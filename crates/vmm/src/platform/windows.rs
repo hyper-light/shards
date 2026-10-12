@@ -3,6 +3,7 @@ use std::io;
 use std::os::windows::io::AsRawHandle;
 use std::ptr::NonNull;
 
+use windows_sys::Win32::Foundation::CloseHandle;
 use windows_sys::Win32::Foundation::ERROR_HANDLE_EOF;
 use windows_sys::Win32::Security::Cryptography::{BCRYPT_USE_SYSTEM_PREFERRED_RNG, BCryptGenRandom};
 use windows_sys::Win32::Storage::FileSystem::{
@@ -10,9 +11,13 @@ use windows_sys::Win32::Storage::FileSystem::{
 };
 use windows_sys::Win32::System::IO::OVERLAPPED;
 use windows_sys::Win32::System::Memory::{
-    MEM_COMMIT, MEM_DECOMMIT, MEM_RELEASE, MEM_RESERVE, PAGE_READWRITE, VirtualAlloc, VirtualFree,
+    CreateFileMappingW, MEM_COMMIT, MEM_DECOMMIT, MEM_PRESERVE_PLACEHOLDER, MEM_RELEASE,
+    MEM_REPLACE_PLACEHOLDER, MEM_RESERVE, MEM_RESERVE_PLACEHOLDER, MEMORY_MAPPED_VIEW_ADDRESS,
+    MapViewOfFile3, PAGE_NOACCESS, PAGE_READONLY, PAGE_READWRITE, UnmapViewOfFile2, VirtualAlloc,
+    VirtualAlloc2, VirtualFree,
 };
 use windows_sys::Win32::System::SystemInformation::{GetSystemInfo, SYSTEM_INFO};
+use windows_sys::Win32::System::Threading::GetCurrentProcess;
 
 /// Makes `dir` and its missing parents. Under `%LOCALAPPDATA%`, they inherit ACLs that
 /// admit this user alone.
@@ -81,6 +86,151 @@ pub unsafe fn grant(ptr: NonNull<u8>, len: usize) -> io::Result<()> {
 pub unsafe fn release(ptr: NonNull<u8>, _len: usize) {
     // SAFETY: forwarded caller contract; MEM_RELEASE requires size 0.
     unsafe { VirtualFree(ptr.as_ptr().cast(), 0, MEM_RELEASE) };
+}
+
+/// The first `mapped` bytes of `file` read-only, then zeros, `len` bytes in all at one
+/// address: a placeholder of `len` bytes (VirtualAlloc2), split at `mapped`, the file's
+/// view in the first (MapViewOfFile3, MEM_REPLACE_PLACEHOLDER: page-aligned, not 64 KiB,
+/// its base and size the placeholder's) and committed zeros in the second, both read-only.
+/// Every VM that maps one file shares its pages in the cache, as on Unix. `mapped` is
+/// page-aligned and at most `len`.
+pub fn map_file_padded(file: &File, mapped: usize, len: usize) -> io::Result<NonNull<u8>> {
+    if mapped > len || mapped == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("{mapped} bytes of a file in {len}"),
+        ));
+    }
+    // SAFETY: the pseudo-handle of this process, which needs no closing.
+    let process = unsafe { GetCurrentProcess() };
+    // SAFETY: a fresh placeholder, which only this function references.
+    let base = unsafe {
+        VirtualAlloc2(
+            process,
+            std::ptr::null(),
+            len,
+            MEM_RESERVE | MEM_RESERVE_PLACEHOLDER,
+            PAGE_NOACCESS,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    let base = NonNull::new(base.cast::<u8>()).ok_or_else(io::Error::last_os_error)?;
+    let tail = len - mapped;
+    // Frees what is mapped of `base` so far, on a failure: the view, then the tail.
+    let undo = |view: bool, rest: bool| {
+        // SAFETY: placeholders and views this function made, which nothing references.
+        unsafe {
+            if view {
+                UnmapViewOfFile2(
+                    process,
+                    MEMORY_MAPPED_VIEW_ADDRESS {
+                        Value: base.as_ptr().cast(),
+                    },
+                    0,
+                );
+            } else {
+                VirtualFree(base.as_ptr().cast(), 0, MEM_RELEASE);
+            }
+            if rest {
+                VirtualFree(base.as_ptr().add(mapped).cast(), 0, MEM_RELEASE);
+            }
+        }
+    };
+    if tail > 0 {
+        // SAFETY: splits our own placeholder in two at a page boundary within it.
+        let split = unsafe {
+            VirtualFree(
+                base.as_ptr().cast(),
+                mapped,
+                MEM_RELEASE | MEM_PRESERVE_PLACEHOLDER,
+            )
+        };
+        if split == 0 {
+            let e = io::Error::last_os_error();
+            undo(false, false);
+            return Err(e);
+        }
+    }
+    // SAFETY: a read-only section of the whole file, closed once its view holds it.
+    let section = unsafe {
+        CreateFileMappingW(
+            file.as_raw_handle(),
+            std::ptr::null(),
+            PAGE_READONLY,
+            0,
+            0,
+            std::ptr::null(),
+        )
+    };
+    if section.is_null() {
+        let e = io::Error::last_os_error();
+        undo(false, tail > 0);
+        return Err(e);
+    }
+    // SAFETY: the view replaces the first placeholder, at its base and of its size.
+    let view = unsafe {
+        MapViewOfFile3(
+            section,
+            process,
+            base.as_ptr().cast(),
+            0,
+            mapped,
+            MEM_REPLACE_PLACEHOLDER,
+            PAGE_READONLY,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    let mapped_err = view.Value.is_null().then(io::Error::last_os_error);
+    // SAFETY: the section handle, which the view (if any) keeps alive by itself.
+    unsafe { CloseHandle(section) };
+    if let Some(e) = mapped_err {
+        undo(false, tail > 0);
+        return Err(e);
+    }
+    if tail > 0 {
+        // SAFETY: committed zeros replace the second placeholder, at its base and size.
+        let zeros = unsafe {
+            VirtualAlloc2(
+                process,
+                base.as_ptr().add(mapped).cast(),
+                tail,
+                MEM_RESERVE | MEM_COMMIT | MEM_REPLACE_PLACEHOLDER,
+                PAGE_READONLY,
+                std::ptr::null_mut(),
+                0,
+            )
+        };
+        if zeros.is_null() {
+            let e = io::Error::last_os_error();
+            // The second placeholder is still one: released as such.
+            undo(true, true);
+            return Err(e);
+        }
+    }
+    Ok(base)
+}
+
+/// Unmaps what [`map_file_padded`] mapped: the view, then the zeros after it.
+///
+/// # Safety
+/// `ptr`, `mapped` and `len` are a mapping's from [`map_file_padded`], which nothing uses
+/// any more: no hypervisor maps it.
+pub unsafe fn unmap_file_padded(ptr: NonNull<u8>, mapped: usize, len: usize) {
+    // SAFETY: forwarded caller contract.
+    unsafe {
+        UnmapViewOfFile2(
+            GetCurrentProcess(),
+            MEMORY_MAPPED_VIEW_ADDRESS {
+                Value: ptr.as_ptr().cast(),
+            },
+            0,
+        );
+        if len > mapped {
+            VirtualFree(ptr.as_ptr().add(mapped).cast(), 0, MEM_RELEASE);
+        }
+    }
 }
 
 /// A file view cannot replace part of a `VirtualAlloc` region without placeholders

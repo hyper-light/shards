@@ -1,0 +1,40 @@
+name: windows afunix
+
+# AF_UNIX stream sockets on GitHub's Windows runners (docs/research/measurements/
+# windows-afunix, PM M199): WSAPoll, half-close, scatter-gather, a pair's cost, inheritance,
+# throughput and latency beside loopback TCP. Runs when the probe changes, or when asked.
+on:
+  push:
+    paths:
+      - docs/research/measurements/windows-afunix/**
+      - .github/workflows/windows-afunix.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  TOOLCHAIN: "1.98.0"
+
+jobs:
+  run:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [windows-2022, windows-2025]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - name: Install pinned Rust
+        shell: bash
+        run: rustup toolchain install "$TOOLCHAIN" --profile minimal --target x86_64-pc-windows-msvc
+      - name: Host
+        shell: pwsh
+        run: |
+          (Get-CimInstance Win32_Processor).Name
+          [System.Environment]::OSVersion.VersionString
+      - name: M199
+        shell: bash
+        working-directory: docs/research/measurements/windows-afunix
+        run: cargo run --release

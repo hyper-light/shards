@@ -28,6 +28,8 @@ const REQ_FLUSH: u32 = 0;
 /// rounded up to `ALIGN`; past the end of the file the region reads as zeros.
 pub struct Region {
     host: NonNull<u8>,
+    /// The bytes of it the file's: the rest are zeros.
+    mapped: usize,
     len: usize,
     _file: File,
 }
@@ -60,16 +62,10 @@ impl Region {
             .ok_or_else(|| format!("{}: {size} bytes is too large", path.display()))?;
         let page = platform::page_size().map_err(err)? as u64;
         let mapped = size.next_multiple_of(page) as usize;
-        let host = platform::reserve(len).map_err(err)?;
-        // SAFETY: `host..host+len` is a fresh reservation nothing references; `mapped`
-        // is page-aligned and within it.
-        if let Err(e) = unsafe { platform::map_file_readonly(&file, mapped, host) } {
-            // SAFETY: our own reservation, never handed out.
-            unsafe { platform::release(host, len) };
-            return Err(err(e));
-        }
+        let host = platform::map_file_padded(&file, mapped, len).map_err(err)?;
         Ok(Region {
             host,
+            mapped,
             len,
             _file: file,
         })
@@ -90,9 +86,9 @@ impl Region {
 
 impl Drop for Region {
     fn drop(&mut self) {
-        // SAFETY: the reservation `open` made; the VM that mapped it is gone
-        // (`Running` drops the VM before the devices).
-        unsafe { platform::release(self.host, self.len) };
+        // SAFETY: the mapping `open` made; the VM that mapped it is gone (`Running` drops
+        // the VM before the devices).
+        unsafe { platform::unmap_file_padded(self.host, self.mapped, self.len) };
     }
 }
 

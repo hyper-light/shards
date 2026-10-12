@@ -397,6 +397,32 @@ pub unsafe fn map_file_readonly(file: &File, len: usize, at: NonNull<u8>) -> io:
     Ok(())
 }
 
+/// The first `mapped` bytes of `file` read-only, then zeros, `len` bytes in all at one
+/// address: a reservation with the file mapped over its start ([`map_file_readonly`]).
+/// `mapped` is page-aligned and at most `len`.
+pub fn map_file_padded(file: &File, mapped: usize, len: usize) -> io::Result<NonNull<u8>> {
+    let host = reserve(len)?;
+    // SAFETY: `host..host+len` is a fresh reservation nothing references; `mapped` is
+    // page-aligned and within it.
+    if let Err(e) = unsafe { map_file_readonly(file, mapped, host) } {
+        // SAFETY: our own reservation, never handed out.
+        unsafe { release(host, len) };
+        return Err(e);
+    }
+    Ok(host)
+}
+
+/// Unmaps what [`map_file_padded`] mapped.
+///
+/// # Safety
+/// `ptr`, `mapped` and `len` are a mapping's from [`map_file_padded`], which nothing uses
+/// any more: no hypervisor maps it.
+pub unsafe fn unmap_file_padded(ptr: NonNull<u8>, _mapped: usize, len: usize) {
+    // SAFETY: forwarded caller contract; one munmap undoes the reservation and the file
+    // mapped over it.
+    unsafe { release(ptr, len) };
+}
+
 /// Faults in the `len` bytes at `ptr` writable, copying each page a private mapping
 /// still shares with its file: the copies the first writes would make, made ahead
 /// (madvise(2) MADV_POPULATE_WRITE, Linux 5.14: a write fault on each page, mm/madvise.c
