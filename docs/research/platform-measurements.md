@@ -7002,3 +7002,49 @@ revision before comparing a changed API/implementation.
   dynamic code before it loads the kernel or runs a vCPU, on every Windows the runners
   have. Nothing it does after that point needs dynamic code. The library never does this
   itself: tests set up many partitions in one process, which windows-2022 refuses after ACG.
+
+### M203. Sockets and files a confined VM process is handed
+
+- **Questions.** On Windows the VM process runs in an AppContainer that reaches no socket and
+  no file outside what its DACLs grant it (M201), so its spawner must bind its vsock
+  listener for it and dial the host ports its guest connects to, as on macOS (M67). Does a
+  listener so bound, in a directory that does not grant the container, work in the child:
+  does WSAEventSelect see a connection, WSAPoll report it, accept take it? Do connected
+  sockets so handed work? Each by DuplicateHandle and by WSADuplicateSocketW, which
+  Winsock's documentation names for sharing a socket; and by WSADuplicateSocketW with the
+  spawner's copy closed before the child makes its own. Does GetFinalPathNameByHandleW
+  name a file handed in? What does a dial through the spawner cost? Does a VM binary in a
+  directory only its user, SYSTEM and Administrators may read start in an AppContainer?
+- **Method.** `docs/research/measurements/whp-run/src/bin/m203.rs`, by `whp-run.yml`, run
+  38223223296 on branch `whp`, 2026-10-12, on a windows-2022 and a windows-2025 runner. A
+  child made as D141 makes the VM process (M201: its own AppContainer profile, VidExo's
+  capabilities, a Job of one process killed with its last handle, no child processes, the
+  mitigations) is handed two listeners, three connected sockets and a file, all in a
+  directory that does not grant its SID; the spawner dials each listener and answers each
+  connection's far end. Then 200 dials through the spawner each way, a byte asking over a
+  socket and the answer a socket's protocol info or a handle's value, timed in the child
+  from the ask to a socket it can use, each dial's socket written a byte and closed by the
+  child; and 200 dials the spawner makes for itself. Last, the probe's binary is copied to
+  a directory given a protected DACL of the user, SYSTEM and Administrators alone, and run
+  from there in an AppContainer.
+- **Found** (both runners alike):
+  - Both listeners work in the child, by either way: its event is set for the
+    connection, WSAPoll reports it (POLLRDNORM), accept takes it, and the line each way
+    arrives.
+  - The three connected sockets work in the child, each way: a line written there is read
+    by the far end, and its answer raises the child's event and is read. One made from
+    WSADuplicateSocketW's info works whose spawner closed its own copy before the child
+    ran.
+  - GetFinalPathNameByHandleW refuses the child a handed file's path, normalized and as
+    opened alike: access denied (5).
+  - A dial through the spawner takes the child 111.0 / 110.7 µs at p50, 197.4 / 196.6 at
+    p99 (windows-2022 / windows-2025) by WSADuplicateSocketW; 99.9 / 105.1 at p50, 150.9 /
+    154.6 at p99, by DuplicateHandle. The spawner's own dial: 41.0 / 38.3 µs at p50, 58.9 /
+    78.2 at p99. Every byte written through the 400 dialed connections arrived.
+  - The binary in the private directory starts in its AppContainer and exits 0, as it
+    does from the probe's own directory.
+- **Consequence (D141).** A VM process on Windows is handed its files by DuplicateHandle,
+  each with the path the spawner resolved for it, since the VM cannot ask; and its sockets
+  by WSADuplicateSocketW, the way Winsock documents, 6-10 µs more a dial at p50 than
+  DuplicateHandle. Its spawner binds its vsock listener and dials its host ports for it, as
+  on macOS. The carried VM binary needs no grant to its directory.

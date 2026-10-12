@@ -88,6 +88,35 @@ pub unsafe fn release(ptr: NonNull<u8>, _len: usize) {
     unsafe { VirtualFree(ptr.as_ptr().cast(), 0, MEM_RELEASE) };
 }
 
+/// The path of the file `file` has open, links resolved (GetFinalPathNameByHandleW): what a
+/// VM's spawner tells it of each file it hands it, as an AppContainer may not ask (PM M203).
+pub fn final_path(file: &File) -> io::Result<std::path::PathBuf> {
+    use std::os::windows::ffi::OsStringExt as _;
+    use windows_sys::Win32::Storage::FileSystem::{FILE_NAME_NORMALIZED, GetFinalPathNameByHandleW};
+    let mut buf = vec![0u16; 1024];
+    loop {
+        // SAFETY: an open handle, and a buffer of the length given.
+        let n = unsafe {
+            GetFinalPathNameByHandleW(
+                file.as_raw_handle(),
+                buf.as_mut_ptr(),
+                u32::try_from(buf.len()).unwrap_or(u32::MAX),
+                FILE_NAME_NORMALIZED,
+            )
+        } as usize;
+        if n == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        // Too small: `n` is the length it needs, its NUL counted.
+        if n >= buf.len() {
+            buf.resize(n + 1, 0);
+            continue;
+        }
+        buf.truncate(n);
+        return Ok(std::path::PathBuf::from(std::ffi::OsString::from_wide(&buf)));
+    }
+}
+
 /// The `size` bytes of `file` read-only, then zeros, `len` bytes in all at one address; and
 /// how many of them are the file's view. A placeholder of `len` bytes (VirtualAlloc2), split
 /// where the file's last whole page ends: its whole pages a view of the file

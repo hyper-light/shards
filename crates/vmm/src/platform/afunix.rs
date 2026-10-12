@@ -12,9 +12,10 @@ use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use windows_sys::Win32::Networking::WinSock::{
-    AF_UNIX, FIONBIO, INVALID_SOCKET, SD_BOTH, SD_RECEIVE, SD_SEND, SOCK_STREAM, SOCKADDR_UN, SOCKET,
-    SOMAXCONN, WSA_FLAG_NO_HANDLE_INHERIT, WSABUF, WSADATA, WSAGetLastError, WSARecv, WSASend, WSASocketW,
-    WSAStartup, accept, bind, closesocket, connect, ioctlsocket, listen, recv, send, shutdown,
+    AF_UNIX, FIONBIO, FROM_PROTOCOL_INFO, INVALID_SOCKET, SD_BOTH, SD_RECEIVE, SD_SEND, SO_RCVTIMEO,
+    SOCK_STREAM, SOCKADDR_UN, SOCKET, SOL_SOCKET, SOMAXCONN, WSA_FLAG_NO_HANDLE_INHERIT, WSABUF, WSADATA,
+    WSADuplicateSocketW, WSAGetLastError, WSAPROTOCOL_INFOW, WSARecv, WSASend, WSASocketW, WSAStartup,
+    accept, bind, closesocket, connect, ioctlsocket, listen, recv, send, setsockopt, shutdown,
 };
 
 /// A socket, as WSAPoll and WSAEventSelect name it.
@@ -80,7 +81,54 @@ impl Socket {
         }
         Ok(())
     }
+
+    /// What process `pid` makes its own copy of this socket from: WSADuplicateSocketW's
+    /// protocol info, the way Winsock documents to share a socket, its bytes whole (PM
+    /// M203).
+    fn share(&self, pid: u32) -> io::Result<Vec<u8>> {
+        let mut info = WSAPROTOCOL_INFOW::default();
+        // SAFETY: a socket this value owns; a structure for the call to fill.
+        if unsafe { WSADuplicateSocketW(self.0, pid, &raw mut info) } != 0 {
+            return Err(last());
+        }
+        // SAFETY: the structure's own bytes, all of them fields (it has no padding).
+        let bytes = unsafe { std::slice::from_raw_parts((&raw const info).cast::<u8>(), INFO) };
+        Ok(bytes.to_vec())
+    }
+
+    /// This process's copy of a socket another process shared with it ([`Socket::share`]).
+    fn shared(info: &[u8]) -> io::Result<Socket> {
+        startup()?;
+        if info.len() != INFO {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("{} bytes of a socket's protocol info, not {INFO}", info.len()),
+            ));
+        }
+        let mut parsed = WSAPROTOCOL_INFOW::default();
+        // SAFETY: the structure's own size, from bytes of that length; any bytes are some
+        // value of its fields, which Winsock checks.
+        unsafe { std::ptr::copy_nonoverlapping(info.as_ptr(), (&raw mut parsed).cast::<u8>(), INFO) };
+        // SAFETY: the info as WSADuplicateSocketW wrote it for this process.
+        let s = unsafe {
+            WSASocketW(
+                FROM_PROTOCOL_INFO,
+                FROM_PROTOCOL_INFO,
+                FROM_PROTOCOL_INFO,
+                &raw const parsed,
+                0,
+                WSA_FLAG_NO_HANDLE_INHERIT,
+            )
+        };
+        if s == INVALID_SOCKET {
+            return Err(last());
+        }
+        Ok(Socket(s))
+    }
 }
+
+/// WSAPROTOCOL_INFOW's size, which a shared socket's info is.
+const INFO: usize = std::mem::size_of::<WSAPROTOCOL_INFOW>();
 
 /// `path` as an AF_UNIX address: its UTF-8 bytes, NUL-terminated within the 108 bytes
 /// sun_path holds.
@@ -175,6 +223,43 @@ impl UnixStream {
 
     pub fn set_nonblocking(&self, on: bool) -> io::Result<()> {
         self.0.set_nonblocking(on)
+    }
+
+    /// A read waits at most `timeout`, or with `None` for ever (SO_RCVTIMEO), as std's
+    /// does.
+    pub fn set_read_timeout(&self, timeout: Option<std::time::Duration>) -> io::Result<()> {
+        let ms: u32 = match timeout {
+            None => 0,
+            Some(t) if t.is_zero() => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "cannot set a 0 duration timeout",
+                ));
+            }
+            Some(t) => u32::try_from(t.as_millis().max(1)).unwrap_or(u32::MAX),
+        };
+        // SAFETY: SO_RCVTIMEO with a DWORD of milliseconds, on a socket this value owns.
+        let r = unsafe { setsockopt(self.0.0, SOL_SOCKET, SO_RCVTIMEO, (&raw const ms).cast(), 4) };
+        if r != 0 {
+            return Err(last());
+        }
+        Ok(())
+    }
+
+    /// Another handle to this connection, as std's `try_clone`: shared with this process.
+    pub fn try_clone(&self) -> io::Result<UnixStream> {
+        Socket::shared(&self.0.share(std::process::id())?).map(UnixStream)
+    }
+
+    /// What process `pid` makes its own copy of this connection from, by [`Self::from_shared`]
+    /// (PM M203).
+    pub fn share_with(&self, pid: u32) -> io::Result<Vec<u8>> {
+        self.0.share(pid)
+    }
+
+    /// A connection another process shared with this one ([`Self::share_with`]).
+    pub fn from_shared(info: &[u8]) -> io::Result<UnixStream> {
+        Socket::shared(info).map(UnixStream)
     }
 
     pub fn shutdown(&self, how: Shutdown) -> io::Result<()> {
@@ -309,18 +394,41 @@ impl super::AsRawSocket for UnixListener {
 impl UnixListener {
     /// Listens at `path`, which must not exist.
     pub fn bind(path: impl AsRef<Path>) -> io::Result<UnixListener> {
+        let listener = UnixListener::bound(path)?;
+        listener.listen()?;
+        Ok(listener)
+    }
+
+    /// A socket bound at `path`, which must not exist, and not listening yet: a client is
+    /// refused until it does ([`Self::listen`]).
+    pub fn bound(path: impl AsRef<Path>) -> io::Result<UnixListener> {
         let addr = address(path.as_ref())?;
         let s = Socket::new()?;
-        // SAFETY: an address of its own length; a bound socket.
-        unsafe {
-            if bind(s.0, (&raw const addr).cast(), ADDRESS_LEN) != 0 {
-                return Err(last());
-            }
-            if listen(s.0, SOMAXCONN as i32) != 0 {
-                return Err(last());
-            }
+        // SAFETY: an address of its own length.
+        if unsafe { bind(s.0, (&raw const addr).cast(), ADDRESS_LEN) } != 0 {
+            return Err(last());
         }
         Ok(UnixListener(s))
+    }
+
+    /// Listens on a socket [`Self::bound`] made.
+    pub fn listen(&self) -> io::Result<()> {
+        // SAFETY: a bound socket this value owns.
+        if unsafe { listen(self.0.0, SOMAXCONN as i32) } != 0 {
+            return Err(last());
+        }
+        Ok(())
+    }
+
+    /// What process `pid` makes its own copy of this socket from, by [`Self::from_shared`]
+    /// (PM M203).
+    pub fn share_with(&self, pid: u32) -> io::Result<Vec<u8>> {
+        self.0.share(pid)
+    }
+
+    /// A socket another process shared with this one ([`Self::share_with`]).
+    pub fn from_shared(info: &[u8]) -> io::Result<UnixListener> {
+        Socket::shared(info).map(UnixListener)
     }
 
     /// The next connection, and no address: an AF_UNIX client's is unnamed.
@@ -373,6 +481,41 @@ mod tests {
         (&b).write_all(b"back").unwrap();
         (&a).read_exact(&mut buf).unwrap();
         assert_eq!(&buf, b"back");
+    }
+
+    /// A connection shared by its protocol info is the same connection, and a clone of it
+    /// is too; a read waits no longer than its timeout.
+    #[test]
+    fn a_shared_connection_is_the_same_connection() {
+        let (a, b) = UnixStream::pair().unwrap();
+        let shared = UnixStream::from_shared(&a.share_with(std::process::id()).unwrap()).unwrap();
+        drop(a);
+        (&shared).write_all(b"same").unwrap();
+        let mut buf = [0u8; 4];
+        (&b).read_exact(&mut buf).unwrap();
+        assert_eq!(&buf, b"same");
+        let clone = b.try_clone().unwrap();
+        clone
+            .set_read_timeout(Some(std::time::Duration::from_millis(50)))
+            .unwrap();
+        let e = (&clone).read(&mut buf).unwrap_err();
+        assert!(
+            matches!(e.kind(), io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock),
+            "{e:?}"
+        );
+        assert!(UnixStream::from_shared(&[0; 3]).is_err());
+    }
+
+    /// A socket bound and not yet listening refuses a client; listening, it takes one.
+    #[test]
+    fn a_bound_socket_listens_when_told() {
+        let dir = shards_testdir::TempDir::new("afunix-bound").unwrap();
+        let path = dir.join("b.sock");
+        let bound = UnixListener::bound(&path).unwrap();
+        assert!(UnixStream::connect(&path).is_err());
+        bound.listen().unwrap();
+        let _client = UnixStream::connect(&path).unwrap();
+        bound.accept().unwrap();
     }
 
     /// A non-blocking read with nothing there would block, and says so.

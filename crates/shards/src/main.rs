@@ -20,12 +20,12 @@ mod daemon;
 mod from_image;
 mod frontend;
 mod google;
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 mod grant;
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 mod grant_answer;
 // The VM's half, which the daemon's tests answer.
-#[cfg(all(test, target_os = "macos"))]
+#[cfg(all(test, any(target_os = "macos", windows)))]
 mod grant_ask;
 mod guest;
 mod helpers;

@@ -1,7 +1,8 @@
 //! vsock between the host and real guests: connections both ways, many streams at once,
-//! refusals, and restored copies of a guest that listens or holds a connection.
+//! refusals, and restored copies of a guest that listens or holds a connection. On Windows
+//! through a VM process confined as D141 confines it: its socket bound and its host ports
+//! dialled by its spawner (PM M203).
 
-#![cfg(unix)]
 #![allow(
     clippy::panic,
     clippy::panic_in_result_fn,
@@ -12,8 +13,8 @@
 
 mod common;
 
+use shards_vmm::platform::{UnixListener, UnixStream};
 use std::io::{BufRead, BufReader, Read, Write};
-use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::thread;

@@ -53,44 +53,12 @@ impl AsRawSocket for UnixListener {
 #[cfg(target_os = "macos")]
 mod macos_thread;
 
-#[cfg(unix)]
 mod granted;
 #[cfg(unix)]
+pub use granted::open_beneath_input;
 pub use granted::{
-    dial_unix, grant_input, grant_listener, input_metadata, input_path, listen_unix, open_beneath_input,
-    open_input, set_dialer,
+    dial_unix, grant_input, grant_listener, input_metadata, input_path, listen_unix, open_input, set_dialer,
 };
-
-/// A listener at `path` (granted ones are a Unix host's).
-#[cfg(not(unix))]
-pub fn listen_unix(path: &std::path::Path) -> io::Result<UnixListener> {
-    UnixListener::bind(path)
-}
-
-/// A connection to `path` through a spawner's dialer: none on this host.
-#[cfg(not(unix))]
-pub fn dial_unix(_path: &std::path::Path) -> Option<io::Result<UnixStream>> {
-    None
-}
-
-/// `path` for reading, and with `write` for writing too (a VM's inputs; granted
-/// descriptors are a Unix host's).
-#[cfg(not(unix))]
-pub fn open_input(path: &std::path::Path, write: bool) -> io::Result<File> {
-    std::fs::OpenOptions::new().read(true).write(write).open(path)
-}
-
-/// `path` resolved, links and all.
-#[cfg(not(unix))]
-pub fn input_path(path: &std::path::Path) -> io::Result<std::path::PathBuf> {
-    std::fs::canonicalize(path)
-}
-
-/// `path`'s metadata.
-#[cfg(not(unix))]
-pub fn input_metadata(path: &std::path::Path) -> io::Result<std::fs::Metadata> {
-    std::fs::metadata(path)
-}
 
 #[cfg(target_os = "linux")]
 pub mod seccomp;

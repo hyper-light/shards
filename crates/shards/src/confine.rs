@@ -164,8 +164,8 @@ pub fn confine() -> Result<(), String> {
 }
 
 /// The files and sockets a VM process may use, for the grants its spawner gives it in App
-/// Sandbox on macOS (`grant`) and its Landlock rules on Linux (D30): all it is denied
-/// besides.
+/// Sandbox on macOS and in an AppContainer on Windows (`grant`), and its Landlock rules on
+/// Linux (D30): all it is denied besides.
 #[derive(Debug, Default, Clone)]
 pub struct Paths {
     /// Files it reads.
@@ -179,9 +179,9 @@ pub struct Paths {
     /// Directories it binds and dials Unix sockets in: that of a vsock socket path it was
     /// given (`--vsock`). The ports its own process serves need none.
     pub sockets_under: Vec<std::path::PathBuf>,
-    /// The vsock socket path it was given, which on macOS its spawner binds for it, and
-    /// beside which it dials for it (grant).
-    #[cfg(target_os = "macos")]
+    /// The vsock socket path it was given, which on macOS and Windows its spawner binds for
+    /// it, and beside which it dials for it (grant).
+    #[cfg(any(target_os = "macos", windows))]
     pub vsock: Option<std::path::PathBuf>,
 }
 

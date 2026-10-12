@@ -1,14 +1,16 @@
-//! A VM's half of its grants (`grant`): it asks its spawner for its paths and resolves
-//! the bookmarks it is answered with.
+//! A VM's half of its grants (`grant`): it asks its spawner for its paths and takes what
+//! it is answered with: on macOS descriptors and bookmarks, which it resolves; on Windows
+//! handles and sockets its spawner put in this process.
 
-use std::path::{Path, PathBuf};
+#[cfg(target_os = "macos")]
+use std::path::Path;
+use std::path::PathBuf;
 
 use crate::grant::{Access, MAX_GRANTS, MAX_PATH, Wanted};
 
 /// What a VM asks for, as `kind::GRANT` carries it: a big-endian u32 count, then each path
-/// as its access, a big-endian u32 length and its bytes.
+/// as its access, a big-endian u32 length and its bytes ([`crate::grant::path_bytes`]).
 pub fn encode(wanted: &[Wanted]) -> Result<Vec<u8>, String> {
-    use std::os::unix::ffi::OsStrExt;
     if wanted.len() > MAX_GRANTS {
         return Err(format!("{} paths to grant, more than {MAX_GRANTS}", wanted.len()));
     }
@@ -19,7 +21,7 @@ pub fn encode(wanted: &[Wanted]) -> Result<Vec<u8>, String> {
             .to_be_bytes(),
     );
     for (access, path) in wanted {
-        let bytes = path.as_os_str().as_bytes();
+        let bytes = crate::grant::path_bytes(path);
         if bytes.len() > MAX_PATH {
             return Err(format!("{}: a path too long to grant", path.display()));
         }
@@ -34,6 +36,7 @@ pub fn encode(wanted: &[Wanted]) -> Result<Vec<u8>, String> {
     Ok(out)
 }
 
+#[cfg(target_os = "macos")]
 mod cf {
     use std::ffi::c_void;
 
@@ -91,6 +94,7 @@ mod cf {
     }
 }
 
+#[cfg(target_os = "macos")]
 /// Whether this process is signed into App Sandbox, which then confines it from its launch
 /// ("App Sandbox Entitlement", Apple), as its own signature says (SecTask.h:
 /// `SecTaskCopyValueForEntitlement`).
@@ -125,6 +129,7 @@ pub fn sandboxed() -> bool {
     }
 }
 
+#[cfg(target_os = "macos")]
 /// Resolves `bookmark`, extending this process's sandbox to what it names for as long as
 /// the process lives; returns its path. The resolved URL is never released, since the
 /// access is wanted for the process's life.
@@ -175,6 +180,7 @@ pub fn resolve(bookmark: &[u8]) -> Result<PathBuf, String> {
     Ok(path)
 }
 
+#[cfg(target_os = "macos")]
 /// Asks the spawner on `link` for `wanted`, and takes what it answers: a file's
 /// descriptor, from here on what opens of its path get; a directory's bookmark, resolved;
 /// or, for a file it reads if it is there, word that it is not. A bookmark must name the
@@ -221,6 +227,7 @@ pub fn obtain(link: &std::os::unix::net::UnixStream, wanted: &[Wanted]) -> Resul
     Ok(())
 }
 
+#[cfg(target_os = "macos")]
 /// A connection to vsock host port `port`, which the spawner on `link` dials for this VM
 /// beside the vsock path it granted it (`kind::DIAL`): App Sandbox lets the VM dial
 /// nothing outside its container (PM M67).
@@ -250,6 +257,94 @@ pub fn dial(
     }
 }
 
+/// Asks the spawner on `link` for `wanted`, and takes what it answers: a file's handle and
+/// the path it was found at, from here on what opens of its path get; a socket bound for
+/// this VM; or, for a file it reads if it is there, word that it is not.
+#[cfg(windows)]
+pub fn obtain(link: &crate::grant::Link, wanted: &[Wanted]) -> Result<(), String> {
+    use shards_ipc::kind;
+    shards_ipc::send(&link.to, kind::GRANT, &encode(wanted)?)
+        .map_err(|e| format!("asking for access: {e}"))?;
+    for (access, path) in wanted {
+        let answer = shards_ipc::recv(&link.from)
+            .map_err(|e| format!("the grant for {}: {e}", path.display()))?
+            .ok_or_else(|| format!("the spawner went before granting {}", path.display()))?;
+        let at = |e: String| format!("{}: {e}", path.display());
+        match (answer.kind, *access) {
+            (kind::GRANTED, Access::Read | Access::ReadIfThere | Access::Write)
+                if !answer.payload.is_empty() =>
+            {
+                let handed = handed_file(&answer.payload).map_err(at)?;
+                shards_vmm::platform::grant_input(path.clone(), Some(handed), *access == Access::Write);
+            }
+            (kind::GRANTED, Access::ReadIfThere) => {
+                shards_vmm::platform::grant_input(path.clone(), None, false)
+            }
+            (kind::GRANTED, Access::Listen) => {
+                let listener = shards_vmm::platform::UnixListener::from_shared(&answer.payload)
+                    .map_err(|e| at(e.to_string()))?;
+                shards_vmm::platform::grant_listener(path.clone(), listener);
+            }
+            (kind::GRANTED, _) => {
+                return Err(format!(
+                    "the spawner's answer for {} was not what was asked",
+                    path.display()
+                ));
+            }
+            (kind::ERR, _) => return Err(String::from_utf8_lossy(&answer.payload).into_owned()),
+            (other, _) => return Err(format!("the spawner answered message kind {other}")),
+        }
+    }
+    Ok(())
+}
+
+/// A file the spawner duplicated into this process, and the path it found it at: the
+/// handle's value there (a little-endian u64), then the path ([`crate::grant::path_bytes`]).
+#[cfg(windows)]
+fn handed_file(payload: &[u8]) -> Result<(std::fs::File, PathBuf), String> {
+    use std::os::windows::io::FromRawHandle as _;
+    let (value, real) = payload
+        .split_first_chunk::<8>()
+        .ok_or("a file's answer cut short")?;
+    let real = crate::grant::path_from(real)
+        .filter(|p| p.is_absolute())
+        .ok_or("a file answered with no whole path")?;
+    let value = usize::try_from(u64::from_le_bytes(*value))
+        .ok()
+        .filter(|&v| v != 0)
+        .ok_or("a file answered with no handle")?;
+    // SAFETY: a handle the spawner duplicated into this process for this answer alone,
+    // owned from here on.
+    let file = unsafe { std::fs::File::from_raw_handle(value as std::os::windows::io::RawHandle) };
+    Ok((file, real))
+}
+
+/// A connection to vsock host port `port`, which the spawner on `link` dials for this VM
+/// beside the vsock path it granted it (`kind::DIAL`): an AppContainer dials nothing its
+/// user's (PM M201, M203).
+#[cfg(windows)]
+pub fn dial(link: &crate::grant::Link, port: u32) -> std::io::Result<shards_vmm::platform::UnixStream> {
+    use shards_ipc::kind;
+    shards_ipc::send(&link.to, kind::DIAL, &port.to_be_bytes())?;
+    let answer = shards_ipc::recv(&link.from)?
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::BrokenPipe, "the spawner went"))?;
+    match answer.kind {
+        kind::GRANTED => {
+            let conn = shards_vmm::platform::UnixStream::from_shared(&answer.payload)?;
+            // Had: the spawner lets go of its copy, as on macOS (review 8.7).
+            let _ = shards_ipc::send(&link.to, kind::TAKEN, &[]);
+            Ok(conn)
+        }
+        kind::ERR => Err(std::io::Error::new(
+            std::io::ErrorKind::ConnectionRefused,
+            String::from_utf8_lossy(&answer.payload).into_owned(),
+        )),
+        _ => Err(std::io::Error::other(
+            "the spawner answered a dial with something else",
+        )),
+    }
+}
+
 /// An access's byte in a request.
 fn code(access: Access) -> u8 {
     match access {
@@ -261,7 +356,7 @@ fn code(access: Access) -> u8 {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "macos"))]
 mod tests {
     /// A test binary is not signed into App Sandbox, and the check says so; a VM process
     /// that is, says it is (the E2E tests' signed shards-vm).

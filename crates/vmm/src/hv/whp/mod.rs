@@ -17,6 +17,7 @@ mod ffi;
 
 use std::ffi::c_void;
 use std::fmt;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
 
 use self::ffi::*;
@@ -187,33 +188,12 @@ pub fn max_vcpus() -> Result<u32> {
     if let Some(max) = MAX.get() {
         return Ok(*max);
     }
-    let features = features().map_err(Error::Guest)?;
-    let mut handle: WHV_PARTITION_HANDLE = 0;
-    // SAFETY: a handle for the call to fill.
-    check("WHvCreatePartition", unsafe {
-        WHvCreatePartition(&raw mut handle)
-    })?;
-    let partition = Partition(handle);
-    partition.set(
-        WHvPartitionPropertyCodeProcessorCount,
-        &1u32,
-        "WHvSetPartitionProperty(ProcessorCount)",
-    )?;
-    // Offered what a VM's guest is, without which its guest has no hypervisor leaves to read
-    // (PM M202: 0 there).
-    partition.set(
-        WHvPartitionPropertyCodeSyntheticProcessorFeaturesBanks,
-        &WHV_SYNTHETIC_PROCESSOR_FEATURES_BANKS {
-            BanksCount: 1,
-            Reserved0: 0,
-            Anonymous: WHV_SYNTHETIC_PROCESSOR_FEATURES_BANKS_0 { AsUINT64: [features] },
-        },
-        "WHvSetPartitionProperty(SyntheticProcessorFeaturesBanks)",
-    )?;
-    // SAFETY: the partition just configured, then its one vCPU, its CPUID read into a value
-    // of its own size.
+    // Made as a VM's is: a partition offered no synthetic features gives its guest no
+    // hypervisor leaves to read (PM M202: 0 there).
+    let partition = partition(1)?;
+    // SAFETY: the partition just set up, its one vCPU, its CPUID read into a value of its
+    // own size.
     let limits = unsafe {
-        check("WHvSetupPartition", WHvSetupPartition(partition.0))?;
         check(
             "WHvCreateVirtualProcessor",
             WHvCreateVirtualProcessor(partition.0, 0, 0),
@@ -341,38 +321,93 @@ pub struct Vm {
     ioapic: Arc<Ioapic>,
 }
 
+/// A partition of `vcpus` vCPUs, set up as every one of shards' is: its local APICs
+/// emulated by the hypervisor (XApic), its guest offered [`SYNTHETIC`] of the host's
+/// synthetic features, which the hypervisor sets up only with the APICs it emulates
+/// (HV_STATUS_INVALID_PARAMETER, 0xc0350005, without; CI run 38222358454).
+fn partition(vcpus: u32) -> Result<Partition> {
+    let features = features().map_err(Error::Guest)?;
+    let mut handle: WHV_PARTITION_HANDLE = 0;
+    // SAFETY: a handle for the call to fill.
+    check("WHvCreatePartition", unsafe {
+        WHvCreatePartition(&raw mut handle)
+    })?;
+    let partition = Partition(handle);
+    partition.set(
+        WHvPartitionPropertyCodeProcessorCount,
+        &vcpus,
+        "WHvSetPartitionProperty(ProcessorCount)",
+    )?;
+    partition.set(
+        WHvPartitionPropertyCodeLocalApicEmulationMode,
+        &WHvX64LocalApicEmulationModeXApic,
+        "WHvSetPartitionProperty(LocalApicEmulationMode)",
+    )?;
+    partition.set(
+        WHvPartitionPropertyCodeSyntheticProcessorFeaturesBanks,
+        &WHV_SYNTHETIC_PROCESSOR_FEATURES_BANKS {
+            BanksCount: 1,
+            Reserved0: 0,
+            Anonymous: WHV_SYNTHETIC_PROCESSOR_FEATURES_BANKS_0 { AsUINT64: [features] },
+        },
+        "WHvSetPartitionProperty(SyntheticProcessorFeaturesBanks)",
+    )?;
+    // SAFETY: the partition just configured.
+    check("WHvSetupPartition", unsafe { WHvSetupPartition(partition.0) })?;
+    Ok(partition)
+}
+
+/// Whether this process forbids itself dynamic code once a partition is set up
+/// ([`forbid_dynamic_code_once_set_up`]).
+static FORBID_DYNAMIC_CODE: AtomicBool = AtomicBool::new(false);
+
+/// Has this process forbid itself dynamic code (ACG) as soon as its next partition is set
+/// up, for good: a VM process's choice, made before it reads anything of its guest's (D141).
+/// Not a partition's own: windows-2022 sets up no partition in a process that has forbidden
+/// it, a VM process's own included, while every call a VM makes after its setup works
+/// (PM M201, M202); and a process that runs many VMs, a test's, sets many up.
+pub fn forbid_dynamic_code_once_set_up() {
+    FORBID_DYNAMIC_CODE.store(true, Ordering::Relaxed);
+}
+
+/// Forbids this process dynamic code from here on (SetProcessMitigationPolicy,
+/// ProcessDynamicCodePolicy).
+fn forbid_dynamic_code() -> Result<()> {
+    use windows_sys::Win32::System::SystemServices::{
+        PROCESS_MITIGATION_DYNAMIC_CODE_POLICY, PROCESS_MITIGATION_DYNAMIC_CODE_POLICY_0,
+    };
+    use windows_sys::Win32::System::Threading::{ProcessDynamicCodePolicy, SetProcessMitigationPolicy};
+    // ProhibitDynamicCode, the policy's first flag (winnt.h).
+    let policy = PROCESS_MITIGATION_DYNAMIC_CODE_POLICY {
+        Anonymous: PROCESS_MITIGATION_DYNAMIC_CODE_POLICY_0 { Flags: 1 },
+    };
+    // SAFETY: a policy of its own size, for this process.
+    let set = unsafe {
+        SetProcessMitigationPolicy(
+            ProcessDynamicCodePolicy,
+            (&raw const policy).cast(),
+            size_of::<PROCESS_MITIGATION_DYNAMIC_CODE_POLICY>(),
+        )
+    };
+    if set == 0 {
+        // HRESULT_FROM_WIN32 of the call's error, as WHP's own failures are reported.
+        let code = std::io::Error::last_os_error().raw_os_error().unwrap_or(0) as u32;
+        return Err(Error::Call {
+            op: "SetProcessMitigationPolicy(ProcessDynamicCodePolicy)",
+            hr: ((code & 0xFFFF) | 0x8007_0000) as i32,
+        });
+    }
+    Ok(())
+}
+
 impl Vm {
     /// A partition of `config.vcpus` vCPUs, their local APICs emulated by the hypervisor, its
     /// guest offered [`SYNTHETIC`] of the host's synthetic features.
     pub fn new(config: VmConfig) -> Result<Vm> {
-        let features = features().map_err(Error::Guest)?;
-        let mut handle: WHV_PARTITION_HANDLE = 0;
-        // SAFETY: a handle for the call to fill.
-        check("WHvCreatePartition", unsafe {
-            WHvCreatePartition(&raw mut handle)
-        })?;
-        let partition = Partition(handle);
-        partition.set(
-            WHvPartitionPropertyCodeProcessorCount,
-            &config.vcpus,
-            "WHvSetPartitionProperty(ProcessorCount)",
-        )?;
-        partition.set(
-            WHvPartitionPropertyCodeLocalApicEmulationMode,
-            &WHvX64LocalApicEmulationModeXApic,
-            "WHvSetPartitionProperty(LocalApicEmulationMode)",
-        )?;
-        partition.set(
-            WHvPartitionPropertyCodeSyntheticProcessorFeaturesBanks,
-            &WHV_SYNTHETIC_PROCESSOR_FEATURES_BANKS {
-                BanksCount: 1,
-                Reserved0: 0,
-                Anonymous: WHV_SYNTHETIC_PROCESSOR_FEATURES_BANKS_0 { AsUINT64: [features] },
-            },
-            "WHvSetPartitionProperty(SyntheticProcessorFeaturesBanks)",
-        )?;
-        // SAFETY: the partition just configured.
-        check("WHvSetupPartition", unsafe { WHvSetupPartition(partition.0) })?;
+        let partition = partition(config.vcpus)?;
+        if FORBID_DYNAMIC_CODE.load(Ordering::Relaxed) {
+            forbid_dynamic_code()?;
+        }
         Ok(Vm {
             partition: Arc::new(partition),
             ioapic: Arc::new(Ioapic::default()),

@@ -21,6 +21,7 @@ shards-netring = { path = "../netring" }
 windows-sys = { workspace = true, features = [
   "Win32_System_Hypervisor",
   "Win32_System_LibraryLoader",
+  "Win32_System_SystemServices",
   "Win32_System_Threading",
 ] }
 

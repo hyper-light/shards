@@ -150,13 +150,7 @@ impl Common {
                 }
                 CWD.set(dir).map_err(|_| "--cwd given twice".to_string())?;
             }
-            "--grants" => {
-                let fd = text(value("--grants")?)?;
-                let fd = fd
-                    .parse::<i32>()
-                    .map_err(|_| format!("--grants: {fd:?} is not a descriptor"))?;
-                grants(fd)?;
-            }
+            "--grants" => grants(&text(value("--grants")?)?)?,
             "-e" | "--env" => w.env.push(text(value("--env")?)?),
             "-w" | "--workdir" => w.workdir = text(value("--workdir")?)?,
             "-u" | "--user" => w.user = text(value("--user")?)?,
@@ -1169,8 +1163,20 @@ fn start(cfg: &Config) -> Result<(Handle, Running), String> {
     // A host that runs no VM says so, before its files are confined: the check reads no
     // input of the VM's.
     vm::check_host()?;
+    if cfg.snapshot.is_some() {
+        snapshots()?;
+    }
     confine(&paths)?;
     vm::start(cfg)
+}
+
+/// A host whose microVMs take no snapshots says so before a VM starts that would take or
+/// restore one (D140).
+fn snapshots() -> Result<(), String> {
+    if vm::SNAPSHOTS {
+        return Ok(());
+    }
+    Err("this host's microVMs take no snapshots yet".into())
 }
 
 /// [`start`] for a restore: the snapshot's directory, and the files it restores against.
@@ -1186,6 +1192,7 @@ fn restore_vm(cfg: &RestoreConfig) -> Result<(Handle, Running), String> {
     // A host that runs no VM says so, before its files are confined: the check reads no
     // input of the VM's.
     vm::check_host()?;
+    snapshots()?;
     let mut paths = crate::confine::Paths::default();
     // The snapshot says which files it restores against: on macOS it is granted first, to
     // be read for them.
@@ -1386,11 +1393,11 @@ fn written(paths: &mut crate::confine::Paths, snapshot: Option<&Path>, vsock: Op
     if let Some(dir) = snapshot {
         let _ = std::fs::create_dir_all(dir);
     }
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
     {
         paths.vsock = vsock.map(Path::to_path_buf);
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", windows)))]
     paths
         .sockets_under
         .extend(vsock.and_then(Path::parent).map(Path::to_path_buf));
@@ -1400,6 +1407,12 @@ fn written(paths: &mut crate::confine::Paths, snapshot: Option<&Path>, vsock: Op
 /// its VM is.
 #[cfg(target_os = "macos")]
 static GRANTS: std::sync::OnceLock<std::os::unix::net::UnixStream> = std::sync::OnceLock::new();
+
+/// The pipes this VM asks its spawner for access on (`--grants HANDLE`): taken, and so
+/// closed, once it has all it needs, unless its guest's connections to host ports go
+/// through them.
+#[cfg(windows)]
+static GRANTS: std::sync::Mutex<Option<crate::grant::Link>> = std::sync::Mutex::new(None);
 
 /// `--net REGION,WAKE_ME,WAKE_PEER,MAC`: the frame ring and doorbells its spawner left this
 /// process at those descriptors, which it owns from here on, and the guest's MAC.
@@ -1445,16 +1458,51 @@ fn net_host(spec: &str) -> Result<shards_vmm::devices::virtio::net::NetHost, Str
     })
 }
 
-/// Takes the socket at `fd` to ask the spawner for access on (macOS).
+/// Takes the socket at descriptor `fd` to ask the spawner for access on (macOS).
 #[cfg(target_os = "macos")]
-fn grants(fd: i32) -> Result<(), String> {
+fn grants(fd: &str) -> Result<(), String> {
+    let fd = fd
+        .parse::<i32>()
+        .map_err(|_| format!("--grants: {fd:?} is not a descriptor"))?;
     let link = crate::warm::inherited_socket("--grants", fd)?;
     GRANTS.set(link).map_err(|_| "--grants given twice".to_string())
 }
 
-#[cfg(not(target_os = "macos"))]
-fn grants(_: i32) -> Result<(), String> {
-    Err("--grants: macOS alone grants a VM its files".into())
+/// Takes what the spawner gave this process (`--grants HANDLE`, shards_ipc's pipe): the
+/// pipes to ask it for access on.
+#[cfg(windows)]
+fn grants(pipe: &str) -> Result<(), String> {
+    use std::os::windows::io::FromRawHandle as _;
+    let pipe = pipe
+        .parse::<usize>()
+        .map_err(|_| format!("--grants: {pipe:?} is not a handle"))?;
+    let given = shards_ipc::given(pipe).map_err(|e| format!("--grants: {e}"))?;
+    let handle = |name: &str| -> Result<std::fs::File, String> {
+        let value = given
+            .iter()
+            .find(|(n, _)| n == name)
+            .map(|(_, v)| *v)
+            .filter(|&v| v != 0)
+            .ok_or_else(|| format!("--grants: no {name} pipe was given"))?;
+        // SAFETY: a pipe's handle the spawner duplicated into this process for it alone,
+        // owned from here on.
+        Ok(unsafe { std::fs::File::from_raw_handle(value as std::os::windows::io::RawHandle) })
+    };
+    let link = crate::grant::Link {
+        from: handle("answer")?,
+        to: handle("ask")?,
+    };
+    let mut grants = GRANTS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    if grants.is_some() {
+        return Err("--grants given twice".into());
+    }
+    *grants = Some(link);
+    Ok(())
+}
+
+#[cfg(not(any(target_os = "macos", windows)))]
+fn grants(_: &str) -> Result<(), String> {
+    Err("--grants: macOS and Windows alone grant a VM its files".into())
 }
 
 /// On macOS, where the VM process is in App Sandbox from its launch, asks its spawner for
@@ -1475,17 +1523,36 @@ fn ask(wanted: &[crate::grant::Wanted]) -> Result<(), String> {
     crate::grant_ask::obtain(link, wanted)
 }
 
+/// On Windows, where the VM process is in an AppContainer from its start (D141), asks its
+/// spawner for `wanted` (grant). It fails closed: a VM process outside one, started by
+/// anything but `shards`, starts no VM.
+#[cfg(windows)]
+fn ask(wanted: &[crate::grant::Wanted]) -> Result<(), String> {
+    if !shards_ipc::in_app_container() {
+        return Err(
+            "shards-vm is not in an AppContainer, which confines every VM on Windows: start it with \
+             `shards run --kernel`, which confines it"
+                .into(),
+        );
+    }
+    let grants = GRANTS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let link = grants.as_ref().ok_or(
+        "nothing was granted to this VM: start it with `shards run --kernel`, which grants it its files",
+    )?;
+    crate::grant_ask::obtain(link, wanted)
+}
+
 /// `paths` as the VM asks for them: files it reads read-only, files it writes read-write,
 /// and the directories it writes in made first. A directory cannot be granted read-only
 /// (PM M70): a restore asks for its template's files instead.
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 fn granted(paths: &crate::confine::Paths) -> Result<(), String> {
     use crate::grant::Access;
     if !paths.read_under.is_empty() {
-        return Err("a directory cannot be granted read-only under App Sandbox".into());
+        return Err("a directory cannot be granted read-only to a confined VM process".into());
     }
     if !paths.sockets_under.is_empty() {
-        return Err("a directory of sockets cannot be granted under App Sandbox".into());
+        return Err("a directory of sockets cannot be granted to a confined VM process".into());
     }
     let wanted: Vec<crate::grant::Wanted> = paths
         .read
@@ -1523,6 +1590,26 @@ fn dial_through_spawner(vsock: &Path) -> Result<(), String> {
     }))
 }
 
+/// Has the spawner dial, beside `vsock`, every host port the guest connects to: an
+/// AppContainer dials no socket of its user's (PM M201, M203).
+#[cfg(windows)]
+fn dial_through_spawner(vsock: &Path) -> Result<(), String> {
+    let prefix = format!("{}_", vsock.to_str().ok_or("a vsock path that is not UTF-8")?);
+    shards_vmm::platform::set_dialer(Box::new(move |target: &Path| {
+        let port = target
+            .to_str()
+            .and_then(|t| t.strip_prefix(prefix.as_str()))
+            .and_then(|p| p.parse::<u32>().ok())
+            .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "not a vsock host port"))?;
+        // A request and its answer at a time: the lock is held through both.
+        let grants = GRANTS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let link = grants.as_ref().ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::NotConnected, "no spawner to dial through")
+        })?;
+        crate::grant_ask::dial(link, port)
+    }))
+}
+
 /// A restore's template, as a VM in App Sandbox is granted it: its pointer, then the
 /// files of the generation it names, never its directory.
 #[cfg(target_os = "macos")]
@@ -1554,7 +1641,27 @@ fn confine(paths: &crate::confine::Paths) -> Result<(), String> {
     });
     #[cfg(target_os = "linux")]
     return crate::confine::landlock(paths);
-    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    // As on macOS; and once its partition is set up, before anything of its guest's is
+    // read, this process forbids itself dynamic code (D141, PM M202).
+    #[cfg(windows)]
+    {
+        #[cfg(target_arch = "x86_64")]
+        shards_vmm::hv::forbid_dynamic_code_once_set_up();
+        granted(paths)?;
+        match &paths.vsock {
+            Some(vsock) => dial_through_spawner(vsock),
+            None => {
+                drop(
+                    GRANTS
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .take(),
+                );
+                Ok(())
+            }
+        }
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
     {
         let _ = paths;
         Ok(())

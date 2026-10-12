@@ -145,6 +145,15 @@ fn private_dir(path: &Path) -> Result<(), String> {
         .map_err(|e| format!("{}: {e}", path.display()))
 }
 
+/// Where the AppContainer profiles of this user's microVMs are recorded as they live, so
+/// that one whose `shards` ended without deleting it is deleted by the next (D141).
+#[cfg(windows)]
+pub fn containers() -> Result<PathBuf, String> {
+    let dir = cache()?.join("containers");
+    private_dir(&dir)?;
+    Ok(dir)
+}
+
 /// This user's cache: `~/Library/Caches/shards` on macOS, `$XDG_CACHE_HOME/shards` or
 /// `~/.cache/shards` elsewhere on Unix, `%LOCALAPPDATA%\shards` on Windows.
 fn cache() -> Result<PathBuf, String> {

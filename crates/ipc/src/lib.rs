@@ -1342,6 +1342,10 @@ mod unix;
 pub use spawner::{serve_spawner, start_spawner};
 #[cfg(unix)]
 pub use unix::*;
+#[cfg(windows)]
+mod windows;
+#[cfg(windows)]
+pub use windows::*;
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::indexing_slicing)]

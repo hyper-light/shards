@@ -1507,14 +1507,12 @@ pub fn served() -> (String, Arc<AtomicUsize>) {
 }
 
 /// A running `shards` whose output lines arrive on a channel, killed when dropped.
-#[cfg(unix)]
 pub struct Vm {
     child: std::process::Child,
     lines: std::sync::mpsc::Receiver<String>,
     pub seen: Vec<String>,
 }
 
-#[cfg(unix)]
 impl Vm {
     pub fn spawn<S: AsRef<std::ffi::OsStr>>(args: &[S]) -> Vm {
         let mut child = command()
@@ -1539,6 +1537,17 @@ impl Vm {
             lines,
             seen: Vec::new(),
         }
+    }
+
+    /// The `shards` process's ID.
+    pub fn id(&self) -> u32 {
+        self.child.id()
+    }
+
+    /// Kills the `shards` process, and waits for it to go.
+    pub fn kill(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
     }
 
     /// Waits up to `timeout` for an output line containing `text`.
@@ -1591,7 +1600,6 @@ impl Vm {
     }
 }
 
-#[cfg(unix)]
 impl Drop for Vm {
     fn drop(&mut self) {
         let _ = self.child.kill();
@@ -1601,14 +1609,13 @@ impl Drop for Vm {
 
 /// Opens a stream to guest vsock port `port` through the VM's socket `sock`: `Ok` once
 /// the guest accepted (the `OK` line was read), `Err` with what came back otherwise.
-#[cfg(unix)]
 pub fn vsock_connect(
     sock: &Path,
     port: u32,
     timeout: Duration,
-) -> Result<std::os::unix::net::UnixStream, String> {
+) -> Result<shards_vmm::platform::UnixStream, String> {
     let mut s =
-        std::os::unix::net::UnixStream::connect(sock).map_err(|e| format!("{}: {e}", sock.display()))?;
+        shards_vmm::platform::UnixStream::connect(sock).map_err(|e| format!("{}: {e}", sock.display()))?;
     s.set_read_timeout(Some(timeout)).map_err(|e| e.to_string())?;
     s.write_all(format!("CONNECT {port}\n").as_bytes())
         .map_err(|e| format!("CONNECT: {e}"))?;
@@ -1633,7 +1640,6 @@ pub fn vsock_connect(
 
 /// Streams `len` bytes of pattern `salt` through the guest's echo on `port` and checks
 /// what comes back, byte for byte, after the half-close.
-#[cfg(unix)]
 pub fn echo(sock: &Path, port: u32, salt: u64, len: usize) -> Result<(), String> {
     let s = vsock_connect(sock, port, Duration::from_secs(60))?;
     let mut w = s.try_clone().map_err(|e| e.to_string())?;

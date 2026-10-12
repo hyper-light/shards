@@ -74,6 +74,16 @@ windows-sys = { workspace = true }
 # The helpers' digests (build.rs).
 sha2 = "0.11"
 
+[target.'cfg(windows)'.dev-dependencies]
+# What tests/confined.rs reads of a running VM process.
+windows-sys = { workspace = true, features = [
+  "Win32_Security",
+  "Win32_Security_Isolation",
+  "Win32_System_Diagnostics_ToolHelp",
+  "Win32_System_JobObjects",
+  "Win32_System_Threading",
+] }
+
 [dev-dependencies]
 shards-testdir = { path = "../testdir" }
 shards-testguest = { path = "../testguest" }

@@ -1,5 +1,6 @@
 //! A spawner's half of a VM's grants (`grant`): it answers what the VM asks for with
-//! descriptors, and with bookmarks for the directories it writes in.
+//! descriptors, and with bookmarks for the directories it writes in (macOS); with handles
+//! and sockets it puts in the VM's process (Windows).
 
 use std::path::{Path, PathBuf};
 
@@ -7,7 +8,6 @@ use crate::grant::{Access, MAX_GRANTS, MAX_PATH, Wanted};
 
 /// What [`encode`] wrote; `None` for anything else, past the limits included.
 pub fn decode(mut bytes: &[u8]) -> Option<Vec<Wanted>> {
-    use std::os::unix::ffi::OsStrExt;
     // `take` borrows `bytes` until the block ends; what is left must be nothing.
     let out = {
         let mut take = |n: usize| {
@@ -26,7 +26,7 @@ pub fn decode(mut bytes: &[u8]) -> Option<Vec<Wanted>> {
             if len > MAX_PATH {
                 return None;
             }
-            let path = PathBuf::from(std::ffi::OsStr::from_bytes(take(len)?));
+            let path = crate::grant::path_from(take(len)?)?;
             if !path.is_absolute() {
                 return None;
             }
@@ -49,12 +49,14 @@ fn access(code: u8) -> Option<Access> {
     }
 }
 
+#[cfg(target_os = "macos")]
 /// A read-write bookmark for directory `path`, for another process to resolve: made by
 /// CoreFoundation, bound when first needed (shards_apple).
 pub fn bookmark(path: &Path) -> Result<Vec<u8>, String> {
     shards_apple::bookmark::bookmark(path)
 }
 
+#[cfg(target_os = "macos")]
 /// What is granted for `path` as `access`: a file opened for it, a directory's bookmark,
 /// nothing, where a file to read if it is there is not, or a socket bound there.
 enum Answer {
@@ -64,6 +66,7 @@ enum Answer {
     Bound(std::os::fd::OwnedFd),
 }
 
+#[cfg(target_os = "macos")]
 /// The names of `path` below `template`, the directory of the snapshot a restoring VM
 /// reads, if it is beneath it: as given, or as its links resolve. `None` for a path
 /// elsewhere; an error for one beneath it that is not plain names.
@@ -81,6 +84,7 @@ fn beneath(path: &Path, template: &Path) -> Result<Option<Vec<String>>, String> 
     names(path, &rest).map(Some)
 }
 
+#[cfg(target_os = "macos")]
 fn names(path: &Path, rest: &Path) -> Result<Vec<String>, String> {
     rest.components()
         .map(|c| match c {
@@ -92,6 +96,7 @@ fn names(path: &Path, rest: &Path) -> Result<Vec<String>, String> {
         .ok_or_else(|| format!("{}: not a file of the template", path.display()))
 }
 
+#[cfg(target_os = "macos")]
 fn answer(access: Access, path: &Path, template: Option<&Path>) -> Result<Answer, String> {
     let at = |e: std::io::Error| format!("{}: {e}", path.display());
     // A restore's template was written by a VM process, which may have left in it
@@ -140,6 +145,7 @@ fn answer(access: Access, path: &Path, template: Option<&Path>) -> Result<Answer
     }
 }
 
+#[cfg(target_os = "macos")]
 /// A socket bound at `path` for a VM's vsock device, not yet listening: the VM listens
 /// on it once its device is up. Until then a client is refused, as it is where the VM
 /// binds the socket itself: listening at once would queue every attempt made while the
@@ -162,6 +168,7 @@ fn listen(path: &Path) -> std::io::Result<std::os::fd::OwnedFd> {
     }
 }
 
+#[cfg(target_os = "macos")]
 /// A Unix stream socket bound at `path`, close-on-exec.
 fn bind(path: &Path) -> std::io::Result<std::os::fd::OwnedFd> {
     use std::os::fd::{AsRawFd as _, FromRawFd as _, OwnedFd};
@@ -198,6 +205,7 @@ fn bind(path: &Path) -> std::io::Result<std::os::fd::OwnedFd> {
     Ok(socket)
 }
 
+#[cfg(target_os = "macos")]
 /// A connection to vsock host port `port` beside `listening`, the vsock path the VM was
 /// granted: the only sockets it may have dialled for it.
 fn dial(listening: Option<&Path>, port: u32) -> Result<std::os::unix::net::UnixStream, String> {
@@ -208,6 +216,7 @@ fn dial(listening: Option<&Path>, port: u32) -> Result<std::os::unix::net::UnixS
         .map_err(|e| format!("{}: {e}", Path::new(&target).display()))
 }
 
+#[cfg(target_os = "macos")]
 /// Answers the VM on `link` as it asks, until it closes it: a bookmark for each path it
 /// names, making the directories it writes in first. A path that cannot be granted ends
 /// the answers with why.
@@ -215,6 +224,7 @@ pub fn serve(link: &std::os::unix::net::UnixStream, template: Option<&Path>) -> 
     serve_waiting(link, template, &mut |_| {})
 }
 
+#[cfg(target_os = "macos")]
 /// [`serve`], calling `wait` with how many messages the VM has sent before each wait for
 /// its next: a caller's watch on a VM that goes quiet (the daemon's, `grant`).
 pub fn serve_waiting(
@@ -304,6 +314,7 @@ pub fn serve_waiting(
     }
 }
 
+#[cfg(target_os = "macos")]
 /// `shardsd grants`: the VM's broker (`shards run --kernel`, `shards restore`), which the CLI starts before it becomes the VM.
 /// Answers the VM on descriptor 3 until it has all it needs and closes it, then exits. What
 /// it could not grant, the VM is told and says.
@@ -331,7 +342,375 @@ pub fn broker() -> std::process::ExitCode {
     }
 }
 
-#[cfg(test)]
+/// The process a broker on Windows puts handles and sockets in: the VM it started.
+#[cfg(windows)]
+pub trait Recipient {
+    /// `handle` duplicated into it: its value there.
+    fn give(&self, handle: std::os::windows::io::BorrowedHandle<'_>) -> std::io::Result<usize>;
+    /// Its process ID, which a socket is shared with.
+    fn id(&self) -> u32;
+}
+
+#[cfg(windows)]
+impl Recipient for shards_ipc::Child {
+    fn give(&self, handle: std::os::windows::io::BorrowedHandle<'_>) -> std::io::Result<usize> {
+        shards_ipc::Child::give(self, handle)
+    }
+
+    fn id(&self) -> u32 {
+        shards_ipc::Child::id(self)
+    }
+}
+
+/// What is granted for a path on Windows: a file opened for it, nothing where a file to
+/// read if it is there is not, or a socket bound there.
+#[cfg(windows)]
+enum Handed {
+    File(std::fs::File),
+    Absent,
+    Bound(shards_vmm::platform::UnixListener),
+}
+
+/// What `access` to `path` is granted on Windows. A directory to write in is not: WHP's
+/// microVMs take no snapshots yet (D140), and a snapshot's is the only one a VM writes in.
+#[cfg(windows)]
+fn handed(access: Access, path: &Path) -> Result<Handed, String> {
+    let at = |e: std::io::Error| format!("{}: {e}", path.display());
+    let open = |write: bool| {
+        std::fs::OpenOptions::new()
+            .read(true)
+            .write(write)
+            .open(path)
+            .map_err(at)
+    };
+    match access {
+        Access::Read => open(false).map(Handed::File),
+        Access::Write => open(true).map(Handed::File),
+        Access::ReadIfThere => match std::fs::File::open(path) {
+            Ok(file) => Ok(Handed::File(file)),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Handed::Absent),
+            Err(e) => Err(at(e)),
+        },
+        Access::MakeDir => Err(format!(
+            "{}: a microVM on Windows takes no snapshot yet",
+            path.display()
+        )),
+        Access::Listen => bound(path).map(Handed::Bound).map_err(at),
+    }
+}
+
+/// A socket bound at `path` for a VM's vsock device, not yet listening, as on macOS: a
+/// client is refused until the VM listens. A socket file an earlier VM left there, which
+/// nothing answers on, is replaced; one in use is not, nor anything that is no socket
+/// file (AF_UNIX's files are reparse points).
+#[cfg(windows)]
+fn bound(path: &Path) -> std::io::Result<shards_vmm::platform::UnixListener> {
+    use shards_vmm::platform::{UnixListener, UnixStream};
+    use std::os::windows::fs::MetadataExt as _;
+    use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;
+    match UnixListener::bound(path) {
+        Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
+            let stale = std::fs::symlink_metadata(path)
+                .is_ok_and(|m| m.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0)
+                && UnixStream::connect(path)
+                    .is_err_and(|e| e.kind() == std::io::ErrorKind::ConnectionRefused);
+            if !stale {
+                return Err(e);
+            }
+            std::fs::remove_file(path)?;
+            UnixListener::bound(path)
+        }
+        made => made,
+    }
+}
+
+/// A connection to vsock host port `port` beside `listening`, the vsock path the VM was
+/// granted: the only sockets it may have dialled for it.
+#[cfg(windows)]
+fn dial_for(listening: Option<&Path>, port: u32) -> Result<shards_vmm::platform::UnixStream, String> {
+    let path = listening.ok_or("a dial from a VM granted no vsock path")?;
+    let mut target = path.as_os_str().to_owned();
+    target.push(format!("_{port}"));
+    shards_vmm::platform::UnixStream::connect(&target)
+        .map_err(|e| format!("{}: {e}", Path::new(&target).display()))
+}
+
+/// Answers the VM on `link` as it asks, until it closes it, putting what it grants in
+/// `to`, the VM's process: a file's handle and the path it was found at (the VM may not ask,
+/// PM M203); a socket shared with it (WSADuplicateSocketW, PM M203). A path that cannot be
+/// granted ends the answers with why. As on macOS, a VM that has its vsock path, the last
+/// it asks for, has started, and asks for nothing more.
+#[cfg(windows)]
+pub fn serve(link: &crate::grant::Link, to: &dyn Recipient) -> Result<(), String> {
+    use shards_ipc::kind;
+    use std::os::windows::io::AsHandle as _;
+    let mut listening: Option<PathBuf> = None;
+    // Sockets sent with the last answer, held until the VM says it has them or asks again,
+    // as macOS holds its descriptors; a socket shared works without (PM M203).
+    let mut held: Vec<shards_vmm::platform::UnixStream> = Vec::new();
+    let mut started = false;
+    let refuse = |e: String| {
+        let _ = shards_ipc::send(&link.to, kind::ERR, e.as_bytes());
+        Err(e)
+    };
+    loop {
+        let asked = shards_ipc::recv(&link.from).map_err(|e| format!("a VM's request for access: {e}"))?;
+        held.clear();
+        let Some(asked) = asked else {
+            return Ok(());
+        };
+        if asked.kind == kind::TAKEN {
+            continue;
+        }
+        if asked.kind == kind::DIAL {
+            let port = <[u8; 4]>::try_from(asked.payload.as_slice())
+                .map(u32::from_be_bytes)
+                .map_err(|_| "a VM sent a malformed dial".to_string())?;
+            let sent = match dial_for(listening.as_deref(), port).and_then(|conn| {
+                let info = conn
+                    .share_with(to.id())
+                    .map_err(|e| format!("sharing a dialled connection: {e}"))?;
+                held.push(conn);
+                Ok(info)
+            }) {
+                Ok(info) => shards_ipc::send(&link.to, kind::GRANTED, &info),
+                Err(e) => shards_ipc::send(&link.to, kind::ERR, e.as_bytes()),
+            };
+            sent.map_err(|e| format!("answering a VM's dial: {e}"))?;
+            continue;
+        }
+        let wanted = match (asked.kind, decode(&asked.payload)) {
+            (kind::GRANT, Some(wanted)) => wanted,
+            _ => return Err("a VM sent a malformed request for access".into()),
+        };
+        if started {
+            return refuse("a VM asked for access after it started".into());
+        }
+        started = wanted.iter().any(|(access, _)| *access == Access::Listen);
+        for (access, path) in wanted {
+            let payload = match handed(access, &path) {
+                Ok(Handed::File(file)) => {
+                    let real = shards_vmm::platform::final_path(&file)
+                        .map_err(|e| format!("{}: {e}", path.display()));
+                    let value = to
+                        .give(file.as_handle())
+                        .map_err(|e| format!("giving a VM {}: {e}", path.display()));
+                    match real.and_then(|real| value.map(|v| (v, real))) {
+                        Ok((value, real)) => {
+                            let mut payload = (value as u64).to_le_bytes().to_vec();
+                            payload.extend(crate::grant::path_bytes(&real));
+                            payload
+                        }
+                        Err(e) => return refuse(e),
+                    }
+                }
+                Ok(Handed::Absent) => Vec::new(),
+                Ok(Handed::Bound(socket)) => {
+                    if listening.is_some() {
+                        return refuse("a VM asked for a second vsock path".into());
+                    }
+                    match socket.share_with(to.id()) {
+                        Ok(info) => {
+                            listening = Some(path.clone());
+                            info
+                        }
+                        Err(e) => return refuse(format!("{}: sharing its socket: {e}", path.display())),
+                    }
+                }
+                Err(e) => return refuse(e),
+            };
+            shards_ipc::send(&link.to, kind::GRANTED, &payload)
+                .map_err(|e| format!("granting a VM {}: {e}", path.display()))?;
+        }
+    }
+}
+
+#[cfg(all(test, windows))]
+#[allow(clippy::unwrap_used)]
+mod windows_tests {
+    use std::io::{Read as _, Write as _};
+    use std::os::windows::io::IntoRawHandle as _;
+
+    use super::*;
+    use crate::grant::Link;
+    use crate::grant_ask::{dial, obtain};
+
+    /// This process, as a VM's stands in for it: what it is given, a handle of its own.
+    struct Here;
+
+    impl Recipient for Here {
+        fn give(&self, handle: std::os::windows::io::BorrowedHandle<'_>) -> std::io::Result<usize> {
+            Ok(handle.try_clone_to_owned()?.into_raw_handle() as usize)
+        }
+
+        fn id(&self) -> u32 {
+            std::process::id()
+        }
+    }
+
+    /// A spawner's end and a VM's, over two pipes.
+    fn link() -> (Link, Link) {
+        let (vm_from, spawner_to) = std::io::pipe().unwrap();
+        let (spawner_from, vm_to) = std::io::pipe().unwrap();
+        let file = |h: std::os::windows::io::OwnedHandle| std::fs::File::from(h);
+        (
+            Link {
+                from: file(spawner_from.into()),
+                to: file(spawner_to.into()),
+            },
+            Link {
+                from: file(vm_from.into()),
+                to: file(vm_to.into()),
+            },
+        )
+    }
+
+    /// A request goes over whole, a Windows name that is no UTF-8 included, and a count, a
+    /// length or an access past what is allowed is refused, as is a relative path or
+    /// anything after the last path.
+    #[test]
+    fn requests_cross_whole_and_bounded() {
+        use crate::grant::MAX_GRANTS;
+        use crate::grant_ask::encode;
+        use std::os::windows::ffi::OsStringExt as _;
+        // An unpaired surrogate, which a Windows name may hold.
+        let odd =
+            std::ffi::OsString::from_wide(&[u16::from(b'C'), u16::from(b':'), u16::from(b'\\'), 0xD800]);
+        let wanted = vec![
+            (Access::Read, PathBuf::from(r"C:\k\kernel")),
+            (Access::Write, PathBuf::from(r"\\?\D:\d\disk")),
+            (Access::Listen, PathBuf::from(odd)),
+        ];
+        let bytes = encode(&wanted).unwrap();
+        assert_eq!(decode(&bytes).unwrap(), wanted);
+        assert!(decode(&bytes[..bytes.len() - 1]).is_none(), "cut short");
+        assert!(
+            decode(&[bytes.as_slice(), &[0]].concat()).is_none(),
+            "trailing bytes"
+        );
+        assert!(
+            decode(&((MAX_GRANTS as u32) + 1).to_be_bytes()).is_none(),
+            "too many"
+        );
+        let relative = encode(&[(Access::Read, PathBuf::from("kernel"))]).unwrap();
+        assert!(decode(&relative).is_none(), "relative");
+        let long = PathBuf::from(format!(r"C:\{}", "x".repeat(MAX_PATH)));
+        assert!(encode(&[(Access::Read, long)]).is_err());
+    }
+
+    /// A VM's request is answered as asked: a file it reads, read-only; one it writes,
+    /// read-write; one to read if it is there and is not, not found, though a file appears
+    /// there since; each also at the path its spawner found it at. A directory to write in
+    /// is refused, with why, and the refusal ends the answers.
+    #[test]
+    fn a_spawner_grants_what_a_vm_asks_for() {
+        use shards_vmm::platform::{input_path, open_input};
+        let dir = shards_testdir::TempDir::new("grant").unwrap();
+        let (kernel, disk, absent) = (dir.join("kernel"), dir.join("disk"), dir.join("absent"));
+        std::fs::write(&kernel, b"k").unwrap();
+        std::fs::write(&disk, b"d").unwrap();
+        let (spawner, vm) = link();
+        std::thread::scope(|scope| {
+            let serving = scope.spawn(|| serve(&spawner, &Here));
+            obtain(
+                &vm,
+                &[
+                    (Access::Read, kernel.clone()),
+                    (Access::Write, disk.clone()),
+                    (Access::ReadIfThere, absent.clone()),
+                ],
+            )
+            .unwrap();
+            let mut got = String::new();
+            open_input(&kernel, false)
+                .unwrap()
+                .read_to_string(&mut got)
+                .unwrap();
+            assert_eq!(got, "k");
+            assert_eq!(
+                open_input(&kernel, true).unwrap_err().kind(),
+                std::io::ErrorKind::PermissionDenied,
+                "a file it reads is granted read-only"
+            );
+            open_input(&disk, true).unwrap().write_all(b"D").unwrap();
+            assert_eq!(std::fs::read(&disk).unwrap(), b"D");
+            let real = input_path(&kernel).unwrap();
+            assert_eq!(std::fs::canonicalize(&kernel).unwrap(), real);
+            open_input(&real, false).unwrap();
+            std::fs::write(&absent, b"later").unwrap();
+            assert_eq!(
+                open_input(&absent, false).unwrap_err().kind(),
+                std::io::ErrorKind::NotFound
+            );
+            let e = obtain(&vm, &[(Access::MakeDir, dir.join("snapshot"))]).unwrap_err();
+            assert!(e.contains("no snapshot"), "{e}");
+            drop(vm);
+            assert!(serving.join().unwrap().is_err(), "the refusal ended its answers");
+        });
+    }
+
+    /// A VM's vsock path is bound for it, replacing a socket an earlier VM left there that
+    /// nothing answers on; its dials reach `<path>_<port>` and nothing else; a dial before
+    /// any vsock path is granted, and a second vsock path, are refused; a VM that has
+    /// started is granted nothing more.
+    #[test]
+    fn a_vms_vsock_is_bound_and_dialled_for_it() {
+        use shards_vmm::platform::{UnixListener, UnixStream};
+        let dir = shards_testdir::TempDir::new("dial").unwrap();
+        let vsock = dir.join("v");
+        drop(UnixListener::bound(&vsock).unwrap());
+        assert!(vsock.exists(), "a socket file left behind");
+        let host = UnixListener::bind(dir.join("v_5000")).unwrap();
+        let (spawner, vm) = link();
+        std::thread::scope(|scope| {
+            let serving = scope.spawn(|| serve(&spawner, &Here));
+            assert!(
+                dial(&vm, 5000).is_err(),
+                "a dial before any vsock path is granted"
+            );
+            obtain(&vm, &[(Access::Listen, vsock.clone())]).unwrap();
+            assert_eq!(
+                UnixStream::connect(&vsock).unwrap_err().kind(),
+                std::io::ErrorKind::ConnectionRefused,
+                "refused until the VM listens"
+            );
+            let listener = shards_vmm::platform::listen_unix(&vsock).unwrap();
+            let _client = UnixStream::connect(&vsock).unwrap();
+            assert!(listener.accept().is_ok(), "the granted listener is at the path");
+            let dialled = dial(&vm, 5000).unwrap();
+            let (accepted, ()) = host.accept().unwrap();
+            (&dialled).write_all(b"x").unwrap();
+            let mut byte = [0u8; 1];
+            (&accepted).read_exact(&mut byte).unwrap();
+            // The VM's close is the end the host sees: the spawner holds no copy open.
+            accepted
+                .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                .unwrap();
+            dialled.shutdown(std::net::Shutdown::Write).unwrap();
+            drop(dialled);
+            assert_eq!((&accepted).read(&mut byte).map_err(|e| e.kind()), Ok(0));
+            assert!(dial(&vm, 5001).is_err(), "nothing listens on that port");
+            let secret = dir.join("secret");
+            std::fs::write(&secret, b"s").unwrap();
+            let late = obtain(&vm, &[(Access::Read, secret.clone())]).unwrap_err();
+            assert!(late.contains("after it started"), "{late}");
+            drop(vm);
+            assert!(serving.join().unwrap().is_err(), "the refusal ended its answers");
+        });
+        // One in use is not taken over.
+        let live = dir.join("live");
+        let _held = UnixListener::bind(&live).unwrap();
+        let (spawner, vm) = link();
+        std::thread::scope(|scope| {
+            let serving = scope.spawn(|| serve(&spawner, &Here));
+            assert!(obtain(&vm, &[(Access::Listen, live.clone())]).is_err());
+            drop(vm);
+            let _ = serving.join();
+        });
+    }
+}
+
+#[cfg(all(test, target_os = "macos"))]
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
