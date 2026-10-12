@@ -96,17 +96,47 @@ fn close(s: SOCKET) {
     unsafe { closesocket(s) };
 }
 
-/// A TCP connection to `to`, timed.
+/// Waits up to 5 s for `s` to be ready for `events` (POLLRDNORM, POLLWRNORM): whether it is.
+fn ready(s: SOCKET, events: i16) -> bool {
+    let mut fd = WSAPOLLFD { fd: s, events, revents: 0 };
+    // SAFETY: one entry.
+    unsafe { WSAPoll(&raw mut fd, 1, 5_000) > 0 }
+}
+
+/// Sets `s` blocking or not.
+fn nonblocking(s: SOCKET, on: bool) {
+    let mut value = u32::from(on);
+    // SAFETY: our socket.
+    unsafe { ioctlsocket(s, FIONBIO, &raw mut value) };
+}
+
+/// A TCP connection to `to`, timed, given up after 5 s.
 fn connect_to(to: SocketAddrV4) -> Result<(SOCKET, Duration), String> {
     let s = socket(SOCK_STREAM)?;
+    nonblocking(s, true);
     let a = sockaddr(to);
     let t = Instant::now();
     // SAFETY: an address of its own length.
     if unsafe { connect(s, (&raw const a).cast(), std::mem::size_of::<SOCKADDR_IN>() as i32) } != 0 {
-        let e = wsa();
-        close(s);
-        return Err(e);
+        // SAFETY: no arguments.
+        if unsafe { WSAGetLastError() } != WSAEWOULDBLOCK {
+            let e = wsa();
+            close(s);
+            return Err(e);
+        }
+        if !ready(s, POLLWRNORM as i16) {
+            close(s);
+            return Err("no answer in 5 s".into());
+        }
+        let (mut error, mut len) = (0i32, 4i32);
+        // SAFETY: an int of its own size.
+        unsafe { getsockopt(s, SOL_SOCKET, SO_ERROR, (&raw mut error).cast(), &raw mut len) };
+        if error != 0 {
+            close(s);
+            return Err(format!("WSA error {error} ({})", std::io::Error::from_raw_os_error(error)));
+        }
     }
+    nonblocking(s, false);
     Ok((s, t.elapsed()))
 }
 
@@ -161,6 +191,7 @@ fn accept_within(l: SOCKET, within: Duration) -> Result<SOCKET, String> {
 /// A DNS query for `github.com`'s A records, by UDP, to `resolver`: how many bytes came back.
 fn dns(resolver: SocketAddrV4) -> Result<usize, String> {
     let s = socket(SOCK_DGRAM)?;
+    nonblocking(s, true);
     let mut query = vec![0x12, 0x34, 0x01, 0x00, 0, 1, 0, 0, 0, 0, 0, 0];
     for label in ["github", "com"] {
         query.push(label.len() as u8);
@@ -176,6 +207,10 @@ fn dns(resolver: SocketAddrV4) -> Result<usize, String> {
         let e = format!("sendto: {}", wsa());
         close(s);
         return Err(e);
+    }
+    if !ready(s, POLLRDNORM as i16) {
+        close(s);
+        return Err("no answer in 5 s".into());
     }
     let mut buf = [0u8; 512];
     // SAFETY: a buffer of its length.
@@ -231,13 +266,16 @@ fn child(pipe: usize) {
     let field = |name: &str| text.lines().find_map(|l| l.strip_prefix(&format!("{name}="))).unwrap_or("").to_string();
     let addr = |name: &str| field(name).parse::<SocketAddrV4>().ok();
 
+    say("trying TCP to the Internet".into());
     if let Some(internet) = addr("internet") {
         say(format!("TCP to the Internet ({internet}): {:?}", connect_to(internet).map(|(s, t)| {
             close(s);
             format!("connected in {} us", t.as_micros())
         })));
     }
+    say("trying DNS by UDP".into());
     say(format!("DNS by UDP to 1.1.1.1:53: {:?}", dns(SocketAddrV4::new(Ipv4Addr::new(1, 1, 1, 1), 53))));
+    say("trying the spawner's loopback listener".into());
     if let Some(host) = addr("host") {
         say(format!("TCP to the spawner's loopback listener: {:?}", connect_to(host).map(|(s, _)| {
             close(s);
@@ -476,13 +514,18 @@ fn confined_run(label: &str, caps: &[Vec<u8>], internet: Option<SocketAddrV4>, o
         SetEvent(sleep);
     }
     let mut code = 0u32;
-    // SAFETY: the child's handles, closed once it has ended; then ours.
+    // SAFETY: the child's handles, closed once it has ended, its Job's closing ending it
+    // where it has not in two minutes; then ours.
     unsafe {
-        WaitForSingleObject(pi.hProcess, INFINITE);
+        let ended = WaitForSingleObject(pi.hProcess, 120_000) == WAIT_OBJECT_0;
+        CloseHandle(job);
+        if !ended {
+            println!("spawner: the child ran past two minutes, and is ended");
+            WaitForSingleObject(pi.hProcess, INFINITE);
+        }
         GetExitCodeProcess(pi.hProcess, &raw mut code);
         CloseHandle(pi.hThread);
         CloseHandle(pi.hProcess);
-        CloseHandle(job);
         CloseHandle(ring);
         CloseHandle(sleep);
         UnmapViewOfFile(view);
