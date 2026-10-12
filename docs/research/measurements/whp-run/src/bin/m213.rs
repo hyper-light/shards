@@ -165,6 +165,52 @@ enum Waits {
     EventPoll,
     /// A completion port that names the ready ones.
     Notifications,
+    /// The one event to wake on, as shards' poller has, and the completion port, asked
+    /// without waiting, to name the ready ones: the doorbell's event and the VM's process
+    /// stay waited on beside it.
+    EventNotifications,
+}
+
+/// Registers `served` with a new completion port, level-triggered, each under its index.
+fn register(served: &[SOCKET]) -> Result<HANDLE, String> {
+    // SAFETY: a new port.
+    let port = unsafe { CreateIoCompletionPort(INVALID_HANDLE_VALUE, std::ptr::null_mut(), 0, 1) };
+    if port.is_null() {
+        return Err("CreateIoCompletionPort".into());
+    }
+    let mut regs: Vec<SOCK_NOTIFY_REGISTRATION> = served
+        .iter()
+        .enumerate()
+        .map(|(i, &socket)| SOCK_NOTIFY_REGISTRATION {
+            socket,
+            completionKey: std::ptr::without_provenance_mut(i),
+            eventFilter: (SOCK_NOTIFY_REGISTER_EVENT_IN | SOCK_NOTIFY_REGISTER_EVENT_HANGUP) as u16,
+            operation: SOCK_NOTIFY_OP_ENABLE as u8,
+            triggerFlags: (SOCK_NOTIFY_TRIGGER_PERSISTENT | SOCK_NOTIFY_TRIGGER_LEVEL) as u8,
+            registrationResult: 0,
+        })
+        .collect();
+    for chunk in regs.chunks_mut(1024) {
+        // SAFETY: registrations of our sockets with our port; no wait.
+        let r = unsafe {
+            ProcessSocketNotifications(
+                port,
+                chunk.len() as u32,
+                chunk.as_mut_ptr(),
+                0,
+                0,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+            )
+        };
+        if r != 0 && r != 258 {
+            let each = chunk.first().map_or(0, |c| c.registrationResult);
+            return Err(format!(
+                "ProcessSocketNotifications: {r} (a registration's result {each})"
+            ));
+        }
+    }
+    Ok(port)
 }
 
 /// A byte's round trip on one connection beside `idle` others, the loop waiting as `how`.
@@ -300,6 +346,66 @@ fn beside(idle: usize, how: Waits) -> Result<Vec<f64>, String> {
                     }
                     // SAFETY: our port.
                     unsafe { CloseHandle(port) };
+                }
+                Waits::EventNotifications => {
+                    // SAFETY: a manual-reset event of ours.
+                    let ev = unsafe { WSACreateEvent() };
+                    for &x in &served {
+                        // SAFETY: our socket and event.
+                        if unsafe { WSAEventSelect(x, ev, (FD_READ | FD_CLOSE) as i32) } != 0 {
+                            return Err(format!("WSAEventSelect: {}", wsa()));
+                        }
+                    }
+                    let port = register(&served)?;
+                    let mut entries = vec![OVERLAPPED_ENTRY::default(); 64];
+                    let (mut answered, mut empty) = (0, 0u32);
+                    while answered < ROUNDS {
+                        // SAFETY: our event.
+                        unsafe { WSAResetEvent(ev) };
+                        let mut got = 0u32;
+                        // SAFETY: our port and an array of its own length; no wait.
+                        let r = unsafe {
+                            ProcessSocketNotifications(
+                                port,
+                                0,
+                                std::ptr::null_mut(),
+                                0,
+                                entries.len() as u32,
+                                entries.as_mut_ptr(),
+                                &raw mut got,
+                            )
+                        };
+                        if r != 0 && r != 258 {
+                            return Err(format!("ProcessSocketNotifications look: {r}"));
+                        }
+                        if entries
+                            .iter()
+                            .take(got as usize)
+                            .any(|e| e.lpCompletionKey == active)
+                        {
+                            if !byte_recv(pong) || !byte_send(pong) {
+                                return Err(format!("echo: {}", wsa()));
+                            }
+                            answered += 1;
+                            empty = 0;
+                            continue;
+                        }
+                        // A wake the port named nothing for, again and again: the two do
+                        // not hold one socket together. A wait of 100 ms at most, so that
+                        // an event that never comes is seen too.
+                        empty += 1;
+                        if empty > 50 {
+                            return Err(format!("the port named nothing after {answered} round trips"));
+                        }
+                        let h = ev as HANDLE;
+                        // SAFETY: our event, as the handle it is.
+                        unsafe { WSAWaitForMultipleEvents(1, &raw const h, 0, 100, 0) };
+                    }
+                    // SAFETY: our port and event.
+                    unsafe {
+                        CloseHandle(port);
+                        WSACloseEvent(ev);
+                    }
                 }
             }
             Ok(())
@@ -600,6 +706,10 @@ fn main() {
     for idle in [0usize, 100, 1_000, 10_000] {
         for (name, how) in [
             ("event + WSAPoll", Waits::EventPoll),
+            (
+                "event + ProcessSocketNotifications look",
+                Waits::EventNotifications,
+            ),
             ("ProcessSocketNotifications", Waits::Notifications),
         ] {
             let what = format!("socket beside {idle} idle: {name}");
