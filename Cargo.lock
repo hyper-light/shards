@@ -1301,6 +1301,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "shards-syscall-filter"
+version = "0.1.0"
+dependencies = [
+ "libc",
+]
+
+[[package]]
 name = "shards-template"
 version = "0.1.0"
 dependencies = [
@@ -1365,6 +1372,7 @@ dependencies = [
  "shards-abi",
  "shards-afunix",
  "shards-netring",
+ "shards-syscall-filter",
  "shards-testdir",
  "windows-sys 0.61.2",
 ]

@@ -1,0 +1,14 @@
+[package]
+name = "shards-syscall-filter"
+version = "0.1.0"
+description = "Seccomp allow-lists of shards' own processes on Linux: compiled to classic BPF, installed, and what they refuse named"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = { workspace = true }

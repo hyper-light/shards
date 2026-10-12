@@ -73,7 +73,7 @@ pub use granted::{
 };
 
 #[cfg(target_os = "linux")]
-pub mod seccomp;
+pub use shards_syscall_filter as seccomp;
 
 /// Applies the scheduling policy measured to give vCPUs precise timer wake-ups. Only
 /// macOS has a measured policy (docs/research/platform-measurements.md M8, M10); on other
