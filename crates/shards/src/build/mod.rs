@@ -754,9 +754,17 @@ fn builder_memory_mib() -> u64 {
         .ok()
         .and_then(|v| v.parse().ok())
     {
-        return m;
+        return whole_blocks(m);
     }
-    host_memory().map_or(512, |bytes| (bytes / 2 / (1 << 20)).max(512))
+    whole_blocks(host_memory().map_or(512, |bytes| (bytes / 2 / (1 << 20)).max(512)))
+}
+
+/// `mib` down to whole blocks of what a builder's memory is plugged in (virtio-mem's,
+/// D133), which a VM refuses anything but: half of a host's memory need not be (Windows
+/// keeps some of a runner's 16 GiB back, and half of it was an odd number of MiB).
+fn whole_blocks(mib: u64) -> u64 {
+    let block = (shards_vmm::devices::virtio::mem::BLOCK >> 20).max(1);
+    mib - mib % block
 }
 
 /// The host's physical memory, in bytes.
@@ -5860,6 +5868,22 @@ fn redact_credentials(url: &str) -> String {
         format!("{scheme}://@{host}{path}")
     } else {
         format!("{scheme}://{masked}@{host}{path}")
+    }
+}
+
+#[cfg(test)]
+mod memory_tests {
+    /// A builder's memory is whole blocks of what it is plugged in, whatever half the host's
+    /// memory comes to: a VM refuses a builder of an odd number of MiB (CI run 38274751000,
+    /// a Windows runner's 16 GiB less what Windows keeps back).
+    #[test]
+    fn a_builders_memory_is_whole_blocks() {
+        let block = shards_vmm::devices::virtio::mem::BLOCK >> 20;
+        for mib in [512, 513, 8191, 8192, 65_535] {
+            let whole = super::whole_blocks(mib);
+            assert_eq!(whole % block, 0, "{mib}");
+            assert!(whole <= mib && mib - whole < block, "{mib}");
+        }
     }
 }
 
