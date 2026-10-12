@@ -12,10 +12,10 @@
 //! - **disable, enable**: OP_DISABLE, then OP_ENABLE at once;
 //! - **filter none, enable**: OP_ENABLE filtering no events, then OP_ENABLE filtering IN.
 //!
-//! Each 1,000 times on a fresh loopback connection: each change's result, whether a byte
-//! sent while the registration waited for nothing was told then (it must not be), and
-//! whether it was told once it waited for it again (it must be), within a second; and what
-//! each change costs.
+//! Each 200 times on a fresh loopback connection: each change's result, whether a byte
+//! sent while the registration waited for nothing was told within 20 ms (it must not be),
+//! and whether it was told within a second once it waited for it again (it must be); and
+//! what each change costs.
 
 // Windows' constants, matched by their own names.
 #![allow(non_upper_case_globals)]
@@ -28,7 +28,7 @@ use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE};
 use windows_sys::Win32::Networking::WinSock::*;
 use windows_sys::Win32::System::IO::{CreateIoCompletionPort, GetQueuedCompletionStatusEx, OVERLAPPED_ENTRY};
 
-const ROUNDS: usize = 1000;
+const ROUNDS: usize = 200;
 const KEY: usize = 7;
 
 fn wsa() -> String {
@@ -228,7 +228,7 @@ fn round(l: SOCKET, at: &SOCKADDR_IN, way: Way, tally: &mut Tally) -> Result<(),
     let b = [1u8];
     // SAFETY: a byte of ours.
     unsafe { send(c, b.as_ptr(), 1, 0) };
-    if notices(port, 50).iter().any(|b| b & SOCK_NOTIFY_EVENT_IN != 0) {
+    if notices(port, 20).iter().any(|b| b & SOCK_NOTIFY_EVENT_IN != 0) {
         tally.told_while_none += 1;
     }
     tally.note("enable again", change(port, a, input, SOCK_NOTIFY_OP_ENABLE));

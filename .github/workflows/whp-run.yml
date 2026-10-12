@@ -31,7 +31,7 @@ jobs:
       matrix:
         runner: [windows-2022, windows-2025]
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7.0.1
       - name: Install pinned Rust
@@ -95,13 +95,14 @@ jobs:
         shell: bash
         working-directory: docs/research/measurements/whp-run
         run: cargo run --release --bin m208
-      - name: M213
-        if: ${{ !cancelled() }}
-        shell: bash
-        working-directory: docs/research/measurements/whp-run
-        run: cargo run --release --bin m213
+      # Before M213, whose 10,000 idle sockets take most of the job's time.
       - name: M215
         if: ${{ !cancelled() }}
         shell: bash
         working-directory: docs/research/measurements/whp-run
         run: cargo run --release --bin m215
+      - name: M213
+        if: ${{ !cancelled() }}
+        shell: bash
+        working-directory: docs/research/measurements/whp-run
+        run: cargo run --release --bin m213
