@@ -1617,7 +1617,9 @@ fn cdi_node(r: &Root, d: &shards_abi::build::Device) -> io::Result<()> {
                 )));
             }
         };
-        (kind, md.rdev(), d.mode.unwrap_or(md.mode() & 0o7777))
+        // The host's mode where CDI gives none: udev's, which the VM's devtmpfs lacks.
+        let mode = at.to_str().and_then(crate::devices::udev_mode);
+        (kind, md.rdev(), d.mode.or(mode).unwrap_or(md.mode() & 0o7777))
     };
     if let Some(parent) = d
         .path

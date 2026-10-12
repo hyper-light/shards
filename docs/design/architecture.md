@@ -3690,6 +3690,10 @@ to test on, where no CI runner has a GPU behind an IOMMU.
   a template, and the run has the render node as `--device` gives one; inspect shows the
   requests as the CLI makes them. More GPUs, another device or a driver of its own are
   refused. `run --kernel … --gpu` does the same for a kernel booted directly.
+- **The render node's mode is a host's:** udev's 0666 (systemd v257
+  50-udev-default.rules.in, `KERNEL=="renderD*"`, group-render-mode's default), where the
+  guest's devtmpfs gives 0600, so a run's user other than root has the GPU, and a step's
+  node where its CDI spec gives no mode; verified (`--user 1000`), mutation-checked.
 - **Verified on this Mac** (tests/gpu.rs): `shards run --rm --gpus all` of an image with
   Mesa's Venus finds "Virtio-GPU Venus (Apple M5 Max)", conformance 1.3; the guest's
   driver negotiates VIRGL, RESOURCE_BLOB, CONTEXT_INIT and BLOB_ALIGNMENT.

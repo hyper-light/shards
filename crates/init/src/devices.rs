@@ -28,13 +28,21 @@ pub struct Node {
 /// The modes systemd-udev's default rules give the devices a guest can have
 /// (systemd v257 rules.d/50-udev-default.rules.in), over devtmpfs's: the VM is the host a
 /// microVM's `--device` and `--privileged` take nodes from, and a host's are so.
-const UDEV_MODES: [(&str, u32); 5] = [
+const UDEV_MODES: [(&str, u32); 6] = [
+    // A GPU's render node: `KERNEL=="renderD*"`, MODE group-render-mode, 0666 by default
+    // (meson_options.txt); a guest has one GPU at most (D144).
+    ("/dev/dri/renderD128", 0o666),
     ("/dev/fuse", 0o666),
     ("/dev/net/tun", 0o666),
     ("/dev/vsock", 0o666),
     ("/dev/vfio/vfio", 0o666),
     ("/dev/rfkill", 0o664),
 ];
+
+/// The mode udev's default rules give the VM's device at `path`, where they give one.
+pub fn udev_mode(path: &str) -> Option<u32> {
+    UDEV_MODES.iter().find(|(p, _)| *p == path).map(|&(_, mode)| mode)
+}
 
 /// The VM's devices, as the kernel names their nodes (each `/sys/dev/{char,block}/M:N`'s
 /// uevent: DEVNAME, and DEVMODE, DEVUID and DEVGID where they are not devtmpfs's 0600 and
@@ -69,8 +77,8 @@ pub fn vm_devices() -> Vec<Node> {
         }
     }
     for n in &mut out {
-        if let Some((_, mode)) = UDEV_MODES.iter().find(|(p, _)| *p == n.path) {
-            n.mode = *mode;
+        if let Some(mode) = udev_mode(&n.path) {
+            n.mode = mode;
         }
     }
     out.sort_by(|a, b| a.path.split('/').cmp(b.path.split('/')));

@@ -70,7 +70,7 @@ fn the_gpu_renders_through_venus_in_runs_and_build_steps() {
     .unwrap();
     std::fs::write(
         ctx.join("Dockerfile"),
-        "FROM gpu-venus:1\nRUN --device=test.example/gpu=0 vulkaninfo --summary > /venus.txt\n",
+        "FROM gpu-venus:1\nRUN --device=test.example/gpu=0 vulkaninfo --summary > /venus.txt\nUSER 1000\nRUN --device=test.example/gpu=0 vulkaninfo --summary > /tmp/venus.txt\n",
     )
     .unwrap();
     let mut step_env = env.to_vec();
@@ -82,9 +82,29 @@ fn the_gpu_renders_through_venus_in_runs_and_build_steps() {
         timeout,
     );
     assert_eq!(built.status, Some(0), "{}", built.stderr);
+    // Root's step, and a user's, whose render node is udev's 0666 as a host's is.
+    for found in ["/venus.txt", "/tmp/venus.txt"] {
+        let ran = run_shards_env(&["run"], &["--rm", "gpu-venus:2", "cat", found], &env, timeout);
+        assert_eq!(ran.status, Some(0), "{found}: {}\n{}", ran.stdout, ran.stderr);
+        assert!(
+            ran.stdout.contains("Virtio-GPU Venus ("),
+            "{found}: {}",
+            ran.stdout
+        );
+    }
+    // A run's user other than root has the GPU too.
     let ran = run_shards_env(
         &["run"],
-        &["--rm", "gpu-venus:2", "cat", "/venus.txt"],
+        &[
+            "--rm",
+            "--gpus",
+            "all",
+            "--user",
+            "1000",
+            "gpu-venus:1",
+            "vulkaninfo",
+            "--summary",
+        ],
         &env,
         timeout,
     );
