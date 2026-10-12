@@ -7276,7 +7276,17 @@ revision before comparing a changed API/implementation.
   made is all in it; CI's every networked E2E passed through it (run 38276224802). musl:
   CI's network processes made rt_sigprocmask (syscall 14), which none had made under
   strace, and were refused, 482 times over its networked tests: the collection now
-  prints each refusal's process's calls before it, to find where.
+  prints each refusal's process's calls before it, to find where. Every one of the 486
+  filtered network processes (320530ec, run 38282809609) was refused as its loop first
+  ran, its frame buffer allocated: `rt_sigprocmask(SIG_BLOCK, every signal but musl's
+  own three)`, which musl's `__block_app_sigs` makes. The loop's first timer reaches a
+  thread-local with a destructor, the memory a connection let go of (M210, efc9c889,
+  after b09a55ae); std then makes its key for thread-local destructors (`LazyKey`), and
+  where the C library gives it key 0, its own mark of none, makes another and deletes 0.
+  musl gives 0 first, and its `pthread_key_delete` blocks application signals around its
+  work and then sets the mask back; glibc's deletes without a syscall. The filter allows
+  rt_sigprocmask's SIG_BLOCK and SIG_SETMASK: a thread's own mask, which grants it
+  nothing.
 
 ### M210. What a network process costs its host as its connections grow (D31, E2)
 
@@ -7328,6 +7338,24 @@ revision before comparing a changed API/implementation.
     memory, as any VM's.
   - A round trip beside them (µs, p50 / p99 / max of 6,000): 91 / 196 / 1,052 beside
     none; 81 / 161 / 2,731 beside 10,000; after 1 MiB each way, 57 / 110 / 36,132.
+  - On Linux (CI's ubuntu-24.04, AMD EPYC 7763, Linux 6.17, 75d51558, `net costs` run
+    38283168175; private / proportional / resident, MiB, p50 of 3):
+
+    | N | fresh | after 256 KiB each way | after 1 MiB each way |
+    |---|---|---|---|
+    | 0 | 0.7 / 1.1 / 3.0 | 0.7 / 1.1 / 3.0 | 0.7 / 1.1 / 2.9 |
+    | 1,000 | 1.2 / 1.9 / 4.0 | 1.2 / 2.2 / 4.7 | 1.1 / 2.2 / 4.7 |
+    | 10,000 | 4.7 / 5.8 / 8.3 | 4.7 / 5.7 / 8.3 | 4.7 / 5.8 / 8.3 |
+
+    0.4 KiB a connection at 10,000, whatever it carried. The host's slab, which holds both
+    ends of each connection (the bench's server is on the host): +9.6 MiB for 1,000 and
+    +91.3 MiB for 10,000, 9.3 KiB a connection. The VM process: 71.7 MiB resident idle,
+    +2.6 MiB for 1,000 fresh connections, +41.3 MiB for 10,000. A round trip beside them
+    (µs, p50 / p99 / max of 6,000): 213 / 262 / 1,637 beside none, 215 / 267 / 620 beside
+    10,000.
+    The workloads bench's `network` there (n = 100): +2.5 ms at p50 of runs of 19 to 22 ms,
+    p90 +16.2 ms, where it was −0.6 ms at cc147e6: within the run-to-run spread of a loaded
+    CI host, which a paired build A/B there is to settle.
   - The start (E1): `build-ab/ab.py`, one build compared with itself, its new arm's runs
     on `--network none` (`FLAGS_NEW`), `exit 0` in the echo image, n = 200 per arm, load
     5.8. A run on the default bridge costs, paired: +418 µs at p50 [+286, +536] of the
@@ -7384,3 +7412,30 @@ revision before comparing a changed API/implementation.
   own over them. D133 no longer sizes processes by the builder's memory: they are Docker's,
   unlimited. Pending signals stay the kernel's, by the builder's memory, as Docker's are by
   its host's. `run_steps_start_with_dockers_limits` holds a step to them.
+
+### M212. A network process's connections to its host, on Windows (D142)
+
+- **Question.** A network process in an AppContainer reaches its host's own addresses and
+  loopback only through its spawner's dialer (D142, M204). Does that hold under many
+  connections, and what does a connection to the host cost to open, beside one elsewhere?
+- **Method.** `crates/shards/benches/net_memory.rs` on CI's windows-2025 (`net costs`): a
+  builder's step opens N connections, one after another, to the bench's server at the
+  host's own address on its default route; the guest times each connect, its SYN to its
+  SYN-ACK (`testguest conns`, `conns connect-us`).
+- **Results.** At 6f57f760 (run 38283168175), N = 1,000: the 178th connection's SYN went
+  unanswered, its connect timed out (ETIMEDOUT) 136.9 s into the step; the guest's kernel
+  gives a SYN up after 127 s (`tcp_syn_retries` 6), so the 177 before it took about 10 s,
+  some 55 ms each. That dialer shared each socket while its
+  connect was still under way and closed its own copy once told the network process had
+  one (`kind::TAKEN`), where Windows documents a shared socket's use as one process making
+  the connection and another exchanging data on it (WSADuplicateSocket); and the network
+  process waited for each answer in its event loop, every flow of its VM's held up the
+  while, each answer listing the host's adapters (GetAdaptersAddresses) to check the
+  address.
+- **Consequence (D142).** Each ask is numbered and answered once its connect has ended;
+  the dialer waits on all its connects and on the network process at once (WSAPoll), and
+  the network process asks without waiting, its guest's SYN waiting for the answer as for
+  a far end's SYN-ACK (`dials_are_answered_as_they_end_and_hold_up_nothing`). The dialer
+  checks an address by binding to it, then connects from it: one call, exact as it dials,
+  where the host's addresses change. Its connects' times on Windows, and 1,000 and 10,000
+  connections held, come from the next `net costs` run.

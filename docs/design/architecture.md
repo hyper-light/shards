@@ -1934,7 +1934,9 @@ stack inside the VMM, is superseded by it.
     (2026-10-12, PM M209): a seccomp filter after Landlock's first layer, of the syscalls a
     network process is seen to make once confined, with glibc and with musl, its sockets
     held to IPv4, IPv6 and Unix, ioctl to FIONBIO, fcntl to close-on-exec and duplicates,
-    prctl to no_new_privs and its name, socket options to the socket's and TCP's levels;
+    prctl to no_new_privs and its name, socket options to the socket's and TCP's levels,
+    and a thread's own signal mask to blocking and setting, which musl's
+    pthread_key_delete makes as std makes its key for thread-local destructors (PM M209);
     no exec, process, thread or file (`the_filter_ends_a_process_that_makes_what_none_makes`,
     and every networked E2E through the filtered process). arm64 Linux's, as the VM
     process's, once its KVM backend runs VMs to measure it on.
@@ -3636,9 +3638,16 @@ on Windows as on Linux and macOS.
   loopback or own addresses, nor a file or socket by its path. Its spawner dials those for
   it, as on macOS a build's proxy is (D31): a build's proxy's socket, and a TCP flow to
   the loopback or to one of the host's own addresses, each up adapter's unicast ones,
-  which it is told as it starts, begun by its spawner without waiting and shared with it
-  (WSADuplicateSocketW, M203), so that it connects in its own loop; the spawner dials no
-  other address. A step reaches its host's own services as Docker's do
+  which it is told as it starts. Each ask is numbered and answered once its connect has
+  ended, the connection shared with it (WSADuplicateSocketW, M203), as Windows documents a
+  shared socket's use: one process makes the connection, another exchanges data on it.
+  The spawner waits on all its connects at once, and the network process asks without
+  waiting, its guest's SYN waiting for the answer as for a far end's SYN-ACK and nothing
+  else with it (`dials_are_answered_as_they_end_and_hold_up_nothing`). An earlier dialer
+  that shared connects still under way and was waited on in the network process's loop
+  left a build's 178th connection to its host unanswered for 137 s (M212). The spawner
+  connects from the address asked for, which binding to it proves the host holds as it
+  dials, and to no other. A step reaches its host's own services as Docker's do
   (`run_steps_reach_the_network_unless_it_is_none`, which failed without it, M204's
   finding).
 - **Its VM's end** it learns from the VM's process, a handle it may only wait on: a
@@ -9195,7 +9204,11 @@ in it, init (PID 1, whose end is the microVM's) and the run's own command includ
     changes, and past the cap ends the domain whose `memory.current`, scratch included,
     is the most, with `cgroup.kill` (Linux 5.14), saying so on the run's stderr
     (`[agent y] shards-init: ended: the agents' memory, …`). systemd-oomd and oomd choose
-    by cgroup usage in the same way. A domain ended still holds the most until it has left
+    by cgroup usage in the same way. A domain the kernel's OOM killer ended, whole, init
+    says too, once, from its `memory.events`: at its own limit where it counted an `oom`,
+    which the kernel counts before it chooses and never for the microVM's memory as a
+    whole, else for the microVM's (`[agent x] shards-init: ended: its memory reached its
+    limit, …`). A domain ended still holds the most until it has left
     its cgroup, which a process does after its namespaces, and with them its scratch, are
     gone (kernel/exit.c, `do_exit`: `exit_nsproxy_namespaces`, `exit_task_work`, then
     `cgroup_task_exit`), so no other is ended for memory it still holds; a rule waiting for
@@ -9229,18 +9242,23 @@ in it, init (PID 1, whose end is the microVM's) and the run's own command includ
 programs' default temporary directory (POSIX `TMPDIR`) is where they look.
 
 Tested on real microVMs: `agents_out_of_memory_end_whole_and_spare_the_run`, the run's
-command holding 64 MiB under `-m 128m`: x, asking 64 MiB, ends with 58 MiB written (its
-resident memory the rest); y, asking nothing, is ended by init at the domains' cap, and z,
+command holding 64 MiB under `-m 128m`: x, asking 32 MiB, below the domains' cap on every
+host measured (66.8 to 80.9 MiB; asking 64 MiB, it met the cap first on an M5 Max), ends
+with 26 MiB written (its resident memory the rest), init saying the kernel ended it at its
+limit; y, asking nothing, is ended by init at the domains' cap, and z,
 holding 16 MiB resident and no scratch, more than y's resident memory, lives; the run's
 command outlives them, and each domain ended lost its PID 1 with its filler. Each guard
 mutation-checked: without x's limit it wrote 82 MiB; without the workload's share taken
 from the cap, the kernel killed the run's command; with the cap a `memory.max`, the
 kernel ended z; with init choosing the least, z was ended; without a cap, init ended
-none; without `memory.oom.group`, a domain's PID 1 outlived its filler. Found while testing: an agent
-can fill and end between two looks at `/proc`, each a whole `shards top`, which under load
-come further apart than it lives (a D127 gate's failure, reproduced with looks 3 s apart),
-so the host reads the run's log, which keeps the filler's lines, as well; so does
-`an_agents_daemon_ends_with_it` for its daemon.
+none; without `memory.oom.group`, a domain's PID 1 outlived its filler; without init saying
+what the kernel ended, x's run fails. Found while testing: an agent can fill and end between
+two looks at `/proc`, each a whole `shards top`, which under load come further apart than it
+lives (a D127 gate's failure, reproduced with looks 3 s apart), so the host reads the run's
+log, which keeps what init says; so does `an_agents_daemon_ends_with_it` for its daemon. A
+look without the filler's processes counted as its end where it came before the filler had
+forked, and before z had named itself (CI run 38264181419): the host waits for init's line
+in the log, then for a look taken after it.
 
 ### Protocols a network carries, and Unix sockets granted (D59, part ten)
 

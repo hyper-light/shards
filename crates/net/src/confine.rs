@@ -179,9 +179,10 @@ pub fn to_ports(ports: &[u16]) -> io::Result<()> {
 /// IPv6 and Unix; FIONBIO alone of ioctl's requests; of fcntl's commands, a descriptor's
 /// close-on-exec flag and its duplicate; prctl's no_new_privs, which its policy's Landlock
 /// layer sets, and the thread's name, which a refusal's report reads; options of sockets'
-/// and TCP's levels alone. No exec, no process or thread, no file: its spawner hands it all
-/// it serves. clock_gettime, which the vDSO answers, where it falls back to the syscall: a
-/// host whose clocksource the vDSO cannot read.
+/// and TCP's levels alone; a thread's own signal mask blocked and set, which musl does
+/// around its work on what threads share. No exec, no process or thread, no file: its
+/// spawner hands it all it serves. clock_gettime, which the vDSO answers, where it falls
+/// back to the syscall: a host whose clocksource the vDSO cannot read.
 ///
 /// Linux on x86_64, where the KVM backend is, as for the VM process; elsewhere nothing is
 /// installed yet.
@@ -239,6 +240,13 @@ fn program() -> io::Result<shards_syscall_filter::Filter> {
     rules.push(Rule::with(libc::SYS_getsockopt, 1, &[libc::SOL_SOCKET as u32]));
     let levels = [libc::SOL_SOCKET, libc::IPPROTO_TCP];
     rules.push(Rule::with(libc::SYS_setsockopt, 1, &levels.map(|l| l as u32)));
+    // musl's, around its work on what a process's threads share: application signals
+    // blocked, then the thread's mask put back. std makes its key for thread-local
+    // destructors the first time one is reached, and deletes the first key it is given
+    // where that is 0, its own mark of none (`LazyKey`): musl gives 0 first, and its
+    // pthread_key_delete blocks them (PM M209).
+    let how = [libc::SIG_BLOCK, libc::SIG_SETMASK];
+    rules.push(Rule::with(libc::SYS_rt_sigprocmask, 0, &how.map(|h| h as u32)));
     seccomp::compile(&rules).map_err(io::Error::other)
 }
 
