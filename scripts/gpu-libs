@@ -1,0 +1,87 @@
+#!/usr/bin/env bash
+# Builds the GPU's renderer for `shards-vm-gpu` (D144) from pinned sources, static:
+#   scripts/gpu-libs [OUT_DIR]
+# OUT_DIR (target/gpu-libs by default) receives libvirglrenderer.a (virglrenderer's Venus,
+# in the 0.10.4e-krunkit fork, which renders in this process on macOS), libepoxy.a and
+# libMoltenVK.a (MoltenVK's release, over Metal), and include/ for the VMM's tests; cargo
+# links them where SHARDS_GPU_LIBS names that directory (crates/vmm/build.rs). macOS on
+# Apple silicon alone. Needs python3, for meson and ninja, pinned by hash in a virtual
+# environment of the build's own, and Xcode's command-line tools.
+set -euo pipefail
+
+repo=$(cd "$(dirname "$0")/.." && pwd)
+out=${1:-$repo/target/gpu-libs}
+if [ "$(uname -s)-$(uname -m)" != "Darwin-arm64" ]; then
+    echo "the GPU's renderer is built on Apple silicon (D144)" >&2
+    exit 2
+fi
+
+virgl_url=https://gitlab.freedesktop.org/slp/virglrenderer/-/archive/0.10.4e-krunkit/virglrenderer-0.10.4e-krunkit.tar.gz
+virgl_sha256=09d000623fbdb966cb604eb48c962a0815e8142383e6066d6494809335b76dbb
+epoxy_url=https://github.com/anholt/libepoxy/archive/refs/tags/1.5.10.tar.gz
+epoxy_sha256=a7ced37f4102b745ac86d6a70a9da399cc139ff168ba6b8002b4d8d43c900c15
+moltenvk_url=https://github.com/KhronosGroup/MoltenVK/releases/download/v1.4.2/MoltenVK-macos.tar
+moltenvk_sha256=f95765a6229cb7b915990a2890ce12ebe36a730b021545d3d52ae69ce4c4024e
+
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT
+
+fetch() {
+    curl -fsSL --retry 3 -o "$work/$2" "$1"
+    echo "$3  $work/$2" | shasum -a 256 -c --quiet -
+}
+fetch "$virgl_url" virgl.tar.gz "$virgl_sha256"
+fetch "$epoxy_url" epoxy.tar.gz "$epoxy_sha256"
+fetch "$moltenvk_url" moltenvk.tar "$moltenvk_sha256"
+mkdir "$work/src"
+tar -xzf "$work/virgl.tar.gz" -C "$work/src"
+tar -xzf "$work/epoxy.tar.gz" -C "$work/src"
+tar -xf "$work/moltenvk.tar" -C "$work/src"
+mvk=$work/src/MoltenVK/MoltenVK
+
+# meson and ninja, as PyPI published them.
+cat >"$work/tools.txt" <<'EOF'
+meson==1.11.2 --hash=sha256:7e4f6e83fec83e3eaac928e058b073c7557b282c35b6a2024cea143a39926a39
+ninja==1.13.2 --hash=sha256:fd82e26c0706ad4ab88e5fdd26f3fab0a987a90f810160f6c322e752c6af298b
+EOF
+python3 -m venv "$work/tools"
+"$work/tools/bin/pip" install --quiet --require-hashes --only-binary :all: -r "$work/tools.txt"
+export PATH=$work/tools/bin:$PATH
+
+# Vulkan as MoltenVK's release gives it, for the renderer's build to find.
+prefix=$work/prefix
+mkdir -p "$prefix/lib/pkgconfig"
+cat >"$prefix/lib/pkgconfig/vulkan.pc" <<EOF
+Name: vulkan
+Description: MoltenVK 1.4.2
+Version: 1.4.335
+Cflags: -I$mvk/include
+Libs: $mvk/static/MoltenVK.xcframework/macos-arm64_x86_64/libMoltenVK.a -framework Metal -framework IOSurface -framework IOKit -framework QuartzCore -framework Foundation -framework CoreGraphics -framework AppKit -lc++
+EOF
+export PKG_CONFIG_PATH=$prefix/lib/pkgconfig
+
+# libepoxy: no GL of its own to find (no EGL, GLX or X11); the renderer runs Venus alone.
+# Each setup's output kept, and shown if it fails; each build's warnings and errors shown.
+setup() {
+    local name=$1
+    shift
+    meson setup "$@" >"$work/$name.log" 2>&1 || {
+        cat "$work/$name.log" >&2
+        exit 1
+    }
+}
+setup epoxy "$work/epoxy" "$work/src/libepoxy-1.5.10" --prefix="$prefix" --default-library=static \
+    -Dtests=false -Ddocs=false -Dx11=false -Degl=no -Dglx=no
+ninja --quiet -C "$work/epoxy" install
+
+setup virgl "$work/virgl" "$work/src/virglrenderer-0.10.4e-krunkit" --prefix="$prefix" \
+    --default-library=static -Dvenus=true -Drender-server=false -Dtests=false \
+    "-Dc_args=-I$mvk/include"
+# The library alone: its test server links MoltenVK by a name the release does not give.
+ninja --quiet -C "$work/virgl" src/libvirglrenderer.a
+
+mkdir -p "$out/include"
+cp "$work/virgl/src/libvirglrenderer.a" "$prefix/lib/libepoxy.a" \
+    "$mvk/static/MoltenVK.xcframework/macos-arm64_x86_64/libMoltenVK.a" "$out/"
+cp "$work/src/virglrenderer-0.10.4e-krunkit/src/virglrenderer.h" "$out/include/"
+(cd "$out" && shasum -a 256 libvirglrenderer.a libepoxy.a libMoltenVK.a)

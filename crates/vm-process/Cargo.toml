@@ -17,6 +17,11 @@ path = "src/main.rs"
 [lints]
 workspace = true
 
+[features]
+# The GPU's renderer (D144): `shards-vm-gpu`, the VM process of a microVM given a GPU, is
+# this binary built with it; every other VM's is built without (PM M214).
+gpu = ["shards-vmm/gpu"]
+
 [dependencies]
 shards-abi = { path = "../abi" }
 shards-cmdline = { path = "../cmdline" }
