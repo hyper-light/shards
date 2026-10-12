@@ -44,8 +44,17 @@ jobs:
         shell: bash
         working-directory: docs/research/measurements/whp-run
         run: cargo run --release --bin m198
+      # A standard user, as the runner's own is an administrator: a throwaway account of
+      # this runner's alone, its password made here and never shown.
       - name: M200
         if: ${{ !cancelled() }}
-        shell: bash
+        shell: pwsh
         working-directory: docs/research/measurements/whp-run
-        run: cargo run --release --bin m200
+        run: |
+          $chars = [char[]]'abcdefghijkmnopqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789'
+          $p = -join (1..24 | ForEach-Object { $chars[(Get-Random -Maximum $chars.Length)] }) + '!7a'
+          net user shards-probe $p /add | Out-Null
+          $env:SHARDS_PROBE_USER = 'shards-probe'
+          $env:SHARDS_PROBE_PASSWORD = $p
+          cargo run --release --bin m200
+          net user shards-probe /delete | Out-Null

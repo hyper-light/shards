@@ -3,7 +3,10 @@
 //! handles named for it (PROC_THREAD_ATTRIBUTE_HANDLE_LIST). The child, in it and again
 //! outside it as the control: reads a file through a handle it inherited; opens a file by
 //! its path, as a confined VM process must not; and runs a partition of one vCPU to a port
-//! write, each step's result printed.
+//! write, each step's result printed. Then: whether a standard user, not an administrator
+//! as the runner's is, runs one (an account the workflow makes, `SHARDS_PROBE_USER`); and
+//! which device WinHvPlatform.dll opens, found among its own strings, with that device's
+//! security descriptor, which says who may.
 
 // Windows' constants, matched by their own names.
 #![allow(non_upper_case_globals)]
@@ -15,8 +18,18 @@ use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, HANDLE_FLAG_INHERIT, S
 use windows_sys::Win32::Security::Isolation::{
     CreateAppContainerProfile, DeleteAppContainerProfile, DeriveAppContainerSidFromAppContainerName,
 };
-use windows_sys::Win32::Security::{FreeSid, PSID, SECURITY_CAPABILITIES};
-use windows_sys::Win32::Storage::FileSystem::ReadFile;
+use windows_sys::Win32::Foundation::{INVALID_HANDLE_VALUE, LocalFree};
+use windows_sys::Win32::Security::Authorization::{
+    ConvertSecurityDescriptorToStringSecurityDescriptorW, GetSecurityInfo, SE_FILE_OBJECT,
+};
+use windows_sys::Win32::Security::{
+    DACL_SECURITY_INFORMATION, FreeSid, LABEL_SECURITY_INFORMATION, OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR,
+    PSID, SECURITY_CAPABILITIES,
+};
+use windows_sys::Win32::Storage::FileSystem::{
+    CreateFileW, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING, READ_CONTROL, ReadFile,
+};
+use windows_sys::Win32::System::Threading::{CreateProcessWithLogonW, LOGON_WITH_PROFILE, STARTUPINFOW};
 use windows_sys::Win32::System::Hypervisor::*;
 use windows_sys::Win32::System::Memory::{MEM_COMMIT, MEM_RESERVE, PAGE_READWRITE, VirtualAlloc};
 use windows_sys::Win32::System::Threading::{
@@ -124,7 +137,142 @@ fn partition() -> Result<String, String> {
     }
 }
 
-fn child(handle: usize, path: &str) {
+/// The device paths among a DLL's strings, UTF-16 and ASCII: `\\Device\\...`.
+fn devices_in(dll: &std::path::Path) -> Vec<String> {
+    let Ok(bytes) = std::fs::read(dll) else {
+        return Vec::new();
+    };
+    let mut found: Vec<String> = Vec::new();
+    let needle: Vec<u8> = "\\Device\\".encode_utf16().flat_map(u16::to_le_bytes).collect();
+    let mut at = 0;
+    while let Some(i) = bytes[at..].windows(needle.len()).position(|w| w == needle.as_slice()) {
+        let start = at + i;
+        let units: Vec<u16> = bytes[start..]
+            .chunks_exact(2)
+            .map(|c| u16::from_le_bytes([c[0], c[1]]))
+            .take_while(|&u| u != 0 && u < 0x80)
+            .collect();
+        let s = String::from_utf16_lossy(&units);
+        if !found.contains(&s) {
+            found.push(s);
+        }
+        at = start + needle.len();
+    }
+    let ascii = b"\\Device\\";
+    let mut at = 0;
+    while let Some(i) = bytes[at..].windows(ascii.len()).position(|w| w == ascii) {
+        let start = at + i;
+        let s: String = bytes[start..]
+            .iter()
+            .take_while(|&&b| b != 0 && b.is_ascii_graphic())
+            .map(|&b| b as char)
+            .collect();
+        if !found.contains(&s) {
+            found.push(s);
+        }
+        at = start + ascii.len();
+    }
+    found
+}
+
+/// A device's owner, DACL and integrity label, as SDDL, through a handle opened for
+/// READ_CONTROL alone.
+fn sddl(device: &str) -> String {
+    let name = wide(&format!("\\\\?\\GLOBALROOT{device}"));
+    // SAFETY: a NUL-terminated name; READ_CONTROL alone.
+    let h = unsafe {
+        CreateFileW(
+            name.as_ptr(),
+            READ_CONTROL,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            std::ptr::null(),
+            OPEN_EXISTING,
+            0,
+            std::ptr::null_mut(),
+        )
+    };
+    if h == INVALID_HANDLE_VALUE {
+        return format!("open: {}", std::io::Error::last_os_error());
+    }
+    let what = OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION | LABEL_SECURITY_INFORMATION;
+    let mut sd: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
+    // SAFETY: our handle; the descriptor is freed below.
+    let r = unsafe {
+        GetSecurityInfo(
+            h,
+            SE_FILE_OBJECT,
+            what,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            &raw mut sd,
+        )
+    };
+    // SAFETY: our handle.
+    unsafe { CloseHandle(h) };
+    if r != 0 {
+        return format!("GetSecurityInfo: {}", std::io::Error::from_raw_os_error(r as i32));
+    }
+    let mut text: windows_sys::core::PWSTR = std::ptr::null_mut();
+    let mut len = 0u32;
+    // SAFETY: the descriptor just read; the string is freed below.
+    let ok = unsafe { ConvertSecurityDescriptorToStringSecurityDescriptorW(sd, 1, what, &raw mut text, &raw mut len) };
+    let out = if ok == 0 || text.is_null() {
+        format!("convert: {}", std::io::Error::last_os_error())
+    } else {
+        // SAFETY: `len` UTF-16 units the call wrote.
+        String::from_utf16_lossy(unsafe { std::slice::from_raw_parts(text, len as usize) })
+            .trim_end_matches('\0')
+            .to_string()
+    };
+    // SAFETY: what the calls allocated.
+    unsafe {
+        LocalFree(text.cast());
+        LocalFree(sd.cast());
+    }
+    out
+}
+
+/// Runs `exe` as `child` under the standard user `user`; its exit code: 0 where the
+/// partition ran.
+fn as_user(exe: &std::path::Path, user: &str, password: &str) -> Result<u32, String> {
+    let mut cmd = wide(&format!("\"{}\" child 0 \"\"", exe.display()));
+    let (user_w, domain, password_w) = (wide(user), wide("."), wide(password));
+    let mut si = STARTUPINFOW::default();
+    si.cb = std::mem::size_of::<STARTUPINFOW>() as u32;
+    let mut pi = PROCESS_INFORMATION::default();
+    // SAFETY: names and a command line we own; startup info alive.
+    let made = unsafe {
+        CreateProcessWithLogonW(
+            user_w.as_ptr(),
+            domain.as_ptr(),
+            password_w.as_ptr(),
+            LOGON_WITH_PROFILE,
+            std::ptr::null(),
+            cmd.as_mut_ptr(),
+            0,
+            std::ptr::null(),
+            std::ptr::null(),
+            &raw const si,
+            &raw mut pi,
+        )
+    };
+    if made == 0 {
+        return Err(format!("CreateProcessWithLogonW: {}", std::io::Error::last_os_error()));
+    }
+    let mut code = 0u32;
+    // SAFETY: the child's handles, closed once it has ended.
+    unsafe {
+        WaitForSingleObject(pi.hProcess, INFINITE);
+        GetExitCodeProcess(pi.hProcess, &raw mut code);
+        CloseHandle(pi.hThread);
+        CloseHandle(pi.hProcess);
+    }
+    Ok(code)
+}
+
+fn child(handle: usize, path: &str) -> i32 {
     let mut buf = [0u8; 64];
     let mut n = 0u32;
     // SAFETY: an inherited file handle; a buffer of its length.
@@ -145,7 +293,9 @@ fn child(handle: usize, path: &str) {
         "child: by path {path}: {:?}",
         std::fs::read_to_string(path).map_err(|e| e.to_string())
     );
-    println!("child: partition: {:?}", partition());
+    let ran = partition();
+    println!("child: partition: {ran:?}");
+    if ran.is_ok() { 0 } else { 10 }
 }
 
 /// Runs this binary as `child`, in AppContainer `sid` if given, with exactly `file`, and
@@ -245,8 +395,7 @@ fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.get(1).map(String::as_str) == Some("child") {
         let handle = args.get(2).and_then(|h| h.parse::<usize>().ok()).unwrap_or(0);
-        child(handle, args.get(3).map_or("", String::as_str));
-        return;
+        std::process::exit(child(handle, args.get(3).map_or("", String::as_str)));
     }
     let dir = std::env::current_dir().unwrap_or_default();
     let path = dir.join("m200-input.txt");
@@ -299,4 +448,24 @@ fn main() {
         }
     }
     let _ = std::fs::remove_file(&path);
+    // A standard user, where the workflow made one: the probe copied where it may run it.
+    if let (Ok(user), Ok(password)) = (std::env::var("SHARDS_PROBE_USER"), std::env::var("SHARDS_PROBE_PASSWORD")) {
+        let public = std::path::PathBuf::from(r"C:\Users\Public\shards-m200");
+        let exe = public.join("m200.exe");
+        let copied = std::fs::create_dir_all(&public)
+            .and_then(|()| std::fs::copy(std::env::current_exe()?, &exe).map(drop));
+        match copied.map_err(|e| e.to_string()).and_then(|()| as_user(&exe, &user, &password)) {
+            Ok(code) => println!("standard user {user}: child exited {code} (0: the partition ran)"),
+            Err(e) => println!("standard user {user}: {e}"),
+        }
+        let _ = std::fs::remove_dir_all(&public);
+    }
+    // The device WHP opens, and who may.
+    let system32 = std::path::PathBuf::from(std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into()))
+        .join("System32");
+    for dll in ["WinHvPlatform.dll", "vid.dll", "WinHvEmulation.dll"] {
+        for device in devices_in(&system32.join(dll)) {
+            println!("{dll}: {device}: {}", sddl(&device));
+        }
+    }
 }
