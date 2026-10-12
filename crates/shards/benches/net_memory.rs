@@ -81,8 +81,22 @@ fn main() {
             for &bytes in &sizes {
                 for &n in &counts {
                     let mut cases = Vec::new();
-                    for _ in 0..rounds {
-                        cases.push(case(&home, &image, &to, n, bytes, trips, &held_rx));
+                    for round in 0..rounds {
+                        let c = case(&home, &image, &to, n, bytes, trips, &held_rx);
+                        // Each case as it ends, which a case that fails after it keeps.
+                        let p50 = |v: &[f64]| {
+                            let mut v = v.to_vec();
+                            v.sort_by(f64::total_cmp);
+                            v.get(v.len() / 2).copied().unwrap_or(0.0)
+                        };
+                        println!(
+                            "case n={n} b={bytes} round={round}: {:.1} s, connect p50 {:.0} us, rtt p50 {:.0} us, net {:?} MiB",
+                            c.secs,
+                            p50(&c.connect),
+                            p50(&c.rtt),
+                            c.net
+                        );
+                        cases.push(c);
                     }
                     let name = |what: &str| format!("{what} n={n} b={bytes}");
                     for (i, (metric, _)) in cases[0].net.iter().enumerate() {
@@ -212,13 +226,15 @@ impl Server {
 }
 
 /// One case's numbers: each process's memory by what its host counts, in MiB; the host's
-/// slab where it says (Linux); and the step's connects and round trips, in µs.
+/// slab where it says (Linux); the step's connects and round trips, in µs; and how long
+/// the case took, its build's start to its end.
 struct Case {
     net: Vec<(&'static str, f64)>,
     vm: Vec<(&'static str, f64)>,
     slab: Option<f64>,
     connect: Vec<f64>,
     rtt: Vec<f64>,
+    secs: f64,
 }
 
 /// A build whose one step holds `n` connections to `to`, each moving `bytes` each way
@@ -303,6 +319,7 @@ fn case(
         slab: slab_mib(),
         connect: Vec::new(),
         rtt: Vec::new(),
+        secs: 0.0,
     };
     let _ = go.send(());
     let status = loop {
@@ -341,6 +358,7 @@ fn case(
     Case {
         connect,
         rtt,
+        secs: start.elapsed().as_secs_f64(),
         ..measured
     }
 }

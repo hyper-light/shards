@@ -7,7 +7,8 @@
 # src/bin/m203.rs); what a confined network process may reach, and its doorbells (PM M204,
 # src/bin/m204.rs); the CPUID a partition's vCPUs see, and what a VMM may change of it (PM
 # M206, src/bin/m206.rs); the environment a child in an AppContainer must be given (PM M208,
-# src/bin/m208.rs).
+# src/bin/m208.rs); what waking a network process's loop costs, by how it waits (PM M213,
+# src/bin/m213.rs).
 [package]
 name = "whp-run"
 version = "0.1.0"
