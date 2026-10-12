@@ -444,6 +444,69 @@ mod tests {
         );
     }
 
+    /// A wait wakes for data that comes while it waits, as the vsock device's waits do for
+    /// a host's stream: its handshake line read first, then a wait in which another socket
+    /// alone is asked about, then the reply, and the stream's data only after the reply.
+    #[test]
+    fn a_wait_wakes_for_data_that_comes_while_it_waits() {
+        let (ours, theirs) = UnixStream::pair().unwrap();
+        ours.set_nonblocking(true).unwrap();
+        let fd = ours.raw_socket();
+        let mut poller = Poller::new().unwrap();
+        let mut out = Vec::new();
+        let read = |token| Interest {
+            fd,
+            read: true,
+            write: false,
+            token,
+        };
+        (&theirs).write_all(b"CONNECT 1\n").unwrap();
+        poller
+            .wait(&[read(1)], Some(Duration::from_secs(10)), &mut out)
+            .unwrap();
+        assert!(out.iter().any(|r| r.token == 1 && r.read), "{out:?}");
+        let mut line = [0u8; 10];
+        std::io::Read::read_exact(&mut &ours, &mut line).unwrap();
+        let (other, _peer) = UnixStream::pair().unwrap();
+        out.clear();
+        poller
+            .wait(
+                &[Interest {
+                    fd: other.raw_socket(),
+                    read: true,
+                    write: false,
+                    token: 2,
+                }],
+                Some(Duration::from_millis(20)),
+                &mut out,
+            )
+            .unwrap();
+        assert!(out.is_empty(), "{out:?}");
+        (&ours).write_all(b"OK 1\n").unwrap();
+        let client = std::thread::spawn(move || {
+            let mut reply = [0u8; 5];
+            std::io::Read::read_exact(&mut &theirs, &mut reply).unwrap();
+            std::thread::sleep(Duration::from_millis(100));
+            (&theirs).write_all(b"data").unwrap();
+            theirs
+        });
+        out.clear();
+        let waited = std::time::Instant::now();
+        poller
+            .wait(&[read(3)], Some(Duration::from_secs(10)), &mut out)
+            .unwrap();
+        let took = waited.elapsed();
+        assert!(
+            out.iter().any(|r| r.token == 3 && r.read),
+            "no data after {took:?}: {out:?}"
+        );
+        assert!(
+            took < Duration::from_secs(5),
+            "the data woke the wait after {took:?}"
+        );
+        drop(client.join().unwrap());
+    }
+
     #[test]
     fn a_half_closed_peer_is_readable_but_not_a_reason_to_wake_a_writer() {
         let (ours, theirs) = UnixStream::pair().unwrap();

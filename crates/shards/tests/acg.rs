@@ -2,9 +2,9 @@
 //! partition is set up, as the VM process forbids it (D141, PM M202): the control that
 //! tells ACG apart from the rest of a confined VM process's confinement where its SMP
 //! boots stall. A binary of its own: ACG is the process's for good, and windows-2022 sets
-//! no other partition up once it is on.
+//! no other partition up once it is on. Where WHP is shards' backend: x86_64 Windows.
 
-#![cfg(windows)]
+#![cfg(all(windows, target_arch = "x86_64"))]
 #![allow(clippy::panic, clippy::unwrap_used)]
 
 mod common;

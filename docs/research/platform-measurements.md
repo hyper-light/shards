@@ -7117,3 +7117,93 @@ revision before comparing a changed API/implementation.
 - **Consequence (D141).** shards' AF_UNIX connect that does not wait waits out Windows'
   "under way", which ends in microseconds where the listener has room: so it connects at
   once or is refused, as Unix's does; WSAENOBUFS is Unix's EAGAIN, a full backlog.
+
+### M206. The CPUID a WHP partition's vCPUs see, and what a VMM may change of it
+
+- **Question.** A Linux guest's AP skips calibrating its delay loop where the TSC is
+  constant and a CPU of its package is up already (`calibrate_delay_is_known`,
+  arch/x86/kernel/tsc.c; a Hyper-V guest without the TSC-invariance privilege marks its TSC
+  unstable, so only the second path is open). shards' WHP guests calibrated every AP: 63
+  of them took a 240-vCPU boot past a minute on a 4-CPU runner, starving every VM beside
+  it (CI run 38240024887). What topology and invariant TSC does a partition set up as
+  shards' are give its vCPUs, and what may the VMM change, how, and at what cost? Does the
+  guest's TSC keep one rate?
+- **Method.** `docs/research/measurements/whp-run/src/bin/m206.rs`, by `whp-run.yml`, runs
+  38246266456 and 38247442481 on branch `whp`, 2026-10-12, on a windows-2022 (Windows
+  Server 2022 10.0.20348) and a windows-2025 (Windows Server 2025 10.0.26100) runner, both
+  AMD EPYC 7763: the host's processor features (WHvGetCapability) and its own CPUID; the
+  CPUID of each of four vCPUs (WHvGetVirtualProcessorCpuidOutput) of a partition set up as
+  shards' (XApic, shards' synthetic features), checked against a guest's own CPUID on
+  vCPU 0; the same given the host's processor features, with TscInvariantSupport asked of
+  them, and with WHvPartitionPropertyCodeCpuidResultList2 results (per vCPU and for all,
+  masked) set before setup and after the vCPUs exist; a second list after a first, and an
+  empty one; a guest's TSC read against the partition's reference counter
+  (HV_X64_MSR_TIME_REF_COUNT) every 10 ms for 3 s, a pair re-read where the counter moved
+  more than 5 µs across it, the host idle and then every host CPU busy; and setting a
+  list for one package once a partition's vCPUs exist, for 64 vCPUs and for the 240 a
+  guest may have (n = 20 each).
+- **Found:**
+  - **Topology.** Each vCPU is a package of one: leaf 1's processor count 0 and HTT clear,
+    0x80000008 ECX 0 (one thread, no APIC id bits), 0x8000001E's core id 0 on every vCPU;
+    the hypervisor gives each its own APIC id in leaf 1 (EBX 31:24) and 0x8000001E EAX.
+    Leaf 0 says 0xD, so no 0xB or 0x1F. The guest's own CPUID agreed with the API's on
+    every leaf, in every partition.
+  - **Invariant TSC.** The host's own CPUID has it (0x80000007 EDX bit 8) on both. Windows
+    Server 2022 offers it (TscInvariantSupport in its processor features, bank 1 0x1cf) and
+    its partitions' guests see it; Server 2025 does not (bank 1 0x200001ed), and its
+    guests do not, as created or given the host's features; asked of the processor
+    features there, it was taken without an error and the guest still did not see it.
+  - **Results.** A list's masks say which bits are its own: a result of mask 0 changed
+    nothing; one of the whole leaf for every vCPU gave all four leaf 1's EAX 0 and APIC id
+    0. Masked, the rest stays the hypervisor's: leaf 1's count and HTT set with each vCPU's
+    APIC id kept. Per-vCPU results set before setup fail the setup,
+    HV_STATUS_INVALID_VP_INDEX (0xc035000e); set once the vCPUs exist, they are taken,
+    and so is invariant TSC set there (on Server 2025 too). A second list replaces the
+    first, and an empty one clears it.
+  - **The TSC's rate.** Over 3 s: 2,445,426,012 Hz idle and 2,445,426,003 loaded on Server
+    2022, 2,445,425,778 and 2,445,425,783 on Server 2025, each within 0.02 ppm of the
+    partition's clock (WHvCapabilityCodeProcessorClockFrequency); each 10 ms's rate within
+    3.3-4.1 ppm of the whole run's at p50, 43-101 at p99, 109 at most (n = 299 each), where
+    the pairs' 5 µs windows allow 1,000.
+  - **Cost** (µs, p50 / p90 / p99 / max, Server 2022 then 2025): setting 131 results for 64
+    vCPUs 726 / 734 / 846 / 846 and 907 / 974 / 1,179 / 1,179; 483 for 240, 2,928 / 2,961 /
+    3,347 / 3,347 and 3,709 / 3,783 / 4,035 / 4,035; against 7.6 / 9.9 ms and 29.1 / 37.2
+    ms at p50 to make the partition and its vCPUs.
+- **Consequence (D140).** shards' WHP VMs give their guests one package of single-thread
+  cores, as KVM's do (`cpuid::for_vcpu`), and invariant TSC where the host's processor has
+  it, which Server 2025 leaves out though its partitions' TSC keeps the host's one rate and
+  a partition never moves to another host; each result masked to the bits it changes, so
+  that the hypervisor keeps the bits it keeps per vCPU and as the guest runs; one list,
+  set once the last vCPU exists and before any runs. A guest's APs then take the boot
+  CPU's calibration.
+
+### M207. A send while another thread waits to read the same connection, on Windows
+
+- **Question.** On Windows CI the vsock tests' streams stalled for a minute with nothing
+  read by the VM, then went on as each client gave up (CI run 38243944747): the test's
+  client waits for the echo in a read of 60 s timeout, a WSAPoll then a recv on its
+  socket, while another thread sends through a copy of it. Does a send wait for another
+  thread's wait to read the same connection?
+- **Method.** `docs/research/measurements/windows-afunix` (`m207`), by `windows-afunix.yml`,
+  run 38251215070 on branch `whp`, 2026-10-12, on a windows-2022 and a windows-2025 runner,
+  and run 38248859064 before it, which hung at its second case: for AF_UNIX and loopback
+  TCP pairs, their sockets made without WSA_FLAG_OVERLAPPED and with it, one thread waits
+  to read a connection, by a WSAPoll of 3 s, a blocking recv, or a recv of SO_RCVTIMEO 3 s,
+  on the socket or on a copy WSADuplicateSocketW made of it; 100 ms on, another sends a
+  byte through the socket or the copy, and the peer waits for it; at 4 s the peer sends
+  the byte that ends a wait still waiting.
+- **Found** (both runners alike, AF_UNIX and TCP alike):
+  - **Made without WSA_FLAG_OVERLAPPED**, every send waited for the other thread's wait to
+    end, through the socket or the copy, on either: 2,895-2,913 ms for a WSAPoll's 3 s,
+    3,899-3,901 ms for a recv the peer's byte ended at 4 s; and SO_RCVTIMEO never ended a
+    recv, which the peer's byte did at 4 s. Run 38248859064's send behind a blocking recv
+    that only its own peer would end hung until the job's limit.
+  - **Made with it**, every send went at once (0.0-0.1 ms), the peer had the byte as soon,
+    and SO_RCVTIMEO ended each recv after 3,012-3,032 ms (WSAETIMEDOUT), on the socket and
+    on the copy alike.
+- **Consequence (D141).** Windows serializes the I/O of a handle opened for synchronous
+  I/O, and a socket made without WSA_FLAG_OVERLAPPED is one; std makes its sockets
+  overlapped. shards' AF_UNIX sockets (`shards-afunix`) are made overlapped too, so that
+  a read never holds a send; their read timeout stays a WSAPoll before the read, as
+  Winsock leaves a connection whose receive timed out in an indeterminate state. The
+  vsock tests' stall was their own client's.

@@ -2,9 +2,11 @@
 //! shards carries over Unix sockets on its other hosts: a VM's vsock streams, its network
 //! process's controls and its builder's sockets. std has Unix sockets on Unix alone; these
 //! are the subset shards uses, made as std makes them there: not inherited by children
-//! unless handed to one, and blocking until set otherwise. Measured: PM M199 (9-12 GB/s,
-//! 3.4-3.7 times loopback TCP's; half-close; scatter-gather; WSAPoll and WSAEventSelect)
-//! and M203 (shared with a confined process). Nothing on other hosts.
+//! unless handed to one, and blocking until set otherwise; overlapped, as std's sockets are
+//! made, so that one thread's send never waits for another's read of the same connection
+//! (PM M207). Measured: PM M199 (9-12 GB/s, 3.4-3.7 times loopback TCP's; half-close;
+//! scatter-gather; WSAPoll and WSAEventSelect), M203 (shared with a confined process) and
+//! M207. Nothing on other hosts.
 
 #![cfg(windows)]
 
@@ -17,9 +19,9 @@ use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use windows_sys::Win32::Networking::WinSock::{
     AF_UNIX, FIONBIO, FROM_PROTOCOL_INFO, INVALID_SOCKET, POLLRDNORM, POLLWRNORM, SD_BOTH, SD_RECEIVE,
     SD_SEND, SO_ERROR, SOCK_STREAM, SOCKADDR_UN, SOCKET, SOL_SOCKET, SOMAXCONN, WSA_FLAG_NO_HANDLE_INHERIT,
-    WSABUF, WSADATA, WSADuplicateSocketW, WSAEWOULDBLOCK, WSAGetLastError, WSAPOLLFD, WSAPROTOCOL_INFOW,
-    WSAPoll, WSARecv, WSASend, WSASocketW, WSAStartup, accept, bind, closesocket, connect, getpeername,
-    getsockopt, ioctlsocket, listen, recv, send, shutdown,
+    WSA_FLAG_OVERLAPPED, WSABUF, WSADATA, WSADuplicateSocketW, WSAEWOULDBLOCK, WSAGetLastError, WSAPOLLFD,
+    WSAPROTOCOL_INFOW, WSAPoll, WSARecv, WSASend, WSASocketW, WSAStartup, accept, bind, closesocket, connect,
+    getpeername, getsockopt, ioctlsocket, listen, recv, send, shutdown,
 };
 
 /// A socket, as WSAPoll and WSAEventSelect name it.
@@ -56,21 +58,20 @@ impl Drop for Socket {
     }
 }
 
+/// How every socket here is made: overlapped, and inherited by no child. Windows serializes
+/// the I/O of a handle opened for synchronous I/O, which a socket made without
+/// WSA_FLAG_OVERLAPPED is: a send there waits out another thread's WSAPoll or recv on the
+/// same connection, by any of its handles, 2.9-3.9 s in M207's runs, where an overlapped
+/// socket's goes at once. Its calls without an OVERLAPPED still block as a synchronous
+/// socket's do.
+const FLAGS: u32 = WSA_FLAG_OVERLAPPED | WSA_FLAG_NO_HANDLE_INHERIT;
+
 impl Socket {
     /// A new AF_UNIX stream socket, which no child inherits.
     fn new() -> io::Result<Socket> {
         startup()?;
         // SAFETY: plain arguments.
-        let s = unsafe {
-            WSASocketW(
-                i32::from(AF_UNIX),
-                SOCK_STREAM,
-                0,
-                std::ptr::null(),
-                0,
-                WSA_FLAG_NO_HANDLE_INHERIT,
-            )
-        };
+        let s = unsafe { WSASocketW(i32::from(AF_UNIX), SOCK_STREAM, 0, std::ptr::null(), 0, FLAGS) };
         if s == INVALID_SOCKET {
             return Err(last());
         }
@@ -121,7 +122,7 @@ impl Socket {
                 FROM_PROTOCOL_INFO,
                 &raw const parsed,
                 0,
-                WSA_FLAG_NO_HANDLE_INHERIT,
+                FLAGS,
             )
         };
         if s == INVALID_SOCKET {
@@ -174,8 +175,10 @@ impl UnixStream {
         }
     }
 
-    /// A read of what has come into `buf`, waiting no longer than the stream's timeout:
-    /// a WSAPoll first, which afunix answers whatever its options say, then the read.
+    /// A read of what has come into `buf`, waiting no longer than the stream's timeout: a
+    /// WSAPoll first, then the read. Not SO_RCVTIMEO, though an overlapped socket keeps it
+    /// (PM M207): Winsock leaves a connection whose receive timed out in an indeterminate
+    /// state, to be closed, where a poll that times out leaves it as it was.
     fn read_into(&self, buf: &mut [u8]) -> io::Result<usize> {
         let ms = self.read_ms.load(Ordering::Relaxed);
         if ms != 0 {
@@ -286,7 +289,7 @@ impl UnixStream {
     }
 
     /// A read waits at most `timeout`, or with `None` for ever, as std's does: kept by the
-    /// stream and waited out by a poll before each read, not left to SO_RCVTIMEO.
+    /// stream and waited out by a poll before each read (`read_into`).
     pub fn set_read_timeout(&self, timeout: Option<std::time::Duration>) -> io::Result<()> {
         let ms: u32 = match timeout {
             None => 0,
@@ -598,6 +601,42 @@ mod tests {
             t.elapsed()
         );
         assert!(UnixStream::from_shared(&[0; 3]).is_err());
+    }
+
+    /// A send goes at once while another thread waits to read the same connection, with
+    /// a timeout or without one, through the socket or a clone of it, as std's sockets'
+    /// do (PM M207).
+    #[test]
+    fn a_send_does_not_wait_for_a_read_in_another_thread() {
+        let second = std::time::Duration::from_secs(1);
+        for (timeout, by_clone) in [(Some(10), true), (Some(10), false), (None, true), (None, false)] {
+            let (a, b) = UnixStream::pair().unwrap();
+            a.set_read_timeout(timeout.map(std::time::Duration::from_secs))
+                .unwrap();
+            b.set_read_timeout(Some(10 * second)).unwrap();
+            let clone = a.try_clone().unwrap();
+            let sender = if by_clone { &clone } else { &a };
+            std::thread::scope(|s| {
+                let reader = s.spawn(|| {
+                    let mut byte = [0u8; 1];
+                    (&a).read(&mut byte).map(|n| (n, byte[0]))
+                });
+                std::thread::sleep(std::time::Duration::from_millis(100));
+                let t = std::time::Instant::now();
+                { sender }.write_all(b"x").unwrap();
+                let took = t.elapsed();
+                let mut got = [0u8; 1];
+                (&b).read_exact(&mut got).unwrap();
+                let seen = t.elapsed();
+                // Ends the read, whatever became of the send.
+                (&b).write_all(b"y").unwrap();
+                assert_eq!(reader.join().unwrap().unwrap(), (1, b'y'));
+                assert!(
+                    took < second && seen < second,
+                    "timeout {timeout:?}, by a clone {by_clone}: the send took {took:?}, the peer had it after {seen:?}"
+                );
+            });
+        }
     }
 
     /// A socket bound and not yet listening, shared, listens in its copy, which takes a

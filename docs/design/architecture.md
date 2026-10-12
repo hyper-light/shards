@@ -3623,6 +3623,20 @@ network process (D142) and its builder (D143) follow.
   from a partition of one made as a VM's is, without whose synthetic features the leaf
   reads 0 (M202): 240 on GitHub's runners, fewer than the host's own CPUID says), and at
   most 254.
+- **One package of cores, and invariant TSC** (M206). Each vCPU's CPUID is a KVM guest's
+  (`cpuid::for_vcpu`: one package of single-thread cores, private L1 and L2 caches, a
+  shared L3), told WHP as results masked to the bits they change (CpuidResultList2,
+  `cpuid::masked`), so that the hypervisor keeps each vCPU's APIC id and the bits it
+  changes as the guest runs; with invariant TSC where the host's processor has it, which
+  Windows Server 2025 leaves out of its partitions' CPUID though their TSC keeps the
+  host's one rate (within 0.02 ppm of the partition's clock over 3 s, idle and loaded) and
+  a partition never moves to another host. One list, set as the last vCPU is made: WHP
+  refuses per-vCPU results before setup (HV_STATUS_INVALID_VP_INDEX), a second list
+  replaces the first, and no vCPU runs before all are made (D5); 0.7-0.9 ms for 64 vCPUs,
+  2.9-3.7 ms for 240. Without them each AP timed the boot CPU's ticks for its own delay
+  loop (Linux's `calibrate_delay_direct`), the ticks late on a busy host: 63 APs took a
+  240-vCPU boot past a minute on a 4-CPU runner, starving every VM beside it (CI run
+  38240024887).
 - **The IOAPIC is the VMM's** (`arch::x86_64::ioapic`), as KVM's in-kernel one presents
   itself (82093AA, version 0x11, 24 pins): its pins driven by the machine's devices, each
   interrupt it sends asked of the hypervisor (WHvRequestInterrupt, 3.8-6.3 µs a call),
@@ -3648,7 +3662,9 @@ network process (D142) and its builder (D143) follow.
   run past its section's end, the file's size, so it holds the file's whole pages, and the
   file's last partial page is copied into the read-only zeros after it.
 - **vsock on Windows**: AF_UNIX sockets (afunix.sys), 3.4-3.7 times loopback TCP's
-  throughput (M199); its worker sleeps on WSAEventSelect's events and reads each socket's
+  throughput (M199), made overlapped, as std makes its sockets: Windows serializes the I/O
+  of a socket made otherwise, so that a send waits out another thread's read of the same
+  connection (M207); its worker sleeps on WSAEventSelect's events and reads each socket's
   state with a WSAPoll that does not wait, as WSAPoll alone reports a peer's half-close as
   a hangup whatever is asked, which would wake a writer without end (M199). Its waker is an
   event, not a socket pair.

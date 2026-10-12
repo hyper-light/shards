@@ -24,7 +24,7 @@ use self::ffi::*;
 use super::{Exit, Io};
 use crate::arch::x86_64::ioapic::{Ioapic, Sent};
 use crate::arch::x86_64::mmio::{self, Access, Extend, Mode};
-use crate::arch::x86_64::{Boot, Segment, layout};
+use crate::arch::x86_64::{Boot, Segment, cpuid, layout};
 use crate::snapshot::codec::{self, DecodeError, Reader, Writer};
 
 /// A failed WHP call, or guest behavior the VMM does not emulate.
@@ -178,41 +178,166 @@ pub fn check_host() -> std::result::Result<(), String> {
 
 /// The most vCPUs one VM can have: as many as the hypervisor tells a partition's guest it
 /// supports (its leaf 0x40000005, Hyper-V TLFS "Implementation Limits"), read for vCPU 0
-/// of a partition of one, once a process; and at most 254, since the MADT carries 8-bit
-/// APIC ids. WHP sets up a partition of 1,024 (PM M198), but creates no vCPU past what its
-/// guest reads there: 240 on GitHub's runners, the 241st refused
+/// of a partition of one, once a process ([`host`]); and at most 254, since the MADT
+/// carries 8-bit APIC ids. WHP sets up a partition of 1,024 (PM M198), but creates no vCPU
+/// past what its guest reads there: 240 on GitHub's runners, the 241st refused
 /// (HV_STATUS_INVALID_VP_INDEX). The root partition's own leaf says more than a guest's: a
 /// VM of as many vCPUs as it said failed at its 241st (CI run 38215340140).
 pub fn max_vcpus() -> Result<u32> {
-    static MAX: OnceLock<u32> = OnceLock::new();
-    if let Some(max) = MAX.get() {
-        return Ok(*max);
+    host().map(|h| h.max_vcpus)
+}
+
+/// What this host's partitions give their guests, read once a process from vCPU 0 of a
+/// partition of one, set up as every VM's is: a partition offered no synthetic features
+/// gives its guest no hypervisor leaves to read (PM M202: 0 there). Only an answer that
+/// passed is kept.
+#[derive(Debug)]
+struct Host {
+    max_vcpus: u32,
+    /// The CPUID leaves a VM's topology is written into ([`template`]).
+    cpuid: Vec<cpuid::Leaf>,
+    /// Whether the host's processor has an invariant TSC, as its own CPUID says.
+    invariant_tsc: bool,
+}
+
+fn host() -> Result<&'static Host> {
+    static HOST: OnceLock<Host> = OnceLock::new();
+    if let Some(h) = HOST.get() {
+        return Ok(h);
     }
-    // Made as a VM's is: a partition offered no synthetic features gives its guest no
-    // hypervisor leaves to read (PM M202: 0 there).
     let partition = partition(1)?;
-    // SAFETY: the partition just set up, its one vCPU, its CPUID read into a value of its
-    // own size.
-    let limits = unsafe {
-        check(
-            "WHvCreateVirtualProcessor",
-            WHvCreateVirtualProcessor(partition.0, 0, 0),
-        )?;
+    // SAFETY: the partition just set up.
+    check("WHvCreateVirtualProcessor", unsafe {
+        WHvCreateVirtualProcessor(partition.0, 0, 0)
+    })?;
+    let read = |function: u32, index: u32| -> Result<WHV_CPUID_OUTPUT> {
         let mut out = WHV_CPUID_OUTPUT::default();
-        check(
-            "WHvGetVirtualProcessorCpuidOutput",
-            WHvGetVirtualProcessorCpuidOutput(partition.0, 0, 0x4000_0005, 0, &raw mut out),
-        )?;
-        WHvDeleteVirtualProcessor(partition.0, 0);
-        out
+        // SAFETY: the partition's vCPU 0, its CPUID read into a value of its own size.
+        check("WHvGetVirtualProcessorCpuidOutput", unsafe {
+            WHvGetVirtualProcessorCpuidOutput(partition.0, 0, function, index, &raw mut out)
+        })?;
+        Ok(out)
     };
+    let limits = read(0x4000_0005, 0);
+    let leaves = template(&read);
+    // SAFETY: the vCPU made above, which never ran.
+    unsafe { WHvDeleteVirtualProcessor(partition.0, 0) };
+    let (limits, leaves) = (limits?, leaves?);
     if limits.Eax == 0 {
         return Err(Error::Guest(
             "the hypervisor gives a partition's guest no limit to its vCPUs (CPUID 0x40000005)".into(),
         ));
     }
-    let max = limits.Eax.min(254);
-    Ok(*MAX.get_or_init(|| max))
+    let extended = std::arch::x86_64::__cpuid(0x8000_0000).eax;
+    let h = Host {
+        max_vcpus: limits.Eax.min(254),
+        cpuid: leaves,
+        invariant_tsc: extended >= 0x8000_0007
+            && std::arch::x86_64::__cpuid(0x8000_0007).edx & cpuid::INVARIANT_TSC != 0,
+    };
+    Ok(HOST.get_or_init(|| h))
+}
+
+/// The most subleaves of a cache leaf (4, 0x8000001D) read: far past the four levels of
+/// cache a processor has.
+const CACHE_SUBLEAVES: u32 = 16;
+
+/// The CPUID leaves [`cpuid::for_vcpu`] writes a VM's topology into, as the hypervisor
+/// gives `read`'s vCPU (PM M206): the maxima, leaf 1, the caches (4 and 0x8000001D, each to
+/// its first subleaf of no type), the extended topologies where the basic leaves reach
+/// them (0xB, 0x1F), invariant TSC (0x80000007), the package's threads (0x80000008) and
+/// AMD's topology (0x8000001E).
+fn template(read: &dyn Fn(u32, u32) -> Result<WHV_CPUID_OUTPUT>) -> Result<Vec<cpuid::Leaf>> {
+    let leaf = |function: u32, index: u32, flags: u32| {
+        read(function, index).map(|o| cpuid::Leaf {
+            function,
+            index,
+            flags,
+            eax: o.Eax,
+            ebx: o.Ebx,
+            ecx: o.Ecx,
+            edx: o.Edx,
+        })
+    };
+    let basic = leaf(0, 0, 0)?;
+    let extended = leaf(0x8000_0000, 0, 0)?;
+    let mut leaves = vec![basic, extended, leaf(1, 0, 0)?];
+    let caches = |function: u32, leaves: &mut Vec<cpuid::Leaf>| -> Result<()> {
+        for index in 0..CACHE_SUBLEAVES {
+            let l = leaf(function, index, cpuid::SIGNIFICANT_INDEX)?;
+            leaves.push(l);
+            if l.eax & 0x1f == 0 {
+                break;
+            }
+        }
+        Ok(())
+    };
+    if basic.eax >= 4 {
+        caches(4, &mut leaves)?;
+    }
+    for function in [0xb, 0x1f] {
+        if basic.eax >= function {
+            for index in 0..3 {
+                leaves.push(leaf(function, index, cpuid::SIGNIFICANT_INDEX)?);
+            }
+        }
+    }
+    for function in [0x8000_0007, 0x8000_0008] {
+        if extended.eax >= function {
+            leaves.push(leaf(function, 0, 0)?);
+        }
+    }
+    if extended.eax >= 0x8000_001d {
+        caches(0x8000_001d, &mut leaves)?;
+    }
+    if extended.eax >= 0x8000_001e {
+        leaves.push(leaf(0x8000_001e, 0, 0)?);
+    }
+    Ok(leaves)
+}
+
+/// The CPUID results a VM of `vcpus` vCPUs is given (PM M206): one package of
+/// single-thread cores, as KVM's guests get ([`cpuid::for_vcpu`]), each result in only
+/// the bits it changes of the hypervisor's ([`cpuid::masked`]); and invariant TSC where the
+/// host's processor has it, which Windows Server 2025 leaves out of its partitions'
+/// CPUID though their TSC runs at the host's fixed rate, a partition never moving to
+/// another host (Server 2022 gives it, on the same processor). With both, a Linux guest's
+/// APs take the boot CPU's delay-loop calibration rather than each timing the boot CPU's
+/// ticks for itself, which took 63 APs past a minute on a 4-CPU host (CI run 38240024887).
+fn cpuid_results(host: &Host, vcpus: u32) -> Vec<cpuid::Masked> {
+    cpuid::masked(&host.cpuid, vcpus, host.invariant_tsc)
+}
+
+/// `results` as WHP takes them (WHvPartitionPropertyCodeCpuidResultList2).
+fn cpuid_list(results: &[cpuid::Masked]) -> Vec<WHV_X64_CPUID_RESULT2> {
+    results
+        .iter()
+        .map(|m| {
+            let output = |[eax, ebx, ecx, edx]: [u32; 4]| WHV_CPUID_OUTPUT {
+                Eax: eax,
+                Ebx: ebx,
+                Ecx: ecx,
+                Edx: edx,
+            };
+            let subleaf = if m.subleaf {
+                WHvX64CpuidResult2FlagSubleafSpecific
+            } else {
+                0
+            };
+            let (vp, one) = match m.vcpu {
+                Some(vp) => (vp, WHvX64CpuidResult2FlagVpSpecific),
+                None => (0, 0),
+            };
+            WHV_X64_CPUID_RESULT2 {
+                Function: m.function,
+                Index: m.index,
+                VpIndex: vp,
+                Flags: subleaf | one,
+                Output: output(m.value),
+                Mask: output(m.mask),
+            }
+        })
+        .collect()
 }
 
 /// A partition: deleted, its vCPUs with it, once nothing holds it.
@@ -319,6 +444,9 @@ const RWX: WHV_MAP_GPA_RANGE_FLAGS =
 pub struct Vm {
     partition: Arc<Partition>,
     ioapic: Arc<Ioapic>,
+    vcpus: u32,
+    /// Its vCPUs' CPUID, set once the last of them exists ([`Vm::create_vcpu`]).
+    cpuid: Vec<cpuid::Masked>,
 }
 
 /// A partition of `vcpus` vCPUs, set up as every one of shards' is: its local APICs
@@ -404,6 +532,7 @@ impl Vm {
     /// A partition of `config.vcpus` vCPUs, their local APICs emulated by the hypervisor, its
     /// guest offered [`SYNTHETIC`] of the host's synthetic features.
     pub fn new(config: VmConfig) -> Result<Vm> {
+        let cpuid = cpuid_results(host()?, config.vcpus);
         let partition = partition(config.vcpus)?;
         if FORBID_DYNAMIC_CODE.load(Ordering::Relaxed) {
             forbid_dynamic_code()?;
@@ -411,6 +540,8 @@ impl Vm {
         Ok(Vm {
             partition: Arc::new(partition),
             ioapic: Arc::new(Ioapic::default()),
+            vcpus: config.vcpus,
+            cpuid,
         })
     }
 
@@ -472,13 +603,27 @@ impl Vm {
 
     /// Creates vCPU `index` on the calling thread, which runs it. Application processors
     /// are created held in wait-for-SIPI, which the boot processor's INIT and SIPI end
-    /// (PM M198).
+    /// (PM M198). The last one sets every vCPU's CPUID: WHP takes a result for one vCPU
+    /// only once that vCPU exists (HV_STATUS_INVALID_VP_INDEX at setup, PM M206), and no
+    /// vCPU runs before all of them exist, made in index order (D5).
     pub fn create_vcpu(&self, index: usize) -> Result<Vcpu> {
         let index = u32::try_from(index).map_err(|_| Error::Guest(format!("vCPU {index}")))?;
         // SAFETY: the partition, set up.
         check("WHvCreateVirtualProcessor", unsafe {
             WHvCreateVirtualProcessor(self.partition.0, index, 0)
         })?;
+        if index + 1 == self.vcpus && !self.cpuid.is_empty() {
+            let list = cpuid_list(&self.cpuid);
+            // SAFETY: the list, of its own size.
+            check("WHvSetPartitionProperty(CpuidResultList2)", unsafe {
+                WHvSetPartitionProperty(
+                    self.partition.0,
+                    WHvPartitionPropertyCodeCpuidResultList2,
+                    list.as_ptr().cast(),
+                    size_of_val(list.as_slice()) as u32,
+                )
+            })?;
+        }
         Ok(Vcpu {
             partition: self.partition.clone(),
             ioapic: self.ioapic.clone(),

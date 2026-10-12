@@ -283,10 +283,6 @@ impl Conn {
         }
         let credit = self.guest_credit();
         if credit == 0 {
-            debug!(
-                "vsock: port {}: no guest credit after {} bytes (its buffer {}, forwarded {})",
-                self.local_port, self.rx_cnt.0, self.guest_buf_alloc, self.guest_fwd_cnt.0
-            );
             // Reading resumes when the guest's credit update arrives.
             self.pending.rw = false;
             return Some(self.header(op::CREDIT_REQUEST));
@@ -301,9 +297,6 @@ impl Conn {
                 Some(h)
             }
             Ok(n) => {
-                if self.rx_cnt.0 == 0 {
-                    debug!("vsock: port {}: the host's first {n} bytes", self.local_port);
-                }
                 // More may be waiting: keep reading while the guest has buffers.
                 self.rx_cnt += n as u32;
                 let mut h = self.header(op::RW);
@@ -389,12 +382,6 @@ impl Conn {
                 Err(e) if e.kind() == io::ErrorKind::WouldBlock => 0,
                 Err(e) => return Err(e),
             };
-            if self.fwd_cnt.0 == 0 {
-                debug!(
-                    "vsock: port {}: the guest's first {total} bytes, {written} of them taken by the host",
-                    self.local_port
-                );
-            }
             self.fwd_cnt += written as u32;
         }
         let mut skip = written;
