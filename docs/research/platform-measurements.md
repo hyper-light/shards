@@ -6832,3 +6832,40 @@ revision before comparing a changed API/implementation.
   takes virtio notifications as MMIO exits, without doorbells; and kicks a vCPU with a
   cancel, which a run about to start takes too.
 
+### M199. AF_UNIX stream sockets on Windows, before shards' Windows transport is built on them
+
+- **Questions.** Can AF_UNIX sockets carry shards' vsock streams and builder sockets on
+  Windows, as Unix sockets do elsewhere: does WSAPoll report them, does half-close work,
+  does scatter-gather, does an inherited one work in a child process; what does a connected
+  pair cost, made as Windows must make one (no socketpair()); and what are their
+  throughput and latency beside loopback TCP's?
+- **Method.** `docs/research/measurements/windows-afunix`, by `windows-afunix.yml`, run
+  38213172739 on branch `whp`, 2026-10-12, on a windows-2022 and a windows-2025 runner:
+  100 pairs made through a listener at a fresh path (bind, listen, connect, accept, the path
+  removed), each timed; a half-close and the other direction after it; WSAPoll on a
+  non-blocking end, quiet, with data, drained, after the peer's shutdown(SD_SEND) and
+  after its close, and as its send buffer fills and drains; WSASend and WSARecv of three
+  buffers; a socket inherited by a child process (std's CreateProcessW inherits
+  inheritable handles), which writes through it; 1 GiB in 64 KiB writes between two
+  threads, and 10,000 one-byte round trips, each over AF_UNIX and over loopback TCP with
+  TCP_NODELAY.
+- **Found** (windows-2022 / windows-2025):
+  - A pair costs 609.5 / 699.8 µs at p50, 917.1 / 967.5 at p99, max 2,039.0 / 1,569.7.
+  - Half-close: after shutdown(SD_SEND) the peer reads the data, then end-of-stream (0);
+    data still goes the other way. Scatter-gather: three buffers sent and received whole.
+  - WSAPoll reports writability (WRNORM) as a socket is quiet; RDNORM and WRNORM with
+    data; WRNORM again once drained. A peer's half-close and its close both read
+    **WRNORM|HUP, without RDNORM**: end-of-stream is reported as a hangup, and a hangup
+    is reported whatever was asked. A full send buffer (131,072 bytes; WSAEWOULDBLOCK)
+    reports nothing, and WRNORM again once drained.
+  - Inherited, a socket works in the child: 14 bytes written there, read here.
+  - Throughput: AF_UNIX 11,954 / 9,020 MB/s, loopback TCP 3,277 / 2,694. A one-byte round
+    trip: AF_UNIX p50 29.1 / 31.3 µs, p99 44.0 / 63.1; TCP 37.0 / 39.1, p99 69.3 / 116.8.
+- **Consequence.** shards' Windows streams are AF_UNIX sockets, as its Unix hosts' are:
+  3.4-3.7 times loopback TCP's throughput, and a round trip 20 percent shorter. A pair
+  costs some 0.6 ms more than socketpair(2), and is made once a stream. WSAPoll cannot
+  wait to write on a socket whose peer has half-closed: it reports the hangup at once,
+  whatever is asked, so such a wait would spin. The vsock device's Windows poller waits on
+  WSAEventSelect's events instead, whose FD_WRITE comes once room does after a send
+  refused for want of it.
+
