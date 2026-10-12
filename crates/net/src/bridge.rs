@@ -245,6 +245,72 @@ pub fn host_resolv() -> Vec<u8> {
     Vec::new()
 }
 
+/// The host's own addresses on Windows: each up adapter's unicast ones
+/// (GetAdaptersAddresses), IPv4's and IPv6's. An AppContainer reaches none of them, nor the
+/// loopback (PM M204), so a network process's flows to them are its spawner's to dial
+/// (D142).
+#[cfg(windows)]
+pub fn host_addresses() -> Vec<std::net::IpAddr> {
+    use windows_sys::Win32::NetworkManagement::IpHelper::{
+        GAA_FLAG_SKIP_ANYCAST, GAA_FLAG_SKIP_DNS_SERVER, GAA_FLAG_SKIP_FRIENDLY_NAME,
+        GAA_FLAG_SKIP_MULTICAST, GetAdaptersAddresses, IP_ADAPTER_ADDRESSES_LH,
+    };
+    use windows_sys::Win32::NetworkManagement::Ndis::IfOperStatusUp;
+    use windows_sys::Win32::Networking::WinSock::{AF_INET, AF_INET6, AF_UNSPEC, SOCKADDR_IN, SOCKADDR_IN6};
+    let flags = GAA_FLAG_SKIP_ANYCAST
+        | GAA_FLAG_SKIP_MULTICAST
+        | GAA_FLAG_SKIP_DNS_SERVER
+        | GAA_FLAG_SKIP_FRIENDLY_NAME;
+    // Asked again with the size it says, as the list may grow between two asks.
+    let mut size: u32 = 16 << 10;
+    for _ in 0..4 {
+        let mut buf = vec![0u64; (size as usize).div_ceil(8)];
+        let first = buf.as_mut_ptr().cast::<IP_ADAPTER_ADDRESSES_LH>();
+        // SAFETY: a buffer of `size` bytes, aligned for the list, for the call to fill.
+        let r = unsafe {
+            GetAdaptersAddresses(
+                u32::from(AF_UNSPEC),
+                flags,
+                std::ptr::null(),
+                first,
+                &raw mut size,
+            )
+        };
+        // ERROR_BUFFER_OVERFLOW: `size` says what it needs.
+        if r == 111 {
+            continue;
+        }
+        if r != 0 {
+            return Vec::new();
+        }
+        let mut found = Vec::new();
+        // SAFETY: the list the call wrote into `buf`, walked by its own links, each within
+        // the buffer, which outlives the walk.
+        unsafe {
+            let mut adapter = first;
+            while !adapter.is_null() {
+                if (*adapter).OperStatus == IfOperStatusUp {
+                    let mut unicast = (*adapter).FirstUnicastAddress;
+                    while !unicast.is_null() {
+                        let sa = (*unicast).Address.lpSockaddr;
+                        if !sa.is_null() && (*sa).sa_family == AF_INET {
+                            let sin = sa.cast::<SOCKADDR_IN>().read_unaligned();
+                            found.push(Ipv4Addr::from(sin.sin_addr.S_un.S_addr.to_ne_bytes()).into());
+                        } else if !sa.is_null() && (*sa).sa_family == AF_INET6 {
+                            let sin6 = sa.cast::<SOCKADDR_IN6>().read_unaligned();
+                            found.push(std::net::Ipv6Addr::from(sin6.sin6_addr.u.Byte).into());
+                        }
+                        unicast = (*unicast).Next;
+                    }
+                }
+                adapter = (*adapter).Next;
+            }
+        }
+        return found;
+    }
+    Vec::new()
+}
+
 #[cfg_attr(windows, allow(dead_code, reason = "systemd-resolved is Linux's"))]
 fn pick_resolv(main: Vec<u8>, systemd: impl FnOnce() -> Vec<u8>) -> Vec<u8> {
     let text = String::from_utf8_lossy(&main);

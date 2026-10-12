@@ -7,7 +7,8 @@
 //!         [--proxy-port PORT --proxy-socket PATH]
 //!
 //! On Windows (D142) `--grants HANDLE` takes `--ring`'s place, and `--control`,
-//! `--release` and `--proxy-dialer` name sockets handed by name.
+//! `--release` and `--dialer` name sockets handed by name; `--host-address ADDR`, each of
+//! the host's own, which its spawner dials for it.
 
 use std::io::Write;
 use std::process::ExitCode;
@@ -36,7 +37,12 @@ struct Args {
     /// flow goes to.
     proxy_port: Option<u16>,
     proxy_socket: Option<std::path::PathBuf>,
-    proxy_dialer: Option<String>,
+    /// Its spawner's dialer: of a build's proxy's socket, and on Windows of the host's own
+    /// addresses.
+    dialer: Option<String>,
+    /// The host's own addresses (Windows), which its AppContainer keeps it from (PM M204).
+    #[cfg(windows)]
+    host_addresses: Vec<std::net::IpAddr>,
     /// Nor a subnet of its own: the guest's is its spawner's to elect.
     bridge: Option<shards_net::bridge::Bridge>,
     /// The host's resolvers, which a guest granted egress asks its names of (D59).
@@ -53,7 +59,9 @@ fn parse() -> Result<Args, String> {
         policy: None,
         proxy_port: None,
         proxy_socket: None,
-        proxy_dialer: None,
+        dialer: None,
+        #[cfg(windows)]
+        host_addresses: Vec::new(),
         bridge: None,
         resolvers: Vec::new(),
         grants: None,
@@ -112,8 +120,15 @@ fn parse() -> Result<Args, String> {
                 ));
             }
             // Where its confinement keeps it from the proxy's socket (App Sandbox, D31; an
-            // AppContainer, D142): its spawner's dialer, which connects for it.
-            Some("--proxy-dialer") => a.proxy_dialer = Some(value(&mut args, "--proxy-dialer")?),
+            // AppContainer, D142), and on Windows from the host's own addresses: its
+            // spawner's dialer, which connects for it.
+            Some("--dialer") => a.dialer = Some(value(&mut args, "--dialer")?),
+            #[cfg(windows)]
+            Some("--host-address") => {
+                let v = value(&mut args, "--host-address")?;
+                a.host_addresses
+                    .push(v.parse().map_err(|e| format!("--host-address {v:?}: {e}"))?);
+            }
             _ => return Err(format!("unknown argument {arg:?}")),
         }
     }
@@ -187,11 +202,11 @@ fn run() -> Result<(), String> {
         Ok(unsafe { OwnedFd::from_raw_fd(fd) })
     };
     let (region, me, peer) = (adopt(*region)?, adopt(*me)?, adopt(*peer)?);
-    if let Some(fd) = a.proxy_dialer {
+    if let Some(fd) = a.dialer {
         let fd = fd
             .parse()
-            .map_err(|_| format!("--proxy-dialer: {fd:?} is not a descriptor"))?;
-        shards_net::tcp::set_proxy_dialer(std::os::unix::net::UnixStream::from(adopt(fd)?))
+            .map_err(|_| format!("--dialer: {fd:?} is not a descriptor"))?;
+        shards_net::tcp::set_dialer(std::os::unix::net::UnixStream::from(adopt(fd)?))
             .map_err(|e| e.to_string())?;
     }
     let controls = a
@@ -269,9 +284,10 @@ fn run() -> Result<(), String> {
             shards_ipc::Handed::Handle(_) => Err(format!("--grants: {name} is no socket")),
         }
     };
-    if let Some(name) = a.proxy_dialer.take() {
-        shards_net::tcp::set_proxy_dialer(socket(&name)?).map_err(|e| e.to_string())?;
+    if let Some(name) = a.dialer.take() {
+        shards_net::tcp::set_dialer(socket(&name)?).map_err(|e| e.to_string())?;
     }
+    shards_net::tcp::set_host_addresses(std::mem::take(&mut a.host_addresses)).map_err(|e| e.to_string())?;
     let controls = a
         .controls
         .iter()

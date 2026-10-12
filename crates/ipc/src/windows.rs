@@ -920,7 +920,7 @@ pub fn spawn_suspended(s: &Spawn<'_>) -> io::Result<Suspended> {
         told.push_str(&format!("{}={theirs}\n", g.name));
     }
     for shared in s.sockets {
-        let info = share(shared.socket, child.pid).map_err(|e| {
+        let info = share_socket(shared.socket, child.pid).map_err(|e| {
             let _ = child.kill();
             io::Error::new(e.kind(), format!("sharing {}: {e}", shared.name))
         })?;
@@ -952,9 +952,11 @@ pub fn spawn_suspended(s: &Spawn<'_>) -> io::Result<Suspended> {
     Ok(Suspended { child, thread })
 }
 
-/// What process `pid` makes its own copy of `socket` from: WSADuplicateSocketW's protocol
-/// info, its bytes whole.
-fn share(socket: u64, pid: u32) -> io::Result<Vec<u8>> {
+/// What process `pid` makes its own copy of `socket` from ([`adopt_socket`]):
+/// WSADuplicateSocketW's protocol info, its bytes whole (PM M203). Of a socket of any
+/// family: a TCP connection made for a process its AppContainer keeps from the host's own
+/// addresses (D142) too.
+pub fn share_socket(socket: u64, pid: u32) -> io::Result<Vec<u8>> {
     use windows_sys::Win32::Networking::WinSock::{WSADuplicateSocketW, WSAGetLastError, WSAPROTOCOL_INFOW};
     let mut info = WSAPROTOCOL_INFOW::default();
     // SAFETY: a socket the caller holds; a structure for the call to fill.
@@ -966,6 +968,44 @@ fn share(socket: u64, pid: u32) -> io::Result<Vec<u8>> {
     let bytes =
         unsafe { std::slice::from_raw_parts((&raw const info).cast::<u8>(), size_of::<WSAPROTOCOL_INFOW>()) };
     Ok(bytes.to_vec())
+}
+
+/// This process's own copy of a socket another shared with it ([`share_socket`]),
+/// overlapped, as every socket of shards' is, and kept from its children.
+pub fn adopt_socket(info: &[u8]) -> io::Result<std::os::windows::io::OwnedSocket> {
+    use std::os::windows::io::FromRawSocket as _;
+    use windows_sys::Win32::Networking::WinSock::{
+        FROM_PROTOCOL_INFO, INVALID_SOCKET, WSA_FLAG_NO_HANDLE_INHERIT, WSA_FLAG_OVERLAPPED, WSAGetLastError,
+        WSAPROTOCOL_INFOW, WSASocketW,
+    };
+    let size = size_of::<WSAPROTOCOL_INFOW>();
+    if info.len() != size {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("{} bytes of a socket's protocol info, not {size}", info.len()),
+        ));
+    }
+    let mut parsed = WSAPROTOCOL_INFOW::default();
+    // SAFETY: the structure's own size, from bytes of that length; any bytes are some value
+    // of its fields, which Winsock checks.
+    unsafe { std::ptr::copy_nonoverlapping(info.as_ptr(), (&raw mut parsed).cast::<u8>(), size) };
+    // SAFETY: the info as WSADuplicateSocketW wrote it for this process.
+    let s = unsafe {
+        WSASocketW(
+            FROM_PROTOCOL_INFO,
+            FROM_PROTOCOL_INFO,
+            FROM_PROTOCOL_INFO,
+            &raw const parsed,
+            0,
+            WSA_FLAG_OVERLAPPED | WSA_FLAG_NO_HANDLE_INHERIT,
+        )
+    };
+    if s == INVALID_SOCKET {
+        // SAFETY: no arguments.
+        return Err(io::Error::from_raw_os_error(unsafe { WSAGetLastError() }));
+    }
+    // SAFETY: a socket just made, owned from here on.
+    Ok(unsafe { std::os::windows::io::OwnedSocket::from_raw_socket(s as u64) })
 }
 
 /// A pipe: its read end, inheritable, for a child's list alone; its write end, not.

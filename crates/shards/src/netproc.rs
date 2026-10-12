@@ -187,7 +187,7 @@ pub fn start(
     };
     #[cfg(target_os = "macos")]
     if let Some(theirs) = &dialer {
-        args.extend::<[&std::ffi::OsStr; 2]>(["--proxy-dialer".as_ref(), "8".as_ref()]);
+        args.extend::<[&std::ffi::OsStr; 2]>(["--dialer".as_ref(), "8".as_ref()]);
         fds.push((theirs.as_fd(), 8));
     }
     let child = shards_ipc::spawn_in(&binary, &args, &fds, false, &env_pairs(&env))
@@ -353,13 +353,17 @@ pub fn prepare(
                 port.into(),
                 "--proxy-socket".into(),
                 socket.clone().into(),
-                "--proxy-dialer".into(),
-                "dialer".into(),
             ]);
             Some(socket)
         }
         None => None,
     };
+    // Its spawner's dialer, of what its AppContainer keeps it from: a build's proxy's
+    // socket, and the host's own addresses and its loopback (PM M204), which it is told.
+    args.extend(["--dialer".into(), "dialer".into()]);
+    for address in shards_net::bridge::host_addresses() {
+        args.extend(["--host-address".into(), address.to_string().into()]);
+    }
     Ok((
         Ready {
             region: region.try_clone().map_err(at)?,
@@ -399,19 +403,12 @@ pub fn start(ready: Ready, vm: &shards_ipc::Suspended) -> Result<NetProcess, Str
     let vm_end = vm
         .waitable()
         .map_err(|e| format!("a VM's network: its VM's process: {e}"))?;
-    let dialer = match &ready.proxy {
-        Some(_) => Some(
-            shards_vmm::platform::UnixStream::pair().map_err(|e| format!("the build proxy's dialer: {e}"))?,
-        ),
-        None => None,
-    };
-    let sockets: Vec<shards_ipc::Shared<'_>> = dialer
-        .iter()
-        .map(|(_, theirs)| shards_ipc::Shared {
-            name: "dialer",
-            socket: theirs.raw() as u64,
-        })
-        .collect();
+    let (ours, theirs) =
+        shards_vmm::platform::UnixStream::pair().map_err(|e| format!("a network process's dialer: {e}"))?;
+    let sockets = [shards_ipc::Shared {
+        name: "dialer",
+        socket: theirs.raw() as u64,
+    }];
     let args: Vec<&std::ffi::OsStr> = ready.args.iter().map(std::ffi::OsString::as_os_str).collect();
     let err = std::io::stderr();
     let env = child_env();
@@ -446,34 +443,47 @@ pub fn start(ready: Ready, vm: &shards_ipc::Suspended) -> Result<NetProcess, Str
         holds: shards_ipc::Holds::Network,
     })
     .map_err(|e| format!("starting {}: {e}", binary.display()))?;
-    // An AppContainer reaches no socket by its path: this process dials the build's proxy
-    // for it, over a link of the two's own, as on macOS (D31).
-    if let (Some((ours, _)), Some(socket)) = (dialer, ready.proxy) {
-        let pid = child.id();
-        std::thread::Builder::new()
-            .name("proxy dialer".into())
-            .spawn(move || serve_dials(&ours, &socket, pid))
-            .map_err(|e| format!("the build proxy's dialer: {e}"))?;
-    }
+    drop(theirs);
+    // An AppContainer reaches no socket by its path, nor the host's own addresses: this
+    // process dials them for it, over a link of the two's own, as on macOS (D31).
+    let pid = child.id();
+    let proxy = ready.proxy;
+    std::thread::Builder::new()
+        .name("network dialer".into())
+        .spawn(move || serve_dials(&ours, proxy.as_deref(), pid))
+        .map_err(|e| format!("a network process's dialer: {e}"))?;
     Ok(NetProcess {
         child,
         _container: container,
     })
 }
 
-/// Dials the build's proxy at `socket` for the network process `pid`, in an AppContainer,
-/// each time it asks over `link` (`kind::DIAL`): the connection shared with it
+/// Dials for the network process `pid`, in an AppContainer, each time it asks over `link`
+/// (`kind::DIAL`): with nothing named, the build's proxy at `proxy`; with an address and a
+/// port, a TCP connection to the host's own address or its loopback (PM M204), begun here
+/// and connected there, refused to any other address. The connection is shared with it
 /// (WSADuplicateSocketW, PM M203) and kept until it says it has its own (`kind::TAKEN`); or
-/// `kind::ERR` with why not. Ends as the network process goes.
+/// `kind::ERR` says why not. Ends as the network process goes.
 #[cfg(windows)]
-fn serve_dials(link: &shards_vmm::platform::UnixStream, socket: &std::path::Path, pid: u32) {
+fn serve_dials(link: &shards_vmm::platform::UnixStream, proxy: Option<&std::path::Path>, pid: u32) {
     use shards_ipc::kind;
+    use std::os::windows::io::AsRawSocket as _;
+    // The connection is held, and closed as it drops, until the process has its own.
+    type Held = Box<dyn std::any::Any>;
     while let Ok(Some(asked)) = shards_ipc::recv(link) {
         if asked.kind != kind::DIAL {
             return;
         }
-        let dialed = shards_vmm::platform::UnixStream::connect(socket)
-            .and_then(|conn| conn.share_with(pid).map(|info| (conn, info)));
+        let dialed = if asked.payload.is_empty() {
+            proxy
+                .ok_or_else(|| std::io::Error::other("no build proxy to dial"))
+                .and_then(shards_vmm::platform::UnixStream::connect)
+                .and_then(|conn| conn.share_with(pid).map(|info| (Box::new(conn) as Held, info)))
+        } else {
+            host_tcp(&asked.payload).and_then(|conn| {
+                shards_ipc::share_socket(conn.as_raw_socket(), pid).map(|info| (Box::new(conn) as Held, info))
+            })
+        };
         match dialed {
             Ok((conn, info)) => {
                 if shards_ipc::send(link, kind::GRANTED, &info).is_err() {
@@ -491,6 +501,32 @@ fn serve_dials(link: &shards_vmm::platform::UnixStream, socket: &std::path::Path
             }
         }
     }
+}
+
+/// A TCP connection begun, without waiting, to the address (4 or 16 bytes) and port
+/// (big-endian) `asked` names: only to the host's own addresses, as they are now, and its
+/// loopback, which a network process's AppContainer keeps it from (D142); its own
+/// capabilities reach the rest.
+#[cfg(windows)]
+fn host_tcp(asked: &[u8]) -> std::io::Result<std::net::TcpStream> {
+    let refused = |why: &str| std::io::Error::new(std::io::ErrorKind::PermissionDenied, why.to_string());
+    let (address, port) = asked
+        .split_at_checked(asked.len().saturating_sub(2))
+        .ok_or_else(|| refused("a dial of nothing"))?;
+    let port = u16::from_be_bytes(port.try_into().map_err(|_| refused("a dial without a port"))?);
+    let ip: std::net::IpAddr = match address.len() {
+        4 => <[u8; 4]>::try_from(address)
+            .map_err(|_| refused("an address"))?
+            .into(),
+        16 => <[u8; 16]>::try_from(address)
+            .map_err(|_| refused("an address"))?
+            .into(),
+        _ => return Err(refused("a dial of no address")),
+    };
+    if !ip.is_loopback() && !shards_net::bridge::host_addresses().contains(&ip) {
+        return Err(refused("not one of this host's addresses"));
+    }
+    shards_net::sys::connect_tcp(std::net::SocketAddr::new(ip, port))
 }
 
 /// Waits for a network process whose VM is gone, [`GRACE`] at most, then ends it (Windows):
