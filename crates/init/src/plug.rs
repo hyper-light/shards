@@ -48,9 +48,9 @@ const INOTIFY_WATCHES: (u64, u64) = (8192, 1_048_576);
 const TCP_RMEM_MAX: u64 = 32 << 20;
 const TCP_WMEM_MAX: u64 = 4 << 20;
 
-/// The kernel's limits sized by its memory at boot, each linear in it (kernel/fork.c
-/// `fork_init`, fs/file_table.c `files_maxfiles_init`, fs/eventpoll.c `eventpoll_init`,
-/// net/ipv4/tcp.c `tcp_init`, net/ipv4/udp.c `udp_init`), as PM M193 measured them.
+/// The kernel's limits sized by its memory at boot, each in proportion to it (kernel/fork.c
+/// `fork_init`, fs/eventpoll.c `eventpoll_init`, net/ipv4/tcp.c `tcp_init`, net/ipv4/udp.c
+/// `udp_init`), as PM M193 measured them.
 const LINEAR: &[&str] = &[
     "kernel/threads-max",
     "user/max_user_namespaces",
@@ -61,7 +61,6 @@ const LINEAR: &[&str] = &[
     "user/max_mnt_namespaces",
     "user/max_cgroup_namespaces",
     "user/max_time_namespaces",
-    "fs/file-max",
     "fs/epoll/max_user_watches",
     "net/ipv4/tcp_mem",
     "net/ipv4/udp_mem",
@@ -72,6 +71,11 @@ const LINEAR: &[&str] = &[
 /// `alloc_large_system_hash`).
 const TCP_TABLE: &[&str] = &["net/ipv4/tcp_max_orphans", "net/ipv4/tcp_max_tw_buckets"];
 const TCP_TABLE_MOST: u64 = 512 << 10;
+/// Files: one for each 10 KiB of the memory the kernel has as it starts its caches, less
+/// half again what it has used by then (fs/file_table.c, `files_maxfiles_init`), so more
+/// memory adds a file for each 10 KiB of it; a proportion would scale what it had used
+/// too, and came out short of a boot with all of it (PM M193, x86_64).
+const FILE_BYTES: u64 = 10 << 10;
 
 /// The memory a builder may have plugged, and what it booted with.
 #[derive(Debug, Clone, Copy)]
@@ -153,11 +157,12 @@ impl Plug {
     }
 
     /// Raises what the kernel sized by the memory it booted with to what it sizes by all
-    /// of it: each limit linear in the memory scaled by their ratio; TCP's buffers within
-    /// their caps; inotify's watches, which the kernel holds at 8192 below about 1 GiB, in
-    /// their proportion to epoll's items, within their clamps; and init's RLIMIT_NPROC and
-    /// RLIMIT_SIGPENDING, half the threads, as the kernel gives PID 1 (`fork_init`), which
-    /// every step inherits. A limit set otherwise is left as it is.
+    /// of it: each limit in proportion to the memory scaled by their ratio; files by the
+    /// memory added; TCP's buffers within their caps; TCP's orphans and TIME-WAIT buckets
+    /// by its table's sizing; inotify's watches, which the kernel holds at 8192 below
+    /// about 1 GiB, in their proportion to epoll's items, within their clamps; and init's
+    /// RLIMIT_NPROC and RLIMIT_SIGPENDING, half the threads, as the kernel gives PID 1
+    /// (`fork_init`), which every step inherits.
     pub fn raise_limits(&self) -> io::Result<()> {
         let (to, from) = (self.full(), self.boot);
         let sysctl = |name: &str| format!("/proc/sys/{name}");
@@ -188,6 +193,10 @@ impl Plug {
             let line: Vec<String> = values.iter().map(u64::to_string).collect();
             std::fs::write(&path, line.join(" ")).map_err(|e| err(format!("{path}: {e}")))?;
         }
+        let path = sysctl("fs/file-max");
+        let files = number(&path).ok_or_else(|| err(format!("{path}: not a number")))?;
+        let files = files.saturating_add(to.saturating_sub(from) / FILE_BYTES);
+        std::fs::write(&path, files.to_string()).map_err(|e| err(format!("{path}: {e}")))?;
         let mib = to.div_ceil(1 << 20);
         let buckets = (mib << 3).next_power_of_two().min(TCP_TABLE_MOST);
         for name in TCP_TABLE {

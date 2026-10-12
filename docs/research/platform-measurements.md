@@ -6531,9 +6531,15 @@ revision before comparing a changed API/implementation.
     kernel. Below about 1 GiB inotify's are clamped at 8192.
   - TCP's receive buffers stop at 32 MiB, its send buffers at 4 MiB; its orphans and
     TIME-WAIT buckets are half its established table, a power of two.
-  - Scaled from a boot of 512 MiB by the ratio of the memory, the linear limits come out up
-    to 4% above a boot with all of it: the kernel's estimate of its free memory at boot,
-    which `threads-max` is of, is MemTotal and about 17 MiB at every size.
+  - Scaled from a boot of 512 MiB by the ratio of the memory, the limits in proportion to
+    it come out up to 4% above a boot with all of it: the kernel's estimate of its free
+    memory at boot, which `threads-max` is of, is MemTotal and about 17 MiB at every size.
+  - `fs.file-max` is a file for each 10 KiB of the memory the kernel has as it starts its
+    caches, less half again what it has used by then (`files_maxfiles_init`), so more
+    memory adds a file for each 10 KiB: 48903 and that from 512 MiB comes within 38 files
+    of 4 GiB's and 64 GiB's. Scaled in proportion instead, a builder booted with 512 MiB
+    that may have 2560 had 254199, 145 short of a guest booted with 2560 on x86_64 (CI run
+    38185002440); the rest of its limits were within bounds there.
   - A builder booted with 512 MiB that may have 2560 MiB gives its steps each limit of a
     guest booted with 2560 MiB, or up to a tenth more
     (`a_builders_memory_is_plugged_as_its_build_needs_it`).

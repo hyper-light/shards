@@ -3587,11 +3587,13 @@ given the rest as its build needs it, up to what it may have.
 - **What the kernel sized by the memory it booted with** is raised to what it sizes by all
   of it, so that a step sees what it saw in a builder booted with all its memory: the
   layers' tmpfs (`size=` and `nr_inodes=` of all of it, where `size=100%` would be of 512
-  MiB); `kernel.threads-max`, the user namespaces' maxima, `fs.file-max`, epoll's watches,
-  `tcp_mem` and `udp_mem`, each linear in the memory; TCP's buffers within their caps; TCP's
-  orphans and TIME-WAIT buckets by its table's sizing; inotify's watches, which the kernel
-  holds at 8192 below about 1 GiB, in their proportion to epoll's; and init's RLIMIT_NPROC
-  and RLIMIT_SIGPENDING, half the threads, which every step inherits.
+  MiB); `kernel.threads-max`, the user namespaces' maxima, epoll's watches, `tcp_mem` and
+  `udp_mem`, each in proportion to the memory; `fs.file-max` by the memory added, a file
+  for each 10 KiB, as the kernel's own sizing has it (a proportion came out short on
+  x86_64); TCP's buffers within their caps; TCP's orphans and TIME-WAIT buckets by its
+  table's sizing; inotify's watches, which the kernel holds at 8192 below about 1 GiB, in
+  their proportion to epoll's; and init's RLIMIT_NPROC and RLIMIT_SIGPENDING, half the
+  threads, which every step inherits.
 - **No snapshot.** Memory plugged is not saved, so a snapshot of a VM with memory to plug
   is refused, and `--memory-max` with `--snapshot-dir` up front.
 - **`shards run --kernel K --memory M --memory-max N`** boots a guest with M MiB that may
