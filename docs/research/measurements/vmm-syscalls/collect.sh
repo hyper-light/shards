@@ -44,6 +44,25 @@ python3 "$(dirname "$0")/parse.py" --program shards-net "$out"/*.trace
 # must allow all of it; refusals are below.
 echo "# shards-net, once filtered"
 python3 "$(dirname "$0")/parse.py" --program shards-net --after seccomp "$out"/*.trace
-# What a filter refused, as strace reports the SIGSYS it raised.
+# What a filter refused, as strace reports the SIGSYS it raised; and for each of the first
+# few, its process's calls before it, which say where it came from.
 echo "## refused"
 grep -h -o 'SIGSYS {[^}]*si_syscall=[^,}]*' "$out"/*.trace | grep -o 'si_syscall=[^,}]*' | sort | uniq -c || echo "none"
+python3 - "$out"/*.trace <<'PY'
+import collections, re, sys
+shown = 0
+for trace in sys.argv[1:]:
+    last = collections.defaultdict(lambda: collections.deque(maxlen=16))
+    for line in open(trace, errors="replace"):
+        m = re.match(r"^(\d+)\s+(.*)", line)
+        if not m:
+            continue
+        pid, rest = m.group(1), m.group(2).rstrip()
+        if "SIGSYS {" in rest and shown < 8:
+            shown += 1
+            print(f"### {trace}, process {pid}")
+            for earlier in last[pid]:
+                print("    " + earlier[:240])
+            print("    " + rest[:240])
+        last[pid].append(rest)
+PY
