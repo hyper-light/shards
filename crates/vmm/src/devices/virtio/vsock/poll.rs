@@ -5,15 +5,23 @@
 //! kqueue and turns EV_EOF into POLLHUP, so a peer's half-close reads as a hangup. POLLHUP
 //! is always reported, so a connection that only waits to write to such a socket would
 //! wake without end. kqueue keeps read EOF and write readiness apart.
+//!
+//! Windows' WSAPoll has the same fault: a peer's half-close reads as a hangup without
+//! RDNORM, reported whatever is asked (PM M199). There a wait sleeps on WSAEventSelect's
+//! events, which come once a socket has something new (FD_WRITE only once room does after
+//! a refused send), and each socket's state is read by a WSAPoll that does not wait.
 
 use std::io;
+#[cfg(target_os = "macos")]
 use std::os::fd::RawFd;
 use std::time::Duration;
+
+use crate::platform::RawSocket;
 
 /// What to wait for on one descriptor.
 #[derive(Debug, Clone, Copy)]
 pub struct Interest<T> {
-    pub fd: RawFd,
+    pub fd: RawSocket,
     pub read: bool,
     pub write: bool,
     pub token: T,
@@ -28,7 +36,7 @@ pub struct Ready<T> {
     pub write: bool,
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "linux")]
 fn millis(timeout: Option<Duration>) -> libc::c_int {
     timeout.map_or(-1, |t| {
         // Round up, so a deadline is never missed by waking a moment early.
@@ -40,7 +48,7 @@ fn millis(timeout: Option<Duration>) -> libc::c_int {
 /// Waits for a worker's sockets. It keeps what its waits need between them: on macOS
 /// one kqueue, whose registrations follow the interests (audit D06, PM M57).
 pub struct Poller {
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "linux")]
     fds: Vec<libc::pollfd>,
     #[cfg(target_os = "macos")]
     kq: std::os::fd::OwnedFd,
@@ -53,9 +61,14 @@ pub struct Poller {
     changes: Vec<libc::kevent>,
     #[cfg(target_os = "macos")]
     events: Vec<libc::kevent>,
+    /// The event every socket's network events signal (WSAEventSelect).
+    #[cfg(windows)]
+    event: windows_sys::Win32::Networking::WinSock::WSAEVENT,
+    #[cfg(windows)]
+    fds: Vec<windows_sys::Win32::Networking::WinSock::WSAPOLLFD>,
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "linux")]
 impl Poller {
     pub fn new() -> io::Result<Poller> {
         Ok(Poller { fds: Vec::new() })
@@ -228,15 +241,121 @@ impl Poller {
     }
 }
 
+#[cfg(windows)]
+impl Poller {
+    pub fn new() -> io::Result<Poller> {
+        use windows_sys::Win32::Networking::WinSock::{WSA_INVALID_EVENT, WSACreateEvent};
+        crate::platform::winsock()?;
+        // SAFETY: no arguments.
+        let event = unsafe { WSACreateEvent() };
+        if event == WSA_INVALID_EVENT {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(Poller {
+            event,
+            fds: Vec::new(),
+        })
+    }
+
+    /// Waits until an interest is ready or `timeout` passes; appends what is ready to
+    /// `out`.
+    ///
+    /// Every interest's socket is associated with the event anew each wait, as a socket
+    /// closed and its handle reused since the last is a socket the event knows nothing of.
+    /// The event is reset before the sockets are looked at, so that anything after the look
+    /// wakes the wait.
+    pub fn wait<T: Copy>(
+        &mut self,
+        interests: &[Interest<T>],
+        timeout: Option<Duration>,
+        out: &mut Vec<Ready<T>>,
+    ) -> io::Result<()> {
+        use windows_sys::Win32::Networking::WinSock::{
+            FD_ACCEPT, FD_CLOSE, FD_READ, FD_WRITE, WSAEventSelect, WSAResetEvent, WSAWaitForMultipleEvents,
+        };
+        for i in interests {
+            // SAFETY: a socket of the caller's and our own event. One that fails is reported
+            // by the look below (POLLNVAL).
+            unsafe {
+                WSAEventSelect(
+                    i.fd,
+                    self.event,
+                    (FD_READ | FD_WRITE | FD_CLOSE | FD_ACCEPT) as i32,
+                )
+            };
+        }
+        // SAFETY: our own event.
+        unsafe { WSAResetEvent(self.event) };
+        let before = out.len();
+        self.look(interests, out)?;
+        if out.len() > before || timeout == Some(Duration::ZERO) {
+            return Ok(());
+        }
+        // Rounded up, so a deadline is never missed by waking a moment early; none waits
+        // without end (INFINITE).
+        let ms = timeout.map_or(u32::MAX, |t| {
+            u32::try_from(t.as_micros().div_ceil(1000)).unwrap_or(u32::MAX - 1)
+        });
+        let handle = self.event as windows_sys::Win32::Foundation::HANDLE;
+        // SAFETY: one event handle of ours.
+        unsafe { WSAWaitForMultipleEvents(1, &raw const handle, 0, ms, 0) };
+        self.look(interests, out)
+    }
+
+    /// What is ready of `interests` now: a WSAPoll that does not wait. End-of-stream is a
+    /// hangup (POLLHUP) here, and a read's alone, never a reason to wake a writer.
+    fn look<T: Copy>(&mut self, interests: &[Interest<T>], out: &mut Vec<Ready<T>>) -> io::Result<()> {
+        use windows_sys::Win32::Networking::WinSock::{
+            POLLERR, POLLHUP, POLLNVAL, POLLRDNORM, POLLWRNORM, WSAPOLLFD, WSAPoll,
+        };
+        self.fds.clear();
+        self.fds.extend(interests.iter().map(|i| WSAPOLLFD {
+            fd: i.fd,
+            events: (if i.read { POLLRDNORM } else { 0 }) | (if i.write { POLLWRNORM } else { 0 }),
+            revents: 0,
+        }));
+        if self.fds.is_empty() {
+            return Ok(());
+        }
+        // SAFETY: `fds` is a valid array of `fds.len()` entries; no wait.
+        let n = unsafe { WSAPoll(self.fds.as_mut_ptr(), self.fds.len() as u32, 0) };
+        if n < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        for (f, i) in self.fds.iter().zip(interests) {
+            let failed = f.revents & (POLLERR | POLLNVAL) != 0;
+            let read = i.read && (f.revents & (POLLRDNORM | POLLHUP) != 0 || failed);
+            let write = i.write && (f.revents & POLLWRNORM != 0 || failed);
+            if read || write {
+                out.push(Ready {
+                    token: i.token,
+                    read,
+                    write,
+                });
+            }
+        }
+        Ok(())
+    }
+}
+
+#[cfg(windows)]
+impl Drop for Poller {
+    fn drop(&mut self) {
+        // SAFETY: our own event, which no wait uses once the poller drops.
+        unsafe { windows_sys::Win32::Networking::WinSock::WSACloseEvent(self.event) };
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
     use std::io::Write as _;
     use std::net::Shutdown;
+    #[cfg(unix)]
     use std::os::fd::AsRawFd;
-    use std::os::unix::net::UnixStream;
 
     use super::*;
+    use crate::platform::{AsRawSocket, UnixStream};
 
     fn ready(i: Interest<u8>) -> Vec<Ready<u8>> {
         let mut out = Vec::new();
@@ -247,7 +366,8 @@ mod tests {
         out
     }
 
-    fn interest(fd: RawFd, read: bool, write: bool, token: u8) -> Interest<u8> {
+    #[cfg(unix)]
+    fn interest(fd: RawSocket, read: bool, write: bool, token: u8) -> Interest<u8> {
         Interest {
             fd,
             read,
@@ -259,6 +379,7 @@ mod tests {
     /// One poller's waits: an interest dropped wakes none, one whose descriptor was
     /// closed and its number reused is the new descriptor's, and one waited for again
     /// wakes again, under its new token.
+    #[cfg(unix)]
     #[test]
     fn a_pollers_waits_follow_their_interests() {
         let mut poller = Poller::new().unwrap();
@@ -317,7 +438,7 @@ mod tests {
         let chunk = [0u8; 4096];
         while (&ours).write(&chunk).is_ok() {}
         theirs.shutdown(Shutdown::Write).unwrap();
-        let fd = ours.as_raw_fd();
+        let fd = ours.raw_socket();
         let r = ready(Interest {
             fd,
             read: true,

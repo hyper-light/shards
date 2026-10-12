@@ -13,7 +13,6 @@ pub mod mmio;
 pub mod net;
 pub mod pmem;
 pub mod queue;
-#[cfg(unix)]
 pub mod vsock;
 mod worker;
 

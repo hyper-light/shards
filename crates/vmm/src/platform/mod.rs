@@ -20,6 +20,36 @@ mod windows;
 #[cfg(windows)]
 pub use windows::*;
 
+/// AF_UNIX stream sockets, std's on Unix and shards' own on Windows (PM M199).
+#[cfg(windows)]
+mod afunix;
+#[cfg(windows)]
+pub use afunix::{RawSocket, UnixListener, UnixStream, startup as winsock};
+#[cfg(unix)]
+pub use std::os::unix::net::{UnixListener, UnixStream};
+/// A socket as the vsock device's poller names it.
+#[cfg(unix)]
+pub type RawSocket = std::os::fd::RawFd;
+
+/// A socket's [`RawSocket`], on every host.
+pub trait AsRawSocket {
+    fn raw_socket(&self) -> RawSocket;
+}
+
+#[cfg(unix)]
+impl AsRawSocket for UnixStream {
+    fn raw_socket(&self) -> RawSocket {
+        std::os::fd::AsRawFd::as_raw_fd(self)
+    }
+}
+
+#[cfg(unix)]
+impl AsRawSocket for UnixListener {
+    fn raw_socket(&self) -> RawSocket {
+        std::os::fd::AsRawFd::as_raw_fd(self)
+    }
+}
+
 #[cfg(target_os = "macos")]
 mod macos_thread;
 
@@ -30,6 +60,18 @@ pub use granted::{
     dial_unix, grant_input, grant_listener, input_metadata, input_path, listen_unix, open_beneath_input,
     open_input, set_dialer,
 };
+
+/// A listener at `path` (granted ones are a Unix host's).
+#[cfg(not(unix))]
+pub fn listen_unix(path: &std::path::Path) -> io::Result<UnixListener> {
+    UnixListener::bind(path)
+}
+
+/// A connection to `path` through a spawner's dialer: none on this host.
+#[cfg(not(unix))]
+pub fn dial_unix(_path: &std::path::Path) -> Option<io::Result<UnixStream>> {
+    None
+}
 
 /// `path` for reading, and with `write` for writing too (a VM's inputs; granted
 /// descriptors are a Unix host's).

@@ -5,10 +5,8 @@ use std::path::PathBuf;
 #[cfg(hv)]
 use std::sync::Arc;
 
-#[cfg(all(hv, unix))]
-use crate::devices::virtio::vsock;
 #[cfg(hv)]
-use crate::devices::virtio::{mem, pmem};
+use crate::devices::virtio::{mem, pmem, vsock};
 
 #[cfg(all(hv, target_arch = "aarch64"))]
 mod aarch64;
@@ -255,19 +253,11 @@ fn virtio_devices(
     for (region, gpa) in regions {
         devices.push(Box::new(pmem::Pmem::new(region.clone(), *gpa)));
     }
-    #[cfg(unix)]
     if config.vsock {
         let host = hosts
             .vsock
             .ok_or("the machine has a vsock device but no host side for it")?;
         devices.push(Box::new(vsock::Vsock::new(host.clone(), vsock::GUEST_CID)?));
-    }
-    #[cfg(not(unix))]
-    if config.vsock {
-        return Err(
-            "a vsock device's host side is a Unix socket, which shards does not serve on this host yet"
-                .into(),
-        );
     }
     #[cfg(unix)]
     if let Some(mac) = config.net {
@@ -437,15 +427,13 @@ pub struct VsockHost {
     /// sender as one end of a socket pair, with no socket file anyone else could reach,
     /// dial first or need to be granted (D30). Each takes the guest's first connection
     /// only.
-    #[cfg(unix)]
-    pub ports: Vec<(u32, std::sync::mpsc::Sender<std::os::unix::net::UnixStream>)>,
+    pub ports: Vec<(u32, std::sync::mpsc::Sender<crate::platform::UnixStream>)>,
     /// Host ports this process serves for every guest connection, as [`ports`]' each
     /// first: their owner tells its own connections from any other by what each says
     /// first (shards' exec sessions, which name a token the guest's init alone was sent).
     ///
     /// [`ports`]: VsockHost::ports
-    #[cfg(unix)]
-    pub every: Vec<(u32, std::sync::mpsc::Sender<std::os::unix::net::UnixStream>)>,
+    pub every: Vec<(u32, std::sync::mpsc::Sender<crate::platform::UnixStream>)>,
 }
 
 impl VsockHost {
@@ -453,9 +441,7 @@ impl VsockHost {
     pub fn at(path: PathBuf) -> VsockHost {
         VsockHost {
             path: Some(path),
-            #[cfg(unix)]
             ports: Vec::new(),
-            #[cfg(unix)]
             every: Vec::new(),
         }
     }

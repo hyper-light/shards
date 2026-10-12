@@ -8,14 +8,13 @@
 use std::io::{self, Write as _};
 use std::net::Shutdown;
 use std::num::Wrapping;
-use std::os::fd::AsRawFd;
-use std::os::unix::net::UnixStream;
 use std::time::{Duration, Instant};
 
 use super::packet::{HOST_CID, Header, TYPE_STREAM, op, shutdown};
 use super::{Span, readv, writev};
 use crate::debug;
 use crate::memory::GuestMemory;
+use crate::platform::{AsRawSocket, RawSocket, UnixStream};
 
 /// Receive buffer advertised per connection (`buf_alloc`), which bounds what we hold for
 /// a host socket that is not reading. Firecracker's CONN_TX_BUF_SIZE.
@@ -137,8 +136,8 @@ impl Conn {
         c
     }
 
-    pub fn fd(&self) -> i32 {
-        self.stream.as_raw_fd()
+    pub fn fd(&self) -> RawSocket {
+        self.stream.raw_socket()
     }
 
     pub fn has_pending_rx(&self) -> bool {
@@ -276,7 +275,7 @@ impl Conn {
             self.pending.rw = false;
             return Some(self.header(op::CREDIT_REQUEST));
         }
-        match readv(self.fd(), space, credit as usize) {
+        match readv(&self.stream, space, credit as usize) {
             Ok(0) => {
                 // A half-close: the host may still read what the guest sends.
                 self.pending.rw = false;
@@ -366,7 +365,7 @@ impl Conn {
         }
         let mut written = 0;
         if self.tx_buf.is_empty() {
-            written = match writev(self.fd(), payload, total) {
+            written = match writev(&self.stream, payload, total) {
                 Ok(n) => n,
                 Err(e) if e.kind() == io::ErrorKind::WouldBlock => 0,
                 Err(e) => return Err(e),
