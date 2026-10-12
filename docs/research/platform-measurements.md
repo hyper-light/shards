@@ -7457,7 +7457,9 @@ revision before comparing a changed API/implementation.
   a far end's SYN-ACK (`dials_are_answered_as_they_end_and_hold_up_nothing`). The dialer
   checks an address by binding to it, then connects from it: one call, exact as it dials,
   where the host's addresses change. Its connects' times on Windows, and 1,000 and 10,000
-  connections held, come from the next `net costs` run.
+  connections held, are M215's (net costs run 38314187451): a connect's p50 1.0 to
+  15.3 ms on windows-2025, the network process's working set 7.5 MiB beside 1,000 idle
+  connections and 16.2 to 16.5 MiB beside 10,000.
 
 ### M213. What waking a network process's loop costs on Windows, by how it waits (D142)
 
@@ -7511,3 +7513,60 @@ revision before comparing a changed API/implementation.
   has gone, as a pipe's does on Unix. The doorbell it rings its VM by stays an event,
   which the VM process's worker waits on with its own. One event and the port asked
   together is not taken: its wakes were lost.
+
+### M215. What changing a socket's registration with a completion port does (D142)
+
+- **Question.** The network process's poller registers each socket with its completion
+  port (ProcessSocketNotifications), level-triggered, and changes the registration as the
+  socket's interest changes. A connection waits for nothing for a while when its guest's
+  window is full and it has nothing for its host, then for its input again. Windows'
+  documentation says a re-registration overwrites a registration, a filter of
+  SOCK_NOTIFY_REGISTER_EVENT_NONE issues nothing, a disabled registration must not be
+  enabled until its DISABLE notice comes (no such notice is defined), and a removed one
+  posts a REMOVE notice. What does each way of waiting for nothing, then for input, do?
+  And one-shot registrations, which a notice disarms?
+- **Method.** `docs/research/measurements/whp-run/src/bin/m215.rs` on CI's windows-2022
+  and windows-2025 (`whp run`), 200 rounds of each way on a fresh loopback connection: a
+  persistent level-triggered registration for input; then OP_REMOVE, or OP_REMOVE and its
+  notice, or OP_DISABLE, or OP_ENABLE filtering nothing; a byte sent, any notice within
+  20 ms counted; OP_ENABLE for input again, its notice within a second counted. One-shot:
+  armed for input; a byte; its notice; 20 ms more; armed again; armed for output; armed
+  for input with nothing to read, then overwritten for output. 87058f85, run
+  38314187392, 2026-10-12.
+- **Results** (both runners alike; each change's p50 / p99 on windows-2022):
+
+  | way | refused | told while waiting for nothing | told when waiting again |
+  |---|---|---|---|
+  | remove, enable at once | 0 of 200 | 0 | 200 |
+  | remove, its notice, enable | 0 of 200 | 0 | 200 |
+  | disable, enable at once | 0 of 200 | 0 | 200 |
+  | enable filtering nothing | 200 of 200 (WSAEINVAL, 10022) | 200 | 200 |
+
+  - Enabling costs 0.8 to 1.5 µs, enabling a registration removed or disabled 8.1 to
+    12.2 µs at p50 (to 52.2 µs at p99), removing or disabling 0.5 to 0.6 µs.
+  - One-shot, 200 of 200 each: told of its input, then nothing while disarmed though the
+    byte is unread; told again once armed again; told of room to write once armed for
+    it; and an armed registration overwritten by OP_ENABLE of another filter is told of
+    what that filter asks.
+- **The network process on the one-shot poller** (87058f85, net costs run 38314187451,
+  windows-2025, 3 rounds each): every case passes, which none had past 1,000 connections
+  of 256 KiB each way before.
+
+  | connections held, bytes each way | case | round trip p50 | network process, working set / private |
+  |---|---|---|---|
+  | 0 | 4.0-4.1 s | 188-338 µs | 5.9-6.4 / 1.1-1.2 MiB |
+  | 1,000, none | 16.8-17.6 s | 292-307 µs | 7.5 / 2.1-2.2 MiB |
+  | 10,000, none | 109.6-120.3 s | 301-346 µs | 16.2-16.5 / 12.5-12.7 MiB |
+  | 10,000, 256 KiB | 120.5-136.7 s | 309-357 µs | 16.2 / 12.5 MiB |
+  | 10,000, 1 MiB | 134.6-138.2 s | 192-305 µs | 15.4-15.5 / 12.5-12.7 MiB |
+
+  Event + WSAPoll took 795-845 s a case of 10,000 idle connections, its round trip p50
+  65-71 ms, and timed out at 10,000 of 256 KiB (run 38297680089).
+- **Consequence (D142).** A filter of nothing is refused, which 527b4519 used for a
+  socket waiting for nothing: every connection that did was reset (net costs run
+  38308200096). Removing and enabling again at once was not refused in this probe, one
+  socket on an idle port, yet f5ac0f01, which paused sockets so, reset the sixth
+  connection of 256 KiB each way; one-shot registrations neither remove nor filter
+  nothing, and every case passes. The poller keeps each socket's registration one-shot: a
+  notice disarms it, and the next wait arms it again for what the socket then waits for,
+  in the call that waits; a socket that waits for nothing is left disarmed.
