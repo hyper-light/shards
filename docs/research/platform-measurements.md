@@ -6845,7 +6845,10 @@ revision before comparing a changed API/implementation.
   removed), each timed; a half-close and the other direction after it; WSAPoll on a
   non-blocking end, quiet, with data, drained, after the peer's shutdown(SD_SEND) and
   after its close, and as its send buffer fills and drains; WSASend and WSARecv of three
-  buffers; a socket inherited by a child process (std's CreateProcessW inherits
+  buffers; WSAEventSelect (FD_READ, FD_WRITE, FD_CLOSE) on one end, the event waited
+  for after each step: associated, data, a full send buffer and its draining, the peer's
+  half-close, and a full send buffer after end-of-stream and its draining (run
+  38213370757); a socket inherited by a child process (std's CreateProcessW inherits
   inheritable handles), which writes through it; 1 GiB in 64 KiB writes between two
   threads, and 10,000 one-byte round trips, each over AF_UNIX and over loopback TCP with
   TCP_NODELAY.
@@ -6858,6 +6861,10 @@ revision before comparing a changed API/implementation.
     **WRNORM|HUP, without RDNORM**: end-of-stream is reported as a hangup, and a hangup
     is reported whatever was asked. A full send buffer (131,072 bytes; WSAEWOULDBLOCK)
     reports nothing, and WRNORM again once drained.
+  - WSAEventSelect records, on both runners: FD_WRITE as associated; FD_READ with data;
+    nothing while the send buffer is full (the wait times out, 100 ms), FD_WRITE once
+    drained; FD_CLOSE on the peer's half-close; and after end-of-stream has been read,
+    again nothing while full and FD_WRITE once drained.
   - Inherited, a socket works in the child: 14 bytes written there, read here.
   - Throughput: AF_UNIX 11,954 / 9,020 MB/s, loopback TCP 3,277 / 2,694. A one-byte round
     trip: AF_UNIX p50 29.1 / 31.3 µs, p99 44.0 / 63.1; TCP 37.0 / 39.1, p99 69.3 / 116.8.
@@ -6865,7 +6872,7 @@ revision before comparing a changed API/implementation.
   3.4-3.7 times loopback TCP's throughput, and a round trip 20 percent shorter. A pair
   costs some 0.6 ms more than socketpair(2), and is made once a stream. WSAPoll cannot
   wait to write on a socket whose peer has half-closed: it reports the hangup at once,
-  whatever is asked, so such a wait would spin. The vsock device's Windows poller waits on
-  WSAEventSelect's events instead, whose FD_WRITE comes once room does after a send
-  refused for want of it.
+  whatever is asked, so such a wait would spin. WSAEventSelect's events have no such fault:
+  the vsock device's Windows poller sleeps on them, and reads each socket's state with a
+  WSAPoll that does not wait, end-of-stream (HUP) a read's and never a write's.
 
