@@ -1,8 +1,9 @@
-"""The syscalls shards-vm makes, by thread, from `strace -f` output (collect.sh): the
-evidence for its seccomp filters (docs/research/rootless-security.md R3).
+"""The syscalls a program of shards' makes, by thread, from `strace -f` output
+(collect.sh): shards-vm's, or with `--program shards-net` the network process's, the
+evidence for their seccomp filters (docs/research/rootless-security.md R3; PM M52, M209).
 
 Each line of strace -f's output starts with the calling thread's id. A thread belongs to
-a shards-vm process once its process has exec'd a path ending in /shards-vm; a clone with
+the program's process once its process has exec'd a path ending in /PROGRAM; a clone with
 CLONE_THREAD adds a thread to its caller's process, and any other clone starts a process
 that runs its parent's program until it execs. Threads are named by their
 prctl(PR_SET_NAME), as Rust's std names them from the thread itself: `vcpuN` threads are
@@ -15,7 +16,7 @@ socket domains, fcntl commands and prctl options they used.
 Thread ids are reused from one strace run to the next, so each trace is read with state
 of its own, and the counts are added up.
 
-    python3 parse.py TRACE...
+    python3 parse.py [--program NAME] TRACE...
 """
 import collections, re, sys
 
@@ -40,8 +41,14 @@ def klass(tid):
     return re.sub(r"\d+$", "N", n)
 
 
+PROGRAM = "shards-vm"
+if sys.argv[1:2] == ["--program"]:
+    PROGRAM = sys.argv[2]
+    del sys.argv[1:3]
+
+
 def is_vm(tid):
-    return exe.get(tgid.get(tid, tid), "").endswith("/shards-vm")
+    return exe.get(tgid.get(tid, tid), "").endswith("/" + PROGRAM)
 
 
 def first_arg(args):
@@ -74,6 +81,10 @@ def record(tid, call, args, result):
             detail[c]["ioctl"][parts[1].strip().split("(")[0]] += 1
     elif call in ("socket", "socketpair"):
         detail[c][call][first_arg(args)] += 1
+    elif call in ("setsockopt", "getsockopt"):
+        parts = args.split(",")
+        if len(parts) > 2:
+            detail[c][call][parts[1].strip() + " " + parts[2].strip()] += 1
     elif call == "fcntl":
         parts = args.split(",")
         if len(parts) > 1:
