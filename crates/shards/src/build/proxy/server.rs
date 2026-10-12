@@ -632,7 +632,8 @@ const CONNECTIONS: usize = 512;
 
 /// The build's proxy: where it listens, its CA, and what its requests upstream trust.
 pub struct Proxy {
-    dir: PathBuf,
+    /// Its directory, removed as it drops.
+    dir: crate::build::builder::SocketDir,
     socket: PathBuf,
     listener: UnixListener,
     authority: ca::Authority,
@@ -655,24 +656,21 @@ impl std::fmt::Debug for Proxy {
     }
 }
 
-impl Drop for Proxy {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.dir);
-    }
-}
-
 impl Proxy {
     /// A proxy listening in `dir`, a directory of its own (mode 0700), with a CA of its
     /// own; its files of request bodies leave the disk what `limits` keeps free.
-    pub fn new(dir: PathBuf, limits: &shards_image::store::Limits) -> Result<Proxy, String> {
-        let socket = dir.join("proxy");
+    pub fn new(
+        dir: crate::build::builder::SocketDir,
+        limits: &shards_image::store::Limits,
+    ) -> Result<Proxy, String> {
+        let socket = dir.path().join("proxy");
         let listener = UnixListener::bind(&socket).map_err(|e| format!("the build's proxy: {e}"))?;
         listener
             .set_nonblocking(true)
             .map_err(|e| format!("the build's proxy: {e}"))?;
         let tls = shards_registry::tls::client_config(Vec::new(), None).map_err(|e| e.to_string())?;
-        let room =
-            shards_image::store::Room::new(&dir, limits).map_err(|e| format!("the build's proxy: {e}"))?;
+        let room = shards_image::store::Room::new(dir.path(), limits)
+            .map_err(|e| format!("the build's proxy: {e}"))?;
         Ok(Proxy {
             dir,
             socket,
@@ -1206,7 +1204,7 @@ impl<'p> Session<'p> {
                 }
                 self.proxy.room.wrote(memory.len()).map_err(|_| Spooled::NoRoom)?;
                 let (mut file, path) =
-                    spool_file(&self.proxy.dir).map_err(|e| Spooled::Failed(e.to_string()))?;
+                    spool_file(self.proxy.dir.path()).map_err(|e| Spooled::Failed(e.to_string()))?;
                 let held = file.write_all(memory);
                 let size = memory.len() as u64;
                 spool = Spool::File { file, path, size };

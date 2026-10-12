@@ -914,26 +914,44 @@ fn run_shards_with<S: AsRef<std::ffi::OsStr>>(
         .stderr(Stdio::piped())
         .spawn()
         .expect("spawning shards");
-    // Read on threads of their own and handed over by channel, so that a pipe another
-    // process still holds (a VM given the client's stdio) costs the test its deadline,
-    // never a hang.
+    // Read on threads of their own and handed over by channel as it comes, so that a pipe
+    // another process still holds (a VM given the client's stdio) costs the test its
+    // deadline, never a hang, and what came before it is kept: a command that never ends
+    // shows how far it got.
     let collect = |mut r: Box<dyn Read + Send>| {
-        let (tx, rx) = std::sync::mpsc::channel();
+        let (tx, rx) = std::sync::mpsc::channel::<Vec<u8>>();
         std::thread::spawn(move || {
-            // Lossily: a step's output is printed as it came, bytes that are no UTF-8
-            // included, which read_to_string would drop the whole of.
-            let mut b = Vec::new();
-            let _ = r.read_to_end(&mut b);
-            let _ = tx.send(String::from_utf8_lossy(&b).into_owned());
+            let mut b = vec![0u8; 64 * 1024];
+            while let Ok(n @ 1..) = r.read(&mut b) {
+                if tx.send(b[..n].to_vec()).is_err() {
+                    return;
+                }
+            }
         });
         rx
     };
-    let took = |rx: &std::sync::mpsc::Receiver<String>| {
-        let left = timeout
-            .saturating_sub(start.elapsed())
-            .max(Duration::from_secs(1));
-        rx.recv_timeout(left)
-            .unwrap_or_else(|_| "(still held open by another process)".into())
+    // All it wrote, to its end; or what came by the deadline, where it never ends.
+    // Lossily: a step's output is printed as it came, bytes that are no UTF-8 included,
+    // which a strict conversion would drop the whole of.
+    let took = |rx: &std::sync::mpsc::Receiver<Vec<u8>>| {
+        let until = Instant::now()
+            .max(start + timeout)
+            .max(Instant::now() + Duration::from_secs(1));
+        let mut got = Vec::new();
+        loop {
+            match rx.recv_timeout(until.saturating_duration_since(Instant::now())) {
+                Ok(chunk) => got.extend_from_slice(&chunk),
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                    break String::from_utf8_lossy(&got).into_owned();
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                    break format!(
+                        "{}\n(still held open by another process)",
+                        String::from_utf8_lossy(&got)
+                    );
+                }
+            }
+        }
     };
     let out = collect(Box::new(child.stdout.take().unwrap()));
     let err = collect(Box::new(child.stderr.take().unwrap()));

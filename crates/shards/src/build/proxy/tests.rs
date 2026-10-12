@@ -150,7 +150,11 @@ fn with_proxy_deciding<T: Send>(
     client: impl FnOnce(&Path, &[u8]) -> T + Send,
 ) -> (T, Vec<String>, Capture) {
     let scratch = scratch(name);
-    let mut proxy = Proxy::new(scratch.to_path_buf(), &shards_image::store::Limits::none()).unwrap();
+    let mut proxy = Proxy::new(
+        crate::build::builder::SocketDir::held(scratch.to_path_buf()).unwrap(),
+        &shards_image::store::Limits::none(),
+    )
+    .unwrap();
     if let Some(root) = roots {
         proxy.tls = shards_registry::tls::client_config(vec![root], None).unwrap();
     }
@@ -658,7 +662,11 @@ fn read_until(c: &mut UnixStream, end: &[u8]) -> Vec<u8> {
 #[test]
 fn heads_are_waited_for_so_long_alone() {
     let scratch = scratch("head-time");
-    let mut proxy = Proxy::new(scratch.to_path_buf(), &shards_image::store::Limits::none()).unwrap();
+    let mut proxy = Proxy::new(
+        crate::build::builder::SocketDir::held(scratch.to_path_buf()).unwrap(),
+        &shards_image::store::Limits::none(),
+    )
+    .unwrap();
     proxy.head_time = Duration::from_millis(300);
     let ((cut, waited, first, second), _, _) = serving(
         &proxy,
@@ -708,7 +716,11 @@ fn heads_are_waited_for_so_long_alone() {
 #[test]
 fn a_step_holds_so_many_connections_at_once() {
     let scratch = scratch("connections");
-    let mut proxy = Proxy::new(scratch.to_path_buf(), &shards_image::store::Limits::none()).unwrap();
+    let mut proxy = Proxy::new(
+        crate::build::builder::SocketDir::held(scratch.to_path_buf()).unwrap(),
+        &shards_image::store::Limits::none(),
+    )
+    .unwrap();
     proxy.connections = 2;
     let ((before, after), _, _) = serving(
         &proxy,
@@ -743,7 +755,11 @@ fn a_step_holds_so_many_connections_at_once() {
 #[test]
 fn requests_no_one_answers_are_refused() {
     let scratch = scratch("unanswered");
-    let proxy = Proxy::new(scratch.to_path_buf(), &shards_image::store::Limits::none()).unwrap();
+    let proxy = Proxy::new(
+        crate::build::builder::SocketDir::held(scratch.to_path_buf()).unwrap(),
+        &shards_image::store::Limits::none(),
+    )
+    .unwrap();
     let raw = b"GET http://127.0.0.1:9/ HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n";
     for dropped_before in [true, false] {
         let (session, questions) =
@@ -886,7 +902,11 @@ fn request_bodies_stop_short_of_the_room_kept() {
     };
     let scratch = scratch("room");
     let dir = scratch.to_path_buf();
-    let mut proxy = Proxy::new(dir.clone(), &limits).unwrap();
+    let mut proxy = Proxy::new(
+        crate::build::builder::SocketDir::held(dir.clone()).unwrap(),
+        &limits,
+    )
+    .unwrap();
     proxy.reach = |_| true;
     let (got, checked, _) = serving(
         &proxy,
@@ -911,11 +931,13 @@ fn request_bodies_stop_short_of_the_room_kept() {
         "{got}"
     );
     assert_eq!(LOOKS.load(Ordering::SeqCst), 2);
-    let left: Vec<_> = std::fs::read_dir(&dir)
+    let mut left: Vec<_> = std::fs::read_dir(&dir)
         .unwrap()
         .map(|e| e.unwrap().file_name())
         .collect();
-    assert_eq!(left, ["proxy"]);
+    left.sort();
+    // Its socket and the lock that says it lives (D137): no body's file.
+    assert_eq!(left, [".shards-lock", "proxy"]);
 }
 
 /// An upstream whose certificate the host does not trust is a 502 in the tunnel, never
@@ -1490,7 +1512,11 @@ fn request_costs() {
     let mut timings: Vec<(&str, Vec<u128>)> = Vec::new();
     for policy in [false, true] {
         let scratch = scratch("measure");
-        let mut proxy = Proxy::new(scratch.to_path_buf(), &shards_image::store::Limits::none()).unwrap();
+        let mut proxy = Proxy::new(
+            crate::build::builder::SocketDir::held(scratch.to_path_buf()).unwrap(),
+            &shards_image::store::Limits::none(),
+        )
+        .unwrap();
         proxy.tls = shards_registry::tls::client_config(vec![root.clone()], None).unwrap();
         proxy.reach = |_| true;
         let (session, questions) =

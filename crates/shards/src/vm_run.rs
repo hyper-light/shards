@@ -258,7 +258,8 @@ fn parse_run(args: impl Iterator<Item = OsString>) -> Result<Run, String> {
             // A join disk, empty until a container joins the VM's network (D119).
             "--join" => cfg.join = Some(give_join_disk()),
             // A join disk its builder attaches files to on this socket, a cache's layers
-            // and the files its steps write theirs to (D134).
+            // and the files its steps write theirs to (D134); the VM ends as the socket
+            // closes, its builder gone (D137).
             "--attach" => {
                 let fd = text(value("--attach")?)?;
                 attach = Some(
@@ -496,9 +497,15 @@ fn serve_attach(fd: i32) -> Result<(), String> {
             while let Ok(Some(m)) = shards_ipc::recv(&socket) {
                 let (kind, payload) = answer(m).unwrap_or_else(|e| (kind::DISK_REFUSED, e.into_bytes()));
                 if shards_ipc::send(&socket, kind, &payload, &[]).is_err() {
-                    return;
+                    break;
                 }
             }
+            // Its builder is gone, even killed: so is the builder's VM, whatever its guest
+            // is doing (a build held at its memory may hear nothing, D137), and with it
+            // its network process, which hears its doorbell hang up. The builder holds
+            // this socket for as long as it holds the VM.
+            report("its builder is gone, and so this builder ends");
+            std::process::exit(1);
         })
         .map(drop)
         .map_err(|e| format!("serving its builder: {e}"))

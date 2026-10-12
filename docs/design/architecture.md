@@ -3538,6 +3538,58 @@ No run-time labels, relays or declassifiers (§12 answer 14, decided by the user
 an internal-only domain to the world (D58), so there is no data to label. Code mode is
 D136.
 
+### D137. A build never held by its builder's memory, nor outlived by its builder
+
+CI run 38198639601 (dev fd9da553, x86_64 Linux): `a_builders_memory_is_plugged_as_its_
+build_needs_it`'s first build ran past its 120 s, where it takes about 33 s (runs
+38197041559 and 38189388050), and what it said was lost, its pipes held open by its builder,
+which outlived the `shards build` the test killed. Three faults, each fixed here; the
+cause of that build's stall left no evidence, so what the next one leaves is fixed too.
+
+- **Memory that stopped coming held the build** (D133). A build past its `memory.high` is
+  slowed, never ended, until memory comes; its grower asked for memory, waited 5 s
+  (`STALLED`, a thousand times the 5-7 ms 1 GiB took, PM M193), said so on the builder's
+  console, which a build does not show, and, once it had asked for all the builder may
+  have, asked no more. Linux's virtio-mem driver tries a plug it could not make (ENOMEM in
+  the guest, BUSY from the host) again at once on a configuration change, or else on a
+  timer of 50 s doubling to 300 s, and never where too many of its blocks are offline
+  (drivers/virtio/virtio_mem.c, `virtio_mem_run_wq`, Linux 6.18): with nothing else
+  changing, the build waited those out, or for ever. Now:
+  - the device tells its driver again when asked again, a configuration interrupt with
+    the configuration and its generation unchanged, so the driver tries again at once;
+  - where nothing comes for `STALLED`, the grower asks again, saying what it asked for,
+    what came, and the kernel's last words of its driver (/dev/kmsg); where nothing comes
+    for as long again, it lifts the build's `memory.high`: the build runs on what the
+    builder has, as one booted with that much would, and is ended by the kernel where it
+    needs more (exit code 137, as one past all its memory is), never held;
+  - what the grower says is said in the output of the step that runs as it says it,
+    through a pipe init relays as that step's stderr.
+- **A killed build left its builder running.** A builder's VM ended as its build dropped
+  it, or as its guest powered off on its connection closing: a killed `shards build` drops
+  nothing, and a guest held at its memory hears nothing. The VM now ends as its `--attach`
+  socket closes, which the build holds for as long as it holds the VM, killed or not; its
+  network process goes with it, as it goes with every VM (D31).
+- **And left its sockets' directory.** A builder's and a build proxy's directory of
+  sockets in the temporary directory holds a lock (flock) its build holds while it lives,
+  put in place only once held, so that one in place and free is a dead build's; each build
+  removes those, its user's, before it makes its own.
+- **What a command said before it hung is kept** (tests/common `run_shards_with`): a
+  command past its deadline shows its output so far, not only that another process held
+  its pipes.
+
+Tested: in crates/init, on Linux, `memory_asked_for_comes`,
+`memory_that_comes_slowly_is_waited_for`, `memory_that_stops_coming_is_asked_for_again`
+and `memory_that_never_comes_is_given_up` (after `STALLED` twice, with what came); in
+crates/vmm, `requests_are_whole_blocks_within_the_most` (a request repeated tells the driver
+again, its generation unchanged); in shards, `a_sweep_removes_what_dead_builds_left` (a free
+lock's directory removed; a live build's, one whose lock is not yet in place, and one not a
+build's, kept); on real microVMs, `a_killed_build_takes_its_builder_with_it` (the build
+killed as a step runs, its VM gone within 10 s, its directory left, and removed by the next
+build), and `a_builders_memory_is_plugged_as_its_build_needs_it`, unchanged.
+Mutation-checked: a request repeated telling the driver nothing, a stall not asked for
+again, a free lock not swept, a held lock swept, the builder outliving its build, and no
+sweep before a build: each fails a test.
+
 ### D136. Code mode: a program run in a sandbox, with its caller's grants and no more
 
 AGENTFILE_ARCH.md §5's last part, decided by the user with D60 (§12 answer 18): the server
@@ -3797,7 +3849,8 @@ given the rest as its build needs it, up to what it may have.
   which nothing slows, wakes on it, asks for twice the memory the builder has, in whole
   memory blocks (so what is plugged ahead of the build is at most what it holds, and a build
   that comes to all of it asks a logarithm of times), raises `memory.high` as each block
-  comes online, and lifts it once all of it is plugged. Plugged memory comes online as the
+  comes online, and lifts it once all of it is plugged, or once memory asked for stops
+  coming (D137). Plugged memory comes online as the
   kernel's own (`memhp_default_state=online_kernel`): a builder gives no memory back, and
   memory online as movable alone can leave the kernel short with memory free
   (memory-hotplug.rst, "ZONE_MOVABLE Sizing Considerations").

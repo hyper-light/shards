@@ -121,17 +121,21 @@ impl Sizes {
 
     /// The guest asks to have `bytes` plugged: whole blocks, at most [`most`](Self::most).
     /// The device asks its driver for it (`requested_size`), which hears through a
-    /// configuration interrupt and plugs or unplugs to match (§5.15.6).
+    /// configuration interrupt and plugs or unplugs to match (§5.15.6). Asked again for
+    /// what it asked already, it tells the driver again: Linux's driver tries a request it
+    /// could not meet (ENOMEM, BUSY) again on a configuration change at once, or else 50
+    /// s later, doubling to 300 s (drivers/virtio/virtio_mem.c, `virtio_mem_config_changed`,
+    /// `VIRTIO_MEM_RETRY_TIMER_MIN_MS`), which a build held at its memory waits out (D133).
+    /// The configuration's generation moves only as it changes.
     pub fn request(&self, bytes: u64) {
         // `most` is whole blocks, so rounding up within it stays within it.
         let want = bytes.min(self.most).next_multiple_of(BLOCK).min(self.most);
         let interrupt = {
             let mut s = lock(&self.state);
-            if s.requested == want {
-                return;
+            if s.requested != want {
+                s.requested = want;
+                s.generation = s.generation.wrapping_add(1);
             }
-            s.requested = want;
-            s.generation = s.generation.wrapping_add(1);
             s.interrupt.clone()
         };
         if let Some(i) = interrupt {
@@ -518,6 +522,18 @@ mod tests {
         }
     }
 
+    /// An interrupt line that counts its edges.
+    #[derive(Default)]
+    struct Edges(std::sync::atomic::AtomicUsize);
+
+    impl crate::devices::Interrupt for Edges {
+        fn set_level(&self, level: bool) {
+            if level {
+                self.0.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+    }
+
     struct Rig {
         memory: GuestMemory,
         sizes: Sizes,
@@ -711,6 +727,13 @@ mod tests {
         let g = s.generation();
         s.request(2 * BLOCK);
         assert_eq!(s.generation(), g, "no change, no new generation");
+        // But the driver is told again: it tries what it could not plug at once.
+        let edges = Arc::new(Edges::default());
+        lock(&s.state).interrupt = Some(Arc::new(DeviceInterrupt::new(edges.clone())));
+        s.request(2 * BLOCK);
+        s.request(2 * BLOCK);
+        assert_eq!(edges.0.load(Ordering::SeqCst), 2, "each request tells the driver");
+        assert_eq!(s.generation(), g);
         s.request(u64::MAX);
         assert_eq!(s.requested(), 10 * BLOCK);
         let c = s.config();

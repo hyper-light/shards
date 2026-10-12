@@ -144,6 +144,9 @@ struct Builder {
     /// Whether the builder's memory is plugged as the build needs it (D133): then each
     /// step has a cgroup of its own, under the build's, as runc gives each container one.
     plugging: bool,
+    /// What the process that grows its memory says, a line at a time: said in the output
+    /// of the step that runs as it comes, which is the step its memory is short for.
+    notes: Option<OwnedFd>,
     /// Its steps' caches' layers, mounted from its join disk (D134).
     caches: crate::caches::Caches,
 }
@@ -197,10 +200,13 @@ fn serve() -> io::Result<()> {
         return Err(os_err("chroot"));
     }
     std::env::set_current_dir("/")?;
-    if let Some(plug) = plug {
-        plug.raise_limits()?;
-        plug.hold()?;
-    }
+    let notes = match plug {
+        Some(plug) => {
+            plug.raise_limits()?;
+            Some(plug.hold()?)
+        }
+        None => None,
+    };
     swap_on()?;
     loopback_up()?;
     // A builder with a network: eth0 as the host named it, which a step with the default
@@ -216,6 +222,7 @@ fn serve() -> io::Result<()> {
         serial: 0,
         ssh: Vec::new(),
         plugging: plug.is_some(),
+        notes,
         caches: crate::caches::Caches::default(),
     };
     let mut h = [0u8; run::HEADER];
@@ -648,11 +655,19 @@ impl Builder {
         })
     }
 
-    /// Sends what the step writes, as it writes it, until both its outputs close.
-    fn relay(&self, out: OwnedFd, err_fd: OwnedFd) -> io::Result<()> {
-        let mut open = [Some(out), Some(err_fd)];
+    /// Sends what the step writes, as it writes it, until both its outputs close; and, as
+    /// its stderr, what the builder's memory's grower says meanwhile (D137).
+    fn relay(&mut self, out: OwnedFd, err_fd: OwnedFd) -> io::Result<()> {
+        let mut open = [Some(out), Some(err_fd), self.notes.take()];
         let mut buf = vec![0u8; 64 * 1024];
-        while open.iter().any(Option::is_some) {
+        let relayed = self.relay_open(&mut open, &mut buf);
+        let [_, _, notes] = open;
+        self.notes = notes;
+        relayed
+    }
+
+    fn relay_open(&self, open: &mut [Option<OwnedFd>; 3], buf: &mut [u8]) -> io::Result<()> {
+        while open.iter().take(2).any(Option::is_some) {
             let mut fds: Vec<libc::pollfd> = open
                 .iter()
                 .map(|f| libc::pollfd {

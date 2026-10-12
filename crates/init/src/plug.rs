@@ -11,11 +11,14 @@
 //!   none, and says so in `memory.events` (Documentation/admin-guide/cgroup-v2.rst);
 //! - and leaves a process outside that cgroup, which the kernel never slows, to ask the
 //!   host for twice the memory each time the build reaches its `memory.high`, and to raise
-//!   it as the memory comes online ([`grow`]).
+//!   it as the memory comes online ([`grow`]); and, where memory asked for stops coming,
+//!   to ask again, and then to let the build run on what the builder has, never held at a
+//!   `memory.high` that nothing will raise (D137).
 
 use std::ffi::CString;
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+use std::os::unix::fs::OpenOptionsExt;
 use std::time::{Duration, Instant};
 
 use shards_abi::control;
@@ -32,8 +35,9 @@ const ALIGN: u64 = 128 << 20;
 /// (PM M193), on top of the page structures of the next memory plugged ([`reserve`]).
 const SLACK: u64 = 64 << 20;
 /// How long the memory asked for may take to come online, from the last of it that came,
-/// before the process that grows it waits for the build to ask again: the driver retries
-/// what it could not plug (drivers/virtio/virtio_mem.c, its retry timer).
+/// before the process that grows it asks again: a thousand times the 5-7 ms 1 GiB took
+/// (PM M193). Asked again, the device tells its driver again, which then tries what it
+/// could not plug at once, not at its retry timer's 50 s (D137).
 const STALLED: Duration = Duration::from_secs(5);
 /// inotify's cost of a watch and epoll's of an item in this kernel, in bytes
 /// (`INOTIFY_WATCH_COST`, `EP_ITEM_COST`): what makes their limits 1:28.17 at every size
@@ -231,8 +235,9 @@ impl Plug {
 
     /// Holds the build at the memory the builder has: mounts the builder's cgroup2 (D133),
     /// makes the build's cgroup with its `memory.high`, starts the process that grows it
-    /// in the root cgroup, which nothing slows, and moves init into the build's.
-    pub fn hold(&self) -> io::Result<()> {
+    /// in the root cgroup, which nothing slows, and moves init into the build's. What the
+    /// grower says comes out of the descriptor returned, a line at a time (D137).
+    pub fn hold(&self) -> io::Result<OwnedFd> {
         mount_cgroups()?;
         let enable = |dir: &str| {
             std::fs::write(format!("{dir}/cgroup.subtree_control"), "+memory +cpu +cpuset")
@@ -253,6 +258,16 @@ impl Plug {
         enable(&format!("{BUILD}/steps"))?;
         set_high(high(self.most, 0)?)?;
         let events = watch_events()?;
+        let mut fds = [0; 2];
+        // SAFETY: pipe2(2) into an array of two descriptors.
+        if unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) } != 0 {
+            return Err(err(format!(
+                "the memory's grower's notes: {}",
+                io::Error::last_os_error()
+            )));
+        }
+        // SAFETY: the two descriptors pipe2 just made, owned here alone.
+        let (notes, said) = unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) };
         // SAFETY: fork(2) of PID 1 before it starts any thread: the child runs on a copy
         // of a process with no other thread, whose locks no one holds.
         let pid = unsafe { libc::fork() };
@@ -263,11 +278,13 @@ impl Plug {
             )));
         }
         if pid == 0 {
-            grow(*self, &events);
+            drop(notes);
+            grow(*self, &events, &said);
         }
-        drop(events);
+        drop((events, said));
         std::fs::write(format!("{BUILD}/init/cgroup.procs"), "1")
-            .map_err(|e| err(format!("moving init into the build's cgroup: {e}")))
+            .map_err(|e| err(format!("moving init into the build's cgroup: {e}")))?;
+        Ok(notes)
     }
 }
 
@@ -347,9 +364,165 @@ fn watch_events() -> io::Result<OwnedFd> {
     Ok(events)
 }
 
-/// Says what went wrong on the builder's console, as init says its own.
-fn say(what: &str) {
-    let _ = writeln!(io::stderr(), "shards-init: the builder's memory: {what}");
+/// Says `what` of the builder's memory, a line into `notes`, which init sends as the
+/// output of the step that runs (D137); a line the pipe has no room for is said on the
+/// builder's console instead, as nothing may block the grower.
+fn say(notes: &OwnedFd, what: &str) {
+    let line = format!("shards-init: the builder's memory: {what}\n");
+    // SAFETY: write(2) of a buffer of the length given, to a descriptor this process owns,
+    // made non-blocking as the grower starts.
+    let n = unsafe { libc::write(notes.as_raw_fd(), line.as_ptr().cast(), line.len()) };
+    if usize::try_from(n).ok() != Some(line.len()) {
+        let _ = io::stderr().write_all(line.as_bytes());
+    }
+}
+
+/// What the guest kernel said of its virtio-mem driver, its last `most` lines (/dev/kmsg,
+/// Documentation/ABI/testing/dev-kmsg): why memory asked for did not come, in its words.
+fn kernel_said(most: usize) -> Vec<String> {
+    let Ok(file) = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK)
+        .open("/dev/kmsg")
+    else {
+        return Vec::new();
+    };
+    let mut said: std::collections::VecDeque<String> = std::collections::VecDeque::new();
+    let mut record = [0u8; 8192];
+    // Each read is one record, `level,seq,usecs,flags;text`; past the last, EAGAIN.
+    while let Ok(n) = (&file).read(&mut record) {
+        let text = String::from_utf8_lossy(record.get(..n).unwrap_or_default());
+        let Some((_, text)) = text.split_once(';') else {
+            if n == 0 {
+                break;
+            }
+            continue;
+        };
+        let text = text.lines().next().unwrap_or_default();
+        if text.contains("virtio_mem") {
+            said.push_back(text.to_string());
+            if said.len() > most {
+                said.pop_front();
+            }
+        }
+    }
+    said.into()
+}
+
+/// How memory asked for came.
+#[derive(Debug, PartialEq, Eq)]
+enum Came {
+    /// All of it.
+    All,
+    /// Not all, though asked for twice: what of it came, in bytes.
+    Stalled(u64),
+}
+
+/// What growing the builder's memory acts on: the guest's memory, the host's device, the
+/// build's `memory.high`, time, and where it says what it saw. The builder's own
+/// ([`Builder`]), or a test's.
+trait Grows {
+    /// MemTotal, memory plugged counted as it comes online.
+    fn total(&mut self) -> io::Result<u64>;
+    /// Asks the host for `bytes` past what the guest booted with.
+    fn ask(&mut self, bytes: u64) -> io::Result<()>;
+    /// `plugged` bytes are online: the build's `memory.high` raised to match.
+    fn raise(&mut self, plugged: u64);
+    fn say(&mut self, what: &str);
+    /// The kernel's last words of its virtio-mem driver.
+    fn kernel_said(&mut self) -> Vec<String>;
+    /// How long since `from` began, from [`Grows::now`].
+    fn now(&mut self) -> Duration;
+    /// Waits a moment before looking again.
+    fn pause(&mut self);
+}
+
+/// The builder's own memory, its device and its build's cgroup.
+struct Builder<'n> {
+    plug: Plug,
+    notes: &'n OwnedFd,
+    began: Instant,
+}
+
+impl Grows for Builder<'_> {
+    fn total(&mut self) -> io::Result<u64> {
+        mem_total()
+    }
+
+    fn ask(&mut self, bytes: u64) -> io::Result<()> {
+        control_write64(control::HOTPLUG_REQUEST, bytes)
+    }
+
+    fn raise(&mut self, plugged: u64) {
+        if let Err(e) = high(self.plug.most, plugged).and_then(set_high) {
+            say(self.notes, &e.to_string());
+        }
+    }
+
+    fn say(&mut self, what: &str) {
+        say(self.notes, what);
+    }
+
+    fn kernel_said(&mut self) -> Vec<String> {
+        kernel_said(3)
+    }
+
+    fn now(&mut self) -> Duration {
+        self.began.elapsed()
+    }
+
+    fn pause(&mut self) {
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}
+
+/// Asks for `asked` bytes past what the builder booted with, and raises the build's
+/// `memory.high` as they come online. Where none comes for [`STALLED`], asks again, which
+/// tells the driver again; where none comes for as long again, stops.
+fn come(plug: Plug, asked: u64, g: &mut impl Grows) -> Came {
+    let want = plug.boot.saturating_add(asked);
+    let Ok(start) = g.total() else {
+        return Came::Stalled(0);
+    };
+    let (mut last, mut since) = (start, g.now());
+    let mut again = false;
+    if let Err(e) = g.ask(asked) {
+        g.say(&format!("asking for {asked} bytes: {e}"));
+        return Came::Stalled(start.saturating_sub(plug.boot));
+    }
+    while let Ok(now) = g.total() {
+        if now > last {
+            (last, since) = (now, g.now());
+            g.raise(now.saturating_sub(plug.boot));
+        }
+        if now >= want {
+            return Came::All;
+        }
+        if g.now().saturating_sub(since) > STALLED {
+            if again {
+                break;
+            }
+            let came = now.saturating_sub(plug.boot);
+            let kernel = g.kernel_said();
+            g.say(&format!(
+                "{asked} bytes asked for, {came} came in {} s; asking again{}{}",
+                STALLED.as_secs(),
+                if kernel.is_empty() {
+                    ""
+                } else {
+                    "; the kernel said: "
+                },
+                kernel.join("; ")
+            ));
+            if let Err(e) = g.ask(asked) {
+                g.say(&format!("asking for {asked} bytes again: {e}"));
+                break;
+            }
+            (again, since) = (true, g.now());
+        }
+        g.pause();
+    }
+    Came::Stalled(last.saturating_sub(plug.boot))
 }
 
 /// The process that grows the builder's memory, in the root cgroup: each time the build
@@ -357,8 +530,18 @@ fn say(what: &str) {
 /// blocks, up to what it may have (growth by doubling, which keeps what is plugged ahead
 /// of the build at most what it holds, and the times it is asked for to the logarithm),
 /// and raises `memory.high` as each block comes online. With all of it plugged, the
-/// build's `memory.high` goes: it is held only where the builder's memory ends.
-fn grow(plug: Plug, events: &OwnedFd) -> ! {
+/// build's `memory.high` goes: it is held only where the builder's memory ends. Where
+/// memory asked for stops coming (`come`), the build's `memory.high` goes too, and says
+/// so: the build runs on what the builder has, as one of that size would, and is ended
+/// by the kernel where it needs more, never held at a `memory.high` nothing raises (D137).
+fn grow(plug: Plug, events: &OwnedFd, notes: &OwnedFd) -> ! {
+    // SAFETY: fcntl(2) of a descriptor this process owns.
+    unsafe { libc::fcntl(notes.as_raw_fd(), libc::F_SETFL, libc::O_NONBLOCK) };
+    let lift = || {
+        if let Err(e) = std::fs::write(format!("{BUILD}/memory.high"), "max") {
+            say(notes, &format!("{BUILD}/memory.high: {e}"));
+        }
+    };
     let mut asked = 0u64;
     let mut buf = [0u8; 4096];
     loop {
@@ -368,7 +551,11 @@ fn grow(plug: Plug, events: &OwnedFd) -> ! {
             if io::Error::last_os_error().kind() == io::ErrorKind::Interrupted {
                 continue;
             }
-            say(&format!("its watch failed: {}", io::Error::last_os_error()));
+            say(
+                notes,
+                &format!("its watch failed: {}", io::Error::last_os_error()),
+            );
+            lift();
             // SAFETY: _exit(2) of this child alone.
             unsafe { libc::_exit(1) };
         }
@@ -378,10 +565,14 @@ fn grow(plug: Plug, events: &OwnedFd) -> ! {
         ) else {
             continue;
         };
-        if current < high_now || asked >= plug.most {
+        if current < high_now {
             continue;
         }
         let Ok(total) = mem_total() else { continue };
+        if total.saturating_sub(plug.boot) >= plug.most {
+            lift();
+            continue;
+        }
         asked = total
             .saturating_mul(2)
             .saturating_sub(plug.boot)
@@ -389,38 +580,129 @@ fn grow(plug: Plug, events: &OwnedFd) -> ! {
             .unwrap_or(u64::MAX)
             .max(asked)
             .min(plug.most);
-        if let Err(e) = control_write64(control::HOTPLUG_REQUEST, asked) {
-            say(&format!("asking for {asked} bytes: {e}"));
-            continue;
-        }
-        let want = plug.boot.saturating_add(asked);
-        let (mut last, mut since) = (total, Instant::now());
-        while let Ok(now) = mem_total() {
-            if now > last {
-                (last, since) = (now, Instant::now());
-                let plugged = now.saturating_sub(plug.boot);
-                if let Err(e) = high(plug.most, plugged).and_then(set_high) {
-                    say(&e.to_string());
-                }
+        let mut builder = Builder {
+            plug,
+            notes,
+            began: Instant::now(),
+        };
+        match come(plug, asked, &mut builder) {
+            Came::All if asked >= plug.most => lift(),
+            Came::All => {}
+            Came::Stalled(came) => {
+                say(
+                    notes,
+                    &format!(
+                        "{asked} bytes asked for, {came} came, though asked for twice: the build now runs on what the builder has, {} bytes",
+                        mem_total().unwrap_or(total)
+                    ),
+                );
+                lift();
             }
-            if now >= want {
-                break;
-            }
-            if since.elapsed() > STALLED {
-                say(&format!(
-                    "{} bytes asked for, {} came",
-                    asked,
-                    now.saturating_sub(plug.boot)
-                ));
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(1));
         }
-        if asked >= plug.most
-            && last >= want
-            && let Err(e) = std::fs::write(format!("{BUILD}/memory.high"), "max")
-        {
-            say(&format!("{BUILD}/memory.high: {e}"));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const MIB: u64 = 1 << 20;
+    const PLUG: Plug = Plug {
+        boot: 512 * MIB,
+        most: 2048 * MIB,
+    };
+
+    /// A builder whose memory is what `comes` makes of the requests so far and the time.
+    struct Fake<F> {
+        comes: F,
+        asks: Vec<u64>,
+        raised: Vec<u64>,
+        said: Vec<String>,
+        clock: Duration,
+    }
+
+    impl<F: FnMut(&[u64], Duration) -> u64> Grows for Fake<F> {
+        fn total(&mut self) -> io::Result<u64> {
+            Ok((self.comes)(&self.asks, self.clock))
         }
+        fn ask(&mut self, bytes: u64) -> io::Result<()> {
+            self.asks.push(bytes);
+            Ok(())
+        }
+        fn raise(&mut self, plugged: u64) {
+            self.raised.push(plugged);
+        }
+        fn say(&mut self, what: &str) {
+            self.said.push(what.to_string());
+        }
+        fn kernel_said(&mut self) -> Vec<String> {
+            vec!["virtio_mem virtio5: adding memory failed: -12".into()]
+        }
+        fn now(&mut self) -> Duration {
+            self.clock
+        }
+        fn pause(&mut self) {
+            self.clock += Duration::from_millis(1);
+        }
+    }
+
+    fn fake<F: FnMut(&[u64], Duration) -> u64>(comes: F) -> Fake<F> {
+        Fake {
+            comes,
+            asks: Vec::new(),
+            raised: Vec::new(),
+            said: Vec::new(),
+            clock: Duration::ZERO,
+        }
+    }
+
+    /// Memory that comes is asked for once, and raises the build's `memory.high`.
+    #[test]
+    fn memory_asked_for_comes() {
+        let mut g = fake(|asks: &[u64], _| PLUG.boot + asks.last().copied().unwrap_or(0));
+        assert_eq!(come(PLUG, 512 * MIB, &mut g), Came::All);
+        assert_eq!(g.asks, [512 * MIB]);
+        assert_eq!(g.raised, [512 * MIB]);
+        assert!(g.said.is_empty(), "{:?}", g.said);
+    }
+
+    /// Memory that comes slowly, a block every four seconds, is never stalled.
+    #[test]
+    fn memory_that_comes_slowly_is_waited_for() {
+        let mut g = fake(|asks: &[u64], t: Duration| {
+            PLUG.boot + (128 * MIB * (t.as_secs() / 4)).min(asks.last().copied().unwrap_or(0))
+        });
+        assert_eq!(come(PLUG, 512 * MIB, &mut g), Came::All);
+        assert_eq!(g.asks, [512 * MIB]);
+        assert_eq!(g.raised, [128 * MIB, 256 * MIB, 384 * MIB, 512 * MIB]);
+    }
+
+    /// Memory that stops coming is asked for again after [`STALLED`], saying so with the
+    /// kernel's words, which tells the driver again; it comes then, and is waited for.
+    #[test]
+    fn memory_that_stops_coming_is_asked_for_again() {
+        let mut g = fake(|asks: &[u64], _| PLUG.boot + if asks.len() > 1 { 512 * MIB } else { 0 });
+        assert_eq!(come(PLUG, 512 * MIB, &mut g), Came::All);
+        assert_eq!(g.asks, [512 * MIB, 512 * MIB]);
+        assert_eq!(
+            g.said,
+            [
+                "536870912 bytes asked for, 0 came in 5 s; asking again; the kernel said: virtio_mem virtio5: adding memory failed: -12"
+            ]
+        );
+    }
+
+    /// Memory that does not come though asked for twice is given up, with what came of it,
+    /// after [`STALLED`] twice and no sooner.
+    #[test]
+    fn memory_that_never_comes_is_given_up() {
+        let mut g = fake(|asks: &[u64], _| PLUG.boot + if asks.is_empty() { 0 } else { 256 * MIB });
+        assert_eq!(come(PLUG, 512 * MIB, &mut g), Came::Stalled(256 * MIB));
+        assert_eq!(g.asks.len(), 2);
+        assert!(
+            g.clock > 2 * STALLED && g.clock < 2 * STALLED + Duration::from_millis(10),
+            "{:?}",
+            g.clock
+        );
     }
 }

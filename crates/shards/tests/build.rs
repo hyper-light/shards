@@ -301,6 +301,89 @@ fn a_builders_memory_is_plugged_as_its_build_needs_it() {
     );
 }
 
+/// A build killed as a step runs takes its builder with it (D137): its VM ends as its
+/// socket to the build closes, whatever its guest is doing, which nothing else would end;
+/// and the next build removes the directory of sockets the killed one left.
+#[test]
+fn a_killed_build_takes_its_builder_with_it() {
+    use std::io::BufRead as _;
+    if cannot_run_vms() {
+        return;
+    }
+    let (image, _) = served();
+    let home = TempDir::new("kill-home");
+    // The builders' sockets' directories, here alone: short, as sockets' paths must be.
+    let tmp = TempDir::new("kt");
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", kernel().as_os_str()),
+        ("SHARDS_INIT", guest_init().as_os_str()),
+        ("TMPDIR", tmp.as_os_str()),
+    ];
+    let ctx = context(
+        "kill-ctx",
+        &format!("FROM {image}\nRUN [\"/bin/testguest\", \"sleep\"]\n"),
+    );
+    let mut build = common::command()
+        .args(["build", "--progress=plain", ctx.to_str().unwrap()])
+        .envs(env.iter().copied())
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let stderr = build.stderr.take().unwrap();
+    let (ready, said) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        for line in std::io::BufReader::new(stderr).lines().map_while(Result::ok) {
+            if line.ends_with(" ready") {
+                let _ = ready.send(());
+            }
+        }
+    });
+    said.recv_timeout(TIMEOUT)
+        .expect("the step never said it was ready");
+    // Its builder: the processes whose command lines name its directory, its VM's.
+    let builders = || {
+        let ps = std::process::Command::new("ps")
+            .args(["-axo", "pid=,command="])
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&ps.stdout)
+            .lines()
+            .filter(|l| l.contains(tmp.to_str().unwrap()))
+            .map(str::to_string)
+            .collect::<Vec<_>>()
+    };
+    assert!(!builders().is_empty(), "no builder runs");
+    build.kill().unwrap();
+    build.wait().unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while !builders().is_empty() && std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(builders(), Vec::<String>::new(), "the builder outlived its build");
+    let left: Vec<std::path::PathBuf> = std::fs::read_dir(&*tmp)
+        .unwrap()
+        .flatten()
+        .filter(|e| e.file_name().to_string_lossy().starts_with("shards-"))
+        .map(|e| e.path())
+        .collect();
+    assert_eq!(left.len(), 1, "{left:?}");
+    let next = context(
+        "kill-next-ctx",
+        &format!("FROM {image}\nRUN [\"/bin/testguest\", \"report\"]\n"),
+    );
+    let built = run_shards_env(
+        &["build"],
+        &["--progress=plain", next.to_str().unwrap()],
+        &env,
+        TIMEOUT,
+    );
+    assert_eq!(built.status, Some(0), "{}", built.stderr);
+    assert!(!left[0].exists(), "the killed build's directory is left");
+}
+
 /// `RUN` steps run in a builder microVM as BuildKit runs them (docs/research/
 /// buildkit-run.md, with the values Docker Desktop's BuildKit showed, 2026-10-02): PID 1
 /// of their own namespaces, `buildkitsandbox`, HOME from passwd, BuildKit's capabilities

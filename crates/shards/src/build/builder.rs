@@ -20,7 +20,7 @@ use std::ffi::OsString;
 #[cfg(unix)]
 use std::io::{self, Read};
 #[cfg(unix)]
-use std::os::fd::AsFd;
+use std::os::fd::{AsFd, AsRawFd};
 #[cfg(unix)]
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
@@ -112,8 +112,8 @@ pub struct Builder {
     conn: UnixStream,
     /// Where its steps' SSH agent sockets are relayed to (build::SSH_PORT).
     ssh: UnixListener,
-    /// Where its vsock socket is: removed with the builder.
-    dir: PathBuf,
+    /// Where its vsock socket is: removed with the builder, after its VM.
+    _dir: SocketDir,
     /// The layer each origin's own part is, once the guest has it, by the origin's id.
     layers: HashMap<u64, u32>,
     next: u32,
@@ -138,13 +138,7 @@ type Asked<'q, 'a> = Option<(&'q super::proxy::Questions, &'a mut dyn FnMut(&str
 /// are, its files of request bodies leaving the disk what `limits` keeps free.
 #[cfg(unix)]
 pub fn proxy(limits: &shards_image::store::Limits) -> Result<super::proxy::Proxy, String> {
-    let guard = DirGuard(Some(socket_dir()?));
-    let dir = guard.0.clone().unwrap_or_default();
-    let proxy = super::proxy::Proxy::new(dir, limits)?;
-    // The proxy removes it as it goes.
-    let mut guard = guard;
-    guard.0 = None;
-    Ok(proxy)
+    super::proxy::Proxy::new(socket_dir()?, limits)
 }
 
 /// Where shards starts no builder, it starts no proxy either.
@@ -231,15 +225,89 @@ pub struct Boot<'a> {
     pub proxy: Option<&'a super::proxy::Proxy>,
 }
 
-/// Removes a directory as it goes out of scope, unless it was let go.
+/// A directory of a builder's or a build proxy's own for its sockets ([`socket_dir`]),
+/// removed as it drops; and the lock that says its owner lives, which a later build takes
+/// once that owner is gone, even killed, to remove what it left ([`sweep`], D137).
 #[cfg(unix)]
-struct DirGuard(Option<PathBuf>);
+#[derive(Debug)]
+pub struct SocketDir {
+    path: PathBuf,
+    _held: std::fs::File,
+}
 
 #[cfg(unix)]
-impl Drop for DirGuard {
+impl SocketDir {
+    /// `path`, an empty directory of this process's own, with its lock taken: held before
+    /// it is put in place, so that a lock in place is held.
+    pub fn held(path: PathBuf) -> Result<SocketDir, String> {
+        let fresh = path.join(".shards-lock-new");
+        let held = std::fs::File::options()
+            .write(true)
+            .create_new(true)
+            .open(&fresh)
+            .and_then(|held| {
+                // SAFETY: flock(2) of a descriptor this process owns.
+                if unsafe { libc::flock(held.as_raw_fd(), libc::LOCK_EX) } != 0 {
+                    return Err(io::Error::last_os_error());
+                }
+                std::fs::rename(&fresh, path.join(SOCKET_DIR_LOCK))?;
+                Ok(held)
+            });
+        match held {
+            Ok(held) => Ok(SocketDir { path, _held: held }),
+            Err(e) => {
+                let _ = std::fs::remove_dir_all(&path);
+                Err(format!("a directory for the builder: {e}"))
+            }
+        }
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+#[cfg(unix)]
+impl Drop for SocketDir {
     fn drop(&mut self) {
-        if let Some(d) = self.0.take() {
-            let _ = std::fs::remove_dir_all(d);
+        let _ = std::fs::remove_dir_all(&self.path);
+    }
+}
+
+/// The lock in a [`SocketDir`] its owner holds (flock(2)) while it lives.
+#[cfg(unix)]
+const SOCKET_DIR_LOCK: &str = ".shards-lock";
+
+/// Removes what builders and build proxies gone before left in `base`, even killed: each
+/// directory of theirs, `shards-` and mkdtemp's six characters, this user's, whose lock no
+/// process holds. Its owner renamed the lock into place only once it held it, so one free
+/// is one whose owner is gone.
+#[cfg(unix)]
+fn sweep(base: &Path) {
+    use std::os::unix::fs::MetadataExt;
+    let Ok(entries) = std::fs::read_dir(base) else {
+        return;
+    };
+    // SAFETY: getuid(2).
+    let me = unsafe { libc::getuid() };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(rest) = name.to_str().and_then(|n| n.strip_prefix("shards-")) else {
+            continue;
+        };
+        if rest.len() != 6 {
+            continue;
+        }
+        let path = entry.path();
+        if !std::fs::symlink_metadata(&path).is_ok_and(|m| m.is_dir() && m.uid() == me) {
+            continue;
+        }
+        let Ok(lock) = std::fs::File::open(path.join(SOCKET_DIR_LOCK)) else {
+            continue;
+        };
+        // SAFETY: flock(2) of a descriptor this process owns.
+        if unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
+            let _ = std::fs::remove_dir_all(&path);
         }
     }
 }
@@ -255,9 +323,9 @@ const SOCKET_PATH: usize = 104 - 1 - 11;
 
 /// A directory of this builder's own for its sockets: made by mkdtemp(3), mode 0700 and a
 /// name no other process chose, in the temporary directory, or in /tmp if that one's path
-/// is too long for a socket's.
+/// is too long for a socket's; what builders gone before left there removed first.
 #[cfg(unix)]
-fn socket_dir() -> Result<PathBuf, String> {
+fn socket_dir() -> Result<SocketDir, String> {
     use std::os::unix::ffi::OsStringExt;
     #[expect(
         clippy::disallowed_methods,
@@ -269,6 +337,7 @@ fn socket_dir() -> Result<PathBuf, String> {
     } else {
         PathBuf::from("/tmp")
     };
+    sweep(&base);
     let mut template = base.join("shards-XXXXXX").into_os_string().into_vec();
     template.push(0);
     // SAFETY: a NUL-terminated template mkdtemp rewrites in place.
@@ -279,16 +348,15 @@ fn socket_dir() -> Result<PathBuf, String> {
         ));
     }
     template.pop();
-    Ok(PathBuf::from(std::ffi::OsString::from_vec(template)))
+    SocketDir::held(PathBuf::from(std::ffi::OsString::from_vec(template)))
 }
 
 #[cfg(unix)]
 impl Builder {
     pub fn start(boot: &Boot<'_>) -> Result<Builder, String> {
         // Removed if the builder does not start; the builder removes it once it does.
-        let guard = DirGuard(Some(socket_dir()?));
-        let dir = guard.0.clone().unwrap_or_default();
-        let vsock = dir.join("v");
+        let dir = socket_dir()?;
+        let vsock = dir.path().join("v");
         let mut dial = vsock.clone().into_os_string();
         dial.push(format!("_{}", build::PORT));
         let listener = UnixListener::bind(&dial).map_err(|e| format!("the builder's port: {e}"))?;
@@ -442,14 +510,12 @@ impl Builder {
         };
         conn.set_nonblocking(false)
             .map_err(|e| format!("the builder's connection: {e}"))?;
-        let mut guard = guard;
-        guard.0 = None;
         Ok(Builder {
             vm,
             net,
             conn,
             ssh,
-            dir,
+            _dir: dir,
             layers: HashMap::new(),
             next: 0,
             proxy_url,
@@ -978,8 +1044,40 @@ impl Drop for Builder {
             }
             std::thread::sleep(Duration::from_millis(1));
         }
-        // The network process goes with its VM.
+        // The network process goes with its VM; its directory, a field, after this.
         crate::netproc::reap(&self.net);
-        let _ = std::fs::remove_dir_all(&self.dir);
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+
+    /// A sweep removes the directories builds gone before left, each whose lock no one
+    /// holds, and none whose build lives, nor one whose lock is not yet in place, nor
+    /// anything not a build's (D137).
+    #[test]
+    fn a_sweep_removes_what_dead_builds_left() {
+        let base = shards_testdir::TempDir::new("sweep").unwrap();
+        let made = |name: &str| {
+            let path = base.join(name);
+            std::fs::create_dir(&path).unwrap();
+            path
+        };
+        let live = SocketDir::held(made("shards-live01")).unwrap();
+        // A build gone, even killed: its lock in place, and no one holding it.
+        let gone = made("shards-gone01");
+        std::fs::write(gone.join(SOCKET_DIR_LOCK), b"").unwrap();
+        let starting = made("shards-start1");
+        std::fs::write(starting.join(".shards-lock-new"), b"").unwrap();
+        let other = made("shards-other-thing");
+        std::fs::write(other.join(SOCKET_DIR_LOCK), b"").unwrap();
+        sweep(&base);
+        assert!(live.path().exists(), "a live build's");
+        assert!(!gone.exists(), "a lock no one holds");
+        assert!(starting.exists(), "a lock not yet in place");
+        assert!(other.exists(), "no build's");
+        drop(live);
+        assert!(!base.join("shards-live01").exists(), "removed as it drops");
     }
 }
