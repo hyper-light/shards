@@ -268,6 +268,17 @@ fn build_answers_as_buildx() {
         // on the host the oracle ran on, Linux: on Windows the text is Windows', which the
         // oracle does not record, so there the rest of the answer alone is compared.
         let os_text = "no such file or directory";
+        // Where no agent socket is named, buildx falls back to the agent's own, which on
+        // Windows is OpenSSH's pipe, and says so where it is not there, as on CI's runners
+        // (BuildKit v0.33.0 agentprovider_windows.go, getFallbackAgentPath).
+        let stderr: &str = &if cfg!(windows) {
+            stderr.replace(
+                "make sure SSH_AUTH_SOCK is set",
+                r"Windows OpenSSH agent not available at \\.\pipe\openssh-ssh-agent. Enable the SSH agent service or set SSH_AUTH_SOCK.",
+            )
+        } else {
+            stderr.to_string()
+        };
         let ok = if refused {
             stdout.starts_with("RUN") && got_status == 1
         } else if cfg!(windows) && stderr.contains(os_text) {

@@ -1432,9 +1432,18 @@ mod tests {
             );
             let _ = std::fs::remove_dir_all(&dir);
         }
+        // Where no socket is named, the agent's own, which on Windows is OpenSSH's pipe:
+        // none runs here (BuildKit's getFallbackAgentPath, agentprovider_windows.go).
+        let fallback = if cfg!(windows) {
+            r"Windows OpenSSH agent not available at \\.\pipe\openssh-ssh-agent. Enable the SSH agent service or set SSH_AUTH_SOCK."
+        } else {
+            "make sure SSH_AUTH_SOCK is set"
+        };
         assert_eq!(
             ssh_agents(&s(&["default"]), &none, &key).unwrap_err(),
-            "failed to convert agent config {default [] false}: invalid empty ssh agent socket: make sure SSH_AUTH_SOCK is set"
+            format!(
+                "failed to convert agent config {{default [] false}}: invalid empty ssh agent socket: {fallback}"
+            )
         );
         assert_eq!(
             ssh_agents(&s(&["k=/no/such"]), &none, &key).unwrap_err(),

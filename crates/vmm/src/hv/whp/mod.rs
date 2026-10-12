@@ -15,10 +15,11 @@
 
 mod ffi;
 
+use std::cell::Cell;
 use std::ffi::c_void;
 use std::fmt;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use self::ffi::*;
 use super::{Exit, Io};
@@ -26,6 +27,7 @@ use crate::arch::x86_64::ioapic::{Ioapic, Sent};
 use crate::arch::x86_64::mmio::{self, Access, Extend, Mode};
 use crate::arch::x86_64::{Boot, Segment, cpuid, layout};
 use crate::snapshot::codec::{self, DecodeError, Reader, Writer};
+use crate::sync::lock;
 
 /// A failed WHP call, or guest behavior the VMM does not emulate.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -340,9 +342,19 @@ fn cpuid_list(results: &[cpuid::Masked]) -> Vec<WHV_X64_CPUID_RESULT2> {
         .collect()
 }
 
-/// A partition: deleted, its vCPUs with it, once nothing holds it.
+/// A partition: deleted, its vCPUs with it, once nothing holds it. With what it maps of this
+/// process's memory, where the instruction emulator's accesses to guest RAM go
+/// ([`Vcpu::emulate`]).
 #[derive(Debug)]
-struct Partition(WHV_PARTITION_HANDLE);
+struct Partition(WHV_PARTITION_HANDLE, Mutex<Vec<Mapped>>);
+
+/// `len` bytes of guest-physical memory from `gpa`, at `host` in this process.
+#[derive(Debug, Clone, Copy)]
+struct Mapped {
+    gpa: u64,
+    host: usize,
+    len: u64,
+}
 
 impl Drop for Partition {
     fn drop(&mut self) {
@@ -367,6 +379,28 @@ impl Partition {
         // SAFETY: forwarded caller contract.
         check("WHvMapGpaRange", unsafe {
             WHvMapGpaRange(self.0, host.cast_const().cast::<c_void>(), gpa, len as u64, flags)
+        })?;
+        lock(&self.1).push(Mapped {
+            gpa,
+            host: host as usize,
+            len: len as u64,
+        });
+        Ok(())
+    }
+
+    fn unmap(&self, gpa: u64, len: u64) -> Result<()> {
+        // SAFETY: the partition's own mapping, which nothing else uses.
+        check("WHvUnmapGpaRange", unsafe { WHvUnmapGpaRange(self.0, gpa, len) })?;
+        lock(&self.1).retain(|m| m.gpa != gpa || m.len != len);
+        Ok(())
+    }
+
+    /// Where `len` bytes of guest RAM at `gpa` lie in this process, if one mapping holds
+    /// them all.
+    fn host(&self, gpa: u64, len: u64) -> Option<*mut u8> {
+        lock(&self.1).iter().find_map(|m| {
+            let offset = gpa.checked_sub(m.gpa)?;
+            (offset.checked_add(len)? <= m.len).then(|| (m.host + offset as usize) as *mut u8)
         })
     }
 
@@ -429,10 +463,7 @@ impl Stage2 {
     }
 
     pub fn unmap(&self, gpa: u64, len: usize) -> Result<()> {
-        // SAFETY: the partition's own mapping, which nothing else uses.
-        check("WHvUnmapGpaRange", unsafe {
-            WHvUnmapGpaRange(self.0.0, gpa, len as u64)
-        })
+        self.0.unmap(gpa, len as u64)
     }
 }
 
@@ -460,7 +491,7 @@ fn partition(vcpus: u32) -> Result<Partition> {
     check("WHvCreatePartition", unsafe {
         WHvCreatePartition(&raw mut handle)
     })?;
-    let partition = Partition(handle);
+    let partition = Partition(handle, Mutex::new(Vec::new()));
     partition.set(
         WHvPartitionPropertyCodeProcessorCount,
         &vcpus,
@@ -628,6 +659,7 @@ impl Vm {
             partition: self.partition.clone(),
             ioapic: self.ioapic.clone(),
             index,
+            emulator: None,
         })
     }
 }
@@ -734,12 +766,155 @@ pub struct Vcpu {
     partition: Arc<Partition>,
     ioapic: Arc<Ioapic>,
     index: u32,
+    /// Microsoft's instruction emulator, made the first time an MMIO access is by an
+    /// instruction shards does not decode itself ([`Vcpu::emulate`]).
+    emulator: Option<Emulator>,
 }
 
 impl Drop for Vcpu {
     fn drop(&mut self) {
         // SAFETY: this vCPU, which no thread runs once it drops.
         unsafe { WHvDeleteVirtualProcessor(self.partition.0, self.index) };
+    }
+}
+
+/// An instruction emulator (WinHvEmulation.h), destroyed as it drops; used by the thread
+/// that runs its vCPU alone.
+#[derive(Debug)]
+struct Emulator(*mut c_void);
+
+// SAFETY: a handle the emulator's library made, used by one thread at a time: its vCPU's,
+// which takes it along.
+unsafe impl Send for Emulator {}
+
+impl Drop for Emulator {
+    fn drop(&mut self) {
+        // SAFETY: the emulator this value made.
+        unsafe { WHvEmulatorDestroyEmulator(self.0) };
+    }
+}
+
+/// What the emulator's callbacks reach while it emulates one instruction: the vCPU, the
+/// VMM's devices, and the first failure of a device's, which no HRESULT carries.
+struct Emulating<'a> {
+    vcpu: &'a Vcpu,
+    io: &'a dyn Io,
+    failed: Cell<Option<Error>>,
+}
+
+/// The emulator's callbacks (WinHvEmulation.h, WHV_EMULATOR_CALLBACKS): each given the
+/// [`Emulating`] its call was.
+mod emulate {
+    use super::*;
+
+    /// E_FAIL.
+    const FAILED: windows_sys::core::HRESULT = 0x8000_4005_u32 as i32;
+
+    /// # Safety
+    /// `context` is the [`Emulating`] of the call that is emulating.
+    unsafe fn emulating<'a>(context: *const c_void) -> &'a Emulating<'a> {
+        // SAFETY: as the caller says.
+        unsafe { &*context.cast::<Emulating<'a>>() }
+    }
+
+    /// Port I/O, which shards emulates itself before it asks the emulator anything.
+    pub unsafe extern "system" fn io_port(
+        _: *const c_void,
+        _: *mut WHV_EMULATOR_IO_ACCESS_INFO,
+    ) -> windows_sys::core::HRESULT {
+        FAILED
+    }
+
+    /// An access of 1 to 8 bytes at a GPA: guest RAM where the partition maps it, else the
+    /// VMM's devices.
+    pub unsafe extern "system" fn memory(
+        context: *const c_void,
+        access: *mut WHV_EMULATOR_MEMORY_ACCESS_INFO,
+    ) -> windows_sys::core::HRESULT {
+        // SAFETY: the emulator's context and access, for this call.
+        let (cx, access) = unsafe { (emulating(context), &mut *access) };
+        let size = usize::from(access.AccessSize).min(access.Data.len());
+        let Some(data) = access.Data.get_mut(..size) else {
+            return FAILED;
+        };
+        let gpa = access.GpaAddress;
+        let write = access.Direction != 0;
+        if let Some(at) = cx.vcpu.partition.host(gpa, size as u64) {
+            for (i, b) in data.iter_mut().enumerate() {
+                // SAFETY: inside a mapping of guest RAM, which stays mapped while the VM
+                // lives; byte by byte, as the guest's other vCPUs may touch it meanwhile.
+                unsafe {
+                    if write {
+                        at.add(i).write_volatile(*b);
+                    } else {
+                        *b = at.add(i).read_volatile();
+                    }
+                }
+            }
+            return 0;
+        }
+        if !write {
+            cx.vcpu.mmio_read(cx.io, gpa, data);
+            return 0;
+        }
+        match cx.vcpu.mmio_write(cx.io, gpa, data) {
+            Ok(()) => 0,
+            Err(e) => {
+                cx.failed.set(Some(e));
+                FAILED
+            }
+        }
+    }
+
+    pub unsafe extern "system" fn get_registers(
+        context: *const c_void,
+        names: *const WHV_REGISTER_NAME,
+        count: u32,
+        values: *mut WHV_REGISTER_VALUE,
+    ) -> windows_sys::core::HRESULT {
+        // SAFETY: the emulator's context, names and values, `count` of each.
+        unsafe {
+            let cx = emulating(context);
+            WHvGetVirtualProcessorRegisters(cx.vcpu.partition.0, cx.vcpu.index, names, count, values)
+        }
+    }
+
+    pub unsafe extern "system" fn set_registers(
+        context: *const c_void,
+        names: *const WHV_REGISTER_NAME,
+        count: u32,
+        values: *const WHV_REGISTER_VALUE,
+    ) -> windows_sys::core::HRESULT {
+        // SAFETY: the emulator's context, names and values, `count` of each.
+        unsafe {
+            let cx = emulating(context);
+            WHvSetVirtualProcessorRegisters(cx.vcpu.partition.0, cx.vcpu.index, names, count, values)
+        }
+    }
+
+    /// The GPA of a guest-virtual page, as the vCPU's own page tables have it.
+    pub unsafe extern "system" fn translate(
+        context: *const c_void,
+        gva: u64,
+        flags: WHV_TRANSLATE_GVA_FLAGS,
+        result: *mut WHV_TRANSLATE_GVA_RESULT_CODE,
+        gpa: *mut u64,
+    ) -> windows_sys::core::HRESULT {
+        let mut translated = WHV_TRANSLATE_GVA_RESULT::default();
+        // SAFETY: the emulator's context, result and GPA, for this call.
+        unsafe {
+            let cx = emulating(context);
+            let hr = WHvTranslateGva(
+                cx.vcpu.partition.0,
+                cx.vcpu.index,
+                gva,
+                flags,
+                &raw mut translated,
+                gpa,
+            );
+            *result = translated.ResultCode;
+            hr
+        }
     }
 }
 
@@ -926,7 +1101,7 @@ impl Vcpu {
         )
     }
 
-    fn mmio(&self, io: &dyn Io, e: &WHV_RUN_VP_EXIT_CONTEXT) -> Result<()> {
+    fn mmio(&mut self, io: &dyn Io, e: &WHV_RUN_VP_EXIT_CONTEXT) -> Result<()> {
         // SAFETY: the union member a memory exit fills.
         let m = unsafe { e.Anonymous.MemoryAccess };
         let gpa = m.Gpa;
@@ -953,13 +1128,15 @@ impl Vcpu {
             .InstructionBytes
             .get(..usize::from(m.InstructionByteCount))
             .unwrap_or_default();
-        let decoded = mode.and_then(|mode| mmio::decode(bytes, mode)).ok_or_else(|| {
-            Error::Guest(format!(
-                "an MMIO {} at {gpa:#x} by an instruction shards does not emulate: {bytes:02x?} (rip {:#x})",
-                if kind == 1 { "write" } else { "read" },
-                e.VpContext.Rip
-            ))
-        })?;
+        let Some(decoded) = mode.and_then(|mode| mmio::decode(bytes, mode)) else {
+            return self.emulate(io, e).map_err(|why| {
+                Error::Guest(format!(
+                    "an MMIO {} at {gpa:#x} by an instruction neither shards nor Windows' emulator emulates ({why}): {bytes:02x?} (rip {:#x})",
+                    if kind == 1 { "write" } else { "read" },
+                    e.VpContext.Rip
+                ))
+            });
+        };
         let rip = e.VpContext.Rip.wrapping_add(u64::from(decoded.len));
         let write = |data: u64, size: u8| {
             let bytes = data.to_le_bytes();
@@ -1009,6 +1186,65 @@ impl Vcpu {
                 "an MMIO access at {gpa:#x} whose instruction ({access:?}) is not of its direction"
             ))),
         }
+    }
+
+    /// Emulates the instruction of MMIO exit `e` with Windows' own instruction emulator
+    /// (WinHvEmulation.h, WHvEmulatorTryMmioEmulation), for what shards' decoder does not
+    /// take (arch/x86_64/mmio.rs): string instructions above all, as KVM's emulator takes
+    /// them. Linux copies a page of a mount's options from its caller, however long they
+    /// are (fs/namespace.c, copy_mount_options), so a REP MOVSB reads the page that follows
+    /// them, which may be the control page a process of the guest maps.
+    fn emulate(&mut self, io: &dyn Io, e: &WHV_RUN_VP_EXIT_CONTEXT) -> Result<()> {
+        static CALLBACKS: WHV_EMULATOR_CALLBACKS = WHV_EMULATOR_CALLBACKS {
+            Size: size_of::<WHV_EMULATOR_CALLBACKS>() as u32,
+            Reserved: 0,
+            WHvEmulatorIoPortCallback: Some(emulate::io_port),
+            WHvEmulatorMemoryCallback: Some(emulate::memory),
+            WHvEmulatorGetVirtualProcessorRegisters: Some(emulate::get_registers),
+            WHvEmulatorSetVirtualProcessorRegisters: Some(emulate::set_registers),
+            WHvEmulatorTranslateGvaPage: Some(emulate::translate),
+        };
+        let emulator = match &self.emulator {
+            Some(made) => made.0,
+            None => {
+                let mut made = std::ptr::null_mut();
+                // SAFETY: callbacks that live as long as the process, and a handle for the
+                // call to fill, destroyed as the Emulator holding it drops.
+                check("WHvEmulatorCreateEmulator", unsafe {
+                    WHvEmulatorCreateEmulator(&raw const CALLBACKS, &raw mut made)
+                })?;
+                self.emulator = Some(Emulator(made));
+                made
+            }
+        };
+        let cx = Emulating {
+            vcpu: self,
+            io,
+            failed: Cell::new(None),
+        };
+        let mut status = WHV_EMULATOR_STATUS::default();
+        // SAFETY: this vCPU's emulator; the context its callbacks are given, alive for the
+        // call; and the exit's own contexts.
+        let hr = unsafe {
+            WHvEmulatorTryMmioEmulation(
+                emulator,
+                (&raw const cx).cast(),
+                &raw const e.VpContext,
+                &raw const e.Anonymous.MemoryAccess,
+                &raw mut status,
+            )
+        };
+        if let Some(failed) = cx.failed.take() {
+            return Err(failed);
+        }
+        check("WHvEmulatorTryMmioEmulation", hr)?;
+        // EmulationSuccessful, the status's first bit (WinHvEmulation.h).
+        // SAFETY: the union's word, which every member shares.
+        let bits = unsafe { status.AsUINT32 };
+        if bits & 1 == 0 {
+            return Err(Error::Guest(format!("its status {bits:#x}")));
+        }
+        Ok(())
     }
 
     fn mmio_read(&self, io: &dyn Io, gpa: u64, data: &mut [u8]) {

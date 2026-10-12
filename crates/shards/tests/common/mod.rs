@@ -103,12 +103,17 @@ pub fn cannot_run_vms() -> bool {
 }
 
 /// Snapshots exist where this build has a backend (vm::SNAPSHOTS); tests of them skip
-/// elsewhere with a SKIP line, as [`cannot_run_vms`] does.
+/// elsewhere with a SKIP line, even where `SHARDS_REQUIRE_VMS=1` says VMs must run: a
+/// backend without snapshots (WHP's, so far) runs VMs all the same.
 pub fn cannot_snapshot() -> bool {
     if shards_vmm::vm::SNAPSHOTS {
         return false;
     }
-    skip(&format!("snapshots are not supported on {ARCH} yet"))
+    let _ = writeln!(
+        std::io::stderr(),
+        "SKIP: snapshots are not supported on {ARCH} yet"
+    );
+    true
 }
 
 /// The kernel shards pins for its guests (src/kernel.rs), which the tests boot too.
