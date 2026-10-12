@@ -6,7 +6,10 @@
 //! write, each step's result printed. Then: whether a standard user, not an administrator
 //! as the runner's is, runs one (an account the workflow makes, `SHARDS_PROBE_USER`); and
 //! which device WinHvPlatform.dll opens, found among its own strings, with that device's
-//! security descriptor, which says who may.
+//! security descriptor, which says who may: Authenticated Users, and one capability SID
+//! (run 3). So the AppContainer is tried a third time holding that capability alone, and
+//! the capability's name is looked for among those the system knows: each derived
+//! (DeriveCapabilitySidsFromName) and compared.
 
 // Windows' constants, matched by their own names.
 #![allow(non_upper_case_globals)]
@@ -45,6 +48,9 @@ const CODE: u64 = 0x1000;
 const PML4: u64 = 0x10000;
 const PDPT: u64 = 0x11000;
 const DONE: u16 = 0x501;
+/// The capability SID VidExo's DACL grants read and write (run 3 of this probe).
+const VIDEXO_CAPABILITY: &str =
+    "S-1-15-3-1024-1350733694-1533467442-3402045280-1710179238-1008639688-2282869650-3611451526-669908847";
 
 fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain([0]).collect()
@@ -290,9 +296,131 @@ fn child(handle: usize, path: &str) -> i32 {
     if ran.is_ok() { 0 } else { 10 }
 }
 
-/// Runs this binary as `child`, in AppContainer `sid` if given, with exactly `file`, and
-/// the parent's stdout and stderr, inherited.
-fn launch(sid: Option<PSID>, file: HANDLE, path: &str) -> Result<u32, String> {
+/// A SID from its string form; freed with LocalFree.
+fn sid_of(text: &str) -> Option<PSID> {
+    let w = wide(text);
+    let mut sid: PSID = std::ptr::null_mut();
+    // SAFETY: a NUL-terminated string; the SID the call allocates.
+    let ok = unsafe { windows_sys::Win32::Security::Authorization::ConvertStringSidToSidW(w.as_ptr(), &raw mut sid) };
+    (ok != 0).then_some(sid)
+}
+
+/// A SID's string form.
+fn text_of(sid: PSID) -> String {
+    let mut out: windows_sys::core::PWSTR = std::ptr::null_mut();
+    // SAFETY: a valid SID; the string the call allocates, freed below.
+    if unsafe { windows_sys::Win32::Security::Authorization::ConvertSidToStringSidW(sid, &raw mut out) } == 0 {
+        return String::new();
+    }
+    let mut n = 0;
+    // SAFETY: a NUL-terminated string the call wrote.
+    while unsafe { *out.add(n) } != 0 {
+        n += 1;
+    }
+    // SAFETY: `n` units.
+    let s = String::from_utf16_lossy(unsafe { std::slice::from_raw_parts(out, n) });
+    // SAFETY: the call's allocation.
+    unsafe { LocalFree(out.cast()) };
+    s
+}
+
+/// The capability SIDs `name` derives to, as strings.
+fn derived(name: &str) -> Vec<String> {
+    let w = wide(name);
+    let (mut groups, mut ngroups, mut caps, mut ncaps): (*mut PSID, u32, *mut PSID, u32) =
+        (std::ptr::null_mut(), 0, std::ptr::null_mut(), 0);
+    // SAFETY: a NUL-terminated name; arrays the call allocates, freed below.
+    let ok = unsafe {
+        windows_sys::Win32::Security::DeriveCapabilitySidsFromName(
+            w.as_ptr(),
+            &raw mut groups,
+            &raw mut ngroups,
+            &raw mut caps,
+            &raw mut ncaps,
+        )
+    };
+    if ok == 0 {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    // SAFETY: the arrays and SIDs the call allocated, read and freed once each.
+    unsafe {
+        for i in 0..ncaps as usize {
+            let sid = *caps.add(i);
+            out.push(text_of(sid));
+            LocalFree(sid.cast());
+        }
+        for i in 0..ngroups as usize {
+            LocalFree((*groups.add(i)).cast());
+        }
+        LocalFree(caps.cast());
+        LocalFree(groups.cast());
+    }
+    out
+}
+
+/// Capability names the system knows: the registry's cached list
+/// (HKLM\SOFTWARE\Microsoft\SecurityManager\CapabilityClasses, AllCachedCapabilities), and
+/// those the system's own app manifests declare.
+fn capability_names() -> Vec<String> {
+    let mut names: Vec<String> = Vec::new();
+    let key = wide(r"SOFTWARE\Microsoft\SecurityManager\CapabilityClasses");
+    let value = wide("AllCachedCapabilities");
+    let mut size = 0u32;
+    // SAFETY: the size query.
+    unsafe {
+        windows_sys::Win32::System::Registry::RegGetValueW(
+            windows_sys::Win32::System::Registry::HKEY_LOCAL_MACHINE,
+            key.as_ptr(),
+            value.as_ptr(),
+            windows_sys::Win32::System::Registry::RRF_RT_REG_MULTI_SZ,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            &raw mut size,
+        )
+    };
+    let mut buf = vec![0u16; size as usize / 2 + 1];
+    // SAFETY: a buffer of the size asked.
+    let r = unsafe {
+        windows_sys::Win32::System::Registry::RegGetValueW(
+            windows_sys::Win32::System::Registry::HKEY_LOCAL_MACHINE,
+            key.as_ptr(),
+            value.as_ptr(),
+            windows_sys::Win32::System::Registry::RRF_RT_REG_MULTI_SZ,
+            std::ptr::null_mut(),
+            buf.as_mut_ptr().cast(),
+            &raw mut size,
+        )
+    };
+    if r == 0 {
+        names.extend(
+            String::from_utf16_lossy(&buf)
+                .split('\0')
+                .filter(|s| !s.is_empty())
+                .map(str::to_string),
+        );
+    }
+    println!("registry: {} cached capability names (RegGetValueW {r})", names.len());
+    for root in [r"C:\Windows\SystemApps", r"C:\Program Files\WindowsApps"] {
+        for entry in std::fs::read_dir(root).into_iter().flatten().flatten() {
+            let Ok(text) = std::fs::read_to_string(entry.path().join("AppxManifest.xml")) else {
+                continue;
+            };
+            for part in text.split("Capability Name=\"").skip(1) {
+                if let Some(name) = part.split('"').next()
+                    && !names.iter().any(|n| n == name)
+                {
+                    names.push(name.to_string());
+                }
+            }
+        }
+    }
+    names
+}
+
+/// Runs this binary as `child`, in AppContainer `sid` if given, holding `capabilities`, with
+/// exactly `file`, and the parent's stdout and stderr, inherited.
+fn launch(sid: Option<PSID>, capabilities: &[PSID], file: HANDLE, path: &str) -> Result<u32, String> {
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
     let mut cmd = wide(&format!("\"{}\" child {} \"{path}\"", exe.display(), file as usize));
     let out = std::io::stdout().as_raw_handle() as HANDLE;
@@ -312,6 +440,13 @@ fn launch(sid: Option<PSID>, file: HANDLE, path: &str) -> Result<u32, String> {
     let mut list = vec![0u8; size];
     let attrs = list.as_mut_ptr() as LPPROC_THREAD_ATTRIBUTE_LIST;
     let mut caps = SECURITY_CAPABILITIES::default();
+    let mut held: Vec<windows_sys::Win32::Security::SID_AND_ATTRIBUTES> = capabilities
+        .iter()
+        .map(|&sid| windows_sys::Win32::Security::SID_AND_ATTRIBUTES {
+            Sid: sid,
+            Attributes: windows_sys::Win32::System::SystemServices::SE_GROUP_ENABLED as u32,
+        })
+        .collect();
     // SAFETY: a buffer of the size asked; attributes whose values outlive the list.
     unsafe {
         if InitializeProcThreadAttributeList(attrs, count, 0, &raw mut size) == 0 {
@@ -331,6 +466,8 @@ fn launch(sid: Option<PSID>, file: HANDLE, path: &str) -> Result<u32, String> {
         }
         if let Some(sid) = sid {
             caps.AppContainerSid = sid;
+            caps.Capabilities = if held.is_empty() { std::ptr::null_mut() } else { held.as_mut_ptr() };
+            caps.CapabilityCount = held.len() as u32;
             if UpdateProcThreadAttribute(
                 attrs,
                 0,
@@ -415,7 +552,13 @@ fn main() {
         let hr2 = unsafe { DeriveAppContainerSidFromAppContainerName(name.as_ptr(), &raw mut sid) };
         println!("CreateAppContainerProfile: {:#010x}; derived: {:#010x}", hr as u32, hr2 as u32);
     }
-    for (label, container) in [("control (no AppContainer)", None), ("AppContainer", Some(sid))] {
+    let vid = sid_of(VIDEXO_CAPABILITY);
+    let with_vid: Vec<PSID> = vid.into_iter().collect();
+    for (label, container, capabilities) in [
+        ("control (no AppContainer)", None, &[][..]),
+        ("AppContainer", Some(sid), &[][..]),
+        ("AppContainer with VidExo's capability", Some(sid), &with_vid[..]),
+    ] {
         let file = match open() {
             Ok(f) => f,
             Err(e) => {
@@ -427,7 +570,7 @@ fn main() {
         // SAFETY: our own file handle, made inheritable for the child's list.
         unsafe { SetHandleInformation(h, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT) };
         println!("== {label}");
-        match launch(container, h, &path_s) {
+        match launch(container, capabilities, h, &path_s) {
             Ok(code) => println!("{label}: child exited {code}"),
             Err(e) => println!("{label}: {e}"),
         }
@@ -451,6 +594,19 @@ fn main() {
             Err(e) => println!("standard user {user}: {e}"),
         }
         let _ = std::fs::remove_dir_all(&public);
+    }
+    // The capability's name, among those the system knows.
+    let names = capability_names();
+    let mut matched = Vec::new();
+    for name in &names {
+        if derived(name).iter().any(|s| s == VIDEXO_CAPABILITY) {
+            matched.push(name.clone());
+        }
+    }
+    println!("capability names tried: {}; VidExo's: {matched:?}", names.len());
+    if let Some(v) = vid {
+        // SAFETY: the SID ConvertStringSidToSidW allocated.
+        unsafe { LocalFree(v.cast()) };
     }
     // The device WHP opens, and who may.
     let system32 = std::path::PathBuf::from(std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into()))
