@@ -22,9 +22,9 @@
 //!   has room, where nothing listens and where the backlog is full, and how soon its
 //!   socket may be written; and whether a blocking one waits on a full backlog;
 //! - with `m207` (PM M207), whether a send waits while another thread waits to read the
-//!   same connection: a WSAPoll for its data, or a blocking recv, on the socket or on a
-//!   copy WSADuplicateSocketW made of it, the send through either; AF_UNIX and loopback
-//!   TCP.
+//!   same connection: a WSAPoll for its data, a blocking recv, or one of SO_RCVTIMEO, on the
+//!   socket or on a copy WSADuplicateSocketW made of it, the send through either; AF_UNIX
+//!   and loopback TCP, made without WSA_FLAG_OVERLAPPED and with it.
 
 use std::time::{Duration, Instant};
 
@@ -704,9 +704,66 @@ fn connects(dir: &std::path::Path) -> Result<(), String> {
     Ok(())
 }
 
+/// An AF_UNIX or loopback TCP socket made with `flags` (WSA_FLAG_OVERLAPPED or none).
+fn socket_with(family: u16, flags: u32) -> Result<SOCKET, String> {
+    // SAFETY: plain arguments.
+    let s = unsafe { WSASocketW(i32::from(family), SOCK_STREAM, 0, std::ptr::null(), 0, flags) };
+    if s == INVALID_SOCKET {
+        return Err(error("WSASocketW"));
+    }
+    Ok(s)
+}
+
+/// A connected pair of `family`, its sockets made with `flags`; an accepted socket takes
+/// its listener's.
+fn pair_with(dir: &std::path::Path, n: usize, family: u16, flags: u32) -> Result<(SOCKET, SOCKET), String> {
+    let l = socket_with(family, flags)?;
+    let c = socket_with(family, flags)?;
+    let path = dir.join(format!("m207-{}-{n}.sock", std::process::id()));
+    let unix = unix_addr(&path.to_string_lossy());
+    let mut tcp = SOCKADDR_IN {
+        sin_family: AF_INET,
+        sin_port: 0,
+        sin_addr: IN_ADDR {
+            S_un: IN_ADDR_0 {
+                S_addr: u32::from_ne_bytes([127, 0, 0, 1]),
+            },
+        },
+        sin_zero: [0; 8],
+    };
+    let (addr, mut len): (*mut SOCKADDR, i32) = if family == AF_UNIX {
+        ((&raw const unix).cast_mut().cast(), std::mem::size_of::<SOCKADDR_UN>() as i32)
+    } else {
+        ((&raw mut tcp).cast(), std::mem::size_of::<SOCKADDR_IN>() as i32)
+    };
+    // SAFETY: an address of its own length, which getsockname fills back for TCP's port.
+    let a = unsafe {
+        if bind(l, addr, len) != 0 || listen(l, 1) != 0 || getsockname(l, addr, &raw mut len) != 0 {
+            let e = error("listener");
+            close(l);
+            close(c);
+            return Err(e);
+        }
+        if connect(c, addr, len) != 0 {
+            let e = error("connect");
+            close(l);
+            close(c);
+            return Err(e);
+        }
+        accept(l, std::ptr::null_mut(), std::ptr::null_mut())
+    };
+    close(l);
+    let _ = std::fs::remove_file(&path);
+    if a == INVALID_SOCKET {
+        close(c);
+        return Err(error("accept"));
+    }
+    Ok((c, a))
+}
+
 /// `s` again, in this process, as WSADuplicateSocketW and WSASocketW(FROM_PROTOCOL_INFO)
-/// make a socket's copy.
-fn duplicate(s: SOCKET) -> Result<SOCKET, String> {
+/// make a socket's copy, with `flags`.
+fn duplicate(s: SOCKET, flags: u32) -> Result<SOCKET, String> {
     let mut info = WSAPROTOCOL_INFOW::default();
     // SAFETY: our socket; a structure for the call to fill.
     if unsafe { WSADuplicateSocketW(s, std::process::id(), &raw mut info) } != 0 {
@@ -720,7 +777,7 @@ fn duplicate(s: SOCKET) -> Result<SOCKET, String> {
             FROM_PROTOCOL_INFO,
             &raw const info,
             0,
-            0,
+            flags,
         )
     };
     if d == INVALID_SOCKET {
@@ -729,85 +786,86 @@ fn duplicate(s: SOCKET) -> Result<SOCKET, String> {
     Ok(d)
 }
 
-/// How long the wait that one thread makes on a connection lasts before another thread
-/// sends through it, and the longest the peer waits for what was sent.
-const WAITER_MS: i32 = 3000;
+/// How long the wait one thread makes on a connection lasts (a WSAPoll's, or a recv's
+/// SO_RCVTIMEO); when the peer sends the byte that ends any wait still waiting; and the
+/// longest the peer waits for what this thread sent.
+const WAITER_MS: u32 = 3000;
+const RELEASE_MS: u64 = 4000;
 const PEER_MS: i32 = 6000;
 
-/// M207: one thread waits to read a connection (a WSAPoll of `WAITER_MS` for its data, or
-/// a recv), on the socket or its copy; 100 ms on, this thread sends a byte through the
-/// socket or its copy, and the peer waits for it. Each: how long the send took, when the
-/// peer had the byte, and when and how the waiter returned (the peer answers a byte, which
-/// ends a recv that is still waiting).
+/// M207: one thread waits to read a connection (a WSAPoll of `WAITER_MS` for its data, a
+/// blocking recv, or one of SO_RCVTIMEO `WAITER_MS`), on the socket or its copy; 100 ms on,
+/// this thread sends a byte through the socket or its copy, and the peer waits for it;
+/// at `RELEASE_MS` another thread of the peer's sends the byte that ends a wait still
+/// waiting. Sockets made without WSA_FLAG_OVERLAPPED and with it. Each: how long the send
+/// took, when the peer had the byte, and when and how the waiter returned.
 fn concurrent(dir: &std::path::Path) -> Result<(), String> {
     let mut n = 0;
-    for transport in ["unix", "tcp"] {
-        for (wait, wait_on, send_by) in [
-            ("poll", "socket", "socket"),
-            ("recv", "socket", "socket"),
-            ("poll", "socket", "copy"),
-            ("recv", "socket", "copy"),
-            ("poll", "copy", "socket"),
-            ("recv", "copy", "socket"),
-        ] {
-            n += 1;
-            let (a, b) = if transport == "unix" {
-                unix_pair(dir, 1000 + n)?
-            } else {
-                tcp_pair()?
-            };
-            let copy = duplicate(a)?;
-            let waiter = if wait_on == "copy" { copy } else { a };
-            let sender = if send_by == "copy" { copy } else { a };
-            let (sent, took, seen, polled, waited) = std::thread::scope(|scope| {
-                let w = scope.spawn(move || {
-                    let t = Instant::now();
-                    let what = if wait == "poll" {
+    for (transport, family) in [("unix", AF_UNIX), ("tcp", AF_INET)] {
+        for (made, flags) in [("synchronous", 0), ("overlapped", WSA_FLAG_OVERLAPPED)] {
+            for wait in ["poll", "recv", "recv-timeout"] {
+                for (wait_on, send_by) in [("socket", "socket"), ("socket", "copy"), ("copy", "socket")] {
+                    n += 1;
+                    let (a, b) = pair_with(dir, n, family, flags)?;
+                    let copy = duplicate(a, flags)?;
+                    let waiter = if wait_on == "copy" { copy } else { a };
+                    let sender = if send_by == "copy" { copy } else { a };
+                    let (sent, took, seen, polled, waited) = std::thread::scope(|scope| {
+                        let w = scope.spawn(move || {
+                            let t = Instant::now();
+                            let what = if wait == "poll" {
+                                let mut fd = WSAPOLLFD {
+                                    fd: waiter,
+                                    events: POLLRDNORM,
+                                    revents: 0,
+                                };
+                                // SAFETY: one entry, our socket.
+                                let r = unsafe { WSAPoll(&raw mut fd, 1, WAITER_MS as i32) };
+                                format!("poll {r} revents {:#x}", fd.revents)
+                            } else {
+                                if wait == "recv-timeout" {
+                                    let ms = WAITER_MS;
+                                    // SAFETY: an option of its own size, on our socket.
+                                    unsafe { setsockopt(waiter, SOL_SOCKET, SO_RCVTIMEO, (&raw const ms).cast(), 4) };
+                                }
+                                let mut byte = [0u8; 1];
+                                format!("recv {:?}", recv_some(waiter, &mut byte))
+                            };
+                            (t.elapsed(), what)
+                        });
+                        scope.spawn(move || {
+                            std::thread::sleep(Duration::from_millis(RELEASE_MS));
+                            let _ = send_all(b, b"y");
+                        });
+                        std::thread::sleep(Duration::from_millis(100));
+                        let t = Instant::now();
+                        let sent = send_all(sender, b"x");
+                        let took = t.elapsed();
                         let mut fd = WSAPOLLFD {
-                            fd: waiter,
+                            fd: b,
                             events: POLLRDNORM,
                             revents: 0,
                         };
                         // SAFETY: one entry, our socket.
-                        let r = unsafe { WSAPoll(&raw mut fd, 1, WAITER_MS) };
-                        format!("poll {r} revents {:#x}", fd.revents)
-                    } else {
-                        let mut byte = [0u8; 1];
-                        format!("recv {:?}", recv_some(waiter, &mut byte))
-                    };
-                    (t.elapsed(), what)
-                });
-                std::thread::sleep(Duration::from_millis(100));
-                let t = Instant::now();
-                let sent = send_all(sender, b"x");
-                let took = t.elapsed();
-                let mut fd = WSAPOLLFD {
-                    fd: b,
-                    events: POLLRDNORM,
-                    revents: 0,
-                };
-                // SAFETY: one entry, our socket.
-                let polled = unsafe { WSAPoll(&raw mut fd, 1, PEER_MS) };
-                let seen = t.elapsed();
-                let mut byte = [0u8; 1];
-                if polled > 0 {
-                    let _ = recv_some(b, &mut byte);
+                        let polled = unsafe { WSAPoll(&raw mut fd, 1, PEER_MS) };
+                        let seen = t.elapsed();
+                        let waited = w.join().unwrap_or((Duration::ZERO, "panicked".into()));
+                        (sent, took, seen, polled, waited)
+                    });
+                    println!(
+                        "m207 {transport} {made} {wait} on the {wait_on}, send by the {send_by}: send {sent:?} \
+                         in {:.1} ms; the peer had it after {:.1} ms (poll {polled}); the waiter's {} after \
+                         {:.1} ms",
+                        took.as_secs_f64() * 1e3,
+                        seen.as_secs_f64() * 1e3,
+                        waited.1,
+                        waited.0.as_secs_f64() * 1e3
+                    );
+                    close(copy);
+                    close(a);
+                    close(b);
                 }
-                let _ = send_all(b, b"y");
-                let waited = w.join().unwrap_or((Duration::ZERO, "panicked".into()));
-                (sent, took, seen, polled, waited)
-            });
-            println!(
-                "m207 {transport} {wait} on the {wait_on}, send by the {send_by}: send {sent:?} in {:.1} ms; \
-                 the peer had it after {:.1} ms (poll {polled}); the waiter's {} after {:.1} ms",
-                took.as_secs_f64() * 1e3,
-                seen.as_secs_f64() * 1e3,
-                waited.1,
-                waited.0.as_secs_f64() * 1e3
-            );
-            close(copy);
-            close(a);
-            close(b);
+            }
         }
     }
     Ok(())
