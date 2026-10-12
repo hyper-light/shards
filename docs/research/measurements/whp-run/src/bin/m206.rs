@@ -7,8 +7,9 @@
 //! what a guest reads on vCPU 0; the same given the host's processor features, with
 //! invariant TSC asked of them, and with per-vCPU results
 //! (WHvPartitionPropertyCodeCpuidResultList2) set before setup, after it, and with masks;
-//! and what a list for 64 vCPUs costs to set, and to set up with (n = 20, interleaved with
-//! partitions set up without).
+//! whether a second list replaces the first; the guest's TSC rate against the partition's
+//! reference time, the host idle and busy; and what setting a list costs once a partition's
+//! vCPUs exist, for 64 vCPUs and for the most a guest may have (n = 20 each).
 
 // Windows' constants, matched by their own names.
 #![allow(non_upper_case_globals)]
@@ -362,18 +363,18 @@ fn guest_code() -> Vec<u8> {
     c
 }
 
-/// What the guest reads of `LEAVES` on vCPU 0, in long mode.
-fn guest(api: &Api, p: WHV_PARTITION_HANDLE) -> Result<Vec<[u32; 4]>, String> {
+/// Runs `code` on vCPU 0 of `p` in long mode until it writes to `DONE`, every host CPU
+/// kept busy meanwhile where `load`; its memory after.
+fn run_code(api: &Api, p: WHV_PARTITION_HANDLE, code: &[u8], load: bool) -> Result<&'static [u8], String> {
     // SAFETY: a fresh allocation, kept for the probe's life (the partition maps it).
     let ram =
         unsafe { VirtualAlloc(std::ptr::null(), RAM, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE) }.cast::<u8>();
     if ram.is_null() {
         return Err("VirtualAlloc".into());
     }
-    // SAFETY: the allocation above, RAM bytes.
-    let mem = unsafe { std::slice::from_raw_parts_mut(ram, RAM) };
-    let code = guest_code();
-    mem[CODE as usize..CODE as usize + code.len()].copy_from_slice(&code);
+    // SAFETY: the allocation above, RAM bytes, never freed.
+    let mem: &'static mut [u8] = unsafe { std::slice::from_raw_parts_mut(ram, RAM) };
+    mem[CODE as usize..CODE as usize + code.len()].copy_from_slice(code);
     // PML4[0] -> PDPT; PDPT[0]: a 1 GiB page at 0.
     mem[PML4 as usize..PML4 as usize + 8].copy_from_slice(&(PDPT | 0x3).to_le_bytes());
     mem[PDPT as usize..PDPT as usize + 8].copy_from_slice(&0x83u64.to_le_bytes());
@@ -422,6 +423,11 @@ fn guest(api: &Api, p: WHV_PARTITION_HANDLE) -> Result<Vec<[u32; 4]>, String> {
     }
     let done = std::sync::atomic::AtomicBool::new(false);
     let cancel = api.cancel;
+    let burners = if load {
+        std::thread::available_parallelism().map_or(1, |n| n.get())
+    } else {
+        0
+    };
     let ended = std::thread::scope(|scope| {
         scope.spawn(|| {
             let until = Instant::now() + WATCHDOG;
@@ -433,6 +439,14 @@ fn guest(api: &Api, p: WHV_PARTITION_HANDLE) -> Result<Vec<[u32; 4]>, String> {
                 unsafe { cancel(p, 0, 0) };
             }
         });
+        for _ in 0..burners {
+            scope.spawn(|| {
+                let mut x = 0u64;
+                while !done.load(std::sync::atomic::Ordering::Relaxed) {
+                    x = std::hint::black_box(x.wrapping_mul(6364136223846793005).wrapping_add(1));
+                }
+            });
+        }
         let mut exit = Aligned(WHV_RUN_VP_EXIT_CONTEXT::default());
         // SAFETY: an exit context of its own size, 16-aligned.
         let hr = unsafe {
@@ -456,13 +470,160 @@ fn guest(api: &Api, p: WHV_PARTITION_HANDLE) -> Result<Vec<[u32; 4]>, String> {
         }
     });
     ended?;
-    let word = |at: usize| u32::from_le_bytes(mem[at..at + 4].try_into().unwrap_or([0; 4]));
+    Ok(mem)
+}
+
+fn word(mem: &[u8], at: usize) -> u32 {
+    u32::from_le_bytes(
+        mem.get(at..at + 4)
+            .and_then(|b| b.try_into().ok())
+            .unwrap_or([0; 4]),
+    )
+}
+
+fn quad(mem: &[u8], at: usize) -> u64 {
+    u64::from(word(mem, at)) | u64::from(word(mem, at + 4)) << 32
+}
+
+/// What the guest reads of `LEAVES` on vCPU 0, in long mode.
+fn guest(api: &Api, p: WHV_PARTITION_HANDLE) -> Result<Vec<[u32; 4]>, String> {
+    let mem = run_code(api, p, &guest_code(), false)?;
     Ok((0..LEAVES.len())
         .map(|i| {
             let at = RESULTS as usize + 16 * i;
-            [word(at), word(at + 4), word(at + 8), word(at + 12)]
+            [
+                word(mem, at),
+                word(mem, at + 4),
+                word(mem, at + 8),
+                word(mem, at + 12),
+            ]
         })
         .collect())
+}
+
+/// The partition's reference counter (HV_X64_MSR_TIME_REF_COUNT, 100 ns), read into RAX:
+/// mov ecx, 0x40000020; rdmsr; shl rdx, 32; or rax, rdx.
+fn read_reference(c: &mut Vec<u8>) {
+    c.push(0xB9);
+    c.extend(0x4000_0020u32.to_le_bytes());
+    c.extend([0x0F, 0x32, 0x48, 0xC1, 0xE2, 0x20, 0x48, 0x09, 0xD0]);
+}
+
+/// `rel8` for a short jump whose opcode is at `at` to `target`.
+fn rel8(at: usize, target: usize) -> u8 {
+    (target as i64 - (at as i64 + 2)) as i8 as u8
+}
+
+/// The guest's code for the TSC's rate (x86-64): `samples` pairs of the reference counter
+/// and the TSC, each `step` (100 ns units) past the one before, stored from `RESULTS` on;
+/// a pair read again where the reference counter moved more than 5 µs across its TSC
+/// read (the vCPU descheduled between them). Then a write to `DONE`.
+fn tsc_code(samples: u32, step: u32) -> Vec<u8> {
+    let mut c = vec![0xBF]; // mov edi, RESULTS
+    c.extend((RESULTS as u32).to_le_bytes());
+    c.extend([0x41, 0xB8]); // mov r8d, samples
+    c.extend(samples.to_le_bytes());
+    read_reference(&mut c);
+    c.extend([0x49, 0x89, 0xC1]); // mov r9, rax: the interval's start
+    let top = c.len();
+    read_reference(&mut c);
+    c.extend([0x4C, 0x29, 0xC8]); // sub rax, r9
+    c.extend([0x48, 0x3D]); // cmp rax, step
+    c.extend(step.to_le_bytes());
+    let at = c.len();
+    c.extend([0x72, rel8(at, top)]); // jb top
+    let sample = c.len();
+    read_reference(&mut c);
+    c.extend([0x49, 0x89, 0xC2]); // mov r10, rax
+    c.extend([0x0F, 0x31, 0x48, 0xC1, 0xE2, 0x20, 0x48, 0x09, 0xD0]); // rdtsc into rax
+    c.extend([0x49, 0x89, 0xC3]); // mov r11, rax
+    read_reference(&mut c);
+    c.extend([0x4C, 0x29, 0xD0]); // sub rax, r10
+    c.extend([0x48, 0x83, 0xF8, 50]); // cmp rax, 50
+    let at = c.len();
+    c.extend([0x77, rel8(at, sample)]); // ja sample
+    c.extend([0x4C, 0x89, 0x17]); // mov [rdi], r10
+    c.extend([0x4C, 0x89, 0x5F, 0x08]); // mov [rdi+8], r11
+    c.extend([0x48, 0x83, 0xC7, 0x10]); // add rdi, 16
+    c.extend([0x4D, 0x89, 0xD1]); // mov r9, r10
+    c.extend([0x41, 0xFF, 0xC8]); // dec r8d
+    let at = c.len();
+    c.extend([0x0F, 0x85]); // jnz top
+    c.extend(((top as i64 - (at as i64 + 6)) as i32).to_le_bytes());
+    c.extend([0x66, 0xBA]); // mov dx, DONE
+    c.extend(DONE.to_le_bytes());
+    c.extend([0xEE, 0xF4]); // out dx, al; hlt
+    c
+}
+
+/// `values`, sorted: n, and the nearest-rank p50, p90, p99 and max.
+fn spread(values: &mut [f64]) -> String {
+    values.sort_by(f64::total_cmp);
+    let n = values.len();
+    if n == 0 {
+        return "n=0".into();
+    }
+    let rank = |p: usize| values[(n * p).div_ceil(100).clamp(1, n) - 1];
+    format!(
+        "n={n} p50={:.1} p90={:.1} p99={:.1} max={:.1}",
+        rank(50),
+        rank(90),
+        rank(99),
+        rank(100)
+    )
+}
+
+/// The guest's TSC against the partition's reference time, the host idle and every host
+/// CPU busy: the rate over each 10 ms and over the whole 3 s, against the partition's
+/// clock frequency. A hypervisor that rescaled the partition's TSC as it ran would move
+/// the rate between the two.
+fn tsc_rate(api: &Api) {
+    const SAMPLES: u32 = 300;
+    const STEP: u32 = 100_000;
+    // SAFETY: the union member the code asked fills.
+    let clock = capability(api, WHvCapabilityCodeProcessorClockFrequency)
+        .map_or(0, |c| unsafe { c.ProcessorClockFrequency });
+    for (label, load) in [("idle", false), ("loaded", true)] {
+        let p = match make(api, "tsc", 1, Features::Default, &[], false) {
+            Ok(p) => p,
+            Err(e) => {
+                println!("tsc {label}: {e}");
+                continue;
+            }
+        };
+        let ran = run_code(api, p, &tsc_code(SAMPLES, STEP), load);
+        // SAFETY: the partition made above, which nothing else holds.
+        unsafe { (api.delete_partition)(p) };
+        let mem = match ran {
+            Ok(mem) => mem,
+            Err(e) => {
+                println!("tsc {label}: {e}");
+                continue;
+            }
+        };
+        let pairs: Vec<(u64, u64)> = (0..SAMPLES as usize)
+            .map(|i| {
+                let at = RESULTS as usize + 16 * i;
+                (quad(mem, at), quad(mem, at + 8))
+            })
+            .collect();
+        let (Some(first), Some(last)) = (pairs.first(), pairs.last()) else {
+            continue;
+        };
+        let hz = |a: (u64, u64), b: (u64, u64)| {
+            b.1.saturating_sub(a.1) as f64 / b.0.saturating_sub(a.0) as f64 * 1e7
+        };
+        let whole = hz(*first, *last);
+        let mut ppm: Vec<f64> = pairs
+            .windows(2)
+            .map(|w| ((hz(w[0], w[1]) - whole) / whole * 1e6).abs())
+            .collect();
+        println!(
+            "tsc {label} rate_hz={whole:.0} vs_clock_ppm={:.2} interval_deviation_ppm {}",
+            (whole - clock as f64) / clock as f64 * 1e6,
+            spread(&mut ppm)
+        );
+    }
 }
 
 /// The host's own CPUID, as this process reads it.
@@ -542,73 +703,160 @@ fn host(api: &Api) {
     }
 }
 
-/// What a list for 64 vCPUs costs to set, and setup with it and without, interleaved.
+/// The leaves shards' WHP backend sets for `vcpus`, one package of single-thread cores:
+/// per vCPU, leaf 1's APIC id, processor count and HTT, and 0x8000001E's APIC and core
+/// ids; for all, 0x80000008's threads and APIC id bits, the L3's sharing (0x8000001D.3) and
+/// invariant TSC.
+fn realistic(vcpus: u32) -> Vec<WHV_X64_CPUID_RESULT2> {
+    let bits = 32 - vcpus.saturating_sub(1).leading_zeros();
+    let others = vcpus.saturating_sub(1);
+    let mut v = Vec::new();
+    for vp in 0..vcpus {
+        v.push(result(
+            1,
+            0,
+            vp,
+            VP,
+            out(0, (vp << 24) | (vcpus.min(255) << 16), 0, 1 << 28),
+            out(0, 0xffff_0000, 0, 1 << 28),
+        ));
+        v.push(result(
+            0x8000_001e,
+            0,
+            vp,
+            VP,
+            out(vp, vp, 0, 0),
+            out(!0, 0xffff, 0x7ff, 0),
+        ));
+    }
+    v.push(result(
+        0x8000_0008,
+        0,
+        0,
+        0,
+        out(0, 0, (bits << 12) | others.min(0xff), 0),
+        out(0, 0, 0xf0ff, 0),
+    ));
+    v.push(result(
+        0x8000_001d,
+        3,
+        0,
+        SUB,
+        out(others.min(0xfff) << 14, 0, 0, 0),
+        out(0xfff << 14, 0, 0, 0),
+    ));
+    v.push(result(
+        0x8000_0007,
+        0,
+        0,
+        0,
+        out(0, 0, 0, 1 << 8),
+        out(0, 0, 0, 1 << 8),
+    ));
+    v
+}
+
+/// The most vCPUs a partition's guest is told it may have (0x40000005), at most 254, as
+/// shards reads it.
+fn limit(api: &Api) -> Result<u32, String> {
+    let p = make(api, "limit", 1, Features::Default, &[], false)?;
+    let r = read(api, p, 0, (0x4000_0005, 0));
+    // SAFETY: the partition made above, which nothing else holds.
+    unsafe { (api.delete_partition)(p) };
+    Ok(r?[0].min(254))
+}
+
+/// What setting [`realistic`]'s list costs once a partition's vCPUs exist, for 64 vCPUs
+/// and for the most a guest may have; and making those partitions, for scale.
 fn cost(api: &Api) {
-    let vcpus = 64;
-    let list = topology(vcpus);
-    let (mut setting, mut with, mut without) = (Vec::new(), Vec::new(), Vec::new());
-    for _ in 0..N {
-        for listed in [true, false] {
-            let mut p: WHV_PARTITION_HANDLE = 0;
-            // SAFETY: a handle for the call to fill.
-            if let Err(e) = check("WHvCreatePartition", unsafe {
-                (api.create_partition)(&raw mut p)
-            }) {
-                println!("cost: {e}");
-                return;
-            }
-            let r = (|| {
-                set(
-                    api,
-                    p,
-                    WHvPartitionPropertyCodeProcessorCount,
-                    &vcpus,
-                    "ProcessorCount",
-                )?;
-                let mode: WHV_X64_LOCAL_APIC_EMULATION_MODE = WHvX64LocalApicEmulationModeXApic;
-                set(
-                    api,
-                    p,
-                    WHvPartitionPropertyCodeLocalApicEmulationMode,
-                    &mode,
-                    "LocalApicEmulationMode",
-                )?;
-                let synthetic = WHV_SYNTHETIC_PROCESSOR_FEATURES_BANKS {
-                    BanksCount: 1,
-                    Reserved0: 0,
-                    Anonymous: WHV_SYNTHETIC_PROCESSOR_FEATURES_BANKS_0 {
-                        AsUINT64: [host_synthetic(api) & SYNTHETIC],
-                    },
-                };
-                set(
-                    api,
-                    p,
-                    WHvPartitionPropertyCodeSyntheticProcessorFeaturesBanks,
-                    &synthetic,
-                    "SyntheticProcessorFeaturesBanks",
-                )?;
-                if listed {
-                    let t = Instant::now();
-                    set_results(api, p, &list)?;
-                    setting.push(t.elapsed());
+    let most = match limit(api) {
+        Ok(most) => most,
+        Err(e) => {
+            println!("cost: {e}");
+            return;
+        }
+    };
+    for vcpus in [64.min(most), most] {
+        let list = realistic(vcpus);
+        let (mut setting, mut making) = (Vec::new(), Vec::new());
+        for _ in 0..N {
+            let t = Instant::now();
+            let p = match make(api, "cost", vcpus, Features::Default, &[], false) {
+                Ok(p) => p,
+                Err(e) => {
+                    println!("cost vcpus={vcpus}: {e}");
+                    return;
                 }
-                let t = Instant::now();
-                // SAFETY: the partition just configured.
-                check("WHvSetupPartition", unsafe { (api.setup_partition)(p) })?;
-                if listed { &mut with } else { &mut without }.push(t.elapsed());
-                Ok::<(), String>(())
-            })();
+            };
+            making.push(t.elapsed());
+            let t = Instant::now();
+            let set = set_results(api, p, &list);
+            setting.push(t.elapsed());
+            let seen = read(api, p, vcpus - 1, (1, 0));
             // SAFETY: the partition made above, which nothing else holds.
             unsafe { (api.delete_partition)(p) };
-            if let Err(e) = r {
-                println!("cost: {e}");
+            if let Err(e) = set {
+                println!("cost vcpus={vcpus}: {e}");
                 return;
             }
+            if let Ok([_, ebx, _, _]) = seen
+                && ebx >> 24 != (vcpus - 1) & 0xff
+            {
+                println!("cost vcpus={vcpus}: the last vCPU's leaf 1 EBX {ebx:#x}");
+            }
         }
+        println!(
+            "cost vcpus={vcpus} entries={} set_us {}",
+            list.len(),
+            summary(&mut setting)
+        );
+        println!(
+            "cost vcpus={vcpus} partition_and_vcpus_us {}",
+            summary(&mut making)
+        );
     }
-    println!("cost entries={} set_us {}", list.len(), summary(&mut setting));
-    println!("cost setup_with_us {}", summary(&mut with));
-    println!("cost setup_without_us {}", summary(&mut without));
+}
+
+/// Whether a second list replaces the first or adds to it, and what an empty one does.
+fn semantics(api: &Api) {
+    let p = match make(api, "semantics", VCPUS, Features::Default, &[], false) {
+        Ok(p) => p,
+        Err(e) => {
+            println!("semantics: {e}");
+            return;
+        }
+    };
+    let count = |vp: u32, n: u32| {
+        [result(
+            1,
+            0,
+            vp,
+            VP,
+            out(0, n << 16, 0, 0),
+            out(0, 0xff << 16, 0, 0),
+        )]
+    };
+    let both = |label: &str| {
+        for vp in [1, 2] {
+            println!(
+                "semantics {label} vp{vp} 0x1.0: {}",
+                show(&read(api, p, vp, (1, 0)))
+            );
+        }
+    };
+    println!(
+        "semantics first (vCPU 1, 7): {:?}",
+        set_results(api, p, &count(1, 7))
+    );
+    println!(
+        "semantics second (vCPU 2, 9): {:?}",
+        set_results(api, p, &count(2, 9))
+    );
+    both("after both");
+    println!("semantics empty: {:?}", set_results(api, p, &[]));
+    both("after an empty list");
+    // SAFETY: the partition made above, which nothing else holds.
+    unsafe { (api.delete_partition)(p) };
 }
 
 fn main() {
@@ -661,5 +909,7 @@ fn main() {
         // SAFETY: the partition made above, which nothing else holds.
         unsafe { (api.delete_partition)(p) };
     }
+    semantics(&api);
+    tsc_rate(&api);
     cost(&api);
 }
