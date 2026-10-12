@@ -152,6 +152,8 @@ pub struct Boot<'a> {
     /// The build's proxy (D110): where there is one, the builder's network reaches it
     /// alone.
     pub proxy: Option<&'a super::proxy::Proxy>,
+    /// Whether it has this Mac's GPU, for steps given its render node (D145).
+    pub gpu: bool,
 }
 
 /// A directory of a builder's or a build proxy's own for its sockets ([`socket_dir`]),
@@ -435,8 +437,14 @@ fn launch(
         .chain(args.iter().skip(1))
         .map(OsString::as_os_str)
         .collect();
-    let env = crate::netproc::child_env();
-    let vm_binary = crate::helpers::vm()?;
+    let mut env = crate::netproc::child_env();
+    // A GPU's builder is the GPU's VM process (D144), which says MoltenVK's errors alone.
+    let vm_binary = if args.iter().any(|a| *a == "--gpu") {
+        env.push(("MVK_CONFIG_LOG_LEVEL", "1".into()));
+        crate::helpers::vm_gpu()?
+    } else {
+        crate::helpers::vm()?
+    };
     let vm = match shards_ipc::spawn_in(&vm_binary, &argv, &fds, false, &crate::netproc::env_pairs(&env)) {
         Ok(vm) => vm,
         Err(e) => {
@@ -616,6 +624,9 @@ impl Builder {
         ];
         for base in boot.bases {
             args.extend(["--pmem".into(), base.into()]);
+        }
+        if boot.gpu {
+            args.push("--gpu".into());
         }
         // The files this process attaches to its join disk for its steps' caches (D134).
         let (attach, attach_theirs) =

@@ -12,9 +12,10 @@ use std::path::PathBuf;
 use common::{TempDir, cannot_run_vms, guest_init, run_shards_env};
 
 /// `shards run --gpus all` of an image with Mesa's Venus: `vulkaninfo` finds the Mac's GPU
-/// through Venus, its render node given the run as `--device` gives one.
+/// through Venus, its render node given the run as `--device` gives one; and a build step
+/// given the render node by a CDI device (`RUN --device`) finds it too (D145).
 #[test]
-fn a_run_given_the_gpu_renders_through_venus() {
+fn the_gpu_renders_through_venus_in_runs_and_build_steps() {
     let (Some(kernel), Some(vm)) = (
         std::env::var_os("SHARDS_TEST_GPU_KERNEL").map(PathBuf::from),
         std::env::var_os("SHARDS_TEST_GPU_VM").map(PathBuf::from),
@@ -58,5 +59,35 @@ fn a_run_given_the_gpu_renders_through_venus() {
         "{}",
         ran.stdout
     );
+    assert!(ran.stdout.contains("Virtio-GPU Venus ("), "{}", ran.stdout);
+
+    // A step given the render node by a CDI device has a builder with the GPU (D145).
+    let cdi = TempDir::new("gpu-cdi");
+    std::fs::write(
+        cdi.join("gpu.json"),
+        r#"{"cdiVersion":"0.6.0","kind":"test.example/gpu","annotations":{"org.mobyproject.buildkit.device.autoallow":"true"},"devices":[{"name":"0","containerEdits":{"deviceNodes":[{"path":"/dev/dri/renderD128"}]}}]}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        ctx.join("Dockerfile"),
+        "FROM gpu-venus:1\nRUN --device=test.example/gpu=0 vulkaninfo --summary > /venus.txt\n",
+    )
+    .unwrap();
+    let mut step_env = env.to_vec();
+    step_env.push(("SHARDS_CDI_SPEC_DIRS", cdi.as_os_str()));
+    let built = run_shards_env(
+        &["build"],
+        &["-q", "-t", "gpu-venus:2", ctx.to_str().unwrap()],
+        &step_env,
+        timeout,
+    );
+    assert_eq!(built.status, Some(0), "{}", built.stderr);
+    let ran = run_shards_env(
+        &["run"],
+        &["--rm", "gpu-venus:2", "cat", "/venus.txt"],
+        &env,
+        timeout,
+    );
+    assert_eq!(ran.status, Some(0), "{}\n{}", ran.stdout, ran.stderr);
     assert!(ran.stdout.contains("Virtio-GPU Venus ("), "{}", ran.stdout);
 }

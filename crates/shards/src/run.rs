@@ -41,6 +41,10 @@ pub fn kernel_of(boot: &Boot) -> &std::path::Path {
     }
 }
 
+/// The render node of a guest's GPU, as Linux's virtio-gpu driver makes it for the first
+/// (D144): a run or a step given it is given this Mac's GPU.
+pub const RENDER_NODE: &str = "/dev/dri/renderD128";
+
 /// Whether `--gpus`, each value as given, asks for this Mac's GPU (D144): a count other
 /// than none, or the device `0`. It has one, which renders through Venus: more, another
 /// device, or a driver of its own a request may not ask for, in dockerd's words where

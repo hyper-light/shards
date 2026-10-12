@@ -3602,6 +3602,25 @@ No run-time labels, relays or declassifiers (§12 answer 14, decided by the user
 an internal-only domain to the world (D58), so there is no data to label. Code mode is
 D136.
 
+### D145. A build's steps given the GPU by CDI name
+
+- **What:** a step given a CDI device whose edits bring the render node
+  `/dev/dri/renderD128`, the node Linux's virtio-gpu driver makes for a guest's first
+  GPU, has this Mac's GPU: the build's builder boots in `shards-vm-gpu` with `--gpu`, on
+  the gpu kernel where SHARDS_KERNEL names none (D144), and the step's node is made from
+  the guest's own, as each CDI node is (D96).
+- **Why by the node:** `RUN` asks for devices by CDI name alone (`--device`, BuildKit
+  v0.28.1, CDI v1.1.0), never for GPUs by count as `--gpus` does, and a CDI spec says
+  which nodes each device brings: a spec of the user's own (SHARDS_CDI_SPEC_DIRS, else
+  /etc/cdi and /var/run/cdi) names the GPU with nothing new to learn. A build's steps share
+  one builder, so all of them run in the GPU's VM process where any is given the GPU.
+- **Elsewhere:** a host without a GPU for microVMs (Linux and Windows, until VFIO) makes
+  the node from the guest's own device as before, which it has not.
+- **Verified on this Mac** (tests/gpu.rs): `RUN --device=test.example/gpu=0 vulkaninfo
+  --summary`, the device a spec of the test's brings the render node by (auto-allowed),
+  finds "Virtio-GPU Venus (Apple M5 Max)"; mutation-checked: with the builder never given
+  the GPU, the step fails.
+
 ### D144. GPUs: macOS first, Venus in a VM process of its own build
 
 AGENTFILE_ARCH.md §11 row 978: a GPU given a run or a build's step (`--gpus`, `--device`'s
@@ -3674,9 +3693,12 @@ to test on, where no CI runner has a GPU behind an IOMMU.
 - **Verified on this Mac** (tests/gpu.rs): `shards run --rm --gpus all` of an image with
   Mesa's Venus finds "Virtio-GPU Venus (Apple M5 Max)", conformance 1.3; the guest's
   driver negotiates VIRGL, RESOURCE_BLOB, CONTEXT_INIT and BLOB_ALIGNMENT.
+- **Built by CI and releases:** the macOS arm64 jobs run scripts/gpu-libs, so `shards`
+  carries `shards-vm-gpu`; CI lints vmm's `gpu` feature, which no workspace lint compiles,
+  and runs the renderer's tests, which skip where Metal finds no GPU (a virtual Mac).
 - **To build:** the gpu kernel pinned once a release publishes it (KERNEL_GPU; until then
-  SHARDS_KERNEL names one); `shards-vm-gpu` in release builds; a GPU for a build's `RUN`
-  steps and by CDI name; the research's E6 measured on it; Linux's VFIO (R2).
+  SHARDS_KERNEL names one); runs' `--device` by CDI name; the research's E6 measured on
+  it; Linux's VFIO (R2). A build's `RUN` steps: D145.
 
 ### D143. `RUN` on Windows hosts: the builder
 

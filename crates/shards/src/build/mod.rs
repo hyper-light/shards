@@ -3747,6 +3747,14 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
                     return Err(fail(&v, &why));
                 }
                 if builder.is_none() {
+                    // Steps given this Mac's GPU by a CDI device of its render node have a
+                    // builder with the GPU, booting the kernel with its driver where none is
+                    // given (D145).
+                    let gpu = cfg!(target_os = "macos")
+                        && cdi_edits.values().any(|e| {
+                            let render = |p: &str| p == crate::run::RENDER_NODE;
+                            e.nodes.iter().any(|n| render(&n.path) || render(&n.host_path))
+                        });
                     let guest = match (std::env::var_os("SHARDS_KERNEL"), std::env::var_os("SHARDS_INIT")) {
                         (Some(k), Some(i)) => (PathBuf::from(k), PathBuf::from(i)),
                         _ => {
@@ -3757,7 +3765,14 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
                                         .map_err(|e| fail(&v, &e))?
                                 }
                             };
-                            (g.kernel, g.init)
+                            let kernel = match gpu {
+                                true => {
+                                    crate::guest::gpu_kernel(&home, &|_| {}, None, &|k| std::env::var(k).ok())
+                                        .map_err(|e| fail(&v, &e))?
+                                }
+                                false => g.kernel,
+                            };
+                            (kernel, g.init)
                         }
                     };
                     if proxy_cap {
@@ -3770,6 +3785,7 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
                         memory_mib: builder_memory_mib(),
                         bases: &run_bases,
                         proxy: build_proxy.as_ref(),
+                        gpu,
                     };
                     let kernel = crate::guest::version_of(&guest.0).map_err(|e| fail(&v, &e))?;
                     step_filter = crate::setup::step_seccomp(kernel).map_err(|e| fail(&v, &e))?;

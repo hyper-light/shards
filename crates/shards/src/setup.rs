@@ -638,7 +638,7 @@ fn devices(run: &Run) -> Option<Vec<u8>> {
     }
     let mut e = b"devices=".to_vec();
     e.extend_from_slice(if run.privileged { b"p\0" } else { b"-\0" });
-    let render = gpu.then_some("/dev/dri/renderD128:/dev/dri/renderD128:rwm".to_string());
+    let render = gpu.then(|| format!("{0}:{0}:rwm", crate::run::RENDER_NODE));
     for d in run.devices.iter().chain(render.iter()) {
         let mut parts = d.splitn(3, ':');
         e.extend_from_slice(b"d\0");
