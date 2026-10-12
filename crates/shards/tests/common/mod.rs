@@ -50,10 +50,17 @@ pub fn spawn(command: &mut std::process::Command) -> io::Result<std::process::Ch
 }
 
 pub fn workspace() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
         .canonicalize()
-        .unwrap()
+        .unwrap();
+    // Windows' canonical form is verbatim (`\\?\D:\...`), which every path under it then
+    // is, and the POSIX shell that runs the guests' C compiler reads its backslashes as
+    // escapes: the plain form names the same directory.
+    match path.to_str().and_then(|p| p.strip_prefix(r"\\?\")) {
+        Some(plain) if cfg!(windows) => PathBuf::from(plain),
+        _ => path,
+    }
 }
 
 /// A downloadable test artifact pinned by content hash.

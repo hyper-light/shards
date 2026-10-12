@@ -95,6 +95,7 @@ winhv! {
     fn WHvGetVirtualProcessorRegisters(partition: WHV_PARTITION_HANDLE, index: u32, names: *const WHV_REGISTER_NAME, count: u32, values: *mut WHV_REGISTER_VALUE);
     fn WHvSetVirtualProcessorRegisters(partition: WHV_PARTITION_HANDLE, index: u32, names: *const WHV_REGISTER_NAME, count: u32, values: *const WHV_REGISTER_VALUE);
     fn WHvRequestInterrupt(partition: WHV_PARTITION_HANDLE, control: *const WHV_INTERRUPT_CONTROL, size: u32);
+    fn WHvGetVirtualProcessorCpuidOutput(partition: WHV_PARTITION_HANDLE, index: u32, eax: u32, ecx: u32, output: *mut WHV_CPUID_OUTPUT);
 }
 
 /// A register value at the 16 bytes' alignment WinHvPlatform.h gives WHV_REGISTER_VALUE

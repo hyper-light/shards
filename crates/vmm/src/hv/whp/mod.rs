@@ -175,26 +175,48 @@ pub fn check_host() -> std::result::Result<(), String> {
     features().map(drop)
 }
 
-/// The most vCPUs one VM can have: the hypervisor's own limit, which its leaf 0x40000005
-/// gives every partition, the root included (Hyper-V TLFS, "Implementation Limits"),
-/// and at most 254, since the MADT carries 8-bit APIC ids. A partition sets up with more
-/// (PM M198), but its 241st vCPU's creation fails on GitHub's runners, whose guests read
-/// 240 there (HV_STATUS_INVALID_VP_INDEX).
+/// The most vCPUs one VM can have: as many as the hypervisor tells a partition's guest it
+/// supports (its leaf 0x40000005, Hyper-V TLFS "Implementation Limits"), read for vCPU 0
+/// of a partition of one, once a process; and at most 254, since the MADT carries 8-bit
+/// APIC ids. WHP sets up a partition of 1,024 (PM M198), but creates no vCPU past what its
+/// guest reads there: 240 on GitHub's runners, the 241st refused
+/// (HV_STATUS_INVALID_VP_INDEX). The root partition's own leaf says more than a guest's: a
+/// VM of as many vCPUs as it said failed at its 241st (CI run 38215340140).
 pub fn max_vcpus() -> Result<u32> {
-    use std::arch::x86_64::__cpuid;
-    // CPUID is unprivileged, and changes nothing.
-    let vendor = __cpuid(0x4000_0000);
-    let microsoft = [vendor.ebx, vendor.ecx, vendor.edx]
-        .iter()
-        .flat_map(|r| r.to_le_bytes())
-        .eq(*b"Microsoft Hv");
-    if !microsoft || vendor.eax < 0x4000_0005 {
-        return Err(Error::Guest(
-            "no Hyper-V answers this host's CPUID: no partition can run".into(),
-        ));
+    static MAX: OnceLock<u32> = OnceLock::new();
+    if let Some(max) = MAX.get() {
+        return Ok(*max);
     }
-    let limits = __cpuid(0x4000_0005);
-    Ok(limits.eax.clamp(1, 254))
+    features().map_err(Error::Guest)?;
+    let mut handle: WHV_PARTITION_HANDLE = 0;
+    // SAFETY: a handle for the call to fill.
+    check("WHvCreatePartition", unsafe {
+        WHvCreatePartition(&raw mut handle)
+    })?;
+    let partition = Partition(handle);
+    partition.set(
+        WHvPartitionPropertyCodeProcessorCount,
+        &1u32,
+        "WHvSetPartitionProperty(ProcessorCount)",
+    )?;
+    // SAFETY: the partition just configured, then its one vCPU, its CPUID read into a value
+    // of its own size.
+    let limits = unsafe {
+        check("WHvSetupPartition", WHvSetupPartition(partition.0))?;
+        check(
+            "WHvCreateVirtualProcessor",
+            WHvCreateVirtualProcessor(partition.0, 0, 0),
+        )?;
+        let mut out = WHV_CPUID_OUTPUT::default();
+        check(
+            "WHvGetVirtualProcessorCpuidOutput",
+            WHvGetVirtualProcessorCpuidOutput(partition.0, 0, 0x4000_0005, 0, &raw mut out),
+        )?;
+        WHvDeleteVirtualProcessor(partition.0, 0);
+        out
+    };
+    let max = limits.Eax.clamp(1, 254);
+    Ok(*MAX.get_or_init(|| max))
 }
 
 /// A partition: deleted, its vCPUs with it, once nothing holds it.
