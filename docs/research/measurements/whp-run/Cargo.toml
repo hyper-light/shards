@@ -1,0 +1,18 @@
+# A WHP partition on a real Windows host (PM M197): what a guest sees of its processor and
+# its hypervisor, and what an exit costs, before shards' WHP backend is written.
+[package]
+name = "whp-run"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+windows-sys = { version = "=0.61.2", features = [
+  "Win32_Foundation",
+  "Win32_System_Hypervisor",
+  "Win32_System_LibraryLoader",
+  "Win32_System_Memory",
+  "Win32_System_Performance",
+] }
