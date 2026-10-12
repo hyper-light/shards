@@ -11,12 +11,14 @@ one class, the process's first thread is `main`, and a thread never named is cou
 under `unnamed`.
 
 For each class it prints the syscalls, with how many calls, and the ioctl requests,
-socket domains, fcntl commands and prctl options they used.
+socket domains, fcntl commands and prctl options they used. With `--after SYSCALL`, a
+process's calls count only once it has made SYSCALL: what a filter installed then must
+allow.
 
 Thread ids are reused from one strace run to the next, so each trace is read with state
 of its own, and the counts are added up.
 
-    python3 parse.py [--program NAME] TRACE...
+    python3 parse.py [--program NAME] [--after SYSCALL] TRACE...
 """
 import collections, re, sys
 
@@ -27,6 +29,7 @@ tgid = {}          # tid -> process id
 exe = {}           # process id -> program
 name = {}          # tid -> thread name
 pending = {}       # tid -> (syscall, args) of an unfinished call
+armed = set()      # process ids that have made the `--after` syscall
 calls = collections.defaultdict(collections.Counter)      # class -> syscall -> count
 detail = collections.defaultdict(lambda: collections.defaultdict(collections.Counter))
 
@@ -44,6 +47,10 @@ def klass(tid):
 PROGRAM = "shards-vm"
 if sys.argv[1:2] == ["--program"]:
     PROGRAM = sys.argv[2]
+    del sys.argv[1:3]
+AFTER = None
+if sys.argv[1:2] == ["--after"]:
+    AFTER = sys.argv[2]
     del sys.argv[1:3]
 
 
@@ -73,6 +80,12 @@ def record(tid, call, args, result):
             name[tid] = found.group(1)
     if not is_vm(tid):
         return
+    if AFTER is not None:
+        process = tgid.get(tid, tid)
+        if process not in armed:
+            if call == AFTER and result is not None and result >= 0:
+                armed.add(process)
+            return
     c = klass(tid)
     calls[c][call] += 1
     if call == "ioctl":
@@ -88,13 +101,14 @@ def record(tid, call, args, result):
     elif call == "fcntl":
         parts = args.split(",")
         if len(parts) > 1:
-            detail[c]["fcntl"][parts[1].strip()] += 1
+            # A command with no argument ends the call: `F_GETFD)  = 0`.
+            detail[c]["fcntl"][parts[1].split(")")[0].strip()] += 1
     elif call == "prctl":
         detail[c]["prctl"][first_arg(args)] += 1
 
 
 for trace in sys.argv[1:]:
-  tgid.clear(); exe.clear(); name.clear(); pending.clear()
+  tgid.clear(); exe.clear(); name.clear(); pending.clear(); armed.clear()
   for line in open(trace, errors="replace"):
       m = LINE.match(line.rstrip("\n"))
       if not m:
