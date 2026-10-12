@@ -20,7 +20,11 @@
 //!   loopback TCP's;
 //! - with `m205` (PM M205), a connect that does not wait: what it returns where a listener
 //!   has room, where nothing listens and where the backlog is full, and how soon its
-//!   socket may be written; and whether a blocking one waits on a full backlog.
+//!   socket may be written; and whether a blocking one waits on a full backlog;
+//! - with `m207` (PM M207), whether a send waits while another thread waits to read the
+//!   same connection: a WSAPoll for its data, or a blocking recv, on the socket or on a
+//!   copy WSADuplicateSocketW made of it, the send through either; AF_UNIX and loopback
+//!   TCP.
 
 use std::time::{Duration, Instant};
 
@@ -700,8 +704,128 @@ fn connects(dir: &std::path::Path) -> Result<(), String> {
     Ok(())
 }
 
+/// `s` again, in this process, as WSADuplicateSocketW and WSASocketW(FROM_PROTOCOL_INFO)
+/// make a socket's copy.
+fn duplicate(s: SOCKET) -> Result<SOCKET, String> {
+    let mut info = WSAPROTOCOL_INFOW::default();
+    // SAFETY: our socket; a structure for the call to fill.
+    if unsafe { WSADuplicateSocketW(s, std::process::id(), &raw mut info) } != 0 {
+        return Err(error("WSADuplicateSocketW"));
+    }
+    // SAFETY: the info just written, as Winsock's documentation has a process use it.
+    let d = unsafe {
+        WSASocketW(
+            FROM_PROTOCOL_INFO,
+            FROM_PROTOCOL_INFO,
+            FROM_PROTOCOL_INFO,
+            &raw const info,
+            0,
+            0,
+        )
+    };
+    if d == INVALID_SOCKET {
+        return Err(error("WSASocketW(FROM_PROTOCOL_INFO)"));
+    }
+    Ok(d)
+}
+
+/// How long the wait that one thread makes on a connection lasts before another thread
+/// sends through it, and the longest the peer waits for what was sent.
+const WAITER_MS: i32 = 3000;
+const PEER_MS: i32 = 6000;
+
+/// M207: one thread waits to read a connection (a WSAPoll of `WAITER_MS` for its data, or
+/// a recv), on the socket or its copy; 100 ms on, this thread sends a byte through the
+/// socket or its copy, and the peer waits for it. Each: how long the send took, when the
+/// peer had the byte, and when and how the waiter returned (the peer answers a byte, which
+/// ends a recv that is still waiting).
+fn concurrent(dir: &std::path::Path) -> Result<(), String> {
+    let mut n = 0;
+    for transport in ["unix", "tcp"] {
+        for (wait, wait_on, send_by) in [
+            ("poll", "socket", "socket"),
+            ("recv", "socket", "socket"),
+            ("poll", "socket", "copy"),
+            ("recv", "socket", "copy"),
+            ("poll", "copy", "socket"),
+            ("recv", "copy", "socket"),
+        ] {
+            n += 1;
+            let (a, b) = if transport == "unix" {
+                unix_pair(dir, 1000 + n)?
+            } else {
+                tcp_pair()?
+            };
+            let copy = duplicate(a)?;
+            let waiter = if wait_on == "copy" { copy } else { a };
+            let sender = if send_by == "copy" { copy } else { a };
+            let (sent, took, seen, polled, waited) = std::thread::scope(|scope| {
+                let w = scope.spawn(move || {
+                    let t = Instant::now();
+                    let what = if wait == "poll" {
+                        let mut fd = WSAPOLLFD {
+                            fd: waiter,
+                            events: POLLRDNORM,
+                            revents: 0,
+                        };
+                        // SAFETY: one entry, our socket.
+                        let r = unsafe { WSAPoll(&raw mut fd, 1, WAITER_MS) };
+                        format!("poll {r} revents {:#x}", fd.revents)
+                    } else {
+                        let mut byte = [0u8; 1];
+                        format!("recv {:?}", recv_some(waiter, &mut byte))
+                    };
+                    (t.elapsed(), what)
+                });
+                std::thread::sleep(Duration::from_millis(100));
+                let t = Instant::now();
+                let sent = send_all(sender, b"x");
+                let took = t.elapsed();
+                let mut fd = WSAPOLLFD {
+                    fd: b,
+                    events: POLLRDNORM,
+                    revents: 0,
+                };
+                // SAFETY: one entry, our socket.
+                let polled = unsafe { WSAPoll(&raw mut fd, 1, PEER_MS) };
+                let seen = t.elapsed();
+                let mut byte = [0u8; 1];
+                if polled > 0 {
+                    let _ = recv_some(b, &mut byte);
+                }
+                let _ = send_all(b, b"y");
+                let waited = w.join().unwrap_or((Duration::ZERO, "panicked".into()));
+                (sent, took, seen, polled, waited)
+            });
+            println!(
+                "m207 {transport} {wait} on the {wait_on}, send by the {send_by}: send {sent:?} in {:.1} ms; \
+                 the peer had it after {:.1} ms (poll {polled}); the waiter's {} after {:.1} ms",
+                took.as_secs_f64() * 1e3,
+                seen.as_secs_f64() * 1e3,
+                waited.1,
+                waited.0.as_secs_f64() * 1e3
+            );
+            close(copy);
+            close(a);
+            close(b);
+        }
+    }
+    Ok(())
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
+    if args.get(1).map(String::as_str) == Some("m207") {
+        let dir = std::env::temp_dir().join(format!("m207-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        if startup().is_ok()
+            && let Err(e) = concurrent(&dir)
+        {
+            println!("M207 failed: {e}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+        return;
+    }
     if args.get(1).map(String::as_str) == Some("m205") {
         let dir = std::env::temp_dir().join(format!("m205-{}", std::process::id()));
         let _ = std::fs::create_dir_all(&dir);

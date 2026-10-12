@@ -2,8 +2,9 @@ name: windows afunix
 
 # AF_UNIX stream sockets on GitHub's Windows runners (docs/research/measurements/
 # windows-afunix, PM M199): WSAPoll, half-close, scatter-gather, a pair's cost, inheritance,
-# throughput and latency beside loopback TCP; connects that do not wait (PM M205). Runs when the
-# probe changes, or when asked.
+# throughput and latency beside loopback TCP; connects that do not wait (PM M205); a send while
+# another thread waits to read the same connection (PM M207). Runs when the probe changes, or
+# when asked.
 on:
   push:
     paths:
@@ -44,3 +45,8 @@ jobs:
         shell: bash
         working-directory: docs/research/measurements/windows-afunix
         run: cargo run --release -- m205
+      - name: M207
+        if: ${{ !cancelled() }}
+        shell: bash
+        working-directory: docs/research/measurements/windows-afunix
+        run: cargo run --release -- m207
