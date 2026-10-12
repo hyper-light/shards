@@ -2183,8 +2183,10 @@ impl<D: Disk> Daemon<D> {
             .map(|c| (c.mounts.clone(), c.started.is_none()))
             .unwrap_or_default();
         // Its own MAC where it has an interface of its own (D46, PM M173): given
-        // (`--mac-address`, its endpoint's `mac-address`), or made for it, as dockerd makes
-        // each endpoint's, so that no two runs of one template share its MAC.
+        // (`--mac-address`, its endpoint's `mac-address`), which its VM takes as the run
+        // comes; else made for it, as dockerd makes each endpoint's, so that no two runs of
+        // one template share its MAC: its VM's own, made with the VM, which the VM's guest
+        // took before the run came (D31, E1).
         let run_mac: Option<Vec<u8>> = match start {
             network::Start::Attach(network::Net::Bridge | network::Net::User) => {
                 match crate::setup::own_endpoint(&run)
@@ -2199,13 +2201,7 @@ impl<D: Disk> Daemon<D> {
                             return None;
                         }
                     },
-                    None => match shards_net::random_mac() {
-                        Ok(made) => Some(made.to_vec()),
-                        Err(e) => {
-                            log(format!("container {id}: a MAC of its own: {e}"));
-                            None
-                        }
-                    },
+                    None => None,
                 }
             }
             _ => None,

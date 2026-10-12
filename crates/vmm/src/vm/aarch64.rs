@@ -318,6 +318,11 @@ fn assemble(
     if let Some(sizes) = sizes {
         control.on_hotplug(sizes);
     }
+    // The MAC the VMM was given, before a snapshot's took its device's place: a restored
+    // VM's own, which its guest takes as it resumes (D31, E1).
+    if let Some(net) = hosts.net {
+        control.on_mac(net.mac);
+    }
     bus.insert(layout::CONTROL, 0x1000, control.clone())?;
     let vmgenid = VmGenId::new(
         memory.clone(),
