@@ -68,19 +68,19 @@ const LEAVES: [(u32, u32); 5] = [(0x4000_0003, 0), (0x4000_0004, 0), (1, 0), (0x
 
 /// The synthetic processor features offered (WinHvPlatformDefs.h's
 /// WHV_SYNTHETIC_PROCESSOR_FEATURES): the hypervisor's presence and HV#1, the partition's
-/// reference counter and TSC page and the frequency MSRs (time), synthetic timers in
-/// direct mode, the APIC's synthetic MSRs and VP assist page, hypercalls, the VP index, and
-/// the TLB-flush and IPI hypercalls with extended processor masks.
+/// reference counter and TSC page and the frequency MSRs (time), the APIC's synthetic MSRs
+/// and VP assist page, hypercalls, the VP index, and the TLB-flush and IPI hypercalls with
+/// extended processor masks. Not synthetic timers: the host sets up no partition offered
+/// them without the SynIC (this probe's first run), which no shards guest has a use for;
+/// the guest's APIC timer, emulated by the hypervisor, keeps its time.
 const SYNTHETIC: u64 = (1 << 0)
     | (1 << 1)
     | (1 << 3)
-    | (1 << 5)
     | (1 << 6)
     | (1 << 7)
     | (1 << 8)
     | (1 << 9)
     | (1 << 11)
-    | (1 << 22)
     | (1 << 24)
     | (1 << 25)
     | (1 << 26);
@@ -479,10 +479,21 @@ fn combinations(api: &Api, bank: u64) {
         ("time", 0b11 | 1 << 3 | 1 << 9 | 1 << 11),
         ("time+hypercalls+vp_index", 0b11 | 1 << 3 | 1 << 7 | 1 << 8 | 1 << 9 | 1 << 11),
         ("ours less ipi/flush", ours & !(7 << 24)),
-        ("ours less timers", ours & !(1 << 5 | 1 << 22)),
+        ("ours with timers and the SynIC", ours | 1 << 4 | 1 << 5 | 1 << 22),
         ("ours less apic msrs", ours & !(1 << 6)),
     ] {
         println!("features {label} {:#x}: {}", set & bank, sets_up(set & bank));
+    }
+}
+
+/// The most vCPUs a partition sets up with: each count tried.
+fn most_vcpus(api: &Api, features: u64) {
+    for vcpus in [64u32, 128, 240, 241, 254, 255, 256, 1024, 2048] {
+        let r = partition(api, vcpus, features).map(|p| {
+            // SAFETY: the partition just made.
+            unsafe { (api.delete_partition)(p) };
+        });
+        println!("vcpus {vcpus}: {r:?}");
     }
 }
 
@@ -963,6 +974,7 @@ fn main() {
         }
     };
     println!("features={features:#x}");
+    most_vcpus(&api, features);
     if let Err(e) = ap_as_created(&api, features) {
         println!("as-created failed: {e}");
     }
