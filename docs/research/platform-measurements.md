@@ -7514,6 +7514,34 @@ revision before comparing a changed API/implementation.
   which the VM process's worker waits on with its own. One event and the port asked
   together is not taken: its wakes were lost.
 
+### M214. What Metal costs a process that links it, on macOS (D144)
+
+- **Question.** A Venus renderer on macOS runs Vulkan over MoltenVK, which links Metal,
+  QuartzCore, IOSurface and Foundation (gpu-accelerators.md R6). dyld loads a linked
+  framework as the process launches. What would linking them cost every VM process, a
+  GPU VM's or not, and what does a GPU VM's own Metal device cost it?
+- **Method.** `docs/research/measurements/metal-launch` (two binaries, release): one
+  linking nothing past libSystem, one linking those four frameworks and referencing
+  `MTLCreateSystemDefaultDevice`, run with no argument (dyld's loading alone) and with one
+  that makes the system's default Metal device. 300 launches each, alternating, spawn to
+  reap; then each held 1 s for its resident size and its physical footprint (`ps`,
+  `footprint`). Apple M5 Max, macOS 26.4.1, load 11 to 12.5 (other work on the host),
+  2026-10-12.
+- **Results.**
+
+  | | launch, p50 / p90 / p99 | resident | footprint |
+  |---|---|---|---|
+  | plain | 3.18 / 4.21 / 6.38 ms | 1,616 KiB | 1,072 KB |
+  | Metal linked | 4.50 / 5.84 / 9.27 ms | 5,888 KiB | 1,552 KB |
+  | Metal device made | 22.55 / 28.42 / 44.13 ms | 11,328 KiB | 3,568 KB |
+
+- **Consequence (D144).** Linked into shards' VM process, Metal would cost every VM 1.3 ms
+  of launch at p50 and 480 KB of footprint, GPU or none (R1: a GPU costs nothing where it
+  is not used). A GPU VM runs a VM process of its own build, `shards-vm-gpu`, which links
+  the renderer and MoltenVK and is carried and written out as the VM process is (D36);
+  every other VM's links neither. A GPU VM pays its device's 19 ms as it boots, in its
+  pool's refill.
+
 ### M215. What changing a socket's registration with a completion port does (D142)
 
 - **Question.** The network process's poller registers each socket with its completion

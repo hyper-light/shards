@@ -3602,6 +3602,35 @@ No run-time labels, relays or declassifiers (§12 answer 14, decided by the user
 an internal-only domain to the world (D58), so there is no data to label. Code mode is
 D136.
 
+### D144. GPUs: macOS first, Venus in a VM process of its own build
+
+AGENTFILE_ARCH.md §11 row 978: a GPU given a run or a build's step (`--gpus`, `--device`'s
+CDI names, `RUN --device`), which shards creates rather than refuses (the user, 2026-10-10:
+"Then we create it"). The research set its shape (gpu-accelerators.md): a GPU costs nothing
+where it is not used (R1); on Linux, VFIO through iommufd, a GPU VM a class of its own
+assigned from a warm pool, as a device passed through pins all of a guest's memory and
+breaks copy-on-write restores (R2, R3); on macOS, virtio-gpu with Venus over MoltenVK,
+Vulkan compute in the guest, as libkrun gives it (R6). macOS is first: its hardware is here
+to test on, where no CI runner has a GPU behind an IOMMU.
+
+- **A VM process of its own build** (PM M214): MoltenVK links Metal, QuartzCore, IOSurface
+  and Foundation, which dyld loads as a process launches: 1.3 ms more at p50 and 480 KB
+  more footprint for every VM that linked them, a GPU's or not. A GPU VM runs
+  `shards-vm-gpu`, the VM process built with the renderer and MoltenVK in it, carried and
+  written out as `shards-vm` is (D36); every other VM's links neither. Its Metal device
+  costs it 19 ms as it boots, in its pool's refill.
+- **Rendering in that process**, as krunkit does: on macOS the renderer (virglrenderer's
+  Venus, in the 0.10.4e-krunkit fork libkrun's Homebrew formula builds) maps a blob's
+  device memory and hands its address (`virgl_renderer_resource_get_map_ptr`), which the
+  VMM maps into the device's shared memory window (hv_vm_map). A renderer in a process of
+  its own would need that memory shared between processes, which the fork does not export
+  on macOS.
+- **To build:** shared memory regions in the virtio-mmio transport (it has none: their
+  lengths read as all-ones); the virtio-gpu device, its Venus capset alone, with no
+  scanout and no virgl GL; the renderer and MoltenVK vendored and built for
+  `shards-vm-gpu`; a guest kernel variant with DRM's virtio-gpu driver; `--gpus` and CDI
+  names on macOS giving a run the render node; the research's E6 measured on it.
+
 ### D143. `RUN` on Windows hosts: the builder
 
 AGENTFILE_ARCH.md §11 row 975: a Windows host runs a build's `RUN` steps in a builder
