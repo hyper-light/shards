@@ -138,6 +138,12 @@ pub fn main() -> ! {
         "agent" => agent(),
         "vsock-agent" => vsock_agent(arg(1).parse().unwrap_or(1028)),
         "hold" => hold(arg(1)),
+        "conns" => conns(
+            arg(1),
+            arg(2).parse().unwrap_or(0),
+            arg(3).parse().unwrap_or(0),
+            arg(4).parse().unwrap_or(0),
+        ),
         "udp-echo" => udp_echo(arg(1), arg(2)),
         "spin" => {
             let _ = writeln!(io::stdout(), "ready");
@@ -554,6 +560,8 @@ fn report() -> i32 {
     // none.
     for (name, resource) in [
         ("nofile", libc::RLIMIT_NOFILE),
+        ("nproc", libc::RLIMIT_NPROC),
+        ("memlock", libc::RLIMIT_MEMLOCK),
         ("core", libc::RLIMIT_CORE),
         ("as", libc::RLIMIT_AS),
         ("rttime", libc::RLIMIT_RTTIME),
@@ -1286,17 +1294,7 @@ fn udp_serve(addr: &str, forget: bool) -> i32 {
 fn hold(port: &str) -> i32 {
     use std::collections::HashMap;
     use std::os::fd::AsRawFd as _;
-    let mut lim = libc::rlimit {
-        rlim_cur: 0,
-        rlim_max: 0,
-    };
-    // SAFETY: getrlimit(2) and setrlimit(2) of our own limit, through a local.
-    unsafe {
-        if libc::getrlimit(libc::RLIMIT_NOFILE, &mut lim) == 0 {
-            lim.rlim_cur = lim.rlim_max;
-            libc::setrlimit(libc::RLIMIT_NOFILE, &lim);
-        }
-    }
+    raise_descriptor_limit();
     let listener = match std::net::TcpListener::bind(format!("0.0.0.0:{port}"))
         .and_then(|l| l.set_nonblocking(true).map(|()| l))
     {
@@ -1357,6 +1355,118 @@ fn hold(port: &str) -> i32 {
             }
         }
     }
+}
+
+/// Raises this process's soft limit on open descriptors to its hard limit.
+fn raise_descriptor_limit() {
+    let mut lim = libc::rlimit {
+        rlim_cur: 0,
+        rlim_max: 0,
+    };
+    // SAFETY: getrlimit(2) and setrlimit(2) of our own limit, through a local.
+    unsafe {
+        if libc::getrlimit(libc::RLIMIT_NOFILE, &mut lim) == 0 {
+            lim.rlim_cur = lim.rlim_max;
+            libc::setrlimit(libc::RLIMIT_NOFILE, &lim);
+        }
+    }
+}
+
+/// Holds `n` connections to `addr` (IP:PORT) open while the host measures what they cost
+/// its network process (benches/net_memory.rs): each says `i` and is answered; or, with
+/// `bytes` above 0, says `b` and that length (8 bytes, big-endian), sends that many bytes
+/// and reads as many back, then idles. One more says `t`, makes `trips` round trips of 64
+/// bytes, and says `H`; every connection is held until the far end closes that one. Then
+/// prints each round trip's time, `conns rtt-us T...`, and `conns n=N bytes=B rtt
+/// n=TRIPS p50 P p90 P p99 P max M`, in microseconds.
+fn conns(addr: &str, n: usize, trips: usize, bytes: u64) -> i32 {
+    use std::io::Read as _;
+    raise_descriptor_limit();
+    let failed = |what: &str, e: io::Error| {
+        let _ = writeln!(io::stdout(), "conns error {what}: {e}");
+        1
+    };
+    let mut buf = vec![0u8; 64 * 1024];
+    let mut held = Vec::with_capacity(n);
+    for _ in 0..n {
+        let opened = std::net::TcpStream::connect(addr).and_then(|mut c| {
+            if bytes == 0 {
+                c.write_all(b"i")?;
+                c.read_exact(buf.get_mut(..1).unwrap_or_default())?;
+                return Ok(c);
+            }
+            let mut head = vec![b'b'];
+            head.extend(bytes.to_be_bytes());
+            c.write_all(&head)?;
+            // All of it sent, then all of it back: the far end reads it all first.
+            for sending in [true, false] {
+                let mut left = bytes;
+                while left > 0 {
+                    let m = usize::try_from(left).unwrap_or(usize::MAX).min(buf.len());
+                    let part = buf.get_mut(..m).unwrap_or_default();
+                    if sending {
+                        c.write_all(part)?;
+                    } else {
+                        c.read_exact(part)?;
+                    }
+                    left -= m as u64;
+                }
+            }
+            Ok(c)
+        });
+        match opened {
+            Ok(c) => held.push(c),
+            Err(e) => return failed(&format!("connection {}", held.len()), e),
+        }
+    }
+    let talk = std::net::TcpStream::connect(addr).and_then(|mut c| {
+        c.set_nodelay(true)?;
+        c.write_all(b"t")?;
+        c.read_exact(buf.get_mut(..1).unwrap_or_default())?;
+        Ok(c)
+    });
+    let mut talk = match talk {
+        Ok(c) => c,
+        Err(e) => return failed("the talking connection", e),
+    };
+    let (out, mut back) = ([b'x'; 64], [0u8; 64]);
+    let mut took = Vec::with_capacity(trips);
+    for _ in 0..trips {
+        let t = std::time::Instant::now();
+        if let Err(e) = talk.write_all(&out).and_then(|()| talk.read_exact(&mut back)) {
+            return failed("a round trip", e);
+        }
+        took.push(t.elapsed().as_micros());
+    }
+    if let Err(e) = talk.write_all(b"H") {
+        return failed("saying it holds them", e);
+    }
+    loop {
+        match talk.read(&mut buf) {
+            Ok(0) => break,
+            Ok(_) => {}
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+            Err(e) => return failed("holding them", e),
+        }
+    }
+    drop(held);
+    let each: Vec<String> = took.iter().map(u128::to_string).collect();
+    let _ = writeln!(io::stdout(), "conns rtt-us {}", each.join(" "));
+    took.sort_unstable();
+    let q = |p: usize| {
+        took.get((took.len() * p / 100).min(took.len().saturating_sub(1)))
+            .copied()
+            .unwrap_or(0)
+    };
+    let _ = writeln!(
+        io::stdout(),
+        "conns n={n} bytes={bytes} rtt n={trips} p50 {} p90 {} p99 {} max {}",
+        q(50),
+        q(90),
+        q(99),
+        took.last().copied().unwrap_or(0)
+    );
+    0
 }
 
 /// Binds UDP `port` at every address, says `ready`, then answers each datagram with

@@ -13,6 +13,7 @@ pub mod confine;
 pub mod dns;
 pub mod pktinfo;
 mod poll;
+mod ring;
 mod siphash;
 pub mod sys;
 pub mod tcp;
@@ -1967,7 +1968,25 @@ impl<'r> Stack<'r> {
             };
             match opened {
                 Ok(c) => (self.tcp.reserve(key), c),
-                Err(_) => {
+                Err(e) => {
+                    // The far end's own refusals are the guest's to hear; what this
+                    // process lacked to connect at all (descriptors, ports, buffers) is
+                    // said too.
+                    if !matches!(
+                        e.kind(),
+                        io::ErrorKind::ConnectionRefused
+                            | io::ErrorKind::TimedOut
+                            | io::ErrorKind::HostUnreachable
+                            | io::ErrorKind::NetworkUnreachable
+                    ) {
+                        use std::io::Write as _;
+                        let _ = writeln!(
+                            io::stderr(),
+                            "shards-net: guest port {}'s connection to {:?} reset: connecting: {e}",
+                            key.guest_port,
+                            key.remote
+                        );
+                    }
                     let mut o = self.out();
                     o.segment(
                         &key,
@@ -2114,6 +2133,7 @@ impl<'r> Stack<'r> {
     /// probe, a UDP flow's end. One a later timer took the place of, or whose flow lives
     /// on, does nothing, or is armed again for when it ends (review 2.14).
     fn timers(&mut self, now: Instant) {
+        ring::expire(now);
         while let Some(&Reverse((at, named))) = self.timers.peek() {
             if at > now {
                 break;
@@ -2180,9 +2200,14 @@ impl<'r> Stack<'r> {
         }
     }
 
-    /// The earliest timer's time.
+    /// The earliest timer's time: a connection's, a flow's, or the memory its queues let
+    /// go of going back to the OS (ring.rs).
     fn next_timer(&self) -> Option<Instant> {
-        self.timers.peek().map(|Reverse((at, _))| *at)
+        let timer = self.timers.peek().map(|Reverse((at, _))| *at);
+        match (timer, ring::expire(Instant::now())) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        }
     }
 }
 

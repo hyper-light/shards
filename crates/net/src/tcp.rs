@@ -8,12 +8,12 @@
 //! (networking.md R1). Sequence numbers compare by their wrapping difference (RFC 9293
 //! §3.4).
 
-use std::collections::VecDeque;
 use std::io::{self, IoSlice, Read, Write};
 use std::net::{IpAddr, Shutdown, SocketAddr, TcpStream};
 use std::path::Path;
 use std::time::{Duration, Instant};
 
+use crate::ring::Ring;
 use crate::sys::{AsRawSock, RawSock, UnixStream};
 use crate::wire::{self, ACK, FIN, PSH, RST, SYN};
 
@@ -34,6 +34,15 @@ pub const MSS: u16 = 65520 - 40;
 /// away has none, and one that answers nothing that long is gone).
 const RTO: Duration = Duration::from_millis(200);
 const RETRIES: u32 = 8;
+
+/// How long a connection's queues stay empty before it lets go of their memory: one RTO,
+/// TCP's own measure of a connection gone idle, after which it starts again from its
+/// initial window (RFC 7661 §4.4; Linux's tcp_slow_start_after_idle), so that a burst
+/// after it pays for little more than that. Kept, a queue holds its largest fill for the
+/// connection's life: 131 KiB for each of 1,000 idle connections that had moved 256 KiB
+/// each way, up to TO_GUEST and TO_HOST for each; let go each time it drained, it cost
+/// bulk transfer 2.5% (PM M210).
+pub(crate) const IDLE: Duration = RTO;
 
 /// `a < b` in sequence space.
 fn before(a: u32, b: u32) -> bool {
@@ -148,9 +157,9 @@ pub struct Conn {
     snd_max: u32,
     /// Bytes from `snd_una` sent to the guest and not yet acknowledged, then bytes not yet
     /// sent: what the guest may still need again.
-    to_guest: VecDeque<u8>,
+    to_guest: Ring,
     /// Guest bytes for the host not yet written.
-    to_host: VecDeque<u8>,
+    to_host: Ring,
     /// The guest sent FIN; the host's write side is shut once `to_host` drains.
     guest_fin: bool,
     host_shut: bool,
@@ -187,6 +196,9 @@ pub struct Conn {
     /// A connection to the host's resolver for the guest's DNS over TCP: its questions and
     /// answers read, as the guest's by UDP are.
     pub dns: Option<crate::dns::Stream>,
+    /// When both queues last drained while holding memory, which goes once they have
+    /// stayed empty for [`IDLE`].
+    drained_at: Option<Instant>,
 }
 
 /// A segment's bytes, as they lie in a queue that may wrap: one part, then the other.
@@ -206,7 +218,7 @@ fn span(parts: Payload<'_>, at: usize, n: usize) -> Payload<'_> {
 }
 
 /// `q`'s bytes `at..at + n`, where they lie in its two halves.
-fn bytes(q: &VecDeque<u8>, at: usize, n: usize) -> Payload<'_> {
+fn bytes(q: &Ring, at: usize, n: usize) -> Payload<'_> {
     span(q.as_slices().into(), at, n)
 }
 
@@ -269,8 +281,8 @@ impl Conn {
             snd_una: isn,
             snd_nxt: isn,
             snd_max: isn,
-            to_guest: VecDeque::new(),
-            to_host: VecDeque::new(),
+            to_guest: Ring::new(),
+            to_host: Ring::new(),
             guest_fin: false,
             host_shut: false,
             host_eof: false,
@@ -286,6 +298,7 @@ impl Conn {
             recover: isn,
             repair: None,
             dns: None,
+            drained_at: None,
         }
     }
 
@@ -305,8 +318,8 @@ impl Conn {
             snd_una: isn,
             snd_nxt: isn.wrapping_add(1),
             snd_max: isn.wrapping_add(1),
-            to_guest: VecDeque::new(),
-            to_host: VecDeque::new(),
+            to_guest: Ring::new(),
+            to_host: Ring::new(),
             guest_fin: false,
             host_shut: false,
             host_eof: false,
@@ -322,6 +335,7 @@ impl Conn {
             recover: isn,
             repair: None,
             dns: None,
+            drained_at: None,
         };
         c.send_syn(out);
         c
@@ -414,7 +428,7 @@ impl Conn {
             let (a, b) = self.to_host.as_slices();
             match write_now(&self.sock, [a, b]) {
                 Ok(n) => {
-                    self.to_host.drain(..n);
+                    self.to_host.drain(n);
                 }
                 Err(_) => {
                     self.lost("the host's socket, after the guest's reset,", None);
@@ -513,7 +527,8 @@ impl Conn {
             let (a, b) = self.to_host.as_slices();
             match write_now(&self.sock, [a, b]) {
                 Ok(n) => {
-                    self.to_host.drain(..n);
+                    self.to_host.drain(n);
+                    self.drained();
                 }
                 Err(_) => {
                     self.reset(out);
@@ -550,17 +565,20 @@ impl Conn {
                 }
                 Ok(n) => {
                     let got = buf.get(..n).unwrap_or_default();
-                    match self.dns.as_mut() {
+                    // Where the OS gives the queue no memory, the connection is reset, as
+                    // one whose socket failed is.
+                    let queued = match self.dns.as_mut() {
                         Some(d) => {
-                            self.to_guest.extend(d.from_host(got));
+                            let answer = d.from_host(got);
                             // A resolver that stops part way through an answer holds no
                             // more than this side holds for any host.
-                            if d.held() > TO_GUEST {
-                                self.reset(out);
-                                return;
-                            }
+                            d.held() <= TO_GUEST && self.to_guest.extend(&answer).is_ok()
                         }
-                        None => self.to_guest.extend(got),
+                        None => self.to_guest.extend(got).is_ok(),
+                    };
+                    if !queued {
+                        self.reset(out);
+                        return;
                     }
                 }
                 Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
@@ -707,7 +725,8 @@ impl Conn {
             self.syn_acked = true;
             bytes -= 1;
         }
-        self.to_guest.drain(..bytes.min(self.to_guest.len()));
+        self.to_guest.drain(bytes);
+        self.drained();
         self.snd_una = ack;
         // What a window that shrank had the guest drop came after all.
         if before(self.snd_nxt, ack) {
@@ -785,7 +804,7 @@ impl Conn {
                 return;
             }
             self.guest_reset = true;
-            self.to_guest.clear();
+            self.to_guest.release();
             self.sent_at = None;
             self.flush_to_host(out);
             return;
@@ -846,9 +865,11 @@ impl Conn {
             if let Some(d) = self.dns.as_mut() {
                 // Questions go whole, if granted; refusals where no answer is part way.
                 let granted = d.from_guest(taken);
-                self.to_host.extend(granted);
-                self.to_guest.extend(d.refusals());
-                if d.held() > TO_GUEST {
+                let refused = d.refusals();
+                if d.held() > TO_GUEST
+                    || self.to_host.extend(&granted).is_err()
+                    || self.to_guest.extend(&refused).is_err()
+                {
                     self.reset(out);
                     return;
                 }
@@ -868,8 +889,14 @@ impl Conn {
             } else {
                 0
             };
-            if self.dns.is_none() {
-                self.to_host.extend(taken.get(written..).unwrap_or_default());
+            if self.dns.is_none()
+                && self
+                    .to_host
+                    .extend(taken.get(written..).unwrap_or_default())
+                    .is_err()
+            {
+                self.reset(out);
+                return;
             }
             self.rcv_nxt = self.rcv_nxt.wrapping_add(taken.len() as u32);
             answer = true;
@@ -911,20 +938,49 @@ impl Conn {
         }
     }
 
-    /// When the next retransmission is due, if anything is unacknowledged.
+    /// When this connection's timer is next due: a retransmission, if anything is
+    /// unacknowledged, or letting go of what its empty queues hold.
     pub fn deadline(&self) -> Option<Instant> {
         if self.guest_reset {
             return None;
         }
+        match (self.retransmission(), self.idle()) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        }
+    }
+
+    /// When the next retransmission is due, if anything is unacknowledged.
+    fn retransmission(&self) -> Option<Instant> {
         self.sent_at.map(|t| t + RTO * 2u32.saturating_pow(self.retries))
     }
 
-    /// Sends the oldest segment unacknowledged again if its time has come, alone (RFC
-    /// 6298 §5.4); resets the connection after [`RETRIES`]. While a window is closed on
-    /// bytes waiting, probes it instead.
+    /// When its queues, empty and holding memory, have been idle for [`IDLE`].
+    fn idle(&self) -> Option<Instant> {
+        let holding = self.to_guest.capacity() > 0 || self.to_host.capacity() > 0;
+        let empty = self.to_guest.is_empty() && self.to_host.is_empty();
+        self.drained_at.filter(|_| holding && empty).map(|t| t + IDLE)
+    }
+
+    /// Notes when the queues drained, where they hold memory.
+    fn drained(&mut self) {
+        if self.to_guest.is_empty() && self.to_host.is_empty() {
+            self.drained_at = Some(Instant::now());
+        }
+    }
+
+    /// Lets go of what its queues hold, once they have stayed empty for [`IDLE`]; sends the
+    /// oldest segment unacknowledged again if its time has come, alone (RFC 6298 §5.4),
+    /// and resets the connection after [`RETRIES`]. While a window is closed on bytes
+    /// waiting, probes it instead.
     pub fn on_timer(&mut self, now: Instant, out: &mut dyn ToGuest) {
-        let Some(due) = self.deadline() else { return };
-        if now < due {
+        if self.idle().is_some_and(|due| now >= due) {
+            self.to_guest.release();
+            self.to_host.release();
+            self.drained_at = None;
+        }
+        let Some(due) = self.retransmission() else { return };
+        if self.guest_reset || now < due {
             return;
         }
         if self.state == State::Open && self.snd_nxt == self.snd_una {
@@ -1240,11 +1296,7 @@ mod tests {
         c.on_segment(&straight, &mut sent);
         // Taken at once, they never touched the queue, nor made it take memory.
         assert_eq!(c.to_host.capacity(), 0);
-        let mut q = VecDeque::with_capacity(7);
-        for &b in b"abc".iter().rev() {
-            q.push_front(b);
-        }
-        q.extend(b"defg");
+        let q = Ring::wrapped(b"abc", b"defg").unwrap();
         assert_eq!(q.as_slices(), (&b"abc"[..], &b"defg"[..]));
         c.to_host = q;
         c.on_writable(&mut sent);
@@ -1317,7 +1369,7 @@ mod tests {
         let (mut c, client) = opened(sent);
         sent.take();
         let data: Vec<u8> = (0..4000u32).map(|i| (i % 251) as u8).collect();
-        c.to_guest.extend(&data);
+        c.to_guest.extend(&data).unwrap();
         c.send_new(sent);
         let segments = sent.take();
         assert_eq!(segments.len(), 8);
@@ -1334,13 +1386,8 @@ mod tests {
         let mut sent = Sent::default();
         let (mut c, _client) = opened(&mut sent);
         let data: Vec<u8> = (0..4000u32).map(|i| (i % 253) as u8).collect();
-        // Pushed in front of an empty queue, the first 1000 bytes lie at its buffer's end
-        // and the rest at its start.
-        let mut q = VecDeque::with_capacity(data.len());
-        for &b in data[..1000].iter().rev() {
-            q.push_front(b);
-        }
-        q.extend(&data[1000..]);
+        // The first 1000 bytes at its memory's end and the rest at its start.
+        let q = Ring::wrapped(&data[..1000], &data[1000..]).unwrap();
         let (front, back) = q.as_slices();
         assert_eq!((front.len(), back.len()), (1000, 3000));
         c.to_guest = q;
@@ -1370,7 +1417,7 @@ mod tests {
         assert_eq!(c.deadline(), Some(due + 2 * RTO));
         c.on_segment(&segment(5001, 5001, ACK), &mut sent);
         assert_eq!(sent.take(), []);
-        assert_eq!(c.deadline(), None);
+        assert_eq!(c.retransmission(), None);
     }
 
     /// A duplicate acknowledgement sends the segment the guest lacks again, at once; each
@@ -1396,9 +1443,9 @@ mod tests {
         );
         c.on_segment(&segment(5001, 5001, ACK), &mut sent);
         assert_eq!(sent.take(), []);
-        assert_eq!(c.deadline(), None);
+        assert_eq!(c.retransmission(), None);
         // A later loss is repaired as the first was.
-        c.to_guest.extend(&data[..1000]);
+        c.to_guest.extend(&data[..1000]).unwrap();
         c.send_new(&mut sent);
         assert_eq!(sent.take().len(), 2);
         c.on_segment(&segment(5001, 5001, ACK), &mut sent);
@@ -1441,7 +1488,7 @@ mod tests {
         assert_eq!(sent.take(), [(1001, 5001, ACK, data[..536].to_vec())]);
         // Late, not lost: the guest had it all, and says so again for each copy.
         c.on_segment(&segment(5001, 5001, ACK), &mut sent);
-        c.to_guest.extend(&data[..2000]);
+        c.to_guest.extend(&data[..2000]).unwrap();
         c.send_new(&mut sent);
         assert_eq!(sent.take().len(), 4);
         for _ in 0..3 {
@@ -1482,7 +1529,7 @@ mod tests {
         assert_eq!(sent.take(), []);
         // Had the guest had them after all, its acknowledgement of them all is taken.
         c.on_segment(&segment(5001, 5001, ACK), &mut sent);
-        assert_eq!(c.deadline(), None);
+        assert_eq!(c.retransmission(), None);
         assert!(c.to_guest.is_empty());
     }
 
@@ -1498,7 +1545,7 @@ mod tests {
             ..segment(5001, 1001, ACK)
         };
         c.on_segment(&shut, &mut sent);
-        c.to_guest.extend(b"waiting");
+        c.to_guest.extend(b"waiting").unwrap();
         c.send_new(&mut sent);
         sent.take();
         let mut due = c.deadline().unwrap();
@@ -1525,7 +1572,7 @@ mod tests {
             ..segment(5001, 1001, ACK)
         };
         c.on_segment(&shut, &mut sent);
-        c.to_guest.extend(b"waiting");
+        c.to_guest.extend(b"waiting").unwrap();
         c.send_new(&mut sent);
         for _ in 0..RETRIES {
             c.on_timer(c.deadline().unwrap(), &mut sent);
@@ -1544,7 +1591,7 @@ mod tests {
         let mut sent = Sent::default();
         let (mut c, _client) = opened(&mut sent);
         sent.take();
-        c.to_guest.extend(b"last words");
+        c.to_guest.extend(b"last words").unwrap();
         c.host_eof = true;
         c.send_new(&mut sent);
         assert_eq!(
@@ -1587,7 +1634,7 @@ mod tests {
         };
         c.on_segment(&small(5001, 1001), &mut sent);
         let data: Vec<u8> = (0..4000u32).map(|i| (i % 251) as u8).collect();
-        c.to_guest.extend(&data);
+        c.to_guest.extend(&data).unwrap();
         c.send_new(&mut sent);
         assert_eq!(sent.take().len(), 2);
         c.on_segment(&small(5001, 1001), &mut sent);
@@ -1601,7 +1648,7 @@ mod tests {
         let mut sent = Sent::default();
         let (mut c, _client, data) = sending(&mut sent);
         // 100 bytes more for the guest, which the full ring refuses too.
-        c.to_guest.extend(&data[..100]);
+        c.to_guest.extend(&data[..100]).unwrap();
         sent.full = true;
         let dup = segment(5001, 1001, ACK);
         for _ in 0..3 {
@@ -1619,5 +1666,68 @@ mod tests {
             ]
         );
         assert!(!c.blocked());
+    }
+
+    /// A connection that moved bytes and then idles holds no memory for them: its queues
+    /// keep what they hold between bursts, and let it go once they have stayed empty for
+    /// [`IDLE`] (PM M210).
+    #[test]
+    fn a_drained_connection_holds_no_memory() {
+        let mut sent = Sent::default();
+        let (mut c, mut client) = opened(&mut sent);
+        sent.take();
+        // The host's bytes, kept for the guest until it has them all.
+        let data: Vec<u8> = (0..64u32 << 10).map(|i| (i % 251) as u8).collect();
+        client.write_all(&data).unwrap();
+        let mut buf = vec![0u8; 64 << 10];
+        let mut had = 0usize;
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while had < data.len() && Instant::now() < deadline {
+            c.on_readable(&mut sent, &mut buf);
+            let segments = sent.take();
+            had += segments.iter().map(|(_, _, _, b)| b.len()).sum::<usize>();
+            if let Some((seq, _, _, b)) = segments.last() {
+                c.on_segment(&segment(5001, seq.wrapping_add(b.len() as u32), ACK), &mut sent);
+            }
+        }
+        assert_eq!(had, data.len());
+        assert!(c.to_guest.is_empty());
+        assert!(c.to_guest.capacity() > 0, "kept for the next burst");
+        let idle = c.deadline().unwrap();
+        c.on_timer(idle - Duration::from_millis(1), &mut sent);
+        assert!(c.to_guest.capacity() > 0, "kept short of an RTO idle");
+        c.on_timer(idle, &mut sent);
+        assert_eq!(c.to_guest.capacity(), 0, "let go once idle");
+        assert_eq!(c.deadline(), None, "nothing more to time");
+        assert_eq!(sent.take(), [], "nothing sent for it");
+        // The guest's bytes, more than the client's socket takes unread: the rest waits,
+        // then goes as the client reads.
+        let big: Vec<u8> = (0..TO_HOST as u32).map(|i| (i % 251) as u8).collect();
+        let mut seq = 5001u32;
+        for chunk in big.chunks(60_000) {
+            let seg = wire::Tcp {
+                payload: chunk,
+                ..segment(seq, 1001u32.wrapping_add(had as u32), ACK)
+            };
+            c.on_segment(&seg, &mut sent);
+            seq = seq.wrapping_add(chunk.len() as u32);
+        }
+        assert!(!c.to_host.is_empty());
+        let reader = std::thread::spawn(move || {
+            let mut got = vec![0u8; TO_HOST];
+            client.read_exact(&mut got).unwrap();
+            got
+        });
+        while !c.to_host.is_empty() && Instant::now() < deadline {
+            c.on_writable(&mut sent);
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert!(reader.join().unwrap() == big);
+        assert!(c.to_host.is_empty());
+        // Held until the guest's bytes are acknowledged... they were, as they came: only
+        // the idle timer is left.
+        let idle = c.deadline().unwrap();
+        c.on_timer(idle, &mut sent);
+        assert_eq!(c.to_host.capacity(), 0, "let go once idle");
     }
 }
