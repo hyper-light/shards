@@ -3638,12 +3638,19 @@ on Windows as on Linux and macOS.
 - **Its ring** is a pagefile-backed section, the doorbell its VM sleeps on an auto-reset
   event, 23-35 µs a round trip (PM M204), and the one it sleeps on an AF_UNIX socket its
   VM rings a byte on, 29-34 µs (PM M213); a socket pair takes 0.6 ms to make (M199).
-- **It waits on a completion port** its sockets and that doorbell are registered with as
-  their interest changes (ProcessSocketNotifications, level-triggered, Windows 11 and
-  Server 2022 on), which names those ready: a round trip beside 10,000 idle connections
-  costs what one beside none does, 37-41 µs, where one event every socket set and a look
-  at every socket after each wake cost 39-54 ms (PM M213). One event to wake on with the
-  port asked which sockets are ready lost wakes, and is not used.
+- **It waits on a completion port** its sockets and that doorbell are registered with
+  (ProcessSocketNotifications, Windows 11 and Server 2022 on), which names those ready: a
+  round trip beside 10,000 idle connections costs what one beside none does, 37-41 µs,
+  where one event every socket set and a look at every socket after each wake cost
+  39-54 ms (PM M213). One event to wake on with the port asked which sockets are ready
+  lost wakes, and is not used.
+- **One-shot registrations** (PM M215): a notice disarms its socket's, and the next wait
+  arms it again, in the call that waits, for what the socket then waits for; one that
+  waits for nothing (its guest's window full, nothing for its host) is left as it is, and
+  its one notice let go of. A registration removed could not be made again until its
+  removal's notice came, and one filtering nothing is refused (WSAEINVAL): a connection
+  that waited for nothing for a while was reset either way (net costs runs 38303389671,
+  38308200096, 256 KiB each way).
 - **Confined** in an AppContainer that holds `internetClient`, `internetClientServer` and
   `privateNetworkClientServer` (M204): it reaches the networks and never this host's
   loopback or own addresses, nor a file or socket by its path. Its spawner dials those for

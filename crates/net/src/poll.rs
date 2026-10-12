@@ -11,17 +11,18 @@
 //! may still come, and its handle's value may name the next socket made: forgotten first,
 //! its notices are let go of as they come.
 //!
-//! On Windows (D142) each socket is registered with a completion port as its interest
-//! changes (ProcessSocketNotifications, level-triggered), and a wait takes the port's
-//! packets, which name the sockets ready: one event every socket set, and a look at every
-//! socket after each wake, cost a round trip 39 to 54 ms beside 10,000 idle sockets,
-//! where the port costs what it does beside none (PM M213). A handle watched beside the
-//! sockets (a peer's process) comes as a packet a thread-pool wait posts. A hangup is a
-//! read's and never a write's (PM M199: a peer's half-close is a hangup whatever is
-//! asked, which a wait to write would spin on). A socket that waits for nothing for a
-//! while is registered again filtering no events, not removed: a removal ends only with
-//! its notice, and a registration enabled again before it came failed, which reset the
-//! socket's connection (PM M215).
+//! On Windows (D142) each socket is registered with a completion port, one-shot and
+//! level-triggered (ProcessSocketNotifications), and a wait takes the port's packets,
+//! which name the sockets ready: one event every socket set, and a look at every socket
+//! after each wake, cost a round trip 39 to 54 ms beside 10,000 idle sockets, where the
+//! port costs what it does beside none (PM M213). A notice disarms its socket's
+//! registration, and the next wait arms it again, in the call that waits, for what the
+//! socket then waits for; one that waits for nothing is left as it is. A registration
+//! removed cannot be made again until its removal's notice comes, and one filtering
+//! nothing is refused (WSAEINVAL): each reset connections that waited for nothing for a
+//! while (PM M215). A handle watched beside the sockets (a peer's process) comes as a
+//! packet a thread-pool wait posts. A hangup is a read's and never a write's (PM M199: a
+//! peer's half-close is a hangup whatever is asked, which a wait to write would spin on).
 
 #[cfg(unix)]
 use std::io;
@@ -247,12 +248,11 @@ mod windows {
     use windows_sys::Win32::Networking::WinSock::{
         ProcessSocketNotifications, SOCK_NOTIFY_EVENT_ERR, SOCK_NOTIFY_EVENT_HANGUP, SOCK_NOTIFY_EVENT_IN,
         SOCK_NOTIFY_EVENT_OUT, SOCK_NOTIFY_EVENT_REMOVE, SOCK_NOTIFY_OP_ENABLE, SOCK_NOTIFY_OP_REMOVE,
-        SOCK_NOTIFY_REGISTER_EVENT_HANGUP, SOCK_NOTIFY_REGISTER_EVENT_IN, SOCK_NOTIFY_REGISTER_EVENT_NONE,
-        SOCK_NOTIFY_REGISTER_EVENT_OUT, SOCK_NOTIFY_REGISTRATION, SOCK_NOTIFY_TRIGGER_LEVEL,
-        SOCK_NOTIFY_TRIGGER_PERSISTENT,
+        SOCK_NOTIFY_REGISTER_EVENT_HANGUP, SOCK_NOTIFY_REGISTER_EVENT_IN, SOCK_NOTIFY_REGISTER_EVENT_OUT,
+        SOCK_NOTIFY_REGISTRATION, SOCK_NOTIFY_TRIGGER_LEVEL, SOCK_NOTIFY_TRIGGER_ONESHOT,
     };
     use windows_sys::Win32::System::IO::{
-        CreateIoCompletionPort, GetQueuedCompletionStatusEx, OVERLAPPED_ENTRY, PostQueuedCompletionStatus,
+        CreateIoCompletionPort, OVERLAPPED_ENTRY, PostQueuedCompletionStatus,
     };
     use windows_sys::Win32::System::Threading::{
         INFINITE, RegisterWaitForSingleObject, UnregisterWaitEx, WT_EXECUTEINWAITTHREAD, WT_EXECUTEONLYONCE,
@@ -285,16 +285,65 @@ mod windows {
         _post: Box<Post>,
     }
 
-    /// A completion port its sockets are registered with as their interest changes
-    /// (ProcessSocketNotifications, level-triggered), which names those ready: a wait
-    /// costs what is ready, not what is watched (PM M213: a round trip beside 10,000 idle
-    /// sockets 37 to 41 µs, where a look at each cost 39 to 54 ms).
+    /// A socket's registration: its token, what it waits for, and the filter it is armed
+    /// with while armed. A notice disarms it (one-shot), and the next wait arms it again for
+    /// what the socket then waits for, Microsoft's pattern for level-triggered notices
+    /// re-armed as each is handled. A socket that waits for nothing is left as it is: a
+    /// registration removed could not be made again until its removal's notice came, and
+    /// one filtering nothing is refused (WSAEINVAL), each of which reset a connection that
+    /// waited for nothing for a while (PM M215).
+    #[derive(Debug)]
+    struct Reg {
+        token: u64,
+        interest: Interest,
+        armed: Option<u16>,
+    }
+
+    /// A completion port its sockets are registered with, one-shot and level-triggered
+    /// (ProcessSocketNotifications), which names those ready: a wait costs what is ready,
+    /// not what is watched (PM M213: a round trip beside 10,000 idle sockets 37 to 41 µs,
+    /// where a look at each cost 39 to 54 ms).
     pub struct Poller {
         port: OwnedHandle,
-        sockets: RefCell<HashMap<RawSock, (u64, Interest)>>,
-        /// Each socket's interest by its token, which its notifications name.
-        interests: RefCell<HashMap<u64, Interest>>,
+        sockets: RefCell<HashMap<RawSock, Reg>>,
+        /// Each token's socket, which its notices name.
+        tokens: RefCell<HashMap<u64, RawSock>>,
+        /// The sockets a notice disarmed, which the next wait arms again.
+        disarmed: RefCell<Vec<RawSock>>,
         watched: RefCell<Vec<Watched>>,
+    }
+
+    /// What a socket of `interest` is armed to be told: its hangup, and its input or room
+    /// to write as it waits for them.
+    fn filter(interest: Interest) -> u16 {
+        let mut f = SOCK_NOTIFY_REGISTER_EVENT_HANGUP;
+        if interest.read {
+            f |= SOCK_NOTIFY_REGISTER_EVENT_IN;
+        }
+        if interest.write {
+            f |= SOCK_NOTIFY_REGISTER_EVENT_OUT;
+        }
+        // The three are bits below 8.
+        f as u16
+    }
+
+    /// `operation` on `sock`'s registration under `token`, one-shot and level-triggered.
+    fn registration(
+        sock: RawSock,
+        token: u64,
+        filter: u16,
+        operation: u32,
+    ) -> io::Result<SOCK_NOTIFY_REGISTRATION> {
+        let key = usize::try_from(token).map_err(|_| io::Error::other("a token past a key"))?;
+        Ok(SOCK_NOTIFY_REGISTRATION {
+            socket: sock,
+            completionKey: std::ptr::without_provenance_mut(key),
+            eventFilter: filter,
+            operation: u8::try_from(operation).map_err(|_| io::Error::other("an operation"))?,
+            triggerFlags: u8::try_from(SOCK_NOTIFY_TRIGGER_ONESHOT | SOCK_NOTIFY_TRIGGER_LEVEL)
+                .map_err(|_| io::Error::other("a trigger"))?,
+            registrationResult: 0,
+        })
     }
 
     impl std::fmt::Debug for Poller {
@@ -336,83 +385,97 @@ mod windows {
                 // SAFETY: a handle just made, which nothing else owns.
                 port: unsafe { OwnedHandle::from_raw_handle(raw) },
                 sockets: RefCell::new(HashMap::new()),
-                interests: RefCell::new(HashMap::new()),
+                tokens: RefCell::new(HashMap::new()),
+                disarmed: RefCell::new(Vec::new()),
                 watched: RefCell::new(Vec::new()),
             })
         }
 
-        /// Registers `sock` with the port under `token` for `filter`, or removes it.
-        fn register(&self, sock: RawSock, token: u64, filter: u32, operation: u32) -> io::Result<()> {
-            let key = usize::try_from(token).map_err(|_| io::Error::other("a token past a key"))?;
-            let mut reg = SOCK_NOTIFY_REGISTRATION {
-                socket: sock,
-                completionKey: std::ptr::without_provenance_mut(key),
-                eventFilter: u16::try_from(filter).map_err(|_| io::Error::other("an event filter"))?,
-                operation: u8::try_from(operation).map_err(|_| io::Error::other("an operation"))?,
-                triggerFlags: u8::try_from(SOCK_NOTIFY_TRIGGER_PERSISTENT | SOCK_NOTIFY_TRIGGER_LEVEL)
-                    .map_err(|_| io::Error::other("a trigger"))?,
-                registrationResult: 0,
-            };
-            // SAFETY: one registration of our port's; no wait, no packet taken.
+        /// Makes `regs`' changes, and waits up to `ms` for packets into `entries`: how many
+        /// came. Each registration's result is in it after.
+        fn process(
+            &self,
+            regs: &mut [SOCK_NOTIFY_REGISTRATION],
+            ms: u32,
+            entries: &mut [OVERLAPPED_ENTRY],
+        ) -> io::Result<usize> {
+            let count = u32::try_from(regs.len()).map_err(|_| io::Error::other("registrations"))?;
+            let room = u32::try_from(entries.len()).map_err(|_| io::Error::other("entries"))?;
+            let mut got = 0u32;
+            // SAFETY: registrations and entries of their own lengths, apart; our port.
             let r = unsafe {
                 ProcessSocketNotifications(
                     self.port.as_raw_handle(),
-                    1,
-                    &raw mut reg,
-                    0,
-                    0,
-                    std::ptr::null_mut(),
-                    std::ptr::null_mut(),
+                    count,
+                    if regs.is_empty() {
+                        std::ptr::null_mut()
+                    } else {
+                        regs.as_mut_ptr()
+                    },
+                    if entries.is_empty() { 0 } else { ms },
+                    room,
+                    if entries.is_empty() {
+                        std::ptr::null_mut()
+                    } else {
+                        entries.as_mut_ptr()
+                    },
+                    if entries.is_empty() {
+                        std::ptr::null_mut()
+                    } else {
+                        &raw mut got
+                    },
                 )
             };
             if r != 0 && r != WAIT_TIMEOUT {
                 return Err(io::Error::from_raw_os_error(r as i32));
             }
-            if reg.registrationResult != 0 {
-                return Err(io::Error::from_raw_os_error(reg.registrationResult as i32));
-            }
-            Ok(())
+            Ok(got as usize)
         }
 
-        /// Makes `sock`'s interest `now`, named `token`. NONE keeps its registration,
-        /// filtering no events, which a registration made again overwrites: one removed
-        /// would be enabled again only once its removal's notice came (PM M215).
-        pub fn set(&self, sock: RawSock, token: u64, was: Interest, now: Interest) -> io::Result<()> {
-            if was == now {
+        /// One registration's change, made now.
+        fn register(&self, reg: SOCK_NOTIFY_REGISTRATION) -> io::Result<()> {
+            let mut regs = [reg];
+            self.process(&mut regs, 0, &mut [])?;
+            match regs[0].registrationResult {
+                0 => Ok(()),
+                e => Err(io::Error::from_raw_os_error(e as i32)),
+            }
+        }
+
+        /// Makes `sock`'s interest `now`, named `token`: armed for it unless it is so, or
+        /// left as it is where it waits for nothing (one notice at most may come, which
+        /// the wait lets go of, and disarms it).
+        pub fn set(&self, sock: RawSock, token: u64, _was: Interest, now: Interest) -> io::Result<()> {
+            let mut sockets = self.sockets.borrow_mut();
+            let reg = sockets.entry(sock).or_insert(Reg {
+                token,
+                interest: Interest::NONE,
+                armed: None,
+            });
+            if reg.token != token {
+                self.tokens.borrow_mut().remove(&reg.token);
+                reg.token = token;
+            }
+            self.tokens.borrow_mut().insert(token, sock);
+            reg.interest = now;
+            if now == Interest::NONE {
                 return Ok(());
             }
-            let mut filter = SOCK_NOTIFY_REGISTER_EVENT_NONE;
-            if now != Interest::NONE {
-                filter |= SOCK_NOTIFY_REGISTER_EVENT_HANGUP;
+            let f = filter(now);
+            if reg.armed == Some(f) {
+                return Ok(());
             }
-            if now.read {
-                filter |= SOCK_NOTIFY_REGISTER_EVENT_IN;
-            }
-            if now.write {
-                filter |= SOCK_NOTIFY_REGISTER_EVENT_OUT;
-            }
-            self.register(sock, token, filter, SOCK_NOTIFY_OP_ENABLE)?;
-            if let Some((old, _)) = self.sockets.borrow_mut().insert(sock, (token, now))
-                && old != token
-            {
-                self.interests.borrow_mut().remove(&old);
-            }
-            // What waits for nothing is told nothing, its notices queued before let go of.
-            let mut interests = self.interests.borrow_mut();
-            if now == Interest::NONE {
-                interests.remove(&token);
-            } else {
-                interests.insert(token, now);
-            }
+            self.register(registration(sock, token, f, SOCK_NOTIFY_OP_ENABLE)?)?;
+            reg.armed = Some(f);
             Ok(())
         }
 
         /// Forgets `sock` before the caller closes it: its registration removed, and its
         /// notices let go of as they come, its removal's own among them.
         pub fn forget(&self, sock: RawSock, _token: u64, _had: Interest) -> io::Result<()> {
-            if let Some((token, _)) = self.sockets.borrow_mut().remove(&sock) {
-                self.interests.borrow_mut().remove(&token);
-                self.register(sock, token, 0, SOCK_NOTIFY_OP_REMOVE)?;
+            if let Some(reg) = self.sockets.borrow_mut().remove(&sock) {
+                self.tokens.borrow_mut().remove(&reg.token);
+                self.register(registration(sock, reg.token, 0, SOCK_NOTIFY_OP_REMOVE)?)?;
             }
             Ok(())
         }
@@ -453,7 +516,9 @@ mod windows {
         }
 
         /// Waits until something registered is ready, or `timeout` passes (`None`: for as
-        /// long as it takes), and puts what is in `out`, which it empties first.
+        /// long as it takes), and puts what is in `out`, which it empties first. The sockets
+        /// a notice disarmed are armed again first, in the call that waits, for what each
+        /// waits for now.
         pub fn wait(&self, out: &mut Vec<Event>, timeout: Option<Duration>) -> io::Result<()> {
             out.clear();
             // Rounded up, so that a deadline is never missed by waking a moment early;
@@ -461,29 +526,45 @@ mod windows {
             let ms = timeout.map_or(INFINITE, |t| {
                 u32::try_from(t.as_micros().div_ceil(1000)).unwrap_or(INFINITE - 1)
             });
-            let mut entries = [OVERLAPPED_ENTRY::default(); AT_ONCE];
-            let mut got = 0u32;
-            // SAFETY: our port and an array of its own length.
-            let ok = unsafe {
-                GetQueuedCompletionStatusEx(
-                    self.port.as_raw_handle(),
-                    entries.as_mut_ptr(),
-                    AT_ONCE as u32,
-                    &raw mut got,
-                    ms,
-                    0,
-                )
-            };
-            if ok == 0 {
-                let e = io::Error::last_os_error();
-                if e.raw_os_error() == Some(WAIT_TIMEOUT as i32) {
-                    return Ok(());
+            let mut arming = Vec::new();
+            let mut regs = Vec::new();
+            {
+                let sockets = self.sockets.borrow();
+                for sock in self.disarmed.borrow_mut().drain(..) {
+                    if let Some(reg) = sockets.get(&sock)
+                        && reg.armed.is_none()
+                        && reg.interest != Interest::NONE
+                    {
+                        let f = filter(reg.interest);
+                        regs.push(registration(sock, reg.token, f, SOCK_NOTIFY_OP_ENABLE)?);
+                        arming.push((sock, f));
+                    }
                 }
-                return Err(e);
             }
-            let interests = self.interests.borrow();
+            let mut entries = [OVERLAPPED_ENTRY::default(); AT_ONCE];
+            let got = self.process(&mut regs, ms, &mut entries)?;
+            {
+                let mut sockets = self.sockets.borrow_mut();
+                for (reg, (sock, f)) in regs.iter().zip(&arming) {
+                    let Some(r) = sockets.get_mut(sock) else { continue };
+                    if reg.registrationResult == 0 {
+                        r.armed = Some(*f);
+                    } else {
+                        // A socket that cannot be waited on: its next read or write says why.
+                        out.push(Event {
+                            token: r.token,
+                            read: true,
+                            write: true,
+                            ended: true,
+                        });
+                    }
+                }
+            }
+            let mut sockets = self.sockets.borrow_mut();
+            let tokens = self.tokens.borrow();
             let watched = self.watched.borrow();
-            for entry in entries.iter().take(got as usize) {
+            let mut disarmed = self.disarmed.borrow_mut();
+            for entry in entries.iter().take(got) {
                 let token = entry.lpCompletionKey as u64;
                 let bits = entry.dwNumberOfBytesTransferred;
                 if bits & WATCHED != 0 {
@@ -497,18 +578,25 @@ mod windows {
                     }
                     continue;
                 }
-                // A registration removed, or one changed since its notice was queued.
+                // A registration removed, which says nothing more.
                 if bits & SOCK_NOTIFY_EVENT_REMOVE != 0 {
                     continue;
                 }
-                let Some(&interest) = interests.get(&token) else {
+                let Some(reg) = tokens.get(&token).and_then(|s| sockets.get_mut(s)) else {
                     continue;
                 };
+                // Told once, as one-shot: armed again by the next wait.
+                if reg.armed.take().is_some()
+                    && let Some(&sock) = tokens.get(&token)
+                {
+                    disarmed.push(sock);
+                }
+                let interest = reg.interest;
                 // End of stream (a hangup) a read's and never a write's (PM M199).
                 let ended = bits & (SOCK_NOTIFY_EVENT_HANGUP | SOCK_NOTIFY_EVENT_ERR) != 0;
                 let read = interest.read && (bits & SOCK_NOTIFY_EVENT_IN != 0 || ended);
                 let write = interest.write && bits & (SOCK_NOTIFY_EVENT_OUT | SOCK_NOTIFY_EVENT_ERR) != 0;
-                if read || write || ended {
+                if read || write || ended && interest != Interest::NONE {
                     out.push(Event {
                         token,
                         read: read || ended,
@@ -639,7 +727,8 @@ mod tests {
     /// A descriptor that waits for nothing for a while is told nothing, and what it waits
     /// for next it is told, again and again: as a connection waits whose guest's window
     /// is full and which has nothing for its host. On Windows a registration removed and
-    /// enabled again at once failed, which reset the connection (PM M215).
+    /// enabled again at once failed, as one filtering nothing did, which reset the
+    /// connection (PM M215).
     #[test]
     fn a_descriptor_waits_for_nothing_then_again() {
         let p = Poller::new().unwrap();
