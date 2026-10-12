@@ -3658,10 +3658,25 @@ to test on, where no CI runner has a GPU behind an IOMMU.
   (vn_renderer_virtgpu.c); an unaligned place is refused, said once.
 - **No snapshot.** A GPU's state is its host driver's, and the renderer's threads reach
   guest memory without the VMM's access: a VM with a GPU is refused a snapshot policy.
-- **To build:** a guest kernel variant with DRM's virtio-gpu driver and the blob alignment;
-  `shards-vm-gpu` built with the renderer, MoltenVK and libepoxy (`--features gpu`,
-  `SHARDS_GPU_LIBS`), its libraries built from pinned sources; `--gpus` and CDI names on
-  macOS giving a run the render node; the research's E6 measured on it.
+- **The gpu kernel variant** (resources/kernel/gpu.config): DRM's virtio-gpu driver without
+  modesetting, apart from every other guest's kernel; patch 0003 backports the blob
+  alignment to 6.18.48 and rounds a host blob's size up to it where upstream refuses it,
+  so that Mesa that aligns nothing, Debian trixie's 25.0.7 among them, maps its blobs too.
+- **`shards-vm-gpu`**, the VM process built with the renderer (`--features gpu`), built
+  and signed by build.rs where SHARDS_GPU_LIBS names the libraries scripts/gpu-libs builds
+  from pinned sources, carried in `shards` and written out the first time a GPU VM needs
+  it. MoltenVK says its errors alone (MVK_CONFIG_LOG_LEVEL 1).
+- **`--gpus`**, read as docker/cli reads it, gives a run this Mac's GPU where it asks for
+  any or for device 0: its microVM boots in `shards-vm-gpu` on the gpu kernel, never from
+  a template, and the run has the render node as `--device` gives one; inspect shows the
+  requests as the CLI makes them. More GPUs, another device or a driver of its own are
+  refused. `run --kernel … --gpu` does the same for a kernel booted directly.
+- **Verified on this Mac** (tests/gpu.rs): `shards run --rm --gpus all` of an image with
+  Mesa's Venus finds "Virtio-GPU Venus (Apple M5 Max)", conformance 1.3; the guest's
+  driver negotiates VIRGL, RESOURCE_BLOB, CONTEXT_INIT and BLOB_ALIGNMENT.
+- **To build:** the gpu kernel pinned once a release publishes it (KERNEL_GPU; until then
+  SHARDS_KERNEL names one); `shards-vm-gpu` in release builds; a GPU for a build's `RUN`
+  steps and by CDI name; the research's E6 measured on it; Linux's VFIO (R2).
 
 ### D143. `RUN` on Windows hosts: the builder
 
