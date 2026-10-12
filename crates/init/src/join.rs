@@ -183,30 +183,30 @@ pub fn kill_rest(id: u32) {
 }
 
 // include/uapi/linux/loop.h and include/uapi/linux/major.h.
-const LOOP_SET_FD: libc::c_ulong = 0x4C00;
-const LOOP_SET_STATUS64: libc::c_ulong = 0x4C04;
-const LOOP_CTL_GET_FREE: libc::c_ulong = 0x4C82;
-const LO_FLAGS_READ_ONLY: u32 = 1;
-const LO_FLAGS_AUTOCLEAR: u32 = 4;
+pub(crate) const LOOP_SET_FD: libc::c_ulong = 0x4C00;
+pub(crate) const LOOP_SET_STATUS64: libc::c_ulong = 0x4C04;
+pub(crate) const LOOP_CTL_GET_FREE: libc::c_ulong = 0x4C82;
+pub(crate) const LO_FLAGS_READ_ONLY: u32 = 1;
+pub(crate) const LO_FLAGS_AUTOCLEAR: u32 = 4;
 const LOOP_MAJOR: u32 = 7;
 const MISC_MAJOR: u32 = 10;
 const LOOP_CTRL_MINOR: u32 = 237;
 
 #[repr(C)]
-struct LoopInfo64 {
-    lo_device: u64,
-    lo_inode: u64,
-    lo_rdevice: u64,
-    lo_offset: u64,
-    lo_sizelimit: u64,
-    lo_number: u32,
-    lo_encrypt_type: u32,
-    lo_encrypt_key_size: u32,
-    lo_flags: u32,
-    lo_file_name: [u8; 64],
-    lo_crypt_name: [u8; 64],
-    lo_encrypt_key: [u8; 32],
-    lo_init: [u64; 2],
+pub(crate) struct LoopInfo64 {
+    pub(crate) lo_device: u64,
+    pub(crate) lo_inode: u64,
+    pub(crate) lo_rdevice: u64,
+    pub(crate) lo_offset: u64,
+    pub(crate) lo_sizelimit: u64,
+    pub(crate) lo_number: u32,
+    pub(crate) lo_encrypt_type: u32,
+    pub(crate) lo_encrypt_key_size: u32,
+    pub(crate) lo_flags: u32,
+    pub(crate) lo_file_name: [u8; 64],
+    pub(crate) lo_crypt_name: [u8; 64],
+    pub(crate) lo_encrypt_key: [u8; 32],
+    pub(crate) lo_init: [u64; 2],
 }
 
 /// How long the join disk may take to show its new capacity: the guest's driver reads it
@@ -268,7 +268,7 @@ fn enter(pid: libc::pid_t, ns: &str, kind: libc::c_int) -> Result<(), String> {
 }
 
 /// The join disk's name under /sys/block, found by its serial, and its device number.
-fn join_disk() -> Result<(String, u32, u32), String> {
+pub(crate) fn join_disk() -> Result<(String, u32, u32), String> {
     let serial = shards_abi::JOIN_DISK_SERIAL.as_bytes();
     for entry in std::fs::read_dir("/sys/block").map_err(|e| format!("/sys/block: {e}"))? {
         let Ok(entry) = entry else { continue };
@@ -294,7 +294,7 @@ fn join_disk() -> Result<(String, u32, u32), String> {
 
 /// Waits until the join disk `name` holds `end` bytes: its capacity, as the driver read
 /// it, past the joiner's range.
-fn await_capacity(name: &str, end: u64) -> Result<(), String> {
+pub(crate) fn await_capacity(name: &str, end: u64) -> Result<(), String> {
     let deadline = Instant::now() + CAPACITY_WAIT;
     loop {
         let sectors: u64 = std::fs::read_to_string(format!("/sys/block/{name}/size"))

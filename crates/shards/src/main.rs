@@ -122,6 +122,19 @@ pub(crate) fn phase(_name: &str) {
     alloc_count::phase(_name);
 }
 
+/// Says how much of phase `_phase`'s time went to `_part`, over `_bytes`, for the work
+/// measured with the feature `alloc-count` (PM M194).
+pub(crate) fn split(_phase: &str, _part: &str, _took: std::time::Duration, _bytes: usize) {
+    #[cfg(all(feature = "alloc-count", unix))]
+    {
+        let _ = writeln!(
+            std::io::stderr(),
+            "alloc-split {_phase} {_part} ms={:.1} bytes={_bytes}",
+            _took.as_secs_f64() * 1e3
+        );
+    }
+}
+
 fn usage_error(message: &str) -> ExitCode {
     let _ = writeln!(std::io::stderr(), "shards: {message}\n{USAGE}");
     ExitCode::from(2)

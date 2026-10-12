@@ -206,6 +206,8 @@ struct Run {
     cfg: Config,
     mode: Mode,
     workload: Options,
+    /// `--attach FD`: the socket a builder attaches files to the VM's join disk on (D134).
+    attach: Option<i32>,
 }
 
 fn parse_run(args: impl Iterator<Item = OsString>) -> Result<Run, String> {
@@ -214,6 +216,7 @@ fn parse_run(args: impl Iterator<Item = OsString>) -> Result<Run, String> {
     let mut cfg = Config::new(PathBuf::new(), None);
     let (mut kernel, mut common, mut warm) = (None, Common::new(), None);
     let mut memory_max = None;
+    let mut attach = None;
     while let Some(arg) = args.next() {
         let arg = text(arg)?;
         let mut value = |name: &str| args.next().ok_or_else(|| format!("{name} needs a value"));
@@ -254,6 +257,17 @@ fn parse_run(args: impl Iterator<Item = OsString>) -> Result<Run, String> {
             }
             // A join disk, empty until a container joins the VM's network (D119).
             "--join" => cfg.join = Some(give_join_disk()),
+            // A join disk its builder attaches files to on this socket, a cache's layers
+            // and the files its steps write theirs to (D134).
+            "--attach" => {
+                let fd = text(value("--attach")?)?;
+                attach = Some(
+                    fd.parse::<i32>()
+                        .map_err(|_| format!("--attach: {fd:?} is not a descriptor"))?,
+                );
+                JOIN.take_writes();
+                cfg.join = Some(give_join_disk());
+            }
             // A join share, served by none until a joiner brings volumes (D119).
             #[cfg(unix)]
             "--join-share" => cfg.join_share = Some(give_join_share()),
@@ -309,10 +323,14 @@ fn parse_run(args: impl Iterator<Item = OsString>) -> Result<Run, String> {
             policy.then = AfterSnapshot::Resume;
             policy.working_set = true;
         }
+        if attach.is_some() {
+            return Err("--warm takes its files from the daemon: no --attach".into());
+        }
         return Ok(Run {
             cfg,
             mode: Mode::Warm { rootfs, fd },
             workload: common.workload,
+            attach,
         });
     }
     let mode = match rootfs {
@@ -326,6 +344,7 @@ fn parse_run(args: impl Iterator<Item = OsString>) -> Result<Run, String> {
         cfg,
         mode,
         workload: common.workload,
+        attach,
     })
 }
 
@@ -432,6 +451,62 @@ static HAS_JOIN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::
 fn give_join_disk() -> &'static shards_vmm::devices::virtio::block::Join {
     HAS_JOIN.store(true, std::sync::atomic::Ordering::Release);
     &JOIN
+}
+
+/// Serves the requests of the builder that spawned this VM (`--attach`, D134) on a thread
+/// of its own, until it hangs up: each a file attached to the VM's join disk, read-only
+/// or writable as it asks, answered with its range, or a range let go.
+#[cfg(unix)]
+fn serve_attach(fd: i32) -> Result<(), String> {
+    use shards_ipc::kind;
+    let socket = crate::warm::inherited_socket("--attach", fd)?;
+    let answer = |m: shards_ipc::Message| -> Result<(u8, Vec<u8>), String> {
+        match m.kind {
+            kind::DISK_ATTACH => {
+                let mut fds = m.fds.into_iter();
+                let (Some(fd), None) = (fds.next(), fds.next()) else {
+                    return Err("an attach without its one file".into());
+                };
+                let file = std::fs::File::from(fd);
+                let (start, len) = match m.payload.as_slice() {
+                    [0] => JOIN.attach(file),
+                    [1] => JOIN.attach_writable(file),
+                    _ => Err("an attach neither read-only nor writable".into()),
+                }?;
+                Ok((
+                    kind::DISK_ATTACH,
+                    [start.to_be_bytes(), len.to_be_bytes()].concat(),
+                ))
+            }
+            kind::DISK_DETACH => {
+                let start = m
+                    .payload
+                    .first_chunk::<8>()
+                    .map(|b| u64::from_be_bytes(*b))
+                    .ok_or("a detach without its range")?;
+                JOIN.detach(start)?;
+                Ok((kind::DISK_DETACH, Vec::new()))
+            }
+            other => Err(format!("message kind {other}")),
+        }
+    };
+    std::thread::Builder::new()
+        .name("attach".into())
+        .spawn(move || {
+            while let Ok(Some(m)) = shards_ipc::recv(&socket) {
+                let (kind, payload) = answer(m).unwrap_or_else(|e| (kind::DISK_REFUSED, e.into_bytes()));
+                if shards_ipc::send(&socket, kind, &payload, &[]).is_err() {
+                    return;
+                }
+            }
+        })
+        .map(drop)
+        .map_err(|e| format!("serving its builder: {e}"))
+}
+
+#[cfg(not(unix))]
+fn serve_attach(_: i32) -> Result<(), String> {
+    Err("--attach: a builder's join disk needs Unix sockets".into())
 }
 
 /// This VM's join disk, where it has one (D119).
@@ -547,10 +622,17 @@ pub fn run(args: impl Iterator<Item = OsString>) -> ExitCode {
         mut cfg,
         mode,
         workload,
+        attach,
     } = match parsed(parse_run(args), RUN_USAGE) {
         Ok(run) => run,
         Err(code) => return code,
     };
+    if let Some(fd) = attach
+        && let Err(e) = serve_attach(fd)
+    {
+        report(e);
+        return ExitCode::FAILURE;
+    }
     match mode {
         Mode::Plain => supervise(start(&cfg), cfg.console, false),
         Mode::Template(rootfs) => {

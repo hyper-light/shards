@@ -1,0 +1,11 @@
+[package]
+name = "shards-erofs"
+version = "0.1.0"
+description = "EROFS images as Linux reads them: written from a tree, and one file read back"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true

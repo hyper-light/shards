@@ -17,9 +17,12 @@ use std::sync::{Mutex, PoisonError};
 
 use sha2::{Digest as _, Sha256, Sha384, Sha512};
 
+mod merge;
 mod mounts;
 
-pub use mounts::{HeldMount, MountEntry, MountLayer, MountRoot, Sharing};
+pub use mounts::{
+    HeldMount, MountChanges, MountEntry, MountLayer, MountPart, MountRoot, Sharing, layer_uuid,
+};
 
 use crate::erofs;
 use crate::layer::{self, Archives};
@@ -1906,14 +1909,6 @@ impl Store {
             };
             for b in &record.blobs {
                 if let Ok(d) = Digest::parse(b) {
-                    blobs.insert(self.blob_path(&d));
-                }
-            }
-        }
-        // And the cache mounts' records theirs (D114).
-        if with_cache {
-            for b in self.mount_blobs()? {
-                if let Ok(d) = Digest::parse(&b) {
                     blobs.insert(self.blob_path(&d));
                 }
             }

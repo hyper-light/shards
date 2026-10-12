@@ -249,6 +249,17 @@ pub mod kind {
     /// the network process's are closed, so that the host may bind them again once the
     /// end is told, as dockerd's may.
     pub const HOST_RELEASE: u8 = 52;
+    /// A builder → its VM process (`--attach`, D134): a file for the VM's join disk, its
+    /// one descriptor, the guest to read it alone (payload 0) or to write it too (1).
+    /// Answered with the same kind and where its range starts and its length (each a
+    /// big-endian u64), or `DISK_REFUSED`.
+    pub const DISK_ATTACH: u8 = 53;
+    /// A builder → its VM process: the join disk's range that starts where it says (a
+    /// big-endian u64) let go, its file closed. Answered with the same kind, or
+    /// `DISK_REFUSED`.
+    pub const DISK_DETACH: u8 = 54;
+    /// A VM process → its builder: why it did not attach or detach what was asked.
+    pub const DISK_REFUSED: u8 = 55;
 }
 
 /// An `ATTACH_RUN` flag: the client's stdin goes to the command's.

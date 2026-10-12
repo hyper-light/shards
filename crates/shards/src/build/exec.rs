@@ -141,9 +141,6 @@ pub struct Exec<'a> {
     /// The build context's snapshots: what BuildKit takes content checksums of before an
     /// operation reads them.
     contexts: Vec<Rc<Fs>>,
-    /// The cache records the build's steps have mounted (D114), by id: the content each was
-    /// left with, and its snapshot, whose tree the builder holds.
-    mounts: std::collections::HashMap<String, (Vec<store::MountLayer>, Ref)>,
 }
 
 /// One slot of a file operation: an input, an action's mount, or its committed result.
@@ -169,90 +166,87 @@ impl<'a> Exec<'a> {
             budget: shards_build::archive::Budget::new(*limits),
             run_staging: None,
             contexts: Vec::new(),
-            mounts: std::collections::HashMap::new(),
         }
     }
 
-    /// The snapshot of a cache record's content, `layers`, and its tree as the builder
-    /// holds it: the one this build left it with, else made from its layers.
-    fn mount_ref(&mut self, id: &str, layers: &[store::MountLayer]) -> Result<Ref, String> {
-        if let Some((known, r)) = self.mounts.get(id)
-            && known.as_slice() == layers
-        {
-            return Ok(r.clone());
-        }
-        if layers.is_empty() {
-            return Ok(scratch_ref());
-        }
-        let layers = layers
-            .iter()
-            .map(|l| Layer {
-                media_type: l.media_type.clone().into_bytes(),
-                digest: l.blob.clone().into_bytes(),
-                size: l.size,
-                diff_id: l.diff_id.clone().into_bytes(),
-                annotations: BTreeMap::new(),
-                created: None,
-                description: Vec::new(),
-            })
-            .collect();
-        self.image(layers, None)
-    }
-
-    /// Keeps a step's changes to cache `t` (D114), which the builder keeps as `layer`
-    /// where the step could write it, read whatever they hold: its record's next layer,
-    /// where they changed it, and a use of it either way.
+    /// Keeps a step's changes to cache `t` (D114): where a mount of it writes, what the
+    /// guest wrote of them to `out`, a file attached to the builder at `start` (D134), its
+    /// record's next layer, where they changed it; and a use of it either way. Its changes
+    /// are told whatever they came to, so that the next cache's are read as theirs.
     fn keep_cache(
         &mut self,
         builder: &mut super::builder::Builder,
         t: Taken,
-        layer: Option<u32>,
-        description: &str,
+        out: Option<(store::MountPart, u64)>,
     ) -> Result<(), String> {
-        let Some(layer) = layer else {
-            self.mounts
-                .insert(t.held.id.clone(), (t.held.layers.clone(), t.base.clone()));
+        let Some((part, start)) = out else {
             return self
                 .store
                 .used_mount(&t.key, &t.held, None, t.held.root)
                 .map_err(err);
         };
-        let mut fs = (*t.base.fs).clone();
-        fs.begin();
-        fs.now = now();
-        let (mut staging, source, at) = self.staging()?;
-        let mut applier = shards_build::upper::Applier::new(&mut fs, &mut staging, source, at);
-        let root = builder.kept(&mut |bytes| applier.feed(bytes).map_err(|e| e.0))?;
-        let changed = applier.changed();
-        let at = applier.finish().map_err(|e| e.0)?;
-        if let Some((_, _, end)) = &mut self.run_staging {
-            *end = at;
-        }
+        // How long the guest took to write them, for builds that count it (`alloc-count`,
+        // PM M194), and how long keeping them took.
+        let began = std::time::Instant::now();
+        let kept = builder.kept();
+        let detached = builder.detach(start);
+        let kept = kept?;
+        detached?;
+        crate::split(
+            "cache-keep",
+            "writing",
+            began.elapsed(),
+            usize::try_from(kept.len).unwrap_or(usize::MAX),
+        );
         let root = store::MountRoot {
-            mode: root.mode,
-            uid: root.uid,
-            gid: root.gid,
+            mode: kept.root.mode,
+            uid: kept.root.uid,
+            gid: kept.root.gid,
         };
-        let origin = Origin::Run {
-            parent: t.base.origin.clone(),
-            layer,
-        };
-        let mut layers = t.held.layers.clone();
-        let made = if changed {
-            let made = self.commit(Some(t.base.clone()), fs, description, Some(origin))?;
-            let new = made.layers.last().map(mount_layer);
-            layers.extend(new.clone());
-            self.store.used_mount(&t.key, &t.held, new, root).map_err(err)?;
-            made
+        let room = part.file().metadata().map_err(err)?.len();
+        let failed = if !kept.failed.is_empty() {
+            Some(String::from_utf8_lossy(&kept.failed).into_owned())
+        } else if kept.len > room {
+            Some(format!(
+                "the builder wrote {} bytes of a cache's changes into {room}",
+                kept.len
+            ))
         } else {
-            self.store.used_mount(&t.key, &t.held, None, root).map_err(err)?;
-            Ref {
-                origin: Rc::new(origin),
-                ..t.base.clone()
-            }
+            None
         };
-        self.mounts.insert(t.held.id.clone(), (layers, made));
+        if let Some(why) = failed {
+            // Its root is kept, its changes are not.
+            self.store.used_mount(&t.key, &t.held, None, root).map_err(err)?;
+            return Err(why);
+        }
+        let began = std::time::Instant::now();
+        let changes = store::MountChanges {
+            part,
+            len: kept.len,
+            hidden: kept.hidden,
+        };
+        self.store
+            .used_mount(&t.key, &t.held, Some(changes), root)
+            .map_err(err)?;
+        crate::split("cache-keep", "storing", began.elapsed(), 0);
         Ok(())
+    }
+
+    /// The first content of a fresh cache record that `held` is, from `from` (a mutable ref
+    /// on its source's, mount.go): an image of it, written whole into a file of the
+    /// record's.
+    fn seed_image(&mut self, held: &store::HeldMount, from: &Ref) -> Result<store::MountChanges, String> {
+        let part = self.store.mount_part(held, &record_id()?, 0).map_err(err)?;
+        let mut out = std::io::BufWriter::new(part.file());
+        let uuid = store::layer_uuid(&["seed", &held.id]);
+        let written = erofs::write_uuid(from.fs.tree(), &mut self.sources, &mut out, uuid).map_err(err)?;
+        std::io::Write::flush(&mut out).map_err(err)?;
+        drop(out);
+        Ok(store::MountChanges {
+            part,
+            len: written.blocks.saturating_mul(erofs::BLOCK),
+            hidden: 0,
+        })
     }
 
     /// What BuildKit's solver finds before an operation reads `path` of `fs`, if `fs` is
@@ -905,21 +899,8 @@ pub struct RunOp<'o> {
 struct Taken {
     key: String,
     held: store::HeldMount,
-    /// Its content as the step mounts it.
-    base: Ref,
     /// Whether any mount of it writes.
     writable: bool,
-}
-
-/// A layer as a cache record keeps it.
-fn mount_layer(l: &Layer) -> store::MountLayer {
-    let text = |b: &[u8]| String::from_utf8_lossy(b).into_owned();
-    store::MountLayer {
-        blob: text(&l.digest),
-        diff_id: text(&l.diff_id),
-        media_type: text(&l.media_type),
-        size: l.size,
-    }
 }
 
 /// A new cache record's id, as BuildKit's identity.NewID makes one: 128 random bits, the
@@ -1335,45 +1316,52 @@ impl Exec<'_> {
                 .map_err(err)?;
             // A new record's first content: what it is from, whole (a mutable ref on its
             // source's, mount.go), else nothing.
-            let base = match usize::try_from(m.input) {
-                Ok(_) if held.fresh => {
-                    let from = input(m.input)?;
-                    let seed = if matches!(from.stack, Stack::Known(_)) && from.stack.follows(from.fs.tree())
-                    {
-                        from
-                    } else {
-                        self.commit(None, (*from.fs).clone(), &description, None)?
-                    };
-                    let layers = seed.layers.iter().map(mount_layer).collect();
-                    // Its root as containerd's snapshotter makes a child's: its parent's
-                    // owner, mode 0755.
-                    let root = seed.fs.tree().node(Tree::ROOT).map(|n| &n.meta);
-                    let root = store::MountRoot {
-                        mode: 0o755,
-                        uid: root.map_or(0, |m| m.uid),
-                        gid: root.map_or(0, |m| m.gid),
-                    };
-                    self.store
-                        .seed_mount(&key, &mut held, layers, root)
-                        .map_err(err)?;
-                    seed
-                }
-                _ => self.mount_ref(&held.id, &held.layers)?,
-            };
+            if usize::try_from(m.input).is_ok() && held.fresh {
+                let from = input(m.input)?;
+                let image = self.seed_image(&held, &from)?;
+                // Its root as containerd's snapshotter makes a child's: its parent's
+                // owner, mode 0755.
+                let root = from.fs.tree().node(Tree::ROOT).map(|n| &n.meta);
+                let root = store::MountRoot {
+                    mode: 0o755,
+                    uid: root.map_or(0, |m| m.uid),
+                    gid: root.map_or(0, |m| m.gid),
+                };
+                self.store.seed_mount(&key, &mut held, image, root).map_err(err)?;
+            }
             cache_of.push(Some(u32::try_from(taken.len()).map_err(|_| "too many caches")?));
             taken.push(Taken {
                 key,
                 held,
-                base,
                 writable: !m.readonly,
             });
         }
+        // Where moving a cache in and out of the builder spends a build's time (PM M194):
+        // each part marked for builds that count it (`alloc-count`).
+        crate::phase("cache-take");
+        // Each cache's layers attached to the builder's join disk, and for each a mount of
+        // it writes, a file for its changes, as large as the store has room for, none of it
+        // taken until the guest writes it (D134).
         let mut caches = Vec::with_capacity(taken.len());
+        let mut outs = Vec::with_capacity(taken.len());
         for t in &taken {
+            let mut layers = Vec::with_capacity(t.held.layers.len());
+            for (layer, file) in t.held.layer_files() {
+                layers.push(builder.attach_layer(&format!("{}/{}", t.held.id, layer.name), file)?);
+            }
+            let out = if t.writable {
+                let room = self.store.mount_room(self.limits).map_err(err)?;
+                let part = self.store.mount_part(&t.held, &record_id()?, room).map_err(err)?;
+                let range = builder.attach_out(part.file())?;
+                outs.push(Some((part, range.0)));
+                Some(range)
+            } else {
+                outs.push(None);
+                None
+            };
             caches.push(shards_abi::build::Cache {
-                tree: builder.tree(&t.base.origin, &mut self.sources)?,
-                writable: t.writable,
-                layer: 0,
+                layers,
+                out,
                 root: shards_abi::build::Root {
                     mode: t.held.root.mode,
                     uid: t.held.root.uid,
@@ -1381,6 +1369,7 @@ impl Exec<'_> {
                 },
             });
         }
+        crate::phase("cache-attach");
         for (m, cache) in op.mounts.iter().filter(|m| m.dest != b"/").zip(cache_of) {
             let mount = match &m.kind {
                 OpMountKind::Bind => {
@@ -1539,7 +1528,7 @@ impl Exec<'_> {
         fs.now = now();
         let (mut staging, source, at) = self.staging()?;
         let mut applier = shards_build::upper::Applier::new(&mut fs, &mut staging, source, at);
-        let (ended, layer, mounted, written, capture) = builder.run(
+        let (ended, layer, mounted, capture) = builder.run(
             step,
             out,
             &mut applier,
@@ -1547,6 +1536,7 @@ impl Exec<'_> {
             self.limits.bytes,
             proxy.map(|p| (p, check)),
         )?;
+        crate::phase("run");
         // Its requests through the proxy end its log, however it ended (logProxyRequests).
         if let Some(c) = &capture {
             let lines = c.summary();
@@ -1563,15 +1553,14 @@ impl Exec<'_> {
         }
         // Each cache's changes, kept whatever the step's end, as BuildKit keeps a cache's
         // writes; every one read, whichever fails.
-        let mut written = written.into_iter();
         let mut kept = Ok(());
-        for t in taken {
-            let layer = if t.writable { written.next() } else { None };
-            let r = self.keep_cache(builder, t, layer, description);
+        for (t, out) in taken.into_iter().zip(outs) {
+            let r = self.keep_cache(builder, t, out);
             if kept.is_ok() {
                 kept = r;
             }
         }
+        crate::phase("cache-keep");
         match ended {
             super::builder::Ended::Status(0) => {}
             super::builder::Ended::Status(n) => return Err(fail(&format!("exit code: {n}"))),

@@ -426,7 +426,7 @@ mod tests {
     /// a cache mount a step holds stays whatever the rule.
     #[test]
     fn a_prune_takes_the_least_used_until_under_its_cap() {
-        use shards_image::store::{MountLayer, Sharing};
+        use shards_image::store::{MountChanges, Sharing};
         let tmp = shards_testdir::TempDir::new("gc").unwrap();
         let store = Store::open(&tmp).unwrap();
         for (key, size, uses) in [("aa", 100, 0), ("bb", 200, 0), ("cc", 300, 3)] {
@@ -435,17 +435,17 @@ mod tests {
                 store.cache_used(key).unwrap();
             }
         }
-        let layer = |size| MountLayer {
-            blob: "sha256:00".into(),
-            diff_id: "sha256:00".into(),
-            media_type: "application/vnd.oci.image.layer.v1.tar".into(),
-            size,
-        };
         let held = store
             .take_mount("/c", Sharing::Shared, "cached mount /c", "held")
             .unwrap();
+        // A layer of 1,000 bytes: the only one, which no merge reads.
+        let changes = MountChanges {
+            part: store.mount_part(&held, "p", 1000).unwrap(),
+            len: 1000,
+            hidden: 0,
+        };
         store
-            .used_mount("/c", &held, Some(layer(1000)), Default::default())
+            .used_mount("/c", &held, Some(changes), Default::default())
             .unwrap();
         // 1,600 bytes, the held cache mount's counted, 1,350 kept: `aa`, then `bb`, the least
         // used, go; `cc` and the held cache mount stay.

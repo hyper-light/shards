@@ -35,11 +35,11 @@ pub mod kind {
     /// Guest to host: the layer whose stream just ended is written.
     pub const LAYERED: u8 = 35;
     /// Guest to host, after a step's `CHANGES`: the next bytes of what it changed in its
-    /// next output mount (`Step::outputs`, in order), as a stream that `MOUNT_END` ends;
-    /// then, whatever the step's status, in each cache it writes (`Step::caches`).
+    /// next output mount (`Step::outputs`, in order), as a stream that `MOUNT_END` ends.
     pub const MOUNT_CHANGES: u8 = 36;
-    /// Guest to host: the output mount's changes are all sent; for a cache, with the
-    /// [`Root`](super::Root) its changes left it.
+    /// Guest to host: the output mount's changes are all sent. Then, whatever the step's
+    /// status, one for each cache it writes (`Step::caches`, in order), once its changes are
+    /// written to its `out` range: what they came to, a [`Kept`](super::Kept).
     pub const MOUNT_END: u8 = 37;
 }
 
@@ -72,15 +72,56 @@ impl Root {
     }
 }
 
+/// What a step's changes to a cache came to (`MOUNT_END`, D134): the root they left it, the
+/// length of the image they are, from the start of its `out` range (0 where nothing
+/// changed), the bytes of the files below them that they hide (each a whole number of
+/// blocks), and, where they could not be written, why.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Kept {
+    pub root: Root,
+    pub len: u64,
+    pub hidden: u64,
+    pub failed: Vec<u8>,
+}
+
+impl Kept {
+    pub fn encode(&self) -> Vec<u8> {
+        let mut out = self.root.encode().to_vec();
+        out.extend_from_slice(&self.len.to_be_bytes());
+        out.extend_from_slice(&self.hidden.to_be_bytes());
+        out.extend_from_slice(&self.failed);
+        out
+    }
+
+    pub fn decode(bytes: &[u8]) -> Option<Kept> {
+        let mut r = Cursor(bytes);
+        let root = Root::decode(r.take(12)?)?;
+        let len = r.u64()?;
+        let hidden = r.u64()?;
+        Some(Kept {
+            root,
+            len,
+            hidden,
+            failed: r.0.to_vec(),
+        })
+    }
+}
+
 /// A cache a step mounts (D114): its content, mounted once for the step however many of its
 /// mounts name it, as BuildKit gives an exec one ref for a cache; and, if any of them
-/// writes, the layer its changes become, kept whatever the step's status, as a cache's
-/// writes are BuildKit's whether or not its step succeeds, over the root it starts with.
+/// writes, where its changes go, kept whatever the step's status, as a cache's writes are
+/// BuildKit's whether or not its step succeeds, over the root it starts with. Its content
+/// and its changes are EROFS images on the builder's join disk (D134), which the host
+/// attaches for the step: the guest reads the one and writes the other, and neither
+/// crosses the build's connection.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Cache {
-    pub tree: Tree,
-    pub writable: bool,
-    pub layer: u32,
+    /// Its content: the record's layers, each an EROFS image at a range of the join disk
+    /// (where it starts and its length, in bytes), the bottom first.
+    pub layers: Vec<(u64, u64)>,
+    /// Where its changes go, if a mount writes it: a writable range of the join disk, which
+    /// the guest writes them to as an EROFS image, its length said with `MOUNT_END`.
+    pub out: Option<(u64, u64)>,
     pub root: Root,
 }
 
@@ -326,9 +367,18 @@ impl Step {
         }
         put_len(&mut out, self.caches.len());
         for c in &self.caches {
-            put_tree(&mut out, &c.tree);
-            out.push(u8::from(c.writable));
-            put_u32(&mut out, c.layer);
+            put_len(&mut out, c.layers.len());
+            for (start, len) in &c.layers {
+                out.extend_from_slice(&start.to_be_bytes());
+                out.extend_from_slice(&len.to_be_bytes());
+            }
+            let (writes, (start, len)) = match c.out {
+                Some(range) => (true, range),
+                None => (false, (0, 0)),
+            };
+            out.push(u8::from(writes));
+            out.extend_from_slice(&start.to_be_bytes());
+            out.extend_from_slice(&len.to_be_bytes());
             out.extend_from_slice(&c.root.encode());
         }
         put_len(&mut out, self.devices.len());
@@ -424,13 +474,19 @@ impl Step {
         for _ in 0..n {
             outputs.push((r.u32()?, r.u32()?));
         }
-        let n = r.count(22)?;
+        let n = r.count(33)?;
         let mut caches = Vec::with_capacity(n);
         for _ in 0..n {
+            let layers = r.count(16)?;
+            let mut ranges = Vec::with_capacity(layers);
+            for _ in 0..layers {
+                ranges.push((r.u64()?, r.u64()?));
+            }
+            let writes = r.flag()?;
+            let out = (r.u64()?, r.u64()?);
             caches.push(Cache {
-                tree: r.tree()?,
-                writable: r.flag()?,
-                layer: r.u32()?,
+                layers: ranges,
+                out: writes.then_some(out),
                 root: Root::decode(r.take(12)?)?,
             });
         }
@@ -503,6 +559,10 @@ impl Cursor<'_> {
         Some(u32::from_be_bytes(self.take(4)?.try_into().ok()?))
     }
 
+    fn u64(&mut self) -> Option<u64> {
+        Some(u64::from_be_bytes(self.take(8)?.try_into().ok()?))
+    }
+
     /// A count of items each at least `min` bytes long: one beyond what is left is a lie.
     fn count(&mut self, min: usize) -> Option<usize> {
         let n = usize::try_from(self.u32()?).ok()?;
@@ -542,6 +602,27 @@ impl Cursor<'_> {
 mod tests {
     use super::*;
     use alloc::vec;
+
+    #[test]
+    fn what_a_cache_kept_reads_back_as_written() {
+        let kept = Kept {
+            root: Root {
+                mode: 0o700,
+                uid: 7,
+                gid: 8,
+            },
+            len: 1 << 33,
+            hidden: 12_288,
+            failed: b"no room".to_vec(),
+        };
+        assert_eq!(Kept::decode(&kept.encode()), Some(kept.clone()));
+        let none = Kept {
+            failed: Vec::new(),
+            ..kept
+        };
+        assert_eq!(Kept::decode(&none.encode()), Some(none.clone()));
+        assert_eq!(Kept::decode(&none.encode()[..27]), None);
+    }
 
     #[test]
     fn a_step_reads_back_as_written_and_nothing_else_does() {
@@ -613,19 +694,22 @@ mod tests {
             seccomp: vec![0, 0, 0, 0, 6, 0, 0, 0, 0, 0, 255, 127],
             cgroup: vec![(b"memory.max".to_vec(), b"67108864".to_vec())],
             outputs: vec![(1, 9)],
-            caches: vec![Cache {
-                tree: Tree {
-                    base: Some(1),
-                    layers: vec![4, 5],
+            caches: vec![
+                Cache {
+                    layers: vec![(0, 4096), (1 << 20, 8192)],
+                    out: Some((2 << 20, 1 << 30)),
+                    root: Root {
+                        mode: 0o700,
+                        uid: 1000,
+                        gid: 50,
+                    },
                 },
-                writable: true,
-                layer: 10,
-                root: Root {
-                    mode: 0o700,
-                    uid: 1000,
-                    gid: 50,
+                Cache {
+                    layers: Vec::new(),
+                    out: None,
+                    root: Root::default(),
                 },
-            }],
+            ],
             devices: vec![
                 Device {
                     path: b"/dev/fuse".to_vec(),

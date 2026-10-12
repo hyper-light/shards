@@ -47,6 +47,7 @@ pub fn main() -> ! {
             0
         }
         "stat" => stat(args.get(1..).unwrap_or_default()),
+        "tree" => tree(arg(1)),
         "ps" => ps(),
         "mtime" => {
             use std::os::unix::fs::MetadataExt as _;
@@ -306,6 +307,131 @@ fn stat(paths: &[String]) -> i32 {
     }
     let _ = io::stdout().write_all(out.as_bytes());
     code
+}
+
+/// Everything under `dir`, sorted by path, a line each: its kind, mode and owner, a
+/// file's size and bytes (a hash of them past 64), a symlink's target, a device's numbers,
+/// its `user.` xattrs, and, for a file of several names, the first of them.
+fn tree(dir: &str) -> i32 {
+    use std::os::unix::ffi::OsStrExt as _;
+    use std::os::unix::fs::{FileTypeExt as _, MetadataExt as _};
+    let mut entries = Vec::new();
+    let mut todo = vec![std::path::PathBuf::from(dir)];
+    while let Some(d) = todo.pop() {
+        let listed = match std::fs::read_dir(&d) {
+            Ok(listed) => listed,
+            Err(e) => {
+                let _ = writeln!(io::stderr(), "{}: {e}", d.display());
+                return 1;
+            }
+        };
+        for e in listed.flatten() {
+            let p = e.path();
+            match std::fs::symlink_metadata(&p) {
+                Ok(m) => {
+                    if m.is_dir() {
+                        todo.push(p.clone());
+                    }
+                    entries.push((p, m));
+                }
+                Err(e) => {
+                    let _ = writeln!(io::stderr(), "{}: {e}", p.display());
+                    return 1;
+                }
+            }
+        }
+    }
+    entries.sort_by(|a, b| a.0.cmp(&b.0));
+    let mut first: std::collections::HashMap<(u64, u64), String> = std::collections::HashMap::new();
+    let mut out = String::new();
+    for (p, m) in &entries {
+        let rel = p.strip_prefix(dir).unwrap_or(p).display().to_string();
+        let t = m.file_type();
+        let kind = if t.is_dir() {
+            "dir"
+        } else if t.is_symlink() {
+            "symlink"
+        } else if t.is_file() {
+            "file"
+        } else if t.is_fifo() {
+            "fifo"
+        } else if t.is_char_device() {
+            "char"
+        } else if t.is_block_device() {
+            "block"
+        } else {
+            "socket"
+        };
+        out.push_str(&format!(
+            "{rel} {kind} {:o} {}:{}",
+            m.mode() & 0o7777,
+            m.uid(),
+            m.gid()
+        ));
+        if t.is_file() {
+            let bytes = std::fs::read(p).unwrap_or_default();
+            if bytes.len() <= 64 {
+                out.push_str(&format!(" {} = {}", m.size(), String::from_utf8_lossy(&bytes)));
+            } else {
+                // FNV-1a, 64 bits.
+                let hash = bytes.iter().fold(0xcbf2_9ce4_8422_2325u64, |h, &b| {
+                    (h ^ u64::from(b)).wrapping_mul(0x0000_0100_0000_01b3)
+                });
+                out.push_str(&format!(" {} #{hash:016x}", m.size()));
+            }
+        } else if t.is_symlink() {
+            let target = std::fs::read_link(p).unwrap_or_default();
+            out.push_str(&format!(" -> {}", target.display()));
+        } else if t.is_char_device() || t.is_block_device() {
+            out.push_str(&format!(" {}:{}", libc::major(m.rdev()), libc::minor(m.rdev())));
+        }
+        if let Ok(c) = std::ffi::CString::new(p.as_os_str().as_bytes()) {
+            let mut names = vec![0u8; 4096];
+            // SAFETY: a NUL-terminated path, and a buffer of the length given.
+            let n = unsafe { libc::llistxattr(c.as_ptr(), names.as_mut_ptr().cast(), names.len()) };
+            let mut user: Vec<String> = Vec::new();
+            for name in names
+                .get(..usize::try_from(n).unwrap_or(0))
+                .unwrap_or_default()
+                .split(|&b| b == 0)
+            {
+                if !name.starts_with(b"user.") {
+                    continue;
+                }
+                let Ok(cn) = std::ffi::CString::new(name) else {
+                    continue;
+                };
+                let mut value = vec![0u8; 4096];
+                // SAFETY: NUL-terminated strings, and a buffer of the length given.
+                let len = unsafe {
+                    libc::lgetxattr(c.as_ptr(), cn.as_ptr(), value.as_mut_ptr().cast(), value.len())
+                };
+                value.truncate(usize::try_from(len).unwrap_or(0));
+                user.push(format!(
+                    "{}={}",
+                    String::from_utf8_lossy(name),
+                    String::from_utf8_lossy(&value)
+                ));
+            }
+            user.sort();
+            for x in user {
+                out.push_str(&format!(" {x}"));
+            }
+        }
+        if !t.is_dir() && m.nlink() > 1 {
+            match first.entry((m.dev(), m.ino())) {
+                std::collections::hash_map::Entry::Occupied(f) => {
+                    out.push_str(&format!(" =link {}", f.get()))
+                }
+                std::collections::hash_map::Entry::Vacant(v) => {
+                    v.insert(rel.clone());
+                }
+            }
+        }
+        out.push('\n');
+    }
+    let _ = io::stdout().write_all(out.as_bytes());
+    0
 }
 
 /// Cleans the data cache over every page of `path`, mapped read-only and never read, as a
@@ -1596,6 +1722,10 @@ fn fs(ops: &[String]) -> i32 {
                 std::os::unix::fs::symlink(t, p)
             }
             "rm" => std::fs::remove_file(rest),
+            "rename" => {
+                let (a, b) = rest.split_once(':').unwrap_or((rest, ""));
+                std::fs::rename(a, b)
+            }
             "rmdir" => std::fs::remove_dir_all(rest),
             "chmod" => {
                 let (m, p) = rest.split_once(':').unwrap_or((rest, ""));
@@ -1604,6 +1734,34 @@ fn fs(ops: &[String]) -> i32 {
                     .and_then(|m| std::fs::set_permissions(p, std::fs::Permissions::from_mode(m)))
             }
             "mknod" => mknod(rest),
+            "mkfifo" => std::ffi::CString::new(rest)
+                .map_err(io::Error::other)
+                .and_then(|p| {
+                    // SAFETY: mkfifo(3) of a NUL-terminated path.
+                    if unsafe { libc::mkfifo(p.as_ptr(), 0o640) } == 0 {
+                        Ok(())
+                    } else {
+                        Err(io::Error::last_os_error())
+                    }
+                }),
+            // NAME=VALUE:PATH, its last symlink not followed.
+            "xattr" => {
+                let (nv, p) = rest.split_once(':').unwrap_or((rest, ""));
+                let (n, v) = nv.split_once('=').unwrap_or((nv, ""));
+                match (std::ffi::CString::new(p), std::ffi::CString::new(n)) {
+                    (Ok(p), Ok(n)) => {
+                        // SAFETY: NUL-terminated strings and a value of the length given.
+                        let r =
+                            unsafe { libc::lsetxattr(p.as_ptr(), n.as_ptr(), v.as_ptr().cast(), v.len(), 0) };
+                        if r == 0 {
+                            Ok(())
+                        } else {
+                            Err(io::Error::last_os_error())
+                        }
+                    }
+                    _ => Err(io::Error::other("a NUL in an xattr")),
+                }
+            }
             "mount" | "umount" | "remount-rw" | "fsopen" | "open-tree" => mounts(kind, rest),
             "chown" => {
                 let mut parts = rest.splitn(3, ':');

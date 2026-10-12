@@ -9,6 +9,7 @@ members = [
   "crates/cmdline",
   "crates/devcgroup",
   "crates/dockerfile",
+  "crates/erofs",
   "crates/flate",
   "crates/gateway",
   "crates/git",

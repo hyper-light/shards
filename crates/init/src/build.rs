@@ -71,16 +71,22 @@ impl Executor {
 const EXECUTOR_FAILED: u8 = b'E';
 const INIT_FAILED: u8 = b'I';
 
-fn os_err(what: &str) -> io::Error {
+pub(crate) fn os_err(what: &str) -> io::Error {
     let e = io::Error::last_os_error();
     io::Error::new(e.kind(), format!("{what}: {e}"))
 }
 
-fn cstr(p: impl AsRef<OsStr>) -> io::Result<CString> {
+pub(crate) fn cstr(p: impl AsRef<OsStr>) -> io::Result<CString> {
     CString::new(p.as_ref().as_bytes()).map_err(|_| err("a path holds NUL"))
 }
 
-fn mount(source: &str, target: &Path, fstype: &str, flags: libc::c_ulong, data: &str) -> io::Result<()> {
+pub(crate) fn mount(
+    source: &str,
+    target: &Path,
+    fstype: &str,
+    flags: libc::c_ulong,
+    data: &str,
+) -> io::Result<()> {
     let (s, t, f, d) = (cstr(source)?, cstr(target)?, cstr(fstype)?, cstr(data)?);
     let src = if source.is_empty() {
         std::ptr::null()
@@ -99,7 +105,7 @@ fn mount(source: &str, target: &Path, fstype: &str, flags: libc::c_ulong, data: 
     Ok(())
 }
 
-fn umount(target: &Path) -> io::Result<()> {
+pub(crate) fn umount(target: &Path) -> io::Result<()> {
     let t = cstr(target)?;
     // SAFETY: a NUL-terminated path.
     if unsafe { libc::umount2(t.as_ptr(), libc::MNT_DETACH) } != 0 {
@@ -109,7 +115,7 @@ fn umount(target: &Path) -> io::Result<()> {
 }
 
 /// A layer's directory name: its id in base 36.
-fn layer_name(id: u32) -> String {
+pub(crate) fn layer_name(id: u32) -> String {
     let digits = b"0123456789abcdefghijklmnopqrstuvwxyz";
     let mut n = id;
     let mut out = Vec::new();
@@ -138,6 +144,8 @@ struct Builder {
     /// Whether the builder's memory is plugged as the build needs it (D133): then each
     /// step has a cgroup of its own, under the build's, as runc gives each container one.
     plugging: bool,
+    /// Its steps' caches' layers, mounted from its join disk (D134).
+    caches: crate::caches::Caches,
 }
 
 /// Starts the builder: the host's layers and steps, until it hangs up.
@@ -158,11 +166,28 @@ fn serve() -> io::Result<()> {
     let plug = crate::plug::plug()?;
     let size = plug.map_or_else(|| "size=100%".to_string(), |p| p.tmpfs());
     mount("tmpfs", Path::new(B), "tmpfs", 0, &format!("mode=0755,{size}"))?;
-    for d in [LAYERS, EMPTY, ROOT, "/dev", "/proc"] {
+    for d in [
+        LAYERS,
+        EMPTY,
+        ROOT,
+        "/dev",
+        "/proc",
+        "/sys",
+        crate::caches::LAYERS,
+    ] {
         std::fs::create_dir_all(Path::new(B).join(d.trim_start_matches('/')))?;
     }
     mount("devtmpfs", &Path::new(B).join("dev"), "devtmpfs", 0, "")?;
     mount("proc", &Path::new(B).join("proc"), "proc", 0, "")?;
+    // Where its disks are told apart, by their serials: the join disk, which holds its
+    // caches' layers (D134), from the others.
+    mount(
+        "sysfs",
+        &Path::new(B).join("sys"),
+        "sysfs",
+        libc::MS_NOSUID | libc::MS_NODEV | libc::MS_NOEXEC,
+        "",
+    )?;
     // Onto it, as switch_root moves off an initramfs.
     std::env::set_current_dir(B)?;
     mount(".", Path::new("/"), "", libc::MS_MOVE, "")?;
@@ -191,6 +216,7 @@ fn serve() -> io::Result<()> {
         serial: 0,
         ssh: Vec::new(),
         plugging: plug.is_some(),
+        caches: crate::caches::Caches::default(),
     };
     let mut h = [0u8; run::HEADER];
     let mut payload = Vec::new();
@@ -216,17 +242,32 @@ fn serve() -> io::Result<()> {
     }
 }
 
-/// Swaps to `/dev/vda` if the host gave one, its swap header written: tmpfs pages go
-/// there, compressed first by zswap, once memory runs short.
+/// Swaps to the host's first disk if it gave one, its swap header written: tmpfs pages go
+/// there, compressed first by zswap, once memory runs short. The join disk, which holds the
+/// caches' layers (D134) and comes after the disks, is none of them: told apart by its
+/// serial.
 fn swap_on() -> io::Result<()> {
-    let dev = Path::new("/dev/vda");
-    if !dev.exists() {
-        return Ok(());
+    let mut disks = Vec::new();
+    for entry in std::fs::read_dir("/sys/block")? {
+        let name = entry?.file_name().to_string_lossy().into_owned();
+        if !name.starts_with("vd") {
+            continue;
+        }
+        let serial = std::fs::read(format!("/sys/block/{name}/serial")).unwrap_or_default();
+        if serial.trim_ascii_end() != shards_abi::JOIN_DISK_SERIAL.as_bytes() {
+            disks.push(name);
+        }
     }
-    let d = cstr(dev)?;
+    // In the order the driver named them: vda to vdz, then vdaa.
+    disks.sort_by(|a, b| (a.len(), a).cmp(&(b.len(), b)));
+    let Some(first) = disks.first() else {
+        return Ok(());
+    };
+    let dev = format!("/dev/{first}");
+    let d = cstr(&dev)?;
     // SAFETY: a NUL-terminated path.
     if unsafe { libc::swapon(d.as_ptr(), 0) } != 0 {
-        return Err(os_err("swapon /dev/vda"));
+        return Err(os_err(&format!("swapon {dev}")));
     }
     Ok(())
 }
@@ -379,25 +420,12 @@ impl Builder {
             }
         }
         // Each cache's changes, whatever the status, as BuildKit keeps a cache's writes
-        // (D114), and the root they left it: none from a step whose caches were never
-        // mounted, its root as it was given.
-        for (k, c) in step.caches.iter().enumerate().filter(|(_, c)| c.writable) {
+        // (D114), written to the join disk as an image (D134), and the root they left it:
+        // none from a step whose caches were never mounted, its root as it was given.
+        for (k, c) in step.caches.iter().enumerate().filter(|(_, c)| c.out.is_some()) {
             let up = work.join(format!("c{k}.upper"));
-            let left = match std::fs::symlink_metadata(&up) {
-                Ok(m) => build::Root {
-                    mode: m.mode() & 0o7777,
-                    uid: m.uid(),
-                    gid: m.gid(),
-                },
-                Err(_) => {
-                    std::fs::create_dir_all(&up)?;
-                    c.root
-                }
-            };
-            let conn = &self.conn;
-            send_upper(&up, &mut |chunk| send(conn, kind::MOUNT_CHANGES, chunk))?;
-            send(conn, kind::MOUNT_END, &left.encode())?;
-            std::fs::rename(&up, Path::new(LAYERS).join(layer_name(c.layer)))?;
+            let kept = self.caches.kept(c, &up, &work.join(format!("c{k}.lower")));
+            send(&self.conn, kind::MOUNT_END, &kept.encode())?;
         }
         let _ = std::fs::remove_dir_all(&work);
         Ok(())
@@ -425,22 +453,8 @@ impl Builder {
         self.mount_tree(&step.root, root, Some(upper))?;
         for (k, c) in step.caches.iter().enumerate() {
             let at = work.join(format!("c{k}"));
-            let up = c.writable.then(|| work.join(format!("c{k}.upper")));
-            // Its root is its upper directory's, as overlayfs shows it: the one it was left
-            // with, as containerd gives a snapshot its parent's owner.
-            if let Some(up) = &up {
-                std::fs::create_dir_all(up)?;
-                let p = cstr(up)?;
-                // SAFETY: a NUL-terminated path.
-                unsafe {
-                    if libc::chown(p.as_ptr(), c.root.uid, c.root.gid) != 0
-                        || libc::chmod(p.as_ptr(), c.root.mode & 0o7777) != 0
-                    {
-                        return Err(os_err("a cache's root"));
-                    }
-                }
-            }
-            self.mount_tree(&c.tree, &at, up.as_deref())?;
+            self.caches
+                .mount(c, &at, &work.join(format!("c{k}.upper")), EMPTY)?;
             caches.push(at);
         }
         for (i, (_, m)) in step.mounts.iter().enumerate() {

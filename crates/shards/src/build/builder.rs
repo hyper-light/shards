@@ -8,6 +8,10 @@
 //! The guest keeps layers this process names: each host step's changes are sent once,
 //! when a `RUN` first stands on them, and each `RUN`'s own changes stay in the guest as
 //! the layer its step named, so nothing goes over the wire twice.
+//!
+//! A step's caches (D134) never cross the wire: their layers' files are attached to the
+//! builder's join disk, each once for the builder's life, through its VM process's
+//! `--attach` socket, and a file for each one's changes too, which the guest writes.
 
 #[cfg(unix)]
 use std::collections::HashMap;
@@ -26,7 +30,7 @@ use std::time::{Duration, Instant};
 
 #[cfg(unix)]
 use shards_abi::build::{self, kind};
-use shards_abi::build::{Root, Step, Tree};
+use shards_abi::build::{Kept, Step, Tree};
 #[cfg(unix)]
 use shards_abi::run;
 #[cfg(unix)]
@@ -85,15 +89,9 @@ pub fn origin_id() -> u64 {
 pub type Outputs = Vec<(u32, Vec<u8>)>;
 
 /// What a step came to: how it ended, the layer its changes are in the guest, each output
-/// mount's changes with its layer, the layer each cache it writes becomes (D114), and what
-/// its requests came to under the build's proxy (D110).
-pub type Ran = (
-    Ended,
-    u32,
-    Outputs,
-    Vec<u32>,
-    Option<super::proxy::capture::Capture>,
-);
+/// mount's changes with its layer, and what its requests came to under the build's proxy
+/// (D110).
+pub type Ran = (Ended, u32, Outputs, Option<super::proxy::capture::Capture>);
 
 /// How a step's process ended.
 #[derive(Debug)]
@@ -122,6 +120,10 @@ pub struct Builder {
     /// The build's proxy's URL, as its steps reach it (the gateway's [`super::proxy::PORT`]),
     /// where its network is the proxy's alone (D110).
     proxy_url: Option<String>,
+    /// Its VM process's `--attach` socket (D134).
+    attach: UnixStream,
+    /// The range of its join disk each cache layer's file was given, by the layer.
+    attached: HashMap<String, (u64, u64)>,
 }
 
 /// A step's proxy, where it has one (D110): the build's, and what answers its requests'
@@ -182,7 +184,19 @@ impl Builder {
         Err("no builder".into())
     }
 
-    pub fn kept(&mut self, _: &mut dyn FnMut(&[u8]) -> Result<(), String>) -> Result<Root, String> {
+    pub fn kept(&mut self) -> Result<Kept, String> {
+        Err("no builder".into())
+    }
+
+    pub fn attach_layer(&mut self, _: &str, _: &std::fs::File) -> Result<(u64, u64), String> {
+        Err("no builder".into())
+    }
+
+    pub fn attach_out(&mut self, _: &std::fs::File) -> Result<(u64, u64), String> {
+        Err("no builder".into())
+    }
+
+    pub fn detach(&mut self, _: u64) -> Result<(), String> {
         Err("no builder".into())
     }
 
@@ -229,6 +243,10 @@ impl Drop for DirGuard {
         }
     }
 }
+
+/// Where a builder's VM process finds its `--attach` socket (D134).
+#[cfg(unix)]
+const ATTACH_FD: i32 = 4;
 
 #[cfg(unix)]
 /// The longest socket path both Linux (108 bytes of sun_path) and macOS (104) bind, less
@@ -332,6 +350,10 @@ impl Builder {
         for base in boot.bases {
             args.extend(["--pmem".into(), base.into()]);
         }
+        // The files this process attaches to its join disk for its steps' caches (D134).
+        let (attach, attach_theirs) =
+            UnixStream::pair().map_err(|e| format!("the builder's join disk: {e}"))?;
+        args.extend(["--attach".into(), ATTACH_FD.to_string().into()]);
         // On macOS the VM is in App Sandbox and asks this process for what it opens.
         let grants = if cfg!(target_os = "macos") {
             Some(UnixStream::pair().map_err(|e| format!("the builder's grants: {e}"))?)
@@ -347,6 +369,7 @@ impl Builder {
             (side.region.as_fd(), crate::netproc::VM_FDS[0]),
             (side.sleeps.as_fd(), crate::netproc::VM_FDS[1]),
             (side.rings.as_fd(), crate::netproc::VM_FDS[2]),
+            (attach_theirs.as_fd(), ATTACH_FD),
         ]
         .into_iter()
         .chain(grants.as_ref().map(|(_, theirs)| (theirs.as_fd(), 3)))
@@ -378,6 +401,7 @@ impl Builder {
         // hears its doorbell hang up and goes too.
         drop(fds);
         drop(side);
+        drop(attach_theirs);
         if let Some((ours, _)) = grants {
             #[cfg(target_os = "macos")]
             std::thread::Builder::new()
@@ -429,7 +453,73 @@ impl Builder {
             layers: HashMap::new(),
             next: 0,
             proxy_url,
+            attach,
+            attached: HashMap::new(),
         })
+    }
+
+    /// Attaches `file` to the builder's join disk, read-only or for the guest to write too:
+    /// the range it was given, where it starts and its length.
+    fn attach(&mut self, file: &std::fs::File, writable: bool) -> Result<(u64, u64), String> {
+        use shards_ipc::kind;
+        shards_ipc::send(
+            &self.attach,
+            kind::DISK_ATTACH,
+            &[u8::from(writable)],
+            &[file.as_fd()],
+        )
+        .map_err(|e| format!("attaching a cache to the builder: {e}"))?;
+        let m = shards_ipc::recv(&self.attach)
+            .map_err(|e| format!("attaching a cache to the builder: {e}"))?
+            .ok_or("the builder's VM went as a cache was attached")?;
+        match (m.kind, m.payload.split_first_chunk::<8>()) {
+            (kind::DISK_ATTACH, Some((start, len))) => Ok((
+                u64::from_be_bytes(*start),
+                len.try_into()
+                    .map(u64::from_be_bytes)
+                    .map_err(|_| "a malformed range")?,
+            )),
+            (kind::DISK_REFUSED, _) => Err(format!(
+                "the builder refused a cache: {}",
+                String::from_utf8_lossy(&m.payload)
+            )),
+            (other, _) => Err(format!("the builder answered an attach with message {other}")),
+        }
+    }
+
+    /// The range of the join disk that cache layer `layer`, open as `file`, has: given
+    /// once for the builder's life, read-only.
+    pub fn attach_layer(&mut self, layer: &str, file: &std::fs::File) -> Result<(u64, u64), String> {
+        if let Some(&range) = self.attached.get(layer) {
+            return Ok(range);
+        }
+        let range = self.attach(file, false)?;
+        self.attached.insert(layer.to_string(), range);
+        Ok(range)
+    }
+
+    /// A range of the join disk the guest writes a cache's changes to: `file`'s, until it
+    /// is let go ([`Builder::detach`]).
+    pub fn attach_out(&mut self, file: &std::fs::File) -> Result<(u64, u64), String> {
+        self.attach(file, true)
+    }
+
+    /// Lets go of the range that starts at `start`: the VM process closes its file.
+    pub fn detach(&mut self, start: u64) -> Result<(), String> {
+        use shards_ipc::kind;
+        shards_ipc::send(&self.attach, kind::DISK_DETACH, &start.to_be_bytes(), &[])
+            .map_err(|e| format!("detaching a cache from the builder: {e}"))?;
+        let m = shards_ipc::recv(&self.attach)
+            .map_err(|e| format!("detaching a cache from the builder: {e}"))?
+            .ok_or("the builder's VM went as a cache was detached")?;
+        match m.kind {
+            kind::DISK_DETACH => Ok(()),
+            kind::DISK_REFUSED => Err(format!(
+                "the builder refused to let a cache go: {}",
+                String::from_utf8_lossy(&m.payload)
+            )),
+            other => Err(format!("the builder answered a detach with message {other}")),
+        }
     }
 
     /// The URL its steps reach the build's proxy at, where it has one (D110).
@@ -548,9 +638,9 @@ impl Builder {
     /// Runs `step` (its `upper` set here), passing its output to `out` as it comes; once
     /// it succeeds, puts what it changed into `applier`, and returns each output mount's
     /// changes (`outputs`' indexes, at most `max` bytes each) with the layer it became.
-    /// How it ended, the layer its changes are in the guest, the layer each cache it
-    /// writes becomes, in order (their changes come next, whatever its end, each for
-    /// [`Builder::kept`]), and what its requests came to under the build's proxy.
+    /// How it ended, the layer its changes are in the guest, and what its requests came to
+    /// under the build's proxy; what its changes to each cache it writes came to comes
+    /// next, whatever its end, each for [`Builder::kept`].
     ///
     /// Under the build's proxy (`proxy`, D110), its connections to the proxy are served
     /// while it runs, each request's question answered here, on the build's thread, by
@@ -569,16 +659,7 @@ impl Builder {
         for o in &mut step.outputs {
             o.1 = self.layer_id();
         }
-        for c in step.caches.iter_mut().filter(|c| c.writable) {
-            c.layer = self.layer_id();
-        }
         let layers: Vec<u32> = step.outputs.iter().map(|o| o.1).collect();
-        let kept: Vec<u32> = step
-            .caches
-            .iter()
-            .filter(|c| c.writable)
-            .map(|c| c.layer)
-            .collect();
         // Its session, begun before it starts: its requests go upstream through the
         // proxies the build's environment names, as BuildKit's through its daemon's.
         let (session, questions, mut check) = match proxy {
@@ -636,7 +717,7 @@ impl Builder {
             r
         });
         let (ended, upper, outputs) = ran?;
-        Ok((ended, upper, outputs, kept, session.map(|s| s.capture())))
+        Ok((ended, upper, outputs, session.map(|s| s.capture())))
     }
 
     /// Waits until the builder has a frame to read, answering the step's questions of the
@@ -668,27 +749,15 @@ impl Builder {
         }
     }
 
-    /// The next kept mount's changes, as they come, each passed to `feed`, and the root
-    /// they left it; read to their end whatever `feed` says, so that the frames after them
-    /// are read as theirs, and then the first error `feed` gave.
-    pub fn kept(&mut self, feed: &mut dyn FnMut(&[u8]) -> Result<(), String>) -> Result<Root, String> {
+    /// What the step's changes to its next cache that it writes came to (D134), as the
+    /// guest wrote them to the cache's `out` range.
+    pub fn kept(&mut self) -> Result<Kept, String> {
         let mut buf = Vec::new();
-        let mut failed = None;
-        loop {
-            match self.read_frame(&mut buf)? {
-                kind::MOUNT_CHANGES => {
-                    if failed.is_none()
-                        && let Err(e) = feed(&buf)
-                    {
-                        failed = Some(e);
-                    }
-                }
-                kind::MOUNT_END => {
-                    let root = Root::decode(&buf).ok_or("the builder sent a malformed cache root")?;
-                    return failed.map_or(Ok(root), Err);
-                }
-                other => return Err(format!("the builder sent frame {other} for a cache's changes")),
+        match self.read_frame(&mut buf)? {
+            kind::MOUNT_END => {
+                Kept::decode(&buf).ok_or_else(|| "the builder said a malformed cache's end".into())
             }
+            other => Err(format!("the builder sent frame {other} for a cache's changes")),
         }
     }
 

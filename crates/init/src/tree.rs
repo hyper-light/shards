@@ -18,14 +18,14 @@ use shards_abi::changes::{self, Decoder, Entry, Event, flag, kind};
 /// How much of a stream is gathered before it is handed on: as much as one frame holds.
 const CHUNK: usize = shards_abi::run::MAX_PAYLOAD as usize;
 
-const OPAQUE: &[u8] = b"trusted.overlay.opaque";
+pub(crate) const OPAQUE: &[u8] = b"trusted.overlay.opaque";
 
 fn cstr(p: &Path) -> io::Result<CString> {
     CString::new(p.as_os_str().as_bytes()).map_err(|_| io::Error::other("a path holds NUL"))
 }
 
 /// The xattrs of `path`, its last symlink not followed: every one but overlayfs's own.
-fn xattrs(path: &CString) -> io::Result<Vec<(Vec<u8>, Vec<u8>)>> {
+pub(crate) fn xattrs(path: &CString) -> io::Result<Vec<(Vec<u8>, Vec<u8>)>> {
     let mut names = vec![0u8; 1024];
     let len = loop {
         // SAFETY: a NUL-terminated path, and a buffer of the length given.
@@ -54,7 +54,7 @@ fn xattrs(path: &CString) -> io::Result<Vec<(Vec<u8>, Vec<u8>)>> {
 }
 
 /// One xattr of `path`, its last symlink not followed; `None` if it is not there.
-fn getxattr(path: &CString, name: &[u8]) -> io::Result<Option<Vec<u8>>> {
+pub(crate) fn getxattr(path: &CString, name: &[u8]) -> io::Result<Option<Vec<u8>>> {
     let cname = CString::new(name).map_err(|_| io::Error::other("an xattr name holds NUL"))?;
     let mut value = vec![0u8; 256];
     loop {

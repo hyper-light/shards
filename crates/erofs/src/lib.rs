@@ -1,6 +1,7 @@
 //! Writes EROFS images as Linux 6.18 reads them (fs/erofs/erofs_fs.h, inode.c, data.c,
 //! dir.c, namei.c and xattr.c at v6.18.48): uncompressed, 4 KiB blocks, inline xattrs, and
-//! no feature flags. The bytes are a function of the tree alone.
+//! no feature flags. The bytes are a function of the tree alone, and of the volume's UUID
+//! where one is given ([`write_uuid`]).
 //!
 //! A regular file's data is whole blocks (`FLAT_PLAIN`), so guests map it straight from
 //! pmem with DAX: the kernel gives DAX only to plain and chunk-based files
@@ -23,7 +24,27 @@ use std::collections::BTreeMap;
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::sync::Arc;
 
-use crate::{Error, bad as err};
+/// Why an image could not be written or read: what went wrong, said.
+#[derive(Debug)]
+pub struct Error(pub String);
+
+impl std::fmt::Display for Error {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for Error {}
+
+impl From<io::Error> for Error {
+    fn from(e: io::Error) -> Error {
+        Error(e.to_string())
+    }
+}
+
+fn err<T>(msg: impl Into<String>) -> Result<T, Error> {
+    Err(Error(msg.into()))
+}
 
 pub const BLOCK_BITS: u8 = 12;
 pub const BLOCK: u64 = 1 << BLOCK_BITS;
@@ -961,16 +982,18 @@ pub struct Written {
     pub inodes: u64,
 }
 
+/// The xattr name prefixes EROFS stores by index (erofs_fs.h, EROFS_XATTR_INDEX_*).
+const PREFIXES: [(&[u8], u8); 6] = [
+    (b"user.", 1),
+    (b"system.posix_acl_access", 2),
+    (b"system.posix_acl_default", 3),
+    (b"trusted.", 4),
+    (b"lustre.", 5),
+    (b"security.", 6),
+];
+
 /// An xattr name as EROFS stores it: a prefix index and the rest of the name.
 fn xattr_index(name: &[u8]) -> Option<(u8, &[u8])> {
-    const PREFIXES: [(&[u8], u8); 6] = [
-        (b"user.", 1),
-        (b"system.posix_acl_access", 2),
-        (b"system.posix_acl_default", 3),
-        (b"trusted.", 4),
-        (b"lustre.", 5),
-        (b"security.", 6),
-    ];
     PREFIXES
         .iter()
         .find_map(|(p, i)| name.strip_prefix(*p).map(|rest| (*i, rest)))
@@ -1006,6 +1029,36 @@ fn xattr_body(xattrs: &Xattrs, body: &mut Vec<u8>) -> Result<(), Error> {
         body.resize(body.len().next_multiple_of(4), 0);
     }
     Ok(())
+}
+
+/// The xattrs of an inline body [`xattr_body`] wrote: none shared, each entry's name its
+/// prefix's and its own, each padded to 4.
+fn xattrs_of(body: &[u8]) -> Result<Xattrs, Error> {
+    let corrupt = || Error("corrupt xattrs".into());
+    let mut out = Xattrs::default();
+    if body.is_empty() {
+        return Ok(out);
+    }
+    if body.get(4) != Some(&0) {
+        return err("shared xattrs, which shards does not write");
+    }
+    let mut at = XATTR_HEADER as usize;
+    while at < body.len() {
+        let name_len = usize::from(*body.get(at).ok_or_else(corrupt)?);
+        let index = *body.get(at + 1).ok_or_else(corrupt)?;
+        let value_len = usize::from(le16(body, at + 2).ok_or_else(corrupt)?);
+        let name_at = at + 4;
+        let value_at = name_at + name_len;
+        let suffix = body.get(name_at..value_at).ok_or_else(corrupt)?;
+        let value = body.get(value_at..value_at + value_len).ok_or_else(corrupt)?;
+        let prefix = PREFIXES
+            .iter()
+            .find_map(|&(p, i)| (i == index).then_some(p))
+            .ok_or_else(corrupt)?;
+        out.insert([prefix, suffix].concat(), value.to_vec());
+        at = (value_at + value_len).next_multiple_of(4);
+    }
+    Ok(out)
 }
 
 /// The length of [`xattr_body`]'s body, which the layout needs before any is written.
@@ -1125,6 +1178,18 @@ impl Seq<'_> {
 
 /// Writes `tree` as an EROFS image to `out`, reading file contents from `source`.
 pub fn write(tree: &Tree, source: &mut dyn Source, out: &mut dyn Write) -> Result<Written, Error> {
+    write_uuid(tree, source, out, [0; 16])
+}
+
+/// [`write`], the volume's UUID `uuid`: what overlayfs tells lower layers apart by where it
+/// follows a copied-up file to the one it was copied from (fs/overlayfs/super.c,
+/// `ovl_lower_uuid_ok`), as the inode index needs (D134).
+pub fn write_uuid(
+    tree: &Tree,
+    source: &mut dyn Source,
+    out: &mut dyn Write,
+    uuid: [u8; 16],
+) -> Result<Written, Error> {
     // Depth-first order from the root, children by name: every node once, at its first
     // name, so the root is first and hard links share one inode. `index` holds each
     // node's place in `order`, by node.
@@ -1266,7 +1331,8 @@ pub fn write(tree: &Tree, source: &mut dyn Source, out: &mut dyn Write) -> Resul
         w.write_all(&total.to_le_bytes())?; // blocks_lo
         w.write_all(&0u32.to_le_bytes())?; // meta_blkaddr
         w.write_all(&0u32.to_le_bytes())?; // xattr_blkaddr
-        // uuid, volume name, features: zero
+        w.write_all(&uuid)?;
+        // volume name, features: zero
     }
     seq.pad_to(SUPER_OFFSET)?;
     seq.put(&sb)?;
@@ -1442,6 +1508,11 @@ fn encode_dev(major: u32, minor: u32) -> Result<u32, Error> {
     Ok((minor & 0xff) | (major << 8) | ((minor & !0xff) << 12))
 }
 
+/// The kernel's new_decode_dev: [`encode_dev`] undone.
+fn decode_dev(dev: u32) -> (u32, u32) {
+    ((dev >> 8) & 0xfff, (dev & 0xff) | ((dev >> 12) & 0xf_ff00))
+}
+
 /// What an image holds at a path ([`read_file`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Found {
@@ -1464,6 +1535,7 @@ pub fn read_file(image: &mut (impl Read + Seek), path: &[u8], max: u64) -> Resul
     let mut img = Image {
         image,
         meta: u64::from(le32(&sb, 40).unwrap_or_default()) * BLOCK,
+        window: None,
     };
     let mut nid = u64::from(le16(&sb, 14).unwrap_or_default());
     for name in path.split(|&c| c == b'/').filter(|n| !n.is_empty()) {
@@ -1497,13 +1569,132 @@ pub fn read_file(image: &mut (impl Read + Seek), path: &[u8], max: u64) -> Resul
         0 => Vec::new(),
         n => {
             let from = img.data_at(&file, 0)?;
-            bytes_at(img.image, from, n)?
+            img.bytes(from, n)?
         }
     };
     if whole < blocks {
         data.extend_from_slice(&img.block(&file, whole)?);
     }
     Ok(Found::File(data))
+}
+
+/// An image [`write`] wrote, read back whole as the tree it was written from: each node's
+/// kind and metadata, an inode of several names one node with several entries (a hard
+/// link), and each regular file's data where it lies in the image, as `DataRef { source,
+/// offset }`, for a [`Source`] that reads the image to write it again. Written again, it
+/// gives the same bytes. What [`write`] never writes is refused: other layouts, shared
+/// xattrs, a file's data inline or past the image, a directory named twice.
+pub fn read_tree(image: &mut (impl Read + Seek), source: u32) -> Result<Tree, Error> {
+    let sb = bytes_at(image, SUPER_OFFSET, SUPER_SIZE)?;
+    if le32(&sb, 0) != Some(MAGIC) || sb.get(12) != Some(&BLOCK_BITS) || le32(&sb, 80) != Some(0) {
+        return err("not an EROFS image as shards writes them");
+    }
+    let corrupt = || Error("a corrupt superblock".into());
+    let epoch = le64(&sb, 24).map(|e| e as i64).ok_or_else(corrupt)?;
+    let total = u64::from(le32(&sb, 36).ok_or_else(corrupt)?);
+    let mut img = Image {
+        image,
+        meta: u64::from(le32(&sb, 40).ok_or_else(corrupt)?) * BLOCK,
+        window: Some(Window::default()),
+    };
+    let root = u64::from(le16(&sb, 14).ok_or_else(corrupt)?);
+    let (dir, meta, _, _) = img.full(root, epoch)?;
+    if dir.mode & ifmt::FMT != ifmt::DIR {
+        return err("the root is no directory");
+    }
+    let mut tree = Tree::new(meta);
+    // Each directory's inode once, which keeps a corrupt image from looping; each other
+    // inode of several names, as the node its first name made.
+    let mut dirs = std::collections::HashSet::from([root]);
+    let mut linked: std::collections::HashMap<u64, NodeId> = std::collections::HashMap::new();
+    let mut todo = vec![(dir, Tree::ROOT)];
+    while let Some((dir, at)) = todo.pop() {
+        if dir.size.div_ceil(BLOCK) > total {
+            return err("a directory larger than its image");
+        }
+        for (name, nid) in img.entries(&dir)? {
+            if let Some(&node) = linked.get(&nid) {
+                tree.link(at, &name, node)?;
+                continue;
+            }
+            let (rec, meta, i_u, nlink) = img.full(nid, epoch)?;
+            let kind = match rec.mode & ifmt::FMT {
+                ifmt::DIR => {
+                    if !dirs.insert(nid) {
+                        return err(format!("directory inode {nid} is named twice"));
+                    }
+                    let id = tree.insert(
+                        at,
+                        &name,
+                        Node {
+                            kind: Kind::Dir(Dir::default()),
+                            meta,
+                        },
+                    )?;
+                    todo.push((rec, id));
+                    continue;
+                }
+                ifmt::REG => {
+                    if rec.tail_at.is_some() {
+                        return err(format!(
+                            "inode {nid}: a file's data inline, which shards does not write"
+                        ));
+                    }
+                    let blocks = rec.size.div_ceil(BLOCK);
+                    let offset = if blocks == 0 {
+                        0
+                    } else if rec.start.checked_add(blocks).is_some_and(|end| end <= total) {
+                        rec.start * BLOCK
+                    } else {
+                        return err(format!("inode {nid}: data past the image"));
+                    };
+                    Kind::File {
+                        size: rec.size,
+                        data: DataRef { source, offset },
+                    }
+                }
+                ifmt::LNK => {
+                    // Read a block at a time, so that a size the image does not hold is
+                    // never asked of memory.
+                    if rec.size.div_ceil(BLOCK) > total {
+                        return err(format!("inode {nid}: a symlink larger than its image"));
+                    }
+                    let mut target = Vec::new();
+                    for k in 0..rec.size.div_ceil(BLOCK) {
+                        target.extend_from_slice(&img.block(&rec, k)?);
+                    }
+                    Kind::Symlink(target.into())
+                }
+                ifmt::CHR => {
+                    let (major, minor) = decode_dev(i_u);
+                    Kind::CharDevice { major, minor }
+                }
+                ifmt::BLK => {
+                    let (major, minor) = decode_dev(i_u);
+                    Kind::BlockDevice { major, minor }
+                }
+                ifmt::FIFO => Kind::Fifo,
+                ifmt::SOCK => Kind::Socket,
+                other => return err(format!("inode {nid}: file type {other:#o}")),
+            };
+            let node = tree.insert(at, &name, Node { kind, meta })?;
+            if nlink > 1 {
+                linked.insert(nid, node);
+            }
+        }
+    }
+    Ok(tree)
+}
+
+/// How much of an image [`read_tree`] reads at once: its inode records come in the order
+/// they were written, so most land in what one read brought.
+const WINDOW: u64 = 1 << 20;
+
+/// The part of an image last read: where it starts, and its bytes.
+#[derive(Default)]
+struct Window {
+    at: u64,
+    bytes: Vec<u8>,
 }
 
 /// `len` bytes of `image` from `offset`.
@@ -1532,10 +1723,12 @@ fn le64(b: &[u8], at: usize) -> Option<u64> {
     ))
 }
 
-/// An image being read, and where its metadata area starts.
+/// An image being read, where its metadata area starts, and the part of it last read,
+/// where it is read through one ([`read_tree`]).
 struct Image<'i, I> {
     image: &'i mut I,
     meta: u64,
+    window: Option<Window>,
 }
 
 /// What [`read_file`] reads of an inode.
@@ -1546,16 +1739,49 @@ struct Record {
     start: u64,
     /// Where its last block's bytes sit in its record, for FLAT_INLINE.
     tail_at: Option<u64>,
+    /// Where its record starts, whether it is the extended one, and the length of its
+    /// inline xattrs.
+    offset: u64,
+    extended: bool,
+    xattrs: u64,
 }
 
 impl<I: Read + Seek> Image<'_, I> {
+    /// `len` bytes from `offset`: from the window, where the image is read through one and
+    /// they lie in it, else read into it from `offset` on.
+    fn bytes(&mut self, offset: u64, len: u64) -> Result<Vec<u8>, Error> {
+        let Image { image, window, .. } = self;
+        let Some(w) = window else {
+            return bytes_at(*image, offset, len);
+        };
+        let end = offset
+            .checked_add(len)
+            .ok_or_else(|| Error("a read past the image".into()))?;
+        let held = |w: &Window| offset >= w.at && end <= w.at.saturating_add(w.bytes.len() as u64);
+        if !held(w) {
+            if len > WINDOW {
+                return bytes_at(*image, offset, len);
+            }
+            image.seek(SeekFrom::Start(offset))?;
+            w.bytes.clear();
+            Read::take(&mut **image, WINDOW).read_to_end(&mut w.bytes)?;
+            w.at = offset;
+            if !held(w) {
+                return err("the image is cut short");
+            }
+        }
+        let from = usize::try_from(offset - w.at).map_err(|_| Error("a read past the image".into()))?;
+        let to = usize::try_from(end - w.at).map_err(|_| Error("a read past the image".into()))?;
+        Ok(w.bytes.get(from..to).unwrap_or_default().to_vec())
+    }
+
     fn inode(&mut self, nid: u64) -> Result<Record, Error> {
         let corrupt = || Error(format!("inode {nid}: out of the image or corrupt"));
         let offset = nid
             .checked_mul(SLOT)
             .and_then(|o| o.checked_add(self.meta))
             .ok_or_else(corrupt)?;
-        let mut b = bytes_at(self.image, offset, COMPACT)?;
+        let mut b = self.bytes(offset, COMPACT)?;
         let format = le16(&b, 0).ok_or_else(corrupt)?;
         let extended = format & 1 == 1;
         let layout = (format >> 1) & 7;
@@ -1565,7 +1791,7 @@ impl<I: Read + Seek> Image<'_, I> {
             ));
         }
         if extended {
-            b = bytes_at(self.image, offset, EXTENDED)?;
+            b = self.bytes(offset, EXTENDED)?;
         }
         let icount = u64::from(le16(&b, 2).ok_or_else(corrupt)?);
         let size = if extended {
@@ -1584,7 +1810,62 @@ impl<I: Read + Seek> Image<'_, I> {
             } else {
                 None
             },
+            offset,
+            extended,
+            xattrs,
         })
+    }
+
+    /// Inode `nid` whole ([`read_tree`]): its record, its metadata, the `i_u` it holds (a
+    /// device's number) and its link count. A compact inode's time is `epoch`'s and its
+    /// own offset from it, in whole seconds.
+    fn full(&mut self, nid: u64, epoch: i64) -> Result<(Record, Meta, u32, u32), Error> {
+        let corrupt = || Error(format!("inode {nid}: out of the image or corrupt"));
+        let rec = self.inode(nid)?;
+        let head = if rec.extended { EXTENDED } else { COMPACT };
+        let b = self.bytes(rec.offset, head + rec.xattrs)?;
+        let i_u = le32(&b, 16).ok_or_else(corrupt)?;
+        let (uid, gid, mtime, mtime_nsec, nlink) = if rec.extended {
+            (
+                le32(&b, 24),
+                le32(&b, 28),
+                le64(&b, 32).map(|t| t as i64),
+                le32(&b, 40),
+                le32(&b, 44),
+            )
+        } else {
+            (
+                le16(&b, 24).map(u32::from),
+                le16(&b, 26).map(u32::from),
+                le32(&b, 12).and_then(|d| epoch.checked_add(i64::from(d))),
+                Some(0),
+                le16(&b, 6).map(u32::from),
+            )
+        };
+        let meta = Meta {
+            mode: rec.mode & 0o7777,
+            uid: uid.ok_or_else(corrupt)?,
+            gid: gid.ok_or_else(corrupt)?,
+            mtime: mtime.ok_or_else(corrupt)?,
+            mtime_nsec: mtime_nsec.ok_or_else(corrupt)?,
+            xattrs: xattrs_of(b.get(head as usize..).unwrap_or_default())
+                .map_err(|e| Error(format!("inode {nid}: {e}")))?,
+        };
+        Ok((rec, meta, i_u, nlink.ok_or_else(corrupt)?))
+    }
+
+    /// A directory's entries but `.` and `..`, in order: each name and its inode.
+    fn entries(&mut self, dir: &Record) -> Result<Vec<(Vec<u8>, u64)>, Error> {
+        let mut out = Vec::new();
+        for k in 0..dir.size.div_ceil(BLOCK) {
+            let block = self.block(dir, k)?;
+            for (name, nid) in dirents(&block)? {
+                if name != b"." && name != b".." {
+                    out.push((name.to_vec(), nid));
+                }
+            }
+        }
+        Ok(out)
     }
 
     /// Where block `k` of an inode's data lies, of its whole blocks.
@@ -1612,9 +1893,12 @@ impl<I: Read + Seek> Image<'_, I> {
                 if tail_at % BLOCK + len > BLOCK {
                     return err("inline data that crosses a block");
                 }
-                bytes_at(self.image, tail_at, len)
+                self.bytes(tail_at, len)
             }
-            _ => bytes_at(self.image, self.data_at(inode, k)?, len),
+            _ => {
+                let at = self.data_at(inode, k)?;
+                self.bytes(at, len)
+            }
         }
     }
 
@@ -2253,6 +2537,64 @@ mod tests {
     fn the_same_tree_gives_the_same_bytes() {
         let (tree, mut mem) = sample();
         assert_eq!(image(&tree, &mut mem), image(&tree, &mut mem));
+    }
+
+    /// An image read back whole is the tree it was written from: written again, its files
+    /// read from the image itself, it is the same image, bytes and all; a hard link is one
+    /// node of two names.
+    #[test]
+    fn a_tree_reads_back_whole() {
+        let (tree, mut mem) = sample();
+        let img = image(&tree, &mut mem);
+        let back = read_tree(&mut io::Cursor::new(&img), 3).unwrap();
+        let etc = back.child(Tree::ROOT, b"etc").unwrap();
+        let linked = back.child(etc, b"f4097").unwrap();
+        assert_eq!(back.child(Tree::ROOT, b"hardlink"), Some(linked));
+        let Some(Node {
+            kind: Kind::File { data, .. },
+            ..
+        }) = back.node(linked)
+        else {
+            panic!("f4097 is no file");
+        };
+        let source = data.source;
+        assert_eq!(source, 3);
+        let mut from_image = Mem(vec![Vec::new(), Vec::new(), Vec::new(), img.clone()]);
+        assert_eq!(image(&back, &mut from_image), img);
+    }
+
+    /// A volume's UUID is in its superblock, where the kernel reads it (erofs_fs.h,
+    /// `erofs_super_block.uuid`, 48 bytes in), and nothing else changes.
+    #[test]
+    fn a_uuid_is_written_where_the_kernel_reads_it() {
+        let (tree, mut mem) = sample();
+        let plain = image(&tree, &mut mem);
+        let uuid: [u8; 16] = std::array::from_fn(|i| i as u8 + 1);
+        let mut out = Vec::new();
+        write_uuid(&tree, &mut mem, &mut out, uuid).unwrap();
+        let at = SUPER_OFFSET as usize + 48;
+        assert_eq!(&out[at..at + 16], &uuid);
+        assert_eq!(&plain[at..at + 16], &[0; 16]);
+        out[at..at + 16].copy_from_slice(&[0; 16]);
+        assert_eq!(out, plain);
+    }
+
+    /// A directory an image names twice, as a loop back to the root would, is refused, as
+    /// is what is no image.
+    #[test]
+    fn a_tree_that_loops_is_refused() {
+        let (tree, mut mem) = sample();
+        let img = image(&tree, &mut mem);
+        let r = Reader::open(&img);
+        let root = r.inode(r.root);
+        // The root's entries: `.`, `..`, then `etc`, its third dirent, made the root again.
+        let mut bad = img.clone();
+        let at = root.tail_at + 2 * DIRENT as usize;
+        assert_eq!(le64(&bad, at), r.lookup("etc").nid);
+        bad[at..at + 8].copy_from_slice(&r.root.to_le_bytes());
+        let e = read_tree(&mut io::Cursor::new(&bad), 0).unwrap_err();
+        assert!(e.to_string().contains("named twice"), "{e}");
+        assert!(read_tree(&mut io::Cursor::new(&img[..1024]), 0).is_err());
     }
 
     #[test]

@@ -1,5 +1,6 @@
 //! virtio-blk backed by a host file (virtio 1.3 §5.2), or a join disk: the ranges the
-//! images of containers joining the microVM were given (D119).
+//! images of containers joining the microVM were given (D119), and a builder's cache layers
+//! and the layers its steps write (D134).
 //!
 //! Data moves directly between the file and guest memory: the device passes raw guest
 //! pointers to positional reads and writes, so no Rust reference ever aliases memory the guest
@@ -7,6 +8,7 @@
 
 use std::fs::File;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, RwLock};
 
 use super::queue::{Chain, Descriptor, Queue};
@@ -66,11 +68,13 @@ impl Backend {
     }
 }
 
-/// A read-only disk whose sectors are the images of the containers that joined the
-/// microVM (D119), each a range of its own from a [`RANGE_ALIGN`] boundary, in the order
-/// they came; the gaps between them read as zeros. It is empty, of no capacity, until a
-/// container joins, and only grows: a range let go reads as an I/O error, and its place
-/// is never given again, so no range's offset ever names another image.
+/// A disk whose sectors are the files its VM process is given (D119): the images of the
+/// containers that joined the microVM, a builder's cache layers, and the files its steps
+/// write theirs to (D134), each a range of its own from a [`RANGE_ALIGN`] boundary, in the
+/// order they came; the gaps between them read as zeros. A range is written only where it
+/// was given as writable; every other write is an I/O error. It is empty, of no capacity,
+/// until it is given a file, and only grows: a range let go reads and writes as an I/O
+/// error, and its place is never given again, so no range's offset ever names another file.
 ///
 /// A VM process runs one VM: its join disk is a `static` of that process's, which its
 /// device and the process's join requests both reach, with no count of holders kept.
@@ -82,6 +86,9 @@ pub struct Join {
     /// it while one lasts, taken once as the driver activates the device and let go at its
     /// reset, never on a request's path.
     interrupt: Mutex<Option<Arc<DeviceInterrupt>>>,
+    /// Whether the guest may write the ranges given writable: a builder's disk (D134). A
+    /// run's join disk is read-only, and its device says so.
+    writable: AtomicBool,
 }
 
 impl Default for Join {
@@ -96,8 +103,10 @@ struct Range {
     start: u64,
     /// Its length in bytes, a whole number of sectors: its file's.
     len: u64,
-    /// Its image, until it is let go.
+    /// Its file, until it is let go.
     file: Option<File>,
+    /// Whether the guest may write it.
+    writable: bool,
 }
 
 impl Join {
@@ -106,13 +115,34 @@ impl Join {
         Join {
             ranges: RwLock::new(Vec::new()),
             interrupt: Mutex::new(None),
+            writable: AtomicBool::new(false),
         }
     }
 
+    /// Lets the guest write the ranges given writable (D134): before its device is made,
+    /// which then says the disk is writable.
+    pub fn take_writes(&self) {
+        self.writable.store(true, Ordering::Release);
+    }
+
     /// Gives `file`, an image whose size is a whole number of sectors, a range after the
-    /// last, and tells the driver the disk's new capacity. Returns where the range starts
-    /// and its length, in bytes.
+    /// last, read-only, and tells the driver the disk's new capacity. Returns where the
+    /// range starts and its length, in bytes.
     pub fn attach(&self, file: File) -> Result<(u64, u64), String> {
+        self.give(file, false)
+    }
+
+    /// Gives `file`, whose size is a whole number of sectors, a range after the last that
+    /// the guest may write (D134), as [`attach`](Self::attach) gives an image one: only on
+    /// a disk that takes writes ([`take_writes`](Self::take_writes)).
+    pub fn attach_writable(&self, file: File) -> Result<(u64, u64), String> {
+        if !self.writable.load(Ordering::Acquire) {
+            return Err("a writable range of a join disk that takes no writes".into());
+        }
+        self.give(file, true)
+    }
+
+    fn give(&self, file: File, writable: bool) -> Result<(u64, u64), String> {
         let len = file
             .metadata()
             .map_err(|e| format!("a file for the join disk: {e}"))?
@@ -133,6 +163,7 @@ impl Join {
                 start,
                 len,
                 file: Some(file),
+                writable,
             });
             start
         };
@@ -204,6 +235,31 @@ impl Join {
         unsafe { std::ptr::write_bytes(ptr, 0, gap) };
         Ok(gap)
     }
+
+    /// Writes up to `len` bytes from the guest's memory at `ptr` at `offset`: into the
+    /// writable range there, within it. Returns how many it wrote, or why it wrote none: a
+    /// range given read-only, let go, or none at all.
+    ///
+    /// # Safety
+    ///
+    /// `ptr .. ptr + len` lies in guest RAM, as `GuestMemory::host_ptr` gives it.
+    unsafe fn write_at(&self, ptr: *const u8, len: usize, offset: u64) -> Result<usize, u8> {
+        let ranges = self.ranges.read().unwrap_or_else(PoisonError::into_inner);
+        let at = ranges.partition_point(|r| r.start <= offset);
+        let r = at
+            .checked_sub(1)
+            .and_then(|i| ranges.get(i))
+            .filter(|r| r.writable && offset < r.start.saturating_add(r.len))
+            .ok_or(S_IOERR)?;
+        let file = r.file.as_ref().ok_or(S_IOERR)?;
+        let left = r.start.saturating_add(r.len) - offset;
+        let n = usize::try_from(left).map_or(len, |left| left.min(len));
+        // SAFETY: the caller's: `ptr .. ptr + n` lies in guest RAM.
+        match unsafe { platform::write_at(file, ptr, n, offset - r.start) } {
+            Ok(0) | Err(_) => Err(S_IOERR),
+            Ok(n) => Ok(n),
+        }
+    }
 }
 
 /// The worker thread returns its queue when stopped, or nothing if a malformed ring
@@ -250,12 +306,12 @@ impl Block {
         }))
     }
 
-    /// A join disk (D119), its serial `id`: read-only, empty until `disk` is given a
-    /// range.
+    /// A join disk (D119), its serial `id`: empty until `disk` is given a range, and
+    /// read-only unless it takes writes (D134).
     pub fn join(disk: &'static Join, id: &str) -> Block {
         Block::of(Backend {
             store: Store::Join(disk),
-            read_only: true,
+            read_only: !disk.writable.load(Ordering::Acquire),
             id: serial(id),
         })
     }
@@ -442,7 +498,8 @@ fn execute(chain: &Chain, status: Descriptor, mem: &GuestMemory, backend: &Backe
         T_OUT if backend.read_only => Err(S_IOERR),
         T_OUT => transfer(&body, sector, mem, backend, Direction::Write).map(|_| 0),
         // Durable on stable storage, not just in the host page cache (platform::sync_durable).
-        // A join disk is read-only: nothing to make durable.
+        // A join disk's ranges are images and the files of a build's steps, which the host
+        // reads back as they are: nothing to make durable.
         T_FLUSH => match &backend.store {
             Store::File { file, .. } => platform::sync_durable(file).map(|()| 0).map_err(|_| S_IOERR),
             Store::Join(_) => Ok(0),
@@ -540,7 +597,7 @@ fn transfer(
                         platform::write_at(file, p, remaining, offset).map_err(|_| S_IOERR)
                     }
                     (Store::Join(join), Direction::Read) => join.read_at(p, remaining, offset),
-                    (Store::Join(_), Direction::Write) => Err(S_IOERR),
+                    (Store::Join(join), Direction::Write) => join.write_at(p, remaining, offset),
                 }
             };
             match n {
@@ -689,6 +746,58 @@ mod tests {
         irq.ack(super::super::INT_CONFIG_CHANGE);
         disk.attach(image("d", 512, 0xdd)).unwrap();
         assert_eq!(irq.status() & super::super::INT_CONFIG_CHANGE, 0);
+    }
+
+    /// A builder's join disk (D134): writes land in a range given as writable alone, and
+    /// within it, at its file's offsets, which the host reads back; a read-only range, a
+    /// gap, a range let go, and past a range's end are I/O errors; the device says it is
+    /// writable.
+    #[test]
+    fn a_join_disk_writes_only_its_writable_ranges() {
+        let dir = shards_testdir::TempDir::new("join-writable").unwrap();
+        let file = |name: &str, len: usize, byte: u8| {
+            let path = dir.join(name);
+            std::fs::write(&path, vec![byte; len]).unwrap();
+            std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(&path)
+                .unwrap()
+        };
+        static DISK: Join = Join::new();
+        let disk = &DISK;
+        assert!(
+            disk.attach_writable(file("refused", 512, 0)).is_err(),
+            "no writes taken yet"
+        );
+        disk.take_writes();
+        let b = Block::join(disk, "shards-join");
+        assert_eq!(b.features() & F_RO, 0);
+        assert_eq!(disk.attach(file("layer", 4096, 0xaa)).unwrap(), (0, 4096));
+        let (out_at, out_len) = disk.attach_writable(file("out", 8192, 0)).unwrap();
+        assert_eq!((out_at, out_len), (1 << 20, 8192));
+        let write = |at: u64, bytes: &[u8]| {
+            // SAFETY: `bytes` holds its length.
+            unsafe { disk.write_at(bytes.as_ptr(), bytes.len(), at) }
+        };
+        assert_eq!(write(out_at + 512, &[0x5a; 1024]), Ok(1024));
+        // Only to the range's end.
+        assert_eq!(write(out_at + 8192 - 512, &[0x77; 1024]), Ok(512));
+        assert_eq!(write(0, &[1; 512]), Err(S_IOERR), "a read-only range");
+        assert_eq!(write(8192, &[1; 512]), Err(S_IOERR), "a gap");
+        assert_eq!(write(out_at + 8192, &[1; 512]), Err(S_IOERR), "past its end");
+        let mut back = vec![0u8; 8192];
+        std::io::Read::read_exact(&mut File::open(dir.join("out")).unwrap(), &mut back).unwrap();
+        assert_eq!(back[..512], [0; 512]);
+        assert_eq!(back[512..1536], [0x5a; 1024]);
+        assert_eq!(back[8192 - 512..], [0x77; 512]);
+        assert_eq!(
+            std::fs::read(dir.join("layer")).unwrap(),
+            vec![0xaa; 4096],
+            "the read-only range's file unwritten"
+        );
+        disk.detach(out_at).unwrap();
+        assert_eq!(write(out_at, &[1; 512]), Err(S_IOERR), "let go");
     }
 
     #[test]

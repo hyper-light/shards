@@ -5073,6 +5073,286 @@ fn run_caches_are_kept_across_builds() {
     assert!(gone.stderr.contains("/c/one missing"), "{}", gone.stderr);
 }
 
+/// A cache's changes as the builder writes them (D134): an EROFS image of the step's upper
+/// directory, stacked by overlayfs under the next step's and merged on the host as the
+/// record grows. Each step sees what the last left as a directory would show it: files
+/// made, rewritten and removed, directories removed and made again, a file made a
+/// directory and a directory a file, symlinks, FIFOs, owners, modes, xattrs and hard
+/// links. A record keeps few layers, each more than twice the one above, and what its
+/// layers hide goes once it is half of what they hold.
+#[test]
+fn a_caches_changes_are_layered_as_a_directory_shows_them() {
+    if cannot_run_vms() {
+        return;
+    }
+    let (image, _) = served();
+    let home = TempDir::new("cache-layers-home");
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", kernel().as_os_str()),
+        ("SHARDS_INIT", guest_init().as_os_str()),
+        ("SHARDS_BUILD_MEMORY", "1024".as_ref()),
+    ];
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let n = std::cell::Cell::new(0);
+    // A build of `ops` on the cache `id`, then a step that lists it.
+    let build = |id: &str, ops: &[&str]| {
+        n.set(n.get() + 1);
+        let c = format!("--mount=type=cache,target=/c,id={id}");
+        let args: Vec<String> = ops.iter().map(|o| format!("{o:?}")).collect();
+        let ctx = context(
+            &format!("cache-layers-{}", n.get()),
+            &format!(
+                "FROM {image}\nUSER root\nRUN {c} [\"/bin/testguest\", {}]\nRUN {c} [\"/bin/testguest\", \"tree\", \"/c\", \"{}\"]\n",
+                args.join(", "),
+                n.get()
+            ),
+        );
+        let built = shards(&["build", "--progress=plain", ctx.to_str().unwrap()]);
+        assert_eq!(built.status, Some(0), "{ops:?}\n{}", built.stderr);
+        // The listing: the second step's output, each line `#N 0.123 ` and the line.
+        let step = built
+            .stderr
+            .lines()
+            .find(|l| l.contains("\"tree\""))
+            .and_then(|l| l.split_whitespace().next())
+            .unwrap()
+            .to_string();
+        built
+            .stderr
+            .lines()
+            .filter_map(|l| l.strip_prefix(&format!("{step} ")))
+            .filter_map(|l| l.split_once(' '))
+            .filter(|(at, _)| at.parse::<f64>().is_ok())
+            .map(|(_, line)| line.to_string())
+            .collect::<Vec<_>>()
+    };
+    let listed = build(
+        "layers",
+        &[
+            "fs",
+            "mkdir:/c/d",
+            "write:/c/d/a=1",
+            "write:/c/d/b=2",
+            "mkdir:/c/e",
+            "write:/c/e/x=x",
+            "write:/c/f=file",
+            "symlink:t:/c/s",
+            "link:/c/d/a:/c/h",
+            "xattr:user.k=v:/c/d/a",
+            "chmod:700:/c/e",
+            "chown:7:8:/c/f",
+            "mkfifo:/c/p",
+            "mkdir:/c/g",
+            "write:/c/g/w=w",
+        ],
+    );
+    assert_eq!(
+        listed,
+        [
+            "d dir 755 0:0",
+            "d/a file 644 0:0 1 = 1 user.k=v",
+            "d/b file 644 0:0 1 = 2",
+            "e dir 700 0:0",
+            "e/x file 644 0:0 1 = x",
+            "f file 644 7:8 4 = file",
+            "g dir 755 0:0",
+            "g/w file 644 0:0 1 = w",
+            "h file 644 0:0 1 = 1 user.k=v =link d/a",
+            "p fifo 640 0:0",
+            "s symlink 777 0:0 -> t",
+        ]
+    );
+    let listed = build(
+        "layers",
+        &[
+            "fs",
+            "rm:/c/d/b",
+            "rmdir:/c/e",
+            "mkdir:/c/e",
+            "write:/c/e/y=y",
+            "rm:/c/f",
+            "mkdir:/c/f",
+            "write:/c/f/in=in",
+            "rmdir:/c/g",
+            "write:/c/g=G",
+            "write:/c/n=new",
+        ],
+    );
+    assert_eq!(
+        listed,
+        [
+            "d dir 755 0:0",
+            "d/a file 644 0:0 1 = 1 user.k=v",
+            "e dir 755 0:0",
+            "e/y file 644 0:0 1 = y",
+            "f dir 755 0:0",
+            "f/in file 644 0:0 2 = in",
+            "g file 644 0:0 1 = G",
+            "h file 644 0:0 1 = 1 user.k=v =link d/a",
+            "n file 644 0:0 3 = new",
+            "p fifo 640 0:0",
+            "s symlink 777 0:0 -> t",
+        ]
+    );
+    // A file of two names rewritten through one: one file still, as a directory keeps it,
+    // where overlayfs alone would leave the other name the old file.
+    let listed = build("layers", &["fs", "write:/c/d/a=A"]);
+    assert!(
+        listed.contains(&"d/a file 644 0:0 1 = A user.k=v".to_string()),
+        "{listed:?}"
+    );
+    assert!(
+        listed.contains(&"h file 644 0:0 1 = A user.k=v =link d/a".to_string()),
+        "{listed:?}"
+    );
+    // And moved: its other name follows it.
+    let listed = build("layers", &["fs", "rename:/c/d/a:/c/z"]);
+    assert_eq!(
+        listed,
+        [
+            "d dir 755 0:0",
+            "e dir 755 0:0",
+            "e/y file 644 0:0 1 = y",
+            "f dir 755 0:0",
+            "f/in file 644 0:0 2 = in",
+            "g file 644 0:0 1 = G",
+            "h file 644 0:0 1 = A user.k=v",
+            "n file 644 0:0 3 = new",
+            "p fifo 640 0:0",
+            "s symlink 777 0:0 -> t",
+            "z file 644 0:0 1 = A user.k=v =link h",
+        ]
+    );
+
+    // The record of `key` (BuildKit's: the cache mount namespace, `/`, then the id): its
+    // layers' sizes, as its record says, and the files in its layers' directory, which are
+    // those layers' alone.
+    let record = |key: &str| {
+        let records = home.join("images/cachemounts/v2/records");
+        for entry in std::fs::read_dir(&records).unwrap() {
+            let dir = entry.unwrap().path();
+            let Ok(json) = std::fs::read(dir.join("record.json")) else {
+                continue;
+            };
+            let r: serde_json::Value = serde_json::from_slice(&json).unwrap();
+            if r["key"] != key {
+                continue;
+            }
+            let sizes: Vec<u64> = r["layers"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|l| l["size"].as_u64().unwrap())
+                .collect();
+            let mut files: Vec<String> = std::fs::read_dir(dir.join("layers"))
+                .unwrap()
+                .map(|e| e.unwrap().file_name().into_string().unwrap())
+                .collect();
+            files.sort();
+            let mut named: Vec<String> = r["layers"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|l| l["name"].as_str().unwrap().to_string())
+                .collect();
+            named.sort();
+            assert_eq!(files, named, "only its layers' files");
+            return sizes;
+        }
+        panic!("no record of {key}");
+    };
+    // Twelve builds that each add 1 MiB: few layers, each more than twice the one above.
+    for i in 0..12 {
+        let path = format!("/c/f{i:02}");
+        build("grow", &["big", &path, "1"]);
+        let sizes = record("/grow");
+        assert!(
+            sizes.windows(2).all(|w| w[0] > 2 * w[1]),
+            "after {} builds: {sizes:?}",
+            i + 1
+        );
+        let (total, least) = (sizes.iter().sum::<u64>(), *sizes.iter().min().unwrap());
+        assert!(
+            sizes.len() <= (total / least).ilog2() as usize + 1,
+            "after {} builds: {sizes:?}",
+            i + 1
+        );
+    }
+    let held: u64 = record("/grow").iter().sum();
+    assert!(held > 12 << 20, "{held}");
+    // All but one removed: what the layers hide is past half of them, so they are merged
+    // into one, which holds what is left.
+    let all: Vec<String> = (1..12).map(|i| format!("rm:/c/f{i:02}")).collect();
+    let ops: Vec<&str> = std::iter::once("fs")
+        .chain(all.iter().map(String::as_str))
+        .collect();
+    let listed = build("grow", &ops);
+    assert_eq!(listed.len(), 1, "{listed:?}");
+    assert!(listed[0].starts_with("f00 file 644 0:0 1048576 #"), "{listed:?}");
+    let sizes = record("/grow");
+    assert_eq!(sizes.len(), 1, "{sizes:?}");
+    assert!(sizes[0] < 2 << 20, "{sizes:?}");
+
+    // A cache from a stage starts as the stage's files, as mount.go makes it (a mutable
+    // ref on its source's): written on the host as its first layer, its root the
+    // stage's owner's and mode 0755, its mount the subpath `source` names.
+    let seeded = |name: &str, steps: &str| {
+        let ctx = context(
+            &format!("cache-layers-seed-{name}"),
+            &format!(
+                "FROM {image} AS seed\nUSER root\nRUN [\"/bin/testguest\", \"fs\", \"mkdir:/s\", \"write:/s/seed=1\", \"chown:7:8:/s\"]\nFROM {image}\nUSER root\n{steps}"
+            ),
+        );
+        let built = shards(&["build", "--progress=plain", ctx.to_str().unwrap()]);
+        assert_eq!(built.status, Some(0), "{steps}\n{}", built.stderr);
+        built.stderr
+    };
+    let m = "--mount=type=cache,target=/c,id=seeded,from=seed,source=/s";
+    let log = seeded(
+        "1",
+        &format!(
+            "RUN {m} [\"/bin/testguest\", \"fs\", \"write:/c/added=2\"]\nRUN {m} [\"/bin/testguest\", \"stat\", \"/c\", \"/c/seed\", \"/c/added\"]\n"
+        ),
+    );
+    assert!(log.contains("/c dir 755 7:8 "), "{log}");
+    assert!(log.contains("/c/seed file 644 0:0 1\n"), "{log}");
+    assert!(log.contains("/c/added file 644 0:0 1\n"), "{log}");
+    // Another build from the same stage takes the same record, as it left it.
+    let log = seeded(
+        "2",
+        &format!("RUN {m} [\"/bin/testguest\", \"stat\", \"/c/seed\", \"/c/added\"]\n"),
+    );
+    assert!(log.contains("/c/seed file 644 0:0 1\n"), "{log}");
+    assert!(log.contains("/c/added file 644 0:0 1\n"), "{log}");
+
+    // Changes past the room the store has (`SHARDS_MAX_IMAGE_BYTES` here) fail the step's
+    // build, said so, and nothing of them is kept.
+    let mut tight = env.to_vec();
+    tight.push(("SHARDS_MAX_IMAGE_BYTES", "16777216".as_ref()));
+    let ctx = context(
+        "cache-layers-room",
+        &format!(
+            "FROM {image}\nUSER root\nRUN --mount=type=cache,target=/c,id=room [\"/bin/testguest\", \"big\", \"/c/f\", \"32\"]\n"
+        ),
+    );
+    let over = run_shards_env(
+        &[],
+        &["build", "--progress=plain", ctx.to_str().unwrap()],
+        &tight,
+        TIMEOUT,
+    );
+    assert_ne!(over.status, Some(0), "{}", over.stderr);
+    assert!(
+        over.stderr
+            .contains("they take more than the 16777216 bytes the host had room for"),
+        "{}",
+        over.stderr
+    );
+    let kept = record("/room");
+    assert!(kept.is_empty(), "{kept:?}");
+}
+
 /// Cache mounts among concurrent builds of one home (D114), as BuildKit takes them (M141):
 /// `shared` takes the record another build holds, `private` makes another while it is
 /// held, `locked` waits until it is free; what each build writes is kept, none of it lost.

@@ -6578,3 +6578,57 @@ revision before comparing a changed API/implementation.
   out of the VM first where its hypervisor holds the pages; the builder's limits are raised
   to all of its memory; and what a VM process holds of its memory to plug is asked of the
   OS, not read from its footprint.
+
+### M194. Moving a cache mount in and out of the builder (D114, D134)
+
+- **Question.** M140 left open where a build spends what a large cache mount costs it,
+  and what a block device would cost instead: a cache of 10,000 files of 4 KiB in 100
+  directories and two of 128 MiB made a build that mounted it and did nothing take 11.2 s
+  at the median against an empty one's 3.9 s, under load. Where does that time go, and
+  what is it with the cache's layers EROFS images on the builder's join disk (D134)?
+- **Method.** `docs/research/measurements/cache-move/cachemove.py`, with M140's
+  `fsbench.rs` built for the guest: two release builds of `shards` with `--features
+  alloc-count`, whose builds mark each part of a step's cache mounts, A at 22cf16b7
+  (D114's transport, the tree sent over the build's connection and the changes sent back
+  and applied, marked) and B at 8f59734a (D134); each with a home of its own, taking
+  turns, each turn starting with the other, n = 20. Each turn builds, with each in turn:
+  `empty`, a step that mounts a new empty cache and does nothing; `filled`, one that mounts
+  the cache a first build filled (M140's) and does nothing; `fill`, one that fills a new
+  cache. Each build's step is new to the build cache by an `ENV` of its own. 2026-10-11,
+  Apple M5 Max, 128 GiB, macOS 26.4.1; load averages 17.6, 19.1 and 39.2 at its end, the
+  host also building and testing this change's mutants and running other projects' work.
+  Wall clock in milliseconds, spawn to exit, p50 / p90 / p99 / max, and the paired
+  difference (B less A, turn by turn: median, bootstrap 95% interval):
+
+  | build | A (D114) | B (D134) | B less A |
+  |---|---|---|---|
+  | `empty` | 287.7 / 395.1 / 521.1 / 521.1 | 297.5 / 438.7 / 500.6 / 500.6 | 0.6 [-63.9, 90.7] |
+  | `filled` | 1122.5 / 1892.2 / 1992.4 / 1992.4 | 266.4 / 407.4 / 541.9 / 541.9 | -859.2 [-1035.1, -789.7] |
+  | `fill` | 1497.9 / 9392.9 / 12361.7 / 12361.7 | 644.6 / 894.4 / 1196.8 / 1196.8 | -782.0 [-1004.5, -715.1] |
+
+  Where each build's time went (p50 / p90; each part from the step's previous mark):
+
+  - A, `filled`: `cache-take` (the builder's start, the record taken, its tree made on
+    the host) 285.3 / 377.7; `cache-send` 707.1 / 1116.5, of which 679.5 / 1094.6 waiting
+    on the builder to take the tree's frames and write them; the step 18.5 / 28.7.
+  - A, `fill`: the step 102.4 / 157.4; `cache-changes` 961.6 / 8568.9, of which applying
+    them 108.3 / 8094.4 and the rest waiting on the builder; the layer written 169.7 /
+    502.8, stored 14.9 / 41.6.
+  - B, `filled`: `cache-take` 142.0 / 193.3; `cache-attach` (its layer, and a file for
+    its changes, of which it made none) 0.3 / 0.5; the step 31.3 / 39.5, the layer mounted
+    from the join disk as it starts; `cache-keep` 10.7 / 44.0.
+  - B, `fill`: `cache-take` 165.8 / 235.8; `cache-attach` 0.3 / 2.3; the step 102.5 /
+    173.7; `cache-keep` 288.9 / 413.8: the builder writing the image of its changes (295
+    MiB of files, 10,000 of 4 KiB and two of 128 MiB) to the join disk and syncing it
+    246.8 / 376.2, 1.25 GB/s of files at the median, and its file trimmed, synced
+    (F_FULLFSYNC), named and recorded 26.2 / 126.1.
+  - `empty` makes a new record each build, written and synced as it is taken: its
+    `cache-take` was 211.1 / 279.0 in B against `filled`'s 142.0 / 193.3.
+- **Consequence.** D134: a cache's layers are EROFS images on the builder's join disk,
+  which the builder mounts and writes, so nothing of a cache crosses the build's
+  connection. A cache mounted and left alone costs a build what an empty one does (B's
+  `filled` and `empty` within their spread); filling one costs its image's writing, and no
+  longer the host's applying of its changes, which under this load took 8.1 s at p90 and
+  10.6 s at worst. Not split further here: B's `filled` step ran 12.8 ms longer than
+  A's at the median, mounting its layer from the join disk where A's had the tree in
+  memory.

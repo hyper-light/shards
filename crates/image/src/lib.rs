@@ -2,11 +2,8 @@
 //! read-only EROFS filesystem per image, which guests mount from virtio-pmem
 //! (docs/research/image-storage.md R1-R2).
 
-use std::fmt;
-use std::io;
-
 pub mod config;
-pub mod erofs;
+pub use shards_erofs as erofs;
 pub mod go;
 pub mod json;
 pub mod layer;
@@ -19,23 +16,8 @@ pub mod store;
 mod tables;
 pub mod tar;
 
-/// Why an image could not be read or built.
-#[derive(Debug)]
-pub struct Error(String);
-
-impl fmt::Display for Error {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.0)
-    }
-}
-
-impl std::error::Error for Error {}
-
-impl From<io::Error> for Error {
-    fn from(e: io::Error) -> Error {
-        Error(e.to_string())
-    }
-}
+/// Why an image could not be read or built: one error with its EROFS writer's.
+pub use shards_erofs::Error;
 
 fn bad<T>(msg: impl Into<String>) -> Result<T, Error> {
     Err(Error(msg.into()))

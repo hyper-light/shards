@@ -3538,6 +3538,98 @@ No run-time labels, relays or declassifiers (§12 answer 14, decided by the user
 an internal-only domain to the world (D58), so there is no data to label. Code mode
 waits on the user.
 
+### D134. Cache mounts at virtio-blk's speed: their layers EROFS images on the builder's join disk
+
+D114 kept a cache's content as the layers its steps' changes made, and moved it in and out
+of the builder over the build's connection: the host made a tree of a record's layers and
+sent it, a frame of 1 MiB at a time, and the guest sent back what the step changed, which
+the host applied to that tree and wrote as a layer. PM M194 measured where that went, for
+a cache of 10,000 files of 4 KiB and two of 128 MiB: a build that mounted it and did
+nothing spent 707 ms at the median sending its tree, 680 of them waiting on the builder
+to take and write it; one that filled it spent 962 ms reading its changes back and
+applying them (8.6 s at p90 under load) and 170 writing their layer. Now nothing of a
+cache crosses the connection, and the host never makes a tree of one nor applies its
+changes.
+
+- **A record's layers are EROFS images**, files of its own (`cachemounts/v2/records/<id>/
+  layers/<n>.erofs`): a step's changes as overlayfs left them in its upper directory
+  (whiteouts as character devices 0:0, opaque directories by `trusted.overlay.opaque`,
+  xattrs, owners, modes, times, a file of several names one inode), the first content of a
+  cache from something (`from=`) written on the host from its source's snapshot, or
+  layers merged. Version 1's records go at the next collection, as the store drops a
+  layout it no longer reads.
+- **The builder's join disk takes writes** (D119's, `shards run --kernel --attach FD`): the
+  host attaches each layer's file to it, read-only, once for the builder's life, and for
+  each cache a step writes, a file of its own for the changes, as large as the store has
+  room for (`SHARDS_MAX_IMAGE_BYTES`, within what the disk has free past
+  `SHARDS_KEEP_FREE`) and taking none of it until written. The VM process serves the
+  attaches on a socket of the builder's (`DISK_ATTACH`, `DISK_DETACH`), and writes only to
+  the ranges given writable. Ranges are never given twice, so what the guest has cached
+  of one is never another's.
+- **The guest** mounts each layer once, from a read-only loop device over its range
+  (LOOP_SET_FD and LOOP_SET_STATUS64, as a joiner's root is made), stacks a cache's layers
+  with overlayfs under the step's upper directory, and after the step, whatever its
+  status, writes an EROFS image of that directory into the cache's writable range, syncs
+  it, and says its length (`MOUNT_END`, a `Kept`): the host lets the range go, trims the
+  file to the image, syncs it, and names it the record's next layer. Changes past the
+  room fail the build, said so (the guest's image would pass its range), and nothing of
+  them is kept.
+- **Few layers, few bytes past what it shows.** A step mounts every layer of a record, and
+  each costs it a loop device and a mount and each lookup that misses a layer; overlayfs
+  stacks 500 at most (fs/overlayfs/params.h, `OVL_MAX_STACK`). A record's layers are
+  kept as the logarithmic method keeps sorted runs (Bentley and Saxe, "Decomposable
+  searching problems I. Static-to-dynamic transformation", J. Algorithms 1(4), 1980):
+  each weighs more than twice the one above it, its weight its bytes and those of the
+  files below it that it hides (which the guest counts as it writes the image, through a
+  read-only mount of the layers); the topmost that weighs at least half the one below it
+  is merged into it, and on down while what they come to does. A record of n bytes then has at most
+  about log2(n / 4 KiB) layers, and each byte is merged at most as often. And what its
+  layers hide stays under half of what they hold, as a copying collector holds at most
+  twice what it keeps (Cheney, "A nonrecursive list compacting algorithm", CACM 13(11),
+  1970): past it every layer is merged into the lowest, and what is hidden goes. That
+  merge copies what is shown, no more than what is hidden: each byte hidden was written
+  once, and is gone after. Merges are the host's, as the step that kept a layer lets the
+  record go, while it still holds it: each run planned under the key's lock, merged
+  without it, and put in its place under it again if no other merge took it meanwhile.
+  A merged layer's files go once the record no longer names them; a step that took them
+  still reads them, as each layer's file is opened as a step takes the record.
+- **A file of several names stays one file**, as a directory keeps it. overlayfs alone
+  copies up one name of a file of several, and its others show the old file below
+  ("breaking the association with a lower hard link", copy_up.c). The cache's overlay
+  has the inode index (`index=on`), which copies such a file up once, under every name it
+  is reached by in the step, and records its origin, the layer's volume UUID and the
+  inode; at the step's end, the names below that its changes did not reach are written
+  into the image as links of the copy, where nothing above them hides them. The index
+  tells layers apart by their UUIDs (super.c, `ovl_lower_uuid_ok`), so each image has one
+  of its own: random in the guest, and on the host from the record and what it holds.
+- **The builder's swap disk**, which none is given, is told from its join disk by serial:
+  init swapped to `/dev/vda`, which the join disk is in a builder without disks.
+- **Measured** (PM M194, against D114's, both arms in turn under one load, n = 20): a
+  build that mounts that cache and does nothing ends 859 ms sooner at the median ([-1035,
+  -790]), and costs what one mounting an empty cache does; one that fills a new one ends
+  782 ms sooner ([-1005, -715]), its slowest of 20 at 1.2 s where D114's was 12.4 s. Filling one costs
+  the image's writing: 247 ms for 295 MiB of files at the median, and 26 to trim, sync and
+  name its file and record it.
+- **Tested** on an M5 Max, macOS 26.4.1: `a_caches_changes_are_layered_as_a_directory_shows_them`
+  (build.rs): two builds' listings as a directory would show them (files made, rewritten
+  and removed, a directory removed and made again, a file made a directory and a
+  directory a file, symlinks, a FIFO, owners, modes, a `user.` xattr, a file of two
+  names), a file of two names rewritten through one and moved, twelve builds that each add
+  1 MiB keeping each layer more than twice the one above, one that removes all but one
+  file leaving one layer, a cache from a stage, and changes past the room; D114's tests
+  unchanged; the store's records, plans and merges (`mounts.rs`, `merge.rs`), an image
+  read back whole (`read_tree`), and its UUID. Mutation-checked: links not completed, no
+  inode index, what changes hide not counted, whiteouts or opaque directories dropped, the
+  room past the store's limits, a failure to write the changes not said, no merges, the
+  rule of what is hidden gone, a merge at the bottom keeping its whiteouts, a directory
+  that replaced something left not opaque, and a run put in place where it is not whole
+  each fail one; a copied-up file's links counted against its names only spares a scan.
+- **Recorded differences.** A step whose cache's changes are past the room the store has
+  runs to its end and fails as they are kept, where BuildKit's step meets a full disk as
+  it writes (no store of BuildKit's limits a cache). A cache from something counts its
+  first content among its bytes (`system df`, `buildx du`): it is a copy of its own,
+  where BuildKit's names its source's snapshot as its parent (D114).
+
 ### D133. A builder's memory, plugged as its build needs it (virtio-mem)
 
 A builder may have half the host's memory, as Docker Desktop's VM has, but the memory a
@@ -4914,7 +5006,8 @@ with its build; a step was keyed by the whole of its inputs, so a change to a co
 it never reads ran it again; and nothing bounded what the cache kept.
 
 - **Cache mounts kept across builds.** Each cache is a record of the store's
-  (`cachemounts/v1`), its content the layers its steps' changes made, in order, and taken
+  (`cachemounts/v1`; `v2` since D134, each layer an EROFS image of the record's own), its
+  content the layers its steps' changes made, in order, and taken
   for a step as BuildKit's mount manager takes a cache directory (v0.28.1
   solver/llbsolver/mounts/mount.go `getRefCacheDir`), among every build of the home,
   whichever process runs it: by its key (the id after the Dockerfile's namespace, and `:`
@@ -4938,7 +5031,9 @@ it never reads ran it again; and nothing bounded what the cache kept.
   record's next layer (none where nothing changed) and keeps its root's owner and mode,
   which no layer holds (the upper directory's, as overlayfs shows a mount's root). The
   guest keeps the upper as a layer, so the build's next step with that cache sends
-  nothing.
+  nothing. (Since D134 nothing of a cache crosses the build's connection: its layers are
+  attached to the builder's join disk, and the guest writes its changes there as an
+  image.)
 - **A step not answered from the cache** (`--no-cache`, `--no-cache-filter`'s stages)
   starts its caches empty: before any step runs, their records are let go of, as
   BuildKit's solver lets them go as it loads the definition (llbsolver
@@ -4950,8 +5045,9 @@ it never reads ran it again; and nothing bounded what the cache kept.
   `adaptUsageInfo` gives them, IDs marked `*` as mutable, each described as BuildKit
   describes it (`cached mount /c from exec /bin/sh -c … with id "//c"`, M141); `--verbose`
   prints no `Type:` line for any record, as buildx's never does (M141; D65's printed one).
-  `system prune` removes them as Docker's does. Their layers are roots of the store's
-  collector while they are there.
+  `system prune` removes them as Docker's does. Their layers were roots of the store's
+  collector while they were there; since D134 they are each record's own files, counted
+  in its size, its first content among them, and removed with it.
 - **Steps keyed by what they read.** A step has two keys, as a vertex has in BuildKit's
   solver: one from its inputs' own keys, which a build that changed nothing it reads finds
   at once; and, asked only where that one finds nothing, one from what it reads of each

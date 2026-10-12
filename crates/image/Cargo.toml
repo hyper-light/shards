@@ -11,6 +11,7 @@ rust-version.workspace = true
 workspace = true
 
 [dependencies]
+shards-erofs = { path = "../erofs" }
 flate2 = { version = "1", default-features = false, features = ["zlib-rs", "runtime_detection"] }
 regex = "1"
 ruzstd = "0.9"

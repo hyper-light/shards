@@ -1073,6 +1073,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "shards-erofs"
+version = "0.1.0"
+
+[[package]]
 name = "shards-flate"
 version = "0.1.0"
 dependencies = [
@@ -1119,6 +1123,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "shards-erofs",
  "shards-testdir",
 ]
 
@@ -1131,6 +1136,7 @@ dependencies = [
  "shards-archive",
  "shards-cmdline",
  "shards-devcgroup",
+ "shards-erofs",
  "shards-testdir",
  "shards-user",
 ]
