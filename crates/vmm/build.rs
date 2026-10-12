@@ -22,6 +22,44 @@ fn main() {
             compile_hvf_shim();
         }
     }
+    if std::env::var_os("CARGO_FEATURE_GPU").is_some() && os == "macos" {
+        link_gpu();
+    }
+}
+
+/// Links the GPU's renderer (D144): virglrenderer's Venus, libepoxy and MoltenVK, static,
+/// from the directory SHARDS_GPU_LIBS names (scripts/gpu-libs builds it), and the system
+/// frameworks MoltenVK needs (PM M214). Without the directory nothing is linked: a check
+/// build of the feature needs none, and a build that links fails on the renderer's names.
+fn link_gpu() {
+    println!("cargo::rerun-if-env-changed=SHARDS_GPU_LIBS");
+    let Some(dir) = std::env::var_os("SHARDS_GPU_LIBS") else {
+        println!("cargo::warning=the gpu feature links the renderer from SHARDS_GPU_LIBS, which is not set");
+        return;
+    };
+    let dir = std::path::PathBuf::from(dir);
+    for lib in ["virglrenderer", "epoxy", "MoltenVK"] {
+        println!(
+            "cargo::rerun-if-changed={}",
+            dir.join(format!("lib{lib}.a")).display()
+        );
+    }
+    println!("cargo::rustc-link-search=native={}", dir.display());
+    for lib in ["virglrenderer", "epoxy", "MoltenVK"] {
+        println!("cargo::rustc-link-lib=static={lib}");
+    }
+    for framework in [
+        "Metal",
+        "QuartzCore",
+        "IOSurface",
+        "Foundation",
+        "IOKit",
+        "CoreGraphics",
+        "AppKit",
+    ] {
+        println!("cargo::rustc-link-lib=framework={framework}");
+    }
+    println!("cargo::rustc-link-lib=c++");
 }
 
 /// Builds src/hv/hvf/simd.c into a static library with the host C compiler, the one

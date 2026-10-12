@@ -7535,12 +7535,25 @@ revision before comparing a changed API/implementation.
   | Metal linked | 4.50 / 5.84 / 9.27 ms | 5,888 KiB | 1,552 KB |
   | Metal device made | 22.55 / 28.42 / 44.13 ms | 11,328 KiB | 3,568 KB |
 
+  MoltenVK's static library also needs IOKit, CoreGraphics and AppKit (NSApplication,
+  NSScreen and NSView, for surfaces and displays a renderer never makes): its link fails
+  without each. A third binary links all seven, as `shards-vm-gpu` must; run again with
+  the others, load 10 to 12, at db0c67a0:
+
+  | | launch, p50 / p90 / p99 | resident | footprint |
+  |---|---|---|---|
+  | plain | 3.05 / 3.50 / 4.12 ms | 1,600 KiB | 1,056 KB |
+  | Metal linked | 4.12 / 4.78 / 5.57 ms | 5,840 KiB | 1,520 KB |
+  | Metal device made | 21.21 / 24.34 / 29.13 ms | 11,296 KiB | 3,520 KB |
+  | MoltenVK's seven linked | 4.97 / 5.78 / 6.31 ms | 8,432 KiB | 1,728 KB |
+  | MoltenVK's seven, device made | 21.81 / 25.27 / 29.36 ms | 13,936 KiB | 3,808 KB |
+
 - **Consequence (D144).** Linked into shards' VM process, Metal would cost every VM 1.3 ms
   of launch at p50 and 480 KB of footprint, GPU or none (R1: a GPU costs nothing where it
-  is not used). A GPU VM runs a VM process of its own build, `shards-vm-gpu`, which links
-  the renderer and MoltenVK and is carried and written out as the VM process is (D36);
-  every other VM's links neither. A GPU VM pays its device's 19 ms as it boots, in its
-  pool's refill.
+  is not used); what MoltenVK links, 1.9 ms and 672 KB. A GPU VM runs a VM process of its
+  own build, `shards-vm-gpu`, which links the renderer and MoltenVK and is carried and
+  written out as the VM process is (D36); every other VM's links neither. A GPU VM pays
+  its device's 17 to 19 ms as it boots, in its pool's refill.
 
 ### M215. What changing a socket's registration with a completion port does (D142)
 
@@ -7598,3 +7611,34 @@ revision before comparing a changed API/implementation.
   nothing, and every case passes. The poller keeps each socket's registration one-shot: a
   notice disarms it, and the next wait arms it again for what the socket then waits for,
   in the call that waits; a socket that waits for nothing is left disarmed.
+
+### M216. MoltenVK's host-visible memory, as a GPU's blobs map it (D144)
+
+- **Question.** A blob of host-visible memory is the guest's to map: the device maps its
+  host pages, in host pages of 16 KiB (hv_vm_map), where the guest chose in its window.
+  Is a mapping 16 KiB aligned, and are its pages past its size another allocation's? When
+  the memory is freed while the window still maps it, can its pages be given to another?
+- **Method.** `docs/research/measurements/moltenvk-memory/run.sh` (C over MoltenVK
+  1.4.2's static library). `layout.c` allocates 64 host-visible VkDeviceMemory objects of
+  each size from 1 B to 1 MiB, maps each whole as virglrenderer's Venus maps a blob's
+  (vkMapMemory), asks the kernel each mapping's region (mach_vm_region), frees them all
+  and allocates again. `reuse.c` frees one while a second mapping of its pages lives
+  (mach_vm_remap, shared, as stage 2 holds a mapped blob's, M193), allocates another,
+  writes it, and reads the held mapping: 32 times each of 16 KiB to 64 MiB. Apple M5 Max,
+  macOS 26.4.1, 2026-10-12.
+- **Results.**
+  - Vulkan's device has one heap, 137,438,953,472 bytes (128 GiB, the Mac's memory), and
+    three memory types on it: device-local (0); device-local, host-visible, coherent and
+    cached (1); lazily allocated (2).
+  - Every host-visible mapping is 16 KiB aligned, at the start of a VM region of its own
+    whose length is its size rounded up to 16 KiB: no other allocation is in its pages.
+  - Freed, the next allocations take the freed addresses: 64 of 64 at every size.
+  - Pages of a freed allocation that are still mapped elsewhere stay its own: the new
+    allocation at its address has new pages, whose writes the held mapping never sees; it
+    keeps the old bytes, 32 of 32 at every size.
+- **Consequence (D144).** A blob maps into the window whole, in host pages, its pages past
+  its size its own region's. The renderer frees a blob's memory when the guest frees it
+  and keeps only its address, which the next allocation takes: the device holds each
+  blob's pages from its making, remapped, and maps those. A blob said to be larger than its
+  memory is refused, as its region ends first. The window is as long as Vulkan's
+  host-visible heaps.

@@ -7,6 +7,7 @@
 pub mod block;
 #[cfg(unix)]
 pub mod fs;
+pub mod gpu;
 pub mod mem;
 pub mod mmio;
 pub mod net;
@@ -131,6 +132,16 @@ pub struct Activation {
     pub restored: bool,
 }
 
+/// A shared memory region a device offers its driver (virtio 1.3 §2.10): memory both may
+/// reach without a copy, at a guest-physical `base` of `len` bytes, named by `id` (the
+/// device type's own meaning, as virtio-gpu's host-visible memory is its region 1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ShmRegion {
+    pub id: u8,
+    pub base: u64,
+    pub len: u64,
+}
+
 /// A virtio device behind a transport.
 pub trait VirtioDevice: Send {
     fn device_id(&self) -> u32;
@@ -146,6 +157,10 @@ pub trait VirtioDevice: Send {
     /// virtio-mem's changes; no other device's does.
     fn config_generation(&self) -> u32 {
         0
+    }
+    /// The shared memory regions it offers: none, but where its type has them.
+    fn shm_regions(&self) -> &[ShmRegion] {
+        &[]
     }
     /// Starts processing. On error the transport reports DEVICE_NEEDS_RESET.
     fn activate(&mut self, activation: Activation) -> Result<(), String>;

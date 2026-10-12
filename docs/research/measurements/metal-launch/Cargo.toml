@@ -1,7 +1,8 @@
 # What Metal costs a process that links it, on macOS (PM M214, D144): `plain` links nothing
-# past libSystem; `metal` links Metal, QuartzCore, IOSurface and Foundation, as MoltenVK does,
-# and with `device` makes the system's default Metal device. run.py times their launches,
-# alternating, and reads each one's memory held.
+# past libSystem; `metal` links Metal, QuartzCore, IOSurface and Foundation; `moltenvk` those
+# and IOKit, CoreGraphics and AppKit, as MoltenVK's static library needs; each with `device`
+# makes the system's default Metal device. run.py times their launches, alternating, and
+# reads each one's memory held.
 [package]
 name = "metal-launch"
 version = "0.1.0"

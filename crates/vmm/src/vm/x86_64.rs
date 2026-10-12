@@ -262,7 +262,11 @@ fn assemble(
     config: &MachineConfig,
     console: Console,
     hosts: super::Hosts<'_>,
+    gpu: bool,
 ) -> Result<Assembled, String> {
+    if gpu {
+        return Err("a GPU is given on macOS hosts alone so far (D144)".into());
+    }
     let ram = config
         .memory_mib
         .checked_mul(MIB)
@@ -295,7 +299,13 @@ fn assemble(
     let irqs = vm.irqs();
     debug!("VM created and RAM mapped");
 
-    let devices = super::virtio_devices(config, &regions, hosts, hotplug, layout::VIRTIO_MMIO_MAX)?;
+    let devices = super::virtio_devices(
+        config,
+        &regions,
+        hosts,
+        hotplug.into_iter().collect(),
+        layout::VIRTIO_MMIO_MAX,
+    )?;
     let mut bus = Bus {
         pmem: regions
             .iter()
@@ -391,7 +401,7 @@ pub fn build(cfg: &Config) -> Result<Machine, String> {
         #[cfg(unix)]
         join_share: cfg.join_share,
     };
-    let a = assemble(&memory, &config, cfg.console, hosts)?;
+    let a = assemble(&memory, &config, cfg.console, hosts, cfg.gpu)?;
     let tables = acpi::build(cfg.vcpus, &a.virtio)?.blobs;
     let access = memory.access().map_err(|e| e.to_string())?;
     for (addr, bytes) in tables {
@@ -459,7 +469,7 @@ pub fn restore(
     let (_, ranges) = ram_ranges(snap.config.memory_mib)?;
     let memory =
         Arc::new(GuestMemory::from_file(&ranges, memory_file).map_err(|e| format!("snapshot memory: {e}"))?);
-    let a = assemble(&memory, &snap.config, console, hosts)?;
+    let a = assemble(&memory, &snap.config, console, hosts, false)?;
     let guest: Vec<(u64, u64)> = memory
         .regions()
         .map(|(gpa, _, len)| (gpa, len as u64))

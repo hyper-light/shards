@@ -3625,11 +3625,43 @@ to test on, where no CI runner has a GPU behind an IOMMU.
   VMM maps into the device's shared memory window (hv_vm_map). A renderer in a process of
   its own would need that memory shared between processes, which the fork does not export
   on macOS.
-- **To build:** shared memory regions in the virtio-mmio transport (it has none: their
-  lengths read as all-ones); the virtio-gpu device, its Venus capset alone, with no
-  scanout and no virgl GL; the renderer and MoltenVK vendored and built for
-  `shards-vm-gpu`; a guest kernel variant with DRM's virtio-gpu driver; `--gpus` and CDI
-  names on macOS giving a run the render node; the research's E6 measured on it.
+- **The transport's shared memory regions** (virtio 1.3 §4.2.2): the region a driver
+  selects reads its length and base; one a device has not, all-ones, as every one read
+  before.
+- **The device** (`devices::virtio::gpu`): what the Linux driver needs for Vulkan through
+  Venus (virtgpu_kms.c; Mesa's vn_renderer_virtgpu.c asks for 3D, blobs, contexts and the
+  host-visible region): VIRGL, RESOURCE_BLOB, CONTEXT_INIT and BLOB_ALIGNMENT offered, no
+  scanout, the renderer's capsets alone (Venus). A request is read once, copied, its
+  lengths held to what it holds and the whole to the guest's RAM. A blob of guest memory
+  is given to the renderer as its RAM's host addresses; one of host memory is mapped into
+  the window at the place the guest chose, of whole host pages, over nothing else mapped,
+  within the window. A fenced request's answer waits for its fence, after those before it
+  on its ring, as the driver signals a timeline's fences in order; one refused waits only
+  for those; one of no ring is answered as it is done. The renderer runs on the device's
+  worker; its threads signal fences to it. A request the driver made available again while
+  the device held it is a malformed ring.
+- **The window** is placed after RAM, the memory to plug and pmem, at a GiB boundary, as
+  long as the host's GPU says it has memory the host can map (Vulkan's host-visible heaps,
+  which Venus tells the guest): the most a guest can have mapped at once. On this Mac,
+  128 GiB (PM M216); the IPA's width grows to hold it. Blobs are mapped read and write,
+  never executed.
+- **Blobs held from their making** (PM M216): the renderer frees a blob's memory when the
+  guest frees it, blob or not, and the fork keeps only its address, which MoltenVK's next
+  allocation takes: mapped from it, a blob freed and then mapped would have given the guest
+  another context's memory. The device remaps each blob's pages as it is made
+  (`mach_vm_remap`, shared) and maps those, which no other allocation is given while held;
+  a blob said to be larger than its memory is refused, its region ending first.
+- **Blob alignment.** Host pages are 16 KiB, and a blob's place in the window must be
+  whole pages. The driver of Linux 7.2 aligns them where the device asks
+  (VIRTIO_GPU_F_BLOB_ALIGNMENT, commits 7b5121c3374e, 47248e0d8264, 6bd7e82e2653, for
+  libkrun on macOS), and Mesa's Venus rounds its blobs' sizes to it
+  (vn_renderer_virtgpu.c); an unaligned place is refused, said once.
+- **No snapshot.** A GPU's state is its host driver's, and the renderer's threads reach
+  guest memory without the VMM's access: a VM with a GPU is refused a snapshot policy.
+- **To build:** a guest kernel variant with DRM's virtio-gpu driver and the blob alignment;
+  `shards-vm-gpu` built with the renderer, MoltenVK and libepoxy (`--features gpu`,
+  `SHARDS_GPU_LIBS`), its libraries built from pinned sources; `--gpus` and CDI names on
+  macOS giving a run the render node; the research's E6 measured on it.
 
 ### D143. `RUN` on Windows hosts: the builder
 

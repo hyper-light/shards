@@ -39,6 +39,8 @@ pub enum QueueError {
     IndirectLength(u32),
     ReadableAfterWritable,
     Config(&'static str),
+    /// The driver made a buffer available again that the device had not used.
+    InUse(u16),
 }
 
 impl fmt::Display for QueueError {
@@ -60,6 +62,9 @@ impl fmt::Display for QueueError {
             }
             QueueError::ReadableAfterWritable => write!(f, "device-readable descriptor after a writable one"),
             QueueError::Config(what) => write!(f, "invalid queue configuration: {what}"),
+            QueueError::InUse(head) => {
+                write!(f, "driver made buffer {head} available while the device held it")
+            }
         }
     }
 }

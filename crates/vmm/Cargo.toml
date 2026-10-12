@@ -10,6 +10,11 @@ rust-version.workspace = true
 [lints]
 workspace = true
 
+[features]
+# The GPU's renderer, linked from the libraries scripts/gpu-libs builds (SHARDS_GPU_LIBS):
+# `shards-vm-gpu` alone has it (D144, PM M214).
+gpu = []
+
 [dependencies]
 shards-abi = { path = "../abi" }
 shards-netring = { path = "../netring" }

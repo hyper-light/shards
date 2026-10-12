@@ -214,12 +214,14 @@ struct Assembled {
     pmem: Vec<(u64, u64)>,
 }
 
-/// `vsock` is the host side of the vsock device `config` asks for.
+/// `vsock` is the host side of the vsock device `config` asks for; `gpu`, whether it has a
+/// GPU, which a booted machine alone may.
 fn assemble(
     memory: &Arc<GuestMemory>,
     config: &MachineConfig,
     console: Console,
     hosts: super::Hosts<'_>,
+    gpu: bool,
 ) -> Result<Assembled, String> {
     let ram = ram_bytes(config.memory_mib)?;
     // Memory to plug, where the guest has any, starts at the first GiB boundary after RAM
@@ -235,6 +237,33 @@ fn assemble(
         .ok_or("pmem regions overflow the address space")?;
     let (regions, end) = super::pmem_regions(config, pmem_at)?;
     let top = if regions.is_empty() { plug_end } else { end };
+    // A GPU's window, at the first GiB boundary past all of that, as long as the renderer
+    // says (D144).
+    let gpu = match gpu {
+        false => None,
+        true => {
+            let (renderer, len) = super::gpu_renderer()?;
+            let len = len
+                .checked_next_multiple_of(PAGE)
+                .ok_or("the GPU's window overflows the address space")?;
+            let at = top
+                .checked_next_multiple_of(GIB)
+                .ok_or("the GPU's window overflows the address space")?;
+            let region = crate::devices::virtio::ShmRegion {
+                id: crate::devices::virtio::gpu::HOST_VISIBLE,
+                base: at,
+                len,
+            };
+            Some((renderer, region))
+        }
+    };
+    let top = match &gpu {
+        Some((_, r)) => r
+            .base
+            .checked_add(r.len)
+            .ok_or("the GPU's window overflows the address space")?,
+        None => top,
+    };
     let pmem: Vec<(u64, u64)> = regions
         .iter()
         .map(|(region, gpa)| (*gpa, region.len() as u64))
@@ -286,7 +315,20 @@ fn assemble(
         .map_err(|e| e.to_string())?;
     debug!("GIC created");
 
-    let devices = super::virtio_devices(config, &regions, hosts, hotplug, layout::VIRTIO_MMIO_MAX)?;
+    let gpu = match gpu {
+        None => None,
+        Some((renderer, region)) => {
+            // The largest request read: no legitimate command outsizes the memory it comes
+            // from.
+            let max = usize::try_from(ram).map_err(|_| format!("{ram} bytes of guest memory"))?;
+            let served =
+                crate::devices::virtio::gpu::Served::new(renderer, Box::new(vm.window()), region, PAGE, max);
+            Some(Box::new(crate::devices::virtio::gpu::Gpu::new(Box::new(served)))
+                as Box<dyn crate::devices::virtio::VirtioDevice>)
+        }
+    };
+    let last = gpu.into_iter().chain(hotplug).collect();
+    let devices = super::virtio_devices(config, &regions, hosts, last, layout::VIRTIO_MMIO_MAX)?;
     let mut bus = MmioBus::default();
     let mut virtio = Vec::with_capacity(devices.len());
     // Each virtio device takes the next MMIO window and SPI, in the guest's probe order.
@@ -368,7 +410,10 @@ pub fn build(cfg: &Config) -> Result<Machine, String> {
         #[cfg(unix)]
         join_share: cfg.join_share,
     };
-    let a = assemble(&memory, &config, cfg.console, hosts)?;
+    if cfg.gpu && cfg.snapshot.is_some() {
+        return Err("a VM with a GPU is not snapshotted: its GPU's state is its host driver's (D144)".into());
+    }
+    let a = assemble(&memory, &config, cfg.console, hosts, cfg.gpu)?;
     a.vmgenid.write_new_id()?;
 
     let fdt_addr = layout::DRAM_BASE + ram - boot::FDT_MAX;
@@ -504,7 +549,7 @@ pub fn restore(
         GuestMemory::from_file(&ram_ranges(ram)?, memory_file)
             .map_err(|e| format!("snapshot memory: {e}"))?,
     );
-    let a = assemble(&memory, &snap.config, console, hosts)?;
+    let a = assemble(&memory, &snap.config, console, hosts, false)?;
     let guest: Vec<(u64, u64)> = memory
         .regions()
         .map(|(gpa, _, len)| (gpa, len as u64))
