@@ -523,6 +523,11 @@ impl UnixListener {
         Socket::shared(info).map(UnixListener)
     }
 
+    /// Another handle to this socket, as std's `try_clone`: shared with this process.
+    pub fn try_clone(&self) -> io::Result<UnixListener> {
+        Socket::shared(&self.0.share(std::process::id())?).map(UnixListener)
+    }
+
     /// The next connection, and no address: an AF_UNIX client's is unnamed.
     pub fn accept(&self) -> io::Result<(UnixStream, ())> {
         // SAFETY: a listening socket this value owns; no address asked.

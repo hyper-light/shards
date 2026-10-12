@@ -1,9 +1,9 @@
 //! The proxy's server (D110): its Unix socket, a step's session on it, and each of the
 //! step's connections, plain or tunnelled, served on threads of the step's.
 
+use shards_vmm::platform::{AsRawSocket as _, UnixListener, UnixStream};
 use std::collections::HashMap;
 use std::io::{self, BufRead, BufReader, Read, Write};
-use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, mpsc};
@@ -223,19 +223,17 @@ enum Spooled {
     Failed(String),
 }
 
-/// A new file of the proxy's own for a request's body (mode 0600, a name no other has).
+/// A new file of the proxy's own for a request's body (mode 0600, a name no other has; on
+/// Windows in the user's own temporary directory, whose ACLs admit the user alone).
 fn spool_file(dir: &Path) -> io::Result<(std::fs::File, PathBuf)> {
-    use std::os::unix::fs::OpenOptionsExt as _;
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let n = NEXT.fetch_add(1, Ordering::Relaxed);
     let path = dir.join(format!("body-{n}"));
-    let file = std::fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .open(&path)?;
-    Ok((file, path))
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true).write(true).create_new(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    Ok((options.open(&path)?, path))
 }
 
 /// Reads and drops what is left of a request's body BuildKit's handler never read, as Go's
@@ -793,21 +791,14 @@ impl<'p> Session<'p> {
     /// Serves the step's connections, each on a thread of `scope`, until `stop` ends
     /// (its other end closed).
     pub fn serve<'s>(&'s self, scope: &'s std::thread::Scope<'s, '_>, stop: &'s UnixStream) {
-        use std::os::fd::AsRawFd as _;
         loop {
-            let mut polled = [self.proxy.listener.as_raw_fd(), stop.as_raw_fd()].map(|fd| libc::pollfd {
-                fd,
-                events: libc::POLLIN,
-                revents: 0,
-            });
-            // SAFETY: poll(2) on two descriptors of ours.
-            if unsafe { libc::poll(polled.as_mut_ptr(), 2, -1) } < 0 {
-                if io::Error::last_os_error().kind() == io::ErrorKind::Interrupted {
-                    continue;
-                }
+            let Ok(ready) = shards_vmm::platform::wait_readable(
+                &[self.proxy.listener.raw_socket(), stop.raw_socket()],
+                None,
+            ) else {
                 return;
-            }
-            if polled[1].revents != 0 || self.ended.load(Ordering::SeqCst) {
+            };
+            if ready.get(1) != Some(&false) || self.ended.load(Ordering::SeqCst) {
                 return;
             }
             if self.live.lock().unwrap_or_else(PoisonError::into_inner).1.len() >= self.proxy.connections {

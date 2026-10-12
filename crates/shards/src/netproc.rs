@@ -1,7 +1,10 @@
 //! A VM's network process, started beside it (docs/design/architecture.md D31): the
 //! frame ring and doorbells the two share, `shards-net` given its side of them, and the
-//! VM's side ready for `shards-vm --net`.
+//! VM's side ready for `shards-vm --net`. On Windows (D142) the network process starts
+//! confined, in an AppContainer that holds the network's capabilities, once its VM's
+//! process exists, whose end it watches for.
 
+#[cfg(unix)]
 use std::os::fd::{AsFd, OwnedFd};
 
 /// What a VM or network process is given of its spawner's environment: the variables it
@@ -10,8 +13,9 @@ use std::os::fd::{AsFd, OwnedFd};
 /// processes a guest could take over.
 /// The resolvers a VM's network process asks names past the microVM of (D59): `SHARDS_DNS`,
 /// each `ADDR[:PORT]`, comma-separated, as `dockerd --dns` names them; else the host's own
-/// IPv4 nameservers (`/etc/resolv.conf`), at port 53. The host asks, so a loopback one (a
-/// local cache's) serves as it is, which Docker must replace for a container.
+/// IPv4 nameservers (`/etc/resolv.conf`; on Windows each up adapter's), at port 53. The
+/// host asks, so a loopback one (a local cache's) serves as it is, which Docker must
+/// replace for a container.
 pub fn resolvers() -> Vec<String> {
     let with_port = |s: &str| -> Option<String> {
         if s.parse::<std::net::SocketAddrV4>().is_ok() {
@@ -28,9 +32,11 @@ pub fn resolvers() -> Vec<String> {
             .filter_map(with_port)
             .collect();
     }
-    std::fs::read_to_string("/etc/resolv.conf")
-        .unwrap_or_default()
-        .lines()
+    #[cfg(unix)]
+    let conf = std::fs::read_to_string("/etc/resolv.conf").unwrap_or_default();
+    #[cfg(windows)]
+    let conf = String::from_utf8_lossy(&shards_net::bridge::host_resolv()).into_owned();
+    conf.lines()
         .filter_map(|l| l.trim().strip_prefix("nameserver"))
         .filter_map(|a| with_port(a.trim()))
         .collect()
@@ -43,7 +49,7 @@ pub fn child_env() -> Vec<(&'static str, std::ffi::OsString)> {
         .collect()
 }
 
-/// [`child_env`], as `shards_ipc::spawn_in` takes it.
+/// [`child_env`], as `shards_ipc::spawn_in` (and on Windows `shards_ipc::Spawn`) takes it.
 pub fn env_pairs<'e>(
     env: &'e [(&'static str, std::ffi::OsString)],
 ) -> Vec<(&'static str, &'e std::ffi::OsStr)> {
@@ -51,10 +57,12 @@ pub fn env_pairs<'e>(
 }
 
 /// The descriptor numbers a VM process takes its side of the ring at.
+#[cfg(unix)]
 pub const VM_FDS: [i32; 3] = [5, 6, 7];
 
 /// The VM's side of its network: the ring and the two doorbells, for the VM process to
 /// be given at [`VM_FDS`].
+#[cfg(unix)]
 #[derive(Debug)]
 pub struct VmSide {
     pub region: OwnedFd,
@@ -70,8 +78,10 @@ pub struct VmSide {
 }
 
 /// Where a VM process is given its side's [`VmSide::release`], named by `--net-release`.
+#[cfg(unix)]
 pub const VM_RELEASE_FD: i32 = 8;
 
+#[cfg(unix)]
 impl VmSide {
     /// `--net`'s value for a VM given this side at [`VM_FDS`] with `mac`.
     pub fn arg(mac: &[u8; 6]) -> String {
@@ -80,11 +90,31 @@ impl VmSide {
     }
 }
 
+/// A build's proxy (D110), as a network process is told of it: the gateway's port, and
+/// the proxy's socket.
+type ProxyArgs = Option<(String, std::path::PathBuf)>;
+
+/// What a VM's network process is told of its policy: the `--policy` it takes, and a
+/// build's proxy's port and socket (D110).
+fn policy_args(policy: shards_net::Policy) -> Result<(&'static str, ProxyArgs), String> {
+    match policy {
+        shards_net::Policy::AllowAll => Ok(("allow", None)),
+        shards_net::Policy::DenyAll => Ok(("deny", None)),
+        // A build's proxy alone (D110): the gateway's port, and the proxy's socket.
+        shards_net::Policy::Proxy { port, socket } => Ok(("proxy", Some((port.to_string(), socket)))),
+        // A run's, given as it starts (NET_POLICY): a VM starts before its run is known.
+        shards_net::Policy::Ports(_) | shards_net::Policy::Host => {
+            Err("a VM's network starts allowing all or nothing".into())
+        }
+    }
+}
+
 /// Starts the network process of one VM whose guest has `mac` on `bridge`, its binary
 /// (helpers.rs), under `policy`.
 /// Its side of the ring goes to it; the VM's comes back. Once the VM process holds its
 /// side and the caller drops this one, the VM's end alone keeps the network process's
 /// doorbell open, so the network process goes with the VM.
+#[cfg(unix)]
 pub fn start(
     policy: shards_net::Policy,
     mac: &[u8; 6],
@@ -95,16 +125,7 @@ pub fn start(
     let (vm_sleeps, net_rings) = shards_netring::doorbell().map_err(at)?;
     let (net_sleeps, vm_rings) = shards_netring::doorbell().map_err(at)?;
     let binary = crate::helpers::net()?;
-    let (policy, proxy) = match policy {
-        shards_net::Policy::AllowAll => ("allow", None),
-        shards_net::Policy::DenyAll => ("deny", None),
-        // A build's proxy alone (D110): the gateway's port, and the proxy's socket.
-        shards_net::Policy::Proxy { port, socket } => ("proxy", Some((port.to_string(), socket))),
-        // A run's, given as it starts (NET_POLICY): a VM starts before its run is known.
-        shards_net::Policy::Ports(_) | shards_net::Policy::Host => {
-            return Err("a VM's network starts allowing all or nothing".into());
-        }
-    };
+    let (policy, proxy) = policy_args(policy)?;
     let pair = || std::os::unix::net::UnixStream::pair().map_err(|e| format!("a VM's network control: {e}"));
     let (control, theirs) = pair()?;
     let (release, released) = pair()?;
@@ -220,6 +241,7 @@ pub const GRACE: std::time::Duration = std::time::Duration::from_secs(1);
 
 /// Waits for a network process whose VM is gone, [`GRACE`] at most, then ends it: woken by
 /// its end (`Poller::add_exit`), where one cannot be watched by a look every millisecond.
+#[cfg(unix)]
 pub fn reap(net: &shards_ipc::Child) {
     let deadline = std::time::Instant::now() + GRACE;
     let watched = shards_vmm::platform::Poller::new()
@@ -246,5 +268,238 @@ pub fn reap(net: &shards_ipc::Child) {
     if net.try_wait().is_none() {
         let _ = net.kill(libc::SIGKILL);
         let _ = net.wait();
+    }
+}
+
+/// The VM's side of its network (Windows, D142): the ring and its two doorbells, handed
+/// to the VM process by name ([`VmSide::given`]). No ports are published there yet, a
+/// daemon's, so it has no control nor release, as a builder's on Unix uses neither.
+#[cfg(windows)]
+#[derive(Debug)]
+pub struct VmSide {
+    pub region: std::os::windows::io::OwnedHandle,
+    pub sleeps: std::os::windows::io::OwnedHandle,
+    pub rings: std::os::windows::io::OwnedHandle,
+}
+
+#[cfg(windows)]
+impl VmSide {
+    /// `--net`'s value for a VM handed [`VmSide::given`] with `mac`.
+    pub fn arg(mac: &[u8; 6]) -> String {
+        shards_net::Mac(*mac).to_string()
+    }
+
+    /// The ring and doorbells, by the names a VM process takes them by.
+    pub fn given(&self) -> [shards_ipc::Given<'_>; 3] {
+        use std::os::windows::io::AsHandle as _;
+        [
+            shards_ipc::Given {
+                name: "net-region",
+                handle: self.region.as_handle(),
+            },
+            shards_ipc::Given {
+                name: "net-wake-me",
+                handle: self.sleeps.as_handle(),
+            },
+            shards_ipc::Given {
+                name: "net-wake-peer",
+                handle: self.rings.as_handle(),
+            },
+        ]
+    }
+}
+
+/// A VM's network process, made ready to start once its VM's process exists, whose end it
+/// watches for (Windows, D142): a doorbell's peer cannot hang up there.
+#[cfg(windows)]
+#[derive(Debug)]
+pub struct Ready {
+    region: std::os::windows::io::OwnedHandle,
+    sleeps: std::os::windows::io::OwnedHandle,
+    rings: std::os::windows::io::OwnedHandle,
+    args: Vec<std::ffi::OsString>,
+    /// A build's proxy's socket, which its spawner dials for it (D110).
+    proxy: Option<std::path::PathBuf>,
+}
+
+/// The ring and doorbells of one VM's network, whose guest has `mac` on `bridge`, under
+/// `policy`: the network process's side, ready to start ([`start`]), and the VM's.
+#[cfg(windows)]
+pub fn prepare(
+    policy: shards_net::Policy,
+    mac: &[u8; 6],
+    bridge: &shards_net::bridge::Bridge,
+) -> Result<(Ready, VmSide), String> {
+    let at = |e: std::io::Error| format!("a VM's network: {e}");
+    let region = shards_netring::memory().map_err(at)?;
+    let (vm_sleeps, net_rings) = shards_netring::doorbell().map_err(at)?;
+    let (net_sleeps, vm_rings) = shards_netring::doorbell().map_err(at)?;
+    let (policy, proxy) = policy_args(policy)?;
+    let mut args: Vec<std::ffi::OsString> = vec![
+        "--policy".into(),
+        policy.into(),
+        "--mac".into(),
+        shards_net::Mac(*mac).to_string().into(),
+        "--bridge".into(),
+        bridge.to_string().into(),
+    ];
+    for r in resolvers() {
+        args.extend(["--resolver".into(), r.into()]);
+    }
+    let proxy = match proxy {
+        Some((port, socket)) => {
+            args.extend([
+                "--proxy-port".into(),
+                port.into(),
+                "--proxy-socket".into(),
+                socket.clone().into(),
+                "--proxy-dialer".into(),
+                "dialer".into(),
+            ]);
+            Some(socket)
+        }
+        None => None,
+    };
+    Ok((
+        Ready {
+            region: region.try_clone().map_err(at)?,
+            sleeps: net_sleeps,
+            rings: net_rings,
+            args,
+            proxy,
+        },
+        VmSide {
+            region,
+            sleeps: vm_sleeps,
+            rings: vm_rings,
+        },
+    ))
+}
+
+/// A started network process (Windows): it, and the AppContainer it runs in, whose profile
+/// goes once it has.
+#[cfg(windows)]
+#[derive(Debug)]
+pub struct NetProcess {
+    pub child: shards_ipc::Child,
+    _container: shards_ipc::AppContainer,
+}
+
+/// Starts `ready`, the network process of the VM `vm`, made and not yet running: given a
+/// handle to it that may only wait for its end, in an AppContainer holding the network's
+/// capabilities (PM M204).
+#[cfg(windows)]
+pub fn start(ready: Ready, vm: &shards_ipc::Suspended) -> Result<NetProcess, String> {
+    use std::os::windows::io::AsHandle as _;
+    let binary = crate::helpers::net()?;
+    let container = crate::helpers::containers().and_then(|records| {
+        shards_ipc::AppContainer::new("net", &records)
+            .map_err(|e| format!("a VM network's AppContainer: {e}"))
+    })?;
+    let vm_end = vm
+        .waitable()
+        .map_err(|e| format!("a VM's network: its VM's process: {e}"))?;
+    let dialer = match &ready.proxy {
+        Some(_) => Some(
+            shards_vmm::platform::UnixStream::pair().map_err(|e| format!("the build proxy's dialer: {e}"))?,
+        ),
+        None => None,
+    };
+    let sockets: Vec<shards_ipc::Shared<'_>> = dialer
+        .iter()
+        .map(|(_, theirs)| shards_ipc::Shared {
+            name: "dialer",
+            socket: theirs.raw() as u64,
+        })
+        .collect();
+    let args: Vec<&std::ffi::OsStr> = ready.args.iter().map(std::ffi::OsString::as_os_str).collect();
+    let err = std::io::stderr();
+    let env = child_env();
+    let child = shards_ipc::spawn(&shards_ipc::Spawn {
+        program: &binary,
+        args: &args,
+        grants_at: 0,
+        given: &[
+            shards_ipc::Given {
+                name: "net-region",
+                handle: ready.region.as_handle(),
+            },
+            shards_ipc::Given {
+                name: "net-wake-me",
+                handle: ready.sleeps.as_handle(),
+            },
+            shards_ipc::Given {
+                name: "net-wake-peer",
+                handle: ready.rings.as_handle(),
+            },
+            shards_ipc::Given {
+                name: "vm",
+                handle: vm_end.as_handle(),
+            },
+        ],
+        stdin: None,
+        stdout: err.as_handle(),
+        stderr: err.as_handle(),
+        sockets: &sockets,
+        env: &env_pairs(&env),
+        container: Some(&container),
+        holds: shards_ipc::Holds::Network,
+    })
+    .map_err(|e| format!("starting {}: {e}", binary.display()))?;
+    // An AppContainer reaches no socket by its path: this process dials the build's proxy
+    // for it, over a link of the two's own, as on macOS (D31).
+    if let (Some((ours, _)), Some(socket)) = (dialer, ready.proxy) {
+        let pid = child.id();
+        std::thread::Builder::new()
+            .name("proxy dialer".into())
+            .spawn(move || serve_dials(&ours, &socket, pid))
+            .map_err(|e| format!("the build proxy's dialer: {e}"))?;
+    }
+    Ok(NetProcess {
+        child,
+        _container: container,
+    })
+}
+
+/// Dials the build's proxy at `socket` for the network process `pid`, in an AppContainer,
+/// each time it asks over `link` (`kind::DIAL`): the connection shared with it
+/// (WSADuplicateSocketW, PM M203) and kept until it says it has its own (`kind::TAKEN`); or
+/// `kind::ERR` with why not. Ends as the network process goes.
+#[cfg(windows)]
+fn serve_dials(link: &shards_vmm::platform::UnixStream, socket: &std::path::Path, pid: u32) {
+    use shards_ipc::kind;
+    while let Ok(Some(asked)) = shards_ipc::recv(link) {
+        if asked.kind != kind::DIAL {
+            return;
+        }
+        let dialed = shards_vmm::platform::UnixStream::connect(socket)
+            .and_then(|conn| conn.share_with(pid).map(|info| (conn, info)));
+        match dialed {
+            Ok((conn, info)) => {
+                if shards_ipc::send(link, kind::GRANTED, &info).is_err() {
+                    return;
+                }
+                match shards_ipc::recv(link) {
+                    Ok(Some(m)) if m.kind == kind::TAKEN => drop(conn),
+                    _ => return,
+                }
+            }
+            Err(e) => {
+                if shards_ipc::send(link, kind::ERR, e.to_string().as_bytes()).is_err() {
+                    return;
+                }
+            }
+        }
+    }
+}
+
+/// Waits for a network process whose VM is gone, [`GRACE`] at most, then ends it (Windows):
+/// it goes as it sees its VM's process end.
+#[cfg(windows)]
+pub fn reap(net: &NetProcess) {
+    let grace = u32::try_from(GRACE.as_millis()).unwrap_or(u32::MAX);
+    if !net.child.ended_within(grace) {
+        let _ = net.child.kill();
+        let _ = net.child.wait();
     }
 }

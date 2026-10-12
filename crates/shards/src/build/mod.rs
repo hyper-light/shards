@@ -2412,16 +2412,9 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
     };
     // --add-host: host-gateway is the builder's gateway, on the bridge it is elected.
     let gateway = || -> Result<String, String> {
-        #[cfg(unix)]
-        {
-            shards_net::bridge::elected_here(&mut |_| {})
-                .map(|b| b.gateway().to_string())
-                .ok_or_else(|| shards_net::bridge::NO_SUBNET.to_string())
-        }
-        #[cfg(not(unix))]
-        {
-            Err("the builder has no network on this platform yet".to_string())
-        }
+        shards_net::bridge::elected_here(&mut |_| {})
+            .map(|b| b.gateway().to_string())
+            .ok_or_else(|| shards_net::bridge::NO_SUBNET.to_string())
     };
     let add_hosts = buildflags::add_hosts(parsed.many("add-host"), &gateway)?;
     // --resource, after the legacy flags as buildx gathers them.

@@ -20,31 +20,13 @@
 //! builder's step (`Session::serve`); as the step ends, its connections are shut and its
 //! requests upstream cancelled.
 
-#[cfg(unix)]
 pub mod ca;
-#[cfg_attr(not(unix), allow(dead_code))]
 pub mod capture;
-#[cfg(unix)]
 pub mod head;
-#[cfg(unix)]
 mod server;
-#[cfg(unix)]
 mod sniff;
 
-#[cfg(unix)]
 pub use self::server::{PORT, Proxy, Questions, Session};
-
-/// Where shards starts no builder (Windows), there is no proxy to start either.
-#[cfg(not(unix))]
-#[derive(Debug)]
-pub enum Proxy {}
-
-#[cfg(not(unix))]
-impl Proxy {
-    pub fn ca(&self) -> &[u8] {
-        match *self {}
-    }
-}
 
 use shards_dockerfile::url as gourl;
 

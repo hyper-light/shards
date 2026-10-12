@@ -166,8 +166,8 @@ impl Authority {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+    use shards_vmm::platform::UnixStream;
     use std::io::{Read, Write};
-    use std::os::unix::net::UnixStream;
 
     /// Says hello over TLS to `config`'s server for `name`, trusting `ca` alone.
     fn hello(config: Arc<ServerConfig>, ca: &[u8], name: &str) -> Result<Vec<u8>, String> {
@@ -250,7 +250,9 @@ mod tests {
     }
 
     /// The certificates as BuildKit makes them (`newCA`, `certForHost`): RSA-2048 keys, a
-    /// leaf with key encipherment, each made the same way here but for its key.
+    /// leaf with key encipherment, each made the same way here but for its key. For the
+    /// measurement, which runs where a thread's CPU time is read (clock_gettime(2)).
+    #[cfg(unix)]
     fn rsa_ca() -> (Issuer<'static, KeyPair>, Vec<u8>) {
         let key = KeyPair::generate_rsa_for(&rcgen::PKCS_RSA_SHA256, rcgen::RsaKeySize::_2048).unwrap();
         let mut params = CertificateParams::default();
@@ -266,6 +268,7 @@ mod tests {
         (Issuer::new(params, key), der)
     }
 
+    #[cfg(unix)]
     fn rsa_leaf(issuer: &Issuer<'static, KeyPair>, host: &str) -> ServerConfig {
         let key = KeyPair::generate_rsa_for(&rcgen::PKCS_RSA_SHA256, rcgen::RsaKeySize::_2048).unwrap();
         let mut params = CertificateParams::default();
@@ -295,6 +298,7 @@ mod tests {
     }
 
     /// This thread's CPU time, in microseconds.
+    #[cfg(unix)]
     fn cpu_us() -> u128 {
         // SAFETY: a zeroed timespec for clock_gettime(2) to fill.
         let mut t: libc::timespec = unsafe { std::mem::zeroed() };
@@ -310,6 +314,7 @@ mod tests {
     /// thread's own CPU time beside the wall's says what of a tail the host's scheduler
     /// made.
     #[test]
+    #[cfg(unix)]
     #[ignore = "a measurement: docs/research/measurements/build-proxy/run.sh"]
     fn certificate_costs() {
         let quantiles = |mut took: Vec<u128>| {

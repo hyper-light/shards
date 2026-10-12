@@ -35,7 +35,6 @@ mod keyless;
 mod local_store;
 #[cfg(unix)]
 mod names;
-#[cfg(unix)]
 mod netproc;
 #[cfg(unix)]
 mod networks;

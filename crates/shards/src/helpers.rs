@@ -36,9 +36,7 @@ pub fn vm() -> Result<PathBuf, String> {
     Ok(dir()?.join(format!("shards-vm{}", std::env::consts::EXE_SUFFIX)))
 }
 
-/// The network process's binary, written out if this build's is not yet. Only Unix
-/// hosts network their VMs yet (D31).
-#[cfg(unix)]
+/// The network process's binary, written out if this build's is not yet (D31, D142).
 pub fn net() -> Result<PathBuf, String> {
     Ok(dir()?.join(format!("shards-net{}", std::env::consts::EXE_SUFFIX)))
 }

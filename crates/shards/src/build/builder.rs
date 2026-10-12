@@ -13,48 +13,34 @@
 //! builder's join disk, each once for the builder's life, through its VM process's
 //! `--attach` socket, and a file for each one's changes too, which the guest writes.
 
-#[cfg(unix)]
 use std::collections::HashMap;
-#[cfg(unix)]
 use std::ffi::OsString;
-#[cfg(unix)]
 use std::io::{self, Read};
 #[cfg(unix)]
 use std::os::fd::{AsFd, AsRawFd};
-#[cfg(unix)]
-use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
-#[cfg(unix)]
 use std::time::{Duration, Instant};
 
-#[cfg(unix)]
-use shards_abi::build::{self, kind};
-use shards_abi::build::{Kept, Step, Tree};
-#[cfg(unix)]
+use shards_abi::build::{self, Kept, Step, Tree, kind};
 use shards_abi::run;
-#[cfg(unix)]
 use shards_build::sync::{self, Scope};
 use shards_build::upper::Applier;
 use shards_build::vfs::Fs;
-#[cfg(unix)]
 use shards_cmdline::buildflags::Agent;
 use shards_image::erofs::Source;
+use shards_vmm::platform::{AsRawSocket as _, UnixListener, UnixStream};
 
 /// How long a builder may take to boot and dial back.
-#[cfg(unix)]
 const BOOT_PATIENCE: Duration = Duration::from_secs(30);
 
 /// The memory a builder boots with, in MiB, where it may have more: what its page
 /// structures cost it at boot grows with it (PM M82), and the rest is plugged as the build
 /// needs it, its init asking (D133, PM M193).
-#[cfg_attr(not(unix), allow(dead_code))]
 pub const BOOT_MEMORY_MIB: u64 = 512;
 
-/// Where a snapshot's tree comes from, as a builder guest holds it. Only a builder reads
-/// one: where none starts yet (Windows), nothing does.
+/// Where a snapshot's tree comes from, as a builder guest holds it.
 #[derive(Debug)]
-#[cfg_attr(not(unix), allow(dead_code))]
 pub enum Origin {
     /// Nothing: scratch.
     Scratch,
@@ -104,11 +90,16 @@ pub enum Ended {
 }
 
 /// A builder VM, and the layers it holds.
-#[cfg(unix)]
 pub struct Builder {
     vm: shards_ipc::Child,
     /// Its network process, which ends with the VM.
+    #[cfg(unix)]
     net: shards_ipc::Child,
+    #[cfg(windows)]
+    net: crate::netproc::NetProcess,
+    /// Its VM's AppContainer (Windows, D141), whose profile goes once the VM has.
+    #[cfg(windows)]
+    _container: shards_ipc::AppContainer,
     conn: UnixStream,
     /// Where its steps' SSH agent sockets are relayed to (build::SSH_PORT).
     ssh: UnixListener,
@@ -131,75 +122,14 @@ pub struct Builder {
 pub type StepProxy<'a, 'p> = Option<(&'p super::proxy::Proxy, &'a mut dyn FnMut(&str, &str) -> bool)>;
 
 /// A step's questions of the build's policies, and what answers them (D110).
-#[cfg(unix)]
 type Asked<'q, 'a> = Option<(&'q super::proxy::Questions, &'a mut dyn FnMut(&str, &str) -> bool)>;
 
 /// The build's proxy (D110), listening in a directory of its own as the builder's sockets
 /// are, its files of request bodies leaving the disk what `limits` keeps free.
-#[cfg(unix)]
 pub fn proxy(limits: &shards_image::store::Limits) -> Result<super::proxy::Proxy, String> {
     super::proxy::Proxy::new(socket_dir()?, limits)
 }
 
-/// Where shards starts no builder, it starts no proxy either.
-#[cfg(not(unix))]
-pub fn proxy(_: &shards_image::store::Limits) -> Result<super::proxy::Proxy, String> {
-    Err("RUN steps run in a builder microVM, which shards starts on Linux and macOS hosts only so far".into())
-}
-
-/// Where shards starts no builder yet: Windows, whose daemon and VM transport are still
-/// to come. Each `RUN` there says so.
-#[cfg(not(unix))]
-#[derive(Debug)]
-pub struct Builder;
-
-#[cfg(not(unix))]
-impl Builder {
-    pub fn start(_: &Boot<'_>) -> Result<Builder, String> {
-        Err(
-            "RUN steps run in a builder microVM, which shards starts on Linux and macOS hosts only so far"
-                .into(),
-        )
-    }
-
-    pub fn tree(&mut self, _: &Rc<Origin>, _: &mut dyn Source) -> Result<Tree, String> {
-        Err("no builder".into())
-    }
-
-    pub fn run(
-        &mut self,
-        _: Step,
-        _: &mut dyn FnMut(u8, &[u8]),
-        _: &mut Applier<'_>,
-        _: &super::Agents,
-        _: u64,
-        _: StepProxy<'_, '_>,
-    ) -> Result<Ran, String> {
-        Err("no builder".into())
-    }
-
-    pub fn kept(&mut self) -> Result<Kept, String> {
-        Err("no builder".into())
-    }
-
-    pub fn attach_layer(&mut self, _: &str, _: &std::fs::File) -> Result<(u64, u64), String> {
-        Err("no builder".into())
-    }
-
-    pub fn attach_out(&mut self, _: &std::fs::File) -> Result<(u64, u64), String> {
-        Err("no builder".into())
-    }
-
-    pub fn detach(&mut self, _: u64) -> Result<(), String> {
-        Err("no builder".into())
-    }
-
-    pub fn proxy_url(&self) -> Option<&str> {
-        None
-    }
-}
-
-#[cfg(unix)]
 impl std::fmt::Debug for Builder {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Builder")
@@ -211,7 +141,6 @@ impl std::fmt::Debug for Builder {
 /// What a builder boots: its kernel and init, its shape, and the base images it can stand
 /// steps on, in pmem order.
 #[derive(Debug)]
-#[cfg_attr(not(unix), allow(dead_code))]
 pub struct Boot<'a> {
     pub kernel: &'a Path,
     pub init: &'a Path,
@@ -228,17 +157,17 @@ pub struct Boot<'a> {
 /// A directory of a builder's or a build proxy's own for its sockets ([`socket_dir`]),
 /// removed as it drops; and the lock that says its owner lives, which a later build takes
 /// once that owner is gone, even killed, to remove what it left ([`sweep`], D137).
-#[cfg(unix)]
 #[derive(Debug)]
 pub struct SocketDir {
     path: PathBuf,
-    _held: std::fs::File,
+    /// The lock, let go as the directory goes: Windows removes no file one holds.
+    held: Option<std::fs::File>,
 }
 
-#[cfg(unix)]
 impl SocketDir {
     /// `path`, an empty directory of this process's own, with its lock taken: held before
     /// it is put in place, so that a lock in place is held.
+    #[cfg(unix)]
     pub fn held(path: PathBuf) -> Result<SocketDir, String> {
         let fresh = path.join(".shards-lock-new");
         let held = std::fs::File::options()
@@ -254,7 +183,33 @@ impl SocketDir {
                 Ok(held)
             });
         match held {
-            Ok(held) => Ok(SocketDir { path, _held: held }),
+            Ok(held) => Ok(SocketDir {
+                path,
+                held: Some(held),
+            }),
+            Err(e) => {
+                let _ = std::fs::remove_dir_all(&path);
+                Err(format!("a directory for the builder: {e}"))
+            }
+        }
+    }
+
+    /// `path`, an empty directory of this process's own, with its lock taken (Windows): made
+    /// held, shared with no one, which no other process opens while this one holds it, as
+    /// shards' AppContainer records are (D141).
+    #[cfg(windows)]
+    pub fn held(path: PathBuf) -> Result<SocketDir, String> {
+        use std::os::windows::fs::OpenOptionsExt as _;
+        let held = std::fs::File::options()
+            .write(true)
+            .create_new(true)
+            .share_mode(0)
+            .open(path.join(SOCKET_DIR_LOCK));
+        match held {
+            Ok(held) => Ok(SocketDir {
+                path,
+                held: Some(held),
+            }),
             Err(e) => {
                 let _ = std::fs::remove_dir_all(&path);
                 Err(format!("a directory for the builder: {e}"))
@@ -267,29 +222,25 @@ impl SocketDir {
     }
 }
 
-#[cfg(unix)]
 impl Drop for SocketDir {
     fn drop(&mut self) {
+        drop(self.held.take());
         let _ = std::fs::remove_dir_all(&self.path);
     }
 }
 
-/// The lock in a [`SocketDir`] its owner holds (flock(2)) while it lives.
-#[cfg(unix)]
+/// The lock in a [`SocketDir`] its owner holds while it lives (flock(2); on Windows, open
+/// and shared with no one).
 const SOCKET_DIR_LOCK: &str = ".shards-lock";
 
 /// Removes what builders and build proxies gone before left in `base`, even killed: each
-/// directory of theirs, `shards-` and mkdtemp's six characters, this user's, whose lock no
-/// process holds. Its owner renamed the lock into place only once it held it, so one free
-/// is one whose owner is gone.
-#[cfg(unix)]
+/// directory of theirs, `shards-` and six characters, this user's, whose lock no process
+/// holds. Its owner put the lock in place only once it held it, so one free is one whose
+/// owner is gone.
 fn sweep(base: &Path) {
-    use std::os::unix::fs::MetadataExt;
     let Ok(entries) = std::fs::read_dir(base) else {
         return;
     };
-    // SAFETY: getuid(2).
-    let me = unsafe { libc::getuid() };
     for entry in entries.flatten() {
         let name = entry.file_name();
         let Some(rest) = name.to_str().and_then(|n| n.strip_prefix("shards-")) else {
@@ -299,27 +250,67 @@ fn sweep(base: &Path) {
             continue;
         }
         let path = entry.path();
-        if !std::fs::symlink_metadata(&path).is_ok_and(|m| m.is_dir() && m.uid() == me) {
-            continue;
-        }
-        let Ok(lock) = std::fs::File::open(path.join(SOCKET_DIR_LOCK)) else {
-            continue;
-        };
-        // SAFETY: flock(2) of a descriptor this process owns.
-        if unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
+        if std::fs::symlink_metadata(&path).is_ok_and(|m| m.is_dir() && mine(&m))
+            && lock_free(&path.join(SOCKET_DIR_LOCK))
+        {
             let _ = std::fs::remove_dir_all(&path);
         }
     }
 }
 
-/// Where a builder's VM process finds its `--attach` socket (D134).
-#[cfg(unix)]
-const ATTACH_FD: i32 = 4;
+/// Whether this user owns what `m` describes. On Windows the temporary directory is the
+/// user's own (`%LOCALAPPDATA%\Temp`), and so is what is in it.
+fn mine(m: &std::fs::Metadata) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        // SAFETY: getuid(2).
+        m.uid() == unsafe { libc::getuid() }
+    }
+    #[cfg(windows)]
+    {
+        let _ = m;
+        true
+    }
+}
 
+/// Whether the lock at `lock` is in place and no process holds it.
+fn lock_free(lock: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        let Ok(lock) = std::fs::File::open(lock) else {
+            return false;
+        };
+        // SAFETY: flock(2) of a descriptor this process owns.
+        unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) == 0 }
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt as _;
+        // A held lock refuses another open (ERROR_SHARING_VIOLATION); a missing one is a
+        // directory whose owner has not yet taken it.
+        std::fs::File::options()
+            .read(true)
+            .share_mode(0)
+            .open(lock)
+            .is_ok()
+    }
+}
+
+/// Where a builder's VM process finds its `--attach` socket (D134): a descriptor on Unix,
+/// the name its spawner handed it by on Windows.
 #[cfg(unix)]
-/// The longest socket path both Linux (108 bytes of sun_path) and macOS (104) bind, less
-/// the `_<port>` the vsock muxer adds.
+const ATTACH: &str = "4";
+#[cfg(windows)]
+const ATTACH: &str = "attach";
+
+/// The longest socket path a host binds, less the `_<port>` the vsock muxer adds: what
+/// both Linux (108 bytes of sun_path) and macOS (104) take, and Windows' afunix (108, its
+/// NUL among them).
+#[cfg(unix)]
 const SOCKET_PATH: usize = 104 - 1 - 11;
+#[cfg(windows)]
+const SOCKET_PATH: usize = 108 - 1 - 11;
 
 /// A directory of this builder's own for its sockets: made by mkdtemp(3), mode 0700 and a
 /// name no other process chose, in the temporary directory, or in /tmp if that one's path
@@ -351,7 +342,213 @@ fn socket_dir() -> Result<SocketDir, String> {
     SocketDir::held(PathBuf::from(std::ffi::OsString::from_vec(template)))
 }
 
+/// A directory of this builder's own for its sockets (Windows): a name of six random
+/// characters no other directory has, made where none is (CreateDirectoryW), in the
+/// user's own temporary directory; what builders gone before left there removed first.
+#[cfg(windows)]
+fn socket_dir() -> Result<SocketDir, String> {
+    const NAMES: &[u8; 36] = b"abcdefghijklmnopqrstuvwxyz0123456789";
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the builder's sockets' directory, removed with the builder (SocketDir)"
+    )]
+    let base = std::env::temp_dir();
+    if base.as_os_str().len() + "\\shards-XXXXXX\\v".len() > SOCKET_PATH {
+        return Err(format!(
+            "a directory for the builder's sockets: the temporary directory's path ({}) is too long for a \
+             socket's ({SOCKET_PATH} bytes)",
+            base.display()
+        ));
+    }
+    sweep(&base);
+    for _ in 0..64 {
+        let mut random = [0u8; 6];
+        shards_vmm::platform::fill_random(&mut random)
+            .map_err(|e| format!("a directory for the builder: {e}"))?;
+        let name: String = random
+            .iter()
+            .map(|b| char::from(NAMES.get(usize::from(*b) % NAMES.len()).copied().unwrap_or(b'x')))
+            .collect();
+        let path = base.join(format!("shards-{name}"));
+        match std::fs::create_dir(&path) {
+            Ok(()) => return SocketDir::held(path),
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {}
+            Err(e) => return Err(format!("a directory for the builder: {e}")),
+        }
+    }
+    Err("a directory for the builder: every name tried was taken".into())
+}
+
+/// A builder's VM process and network process, started: and on Windows the AppContainer
+/// its VM runs in.
+struct Launched {
+    vm: shards_ipc::Child,
+    #[cfg(unix)]
+    net: shards_ipc::Child,
+    #[cfg(windows)]
+    net: crate::netproc::NetProcess,
+    #[cfg(windows)]
+    container: shards_ipc::AppContainer,
+}
+
+/// Starts a builder's network process and its VM process, the VM's command `args`, its
+/// `--attach` socket `attach`: the network process first, whose side of the ring the VM is
+/// given, as a VM's (D31); the VM in App Sandbox on macOS, asking this process for what it
+/// opens (D30).
 #[cfg(unix)]
+fn launch(
+    args: &[OsString],
+    policy: shards_net::Policy,
+    mac: &[u8; 6],
+    bridge: &shards_net::bridge::Bridge,
+    attach: UnixStream,
+) -> Result<Launched, String> {
+    let (net, side) = crate::netproc::start(policy, mac, bridge)?;
+    let grants = if cfg!(target_os = "macos") {
+        Some(UnixStream::pair().map_err(|e| format!("the builder's grants: {e}"))?)
+    } else {
+        None
+    };
+    let null = std::fs::File::open("/dev/null").map_err(|e| format!("/dev/null: {e}"))?;
+    let err = io::stderr();
+    let fds: Vec<_> = [
+        (null.as_fd(), 0),
+        (err.as_fd(), 1),
+        (err.as_fd(), 2),
+        (side.region.as_fd(), crate::netproc::VM_FDS[0]),
+        (side.sleeps.as_fd(), crate::netproc::VM_FDS[1]),
+        (side.rings.as_fd(), crate::netproc::VM_FDS[2]),
+        (attach.as_fd(), 4),
+    ]
+    .into_iter()
+    .chain(grants.as_ref().map(|(_, theirs)| (theirs.as_fd(), 3)))
+    .collect();
+    let given: &[OsString] = if grants.is_some() {
+        &["--grants".into(), "3".into()]
+    } else {
+        &[]
+    };
+    let argv: Vec<&std::ffi::OsStr> = args
+        .iter()
+        .take(1)
+        .chain(given)
+        .chain(args.iter().skip(1))
+        .map(OsString::as_os_str)
+        .collect();
+    let env = crate::netproc::child_env();
+    let vm_binary = crate::helpers::vm()?;
+    let vm = match shards_ipc::spawn_in(&vm_binary, &argv, &fds, false, &crate::netproc::env_pairs(&env)) {
+        Ok(vm) => vm,
+        Err(e) => {
+            let _ = net.kill(libc::SIGKILL);
+            let _ = net.wait();
+            return Err(format!("starting the builder: {e}"));
+        }
+    };
+    // The two processes hold the ring now: once the VM goes, its network process hears
+    // its doorbell hang up and goes too.
+    drop(fds);
+    drop(side);
+    drop(attach);
+    if let Some((ours, _)) = grants {
+        #[cfg(target_os = "macos")]
+        std::thread::Builder::new()
+            .name("builder grants".into())
+            .spawn(move || {
+                let _ = crate::grant_answer::serve(&ours, None);
+            })
+            .map_err(|e| format!("answering the builder: {e}"))?;
+        #[cfg(not(target_os = "macos"))]
+        drop(ours);
+    }
+    Ok(Launched { vm, net })
+}
+
+/// Starts a builder's VM process and network process (Windows, D141, D142): the VM
+/// confined in an AppContainer of its own, made suspended, so that its network process,
+/// started next in one holding the network's capabilities, is given the VM's process to
+/// watch for its end; then the VM runs, and this process answers what it asks for (its
+/// base images, its vsock socket, its dials to this process's ports) on a thread of its
+/// own, which ends as the VM does.
+#[cfg(windows)]
+fn launch(
+    args: &[OsString],
+    policy: shards_net::Policy,
+    mac: &[u8; 6],
+    bridge: &shards_net::bridge::Bridge,
+    attach: UnixStream,
+) -> Result<Launched, String> {
+    use std::os::windows::io::{AsHandle as _, OwnedHandle};
+    let (ready, side) = crate::netproc::prepare(policy, mac, bridge)?;
+    let vm_binary = crate::helpers::vm()?;
+    let container = crate::helpers::containers().and_then(|records| {
+        shards_ipc::AppContainer::new("vm", &records).map_err(|e| format!("the builder's AppContainer: {e}"))
+    })?;
+    // A pipe each way: the VM's requests, and the answers.
+    let pipes = std::io::pipe().and_then(|asks| Ok((asks, std::io::pipe()?)));
+    let ((asks_from, asks_to), (answers_from, answers_to)) =
+        pipes.map_err(|e| format!("the builder's grants: {e}"))?;
+    let (asks_to, answers_from) = (OwnedHandle::from(asks_to), OwnedHandle::from(answers_from));
+    let argv: Vec<&std::ffi::OsStr> = args.iter().map(OsString::as_os_str).collect();
+    let mut given = vec![
+        shards_ipc::Given {
+            name: "ask",
+            handle: asks_to.as_handle(),
+        },
+        shards_ipc::Given {
+            name: "answer",
+            handle: answers_from.as_handle(),
+        },
+    ];
+    given.extend(side.given());
+    let err = io::stderr();
+    let env = crate::netproc::child_env();
+    let vm = shards_ipc::spawn_suspended(&shards_ipc::Spawn {
+        program: &vm_binary,
+        args: &argv,
+        grants_at: 1,
+        given: &given,
+        stdin: None,
+        stdout: err.as_handle(),
+        stderr: err.as_handle(),
+        sockets: &[shards_ipc::Shared {
+            name: ATTACH,
+            socket: attach.raw_socket() as u64,
+        }],
+        env: &crate::netproc::env_pairs(&env),
+        container: Some(&container),
+        holds: shards_ipc::Holds::Hypervisor,
+    })
+    .map_err(|e| format!("starting the builder: {e}"))?;
+    // Ended with the suspended VM, a Job's, where its network process does not start.
+    let net = crate::netproc::start(ready, &vm)?;
+    let giver = vm.giver().map_err(|e| format!("answering the builder: {e}"))?;
+    let vm = vm.resume().map_err(|e| format!("starting the builder: {e}"))?;
+    // Its ends are the VM's now: its exit ends its requests, and its network process,
+    // which watches it, goes with it.
+    drop(given);
+    drop((asks_to, answers_from, side, attach));
+    let link = crate::grant::Link {
+        from: std::fs::File::from(OwnedHandle::from(asks_from)),
+        to: std::fs::File::from(OwnedHandle::from(answers_to)),
+    };
+    std::thread::Builder::new()
+        .name("builder grants".into())
+        .spawn(move || {
+            let _ = crate::grant_answer::serve(&link, &giver);
+        })
+        .map_err(|e| format!("answering the builder: {e}"))?;
+    Ok(Launched { vm, net, container })
+}
+
+/// Ends a builder's VM process that does not start.
+fn kill(vm: &shards_ipc::Child) {
+    #[cfg(unix)]
+    let _ = vm.kill(libc::SIGKILL);
+    #[cfg(windows)]
+    let _ = vm.kill();
+}
+
 impl Builder {
     pub fn start(boot: &Boot<'_>) -> Result<Builder, String> {
         // Removed if the builder does not start; the builder removes it once it does.
@@ -385,7 +582,6 @@ impl Builder {
         let proxy_url = boot
             .proxy
             .map(|_| format!("http://{}:{}", bridge.gateway(), super::proxy::PORT));
-        let (net, side) = crate::netproc::start(policy, &mac, &bridge)?;
         let mut args: Vec<OsString> = vec![
             "run".into(),
             "--kernel".into(),
@@ -421,66 +617,9 @@ impl Builder {
         // The files this process attaches to its join disk for its steps' caches (D134).
         let (attach, attach_theirs) =
             UnixStream::pair().map_err(|e| format!("the builder's join disk: {e}"))?;
-        args.extend(["--attach".into(), ATTACH_FD.to_string().into()]);
-        // On macOS the VM is in App Sandbox and asks this process for what it opens.
-        let grants = if cfg!(target_os = "macos") {
-            Some(UnixStream::pair().map_err(|e| format!("the builder's grants: {e}"))?)
-        } else {
-            None
-        };
-        let null = std::fs::File::open("/dev/null").map_err(|e| format!("/dev/null: {e}"))?;
-        let err = io::stderr();
-        let fds: Vec<_> = [
-            (null.as_fd(), 0),
-            (err.as_fd(), 1),
-            (err.as_fd(), 2),
-            (side.region.as_fd(), crate::netproc::VM_FDS[0]),
-            (side.sleeps.as_fd(), crate::netproc::VM_FDS[1]),
-            (side.rings.as_fd(), crate::netproc::VM_FDS[2]),
-            (attach_theirs.as_fd(), ATTACH_FD),
-        ]
-        .into_iter()
-        .chain(grants.as_ref().map(|(_, theirs)| (theirs.as_fd(), 3)))
-        .collect();
-        let given: &[OsString] = if grants.is_some() {
-            &["--grants".into(), "3".into()]
-        } else {
-            &[]
-        };
-        let argv: Vec<&std::ffi::OsStr> = args
-            .iter()
-            .take(1)
-            .chain(given)
-            .chain(args.iter().skip(1))
-            .map(OsString::as_os_str)
-            .collect();
-        let env = crate::netproc::child_env();
-        let vm_binary = crate::helpers::vm()?;
-        let vm = match shards_ipc::spawn_in(&vm_binary, &argv, &fds, false, &crate::netproc::env_pairs(&env))
-        {
-            Ok(vm) => vm,
-            Err(e) => {
-                let _ = net.kill(libc::SIGKILL);
-                let _ = net.wait();
-                return Err(format!("starting the builder: {e}"));
-            }
-        };
-        // The two processes hold the ring now: once the VM goes, its network process
-        // hears its doorbell hang up and goes too.
-        drop(fds);
-        drop(side);
-        drop(attach_theirs);
-        if let Some((ours, _)) = grants {
-            #[cfg(target_os = "macos")]
-            std::thread::Builder::new()
-                .name("builder grants".into())
-                .spawn(move || {
-                    let _ = crate::grant_answer::serve(&ours, None);
-                })
-                .map_err(|e| format!("answering the builder: {e}"))?;
-            #[cfg(not(target_os = "macos"))]
-            drop(ours);
-        }
+        args.extend(["--attach".into(), ATTACH.into()]);
+        let launched = launch(&args, policy, &mac, &bridge, attach_theirs)?;
+        let vm = launched.vm;
         let began = Instant::now();
         let conn = loop {
             match listener.accept() {
@@ -489,8 +628,11 @@ impl Builder {
                     if began.elapsed() > BOOT_PATIENCE {
                         // One the host has not let run yet is not the builder's failure
                         // to boot, and says so (PM M166).
+                        #[cfg(unix)]
                         let unstarted = shards_vmm::platform::launched(vm.id()) == Some(false);
-                        let _ = vm.kill(libc::SIGKILL);
+                        #[cfg(windows)]
+                        let unstarted = false;
+                        kill(&vm);
                         if unstarted {
                             return Err(format!(
                                 "the builder was not started by the host in {BOOT_PATIENCE:?}: its \
@@ -512,7 +654,9 @@ impl Builder {
             .map_err(|e| format!("the builder's connection: {e}"))?;
         Ok(Builder {
             vm,
-            net,
+            net: launched.net,
+            #[cfg(windows)]
+            _container: launched.container,
             conn,
             ssh,
             _dir: dir,
@@ -528,6 +672,7 @@ impl Builder {
     /// the range it was given, where it starts and its length.
     fn attach(&mut self, file: &std::fs::File, writable: bool) -> Result<(u64, u64), String> {
         use shards_ipc::kind;
+        #[cfg(unix)]
         shards_ipc::send(
             &self.attach,
             kind::DISK_ATTACH,
@@ -535,6 +680,20 @@ impl Builder {
             &[file.as_fd()],
         )
         .map_err(|e| format!("attaching a cache to the builder: {e}"))?;
+        // The file's handle given the VM process, its value there after the mode: a
+        // message on Windows carries no handle (shards_ipc).
+        #[cfg(windows)]
+        {
+            use std::os::windows::io::AsHandle as _;
+            let theirs = self
+                .vm
+                .give(file.as_handle())
+                .map_err(|e| format!("attaching a cache to the builder: {e}"))?;
+            let mut payload = vec![u8::from(writable)];
+            payload.extend((theirs as u64).to_le_bytes());
+            shards_ipc::send(&self.attach, kind::DISK_ATTACH, &payload)
+                .map_err(|e| format!("attaching a cache to the builder: {e}"))?;
+        }
         let m = shards_ipc::recv(&self.attach)
             .map_err(|e| format!("attaching a cache to the builder: {e}"))?
             .ok_or("the builder's VM went as a cache was attached")?;
@@ -573,8 +732,11 @@ impl Builder {
     /// Lets go of the range that starts at `start`: the VM process closes its file.
     pub fn detach(&mut self, start: u64) -> Result<(), String> {
         use shards_ipc::kind;
-        shards_ipc::send(&self.attach, kind::DISK_DETACH, &start.to_be_bytes(), &[])
-            .map_err(|e| format!("detaching a cache from the builder: {e}"))?;
+        #[cfg(unix)]
+        let sent = shards_ipc::send(&self.attach, kind::DISK_DETACH, &start.to_be_bytes(), &[]);
+        #[cfg(windows)]
+        let sent = shards_ipc::send(&self.attach, kind::DISK_DETACH, &start.to_be_bytes());
+        sent.map_err(|e| format!("detaching a cache from the builder: {e}"))?;
         let m = shards_ipc::recv(&self.attach)
             .map_err(|e| format!("detaching a cache from the builder: {e}"))?
             .ok_or("the builder's VM went as a cache was detached")?;
@@ -793,23 +955,14 @@ impl Builder {
         questions: &super::proxy::Questions,
         check: &mut dyn FnMut(&str, &str) -> bool,
     ) -> Result<(), String> {
-        use std::os::fd::AsRawFd as _;
         loop {
             questions.answer(check);
-            let mut polled = [self.conn.as_raw_fd(), questions.woken.as_raw_fd()].map(|fd| libc::pollfd {
-                fd,
-                events: libc::POLLIN,
-                revents: 0,
-            });
-            // SAFETY: poll(2) on two descriptors of ours, until either has something.
-            if unsafe { libc::poll(polled.as_mut_ptr(), 2, -1) } < 0 {
-                let e = io::Error::last_os_error();
-                if e.kind() == io::ErrorKind::Interrupted {
-                    continue;
-                }
-                return Err(format!("hearing the builder: {e}"));
-            }
-            if polled[0].revents != 0 {
+            let ready = shards_vmm::platform::wait_readable(
+                &[self.conn.raw_socket(), questions.woken.raw_socket()],
+                None,
+            )
+            .map_err(|e| format!("hearing the builder: {e}"))?;
+            if ready.first() == Some(&true) {
                 return Ok(());
             }
         }
@@ -897,18 +1050,15 @@ impl Builder {
 }
 
 /// The longest message an SSH agent takes or sends (OpenSSH's AGENT_MAX_MSGLEN).
-#[cfg(unix)]
 const AGENT_MAX: usize = 256 * 1024;
 
 /// What a step may ask of an agent, as BuildKit's read-only agent lets it
 /// (sshprovider readOnlyAgent): its keys, signatures, and unlocking; adding, removing or
 /// locking keys and extensions are refused.
-#[cfg(unix)]
 const AGENT_ALLOWED: [u8; 3] = [11, 13, 23];
 
 /// Takes a step's relayed agent connections until `woken` says the step has ended (its
 /// other end closed), each on a thread of `scope`.
-#[cfg(unix)]
 fn accept_agents<'s, 'e>(
     scope: &'s std::thread::Scope<'s, 'e>,
     ssh: &'e UnixListener,
@@ -916,21 +1066,12 @@ fn accept_agents<'s, 'e>(
     agents: &'e super::Agents,
     woken: &'e UnixStream,
 ) {
-    use std::os::fd::AsRawFd as _;
     loop {
-        let mut polled = [ssh.as_raw_fd(), woken.as_raw_fd()].map(|fd| libc::pollfd {
-            fd,
-            events: libc::POLLIN,
-            revents: 0,
-        });
-        // SAFETY: poll(2) on two descriptors of ours, until either has something.
-        if unsafe { libc::poll(polled.as_mut_ptr(), 2, -1) } < 0 {
-            if std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted {
-                continue;
-            }
+        let Ok(ready) = shards_vmm::platform::wait_readable(&[ssh.raw_socket(), woken.raw_socket()], None)
+        else {
             return;
-        }
-        if polled[1].revents != 0 {
+        };
+        if ready.get(1) != Some(&false) {
             return;
         }
         let Ok((conn, _)) = ssh.accept() else { continue };
@@ -945,7 +1086,6 @@ fn accept_agents<'s, 'e>(
 /// One relayed connection: opened with a grant's token and its agent's id, or closed; then
 /// each request the step makes, passed to the agent if a read-only agent takes it,
 /// refused (SSH_AGENT_FAILURE) if not.
-#[cfg(unix)]
 fn serve_agent(
     mut conn: UnixStream,
     grants: &[([u8; 16], Vec<u8>)],
@@ -1011,7 +1151,6 @@ fn serve_agent(
 }
 
 /// Whether `origin` stands on a base image.
-#[cfg(unix)]
 fn has_base(origin: &Origin) -> bool {
     match origin {
         Origin::Image(_) => true,
@@ -1021,7 +1160,6 @@ fn has_base(origin: &Origin) -> bool {
     }
 }
 
-#[cfg(unix)]
 /// The snapshot an origin ends in, where it holds one, and the id to send it whole by:
 /// another than its own part's, which is its changes alone.
 fn whole_of(origin: &Origin) -> Option<(u64, Rc<Fs>)> {
@@ -1031,7 +1169,6 @@ fn whole_of(origin: &Origin) -> Option<(u64, Rc<Fs>)> {
     }
 }
 
-#[cfg(unix)]
 impl Drop for Builder {
     fn drop(&mut self) {
         // The guest powers off as its connection closes.
@@ -1039,17 +1176,18 @@ impl Drop for Builder {
         let deadline = Instant::now() + Duration::from_secs(5);
         while self.vm.try_wait().is_none() {
             if Instant::now() > deadline {
-                let _ = self.vm.kill(libc::SIGKILL);
+                kill(&self.vm);
                 break;
             }
             std::thread::sleep(Duration::from_millis(1));
         }
-        // The network process goes with its VM; its directory, a field, after this.
+        // The network process goes with its VM; its directory and AppContainer, fields,
+        // after this.
         crate::netproc::reap(&self.net);
     }
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -1068,7 +1206,10 @@ mod tests {
         // A build gone, even killed: its lock in place, and no one holding it.
         let gone = made("shards-gone01");
         std::fs::write(gone.join(SOCKET_DIR_LOCK), b"").unwrap();
+        // One whose owner is putting its lock in place: on Unix, held and not yet renamed
+        // into place; on Windows, not yet made.
         let starting = made("shards-start1");
+        #[cfg(unix)]
         std::fs::write(starting.join(".shards-lock-new"), b"").unwrap();
         let other = made("shards-other-thing");
         std::fs::write(other.join(SOCKET_DIR_LOCK), b"").unwrap();

@@ -24,6 +24,36 @@ pub fn disk_space(path: &std::path::Path) -> io::Result<(u64, u64)> {
     Ok((avail.saturating_mul(frsize), blocks.saturating_mul(frsize)))
 }
 
+/// Waits until any of `sockets` has something to read, its end, or an error (poll(2)), or
+/// `timeout` passes: which did. For the few sockets one thread waits on at a time.
+pub fn wait_readable(
+    sockets: &[super::RawSocket],
+    timeout: Option<std::time::Duration>,
+) -> io::Result<Vec<bool>> {
+    let mut polled: Vec<libc::pollfd> = sockets
+        .iter()
+        .map(|&fd| libc::pollfd {
+            fd,
+            events: libc::POLLIN,
+            revents: 0,
+        })
+        .collect();
+    // Rounded up, so that a wait never ends early.
+    let ms = timeout.map_or(-1, |t| {
+        libc::c_int::try_from(t.as_micros().div_ceil(1000)).unwrap_or(libc::c_int::MAX)
+    });
+    loop {
+        // SAFETY: poll(2) on `polled.len()` entries of descriptors the caller holds.
+        if unsafe { libc::poll(polled.as_mut_ptr(), polled.len() as libc::nfds_t, ms) } >= 0 {
+            return Ok(polled.iter().map(|p| p.revents != 0).collect());
+        }
+        let e = io::Error::last_os_error();
+        if e.kind() != io::ErrorKind::Interrupted {
+            return Err(e);
+        }
+    }
+}
+
 /// Makes `dir`, and its missing parents, readable by this user alone (0700). An existing
 /// `dir` is made 0700 too, as containerd makes its root.
 pub fn create_private_dir(dir: &std::path::Path) -> io::Result<()> {

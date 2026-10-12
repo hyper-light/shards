@@ -197,8 +197,9 @@ struct Run {
     cfg: Config,
     mode: Mode,
     workload: Options,
-    /// `--attach FD`: the socket a builder attaches files to the VM's join disk on (D134).
-    attach: Option<i32>,
+    /// `--attach FD` (Windows: `--attach NAME`, the name its spawner handed it by): the
+    /// socket a builder attaches files to the VM's join disk on (D134).
+    attach: Option<String>,
 }
 
 fn parse_run(args: impl Iterator<Item = OsString>) -> Result<Run, String> {
@@ -252,11 +253,7 @@ fn parse_run(args: impl Iterator<Item = OsString>) -> Result<Run, String> {
             // and the files its steps write theirs to (D134); the VM ends as the socket
             // closes, its builder gone (D137).
             "--attach" => {
-                let fd = text(value("--attach")?)?;
-                attach = Some(
-                    fd.parse::<i32>()
-                        .map_err(|_| format!("--attach: {fd:?} is not a descriptor"))?,
-                );
+                attach = Some(text(value("--attach")?)?);
                 JOIN.take_writes();
                 cfg.join = Some(give_join_disk());
             }
@@ -445,8 +442,11 @@ fn give_join_disk() -> &'static shards_vmm::devices::virtio::block::Join {
 /// of its own, until it hangs up: each a file attached to the VM's join disk, read-only
 /// or writable as it asks, answered with its range, or a range let go.
 #[cfg(unix)]
-fn serve_attach(fd: i32) -> Result<(), String> {
+fn serve_attach(fd: &str) -> Result<(), String> {
     use shards_ipc::kind;
+    let fd = fd
+        .parse::<i32>()
+        .map_err(|_| format!("--attach: {fd:?} is not a descriptor"))?;
     let socket = crate::warm::inherited_socket("--attach", fd)?;
     let answer = |m: shards_ipc::Message| -> Result<(u8, Vec<u8>), String> {
         match m.kind {
@@ -498,9 +498,76 @@ fn serve_attach(fd: i32) -> Result<(), String> {
         .map_err(|e| format!("serving its builder: {e}"))
 }
 
-#[cfg(not(unix))]
-fn serve_attach(_: i32) -> Result<(), String> {
-    Err("--attach: a builder's join disk needs Unix sockets".into())
+/// [`serve_attach`] on Windows: the socket its spawner handed it as `name`, and each
+/// attached file a handle the builder duplicated into this process, its value after the
+/// mode, as a message on Windows carries no handle (shards_ipc).
+#[cfg(windows)]
+fn serve_attach(name: &str) -> Result<(), String> {
+    use shards_ipc::kind;
+    use std::os::windows::io::{FromRawHandle as _, OwnedHandle, RawHandle};
+    let socket = {
+        let mut given = GIVEN.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let at = given
+            .iter()
+            .position(|(n, h)| n == name && matches!(h, shards_ipc::Handed::Socket(_)))
+            .ok_or_else(|| format!("--attach: no socket {name} was given"))?;
+        let shards_ipc::Handed::Socket(info) = given.swap_remove(at).1 else {
+            return Err(format!("--attach: {name} is no socket"));
+        };
+        shards_vmm::platform::UnixStream::from_shared(&info).map_err(|e| format!("--attach: {e}"))?
+    };
+    let answer = |m: shards_ipc::Message| -> Result<(u8, Vec<u8>), String> {
+        match m.kind {
+            kind::DISK_ATTACH => {
+                let (mode, value) = m
+                    .payload
+                    .split_first()
+                    .and_then(|(mode, rest)| Some((*mode, u64::from_le_bytes(*rest.first_chunk::<8>()?))))
+                    .ok_or("an attach without its one file")?;
+                let value = usize::try_from(value)
+                    .ok()
+                    .filter(|v| *v != 0)
+                    .ok_or("an attach without its one file")?;
+                // SAFETY: a handle the builder duplicated into this process for this attach
+                // alone, owned from here on.
+                let file = std::fs::File::from(unsafe { OwnedHandle::from_raw_handle(value as RawHandle) });
+                let (start, len) = match mode {
+                    0 => JOIN.attach(file),
+                    1 => JOIN.attach_writable(file),
+                    _ => Err("an attach neither read-only nor writable".into()),
+                }?;
+                Ok((
+                    kind::DISK_ATTACH,
+                    [start.to_be_bytes(), len.to_be_bytes()].concat(),
+                ))
+            }
+            kind::DISK_DETACH => {
+                let start = m
+                    .payload
+                    .first_chunk::<8>()
+                    .map(|b| u64::from_be_bytes(*b))
+                    .ok_or("a detach without its range")?;
+                JOIN.detach(start)?;
+                Ok((kind::DISK_DETACH, Vec::new()))
+            }
+            other => Err(format!("message kind {other}")),
+        }
+    };
+    std::thread::Builder::new()
+        .name("attach".into())
+        .spawn(move || {
+            while let Ok(Some(m)) = shards_ipc::recv(&socket) {
+                let (kind, payload) = answer(m).unwrap_or_else(|e| (kind::DISK_REFUSED, e.into_bytes()));
+                if shards_ipc::send(&socket, kind, &payload).is_err() {
+                    break;
+                }
+            }
+            // Its builder is gone, even killed: so is the builder's VM, as on Unix.
+            report("its builder is gone, and so this builder ends");
+            std::process::exit(1);
+        })
+        .map(drop)
+        .map_err(|e| format!("serving its builder: {e}"))
 }
 
 /// This VM's join disk, where it has one (D119).
@@ -621,8 +688,8 @@ pub fn run(args: impl Iterator<Item = OsString>) -> ExitCode {
         Ok(run) => run,
         Err(code) => return code,
     };
-    if let Some(fd) = attach
-        && let Err(e) = serve_attach(fd)
+    if let Some(at) = attach
+        && let Err(e) = serve_attach(&at)
     {
         report(e);
         return ExitCode::FAILURE;

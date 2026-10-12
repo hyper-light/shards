@@ -61,12 +61,13 @@ use windows_sys::Win32::System::JobObjects::{
 use windows_sys::Win32::System::Pipes::CreatePipe;
 use windows_sys::Win32::System::SystemServices::SE_GROUP_ENABLED;
 use windows_sys::Win32::System::Threading::{
-    CREATE_SUSPENDED, CreateProcessW, DeleteProcThreadAttributeList, EXTENDED_STARTUPINFO_PRESENT,
-    GetCurrentProcess, GetExitCodeProcess, INFINITE, InitializeProcThreadAttributeList,
-    LPPROC_THREAD_ATTRIBUTE_LIST, OpenProcessToken, PROC_THREAD_ATTRIBUTE_CHILD_PROCESS_POLICY,
-    PROC_THREAD_ATTRIBUTE_HANDLE_LIST, PROC_THREAD_ATTRIBUTE_JOB_LIST,
-    PROC_THREAD_ATTRIBUTE_MITIGATION_POLICY, PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES,
-    PROCESS_INFORMATION, ResumeThread, STARTF_USESTDHANDLES, STARTUPINFOEXW, TerminateProcess,
+    CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT, CreateProcessW, DeleteProcThreadAttributeList,
+    EXTENDED_STARTUPINFO_PRESENT, GetCurrentProcess, GetExitCodeProcess, INFINITE,
+    InitializeProcThreadAttributeList, LPPROC_THREAD_ATTRIBUTE_LIST, OpenProcessToken,
+    PROC_THREAD_ATTRIBUTE_CHILD_PROCESS_POLICY, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
+    PROC_THREAD_ATTRIBUTE_JOB_LIST, PROC_THREAD_ATTRIBUTE_MITIGATION_POLICY,
+    PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES, PROCESS_DUP_HANDLE, PROCESS_INFORMATION,
+    PROCESS_SYNCHRONIZE, ResumeThread, STARTF_USESTDHANDLES, STARTUPINFOEXW, TerminateProcess,
     UpdateProcThreadAttribute, WaitForSingleObject,
 };
 
@@ -235,6 +236,61 @@ impl Child {
     /// the child may use.
     pub fn give(&self, handle: BorrowedHandle<'_>) -> io::Result<usize> {
         give(&self.process, handle)
+    }
+
+    /// A handle to the child that may only wait for its end (PROCESS_SYNCHRONIZE): for
+    /// another child to watch it by, as a VM's network process watches its VM (D142).
+    pub fn waitable(&self) -> io::Result<OwnedHandle> {
+        self.with_access(PROCESS_SYNCHRONIZE)
+    }
+
+    /// What may give the child handles, as [`Child::give`] does, and no more: for a thread
+    /// that answers it while this value is held elsewhere (a builder's grants, D143).
+    pub fn giver(&self) -> io::Result<Process> {
+        Ok(Process {
+            handle: self.with_access(PROCESS_DUP_HANDLE)?,
+            pid: self.pid,
+        })
+    }
+
+    /// Another handle to the child, of `access` alone.
+    fn with_access(&self, access: u32) -> io::Result<OwnedHandle> {
+        let mut h: HANDLE = std::ptr::null_mut();
+        // SAFETY: our own process handle, duplicated within this process, of less access.
+        if unsafe {
+            DuplicateHandle(
+                GetCurrentProcess(),
+                self.process.as_raw_handle(),
+                GetCurrentProcess(),
+                &raw mut h,
+                access,
+                0,
+                0,
+            )
+        } == 0
+        {
+            return Err(last());
+        }
+        // SAFETY: the handle just made, owned from here on.
+        Ok(unsafe { OwnedHandle::from_raw_handle(h) })
+    }
+}
+
+/// A child's process, to give handles to and nothing more ([`Child::giver`]).
+#[derive(Debug)]
+pub struct Process {
+    handle: OwnedHandle,
+    pid: u32,
+}
+
+impl Process {
+    pub fn id(&self) -> u32 {
+        self.pid
+    }
+
+    /// As [`Child::give`].
+    pub fn give(&self, handle: BorrowedHandle<'_>) -> io::Result<usize> {
+        give(&self.handle, handle)
     }
 }
 
@@ -741,9 +797,11 @@ pub enum Handed {
 #[derive(Debug)]
 pub struct Spawn<'a> {
     pub program: &'a Path,
-    /// Its arguments: `--grants HANDLE`, the pipe its handles are told on, goes after the
-    /// first, its command, so that it comes before any `--` and what follows that.
     pub args: &'a [&'a OsStr],
+    /// Where `--grants HANDLE`, the pipe its handles are told on, goes among `args`: before
+    /// the one of this index, after a command (a VM process's `run`) and before any `--`
+    /// and what follows that.
+    pub grants_at: usize,
     pub given: &'a [Given<'a>],
     /// Its standard input, if any, output and error: each inherited, where this process has
     /// one.
@@ -752,6 +810,9 @@ pub struct Spawn<'a> {
     pub stderr: BorrowedHandle<'a>,
     /// Sockets shared with it.
     pub sockets: &'a [Shared<'a>],
+    /// The variables it is given ([`environment`]): of this process's environment, it has
+    /// these and no more, as the processes a guest could take over are given on Unix.
+    pub env: &'a [(&'a str, &'a OsStr)],
     /// Its container, which holds what `holds` says.
     pub container: Option<&'a AppContainer>,
     pub holds: Holds,
@@ -772,6 +833,16 @@ impl Suspended {
     /// `handle` duplicated into it, as [`Child::give`].
     pub fn give(&self, handle: BorrowedHandle<'_>) -> io::Result<usize> {
         self.child.give(handle)
+    }
+
+    /// As [`Child::waitable`].
+    pub fn waitable(&self) -> io::Result<OwnedHandle> {
+        self.child.waitable()
+    }
+
+    /// As [`Child::giver`].
+    pub fn giver(&self) -> io::Result<Process> {
+        self.child.giver()
     }
 
     /// Lets it run.
@@ -800,10 +871,11 @@ pub fn spawn_suspended(s: &Spawn<'_>) -> io::Result<Suspended> {
     let pipe_value = pipe_read.as_raw_handle() as usize;
     let pipe_arg = pipe_value.to_string();
     let mut args: Vec<&OsStr> = Vec::with_capacity(s.args.len() + 2);
-    args.extend(s.args.first());
+    let at = s.grants_at.min(s.args.len());
+    args.extend(s.args.iter().take(at));
     args.push(OsStr::new("--grants"));
     args.push(OsStr::new(&pipe_arg));
-    args.extend(s.args.iter().skip(1));
+    args.extend(s.args.iter().skip(at));
     let mut line = command_line(s.program, &args);
     let job = Job::new()?;
     let caps: &[Vec<u8>] = match s.holds {
@@ -1032,8 +1104,9 @@ fn create(
         si.StartupInfo.hStdError = stderr.unwrap_or(std::ptr::null_mut());
         si.lpAttributeList = attrs;
         let mut pi = PROCESS_INFORMATION::default();
+        let env = environment(s.env);
         // SAFETY: a command line we own and may be written; startup info and its
-        // attributes alive through the call.
+        // attributes, and the environment block, alive through the call.
         if unsafe {
             CreateProcessW(
                 std::ptr::null(),
@@ -1041,8 +1114,8 @@ fn create(
                 std::ptr::null(),
                 std::ptr::null(),
                 1,
-                EXTENDED_STARTUPINFO_PRESENT | CREATE_SUSPENDED,
-                std::ptr::null(),
+                EXTENDED_STARTUPINFO_PRESENT | CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT,
+                env.as_ptr().cast(),
                 std::ptr::null(),
                 (&raw const si).cast(),
                 &raw mut pi,
@@ -1056,6 +1129,34 @@ fn create(
     // SAFETY: the list initialized above, its values alive still.
     unsafe { DeleteProcThreadAttributeList(attrs) };
     made
+}
+
+/// A child's environment block (CreateProcessW's, Unicode): `given`, and this process's
+/// `SystemRoot`, without which Winsock loads no provider in the child (WSAStartup fails,
+/// WSAEPROVIDERFAILEDINIT); each `NAME=VALUE` and its NUL, sorted by name as Windows keeps
+/// a block (case folded), and a NUL to end it.
+fn environment(given: &[(&str, &OsStr)]) -> Vec<u16> {
+    let system_root = std::env::var_os("SystemRoot");
+    let mut vars: Vec<(&str, &OsStr)> = given.to_vec();
+    if let Some(root) = &system_root
+        && !vars.iter().any(|(n, _)| n.eq_ignore_ascii_case("SystemRoot"))
+    {
+        vars.push(("SystemRoot", root.as_os_str()));
+    }
+    vars.sort_by_key(|(n, _)| n.to_ascii_uppercase());
+    let mut block = Vec::new();
+    for (name, value) in vars {
+        block.extend(name.encode_utf16());
+        block.push(u16::from(b'='));
+        block.extend(value.encode_wide());
+        block.push(0);
+    }
+    // An empty block is two NULs.
+    if block.is_empty() {
+        block.push(0);
+    }
+    block.push(0);
+    block
 }
 
 /// What a child's spawner gave it (`--grants HANDLE`): each line of the pipe, read to its
@@ -1197,5 +1298,24 @@ mod tests {
             r#"C:\bin\shards-vm.exe "dir with space\\""#
         );
         assert_eq!(line(&[""]), r#"C:\bin\shards-vm.exe """#);
+    }
+
+    /// A child's environment is what it is given and SystemRoot, sorted by name with case
+    /// folded, each variable and the block ended by a NUL.
+    #[test]
+    fn a_child_is_given_its_variables_and_systemroot_alone() {
+        let text = |block: &[u16]| String::from_utf16(block).unwrap();
+        let root = std::env::var_os("SystemRoot").unwrap();
+        let block = environment(&[("SHARDS_LOG", OsStr::new("debug")), ("a_first", OsStr::new("1"))]);
+        assert_eq!(
+            text(&block),
+            format!(
+                "a_first=1\0SHARDS_LOG=debug\0SystemRoot={}\0\0",
+                root.to_string_lossy()
+            )
+        );
+        // One given is kept, not doubled.
+        let block = environment(&[("SYSTEMROOT", OsStr::new(r"D:\w"))]);
+        assert_eq!(text(&block), "SYSTEMROOT=D:\\w\0\0");
     }
 }

@@ -3566,6 +3566,48 @@ No run-time labels, relays or declassifiers (§12 answer 14, decided by the user
 an internal-only domain to the world (D58), so there is no data to label. Code mode is
 D136.
 
+### D143. `RUN` on Windows hosts: the builder
+
+AGENTFILE_ARCH.md §11 row 975: a Windows host runs a build's `RUN` steps in a builder
+microVM as Linux and macOS hosts do (D34), its VM process confined as D141 confines one,
+its network the network process's (D142).
+
+- **One builder, every host.** Its code is the Unix builder's: the same frames over the
+  same build port, layers sent once, caches attached to its join disk (D134), SSH agents
+  relayed, the build's proxy (D110). Its sockets are AF_UNIX on Windows too
+  (`shards-afunix`: M199, made overlapped, M207), and a wait on two of them is WSAPoll's
+  where Unix polls (`platform::wait_readable`).
+- **Started in order.** Its VM process is made suspended in its AppContainer; its network
+  process starts next in one of its own, given a handle to the VM's process that may only
+  wait for its end (PROCESS_SYNCHRONIZE); then the VM runs. A thread answers what the VM
+  asks for (its base images, its vsock socket, its dials to the build port) with a handle
+  to it that may only give it handles (PROCESS_DUP_HANDLE), and ends with it.
+- **Its caches' files** go to the VM by handle: duplicated into it, each one's value in its
+  attach message, as a message on Windows carries no handle (shards_ipc).
+- **Its sockets' directory** is in the user's own temporary directory, its lock a file
+  shared with no one, which no other process opens while its owner holds it; a later
+  build's sweep removes one whose lock opens (D137).
+- **A child's environment** is `SHARDS_LOG` and `SHARDS_TIMING`, as on Unix, and
+  `SystemRoot`, without which Winsock loads no provider in the child; a Windows child had
+  its spawner's whole environment until now (D141).
+
+### D142. The network process on Windows
+
+AGENTFILE_ARCH.md §11 row 975: a VM's flows go through a network process of its own (D31)
+on Windows as on Linux and macOS.
+
+- **Its ring** is a pagefile-backed section, and its doorbells auto-reset events, 23-35 µs
+  a round trip (PM M204); an AF_UNIX socket pair takes 0.6 ms to make (M199).
+- **Confined** in an AppContainer that holds `internetClient`, `internetClientServer` and
+  `privateNetworkClientServer` (M204): it reaches the networks and never this host's
+  loopback, nor a file or socket by its path. A build's proxy is dialled for it by its
+  spawner, as on macOS (D31), the connection shared with it (WSADuplicateSocketW, M203).
+- **Its VM's end** it learns from the VM's process, a handle it may only wait on: a
+  doorbell does not hang up there as a pipe does. Its spawner gives it that handle before
+  the VM runs (D143).
+- **No published ports yet**: those are the daemon's, which Windows has none of; a
+  builder publishes none.
+
 ### D141. The Windows VM process confined
 
 AGENTFILE_ARCH.md §11 row 975, after D140: a VM process on Windows reaches no more of its

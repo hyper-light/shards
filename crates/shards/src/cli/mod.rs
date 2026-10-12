@@ -975,9 +975,11 @@ fn vm(args: &[OsString]) -> ExitCode {
     with.push(cwd.as_os_str());
     with.extend(args.iter().skip(1).map(OsString::as_os_str));
     let (asks_to, answers_from) = (OwnedHandle::from(asks_to), OwnedHandle::from(answers_from));
+    let env = crate::netproc::child_env();
     let spawned = shards_ipc::spawn(&shards_ipc::Spawn {
         program: &bin,
         args: &with,
+        grants_at: 1,
         given: &[
             shards_ipc::Given {
                 name: "ask",
@@ -992,6 +994,7 @@ fn vm(args: &[OsString]) -> ExitCode {
         stdout: std::io::stdout().as_handle(),
         stderr: std::io::stderr().as_handle(),
         sockets: &[],
+        env: &crate::netproc::env_pairs(&env),
         container: Some(&container),
         holds: shards_ipc::Holds::Hypervisor,
     });

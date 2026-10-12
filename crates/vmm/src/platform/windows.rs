@@ -19,6 +19,33 @@ use windows_sys::Win32::System::Memory::{
 use windows_sys::Win32::System::SystemInformation::{GetSystemInfo, SYSTEM_INFO};
 use windows_sys::Win32::System::Threading::GetCurrentProcess;
 
+/// Waits until any of `sockets` has something to read, its end, or an error (WSAPoll,
+/// which reports a peer's half-close as a hangup, PM M199), or `timeout` passes: which
+/// did. For the few sockets one thread waits on at a time.
+pub fn wait_readable(
+    sockets: &[super::RawSocket],
+    timeout: Option<std::time::Duration>,
+) -> io::Result<Vec<bool>> {
+    use windows_sys::Win32::Networking::WinSock::{POLLRDNORM, WSAPOLLFD, WSAPoll};
+    let mut polled: Vec<WSAPOLLFD> = sockets
+        .iter()
+        .map(|&fd| WSAPOLLFD {
+            fd,
+            events: POLLRDNORM,
+            revents: 0,
+        })
+        .collect();
+    // Rounded up, so that a wait never ends early.
+    let ms = timeout.map_or(-1, |t| {
+        i32::try_from(t.as_micros().div_ceil(1000)).unwrap_or(i32::MAX)
+    });
+    // SAFETY: `polled.len()` entries of sockets the caller holds.
+    if unsafe { WSAPoll(polled.as_mut_ptr(), polled.len() as u32, ms) } < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(polled.iter().map(|p| p.revents != 0).collect())
+}
+
 /// Makes `dir` and its missing parents. Under `%LOCALAPPDATA%`, they inherit ACLs that
 /// admit this user alone.
 pub fn create_private_dir(dir: &std::path::Path) -> io::Result<()> {

@@ -362,6 +362,17 @@ impl Recipient for shards_ipc::Child {
     }
 }
 
+#[cfg(windows)]
+impl Recipient for shards_ipc::Process {
+    fn give(&self, handle: std::os::windows::io::BorrowedHandle<'_>) -> std::io::Result<usize> {
+        shards_ipc::Process::give(self, handle)
+    }
+
+    fn id(&self) -> u32 {
+        shards_ipc::Process::id(self)
+    }
+}
+
 /// What is granted for a path on Windows: a file opened for it, nothing where a file to
 /// read if it is there is not, or a socket bound there.
 #[cfg(windows)]

@@ -780,14 +780,10 @@ fn requests_no_one_answers_are_refused() {
             let dropper = std::thread::Builder::new()
                 .spawn_scoped(scope, move || {
                     if let Some(q) = questions {
-                        use std::os::fd::AsRawFd as _;
-                        let mut p = libc::pollfd {
-                            fd: q.woken.as_raw_fd(),
-                            events: libc::POLLIN,
-                            revents: 0,
-                        };
-                        // SAFETY: poll(2) on one descriptor of ours.
-                        unsafe { libc::poll(&mut p, 1, 10_000) };
+                        let _ = shards_vmm::platform::wait_readable(
+                            &[q.woken.raw_socket()],
+                            Some(Duration::from_secs(10)),
+                        );
                         drop(q);
                     }
                 })
@@ -1393,7 +1389,6 @@ type Measured<'a> = Box<dyn Fn() + 'a>;
 
 fn answering_as_a_build(q: Questions, done: &AtomicBool, policy: bool) {
     use super::super::super::policy;
-    use std::os::fd::AsRawFd as _;
     struct Quiet;
     impl policy::Log for Quiet {
         fn line(&self, _: &str) {}
@@ -1432,13 +1427,8 @@ fn answering_as_a_build(q: Questions, done: &AtomicBool, policy: bool) {
     .unwrap()
     .unwrap();
     while !done.load(Ordering::SeqCst) {
-        let mut p = libc::pollfd {
-            fd: q.woken.as_raw_fd(),
-            events: libc::POLLIN,
-            revents: 0,
-        };
-        // SAFETY: poll(2) on one descriptor of ours, 10 ms at most, to see `done`.
-        unsafe { libc::poll(&mut p, 1, 10) };
+        // 10 ms at most, to see `done`.
+        let _ = shards_vmm::platform::wait_readable(&[q.woken.raw_socket()], Some(Duration::from_millis(10)));
         q.answer(&mut |_, url| {
             !policy
                 || matches!(
