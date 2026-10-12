@@ -6876,3 +6876,43 @@ revision before comparing a changed API/implementation.
   the vsock device's Windows poller sleeps on them, and reads each socket's state with a
   WSAPoll that does not wait, end-of-stream (HUP) a read's and never a write's.
 
+### M200. A WHP partition from a confined process, and from a standard user
+
+- **Questions.** shards confines its VM process (D30: Landlock and seccomp on Linux, App
+  Sandbox on macOS); on Windows the like is an AppContainer, which reaches no file but by a
+  handle given it. Can a process in one run a WHP partition? Can a standard user, not an
+  administrator as GitHub's runner account is? And who may open what WHP opens?
+- **Method.** `docs/research/measurements/whp-run/src/bin/m200.rs`, by `whp-run.yml`, on
+  a windows-2022 and a windows-2025 runner, 2026-10-12 (runs 38214206152, 38214574386,
+  38214718457, 38215445267): the probe launches itself as a child with exactly the handles named
+  for it (PROC_THREAD_ATTRIBUTE_HANDLE_LIST: a file of its own, opened, and its stdout
+  and stderr); the child reads the file through the handle, opens it by its path, and
+  runs a partition of one vCPU to a port write. Three ways: as the runner's user; in an
+  AppContainer of no capabilities (CreateAppContainerProfile,
+  PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES); in that AppContainer holding one
+  capability SID, the one the device's DACL names (below). Then as a standard user the
+  workflow makes (New-LocalUser), through CreateProcessWithLogonW. The device: found
+  among vid.dll's own strings, opened for READ_CONTROL alone, its descriptor read
+  (GetSecurityInfo) as SDDL; the capability's name looked for by deriving each name the
+  system knows (DeriveCapabilitySidsFromName: the registry's AllCachedCapabilities, and
+  every Capability Name of the app manifests under SystemApps and WindowsApps).
+- **Found** (both runners alike):
+  - As the runner's user, the child reads the file both ways and runs the partition.
+  - In an AppContainer of no capabilities: the handle reads, the path is refused
+    (ERROR_ACCESS_DENIED), and **WHvCreatePartition is refused (E_ACCESSDENIED)**.
+  - WinHvPlatform's functions reach the hypervisor through vid.dll, which opens
+    `\\?\VidExo`, whose descriptor is
+    `O:BAD:P(A;;FA;;;SY)(A;;FA;;;BA)(A;;0x1201bf;;;AU)(A;;0x1201bf;;;S-1-15-3-1024-1350733694-1533467442-3402045280-1710179238-1008639688-2282869650-3611451526-669908847)S:AI(ML;;NW;;;LW)`:
+    full access for SYSTEM and Administrators; read, write and execute (0x1201bf) for
+    Authenticated Users and for one capability SID; a low integrity label.
+  - **In the AppContainer holding that capability SID, the partition runs**, and the path is
+    still refused, the handle still read.
+  - As a standard user, the partition runs.
+  - The capability's name is none of the 413 / 446 names the system knows (339 / 357
+    cached in the registry, the rest from manifests).
+- **Consequence (D140).** shards runs on Windows as a standard user, as it runs rootless
+  elsewhere. Its Windows VM process runs in an AppContainer of its own, which reaches no
+  file but the handles its spawner gives it, holding the capability VidExo's DACL grants,
+  and that alone: read from the device's own descriptor as the VM process is spawned, not
+  written into shards, so a Windows that grants another reaches no stale SID.
+
