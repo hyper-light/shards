@@ -352,8 +352,12 @@ impl Builder {
             data.push_str(&format!(",upperdir={},workdir={}", u.display(), work.display()));
         }
         // What a layer holds as it was written: no index, no redirects, no metacopy, as
-        // BuildKit's differ needs of an upper directory (docs/research/buildkit-run.md §6).
-        data.push_str(",index=off,redirect_dir=off,metacopy=off");
+        // BuildKit's differ needs of an upper directory (docs/research/buildkit-run.md §6);
+        // one space of inode numbers for its layers (run::XINO).
+        data.push_str(&format!(
+            ",index=off,redirect_dir=off,metacopy=off,{}",
+            crate::run::XINO
+        ));
         if upper.is_some() {
             // A builder's upper directory is never needed after a crash.
             data.push_str(",volatile");

@@ -9919,3 +9919,53 @@ fn configs_are_read_as_docker_reads_them() {
         "{ports}"
     );
 }
+
+/// A file's device and inode numbers, and a directory's, as `testguest fs ino:` printed
+/// them: each path's `DEV:INO`, in order.
+fn numbers(out: &str) -> Vec<(String, String)> {
+    out.lines()
+        .filter_map(|l| {
+            let (path, n) = l.split_once(' ')?;
+            Some((path.to_string(), n.to_string()))
+        })
+        .collect()
+}
+
+/// A run's directories keep their numbers for as long as they live, and its files and
+/// directories share one device, as on Docker's one filesystem: its root's overlay maps
+/// its layers' inode numbers into one space (init's run::XINO). Without it, the kernel
+/// numbered a directory anew each time it dropped it from its caches, as it does here, and
+/// GNU tar failed extracting a tree large enough for that to happen as it extracted it.
+#[test]
+fn a_runs_directories_keep_their_numbers() {
+    let Some((home, image)) = home("containers-numbers") else {
+        return;
+    };
+    let ops = [
+        "fs",
+        "mkdir:/d",
+        "mkdir:/d/e",
+        "write:/d/f=x",
+        "ino:/d",
+        "ino:/d/e",
+        "ino:/d/f",
+        "write:/proc/sys/vm/drop_caches=2",
+        "ino:/d",
+        "ino:/d/e",
+        "ino:/d/f",
+    ];
+    let r = run_in(&home, &image, &["--rm", "--privileged", "-u", "0"], &ops);
+    assert_eq!(r.status, Some(0), "{r}");
+    let n = numbers(&r.stdout);
+    assert_eq!(n.len(), 6, "{r}");
+    assert_eq!(
+        n[..3],
+        n[3..],
+        "numbers changed as the kernel dropped its caches: {r}"
+    );
+    let device = |(_, n): &(String, String)| n.split(':').next().map(str::to_string);
+    assert!(
+        n.iter().all(|e| device(e) == device(&n[0])),
+        "more than one device: {r}"
+    );
+}

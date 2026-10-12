@@ -301,6 +301,15 @@ fn chdir_chroot(path: &str, root: bool) -> Result<(), Failure> {
     Ok(())
 }
 
+/// Every overlay's option: one space of inode numbers for its layers. They are on more than
+/// one filesystem (EROFS, tmpfs), where overlayfs numbers a directory anew each time it
+/// takes it back into its caches (fs/overlayfs/inode.c, ovl_map_dev_ino), and gives a file
+/// its layer's device, not the directory's; xino maps its layers' own numbers into one
+/// space, persistent, under one device, as Docker's one filesystem gives them. Without it,
+/// GNU tar, which checks a directory's numbers as it ends it, failed extracting Linux's
+/// sources in a build step ("Directory renamed before its status could be extracted").
+pub const XINO: &str = "xino=on";
+
 fn mount_root(device: &str) -> Result<(), Failure> {
     for dir in ["/lower", "/rw", "/newroot"] {
         mkdir(dir)?;
@@ -315,7 +324,7 @@ fn mount_root(device: &str) -> Result<(), Failure> {
         "/newroot",
         "overlay",
         0,
-        "lowerdir=/lower,upperdir=/rw/upper,workdir=/rw/work,volatile",
+        &format!("lowerdir=/lower,upperdir=/rw/upper,workdir=/rw/work,volatile,{XINO}"),
     )?;
     // Kept for `diff` (changes.rs), which compares the layers the root hides.
     if let Err(e) = crate::changes::keep("/lower", "/rw/upper") {

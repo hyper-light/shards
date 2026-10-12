@@ -153,10 +153,11 @@ impl Caches {
         // redirects, no metacopy, as a layer holds what was written; its upper directory is
         // never needed after a crash.
         let data = format!(
-            "lowerdir={},upperdir={},workdir={},index=on,redirect_dir=off,metacopy=off,volatile",
+            "lowerdir={},upperdir={},workdir={},index=on,redirect_dir=off,metacopy=off,volatile,{}",
             lower.join(":"),
             upper.display(),
-            work.display()
+            work.display(),
+            crate::run::XINO
         );
         if data.len() >= 4096 {
             return Err(err("too many layers for one mount"));
@@ -304,7 +305,11 @@ impl View {
                     at,
                     "overlay",
                     libc::MS_RDONLY,
-                    &format!("lowerdir={},redirect_dir=off,metacopy=off", lower.join(":")),
+                    &format!(
+                        "lowerdir={},redirect_dir=off,metacopy=off,{}",
+                        lower.join(":"),
+                        crate::run::XINO
+                    ),
                 );
                 std::env::set_current_dir("/")?;
                 mounted?;
