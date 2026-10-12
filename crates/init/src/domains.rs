@@ -630,6 +630,8 @@ struct Prepared {
     /// Its volumes (D109), each a mount not yet attached, its mount point, and whether it
     /// is read-only.
     volumes: Vec<(RawFd, CString, bool)>,
+    /// Its scratch, `/tmp`, a mount not yet attached, where the image has a `/tmp` (D139).
+    scratch: Option<RawFd>,
 }
 
 /// `open_tree`'s and `mount_setattr`'s (include/uapi/linux/mount.h).
@@ -686,6 +688,12 @@ mod mount_api {
 
 /// A new mount of `fstype` with `options`, attached nowhere.
 fn detached(fstype: &CStr, options: &[(&CStr, &CStr)]) -> io::Result<OwnedFd> {
+    detached_with(fstype, options, 0)
+}
+
+/// A new mount of `fstype` with `options` and mount attributes `attrs`
+/// (`MOUNT_ATTR_*`), attached nowhere.
+fn detached_with(fstype: &CStr, options: &[(&CStr, &CStr)], attrs: u64) -> io::Result<OwnedFd> {
     use mount_api::*;
     // SAFETY: fsopen(2) of a NUL-terminated name.
     let fs = unsafe { libc::syscall(libc::SYS_fsopen, fstype.as_ptr(), FSOPEN_CLOEXEC) };
@@ -724,13 +732,36 @@ fn detached(fstype: &CStr, options: &[(&CStr, &CStr)]) -> io::Result<OwnedFd> {
         {
             return Err(io::Error::last_os_error());
         }
-        libc::syscall(libc::SYS_fsmount, fs.as_raw_fd(), FSMOUNT_CLOEXEC, 0)
+        libc::syscall(libc::SYS_fsmount, fs.as_raw_fd(), FSMOUNT_CLOEXEC, attrs)
     };
     if mounted < 0 {
         return Err(io::Error::last_os_error());
     }
     // SAFETY: the descriptor fsmount just made, owned here alone.
     Ok(unsafe { OwnedFd::from_raw_fd(mounted as RawFd) })
+}
+
+/// A domain's scratch, `/tmp` as it sees it, where the image has a `/tmp` (D139): a tmpfs of
+/// its own, attached nowhere, `nosuid` and `nodev`, its root the domain's (uid and gid
+/// `id`) and its group's to read (0750), its server instance being of that group. The
+/// domain attaches it; its instance holds it, beneath which it reads the files the domain
+/// hands across (AGENTFILE_ARCH §9.4).
+fn scratch(lower: std::os::fd::BorrowedFd<'_>, id: u32) -> io::Result<Option<OwnedFd>> {
+    // SAFETY: an all-zero stat is a valid out-parameter, which fstatat(2) fills.
+    let mut st: libc::stat = unsafe { std::mem::zeroed() };
+    // SAFETY: fstatat(2) of a NUL-terminated name beneath a descriptor of init's.
+    let has = unsafe { libc::fstatat(lower.as_raw_fd(), c"tmp".as_ptr(), &raw mut st, 0) } == 0
+        && st.st_mode & libc::S_IFMT == libc::S_IFDIR;
+    if !has {
+        return Ok(None);
+    }
+    let id = CString::new(id.to_string()).map_err(io::Error::other)?;
+    detached_with(
+        c"tmpfs",
+        &[(c"mode", c"0750"), (c"uid", &id), (c"gid", &id)],
+        libc::MOUNT_ATTR_NOSUID | libc::MOUNT_ATTR_NODEV,
+    )
+    .map(Some)
 }
 
 /// What a domain mounts over and the image may lack, made where it does: the run makes
@@ -1428,7 +1459,17 @@ pub fn start(
                 })
             })
             .collect();
-        let dir = server.start(i, d, no_processes, last_cap, &group, &peers)?;
+        // Its scratch, which its instance holds too, to read the files it hands across.
+        let scratch = scratch(lower, d.id).map_err(|e| format!("{}: its /tmp: {e}", d.label))?;
+        let dir = server.start(
+            i,
+            d,
+            no_processes,
+            last_cap,
+            &group,
+            &peers,
+            scratch.as_ref().map(AsRawFd::as_raw_fd),
+        )?;
         let quiet = libc::MOUNT_ATTR_NOSUID | libc::MOUNT_ATTR_NODEV | libc::MOUNT_ATTR_NOEXEC;
         let copy = copy_of(&dir, quiet | libc::MOUNT_ATTR_RDONLY)
             .map_err(|e| format!("{}: the in-VM server: {e}", d.label))?;
@@ -1458,6 +1499,7 @@ pub fn start(
             root: root.as_raw_fd(),
             sockets,
             volumes,
+            scratch: scratch.as_ref().map(AsRawFd::as_raw_fd),
             receives,
             hide: all
                 .iter()
@@ -1659,6 +1701,10 @@ impl Server {
         })
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "an instance's whole start: its domain, its filter, its channels and its domain's scratch"
+    )]
     /// Starts the `n`-th domain's instance, least-privileged (its own uid and gid, the
     /// domain's group to give its files to, no capability, `no_new_privs`, its own
     /// network, IPC and UTS namespaces), confined by `filter` once it listens; returns
@@ -1671,6 +1717,7 @@ impl Server {
         last_cap: u32,
         group: &str,
         peers: &[Peer<'_>],
+        scratch: Option<RawFd>,
     ) -> Result<String, String> {
         let fail = |e: String| format!("{}: its server: {e}", d.label);
         let id = u32::try_from(n)
@@ -1715,6 +1762,8 @@ impl Server {
             )?,
             // The MCP servers offered its domain.
             cstr_of(&d.mcp)?,
+            // Its domain's scratch, past its channels, where the image has one (D139).
+            cstr_of(&scratch.map_or(String::new(), |_| (7 + peers.len()).to_string()))?,
         ];
         let argv: Vec<*const libc::c_char> = argv_owned
             .iter()
@@ -1740,7 +1789,8 @@ impl Server {
         // the agent's own memory, and ends with it.
         let procs = cstr_of(&format!("{group}/cgroup.procs"))?;
         let ends: Vec<RawFd> = peers.iter().map(|p| p.fd).collect();
-        let first_free = u32::try_from(7 + ends.len()).map_err(|_| fail("too many channels".into()))?;
+        let first_free = u32::try_from(7 + ends.len() + usize::from(scratch.is_some()))
+            .map_err(|_| fail("too many channels".into()))?;
         // SAFETY: fork(2) from init with no other thread running; the child calls only the
         // kernel, on what was made above, and execs or exits.
         let pid = unsafe { libc::fork() };
@@ -1760,6 +1810,17 @@ impl Server {
                     }
                     high.push(h);
                 }
+                // Its domain's scratch, likewise above where it goes (D139).
+                let scratch_high = match scratch {
+                    Some(at) => {
+                        let h = libc::fcntl(at, libc::F_DUPFD_CLOEXEC, first_free as libc::c_int);
+                        if h < 0 {
+                            libc::_exit(126);
+                        }
+                        Some(h)
+                    }
+                    None => None,
+                };
                 let up = |fd: RawFd| libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, 10);
                 let (r, f, b, e, w) = (
                     up(ready_w.as_raw_fd()),
@@ -1790,6 +1851,11 @@ impl Server {
                     if libc::dup2(h, 7 + k as libc::c_int) < 0 {
                         libc::_exit(126);
                     }
+                }
+                if let Some(h) = scratch_high
+                    && libc::dup2(h, 7 + high.len() as libc::c_int) < 0
+                {
+                    libc::_exit(126);
                 }
                 let join = libc::open(procs.as_ptr(), libc::O_WRONLY | libc::O_CLOEXEC);
                 if join < 0
@@ -1981,11 +2047,21 @@ fn child(d: &Domain, p: &Prepared, out: RawFd, flags: u32, program: &libc::sock_
         if libc::mount(null, c"/dev".as_ptr(), null, ro_dev, nil) != 0 {
             fail(out, c"making its /dev read-only");
         }
-        // Its own scratch: /tmp and /dev/shm.
-        for (path, data) in [
-            (c"/tmp", c"mode=700".as_ptr()),
-            (c"/dev/shm", c"mode=700,size=65536k".as_ptr()),
-        ] {
+        // Its own scratch: /tmp, init's mount of it, which its server instance holds too
+        // (D139); and /dev/shm.
+        if let Some(fd) = p.scratch
+            && libc::syscall(
+                libc::SYS_move_mount,
+                fd,
+                c"".as_ptr(),
+                libc::AT_FDCWD,
+                c"/tmp".as_ptr(),
+                mount_api::MOVE_MOUNT_F_EMPTY_PATH,
+            ) != 0
+        {
+            fail(out, c"making its scratch");
+        }
+        for (path, data) in [(c"/dev/shm", c"mode=700,size=65536k".as_ptr())] {
             let mut st: libc::stat = std::mem::zeroed();
             if libc::stat(path.as_ptr(), &raw mut st) != 0 {
                 continue;

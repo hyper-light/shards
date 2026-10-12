@@ -69,6 +69,9 @@ pub struct Prepared {
     config: Arc<rustls::ServerConfig>,
     /// The MCP servers offered its caller (§12 answer 5): a JSON array.
     offered: String,
+    /// Its caller's scratch, `/tmp` as the caller sees it, where the files it hands across
+    /// lie (D139); none where its image has no `/tmp`.
+    scratch: Option<OwnedFd>,
 }
 
 pub fn main() -> ExitCode {
@@ -108,6 +111,11 @@ fn run(args: &[OsString]) -> Result<(), String> {
         .filter(|a| json::parse(a.as_bytes()).is_ok())
         .unwrap_or("[]")
         .to_string();
+    // Its caller's scratch, as init gave it (D139).
+    p.scratch = match arg(7, "SCRATCH").ok().filter(|a| !a.is_empty()) {
+        Some(_) => Some(fd(7, "SCRATCH")?),
+        None => None,
+    };
     let program = read_filter(filter)?;
     // Code mode's helper, while this process may still make one (D136): without it, code
     // mode says why, and the rest is served.
@@ -296,11 +304,21 @@ pub struct Peer {
 struct Message {
     request: bool,
     id: u64,
-    text: String,
+    body: Body,
+}
+
+/// What a message carries: a text, or a file handed across, its name and its bytes.
+enum Body {
+    Text(String),
+    File(String, Vec<u8>),
 }
 
 const REQUEST: u8 = 1;
 const ANSWER: u8 = 2;
+/// A request, and an answer, that carry a file: its name's length (2 bytes, big-endian),
+/// its name, and its bytes.
+const REQUEST_FILE: u8 = 3;
+const ANSWER_FILE: u8 = 4;
 
 /// The channels init gave it: one a line, `FD\tLABEL\tSEND\tANSWER`.
 fn channels(spec: &str) -> Result<Vec<Peer>, String> {
@@ -361,24 +379,50 @@ fn take(peer: &mut Peer) {
         return;
     };
     let id = u64::from_be_bytes(*id);
-    let request = match kind {
-        REQUEST if peer.answer => true,
-        ANSWER if peer.sent.contains(&id) => {
-            peer.sent.retain(|s| *s != id);
-            false
-        }
+    let (request, file) = match kind {
+        REQUEST | REQUEST_FILE if peer.answer => (true, kind == REQUEST_FILE),
+        ANSWER | ANSWER_FILE if peer.sent.contains(&id) => (false, kind == ANSWER_FILE),
         _ => return,
     };
-    peer.held = Some(Message {
-        request,
-        id,
-        text: String::from_utf8_lossy(text).into_owned(),
-    });
+    let body = if file {
+        let Some((len, rest)) = text.split_first_chunk::<2>() else {
+            return;
+        };
+        let len = usize::from(u16::from_be_bytes(*len));
+        let (Some(name), Some(bytes)) = (rest.get(..len), rest.get(len..)) else {
+            return;
+        };
+        Body::File(String::from_utf8_lossy(name).into_owned(), bytes.to_vec())
+    } else {
+        Body::Text(String::from_utf8_lossy(text).into_owned())
+    };
+    if !request {
+        peer.sent.retain(|s| *s != id);
+    }
+    peer.held = Some(Message { request, id, body });
 }
 
 /// Sends `peer` a message of `kind`; false where its buffer is full.
 fn put(peer: &Peer, kind: u8, id: u64, text: &str) -> bool {
-    let frame = [&[kind][..], &id.to_be_bytes(), text.as_bytes()].concat();
+    put_bytes(peer, kind, id, text.as_bytes())
+}
+
+/// Sends `peer` a file handed across, named `name`, as `kind`; false where its buffer is
+/// full.
+fn put_file(peer: &Peer, kind: u8, id: u64, name: &str, bytes: &[u8]) -> bool {
+    let Ok(len) = u16::try_from(name.len()) else {
+        return false;
+    };
+    put_bytes(
+        peer,
+        kind,
+        id,
+        &[&len.to_be_bytes()[..], name.as_bytes(), bytes].concat(),
+    )
+}
+
+fn put_bytes(peer: &Peer, kind: u8, id: u64, payload: &[u8]) -> bool {
+    let frame = [&[kind][..], &id.to_be_bytes(), payload].concat();
     // SAFETY: send(2) of a buffer it owns, on a socket of its own.
     let n = unsafe {
         libc::send(
@@ -513,6 +557,7 @@ pub fn prepare(dir: &str, label: &str, gid: u32) -> Result<Prepared, String> {
         listener,
         cert: cert.der().clone(),
         config: Arc::new(config),
+        scratch: None,
         offered: "[]".into(),
     })
 }
@@ -1027,9 +1072,10 @@ const TOOLS: &str = r#"{"tools":[
 {"name":"mcp","description":"The MCP servers offered the caller: a remote one by its URL, one spoken to over stdio by its directory and the command that runs it, which the caller runs itself, in its own confinement.","inputSchema":{"type":"object","properties":{}}},
 {"name":"peers","description":"The agents and harnesses the caller may message, as its Agentfile grants: whether it may send each requests (send), and whether it answers theirs (answer).","inputSchema":{"type":"object","properties":{}}},
 {"name":"send","description":"Sends a peer the caller may send requests a request; its ID, which the peer's answer carries.","inputSchema":{"type":"object","properties":{"to":{"type":"string"},"text":{"type":"string"}},"required":["to","text"]}},
-{"name":"receive","description":"What peers have sent the caller and it has not taken: their requests, and their answers to its own.","inputSchema":{"type":"object","properties":{}}},
+{"name":"receive","description":"What peers have sent the caller and it has not taken: their requests, and their answers to its own, each a text or a file (its name, its size, and its bytes in Base64).","inputSchema":{"type":"object","properties":{}}},
 {"name":"answer","description":"Answers a request a peer sent the caller, by its ID.","inputSchema":{"type":"object","properties":{"to":{"type":"string"},"id":{"type":"integer"},"text":{"type":"string"}},"required":["to","id","text"]}},
-{"name":"run","description":"Runs a JavaScript program (ECMAScript, QuickJS-NG) that calls the tools above, many in one round trip, in a sandbox with the caller's grants and no more: no files, no network, no processes. The program is the body of an async function, in strict mode: await the tools, and return a value, which comes back as JSON; a tool's refusal is thrown as an Error, and an error the program does not catch comes back with its stack, at the program's own lines and columns. timeout_ms, if given, ends it past that many milliseconds.\n\ndeclare const shards: {\n  whoami(): Promise<string>;\n  mcp(): Promise<Array<{ name: string; remote: true; url: string } | { name: string; remote: false; dir: string; command: string[] }>>;\n  peers(): Promise<Array<{ name: string; send: boolean; answer: boolean }>>;\n  send(to: string, text: string): Promise<{ id: number }>;\n  receive(): Promise<Array<{ from: string; kind: \"request\" | \"answer\"; id: number; text: string }>>;\n  answer(to: string, id: number, text: string): Promise<{}>;\n};","inputSchema":{"type":"object","properties":{"code":{"type":"string"},"timeout_ms":{"type":"integer","minimum":1}},"required":["code"]}}
+{"name":"hand","description":"Hands a peer a file of the caller's scratch, /tmp: a request where the caller may send the peer requests, or, with id, the answer to its request of that ID. The file is a regular one, which the caller's group may read, of at most 1 MiB less its name; its server opens it beneath /tmp, through no link, and reads it whole.","inputSchema":{"type":"object","properties":{"to":{"type":"string"},"path":{"type":"string"},"id":{"type":"integer"}},"required":["to","path"]}},
+{"name":"run","description":"Runs a JavaScript program (ECMAScript, QuickJS-NG) that calls the tools above, many in one round trip, in a sandbox with the caller's grants and no more: no files, no network, no processes. The program is the body of an async function, in strict mode: await the tools, and return a value, which comes back as JSON; a tool's refusal is thrown as an Error, and an error the program does not catch comes back with its stack, at the program's own lines and columns. timeout_ms, if given, ends it past that many milliseconds.\n\ndeclare const shards: {\n  whoami(): Promise<string>;\n  mcp(): Promise<Array<{ name: string; remote: true; url: string } | { name: string; remote: false; dir: string; command: string[] }>>;\n  peers(): Promise<Array<{ name: string; send: boolean; answer: boolean }>>;\n  send(to: string, text: string): Promise<{ id: number }>;\n  receive(): Promise<Array<{ from: string; kind: \"request\" | \"answer\"; id: number; text?: string; file?: { name: string; size: number; data: string } }>>;\n  answer(to: string, id: number, text: string): Promise<{}>;\n  hand(to: string, path: string, id?: number): Promise<{ id: number } | {}>;\n};","inputSchema":{"type":"object","properties":{"code":{"type":"string"},"timeout_ms":{"type":"integer","minimum":1}},"required":["code"]}}
 ]}"#;
 
 /// What a JSON-RPC message came to: an answer now, an answer that begins a session and that
@@ -1091,12 +1137,20 @@ fn call(
                     if m.request {
                         q.asked.push(m.id);
                     }
+                    let body = match &m.body {
+                        Body::Text(text) => format!(r#""text":{}"#, quote(text)),
+                        Body::File(name, bytes) => format!(
+                            r#""file":{{"name":{},"size":{},"data":"{}"}}"#,
+                            quote(name),
+                            bytes.len(),
+                            base64(bytes)
+                        ),
+                    };
                     got.push(format!(
-                        r#"{{"from":{},"kind":"{}","id":{},"text":{}}}"#,
+                        r#"{{"from":{},"kind":"{}","id":{},{body}}}"#,
                         quote(&q.label),
                         if m.request { "request" } else { "answer" },
                         m.id,
-                        quote(&m.text)
                     ));
                 }
             }
@@ -1121,8 +1175,156 @@ fn call(
                 )),
             }
         }
+        "hand" => {
+            let to = arg("to").and_then(Value::str).unwrap_or_default();
+            let path = arg("path").and_then(Value::str).unwrap_or_default();
+            let to_id = arg("id").and_then(Value::u64);
+            // The grant first, as for a text: nothing is read where nothing may go.
+            match (peers.iter_mut().find(|q| q.label == to), to_id) {
+                (Some(q), None) if q.send => handed(p, path).and_then(|(name, bytes)| {
+                    let next = q.last.wrapping_add(1);
+                    if put_file(q, REQUEST_FILE, next, &name, &bytes) {
+                        q.last = next;
+                        q.sent.push(next);
+                        Ok(format!(r#"{{"id":{next}}}"#))
+                    } else {
+                        Err(format!("{to} has not taken what was sent it; send again later"))
+                    }
+                }),
+                (Some(q), Some(n)) if q.asked.contains(&n) => handed(p, path).and_then(|(name, bytes)| {
+                    if put_file(q, ANSWER_FILE, n, &name, &bytes) {
+                        q.asked.retain(|a| *a != n);
+                        Ok("{}".to_string())
+                    } else {
+                        Err(format!("{to} has not taken what was sent it; answer again later"))
+                    }
+                }),
+                (_, None) => Err(format!("{} may not send {to} requests", p.label)),
+                (_, Some(_)) => Err(format!(
+                    "{} has no request of {to}'s to answer by that ID",
+                    p.label
+                )),
+            }
+        }
         _ => return None,
     })
+}
+
+/// The file its caller hands across (AGENTFILE_ARCH §9.4): `path`, in the caller's scratch
+/// as it sees it (`/tmp/...`), opened beneath that scratch as the kernel resolves it
+/// (openat2(2): through no symbolic or magic link, onto no other mount, never above it)
+/// without waiting, so that a FIFO cannot stall it, and a regular file and no other kind,
+/// read whole within what a message to a peer holds: its name and its bytes. A link, a
+/// FIFO or a giant file the caller planted redirects, stalls and exhausts nothing.
+fn handed(p: &Prepared, path: &str) -> Result<(String, Vec<u8>), String> {
+    use std::os::unix::fs::FileTypeExt as _;
+    let scratch = p
+        .scratch
+        .as_ref()
+        .ok_or("its caller has no scratch, /tmp, to hand files from")?;
+    let rel = path
+        .strip_prefix("/tmp/")
+        .filter(|r| !r.is_empty())
+        .ok_or_else(|| format!("{path} is not in /tmp, the scratch files are handed from"))?;
+    let name = rel.rsplit('/').next().unwrap_or(rel).to_string();
+    let most = BODY_MAX.saturating_sub(2 + name.len());
+    let at = std::ffi::CString::new(rel).map_err(|_| format!("{path} holds a NUL"))?;
+    // struct open_how (include/uapi/linux/openat2.h): flags, mode, resolve.
+    let how: [u64; 3] = [
+        (libc::O_RDONLY | libc::O_NONBLOCK | libc::O_NOCTTY | libc::O_CLOEXEC) as u64,
+        0,
+        RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS | RESOLVE_NO_MAGICLINKS | RESOLVE_NO_XDEV,
+    ];
+    // SAFETY: openat2(2) beneath a descriptor of its own, with a NUL-terminated path and an
+    // open_how of the size given.
+    let fd = unsafe {
+        libc::syscall(
+            libc::SYS_openat2,
+            scratch.as_raw_fd(),
+            at.as_ptr(),
+            how.as_ptr(),
+            std::mem::size_of_val(&how),
+        )
+    };
+    if fd < 0 {
+        let e = io::Error::last_os_error();
+        return Err(match e.raw_os_error() {
+            Some(libc::ELOOP) => format!(
+                "{path} is a symbolic link, or lies past one: a file handed across is a regular file of the caller's scratch"
+            ),
+            Some(libc::EXDEV) => format!("{path} lies past the caller's scratch"),
+            Some(libc::ENXIO) => format!("{path} is a socket, not a regular file"),
+            Some(libc::EACCES) => format!(
+                "{path}: its server may not read it; a file handed across is one the caller's group may read"
+            ),
+            _ => format!("{path}: {e}"),
+        });
+    }
+    let fd = RawFd::try_from(fd).map_err(|_| format!("{path}: no descriptor"))?;
+    // SAFETY: the descriptor openat2 just made, owned here alone.
+    let file = std::fs::File::from(unsafe { OwnedFd::from_raw_fd(fd) });
+    let meta = file.metadata().map_err(|e| format!("{path}: {e}"))?;
+    let kind = meta.file_type();
+    if !kind.is_file() {
+        let what = if kind.is_dir() {
+            "a directory"
+        } else if kind.is_fifo() {
+            "a FIFO"
+        } else if kind.is_socket() {
+            "a socket"
+        } else if kind.is_block_device() || kind.is_char_device() {
+            "a device"
+        } else {
+            "no regular file"
+        };
+        return Err(format!("{path} is {what}, not a regular file"));
+    }
+    if meta.len() > most as u64 {
+        return Err(format!(
+            "{path} is {} bytes, more than the {most} a file handed across holds",
+            meta.len()
+        ));
+    }
+    let mut bytes = Vec::new();
+    (&file)
+        .take(most as u64 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|e| format!("{path}: {e}"))?;
+    if bytes.len() > most {
+        return Err(format!(
+            "{path} grew past the {most} bytes a file handed across holds"
+        ));
+    }
+    Ok((name, bytes))
+}
+
+/// openat2(2)'s `resolve` flags (include/uapi/linux/openat2.h).
+const RESOLVE_NO_XDEV: u64 = 0x01;
+const RESOLVE_NO_MAGICLINKS: u64 = 0x02;
+const RESOLVE_NO_SYMLINKS: u64 = 0x04;
+const RESOLVE_BENEATH: u64 = 0x08;
+
+/// `bytes` in Base64, the standard alphabet with padding (RFC 4648 §4).
+fn base64(bytes: &[u8]) -> String {
+    const DIGITS: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let b = [
+            chunk.first().copied().unwrap_or(0),
+            chunk.get(1).copied().unwrap_or(0),
+            chunk.get(2).copied().unwrap_or(0),
+        ];
+        let n = (u32::from(b[0]) << 16) | (u32::from(b[1]) << 8) | u32::from(b[2]);
+        for (i, shift) in [18u32, 12, 6, 0].into_iter().enumerate() {
+            if i <= chunk.len() {
+                let digit = DIGITS.get(((n >> shift) & 63) as usize).copied().unwrap_or(b'A');
+                out.push(char::from(digit));
+            } else {
+                out.push('=');
+            }
+        }
+    }
+    out
 }
 
 /// What a request's head says beside its length: the MCP headers, and the page it came
@@ -1642,8 +1844,115 @@ mod tests {
         p.sent.push(7);
         assert!(put(&other(&theirs), ANSWER, 7, "asked"));
         take(&mut p);
-        assert!(p.held.as_ref().is_some_and(|m| !m.request && m.text == "asked"));
+        assert!(
+            p.held
+                .as_ref()
+                .is_some_and(|m| !m.request && matches!(&m.body, Body::Text(t) if t == "asked"))
+        );
         assert!(p.sent.is_empty());
+    }
+
+    /// A file a peer hands is held as one, by the same grants as a text; one whose name runs
+    /// past its message is dropped.
+    #[test]
+    fn a_peers_file_is_heard_as_granted() {
+        let mut fds = [0 as RawFd; 2];
+        // SAFETY: socketpair(2) into a two-element array.
+        let rc = unsafe { libc::socketpair(libc::AF_UNIX, libc::SOCK_SEQPACKET, 0, fds.as_mut_ptr()) };
+        assert_eq!(rc, 0);
+        // SAFETY: both were just made, and are owned here alone.
+        let (mine, theirs) = unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) };
+        let peer = |fd: OwnedFd| Peer {
+            label: "agent o".into(),
+            fd,
+            send: true,
+            answer: false,
+            held: None,
+            sent: vec![3],
+            last: 0,
+            asked: Vec::new(),
+            gone: false,
+        };
+        let other = peer(theirs);
+        let mut p = peer(mine);
+        assert!(put_file(&other, REQUEST_FILE, 1, "x", b"y"));
+        take(&mut p);
+        assert!(p.held.is_none(), "a request from one it does not answer");
+        assert!(put_bytes(&other, ANSWER_FILE, 3, &[0, 9, b'a']));
+        take(&mut p);
+        assert!(p.held.is_none(), "a name past its message");
+        assert!(put_file(&other, ANSWER_FILE, 3, "out.txt", b"hello"));
+        take(&mut p);
+        assert!(p.held.as_ref().is_some_and(|m| !m.request
+            && m.id == 3
+            && matches!(&m.body, Body::File(n, b) if n == "out.txt" && b == b"hello")));
+    }
+
+    /// Base64 as RFC 4648 §10's test vectors have it.
+    #[test]
+    fn base64_is_rfc_4648s() {
+        for (plain, encoded) in [
+            ("", ""),
+            ("f", "Zg=="),
+            ("fo", "Zm8="),
+            ("foo", "Zm9v"),
+            ("foob", "Zm9vYg=="),
+            ("fooba", "Zm9vYmE="),
+            ("foobar", "Zm9vYmFy"),
+        ] {
+            assert_eq!(base64(plain.as_bytes()), encoded);
+            assert_eq!(
+                header_value(&format!("=?base64?{encoded}?=")).as_deref(),
+                Some(plain)
+            );
+        }
+    }
+
+    /// A file is handed from beneath its caller's scratch, a regular one within what a
+    /// message holds; a link, a FIFO, a directory, a giant file and a path past the scratch
+    /// are refused, and the FIFO stalls nothing.
+    #[test]
+    fn only_a_regular_file_of_the_scratch_is_handed() {
+        let mut p = prepare_for_test();
+        let tmp = shards_testdir::TempDir::new("hand").unwrap();
+        std::fs::write(tmp.join("out.txt"), "hello").unwrap();
+        std::os::unix::fs::symlink("/etc/passwd", tmp.join("key")).unwrap();
+        let fifo = std::ffi::CString::new(tmp.join("pipe").to_str().unwrap()).unwrap();
+        // SAFETY: mkfifo(3) of a NUL-terminated path.
+        assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o644) }, 0);
+        std::fs::create_dir(tmp.join("d")).unwrap();
+        std::fs::write(tmp.join("big"), vec![b'b'; BODY_MAX]).unwrap();
+        let dir = std::fs::File::open(&*tmp).unwrap();
+        p.scratch = Some(OwnedFd::from(dir));
+        assert_eq!(
+            handed(&p, "/tmp/out.txt"),
+            Ok(("out.txt".to_string(), b"hello".to_vec()))
+        );
+        let refused = |path: &str| handed(&p, path).unwrap_err();
+        assert!(
+            refused("/tmp/key").contains("is a symbolic link"),
+            "{}",
+            refused("/tmp/key")
+        );
+        assert_eq!(refused("/tmp/pipe"), "/tmp/pipe is a FIFO, not a regular file");
+        assert_eq!(refused("/tmp/d"), "/tmp/d is a directory, not a regular file");
+        assert_eq!(
+            refused("/tmp/big"),
+            format!(
+                "/tmp/big is {BODY_MAX} bytes, more than the {} a file handed across holds",
+                BODY_MAX - 5
+            )
+        );
+        assert_eq!(refused("/tmp/../x"), "/tmp/../x lies past the caller's scratch");
+        assert_eq!(
+            refused("/x"),
+            "/x is not in /tmp, the scratch files are handed from"
+        );
+        p.scratch = None;
+        assert_eq!(
+            handed(&p, "/tmp/out.txt").unwrap_err(),
+            "its caller has no scratch, /tmp, to hand files from"
+        );
     }
 
     #[test]

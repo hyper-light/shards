@@ -3538,6 +3538,48 @@ No run-time labels, relays or declassifiers (§12 answer 14, decided by the user
 an internal-only domain to the world (D58), so there is no data to label. Code mode is
 D136.
 
+### D139. Files handed across, through the in-VM server
+
+AGENTFILE_ARCH.md §9.4, §9.10 and §11 row 1001: what one domain produces reaches another only
+through what a directive declares, and the reader never trusts its shape; a harness drives
+an agent through the in-VM server and reads nothing of the agent's directory (§12 answer
+11). Until now a harness had an agent's output only as the texts of its messages (D60).
+
+- **The scratch, the server's too.** A domain's `/tmp` is no longer a tmpfs it mounts
+  itself: init makes it, where the image has a `/tmp`, attached nowhere (`fsopen`,
+  `fsmount`), `nosuid` and `nodev`, the domain's own (its uid and gid) and its group's to
+  read (0750); the domain attaches it at `/tmp`, and its server instance, of the domain's
+  group (D60), holds the same mount.
+- **`hand`.** A caller hands a peer a file of its scratch: as a request, where it may send
+  the peer requests, or, with `id`, as the answer to the peer's request (`ATTACH`: an agent
+  answers its harness's). The grant is checked first: nothing is read where nothing may
+  go. Its server opens the path beneath the scratch as the kernel resolves it (openat2(2),
+  `RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS | RESOLVE_NO_MAGICLINKS | RESOLVE_NO_XDEV`),
+  without waiting (`O_NONBLOCK`: a FIFO's open waits on no writer), refuses any but a
+  regular file, and reads it whole within what a message to a peer holds (1 MiB less the
+  file's name and its length), else refuses, naming why. So a link the caller planted (to
+  its server's own key), a FIFO, a giant file or a path above the scratch redirects,
+  stalls and exhausts nothing.
+- **On the channel**, a file is a message of kinds of its own, a request or an answer with
+  the file's name and bytes, held by the receiving instance under the same grants as a
+  text; `receive` shows it as `"file":{"name","size","data"}`, its bytes in Base64 (RFC
+  4648). Code mode's programs hand files too (`shards.hand`, D136).
+- **Recorded difference**: a file handed is one its server may read, the caller's group's
+  (mode 0640 or wider); one of mode 0600 is refused, its server owning no file of the
+  caller's.
+
+Tested: in crates/server, on Linux, `only_a_regular_file_of_the_scratch_is_handed` (a link, a
+FIFO, a directory, a file past the bound, a path above the scratch and one outside it
+refused; none without a scratch), `a_peers_file_is_heard_as_granted`, `base64_is_rfc_4648s`;
+on real microVMs, `a_harness_is_handed_files_and_no_link_fifo_or_giant`: an agent plants a
+link to its server's key, a FIFO and a 2 MiB file in its scratch, its harness asks it once,
+and its tries to hand each, a path above its scratch and one outside it are refused by its
+server, which stalls on none; the regular file it hands is the one thing the harness
+receives. Mutation-checked: links followed, a path above the scratch reached, a FIFO waited
+on (the server stalls), any kind of file read, a giant file not refused, a file heard
+without its grant, Base64 unpadded, the scratch not given to its instance, and the scratch
+closed to its instance: each fails a test.
+
 ### D138. The in-VM server speaks MCP 2026-07-28, and the revisions before it
 
 The in-VM server spoke MCP 2025-06-18 and 2025-03-26 (D60). The current revision is

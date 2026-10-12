@@ -63,6 +63,7 @@ const PRELUDE: &str = r#"const shards = (() => {
     send: async (to, text) => tool("send", { to, text }),
     receive: async () => tool("receive", {}),
     answer: async (to, id, text) => tool("answer", { to, id, text }),
+    hand: async (to, path, id) => tool("hand", id === undefined ? { to, path } : { to, path, id }),
   });
 })();
 "#;

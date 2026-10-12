@@ -2289,7 +2289,7 @@ fn confined(args: &[String]) -> i32 {
             | "udpflood" | "tcpflood" | "udpaskfrom" | "reachmany" | "reachrounds" | "udpask"
             | "srv-send" | "srv-receive" | "srv-answer" | "owner" | "mcp-run" | "srv-run"
             | "srv-run-timeout" | "srv-run-cancel" | "srv-run-abandon" | "srv-bench" | "srv-modern"
-            | "hold-tell" => mode = a.as_str(),
+            | "hold-tell" | "make" | "srv-hand" => mode = a.as_str(),
             "srv-mcp" => {
                 let said = match server_call("mcp", "{}") {
                     Ok((t, false)) => t,
@@ -2659,6 +2659,56 @@ fn confined(args: &[String]) -> i32 {
                     asked = Some((from, id));
                 }
                 out.push_str(&format!("confined srv-receive: {said}\n"));
+            }
+            // `KIND:PATH[:ARG]`: a file made, as an agent might plant one: `file` with ARG
+            // its text, `link` to ARG, `fifo`, or `big` of ARG bytes.
+            spec if mode == "make" => {
+                let mut parts = spec.splitn(3, ':');
+                let (kind, path, arg) = (
+                    parts.next().unwrap_or_default(),
+                    parts.next().unwrap_or_default(),
+                    parts.next().unwrap_or_default(),
+                );
+                let made = match kind {
+                    "file" => std::fs::write(path, arg),
+                    "link" => std::os::unix::fs::symlink(arg, path),
+                    "fifo" => std::ffi::CString::new(path)
+                        .map_err(io::Error::other)
+                        .and_then(|c| {
+                            // SAFETY: mkfifo(3) of a NUL-terminated path.
+                            if unsafe { libc::mkfifo(c.as_ptr(), 0o644) } == 0 {
+                                Ok(())
+                            } else {
+                                Err(io::Error::last_os_error())
+                            }
+                        }),
+                    "big" => std::fs::write(path, vec![b'b'; arg.parse().unwrap_or(0)]),
+                    _ => Err(io::Error::other("no such kind")),
+                };
+                let said = match made {
+                    Ok(()) => "ok".to_string(),
+                    Err(e) => errno(&e),
+                };
+                out.push_str(&format!("confined make {spec}: {said}\n"));
+            }
+            // PATH: a file handed across, the answer to the last request received (D139).
+            path if mode == "srv-hand" => {
+                let said = match &asked {
+                    Some((from, id)) => {
+                        let args = format!(
+                            r#"{{"to":{},"id":{id},"path":{}}}"#,
+                            quote_json(from),
+                            quote_json(path)
+                        );
+                        match server_call("hand", &args) {
+                            Ok((t, false)) => format!("ok {t}"),
+                            Ok((t, true)) => format!("refused {t}"),
+                            Err(e) => format!("error {e}"),
+                        }
+                    }
+                    None => "no request".to_string(),
+                };
+                out.push_str(&format!("confined srv-hand {path}: {said}\n"));
             }
             // TEXT: the answer to the last request received.
             body if mode == "srv-answer" => {

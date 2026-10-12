@@ -343,17 +343,29 @@ fn a_killed_build_takes_its_builder_with_it() {
     });
     said.recv_timeout(TIMEOUT)
         .expect("the step never said it was ready");
-    // Its builder: the processes whose command lines name its directory, its VM's.
+    // Its builder: the processes whose command lines name its directory, its VM's. Read
+    // from /proc where there is one: a BusyBox `ps` (CI's Alpine) takes no `-o command`.
     let builders = || {
-        let ps = std::process::Command::new("ps")
-            .args(["-axo", "pid=,command="])
-            .output()
-            .unwrap();
-        String::from_utf8_lossy(&ps.stdout)
-            .lines()
-            .filter(|l| l.contains(tmp.to_str().unwrap()))
-            .map(str::to_string)
-            .collect::<Vec<_>>()
+        let tmp = tmp.to_str().unwrap();
+        if cfg!(target_os = "linux") {
+            std::fs::read_dir("/proc")
+                .unwrap()
+                .flatten()
+                .filter_map(|e| std::fs::read(e.path().join("cmdline")).ok())
+                .map(|c| String::from_utf8_lossy(&c).replace('\0', " "))
+                .filter(|l| l.contains(tmp))
+                .collect::<Vec<_>>()
+        } else {
+            let ps = std::process::Command::new("ps")
+                .args(["-axo", "pid=,command="])
+                .output()
+                .unwrap();
+            String::from_utf8_lossy(&ps.stdout)
+                .lines()
+                .filter(|l| l.contains(tmp))
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        }
     };
     assert!(!builders().is_empty(), "no builder runs");
     build.kill().unwrap();
@@ -10936,6 +10948,110 @@ return { me, peers, sent, refused };"#;
     }
 }
 
+/// A harness is handed an agent's file, and no link, FIFO or giant file in its place
+/// (AGENTFILE_ARCH §9.4, §9.10; D139): the agent plants a symbolic link to its server's
+/// key, a FIFO and a file past what a message holds in its scratch, and tries to hand
+/// each, and a path above its scratch, to its attached harness; its server refuses each,
+/// stalling on none, and hands the harness the one regular file, and nothing else.
+#[test]
+fn a_harness_is_handed_files_and_no_link_fifo_or_giant() {
+    if cannot_run_vms() {
+        return;
+    }
+    let (image, _) = served();
+    let (port, _repos) = common::writable_registry();
+    let home = TempDir::new("hand-home");
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", kernel().as_os_str()),
+        ("SHARDS_INIT", guest_init().as_os_str()),
+    ];
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let mut domains = String::new();
+    for (kind, name, verbs) in [
+        (
+            "agent",
+            "a",
+            vec![
+                "make",
+                "file:/tmp/out.txt:hello",
+                "link:/tmp/key:/run/shards/key.pem",
+                "fifo:/tmp/pipe",
+                "big:/tmp/big:2097152",
+                "srv-receive",
+                "30",
+                "srv-hand",
+                "/tmp/key",
+                "/tmp/pipe",
+                "/tmp/big",
+                "/tmp/../etc/passwd",
+                "/etc/passwd",
+                "/tmp/out.txt",
+            ],
+        ),
+        (
+            "harness",
+            "h",
+            vec!["srv-send", "agent a|files", "srv-receive", "30"],
+        ),
+    ] {
+        let dir = TempDir::new(&format!("hand-{kind}-{name}"));
+        std::fs::create_dir_all(dir.join("bin")).unwrap();
+        std::fs::copy(common::test_guest(), dir.join("bin/testguest")).unwrap();
+        let command: Vec<&str> = ["bin/testguest", "confined"].into_iter().chain(verbs).collect();
+        let config = serde_json::json!({ "name": name, "run": { "command": command } });
+        std::fs::write(dir.join(format!("{kind}.json")), config.to_string()).unwrap();
+        let tag = format!("127.0.0.1:{port}/team/hand-{name}:1");
+        let made = shards(&["build", kind, dir.to_str().unwrap(), "-t", &tag]);
+        assert_eq!(made.status, Some(0), "{}", made.stderr);
+        let pushed = shards(&["push", kind, &tag]);
+        assert_eq!(pushed.status, Some(0), "{}", pushed.stderr);
+        domains.push_str(&format!("{} {name} FROM {tag}\n", kind.to_uppercase()));
+    }
+    let ctx = context("hand-ctx", &format!("FROM {image}\n"));
+    std::fs::write(
+        ctx.join("Agentfile"),
+        format!("FROM {image}\n{domains}ATTACH a FOR h\n"),
+    )
+    .unwrap();
+    let built = shards(&["build", "-t", "hand:1", ctx.to_str().unwrap()]);
+    assert_eq!(built.status, Some(0), "{}", built.stderr);
+    let ran = common::run_awaiting(
+        &env,
+        &[
+            "run",
+            "--rm",
+            "--name",
+            "aw-hand",
+            "hand:1",
+            "await",
+            "confined-ready",
+            "2",
+        ],
+        "aw-hand",
+        ("confined-ready", 2),
+        TIMEOUT,
+    );
+    let all = format!("{}{}", ran.stdout, ran.stderr);
+    assert_eq!(ran.status, Some(0), "{all}");
+    for want in [
+        "[agent a] confined make file:/tmp/out.txt:hello: ok",
+        "[agent a] confined make link:/tmp/key:/run/shards/key.pem: ok",
+        "[agent a] confined make fifo:/tmp/pipe: ok",
+        "[agent a] confined make big:/tmp/big:2097152: ok",
+        r#"[agent a] confined srv-receive: [{"from":"harness h","kind":"request","id":1,"text":"files"}]"#,
+        "[agent a] confined srv-hand /tmp/key: refused /tmp/key is a symbolic link, or lies past one: a file handed across is a regular file of the caller's scratch",
+        "[agent a] confined srv-hand /tmp/pipe: refused /tmp/pipe is a FIFO, not a regular file",
+        "[agent a] confined srv-hand /tmp/big: refused /tmp/big is 2097152 bytes, more than the 1048571 a file handed across holds",
+        "[agent a] confined srv-hand /tmp/../etc/passwd: refused /tmp/../etc/passwd lies past the caller's scratch",
+        "[agent a] confined srv-hand /etc/passwd: refused /etc/passwd is not in /tmp, the scratch files are handed from",
+        "[agent a] confined srv-hand /tmp/out.txt: ok {}",
+        r#"[harness h] confined srv-receive: [{"from":"agent a","kind":"answer","id":1,"file":{"name":"out.txt","size":5,"data":"aGVsbG8="}}]"#,
+    ] {
+        assert!(all.lines().any(|l| l == want), "no {want:?} in\n{all}");
+    }
+}
+
 /// The in-VM server speaks MCP 2026-07-28 and the revisions before it (D138): an agent
 /// asks as a client of 2026-07-28 does, each request alone, and is answered; with its
 /// headers wrong, its revision one the server does not speak, its client's capabilities
@@ -11013,7 +11129,7 @@ fn the_in_vm_server_speaks_each_revision() {
                 r#"{ok} {{"jsonrpc":"2.0","id":7,"result":{{"supportedVersions":["2026-07-28","2025-11-25","2025-06-18","2025-03-26"],"capabilities":{{"tools":{{}}}},"ttlMs":0,"cacheScope":"public",{complete}}}}}"#
             ),
         ),
-        ("list", format!(r#"7 tools],"ttlMs":0,"cacheScope":"public",{complete}}}}}"#)),
+        ("list", format!(r#"8 tools],"ttlMs":0,"cacheScope":"public",{complete}}}}}"#)),
         ("whoami", whoami.clone()),
         (
             "run",
