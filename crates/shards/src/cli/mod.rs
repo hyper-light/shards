@@ -846,9 +846,18 @@ fn instead(args: &[OsString]) -> ExitCode {
         Ok(bin) => bin,
         Err(e) => return failed(&e),
     };
-    let e = std::process::Command::new(&bin).args(args).exec();
+    let e = std::process::Command::new(&bin)
+        .args(args)
+        .env("MVK_CONFIG_LOG_LEVEL", MOLTENVK_LOG_LEVEL)
+        .exec();
     failed(&format!("{}: {e}", bin.display()))
 }
+
+/// What a GPU's VM process says of MoltenVK: its errors alone (MVK_CONFIG_LOG_LEVEL 1, its
+/// mvk_config.h), where its default, information, writes a page about the GPU as the
+/// renderer starts.
+#[cfg(unix)]
+const MOLTENVK_LOG_LEVEL: &str = "1";
 
 /// Runs the VM process's binary with `args`, and exits as it does: Windows has no exec.
 #[cfg(not(unix))]
