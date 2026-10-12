@@ -165,7 +165,12 @@ fn devices_in(dll: &std::path::Path) -> Vec<String> {
 /// A device's owner, DACL and integrity label, as SDDL, through a handle opened for
 /// READ_CONTROL alone.
 fn sddl(device: &str) -> String {
-    let name = wide(&format!("\\\\?\\GLOBALROOT{device}"));
+    // An NT device path through GLOBALROOT; a DOS one (\\?\NAME) as it is.
+    let name = if device.starts_with("\\\\?\\") {
+        wide(device)
+    } else {
+        wide(&format!("\\\\?\\GLOBALROOT{device}"))
+    };
     // SAFETY: a NUL-terminated name; READ_CONTROL alone.
     let h = unsafe {
         CreateFileW(
@@ -452,7 +457,7 @@ fn main() {
         .join("System32");
     for dll in ["WinHvPlatform.dll", "vid.dll", "VidCore.dll", "WinHvEmulation.dll"] {
         for text in devices_in(&system32.join(dll)) {
-            if text.starts_with("\\Device\\") {
+            if text.starts_with("\\Device\\") || text.starts_with("\\\\?\\") {
                 println!("{dll}: {text}: {}", sddl(&text));
             } else {
                 println!("{dll}: string {text:?}");
