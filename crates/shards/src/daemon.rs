@@ -4466,6 +4466,17 @@ impl<D: Disk> Daemon<D> {
                 cfg.cmdline.push_str(&bridge.cmdline());
             }
         };
+        // A run given this Mac's GPU boots in the GPU's VM process, the GPU's kernel, and
+        // never from a template, nor saves one: a GPU's state is its host driver's (D144).
+        if let Some(kernel) = &prepared.gpu {
+            let mut cfg = match &prepared.boot {
+                Boot::Given(cfg) => (**cfg).clone(),
+                Boot::Stored(guest) => Config::new(kernel.clone(), Some(guest.init.clone())),
+            };
+            on_network(&mut cfg);
+            cfg.gpu = true;
+            return self.cold(threads, &cfg, &prepared.rootfs, None);
+        }
         let guest = match &prepared.boot {
             Boot::Given(cfg) => {
                 let mut cfg = cfg.clone();
@@ -4849,6 +4860,9 @@ impl<D: Disk> Daemon<D> {
         if let Some(fresh) = save {
             args.extend(["--snapshot-dir".into(), fresh.into()]);
         }
+        if cfg.gpu {
+            args.push("--gpu".into());
+        }
         if !cfg.shares.is_empty() {
             args.extend(["--shares".into(), cfg.shares.len().to_string().into()]);
         }
@@ -4947,8 +4961,18 @@ impl<D: Disk> Daemon<D> {
             .chain(given)
             .chain(args.iter().skip(1).map(OsString::as_os_str))
             .collect();
-        let env = crate::netproc::child_env();
-        let child = match shards_ipc::spawn_in(&self.vm, &args, &fds, false, &crate::netproc::env_pairs(&env))
+        let mut env = crate::netproc::child_env();
+        // A GPU's VM process is the GPU's build (D144), which says MoltenVK's errors alone.
+        let gpu = args.iter().any(|a| *a == "--gpu");
+        let binary = if gpu {
+            crate::helpers::vm_gpu()?
+        } else {
+            self.vm.clone()
+        };
+        if gpu {
+            env.push(("MVK_CONFIG_LOG_LEVEL", "1".into()));
+        }
+        let child = match shards_ipc::spawn_in(&binary, &args, &fds, false, &crate::netproc::env_pairs(&env))
         {
             Ok(child) => child,
             Err(e) => {
@@ -4956,7 +4980,7 @@ impl<D: Disk> Daemon<D> {
                     drop(side);
                     crate::netproc::reap(&net);
                 }
-                return Err(format!("starting {}: {e}", self.vm.display()));
+                return Err(format!("starting {}: {e}", binary.display()));
             }
         };
         drop(fds);
@@ -5720,6 +5744,7 @@ mod tests {
             };
             let prepared = Prepared {
                 boot: Boot::Given(Box::new(Config::new(PathBuf::from("kernel"), None))),
+                gpu: None,
                 rootfs: PathBuf::new(),
                 spec: shards_abi::run::Spec {
                     argv: vec![b"exit".to_vec(), b"7".to_vec()],

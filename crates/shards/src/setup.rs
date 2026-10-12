@@ -625,7 +625,10 @@ fn devices(run: &Run) -> Option<Vec<u8>> {
         (b"ri", &run.device_read_iops),
         (b"wi", &run.device_write_iops),
     ];
+    // A run given this Mac's GPU has its render node, as `--device` gives one (D144).
+    let gpu = crate::run::wants_gpu(&run.gpus).unwrap_or(false);
     if !run.privileged
+        && !gpu
         && run.devices.is_empty()
         && run.device_cgroup_rules.is_empty()
         && run.cdi_devices.is_empty()
@@ -635,7 +638,8 @@ fn devices(run: &Run) -> Option<Vec<u8>> {
     }
     let mut e = b"devices=".to_vec();
     e.extend_from_slice(if run.privileged { b"p\0" } else { b"-\0" });
-    for d in &run.devices {
+    let render = gpu.then_some("/dev/dri/renderD128:/dev/dri/renderD128:rwm".to_string());
+    for d in run.devices.iter().chain(render.iter()) {
         let mut parts = d.splitn(3, ':');
         e.extend_from_slice(b"d\0");
         for _ in 0..3 {
