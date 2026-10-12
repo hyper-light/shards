@@ -1,6 +1,6 @@
 //! WinHvPlatform and WinHvEmulation, bound at run time (LoadLibraryExW, GetProcAddress) as
 //! shards binds them, so that a probe starts where they are not; and what the probes share.
-//! The probes: `main.rs` (PM M197) and `bin/m198.rs` (PM M198).
+//! The probes: `main.rs` (PM M197) and `bin/m*.rs` (PM M198 on).
 
 pub mod confine;
 
@@ -16,6 +16,8 @@ pub type GetCapability = unsafe extern "system" fn(WHV_CAPABILITY_CODE, *mut c_v
 pub type CreatePartition = unsafe extern "system" fn(*mut WHV_PARTITION_HANDLE) -> HRESULT;
 pub type SetPartitionProperty =
     unsafe extern "system" fn(WHV_PARTITION_HANDLE, WHV_PARTITION_PROPERTY_CODE, *const c_void, u32) -> HRESULT;
+pub type GetPartitionProperty =
+    unsafe extern "system" fn(WHV_PARTITION_HANDLE, WHV_PARTITION_PROPERTY_CODE, *mut c_void, u32, *mut u32) -> HRESULT;
 pub type SetupPartition = unsafe extern "system" fn(WHV_PARTITION_HANDLE) -> HRESULT;
 pub type DeletePartition = unsafe extern "system" fn(WHV_PARTITION_HANDLE) -> HRESULT;
 pub type MapGpaRange =
@@ -65,6 +67,7 @@ pub type CreatePort = unsafe extern "system" fn(
     *mut *mut c_void,
 ) -> HRESULT;
 pub type DeletePort = unsafe extern "system" fn(WHV_PARTITION_HANDLE, *const c_void) -> HRESULT;
+pub type CpuidOutput = unsafe extern "system" fn(WHV_PARTITION_HANDLE, u32, u32, u32, *mut WHV_CPUID_OUTPUT) -> HRESULT;
 
 /// `T` at 16 bytes' alignment, which WinHvPlatform.h gives its register values
 /// (`DECLSPEC_ALIGN(16)` on WHV_REGISTER_VALUE and WHV_UINT128) and windows-sys's
@@ -77,6 +80,7 @@ pub struct Api {
     pub get_capability: GetCapability,
     pub create_partition: CreatePartition,
     pub set_property: SetPartitionProperty,
+    pub get_property: GetPartitionProperty,
     pub setup_partition: SetupPartition,
     pub delete_partition: DeletePartition,
     pub map: MapGpaRange,
@@ -94,6 +98,7 @@ pub struct Api {
     pub request_interrupt: RequestInterrupt,
     pub create_port: CreatePort,
     pub delete_port: DeletePort,
+    pub cpuid_output: CpuidOutput,
 }
 
 /// A system DLL, loaded from System32 alone.
@@ -127,6 +132,7 @@ pub fn bind() -> Result<Api, String> {
             get_capability: sym(p, "WHvGetCapability")?,
             create_partition: sym(p, "WHvCreatePartition")?,
             set_property: sym(p, "WHvSetPartitionProperty")?,
+            get_property: sym(p, "WHvGetPartitionProperty")?,
             setup_partition: sym(p, "WHvSetupPartition")?,
             delete_partition: sym(p, "WHvDeletePartition")?,
             map: sym(p, "WHvMapGpaRange")?,
@@ -144,6 +150,7 @@ pub fn bind() -> Result<Api, String> {
             request_interrupt: sym(p, "WHvRequestInterrupt")?,
             create_port: sym(p, "WHvCreateNotificationPort")?,
             delete_port: sym(p, "WHvDeleteNotificationPort")?,
+            cpuid_output: sym(p, "WHvGetVirtualProcessorCpuidOutput")?,
         })
     }
 }

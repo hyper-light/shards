@@ -5,7 +5,8 @@
 # shards would confine it (PM M201, src/bin/m201.rs); dynamic code forbidden after setup (PM
 # M202, src/bin/m202.rs); sockets and files a confined VM process is handed (PM M203,
 # src/bin/m203.rs); what a confined network process may reach, and its doorbells (PM M204,
-# src/bin/m204.rs).
+# src/bin/m204.rs); the CPUID a partition's vCPUs see, and what a VMM may change of it (PM
+# M206, src/bin/m206.rs).
 [package]
 name = "whp-run"
 version = "0.1.0"
