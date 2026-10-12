@@ -6720,3 +6720,56 @@ revision before comparing a changed API/implementation.
 - **Consequence.** D136: QuickJS-NG runs code mode's programs, a process each; its cost is
   stated as measured, a program's own 0.4 ms, and its saving as the model's turns.
 
+### M197. A WHP partition on GitHub's Windows runners: what its guest sees, and what an exit costs
+
+- **Questions.** Before shards' WHP backend (AGENTFILE_ARCH §11's Windows builder): what
+  does a partition's guest see of its processor and its hypervisor, with what it would
+  keep time by in kvm-clock's place; and what does an exit cost?
+- **Method.** `docs/research/measurements/whp-run`, by its workflow (`whp-run.yml`), run
+  38209188341 on branch `whp`, 2026-10-12: a partition of one vCPU, its local APIC
+  emulated (XApic), 2 MiB of memory, entered in long mode; its guest asks CPUID for the
+  hypervisor's leaves (0x40000000-6), leaf 1 and 0x80000007, reads
+  HV_X64_MSR_TSC_FREQUENCY and HV_X64_MSR_APIC_FREQUENCY where 0x40000003 offers them, then
+  writes MMIO 1001 times and a port 1001 times, each exit emulated by WinHvEmulation as a
+  VMM would, and timed from the host (n = 1000, the first of each left out). Twice: as
+  created, and given every synthetic processor feature the host offers. Functions bound at
+  run time (LoadLibraryExW, GetProcAddress).
+- **Found** (windows-2022: Windows Server 2022 10.0.20348, AMD EPYC 7763; windows-2025:
+  Windows Server 2025 10.0.26100, AMD EPYC 9V74):
+  - Both: HypervisorPresent 1; capability features 0x2ff (local APIC emulation among
+    them); extended exits 0x7fff; processor clock 2,445 and 2,596 MHz; interrupt clock
+    200 MHz; synthetic features 0x7f448fff and 0x6fff448fff.
+  - **As created, the guest sees no hypervisor**: leaf 1's hypervisor bit clear, the
+    0x40000000 leaves zero, no frequency MSRs. A Linux guest would have nothing to
+    calibrate its TSC by, with no PIT, HPET or PM timer in shards' hardware-reduced ACPI.
+  - **Given the host's synthetic features, it sees Hyper-V**: leaf 1's hypervisor bit set,
+    0x40000000 "Microsoft Hv" to 0x40000006, 0x40000001 "Hv#1", 0x40000003 EAX 0x00000e7f
+    (the hypercall MSR, the partition reference counter and TSC, the frequency MSRs among
+    them) and EDX bit 8 (the frequency MSRs available); the TSC's frequency
+    2,445,432,807 and 2,596,141,229 Hz and the APIC timer's 200,000,000 Hz, read from the
+    MSRs. Linux's `mshyperv.c` (CONFIG_HYPERVISOR_GUEST, in the pinned kernel) calibrates
+    both by them.
+  - Invariant TSC (0x80000007 EDX bit 8): set on windows-2022, clear on windows-2025, as
+    created or not; 0x40000003 offers no TSC-invariance bit (15) on either.
+  - **What an exit costs** (µs, p50 / p90 / p99 / max), the vCPU's run to its exit, and
+    WinHvEmulation's decode and callbacks after it:
+
+    | runner | exit | run | emulate |
+    |---|---|---|---|
+    | windows-2022 | MMIO | 12.1-13.4 / 12.2-13.6 / 12.9-16.3 / 34.6-79.1 | 8.2-9.5 / 8.3-9.6 / 10.6-11.8 / 24.3-54.4 |
+    | windows-2022 | port | 12.6 / 12.8 / 13.6-18.9 / 48.4-57.1 | 0.2 / 0.3 / 0.5-0.6 / 7.3-7.8 |
+    | windows-2025 | MMIO | 15.6 / 15.9-16.0 / 33.2-34.3 / 54.3-75.6 | 10.5-10.6 / 10.8 / 22.5-25.2 / 34.9-113.1 |
+    | windows-2025 | port | 14.5-16.2 / 14.9-16.5 / 28.8-37.2 / 47.9-48.8 | 0.3 / 0.4 / 1.0-1.1 / 10.0-11.3 |
+
+    (Ranges over the two partitions.) A partition was set up in 0.4-31.7 ms, the first of
+    a process the slowest; 2 MiB mapped in 0.04-3.6 ms; a vCPU made in 0.09-0.25 ms.
+  - Register values handed to WinHvPlatform 8-aligned (windows-sys's WHV_REGISTER_VALUE,
+    whose C declaration is `DECLSPEC_ALIGN(16)`) made the process fault
+    (STATUS_ACCESS_VIOLATION); 16-aligned, it ran. With the local APIC emulated, a HLT with
+    interrupts off never returned to the VMM.
+- **Consequence.** shards' WHP backend gives its partitions the host's synthetic features,
+  and its guest kernel the Hyper-V reference TSC (CONFIG_HYPERV) where invariant TSC is not
+  offered; hands WinHvPlatform 16-aligned register values; and takes virtio's
+  notifications by doorbell (a notification port) rather than by an exit and WinHvEmulation
+  each, a port exit costing 12.6-16.2 µs here and an MMIO exit 8-11 µs more.
+
