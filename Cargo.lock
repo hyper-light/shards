@@ -1100,6 +1100,7 @@ dependencies = [
  "shards-image",
  "shards-template",
  "shards-testdir",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

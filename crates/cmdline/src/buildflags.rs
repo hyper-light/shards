@@ -642,9 +642,10 @@ pub fn ssh_agents<K>(
 ) -> Result<BTreeMap<String, Agent<K>>, String> {
     #[cfg(unix)]
     let is_socket = |m: &std::fs::Metadata| std::os::unix::fs::FileTypeExt::is_socket(&m.file_type());
-    // No builder runs on Windows yet, nor does a socket there say what it is.
+    // A socket file on Windows is told apart before its metadata is asked for, which
+    // Windows refuses of one (windows_agent::is_socket).
     #[cfg(not(unix))]
-    let is_socket = |_: &std::fs::Metadata| true;
+    let is_socket = |_: &std::fs::Metadata| false;
     // An error of a path, as Go's *PathError says it.
     let os_err = |op: &str, p: &str, e: &std::io::Error| {
         let why = match e.kind() {
@@ -672,7 +673,16 @@ pub fn ssh_agents<K>(
         if paths.is_empty() || paths.len() == 1 && paths.first().is_some_and(String::is_empty) {
             paths = vec![env("SSH_AUTH_SOCK").unwrap_or_default()];
         }
-        if paths.first().is_some_and(String::is_empty) {
+        if let Some(first) = paths.first_mut()
+            && first.is_empty()
+        {
+            // getFallbackAgentPath: Windows' OpenSSH agent's pipe, where it runs.
+            #[cfg(windows)]
+            match windows_agent::fallback() {
+                Ok(pipe) => *first = pipe,
+                Err(why) => return Err(fail(format!("invalid empty ssh agent socket: {why}"))),
+            }
+            #[cfg(not(windows))]
             return Err(fail(
                 "invalid empty ssh agent socket: make sure SSH_AUTH_SOCK is set".into(),
             ));
@@ -688,6 +698,13 @@ pub fn ssh_agents<K>(
         for p in &paths {
             if socket.is_some() {
                 return Err(wrap("only single socket allowed".into()));
+            }
+            // getWindowsPipeDialer: a named pipe's path, never looked at; and an AF_UNIX
+            // socket's.
+            #[cfg(windows)]
+            if windows_agent::is_pipe_path(p) || windows_agent::is_socket(p) {
+                socket = Some(std::path::PathBuf::from(p));
+                continue;
             }
             let meta = std::fs::metadata(p).map_err(|e| wrap(os_err("stat", p, &e)))?;
             if is_socket(&meta) {
@@ -716,6 +733,88 @@ pub fn ssh_agents<K>(
         out.insert(id.to_string(), agent);
     }
     Ok(out)
+}
+
+/// SSH agents on Windows, as BuildKit finds them there (v0.33.0
+/// session/sshforward/sshprovider/agentprovider_windows.go).
+/// Whether `path` names a named pipe, as BuildKit tells one on Windows (isWindowsPipePath).
+#[cfg(windows)]
+pub use windows_agent::is_pipe_path;
+
+#[cfg(windows)]
+mod windows_agent {
+    use std::os::windows::ffi::OsStrExt as _;
+
+    /// Windows' OpenSSH agent's pipe.
+    const PIPE: &str = r"\\.\pipe\openssh-ssh-agent";
+
+    /// IO_REPARSE_TAG_AF_UNIX (winnt.h): an AF_UNIX socket's file.
+    const AF_UNIX_TAG: u32 = 0x8000_0023;
+
+    /// Whether `path` names a named pipe (isWindowsPipePath): `\\HOST\pipe\NAME`, its
+    /// slashes and backslashes alike, each separator one or more of them.
+    pub fn is_pipe_path(path: &str) -> bool {
+        static PIPE_PATH: std::sync::OnceLock<Option<regex::Regex>> = std::sync::OnceLock::new();
+        PIPE_PATH
+            .get_or_init(|| regex::Regex::new(r"^[\\/]{2}[^\\/]+[\\/]+pipe[\\/]+").ok())
+            .as_ref()
+            .is_some_and(|r| r.is_match(path))
+    }
+
+    /// FindFirstFileW's view of `path`, where it is there: its attributes, and its reparse
+    /// tag where it is a reparse point. FindFirstFileW opens nothing, so it asks a pipe or
+    /// a socket's file nothing (BuildKit: "These pipes do not play nice with os.Stat").
+    fn found(path: &str) -> Option<(u32, u32)> {
+        use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
+        use windows_sys::Win32::Storage::FileSystem::{FindClose, FindFirstFileW, WIN32_FIND_DATAW};
+        let wide: Vec<u16> = std::ffi::OsStr::new(path).encode_wide().chain([0]).collect();
+        let mut data = WIN32_FIND_DATAW::default();
+        // SAFETY: a NUL-terminated path, and a structure for the call to fill.
+        let handle = unsafe { FindFirstFileW(wide.as_ptr(), &raw mut data) };
+        if handle == INVALID_HANDLE_VALUE {
+            return None;
+        }
+        // SAFETY: the search handle just opened.
+        unsafe { FindClose(handle) };
+        Some((data.dwFileAttributes, data.dwReserved0))
+    }
+
+    /// Whether `path` is an AF_UNIX socket's file: a reparse point of its tag, as Go's
+    /// os.Stat reports ModeSocket on Windows (golang/go#33357), where BuildKit's own check
+    /// reads the file for the word `socket`.
+    pub fn is_socket(path: &str) -> bool {
+        use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;
+        found(path).is_some_and(|(attributes, tag)| {
+            attributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 && tag == AF_UNIX_TAG
+        })
+    }
+
+    /// getFallbackAgentPath: Windows' OpenSSH agent's pipe, if the agent runs.
+    pub fn fallback() -> Result<String, String> {
+        match found(PIPE) {
+            Some(_) => Ok(PIPE.to_string()),
+            None => Err(format!(
+                "Windows OpenSSH agent not available at {PIPE}. Enable the SSH agent service or set SSH_AUTH_SOCK."
+            )),
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        /// A pipe's path by isWindowsPipePath's pattern, its separators either slash, one
+        /// or more; a file's is none.
+        #[test]
+        fn pipe_paths_are_told_as_buildkit_tells_them() {
+            for p in [PIPE, "//./pipe/x", r"\\host\\pipe\x", r"\\./pipe//x"] {
+                assert!(is_pipe_path(p), "{p}");
+            }
+            for p in [r"C:\pipe\x", r"\\.\pipes\x", "pipe/x", r"\\\pipe\x"] {
+                assert!(!is_pipe_path(p), "{p}");
+            }
+        }
+    }
 }
 
 pub fn parse_secrets(specs: &[String]) -> Result<Vec<Secret>, String> {

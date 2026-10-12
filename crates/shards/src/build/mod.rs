@@ -46,7 +46,6 @@ pub mod gc;
 mod gha;
 mod git;
 pub(crate) mod http;
-#[cfg(unix)]
 mod live;
 pub(crate) mod multi;
 mod output;
@@ -214,7 +213,6 @@ struct Progress {
     quiet: bool,
     next: usize,
     /// On a colour terminal, shards' own display in place of the plain one.
-    #[cfg(unix)]
     live: Option<RefCell<live::Live>>,
     /// Each step's name, its last lines (the 10 progressui's printer keeps,
     /// logsBufferSize) and whether it failed: what the build's end recaps of each step
@@ -234,7 +232,6 @@ impl Progress {
         Progress {
             quiet: true,
             next: 0,
-            #[cfg(unix)]
             live: None,
             steps: RefCell::new(BTreeMap::new()),
             recapped: std::cell::Cell::new(false),
@@ -261,7 +258,6 @@ impl Progress {
     }
 
     fn say_bytes(&self, bytes: &[u8]) {
-        #[cfg(unix)]
         if self.live.is_some() {
             return;
         }
@@ -277,7 +273,6 @@ impl Progress {
             self.next,
             (name.to_string(), std::collections::VecDeque::new(), false),
         );
-        #[cfg(unix)]
         if let Some(live) = &self.live {
             live.borrow_mut().start(name);
         }
@@ -315,7 +310,6 @@ impl Progress {
     }
 
     fn line(&self, v: &Vertex, text: &str) {
-        #[cfg(unix)]
         if let Some(live) = &self.live {
             live.borrow_mut().line(v.index, text);
         }
@@ -332,7 +326,6 @@ impl Progress {
             .borrow_mut()
             .entry(index)
             .or_insert_with(|| (name.to_string(), std::collections::VecDeque::new(), false));
-        #[cfg(unix)]
         if let Some(live) = &self.live {
             live.borrow_mut().resume(index);
         }
@@ -364,7 +357,6 @@ impl Progress {
         };
         self.to(v.index);
         for line in text.strip_suffix('\n').unwrap_or(text).split('\n') {
-            #[cfg(unix)]
             if let Some(live) = &self.live {
                 live.borrow_mut().line(v.index, line);
             }
@@ -408,7 +400,6 @@ impl Progress {
     }
 
     fn done(&self, v: &Vertex) {
-        #[cfg(unix)]
         if let Some(live) = &self.live {
             live.borrow_mut().done(v.index);
         }
@@ -421,7 +412,6 @@ impl Progress {
         if let Some(step) = self.steps.borrow_mut().get_mut(&v.index) {
             step.2 = true;
         }
-        #[cfg(unix)]
         if let Some(live) = &self.live {
             live.borrow_mut().error(v.index, message);
         }
@@ -431,7 +421,6 @@ impl Progress {
 
     /// A vertex the build cache answered, as progressui says it.
     fn cached(&self, v: &Vertex) {
-        #[cfg(unix)]
         if let Some(live) = &self.live {
             live.borrow_mut().cached(v.index);
         }
@@ -441,7 +430,6 @@ impl Progress {
 
     /// A vertex the build's failure stopped.
     fn canceled(&self, v: &Vertex) {
-        #[cfg(unix)]
         if let Some(live) = &self.live {
             live.borrow_mut().canceled(v.index);
             live.borrow_mut().leave();
@@ -645,7 +633,6 @@ impl StepLog {
             return;
         };
         let out = clip.write(bytes, limits);
-        #[cfg(unix)]
         if let Some(live) = &p.live {
             live.borrow_mut().output(v.index, &out);
             return;
@@ -2569,7 +2556,6 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
         // A platform's build of several numbers on from the one before it.
         next: multi::with(|s| s.next).unwrap_or(0),
         // `auto` or `tty` on a colour terminal: shards' own display.
-        #[cfg(unix)]
         live: if !quiet && matches!(asked, "auto" | "tty") {
             live::Live::new().map(RefCell::new)
         } else {

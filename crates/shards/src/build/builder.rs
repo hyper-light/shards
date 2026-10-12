@@ -1105,7 +1105,7 @@ fn serve_agent(
     let Some(agent) = agents.get(&*String::from_utf8_lossy(&id)) else {
         return Ok(());
     };
-    let read_msg = |from: &mut UnixStream| -> std::io::Result<Option<Vec<u8>>> {
+    let read_msg = |from: &mut dyn std::io::Read| -> std::io::Result<Option<Vec<u8>>> {
         let mut n = [0u8; 4];
         match from.read_exact(&mut n) {
             Ok(()) => {}
@@ -1120,7 +1120,7 @@ fn serve_agent(
         from.read_exact(&mut body)?;
         Ok(Some(body))
     };
-    let write_msg = |to: &mut UnixStream, body: &[u8]| -> std::io::Result<()> {
+    let write_msg = |to: &mut dyn std::io::Write, body: &[u8]| -> std::io::Result<()> {
         to.write_all(&u32::try_from(body.len()).unwrap_or(0).to_be_bytes())?;
         to.write_all(body)
     };
@@ -1134,7 +1134,7 @@ fn serve_agent(
             return Ok(());
         }
     };
-    let mut agent = UnixStream::connect(path)?;
+    let mut agent = super::ssh::agent_stream(path)?;
     while let Some(request) = read_msg(&mut conn)? {
         let allowed = request.first().is_some_and(|t| AGENT_ALLOWED.contains(t));
         if !allowed {

@@ -142,16 +142,14 @@ pub(crate) fn action(p: &Paint, action: &str, rows: &[(&str, &str)], out: &mut i
 
 /// Whether stdout is a colour terminal, without asking it anything.
 pub(crate) fn styled_quiet() -> bool {
-    // SAFETY: isatty(3) on this process's stdout.
-    let tty = unsafe { libc::isatty(1) } == 1;
+    let tty = super::terminal::styles(1);
     tty && std::env::var_os("NO_COLOR").is_none_or(|v| v.is_empty())
         && std::env::var_os("TERM").is_none_or(|t| t != "dumb")
 }
 
 /// The paint for stdout, if it is a colour terminal: shards' pages are drawn there.
 pub(crate) fn styled() -> Option<Paint> {
-    // SAFETY: isatty(3) on this process's stdout.
-    let tty = unsafe { libc::isatty(1) } == 1;
+    let tty = super::terminal::styles(1);
     let color = std::env::var_os("NO_COLOR").is_none_or(|v| v.is_empty())
         && std::env::var_os("TERM").is_none_or(|t| t != "dumb");
     if !(tty && color) {
@@ -167,18 +165,7 @@ pub(crate) fn styled() -> Option<Paint> {
 
 /// The paint for stderr, if it is a colour terminal, for errors.
 pub(crate) fn styled_err() -> Option<Paint> {
-    // SAFETY: isatty(3) on this process's stderr.
-    let tty = unsafe { libc::isatty(2) } == 1;
-    let color = std::env::var_os("NO_COLOR").is_none_or(|v| v.is_empty())
-        && std::env::var_os("TERM").is_none_or(|t| t != "dumb");
-    let env = |k: &str| std::env::var(k).ok();
-    (tty && color).then(|| Paint::new(shards_tui::tokens_truecolor(&env)))
-}
-
-/// The size of the terminal stderr is, rows then columns; 0×0 where it is none.
-pub(crate) fn err_size() -> (usize, usize) {
-    let (r, c) = super::terminal::size(2);
-    (usize::from(r), usize::from(c))
+    super::terminal::styled_err()
 }
 
 /// The terminal's width, or 80.

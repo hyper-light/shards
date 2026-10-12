@@ -1368,32 +1368,64 @@ fn verify_host_signature(k_s: &[u8], alg: &str, h: &[u8], sig: &[u8]) -> Result<
     if ok { Ok(()) } else { Err(bad()) }
 }
 
+/// A connection to an SSH agent, read and written as one stream.
+pub trait AgentStream: Read + Write + Send {}
+
+impl<T: Read + Write + Send> AgentStream for T {}
+
+/// A connection to the SSH agent at `path`: its AF_UNIX socket's; on Windows, a named
+/// pipe's where `path` names one (OpenSSH's agent's, as BuildKit dials it with
+/// winio.DialPipe), or an AF_UNIX socket's.
+pub fn agent_stream(path: &std::path::Path) -> std::io::Result<Box<dyn AgentStream>> {
+    #[cfg(windows)]
+    if shards_cmdline::buildflags::is_pipe_path(&path.to_string_lossy()) {
+        return pipe(path).map(|p| Box::new(p) as Box<dyn AgentStream>);
+    }
+    shards_vmm::platform::UnixStream::connect(path).map(|s| Box::new(s) as Box<dyn AgentStream>)
+}
+
+/// A client's end of the named pipe at `path`: opened, or opened once an instance is free
+/// where all are busy (ERROR_PIPE_BUSY), as winio.DialPipe waits for one (2 s here, as
+/// BuildKit gives an agent's socket to connect).
+#[cfg(windows)]
+fn pipe(path: &std::path::Path) -> std::io::Result<std::fs::File> {
+    use std::os::windows::ffi::OsStrExt as _;
+    use windows_sys::Win32::Foundation::ERROR_PIPE_BUSY;
+    use windows_sys::Win32::System::Pipes::WaitNamedPipeW;
+    let open = || std::fs::File::options().read(true).write(true).open(path);
+    match open() {
+        Err(e) if e.raw_os_error() == Some(ERROR_PIPE_BUSY as i32) => {
+            let wide: Vec<u16> = path.as_os_str().encode_wide().chain([0]).collect();
+            // SAFETY: a NUL-terminated name.
+            if unsafe { WaitNamedPipeW(wide.as_ptr(), 2000) } == 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            open()
+        }
+        opened => opened,
+    }
+}
+
 /// The build's agent, asked for its keys and signatures: a socket the client forwards, or
 /// the keys of files it serves (sshkey).
 pub struct AgentConn<'a> {
     agent: &'a Agent<Key>,
-    #[cfg(unix)]
-    socket: Option<std::os::unix::net::UnixStream>,
+    socket: Option<Box<dyn AgentStream>>,
 }
 
 impl<'a> AgentConn<'a> {
     pub fn new(agent: &'a Agent<Key>) -> AgentConn<'a> {
-        AgentConn {
-            agent,
-            #[cfg(unix)]
-            socket: None,
-        }
+        AgentConn { agent, socket: None }
     }
 
     fn ask(&mut self, request: &[u8]) -> Result<Vec<u8>, String> {
         match self.agent {
             Agent::Keys(keys) => Ok(sshkey::answer(keys, request)),
-            #[cfg(unix)]
             Agent::Socket(path) => {
                 let s = match &mut self.socket {
                     Some(s) => s,
                     None => self.socket.insert(
-                        std::os::unix::net::UnixStream::connect(path)
+                        agent_stream(path)
                             .map_err(|e| format!("the SSH agent at {}: {e}", path.display()))?,
                     ),
                 };
@@ -1413,11 +1445,6 @@ impl<'a> AgentConn<'a> {
                     .map_err(|e| format!("the SSH agent: {e}"))?;
                 Ok(answer)
             }
-            #[cfg(not(unix))]
-            Agent::Socket(path) => Err(format!(
-                "the SSH agent at {}: agents are reached on Unix alone",
-                path.display()
-            )),
         }
     }
 

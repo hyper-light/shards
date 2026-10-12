@@ -27,8 +27,7 @@ mod save;
 mod screens;
 #[cfg(unix)]
 mod show;
-#[cfg(unix)]
-mod terminal;
+pub(crate) mod terminal;
 pub(crate) mod version;
 
 /// `docker run`'s status when it could not run the command at all.

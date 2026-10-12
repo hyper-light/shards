@@ -1,16 +1,22 @@
 //! The client's terminal under `run -t`, kept as the Docker CLI keeps it
 //! (docs/research/tty-and-interactive-runs.md §2.1): stdin in raw mode with moby/term's
-//! flags, until the client exits by any path but SIGKILL, and the size of its stdout.
+//! flags, until the client exits by any path but SIGKILL, and the size of its stdout. On
+//! Windows (whose client has no `run -t` yet) its console: its size, and whether it takes
+//! escape sequences, for shards' own look.
 
+#[cfg(unix)]
 use std::io;
+#[cfg(unix)]
 use std::sync::{Mutex, PoisonError};
 
 /// The terminal's settings before raw mode, to restore.
+#[cfg(unix)]
 static SAVED: Mutex<Option<libc::termios>> = Mutex::new(None);
 
 /// Puts stdin's terminal in raw mode as moby/term's makeRaw does (termios_unix.go): the
 /// same flags on every OS, which Apple's cfmakeraw does not set (it also sets IGNBRK and
 /// clears IMAXBEL, TOSTOP and more), applied at once, as TCSETS and TIOCSETA apply them.
+#[cfg(unix)]
 pub fn make_raw() -> io::Result<()> {
     // SAFETY: an all-zero termios is a valid out-parameter.
     let mut t: libc::termios = unsafe { std::mem::zeroed() };
@@ -47,6 +53,7 @@ pub fn make_raw() -> io::Result<()> {
 
 /// Gives the terminal back the settings raw mode took, if it took any. Again, it does
 /// nothing.
+#[cfg(unix)]
 pub fn restore() {
     if let Some(saved) = SAVED.lock().unwrap_or_else(PoisonError::into_inner).take() {
         // SAFETY: tcsetattr(3) reads `saved`.
@@ -56,6 +63,7 @@ pub fn restore() {
 
 /// The size of the terminal `fd` is, rows then columns, or 0×0 if it is not one, as the CLI
 /// measures its stdout (docker/cli cli/streams/stream.go, GetTtySize).
+#[cfg(unix)]
 pub fn size(fd: libc::c_int) -> (u16, u16) {
     // SAFETY: an all-zero winsize is a valid out-parameter.
     let mut ws: libc::winsize = unsafe { std::mem::zeroed() };
@@ -74,6 +82,7 @@ pub fn size(fd: libc::c_int) -> (u16, u16) {
 /// an answer to DA1 with none to OSC 11 before it says there is none. Asked of the
 /// controlling terminal, not stdin, which may be a pipe; `None` where there is none, or
 /// it says nothing in `PATIENCE`, the most a terminal that answers neither is waited for.
+#[cfg(unix)]
 pub fn background() -> Option<(u8, u8, u8)> {
     use std::io::{Read as _, Write as _};
     use std::os::fd::AsRawFd as _;
@@ -157,17 +166,106 @@ pub fn background() -> Option<(u8, u8, u8)> {
 
 /// `v` as a `timeval` field, whose types differ from target to target; 0 if it does not
 /// fit.
+/// Whether this process's stdout (`fd` 1) or stderr (2) is a terminal that takes escape
+/// sequences.
+#[cfg(unix)]
+pub fn styles(fd: libc::c_int) -> bool {
+    // SAFETY: isatty(3) on one of this process's descriptors.
+    unsafe { libc::isatty(fd) == 1 }
+}
+
+/// This process's stdout (`fd` 1) or stderr (2), where it is a console: its handle.
+#[cfg(windows)]
+fn console(fd: i32) -> Option<windows_sys::Win32::Foundation::HANDLE> {
+    use windows_sys::Win32::System::Console::{
+        GetConsoleMode, GetStdHandle, STD_ERROR_HANDLE, STD_OUTPUT_HANDLE,
+    };
+    let which = if fd == 2 {
+        STD_ERROR_HANDLE
+    } else {
+        STD_OUTPUT_HANDLE
+    };
+    // SAFETY: GetStdHandle and GetConsoleMode read this process's state; a handle that is
+    // no console fails GetConsoleMode.
+    unsafe {
+        let h = GetStdHandle(which);
+        let mut mode = 0;
+        (!h.is_null()
+            && h != windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE
+            && GetConsoleMode(h, &mut mode) != 0)
+            .then_some(h)
+    }
+}
+
+/// Whether this process's stdout (`fd` 1) or stderr (2) is a console that takes escape
+/// sequences: its virtual terminal processing turned on, as the Console's documentation
+/// has a program ask for it (SetConsoleMode, ENABLE_VIRTUAL_TERMINAL_PROCESSING); a console
+/// that refuses it (Windows before 10 1511) takes none.
+#[cfg(windows)]
+pub fn styles(fd: i32) -> bool {
+    use windows_sys::Win32::System::Console::{
+        ENABLE_VIRTUAL_TERMINAL_PROCESSING, GetConsoleMode, SetConsoleMode,
+    };
+    let Some(h) = console(fd) else {
+        return false;
+    };
+    let mut mode = 0;
+    // SAFETY: the console's own handle, its mode read then set with one flag more.
+    unsafe {
+        GetConsoleMode(h, &mut mode) != 0
+            && (mode & ENABLE_VIRTUAL_TERMINAL_PROCESSING != 0
+                || SetConsoleMode(h, mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING) != 0)
+    }
+}
+
+/// The size of the console `fd` is, rows then columns, or 0×0 if it is not one: its
+/// window's (GetConsoleScreenBufferInfo, as moby/term's GetWinsize reads it on Windows).
+#[cfg(windows)]
+pub fn size(fd: i32) -> (u16, u16) {
+    use windows_sys::Win32::System::Console::{CONSOLE_SCREEN_BUFFER_INFO, GetConsoleScreenBufferInfo};
+    let Some(h) = console(fd) else {
+        return (0, 0);
+    };
+    let mut info = CONSOLE_SCREEN_BUFFER_INFO::default();
+    // SAFETY: the console's own handle, and a structure for the call to fill.
+    if unsafe { GetConsoleScreenBufferInfo(h, &mut info) } == 0 {
+        return (0, 0);
+    }
+    let w = info.srWindow;
+    let span = |a: i16, b: i16| u16::try_from(i32::from(b) - i32::from(a) + 1).unwrap_or(0);
+    (span(w.Top, w.Bottom), span(w.Left, w.Right))
+}
+
+/// The paint for stderr, if it is a colour terminal (a build's live progress; the look's
+/// errors on Unix): a terminal that takes escape sequences, where `NO_COLOR` is unset and
+/// `TERM` is not `dumb`.
+pub(crate) fn styled_err() -> Option<shards_tui::tokens::Paint> {
+    let color = std::env::var_os("NO_COLOR").is_none_or(|v| v.is_empty())
+        && std::env::var_os("TERM").is_none_or(|t| t != "dumb");
+    let env = |k: &str| std::env::var(k).ok();
+    (color && styles(2)).then(|| shards_tui::tokens::Paint::new(shards_tui::tokens_truecolor(&env)))
+}
+
+/// The size of the terminal stderr is, rows then columns; 0×0 where it is none.
+pub(crate) fn err_size() -> (usize, usize) {
+    let (r, c) = size(2);
+    (usize::from(r), usize::from(c))
+}
+
+#[cfg(unix)]
 fn field<T: TryFrom<i64> + Default>(v: i64) -> T {
     T::try_from(v).unwrap_or_default()
 }
 
 /// Where `needle` starts in `hay`.
+#[cfg(unix)]
 fn find(hay: &[u8], needle: &[u8]) -> Option<usize> {
     hay.windows(needle.len()).position(|w| w == needle)
 }
 
 /// The colour in an answer to OSC 11: each channel of 1 to 4 hex digits, scaled to 8 bits
 /// (XParseColor's `rgb:` form).
+#[cfg(unix)]
 fn parse_background(heard: &[u8]) -> Option<(u8, u8, u8)> {
     let at = find(heard, b"]11;rgb:")? + 8;
     let rest = heard.get(at..)?;
@@ -184,7 +282,7 @@ fn parse_background(heard: &[u8]) -> Option<(u8, u8, u8)> {
     Some((channels.next()??, channels.next()??, channels.next()??))
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
 

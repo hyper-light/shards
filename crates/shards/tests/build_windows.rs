@@ -174,3 +174,145 @@ fn run_steps_reach_the_network_unless_it_is_none() {
     assert_eq!(built.status, Some(1), "{}", built.stderr);
     assert!(built.stderr.contains(" tcp error "), "{}", built.stderr);
 }
+
+/// A fake SSH agent's answer to `request`: one key, `shards-test-key`, listed (11) and
+/// signed with (13); anything else refused (SSH_AGENT_FAILURE).
+fn agent_answer(request: &[u8]) -> Vec<u8> {
+    let string = |out: &mut Vec<u8>, b: &[u8]| {
+        out.extend((b.len() as u32).to_be_bytes());
+        out.extend_from_slice(b);
+    };
+    let mut out = Vec::new();
+    match request.first() {
+        Some(11) => {
+            out.push(12);
+            out.extend(1u32.to_be_bytes());
+            string(&mut out, b"a fake key's blob");
+            string(&mut out, b"shards-test-key");
+        }
+        Some(13) => {
+            out.push(14);
+            string(&mut out, b"a fake signature");
+        }
+        _ => out.push(5),
+    }
+    out
+}
+
+/// Serves one connection of the SSH agent protocol on `c`, message by message, until it
+/// ends.
+fn serve_agent(mut c: impl std::io::Read + std::io::Write) {
+    loop {
+        let mut n = [0u8; 4];
+        if c.read_exact(&mut n).is_err() {
+            return;
+        }
+        let mut request = vec![0u8; u32::from_be_bytes(n) as usize];
+        if c.read_exact(&mut request).is_err() {
+            return;
+        }
+        let answer = agent_answer(&request);
+        if c.write_all(&(answer.len() as u32).to_be_bytes()).is_err() || c.write_all(&answer).is_err() {
+            return;
+        }
+    }
+}
+
+/// A fake agent at a named pipe, as Windows' OpenSSH agent serves its own: a new instance
+/// for each client, served on a thread of its own, for the test's life.
+fn pipe_agent(name: &str) {
+    use std::os::windows::ffi::OsStrExt as _;
+    use std::os::windows::io::FromRawHandle as _;
+    use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
+    use windows_sys::Win32::Storage::FileSystem::PIPE_ACCESS_DUPLEX;
+    use windows_sys::Win32::System::Pipes::{
+        ConnectNamedPipe, CreateNamedPipeW, PIPE_READMODE_BYTE, PIPE_TYPE_BYTE, PIPE_UNLIMITED_INSTANCES,
+        PIPE_WAIT,
+    };
+    let wide: Vec<u16> = std::ffi::OsStr::new(name).encode_wide().chain([0]).collect();
+    std::thread::spawn(move || {
+        loop {
+            // SAFETY: a NUL-terminated name; default security.
+            let h = unsafe {
+                CreateNamedPipeW(
+                    wide.as_ptr(),
+                    PIPE_ACCESS_DUPLEX,
+                    PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT,
+                    PIPE_UNLIMITED_INSTANCES,
+                    64 << 10,
+                    64 << 10,
+                    0,
+                    std::ptr::null(),
+                )
+            };
+            if h == INVALID_HANDLE_VALUE {
+                return;
+            }
+            // SAFETY: the instance just made, owned by the file from here on.
+            let pipe = unsafe { std::fs::File::from_raw_handle(h) };
+            // SAFETY: the instance's handle; waits for a client (synchronous).
+            let connected = unsafe { ConnectNamedPipe(h, std::ptr::null_mut()) } != 0
+                || std::io::Error::last_os_error().raw_os_error() == Some(535); // ERROR_PIPE_CONNECTED
+            if connected {
+                std::thread::spawn(move || serve_agent(pipe));
+            }
+        }
+    });
+}
+
+/// `RUN --mount=type=ssh` reaches the client's SSH agent through the builder, as BuildKit's
+/// steps reach it: one at an AF_UNIX socket, and one at a named pipe, as Windows' OpenSSH
+/// agent serves (BuildKit's winio.DialPipe). The step sees the agent's key and has it sign,
+/// and cannot have it forget its keys, which BuildKit's read-only agent refuses.
+#[test]
+fn run_steps_reach_the_clients_ssh_agent_by_socket_or_pipe() {
+    if cannot_run_vms() {
+        return;
+    }
+    let keys = TempDir::new("bw-ssh-agent");
+    let sock = keys.join("agent.sock");
+    let listener = shards_vmm::platform::UnixListener::bind(&sock).unwrap();
+    std::thread::spawn(move || {
+        while let Ok((c, _)) = listener.accept() {
+            std::thread::spawn(move || serve_agent(c));
+        }
+    });
+    let pipe = format!(r"\\.\pipe\shards-test-agent-{}", std::process::id());
+    pipe_agent(&pipe);
+    let (image, _) = served();
+    for (what, at) in [
+        ("socket", sock.to_string_lossy().into_owned()),
+        ("pipe", pipe.clone()),
+    ] {
+        let home = TempDir::new(&format!("bw-ssh-home-{what}"));
+        let ctx = context(
+            &format!("bw-ssh-ctx-{what}"),
+            &format!("FROM {image}\nUSER root\nRUN --mount=type=ssh [\"/bin/testguest\", \"agent\"]\n"),
+        );
+        let ssh = format!("default={at}");
+        let built = run_shards_env(
+            &["build"],
+            &[
+                "--progress=plain",
+                "--no-cache",
+                "--ssh",
+                ssh.as_str(),
+                ctx.to_str().unwrap(),
+            ],
+            &build_env(&home),
+            TIMEOUT,
+        );
+        let shown = format!(
+            "{what}\n--- stdout\n{}\n--- stderr\n{}",
+            built.stdout, built.stderr
+        );
+        assert_eq!(built.status, Some(0), "{shown}");
+        for said in [
+            " agent keys 1 shards-test-key\n",
+            " agent signed\n",
+            " agent remove refused\n",
+        ] {
+            assert!(built.stderr.contains(said), "{said:?}\n{shown}");
+        }
+    }
+}

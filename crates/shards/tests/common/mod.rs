@@ -158,9 +158,11 @@ pub fn fetch(a: &Artifact) -> PathBuf {
     std::fs::create_dir_all(&dir).unwrap();
     let part = dir.join(format!("{}.{}.part", a.name, std::process::id()));
     // Every failure is retried, a connection reset in the TLS handshake as well: curl's
-    // `--retry` alone retries timeouts and some HTTP statuses (curl(1)).
+    // `--retry` alone retries timeouts and some HTTP statuses (curl(1)). Eight times, its
+    // waits doubling from a second, some four minutes in all: GitHub's release downloads
+    // answered 500 past three tries (CI run 38252923745).
     let ok = Command::new("curl")
-        .args(["-fsSL", "--retry", "3", "--retry-all-errors", "-o"])
+        .args(["-fsSL", "--retry", "8", "--retry-all-errors", "-o"])
         .arg(&part)
         .arg(a.url)
         .status()

@@ -68,7 +68,7 @@ libc = { workspace = true }
 shards-apple = { path = "../apple" }
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { workspace = true }
+windows-sys = { workspace = true, features = ["Win32_System_Pipes"] }
 
 [build-dependencies]
 # The helpers' digests (build.rs).
@@ -81,6 +81,7 @@ windows-sys = { workspace = true, features = [
   "Win32_Security_Isolation",
   "Win32_System_Diagnostics_ToolHelp",
   "Win32_System_JobObjects",
+  "Win32_System_Pipes",
   "Win32_System_Threading",
 ] }
 
