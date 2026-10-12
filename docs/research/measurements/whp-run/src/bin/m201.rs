@@ -473,14 +473,24 @@ fn confined_child(pipe: usize) {
     ));
 }
 
-/// A suspended child in an AppContainer of `sid` holding `caps`, in `job`, with `mitigate`
-/// or not; its grants pipe's write end, its process and its thread.
+/// Which of the confinement's parts a child is given, to find which a refusal is of.
+#[derive(Debug, Clone, Copy)]
+struct Variant {
+    profile: bool,
+    job: bool,
+    child_policy: bool,
+    /// The mitigation words given: 0, the first, or both.
+    mitigations: usize,
+}
+
+/// A suspended child in an AppContainer of `sid` holding `caps`, in `job` where the variant
+/// says, with what else it says; its grants pipe's write end, its process and its thread.
 fn spawn(
     args: &str,
     sid: Option<PSID>,
     caps: &mut [SID_AND_ATTRIBUTES],
     job: HANDLE,
-    mitigate: bool,
+    variant: Variant,
     pipe_read: HANDLE,
 ) -> Result<PROCESS_INFORMATION, String> {
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
@@ -521,7 +531,9 @@ fn spawn(
         handles.as_ptr().cast(),
         handles.len() * std::mem::size_of::<HANDLE>(),
     )?;
-    update(PROC_THREAD_ATTRIBUTE_JOB_LIST, jobs.as_ptr().cast(), std::mem::size_of::<HANDLE>())?;
+    if variant.job {
+        update(PROC_THREAD_ATTRIBUTE_JOB_LIST, jobs.as_ptr().cast(), std::mem::size_of::<HANDLE>())?;
+    }
     if let Some(sid) = sid {
         capabilities.AppContainerSid = sid;
         capabilities.Capabilities = caps.as_mut_ptr();
@@ -531,17 +543,19 @@ fn spawn(
             (&raw const capabilities).cast(),
             std::mem::size_of::<SECURITY_CAPABILITIES>(),
         )?;
-        update(
-            PROC_THREAD_ATTRIBUTE_CHILD_PROCESS_POLICY,
-            (&raw const child_policy).cast(),
-            std::mem::size_of::<u32>(),
-        )?;
+        if variant.child_policy {
+            update(
+                PROC_THREAD_ATTRIBUTE_CHILD_PROCESS_POLICY,
+                (&raw const child_policy).cast(),
+                std::mem::size_of::<u32>(),
+            )?;
+        }
     }
-    if mitigate {
+    if variant.mitigations > 0 {
         update(
             PROC_THREAD_ATTRIBUTE_MITIGATION_POLICY,
             MITIGATIONS.as_ptr().cast(),
-            std::mem::size_of_val(&MITIGATIONS),
+            variant.mitigations * std::mem::size_of::<u64>(),
         )?;
     }
     let mut si = STARTUPINFOEXW::default();
@@ -603,18 +617,31 @@ fn job(one_process: bool) -> Result<HANDLE, String> {
     Ok(job)
 }
 
-fn confined_run(mitigate: bool, caps_bytes: &[Vec<u8>]) -> Result<(), String> {
-    let base = std::env::current_dir().map_err(|e| e.to_string())?.join(format!("m201-{}", mitigate as u8));
+fn confined_run(variant: Variant, n: usize, caps_bytes: &[Vec<u8>]) -> Result<(), String> {
+    let base = std::env::current_dir().map_err(|e| e.to_string())?.join(format!("m201-{n}"));
     let (granted, refused) = (base.join("granted"), base.join("refused"));
     for d in [&granted, &refused] {
         std::fs::create_dir_all(d).map_err(|e| e.to_string())?;
     }
-    let name = wide(&format!("shards.m201.{}.{}", std::process::id(), mitigate as u8));
+    let name = wide(&format!("shards.m201.{}.{n}", std::process::id()));
     let mut sid: PSID = std::ptr::null_mut();
-    // SAFETY: a name we own; the SID freed below. No profile is made.
-    let hr = unsafe { DeriveAppContainerSidFromAppContainerName(name.as_ptr(), &raw mut sid) };
+    // SAFETY: a name we own; the SID freed below, the profile, where made, deleted.
+    let hr = unsafe {
+        if variant.profile {
+            windows_sys::Win32::Security::Isolation::CreateAppContainerProfile(
+                name.as_ptr(),
+                name.as_ptr(),
+                name.as_ptr(),
+                std::ptr::null(),
+                0,
+                &raw mut sid,
+            )
+        } else {
+            DeriveAppContainerSidFromAppContainerName(name.as_ptr(), &raw mut sid)
+        }
+    };
     if hr < 0 {
-        return Err(format!("DeriveAppContainerSidFromAppContainerName: {:#010x}", hr as u32));
+        return Err(format!("the AppContainer's SID: {:#010x}", hr as u32));
     }
     grant_dir(&granted, sid)?;
     let granted_sock = granted.join("g.sock").display().to_string();
@@ -639,7 +666,28 @@ fn confined_run(mitigate: bool, caps_bytes: &[Vec<u8>]) -> Result<(), String> {
     }
     let job = job(true)?;
     let t = Instant::now();
-    let pi = spawn(&format!("child-confined {}", pr as usize), Some(sid), &mut caps, job, mitigate, pr)?;
+    let spawned_pi = spawn(&format!("child-confined {}", pr as usize), Some(sid), &mut caps, job, variant, pr);
+    let pi = match spawned_pi {
+        Ok(pi) => pi,
+        Err(e) => {
+            // SAFETY: what this run made.
+            unsafe {
+                CloseHandle(pw);
+                CloseHandle(pr);
+                closesocket(theirs);
+                closesocket(ours);
+                closesocket(lg);
+                closesocket(lr);
+                CloseHandle(job);
+                if variant.profile {
+                    windows_sys::Win32::Security::Isolation::DeleteAppContainerProfile(name.as_ptr());
+                }
+                FreeSid(sid);
+            }
+            let _ = std::fs::remove_dir_all(&base);
+            return Err(e);
+        }
+    };
     let dup = |h: HANDLE| -> usize {
         let mut out: HANDLE = std::ptr::null_mut();
         // SAFETY: our handle, duplicated into the child we made, of the same access.
@@ -681,7 +729,7 @@ fn confined_run(mitigate: bool, caps_bytes: &[Vec<u8>]) -> Result<(), String> {
     let ran = t.elapsed();
     let refused_conn = accept_within(lr, Duration::from_millis(200)).is_some();
     println!(
-        "parent: mitigations={mitigate} spawned_us={} ran_us={} exit={code} granted dir dialed: {dialed:?}; refused dir reached: {refused_conn}; pair heard: {:?}",
+        "parent: {variant:?} spawned_us={} ran_us={} exit={code} granted dir dialed: {dialed:?}; refused dir reached: {refused_conn}; pair heard: {:?}",
         spawned.as_micros(),
         ran.as_micros(),
         read_some(ours)
@@ -692,6 +740,9 @@ fn confined_run(mitigate: bool, caps_bytes: &[Vec<u8>]) -> Result<(), String> {
         closesocket(lr);
         closesocket(ours);
         CloseHandle(job);
+        if variant.profile {
+            windows_sys::Win32::Security::Isolation::DeleteAppContainerProfile(name.as_ptr());
+        }
         FreeSid(sid);
     }
     drop(file);
@@ -702,7 +753,13 @@ fn confined_run(mitigate: bool, caps_bytes: &[Vec<u8>]) -> Result<(), String> {
 /// A child left running, ended as its Job's last handle closes.
 fn lifeline() -> Result<(), String> {
     let job = job(false)?;
-    let pi = spawn("child-sleep", None, &mut [], job, false, std::ptr::null_mut())?;
+    let plain = Variant {
+        profile: false,
+        job: true,
+        child_policy: false,
+        mitigations: 0,
+    };
+    let pi = spawn("child-sleep", None, &mut [], job, plain, std::ptr::null_mut())?;
     // SAFETY: the child we made.
     unsafe { ResumeThread(pi.hThread) };
     std::thread::sleep(Duration::from_millis(500));
@@ -748,11 +805,58 @@ fn main() {
         }
     };
     println!("VidExo grants {} capability SID(s)", caps.len());
-    for mitigate in [false, true] {
-        if let Err(e) = confined_run(mitigate, &caps) {
-            println!("confined (mitigations={mitigate}): {e}");
+    let variants = [
+        (false, false, false, 0),
+        (true, false, false, 0),
+        (true, true, false, 0),
+        (true, true, true, 0),
+        (true, true, true, 1),
+        (true, true, true, 2),
+    ];
+    for (n, (profile, job, child_policy, mitigations)) in variants.into_iter().enumerate() {
+        let v = Variant {
+            profile,
+            job,
+            child_policy,
+            mitigations,
+        };
+        if let Err(e) = confined_run(v, n, &caps) {
+            println!("confined {v:?}: {e}");
         }
     }
+    // What a profile per VM costs: made and deleted, each timed.
+    let (mut made, mut deleted) = (Vec::new(), Vec::new());
+    for i in 0..20 {
+        let name = wide(&format!("shards.m201.cost.{}.{i}", std::process::id()));
+        let mut sid: PSID = std::ptr::null_mut();
+        let t = Instant::now();
+        // SAFETY: names we own; the SID freed, the profile deleted, below.
+        let hr = unsafe {
+            windows_sys::Win32::Security::Isolation::CreateAppContainerProfile(
+                name.as_ptr(),
+                name.as_ptr(),
+                name.as_ptr(),
+                std::ptr::null(),
+                0,
+                &raw mut sid,
+            )
+        };
+        made.push(t.elapsed());
+        let t = Instant::now();
+        // SAFETY: as above.
+        unsafe {
+            windows_sys::Win32::Security::Isolation::DeleteAppContainerProfile(name.as_ptr());
+            if hr >= 0 {
+                FreeSid(sid);
+            }
+        }
+        deleted.push(t.elapsed());
+    }
+    println!(
+        "profile made {}; deleted {}",
+        whp_run::summary(&mut made),
+        whp_run::summary(&mut deleted)
+    );
     if let Err(e) = lifeline() {
         println!("lifeline: {e}");
     }
