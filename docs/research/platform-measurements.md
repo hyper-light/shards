@@ -7379,13 +7379,28 @@ revision before comparing a changed API/implementation.
     Linux reuses one for another peer: the bench's cases one after another, whose
     connections the network process closed first, exhausted them (connect: EADDRNOTAVAIL,
     which the network process now says). The bench closes its side first.
+  - What a run's network process is told before its VM has the run, asked one ask at a
+    time, then all at once with their answers read after the last (`networks::Asks`):
+    `build-ab/ab.py`, 922fcbda against it, one template, `--rm --network n` on a user
+    network, `exit 0`, n = 200 pairs, load 7.5 to 11 (other work on the host). Without
+    peers on it: −282 µs at p50 of wall time [−464, +18], −231 µs outside the guest
+    [−389, −11]. With two peers running on it: +105 µs [−474, +635], no difference that
+    resolves: each peer's own network process is still asked one after another, its
+    socket being others' to use too.
+  - What peers cost a run on their network: one build, two homes with one template, two
+    peers running on `n` in one of them (`sleep` containers), n = 200 pairs: +1,267 µs of
+    wall time [+1,106, +1,410], +1,118 µs of it in the guest from the request to the
+    command's status [+1,089, +1,148], +154 µs outside it [+49, +295]. A second sample
+    of 30 runs each, minutes later: +304 µs in the guest at p50, its markers showing it
+    grow over the command's run and after its exit. The peers' VMs were idle (0% CPU).
 - **Consequence (D31).** A network process's connections cost its host what they hold:
   their queues over memory of their own, let go once idle for an RTO, kept that long for
   the next connection's bytes, then handed back to the OS. Its memory beside a VM's own
   is a few MiB, whatever its connections carried before. E1: a run whose MAC is made, on
-  the default bridge, costs its guest nothing of its network as the request comes; its
-  daemon's share is to be measured on a quiet host, and a given MAC's and a user
-  network's round trips (one for its MAC, two for each of its peers) are to go as one.
+  the default bridge, costs its guest nothing of its network as the request comes, and
+  what a run's network process takes before the run goes in one round trip. Open: the
+  daemon's share on a quiet host; the peers' processes asked at once; and what peers cost
+  a run in its guest, which depends on the host's load and is not yet explained.
 
 ### M211. The limits a build's `RUN` step starts with
 
