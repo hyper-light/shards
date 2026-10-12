@@ -7207,3 +7207,30 @@ revision before comparing a changed API/implementation.
   a read never holds a send; their read timeout stays a WSAPoll before the read, as
   Winsock leaves a connection whose receive timed out in an indeterminate state. The
   vsock tests' stall was their own client's.
+
+### M208. The environment a child in an AppContainer must be given
+
+- **Question.** shards gives its Unix children `SHARDS_LOG` and `SHARDS_TIMING` alone (the
+  processes a guest could take over carry none of their spawner's secrets). Given those and
+  `SystemRoot` on Windows, every confined child was refused (CreateProcessW:
+  ERROR_ENVVAR_NOT_FOUND, 203; CI run 38256632140). What must a child made in an
+  AppContainer be given, and what does it have then?
+- **Method.** `docs/research/measurements/whp-run/src/bin/m208.rs`, by `whp-run.yml`, runs
+  38260099347 and 38260506180 on branch `whp`, 2026-10-12, on a windows-2022 and a
+  windows-2025 runner: a child made as D141 makes the VM process (an AppContainer of its
+  own, a Job, the mitigations), given each of: this process's environment; none; and
+  `SystemRoot`, `LOCALAPPDATA`, `USERPROFILE`, `TEMP` and `TMP` in several combinations.
+  The child prints every variable it has, its temporary directory and whether it may write
+  a file there, WSAStartup's result, and whether it makes an AF_UNIX and an AF_INET socket.
+- **Found** (both runners alike):
+  - **Without `LOCALAPPDATA` no child is made** (203), whatever else it is given.
+  - **Windows rewrites what it is given**: the child's `LOCALAPPDATA` is the container's
+    own folder (`...\Packages\<profile>\AC`) and its `TEMP` and `TMP` the `Temp` in it,
+    whatever they were or were not; it may write a file there.
+  - **Without `SystemRoot`, Winsock starts and makes no socket**: WSAStartup returns 0, and
+    every socket, AF_UNIX and AF_INET alike, fails with WSAEPROVIDERFAILEDINIT (10106).
+  - `LOCALAPPDATA` and `SystemRoot` alone: the child is made, its temporary directory is
+    its container's and writable, and it makes both sockets.
+- **Consequence (D141, D142, D143).** A Windows child of shards' is given what it is told
+  (`SHARDS_LOG`, `SHARDS_TIMING`) and this process's `LOCALAPPDATA` and `SystemRoot` alone;
+  its temporary directory is its container's own.

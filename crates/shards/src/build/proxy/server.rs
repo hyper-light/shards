@@ -32,6 +32,31 @@ pub const PORT: u16 = 3128;
 /// A request body kept in memory up to this; past it, in a file of the proxy's own.
 const IN_MEMORY: usize = 64 << 10;
 
+/// How long a connection's end waits for its client to close too (Go's net/http
+/// rstAvoidanceDelay).
+const RST_AVOIDANCE: Duration = Duration::from_millis(500);
+
+/// Ends a connection as Go's server ends one it reads no more of (`closeWriteAndWait`):
+/// its writing shut, then what the client still sends read and dropped until it closes too
+/// or [`RST_AVOIDANCE`] passes, so that the close resets nothing the client has yet to
+/// read. Windows' AF_UNIX loses what a reset connection's peer had not read (PM M199), as
+/// a TCP peer's stack may (golang/go#3595); where Go only waits, this reads the client's
+/// bytes away, and so resets nothing, and is done as soon as the client closes.
+fn close_gracefully(sock: &UnixStream) {
+    let _ = sock.shutdown(std::net::Shutdown::Write);
+    let deadline = Instant::now() + RST_AVOIDANCE;
+    let mut dropped = [0u8; 4096];
+    loop {
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() || sock.set_read_timeout(Some(left)).is_err() {
+            return;
+        }
+        if !matches!((&*sock).read(&mut dropped), Ok(n) if n > 0) {
+            return;
+        }
+    }
+}
+
 /// Whether a request may go to `ip`: never the host itself (its loopback, unspecified,
 /// link-local, multicast and broadcast addresses, nor IPv4-compatible IPv6), as the
 /// builder's network keeps a step from them where it has the network (D31).
@@ -816,6 +841,7 @@ impl<'p> Session<'p> {
                 .spawn_scoped(scope, move || {
                     let _ = conn.set_nonblocking(false);
                     self.connection(&conn);
+                    close_gracefully(&conn);
                     self.let_go(id);
                 });
             if spawned.is_err() {

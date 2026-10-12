@@ -3587,9 +3587,12 @@ its network the network process's (D142).
 - **Its sockets' directory** is in the user's own temporary directory, its lock a file
   shared with no one, which no other process opens while its owner holds it; a later
   build's sweep removes one whose lock opens (D137).
-- **A child's environment** is `SHARDS_LOG` and `SHARDS_TIMING`, as on Unix, and
-  `SystemRoot`, without which Winsock loads no provider in the child; a Windows child had
-  its spawner's whole environment until now (D141).
+- **A child's environment** is `SHARDS_LOG` and `SHARDS_TIMING`, as on Unix, and this
+  process's `LOCALAPPDATA` and `SystemRoot` (PM M208): without `LOCALAPPDATA` Windows makes
+  no child in an AppContainer, and points it at the container's own folder, the child's
+  `TEMP` at the `Temp` there; without `SystemRoot` Winsock makes no socket
+  (WSAEPROVIDERFAILEDINIT). A Windows child had its spawner's whole environment until now
+  (D141).
 
 ### D142. The network process on Windows
 

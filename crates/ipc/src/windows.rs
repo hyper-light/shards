@@ -1131,18 +1131,24 @@ fn create(
     made
 }
 
+/// What a child is given of this process's environment besides what it is told (PM M208):
+/// `LOCALAPPDATA`, without which Windows makes no child in an AppContainer
+/// (ERROR_ENVVAR_NOT_FOUND), and which it points at the container's own folder, `TEMP` and
+/// `TMP` at the `Temp` in it; and `SystemRoot`, whose `%SystemRoot%` Winsock's providers are
+/// found under as a socket is made.
+const KEPT: [&str; 2] = ["LOCALAPPDATA", "SystemRoot"];
+
 /// A child's environment block (CreateProcessW's, Unicode): `given`, and this process's
-/// `SystemRoot`, without which Winsock loads no provider in the child (WSAStartup fails,
-/// WSAEPROVIDERFAILEDINIT); each `NAME=VALUE` and its NUL, sorted by name as Windows keeps
-/// a block (case folded), and a NUL to end it.
+/// [`KEPT`]; each `NAME=VALUE` and its NUL, sorted by name as Windows keeps a block (case
+/// folded), and a NUL to end it.
 fn environment(given: &[(&str, &OsStr)]) -> Vec<u16> {
-    let system_root = std::env::var_os("SystemRoot");
+    let kept: Vec<(&str, std::ffi::OsString)> = KEPT
+        .iter()
+        .filter(|k| !given.iter().any(|(n, _)| n.eq_ignore_ascii_case(k)))
+        .filter_map(|&k| std::env::var_os(k).map(|v| (k, v)))
+        .collect();
     let mut vars: Vec<(&str, &OsStr)> = given.to_vec();
-    if let Some(root) = &system_root
-        && !vars.iter().any(|(n, _)| n.eq_ignore_ascii_case("SystemRoot"))
-    {
-        vars.push(("SystemRoot", root.as_os_str()));
-    }
+    vars.extend(kept.iter().map(|(k, v)| (*k, v.as_os_str())));
     vars.sort_by_key(|(n, _)| n.to_ascii_uppercase());
     let mut block = Vec::new();
     for (name, value) in vars {
@@ -1300,22 +1306,26 @@ mod tests {
         assert_eq!(line(&[""]), r#"C:\bin\shards-vm.exe """#);
     }
 
-    /// A child's environment is what it is given and SystemRoot, sorted by name with case
-    /// folded, each variable and the block ended by a NUL.
+    /// A child's environment is what it is given, LOCALAPPDATA and SystemRoot, sorted by
+    /// name with case folded, each variable and the block ended by a NUL.
     #[test]
-    fn a_child_is_given_its_variables_and_systemroot_alone() {
+    fn a_child_is_given_its_variables_and_what_windows_needs_alone() {
         let text = |block: &[u16]| String::from_utf16(block).unwrap();
-        let root = std::env::var_os("SystemRoot").unwrap();
+        let ours = |k: &str| std::env::var_os(k).unwrap().to_string_lossy().into_owned();
         let block = environment(&[("SHARDS_LOG", OsStr::new("debug")), ("a_first", OsStr::new("1"))]);
         assert_eq!(
             text(&block),
             format!(
-                "a_first=1\0SHARDS_LOG=debug\0SystemRoot={}\0\0",
-                root.to_string_lossy()
+                "a_first=1\0LOCALAPPDATA={}\0SHARDS_LOG=debug\0SystemRoot={}\0\0",
+                ours("LOCALAPPDATA"),
+                ours("SystemRoot")
             )
         );
         // One given is kept, not doubled.
-        let block = environment(&[("SYSTEMROOT", OsStr::new(r"D:\w"))]);
-        assert_eq!(text(&block), "SYSTEMROOT=D:\\w\0\0");
+        let block = environment(&[
+            ("SYSTEMROOT", OsStr::new(r"D:\w")),
+            ("localappdata", OsStr::new("L")),
+        ]);
+        assert_eq!(text(&block), "localappdata=L\0SYSTEMROOT=D:\\w\0\0");
     }
 }
