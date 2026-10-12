@@ -22,7 +22,9 @@ use std::time::Instant;
 use super::queue::{Chain, Queue, QueueError, with};
 use super::{Activation, DeviceInterrupt, VirtioDevice, feature};
 use crate::memory::{Access, GuestMemory};
-use crate::platform::{RawSocket, UnixStream};
+#[cfg(unix)]
+use crate::platform::RawSocket;
+use crate::platform::UnixStream;
 use crate::snapshot::codec::{self, Reader, Writer};
 use crate::{debug, warn};
 use muxer::{Muxer, Saved, Token};
@@ -219,39 +221,58 @@ impl Waker {
     }
 }
 
-/// A self-pair: vCPU threads write a byte to wake the worker out of its wait. Windows has
-/// no pipe its socket poller waits on (PM M199), so a pair of sockets, both non-blocking.
+/// An event vCPU threads set to wake the worker out of its wait, which the Windows poller
+/// sleeps on beside its sockets' (poll.rs): no socket, and so no socket file a confined VM
+/// process might be refused.
 #[cfg(windows)]
 #[derive(Debug)]
-struct Waker {
-    read: UnixStream,
-    write: UnixStream,
-}
+struct Waker(windows_sys::Win32::Networking::WinSock::WSAEVENT);
 
 #[cfg(windows)]
 impl Waker {
     fn new() -> io::Result<Waker> {
-        let (read, write) = UnixStream::pair()?;
-        read.set_nonblocking(true)?;
-        write.set_nonblocking(true)?;
-        Ok(Waker { read, write })
+        use windows_sys::Win32::Networking::WinSock::{WSA_INVALID_EVENT, WSACreateEvent};
+        crate::platform::winsock()?;
+        // SAFETY: no arguments.
+        let event = unsafe { WSACreateEvent() };
+        if event == WSA_INVALID_EVENT {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(Waker(event))
     }
 
-    /// What the worker's poller waits on.
-    fn raw(&self) -> RawSocket {
-        crate::platform::AsRawSocket::raw_socket(&self.read)
+    /// The event the worker's poller sleeps on.
+    fn event(&self) -> windows_sys::Win32::Networking::WinSock::WSAEVENT {
+        self.0
     }
 
-    /// Cheap enough for a vCPU thread. A full pair already holds a wakeup.
+    /// Cheap enough for a vCPU thread. A set event already holds a wakeup.
     fn wake(&self) {
-        let _ = std::io::Write::write(&mut &self.write, &[1u8]);
+        // SAFETY: our own event.
+        unsafe { windows_sys::Win32::Networking::WinSock::WSASetEvent(self.0) };
     }
 
     fn drain(&self) {
-        let mut buf = [0u8; 64];
-        while std::io::Read::read(&mut &self.read, &mut buf).is_ok_and(|n| n > 0) {}
+        // SAFETY: our own event.
+        unsafe { windows_sys::Win32::Networking::WinSock::WSAResetEvent(self.0) };
     }
 }
+
+#[cfg(windows)]
+impl Drop for Waker {
+    fn drop(&mut self) {
+        // SAFETY: our own event, which no wait uses once the waker drops: the worker that
+        // waits on it has ended (Vsock::stop joins it) or holds the waker itself.
+        unsafe { windows_sys::Win32::Networking::WinSock::WSACloseEvent(self.0) };
+    }
+}
+
+// SAFETY: an event handle, set and reset from any thread.
+#[cfg(windows)]
+unsafe impl Send for Waker {}
+// SAFETY: as above.
+#[cfg(windows)]
+unsafe impl Sync for Waker {}
 
 /// What the worker owns while it runs, handed back when it stops.
 struct Session {
@@ -485,6 +506,7 @@ fn run(
             }
         };
         interests.clear();
+        #[cfg(unix)]
         interests.push(Interest {
             fd: waker.raw(),
             read: true,
@@ -504,7 +526,12 @@ fn run(
         ready.clear();
         let waited = match &mut poller {
             Some(p) => p.wait(&interests, timeout, &mut ready),
-            None => poll::Poller::new().and_then(|p| poller.insert(p).wait(&interests, timeout, &mut ready)),
+            None => poll::Poller::new().and_then(|p| {
+                let p = poller.insert(p);
+                #[cfg(windows)]
+                p.watch(waker.event());
+                p.wait(&interests, timeout, &mut ready)
+            }),
         };
         if let Err(e) = waited {
             // Unexpected (out of memory or descriptors): back off rather than spin.

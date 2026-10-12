@@ -64,6 +64,9 @@ pub struct Poller {
     /// The event every socket's network events signal (WSAEventSelect).
     #[cfg(windows)]
     event: windows_sys::Win32::Networking::WinSock::WSAEVENT,
+    /// Another event that wakes a wait: the worker's waker.
+    #[cfg(windows)]
+    watched: Option<windows_sys::Win32::Networking::WinSock::WSAEVENT>,
     #[cfg(windows)]
     fds: Vec<windows_sys::Win32::Networking::WinSock::WSAPOLLFD>,
 }
@@ -253,8 +256,15 @@ impl Poller {
         }
         Ok(Poller {
             event,
+            watched: None,
             fds: Vec::new(),
         })
+    }
+
+    /// Wakes every wait when `event` is set, as well as for the sockets'; its owner resets
+    /// it, and keeps it open while the poller waits.
+    pub fn watch(&mut self, event: windows_sys::Win32::Networking::WinSock::WSAEVENT) {
+        self.watched = Some(event);
     }
 
     /// Waits until an interest is ready or `timeout` passes; appends what is ready to
@@ -296,9 +306,13 @@ impl Poller {
         let ms = timeout.map_or(u32::MAX, |t| {
             u32::try_from(t.as_micros().div_ceil(1000)).unwrap_or(u32::MAX - 1)
         });
-        let handle = self.event as windows_sys::Win32::Foundation::HANDLE;
-        // SAFETY: one event handle of ours.
-        unsafe { WSAWaitForMultipleEvents(1, &raw const handle, 0, ms, 0) };
+        let handles: Vec<windows_sys::Win32::Foundation::HANDLE> = [Some(self.event), self.watched]
+            .into_iter()
+            .flatten()
+            .map(|e| e as windows_sys::Win32::Foundation::HANDLE)
+            .collect();
+        // SAFETY: our own event and the one watched, which its owner keeps open.
+        unsafe { WSAWaitForMultipleEvents(handles.len() as u32, handles.as_ptr(), 0, ms, 0) };
         self.look(interests, out)
     }
 
