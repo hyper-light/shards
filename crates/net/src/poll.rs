@@ -5,10 +5,11 @@
 //! it is ready for is left.
 //!
 //! A descriptor closed is forgotten by both (epoll(7) once its last reference closes,
-//! kqueue(2) at close), so the caller never removes one it is closing: a change made
-//! after the close could reach a new descriptor of the same number. On Windows a socket
-//! closed is not forgotten, and its handle's value may name the next socket made: the
-//! caller makes a socket's interest NONE before it closes it ([`Poller::set`]).
+//! kqueue(2) at close), so a change made after the close could reach a new descriptor of
+//! the same number: the caller forgets one before it closes it ([`Poller::forget`]). On
+//! Windows a closed socket's registration goes with it, but notices already queued for it
+//! may still come, and its handle's value may name the next socket made: forgotten first,
+//! its notices are let go of as they come.
 //!
 //! On Windows (D142) each socket is registered with a completion port as its interest
 //! changes (ProcessSocketNotifications, level-triggered), and a wait takes the port's
@@ -17,7 +18,10 @@
 //! where the port costs what it does beside none (PM M213). A handle watched beside the
 //! sockets (a peer's process) comes as a packet a thread-pool wait posts. A hangup is a
 //! read's and never a write's (PM M199: a peer's half-close is a hangup whatever is
-//! asked, which a wait to write would spin on).
+//! asked, which a wait to write would spin on). A socket that waits for nothing for a
+//! while is registered again filtering no events, not removed: a removal ends only with
+//! its notice, and a registration enabled again before it came failed, which reset the
+//! socket's connection (PM M215).
 
 #[cfg(unix)]
 use std::io;
@@ -82,6 +86,11 @@ impl Poller {
         // SAFETY: a descriptor just made, owned by nothing else.
         let fd = unsafe { OwnedFd::from_raw_fd(raw) };
         Ok(Poller { fd })
+    }
+
+    /// Forgets `fd`, waited on under `token` for `had`, before the caller closes it.
+    pub fn forget(&self, fd: RawSock, token: u64, had: Interest) -> io::Result<()> {
+        self.set(fd, token, had, Interest::NONE)
     }
 
     /// Makes `fd`'s interest `now`, named `token`, from `was`, what it was (NONE for one
@@ -238,8 +247,9 @@ mod windows {
     use windows_sys::Win32::Networking::WinSock::{
         ProcessSocketNotifications, SOCK_NOTIFY_EVENT_ERR, SOCK_NOTIFY_EVENT_HANGUP, SOCK_NOTIFY_EVENT_IN,
         SOCK_NOTIFY_EVENT_OUT, SOCK_NOTIFY_EVENT_REMOVE, SOCK_NOTIFY_OP_ENABLE, SOCK_NOTIFY_OP_REMOVE,
-        SOCK_NOTIFY_REGISTER_EVENT_HANGUP, SOCK_NOTIFY_REGISTER_EVENT_IN, SOCK_NOTIFY_REGISTER_EVENT_OUT,
-        SOCK_NOTIFY_REGISTRATION, SOCK_NOTIFY_TRIGGER_LEVEL, SOCK_NOTIFY_TRIGGER_PERSISTENT,
+        SOCK_NOTIFY_REGISTER_EVENT_HANGUP, SOCK_NOTIFY_REGISTER_EVENT_IN, SOCK_NOTIFY_REGISTER_EVENT_NONE,
+        SOCK_NOTIFY_REGISTER_EVENT_OUT, SOCK_NOTIFY_REGISTRATION, SOCK_NOTIFY_TRIGGER_LEVEL,
+        SOCK_NOTIFY_TRIGGER_PERSISTENT,
     };
     use windows_sys::Win32::System::IO::{
         CreateIoCompletionPort, GetQueuedCompletionStatusEx, OVERLAPPED_ENTRY, PostQueuedCompletionStatus,
@@ -364,22 +374,17 @@ mod windows {
             Ok(())
         }
 
-        /// Makes `sock`'s interest `now`, named `token`: NONE forgets it, as the caller
-        /// does before it closes it.
+        /// Makes `sock`'s interest `now`, named `token`. NONE keeps its registration,
+        /// filtering no events, which a registration made again overwrites: one removed
+        /// would be enabled again only once its removal's notice came (PM M215).
         pub fn set(&self, sock: RawSock, token: u64, was: Interest, now: Interest) -> io::Result<()> {
-            if was == now && now != Interest::NONE {
+            if was == now {
                 return Ok(());
             }
-            let mut sockets = self.sockets.borrow_mut();
-            if now == Interest::NONE {
-                if let Some((token, _)) = sockets.remove(&sock) {
-                    self.interests.borrow_mut().remove(&token);
-                    // Its removal's own notice, as a packet, is let go of in `wait`.
-                    let _ = self.register(sock, token, 0, SOCK_NOTIFY_OP_REMOVE);
-                }
-                return Ok(());
+            let mut filter = SOCK_NOTIFY_REGISTER_EVENT_NONE;
+            if now != Interest::NONE {
+                filter |= SOCK_NOTIFY_REGISTER_EVENT_HANGUP;
             }
-            let mut filter = SOCK_NOTIFY_REGISTER_EVENT_HANGUP;
             if now.read {
                 filter |= SOCK_NOTIFY_REGISTER_EVENT_IN;
             }
@@ -387,12 +392,28 @@ mod windows {
                 filter |= SOCK_NOTIFY_REGISTER_EVENT_OUT;
             }
             self.register(sock, token, filter, SOCK_NOTIFY_OP_ENABLE)?;
-            if let Some((old, _)) = sockets.insert(sock, (token, now))
+            if let Some((old, _)) = self.sockets.borrow_mut().insert(sock, (token, now))
                 && old != token
             {
                 self.interests.borrow_mut().remove(&old);
             }
-            self.interests.borrow_mut().insert(token, now);
+            // What waits for nothing is told nothing, its notices queued before let go of.
+            let mut interests = self.interests.borrow_mut();
+            if now == Interest::NONE {
+                interests.remove(&token);
+            } else {
+                interests.insert(token, now);
+            }
+            Ok(())
+        }
+
+        /// Forgets `sock` before the caller closes it: its registration removed, and its
+        /// notices let go of as they come, its removal's own among them.
+        pub fn forget(&self, sock: RawSock, _token: u64, _had: Interest) -> io::Result<()> {
+            if let Some((token, _)) = self.sockets.borrow_mut().remove(&sock) {
+                self.interests.borrow_mut().remove(&token);
+                self.register(sock, token, 0, SOCK_NOTIFY_OP_REMOVE)?;
+            }
             Ok(())
         }
 
@@ -528,6 +549,24 @@ mod tests {
         out
     }
 
+    /// The events of waits until one is ready to read and one to write, five seconds at
+    /// most: Windows queues a registration's notices as it is made, not within the call
+    /// that makes it.
+    fn until_both(p: &Poller) -> Vec<Event> {
+        let mut seen = Vec::new();
+        let end = std::time::Instant::now() + Duration::from_secs(5);
+        while !(seen.iter().any(|e: &Event| e.read) && seen.iter().any(|e: &Event| e.write)) {
+            let left = end.saturating_duration_since(std::time::Instant::now());
+            if left.is_zero() {
+                break;
+            }
+            let mut out = Vec::new();
+            p.wait(&mut out, Some(left)).unwrap();
+            seen.extend(out);
+        }
+        seen
+    }
+
     /// A descriptor is ready for what it waits for, under its token, while that is left:
     /// to read while bytes are, to write while there is room; its interest changes as
     /// asked, and one waiting for nothing wakes nothing.
@@ -538,8 +577,10 @@ mod tests {
         p.set(b.raw_sock(), 7, Interest::NONE, Interest::READ).unwrap();
         assert_eq!(ready(&p), []);
         a.write_all(b"x").unwrap();
+        let mut out = Vec::new();
+        p.wait(&mut out, Some(Duration::from_secs(5))).unwrap();
         assert_eq!(
-            ready(&p),
+            out,
             [Event {
                 token: 7,
                 read: true,
@@ -548,19 +589,24 @@ mod tests {
             }]
         );
         // Level-triggered: still there, still ready.
-        assert_eq!(ready(&p).len(), 1);
+        p.wait(&mut out, Some(Duration::from_secs(5))).unwrap();
+        assert_eq!(out.len(), 1);
         let both = Interest {
             read: true,
             write: true,
         };
         p.set(b.raw_sock(), 7, Interest::READ, both).unwrap();
-        let events = ready(&p);
+        let events = until_both(&p);
         assert!(
-            events.iter().any(|e| e.write) && events.iter().any(|e| e.read),
+            events.iter().all(|e| e.token == 7)
+                && events.iter().any(|e| e.write)
+                && events.iter().any(|e| e.read),
             "{events:?}"
         );
         p.set(b.raw_sock(), 7, both, Interest::NONE).unwrap();
-        assert_eq!(ready(&p), []);
+        // What was queued before goes with the interest.
+        p.wait(&mut out, Some(Duration::from_millis(5))).unwrap();
+        assert_eq!(out, []);
         let mut got = [0u8; 1];
         (&b).read_exact(&mut got).unwrap();
     }
@@ -577,18 +623,51 @@ mod tests {
         assert!(events[0].read && events[0].ended, "{events:?}");
     }
 
-    /// A descriptor closed is forgotten: a wait finds nothing of it. On Windows the caller
-    /// forgets it first, as the stack does.
+    /// A descriptor forgotten, then closed, is gone: a wait finds nothing of it, its
+    /// notices queued before let go of.
     #[test]
     fn a_closed_descriptor_is_forgotten() {
         let p = Poller::new().unwrap();
         let (mut a, b) = UnixStream::pair().unwrap();
         a.write_all(b"x").unwrap();
         p.set(b.raw_sock(), 9, Interest::NONE, Interest::READ).unwrap();
-        #[cfg(windows)]
-        p.set(b.raw_sock(), 9, Interest::READ, Interest::NONE).unwrap();
+        p.forget(b.raw_sock(), 9, Interest::READ).unwrap();
         drop(b);
         assert_eq!(ready(&p), []);
+    }
+
+    /// A descriptor that waits for nothing for a while is told nothing, and what it waits
+    /// for next it is told, again and again: as a connection waits whose guest's window
+    /// is full and which has nothing for its host. On Windows a registration removed and
+    /// enabled again at once failed, which reset the connection (PM M215).
+    #[test]
+    fn a_descriptor_waits_for_nothing_then_again() {
+        let p = Poller::new().unwrap();
+        let (mut a, b) = UnixStream::pair().unwrap();
+        for round in 0..200 {
+            p.set(b.raw_sock(), 4, Interest::NONE, Interest::READ).unwrap();
+            p.set(b.raw_sock(), 4, Interest::READ, Interest::NONE).unwrap();
+            a.write_all(b"x").unwrap();
+            let mut out = Vec::new();
+            p.wait(&mut out, Some(Duration::from_millis(5))).unwrap();
+            assert_eq!(out, [], "round {round}: told while waiting for nothing");
+            p.set(b.raw_sock(), 4, Interest::NONE, Interest::READ).unwrap();
+            p.wait(&mut out, Some(Duration::from_secs(5))).unwrap();
+            assert_eq!(
+                out,
+                [Event {
+                    token: 4,
+                    read: true,
+                    write: false,
+                    ended: false
+                }],
+                "round {round}"
+            );
+            let mut got = [0u8; 1];
+            (&b).read_exact(&mut got).unwrap();
+            p.set(b.raw_sock(), 4, Interest::READ, Interest::NONE).unwrap();
+        }
+        p.forget(b.raw_sock(), 4, Interest::NONE).unwrap();
     }
 
     /// A handle watched is ready while signaled, under its token: a doorbell's event as a

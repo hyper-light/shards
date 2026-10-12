@@ -1765,9 +1765,7 @@ impl<'r> Stack<'r> {
                     write: true,
                 }
             };
-            let _ = self
-                .poller
-                .set(peer.sock.raw_sock(), token, was, poll::Interest::NONE);
+            self.forget(peer.sock.raw_sock(), token, was);
         }
     }
 
@@ -2185,12 +2183,10 @@ impl<'r> Stack<'r> {
     }
 
     /// Has the poller forget `sock`, waited on under `token` for `had`, before it closes:
-    /// Windows' poller holds a closed socket's handle, whose value the next socket may take
-    /// (poll.rs); epoll and kqueue would forget it as it closes.
+    /// a closed socket's number, or on Windows its handle's value, may name the next one
+    /// (poll.rs).
     fn forget(&self, sock: RawSock, token: u64, had: poll::Interest) {
-        if had != poll::Interest::NONE {
-            let _ = self.poller.set(sock, token, had, poll::Interest::NONE);
-        }
+        let _ = self.poller.forget(sock, token, had);
     }
 
     /// Puts connection `c` back in `slot` once it has been served: its socket waited on

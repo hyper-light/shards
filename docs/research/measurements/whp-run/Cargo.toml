@@ -8,7 +8,8 @@
 # src/bin/m204.rs); the CPUID a partition's vCPUs see, and what a VMM may change of it (PM
 # M206, src/bin/m206.rs); the environment a child in an AppContainer must be given (PM M208,
 # src/bin/m208.rs); what waking a network process's loop costs, by how it waits (PM M213,
-# src/bin/m213.rs).
+# src/bin/m213.rs); what changing a socket's registration with a completion port does (PM
+# M215, src/bin/m215.rs).
 [package]
 name = "whp-run"
 version = "0.1.0"

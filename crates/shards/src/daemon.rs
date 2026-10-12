@@ -7882,7 +7882,9 @@ mod tests {
             t.until("the ports were not freed", |d| lock(&d.ports_held).is_empty());
             assert!(ended.elapsed() >= crate::netproc::GRACE, "freed within the grace");
             assert!(reaped(net_pid), "the network process was not reaped");
-            assert!(reaped(vm.id()));
+            // The VM is reaped once its ports are freed (follow.rs), which the wait above
+            // could see first.
+            t.until("the VM was not reaped", |_| reaped(vm.id()));
         });
     }
 
