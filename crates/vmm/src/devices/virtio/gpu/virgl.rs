@@ -618,12 +618,34 @@ impl Drop for Venus {
 mod tests {
     use super::*;
 
+    unsafe extern "C" {
+        /// Metal's GPU, retained, or null where the Mac has none (a virtual one, as CI's).
+        fn MTLCreateSystemDefaultDevice() -> *mut c_void;
+        fn objc_release(obj: *mut c_void);
+    }
+
+    /// Whether this Mac has a GPU for Metal, and so for MoltenVK.
+    fn has_gpu() -> bool {
+        // SAFETY: Metal's own function, which takes nothing.
+        let device = unsafe { MTLCreateSystemDefaultDevice() };
+        if device.is_null() {
+            return false;
+        }
+        // SAFETY: the object the call above retained for us, released once.
+        unsafe { objc_release(device) };
+        true
+    }
+
     /// On this Mac's GPU: the renderer starts once a process, offers Venus's capability set
     /// and fills it, says the host's heaps, makes a context of Venus; a blob of host memory
     /// is held from its making, written through the held range as the renderer sees it,
     /// and refused where the guest says it is larger than its memory.
     #[test]
     fn the_renderer_offers_venus_and_holds_its_blobs() {
+        if !has_gpu() {
+            println!("SKIP: this Mac has no GPU for Metal");
+            return;
+        }
         let mut venus = Venus::new().unwrap();
         assert_eq!(Venus::new().unwrap_err(), "the GPU renderer runs once a process");
         let c = venus.capsets()[0];
@@ -646,10 +668,8 @@ mod tests {
         assert_eq!(held.len as u64, 20000u64.next_multiple_of(venus.page));
         let mut renderer = 0u64;
         // SAFETY: an output of the renderer's.
-        assert_eq!(
-            unsafe { virgl_renderer_resource_get_map_ptr(7, &raw mut renderer) },
-            0
-        );
+        let got = unsafe { virgl_renderer_resource_get_map_ptr(7, &raw mut renderer) };
+        assert_eq!(got, 0);
         assert_ne!(
             held.host as u64, renderer,
             "the blob's own range, not the renderer's"
