@@ -163,7 +163,8 @@ jobs:
         if: matrix.target == 'aarch64-apple-darwin'
         timeout-minutes: 15
         shell: bash
-        run: cargo test --locked -p shards-vmm --features gpu --profile test-release --target ${{ matrix.target }} gpu::
+        run: |
+          cargo test --locked -p shards-vmm --features gpu --profile test-release --target ${{ matrix.target }} gpu::
       # The stack guards are release's (crates/rego: stack::LEAF, RULE_STEP, and the policy
       # thread's STACK): measured on release, whose fat LTO puts more in each frame than
       # test-release does, so the tests that hold every target to them run on release too
