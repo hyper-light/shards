@@ -2288,7 +2288,8 @@ fn confined(args: &[String]) -> i32 {
             | "resolve" | "dnsprobe" | "dnsask" | "unix" | "abstract" | "unix-serve" | "pause"
             | "udpflood" | "tcpflood" | "udpaskfrom" | "reachmany" | "reachrounds" | "udpask"
             | "srv-send" | "srv-receive" | "srv-answer" | "owner" | "mcp-run" | "srv-run"
-            | "srv-run-timeout" | "srv-run-cancel" | "srv-run-abandon" | "srv-bench" => mode = a.as_str(),
+            | "srv-run-timeout" | "srv-run-cancel" | "srv-run-abandon" | "srv-bench" | "srv-modern"
+            | "hold-tell" => mode = a.as_str(),
             "srv-mcp" => {
                 let said = match server_call("mcp", "{}") {
                     Ok((t, false)) => t,
@@ -2415,6 +2416,28 @@ fn confined(args: &[String]) -> i32 {
             "fill" => {
                 let _ = io::stdout().write_all(out.as_bytes());
                 return fill_scratch();
+            }
+            // `TO|TEXT`: an innocent agent, as `hold`, that once it holds its memory tells TO
+            // so, a request of TEXT, for an agent that waits for it before it starts.
+            spec if mode == "hold-tell" => {
+                let _ = io::stdout().write_all(out.as_bytes());
+                let held: Vec<u8> = vec![1; 16 << 20];
+                // SAFETY: prctl(2) with a NUL-terminated name.
+                unsafe { libc::prctl(libc::PR_SET_NAME, c"innocent".as_ptr()) };
+                let (to, text) = spec.split_once('|').unwrap_or((spec, ""));
+                let args = format!(r#"{{"to":{},"text":{}}}"#, quote_json(to), quote_json(text));
+                let said = match server_call("send", &args) {
+                    Ok((t, false)) => format!("ok {t}"),
+                    Ok((t, true)) => format!("refused {t}"),
+                    Err(e) => format!("error {e}"),
+                };
+                let _ = writeln!(io::stdout(), "confined hold-tell: {said}");
+                let _ = io::stdout().flush();
+                loop {
+                    // SAFETY: pause(2) until a signal.
+                    unsafe { libc::pause() };
+                    std::hint::black_box(&held);
+                }
             }
             // An innocent agent: 16 MiB resident, more than a filler, and no scratch.
             "hold" => {
@@ -2574,6 +2597,14 @@ fn confined(args: &[String]) -> i32 {
                 })()
                 .unwrap_or_else(|e| format!("error {e}"));
                 out.push_str(&format!("confined srv-bench: {said}\n"));
+            }
+            // NAME: the in-VM server asked as a client of MCP 2026-07-28 asks it, each
+            // request standing alone (D138): what each answer's status and body say,
+            // a line each, NAME heading them.
+            name if mode == "srv-modern" => {
+                for (what, said) in modern_asks() {
+                    out.push_str(&format!("confined srv-modern {name} {what}: {said}\n"));
+                }
             }
             // CODE: code mode's program, its session closed as it runs.
             code if mode == "srv-run-abandon" => {
@@ -3504,6 +3535,18 @@ impl Session {
         })
     }
 
+    /// Posts `body` with `headers` (each ending CRLF), and none of a session's.
+    fn post_with(&mut self, body: &str, headers: &str) -> Result<(), String> {
+        let req = format!(
+            "POST /mcp HTTP/1.1\r\nHost: shards\r\nContent-Type: application/json\r\n\
+             Accept: application/json, text/event-stream\r\n{headers}Content-Length: {}\r\n\r\n{body}",
+            body.len()
+        );
+        self.s
+            .write_all(req.as_bytes())
+            .map_err(|x| format!("write: {x}"))
+    }
+
     /// Posts `body`, a JSON-RPC message, to `/mcp`, in this connection's session.
     fn post(&mut self, body: &str) -> Result<(), String> {
         let session = self
@@ -3572,6 +3615,117 @@ fn summary_us(values: &mut [f64]) -> String {
         rank(99),
         rank(100)
     )
+}
+
+/// A request of MCP 2026-07-28, `method` with `params` (a JSON object's fields, or none):
+/// its body, its `_meta` saying `version`, and its headers, as a client of that revision
+/// sends them.
+fn modern_request(method: &str, params: &str, version: &str) -> (String, String) {
+    let meta = format!(
+        r#""_meta":{{"io.modelcontextprotocol/protocolVersion":"{version}","io.modelcontextprotocol/clientInfo":{{"name":"testguest","version":"1"}},"io.modelcontextprotocol/clientCapabilities":{{}}}}"#
+    );
+    let params = if params.is_empty() {
+        meta
+    } else {
+        format!("{params},{meta}")
+    };
+    let body = format!(r#"{{"jsonrpc":"2.0","id":7,"method":"{method}","params":{{{params}}}}}"#);
+    let mut headers = format!("MCP-Protocol-Version: {version}\r\nMcp-Method: {method}\r\n");
+    if let Some(name) = params
+        .split(r#""name":""#)
+        .nth(1)
+        .and_then(|r| r.split('"').next())
+    {
+        headers.push_str(&format!("Mcp-Name: {name}\r\n"));
+    }
+    (body, headers)
+}
+
+/// The in-VM server asked as MCP 2026-07-28 asks: each answer's status line and body, a
+/// connection each, with what a client of that revision sends and what it must not.
+fn modern_asks() -> Vec<(&'static str, String)> {
+    let ask = |body: &str, headers: &str| -> String {
+        (|| -> Result<String, String> {
+            let mut s = Session::connect()?;
+            s.post_with(body, headers)?;
+            let (head, body) = s.answered()?;
+            Ok(format!("{} {body}", head.lines().next().unwrap_or_default()))
+        })()
+        .unwrap_or_else(|e| format!("error {e}"))
+    };
+    let (discover, h) = modern_request("server/discover", "", "2026-07-28");
+    let mut asks = vec![("discover", ask(&discover, &h))];
+    let (list, h) = modern_request("tools/list", "", "2026-07-28");
+    let listed = ask(&list, &h);
+    let (tools, tail) = listed.rsplit_once(']').unwrap_or_default();
+    asks.push((
+        "list",
+        format!("{} tools]{tail}", tools.matches(r#""inputSchema""#).count()),
+    ));
+    let (whoami, h) = modern_request("tools/call", r#""name":"whoami","arguments":{}"#, "2026-07-28");
+    asks.push(("whoami", ask(&whoami, &h)));
+    let (run, h) = modern_request(
+        "tools/call",
+        r#""name":"run","arguments":{"code":"return (await shards.whoami()).length;"}"#,
+        "2026-07-28",
+    );
+    asks.push(("run", ask(&run, &h)));
+    // Its headers must say what its body does.
+    let (whoami, _) = modern_request("tools/call", r#""name":"whoami","arguments":{}"#, "2026-07-28");
+    asks.push((
+        "method-mismatch",
+        ask(
+            &whoami,
+            "MCP-Protocol-Version: 2026-07-28\r\nMcp-Method: tools/list\r\nMcp-Name: whoami\r\n",
+        ),
+    ));
+    asks.push((
+        "name-base64",
+        ask(
+            &whoami,
+            "MCP-Protocol-Version: 2026-07-28\r\nMcp-Method: tools/call\r\nMcp-Name: =?base64?d2hvYW1p?=\r\n",
+        ),
+    ));
+    asks.push((
+        "no-version-header",
+        ask(&whoami, "Mcp-Method: tools/call\r\nMcp-Name: whoami\r\n"),
+    ));
+    let (old, h) = modern_request("tools/list", "", "1900-01-01");
+    asks.push(("unsupported", ask(&old, &h)));
+    let (unknown, h) = modern_request("prompts/list", "", "2026-07-28");
+    asks.push(("unknown", ask(&unknown, &h)));
+    let no_caps = r#"{"jsonrpc":"2.0","id":7,"method":"tools/list","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28"}}}"#;
+    asks.push((
+        "no-capabilities",
+        ask(
+            no_caps,
+            "MCP-Protocol-Version: 2026-07-28\r\nMcp-Method: tools/list\r\n",
+        ),
+    ));
+    let (list, h) = modern_request("tools/list", "", "2026-07-28");
+    asks.push((
+        "origin",
+        ask(&list, &format!("{h}Origin: https://example.com\r\n")),
+    ));
+    // A revision before it still begins a session.
+    let init = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"testguest","version":"1"}}}"#;
+    asks.push((
+        "legacy",
+        (|| -> Result<String, String> {
+            let mut s = Session::connect()?;
+            s.post_with(init, "")?;
+            let (head, body) = s.answered()?;
+            Ok(format!(
+                "{} session={} revision={}",
+                head.lines().next().unwrap_or_default(),
+                head.lines()
+                    .any(|l| l.to_ascii_lowercase().starts_with("mcp-session-id: ")),
+                body.contains(r#""protocolVersion":"2025-11-25""#)
+            ))
+        })()
+        .unwrap_or_else(|e| format!("error {e}")),
+    ));
+    asks
 }
 
 /// `tools/call` of `tool` with `args`, request 2.

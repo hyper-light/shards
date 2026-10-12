@@ -140,6 +140,9 @@ fn compile(
         .args(["--target", &triple, "--target-dir"])
         .arg(target_dir)
         .env(linker, "rust-lld")
+        // The version the in-VM server says it is (MCP's `serverInfo`): shards', whose part
+        // it is.
+        .env("SHARDS_VERSION", env!("CARGO_PKG_VERSION"))
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::piped());

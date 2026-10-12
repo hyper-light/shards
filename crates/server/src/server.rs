@@ -41,7 +41,20 @@ use json::Value;
 /// The name its certificate is for, which a client asks for.
 pub const NAME: &str = "shards";
 /// The MCP revisions it answers to, newest first (modelcontextprotocol.io, "Versioning").
-const REVISIONS: [&str; 2] = ["2025-06-18", "2025-03-26"];
+/// The version it says it is, shards' (crates/shards/build.rs), or its own where it is
+/// built alone.
+const VERSION: &str = match option_env!("SHARDS_VERSION") {
+    Some(v) => v,
+    None => env!("CARGO_PKG_VERSION"),
+};
+/// The current revision of MCP, whose requests each say it in their `_meta` and stand
+/// alone (modelcontextprotocol.io, 2026-07-28, "Versioning and Compatibility").
+const MODERN: &str = "2026-07-28";
+/// The revisions before it, newest first, which a session's `initialize` chooses among.
+const REVISIONS: [&str; 3] = ["2025-11-25", "2025-06-18", "2025-03-26"];
+/// Where a request of the current revision says it, and the capabilities it asks with.
+const VERSION_KEY: &str = "io.modelcontextprotocol/protocolVersion";
+const CAPABILITIES_KEY: &str = "io.modelcontextprotocol/clientCapabilities";
 /// The most of a request it holds: its head, and its body.
 const HEAD_MAX: usize = 16 * 1024;
 const BODY_MAX: usize = 1 << 20;
@@ -189,6 +202,8 @@ struct Program {
     conn: u64,
     session: Option<String>,
     rpc_id: String,
+    /// Whether its request was of the current revision, which shapes its answer.
+    modern: bool,
     deadline: Option<(Instant, u64)>,
 }
 
@@ -215,6 +230,7 @@ impl Programs {
         conn: u64,
         session: Option<&str>,
         rpc_id: String,
+        modern: bool,
     ) -> Result<(), String> {
         let control = match &self.control {
             Ok(c) => c.as_raw_fd(),
@@ -239,6 +255,7 @@ impl Programs {
             conn,
             session: session.map(str::to_string),
             rpc_id,
+            modern,
             deadline: timeout.map(|ms| (Instant::now() + Duration::from_millis(ms), ms)),
         });
         Ok(())
@@ -787,7 +804,13 @@ fn run_programs(
         if failed {
             programs.stop(id);
         }
-        answers.push((prog.conn, answered(&prog.rpc_id, &text(&said, failed))));
+        let result = text(&said, failed);
+        let result = if prog.modern {
+            completed(&result, "")
+        } else {
+            result
+        };
+        answers.push((prog.conn, answered(&prog.rpc_id, &result)));
     }
 }
 
@@ -920,16 +943,21 @@ fn request(
     let (method, path) = (first.next()?, first.next()?);
     let mut length = 0usize;
     let mut close = false;
-    let mut session = None;
+    let mut head = Head::default();
     for l in lines {
         let Some((k, v)) = l.split_once(':') else { continue };
+        let v = Some(v.trim().to_string());
         match k.trim().to_ascii_lowercase().as_str() {
-            "content-length" => match v.trim().parse() {
-                Ok(n) => length = n,
-                Err(_) => return now(status(400, "bad content-length"), plain.len(), true),
+            "content-length" => match v.as_deref().map(str::parse) {
+                Some(Ok(n)) => length = n,
+                _ => return now(status(400, "bad content-length"), plain.len(), true),
             },
-            "connection" => close = v.trim().eq_ignore_ascii_case("close"),
-            "mcp-session-id" => session = Some(v.trim().to_string()),
+            "connection" => close = v.is_some_and(|v| v.eq_ignore_ascii_case("close")),
+            "mcp-session-id" => head.session = v,
+            "mcp-protocol-version" => head.version = v,
+            "mcp-method" => head.method = v,
+            "mcp-name" => head.name = v,
+            "origin" => head.origin = v,
             _ => {}
         }
     }
@@ -938,26 +966,42 @@ fn request(
     }
     let used = end + 4 + length;
     let body = plain.get(end + 4..used)?;
+    // No web page may reach it (Streamable HTTP, "Security"): its callers are agents, over
+    // a socket of their own, which no browser opens; an origin named is none it serves.
+    if head.origin.is_some() {
+        let said = format!(
+            r#"{{"jsonrpc":"2.0","error":{{"code":-32600,"message":{}}}}}"#,
+            quote("this server answers no web origin")
+        );
+        return now(http(403, "application/json", said.as_bytes()), used, close);
+    }
     if path != "/mcp" {
         return now(status(404, "not found"), used, close);
     }
+    // POST alone: no stream of the server's own to GET, no session to DELETE (2026-07-28
+    // has neither; before it, a server may offer neither).
     if method != "POST" {
-        return now(status(405, "method not allowed"), used, close);
+        return now(
+            reply(405, "text/plain", "Allow: POST\r\n", b"method not allowed"),
+            used,
+            close,
+        );
     }
     let answer = match json::parse(body) {
-        Ok(msg) => match rpc(p, peers, programs, conn, session.as_deref(), &msg) {
-            Answered::Now(result) => http(200, "application/json", result.as_bytes()),
+        Ok(msg) => match era(p, peers, programs, conn, &head, &msg) {
+            Err(refused) => refused,
+            Ok(Answered::Now(result)) => http(200, "application/json", result.as_bytes()),
             // A session begun (MCP 2025-03-26 to 2025-11-25, Streamable HTTP, "Session
             // Management"): its ID, which the client's requests in it carry.
-            Answered::Begun(result, session) => reply(
+            Ok(Answered::Begun(result, session)) => reply(
                 200,
                 "application/json",
                 &format!("Mcp-Session-Id: {session}\r\n"),
                 result.as_bytes(),
             ),
-            Answered::Later(id) => return Some((Reply::Later(id), used, close)),
+            Ok(Answered::Later(id)) => return Some((Reply::Later(id), used, close)),
             // A notification is accepted, and answered with nothing.
-            Answered::Nothing => http(202, "", b""),
+            Ok(Answered::Nothing) => http(202, "", b""),
         },
         Err(_) => http(
             400,
@@ -1081,7 +1125,254 @@ fn call(
     })
 }
 
-/// A JSON-RPC message's answer, sent on connection `conn` in `session`.
+/// What a request's head says beside its length: the MCP headers, and the page it came
+/// from, if a browser sent it.
+#[derive(Debug, Default)]
+struct Head {
+    session: Option<String>,
+    version: Option<String>,
+    method: Option<String>,
+    name: Option<String>,
+    origin: Option<String>,
+}
+
+/// A request answered by the revision it is of: the current one where its `_meta` says
+/// so, each request standing alone; those before it otherwise, a session's. Or its
+/// refusal, an answer of its own, where its headers or its revision do not hold.
+fn era(
+    p: &Prepared,
+    peers: &mut [Peer],
+    programs: &mut Programs,
+    conn: u64,
+    head: &Head,
+    msg: &Value,
+) -> Result<Answered, Vec<u8>> {
+    let meta = msg.get("params").and_then(|params| params.get("_meta"));
+    let id = msg.get("id").unwrap_or(&Value::Null);
+    let refuse = |status: u16, code: i32, message: &str, data: Option<String>| {
+        let mut said = format!(
+            r#"{{"jsonrpc":"2.0","id":{},"error":{{"code":{code},"message":{}"#,
+            write(id),
+            quote(message)
+        );
+        if let Some(data) = data {
+            said.push_str(&format!(r#","data":{data}"#));
+        }
+        said.push_str("}}");
+        http(status, "application/json", said.as_bytes())
+    };
+    let unsupported = |asked: &str| {
+        let supported: Vec<String> = std::iter::once(MODERN).chain(REVISIONS).map(quote).collect();
+        refuse(
+            400,
+            -32022,
+            "Unsupported protocol version",
+            Some(format!(
+                r#"{{"supported":[{}],"requested":{}}}"#,
+                supported.join(","),
+                quote(asked)
+            )),
+        )
+    };
+    let Some(version) = meta.and_then(|m| m.get(VERSION_KEY)).and_then(Value::str) else {
+        // A revision before the current one: its header, once it has one, one of them.
+        return match head.version.as_deref() {
+            None => Ok(rpc(p, peers, programs, conn, head.session.as_deref(), msg)),
+            Some(v) if REVISIONS.contains(&v) => {
+                Ok(rpc(p, peers, programs, conn, head.session.as_deref(), msg))
+            }
+            // The current revision's request without its `_meta`, which it must have.
+            Some(MODERN) => Err(refuse(
+                400,
+                -32602,
+                &format!("Invalid params: no {VERSION_KEY} in _meta"),
+                None,
+            )),
+            Some(v) => Err(unsupported(v)),
+        };
+    };
+    // Its headers say what its body says (Streamable HTTP, "Server Validation").
+    let method = msg.get("method").and_then(Value::str).unwrap_or_default();
+    let mismatch = |header: &str, said: Option<&str>, body: &str| {
+        refuse(
+            400,
+            -32020,
+            &match said {
+                Some(said) => format!(
+                    "Header mismatch: {header} header value {said:?} does not match body value {body:?}"
+                ),
+                None => format!("Header mismatch: no {header} header for body value {body:?}"),
+            },
+            None,
+        )
+    };
+    if head.version.as_deref() != Some(version) {
+        return Err(mismatch("MCP-Protocol-Version", head.version.as_deref(), version));
+    }
+    if head.method.as_deref() != Some(method) {
+        return Err(mismatch("Mcp-Method", head.method.as_deref(), method));
+    }
+    if method == "tools/call" {
+        let name = msg
+            .get("params")
+            .and_then(|params| params.get("name"))
+            .and_then(Value::str)
+            .unwrap_or_default();
+        let said = head.name.as_deref().map(header_value);
+        if said.as_ref().is_none_or(|said| said.as_deref() != Some(name)) {
+            return Err(mismatch("Mcp-Name", head.name.as_deref(), name));
+        }
+    }
+    if version != MODERN {
+        return Err(unsupported(version));
+    }
+    if !meta
+        .and_then(|m| m.get(CAPABILITIES_KEY))
+        .is_some_and(|c| matches!(c, Value::Object(_)))
+    {
+        return Err(refuse(
+            400,
+            -32602,
+            &format!("Invalid params: no {CAPABILITIES_KEY} in _meta"),
+            None,
+        ));
+    }
+    // No notification of the client's is defined over HTTP: one is accepted, and does
+    // nothing; a request's cancellation is its connection closing.
+    let Some(id) = msg.get("id") else {
+        return Ok(Answered::Nothing);
+    };
+    let result = match method {
+        "server/discover" => {
+            let supported: Vec<String> = std::iter::once(MODERN).chain(REVISIONS).map(quote).collect();
+            completed(
+                &format!(
+                    r#"{{"supportedVersions":[{}],"capabilities":{{"tools":{{}}}}}}"#,
+                    supported.join(",")
+                ),
+                CACHED,
+            )
+        }
+        "tools/list" => completed(TOOLS, CACHED),
+        "tools/call" => match tool(p, peers, programs, conn, None, id, msg, true) {
+            Called::Result(result) => completed(&result, ""),
+            Called::Later(program) => return Ok(Answered::Later(program)),
+            Called::Refused(answer) => return Ok(Answered::Now(answer)),
+        },
+        _ => return Err(refuse(404, -32601, "Method not found", None)),
+    };
+    Ok(Answered::Now(format!(
+        r#"{{"jsonrpc":"2.0","id":{},"result":{result}}}"#,
+        write(id)
+    )))
+}
+
+/// What a list's freshness is (2026-07-28, "Caching"): the same for every caller, and
+/// stale at once, as asking again costs a caller tens of microseconds (PM M196), and a
+/// cache kept past this instance, by a client that keeps one, would not see a newer
+/// server's tools.
+const CACHED: &str = r#""ttlMs":0,"cacheScope":"public""#;
+
+/// `result`, a JSON object, as the current revision answers: `more` fields beside it,
+/// its type, complete, and who answers.
+fn completed(result: &str, more: &str) -> String {
+    let fields = format!(
+        r#"{more}{}"resultType":"complete","_meta":{{"io.modelcontextprotocol/serverInfo":{{"name":"shards","version":{}}}}}"#,
+        if more.is_empty() { "" } else { "," },
+        quote(VERSION)
+    );
+    match result.trim_end().strip_suffix('}') {
+        Some(head) if head.trim_end().ends_with('{') => format!("{head}{fields}}}"),
+        Some(head) => format!("{head},{fields}}}"),
+        None => result.to_string(),
+    }
+}
+
+/// A header's value as its sender meant it: plain, or Base64 between `=?base64?` and `?=`
+/// (Streamable HTTP, "Value Encoding"); None for Base64 that is no UTF-8 or no Base64.
+fn header_value(said: &str) -> Option<String> {
+    let Some(encoded) = said.strip_prefix("=?base64?").and_then(|r| r.strip_suffix("?=")) else {
+        return Some(said.to_string());
+    };
+    let digit = |c: u8| match c {
+        b'A'..=b'Z' => Some(c - b'A'),
+        b'a'..=b'z' => Some(c - b'a' + 26),
+        b'0'..=b'9' => Some(c - b'0' + 52),
+        b'+' => Some(62),
+        b'/' => Some(63),
+        _ => None,
+    };
+    let body = encoded.trim_end_matches('=');
+    if encoded.len() % 4 != 0 || encoded.len() - body.len() > 2 {
+        return None;
+    }
+    let mut out = Vec::with_capacity(body.len() * 3 / 4);
+    let (mut acc, mut bits) = (0u32, 0u32);
+    for c in body.bytes() {
+        acc = (acc << 6) | u32::from(digit(c)?);
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push((acc >> bits) as u8);
+            acc &= (1 << bits) - 1;
+        }
+    }
+    String::from_utf8(out).ok()
+}
+
+/// What a `tools/call` came to: its tool's result, a program's answer to come, or a
+/// refusal, its whole answer.
+enum Called {
+    Result(String),
+    Later(u64),
+    Refused(String),
+}
+
+/// `tools/call`, request `id`, its tool called as the caller's: a program started for
+/// `run`, in `session`, its answer shaped by its revision (`modern`).
+#[expect(
+    clippy::too_many_arguments,
+    reason = "a call's whole context, both revisions'"
+)]
+fn tool(
+    p: &Prepared,
+    peers: &mut [Peer],
+    programs: &mut Programs,
+    conn: u64,
+    session: Option<&str>,
+    id: &Value,
+    msg: &Value,
+    modern: bool,
+) -> Called {
+    let params = msg.get("params");
+    let args = params.and_then(|p| p.get("arguments"));
+    Called::Result(match params.and_then(|p| p.get("name")).and_then(Value::str) {
+        Some("run") => {
+            let code = args.and_then(|a| a.get("code")).and_then(Value::str);
+            let timeout = args.and_then(|a| a.get("timeout_ms")).and_then(Value::u64);
+            match code {
+                Some(code) => {
+                    match programs.start(code, timeout.filter(|&t| t > 0), conn, session, write(id), modern) {
+                        Ok(()) => return Called::Later(programs.next),
+                        Err(why) => text(&why, true),
+                    }
+                }
+                None => text("run takes a program, its code", true),
+            }
+        }
+        Some(name) => match call(p, peers, name, args) {
+            // Who it is, as the text it is.
+            Some(Ok(_)) if name == "whoami" => text(&p.label, false),
+            Some(Ok(value)) => text(&value, false),
+            Some(Err(why)) => text(&why, true),
+            None => return Called::Refused(error(id, -32602, "no such tool")),
+        },
+        None => return Called::Refused(error(id, -32602, "no such tool")),
+    })
+}
+
+/// A JSON-RPC message's answer, sent on connection `conn` in `session`, of a revision
+/// before the current one.
 fn rpc(
     p: &Prepared,
     peers: &mut [Peer],
@@ -1124,38 +1415,16 @@ fn rpc(
             format!(
                 r#"{{"protocolVersion":{},"capabilities":{{"tools":{{}}}},"serverInfo":{{"name":"shards","version":{}}}}}"#,
                 quote(version),
-                quote(env!("CARGO_PKG_VERSION"))
+                quote(VERSION)
             )
         }
         Some("ping") => "{}".to_string(),
         Some("tools/list") => TOOLS.to_string(),
-        Some("tools/call") => {
-            let params = msg.get("params");
-            let args = params.and_then(|p| p.get("arguments"));
-            match params.and_then(|p| p.get("name")).and_then(Value::str) {
-                Some("run") => {
-                    let code = args.and_then(|a| a.get("code")).and_then(Value::str);
-                    let timeout = args.and_then(|a| a.get("timeout_ms")).and_then(Value::u64);
-                    match code {
-                        Some(code) => {
-                            match programs.start(code, timeout.filter(|&t| t > 0), conn, session, write(id)) {
-                                Ok(()) => return Answered::Later(programs.next),
-                                Err(why) => text(&why, true),
-                            }
-                        }
-                        None => text("run takes a program, its code", true),
-                    }
-                }
-                Some(name) => match call(p, peers, name, args) {
-                    // Who it is, as the text it is.
-                    Some(Ok(_)) if name == "whoami" => text(&p.label, false),
-                    Some(Ok(value)) => text(&value, false),
-                    Some(Err(why)) => text(&why, true),
-                    None => return Answered::Now(error(id, -32602, "no such tool")),
-                },
-                None => return Answered::Now(error(id, -32602, "no such tool")),
-            }
-        }
+        Some("tools/call") => match tool(p, peers, programs, conn, session, id, msg, false) {
+            Called::Result(result) => result,
+            Called::Later(program) => return Answered::Later(program),
+            Called::Refused(answer) => return Answered::Now(answer),
+        },
         _ => return Answered::Now(error(id, -32601, "no such method")),
     };
     let answer = format!(r#"{{"jsonrpc":"2.0","id":{},"result":{result}}}"#, write(id));
@@ -1223,6 +1492,7 @@ fn reply(code: u16, kind: &str, more: &str, body: &[u8]) -> Vec<u8> {
         200 => "OK",
         202 => "Accepted",
         400 => "Bad Request",
+        403 => "Forbidden",
         404 => "Not Found",
         405 => "Method Not Allowed",
         413 => "Content Too Large",
@@ -1411,8 +1681,13 @@ mod tests {
         let session = session
             .map(|s| format!("Mcp-Session-Id: {s}\r\n"))
             .unwrap_or_default();
+        asked_with(p, programs, &session, body)
+    }
+
+    /// A request with `headers` (each ending CRLF): its answer's head and body.
+    fn asked_with(p: &Prepared, programs: &mut Programs, headers: &str, body: &str) -> (String, String) {
         let req = format!(
-            "POST /mcp HTTP/1.1\r\n{session}Content-Length: {}\r\n\r\n{body}",
+            "POST /mcp HTTP/1.1\r\n{headers}Content-Length: {}\r\n\r\n{body}",
             body.len()
         );
         let Some((Reply::Now(answer), _, _)) = request(p, &mut [], programs, 1, req.as_bytes()) else {
@@ -1452,6 +1727,154 @@ mod tests {
         assert_eq!(id(&head), None);
     }
 
+    /// A request of MCP 2026-07-28: its body, its `_meta` naming `version`, and its
+    /// headers as its client sends them.
+    fn current(method: &str, params: &str, version: &str) -> (String, String) {
+        let meta = format!(
+            r#""_meta":{{"io.modelcontextprotocol/protocolVersion":"{version}","io.modelcontextprotocol/clientCapabilities":{{}}}}"#
+        );
+        let params = if params.is_empty() {
+            meta
+        } else {
+            format!("{params},{meta}")
+        };
+        let body = format!(r#"{{"jsonrpc":"2.0","id":7,"method":"{method}","params":{{{params}}}}}"#);
+        let mut headers = format!("MCP-Protocol-Version: {version}\r\nMcp-Method: {method}\r\n");
+        if method == "tools/call" {
+            let name = params
+                .split(r#""name":""#)
+                .nth(1)
+                .and_then(|r| r.split('"').next())
+                .unwrap();
+            headers.push_str(&format!("Mcp-Name: {name}\r\n"));
+        }
+        (body, headers)
+    }
+
+    /// A request of the current revision is answered alone: its result complete, saying
+    /// who answers; a list's with its caching hints; a tool's as before.
+    #[test]
+    fn the_current_revision_is_answered_request_by_request() {
+        let p = prepare_for_test();
+        let (body, headers) = current("tools/list", "", MODERN);
+        let (head, said) = asked_with(&p, &mut no_programs(), &headers, &body);
+        assert!(head.starts_with("HTTP/1.1 200"), "{head}");
+        assert!(
+            said.ends_with(&format!(
+                r#""ttlMs":0,"cacheScope":"public","resultType":"complete","_meta":{{"io.modelcontextprotocol/serverInfo":{{"name":"shards","version":"{}"}}}}}}}}"#,
+                VERSION
+            )),
+            "{said}"
+        );
+        let (body, headers) = current("tools/call", r#""name":"whoami","arguments":{}"#, MODERN);
+        let (_, said) = asked_with(&p, &mut no_programs(), &headers, &body);
+        assert!(
+            said.starts_with(r#"{"jsonrpc":"2.0","id":7,"result":{"content":[{"type":"text","text":"agent t"}],"isError":false,"resultType":"complete","#),
+            "{said}"
+        );
+        let (body, headers) = current("server/discover", "", MODERN);
+        let (_, said) = asked_with(&p, &mut no_programs(), &headers, &body);
+        assert!(
+            said.contains(r#""supportedVersions":["2026-07-28","2025-11-25","2025-06-18","2025-03-26"],"capabilities":{"tools":{}},"ttlMs":0"#),
+            "{said}"
+        );
+    }
+
+    /// Headers that do not say what the body says are refused, 400 and HeaderMismatch; a
+    /// name in Base64 is read as its sender meant it.
+    #[test]
+    fn headers_that_differ_from_their_body_are_refused() {
+        let p = prepare_for_test();
+        let (body, headers) = current("tools/call", r#""name":"whoami","arguments":{}"#, MODERN);
+        for wrong in [
+            headers.replace("Mcp-Method: tools/call", "Mcp-Method: tools/list"),
+            headers.replace("Mcp-Name: whoami", "Mcp-Name: peers"),
+            headers.replace("MCP-Protocol-Version: 2026-07-28\r\n", ""),
+            headers.replace("Mcp-Name: whoami\r\n", ""),
+        ] {
+            let (head, said) = asked_with(&p, &mut no_programs(), &wrong, &body);
+            assert!(head.starts_with("HTTP/1.1 400"), "{wrong:?}: {head}");
+            assert!(said.contains(r#""code":-32020"#), "{wrong:?}: {said}");
+        }
+        let base64 = headers.replace("Mcp-Name: whoami", "Mcp-Name: =?base64?d2hvYW1p?=");
+        let (head, _) = asked_with(&p, &mut no_programs(), &base64, &body);
+        assert!(head.starts_with("HTTP/1.1 200"), "{head}");
+        assert_eq!(
+            header_value("=?base64?SGVsbG8sIOS4lueVjA==?="),
+            Some("Hello, 世界".into())
+        );
+        assert_eq!(header_value("=?base64?IHBhZGRlZCA=?="), Some(" padded ".into()));
+        assert_eq!(header_value("=?base64?!!!!?="), None);
+        assert_eq!(header_value("plain"), Some("plain".into()));
+    }
+
+    /// A revision it does not speak is refused with those it does; one missing its
+    /// client's capabilities, or a method it lacks, as that revision says.
+    #[test]
+    fn what_the_current_revision_refuses() {
+        let p = prepare_for_test();
+        let (body, headers) = current("tools/list", "", "1900-01-01");
+        let (head, said) = asked_with(&p, &mut no_programs(), &headers, &body);
+        assert!(head.starts_with("HTTP/1.1 400"), "{head}");
+        assert_eq!(
+            said,
+            r#"{"jsonrpc":"2.0","id":7,"error":{"code":-32022,"message":"Unsupported protocol version","data":{"supported":["2026-07-28","2025-11-25","2025-06-18","2025-03-26"],"requested":"1900-01-01"}}}"#
+        );
+        let (body, headers) = current("prompts/list", "", MODERN);
+        let (head, said) = asked_with(&p, &mut no_programs(), &headers, &body);
+        assert!(head.starts_with("HTTP/1.1 404"), "{head}");
+        assert!(said.contains(r#""code":-32601"#), "{said}");
+        let body = r#"{"jsonrpc":"2.0","id":7,"method":"tools/list","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28"}}}"#;
+        let (head, said) = asked_with(
+            &p,
+            &mut no_programs(),
+            "MCP-Protocol-Version: 2026-07-28\r\nMcp-Method: tools/list\r\n",
+            body,
+        );
+        assert!(head.starts_with("HTTP/1.1 400"), "{head}");
+        assert!(said.contains(r#""code":-32602"#), "{said}");
+    }
+
+    /// The revisions before it are a session's, as before; a header naming none of them
+    /// is refused. A browser's request is refused whatever it asks, and a method but POST.
+    #[test]
+    fn earlier_revisions_and_what_every_revision_refuses() {
+        let p = prepare_for_test();
+        let init =
+            r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25"}}"#;
+        let (head, said) = asked(&p, &mut no_programs(), None, init);
+        assert!(head.contains("Mcp-Session-Id: "), "{head}");
+        assert!(said.contains(r#""protocolVersion":"2025-11-25""#), "{said}");
+        let list = r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#;
+        let (head, _) = asked_with(
+            &p,
+            &mut no_programs(),
+            "MCP-Protocol-Version: 2025-06-18\r\n",
+            list,
+        );
+        assert!(head.starts_with("HTTP/1.1 200"), "{head}");
+        let (head, said) = asked_with(
+            &p,
+            &mut no_programs(),
+            "MCP-Protocol-Version: 2024-11-05\r\n",
+            list,
+        );
+        assert!(head.starts_with("HTTP/1.1 400"), "{head}");
+        assert!(said.contains(r#""code":-32022"#), "{said}");
+        let (head, said) = asked_with(&p, &mut no_programs(), "Origin: https://example.com\r\n", list);
+        assert!(head.starts_with("HTTP/1.1 403"), "{head}");
+        assert!(!said.contains(r#""id""#), "{said}");
+        let get = b"GET /mcp HTTP/1.1\r\nContent-Length: 0\r\n\r\n";
+        let Some((Reply::Now(answer), _, _)) = request(&p, &mut [], &mut no_programs(), 1, get) else {
+            panic!("no answer to GET");
+        };
+        let answer = String::from_utf8(answer).unwrap();
+        assert!(
+            answer.starts_with("HTTP/1.1 405") && answer.contains("\r\nAllow: POST\r\n"),
+            "{answer}"
+        );
+    }
+
     /// A cancellation names a request within its session: another session's request of
     /// that ID runs on; its own is ended, its worker killed, and its connection told.
     #[test]
@@ -1461,10 +1884,10 @@ mod tests {
         helper.set_nonblocking(true).unwrap();
         let mut programs = Programs::new(Ok(OwnedFd::from(instance)));
         programs
-            .start("return 1;", None, 7, Some("s1"), "2".to_string())
+            .start("return 1;", None, 7, Some("s1"), "2".to_string(), false)
             .unwrap();
         programs
-            .start("return 2;", None, 8, Some("s2"), "2".to_string())
+            .start("return 2;", None, 8, Some("s2"), "2".to_string(), false)
             .unwrap();
         let (run, _) = sandbox::recv_control(helper.as_raw_fd()).unwrap().unwrap();
         assert_eq!(run.first(), Some(&sandbox::RUN));

@@ -3538,6 +3538,53 @@ No run-time labels, relays or declassifiers (§12 answer 14, decided by the user
 an internal-only domain to the world (D58), so there is no data to label. Code mode is
 D136.
 
+### D138. The in-VM server speaks MCP 2026-07-28, and the revisions before it
+
+The in-VM server spoke MCP 2025-06-18 and 2025-03-26 (D60). The current revision is
+2026-07-28 (modelcontextprotocol.io, "Versioning", read 2026-10-11): stateless, with no
+`initialize`, no session and no stream of the server's own; each request says its
+revision, its client's capabilities and who the client is in its `_meta`, and its HTTP
+headers say again what its body says. A client of it alone fails against a server of the
+revisions before it; one of those alone fails against a server of it alone. The server
+now speaks both, as the revision allows a server to ("dual-era"), each request by its own.
+
+- **The current revision**, a request whose `_meta` names its revision:
+  - its headers checked against its body, as its transport asks: `MCP-Protocol-Version`
+    the revision, `Mcp-Method` the method, `Mcp-Name` the tool a `tools/call` names
+    (plain, or Base64 between `=?base64?` and `?=`); any missing or other, 400 and
+    `HeaderMismatch` (-32020);
+  - a revision it does not speak, 400 and `UnsupportedProtocolVersion` (-32022), naming
+    those it does, `2026-07-28` first; no `clientCapabilities` in its `_meta`, 400 and
+    -32602;
+  - `server/discover` (its revisions, its capabilities, who it is), `tools/list` and
+    `tools/call`; any other method, 404 and -32601; a notification, of which none is
+    defined over HTTP, accepted and ignored;
+  - each result `resultType: "complete"`, with who answers in its `_meta`
+    (`io.modelcontextprotocol/serverInfo`); `server/discover` and `tools/list` with
+    caching hints, the same for every caller and stale at once (`ttlMs` 0,
+    `cacheScope` public): asking again costs a caller tens of microseconds (PM M196),
+    and a cache a client kept past this instance would not see a newer server's tools;
+  - a `run`'s program ended by its connection closing, which is the revision's
+    cancellation (D136); a session ID ignored.
+- **The revisions before it** (2025-11-25, 2025-06-18, 2025-03-26), a request without
+  that `_meta`: as D60 and D136 serve them, `initialize` choosing among them and
+  beginning a session; `MCP-Protocol-Version`, where given, one of them, or 400 and
+  -32022 as above; with it `2026-07-28` but no `_meta`, 400 and -32602.
+- **For both**, as 2025-11-25 and 2026-07-28 ask of every server over HTTP: an `Origin`
+  header, which a browser sends, is refused, 403 (no web page is a caller: callers are
+  agents on sockets of their own); a method but POST, 405 with `Allow: POST`.
+
+Tested: in crates/server, on Linux, `the_current_revision_is_answered_request_by_request`,
+`headers_that_differ_from_their_body_are_refused` (each header missing or other, a name in
+Base64), `what_the_current_revision_refuses` and
+`earlier_revisions_and_what_every_revision_refuses`; on real microVMs,
+`the_in_vm_server_speaks_each_revision`: an agent asks as a client of 2026-07-28 does
+(discover, list, call `whoami` and `run`), with its headers wrong, its revision unknown,
+its capabilities missing, an unknown method and an origin, each refused as above; and
+begins a session of 2025-11-25. Mutation-checked: each of the three headers unchecked, Base64
+unread, any revision spoken, capabilities not required, an unknown method answered 200, a
+result not complete, a list without its caching hints, an origin answered, an earlier
+revision's header unchecked, 2025-11-25 not spoken: each fails a test.
 ### D137. A build never held by its builder's memory, nor outlived by its builder
 
 CI run 38198639601 (dev fd9da553, x86_64 Linux): `a_builders_memory_is_plugged_as_its_

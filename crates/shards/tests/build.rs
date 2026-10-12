@@ -9832,13 +9832,20 @@ fn agents_out_of_memory_end_whole_and_spare_the_run() {
         ("SHARDS_INIT", guest_init().as_os_str()),
     ];
     let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
-    let agent = |name: &str, verb: &str, asks: &str| {
+    let agent = |name: &str, verbs: &[&str], asks: &str| {
         let dir = TempDir::new(&format!("oom-agent-{name}"));
         std::fs::create_dir_all(dir.join("bin")).unwrap();
         std::fs::copy(common::test_guest(), dir.join("bin/testguest")).unwrap();
+        let command: Vec<&str> = ["bin/testguest", "confined"]
+            .into_iter()
+            .chain(verbs.iter().copied())
+            .collect();
         std::fs::write(
             dir.join("agent.json"),
-            format!(r#"{{"name":"{name}","run":{{"command":["bin/testguest","confined","{verb}"]}}{asks}}}"#),
+            format!(
+                r#"{{"name":"{name}","run":{{"command":{}}}{asks}}}"#,
+                serde_json::to_string(&command).unwrap()
+            ),
         )
         .unwrap();
         let tag = format!("127.0.0.1:{port}/team/oom-{name}:1");
@@ -9848,8 +9855,14 @@ fn agents_out_of_memory_end_whole_and_spare_the_run() {
         assert_eq!(pushed.status, Some(0), "{}", pushed.stderr);
         format!("AGENT {name} FROM {tag}\n")
     };
-    let x = agent("x", "fill", r#","asks":{"memory":67108864}"#);
-    let yz = agent("y", "fill", "") + &agent("z", "hold", "");
+    let x = agent("x", &["fill"], r#","asks":{"memory":67108864}"#);
+    // y fills only once z holds its memory and says so (`CONNECT z TO y`): z, started after
+    // y, must hold more resident memory than y's filler as y is ended, which a y that
+    // started filling at once outran on a slow host (CI run 38203829846), and then nothing
+    // was chosen over z.
+    let yz = agent("y", &["srv-receive", "30", "fill"], "")
+        + &agent("z", &["hold-tell", "agent y|holding"], "")
+        + "NETWORK --ingress=7000 n\nCONNECT --port=7000 z TO y ON n\n";
     // The run's own command holds 64 MiB and waits for the host (D115: it sees none of the
     // agents' processes, so the host watches them in `shards top`). The host waits until a
     // domain has filled (`filling` seen) and then been ended whole (`filling` and its
@@ -9922,6 +9935,13 @@ fn agents_out_of_memory_end_whole_and_spare_the_run() {
     let (ended, all) = run("aw-oom-yz", "oom-yz:1", &yz);
     // z, holding memory but no scratch, is spared where the kernel's own choice (most
     // resident memory) would have ended it: it is still there when y's domain is gone.
+    // z held its memory before y began filling: y heard it say so.
+    for want in [
+        r#"[agent z] confined hold-tell: ok {"id":1}"#,
+        r#"[agent y] confined srv-receive: [{"from":"agent z","kind":"request","id":1,"text":"holding"}]"#,
+    ] {
+        assert!(all.lines().any(|l| l == want), "no {want:?} in\n{all}");
+    }
     assert!(
         ended.contains(&"innocent".to_string()),
         "z was ended with y:\n{all}"
@@ -10913,6 +10933,127 @@ return { me, peers, sent, refused };"#;
         ),
     ] {
         assert!(all.lines().any(|l| l.starts_with(want)), "no {what} in\n{all}");
+    }
+}
+
+/// The in-VM server speaks MCP 2026-07-28 and the revisions before it (D138): an agent
+/// asks as a client of 2026-07-28 does, each request alone, and is answered; with its
+/// headers wrong, its revision one the server does not speak, its client's capabilities
+/// missing, a method the server lacks or a browser's origin, it is refused as that
+/// revision says; and it still begins a session of 2025-11-25.
+#[test]
+fn the_in_vm_server_speaks_each_revision() {
+    if cannot_run_vms() {
+        return;
+    }
+    let (image, _) = served();
+    let (port, _repos) = common::writable_registry();
+    let home = TempDir::new("revisions-home");
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", kernel().as_os_str()),
+        ("SHARDS_INIT", guest_init().as_os_str()),
+    ];
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let dir = TempDir::new("revisions-agent");
+    std::fs::create_dir_all(dir.join("bin")).unwrap();
+    std::fs::copy(common::test_guest(), dir.join("bin/testguest")).unwrap();
+    let agent = serde_json::json!({
+        "name": "a",
+        "run": { "command": ["bin/testguest", "confined", "srv-modern", "x"] },
+    });
+    std::fs::write(dir.join("agent.json"), agent.to_string()).unwrap();
+    let tag = format!("127.0.0.1:{port}/team/revisions-a:1");
+    let made = shards(&["build", "agent", dir.to_str().unwrap(), "-t", &tag]);
+    assert_eq!(made.status, Some(0), "{}", made.stderr);
+    let pushed = shards(&["push", "agent", &tag]);
+    assert_eq!(pushed.status, Some(0), "{}", pushed.stderr);
+    let ctx = context("revisions-ctx", &format!("FROM {image}\n"));
+    std::fs::write(
+        ctx.join("Agentfile"),
+        format!("FROM {image}\nAGENT a FROM {tag}\n"),
+    )
+    .unwrap();
+    let built = shards(&["build", "-t", "revisions:1", ctx.to_str().unwrap()]);
+    assert_eq!(built.status, Some(0), "{}", built.stderr);
+    let ran = common::run_awaiting(
+        &env,
+        &[
+            "run",
+            "--rm",
+            "--name",
+            "aw-revisions",
+            "revisions:1",
+            "await",
+            "confined-ready",
+            "1",
+        ],
+        "aw-revisions",
+        ("confined-ready", 1),
+        TIMEOUT,
+    );
+    let all = format!("{}{}", ran.stdout, ran.stderr);
+    assert_eq!(ran.status, Some(0), "{all}");
+    let complete = format!(
+        r#""resultType":"complete","_meta":{{"io.modelcontextprotocol/serverInfo":{{"name":"shards","version":"{}"}}}}"#,
+        env!("CARGO_PKG_VERSION")
+    );
+    let ok = "HTTP/1.1 200 OK";
+    let bad = "HTTP/1.1 400 Bad Request";
+    let whoami = format!(
+        r#"{ok} {{"jsonrpc":"2.0","id":7,"result":{{"content":[{{"type":"text","text":"agent a"}}],"isError":false,{complete}}}}}"#
+    );
+    let mismatch = |message: &str| {
+        format!(r#"{bad} {{"jsonrpc":"2.0","id":7,"error":{{"code":-32020,"message":{message}}}}}"#)
+    };
+    for (what, want) in [
+        (
+            "discover",
+            format!(
+                r#"{ok} {{"jsonrpc":"2.0","id":7,"result":{{"supportedVersions":["2026-07-28","2025-11-25","2025-06-18","2025-03-26"],"capabilities":{{"tools":{{}}}},"ttlMs":0,"cacheScope":"public",{complete}}}}}"#
+            ),
+        ),
+        ("list", format!(r#"7 tools],"ttlMs":0,"cacheScope":"public",{complete}}}}}"#)),
+        ("whoami", whoami.clone()),
+        (
+            "run",
+            format!(
+                r#"{ok} {{"jsonrpc":"2.0","id":7,"result":{{"content":[{{"type":"text","text":"7"}}],"isError":false,{complete}}}}}"#
+            ),
+        ),
+        (
+            "method-mismatch",
+            mismatch(r#""Header mismatch: Mcp-Method header value \"tools/list\" does not match body value \"tools/call\"""#),
+        ),
+        ("name-base64", whoami),
+        (
+            "no-version-header",
+            mismatch(r#""Header mismatch: no MCP-Protocol-Version header for body value \"2026-07-28\"""#),
+        ),
+        (
+            "unsupported",
+            format!(
+                r#"{bad} {{"jsonrpc":"2.0","id":7,"error":{{"code":-32022,"message":"Unsupported protocol version","data":{{"supported":["2026-07-28","2025-11-25","2025-06-18","2025-03-26"],"requested":"1900-01-01"}}}}}}"#
+            ),
+        ),
+        (
+            "unknown",
+            r#"HTTP/1.1 404 Not Found {"jsonrpc":"2.0","id":7,"error":{"code":-32601,"message":"Method not found"}}"#.to_string(),
+        ),
+        (
+            "no-capabilities",
+            format!(
+                r#"{bad} {{"jsonrpc":"2.0","id":7,"error":{{"code":-32602,"message":"Invalid params: no io.modelcontextprotocol/clientCapabilities in _meta"}}}}"#
+            ),
+        ),
+        (
+            "origin",
+            r#"HTTP/1.1 403 Forbidden {"jsonrpc":"2.0","error":{"code":-32600,"message":"this server answers no web origin"}}"#.to_string(),
+        ),
+        ("legacy", format!("{ok} session=true revision=true")),
+    ] {
+        let line = format!("[agent a] confined srv-modern x {what}: {want}");
+        assert!(all.lines().any(|l| l == line), "no {line:?} in\n{all}");
     }
 }
 
