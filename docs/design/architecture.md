@@ -2024,6 +2024,19 @@ stack inside the VMM, is superseded by it.
     epoll or kqueue, timers in a heap, the connections a full ring held back in a queue
     of their own; a round trip beside 3,500 idle connections costs what it does beside
     none (PM M106).
+  - *What a connection holds (2026-10-12, PM M210).* Each connection's queues, its
+    guest's bytes for the host and the host's for its guest, are rings over memory of
+    their own from the OS (mmap; VirtualAlloc on Windows), doubling as bytes come, which
+    the connection lets go of once both have stayed empty for an RTO, TCP's own measure of
+    a connection gone idle (RFC 7661 §4.4); memory let go of is kept an RTO for the next
+    queue that grows to its size, then unmapped. Queues on the heap kept their largest
+    fill for the connection's life, and the C library's allocator kept what they freed,
+    dirty: 1,000 connections idle after 1 MiB each way held 173 MiB of the network
+    process's footprint on macOS, and 10,000, 375 MiB; as built, 4.6 and 9.5. Letting a
+    queue go each time it drained cost bulk transfer 2.5% at p50, and fresh pages for
+    each new connection's queue 2.9%; as built, none measurable. A host connect the
+    process itself could not make (descriptors, ports, buffers) is said, beside the reset
+    the guest hears.
 - **Open, measured before it is built** (networking.md §4):
   - *The data path between the two processes* (E2), **decided (PM M83):** a ring of frame
     slots in memory the two processes share, not the datagram socket Apple's model uses
@@ -2035,9 +2048,15 @@ stack inside the VMM, is superseded by it.
     side spins: each sleeps on its doorbell as soon as its ring is empty, which costs an
     idle VM nothing, and a round trip 6.6 µs at p50, 12 at p99, with 124 to 250 Gbit/s
     one way (PM M105).
-  - *Its cost per VM* (E2, D14): RSS idle and with 1k and 10k connections, beside a VM's
-    own (M64), and the start: the network process is spawned and paired with a warm VM
-    before its request, and must cost a restore nothing (E1).
+  - *Its cost per VM* (E2, D14), **measured (PM M210):** 2.6 MiB of footprint idle and
+    about 0.7 KiB a connection at 10,000 on macOS, whatever they carried before (above),
+    beside the VM's own 89.5 MiB; a round trip beside 10,000 costs what it does beside
+    none. The start (E1): the network process is spawned and paired with its warm VM
+    before the request, and must cost a restore nothing; **measured, not yet met** (PM
+    M210): a run on the default bridge costs 0.42 ms more than one on `none` at p50 [0.29,
+    0.54], 0.22 ms of it in the guest (init setting eth0's MAC and address as the request
+    comes) and 0.20 ms before the hand-over (the daemon's two round trips to the network
+    process, the run's MAC and then its address and names).
   - *Enforcement overhead* (E5) at 0, 100 and 10k rules, and the DNS conformance suite (E6).
 - **Not now:** a VM-to-VM switch (networking.md R8; VMs reach each other through published
   ports first), an administrator-provisioned TAP tier (R2), GPU networking (R9).
@@ -4133,8 +4152,10 @@ given the rest as its build needs it, up to what it may have.
   for each 10 KiB, as the kernel's own sizing has it (a proportion came out short on
   x86_64); TCP's buffers within their caps; TCP's orphans and TIME-WAIT buckets by its
   table's sizing; inotify's watches, which the kernel holds at 8192 below about 1 GiB, in
-  their proportion to epoll's; and init's RLIMIT_NPROC and RLIMIT_SIGPENDING, half the
-  threads, which every step inherits.
+  their proportion to epoll's; and init's RLIMIT_SIGPENDING, half the threads, which
+  every step inherits. Its processes are Docker's build steps', unlimited, as are its open
+  files (1048576) and locked memory, whatever the memory (2026-10-12, PM M211: a step had
+  kept the builder's kernel's own, 1024 of 4096 files).
 - **No snapshot.** Memory plugged is not saved, so a snapshot of a VM with memory to plug
   is refused, and `--memory-max` with `--snapshot-dir` up front.
 - **`shards run --kernel K --memory M --memory-max N`** boots a guest with M MiB that may

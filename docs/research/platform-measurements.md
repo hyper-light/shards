@@ -7234,3 +7234,100 @@ revision before comparing a changed API/implementation.
 - **Consequence (D141, D142, D143).** A Windows child of shards' is given what it is told
   (`SHARDS_LOG`, `SHARDS_TIMING`) and this process's `LOCALAPPDATA` and `SystemRoot` alone;
   its temporary directory is its container's own.
+
+### M210. What a network process costs its host as its connections grow (D31, E2)
+
+- **Question.** A VM's network process holds a host socket and a record for each of its
+  guest's connections, and queues for the bytes between them. What does it cost in memory
+  idle and holding 1,000 and 10,000 connections, beside the VM's own (M64), fresh and after
+  they have carried bytes? Does a round trip beside them cost what it does beside none
+  (M106)?
+- **Method.** `crates/shards/benches/net_memory.rs`: a builder's `RUN` step
+  (`testguest conns`) opens N connections to a server of the bench's at this host's address
+  on its default route, each fresh or after B bytes each way, then makes 2,000 round trips
+  of 64 bytes on one more, and holds them all; 1 s later, past the network process's idle
+  time (one RTO), the bench reads the network process's and the VM process's memory
+  (macOS: `proc_pid_rusage`'s physical footprint and resident size; Linux: `smaps_rollup`;
+  Windows: `GetProcessMemoryInfo`). N = 0, 1,000, 10,000; B = 0, 256 KiB, 1 MiB; 3 rounds
+  each. Each change's cost to bulk transfer: `net-throughput/ab.py`, 32 MiB each way through
+  a published port, n = 300 per arm, the turns' paired median difference with its
+  bootstrap 95% interval. Apple M5 Max, macOS 26.4.1, load average 5.8 to 12, b09a55ae and
+  the changes below, 2026-10-12.
+- **Results.**
+  - Each connection's queues (`VecDeque`) kept their largest fill for the connection's
+    life: 1,000 connections idle after 256 KiB each way held 131 KiB each, 132.6 MiB of
+    footprint against 1.9 idle.
+  - Letting a queue's memory go each time it drained cost bulk transfer +0.2 ms at p50
+    [+0.1, +0.4] (2.5%): a streaming connection's queue empties between its host's reads.
+    Letting both go once they have stayed empty for an RTO, TCP's own measure of a
+    connection gone idle (RFC 7661 §4.4), cost none measurable (+0.1 ms [-0.1, +0.3]); but
+    the footprint stayed (173 MiB for 1,000 connections after 1 MiB each way, 375 MiB for
+    10,000): the C library's allocator keeps what is freed, dirty. A probe: 1,000 queues
+    of 1 MiB, filled and freed, left 1,006 MiB of footprint, which
+    `malloc_zone_pressure_relief` freed none of.
+  - Queues over memory of their own from the OS (mmap(2); VirtualAlloc on Windows),
+    unmapped as they are let go: the footprint follows what is held (below), but bulk
+    transfer cost +0.3 ms at p50 [+0.0, +0.5] (2.9%), each new connection's queue zeroing
+    fresh pages. Memory let go of kept an RTO for the next queue that grows to its size:
+    -0.0 ms [-0.2, +0.1].
+  - The network process, as built (footprint and resident size, MiB, p50 of 3):
+
+    | N | fresh | after 256 KiB each way | after 1 MiB each way |
+    |---|---|---|---|
+    | 0 | 2.6 / 9.8 | 2.6 / 9.8 | 2.6 / 9.8 |
+    | 1,000 | 3.8 / 11.0 | 4.6 / 11.8 | 4.6 / 11.8 |
+    | 10,000 | 9.7 / 16.9 | 9.5 / 16.7 | 9.5 / 16.7 |
+
+    0.7 KiB a connection at 10,000; the resident size's other 7.2 MiB are clean pages,
+    its binary's and the system's libraries', which the footprint leaves out.
+  - The VM process beside it, 89.5 MiB of footprint idle, +5.0 MiB for 1,000 fresh
+    connections and +44.4 MiB for 10,000: the guest kernel's own sockets, in the guest's
+    memory, as any VM's.
+  - A round trip beside them (µs, p50 / p99 / max of 6,000): 91 / 196 / 1,052 beside
+    none; 81 / 161 / 2,731 beside 10,000; after 1 MiB each way, 57 / 110 / 36,132.
+  - The start (E1): `build-ab/ab.py`, one build compared with itself, its new arm's runs
+    on `--network none` (`FLAGS_NEW`), `exit 0` in the echo image, n = 200 per arm, load
+    5.8. A run on the default bridge costs, paired: +418 µs at p50 [+286, +536] of the
+    client's wall time (6,126 against 5,666 µs), +216 µs [+200, +227] of it in the guest
+    from the request to the command's status (1,142 against 925), and +202 µs [+87, +283]
+    outside it. The network process is started with the warm VM, before the request; what
+    costs is the request's network: the daemon asks the network process twice before it
+    hands the run over (the run's MAC, `NET_MAC`; then its address, peers and names), and
+    init sets eth0's MAC and address as the request comes. The workloads bench's
+    `network` (`true` less `none`, run by run, n = 50): +130 µs at p50.
+  - macOS gives a host address 16,384 ports for its connections, which TIME_WAIT holds
+    30 s whatever their peer (`net.inet.ip.portrange`, `net.inet.tcp.msl` 15000), where
+    Linux reuses one for another peer: the bench's cases one after another, whose
+    connections the network process closed first, exhausted them (connect: EADDRNOTAVAIL,
+    which the network process now says). The bench closes its side first.
+- **Consequence (D31).** A network process's connections cost its host what they hold:
+  their queues over memory of their own, let go once idle for an RTO, kept that long for
+  the next connection's bytes, then handed back to the OS. Its memory beside a VM's own
+  is a few MiB, whatever its connections carried before. E1 is not yet met: the request's
+  network work is to move before the request, as the network process's start did.
+
+### M211. The limits a build's `RUN` step starts with
+
+- **Question.** A container's process starts with Docker's limits (`defaults::limits`,
+  measured 2026-10-05). Does a `docker build` step start with the same, and does shards'?
+- **Method.** `RUN cat /proc/self/limits` over `alpine:3.20`, `--no-cache`, built by Docker
+  29.3.1's `docker build` (its BuildKit, in shards-dind) and by shards' (`shards build`,
+  2a3941ea), on an Apple M5 Max, 2026-10-12.
+- **Results.**
+
+  | limit | Docker | shards, before |
+  |---|---|---|
+  | open files | 1048576:1048576 | 1024:4096 |
+  | processes | unlimited | 271397 (the kernel's, by the builder's memory) |
+  | locked memory | unlimited | 8 MiB |
+  | core file | 0:unlimited | 0:unlimited |
+  | stack | 8 MiB:unlimited | 8 MiB:unlimited |
+  | pending signals | 256734 (its host's kernel's) | 271397 (the builder's) |
+
+  The rest alike. A step kept the builder's kernel's own, where Docker's inherit its
+  daemon's, which are its containers'.
+- **Consequence.** The builder's init takes Docker's limits before its first step, as a
+  run's init does (`defaults::limits`), and every step inherits them; `--ulimit` sets its
+  own over them. D133 no longer sizes processes by the builder's memory: they are Docker's,
+  unlimited. Pending signals stay the kernel's, by the builder's memory, as Docker's are by
+  its host's. `run_steps_start_with_dockers_limits` holds a step to them.
