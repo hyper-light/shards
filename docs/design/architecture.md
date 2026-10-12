@@ -2071,9 +2071,9 @@ stack inside the VMM, is superseded by it.
     addresses, published ports, a user network's address, peers and names, its agents'
     grants) goes in one round trip, each ask sent as it comes and their answers read after
     the last (`networks::Asks`): on a user network, −282 µs of a run's wall time at p50
-    [−464, +18]. **Open:** the daemon's share measured on a quiet host; the peers' own
-    network processes, still asked one after another; and what each peer costs a run on
-    its network in its guest, +0.3 to +1.1 ms with two, by the host's load (PM M210).
+    [−464, +18]; peers on that network cost it nothing measurable (PM M210). **Open:** the
+    daemon's share measured on a quiet host; the peers' own network processes, still asked
+    one after another.
   - *Enforcement overhead* (E5) at 0, 100 and 10k rules, and the DNS conformance suite (E6).
 - **Not now:** a VM-to-VM switch (networking.md R8; VMs reach each other through published
   ports first), an administrator-provisioned TAP tier (R2), GPU networking (R9).

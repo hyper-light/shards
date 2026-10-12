@@ -7387,20 +7387,22 @@ revision before comparing a changed API/implementation.
     [−389, −11]. With two peers running on it: +105 µs [−474, +635], no difference that
     resolves: each peer's own network process is still asked one after another, its
     socket being others' to use too.
-  - What peers cost a run on their network: one build, two homes with one template, two
-    peers running on `n` in one of them (`sleep` containers), n = 200 pairs: +1,267 µs of
-    wall time [+1,106, +1,410], +1,118 µs of it in the guest from the request to the
-    command's status [+1,089, +1,148], +154 µs outside it [+49, +295]. A second sample
-    of 30 runs each, minutes later: +304 µs in the guest at p50, its markers showing it
-    grow over the command's run and after its exit. The peers' VMs were idle (0% CPU).
+  - What peers cost a run on their network: one home and its daemon, runs alternating
+    between a network with two peers running on it (`sleep` containers) and one with none
+    (`FLAGS_NEW="--network n"`, `FLAGS_OLD="--network m"`), n = 200 pairs: +6 µs in the
+    guest from the request to the command's status [−22, +24], +161 µs of wall time
+    [−222, +439]: none that resolves. A first comparison put the peers in a second home,
+    copied from the first: +1,118 µs in the guest [+1,089, +1,148]; but with no peers
+    running at all the two homes still differed by +302 µs there [+260, +345], so it
+    measured the homes, not the peers.
 - **Consequence (D31).** A network process's connections cost its host what they hold:
   their queues over memory of their own, let go once idle for an RTO, kept that long for
   the next connection's bytes, then handed back to the OS. Its memory beside a VM's own
   is a few MiB, whatever its connections carried before. E1: a run whose MAC is made, on
   the default bridge, costs its guest nothing of its network as the request comes, and
-  what a run's network process takes before the run goes in one round trip. Open: the
-  daemon's share on a quiet host; the peers' processes asked at once; and what peers cost
-  a run in its guest, which depends on the host's load and is not yet explained.
+  what a run's network process takes before the run goes in one round trip; peers on its
+  network cost it nothing measurable. Open: the daemon's share on a quiet host; the peers'
+  processes asked at once.
 
 ### M211. The limits a build's `RUN` step starts with
 
