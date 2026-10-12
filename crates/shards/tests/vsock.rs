@@ -52,7 +52,8 @@ fn os(args: &[std::ffi::OsString]) -> Vec<&std::ffi::OsStr> {
 fn boot_echo_guest(dir: &Path) -> (Vm, PathBuf) {
     let sock = dir.join("v.sock");
     let host = UnixListener::bind(dir.join("v.sock_5000")).unwrap();
-    let mut vm = Vm::spawn(&os(&guest_args("vsock", &sock)));
+    // Its device's debug lines, which a failure prints with what the VM said.
+    let mut vm = Vm::spawn_env(&os(&guest_args("vsock", &sock)), &[("SHARDS_LOG", "debug")]);
     let (tx, rx) = mpsc::channel();
     thread::spawn(move || {
         let result = (|| {

@@ -11,11 +11,10 @@
 use std::collections::VecDeque;
 use std::io::{self, IoSlice, Read, Write};
 use std::net::{IpAddr, Shutdown, SocketAddr, TcpStream};
-use std::os::fd::{AsRawFd, FromRawFd as _, RawFd};
-use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
+use crate::sys::{AsRawSock, RawSock, UnixStream};
 use crate::wire::{self, ACK, FIN, PSH, RST, SYN};
 
 /// What a connection holds of the guest's bytes the host has not taken yet, and so the
@@ -120,11 +119,11 @@ impl Write for &HostSock {
     }
 }
 
-impl AsRawFd for HostSock {
-    fn as_raw_fd(&self) -> RawFd {
+impl AsRawSock for HostSock {
+    fn raw_sock(&self) -> RawSock {
         match self {
-            HostSock::Tcp(s) => s.as_raw_fd(),
-            HostSock::Unix(s) => s.as_raw_fd(),
+            HostSock::Tcp(s) => s.raw_sock(),
+            HostSock::Unix(s) => s.raw_sock(),
         }
     }
 }
@@ -242,7 +241,12 @@ impl Conn {
     /// A connection for the guest's SYN to `key`'s remote end, its host socket connecting
     /// to `to` instead.
     pub fn open_to(key: Key, to: (IpAddr, u16), seg: &wire::Tcp<'_>, isn: u32) -> io::Result<Conn> {
-        Ok(Conn::opened(key, HostSock::Tcp(connect(to)?), seg, isn))
+        Ok(Conn::opened(
+            key,
+            HostSock::Tcp(crate::sys::connect_tcp(SocketAddr::from(to))?),
+            seg,
+            isn,
+        ))
     }
 
     /// A connection for the guest's SYN to the build's proxy (D110), its host socket a Unix
@@ -987,8 +991,8 @@ impl Conn {
         );
     }
 
-    pub fn fd(&self) -> i32 {
-        self.sock.as_raw_fd()
+    pub fn fd(&self) -> RawSock {
+        self.sock.raw_sock()
     }
 }
 
@@ -1009,11 +1013,10 @@ fn write_now(mut sock: impl Write, parts: Payload<'_>) -> io::Result<usize> {
     Ok(done)
 }
 
-/// A Unix stream socket connected to `path` without blocking: connected at once, or the
-/// error that refused it (a backlog with no room says EAGAIN).
-/// Where a build's proxy is dialled from in a process App Sandbox keeps from the proxy's
-/// socket (macOS, D31): its spawner's end of a link, over which it asks for a connection and
-/// is given one, as a sandboxed VM asks for its vsock host ports (`kind::DIAL`).
+/// Where a build's proxy is dialled from in a process App Sandbox or an AppContainer keeps
+/// from the proxy's socket (macOS, D31; Windows, D142): its spawner's end of a link, over
+/// which it asks for a connection and is given one, as a confined VM asks for its vsock
+/// host ports (`kind::DIAL`).
 static PROXY_DIALER: std::sync::OnceLock<std::sync::Mutex<UnixStream>> = std::sync::OnceLock::new();
 
 /// Dials the build's proxy through `link`, once for the process's life.
@@ -1026,6 +1029,7 @@ pub fn set_proxy_dialer(link: UnixStream) -> io::Result<()> {
 /// A connection to the build's proxy, from the spawner's dialer: asked for, given as a
 /// descriptor, and acknowledged (`kind::TAKEN`), as XNU drops a socket in flight that no
 /// process holds (M24).
+#[cfg(unix)]
 fn dial(link: &std::sync::Mutex<UnixStream>) -> io::Result<UnixStream> {
     use shards_ipc::kind;
     // A request and its answer at a time.
@@ -1050,133 +1054,42 @@ fn dial(link: &std::sync::Mutex<UnixStream>) -> io::Result<UnixStream> {
     }
 }
 
+/// A connection to the build's proxy, from the spawner's dialer (Windows): asked for, and
+/// given as a socket its spawner shared with this process (WSADuplicateSocketW, PM M203),
+/// which an AppContainer could not dial (PM M201).
+#[cfg(windows)]
+fn dial(link: &std::sync::Mutex<UnixStream>) -> io::Result<UnixStream> {
+    use shards_ipc::kind;
+    // A request and its answer at a time.
+    let link = link.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    shards_ipc::send(&*link, kind::DIAL, &[])?;
+    let answer = shards_ipc::recv(&*link)?
+        .ok_or_else(|| io::Error::new(io::ErrorKind::BrokenPipe, "the proxy's dialer went"))?;
+    match answer.kind {
+        kind::GRANTED => {
+            let sock = UnixStream::from_shared(&answer.payload)?;
+            let _ = shards_ipc::send(&*link, kind::TAKEN, &[]);
+            sock.set_nonblocking(true)?;
+            Ok(sock)
+        }
+        kind::ERR => Err(io::Error::new(
+            io::ErrorKind::ConnectionRefused,
+            String::from_utf8_lossy(&answer.payload).into_owned(),
+        )),
+        _ => Err(io::Error::other(
+            "the proxy's dialer answered with something else",
+        )),
+    }
+}
+
+/// A Unix connection to the build's proxy at `path` without blocking: through the
+/// spawner's dialer where there is one, else connected at once, or the error that refused
+/// it (a backlog with no room says EAGAIN).
 fn connect_unix(path: &Path) -> io::Result<UnixStream> {
-    use std::os::unix::ffi::OsStrExt as _;
     if let Some(link) = PROXY_DIALER.get() {
         return dial(link);
     }
-    // SAFETY: an all-zero sockaddr_un is valid.
-    let mut sa: libc::sockaddr_un = unsafe { std::mem::zeroed() };
-    let bytes = path.as_os_str().as_bytes();
-    if bytes.len() >= sa.sun_path.len() || bytes.contains(&0) {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "a proxy socket's path longer than sun_path holds",
-        ));
-    }
-    for (d, s) in sa.sun_path.iter_mut().zip(bytes) {
-        *d = *s as libc::c_char;
-    }
-    sa.sun_family = libc::AF_UNIX as libc::sa_family_t;
-    #[cfg(target_os = "macos")]
-    {
-        sa.sun_len = std::mem::size_of::<libc::sockaddr_un>() as u8;
-    }
-    // SAFETY: socket(2) with constant arguments; the descriptor is owned below.
-    let fd = unsafe { libc::socket(libc::AF_UNIX, libc::SOCK_STREAM, 0) };
-    if fd < 0 {
-        return Err(io::Error::last_os_error());
-    }
-    // SAFETY: a descriptor just made.
-    let sock = unsafe { UnixStream::from_raw_fd(fd) };
-    sock.set_nonblocking(true)?;
-    // SAFETY: fcntl(2) on our own descriptor.
-    unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) };
-    // SAFETY: a sockaddr_un of its own length.
-    let r = unsafe {
-        libc::connect(
-            fd,
-            (&raw const sa).cast(),
-            std::mem::size_of::<libc::sockaddr_un>() as libc::socklen_t,
-        )
-    };
-    if r != 0 {
-        return Err(io::Error::last_os_error());
-    }
-    Ok(sock)
-}
-
-/// A TCP socket connecting to `to`, of its address's family, without blocking.
-fn connect(to: (IpAddr, u16)) -> io::Result<TcpStream> {
-    let addr = SocketAddr::from(to);
-    let family = if addr.is_ipv6() {
-        libc::AF_INET6
-    } else {
-        libc::AF_INET
-    };
-    // SAFETY: socket(2) with constant arguments; the descriptor is owned below.
-    let fd = unsafe { libc::socket(family, libc::SOCK_STREAM, 0) };
-    if fd < 0 {
-        return Err(io::Error::last_os_error());
-    }
-    // SAFETY: a descriptor just made.
-    let sock = unsafe { <TcpStream as std::os::fd::FromRawFd>::from_raw_fd(fd) };
-    sock.set_nonblocking(true)?;
-    // No Nagle on the host's leg: the guest's own TCP chose what to send together.
-    sock.set_nodelay(true)?;
-    // SAFETY: fcntl(2) on our own descriptor.
-    unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) };
-    let r = match addr {
-        SocketAddr::V4(v4) => {
-            let sa = sockaddr_in(v4);
-            // SAFETY: a sockaddr_in of its own length.
-            unsafe {
-                libc::connect(
-                    fd,
-                    (&raw const sa).cast(),
-                    std::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t,
-                )
-            }
-        }
-        SocketAddr::V6(v6) => {
-            let sa = sockaddr_in6(v6);
-            // SAFETY: a sockaddr_in6 of its own length.
-            unsafe {
-                libc::connect(
-                    fd,
-                    (&raw const sa).cast(),
-                    std::mem::size_of::<libc::sockaddr_in6>() as libc::socklen_t,
-                )
-            }
-        }
-    };
-    if r != 0 {
-        let e = io::Error::last_os_error();
-        if e.raw_os_error() != Some(libc::EINPROGRESS) {
-            return Err(e);
-        }
-    }
-    Ok(sock)
-}
-
-fn sockaddr_in(v4: std::net::SocketAddrV4) -> libc::sockaddr_in {
-    // SAFETY: an all-zero sockaddr_in is valid.
-    let mut sa: libc::sockaddr_in = unsafe { std::mem::zeroed() };
-    #[cfg(target_os = "macos")]
-    {
-        sa.sin_len = std::mem::size_of::<libc::sockaddr_in>() as u8;
-    }
-    sa.sin_family = libc::AF_INET as libc::sa_family_t;
-    sa.sin_port = v4.port().to_be();
-    sa.sin_addr = libc::in_addr {
-        s_addr: u32::from_ne_bytes(v4.ip().octets()),
-    };
-    sa
-}
-
-fn sockaddr_in6(v6: std::net::SocketAddrV6) -> libc::sockaddr_in6 {
-    // SAFETY: an all-zero sockaddr_in6 is valid.
-    let mut sa: libc::sockaddr_in6 = unsafe { std::mem::zeroed() };
-    #[cfg(target_os = "macos")]
-    {
-        sa.sin6_len = std::mem::size_of::<libc::sockaddr_in6>() as u8;
-    }
-    sa.sin6_family = libc::AF_INET6 as libc::sa_family_t;
-    sa.sin6_port = v6.port().to_be();
-    sa.sin6_addr = libc::in6_addr {
-        s6_addr: v6.ip().octets(),
-    };
-    sa
+    crate::sys::connect_unix(path)
 }
 
 #[cfg(test)]

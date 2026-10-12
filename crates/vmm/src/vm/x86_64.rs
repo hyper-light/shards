@@ -379,7 +379,6 @@ pub fn build(cfg: &Config) -> Result<Machine, String> {
 
     let hosts = super::Hosts {
         vsock: cfg.vsock.as_ref(),
-        #[cfg(unix)]
         net: cfg.net.as_ref(),
         #[cfg(unix)]
         shares: &cfg.shares,

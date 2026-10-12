@@ -9,7 +9,6 @@ pub mod block;
 pub mod fs;
 pub mod mem;
 pub mod mmio;
-#[cfg(unix)]
 pub mod net;
 pub mod pmem;
 pub mod queue;

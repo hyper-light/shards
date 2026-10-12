@@ -1546,7 +1546,13 @@ pub fn within<T: Send + 'static>(
 
 impl Vm {
     pub fn spawn<S: AsRef<std::ffi::OsStr>>(args: &[S]) -> Vm {
+        Vm::spawn_env(args, &[])
+    }
+
+    /// [`Vm::spawn`], with `env` added to shards' environment.
+    pub fn spawn_env<S: AsRef<std::ffi::OsStr>>(args: &[S], env: &[(&str, &str)]) -> Vm {
         let mut child = command()
+            .envs(env.iter().copied())
             .args(args)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())

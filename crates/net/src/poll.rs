@@ -5,11 +5,26 @@
 //!
 //! A descriptor closed is forgotten by both (epoll(7) once its last reference closes,
 //! kqueue(2) at close), so the caller never removes one it is closing: a change made
-//! after the close could reach a new descriptor of the same number.
+//! after the close could reach a new descriptor of the same number. On Windows a socket
+//! closed is not forgotten, and its handle's value may name the next socket made: the
+//! caller makes a socket's interest NONE before it closes it ([`Poller::set`]).
+//!
+//! On Windows (D142) each socket's interest selects its network events onto one event
+//! (WSAEventSelect), once, as it changes; a wait reads each socket's state with a WSAPoll
+//! that does not wait, and sleeps on that event and on the handles watched beside the
+//! sockets (a doorbell's event, a peer's process), as the vsock device's poller does
+//! (vmm vsock/poll.rs; PM M199: WSAPoll alone reports a peer's half-close as a hangup
+//! whatever is asked, which a wait to write would spin on).
 
+#[cfg(unix)]
 use std::io;
-use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
+#[cfg(unix)]
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+#[cfg(unix)]
 use std::time::Duration;
+
+#[cfg(unix)]
+use crate::sys::RawSock;
 
 /// What a descriptor waits for.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -40,13 +55,16 @@ pub struct Event {
 }
 
 /// Events a wait takes at most; more wait for the next.
+#[cfg(unix)]
 const AT_ONCE: usize = 256;
 
+#[cfg(unix)]
 #[derive(Debug)]
 pub struct Poller {
     fd: OwnedFd,
 }
 
+#[cfg(unix)]
 impl Poller {
     pub fn new() -> io::Result<Poller> {
         #[cfg(target_os = "macos")]
@@ -65,7 +83,7 @@ impl Poller {
 
     /// Makes `fd`'s interest `now`, named `token`, from `was`, what it was (NONE for one
     /// not registered).
-    pub fn set(&self, fd: RawFd, token: u64, was: Interest, now: Interest) -> io::Result<()> {
+    pub fn set(&self, fd: RawSock, token: u64, was: Interest, now: Interest) -> io::Result<()> {
         if was == now {
             return Ok(());
         }
@@ -205,6 +223,187 @@ impl Poller {
     }
 }
 
+#[cfg(windows)]
+mod windows {
+    use std::cell::RefCell;
+    use std::collections::HashMap;
+    use std::io;
+    use std::os::windows::io::RawHandle;
+    use std::time::Duration;
+
+    use windows_sys::Win32::Networking::WinSock::{
+        FD_ACCEPT, FD_CLOSE, FD_CONNECT, FD_READ, FD_WRITE, POLLERR, POLLHUP, POLLNVAL, POLLRDNORM,
+        POLLWRNORM, WSA_INVALID_EVENT, WSACloseEvent, WSACreateEvent, WSAEVENT, WSAEventSelect,
+        WSAGetLastError, WSAPOLLFD, WSAPoll, WSAResetEvent, WSAWaitForMultipleEvents,
+    };
+    use windows_sys::Win32::System::Threading::WaitForSingleObject;
+
+    use super::{Event, Interest};
+    use crate::sys::RawSock;
+
+    /// A handle watched beside the sockets: under `token`, its being signaled an end where
+    /// `ends` (a peer's process), and otherwise a read (a doorbell's event).
+    #[derive(Debug, Clone, Copy)]
+    struct Watched {
+        handle: RawHandle,
+        token: u64,
+        ends: bool,
+    }
+
+    #[derive(Debug)]
+    pub struct Poller {
+        /// The event every socket's network events set.
+        event: WSAEVENT,
+        sockets: RefCell<HashMap<RawSock, (u64, Interest)>>,
+        watched: RefCell<Vec<Watched>>,
+    }
+
+    impl Drop for Poller {
+        fn drop(&mut self) {
+            // SAFETY: our own event.
+            unsafe { WSACloseEvent(self.event) };
+        }
+    }
+
+    fn last() -> io::Error {
+        // SAFETY: no arguments.
+        io::Error::from_raw_os_error(unsafe { WSAGetLastError() })
+    }
+
+    impl Poller {
+        pub fn new() -> io::Result<Poller> {
+            shards_afunix::startup()?;
+            // SAFETY: no arguments; closed as the poller drops.
+            let event = unsafe { WSACreateEvent() };
+            if event == WSA_INVALID_EVENT {
+                return Err(last());
+            }
+            Ok(Poller {
+                event,
+                sockets: RefCell::new(HashMap::new()),
+                watched: RefCell::new(Vec::new()),
+            })
+        }
+
+        /// Makes `sock`'s interest `now`, named `token`: NONE forgets it, as the caller
+        /// does before it closes it.
+        pub fn set(&self, sock: RawSock, token: u64, was: Interest, now: Interest) -> io::Result<()> {
+            if was == now && now != Interest::NONE {
+                return Ok(());
+            }
+            let mut sockets = self.sockets.borrow_mut();
+            if now == Interest::NONE {
+                if sockets.remove(&sock).is_some() {
+                    // SAFETY: a socket of the caller's, its events selected onto nothing.
+                    unsafe { WSAEventSelect(sock, 0, 0) };
+                }
+                return Ok(());
+            }
+            let mut events = 0;
+            if now.read {
+                events |= FD_READ | FD_ACCEPT | FD_CLOSE;
+            }
+            if now.write {
+                events |= FD_WRITE | FD_CONNECT | FD_CLOSE;
+            }
+            // SAFETY: a socket of the caller's and our own event.
+            if unsafe { WSAEventSelect(sock, self.event, events as i32) } != 0 {
+                return Err(last());
+            }
+            sockets.insert(sock, (token, now));
+            Ok(())
+        }
+
+        /// Watches `handle` beside the sockets, under `token`: a doorbell's event, which a
+        /// wait it wakes resets; or, where `ends`, a peer's process, whose end it says.
+        pub fn watch(&self, handle: RawHandle, token: u64, ends: bool) {
+            self.watched.borrow_mut().push(Watched { handle, token, ends });
+        }
+
+        /// Waits until something registered is ready, or `timeout` passes (`None`: for as
+        /// long as it takes), and puts what is in `out`, which it empties first.
+        pub fn wait(&self, out: &mut Vec<Event>, timeout: Option<Duration>) -> io::Result<()> {
+            out.clear();
+            // SAFETY: our own event, set again by any network event from here on.
+            unsafe { WSAResetEvent(self.event) };
+            self.look(out)?;
+            if !out.is_empty() || timeout == Some(Duration::ZERO) {
+                return Ok(());
+            }
+            // Rounded up, so that a deadline is never missed by waking a moment early;
+            // none waits without end (INFINITE).
+            let ms = timeout.map_or(u32::MAX, |t| {
+                u32::try_from(t.as_micros().div_ceil(1000)).unwrap_or(u32::MAX - 1)
+            });
+            let handles: Vec<RawHandle> = std::iter::once(self.event as RawHandle)
+                .chain(self.watched.borrow().iter().map(|w| w.handle))
+                .collect();
+            // SAFETY: our own event and the handles watched, which their owner keeps open.
+            unsafe { WSAWaitForMultipleEvents(handles.len() as u32, handles.as_ptr(), 0, ms, 0) };
+            self.look(out)
+        }
+
+        /// What is ready now: each socket's state as a WSAPoll that does not wait reads it,
+        /// end of stream (a hangup) a read's and never a write's (PM M199); and each handle
+        /// watched that is signaled, a doorbell's taken as it is looked at.
+        fn look(&self, out: &mut Vec<Event>) -> io::Result<()> {
+            let sockets = self.sockets.borrow();
+            let mut fds: Vec<WSAPOLLFD> = sockets
+                .iter()
+                .map(|(&fd, &(_, interest))| WSAPOLLFD {
+                    fd,
+                    events: if interest.read { POLLRDNORM } else { 0 }
+                        | if interest.write { POLLWRNORM } else { 0 },
+                    revents: 0,
+                })
+                .collect();
+            if !fds.is_empty() {
+                // SAFETY: an array of its own length; no wait.
+                let n = unsafe { WSAPoll(fds.as_mut_ptr(), fds.len() as u32, 0) };
+                if n < 0 {
+                    return Err(last());
+                }
+            }
+            for fd in &fds {
+                let r = fd.revents;
+                if r == 0 {
+                    continue;
+                }
+                let Some(&(token, interest)) = sockets.get(&fd.fd) else {
+                    continue;
+                };
+                let ended = r & (POLLHUP | POLLERR | POLLNVAL) != 0;
+                let read = interest.read && (r & POLLRDNORM != 0 || ended);
+                let write = interest.write && (r & POLLWRNORM != 0 || r & (POLLERR | POLLNVAL) != 0);
+                if read || write || ended {
+                    out.push(Event {
+                        token,
+                        read: read || ended,
+                        write,
+                        ended,
+                    });
+                }
+            }
+            for w in self.watched.borrow().iter() {
+                // SAFETY: a handle its owner keeps open; no wait.
+                if unsafe { WaitForSingleObject(w.handle, 0) } == 0 {
+                    out.push(Event {
+                        token: w.token,
+                        read: true,
+                        write: false,
+                        ended: w.ends,
+                    });
+                }
+            }
+            Ok(())
+        }
+    }
+}
+
+#[cfg(windows)]
+pub use windows::Poller;
+
+#[cfg(unix)]
 fn interrupted_or(e: io::Error) -> io::Result<()> {
     if e.kind() == io::ErrorKind::Interrupted {
         Ok(())
@@ -217,8 +416,9 @@ fn interrupted_or(e: io::Error) -> io::Result<()> {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+    use crate::sys::{AsRawSock as _, UnixStream};
     use std::io::{Read as _, Write as _};
-    use std::os::unix::net::UnixStream;
+    use std::time::Duration;
 
     fn ready(p: &Poller) -> Vec<Event> {
         let mut out = Vec::new();
@@ -234,7 +434,7 @@ mod tests {
     fn descriptors_are_ready_for_what_they_wait_for() {
         let p = Poller::new().unwrap();
         let (mut a, b) = UnixStream::pair().unwrap();
-        p.set(b.as_raw_fd(), 7, Interest::NONE, Interest::READ).unwrap();
+        p.set(b.raw_sock(), 7, Interest::NONE, Interest::READ).unwrap();
         assert_eq!(ready(&p), []);
         a.write_all(b"x").unwrap();
         assert_eq!(
@@ -252,13 +452,13 @@ mod tests {
             read: true,
             write: true,
         };
-        p.set(b.as_raw_fd(), 7, Interest::READ, both).unwrap();
+        p.set(b.raw_sock(), 7, Interest::READ, both).unwrap();
         let events = ready(&p);
         assert!(
             events.iter().any(|e| e.write) && events.iter().any(|e| e.read),
             "{events:?}"
         );
-        p.set(b.as_raw_fd(), 7, both, Interest::NONE).unwrap();
+        p.set(b.raw_sock(), 7, both, Interest::NONE).unwrap();
         assert_eq!(ready(&p), []);
         let mut got = [0u8; 1];
         (&b).read_exact(&mut got).unwrap();
@@ -269,21 +469,50 @@ mod tests {
     fn an_end_is_said() {
         let p = Poller::new().unwrap();
         let (a, b) = UnixStream::pair().unwrap();
-        p.set(b.as_raw_fd(), 3, Interest::NONE, Interest::READ).unwrap();
+        p.set(b.raw_sock(), 3, Interest::NONE, Interest::READ).unwrap();
         drop(a);
         let events = ready(&p);
         assert_eq!(events.len(), 1);
         assert!(events[0].read && events[0].ended, "{events:?}");
     }
 
-    /// A descriptor closed is forgotten: a wait finds nothing of it.
+    /// A descriptor closed is forgotten: a wait finds nothing of it. On Windows the caller
+    /// forgets it first, as the stack does.
     #[test]
     fn a_closed_descriptor_is_forgotten() {
         let p = Poller::new().unwrap();
         let (mut a, b) = UnixStream::pair().unwrap();
         a.write_all(b"x").unwrap();
-        p.set(b.as_raw_fd(), 9, Interest::NONE, Interest::READ).unwrap();
+        p.set(b.raw_sock(), 9, Interest::NONE, Interest::READ).unwrap();
+        #[cfg(windows)]
+        p.set(b.raw_sock(), 9, Interest::READ, Interest::NONE).unwrap();
         drop(b);
         assert_eq!(ready(&p), []);
+    }
+
+    /// A handle watched is ready while signaled, under its token: a doorbell's event as a
+    /// read, taken as the wait finds it; a peer's process, as its end.
+    #[cfg(windows)]
+    #[test]
+    fn handles_watched_are_ready_when_signaled() {
+        use std::os::windows::io::AsRawHandle as _;
+        let p = Poller::new().unwrap();
+        let (sleeps, rings) = shards_netring::doorbell().unwrap();
+        p.watch(sleeps.as_raw_handle(), 5, false);
+        assert_eq!(ready(&p), []);
+        // SAFETY: an event of the test's.
+        unsafe { windows_sys::Win32::System::Threading::SetEvent(rings.as_raw_handle()) };
+        let mut out = Vec::new();
+        p.wait(&mut out, Some(Duration::from_secs(5))).unwrap();
+        assert_eq!(
+            out,
+            [Event {
+                token: 5,
+                read: true,
+                write: false,
+                ended: false
+            }]
+        );
+        assert_eq!(ready(&p), [], "a doorbell's ring is taken as it is found");
     }
 }

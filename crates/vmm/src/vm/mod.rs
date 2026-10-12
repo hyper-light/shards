@@ -52,7 +52,6 @@ pub use unsupported::{
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Hosts<'a> {
     pub vsock: Option<&'a VsockHost>,
-    #[cfg(unix)]
     pub net: Option<&'a crate::devices::virtio::net::NetHost>,
     /// Each virtio-fs device's slot, in order (D38).
     #[cfg(unix)]
@@ -79,7 +78,6 @@ fn check_hosts(snap: &crate::snapshot::Snapshot, hosts: Hosts<'_>) -> Result<(),
         (false, Some(_)) => return Err("the snapshot has no vsock device for --vsock".into()),
         _ => {}
     }
-    #[cfg(unix)]
     match (snap.config.net, hosts.net) {
         (Some(_), None) => {
             return Err(
@@ -259,7 +257,6 @@ fn virtio_devices(
             .ok_or("the machine has a vsock device but no host side for it")?;
         devices.push(Box::new(vsock::Vsock::new(host.clone(), vsock::GUEST_CID)?));
     }
-    #[cfg(unix)]
     if let Some(mac) = config.net {
         let mut host = hosts
             .net
@@ -328,10 +325,7 @@ fn machine_config(cfg: &Config) -> Result<crate::snapshot::MachineConfig, String
             .map(|p| resolve(p))
             .collect::<Result<_, String>>()?,
         vsock: cfg.vsock.is_some(),
-        #[cfg(unix)]
         net: cfg.net.as_ref().map(|n| n.mac),
-        #[cfg(not(unix))]
-        net: None,
         #[cfg(unix)]
         shares: u32::try_from(cfg.shares.len()).map_err(|_| "too many shared directories")?,
         #[cfg(not(unix))]
@@ -396,7 +390,6 @@ pub struct Config {
     /// A virtio-vsock device, and where its host side is.
     pub vsock: Option<VsockHost>,
     /// A virtio-net device, and the network process's side of it (D31).
-    #[cfg(unix)]
     pub net: Option<crate::devices::virtio::net::NetHost>,
     /// virtio-fs devices, each a slot its directory's server is put in (D38).
     #[cfg(unix)]
@@ -465,7 +458,6 @@ impl Config {
             snapshot: None,
             pmem: Vec::new(),
             vsock: None,
-            #[cfg(unix)]
             net: None,
             #[cfg(unix)]
             shares: Vec::new(),
@@ -494,7 +486,6 @@ pub struct RestoreConfig {
     pub vsock: Option<VsockHost>,
     /// This VM's network process's side of its network device. A snapshot with one needs
     /// one: a network process serves one VM alone.
-    #[cfg(unix)]
     pub net: Option<crate::devices::virtio::net::NetHost>,
     /// The slots of the snapshot's shared directories, one each (D38).
     #[cfg(unix)]

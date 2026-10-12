@@ -118,6 +118,11 @@ mod platform {
 
 #[cfg(test)]
 mod tests {
+    /// A thread knows the stack it has: at least half of what it asked, at its start, and
+    /// no more than the OS may give for it. glibc gives a new thread an exited one's cached
+    /// stack of up to four times the size asked (nptl/allocatestack.c, `get_cached_stack`):
+    /// a 1 MiB thread had 2 MiB on aarch64-unknown-linux-gnu, where other tests' threads of
+    /// glibc's default 2 MiB had ended (CI run 38230528047).
     #[test]
     fn a_thread_knows_how_much_stack_it_has_left() {
         let size = 1 << 20;
@@ -127,9 +132,14 @@ mod tests {
             .unwrap()
             .join()
             .unwrap();
+        let most = if cfg!(all(target_os = "linux", target_env = "gnu")) {
+            4 * size
+        } else {
+            size
+        };
         if cfg!(any(target_os = "macos", target_os = "linux", windows)) {
             let left = left.unwrap();
-            assert!(left > size / 2 && left <= size + (64 << 10), "{left}");
+            assert!(left > size / 2 && left <= most + (64 << 10), "{left}");
         }
     }
 }

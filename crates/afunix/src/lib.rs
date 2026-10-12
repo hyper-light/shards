@@ -12,13 +12,14 @@ use std::io::{self, Read, Write};
 use std::net::Shutdown;
 use std::path::Path;
 use std::sync::OnceLock;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 use windows_sys::Win32::Networking::WinSock::{
-    AF_UNIX, FIONBIO, FROM_PROTOCOL_INFO, INVALID_SOCKET, SD_BOTH, SD_RECEIVE, SD_SEND, SO_RCVTIMEO,
+    AF_UNIX, FIONBIO, FROM_PROTOCOL_INFO, INVALID_SOCKET, POLLRDNORM, SD_BOTH, SD_RECEIVE, SD_SEND, SO_ERROR,
     SOCK_STREAM, SOCKADDR_UN, SOCKET, SOL_SOCKET, SOMAXCONN, WSA_FLAG_NO_HANDLE_INHERIT, WSABUF, WSADATA,
-    WSADuplicateSocketW, WSAGetLastError, WSAPROTOCOL_INFOW, WSARecv, WSASend, WSASocketW, WSAStartup,
-    accept, bind, closesocket, connect, ioctlsocket, listen, recv, send, setsockopt, shutdown,
+    WSADuplicateSocketW, WSAGetLastError, WSAPOLLFD, WSAPROTOCOL_INFOW, WSAPoll, WSARecv, WSASend,
+    WSASocketW, WSAStartup, accept, bind, closesocket, connect, getpeername, getsockopt, ioctlsocket, listen,
+    recv, send, shutdown,
 };
 
 /// A socket, as WSAPoll and WSAEventSelect name it.
@@ -159,12 +160,48 @@ const ADDRESS_LEN: i32 = std::mem::size_of::<SOCKADDR_UN>() as i32;
 
 /// A connected AF_UNIX stream.
 #[derive(Debug)]
-pub struct UnixStream(Socket);
+pub struct UnixStream {
+    socket: Socket,
+    /// How long a read waits, in milliseconds; 0, for ever (`set_read_timeout`).
+    read_ms: AtomicU32,
+}
 
 impl UnixStream {
+    fn wrap(socket: Socket) -> UnixStream {
+        UnixStream {
+            socket,
+            read_ms: AtomicU32::new(0),
+        }
+    }
+
+    /// A read of what has come into `buf`, waiting no longer than the stream's timeout:
+    /// a WSAPoll first, which afunix answers whatever its options say, then the read.
+    fn read_into(&self, buf: &mut [u8]) -> io::Result<usize> {
+        let ms = self.read_ms.load(Ordering::Relaxed);
+        if ms != 0 {
+            let mut fd = WSAPOLLFD {
+                fd: self.socket.0,
+                events: POLLRDNORM,
+                revents: 0,
+            };
+            // SAFETY: one entry, a socket this value owns.
+            let n = unsafe { WSAPoll(&raw mut fd, 1, i32::try_from(ms).unwrap_or(i32::MAX)) };
+            if n < 0 {
+                return Err(last());
+            }
+            if n == 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "no data within the read timeout",
+                ));
+            }
+        }
+        read_into(self.socket.0, buf)
+    }
+
     /// The socket, as Winsock's calls name it; this value still owns it.
     pub fn raw(&self) -> RawSocket {
-        self.0.0
+        self.socket.0
     }
 
     /// Connects to the listener at `path`.
@@ -175,7 +212,7 @@ impl UnixStream {
         if unsafe { connect(s.0, (&raw const addr).cast(), ADDRESS_LEN) } != 0 {
             return Err(last());
         }
-        Ok(UnixStream(s))
+        Ok(UnixStream::wrap(s))
     }
 
     /// Connects without blocking: a listener whose backlog is full refuses at once.
@@ -187,7 +224,7 @@ impl UnixStream {
         if unsafe { connect(s.0, (&raw const addr).cast(), ADDRESS_LEN) } != 0 {
             return Err(last());
         }
-        Ok(UnixStream(s))
+        Ok(UnixStream::wrap(s))
     }
 
     /// A connected pair: Windows has no socketpair(), so a listener at a fresh path in the
@@ -224,11 +261,11 @@ impl UnixStream {
     }
 
     pub fn set_nonblocking(&self, on: bool) -> io::Result<()> {
-        self.0.set_nonblocking(on)
+        self.socket.set_nonblocking(on)
     }
 
-    /// A read waits at most `timeout`, or with `None` for ever (SO_RCVTIMEO), as std's
-    /// does.
+    /// A read waits at most `timeout`, or with `None` for ever, as std's does: kept by the
+    /// stream and waited out by a poll before each read, not left to SO_RCVTIMEO.
     pub fn set_read_timeout(&self, timeout: Option<std::time::Duration>) -> io::Result<()> {
         let ms: u32 = match timeout {
             None => 0,
@@ -240,28 +277,58 @@ impl UnixStream {
             }
             Some(t) => u32::try_from(t.as_millis().max(1)).unwrap_or(u32::MAX),
         };
-        // SAFETY: SO_RCVTIMEO with a DWORD of milliseconds, on a socket this value owns.
-        let r = unsafe { setsockopt(self.0.0, SOL_SOCKET, SO_RCVTIMEO, (&raw const ms).cast(), 4) };
-        if r != 0 {
-            return Err(last());
-        }
+        self.read_ms.store(ms, Ordering::Relaxed);
         Ok(())
     }
 
     /// Another handle to this connection, as std's `try_clone`: shared with this process.
     pub fn try_clone(&self) -> io::Result<UnixStream> {
-        Socket::shared(&self.0.share(std::process::id())?).map(UnixStream)
+        Socket::shared(&self.socket.share(std::process::id())?).map(UnixStream::wrap)
     }
 
     /// What process `pid` makes its own copy of this connection from, by [`Self::from_shared`]
     /// (PM M203).
     pub fn share_with(&self, pid: u32) -> io::Result<Vec<u8>> {
-        self.0.share(pid)
+        self.socket.share(pid)
     }
 
     /// A connection another process shared with this one ([`Self::share_with`]).
     pub fn from_shared(info: &[u8]) -> io::Result<UnixStream> {
-        Socket::shared(info).map(UnixStream)
+        Socket::shared(info).map(UnixStream::wrap)
+    }
+
+    /// The socket's pending error, taken (SO_ERROR), as std's `take_error`.
+    pub fn take_error(&self) -> io::Result<Option<io::Error>> {
+        let (mut error, mut len) = (0i32, 4i32);
+        // SAFETY: an int of its own size, on a socket this value owns.
+        if unsafe {
+            getsockopt(
+                self.socket.0,
+                SOL_SOCKET,
+                SO_ERROR,
+                (&raw mut error).cast(),
+                &raw mut len,
+            )
+        } != 0
+        {
+            return Err(last());
+        }
+        Ok((error != 0).then(|| io::Error::from_raw_os_error(error)))
+    }
+
+    /// Whether it is connected: its peer named (getpeername); an AF_UNIX peer is unnamed,
+    /// and only the connection is told.
+    pub fn peer_addr(&self) -> io::Result<()> {
+        let mut addr = SOCKADDR_UN {
+            sun_family: AF_UNIX,
+            sun_path: [0; 108],
+        };
+        let mut len = ADDRESS_LEN;
+        // SAFETY: an address of its own length, on a socket this value owns.
+        if unsafe { getpeername(self.socket.0, (&raw mut addr).cast(), &raw mut len) } != 0 {
+            return Err(last());
+        }
+        Ok(())
     }
 
     pub fn shutdown(&self, how: Shutdown) -> io::Result<()> {
@@ -271,7 +338,7 @@ impl UnixStream {
             Shutdown::Both => SD_BOTH,
         };
         // SAFETY: a socket this value owns.
-        if unsafe { shutdown(self.0.0, how) } != 0 {
+        if unsafe { shutdown(self.socket.0, how) } != 0 {
             return Err(last());
         }
         Ok(())
@@ -287,7 +354,7 @@ impl UnixStream {
         // SAFETY: buffers the caller vouches for; synchronous, so they outlive the call.
         let r = unsafe {
             WSARecv(
-                self.0.0,
+                self.socket.0,
                 wsabufs.as_ptr(),
                 wsabufs.len() as u32,
                 &raw mut got,
@@ -312,7 +379,7 @@ impl UnixStream {
         // SAFETY: buffers the caller vouches for, only read; synchronous.
         let r = unsafe {
             WSASend(
-                self.0.0,
+                self.socket.0,
                 wsabufs.as_ptr(),
                 wsabufs.len() as u32,
                 &raw mut sent,
@@ -353,19 +420,19 @@ fn write_from(s: SOCKET, buf: &[u8]) -> io::Result<usize> {
 
 impl Read for &UnixStream {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        read_into(self.0.0, buf)
+        UnixStream::read_into(self, buf)
     }
 }
 
 impl Read for UnixStream {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        read_into(self.0.0, buf)
+        UnixStream::read_into(self, buf)
     }
 }
 
 impl Write for &UnixStream {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        write_from(self.0.0, buf)
+        write_from(self.socket.0, buf)
     }
 
     fn flush(&mut self) -> io::Result<()> {
@@ -375,7 +442,7 @@ impl Write for &UnixStream {
 
 impl Write for UnixStream {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        write_from(self.0.0, buf)
+        write_from(self.socket.0, buf)
     }
 
     fn flush(&mut self) -> io::Result<()> {
@@ -439,7 +506,7 @@ impl UnixListener {
         if s == INVALID_SOCKET {
             return Err(last());
         }
-        Ok((UnixStream(Socket(s)), ()))
+        Ok((UnixStream::wrap(Socket(s)), ()))
     }
 
     pub fn set_nonblocking(&self, on: bool) -> io::Result<()> {
@@ -489,20 +556,25 @@ mod tests {
     #[test]
     fn a_shared_connection_is_the_same_connection() {
         let (a, b) = UnixStream::pair().unwrap();
+        b.set_read_timeout(Some(std::time::Duration::from_secs(10)))
+            .unwrap();
         let shared = UnixStream::from_shared(&a.share_with(std::process::id()).unwrap()).unwrap();
         drop(a);
         (&shared).write_all(b"same").unwrap();
         let mut buf = [0u8; 4];
-        (&b).read_exact(&mut buf).unwrap();
+        (&b).read_exact(&mut buf).expect("what the shared copy wrote");
         assert_eq!(&buf, b"same");
         let clone = b.try_clone().unwrap();
         clone
             .set_read_timeout(Some(std::time::Duration::from_millis(50)))
             .unwrap();
+        let t = std::time::Instant::now();
         let e = (&clone).read(&mut buf).unwrap_err();
+        assert_eq!(e.kind(), io::ErrorKind::TimedOut, "{e:?}");
         assert!(
-            matches!(e.kind(), io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock),
-            "{e:?}"
+            t.elapsed() < std::time::Duration::from_secs(5),
+            "{:?}",
+            t.elapsed()
         );
         assert!(UnixStream::from_shared(&[0; 3]).is_err());
     }

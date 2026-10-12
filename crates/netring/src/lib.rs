@@ -11,13 +11,31 @@
 //! checked against it before it is used, and no reference into the shared memory is ever
 //! made, only copies through raw pointers. A peer that writes nonsense spoils its own
 //! frames, and is cut off, but reaches nothing of this side's.
+//!
+//! On Unix the memory is a memory file and a doorbell a pipe, whose read end a side sleeps
+//! on and whose hang-up says its peer has gone. On Windows the memory is a pagefile-backed
+//! section and a doorbell an auto-reset event, as cheap to ring as an AF_UNIX socket and
+//! made in microseconds where a socket pair takes 0.6 ms (PM M199, M204); a side learns
+//! its peer has gone from the peer's process handle, which its spawner gives it.
 
-#![cfg(unix)]
+#[cfg(unix)]
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd as Owned, RawFd};
+#[cfg(windows)]
+use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle as Owned, RawHandle};
 
 use std::io;
-use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::ptr;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering, fence};
+
+/// What a side waits on: a descriptor on Unix, a handle on Windows.
+#[cfg(unix)]
+pub type RawWait = RawFd;
+#[cfg(windows)]
+pub type RawWait = RawHandle;
+
+/// What a region's memory and a doorbell are held by: a descriptor on Unix, a handle on
+/// Windows.
+pub type Handle = Owned;
 
 /// The largest frame a record holds: a virtio-net header and a 64 KiB Ethernet frame
 /// (an MTU of 65535 and its 14-byte header), as the device carries them.
@@ -54,8 +72,10 @@ const CONTROL: usize = 64 * 1024;
 #[derive(Debug)]
 pub struct Region {
     base: *mut u8,
+    /// The mapping's length, which munmap takes (a view is unmapped by its base alone).
+    #[cfg(unix)]
     len: usize,
-    fd: OwnedFd,
+    memory: Handle,
 }
 
 // SAFETY: the region is a mapping both sides reach only through atomics and raw-pointer
@@ -70,7 +90,8 @@ pub const SIZE: usize = CONTROL + 2 * RING;
 
 impl Region {
     /// Maps the region a peer made and handed over as `fd`. Its size must be [`SIZE`].
-    pub fn map(fd: OwnedFd) -> io::Result<Region> {
+    #[cfg(unix)]
+    pub fn map(fd: Handle) -> io::Result<Region> {
         // SAFETY: fstat(2) into a zeroed buffer, for a descriptor we own.
         let mut st: libc::stat = unsafe { std::mem::zeroed() };
         // SAFETY: as above.
@@ -97,13 +118,44 @@ impl Region {
         Ok(Region {
             base: p.cast(),
             len: SIZE,
-            fd,
+            memory: fd,
+        })
+    }
+
+    /// Maps the section a peer made and handed over: [`SIZE`] bytes of it, which a
+    /// smaller section has not, and is refused.
+    #[cfg(windows)]
+    pub fn map(section: Handle) -> io::Result<Region> {
+        use windows_sys::Win32::System::Memory::{FILE_MAP_READ, FILE_MAP_WRITE, MapViewOfFile};
+        // SAFETY: a view of SIZE bytes of a section we hold, unmapped in Drop.
+        let view = unsafe {
+            MapViewOfFile(
+                section.as_raw_handle(),
+                FILE_MAP_READ | FILE_MAP_WRITE,
+                0,
+                0,
+                SIZE,
+            )
+        };
+        if view.Value.is_null() {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(Region {
+            base: view.Value.cast(),
+            memory: section,
         })
     }
 
     /// The descriptor to hand the peer.
+    #[cfg(unix)]
     pub fn fd(&self) -> RawFd {
-        self.fd.as_raw_fd()
+        self.memory.as_raw_fd()
+    }
+
+    /// The memory's handle, to hand the peer.
+    #[cfg(windows)]
+    pub fn handle(&self) -> RawHandle {
+        self.memory.as_raw_handle()
     }
 
     /// Direction `d` (0 or 1)'s control block and ring.
@@ -122,7 +174,7 @@ impl Region {
 
     /// The producer end of direction `d`, ringing `doorbell` for its consumer; its ring
     /// starts empty.
-    pub fn producer(&self, d: usize, doorbell: OwnedFd) -> Producer<'_> {
+    pub fn producer(&self, d: usize, doorbell: Handle) -> Producer<'_> {
         let (control, ring) = self.direction(d & 1);
         let producer = Producer {
             _region: self,
@@ -137,7 +189,7 @@ impl Region {
 
     /// The consumer end of direction `d`, ringing `doorbell` for its producer; it starts
     /// at the ring's start.
-    pub fn consumer(&self, d: usize, doorbell: OwnedFd, waits_on: OwnedFd) -> Consumer<'_> {
+    pub fn consumer(&self, d: usize, doorbell: Handle, waits_on: Handle) -> Consumer<'_> {
         let (control, ring) = self.direction(d & 1);
         let consumer = Consumer {
             _region: self,
@@ -155,19 +207,48 @@ impl Region {
 impl Drop for Region {
     fn drop(&mut self) {
         // SAFETY: the mapping made in `map`, unmapped once.
-        unsafe { libc::munmap(self.base.cast(), self.len) };
+        #[cfg(unix)]
+        unsafe {
+            libc::munmap(self.base.cast(), self.len)
+        };
+        // SAFETY: as above.
+        #[cfg(windows)]
+        unsafe {
+            windows_sys::Win32::System::Memory::UnmapViewOfFile(
+                windows_sys::Win32::System::Memory::MEMORY_MAPPED_VIEW_ADDRESS {
+                    Value: self.base.cast(),
+                },
+            )
+        };
     }
 }
 
 /// Shared memory for a region, zeroed and unmapped: for a spawner that hands it to the
 /// two processes that map it.
-pub fn memory() -> io::Result<OwnedFd> {
+pub fn memory() -> io::Result<Handle> {
     platform::shared_memory(SIZE)
 }
 
-/// A doorbell: a pipe's two ends, the read end for the side that sleeps on it, the write
-/// end for the side that wakes it. Both nonblocking: a ring already rung needs no more.
-pub fn doorbell() -> io::Result<(OwnedFd, OwnedFd)> {
+/// A doorbell: what the side that sleeps on it holds, and what the side that wakes it
+/// holds. On Unix a pipe's two ends, both nonblocking: a ring already rung needs no more.
+/// On Windows an auto-reset event, held twice: a ring sets it, and a wait resets it.
+#[cfg(windows)]
+pub fn doorbell() -> io::Result<(Handle, Handle)> {
+    use windows_sys::Win32::System::Threading::CreateEventW;
+    // SAFETY: an unnamed auto-reset event, unset, owned below.
+    let raw = unsafe { CreateEventW(ptr::null(), 0, 0, ptr::null()) };
+    if raw.is_null() {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: a handle just made, which nothing else owns.
+    let sleeps = unsafe { Handle::from_raw_handle(raw) };
+    let rings = sleeps.try_clone()?;
+    Ok((sleeps, rings))
+}
+
+/// A doorbell (Unix).
+#[cfg(unix)]
+pub fn doorbell() -> io::Result<(Handle, Handle)> {
     let mut fds = [0; 2];
     // Close-on-exec from its making where the kernel can (Linux): the daemon making it
     // spawns VMs on other threads, which would otherwise have it. macOS cannot, and
@@ -182,7 +263,7 @@ pub fn doorbell() -> io::Result<(OwnedFd, OwnedFd)> {
         return Err(io::Error::last_os_error());
     }
     // SAFETY: two descriptors just made, owned from here on.
-    let (r, w) = unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) };
+    let (r, w) = unsafe { (Handle::from_raw_fd(fds[0]), Handle::from_raw_fd(fds[1])) };
     #[cfg(not(any(target_os = "linux", target_os = "android")))]
     for fd in [&r, &w] {
         // SAFETY: fcntl(2) on descriptors we own.
@@ -195,10 +276,17 @@ pub fn doorbell() -> io::Result<(OwnedFd, OwnedFd)> {
     Ok((r, w))
 }
 
-fn ring_bell(fd: &OwnedFd) {
+#[cfg(unix)]
+fn ring_bell(fd: &Handle) {
     let b = [1u8];
     // SAFETY: a one-byte write; a full pipe has a wakeup pending already.
     unsafe { libc::write(fd.as_raw_fd(), b.as_ptr().cast(), 1) };
+}
+
+#[cfg(windows)]
+fn ring_bell(event: &Handle) {
+    // SAFETY: an event we hold; one already set needs no more.
+    unsafe { windows_sys::Win32::System::Threading::SetEvent(event.as_raw_handle()) };
 }
 
 /// Why a ring was given up on: the peer broke its rules.
@@ -221,7 +309,7 @@ pub struct Producer<'r> {
     head: u64,
     /// Rung for the consumer. A producer short of room is rung on its process's own
     /// doorbell, which its consumer of the other direction sleeps on.
-    doorbell: OwnedFd,
+    doorbell: Handle,
 }
 
 // SAFETY: as Region's: atomics and raw-pointer copies alone.
@@ -330,8 +418,8 @@ pub struct Consumer<'r> {
     /// Bytes consumed so far: this side's own, of which the shared `tail` is a copy.
     tail: u64,
     /// Rung for the producer once room is made; slept on for frames.
-    doorbell: OwnedFd,
-    waits_on: OwnedFd,
+    doorbell: Handle,
+    waits_on: Handle,
 }
 
 // SAFETY: as Region's.
@@ -343,9 +431,13 @@ impl Consumer<'_> {
         unsafe { &*self.control }
     }
 
-    /// The descriptor this side sleeps on, to wait for it among others.
-    pub fn waits_on(&self) -> RawFd {
-        self.waits_on.as_raw_fd()
+    /// What this side sleeps on, to wait for it among others: a descriptor, or on
+    /// Windows an event.
+    pub fn waits_on(&self) -> RawWait {
+        #[cfg(unix)]
+        return self.waits_on.as_raw_fd();
+        #[cfg(windows)]
+        return self.waits_on.as_raw_handle();
     }
 
     /// The producer's position, if it can be believed: not behind this side's, and not
@@ -461,6 +553,37 @@ impl Consumer<'_> {
     }
 }
 
+#[cfg(windows)]
+mod platform {
+    use std::io;
+    use std::os::windows::io::{FromRawHandle, OwnedHandle};
+
+    use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
+    use windows_sys::Win32::System::Memory::{CreateFileMappingW, PAGE_READWRITE};
+
+    /// A pagefile-backed section of `size` bytes, zeroed (CreateFileMappingW), which no
+    /// child inherits but whom it is handed to.
+    pub fn shared_memory(size: usize) -> io::Result<OwnedHandle> {
+        let size = u64::try_from(size).map_err(|_| io::Error::other("a section too large"))?;
+        // SAFETY: an unnamed section of the pagefile, owned below.
+        let raw = unsafe {
+            CreateFileMappingW(
+                INVALID_HANDLE_VALUE,
+                std::ptr::null(),
+                PAGE_READWRITE,
+                (size >> 32) as u32,
+                size as u32,
+                std::ptr::null(),
+            )
+        };
+        if raw.is_null() {
+            return Err(io::Error::last_os_error());
+        }
+        // SAFETY: a handle just made, which nothing else owns.
+        Ok(unsafe { OwnedHandle::from_raw_handle(raw) })
+    }
+}
+
 #[cfg(target_os = "linux")]
 mod platform {
     use std::io;
@@ -534,7 +657,8 @@ mod tests {
     }
 
     /// Sleeps on `fd` until it rings, and drains it.
-    fn sleep(fd: RawFd) {
+    #[cfg(unix)]
+    fn sleep(fd: RawWait) {
         let mut p = libc::pollfd {
             fd,
             events: libc::POLLIN,
@@ -547,12 +671,27 @@ mod tests {
         while unsafe { libc::read(fd, buf.as_mut_ptr().cast(), buf.len()) } > 0 {}
     }
 
+    /// Sleeps on `event` until it rings, which resets it.
+    #[cfg(windows)]
+    fn sleep(event: RawWait) {
+        // SAFETY: an event of the test's.
+        unsafe { windows_sys::Win32::System::Threading::WaitForSingleObject(event, u32::MAX) };
+    }
+
+    /// What a doorbell is waited on by.
+    fn raw(h: &Handle) -> RawWait {
+        #[cfg(unix)]
+        return h.as_raw_fd();
+        #[cfg(windows)]
+        return h.as_raw_handle();
+    }
+
     /// Writes one frame of `parts`, sleeping on `wait` while there is no room.
-    fn push(p: &mut Producer<'_>, wait: &OwnedFd, parts: &[&[u8]]) -> Result<bool, Broken> {
+    fn push(p: &mut Producer<'_>, wait: &Handle, parts: &[&[u8]]) -> Result<bool, Broken> {
         loop {
             match p.try_push(parts)? {
                 Some(fit) => return Ok(fit),
-                None => sleep(wait.as_raw_fd()),
+                None => sleep(raw(wait)),
             }
         }
     }
@@ -743,13 +882,11 @@ mod tests {
         }
     }
 
-    /// A region handed over by its descriptor is the same memory.
+    /// A region handed over by its descriptor, or its handle, is the same memory.
     #[test]
     fn a_region_mapped_from_its_descriptor_is_shared() {
         let a = region();
-        // SAFETY: dup(2) of a descriptor the region owns.
-        let fd = unsafe { OwnedFd::from_raw_fd(libc::dup(a.fd())) };
-        let b = Region::map(fd).unwrap();
+        let b = Region::map(a.memory.try_clone().unwrap()).unwrap();
         let (cw, pr) = doorbell().unwrap();
         let (pw, cr) = doorbell().unwrap();
         let mut producer = a.producer(1, pr);

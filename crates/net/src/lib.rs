@@ -7,8 +7,6 @@
 //! would keep a compromised one from the rest of the host (seccomp, Landlock, App
 //! Sandbox) is still to be built (architecture.md D31).
 
-#![cfg(unix)]
-
 pub mod bridge;
 #[cfg(target_os = "linux")]
 pub mod confine;
@@ -16,6 +14,7 @@ pub mod dns;
 pub mod pktinfo;
 mod poll;
 mod siphash;
+pub mod sys;
 pub mod tcp;
 pub mod wire;
 
@@ -23,10 +22,12 @@ use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap, HashSet, VecDeque};
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, UdpSocket};
-use std::os::fd::{AsRawFd, OwnedFd};
+#[cfg(unix)]
+use std::os::fd::OwnedFd;
 use std::time::{Duration, Instant};
 
-use shards_netring::{Consumer, Producer, RING, Region};
+use shards_netring::{Consumer, Handle, Producer, RING, Region};
+use sys::{AsRawSock as _, RawSock, UnixStream};
 use tcp::{Conn, Key, Payload, ToGuest};
 use wire::Frames;
 
@@ -371,36 +372,9 @@ pub fn random_mac() -> io::Result<[u8; 6]> {
     Ok(mac)
 }
 
-/// `buf` filled from the kernel's random source.
+/// `buf` filled from the OS's random source ([`sys::entropy`]).
 pub fn entropy(buf: &mut [u8]) -> io::Result<()> {
-    // getrandom(2), which the libc crate binds on glibc and musl alike; it fills a buffer
-    // of at most 256 bytes at once once the pool is initialized, but a signal can
-    // interrupt it.
-    #[cfg(any(target_os = "linux", target_os = "android"))]
-    loop {
-        // SAFETY: getrandom(2) into a buffer of ours, of its length.
-        let n = unsafe { libc::getrandom(buf.as_mut_ptr().cast(), buf.len(), 0) };
-        if usize::try_from(n).is_ok_and(|n| n == buf.len()) {
-            return Ok(());
-        }
-        let e = io::Error::last_os_error();
-        if n >= 0 || e.kind() != io::ErrorKind::Interrupted {
-            return Err(if n >= 0 {
-                io::Error::other("getrandom(2) fell short")
-            } else {
-                e
-            });
-        }
-    }
-    // getentropy(2) elsewhere, which fills up to 256 bytes or fails.
-    #[cfg(not(any(target_os = "linux", target_os = "android")))]
-    {
-        // SAFETY: getentropy(2) into a buffer of ours, of its length.
-        if unsafe { libc::getentropy(buf.as_mut_ptr().cast(), buf.len()) } != 0 {
-            return Err(io::Error::last_os_error());
-        }
-        Ok(())
-    }
+    sys::entropy(buf)
 }
 
 impl Config {
@@ -509,16 +483,23 @@ impl Config {
 }
 
 /// A published port's host socket: listening for TCP, or bound for UDP's datagrams.
+#[cfg_attr(
+    windows,
+    allow(
+        dead_code,
+        reason = "published ports come from the daemon, Unix's alone yet (D143)"
+    )
+)]
 enum Listener {
     Tcp(std::net::TcpListener),
     Udp(UdpSocket),
 }
 
 impl Listener {
-    fn as_raw_fd(&self) -> i32 {
+    fn raw_sock(&self) -> RawSock {
         match self {
-            Listener::Tcp(l) => l.as_raw_fd(),
-            Listener::Udp(u) => u.as_raw_fd(),
+            Listener::Tcp(l) => l.raw_sock(),
+            Listener::Udp(u) => u.raw_sock(),
         }
     }
 }
@@ -709,7 +690,7 @@ struct Peer {
     ip6: Option<Ipv6Addr>,
     /// Its link-local addresses (PM M175), which its guest's alone reach.
     link_local: Vec<IpAddr>,
-    sock: std::os::unix::net::UnixStream,
+    sock: UnixStream,
     /// What of the frame being sent the socket has yet to take.
     unsent: Vec<u8>,
     /// What has come of the frames being received.
@@ -848,17 +829,20 @@ impl Control {
 }
 
 /// Serves the guest on `region`'s rings until the VM goes, ringing `wake_peer` and sleeping
-/// on `wake_me`. Published ports come and go on `controls`, each of whom [`Control`] says;
-/// their messages are taken as each comes whole, so that one cut short holds up nothing.
+/// on `wake_me`: on Unix the VM goes as its doorbell hangs up; on Windows, whose doorbells
+/// are events, as its process (`vm`) ends. Published ports come and go on `controls`, each
+/// of whom [`Control`] says; their messages are taken as each comes whole, so that one cut
+/// short holds up nothing.
 pub fn serve(
-    region: OwnedFd,
-    wake_me: OwnedFd,
-    wake_peer: OwnedFd,
+    region: Handle,
+    wake_me: Handle,
+    wake_peer: Handle,
+    #[cfg(windows)] vm: std::os::windows::io::OwnedHandle,
     cfg: Config,
-    controls: Vec<(Control, std::os::unix::net::UnixStream)>,
+    controls: Vec<(Control, UnixStream)>,
 ) -> io::Result<()> {
     // Each control socket keeps its place, a token's index, until it hangs up.
-    let mut controls: Vec<Option<(Control, std::os::unix::net::UnixStream, shards_ipc::Incoming)>> = controls
+    let mut controls: Vec<Option<(Control, UnixStream, shards_ipc::Incoming)>> = controls
         .into_iter()
         .map(|(role, sock)| Some((role, sock, shards_ipc::Incoming::default())))
         .collect();
@@ -900,20 +884,28 @@ pub fn serve(
         ports_confined: false,
     };
     let doorbell = from_guest.waits_on();
+    #[cfg(unix)]
     stack.poller.set(
         doorbell,
         token::of(token::DOORBELL, 0, 0),
         poll::Interest::NONE,
         poll::Interest::READ,
     )?;
+    #[cfg(windows)]
+    {
+        use std::os::windows::io::AsRawHandle as _;
+        stack
+            .poller
+            .watch(doorbell, token::of(token::DOORBELL, 0, 0), false);
+        stack
+            .poller
+            .watch(vm.as_raw_handle(), token::of(token::DOORBELL, 0, 0), true);
+    }
     for (i, (_, sock, _)) in controls.iter().flatten().enumerate() {
         let named = token::of(token::CONTROL, 0, u32::try_from(i).unwrap_or(u32::MAX));
-        stack.poller.set(
-            sock.as_raw_fd(),
-            named,
-            poll::Interest::NONE,
-            poll::Interest::READ,
-        )?;
+        stack
+            .poller
+            .set(sock.raw_sock(), named, poll::Interest::NONE, poll::Interest::READ)?;
     }
     let mut frame = vec![0u8; shards_netring::MAX_FRAME];
     let mut events: Vec<poll::Event> = Vec::new();
@@ -950,7 +942,7 @@ pub fn serve(
                         let _ = take_frames(&mut from_guest, &mut stack, &mut frame, usize::MAX, RING);
                         return Ok(());
                     }
-                    drain(doorbell);
+                    sys::drain(doorbell);
                 }
                 token::CONTROL => {
                     let Some(entry) = controls.get_mut(index as usize) else {
@@ -964,10 +956,10 @@ pub fn serve(
                     let keep = entry
                         .as_mut()
                         .is_some_and(|(role, sock, incoming)| control(&mut stack, *role, sock, incoming));
-                    // Hung up, or said what was not its: closed, and forgotten. What is
+                    // Hung up, or said what was not its: forgotten, and closed. What is
                     // published stays, as the VM runs on.
-                    if !keep {
-                        *entry = None;
+                    if !keep && let Some((_, sock, _)) = entry.take() {
+                        stack.forget(sock.raw_sock(), e.token, poll::Interest::READ);
                     }
                 }
                 token::LISTENER => match stack.published.get(index as usize).and_then(Option::as_ref) {
@@ -991,7 +983,7 @@ pub fn serve(
 fn control(
     stack: &mut Stack<'_>,
     role: Control,
-    sock: &std::os::unix::net::UnixStream,
+    sock: &UnixStream,
     incoming: &mut shards_ipc::Incoming,
 ) -> bool {
     loop {
@@ -1003,9 +995,19 @@ fn control(
         if !role.says(m.kind) {
             return false;
         }
+        // What hands this process sockets: the daemon's, on Unix, which no Windows host runs
+        // yet (D143).
+        #[cfg(windows)]
+        if matches!(
+            m.kind,
+            shards_ipc::kind::PUBLISH | shards_ipc::kind::NET_PUBLISHED | shards_ipc::kind::NET_PEER
+        ) {
+            return false;
+        }
+        #[cfg(unix)]
         let answered = if m.kind == shards_ipc::kind::PUBLISH {
             stack.publish(&m.payload, m.fds);
-            shards_ipc::send(sock, shards_ipc::kind::PUBLISH, &[], &[])
+            answer(sock, shards_ipc::kind::PUBLISH)
         } else if m.kind == shards_ipc::kind::NET_PUBLISHED {
             // A port of the host's network (D124): its number, then as PUBLISH's. Not
             // answered: the daemon holds its copy of the socket until it lets the port go.
@@ -1018,46 +1020,69 @@ fn control(
                 stack.hosted.insert(u32::from_be_bytes(*id), at);
             }
             Ok(())
-        } else if m.kind == shards_ipc::kind::NET_UNPUBLISHED {
+        } else if m.kind == shards_ipc::kind::NET_PEER {
+            stack.add_peer(&m.payload, m.fds);
+            answer(sock, shards_ipc::kind::NET_PEER)
+        } else {
+            answer_other(stack, sock, &m)
+        };
+        #[cfg(windows)]
+        let answered = answer_other(stack, sock, &m);
+        if answered.is_err() {
+            return false;
+        }
+    }
+}
+
+/// [`control`]'s answer to message `m`, of a kind no socket comes with.
+fn answer_other(stack: &mut Stack<'_>, sock: &UnixStream, m: &shards_ipc::Message) -> io::Result<()> {
+    let malformed = || {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "a control message this process does not take",
+        )
+    };
+    {
+        if m.kind == shards_ipc::kind::NET_UNPUBLISHED {
             let Ok(id) = <[u8; 4]>::try_from(m.payload.as_slice()) else {
-                return false;
+                return Err(malformed());
             };
             stack.unpublish(u32::from_be_bytes(id));
             // Answered: the port is free once this has its sockets closed, which a bind
             // of the same port waits for (the daemon's hostnet.rs).
-            shards_ipc::send(sock, shards_ipc::kind::NET_UNPUBLISHED, &[], &[])
+            answer(sock, shards_ipc::kind::NET_UNPUBLISHED)
         } else if m.kind == shards_ipc::kind::NET_ADDRESS {
             if !stack.readdress(&m.payload) {
-                return false;
+                return Err(malformed());
             }
-            shards_ipc::send(sock, shards_ipc::kind::NET_ADDRESS, &[], &[])
+            answer(sock, shards_ipc::kind::NET_ADDRESS)
         } else if m.kind == shards_ipc::kind::NET_MAC {
             let Ok(mac) = <[u8; 6]>::try_from(m.payload.as_slice()) else {
-                return false;
+                return Err(malformed());
             };
             stack.remac(mac);
-            shards_ipc::send(sock, shards_ipc::kind::NET_MAC, &[], &[])
+            answer(sock, shards_ipc::kind::NET_MAC)
         } else if m.kind == shards_ipc::kind::NET_NAMES {
             let Some(names) = dns::Names::decode(&m.payload) else {
-                return false;
+                return Err(malformed());
             };
             stack.names = Some(names);
-            shards_ipc::send(sock, shards_ipc::kind::NET_NAMES, &[], &[])
+            answer(sock, shards_ipc::kind::NET_NAMES)
         } else if m.kind == shards_ipc::kind::NET_POLICY && m.payload == HOST_POLICY {
             // The host's network (D124), once, as grants are: every port, which no layer of
             // Landlock's narrows.
             #[cfg(target_os = "linux")]
             {
                 if stack.ports_confined {
-                    return false;
+                    return Err(malformed());
                 }
                 stack.ports_confined = true;
             }
             stack.cfg.policy = Policy::Host;
-            shards_ipc::send(sock, shards_ipc::kind::NET_POLICY, &[], &[])
+            answer(sock, shards_ipc::kind::NET_POLICY)
         } else if m.kind == shards_ipc::kind::NET_POLICY {
             let Some((ports, named, dns_all)) = decode_policy(&m.payload) else {
-                return false;
+                return Err(malformed());
             };
             // The process held to the grants' TCP ports (D31), once: a layer narrows what
             // the last left and never widens it, so a second policy is refused, and the
@@ -1065,38 +1090,50 @@ fn control(
             #[cfg(target_os = "linux")]
             {
                 if stack.ports_confined {
-                    return false;
+                    return Err(malformed());
                 }
                 let tcp = policy_tcp_ports(&ports, &named, dns_all, &stack.cfg.resolvers);
                 if confine::to_ports(&tcp).is_err() {
-                    return false;
+                    return Err(malformed());
                 }
                 stack.ports_confined = true;
             }
             stack.cfg.policy = Policy::Ports(ports);
             stack.cfg.named = named;
             stack.cfg.dns_all = dns_all;
-            shards_ipc::send(sock, shards_ipc::kind::NET_POLICY, &[], &[])
+            answer(sock, shards_ipc::kind::NET_POLICY)
         } else if m.kind == shards_ipc::kind::NET_LINK_LOCAL {
             let Some(addresses) = decode_addresses(&m.payload) else {
-                return false;
+                return Err(malformed());
             };
             stack.cfg.guest_link_local = addresses;
-            shards_ipc::send(sock, shards_ipc::kind::NET_LINK_LOCAL, &[], &[])
-        } else if m.kind == shards_ipc::kind::NET_PEER {
-            stack.add_peer(&m.payload, m.fds);
-            shards_ipc::send(sock, shards_ipc::kind::NET_PEER, &[], &[])
+            answer(sock, shards_ipc::kind::NET_LINK_LOCAL)
         } else {
-            // Flows left answer nobody: their sockets are gone, and the poller forgets
-            // them.
+            // Flows left answer nobody: their sockets are forgotten, and closed.
+            for (i, slot) in stack.published.iter().enumerate() {
+                if let Some((listener, _)) = slot {
+                    let named = token::of(token::LISTENER, 0, u32::try_from(i).unwrap_or(u32::MAX));
+                    let _ = stack.poller.set(
+                        listener.raw_sock(),
+                        named,
+                        poll::Interest::READ,
+                        poll::Interest::NONE,
+                    );
+                }
+            }
             stack.published.clear();
             stack.hosted.clear();
-            shards_ipc::send(sock, shards_ipc::kind::UNPUBLISH, &[], &[])
-        };
-        if answered.is_err() {
-            return false;
+            answer(sock, shards_ipc::kind::UNPUBLISH)
         }
     }
+}
+
+/// Answers a control message of `kind`, with nothing more: that it was taken.
+fn answer(sock: &UnixStream, kind: u8) -> io::Result<()> {
+    #[cfg(unix)]
+    return shards_ipc::send(sock, kind, &[], &[]);
+    #[cfg(windows)]
+    return shards_ipc::send(sock, kind, &[]);
 }
 
 /// Takes the guest's frames from the ring, `frames` of them at most, until it is empty or
@@ -1123,12 +1160,6 @@ fn take_frames(
         n_bytes = n_bytes.saturating_add(n.max(1));
     }
     Ok(())
-}
-
-fn drain(fd: i32) {
-    let mut buf = [0u8; 64];
-    // SAFETY: a local buffer, from a non-blocking descriptor.
-    while unsafe { libc::read(fd, buf.as_mut_ptr().cast(), buf.len()) } > 0 {}
 }
 
 /// A gateway port no published UDP flow uses, from the ephemeral range, in turn from
@@ -1177,6 +1208,7 @@ impl<'r> Stack<'r> {
         initial_seq(&self.isn_key, ticks, guest, key)
     }
 
+    #[cfg(unix)]
     /// Takes published ports' host sockets, each for the guest port and protocol its
     /// payload's next three bytes name (a big-endian u16, then the IP protocol number);
     /// what does not pair up, or names another protocol, is closed.
@@ -1200,7 +1232,7 @@ impl<'r> Stack<'r> {
                 && self
                     .poller
                     .set(
-                        listener.as_raw_fd(),
+                        listener.raw_sock(),
                         named,
                         poll::Interest::NONE,
                         poll::Interest::READ,
@@ -1224,7 +1256,7 @@ impl<'r> Stack<'r> {
         {
             let named = token::of(token::LISTENER, 0, u32::try_from(i).unwrap_or(u32::MAX));
             let _ = self.poller.set(
-                listener.as_raw_fd(),
+                listener.raw_sock(),
                 named,
                 poll::Interest::READ,
                 poll::Interest::NONE,
@@ -1497,6 +1529,7 @@ impl<'r> Stack<'r> {
         self.frames.guest_mac = mac;
     }
 
+    #[cfg(unix)]
     /// A peer (`NET_PEER`): its guest's address, then its IPv6 one on a network with
     /// IPv6, and the socket to its network process.
     fn add_peer(&mut self, payload: &[u8], fds: Vec<OwnedFd>) {
@@ -1516,7 +1549,7 @@ impl<'r> Stack<'r> {
         let Some(link_local) = decode_addresses(rest) else {
             return;
         };
-        let sock = std::os::unix::net::UnixStream::from(fd);
+        let sock = UnixStream::from(fd);
         if sock.set_nonblocking(true).is_err() {
             return;
         }
@@ -1525,19 +1558,7 @@ impl<'r> Stack<'r> {
         // a socket pair 8 KiB (net.local.stream.sendspace, recvspace), five full-size
         // frames (PM M182). Linux keeps an unprivileged process to twice net.core's
         // wmem_max and rmem_max.
-        for option in [libc::SO_SNDBUF, libc::SO_RCVBUF] {
-            let size = libc::c_int::try_from(shards_netring::RING).unwrap_or(libc::c_int::MAX);
-            // SAFETY: setsockopt(2) of a socket of ours, with a c_int of its length.
-            unsafe {
-                libc::setsockopt(
-                    sock.as_raw_fd(),
-                    libc::SOL_SOCKET,
-                    option,
-                    (&raw const size).cast(),
-                    size_of::<libc::c_int>() as libc::socklen_t,
-                )
-            };
-        }
+        sys::set_buffers(sock.raw_sock(), shards_netring::RING);
         let i = self
             .peers
             .iter()
@@ -1546,12 +1567,7 @@ impl<'r> Stack<'r> {
         let token = token::of(token::PEER, 0, u32::try_from(i).unwrap_or(u32::MAX));
         if self
             .poller
-            .set(
-                sock.as_raw_fd(),
-                token,
-                poll::Interest::NONE,
-                poll::Interest::READ,
-            )
+            .set(sock.raw_sock(), token, poll::Interest::NONE, poll::Interest::READ)
             .is_err()
         {
             return;
@@ -1601,7 +1617,7 @@ impl<'r> Stack<'r> {
                 };
                 let _ = self
                     .poller
-                    .set(peer.sock.as_raw_fd(), token, poll::Interest::READ, both);
+                    .set(peer.sock.raw_sock(), token, poll::Interest::READ, both);
             }
             Err(e) if e.kind() == io::ErrorKind::WouldBlock => {}
             Err(_) => self.drop_peer(i),
@@ -1631,7 +1647,7 @@ impl<'r> Stack<'r> {
                             };
                             let _ = self
                                 .poller
-                                .set(peer.sock.as_raw_fd(), token, both, poll::Interest::READ);
+                                .set(peer.sock.raw_sock(), token, both, poll::Interest::READ);
                         }
                     }
                     Err(e) if e.kind() == io::ErrorKind::WouldBlock => {}
@@ -1719,7 +1735,7 @@ impl<'r> Stack<'r> {
             };
             let _ = self
                 .poller
-                .set(peer.sock.as_raw_fd(), token, was, poll::Interest::NONE);
+                .set(peer.sock.raw_sock(), token, was, poll::Interest::NONE);
         }
     }
 
@@ -1824,12 +1840,7 @@ impl<'r> Stack<'r> {
                 let named = token::of(token::UDP, 0, id);
                 if self
                     .poller
-                    .set(
-                        sock.as_raw_fd(),
-                        named,
-                        poll::Interest::NONE,
-                        poll::Interest::READ,
-                    )
+                    .set(sock.raw_sock(), named, poll::Interest::NONE, poll::Interest::READ)
                     .is_err()
                 {
                     return;
@@ -1978,12 +1989,24 @@ impl<'r> Stack<'r> {
         self.settle(slot, c);
     }
 
+    /// Has the poller forget `sock`, waited on under `token` for `had`, before it closes:
+    /// Windows' poller holds a closed socket's handle, whose value the next socket may take
+    /// (poll.rs); epoll and kqueue would forget it as it closes.
+    fn forget(&self, sock: RawSock, token: u64, had: poll::Interest) {
+        if had != poll::Interest::NONE {
+            let _ = self.poller.set(sock, token, had, poll::Interest::NONE);
+        }
+    }
+
     /// Puts connection `c` back in `slot` once it has been served: its socket waited on
     /// for what it now wants, its timer armed for its deadline unless an earlier one is,
     /// and its turn kept if a full ring held it back; or its slot emptied if it has
     /// closed, its socket with it, which the poller forgets (review 2.14).
     fn settle(&mut self, slot: u32, mut c: Conn) {
         if c.closed {
+            if let Some(had) = self.tcp.slot(slot).map(|s| s.interest) {
+                self.forget(c.fd(), self.tcp.token(slot), had);
+            }
             self.tcp.release(slot);
             return;
         }
@@ -1999,6 +2022,7 @@ impl<'r> Stack<'r> {
         if self.poller.set(fd, named, had, wants).is_err() {
             // A socket that cannot be waited on would never be served: the guest hears
             // a reset, as from a peer gone.
+            self.forget(fd, named, had);
             let mut o = self.out();
             c.reset(&mut o);
             self.tcp.release(slot);
@@ -2123,8 +2147,14 @@ impl<'r> Stack<'r> {
                             self.timers.push(Reverse((f.life.until, named)));
                         }
                         _ => {
-                            // Its socket closes with it, and the poller forgets it.
-                            self.udp.remove(&key);
+                            // Forgotten by the poller, its socket closes with it.
+                            if let Some(f) = self.udp.remove(&key) {
+                                self.forget(
+                                    f.sock.raw_sock(),
+                                    token::of(token::UDP, 0, id),
+                                    poll::Interest::READ,
+                                );
+                            }
                             self.udp_ids.remove(&id);
                         }
                     }
@@ -2299,6 +2329,8 @@ mod tests {
     /// from its link-local address to the guest's reaches the guest; and a guest with no
     /// IPv4 link-local address of its own, whose route to 169.254.0.0/16 is its gateway,
     /// reaches no peer's.
+    // Peers come from the daemon, which runs on Unix alone yet (D143).
+    #[cfg(unix)]
     #[test]
     fn link_local_addresses_reach_their_peers_alone() {
         use std::io::{Read as _, Write as _};
@@ -2621,7 +2653,7 @@ mod tests {
     fn a_proxy_policy_reaches_its_proxy_alone() {
         let dir = shards_testdir::TempDir::new("net-proxy").unwrap();
         let socket = dir.join("p");
-        let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+        let listener = sys::UnixListener::bind(&socket).unwrap();
         listener.set_nonblocking(true).unwrap();
         let bridge = bridge::Bridge::elect(&[]).unwrap();
         let policy = Policy::Proxy {
@@ -2815,6 +2847,8 @@ mod tests {
     /// A port of the host's network (D124), given by its number and let go by it: the host
     /// socket the network process held is closed then, so its port is the host's again,
     /// and a port published beside it stays.
+    // Published ports come from the daemon, which runs on Unix alone yet (D143).
+    #[cfg(unix)]
     #[test]
     fn a_hosted_port_is_let_go_by_its_number() {
         use std::os::fd::AsFd as _;
@@ -2891,6 +2925,8 @@ mod tests {
     /// run's last datagram, which its VM puts in the ring before it asks for its ports
     /// to close (warm.rs `release_ports`), reaches its peer (the published UDP flake,
     /// 2026-10-10).
+    // Published ports come from the daemon, which runs on Unix alone yet (D143).
+    #[cfg(unix)]
     #[test]
     fn frames_in_the_ring_go_before_a_control_message() {
         use std::os::fd::AsFd as _;

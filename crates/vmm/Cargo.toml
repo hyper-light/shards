@@ -12,10 +12,10 @@ workspace = true
 
 [dependencies]
 shards-abi = { path = "../abi" }
+shards-netring = { path = "../netring" }
 
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true }
-shards-netring = { path = "../netring" }
 
 [target.'cfg(windows)'.dependencies]
 shards-afunix = { path = "../afunix" }

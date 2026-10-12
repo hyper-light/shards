@@ -991,8 +991,9 @@ fn vm(args: &[OsString]) -> ExitCode {
         stdin: Some(std::io::stdin().as_handle()),
         stdout: std::io::stdout().as_handle(),
         stderr: std::io::stderr().as_handle(),
+        sockets: &[],
         container: Some(&container),
-        hypervisor: true,
+        holds: shards_ipc::Holds::Hypervisor,
     });
     // The VM's ends are its own now: its exit ends the requests.
     drop((asks_to, answers_from));

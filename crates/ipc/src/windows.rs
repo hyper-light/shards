@@ -357,6 +357,70 @@ pub fn send(mut to: impl Write, kind: u8, payload: &[u8]) -> io::Result<()> {
     to.write_all(&frame)
 }
 
+/// A message coming in parts on a socket that does not wait: what [`Incoming::take`] holds of
+/// it between calls.
+#[derive(Debug, Default)]
+pub struct Incoming {
+    header: [u8; 5],
+    /// Bytes of the header that have come, then of the payload.
+    have: usize,
+    /// Once the header has come, the payload, as long as it says.
+    payload: Option<Vec<u8>>,
+}
+
+/// What [`Incoming::take`] found.
+#[derive(Debug)]
+pub enum Took {
+    Message(Message),
+    /// Some of the next message, or none of it, has come.
+    Partial,
+    /// The peer's end, with nothing of a message before it.
+    Ended,
+}
+
+impl Incoming {
+    /// The next message whole, from what `from` has now: it waits for nothing.
+    pub fn take(&mut self, mut from: impl Read) -> io::Result<Took> {
+        loop {
+            let (buf, whole) = match &mut self.payload {
+                None => (self.header.get_mut(self.have..).unwrap_or_default(), 5),
+                Some(payload) => {
+                    let len = payload.len();
+                    (payload.get_mut(self.have..).unwrap_or_default(), len)
+                }
+            };
+            if self.have < whole {
+                match from.read(buf) {
+                    Ok(0) if self.have == 0 && self.payload.is_none() => return Ok(Took::Ended),
+                    Ok(0) => return Err(io::ErrorKind::UnexpectedEof.into()),
+                    Ok(n) => self.have += n,
+                    Err(e) if e.kind() == io::ErrorKind::WouldBlock => return Ok(Took::Partial),
+                    Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+                    Err(e) => return Err(e),
+                }
+                continue;
+            }
+            if self.payload.is_none() {
+                let [_, l0, l1, l2, l3] = self.header;
+                let len = u32::from_be_bytes([l0, l1, l2, l3]) as usize;
+                if len > crate::MAX_PAYLOAD {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "message payload too large",
+                    ));
+                }
+                self.payload = Some(vec![0u8; len]);
+                self.have = 0;
+                continue;
+            }
+            let [kind, ..] = self.header;
+            let payload = self.payload.take().unwrap_or_default();
+            self.have = 0;
+            return Ok(Took::Message(Message { kind, payload }));
+        }
+    }
+}
+
 /// The next message, or `None` where the stream ends before one starts.
 pub fn recv(mut from: impl Read) -> io::Result<Option<Message>> {
     let mut header = [0u8; 5];
@@ -628,6 +692,51 @@ pub struct Given<'a> {
     pub handle: BorrowedHandle<'a>,
 }
 
+/// A socket shared with a child (WSADuplicateSocketW, as Winsock documents a socket's
+/// sharing, PM M203), and the name it is told by: its raw SOCKET, which the caller holds
+/// open until the child has made its own.
+#[derive(Debug, Clone, Copy)]
+pub struct Shared<'a> {
+    pub name: &'a str,
+    pub socket: u64,
+}
+
+/// What a child's AppContainer holds besides itself: the capabilities VidExo's DACL grants
+/// (a VM process, M200), or the network's (a network process: internetClient,
+/// internetClientServer and privateNetworkClientServer, PM M204).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Holds {
+    Nothing,
+    Hypervisor,
+    Network,
+}
+
+/// The network's capability SIDs, S-1-15-3-1 to -3 (winnt.h's
+/// SECURITY_CAPABILITY_INTERNET_CLIENT, _CLIENT_SERVER, PRIVATE_NETWORK_CLIENT_SERVER), as
+/// bytes.
+fn network_capabilities() -> &'static [Vec<u8>] {
+    static CAPS: OnceLock<Vec<Vec<u8>>> = OnceLock::new();
+    CAPS.get_or_init(|| {
+        (1u32..=3)
+            .map(|rid| {
+                let mut sid = vec![1u8, 2, 0, 0, 0, 0, 0, 15];
+                sid.extend(3u32.to_le_bytes());
+                sid.extend(rid.to_le_bytes());
+                sid
+            })
+            .collect()
+    })
+}
+
+/// What a child was handed, by name ([`given`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Handed {
+    /// A handle's value in the child.
+    Handle(usize),
+    /// A shared socket's protocol info, which the child makes its own socket of.
+    Socket(Vec<u8>),
+}
+
 /// What [`spawn`] starts.
 #[derive(Debug)]
 pub struct Spawn<'a> {
@@ -641,14 +750,52 @@ pub struct Spawn<'a> {
     pub stdin: Option<BorrowedHandle<'a>>,
     pub stdout: BorrowedHandle<'a>,
     pub stderr: BorrowedHandle<'a>,
-    /// Its container, which holds [`hypervisor_capabilities`] where `hypervisor`.
+    /// Sockets shared with it.
+    pub sockets: &'a [Shared<'a>],
+    /// Its container, which holds what `holds` says.
     pub container: Option<&'a AppContainer>,
-    pub hypervisor: bool,
+    pub holds: Holds,
 }
 
-/// Starts `s`: suspended, its handles duplicated into it, their values (`NAME=VALUE`, a
-/// line each) written to its grants pipe, which is then closed, and resumed.
+/// A child [`spawn_suspended`] made, handed all it is given, which runs once resumed.
+#[derive(Debug)]
+pub struct Suspended {
+    child: Child,
+    thread: OwnedHandle,
+}
+
+impl Suspended {
+    pub fn id(&self) -> u32 {
+        self.child.pid
+    }
+
+    /// `handle` duplicated into it, as [`Child::give`].
+    pub fn give(&self, handle: BorrowedHandle<'_>) -> io::Result<usize> {
+        self.child.give(handle)
+    }
+
+    /// Lets it run.
+    pub fn resume(self) -> io::Result<Child> {
+        // SAFETY: the child's first thread, suspended until now.
+        if unsafe { ResumeThread(self.thread.as_raw_handle()) } == u32::MAX {
+            let e = last();
+            let _ = self.child.kill();
+            return Err(e);
+        }
+        Ok(self.child)
+    }
+}
+
+/// Starts `s`: suspended, its handles duplicated into it and its sockets shared with it,
+/// what it was handed (`NAME=VALUE` for a handle, `NAME=@HEX` for a socket's info, a line
+/// each) written to its grants pipe, which is then closed, and resumed.
 pub fn spawn(s: &Spawn<'_>) -> io::Result<Child> {
+    spawn_suspended(s)?.resume()
+}
+
+/// [`spawn`], left suspended: for a spawner that hands another child this one's process
+/// before either runs.
+pub fn spawn_suspended(s: &Spawn<'_>) -> io::Result<Suspended> {
     let (pipe_read, pipe_write) = pipe()?;
     let pipe_value = pipe_read.as_raw_handle() as usize;
     let pipe_arg = pipe_value.to_string();
@@ -659,10 +806,10 @@ pub fn spawn(s: &Spawn<'_>) -> io::Result<Child> {
     args.extend(s.args.iter().skip(1));
     let mut line = command_line(s.program, &args);
     let job = Job::new()?;
-    let caps: &[Vec<u8>] = if s.hypervisor {
-        hypervisor_capabilities()?
-    } else {
-        &[]
+    let caps: &[Vec<u8>] = match s.holds {
+        Holds::Hypervisor => hypervisor_capabilities()?,
+        Holds::Network => network_capabilities(),
+        Holds::Nothing => &[],
     };
     let made = match create(
         s,
@@ -700,6 +847,14 @@ pub fn spawn(s: &Spawn<'_>) -> io::Result<Child> {
         })?;
         told.push_str(&format!("{}={theirs}\n", g.name));
     }
+    for shared in s.sockets {
+        let info = share(shared.socket, child.pid).map_err(|e| {
+            let _ = child.kill();
+            io::Error::new(e.kind(), format!("sharing {}: {e}", shared.name))
+        })?;
+        let hex: String = info.iter().map(|b| format!("{b:02x}")).collect();
+        told.push_str(&format!("{}=@{hex}\n", shared.name));
+    }
     let mut written = 0usize;
     while written < told.len() {
         let rest = told.as_bytes().get(written..).unwrap_or_default();
@@ -722,13 +877,23 @@ pub fn spawn(s: &Spawn<'_>) -> io::Result<Child> {
         written += n as usize;
     }
     drop(pipe_write);
-    // SAFETY: the child's first thread, suspended until now.
-    if unsafe { ResumeThread(thread.as_raw_handle()) } == u32::MAX {
-        let e = last();
-        let _ = child.kill();
-        return Err(e);
+    Ok(Suspended { child, thread })
+}
+
+/// What process `pid` makes its own copy of `socket` from: WSADuplicateSocketW's protocol
+/// info, its bytes whole.
+fn share(socket: u64, pid: u32) -> io::Result<Vec<u8>> {
+    use windows_sys::Win32::Networking::WinSock::{WSADuplicateSocketW, WSAGetLastError, WSAPROTOCOL_INFOW};
+    let mut info = WSAPROTOCOL_INFOW::default();
+    // SAFETY: a socket the caller holds; a structure for the call to fill.
+    if unsafe { WSADuplicateSocketW(socket as usize, pid, &raw mut info) } != 0 {
+        // SAFETY: no arguments.
+        return Err(io::Error::from_raw_os_error(unsafe { WSAGetLastError() }));
     }
-    Ok(child)
+    // SAFETY: the structure's own bytes, all of them fields.
+    let bytes =
+        unsafe { std::slice::from_raw_parts((&raw const info).cast::<u8>(), size_of::<WSAPROTOCOL_INFOW>()) };
+    Ok(bytes.to_vec())
 }
 
 /// A pipe: its read end, inheritable, for a child's list alone; its write end, not.
@@ -893,9 +1058,9 @@ fn create(
     made
 }
 
-/// What a child's spawner gave it (`--grants HANDLE`): each `NAME=VALUE` line of the pipe,
-/// read to its end, the handle values as given.
-pub fn given(pipe: usize) -> io::Result<Vec<(String, usize)>> {
+/// What a child's spawner gave it (`--grants HANDLE`): each line of the pipe, read to its
+/// end, a handle's value or a shared socket's info.
+pub fn given(pipe: usize) -> io::Result<Vec<(String, Handed)>> {
     use std::io::Read as _;
     // SAFETY: the pipe's read end this process inherited, owned from here on.
     let mut file = std::fs::File::from(unsafe { OwnedHandle::from_raw_handle(pipe as RawHandle) });
@@ -904,13 +1069,19 @@ pub fn given(pipe: usize) -> io::Result<Vec<(String, usize)>> {
     text.lines()
         .filter(|l| !l.is_empty())
         .map(|l| {
-            let (name, value) = l
-                .rsplit_once('=')
-                .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, format!("a grant {l:?}")))?;
-            let value = value
-                .parse::<usize>()
-                .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, format!("a grant {l:?}")))?;
-            Ok((name.to_string(), value))
+            let bad = || io::Error::new(io::ErrorKind::InvalidData, format!("a grant {l:?}"));
+            let (name, value) = l.split_once('=').ok_or_else(bad)?;
+            let handed = match value.strip_prefix('@') {
+                Some(hex) => Handed::Socket(
+                    (0..hex.len())
+                        .step_by(2)
+                        .map(|i| hex.get(i..i + 2).and_then(|b| u8::from_str_radix(b, 16).ok()))
+                        .collect::<Option<Vec<u8>>>()
+                        .ok_or_else(bad)?,
+                ),
+                None => Handed::Handle(value.parse::<usize>().map_err(|_| bad())?),
+            };
+            Ok((name.to_string(), handed))
         })
         .collect()
 }
@@ -943,6 +1114,44 @@ mod tests {
         assert!(recv(&wire[..3]).is_err());
         let too_long = [1u8, 0xff, 0xff, 0xff, 0xff];
         assert!(recv(&too_long[..]).is_err());
+    }
+
+    /// A message read a byte at a time, as a socket that does not wait gives it, is taken
+    /// whole once its last byte has come; an end between messages ends them.
+    #[test]
+    fn a_message_comes_whole_from_its_parts() {
+        let mut wire = Vec::new();
+        send(&mut wire, 9, b"parts").unwrap();
+        send(&mut wire, 3, b"").unwrap();
+        struct Trickle<'a>(&'a [u8], usize);
+        impl Read for Trickle<'_> {
+            fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+                if self.1 % 2 == 1 {
+                    self.1 += 1;
+                    return Err(io::ErrorKind::WouldBlock.into());
+                }
+                self.1 += 1;
+                let Some((first, rest)) = self.0.split_first() else {
+                    return Ok(0);
+                };
+                if let Some(b) = buf.first_mut() {
+                    *b = *first;
+                }
+                self.0 = rest;
+                Ok(1)
+            }
+        }
+        let mut from = Trickle(&wire, 0);
+        let mut incoming = Incoming::default();
+        let mut got = Vec::new();
+        loop {
+            match incoming.take(&mut from).unwrap() {
+                Took::Message(m) => got.push((m.kind, m.payload)),
+                Took::Partial => {}
+                Took::Ended => break,
+            }
+        }
+        assert_eq!(got, [(9, b"parts".to_vec()), (3, Vec::new())]);
     }
 
     /// A record its maker holds is left; one no process holds is swept, and its file goes.

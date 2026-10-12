@@ -89,7 +89,6 @@ struct Common {
     then: AfterSnapshot,
     vsock: Option<PathBuf>,
     /// A network device, and its network process's side (D31).
-    #[cfg(unix)]
     net: Option<shards_vmm::devices::virtio::net::NetHost>,
     workload: Options,
     /// Whether a workload option was given.
@@ -103,7 +102,6 @@ impl Common {
             snapshot_dir: None,
             then: AfterSnapshot::Stop,
             vsock: None,
-            #[cfg(unix)]
             net: None,
             workload: Options::default(),
             workload_options: false,
@@ -128,7 +126,6 @@ impl Common {
                 }
             }
             "--vsock" => self.vsock = Some(PathBuf::from(value("--vsock")?)),
-            #[cfg(unix)]
             "--net" => {
                 if self.net.is_some() {
                     return Err("--net given twice".into());
@@ -300,10 +297,7 @@ fn parse_run(args: impl Iterator<Item = OsString>) -> Result<Run, String> {
     cfg.snapshot = common.policy();
     cfg.console = common.console;
     cfg.vsock = common.vsock.map(VsockHost::at);
-    #[cfg(unix)]
-    {
-        cfg.net = common.net.take();
-    }
+    cfg.net = common.net.take();
     let command = !common.workload.argv.is_empty();
     if let Some(fd) = warm {
         let rootfs = rootfs.ok_or("--warm needs --rootfs")?;
@@ -410,7 +404,6 @@ fn parse_restore(args: impl Iterator<Item = OsString>) -> Result<Restore, String
         snapshot: common.policy(),
         hold,
         vsock: common.vsock.map(VsockHost::at),
-        #[cfg(unix)]
         net: common.net.take(),
         // Its slots are made once its snapshot is read (`restore_vm`).
         #[cfg(unix)]
@@ -1416,6 +1409,11 @@ static GRANTS: std::sync::OnceLock<std::os::unix::net::UnixStream> = std::sync::
 #[cfg(windows)]
 static GRANTS: std::sync::Mutex<Option<crate::grant::Link>> = std::sync::Mutex::new(None);
 
+/// What else its spawner handed this process (`--grants HANDLE`), by name, until taken:
+/// its network's ring and doorbells (`--net`).
+#[cfg(windows)]
+static GIVEN: std::sync::Mutex<Vec<(String, shards_ipc::Handed)>> = std::sync::Mutex::new(Vec::new());
+
 /// `--net REGION,WAKE_ME,WAKE_PEER,MAC`: the frame ring and doorbells its spawner left this
 /// process at those descriptors, which it owns from here on, and the guest's MAC.
 #[cfg(unix)]
@@ -1460,6 +1458,45 @@ fn net_host(spec: &str) -> Result<shards_vmm::devices::virtio::net::NetHost, Str
     })
 }
 
+/// `--net MAC` (Windows): the frame ring and doorbells its spawner handed this process by
+/// name (`net-region`, `net-wake-me`, `net-wake-peer`), which it owns from here on, as no
+/// spawner can know a handle's value in a child before it hands it over; and the guest's
+/// MAC.
+#[cfg(windows)]
+fn net_host(spec: &str) -> Result<shards_vmm::devices::virtio::net::NetHost, String> {
+    use std::os::windows::io::{FromRawHandle as _, OwnedHandle};
+    let mut given = GIVEN.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut take = |name: &str| -> Result<std::sync::Arc<OwnedHandle>, String> {
+        let at = given
+            .iter()
+            .position(|(n, h)| n == name && matches!(h, shards_ipc::Handed::Handle(v) if *v != 0))
+            .ok_or_else(|| format!("--net: no {name} was given"))?;
+        let shards_ipc::Handed::Handle(value) = given.swap_remove(at).1 else {
+            return Err(format!("--net: {name} is no handle"));
+        };
+        // SAFETY: a handle the spawner duplicated into this process for this alone, owned
+        // from here on.
+        Ok(std::sync::Arc::new(unsafe {
+            OwnedHandle::from_raw_handle(value as std::os::windows::io::RawHandle)
+        }))
+    };
+    let region = take("net-region")?;
+    let wake_me = take("net-wake-me")?;
+    let wake_peer = take("net-wake-peer")?;
+    let mac = spec
+        .parse::<shards_net::Mac>()
+        .map_err(|e| format!("--net: {e}"))?
+        .0;
+    let flush = shards_vmm::devices::virtio::net::TxFlush::default();
+    Ok(shards_vmm::devices::virtio::net::NetHost {
+        region,
+        wake_me,
+        wake_peer,
+        mac,
+        flush,
+    })
+}
+
 /// Takes the socket at descriptor `fd` to ask the spawner for access on (macOS).
 #[cfg(target_os = "macos")]
 fn grants(fd: &str) -> Result<(), String> {
@@ -1482,9 +1519,10 @@ fn grants(pipe: &str) -> Result<(), String> {
     let handle = |name: &str| -> Result<std::fs::File, String> {
         let value = given
             .iter()
-            .find(|(n, _)| n == name)
-            .map(|(_, v)| *v)
-            .filter(|&v| v != 0)
+            .find_map(|(n, v)| match v {
+                shards_ipc::Handed::Handle(v) if n == name && *v != 0 => Some(*v),
+                _ => None,
+            })
             .ok_or_else(|| format!("--grants: no {name} pipe was given"))?;
         // SAFETY: a pipe's handle the spawner duplicated into this process for it alone,
         // owned from here on.
@@ -1494,6 +1532,10 @@ fn grants(pipe: &str) -> Result<(), String> {
         from: handle("answer")?,
         to: handle("ask")?,
     };
+    GIVEN
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .extend(given.into_iter().filter(|(n, _)| n != "ask" && n != "answer"));
     let mut grants = GRANTS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     if grants.is_some() {
         return Err("--grants given twice".into());

@@ -7048,3 +7048,45 @@ revision before comparing a changed API/implementation.
   by WSADuplicateSocketW, the way Winsock documents, 6-10 µs more a dial at p50 than
   DuplicateHandle. Its spawner binds its vsock listener and dials its host ports for it, as
   on macOS. The carried VM binary needs no grant to its directory.
+
+### M204. What a confined network process may reach, and doorbells over a section
+
+- **Questions.** A VM's network process parses what a guest and the Internet send, so on
+  Windows it is to be confined as the VM process is (D141), in an AppContainer. Which of
+  its flows does an AppContainer allow: TCP and UDP to the Internet, with which
+  capabilities? A connection to a host service on the loopback, and one from the host to
+  a listener of its own, as a published port's? A listener its spawner bound and shared
+  with it? And what does a doorbell cost between two processes, an event each way over
+  shared memory, beside AF_UNIX's round trip (M199)?
+- **Method.** `docs/research/measurements/whp-run/src/bin/m204.rs`, by `whp-run.yml`, run
+  38228876254 on branch `whp`, 2026-10-12, on a windows-2025 (Intel Xeon 6973P-C) and a
+  windows-2022 (AMD EPYC 7763) runner. A child made as D141 makes the VM process (an
+  AppContainer of its own, a Job, the mitigations; M201), twice: holding no capability,
+  then the network capabilities internetClient, internetClientServer and
+  privateNetworkClientServer (S-1-15-3-1, -2, -3). Each time it connects by TCP to
+  github.com's address (resolved by its spawner) and asks 1.1.1.1:53 by UDP for github.com's
+  address; connects to a listener of its spawner's at 127.0.0.1; listens at 127.0.0.1 and at
+  the host's own non-loopback address, which its spawner dials; and accepts on a listener at
+  127.0.0.1 its spawner bound and shared (WSADuplicateSocketW). Each step is given up after
+  5 s. Then 10,000 doorbell round trips, timed at the spawner: an auto-reset event set, the
+  child woken, a count in a pagefile-backed section (CreateFileMappingW) incremented, and
+  the other event set; both events and the section handed by DuplicateHandle.
+- **Found** (both runners alike):
+  - Without a capability, its TCP to the Internet is refused at once (WSAEACCES, 10013) and
+    its DNS query goes unanswered. With the network capabilities both work: connected in
+    45.2 / 51.5 ms (the spawner's own: 38.3 / 56.1), answered alike.
+  - Loopback is closed both ways whatever it holds: its connection to its spawner's
+    listener, and its spawner's to its own listeners, at 127.0.0.1 and at the host's own
+    address alike, are answered by nothing in 5 s.
+  - A listener its spawner bound at 127.0.0.1 and shared with it takes its spawner's
+    connection, with or without capabilities.
+  - A doorbell round trip: p50 28.8 / 22.8 µs, p90 45.0 / 31.9, p99 57.3 / 49.9, max
+    152.4 / 213.5 holding no capability; 35.5 / 22.8, 48.8 / 29.6, 64.5 / 43.3, 103.3 /
+    112.4 holding the network capabilities (windows-2025 / windows-2022; n = 10,000).
+    Every round's count arrived (10,001 rounds answered, the first untimed).
+- **Consequence (D142).** A network process on Windows runs in an AppContainer of its
+  own holding the network capabilities: the Internet it reaches itself. The host's
+  loopback it reaches through its spawner, which binds a published port's listeners and
+  shares them, as it binds a VM's vsock socket (M203), and dials for it what is on the
+  host's loopback. A doorbell costs what AF_UNIX's round trip does (29.1 / 31.3 µs at
+  p50, M199).
