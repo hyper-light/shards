@@ -385,6 +385,25 @@ fn exits(dir: &std::path::Path) -> Result<(), String> {
         );
         close(b);
     }
+    // The writer's exit closing the socket's last reference: the parent's copy closed
+    // before it writes, read only once it has gone.
+    for (n, mode) in ["exit", "shutdown-close"].iter().enumerate() {
+        let (a, b) = unix_pair(dir, PAIRS + 40 + n)?;
+        let mut child = std::process::Command::new(&exe)
+            .args(["child-exit", &(a as usize).to_string(), mode])
+            .spawn()
+            .map_err(|e| e.to_string())?;
+        close(a);
+        let status = child.wait().map_err(|e| e.to_string())?;
+        std::thread::sleep(Duration::from_millis(100));
+        let mut buf = [0u8; 64];
+        let got = recv_some(b, &mut buf);
+        println!(
+            "last reference closed by the writer's exit ({mode}): child {status}; read {:?}",
+            got.map(|n| String::from_utf8_lossy(&buf[..n]).into_owned())
+        );
+        close(b);
+    }
     for (n, how) in ["closesocket", "CloseHandle"].iter().enumerate() {
         let (a, b) = unix_pair(dir, PAIRS + 30 + n)?;
         let mut child = std::process::Command::new(&exe)
