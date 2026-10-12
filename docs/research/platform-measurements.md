@@ -7270,7 +7270,13 @@ revision before comparing a changed API/implementation.
   held to its values, setsockopt to the socket's and TCP's levels, prctl's to
   no_new_privs and the thread's name its refusals' report reads, and clock_gettime too,
   which the vDSO answers but where it cannot read the host's clocksource. A syscall
-  outside it ends the process with SIGSYS, the syscall named.
+  outside it ends the process with SIGSYS, the syscall named. Run again with the filter
+  installed (8b16ffc0, run 38276224826, its count from the filter's install), glibc:
+  every test passed under strace and none was refused, and what the filtered processes
+  made is all in it; CI's every networked E2E passed through it (run 38276224802). musl:
+  CI's network processes made rt_sigprocmask (syscall 14), which none had made under
+  strace, and were refused, 482 times over its networked tests: the collection now
+  prints each refusal's process's calls before it, to find where.
 
 ### M210. What a network process costs its host as its connections grow (D31, E2)
 
@@ -7331,7 +7337,15 @@ revision before comparing a changed API/implementation.
     costs is the request's network: the daemon asks the network process twice before it
     hands the run over (the run's MAC, `NET_MAC`; then its address, peers and names), and
     init sets eth0's MAC and address as the request comes. The workloads bench's
-    `network` (`true` less `none`, run by run, n = 50): +130 µs at p50.
+    `network` (`true` less `none`, run by run, n = 50): +130 µs at p50. A run whose MAC
+    is made rather than given then took its VM's own, made with the VM, which the VM's
+    guest takes as it resumes (`control::MAC`), so neither the daemon nor init does
+    anything of it as the request comes: in the guest, from the request to the command's
+    status, −12 µs [−72, +30] (1,119 against 1,106 µs; n = 200 per arm, load 4.5 to 6.9).
+    Outside the guest the host's load drowned the difference ([−1,058, +320]); the daemon
+    asks the network process nothing for such a run on the default bridge. On CI's
+    ubuntu-24.04 (AMD EPYC 7763, cc147e6, before that change), the workloads bench's
+    `network`, n = 100: −645 µs at p50 of runs of 20 ms, as wide as its spread.
   - macOS gives a host address 16,384 ports for its connections, which TIME_WAIT holds
     30 s whatever their peer (`net.inet.ip.portrange`, `net.inet.tcp.msl` 15000), where
     Linux reuses one for another peer: the bench's cases one after another, whose
@@ -7340,8 +7354,10 @@ revision before comparing a changed API/implementation.
 - **Consequence (D31).** A network process's connections cost its host what they hold:
   their queues over memory of their own, let go once idle for an RTO, kept that long for
   the next connection's bytes, then handed back to the OS. Its memory beside a VM's own
-  is a few MiB, whatever its connections carried before. E1 is not yet met: the request's
-  network work is to move before the request, as the network process's start did.
+  is a few MiB, whatever its connections carried before. E1: a run whose MAC is made, on
+  the default bridge, costs its guest nothing of its network as the request comes; its
+  daemon's share is to be measured on a quiet host, and a given MAC's and a user
+  network's round trips (one for its MAC, two for each of its peers) are to go as one.
 
 ### M211. The limits a build's `RUN` step starts with
 

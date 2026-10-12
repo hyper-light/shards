@@ -2054,14 +2054,20 @@ stack inside the VMM, is superseded by it.
     idle VM nothing, and a round trip 6.6 µs at p50, 12 at p99, with 124 to 250 Gbit/s
     one way (PM M105).
   - *Its cost per VM* (E2, D14), **measured (PM M210):** 2.6 MiB of footprint idle and
-    about 0.7 KiB a connection at 10,000 on macOS, whatever they carried before (above),
-    beside the VM's own 89.5 MiB; a round trip beside 10,000 costs what it does beside
-    none. The start (E1): the network process is spawned and paired with its warm VM
-    before the request, and must cost a restore nothing; **measured, not yet met** (PM
-    M210): a run on the default bridge costs 0.42 ms more than one on `none` at p50 [0.29,
-    0.54], 0.22 ms of it in the guest (init setting eth0's MAC and address as the request
-    comes) and 0.20 ms before the hand-over (the daemon's two round trips to the network
-    process, the run's MAC and then its address and names).
+    about 0.7 KiB a connection at 10,000 on macOS, 0.4 KiB private on Linux, whatever they
+    carried before (above), beside the VM's own; a round trip beside 10,000 costs what it
+    does beside none. The start (E1): the network process is spawned and paired with its
+    warm VM before the request, and must cost a restore nothing. Measured (PM M210), a run
+    on the default bridge cost 0.42 ms more than one on `none` at p50 [0.29, 0.54]: init
+    setting eth0's MAC as the request came, and the daemon's round trip to give the
+    network process that MAC. **As built (2026-10-12):** each pooled VM is given its own
+    MAC as it is made, as dockerd makes each start one (PM M173), its network process
+    started with it and its guest taking it as it resumes (`control::MAC`), so a run whose
+    MAC is made has its VM's: its guest does nothing of its network as the request comes
+    (−12 µs [−72, +30]), and the daemon asks its network process nothing. **Open:** the
+    daemon's share measured on a quiet host; a given MAC's round trip, and a user
+    network's (its address, names and two for each peer), sent at once and answered
+    together.
   - *Enforcement overhead* (E5) at 0, 100 and 10k rules, and the DNS conformance suite (E6).
 - **Not now:** a VM-to-VM switch (networking.md R8; VMs reach each other through published
   ports first), an administrator-provisioned TAP tier (R2), GPU networking (R9).
@@ -3627,8 +3633,14 @@ on Windows as on Linux and macOS.
   a round trip (PM M204); an AF_UNIX socket pair takes 0.6 ms to make (M199).
 - **Confined** in an AppContainer that holds `internetClient`, `internetClientServer` and
   `privateNetworkClientServer` (M204): it reaches the networks and never this host's
-  loopback, nor a file or socket by its path. A build's proxy is dialled for it by its
-  spawner, as on macOS (D31), the connection shared with it (WSADuplicateSocketW, M203).
+  loopback or own addresses, nor a file or socket by its path. Its spawner dials those for
+  it, as on macOS a build's proxy is (D31): a build's proxy's socket, and a TCP flow to
+  the loopback or to one of the host's own addresses, each up adapter's unicast ones,
+  which it is told as it starts, begun by its spawner without waiting and shared with it
+  (WSADuplicateSocketW, M203), so that it connects in its own loop; the spawner dials no
+  other address. A step reaches its host's own services as Docker's do
+  (`run_steps_reach_the_network_unless_it_is_none`, which failed without it, M204's
+  finding).
 - **Its VM's end** it learns from the VM's process, a handle it may only wait on: a
   doorbell does not hang up there as a pipe does. Its spawner gives it that handle before
   the VM runs (D143).
