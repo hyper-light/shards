@@ -187,6 +187,12 @@ pub fn to_ports(ports: &[u16]) -> io::Result<()> {
 /// installed yet.
 #[cfg(target_arch = "x86_64")]
 pub fn filter() -> io::Result<()> {
+    install(&program()?)
+}
+
+/// The filter's program, compiled.
+#[cfg(target_arch = "x86_64")]
+fn program() -> io::Result<shards_syscall_filter::Filter> {
     use shards_syscall_filter::{self as seccomp, Rule};
 
     let any = [
@@ -233,9 +239,14 @@ pub fn filter() -> io::Result<()> {
     rules.push(Rule::with(libc::SYS_getsockopt, 1, &[libc::SOL_SOCKET as u32]));
     let levels = [libc::SOL_SOCKET, libc::IPPROTO_TCP];
     rules.push(Rule::with(libc::SYS_setsockopt, 1, &levels.map(|l| l as u32)));
-    let filter = seccomp::compile(&rules).map_err(io::Error::other)?;
-    seccomp::name_refusals()?;
-    seccomp::install(&filter, true)
+    seccomp::compile(&rules).map_err(io::Error::other)
+}
+
+/// Installs `filter` over the whole process, its refusals named.
+#[cfg(target_arch = "x86_64")]
+fn install(filter: &shards_syscall_filter::Filter) -> io::Result<()> {
+    shards_syscall_filter::name_refusals()?;
+    shards_syscall_filter::install(filter, true)
 }
 
 #[cfg(test)]
@@ -349,42 +360,61 @@ mod tests {
 
     /// Filtered, a network process still makes its sockets, of each domain it uses, and
     /// polls them; a syscall none makes, opening a file, ends it with SIGSYS's status, the
-    /// syscall named.
+    /// syscall named. In a process of one thread, as a network process is: forked, the
+    /// program compiled before; a test binary's other threads make calls a network process
+    /// does not (glibc's pthread_create restores its signal mask after its thread runs).
     #[cfg(target_arch = "x86_64")]
     #[test]
     fn the_filter_ends_a_process_that_makes_what_none_makes() {
-        if !child() {
-            let out = Command::new(std::env::current_exe().unwrap())
-                .args([
-                    "--exact",
-                    "confine::tests::the_filter_ends_a_process_that_makes_what_none_makes",
-                    "--nocapture",
-                    "--test-threads=1",
-                ])
-                .env("SHARDS_CONFINE_CHILD", "1")
-                .output()
-                .unwrap();
-            let said = String::from_utf8_lossy(&out.stderr);
-            assert_eq!(out.status.code(), Some(shards_syscall_filter::REFUSED), "{said}");
-            assert!(
-                said.contains(&format!("refused syscall {}", libc::SYS_openat)),
-                "{said}"
-            );
-            return;
-        }
-        super::filter().unwrap();
-        // SAFETY: plain syscalls; each descriptor closed, and the process ended below.
-        unsafe {
-            for domain in [libc::AF_INET, libc::AF_INET6, libc::AF_UNIX] {
-                let fd = libc::socket(domain, libc::SOCK_STREAM | libc::SOCK_CLOEXEC, 0);
-                assert!(fd >= 0, "{}", std::io::Error::last_os_error());
-                libc::close(fd);
+        use std::io::Read as _;
+        use std::os::fd::{AsRawFd as _, FromRawFd as _, OwnedFd};
+        let program = super::program().unwrap();
+        let mut fds = [0i32; 2];
+        // SAFETY: pipe2(2) into two ints of ours.
+        assert_eq!(unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) }, 0);
+        // SAFETY: the descriptors just made, owned from here on.
+        let (read, write) = unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) };
+        // SAFETY: fork(2); the child makes raw syscalls alone and ends with exit_group.
+        let pid = unsafe { libc::fork() };
+        assert!(pid >= 0);
+        if pid == 0 {
+            // SAFETY: as above.
+            unsafe {
+                libc::dup2(write.as_raw_fd(), 2);
+                if super::install(&program).is_err() {
+                    libc::syscall(libc::SYS_exit_group, 1);
+                }
+                for domain in [libc::AF_INET, libc::AF_INET6, libc::AF_UNIX] {
+                    let fd = libc::socket(domain, libc::SOCK_STREAM | libc::SOCK_CLOEXEC, 0);
+                    if fd < 0 {
+                        libc::syscall(libc::SYS_exit_group, 2);
+                    }
+                    libc::close(fd);
+                }
+                let ep = libc::epoll_create1(libc::EPOLL_CLOEXEC);
+                if ep < 0 {
+                    libc::syscall(libc::SYS_exit_group, 3);
+                }
+                libc::close(ep);
+                libc::syscall(libc::SYS_openat, libc::AT_FDCWD, c"/".as_ptr(), libc::O_RDONLY);
+                libc::syscall(libc::SYS_exit_group, 0);
             }
-            let ep = libc::epoll_create1(libc::EPOLL_CLOEXEC);
-            assert!(ep >= 0);
-            libc::close(ep);
-            libc::syscall(libc::SYS_openat, libc::AT_FDCWD, c"/".as_ptr(), libc::O_RDONLY);
-            libc::syscall(libc::SYS_exit_group, 0);
         }
+        drop(write);
+        let mut said = String::new();
+        std::fs::File::from(read).read_to_string(&mut said).unwrap();
+        let mut status = 0;
+        // SAFETY: waitpid(2) of the child just forked.
+        assert_eq!(unsafe { libc::waitpid(pid, &mut status, 0) }, pid);
+        assert!(libc::WIFEXITED(status), "{status:#x}: {said}");
+        assert_eq!(
+            libc::WEXITSTATUS(status),
+            shards_syscall_filter::REFUSED,
+            "{said}"
+        );
+        assert!(
+            said.contains(&format!("refused syscall {}", libc::SYS_openat)),
+            "{said}"
+        );
     }
 }
