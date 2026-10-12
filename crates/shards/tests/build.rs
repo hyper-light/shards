@@ -10581,25 +10581,37 @@ fn the_in_vm_server_knows_each_agent() {
     let all = format!("{}{}", ran.stdout, ran.stderr);
     assert_eq!(ran.status, Some(0), "{all}");
     let shown = format!("{rows:?}\n{all}");
+    // Each instance and its code mode's sandbox (D136), which it started as it began.
     let servers: Vec<&Vec<String>> = rows
         .iter()
-        .filter(|r| r.last().is_some_and(|c| c == "shards-server"))
+        .filter(|r| {
+            r.last()
+                .is_some_and(|c| c == "shards-server" || c == "shards-sandbox")
+        })
         .collect();
-    assert_eq!(servers.len(), 2, "{shown}");
+    assert_eq!(servers.len(), 4, "{shown}");
     for (n, agent) in [(0u32, 200_000u32), (1, 200_001)] {
         let id = (200_000 + 4 * 1024 * 1024 + n).to_string();
-        let found = servers.iter().find(|r| r.first() == Some(&id));
-        let r = found.unwrap_or_else(|| panic!("no instance as {id} in {shown}"));
-        // Every uid and gid its own, its one group its agent's, and memory of its own.
-        assert!(r.iter().take(8).all(|v| *v == id), "{r:?}");
-        assert_eq!(r.get(8), Some(&agent.to_string()), "{r:?}");
-        assert!(
-            r.get(9)
-                .and_then(|v| v.parse::<u64>().ok())
-                .is_some_and(|kb| kb > 0),
-            "{r:?}"
-        );
-        eprintln!("instance {n}: {r:?}");
+        let found: Vec<&&Vec<String>> = servers.iter().filter(|r| r.first() == Some(&id)).collect();
+        let mut names: Vec<&str> = found
+            .iter()
+            .filter_map(|r| r.last())
+            .map(String::as_str)
+            .collect();
+        names.sort_unstable();
+        assert_eq!(names, ["shards-sandbox", "shards-server"], "{id} in {shown}");
+        for r in found {
+            // Every uid and gid its own, its one group its agent's, and memory of its own.
+            assert!(r.iter().take(8).all(|v| *v == id), "{r:?}");
+            assert_eq!(r.get(8), Some(&agent.to_string()), "{r:?}");
+            assert!(
+                r.get(9)
+                    .and_then(|v| v.parse::<u64>().ok())
+                    .is_some_and(|kb| kb > 0),
+                "{r:?}"
+            );
+            eprintln!("instance {n}: {r:?}");
+        }
     }
     for name in ["x", "y"] {
         let want = format!("[agent {name}] confined whoami: agent {name}");
@@ -10688,6 +10700,203 @@ fn agents_message_one_another_as_granted() {
         "[agent c] confined srv-send agent b: refused agent c may not send agent b requests",
     ] {
         assert!(all.lines().any(|l| l == want), "no {want:?} in\n{all}");
+    }
+}
+
+/// Code mode (D136): an agent's program, run by its in-VM server in a sandbox, calls the
+/// server's tools many in one round trip, with the agent's grants and no more: a request
+/// sent where `CONNECT` grants it reaches its peer, one past the grant is thrown; the
+/// program reaches no files, network or processes, its errors and a syntax error come back
+/// as the tool's errors, and a program that runs on is ended past its timeout.
+#[test]
+fn code_mode_runs_a_program_with_the_callers_grants() {
+    if cannot_run_vms() {
+        return;
+    }
+    let (image, _) = served();
+    let (port, _repos) = common::writable_registry();
+    let home = TempDir::new("code-home");
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", kernel().as_os_str()),
+        ("SHARDS_INIT", guest_init().as_os_str()),
+    ];
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let a_program = r#"const me = await shards.whoami();
+const peers = await shards.peers();
+const sent = [];
+for (const p of peers) if (p.send) sent.push((await shards.send(p.name, "from " + me)).id);
+let refused;
+try { await shards.send("agent c", "x"); } catch (e) { refused = e.message; }
+return { me, peers, sent, refused };"#;
+    let c_reach =
+        r#"return [typeof require, typeof fetch, typeof std, typeof os, typeof XMLHttpRequest].join(",");"#;
+    let spin = r#"const t = Date.now(); while (Date.now() - t < 1500) {} return "finished";"#;
+    let mut agents = String::new();
+    for (name, verbs) in [
+        ("a", vec!["srv-run", a_program]),
+        ("b", vec!["srv-receive", "30"]),
+        (
+            "c",
+            vec![
+                "srv-run",
+                c_reach,
+                "throw new TypeError(\"boom\");",
+                "return {;",
+                "const f = (n) => f(n + 1); return f(0);",
+                "srv-run-timeout",
+                "300|while (true) {}",
+                "srv-run-cancel",
+                spin,
+                "srv-run-abandon",
+                "while (true) {}",
+            ],
+        ),
+    ] {
+        let dir = TempDir::new(&format!("code-agent-{name}"));
+        std::fs::create_dir_all(dir.join("bin")).unwrap();
+        std::fs::copy(common::test_guest(), dir.join("bin/testguest")).unwrap();
+        let command: Vec<&str> = ["bin/testguest", "confined"].into_iter().chain(verbs).collect();
+        let agent = serde_json::json!({ "name": name, "run": { "command": command } });
+        std::fs::write(dir.join("agent.json"), agent.to_string()).unwrap();
+        let tag = format!("127.0.0.1:{port}/team/code-{name}:1");
+        let made = shards(&["build", "agent", dir.to_str().unwrap(), "-t", &tag]);
+        assert_eq!(made.status, Some(0), "{}", made.stderr);
+        let pushed = shards(&["push", "agent", &tag]);
+        assert_eq!(pushed.status, Some(0), "{}", pushed.stderr);
+        agents.push_str(&format!("AGENT {name} FROM {tag}\n"));
+    }
+    let ctx = context("code-ctx", &format!("FROM {image}\n"));
+    std::fs::write(
+        ctx.join("Agentfile"),
+        format!("FROM {image}\n{agents}NETWORK --ingress=7000 n\nCONNECT --port=7000 a TO b ON n\n"),
+    )
+    .unwrap();
+    let built = shards(&["build", "-t", "code:1", ctx.to_str().unwrap()]);
+    assert_eq!(built.status, Some(0), "{}", built.stderr);
+    // Ready once every agent is, each with its instance and its sandbox, and no program
+    // left running: a worker its program's end, cancellation or abandonment did not end
+    // stays among them, and the run is never ready.
+    let mut ready = |rows: &[Vec<String>]| {
+        let count = |comm: &str| {
+            rows.iter()
+                .filter(|r| r.first().is_some_and(|c| c == comm))
+                .count()
+        };
+        count("confined-ready") == 3
+            && count("shards-server") == 3
+            && count("shards-sandbox") == 3
+            && count("shards-program") == 0
+    };
+    let ran = common::run_watching(
+        &env,
+        &[
+            "run",
+            "--rm",
+            "--name",
+            "aw-code",
+            "code:1",
+            "await",
+            "confined-ready",
+            "3",
+        ],
+        "aw-code",
+        "comm",
+        &mut ready,
+        TIMEOUT,
+    );
+    let all = format!("{}{}", ran.stdout, ran.stderr);
+    assert_eq!(ran.status, Some(0), "{all}");
+    for want in [
+        r#"[agent a] confined srv-run: ok {"me":"agent a","peers":[{"name":"agent b","send":true,"answer":false}],"sent":[1],"refused":"agent a may not send agent c requests"}"#,
+        r#"[agent b] confined srv-receive: [{"from":"agent a","kind":"request","id":1,"text":"from agent a"}]"#,
+        r#"[agent c] confined srv-run: ok "undefined,undefined,undefined,undefined,undefined""#,
+        "[agent c] confined srv-run: refused TypeError: boom",
+        "[agent c] confined srv-run: refused the program ran past its 300 ms, and was ended",
+        r#"[agent c] confined srv-run-cancel stranger: {"jsonrpc":"2.0","id":2,"result":{"content":[{"type":"text","text":"\"finished\""}],"isError":false}}"#,
+        r#"[agent c] confined srv-run-cancel own: {"jsonrpc":"2.0","id":2,"error":{"code":-32800,"message":"request cancelled"}}"#,
+        "[agent c] confined srv-run-abandon: abandoned",
+    ] {
+        assert!(all.lines().any(|l| l == want), "no {want:?} in\n{all}");
+    }
+    for (want, what) in [
+        (
+            "[agent c] confined srv-run: refused SyntaxError: ",
+            "syntax error",
+        ),
+        (
+            "[agent c] confined srv-run: refused RangeError: ",
+            "stack overflow",
+        ),
+    ] {
+        assert!(all.lines().any(|l| l.starts_with(want)), "no {what} in\n{all}");
+    }
+}
+
+/// PM M196's in-situ part: what code mode costs its caller, as an agent times it in its
+/// microVM: CALLS MCP calls of `whoami`, one after another in one session, against one
+/// `run` of a program that makes those CALLS, and a `run` of one that makes none; 200
+/// rounds, interleaved, for CALLS of 1 and 10.
+#[test]
+#[ignore = "a measurement: docs/research/measurements/code-mode/measure.sh"]
+fn code_mode_costs_in_microvms() {
+    if cannot_run_vms() {
+        return;
+    }
+    let (image, _) = served();
+    let (port, _repos) = common::writable_registry();
+    let home = TempDir::new("code-cost-home");
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", kernel().as_os_str()),
+        ("SHARDS_INIT", guest_init().as_os_str()),
+    ];
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let dir = TempDir::new("code-cost-agent");
+    std::fs::create_dir_all(dir.join("bin")).unwrap();
+    std::fs::copy(common::test_guest(), dir.join("bin/testguest")).unwrap();
+    let command = ["bin/testguest", "confined", "srv-bench", "200|1", "200|10"];
+    let agent = serde_json::json!({ "name": "a", "run": { "command": command } });
+    std::fs::write(dir.join("agent.json"), agent.to_string()).unwrap();
+    let tag = format!("127.0.0.1:{port}/team/code-cost:1");
+    let made = shards(&["build", "agent", dir.to_str().unwrap(), "-t", &tag]);
+    assert_eq!(made.status, Some(0), "{}", made.stderr);
+    let pushed = shards(&["push", "agent", &tag]);
+    assert_eq!(pushed.status, Some(0), "{}", pushed.stderr);
+    let ctx = context("code-cost-ctx", &format!("FROM {image}\n"));
+    std::fs::write(
+        ctx.join("Agentfile"),
+        format!("FROM {image}\nAGENT a FROM {tag}\n"),
+    )
+    .unwrap();
+    let built = shards(&["build", "-t", "code-cost:1", ctx.to_str().unwrap()]);
+    assert_eq!(built.status, Some(0), "{}", built.stderr);
+    let ran = common::run_awaiting(
+        &env,
+        &[
+            "run",
+            "--rm",
+            "--name",
+            "aw-code-cost",
+            "code-cost:1",
+            "await",
+            "confined-ready",
+            "1",
+        ],
+        "aw-code-cost",
+        ("confined-ready", 1),
+        Duration::from_secs(600),
+    );
+    let all = format!("{}{}", ran.stdout, ran.stderr);
+    assert_eq!(ran.status, Some(0), "{all}");
+    let said: Vec<&str> = all
+        .lines()
+        .filter_map(|l| l.strip_prefix("[agent a] confined srv-bench: "))
+        .collect();
+    assert_eq!(said.len(), 2, "{all}");
+    for line in said {
+        assert!(!line.starts_with("error"), "{line}");
+        println!("{line}");
     }
 }
 

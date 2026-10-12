@@ -3535,8 +3535,93 @@ scope, b is offered a's.
 
 No run-time labels, relays or declassifiers (§12 answer 14, decided by the user
 2026-10-07): every path between domains is a grant, and the build refuses any that joins
-an internal-only domain to the world (D58), so there is no data to label. Code mode
-waits on the user.
+an internal-only domain to the world (D58), so there is no data to label. Code mode is
+D136.
+
+### D136. Code mode: a program run in a sandbox, with its caller's grants and no more
+
+AGENTFILE_ARCH.md §5's last part, decided by the user with D60 (§12 answer 18): the server
+describes every tool open to its caller as a typed API, and takes a program that calls
+them, run in a sandbox with the caller's grants and no more, many calls in one round trip.
+It is shards' own MCP's, and its runtime shards' to choose (AGENTFILE_ARCH §11 row 997).
+
+- **The tool.** `run` (`{code, timeout_ms?}`), beside `whoami`, `mcp`, `peers`, `send`,
+  `receive` and `answer`: `code` is the body of an async function, in strict mode, with
+  `shards` in reach, each tool an async function of it that returns the tool's value or
+  throws its refusal as an `Error`. What the program returns comes back as JSON, the
+  tool's text; what it throws, a syntax error, or its time running out, as an error
+  (`isError`) in JavaScript's words (`TypeError: boom`) with its stack, whose lines and
+  columns are the program's as sent (the function it is the body of opens on lines
+  numbered -1 and 0, which QuickJS-NG records no position on). The tool's description
+  declares `shards` in TypeScript: the typed API.
+- **The engine.** QuickJS-NG 0.16.2, through rquickjs 0.14.0, against Boa 0.22.0 (PM
+  M196): 0.80 MB added to the binary against 5.69; a call into the host in 44-47 ns
+  against 95-121 (p50); the reference program made and run in 95-110 µs against 200-230
+  (p50), 139-302 against 1312-1656 (p99), Boa's tail its collector's; and 0.6 MiB at its
+  peak against 4.8. Its C is vendored (`vendor/rquickjs-sys`, checked against crates.io's
+  index) and compiled for the guest by zig, as AWS-LC's is (D60). A program has
+  ECMAScript's intrinsics and `shards`: no module, `require`, `fetch`, timer, `std` or
+  `os`.
+- **The sandbox.** The instance's filter forks no process (D59's `--processes=none`), so
+  as it begins, before it confines itself, it starts a helper: its own binary again
+  (`/proc/self/exe`, `shards-server sandbox`), exec'd fresh, so it holds none of the
+  instance's keys, with one descriptor, its control socket. The helper confines itself at
+  once to that socket's messages, polling, forking, and reaping and killing its workers
+  by pidfd. For each program it forks a worker, which holds the program's socket alone
+  and loads a filter of its own before it reads the program: reading and writing, its
+  memory, futexes, the clock, the kernel's randomness and exiting; any other call, or one
+  of another ABI (x32), kills it (`SECCOMP_RET_KILL_PROCESS`). A worker opens nothing: no
+  file, socket, process or descriptor. Each tool it calls is a frame to the instance over
+  its socket, which the instance answers as it answers its caller's MCP call of that tool,
+  under the same grants, with the same refusals. Helper and workers are the instance's
+  uid, gid and cgroup, its agent's (D60): a program's memory and CPU are its caller's,
+  under the domains' memory policy, and need no limits of their own. `shards top` shows
+  them as `shards-sandbox` and `shards-program`.
+- **Bounds.** A worker's frames, a call or its value, are at most 1 MiB, as a request's
+  body is: a program makes its instance hold no more for it than a request does. A call
+  past it is thrown, for the program to catch, and never sent; a value past it fails the
+  program. The instance's frames, the program and each call's answer, are read whole: a
+  `receive` may hold more than 1 MiB, as an MCP call of it may.
+- **Its end.** A program ends with its value or its failure; past `timeout_ms`, its worker
+  killed; or when its caller lets it go. MCP's `notifications/cancelled` (2025-03-26 to
+  2025-11-25) names a request by its ID in the caller's session, so the instance begins a
+  session at `initialize` (`Mcp-Session-Id`, 128 bits from the kernel's CSPRNG) and a
+  cancellation reaches only its own session's program: another client of the same agent,
+  with a request of the same ID, keeps its own. A connection that closes ends the program
+  it awaits, as closing a request's stream is its cancellation in MCP 2026-07-28's
+  Streamable HTTP; an answer in JSON has no stream to resume, and none to reach once its
+  connection is gone. A program that awaits what nothing will settle (no job left to run)
+  ends at once, saying so. The helper reaps each worker and says how it ended: one its
+  filter killed "made a system call its sandbox refuses".
+- **What it saves.** The model's turns: one for each call made one by one, one for a
+  program making them all. Not time between an agent and its instance (PM M196): a
+  program costs its caller about 0.4 ms of its own (p50 408 µs, p99 558, for one that
+  makes no call), what a process made for it costs, and a call within it as much as one
+  over MCP, about 23 µs.
+- **Recorded difference.** MCP asks a cancelled request's receiver not to answer it. Over
+  HTTP, where the request waits on its connection, the instance answers it with JSON-RPC
+  error -32800 (`request cancelled`, LSP's code, as MCP names none), which the client is
+  to ignore, so that its request ends rather than holding its connection open.
+
+Tested: in crates/server, on Linux, `a_program_calls_its_tools_over_its_socket`,
+`a_refused_call_is_thrown` (an oversized call thrown, unsent),
+`the_call_beneath_the_tools_is_out_of_reach`, `what_a_program_came_to` (null, a value JSON
+cannot hold, a throw, an error's positions, a syntax error's, a promise nothing settles),
+`frames_are_read_whole_and_within_their_bound`,
+`a_worker_is_ended_for_a_call_its_filter_refuses` (`openat`, and x32 on x86_64, SIGSYS),
+`initialize_begins_a_session`, `a_cancellation_names_a_request_in_its_own_session`,
+`a_programs_call_is_its_callers`; on real microVMs,
+`code_mode_runs_a_program_with_the_callers_grants`: a's program finds itself, its peers,
+sends b a request (b receives it) and is refused one to c; c's see no `require`, `fetch`,
+`std`, `os` or `XMLHttpRequest`, throw, fail to parse, overflow the stack and run past
+300 ms; a cancellation from another session reaches nothing, the program's own session's
+ends it; an abandoned program's worker goes; and once all is done the run holds three
+instances, three sandboxes and no program. `the_in_vm_server_knows_each_agent`: each
+instance and its sandbox run as the instance's ids. Mutation-checked: a cancellation that
+ignores its session, a worker allowed to open files, the call beneath the tools left in
+reach, a call past its bound sent, a pending program not said, positions counted from 1,
+no session begun, an abandoned program left to run, no deadline, a cancelled request left
+unanswered, the sandbox unnamed: each fails a test.
 
 ### D135. What git says as a build keeps a repository, and the advice asked for
 

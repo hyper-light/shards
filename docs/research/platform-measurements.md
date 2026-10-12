@@ -6667,3 +6667,56 @@ revision before comparing a changed API/implementation.
 - **Consequence.** D135: shards says what git says of the repository a build keeps (its
   checkout's `HEAD is now at ...`, the advice when asked) and none of what it says of a
   builder's own, each line stamped as BuildKit stamps it.
+
+### M196. What code mode costs: its engine, and a program against MCP calls (D136)
+
+- **Questions.** Which JavaScript engine should run code mode's programs: what does each
+  add to the in-VM server's binary, and cost to start, to call into the host, to run a
+  program, and in memory? And what does a program cost its caller, against the calls it
+  makes made one by one over MCP?
+- **Method.** `docs/research/measurements/code-mode/measure.sh`. Three static binaries
+  built as shards' guest binaries are (aarch64 musl, `opt-level = "s"`, fat LTO, zig 0.16.0
+  for QuickJS-NG's C): `base` (none), `boa` (Boa 0.22.0) and `qjs` (QuickJS-NG 0.16.2,
+  rquickjs 0.14.0), each measure run in a microVM (`shards run`, the pinned kernel
+  6.18.48), five rounds, the engines in turn within each: `create`, a runtime and context
+  made with the host's functions and dropped, n = 1000 (µs); `calls`, a call into the host
+  (ns per call, 50 batches of 10,000); `program`, a runtime made and the reference program
+  run to its value (an async body awaiting three host calls, JSON, destructuring, a loop, a
+  closure), n = 200 (µs); and each process's peak resident set (VmHWM). Then, in place
+  (`code_mode_costs_in_microvms`): an agent in a microVM, in one MCP session to its
+  instance, times in each of 200 rounds CALLS MCP calls of `whoami` one after another, one
+  `run` of a program making those CALLS, and one `run` of a program making none, for
+  CALLS of 1 and 10 (µs). 2026-10-11, Apple M5 Max, macOS 26.4.1, load average 7.7-12.3,
+  the tree D136 was committed from (on dev fd9da553).
+- **The engines** (each percentile's range over the five rounds):
+
+  | measure | engine | p50 | p90 | p99 | max | peak RSS (KiB) |
+  |---|---|---|---|---|---|---|
+  | create (µs) | Boa | 107.5-116.6 | 195.2-286.1 | 1290.8-1421.2 | 1397.4-1593.6 | 3492-3532 |
+  | create (µs) | QuickJS-NG | 123.0-132.5 | 140.8-153.8 | 185.2-227.8 | 294.3-362.9 | 432 |
+  | call (ns) | Boa | 95.4-121.0 | 103.9-126.9 | 125.9-157.4 | 125.9-157.4 | 2532-2536 |
+  | call (ns) | QuickJS-NG | 43.9-47.3 | 47.4-50.9 | 50.8-55.2 | 50.8-55.2 | 576 |
+  | program (µs) | Boa | 200.0-230.4 | 1029.7-1293.2 | 1312.0-1656.0 | 1352.2-1812.8 | 4944-4948 |
+  | program (µs) | QuickJS-NG | 94.8-110.4 | 101.3-161.4 | 139.2-302.3 | 359.2-413.8 | 636-640 |
+
+  - Size: `base` 343,632 bytes; Boa 6,037,672, 5.69 MB more; QuickJS-NG 1,143,144, 0.80 MB
+    more. `base`'s peak resident set: 88-92 KiB.
+  - Boa's tail is its collector's: a tenth of its programs took over a millisecond, none of
+    QuickJS-NG's did; its peak is 7.8 times QuickJS-NG's.
+- **In place** (n = 200 each, µs):
+
+  | CALLS | MCP calls, one by one | `run`, a program making them | `run`, a program making none |
+  |---|---|---|---|
+  | 1 | 32 / 45 / 94 / 147 | 447 / 514 / 643 / 700 | 408 / 473 / 558 / 633 |
+  | 10 | 243 / 294 / 338 / 367 | 647 / 728 / 886 / 921 | 406 / 457 / 526 / 590 |
+
+  (p50 / p90 / p99 / max.)
+  - A program costs its caller about 0.4 ms of its own, what a process made for it costs:
+    the helper's fork, the worker's filter, its runtime, the prelude and the program, and
+    its frames. A call within it costs what one over MCP does, about 23 µs (from p50: 22
+    within a program, 23 one by one): the instance answers both alike.
+  - So code mode saves no time between an agent and its instance: what it saves is the
+    model's turns, one for each call made one by one, against one for the program.
+- **Consequence.** D136: QuickJS-NG runs code mode's programs, a process each; its cost is
+  stated as measured, a program's own 0.4 ms, and its saving as the model's turns.
+

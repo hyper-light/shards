@@ -42,7 +42,7 @@ Targets: request → usable in **under 5 ms, boot included**, and less memory pe
   `cargo build -p shards-init --profile guest --target <arch>-unknown-linux-musl`
   - The guest arch is the host arch.
   - Lint them with the same `--target`, because host builds compile only their stub.
-  - shards-server and testguest carry TLS (AWS-LC's C), compiled by zig 0.16.0 (`scripts/install-zig`): `build.rs` and the tests set `CC_<triple>=scripts/zig-cc`, `AR_<triple>=scripts/zig-ar` and `ZIG_TARGET`; set them yourself to build or lint those by hand. `SHARDS_SERVER_BINARY` names a prebuilt server.
+  - shards-server and testguest carry TLS (AWS-LC's C), and shards-server QuickJS-NG's (code mode, D136), compiled by zig 0.16.0 (`scripts/install-zig`): `build.rs` and the tests set `CC_<triple>=scripts/zig-cc`, `AR_<triple>=scripts/zig-ar` and `ZIG_TARGET`; set them yourself to build or lint those by hand. `SHARDS_SERVER_BINARY` names a prebuilt server.
 - Lint every matrix target before pushing: `scripts/lint`, or `scripts/lint <triple>…`. `.github/workflows/ci.yml` lists the triples.
   - aws-lc-sys compiles C for each target, so this needs zig, LLVM (clang-cl, llvm-lib), NASM and cargo-xwin: `brew install zig llvm nasm` and `cargo install cargo-xwin`.
   - The first Windows lint downloads Microsoft's CRT and SDK.
@@ -60,7 +60,7 @@ Targets: request → usable in **under 5 ms, boot included**, and less memory pe
 - `crates/shards`: the one binary (`src/main.rs`, the command line in `src/cli/`, the helpers it carries in `src/helpers.rs`), and the real-VM E2E tests. `crates/vm-process` and `crates/net-process`: the VM and network processes it carries. `crates/apple`: Apple's frameworks, bound when first used. `crates/tui`: how shards looks on a colour terminal (hyperlight's design).
 - `crates/vmm`: the VMM library.
 - `crates/image`: layers, EROFS images, OCI documents and the image store.
-- `crates/registry`: pulling from registries. It is the only crate with C (AWS-LC, vendored in `vendor/`, see `vendor/README.md`).
+- `crates/registry`: pulling from registries. Its C, AWS-LC, and the in-VM server's QuickJS-NG are vendored in `vendor/` (see `vendor/README.md`).
 - `crates/init`: guest PID 1.
 - `crates/testguest`: PID 1 of test VMs. Its library holds the data patterns the host tests share.
 - `crates/abi`: constants shared by the VMM and the guest.

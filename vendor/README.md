@@ -1,8 +1,9 @@
 # Vendored crates
 
 shards builds these crates from the copies here, not from crates.io. The workspace
-`Cargo.toml` points `[patch.crates-io]` at them. They are the TLS provider for registry
-pulls: AWS-LC, the one C dependency (docs/design/architecture.md D19).
+`Cargo.toml` points `[patch.crates-io]` at them. They hold shards' C: AWS-LC, the TLS
+provider (docs/design/architecture.md D19), and QuickJS-NG, the JavaScript engine of the
+in-VM server's code mode (D136).
 
 Each directory is the crate exactly as crates.io publishes it. Nothing here is edited.
 
@@ -15,6 +16,7 @@ Each directory is the crate exactly as crates.io publishes it. Nothing here is e
 |---|---|---|---|
 | aws-lc-sys | 0.45.0 | `9bff6c3b54fad79a2e60b8102caf565819711497c1f5f092f49508e2f5c31b27` | [aws/aws-lc-rs](https://github.com/aws/aws-lc-rs) `7943223c99d909bc399bdf1b856821bb04f1f3c5`, `aws-lc-sys/` |
 | aws-lc-rs | 1.18.1 | `b281d307588d634de920874890732659e2e7672f72b5e10e81badc1a8a83621e` | [aws/aws-lc-rs](https://github.com/aws/aws-lc-rs) `22e629d5c46276497a24ee3e575be4315940e7cb`, `aws-lc-rs/` |
+| rquickjs-sys | 0.14.0 | `cee271d0eeba64f0915b846cb7ae02e16faf3dfdffdca91731101d9d30fe3423` | [DelSkayn/rquickjs](https://github.com/DelSkayn/rquickjs) `d7ef5eeae702fea24c03643064de454f1c1dd4b0`, `sys/`: QuickJS-NG 0.16.2 in `quickjs/` |
 
 The source commits come from each crate's `.cargo_vcs_info.json`. The licenses are in
 each directory: ISC, Apache-2.0, MIT and BSD-3-Clause parts, as each `Cargo.toml` lists.
@@ -67,5 +69,5 @@ Recheck these upstream items with each update:
 Then:
 
 1. Run `scripts/vendor-crate NAME VERSION` for each crate, then `cargo update -p NAME`.
-2. Update the table above and D19.
+2. Update the table above, and D19 or D136.
 3. Lint every target (`scripts/lint`) and run the tests.

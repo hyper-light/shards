@@ -2287,7 +2287,8 @@ fn confined(args: &[String]) -> i32 {
             "see" | "write" | "bind" | "connect" | "call" | "listen" | "reach" | "unreach" | "cat"
             | "resolve" | "dnsprobe" | "dnsask" | "unix" | "abstract" | "unix-serve" | "pause"
             | "udpflood" | "tcpflood" | "udpaskfrom" | "reachmany" | "reachrounds" | "udpask"
-            | "srv-send" | "srv-receive" | "srv-answer" | "owner" | "mcp-run" => mode = a.as_str(),
+            | "srv-send" | "srv-receive" | "srv-answer" | "owner" | "mcp-run" | "srv-run"
+            | "srv-run-timeout" | "srv-run-cancel" | "srv-run-abandon" | "srv-bench" => mode = a.as_str(),
             "srv-mcp" => {
                 let said = match server_call("mcp", "{}") {
                     Ok((t, false)) => t,
@@ -2488,6 +2489,104 @@ fn confined(args: &[String]) -> i32 {
                     Err(e) => errno(&e),
                 };
                 out.push_str(&format!("confined udpask {addr}: {said}\n"));
+            }
+            // CODE: code mode's program, run by the in-VM server (D136); `MS|CODE` with its
+            // timeout.
+            spec if mode == "srv-run" || mode == "srv-run-timeout" => {
+                let (timeout, code) = match mode {
+                    "srv-run-timeout" => spec.split_once('|').unwrap_or(("0", spec)),
+                    _ => ("", spec),
+                };
+                let args = match timeout {
+                    "" => format!(r#"{{"code":{}}}"#, quote_json(code)),
+                    ms => format!(r#"{{"code":{},"timeout_ms":{ms}}}"#, quote_json(code)),
+                };
+                let said = match server_call("run", &args) {
+                    Ok((t, false)) => format!("ok {t}"),
+                    Ok((t, true)) => format!("refused {t}"),
+                    Err(e) => format!("error {e}"),
+                };
+                out.push_str(&format!("confined srv-run: {said}\n"));
+            }
+            // CODE: code mode's program, let go of as it runs (MCP's
+            // `notifications/cancelled`), twice: from a session of its own, which names
+            // another request 2 than the program's; and from the program's session, on
+            // another connection. What the program's connection is told each time.
+            code if mode == "srv-run-cancel" => {
+                let cancelled = |own: bool| -> Result<String, String> {
+                    let args = format!(r#"{{"code":{}}}"#, quote_json(code));
+                    let mut running = Session::open()?;
+                    running.post(&tool_call("run", &args))?;
+                    std::thread::sleep(std::time::Duration::from_millis(300));
+                    let mut other = if own { running.join()? } else { Session::open()? };
+                    other.post(
+                        r#"{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":2,"reason":"enough"}}"#,
+                    )?;
+                    other.answer()?;
+                    running.answer()
+                };
+                for (whose, own) in [("stranger", false), ("own", true)] {
+                    let said = cancelled(own).unwrap_or_else(|e| format!("error {e}"));
+                    out.push_str(&format!("confined srv-run-cancel {whose}: {said}\n"));
+                }
+            }
+            // `ROUNDS|CALLS`: what code mode costs its caller (PM M196), measured where the
+            // caller is: in each round, one after another in one session, CALLS MCP calls
+            // of `whoami`; one `run` of a program that makes those CALLS; and one `run` of
+            // a program that makes none. Each's n, p50, p90, p99 and max, in µs.
+            spec if mode == "srv-bench" => {
+                let said = (|| -> Result<String, String> {
+                    let (rounds, calls) = spec.split_once('|').ok_or("no ROUNDS|CALLS")?;
+                    let rounds: usize = rounds.parse().map_err(|_| "ROUNDS")?;
+                    let calls: usize = calls.parse().map_err(|_| "CALLS")?;
+                    let program = format!(
+                        r#"{{"code":{}}}"#,
+                        quote_json(&format!(
+                            "for (let i = 0; i < {calls}; i++) await shards.whoami(); return {calls};"
+                        ))
+                    );
+                    let mut session = Session::open()?;
+                    let mut ask = |args: (&str, &str)| -> Result<f64, String> {
+                        let t = std::time::Instant::now();
+                        session.post(&tool_call(args.0, args.1))?;
+                        let answer = session.answer()?;
+                        if !answer.contains(r#""isError":false"#) {
+                            return Err(answer);
+                        }
+                        Ok(t.elapsed().as_secs_f64() * 1e6)
+                    };
+                    let (mut mcp, mut run, mut empty) = (Vec::new(), Vec::new(), Vec::new());
+                    for _ in 0..rounds {
+                        let mut took = 0.0;
+                        for _ in 0..calls {
+                            took += ask(("whoami", "{}"))?;
+                        }
+                        mcp.push(took);
+                        run.push(ask(("run", &program))?);
+                        empty.push(ask(("run", r#"{"code":"return 0;"}"#))?);
+                    }
+                    Ok(format!(
+                        "mcp-calls={calls} {}; run-calls={calls} {}; run-empty {}",
+                        summary_us(&mut mcp),
+                        summary_us(&mut run),
+                        summary_us(&mut empty)
+                    ))
+                })()
+                .unwrap_or_else(|e| format!("error {e}"));
+                out.push_str(&format!("confined srv-bench: {said}\n"));
+            }
+            // CODE: code mode's program, its session closed as it runs.
+            code if mode == "srv-run-abandon" => {
+                let said = (|| -> Result<String, String> {
+                    let args = format!(r#"{{"code":{}}}"#, quote_json(code));
+                    let mut running = Session::open()?;
+                    running.post(&tool_call("run", &args))?;
+                    std::thread::sleep(std::time::Duration::from_millis(300));
+                    drop(running);
+                    Ok("abandoned".to_string())
+                })()
+                .unwrap_or_else(|e| format!("error {e}"));
+                out.push_str(&format!("confined srv-run-abandon: {said}\n"));
             }
             // `TO|TEXT`: a request to TO.
             spec if mode == "srv-send" => {
@@ -3346,43 +3445,93 @@ fn first_of_own() -> String {
 /// The System V key §9.8's channel probes use: "SHAR".
 const IPC_KEY: libc::key_t = 0x5348_4152;
 
-/// Calls the in-VM server's `tool` with `args` (a JSON object), as an MCP client calls
-/// one: over the agent's socket and mutual TLS 1.3 with the certificate and key beside it,
-/// MCP's `initialize`, then `tools/call`. Its text, and whether it is an error.
-fn server_call(tool: &str, args: &str) -> Result<(String, bool), String> {
-    use rustls::pki_types::pem::PemObject as _;
-    use rustls::pki_types::{CertificateDer, PrivateKeyDer, ServerName};
-    use std::sync::Arc;
-    let at = "/run/shards";
-    let e = |what: &str, x: &dyn std::fmt::Display| format!("{what}: {x}");
-    let ca = CertificateDer::from_pem_file(format!("{at}/ca.pem")).map_err(|x| e("ca.pem", &x))?;
-    let cert = CertificateDer::from_pem_file(format!("{at}/cert.pem")).map_err(|x| e("cert.pem", &x))?;
-    let key = PrivateKeyDer::from_pem_file(format!("{at}/key.pem")).map_err(|x| e("key.pem", &x))?;
-    let mut roots = rustls::RootCertStore::empty();
-    roots.add(ca).map_err(|x| e("ca", &x))?;
-    let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
-    let config = rustls::ClientConfig::builder_with_provider(provider)
-        .with_protocol_versions(&[&rustls::version::TLS13])
-        .map_err(|x| e("tls", &x))?
-        .with_root_certificates(roots)
-        .with_client_auth_cert(vec![cert], key)
-        .map_err(|x| e("client cert", &x))?;
-    let name = ServerName::try_from("shards").map_err(|x| e("name", &x))?;
-    let tls = rustls::ClientConnection::new(Arc::new(config), name).map_err(|x| e("tls", &x))?;
-    let sock = std::os::unix::net::UnixStream::connect(format!("{at}/server.sock"))
-        .map_err(|x| format!("errno {}", x.raw_os_error().unwrap_or(0)))?;
-    let mut s = rustls::StreamOwned::new(tls, sock);
-    let mut ask = |body: &str| -> Result<String, String> {
+/// A connection to the in-VM server, as an MCP client makes one: over the agent's socket and
+/// mutual TLS 1.3 with the certificate and key beside it; and the session it is in, if the
+/// server began one, which each request carries (MCP 2025-06-18, "Session Management").
+struct Session {
+    s: rustls::StreamOwned<rustls::ClientConnection, std::os::unix::net::UnixStream>,
+    id: Option<String>,
+}
+
+impl Session {
+    /// A connection, its session begun with MCP's `initialize`.
+    fn open() -> Result<Session, String> {
+        let mut session = Session::connect()?;
+        session.post(
+            r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"testguest","version":"1"}}}"#,
+        )?;
+        let (head, _) = session.answered()?;
+        session.id = head.lines().find_map(|l| {
+            let (k, v) = l.split_once(':')?;
+            k.eq_ignore_ascii_case("mcp-session-id")
+                .then(|| v.trim().to_string())
+        });
+        Ok(session)
+    }
+
+    /// Another connection, in this one's session.
+    fn join(&self) -> Result<Session, String> {
+        let mut other = Session::connect()?;
+        other.id = self.id.clone();
+        Ok(other)
+    }
+
+    fn connect() -> Result<Session, String> {
+        use rustls::pki_types::pem::PemObject as _;
+        use rustls::pki_types::{CertificateDer, PrivateKeyDer, ServerName};
+        use std::sync::Arc;
+        let at = "/run/shards";
+        let e = |what: &str, x: &dyn std::fmt::Display| format!("{what}: {x}");
+        let ca = CertificateDer::from_pem_file(format!("{at}/ca.pem")).map_err(|x| e("ca.pem", &x))?;
+        let cert = CertificateDer::from_pem_file(format!("{at}/cert.pem")).map_err(|x| e("cert.pem", &x))?;
+        let key = PrivateKeyDer::from_pem_file(format!("{at}/key.pem")).map_err(|x| e("key.pem", &x))?;
+        let mut roots = rustls::RootCertStore::empty();
+        roots.add(ca).map_err(|x| e("ca", &x))?;
+        let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
+        let config = rustls::ClientConfig::builder_with_provider(provider)
+            .with_protocol_versions(&[&rustls::version::TLS13])
+            .map_err(|x| e("tls", &x))?
+            .with_root_certificates(roots)
+            .with_client_auth_cert(vec![cert], key)
+            .map_err(|x| e("client cert", &x))?;
+        let name = ServerName::try_from("shards").map_err(|x| e("name", &x))?;
+        let tls = rustls::ClientConnection::new(Arc::new(config), name).map_err(|x| e("tls", &x))?;
+        let sock = std::os::unix::net::UnixStream::connect(format!("{at}/server.sock"))
+            .map_err(|x| format!("errno {}", x.raw_os_error().unwrap_or(0)))?;
+        Ok(Session {
+            s: rustls::StreamOwned::new(tls, sock),
+            id: None,
+        })
+    }
+
+    /// Posts `body`, a JSON-RPC message, to `/mcp`, in this connection's session.
+    fn post(&mut self, body: &str) -> Result<(), String> {
+        let session = self
+            .id
+            .as_ref()
+            .map(|id| format!("Mcp-Session-Id: {id}\r\nMCP-Protocol-Version: 2025-06-18\r\n"))
+            .unwrap_or_default();
         let req = format!(
             "POST /mcp HTTP/1.1\r\nHost: shards\r\nContent-Type: application/json\r\n\
-             Accept: application/json, text/event-stream\r\nContent-Length: {}\r\n\r\n{body}",
+             Accept: application/json, text/event-stream\r\n{session}Content-Length: {}\r\n\r\n{body}",
             body.len()
         );
-        s.write_all(req.as_bytes()).map_err(|x| e("write", &x))?;
+        self.s
+            .write_all(req.as_bytes())
+            .map_err(|x| format!("write: {x}"))
+    }
+
+    /// The next answer's body.
+    fn answer(&mut self) -> Result<String, String> {
+        self.answered().map(|(_, body)| body)
+    }
+
+    /// The next answer: its head, and its body.
+    fn answered(&mut self) -> Result<(String, String), String> {
         let mut got = Vec::new();
         let mut b = [0u8; 4096];
         loop {
-            let n = s.read(&mut b).map_err(|x| e("read", &x))?;
+            let n = self.s.read(&mut b).map_err(|x| format!("read: {x}"))?;
             if n == 0 {
                 return Err("closed".to_string());
             }
@@ -3399,17 +3548,45 @@ fn server_call(tool: &str, args: &str) -> Result<(String, bool), String> {
                     .and_then(|v| v.parse().ok())
                     .unwrap_or(0);
                 if body.len() >= len {
-                    return Ok(body.to_string());
+                    return Ok((head.to_string(), body.to_string()));
                 }
             }
         }
+    }
+}
+
+/// `values`, sorted: n, and the nearest-rank p50, p90, p99 and max, in µs.
+fn summary_us(values: &mut [f64]) -> String {
+    values.sort_by(f64::total_cmp);
+    let n = values.len();
+    let rank = |p: usize| {
+        values
+            .get((n * p).div_ceil(100).clamp(1, n.max(1)) - 1)
+            .copied()
+            .unwrap_or(0.0)
     };
-    ask(
-        r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"testguest","version":"1"}}}"#,
-    )?;
-    let answer = ask(&format!(
+    format!(
+        "n={n} p50={:.0} p90={:.0} p99={:.0} max={:.0}",
+        rank(50),
+        rank(90),
+        rank(99),
+        rank(100)
+    )
+}
+
+/// `tools/call` of `tool` with `args`, request 2.
+fn tool_call(tool: &str, args: &str) -> String {
+    format!(
         r#"{{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{{"name":"{tool}","arguments":{args}}}}}"#
-    ))?;
+    )
+}
+
+/// Calls the in-VM server's `tool` with `args` (a JSON object), as an MCP client calls
+/// one, in a session of its own. Its text, and whether it is an error.
+fn server_call(tool: &str, args: &str) -> Result<(String, bool), String> {
+    let mut session = Session::open()?;
+    session.post(&tool_call(tool, args))?;
+    let answer = session.answer()?;
     let at = answer
         .find(r#""text":""#)
         .map(|i| i + r#""text":""#.len())
@@ -3453,6 +3630,8 @@ fn quote_json(s: &str) -> String {
         match c {
             '"' => out.push_str("\\\""),
             '\\' => out.push_str("\\\\"),
+            // Control characters escaped, as RFC 8259 §7 requires of a string.
+            c if u32::from(c) < 0x20 => out.push_str(&format!("\\u{:04x}", u32::from(c))),
             c => out.push(c),
         }
     }

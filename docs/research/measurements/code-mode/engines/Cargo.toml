@@ -1,0 +1,39 @@
+# The engines code mode chose between (D136, PM M196), each in a static binary of its own:
+# `base` (none), `boa` (Boa) and `qjs` (QuickJS-NG, through rquickjs). Built and run in a
+# microVM by ../measure.sh.
+[package]
+name = "engines"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+boa_engine = { version = "=0.22.0", default-features = false, optional = true }
+rquickjs = { version = "=0.14.0", default-features = false, optional = true }
+
+[features]
+boa = ["dep:boa_engine"]
+qjs = ["dep:rquickjs"]
+
+[[bin]]
+name = "base"
+path = "src/bin/base.rs"
+
+[[bin]]
+name = "boa"
+path = "src/bin/boa.rs"
+required-features = ["boa"]
+
+[[bin]]
+name = "qjs"
+path = "src/bin/qjs.rs"
+required-features = ["qjs"]
+
+# As shards' guest binaries are built (the workspace's `guest` profile).
+[profile.release]
+opt-level = "s"
+lto = "fat"
+debug = false
+strip = true

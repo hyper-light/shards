@@ -17,6 +17,8 @@ libc = { workspace = true }
 [target.'cfg(target_os = "linux")'.dependencies]
 rustls = { version = "0.23.45", default-features = false, features = ["std", "aws_lc_rs"] }
 rcgen = { version = "0.14.10", default-features = false, features = ["aws_lc_rs", "pem"] }
+# Code mode's programs (D136): QuickJS-NG, its C compiled for the guest as AWS-LC's is.
+rquickjs = { version = "0.14.0", default-features = false }
 
 [[bin]]
 name = "shards-server"

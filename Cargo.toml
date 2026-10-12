@@ -87,6 +87,7 @@ print_stderr = "deny"
 [patch.crates-io]
 aws-lc-rs = { path = "vendor/aws-lc-rs" }
 aws-lc-sys = { path = "vendor/aws-lc-sys" }
+rquickjs-sys = { path = "vendor/rquickjs-sys" }
 
 [profile.release]
 opt-level = 3
