@@ -36,10 +36,14 @@ pub fn read(r: &mut impl Read) -> io::Result<Option<Packet>> {
     let mut head = [0u8; 4];
     let mut got = 0;
     while got < head.len() {
-        match r.read(head.get_mut(got..).unwrap_or_default())? {
-            0 if got == 0 => return Ok(None),
-            0 => return Err(io::ErrorKind::UnexpectedEof.into()),
-            n => got += n,
+        // A read a signal interrupted is read again, as `read_exact` does: a socket with a
+        // receive timeout is never restarted after a handler runs (signal(7)).
+        match r.read(head.get_mut(got..).unwrap_or_default()) {
+            Ok(0) if got == 0 => return Ok(None),
+            Ok(0) => return Err(io::ErrorKind::UnexpectedEof.into()),
+            Ok(n) => got += n,
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+            Err(e) => return Err(e),
         }
     }
     let len = std::str::from_utf8(&head)
@@ -94,5 +98,33 @@ mod tests {
         assert!(read(&mut &b"0009ab"[..]).is_err());
         assert!(data(&[0; MAX]).is_err());
         assert_eq!(text(b"ok\n"), b"ok");
+    }
+
+    /// A read a signal interrupted is read again, a packet's length as its payload is: a
+    /// socket with a receive timeout is interrupted by any handler that runs.
+    #[test]
+    fn an_interrupted_read_is_read_again() {
+        struct Interrupted<'a> {
+            wire: &'a [u8],
+            each: bool,
+        }
+        impl Read for Interrupted<'_> {
+            fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+                self.each = !self.each;
+                if self.each {
+                    return Err(io::ErrorKind::Interrupted.into());
+                }
+                // A byte at a time, so that a length is read in parts.
+                let n = buf.len().min(1);
+                self.wire.read(buf.get_mut(..n).unwrap_or_default())
+            }
+        }
+        let mut wire = Interrupted {
+            wire: b"0006a\n0000",
+            each: false,
+        };
+        assert_eq!(read(&mut wire).unwrap(), Some(Packet::Data(b"a\n".to_vec())));
+        assert_eq!(read(&mut wire).unwrap(), Some(Packet::Flush));
+        assert_eq!(read(&mut wire).unwrap(), None);
     }
 }

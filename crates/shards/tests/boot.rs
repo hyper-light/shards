@@ -115,36 +115,37 @@ fn two_vcpus_boot_to_their_end_in_this_process() {
     }
 }
 
+/// The host's most vCPUs: the guest brings up as many as its kernel was built for, and is
+/// shown the rest, which its kernel names as it refuses them. Watched until its CPUs are
+/// up, then stopped: the rest of a boot of 64 vCPUs on a host of 4 took a CI runner's
+/// nested WHP 40 s and more.
 #[test]
 fn boots_the_hosts_maximum_vcpu_count() {
     if cannot_run_vms() {
         return;
     }
     let max = shards_vmm::vm::max_vcpus().unwrap();
-    let k = kernel().to_str().unwrap();
+    let k = kernel();
     let cpus = max.to_string();
-    let r = vm_run(
-        &[
-            "--kernel",
-            k,
-            "--cpus",
-            &cpus,
-            "--memory",
-            "1024",
-            "--cmdline",
-            "console=ttyS0 panic=-1",
-        ],
-        TIMEOUT,
-    );
-    // The guest runs as many as its kernel was built for. It must have been shown the
-    // rest: the kernel names the vCPUs it refused.
+    let mut vm = common::Vm::spawn(&[
+        "run".as_ref(),
+        "--kernel".as_ref(),
+        k.as_os_str(),
+        "--cpus".as_ref(),
+        cpus.as_ref(),
+        "--memory".as_ref(),
+        "1024".as_ref(),
+        "--cmdline".as_ref(),
+        "console=ttyS0 panic=-1".as_ref(),
+    ]);
     let up = max.min(KERNEL_NR_CPUS);
     let plural = if up == 1 { "" } else { "s" };
-    assert!(
-        r.stdout
-            .contains(&format!("smp: Brought up 1 node, {up} CPU{plural}")),
-        "{r}"
-    );
+    let brought = format!("smp: Brought up 1 node, {up} CPU{plural}");
+    // A count other than the one asked for fails at once, with what the guest said.
+    let said = vm.wait_for_any(&["smp: Brought up"], TIMEOUT);
+    vm.kill();
+    let seen = vm.seen.join("\n");
+    assert!(said.contains(&brought), "{seen}");
     if max > KERNEL_NR_CPUS {
         let refused = match common::ARCH {
             // arch/x86/kernel/cpu/topology.c
@@ -152,7 +153,7 @@ fn boots_the_hosts_maximum_vcpu_count() {
             // arch/arm64/kernel/smp.c
             _ => format!("Number of cores ({max}) exceeds configured maximum of {KERNEL_NR_CPUS}"),
         };
-        assert!(r.stdout.contains(&refused), "{r}");
+        assert!(seen.contains(&refused), "{seen}");
     }
 }
 

@@ -125,7 +125,15 @@ jobs:
         shell: bash
         run: |
           case "$RUNNER_OS" in
-            Linux) ls -l /dev/kvm 2>&1 || true ;;
+            # And what VFIO may pass through: IOMMU groups, the VFIO and mediated-device
+            # (mdev) modules and the kernel's config of them, for a test device.
+            Linux)
+              ls -l /dev/kvm 2>&1 || true
+              ls /sys/kernel/iommu_groups 2>&1 | head -5 || true
+              ls /sys/class/mdev_bus 2>&1 || true
+              for m in vfio vfio_pci vfio_iommu_type1 mdev mtty mbochs mdpy; do modinfo -F filename "$m" 2>&1 || true; done
+              grep -E "CONFIG_(VFIO|VFIO_PCI|VFIO_MDEV|SAMPLE_VFIO_MDEV_MTTY|IOMMUFD|VFIO_NOIOMMU)=" "/boot/config-$(uname -r)" 2>&1 || true
+              ;;
             macOS) sysctl kern.hv_support || true ;;
             Windows) powershell -NoProfile -Command \
               "(Get-CimInstance Win32_Processor).Name; (Get-CimInstance Win32_ComputerSystem).HypervisorPresent; (Get-WindowsOptionalFeature -Online -FeatureName HypervisorPlatform).State" || true ;;
