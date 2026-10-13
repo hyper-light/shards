@@ -3516,7 +3516,12 @@ Tested: `reach_through_any_declared_edge_is_reach` (paths through an internal ne
 volume, `ATTACH` and a remote MCP server; networks with no port, or internal, reaching
 nothing; a local MCP server joining no one; every agent reaching the world refusing none;
 a harness driving a world-reaching agent allowed), mutation-checked three ways: a search
-that follows no edge, every domain taken as internal-only, and none.
+that follows no edge, every domain taken as internal-only, and none. End to end (§9.10),
+`an_internal_agent_reaches_the_world_through_nothing`: each of those paths refused by
+`shards build`, the path named; and at run, an image whose own normalized Agentfile joins
+b to a (a commit of the Agentfile changed, its digest relabelled, as no build of shards'
+would make it) refused as the daemon reads it (D109), as built it runs. Mutation-checked:
+the build's check dropped, and the run's.
 
 ### D60. The in-VM server: an instance for each agent, apart from init
 
@@ -9181,7 +9186,22 @@ ENOSYS for no capability under Docker's profile, and musl and glibc then fall ba
 `clone`. `execve` stays: it starts no process. Tested by a third agent declared
 `--processes=none` from the same artifact: its thread starts and its `fork` is refused
 (EPERM), while the first agent forks. Mutation-checked: compiling the ordinary domain
-filter for it lets the fork through.
+filter for it lets the fork through. Every other way to start a process is tried too
+(§9.10): `vfork` as the kernel makes it (x86_64's own call, arm64's `clone` with CLONE_VM
+and CLONE_VFORK, issued so that the child touches no memory: libc's `vfork` is
+deprecated for the stack its child corrupts), a `clone` that is no thread, `clone3`
+(ENOSYS for every domain), a spawn as libc makes it, and so any program run: each refused
+(EPERM), each made by the first agent. Mutation-checked: `clone` left as Docker's rule lets
+musl's `fork`, itself a `clone`, through.
+
+The same test plants the file escapes of §9.10: a symlink in its scratch to another
+domain's file, followed (EACCES: the domain is hidden); a hard link to it (EACCES) and to
+the system's (EXDEV, another filesystem); and a set-user-ID-root program of the system
+(`COPY --chmod=4755`) run, which runs as the agent (uid and euid 200000). Two guards hold
+that: the system is mounted `nosuid`, which the agent sees (`statvfs`), and
+`no_new_privs` (`nnp=1`), which Landlock and seccomp need besides. Mutation-checked: the
+system mounted without `nosuid` fails the `nosuid` line while `no_new_privs` keeps the
+euid; `no_new_privs` cannot be dropped alone, as no domain then starts.
 
 Part three, network grants between domains (AGENTFILE_ARCH.md §4.6, §4.7, §9.7):
 

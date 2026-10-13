@@ -8244,6 +8244,106 @@ fn domains_are_checked_before_an_image_leaves_the_build() {
     );
 }
 
+/// Reach is transitive (§9.5, §9.8, §9.10): an internal-only agent with a path to the world
+/// through anything declared fails the build, the path named: an internal network to an
+/// agent on one open to the world, a volume both mount, a harness attached to both, and
+/// the other's remote MCP server, as the planner finds them
+/// (`reach_through_any_declared_edge_is_reach`). And an image whose Agentfile says so,
+/// though no build of shards' checked it (made here by a commit of the Agentfile changed,
+/// its digest relabelled), is refused at run, as the daemon reads the image's own (D109).
+#[test]
+fn an_internal_agent_reaches_the_world_through_nothing() {
+    use sha2::Digest as _;
+    if cannot_run_vms() {
+        return;
+    }
+    let (image, _) = served();
+    let home = TempDir::new("reach-home");
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", kernel().as_os_str()),
+        ("SHARDS_INIT", guest_init().as_os_str()),
+    ];
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let ctx = context("reach-ctx", &format!("FROM {image}\n"));
+    for d in ["a", "b", "h"] {
+        std::fs::create_dir_all(ctx.join(d)).unwrap();
+        std::fs::write(ctx.join(d).join("run"), "run\n").unwrap();
+    }
+    let base = format!("FROM {image}\nAGENT a FROM ./a\nAGENT b FROM ./b\n");
+    // b on an internal network of its own: internal-only.
+    let inner = "NETWORK --internal inner\nCONNECT b WITH b ON inner\n";
+    let world = "NETWORK --egress=443 world\nEXPOSE 443 AS egress FOR world\nCONNECT a WITH a ON world\n";
+    for (directives, path) in [
+        (
+            "NETWORK --internal back\nNETWORK --egress=443 world\nEXPOSE 443 FOR world\n\
+             CONNECT --port=8080 b WITH a ON back\nCONNECT a WITH a ON world\n"
+                .to_string(),
+            "agent b -> network back -> agent a -> network world",
+        ),
+        (
+            format!("{world}VOLUME data /data FOR a b\n{inner}"),
+            "agent b -> volume data -> agent a -> network world",
+        ),
+        (
+            format!("HARNESS h FROM ./h\n{world}ATTACH a b FOR h\n{inner}"),
+            "agent b -> ATTACH -> harness h -> ATTACH -> agent a -> network world",
+        ),
+        (
+            format!("MCP web FROM https://mcp.example.com FOR a\nVOLUME shared /s FOR a b\n{inner}"),
+            "agent b -> volume shared -> agent a -> remote MCP server web",
+        ),
+    ] {
+        std::fs::write(ctx.join("Agentfile"), format!("{base}{directives}")).unwrap();
+        let refused = shards(&["build", ctx.to_str().unwrap()]);
+        assert_ne!(refused.status, Some(0), "{directives}");
+        assert!(refused.stderr.contains(path), "{directives}: {}", refused.stderr);
+    }
+
+    // An image whose own Agentfile joins b to a: a volume of a's, which it says b mounts.
+    std::fs::write(
+        ctx.join("Agentfile"),
+        format!("{base}{world}VOLUME data /data FOR a\n{inner}"),
+    )
+    .unwrap();
+    let built = shards(&["build", "-t", "reach:1", ctx.to_str().unwrap()]);
+    assert_eq!(built.status, Some(0), "{}", built.stderr);
+    let created = shards(&["create", "--name", "reach-c", "reach:1", "exit", "0"]);
+    assert_eq!(created.status, Some(0), "{}", created.stderr);
+    let host = TempDir::new("reach-host");
+    let spec_at = host.join("spec.json");
+    let out = shards(&["cp", "reach-c:/.agentfile.json", spec_at.to_str().unwrap()]);
+    assert_eq!(out.status, Some(0), "{}", out.stderr);
+    let mut spec: serde_json::Value = serde_json::from_slice(&std::fs::read(&spec_at).unwrap()).unwrap();
+    for v in spec["volumes"].as_array_mut().unwrap() {
+        v["for"]["names"] = serde_json::json!(["a", "b"]);
+    }
+    let joined = serde_json::to_vec(&spec).unwrap();
+    let joined_at = host.join("joined.json");
+    std::fs::write(&joined_at, &joined).unwrap();
+    let put = shards(&["cp", joined_at.to_str().unwrap(), "reach-c:/.agentfile.json"]);
+    assert_eq!(put.status, Some(0), "{}", put.stderr);
+    let digest: String = sha2::Sha256::digest(&joined)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    let label = format!("LABEL vnd.osi.agentfile.digest=sha256:{digest}");
+    let committed = shards(&["commit", "--change", &label, "reach-c", "reach:2"]);
+    assert_eq!(committed.status, Some(0), "{}", committed.stderr);
+    let refused = shards(&["run", "--rm", "reach:2", "exit", "0"]);
+    assert_ne!(refused.status, Some(0), "{}", refused.stderr);
+    assert!(
+        refused
+            .stderr
+            .contains("agent b -> volume data -> agent a -> network world"),
+        "{}",
+        refused.stderr
+    );
+    // As built, it runs.
+    let ran = shards(&["run", "--rm", "reach:1", "exit", "0"]);
+    assert_eq!(ran.status, Some(0), "{}", ran.stderr);
+}
+
 /// Only a domain's own directives write in it (D55, §9.2, §7 Q19.3): a `RUN` writing in an
 /// agent's directory fails the build, before the `AGENT` line or after it, as does a
 /// `COPY` into its grants; a `RUN` writing elsewhere builds.
@@ -8416,7 +8516,9 @@ fn an_agentfiles_manifest_says_what_it_holds() {
 /// write but to its scratch and `/dev`, and no TCP; under seccomp, no vsock, netlink,
 /// io_uring, keys or userfaultfd; its output on the
 /// run's stderr, each line prefixed with it. An agent whose config says nothing of how it
-/// runs is files alone.
+/// runs is files alone. And the escapes of §9.10: a symlink planted and followed, a hard
+/// link made, a set-user-ID program run, and, under `--processes=none`, every way to
+/// start a process.
 #[test]
 fn agents_run_in_their_domains() {
     if cannot_run_vms() {
@@ -8436,7 +8538,7 @@ fn agents_run_in_their_domains() {
     std::fs::copy(common::test_guest(), dir.join("bin/testguest")).unwrap();
     std::fs::write(
         dir.join("agent.json"),
-        r#"{"name":"main","run":{"command":["bin/testguest","confined","see","/agents/other","/sys","/dev","/proc/self/fd","/agents/main.d/skills","/agents/other.d","/skills","/mcp","write","/agents/main/x","/etc/x","/tmp/x","/tmp/../proc/self/comm","bind","127.0.0.1:8080","connect","127.0.0.1:9","call","fork","thread","socket-vsock","socket-netlink","socket-unix","socket-inet6","io_uring_setup","keyctl","userfaultfd"]}}"#,
+        r#"{"name":"main","run":{"command":["bin/testguest","confined","see","/agents/other","/sys","/dev","/proc/self/fd","/agents/main.d/skills","/agents/other.d","/skills","/mcp","write","/agents/main/x","/etc/x","/tmp/x","/tmp/../proc/self/comm","bind","127.0.0.1:8080","connect","127.0.0.1:9","call","fork","thread","vfork","clone","clone3","spawn","socket-vsock","socket-netlink","socket-unix","socket-inet6","io_uring_setup","keyctl","userfaultfd","follow","/tmp/l=/agents/other/secret","hardlink","/tmp/h=/agents/other/secret","/tmp/h2=/bin/testguest","exec","/usr/local/bin/suid","nosuid","/usr/local/bin"]}}"#,
     )
     .unwrap();
     let name = format!("127.0.0.1:{port}/team/confined:1");
@@ -8465,6 +8567,8 @@ fn agents_run_in_their_domains() {
     );
     write("tools/server.py", "print('tools')\n");
     write("helper/server.py", "print('helper')\n");
+    // A program of the system set-user-ID root, as an image's `su` is.
+    std::fs::copy(common::test_guest(), ctx.join("suid")).unwrap();
     std::fs::write(
         ctx.join("Agentfile"),
         format!(
@@ -8476,7 +8580,8 @@ fn agents_run_in_their_domains() {
              SKILL ./skills/theirs FOR other\n\
              SKILL ./shared\n\
              MCP tools FROM ./tools\n\
-             MCP helper FROM ./helper FOR other\n"
+             MCP helper FROM ./helper FOR other\n\
+             COPY --chmod=4755 suid /usr/local/bin/suid\n"
         ),
     )
     .unwrap();
@@ -8543,6 +8648,22 @@ fn agents_run_in_their_domains() {
         "confined call userfaultfd: errno 1",
         "confined call fork: ok",
         "confined call thread: ok",
+        "confined call vfork: ok",
+        "confined call clone: ok",
+        "confined call spawn: ok",
+        // clone3, whose flags no filter reads, fails for no capability (ENOSYS), and libc
+        // clones instead.
+        "confined call clone3: errno 38",
+        // Another domain's file reached by no link it plants: a symlink followed into the
+        // domain hidden from it, a hard link to it, or one to the system's (another
+        // filesystem, EXDEV).
+        "confined follow /tmp/l=/agents/other/secret: errno 13",
+        "confined hardlink /tmp/h=/agents/other/secret: errno 13",
+        "confined hardlink /tmp/h2=/bin/testguest: errno 18",
+        // A set-user-ID program runs as the agent: the system is `nosuid`, and
+        // `no_new_privs` (nnp=1 above) would hold it besides.
+        "confined exec /usr/local/bin/suid: creds uid=200000 euid=200000",
+        "confined nosuid /usr/local/bin: yes",
     ] {
         assert!(said.contains(&want), "no {want:?} in:\n{}", ran.stderr);
     }
@@ -8556,6 +8677,13 @@ fn agents_run_in_their_domains() {
         "confined uid=200002 gid=200002 groups=0",
         "confined call fork: errno 1",
         "confined call thread: ok",
+        // Every other way to start a process (§9.10): vfork, a clone that is no thread,
+        // clone3, a spawn as libc makes it, and so a program run.
+        "confined call vfork: errno 1",
+        "confined call clone: errno 1",
+        "confined call clone3: errno 38",
+        "confined call spawn: errno 1",
+        "confined exec /usr/local/bin/suid: errno 1",
     ] {
         assert!(solo.contains(&want), "no {want:?} in:\n{}", ran.stderr);
     }
