@@ -522,6 +522,7 @@ pub fn template(home: &Path, guest: &Guest, rootfs: &Path, cfg: &Config) -> Path
         shares(cfg),
     ) + &pmem(cfg)
         + &plug(cfg)
+        + gpu(cfg)
         + JOIN_SHARE;
     let hex: String = Sha256::digest(key.as_bytes())
         .iter()
@@ -533,6 +534,11 @@ pub fn template(home: &Path, guest: &Guest, rootfs: &Path, cfg: &Config) -> Path
 /// Every template's join share (D119), which every microVM the daemon starts has, as it has
 /// a join disk: in its key, so that none saved without one is restored as one with it.
 const JOIN_SHARE: &str = "join share\n";
+
+/// A GPU's template (D150), in its key where it has one.
+fn gpu(cfg: &Config) -> &'static str {
+    if cfg.gpu { "gpu\n" } else { "" }
+}
 
 /// A template's memory to plug (D148), in its key where it has any.
 fn plug(cfg: &Config) -> String {
@@ -579,6 +585,10 @@ pub struct Origin {
     /// from the template.
     #[serde(default)]
     server: bool,
+    /// Whether it is a GPU's (D150): saved by the GPU's VM process from the pinned GPU
+    /// kernel, its restores the GPU's VM process's too.
+    #[serde(default)]
+    gpu: bool,
 }
 
 impl Origin {
@@ -598,18 +608,24 @@ impl Origin {
         Self::place(dir).map(|(parent, name)| parent.join(name))
     }
 
-    pub fn of(guest: &Guest, rootfs: &Path, server: bool) -> Origin {
+    pub fn of(guest: &Guest, rootfs: &Path, server: bool, gpu: bool) -> Origin {
         Origin {
             rootfs: rootfs.to_path_buf(),
             kernel_digest: guest.kernel_digest.clone(),
             init_digest: guest.init_digest.clone(),
             server,
+            gpu,
         }
     }
 
     /// Whether it was saved with the in-VM server's device.
     pub fn server(&self) -> bool {
         self.server
+    }
+
+    /// Whether it is a GPU's (D150).
+    pub fn gpu(&self) -> bool {
+        self.gpu
     }
 
     /// Records it for the template `dir`, beside it: written whole under a name of its
@@ -635,10 +651,19 @@ impl Origin {
         &self.rootfs
     }
 
+    /// Whether it is still the template of `guest`'s runs: a GPU's is of the pinned GPU
+    /// kernel instead of `guest`'s (D150).
     pub fn live(&self, guest: Option<&Guest>) -> bool {
+        let gpu = || crate::kernel::KERNEL_GPU.map(|k| format!("sha256:{}", k.sha256));
         self.rootfs.is_file()
-            && guest
-                .is_some_and(|g| g.kernel_digest == self.kernel_digest && g.init_digest == self.init_digest)
+            && guest.is_some_and(|g| {
+                let kernel = if self.gpu {
+                    gpu()
+                } else {
+                    Some(g.kernel_digest.clone())
+                };
+                kernel.as_deref() == Some(self.kernel_digest.as_str()) && g.init_digest == self.init_digest
+            })
     }
 }
 
@@ -781,7 +806,7 @@ mod tests {
         std::fs::write(&victim, b"the user's").unwrap();
         std::os::unix::fs::symlink(&victim, &place).unwrap();
         assert!(Origin::read(&dir).is_none(), "a link is read through");
-        Origin::of(&guest, &rootfs, true).write(&dir).unwrap();
+        Origin::of(&guest, &rootfs, true, false).write(&dir).unwrap();
         assert_eq!(
             std::fs::read(&victim).unwrap(),
             b"the user's",

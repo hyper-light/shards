@@ -298,6 +298,9 @@ struct Pool {
     /// Whether its template was saved with the in-VM server's device (D60), once read:
     /// its restores are given the daemon's own, as its cold boots are.
     server: Option<bool>,
+    /// Whether its template is a GPU's (D150), once read: its restores are the GPU's VM
+    /// process's.
+    gpu: Option<bool>,
     ready: VecDeque<Ready>,
     starting: usize,
     /// Warm VMs in a row that never became ready.
@@ -4501,27 +4504,30 @@ impl<D: Disk> Daemon<D> {
                 cfg.cmdline.push_str(&bridge.cmdline());
             }
         };
-        // A run given this Mac's GPU boots in the GPU's VM process, the GPU's kernel, and
-        // never from a template, nor saves one: a GPU's state is its host driver's (D144).
-        if let Some(kernel) = &prepared.gpu {
-            let mut cfg = match &prepared.boot {
-                Boot::Given(cfg) => (**cfg).clone(),
-                Boot::Stored(guest) => Config::new(kernel.clone(), Some(guest.init.clone())),
-            };
-            on_network(&mut cfg);
-            cfg.gpu = true;
-            return self.cold(threads, &cfg, &prepared.rootfs, None);
-        }
         let guest = match &prepared.boot {
             Boot::Given(cfg) => {
-                let mut cfg = cfg.clone();
+                let mut cfg = (**cfg).clone();
                 on_network(&mut cfg);
+                cfg.gpu = prepared.gpu.is_some();
                 return self.cold(threads, &cfg, &prepared.rootfs, None);
             }
             Boot::Stored(guest) => guest,
         };
+        // A run given this Mac's GPU boots the pinned GPU kernel in the GPU's VM process
+        // (D144), and restores a template of its own, saved before its guest made anything
+        // of the GPU's, which its host driver would hold (D150).
+        let gpu_guest = prepared.gpu.as_ref().map(|kernel| crate::guest::Guest {
+            kernel: kernel.clone(),
+            init: guest.init.clone(),
+            kernel_digest: crate::kernel::KERNEL_GPU
+                .map(|k| format!("sha256:{}", k.sha256))
+                .unwrap_or_default(),
+            init_digest: guest.init_digest.clone(),
+        });
+        let guest = gpu_guest.as_ref().unwrap_or(guest);
         let mut cfg = Config::new(guest.kernel.clone(), Some(guest.init.clone()));
         on_network(&mut cfg);
+        cfg.gpu = prepared.gpu.is_some();
         if !shards_vmm::vm::SNAPSHOTS {
             return self.cold(threads, &cfg, &prepared.rootfs, None);
         }
@@ -4545,7 +4551,8 @@ impl<D: Disk> Daemon<D> {
         let fresh = dir.with_extension(format!("new-{}-{n}", std::process::id()));
         let mut ready = self.cold(threads, &cfg, &prepared.rootfs, Some(&fresh));
         if ready.is_ok()
-            && let Err(e) = crate::run::Origin::of(guest, &prepared.rootfs, server.is_some()).write(&dir)
+            && let Err(e) =
+                crate::run::Origin::of(guest, &prepared.rootfs, server.is_some(), cfg.gpu).write(&dir)
         {
             log(format!("{}: its origin: {e}", dir.display()));
         }

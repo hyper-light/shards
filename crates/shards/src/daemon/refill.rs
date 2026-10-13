@@ -185,6 +185,13 @@ impl<D: Disk> Daemon<D> {
                 Err(e) => log(format!("{}: the in-VM server's device: {e}", dir.display())),
             }
         }
+        // A GPU's template restores in the GPU's VM process (D150).
+        if *pool
+            .gpu
+            .get_or_insert_with(|| crate::run::Origin::read(dir).is_some_and(|o| o.gpu()))
+        {
+            args.push("--gpu".into());
+        }
         Some(Planned {
             dir: dir.to_path_buf(),
             args,

@@ -7878,3 +7878,61 @@ revision before comparing a changed API/implementation.
 - **Consequence (D151).** Templates are saved after a flush; a run's memory freed goes
   back to the host at no cost measured to its runs.
 
+
+### M223. A GPU's runs from templates of their own, and a run's devices found by name (D150, D152)
+
+- **Question.** What does restoring a template of its own (D150) save a run given the GPU,
+  what does the GPU still cost a restored run, and where does that cost come from?
+- **Method.** `docs/research/measurements/build-ab/ab.py`, `AB_FLAGS=--rm`, `true` in
+  `gpu-venus:1` (Debian trixie-slim with Mesa's Venus and vulkan-tools, tests/gpu.rs's
+  image), each arm a home of its own with a copy of one build of D150's work, the image
+  loaded (`shards load`), its guest recorded (`shards guest use`), pairs n=200; the
+  daemon of a home that boots every run was started with SHARDS_KERNEL, the pinned gpu
+  kernel, and SHARDS_INIT. Inside restored microVMs, `device-setup` (its directory): the
+  steps of finding and confining a device, as root of a privileged run, each round timed
+  (n=300, one VM) and the first round of fresh VMs (n=30); and shards-init with
+  `timed.patch` (over `preload.patch`), whose runs read what their devices cost it
+  (n=30 each). Memory: `venus/run-memory.sh 10 gpu-venus:1`, in a home that restores
+  templates and in one that boots every run. Apple M5 Max, 128 GiB, macOS 26.4.1,
+  2026-10-13; kernel 6.18.48, b3f3b948641f; each A/B's 1-minute load below.
+- **A GPU's runs.** Paired median differences, NEW less OLD, with 95% intervals, µs:
+
+  | OLD → NEW (`--gpus all` unless said) | load | wall p50, OLD → NEW | wall | command |
+  |---|---|---|---|---|
+  | booted every run → restored | 7.0 | 98,803 → 7,591 | −90,577 [−91,588, −89,534] | +301 [+256, +337] |
+  | restored: no GPU → the GPU | 7.6 | 6,445 → 7,410 | +920 [+792, +994] | +889 [+829, +930] |
+  | restored: no device → `--device /dev/fuse` | 32.7 | 8,741 → 10,368 | +1,614 [+1,272, +2,017] | +1,234 [+1,167, +1,311] |
+
+  Booted, p90 112,030, p99 129,751, max 136,082; restored, 13,004, 31,714 and 35,150.
+  The GPU's cost in a restored run is in its command, the restore itself the same
+  (outside the command, +8 [−97, +106]); and a device costs as much without the GPU.
+- **Where a device's cost was.** `device-setup`, µs, p50 (p90, max):
+
+  | step | each round, one VM | first round, fresh VMs |
+  |---|---|---|
+  | walk of /sys/dev's 104 uevents (init's lookup) | 229.3 (251.5, 652.3) | 581.8 (633.2, 657.3) |
+  | fstatat(2) of the node in a devtmpfs held open | 0.3 (0.5, 11.2) | 1.5 (1.9, 3.3) |
+  | the filter compiled | 3.2 (4.2, 10.6) | 6.0 (6.8, 7.5) |
+  | loaded (BPF_PROG_LOAD) | 84.2 (112.0, 508.5) | 69.2 (89.4, 122.9) |
+  | attached in the default's place | 1.2 (1.6, 8.1) | 2.4 (3.6, 3.7) |
+
+- **Found by name (D152).** D150's init against one that finds a run's devices in its
+  devtmpfs, `--device /dev/fuse` in both, load 9.5: wall −954 [−1,124, −780], command
+  −774 [−796, −761] (p50 1,913 → 1,137). With it, against a run with no device, load
+  6.8: wall +94 [+10, +160], command +106 [+90, +115]; the GPU, load 5.2: wall +235
+  [+107, +359], command +194 [+180, +209]. With the gpu kernel recorded, so that both
+  arms boot it, the GPU against `--device /dev/fuse`, load 12.2: command +52 [+21, +83].
+- **A GPU's filter loaded before its template is saved** (`preload.patch`) against
+  none, load 12.4: wall −2 [−105, +90], command −1 [−19, +15]. In place (`timed.patch`,
+  restored runs, µs, p50): the lookup and the nodes made 17.0, the GPU's filter compiled
+  7.4, a load of it 100.3, the loaded one attached 9.2; a fuse device's load 113.5. The
+  load is off a GPU run's path: its command waits on something else as long.
+- **Memory**, MiB p50 (n=10 each), footprint and RSS as each run ends: restored, the
+  GPU's `true` 18.4 and 39.4, a run without the GPU 16.5 and 31.5; `vulkaninfo
+  --summary` 51.4 and 132.3, and 46.5 and 118.7 (the guest's lavapipe). Booted, the gpu
+  kernel in both: 94.8 and 106.3, 92.2 and 97.5; `vulkaninfo` 120.6 and 190.5, 115.7 and
+  177.1.
+- **Consequence.** A run given the GPU restores a template of its own (D150): 91 ms
+  sooner at the median, and 76 MiB less footprint. A run's devices are found by name in
+  the VM's devtmpfs (D152): a device costs a run 0.1 ms where it cost 1.2. A GPU's filter
+  is loaded as its run comes, which costs the run nothing measured.

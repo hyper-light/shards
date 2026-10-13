@@ -10,6 +10,8 @@ use shards_abi::{CONTROL_PAGE, control, marker};
 pub fn main() {
     if let Err(e) = mount(c"devtmpfs", c"/dev", c"devtmpfs") {
         let _ = writeln!(io::stderr(), "shards-init: mounting /dev: {e}");
+    } else if let Err(e) = crate::devices::keep_devtmpfs() {
+        let _ = writeln!(io::stderr(), "shards-init: keeping /dev: {e}");
     }
     if let Err(e) = mark(marker::INIT_STARTED) {
         let _ = writeln!(io::stderr(), "shards-init: control page: {e}");

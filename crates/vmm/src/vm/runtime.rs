@@ -799,6 +799,7 @@ mod tests {
                 nested: false,
                 hotplug_mib: 0,
                 reporting: false,
+                gpu: None,
             },
             arch: Vec::new(),
             devices: Vec::new(),

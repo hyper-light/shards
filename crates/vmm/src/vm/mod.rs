@@ -403,6 +403,8 @@ fn machine_config(cfg: &Config) -> Result<crate::snapshot::MachineConfig, String
         nested: cfg.nested,
         hotplug_mib: cfg.hotplug_mib,
         reporting: cfg.reporting,
+        // Its window's length, once the machine has its renderer (aarch64.rs `build`).
+        gpu: None,
     })
 }
 
@@ -478,8 +480,9 @@ pub struct Config {
     #[cfg(unix)]
     pub join_share: Option<&'static crate::devices::virtio::fs::Slot>,
     /// A virtio-gpu device, Vulkan through Venus (D144), rendered in this process: a VM
-    /// process built with the renderer (`shards-vm-gpu`) has one. Its VM is never
-    /// snapshotted: its GPU's state is its host driver's, which no snapshot holds.
+    /// process built with the renderer (`shards-vm-gpu`) has one. Its snapshot is refused
+    /// once the guest has made a context or a resource, which are its host driver's and no
+    /// snapshot holds; a template is saved before any (D150).
     pub gpu: bool,
 }
 
@@ -701,6 +704,7 @@ mod tests {
             nested: false,
             hotplug_mib: 0,
             reporting: false,
+            gpu: None,
         }
     }
 

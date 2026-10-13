@@ -805,6 +805,22 @@ impl VirtioDevice for Gpu {
         }
     }
 
+    /// The guest's contexts and resources are its host driver's, which no snapshot holds
+    /// (D144): one taken once the guest made any is refused. A template is saved before
+    /// it has, and its restores' renderers start as its did (D150).
+    fn unsaved(&self) -> Option<String> {
+        let Some(served) = &self.served else {
+            return Some("the GPU's worker holds its state".into());
+        };
+        (!served.contexts.is_empty() || !served.resources.is_empty() || !served.held.is_empty()).then(|| {
+            format!(
+                "the GPU's contexts and resources are its host driver's ({} contexts, {} resources)",
+                served.contexts.len(),
+                served.resources.len()
+            )
+        })
+    }
+
     fn pause(&mut self) -> Vec<QueueState> {
         if let Some(queues) = self.stop() {
             self.paused = Some(queues);
@@ -1173,6 +1189,40 @@ mod tests {
             ask(&mut s, &mem, 1, plain(cmd::RESOURCE_CREATE_BLOB, 1), &inside).1,
             resp::ERR_INVALID_RESOURCE_ID
         );
+    }
+
+    /// A GPU is saved while its guest has made nothing of its host driver's, its capsets
+    /// asked for as its driver probes; it is refused once a context or a resource is
+    /// made, and saved again once they are gone (D150).
+    #[test]
+    fn a_gpu_is_saved_only_with_nothing_of_its_host_drivers() {
+        let (served, _log, mem) = served();
+        let mut gpu = Gpu::new(served);
+        fn s(gpu: &mut Gpu) -> &mut Served {
+            gpu.served.as_deref_mut().unwrap()
+        }
+        ask(s(&mut gpu), &mem, 3, plain(cmd::GET_CAPSET_INFO, 0), &le(&[0]));
+        ask(s(&mut gpu), &mem, 3, plain(cmd::GET_CAPSET, 0), &le(&[4, 0]));
+        assert_eq!(gpu.unsaved(), None);
+        assert_eq!(context(s(&mut gpu), &mem, 1, 4), resp::OK_NODATA);
+        assert!(
+            gpu.unsaved()
+                .is_some_and(|why| why.contains("(1 contexts, 0 resources)")),
+            "{:?}",
+            gpu.unsaved()
+        );
+        assert_eq!(blob(s(&mut gpu), &mem, 1, 5, 16384), resp::OK_NODATA);
+        let (_, kind, _) = ask(s(&mut gpu), &mem, 5, plain(cmd::CTX_DESTROY, 1), &[]);
+        assert_eq!(kind, resp::OK_NODATA);
+        assert!(
+            gpu.unsaved()
+                .is_some_and(|why| why.contains("(0 contexts, 1 resources)")),
+            "{:?}",
+            gpu.unsaved()
+        );
+        let (_, kind, _) = ask(s(&mut gpu), &mem, 3, plain(cmd::RESOURCE_UNREF, 1), &le(&[5, 0]));
+        assert_eq!(kind, resp::OK_NODATA);
+        assert_eq!(gpu.unsaved(), None);
     }
 
     /// A blob maps into the window at a place of whole host pages, over nothing mapped,

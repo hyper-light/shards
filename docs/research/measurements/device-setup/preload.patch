@@ -1,0 +1,128 @@
+PM M223: shards-init with a GPU's runs' device filter loaded before its template is saved,
+so that a run given the GPU attaches it without loading it. Applied over D152's init
+(`git apply`), built (`cargo build -p shards-init --profile guest --target
+aarch64-unknown-linux-musl`) and recorded in one home (`shards guest use --init`), it was
+compared with D152's init in another by build-ab/ab.py, `AB_FLAGS="--rm --gpus all"`: the
+runs took no less time, and shards does not do it.
+
+--- a/crates/init/src/devices.rs
++++ b/crates/init/src/devices.rs
+@@ -31,13 +31,16 @@
+ const UDEV_MODES: [(&str, u32); 6] = [
+     // A GPU's render node: `KERNEL=="renderD*"`, MODE group-render-mode, 0666 by default
+     // (meson_options.txt); a guest has one GPU at most (D144).
+-    ("/dev/dri/renderD128", 0o666),
++    (RENDER_NODE, 0o666),
+     ("/dev/fuse", 0o666),
+     ("/dev/net/tun", 0o666),
+     ("/dev/vsock", 0o666),
+     ("/dev/vfio/vfio", 0o666),
+     ("/dev/rfkill", 0o664),
+ ];
++
++/// A GPU's render node, the VM's one GPU's (D144).
++const RENDER_NODE: &str = "/dev/dri/renderD128";
+ 
+ /// The mode udev's default rules give the VM's device at `path`, where they give one.
+ pub fn udev_mode(path: &str) -> Option<u32> {
+@@ -600,10 +603,13 @@
+             };
+         };
+         let program = dc::compile(rules)?;
+-        match default {
+-            Some((bytes, _)) if *bytes == program => Ok(()),
+-            Some((_, fd)) => attach(&program, cgroup, Some(fd)).map(drop),
+-            None => attach(&program, cgroup, None).map(drop),
++        match (default, GPU.get()) {
++            (Some((bytes, _)), _) if *bytes == program => Ok(()),
++            (Some((_, fd)), Some((gpu, loaded))) if *gpu == program => {
++                attach_loaded(loaded, cgroup, Some(fd))
++            }
++            (Some((_, fd)), _) => attach(&program, cgroup, Some(fd)).map(drop),
++            (None, _) => attach(&program, cgroup, None).map(drop),
+         }
+     }
+ }
+@@ -689,14 +695,35 @@
+ /// a run's own replaces it.
+ static DEFAULT: std::sync::OnceLock<Filter> = std::sync::OnceLock::new();
+ 
++/// A GPU's runs' filter, loaded before any snapshot where the VM has a GPU: Docker's
++/// rules and its render node's, which every run given the GPU has.
++static GPU: std::sync::OnceLock<Filter> = std::sync::OnceLock::new();
++
+ /// Confines `cgroup` to Docker's default devices (moby's rules and runc's own), as boot
+ /// does before any snapshot: every run with those rules, the most, then has them already.
++/// Where the VM has a GPU, its runs' filter is loaded too ([`GPU`]).
+ pub fn confine_by_default(cgroup: &str) -> Result<(), String> {
+     let program = dc::compile(&dc::container(&[], &[], false))?;
+     let fd = attach(&program, cgroup, None)?;
+     DEFAULT
+         .set((program, fd))
+-        .map_err(|_| "the default device filter, twice".to_string())
++        .map_err(|_| "the default device filter, twice".to_string())?;
++    if let [node] = vm_devices(RENDER_NODE).as_slice() {
++        let given = dc::Given {
++            path: node.path.clone(),
++            rule: Rule {
++                kind: node.kind,
++                major: i64::from(node.major),
++                minor: i64::from(node.minor),
++                perms: dc::RWM,
++                allow: true,
++            },
++        };
++        let program = dc::compile(&dc::container(&[given], &[], false))?;
++        let fd = load(&program)?;
++        let _ = GPU.set((program, fd));
++    }
++    Ok(())
+ }
+ 
+ /// Confines a joiner's cgroup (D119) to Docker's default devices, as the workload's is:
+@@ -750,10 +777,19 @@
+ /// (BPF_F_REPLACE, as runc replaces its one old program), as cilium/ebpf and runc say it
+ /// fails. Its descriptor.
+ fn attach(program: &[u8], cgroup: &str, replacing: Option<&OwnedFd>) -> Result<OwnedFd, String> {
+-    let err = |what: &str| {
+-        let e = io::Error::last_os_error().raw_os_error().unwrap_or(libc::EIO);
+-        format!("{what}: {}", shards_cmdline::go::linux_error(e))
+-    };
++    let prog = load(program)?;
++    attach_loaded(&prog, cgroup, replacing)?;
++    Ok(prog)
++}
++
++/// The last error, in Go's words, after `what`.
++fn err(what: &str) -> String {
++    let e = io::Error::last_os_error().raw_os_error().unwrap_or(libc::EIO);
++    format!("{what}: {}", shards_cmdline::go::linux_error(e))
++}
++
++/// `program` loaded (BPF_PROG_LOAD), as a cgroup's device filter: its descriptor.
++fn load(program: &[u8]) -> Result<OwnedFd, String> {
+     let license = CString::new(dc::LICENSE).map_err(|_| "a NUL in the license")?;
+     let load = ProgLoad {
+         prog_type: BPF_PROG_TYPE_CGROUP_DEVICE,
+@@ -777,7 +813,11 @@
+     }
+     let prog = i32::try_from(prog).map_err(|_| "a descriptor out of range")?;
+     // SAFETY: the descriptor bpf(2) just returned, ours alone.
+-    let prog = unsafe { <OwnedFd as std::os::fd::FromRawFd>::from_raw_fd(prog) };
++    Ok(unsafe { <OwnedFd as std::os::fd::FromRawFd>::from_raw_fd(prog) })
++}
++
++/// Loaded program `prog` attached to `cgroup` as [`attach`] attaches one.
++fn attach_loaded(prog: &OwnedFd, cgroup: &str, replacing: Option<&OwnedFd>) -> Result<(), String> {
+     let dir = std::fs::OpenOptions::new()
+         .read(true)
+         .custom_flags(libc::O_DIRECTORY)
+@@ -809,7 +849,7 @@
+             "failed to call BPF_PROG_ATTACH (BPF_CGROUP_DEVICE, BPF_F_ALLOW_MULTI)",
+         ));
+     }
+-    Ok(prog)
++    Ok(())
+ }
+ 
+ /// The program `fd` taken off `cgroup` (runc's closer: BPF_PROG_DETACH).

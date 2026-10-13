@@ -212,16 +212,19 @@ struct Assembled {
     mpidrs: Vec<u64>,
     /// Each pmem region's guest address and length.
     pmem: Vec<(u64, u64)>,
+    /// The GPU's window's length, where it has a GPU.
+    gpu_window: Option<u64>,
 }
 
 /// `vsock` is the host side of the vsock device `config` asks for; `gpu`, whether it has a
-/// GPU, which a booted machine alone may.
+/// GPU, and its window's length: as its renderer offers, where `Some(0)`, a boot's; that
+/// long, a restore's, where its renderer offers at least as much (D150).
 fn assemble(
     memory: &Arc<GuestMemory>,
     config: &MachineConfig,
     console: Console,
     hosts: super::Hosts<'_>,
-    gpu: bool,
+    gpu: Option<u64>,
 ) -> Result<Assembled, String> {
     let ram = ram_bytes(config.memory_mib)?;
     // Memory to plug, where the guest has any, starts at the first GiB boundary after RAM
@@ -240,12 +243,18 @@ fn assemble(
     // A GPU's window, at the first GiB boundary past all of that, as long as the renderer
     // says (D144).
     let gpu = match gpu {
-        false => None,
-        true => {
-            let (renderer, len) = super::gpu_renderer()?;
-            let len = len
+        None => None,
+        Some(saw) => {
+            let (renderer, offers) = super::gpu_renderer()?;
+            let offers = offers
                 .checked_next_multiple_of(PAGE)
                 .ok_or("the GPU's window overflows the address space")?;
+            if offers < saw {
+                return Err(format!(
+                    "this host's GPU offers {offers} bytes of memory the host can map, where the snapshot's guest saw {saw}"
+                ));
+            }
+            let len = if saw == 0 { offers } else { saw };
             let at = top
                 .checked_next_multiple_of(GIB)
                 .ok_or("the GPU's window overflows the address space")?;
@@ -316,6 +325,7 @@ fn assemble(
         .map_err(|e| e.to_string())?;
     debug!("GIC created");
 
+    let gpu_window = gpu.as_ref().map(|(_, region)| region.len);
     let gpu = match gpu {
         None => None,
         Some((renderer, region)) => {
@@ -386,13 +396,14 @@ fn assemble(
         virtio,
         mpidrs,
         pmem,
+        gpu_window,
     })
 }
 
 /// A machine that boots `cfg.kernel`.
 pub fn build(cfg: &Config) -> Result<Machine, String> {
     let ram = ram_bytes(cfg.memory_mib)?;
-    let config = super::machine_config(cfg)?;
+    let mut config = super::machine_config(cfg)?;
     let memory = Arc::new(super::guest_memory(&ram_ranges(ram)?, &config, plug_at(ram))?);
     // A bad kernel fails the start before any hypervisor state exists. The image is copied,
     // not mapped: a mapped image stalled boots for up to 1 s (platform-measurements M16).
@@ -411,10 +422,9 @@ pub fn build(cfg: &Config) -> Result<Machine, String> {
         #[cfg(unix)]
         join_share: cfg.join_share,
     };
-    if cfg.gpu && cfg.snapshot.is_some() {
-        return Err("a VM with a GPU is not snapshotted: its GPU's state is its host driver's (D144)".into());
-    }
-    let a = assemble(&memory, &config, cfg.console, hosts, cfg.gpu)?;
+    let a = assemble(&memory, &config, cfg.console, hosts, cfg.gpu.then_some(0))?;
+    // Its GPU's window as the guest sees it, which a snapshot keeps for a restore (D150).
+    config.gpu = a.gpu_window;
     a.vmgenid.write_new_id()?;
 
     let fdt_addr = layout::DRAM_BASE + ram - boot::FDT_MAX;
@@ -552,7 +562,7 @@ pub fn restore(
         &snap.config,
         plug_at(ram),
     )?);
-    let a = assemble(&memory, &snap.config, console, hosts, false)?;
+    let a = assemble(&memory, &snap.config, console, hosts, snap.config.gpu)?;
     let guest: Vec<(u64, u64)> = memory
         .regions()
         .map(|(gpa, _, len)| (gpa, len as u64))

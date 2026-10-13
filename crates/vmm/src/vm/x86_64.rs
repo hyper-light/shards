@@ -266,9 +266,9 @@ fn assemble(
     config: &MachineConfig,
     console: Console,
     hosts: super::Hosts<'_>,
-    gpu: bool,
+    gpu: Option<u64>,
 ) -> Result<Assembled, String> {
-    if gpu {
+    if gpu.is_some() {
         return Err("a GPU is given on macOS hosts alone so far (D144)".into());
     }
     let ram = config
@@ -406,7 +406,7 @@ pub fn build(cfg: &Config) -> Result<Machine, String> {
         #[cfg(unix)]
         join_share: cfg.join_share,
     };
-    let a = assemble(&memory, &config, cfg.console, hosts, cfg.gpu)?;
+    let a = assemble(&memory, &config, cfg.console, hosts, cfg.gpu.then_some(0))?;
     let tables = acpi::build(cfg.vcpus, &a.virtio)?.blobs;
     let access = memory.access().map_err(|e| e.to_string())?;
     for (addr, bytes) in tables {
@@ -478,7 +478,7 @@ pub fn restore(
         &snap.config,
         plug_at(ram),
     )?);
-    let a = assemble(&memory, &snap.config, console, hosts, false)?;
+    let a = assemble(&memory, &snap.config, console, hosts, snap.config.gpu)?;
     let guest: Vec<(u64, u64)> = memory
         .regions()
         .map(|(gpa, _, len)| (gpa, len as u64))

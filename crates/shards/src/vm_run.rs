@@ -40,11 +40,12 @@ const RUN_USAGE: &str = "usage: shards run --kernel PATH [--initrd PATH | --init
             much in all as it asks for more through shards' control page, plugged by a
             virtio-mem device. Whole 2 MiB blocks. A snapshot keeps none plugged.
   --gpu: this Mac's GPU, Vulkan through Venus, on the guest's render node
-         /dev/dri/renderD128, where its kernel has DRM's virtio-gpu driver. Not with
-         --snapshot-dir: a GPU's state is its host driver's.
+         /dev/dri/renderD128, where its kernel has DRM's virtio-gpu driver. With
+         --snapshot-dir, a snapshot is refused once the guest has made a context or a
+         resource of the GPU's: those are its host driver's, which no snapshot holds.
   Console escape: Ctrl-A x stops the VM.";
 
-const RESTORE_USAGE: &str = "usage: shards restore DIR [--hold] [--vsock PATH] [--no-console] [--backing PATH[:ro]]... [--snapshot-dir DIR [--snapshot-then stop|resume]]
+const RESTORE_USAGE: &str = "usage: shards restore DIR [--hold] [--vsock PATH] [--no-console] [--gpu] [--backing PATH[:ro]]... [--snapshot-dir DIR [--snapshot-then stop|resume]]
        shards restore DIR [--hold] [--backing PATH[:ro]]... [WORKLOAD OPTIONS] -- COMMAND [ARG...]
        shards restore DIR --warm FD [--backing PATH[:ro]]...
   Resumes the VM in snapshot directory DIR. With a COMMAND, DIR is a template saved by
@@ -61,6 +62,7 @@ const RESTORE_USAGE: &str = "usage: shards restore DIR [--hold] [--vsock PATH] [
           of the client it is for, from the daemon on the Unix socket at descriptor FD.
   --backing: a file the snapshot restores against, read-only with :ro: given, a snapshot
              naming any other is refused, its state being what the VM saving it wrote.
+  --gpu: restore in the GPU's VM process, which a snapshot of a VM with a GPU needs.
   Console escape: Ctrl-A x stops the VM.";
 
 /// An argument that is text, with an error naming it if it is not UTF-8. Paths are taken
@@ -289,9 +291,6 @@ fn parse_run(args: impl Iterator<Item = OsString>) -> Result<Run, String> {
     if cfg.nested && common.snapshot_dir.is_some() {
         return Err("--nested with --snapshot-dir: a VM with virtualization of its own is not snapshotted, its EL2 state not saved".into());
     }
-    if cfg.gpu && common.snapshot_dir.is_some() {
-        return Err("--gpu with --snapshot-dir: a VM with a GPU is not snapshotted, its GPU's state its host driver's".into());
-    }
     if let Some(max) = memory_max {
         cfg.hotplug_mib = max
             .checked_sub(cfg.memory_mib)
@@ -368,6 +367,9 @@ fn parse_restore(args: impl Iterator<Item = OsString>) -> Result<Restore, String
         match flag.as_str() {
             "-h" | "--help" => return Err(String::new()),
             "--hold" => hold = true,
+            // The GPU's VM process restores it, which a snapshot of a machine with a GPU
+            // needs (D150): the binary is chosen by it, the GPU by the snapshot.
+            "--gpu" => {}
             "--backing" => backing.push(disk(value("--backing")?)),
             "--warm" => {
                 let fd = text(value("--warm")?)?;

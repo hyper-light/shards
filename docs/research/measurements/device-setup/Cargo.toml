@@ -1,0 +1,12 @@
+[package]
+name = "device-setup"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+# Its own workspace: built against a checkout's shards-devcgroup, not with shards'.
+[workspace]
+
+[dependencies]
+libc = "0.2"
+shards-devcgroup = { path = "../../../../crates/devcgroup" }

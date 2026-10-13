@@ -752,7 +752,7 @@ fn privileged() -> io::Result<()> {
     remount(c"/sys", libc::MS_REMOUNT | base)?;
     remount(c"/sys", libc::MS_REMOUNT | libc::MS_BIND | base)?;
     remount(c"/sys/fs/cgroup", libc::MS_REMOUNT | libc::MS_BIND | base)?;
-    for n in crate::devices::vm_devices() {
+    for n in crate::devices::vm_devices("/dev") {
         if std::fs::symlink_metadata(&n.path).is_ok() {
             continue;
         }
