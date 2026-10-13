@@ -210,6 +210,61 @@ fn limits_said(out: &str) -> std::collections::BTreeMap<String, Vec<u64>> {
         .collect()
 }
 
+/// A builder's steps see the memory it may have, as a build on a host sees the host's,
+/// where its kernel reports what it may still plug (D149): `MemTotal` is all of it, not the
+/// 512 MiB it boots with, and one allocation of three times that is made, which the
+/// kernel's overcommit heuristic refused while it counted only memory plugged.
+#[test]
+fn a_builders_steps_see_the_memory_it_may_have() {
+    if cannot_run_vms() {
+        return;
+    }
+    let (image, _) = served();
+    let home = TempDir::new("build-report-home");
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", kernel().as_os_str()),
+        ("SHARDS_INIT", guest_init().as_os_str()),
+        ("SHARDS_BUILD_MEMORY", "2560".as_ref()),
+    ];
+    let build = |name: &str, step: &str| {
+        let ctx = context(name, &format!("FROM {image}\nRUN {step}\n"));
+        let built = run_shards_env(
+            &["build"],
+            &["--progress=plain", "--no-cache", ctx.to_str().unwrap()],
+            &env,
+            TIMEOUT,
+        );
+        let shown = format!("--- stdout\n{}\n--- stderr\n{}", built.stdout, built.stderr);
+        (built, shown)
+    };
+    let (seen, shown) = build(
+        "build-report-ctx",
+        r#"["/bin/testguest", "stat", "/proc/sys/vm/pluggable_kbytes", "/proc/meminfo"]"#,
+    );
+    if seen.stderr.contains("/proc/sys/vm/pluggable_kbytes missing") {
+        println!("SKIP: this guest kernel reports none of the memory it may plug (D149)");
+        return;
+    }
+    assert_eq!(seen.status, Some(0), "{shown}");
+    let total_kib: u64 = seen
+        .stderr
+        .split_once("MemTotal:")
+        .and_then(|(_, after)| after.split_whitespace().next())
+        .and_then(|n| n.parse().ok())
+        .unwrap_or_else(|| panic!("no MemTotal: {shown}"));
+    assert!(
+        total_kib > 2048 << 10 && total_kib <= 2560 << 10,
+        "MemTotal {total_kib} kB of a builder of 2560 MiB: {shown}"
+    );
+    let (once, shown) = build(
+        "build-report-once-ctx",
+        r#"["/bin/testguest", "alloc-once", "1536"]"#,
+    );
+    assert_eq!(once.status, Some(0), "{shown}");
+    assert!(once.stderr.contains("allocated 1536 at once"), "{shown}");
+}
+
 /// A builder boots with little memory and is given more as its build needs it (D133): a
 /// step that touches three times what it booted with succeeds, and so does a layer twice
 /// as large; its steps' limits, those the kernel sizes by its memory, are at least a guest's
@@ -299,6 +354,12 @@ fn a_builders_memory_is_plugged_as_its_build_needs_it() {
     assert!(
         over.stderr
             .contains("did not complete successfully: exit code: 137"),
+        "{shown}"
+    );
+    // Why, in the kernel's words, which a builder's log keeps nowhere a build shows.
+    assert!(
+        over.stderr
+            .contains("the kernel ended a process: Out of memory: Killed process"),
         "{shown}"
     );
 }

@@ -7823,7 +7823,18 @@ revision before comparing a changed API/implementation.
   | shards, `-m 1g` | 524 | 1,085 | 1,024 |
   | Docker, `-m 1g` | 524 | 64,186 | 1,024 |
 
+- **Builds and one large allocation.** A `RUN` step printing Node's `heap_size_limit` and
+  `os.totalmem()`, then `dd bs=1G count=1` (scratchpad Dockerfile, `FROM node:22-alpine`):
+  shards' builder (its most 64 GiB, half the host's) before D149, 259 MiB and 472 MiB, and
+  dd "out of memory"; after, 4,144 MiB and 65,496 MiB, and dd's gigabyte copied; `docker
+  build` (shards-dind), 4,144 MiB and 64,186 MiB, and copied. In a run without `-m`,
+  `dd bs=1G count=2` (debian:bookworm-slim): before, "memory exhausted by input buffer of
+  size 1073741824 bytes"; after, copied, `CommitLimit` 67,089,944 kB (half the memory the
+  run may reach, as a host of it would have), as Docker's copies it (its VM's
+  `overcommit_memory` is 1).
 - **Consequence (D149).** Node sizes its heap as Docker's in each case: without `-m` by
   the memory the run may have (its host's), where M220's sized it by the 243 MiB it booted
-  with (259). A run with `-m` reports its own memory, where Docker's reports its host's:
-  the smaller of the two that Node takes is the limit either way.
+  with (259); in a build step, by its builder's most. A run with `-m` reports its own
+  memory, where Docker's reports its host's: the smaller of the two that Node takes is the
+  limit either way. One allocation larger than what is plugged so far is made, as on a
+  host of the memory the guest may reach.

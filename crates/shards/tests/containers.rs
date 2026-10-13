@@ -10271,6 +10271,11 @@ fn a_runs_memory_grows_as_its_workload_needs_it() {
                     && kib(&meminfo, "MemAvailable:") > pluggable,
                 "{pluggable} kB pluggable: {meminfo}"
             );
+            // One allocation of four times what it boots with, which the kernel's
+            // overcommit heuristic refused while it counted only memory plugged.
+            let r = run(&["--rm"], &["alloc-once", "1024"]);
+            assert_eq!(r.status, Some(0), "{r}");
+            assert!(r.stdout.contains("allocated 1024 at once"), "{r}");
             // A run with a limit reports its own memory, its template's most to plug
             // lowered to its own, none, as it begins.
             let (pluggable, meminfo) = reported(&["--rm", "-m", "1g"]).unwrap();

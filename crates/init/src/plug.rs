@@ -109,11 +109,7 @@ pub fn plug() -> io::Result<Option<Plug>> {
 /// A run's microVM's memory to plug, where its VM has a device for it (D148): its
 /// processes past init held in `cgroup`.
 pub fn run_plug(cgroup: &'static str) -> io::Result<Option<Plug>> {
-    let plug = plug_of(cgroup, "the microVM's")?;
-    if let Some(plug) = &plug {
-        let _ = RUN_BOOT.set(plug.boot);
-    }
-    Ok(plug)
+    plug_of(cgroup, "the microVM's")
 }
 
 /// The kernel's log, opened where init's /dev still has it, before its root's own /dev
@@ -126,14 +122,14 @@ pub fn kmsg() -> io::Result<OwnedFd> {
         .map_err(|e| err(format!("/dev/kmsg: {e}")))
 }
 
-/// MemTotal as a run's microVM booted, none of its memory plugged (D148): kept in a
-/// template, as its restores boot from it.
-static RUN_BOOT: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+/// MemTotal as the VM booted, none of its memory plugged (D148): a builder's, or a run's
+/// microVM's, kept in a template, as its restores boot from it.
+static BOOT: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
 
-/// The memory a run's microVM may still have plugged, in bytes (D148): its run's own most,
-/// less what is plugged already; none where it plugs none.
+/// The memory the VM may still have plugged, in bytes: a builder's most, or a run's own
+/// (D148), less what is plugged already; none where it plugs none.
 pub fn still_pluggable() -> u64 {
-    let Some(&boot) = RUN_BOOT.get() else {
+    let Some(&boot) = BOOT.get() else {
         return 0;
     };
     let Ok(most) = control_read64(control::HOTPLUG_SIZE) else {
@@ -147,8 +143,10 @@ fn plug_of(cgroup: &'static str, whose: &'static str) -> io::Result<Option<Plug>
     if most == 0 {
         return Ok(None);
     }
+    let boot = mem_total()?;
+    let _ = BOOT.set(boot);
     Ok(Some(Plug {
-        boot: mem_total()?,
+        boot,
         most,
         cgroup,
         whose,
@@ -354,7 +352,7 @@ impl Plug {
         }
         if pid == 0 {
             drop(notes);
-            grow(*self, &events, &said);
+            grow(*self, &events, &said, Kills::Said);
         }
         drop((events, said));
         std::fs::write(format!("{BUILD}/init/cgroup.procs"), "1")
@@ -382,7 +380,7 @@ impl Plug {
             )));
         }
         if pid == 0 {
-            grow(*self, &events, &notes);
+            grow(*self, &events, &notes, Kills::Logged);
         }
         let _ = GROWER.set(pid);
         Ok(())
@@ -391,11 +389,11 @@ impl Plug {
 
 /// The guest kernel's report of the memory the host may still plug (D149):
 /// `vm.pluggable_kbytes`, which shards' kernel adds to the total, free and available memory
-/// sysinfo(2) and /proc/meminfo report. Written, the memory the host may plug from then
-/// on; read, what of it is still to be plugged, which the kernel lowers as memory is
-/// plugged (resources/kernel/patches/0004). Opened by init before /proc/sys is masked,
-/// where the kernel has it, and kept: a template's restores write through it, and its
-/// grower reads it.
+/// sysinfo(2) and /proc/meminfo report, and to what its overcommit heuristic counts.
+/// Written, the memory the host may plug from then on; read, what of it is still to be
+/// plugged, which the kernel lowers as memory is plugged (resources/kernel/patches/0004).
+/// Opened by init before /proc/sys is masked, where the kernel has it, and kept: a
+/// template's restores write through it, and its grower reads it.
 static PLUGGABLE: std::sync::OnceLock<std::fs::File> = std::sync::OnceLock::new();
 
 /// Opens [`PLUGGABLE`], where the kernel has it: one without reports what it has alone.
@@ -688,6 +686,107 @@ fn come(plug: Plug, asked: u64, g: &mut impl Grows) -> Came {
     Came::Stalled(last.saturating_sub(plug.boot))
 }
 
+/// What a grower does with the kernel's words as it ends a process of its cgroup for want
+/// of memory.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Kills {
+    /// Says them in its notes: a builder's, whose kernel's log goes nowhere a build shows.
+    Said,
+    /// Leaves them in the kernel's log, which its notes are.
+    Logged,
+}
+
+/// How many of `cgroup`'s processes the kernel has ended for want of memory, by any of its
+/// OOM killers (`memory.events` `oom_kill`, cgroup-v2.rst).
+fn oom_kills(cgroup: &str) -> u64 {
+    std::fs::read_to_string(format!("{cgroup}/memory.events"))
+        .ok()
+        .and_then(|e| {
+            e.lines()
+                .find_map(|l| l.strip_prefix("oom_kill ")?.trim().parse().ok())
+        })
+        .unwrap_or(0)
+}
+
+/// What the kernel said as it last ended a process for want of memory (/dev/kmsg): what
+/// asked for memory and of what order, the memory free in each zone against its
+/// watermarks, and what it ended (mm/oom_kill.c `dump_header`, `__oom_kill_process`;
+/// mm/show_mem.c `show_free_areas`). It counts the kill before it says what it ended, so
+/// where that is not said yet, it is read again, for as long as [`STALLED`].
+fn oom_said() -> Vec<String> {
+    let began = Instant::now();
+    loop {
+        let said = oom_report();
+        if said.iter().any(|l| ended(l)) || began.elapsed() > STALLED {
+            return said;
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}
+
+/// Whether a line of the kernel's says what it ended: "Out of memory: Killed process", or
+/// "Memory cgroup out of memory: Killed process" (mm/oom_kill.c `oom_kill_process`).
+fn ended(line: &str) -> bool {
+    line.to_ascii_lowercase()
+        .contains("out of memory: killed process")
+}
+
+/// The lines of the kernel's last report of a process ended for want of memory, as
+/// [`oom_said`] relays them.
+fn oom_report() -> Vec<String> {
+    let Ok(file) = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK)
+        .open("/dev/kmsg")
+    else {
+        return Vec::new();
+    };
+    let mut records = Vec::new();
+    let mut record = [0u8; 8192];
+    loop {
+        // Each read is one record, `level,seq,usecs,flags;text`; past the last, EAGAIN.
+        let n = match (&file).read(&mut record) {
+            Ok(0) => break,
+            Ok(n) => n,
+            // Records overwritten before they were read: the next is the oldest kept.
+            Err(e) if e.raw_os_error() == Some(libc::EPIPE) => continue,
+            Err(_) => break,
+        };
+        records.push(String::from_utf8_lossy(record.get(..n).unwrap_or_default()).into_owned());
+    }
+    oom_lines(&records)
+}
+
+/// Of the kernel's log `records`, the last report of a process ended for want of memory:
+/// each of its lines that says why, one line each, as a record of several lines is
+/// (`\x0a`, Documentation/ABI/testing/dev-kmsg).
+fn oom_lines(records: &[String]) -> Vec<String> {
+    let mut said = Vec::new();
+    for record in records {
+        let Some((_, text)) = record.split_once(';') else {
+            continue;
+        };
+        let text = text.lines().next().unwrap_or_default();
+        if text.contains("invoked oom-killer") {
+            said.clear();
+        }
+        if text.contains("invoked oom-killer")
+            || text.starts_with("active_anon:")
+            || (text.starts_with("Node ") && text.contains(" min:"))
+            || text.starts_with("oom-kill:")
+            || ended(text)
+        {
+            said.push(
+                text.replace("\\x0a", " ")
+                    .split_whitespace()
+                    .collect::<Vec<_>>()
+                    .join(" "),
+            );
+        }
+    }
+    said
+}
+
 /// The process that grows the builder's memory, in the root cgroup: each time the build
 /// reaches its `memory.high`, it asks for as much again as the builder has, whole memory
 /// blocks, up to what it may have (growth by doubling, which keeps what is plugged ahead
@@ -697,10 +796,11 @@ fn come(plug: Plug, asked: u64, g: &mut impl Grows) -> Came {
 /// memory asked for stops coming (`come`), the build's `memory.high` goes too, and says
 /// so: the build runs on what the builder has, as one of that size would, and is ended
 /// by the kernel where it needs more, never held at a `memory.high` nothing raises (D137).
-fn grow(plug: Plug, events: &OwnedFd, notes: &OwnedFd) -> ! {
+fn grow(plug: Plug, events: &OwnedFd, notes: &OwnedFd, kills: Kills) -> ! {
     // SAFETY: fcntl(2) of a descriptor this process owns.
     unsafe { libc::fcntl(notes.as_raw_fd(), libc::F_SETFL, libc::O_NONBLOCK) };
     let cgroup = plug.cgroup;
+    let mut killed = oom_kills(cgroup);
     let lift = || {
         if let Err(e) = std::fs::write(format!("{cgroup}/memory.high"), "max") {
             say(notes, plug.whose, &format!("{cgroup}/memory.high: {e}"));
@@ -723,6 +823,17 @@ fn grow(plug: Plug, events: &OwnedFd, notes: &OwnedFd) -> ! {
             lift();
             // SAFETY: _exit(2) of this child alone.
             unsafe { libc::_exit(1) };
+        }
+        // A process the kernel ended for want of memory: why, in its words, said where the
+        // build shows it, as the kernel's log of a builder is not kept.
+        let now_killed = oom_kills(cgroup);
+        if now_killed > killed {
+            killed = now_killed;
+            if kills == Kills::Said {
+                for line in oom_said() {
+                    say(notes, plug.whose, &format!("the kernel ended a process: {line}"));
+                }
+            }
         }
         let (Some(current), Some(high_now)) = (
             number(&format!("{cgroup}/memory.current")),
@@ -843,6 +954,47 @@ mod tests {
         );
         assert_eq!(memory.unwrap(), [384 * MIB, 178 * MIB]);
         assert_eq!((reports.next(), reads.next()), (None, None));
+    }
+
+    /// What the kernel said as it ended a step's process for want of memory, as a builder of
+    /// 1 GiB said it (6.18.48, a step growing past all it may have): of its last report,
+    /// the lines that say why, each one line.
+    #[test]
+    fn a_kill_is_said_in_the_kernels_words() {
+        let records: Vec<String> = [
+            "3,900,1000,-;awk invoked oom-killer: gfp_mask=0x140dca(GFP_HIGHUSER_MOVABLE|__GFP_ZERO|__GFP_COMP), order=0, oom_score_adj=0",
+            "3,901,1000,-;Out of memory: Killed process 150 (awk) total-vm:900000kB, anon-rss:890000kB, file-rss:0kB, shmem-rss:0kB, UID:0 pgtables:1800kB oom_score_adj:0",
+            "6,902,2000,-;virtio_mem virtio5: plugged size: 0x20000000",
+            "3,1001,3000,-;awk invoked oom-killer: gfp_mask=0x140dca(GFP_HIGHUSER_MOVABLE|__GFP_ZERO|__GFP_COMP), order=0, oom_score_adj=0",
+            "4,1002,3000,-;Mem-Info:",
+            "4,1003,3000,-;active_anon:279 inactive_anon:236227 isolated_anon:0\\x0a active_file:0 inactive_file:0 isolated_file:0\\x0a free:815 free_pcp:5968 free_cma:0",
+            "4,1004,3000,-;Node 0 active_anon:1116kB inactive_anon:944896kB all_unreclaimable? yes",
+            "4,1005,3000,-;Node 0 DMA free:3220kB boost:0kB min:1920kB low:2400kB high:2880kB managed:483492kB free_pcp:17300kB",
+            "4,1006,3000,-;lowmem_reserve[]: 0 0 0 0",
+            "4,1007,3000,-;Node 0 Normal free:40kB boost:0kB min:2080kB low:2604kB high:3128kB managed:524288kB free_pcp:6572kB",
+            "4,1008,3000,-;Node 0 DMA: 5*4kB (UME) 2*8kB (M) = 36kB",
+            "6,1009,3000,-;Tasks state (memory values in pages):",
+            "6,1010,3000,-;[    199]     0   199   236855   236120  1888        0 awk",
+            "6,1011,3000,-;oom-kill:constraint=CONSTRAINT_NONE,nodemask=(null),cpuset=0,mems_allowed=0,global_oom,task_memcg=/build/steps/0,task=awk,pid=199,uid=0",
+            "3,1012,3000,-;Out of memory: Killed process 199 (awk) total-vm:947420kB, anon-rss:944496kB, file-rss:576kB, shmem-rss:0kB, UID:0 pgtables:1888kB oom_score_adj:0",
+        ]
+        .iter()
+        .map(|r| r.to_string())
+        .collect();
+        assert_eq!(
+            oom_lines(&records),
+            [
+                "awk invoked oom-killer: gfp_mask=0x140dca(GFP_HIGHUSER_MOVABLE|__GFP_ZERO|__GFP_COMP), order=0, oom_score_adj=0",
+                "active_anon:279 inactive_anon:236227 isolated_anon:0 active_file:0 inactive_file:0 isolated_file:0 free:815 free_pcp:5968 free_cma:0",
+                "Node 0 DMA free:3220kB boost:0kB min:1920kB low:2400kB high:2880kB managed:483492kB free_pcp:17300kB",
+                "Node 0 Normal free:40kB boost:0kB min:2080kB low:2604kB high:3128kB managed:524288kB free_pcp:6572kB",
+                "oom-kill:constraint=CONSTRAINT_NONE,nodemask=(null),cpuset=0,mems_allowed=0,global_oom,task_memcg=/build/steps/0,task=awk,pid=199,uid=0",
+                "Out of memory: Killed process 199 (awk) total-vm:947420kB, anon-rss:944496kB, file-rss:576kB, shmem-rss:0kB, UID:0 pgtables:1888kB oom_score_adj:0",
+            ]
+        );
+        assert!(ended(
+            "Memory cgroup out of memory: Killed process 7 (cc1) total-vm:1kB"
+        ));
     }
 
     /// Memory that comes is asked for once, and raises the build's `memory.high`.

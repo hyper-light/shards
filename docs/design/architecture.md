@@ -3607,7 +3607,13 @@ D136.
 A run without a limit grows to its host's memory (D148), but its guest reported only what
 had been plugged: 243 MiB as it boots, where a container's is its host's, by which Node.js
 sized its heap at 259 MiB where Docker's is 4,144 (PM M220). sysinfo(2) and /proc/meminfo
-take total and free memory from `si_meminfo()`, which counts what the kernel has.
+take total and free memory from `si_meminfo()`, which counts what the kernel has. A
+builder, booted with 512 MiB and grown to half its host's, was the same: a step's Node.js
+sized its heap at 259 MiB, where `docker build`'s sizes it at 4,144. And the kernel's
+overcommit heuristic (`overcommit_memory` 0, mm/util.c `__vm_enough_memory`) refuses any
+one allocation larger than the memory it has: `dd bs=1G` failed in a run and in a step
+("memory exhausted"), where Docker's makes it (its VM's `overcommit_memory` is 1, and a
+Linux host's heuristic counts the host's memory).
 
 - **The kernel's report** (resources/kernel/patches/0004): `vm.pluggable_kbytes`. Written,
   the memory the host may plug from then on; the kernel keeps what the guest has with
@@ -3615,11 +3621,16 @@ take total and free memory from `si_meminfo()`, which counts what the kernel has
   that less the memory each read, to the total, free and available memory they report.
   Memory plugged lowers what they add as it raises what they read, in the same read, so
   the total reported is what the guest may reach at every moment; read, the sysctl gives
-  what the reports add then. Nothing in the kernel's own accounting counts it:
-  `si_meminfo()` is as it was; only the two reports add it.
+  what the reports add then. The overcommit heuristic and the commit limit
+  (`vm_commit_limit`) count it too, read once with the memory it is measured against
+  (`si_reachable_pages`): an allocation a guest could hold once its memory is plugged is
+  made, as on a host of that memory, and one past all of it is refused. Nothing in the
+  kernel's own accounting of the memory it has counts it: `si_meminfo()` and
+  `totalram_pages()` are as they were.
 - **Init** opens it before /proc/sys is masked, where the kernel has it, and writes it
   once as a template boots (its host's) and once as each run comes (the run's own most
-  less what is plugged), before anything of the run grows its memory. A first draft had
+  less what is plugged), before anything of the run grows its memory; a builder's, once,
+  as it boots (its most). A first draft had
   init lower it as its grower plugged memory: the total reported then overstated what
   the guest may reach for as long as each block took to be seen, and two processes
   wrote it.
@@ -3634,16 +3645,21 @@ take total and free memory from `si_meminfo()`, which counts what the kernel has
 - **Result (PM M221):** a run without `-m` reports its host's memory less the 37 MiB its
   kernel keeps (`MemTotal` 134,179,892 kB of the host's 134,217,728), and Node.js sizes
   its heap at 4,144 MiB, as Docker's; with `-m 8g` and `-m 1g`, at 2,096 and 524, as
-  Docker's.
+  Docker's; in a build step, at 4,144, as `docker build`'s. `dd bs=1G` copies its
+  gigabytes in a run and in a step, as in Docker.
 
 Tested: in crates/init, on Linux, `memory_is_read_without_the_kernels_report` (the report
 read again where memory came between); on real microVMs,
 `a_runs_memory_grows_as_its_workload_needs_it` (with the report: a gigabyte allocated where
-the first draft's grower, counting the report as memory had, let it be ended, and a run's
+the first draft's grower, counting the report as memory had, let it be ended; a run's
 `MemTotal` its host's, what may still be plugged free and available too, and a run with
-`-m`'s none). Mutation-checked: init counting the report as memory it has (the workload
-ended, 137), and a run not lowering its template's report as it begins (a run with
-`-m 1g` reporting its host's memory): each fails the test.
+`-m`'s none; and a gigabyte in one allocation) and `a_builders_steps_see_the_memory_it_may_have`
+(a step's `MemTotal` its builder's most, and 1.5 GiB in one allocation, of a builder
+booted with 512 MiB). Mutation-checked: init counting the report as memory it has (the
+workload ended, 137); a run not lowering its template's report as it begins (a run with
+`-m 1g` reporting its host's memory); a builder not reporting (a step's `MemTotal` 483,556
+kB); and the kernel's overcommit heuristic not counting the report (the first draft's
+kernel: each one allocation refused): each fails a test.
 
 ### D148. A run's memory, plugged as its workload needs it (virtio-mem)
 
@@ -4149,7 +4165,18 @@ cause of that build's stall left no evidence, so what the next one leaves is fix
     builder has, as one booted with that much would, and is ended by the kernel where it
     needs more (exit code 137, as one past all its memory is), never held;
   - what the grower says is said in the output of the step that runs as it says it,
-    through a pipe init relays as that step's stderr.
+    through a pipe init relays as that step's stderr;
+  - and where the kernel ends a process of the build for want of memory (any of its OOM
+    killers, `memory.events` `oom_kill`), the grower says why in the kernel's words, of
+    its last report (/dev/kmsg): what asked and of what order, each zone's free memory
+    against its watermarks, and what it ended. A builder's kernel log goes nowhere a
+    build shows, and a kernel build whose compilers were ended at 20 s (once in four,
+    under a host's load of 23) said only "Killed signal terminated program cc1"; a run's
+    is told as Docker tells it (`State.OOMKilled`, the `oom` event). Tested by
+    `a_kill_is_said_in_the_kernels_words` (crates/init, a builder's real report from
+    6.18.48) and `a_builders_memory_is_plugged_as_its_build_needs_it` (the step past all
+    its builder's memory says the kernel's "Out of memory: Killed process"); the relay off
+    fails the latter.
 - **A killed build left its builder running.** A builder's VM ended as its build dropped
   it, or as its guest powered off on its connection closing: a killed `shards build` drops
   nothing, and a guest held at its memory hears nothing. The VM now ends as its `--attach`

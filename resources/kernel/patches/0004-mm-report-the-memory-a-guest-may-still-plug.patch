@@ -8,16 +8,23 @@ memory it sees and its cgroup's limit, at 259 MiB in a guest booted with
 256 MiB that may grow to 128 GiB, where a container on the host sizes it
 at 4,144 MiB.
 
+The kernel's overcommit heuristic refuses, likewise, any allocation larger
+than what has been plugged so far: a guest booted with 512 MiB that may
+grow to 64 GiB refuses dd's 1 GiB buffer, which a host of that memory
+allocates.
+
 Add vm.pluggable_kbytes, which the guest's own agent sets to the memory the
 host may plug from then on, and add what is still to be plugged to the
-total, free and available memory that sysinfo(2) and /proc/meminfo report.
+total, free and available memory that sysinfo(2) and /proc/meminfo report,
+and to the memory the overcommit heuristic and the commit limit count.
 The kernel keeps the memory the guest has with all of it plugged, its
 memory as the sysctl is written and the amount written, and each report
 adds the difference from the memory that report read: memory plugged, or
 unplugged, changes what it adds as it changes the memory it reads, so that
 the total reported stays what the guest may reach, and reading the sysctl
 gives what the reports add then. Nothing in the kernel's own accounting
-counts it: si_meminfo() is as it was, and only the two reports add it.
+counts it: si_meminfo() and totalram_pages() are as they were, and only
+the two reports and the two overcommit checks add it.
 
 --- a/Documentation/admin-guide/sysctl/vm.rst
 +++ b/Documentation/admin-guide/sysctl/vm.rst
@@ -29,7 +36,7 @@ counts it: si_meminfo() is as it was, and only the two reports add it.
  - stat_interval
  - stat_refresh
  - numa_stat
-@@ -917,8 +918,23 @@
+@@ -917,8 +918,27 @@
  mark based on the low watermark for the zone and the number of local
  online CPUs.  If the user writes '0' to this sysctl, it will revert to
  this default behavior.
@@ -42,10 +49,14 @@ counts it: si_meminfo() is as it was, and only the two reports add it.
 +in kilobytes: reported by sysinfo(2) and /proc/meminfo as total, free and
 +available memory, so that a program that sizes itself by the memory it sees
 +sizes itself by what the guest may have, not only by what has been plugged so
-+far. The guest's own agent writes how much the host may plug from then on; the
-+kernel lowers it as memory is plugged and raises it as memory is unplugged, so
-+that reading it gives what may still be plugged, the amount the reports add.
-+Nothing in the kernel's own accounting counts it.
++far; and counted as memory the guest has by the overcommit heuristic and the
++commit limit (overcommit_memory, overcommit_ratio), so that an allocation the
++guest could hold once its memory is plugged is not refused for being larger
++than what has been plugged so far. The guest's own agent writes how much the
++host may plug from then on; the kernel lowers it as memory is plugged and
++raises it as memory is unplugged, so that reading it gives what may still be
++plugged, the amount the reports add. Nothing in the kernel's own accounting of
++the memory it has counts it.
  
 +The default value is 0.
  
@@ -80,11 +91,12 @@ counts it: si_meminfo() is as it was, and only the two reports add it.
  
 --- a/include/linux/mm.h
 +++ b/include/linux/mm.h
-@@ -3515,6 +3515,7 @@
+@@ -3515,6 +3515,8 @@
  }
  extern long si_mem_available(void);
  extern void si_meminfo(struct sysinfo * val);
 +extern unsigned long si_pluggable_pages(unsigned long totalram);
++extern unsigned long si_reachable_pages(void);
  extern void si_meminfo_node(struct sysinfo *val, int nid);
  
  extern __printf(3, 4)
@@ -119,7 +131,7 @@ counts it: si_meminfo() is as it was, and only the two reports add it.
  #include <linux/vmstat.h>
  
  #include "internal.h"
-@@ -71,7 +72,66 @@
+@@ -71,7 +72,74 @@
  	return available;
  }
  EXPORT_SYMBOL_GPL(si_mem_available);
@@ -140,6 +152,14 @@ counts it: si_meminfo() is as it was, and only the two reports add it.
 +	unsigned long ceiling = READ_ONCE(pluggable_ceiling);
 +
 +	return ceiling > totalram ? ceiling - totalram : 0;
++}
++
++/* The memory the guest has and may still have plugged, in pages. */
++unsigned long si_reachable_pages(void)
++{
++	unsigned long totalram = totalram_pages();
++
++	return totalram + si_pluggable_pages(totalram);
 +}
 +
 +/*
@@ -186,3 +206,23 @@ counts it: si_meminfo() is as it was, and only the two reports add it.
  void si_meminfo(struct sysinfo *val)
  {
  	val->totalram = totalram_pages();
+--- a/mm/util.c
++++ b/mm/util.c
+@@ -879,7 +879,7 @@
+ 	if (sysctl_overcommit_kbytes)
+ 		allowed = sysctl_overcommit_kbytes >> (PAGE_SHIFT - 10);
+ 	else
+-		allowed = ((totalram_pages() - hugetlb_total_pages())
++		allowed = ((si_reachable_pages() - hugetlb_total_pages())
+ 			   * sysctl_overcommit_ratio / 100);
+ 	allowed += total_swap_pages;
+ 
+@@ -941,7 +941,7 @@
+ 		return 0;
+ 
+ 	if (sysctl_overcommit_memory == OVERCOMMIT_GUESS) {
+-		if (pages > totalram_pages() + total_swap_pages)
++		if (pages > si_reachable_pages() + total_swap_pages)
+ 			goto error;
+ 		return 0;
+ 	}
