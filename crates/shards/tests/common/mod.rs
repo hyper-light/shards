@@ -219,9 +219,9 @@ pub fn nested_kernel() -> Option<&'static Path> {
     K.get_or_init(|| {
         (ARCH == "aarch64").then(|| {
             fetch(&Artifact {
-                name: "Image-6.18.48-aarch64-kvm-b3f3b948641f",
-                url: "https://github.com/hyper-light/shards/releases/download/kernel-6.18.48-b3f3b948641f/Image-6.18.48-aarch64-kvm",
-                sha256: "89a48e06e78bdd098ef384ae6a1db16842f430ec83908238747e34aa025f5d9e",
+                name: "Image-6.18.48-aarch64-kvm-5bcf70b135d5",
+                url: "https://github.com/hyper-light/shards/releases/download/kernel-6.18.48-5bcf70b135d5/Image-6.18.48-aarch64-kvm",
+                sha256: "99642875933b506a4b3f753d719b111a233f4e0aa258c4fcf1c060262b779ef9",
             })
         })
     })
