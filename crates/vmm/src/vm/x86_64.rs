@@ -28,7 +28,9 @@ const GIB: u64 = 1 << 30;
 const MIN_MEMORY_MIB: u64 = 128;
 /// Kernel parameters the machine depends on: restart through the i8042 (the device the
 /// VMM emulates), and no PCI bus (there is none yet).
-const MACHINE_CMDLINE: &str = "reboot=k pci=off";
+const MACHINE_CMDLINE: &str = "reboot=k";
+/// Where the machine has no PCI bus, its kernel looks for none (D153).
+const NO_PCI_CMDLINE: &str = "pci=off";
 
 /// How the vCPUs start.
 #[derive(Debug)]
@@ -235,6 +237,8 @@ struct Assembled {
     power: Arc<Power>,
     vmgenid: VmGenId,
     virtio: Vec<acpi::MmioDevice>,
+    /// Its PCI host bridge, where it has a PCI bus (D153).
+    pci: Option<acpi::PciBridge>,
 }
 
 /// Where the memory to plug starts (D133): above 4 GiB, at the first GiB boundary after
@@ -267,6 +271,7 @@ fn assemble(
     console: Console,
     hosts: super::Hosts<'_>,
     gpu: Option<u64>,
+    pci_test: bool,
 ) -> Result<Assembled, String> {
     if gpu.is_some() {
         return Err("a GPU is given on macOS hosts alone so far (D144)".into());
@@ -370,6 +375,26 @@ fn assemble(
             gsi: layout::GSI_GED,
         }),
     );
+    // A PCI bus (D153), its test function at 00:01.0, BAR 0 the first of its window.
+    let pci = match pci_test {
+        false => None,
+        true => {
+            use crate::devices::pci;
+            let (edu, registers) = pci::edu::Edu::new(layout::PCI_MEM32)?;
+            let functions: Vec<(u8, Arc<dyn pci::PciFunction>)> = vec![(1 << 3, edu)];
+            bus.mmio.insert(
+                layout::PCI_ECAM,
+                pci::ECAM_SIZE,
+                Arc::new(pci::Ecam::new(functions)),
+            )?;
+            bus.mmio
+                .insert(layout::PCI_MEM32, pci::edu::BAR_SIZE, registers)?;
+            Some(acpi::PciBridge {
+                ecam: (layout::PCI_ECAM, pci::ECAM_SIZE),
+                mem32: (layout::PCI_MEM32, layout::PCI_MEM32_SIZE),
+            })
+        }
+    };
     Ok(Assembled {
         vm,
         bus,
@@ -378,6 +403,7 @@ fn assemble(
         power,
         vmgenid,
         virtio,
+        pci,
     })
 }
 
@@ -406,8 +432,15 @@ pub fn build(cfg: &Config) -> Result<Machine, String> {
         #[cfg(unix)]
         join_share: cfg.join_share,
     };
-    let a = assemble(&memory, &config, cfg.console, hosts, cfg.gpu.then_some(0))?;
-    let tables = acpi::build(cfg.vcpus, &a.virtio)?.blobs;
+    let a = assemble(
+        &memory,
+        &config,
+        cfg.console,
+        hosts,
+        cfg.gpu.then_some(0),
+        cfg.pci_test,
+    )?;
+    let tables = acpi::build(cfg.vcpus, &a.virtio, a.pci.as_ref())?.blobs;
     let access = memory.access().map_err(|e| e.to_string())?;
     for (addr, bytes) in tables {
         access.write(addr, &bytes).map_err(|e| e.to_string())?;
@@ -425,7 +458,10 @@ pub fn build(cfg: &Config) -> Result<Machine, String> {
                 .map_err(|e| e.to_string())?,
         ),
     };
-    let cmdline = format!("{} {MACHINE_CMDLINE}", cfg.cmdline);
+    let cmdline = match a.pci {
+        Some(_) => format!("{} {MACHINE_CMDLINE}", cfg.cmdline),
+        None => format!("{} {MACHINE_CMDLINE} {NO_PCI_CMDLINE}", cfg.cmdline),
+    };
     let boot_state = boot::write_boot_state(
         &memory,
         kernel.entry,
@@ -434,6 +470,7 @@ pub fn build(cfg: &Config) -> Result<Machine, String> {
             ram,
             initrd,
             rsdp: layout::RSDP,
+            pci_ecam: a.pci.map(|p| p.ecam),
         },
     )
     .map_err(|e| e.to_string())?;
@@ -478,7 +515,8 @@ pub fn restore(
         &snap.config,
         plug_at(ram),
     )?);
-    let a = assemble(&memory, &snap.config, console, hosts, snap.config.gpu)?;
+    // A machine with a PCI bus saves no snapshot, so a restored one has none.
+    let a = assemble(&memory, &snap.config, console, hosts, snap.config.gpu, false)?;
     let guest: Vec<(u64, u64)> = memory
         .regions()
         .map(|(gpa, _, len)| (gpa, len as u64))

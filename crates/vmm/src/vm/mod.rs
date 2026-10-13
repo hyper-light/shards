@@ -484,6 +484,10 @@ pub struct Config {
     /// once the guest has made a context or a resource, which are its host driver's and no
     /// snapshot holds; a template is saved before any (D150).
     pub gpu: bool,
+    /// A PCI bus with a test function on it, QEMU's edu's identification and liveness
+    /// registers (D153): what tests read to show that the bus reaches the VMM. A machine
+    /// with a PCI bus saves no snapshot.
+    pub pci_test: bool,
 }
 
 /// The host side of a VM's virtio-vsock device.
@@ -544,6 +548,7 @@ impl Config {
             hotplug_mib: 0,
             reporting: false,
             gpu: false,
+            pci_test: false,
         }
     }
 }

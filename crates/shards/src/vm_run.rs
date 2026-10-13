@@ -18,7 +18,7 @@ use shards_vmm::vm::{
 use crate::spec::Options;
 use crate::terminal::RawTerminal;
 
-const RUN_USAGE: &str = "usage: shards run --kernel PATH [--initrd PATH | --init PATH] [--cmdline STR] [--cpus N] [--memory MIB] [--memory-max MIB] [--disk PATH[:ro]]... [--pmem PATH]... [--vsock PATH] [--nested] [--gpu] [--reporting] [--no-console] [--snapshot-dir DIR [--snapshot-then stop|resume]]
+const RUN_USAGE: &str = "usage: shards run --kernel PATH [--initrd PATH | --init PATH] [--cmdline STR] [--cpus N] [--memory MIB] [--memory-max MIB] [--disk PATH[:ro]]... [--pmem PATH]... [--vsock PATH] [--nested] [--gpu] [--reporting] [--pci-test] [--no-console] [--snapshot-dir DIR [--snapshot-then stop|resume]]
        shards run --kernel PATH --init SHARDS-INIT --rootfs IMAGE [OPTIONS] [WORKLOAD OPTIONS] -- COMMAND [ARG...]
        shards run --kernel PATH --init SHARDS-INIT --rootfs IMAGE --snapshot-dir DIR [OPTIONS]
   --pmem: a read-only virtio-pmem device backed by PATH: /dev/pmem0, pmem1, ... in order.
@@ -43,6 +43,9 @@ const RUN_USAGE: &str = "usage: shards run --kernel PATH [--initrd PATH | --init
          /dev/dri/renderD128, where its kernel has DRM's virtio-gpu driver. With
          --snapshot-dir, a snapshot is refused once the guest has made a context or a
          resource of the GPU's: those are its host driver's, which no snapshot holds.
+  --pci-test: a PCI bus with a test function at 00:01.0, the identification and liveness
+              registers of QEMU's edu device in its BAR 0, for testing the bus. Not with
+              --snapshot-dir.
   Console escape: Ctrl-A x stops the VM.";
 
 const RESTORE_USAGE: &str = "usage: shards restore DIR [--hold] [--vsock PATH] [--no-console] [--gpu] [--backing PATH[:ro]]... [--snapshot-dir DIR [--snapshot-then stop|resume]]
@@ -270,6 +273,7 @@ fn parse_run(args: impl Iterator<Item = OsString>) -> Result<Run, String> {
             "--pmem" => cfg.pmem.push(PathBuf::from(value("--pmem")?)),
             "--nested" => cfg.nested = true,
             "--gpu" => cfg.gpu = true,
+            "--pci-test" => cfg.pci_test = true,
             "--reporting" => cfg.reporting = true,
             "--rootfs" => rootfs = Some(PathBuf::from(value("--rootfs")?)),
             "--warm" => {
@@ -288,6 +292,9 @@ fn parse_run(args: impl Iterator<Item = OsString>) -> Result<Run, String> {
         }
     }
     common.check_workload()?;
+    if cfg.pci_test && common.snapshot_dir.is_some() {
+        return Err("--pci-test with --snapshot-dir: a machine with a PCI bus is not snapshotted, its functions' state their devices' own".into());
+    }
     if cfg.nested && common.snapshot_dir.is_some() {
         return Err("--nested with --snapshot-dir: a VM with virtualization of its own is not snapshotted, its EL2 state not saved".into());
     }

@@ -197,6 +197,16 @@ pub struct Machine<'a> {
     /// own calls to EL2 are its own, so PSCI is reached by SMC; the GIC's virtualization
     /// interface raises its maintenance interrupt.
     pub el2: bool,
+    /// A PCI host bridge, where the machine has a PCI bus (D153).
+    pub pci: Option<PciBridge>,
+}
+
+/// A PCI host bridge (D153): its ECAM window and the 32-bit memory window its functions'
+/// BARs are placed in, each an address and a length.
+#[derive(Debug, Clone, Copy)]
+pub struct PciBridge {
+    pub ecam: (u64, u64),
+    pub mem32: (u64, u64),
 }
 
 const PHANDLE_GIC: u32 = 1;
@@ -253,6 +263,11 @@ pub fn build_fdt(m: &Machine<'_>) -> Result<Vec<u8>, FdtError> {
     if let Some((start, len)) = m.initrd {
         f.prop_u64s("linux,initrd-start", &[start]);
         f.prop_u64s("linux,initrd-end", &[start + len]);
+    }
+    // The BARs where the VMM placed them, kept (drivers/pci/of.c,
+    // of_pci_check_probe_only).
+    if m.pci.is_some() {
+        f.prop_u32("linux,pci-probe-only", 1);
     }
     f.end_node();
 
@@ -326,6 +341,35 @@ pub fn build_fdt(m: &Machine<'_>) -> Result<Vec<u8>, FdtError> {
     f.prop_str("clock-names", "apb_pclk");
     f.end_node();
 
+    // Linux Documentation/devicetree/bindings/pci/host-generic-pci.yaml: ECAM's window,
+    // bus 0, and one range, 32-bit memory (phys.hi 0x02000000) at the same addresses in
+    // both spaces.
+    if let Some(p) = m.pci {
+        let (base, len) = p.mem32;
+        f.begin_node(&format!("pcie@{:x}", p.ecam.0));
+        f.prop_str("compatible", "pci-host-ecam-generic");
+        f.prop_str("device_type", "pci");
+        f.prop_u64s("reg", &[p.ecam.0, p.ecam.1]);
+        f.prop_cells("bus-range", &[0, 0]);
+        f.prop_u32("#address-cells", 3);
+        f.prop_u32("#size-cells", 2);
+        f.prop_cells(
+            "ranges",
+            &[
+                0x0200_0000,
+                (base >> 32) as u32,
+                base as u32,
+                (base >> 32) as u32,
+                base as u32,
+                (len >> 32) as u32,
+                len as u32,
+            ],
+        );
+        f.prop_u32("linux,pci-domain", 0);
+        f.prop_null("dma-coherent");
+        f.end_node();
+    }
+
     for d in m.virtio {
         f.begin_node(&format!("virtio_mmio@{:x}", d.base));
         f.prop_str("compatible", "virtio,mmio");
@@ -392,6 +436,7 @@ mod tests {
             virtio: &virtio,
             rng_seed: [7; 64],
             el2: false,
+            pci: None,
         };
         let root = decode::parse(&build_fdt(&m).unwrap());
         assert_eq!((root.u32("#address-cells"), root.u32("#size-cells")), (2, 2));
@@ -433,5 +478,24 @@ mod tests {
         assert_eq!(at_el2.path("psci").str("method"), "smc");
         assert_eq!(at_el2.path("intc@8000000").cells("interrupts"), vec![1, 9, 4]);
         assert_eq!(&at_el2.path("timer").cells("interrupts")[9..12], &[1, 10, 4]);
+        // No PCI bus but where the machine has one (D153): pci-host-generic's node, its
+        // ECAM window and 32-bit memory range, and the BARs kept where they were placed.
+        assert!(!root.children.keys().any(|name| name.starts_with("pcie@")));
+        assert!(!root.path("chosen").props.contains_key("linux,pci-probe-only"));
+        let pci = PciBridge {
+            ecam: (layout::PCI_ECAM, 1 << 20),
+            mem32: (layout::PCI_MEM32, layout::PCI_MEM32_SIZE),
+        };
+        let with_pci = decode::parse(&build_fdt(&Machine { pci: Some(pci), ..m }).unwrap());
+        let bridge = with_pci.path("pcie@3f000000");
+        assert_eq!(bridge.str("compatible"), "pci-host-ecam-generic");
+        assert_eq!(bridge.str("device_type"), "pci");
+        assert_eq!(bridge.cells("reg"), vec![0, 0x3f00_0000, 0, 0x10_0000]);
+        assert_eq!(bridge.cells("bus-range"), vec![0, 0]);
+        assert_eq!(
+            bridge.cells("ranges"),
+            vec![0x0200_0000, 0, 0x1000_0000, 0, 0x1000_0000, 0, 0x2f00_0000]
+        );
+        assert_eq!(with_pci.path("chosen").u32("linux,pci-probe-only"), 1);
     }
 }

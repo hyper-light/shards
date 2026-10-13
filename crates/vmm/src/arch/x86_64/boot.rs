@@ -243,6 +243,9 @@ pub struct ZeroPage {
     pub ram: u64,
     pub initrd: Option<(u64, u64)>,
     pub rsdp: u64,
+    /// A PCI bus's ECAM window, reserved in the e820 map: Linux uses MMCONFIG only where
+    /// the firmware reserved it (arch/x86/pci/mmconfig-shared.c, `pci_mmcfg_reserved`).
+    pub pci_ecam: Option<(u64, u64)>,
 }
 
 /// `struct boot_params` for a raw vmlinux, built from zero (arch/x86/include/uapi/asm/
@@ -269,7 +272,10 @@ pub fn zero_page(z: &ZeroPage) -> Result<[u8; 4096], BootError> {
         put(0x21c, &len.to_le_bytes())?; // hdr.ramdisk_size
     }
     put(0x228, &(layout::CMDLINE as u32).to_le_bytes())?; // hdr.cmd_line_ptr
-    let map = e820(z.ram);
+    let mut map = e820(z.ram);
+    if let Some((base, len)) = z.pci_ecam {
+        map.push((base, len, E820_RESERVED));
+    }
     put(0x1e8, &[map.len() as u8])?; // e820_entries
     for (i, (addr, size, kind)) in map.iter().enumerate() {
         let at = 0x2d0 + 20 * i;
@@ -431,6 +437,7 @@ mod tests {
             ram: 256 << 20,
             initrd: Some((0x400_0000, 0x1234)),
             rsdp: layout::RSDP,
+            pci_ecam: None,
         })
         .unwrap();
         assert_eq!(

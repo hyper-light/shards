@@ -28,6 +28,11 @@ pub mod layout {
     /// does (hv::Vcpu::prefetch): 1 GiB between the devices and RAM that nothing else uses.
     pub const PREFETCH: u64 = 0x4000_0000;
     pub const DRAM_BASE: u64 = 0x8000_0000;
+    /// A PCI bus's 32-bit memory window, where its functions' BARs are placed, and its
+    /// ECAM window above it, bus 0 alone (D153): QEMU virt's places.
+    pub const PCI_MEM32: u64 = 0x1000_0000;
+    pub const PCI_MEM32_SIZE: u64 = 0x2f00_0000;
+    pub const PCI_ECAM: u64 = PCI_MEM32 + PCI_MEM32_SIZE;
     /// The first 2 MiB of DRAM hold data the VMM writes for guest drivers that map it as
     /// a device (VMGenID). Left out of the devicetree's memory node, so Linux can
     /// ioremap it; the kernel loads above it, 2 MiB aligned (Firecracker's layout:

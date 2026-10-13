@@ -214,6 +214,8 @@ struct Assembled {
     pmem: Vec<(u64, u64)>,
     /// The GPU's window's length, where it has a GPU.
     gpu_window: Option<u64>,
+    /// Its PCI host bridge, where it has a PCI bus (D153).
+    pci: Option<boot::PciBridge>,
 }
 
 /// `vsock` is the host side of the vsock device `config` asks for; `gpu`, whether it has a
@@ -225,6 +227,7 @@ fn assemble(
     console: Console,
     hosts: super::Hosts<'_>,
     gpu: Option<u64>,
+    pci_test: bool,
 ) -> Result<Assembled, String> {
     let ram = ram_bytes(config.memory_mib)?;
     // Memory to plug, where the guest has any, starts at the first GiB boundary after RAM
@@ -377,6 +380,25 @@ fn assemble(
         control.on_mac(net.mac);
     }
     bus.insert(layout::CONTROL, 0x1000, control.clone())?;
+    // A PCI bus (D153), its test function at 00:01.0, BAR 0 the first of its window.
+    let pci = match pci_test {
+        false => None,
+        true => {
+            use crate::devices::pci;
+            let (edu, registers) = pci::edu::Edu::new(layout::PCI_MEM32)?;
+            let functions: Vec<(u8, Arc<dyn pci::PciFunction>)> = vec![(1 << 3, edu)];
+            bus.insert(
+                layout::PCI_ECAM,
+                pci::ECAM_SIZE,
+                Arc::new(pci::Ecam::new(functions)),
+            )?;
+            bus.insert(layout::PCI_MEM32, pci::edu::BAR_SIZE, registers)?;
+            Some(boot::PciBridge {
+                ecam: (layout::PCI_ECAM, pci::ECAM_SIZE),
+                mem32: (layout::PCI_MEM32, layout::PCI_MEM32_SIZE),
+            })
+        }
+    };
     let vmgenid = VmGenId::new(
         memory.clone(),
         layout::VMGENID,
@@ -397,6 +419,7 @@ fn assemble(
         mpidrs,
         pmem,
         gpu_window,
+        pci,
     })
 }
 
@@ -422,7 +445,14 @@ pub fn build(cfg: &Config) -> Result<Machine, String> {
         #[cfg(unix)]
         join_share: cfg.join_share,
     };
-    let a = assemble(&memory, &config, cfg.console, hosts, cfg.gpu.then_some(0))?;
+    let a = assemble(
+        &memory,
+        &config,
+        cfg.console,
+        hosts,
+        cfg.gpu.then_some(0),
+        cfg.pci_test,
+    )?;
     // Its GPU's window as the guest sees it, which a snapshot keeps for a restore (D150).
     config.gpu = a.gpu_window;
     a.vmgenid.write_new_id()?;
@@ -449,6 +479,7 @@ pub fn build(cfg: &Config) -> Result<Machine, String> {
         virtio: &a.virtio,
         rng_seed,
         el2: cfg.nested,
+        pci: a.pci,
     })
     .map_err(|e| e.to_string())?;
     memory
@@ -562,7 +593,8 @@ pub fn restore(
         &snap.config,
         plug_at(ram),
     )?);
-    let a = assemble(&memory, &snap.config, console, hosts, snap.config.gpu)?;
+    // A machine with a PCI bus saves no snapshot, so a restored one has none.
+    let a = assemble(&memory, &snap.config, console, hosts, snap.config.gpu, false)?;
     let guest: Vec<(u64, u64)> = memory
         .regions()
         .map(|(gpa, _, len)| (gpa, len as u64))

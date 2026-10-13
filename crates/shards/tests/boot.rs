@@ -57,6 +57,30 @@ fn boots_to_root_mount_without_a_root_device() {
     );
 }
 
+/// A PCI bus (D153): the guest's pci-host-generic finds the test function, QEMU edu's IDs
+/// at 00:01.0, and the test guest reaches its BAR's registers, mapped from sysfs.
+#[test]
+fn a_pci_bus_reaches_its_function() {
+    if cannot_run_vms() {
+        return;
+    }
+    let (k, g) = (kernel().to_str().unwrap(), test_guest().to_str().unwrap());
+    let r = vm_run(
+        &[
+            "--kernel",
+            k,
+            "--init",
+            g,
+            "--pci-test",
+            "--cmdline",
+            "console=ttyS0 panic=-1 shards_test=pci",
+        ],
+        TIMEOUT,
+    );
+    assert!(r.stdout.contains("SHARDS-TEST PASS"), "{r}");
+    assert_eq!(r.status, Some(0), "{r}");
+}
+
 /// Secondary CPUs come up through the firmware: PSCI CPU_ON on arm64, INIT/SIPI on x86.
 #[test]
 fn brings_up_every_vcpu() {

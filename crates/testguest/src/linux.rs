@@ -32,6 +32,7 @@ pub fn main() {
             "hotplug" => hotplug(),
             "snapshot-plug" => snapshot_plug(),
             "limits" => limits(),
+            "pci" => pci(),
             other => Err(format!("unknown test {other:?}")),
         },
     );
@@ -1013,6 +1014,58 @@ fn work() -> Result<(), String> {
         .map_err(|e| format!("shards_work_mib: {e}"))?;
     let hash = shards_testguest::pattern_hash(1, mib << 20);
     let _ = writeln!(io::stdout(), "SHARDS-TEST HASH {hash:016x}");
+    Ok(())
+}
+
+/// A PCI bus's test function (D153): QEMU edu's IDs at 0000:00:01.0, and through its BAR
+/// 0, mapped from sysfs as a driver in user space maps one, its identification register
+/// and its liveness check, which reads back the inverse of what was written.
+fn pci() -> Result<(), String> {
+    const DIR: &str = "/sys/bus/pci/devices/0000:00:01.0";
+    let read = |f: &str| {
+        std::fs::read_to_string(format!("{DIR}/{f}"))
+            .map(|s| s.trim().to_string())
+            .map_err(|e| format!("{DIR}/{f}: {e}"))
+    };
+    let (vendor, device) = (read("vendor")?, read("device")?);
+    if (vendor.as_str(), device.as_str()) != ("0x1234", "0x11e8") {
+        return Err(format!("00:01.0 is {vendor}:{device}"));
+    }
+    std::fs::write(format!("{DIR}/enable"), "1").map_err(|e| format!("{DIR}/enable: {e}"))?;
+    let bar = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(format!("{DIR}/resource0"))
+        .map_err(|e| format!("{DIR}/resource0: {e}"))?;
+    use std::os::fd::AsRawFd as _;
+    // SAFETY: a fresh shared mapping of the BAR's first page, which nothing else maps.
+    let regs = unsafe {
+        libc::mmap(
+            std::ptr::null_mut(),
+            4096,
+            libc::PROT_READ | libc::PROT_WRITE,
+            libc::MAP_SHARED,
+            bar.as_raw_fd(),
+            0,
+        )
+    };
+    if regs == libc::MAP_FAILED {
+        return Err(format!("mapping BAR 0: {}", io::Error::last_os_error()));
+    }
+    let regs = regs.cast::<u32>();
+    // SAFETY: volatile accesses of the mapping's first two registers, a device's.
+    let (identification, live) = unsafe {
+        let identification = regs.read_volatile();
+        regs.add(1).write_volatile(0x1234_5678);
+        (identification, regs.add(1).read_volatile())
+    };
+    // SAFETY: the mapping made above.
+    unsafe { libc::munmap(regs.cast(), 4096) };
+    if identification != 0x0100_00ed || live != !0x1234_5678 {
+        return Err(format!(
+            "BAR 0 said identification {identification:#x}, liveness {live:#x}"
+        ));
+    }
     Ok(())
 }
 

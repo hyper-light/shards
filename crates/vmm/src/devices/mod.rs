@@ -3,6 +3,7 @@
 pub mod acpi_sleep;
 pub mod control;
 pub mod i8042;
+pub mod pci;
 pub mod power;
 pub mod rtc;
 pub mod serial;

@@ -3613,6 +3613,50 @@ No run-time labels, relays or declassifiers (§12 answer 14, decided by the user
 an internal-only domain to the world (D58), so there is no data to label. Code mode is
 D136.
 
+### D153. A PCI bus, for the devices a microVM is given (VFIO's first step)
+
+AGENTFILE_ARCH.md §11 row 978: Linux's VFIO is the last gap of `--device` and `--gpus`.
+A Docker container on Linux is given a host's device by its node; a microVM's guest
+kernel drives a device only as a device on a bus of its own, and VFIO (Linux
+Documentation/driver-api/vfio.rst) hands a process a PCI device: its configuration space,
+its BARs and its interrupts, its DMA confined to what the process maps. Every shards
+machine had virtio-mmio alone, and x86_64's kernel was told `pci=off`. First, the bus.
+
+- **One segment, bus 0**, each function's configuration space reached through an ECAM
+  window (PCI Express Base 6.0 §7.2.2, 1 MiB for 32 devices of 8 functions); an access a
+  function does not claim reads as all ones (§2.3.2). An arm64 guest finds it by a
+  `pci-host-ecam-generic` node (Linux Documentation/devicetree/bindings/pci/
+  host-generic-pci.yaml), its window at QEMU virt's places, 0x3f000000, and one 32-bit
+  memory range below it from 0x10000000; an x86_64 guest by ACPI, an MCFG table (PCI
+  Firmware 3.3 §4.1.2) and a PNP0A08 host bridge whose _CRS is bus 0 and a 32-bit memory
+  window from 0xc1000000, the ECAM window at 0xe0000000 reserved in the e820 map, without
+  which Linux takes no MMCONFIG (arch/x86/pci/mmconfig-shared.c), and no `pci=off`.
+- **BARs where the VMM places them.** A function's type 0 header (PCI Local Bus 3.0
+  §6.1) is the VMM's: its BARs sized as §6.2.5.1 asks and otherwise kept, which the guest
+  is told to keep (`/chosen/linux,pci-probe-only`; x86_64's Linux keeps firmware's
+  placement inside the bridge's windows), the command register's enables, the interrupt
+  line.
+- **A test function**, for the bus's tests and VFIO's to come (`run --kernel …
+  --pci-test`): QEMU's edu device's IDs, 1234:11e8, and its identification and liveness
+  registers in its BAR 0 (QEMU docs/specs/edu.rst), reached with no driver, through sysfs.
+- **No snapshot** of a machine with a PCI bus: its functions' state is their devices'
+  own, a passed-through device's above all.
+- **Verified on real VMs** (`a_pci_bus_reaches_its_function`): an arm64 guest on
+  Hypervisor.framework says "pci-host-generic 3f000000.pcie: ECAM at [mem
+  0x3f000000-0x3f0fffff] for [bus 00]" and "pci 0000:00:01.0: [1234:11e8] type 00 class
+  0xff0000", BAR 0 kept at 0x10000000, and the test guest maps it from sysfs and reads
+  0x010000ed and the liveness check's inverse; unit tests hold the ECAM decode, BAR
+  sizing, the devicetree node and the ACPI tables to their specs' encodings. x86_64's
+  guests on KVM and WHP, by CI.
+- **To build:** VFIO (Linux): the container, group and device; a passed-through
+  function's configuration space read from the device but for its BARs and MSI/MSI-X
+  capabilities, which the VMM keeps; its memory BARs mapped into the guest, the MSI-X
+  table's pages trapped; INTx and MSI through irqfds; all of guest RAM mapped for its
+  DMA, pinned, so that a machine with one boots with all its memory and no balloon. Then
+  `--device /dev/vfio/N`, `--gpus` and CDI's VFIO nodes. Its tests: a shards microVM on
+  an M3 or later, with KVM inside (`--nested`), given the test function, binding it to
+  vfio-pci and passing it to a microVM of its own.
+
 ### D152. A run's devices found by name in the VM's devtmpfs
 
 D44 found a run's `--device` among the VM's devices by reading the uevent of each device
