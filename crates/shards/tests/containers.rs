@@ -10106,3 +10106,38 @@ fn cdi_devices_are_injected_as_dockers_are() {
     assert_eq!(shards(&["rm", "-f", "cdiprov"]).status, Some(0));
     let _ = provider.wait();
 }
+
+/// An image of gigabytes boots as a small one does. Its root is a pmem region, which
+/// libnvdimm probes asynchronously, longest for the largest; init waits for its node
+/// (init's pmem.rs), where a 2.1 GB image's runs found none and failed every time.
+#[test]
+fn an_image_of_gigabytes_boots() {
+    let Some((home, image)) = home("containers-big") else {
+        return;
+    };
+    let ctx = home.join("big");
+    std::fs::create_dir(&ctx).unwrap();
+    std::fs::write(ctx.join("Dockerfile"), format!("FROM {image}\nCOPY big /big\n")).unwrap();
+    // 2 GiB of xorshift64's bytes, which no filesystem keeps as holes or shares.
+    {
+        use std::io::Write as _;
+        let mut big = std::io::BufWriter::new(std::fs::File::create(ctx.join("big")).unwrap());
+        let mut x = 0x9e37_79b9_7f4a_7c15u64;
+        let mut block = vec![0u8; 1 << 20];
+        for _ in 0..2048 {
+            for word in block.as_chunks_mut::<8>().0 {
+                x ^= x << 13;
+                x ^= x >> 7;
+                x ^= x << 17;
+                *word = x.to_le_bytes();
+            }
+            big.write_all(&block).unwrap();
+        }
+        big.flush().unwrap();
+    }
+    let built = shards_in(&home, &["build", "-q", "-t", "big:1", ctx.to_str().unwrap()]);
+    assert_eq!(built.status, Some(0), "{built}");
+    std::fs::remove_file(ctx.join("big")).unwrap();
+    let ran = run_in(&home, "big:1", &["--rm"], &["fs", "open:r:/big"]);
+    assert_eq!(ran.status, Some(0), "{ran}");
+}

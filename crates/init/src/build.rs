@@ -319,13 +319,11 @@ impl Builder {
         }
         let at = PathBuf::from(format!("/base{n}"));
         std::fs::create_dir_all(&at)?;
-        mount(
-            &format!("/dev/pmem{n}"),
-            &at,
-            "erofs",
-            libc::MS_RDONLY,
-            "dax=always",
-        )?;
+        // Once libnvdimm has made it (pmem.rs).
+        let device = format!("/dev/pmem{n}");
+        let target = at.to_str().ok_or(io::ErrorKind::InvalidInput)?;
+        crate::pmem::mount_erofs(&device, target, "dax=always", Some(Path::new("/sys")))
+            .map_err(|e| io::Error::new(e.kind(), format!("mounting {device} on {target}: {e}")))?;
         self.bases.insert(n, at.clone());
         Ok(at)
     }

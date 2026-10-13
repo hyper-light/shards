@@ -314,7 +314,9 @@ fn mount_root(device: &str) -> Result<(), Failure> {
     for dir in ["/lower", "/rw", "/newroot"] {
         mkdir(dir)?;
     }
-    mount(device, "/lower", "erofs", libc::MS_RDONLY, "dax=always")?;
+    // Once libnvdimm has made it, which it may not have yet (pmem.rs).
+    crate::pmem::mount_erofs(device, "/lower", "dax=always", None)
+        .map_err(|e| setup_failed(format!("mounting erofs on /lower: {e}")))?;
     mount("tmpfs", "/rw", "tmpfs", 0, "mode=0755")?;
     for dir in ["/rw/upper", "/rw/work"] {
         mkdir(dir)?;

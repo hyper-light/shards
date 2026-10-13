@@ -3602,6 +3602,23 @@ No run-time labels, relays or declassifiers (§12 answer 14, decided by the user
 an internal-only domain to the world (D58), so there is no data to label. Code mode is
 D136.
 
+### D147. Mounting a pmem root once libnvdimm has made it
+
+- **What:** init mounts an image's EROFS on its pmem device (a run's root, a builder's
+  base images) once; where the mount fails with ENOENT (no node yet) or ENXIO (a node
+  whose disk is not there yet), it waits for libnvdimm's probing to end, reading each nd
+  bus's `wait_probe` as ndctl does, and mounts again. Before the root is mounted, sysfs is
+  mounted for the wait alone.
+- **Why:** libnvdimm registers pmem regions and namespaces in an exclusive asynchronous
+  domain, which the kernel does not wait for before init runs (drivers/nvdimm/bus.c,
+  include/linux/async.h, init/main.c). A 2.1 GB root, whose region takes longest to
+  probe, was not there yet as init mounted it, and its runs failed every time (M217).
+- **No deadline:** the wait ends when the kernel says probing is done; a mount that fails
+  again says why. Where the first mount succeeds, it is the one call it always was.
+- **Verified:** `an_image_of_gigabytes_boots` (a 2 GiB root of random bytes); 200 of 200
+  cold boots of 108 MB and 2.1 GB roots (M217). Mutation-checked: without the retry, the
+  test fails 3 of 3 with ENOENT.
+
 ### D146. A run's `--device` by CDI name
 
 - **What:** `--device VENDOR/CLASS=NAME` gives a run what the device's CDI spec says, as
