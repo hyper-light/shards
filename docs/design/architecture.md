@@ -3672,6 +3672,35 @@ one. So both, in that order.
   the BAR is trapped again, and a read with memory space off is all ones, as an access
   no function claims (PCI 3.0 §6.2.2, §2.3.2), which the test function now does too. A
   BAR of less than a page stays trapped whole, as its page in the guest holds others.
+- **An IOMMU for the functions the VMM emulates** (virtio-iommu, virtio 1.3 §5.13;
+  include/uapi/linux/virtio_iommu.h): a machine with the test function has one, last of
+  its virtio devices, which translates the test function's requester ID alone: the
+  devicetree's `iommu-map` on the host bridge (Documentation/devicetree/bindings/pci/
+  pci-iommu.txt) and, on x86_64, ACPI's VIOT (ACPICA's actbl3.h; Linux
+  drivers/acpi/viot.c). A passed-through function stays out of it, as its DMA reaches
+  guest RAM through the host's mappings of all of it, which a guest's own mappings would
+  not move. The guest's driver attaches each endpoint to a domain and maps I/O addresses
+  in it to guest-physical ones, a domain going with its mappings once its last endpoint
+  leaves it, as Linux's driver expects (virtio-iommu.c, viommu_attach_dev); MAP refuses
+  what is not whole pages or overlaps a mapping, UNMAP what would split one. On x86_64,
+  PROBE gives each endpoint the local APICs' window, 0xfee00000 to 0xfeefffff, as a
+  reserved region of subtype MSI (virtio 1.3 §5.13.3), so that MSIs need no mapping. On
+  arm64 it gives none: Linux's MSI parents, GICv2m's and the ITS's, have the IOMMU map
+  their doorbell for the device's domain (iommu.c, iommu_dma_prepare_msi), which VFIO's
+  type 1 can do only in the software MSI window Linux's driver adds where the device
+  reports no MSI region, mapped as device memory (IOMMU_MMIO), which the driver maps only
+  where the device offers VIRTIO_IOMMU_F_MMIO; with a bypassed region instead, VFIO's
+  MSIs failed (ENOSPC, msi_handle_pci_fail). The test function's MSIs are writes to an
+  I/O address there, translated as its DMA is. An endpoint attached to no domain bypasses translation until the driver
+  says otherwise (the configuration's `bypass`, 1 from reset, as QEMU's `boot-bypass`): a
+  guest without the driver keeps DMA by guest-physical address. Linux defers probing a
+  function behind an IOMMU it has no driver for, ten seconds where it has modules
+  (driver_deferred_probe_check_state), so the `kvm` kernel has the driver.
+- **The test function's DMA** is edu's engine (edu.rst: source, destination, length and
+  command at 0x80 of BAR 0, its 4 KiB buffer at 0x40000 of its DMA addresses), run at once
+  rather than on edu's timer: guest memory is reached at what its endpoint's domain maps,
+  each part read or written as the mapping allows, and a transfer to what it does not map
+  moves nothing, as an IOMMU's fault ends a device's DMA.
 - **A 64-bit window.** 64-bit BARs, a GPU's of tens of GiB among them, take a window of
   their own above 4 GiB, past the rest of the guest's address map, as long as they need:
   each placed at a multiple of its size, the test function's and then each
@@ -3758,7 +3787,17 @@ one. So both, in that order.
   memory space off, BAR 0 leaves the inner guest and reads all ones through the outer VM
   process and vfio-pci, and comes back as it is on again. BAR 4 lies past 4 GiB in each
   guest's 64-bit window, its scratch reading back what each wrote, in the inner guest
-  through the window the outer VM process sized from sysfs and mapped. The inner guest takes INTx, MSI and MSI-X, both of the VMM's
+  through the window the outer VM process sized from sysfs and mapped. DMA: the test
+  guest takes the test function through vfio-pci in a group with the IOMMU (its INTx, MSI
+  and MSI-X as before, the MSIs through the domain to the doorbell), maps two pages at
+  I/O addresses of its own (type 1), and the function moves a page of a pattern
+  from one into its buffer and back to the other, then to an address never mapped,
+  which moves nothing. Nested, the inner guest does the same behind the outer VM
+  process's IOMMU; and given the outer guest's function, its group now with an IOMMU,
+  so that the outer VM process maps all of the inner guest's RAM for it through the
+  outer guest's IOMMU (type 1), the inner guest, which has none, gives the function its
+  pages' guest-physical addresses (pagemap), and the outermost VMM's function reaches
+  them through the outer guest's mappings. The inner guest takes INTx, MSI and MSI-X, both of the VMM's
   own test function, through its emulated frame, and of the function passed through, by
   the outer VM process's irqfds: its vector 1 held while masked is the outer VM process's
   count, as the outermost function sends it at once. CI's arm64 runners give no KVM: the nested test runs where a
@@ -3767,9 +3806,10 @@ one. So both, in that order.
   `kvm` kernel, built now for x86_64 too, is pinned.
 - **Not yet:** snapshots of arm64 KVM VMs (`vm::SNAPSHOTS`; their GIC and vCPU state
   through KVM's registers); more vCPUs than one redistributor region holds (123). For
-  VFIO: MSI of more than one message, and its per-vector masking; DMA verified on real
-  VMs, which needs an IOMMU in the test's outer guest; then `--device /dev/vfio/N`,
-  `--gpus` and CDI's VFIO nodes.
+  VFIO: MSI of more than one message, and its per-vector masking; a passed-through
+  function behind the guest's own IOMMU, its host mappings following the guest's (what a
+  workload's VFIO in a microVM needs); then `--device /dev/vfio/N`, `--gpus` and CDI's
+  VFIO nodes.
 
 ### D153. A PCI bus, for the devices a microVM is given (VFIO's first step)
 

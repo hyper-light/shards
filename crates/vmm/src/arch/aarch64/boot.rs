@@ -179,6 +179,9 @@ pub struct MmioDevice {
     pub base: u64,
     pub size: u64,
     pub spi: u32,
+    /// Whether it is the machine's IOMMU (virtio-iommu, D154), which `PciBridge::iommu`'s
+    /// functions' DMA goes through.
+    pub iommu: bool,
 }
 
 /// Everything the devicetree describes.
@@ -210,6 +213,8 @@ pub struct PciBridge {
     pub mem32: (u64, u64),
     /// Its 64-bit window, above 4 GiB, where its functions have 64-bit BARs (D154).
     pub mem64: Option<(u64, u64)>,
+    /// The requester IDs of its functions the machine's IOMMU translates (D154).
+    pub iommu: Vec<u32>,
     pub intx: Vec<Intx>,
     pub msi: Option<MsiFrame>,
 }
@@ -236,6 +241,7 @@ pub struct MsiFrame {
 const PHANDLE_GIC: u32 = 1;
 const PHANDLE_APB_PCLK: u32 = 2;
 const PHANDLE_V2M: u32 = 3;
+const PHANDLE_IOMMU: u32 = 4;
 const GIC_SPI: u32 = 0;
 const GIC_PPI: u32 = 1;
 const IRQ_EDGE_RISING: u32 = 1;
@@ -437,6 +443,17 @@ pub fn build_fdt(m: &Machine<'_>) -> Result<Vec<u8>, FdtError> {
         if p.msi.is_some() {
             f.prop_u32("msi-parent", PHANDLE_V2M);
         }
+        // Each function the IOMMU translates, by its requester ID, to the same ID of the
+        // IOMMU's (Documentation/devicetree/bindings/pci/pci-iommu.txt); the rest, passed
+        // through, no IOMMU's.
+        if m.virtio.iter().any(|d| d.iommu) && !p.iommu.is_empty() {
+            let map: Vec<u32> = p
+                .iommu
+                .iter()
+                .flat_map(|&rid| [rid, PHANDLE_IOMMU, rid, 1])
+                .collect();
+            f.prop_cells("iommu-map", &map);
+        }
         f.end_node();
     }
 
@@ -446,6 +463,12 @@ pub fn build_fdt(m: &Machine<'_>) -> Result<Vec<u8>, FdtError> {
         f.prop_u64s("reg", &[d.base, d.size]);
         f.prop_cells("interrupts", &[GIC_SPI, d.spi, IRQ_EDGE_RISING]);
         f.prop_null("dma-coherent");
+        // virtio-iommu's binding (Documentation/devicetree/bindings/virtio/iommu.yaml): one
+        // cell, the endpoint's ID.
+        if d.iommu {
+            f.prop_u32("#iommu-cells", 1);
+            f.prop_u32("phandle", PHANDLE_IOMMU);
+        }
         f.end_node();
     }
 
@@ -495,6 +518,7 @@ mod tests {
             base: layout::VIRTIO_MMIO,
             size: 0x200,
             spi: layout::SPI_VIRTIO_MMIO,
+            iommu: false,
         }];
         let m = Machine {
             mpidrs: &mpidrs,
@@ -570,6 +594,7 @@ mod tests {
             ecam: (layout::PCI_ECAM, 1 << 20),
             mem32: (layout::PCI_MEM32, layout::PCI_MEM32_SIZE),
             mem64: Some((0x1_0000_0000, 0x10_0000)),
+            iommu: vec![0x8],
             intx: vec![Intx {
                 device: 1,
                 pin: 1,
@@ -582,7 +607,13 @@ mod tests {
                 count: layout::MSI_SPIS,
             }),
         };
-        let with_pci = decode::parse(&build_fdt(&Machine { pci: Some(pci), ..m }).unwrap());
+        let with_pci = decode::parse(
+            &build_fdt(&Machine {
+                pci: Some(pci.clone()),
+                ..m
+            })
+            .unwrap(),
+        );
         let bridge = with_pci.path("pcie@3f000000");
         assert_eq!(bridge.str("compatible"), "pci-host-ecam-generic");
         assert_eq!(bridge.str("device_type"), "pci");
@@ -624,5 +655,29 @@ mod tests {
         assert_eq!(v2m.u32("arm,msi-base-spi"), 32 + layout::SPI_MSI);
         assert_eq!(v2m.u32("arm,msi-num-spis"), layout::MSI_SPIS);
         assert_eq!(v2m.u32("phandle"), PHANDLE_V2M);
+        // No IOMMU but where the machine has one (D154): its virtio node's one cell, the
+        // endpoint's ID, and the bridge's map of each function it translates to it.
+        assert!(!bridge.props.contains_key("iommu-map"));
+        let iommu = [MmioDevice {
+            base: layout::VIRTIO_MMIO,
+            size: 0x200,
+            spi: layout::SPI_VIRTIO_MMIO,
+            iommu: true,
+        }];
+        let with_iommu = decode::parse(
+            &build_fdt(&Machine {
+                virtio: &iommu,
+                pci: Some(pci),
+                ..m
+            })
+            .unwrap(),
+        );
+        let node = with_iommu.path(&format!("virtio_mmio@{:x}", layout::VIRTIO_MMIO));
+        assert_eq!(node.u32("#iommu-cells"), 1);
+        assert_eq!(node.u32("phandle"), PHANDLE_IOMMU);
+        assert_eq!(
+            with_iommu.path("pcie@3f000000").cells("iommu-map"),
+            vec![0x8, PHANDLE_IOMMU, 0x8, 1]
+        );
     }
 }

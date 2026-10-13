@@ -541,8 +541,20 @@ fn assemble(
                 as Box<dyn crate::devices::virtio::VirtioDevice>)
         }
     };
-    let last = gpu.into_iter().chain(hotplug).chain(reporting).collect();
+    // The IOMMU of the functions the VMM emulates, last of the virtio devices (D154): no
+    // MSI window bypassed, as Linux has the IOMMU map the GICv2m frame's doorbell.
+    let (iommu, iommu_device) = match msi {
+        Some(_) => super::test_iommu(pci, None).unzip(),
+        None => (None, None),
+    };
+    let last = gpu
+        .into_iter()
+        .chain(hotplug)
+        .chain(reporting)
+        .chain(iommu_device)
+        .collect();
     let devices = super::virtio_devices(config, &regions, hosts, last, layout::VIRTIO_MMIO_MAX)?;
+    let iommu_at = iommu.is_some().then(|| devices.len() - 1);
     let mut bus = MmioBus::default();
     if let Some(frame) = msi
         && !hv::MSI_FRAME_IN_KERNEL
@@ -571,6 +583,7 @@ fn assemble(
             base,
             size: virtio_mmio::WINDOW,
             spi,
+            iommu: iommu_at == Some(i),
         });
     }
     let serial = Arc::new(Serial::new(
@@ -604,12 +617,14 @@ fn assemble(
         vm: &vm,
         memory,
         irqs,
+        iommu: iommu.clone(),
     };
     let pci = super::pci_bus(&mut bus, layout::PCI_ECAM, mem32, mem64, pci, config, machine)?.map(|routed| {
         boot::PciBridge {
             ecam: (layout::PCI_ECAM, crate::devices::pci::ECAM_SIZE),
             mem32,
             mem64,
+            iommu: iommu.iter().map(|_| u32::from(super::TEST_DEVICE) << 3).collect(),
             intx: routed
                 .intx
                 .into_iter()

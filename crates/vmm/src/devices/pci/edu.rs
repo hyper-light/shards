@@ -5,7 +5,9 @@
 //! D154). Its interrupts are INTA#, asserted while its interrupt status is not zero, or one
 //! MSI for each raise where the guest enabled MSI, as edu's; and, of shards' own, as edu
 //! has none, an MSI-X capability of two vectors, a raise of bit k sending vector k, its
-//! table and pending bits in BAR 2. Nothing else of edu's: no factorial, no DMA.
+//! table and pending bits in BAR 2. Its DMA engine is edu's: its buffer on one side, guest
+//! memory on the other, by its requester ID's domain where the machine has an IOMMU (D154).
+//! Nothing else of edu's: no factorial.
 
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
@@ -13,7 +15,9 @@ use std::sync::{Arc, Mutex, PoisonError};
 use super::{
     Bar, BarKind, Header, Identity, Interrupts, Lines, MsiCap, MsixCap, MsixTable, PciFunction, reg,
 };
+use crate::devices::virtio::iommu::Shared;
 use crate::devices::{MmioDevice, get_le, put_le};
+use crate::memory::GuestMemory;
 use crate::snapshot::codec::{self, Reader, Writer};
 
 pub const VENDOR: u16 = 0x1234;
@@ -46,6 +50,34 @@ const REG_LIVENESS: u64 = 0x04;
 const REG_INTERRUPT_STATUS: u64 = 0x24;
 const REG_INTERRUPT_RAISE: u64 = 0x60;
 const REG_INTERRUPT_ACK: u64 = 0x64;
+/// Its DMA engine's registers, 64 bits each (edu.rst): the transfer's source, destination
+/// and length, and its command: run (bit 0, cleared once done), from its buffer to guest
+/// memory rather than to it (bit 1), and raise interrupt 0x100 once done (bit 2).
+const REG_DMA: u64 = 0x80;
+const DMA_REGISTERS: usize = 4;
+const DMA_COMMAND: usize = 3;
+const DMA_RUN: u64 = 1 << 0;
+const DMA_TO_MEMORY: u64 = 1 << 1;
+const DMA_RAISE: u64 = 1 << 2;
+const DMA_INTERRUPT: u32 = 0x100;
+/// Its buffer, the edu side of a transfer: 4 KiB at 0x40000 of its DMA addresses.
+pub const DMA_BUFFER: u64 = 0x40000;
+const DMA_BUFFER_SIZE: usize = 4096;
+
+/// How the function's DMA reaches guest memory: the memory, and the IOMMU its requester ID
+/// is translated by, with that ID, where the machine has one (D154).
+#[derive(Debug, Clone)]
+pub struct Dma {
+    pub memory: Arc<GuestMemory>,
+    pub iommu: Option<(Shared, u32)>,
+}
+
+/// Its DMA engine: its registers and its buffer.
+#[derive(Debug)]
+struct Engine {
+    registers: [u64; DMA_REGISTERS],
+    buffer: Vec<u8>,
+}
 
 /// The function: its configuration header, BAR 0 placed at `bar` by the VMM, and its
 /// interrupt status, which its BAR's registers raise and acknowledge; its MSI-X table and
@@ -56,6 +88,8 @@ pub struct Edu {
     status: Mutex<u32>,
     msix: Mutex<MsixTable>,
     lines: Option<Lines>,
+    engine: Mutex<Engine>,
+    dma: Option<Dma>,
 }
 
 /// Where the machine maps the function's BARs: BAR 0's registers, BAR 2's MSI-X table and
@@ -77,8 +111,9 @@ pub struct Bars {
 
 impl Edu {
     /// The function and its BARs, which the machine maps at `at`; its interrupts go to
-    /// `lines`, and where a machine takes none it has none.
-    pub fn new(at: Places, lines: Option<Lines>) -> Result<(Arc<Edu>, Bars), String> {
+    /// `lines`, and where a machine takes none it has none; its DMA goes as `dma` says,
+    /// and without it nowhere.
+    pub fn new(at: Places, lines: Option<Lines>, dma: Option<Dma>) -> Result<(Arc<Edu>, Bars), String> {
         let interrupts = match lines {
             Some(_) => Interrupts {
                 pin: PIN,
@@ -134,6 +169,11 @@ impl Edu {
             status: Mutex::new(0),
             msix: Mutex::new(MsixTable::new(MSIX_VECTORS)),
             lines,
+            engine: Mutex::new(Engine {
+                registers: [0; DMA_REGISTERS],
+                buffer: vec![0; DMA_BUFFER_SIZE],
+            }),
+            dma,
         });
         let bars = Bars {
             registers: Arc::new(EduRegisters {
@@ -179,7 +219,7 @@ impl Edu {
                 self.header.set_interrupt_status(false);
                 lines.intx.set_level(false);
                 if raised != 0 && *status != 0 {
-                    lines.msi.send(address, data);
+                    self.send_msi(lines, address, data);
                 }
             }
             None => {
@@ -192,11 +232,82 @@ impl Edu {
         }
     }
 
+    /// Runs the transfer `engine`'s registers describe, as edu's `edu_dma_timer` does but
+    /// at once: `length` bytes between its buffer, at an address in it, and guest memory,
+    /// at the address its endpoint's domain maps where the machine has an IOMMU. A transfer
+    /// past the buffer, or to what the domain does not map for it, moves nothing, as an
+    /// IOMMU's fault ends a device's DMA. Its run bit clears as it ends, and where asked,
+    /// interrupt 0x100 is raised.
+    fn transfer(&self) {
+        let mut engine = self.engine.lock().unwrap_or_else(PoisonError::into_inner);
+        let [source, destination, length, command] = engine.registers;
+        let to_memory = command & DMA_TO_MEMORY != 0;
+        let (on_edu, in_memory) = if to_memory {
+            (source, destination)
+        } else {
+            (destination, source)
+        };
+        let moved = (|| {
+            let at = usize::try_from(on_edu.checked_sub(DMA_BUFFER)?).ok()?;
+            let len = usize::try_from(length).ok()?;
+            at.checked_add(len).filter(|&end| end <= DMA_BUFFER_SIZE)?;
+            let dma = self.dma.as_ref()?;
+            let parts = match &dma.iommu {
+                Some((translation, endpoint)) => translation
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .translate(*endpoint, in_memory, length, to_memory)?,
+                None => vec![(in_memory, length)],
+            };
+            let memory = dma.memory.access().ok()?;
+            let mut at = at;
+            for (gpa, part) in parts {
+                let part = usize::try_from(part).ok()?;
+                let bytes = engine.buffer.get_mut(at..at + part)?;
+                if to_memory {
+                    memory.write(gpa, bytes).ok()?;
+                } else {
+                    memory.read(gpa, bytes).ok()?;
+                }
+                at += part;
+            }
+            Some(())
+        })();
+        if moved.is_none() {
+            crate::debug!("edu: a DMA of {length:#x} bytes at {in_memory:#x} moved nothing");
+        }
+        if let Some(c) = engine.registers.get_mut(DMA_COMMAND) {
+            *c &= !DMA_RUN;
+        }
+        drop(engine);
+        if command & DMA_RAISE != 0 {
+            self.interrupt(|status| status | DMA_INTERRUPT, DMA_INTERRUPT);
+        }
+    }
+
     /// Whether it decodes its BARs' addresses: memory space enabled in its command register
     /// (§6.2.2). It does not where the guest disabled it, and an access there ends as no
     /// function claims it, a read all ones (§2.3.2).
     fn decodes(&self) -> bool {
         self.header.command() & reg::COMMAND_MEMORY != 0
+    }
+
+    /// Sends a message: a write of `data` to `address`, which goes through the function's
+    /// IOMMU domain where the machine has an IOMMU, as its DMA does (D154): to the
+    /// guest-physical address the domain maps it to, and nowhere where it maps none.
+    fn send_msi(&self, lines: &Lines, address: u64, data: u32) {
+        let to = match self.dma.as_ref().and_then(|d| d.iommu.as_ref()) {
+            Some((translation, endpoint)) => translation
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .translate(*endpoint, address, 4, true)
+                .and_then(|parts| parts.first().map(|&(gpa, _)| gpa)),
+            None => Some(address),
+        };
+        match to {
+            Some(gpa) => lines.msi.send(gpa, data),
+            None => crate::debug!("edu: an MSI to {address:#x} its domain does not map"),
+        }
     }
 
     /// Sends each pending MSI-X vector the function and the vector leave unmasked.
@@ -208,7 +319,7 @@ impl Edu {
             if table.pending(k)
                 && let Some((address, data)) = table.message(k)
             {
-                lines.msi.send(address, data);
+                self.send_msi(lines, address, data);
                 table.set_pending(k, false);
             }
         }
@@ -235,6 +346,12 @@ impl PciFunction for Edu {
 pub struct EduRegisters {
     edu: Arc<Edu>,
     liveness: AtomicU32,
+}
+
+/// Which of the DMA engine's registers `offset` of BAR 0 is in, where it is one.
+fn dma_register(offset: u64) -> Option<usize> {
+    let i = usize::try_from(offset.checked_sub(REG_DMA)? / 8).ok()?;
+    (i < DMA_REGISTERS).then_some(i)
 }
 
 /// BAR 4: its first page what the guest last wrote there, a dword or a qword at a time; the
@@ -349,6 +466,12 @@ impl MmioDevice for EduRegisters {
             data.fill(0xff);
             return;
         }
+        if let Some(i) = dma_register(offset) {
+            let engine = self.edu.engine.lock().unwrap_or_else(PoisonError::into_inner);
+            let value = engine.registers.get(i).copied().unwrap_or(0);
+            put_le(data, value >> (8 * (offset % 8)));
+            return;
+        }
         let value = match offset {
             REG_IDENTIFICATION => IDENTIFICATION,
             REG_LIVENESS => !self.liveness.load(Ordering::Relaxed),
@@ -360,6 +483,26 @@ impl MmioDevice for EduRegisters {
 
     fn write(&self, offset: u64, data: &[u8]) {
         if !self.edu.decodes() {
+            return;
+        }
+        if let Some(i) = dma_register(offset) {
+            let mut engine = self.edu.engine.lock().unwrap_or_else(PoisonError::into_inner);
+            let shift = 8 * (offset % 8);
+            let mask = match data.len() {
+                8 => u64::MAX,
+                n => ((1u64 << (8 * n)) - 1) << shift,
+            };
+            let run = match engine.registers.get_mut(i) {
+                Some(r) => {
+                    *r = (*r & !mask) | ((get_le(data) << shift) & mask);
+                    i == DMA_COMMAND && *r & DMA_RUN != 0
+                }
+                None => false,
+            };
+            drop(engine);
+            if run {
+                self.edu.transfer();
+            }
             return;
         }
         let value = get_le(data) as u32;
@@ -432,6 +575,7 @@ mod tests {
                 scratch: 0x1_0010_0000,
             },
             Some(lines),
+            None,
         )
         .unwrap();
         let (regs, msix) = (bars.registers, bars.msix);
@@ -481,6 +625,7 @@ mod tests {
                 scratch: 0x1_0010_0000,
             },
             Some(lines),
+            None,
         )
         .unwrap();
         edu.config_write(0x04, &reg::COMMAND_MEMORY.to_le_bytes());
@@ -497,6 +642,69 @@ mod tests {
         assert_eq!(u32::from_le_bytes(d), 0xdead_beef);
         scratch.read(0x8_0000, &mut d);
         assert_eq!(u32::from_le_bytes(d), 0, "past the page");
+    }
+
+    /// Its DMA engine moves guest memory into its buffer and back: by guest-physical
+    /// address while its endpoint bypasses the IOMMU, from reset, and by I/O virtual
+    /// address once its domain maps one; to what the domain does not map, or past its
+    /// buffer, it moves nothing. Its run bit clears as each ends.
+    #[test]
+    fn edus_dma_goes_through_its_iommu() {
+        use crate::devices::virtio::iommu::{MAP_F_READ, MAP_F_WRITE, Translation};
+        let memory = Arc::new(GuestMemory::anonymous(&[(0x8000_0000, 1 << 20)]).unwrap());
+        let translation = Arc::new(Mutex::new(Translation::new(vec![8])));
+        let (edu, bars) = Edu::new(
+            Places {
+                registers: 0x1010_0000,
+                msix: 0x1020_0000,
+                scratch: 0x1_0010_0000,
+            },
+            None,
+            Some(Dma {
+                memory: memory.clone(),
+                iommu: Some((translation.clone(), 8)),
+            }),
+        )
+        .unwrap();
+        edu.config_write(0x04, &reg::COMMAND_MEMORY.to_le_bytes());
+        let regs = bars.registers;
+        let transfer = |source: u64, destination: u64, len: u64, command: u64| {
+            for (i, v) in [source, destination, len, command].into_iter().enumerate() {
+                regs.write(REG_DMA + 8 * i as u64, &v.to_le_bytes());
+            }
+        };
+        let read = |gpa: u64, len: usize| {
+            let mut b = vec![0u8; len];
+            memory.access().unwrap().read(gpa, &mut b).unwrap();
+            b
+        };
+        memory
+            .access()
+            .unwrap()
+            .write(0x8000_1000, b"through edu")
+            .unwrap();
+        transfer(0x8000_1000, DMA_BUFFER, 11, DMA_RUN);
+        transfer(DMA_BUFFER, 0x8000_2000, 11, DMA_RUN | DMA_TO_MEMORY);
+        assert_eq!(read(0x8000_2000, 11), b"through edu", "by guest-physical address");
+        let mut c = [0u8; 8];
+        regs.read(REG_DMA + 24, &mut c);
+        assert_eq!(u64::from_le_bytes(c) & DMA_RUN, 0, "done");
+        // Its domain maps I/O address 0x10_0000 to 0x8000_3000.
+        {
+            let mut t = translation.lock().unwrap();
+            assert_eq!(t.attach(1, 8, 0), 0);
+            assert_eq!(
+                t.map(1, 0x10_0000, 0x10_0fff, 0x8000_3000, MAP_F_READ | MAP_F_WRITE),
+                0
+            );
+        }
+        transfer(DMA_BUFFER, 0x10_0000, 11, DMA_RUN | DMA_TO_MEMORY);
+        assert_eq!(read(0x8000_3000, 11), b"through edu", "by I/O virtual address");
+        transfer(DMA_BUFFER, 0x8000_4000, 11, DMA_RUN | DMA_TO_MEMORY);
+        assert_eq!(read(0x8000_4000, 11), vec![0; 11], "unmapped: nothing moved");
+        transfer(0x10_0000, DMA_BUFFER + 4090, 11, DMA_RUN);
+        regs.read(REG_DMA + 24, &mut c);
+        assert_eq!(u64::from_le_bytes(c) & DMA_RUN, 0, "past the buffer, ended");
     }
 
     /// With its memory space disabled, edu decodes neither BAR: reads are all ones, as an

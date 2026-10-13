@@ -587,9 +587,9 @@ pub(crate) struct PciBus {
     pub intx: Vec<(u8, u8)>,
 }
 
-/// What a machine gives its PCI bus: its VM, and its guest memory, which passed-through
-/// functions reach by DMA; and how its functions' interrupts reach the guest, where it
-/// routes them.
+/// What a machine gives its PCI bus: its VM, and its guest memory, which its functions
+/// reach by DMA; how their interrupts reach the guest, where it routes them; and its
+/// IOMMU's translation, which the test function's DMA goes through, where it has one.
 #[cfg(hv)]
 pub(crate) struct PciMachine<'a> {
     #[cfg_attr(
@@ -597,12 +597,36 @@ pub(crate) struct PciMachine<'a> {
         expect(dead_code, reason = "read by VFIO, Linux's alone")
     )]
     pub vm: &'a crate::hv::Vm,
-    #[cfg_attr(
-        not(target_os = "linux"),
-        expect(dead_code, reason = "read by VFIO, Linux's alone")
-    )]
-    pub memory: &'a crate::memory::GuestMemory,
+    pub memory: &'a Arc<crate::memory::GuestMemory>,
     pub irqs: Option<&'a dyn PciInterrupts>,
+    pub iommu: Option<crate::devices::virtio::iommu::Shared>,
+}
+
+/// The test function's device on bus 0 (D153), and so its requester ID, `device << 3`,
+/// which the machine's IOMMU translates (D154).
+#[cfg(hv)]
+pub(crate) const TEST_DEVICE: u8 = 1;
+
+/// The IOMMU of the functions the VMM emulates (virtio-iommu, D154): where the machine has
+/// the test function, its translation of the test function's requester ID, and the device,
+/// the MSI window `msi`, its first and last address, bypassed where the machine has one.
+#[cfg(hv)]
+fn test_iommu(
+    pci: Pci<'_>,
+    msi: Option<(u64, u64)>,
+) -> Option<(
+    crate::devices::virtio::iommu::Shared,
+    Box<dyn crate::devices::virtio::VirtioDevice>,
+)> {
+    use crate::devices::virtio::iommu;
+    pci.test.then(|| {
+        let translation = Arc::new(std::sync::Mutex::new(iommu::Translation::new(vec![
+            u32::from(TEST_DEVICE) << 3,
+        ])));
+        let device = Box::new(iommu::Iommu::new(translation.clone(), msi))
+            as Box<dyn crate::devices::virtio::VirtioDevice>;
+        (translation, device)
+    })
 }
 
 /// Puts the PCI bus `pci` asks for on `bus` (D153, D154), where it asks for one: its ECAM
@@ -630,7 +654,7 @@ fn pci_bus(
     let mut window = BarWindow::of(mem32)?;
     let mut window64 = mem64.map(BarWindow::of).transpose()?;
     let mut functions: Vec<pci::Function> = Vec::new();
-    let mut device: u8 = 1;
+    let mut device: u8 = TEST_DEVICE;
     if pci.test {
         let at = window.take(pci::edu::BAR_SIZE)?;
         let lines = irqs.map(|irqs| pci::Lines {
@@ -648,7 +672,11 @@ fn pci_bus(
                 .ok_or("the test function's BAR 4 has no 64-bit window")?
                 .take(pci::edu::SCRATCH_BAR_SIZE)?,
         };
-        let (edu, bars) = pci::edu::Edu::new(places, lines)?;
+        let dma = pci::edu::Dma {
+            memory: machine.memory.clone(),
+            iommu: machine.iommu.clone().map(|t| (t, u32::from(device) << 3)),
+        };
+        let (edu, bars) = pci::edu::Edu::new(places, lines, Some(dma))?;
         bus.insert(places.registers, pci::edu::BAR_SIZE, bars.registers)?;
         bus.insert(places.msix, pci::edu::MSIX_BAR_SIZE, bars.msix)?;
         bus.insert(places.scratch, pci::edu::SCRATCH_BAR_SIZE, bars.scratch)?;
@@ -726,7 +754,7 @@ fn passed_through(
     routed: &mut PciBus,
 ) -> Result<Vec<crate::devices::pci::Function>, String> {
     use crate::devices::pci::{self, vfio as v};
-    let PciMachine { vm, memory, irqs } = *machine;
+    let PciMachine { vm, memory, irqs, .. } = *machine;
     let mut functions: Vec<pci::Function> = Vec::new();
     // One container for the functions whose groups have an IOMMU, and one for those
     // whose have none.

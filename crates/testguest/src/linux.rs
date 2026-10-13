@@ -34,6 +34,7 @@ pub fn main() {
             "limits" => limits(),
             "pci" => pci(),
             "pci-irq" => pci_irq(),
+            "pci-dma" => pci_dma(),
             "host" => host(),
             other => Err(format!("unknown test {other:?}")),
         },
@@ -1150,17 +1151,7 @@ fn pci() -> Result<(), String> {
 /// VFIO frees it, and sent as it is given its eventfd again.
 fn pci_irq() -> Result<(), String> {
     const NAME: &str = "0000:00:01.0";
-    let dir = format!("/sys/bus/pci/devices/{NAME}");
-    std::fs::write(format!("{dir}/driver_override"), "vfio-pci")
-        .map_err(|e| format!("{dir}/driver_override: {e}"))?;
-    std::fs::write("/sys/bus/pci/drivers_probe", NAME).map_err(|e| format!("binding {NAME}: {e}"))?;
-    let group =
-        std::fs::read_link(format!("{dir}/iommu_group")).map_err(|e| format!("{dir}/iommu_group: {e}"))?;
-    let group = group
-        .file_name()
-        .and_then(|n| n.to_str())
-        .ok_or("an IOMMU group without a number")?;
-    let device = vfio::open(&format!("/dev/vfio/noiommu-{group}"), NAME)?;
+    let (device, _) = vfio::take(NAME)?;
     let bar = vfio::region(device, 0)?;
     let raise = |value: u32| pwrite_exact(device, &value.to_le_bytes(), bar + 0x60);
     let ack = |value: u32| pwrite_exact(device, &value.to_le_bytes(), bar + 0x64);
@@ -1169,7 +1160,7 @@ fn pci_irq() -> Result<(), String> {
         pread_exact(device, &mut b, bar + 0x24).map(|()| u32::from_le_bytes(b))
     };
     let intx = vfio::eventfd()?;
-    vfio::trigger(device, vfio::INTX, &[intx])?;
+    vfio::trigger(device, vfio::INTX, &[intx]).map_err(|e| format!("INTx on: {e}"))?;
     for round in 1..=2u32 {
         raise(round)?;
         vfio::wait(intx).map_err(|e| format!("INTx {round}: {e}"))?;
@@ -1177,11 +1168,11 @@ fn pci_irq() -> Result<(), String> {
             return Err(format!("INTx {round}: status {:#x}", status()?));
         }
         ack(round)?;
-        vfio::unmask_intx(device)?;
+        vfio::unmask_intx(device).map_err(|e| format!("INTx unmasked: {e}"))?;
     }
-    vfio::trigger(device, vfio::INTX, &[])?;
+    vfio::trigger(device, vfio::INTX, &[]).map_err(|e| format!("INTx off: {e}"))?;
     let msi = vfio::eventfd()?;
-    vfio::trigger(device, vfio::MSI, &[msi])?;
+    vfio::trigger(device, vfio::MSI, &[msi]).map_err(|e| format!("MSI on: {e}"))?;
     raise(4)?;
     vfio::wait(msi).map_err(|e| format!("MSI: {e}"))?;
     ack(4)?;
@@ -1206,7 +1197,7 @@ fn pci_irq() -> Result<(), String> {
         Ok(())
     };
     let vectors = [vfio::eventfd()?, vfio::eventfd()?];
-    vfio::msix(device, 0, &[-1, -1])?;
+    vfio::msix(device, 0, &[-1, -1]).map_err(|e| format!("MSI-X on: {e}"))?;
     held(0)?;
     vfio::msix(device, 0, &vectors[..1])?;
     vfio::wait(vectors[0]).map_err(|e| format!("MSI-X vector 0, held: {e}"))?;
@@ -1229,6 +1220,115 @@ fn pci_irq() -> Result<(), String> {
     Ok(())
 }
 
+/// The test function's DMA (D154): taken through vfio-pci, its DMA engine (edu's: source,
+/// destination, length and command at 0x80 of BAR 0, its buffer at 0x40000 of its DMA
+/// addresses) moves a page of a pattern from memory into its buffer, and back to another
+/// page. Where the function's group has an IOMMU, the pages are mapped for it at I/O
+/// addresses of the test's own (VFIO_IOMMU_MAP_DMA), and a transfer to one unmapped moves
+/// nothing; where it has none, the function is given the pages' guest-physical addresses
+/// (/proc/self/pagemap).
+fn pci_dma() -> Result<(), String> {
+    const NAME: &str = "0000:00:01.0";
+    const PAGE: usize = 4096;
+    const BUFFER: u64 = 0x40000;
+    const RUN: u64 = 1;
+    const TO_MEMORY: u64 = 2;
+    let (device, iommu) = vfio::take(NAME)?;
+    let bar = vfio::region(device, 0)?;
+    let page = || -> Result<*mut u8, String> {
+        // SAFETY: a fresh anonymous mapping of a page, locked in memory: its address is the
+        // function's for as long as the test runs.
+        let p = unsafe {
+            libc::mmap(
+                std::ptr::null_mut(),
+                PAGE,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_PRIVATE | libc::MAP_ANONYMOUS | libc::MAP_LOCKED | libc::MAP_POPULATE,
+                -1,
+                0,
+            )
+        };
+        if p == libc::MAP_FAILED {
+            return Err(format!("mmap: {}", io::Error::last_os_error()));
+        }
+        Ok(p.cast())
+    };
+    let (from, to) = (page()?, page()?);
+    // Where the function reaches each page: an I/O address mapped for it, or its own.
+    let addresses = match iommu {
+        Some(container) => {
+            vfio::map_dma(container, from as u64, 0x10_0000, PAGE as u64)?;
+            vfio::map_dma(container, to as u64, 0x20_0000, PAGE as u64)?;
+            (0x10_0000, 0x20_0000)
+        }
+        None => (physical(from)?, physical(to)?),
+    };
+    for i in 0..PAGE {
+        // SAFETY: within the page mapped above.
+        unsafe { from.add(i).write_volatile((i * 7 + 3) as u8) };
+    }
+    let transfer = |source: u64, destination: u64, command: u64| -> Result<(), String> {
+        for (offset, value) in [
+            (0x80, source),
+            (0x88, destination),
+            (0x90, PAGE as u64),
+            (0x98, command),
+        ] {
+            pwrite_exact(device, &value.to_le_bytes(), bar + offset)?;
+        }
+        let start = std::time::Instant::now();
+        loop {
+            let mut c = [0u8; 8];
+            pread_exact(device, &mut c, bar + 0x98)?;
+            if u64::from_le_bytes(c) & RUN == 0 {
+                return Ok(());
+            }
+            if start.elapsed() > std::time::Duration::from_secs(10) {
+                return Err("a DMA still running after 10 s".into());
+            }
+            std::thread::yield_now();
+        }
+    };
+    transfer(addresses.0, BUFFER, RUN)?;
+    transfer(BUFFER, addresses.1, RUN | TO_MEMORY)?;
+    for i in 0..PAGE {
+        // SAFETY: within the page mapped above.
+        let b = unsafe { to.add(i).read_volatile() };
+        if b != (i * 7 + 3) as u8 {
+            return Err(format!("byte {i} came back {b:#x}"));
+        }
+    }
+    let through = if iommu.is_some() {
+        // To an I/O address nothing is mapped at: nothing moves, and the transfer ends.
+        transfer(BUFFER, 0x30_0000, RUN | TO_MEMORY)?;
+        "its IOMMU"
+    } else {
+        "guest-physical addresses"
+    };
+    let _ = writeln!(
+        io::stdout(),
+        "SHARDS-TEST INFO dma: {PAGE} bytes into the function and back, through {through}"
+    );
+    Ok(())
+}
+
+/// The guest-physical address of the page at `virt`, resident and locked: its frame in
+/// /proc/self/pagemap (Documentation/admin-guide/mm/pagemap.rst: bits 0-54, bit 63
+/// present).
+fn physical(virt: *mut u8) -> Result<u64, String> {
+    let fd = open("/proc/self/pagemap", libc::O_RDONLY)?;
+    let mut entry = [0u8; 8];
+    let read = pread_exact(fd, &mut entry, (virt as u64 / 4096) * 8);
+    // SAFETY: closing our own descriptor.
+    unsafe { libc::close(fd) };
+    read?;
+    let entry = u64::from_le_bytes(entry);
+    if entry & (1 << 63) == 0 || entry & ((1 << 55) - 1) == 0 {
+        return Err(format!("page {virt:?}: no frame in pagemap ({entry:#x})"));
+    }
+    Ok((entry & ((1 << 55) - 1)) * 4096)
+}
+
 /// The VFIO a test guest makes of its PCI function (include/uapi/linux/vfio.h).
 mod vfio {
     use std::io;
@@ -1242,6 +1342,8 @@ mod vfio {
     const DEVICE_GET_REGION_INFO: u64 = io(8);
     const DEVICE_SET_IRQS: u64 = io(10);
     const NOIOMMU_IOMMU: u64 = 8;
+    const TYPE1V2_IOMMU: u64 = 3;
+    const IOMMU_MAP_DMA: u64 = io(13);
     pub const INTX: u32 = 0;
     pub const MSI: u32 = 1;
     pub const MSIX: u32 = 2;
@@ -1259,14 +1361,45 @@ mod vfio {
         Ok(r)
     }
 
-    /// The device `name` of the no-IOMMU group at `group`, in a container of its own.
-    pub fn open(group: &str, name: &str) -> Result<libc::c_int, String> {
+    /// The PCI function `name`, bound to vfio-pci, and the container of its group where
+    /// the group has an IOMMU (type 1), none where it has not (no-IOMMU).
+    pub fn take(name: &str) -> Result<(libc::c_int, Option<libc::c_int>), String> {
+        let dir = format!("/sys/bus/pci/devices/{name}");
+        std::fs::write(format!("{dir}/driver_override"), "vfio-pci")
+            .map_err(|e| format!("{dir}/driver_override: {e}"))?;
+        std::fs::write("/sys/bus/pci/drivers_probe", name).map_err(|e| format!("binding {name}: {e}"))?;
+        let group = std::fs::read_link(format!("{dir}/iommu_group"))
+            .map_err(|e| format!("{dir}/iommu_group: {e}"))?;
+        let group = group
+            .file_name()
+            .and_then(|n| n.to_str())
+            .ok_or("an IOMMU group without a number")?;
+        let plain = format!("/dev/vfio/{group}");
+        let (path, iommu) = if std::path::Path::new(&plain).exists() {
+            (plain, TYPE1V2_IOMMU)
+        } else {
+            (format!("/dev/vfio/noiommu-{group}"), NOIOMMU_IOMMU)
+        };
         let container = super::open("/dev/vfio/vfio", libc::O_RDWR)?;
-        let group = super::open(group, libc::O_RDWR)?;
+        let group = super::open(&path, libc::O_RDWR)?;
         ioctl(group, GROUP_SET_CONTAINER, (&raw const container) as usize)?;
-        ioctl(container, SET_IOMMU, NOIOMMU_IOMMU as usize)?;
-        let name = std::ffi::CString::new(name).map_err(|e| e.to_string())?;
-        ioctl(group, GROUP_GET_DEVICE_FD, name.as_ptr() as usize)
+        ioctl(container, SET_IOMMU, iommu as usize)?;
+        let cname = std::ffi::CString::new(name).map_err(|e| e.to_string())?;
+        let device = ioctl(group, GROUP_GET_DEVICE_FD, cname.as_ptr() as usize)?;
+        Ok((device, (iommu == TYPE1V2_IOMMU).then_some(container)))
+    }
+
+    /// Maps `len` bytes of this process at `vaddr` at I/O address `iova` of the
+    /// container's IOMMU, for the function to read and write (struct
+    /// vfio_iommu_type1_dma_map).
+    pub fn map_dma(container: libc::c_int, vaddr: u64, iova: u64, len: u64) -> Result<(), String> {
+        let mut map = [0u8; 32];
+        map[0..4].copy_from_slice(&32u32.to_le_bytes());
+        map[4..8].copy_from_slice(&3u32.to_le_bytes());
+        map[8..16].copy_from_slice(&vaddr.to_le_bytes());
+        map[16..24].copy_from_slice(&iova.to_le_bytes());
+        map[24..32].copy_from_slice(&len.to_le_bytes());
+        ioctl(container, IOMMU_MAP_DMA, map.as_ptr() as usize).map(drop)
     }
 
     /// Where region `index` (a BAR) is in the device's descriptor.
@@ -1376,9 +1509,10 @@ fn host() -> Result<(), String> {
     let out = vm
         .args(["run", "--kernel", "/l2", "--init", "/init", "--cpus", "2"])
         .args(["--memory", "256", "--cmdline"])
-        // A function the inner guest is given it takes through VFIO, in a no-IOMMU group.
+        // A function the inner guest is given it takes through VFIO: in a no-IOMMU group,
+        // or behind the inner machine's IOMMU, whose GICv2m frame isolates no MSIs.
         .arg(format!(
-            "console=ttyS0 panic=-1 vfio.enable_unsafe_noiommu_mode=1 shards_test={test}"
+            "console=ttyS0 panic=-1 vfio.enable_unsafe_noiommu_mode=1 vfio_iommu_type1.allow_unsafe_interrupts=1 shards_test={test}"
         ))
         .args(args.split(',').filter(|a| !a.is_empty()))
         .output()

@@ -429,7 +429,7 @@ fn a_pci_functions_interrupts_reach_the_guest() {
             test_guest().to_str().unwrap(),
             "--pci-test",
             "--cmdline",
-            "console=ttyS0 panic=-1 vfio.enable_unsafe_noiommu_mode=1 shards_test=pci-irq",
+            "console=ttyS0 panic=-1 vfio.enable_unsafe_noiommu_mode=1 vfio_iommu_type1.allow_unsafe_interrupts=1 shards_test=pci-irq",
         ],
         TIMEOUT,
     );
@@ -440,6 +440,51 @@ fn a_pci_functions_interrupts_reach_the_guest() {
         "{r}"
     );
 }
+
+/// A guest's GICv2m frame isolates no MSIs, and its IOMMU remaps no interrupts, so VFIO's
+/// type 1 takes a group of it only where told that a function's DMA may reach the frame
+/// (vfio_iommu_type1.c, `allow_unsafe_interrupts`): the tests' guests are told so.
+///
+/// A PCI function's DMA goes through the machine's IOMMU (D154): the test guest, its
+/// kernel virtio-iommu's driver, takes the test function through vfio-pci in a group with
+/// an IOMMU, maps two pages of its own at I/O addresses of its choosing, and has the
+/// function's DMA engine move a page of a pattern from one into its buffer and back to the
+/// other, then to an address it never mapped, which moves nothing.
+#[test]
+fn a_pci_functions_dma_goes_through_its_iommu() {
+    if cannot_run_vms() {
+        return;
+    }
+    let Some(kernel) = common::nested_kernel() else {
+        eprintln!("SKIP: no pinned kernel with VFIO for {}", common::ARCH);
+        return;
+    };
+    let r = vm_run(
+        &[
+            "--kernel",
+            kernel.to_str().unwrap(),
+            "--init",
+            test_guest().to_str().unwrap(),
+            "--pci-test",
+            "--cmdline",
+            "console=ttyS0 panic=-1 vfio_iommu_type1.allow_unsafe_interrupts=1 shards_test=pci-dma",
+        ],
+        TIMEOUT,
+    );
+    assert_eq!(r.status, Some(0), "{r}");
+    assert!(r.stdout.contains(DMA_THROUGH_IOMMU), "{r}");
+    assert!(
+        r.stdout.lines().any(|l| l.trim_end() == "SHARDS-TEST PASS"),
+        "{r}"
+    );
+}
+
+/// What the test guest says of its DMA (`pci-dma`): through an IOMMU, or by guest-physical
+/// address where its group has none.
+const DMA_THROUGH_IOMMU: &str =
+    "SHARDS-TEST INFO dma: 4096 bytes into the function and back, through its IOMMU";
+const DMA_BY_ADDRESS: &str =
+    "SHARDS-TEST INFO dma: 4096 bytes into the function and back, through guest-physical addresses";
 
 /// A guest that is itself a KVM host runs VMs of its own with shards' VM process for its
 /// Linux (D132, D154), on arm64 with shards' KVM backend: the inner guest boots on KVM's
@@ -522,23 +567,39 @@ fn a_nested_guest_runs_vms_of_its_own() {
             "the inner guest's interrupts: {r}"
         );
     };
-    for test in ["pci", "pci-irq"] {
+    let dma = |r: &common::Run, how: &str| {
+        assert!(
+            r.stdout.lines().any(|l| l.trim_end() == format!("L2: {how}")),
+            "the inner guest's DMA: {r}"
+        );
+    };
+    for test in ["pci", "pci-irq", "pci-dma"] {
         let bus = outer(&[], &format!("shards_l2={test} shards_l2_args=--pci-test"));
         assert_eq!(bus.status, Some(0), "{bus}");
         passed(&bus);
         if test == "pci-irq" {
             interrupted(&bus);
         }
+        // The inner guest's own bus, behind the outer VM process's IOMMU.
+        if test == "pci-dma" {
+            dma(&bus, DMA_THROUGH_IOMMU);
+        }
         let passed_through = outer(
             &["--pci-test"],
             &format!(
-                "shards_l2={test} shards_l1_vfio=0000:00:01.0 shards_l2_args=--vfio,0000:00:01.0 vfio.enable_unsafe_noiommu_mode=1 shards_l1_log=debug"
+                "shards_l2={test} shards_l1_vfio=0000:00:01.0 shards_l2_args=--vfio,0000:00:01.0 vfio.enable_unsafe_noiommu_mode=1 vfio_iommu_type1.allow_unsafe_interrupts=1 shards_l1_log=debug"
             ),
         );
         assert_eq!(passed_through.status, Some(0), "{passed_through}");
         passed(&passed_through);
         if test == "pci-irq" {
             interrupted(&passed_through);
+        }
+        // The inner guest has no IOMMU, and gives the function its pages' guest-physical
+        // addresses: the I/O addresses the outer VM process mapped its RAM at, through
+        // the outer guest's IOMMU, which the outermost VMM's function's DMA goes through.
+        if test == "pci-dma" {
+            dma(&passed_through, DMA_BY_ADDRESS);
         }
         // BARs 0 and 4 in the inner guest's memory as the guest enables the function's
         // memory space, reached without exits to the outer VM process; BAR 2, all MSI-X,

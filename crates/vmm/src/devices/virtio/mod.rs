@@ -9,6 +9,7 @@ pub mod block;
 #[cfg(unix)]
 pub mod fs;
 pub mod gpu;
+pub mod iommu;
 pub mod mem;
 pub mod mmio;
 pub mod net;

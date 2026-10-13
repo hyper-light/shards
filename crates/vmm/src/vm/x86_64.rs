@@ -422,13 +422,18 @@ fn assemble(
     // A PCI bus takes the last of the virtio devices' GSIs for its INTx (D154).
     let has_pci = pci.test || !pci.vfio.is_empty();
     let virtio_max = layout::VIRTIO_MMIO_MAX - u64::from(has_pci);
+    // The IOMMU of the functions the VMM emulates, last of the virtio devices, the local
+    // APICs' MSI window bypassed (D154; virtio 1.3 §5.13.3: the x86 MSI range,
+    // 0xfee00000 to 0xfeefffff).
+    let (iommu, iommu_device) = super::test_iommu(pci, Some((0xfee0_0000, 0xfeef_ffff))).unzip();
     let devices = super::virtio_devices(
         config,
         &regions,
         hosts,
-        hotplug.into_iter().chain(reporting).collect(),
+        hotplug.into_iter().chain(reporting).chain(iommu_device).collect(),
         virtio_max,
     )?;
+    let iommu_at = iommu.is_some().then(|| devices.len() - 1);
     let mut bus = Bus {
         pmem: regions
             .iter()
@@ -451,6 +456,7 @@ fn assemble(
             base,
             size: virtio_mmio::WINDOW,
             gsi,
+            iommu: iommu_at == Some(i),
         });
     }
     let control = Arc::new(Control::default());
@@ -502,6 +508,7 @@ fn assemble(
         vm: &vm,
         memory,
         irqs: routes,
+        iommu: iommu.clone(),
     };
     let pci = super::pci_bus(
         &mut bus.mmio,
@@ -518,6 +525,7 @@ fn assemble(
         mem64,
         intx: routed.intx,
         gsi: layout::GSI_PCI,
+        iommu: iommu.iter().map(|_| u16::from(super::TEST_DEVICE) << 3).collect(),
     });
     Ok(Assembled {
         vm,
