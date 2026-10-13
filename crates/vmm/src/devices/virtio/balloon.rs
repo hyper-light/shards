@@ -355,7 +355,8 @@ mod tests {
     }
 
     /// A reported range whose pages the host holds none of, never touched, is left alone:
-    /// nothing to give back, and the stage 2 untouched.
+    /// nothing to give back, and the stage 2 untouched. Where the host cannot say which it
+    /// never touched (Windows, `platform::untouched`), each range is given back.
     #[test]
     fn a_range_the_host_holds_nothing_of_is_left_alone() {
         let memory = GuestMemory::anonymous(&[(RAM, 4 * BLOCK as usize)]).unwrap();
@@ -364,14 +365,25 @@ mod tests {
         let said = AtomicBool::new(false);
         let report = chain(&[(RAM, BLOCK as u32), (RAM + 2 * BLOCK, BLOCK as u32)]);
         assert_eq!(answer(&report, &memory, &fake, &said), 0);
-        assert_eq!(
-            *fake.log.lock().unwrap(),
-            [
-                format!("unmap {RAM:#x}+{BLOCK:#x}"),
-                format!("map {RAM:#x}+{BLOCK:#x}")
-            ],
-            "the touched block alone"
-        );
+        let untouched = RAM + 2 * BLOCK;
+        let host = memory.host_ptr(untouched, BLOCK as usize).unwrap();
+        // SAFETY: guest RAM of `memory`, whole host pages of it.
+        let says = unsafe {
+            crate::platform::untouched(host, BLOCK as usize, crate::platform::page_size().unwrap())
+        }
+        .unwrap()
+        .is_some();
+        let mut given = vec![
+            format!("unmap {RAM:#x}+{BLOCK:#x}"),
+            format!("map {RAM:#x}+{BLOCK:#x}"),
+        ];
+        if !says {
+            given.extend([
+                format!("unmap {untouched:#x}+{BLOCK:#x}"),
+                format!("map {untouched:#x}+{BLOCK:#x}"),
+            ]);
+        }
+        assert_eq!(*fake.log.lock().unwrap(), given, "the touched block alone");
     }
 
     /// The configuration asks for no pages and holds what the driver writes of `actual`
