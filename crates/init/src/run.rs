@@ -2985,22 +2985,11 @@ fn start_joiner(
     };
     // Its devices, as the workload's are found and confined (D44): the VM's, their nodes
     // made in its own /dev once its root is built, its cgroup's filter theirs.
-    let devices = spec
+    let mut devices = spec
         .setup
         .iter()
         .find_map(|e| e.strip_prefix(b"devices="))
-        .map(|e| {
-            // Its user database is its image's, read once its root is built: here, a CDI
-            // node whose spec gives no owner takes a numeric user's (D146).
-            let owner = || {
-                user::resolve(&spec.user, None, None)
-                    .map(|u| (u.uid, u.gid))
-                    .map_err(|e| {
-                        format!("{e}: a joining microVM's CDI node takes a numeric user as its owner")
-                    })
-            };
-            crate::devices::prepare_joiner(e, &owner)
-        })
+        .map(crate::devices::prepare_joiner)
         .transpose()
         .map_err(setup_failed)?;
     let mut standby = Standby::forked(Born::Joined(join, id), (None, None))?;
@@ -3024,7 +3013,18 @@ fn start_joiner(
         .partition(|e| e.starts_with(b"sysctl="));
     let mut inherited = Inherited::default();
     let ready = sysctls_in(pid, &sysctls)
-        .and_then(|()| devices.as_ref().map_or(Ok(()), |d| nodes_in(pid, d.nodes())))
+        .and_then(|()| match devices.as_mut() {
+            // Its CDI nodes' owner where their spec gives none (D146): its user, by the
+            // user database its image's root, now built, gave.
+            Some(d) => d
+                .own(&|| {
+                    user::resolve(&spec.user, standby.passwd.as_deref(), standby.group.as_deref())
+                        .map(|u| (u.uid, u.gid))
+                })
+                .map_err(setup_failed)
+                .and_then(|()| nodes_in(pid, d.nodes())),
+            None => Ok(()),
+        })
         .and_then(|()| limit_in(&crate::join::cgroup(id), &spec.cgroup, devices.as_ref(), Some(id)))
         .and_then(|()| sort_setup(&setup, &mut inherited))
         .and_then(|setup| reaper_ready(&mut standby, spec).map(|()| setup));

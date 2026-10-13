@@ -3630,8 +3630,8 @@ D136.
   bind, a name refused at start, a hook refused; `--device test.example/gpu=0` finds
   Venus. Mutation-checked: without `nosuid` on the guest's mount, or with root as a
   node's owner, the test fails.
-- **To build:** a joining microVM's node whose spec gives no owner takes a numeric
-  `--user` alone, its image's user database being read once its root is built.
+- **A joiner's nodes** (D119) are owned once its root is built: its user by name is
+  resolved by its own image's users, as a run's is; verified (`-u app`).
 
 ### D145. A build's steps given the GPU by CDI name
 

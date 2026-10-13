@@ -238,6 +238,9 @@ pub struct Prepared {
     throttles: Vec<Vec<u8>>,
     rules: Option<Vec<Rule>>,
     nodes: Vec<Node>,
+    /// CDI's nodes whose spec gives no owner (D146): each its index in `nodes`, and
+    /// whether its user and its group are the process's.
+    unowned: Vec<(usize, bool, bool)>,
 }
 
 /// What setup entry `entry` asks, as dockerd makes a spec of it (WithResources, then
@@ -247,23 +250,20 @@ pub struct Prepared {
 ///
 /// `owner` is the process's user and group, which CDI gives a node whose spec gives it none.
 pub fn prepare(entry: &[u8], owner: &dyn Fn() -> Result<(u32, u32), String>) -> Result<Prepared, String> {
-    prepare_with(entry, true, owner)
+    let mut prepared = prepare_with(entry)?;
+    prepared.own(owner)?;
+    make_nodes(&prepared.nodes)?;
+    prepared.nodes.clear();
+    Ok(prepared)
 }
 
 /// [`prepare`] for a joiner (D119), whose nodes are made in its own `/dev`, in its mount
 /// namespace ([`Prepared::nodes`]), not in the one init shares with the workload.
-pub fn prepare_joiner(
-    entry: &[u8],
-    owner: &dyn Fn() -> Result<(u32, u32), String>,
-) -> Result<Prepared, String> {
-    prepare_with(entry, false, owner)
+pub fn prepare_joiner(entry: &[u8]) -> Result<Prepared, String> {
+    prepare_with(entry)
 }
 
-fn prepare_with(
-    entry: &[u8],
-    here: bool,
-    owner: &dyn Fn() -> Result<(u32, u32), String>,
-) -> Result<Prepared, String> {
+fn prepare_with(entry: &[u8]) -> Result<Prepared, String> {
     let a = asked(entry).ok_or("a malformed devices entry")?;
     // Read only where a path is named.
     let vm = if a.devices.is_empty() && a.io.is_empty() && a.cdi_nodes.is_empty() {
@@ -318,6 +318,7 @@ fn prepare_with(
             nodes.push(node);
         }
     }
+    let mut unowned = Vec::new();
     // CDI's nodes (D146), as CDI's Apply makes them (fillMissingInfo, toOCI): the guest's
     // own device at the host path, a host's numbers meaning nothing in a guest, of the kind
     // the spec says; its mode and owner the spec's, else the device's mode and the
@@ -332,10 +333,10 @@ fn prepare_with(
             }
         };
         let (mode, uid, gid) = (number(mode, 8)?, number(uid, 10)?, number(gid, 10)?);
-        let (process_uid, process_gid) = match (uid, gid) {
-            (Some(_), Some(_)) => (0, 0),
-            _ => owner()?,
-        };
+        // The process's owner, given by `own` once its user is known.
+        if uid.is_none() || gid.is_none() {
+            unowned.push((nodes.len(), uid.is_none(), gid.is_none()));
+        }
         if *kind == "p" {
             nodes.push(Node {
                 path: (*path).to_string(),
@@ -343,8 +344,8 @@ fn prepare_with(
                 major: 0,
                 minor: 0,
                 mode: mode.unwrap_or(0o666),
-                uid: uid.unwrap_or(process_uid),
-                gid: gid.unwrap_or(process_gid),
+                uid: uid.unwrap_or(0),
+                gid: gid.unwrap_or(0),
             });
             continue;
         }
@@ -367,8 +368,8 @@ fn prepare_with(
             }
         }
         node.mode = mode.unwrap_or(node.mode);
-        node.uid = uid.unwrap_or(process_uid);
-        node.gid = gid.unwrap_or(process_gid);
+        node.uid = uid.unwrap_or(0);
+        node.gid = gid.unwrap_or(0);
         given.push(dc::Given {
             path: node.path.clone(),
             rule,
@@ -391,15 +392,12 @@ fn prepare_with(
             a.cdi.join(", ")
         ));
     }
-    if here {
-        make_nodes(&nodes)?;
-        nodes.clear();
-    }
     Ok(Prepared {
         weights,
         throttles,
         rules,
         nodes,
+        unowned,
     })
 }
 
@@ -445,6 +443,28 @@ impl Prepared {
     /// The nodes still to make: a joiner's (D119), in its own `/dev`.
     pub fn nodes(&self) -> &[Node] {
         &self.nodes
+    }
+
+    /// CDI's nodes whose spec gives no owner (D146), given the process's user and group,
+    /// which `owner` says, asked once and only where a node has none: root's where the
+    /// process is root's, as CDI leaves such a node to its runtime's default.
+    pub fn own(&mut self, owner: &dyn Fn() -> Result<(u32, u32), String>) -> Result<(), String> {
+        if self.unowned.is_empty() {
+            return Ok(());
+        }
+        let (uid, gid) = owner()?;
+        for &(i, user, group) in &self.unowned {
+            if let Some(n) = self.nodes.get_mut(i) {
+                if user {
+                    n.uid = uid;
+                }
+                if group {
+                    n.gid = gid;
+                }
+            }
+        }
+        self.unowned.clear();
+        Ok(())
     }
 
     /// [`attach`](Self::attach) for a joiner's cgroup (D119), whose own filter, `default`,

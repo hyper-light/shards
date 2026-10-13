@@ -10088,4 +10088,21 @@ fn cdi_devices_are_injected_as_dockers_are() {
             .contains("a createRuntime hook (/bin/true), which runs on a container's host"),
         "{r}"
     );
+    // A joiner's node, owned by its user by name, which its own image's users say.
+    let mut provider = start(&home, &image, &["--name", "cdiprov"], &["serve", "7000", "1"]);
+    let r = run(
+        &[
+            "--rm",
+            "--network",
+            "container:cdiprov",
+            "-u",
+            "app",
+            "--device",
+            "test.example/dev=fuse",
+        ],
+        &["stat", "/dev/cdi-fuse"],
+    );
+    assert_eq!(r.stdout, "/dev/cdi-fuse other 666 1000:1000 0\n", "{r}");
+    assert_eq!(shards(&["rm", "-f", "cdiprov"]).status, Some(0));
+    let _ = provider.wait();
 }
