@@ -189,6 +189,28 @@ pub fn kernel() -> &'static Path {
     })
 }
 
+/// The pinned kernel's `gpu` variant (D144), for a guest given this Mac's GPU: arm64's
+/// alone (src/kernel.rs).
+pub fn gpu_kernel() -> Option<&'static Path> {
+    static K: OnceLock<Option<PathBuf>> = OnceLock::new();
+    K.get_or_init(|| {
+        pinned::KERNEL_GPU.map(|k| {
+            fetch(&Artifact {
+                name: k.name,
+                url: k.url,
+                sha256: k.sha256,
+            })
+        })
+    })
+    .as_deref()
+}
+
+/// Whether the `shards` under test carries the GPU's VM process (D144): built where the
+/// renderer's libraries were given (SHARDS_GPU_LIBS), an empty file elsewhere (build.rs).
+pub fn carries_gpu_vm() -> bool {
+    std::fs::metadata(carried().join("shards-vm-gpu")).is_ok_and(|m| m.len() > 0)
+}
+
 /// The pinned kernel's `kvm` variant (resources/kernel/kvm.config), for a guest that is
 /// itself a KVM host (`--nested`, D132): arm64 alone so far, where a guest can have EL2.
 /// Its release rebuilt the pinned kernels byte for byte.

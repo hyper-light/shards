@@ -1,31 +1,48 @@
 //! A run given this Mac's GPU (D144): Vulkan through Venus, in a real microVM.
 //!
-//! It needs what only a host prepared for it has: SHARDS_TEST_GPU_KERNEL, a kernel built
-//! with resources/kernel/gpu.config, and SHARDS_TEST_GPU_VM, the VM process built with the
-//! GPU's renderer (scripts/gpu-libs, `--features gpu`) and signed as build.rs signs it.
-//! Elsewhere it says SKIP.
+//! It boots the pinned gpu kernel (SHARDS_TEST_GPU_KERNEL names another to try) in the
+//! GPU's VM process that `shards` carries where it was built with the renderer
+//! (SHARDS_GPU_LIBS; SHARDS_TEST_GPU_VM names another). Where there is neither, it says
+//! SKIP.
 
 mod common;
 
+use std::ffi::OsStr;
 use std::path::PathBuf;
 
 use common::{TempDir, cannot_run_vms, guest_init, run_shards_env};
+
+/// The GPU's kernel, and the VM process the test names, if it names one; or why there is
+/// no GPU to test.
+fn gpu() -> Result<(PathBuf, Option<PathBuf>), &'static str> {
+    let vm = std::env::var_os("SHARDS_TEST_GPU_VM").map(PathBuf::from);
+    if vm.is_none() && !common::carries_gpu_vm() {
+        return Err("this shards carries no GPU VM process (SHARDS_GPU_LIBS)");
+    }
+    let kernel = match std::env::var_os("SHARDS_TEST_GPU_KERNEL") {
+        Some(k) => PathBuf::from(k),
+        None => common::gpu_kernel()
+            .ok_or("no gpu kernel is pinned for this architecture")?
+            .to_path_buf(),
+    };
+    Ok((kernel, vm))
+}
 
 /// `shards run --gpus all` of an image with Mesa's Venus: `vulkaninfo` finds the Mac's GPU
 /// through Venus, its render node given the run as `--device` gives one; and a build step
 /// given the render node by a CDI device (`RUN --device`) finds it too (D145).
 #[test]
 fn the_gpu_renders_through_venus_in_runs_and_build_steps() {
-    let (Some(kernel), Some(vm)) = (
-        std::env::var_os("SHARDS_TEST_GPU_KERNEL").map(PathBuf::from),
-        std::env::var_os("SHARDS_TEST_GPU_VM").map(PathBuf::from),
-    ) else {
-        println!("SKIP: SHARDS_TEST_GPU_KERNEL and SHARDS_TEST_GPU_VM name no GPU kernel and VM process");
-        return;
-    };
     if cannot_run_vms() {
         return;
     }
+    let (kernel, vm) = match gpu() {
+        Ok(found) => found,
+        Err(why) => {
+            println!("SKIP: {why}");
+            return;
+        }
+    };
     let home = TempDir::new("gpu-home");
     let ctx = TempDir::new("gpu-ctx");
     std::fs::write(
@@ -33,12 +50,14 @@ fn the_gpu_renders_through_venus_in_runs_and_build_steps() {
         "FROM debian:trixie-slim\nRUN apt-get update -q && apt-get install -y -q --no-install-recommends mesa-vulkan-drivers vulkan-tools\n",
     )
     .unwrap();
-    let env = [
+    let mut env: Vec<(&str, &OsStr)> = vec![
         ("SHARDS_HOME", home.as_os_str()),
         ("SHARDS_KERNEL", kernel.as_os_str()),
         ("SHARDS_INIT", guest_init().as_os_str()),
-        ("SHARDS_VM_BINARY", vm.as_os_str()),
     ];
+    if let Some(vm) = &vm {
+        env.push(("SHARDS_VM_BINARY", vm.as_os_str()));
+    }
     let timeout = std::time::Duration::from_secs(900);
     let built = run_shards_env(
         &["build"],
@@ -73,7 +92,7 @@ fn the_gpu_renders_through_venus_in_runs_and_build_steps() {
         "FROM gpu-venus:1\nRUN --device=test.example/gpu=0 vulkaninfo --summary > /venus.txt\nUSER 1000\nRUN --device=test.example/gpu=0 vulkaninfo --summary > /tmp/venus.txt\n",
     )
     .unwrap();
-    let mut step_env = env.to_vec();
+    let mut step_env = env.clone();
     step_env.push(("SHARDS_CDI_SPEC_DIRS", cdi.as_os_str()));
     let built = run_shards_env(
         &["build"],

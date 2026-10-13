@@ -60,6 +60,37 @@ fn link_gpu() {
         println!("cargo::rustc-link-lib=framework={framework}");
     }
     println!("cargo::rustc-link-lib=c++");
+    // MoltenVK's `@available` checks call compiler-rt's __isPlatformVersionAtLeast, which
+    // clang links into every Darwin program (clang's Darwin.cpp, AddLinkRuntimeLibArgs:
+    // libclang_rt.osx.a) and rustc's link does not: std's weak copy is gone under release's
+    // fat LTO, which sees no Rust caller of it. A link-lib, which reaches the binaries this
+    // library is linked into, as a build script's link-arg does not.
+    let cc = std::env::var("CC").unwrap_or_else(|_| "cc".into());
+    let resources = std::process::Command::new(&cc)
+        .arg("-print-resource-dir")
+        .output();
+    let darwin = match resources {
+        Ok(out) if out.status.success() => {
+            std::path::Path::new(String::from_utf8_lossy(&out.stdout).trim()).join("lib/darwin")
+        }
+        _ => {
+            println!(
+                "cargo::warning=the gpu feature links compiler-rt, which {cc} -print-resource-dir did not say"
+            );
+            return;
+        }
+    };
+    let rt = darwin.join("libclang_rt.osx.a");
+    if !rt.exists() {
+        println!(
+            "cargo::warning=the gpu feature links compiler-rt, which is not at {}",
+            rt.display()
+        );
+        return;
+    }
+    println!("cargo::rerun-if-changed={}", rt.display());
+    println!("cargo::rustc-link-search=native={}", darwin.display());
+    println!("cargo::rustc-link-lib=static=clang_rt.osx");
 }
 
 /// Builds src/hv/hvf/simd.c into a static library with the host C compiler, the one

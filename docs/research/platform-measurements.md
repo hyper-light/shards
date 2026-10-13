@@ -7677,3 +7677,69 @@ revision before comparing a changed API/implementation.
   waits for libnvdimm and mounts again: no deadline, and nothing more where the first
   mount succeeds. A large root reaches the host later by its region's probing (4.1 ms at
   p50 for 2.1 GB here); what makes that probing cheaper is unmeasured.
+
+### M218. E6: Venus in a guest against MoltenVK on the host (D144)
+
+- **Question.** docs/research/gpu-accelerators.md's E6: in a guest given this Mac's GPU,
+  how do Vulkan matrix multiplication and llama.cpp's tokens/s compare with the same code
+  on the host through MoltenVK; what do host-visible memory's steps cost; and what does
+  the renderer cost a VM in memory?
+- **Method.** `docs/research/measurements/venus/`: `run.sh` builds the guest's image
+  (Dockerfile: llama.cpp v0.6.0's Vulkan backend, TinyLlama 1.1B Q4_0, `blobs.c`) and the
+  same on the host against MoltenVK 1.4.2, then, in 3 rounds, runs each benchmark on each
+  side in turn: `blobs` (200 allocations of each size), test-backend-ops `perf -o
+  MUL_MAT` (218 cases), llama-bench (5 repetitions of pp512 and tg128 a round); the
+  guest's runs `--gpus all -m 8g` with release `shards` and the pinned gpu kernel.
+  `compare.py` pools them. `cold-memory.sh`: 10 cold boots each of one kernel, init and
+  root with `--gpu` and without, interleaved, the VM process's memory as each ends;
+  `run-memory.sh`: the same of 10 `shards run`s each, as a user's runs have it. Apple
+  M5 Max, macOS 26.4.1, 87a17403 with the gpu kernel pinned, 2026-10-12; the host busy
+  with other projects' work throughout, its load average 7.9 to 38.9 (`load.txt`).
+- **Results.**
+  - Matrix multiplication: guest time over host time, per case, geometric mean 1.003;
+    min 0.85, p10 0.95, p50 1.00, p90 1.07, max 1.24. What runs on the GPU runs at its
+    speed through Venus.
+  - llama-bench, tokens/s, n=15 each:
+
+    | Test | Side | p50 | p90 | min | max |
+    |---|---|---|---|---|---|
+    | pp512 | guest | 5,567.1 | 5,636.0 | 4,092.1 | 5,670.4 |
+    | pp512 | host | 4,177.4 | 5,142.6 | 2,873.6 | 5,305.3 |
+    | tg128 | guest | 344.4 | 354.9 | 321.9 | 359.6 |
+    | tg128 | host | 289.4 | 307.1 | 126.5 | 315.3 |
+
+    The guest is ahead on a busy host, for two reasons found, not Venus's speed: its
+    vCPU threads run at the Mach time-constraint policy (`ps -M`: priority 97R, M8, M10),
+    which the host's other work does not preempt, where the host's llama-bench runs at
+    31T, time-sharing, as any process does; and Venus submits asynchronously, its
+    renderer's thread calling MoltenVK, where MoltenVK's own submits are synchronous by
+    default: the host with `MVK_CONFIG_SYNCHRONOUS_QUEUE_SUBMITS=0` made tg128 p50 309.5
+    from 280.6 (n=15 each, interleaved). A spawn cannot raise a process's QoS class
+    (pthread/spawn.h), and a library raising it from within (`qos.c`, loaded by
+    DYLD_INSERT_LIBRARIES) left llama-bench's threads at 31T. A quiet host's comparison
+    is unmeasured.
+  - Host-visible memory, microseconds, the median of the rounds' p50 (p99):
+
+    | Step | 4 KiB guest | host | 64 MiB guest | host |
+    |---|---|---|---|---|
+    | allocate | 0.3 (0.9) | 4.5 (33.2) | 0.3 (0.9) | 8.0 (51.2) |
+    | first map | 126.8 (680.3) | 0.0 (0.1) | 160.5 (1,331.2) | 0.0 (0.1) |
+    | first writes | 5.6 (346.0) | 1.1 (5.5) | 13.1 (862.2) | 5.7 (43.8) |
+    | unmap | 0.1 (0.4) | 0.0 (0.0) | 0.2 (0.5) | 0.0 (0.2) |
+    | free | 6.1 (43.3) | 3.5 (116.9) | 96.2 (121.3) | 26.0 (124.5) |
+
+    A guest's allocation is a command on Venus's ring, which it does not wait for; its
+    first map waits for the blob's making and its mapping into the window
+    (hv_vm_map); its first writes fault through stage 2. A sequential run of the same
+    harness, the host's load lower, had the first map at 68 to 96 µs p50.
+  - The renderer's memory, cold boots, n=10 each, MiB p50: `true` 26.3 footprint, 109.9
+    RSS with the GPU, 24.0 and 100.9 without; `vulkaninfo --summary` 27.8 and 188.5
+    with, 24.2 and 175.1 without (its device the guest's lavapipe). The renderer costs a
+    VM 2.3 to 3.6 MiB of footprint. As a user's runs have it (`run-memory.sh`, n=10
+    each, p50): a GPU run, booted cold where a run without one restores its template,
+    holds 124.1 MiB of footprint (135.4 RSS), the run without 14.8 (29.5), both with 18
+    vCPUs; with `vulkaninfo`, 149.4 (219.2) and 45.5 (117.3).
+- **Consequence (D144).** Venus gives a guest the GPU's speed for its GPU's work, and
+  costs a VM some 3 MiB. A blob's first map is the cost to keep down: about 0.1 ms each,
+  past 1 ms at p99 on a busy host. A GPU run's memory is its cold boot's (D149's
+  templates). Guest vCPUs at the time-constraint policy outrun the host's other work.

@@ -3747,10 +3747,22 @@ to test on, where no CI runner has a GPU behind an IOMMU.
   driver negotiates VIRGL, RESOURCE_BLOB, CONTEXT_INIT and BLOB_ALIGNMENT.
 - **Built by CI and releases:** the macOS arm64 jobs run scripts/gpu-libs, so `shards`
   carries `shards-vm-gpu`; CI lints vmm's `gpu` feature, which no workspace lint compiles,
-  and runs the renderer's tests, which skip where Metal finds no GPU (a virtual Mac).
-- **To build:** the gpu kernel pinned once a release publishes it (KERNEL_GPU; until then
-  SHARDS_KERNEL names one); the research's E6 measured on it; Linux's VFIO (R2). A
-  build's `RUN` steps: D145; a run's `--device` by CDI name: D146.
+  and runs the renderer's tests, which skip where Metal finds no GPU (a virtual Mac). The
+  renderer links compiler-rt (`libclang_rt.osx.a`) for MoltenVK's `@available` checks
+  (`__isPlatformVersionAtLeast`), which clang links into every Darwin program and rustc
+  does not: std's weak copy is gone under release's fat LTO, and the release build failed
+  to link without it. A link-lib, as a library's build script's link-arg reaches no
+  binary.
+- **The gpu kernel is pinned** (`KERNEL_GPU`): kernel-6.18.48-7ccc39cf716b's
+  `Image-6.18.48-aarch64-gpu`, whose release rebuilt the other kernels byte for byte; a
+  GPU run downloads it as the pinned kernel is. tests/gpu.rs boots it in the GPU's VM
+  process that `shards` carries, as a user's run does.
+- **E6 measured** (PM M218): matrix multiplication at the GPU's speed through Venus
+  (guest time over host time, geometric mean 1.003 over 218 cases); llama.cpp ahead in
+  the guest on a busy host, by its vCPUs' scheduling and Venus's asynchronous submits;
+  a blob's first map about 0.1 ms; the renderer some 3 MiB of a VM's footprint.
+- **To build:** a GPU VM from a template (D149); Linux's VFIO (R2). A build's `RUN`
+  steps: D145; a run's `--device` by CDI name: D146.
 
 ### D143. `RUN` on Windows hosts: the builder
 
