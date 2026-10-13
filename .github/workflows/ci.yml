@@ -217,6 +217,14 @@ jobs:
       # docs/benchmarks-envelope.toml).
       - name: Envelope
         run: scripts/bench-envelope target/bench-samples
+      # Guest memory advised for huge pages or not, under the runner's THP (PM M157, M225):
+      # what the advice buys a boot, and what it costs a boot's tail where THP gives huge
+      # pages to all memory and compacts at a fault only for memory advised.
+      - name: THP advice
+        if: always()
+        env:
+          SHARDS_BENCH_SAMPLES: ${{ github.workspace }}/target/bench-samples
+        run: cargo bench --locked -p shards --bench firecracker -- --thp-ab all,unadvised --runs 30
       # shards' own restores and pooled runs on this KVM host (docs/benchmarks.md).
       - name: Restore
         if: always()

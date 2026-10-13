@@ -135,8 +135,10 @@ mod compare {
     const WALK_CMDLINE: &str = "console=ttyS0 quiet panic=-1 shards_test=walk shards_walk_mib=512";
 
     /// THP's A/B (`--thp-ab all,never`, PM M157): shards alone, its guest memory on huge
-    /// pages as shards advises it (MADV_HUGEPAGE, `all`), or on none (`never`: the VM
-    /// process's THP disabled), interleaved, each order alternating. Boot: the idle guest's
+    /// pages as shards advises it (MADV_HUGEPAGE, `all`), on none (`never`: the VM
+    /// process's THP disabled), or unadvised, on what the host's THP gives memory no one
+    /// advised (`unadvised`, SHARDS_THP_ADVICE=never, PM M225), interleaved, each order
+    /// alternating. Boot: the idle guest's
     /// `to_ready` and the VMM's memory at ready, as above, with `AnonHugePages`. Work: a
     /// 1 GiB guest that writes a byte to each page of 512 MiB and reads it at random
     /// (testguest `walk`).
@@ -147,8 +149,8 @@ mod compare {
         let initrd = idle_initrd();
         for arm in &arms {
             assert!(
-                arm == "all" || arm == "never",
-                "--thp-ab: all or never, not {arm}"
+                arm == "all" || arm == "never" || arm == "unadvised",
+                "--thp-ab: all, never or unadvised, not {arm}"
             );
         }
         let command = |arm: &str, memory: &str, cmdline: &str| {
@@ -158,6 +160,9 @@ mod compare {
                 .arg("--initrd")
                 .arg(&initrd)
                 .args(["--cpus", "1", "--memory", memory, "--cmdline", cmdline]);
+            if arm == "unadvised" {
+                c.env("SHARDS_THP_ADVICE", "never");
+            }
             if arm == "never" {
                 // No huge page for any of the VM process's memory, its MADV_HUGEPAGE guest
                 // memory too: PR_SET_THP_DISABLE holds across exec (prctl(2)).

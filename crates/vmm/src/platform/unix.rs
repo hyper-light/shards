@@ -160,8 +160,10 @@ fn reserve_huge(len: usize, huge: usize) -> io::Result<NonNull<u8>> {
         }
     }
     // Advice only: without it (or with THP disabled) the memory is ordinary pages.
+    // SHARDS_THP_ADVICE=never leaves it out, for measuring what it buys (PM M157, M225).
+    let advise = std::env::var_os("SHARDS_THP_ADVICE").is_none_or(|a| a != "never");
     // SAFETY: `aligned..aligned+len` is our own mapping.
-    if unsafe { libc::madvise(aligned as *mut libc::c_void, len, libc::MADV_HUGEPAGE) } != 0 {
+    if advise && unsafe { libc::madvise(aligned as *mut libc::c_void, len, libc::MADV_HUGEPAGE) } != 0 {
         crate::debug!("MADV_HUGEPAGE: {}", io::Error::last_os_error());
     }
     NonNull::new(aligned as *mut u8).ok_or_else(|| io::Error::other("mmap returned NULL"))
