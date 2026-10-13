@@ -6,6 +6,7 @@
 //! SYSTEM_RESET come back as system events. A trapped device access completes in the
 //! kernel, which takes a read's data from the run's exit as the vCPU enters again.
 
+use std::os::fd::RawFd;
 use std::sync::{Arc, Mutex, OnceLock};
 
 use super::{Error, Kicker, Result, Slots, Thread, call, install_kick_handler, kvm, sys};
@@ -32,10 +33,14 @@ pub(super) const VCPU_LIMIT: u32 =
 /// Nothing for the process to ask of Linux first.
 pub(super) fn prepare() {}
 
-/// The GIC's interrupts: 32 private to each vCPU, then the SPIs the machine's devices use
+/// The GIC's interrupts: 32 private to each vCPU, then the SPIs the machine uses
 /// (arch::aarch64::layout), in KVM's steps of 32 (arm-vgic-v3.rst,
 /// KVM_DEV_ARM_VGIC_GRP_NR_IRQS).
-const NR_IRQS: u32 = (32 + layout::SPI_VIRTIO_MMIO + layout::VIRTIO_MMIO_MAX as u32).next_multiple_of(32);
+const NR_IRQS: u32 = (32 + layout::SPIS).next_multiple_of(32);
+
+/// Whether the GIC's MSI frame is in the kernel: KVM's GICv3 has none (its MSIs go to an
+/// ITS), so the machine puts a GICv2m frame of the VMM's on the bus.
+pub const MSI_FRAME_IN_KERNEL: bool = false;
 
 /// The maintenance interrupt of a guest with EL2: PPI 9, INTID 25, as its devicetree says
 /// (arch::aarch64::boot) and as Hypervisor.framework's.
@@ -69,13 +74,19 @@ pub fn el2_supported() -> bool {
 pub const NO_EL2: &str = "this host's KVM gives a guest no EL2: virtualization of a guest's own needs a CPU with FEAT_NV2, its kernel booted with kvm-arm.mode=nested";
 
 /// KVM's GICv3 geometry: a distributor of one 64 KiB frame, and two for each vCPU's
-/// redistributor, each placed on a 64 KiB boundary (arm-vgic-v3.rst).
+/// redistributor, each placed on a 64 KiB boundary (arm-vgic-v3.rst); its SPIs, INTID 32
+/// on, as many as the machine asks ([`NR_IRQS`]); and the machine's MSI frame, one 64 KiB
+/// page of the VMM's.
 #[derive(Debug, Clone, Copy)]
 pub struct GicParams {
     pub dist_size: u64,
     pub dist_align: u64,
     pub redist_size: u64,
     pub redist_align: u64,
+    pub msi_size: u64,
+    pub msi_align: u64,
+    pub spi_base: u32,
+    pub spi_count: u32,
 }
 
 pub fn gic_params() -> Result<GicParams> {
@@ -84,10 +95,14 @@ pub fn gic_params() -> Result<GicParams> {
         dist_align: 64 << 10,
         redist_size: sys::VGIC_V3_REDIST_SIZE,
         redist_align: 64 << 10,
+        msi_size: 64 << 10,
+        msi_align: 64 << 10,
+        spi_base: 32,
+        spi_count: NR_IRQS - 32,
     })
 }
 
-/// A GICv2m-style MSI frame, which KVM's GICv3 has none of.
+/// A GICv2m frame: the VMM's, at `base`, its SPIs `count` from INTID `first_intid`.
 #[derive(Debug, Clone, Copy)]
 pub struct MsiFrame {
     pub base: u64,
@@ -112,6 +127,31 @@ impl Gic {
     pub fn set_spi(&self, intid: u32, level: bool) -> Result<()> {
         let irq = (sys::IRQ_TYPE_SPI << sys::IRQ_TYPE_SHIFT) | (intid & sys::IRQ_NUM_MASK);
         self.0.irq_line(irq, level).map_err(call("KVM_IRQ_LINE"))
+    }
+
+    /// Delivers an MSI that the machine's GICv2m frame, at `_doorbell`, took for SPI
+    /// `intid`: an edge on it, as the frame raises its SPIs (Linux irq-gic-v2m.c, edge).
+    pub fn send_msi(&self, _doorbell: u64, intid: u32) -> Result<()> {
+        self.set_spi(intid, true)
+    }
+
+    /// Raises SPI `intid` each time `event` is written, in the kernel (KVM_IRQFD): its GSI
+    /// is the SPI's number, as KVM routes every SPI by default (vgic-irqfd.c,
+    /// kvm_vgic_setup_default_irq_routing). With `resample`, a level-triggered line, which
+    /// KVM lowers as the guest ends the interrupt, writing `resample`.
+    pub fn irqfd(&self, event: RawFd, intid: u32, resample: Option<RawFd>) -> Result<()> {
+        let gsi = intid
+            .checked_sub(32)
+            .ok_or_else(|| Error::Guest(format!("INTID {intid}: not an SPI")))?;
+        self.0.irqfd(event, gsi, resample).map_err(call("KVM_IRQFD"))
+    }
+
+    /// Takes `event` from SPI `intid` again.
+    pub fn irqfd_remove(&self, event: RawFd, intid: u32) -> Result<()> {
+        let gsi = intid
+            .checked_sub(32)
+            .ok_or_else(|| Error::Guest(format!("INTID {intid}: not an SPI")))?;
+        self.0.irqfd_remove(event, gsi).map_err(call("KVM_IRQFD"))
     }
 }
 
@@ -186,13 +226,9 @@ impl Vm {
 
     /// Creates the in-kernel GICv3 at `layout`'s places, its interrupts the machine's
     /// ([`NR_IRQS`]), and where the guest has EL2 its maintenance interrupt; it is
-    /// initialized once every vCPU exists ([`Vm::vcpus_created`]).
+    /// initialized once every vCPU exists ([`Vm::vcpus_created`]). `layout`'s MSI frame is
+    /// the machine's to emulate ([`MSI_FRAME_IN_KERNEL`]).
     pub fn create_gic(&self, layout: &GicLayout) -> Result<Gic> {
-        if layout.msi.is_some() {
-            return Err(Error::Guest(
-                "KVM's GICv3 has no MSI frame: MSIs reach it through an ITS".into(),
-            ));
-        }
         let gic = self
             .fd
             .create_device(sys::DEV_TYPE_ARM_VGIC_V3)

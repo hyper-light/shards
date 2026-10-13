@@ -92,6 +92,8 @@ pub fn confine() -> Result<(), String> {
         libc::SYS_exit_group,
         libc::SYS_ppoll,
         libc::SYS_pipe2,
+        // The eventfds a passed-through device's interrupts reach KVM by (D154).
+        libc::SYS_eventfd2,
         libc::SYS_dup,
         libc::SYS_dup3,
         libc::SYS_accept4,

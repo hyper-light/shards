@@ -26,6 +26,26 @@ pub trait PciFunction: Send + Sync {
 /// function).
 pub type Function = (u8, Arc<dyn PciFunction>);
 
+/// Sends a message-signalled interrupt (PCI Local Bus 3.0 §6.8): a write of `data` to
+/// `address`, which the machine delivers as its interrupt controller takes MSIs.
+pub trait Msi: Send + Sync {
+    fn send(&self, address: u64, data: u32);
+}
+
+/// Where a function the VMM emulates sends its interrupts: its INTx pin's line, and the
+/// machine's MSIs.
+#[derive(Clone)]
+pub struct Lines {
+    pub intx: Arc<dyn super::Interrupt>,
+    pub msi: Arc<dyn Msi>,
+}
+
+impl std::fmt::Debug for Lines {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Lines")
+    }
+}
+
 /// The ECAM window: an access's offset holds its bus (27:20), device (19:15), function
 /// (14:12) and register (11:0) (§7.2.2, Table 7-1). Only bus 0 is there; a function not
 /// there reads as all ones, as an access that no function claims completes (§2.3.2), and
@@ -127,6 +147,8 @@ pub struct Header {
     /// The 4 KiB of configuration space, as reads see it.
     space: Mutex<Vec<u8>>,
     bars: Vec<Bar>,
+    /// Its MSI capability, if it has one.
+    msi: Option<MsiCap>,
 }
 
 /// Configuration space registers (§6.1, §6.2).
@@ -141,14 +163,61 @@ pub mod reg {
     pub const BAR0: u16 = 0x10;
     pub const SUBSYSTEM_VENDOR: u16 = 0x2c;
     pub const SUBSYSTEM: u16 = 0x2e;
+    pub const CAPABILITIES: u16 = 0x34;
     pub const INTERRUPT_LINE: u16 = 0x3c;
     pub const INTERRUPT_PIN: u16 = 0x3d;
+    /// The status register's interrupt status (an INTx asserted) and capabilities list.
+    pub const STATUS_INTERRUPT: u16 = 1 << 3;
+    pub const STATUS_CAPABILITIES: u16 = 1 << 4;
+    /// MSI's capability ID (§6.8.1), and its registers from the capability's start: its
+    /// message control (enable, bit 0; 64-bit addresses, bit 7; per-vector masking, bit
+    /// 8), address, upper address where 64-bit, and data, after the address's 32 or 64
+    /// bits.
+    pub const CAP_MSI: u8 = 0x05;
+    pub const MSI_CONTROL: u16 = 2;
+    pub const MSI_ADDRESS: u16 = 4;
+    pub const MSI_ADDRESS_HIGH: u16 = 8;
+    pub const MSI_DATA: u16 = 12;
+    pub const MSI_DATA_32: u16 = 8;
+    pub const MSI_ENABLE: u16 = 1 << 0;
+    pub const MSI_64BIT: u16 = 1 << 7;
+    pub const MSI_MASKING: u16 = 1 << 8;
     /// The command register's I/O space, memory space and bus master enables.
     pub const COMMAND_IO: u16 = 1 << 0;
     pub const COMMAND_MEMORY: u16 = 1 << 1;
     pub const COMMAND_MASTER: u16 = 1 << 2;
     /// INTx disabled.
     pub const COMMAND_INTX_OFF: u16 = 1 << 10;
+}
+
+/// The interrupts a function says it has (§6.2.4, §6.8.1): its INTx pin, 1 to 4 for
+/// INTA# to INTD# and 0 for none, and its MSI capability.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Interrupts {
+    pub pin: u8,
+    pub msi: Option<MsiCap>,
+}
+
+/// An MSI capability the VMM keeps (§6.8.1): where it is, the capability after it in the
+/// list (0 for none), and whether its addresses are 64-bit; one message, without
+/// per-vector masking.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MsiCap {
+    pub at: u16,
+    pub next: u8,
+    pub is64: bool,
+}
+
+impl MsiCap {
+    /// Where its data register is.
+    fn data(&self) -> u16 {
+        self.at
+            + if self.is64 {
+                reg::MSI_DATA
+            } else {
+                reg::MSI_DATA_32
+            }
+    }
 }
 
 /// What a function says it is.
@@ -165,8 +234,26 @@ pub struct Identity {
 
 impl Header {
     /// A function's header with `bars`, each placed where its address is a multiple of its
-    /// size (§6.2.5.1), sizes powers of two of at least 16 bytes (memory) or 4 (I/O).
+    /// size (§6.2.5.1), sizes powers of two of at least 16 bytes (memory) or 4 (I/O), and
+    /// no interrupt.
     pub fn new(id: Identity, bars: Vec<Bar>) -> Result<Header, String> {
+        Header::with_interrupts(id, bars, Interrupts::default())
+    }
+
+    /// [`Header::new`]'s, with `interrupts`: its INTx pin, and its MSI capability, the
+    /// first in its list, in the header's device-specific part (§6.7).
+    pub fn with_interrupts(id: Identity, bars: Vec<Bar>, interrupts: Interrupts) -> Result<Header, String> {
+        if interrupts.pin > 4 {
+            return Err(format!("INTx pin {}: not one of INTA# to INTD#", interrupts.pin));
+        }
+        if let Some(cap) = interrupts.msi
+            && (cap.at < 0x40 || !cap.at.is_multiple_of(4) || cap.data() + 2 > 0x100)
+        {
+            return Err(format!(
+                "an MSI capability at {:#x}: past the header, in it, or unaligned",
+                cap.at
+            ));
+        }
         let mut space = vec![0u8; 4096];
         let mut put = |at: u16, bytes: &[u8]| {
             if let Some(d) = space.get_mut(usize::from(at)..usize::from(at) + bytes.len()) {
@@ -180,6 +267,14 @@ impl Header {
         put(reg::HEADER_TYPE, &[0]);
         put(reg::SUBSYSTEM_VENDOR, &id.subsystem_vendor.to_le_bytes());
         put(reg::SUBSYSTEM, &id.subsystem.to_le_bytes());
+        put(reg::INTERRUPT_PIN, &[interrupts.pin]);
+        if let Some(cap) = interrupts.msi {
+            put(reg::STATUS, &reg::STATUS_CAPABILITIES.to_le_bytes());
+            put(reg::CAPABILITIES, &[cap.at as u8]);
+            put(cap.at, &[reg::CAP_MSI, cap.next]);
+            let control = if cap.is64 { reg::MSI_64BIT } else { 0 };
+            put(cap.at + reg::MSI_CONTROL, &control.to_le_bytes());
+        }
         for bar in &bars {
             let least = if bar.kind == BarKind::Io { 4 } else { 16 };
             let registers = if bar.kind == BarKind::Memory64 { 2 } else { 1 };
@@ -204,6 +299,7 @@ impl Header {
         Ok(Header {
             space: Mutex::new(space),
             bars,
+            msi: interrupts.msi,
         })
     }
 
@@ -220,6 +316,37 @@ impl Header {
         ])
     }
 
+    /// The MSI the function sends, its address and data, where the guest enabled MSI.
+    pub fn msi(&self) -> Option<(u64, u32)> {
+        let cap = self.msi?;
+        let space = self.space.lock().unwrap_or_else(PoisonError::into_inner);
+        let field = |at: u16, len: usize| {
+            space
+                .get(usize::from(at)..usize::from(at) + len)
+                .map(get_le)
+                .unwrap_or(0)
+        };
+        if field(cap.at + reg::MSI_CONTROL, 2) & u64::from(reg::MSI_ENABLE) == 0 {
+            return None;
+        }
+        let high = if cap.is64 {
+            field(cap.at + reg::MSI_ADDRESS_HIGH, 4)
+        } else {
+            0
+        };
+        let address = field(cap.at + reg::MSI_ADDRESS, 4) | (high << 32);
+        Some((address, field(cap.data(), 2) as u32))
+    }
+
+    /// Sets the status register's interrupt status: whether the function asserts INTx.
+    pub fn set_interrupt_status(&self, asserted: bool) {
+        let mut space = self.space.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(b) = space.get_mut(usize::from(reg::STATUS)) {
+            let bit = reg::STATUS_INTERRUPT as u8;
+            *b = if asserted { *b | bit } else { *b & !bit };
+        }
+    }
+
     pub fn read(&self, offset: u16, data: &mut [u8]) {
         let space = self.space.lock().unwrap_or_else(PoisonError::into_inner);
         match space.get(usize::from(offset)..usize::from(offset) + data.len()) {
@@ -228,17 +355,33 @@ impl Header {
         }
     }
 
-    /// A write: the command register's enables, the interrupt line, and the BARs as their
-    /// sizing asks; every other register is read-only.
+    /// A write: the command register's enables, the interrupt line, MSI's enable, address
+    /// and data, and the BARs as their sizing asks; every other register is read-only.
     pub fn write(&self, offset: u16, data: &[u8]) {
         let mut space = self.space.lock().unwrap_or_else(PoisonError::into_inner);
+        let msi = self.msi;
         let writable = |at: u16| -> Option<u8> {
             match at {
                 // Command: I/O, memory, bus master and INTx disable.
                 0x04 => Some(0x07),
                 0x05 => Some(0x04),
                 0x3c => Some(0xff),
-                _ => None,
+                _ => {
+                    // MSI: its enable alone of its control (one message, so no more to
+                    // enable), its address but the two bits it keeps clear, its upper
+                    // address where 64-bit, and its data.
+                    let cap = msi?;
+                    let from = at.checked_sub(cap.at)?;
+                    let data = cap.data() - cap.at;
+                    match from {
+                        2 => Some(0x01),
+                        4 => Some(0xfc),
+                        5..=7 => Some(0xff),
+                        8..=11 if cap.is64 => Some(0xff),
+                        _ if from == data || from == data + 1 => Some(0xff),
+                        _ => None,
+                    }
+                }
             }
         };
         for (i, &byte) in data.iter().enumerate() {

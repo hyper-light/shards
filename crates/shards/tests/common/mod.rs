@@ -212,9 +212,10 @@ pub fn carries_gpu_vm() -> bool {
 }
 
 /// The pinned kernel's `kvm` variant (resources/kernel/kvm.config), for a guest that is
-/// itself a KVM host (`--nested`, D132): arm64 alone so far, where a guest can have EL2.
-/// Of the pinned kernels' own release, or the one SHARDS_TEST_NESTED_KERNEL names, as
-/// SHARDS_TEST_KERNEL names another kernel for every other guest.
+/// itself a KVM host (`--nested`, D132), and for one that takes a PCI function it was given
+/// through VFIO (D154): arm64's so far. Of the pinned kernels' own release, or the one
+/// SHARDS_TEST_NESTED_KERNEL names, as SHARDS_TEST_KERNEL names another kernel for every
+/// other guest.
 pub fn nested_kernel() -> Option<&'static Path> {
     static K: OnceLock<Option<PathBuf>> = OnceLock::new();
     K.get_or_init(|| {

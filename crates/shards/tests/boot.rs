@@ -293,7 +293,7 @@ fn rejects_malformed_vm_arguments() {
 fn this_host_has_its_hypervisor_backend() {
     let expected = match (std::env::consts::OS, common::ARCH) {
         ("macos", "aarch64") => Some("hvf"),
-        ("linux", "x86_64") => Some("kvm"),
+        ("linux", "x86_64" | "aarch64") => Some("kvm"),
         ("windows", "x86_64") => Some("whp"),
         _ => None,
     };
@@ -403,13 +403,51 @@ fn a_nested_guest_is_a_kvm_host() {
     }
 }
 
+/// A PCI function's interrupts reach the guest (D154): the test function, taken by vfio-pci
+/// in the guest's own userspace (a no-IOMMU group), raises INTx twice, acknowledged and
+/// unmasked between, then one MSI, each signalled on an eventfd. On arm64, INTx on an SPI
+/// of the device's own and the MSI through the GIC's GICv2m frame; on x86_64, INTx on the
+/// bus's GSI as the DSDT's _PRT says, and the MSI to the local APICs.
+#[test]
+fn a_pci_functions_interrupts_reach_the_guest() {
+    if cannot_run_vms() {
+        return;
+    }
+    let Some(kernel) = common::nested_kernel() else {
+        eprintln!("SKIP: no pinned kernel with VFIO for {}", common::ARCH);
+        return;
+    };
+    let r = vm_run(
+        &[
+            "--kernel",
+            kernel.to_str().unwrap(),
+            "--init",
+            test_guest().to_str().unwrap(),
+            "--pci-test",
+            "--cmdline",
+            "console=ttyS0 panic=-1 vfio.enable_unsafe_noiommu_mode=1 shards_test=pci-irq",
+        ],
+        TIMEOUT,
+    );
+    assert_eq!(r.status, Some(0), "{r}");
+    assert!(
+        r.stdout.contains("SHARDS-TEST INFO interrupts: INTx 2, MSI 1"),
+        "{r}"
+    );
+    assert!(
+        r.stdout.lines().any(|l| l.trim_end() == "SHARDS-TEST PASS"),
+        "{r}"
+    );
+}
+
 /// A guest that is itself a KVM host runs VMs of its own with shards' VM process for its
 /// Linux (D132, D154), on arm64 with shards' KVM backend: the inner guest boots on KVM's
 /// GICv3, its second vCPU brought up by KVM's PSCI, and passes its test; its PCI bus
-/// reaches the test function; and a PCI function the outer guest was given, bound to
-/// vfio-pci there, reaches the inner guest passed through by VFIO, its configuration
-/// space and its BAR the outer function's. An x86_64 host gives no guest virtualization
-/// of its own yet.
+/// reaches the test function, whose interrupts reach it, INTx and MSI, through the VMM's
+/// GICv2m frame; and a PCI function the outer guest was given, bound to vfio-pci there,
+/// reaches the inner guest passed through by VFIO, its configuration space and its BAR the
+/// outer function's, and its INTx and MSI by KVM's irqfds. An x86_64 host gives no guest
+/// virtualization of its own yet.
 #[test]
 fn a_nested_guest_runs_vms_of_its_own() {
     if cannot_run_vms() {
@@ -429,7 +467,9 @@ fn a_nested_guest_runs_vms_of_its_own() {
         .dir("sys", 0o555)
         .file("init", 0o755, &read(test_guest()))
         .file("vm", 0o755, &read(common::guest_vm_process()))
-        .file("l2", 0o644, &read(kernel()));
+        // The inner guests' kernel has VFIO too, which takes their PCI functions'
+        // interrupts.
+        .file("l2", 0o644, &read(nested));
     std::fs::write(&initrd, cpio.finish()).unwrap();
     let outer = |args: &[&str], cmdline: &str| {
         let cmdline = format!("console=ttyS0 panic=-1 shards_test=host {cmdline}");
@@ -473,15 +513,33 @@ fn a_nested_guest_runs_vms_of_its_own() {
             "the inner guest lacks {line:?}: {booted}"
         );
     }
-    let bus = outer(&[], "shards_l2=pci shards_l2_args=--pci-test");
-    assert_eq!(bus.status, Some(0), "{bus}");
-    passed(&bus);
-    let passed_through = outer(
-        &["--pci-test"],
-        "shards_l2=pci shards_l1_vfio=0000:00:01.0 shards_l2_args=--vfio,0000:00:01.0 vfio.enable_unsafe_noiommu_mode=1",
-    );
-    assert_eq!(passed_through.status, Some(0), "{passed_through}");
-    passed(&passed_through);
+    let interrupted = |r: &common::Run| {
+        assert!(
+            r.stdout
+                .lines()
+                .any(|l| l.trim_end() == "L2: SHARDS-TEST INFO interrupts: INTx 2, MSI 1"),
+            "the inner guest's interrupts: {r}"
+        );
+    };
+    for test in ["pci", "pci-irq"] {
+        let bus = outer(&[], &format!("shards_l2={test} shards_l2_args=--pci-test"));
+        assert_eq!(bus.status, Some(0), "{bus}");
+        passed(&bus);
+        if test == "pci-irq" {
+            interrupted(&bus);
+        }
+        let passed_through = outer(
+            &["--pci-test"],
+            &format!(
+                "shards_l2={test} shards_l1_vfio=0000:00:01.0 shards_l2_args=--vfio,0000:00:01.0 vfio.enable_unsafe_noiommu_mode=1"
+            ),
+        );
+        assert_eq!(passed_through.status, Some(0), "{passed_through}");
+        passed(&passed_through);
+        if test == "pci-irq" {
+            interrupted(&passed_through);
+        }
+    }
 }
 
 /// A snapshot of a guest with memory to plug, none of it plugged (D148): the VM that

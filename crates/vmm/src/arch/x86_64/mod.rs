@@ -64,6 +64,10 @@ pub mod layout {
     /// The Generic Event Device's, which tells the guest of a new VM generation ID: the
     /// IOAPIC's last pin.
     pub const GSI_GED: u32 = 23;
+    /// A PCI bus's INTx#, every device's on this one shared line, as PCI's INTx# may be
+    /// (D154): the last of the virtio devices' pins, so that a machine with a PCI bus has
+    /// one virtio device fewer.
+    pub const GSI_PCI: u32 = 22;
     /// The i8042 data and command ports (only the reset command is emulated).
     pub const I8042: u16 = 0x60;
     /// ACPI SLEEP_CONTROL_REG and SLEEP_STATUS_REG (HW-reduced ACPI), a free port pair.

@@ -536,10 +536,33 @@ pub(crate) struct Pci<'a> {
     pub vfio: &'a [Vfio],
 }
 
-/// Puts the PCI bus `pci` asks for on `bus` (D153, D154), and says whether there is one:
-/// its ECAM window at `ecam`, and its functions' BARs in the memory window `mem32`, each at
-/// the next multiple of its size; QEMU's edu at 00:01.0 where `pci.test`, then each
-/// function passed through, on the devices after.
+/// How a machine takes its PCI functions' interrupts (D154): the line of each device's
+/// INTx pin, which its firmware tables route there, and where the MSIs of the functions
+/// the VMM emulates go.
+#[cfg(hv)]
+pub(crate) trait PciInterrupts {
+    /// The INTx line of device `device` on bus 0.
+    fn intx(&self, device: u8) -> Arc<dyn crate::devices::Interrupt>;
+    fn msi(&self) -> Arc<dyn crate::devices::pci::Msi>;
+    /// How a function passed through on device `device` interrupts the guest, by irqfds;
+    /// none where the machine routes it no interrupt.
+    #[cfg(target_os = "linux")]
+    fn route(&self, device: u8) -> Option<Arc<dyn crate::devices::pci::vfio::Route>>;
+}
+
+/// A machine's PCI bus (D153, D154): each device that raises INTx, and its pin, for the
+/// machine's firmware tables to route to [`PciInterrupts::intx`]'s line.
+#[cfg(hv)]
+#[derive(Debug, Default)]
+pub(crate) struct PciBus {
+    pub intx: Vec<(u8, u8)>,
+}
+
+/// Puts the PCI bus `pci` asks for on `bus` (D153, D154), where it asks for one: its ECAM
+/// window at `ecam`, and its functions' BARs in the memory window `mem32`, each at the
+/// next multiple of its size; QEMU's edu at 00:01.0 where `pci.test`, then each function
+/// passed through, on the devices after. Their interrupts go where `irqs` says; with none,
+/// the functions the VMM emulates have none.
 #[cfg(hv)]
 fn pci_bus(
     bus: &mut crate::devices::MmioBus,
@@ -548,11 +571,13 @@ fn pci_bus(
     pci: Pci<'_>,
     config: &crate::snapshot::MachineConfig,
     memory: &crate::memory::GuestMemory,
-) -> Result<bool, String> {
+    irqs: Option<&dyn PciInterrupts>,
+) -> Result<Option<PciBus>, String> {
     use crate::devices::pci;
     if !pci.test && pci.vfio.is_empty() {
-        return Ok(false);
+        return Ok(None);
     }
+    let mut routed = PciBus::default();
     let mut window = BarWindow {
         next: mem32.0,
         end: mem32
@@ -564,7 +589,14 @@ fn pci_bus(
     let mut device: u8 = 1;
     if pci.test {
         let at = window.take(pci::edu::BAR_SIZE)?;
-        let (edu, registers) = pci::edu::Edu::new(at)?;
+        let lines = irqs.map(|irqs| pci::Lines {
+            intx: irqs.intx(device),
+            msi: irqs.msi(),
+        });
+        if lines.is_some() {
+            routed.intx.push((device, pci::edu::PIN));
+        }
+        let (edu, registers) = pci::edu::Edu::new(at, lines)?;
         bus.insert(at, pci::edu::BAR_SIZE, registers)?;
         functions.push((device << 3, edu));
         device += 1;
@@ -573,10 +605,18 @@ fn pci_bus(
         if config.hotplug_mib > 0 || config.reporting {
             return Err("a VM given a host's PCI device has no memory to plug and no balloon: the device's DMA reaches guest RAM through mappings the host holds pinned (D154)".into());
         }
-        functions.extend(passed_through(bus, &mut window, pci.vfio, device, memory)?);
+        functions.extend(passed_through(
+            bus,
+            &mut window,
+            pci.vfio,
+            device,
+            memory,
+            irqs,
+            &mut routed,
+        )?);
     }
     bus.insert(ecam, pci::ECAM_SIZE, Arc::new(pci::Ecam::new(functions)))?;
-    Ok(true)
+    Ok(Some(routed))
 }
 
 /// What is left of a PCI memory window, BARs taken from its start.
@@ -616,6 +656,8 @@ fn passed_through(
     vfio: &[Vfio],
     first: u8,
     memory: &crate::memory::GuestMemory,
+    irqs: Option<&dyn PciInterrupts>,
+    routed: &mut PciBus,
 ) -> Result<Vec<crate::devices::pci::Function>, String> {
     use crate::devices::pci::{self, vfio as v};
     let mut functions: Vec<pci::Function> = Vec::new();
@@ -642,7 +684,12 @@ fn passed_through(
                 kind,
             });
         }
-        functions.push((device << 3, Arc::new(v::VfioFunction::new(opened, bars)?)));
+        let route = irqs.and_then(|irqs| irqs.route(device));
+        let function = v::VfioFunction::new(opened, bars, route)?;
+        if function.pin() != 0 {
+            routed.intx.push((device, function.pin()));
+        }
+        functions.push((device << 3, Arc::new(function)));
     }
     if functions.len() < vfio.len() {
         return Err(format!(
@@ -661,6 +708,8 @@ fn passed_through(
     _vfio: &[Vfio],
     _first: u8,
     _memory: &crate::memory::GuestMemory,
+    _irqs: Option<&dyn PciInterrupts>,
+    _routed: &mut PciBus,
 ) -> Result<Vec<crate::devices::pci::Function>, String> {
     Err("a host's PCI devices are passed through by VFIO, Linux's (D154)".into())
 }

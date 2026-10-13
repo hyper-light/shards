@@ -99,6 +99,10 @@ pub fn el2_supported() -> bool {
     sys::el2_supported()
 }
 
+/// Whether the GIC's MSI frame is the framework's own, which takes the guest's writes to
+/// its doorbell (hv_gic_config_set_msi_region_base): the VMM's need not be on the bus.
+pub const MSI_FRAME_IN_KERNEL: bool = true;
+
 /// Why a guest is given no EL2 here.
 pub const NO_EL2: &str = "this Mac gives a guest no EL2: virtualization of a guest's own needs an M3 or later, on macOS 15 or later";
 

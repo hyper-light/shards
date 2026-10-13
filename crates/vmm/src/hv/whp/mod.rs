@@ -23,7 +23,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use self::ffi::*;
 use super::{Exit, Io};
-use crate::arch::x86_64::ioapic::{Ioapic, Sent};
+use crate::arch::x86_64::ioapic::{Ioapic, Message, Sent};
 use crate::arch::x86_64::mmio::{self, Access, Extend, Mode};
 use crate::arch::x86_64::{Boot, Segment, cpuid, layout};
 use crate::snapshot::codec::{self, DecodeError, Reader, Writer};
@@ -733,6 +733,11 @@ impl Irqs {
     pub fn pulse(&self, gsi: u32) -> Result<()> {
         self.set(gsi, true)?;
         self.set(gsi, false)
+    }
+
+    /// Delivers the MSI of `address` and `data`, as the IOAPIC delivers its messages.
+    pub fn msi(&self, address: u64, data: u32) -> Result<()> {
+        self.partition.deliver(&Sent::one(Message::of_msi(address, data)))
     }
 }
 

@@ -3657,24 +3657,59 @@ one. So both, in that order.
   I/O BAR is left out, as the machine has no I/O window. A machine given a function has
   no memory to plug, no balloon (its DMA mappings pinned; QEMU's
   `ram_block_discard_disable`) and no snapshot.
-- **Verified on real VMs** (`a_nested_guest_runs_vms_of_its_own`), on an M5 Max, macOS
-  26.4.1: shards boots the `kvm` kernel at EL2 with an initramfs of the test guest, shards'
-  VM process for arm64 Linux and the pinned kernel. In it, shards' KVM backend boots a
+- **Interrupts.** A PCI bus's functions interrupt as PCI's do. On arm64, each device's
+  INTx on an SPI of its own, level-triggered (the devicetree's `interrupt-map`): KVM's
+  GICv3 keeps one level a line, so a line the VMM drives and an irqfd must not share one.
+  MSIs go to a GICv2m frame (Linux's GICv3 driver takes one where the distributor has no
+  LPIs, irq-gic-v3.c; its SPIs in the devicetree, irq-gic-v2m.c): Hypervisor.framework's
+  own, or on KVM one the VMM emulates. On x86_64, every device's INTx on GSI 22, wired-OR
+  as PCI's may be, by the DSDT's `_PRT` (ACPI 6.5 §6.2.13), so that a machine with a PCI
+  bus has one virtio device fewer (KVM's IOAPIC has 24 pins); MSIs to the local APICs,
+  delivered by KVM_SIGNAL_MSI, or on WHP decoded as the IOAPIC's messages are (Intel SDM
+  Vol. 3A §11.11). The test function raises INTA# and MSIs as edu does, its status
+  register's Interrupt Status set while its interrupt is pending whether or not INTx is
+  disabled (PCI 3.0 §6.2.3): with it clear while disabled, a guest's vfio-pci, which masks
+  INTx by disabling it, took the next for another device's and the kernel shut the line
+  ("irq 15: nobody cared").
+- **A passed-through function's interrupts** reach the guest in the kernel, the VMM never
+  seeing them: VFIO signals an eventfd (VFIO_DEVICE_SET_IRQS) that a KVM irqfd raises a
+  line by. INTx level-triggered: VFIO masks it as it fires, and KVM's resample eventfd,
+  written as the guest ends the interrupt, unmasks it in vfio-pci, which takes that
+  eventfd only for INTx it already signals (vfio_pci_set_intx_unmask). INTx is routed as
+  the guest first reaches the function, as KVM takes no irqfd before its interrupt
+  controller is initialized, after every vCPU exists (kvm_irqfd_assign: EAGAIN). The VMM
+  keeps the function's MSI capability, at the device's place and of its length, as
+  vfio-pci leaves MSI's enable to VFIO_DEVICE_SET_IRQS (vfio_msi_config_write): as the
+  guest enables it, INTx goes off and the message is routed: on arm64 to the frame's SPI
+  it names (KVM's default routes, GSI n to SPI n), on x86_64 to a GSI past the IOAPIC's
+  by KVM_SET_GSI_ROUTING, the table KVM's defaults and every route, whole each time.
+  irqfds with resampling are among what KVM must offer.
+- **Verified on real VMs** (`a_pci_functions_interrupts_reach_the_guest`,
+  `a_nested_guest_runs_vms_of_its_own`), on an M5 Max, macOS 26.4.1. The test guest takes
+  the test function through vfio-pci in its own userspace and waits on eventfds: INTA#
+  twice, acknowledged and unmasked between, then one MSI ("interrupts: INTx 2, MSI 1"),
+  on Hypervisor.framework. Nested: shards boots the `kvm` kernel at EL2 with an initramfs
+  of the test guest, shards' VM process for arm64 Linux and the `kvm` kernel again. In it, shards' KVM backend boots a
   guest of its own, under its seccomp filter and Landlock: "smp: Brought up 1 node, 2
   CPUs", its second vCPU's redistributor found, its test passed. Given `--pci-test`, the
   inner guest's PCI bus reaches the test function. Given the outer guest's test function,
   bound to vfio-pci there in a no-IOMMU group, the inner guest finds 1234:11e8 at 00:01.0
   and reads the identification register and the liveness check's inverse through BAR 0:
   the inner guest's access, the outer VM process, vfio-pci, the outer guest's access, the
-  outermost VMM's function. CI's arm64 runners give no KVM: the test runs where a Mac
-  gives a guest EL2.
+  outermost VMM's function. The inner guest takes INTx and MSI, both of the VMM's own
+  test function, through its emulated frame, and of the function passed through, by the
+  outer VM process's irqfds. CI's arm64 runners give no KVM: the nested test runs where a
+  Mac gives a guest EL2. x86_64's interrupts are held to their encodings by unit tests
+  (the `_PRT` as iasl compiles it, an MSI's decoding), and run on CI's KVM runner once its
+  `kvm` kernel, built now for x86_64 too, is pinned.
 - **Not yet:** snapshots of arm64 KVM VMs (`vm::SNAPSHOTS`; their GIC and vCPU state
   through KVM's registers); more vCPUs than one redistributor region holds (123). For
-  VFIO: the BARs mapped into the guest (KVM memory slots of the regions vfio-pci maps,
-  the MSI-X table's pages trapped); interrupts (INTx, MSI and MSI-X through irqfds); a
-  64-bit window for BARs past the 32-bit one; the kvm-vfio device, for x86's non-coherent
-  DMA; DMA verified on real VMs, which needs an IOMMU in the test's outer guest; then
-  `--device /dev/vfio/N`, `--gpus` and CDI's VFIO nodes.
+  VFIO: MSI-X (its table kept by the VMM in the BAR's trapped pages); MSI of more than one
+  message, and its per-vector masking; the BARs mapped into the guest (KVM memory slots
+  of the regions vfio-pci maps, the MSI-X table's pages trapped); a 64-bit window for
+  BARs past the 32-bit one; the kvm-vfio device, for x86's non-coherent DMA; DMA verified
+  on real VMs, which needs an IOMMU in the test's outer guest; then `--device
+  /dev/vfio/N`, `--gpus` and CDI's VFIO nodes.
 
 ### D153. A PCI bus, for the devices a microVM is given (VFIO's first step)
 

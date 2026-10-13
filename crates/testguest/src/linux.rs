@@ -33,6 +33,7 @@ pub fn main() {
             "snapshot-plug" => snapshot_plug(),
             "limits" => limits(),
             "pci" => pci(),
+            "pci-irq" => pci_irq(),
             "host" => host(),
             other => Err(format!("unknown test {other:?}")),
         },
@@ -1070,6 +1071,153 @@ fn pci() -> Result<(), String> {
     Ok(())
 }
 
+/// The test function's interrupts (D154): bound to vfio-pci in a no-IOMMU group (the
+/// kernel's `vfio.enable_unsafe_noiommu_mode=1`), it raises INTA# through its BAR's raise
+/// register, which VFIO signals on an eventfd, twice, the second after acknowledging and
+/// unmasking the first; then, INTx's eventfd taken away, one MSI.
+fn pci_irq() -> Result<(), String> {
+    const NAME: &str = "0000:00:01.0";
+    let dir = format!("/sys/bus/pci/devices/{NAME}");
+    std::fs::write(format!("{dir}/driver_override"), "vfio-pci")
+        .map_err(|e| format!("{dir}/driver_override: {e}"))?;
+    std::fs::write("/sys/bus/pci/drivers_probe", NAME).map_err(|e| format!("binding {NAME}: {e}"))?;
+    let group =
+        std::fs::read_link(format!("{dir}/iommu_group")).map_err(|e| format!("{dir}/iommu_group: {e}"))?;
+    let group = group
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or("an IOMMU group without a number")?;
+    let device = vfio::open(&format!("/dev/vfio/noiommu-{group}"), NAME)?;
+    let bar = vfio::region(device, 0)?;
+    let raise = |value: u32| pwrite_exact(device, &value.to_le_bytes(), bar + 0x60);
+    let ack = |value: u32| pwrite_exact(device, &value.to_le_bytes(), bar + 0x64);
+    let status = || {
+        let mut b = [0u8; 4];
+        pread_exact(device, &mut b, bar + 0x24).map(|()| u32::from_le_bytes(b))
+    };
+    let intx = vfio::eventfd()?;
+    vfio::trigger(device, vfio::INTX, &[intx])?;
+    for round in 1..=2u32 {
+        raise(round)?;
+        vfio::wait(intx).map_err(|e| format!("INTx {round}: {e}"))?;
+        if status()? != round {
+            return Err(format!("INTx {round}: status {:#x}", status()?));
+        }
+        ack(round)?;
+        vfio::unmask_intx(device)?;
+    }
+    vfio::trigger(device, vfio::INTX, &[])?;
+    let msi = vfio::eventfd()?;
+    vfio::trigger(device, vfio::MSI, &[msi])?;
+    raise(4)?;
+    vfio::wait(msi).map_err(|e| format!("MSI: {e}"))?;
+    ack(4)?;
+    let _ = writeln!(io::stdout(), "SHARDS-TEST INFO interrupts: INTx 2, MSI 1");
+    Ok(())
+}
+
+/// The VFIO a test guest makes of its PCI function (include/uapi/linux/vfio.h).
+mod vfio {
+    use std::io;
+
+    const fn io(n: u64) -> u64 {
+        ((b';' as u64) << 8) | (100 + n)
+    }
+    const GROUP_SET_CONTAINER: u64 = io(4);
+    const SET_IOMMU: u64 = io(2);
+    const GROUP_GET_DEVICE_FD: u64 = io(6);
+    const DEVICE_GET_REGION_INFO: u64 = io(8);
+    const DEVICE_SET_IRQS: u64 = io(10);
+    const NOIOMMU_IOMMU: u64 = 8;
+    pub const INTX: u32 = 0;
+    pub const MSI: u32 = 1;
+    const DATA_NONE: u32 = 1 << 0;
+    const DATA_EVENTFD: u32 = 1 << 2;
+    const ACTION_UNMASK: u32 = 1 << 4;
+    const ACTION_TRIGGER: u32 = 1 << 5;
+
+    fn ioctl(fd: libc::c_int, request: u64, arg: usize) -> Result<libc::c_int, String> {
+        // SAFETY: each caller passes what its request reads and writes.
+        let r = unsafe { libc::ioctl(fd, request as _, arg) };
+        if r < 0 {
+            return Err(format!("ioctl {request:#x}: {}", io::Error::last_os_error()));
+        }
+        Ok(r)
+    }
+
+    /// The device `name` of the no-IOMMU group at `group`, in a container of its own.
+    pub fn open(group: &str, name: &str) -> Result<libc::c_int, String> {
+        let container = super::open("/dev/vfio/vfio", libc::O_RDWR)?;
+        let group = super::open(group, libc::O_RDWR)?;
+        ioctl(group, GROUP_SET_CONTAINER, (&raw const container) as usize)?;
+        ioctl(container, SET_IOMMU, NOIOMMU_IOMMU as usize)?;
+        let name = std::ffi::CString::new(name).map_err(|e| e.to_string())?;
+        ioctl(group, GROUP_GET_DEVICE_FD, name.as_ptr() as usize)
+    }
+
+    /// Where region `index` (a BAR) is in the device's descriptor.
+    pub fn region(device: libc::c_int, index: u32) -> Result<u64, String> {
+        // struct vfio_region_info: argsz, flags, index, cap_offset, size, offset.
+        let mut info = [0u32; 8];
+        info[0] = 32;
+        info[2] = index;
+        ioctl(device, DEVICE_GET_REGION_INFO, info.as_mut_ptr() as usize)?;
+        Ok(u64::from(info[6]) | (u64::from(info[7]) << 32))
+    }
+
+    /// struct vfio_irq_set: argsz, flags, index, start, count, then the data.
+    fn set_irqs(device: libc::c_int, flags: u32, index: u32, fds: &[libc::c_int]) -> Result<(), String> {
+        let mut set: Vec<u32> = vec![(20 + 4 * fds.len()) as u32, flags, index, 0, fds.len() as u32];
+        set.extend(fds.iter().map(|&fd| fd as u32));
+        ioctl(device, DEVICE_SET_IRQS, set.as_ptr() as usize).map(drop)
+    }
+
+    /// Signals `fds` for interrupts `0..` of `index`; none, its interrupts off.
+    pub fn trigger(device: libc::c_int, index: u32, fds: &[libc::c_int]) -> Result<(), String> {
+        match fds {
+            [] => set_irqs(device, ACTION_TRIGGER | DATA_NONE, index, &[]),
+            fds => set_irqs(device, ACTION_TRIGGER | DATA_EVENTFD, index, fds),
+        }
+    }
+
+    /// Unmasks INTx, which VFIO masked as it signalled it.
+    pub fn unmask_intx(device: libc::c_int) -> Result<(), String> {
+        // One interrupt, no data: count 1.
+        let set: [u32; 5] = [20, ACTION_UNMASK | DATA_NONE, INTX, 0, 1];
+        ioctl(device, DEVICE_SET_IRQS, set.as_ptr() as usize).map(drop)
+    }
+
+    pub fn eventfd() -> Result<libc::c_int, String> {
+        // SAFETY: eventfd(2) with flags.
+        let fd = unsafe { libc::eventfd(0, libc::EFD_CLOEXEC) };
+        if fd < 0 {
+            return Err(format!("eventfd: {}", io::Error::last_os_error()));
+        }
+        Ok(fd)
+    }
+
+    /// Waits up to 10 s for `fd` to be signalled, and takes its count.
+    pub fn wait(fd: libc::c_int) -> Result<u64, String> {
+        let mut p = libc::pollfd {
+            fd,
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        // SAFETY: one pollfd of ours.
+        match unsafe { libc::poll(&raw mut p, 1, 10_000) } {
+            1 => {}
+            0 => return Err("no interrupt in 10 s".into()),
+            _ => return Err(format!("poll: {}", io::Error::last_os_error())),
+        }
+        let mut count = [0u8; 8];
+        // SAFETY: eight bytes of ours.
+        if unsafe { libc::read(fd, count.as_mut_ptr().cast(), 8) } != 8 {
+            return Err(format!("reading the eventfd: {}", io::Error::last_os_error()));
+        }
+        Ok(u64::from_ne_bytes(count))
+    }
+}
+
 /// A guest that is itself a host (D132): it boots a VM of its own with shards' VM process
 /// for this architecture's Linux, `/vm` in its initramfs, the kernel `/l2` and itself as
 /// that VM's init, whose test is `shards_l2`, and `shards_l2_args`' arguments (comma
@@ -1094,7 +1242,10 @@ fn host() -> Result<(), String> {
     let out = std::process::Command::new("/vm")
         .args(["run", "--kernel", "/l2", "--init", "/init", "--cpus", "2"])
         .args(["--memory", "256", "--cmdline"])
-        .arg(format!("console=ttyS0 panic=-1 shards_test={test}"))
+        // A function the inner guest is given it takes through VFIO, in a no-IOMMU group.
+        .arg(format!(
+            "console=ttyS0 panic=-1 vfio.enable_unsafe_noiommu_mode=1 shards_test={test}"
+        ))
         .args(args.split(',').filter(|a| !a.is_empty()))
         .output()
         .map_err(|e| format!("/vm: {e}"))?;

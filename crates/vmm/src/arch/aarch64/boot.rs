@@ -202,15 +202,38 @@ pub struct Machine<'a> {
 }
 
 /// A PCI host bridge (D153): its ECAM window and the 32-bit memory window its functions'
-/// BARs are placed in, each an address and a length.
-#[derive(Debug, Clone, Copy)]
+/// BARs are placed in, each an address and a length; each device that raises INTx, its
+/// pin and the SPI its line is; and the GICv2m frame its functions' MSIs go to (D154).
+#[derive(Debug, Clone)]
 pub struct PciBridge {
     pub ecam: (u64, u64),
     pub mem32: (u64, u64),
+    pub intx: Vec<Intx>,
+    pub msi: Option<MsiFrame>,
+}
+
+/// A PCI device's INTx: its device number on bus 0, its pin (1 for INTA#) and its SPI.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Intx {
+    pub device: u8,
+    pub pin: u8,
+    pub spi: u32,
+}
+
+/// A GICv2m frame (Arm GIC architecture, GICv2m; Linux Documentation/devicetree/bindings/
+/// interrupt-controller/arm,gic.yaml): its registers' window, and the SPIs its doorbell
+/// raises, by INTID.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MsiFrame {
+    pub base: u64,
+    pub size: u64,
+    pub first_intid: u32,
+    pub count: u32,
 }
 
 const PHANDLE_GIC: u32 = 1;
 const PHANDLE_APB_PCLK: u32 = 2;
+const PHANDLE_V2M: u32 = 3;
 const GIC_SPI: u32 = 0;
 const GIC_PPI: u32 = 1;
 const IRQ_EDGE_RISING: u32 = 1;
@@ -288,6 +311,19 @@ pub fn build_fdt(m: &Machine<'_>) -> Result<Vec<u8>, FdtError> {
         f.prop_cells("interrupts", &[GIC_PPI, 9, IRQ_LEVEL_HIGH]);
     }
     f.prop_u32("phandle", PHANDLE_GIC);
+    // The GICv2m frame of a PCI bus's MSIs (D154): Linux's GICv3 driver takes one where
+    // the distributor has no LPIs (irq-gic-v3.c, gicv2m_init), and the properties say its
+    // SPIs (irq-gic-v2m.c, "arm,msi-base-spi" by INTID).
+    if let Some(v2m) = m.pci.as_ref().and_then(|p| p.msi) {
+        f.begin_node(&format!("v2m@{:x}", v2m.base));
+        f.prop_str("compatible", "arm,gic-v2m-frame");
+        f.prop_null("msi-controller");
+        f.prop_u64s("reg", &[v2m.base, v2m.size]);
+        f.prop_u32("arm,msi-base-spi", v2m.first_intid);
+        f.prop_u32("arm,msi-num-spis", v2m.count);
+        f.prop_u32("phandle", PHANDLE_V2M);
+        f.end_node();
+    }
     f.end_node();
 
     f.begin_node("timer");
@@ -344,7 +380,7 @@ pub fn build_fdt(m: &Machine<'_>) -> Result<Vec<u8>, FdtError> {
     // Linux Documentation/devicetree/bindings/pci/host-generic-pci.yaml: ECAM's window,
     // bus 0, and one range, 32-bit memory (phys.hi 0x02000000) at the same addresses in
     // both spaces.
-    if let Some(p) = m.pci {
+    if let Some(p) = &m.pci {
         let (base, len) = p.mem32;
         f.begin_node(&format!("pcie@{:x}", p.ecam.0));
         f.prop_str("compatible", "pci-host-ecam-generic");
@@ -367,6 +403,33 @@ pub fn build_fdt(m: &Machine<'_>) -> Result<Vec<u8>, FdtError> {
         );
         f.prop_u32("linux,pci-domain", 0);
         f.prop_null("dma-coherent");
+        // Each device's INTx by its device number and pin (the binding's interrupt-map,
+        // Documentation/devicetree/bindings/pci/pci.txt): its own SPI, level-triggered.
+        if !p.intx.is_empty() {
+            f.prop_u32("#interrupt-cells", 1);
+            f.prop_cells("interrupt-map-mask", &[0xf800, 0, 0, 7]);
+            let mut map = Vec::with_capacity(p.intx.len() * 10);
+            for i in &p.intx {
+                // Child: phys.hi's device (bits 15:11), phys.mid, phys.lo, the pin; the
+                // GIC, its two address cells, and its SPI specifier.
+                map.extend([
+                    u32::from(i.device) << 11,
+                    0,
+                    0,
+                    u32::from(i.pin),
+                    PHANDLE_GIC,
+                    0,
+                    0,
+                    GIC_SPI,
+                    i.spi,
+                    IRQ_LEVEL_HIGH,
+                ]);
+            }
+            f.prop_cells("interrupt-map", &map);
+        }
+        if p.msi.is_some() {
+            f.prop_u32("msi-parent", PHANDLE_V2M);
+        }
         f.end_node();
     }
 
@@ -474,7 +537,14 @@ mod tests {
         assert!(!gic.props.contains_key("interrupts"));
         // At EL2 the kernel is the hypervisor: PSCI by SMC, the GIC's maintenance interrupt
         // PPI 9 (INTID 25), and the EL2 physical timer still the timer's fourth (PPI 10).
-        let at_el2 = decode::parse(&build_fdt(&Machine { el2: true, ..m }).unwrap());
+        let at_el2 = decode::parse(
+            &build_fdt(&Machine {
+                el2: true,
+                pci: None,
+                ..m
+            })
+            .unwrap(),
+        );
         assert_eq!(at_el2.path("psci").str("method"), "smc");
         assert_eq!(at_el2.path("intc@8000000").cells("interrupts"), vec![1, 9, 4]);
         assert_eq!(&at_el2.path("timer").cells("interrupts")[9..12], &[1, 10, 4]);
@@ -482,9 +552,27 @@ mod tests {
         // ECAM window and 32-bit memory range, and the BARs kept where they were placed.
         assert!(!root.children.keys().any(|name| name.starts_with("pcie@")));
         assert!(!root.path("chosen").props.contains_key("linux,pci-probe-only"));
+        assert!(
+            !root
+                .path("intc@8000000")
+                .children
+                .keys()
+                .any(|name| name.starts_with("v2m@"))
+        );
         let pci = PciBridge {
             ecam: (layout::PCI_ECAM, 1 << 20),
             mem32: (layout::PCI_MEM32, layout::PCI_MEM32_SIZE),
+            intx: vec![Intx {
+                device: 1,
+                pin: 1,
+                spi: layout::SPI_PCI,
+            }],
+            msi: Some(MsiFrame {
+                base: layout::GIC_MSI,
+                size: 0x1_0000,
+                first_intid: 32 + layout::SPI_MSI,
+                count: layout::MSI_SPIS,
+            }),
         };
         let with_pci = decode::parse(&build_fdt(&Machine { pci: Some(pci), ..m }).unwrap());
         let bridge = with_pci.path("pcie@3f000000");
@@ -497,5 +585,21 @@ mod tests {
             vec![0x0200_0000, 0, 0x1000_0000, 0, 0x1000_0000, 0, 0x2f00_0000]
         );
         assert_eq!(with_pci.path("chosen").u32("linux,pci-probe-only"), 1);
+        // Its devices' INTx (D154): device 1's INTA# on its own SPI, level-triggered, and
+        // its MSIs to the GIC's v2m frame, its SPIs by INTID.
+        assert_eq!(bridge.u32("#interrupt-cells"), 1);
+        assert_eq!(bridge.cells("interrupt-map-mask"), vec![0xf800, 0, 0, 7]);
+        assert_eq!(
+            bridge.cells("interrupt-map"),
+            vec![1 << 11, 0, 0, 1, PHANDLE_GIC, 0, 0, 0, layout::SPI_PCI, 4]
+        );
+        assert_eq!(bridge.u32("msi-parent"), PHANDLE_V2M);
+        let v2m = with_pci.path("intc@8000000/v2m@8020000");
+        assert_eq!(v2m.str("compatible"), "arm,gic-v2m-frame");
+        assert!(v2m.props.contains_key("msi-controller"));
+        assert_eq!(v2m.cells("reg"), vec![0, 0x0802_0000, 0, 0x1_0000]);
+        assert_eq!(v2m.u32("arm,msi-base-spi"), 32 + layout::SPI_MSI);
+        assert_eq!(v2m.u32("arm,msi-num-spis"), layout::MSI_SPIS);
+        assert_eq!(v2m.u32("phandle"), PHANDLE_V2M);
     }
 }

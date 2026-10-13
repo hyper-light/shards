@@ -14,10 +14,13 @@ use super::layout;
 
 /// A PCI host bridge to describe (D153): its ECAM window and the 32-bit memory window
 /// its functions' BARs are placed in, each an address and a length.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct PciBridge {
     pub ecam: (u64, u64),
     pub mem32: (u64, u64),
+    /// Each device that raises INTx, and its pin (1 for INTA#), all on `gsi` (D154).
+    pub intx: Vec<(u8, u8)>,
+    pub gsi: u32,
 }
 
 /// A virtio-mmio transport to describe.
@@ -211,6 +214,15 @@ mod aml {
         with_pkg(&[0x10], content)
     }
 
+    /// `Package () { ... }` of elements already encoded, as packages of packages are.
+    pub fn package_of(elements: &[Vec<u8>]) -> Vec<u8> {
+        let mut content = vec![elements.len() as u8];
+        for e in elements {
+            content.extend_from_slice(e);
+        }
+        with_pkg(&[0x12], content)
+    }
+
     /// `Package () { ... }` of integers.
     pub fn package(elements: &[u64]) -> Vec<u8> {
         let mut content = vec![elements.len() as u8];
@@ -357,6 +369,25 @@ fn pci_bridge(p: &PciBridge) -> Result<Vec<u8>, String> {
         u32::try_from(p.mem32.0).map_err(|_| "a 32-bit PCI window above 4 GiB")?,
         u32::try_from(p.mem32.1).map_err(|_| "a 32-bit PCI window past 4 GiB")?,
     );
+    // Each device's INTx (ACPI 6.5 §6.2.13, _PRT): its address (device in the high word,
+    // every function), its pin from 0 for INTA#, no link device (0) and so its GSI.
+    let routes: Vec<Vec<u8>> = p
+        .intx
+        .iter()
+        .map(|&(device, pin)| {
+            aml::package(&[
+                (u64::from(device) << 16) | 0xffff,
+                u64::from(pin.saturating_sub(1)),
+                0,
+                u64::from(p.gsi),
+            ])
+        })
+        .collect();
+    let prt = if routes.is_empty() {
+        Vec::new()
+    } else {
+        aml::name(b"_PRT", aml::package_of(&routes))
+    };
     Ok(aml::device(
         "PCI0",
         [
@@ -369,6 +400,7 @@ fn pci_bridge(p: &PciBridge) -> Result<Vec<u8>, String> {
                 b"_CRS",
                 aml::resources(&[aml::bus_numbers(0, 0), aml::memory_window(base, len)]),
             ),
+            prt,
         ]
         .concat(),
     ))
@@ -516,7 +548,8 @@ mod tests {
 
     /// A PCI host bridge (D153): an MCFG table, linked and checksummed, of segment 0's
     /// ECAM window for bus 0, and a PNP0A08 host bridge in the DSDT whose _CRS is bus 0
-    /// and the 32-bit memory window; none of it without one.
+    /// and the 32-bit memory window, and whose _PRT routes its devices' INTx (D154);
+    /// none of it without one.
     #[test]
     fn a_pci_bridge_is_described_where_there_is_one() {
         let without = build(1, &[], None).unwrap();
@@ -524,6 +557,8 @@ mod tests {
         let bridge = PciBridge {
             ecam: (layout::PCI_ECAM, 1 << 20),
             mem32: (layout::PCI_MEM32, layout::PCI_MEM32_SIZE),
+            intx: vec![(1, 1), (2, 2)],
+            gsi: layout::GSI_PCI,
         };
         let t = build(1, &[], Some(&bridge)).unwrap();
         let find = |sig: &[u8]| t.blobs.iter().find(|(_, b)| b.starts_with(sig)).unwrap();
@@ -543,6 +578,24 @@ mod tests {
             layout::PCI_MEM32 as u32,
             layout::PCI_MEM32_SIZE as u32
         )));
+        // _PRT: Package (2) { Package (4) { 0x1FFFF, 0, 0, 22 }, Package (4) { 0x2FFFF,
+        // 1, 0, 22 } }, as iasl encodes it.
+        let entry = |device: u8, pin: u8| {
+            [
+                &[0x12, 0x0b, 0x04, 0x0c][..],
+                &((u32::from(device) << 16) | 0xffff).to_le_bytes(),
+                &[pin, 0x00, 0x0a, layout::GSI_PCI as u8],
+            ]
+            .concat()
+        };
+        let prt = [
+            &b"\x08_PRT"[..],
+            &[0x12, 0x1a, 0x02],
+            &entry(1, 0x00),
+            &entry(2, 0x01),
+        ]
+        .concat();
+        assert!(has(&prt), "no _PRT as iasl encodes it");
     }
 
     #[test]

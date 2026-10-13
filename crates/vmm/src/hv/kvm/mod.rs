@@ -57,13 +57,16 @@ fn call(op: &'static str) -> impl Fn(io::Error) -> Error {
 }
 
 /// What KVM must offer on every architecture: IMMEDIATE_EXIT backs the kick (research doc
-/// §9 step 1); each architecture's module adds its own ([`REQUIRED`]).
-const COMMON: [(u64, &str); 5] = [
+/// §9 step 1), and irqfds, with resampling, carry a passed-through device's interrupts
+/// (D154); each architecture's module adds its own ([`REQUIRED`]).
+const COMMON: [(u64, &str); 7] = [
     (sys::CAP_IRQCHIP, "KVM_CAP_IRQCHIP"),
     (sys::CAP_READONLY_MEM, "KVM_CAP_READONLY_MEM"),
     (sys::CAP_USER_MEMORY, "KVM_CAP_USER_MEMORY"),
     (sys::CAP_MP_STATE, "KVM_CAP_MP_STATE"),
     (sys::CAP_IMMEDIATE_EXIT, "KVM_CAP_IMMEDIATE_EXIT"),
+    (sys::CAP_IRQFD, "KVM_CAP_IRQFD"),
+    (sys::CAP_IRQFD_RESAMPLE, "KVM_CAP_IRQFD_RESAMPLE"),
 ];
 
 fn open() -> std::result::Result<sys::Kvm, String> {

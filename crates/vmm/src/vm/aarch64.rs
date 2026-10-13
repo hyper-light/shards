@@ -165,6 +165,166 @@ impl Interrupt for GicLine {
     }
 }
 
+/// The SPI of PCI device `device`'s INTx (layout::SPI_PCI).
+fn pci_intx_spi(device: u8) -> u32 {
+    layout::SPI_PCI + u32::from(device).saturating_sub(1)
+}
+
+/// A PCI bus's interrupts on this machine (D154): each device's INTx on an SPI of its own,
+/// level-triggered, and MSIs to the GICv2m frame `frame`, whose SPIs they name.
+struct PciLines {
+    gic: Gic,
+    frame: boot::MsiFrame,
+}
+
+impl super::PciInterrupts for PciLines {
+    fn intx(&self, device: u8) -> Arc<dyn Interrupt> {
+        Arc::new(GicLine {
+            gic: self.gic.clone(),
+            intid: SPI_INTID_BASE + pci_intx_spi(device),
+        })
+    }
+
+    fn msi(&self) -> Arc<dyn crate::devices::pci::Msi> {
+        Arc::new(V2mFrame {
+            gic: self.gic.clone(),
+            frame: self.frame,
+        })
+    }
+
+    /// KVM's irqfds: INTx on the device's SPI, resampled at its EOI; each MSI on the SPI
+    /// the guest aimed it at in the GICv2m frame.
+    #[cfg(target_os = "linux")]
+    fn route(&self, device: u8) -> Option<Arc<dyn crate::devices::pci::vfio::Route>> {
+        Some(Arc::new(IrqfdRoute {
+            gic: self.gic.clone(),
+            intx: SPI_INTID_BASE + pci_intx_spi(device),
+            frame: self.frame,
+        }))
+    }
+}
+
+/// A passed-through function's interrupts by KVM's irqfds (D154): its INTx on SPI `intx`,
+/// its MSIs on the SPIs of the GICv2m frame `frame` they name.
+#[cfg(target_os = "linux")]
+struct IrqfdRoute {
+    gic: Gic,
+    intx: u32,
+    frame: boot::MsiFrame,
+}
+
+#[cfg(target_os = "linux")]
+impl IrqfdRoute {
+    /// The SPI an MSI the guest aimed at `address` with `data` raises: one of the frame's,
+    /// at its doorbell.
+    fn spi(&self, address: u64, data: u32) -> Result<u32, String> {
+        let f = &self.frame;
+        if address != f.base + V2M_MSI_SETSPI_NS || data < f.first_intid || data - f.first_intid >= f.count {
+            return Err(format!(
+                "an MSI to {address:#x} with {data:#x}: not one of the GICv2m frame's"
+            ));
+        }
+        Ok(data)
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl crate::devices::pci::vfio::Route for IrqfdRoute {
+    fn intx(&self, trigger: std::os::fd::RawFd, resample: std::os::fd::RawFd) -> Result<(), String> {
+        self.gic
+            .irqfd(trigger, self.intx, Some(resample))
+            .map_err(|e| e.to_string())
+    }
+
+    fn intx_off(&self, trigger: std::os::fd::RawFd) -> Result<(), String> {
+        self.gic
+            .irqfd_remove(trigger, self.intx)
+            .map_err(|e| e.to_string())
+    }
+
+    fn msi(&self, event: std::os::fd::RawFd, address: u64, data: u32) -> Result<(), String> {
+        let spi = self.spi(address, data)?;
+        self.gic.irqfd(event, spi, None).map_err(|e| e.to_string())
+    }
+
+    fn msi_off(&self, event: std::os::fd::RawFd, address: u64, data: u32) -> Result<(), String> {
+        let spi = self.spi(address, data)?;
+        self.gic.irqfd_remove(event, spi).map_err(|e| e.to_string())
+    }
+}
+
+/// A GICv2m frame (Arm's GICv2m specification, its registers as Linux's irq-gic-v2m.c
+/// reads them): its type register says its SPIs, and a write to its doorbell, MSI_SETSPI_NS,
+/// raises the one it names, edge-triggered. The VMM's where the backend's GIC has none of
+/// its own (KVM's), and the MSIs of the functions the VMM emulates on any.
+#[derive(Debug)]
+struct V2mFrame {
+    gic: Gic,
+    frame: boot::MsiFrame,
+}
+
+const V2M_MSI_TYPER: u64 = 0x008;
+const V2M_MSI_SETSPI_NS: u64 = 0x040;
+
+impl V2mFrame {
+    /// Raises SPI `intid`, where it is one of the frame's.
+    fn raise(&self, intid: u32) {
+        let f = &self.frame;
+        if intid < f.first_intid || intid - f.first_intid >= f.count {
+            warn!("an MSI for INTID {intid}, none of the GICv2m frame's");
+            return;
+        }
+        if let Err(e) = self.gic.send_msi(f.base + V2M_MSI_SETSPI_NS, intid) {
+            warn!("MSI {intid}: {e}");
+        }
+    }
+}
+
+impl crate::devices::pci::Msi for V2mFrame {
+    /// An MSI the guest aimed at the frame's doorbell; any other address is none of its.
+    fn send(&self, address: u64, data: u32) {
+        if address != self.frame.base + V2M_MSI_SETSPI_NS {
+            warn!("an MSI to {address:#x}, not the GICv2m frame's doorbell");
+            return;
+        }
+        self.raise(data);
+    }
+}
+
+impl crate::devices::MmioDevice for V2mFrame {
+    fn read(&self, offset: u64, data: &mut [u8]) {
+        let value = match offset {
+            // BASE (25:16), the first SPI's INTID; NUMBER (9:0).
+            V2M_MSI_TYPER => (self.frame.first_intid << 16) | self.frame.count,
+            _ => 0,
+        };
+        crate::devices::put_le(data, u64::from(value));
+    }
+
+    fn write(&self, offset: u64, data: &[u8]) {
+        if offset == V2M_MSI_SETSPI_NS {
+            self.raise(crate::devices::get_le(data) as u32);
+        }
+    }
+
+    fn pause(&self) {}
+
+    fn resume(&self) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn save(&self, _: &mut Writer) {}
+
+    fn restore(&self, _: &mut Reader<'_>) -> crate::snapshot::codec::Result<()> {
+        Ok(())
+    }
+
+    /// A machine with a PCI bus saves no snapshot (D153).
+    fn unsaved(&self) -> Option<String> {
+        Some("a PCI bus's MSI frame".into())
+    }
+}
+
 /// The smallest architected IPA width that covers guest RAM, within the host's limit.
 fn ipa_bits(end: u64) -> Result<u32, String> {
     let needed = 64 - end.saturating_sub(1).leading_zeros();
@@ -314,10 +474,21 @@ fn assemble(
 
     let gp = hv::gic_params().map_err(|e| e.to_string())?;
     let redist_total = gp.redist_size * u64::from(config.vcpus);
+    // A PCI bus's MSIs go to a GICv2m frame (D154): the backend's own, or the VMM's.
+    let msi = (pci.test || !pci.vfio.is_empty()).then_some(boot::MsiFrame {
+        base: layout::GIC_MSI,
+        size: gp.msi_size,
+        first_intid: SPI_INTID_BASE + layout::SPI_MSI,
+        count: layout::MSI_SPIS,
+    });
     if !layout::GIC_DIST.is_multiple_of(gp.dist_align)
         || !layout::GIC_REDIST.is_multiple_of(gp.redist_align)
+        || !layout::GIC_MSI.is_multiple_of(gp.msi_align)
         || layout::GIC_DIST + gp.dist_size > layout::GIC_MSI
+        || layout::GIC_MSI + gp.msi_size > layout::GIC_REDIST
         || layout::GIC_REDIST + redist_total > layout::GIC_REDIST_MAX_END
+        || gp.spi_base > SPI_INTID_BASE
+        || SPI_INTID_BASE + layout::SPIS > gp.spi_base + gp.spi_count
     {
         return Err(format!(
             "host GIC geometry {gp:?} does not fit the guest memory map"
@@ -327,7 +498,11 @@ fn assemble(
         .create_gic(&GicLayout {
             dist_base: layout::GIC_DIST,
             redist_base: layout::GIC_REDIST,
-            msi: None,
+            msi: msi.map(|f| hv::MsiFrame {
+                base: f.base,
+                first_intid: f.first_intid,
+                count: f.count,
+            }),
         })
         .map_err(|e| e.to_string())?;
     debug!("GIC created");
@@ -351,6 +526,18 @@ fn assemble(
     let last = gpu.into_iter().chain(hotplug).chain(reporting).collect();
     let devices = super::virtio_devices(config, &regions, hosts, last, layout::VIRTIO_MMIO_MAX)?;
     let mut bus = MmioBus::default();
+    if let Some(frame) = msi
+        && !hv::MSI_FRAME_IN_KERNEL
+    {
+        bus.insert(
+            frame.base,
+            frame.size,
+            Arc::new(V2mFrame {
+                gic: gic.clone(),
+                frame,
+            }),
+        )?;
+    }
     let mut virtio = Vec::with_capacity(devices.len());
     // Each virtio device takes the next MMIO window and SPI, in the guest's probe order.
     for (i, device) in devices.into_iter().enumerate() {
@@ -387,13 +574,30 @@ fn assemble(
         control.on_mac(net.mac);
     }
     bus.insert(layout::CONTROL, 0x1000, control.clone())?;
-    // A PCI bus (D153, D154): its functions from 00:01.0, their BARs in its window.
+    // A PCI bus (D153, D154): its functions from 00:01.0, their BARs in its window, each
+    // device's INTx on an SPI of its own, its MSIs to the GICv2m frame.
     let mem32 = (layout::PCI_MEM32, layout::PCI_MEM32_SIZE);
-    let pci =
-        super::pci_bus(&mut bus, layout::PCI_ECAM, mem32, pci, config, memory)?.then_some(boot::PciBridge {
+    let lines = msi.map(|frame| PciLines {
+        gic: gic.clone(),
+        frame,
+    });
+    let irqs = lines.as_ref().map(|l| l as &dyn super::PciInterrupts);
+    let pci = super::pci_bus(&mut bus, layout::PCI_ECAM, mem32, pci, config, memory, irqs)?.map(|routed| {
+        boot::PciBridge {
             ecam: (layout::PCI_ECAM, crate::devices::pci::ECAM_SIZE),
             mem32,
-        });
+            intx: routed
+                .intx
+                .into_iter()
+                .map(|(device, pin)| boot::Intx {
+                    device,
+                    pin,
+                    spi: pci_intx_spi(device),
+                })
+                .collect(),
+            msi,
+        }
+    });
     let vmgenid = VmGenId::new(
         memory.clone(),
         layout::VMGENID,

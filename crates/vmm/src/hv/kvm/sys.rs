@@ -34,6 +34,7 @@ pub const KVM_GET_MP_STATE: u64 = 0x8004_AE98;
 pub const KVM_SET_MP_STATE: u64 = 0x4004_AE99;
 pub const KVM_SET_DEVICE_ATTR: u64 = 0x4018_AEE1;
 pub const KVM_GET_DEVICE_ATTR: u64 = 0x4018_AEE2;
+pub const KVM_IRQFD: u64 = 0x4020_AE76;
 
 /// Each structure is the size its ioctl numbers encode (bits 16-29).
 const _: () = {
@@ -44,6 +45,7 @@ const _: () = {
     assert!(size(KVM_IRQ_LINE) == size_of::<kvm_irq_level>());
     assert!(size(KVM_GET_DEVICE_ATTR) == size_of::<kvm_device_attr>());
     assert!(size(KVM_SET_DEVICE_ATTR) == size_of::<kvm_device_attr>());
+    assert!(size(KVM_IRQFD) == size_of::<kvm_irqfd>());
 };
 
 pub const CAP_IRQCHIP: u64 = 0;
@@ -63,6 +65,23 @@ pub struct kvm_device_attr {
     pub attr: u64,
     pub addr: u64,
 }
+
+/// An irqfd (api.rst 4.75, KVM_IRQFD): an eventfd whose writes raise a GSI in the kernel;
+/// with a resample eventfd, a level-triggered one, lowered at the guest's EOI.
+#[repr(C)]
+#[derive(Debug, Default)]
+pub struct kvm_irqfd {
+    pub fd: u32,
+    pub gsi: u32,
+    pub flags: u32,
+    pub resamplefd: u32,
+    pub pad: [u8; 16],
+}
+
+pub const IRQFD_FLAG_DEASSIGN: u32 = 1 << 0;
+pub const IRQFD_FLAG_RESAMPLE: u32 = 1 << 1;
+pub const CAP_IRQFD: u64 = 32;
+pub const CAP_IRQFD_RESAMPLE: u64 = 82;
 
 /// kvm_userspace_memory_region flags.
 pub const MEM_READONLY: u32 = 1 << 1;
@@ -107,6 +126,7 @@ const _: () = {
     assert!(size_of::<kvm_userspace_memory_region>() == 32);
     assert!(size_of::<kvm_irq_level>() == 8);
     assert!(size_of::<kvm_device_attr>() == 24);
+    assert!(size_of::<kvm_irqfd>() == 32);
 };
 
 fn ret(r: libc::c_int) -> io::Result<libc::c_int> {
@@ -209,6 +229,36 @@ impl VmFd {
         };
         // SAFETY: a pointer to a live struct.
         unsafe { ioctl(self.fd(), KVM_IRQ_LINE, (&raw const l) as libc::c_ulong) }.map(drop)
+    }
+
+    /// Raises `gsi` each time `event` is written, in the kernel; with `resample`, a
+    /// level-triggered line, lowered as the guest ends the interrupt and `resample` written.
+    pub fn irqfd(&self, event: RawFd, gsi: u32, resample: Option<RawFd>) -> io::Result<()> {
+        let irqfd = kvm_irqfd {
+            fd: event as u32,
+            gsi,
+            flags: if resample.is_some() {
+                IRQFD_FLAG_RESAMPLE
+            } else {
+                0
+            },
+            resamplefd: resample.unwrap_or(0) as u32,
+            ..Default::default()
+        };
+        // SAFETY: KVM reads one kvm_irqfd.
+        unsafe { ioctl(self.fd(), KVM_IRQFD, (&raw const irqfd) as libc::c_ulong) }.map(drop)
+    }
+
+    /// Removes the irqfd of `event` on `gsi`.
+    pub fn irqfd_remove(&self, event: RawFd, gsi: u32) -> io::Result<()> {
+        let irqfd = kvm_irqfd {
+            fd: event as u32,
+            gsi,
+            flags: IRQFD_FLAG_DEASSIGN,
+            ..Default::default()
+        };
+        // SAFETY: KVM reads one kvm_irqfd.
+        unsafe { ioctl(self.fd(), KVM_IRQFD, (&raw const irqfd) as libc::c_ulong) }.map(drop)
     }
 
     pub fn create_vcpu(&self, id: u64, mmap_size: usize) -> io::Result<VcpuFd> {

@@ -15,7 +15,7 @@ use crate::devices::power::Power;
 use crate::devices::serial::Serial;
 use crate::devices::virtio::{mmio as virtio_mmio, pmem};
 use crate::devices::vmgenid::VmGenId;
-use crate::devices::{Interrupt, MmioBus};
+use crate::devices::{Interrupt, MmioBus, SharedLine};
 use crate::hv::{self, Io};
 use crate::memory::GuestMemory;
 use crate::snapshot::codec::{Reader, Writer};
@@ -219,6 +219,92 @@ struct EdgeLine {
     gsi: u32,
 }
 
+/// A PCI bus's interrupts on this machine (D154): every device's INTx# on GSI_PCI,
+/// wired-OR, level-triggered, as the DSDT's _PRT says; the MSIs of the functions the VMM
+/// emulates delivered by the backend; and a passed-through function's by KVM's irqfds.
+struct PciLines {
+    irqs: hv::Irqs,
+    intx: Arc<SharedLine>,
+}
+
+impl super::PciInterrupts for PciLines {
+    fn intx(&self, device: u8) -> Arc<dyn Interrupt> {
+        self.intx.source(u32::from(device))
+    }
+
+    fn msi(&self) -> Arc<dyn crate::devices::pci::Msi> {
+        Arc::new(BackendMsi(self.irqs.clone()))
+    }
+
+    #[cfg(target_os = "linux")]
+    fn route(&self, _device: u8) -> Option<Arc<dyn crate::devices::pci::vfio::Route>> {
+        Some(Arc::new(IrqfdRoute {
+            irqs: self.irqs.clone(),
+            msis: std::sync::Mutex::new(Vec::new()),
+        }))
+    }
+}
+
+/// MSIs delivered by the backend: KVM_SIGNAL_MSI's, or WHP's as its IOAPIC delivers.
+struct BackendMsi(hv::Irqs);
+
+impl crate::devices::pci::Msi for BackendMsi {
+    fn send(&self, address: u64, data: u32) {
+        if let Err(e) = self.0.msi(address, data) {
+            warn!("an MSI to {address:#x} with {data:#x}: {e}");
+        }
+    }
+}
+
+/// A passed-through function's interrupts by KVM's irqfds (D154): INTx on GSI_PCI,
+/// resampled at the guest's EOI; each MSI on a GSI routed to its message, and which GSI
+/// each eventfd raises.
+#[cfg(target_os = "linux")]
+struct IrqfdRoute {
+    irqs: hv::Irqs,
+    msis: std::sync::Mutex<Vec<(std::os::fd::RawFd, u32)>>,
+}
+
+#[cfg(target_os = "linux")]
+impl crate::devices::pci::vfio::Route for IrqfdRoute {
+    fn intx(&self, trigger: std::os::fd::RawFd, resample: std::os::fd::RawFd) -> Result<(), String> {
+        self.irqs
+            .irqfd(trigger, layout::GSI_PCI, Some(resample))
+            .map_err(|e| e.to_string())
+    }
+
+    fn intx_off(&self, trigger: std::os::fd::RawFd) -> Result<(), String> {
+        self.irqs
+            .irqfd_remove(trigger, layout::GSI_PCI)
+            .map_err(|e| e.to_string())
+    }
+
+    /// An MSI the guest aimed at its local APICs (Intel SDM Vol. 3A §11.11.1: 0xFEE in
+    /// the address's bits 31:20), routed to a GSI of its own.
+    fn msi(&self, event: std::os::fd::RawFd, address: u64, data: u32) -> Result<(), String> {
+        if address >> 20 != 0xfee {
+            return Err(format!("an MSI to {address:#x}: not the local APICs'"));
+        }
+        let gsi = self.irqs.route_msi(address, data).map_err(|e| e.to_string())?;
+        if let Err(e) = self.irqs.irqfd(event, gsi, None) {
+            let _ = self.irqs.unroute_msi(gsi);
+            return Err(e.to_string());
+        }
+        crate::sync::lock(&self.msis).push((event, gsi));
+        Ok(())
+    }
+
+    fn msi_off(&self, event: std::os::fd::RawFd, _address: u64, _data: u32) -> Result<(), String> {
+        let mut msis = crate::sync::lock(&self.msis);
+        let Some(at) = msis.iter().position(|&(e, _)| e == event) else {
+            return Ok(());
+        };
+        let (_, gsi) = msis.swap_remove(at);
+        self.irqs.irqfd_remove(event, gsi).map_err(|e| e.to_string())?;
+        self.irqs.unroute_msi(gsi).map_err(|e| e.to_string())
+    }
+}
+
 impl Interrupt for EdgeLine {
     fn set_level(&self, level: bool) {
         if level && let Err(e) = self.irqs.pulse(self.gsi) {
@@ -309,12 +395,15 @@ fn assemble(
     let irqs = vm.irqs();
     debug!("VM created and RAM mapped");
 
+    // A PCI bus takes the last of the virtio devices' GSIs for its INTx (D154).
+    let has_pci = pci.test || !pci.vfio.is_empty();
+    let virtio_max = layout::VIRTIO_MMIO_MAX - u64::from(has_pci);
     let devices = super::virtio_devices(
         config,
         &regions,
         hosts,
         hotplug.into_iter().chain(reporting).collect(),
-        layout::VIRTIO_MMIO_MAX,
+        virtio_max,
     )?;
     let mut bus = Bus {
         pmem: regions
@@ -371,18 +460,35 @@ fn assemble(
         memory.clone(),
         layout::VMGENID,
         Arc::new(EdgeLine {
-            irqs,
+            irqs: irqs.clone(),
             gsi: layout::GSI_GED,
         }),
     );
     // A PCI bus (D153, D154): its functions from 00:01.0, their BARs in its window.
     let mem32 = (layout::PCI_MEM32, layout::PCI_MEM32_SIZE);
-    let pci = super::pci_bus(&mut bus.mmio, layout::PCI_ECAM, mem32, pci, config, memory)?.then_some(
-        acpi::PciBridge {
-            ecam: (layout::PCI_ECAM, crate::devices::pci::ECAM_SIZE),
-            mem32,
-        },
-    );
+    let lines = has_pci.then(|| PciLines {
+        irqs: irqs.clone(),
+        intx: SharedLine::new(Arc::new(LevelLine {
+            irqs: irqs.clone(),
+            gsi: layout::GSI_PCI,
+        })),
+    });
+    let routes = lines.as_ref().map(|l| l as &dyn super::PciInterrupts);
+    let pci = super::pci_bus(
+        &mut bus.mmio,
+        layout::PCI_ECAM,
+        mem32,
+        pci,
+        config,
+        memory,
+        routes,
+    )?
+    .map(|routed| acpi::PciBridge {
+        ecam: (layout::PCI_ECAM, crate::devices::pci::ECAM_SIZE),
+        mem32,
+        intx: routed.intx,
+        gsi: layout::GSI_PCI,
+    });
     Ok(Assembled {
         vm,
         bus,
@@ -449,7 +555,7 @@ pub fn build(cfg: &Config) -> Result<Machine, String> {
                 .map_err(|e| e.to_string())?,
         ),
     };
-    let cmdline = match a.pci {
+    let cmdline = match &a.pci {
         Some(_) => format!("{} {MACHINE_CMDLINE}", cfg.cmdline),
         None => format!("{} {MACHINE_CMDLINE} {NO_PCI_CMDLINE}", cfg.cmdline),
     };
@@ -461,7 +567,7 @@ pub fn build(cfg: &Config) -> Result<Machine, String> {
             ram,
             initrd,
             rsdp: layout::RSDP,
-            pci_ecam: a.pci.map(|p| p.ecam),
+            pci_ecam: a.pci.as_ref().map(|p| p.ecam),
         },
     )
     .map_err(|e| e.to_string())?;

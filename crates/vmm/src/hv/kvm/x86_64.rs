@@ -3,12 +3,14 @@
 //! is a reset. Ground truth: docs/research/kvm-x86_64-ground-truth.md.
 
 use std::io;
+use std::os::fd::RawFd;
 use std::sync::{Arc, Mutex};
 
 use super::state::{VcpuState, VmState};
 use super::{Error, Kicker, Result, Slots, Thread, call, install_kick_handler, kvm, sys};
 use crate::arch::x86_64::{Boot, Segment, cpuid, layout};
 use crate::hv::{Exit, Io};
+use crate::sync::lock;
 
 /// What KVM must offer on x86_64 besides what every architecture needs (research doc §9
 /// step 1).
@@ -92,7 +94,22 @@ pub struct Vm {
     /// Whether each vCPU's TSC offset can be read and set (Linux 5.16), which snapshots
     /// then keep, so that every vCPU's TSC comes back in step with the others'.
     tsc_offsets: bool,
+    /// The MSIs routed to GSIs past the IOAPIC's, as the guest programmed its
+    /// passed-through functions' (D154).
+    routes: Arc<Mutex<Vec<MsiRoute>>>,
 }
+
+/// An MSI's route: the GSI an irqfd raises it by, and its message.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct MsiRoute {
+    gsi: u32,
+    address: u64,
+    data: u32,
+}
+
+/// The GSIs of the in-kernel irqchip's pins: the IOAPIC's 24 (with the PICs' beside its
+/// first 16), whose routes KVM makes by default; MSI routes take GSIs past them.
+const IOAPIC_PINS: u32 = 24;
 
 impl Vm {
     /// Creates the VM with the in-kernel irqchip (PIC, IOAPIC, LAPICs), before any vCPU
@@ -148,6 +165,7 @@ impl Vm {
             xsave_size: (xsave2.unsigned_abs() as usize).max(sys::XSAVE_SIZE),
             pre_fault,
             tsc_offsets,
+            routes: Arc::new(Mutex::new(Vec::new())),
         })
     }
 
@@ -175,7 +193,10 @@ impl Vm {
 
     /// A handle for driving interrupt lines from any thread.
     pub fn irqs(&self) -> Irqs {
-        Irqs(self.fd.clone())
+        Irqs {
+            fd: self.fd.clone(),
+            routes: self.routes.clone(),
+        }
     }
 
     /// Creates vCPU `index` on the calling thread, which runs it. Its CPUID has its own
@@ -270,13 +291,17 @@ impl Tsc {
     }
 }
 
-/// Drives the in-kernel IOAPIC's pins (GSIs) from any thread.
+/// Drives the in-kernel IOAPIC's pins (GSIs) from any thread, and the MSIs of the VM's
+/// PCI functions.
 #[derive(Debug, Clone)]
-pub struct Irqs(Arc<sys::VmFd>);
+pub struct Irqs {
+    fd: Arc<sys::VmFd>,
+    routes: Arc<Mutex<Vec<MsiRoute>>>,
+}
 
 impl Irqs {
     pub fn set(&self, gsi: u32, level: bool) -> Result<()> {
-        self.0.irq_line(gsi, level).map_err(call("KVM_IRQ_LINE"))
+        self.fd.irq_line(gsi, level).map_err(call("KVM_IRQ_LINE"))
     }
 
     /// One edge on an edge-triggered pin: KVM coalesces a re-assertion that finds the
@@ -284,6 +309,84 @@ impl Irqs {
     pub fn pulse(&self, gsi: u32) -> Result<()> {
         self.set(gsi, true)?;
         self.set(gsi, false)
+    }
+
+    /// Delivers the MSI of `address` and `data`, as a function the VMM emulates sends it.
+    pub fn msi(&self, address: u64, data: u32) -> Result<()> {
+        self.fd.signal_msi(address, data).map_err(call("KVM_SIGNAL_MSI"))
+    }
+
+    /// Raises `gsi` each time `event` is written, in the kernel (KVM_IRQFD); with
+    /// `resample`, a level-triggered line, lowered as the guest ends it, `resample` written.
+    pub fn irqfd(&self, event: RawFd, gsi: u32, resample: Option<RawFd>) -> Result<()> {
+        self.fd.irqfd(event, gsi, resample).map_err(call("KVM_IRQFD"))
+    }
+
+    pub fn irqfd_remove(&self, event: RawFd, gsi: u32) -> Result<()> {
+        self.fd.irqfd_remove(event, gsi).map_err(call("KVM_IRQFD"))
+    }
+
+    /// A GSI past the IOAPIC's that sends the MSI of `address` and `data`, for an irqfd to
+    /// raise: the routing table is KVM's defaults and every MSI routed, set whole
+    /// (api.rst 4.52, which replaces the table each time).
+    pub fn route_msi(&self, address: u64, data: u32) -> Result<u32> {
+        let mut routes = lock(&self.routes);
+        let gsi = (IOAPIC_PINS..)
+            .find(|gsi| routes.iter().all(|r| r.gsi != *gsi))
+            .ok_or_else(|| Error::Guest("no GSI left for an MSI".into()))?;
+        routes.push(MsiRoute { gsi, address, data });
+        if let Err(e) = self.commit(&routes) {
+            routes.pop();
+            return Err(e);
+        }
+        Ok(gsi)
+    }
+
+    /// Takes the MSI route of `gsi` from the table.
+    pub fn unroute_msi(&self, gsi: u32) -> Result<()> {
+        let mut routes = lock(&self.routes);
+        routes.retain(|r| r.gsi != gsi);
+        self.commit(&routes)
+    }
+
+    fn commit(&self, routes: &[MsiRoute]) -> Result<()> {
+        let irqchip = |gsi: u32, chip: u32, pin: u32| {
+            let mut u = [0u32; 8];
+            (u[0], u[1]) = (chip, pin);
+            sys::kvm_irq_routing_entry {
+                gsi,
+                kind: sys::IRQ_ROUTING_IRQCHIP,
+                u,
+                ..Default::default()
+            }
+        };
+        // KVM's defaults (arch/x86/kvm/irq.c, default_routing): each GSI to the IOAPIC's
+        // pin, and the first 16 also to a PIC's, the master's below 8.
+        let mut entries: Vec<sys::kvm_irq_routing_entry> = Vec::with_capacity(40 + routes.len());
+        for gsi in 0..IOAPIC_PINS {
+            entries.push(irqchip(gsi, sys::IRQCHIP_IOAPIC, gsi));
+            if gsi < 16 {
+                let pic = if gsi < 8 {
+                    sys::IRQCHIP_PIC_MASTER
+                } else {
+                    sys::IRQCHIP_PIC_SLAVE
+                };
+                entries.push(irqchip(gsi, pic, gsi % 8));
+            }
+        }
+        for r in routes {
+            let mut u = [0u32; 8];
+            (u[0], u[1], u[2]) = (r.address as u32, (r.address >> 32) as u32, r.data);
+            entries.push(sys::kvm_irq_routing_entry {
+                gsi: r.gsi,
+                kind: sys::IRQ_ROUTING_MSI,
+                u,
+                ..Default::default()
+            });
+        }
+        self.fd
+            .set_gsi_routing(&entries)
+            .map_err(call("KVM_SET_GSI_ROUTING"))
     }
 }
 
