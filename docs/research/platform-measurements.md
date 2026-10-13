@@ -7741,7 +7741,7 @@ revision before comparing a changed API/implementation.
     vCPUs; with `vulkaninfo`, 149.4 (219.2) and 45.5 (117.3).
 - **Consequence (D144).** Venus gives a guest the GPU's speed for its GPU's work, and
   costs a VM some 3 MiB. A blob's first map is the cost to keep down: about 0.1 ms each,
-  past 1 ms at p99 on a busy host. A GPU run's memory is its cold boot's (D149's
+  past 1 ms at p99 on a busy host. A GPU run's memory is its cold boot's (D150's
   templates). Guest vCPUs at the time-constraint policy outrun the host's other work.
 
 ### M219. What plugging a run's memory costs a run (D148)
@@ -7838,3 +7838,43 @@ revision before comparing a changed API/implementation.
   memory, where Docker's reports its host's: the smaller of the two that Node takes is the
   limit either way. One allocation larger than what is plugged so far is made, as on a
   host of the memory the guest may reach.
+
+### M222. What giving a run's freed memory back costs its runs (D151)
+
+- **Question.** A virtio-balloon device that gives back the memory a guest reports free:
+  what does it cost a run, and where does a cost come from?
+- **Method.** `docs/research/measurements/build-ab/ab.py OLD NEW alpine:3.20 N true`,
+  `AB_FLAGS=--rm`: each arm's `shards` and a home with alpine pulled, the guest recorded,
+  and its template saved; N runs of each arm in turn, paired. OLD: ea38f209, no device.
+  The other arms are builds of D151's work in turn, and `run-plug/age.py` reads each run's
+  VM age as its request came. Apple M5 Max, 128 GiB, macOS 26.4.1, 2026-10-13, load 4 to
+  30 (each A/B's own in the scratch records); the pinned kernel 4b8900bdffdd, and for the
+  last, both arms on 6.18.48 with patches 0004 and 0005, built here.
+- **Results.** Paired median differences, NEW less OLD, with 95% intervals, µs:
+
+  | NEW | n | wall | command |
+  |---|---|---|---|
+  | the device, every reported range given back | 300 | +306 [+49, +568] | +21 [+12, +41] |
+  | the device, no reporting offered | 300 | −61 [−205, +98] | +12 [−13, +43] |
+  | reporting offered, against the device without it | 300 | −15 [−94, +108] | +32 [+4, +57] |
+  | every range given back, again | 300 | +154 [−389, +1011] | +60 [+33, +91] |
+  | ranges the host holds none of left alone | 400 | +83 [−98, +337] | +79 [+70, +92] |
+  | nothing given back in a VM's first 5 s | 400 | +209 [−112, +397] | +50 [+43, +60] |
+  | ten execs a run, the same | 200 | +186 [−17, +349] | +81 [+46, +117] |
+  | templates saved 2.5 s into their boot | 400 | +24 [−65, +80] | +29 [+18, +45] |
+  | templates saved after `page_reporting.flush` (D151) | 400 | −5 [−94, +98] | −11 [−22, +0] |
+
+  Every run of `age.py` took a VM under 0.5 s old (the pool refills as a run ends), so no
+  report came during any of them: each restore's reports came two seconds into its life
+  (208 MiB, in two reports of 2 to 4 ms). The cost followed the template's state, not
+  the reports: a template saved some 150 ms into its boot holds the first pass that
+  registering the device schedules two seconds on; saved after one pass, it held the
+  next, as a pass reports some 64 blocks of each free list; saved after the flush, it
+  holds none. A restore of a flushed template reports nothing in its first 3 s, one of a
+  template saved without it 212,992 KiB (`a_runs_memory_freed_goes_back_to_the_host`).
+- **Giving back.** A run that touched 512 MiB and freed it, idle 10 s: footprint at its
+  end 57 and 132 MiB, an idle run's 94, the peak 578 and 645; without the device, 562
+  against 90.
+- **Consequence (D151).** Templates are saved after a flush; a run's memory freed goes
+  back to the host at no cost measured to its runs.
+

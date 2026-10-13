@@ -293,6 +293,7 @@ fn assemble(
             .map_err(|e| e.to_string())?;
     }
     let (hotplug, sizes) = super::hotplug_device(&vm, memory, config)?.unzip();
+    let reporting = super::reporting_device(&vm, config);
     debug!("VM created and RAM mapped");
 
     let gp = hv::gic_params().map_err(|e| e.to_string())?;
@@ -327,7 +328,7 @@ fn assemble(
                 as Box<dyn crate::devices::virtio::VirtioDevice>)
         }
     };
-    let last = gpu.into_iter().chain(hotplug).collect();
+    let last = gpu.into_iter().chain(hotplug).chain(reporting).collect();
     let devices = super::virtio_devices(config, &regions, hosts, last, layout::VIRTIO_MMIO_MAX)?;
     let mut bus = MmioBus::default();
     let mut virtio = Vec::with_capacity(devices.len());

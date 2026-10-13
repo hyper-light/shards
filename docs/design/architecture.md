@@ -3613,6 +3613,64 @@ No run-time labels, relays or declassifiers (§12 answer 14, decided by the user
 an internal-only domain to the world (D58), so there is no data to label. Code mode is
 D136.
 
+### D151. What a run frees goes back to the host (free page reporting)
+
+D148 plugs memory into a run as its workload needs it, and nothing gave any back: a
+workload that touched 512 MiB and freed it held it to its end, 562 MiB of footprint where an
+idle run as long held 90 (`a_runs_memory_freed_goes_back_to_the_host`, mutated), where a
+container's memory freed is its host's at once.
+
+- **The guest reports, the host gives back.** Linux's free page reporting
+  (mm/page_reporting.c; the pinned kernel has CONFIG_PAGE_REPORTING and
+  CONFIG_VIRTIO_BALLOON) hands a virtio-balloon device the blocks of its free lists of its
+  pageblock and up (2 MiB with 4 KiB pages), two seconds after one is freed, paced to some
+  64 blocks of each free list a pass, a pass each two seconds ("all pages on an idle
+  system in about 30 seconds"). shards' device offers that feature alone
+  (VIRTIO_BALLOON_F_REPORTING), its queues inflate, deflate and reporting, as Linux gives
+  indexes only to the queues it names; the balloon never inflates (`num_pages` 0).
+- **A reported range stays the guest's.** Each range, those that meet joined, is given back
+  under guest memory's lock, as unplug and plug in turn (`memory::Access::discard`): taken
+  from the guest at stage 2 where the hypervisor holds what it maps (Hypervisor.framework,
+  WHP; M193: replaced in the host alone, the guest kept the old pages), its pages given
+  back (`platform::discard`: on Linux MADV_DONTNEED, which keeps the mapping, its advice,
+  and frees a private mapping's copies; on macOS fresh anonymous memory mapped over it,
+  as MADV_FREE_REUSABLE gave nothing back, M193), and mapped to the guest again, before
+  the report is answered, after which the guest may use the pages, zero-filled as first
+  touched. Only the host's whole pages of guest RAM in a range are given back; one the
+  host could not give back is kept, and said once.
+- **Where.** Every run's microVM, last of its devices, so that no other device's window
+  moves; its templates with it (snapshot format 14). Builders on Linux and macOS: a
+  build's peak is not held to its end. Not over WHP yet, whose taking a part of guest
+  RAM away and back is unmeasured.
+- **What the host holds none of is left alone.** A range none of whose pages the host
+  holds (`platform::untouched`: never touched, or a restored guest's that is still its
+  template's file's) is answered as it is, no stage 2 touched.
+- **A template is saved with nothing left to report.** Registering the device schedules a
+  first pass over every zone two seconds on (mm/page_reporting.c
+  `page_reporting_register`), and a template, saved some 150 ms into its boot, was saved
+  with it to run: every restore then reported what its template's boot freed, 208 MiB,
+  two seconds into its life, and runs paid for that state, 50 to 79 µs of a 1 ms command
+  at the median, though no report came during them (PM M222). Kernel patch 0005 adds
+  `page_reporting.flush`, which reports at once what waits, pass after pass until
+  nothing does; a template's init writes it before the template is saved (6 ms), through
+  a sysfs of its own opened as it boots, its container's being read-only. A guest kernel
+  without it reports as before.
+- **Measured (PM M222):** with the flush, runs cost what they did, wall time −5 µs
+  [−94, +98] and the command's −11 µs [−22, +0], paired over 400; a run that touched
+  512 MiB and freed it held 57 to 132 MiB at its end where an idle one held 94, and with
+  none given back 562.
+
+Tested: in crates/vmm, `reported_memory_comes_back_empty` (ranges that meet joined, each
+unmapped and mapped again around its pages, the rest of RAM as it was),
+`a_range_the_host_holds_nothing_of_is_left_alone`,
+`a_range_past_ram_or_in_part_of_a_page_keeps_what_is_not_wholly_its` and
+`the_device_asks_for_nothing_and_keeps_actual`; on real microVMs,
+`a_runs_memory_freed_goes_back_to_the_host`: restores of a template reporting nothing in
+their first seconds, where the kernel has the flush (a VM's timing line says what its
+guest reported, `reported_kib`), and 512 MiB touched and freed given back. Mutation-checked:
+runs without the device hold 562 MiB; a template saved without the flush has its restores
+report 212,992 KiB.
+
 ### D149. A guest reports the memory it may still plug
 
 A run without a limit grows to its host's memory (D148), but its guest reported only what
@@ -3878,7 +3936,7 @@ to test on, where no CI runner has a GPU behind an IOMMU.
   (guest time over host time, geometric mean 1.003 over 218 cases); llama.cpp ahead in
   the guest on a busy host, by its vCPUs' scheduling and Venus's asynchronous submits;
   a blob's first map about 0.1 ms; the renderer some 3 MiB of a VM's footprint.
-- **To build:** a GPU VM from a template (D149); Linux's VFIO (R2). A build's `RUN`
+- **To build:** a GPU VM from a template (D150); Linux's VFIO (R2). A build's `RUN`
   steps: D145; a run's `--device` by CDI name: D146.
 
 ### D143. `RUN` on Windows hosts: the builder

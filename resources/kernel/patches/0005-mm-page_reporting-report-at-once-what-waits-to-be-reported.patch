@@ -1,0 +1,53 @@
+mm/page_reporting: report at once what waits to be reported
+
+A guest saved as a template is restored as many times over, each copy
+continuing from the moment it was saved. Registering a page reporting
+device schedules a first pass over every zone two seconds on, and a guest
+saved within those two seconds is saved with the pass still to run: each
+copy then reports, two seconds into its life, what its template's boot
+freed. Its runs paid for that state: in shards, 50 to 79 us of a 1 ms
+command at the median against a guest without the device, 29 us where
+the template was saved after the pass.
+
+Add page_reporting.flush, written to report at once what waits to be
+reported and to wait for it, pass after pass, until nothing does, as a
+guest's agent writes it before the guest is saved. Reporting is as it was
+otherwise.
+
+--- a/mm/page_reporting.c
++++ b/mm/page_reporting.c
+@@ -417,3 +417,34 @@
+ 	mutex_unlock(&page_reporting_mutex);
+ }
+ EXPORT_SYMBOL_GPL(page_reporting_unregister);
++
++/*
++ * Reports at once what waits to be reported, and waits for it, pass after pass,
++ * until nothing does: what a guest about to be saved has freed is reported before
++ * it is saved, so that no copy of it starts by reporting it.
++ */
++static int page_reporting_flush_set(const char *val, const struct kernel_param *kp)
++{
++	struct page_reporting_dev_info *prdev;
++	int passes;
++
++	mutex_lock(&page_reporting_mutex);
++	prdev = rcu_dereference_protected(pr_dev_info,
++				lockdep_is_held(&page_reporting_mutex));
++	for (passes = 0; prdev && passes < 64; passes++) {
++		if (atomic_read(&prdev->state) == PAGE_REPORTING_IDLE)
++			break;
++		mod_delayed_work(system_freezable_wq, &prdev->work, 0);
++		flush_delayed_work(&prdev->work);
++	}
++	mutex_unlock(&page_reporting_mutex);
++
++	return 0;
++}
++
++static const struct kernel_param_ops page_reporting_flush_ops = {
++	.set = &page_reporting_flush_set,
++};
++
++module_param_cb(flush, &page_reporting_flush_ops, NULL, 0200);
++MODULE_PARM_DESC(flush, "Report at once what waits to be reported");

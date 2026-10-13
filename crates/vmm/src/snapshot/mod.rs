@@ -57,7 +57,9 @@ const MAGIC: [u8; 8] = *b"SHRDSNAP";
 /// 11: and whether a join disk follows the disks (D119).
 /// 12: and whether a join share follows the shared directories (D119).
 /// 13: and the memory the machine may have plugged, in MiB, none of it plugged (D148).
-const VERSION: u32 = 13;
+/// 14: and whether a virtio-balloon device gives back the memory the guest reports free
+///     (D151).
+const VERSION: u32 = 14;
 /// The snapshot format this build writes and reads: what a snapshot kept for reuse is
 /// keyed by.
 pub const FORMAT: u32 = VERSION;
@@ -100,8 +102,11 @@ pub struct MachineConfig {
     /// snapshot: its state at EL2 is not saved, so a snapshot of it is refused.
     pub nested: bool,
     /// Memory the guest may have plugged, in MiB, through a virtio-mem device (D133).
-    /// Never in a snapshot: memory plugged is not saved, so a snapshot of it is refused.
+    /// A snapshot keeps it, none of it plugged (D148).
     pub hotplug_mib: u64,
+    /// Whether a virtio-balloon device gives back the memory the guest reports free
+    /// (D151), last of its devices.
+    pub reporting: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -305,6 +310,7 @@ fn encode(s: &Snapshot, generation: &str, identities: &[Identity]) -> Result<Vec
     w.bool(s.config.join);
     w.bool(s.config.join_share);
     w.u64(s.config.hotplug_mib);
+    w.bool(s.config.reporting);
     w.bytes(&s.arch);
     w.bytes(&s.devices);
     Ok(w.into_bytes())
@@ -379,6 +385,7 @@ fn decode(bytes: &[u8]) -> codec::Result<Decoded> {
     let join = r.bool()?;
     let join_share = r.bool()?;
     let hotplug_mib = r.u64()?;
+    let reporting = r.bool()?;
     let arch_state = r.bytes(usize::MAX)?.to_vec();
     let devices = r.bytes(usize::MAX)?.to_vec();
     r.finish()?;
@@ -396,6 +403,7 @@ fn decode(bytes: &[u8]) -> codec::Result<Decoded> {
                 join_share,
                 nested: false,
                 hotplug_mib,
+                reporting,
             },
             arch: arch_state,
             devices,
@@ -870,6 +878,7 @@ mod tests {
                 join_share: true,
                 nested: false,
                 hotplug_mib: 0,
+                reporting: false,
             },
             arch: vec![marker, 2, 3],
             devices: vec![9; 100],

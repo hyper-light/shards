@@ -1312,9 +1312,8 @@ impl<D: Disk> Daemon<D> {
             // are gone with it, so no command could reach them: they end as `daemon stop`
             // ends them, rather than run on unseen.
             if !closing && self.home_going() {
-                log(format!("{} is gone", self.home.display()));
                 self.home_gone.store(true, Ordering::SeqCst);
-                self.step_aside(threads);
+                self.step_aside(threads, &format!("{} is gone", self.home.display()));
                 continue;
             }
             // Someone may remove the socket while the daemon runs; a removal of the home,
@@ -1685,7 +1684,7 @@ impl<D: Disk> Daemon<D> {
                     Ok(held) => lock(&self.stoppers).push(held),
                     Err(e) => log(format!("holding a stopper's connection: {e}")),
                 }
-                self.step_aside(threads);
+                self.step_aside(threads, "a client asked it to stop");
                 return None;
             }
             kind::ATTACH => {
@@ -1693,7 +1692,7 @@ impl<D: Disk> Daemon<D> {
                 if let Some(attach) = shards_ipc::Attach::decode(&message.payload)
                     && attach.daemon != self.identity
                 {
-                    self.step_aside(threads);
+                    self.step_aside(threads, "an attach of another build");
                     let _ = shards_ipc::send(conn, kind::RESTART, &[], &[]);
                     return None;
                 }
@@ -1705,7 +1704,7 @@ impl<D: Disk> Daemon<D> {
                 if let Some(exec) = shards_ipc::Exec::decode(&message.payload)
                     && exec.daemon != self.identity
                 {
-                    self.step_aside(threads);
+                    self.step_aside(threads, "an exec of another build");
                     let _ = shards_ipc::send(conn, kind::RESTART, &[], &[]);
                     return None;
                 }
@@ -1719,7 +1718,7 @@ impl<D: Disk> Daemon<D> {
                 };
                 if command.daemon != self.identity {
                     self.release_client(number);
-                    self.step_aside(threads);
+                    self.step_aside(threads, "a command of another build");
                     let _ = shards_ipc::send(conn, kind::RESTART, &[], &[]);
                     return None;
                 }
@@ -1773,7 +1772,7 @@ impl<D: Disk> Daemon<D> {
             // Another build asks: its own daemon serves it once this one has gone. The
             // socket goes first, so that the client's next connection cannot reach this
             // daemon.
-            self.step_aside(threads);
+            self.step_aside(threads, "a run of another build");
             let _ = shards_ipc::send(conn, kind::RESTART, &[], &[]);
             return None;
         }
@@ -4063,7 +4062,11 @@ impl<D: Disk> Daemon<D> {
     /// Stops serving: removes the socket, ends the runs in progress, and exits once they
     /// have ended, as dockerd shuts down (`shards daemon stop`, or a client of another
     /// build, whose own daemon then takes the home).
-    fn step_aside<'s, 'e>(&'s self, threads: &'s Threads<'s, 'e>) {
+    /// Stops serving, for `why`, which its log says: a daemon gone with no word of why
+    /// left a test only its absence to go by (a_container_outlives_a_daemon_that_dies, dev
+    /// 3c2e3cd3's CI).
+    fn step_aside<'s, 'e>(&'s self, threads: &'s Threads<'s, 'e>, why: &str) {
+        log(format!("stepping aside: {why}"));
         // Before its socket goes: whoever then finds no daemon listening waits for this
         // one while it ends its runs, however long their stop timeouts.
         let stopping = self.home.join(shards_ipc::STOPPING);
@@ -4487,6 +4490,9 @@ impl<D: Disk> Daemon<D> {
             if cfg.hotplug_mib > 0 {
                 cfg.cmdline.push_str(" memhp_default_state=online_kernel");
             }
+            // And memory its workload frees given back to the host, as it reports it
+            // free, as a container's is (D151).
+            cfg.reporting = true;
             cfg.pmem.extend(server.iter().cloned());
             // A slot for each directory it shares (D38), which its run fills.
             cfg.shares = (0..prepared.shares).map(|_| Arc::default()).collect();
@@ -4883,6 +4889,9 @@ impl<D: Disk> Daemon<D> {
         if cfg.hotplug_mib > 0 {
             let max = cfg.memory_mib.saturating_add(cfg.hotplug_mib);
             args.extend(["--memory-max".into(), max.to_string().into()]);
+        }
+        if cfg.reporting {
+            args.push("--reporting".into());
         }
         if let Some(init) = &cfg.init {
             args.extend(["--init".into(), init.into()]);
@@ -6460,7 +6469,7 @@ mod tests {
                     && lock(&d.waiters).contains_key(&id)
             });
             let t0 = Instant::now();
-            t.t.daemon.step_aside(t.threads);
+            t.t.daemon.step_aside(t.threads, "a test asked it to stop");
             // The run hears its SIGTERM, and goes on regardless.
             assert_eq!(heard(&vm), signal(15));
             t.until("clients still in hand", |d| {

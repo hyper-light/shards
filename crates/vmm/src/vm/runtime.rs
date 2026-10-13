@@ -46,6 +46,11 @@ impl Handle {
         self.memory.hotplug_held().ok().flatten()
     }
 
+    /// The bytes its guest has reported free (D151), given back or not.
+    pub fn reported(&self) -> u64 {
+        self.memory.reported()
+    }
+
     /// Sets the most memory its guest may have plugged, in bytes: a run's own, as a VM
     /// restored from a template takes it (D148). An error where it has none to plug.
     pub fn set_plug_most(&self, bytes: u64) -> Result<(), String> {
@@ -793,6 +798,7 @@ mod tests {
                 join_share: false,
                 nested: false,
                 hotplug_mib: 0,
+                reporting: false,
             },
             arch: Vec::new(),
             devices: Vec::new(),

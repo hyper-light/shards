@@ -213,15 +213,15 @@ pub fn carries_gpu_vm() -> bool {
 
 /// The pinned kernel's `kvm` variant (resources/kernel/kvm.config), for a guest that is
 /// itself a KVM host (`--nested`, D132): arm64 alone so far, where a guest can have EL2.
-/// Its release rebuilt the pinned kernels byte for byte.
+/// Of the pinned kernels' own release.
 pub fn nested_kernel() -> Option<&'static Path> {
     static K: OnceLock<Option<PathBuf>> = OnceLock::new();
     K.get_or_init(|| {
         (ARCH == "aarch64").then(|| {
             fetch(&Artifact {
-                name: "Image-6.18.48-aarch64-kvm-13af2abd3f30",
-                url: "https://github.com/hyper-light/shards/releases/download/kernel-6.18.48-13af2abd3f30/Image-6.18.48-aarch64-kvm",
-                sha256: "5bf30280278fd8c4a01785c0e1449e57eedc26958ca3e317cbd1b798c91d6d1e",
+                name: "Image-6.18.48-aarch64-kvm-b3f3b948641f",
+                url: "https://github.com/hyper-light/shards/releases/download/kernel-6.18.48-b3f3b948641f/Image-6.18.48-aarch64-kvm",
+                sha256: "89a48e06e78bdd098ef384ae6a1db16842f430ec83908238747e34aa025f5d9e",
             })
         })
     })
@@ -760,6 +760,16 @@ impl Run {
     /// The VMM process's peak RSS when it reported, in KiB.
     pub fn rss_kib(&self) -> Option<u128> {
         self.timing_field("rss_kib")
+    }
+
+    /// The VMM process's own memory as it reported, in KiB, as memory per VM is counted.
+    pub fn footprint_kib(&self) -> Option<u128> {
+        self.timing_field("footprint_kib")
+    }
+
+    /// What the VM's guest reported free, given back or not (D151), in KiB.
+    pub fn reported_kib(&self) -> Option<u128> {
+        self.timing_field("reported_kib")
     }
 
     /// How many pages of its template's working set the VM prefetched before it ran.

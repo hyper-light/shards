@@ -1045,10 +1045,18 @@ fn stats_measures_each_microvm_from_its_guest() {
             .unwrap();
         let fields: Vec<&str> = line.split_whitespace().collect();
         let cpu = fields[2].trim_end_matches('%').parse().unwrap();
-        // Against the guest's memory, no limit given; its interfaces' and devices'
-        // bytes, and its one process.
+        // Against the memory the microVM may have, no limit given, its host's, as
+        // Docker's is its host's (D149: `128GiB` on a host of 128); its interfaces' and
+        // devices' bytes, and its one process.
         assert_eq!(fields[4], "/", "{line}");
-        assert!(fields[5].ends_with("MiB"), "{line}");
+        let limit: f64 = fields[5]
+            .strip_suffix("GiB")
+            .and_then(|g| g.parse().ok())
+            .unwrap_or(0.0);
+        // SAFETY: sysconf(3) with constant arguments.
+        let host =
+            unsafe { libc::sysconf(libc::_SC_PHYS_PAGES) as f64 * libc::sysconf(libc::_SC_PAGESIZE) as f64 };
+        assert!(limit * f64::from(1u32 << 30) > host / 2.0, "{line}");
         assert_eq!(fields.last(), Some(&"1"), "{line}");
         (cpu, fields[3].to_string())
     };
@@ -10170,6 +10178,68 @@ fn an_image_of_gigabytes_boots() {
     std::fs::remove_file(ctx.join("big")).unwrap();
     let ran = run_in(&home, "big:1", &["--rm"], &["fs", "open:r:/big"]);
     assert_eq!(ran.status, Some(0), "{ran}");
+}
+
+/// What a run's workload frees goes back to the host (D151): half a gigabyte touched, then
+/// freed, and once the guest has reported it free, its microVM holds what an idle one
+/// does, not the half gigabyte, as a container's memory freed is its host's at once.
+#[test]
+fn a_runs_memory_freed_goes_back_to_the_host() {
+    let Some((home, image)) = home("containers-giveback") else {
+        return;
+    };
+    // Its runs restore templates, as a user's do: a daemon started with SHARDS_KERNEL
+    // boots every run.
+    assert_eq!(shards_in(&home, &["stop", "daemon"]).status, Some(0));
+    let env: [(&str, &OsStr); 2] = [("SHARDS_HOME", home.as_os_str()), ("SHARDS_TIMING", "1".as_ref())];
+    let (kernel, init) = (kernel(), guest_init());
+    let recorded = run_shards_env(
+        &["guest"],
+        &[
+            "use",
+            "--kernel",
+            kernel.to_str().unwrap(),
+            "--init",
+            init.to_str().unwrap(),
+        ],
+        &env,
+        TIMEOUT,
+    );
+    assert_eq!(recorded.status, Some(0), "{recorded}");
+    let run = |command: &[&str]| {
+        let args = run_args(&image, &["--rm"], command);
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        run_shards_env(&[], &args, &env, TIMEOUT)
+    };
+    // The microVM that saves the template, then one restored from it, each idle as long
+    // as the run that frees memory.
+    let first = run(&["alloc-free", "0", "10"]);
+    assert_eq!(first.status, Some(0), "{first}");
+    let idle = run(&["alloc-free", "0", "10"]);
+    assert_eq!(idle.status, Some(0), "{idle}");
+    // A template is saved with what its boot freed reported, where its kernel can be told
+    // to report at once (`page_reporting.flush`, resources/kernel/patches/0005): a restore
+    // reports none of it, two seconds into its life, which its runs paid for. Measured:
+    // 0 KiB; with the pass left to run, 212,992.
+    let flushes = run(&["stat", "/sys/module/page_reporting/parameters/flush"]);
+    if flushes.status == Some(0) {
+        assert_eq!(idle.reported_kib(), Some(0), "{idle}");
+    } else {
+        println!("SKIP: this guest kernel cannot be told to report at once (D151)");
+    }
+    // The guest reports memory freed two seconds on, and of each free list about 64
+    // blocks a pass, a pass each two seconds (mm/page_reporting.c): 512 MiB in two.
+    let r = run(&["alloc-free", "512", "10"]);
+    assert_eq!(r.status, Some(0), "{r}");
+    assert!(r.stdout.contains("freed 512"), "{r}");
+    // Against a restore as long that frees nothing: the guest's own use, and what of it
+    // it reports free in turn. Measured 94 MiB idle, and 57 and 132 MiB after 512 MiB
+    // freed, a peak of 578 and 645 MiB; with none given back, the peak.
+    let (idle, held) = (idle.footprint_kib().unwrap(), r.footprint_kib().unwrap());
+    assert!(
+        held < idle + (512 << 10) / 2,
+        "{held} KiB held of 512 MiB freed, {idle} KiB idle: {r}"
+    );
 }
 
 /// A run's memory, plugged as its workload needs it (D148): without `-m` it holds more

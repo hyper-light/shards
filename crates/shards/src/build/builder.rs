@@ -628,6 +628,12 @@ impl Builder {
         if boot.gpu {
             args.push("--gpu".into());
         }
+        // Memory its steps free given back to the host as the guest reports it free
+        // (D151): a build's peak is not held to its end. Not yet over WHP, whose taking a
+        // part of guest RAM away and back is unmeasured.
+        if cfg!(unix) {
+            args.push("--reporting".into());
+        }
         // The files this process attaches to its join disk for its steps' caches (D134).
         let (attach, attach_theirs) =
             UnixStream::pair().map_err(|e| format!("the builder's join disk: {e}"))?;

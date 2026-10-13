@@ -189,6 +189,8 @@ pub struct GuestMemory {
     /// Mapped from a file ([`from_file`](Self::from_file)): a page it has not touched holds
     /// the file's bytes, not zeros.
     file_backed: bool,
+    /// The bytes the guest has reported free, given back or not (D151).
+    reported: AtomicU64,
     /// Held by the thread with the [`Access`].
     host: Mutex<()>,
     /// That thread's [`token`], or 0.
@@ -232,6 +234,7 @@ impl GuestMemory {
             hotplug: None,
             file_backed: false,
             host: Mutex::new(()),
+            reported: AtomicU64::new(0),
             holder: AtomicUsize::new(0),
         };
         for &(gpa, len) in ranges {
@@ -519,6 +522,12 @@ impl GuestMemory {
         Ok(h.host(gpa))
     }
 
+    /// The bytes the guest has reported free since this memory was made, given back or
+    /// not ([`Access::discard`], D151).
+    pub fn reported(&self) -> u64 {
+        self.reported.load(Ordering::Relaxed)
+    }
+
     /// Keeps `gpa..gpa+len`, within one region, on the host's base pages
     /// ([`platform::small_pages`]): guest RAM the guest touches sparsely. Before it does.
     pub fn small_pages(&self, gpa: u64, len: usize) -> Result<(), OutOfBounds> {
@@ -624,6 +633,54 @@ impl<'a> Access<'a> {
             crate::warn!("memory unplugged at {gpa:#x}+{len:#x} keeps its host pages: {e}");
         }
         Ok(())
+    }
+
+    /// Gives the host back the pages of `gpa..gpa+len`, guest RAM the guest holds free and
+    /// has reported (D151): the host's whole pages within it, of its RAM or of memory
+    /// plugged. As unplug and plug in turn, but the range stays the guest's: `unmap` takes
+    /// it from the guest where the hypervisor's stage 2 holds what it maps, its pages go
+    /// back to the host and fresh ones, zero-filled as first touched, take their place
+    /// ([`platform::discard`]), and `map` gives it to the guest again, whether its pages
+    /// went or not. A range whose pages the host holds none of is left as it is: the
+    /// guest's free memory a restored VM never touched is its template's file's, and its
+    /// reports came at once after each restore (D151). Under this access, so no host thread
+    /// is between. The bytes given back.
+    pub fn discard(
+        &self,
+        gpa: u64,
+        len: u64,
+        unmap: impl FnOnce(u64, usize) -> Result<(), String>,
+        map: impl FnOnce(*mut u8, u64, usize) -> Result<(), String>,
+    ) -> Result<u64, String> {
+        self.mem.reported.fetch_add(len, Ordering::Relaxed);
+        let page = platform::page_size().map_err(|e| e.to_string())? as u64;
+        let end = gpa
+            .checked_add(len)
+            .ok_or_else(|| format!("{gpa:#x}+{len:#x} overflows"))?;
+        let (start, end) = (
+            gpa.checked_next_multiple_of(page).unwrap_or(u64::MAX),
+            end - end % page,
+        );
+        if end <= start {
+            return Ok(0);
+        }
+        let size = usize::try_from(end - start).map_err(|e| e.to_string())?;
+        let host = self.mem.host_ptr(start, size).map_err(|e| e.to_string())?;
+        let at = NonNull::new(host).ok_or("a null host address")?;
+        // SAFETY: guest RAM of this memory, whole host pages of it.
+        let held = unsafe { platform::untouched(host, size, page as usize) };
+        if let Ok(Some(untouched)) = held
+            && untouched.iter().all(|u| *u)
+        {
+            return Ok(0);
+        }
+        unmap(start, size)?;
+        // SAFETY: whole host pages of guest RAM, which the guest holds free and no host
+        // thread accesses under this access: a device's buffers are the guest's in use.
+        let discarded = unsafe { platform::discard(at, size) };
+        map(host, start, size)?;
+        discarded.map_err(|e| e.to_string())?;
+        Ok(size as u64)
     }
 
     /// The blocks `gpa..gpa+len` is, where it is whole blocks of the memory to plug.

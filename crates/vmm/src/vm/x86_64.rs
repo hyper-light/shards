@@ -300,6 +300,7 @@ fn assemble(
             .map_err(|e| e.to_string())?;
     }
     let (hotplug, sizes) = super::hotplug_device(&vm, memory, config)?.unzip();
+    let reporting = super::reporting_device(&vm, config);
     let irqs = vm.irqs();
     debug!("VM created and RAM mapped");
 
@@ -307,7 +308,7 @@ fn assemble(
         config,
         &regions,
         hosts,
-        hotplug.into_iter().collect(),
+        hotplug.into_iter().chain(reporting).collect(),
         layout::VIRTIO_MMIO_MAX,
     )?;
     let mut bus = Bus {

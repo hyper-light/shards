@@ -196,6 +196,37 @@ pub unsafe fn withhold(ptr: NonNull<u8>, len: usize) -> io::Result<()> {
     Ok(())
 }
 
+/// Gives the pages of `ptr..ptr+len` back to the host and leaves the range readable and
+/// writable, zero-filled as it is next touched: guest RAM the guest holds free (D151).
+/// Linux: MADV_DONTNEED, which keeps the mapping and its advice, and takes what it held
+/// of anonymous memory, or its copies of a file mapped private (madvise(2)). macOS: fresh
+/// anonymous memory mapped over it (mmap(2) MAP_FIXED), as MADV_FREE_REUSABLE and
+/// MADV_FREE gave nothing back (PM M193); the hypervisor must not map it meanwhile.
+///
+/// # Safety
+/// As for [`withhold`].
+pub unsafe fn discard(ptr: NonNull<u8>, len: usize) -> io::Result<()> {
+    #[cfg(target_os = "linux")]
+    // SAFETY: madvise(2) of the caller's own mapping, which nothing accesses meanwhile.
+    let done = unsafe { libc::madvise(ptr.as_ptr().cast(), len, libc::MADV_DONTNEED) } == 0;
+    #[cfg(not(target_os = "linux"))]
+    // SAFETY: MAP_FIXED over the caller's own mapping, which nothing accesses meanwhile.
+    let done = unsafe {
+        libc::mmap(
+            ptr.as_ptr().cast(),
+            len,
+            libc::PROT_READ | libc::PROT_WRITE,
+            libc::MAP_PRIVATE | libc::MAP_ANON | libc::MAP_FIXED | noreserve(),
+            -1,
+            0,
+        )
+    } != libc::MAP_FAILED;
+    if !done {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
 /// Makes `ptr..ptr+len`, which [`withhold`] left inaccessible, readable and writable again,
 /// zero-filled as it is first touched; on Linux advised as [`reserve_ram`] advises guest
 /// RAM, MADV_HUGEPAGE, which the mapping `withhold` made does not inherit.
