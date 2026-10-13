@@ -238,7 +238,8 @@ impl Warm {
         let mut payload = vec![0];
         payload.extend((20u64 << 20).to_be_bytes());
         payload.extend(5u64.to_be_bytes());
-        // Its first segment.
+        // Its first segment, and memory to plug: none (D148).
+        payload.extend(0u64.to_be_bytes());
         payload.extend(0u64.to_be_bytes());
         payload.extend(spec.encode());
         shards_ipc::send(
@@ -303,7 +304,8 @@ impl Warm {
         // The log's retention, which a run without a log has no use for.
         payload.extend((20u64 << 20).to_be_bytes());
         payload.extend(5u64.to_be_bytes());
-        // Its first segment.
+        // Its first segment, and memory to plug: none (D148).
+        payload.extend(0u64.to_be_bytes());
         payload.extend(0u64.to_be_bytes());
         payload.extend(spec.encode());
         shards_ipc::send(

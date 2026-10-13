@@ -146,8 +146,10 @@ pub struct Prepared {
     pub labels: std::collections::BTreeMap<String, String>,
     /// The image's ID: what its reference resolved to.
     pub image_id: String,
-    /// The microVM's vCPUs and memory in MiB, as its resource limits need them.
+    /// The microVM's vCPUs and the memory it boots with, in MiB ([`sizes`]).
     pub size: (u32, u64),
+    /// The most memory the microVM may have in all, in MiB ([`sizes`], D148).
+    pub memory_max: u64,
     /// The image's `VOLUME`s.
     pub image_volumes: Vec<String>,
     /// Its Agentfile, where it is an Agentfile's image (D109): what the daemon holds the
@@ -463,17 +465,10 @@ pub fn prepare(
             .unwrap_or_else(|| vec!["/bin/sh".into(), "-c".into()]),
         labels,
         size: {
-            let vcpus = crate::resources::vcpus(&request.resources, crate::resources::host_cpus());
-            (
-                vcpus,
-                crate::resources::memory_mib(
-                    request.resources.memory,
-                    shards_vmm::vm::MEMORY_MIB,
-                    crate::build::host_memory(),
-                    vcpus,
-                ),
-            )
+            let (vcpus, boot, _) = sizes(&request.resources, crate::build::host_memory());
+            (vcpus, boot)
         },
+        memory_max: sizes(&request.resources, crate::build::host_memory()).2,
         image_volumes: image
             .config
             .config
@@ -495,6 +490,23 @@ pub fn prepare(
     })
 }
 
+/// A run's microVM's vCPUs, the memory it boots with and the most it may have in all, in
+/// MiB (D148). Without a memory limit, it boots as before and plugs memory as its workload
+/// asks, up to the host's memory, as a container without one may have. With one, it boots
+/// with what its limit needs, as before: the memory a guest reports is what it has, which
+/// runtimes size their heaps by (Node.js's V8 by its total, 259 MiB of a microVM booted
+/// small where `-m 8g` was asked, PM M220), until it reports what it may plug. Where the
+/// host's memory is not known, it plugs none.
+pub fn sizes(resources: &shards_ipc::Resources, host: Option<u64>) -> (u32, u64, u64) {
+    use shards_vmm::vm::MEMORY_MIB;
+    let vcpus = crate::resources::vcpus(resources, crate::resources::host_cpus());
+    let boot = crate::resources::memory_mib(resources.memory, MEMORY_MIB, host, vcpus);
+    match host {
+        Some(bytes) if resources.memory <= 0 => (vcpus, boot, ((bytes >> 20) & !1).max(boot)),
+        _ => (vcpus, boot, boot),
+    }
+}
+
 /// The template a run of `rootfs` on `guest` with `cfg`'s shape restores: named by the
 /// SHA-256 of everything that goes into it, the snapshot format included.
 pub fn template(home: &Path, guest: &Guest, rootfs: &Path, cfg: &Config) -> PathBuf {
@@ -509,6 +521,7 @@ pub fn template(home: &Path, guest: &Guest, rootfs: &Path, cfg: &Config) -> Path
         cfg.cmdline,
         shares(cfg),
     ) + &pmem(cfg)
+        + &plug(cfg)
         + JOIN_SHARE;
     let hex: String = Sha256::digest(key.as_bytes())
         .iter()
@@ -520,6 +533,14 @@ pub fn template(home: &Path, guest: &Guest, rootfs: &Path, cfg: &Config) -> Path
 /// Every template's join share (D119), which every microVM the daemon starts has, as it has
 /// a join disk: in its key, so that none saved without one is restored as one with it.
 const JOIN_SHARE: &str = "join share\n";
+
+/// A template's memory to plug (D148), in its key where it has any.
+fn plug(cfg: &Config) -> String {
+    match cfg.hotplug_mib {
+        0 => String::new(),
+        mib => format!("memory to plug {mib}\n"),
+    }
+}
 
 /// A template's devices after its root filesystem, the in-VM server's among them (D60),
 /// each named by content: the keys of those without stay as they were.

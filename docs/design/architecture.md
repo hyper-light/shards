@@ -3602,6 +3602,112 @@ No run-time labels, relays or declassifiers (§12 answer 14, decided by the user
 an internal-only domain to the world (D58), so there is no data to label. Code mode is
 D136.
 
+### D149. A guest reports the memory it may still plug
+
+A run without a limit grows to its host's memory (D148), but its guest reported only what
+had been plugged: 243 MiB as it boots, where a container's is its host's, by which Node.js
+sized its heap at 259 MiB where Docker's is 4,144 (PM M220). sysinfo(2) and /proc/meminfo
+take total and free memory from `si_meminfo()`, which counts what the kernel has. A
+builder, booted with 512 MiB and grown to half its host's, was the same: a step's Node.js
+sized its heap at 259 MiB, where `docker build`'s sizes it at 4,144. And the kernel's
+overcommit heuristic (`overcommit_memory` 0, mm/util.c `__vm_enough_memory`) refuses any
+one allocation larger than the memory it has: `dd bs=1G` failed in a run and in a step
+("memory exhausted"), where Docker's makes it (its VM's `overcommit_memory` is 1, and a
+Linux host's heuristic counts the host's memory).
+
+- **The kernel's report** (resources/kernel/patches/0004): `vm.pluggable_kbytes`. Written,
+  the memory the host may plug from then on; the kernel keeps what the guest has with
+  all of it plugged, and sysinfo(2) and /proc/meminfo add what is still to be plugged,
+  that less the memory each read, to the total, free and available memory they report.
+  Memory plugged lowers what they add as it raises what they read, in the same read, so
+  the total reported is what the guest may reach at every moment; read, the sysctl gives
+  what the reports add then. The overcommit heuristic and the commit limit
+  (`vm_commit_limit`) count it too, read once with the memory it is measured against
+  (`si_reachable_pages`): an allocation a guest could hold once its memory is plugged is
+  made, as on a host of that memory, and one past all of it is refused. Nothing in the
+  kernel's own accounting of the memory it has counts it: `si_meminfo()` and
+  `totalram_pages()` are as they were.
+- **Init** opens it before /proc/sys is masked, where the kernel has it, and writes it
+  once as a template boots (its host's) and once as each run comes (the run's own most
+  less what is plugged), before anything of the run grows its memory; a builder's, once,
+  as it boots (its most). A first draft had
+  init lower it as its grower plugged memory: the total reported then overstated what
+  the guest may reach for as long as each block took to be seen, and two processes
+  wrote it.
+- **Init's own view is the kernel's:** what it reads to hold and grow its runs' memory
+  (`memory.high`, what is plugged, what the domains may take) is sysinfo(2) and
+  `MemAvailable` less the report, read before and after: the report changes only as
+  memory is plugged, one way at a time, so the same report on both sides is the one
+  added, and where memory came between, init reads again. With the report counted, the
+  grower saw the memory it was to plug as had and a workload was ended at 1 GiB (137).
+- **An extra layer:** a guest kernel without it reports what it has, as before, and its
+  runs grow all the same.
+- **Result (PM M221):** a run without `-m` reports its host's memory less the 37 MiB its
+  kernel keeps (`MemTotal` 134,179,892 kB of the host's 134,217,728), and Node.js sizes
+  its heap at 4,144 MiB, as Docker's; with `-m 8g` and `-m 1g`, at 2,096 and 524, as
+  Docker's; in a build step, at 4,144, as `docker build`'s. `dd bs=1G` copies its
+  gigabytes in a run and in a step, as in Docker.
+
+Tested: in crates/init, on Linux, `memory_is_read_without_the_kernels_report` (the report
+read again where memory came between); on real microVMs,
+`a_runs_memory_grows_as_its_workload_needs_it` (with the report: a gigabyte allocated where
+the first draft's grower, counting the report as memory had, let it be ended; a run's
+`MemTotal` its host's, what may still be plugged free and available too, and a run with
+`-m`'s none; and a gigabyte in one allocation) and `a_builders_steps_see_the_memory_it_may_have`
+(a step's `MemTotal` its builder's most, and 1.5 GiB in one allocation, of a builder
+booted with 512 MiB). Mutation-checked: init counting the report as memory it has (the
+workload ended, 137); a run not lowering its template's report as it begins (a run with
+`-m 1g` reporting its host's memory); a builder not reporting (a step's `MemTotal` 483,556
+kB); and the kernel's overcommit heuristic not counting the report (the first draft's
+kernel: each one allocation refused): each fails a test.
+
+### D148. A run's memory, plugged as its workload needs it (virtio-mem)
+
+A run's microVM was sized at boot: without `-m`, 256 MiB less what its kernel keeps
+(`MemTotal` 248,820 kB), so a workload past it was ended (test-backend-ops, 137, M218),
+where a Docker container without `-m` may hold its host's memory (`memory.max` "max",
+`MemTotal` its host's: shards-dind, docker 29.3.1); with `-m`, booted with all of it, its
+page structures paid at boot (21 MiB and 4 ms per GiB, PM M82). D133's virtio-mem gives a
+builder memory as its build needs it; runs now have it too.
+
+- **A run without a limit** boots as before, with a region to plug of the host's memory
+  less that, and is given memory as its processes reach what it has, up to the host's
+  memory, as a container without one may have. **A run with `-m`** boots with what its
+  limit needs, as before, and `-m` ends a workload past it (`memory.max`, 137), as
+  Docker's does: a guest reports the memory it has, and Node.js sizes its heap by the
+  smaller of that and its cgroup's limit (PM M220), so a run with `-m` booted small sized
+  its heap at 259 MiB where Docker's sizes it at 2,096.
+- **Templates.** A snapshot keeps the region to plug, none of it plugged (format 13: the
+  machine's `hotplug_mib`); a restore remakes it as boot made it, withheld. The runs
+  without a limit share one template. What is plugged or asked for is not saved: a device says why
+  (`VirtioDevice::unsaved`), and the snapshot is refused, not written without it. A run's
+  most comes with the run (the `RUN` request) and the VM sets it before its guest hears
+  of the run (`Handle::set_plug_most`): the host keeps the bound, never the guest.
+- **Init** holds every process past it, the workload's, each joiner's (D119) and the
+  domains' (D109), in one cgroup (`/sys/fs/cgroup/run`; each keeps its own namespace's
+  view), at a `memory.high` of the memory plugged so far, and a process of its own in the
+  root cgroup grows it, D133's grower, reading the run's most again as it grows; it says
+  what it sees in the kernel's log. It starts before the template's snapshot and goes on
+  in each restore, and through the workload's end, where joiners go on. The template's kernel limits sized by memory are those of all of it
+  (D133's `raise_limits`), and its root's writes hold as much (the writable layer's
+  tmpfs), as a container's are its host's; the domains count what may still be plugged.
+- **Verified on real VMs** (containers.rs `a_runs_memory_grows_as_its_workload_needs_it`):
+  without `-m`, 1 GiB in a microVM booted with 256 MiB, in the one that saved the
+  template and in a restore; `-m 256m` ended at 137; `-m 1g` holding 512 MiB.
+  `run_limits_resources_as_docker_run_does`: each limit, at 1 vCPU and at every one, held
+  to within 16 MiB of it. boot.rs `a_snapshot_keeps_memory_to_plug`: a guest snapshotted with memory to
+  plug, the booted VM and two restores each plugging 512 MiB. Mutation-checked: without
+  the grower, the 1 GiB run is ended (137); without the restored region, a restore fails.
+- **What it costs** (PM M219): a run's start and end within 0.1 ms of before (paired
+  A/B, median +36 µs, 95% [-14, +100]), an idle run 0.2 MiB more of footprint; a region
+  of 128 GiB costs a cold boot 0.8 ms. Found on the way: `SHARDS_TIMING`'s count of held
+  pages asked the OS of the whole region, 7.75 ms a run; it asks of blocks ever plugged.
+- **Not yet:** what a guest without a limit reports of its memory: what it has, 243 MiB
+  as it boots, where a container's is its host's, by which Node.js sizes its heap at 259
+  MiB where Docker's is 4,144 (PM M220): it must report what it may plug. Memory given
+  back as a long-lived run's workload frees it (D133's device can unplug; a guest must ask
+  for less).
+
 ### D147. Mounting a pmem root once libnvdimm has made it
 
 - **What:** init mounts an image's EROFS on its pmem device (a run's root, a builder's
@@ -4059,7 +4165,18 @@ cause of that build's stall left no evidence, so what the next one leaves is fix
     builder has, as one booted with that much would, and is ended by the kernel where it
     needs more (exit code 137, as one past all its memory is), never held;
   - what the grower says is said in the output of the step that runs as it says it,
-    through a pipe init relays as that step's stderr.
+    through a pipe init relays as that step's stderr;
+  - and where the kernel ends a process of the build for want of memory (any of its OOM
+    killers, `memory.events` `oom_kill`), the grower says why in the kernel's words, of
+    its last report (/dev/kmsg): what asked and of what order, each zone's free memory
+    against its watermarks, and what it ended. A builder's kernel log goes nowhere a
+    build shows, and a kernel build whose compilers were ended at 20 s (once in four,
+    under a host's load of 23) said only "Killed signal terminated program cc1"; a run's
+    is told as Docker tells it (`State.OOMKilled`, the `oom` event). Tested by
+    `a_kill_is_said_in_the_kernels_words` (crates/init, a builder's real report from
+    6.18.48) and `a_builders_memory_is_plugged_as_its_build_needs_it` (the step past all
+    its builder's memory says the kernel's "Out of memory: Killed process"); the relay off
+    fails the latter.
 - **A killed build left its builder running.** A builder's VM ended as its build dropped
   it, or as its guest powered off on its connection closing: a killed `shards build` drops
   nothing, and a guest held at its memory hears nothing. The VM now ends as its `--attach`

@@ -171,6 +171,28 @@ fn guest_memory(
     memory.map_err(|e| format!("guest RAM: {e}"))
 }
 
+/// Guest RAM of `ranges` from a snapshot's memory `file`, and, as boot made it, the memory
+/// `config` may have plugged at `at`, none of it plugged: a snapshot keeps none (D148).
+#[cfg(hv)]
+fn restored_memory(
+    ranges: &[(u64, usize)],
+    file: &std::fs::File,
+    config: &crate::snapshot::MachineConfig,
+    at: u64,
+) -> Result<crate::memory::GuestMemory, String> {
+    let memory =
+        crate::memory::GuestMemory::from_file(ranges, file).map_err(|e| format!("snapshot memory: {e}"))?;
+    match hotplug(config)? {
+        None => Ok(memory),
+        Some((_, region)) => {
+            let len = usize::try_from(region).map_err(|_| format!("{region} bytes of memory to plug"))?;
+            memory
+                .with_plug_region(at, len, mem::BLOCK)
+                .map_err(|e| format!("snapshot memory: {e}"))
+        }
+    }
+}
+
 #[cfg(hv)]
 impl mem::Mapper for crate::hv::Stage2 {
     unsafe fn map(&self, host: *mut u8, gpa: u64, len: usize) -> Result<(), String> {

@@ -7743,3 +7743,98 @@ revision before comparing a changed API/implementation.
   costs a VM some 3 MiB. A blob's first map is the cost to keep down: about 0.1 ms each,
   past 1 ms at p99 on a busy host. A GPU run's memory is its cold boot's (D149's
   templates). Guest vCPUs at the time-constraint policy outrun the host's other work.
+
+### M219. What plugging a run's memory costs a run (D148)
+
+- **Question.** D148 gives every run's microVM a region to plug of the host's memory (here
+  128 GiB), one more device, init's grower and a template whose kernel limits are sized
+  for all of it. What does that cost a run's start and end, and an idle run's memory?
+- **Method.** `docs/research/measurements/run-plug/region.py`: cold boots of one root,
+  `--memory 256` and a region of 0 to 128 GiB, the sizes in turn, n=12 each.
+  `build-ab/ab.py`: 300 runs of `run --rm alpine:3.22 true` in each of two builds, in
+  turn (93ce8368, and it with D148), each restoring its own template.
+  `run-plug/memory.py`: 20 such runs each, their VM process's memory as they end. Apple
+  M5 Max, macOS 26.4.1, 2026-10-12, the host's load average 7.8 to 11.7.
+- **Results.**
+  - A region costs a cold boot and its end next to nothing, by its size, µs p50 (p90):
+    none 38,576 (39,053); 2 GiB 38,516 (40,012); 16 GiB 39,027 (40,482); 64 GiB 39,279
+    (40,087); 128 GiB 39,374 (40,728).
+  - The first A/B found +7.75 ms a run, paired median, 95% [+7.63, +7.87], outside the
+    command: `SHARDS_TIMING`'s count of the pages held of memory to plug asked the OS of
+    the whole region, page by page (16 KiB pages, 8 Mi of them). It now asks of blocks
+    ever plugged alone (`Hotplug::ever`), still those given back, whose pages a failed
+    give-back would leave held, which `a_guest_grows_and_gives_back_its_memory` catches.
+  - With that, a run's wall clock, new less old, paired: median +36 µs, 95% [-14, +100];
+    the command's time in the guest -26 µs [-38, -9]; the rest +70 µs [+23, +121]. Wall,
+    µs: old p50 6,131, p90 7,012, p99 16,420, max 25,772; new 6,142, 6,938, 10,104,
+    10,675.
+  - An idle run's memory, MiB, p50 (p90): footprint 15.06 (15.20) old, 15.27 (15.38)
+    new; RSS 29.30 (29.34) old, 29.44 (29.53) new.
+- **Consequence (D148).** Every run may plug the host's memory for what its start costs
+  already: within 0.1 ms and 0.2 MiB of a microVM fixed at boot.
+
+### M220. What a guest reports of its memory sizes a runtime's heap (D148)
+
+- **Question.** Runtimes size themselves by the memory they see: what does Node.js see,
+  and size its heap by, in a shards run and in a Docker container, with `-m` and without?
+- **Method.** `node:22-alpine`, `node -e` printing V8's `heap_size_limit`,
+  `os.totalmem()` and `process.constrainedMemory()`: in Docker 29.3.1 (shards-dind, its
+  VM's 62.7 GiB), and in shards at 7a132d35 (a run booted small, plugging up to its limit)
+  and with `-m` booting its limit again, on an Apple M5 Max of 128 GiB, macOS 26.4.1,
+  2026-10-12. Each value is the runtime's own computation from what it read, the same
+  every run.
+- **Results.** MiB:
+
+  | Run | heap_size_limit | totalmem | constrained |
+  |---|---|---|---|
+  | Docker, no `-m` | 4,144 | 64,186 | none |
+  | Docker, `-m 8g` | 2,096 | 64,186 | 8,192 |
+  | shards, no `-m` | 259 | 243 | none |
+  | shards, `-m 8g`, booted small | 259 | 243 | 8,192 |
+  | shards, `-m 8g`, booted with its limit | 2,096 | 8,362 | 8,192 |
+
+- **Consequence (D148).** Node sizes its heap by the smaller of the memory the kernel
+  reports and its cgroup's limit. A microVM booted small reports only what it has, so a
+  run with `-m` boots with what its limit needs, and sizes as Docker's does. A run without
+  one grows as it needs, but Node sizes its heap by the 243 MiB it boots with, where
+  Docker's sees its host's: what a guest reports must be what it may plug.
+
+### M221. A guest that reports what it may plug sizes a runtime's heap as Docker's (D149)
+
+- **Question.** With D149's report, what does Node.js see of a run's memory, and size its
+  heap by, against Docker's?
+- **Method.** `docs/research/measurements/run-plug/heap.sh "" "-m 8g" "-m 1g"`, as M220:
+  `node:22-alpine` (Node v22.23.3, libuv 1.51.0) printing V8's `heap_size_limit`,
+  `os.totalmem()` and `process.constrainedMemory()`, in shards at D149 (on dd843b2c) with
+  the 6.18.48 kernel patch 0004 makes (`SHARDS_KERNEL`), and in Docker 29.3.1 (shards-dind,
+  its VM's 62.7 GiB), on an Apple M5 Max of 128 GiB, macOS 26.4.1, 2026-10-12. Each value
+  is the runtime's own computation from what it read, the same every run. Inside the run,
+  without `-m`: `vm.pluggable_kbytes` 133,931,008, `MemTotal` 134,179,892 kB (the host's
+  134,217,728 less the 37 MiB the guest kernel keeps of what it boots with), `free -m`'s
+  total 131,035.
+- **Results.** MiB; "none" where libuv reads cgroup2's `max` (UINT64_MAX, in both):
+
+  | Run | heap_size_limit | totalmem | constrained |
+  |---|---|---|---|
+  | shards, no `-m` | 4,144 | 131,035 | none |
+  | Docker, no `-m` | 4,144 | 64,186 | none |
+  | shards, `-m 8g` | 2,096 | 8,362 | 8,192 |
+  | Docker, `-m 8g` | 2,096 | 64,186 | 8,192 |
+  | shards, `-m 1g` | 524 | 1,085 | 1,024 |
+  | Docker, `-m 1g` | 524 | 64,186 | 1,024 |
+
+- **Builds and one large allocation.** A `RUN` step printing Node's `heap_size_limit` and
+  `os.totalmem()`, then `dd bs=1G count=1` (scratchpad Dockerfile, `FROM node:22-alpine`):
+  shards' builder (its most 64 GiB, half the host's) before D149, 259 MiB and 472 MiB, and
+  dd "out of memory"; after, 4,144 MiB and 65,496 MiB, and dd's gigabyte copied; `docker
+  build` (shards-dind), 4,144 MiB and 64,186 MiB, and copied. In a run without `-m`,
+  `dd bs=1G count=2` (debian:bookworm-slim): before, "memory exhausted by input buffer of
+  size 1073741824 bytes"; after, copied, `CommitLimit` 67,089,944 kB (half the memory the
+  run may reach, as a host of it would have), as Docker's copies it (its VM's
+  `overcommit_memory` is 1).
+- **Consequence (D149).** Node sizes its heap as Docker's in each case: without `-m` by
+  the memory the run may have (its host's), where M220's sized it by the 243 MiB it booted
+  with (259); in a build step, by its builder's most. A run with `-m` reports its own
+  memory, where Docker's reports its host's: the smaller of the two that Node takes is the
+  limit either way. One allocation larger than what is plugged so far is made, as on a
+  host of the memory the guest may reach.

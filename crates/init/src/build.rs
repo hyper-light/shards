@@ -207,6 +207,10 @@ fn serve() -> io::Result<()> {
     let notes = match plug {
         Some(plug) => {
             plug.raise_limits()?;
+            // What it may still plug, reported where its kernel reports it (D149), as a
+            // build on a host sees the host's memory: before its grower, which reads it.
+            crate::plug::open_pluggable();
+            crate::plug::report_pluggable()?;
             Some(plug.hold()?)
         }
         None => None,

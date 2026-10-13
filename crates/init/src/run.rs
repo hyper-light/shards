@@ -160,9 +160,9 @@ pub fn main(device: &str, template: bool) -> ! {
 }
 
 /// Kills every process but init, the kernel's threads, those of the containers joined to
-/// the workload's network (D119), each in a cgroup of its own (`join-N`), and `spared`,
-/// init's own children working for them: the workload's end ends the rest of its
-/// microVM, and its joiners go on. Looked at again until none is left to kill, as one may
+/// the workload's network (D119), each in a cgroup of its own ([`joiner_path`]), the
+/// grower of its memory (D148), and `spared`, init's own children working for them: the
+/// workload's end ends the rest of its microVM, and its joiners go on. Looked at again until none is left to kill, as one may
 /// have forked meanwhile.
 fn kill_all_but_joiners(spared: &[libc::pid_t]) {
     // A process forks at most once between looks; each look kills what it finds.
@@ -179,7 +179,7 @@ fn kill_all_but_joiners(spared: &[libc::pid_t]) {
             else {
                 continue;
             };
-            if pid <= 2 || spared.contains(&pid) {
+            if pid <= 2 || spared.contains(&pid) || crate::plug::grower() == Some(pid) {
                 continue;
             }
             // The kernel's threads are kthreadd's (pid 2) children: the fourth field of
@@ -198,9 +198,10 @@ fn kill_all_but_joiners(spared: &[libc::pid_t]) {
             }
             // Relative to init's cgroup namespace, the root (cgroup_namespaces(7)).
             let cgroup = std::fs::read_to_string(format!("/proc/{pid}/cgroup")).unwrap_or_default();
+            let joiners = joiner_path("");
             if cgroup
                 .lines()
-                .any(|l| l.split_once("::").is_some_and(|(_, p)| p.starts_with("/join-")))
+                .any(|l| l.split_once("::").is_some_and(|(_, p)| p.starts_with(&joiners)))
             {
                 continue;
             }
@@ -317,7 +318,20 @@ fn mount_root(device: &str) -> Result<(), Failure> {
     // Once libnvdimm has made it, which it may not have yet (pmem.rs).
     crate::pmem::mount_erofs(device, "/lower", "dax=always", None)
         .map_err(|e| setup_failed(format!("mounting erofs on /lower: {e}")))?;
-    mount("tmpfs", "/rw", "tmpfs", 0, "mode=0755")?;
+    // Its memory to plug (D148): its root's writes hold as much as in a microVM booted with
+    // all of it, as a container's writable layer does in all its host's.
+    let plug =
+        crate::plug::run_plug(RUN_CGROUP).map_err(|e| setup_failed(format!("its memory to plug: {e}")))?;
+    let rw = match &plug {
+        Some(plug) => format!("mode=0755,{}", plug.tmpfs()),
+        None => "mode=0755".to_string(),
+    };
+    // Where its grower says what it sees, opened while init's /dev is the VM's.
+    let notes = match &plug {
+        Some(_) => Some(crate::plug::kmsg().map_err(|e| setup_failed(format!("its memory's notes: {e}")))?),
+        None => None,
+    };
+    mount("tmpfs", "/rw", "tmpfs", 0, &rw)?;
     for dir in ["/rw/upper", "/rw/work"] {
         mkdir(dir)?;
     }
@@ -346,6 +360,20 @@ fn mount_root(device: &str) -> Result<(), Failure> {
         crate::net::configure(addr, prefix, gateway).map_err(|e| setup_failed(format!("eth0: {e}")))?;
     }
     cgroups()?;
+    // Its processes held at the memory plugged so far, growing as they need it, and the
+    // kernel's limits those of a microVM booted with all of it, as a container's are its
+    // host's (D148): before any thread, and before /proc/sys is masked.
+    if let (Some(plug), Some(notes)) = (&plug, notes) {
+        // The memory it may still plug, reported where its kernel reports it (D149):
+        // opened before /proc/sys is masked, and written again as its run comes.
+        crate::plug::open_pluggable();
+        crate::plug::report_pluggable()
+            .map_err(|e| setup_failed(format!("reporting the microVM's memory: {e}")))?;
+        plug.hold_run(notes)
+            .map_err(|e| setup_failed(format!("holding the microVM's memory: {e}")))?;
+        plug.raise_limits()
+            .map_err(|e| setup_failed(format!("the kernel's limits: {e}")))?;
+    }
     // Docker's device rules, before any snapshot: a run with them does nothing more.
     crate::devices::confine_by_default(WORKLOAD_CGROUP).map_err(setup_failed)?;
     crate::setup::keep_proc_sys().map_err(|e| setup_failed(format!("/proc/sys: {e}")))?;
@@ -733,7 +761,18 @@ fn freeze(dir: &str, frozen: bool) -> io::Result<()> {
 }
 
 /// Where the workload's cgroup is, as init sees the hierarchy.
-const WORKLOAD_CGROUP: &str = "/sys/fs/cgroup/workload";
+/// Every process of a run's microVM past init: its workload's, each joiner's (D119) and
+/// its Agentfile's domains' (D109), held at the memory plugged so far where its VM plugs
+/// memory as its run asks (D148).
+pub const RUN_CGROUP: &str = "/sys/fs/cgroup/run";
+/// [`RUN_CGROUP`] as `/proc/PID/cgroup` names it, from the hierarchy's root.
+pub const RUN_PATH: &str = "/run";
+
+/// A joiner's cgroup (D119) as `/proc/PID/cgroup` names it: under [`RUN_PATH`].
+pub fn joiner_path(id: impl std::fmt::Display) -> String {
+    format!("{RUN_PATH}/join-{id}")
+}
+const WORKLOAD_CGROUP: &str = "/sys/fs/cgroup/run/workload";
 
 /// What the workload's memory limit allows it beyond what it holds, in bytes: none where
 /// it has no limit.
@@ -764,13 +803,18 @@ fn cgroups() -> Result<(), Failure> {
         "nsdelegate",
     )?;
     // One at a time: a controller the kernel lacks stays off, and a limit of it then
-    // fails where it is asked for.
-    for controller in ["cpu", "cpuset", "io", "memory", "pids"] {
-        let _ = std::fs::OpenOptions::new()
-            .write(true)
-            .open("/sys/fs/cgroup/cgroup.subtree_control")
-            .and_then(|mut f| f.write_all(format!("+{controller}").as_bytes()));
-    }
+    // fails where it is asked for. The root's, and the run's below it (D148).
+    let enable = |dir: &str| {
+        for controller in ["cpu", "cpuset", "io", "memory", "pids"] {
+            let _ = std::fs::OpenOptions::new()
+                .write(true)
+                .open(format!("{dir}/cgroup.subtree_control"))
+                .and_then(|mut f| f.write_all(format!("+{controller}").as_bytes()));
+        }
+    };
+    enable("/sys/fs/cgroup");
+    mkdir(RUN_CGROUP)?;
+    enable(RUN_CGROUP);
     mkdir(WORKLOAD_CGROUP)?;
     mount("", "/", "", libc::MS_REC | libc::MS_SHARED, "")
 }
@@ -859,7 +903,7 @@ fn joiner_cgroup(pid: libc::pid_t) -> Result<String, i32> {
         .map_err(|e| e.raw_os_error().unwrap_or(libc::EIO))?;
     text.lines()
         .find_map(|l| l.strip_prefix("0::"))
-        .filter(|p| p.starts_with("/join-") && !p.contains(".."))
+        .filter(|p| p.starts_with(&joiner_path("")) && !p.contains(".."))
         .map(|p| format!("/sys/fs/cgroup{p}"))
         .ok_or(libc::ENOENT)
 }
@@ -2095,6 +2139,10 @@ impl Standby {
     /// standby that has ended is replaced first. With it, the image's Agentfile as read
     /// before the workload starts, for a run that starts its domains (D115).
     fn start(self, spec: &Spec) -> Result<(Workload, Option<crate::domains::Read>), Failure> {
+        // What its microVM may still plug, its run's own, which its VM set before its run
+        // came, where the kernel reports it (D149): before anything of the run's starts.
+        crate::plug::report_pluggable()
+            .map_err(|e| setup_failed(format!("reporting the microVM's memory: {e}")))?;
         // Its own MAC, not its template's (D46): given, or made for it, as dockerd gives
         // each container's endpoint one; first, as libnetwork sets it before addresses.
         if let Some(mac) = spec.setup.iter().find_map(|e| e.strip_prefix(b"mac=")) {
@@ -2697,7 +2745,7 @@ fn builtin(kind: u8, args: &[Vec<u8>], joiner: Option<(libc::pid_t, u32)>) -> Re
     };
     // Whose processes `top` lists: a joiner's by its cgroup, which in a PID namespace of
     // another's has others' beside its own.
-    let members = joiner.map(|(_, id)| format!("/join-{id}"));
+    let members = joiner.map(|(_, id)| joiner_path(id));
     let joiner = joiner.map(|(pid, _)| pid);
     let cgroup = match joiner {
         Some(pid) => joiner_cgroup(pid).map_err(|e| {

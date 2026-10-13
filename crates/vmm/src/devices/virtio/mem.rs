@@ -10,7 +10,7 @@
 //! The driver must accept VIRTIO_MEM_F_UNPLUGGED_INACCESSIBLE, its promise never to touch
 //! it (§5.15.6.1).
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use super::queue::{Chain, Queue};
@@ -71,8 +71,9 @@ pub trait Mapper: Send + Sync {
 pub struct Sizes {
     gpa: u64,
     region: u64,
-    /// The most the guest may have plugged: whole blocks, at most `region`.
-    most: u64,
+    /// The most the guest may have plugged: whole blocks, at most `region`. A run's own,
+    /// set as a VM restored from a template takes it (D148).
+    most: AtomicU64,
     state: Mutex<State>,
     /// Whether a plug or unplug the host could not do has been said: once, as a guest
     /// asking again and again could otherwise fill the host's log.
@@ -98,7 +99,7 @@ impl Sizes {
         Sizes {
             gpa,
             region,
-            most: most.min(region) / BLOCK * BLOCK,
+            most: AtomicU64::new(most.min(region) / BLOCK * BLOCK),
             state: Mutex::new(State {
                 requested: 0,
                 plugged: 0,
@@ -111,7 +112,18 @@ impl Sizes {
 
     /// The most the guest may have plugged (shards_abi::control::HOTPLUG_SIZE).
     pub fn most(&self) -> u64 {
-        self.most
+        self.most.load(Ordering::Relaxed)
+    }
+
+    /// Sets the most the guest may have plugged: a run's own, as it is given to a VM
+    /// restored from a template (D148). Whole blocks, at most the region; a request past it
+    /// is lowered to it, as the guest may have no more.
+    pub fn set_most(&self, bytes: u64) {
+        let most = bytes.min(self.region) / BLOCK * BLOCK;
+        self.most.store(most, Ordering::Relaxed);
+        if self.requested() > most {
+            self.request(most);
+        }
     }
 
     /// What the guest asks to have plugged now (shards_abi::control::HOTPLUG_REQUEST).
@@ -129,7 +141,8 @@ impl Sizes {
     /// The configuration's generation moves only as it changes.
     pub fn request(&self, bytes: u64) {
         // `most` is whole blocks, so rounding up within it stays within it.
-        let want = bytes.min(self.most).next_multiple_of(BLOCK).min(self.most);
+        let most = self.most();
+        let want = bytes.min(most).next_multiple_of(BLOCK).min(most);
         let interrupt = {
             let mut s = lock(&self.state);
             if s.requested != want {
@@ -338,6 +351,18 @@ impl<M: Mapper + Clone + 'static> Mem<M> {
 impl<M: Mapper + Clone + 'static> VirtioDevice for Mem<M> {
     fn device_id(&self) -> u32 {
         DEVICE_ID
+    }
+
+    /// A snapshot keeps the size of the memory to plug and none of it (D148): one taken
+    /// while memory is asked for or plugged would lose it.
+    fn unsaved(&self) -> Option<String> {
+        let s = lock(&self.sizes.state);
+        (s.requested > 0 || s.plugged > 0).then(|| {
+            format!(
+                "memory asked for or plugged is not saved ({} bytes asked for, {} plugged)",
+                s.requested, s.plugged
+            )
+        })
     }
 
     fn features(&self) -> u64 {
@@ -591,6 +616,39 @@ mod tests {
         fn config(&self, at: usize) -> u64 {
             le64(&self.sizes.config()[at..])
         }
+    }
+
+    /// A run's own bound, set as a restored VM takes it (D148): whole blocks, at most the
+    /// region, and what was asked for past it lowered to it.
+    #[test]
+    fn the_most_is_a_runs_own_and_lowers_what_was_asked() {
+        let s = Sizes::new(HOTPLUG, REGION, REGION);
+        s.request(REGION);
+        assert_eq!(s.requested(), REGION);
+        s.set_most(3 * BLOCK + 5);
+        assert_eq!((s.most(), s.requested()), (3 * BLOCK, 3 * BLOCK));
+        s.request(REGION);
+        assert_eq!(s.requested(), 3 * BLOCK, "asked for past it, given it");
+        s.set_most(2 * REGION);
+        assert_eq!(s.most(), REGION, "at most the region");
+        assert_eq!(s.requested(), 3 * BLOCK, "a higher bound asks for nothing more");
+    }
+
+    /// A snapshot keeps none of the memory to plug (D148): a device with memory asked for
+    /// says its state cannot be saved, and one with none, that it can.
+    #[test]
+    fn memory_asked_for_is_not_saved() {
+        let sizes = Arc::new(Sizes::new(HOTPLUG, REGION, REGION));
+        let device = Mem::new(sizes.clone(), Fake::default());
+        assert_eq!(device.unsaved(), None);
+        sizes.request(BLOCK);
+        assert!(
+            device.unsaved().is_some_and(|why| why.contains("asked for")),
+            "{:?}",
+            device.unsaved()
+        );
+        sizes.request(0);
+        assert_eq!(device.unsaved(), None);
     }
 
     /// A plug within the size asked for is the guest's: the host's devices reach it, and

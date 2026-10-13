@@ -31,6 +31,11 @@ pub trait MmioDevice: Send + Sync {
     /// Loads state that `save` wrote into a device built from the same configuration,
     /// then continues as if resumed.
     fn restore(&self, r: &mut Reader<'_>) -> codec::Result<()>;
+    /// Why the paused device's state cannot be saved, where it cannot: a snapshot is
+    /// then refused, not written without it (D148).
+    fn unsaved(&self) -> Option<String> {
+        None
+    }
 }
 
 /// Stores `value` little-endian into `data` (an access of 1-8 bytes); bytes past the
@@ -124,6 +129,11 @@ impl MmioBus {
 
     pub fn resume(&self) -> Result<(), String> {
         self.devices.iter().try_for_each(|(_, _, d)| d.resume())
+    }
+
+    /// Why a paused device's state cannot be saved: the first device's that cannot.
+    pub fn unsaved(&self) -> Option<String> {
+        self.devices.iter().find_map(|(_, _, d)| d.unsaved())
     }
 
     pub fn save(&self, w: &mut Writer) {

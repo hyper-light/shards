@@ -545,10 +545,12 @@ pub fn restore(
         ));
     }
     let ram = ram_bytes(snap.config.memory_mib)?;
-    let memory = Arc::new(
-        GuestMemory::from_file(&ram_ranges(ram)?, memory_file)
-            .map_err(|e| format!("snapshot memory: {e}"))?,
-    );
+    let memory = Arc::new(super::restored_memory(
+        &ram_ranges(ram)?,
+        memory_file,
+        &snap.config,
+        plug_at(ram),
+    )?);
     let a = assemble(&memory, &snap.config, console, hosts, false)?;
     let guest: Vec<(u64, u64)> = memory
         .regions()

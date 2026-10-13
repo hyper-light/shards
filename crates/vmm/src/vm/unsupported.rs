@@ -57,6 +57,10 @@ impl Handle {
         match self.0 {}
     }
 
+    pub fn set_plug_most(&self, _bytes: u64) -> Result<(), String> {
+        match self.0 {}
+    }
+
     pub fn entered_at_us(&self) -> Option<u128> {
         match self.0 {}
     }

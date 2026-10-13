@@ -309,6 +309,8 @@ fn member_of(pid: u32) -> Option<String> {
 
 /// [`member_of`] of a cgroup's path.
 fn member_by_cgroup(path: &str) -> Option<String> {
+    // Every member is under the run's cgroup (D148); init's own are not.
+    let path = path.strip_prefix(crate::run::RUN_PATH)?;
     if path == "/workload" || path.starts_with("/workload/") {
         return Some("command".into());
     }
@@ -389,12 +391,14 @@ mod tests {
     #[test]
     fn members_are_their_cgroups() {
         for (path, member) in [
-            ("/workload", Some("command")),
-            ("/workload/sub", Some("command")),
-            ("/domains/agent-web", Some("agent web")),
-            ("/domains/harness-ci-main", Some("harness ci-main")),
-            ("/domains/other-x", None),
-            ("/join-7", Some("joiner 7")),
+            ("/run/workload", Some("command")),
+            ("/run/workload/sub", Some("command")),
+            ("/run/domains/agent-web", Some("agent web")),
+            ("/run/domains/harness-ci-main", Some("harness ci-main")),
+            ("/run/domains/other-x", None),
+            ("/run/join-7", Some("joiner 7")),
+            ("/workload", None),
+            ("/run", None),
             ("/", None),
             ("/init", None),
         ] {

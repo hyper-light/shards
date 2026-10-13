@@ -55,10 +55,11 @@ fn run_in(home: &Path, image: &str, options: &[&str], command: &[&str]) -> Run {
 
 /// A run left going: its client, with the command's first line read.
 fn start(home: &Path, image: &str, options: &[&str], command: &[&str]) -> Child {
-    // Kept in the home, which a failing test shows (common::TempDir).
+    // In the home, and shown where the run ends unready ([`ended`]).
     static RUNS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
     let n = RUNS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let stderr = std::fs::File::create(home.join(format!("run-{n}.stderr"))).unwrap();
+    let said = home.join(format!("run-{n}.stderr"));
+    let stderr = std::fs::File::create(&said).unwrap();
     let mut child = common::command()
         .args(run_args(image, options, command))
         .env("SHARDS_HOME", home)
@@ -73,8 +74,35 @@ fn start(home: &Path, image: &str, options: &[&str], command: &[&str]) -> Child 
     BufReader::new(child.stdout.as_mut().unwrap())
         .read_line(&mut line)
         .unwrap();
-    assert_eq!(line, "ready\n");
+    if line != "ready\n" {
+        panic!(
+            "{command:?} ended unready ({line:?}): {}",
+            ended(&mut child, Some(&said))
+        );
+    }
     child
+}
+
+/// How a run's client that should have gone on ended, and what it said where it said it
+/// into `stderr`: a test's home goes with it, failing or not (common::TempDir).
+fn ended(child: &mut Child, stderr: Option<&Path>) -> String {
+    use std::os::unix::process::ExitStatusExt as _;
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(s)) => break format!("status {:?}, signal {:?}", s.code(), s.signal()),
+            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(10)),
+            Ok(None) => {
+                let _ = child.kill();
+                break "still running 10 s after its output ended".to_string();
+            }
+            Err(e) => break format!("its status unknown: {e}"),
+        }
+    };
+    let said = stderr
+        .map(|p| std::fs::read_to_string(p).unwrap_or_else(|e| format!("{}: {e}", p.display())))
+        .unwrap_or_default();
+    format!("{status}\n--- stderr\n{said}")
 }
 
 /// Waits for a child, failing the test rather than hanging it.
@@ -3621,7 +3649,7 @@ fn run_writes_cidfiles_pulls_quietly_and_keeps_signals_as_docker_run_does() {
 }
 
 /// `run`'s memory and CPU flags as docker run takes them: checked as dockerd checks them,
-/// its warnings said, the microVM sized to hold them, and the workload's cgroup limited
+/// its warnings said, the microVM growing to hold them (D148), and the workload's cgroup limited
 /// as runc limits it, seen read-only at /sys/fs/cgroup as a container sees its own; a
 /// workload past its memory killed, and OOMKilled, as Docker reports it.
 #[test]
@@ -3740,29 +3768,20 @@ fn run_limits_resources_as_docker_run_does() {
         ("700m", every.as_str()),
         ("2500m", every.as_str()),
     ] {
-        let read = run_in(
+        // It holds all but what its own process and page tables take of its limit, in a
+        // microVM that boots with less and plugs the rest as it needs it (D148).
+        let limit_mib = limit.trim_end_matches('m').parse::<u64>().unwrap();
+        let wanted = (limit_mib - 16).to_string();
+        let held = run_in(
             &home,
             &image,
-            &["-m", limit, "--cpus", cpus],
-            &["stat", "/proc/meminfo", "/proc/zoneinfo"],
+            &["--rm", "-m", limit, "--cpus", cpus],
+            &["alloc", &wanted],
         );
-        assert_eq!(read.status, Some(0), "{read}");
-        let lines: Vec<&str> = read.stdout.split("\\n").collect();
-        let available_kib: u64 = lines
-            .iter()
-            .find_map(|l| l.strip_prefix("MemAvailable:"))
-            .and_then(|v| v.trim().trim_end_matches(" kB").trim().parse().ok())
-            .unwrap();
-        // zoneinfo's pagesets: each CPU's count of 4 KiB pages.
-        let listed_kib: u64 = lines
-            .iter()
-            .filter_map(|l| l.trim_start().strip_prefix("count:"))
-            .map(|c| c.trim().parse::<u64>().unwrap() * 4)
-            .sum();
-        let limit_kib = limit.trim_end_matches('m').parse::<u64>().unwrap() * 1024;
+        assert_eq!(held.status, Some(0), "{limit}, {cpus} vCPUs: {held}");
         assert!(
-            available_kib + listed_kib >= limit_kib,
-            "{limit}, {cpus} vCPUs: {available_kib} KiB available, {listed_kib} KiB on its CPUs' lists"
+            held.stdout.contains(&format!("allocated {wanted}")),
+            "{limit}, {cpus} vCPUs: {held}"
         );
     }
     // Past its limit, the workload is killed, as the kernel kills it in its cgroup.
@@ -5086,11 +5105,11 @@ fn serving(home: &Path, image: &str, command: &[&str]) -> (Child, u16) {
 /// `shards ARGS` left going, its stderr in the home: its client, and the port its server
 /// says it is ready on (`ready PORT`).
 fn ready_on(home: &Path, args: &[String]) -> (Child, u16) {
-    let stderr = std::fs::File::create(home.join(format!(
+    let said = home.join(format!(
         "serving-{}.stderr",
         args.join("-").replace(['/', ':'], "_")
-    )))
-    .unwrap();
+    ));
+    let stderr = std::fs::File::create(&said).unwrap();
     let mut child = common::command()
         .args(args)
         .env("SHARDS_HOME", home)
@@ -5103,16 +5122,15 @@ fn ready_on(home: &Path, args: &[String]) -> (Child, u16) {
         .unwrap();
     // Read byte by byte: what comes after the line is the test's to read.
     let mut line = Vec::new();
-    let out = child.stdout.as_mut().unwrap();
+    let mut out = child.stdout.take().unwrap();
     let mut byte = [0u8; 1];
     while line.last() != Some(&b'\n') {
-        assert_eq!(
-            std::io::Read::read(out, &mut byte).unwrap(),
-            1,
-            "{args:?} ended unready"
-        );
+        if std::io::Read::read(&mut out, &mut byte).unwrap() != 1 {
+            panic!("{args:?} ended unready: {}", ended(&mut child, Some(&said)));
+        }
         line.extend_from_slice(&byte);
     }
+    child.stdout = Some(out);
     let line = String::from_utf8(line).unwrap();
     let port = line.strip_prefix("ready ").and_then(|p| p.trim().parse().ok());
     let port = port.unwrap_or_else(|| panic!("{args:?}: {line}"));
@@ -5664,16 +5682,15 @@ fn answers_lost_without_the_gateways_mac() {
             .spawn()
             .unwrap();
         let mut line = Vec::new();
-        let out = child.stdout.as_mut().unwrap();
+        let mut out = child.stdout.take().unwrap();
         let mut byte = [0u8; 1];
         while line.last() != Some(&b'\n') {
-            assert_eq!(
-                std::io::Read::read(out, &mut byte).unwrap(),
-                1,
-                "{command:?} ended unready"
-            );
+            if std::io::Read::read(&mut out, &mut byte).unwrap() != 1 {
+                panic!("{command:?} ended unready: {}", ended(&mut child, None));
+            }
             line.extend_from_slice(&byte);
         }
+        child.stdout = Some(out);
         let line = String::from_utf8(line).unwrap();
         let port: u16 = line
             .strip_prefix("ready ")
@@ -10153,4 +10170,129 @@ fn an_image_of_gigabytes_boots() {
     std::fs::remove_file(ctx.join("big")).unwrap();
     let ran = run_in(&home, "big:1", &["--rm"], &["fs", "open:r:/big"]);
     assert_eq!(ran.status, Some(0), "{ran}");
+}
+
+/// A run's memory, plugged as its workload needs it (D148): without `-m` it holds more
+/// than its microVM boots with, as a container may hold its host's, in the microVM that
+/// saved its template and in a restore of it; with `-m` it is ended past its limit, as
+/// Docker's is, and runs within it, its microVM booted with what its limit needs.
+#[test]
+fn a_runs_memory_grows_as_its_workload_needs_it() {
+    let Some((home, image)) = home("containers-plug") else {
+        return;
+    };
+    // Its runs boot the guest recorded, as a user's do, and so restore templates: a
+    // daemon started with SHARDS_KERNEL boots every run.
+    assert_eq!(shards_in(&home, &["stop", "daemon"]).status, Some(0));
+    let env: [(&str, &OsStr); 1] = [("SHARDS_HOME", home.as_os_str())];
+    let (kernel, init) = (kernel(), guest_init());
+    let recorded = run_shards_env(
+        &["guest"],
+        &[
+            "use",
+            "--kernel",
+            kernel.to_str().unwrap(),
+            "--init",
+            init.to_str().unwrap(),
+        ],
+        &env,
+        TIMEOUT,
+    );
+    assert_eq!(recorded.status, Some(0), "{recorded}");
+    let run = |options: &[&str], command: &[&str]| {
+        let args = run_args(&image, options, command);
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        run_shards_env(&[], &args, &env, TIMEOUT)
+    };
+    let r = run(&["--rm"], &["alloc", "1024"]);
+    assert_eq!(r.status, Some(0), "{r}");
+    assert!(r.stdout.contains("allocated 1024"), "{r}");
+    let r = run(&["--rm", "-m", "256m"], &["alloc", "1024"]);
+    assert_eq!(r.status, Some(137), "{r}");
+    let r = run(&["--rm", "-m", "1g"], &["alloc", "512"]);
+    assert_eq!(r.status, Some(0), "{r}");
+    assert!(r.stdout.contains("allocated 512"), "{r}");
+    // A restored microVM grows as the one that saved its template did.
+    let r = run(&["--rm"], &["alloc", "1024"]);
+    assert_eq!(r.status, Some(0), "{r}");
+    assert!(r.stdout.contains("allocated 1024"), "{r}");
+    // Its memory as it reports it is what it may have, where its kernel reports what it
+    // may plug (D149), as a container's is its host's: not what it boots with, 243 MiB.
+    // Each file's text: `PATH file MODE UID:GID SIZE`, then `= TEXT`, its newlines `\n`.
+    let reported = |options: &[&str]| -> Option<(u64, String)> {
+        let r = run(
+            options,
+            &["stat", "/proc/sys/vm/pluggable_kbytes", "/proc/meminfo"],
+        );
+        if r.stdout.contains("/proc/sys/vm/pluggable_kbytes missing") {
+            return None;
+        }
+        assert_eq!(r.status, Some(0), "{r}");
+        let text = |path: &str| -> String {
+            let mut lines = r.stdout.lines();
+            lines
+                .by_ref()
+                .find(|l| l.starts_with(&format!("{path} ")))
+                .and(lines.next())
+                .and_then(|l| l.strip_prefix("= "))
+                .unwrap()
+                .replace("\\n", "\n")
+        };
+        Some((
+            text("/proc/sys/vm/pluggable_kbytes").trim().parse().unwrap(),
+            text("/proc/meminfo"),
+        ))
+    };
+    let kib = |meminfo: &str, field: &str| -> u64 {
+        meminfo
+            .lines()
+            .find_map(|l| l.strip_prefix(field))
+            .and_then(|v| v.trim().strip_suffix("kB"))
+            .and_then(|v| v.trim().parse().ok())
+            .unwrap()
+    };
+    match reported(&["--rm"]) {
+        None => println!("SKIP: this guest kernel reports none of the memory it may plug (D149)"),
+        Some((pluggable, meminfo)) => {
+            // SAFETY: sysconf(3) with constant arguments.
+            let host = unsafe {
+                libc::sysconf(libc::_SC_PHYS_PAGES) as u64 * libc::sysconf(libc::_SC_PAGESIZE) as u64
+            } / 1024;
+            // All of it, never more than its host has; what may still be plugged is free
+            // and available as well, as plugged it would be.
+            let total = kib(&meminfo, "MemTotal:");
+            assert!(
+                total > host / 2 && total <= host,
+                "MemTotal {total} kB, the host's {host} kB: {meminfo}"
+            );
+            assert!(
+                pluggable > 0
+                    && kib(&meminfo, "MemFree:") > pluggable
+                    && kib(&meminfo, "MemAvailable:") > pluggable,
+                "{pluggable} kB pluggable: {meminfo}"
+            );
+            // One allocation of four times what it boots with, which the kernel's
+            // overcommit heuristic refused while it counted only memory plugged.
+            let r = run(&["--rm"], &["alloc-once", "1024"]);
+            assert_eq!(r.status, Some(0), "{r}");
+            assert!(r.stdout.contains("allocated 1024 at once"), "{r}");
+            // A run with a limit reports its own memory, its template's most to plug
+            // lowered to its own, none, as it begins.
+            let (pluggable, meminfo) = reported(&["--rm", "-m", "1g"]).unwrap();
+            let total = kib(&meminfo, "MemTotal:");
+            assert!(
+                pluggable == 0 && total < 2 << 20,
+                "{pluggable} kB pluggable: {meminfo}"
+            );
+        }
+    }
+    // The templates, each a directory: the daemon's record of each is a file beside it.
+    // The runs without a limit share one; each limit has its own.
+    let templates: Vec<_> = std::fs::read_dir(home.join("templates"))
+        .unwrap()
+        .map(|e| e.unwrap())
+        .filter(|e| e.path().is_dir())
+        .map(|e| e.file_name())
+        .collect();
+    assert_eq!(templates.len(), 3, "{templates:?}");
 }

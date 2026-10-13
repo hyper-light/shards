@@ -153,6 +153,8 @@ pub struct Request {
     /// layer goes once it stops, for a container that stays.
     pub layer_in: Option<File>,
     pub layer_out: Option<File>,
+    /// The most memory its guest may plug, in bytes: the run's own (D148).
+    pub plug: u64,
 }
 
 /// Takes a connection for each of `slots` from the run's share process, in order, and
@@ -186,6 +188,47 @@ fn shared(link: &UnixStream, slots: &[shards_vmm::devices::virtio::fs::Share]) -
 /// has taken it. Until then the daemon holds its own copies of the client's descriptors,
 /// and gives the request to another VM if this one fails. Then makes the client's stdio
 /// this process's, and starts passing the client's signals to the workload through `to`.
+/// A `RUN` request's head, as the daemon writes it: its flags, its log's retention, its
+/// log's first segment, the most memory its guest may plug in bytes (D148), and its
+/// command's encoded spec. A warm VM's run and a joiner's (D119) read it alike.
+struct Head<'a> {
+    flags: u8,
+    retention: crate::spec::LogRetention,
+    first: u64,
+    plug: u64,
+    spec: &'a [u8],
+}
+
+fn head(payload: &[u8]) -> Result<Head<'_>, String> {
+    let (&flags, rest) = payload.split_first().ok_or("an empty request")?;
+    let (size, rest) = rest
+        .split_first_chunk::<8>()
+        .ok_or("a request without its log's retention")?;
+    let (files, rest) = rest
+        .split_first_chunk::<8>()
+        .ok_or("a request without its log's retention")?;
+    let (first, rest) = rest
+        .split_first_chunk::<8>()
+        .ok_or("a request without its log's segment")?;
+    let (plug, spec) = rest
+        .split_first_chunk::<8>()
+        .ok_or("a request without the memory its guest may plug")?;
+    let retention = crate::spec::LogRetention {
+        size: u64::from_be_bytes(*size),
+        files: u64::from_be_bytes(*files),
+    };
+    if retention.size == 0 || retention.files == 0 {
+        return Err("a request whose log keeps nothing".into());
+    }
+    Ok(Head {
+        flags,
+        retention,
+        first: u64::from_be_bytes(*first),
+        plug: u64::from_be_bytes(*plug),
+        spec,
+    })
+}
+
 pub fn receive(
     link: &Link,
     to: &'static ToGuest,
@@ -203,24 +246,13 @@ pub fn receive(
     if request.kind != kind::RUN {
         return Err(format!("expected a request, got message kind {}", request.kind));
     }
-    let (flags, rest) = request.payload.split_first().ok_or("an empty request")?;
-    let (size, rest) = rest
-        .split_first_chunk::<8>()
-        .ok_or("a request without its log's retention")?;
-    let (files, rest) = rest
-        .split_first_chunk::<8>()
-        .ok_or("a request without its log's retention")?;
-    let (first, spec) = rest
-        .split_first_chunk::<8>()
-        .ok_or("a request without its log's segment")?;
-    let first = u64::from_be_bytes(*first);
-    let retention = crate::spec::LogRetention {
-        size: u64::from_be_bytes(*size),
-        files: u64::from_be_bytes(*files),
-    };
-    if retention.size == 0 || retention.files == 0 {
-        return Err("a request whose log keeps nothing".into());
-    }
+    let Head {
+        flags,
+        retention,
+        first,
+        plug,
+        spec,
+    } = head(&request.payload)?;
     let spec = Spec::decode(spec).ok_or("a malformed command")?;
     let (detached, logged) = (
         flags & shards_ipc::RUN_DETACHED != 0,
@@ -338,6 +370,7 @@ pub fn receive(
     }
     Ok(Request {
         client,
+        plug,
         spec,
         interactive: flags & shards_ipc::RUN_INTERACTIVE != 0,
         detached,
@@ -627,23 +660,14 @@ fn joiner(link: &UnixStream, range: Result<(u64, u64), String>, to: &'static ToG
     if request.kind != kind::RUN {
         return Err(format!("expected its run, got message kind {}", request.kind));
     }
-    let (flags, rest) = request.payload.split_first().ok_or("an empty request")?;
-    let (size, rest) = rest
-        .split_first_chunk::<8>()
-        .ok_or("a request without its log's retention")?;
-    let (files, rest) = rest
-        .split_first_chunk::<8>()
-        .ok_or("a request without its log's retention")?;
-    let (first, spec) = rest
-        .split_first_chunk::<8>()
-        .ok_or("a request without its log's segment")?;
-    let retention = crate::spec::LogRetention {
-        size: u64::from_be_bytes(*size),
-        files: u64::from_be_bytes(*files),
-    };
-    if retention.size == 0 || retention.files == 0 {
-        return Err("a request whose log keeps nothing".into());
-    }
+    // Its memory is its provider's microVM's, whose most stays the provider's run's (D148).
+    let Head {
+        flags,
+        retention,
+        first,
+        spec,
+        ..
+    } = head(&request.payload)?;
     let mut spec = Spec::decode(spec).ok_or("a malformed command")?;
     let detached = flags & shards_ipc::RUN_DETACHED != 0;
     let logged = flags & shards_ipc::RUN_LOG != 0;
@@ -669,14 +693,8 @@ fn joiner(link: &UnixStream, range: Result<(u64, u64), String>, to: &'static ToG
         let (log, index) = (File::from(next()?), File::from(next()?));
         let asker = link.try_clone().map_err(|e| format!("its connection: {e}"))?;
         Some(
-            workload::Logger::new(
-                log,
-                index,
-                u64::from_be_bytes(*first),
-                retention,
-                segments_from(asker, answers),
-            )
-            .map_err(|e| format!("its log: {e}"))?,
+            workload::Logger::new(log, index, first, retention, segments_from(asker, answers))
+                .map_err(|e| format!("its log: {e}"))?,
         )
     } else {
         None
@@ -1077,7 +1095,8 @@ mod tests {
                 let mut payload = vec![shards_ipc::RUN_DETACHED | shards_ipc::RUN_LOG];
                 payload.extend(1u64.to_be_bytes());
                 payload.extend(1u64.to_be_bytes());
-                // Its log's first segment.
+                // Its log's first segment, and memory to plug: none (D148).
+                payload.extend(0u64.to_be_bytes());
                 payload.extend(0u64.to_be_bytes());
                 Spec::default().encode_into(&mut payload);
                 shards_ipc::send(&daemon, kind::RUN, &payload, &fds).unwrap();

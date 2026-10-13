@@ -7,7 +7,9 @@ mod common;
 
 use std::time::Duration;
 
-use common::{KERNEL_NR_CPUS, cannot_run_vms, guest_init, kernel, run_shards, test_guest, vm_run};
+use common::{
+    KERNEL_NR_CPUS, cannot_run_vms, cannot_snapshot, guest_init, kernel, run_shards, test_guest, vm_run,
+};
 
 const TIMEOUT: Duration = Duration::from_secs(60);
 const EXIT_RESET: i32 = 3;
@@ -376,6 +378,45 @@ fn a_nested_guest_is_a_kvm_host() {
     }
 }
 
+/// A snapshot of a guest with memory to plug, none of it plugged (D148): the VM that
+/// booted and each VM restored from it plug memory as their guest asks, and write it.
+#[test]
+fn a_snapshot_keeps_memory_to_plug() {
+    if cannot_run_vms() || cannot_snapshot() {
+        return;
+    }
+    let dir = common::TempDir::new("snap-plug");
+    let snapshot = dir.join("s");
+    let cmdline = "console=ttyS0 quiet panic=-1 shards_test=snapshot-plug shards_plug_mib=512 memhp_default_state=online_movable";
+    let booted = run_shards(
+        &["run"],
+        &[
+            "--kernel",
+            kernel().to_str().unwrap(),
+            "--init",
+            test_guest().to_str().unwrap(),
+            "--memory",
+            "256",
+            "--memory-max",
+            "1024",
+            "--cmdline",
+            cmdline,
+            "--snapshot-dir",
+            snapshot.to_str().unwrap(),
+            "--snapshot-then",
+            "resume",
+        ],
+        TIMEOUT,
+    );
+    for run in [booted]
+        .into_iter()
+        .chain((0..2).map(|_| run_shards(&["restore"], &[snapshot.to_str().unwrap()], TIMEOUT)))
+    {
+        assert!(run.stdout.contains("SHARDS-TEST PLUGGED "), "{run}");
+        assert!(run.stdout.contains("SHARDS-TEST PASS"), "{run}");
+    }
+}
+
 /// Memory plugged as the guest asks for it (`--memory-max`, D133). A guest booted with 256
 /// MiB asks for 1 GiB more, its kernel brings it all online, and the guest fills seven
 /// eighths of it, which the VM process then holds; it frees it and asks for none, its kernel
@@ -392,22 +433,6 @@ fn a_guest_grows_and_gives_back_its_memory() {
     if cannot_run_vms() {
         return;
     }
-    let refused = vm_run(
-        &[
-            "--kernel",
-            kernel().to_str().unwrap(),
-            "--memory-max",
-            "1024",
-            "--snapshot-dir",
-            "nowhere",
-        ],
-        TIMEOUT,
-    );
-    assert_eq!(refused.status, Some(2), "{refused}");
-    assert!(
-        refused.stderr.contains("--memory-max with --snapshot-dir"),
-        "{refused}"
-    );
     let mut child = common::command()
         .env("SHARDS_TIMING", "1")
         .args(["run", "--kernel", kernel().to_str().unwrap()])

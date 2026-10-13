@@ -93,6 +93,23 @@ pub fn main() -> ! {
             let _ = writeln!(io::stdout(), "allocated {}", held.len());
             0
         }
+        // N MiB in one allocation, every page touched, then says so: what the kernel's
+        // overcommit heuristic refuses past the memory it counts (D149).
+        "alloc-once" => {
+            let mib: usize = arg(1).parse().unwrap_or(0);
+            let mut held: Vec<u8> = Vec::new();
+            match held.try_reserve_exact(mib << 20) {
+                Ok(()) => {
+                    held.resize(mib << 20, 1);
+                    let _ = writeln!(io::stdout(), "allocated {} at once", held.len() >> 20);
+                    0
+                }
+                Err(e) => {
+                    let _ = writeln!(io::stdout(), "alloc-once {mib}: {e}");
+                    1
+                }
+            }
+        }
         "kill" => {
             // SAFETY: raise(2) on ourselves.
             unsafe { libc::raise(libc::SIGKILL) };
