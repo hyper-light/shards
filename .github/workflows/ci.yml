@@ -98,9 +98,11 @@ jobs:
       - uses: actions/checkout@v7.0.1
       - name: Install pinned Rust
         shell: bash
-        # Guest binaries build for every architecture's musl target.
+        # Guest binaries build for every architecture's musl target. Every component
+        # rust-toolchain.toml names, here: a cargo proxy that installs one as a later step
+        # starts failed once on a file already there ('bin/cargo-fmt').
         run: |
-          rustup toolchain install "$TOOLCHAIN" --profile minimal --component clippy \
+          rustup toolchain install "$TOOLCHAIN" --profile minimal --component clippy --component rustfmt \
             --target ${{ matrix.target }} --target x86_64-unknown-linux-musl --target aarch64-unknown-linux-musl
       # shards-init's C (AWS-LC, for the in-VM server's TLS) is compiled by zig on every host
       # (crates/shards/build.rs): 0.16.0, pinned by digest.
@@ -123,7 +125,15 @@ jobs:
         shell: bash
         run: |
           case "$RUNNER_OS" in
-            Linux) ls -l /dev/kvm 2>&1 || true ;;
+            # And what VFIO may pass through: IOMMU groups, the VFIO and mediated-device
+            # (mdev) modules and the kernel's config of them, for a test device.
+            Linux)
+              ls -l /dev/kvm 2>&1 || true
+              ls /sys/kernel/iommu_groups 2>&1 | head -5 || true
+              ls /sys/class/mdev_bus 2>&1 || true
+              for m in vfio vfio_pci vfio_iommu_type1 mdev mtty mbochs mdpy; do modinfo -F filename "$m" 2>&1 || true; done
+              grep -E "CONFIG_(VFIO|VFIO_PCI|VFIO_MDEV|SAMPLE_VFIO_MDEV_MTTY|IOMMUFD|VFIO_NOIOMMU)=" "/boot/config-$(uname -r)" 2>&1 || true
+              ;;
             macOS) sysctl kern.hv_support || true ;;
             Windows) powershell -NoProfile -Command \
               "(Get-CimInstance Win32_Processor).Name; (Get-CimInstance Win32_ComputerSystem).HypervisorPresent; (Get-WindowsOptionalFeature -Online -FeatureName HypervisorPlatform).State" || true ;;

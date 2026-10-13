@@ -594,6 +594,12 @@ impl Vm {
         unsafe { self.partition.map(host, gpa, len, RWX) }
     }
 
+    /// What takes guest RAM from the guest and gives it back, from whichever thread gives
+    /// its pages back to the host as the guest reports them free (D151).
+    pub fn stage2(&self) -> Stage2 {
+        Stage2(self.partition.clone())
+    }
+
     /// The memory a virtio-mem device plugs, `len` bytes at `host` seen at `gpa` (D133):
     /// none of it mapped until plugged, block by block, through the [`Stage2`] this returns.
     ///

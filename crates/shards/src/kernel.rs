@@ -18,24 +18,24 @@ pub struct Pinned {
 /// (resources/kernel/hyperv.config, D140).
 pub const KERNEL: Option<Pinned> = if cfg!(all(target_arch = "x86_64", windows)) {
     Some(Pinned {
-        name: "vmlinux-6.18.48-x86_64-hyperv-4062e616c93a",
-        url: "https://github.com/hyper-light/shards/releases/download/kernel-6.18.48-4062e616c93a/vmlinux-6.18.48-x86_64-hyperv",
-        size: 27_752_824,
-        sha256: "f85e53a6dd02600f1370d1185a49ae0a4862f5678987b20614fbb95f489ec89b",
+        name: "vmlinux-6.18.48-x86_64-hyperv-b3f3b948641f",
+        url: "https://github.com/hyper-light/shards/releases/download/kernel-6.18.48-b3f3b948641f/vmlinux-6.18.48-x86_64-hyperv",
+        size: 27_753_168,
+        sha256: "ce779d68a3a0e2e84ed81302514b034c8030b60f6b8bcd8cfc7eb4a72daa63ee",
     })
 } else if cfg!(target_arch = "x86_64") {
     Some(Pinned {
-        name: "vmlinux-6.18.48-x86_64-4b8900bdffdd",
-        url: "https://github.com/hyper-light/shards/releases/download/kernel-6.18.48-4b8900bdffdd/vmlinux-6.18.48-x86_64",
-        size: 27_723_496,
-        sha256: "9dcf7906e6e154ac187dc6e0e469f4723d2f82672410609a33a341805496e265",
+        name: "vmlinux-6.18.48-x86_64-b3f3b948641f",
+        url: "https://github.com/hyper-light/shards/releases/download/kernel-6.18.48-b3f3b948641f/vmlinux-6.18.48-x86_64",
+        size: 27_723_840,
+        sha256: "e92155ab4331c222679870cbce8ede7baf4967925ae5a2d836f9362d194c181e",
     })
 } else if cfg!(target_arch = "aarch64") {
     Some(Pinned {
-        name: "Image-6.18.48-aarch64-4b8900bdffdd",
-        url: "https://github.com/hyper-light/shards/releases/download/kernel-6.18.48-4b8900bdffdd/Image-6.18.48-aarch64",
-        size: 19_081_728,
-        sha256: "684c7f5dc8889ca417ed593b3ce8efca0d9fcc03f494d9b72b58a1bb37e99d58",
+        name: "Image-6.18.48-aarch64-b3f3b948641f",
+        url: "https://github.com/hyper-light/shards/releases/download/kernel-6.18.48-b3f3b948641f/Image-6.18.48-aarch64",
+        size: 19_016_192,
+        sha256: "afeffb94428d96a0026b75fa1957f18f51697258848f7b0ecf411c562a9c5e34",
     })
 } else {
     None
@@ -43,13 +43,13 @@ pub const KERNEL: Option<Pinned> = if cfg!(all(target_arch = "x86_64", windows))
 
 /// The kernel of a guest given a GPU (D144): the `gpu` variant, DRM's virtio-gpu driver
 /// built in (resources/kernel/gpu.config); arm64's alone, as Hypervisor.framework's guests
-/// alone have a GPU yet. Its release rebuilt the pinned kernels byte for byte.
+/// alone have a GPU yet. Of the pinned kernels' own release.
 pub const KERNEL_GPU: Option<Pinned> = if cfg!(target_arch = "aarch64") {
     Some(Pinned {
-        name: "Image-6.18.48-aarch64-gpu-7ccc39cf716b",
-        url: "https://github.com/hyper-light/shards/releases/download/kernel-6.18.48-7ccc39cf716b/Image-6.18.48-aarch64-gpu",
+        name: "Image-6.18.48-aarch64-gpu-b3f3b948641f",
+        url: "https://github.com/hyper-light/shards/releases/download/kernel-6.18.48-b3f3b948641f/Image-6.18.48-aarch64-gpu",
         size: 19_614_208,
-        sha256: "b2513bf57f6ec9064779df686ec35165efa31b5714657ea120673590cb2f4d3e",
+        sha256: "4152a240366c80db7840e95a1cf6fb193b0444dc81ab5db9b5aa604f356d0fa1",
     })
 } else {
     None

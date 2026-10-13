@@ -106,11 +106,16 @@ fn percentile(v: &[f64], p: f64) -> f64 {
 static SAMPLES: std::sync::Mutex<Vec<(String, String, Vec<f64>)>> = std::sync::Mutex::new(Vec::new());
 
 /// One result row: `(table line, JSON member)`.
-pub fn stats(name: &str, unit: &str, mut v: Vec<f64>) -> (String, String) {
+pub fn stats(name: &str, unit: &str, v: Vec<f64>) -> (String, String) {
     SAMPLES
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .push((name.to_string(), unit.to_string(), v.clone()));
+    row(name, unit, v)
+}
+
+/// The table line and JSON member of `v`: its p50, p90, p99 and max.
+fn row(name: &str, unit: &str, mut v: Vec<f64>) -> (String, String) {
     v.sort_by(f64::total_cmp);
     let (p50, p90, p99, max) = (
         percentile(&v, 50.0),
@@ -124,6 +129,17 @@ pub fn stats(name: &str, unit: &str, mut v: Vec<f64>) -> (String, String) {
             "\"{name}\":{{\"unit\":\"{unit}\",\"p50\":{p50:.1},\"p90\":{p90:.1},\"p99\":{p99:.1},\"max\":{max:.1}}}"
         ),
     )
+}
+
+/// A result row the envelope does not check (scripts/bench-envelope), its samples kept
+/// from it: what explains a checked row, such as the parts of a time. NaN samples are
+/// left out, and a row of none says so.
+pub fn diagnostic(name: &str, unit: &str, mut v: Vec<f64>) -> (String, String) {
+    v.retain(|x| x.is_finite());
+    if v.is_empty() {
+        return (format!("{name:<16} none  {unit}"), format!("\"{name}\":null"));
+    }
+    row(name, unit, v)
 }
 
 fn command_output(cmd: &str, args: &[&str]) -> String {

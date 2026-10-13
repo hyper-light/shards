@@ -47,16 +47,67 @@ fn setup_failed(message: impl Into<String>) -> Failure {
     }
 }
 
+/// `page_reporting.flush` (resources/kernel/patches/0005), where the kernel has it: opened
+/// by a template's init before its root is the container's, whose sysfs is read-only, and
+/// kept for [`flush_page_reports`].
+static FLUSH: std::sync::OnceLock<File> = std::sync::OnceLock::new();
+
+/// Opens [`FLUSH`] through a sysfs of init's own, mounted for the moment it takes.
+fn open_flush() {
+    const AT: &str = "/flush";
+    if std::fs::create_dir_all(AT).is_err() {
+        return;
+    }
+    let flags = libc::MS_NOSUID | libc::MS_NODEV | libc::MS_NOEXEC;
+    // SAFETY: mount(2) of NUL-terminated literals.
+    if unsafe {
+        libc::mount(
+            c"sysfs".as_ptr(),
+            c"/flush".as_ptr(),
+            c"sysfs".as_ptr(),
+            flags,
+            std::ptr::null(),
+        )
+    } == 0
+    {
+        if let Ok(file) = std::fs::OpenOptions::new()
+            .write(true)
+            .open("/flush/module/page_reporting/parameters/flush")
+        {
+            let _ = FLUSH.set(file);
+        }
+        // SAFETY: umount2(2) of the mount above: the file opened through it stays open.
+        unsafe { libc::umount2(c"/flush".as_ptr(), libc::MNT_DETACH) };
+    }
+    let _ = std::fs::remove_dir(AT);
+}
+
+/// Reports at once the memory the guest holds free that waits to be reported to its
+/// microVM, which gives it back to the host (D151), and waits for it: a template is saved
+/// with none waiting, else each copy reports, two seconds into its life, what the
+/// template's boot freed, and its runs paid for it. Where the kernel has no
+/// `page_reporting.flush`, or the VM no device to report to, nothing.
+fn flush_page_reports() {
+    use std::os::unix::fs::FileExt as _;
+    if let Some(file) = FLUSH.get() {
+        let _ = file.write_at(b"1", 0);
+    }
+}
+
 /// Boots into the image on `device`, runs the host's workload, and powers off. As a
 /// template (`template`), it asks for a snapshot once the image is mounted: every VM
 /// restored from it continues from there, and dials the host for its own workload.
 pub fn main(device: &str, template: bool) -> ! {
     // Docker's limits for what it starts, inherited by the standby and so the workload.
     defaults::limits();
+    if template {
+        open_flush();
+    }
     // Before any snapshot, so that every copy of a template has one.
     let standby = mount_root(device).and_then(|()| Standby::fork(Born::Own));
     if template && standby.is_ok() {
         await_crypto_selftests();
+        flush_page_reports();
         if let Err(e) = crate::linux::control_write(control::SNAPSHOT, control::SNAPSHOT_NOW) {
             let _ = writeln!(io::stderr(), "shards-init: requesting a snapshot: {e}");
             power_off()

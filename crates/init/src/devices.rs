@@ -1,6 +1,6 @@
 //! A microVM's devices (D44), as dockerd and runc give a container its host's: each
 //! `--device` found (moby daemon/oci_linux.go WithDevices, daemon/pkg/oci DevicesFromPath),
-//! here among the VM's own, which `/sys/dev` lists; its rules and each
+//! here among the VM's own, which its devtmpfs holds; its rules and each
 //! `--device-cgroup-rule` (AppendDevicePermissionsFromCgroupRules); the CDI devices, which
 //! no VM has a spec for; then the nodes made in the workload's `/dev` (runc
 //! createDevices) and its cgroup confined to its devices by runc's eBPF program
@@ -44,44 +44,145 @@ pub fn udev_mode(path: &str) -> Option<u32> {
     UDEV_MODES.iter().find(|(p, _)| *p == path).map(|&(_, mode)| mode)
 }
 
-/// The VM's devices, as the kernel names their nodes (each `/sys/dev/{char,block}/M:N`'s
-/// uevent: DEVNAME, and DEVMODE, DEVUID and DEVGID where they are not devtmpfs's 0600 and
-/// root's), with udev's modes where it has them, sorted as filepath.WalkDir visits a tree: by each path's names in turn.
-pub fn vm_devices() -> Vec<Node> {
-    let mut out = Vec::new();
-    for (dir, kind) in [("/sys/dev/char", Kind::Char), ("/sys/dev/block", Kind::Block)] {
-        let Ok(entries) = std::fs::read_dir(dir) else {
-            continue;
-        };
-        for entry in entries.flatten() {
-            let Ok(uevent) = std::fs::read_to_string(entry.path().join("uevent")) else {
-                continue;
-            };
-            let field = |k: &str| uevent.lines().find_map(|l| l.strip_prefix(k)?.strip_prefix('='));
-            let number = |k: &str| field(k).and_then(|v| v.parse::<u32>().ok());
-            let (Some(major), Some(minor), Some(name)) = (number("MAJOR"), number("MINOR"), field("DEVNAME"))
-            else {
-                continue;
-            };
-            out.push(Node {
-                path: format!("/dev/{name}"),
-                kind,
-                major,
-                minor,
-                mode: field("DEVMODE")
-                    .and_then(|m| u32::from_str_radix(m, 8).ok())
-                    .unwrap_or(0o600),
-                uid: number("DEVUID").unwrap_or(0),
-                gid: number("DEVGID").unwrap_or(0),
-            });
-        }
+/// The VM's devtmpfs, as boot mounted it at `/dev`, before a run's root took that place:
+/// its nodes are the VM's devices, as a host's `/dev` holds its own ([`keep_devtmpfs`]).
+static DEVTMPFS: std::sync::OnceLock<OwnedFd> = std::sync::OnceLock::new();
+
+/// Keeps the devtmpfs boot mounted at `/dev`, before any snapshot, for [`vm_devices`]: a
+/// run's devices are found there by name, where reading every device's uevent cost each
+/// run given one 0.8 ms (PM M223).
+pub fn keep_devtmpfs() -> io::Result<()> {
+    // SAFETY: open(2) of a NUL-terminated literal.
+    let fd = unsafe {
+        libc::open(
+            c"/dev".as_ptr(),
+            libc::O_PATH | libc::O_DIRECTORY | libc::O_CLOEXEC,
+        )
+    };
+    if fd < 0 {
+        return Err(io::Error::last_os_error());
     }
+    // SAFETY: a fresh descriptor nothing else owns.
+    let _ = DEVTMPFS.set(unsafe { <OwnedFd as std::os::fd::FromRawFd>::from_raw_fd(fd) });
+    Ok(())
+}
+
+/// The VM's devices at `path` and beneath it ([`devices_at`] of its devtmpfs); none where
+/// boot kept none.
+pub fn vm_devices(path: &str) -> Vec<Node> {
+    DEVTMPFS
+        .get()
+        .map(|dev| devices_at(dev, path))
+        .unwrap_or_default()
+}
+
+/// The devices at `path` and beneath it in `dev`, a `/dev`, as runc finds a host's
+/// (DeviceFromPath, and a directory walked as DevicesFromPath's filepath.WalkDir walks
+/// one): each node with its numbers, mode and owner, udev's modes over devtmpfs's, sorted
+/// as WalkDir visits a tree, by each path's names in turn. None where `path` is no path of
+/// `/dev` as the kernel names its nodes: no `.`, `..` or empty name in it.
+fn devices_at(dev: &OwnedFd, path: &str) -> Vec<Node> {
+    let mut out = Vec::new();
+    let rel = match path.trim_end_matches('/').strip_prefix("/dev") {
+        Some("") => "",
+        Some(rest) => match rest.strip_prefix('/') {
+            Some(rel) if rel.split('/').all(|n| !n.is_empty() && n != "." && n != "..") => rel,
+            _ => return out,
+        },
+        None => return out,
+    };
+    visit(dev, rel, &mut out);
     for n in &mut out {
         if let Some(mode) = udev_mode(&n.path) {
             n.mode = mode;
         }
     }
     out.sort_by(|a, b| a.path.split('/').cmp(b.path.split('/')));
+    out
+}
+
+/// The node at `rel` in `dev` into `out`, or each beneath it where it is a directory; what
+/// cannot be read passed over, as DevicesFromPath's WalkDir passes it over.
+fn visit(dev: &OwnedFd, rel: &str, out: &mut Vec<Node>) {
+    use std::os::fd::AsRawFd as _;
+    let Ok(at) = CString::new(if rel.is_empty() { "." } else { rel }) else {
+        return;
+    };
+    // SAFETY: a zeroed stat(2) buffer, for fstatat(2) to fill.
+    let mut st: libc::stat = unsafe { std::mem::zeroed() };
+    // SAFETY: fstatat(2) of a NUL-terminated path beneath a descriptor held open, into a
+    // buffer of its own.
+    if unsafe { libc::fstatat(dev.as_raw_fd(), at.as_ptr(), &mut st, libc::AT_SYMLINK_NOFOLLOW) } != 0 {
+        return;
+    }
+    let kind = match st.st_mode & libc::S_IFMT {
+        libc::S_IFCHR => Kind::Char,
+        libc::S_IFBLK => Kind::Block,
+        libc::S_IFDIR => {
+            for name in names(dev, &at) {
+                let child = if rel.is_empty() {
+                    name
+                } else {
+                    format!("{rel}/{name}")
+                };
+                visit(dev, &child, out);
+            }
+            return;
+        }
+        _ => return,
+    };
+    out.push(Node {
+        path: format!("/dev/{rel}"),
+        kind,
+        major: libc::major(st.st_rdev),
+        minor: libc::minor(st.st_rdev),
+        mode: st.st_mode & 0o7777,
+        uid: st.st_uid,
+        gid: st.st_gid,
+    });
+}
+
+/// The names in directory `at` of `dev`, but `.` and `..`; none where it cannot be read.
+fn names(dev: &OwnedFd, at: &std::ffi::CStr) -> Vec<String> {
+    use std::os::fd::AsRawFd as _;
+    // SAFETY: openat(2) of a NUL-terminated path beneath a descriptor held open.
+    let fd = unsafe {
+        libc::openat(
+            dev.as_raw_fd(),
+            at.as_ptr(),
+            libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+        )
+    };
+    if fd < 0 {
+        return Vec::new();
+    }
+    // SAFETY: fdopendir(3) takes the fresh descriptor, closed with the stream; close(2) of
+    // it where no stream took it.
+    let dir = unsafe { libc::fdopendir(fd) };
+    if dir.is_null() {
+        // SAFETY: close(2) of the descriptor this function opened.
+        unsafe { libc::close(fd) };
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    loop {
+        // SAFETY: readdir(3) of the stream this function holds; each entry's name read
+        // before the next call.
+        let entry = unsafe { libc::readdir(dir) };
+        if entry.is_null() {
+            break;
+        }
+        // SAFETY: an entry readdir(3) returned, whose name is NUL-terminated.
+        let name = unsafe { std::ffi::CStr::from_ptr((*entry).d_name.as_ptr()) };
+        if let Ok(name) = name.to_str()
+            && name != "."
+            && name != ".."
+        {
+            out.push(name.to_string());
+        }
+    }
+    // SAFETY: closedir(3) of the stream this function holds, and its descriptor.
+    unsafe { libc::closedir(dir) };
     out
 }
 
@@ -265,12 +366,17 @@ pub fn prepare_joiner(entry: &[u8]) -> Result<Prepared, String> {
 
 fn prepare_with(entry: &[u8]) -> Result<Prepared, String> {
     let a = asked(entry).ok_or("a malformed devices entry")?;
-    // Read only where a path is named.
-    let vm = if a.devices.is_empty() && a.io.is_empty() && a.cdi_nodes.is_empty() {
-        Vec::new()
-    } else {
-        vm_devices()
-    };
+    // Read where a path is named, at it and beneath it.
+    let mut vm: Vec<Node> = a
+        .devices
+        .iter()
+        .map(|[host, ..]| *host)
+        .chain(a.io.iter().map(|[_, path, _]| *path))
+        .chain(a.cdi_nodes.iter().map(|[host, ..]| *host))
+        .flat_map(vm_devices)
+        .collect();
+    vm.sort_by(|a, b| a.path.split('/').cmp(b.path.split('/')));
+    vm.dedup_by(|a, b| a.path == b.path);
     // getBlkioWeightDevices and getBlkioThrottleDevices: each path stat(2)ed for its
     // numbers, a directory's 0:0.
     let (mut weights, mut throttles) = (Vec::new(), Vec::new());
@@ -771,6 +877,54 @@ mod tests {
             devices_from_path(&vm, "/dev/nope", "/dev/nope", "rwm").unwrap_err(),
             "error gathering device information while adding custom device \"/dev/nope\": no such file or directory"
         );
+    }
+
+    /// The devices at a path of `/dev` and beneath it, from a descriptor of it, as runc's
+    /// walk of a host's finds them, in WalkDir's order; none at a path that is no path of
+    /// `/dev` as the kernel names its nodes, a link, or nothing.
+    #[test]
+    fn devices_are_found_in_dev_by_name() {
+        // SAFETY: open(2) of a NUL-terminated literal.
+        let fd = unsafe {
+            libc::open(
+                c"/dev".as_ptr(),
+                libc::O_PATH | libc::O_DIRECTORY | libc::O_CLOEXEC,
+            )
+        };
+        assert!(fd >= 0, "{}", io::Error::last_os_error());
+        // SAFETY: a fresh descriptor nothing else owns.
+        let dev = unsafe { <OwnedFd as std::os::fd::FromRawFd>::from_raw_fd(fd) };
+        let null = devices_at(&dev, "/dev/null");
+        assert_eq!(null.len(), 1, "{null:?}");
+        assert_eq!(
+            (null[0].path.as_str(), null[0].kind, null[0].major, null[0].minor),
+            ("/dev/null", Kind::Char, 1, 3)
+        );
+        assert_eq!(devices_at(&dev, "/dev/null/"), null);
+        let pts = devices_at(&dev, "/dev/pts");
+        assert!(
+            !pts.is_empty() && pts.iter().all(|n| n.path.starts_with("/dev/pts/")),
+            "{pts:?}"
+        );
+        let all = devices_at(&dev, "/dev");
+        assert!(
+            all.contains(&null[0]) && pts.iter().all(|n| all.contains(n)),
+            "{all:?}"
+        );
+        let mut walked = all.clone();
+        walked.sort_by(|a, b| a.path.split('/').cmp(b.path.split('/')));
+        assert_eq!(all, walked);
+        for none in [
+            "/dev/./null",
+            "/dev/../dev/null",
+            "/dev//null",
+            "/devnull",
+            "/etc/passwd",
+            "/dev/stdin",
+            "/dev/nope",
+        ] {
+            assert_eq!(devices_at(&dev, none), Vec::new(), "{none}");
+        }
     }
 
     /// AppendDevicePermissionsFromCgroupRules' refusals.

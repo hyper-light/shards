@@ -7,7 +7,11 @@
 //! `/init`) and the same kernel command line. Every sample is a fresh VMM process:
 //!
 //! - `to_ready`: the host's clock from spawn until the guest's ready line reaches the VMM's
-//!   stdout. It covers exec, VMM setup, the kernel and init: what a user waits for.
+//!   stdout. It covers exec, VMM setup, the kernel and init: what a user waits for. Its
+//!   parts, which the envelope does not check: `in_guest`, the guest's own clock at ready
+//!   (its time since its kernel started keeping time), and `outside`, the rest (the spawn,
+//!   the VMM's setup, the kernel's start, the ready line's way out); `*_diff`, each pair's
+//!   difference, shards less Firecracker.
 //! - `overhead`: the VMM's resident memory outside guest memory, by Firecracker's own rule
 //!   (tests/host_tools/memory.py): every mapping in /proc/PID/smaps counts except those
 //!   sized like guest memory. The highest of 20 readings, 10 ms apart, once the guest idles.
@@ -115,6 +119,9 @@ mod compare {
 
     struct Sample {
         to_ready_us: f64,
+        /// The guest's own clock as it said it was ready (testguest `idle`): its time since
+        /// its kernel started keeping time; NaN where its ready line says none.
+        in_guest_us: f64,
         overhead_bytes: u64,
         peak_rss_bytes: u64,
         rss_anon_bytes: u64,
@@ -324,6 +331,16 @@ mod compare {
         }
 
         let to_ready = |v: &[Sample]| v.iter().map(|s| s.to_ready_us).collect::<Vec<_>>();
+        // to_ready's parts, unchecked: the guest's own time to ready, by its clock, and the
+        // rest (the spawn, the VMM's setup, the kernel until it keeps time, and the ready
+        // line's way out); and each pair's difference, shards less Firecracker.
+        let in_guest = |v: &[Sample]| v.iter().map(|s| s.in_guest_us).collect::<Vec<_>>();
+        let outside = |v: &[Sample]| {
+            v.iter()
+                .map(|s| s.to_ready_us - s.in_guest_us)
+                .collect::<Vec<_>>()
+        };
+        let paired = |a: Vec<f64>, b: Vec<f64>| a.iter().zip(&b).map(|(x, y)| x - y).collect::<Vec<_>>();
         let mib =
             |v: &[Sample], f: fn(&Sample) -> u64| v.iter().map(|s| f(s) as f64 / MIB).collect::<Vec<_>>();
         support::report(
@@ -338,6 +355,12 @@ mod compare {
             &[
                 support::stats("shards_to_ready", "us", to_ready(&shards)),
                 support::stats("fc_to_ready", "us", to_ready(&fc)),
+                support::diagnostic("shards_in_guest", "us", in_guest(&shards)),
+                support::diagnostic("fc_in_guest", "us", in_guest(&fc)),
+                support::diagnostic("in_guest_diff", "us", paired(in_guest(&shards), in_guest(&fc))),
+                support::diagnostic("shards_outside", "us", outside(&shards)),
+                support::diagnostic("fc_outside", "us", outside(&fc)),
+                support::diagnostic("outside_diff", "us", paired(outside(&shards), outside(&fc))),
                 support::stats("shards_overhead", "MiB", mib(&shards, |s| s.overhead_bytes)),
                 support::stats("fc_overhead", "MiB", mib(&fc, |s| s.overhead_bytes)),
                 support::stats("shards_peak_rss", "MiB", mib(&shards, |s| s.peak_rss_bytes)),
@@ -715,6 +738,7 @@ mod compare {
         };
         Sample {
             to_ready_us: beat.duration_since(start).as_secs_f64() * 1e6,
+            in_guest_us: f64::NAN,
             overhead_bytes,
             peak_rss_bytes: peak.expect("the VMM's VmHWM"),
             rss_anon_bytes: anon.expect("the VMM's RssAnon"),
@@ -856,10 +880,11 @@ mod compare {
             let mut all = String::new();
             let mut ready_tx = Some(ready_tx);
             for line in BufReader::new(stdout).lines().map_while(Result::ok) {
-                if line.contains(READY)
+                if let Some((_, said)) = line.split_once(READY)
                     && let Some(tx) = ready_tx.take()
                 {
-                    let _ = tx.send(Instant::now());
+                    let in_guest = said.trim().parse::<f64>().unwrap_or(f64::NAN);
+                    let _ = tx.send((Instant::now(), in_guest));
                 }
                 all.push_str(&line);
                 all.push('\n');
@@ -896,8 +921,10 @@ mod compare {
         let (Ok(ready), Some(overhead_bytes)) = (ready, overhead) else {
             panic!("the guest never reported ready\n--- stdout\n{out}\n--- stderr\n{err}");
         };
+        let (ready, in_guest_us) = ready;
         Sample {
             to_ready_us: ready.duration_since(start).as_secs_f64() * 1e6,
+            in_guest_us,
             overhead_bytes,
             peak_rss_bytes: peak.expect("the VMM's VmHWM"),
             rss_anon_bytes: anon.expect("the VMM's RssAnon"),

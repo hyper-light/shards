@@ -198,6 +198,12 @@ impl Vm {
         Ok(())
     }
 
+    /// What takes guest RAM from the guest and gives it back, from whichever thread gives
+    /// its pages back to the host as the guest reports them free (D151).
+    pub fn stage2(&self) -> Stage2 {
+        Stage2(())
+    }
+
     /// Gives the guest the memory a virtio-mem device plugs, `len` bytes at `host` seen at
     /// `gpa` (D133): none of it yet. Hypervisor.framework's stage 2 holds the pages it maps
     /// (PM M193), so each range is mapped as it is plugged, and unmapped before its pages

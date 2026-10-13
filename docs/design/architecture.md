@@ -663,7 +663,13 @@ A pull resolves, fetches and checks as containerd v2.4.1 does
   - a timeout or cut connection is tried again after 50 ms;
   - a 401 is answered (D21), then the request is sent again;
   - a manifest HEAD refused with 405 becomes a GET;
-  - 408 is tried again, and a 500, 503 or 504 once.
+  - 408 is tried again, and a 500, 502, 503 or 504 once, unless it repeats: a gateway's
+    failure, 502, as its timeout and an unavailable server are, which containerd leaves
+    out. A token server's request is tried again as these are, where containerd tries
+    none: Docker Hub's token server answered a pull with a 502, which the next asking
+    passed, and the pull had failed (dev 3c2e3cd3's CI;
+    `a_token_servers_passing_failure_is_asked_again`,
+    `existence_is_asked_as_containerd_asks_it`, each mutation-checked).
   - A 429 is tried again, as containerd tries it, but after a wait: `Retry-After`
     when it fits in the waits left, else up to 50, 100, 200, 400 and 800 ms, a random
     share of each. containerd asks again at once, and ECR Public, which throttles
@@ -1577,7 +1583,7 @@ its record after it, until `shards rm` removes it; `--rm` removes it once it end
   as moby's getUser adds them (moby/sys/user GetAdditionalGroups), after the user's own;
   the OOM score set on the process before it execs; a privileged container's every
   capability, no masked or read-only paths, `/sys` and its cgroup writable, every device
-  the VM has made in `/dev` from `/sys/dev`, and `SecurityOpt` `label=disable`. An exec
+  the VM has made in `/dev` from its devtmpfs, and `SecurityOpt` `label=disable`. An exec
   takes the workload's process (moby daemon/exec.go): its capabilities (all, with
   `--privileged`), groups, rlimits and OOM score. Checked side by side with Docker 29.3.1:
   the same CapEff, CapBnd, groups and OOM score. Test:
@@ -2849,10 +2855,10 @@ under it, as a container's execs are.
 `--device` takes the VM's devices as Docker's takes its host's (WithDevices,
 DevicesFromPath): one by its path, a directory's each, at the path in the microVM
 asked, with its permissions, refused as dockerd refuses one it cannot find; the VM's
-devices are those `/sys/dev` lists, which shards-init reads, with the modes systemd-udev's
-default rules give a host's (fuse, net/tun, vsock and vfio 0666, rfkill 0664; v257
-50-udev-default.rules.in) where devtmpfs's are 0600, so that the image's user opens
-`/dev/fuse` as on a Docker host; `--privileged` makes its nodes from the same list. A
+devices are the nodes of its devtmpfs, which shards-init keeps (D152), with the modes
+systemd-udev's default rules give a host's (fuse, net/tun, vsock and vfio 0666, rfkill
+0664; v257 50-udev-default.rules.in) where devtmpfs's are 0600, so that the image's user
+opens `/dev/fuse` as on a Docker host; `--privileged` makes its nodes from all of it. A
 CDI device's name is a device request, as the CLI makes it, which no VM has a spec for:
 refused in dockerd's words. `--device-cgroup-rule` is checked by the CLI's pattern and
 read as dockerd reads it; `--device-read-bps`, `--device-write-bps`, `--device-read-iops`,
@@ -3516,7 +3522,12 @@ Tested: `reach_through_any_declared_edge_is_reach` (paths through an internal ne
 volume, `ATTACH` and a remote MCP server; networks with no port, or internal, reaching
 nothing; a local MCP server joining no one; every agent reaching the world refusing none;
 a harness driving a world-reaching agent allowed), mutation-checked three ways: a search
-that follows no edge, every domain taken as internal-only, and none.
+that follows no edge, every domain taken as internal-only, and none. End to end (§9.10),
+`an_internal_agent_reaches_the_world_through_nothing`: each of those paths refused by
+`shards build`, the path named; and at run, an image whose own normalized Agentfile joins
+b to a (a commit of the Agentfile changed, its digest relabelled, as no build of shards'
+would make it) refused as the daemon reads it (D109), as built it runs. Mutation-checked:
+the build's check dropped, and the run's.
 
 ### D60. The in-VM server: an instance for each agent, apart from init
 
@@ -3601,6 +3612,161 @@ No run-time labels, relays or declassifiers (§12 answer 14, decided by the user
 2026-10-07): every path between domains is a grant, and the build refuses any that joins
 an internal-only domain to the world (D58), so there is no data to label. Code mode is
 D136.
+
+### D152. A run's devices found by name in the VM's devtmpfs
+
+D44 found a run's `--device` among the VM's devices by reading the uevent of each device
+`/sys/dev` lists, 104 of them: 582 µs at the median in a microVM just restored, and every
+run given a device paid it, the GPU's render node among them, 1.2 ms of its command in
+all (PM M223).
+
+- **Found as runc finds a host's.** Boot keeps the devtmpfs it mounts at `/dev` open
+  (O_PATH), before any template is saved, as it keeps `/proc/sys`. A run's device is the
+  node at its path there (fstatat(2), 1.5 µs), or each node beneath a directory there,
+  in WalkDir's order, as DevicesFromPath walks a host's `/dev` and runc's DeviceFromPath
+  stats each node. A node has the numbers, mode and owner devtmpfs made it with, from the
+  device's own name, mode and owner, which its uevent said, with udev's modes over them
+  as before. `--privileged` walks all of it, as runc's HostDevices walks a host's `/dev`.
+- **Nothing more for the workload.** The descriptor is init's and close-on-exec, and
+  every process init starts closes all it holds past stdio before a workload runs. A
+  path outside `/dev`, or with a `.`, `..` or empty name, finds nothing, as before, so
+  that no lookup leaves the devtmpfs.
+- **Measured (PM M223):** a run given `--device /dev/fuse`, 774 µs sooner in its command
+  [−796, −761] and 954 µs in all [−1,124, −780], paired over 200; a device now costs a
+  run 106 µs [+90, +115] of its command: its filter compiled, loaded and attached, and
+  its node made. Loading a GPU's filter before its template is saved, where every GPU
+  run's filter is known, took 100 µs off init's work but nothing off the run's
+  (−1 µs [−19, +15]): the load is off a GPU run's path, and is not done.
+
+Tested: `devices_are_found_in_dev_by_name` (shards-init, in a guest): a node by its path,
+with a trailing `/` too, a directory's each in WalkDir's order, and nothing at
+`/dev/./null`, `/dev/../dev/null`, `/dev//null`, `/devnull`, `/etc/passwd`, a link or a
+missing name; on real microVMs, the tests of `--device`, joiners', CDI's, `--privileged`
+and the GPU's devices. Mutation-checked: finding nothing fails the first three; a
+privileged run's walk finding nothing fails `devices_are_given_and_confined_as_dockers_are`.
+
+### D151. What a run frees goes back to the host (free page reporting)
+
+D148 plugs memory into a run as its workload needs it, and nothing gave any back: a
+workload that touched 512 MiB and freed it held it to its end, 562 MiB of footprint where an
+idle run as long held 90 (`a_runs_memory_freed_goes_back_to_the_host`, mutated), where a
+container's memory freed is its host's at once.
+
+- **The guest reports, the host gives back.** Linux's free page reporting
+  (mm/page_reporting.c; the pinned kernel has CONFIG_PAGE_REPORTING and
+  CONFIG_VIRTIO_BALLOON) hands a virtio-balloon device the blocks of its free lists of its
+  pageblock and up (2 MiB with 4 KiB pages), two seconds after one is freed, paced to some
+  64 blocks of each free list a pass, a pass each two seconds ("all pages on an idle
+  system in about 30 seconds"). shards' device offers that feature alone
+  (VIRTIO_BALLOON_F_REPORTING), its queues inflate, deflate and reporting, as Linux gives
+  indexes only to the queues it names; the balloon never inflates (`num_pages` 0).
+- **A reported range stays the guest's.** Each range, those that meet joined, is given back
+  under guest memory's lock, as unplug and plug in turn (`memory::Access::discard`): taken
+  from the guest at stage 2 where the hypervisor holds what it maps (Hypervisor.framework,
+  WHP; M193: replaced in the host alone, the guest kept the old pages), its pages given
+  back (`platform::discard`: on Linux MADV_DONTNEED, which keeps the mapping, its advice,
+  and frees a private mapping's copies; on macOS fresh anonymous memory mapped over it,
+  as MADV_FREE_REUSABLE gave nothing back, M193), and mapped to the guest again, before
+  the report is answered, after which the guest may use the pages, zero-filled as first
+  touched. Only the host's whole pages of guest RAM in a range are given back; one the
+  host could not give back is kept, and said once.
+- **Where.** Every run's microVM, last of its devices, so that no other device's window
+  moves; its templates with it (snapshot format 14). Builders on Linux and macOS: a
+  build's peak is not held to its end. Not over WHP yet, whose taking a part of guest
+  RAM away and back is unmeasured.
+- **What the host holds none of is left alone.** A range none of whose pages the host
+  holds (`platform::untouched`: never touched, or a restored guest's that is still its
+  template's file's) is answered as it is, no stage 2 touched.
+- **A template is saved with nothing left to report.** Registering the device schedules a
+  first pass over every zone two seconds on (mm/page_reporting.c
+  `page_reporting_register`), and a template, saved some 150 ms into its boot, was saved
+  with it to run: every restore then reported what its template's boot freed, 208 MiB,
+  two seconds into its life, and runs paid for that state, 50 to 79 µs of a 1 ms command
+  at the median, though no report came during them (PM M222). Kernel patch 0005 adds
+  `page_reporting.flush`, which reports at once what waits, pass after pass until
+  nothing does; a template's init writes it before the template is saved (6 ms), through
+  a sysfs of its own opened as it boots, its container's being read-only. A guest kernel
+  without it reports as before.
+- **What a pass holds is free memory (patch 0006).** A pass holds up to 32 free blocks
+  of at most 4 MiB, 128 MiB, until the host answers, and the zones count them gone:
+  readings of the guest's free memory dipped by as much, and an allocation needing them
+  found nothing to reclaim, and the OOM killer ended a task in a guest whose memory was
+  free. A growing run was ended as a restore's pass came (4 of 8 asked at that moment), a
+  run of fixed size with three agents as its first pass came (6 of 8 runs of
+  `agents_out_of_memory_end_whole_and_spare_the_run`), and agents were given a share of
+  none, read during a pass (PM M224). Patch 0006 counts what a pass holds as free in
+  sysinfo(2) and /proc/meminfo, and has an allocation that would otherwise give up wait a
+  tick and try again while a pass holds any (`should_reclaim_retry`); the zones' own counts,
+  by which the allocator's watermarks see the pages gone until they are back, are as they
+  were. With it, `MemAvailable` moved 8 to 12 MiB as a pass held 128 MiB, as without
+  reporting, and the agents' test none of 24 times as it had: once, after its run was
+  spared and y ended, z was ended too, its memory read as 65,679,360 bytes where it holds
+  16 MiB, which is not yet explained.
+- **A guest kernel without it reports nothing.** shards-init reads `page_reporting.held`,
+  which 0006 adds, as it boots, before any template is saved: where its kernel has none,
+  it lets the virtio-balloon device's driver go (sysfs `unbind`), and the guest keeps what
+  it frees, as before D151.
+- **Measured (PM M222):** with the flush, runs cost what they did, wall time −5 µs
+  [−94, +98] and the command's −11 µs [−22, +0], paired over 400; a run that touched
+  512 MiB and freed it held 57 to 132 MiB at its end where an idle one held 94, and with
+  none given back 562.
+
+Tested: in crates/vmm, `reported_memory_comes_back_empty` (ranges that meet joined, each
+unmapped and mapped again around its pages, the rest of RAM as it was),
+`a_range_the_host_holds_nothing_of_is_left_alone`,
+`a_range_past_ram_or_in_part_of_a_page_keeps_what_is_not_wholly_its` and
+`the_device_asks_for_nothing_and_keeps_actual`; on real microVMs,
+`a_runs_memory_freed_goes_back_to_the_host`: restores of a template reporting nothing in
+their first seconds, where the kernel has the flush (a VM's timing line says what its
+guest reported, `reported_kib`), and 512 MiB touched and freed given back, where its kernel
+has 0006, and nothing reported where it has not; and
+`agents_out_of_memory_end_whole_and_spare_the_run`, which a pass ended 6 times in 8 on a
+kernel whose allocations did not wait. Mutation-checked: runs without the device hold 562
+MiB; a template saved without the flush has its restores report 212,992 KiB. What a pass
+does to readings and to growing runs is shown by `reporting-dip` and
+`run-plug/report-race.py` (PM M224).
+
+### D150. A GPU's runs restore templates of their own
+
+D144 booted every run given the GPU and saved no template: a GPU's state is its host
+driver's, which no snapshot holds, and the renderer's threads reach guest memory without
+the VMM's access. Each such run paid a whole boot, 98.8 ms at the median where a restore
+took 7.6 (PM M223).
+
+- **Saved before the guest has anything of the GPU's.** A template is saved once its root
+  is mounted, before any workload runs. By then the guest's driver has negotiated its
+  features and asked for the capsets, and has made no context and no resource: the
+  device has no scanout, so DRM makes no framebuffer either. All the device holds of the
+  guest then is its rings' places, which a snapshot keeps as it keeps every virtio
+  device's. The renderer's threads reach guest memory only through a context's blobs and
+  fences, and there are none. A snapshot is refused once the guest has a context or a
+  resource, or while a request waits on a fence, and says how many (`Gpu::unsaved`),
+  as D148 refuses one while memory has been asked for and not plugged.
+- **A restore makes its renderer anew**, in the GPU's VM process (`shards restore --gpu`).
+  Its window has the place and the length its template's guest saw: snapshot format 15
+  records the length. A host whose renderer offers less refuses the restore, since the
+  guest would be told of memory its host cannot map. One that offers more maps only what
+  the guest was told of.
+- **Its own template.** A GPU run's template is keyed apart from the same image's runs
+  without the GPU: by "gpu", and by the pinned gpu kernel's digest whatever guest is
+  recorded. Its origin says so. A run without the GPU never restores one with it, and the
+  daemon gives a GPU template's restores the GPU's VM process.
+- **Measured (PM M223):** a GPU run restored is 90.6 ms sooner than one booted, wall
+  time paired over 200 [−91.6, −89.5] (p50 98.8 → 7.6 ms, p99 129.8 → 31.7), and holds
+  18.4 MiB of footprint where one booted holds 94.8. Restored, the GPU costs a run
+  0.19 ms of its command against a run without it, its device's cost found and taken
+  down to 0.1 ms (D152) and the gpu kernel and the GPU's VM process the rest; restoring
+  itself costs the same, with the GPU or without.
+
+Tested: in crates/vmm, `a_gpu_is_saved_only_with_nothing_of_its_host_drivers`. On real
+microVMs, in tests/gpu.rs: with the gpu kernel recorded as the guest, a run without the
+GPU saves a template first, and the GPU run after it still boots and saves its own. The
+next GPU run restores that template, and so does one with the usual kernel recorded;
+each finds "Virtio-GPU Venus (". Mutation-checked: keyed without "gpu", the GPU run
+restores the template saved without the GPU, which has no render node; restored in the
+VM process without the renderer, the restore is refused and the run boots; keyed by the
+recorded guest's kernel, the usual one boots, without virtio-gpu; and a GPU that never
+refuses a snapshot fails the unit test.
 
 ### D149. A guest reports the memory it may still plug
 
@@ -3829,8 +3995,10 @@ to test on, where no CI runner has a GPU behind an IOMMU.
   (VIRTIO_GPU_F_BLOB_ALIGNMENT, commits 7b5121c3374e, 47248e0d8264, 6bd7e82e2653, for
   libkrun on macOS), and Mesa's Venus rounds its blobs' sizes to it
   (vn_renderer_virtgpu.c); an unaligned place is refused, said once.
-- **No snapshot.** A GPU's state is its host driver's, and the renderer's threads reach
-  guest memory without the VMM's access: a VM with a GPU is refused a snapshot policy.
+- **No snapshot of what the GPU holds.** A GPU's state is its host driver's, and the
+  renderer's threads reach guest memory without the VMM's access: a snapshot is refused
+  once the guest has made a context or a resource, and a template is saved before it has
+  (D150).
 - **The gpu kernel variant** (resources/kernel/gpu.config): DRM's virtio-gpu driver without
   modesetting, apart from every other guest's kernel; patch 0003 backports the blob
   alignment to 6.18.48 and rounds a host blob's size up to it where upstream refuses it,
@@ -3840,10 +4008,11 @@ to test on, where no CI runner has a GPU behind an IOMMU.
   from pinned sources, carried in `shards` and written out the first time a GPU VM needs
   it. MoltenVK says its errors alone (MVK_CONFIG_LOG_LEVEL 1).
 - **`--gpus`**, read as docker/cli reads it, gives a run this Mac's GPU where it asks for
-  any or for device 0: its microVM boots in `shards-vm-gpu` on the gpu kernel, never from
-  a template, and the run has the render node as `--device` gives one; inspect shows the
-  requests as the CLI makes them. More GPUs, another device or a driver of its own are
-  refused. `run --kernel … --gpu` does the same for a kernel booted directly.
+  any or for device 0: its microVM is `shards-vm-gpu`'s, on the gpu kernel, restored from
+  a template of its own (D150), and the run has the render node as `--device` gives one;
+  inspect shows the requests as the CLI makes them. More GPUs, another device or a driver
+  of its own are refused. `run --kernel … --gpu` does the same for a kernel booted
+  directly.
 - **The render node's mode is a host's:** udev's 0666 (systemd v257
   50-udev-default.rules.in, `KERNEL=="renderD*"`, group-render-mode's default), where the
   guest's devtmpfs gives 0600, so a run's user other than root has the GPU, and a step's
@@ -3867,8 +4036,8 @@ to test on, where no CI runner has a GPU behind an IOMMU.
   (guest time over host time, geometric mean 1.003 over 218 cases); llama.cpp ahead in
   the guest on a busy host, by its vCPUs' scheduling and Venus's asynchronous submits;
   a blob's first map about 0.1 ms; the renderer some 3 MiB of a VM's footprint.
-- **To build:** a GPU VM from a template (D149); Linux's VFIO (R2). A build's `RUN`
-  steps: D145; a run's `--device` by CDI name: D146.
+- **To build:** Linux's VFIO (R2). A build's `RUN` steps: D145; a run's `--device` by
+  CDI name: D146; a GPU's templates: D150.
 
 ### D143. `RUN` on Windows hosts: the builder
 
@@ -9181,7 +9350,22 @@ ENOSYS for no capability under Docker's profile, and musl and glibc then fall ba
 `clone`. `execve` stays: it starts no process. Tested by a third agent declared
 `--processes=none` from the same artifact: its thread starts and its `fork` is refused
 (EPERM), while the first agent forks. Mutation-checked: compiling the ordinary domain
-filter for it lets the fork through.
+filter for it lets the fork through. Every other way to start a process is tried too
+(§9.10): `vfork` as the kernel makes it (x86_64's own call, arm64's `clone` with CLONE_VM
+and CLONE_VFORK, issued so that the child touches no memory: libc's `vfork` is
+deprecated for the stack its child corrupts), a `clone` that is no thread, `clone3`
+(ENOSYS for every domain), a spawn as libc makes it, and so any program run: each refused
+(EPERM), each made by the first agent. Mutation-checked: `clone` left as Docker's rule lets
+musl's `fork`, itself a `clone`, through.
+
+The same test plants the file escapes of §9.10: a symlink in its scratch to another
+domain's file, followed (EACCES: the domain is hidden); a hard link to it (EACCES) and to
+the system's (EXDEV, another filesystem); and a set-user-ID-root program of the system
+(`COPY --chmod=4755`) run, which runs as the agent (uid and euid 200000). Two guards hold
+that: the system is mounted `nosuid`, which the agent sees (`statvfs`), and
+`no_new_privs` (`nnp=1`), which Landlock and seccomp need besides. Mutation-checked: the
+system mounted without `nosuid` fails the `nosuid` line while `no_new_privs` keeps the
+euid; `no_new_privs` cannot be dropped alone, as no domain then starts.
 
 Part three, network grants between domains (AGENTFILE_ARCH.md §4.6, §4.7, §9.7):
 

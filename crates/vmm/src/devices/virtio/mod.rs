@@ -4,6 +4,7 @@
 //! VIRTIO_RING_F_EVENT_IDX and a queue notify only hands work to a device thread
 //! (docs/research/virtio-io-exits.md R2).
 
+pub mod balloon;
 pub mod block;
 #[cfg(unix)]
 pub mod fs;

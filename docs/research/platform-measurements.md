@@ -7741,7 +7741,7 @@ revision before comparing a changed API/implementation.
     vCPUs; with `vulkaninfo`, 149.4 (219.2) and 45.5 (117.3).
 - **Consequence (D144).** Venus gives a guest the GPU's speed for its GPU's work, and
   costs a VM some 3 MiB. A blob's first map is the cost to keep down: about 0.1 ms each,
-  past 1 ms at p99 on a busy host. A GPU run's memory is its cold boot's (D149's
+  past 1 ms at p99 on a busy host. A GPU run's memory is its cold boot's (D150's
   templates). Guest vCPUs at the time-constraint policy outrun the host's other work.
 
 ### M219. What plugging a run's memory costs a run (D148)
@@ -7838,3 +7838,148 @@ revision before comparing a changed API/implementation.
   memory, where Docker's reports its host's: the smaller of the two that Node takes is the
   limit either way. One allocation larger than what is plugged so far is made, as on a
   host of the memory the guest may reach.
+
+### M222. What giving a run's freed memory back costs its runs (D151)
+
+- **Question.** A virtio-balloon device that gives back the memory a guest reports free:
+  what does it cost a run, and where does a cost come from?
+- **Method.** `docs/research/measurements/build-ab/ab.py OLD NEW alpine:3.20 N true`,
+  `AB_FLAGS=--rm`: each arm's `shards` and a home with alpine pulled, the guest recorded,
+  and its template saved; N runs of each arm in turn, paired. OLD: ea38f209, no device.
+  The other arms are builds of D151's work in turn, and `run-plug/age.py` reads each run's
+  VM age as its request came. Apple M5 Max, 128 GiB, macOS 26.4.1, 2026-10-13, load 4 to
+  30 (each A/B's own in the scratch records); the pinned kernel 4b8900bdffdd, and for the
+  last, both arms on 6.18.48 with patches 0004 and 0005, built here.
+- **Results.** Paired median differences, NEW less OLD, with 95% intervals, µs:
+
+  | NEW | n | wall | command |
+  |---|---|---|---|
+  | the device, every reported range given back | 300 | +306 [+49, +568] | +21 [+12, +41] |
+  | the device, no reporting offered | 300 | −61 [−205, +98] | +12 [−13, +43] |
+  | reporting offered, against the device without it | 300 | −15 [−94, +108] | +32 [+4, +57] |
+  | every range given back, again | 300 | +154 [−389, +1011] | +60 [+33, +91] |
+  | ranges the host holds none of left alone | 400 | +83 [−98, +337] | +79 [+70, +92] |
+  | nothing given back in a VM's first 5 s | 400 | +209 [−112, +397] | +50 [+43, +60] |
+  | ten execs a run, the same | 200 | +186 [−17, +349] | +81 [+46, +117] |
+  | templates saved 2.5 s into their boot | 400 | +24 [−65, +80] | +29 [+18, +45] |
+  | templates saved after `page_reporting.flush` (D151) | 400 | −5 [−94, +98] | −11 [−22, +0] |
+
+  Every run of `age.py` took a VM under 0.5 s old (the pool refills as a run ends), so no
+  report came during any of them: each restore's reports came two seconds into its life
+  (208 MiB, in two reports of 2 to 4 ms). The cost followed the template's state, not
+  the reports: a template saved some 150 ms into its boot holds the first pass that
+  registering the device schedules two seconds on; saved after one pass, it held the
+  next, as a pass reports some 64 blocks of each free list; saved after the flush, it
+  holds none. A restore of a flushed template reports nothing in its first 3 s, one of a
+  template saved without it 212,992 KiB (`a_runs_memory_freed_goes_back_to_the_host`).
+- **Giving back.** A run that touched 512 MiB and freed it, idle 10 s: footprint at its
+  end 57 and 132 MiB, an idle run's 94, the peak 578 and 645; without the device, 562
+  against 90.
+- **Consequence (D151).** Templates are saved after a flush; a run's memory freed goes
+  back to the host at no cost measured to its runs.
+
+
+### M223. A GPU's runs from templates of their own, and a run's devices found by name (D150, D152)
+
+- **Question.** What does restoring a template of its own (D150) save a run given the GPU,
+  what does the GPU still cost a restored run, and where does that cost come from?
+- **Method.** `docs/research/measurements/build-ab/ab.py`, `AB_FLAGS=--rm`, `true` in
+  `gpu-venus:1` (Debian trixie-slim with Mesa's Venus and vulkan-tools, tests/gpu.rs's
+  image), each arm a home of its own with a copy of one build of D150's work, the image
+  loaded (`shards load`), its guest recorded (`shards guest use`), pairs n=200; the
+  daemon of a home that boots every run was started with SHARDS_KERNEL, the pinned gpu
+  kernel, and SHARDS_INIT. Inside restored microVMs, `device-setup` (its directory): the
+  steps of finding and confining a device, as root of a privileged run, each round timed
+  (n=300, one VM) and the first round of fresh VMs (n=30); and shards-init with
+  `timed.patch` (over `preload.patch`), whose runs read what their devices cost it
+  (n=30 each). Memory: `venus/run-memory.sh 10 gpu-venus:1`, in a home that restores
+  templates and in one that boots every run. Apple M5 Max, 128 GiB, macOS 26.4.1,
+  2026-10-13; kernel 6.18.48, b3f3b948641f; each A/B's 1-minute load below.
+- **A GPU's runs.** Paired median differences, NEW less OLD, with 95% intervals, µs:
+
+  | OLD → NEW (`--gpus all` unless said) | load | wall p50, OLD → NEW | wall | command |
+  |---|---|---|---|---|
+  | booted every run → restored | 7.0 | 98,803 → 7,591 | −90,577 [−91,588, −89,534] | +301 [+256, +337] |
+  | restored: no GPU → the GPU | 7.6 | 6,445 → 7,410 | +920 [+792, +994] | +889 [+829, +930] |
+  | restored: no device → `--device /dev/fuse` | 32.7 | 8,741 → 10,368 | +1,614 [+1,272, +2,017] | +1,234 [+1,167, +1,311] |
+
+  Booted, p90 112,030, p99 129,751, max 136,082; restored, 13,004, 31,714 and 35,150.
+  The GPU's cost in a restored run is in its command, the restore itself the same
+  (outside the command, +8 [−97, +106]); and a device costs as much without the GPU.
+- **Where a device's cost was.** `device-setup`, µs, p50 (p90, max):
+
+  | step | each round, one VM | first round, fresh VMs |
+  |---|---|---|
+  | walk of /sys/dev's 104 uevents (init's lookup) | 229.3 (251.5, 652.3) | 581.8 (633.2, 657.3) |
+  | fstatat(2) of the node in a devtmpfs held open | 0.3 (0.5, 11.2) | 1.5 (1.9, 3.3) |
+  | the filter compiled | 3.2 (4.2, 10.6) | 6.0 (6.8, 7.5) |
+  | loaded (BPF_PROG_LOAD) | 84.2 (112.0, 508.5) | 69.2 (89.4, 122.9) |
+  | attached in the default's place | 1.2 (1.6, 8.1) | 2.4 (3.6, 3.7) |
+
+- **Found by name (D152).** D150's init against one that finds a run's devices in its
+  devtmpfs, `--device /dev/fuse` in both, load 9.5: wall −954 [−1,124, −780], command
+  −774 [−796, −761] (p50 1,913 → 1,137). With it, against a run with no device, load
+  6.8: wall +94 [+10, +160], command +106 [+90, +115]; the GPU, load 5.2: wall +235
+  [+107, +359], command +194 [+180, +209]. With the gpu kernel recorded, so that both
+  arms boot it, the GPU against `--device /dev/fuse`, load 12.2: command +52 [+21, +83].
+- **A GPU's filter loaded before its template is saved** (`preload.patch`) against
+  none, load 12.4: wall −2 [−105, +90], command −1 [−19, +15]. In place (`timed.patch`,
+  restored runs, µs, p50): the lookup and the nodes made 17.0, the GPU's filter compiled
+  7.4, a load of it 100.3, the loaded one attached 9.2; a fuse device's load 113.5. The
+  load is off a GPU run's path: its command waits on something else as long.
+- **Memory**, MiB p50 (n=10 each), footprint and RSS as each run ends: restored, the
+  GPU's `true` 18.4 and 39.4, a run without the GPU 16.5 and 31.5; `vulkaninfo
+  --summary` 51.4 and 132.3, and 46.5 and 118.7 (the guest's lavapipe). Booted, the gpu
+  kernel in both: 94.8 and 106.3, 92.2 and 97.5; `vulkaninfo` 120.6 and 190.5, 115.7 and
+  177.1.
+- **Consequence.** A run given the GPU restores a template of its own (D150): 91 ms
+  sooner at the median, and 76 MiB less footprint. A run's devices are found by name in
+  the VM's devtmpfs (D152): a device costs a run 0.1 ms where it cost 1.2. A GPU's filter
+  is loaded as its run comes, which costs the run nothing measured.
+
+### M224. What a pass of free page reporting holds, and whom it starved (D151)
+
+- **Question.** Two gates' runs ended where they should not have, each as its guest
+  reported free memory: a restored run of `alloc 1024`, growing (D148), was ended (137)
+  with 106 MiB reported; a run's agents (`agents_out_of_memory_end_whole_and_spare_the_run`,
+  `-m 128m`) were given a share of none, and their run was ended. What does a pass of
+  reporting do to a guest's memory, and what keeps it from starving anyone?
+- **Method.** Apple M5 Max, macOS 26.4.1, 2026-10-13, load 12 to 25 (other projects'
+  builds). Guest kernels: the pinned one, b3f3b948641f (patches 0001-0004), and two built
+  here from 6.18.48 by scripts/build-kernel.sh in a builder microVM: A, with 0005 and with
+  0006 counting what a pass holds as free; B, 0006 whole (resources/kernel/patches), its
+  allocations also waiting for what a pass holds.
+  - Growth: `run-plug/report-race.py`, restored runs of `alloc 1024` whose request came as
+    the pinned kernel's template ran the pass its boot scheduled (about 1.85 s into a
+    restore's life), pauses seeded from 1.0 to 2.6 s (n=60), then aimed at the pass (1.6
+    to 1.9 s, n=60, two blocks of 30 per arm in turn).
+  - Readings: `reporting-dip`, in a guest: 512 MiB touched and freed, then `MemAvailable`,
+    `MemFree` and `page_reporting.held` read every millisecond for 5 s, 3 runs per kernel
+    in turn; its pass comes two seconds after the free.
+  - Allocations: the agents test itself, its run of fixed size booted cold (its first pass
+    two seconds into its life), kernels A and B in turn, and the pinned kernel.
+- **Results.**
+  - Growth, the pinned kernel: D150's init, 2 of 60 ended, both asked at 2,050 ms; aimed,
+    4 of 60, each asked at 2,000 to 2,049 ms, where 4 of 8 were. With room for a whole pass
+    beside `memory.high` (128 MiB), none of 60, and none of 60 aimed.
+  - Readings: the pinned kernel, reporting, `MemAvailable` ranged 132,044 KiB (129 MiB) as
+    the workload idled, its passes reporting 686 to 836 MiB; kernel A, a pass held 131,072
+    KiB at once, 32 blocks of 4 MiB, and `MemAvailable` ranged 7,684 to 12,704 KiB, as it
+    did without reporting, the pinned kernel with the device let go: 7,624 to 10,232 KiB.
+  - Allocations: kernel A, 6 of 8 failed, the run's command ended (137) as the first pass
+    held the run's free memory; kernel B, none of 24 so, and once otherwise: the run spared
+    and y ended, z was ended after it, its memory read as 65,679,360 bytes where it holds
+    16 MiB, not yet explained; the pinned kernel, the device let go, 0 of 8.
+- **Why.** A pass takes up to 32 free blocks of order 9 or more off the free lists, 4 MiB
+  at most each, and holds them until the device has reported them (mm/page_reporting.c
+  `page_reporting_cycle`); it starts only where the zone has its low watermark and 64 MiB
+  free (`page_reporting_process_zone`), and then takes what it finds. For that time the
+  zones count the pages gone: sysinfo(2) and /proc/meminfo showed that much less, and an
+  allocation needing them found nothing to reclaim, and the OOM killer ended a task in a
+  guest whose memory was free.
+- **Consequence (D151, patch 0006).** What a pass holds is free memory: counted so in
+  sysinfo(2) and /proc/meminfo, and waited for by an allocation that would otherwise fail.
+  A guest kernel without it reports nothing: shards-init lets its device go as it boots.
+  Room for a pass beside growth, which ended the kills in growing runs on the pinned
+  kernel, is not kept: with 0006 no allocation fails for a pass, and without it no pass
+  comes.

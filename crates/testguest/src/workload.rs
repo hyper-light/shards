@@ -93,6 +93,20 @@ pub fn main() -> ! {
             let _ = writeln!(io::stdout(), "allocated {}", held.len());
             0
         }
+        // Touches N MiB as `alloc` does, frees it, says so, and idles for SECONDS: memory
+        // its microVM may give back (D151).
+        "alloc-free" => {
+            let mib: usize = arg(1).parse().unwrap_or(0);
+            let mut held: Vec<Vec<u8>> = Vec::new();
+            for _ in 0..mib {
+                held.push(vec![1u8; 1 << 20]);
+            }
+            let n = held.len();
+            drop(held);
+            let _ = writeln!(io::stdout(), "freed {n}");
+            std::thread::sleep(std::time::Duration::from_secs(arg(2).parse().unwrap_or(0)));
+            0
+        }
         // N MiB in one allocation, every page touched, then says so: what the kernel's
         // overcommit heuristic refuses past the memory it counts (D149).
         "alloc-once" => {
@@ -109,6 +123,13 @@ pub fn main() -> ! {
                     1
                 }
             }
+        }
+        // Who it runs as, real and effective: what a set-user-ID binary is given.
+        "creds" => {
+            // SAFETY: plain getters.
+            let (uid, euid) = unsafe { (libc::getuid(), libc::geteuid()) };
+            let _ = writeln!(io::stdout(), "creds uid={uid} euid={euid}");
+            0
         }
         "kill" => {
             // SAFETY: raise(2) on ourselves.
@@ -2372,6 +2393,69 @@ fn trap(name: &str) -> i32 {
 /// As an agent's first process (D59): what its domain gives it, a line each, `confined`
 /// first, then `comm` set to `confined-ready` and held until killed. Each path in `see`
 /// is listed or its errno said; each in `write` written or its errno said.
+/// vfork(2) as the kernel makes it, the child sharing this process's memory until it ends:
+/// so the child ends in the instruction after, touching no memory (libc's vfork, a
+/// function the child returns through, corrupts its parent's stack, rust-lang/libc#1596).
+/// x86_64's `vfork`; arm64, which has none, `clone` with CLONE_VM and CLONE_VFORK, as its
+/// libc's vfork. The child's pid, or the errno that kept it from starting.
+fn vfork_and_exit() -> Result<libc::pid_t, i32> {
+    let ret: i64;
+    #[cfg(target_arch = "x86_64")]
+    // SAFETY: the child runs only the instructions below, in registers, then exit_group.
+    unsafe {
+        std::arch::asm!(
+            "syscall",
+            "test rax, rax",
+            "jnz 2f",
+            "mov eax, 231",
+            "xor edi, edi",
+            "syscall",
+            "2:",
+            inlateout("rax") libc::SYS_vfork => ret,
+            out("rdi") _,
+            out("rcx") _,
+            out("r11") _,
+            options(nostack),
+        );
+    }
+    #[cfg(target_arch = "aarch64")]
+    // SAFETY: as above: the child runs only these instructions, then exit_group.
+    unsafe {
+        std::arch::asm!(
+            "svc #0",
+            "cbnz x0, 2f",
+            "mov x8, #94",
+            "mov x0, #0",
+            "svc #0",
+            "2:",
+            inlateout("x8") libc::SYS_clone => _,
+            inlateout("x0") (libc::CLONE_VM | libc::CLONE_VFORK | libc::SIGCHLD) as i64 => ret,
+            in("x1") 0i64,
+            in("x2") 0i64,
+            in("x3") 0i64,
+            in("x4") 0i64,
+            options(nostack),
+        );
+    }
+    if ret < 0 {
+        Err(i32::try_from(-ret).unwrap_or(libc::EINVAL))
+    } else {
+        Ok(ret as libc::pid_t)
+    }
+}
+
+/// What a probe that starts a process says of `pid`: the child waited for, or the error
+/// that kept it from starting (errno as the kernel left it).
+fn reaped(pid: libc::pid_t) -> libc::c_long {
+    if pid > 0 {
+        // SAFETY: waitpid(2) of the child just started.
+        unsafe { libc::waitpid(pid, std::ptr::null_mut(), 0) };
+        0
+    } else {
+        -1
+    }
+}
+
 fn confined(args: &[String]) -> i32 {
     let mut out = String::new();
     // SAFETY: plain getters, and getgroups(2) into 64 entries.
@@ -2430,7 +2514,9 @@ fn confined(args: &[String]) -> i32 {
             | "udpflood" | "tcpflood" | "udpaskfrom" | "reachmany" | "reachrounds" | "udpask"
             | "srv-send" | "srv-receive" | "srv-answer" | "owner" | "mcp-run" | "srv-run"
             | "srv-run-timeout" | "srv-run-cancel" | "srv-run-abandon" | "srv-bench" | "srv-modern"
-            | "hold-tell" | "make" | "srv-hand" => mode = a.as_str(),
+            | "hold-tell" | "make" | "srv-hand" | "follow" | "hardlink" | "exec" | "nosuid" => {
+                mode = a.as_str()
+            }
             "srv-mcp" => {
                 let said = match server_call("mcp", "{}") {
                     Ok((t, false)) => t,
@@ -3231,12 +3317,55 @@ fn confined(args: &[String]) -> i32 {
                             Ok(t) => i64::from(t.join().is_ok()) - 1,
                             Err(_) => -1,
                         },
+                        // Each other way to start a process: vfork, a clone that is no
+                        // thread, clone3, and a spawn as libc makes it.
+                        "vfork" => match vfork_and_exit() {
+                            Ok(pid) => reaped(pid),
+                            Err(e) => {
+                                *libc::__errno_location() = e;
+                                -1
+                            }
+                        },
+                        "clone" => {
+                            let pid = libc::syscall(libc::SYS_clone, libc::SIGCHLD, 0, 0, 0, 0);
+                            if pid == 0 {
+                                libc::_exit(0);
+                            }
+                            reaped(pid as libc::pid_t)
+                        }
+                        "clone3" => {
+                            // struct clone_args (include/uapi/linux/sched.h): as fork(2).
+                            let mut args = [0u64; 11];
+                            args[4] = libc::SIGCHLD as u64;
+                            let pid = libc::syscall(
+                                libc::SYS_clone3,
+                                args.as_mut_ptr(),
+                                std::mem::size_of_val(&args),
+                            );
+                            if pid == 0 {
+                                libc::_exit(0);
+                            }
+                            reaped(pid as libc::pid_t)
+                        }
+                        "spawn" => match std::process::Command::new("/proc/self/exe")
+                            .args(["exit", "0"])
+                            .status()
+                        {
+                            Ok(_) => 0,
+                            Err(e) => {
+                                *libc::__errno_location() = e.raw_os_error().unwrap_or(0);
+                                -1
+                            }
+                        },
                         _ => -1,
                     };
                     (rc, io::Error::last_os_error())
                 };
                 let said = if rc >= 0 {
-                    if !matches!(what, "keyctl" | "fork" | "thread" | "unshare-net") {
+                    if !matches!(
+                        what,
+                        "keyctl" | "fork" | "thread" | "unshare-net" | "vfork" | "clone" | "clone3" | "spawn"
+                    ) {
                         // SAFETY: closing the descriptor just made.
                         unsafe { libc::close(rc as libc::c_int) };
                     }
@@ -3289,6 +3418,55 @@ fn confined(args: &[String]) -> i32 {
                 for line in lines {
                     out.push_str(&format!("confined mcp-run {name}: {line}\n"));
                 }
+            }
+            // A symlink it plants, `LINK=TARGET`, followed: what it reads through it.
+            pair if mode == "follow" => {
+                let (link, target) = pair.split_once('=').unwrap_or((pair, ""));
+                let _ = std::fs::remove_file(link);
+                let said = match std::os::unix::fs::symlink(target, link).and_then(|()| std::fs::read(link)) {
+                    Ok(b) => format!("ok {} bytes", b.len()),
+                    Err(e) => errno(&e),
+                };
+                out.push_str(&format!("confined follow {pair}: {said}\n"));
+            }
+            // A hard link it makes, `LINK=TARGET`.
+            pair if mode == "hardlink" => {
+                let (link, target) = pair.split_once('=').unwrap_or((pair, ""));
+                let said = match std::fs::hard_link(target, link) {
+                    Ok(()) => "ok".to_string(),
+                    Err(e) => errno(&e),
+                };
+                out.push_str(&format!("confined hardlink {pair}: {said}\n"));
+            }
+            // A program it runs, asked who it runs as.
+            path if mode == "exec" => {
+                let said = match std::process::Command::new(path).arg("creds").output() {
+                    Ok(o) => String::from_utf8_lossy(&o.stdout).trim().to_string(),
+                    Err(e) => errno(&e),
+                };
+                out.push_str(&format!("confined exec {path}: {said}\n"));
+            }
+            // Whether a path's filesystem ignores set-ID bits.
+            path if mode == "nosuid" => {
+                let said = match std::ffi::CString::new(path) {
+                    Ok(c) => {
+                        // SAFETY: an all-zero statvfs is a valid out-parameter, which
+                        // statvfs(3) fills, of a NUL-terminated path.
+                        let (rc, s) = unsafe {
+                            let mut s: libc::statvfs = std::mem::zeroed();
+                            (libc::statvfs(c.as_ptr(), &mut s), s)
+                        };
+                        if rc != 0 {
+                            errno(&io::Error::last_os_error())
+                        } else if s.f_flag & libc::ST_NOSUID != 0 {
+                            "yes".to_string()
+                        } else {
+                            "no".to_string()
+                        }
+                    }
+                    Err(_) => "errno 22".to_string(),
+                };
+                out.push_str(&format!("confined nosuid {path}: {said}\n"));
             }
             path if mode == "owner" => {
                 use std::os::unix::fs::MetadataExt as _;

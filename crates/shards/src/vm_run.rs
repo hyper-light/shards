@@ -18,10 +18,12 @@ use shards_vmm::vm::{
 use crate::spec::Options;
 use crate::terminal::RawTerminal;
 
-const RUN_USAGE: &str = "usage: shards run --kernel PATH [--initrd PATH | --init PATH] [--cmdline STR] [--cpus N] [--memory MIB] [--memory-max MIB] [--disk PATH[:ro]]... [--pmem PATH]... [--vsock PATH] [--nested] [--gpu] [--no-console] [--snapshot-dir DIR [--snapshot-then stop|resume]]
+const RUN_USAGE: &str = "usage: shards run --kernel PATH [--initrd PATH | --init PATH] [--cmdline STR] [--cpus N] [--memory MIB] [--memory-max MIB] [--disk PATH[:ro]]... [--pmem PATH]... [--vsock PATH] [--nested] [--gpu] [--reporting] [--no-console] [--snapshot-dir DIR [--snapshot-then stop|resume]]
        shards run --kernel PATH --init SHARDS-INIT --rootfs IMAGE [OPTIONS] [WORKLOAD OPTIONS] -- COMMAND [ARG...]
        shards run --kernel PATH --init SHARDS-INIT --rootfs IMAGE --snapshot-dir DIR [OPTIONS]
   --pmem: a read-only virtio-pmem device backed by PATH: /dev/pmem0, pmem1, ... in order.
+  --reporting: a virtio-balloon device that gives the host back the memory the guest
+               reports free.
   --rootfs: boot into the EROFS image IMAGE. With a COMMAND, run it there as `docker run`
             would: its output is shards' output, and its exit status shards' exit status.
             With --snapshot-dir instead, save the VM to DIR once the image is mounted: a
@@ -38,11 +40,12 @@ const RUN_USAGE: &str = "usage: shards run --kernel PATH [--initrd PATH | --init
             much in all as it asks for more through shards' control page, plugged by a
             virtio-mem device. Whole 2 MiB blocks. A snapshot keeps none plugged.
   --gpu: this Mac's GPU, Vulkan through Venus, on the guest's render node
-         /dev/dri/renderD128, where its kernel has DRM's virtio-gpu driver. Not with
-         --snapshot-dir: a GPU's state is its host driver's.
+         /dev/dri/renderD128, where its kernel has DRM's virtio-gpu driver. With
+         --snapshot-dir, a snapshot is refused once the guest has made a context or a
+         resource of the GPU's: those are its host driver's, which no snapshot holds.
   Console escape: Ctrl-A x stops the VM.";
 
-const RESTORE_USAGE: &str = "usage: shards restore DIR [--hold] [--vsock PATH] [--no-console] [--backing PATH[:ro]]... [--snapshot-dir DIR [--snapshot-then stop|resume]]
+const RESTORE_USAGE: &str = "usage: shards restore DIR [--hold] [--vsock PATH] [--no-console] [--gpu] [--backing PATH[:ro]]... [--snapshot-dir DIR [--snapshot-then stop|resume]]
        shards restore DIR [--hold] [--backing PATH[:ro]]... [WORKLOAD OPTIONS] -- COMMAND [ARG...]
        shards restore DIR --warm FD [--backing PATH[:ro]]...
   Resumes the VM in snapshot directory DIR. With a COMMAND, DIR is a template saved by
@@ -59,6 +62,7 @@ const RESTORE_USAGE: &str = "usage: shards restore DIR [--hold] [--vsock PATH] [
           of the client it is for, from the daemon on the Unix socket at descriptor FD.
   --backing: a file the snapshot restores against, read-only with :ro: given, a snapshot
              naming any other is refused, its state being what the VM saving it wrote.
+  --gpu: restore in the GPU's VM process, which a snapshot of a VM with a GPU needs.
   Console escape: Ctrl-A x stops the VM.";
 
 /// An argument that is text, with an error naming it if it is not UTF-8. Paths are taken
@@ -266,6 +270,7 @@ fn parse_run(args: impl Iterator<Item = OsString>) -> Result<Run, String> {
             "--pmem" => cfg.pmem.push(PathBuf::from(value("--pmem")?)),
             "--nested" => cfg.nested = true,
             "--gpu" => cfg.gpu = true,
+            "--reporting" => cfg.reporting = true,
             "--rootfs" => rootfs = Some(PathBuf::from(value("--rootfs")?)),
             "--warm" => {
                 let fd = text(value("--warm")?)?;
@@ -285,9 +290,6 @@ fn parse_run(args: impl Iterator<Item = OsString>) -> Result<Run, String> {
     common.check_workload()?;
     if cfg.nested && common.snapshot_dir.is_some() {
         return Err("--nested with --snapshot-dir: a VM with virtualization of its own is not snapshotted, its EL2 state not saved".into());
-    }
-    if cfg.gpu && common.snapshot_dir.is_some() {
-        return Err("--gpu with --snapshot-dir: a VM with a GPU is not snapshotted, its GPU's state its host driver's".into());
     }
     if let Some(max) = memory_max {
         cfg.hotplug_mib = max
@@ -365,6 +367,9 @@ fn parse_restore(args: impl Iterator<Item = OsString>) -> Result<Restore, String
         match flag.as_str() {
             "-h" | "--help" => return Err(String::new()),
             "--hold" => hold = true,
+            // The GPU's VM process restores it, which a snapshot of a machine with a GPU
+            // needs (D150): the binary is chosen by it, the GPU by the snapshot.
+            "--gpu" => {}
             "--backing" => backing.push(disk(value("--backing")?)),
             "--warm" => {
                 let fd = text(value("--warm")?)?;
@@ -1158,7 +1163,8 @@ fn report_timing(handle: &Handle, workload: Option<&WorkloadTiming>) {
 
 /// The timing line's fields, as JSON: the VM's clock readings in microseconds since the
 /// process started, 0 for any not yet taken; the process's peak RSS so far and its own
-/// memory now, in KiB; and what it holds of the memory to plug (D133), in KiB.
+/// memory now, in KiB; what it holds of the memory to plug (D133), in KiB; and what its
+/// guest has reported free (D151), in KiB.
 fn timing_json(handle: &Handle, workload: Option<&WorkloadTiming>) -> String {
     let markers: Vec<String> = handle
         .markers()
@@ -1178,7 +1184,7 @@ fn timing_json(handle: &Handle, workload: Option<&WorkloadTiming>) -> String {
         (0, 0)
     };
     format!(
-        "{{\"released_us\":{},\"entry_us\":{},\"exit_us\":{},\"request_us\":{request},\"answered_us\":{answered},\"prefetched\":{},\"rss_kib\":{},\"footprint_kib\":{},\"hotplug_held_kib\":{},\"markers\":[{}]}}",
+        "{{\"released_us\":{},\"entry_us\":{},\"exit_us\":{},\"request_us\":{request},\"answered_us\":{answered},\"prefetched\":{},\"rss_kib\":{},\"footprint_kib\":{},\"hotplug_held_kib\":{},\"reported_kib\":{},\"markers\":[{}]}}",
         handle.released_at_us().unwrap_or(0),
         handle.entered_at_us().unwrap_or(0),
         handle.exited_at_us().unwrap_or(0),
@@ -1186,6 +1192,7 @@ fn timing_json(handle: &Handle, workload: Option<&WorkloadTiming>) -> String {
         max_rss_kib(),
         footprint_kib(),
         handle.hotplug_held().unwrap_or(0) / 1024,
+        handle.reported() / 1024,
         markers.join(",")
     )
 }

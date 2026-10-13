@@ -108,6 +108,19 @@ pub unsafe fn grant(ptr: NonNull<u8>, len: usize) -> io::Result<()> {
     Ok(())
 }
 
+/// Gives the pages of `ptr..ptr+len` back and leaves the range readable and writable,
+/// zero-filled: decommitted and committed again ([`withhold`], [`grant`]). Guest RAM the
+/// guest holds free (D151).
+///
+/// # Safety
+/// As for [`withhold`].
+pub unsafe fn discard(ptr: NonNull<u8>, len: usize) -> io::Result<()> {
+    // SAFETY: forwarded caller contract.
+    unsafe { withhold(ptr, len) }?;
+    // SAFETY: as above.
+    unsafe { grant(ptr, len) }
+}
+
 /// # Safety
 /// `ptr` must come from `reserve` or `reserve_ram` and not be used afterwards.
 pub unsafe fn release(ptr: NonNull<u8>, _len: usize) {

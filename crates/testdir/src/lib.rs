@@ -1,5 +1,7 @@
 //! A directory a test has of its own, in the system's temporary directory, removed as the
-//! test goes, a failing test's too: its value is dropped as the panic unwinds. Each test
+//! test goes, a failing test's too: its value is dropped as the panic unwinds, and a
+//! failing test's says first, on stderr, the end of each log its programs wrote in it
+//! (a daemon's log, a run's stderr, a VM's sample), which says why it failed. Each test
 //! process's are under `shards-tests/<pid>/`, so that a process killed before it removed
 //! its own leaves them where the next one finds them: the first directory a process makes
 //! removes those of every process that has ended. Only that directory is swept, and only
@@ -72,6 +74,9 @@ impl AsRef<std::ffi::OsStr> for TempDir {
 
 impl Drop for TempDir {
     fn drop(&mut self) {
+        if std::thread::panicking() {
+            show_logs(&self.0, 3, &mut io::stderr().lock());
+        }
         remove(&self.0);
         // The process's own directory, with its last.
         let mut live = LIVE.lock().unwrap_or_else(PoisonError::into_inner);
@@ -80,6 +85,49 @@ impl Drop for TempDir {
             && let Some(own) = self.0.parent()
         {
             let _ = std::fs::remove_dir(own);
+        }
+    }
+}
+
+/// The last bytes [`show_logs`] shows of a log.
+const SHOWN: u64 = 32 << 10;
+
+/// What a failing test's directory says of why: the last [`SHOWN`] bytes of each log in it,
+/// `depth` directories down (`*.log`, `*.stderr`, `*.sample`), into `out`.
+fn show_logs(dir: &Path, depth: u32, out: &mut impl io::Write) {
+    use std::io::{Read as _, Seek as _};
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for e in entries.flatten() {
+        let path = e.path();
+        let Ok(kind) = e.file_type() else {
+            continue;
+        };
+        let log = path
+            .extension()
+            .is_some_and(|x| x == "log" || x == "stderr" || x == "sample");
+        if kind.is_dir() && depth > 0 {
+            show_logs(&path, depth - 1, out);
+        } else if kind.is_file() && log {
+            let Ok(mut f) = std::fs::File::open(&path) else {
+                continue;
+            };
+            let len = f.metadata().map_or(0, |m| m.len());
+            let mut tail = Vec::new();
+            if f.seek(io::SeekFrom::Start(len.saturating_sub(SHOWN))).is_err()
+                || f.read_to_end(&mut tail).is_err()
+            {
+                continue;
+            }
+            let _ = writeln!(
+                out,
+                "--- {}, its last {} of {len} bytes",
+                path.display(),
+                tail.len()
+            );
+            let _ = out.write_all(&tail);
+            let _ = writeln!(out);
         }
     }
 }
@@ -146,6 +194,36 @@ fn sweep(_: &Path) {}
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A failing test's directory says the end of each of its logs, and nothing else.
+    #[test]
+    fn a_failing_tests_logs_are_said() {
+        let dir = TempDir::new("logs").unwrap();
+        let mut long = b"its start\n".to_vec();
+        long.resize(10 + SHOWN as usize, b'x');
+        std::fs::write(dir.join("daemon.log"), &long).unwrap();
+        std::fs::write(dir.join("run-0.stderr"), "a run said this\n").unwrap();
+        std::fs::write(dir.join("notes.txt"), "no log\n").unwrap();
+        std::fs::create_dir_all(dir.join("a/b")).unwrap();
+        std::fs::write(dir.join("a/b/vm-7.sample"), "a VM's stacks\n").unwrap();
+        let mut said = Vec::new();
+        show_logs(&dir, 3, &mut said);
+        let said = String::from_utf8(said).unwrap();
+        let tail = "x".repeat(SHOWN as usize);
+        assert!(
+            said.contains(&format!(
+                "daemon.log, its last {SHOWN} of {} bytes\n{tail}\n",
+                SHOWN + 10
+            )),
+            "{said}"
+        );
+        assert!(!said.contains("its start"), "{said}");
+        assert!(
+            said.contains("a run said this") && said.contains("a VM's stacks"),
+            "{said}"
+        );
+        assert!(!said.contains("no log"), "{said}");
+    }
 
     /// A directory is made empty and removed as it goes, a panicking test's too; the
     /// process's own directory goes with its last; another process's that has ended is

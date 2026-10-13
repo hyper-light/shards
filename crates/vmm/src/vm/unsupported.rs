@@ -108,6 +108,10 @@ impl Handle {
     pub fn hotplug_held(&self) -> Option<u64> {
         match self.0 {}
     }
+
+    pub fn reported(&self) -> u64 {
+        match self.0 {}
+    }
 }
 
 #[derive(Debug)]

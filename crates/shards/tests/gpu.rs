@@ -29,8 +29,10 @@ fn gpu() -> Result<(PathBuf, Option<PathBuf>), &'static str> {
 }
 
 /// `shards run --gpus all` of an image with Mesa's Venus: `vulkaninfo` finds the Mac's GPU
-/// through Venus, its render node given the run as `--device` gives one; and a build step
-/// given the render node by a CDI device (`RUN --device`) finds it too (D145).
+/// through Venus, its render node given the run as `--device` gives one; a build step
+/// given the render node by a CDI device (`RUN --device`) finds it too (D145); and the
+/// GPU's runs restore a template of their own, apart from the same image's without it
+/// (D150).
 #[test]
 fn the_gpu_renders_through_venus_in_runs_and_build_steps() {
     if cannot_run_vms() {
@@ -148,4 +150,76 @@ fn the_gpu_renders_through_venus_in_runs_and_build_steps() {
     );
     assert_eq!(ran.status, Some(0), "{}\n{}", ran.stdout, ran.stderr);
     assert!(ran.stdout.contains("Virtio-GPU Venus ("), "{}", ran.stdout);
+
+    // Runs of the recorded guest restore templates (a daemon started with SHARDS_KERNEL
+    // boots every run), a GPU's its own, saved before its guest made anything of the
+    // GPU's (D150). Its key is apart from the same image's runs without the GPU: with the
+    // gpu kernel recorded, one saved first is not the GPU run's.
+    let stopped = run_shards_env(&["stop"], &["daemon"], &env, timeout);
+    assert_eq!(stopped.status, Some(0), "{}", stopped.stderr);
+    let mut recorded_env: Vec<(&str, &OsStr)> = vec![("SHARDS_HOME", home.as_os_str())];
+    if let Some(vm) = &vm {
+        recorded_env.push(("SHARDS_VM_BINARY", vm.as_os_str()));
+    }
+    let record = |kernel: &std::path::Path| {
+        let used = run_shards_env(
+            &["guest"],
+            &[
+                "use",
+                "--kernel",
+                kernel.to_str().unwrap(),
+                "--init",
+                guest_init().to_str().unwrap(),
+            ],
+            &recorded_env,
+            timeout,
+        );
+        assert_eq!(used.status, Some(0), "{}", used.stderr);
+    };
+    record(&kernel);
+    let ran = run_shards_env(&["run"], &["--rm", "gpu-venus:1", "true"], &recorded_env, timeout);
+    assert_eq!(ran.status, Some(0), "{}\n{}", ran.stdout, ran.stderr);
+    let gpu_run = |which: &str, booted: bool| {
+        let ran = run_shards_env(
+            &["run"],
+            &["--rm", "--gpus", "all", "gpu-venus:1", "vulkaninfo", "--summary"],
+            &recorded_env,
+            timeout,
+        );
+        assert_eq!(ran.status, Some(0), "{which}: {}\n{}", ran.stdout, ran.stderr);
+        assert!(
+            ran.stdout.contains("Virtio-GPU Venus ("),
+            "{which}: {}",
+            ran.stdout
+        );
+        // Booted, init started in the run; restored, in the template.
+        assert_eq!(
+            ran.marker_us(shards_abi::marker::INIT_STARTED).is_some(),
+            booted,
+            "{which}: {}",
+            ran.stderr
+        );
+        // Each resumed: one restored, as it was; the one booted, once its template was saved.
+        assert!(
+            ran.marker_us(shards_abi::marker::RESUMED).is_some(),
+            "{which}: {}",
+            ran.stderr
+        );
+    };
+    gpu_run("saving its template", true);
+    gpu_run("restored from it", false);
+    // The GPU's runs boot the pinned gpu kernel whatever guest is recorded: with the
+    // usual kernel recorded, they restore the same template.
+    record(common::kernel());
+    gpu_run("restored with the usual kernel recorded", false);
+    let origins: Vec<String> = std::fs::read_dir(home.join("templates"))
+        .unwrap()
+        .filter_map(|e| {
+            let path = e.unwrap().path();
+            (path.extension()? == "origin").then(|| std::fs::read_to_string(path).unwrap())
+        })
+        .collect();
+    for gpu in ["\"gpu\":true", "\"gpu\":false"] {
+        assert!(origins.iter().any(|o| o.contains(gpu)), "no {gpu}: {origins:?}");
+    }
 }

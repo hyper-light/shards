@@ -334,6 +334,12 @@ impl Vm {
         unsafe { self.fd.set_user_memory_region(&region) }.map_err(call("KVM_SET_USER_MEMORY_REGION"))
     }
 
+    /// What takes guest RAM from the guest and gives it back, from whichever thread gives
+    /// its pages back to the host as the guest reports them free (D151).
+    pub fn stage2(&self) -> Stage2 {
+        Stage2(())
+    }
+
     /// Gives the guest the memory a virtio-mem device plugs, `len` bytes at `host` seen at
     /// `gpa` (D133), as one memslot: KVM's stage 2 follows the host's mapping of it, through
     /// its MMU notifiers (Documentation/virt/kvm/mmu.rst), so what the host withholds the

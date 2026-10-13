@@ -34,6 +34,60 @@ const ALIGN: u64 = 128 << 20;
 /// the build may pass its `memory.high` by before the kernel's slowing catches it
 /// (PM M193), on top of the page structures of the next memory plugged ([`reserve`]).
 const SLACK: u64 = 64 << 20;
+/// At boot, before any snapshot: a guest reports the memory it holds free to its microVM
+/// (D151) only where its kernel treats what a pass of reporting holds as free memory
+/// (`page_reporting.held`, resources/kernel/patches/0006). One that does not counts up to
+/// 128 MiB gone for as long as a pass holds it: readings of its free memory dip by as much,
+/// and an allocation that needs it fails, and a task is ended (PM M224). There, each device
+/// of the virtio-balloon driver is let go of, through a sysfs of init's own, and the guest
+/// keeps what it frees.
+pub fn settle_reporting() {
+    const AT: &str = "/reporting";
+    if std::fs::create_dir_all(AT).is_err() {
+        return;
+    }
+    let flags = libc::MS_NOSUID | libc::MS_NODEV | libc::MS_NOEXEC;
+    // SAFETY: mount(2) of NUL-terminated literals.
+    if unsafe {
+        libc::mount(
+            c"sysfs".as_ptr(),
+            c"/reporting".as_ptr(),
+            c"sysfs".as_ptr(),
+            flags,
+            std::ptr::null(),
+        )
+    } == 0
+    {
+        if !std::path::Path::new("/reporting/module/page_reporting/parameters/held").exists() {
+            let_go_of_balloons("/reporting/bus/virtio/drivers/virtio_balloon");
+        }
+        // SAFETY: umount2(2) of the mount above.
+        unsafe { libc::umount2(c"/reporting".as_ptr(), libc::MNT_DETACH) };
+    }
+    let _ = std::fs::remove_dir(AT);
+}
+
+/// Unbinds each device bound to the driver at `driver` (sysfs's `unbind`), saying any it
+/// cannot.
+fn let_go_of_balloons(driver: &str) {
+    let Ok(entries) = std::fs::read_dir(driver) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        if !name.as_encoded_bytes().starts_with(b"virtio") {
+            continue;
+        }
+        if let Err(e) = std::fs::write(format!("{driver}/unbind"), name.as_encoded_bytes()) {
+            let _ = writeln!(
+                io::stderr(),
+                "shards-init: letting go of {}: {e}",
+                name.to_string_lossy()
+            );
+        }
+    }
+}
+
 /// How long the memory asked for may take to come online, from the last of it that came,
 /// before the process that grows it asks again: a thousand times the 5-7 ms 1 GiB took
 /// (PM M193). Asked again, the device tells its driver again, which then tries what it

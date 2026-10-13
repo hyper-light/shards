@@ -227,11 +227,25 @@ fn hotplug_device(
     Ok(Some((Box::new(mem::Mem::new(sizes.clone(), stage2)), sizes)))
 }
 
+/// The virtio-balloon device that gives the host back the memory the guest reports free
+/// (D151), where `config` has one; it takes guest RAM from the guest and gives it back
+/// through the VM's stage 2.
+#[cfg(hv)]
+fn reporting_device(
+    vm: &crate::hv::Vm,
+    config: &crate::snapshot::MachineConfig,
+) -> Option<Box<dyn crate::devices::virtio::VirtioDevice>> {
+    config.reporting.then(|| {
+        Box::new(crate::devices::virtio::balloon::Balloon::new(vm.stage2()))
+            as Box<dyn crate::devices::virtio::VirtioDevice>
+    })
+}
+
 /// `config`'s virtio devices in the guest's probe order, which each machine gives the
 /// next of its MMIO windows and interrupt lines: its disks, its join disk, its pmem
 /// `regions`, its vsock device, its network device, its shared directories, its join share,
-/// and the machine's own devices, `last`: its GPU, then its memory to plug (last of all: no
-/// other device's window moves for it); at most `max` of them. The devices share the regions:
+/// and the machine's own devices, `last`: its GPU, its memory to plug, then its balloon (last of
+/// all: no other device's window moves for them); at most `max` of them. The devices share the regions:
 /// `regions`, made before the VM, holds them until after it on every early return, the
 /// hypervisor mapping them until its destroy.
 #[cfg(hv)]
@@ -388,6 +402,9 @@ fn machine_config(cfg: &Config) -> Result<crate::snapshot::MachineConfig, String
         join_share: false,
         nested: cfg.nested,
         hotplug_mib: cfg.hotplug_mib,
+        reporting: cfg.reporting,
+        // Its window's length, once the machine has its renderer (aarch64.rs `build`).
+        gpu: None,
     })
 }
 
@@ -454,14 +471,18 @@ pub struct Config {
     pub nested: bool,
     /// Memory the guest may have plugged beyond `memory_mib`, in MiB, as it asks for it
     /// through the control page: a virtio-mem device (D133), last of its devices; 0 for
-    /// none. Its snapshot is refused: memory plugged is not saved.
+    /// none. Its snapshot keeps none of it plugged (D148).
     pub hotplug_mib: u64,
+    /// A virtio-balloon device that gives the host back the memory the guest reports free
+    /// (D151), after the memory to plug: last of its devices.
+    pub reporting: bool,
     /// The join share's slot (D119), which a server of its VM's joiners' volumes fills.
     #[cfg(unix)]
     pub join_share: Option<&'static crate::devices::virtio::fs::Slot>,
     /// A virtio-gpu device, Vulkan through Venus (D144), rendered in this process: a VM
-    /// process built with the renderer (`shards-vm-gpu`) has one. Its VM is never
-    /// snapshotted: its GPU's state is its host driver's, which no snapshot holds.
+    /// process built with the renderer (`shards-vm-gpu`) has one. Its snapshot is refused
+    /// once the guest has made a context or a resource, which are its host driver's and no
+    /// snapshot holds; a template is saved before any (D150).
     pub gpu: bool,
 }
 
@@ -521,6 +542,7 @@ impl Config {
             join_share: None,
             nested: false,
             hotplug_mib: 0,
+            reporting: false,
             gpu: false,
         }
     }
@@ -681,6 +703,8 @@ mod tests {
             join_share: false,
             nested: false,
             hotplug_mib: 0,
+            reporting: false,
+            gpu: None,
         }
     }
 
