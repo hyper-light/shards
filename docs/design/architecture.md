@@ -3602,6 +3602,23 @@ No run-time labels, relays or declassifiers (§12 answer 14, decided by the user
 an internal-only domain to the world (D58), so there is no data to label. Code mode is
 D136.
 
+### D147. Mounting a pmem root once libnvdimm has made it
+
+- **What:** init mounts an image's EROFS on its pmem device (a run's root, a builder's
+  base images) once; where the mount fails with ENOENT (no node yet) or ENXIO (a node
+  whose disk is not there yet), it waits for libnvdimm's probing to end, reading each nd
+  bus's `wait_probe` as ndctl does, and mounts again. Before the root is mounted, sysfs is
+  mounted for the wait alone.
+- **Why:** libnvdimm registers pmem regions and namespaces in an exclusive asynchronous
+  domain, which the kernel does not wait for before init runs (drivers/nvdimm/bus.c,
+  include/linux/async.h, init/main.c). A 2.1 GB root, whose region takes longest to
+  probe, was not there yet as init mounted it, and its runs failed every time (M217).
+- **No deadline:** the wait ends when the kernel says probing is done; a mount that fails
+  again says why. Where the first mount succeeds, it is the one call it always was.
+- **Verified:** `an_image_of_gigabytes_boots` (a 2 GiB root of random bytes); 200 of 200
+  cold boots of 108 MB and 2.1 GB roots (M217). Mutation-checked: without the retry, the
+  test fails 3 of 3 with ENOENT.
+
 ### D146. A run's `--device` by CDI name
 
 - **What:** `--device VENDOR/CLASS=NAME` gives a run what the device's CDI spec says, as
@@ -3730,10 +3747,22 @@ to test on, where no CI runner has a GPU behind an IOMMU.
   driver negotiates VIRGL, RESOURCE_BLOB, CONTEXT_INIT and BLOB_ALIGNMENT.
 - **Built by CI and releases:** the macOS arm64 jobs run scripts/gpu-libs, so `shards`
   carries `shards-vm-gpu`; CI lints vmm's `gpu` feature, which no workspace lint compiles,
-  and runs the renderer's tests, which skip where Metal finds no GPU (a virtual Mac).
-- **To build:** the gpu kernel pinned once a release publishes it (KERNEL_GPU; until then
-  SHARDS_KERNEL names one); the research's E6 measured on it; Linux's VFIO (R2). A
-  build's `RUN` steps: D145; a run's `--device` by CDI name: D146.
+  and runs the renderer's tests, which skip where Metal finds no GPU (a virtual Mac). The
+  renderer links compiler-rt (`libclang_rt.osx.a`) for MoltenVK's `@available` checks
+  (`__isPlatformVersionAtLeast`), which clang links into every Darwin program and rustc
+  does not: std's weak copy is gone under release's fat LTO, and the release build failed
+  to link without it. A link-lib, as a library's build script's link-arg reaches no
+  binary.
+- **The gpu kernel is pinned** (`KERNEL_GPU`): kernel-6.18.48-7ccc39cf716b's
+  `Image-6.18.48-aarch64-gpu`, whose release rebuilt the other kernels byte for byte; a
+  GPU run downloads it as the pinned kernel is. tests/gpu.rs boots it in the GPU's VM
+  process that `shards` carries, as a user's run does.
+- **E6 measured** (PM M218): matrix multiplication at the GPU's speed through Venus
+  (guest time over host time, geometric mean 1.003 over 218 cases); llama.cpp ahead in
+  the guest on a busy host, by its vCPUs' scheduling and Venus's asynchronous submits;
+  a blob's first map about 0.1 ms; the renderer some 3 MiB of a VM's footprint.
+- **To build:** a GPU VM from a template (D149); Linux's VFIO (R2). A build's `RUN`
+  steps: D145; a run's `--device` by CDI name: D146.
 
 ### D143. `RUN` on Windows hosts: the builder
 

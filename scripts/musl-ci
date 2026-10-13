@@ -10,7 +10,17 @@
 #   docker run ... -v "$PWD:/work" -w /work -e TARGET ... IMAGE scripts/musl-ci
 set -eu
 
-apk add --no-cache build-base curl xz
+# Retried, as the tests' downloads are: eight times, the waits doubling from a second. A
+# runner's DNS failed Alpine's index once ("DNS: transient error", CI run 38329714115).
+tries=0
+until apk add --no-cache build-base curl xz; do
+    tries=$((tries + 1))
+    if [ "$tries" -ge 8 ]; then
+        echo "adding Alpine's packages failed $tries times" >&2
+        exit 1
+    fi
+    sleep $((1 << (tries - 1)))
+done
 rustup component add clippy
 # shards-init's C is compiled by the pinned zig (crates/shards/build.rs).
 zig=$(RUNNER_TEMP=/opt GITHUB_PATH= scripts/install-zig)

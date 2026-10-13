@@ -42,5 +42,15 @@ pub const KERNEL: Option<Pinned> = if cfg!(all(target_arch = "x86_64", windows))
 };
 
 /// The kernel of a guest given a GPU (D144): the `gpu` variant, DRM's virtio-gpu driver
-/// built in (resources/kernel/gpu.config). None until a release publishes it.
-pub const KERNEL_GPU: Option<Pinned> = None;
+/// built in (resources/kernel/gpu.config); arm64's alone, as Hypervisor.framework's guests
+/// alone have a GPU yet. Its release rebuilt the pinned kernels byte for byte.
+pub const KERNEL_GPU: Option<Pinned> = if cfg!(target_arch = "aarch64") {
+    Some(Pinned {
+        name: "Image-6.18.48-aarch64-gpu-7ccc39cf716b",
+        url: "https://github.com/hyper-light/shards/releases/download/kernel-6.18.48-7ccc39cf716b/Image-6.18.48-aarch64-gpu",
+        size: 19_614_208,
+        sha256: "b2513bf57f6ec9064779df686ec35165efa31b5714657ea120673590cb2f4d3e",
+    })
+} else {
+    None
+};

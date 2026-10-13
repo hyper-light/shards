@@ -43,6 +43,8 @@ mod orders;
 #[cfg(target_os = "linux")]
 mod plug;
 #[cfg(target_os = "linux")]
+mod pmem;
+#[cfg(target_os = "linux")]
 mod procevents;
 #[cfg(target_os = "linux")]
 mod procs;
