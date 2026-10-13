@@ -364,6 +364,11 @@ fn mount_root(device: &str) -> Result<(), Failure> {
     // kernel's limits those of a microVM booted with all of it, as a container's are its
     // host's (D148): before any thread, and before /proc/sys is masked.
     if let (Some(plug), Some(notes)) = (&plug, notes) {
+        // The memory it may still plug, reported where its kernel reports it (D149):
+        // opened before /proc/sys is masked, and written again as its run comes.
+        crate::plug::open_pluggable();
+        crate::plug::report_pluggable()
+            .map_err(|e| setup_failed(format!("reporting the microVM's memory: {e}")))?;
         plug.hold_run(notes)
             .map_err(|e| setup_failed(format!("holding the microVM's memory: {e}")))?;
         plug.raise_limits()
@@ -2134,6 +2139,10 @@ impl Standby {
     /// standby that has ended is replaced first. With it, the image's Agentfile as read
     /// before the workload starts, for a run that starts its domains (D115).
     fn start(self, spec: &Spec) -> Result<(Workload, Option<crate::domains::Read>), Failure> {
+        // What its microVM may still plug, its run's own, which its VM set before its run
+        // came, where the kernel reports it (D149): before anything of the run's starts.
+        crate::plug::report_pluggable()
+            .map_err(|e| setup_failed(format!("reporting the microVM's memory: {e}")))?;
         // Its own MAC, not its template's (D46): given, or made for it, as dockerd gives
         // each container's endpoint one; first, as libnetwork sets it before addresses.
         if let Some(mac) = spec.setup.iter().find_map(|e| e.strip_prefix(b"mac=")) {

@@ -55,10 +55,11 @@ fn run_in(home: &Path, image: &str, options: &[&str], command: &[&str]) -> Run {
 
 /// A run left going: its client, with the command's first line read.
 fn start(home: &Path, image: &str, options: &[&str], command: &[&str]) -> Child {
-    // Kept in the home, which a failing test shows (common::TempDir).
+    // In the home, and shown where the run ends unready ([`ended`]).
     static RUNS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
     let n = RUNS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let stderr = std::fs::File::create(home.join(format!("run-{n}.stderr"))).unwrap();
+    let said = home.join(format!("run-{n}.stderr"));
+    let stderr = std::fs::File::create(&said).unwrap();
     let mut child = common::command()
         .args(run_args(image, options, command))
         .env("SHARDS_HOME", home)
@@ -73,8 +74,35 @@ fn start(home: &Path, image: &str, options: &[&str], command: &[&str]) -> Child 
     BufReader::new(child.stdout.as_mut().unwrap())
         .read_line(&mut line)
         .unwrap();
-    assert_eq!(line, "ready\n");
+    if line != "ready\n" {
+        panic!(
+            "{command:?} ended unready ({line:?}): {}",
+            ended(&mut child, Some(&said))
+        );
+    }
     child
+}
+
+/// How a run's client that should have gone on ended, and what it said where it said it
+/// into `stderr`: a test's home goes with it, failing or not (common::TempDir).
+fn ended(child: &mut Child, stderr: Option<&Path>) -> String {
+    use std::os::unix::process::ExitStatusExt as _;
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(s)) => break format!("status {:?}, signal {:?}", s.code(), s.signal()),
+            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(10)),
+            Ok(None) => {
+                let _ = child.kill();
+                break "still running 10 s after its output ended".to_string();
+            }
+            Err(e) => break format!("its status unknown: {e}"),
+        }
+    };
+    let said = stderr
+        .map(|p| std::fs::read_to_string(p).unwrap_or_else(|e| format!("{}: {e}", p.display())))
+        .unwrap_or_default();
+    format!("{status}\n--- stderr\n{said}")
 }
 
 /// Waits for a child, failing the test rather than hanging it.
@@ -5077,11 +5105,11 @@ fn serving(home: &Path, image: &str, command: &[&str]) -> (Child, u16) {
 /// `shards ARGS` left going, its stderr in the home: its client, and the port its server
 /// says it is ready on (`ready PORT`).
 fn ready_on(home: &Path, args: &[String]) -> (Child, u16) {
-    let stderr = std::fs::File::create(home.join(format!(
+    let said = home.join(format!(
         "serving-{}.stderr",
         args.join("-").replace(['/', ':'], "_")
-    )))
-    .unwrap();
+    ));
+    let stderr = std::fs::File::create(&said).unwrap();
     let mut child = common::command()
         .args(args)
         .env("SHARDS_HOME", home)
@@ -5094,16 +5122,15 @@ fn ready_on(home: &Path, args: &[String]) -> (Child, u16) {
         .unwrap();
     // Read byte by byte: what comes after the line is the test's to read.
     let mut line = Vec::new();
-    let out = child.stdout.as_mut().unwrap();
+    let mut out = child.stdout.take().unwrap();
     let mut byte = [0u8; 1];
     while line.last() != Some(&b'\n') {
-        assert_eq!(
-            std::io::Read::read(out, &mut byte).unwrap(),
-            1,
-            "{args:?} ended unready"
-        );
+        if std::io::Read::read(&mut out, &mut byte).unwrap() != 1 {
+            panic!("{args:?} ended unready: {}", ended(&mut child, Some(&said)));
+        }
         line.extend_from_slice(&byte);
     }
+    child.stdout = Some(out);
     let line = String::from_utf8(line).unwrap();
     let port = line.strip_prefix("ready ").and_then(|p| p.trim().parse().ok());
     let port = port.unwrap_or_else(|| panic!("{args:?}: {line}"));
@@ -5655,16 +5682,15 @@ fn answers_lost_without_the_gateways_mac() {
             .spawn()
             .unwrap();
         let mut line = Vec::new();
-        let out = child.stdout.as_mut().unwrap();
+        let mut out = child.stdout.take().unwrap();
         let mut byte = [0u8; 1];
         while line.last() != Some(&b'\n') {
-            assert_eq!(
-                std::io::Read::read(out, &mut byte).unwrap(),
-                1,
-                "{command:?} ended unready"
-            );
+            if std::io::Read::read(&mut out, &mut byte).unwrap() != 1 {
+                panic!("{command:?} ended unready: {}", ended(&mut child, None));
+            }
             line.extend_from_slice(&byte);
         }
+        child.stdout = Some(out);
         let line = String::from_utf8(line).unwrap();
         let port: u16 = line
             .strip_prefix("ready ")
@@ -10190,6 +10216,71 @@ fn a_runs_memory_grows_as_its_workload_needs_it() {
     let r = run(&["--rm"], &["alloc", "1024"]);
     assert_eq!(r.status, Some(0), "{r}");
     assert!(r.stdout.contains("allocated 1024"), "{r}");
+    // Its memory as it reports it is what it may have, where its kernel reports what it
+    // may plug (D149), as a container's is its host's: not what it boots with, 243 MiB.
+    // Each file's text: `PATH file MODE UID:GID SIZE`, then `= TEXT`, its newlines `\n`.
+    let reported = |options: &[&str]| -> Option<(u64, String)> {
+        let r = run(
+            options,
+            &["stat", "/proc/sys/vm/pluggable_kbytes", "/proc/meminfo"],
+        );
+        if r.stdout.contains("/proc/sys/vm/pluggable_kbytes missing") {
+            return None;
+        }
+        assert_eq!(r.status, Some(0), "{r}");
+        let text = |path: &str| -> String {
+            let mut lines = r.stdout.lines();
+            lines
+                .by_ref()
+                .find(|l| l.starts_with(&format!("{path} ")))
+                .and(lines.next())
+                .and_then(|l| l.strip_prefix("= "))
+                .unwrap()
+                .replace("\\n", "\n")
+        };
+        Some((
+            text("/proc/sys/vm/pluggable_kbytes").trim().parse().unwrap(),
+            text("/proc/meminfo"),
+        ))
+    };
+    let kib = |meminfo: &str, field: &str| -> u64 {
+        meminfo
+            .lines()
+            .find_map(|l| l.strip_prefix(field))
+            .and_then(|v| v.trim().strip_suffix("kB"))
+            .and_then(|v| v.trim().parse().ok())
+            .unwrap()
+    };
+    match reported(&["--rm"]) {
+        None => println!("SKIP: this guest kernel reports none of the memory it may plug (D149)"),
+        Some((pluggable, meminfo)) => {
+            // SAFETY: sysconf(3) with constant arguments.
+            let host = unsafe {
+                libc::sysconf(libc::_SC_PHYS_PAGES) as u64 * libc::sysconf(libc::_SC_PAGESIZE) as u64
+            } / 1024;
+            // All of it, never more than its host has; what may still be plugged is free
+            // and available as well, as plugged it would be.
+            let total = kib(&meminfo, "MemTotal:");
+            assert!(
+                total > host / 2 && total <= host,
+                "MemTotal {total} kB, the host's {host} kB: {meminfo}"
+            );
+            assert!(
+                pluggable > 0
+                    && kib(&meminfo, "MemFree:") > pluggable
+                    && kib(&meminfo, "MemAvailable:") > pluggable,
+                "{pluggable} kB pluggable: {meminfo}"
+            );
+            // A run with a limit reports its own memory, its template's most to plug
+            // lowered to its own, none, as it begins.
+            let (pluggable, meminfo) = reported(&["--rm", "-m", "1g"]).unwrap();
+            let total = kib(&meminfo, "MemTotal:");
+            assert!(
+                pluggable == 0 && total < 2 << 20,
+                "{pluggable} kB pluggable: {meminfo}"
+            );
+        }
+    }
     // The templates, each a directory: the daemon's record of each is a file beside it.
     // The runs without a limit share one; each limit has its own.
     let templates: Vec<_> = std::fs::read_dir(home.join("templates"))

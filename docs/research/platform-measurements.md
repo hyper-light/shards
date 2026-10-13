@@ -7798,3 +7798,32 @@ revision before comparing a changed API/implementation.
   run with `-m` boots with what its limit needs, and sizes as Docker's does. A run without
   one grows as it needs, but Node sizes its heap by the 243 MiB it boots with, where
   Docker's sees its host's: what a guest reports must be what it may plug.
+
+### M221. A guest that reports what it may plug sizes a runtime's heap as Docker's (D149)
+
+- **Question.** With D149's report, what does Node.js see of a run's memory, and size its
+  heap by, against Docker's?
+- **Method.** `docs/research/measurements/run-plug/heap.sh "" "-m 8g" "-m 1g"`, as M220:
+  `node:22-alpine` (Node v22.23.3, libuv 1.51.0) printing V8's `heap_size_limit`,
+  `os.totalmem()` and `process.constrainedMemory()`, in shards at D149 (on dd843b2c) with
+  the 6.18.48 kernel patch 0004 makes (`SHARDS_KERNEL`), and in Docker 29.3.1 (shards-dind,
+  its VM's 62.7 GiB), on an Apple M5 Max of 128 GiB, macOS 26.4.1, 2026-10-12. Each value
+  is the runtime's own computation from what it read, the same every run. Inside the run,
+  without `-m`: `vm.pluggable_kbytes` 133,931,008, `MemTotal` 134,179,892 kB (the host's
+  134,217,728 less the 37 MiB the guest kernel keeps of what it boots with), `free -m`'s
+  total 131,035.
+- **Results.** MiB; "none" where libuv reads cgroup2's `max` (UINT64_MAX, in both):
+
+  | Run | heap_size_limit | totalmem | constrained |
+  |---|---|---|---|
+  | shards, no `-m` | 4,144 | 131,035 | none |
+  | Docker, no `-m` | 4,144 | 64,186 | none |
+  | shards, `-m 8g` | 2,096 | 8,362 | 8,192 |
+  | Docker, `-m 8g` | 2,096 | 64,186 | 8,192 |
+  | shards, `-m 1g` | 524 | 1,085 | 1,024 |
+  | Docker, `-m 1g` | 524 | 64,186 | 1,024 |
+
+- **Consequence (D149).** Node sizes its heap as Docker's in each case: without `-m` by
+  the memory the run may have (its host's), where M220's sized it by the 243 MiB it booted
+  with (259). A run with `-m` reports its own memory, where Docker's reports its host's:
+  the smaller of the two that Node takes is the limit either way.

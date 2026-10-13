@@ -1,0 +1,188 @@
+mm: report the memory a guest may still plug
+
+A guest given memory through virtio-mem as it needs it boots with little
+and has the rest plugged on demand, up to what its host allows. sysinfo(2)
+and /proc/meminfo report only what has been plugged so far, and programs
+size themselves by that: Node.js's V8 sizes its heap by the smaller of the
+memory it sees and its cgroup's limit, at 259 MiB in a guest booted with
+256 MiB that may grow to 128 GiB, where a container on the host sizes it
+at 4,144 MiB.
+
+Add vm.pluggable_kbytes, which the guest's own agent sets to the memory the
+host may plug from then on, and add what is still to be plugged to the
+total, free and available memory that sysinfo(2) and /proc/meminfo report.
+The kernel keeps the memory the guest has with all of it plugged, its
+memory as the sysctl is written and the amount written, and each report
+adds the difference from the memory that report read: memory plugged, or
+unplugged, changes what it adds as it changes the memory it reads, so that
+the total reported stays what the guest may reach, and reading the sysctl
+gives what the reports add then. Nothing in the kernel's own accounting
+counts it: si_meminfo() is as it was, and only the two reports add it.
+
+--- a/Documentation/admin-guide/sysctl/vm.rst
++++ b/Documentation/admin-guide/sysctl/vm.rst
+@@ -68,6 +68,7 @@
+ - page_lock_unfairness
+ - panic_on_oom
+ - percpu_pagelist_high_fraction
++- pluggable_kbytes
+ - stat_interval
+ - stat_refresh
+ - numa_stat
+@@ -917,8 +918,23 @@
+ mark based on the low watermark for the zone and the number of local
+ online CPUs.  If the user writes '0' to this sysctl, it will revert to
+ this default behavior.
++
++
++pluggable_kbytes
++================
++
++Memory the host may still plug into this guest, through a virtio-mem device,
++in kilobytes: reported by sysinfo(2) and /proc/meminfo as total, free and
++available memory, so that a program that sizes itself by the memory it sees
++sizes itself by what the guest may have, not only by what has been plugged so
++far. The guest's own agent writes how much the host may plug from then on; the
++kernel lowers it as memory is plugged and raises it as memory is unplugged, so
++that reading it gives what may still be plugged, the amount the reports add.
++Nothing in the kernel's own accounting counts it.
+ 
++The default value is 0.
+ 
++
+ stat_interval
+ =============
+ 
+--- a/fs/proc/meminfo.c
++++ b/fs/proc/meminfo.c
+@@ -39,9 +39,13 @@
+ 	long available;
+ 	unsigned long pages[NR_LRU_LISTS];
+ 	unsigned long sreclaimable, sunreclaim;
++	unsigned long pluggable;
+ 	int lru;
+ 
+ 	si_meminfo(&i);
++	pluggable = si_pluggable_pages(i.totalram);
++	i.totalram += pluggable;
++	i.freeram += pluggable;
+ 	si_swapinfo(&i);
+ 	committed = vm_memory_committed();
+ 
+@@ -53,7 +57,7 @@
+ 	for (lru = LRU_BASE; lru < NR_LRU_LISTS; lru++)
+ 		pages[lru] = global_node_page_state(NR_LRU_BASE + lru);
+ 
+-	available = si_mem_available();
++	available = si_mem_available() + pluggable;
+ 	sreclaimable = global_node_page_state_pages(NR_SLAB_RECLAIMABLE_B);
+ 	sunreclaim = global_node_page_state_pages(NR_SLAB_UNRECLAIMABLE_B);
+ 
+--- a/include/linux/mm.h
++++ b/include/linux/mm.h
+@@ -3515,6 +3515,7 @@
+ }
+ extern long si_mem_available(void);
+ extern void si_meminfo(struct sysinfo * val);
++extern unsigned long si_pluggable_pages(unsigned long totalram);
+ extern void si_meminfo_node(struct sysinfo *val, int nid);
+ 
+ extern __printf(3, 4)
+--- a/kernel/sys.c
++++ b/kernel/sys.c
+@@ -2895,7 +2895,7 @@
+  */
+ static int do_sysinfo(struct sysinfo *info)
+ {
+-	unsigned long mem_total, sav_total;
++	unsigned long mem_total, sav_total, pluggable;
+ 	unsigned int mem_unit, bitcount;
+ 	struct timespec64 tp;
+ 
+@@ -2910,6 +2910,9 @@
+ 	info->procs = nr_threads;
+ 
+ 	si_meminfo(info);
++	pluggable = si_pluggable_pages(info->totalram);
++	info->totalram += pluggable;
++	info->freeram += pluggable;
+ 	si_swapinfo(info);
+ 
+ 	/*
+--- a/mm/show_mem.c
++++ b/mm/show_mem.c
+@@ -13,6 +13,7 @@
+ #include <linux/mm.h>
+ #include <linux/mmzone.h>
+ #include <linux/swap.h>
++#include <linux/sysctl.h>
+ #include <linux/vmstat.h>
+ 
+ #include "internal.h"
+@@ -71,7 +72,66 @@
+ 	return available;
+ }
+ EXPORT_SYMBOL_GPL(si_mem_available);
++
++/*
++ * The memory, in pages, the guest has once the host has plugged all it may
++ * (virtio-mem), as its own agent sets it through vm.pluggable_kbytes: what is
++ * still to be plugged is reported by sysinfo(2) and /proc/meminfo as total and
++ * free memory, so that what sizes itself by the memory it sees sizes itself by
++ * what it may have, not by what has been plugged so far. Nothing in the
++ * kernel's own accounting counts it.
++ */
++static unsigned long pluggable_ceiling;
++
++/* The memory still to be plugged, in pages, where the guest has @totalram. */
++unsigned long si_pluggable_pages(unsigned long totalram)
++{
++	unsigned long ceiling = READ_ONCE(pluggable_ceiling);
++
++	return ceiling > totalram ? ceiling - totalram : 0;
++}
++
++/*
++ * vm.pluggable_kbytes: read, the memory still to be plugged; written, the
++ * memory the host may plug from now on, which sets the ceiling.
++ */
++static int pluggable_kbytes_handler(const struct ctl_table *table, int write,
++				    void *buffer, size_t *lenp, loff_t *ppos)
++{
++	unsigned long totalram = totalram_pages();
++	unsigned long pages = si_pluggable_pages(totalram);
++	unsigned long kbytes;
++	struct ctl_table t = *table;
++	int ret;
+ 
++	kbytes = pages > ULONG_MAX >> (PAGE_SHIFT - 10) ?
++		 ULONG_MAX : pages << (PAGE_SHIFT - 10);
++	t.data = &kbytes;
++	ret = proc_doulongvec_minmax(&t, write, buffer, lenp, ppos);
++	if (ret || !write)
++		return ret;
++	pages = kbytes >> (PAGE_SHIFT - 10);
++	totalram = totalram_pages();
++	WRITE_ONCE(pluggable_ceiling, totalram + min(pages, ULONG_MAX - totalram));
++	return 0;
++}
++
++static const struct ctl_table pluggable_table[] = {
++	{
++		.procname	= "pluggable_kbytes",
++		.maxlen		= sizeof(unsigned long),
++		.mode		= 0644,
++		.proc_handler	= pluggable_kbytes_handler,
++	},
++};
++
++static int __init pluggable_sysctl_init(void)
++{
++	register_sysctl_init("vm", pluggable_table);
++	return 0;
++}
++subsys_initcall(pluggable_sysctl_init);
++
+ void si_meminfo(struct sysinfo *val)
+ {
+ 	val->totalram = totalram_pages();

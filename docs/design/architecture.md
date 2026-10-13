@@ -3602,6 +3602,49 @@ No run-time labels, relays or declassifiers (§12 answer 14, decided by the user
 an internal-only domain to the world (D58), so there is no data to label. Code mode is
 D136.
 
+### D149. A guest reports the memory it may still plug
+
+A run without a limit grows to its host's memory (D148), but its guest reported only what
+had been plugged: 243 MiB as it boots, where a container's is its host's, by which Node.js
+sized its heap at 259 MiB where Docker's is 4,144 (PM M220). sysinfo(2) and /proc/meminfo
+take total and free memory from `si_meminfo()`, which counts what the kernel has.
+
+- **The kernel's report** (resources/kernel/patches/0004): `vm.pluggable_kbytes`. Written,
+  the memory the host may plug from then on; the kernel keeps what the guest has with
+  all of it plugged, and sysinfo(2) and /proc/meminfo add what is still to be plugged,
+  that less the memory each read, to the total, free and available memory they report.
+  Memory plugged lowers what they add as it raises what they read, in the same read, so
+  the total reported is what the guest may reach at every moment; read, the sysctl gives
+  what the reports add then. Nothing in the kernel's own accounting counts it:
+  `si_meminfo()` is as it was; only the two reports add it.
+- **Init** opens it before /proc/sys is masked, where the kernel has it, and writes it
+  once as a template boots (its host's) and once as each run comes (the run's own most
+  less what is plugged), before anything of the run grows its memory. A first draft had
+  init lower it as its grower plugged memory: the total reported then overstated what
+  the guest may reach for as long as each block took to be seen, and two processes
+  wrote it.
+- **Init's own view is the kernel's:** what it reads to hold and grow its runs' memory
+  (`memory.high`, what is plugged, what the domains may take) is sysinfo(2) and
+  `MemAvailable` less the report, read before and after: the report changes only as
+  memory is plugged, one way at a time, so the same report on both sides is the one
+  added, and where memory came between, init reads again. With the report counted, the
+  grower saw the memory it was to plug as had and a workload was ended at 1 GiB (137).
+- **An extra layer:** a guest kernel without it reports what it has, as before, and its
+  runs grow all the same.
+- **Result (PM M221):** a run without `-m` reports its host's memory less the 37 MiB its
+  kernel keeps (`MemTotal` 134,179,892 kB of the host's 134,217,728), and Node.js sizes
+  its heap at 4,144 MiB, as Docker's; with `-m 8g` and `-m 1g`, at 2,096 and 524, as
+  Docker's.
+
+Tested: in crates/init, on Linux, `memory_is_read_without_the_kernels_report` (the report
+read again where memory came between); on real microVMs,
+`a_runs_memory_grows_as_its_workload_needs_it` (with the report: a gigabyte allocated where
+the first draft's grower, counting the report as memory had, let it be ended, and a run's
+`MemTotal` its host's, what may still be plugged free and available too, and a run with
+`-m`'s none). Mutation-checked: init counting the report as memory it has (the workload
+ended, 137), and a run not lowering its template's report as it begins (a run with
+`-m 1g` reporting its host's memory): each fails the test.
+
 ### D148. A run's memory, plugged as its workload needs it (virtio-mem)
 
 A run's microVM was sized at boot: without `-m`, 256 MiB less what its kernel keeps

@@ -157,19 +157,46 @@ fn plug_of(cgroup: &'static str, whose: &'static str) -> io::Result<Option<Plug>
 
 /// The kernel's memory and what of it is free, in bytes: /proc/meminfo's MemTotal and
 /// MemFree, from sysinfo(2), which both come from (mm/show_mem.c `si_meminfo`), without
-/// a file: init asks before it has mounted /proc. Memory plugged counts as it comes online.
+/// a file: init asks before it has mounted /proc. Memory plugged counts as it comes online;
+/// memory still to be plugged, which the kernel reports as its own (D149), does not.
 fn memory() -> io::Result<(u64, u64)> {
-    // SAFETY: a zeroed sysinfo is a valid out-parameter, which sysinfo(2) fills.
-    let mut info: libc::sysinfo = unsafe { std::mem::zeroed() };
-    // SAFETY: sysinfo(2) writes `info`.
-    if unsafe { libc::sysinfo(&mut info) } != 0 {
-        return Err(err(format!("sysinfo: {}", io::Error::last_os_error())));
+    let [total, free] = unreported(|| {
+        // SAFETY: a zeroed sysinfo is a valid out-parameter, which sysinfo(2) fills.
+        let mut info: libc::sysinfo = unsafe { std::mem::zeroed() };
+        // SAFETY: sysinfo(2) writes `info`.
+        if unsafe { libc::sysinfo(&mut info) } != 0 {
+            return Err(err(format!("sysinfo: {}", io::Error::last_os_error())));
+        }
+        let unit = u64::from(info.mem_unit.max(1));
+        Ok([
+            info.totalram.saturating_mul(unit),
+            info.freeram.saturating_mul(unit),
+        ])
+    })?;
+    Ok((total, free))
+}
+
+/// What `read` reads of the kernel's memory, each amount less what the kernel adds to it
+/// of the memory still to be plugged (D149): its report, read before and after. The
+/// report changes only as memory is plugged, or unplugged, one way at a time, so the same
+/// report before and after is the one `read` saw; where memory came between, it reads
+/// again.
+pub fn unreported<const N: usize>(read: impl FnMut() -> io::Result<[u64; N]>) -> io::Result<[u64; N]> {
+    unreported_by(reported, read)
+}
+
+/// [`unreported`], the report read by `report`.
+fn unreported_by<const N: usize>(
+    mut report: impl FnMut() -> io::Result<u64>,
+    mut read: impl FnMut() -> io::Result<[u64; N]>,
+) -> io::Result<[u64; N]> {
+    loop {
+        let before = report()?;
+        let amounts = read()?;
+        if report()? == before {
+            return Ok(amounts.map(|a| a.saturating_sub(before)));
+        }
     }
-    let unit = u64::from(info.mem_unit.max(1));
-    Ok((
-        info.totalram.saturating_mul(unit),
-        info.freeram.saturating_mul(unit),
-    ))
 }
 
 /// MemTotal: what the kernel has, memory plugged included as it comes online.
@@ -360,6 +387,58 @@ impl Plug {
         let _ = GROWER.set(pid);
         Ok(())
     }
+}
+
+/// The guest kernel's report of the memory the host may still plug (D149):
+/// `vm.pluggable_kbytes`, which shards' kernel adds to the total, free and available memory
+/// sysinfo(2) and /proc/meminfo report. Written, the memory the host may plug from then
+/// on; read, what of it is still to be plugged, which the kernel lowers as memory is
+/// plugged (resources/kernel/patches/0004). Opened by init before /proc/sys is masked,
+/// where the kernel has it, and kept: a template's restores write through it, and its
+/// grower reads it.
+static PLUGGABLE: std::sync::OnceLock<std::fs::File> = std::sync::OnceLock::new();
+
+/// Opens [`PLUGGABLE`], where the kernel has it: one without reports what it has alone.
+pub fn open_pluggable() {
+    if let Ok(file) = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open("/proc/sys/vm/pluggable_kbytes")
+    {
+        let _ = PLUGGABLE.set(file);
+    }
+}
+
+/// Tells the kernel what the host may still plug ([`still_pluggable`]), where it reports
+/// it: at offset 0, as a sysctl's writes elsewhere are ignored (`sysctl_writes_strict`).
+/// Once for each run, as it begins, before anything of it grows its memory: the kernel
+/// lowers the report itself as memory is plugged.
+pub fn report_pluggable() -> io::Result<()> {
+    use std::os::unix::fs::FileExt as _;
+    let Some(file) = PLUGGABLE.get() else {
+        return Ok(());
+    };
+    file.write_at(format!("{}\n", still_pluggable() / 1024).as_bytes(), 0)
+        .map(drop)
+        .map_err(|e| err(format!("vm.pluggable_kbytes: {e}")))
+}
+
+/// What the kernel reports of the memory still to be plugged, in bytes: none where init has
+/// not told it ([`report_pluggable`]).
+fn reported() -> io::Result<u64> {
+    use std::os::unix::fs::FileExt as _;
+    let Some(file) = PLUGGABLE.get() else {
+        return Ok(0);
+    };
+    let mut text = [0u8; 32];
+    let n = file
+        .read_at(&mut text, 0)
+        .map_err(|e| err(format!("vm.pluggable_kbytes: {e}")))?;
+    std::str::from_utf8(text.get(..n).unwrap_or_default())
+        .ok()
+        .and_then(|t| t.trim().parse::<u64>().ok())
+        .map(|kib| kib.saturating_mul(1024))
+        .ok_or_else(|| err("vm.pluggable_kbytes: not a number"))
 }
 
 /// A run's microVM's grower ([`Plug::hold_run`]): a process of init's, which the end of
@@ -749,6 +828,21 @@ mod tests {
             said: Vec::new(),
             clock: Duration::ZERO,
         }
+    }
+
+    /// The kernel's memory less its report of what may still be plugged (D149): read
+    /// again where memory came between the reports, as the one the kernel added is then
+    /// not known.
+    #[test]
+    fn memory_is_read_without_the_kernels_report() {
+        let mut reports = [640 * MIB, 512 * MIB, 512 * MIB, 512 * MIB].into_iter();
+        let mut reads = [[896 * MIB, 700 * MIB], [896 * MIB, 690 * MIB]].into_iter();
+        let memory = unreported_by(
+            || Ok(reports.next().unwrap_or(0)),
+            || Ok(reads.next().unwrap_or_default()),
+        );
+        assert_eq!(memory.unwrap(), [384 * MIB, 178 * MIB]);
+        assert_eq!((reports.next(), reads.next()), (None, None));
     }
 
     /// Memory that comes is asked for once, and raises the build's `memory.high`.

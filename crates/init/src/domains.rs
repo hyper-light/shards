@@ -1279,7 +1279,11 @@ pub fn start(
     // charge itself as well as on the way back to user space (mm/memcontrol.c,
     // `try_charge_memcg`), and [`Memory`] ends the domain holding the most.
     let promised = crate::run::workload_headroom();
-    let available = available_memory()?
+    // What may still be plugged counted once: the kernel's own report of it taken off
+    // `MemAvailable` (D149), whose kernel reports it.
+    let [available] = crate::plug::unreported(|| available_memory().map(|a| [a]).map_err(io::Error::other))
+        .map_err(|e| e.to_string())?;
+    let available = available
         .saturating_add(crate::plug::still_pluggable())
         .saturating_sub(promised);
     std::fs::write(format!("{CGROUPS}/memory.high"), available.to_string())

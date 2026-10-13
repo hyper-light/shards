@@ -7,7 +7,9 @@ mod common;
 
 use std::time::Duration;
 
-use common::{KERNEL_NR_CPUS, cannot_run_vms, guest_init, kernel, run_shards, test_guest, vm_run};
+use common::{
+    KERNEL_NR_CPUS, cannot_run_vms, cannot_snapshot, guest_init, kernel, run_shards, test_guest, vm_run,
+};
 
 const TIMEOUT: Duration = Duration::from_secs(60);
 const EXIT_RESET: i32 = 3;
@@ -380,7 +382,7 @@ fn a_nested_guest_is_a_kvm_host() {
 /// booted and each VM restored from it plug memory as their guest asks, and write it.
 #[test]
 fn a_snapshot_keeps_memory_to_plug() {
-    if cannot_run_vms() {
+    if cannot_run_vms() || cannot_snapshot() {
         return;
     }
     let dir = common::TempDir::new("snap-plug");
