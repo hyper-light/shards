@@ -4,7 +4,8 @@ the Firecracker comparison boots (crates/shards/benches/firecracker.rs: the pinn
 the test guest in `idle` mode, the same command line), each VMM's boots interleaved.
 
 1. VM exits: each boot under `perf kvm stat record`, to its ready line; `perf kvm stat
-   report` per VMM: each exit reason's count and time, summed over the boots.
+   report` per VMM: each exit reason's count and time, summed over the boots; and the
+   first boot's exits in order (`perf script`), each with its time and guest address.
 2. The guest's own timeline: one boot each with the kernel's initcalls timed
    (`initcall_debug`), `quiet`, so that no console line costs them anything, the test
    guest in `kmsg` mode printing the kernel's log once booted; each initcall's time,
@@ -109,6 +110,21 @@ for vmm in ["shards", "firecracker"]:
             f.write("\n".join(reports))
         print(f"== {vmm} {event}, boot 0")
         print(reports[0])
+
+# 1b. One boot's exits in order, each VMM's: when each came (perf's clock), its reason,
+# and the guest's address (kvm_exit's rip and, for a nested page fault, info2, the
+# guest-physical address it faulted at), for the timeline of a boot before its guest
+# keeps time.
+for vmm in ["shards", "firecracker"]:
+    data = os.path.join(out, vmm, "perf-0.data")
+    r = subprocess.run(["sudo", "perf", "script", "-i", data, "-F", "time,event,trace"],
+                       capture_output=True, text=True)
+    with open(os.path.join(out, f"{vmm}-script-0.txt"), "w") as f:
+        f.write(r.stdout + r.stderr)
+    print(f"{vmm}: {len(r.stdout.splitlines())} events in boot 0's script")
+# The kernel's symbols, to name the guest addresses the exits came from.
+with open(os.path.join(out, "System.map"), "w") as f:
+    subprocess.run(["nm", "-n", kernel], stdout=f, check=False)
 
 # 2. The guest's initcalls, each VMM's guest run to its end.
 initcalls = {}
