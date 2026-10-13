@@ -340,6 +340,8 @@ Networks between agents need more than the directives:
 
 ## 6. Relation to what exists
 
+As it was when this spec was written (2026-09-29); what is built since is in §11.
+
 - **Images.** `shards pull` and `shards run IMAGE` take OCI images from registries
   (`crates/registry`) and build a root filesystem from their layers (`crates/image`).
   `shards build` builds Dockerfiles as BuildKit does (architecture.md D33); the
@@ -665,12 +667,14 @@ the agent's reach. Each agent and harness has:
   made of it since (D59), so a pathname Unix socket exists for it only when granted, as
   the in-VM server's of §5 is, and never because it can see the socket's file.
 
-**vsock, today.** The guest reaches the host over vsock alone, and nothing yet keeps a
-workload from opening `AF_VSOCK` itself: a connection to host CID 2 reaches the ports the
-VM process serves, the run and signal ports (`crates/shards/src/vm_run.rs`), and with a
-vsock path any port P reaches the host socket `<path>_P` (`crates/vmm`, the vsock muxer).
-Only shards-init may open `AF_VSOCK`, and the host accepts each port once per run. Whether a
-workload can use either port today is not yet tested; §9.10 holds the test.
+**vsock.** A connection to host CID 2 reaches the ports the VM process serves, the run
+and signal ports (`crates/shards/src/vm_run.rs`), and with a vsock path any port P reaches
+the host socket `<path>_P` (`crates/vmm`, the vsock muxer). Only shards-init uses
+`AF_VSOCK`: it holds the run and signal ports before any workload starts, and the host
+accepts each once per run. A workload that dials them, or any other host port, the moment
+it starts is refused: under Docker's default seccomp profile (architecture.md D42) it
+cannot make a vsock socket at all, and without one the host refuses each connection
+(`a_workload_reaches_no_host_port_over_vsock`, tests/isolation.rs).
 
 ### 9.8 One domain triggering another
 
