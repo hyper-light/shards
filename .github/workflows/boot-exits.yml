@@ -44,6 +44,10 @@ jobs:
         run: cargo bench --locked -p shards --bench firecracker -- --runs 1
       - name: Measure
         run: python3 docs/research/measurements/boot-exits/measure.py target/boot-exits 10
+      # perf's records are root's: the runner's own to upload.
+      - name: Own
+        if: always()
+        run: sudo chown -R "$(id -u):$(id -g)" target/boot-exits || true
       - uses: actions/upload-artifact@v7.0.1
         if: always()
         with:

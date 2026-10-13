@@ -38,7 +38,8 @@ shards_vm = one("target/release/build/shards-*/out/helpers/shards-vm")
 print(f"kernel {kernel}\ninitrd {initrd}\nfirecracker {firecracker}\nshards-vm {shards_vm}")
 
 QUIET = "console=ttyS0 quiet panic=-1 shards_test=idle"
-VERBOSE = "console=ttyS0 printk.time=1 initcall_debug loglevel=7 panic=-1 shards_test=idle"
+# initcall_debug prints at KERN_DEBUG, which only loglevel 8 lets through to the console.
+VERBOSE = "console=ttyS0 printk.time=1 initcall_debug loglevel=8 panic=-1 shards_test=idle"
 
 
 def command(vmm, cmdline, name):
@@ -71,9 +72,13 @@ def boot(argv, console, wrap=None, env=None):
             break
     # The VMM itself, not the wrapper: perf ends as its command does.
     subprocess.run(["sudo", "pkill", "-KILL", "-f", argv[0]], check=False)
+    lines.extend(raw.decode(errors="replace") for raw in p.stdout)
     p.wait()
     with open(console, "w") as f:
         f.writelines(lines)
+    if ready is None:
+        print(f"{argv[0]}: no ready line; its last output:")
+        print("".join(lines[-30:]))
     return ready
 
 
@@ -96,7 +101,7 @@ for vmm in ["shards", "firecracker"]:
             data = os.path.join(out, vmm, f"perf-{i}.data")
             r = subprocess.run(["sudo", "perf", "kvm", "stat", "report", "-i", data, f"--event={event}",
                                 "--key=time"], capture_output=True, text=True)
-            reports.append(r.stdout)
+            reports.append(r.stdout + r.stderr)
         with open(os.path.join(out, f"{vmm}-{event}.txt"), "w") as f:
             f.write("\n".join(reports))
         print(f"== {vmm} {event}, boot 0")
