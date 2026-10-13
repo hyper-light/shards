@@ -666,48 +666,63 @@ pub fn build(cfg: &Config) -> Result<Machine, String> {
     let ram = ram_bytes(cfg.memory_mib)?;
     let mut config = super::machine_config(cfg)?;
     let memory = Arc::new(super::guest_memory(&ram_ranges(ram)?, &config, plug_at(ram))?);
-    // A bad kernel fails the start before any hypervisor state exists. The image is copied,
-    // not mapped: a mapped image stalled boots for up to 1 s (platform-measurements M16).
+    // The image is copied, not mapped: a mapped image stalled boots for up to 1 s
+    // (platform-measurements M16). The kernel and the initrd, copied into guest RAM, are
+    // most of a cold boot's setup, which the VM and its devices need none of, nor touch any
+    // of: so they are copied on a thread of their own while those are made, and inline
+    // where no thread can be.
     let kernel_file = crate::platform::open_input(&cfg.kernel, false)
         .map_err(|e| format!("{}: {e}", cfg.kernel.display()))?;
-    let kernel = boot::load_kernel(&memory, &kernel_file, ram).map_err(|e| e.to_string())?;
-    debug!("kernel loaded");
-
-    let hosts = super::Hosts {
-        vsock: cfg.vsock.as_ref(),
-        #[cfg(unix)]
-        net: cfg.net.as_ref(),
-        #[cfg(unix)]
-        shares: &cfg.shares,
-        join: cfg.join,
-        #[cfg(unix)]
-        join_share: cfg.join_share,
+    let fdt_addr = layout::DRAM_BASE + ram - boot::FDT_MAX;
+    let load = || -> Result<(boot::LoadedKernel, Option<(u64, u64)>), String> {
+        let kernel = boot::load_kernel(&memory, &kernel_file, ram).map_err(|e| e.to_string())?;
+        debug!("kernel loaded");
+        // Between the kernel, at the next 2 MiB, and the device tree (boot.rs, load_initrd).
+        let room = fdt_addr.saturating_sub(kernel.end.next_multiple_of(2 << 20));
+        let initrd = match super::initrd(cfg, room)? {
+            None => None,
+            Some(bytes) => {
+                Some(boot::load_initrd(&memory, &bytes, kernel.end, fdt_addr).map_err(|e| e.to_string())?)
+            }
+        };
+        Ok((kernel, initrd))
     };
-    let a = assemble(
-        &memory,
-        &config,
-        cfg.console,
-        hosts,
-        cfg.gpu.then_some(0),
-        super::Pci {
-            test: cfg.pci_test,
-            vfio: &cfg.vfio,
-        },
-    )?;
+    let (a, (kernel, initrd)) = std::thread::scope(|s| -> Result<_, String> {
+        let loader = std::thread::Builder::new()
+            .name("shards-load".into())
+            .spawn_scoped(s, load);
+        let hosts = super::Hosts {
+            vsock: cfg.vsock.as_ref(),
+            #[cfg(unix)]
+            net: cfg.net.as_ref(),
+            #[cfg(unix)]
+            shares: &cfg.shares,
+            join: cfg.join,
+            #[cfg(unix)]
+            join_share: cfg.join_share,
+        };
+        let a = assemble(
+            &memory,
+            &config,
+            cfg.console,
+            hosts,
+            cfg.gpu.then_some(0),
+            super::Pci {
+                test: cfg.pci_test,
+                vfio: &cfg.vfio,
+            },
+        )?;
+        a.vmgenid.write_new_id()?;
+        let loaded = match loader {
+            Ok(loader) => loader
+                .join()
+                .map_err(|_| "the kernel's loader ended abnormally".to_string())??,
+            Err(_) => load()?,
+        };
+        Ok((a, loaded))
+    })?;
     // Its GPU's window as the guest sees it, which a snapshot keeps for a restore (D150).
     config.gpu = a.gpu_window;
-    a.vmgenid.write_new_id()?;
-
-    let fdt_addr = layout::DRAM_BASE + ram - boot::FDT_MAX;
-    // Between the kernel, at the next 2 MiB, and the device tree (boot.rs, load_initrd).
-    let room = fdt_addr.saturating_sub(kernel.end.next_multiple_of(2 << 20));
-    let initrd_bytes = super::initrd(cfg, room)?;
-    let initrd = match initrd_bytes {
-        None => None,
-        Some(bytes) => {
-            Some(boot::load_initrd(&memory, &bytes, kernel.end, fdt_addr).map_err(|e| e.to_string())?)
-        }
-    };
     let mut rng_seed = [0u8; 64];
     platform::fill_random(&mut rng_seed).map_err(|e| format!("host entropy: {e}"))?;
     let fdt = boot::build_fdt(&boot::Machine {
