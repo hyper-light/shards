@@ -56,7 +56,8 @@ const MAGIC: [u8; 8] = *b"SHRDSNAP";
 /// 10: and how many shared directories (virtio-fs) follow it (D38).
 /// 11: and whether a join disk follows the disks (D119).
 /// 12: and whether a join share follows the shared directories (D119).
-const VERSION: u32 = 12;
+/// 13: and the memory the machine may have plugged, in MiB, none of it plugged (D148).
+const VERSION: u32 = 13;
 /// The snapshot format this build writes and reads: what a snapshot kept for reuse is
 /// keyed by.
 pub const FORMAT: u32 = VERSION;
@@ -272,9 +273,6 @@ fn encode(s: &Snapshot, generation: &str, identities: &[Identity]) -> Result<Vec
             "a snapshot of a VM with virtualization of its own is refused: its EL2 state is not saved".into(),
         );
     }
-    if s.config.hotplug_mib > 0 {
-        return Err("a snapshot of a VM with memory to plug is refused: memory plugged is not saved".into());
-    }
     let disks = s
         .config
         .disks
@@ -306,6 +304,7 @@ fn encode(s: &Snapshot, generation: &str, identities: &[Identity]) -> Result<Vec
     w.u32(s.config.shares);
     w.bool(s.config.join);
     w.bool(s.config.join_share);
+    w.u64(s.config.hotplug_mib);
     w.bytes(&s.arch);
     w.bytes(&s.devices);
     Ok(w.into_bytes())
@@ -379,6 +378,7 @@ fn decode(bytes: &[u8]) -> codec::Result<Decoded> {
     }
     let join = r.bool()?;
     let join_share = r.bool()?;
+    let hotplug_mib = r.u64()?;
     let arch_state = r.bytes(usize::MAX)?.to_vec();
     let devices = r.bytes(usize::MAX)?.to_vec();
     r.finish()?;
@@ -395,7 +395,7 @@ fn decode(bytes: &[u8]) -> codec::Result<Decoded> {
                 join,
                 join_share,
                 nested: false,
-                hotplug_mib: 0,
+                hotplug_mib,
             },
             arch: arch_state,
             devices,
@@ -891,7 +891,8 @@ mod tests {
     }
 
     /// What a snapshot cannot hold is refused as it is written, not lost: a guest's EL2
-    /// state, and memory it has plugged.
+    /// state. Memory to plug it holds, as a size: none of it is plugged (D148), which its
+    /// memory and its device refuse otherwise.
     #[test]
     fn a_machine_with_state_a_snapshot_cannot_hold_is_refused() {
         let ids = vec![Identity::default(); 3];
@@ -900,9 +901,9 @@ mod tests {
         let e = encode(&nested, "g-1", &ids).unwrap_err();
         assert!(e.contains("EL2 state is not saved"), "{e}");
         let mut plugging = sample(&nowhere(), 1);
-        plugging.config.hotplug_mib = 2;
-        let e = encode(&plugging, "g-1", &ids).unwrap_err();
-        assert!(e.contains("memory to plug is refused"), "{e}");
+        plugging.config.hotplug_mib = 2048;
+        let decoded = decode(&encode(&plugging, "g-1", &ids).unwrap()).unwrap();
+        assert_eq!(decoded.snapshot.config.hotplug_mib, 2048);
     }
 
     #[test]

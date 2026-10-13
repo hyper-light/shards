@@ -109,7 +109,7 @@ fn entry_range(setup: &[Vec<u8>], prefix: &[u8], what: &str) -> Option<Result<(u
 /// The cgroup of the joiner init knows as exec `id`: beside the workload's, its own, as a
 /// container's is.
 pub fn cgroup(id: u32) -> String {
-    format!("/sys/fs/cgroup/join-{id}")
+    format!("/sys/fs/cgroup{}", crate::run::joiner_path(id))
 }
 
 /// Each joiner's device filter, by its id: Docker's default program and its descriptor,

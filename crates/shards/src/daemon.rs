@@ -2416,11 +2416,17 @@ impl<D: Disk> Daemon<D> {
         }
         // The flags, the retention's two u64s, the log's segment, then the spec, in one
         // allocation (audit D10).
-        let mut payload = Vec::with_capacity(25 + prepared.spec.encoded_len().unwrap_or(0));
+        let mut payload = Vec::with_capacity(33 + prepared.spec.encoded_len().unwrap_or(0));
         payload.push(flags);
         payload.extend(self.logs.size.to_be_bytes());
         payload.extend(self.logs.files.to_be_bytes());
         payload.extend(container_log.seq.to_be_bytes());
+        // The most memory its guest may plug, in bytes: its own (D148).
+        let plug = prepared
+            .memory_max
+            .saturating_sub(prepared.size.1)
+            .saturating_mul(1 << 20);
+        payload.extend(plug.to_be_bytes());
         prepared.spec.encode_into(&mut payload);
         let detached = run.detach.then_some(conn);
         // An Agentfile's egress grants and remote MCP servers (D59), as the daemon read
@@ -4470,9 +4476,17 @@ impl<D: Disk> Daemon<D> {
         } else {
             None
         };
-        // Sized for its limits; a template is of one size (run::template).
+        // Sized as a run without a limit, with the host's memory to plug, which each run
+        // asks for as its workload needs it within its own most (D148): one template for
+        // every limit (run::template). Plugged memory comes online as the kernel's own, as
+        // a builder's does (D133).
         let on_network = |cfg: &mut Config| {
             (cfg.vcpus, cfg.memory_mib) = prepared.size;
+            cfg.hotplug_mib = crate::build::host_memory()
+                .map_or(0, |bytes| ((bytes >> 20) & !1).saturating_sub(cfg.memory_mib));
+            if cfg.hotplug_mib > 0 {
+                cfg.cmdline.push_str(" memhp_default_state=online_kernel");
+            }
             cfg.pmem.extend(server.iter().cloned());
             // A slot for each directory it shares (D38), which its run fills.
             cfg.shares = (0..prepared.shares).map(|_| Arc::default()).collect();
@@ -4866,6 +4880,10 @@ impl<D: Disk> Daemon<D> {
             "--rootfs".into(),
             rootfs.into(),
         ];
+        if cfg.hotplug_mib > 0 {
+            let max = cfg.memory_mib.saturating_add(cfg.hotplug_mib);
+            args.extend(["--memory-max".into(), max.to_string().into()]);
+        }
         if let Some(init) = &cfg.init {
             args.extend(["--init".into(), init.into()]);
         }
@@ -5776,6 +5794,7 @@ mod tests {
                 exposed: Vec::new(),
                 image_id: String::new(),
                 size: (1, shards_vmm::vm::MEMORY_MIB),
+                memory_max: shards_vmm::vm::MEMORY_MIB,
                 image_volumes: Vec::new(),
                 agentfile: None,
                 shares: 0,

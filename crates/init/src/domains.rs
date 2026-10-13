@@ -33,7 +33,7 @@ use crate::json::{self, Value};
 /// The first domain's uid and gid; the n-th's is this plus n.
 pub const FIRST_ID: u32 = shards_abi::DOMAIN_FIRST_ID;
 /// Where the domains' cgroups are.
-const CGROUPS: &str = "/sys/fs/cgroup/domains";
+const CGROUPS: &str = "/sys/fs/cgroup/run/domains";
 /// The `PATH` a domain starts with: Docker's default (moby oci/defaults.go).
 const PATH: &str = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
 /// The nodes a domain's `/dev` holds, as Docker's containers' (moby oci/defaults.go,
@@ -1270,15 +1270,18 @@ pub fn start(
     std::fs::write(format!("{CGROUPS}/cgroup.subtree_control"), "+pids +memory")
         .map_err(|e| format!("{CGROUPS}: enabling pids and memory: {e}"))?;
     // The domains together take at most what the microVM can give as they start
-    // (`MemAvailable`, Documentation/filesystems/proc.rst), less what the workload's own
-    // limit (`-m`) still promises it: never what init and the workload hold or may. Their
+    // (`MemAvailable`, Documentation/filesystems/proc.rst, and what it may still have
+    // plugged, D148), less what the workload's own limit (`-m`) still promises it: never
+    // what init and the workload hold or may. Their
     // scratch tmpfs counts, which the OOM killer's choice by resident memory does not
     // (mm/oom_kill.c, `oom_badness`), so the kernel does not choose: past `memory.high`
     // it throttles them and kills none (Documentation/admin-guide/cgroup-v2.rst), in the
     // charge itself as well as on the way back to user space (mm/memcontrol.c,
     // `try_charge_memcg`), and [`Memory`] ends the domain holding the most.
     let promised = crate::run::workload_headroom();
-    let available = available_memory()?.saturating_sub(promised);
+    let available = available_memory()?
+        .saturating_add(crate::plug::still_pluggable())
+        .saturating_sub(promised);
     std::fs::write(format!("{CGROUPS}/memory.high"), available.to_string())
         .map_err(|e| format!("{CGROUPS}/memory.high: {e}"))?;
     let last_cap = crate::defaults::last_cap();

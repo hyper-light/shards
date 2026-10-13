@@ -3621,7 +3621,7 @@ fn run_writes_cidfiles_pulls_quietly_and_keeps_signals_as_docker_run_does() {
 }
 
 /// `run`'s memory and CPU flags as docker run takes them: checked as dockerd checks them,
-/// its warnings said, the microVM sized to hold them, and the workload's cgroup limited
+/// its warnings said, the microVM growing to hold them (D148), and the workload's cgroup limited
 /// as runc limits it, seen read-only at /sys/fs/cgroup as a container sees its own; a
 /// workload past its memory killed, and OOMKilled, as Docker reports it.
 #[test]
@@ -3740,29 +3740,20 @@ fn run_limits_resources_as_docker_run_does() {
         ("700m", every.as_str()),
         ("2500m", every.as_str()),
     ] {
-        let read = run_in(
+        // It holds all but what its own process and page tables take of its limit, in a
+        // microVM that boots with less and plugs the rest as it needs it (D148).
+        let limit_mib = limit.trim_end_matches('m').parse::<u64>().unwrap();
+        let wanted = (limit_mib - 16).to_string();
+        let held = run_in(
             &home,
             &image,
-            &["-m", limit, "--cpus", cpus],
-            &["stat", "/proc/meminfo", "/proc/zoneinfo"],
+            &["--rm", "-m", limit, "--cpus", cpus],
+            &["alloc", &wanted],
         );
-        assert_eq!(read.status, Some(0), "{read}");
-        let lines: Vec<&str> = read.stdout.split("\\n").collect();
-        let available_kib: u64 = lines
-            .iter()
-            .find_map(|l| l.strip_prefix("MemAvailable:"))
-            .and_then(|v| v.trim().trim_end_matches(" kB").trim().parse().ok())
-            .unwrap();
-        // zoneinfo's pagesets: each CPU's count of 4 KiB pages.
-        let listed_kib: u64 = lines
-            .iter()
-            .filter_map(|l| l.trim_start().strip_prefix("count:"))
-            .map(|c| c.trim().parse::<u64>().unwrap() * 4)
-            .sum();
-        let limit_kib = limit.trim_end_matches('m').parse::<u64>().unwrap() * 1024;
+        assert_eq!(held.status, Some(0), "{limit}, {cpus} vCPUs: {held}");
         assert!(
-            available_kib + listed_kib >= limit_kib,
-            "{limit}, {cpus} vCPUs: {available_kib} KiB available, {listed_kib} KiB on its CPUs' lists"
+            held.stdout.contains(&format!("allocated {wanted}")),
+            "{limit}, {cpus} vCPUs: {held}"
         );
     }
     // Past its limit, the workload is killed, as the kernel kills it in its cgroup.
@@ -10153,4 +10144,58 @@ fn an_image_of_gigabytes_boots() {
     std::fs::remove_file(ctx.join("big")).unwrap();
     let ran = run_in(&home, "big:1", &["--rm"], &["fs", "open:r:/big"]);
     assert_eq!(ran.status, Some(0), "{ran}");
+}
+
+/// A run's memory, plugged as its workload needs it (D148): without `-m` it holds more
+/// than its microVM boots with, as a container may hold its host's; with `-m` it is ended
+/// past its limit, as Docker's is, and runs within it; and every limit restores the one
+/// template.
+#[test]
+fn a_runs_memory_grows_as_its_workload_needs_it() {
+    let Some((home, image)) = home("containers-plug") else {
+        return;
+    };
+    // Its runs boot the guest recorded, as a user's do, and so restore templates: a
+    // daemon started with SHARDS_KERNEL boots every run.
+    assert_eq!(shards_in(&home, &["stop", "daemon"]).status, Some(0));
+    let env: [(&str, &OsStr); 1] = [("SHARDS_HOME", home.as_os_str())];
+    let (kernel, init) = (kernel(), guest_init());
+    let recorded = run_shards_env(
+        &["guest"],
+        &[
+            "use",
+            "--kernel",
+            kernel.to_str().unwrap(),
+            "--init",
+            init.to_str().unwrap(),
+        ],
+        &env,
+        TIMEOUT,
+    );
+    assert_eq!(recorded.status, Some(0), "{recorded}");
+    let run = |options: &[&str], command: &[&str]| {
+        let args = run_args(&image, options, command);
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        run_shards_env(&[], &args, &env, TIMEOUT)
+    };
+    let r = run(&["--rm"], &["alloc", "1024"]);
+    assert_eq!(r.status, Some(0), "{r}");
+    assert!(r.stdout.contains("allocated 1024"), "{r}");
+    let r = run(&["--rm", "-m", "256m"], &["alloc", "1024"]);
+    assert_eq!(r.status, Some(137), "{r}");
+    let r = run(&["--rm", "-m", "1g"], &["alloc", "512"]);
+    assert_eq!(r.status, Some(0), "{r}");
+    assert!(r.stdout.contains("allocated 512"), "{r}");
+    // A restored microVM grows as the one that saved its template did.
+    let r = run(&["--rm"], &["alloc", "1024"]);
+    assert_eq!(r.status, Some(0), "{r}");
+    assert!(r.stdout.contains("allocated 1024"), "{r}");
+    // The templates, each a directory: the daemon's record of each is a file beside it.
+    let templates: Vec<_> = std::fs::read_dir(home.join("templates"))
+        .unwrap()
+        .map(|e| e.unwrap())
+        .filter(|e| e.path().is_dir())
+        .map(|e| e.file_name())
+        .collect();
+    assert_eq!(templates.len(), 1, "{templates:?}");
 }

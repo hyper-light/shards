@@ -69,6 +69,12 @@ impl Control {
         let _ = self.hotplug.set(sizes);
     }
 
+    /// Sets the most memory the guest may have plugged, in bytes: a run's own, as a VM
+    /// restored from a template takes it (D148). False where it has none to plug.
+    pub fn set_plug_most(&self, bytes: u64) -> bool {
+        self.hotplug.get().map(|s| s.set_most(bytes)).is_some()
+    }
+
     /// The MAC the VMM was given for the guest's network device, which the guest reads
     /// (`control::MAC`): a restored VM's own, where its guest still has its template's.
     pub fn on_mac(&self, mac: [u8; 6]) {

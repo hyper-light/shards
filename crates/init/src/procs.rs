@@ -42,7 +42,7 @@ impl Members<'_> {
             .find_map(|l| l.strip_prefix(b"0::"))
             .unwrap_or_default();
         match self {
-            Members::Workload => !path.starts_with(b"/join-"),
+            Members::Workload => !path.starts_with(crate::run::joiner_path("").as_bytes()),
             Members::Joiner(own) => path
                 .strip_prefix(own.as_bytes())
                 .is_some_and(|rest| rest.is_empty() || rest.starts_with(b"/")),

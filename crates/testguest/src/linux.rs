@@ -30,6 +30,7 @@ pub fn main() {
             "pmem" => pmem(),
             "erofs" => erofs(),
             "hotplug" => hotplug(),
+            "snapshot-plug" => snapshot_plug(),
             "limits" => limits(),
             other => Err(format!("unknown test {other:?}")),
         },
@@ -1096,6 +1097,46 @@ fn host_turn() -> Result<(), String> {
             _ => return Err(format!("the console: {}", io::Error::last_os_error())),
         }
     }
+}
+
+/// Memory to plug across a snapshot (D148): asks the VMM for a snapshot with none of it
+/// plugged; then, in the VM that booted and in every VM restored from it, asks for
+/// `shards_plug_mib` MiB, waits until the kernel has it all (`MemTotal`), writes and checks
+/// seven eighths of it, and says `SHARDS-TEST PLUGGED <ms>`, the time from asking to having.
+fn snapshot_plug() -> Result<(), String> {
+    use shards_abi::control::{HOTPLUG_REQUEST, HOTPLUG_SIZE};
+    let control = ControlPage::map()?;
+    control.write(shards_abi::control::SNAPSHOT, shards_abi::control::SNAPSHOT_NOW);
+    // A restored guest continues here.
+    control.write(shards_abi::control::MARKER, shards_abi::marker::RESUMED);
+    let most = control.read64(HOTPLUG_SIZE);
+    let want = env_u64("shards_plug_mib")? << 20;
+    if most < want {
+        return Err(format!("{want} bytes asked for; the guest may plug {most}"));
+    }
+    let before = mem_total()?;
+    let began = Instant::now();
+    control.write64(HOTPLUG_REQUEST, want);
+    waiting("the memory asked for", || match mem_total()? {
+        now if now >= before + want => Ok(()),
+        now => Err(format!("MemTotal {now}, {before} before")),
+    });
+    let plugged = began.elapsed();
+    let used = usize::try_from(want - want / 8).map_err(|e| e.to_string())?;
+    let mut buf = Aligned::new(used)?;
+    for (i, page) in buf.slice(used).chunks_mut(4096).enumerate() {
+        page.fill(i as u8);
+    }
+    if let Some(i) = buf
+        .slice(used)
+        .chunks(4096)
+        .enumerate()
+        .find_map(|(i, page)| page.iter().any(|&b| b != i as u8).then_some(i))
+    {
+        return Err(format!("page {i} of the plugged memory lost what was written"));
+    }
+    let _ = writeln!(io::stdout(), "SHARDS-TEST PLUGGED {}", plugged.as_millis());
+    Ok(())
 }
 
 /// Memory plugged as the guest asks for it (D133): asks the control page for

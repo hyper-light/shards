@@ -81,13 +81,20 @@ const TCP_TABLE_MOST: u64 = 512 << 10;
 /// too, and came out short of a boot with all of it (PM M193, x86_64).
 const FILE_BYTES: u64 = 10 << 10;
 
-/// The memory a builder may have plugged, and what it booted with.
+/// The memory a builder, or a run's microVM (D148), may have plugged, and what it booted
+/// with.
 #[derive(Debug, Clone, Copy)]
 pub struct Plug {
     /// MemTotal as it booted.
     boot: u64,
-    /// The most it may have plugged.
+    /// The most it may have plugged: a builder's, or a run's microVM's own, which the host
+    /// sets as the microVM takes its run, and which its grower reads again as it grows
+    /// (D148).
     most: u64,
+    /// The cgroup it holds: the build's, or every process of a run's microVM past init.
+    cgroup: &'static str,
+    /// Whose memory its notes say it is.
+    whose: &'static str,
 }
 
 fn err(what: impl std::fmt::Display) -> io::Error {
@@ -96,6 +103,46 @@ fn err(what: impl std::fmt::Display) -> io::Error {
 
 /// The builder's memory to plug, where its VM has a device for it.
 pub fn plug() -> io::Result<Option<Plug>> {
+    plug_of(BUILD, "the builder's")
+}
+
+/// A run's microVM's memory to plug, where its VM has a device for it (D148): its
+/// processes past init held in `cgroup`.
+pub fn run_plug(cgroup: &'static str) -> io::Result<Option<Plug>> {
+    let plug = plug_of(cgroup, "the microVM's")?;
+    if let Some(plug) = &plug {
+        let _ = RUN_BOOT.set(plug.boot);
+    }
+    Ok(plug)
+}
+
+/// The kernel's log, opened where init's /dev still has it, before its root's own /dev
+/// holds a container's devices alone: where a run's grower says what it sees (D148).
+pub fn kmsg() -> io::Result<OwnedFd> {
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open("/dev/kmsg")
+        .map(OwnedFd::from)
+        .map_err(|e| err(format!("/dev/kmsg: {e}")))
+}
+
+/// MemTotal as a run's microVM booted, none of its memory plugged (D148): kept in a
+/// template, as its restores boot from it.
+static RUN_BOOT: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+
+/// The memory a run's microVM may still have plugged, in bytes (D148): its run's own most,
+/// less what is plugged already; none where it plugs none.
+pub fn still_pluggable() -> u64 {
+    let Some(&boot) = RUN_BOOT.get() else {
+        return 0;
+    };
+    let Ok(most) = control_read64(control::HOTPLUG_SIZE) else {
+        return 0;
+    };
+    most.saturating_sub(mem_total().map_or(0, |total| total.saturating_sub(boot)))
+}
+
+fn plug_of(cgroup: &'static str, whose: &'static str) -> io::Result<Option<Plug>> {
     let most = control_read64(control::HOTPLUG_SIZE)?;
     if most == 0 {
         return Ok(None);
@@ -103,6 +150,8 @@ pub fn plug() -> io::Result<Option<Plug>> {
     Ok(Some(Plug {
         boot: mem_total()?,
         most,
+        cgroup,
+        whose,
     }))
 }
 
@@ -255,8 +304,8 @@ impl Plug {
         }
         enable(BUILD)?;
         enable(&format!("{BUILD}/steps"))?;
-        set_high(high(self.most, 0)?)?;
-        let events = watch_events()?;
+        set_high(self.cgroup, high(self.cgroup, self.most, 0)?)?;
+        let events = watch_events(self.cgroup)?;
         let mut fds = [0; 2];
         // SAFETY: pipe2(2) into an array of two descriptors.
         if unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) } != 0 {
@@ -285,6 +334,41 @@ impl Plug {
             .map_err(|e| err(format!("moving init into the build's cgroup: {e}")))?;
         Ok(notes)
     }
+
+    /// Holds a run's microVM at the memory it has (D148): every process past init, in its
+    /// cgroup, made already, at a `memory.high` of the memory plugged so far, and a process
+    /// of init's in the root cgroup, which nothing slows, that grows it as they reach it,
+    /// up to the run's own most, which the host sets as the microVM takes its run. What it
+    /// sees it says into `notes`, the kernel's log ([`kmsg`]), beside the driver's own
+    /// words. Called by PID 1 before it starts any thread; a template's grower goes on in
+    /// each of its restores.
+    pub fn hold_run(&self, notes: OwnedFd) -> io::Result<()> {
+        set_high(self.cgroup, high(self.cgroup, self.most, 0)?)?;
+        let events = watch_events(self.cgroup)?;
+        // SAFETY: fork(2) of PID 1 before it starts any thread: the child runs on a copy
+        // of a process with no other thread, whose locks no one holds.
+        let pid = unsafe { libc::fork() };
+        if pid < 0 {
+            return Err(err(format!(
+                "starting the memory's grower: {}",
+                io::Error::last_os_error()
+            )));
+        }
+        if pid == 0 {
+            grow(*self, &events, &notes);
+        }
+        let _ = GROWER.set(pid);
+        Ok(())
+    }
+}
+
+/// A run's microVM's grower ([`Plug::hold_run`]): a process of init's, which the end of
+/// the run's workload spares, as its joiners go on and may need memory (D148).
+static GROWER: std::sync::OnceLock<libc::pid_t> = std::sync::OnceLock::new();
+
+/// The pid of a run's microVM's grower, where it has one.
+pub fn grower() -> Option<libc::pid_t> {
+    GROWER.get().copied()
 }
 
 /// The builder's cgroup2 at /sys/fs/cgroup, mounted once: by [`Plug::hold`], or by the
@@ -326,22 +410,22 @@ fn reserve(total: u64, left: u64) -> u64 {
 /// The build's `memory.high`: what it holds now and what is free, less the [`reserve`]
 /// for what may still be plugged, `left` of it. Its page cache counts as its own, so it is
 /// not free; nothing else the kernel keeps is the build's.
-fn high(most: u64, plugged: u64) -> io::Result<u64> {
-    let current = number(&format!("{BUILD}/memory.current")).unwrap_or(0);
+fn high(cgroup: &str, most: u64, plugged: u64) -> io::Result<u64> {
+    let current = number(&format!("{cgroup}/memory.current")).unwrap_or(0);
     let (total, free) = memory()?;
     Ok(current
         .saturating_add(free)
         .saturating_sub(reserve(total, most.saturating_sub(plugged))))
 }
 
-fn set_high(high: u64) -> io::Result<()> {
-    std::fs::write(format!("{BUILD}/memory.high"), high.to_string())
-        .map_err(|e| err(format!("{BUILD}/memory.high: {e}")))
+fn set_high(cgroup: &str, high: u64) -> io::Result<()> {
+    std::fs::write(format!("{cgroup}/memory.high"), high.to_string())
+        .map_err(|e| err(format!("{cgroup}/memory.high: {e}")))
 }
 
 /// An inotify watch of the build's `memory.events`, which the kernel marks modified as
 /// it slows the build past its `memory.high` ("Conventions", cgroup-v2.rst).
-fn watch_events() -> io::Result<OwnedFd> {
+fn watch_events(cgroup: &str) -> io::Result<OwnedFd> {
     // SAFETY: inotify_init1(2), whose descriptor is owned below.
     let fd = unsafe { libc::inotify_init1(libc::IN_CLOEXEC) };
     if fd < 0 {
@@ -352,7 +436,7 @@ fn watch_events() -> io::Result<OwnedFd> {
     }
     // SAFETY: the descriptor inotify_init1 just made, owned here alone.
     let events = unsafe { OwnedFd::from_raw_fd(fd) };
-    let path = CString::new(format!("{BUILD}/memory.events")).map_err(err)?;
+    let path = CString::new(format!("{cgroup}/memory.events")).map_err(err)?;
     // SAFETY: inotify_add_watch(2) of a NUL-terminated path.
     if unsafe { libc::inotify_add_watch(events.as_raw_fd(), path.as_ptr(), libc::IN_MODIFY) } < 0 {
         return Err(err(format!(
@@ -366,8 +450,8 @@ fn watch_events() -> io::Result<OwnedFd> {
 /// Says `what` of the builder's memory, a line into `notes`, which init sends as the
 /// output of the step that runs (D137); a line the pipe has no room for is said on the
 /// builder's console instead, as nothing may block the grower.
-fn say(notes: &OwnedFd, what: &str) {
-    let line = format!("shards-init: the builder's memory: {what}\n");
+fn say(notes: &OwnedFd, whose: &str, what: &str) {
+    let line = format!("shards-init: {whose} memory: {what}\n");
     // SAFETY: write(2) of a buffer of the length given, to a descriptor this process owns,
     // made non-blocking as the grower starts.
     let n = unsafe { libc::write(notes.as_raw_fd(), line.as_ptr().cast(), line.len()) };
@@ -453,13 +537,14 @@ impl Grows for Builder<'_> {
     }
 
     fn raise(&mut self, plugged: u64) {
-        if let Err(e) = high(self.plug.most, plugged).and_then(set_high) {
-            say(self.notes, &e.to_string());
+        let cgroup = self.plug.cgroup;
+        if let Err(e) = high(cgroup, self.plug.most, plugged).and_then(|h| set_high(cgroup, h)) {
+            say(self.notes, self.plug.whose, &e.to_string());
         }
     }
 
     fn say(&mut self, what: &str) {
-        say(self.notes, what);
+        say(self.notes, self.plug.whose, what);
     }
 
     fn kernel_said(&mut self) -> Vec<String> {
@@ -536,9 +621,10 @@ fn come(plug: Plug, asked: u64, g: &mut impl Grows) -> Came {
 fn grow(plug: Plug, events: &OwnedFd, notes: &OwnedFd) -> ! {
     // SAFETY: fcntl(2) of a descriptor this process owns.
     unsafe { libc::fcntl(notes.as_raw_fd(), libc::F_SETFL, libc::O_NONBLOCK) };
+    let cgroup = plug.cgroup;
     let lift = || {
-        if let Err(e) = std::fs::write(format!("{BUILD}/memory.high"), "max") {
-            say(notes, &format!("{BUILD}/memory.high: {e}"));
+        if let Err(e) = std::fs::write(format!("{cgroup}/memory.high"), "max") {
+            say(notes, plug.whose, &format!("{cgroup}/memory.high: {e}"));
         }
     };
     let mut asked = 0u64;
@@ -552,6 +638,7 @@ fn grow(plug: Plug, events: &OwnedFd, notes: &OwnedFd) -> ! {
             }
             say(
                 notes,
+                plug.whose,
                 &format!("its watch failed: {}", io::Error::last_os_error()),
             );
             lift();
@@ -559,10 +646,16 @@ fn grow(plug: Plug, events: &OwnedFd, notes: &OwnedFd) -> ! {
             unsafe { libc::_exit(1) };
         }
         let (Some(current), Some(high_now)) = (
-            number(&format!("{BUILD}/memory.current")),
-            number(&format!("{BUILD}/memory.high")),
+            number(&format!("{cgroup}/memory.current")),
+            number(&format!("{cgroup}/memory.high")),
         ) else {
             continue;
+        };
+        // The most it may have, read again: a run's microVM's is the run's own, which the
+        // host sets as the microVM takes its run (D148).
+        let plug = Plug {
+            most: control_read64(control::HOTPLUG_SIZE).unwrap_or(plug.most),
+            ..plug
         };
         if current < high_now {
             continue;
@@ -590,8 +683,9 @@ fn grow(plug: Plug, events: &OwnedFd, notes: &OwnedFd) -> ! {
             Came::Stalled(came) => {
                 say(
                     notes,
+                    plug.whose,
                     &format!(
-                        "{asked} bytes asked for, {came} came, though asked for twice: the build now runs on what the builder has, {} bytes",
+                        "{asked} bytes asked for, {came} came, though asked for twice: what it holds now runs on what it has, {} bytes",
                         mem_total().unwrap_or(total)
                     ),
                 );
@@ -609,6 +703,8 @@ mod tests {
     const PLUG: Plug = Plug {
         boot: 512 * MIB,
         most: 2048 * MIB,
+        cgroup: BUILD,
+        whose: "the builder's",
     };
 
     /// A builder whose memory is what `comes` makes of the requests so far and the time.

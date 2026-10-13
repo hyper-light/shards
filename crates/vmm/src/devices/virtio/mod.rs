@@ -180,4 +180,9 @@ pub trait VirtioDevice: Send {
     fn restore(&mut self, _r: &mut Reader<'_>) -> codec::Result<()> {
         Ok(())
     }
+    /// Why its state cannot be saved, where it cannot: asked while paused, before a
+    /// snapshot, which is then refused (D148).
+    fn unsaved(&self) -> Option<String> {
+        None
+    }
 }

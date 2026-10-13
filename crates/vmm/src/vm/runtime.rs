@@ -46,6 +46,16 @@ impl Handle {
         self.memory.hotplug_held().ok().flatten()
     }
 
+    /// Sets the most memory its guest may have plugged, in bytes: a run's own, as a VM
+    /// restored from a template takes it (D148). An error where it has none to plug.
+    pub fn set_plug_most(&self, bytes: u64) -> Result<(), String> {
+        if self.control.set_plug_most(bytes) {
+            Ok(())
+        } else {
+            Err("the VM has no memory to plug".into())
+        }
+    }
+
     /// Guest markers as `(marker, µs since VMM start)`.
     pub fn markers(&self) -> Vec<(u32, u128)> {
         self.control.markers()
@@ -686,6 +696,10 @@ impl Coordinator {
                 "snapshot: a container has joined this microVM, whose image a snapshot cannot keep".into(),
                 true,
             );
+        }
+        // What a paused device cannot save refuses the snapshot, not lost in it (D148).
+        if let Some(why) = self.bus.unsaved() {
+            return failed(format!("snapshot: {why}"), true);
         }
         let captured = match self.sh.snapshot.capture(&stopping) {
             None => return,

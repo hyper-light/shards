@@ -140,11 +140,17 @@ impl<D: crate::containers::Disk> Daemon<D> {
             fds.push(file.as_fd());
         }
         fds.push(layer_out.as_fd());
-        let mut payload = Vec::with_capacity(25 + prepared.spec.encoded_len().unwrap_or(0));
+        let mut payload = Vec::with_capacity(33 + prepared.spec.encoded_len().unwrap_or(0));
         payload.push(flags);
         payload.extend(self.logs.size.to_be_bytes());
         payload.extend(self.logs.files.to_be_bytes());
         payload.extend(0u64.to_be_bytes());
+        // The most memory its guest may plug (D148): a run's, for a visit's built-ins.
+        let plug = prepared
+            .memory_max
+            .saturating_sub(prepared.size.1)
+            .saturating_mul(1 << 20);
+        payload.extend(plug.to_be_bytes());
         prepared.spec.encode_into(&mut payload);
         // No network: nothing of the image's runs.
         let start = network::Start::Attach(network::Net::None);

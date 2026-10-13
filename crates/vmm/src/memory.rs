@@ -101,6 +101,9 @@ struct Hotplug {
     /// A bit for each block, set while it is plugged: what [`GuestMemory::host_ptr`] lets
     /// the host's devices reach.
     plugged: Box<[AtomicU64]>,
+    /// A bit for each block that has been plugged, never cleared: the blocks whose pages
+    /// the host may hold, asked about by [`GuestMemory::hotplug_held`] (D148).
+    ever: Box<[AtomicU64]>,
     /// Whether withholding an unplugged block's pages has failed and been said: once, as a
     /// guest unplugging over and over could otherwise fill the host's log.
     said_kept: AtomicBool,
@@ -129,15 +132,36 @@ impl Hotplug {
 
     fn set(&self, blocks: Range<u64>, plugged: bool) {
         for block in blocks {
-            if let Some(w) = usize::try_from(block / 64).ok().and_then(|w| self.plugged.get(w)) {
-                let bit = 1 << (block % 64);
+            let word = usize::try_from(block / 64).ok();
+            let bit = 1 << (block % 64);
+            if let Some(w) = word.and_then(|w| self.plugged.get(w)) {
                 if plugged {
                     w.fetch_or(bit, Ordering::Release);
                 } else {
                     w.fetch_and(!bit, Ordering::Release);
                 }
             }
+            if plugged && let Some(w) = word.and_then(|w| self.ever.get(w)) {
+                w.fetch_or(bit, Ordering::Release);
+            }
         }
+    }
+
+    /// Each run of the blocks whose bits are set in `bits`, `(gpa, len)`, in order.
+    fn runs(&self, bits: &[AtomicU64]) -> Vec<(u64, u64)> {
+        let set = |block: u64| {
+            let word = usize::try_from(block / 64).ok().and_then(|w| bits.get(w));
+            word.is_some_and(|w| w.load(Ordering::Acquire) & (1 << (block % 64)) != 0)
+        };
+        let mut runs: Vec<(u64, u64)> = Vec::new();
+        for block in (0..self.len as u64 / self.block).filter(|&b| set(b)) {
+            let gpa = self.gpa + block * self.block;
+            match runs.last_mut() {
+                Some((start, len)) if *start + *len == gpa => *len += self.block,
+                _ => runs.push((gpa, self.block)),
+            }
+        }
+        runs
     }
 
     /// The host's address of `gpa`, within the region.
@@ -230,15 +254,21 @@ impl GuestMemory {
         Ok(mem)
     }
 
-    /// Guest RAM of `ranges`, as [`anonymous`](Self::anonymous) makes it, and `len` bytes
-    /// at `gpa` that are the guest's only as its virtio-mem device plugs them, in blocks of
-    /// `block` bytes (D133): reserved now, and withheld until plugged ([`Access::plug`]).
+    /// Guest RAM of `ranges`, as [`anonymous`](Self::anonymous) makes it, with memory to
+    /// plug ([`with_plug_region`](Self::with_plug_region)).
     pub fn with_hotplug(
         ranges: &[(u64, usize)],
         gpa: u64,
         len: usize,
         block: u64,
     ) -> io::Result<GuestMemory> {
+        GuestMemory::anonymous(ranges)?.with_plug_region(gpa, len, block)
+    }
+
+    /// This memory, and `len` bytes at `gpa` that are the guest's only as its virtio-mem
+    /// device plugs them, in blocks of `block` bytes (D133): reserved now, and withheld
+    /// until plugged ([`Access::plug`]). A booted guest's RAM, or a restored one's (D148).
+    pub fn with_plug_region(mut self, gpa: u64, len: usize, block: u64) -> io::Result<GuestMemory> {
         let invalid = |msg: String| io::Error::new(io::ErrorKind::InvalidInput, msg);
         let page = platform::page_size()? as u64;
         if !block.is_power_of_two() || !block.is_multiple_of(page) {
@@ -254,24 +284,27 @@ impl GuestMemory {
                 "memory to plug at {gpa:#x}+{len:#x} is not in whole blocks of {block:#x}"
             )));
         }
-        let mut mem = GuestMemory::anonymous(ranges)?;
-        if mem.regions.iter().any(|r| gpa < r.end() && r.gpa < end) {
+        if self.hotplug.is_some() {
+            return Err(invalid("the memory has memory to plug already".into()));
+        }
+        if self.regions.iter().any(|r| gpa < r.end() && r.gpa < end) {
             return Err(invalid("memory to plug overlaps guest RAM".into()));
         }
         let host = platform::reserve_ram(len)?;
         let words = (len as u64 / block).div_ceil(64);
-        // Ownership moves into `mem`, whose Drop releases it.
-        mem.hotplug = Some(Hotplug {
+        // Ownership moves into `self`, whose Drop releases it.
+        self.hotplug = Some(Hotplug {
             gpa,
             len,
             host,
             block,
             plugged: (0..words).map(|_| AtomicU64::new(0)).collect(),
+            ever: (0..words).map(|_| AtomicU64::new(0)).collect(),
             said_kept: AtomicBool::new(false),
         });
         // SAFETY: the reservation just made, which nothing else references.
         unsafe { platform::withhold(host, len) }?;
-        Ok(mem)
+        Ok(self)
     }
 
     /// `(gpa, host pointer, len)` of the memory a virtio-mem device plugs, if the guest has
@@ -290,9 +323,28 @@ impl GuestMemory {
             return Ok(None);
         };
         let page = platform::page_size()?;
-        // SAFETY: the whole reservation, which this value owns.
-        let untouched = unsafe { platform::untouched(h.host.as_ptr(), h.len, page) }?;
-        Ok(untouched.map(|u| u.iter().filter(|&&never| !never).count() as u64 * page as u64))
+        // The blocks ever plugged alone are asked about, where the pages a block given back
+        // still held would show: asking of all of a region the size of the host's memory, a
+        // run's (D148), took 7.7 ms a run where none of it was ever plugged.
+        let mut held = 0u64;
+        for (gpa, len) in h.runs(&h.ever) {
+            let (Some(offset), Ok(len)) = (
+                gpa.checked_sub(h.gpa).and_then(|o| usize::try_from(o).ok()),
+                usize::try_from(len),
+            ) else {
+                return Ok(None);
+            };
+            if offset.checked_add(len).is_none_or(|end| end > h.len) {
+                return Ok(None);
+            }
+            // SAFETY: a range within the reservation, which this value owns.
+            let untouched = unsafe { platform::untouched(h.host.as_ptr().add(offset), len, page) }?;
+            match untouched {
+                Some(u) => held += u.iter().filter(|&&never| !never).count() as u64 * page as u64,
+                None => return Ok(None),
+            }
+        }
+        Ok(Some(held))
     }
 
     /// How many of the blocks `gpa..gpa+len` covers are plugged, and how many it covers;
@@ -306,18 +358,9 @@ impl GuestMemory {
 
     /// Each run of plugged blocks, `(gpa, len)`, in order.
     pub fn plugged_runs(&self) -> Vec<(u64, u64)> {
-        let Some(h) = &self.hotplug else {
-            return Vec::new();
-        };
-        let mut runs: Vec<(u64, u64)> = Vec::new();
-        for block in (0..h.len as u64 / h.block).filter(|&b| h.is_plugged(b)) {
-            let gpa = h.gpa + block * h.block;
-            match runs.last_mut() {
-                Some((start, len)) if *start + *len == gpa => *len += h.block,
-                _ => runs.push((gpa, h.block)),
-            }
-        }
-        runs
+        self.hotplug
+            .as_ref()
+            .map_or_else(Vec::new, |h| h.runs(&h.plugged))
     }
 
     /// Guest RAM backed copy-on-write by `file`, which holds each region in turn by guest
@@ -404,10 +447,12 @@ impl GuestMemory {
     /// machine whose vCPUs and devices are paused. Memory a virtio-mem device plugs is not
     /// saved: a machine with it is not snapshotted (`snapshot::encode`).
     pub fn save(&self, file: &File) -> io::Result<()> {
-        if self.hotplug.is_some() {
+        // Memory to plug is saved where none of it is plugged: a restore remakes its
+        // region as boot made it (D148). What is plugged is not saved.
+        if !self.plugged_runs().is_empty() {
             return Err(io::Error::new(
                 io::ErrorKind::Unsupported,
-                "the memory a virtio-mem device plugs is not saved",
+                "the memory a virtio-mem device plugged is not saved",
             ));
         }
         let page = platform::page_size()?;
@@ -853,7 +898,42 @@ mod tests {
         drop(a);
         let dir = shards_testdir::TempDir::new("plug-save").unwrap();
         let file = std::fs::File::create(dir.join("mem")).unwrap();
-        assert!(m.save(&file).is_err(), "memory to plug is not saved");
+        assert!(m.save(&file).is_err(), "memory plugged is not saved");
+    }
+
+    /// A snapshot keeps memory to plug where none of it is plugged (D148): its RAM is
+    /// saved, and a restore remakes the region as boot made it, withheld.
+    #[test]
+    fn memory_to_plug_with_none_plugged_is_saved_and_remade() {
+        let p = page_size().unwrap();
+        let block = (2 << 20).max(p as u64);
+        let ram = [(0x8000_0000u64, 4 * p)];
+        let hot = 0x1_0000_0000u64;
+        let m = GuestMemory::with_hotplug(&ram, hot, 4 * block as usize, block).unwrap();
+        m.access().unwrap().write_obj(0x8000_0000u64, 0x77u64).unwrap();
+        let dir = shards_testdir::TempDir::new("plug-none").unwrap();
+        let file = std::fs::File::create(dir.join("mem")).unwrap();
+        m.save(&file).unwrap();
+        let file = std::fs::File::open(dir.join("mem")).unwrap();
+        let back = GuestMemory::from_file(&ram, &file)
+            .unwrap()
+            .with_plug_region(hot, 4 * block as usize, block)
+            .unwrap();
+        let a = back.access().unwrap();
+        assert_eq!(a.read_obj::<u64>(0x8000_0000).unwrap(), 0x77);
+        assert!(
+            a.read_obj::<u64>(hot).is_err(),
+            "the region is withheld until plugged"
+        );
+        drop(a);
+        assert_eq!(
+            back.hotplug().map(|(gpa, _, len)| (gpa, len)),
+            Some((hot, 4 * block as usize))
+        );
+        assert!(
+            back.with_plug_region(hot, block as usize, block).is_err(),
+            "one region"
+        );
     }
 
     #[test]

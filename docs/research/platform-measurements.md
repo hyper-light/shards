@@ -7743,3 +7743,32 @@ revision before comparing a changed API/implementation.
   costs a VM some 3 MiB. A blob's first map is the cost to keep down: about 0.1 ms each,
   past 1 ms at p99 on a busy host. A GPU run's memory is its cold boot's (D149's
   templates). Guest vCPUs at the time-constraint policy outrun the host's other work.
+
+### M219. What plugging a run's memory costs a run (D148)
+
+- **Question.** D148 gives every run's microVM a region to plug of the host's memory (here
+  128 GiB), one more device, init's grower and a template whose kernel limits are sized
+  for all of it. What does that cost a run's start and end, and an idle run's memory?
+- **Method.** `docs/research/measurements/run-plug/region.py`: cold boots of one root,
+  `--memory 256` and a region of 0 to 128 GiB, the sizes in turn, n=12 each.
+  `build-ab/ab.py`: 300 runs of `run --rm alpine:3.22 true` in each of two builds, in
+  turn (93ce8368, and it with D148), each restoring its own template.
+  `run-plug/memory.py`: 20 such runs each, their VM process's memory as they end. Apple
+  M5 Max, macOS 26.4.1, 2026-10-12, the host's load average 7.8 to 11.7.
+- **Results.**
+  - A region costs a cold boot and its end next to nothing, by its size, µs p50 (p90):
+    none 38,576 (39,053); 2 GiB 38,516 (40,012); 16 GiB 39,027 (40,482); 64 GiB 39,279
+    (40,087); 128 GiB 39,374 (40,728).
+  - The first A/B found +7.75 ms a run, paired median, 95% [+7.63, +7.87], outside the
+    command: `SHARDS_TIMING`'s count of the pages held of memory to plug asked the OS of
+    the whole region, page by page (16 KiB pages, 8 Mi of them). It now asks of blocks
+    ever plugged alone (`Hotplug::ever`), still those given back, whose pages a failed
+    give-back would leave held, which `a_guest_grows_and_gives_back_its_memory` catches.
+  - With that, a run's wall clock, new less old, paired: median +36 µs, 95% [-14, +100];
+    the command's time in the guest -26 µs [-38, -9]; the rest +70 µs [+23, +121]. Wall,
+    µs: old p50 6,131, p90 7,012, p99 16,420, max 25,772; new 6,142, 6,938, 10,104,
+    10,675.
+  - An idle run's memory, MiB, p50 (p90): footprint 15.06 (15.20) old, 15.27 (15.38)
+    new; RSS 29.30 (29.34) old, 29.44 (29.53) new.
+- **Consequence (D148).** Every run may plug the host's memory for what its start costs
+  already: within 0.1 ms and 0.2 MiB of a microVM fixed at boot.

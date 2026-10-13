@@ -3602,6 +3602,48 @@ No run-time labels, relays or declassifiers (§12 answer 14, decided by the user
 an internal-only domain to the world (D58), so there is no data to label. Code mode is
 D136.
 
+### D148. A run's memory, plugged as its workload needs it (virtio-mem)
+
+A run's microVM was sized at boot: without `-m`, 256 MiB less what its kernel keeps
+(`MemTotal` 248,820 kB), so a workload past it was ended (test-backend-ops, 137, M218),
+where a Docker container without `-m` may hold its host's memory (`memory.max` "max",
+`MemTotal` its host's: shards-dind, docker 29.3.1); with `-m`, booted with all of it, its
+page structures paid at boot (21 MiB and 4 ms per GiB, PM M82). D133's virtio-mem gives a
+builder memory as its build needs it; runs now have it too.
+
+- **Each run's microVM boots as a run without a limit does**, with a region to plug of the
+  host's memory less that, and is given memory as its processes reach what it has, up to
+  its run's own most: what its `-m` needs (`resources::memory_mib`), or without one the
+  host's memory, as a container without one may have. `-m` still ends a workload past it
+  (`memory.max`, 137), as Docker's does.
+- **One template for every limit.** A snapshot keeps the region to plug, none of it
+  plugged (format 13: the machine's `hotplug_mib`); a restore remakes it as boot made it,
+  withheld. What is plugged or asked for is not saved: a device says why
+  (`VirtioDevice::unsaved`), and the snapshot is refused, not written without it. A run's
+  most comes with the run (the `RUN` request) and the VM sets it before its guest hears
+  of the run (`Handle::set_plug_most`): the host keeps the bound, never the guest.
+- **Init** holds every process past it, the workload's, each joiner's (D119) and the
+  domains' (D109), in one cgroup (`/sys/fs/cgroup/run`; each keeps its own namespace's
+  view), at a `memory.high` of the memory plugged so far, and a process of its own in the
+  root cgroup grows it, D133's grower, reading the run's most again as it grows; it says
+  what it sees in the kernel's log. It starts before the template's snapshot and goes on
+  in each restore, and through the workload's end, where joiners go on. The template's kernel limits sized by memory are those of all of it
+  (D133's `raise_limits`), and its root's writes hold as much (the writable layer's
+  tmpfs), as a container's are its host's; the domains count what may still be plugged.
+- **Verified on real VMs** (containers.rs `a_runs_memory_grows_as_its_workload_needs_it`):
+  without `-m`, 1 GiB in a microVM booted with 256 MiB, in the one that saved the
+  template and in a restore; `-m 256m` ended at 137; `-m 1g` holding 512 MiB; one template
+  for all. boot.rs `a_snapshot_keeps_memory_to_plug`: a guest snapshotted with memory to
+  plug, the booted VM and two restores each plugging 512 MiB. Mutation-checked: without
+  the grower, the 1 GiB run is ended (137); without the restored region, a restore fails.
+- **What it costs** (PM M219): a run's start and end within 0.1 ms of before (paired
+  A/B, median +36 µs, 95% [-14, +100]), an idle run 0.2 MiB more of footprint; a region
+  of 128 GiB costs a cold boot 0.8 ms. Found on the way: `SHARDS_TIMING`'s count of held
+  pages asked the OS of the whole region, 7.75 ms a run; it asks of blocks ever plugged.
+- **Not yet:** memory given back as a long-lived run's workload frees it (D133's device
+  can unplug; a guest must ask for less), and `MemTotal`, which grows as memory is plugged
+  where a container's is its host's from the start: a JVM or Node.js sizes its heap by it.
+
 ### D147. Mounting a pmem root once libnvdimm has made it
 
 - **What:** init mounts an image's EROFS on its pmem device (a run's root, a builder's

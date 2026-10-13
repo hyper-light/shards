@@ -165,6 +165,10 @@ impl Bus {
         self.pio.save(w);
     }
 
+    pub fn unsaved(&self) -> Option<String> {
+        self.mmio.unsaved().or_else(|| self.pio.unsaved())
+    }
+
     fn restore(&self, r: &mut Reader<'_>) -> Result<(), String> {
         self.mmio.restore(r).map_err(|e| e.to_string())?;
         self.pio.restore(r).map_err(|e| e.to_string())
@@ -466,9 +470,13 @@ pub fn restore(
             snap.config.vcpus
         ));
     }
-    let (_, ranges) = ram_ranges(snap.config.memory_mib)?;
-    let memory =
-        Arc::new(GuestMemory::from_file(&ranges, memory_file).map_err(|e| format!("snapshot memory: {e}"))?);
+    let (ram, ranges) = ram_ranges(snap.config.memory_mib)?;
+    let memory = Arc::new(super::restored_memory(
+        &ranges,
+        memory_file,
+        &snap.config,
+        plug_at(ram),
+    )?);
     let a = assemble(&memory, &snap.config, console, hosts, false)?;
     let guest: Vec<(u64, u64)> = memory
         .regions()

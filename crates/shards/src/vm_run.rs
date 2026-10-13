@@ -36,7 +36,7 @@ const RUN_USAGE: &str = "usage: shards run --kernel PATH [--initrd PATH | --init
             macOS 15 or later. Not with --snapshot-dir: its EL2 state is not saved.
   --memory-max: the most memory the guest may have: --memory at boot, and up to this
             much in all as it asks for more through shards' control page, plugged by a
-            virtio-mem device. Whole 2 MiB blocks; not with --snapshot-dir.
+            virtio-mem device. Whole 2 MiB blocks. A snapshot keeps none plugged.
   --gpu: this Mac's GPU, Vulkan through Venus, on the guest's render node
          /dev/dri/renderD128, where its kernel has DRM's virtio-gpu driver. Not with
          --snapshot-dir: a GPU's state is its host driver's.
@@ -293,9 +293,6 @@ fn parse_run(args: impl Iterator<Item = OsString>) -> Result<Run, String> {
         cfg.hotplug_mib = max
             .checked_sub(cfg.memory_mib)
             .ok_or_else(|| format!("--memory-max {max} is less than --memory {}", cfg.memory_mib))?;
-        if cfg.hotplug_mib > 0 && common.snapshot_dir.is_some() {
-            return Err("--memory-max with --snapshot-dir: memory plugged into a VM is not saved, so it is not snapshotted".into());
-        }
     }
     cfg.kernel = kernel.ok_or("--kernel is required")?;
     cfg.snapshot = common.policy();
@@ -1008,6 +1005,12 @@ fn serve_workload(
                             let request = crate::warm::receive(&link, to_guest, &|| {
                                 moved().inspect_err(|e| report(e))
                             })?;
+                            // The run's own most memory to plug, before its guest hears of
+                            // it (D148), none included: the template's is the host's. A VM
+                            // with none to plug has what it booted with.
+                            if let Err(e) = stopper.set_plug_most(request.plug) {
+                                shards_vmm::debug!("{e}");
+                            }
                             timing
                                 .asked
                                 .store(request.timing, std::sync::atomic::Ordering::Relaxed);
@@ -1963,7 +1966,8 @@ mod tests {
         .err()
         .unwrap();
         assert_eq!(e, "--memory-max 256 is less than --memory 512");
-        let e = parse_run(args(&[
+        // A snapshot keeps the memory to plug, none of it plugged (D148).
+        let run = parse_run(args(&[
             b"--kernel",
             b"/k",
             b"--memory-max",
@@ -1971,9 +1975,8 @@ mod tests {
             b"--snapshot-dir",
             b"/t",
         ]))
-        .err()
         .unwrap();
-        assert!(e.starts_with("--memory-max with --snapshot-dir: "), "{e}");
+        assert_eq!(run.cfg.hotplug_mib, 1024 - run.cfg.memory_mib);
         let e = parse_run(args(&[b"--kernel", b"/k", b"--memory-max", b"lots"]))
             .err()
             .unwrap();

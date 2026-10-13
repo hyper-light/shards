@@ -320,6 +320,10 @@ impl MmioDevice for MmioTransport {
         lock(&self.state).device.resume()
     }
 
+    fn unsaved(&self) -> Option<String> {
+        lock(&self.state).device.unsaved()
+    }
+
     fn save(&self, w: &mut Writer) {
         let s = lock(&self.state);
         for v in [
