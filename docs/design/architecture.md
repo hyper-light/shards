@@ -3602,6 +3602,37 @@ No run-time labels, relays or declassifiers (§12 answer 14, decided by the user
 an internal-only domain to the world (D58), so there is no data to label. Code mode is
 D136.
 
+### D146. A run's `--device` by CDI name
+
+- **What:** `--device VENDOR/CLASS=NAME` gives a run what the device's CDI spec says, as
+  dockerd's CDI driver gives it as a container starts (moby daemon/cdi.go,
+  injectCDIDevices; CDI v1.1.0 Cache.InjectDevices, ContainerEdits.Apply): each name the
+  device of that name in the specs of the daemon's CDI directories (SHARDS_CDI_SPEC_DIRS,
+  else /etc/cdi and /var/run/cdi, read as builds read them, D96), the spec's edits once,
+  then each device's.
+  - Its variables over the workload's whole environment (AddMultipleProcessEnv).
+  - Its groups, but root's, once each (AddProcessAdditionalGid).
+  - Its nodes from the guest's own device at the host path, a host's numbers meaning
+    nothing in a guest, checked against the kind the spec says; the spec's mode, else the
+    device's (udev's); the spec's owner, else the process's user and group but root's,
+    which init resolves from the image's user database; the spec's cgroup access, else
+    `rwm`. A FIFO is made as one, outside the device filter.
+  - Its mounts as binds of the host path, read-only with `ro`, of the propagation its
+    options name, with `nosuid`, `nodev` and `noexec` on the guest's mount; a container's
+    record keeps none of them, as dockerd's keeps none.
+  - A node of the GPU's render node gives the run this Mac's GPU (D144, D145).
+- **As dockerd fails:** a name no spec has fails the start, not the making, in dockerd's
+  words (`CDI device injection failed: unresolvable CDI devices …`); a hook, a host's
+  network interface or an Intel RDT class, which only a container's host has, is refused
+  by name, as a build's step refuses it.
+- **Verified on real VMs** (containers.rs `cdi_devices_are_injected_as_dockers_are`,
+  gpu.rs): variables, groups, a node's owner, mode and access, a read-only nosuid nodev
+  bind, a name refused at start, a hook refused; `--device test.example/gpu=0` finds
+  Venus. Mutation-checked: without `nosuid` on the guest's mount, or with root as a
+  node's owner, the test fails.
+- **To build:** a joining microVM's node whose spec gives no owner takes a numeric
+  `--user` alone, its image's user database being read once its root is built.
+
 ### D145. A build's steps given the GPU by CDI name
 
 - **What:** a step given a CDI device whose edits bring the render node
@@ -3701,8 +3732,8 @@ to test on, where no CI runner has a GPU behind an IOMMU.
   carries `shards-vm-gpu`; CI lints vmm's `gpu` feature, which no workspace lint compiles,
   and runs the renderer's tests, which skip where Metal finds no GPU (a virtual Mac).
 - **To build:** the gpu kernel pinned once a release publishes it (KERNEL_GPU; until then
-  SHARDS_KERNEL names one); runs' `--device` by CDI name; the research's E6 measured on
-  it; Linux's VFIO (R2). A build's `RUN` steps: D145.
+  SHARDS_KERNEL names one); the research's E6 measured on it; Linux's VFIO (R2). A
+  build's `RUN` steps: D145; a run's `--device` by CDI name: D146.
 
 ### D143. `RUN` on Windows hosts: the builder
 

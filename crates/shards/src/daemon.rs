@@ -2178,10 +2178,16 @@ impl<D: Disk> Daemon<D> {
         let _ = shards_ipc::send(conn, kind::CREATED, id.as_bytes(), &[]);
         // Its mount points, opened and served (D38): the guest mounts each as its setup
         // says. One that cannot be fails the start, as a mount runc cannot make does.
-        let (points, first) = lock(&self.containers)
+        let (mut points, first) = lock(&self.containers)
             .made(&id)
             .map(|c| (c.mounts.clone(), c.started.is_none()))
             .unwrap_or_default();
+        // CDI's mounts (D146), as the run starts: one that cannot be fails the start too.
+        let cdi_points = match &prepared.cdi {
+            Ok(Some(e)) => crate::volumes::cdi_points(&e.mounts),
+            Ok(None) => Ok(Vec::new()),
+            Err(e) => Err(e.clone()),
+        };
         // Its own MAC where it has an interface of its own (D46, PM M173): given
         // (`--mac-address`, its endpoint's `mac-address`), which its VM takes as the run
         // comes; else made for it, as dockerd makes each endpoint's, so that no two runs of
@@ -2226,9 +2232,18 @@ impl<D: Disk> Daemon<D> {
         // join share, given to the share as it joins (`join_vm`).
         let mut join_volumes = Vec::new();
         let joining = matches!(start, network::Start::Join(_));
-        let shared = crate::volumes::open(&points, first, &crate::volumes::Store::new(&self.home)).and_then(
-            |opened| {
-                prepared.spec.setup = crate::setup::setup(&run, &opened.mounts)?;
+        let shared = cdi_points
+            .and_then(|more| {
+                points.extend(more);
+                crate::volumes::open(&points, first, &crate::volumes::Store::new(&self.home))
+            })
+            .and_then(|opened| {
+                let cdi = prepared.cdi.as_ref().ok().and_then(Option::as_ref);
+                prepared.spec.setup = crate::setup::setup(&run, &opened.mounts, cdi)?;
+                // CDI's variables, over the workload's whole (AddMultipleProcessEnv, D146).
+                if let Some(e) = cdi {
+                    crate::build::cdi::merge_env(&mut prepared.spec.env, &e.env);
+                }
                 // `--pid container:` of a joiner (D119): the PID namespace its run took.
                 if let Some(other) = run.pid.strip_prefix("container:")
                     && self.joined_run(other)
@@ -2280,10 +2295,11 @@ impl<D: Disk> Daemon<D> {
                         .map(|kv| format!("endpoint-sysctl={kv}").into_bytes()),
                 );
                 let kernel = crate::guest::version_of(crate::run::kernel_of(&prepared.boot))?;
-                prepared
-                    .spec
-                    .setup
-                    .extend(crate::setup::security_setup(&run, kernel)?);
+                prepared.spec.setup.extend(crate::setup::security_setup(
+                    &run,
+                    kernel,
+                    prepared.cdi.as_ref().ok().and_then(Option::as_ref),
+                )?);
                 // A joiner of a container on the host's network: its binds the host's too,
                 // by its provider's process for them (D124).
                 if joins_host {
@@ -2311,8 +2327,7 @@ impl<D: Disk> Daemon<D> {
                 let link = self.start_shares(threads, &opened.dirs)?;
                 prepared.shares = u32::try_from(opened.dirs.len()).map_err(|_| "too many shares")?;
                 Ok(link)
-            },
-        );
+            });
         let shares = match shared {
             Ok(link) => link,
             Err(e) => {
@@ -2686,7 +2701,7 @@ impl<D: Disk> Daemon<D> {
             spec.hosts = Vec::new();
             spec.domainname = run.domainname.clone().into_bytes();
             spec.cgroup = crate::resources::cgroup(&run.resources);
-            spec.setup = crate::setup::setup(run, &[])?;
+            spec.setup = crate::setup::setup(run, &[], crate::run::cdi_edits(run).ok().flatten().as_ref())?;
             return Ok(());
         }
         spec.resolv = Some(crate::build::step::resolv_with(
@@ -2714,7 +2729,7 @@ impl<D: Disk> Daemon<D> {
             .collect::<Result<_, &str>>()?;
         spec.domainname = run.domainname.clone().into_bytes();
         spec.cgroup = crate::resources::cgroup(&run.resources);
-        spec.setup = crate::setup::setup(run, &[])?;
+        spec.setup = crate::setup::setup(run, &[], crate::run::cdi_edits(run).ok().flatten().as_ref())?;
         Ok(())
     }
 
@@ -5745,6 +5760,7 @@ mod tests {
             let prepared = Prepared {
                 boot: Boot::Given(Box::new(Config::new(PathBuf::from("kernel"), None))),
                 gpu: None,
+                cdi: Ok(None),
                 rootfs: PathBuf::new(),
                 spec: shards_abi::run::Spec {
                     argv: vec![b"exit".to_vec(), b"7".to_vec()],

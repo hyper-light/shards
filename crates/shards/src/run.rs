@@ -41,6 +41,40 @@ pub fn kernel_of(boot: &Boot) -> &std::path::Path {
     }
 }
 
+/// What a run's CDI devices (`--device VENDOR/CLASS=NAME`) bring it, resolved as dockerd's
+/// CDI driver resolves them as a container starts (moby daemon/cdi.go, injectCDIDevices;
+/// CDI v1.1.0 Cache.InjectDevices): each name the device of that name in the specs of the
+/// daemon's CDI directories (SHARDS_CDI_SPEC_DIRS, else /etc/cdi and /var/run/cdi), their
+/// edits merged in CDI's order. What only a host can do is refused, as a build's step
+/// refuses it (D96, D146).
+pub fn cdi_edits(run: &Run) -> Result<Option<crate::build::cdi::Edits>, String> {
+    use crate::build::cdi;
+    if run.cdi_devices.is_empty() {
+        return Ok(None);
+    }
+    let registry = cdi::Registry::load(&cdi::spec_dirs(&|k| std::env::var(k).ok()), &[]);
+    let unresolved: Vec<&str> = run
+        .cdi_devices
+        .iter()
+        .filter(|d| !registry.has(d))
+        .map(String::as_str)
+        .collect();
+    if !unresolved.is_empty() {
+        return Err(format!(
+            "CDI device injection failed: unresolvable CDI devices {}",
+            unresolved.join(", ")
+        ));
+    }
+    let edits = registry.edits(&run.cdi_devices);
+    if !edits.host_only.is_empty() {
+        return Err(format!(
+            "CDI device injection failed: CDI devices ask for what only a container's host can do, which a microVM has none of: {}",
+            edits.host_only.join("; ")
+        ));
+    }
+    Ok(Some(edits))
+}
+
 /// The render node of a guest's GPU, as Linux's virtio-gpu driver makes it for the first
 /// (D144): a run or a step given it is given this Mac's GPU.
 pub const RENDER_NODE: &str = "/dev/dri/renderD128";
@@ -87,6 +121,9 @@ pub struct Prepared {
     /// The kernel its guest boots with this Mac's GPU, where `--gpus` asks for it and
     /// `boot` is the stored guest's (D144).
     pub gpu: Option<PathBuf>,
+    /// What its CDI devices bring it (D146), or why they cannot be: its start fails then,
+    /// and not its making, as dockerd's resolves them as a container starts.
+    pub cdi: Result<Option<crate::build::cdi::Edits>, String>,
     /// The image's root filesystem.
     pub rootfs: PathBuf,
     pub spec: Spec,
@@ -337,7 +374,15 @@ pub fn prepare(
         }),
         _ => return Err("--kernel and --init (or SHARDS_KERNEL and SHARDS_INIT) go together".into()),
     };
-    let gpu = match (wants_gpu(&request.gpus)?, &boot) {
+    let cdi = cdi_edits(request);
+    let renders = cdi.as_ref().ok().and_then(Option::as_ref).is_some_and(|e| {
+        let render = |p: &str| p == RENDER_NODE;
+        e.nodes.iter().any(|n| render(&n.path) || render(&n.host_path))
+    });
+    let gpu = match (
+        wants_gpu(&request.gpus)? || (cfg!(target_os = "macos") && renders),
+        &boot,
+    ) {
         (false, _) => None,
         // The kernel given is the one it boots.
         (true, Boot::Given(cfg)) => Some(cfg.kernel.clone()),
@@ -398,6 +443,7 @@ pub fn prepare(
         agentfile,
         boot,
         gpu,
+        cdi,
         rootfs,
         spec,
         interactive: options.interactive,

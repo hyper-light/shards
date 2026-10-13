@@ -37,7 +37,7 @@ mod attest;
 mod azblob;
 mod builder;
 mod cache;
-mod cdi;
+pub(crate) mod cdi;
 mod compress;
 pub(crate) mod domains;
 mod estargz;

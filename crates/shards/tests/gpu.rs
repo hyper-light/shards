@@ -92,6 +92,25 @@ fn the_gpu_renders_through_venus_in_runs_and_build_steps() {
             ran.stdout
         );
     }
+    // A run given the render node by CDI name has the GPU (D146): its daemon started again,
+    // with the spec's directory.
+    let stopped = run_shards_env(&["stop"], &["daemon"], &env, timeout);
+    assert_eq!(stopped.status, Some(0), "{}", stopped.stderr);
+    let ran = run_shards_env(
+        &["run"],
+        &[
+            "--rm",
+            "--device",
+            "test.example/gpu=0",
+            "gpu-venus:1",
+            "vulkaninfo",
+            "--summary",
+        ],
+        &step_env,
+        timeout,
+    );
+    assert_eq!(ran.status, Some(0), "{}\n{}", ran.stdout, ran.stderr);
+    assert!(ran.stdout.contains("Virtio-GPU Venus ("), "{}", ran.stdout);
     // A run's user other than root has the GPU too.
     let ran = run_shards_env(
         &["run"],

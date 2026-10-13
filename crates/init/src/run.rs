@@ -2254,11 +2254,16 @@ impl Standby {
         // Its devices first, as dockerd finds them and runc makes their nodes, init's: in
         // the /dev it shares with the workload, the limits and filter on the cgroup it is
         // outside of.
+        // The process's owner, which CDI gives a node whose spec gives it none (D146).
+        let owner = || {
+            user::resolve(&spec.user, standby.passwd.as_deref(), standby.group.as_deref())
+                .map(|u| (u.uid, u.gid))
+        };
         let devices = spec
             .setup
             .iter()
             .find_map(|e| e.strip_prefix(b"devices="))
-            .map(crate::devices::prepare)
+            .map(|e| crate::devices::prepare(e, &owner))
             .transpose()
             .map_err(setup_failed)?;
         limit(&spec.cgroup, devices.as_ref())?;
@@ -2984,7 +2989,18 @@ fn start_joiner(
         .setup
         .iter()
         .find_map(|e| e.strip_prefix(b"devices="))
-        .map(crate::devices::prepare_joiner)
+        .map(|e| {
+            // Its user database is its image's, read once its root is built: here, a CDI
+            // node whose spec gives no owner takes a numeric user's (D146).
+            let owner = || {
+                user::resolve(&spec.user, None, None)
+                    .map(|u| (u.uid, u.gid))
+                    .map_err(|e| {
+                        format!("{e}: a joining microVM's CDI node takes a numeric user as its owner")
+                    })
+            };
+            crate::devices::prepare_joiner(e, &owner)
+        })
         .transpose()
         .map_err(setup_failed)?;
     let mut standby = Standby::forked(Born::Joined(join, id), (None, None))?;

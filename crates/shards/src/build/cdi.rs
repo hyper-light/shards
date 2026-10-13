@@ -650,6 +650,11 @@ impl Registry {
         r
     }
 
+    /// Whether `name`, fully qualified, is a device of the specs read.
+    pub fn has(&self, name: &str) -> bool {
+        self.device(name).is_some()
+    }
+
     fn device(&self, name: &str) -> Option<(&Loaded, &Device)> {
         let &(s, d) = self.devices.get(name)?;
         let loaded = self.specs.get(s)?;

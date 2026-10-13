@@ -510,7 +510,11 @@ pub(crate) fn merge_tmpfs_options(options: &[&str]) -> Result<Vec<String>, Strin
 /// as moby sorts mounts, with moby's default options before the run's; `/dev/shm`'s size;
 /// the ulimits, the last of each by name; the sysctls, the last of each; and the root
 /// read-only last, after everything is mounted on it.
-pub fn setup(run: &Run, points: &[(String, Vec<u8>)]) -> Result<Vec<Vec<u8>>, String> {
+pub fn setup(
+    run: &Run,
+    points: &[(String, Vec<u8>)],
+    cdi: Option<&crate::build::cdi::Edits>,
+) -> Result<Vec<Vec<u8>>, String> {
     let mut out: Vec<Vec<u8>> = Vec::new();
     let mut mounts: Vec<(String, Vec<u8>)> = Vec::new();
     for (dest, opts) in tmpfs_map(run) {
@@ -549,6 +553,13 @@ pub fn setup(run: &Run, points: &[(String, Vec<u8>)]) -> Result<Vec<Vec<u8>>, St
     for g in &run.group_add {
         out.push(format!("group={g}").into_bytes());
     }
+    // CDI's groups (AddProcessAdditionalGid): each but root's, once (D146).
+    for g in cdi.map(|e| e.gids.as_slice()).unwrap_or_default() {
+        let g = g.to_string();
+        if g != "0" && !run.group_add.contains(&g) {
+            out.push(format!("group={g}").into_bytes());
+        }
+    }
     if run.oom_score_adj != 0 {
         out.push(format!("oom={}", run.oom_score_adj).into_bytes());
     }
@@ -578,7 +589,11 @@ pub fn setup(run: &Run, points: &[(String, Vec<u8>)]) -> Result<Vec<Vec<u8>>, St
 /// writable, no new privileges and the seccomp filter, which its execs take too (init
 /// installs the filter last, as runc does). Made as the container starts, so that a
 /// profile it cannot load fails its start and not its making, as dockerd's does.
-pub fn security_setup(run: &Run, kernel: shards_seccomp::Kernel) -> Result<Vec<Vec<u8>>, String> {
+pub fn security_setup(
+    run: &Run,
+    kernel: shards_seccomp::Kernel,
+    cdi: Option<&crate::build::cdi::Edits>,
+) -> Result<Vec<Vec<u8>>, String> {
     let mut out = Vec::new();
     let security = security(run)?;
     if run.system_paths && !run.privileged {
@@ -587,7 +602,7 @@ pub fn security_setup(run: &Run, kernel: shards_seccomp::Kernel) -> Result<Vec<V
     if security.writable_cgroups == Some(true) && !run.privileged {
         out.push(b"cgroups-rw".to_vec());
     }
-    if let Some(devices) = devices(run) {
+    if let Some(devices) = devices(run, cdi) {
         out.push(devices);
     }
     if security.no_new_privileges {
@@ -617,7 +632,8 @@ pub fn security_setup(run: &Run, kernel: shards_seccomp::Kernel) -> Result<Vec<V
 /// each `--device-cgroup-rule`, `i` with each CDI device, and `w`, `rb`, `wb`, `ri` and
 /// `wi` with each device weight's and throttle's path and number. Without one, a container keeps
 /// the filter of Docker's defaults that its VM booted with.
-fn devices(run: &Run) -> Option<Vec<u8>> {
+fn devices(run: &Run, cdi: Option<&crate::build::cdi::Edits>) -> Option<Vec<u8>> {
+    let cdi_nodes = cdi.map(|e| e.nodes.as_slice()).unwrap_or_default();
     let io = [
         (&b"w"[..], &run.blkio_weight_device),
         (b"rb", &run.device_read_bps),
@@ -631,7 +647,7 @@ fn devices(run: &Run) -> Option<Vec<u8>> {
         && !gpu
         && run.devices.is_empty()
         && run.device_cgroup_rules.is_empty()
-        && run.cdi_devices.is_empty()
+        && cdi_nodes.is_empty()
         && io.iter().all(|(_, v)| v.is_empty())
     {
         return None;
@@ -647,11 +663,43 @@ fn devices(run: &Run) -> Option<Vec<u8>> {
             e.push(0);
         }
     }
-    for (tag, values) in [(b"r", &run.device_cgroup_rules), (b"i", &run.cdi_devices)] {
-        for v in values {
-            e.extend_from_slice(tag);
-            e.push(0);
-            e.extend_from_slice(v.as_bytes());
+    for v in &run.device_cgroup_rules {
+        e.extend_from_slice(b"r\0");
+        e.extend_from_slice(v.as_bytes());
+        e.push(0);
+    }
+    // CDI's nodes (D146), resolved as the run starts: each its host path and path, its
+    // cgroup access (CDI's `rwm` where its spec gives none), and the kind, mode and owner
+    // its spec gives, `-` where it gives none.
+    for n in cdi_nodes {
+        let given = |s: &str| {
+            if s.is_empty() {
+                "-".to_string()
+            } else {
+                s.to_string()
+            }
+        };
+        let number = |v: Option<String>| v.unwrap_or_else(|| "-".into());
+        let words = [
+            given(if n.host_path.is_empty() {
+                &n.path
+            } else {
+                &n.host_path
+            }),
+            given(&n.path),
+            if n.permissions.is_empty() {
+                "rwm".into()
+            } else {
+                n.permissions.clone()
+            },
+            given(&n.kind),
+            number(n.file_mode.map(|m| format!("{:o}", m & 0o7777))),
+            number(n.uid.map(|u| u.to_string())),
+            number(n.gid.map(|g| g.to_string())),
+        ];
+        e.extend_from_slice(b"n\0");
+        for w in words {
+            e.extend_from_slice(w.as_bytes());
             e.push(0);
         }
     }
@@ -731,7 +779,7 @@ mod tests {
             Err("invalid mount path: 'run' mount path must be absolute".into())
         );
         assert_eq!(
-            setup(&run(&["/x:foo"]), &[]),
+            setup(&run(&["/x:foo"]), &[], None),
             Err("invalid tmpfs option \"foo\"".into())
         );
         let set = Run {
@@ -746,7 +794,7 @@ mod tests {
             read_only: true,
             ..Run::default()
         };
-        let text: Vec<String> = setup(&set, &[])
+        let text: Vec<String> = setup(&set, &[], None)
             .unwrap()
             .into_iter()
             .map(|b| String::from_utf8(b).unwrap())
@@ -775,7 +823,7 @@ mod tests {
     fn a_container_given_sys_admin_has_apparmors_mount_rule() {
         let kernel = shards_seccomp::Kernel(6, 1);
         let entries = |run: &Run| {
-            security_setup(run, kernel)
+            security_setup(run, kernel, None)
                 .unwrap()
                 .into_iter()
                 .filter_map(|e| {

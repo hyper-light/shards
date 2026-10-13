@@ -9969,3 +9969,123 @@ fn a_runs_directories_keep_their_numbers() {
         "more than one device: {r}"
     );
 }
+
+/// `--device` by CDI name (D146), resolved by the daemon as dockerd's CDI driver resolves
+/// it as a container starts, from the specs of its CDI directories: a device's variables,
+/// spec-wide and its own, over the workload's; its groups but root's; its node, made from
+/// the guest's own device at its host path, owned by the process's user, its access the
+/// spec's; its mount, a host directory bound read-only, nosuid and nodev. A name no spec
+/// has fails the start, not the making; a hook, which runs on a container's host, is
+/// refused.
+#[test]
+fn cdi_devices_are_injected_as_dockers_are() {
+    let Some((home, image)) = home("containers-cdi") else {
+        return;
+    };
+    // The daemon reads CDI's directories as it starts: started again, with ours.
+    assert_eq!(shards_in(&home, &["stop", "daemon"]).status, Some(0));
+    let specs = TempDir::new("cdi-specs");
+    let shared = TempDir::new("cdi-shared");
+    std::fs::write(shared.join("hello"), "from the host\n").unwrap();
+    let spec = serde_json::json!({
+        // additionalGids are v0.7.0's.
+        "cdiVersion": "0.7.0",
+        "kind": "test.example/dev",
+        "containerEdits": {"env": ["SPEC_WIDE=1"]},
+        "devices": [
+            {"name": "fuse", "containerEdits": {
+                "env": ["CDI_DEV=fuse"],
+                "deviceNodes": [{"path": "/dev/cdi-fuse", "hostPath": "/dev/fuse", "permissions": "rw"}],
+                "mounts": [{"hostPath": shared.to_str().unwrap(), "containerPath": "/cdi",
+                            "options": ["ro", "nosuid", "nodev", "bind"]}],
+                "additionalGids": [4242, 0]
+            }},
+            {"name": "hook", "containerEdits": {
+                "hooks": [{"hookName": "createRuntime", "path": "/bin/true"}]
+            }}
+        ]
+    });
+    std::fs::write(specs.join("test.json"), spec.to_string()).unwrap();
+    let (kernel, init) = (kernel(), guest_init());
+    let env: [(&str, &OsStr); 4] = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", kernel.as_os_str()),
+        ("SHARDS_INIT", init.as_os_str()),
+        ("SHARDS_CDI_SPEC_DIRS", specs.as_os_str()),
+    ];
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let run = |options: &[&str], command: &[&str]| {
+        let args = run_args(&image, options, command);
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        shards(&args)
+    };
+    let given = ["--rm", "-u", "1000", "--device", "test.example/dev=fuse"];
+    let r = run(&given, &["report"]);
+    assert_eq!(r.status, Some(0), "{r}");
+    for line in ["uid 1000\n", "env CDI_DEV=fuse\n", "env SPEC_WIDE=1\n"] {
+        assert!(r.stdout.contains(line), "{line}: {r}");
+    }
+    let groups = r
+        .stdout
+        .lines()
+        .find_map(|l| l.strip_prefix("groups "))
+        .unwrap_or_default();
+    assert!(groups.split(',').any(|g| g == "4242"), "{r}");
+    // The node's owner, where its spec names none, is the process's.
+    let gid = r
+        .stdout
+        .lines()
+        .find_map(|l| l.strip_prefix("gid "))
+        .unwrap_or_default()
+        .to_string();
+    let r = run(&given, &["stat", "/dev/cdi-fuse"]);
+    assert_eq!(r.stdout, format!("/dev/cdi-fuse other 666 1000:{gid} 0\n"), "{r}");
+    let r = run(
+        &given,
+        &[
+            "fs",
+            "open:r:/dev/cdi-fuse",
+            "print:/cdi/hello",
+            "print:/proc/self/mounts",
+        ],
+    );
+    assert_eq!(r.status, Some(0), "{r}");
+    assert!(r.stdout.starts_with("from the host\n"), "{r}");
+    let cdi = r
+        .stdout
+        .lines()
+        .find(|l| l.split(' ').nth(1) == Some("/cdi"))
+        .unwrap_or_default();
+    let options: Vec<&str> = cdi.split(' ').nth(3).unwrap_or_default().split(',').collect();
+    for o in ["ro", "nosuid", "nodev"] {
+        assert!(options.contains(&o), "{o}: {cdi}\n{r}");
+    }
+    let r = run(&given, &["fs", "write:/cdi/x=1"]);
+    assert!(r.stderr.contains("Read-only file system"), "{r}");
+    // A name no spec has: made, then refused as it starts.
+    let made = shards(&[
+        "create",
+        "--pull",
+        "never",
+        "--name",
+        "nocdi",
+        "--device",
+        "test.example/dev=nope",
+        &image,
+    ]);
+    assert_eq!(made.status, Some(0), "{made}");
+    let started = shards(&["start", "nocdi"]);
+    assert_eq!(started.status, Some(1), "{started}");
+    assert!(
+        started
+            .stderr
+            .contains("CDI device injection failed: unresolvable CDI devices test.example/dev=nope"),
+        "{started}"
+    );
+    let r = run(&["--rm", "--device", "test.example/dev=hook"], &["exit", "0"]);
+    assert!(
+        r.stderr
+            .contains("a createRuntime hook (/bin/true), which runs on a container's host"),
+        "{r}"
+    );
+}
