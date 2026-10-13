@@ -403,6 +403,87 @@ fn a_nested_guest_is_a_kvm_host() {
     }
 }
 
+/// A guest that is itself a KVM host runs VMs of its own with shards' VM process for its
+/// Linux (D132, D154), on arm64 with shards' KVM backend: the inner guest boots on KVM's
+/// GICv3, its second vCPU brought up by KVM's PSCI, and passes its test; its PCI bus
+/// reaches the test function; and a PCI function the outer guest was given, bound to
+/// vfio-pci there, reaches the inner guest passed through by VFIO, its configuration
+/// space and its BAR the outer function's. An x86_64 host gives no guest virtualization
+/// of its own yet.
+#[test]
+fn a_nested_guest_runs_vms_of_its_own() {
+    if cannot_run_vms() {
+        return;
+    }
+    let Some(nested) = common::nested_kernel() else {
+        eprintln!("SKIP: no nested guest kernel for {}", common::ARCH);
+        return;
+    };
+    let dir = common::TempDir::new("nest");
+    let initrd = dir.join("l1.cpio");
+    let read = |p: &std::path::Path| std::fs::read(p).unwrap();
+    let mut cpio = shards_vmm::initramfs::Cpio::new();
+    cpio.dir("dev", 0o755)
+        .char_dev("dev/console", 0o600, 5, 1)
+        .dir("proc", 0o555)
+        .dir("sys", 0o555)
+        .file("init", 0o755, &read(test_guest()))
+        .file("vm", 0o755, &read(common::guest_vm_process()))
+        .file("l2", 0o644, &read(kernel()));
+    std::fs::write(&initrd, cpio.finish()).unwrap();
+    let outer = |args: &[&str], cmdline: &str| {
+        let cmdline = format!("console=ttyS0 panic=-1 shards_test=host {cmdline}");
+        let mut all = vec![
+            "--kernel",
+            nested.to_str().unwrap(),
+            "--initrd",
+            initrd.to_str().unwrap(),
+            "--nested",
+            "--cpus",
+            "2",
+            "--memory",
+            "1024",
+            "--cmdline",
+            &cmdline,
+        ];
+        all.extend_from_slice(args);
+        vm_run(&all, TIMEOUT * 3)
+    };
+    let passed = |r: &common::Run| {
+        let line = |want: &str| r.stdout.lines().any(|l| l.trim_end() == want);
+        assert!(line("L2: SHARDS-TEST PASS"), "the inner guest: {r}");
+        assert!(line("SHARDS-TEST PASS"), "the outer guest: {r}");
+    };
+    let booted = outer(&[], "shards_l2=kmsg");
+    if booted.stderr.contains("gives a guest no EL2") {
+        eprintln!("SKIP: this host gives a guest no EL2");
+        return;
+    }
+    assert_eq!(booted.status, Some(0), "{booted}");
+    passed(&booted);
+    for line in [
+        "smp: Brought up 1 node, 2 CPUs",
+        "GICv3: CPU1: found redistributor 1",
+    ] {
+        assert!(
+            booted
+                .stdout
+                .lines()
+                .any(|l| l.starts_with("L2: ") && l.contains(line)),
+            "the inner guest lacks {line:?}: {booted}"
+        );
+    }
+    let bus = outer(&[], "shards_l2=pci shards_l2_args=--pci-test");
+    assert_eq!(bus.status, Some(0), "{bus}");
+    passed(&bus);
+    let passed_through = outer(
+        &["--pci-test"],
+        "shards_l2=pci shards_l1_vfio=0000:00:01.0 shards_l2_args=--vfio,0000:00:01.0 vfio.enable_unsafe_noiommu_mode=1",
+    );
+    assert_eq!(passed_through.status, Some(0), "{passed_through}");
+    passed(&passed_through);
+}
+
 /// A snapshot of a guest with memory to plug, none of it plugged (D148): the VM that
 /// booted and each VM restored from it plug memory as their guest asks, and write it.
 #[test]

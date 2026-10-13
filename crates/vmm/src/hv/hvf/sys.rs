@@ -413,7 +413,7 @@ pub struct GicLayout {
 
 /// Handle to the in-kernel GIC. Interrupt injection is legal from any thread
 /// (no owning-thread rule on `hv_gic_set_spi`/`hv_gic_send_msi`).
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct Gic(());
 
 impl Gic {

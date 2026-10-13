@@ -18,9 +18,9 @@ use aarch64 as machine;
 mod x86_64;
 #[cfg(all(hv, target_arch = "x86_64"))]
 use x86_64 as machine;
-/// Whether this build's VMs can be snapshotted and restored: HVF's and KVM's can, WHP's
-/// not yet (D140).
-pub const SNAPSHOTS: bool = cfg!(any(hv = "hvf", hv = "kvm"));
+/// Whether this build's VMs can be snapshotted and restored: HVF's and x86_64 KVM's can,
+/// arm64 KVM's and WHP's not yet (D140).
+pub const SNAPSHOTS: bool = cfg!(any(hv = "hvf", all(hv = "kvm", target_arch = "x86_64")));
 /// Whether a VM resumed from its snapshot records its working set, for restores to
 /// prefetch: HVF's at stage 2 (hv::hvf::Watch), KVM's from the pages its host maps
 /// (vm::x86_64::recorder).
@@ -488,6 +488,181 @@ pub struct Config {
     /// registers (D153): what tests read to show that the bus reaches the VMM. A machine
     /// with a PCI bus saves no snapshot.
     pub pci_test: bool,
+    /// Host PCI functions passed through by VFIO, Linux's (D154), on the PCI bus after the
+    /// test function. A machine given any has no memory to plug and no balloon: the
+    /// functions' DMA reaches guest RAM through mappings the host's IOMMU holds pinned,
+    /// which neither may take from under them (as QEMU's `ram_block_discard_disable`).
+    pub vfio: Vec<Vfio>,
+}
+
+/// A host PCI function a VM is given (D154): its name as the host has it (`0000:01:00.0`)
+/// and its IOMMU group's VFIO device, found before the VM process is confined
+/// ([`Vfio::of`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Vfio {
+    pub name: String,
+    pub group: PathBuf,
+    /// Whether the group has no IOMMU (vfio's `enable_unsafe_noiommu_mode`): its function
+    /// may make no DMA, and guest RAM is mapped for none.
+    pub noiommu: bool,
+}
+
+impl Vfio {
+    /// The host's function `name`, by the VFIO group it is in: it must be bound to
+    /// vfio-pci, as must every other function in its IOMMU group.
+    pub fn of(name: &str) -> Result<Vfio, String> {
+        #[cfg(target_os = "linux")]
+        {
+            let (group, noiommu) =
+                crate::devices::pci::vfio::group_of(name).map_err(|e| format!("{name}: {e}"))?;
+            Ok(Vfio {
+                name: name.to_string(),
+                group,
+                noiommu,
+            })
+        }
+        #[cfg(not(target_os = "linux"))]
+        Err(format!(
+            "{name}: a host's PCI devices are passed through by VFIO, Linux's (D154)"
+        ))
+    }
+}
+
+/// The PCI functions a machine is given (D153, D154).
+#[cfg(hv)]
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct Pci<'a> {
+    pub test: bool,
+    pub vfio: &'a [Vfio],
+}
+
+/// Puts the PCI bus `pci` asks for on `bus` (D153, D154), and says whether there is one:
+/// its ECAM window at `ecam`, and its functions' BARs in the memory window `mem32`, each at
+/// the next multiple of its size; QEMU's edu at 00:01.0 where `pci.test`, then each
+/// function passed through, on the devices after.
+#[cfg(hv)]
+fn pci_bus(
+    bus: &mut crate::devices::MmioBus,
+    ecam: u64,
+    mem32: (u64, u64),
+    pci: Pci<'_>,
+    config: &crate::snapshot::MachineConfig,
+    memory: &crate::memory::GuestMemory,
+) -> Result<bool, String> {
+    use crate::devices::pci;
+    if !pci.test && pci.vfio.is_empty() {
+        return Ok(false);
+    }
+    let mut window = BarWindow {
+        next: mem32.0,
+        end: mem32
+            .0
+            .checked_add(mem32.1)
+            .ok_or("the PCI window overflows the address space")?,
+    };
+    let mut functions: Vec<pci::Function> = Vec::new();
+    let mut device: u8 = 1;
+    if pci.test {
+        let at = window.take(pci::edu::BAR_SIZE)?;
+        let (edu, registers) = pci::edu::Edu::new(at)?;
+        bus.insert(at, pci::edu::BAR_SIZE, registers)?;
+        functions.push((device << 3, edu));
+        device += 1;
+    }
+    if !pci.vfio.is_empty() {
+        if config.hotplug_mib > 0 || config.reporting {
+            return Err("a VM given a host's PCI device has no memory to plug and no balloon: the device's DMA reaches guest RAM through mappings the host holds pinned (D154)".into());
+        }
+        functions.extend(passed_through(bus, &mut window, pci.vfio, device, memory)?);
+    }
+    bus.insert(ecam, pci::ECAM_SIZE, Arc::new(pci::Ecam::new(functions)))?;
+    Ok(true)
+}
+
+/// What is left of a PCI memory window, BARs taken from its start.
+#[cfg(hv)]
+#[derive(Debug)]
+struct BarWindow {
+    next: u64,
+    end: u64,
+}
+
+#[cfg(hv)]
+impl BarWindow {
+    /// The place of a BAR of `size` bytes, a power of two: the next multiple of its size
+    /// (PCI Local Bus 3.0 §6.2.5.1).
+    fn take(&mut self, size: u64) -> Result<u64, String> {
+        let at = self
+            .next
+            .checked_next_multiple_of(size)
+            .filter(|at| at.checked_add(size).is_some_and(|end| end <= self.end))
+            .ok_or_else(|| {
+                format!(
+                    "a BAR of {size:#x} bytes: the PCI window has {:#x} left",
+                    self.end.saturating_sub(self.next)
+                )
+            })?;
+        self.next = at + size;
+        Ok(at)
+    }
+}
+
+/// Each function of `vfio` opened (its DMA mapped to `memory`), its BARs placed in
+/// `window` and put on `bus`, on device `first` and those after it.
+#[cfg(all(hv, target_os = "linux"))]
+fn passed_through(
+    bus: &mut crate::devices::MmioBus,
+    window: &mut BarWindow,
+    vfio: &[Vfio],
+    first: u8,
+    memory: &crate::memory::GuestMemory,
+) -> Result<Vec<crate::devices::pci::Function>, String> {
+    use crate::devices::pci::{self, vfio as v};
+    let mut functions: Vec<pci::Function> = Vec::new();
+    // One container for the functions whose groups have an IOMMU, and one for those
+    // whose have none.
+    let (mut iommu, mut noiommu) = (None, None);
+    for (device, f) in (first..32).zip(vfio) {
+        let slot = if f.noiommu { &mut noiommu } else { &mut iommu };
+        let container = match slot {
+            Some(c) => c,
+            None => slot.insert(v::Container::open(f.noiommu).map_err(|e| format!("{}: {e}", f.name))?),
+        };
+        let opened = Arc::new(v::Device::open(&f.name, &f.group, container, memory)?);
+        let mut bars = Vec::new();
+        for (index, size, kind) in opened.bars() {
+            let addr = window
+                .take(size)
+                .map_err(|e| format!("{}: BAR {index}: {e}", f.name))?;
+            bus.insert(addr, size, Arc::new(v::VfioBar::new(opened.clone(), index)))?;
+            bars.push(pci::Bar {
+                index,
+                addr,
+                size,
+                kind,
+            });
+        }
+        functions.push((device << 3, Arc::new(v::VfioFunction::new(opened, bars)?)));
+    }
+    if functions.len() < vfio.len() {
+        return Err(format!(
+            "{} PCI devices: bus 0 has room for {}",
+            vfio.len(),
+            32 - usize::from(first)
+        ));
+    }
+    Ok(functions)
+}
+
+#[cfg(all(hv, not(target_os = "linux")))]
+fn passed_through(
+    _bus: &mut crate::devices::MmioBus,
+    _window: &mut BarWindow,
+    _vfio: &[Vfio],
+    _first: u8,
+    _memory: &crate::memory::GuestMemory,
+) -> Result<Vec<crate::devices::pci::Function>, String> {
+    Err("a host's PCI devices are passed through by VFIO, Linux's (D154)".into())
 }
 
 /// The host side of a VM's virtio-vsock device.
@@ -549,6 +724,7 @@ impl Config {
             reporting: false,
             gpu: false,
             pci_test: false,
+            vfio: Vec::new(),
         }
     }
 }
@@ -694,6 +870,25 @@ mod tests {
     use crate::snapshot::MachineConfig;
     #[cfg(unix)]
     use crate::snapshot::Snapshot;
+
+    /// BARs are placed from the window's start, each at the next multiple of its size,
+    /// and one past the window's end is refused, the window as it was.
+    #[test]
+    fn bars_are_placed_at_multiples_of_their_sizes() {
+        let mut w = BarWindow {
+            next: 0x1000_0000,
+            end: 0x1080_0000,
+        };
+        assert_eq!(w.take(0x1000).unwrap(), 0x1000_0000);
+        assert_eq!(w.take(0x10_0000).unwrap(), 0x1010_0000);
+        assert_eq!(w.take(0x10).unwrap(), 0x1020_0000);
+        assert_eq!(w.take(0x20_0000).unwrap(), 0x1040_0000);
+        // 4 MiB fits from 0x10800000 alone, past the end.
+        assert!(w.take(0x40_0000).is_err(), "{w:?}");
+        assert_eq!(w.next, 0x1060_0000);
+        assert_eq!(w.take(0x20_0000).unwrap(), 0x1060_0000);
+        assert!(w.take(0x10).is_err(), "{w:?}");
+    }
 
     fn machine(vsock: bool, net: Option<[u8; 6]>) -> MachineConfig {
         MachineConfig {

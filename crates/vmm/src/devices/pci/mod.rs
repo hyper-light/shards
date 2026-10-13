@@ -4,6 +4,8 @@
 //! ACPI host bridge, by MCFG, in an x86_64 guest's.
 
 pub mod edu;
+#[cfg(target_os = "linux")]
+pub mod vfio;
 
 use std::sync::{Arc, Mutex, PoisonError};
 
@@ -20,13 +22,16 @@ pub trait PciFunction: Send + Sync {
     fn config_write(&self, offset: u16, data: &[u8]);
 }
 
+/// A function on the bus and its device and function number (`devfn`: device << 3 |
+/// function).
+pub type Function = (u8, Arc<dyn PciFunction>);
+
 /// The ECAM window: an access's offset holds its bus (27:20), device (19:15), function
 /// (14:12) and register (11:0) (§7.2.2, Table 7-1). Only bus 0 is there; a function not
 /// there reads as all ones, as an access that no function claims completes (§2.3.2), and
 /// a write to it goes nowhere.
 pub struct Ecam {
-    /// Each function and its device and function number (`devfn`: device << 3 | function).
-    functions: Vec<(u8, Arc<dyn PciFunction>)>,
+    functions: Vec<Function>,
 }
 
 impl std::fmt::Debug for Ecam {
@@ -38,7 +43,7 @@ impl std::fmt::Debug for Ecam {
 }
 
 impl Ecam {
-    pub fn new(functions: Vec<(u8, Arc<dyn PciFunction>)>) -> Ecam {
+    pub fn new(functions: Vec<Function>) -> Ecam {
         Ecam { functions }
     }
 

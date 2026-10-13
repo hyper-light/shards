@@ -4,7 +4,7 @@
 //! | `hv` | Host |
 //! |---|---|
 //! | `hvf` | macOS on arm64: Hypervisor.framework |
-//! | `kvm` | Linux on x86_64: KVM |
+//! | `kvm` | Linux on x86_64 and arm64: KVM |
 //! | `whp` | Windows on x86_64: the Windows Hypervisor Platform |
 //!
 //! Every other target in the platform matrix (docs/design/architecture.md D13) builds

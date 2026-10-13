@@ -271,7 +271,7 @@ fn assemble(
     console: Console,
     hosts: super::Hosts<'_>,
     gpu: Option<u64>,
-    pci_test: bool,
+    pci: super::Pci<'_>,
 ) -> Result<Assembled, String> {
     if gpu.is_some() {
         return Err("a GPU is given on macOS hosts alone so far (D144)".into());
@@ -375,26 +375,14 @@ fn assemble(
             gsi: layout::GSI_GED,
         }),
     );
-    // A PCI bus (D153), its test function at 00:01.0, BAR 0 the first of its window.
-    let pci = match pci_test {
-        false => None,
-        true => {
-            use crate::devices::pci;
-            let (edu, registers) = pci::edu::Edu::new(layout::PCI_MEM32)?;
-            let functions: Vec<(u8, Arc<dyn pci::PciFunction>)> = vec![(1 << 3, edu)];
-            bus.mmio.insert(
-                layout::PCI_ECAM,
-                pci::ECAM_SIZE,
-                Arc::new(pci::Ecam::new(functions)),
-            )?;
-            bus.mmio
-                .insert(layout::PCI_MEM32, pci::edu::BAR_SIZE, registers)?;
-            Some(acpi::PciBridge {
-                ecam: (layout::PCI_ECAM, pci::ECAM_SIZE),
-                mem32: (layout::PCI_MEM32, layout::PCI_MEM32_SIZE),
-            })
-        }
-    };
+    // A PCI bus (D153, D154): its functions from 00:01.0, their BARs in its window.
+    let mem32 = (layout::PCI_MEM32, layout::PCI_MEM32_SIZE);
+    let pci = super::pci_bus(&mut bus.mmio, layout::PCI_ECAM, mem32, pci, config, memory)?.then_some(
+        acpi::PciBridge {
+            ecam: (layout::PCI_ECAM, crate::devices::pci::ECAM_SIZE),
+            mem32,
+        },
+    );
     Ok(Assembled {
         vm,
         bus,
@@ -438,7 +426,10 @@ pub fn build(cfg: &Config) -> Result<Machine, String> {
         cfg.console,
         hosts,
         cfg.gpu.then_some(0),
-        cfg.pci_test,
+        super::Pci {
+            test: cfg.pci_test,
+            vfio: &cfg.vfio,
+        },
     )?;
     let tables = acpi::build(cfg.vcpus, &a.virtio, a.pci.as_ref())?.blobs;
     let access = memory.access().map_err(|e| e.to_string())?;
@@ -516,7 +507,14 @@ pub fn restore(
         plug_at(ram),
     )?);
     // A machine with a PCI bus saves no snapshot, so a restored one has none.
-    let a = assemble(&memory, &snap.config, console, hosts, snap.config.gpu, false)?;
+    let a = assemble(
+        &memory,
+        &snap.config,
+        console,
+        hosts,
+        snap.config.gpu,
+        super::Pci::default(),
+    )?;
     let guest: Vec<(u64, u64)> = memory
         .regions()
         .map(|(gpa, _, len)| (gpa, len as u64))

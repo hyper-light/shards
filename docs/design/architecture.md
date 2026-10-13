@@ -167,7 +167,7 @@ the guest arch is always the host arch.
 | Host OS | Arch (Rust triple / OCI name) | Backend (`hv`) | Status |
 |---|---|---|---|
 | Linux (glibc, musl) | x86_64 / amd64 | KVM | booting Linux: SMP, ACPI, virtio-blk; snapshots with cold and warm restore; CI on both libcs |
-| Linux (glibc, musl) | aarch64 / arm64 | KVM | planned |
+| Linux (glibc, musl) | aarch64 / arm64 | KVM | booting Linux: SMP, GICv3 and PSCI (KVM's), virtio, PCI and VFIO; no snapshots yet (D154) |
 | macOS | aarch64 / arm64 | Hypervisor.framework (arm64 API) | booting Linux; snapshots with cold and warm restore |
 | macOS | x86_64 / amd64 | Hypervisor.framework (x86 VMX API) | planned |
 | Windows | x86_64 / amd64 | Windows Hypervisor Platform | booting Linux: SMP, virtio-blk, pmem and vsock; no snapshots yet (D140) |
@@ -3612,6 +3612,69 @@ No run-time labels, relays or declassifiers (§12 answer 14, decided by the user
 2026-10-07): every path between domains is a grant, and the build refuses any that joins
 an internal-only domain to the world (D58), so there is no data to label. Code mode is
 D136.
+
+### D154. KVM on arm64, and a host's PCI function passed through (VFIO)
+
+D13 planned KVM on arm64 Linux hosts, and none ran a VM: the KVM backend was x86_64's.
+D153's test path for VFIO is a guest given the test function, passing it to a guest of
+its own, on an arm64 Mac (D132): shards' VM process inside that guest is an arm64 Linux
+one. So both, in that order.
+
+- **One KVM backend for both architectures.** What is KVM's everywhere is shared (hv/kvm):
+  /dev/kvm opened and checked once, guest memory's slots, the run loop, the kick. Each
+  architecture's VM and vCPUs are its own module's, and so are its ioctls.
+- **arm64's VM is the arm64 machine's** (vm/aarch64.rs), as Hypervisor.framework's is,
+  with KVM's semantics behind the same names. Its GICv3 is KVM's
+  (KVM_DEV_TYPE_ARM_VGIC_V3, Documentation/virt/kvm/devices/arm-vgic-v3.rst): the
+  distributor and redistributors at the machine's places; 96 interrupts, 32 private and
+  then the SPIs the machine's devices use, in KVM's steps of 32; initialized once every
+  vCPU exists, before any runs (KVM_DEV_ARM_VGIC_CTRL_INIT), as the machine's `finish`
+  now asks of every backend. PSCI is KVM's (KVM_ARM_VCPU_PSCI_0_2, api.rst 4.82): the boot
+  vCPU enters at the kernel with X0 the devicetree, the others start powered off, CPU_ON
+  and CPU_OFF are the kernel's, SYSTEM_OFF and SYSTEM_RESET come back as system events.
+  Each vCPU's MPIDR, which KVM derives from its id, is checked against the devicetree's
+  (`arch::aarch64::mpidr`). The address width is asked of KVM
+  (KVM_CAP_ARM_VM_IPA_SIZE); pointer authentication is on where KVM gives both kinds, as
+  the guest has it under Hypervisor.framework; EL2 where KVM gives it (KVM_CAP_ARM_EL2: a
+  CPU with FEAT_NV2 and a host booted with kvm-arm.mode=nested, arch/arm64/kernel/
+  cpufeature.c has_nested_virt_support), its maintenance interrupt the devicetree's,
+  INTID 25, which KVM reads from the attribute's `addr` (arm64/kvm/vgic/
+  vgic-kvm-device.c), where arm-vgic-v3.rst says its `attr`.
+- **Confined as on x86_64** (D30): Landlock, and the seccomp filter, whose system calls
+  are x86_64's but those the generic ABI has none of (open, stat, access, mkdir, rename,
+  unlink, readlink, poll, dup2), whose `*at` forms musl and glibc make there instead.
+- **VFIO** (`run --kernel … --vfio NAME`, Linux): VFIO's container, group and device
+  (include/uapi/linux/vfio.h; Documentation/driver-api/vfio.rst). The function's group is
+  found by its `iommu_group` before the VM process is confined, and the container and the
+  group are the only devices Landlock then lets it reach (IOCTL_DEV); VFIO's requests are
+  in the seccomp filter, of no use without them. A group with an IOMMU takes type 1 with
+  all of guest RAM mapped for the function's DMA, pinned; a no-IOMMU group
+  (vfio.enable_unsafe_noiommu_mode) maps none, for a function that makes no DMA. The
+  configuration space is vfio-pci's, which keeps from a user what it must not touch, but
+  for the BARs, the expansion ROM and the interrupt line and pin, which the VMM keeps
+  (D153's header); the memory BARs are placed in the bus's window, each at the next
+  multiple of its size, and each access goes to the device's region at its offset; an
+  I/O BAR is left out, as the machine has no I/O window. A machine given a function has
+  no memory to plug, no balloon (its DMA mappings pinned; QEMU's
+  `ram_block_discard_disable`) and no snapshot.
+- **Verified on real VMs** (`a_nested_guest_runs_vms_of_its_own`), on an M5 Max, macOS
+  26.4.1: shards boots the `kvm` kernel at EL2 with an initramfs of the test guest, shards'
+  VM process for arm64 Linux and the pinned kernel. In it, shards' KVM backend boots a
+  guest of its own, under its seccomp filter and Landlock: "smp: Brought up 1 node, 2
+  CPUs", its second vCPU's redistributor found, its test passed. Given `--pci-test`, the
+  inner guest's PCI bus reaches the test function. Given the outer guest's test function,
+  bound to vfio-pci there in a no-IOMMU group, the inner guest finds 1234:11e8 at 00:01.0
+  and reads the identification register and the liveness check's inverse through BAR 0:
+  the inner guest's access, the outer VM process, vfio-pci, the outer guest's access, the
+  outermost VMM's function. CI's arm64 runners give no KVM: the test runs where a Mac
+  gives a guest EL2.
+- **Not yet:** snapshots of arm64 KVM VMs (`vm::SNAPSHOTS`; their GIC and vCPU state
+  through KVM's registers); more vCPUs than one redistributor region holds (123). For
+  VFIO: the BARs mapped into the guest (KVM memory slots of the regions vfio-pci maps,
+  the MSI-X table's pages trapped); interrupts (INTx, MSI and MSI-X through irqfds); a
+  64-bit window for BARs past the 32-bit one; the kvm-vfio device, for x86's non-coherent
+  DMA; DMA verified on real VMs, which needs an IOMMU in the test's outer guest; then
+  `--device /dev/vfio/N`, `--gpus` and CDI's VFIO nodes.
 
 ### D153. A PCI bus, for the devices a microVM is given (VFIO's first step)
 

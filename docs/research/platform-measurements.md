@@ -7983,3 +7983,32 @@ revision before comparing a changed API/implementation.
   Room for a pass beside growth, which ended the kills in growing runs on the pinned
   kernel, is not kept: with 0006 no allocation fails for a pass, and without it no pass
   comes.
+
+### M225. Huge pages advised or not, where the host's THP is always on (M157)
+
+- **Question.** shards advises huge pages for guest RAM (MADV_HUGEPAGE,
+  platform/unix.rs). Under `defrag=madvise` an advised region's fault may stall in direct
+  compaction, which an unadvised one never does. Is that the tail `to_ready` showed beside
+  Firecracker?
+- **Method.** CI's x86_64 KVM runner, AMD EPYC 7763, Linux 6.17.0-1022-azure, revision
+  07385b7, 2026-10-13, load 1.1 to 2.7; THP `enabled=[always]`, `defrag=[madvise]`, 2 MiB
+  pages. `cargo bench -p shards --bench firecracker -- --thp-ab all,unadvised --runs 30`:
+  the comparison's idle guest (1 vCPU, 128 MiB) booted to ready, each boot followed by a
+  1 GiB guest writing 512 MiB and reading it at random (`walk`), the arms interleaved and
+  their order alternating; `unadvised` is the VM process with SHARDS_THP_ADVICE=never. The
+  same job's comparison with Firecracker v1.17.0, n=30, beside it.
+- **Results** (p50 / p90 / p99 / max).
+  - Boot `to_ready`: advised 129.4 / 195.9 / 202.2 / 202.2 ms, unadvised 128.6 / 199.0 /
+    202.4 / 202.4 ms; huge anonymous memory 56.0 MiB at the median in both, 58.0 at most.
+  - Work: writing 327.7 ms against 328.2 ms at the median, reading 202.7 against 202.6 ms.
+  - The comparison: shards 123.0 / 129.7 / 130.2 / 130.2 ms, Firecracker 124.0 / 128.9 /
+    206.0 / 206.0 ms, tied at the median (−483 µs, interval −1,948 to +1,516); in the
+    guest 77.9 against 80.3 ms at the median, outside it 44.6 against 44.4 ms, Firecracker's
+    outside 117.7 ms at p99.
+- **Why.** With THP always on, every anonymous region is given huge pages, advised or not,
+  and both arms were: the advice changed nothing here, its tail included. The tail both
+  arms of the A/B show, 67 to 70 ms past their median at p90, the comparison's boots do
+  not, which follow no 1 GiB guest: it is not the advice's, and its cause is not yet
+  known.
+- **Consequence.** The advice stays: on a host whose THP is `madvise`, it is what gives
+  guest RAM huge pages at all (M157). SHARDS_THP_ADVICE=never stays the A/B's knob.

@@ -33,6 +33,7 @@ pub fn main() {
             "snapshot-plug" => snapshot_plug(),
             "limits" => limits(),
             "pci" => pci(),
+            "host" => host(),
             other => Err(format!("unknown test {other:?}")),
         },
     );
@@ -1065,6 +1066,52 @@ fn pci() -> Result<(), String> {
         return Err(format!(
             "BAR 0 said identification {identification:#x}, liveness {live:#x}"
         ));
+    }
+    Ok(())
+}
+
+/// A guest that is itself a host (D132): it boots a VM of its own with shards' VM process
+/// for this architecture's Linux, `/vm` in its initramfs, the kernel `/l2` and itself as
+/// that VM's init, whose test is `shards_l2`, and `shards_l2_args`' arguments (comma
+/// separated) besides, having given vfio-pci the PCI function `shards_l1_vfio` names, if
+/// any. Each line of the inner VM's console is printed after `L2: `, and
+/// the test passes where the inner VM ended well and its guest passed.
+fn host() -> Result<(), String> {
+    let test = std::env::var("shards_l2").map_err(|_| "shards_l2 not set".to_string())?;
+    let args = std::env::var("shards_l2_args").unwrap_or_default();
+    if !Path::new("/dev/kvm").exists() {
+        return Err("no /dev/kvm: this guest's kernel is no KVM host".into());
+    }
+    // A PCI function of this guest's own, given to vfio-pci (`shards_l1_vfio`), for the
+    // inner VM to be given in turn (D154).
+    if let Ok(name) = std::env::var("shards_l1_vfio") {
+        let dir = format!("/sys/bus/pci/devices/{name}");
+        std::fs::write(format!("{dir}/driver_override"), "vfio-pci")
+            .map_err(|e| format!("{dir}/driver_override: {e}"))?;
+        std::fs::write("/sys/bus/pci/drivers_probe", &name)
+            .map_err(|e| format!("binding {name} to vfio-pci: {e}"))?;
+    }
+    let out = std::process::Command::new("/vm")
+        .args(["run", "--kernel", "/l2", "--init", "/init", "--cpus", "2"])
+        .args(["--memory", "256", "--cmdline"])
+        .arg(format!("console=ttyS0 panic=-1 shards_test={test}"))
+        .args(args.split(',').filter(|a| !a.is_empty()))
+        .output()
+        .map_err(|e| format!("/vm: {e}"))?;
+    let mut stdout = io::stdout().lock();
+    for (stream, bytes) in [("L2", &out.stdout), ("L2 stderr", &out.stderr)] {
+        for line in String::from_utf8_lossy(bytes).lines() {
+            let _ = writeln!(stdout, "{stream}: {}", line.trim_end());
+        }
+    }
+    if !out.status.success() {
+        return Err(format!("the inner VM ended with {}", out.status));
+    }
+    let passed = String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .any(|l| l.trim_end() == "SHARDS-TEST PASS");
+    if !passed {
+        return Err("the inner guest did not pass".into());
     }
     Ok(())
 }

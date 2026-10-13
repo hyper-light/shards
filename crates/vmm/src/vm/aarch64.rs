@@ -227,7 +227,7 @@ fn assemble(
     console: Console,
     hosts: super::Hosts<'_>,
     gpu: Option<u64>,
-    pci_test: bool,
+    pci: super::Pci<'_>,
 ) -> Result<Assembled, String> {
     let ram = ram_bytes(config.memory_mib)?;
     // Memory to plug, where the guest has any, starts at the first GiB boundary after RAM
@@ -244,7 +244,14 @@ fn assemble(
     let (regions, end) = super::pmem_regions(config, pmem_at)?;
     let top = if regions.is_empty() { plug_end } else { end };
     // A GPU's window, at the first GiB boundary past all of that, as long as the renderer
-    // says (D144).
+    // says (D144): on macOS alone so far.
+    #[cfg(not(hv = "hvf"))]
+    if gpu.is_some() {
+        return Err("a GPU is given on macOS hosts alone so far (D144)".into());
+    }
+    #[cfg(not(hv = "hvf"))]
+    let gpu: Option<((), crate::devices::virtio::ShmRegion)> = None;
+    #[cfg(hv = "hvf")]
     let gpu = match gpu {
         None => None,
         Some(saw) => {
@@ -283,10 +290,7 @@ fn assemble(
     let ipa_bits = ipa_bits(top)?;
     let mpidrs: Vec<u64> = (0..config.vcpus).map(aarch64::mpidr).collect();
     if config.nested && !hv::el2_supported() {
-        return Err(
-            "this Mac gives a guest no EL2: virtualization of a guest's own needs an M3 or later, on macOS 15 or later"
-                .into(),
-        );
+        return Err(hv::NO_EL2.into());
     }
     let vm = hv::Vm::new(hv::VmConfig {
         ipa_bits,
@@ -329,6 +333,9 @@ fn assemble(
     debug!("GIC created");
 
     let gpu_window = gpu.as_ref().map(|(_, region)| region.len);
+    #[cfg(not(hv = "hvf"))]
+    let gpu: Option<Box<dyn crate::devices::virtio::VirtioDevice>> = None;
+    #[cfg(hv = "hvf")]
     let gpu = match gpu {
         None => None,
         Some((renderer, region)) => {
@@ -350,7 +357,7 @@ fn assemble(
         let spi = layout::SPI_VIRTIO_MMIO + i as u32;
         let base = layout::VIRTIO_MMIO + i as u64 * layout::VIRTIO_MMIO_STRIDE;
         let line = Arc::new(GicLine {
-            gic,
+            gic: gic.clone(),
             intid: SPI_INTID_BASE + spi,
         });
         let transport = virtio_mmio::MmioTransport::new(device, memory.clone(), line);
@@ -364,7 +371,7 @@ fn assemble(
     let serial = Arc::new(Serial::new(
         super::console_out(console)?,
         Arc::new(GicLine {
-            gic,
+            gic: gic.clone(),
             intid: SPI_INTID_BASE + layout::SPI_UART,
         }),
     ));
@@ -380,25 +387,13 @@ fn assemble(
         control.on_mac(net.mac);
     }
     bus.insert(layout::CONTROL, 0x1000, control.clone())?;
-    // A PCI bus (D153), its test function at 00:01.0, BAR 0 the first of its window.
-    let pci = match pci_test {
-        false => None,
-        true => {
-            use crate::devices::pci;
-            let (edu, registers) = pci::edu::Edu::new(layout::PCI_MEM32)?;
-            let functions: Vec<(u8, Arc<dyn pci::PciFunction>)> = vec![(1 << 3, edu)];
-            bus.insert(
-                layout::PCI_ECAM,
-                pci::ECAM_SIZE,
-                Arc::new(pci::Ecam::new(functions)),
-            )?;
-            bus.insert(layout::PCI_MEM32, pci::edu::BAR_SIZE, registers)?;
-            Some(boot::PciBridge {
-                ecam: (layout::PCI_ECAM, pci::ECAM_SIZE),
-                mem32: (layout::PCI_MEM32, layout::PCI_MEM32_SIZE),
-            })
-        }
-    };
+    // A PCI bus (D153, D154): its functions from 00:01.0, their BARs in its window.
+    let mem32 = (layout::PCI_MEM32, layout::PCI_MEM32_SIZE);
+    let pci =
+        super::pci_bus(&mut bus, layout::PCI_ECAM, mem32, pci, config, memory)?.then_some(boot::PciBridge {
+            ecam: (layout::PCI_ECAM, crate::devices::pci::ECAM_SIZE),
+            mem32,
+        });
     let vmgenid = VmGenId::new(
         memory.clone(),
         layout::VMGENID,
@@ -451,7 +446,10 @@ pub fn build(cfg: &Config) -> Result<Machine, String> {
         cfg.console,
         hosts,
         cfg.gpu.then_some(0),
-        cfg.pci_test,
+        super::Pci {
+            test: cfg.pci_test,
+            vfio: &cfg.vfio,
+        },
     )?;
     // Its GPU's window as the guest sees it, which a snapshot keeps for a restore (D150).
     config.gpu = a.gpu_window;
@@ -513,19 +511,37 @@ pub fn build(cfg: &Config) -> Result<Machine, String> {
 pub const PAGE: u64 = hv::PAGE;
 
 /// What records a working set.
+#[cfg(hv = "hvf")]
 pub type Recorder = Arc<hv::Watch>;
+
+/// Nothing records one: a VM on arm64 KVM is not snapshotted yet (vm::SNAPSHOTS).
+#[cfg(hv = "kvm")]
+#[derive(Debug)]
+pub enum Recorder {}
 
 /// Starts recording `vm`'s working set: its stage 2 watches RAM and pmem alike. Every
 /// vCPU must be out of the guest.
+#[cfg(hv = "hvf")]
 pub fn record(vm: &hv::Vm) -> Result<Option<Recorder>, String> {
     let watch = vm.watch();
     watch.start().map_err(|e| e.to_string())?;
     Ok(Some(watch))
 }
 
+#[cfg(hv = "kvm")]
+pub fn record(_vm: &hv::Vm) -> Result<Option<Recorder>, String> {
+    Ok(None)
+}
+
 /// Stops recording; the pages touched since [`record`], in order.
+#[cfg(hv = "hvf")]
 pub fn recorded(recorder: &Recorder) -> Result<Vec<hv::Touch>, String> {
     Ok(recorder.stop())
+}
+
+#[cfg(hv = "kvm")]
+pub fn recorded(recorder: &Recorder) -> Result<Vec<hv::Touch>, String> {
+    match *recorder {}
 }
 
 /// None: on HVF, the run that saves a template records its working set ([`record`]).
@@ -594,7 +610,14 @@ pub fn restore(
         plug_at(ram),
     )?);
     // A machine with a PCI bus saves no snapshot, so a restored one has none.
-    let a = assemble(&memory, &snap.config, console, hosts, snap.config.gpu, false)?;
+    let a = assemble(
+        &memory,
+        &snap.config,
+        console,
+        hosts,
+        snap.config.gpu,
+        super::Pci::default(),
+    )?;
     let guest: Vec<(u64, u64)> = memory
         .regions()
         .map(|(gpa, _, len)| (gpa, len as u64))
@@ -621,7 +644,8 @@ pub fn restore(
     })
 }
 
-/// Completes the machine once every vCPU exists and before any runs. A restore applies
+/// Completes the machine once every vCPU exists and before any runs: KVM initializes its
+/// GIC now, whose redistributors are the vCPUs' (arm-vgic-v3.rst). A restore applies
 /// the GIC's state only now, as Hypervisor.framework requires (hv_gic.h): HVF routes an
 /// SPI to its vCPU, and routing to a CPU that does not exist yet loses the SPI for good.
 /// Found by the snapshot E2E test; SPIs were pending but never delivered. The state is
@@ -631,6 +655,7 @@ pub fn restore(
 /// re-raise their interrupt lines as they restore. Last, the restored guest gets a new
 /// generation ID, so it reseeds its RNG before it runs anything that uses it.
 pub fn finish(vm: &hv::Vm, bus: &MmioBus, vmgenid: &VmGenId, rest: Option<&Remainder>) -> Result<(), String> {
+    vm.vcpus_created().map_err(|e| e.to_string())?;
     let Some(r) = rest else {
         return Ok(());
     };
@@ -651,7 +676,7 @@ pub fn setup_vcpu(vm: &hv::Vm, index: usize, start: VcpuStart) -> Result<(hv::Vc
     match start {
         VcpuStart::Boot(entry) => {
             if let Some(entry) = entry {
-                vcpu.boot(entry);
+                vcpu.boot(entry).map_err(e)?;
             }
         }
         VcpuStart::Restore { state, first } => {

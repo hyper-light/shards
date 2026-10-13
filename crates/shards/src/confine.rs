@@ -9,12 +9,33 @@
 //! `clone`, whose flags must be those of a thread, as Firecracker's filters have it.
 //! No exec, no process of its own, no network.
 //!
-//! Linux on x86_64, where the KVM backend is; elsewhere nothing is installed yet.
+//! Linux, where the KVM backend is, on x86_64 and arm64. arm64's system calls are the
+//! generic ABI's, which has none of x86_64's that name a path or a descriptor without one
+//! to start from (open, stat, access, mkdir, rename, unlink, readlink, poll, dup2): their
+//! `*at` forms, which the C libraries make there, take their places (D154).
 
-#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[cfg(target_os = "linux")]
 pub fn confine() -> Result<(), String> {
     use shards_vmm::platform::seccomp::{self, Rule};
 
+    #[cfg(target_arch = "x86_64")]
+    let arch = [
+        // musl's `open`, `stat`, `lstat`, `access`, `mkdir`, `rename`, `unlink`, `readlink`
+        // and `poll`, where glibc's make the *at calls.
+        libc::SYS_open,
+        libc::SYS_stat,
+        libc::SYS_lstat,
+        libc::SYS_access,
+        libc::SYS_mkdir,
+        libc::SYS_rename,
+        libc::SYS_unlink,
+        libc::SYS_readlink,
+        libc::SYS_poll,
+        libc::SYS_dup2,
+        libc::SYS_arch_prctl,
+    ];
+    #[cfg(target_arch = "aarch64")]
+    let arch = [libc::SYS_faccessat, libc::SYS_mkdirat, libc::SYS_readlinkat];
     let any = [
         libc::SYS_read,
         libc::SYS_write,
@@ -28,19 +49,10 @@ pub fn confine() -> Result<(), String> {
         libc::SYS_newfstatat,
         libc::SYS_statx,
         libc::SYS_openat,
-        // musl's `open`, `stat` and `lstat`, where glibc's make the *at calls.
-        libc::SYS_open,
-        libc::SYS_stat,
-        libc::SYS_lstat,
-        libc::SYS_access,
         libc::SYS_faccessat2,
         libc::SYS_getdents64,
-        libc::SYS_mkdir,
-        libc::SYS_rename,
         libc::SYS_renameat,
-        libc::SYS_unlink,
         libc::SYS_unlinkat,
-        libc::SYS_readlink,
         libc::SYS_getcwd,
         libc::SYS_flock,
         libc::SYS_fsync,
@@ -76,14 +88,11 @@ pub fn confine() -> Result<(), String> {
         libc::SYS_set_robust_list,
         libc::SYS_set_tid_address,
         libc::SYS_rseq,
-        libc::SYS_arch_prctl,
         libc::SYS_exit,
         libc::SYS_exit_group,
-        libc::SYS_poll,
         libc::SYS_ppoll,
         libc::SYS_pipe2,
         libc::SYS_dup,
-        libc::SYS_dup2,
         libc::SYS_dup3,
         libc::SYS_accept4,
         libc::SYS_bind,
@@ -99,9 +108,12 @@ pub fn confine() -> Result<(), String> {
         libc::SYS_landlock_add_rule,
         libc::SYS_landlock_restrict_self,
     ];
-    let mut rules: Vec<Rule> = any.into_iter().map(Rule::any).collect();
+    let mut rules: Vec<Rule> = any.into_iter().chain(arch).map(Rule::any).collect();
     // The requests' low 32 bits: the kernel's `cmd` is an unsigned int.
     let mut requests: Vec<u32> = shards_vmm::hv::IOCTLS.iter().map(|&r| r as u32).collect();
+    // VFIO's, for a passed-through PCI function (D154): only Landlock's rules give a
+    // process a VFIO descriptor to make them of.
+    requests.extend(shards_vmm::devices::pci::vfio::IOCTLS.iter().map(|&r| r as u32));
     // `isatty` asks TCGETS in glibc and TIOCGWINSZ in musl.
     requests.extend([
         libc::FIONBIO as u32,
@@ -158,7 +170,7 @@ pub fn confine() -> Result<(), String> {
     seccomp::install(&filter, true).map_err(|e| format!("installing the seccomp filter: {e}"))
 }
 
-#[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+#[cfg(not(target_os = "linux"))]
 pub fn confine() -> Result<(), String> {
     Ok(())
 }
@@ -176,6 +188,9 @@ pub struct Paths {
     pub write: Vec<std::path::PathBuf>,
     /// Directories it may make, and in which it reads and writes anything.
     pub write_under: Vec<std::path::PathBuf>,
+    /// Device files it reads, writes and controls: a passed-through PCI function's VFIO
+    /// container and group (D154).
+    pub devices: Vec<std::path::PathBuf>,
     /// Directories it binds and dials Unix sockets in: that of a vsock socket path it was
     /// given (`--vsock`). The ports its own process serves need none.
     pub sockets_under: Vec<std::path::PathBuf>,
@@ -359,6 +374,9 @@ pub fn landlock(paths: &Paths) -> Result<(), String> {
     }
     for d in &paths.sockets_under {
         allow(d, sockets_dir)?;
+    }
+    for d in &paths.devices {
+        allow(d, write | IOCTL_DEV)?;
     }
     // SAFETY: prctl(2) with integer arguments; landlock_restrict_self(2) on our ruleset.
     unsafe {
