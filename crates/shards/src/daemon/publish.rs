@@ -471,11 +471,22 @@ mod tests {
         let (fds, picked) = bind_one(&both, "", TCP, &host).unwrap();
         assert_eq!(fds.len(), 2);
         assert_ne!(picked, 0);
-        let v6 = std::net::TcpListener::bind("[::1]:0").unwrap();
-        let v6_port = v6.local_addr().unwrap().port();
+        // A port the kernel picks at IPv6 alone may be another process's at IPv4, as on a
+        // busy CI runner (gpu ea38f209): another is picked, until IPv4's is free.
+        let refused = (0..64)
+            .find_map(|_| {
+                let v6 = std::net::TcpListener::bind("[::1]:0").unwrap();
+                let v6_port = v6.local_addr().unwrap().port();
+                let refused = bind_one(&both, &v6_port.to_string(), TCP, &host).unwrap_err();
+                (!refused.contains("127.0.0.1")).then_some((refused, v6_port))
+            })
+            .unwrap();
         assert_eq!(
-            bind_one(&both, &v6_port.to_string(), TCP, &host).unwrap_err(),
-            format!("failed to bind host port [::1]:{v6_port}/tcp: address already in use")
+            refused.0,
+            format!(
+                "failed to bind host port [::1]:{}/tcp: address already in use",
+                refused.1
+            )
         );
         let blocker = std::net::TcpListener::bind((loopback[0], port)).unwrap();
         let (_, next) = bind_one(

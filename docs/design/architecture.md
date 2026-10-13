@@ -663,7 +663,13 @@ A pull resolves, fetches and checks as containerd v2.4.1 does
   - a timeout or cut connection is tried again after 50 ms;
   - a 401 is answered (D21), then the request is sent again;
   - a manifest HEAD refused with 405 becomes a GET;
-  - 408 is tried again, and a 500, 503 or 504 once.
+  - 408 is tried again, and a 500, 502, 503 or 504 once, unless it repeats: a gateway's
+    failure, 502, as its timeout and an unavailable server are, which containerd leaves
+    out. A token server's request is tried again as these are, where containerd tries
+    none: Docker Hub's token server answered a pull with a 502, which the next asking
+    passed, and the pull had failed (dev 3c2e3cd3's CI;
+    `a_token_servers_passing_failure_is_asked_again`,
+    `existence_is_asked_as_containerd_asks_it`, each mutation-checked).
   - A 429 is tried again, as containerd tries it, but after a wait: `Retry-After`
     when it fits in the waits left, else up to 50, 100, 200, 400 and 800 ms, a random
     share of each. containerd asks again at once, and ECR Public, which throttles

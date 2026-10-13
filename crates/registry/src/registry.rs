@@ -21,9 +21,9 @@ use crate::url::{Scheme, Url};
 use crate::{Error, ErrorKind, Said, printable};
 
 /// containerd's `maxAttempts`.
-const ATTEMPTS: usize = 5;
+pub(crate) const ATTEMPTS: usize = 5;
 /// containerd's pause before trying a transient transport error again.
-const PAUSE: Duration = Duration::from_millis(50);
+pub(crate) const PAUSE: Duration = Duration::from_millis(50);
 /// The longest of the waits before asking a throttling registry again: up to 50 ms,
 /// then 100, 200, 400 and 800, each a random share of it. ECR Public throttles
 /// anonymous requests at random, at 1 a second already, and less the slower they come
@@ -322,7 +322,10 @@ impl Registry {
     /// - a timeout or a cut connection is tried again after 50 ms;
     /// - a 401 is answered (auth.rs), then the request is sent again;
     /// - a HEAD of a manifest refused with 405 becomes a GET;
-    /// - 408 is tried again, and 500, 503 or 504 once, unless it repeats.
+    /// - 408 is tried again, and 500, 502, 503 or 504 once, unless it repeats: a gateway's
+    ///   failure, 502, as its timeout and an unavailable server are, which containerd
+    ///   leaves out (Docker Hub's token server answered a pull's request with one, which
+    ///   the next passed: dev 3c2e3cd3's CI).
     ///
     /// A 429 is tried again, as containerd tries it, but after a wait ([`throttle`]), and
     /// never for a quota spent: Docker Hub counts pulls over hours (§3.2). Where the
@@ -428,7 +431,7 @@ impl Registry {
                         None => false,
                     }
                 }
-                500 | 503 | 504 => !repeated,
+                500 | 502 | 503 | 504 => !repeated,
                 _ => false,
             };
             if !again || attempt >= ATTEMPTS {
@@ -1430,6 +1433,18 @@ mod tests {
         assert!(!found.unwrap(), "{requests:?}");
         let (failed, _) = check(Box::new(|_| http("500 Internal Server Error", &[])), false, None);
         assert!(failed.is_err());
+        // A gateway's failure is asked again, as 503 and 504 are: once, and it passed.
+        let asked = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let theirs = ours.clone();
+        let once: Box<dyn Fn(u16) -> Vec<u8> + Send + Sync> = Box::new(move |_| {
+            if asked.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+                http("502 Bad Gateway", &[])
+            } else {
+                http("200 OK", &[("Docker-Content-Digest", &theirs)])
+            }
+        });
+        let (found, requests) = check(once, true, Some("v1"));
+        assert!(found.unwrap(), "{requests:?}");
     }
 
     /// A scripted registry's answer to the `n`th request.

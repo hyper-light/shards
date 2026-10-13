@@ -472,19 +472,50 @@ impl Bearer {
         scopes
     }
 
-    /// containerd's `doBearerAuth`: OAuth2 when there is a secret, falling back to GET
-    /// where the server has no OAuth2 endpoint; else an anonymous GET.
+    /// containerd's `doBearerAuth`, tried again as the registry's own requests are
+    /// (registry.rs `send`): a timeout or a cut connection after a pause, a 408, and a
+    /// 500, 502, 503 or 504 once, unless it repeats, up to its attempts. containerd tries
+    /// no token fetch again: Docker Hub's token server answered a pull with a 502, which
+    /// the next asking passed (dev 3c2e3cd3's CI), and the pull failed.
     fn fetch(&self, http: &Client, scopes: &[String]) -> Result<Token, Error> {
-        let context = |e: Error| Error::new(format!("fetching a token from {}: {e}", self.realm));
-        if self.secret.is_empty() {
-            return self.get(http, scopes).map_err(context);
+        let mut last: Option<u16> = None;
+        let mut attempt = 0;
+        loop {
+            attempt += 1;
+            let failed = match self.fetch_once(http, scopes) {
+                Ok(token) => return Ok(token),
+                Err(failed) => failed,
+            };
+            let again = attempt < crate::registry::ATTEMPTS
+                && match failed.status {
+                    None => failed.error.kind() == ErrorKind::Transient,
+                    Some(408) => true,
+                    Some(s @ (500 | 502 | 503 | 504)) => last != Some(s),
+                    Some(_) => false,
+                };
+            if !again {
+                return Err(Error::new(format!(
+                    "fetching a token from {}: {}",
+                    self.realm, failed.error
+                )));
+            }
+            last = failed.status;
+            std::thread::sleep(crate::registry::PAUSE);
         }
-        let mut response = self.post(http, scopes).map_err(context)?;
+    }
+
+    /// One asking: OAuth2 when there is a secret, falling back to GET where the server
+    /// has no OAuth2 endpoint; else an anonymous GET.
+    fn fetch_once(&self, http: &Client, scopes: &[String]) -> Result<Token, Failed> {
+        if self.secret.is_empty() {
+            return self.get(http, scopes);
+        }
+        let mut response = self.post(http, scopes).map_err(Failed::from)?;
         match response.status {
             // Registries without OAuth2: GCR answers 404, Artifactory 401, ACR 400.
-            405 if !self.username.is_empty() => self.get(http, scopes).map_err(context),
-            404 | 401 | 400 => self.get(http, scopes).map_err(context),
-            _ => read_token(&mut response, true).map_err(context),
+            405 if !self.username.is_empty() => self.get(http, scopes),
+            404 | 401 | 400 => self.get(http, scopes),
+            _ => answer(&mut response, true),
         }
     }
 
@@ -523,7 +554,7 @@ impl Bearer {
 
     /// `FetchToken`: a GET with `service` and each scope added to the realm's query, and
     /// Basic authentication when there is a secret, sent to the realm's origin only.
-    fn get(&self, http: &Client, scopes: &[String]) -> Result<Token, Error> {
+    fn get(&self, http: &Client, scopes: &[String]) -> Result<Token, Failed> {
         let (base, query) = match self.realm.as_str().split_once('?') {
             Some((base, query)) => (base, query),
             None => (self.realm.as_str(), ""),
@@ -540,26 +571,49 @@ impl Bearer {
             .extend_pairs(&pairs)
             .finish();
         let url = if query.is_empty() {
-            Url::parse(base)?
+            Url::parse(base).map_err(Failed::from)?
         } else {
-            Url::parse(&format!("{base}?{query}"))?
+            Url::parse(&format!("{base}?{query}")).map_err(Failed::from)?
         };
         let basic =
             (!self.secret.is_empty()).then(|| basic(self.username.as_bytes(), self.secret.as_bytes()));
         let realm = &self.realm;
-        let mut response = http.follow(
-            &Request {
-                method: "GET",
-                url: &url,
-                headers: &[],
-                body: &[],
-                file: None,
-            },
-            &|hop| Ok(basic.clone().filter(|_| hop.same_origin(realm))),
-            Redirects::Anywhere,
-        )?;
-        read_token(&mut response, false)
+        let mut response = http
+            .follow(
+                &Request {
+                    method: "GET",
+                    url: &url,
+                    headers: &[],
+                    body: &[],
+                    file: None,
+                },
+                &|hop| Ok(basic.clone().filter(|_| hop.same_origin(realm))),
+                Redirects::Anywhere,
+            )
+            .map_err(Failed::from)?;
+        answer(&mut response, false)
     }
+}
+
+/// A token not fetched: why, and the status the token server answered with, if it did.
+struct Failed {
+    error: Error,
+    status: Option<u16>,
+}
+
+impl From<Error> for Failed {
+    fn from(error: Error) -> Failed {
+        Failed { error, status: None }
+    }
+}
+
+/// [`read_token`] of `response`, its status kept where it was no answer.
+fn answer(response: &mut Response, oauth: bool) -> Result<Token, Failed> {
+    let status = response.status;
+    read_token(response, oauth).map_err(|error| Failed {
+        error,
+        status: (!(200..400).contains(&status)).then_some(status),
+    })
 }
 
 /// The fields of a token server's answer (distribution's token.md and oauth.md).
@@ -1087,6 +1141,46 @@ mod tests {
         auth.challenged(&registry(), &refusal(&plain(), &challenge), false)
             .unwrap();
         assert!(auth.authorization(&plain(), &registry(), &pull("a/b")).is_err());
+    }
+
+    /// A token server's 502, 503 or 504 is asked again, as a registry's own are, unless it
+    /// repeats, and its 400 is not: a token fetched past a gateway's failure.
+    #[test]
+    fn a_token_servers_passing_failure_is_asked_again() {
+        let answers = |statuses: &[&str]| -> Vec<(Vec<u8>, After)> {
+            statuses
+                .iter()
+                .map(|s| {
+                    let body = if s.starts_with("200") {
+                        r#"{"token":"t"}"#
+                    } else {
+                        ""
+                    };
+                    (http(s, "", body), After::Keep)
+                })
+                .collect()
+        };
+        for (statuses, fetched) in [
+            (&["502 Bad Gateway", "200 OK"][..], true),
+            (
+                &["503 Service Unavailable", "502 Bad Gateway", "200 OK"][..],
+                true,
+            ),
+            (
+                &["408 Request Timeout", "408 Request Timeout", "200 OK"][..],
+                true,
+            ),
+            (&["502 Bad Gateway", "502 Bad Gateway", "200 OK"][..], false),
+            (&["400 Bad Request", "200 OK"][..], false),
+        ] {
+            let tokens = serve(None, answers(statuses));
+            let auth = Authorizer::new(&registry(), Credentials::Anonymous);
+            let challenge = format!(r#"Bearer realm="http://127.0.0.1:{}/token""#, tokens.port);
+            auth.challenged(&registry(), &refusal(&plain(), &challenge), false)
+                .unwrap();
+            let got = auth.authorization(&plain(), &registry(), &pull("a/b"));
+            assert_eq!(got.is_ok(), fetched, "{statuses:?}: {got:?}");
+        }
     }
 
     #[test]
