@@ -12,6 +12,10 @@ the test guest in `idle` mode, the same command line), each VMM's boots interlea
    shards less Firecracker, the largest differences first.
 3. shards' own: one boot with its log at debug, whose lines carry the VM process's
    microseconds since it started.
+4. Before the guest runs: each boot's time from the VMM's exec to its vCPU's first entry,
+   both events in one record (`perf record` of `sched:sched_process_exec` and
+   `kvm:kvm_entry`), interleaved; and one boot each under `perf trace`, every system call
+   in order with its time, thread and duration, to the guest's ready line.
 
 Run from the workspace after `cargo bench -p shards --bench firecracker -- --runs 1`,
 which leaves the kernel, the initrd and Firecracker in target/artifacts and the VM process
@@ -155,3 +159,43 @@ log = os.path.join(out, "shards-debug.txt")
 boot(command("shards", QUIET, ""), log, env=dict(os.environ, SHARDS_LOG="debug"))
 print("shards at debug:")
 print(open(log, errors="replace").read())
+
+# 4. Before the guest runs: from the VMM's exec to its vCPU's first entry, perf's clock
+# for both events, the boots interleaved.
+entries = {"shards": [], "firecracker": []}
+for i in range(boots):
+    order = ["shards", "firecracker"] if i % 2 == 0 else ["firecracker", "shards"]
+    for vmm in order:
+        data = os.path.join(out, vmm, f"entry-{i}.data")
+        boot(command(vmm, QUIET, f"fc-{i}.json"), os.path.join(out, vmm, f"entry-console-{i}.txt"),
+             ["sudo", "perf", "record", "-q", "-o", data, "-e", "sched:sched_process_exec",
+              "-e", "kvm:kvm_entry", "--"])
+        r = subprocess.run(["sudo", "perf", "script", "-i", data, "-F", "time,event"],
+                           capture_output=True, text=True)
+        seen = re.findall(r"^\s*(\d+\.\d+):\s+(sched:sched_process_exec|kvm:kvm_entry):",
+                          r.stdout, re.M)
+        execs = [float(t) for t, e in seen if e == "sched:sched_process_exec"]
+        first = [float(t) for t, e in seen if e == "kvm:kvm_entry"]
+        if execs and first:
+            entries[vmm].append(round((first[0] - execs[0]) * 1e6))
+        else:
+            print(f"{vmm}, boot {i}: no exec or no entry recorded\n{r.stdout[-1000:]}{r.stderr[-1000:]}")
+print("exec to first entry, us:", json.dumps(entries))
+for vmm, v in entries.items():
+    if v:
+        v = sorted(v)
+        print(f"  {vmm}: n {len(v)}, p50 {v[len(v) // 2]}, max {v[-1]}")
+if len(entries["shards"]) == len(entries["firecracker"]) == boots:
+    d = sorted(a - b for a, b in zip(entries["shards"], entries["firecracker"]))
+    print(f"  shards less Firecracker, paired: p50 {d[boots // 2]}, min {d[0]}, max {d[-1]}")
+
+# 4b. One boot each under perf trace: the system calls before the guest ran, and after.
+for vmm in ["shards", "firecracker"]:
+    trace = os.path.join(out, f"{vmm}-syscalls.txt")
+    boot(command(vmm, QUIET, "fc-0.json"), os.path.join(out, vmm, "trace-console.txt"),
+         ["sudo", "perf", "trace", "-T", "-o", trace, "--"])
+    lines = open(trace, errors="replace").read().splitlines() if os.path.exists(trace) else []
+    run = next((n for n, l in enumerate(lines) if "KVM_RUN" in l), None)
+    print(f"{vmm}: {len(lines)} lines traced; the first KVM_RUN at line {run}")
+    for l in lines[:3] + (lines[max(run - 3, 0):run + 1] if run is not None else []):
+        print("   ", l[:200])

@@ -13,7 +13,11 @@ mode, the same command line, 1 vCPU, 128 MiB) with each VMM, interleaved:
    VM exits, port I/O and MMIO by reason, count and time, boot by boot;
 2. once each with the kernel's initcalls timed (`initcall_debug`), each initcall's time,
    shards less Firecracker, the largest differences first;
-3. shards once with its log at debug, the VM process's setup in microseconds.
+3. shards once with its log at debug, the VM process's setup in microseconds;
+4. from each VMM's exec to its vCPU's first entry, boot by boot, both events in one
+   `perf record` (`sched:sched_process_exec`, `kvm:kvm_entry`), with the paired
+   difference; and one boot each under `perf trace`, every system call in order with its
+   time, thread and duration (`shards-syscalls.txt`, `firecracker-syscalls.txt`).
 
 `.github/workflows/boot-exits.yml` runs it on two runners after the comparison's
 `--runs 1` has built and fetched its guest; each uploads its directory as an artifact.
