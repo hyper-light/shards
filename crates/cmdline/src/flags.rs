@@ -226,7 +226,8 @@ pub struct Command {
     pub flags: &'static [Flag],
     /// The flags `docker` takes that shards does not serve yet, which parse all the same:
     /// a line each of `NAME SHORT KIND DEFAULT SHARES`, `-` for no shorthand, an empty
-    /// default or no flag shared, and the kind `b`, `i`, `s` or `m` (`Kind`). One string
+    /// default or no flag shared, and the kind `b`, `i`, `s` or `m` (`Kind`), or the type
+    /// of a value docker/cli parses as its own (`Kind::Value`: `bytes`, `uint64`). One string
     /// rather than a table of `Flag`s, whose `&str`s filled a page of fixed-up pointers
     /// that every parse faulted in: 7 µs of the thin client's start (docs/research/
     /// platform-measurements.md M29).
@@ -239,9 +240,17 @@ pub struct Command {
     pub error_prefix: &'static str,
 }
 
-/// `v` as Go's `encoding/csv` writes one record, without its line end (pflag's
-/// `writeAsCSV`): a field is quoted, its quotes doubled, if it holds a comma, a quote or a
-/// line break, or starts with a space.
+impl Command {
+    /// Every flag it takes: those it serves, then those `docker` takes that it does not
+    /// serve yet.
+    pub fn every_flag(&self) -> impl Iterator<Item = Flag> {
+        self.flags
+            .iter()
+            .copied()
+            .chain(self.unserved.lines().filter_map(unserved_flag))
+    }
+}
+
 /// A CSV record's fields, as encoding/csv reads one line (pflag's readAsCSV): commas
 /// part them, a quoted field keeps its commas, and a doubled quote in it is one.
 fn csv_fields(line: &str) -> Vec<String> {
@@ -265,6 +274,9 @@ fn csv_fields(line: &str) -> Vec<String> {
     fields
 }
 
+/// `v` as Go's `encoding/csv` writes one record, without its line end (pflag's
+/// `writeAsCSV`): a field is quoted, its quotes doubled, if it holds a comma, a quote or a
+/// line break, or starts with a space.
 fn csv_record(v: &[String]) -> String {
     let fields: Vec<String> = v
         .iter()
@@ -297,7 +309,8 @@ fn unserved_flag(line: &'static str) -> Option<Flag> {
         "b" => Kind::Bool,
         "i" => Kind::Int,
         "s" => Kind::String,
-        _ => Kind::Many("list"),
+        "m" => Kind::Many("list"),
+        go => Kind::Value(go),
     };
     let flag = Flag::new(
         name,
@@ -750,9 +763,11 @@ pub fn value(flag: &Flag, value: &str) -> Result<String, String> {
         ("memory-swap", Kind::Value("bytes")) if value == "-1" => Ok(value.to_string()),
         (_, Kind::Value("bytes")) => crate::resources::ram_in_bytes(value).map(|n| n.to_string()),
         (_, Kind::Value("decimal")) => crate::resources::parse_cpus(value).map(|n| n.to_string()),
-        (_, Kind::Value("uint16")) => crate::go::parse_uint_bits(value, 16)
-            .map(|n| n.to_string())
-            .map_err(|e| e.to_string()),
+        (_, Kind::Value(go @ ("uint16" | "uint64"))) => {
+            crate::go::parse_uint_bits(value, if go == "uint16" { 16 } else { 64 })
+                .map(|n| n.to_string())
+                .map_err(|e| e.to_string())
+        }
         ("label", Kind::Many("list")) => validate_label(value),
         ("dns", Kind::Many("list")) => validate_ip(value),
         ("dns-search", Kind::Many("list")) => validate_dns_search(value),

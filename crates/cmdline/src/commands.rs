@@ -349,14 +349,14 @@ pub static RUN: Command = Command {
     unserved: "\
 annotation - m - -\n\
 attach a m - -\n\
-blkio-weight-cgroup-parent - s - -\n\
+cgroup-parent - s - -\n\
 cgroupns - s - -\n\
 cpu-count - i 0 -\n\
 cpu-percent - i 0 -\n\
 cpu-rt-period - i 0 -\n\
 cpu-rt-runtime - i 0 -\n\
-cpuset-io-maxbandwidth - s 0 -\n\
-io-maxiops - s 0 -\n\
+io-maxbandwidth - bytes 0 -\n\
+io-maxiops - uint64 0 -\n\
 ipc - s - -\n\
 isolation - s - -\n\
 link - m - -\n\
@@ -701,15 +701,14 @@ pub static CREATE: Command = Command {
     unserved: "\
 annotation - m - -\n\
 attach a m - -\n\
-blkio-weight-cgroup-parent - s - -\n\
+cgroup-parent - s - -\n\
 cgroupns - s - -\n\
 cpu-count - i 0 -\n\
 cpu-percent - i 0 -\n\
 cpu-rt-period - i 0 -\n\
 cpu-rt-runtime - i 0 -\n\
-cpus - s - -\n\
-io-maxbandwidth - s 0 -\n\
-io-maxiops - s 0 -\n\
+io-maxbandwidth - bytes 0 -\n\
+io-maxiops - uint64 0 -\n\
 ipc - s - -\n\
 isolation - s - -\n\
 link - m - -\n\
@@ -1036,7 +1035,7 @@ pub static RMI: Command = Command {
         Flag::bool("vms", None, "Remove stopped microVMs").extension(),
     ],
     unserved: "\
-platform - l - -",
+platform - m - -",
     interspersed: true,
     error_prefix: "",
 };
@@ -1682,7 +1681,7 @@ pub static SAVE: Command = Command {
         Flag::string("output", Some(b'o'), "", "Write to a file, instead of STDOUT"),
     ],
     unserved: "\
-platform - l - -",
+platform - m - -",
     interspersed: true,
     error_prefix: "",
 };
@@ -1704,7 +1703,7 @@ pub static LOAD: Command = Command {
         Flag::bool("quiet", Some(b'q'), "Suppress the load output"),
     ],
     unserved: "\
-platform - l - -",
+platform - m - -",
     interspersed: true,
     error_prefix: "",
 };

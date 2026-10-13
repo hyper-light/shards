@@ -642,6 +642,98 @@
   },
   {
     "argv": [
+      "run",
+      "--cgroup-parent",
+      "/x",
+      "img"
+    ],
+    "stdout": "RUN --cgroup-parent=/x \"img\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "create",
+      "--cgroup-parent",
+      "/x",
+      "img"
+    ],
+    "stdout": "RUN --cgroup-parent=/x \"img\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "run",
+      "--io-maxbandwidth",
+      "10m",
+      "img"
+    ],
+    "stdout": "RUN --io-maxbandwidth=10MiB \"img\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "run",
+      "--io-maxbandwidth",
+      "lots",
+      "img"
+    ],
+    "stdout": "",
+    "stderr": "invalid argument \"lots\" for \"--io-maxbandwidth\" flag: invalid size: 'lots'\n\nUsage:  shards run [OPTIONS] IMAGE [COMMAND] [ARG...]\n\nRun 'shards run --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "run",
+      "--io-maxiops",
+      "abc",
+      "img"
+    ],
+    "stdout": "",
+    "stderr": "invalid argument \"abc\" for \"--io-maxiops\" flag: strconv.ParseUint: parsing \"abc\": invalid syntax\n\nUsage:  shards run [OPTIONS] IMAGE [COMMAND] [ARG...]\n\nRun 'shards run --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "run",
+      "--io-maxiops",
+      "-1",
+      "img"
+    ],
+    "stdout": "",
+    "stderr": "invalid argument \"-1\" for \"--io-maxiops\" flag: strconv.ParseUint: parsing \"-1\": invalid syntax\n\nUsage:  shards run [OPTIONS] IMAGE [COMMAND] [ARG...]\n\nRun 'shards run --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "create",
+      "--io-maxiops",
+      "0",
+      "img"
+    ],
+    "stdout": "RUN --io-maxiops=0 \"img\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "save",
+      "--platform",
+      "arm64",
+      "--platform",
+      "amd64",
+      "-o",
+      "f",
+      "img"
+    ],
+    "stdout": "RUN --output=f --platform=[arm64,amd64] \"img\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
       "network",
       "create",
       "--help"
