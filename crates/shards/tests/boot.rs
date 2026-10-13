@@ -403,11 +403,15 @@ fn a_nested_guest_is_a_kvm_host() {
     }
 }
 
+/// What the test guest says of the interrupts it took (`pci-irq`).
+const INTERRUPTS: &str = "SHARDS-TEST INFO interrupts: INTx 2, MSI 1, MSI-X 3, 2 of them held";
+
 /// A PCI function's interrupts reach the guest (D154): the test function, taken by vfio-pci
 /// in the guest's own userspace (a no-IOMMU group), raises INTx twice, acknowledged and
-/// unmasked between, then one MSI, each signalled on an eventfd. On arm64, INTx on an SPI
-/// of the device's own and the MSI through the GIC's GICv2m frame; on x86_64, INTx on the
-/// bus's GSI as the DSDT's _PRT says, and the MSI to the local APICs.
+/// unmasked between, then one MSI, then MSI-X vectors three times, two of them held
+/// pending while masked and sent as unmasked, each signalled on an eventfd. On arm64, INTx
+/// on an SPI of the device's own and the MSIs through the GIC's GICv2m frame; on x86_64,
+/// INTx on the bus's GSI as the DSDT's _PRT says, and the MSIs to the local APICs.
 #[test]
 fn a_pci_functions_interrupts_reach_the_guest() {
     if cannot_run_vms() {
@@ -430,10 +434,7 @@ fn a_pci_functions_interrupts_reach_the_guest() {
         TIMEOUT,
     );
     assert_eq!(r.status, Some(0), "{r}");
-    assert!(
-        r.stdout.contains("SHARDS-TEST INFO interrupts: INTx 2, MSI 1"),
-        "{r}"
-    );
+    assert!(r.stdout.contains(INTERRUPTS), "{r}");
     assert!(
         r.stdout.lines().any(|l| l.trim_end() == "SHARDS-TEST PASS"),
         "{r}"
@@ -517,7 +518,7 @@ fn a_nested_guest_runs_vms_of_its_own() {
         assert!(
             r.stdout
                 .lines()
-                .any(|l| l.trim_end() == "L2: SHARDS-TEST INFO interrupts: INTx 2, MSI 1"),
+                .any(|l| l.trim_end() == format!("L2: {INTERRUPTS}")),
             "the inner guest's interrupts: {r}"
         );
     };

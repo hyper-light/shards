@@ -3,9 +3,11 @@
 //! type 1 IOMMU, all of guest RAM mapped for its DMA, or with none where the group is a
 //! no-IOMMU one (`enable_unsafe_noiommu_mode`, for tests of functions that do no DMA);
 //! its configuration space the device's, read and written through vfio-pci, which
-//! already keeps the device's own registers from a guest, but for its BARs, its expansion
-//! ROM and its interrupt line and pin, which the VMM keeps; its memory BARs reached
-//! through the device's regions.
+//! already keeps the device's own registers from a guest, but for what the VMM keeps: its
+//! BARs, its expansion ROM, its interrupt line and pin, and its MSI and MSI-X
+//! capabilities; its memory BARs reached through the device's regions, but for its MSI-X
+//! table and pending bits, the VMM's too; its interrupts signalled by VFIO on eventfds
+//! that KVM's irqfds take into the guest (D154).
 
 use std::ffi::CString;
 use std::fs::File;
@@ -16,7 +18,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::{Mutex, PoisonError};
 
-use super::{Bar, BarKind, Header, Identity, Interrupts, MsiCap, PciFunction, reg};
+use super::{Bar, BarKind, Header, Identity, Interrupts, Msi, MsiCap, MsixCap, MsixTable, PciFunction, reg};
 use crate::devices::{MmioDevice, get_le};
 use crate::memory::GuestMemory;
 use crate::snapshot::codec::{self, Reader, Writer};
@@ -67,11 +69,13 @@ const VFIO_REGION_INFO_FLAG_READ: u32 = 1 << 0;
 const VFIO_REGION_INFO_FLAG_WRITE: u32 = 1 << 1;
 /// The configuration space's region (VFIO_PCI_CONFIG_REGION_INDEX).
 const CONFIG_REGION: u32 = 7;
-/// A function's interrupts as VFIO indexes them (VFIO_PCI_INTX_IRQ_INDEX, _MSI_), and
-/// how they are set (struct vfio_irq_set's flags) and signalled (vfio_irq_info's).
+/// A function's interrupts as VFIO indexes them (VFIO_PCI_INTX_IRQ_INDEX, _MSI_, _MSIX_),
+/// and how they are set (struct vfio_irq_set's flags) and signalled (vfio_irq_info's).
 const IRQ_INTX: u32 = 0;
 const IRQ_MSI: u32 = 1;
+const IRQ_MSIX: u32 = 2;
 const VFIO_IRQ_INFO_EVENTFD: u32 = 1 << 0;
+const VFIO_IRQ_INFO_NORESIZE: u32 = 1 << 3;
 const VFIO_IRQ_SET_DATA_NONE: u32 = 1 << 0;
 const VFIO_IRQ_SET_DATA_EVENTFD: u32 = 1 << 2;
 const VFIO_IRQ_SET_ACTION_UNMASK: u32 = 1 << 4;
@@ -421,24 +425,36 @@ impl Device {
         }
     }
 
-    /// Whether VFIO signals the function's interrupt `index` by eventfd.
-    fn signals(&self, index: u32) -> bool {
+    /// How VFIO signals the function's interrupt `index`, its flags, where it signals it
+    /// by eventfd at all.
+    fn irq_flags(&self, index: u32) -> Option<u32> {
         let mut info = IrqInfo {
             argsz: size_of::<IrqInfo>() as u32,
             index,
             ..IrqInfo::default()
         };
         // SAFETY: VFIO_DEVICE_GET_IRQ_INFO fills a `vfio_irq_info` it is given.
-        let read = unsafe { ioctl(&self.file, VFIO_DEVICE_GET_IRQ_INFO, (&raw mut info) as usize) };
-        read.is_ok() && info.flags & VFIO_IRQ_INFO_EVENTFD != 0 && info.count > 0
+        unsafe { ioctl(&self.file, VFIO_DEVICE_GET_IRQ_INFO, (&raw mut info) as usize) }.ok()?;
+        (info.flags & VFIO_IRQ_INFO_EVENTFD != 0 && info.count > 0).then_some(info.flags)
     }
 
-    /// A `vfio_irq_set`: `flags` for interrupts `0..count` of `index`, `events` its data.
-    fn set_irqs(&self, index: u32, flags: u32, count: u32, events: &[RawFd]) -> io::Result<()> {
-        let mut set: Vec<u32> = vec![(20 + 4 * events.len()) as u32, flags, index, 0, count];
+    fn signals(&self, index: u32) -> bool {
+        self.irq_flags(index).is_some()
+    }
+
+    /// A `vfio_irq_set`: `flags` for interrupts `start..start + count` of `index`, `events`
+    /// its data. Where it enables MSI or MSI-X with more vectors than the host gives, VFIO
+    /// enables none and answers how many it could (vfio_pci_intrs.c, vfio_msi_enable).
+    fn set_irqs(&self, index: u32, flags: u32, start: u32, count: u32, events: &[RawFd]) -> io::Result<()> {
+        let mut set: Vec<u32> = vec![(20 + 4 * events.len()) as u32, flags, index, start, count];
         set.extend(events.iter().map(|&fd| fd as u32));
         // SAFETY: a vfio_irq_set whose argsz covers the eventfds after it.
-        unsafe { ioctl(&self.file, VFIO_DEVICE_SET_IRQS, set.as_ptr() as usize) }.map(drop)
+        match unsafe { ioctl(&self.file, VFIO_DEVICE_SET_IRQS, set.as_ptr() as usize) }? {
+            0 => Ok(()),
+            could => Err(io::Error::other(format!(
+                "the host has {could} of the {count} vectors asked"
+            ))),
+        }
     }
 
     /// Signals the function's interrupt `index` on `event` from now; with none, no more.
@@ -447,6 +463,7 @@ impl Device {
             Some(fd) => self.set_irqs(
                 index,
                 VFIO_IRQ_SET_ACTION_TRIGGER | VFIO_IRQ_SET_DATA_EVENTFD,
+                0,
                 1,
                 &[fd],
             ),
@@ -454,9 +471,21 @@ impl Device {
                 index,
                 VFIO_IRQ_SET_ACTION_TRIGGER | VFIO_IRQ_SET_DATA_NONE,
                 0,
+                0,
                 &[],
             ),
         }
+    }
+
+    /// Signals MSI-X vectors `start..` on `events`, -1 for one signalled on nothing.
+    fn trigger_msix(&self, start: u32, events: &[RawFd]) -> io::Result<()> {
+        self.set_irqs(
+            IRQ_MSIX,
+            VFIO_IRQ_SET_ACTION_TRIGGER | VFIO_IRQ_SET_DATA_EVENTFD,
+            start,
+            events.len() as u32,
+            events,
+        )
     }
 
     /// Unmasks INTx, which VFIO masks as it signals it, each time `event` is written.
@@ -464,6 +493,7 @@ impl Device {
         self.set_irqs(
             IRQ_INTX,
             VFIO_IRQ_SET_ACTION_UNMASK | VFIO_IRQ_SET_DATA_EVENTFD,
+            0,
             1,
             &[event],
         )
@@ -478,10 +508,8 @@ impl Device {
         get_le(bytes) as u32
     }
 
-    /// Its MSI capability (§6.8.1), found in its list (§6.7): where it is, the next, its
-    /// addresses' width, and its length, with per-vector masking's registers where it has
-    /// them.
-    fn msi_cap(&self) -> Option<(MsiCap, u16)> {
+    /// Where its capability `id` is, found in its list (§6.7).
+    fn cap(&self, id: u8) -> Option<u16> {
         if self.config(reg::STATUS, 2) as u16 & reg::STATUS_CAPABILITIES == 0 {
             return None;
         }
@@ -491,17 +519,43 @@ impl Device {
             if at < 0x40 {
                 return None;
             }
-            let next = self.config(at + 1, 1) as u8 & 0xfc;
-            if self.config(at, 1) as u8 == reg::CAP_MSI {
-                let control = self.config(at + reg::MSI_CONTROL, 2) as u16;
-                let is64 = control & reg::MSI_64BIT != 0;
-                let masking = control & reg::MSI_MASKING != 0;
-                let len = 10 + if is64 { 4 } else { 0 } + if masking { 10 } else { 0 };
-                return Some((MsiCap { at, next, is64 }, len));
+            if self.config(at, 1) as u8 == id {
+                return Some(at);
             }
-            at = u16::from(next);
+            at = self.config(at + 1, 1) as u16 & 0xfc;
         }
         None
+    }
+
+    /// Its MSI capability (§6.8.1): where it is, the next, its addresses' width, and its
+    /// length, with per-vector masking's registers where it has them.
+    fn msi_cap(&self) -> Option<(MsiCap, u16)> {
+        let at = self.cap(reg::CAP_MSI)?;
+        let next = self.config(at + 1, 1) as u8 & 0xfc;
+        let control = self.config(at + reg::MSI_CONTROL, 2) as u16;
+        let is64 = control & reg::MSI_64BIT != 0;
+        let masking = control & reg::MSI_MASKING != 0;
+        let len = 10 + if is64 { 4 } else { 0 } + if masking { 10 } else { 0 };
+        Some((MsiCap { at, next, is64 }, len))
+    }
+
+    /// Its MSI-X capability (§6.8.2): where it is, the next, its table's size, and its
+    /// table's and pending bits' BARs and offsets.
+    fn msix_cap(&self) -> Option<MsixCap> {
+        let at = self.cap(reg::CAP_MSIX)?;
+        let next = self.config(at + 1, 1) as u8 & 0xfc;
+        let control = self.config(at + reg::MSIX_CONTROL, 2) as u16;
+        let place = |register: u16| {
+            let value = self.config(at + register, 4);
+            ((value & 7) as u8, value & !7)
+        };
+        Some(MsixCap {
+            at,
+            next,
+            size: (control & 0x7ff) + 1,
+            table: place(reg::MSIX_TABLE),
+            pba: place(reg::MSIX_PBA),
+        })
     }
 
     /// The BARs the device has, by their sizes (its regions) and their kinds (its
@@ -534,12 +588,21 @@ impl Device {
     }
 }
 
-/// Whether `offset` is a register the VMM keeps of a function whose MSI capability is at
-/// `msi`'s place, of its length: the BARs, the expansion ROM, the interrupt line and pin
-/// (with PCIe's hardwired-zero Min_Gnt and Max_Lat beside them), and the capability.
-fn kept(offset: u16, msi: Option<(u16, u16)>) -> bool {
+/// Whether `offset` is a register the VMM keeps of a function whose MSI and MSI-X
+/// capabilities are at `caps`' places, of their lengths: the BARs, the expansion ROM, the
+/// interrupt line and pin (with PCIe's hardwired-zero Min_Gnt and Max_Lat beside them),
+/// and the capabilities.
+fn kept(offset: u16, caps: &[(u16, u16)]) -> bool {
     matches!(offset, 0x10..=0x27 | 0x30..=0x33 | 0x3c..=0x3f)
-        || msi.is_some_and(|(at, len)| (at..at + len).contains(&offset))
+        || caps.iter().any(|&(at, len)| (at..at + len).contains(&offset))
+}
+
+/// Whether `len` bytes at `place`, a BAR's index and an offset in it, lie in a memory BAR
+/// of `bars`.
+fn in_bars(bars: &[Bar], (index, offset): (u8, u32), len: u64) -> bool {
+    bars.iter().any(|bar| {
+        bar.index == usize::from(index) && bar.kind != BarKind::Io && u64::from(offset) + len <= bar.size
+    })
 }
 
 /// How a passed-through function's interrupts reach the guest (D154): in the kernel, by
@@ -554,6 +617,12 @@ pub trait Route: Send + Sync {
     fn msi_off(&self, event: RawFd, address: u64, data: u32) -> Result<(), String>;
 }
 
+impl std::fmt::Debug for dyn Route {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Route")
+    }
+}
+
 /// An eventfd(2): a counter VFIO writes as the function interrupts, and KVM reads.
 #[derive(Debug)]
 struct EventFd(OwnedFd);
@@ -561,7 +630,7 @@ struct EventFd(OwnedFd);
 impl EventFd {
     fn new() -> io::Result<EventFd> {
         // SAFETY: eventfd(2) with flags; a fresh descriptor on success.
-        let fd = unsafe { libc::eventfd(0, libc::EFD_CLOEXEC) };
+        let fd = unsafe { libc::eventfd(0, libc::EFD_CLOEXEC | libc::EFD_NONBLOCK) };
         if fd < 0 {
             return Err(io::Error::last_os_error());
         }
@@ -572,49 +641,82 @@ impl EventFd {
     fn raw(&self) -> RawFd {
         self.0.as_raw_fd()
     }
+
+    /// What it counted since it was last read, zero from now: 0 where it counted
+    /// nothing, which a read of it, nonblocking, answers with EAGAIN.
+    fn take(&self) -> u64 {
+        let mut count = [0u8; 8];
+        // SAFETY: read(2) of an eventfd's eight bytes into eight of ours.
+        let n = unsafe { libc::read(self.raw(), count.as_mut_ptr().cast(), count.len()) };
+        if n == 8 { u64::from_ne_bytes(count) } else { 0 }
+    }
 }
 
 /// A passed-through function's interrupts as they stand: whether the guest has reached
-/// the function yet, INTx's eventfds where it is on, and MSI's and the message it is
-/// routed by where the guest enabled it.
+/// the function yet; INTx's eventfds where it is on; MSI's and the message it is routed
+/// by where the guest enabled it; and MSI-X's table, the guest's, and its vectors at the
+/// host while MSI-X is on there.
 #[derive(Debug, Default)]
 struct Irqs {
     reached: bool,
     intx: Option<(EventFd, EventFd)>,
     msi: Option<(EventFd, u64, u32)>,
+    table: Option<MsixTable>,
+    vectors: Option<Vec<Vector>>,
+}
+
+/// An MSI-X vector at the host: the eventfd VFIO signals it on, from the guest's first
+/// unmasking it, and the message an irqfd routes it by while the guest leaves it unmasked.
+#[derive(Debug, Default)]
+struct Vector {
+    event: Option<EventFd>,
+    routed: Option<(u64, u32)>,
+}
+
+/// Where an access to a passed-through function's BAR lands: its MSI-X table or pending
+/// bits, at an offset in them, which the VMM keeps; or the device.
+enum Landing {
+    Table(u64),
+    Pending(u64),
+    Device,
 }
 
 /// A passed-through function: its configuration space the device's but for what the VMM
 /// keeps ([`Header`]'s): its BARs, placed by the VMM; its expansion ROM, none; its
-/// interrupt line and pin; and its MSI capability, which vfio-pci leaves a user to enable
+/// interrupt line and pin; its MSI capability, which vfio-pci leaves a user to enable
 /// through VFIO_DEVICE_SET_IRQS (vfio_pci_config.c, vfio_msi_config_write): one message,
-/// at the device's place and of its length, without per-vector masking.
+/// at the device's place and of its length, without per-vector masking; and its MSI-X
+/// capability, with its table and pending bits, which vfio-pci keeps a user from
+/// (vfio_pci_rdwr.c, vfio_pci_bar_rw).
 #[derive(Debug)]
 pub struct VfioFunction {
-    device: Arc<Device>,
+    device: Device,
     kept: Header,
-    /// Its MSI capability's place and length.
-    msi: Option<(u16, u16)>,
+    /// Its MSI and MSI-X capabilities' places and lengths.
+    caps: Vec<(u16, u16)>,
     route: Option<Arc<dyn Route>>,
+    /// The machine's MSIs: what sends an MSI-X vector that pended while masked, as the
+    /// guest unmasks it.
+    send: Option<Arc<dyn Msi>>,
+    /// Whether VFIO adds MSI-X vectors one at a time (vfio.h: no VFIO_IRQ_INFO_NORESIZE),
+    /// as the host's MSI domains do where they allocate them dynamically
+    /// (MSI_FLAG_PCI_MSIX_ALLOC_DYN: x86's), or takes them all at once (arm64's).
+    grows: bool,
     irqs: Mutex<Irqs>,
 }
 
-impl std::fmt::Debug for dyn Route {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("Route")
-    }
-}
-
 impl VfioFunction {
-    /// `device`, its BARs at `bars`, its interrupts reaching the guest by `route`, where
-    /// the machine routes them: INTx from the guest's first look at the function
-    /// ([`VfioFunction::reach`]), where it has a pin.
+    /// `device`, its BARs at `bars`, its interrupts reaching the guest by `route` and
+    /// `send`, where the machine routes them: INTx from the guest's first look at the
+    /// function ([`VfioFunction::reach`]), where it has a pin; MSI and MSI-X as the guest
+    /// enables them.
     pub fn new(
-        device: Arc<Device>,
+        device: Device,
         bars: Vec<Bar>,
         route: Option<Arc<dyn Route>>,
+        send: Option<Arc<dyn Msi>>,
     ) -> Result<VfioFunction, String> {
-        let routed = route.is_some();
+        let routed = route.is_some() && send.is_some();
         let pin = if routed && device.signals(IRQ_INTX) {
             device.config(reg::INTERRUPT_PIN, 1) as u8
         } else {
@@ -625,6 +727,21 @@ impl VfioFunction {
         } else {
             None
         };
+        let msix_flags = if routed { device.irq_flags(IRQ_MSIX) } else { None };
+        // MSI-X where its table and pending bits lie in the device's BARs, as they must
+        // for the VMM to keep them.
+        let msix = msix_flags.and_then(|_| device.msix_cap()).filter(|cap| {
+            let size = u64::from(cap.size);
+            let fits = in_bars(&bars, cap.table, size * reg::MSIX_ENTRY)
+                && in_bars(&bars, cap.pba, size.div_ceil(64) * 8);
+            if !fits {
+                crate::warn!(
+                    "{}: its MSI-X table or pending bits lie past its BARs",
+                    device.name
+                );
+            }
+            fits
+        });
         let kept = Header::with_interrupts(
             Identity {
                 vendor: 0,
@@ -638,32 +755,28 @@ impl VfioFunction {
             Interrupts {
                 pin,
                 msi: msi.map(|(cap, _)| cap),
+                msix,
             },
         )?;
+        let mut caps: Vec<(u16, u16)> = msi.map(|(cap, len)| (cap.at, len)).into_iter().collect();
+        caps.extend(msix.map(|cap| (cap.at, reg::MSIX_LEN)));
         Ok(VfioFunction {
             device,
             kept,
-            msi: msi.map(|(cap, len)| (cap.at, len)),
+            caps,
             route,
-            irqs: Mutex::new(Irqs::default()),
+            send,
+            grows: msix_flags.is_some_and(|flags| flags & VFIO_IRQ_INFO_NORESIZE == 0),
+            irqs: Mutex::new(Irqs {
+                table: msix.map(|cap| MsixTable::new(cap.size)),
+                ..Irqs::default()
+            }),
         })
     }
 
-    /// Routes INTx as the guest first reaches the function's configuration space: its
-    /// vCPUs run by then, and KVM takes an irqfd only once the machine's interrupt
-    /// controller is initialized, after every vCPU exists (virt/kvm/eventfd.c,
-    /// kvm_irqfd_assign: EAGAIN before `kvm_arch_intc_initialized`).
-    fn reach(&self) {
-        let mut irqs = self.irqs.lock().unwrap_or_else(PoisonError::into_inner);
-        if irqs.reached {
-            return;
-        }
-        irqs.reached = true;
-        if self.pin() != 0
-            && let Err(e) = self.intx_on(&mut irqs)
-        {
-            crate::warn!("{}: INTx: {e}", self.device.name);
-        }
+    /// Its BARs, where the VMM placed them.
+    pub fn bars(&self) -> &[Bar] {
+        self.kept.bars()
     }
 
     /// Its INTx pin, 0 for none: what the machine routes.
@@ -673,8 +786,58 @@ impl VfioFunction {
         pin[0]
     }
 
-    fn kept(&self, offset: u16) -> bool {
-        kept(offset, self.msi)
+    fn irqs(&self) -> std::sync::MutexGuard<'_, Irqs> {
+        self.irqs.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Routes INTx as the guest first reaches the function's configuration space: its
+    /// vCPUs run by then, and KVM takes an irqfd only once the machine's interrupt
+    /// controller is initialized, after every vCPU exists (virt/kvm/eventfd.c,
+    /// kvm_irqfd_assign: EAGAIN before `kvm_arch_intc_initialized`).
+    fn reach(&self) {
+        let mut irqs = self.irqs();
+        if !irqs.reached {
+            irqs.reached = true;
+            self.sync(&mut irqs);
+        }
+    }
+
+    /// Brings the function's interrupts at the host to what the guest set (§6.8): MSI-X
+    /// where it enabled MSI-X, else MSI where it enabled MSI, else INTx where the
+    /// function has a pin. VFIO has one of them on at a time (vfio_pci_intrs.c,
+    /// vfio_pci_set_msi_trigger), so what is no longer wanted goes first.
+    fn sync(&self, irqs: &mut Irqs) {
+        if !irqs.reached || self.route.is_none() {
+            return;
+        }
+        let msix = self.kept.msix().is_some_and(|m| m.enabled);
+        let msi = if msix { None } else { self.kept.msi() };
+        if !msix {
+            self.msix_off(irqs);
+        }
+        if irqs.msi.as_ref().map(|&(_, address, data)| (address, data)) != msi {
+            self.msi_off(irqs);
+        }
+        if msix || msi.is_some() {
+            self.intx_off(irqs);
+        }
+        if msix {
+            if irqs.vectors.is_none() {
+                self.msix_on(irqs);
+            }
+            for k in 0..irqs.vectors.as_ref().map_or(0, Vec::len) {
+                self.vector(irqs, k);
+            }
+        } else if let Some((address, data)) = msi {
+            if irqs.msi.is_none() {
+                self.msi_on(irqs, address, data);
+            }
+        } else if self.pin() != 0
+            && irqs.intx.is_none()
+            && let Err(e) = self.intx_on(irqs)
+        {
+            crate::warn!("{}: INTx: {e}", self.device.name);
+        }
     }
 
     /// INTx routed and signalled: VFIO masks it as it signals it, and unmasks it as the
@@ -715,49 +878,202 @@ impl VfioFunction {
         }
     }
 
-    /// MSI as the guest left the capability: where it enabled MSI, routed by its message
-    /// and signalled, INTx off, which VFIO has on with MSI never (vfio_pci_intrs.c); where
-    /// it disabled it, INTx back. A message changed while enabled is routed again.
-    fn msi_written(&self) {
+    /// MSI routed by the guest's message and signalled.
+    fn msi_on(&self, irqs: &mut Irqs, address: u64, data: u32) {
         let Some(route) = &self.route else {
             return;
         };
-        let mut irqs = self.irqs.lock().unwrap_or_else(PoisonError::into_inner);
-        let want = self.kept.msi();
-        let now = irqs.msi.as_ref().map(|&(_, address, data)| (address, data));
-        if want == now {
+        let on = EventFd::new().map_err(|e| e.to_string()).and_then(|event| {
+            route.msi(event.raw(), address, data)?;
+            if let Err(e) = self.device.trigger(IRQ_MSI, Some(event.raw())) {
+                let _ = route.msi_off(event.raw(), address, data);
+                return Err(e.to_string());
+            }
+            Ok(event)
+        });
+        match on {
+            Ok(event) => irqs.msi = Some((event, address, data)),
+            Err(e) => crate::warn!("{}: MSI to {address:#x} with {data:#x}: {e}", self.device.name),
+        }
+    }
+
+    fn msi_off(&self, irqs: &mut Irqs) {
+        let (Some(route), Some((event, address, data))) = (&self.route, irqs.msi.take()) else {
+            return;
+        };
+        if let Err(e) = self.device.trigger(IRQ_MSI, None) {
+            crate::warn!("{}: MSI off: {e}", self.device.name);
+        }
+        if let Err(e) = route.msi_off(event.raw(), address, data) {
+            crate::warn!("{}: MSI's route: {e}", self.device.name);
+        }
+    }
+
+    /// MSI-X on at the host, no vector signalled on anything (an eventfd of -1) until the
+    /// guest unmasks it (vfio.h, VFIO_IRQ_INFO_NORESIZE): every vector of the table at
+    /// once where VFIO cannot add one later, as a vector added by disabling MSI-X and
+    /// enabling it again would lose the interrupts between; else the first alone, and
+    /// each other as the guest first unmasks it, the host allocating only those in use.
+    fn msix_on(&self, irqs: &mut Irqs) {
+        let Some(table) = &irqs.table else {
+            return;
+        };
+        let count = if self.grows { 1 } else { table.vectors() };
+        match self.device.trigger_msix(0, &vec![-1; count]) {
+            Ok(()) => irqs.vectors = Some((0..table.vectors()).map(|_| Vector::default()).collect()),
+            Err(e) => crate::warn!("{}: MSI-X of {count} vectors: {e}", self.device.name),
+        }
+    }
+
+    fn msix_off(&self, irqs: &mut Irqs) {
+        let (Some(route), Some(vectors)) = (&self.route, irqs.vectors.take()) else {
+            return;
+        };
+        if let Err(e) = self.device.trigger(IRQ_MSIX, None) {
+            crate::warn!("{}: MSI-X off: {e}", self.device.name);
+        }
+        for vector in vectors {
+            if let (Some(event), Some((address, data))) = (vector.event, vector.routed)
+                && let Err(e) = route.msi_off(event.raw(), address, data)
+            {
+                crate::warn!("{}: an MSI-X vector's route: {e}", self.device.name);
+            }
+        }
+    }
+
+    /// MSI-X vector `k` at the host as the guest left it. Where it and the function are
+    /// unmasked, its eventfd, made and given VFIO as the guest first unmasks it, is
+    /// routed by its message through an irqfd; and the vector is sent where it pended
+    /// masked: VFIO signals it masked or not, its eventfd counting what no irqfd took.
+    /// KVM injects what an eventfd counted as its irqfd is assigned, but leaves the count
+    /// (virt/kvm/eventfd.c, kvm_irqfd_assign), so the count is taken before, to be sent
+    /// once, and after, not to be sent again. Where either is masked, the irqfd goes.
+    fn vector(&self, irqs: &mut Irqs, k: usize) {
+        let (Some(route), Some(table), Some(vectors)) = (&self.route, &mut irqs.table, &mut irqs.vectors)
+        else {
+            return;
+        };
+        let Some(vector) = vectors.get_mut(k) else {
+            return;
+        };
+        let masked = self.kept.msix().is_none_or(|m| m.masked);
+        let want = if masked { None } else { table.message(k) };
+        if vector.routed == want {
             return;
         }
-        if let Some((event, address, data)) = irqs.msi.take() {
-            if let Err(e) = self.device.trigger(IRQ_MSI, None) {
-                crate::warn!("{}: MSI off: {e}", self.device.name);
-            }
-            if let Err(e) = route.msi_off(event.raw(), address, data) {
-                crate::warn!("{}: MSI's route: {e}", self.device.name);
-            }
+        if let (Some(event), Some((address, data))) = (&vector.event, vector.routed.take())
+            && let Err(e) = route.msi_off(event.raw(), address, data)
+        {
+            crate::warn!("{}: MSI-X vector {k}'s route: {e}", self.device.name);
         }
-        match want {
-            Some((address, data)) => {
-                self.intx_off(&mut irqs);
-                let on = EventFd::new().map_err(|e| e.to_string()).and_then(|event| {
-                    route.msi(event.raw(), address, data)?;
-                    if let Err(e) = self.device.trigger(IRQ_MSI, Some(event.raw())) {
-                        let _ = route.msi_off(event.raw(), address, data);
-                        return Err(e.to_string());
-                    }
+        let Some((address, data)) = want else {
+            return;
+        };
+        let event = match vector.event.take() {
+            Some(event) => event,
+            None => {
+                let given = EventFd::new().and_then(|event| {
+                    self.device.trigger_msix(k as u32, &[event.raw()])?;
                     Ok(event)
                 });
-                match on {
-                    Ok(event) => irqs.msi = Some((event, address, data)),
-                    Err(e) => crate::warn!("{}: MSI to {address:#x} with {data:#x}: {e}", self.device.name),
+                match given {
+                    Ok(event) => event,
+                    Err(e) => {
+                        crate::warn!("{}: MSI-X vector {k}: {e}", self.device.name);
+                        return;
+                    }
                 }
             }
-            None if self.pin() != 0 && irqs.intx.is_none() => {
-                if let Err(e) = self.intx_on(&mut irqs) {
-                    crate::warn!("{}: INTx: {e}", self.device.name);
+        };
+        if event.take() > 0 {
+            table.set_pending(k, true);
+        }
+        if table.pending(k) {
+            if let Some(send) = &self.send {
+                send.send(address, data);
+            }
+            table.set_pending(k, false);
+        }
+        match route.msi(event.raw(), address, data) {
+            Ok(()) => {
+                vector.routed = Some((address, data));
+                // What KVM injected as it assigned the irqfd.
+                event.take();
+            }
+            Err(e) => crate::warn!(
+                "{}: MSI-X vector {k} to {address:#x} with {data:#x}: {e}",
+                self.device.name
+            ),
+        }
+        vector.event = Some(event);
+    }
+
+    /// Where an access at `offset` of BAR `bar` lands.
+    fn landing(&self, bar: usize, offset: u64) -> Landing {
+        let Some(cap) = self.kept.msix_cap() else {
+            return Landing::Device;
+        };
+        let size = u64::from(cap.size);
+        let within = |(index, at): (u8, u32), len: u64| {
+            (usize::from(index) == bar)
+                .then(|| offset.checked_sub(u64::from(at)))
+                .flatten()
+                .filter(|&o| o < len)
+        };
+        if let Some(at) = within(cap.table, size * reg::MSIX_ENTRY) {
+            return Landing::Table(at);
+        }
+        if let Some(at) = within(cap.pba, size.div_ceil(64) * 8) {
+            return Landing::Pending(at);
+        }
+        Landing::Device
+    }
+
+    /// Reads BAR `bar` at `offset`. The pending bits are the device's own, for vectors
+    /// VFIO signals on nothing yet, which the host leaves masked at the device, with each
+    /// vector that pended while the guest masked it, as its eventfd counted.
+    fn bar_read(&self, bar: usize, offset: u64, data: &mut [u8]) {
+        match self.landing(bar, offset) {
+            Landing::Device => self.device.read(bar, offset, data),
+            Landing::Table(at) => {
+                if let Some(table) = &self.irqs().table {
+                    table.read(at, data);
                 }
             }
-            None => {}
+            Landing::Pending(at) => {
+                self.device.read(bar, offset, data);
+                let mut irqs = self.irqs();
+                let Irqs { table, vectors, .. } = &mut *irqs;
+                let Some(table) = table else {
+                    return;
+                };
+                for (k, vector) in vectors.iter().flatten().enumerate() {
+                    if vector.routed.is_none() && vector.event.as_ref().is_some_and(|e| e.take() > 0) {
+                        table.set_pending(k, true);
+                    }
+                }
+                let mut ours = [0u8; 8];
+                let ours = ours.get_mut(..data.len()).unwrap_or_default();
+                table.read_pending(at, ours);
+                for (d, o) in data.iter_mut().zip(ours.iter()) {
+                    *d |= o;
+                }
+            }
+        }
+    }
+
+    /// Writes BAR `bar` at `offset`: a write of a table entry brings its vector at the
+    /// host to what the guest left in it; the pending bits are read-only.
+    fn bar_write(&self, bar: usize, offset: u64, data: &[u8]) {
+        match self.landing(bar, offset) {
+            Landing::Device => self.device.write(bar, offset, data),
+            Landing::Table(at) => {
+                let mut irqs = self.irqs();
+                if let Some(k) = irqs.table.as_mut().and_then(|table| table.write(at, data)) {
+                    self.vector(&mut irqs, k);
+                }
+            }
+            Landing::Pending(_) => {}
         }
     }
 }
@@ -765,7 +1081,7 @@ impl VfioFunction {
 impl PciFunction for VfioFunction {
     fn config_read(&self, offset: u16, data: &mut [u8]) {
         self.reach();
-        if self.kept(offset) {
+        if kept(offset, &self.caps) {
             self.kept.read(offset, data);
         } else {
             self.device.read(CONFIG_REGION as usize, u64::from(offset), data);
@@ -774,37 +1090,42 @@ impl PciFunction for VfioFunction {
 
     fn config_write(&self, offset: u16, data: &[u8]) {
         self.reach();
-        if !self.kept(offset) {
+        if !kept(offset, &self.caps) {
             self.device.write(CONFIG_REGION as usize, u64::from(offset), data);
             return;
         }
         self.kept.write(offset, data);
-        if self.msi.is_some_and(|(at, len)| (at..at + len).contains(&offset)) {
-            self.msi_written();
+        if self
+            .caps
+            .iter()
+            .any(|&(at, len)| (at..at + len).contains(&offset))
+        {
+            self.sync(&mut self.irqs());
         }
     }
 }
 
-/// A memory BAR of a passed-through function, each access the device's region's.
+/// A memory BAR of a passed-through function: each access the device's region's, but for
+/// the function's MSI-X table and pending bits, which the VMM keeps.
 #[derive(Debug)]
 pub struct VfioBar {
-    device: Arc<Device>,
+    function: Arc<VfioFunction>,
     index: usize,
 }
 
 impl VfioBar {
-    pub fn new(device: Arc<Device>, index: usize) -> VfioBar {
-        VfioBar { device, index }
+    pub fn new(function: Arc<VfioFunction>, index: usize) -> VfioBar {
+        VfioBar { function, index }
     }
 }
 
 impl MmioDevice for VfioBar {
     fn read(&self, offset: u64, data: &mut [u8]) {
-        self.device.read(self.index, offset, data);
+        self.function.bar_read(self.index, offset, data);
     }
 
     fn write(&self, offset: u64, data: &[u8]) {
-        self.device.write(self.index, offset, data);
+        self.function.bar_write(self.index, offset, data);
     }
 
     fn pause(&self) {}
@@ -829,21 +1150,45 @@ mod tests {
     use super::*;
 
     /// The VMM keeps the BARs, the expansion ROM, the interrupt line and pin (with PCIe's
-    /// hardwired-zero Min_Gnt and Max_Lat beside them) and the MSI capability, all of it;
-    /// every other register is the device's, through vfio-pci.
+    /// hardwired-zero Min_Gnt and Max_Lat beside them) and the MSI and MSI-X
+    /// capabilities, all of them; every other register is the device's, through vfio-pci.
     #[test]
-    fn the_vmm_keeps_the_bars_rom_interrupt_registers_and_msi() {
-        let msi = Some((0x50, 14));
+    fn the_vmm_keeps_the_bars_rom_interrupt_registers_msi_and_msix() {
+        let caps = [(0x50, 14), (0x70, reg::MSIX_LEN)];
         for offset in [
-            0x10, 0x14, 0x24, 0x27, 0x30, 0x33, 0x3c, 0x3d, 0x3e, 0x3f, 0x50, 0x5d,
+            0x10, 0x14, 0x24, 0x27, 0x30, 0x33, 0x3c, 0x3d, 0x3e, 0x3f, 0x50, 0x5d, 0x70, 0x7b,
         ] {
-            assert!(kept(offset, msi), "{offset:#x}");
+            assert!(kept(offset, &caps), "{offset:#x}");
         }
         for offset in [
-            0x00, 0x04, 0x06, 0x0f, 0x28, 0x2c, 0x34, 0x38, 0x40, 0x4f, 0x5e, 0x100,
+            0x00, 0x04, 0x06, 0x0f, 0x28, 0x2c, 0x34, 0x38, 0x40, 0x4f, 0x5e, 0x6f, 0x7c, 0x100,
         ] {
-            assert!(!kept(offset, msi), "{offset:#x}");
+            assert!(!kept(offset, &caps), "{offset:#x}");
         }
-        assert!(!kept(0x50, None));
+        assert!(!kept(0x50, &[]));
+    }
+
+    /// MSI-X's table and pending bits are the VMM's only where they lie in a memory BAR
+    /// the function has.
+    #[test]
+    fn an_msix_table_is_kept_only_within_a_bar() {
+        let bars = [
+            Bar {
+                index: 0,
+                addr: 0x1000_0000,
+                size: 0x4000,
+                kind: BarKind::Memory32,
+            },
+            Bar {
+                index: 2,
+                addr: 0x1000,
+                size: 0x100,
+                kind: BarKind::Io,
+            },
+        ];
+        assert!(in_bars(&bars, (0, 0x2000), 0x2000));
+        assert!(!in_bars(&bars, (0, 0x2000), 0x2001));
+        assert!(!in_bars(&bars, (1, 0), 16));
+        assert!(!in_bars(&bars, (2, 0), 16), "an I/O BAR");
     }
 }

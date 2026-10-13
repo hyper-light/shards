@@ -32,6 +32,12 @@ pub trait Msi: Send + Sync {
     fn send(&self, address: u64, data: u32);
 }
 
+impl std::fmt::Debug for dyn Msi {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Msi")
+    }
+}
+
 /// Where a function the VMM emulates sends its interrupts: its INTx pin's line, and the
 /// machine's MSIs.
 #[derive(Clone)]
@@ -149,6 +155,8 @@ pub struct Header {
     bars: Vec<Bar>,
     /// Its MSI capability, if it has one.
     msi: Option<MsiCap>,
+    /// Its MSI-X capability, if it has one.
+    msix: Option<MsixCap>,
 }
 
 /// Configuration space registers (§6.1, §6.2).
@@ -182,6 +190,21 @@ pub mod reg {
     pub const MSI_ENABLE: u16 = 1 << 0;
     pub const MSI_64BIT: u16 = 1 << 7;
     pub const MSI_MASKING: u16 = 1 << 8;
+    /// MSI-X's capability ID (§6.8.2), and its registers from the capability's start: its
+    /// message control (the table's size less one, bits 10:0; Function Mask, bit 14;
+    /// MSI-X Enable, bit 15), and its table's and its pending bits' BAR (bits 2:0) and
+    /// offset in it.
+    pub const CAP_MSIX: u8 = 0x11;
+    pub const MSIX_CONTROL: u16 = 2;
+    pub const MSIX_TABLE: u16 = 4;
+    pub const MSIX_PBA: u16 = 8;
+    pub const MSIX_LEN: u16 = 12;
+    pub const MSIX_MASK: u16 = 1 << 14;
+    pub const MSIX_ENABLE: u16 = 1 << 15;
+    /// A table entry's registers (§6.8.2.6-9): its message address, upper address, data,
+    /// and vector control, whose bit 0 masks it.
+    pub const MSIX_ENTRY: u64 = 16;
+    pub const MSIX_ENTRY_MASKED: u32 = 1 << 0;
     /// The command register's I/O space, memory space and bus master enables.
     pub const COMMAND_IO: u16 = 1 << 0;
     pub const COMMAND_MEMORY: u16 = 1 << 1;
@@ -190,12 +213,138 @@ pub mod reg {
     pub const COMMAND_INTX_OFF: u16 = 1 << 10;
 }
 
-/// The interrupts a function says it has (§6.2.4, §6.8.1): its INTx pin, 1 to 4 for
-/// INTA# to INTD# and 0 for none, and its MSI capability.
+/// The interrupts a function says it has (§6.2.4, §6.8): its INTx pin, 1 to 4 for INTA#
+/// to INTD# and 0 for none, and its MSI and MSI-X capabilities.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Interrupts {
     pub pin: u8,
     pub msi: Option<MsiCap>,
+    pub msix: Option<MsixCap>,
+}
+
+/// An MSI-X capability the VMM keeps (§6.8.2): where it is, the capability after it in
+/// the list, its table's size, and where its table and pending bits are, each a BAR's
+/// index and an offset in it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MsixCap {
+    pub at: u16,
+    pub next: u8,
+    pub size: u16,
+    pub table: (u8, u32),
+    pub pba: (u8, u32),
+}
+
+/// Where a function's MSI-X stands: enabled, and the whole function masked.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct MsixState {
+    pub enabled: bool,
+    pub masked: bool,
+}
+
+/// An MSI-X table and its pending bits (§6.8.2), which a function keeps in its BARs:
+/// each vector's message address, upper address, data and vector control, every vector
+/// masked from reset (§6.8.2.9); and the vectors pending, each set as its vector would
+/// have been sent masked and cleared as it is sent unmasked. They are reached a dword
+/// or a qword at a time ("software must use aligned full DWORD or aligned full QWORD
+/// transactions"): a narrower read gets its dword's bytes, and a narrower write is
+/// dropped.
+#[derive(Debug)]
+pub struct MsixTable {
+    entries: Vec<[u32; 4]>,
+    pending: Vec<u64>,
+}
+
+impl MsixTable {
+    /// A table of `size` vectors.
+    pub fn new(size: u16) -> MsixTable {
+        MsixTable {
+            entries: vec![[0, 0, 0, reg::MSIX_ENTRY_MASKED]; usize::from(size)],
+            pending: vec![0; usize::from(size).div_ceil(64)],
+        }
+    }
+
+    pub fn vectors(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// Vector `k`'s message, its address and data, where the vector is unmasked.
+    pub fn message(&self, k: usize) -> Option<(u64, u32)> {
+        let [low, high, data, control] = *self.entries.get(k)?;
+        (control & reg::MSIX_ENTRY_MASKED == 0).then_some((u64::from(low) | (u64::from(high) << 32), data))
+    }
+
+    pub fn pending(&self, k: usize) -> bool {
+        self.pending.get(k / 64).is_some_and(|w| w & (1 << (k % 64)) != 0)
+    }
+
+    pub fn set_pending(&mut self, k: usize, pending: bool) {
+        if let Some(w) = self.pending.get_mut(k / 64) {
+            let bit = 1u64 << (k % 64);
+            *w = if pending { *w | bit } else { *w & !bit };
+        }
+    }
+
+    /// Reads the table at `offset`; past its vectors, zeros.
+    pub fn read(&self, offset: u64, data: &mut [u8]) {
+        read_dwords(offset, data, |at| {
+            let k = usize::try_from(at / reg::MSIX_ENTRY).unwrap_or(usize::MAX);
+            let field = ((at % reg::MSIX_ENTRY) / 4) as usize;
+            self.entries
+                .get(k)
+                .and_then(|e| e.get(field))
+                .copied()
+                .unwrap_or(0)
+        });
+    }
+
+    /// Reads the pending bits at `offset`; past them, zeros.
+    pub fn read_pending(&self, offset: u64, data: &mut [u8]) {
+        read_dwords(offset, data, |at| {
+            let w = usize::try_from(at / 8).unwrap_or(usize::MAX);
+            self.pending
+                .get(w)
+                .map_or(0, |w| (w >> (32 * ((at / 4) % 2))) as u32)
+        });
+    }
+
+    /// Writes the table at `offset`: a vector's message, or its vector control's mask,
+    /// the one bit of it a guest writes; the vector written, where one was.
+    pub fn write(&mut self, offset: u64, data: &[u8]) -> Option<usize> {
+        let len = data.len() as u64;
+        if !matches!(len, 4 | 8) || !offset.is_multiple_of(len) {
+            return None;
+        }
+        let value = get_le(data);
+        let k = usize::try_from(offset / reg::MSIX_ENTRY).ok()?;
+        let entry = self.entries.get_mut(k)?;
+        let first = ((offset % reg::MSIX_ENTRY) / 4) as usize;
+        for (field, dword) in (first..).zip(
+            [value as u32, (value >> 32) as u32]
+                .into_iter()
+                .take(data.len() / 4),
+        ) {
+            if let Some(slot) = entry.get_mut(field) {
+                *slot = if field == 3 {
+                    dword & reg::MSIX_ENTRY_MASKED
+                } else {
+                    dword
+                };
+            }
+        }
+        Some(k)
+    }
+}
+
+/// Reads `data` at `offset` of registers that `dword` gives a dword at a time: a qword
+/// as two, and a narrower read as its dword's bytes.
+fn read_dwords(offset: u64, data: &mut [u8], dword: impl Fn(u64) -> u32) {
+    let at = offset & !3;
+    let value = if data.len() == 8 {
+        u64::from(dword(at)) | (u64::from(dword(at + 4)) << 32)
+    } else {
+        u64::from(dword(at)) >> (8 * (offset & 3))
+    };
+    put_le(data, value);
 }
 
 /// An MSI capability the VMM keeps (§6.8.1): where it is, the capability after it in the
@@ -254,6 +403,22 @@ impl Header {
                 cap.at
             ));
         }
+        if let Some(cap) = interrupts.msix
+            && (cap.at < 0x40
+                || !cap.at.is_multiple_of(4)
+                || cap.at + reg::MSIX_LEN > 0x100
+                || cap.size == 0
+                || cap.size > 2048
+                || cap.table.0 > 5
+                || cap.pba.0 > 5
+                || !cap.table.1.is_multiple_of(8)
+                || !cap.pba.1.is_multiple_of(8))
+        {
+            return Err(format!(
+                "an MSI-X capability at {:#x}: past the header, in it, unaligned, or its table not one",
+                cap.at
+            ));
+        }
         let mut space = vec![0u8; 4096];
         let mut put = |at: u16, bytes: &[u8]| {
             if let Some(d) = space.get_mut(usize::from(at)..usize::from(at) + bytes.len()) {
@@ -268,12 +433,26 @@ impl Header {
         put(reg::SUBSYSTEM_VENDOR, &id.subsystem_vendor.to_le_bytes());
         put(reg::SUBSYSTEM, &id.subsystem.to_le_bytes());
         put(reg::INTERRUPT_PIN, &[interrupts.pin]);
-        if let Some(cap) = interrupts.msi {
+        // The list starts at the first capability it holds.
+        let first = [interrupts.msi.map(|c| c.at), interrupts.msix.map(|c| c.at)]
+            .into_iter()
+            .flatten()
+            .min();
+        if let Some(first) = first {
             put(reg::STATUS, &reg::STATUS_CAPABILITIES.to_le_bytes());
-            put(reg::CAPABILITIES, &[cap.at as u8]);
+            put(reg::CAPABILITIES, &[first as u8]);
+        }
+        if let Some(cap) = interrupts.msi {
             put(cap.at, &[reg::CAP_MSI, cap.next]);
             let control = if cap.is64 { reg::MSI_64BIT } else { 0 };
             put(cap.at + reg::MSI_CONTROL, &control.to_le_bytes());
+        }
+        if let Some(cap) = interrupts.msix {
+            put(cap.at, &[reg::CAP_MSIX, cap.next]);
+            put(cap.at + reg::MSIX_CONTROL, &(cap.size - 1).to_le_bytes());
+            let place = |(bir, offset): (u8, u32)| offset | u32::from(bir);
+            put(cap.at + reg::MSIX_TABLE, &place(cap.table).to_le_bytes());
+            put(cap.at + reg::MSIX_PBA, &place(cap.pba).to_le_bytes());
         }
         for bar in &bars {
             let least = if bar.kind == BarKind::Io { 4 } else { 16 };
@@ -300,6 +479,24 @@ impl Header {
             space: Mutex::new(space),
             bars,
             msi: interrupts.msi,
+            msix: interrupts.msix,
+        })
+    }
+
+    /// Its MSI-X capability, if it has one.
+    pub fn msix_cap(&self) -> Option<MsixCap> {
+        self.msix
+    }
+
+    /// Where its MSI-X stands, as the guest set its message control; none without MSI-X.
+    pub fn msix(&self) -> Option<MsixState> {
+        let cap = self.msix?;
+        let mut control = [0u8; 2];
+        self.read(cap.at + reg::MSIX_CONTROL, &mut control);
+        let control = u16::from_le_bytes(control);
+        Some(MsixState {
+            enabled: control & reg::MSIX_ENABLE != 0,
+            masked: control & reg::MSIX_MASK != 0,
         })
     }
 
@@ -359,8 +556,12 @@ impl Header {
     /// and data, and the BARs as their sizing asks; every other register is read-only.
     pub fn write(&self, offset: u16, data: &[u8]) {
         let mut space = self.space.lock().unwrap_or_else(PoisonError::into_inner);
-        let msi = self.msi;
+        let (msi, msix) = (self.msi, self.msix);
         let writable = |at: u16| -> Option<u8> {
+            // MSI-X: its message control's Function Mask and Enable, bits 14 and 15.
+            if msix.is_some_and(|cap| at == cap.at + reg::MSIX_CONTROL + 1) {
+                return Some(0xc0);
+            }
             match at {
                 // Command: I/O, memory, bus master and INTx disable.
                 0x04 => Some(0x07),
@@ -537,6 +738,52 @@ mod tests {
             };
             assert!(Header::new(id(), vec![bar]).is_err(), "{bar:?}");
         }
+    }
+
+    /// An MSI-X table starts with every vector masked. A guest writes an entry a dword or
+    /// an aligned qword at a time, and of its vector control only the mask; a narrower or
+    /// unaligned write is dropped. The pending bits read as qwords of 64 vectors each.
+    #[test]
+    fn an_msix_table_is_written_and_read_as_dwords_and_qwords() {
+        let mut t = MsixTable::new(70);
+        let dword = |t: &MsixTable, at: u64| {
+            let mut b = [0u8; 4];
+            t.read(at, &mut b);
+            u32::from_le_bytes(b)
+        };
+        assert_eq!(dword(&t, 12), reg::MSIX_ENTRY_MASKED);
+        assert_eq!(t.message(0), None);
+        assert_eq!(t.write(16, &0x1_0802_0040u64.to_le_bytes()), Some(1));
+        assert_eq!(t.write(24, &81u32.to_le_bytes()), Some(1));
+        assert_eq!(t.write(28, &u32::MAX.to_le_bytes()), Some(1));
+        assert_eq!(
+            dword(&t, 28),
+            reg::MSIX_ENTRY_MASKED,
+            "of vector control, the mask"
+        );
+        assert_eq!(t.message(1), None, "masked");
+        // Data and vector control as one qword: unmasked.
+        assert_eq!(t.write(24, &81u64.to_le_bytes()), Some(1));
+        assert_eq!(t.message(1), Some((0x1_0802_0040, 81)));
+        assert_eq!(t.write(16, &0u16.to_le_bytes()), None, "narrower");
+        assert_eq!(t.write(20, &0u64.to_le_bytes()), None, "unaligned");
+        assert_eq!(t.write(70 * 16, &0u32.to_le_bytes()), None, "past the table");
+        assert_eq!(t.message(1), Some((0x1_0802_0040, 81)));
+        let mut q = [0u8; 8];
+        t.read(16, &mut q);
+        assert_eq!(u64::from_le_bytes(q), 0x1_0802_0040);
+        assert_eq!(dword(&t, 70 * 16), 0, "past the table");
+        // Vector 69 pends: bit 5 of the second qword.
+        t.set_pending(69, true);
+        assert!(t.pending(69));
+        t.read_pending(8, &mut q);
+        assert_eq!(u64::from_le_bytes(q), 1 << 5);
+        let mut d = [0u8; 4];
+        t.read_pending(12, &mut d);
+        assert_eq!(u32::from_le_bytes(d), 0);
+        t.set_pending(69, false);
+        t.read_pending(8, &mut q);
+        assert_eq!(u64::from_le_bytes(q), 0);
     }
 
     struct Fixed(Header);

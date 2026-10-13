@@ -1074,7 +1074,11 @@ fn pci() -> Result<(), String> {
 /// The test function's interrupts (D154): bound to vfio-pci in a no-IOMMU group (the
 /// kernel's `vfio.enable_unsafe_noiommu_mode=1`), it raises INTA# through its BAR's raise
 /// register, which VFIO signals on an eventfd, twice, the second after acknowledging and
-/// unmasking the first; then, INTx's eventfd taken away, one MSI.
+/// unmasking the first; then, INTx's eventfd taken away, one MSI; then MSI-X, raise bit k
+/// sending vector k. Its two vectors start with no eventfd, so the kernel leaves them
+/// masked: a raise of vector 0 is held, its pending bit set, and sent as VFIO is given
+/// its eventfd, which unmasks it; vector 1 is sent at once, and again held, masked as
+/// VFIO frees it, and sent as it is given its eventfd again.
 fn pci_irq() -> Result<(), String> {
     const NAME: &str = "0000:00:01.0";
     let dir = format!("/sys/bus/pci/devices/{NAME}");
@@ -1112,7 +1116,47 @@ fn pci_irq() -> Result<(), String> {
     raise(4)?;
     vfio::wait(msi).map_err(|e| format!("MSI: {e}"))?;
     ack(4)?;
-    let _ = writeln!(io::stdout(), "SHARDS-TEST INFO interrupts: INTx 2, MSI 1");
+    vfio::trigger(device, vfio::MSI, &[])?;
+    // MSI-X: its table and pending bits in BAR 2, the pending bits at 0x800.
+    let pba = vfio::region(device, 2)? + 0x800;
+    let pending = |vector: u32| {
+        let mut b = [0u8; 4];
+        pread_exact(device, &mut b, pba).map(|()| u32::from_le_bytes(b) & (1 << vector) != 0)
+    };
+    // Held while masked: its pending bit set as the host has the raise (VFIO's host
+    // takes it as an interrupt first, where the function is passed through again).
+    let held = |vector: u32| -> Result<(), String> {
+        raise(1 << vector)?;
+        let start = std::time::Instant::now();
+        while !pending(vector)? {
+            if start.elapsed() > std::time::Duration::from_secs(10) {
+                return Err(format!("MSI-X vector {vector}: masked, nothing pending in 10 s"));
+            }
+            std::thread::yield_now();
+        }
+        Ok(())
+    };
+    let vectors = [vfio::eventfd()?, vfio::eventfd()?];
+    vfio::msix(device, 0, &[-1, -1])?;
+    held(0)?;
+    vfio::msix(device, 0, &vectors[..1])?;
+    vfio::wait(vectors[0]).map_err(|e| format!("MSI-X vector 0, held: {e}"))?;
+    if pending(0)? {
+        return Err("MSI-X vector 0: still pending, sent".into());
+    }
+    vfio::msix(device, 1, &vectors[1..])?;
+    raise(2)?;
+    vfio::wait(vectors[1]).map_err(|e| format!("MSI-X vector 1: {e}"))?;
+    vfio::msix(device, 1, &[-1])?;
+    held(1)?;
+    vfio::msix(device, 1, &vectors[1..])?;
+    vfio::wait(vectors[1]).map_err(|e| format!("MSI-X vector 1, held: {e}"))?;
+    ack(3)?;
+    vfio::trigger(device, vfio::MSIX, &[])?;
+    let _ = writeln!(
+        io::stdout(),
+        "SHARDS-TEST INFO interrupts: INTx 2, MSI 1, MSI-X 3, 2 of them held"
+    );
     Ok(())
 }
 
@@ -1131,6 +1175,7 @@ mod vfio {
     const NOIOMMU_IOMMU: u64 = 8;
     pub const INTX: u32 = 0;
     pub const MSI: u32 = 1;
+    pub const MSIX: u32 = 2;
     const DATA_NONE: u32 = 1 << 0;
     const DATA_EVENTFD: u32 = 1 << 2;
     const ACTION_UNMASK: u32 = 1 << 4;
@@ -1166,18 +1211,33 @@ mod vfio {
     }
 
     /// struct vfio_irq_set: argsz, flags, index, start, count, then the data.
-    fn set_irqs(device: libc::c_int, flags: u32, index: u32, fds: &[libc::c_int]) -> Result<(), String> {
-        let mut set: Vec<u32> = vec![(20 + 4 * fds.len()) as u32, flags, index, 0, fds.len() as u32];
+    fn set_irqs(
+        device: libc::c_int,
+        flags: u32,
+        index: u32,
+        start: u32,
+        fds: &[libc::c_int],
+    ) -> Result<(), String> {
+        let mut set: Vec<u32> = vec![(20 + 4 * fds.len()) as u32, flags, index, start, fds.len() as u32];
         set.extend(fds.iter().map(|&fd| fd as u32));
-        ioctl(device, DEVICE_SET_IRQS, set.as_ptr() as usize).map(drop)
+        match ioctl(device, DEVICE_SET_IRQS, set.as_ptr() as usize)? {
+            0 => Ok(()),
+            could => Err(format!("{could} of {} interrupts", fds.len())),
+        }
     }
 
     /// Signals `fds` for interrupts `0..` of `index`; none, its interrupts off.
     pub fn trigger(device: libc::c_int, index: u32, fds: &[libc::c_int]) -> Result<(), String> {
         match fds {
-            [] => set_irqs(device, ACTION_TRIGGER | DATA_NONE, index, &[]),
-            fds => set_irqs(device, ACTION_TRIGGER | DATA_EVENTFD, index, fds),
+            [] => set_irqs(device, ACTION_TRIGGER | DATA_NONE, index, 0, &[]),
+            fds => set_irqs(device, ACTION_TRIGGER | DATA_EVENTFD, index, 0, fds),
         }
+    }
+
+    /// Signals MSI-X vectors `start..` on `fds`, -1 for a vector signalled on nothing,
+    /// which the kernel leaves masked.
+    pub fn msix(device: libc::c_int, start: u32, fds: &[libc::c_int]) -> Result<(), String> {
+        set_irqs(device, ACTION_TRIGGER | DATA_EVENTFD, MSIX, start, fds)
     }
 
     /// Unmasks INTx, which VFIO masked as it signalled it.

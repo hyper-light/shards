@@ -596,8 +596,10 @@ fn pci_bus(
         if lines.is_some() {
             routed.intx.push((device, pci::edu::PIN));
         }
-        let (edu, registers) = pci::edu::Edu::new(at, lines)?;
+        let msix_at = window.take(pci::edu::MSIX_BAR_SIZE)?;
+        let (edu, registers, msix) = pci::edu::Edu::new(at, msix_at, lines)?;
         bus.insert(at, pci::edu::BAR_SIZE, registers)?;
+        bus.insert(msix_at, pci::edu::MSIX_BAR_SIZE, msix)?;
         functions.push((device << 3, edu));
         device += 1;
     }
@@ -670,13 +672,12 @@ fn passed_through(
             Some(c) => c,
             None => slot.insert(v::Container::open(f.noiommu).map_err(|e| format!("{}: {e}", f.name))?),
         };
-        let opened = Arc::new(v::Device::open(&f.name, &f.group, container, memory)?);
+        let opened = v::Device::open(&f.name, &f.group, container, memory)?;
         let mut bars = Vec::new();
         for (index, size, kind) in opened.bars() {
             let addr = window
                 .take(size)
                 .map_err(|e| format!("{}: BAR {index}: {e}", f.name))?;
-            bus.insert(addr, size, Arc::new(v::VfioBar::new(opened.clone(), index)))?;
             bars.push(pci::Bar {
                 index,
                 addr,
@@ -685,11 +686,19 @@ fn passed_through(
             });
         }
         let route = irqs.and_then(|irqs| irqs.route(device));
-        let function = v::VfioFunction::new(opened, bars, route)?;
+        let send = irqs.map(|irqs| irqs.msi());
+        let function = Arc::new(v::VfioFunction::new(opened, bars, route, send)?);
+        for bar in function.bars() {
+            bus.insert(
+                bar.addr,
+                bar.size,
+                Arc::new(v::VfioBar::new(function.clone(), bar.index)),
+            )?;
+        }
         if function.pin() != 0 {
             routed.intx.push((device, function.pin()));
         }
-        functions.push((device << 3, Arc::new(function)));
+        functions.push((device << 3, function));
     }
     if functions.len() < vfio.len() {
         return Err(format!(

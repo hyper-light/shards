@@ -1,15 +1,18 @@
 //! A test function with the identification, liveness and interrupt registers of QEMU's edu
 //! device (QEMU docs/specs/edu.rst), its IDs 1234:11e8: what a guest reads and raises
 //! through the PCI bus, with no driver of its own, to show that its configuration space,
-//! its BAR and its interrupts reach the VMM, and through VFIO a guest's own VMs (D153,
+//! its BARs and its interrupts reach the VMM, and through VFIO a guest's own VMs (D153,
 //! D154). Its interrupts are INTA#, asserted while its interrupt status is not zero, or one
-//! MSI for each raise where the guest enabled MSI, as edu's. Nothing else of edu's: no
-//! factorial, no DMA.
+//! MSI for each raise where the guest enabled MSI, as edu's; and, of shards' own, as edu
+//! has none, an MSI-X capability of two vectors, a raise of bit k sending vector k, its
+//! table and pending bits in BAR 2. Nothing else of edu's: no factorial, no DMA.
 
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
-use super::{Bar, BarKind, Header, Identity, Interrupts, Lines, MsiCap, PciFunction, reg};
+use super::{
+    Bar, BarKind, Header, Identity, Interrupts, Lines, MsiCap, MsixCap, MsixTable, PciFunction, reg,
+};
 use crate::devices::{MmioDevice, get_le, put_le};
 use crate::snapshot::codec::{self, Reader, Writer};
 
@@ -22,6 +25,13 @@ pub const IDENTIFICATION: u32 = 0x0100_00ed;
 /// Where its MSI capability is: the first place after the header (§6.7), as QEMU's
 /// `msi_init` finds for edu.
 pub const MSI_CAP: u16 = 0x40;
+/// Its MSI-X capability, after MSI's: two vectors, their table at the start of BAR 2 and
+/// their pending bits halfway into it.
+pub const MSIX_CAP: u16 = 0x50;
+pub const MSIX_VECTORS: u16 = 2;
+pub const MSIX_BAR_SIZE: u64 = 4096;
+const MSIX_BAR: u8 = 2;
+const MSIX_PBA: u64 = 0x800;
 /// Its INTx pin: INTA#.
 pub const PIN: u8 = 1;
 
@@ -33,25 +43,43 @@ const REG_INTERRUPT_RAISE: u64 = 0x60;
 const REG_INTERRUPT_ACK: u64 = 0x64;
 
 /// The function: its configuration header, BAR 0 placed at `bar` by the VMM, and its
-/// interrupt status, which its BAR's registers raise and acknowledge.
+/// interrupt status, which its BAR's registers raise and acknowledge; its MSI-X table and
+/// pending bits.
 #[derive(Debug)]
 pub struct Edu {
     header: Header,
     status: Mutex<u32>,
+    msix: Mutex<MsixTable>,
     lines: Option<Lines>,
 }
 
 impl Edu {
-    /// The function and its BAR 0's registers, which the machine maps at `bar`; its
-    /// interrupts go to `lines`, and where a machine takes none it has none.
-    pub fn new(bar: u64, lines: Option<Lines>) -> Result<(Arc<Edu>, Arc<EduRegisters>), String> {
+    /// The function, its BAR 0's registers, which the machine maps at `bar`, and BAR 2's,
+    /// its MSI-X table, mapped at `msix_bar`; its interrupts go to `lines`, and where a
+    /// machine takes none it has none.
+    #[expect(
+        clippy::type_complexity,
+        reason = "the function and its two BARs' registers, made together"
+    )]
+    pub fn new(
+        bar: u64,
+        msix_bar: u64,
+        lines: Option<Lines>,
+    ) -> Result<(Arc<Edu>, Arc<EduRegisters>, Arc<EduMsix>), String> {
         let interrupts = match lines {
             Some(_) => Interrupts {
                 pin: PIN,
                 msi: Some(MsiCap {
                     at: MSI_CAP,
-                    next: 0,
+                    next: MSIX_CAP as u8,
                     is64: true,
+                }),
+                msix: Some(MsixCap {
+                    at: MSIX_CAP,
+                    next: 0,
+                    size: MSIX_VECTORS,
+                    table: (MSIX_BAR, 0),
+                    pba: (MSIX_BAR, MSIX_PBA as u32),
                 }),
             },
             None => Interrupts::default(),
@@ -66,45 +94,68 @@ impl Edu {
                 subsystem_vendor: 0,
                 subsystem: 0,
             },
-            vec![Bar {
-                index: 0,
-                addr: bar,
-                size: BAR_SIZE,
-                kind: BarKind::Memory32,
-            }],
+            vec![
+                Bar {
+                    index: 0,
+                    addr: bar,
+                    size: BAR_SIZE,
+                    kind: BarKind::Memory32,
+                },
+                Bar {
+                    index: usize::from(MSIX_BAR),
+                    addr: msix_bar,
+                    size: MSIX_BAR_SIZE,
+                    kind: BarKind::Memory32,
+                },
+            ],
             interrupts,
         )?;
         let edu = Arc::new(Edu {
             header,
             status: Mutex::new(0),
+            msix: Mutex::new(MsixTable::new(MSIX_VECTORS)),
             lines,
         });
         Ok((
             edu.clone(),
             Arc::new(EduRegisters {
-                edu,
+                edu: edu.clone(),
                 liveness: AtomicU32::new(0),
             }),
+            Arc::new(EduMsix { edu }),
         ))
     }
 
     /// Changes the interrupt status as `change` says, and gives the guest what the status
-    /// asks of the function's interrupts, as edu's `edu_raise_irq` and `edu_lower_irq`: a
-    /// message for each `raise` where MSI is on; else INTx pending while the status is not
-    /// zero, which the status register's Interrupt Status says whether or not INTx is
-    /// disabled, and INTA# asserted where it is not (§6.2.2, §6.2.3; QEMU's
-    /// pci_update_irq_status and pci_irq_disabled).
-    fn interrupt(&self, change: impl FnOnce(u32) -> u32, raise: bool) {
+    /// asks of the function's interrupts: where MSI-X is on, vector k for each bit k of
+    /// `raised`, held pending while masked (§6.8.2); where MSI is, a message for each
+    /// raise, as edu's `edu_raise_irq`; else INTx pending while the status is not zero,
+    /// which the status register's Interrupt Status says whether or not INTx is disabled,
+    /// and INTA# asserted where it is not (§6.2.2, §6.2.3; QEMU's pci_update_irq_status
+    /// and pci_irq_disabled).
+    fn interrupt(&self, change: impl FnOnce(u32) -> u32, raised: u32) {
         let mut status = self.status.lock().unwrap_or_else(PoisonError::into_inner);
         *status = change(*status);
         let Some(lines) = &self.lines else {
             return;
         };
+        if self.header.msix().is_some_and(|m| m.enabled) {
+            self.header.set_interrupt_status(false);
+            lines.intx.set_level(false);
+            let mut table = self.msix.lock().unwrap_or_else(PoisonError::into_inner);
+            for k in 0..table.vectors() {
+                if raised & (1 << k) != 0 {
+                    table.set_pending(k, true);
+                }
+            }
+            self.send_unmasked(lines, &mut table);
+            return;
+        }
         match self.header.msi() {
             Some((address, data)) => {
                 self.header.set_interrupt_status(false);
                 lines.intx.set_level(false);
-                if raise && *status != 0 {
+                if raised != 0 && *status != 0 {
                     lines.msi.send(address, data);
                 }
             }
@@ -117,6 +168,21 @@ impl Edu {
             }
         }
     }
+
+    /// Sends each pending MSI-X vector the function and the vector leave unmasked.
+    fn send_unmasked(&self, lines: &Lines, table: &mut MsixTable) {
+        if !self.header.msix().is_some_and(|m| m.enabled && !m.masked) {
+            return;
+        }
+        for k in 0..table.vectors() {
+            if table.pending(k)
+                && let Some((address, data)) = table.message(k)
+            {
+                lines.msi.send(address, data);
+                table.set_pending(k, false);
+            }
+        }
+    }
 }
 
 impl PciFunction for Edu {
@@ -124,10 +190,11 @@ impl PciFunction for Edu {
         self.header.read(offset, data);
     }
 
-    /// A write, and then INTx as the command register and MSI's enable now say.
+    /// A write, and then INTx as the command register and MSI's enable now say, and any
+    /// MSI-X vector pending sent where the function is no longer masked.
     fn config_write(&self, offset: u16, data: &[u8]) {
         self.header.write(offset, data);
-        self.interrupt(|status| status, false);
+        self.interrupt(|status| status, 0);
     }
 }
 
@@ -138,6 +205,52 @@ impl PciFunction for Edu {
 pub struct EduRegisters {
     edu: Arc<Edu>,
     liveness: AtomicU32,
+}
+
+/// BAR 2: the MSI-X table, from its start, and the pending bits, read-only, at 0x800.
+#[derive(Debug)]
+pub struct EduMsix {
+    edu: Arc<Edu>,
+}
+
+impl MmioDevice for EduMsix {
+    fn read(&self, offset: u64, data: &mut [u8]) {
+        let table = self.edu.msix.lock().unwrap_or_else(PoisonError::into_inner);
+        match offset.checked_sub(MSIX_PBA) {
+            Some(at) => table.read_pending(at, data),
+            None => table.read(offset, data),
+        }
+    }
+
+    /// A write of the table, the pending bits being read-only; a vector unmasked sends
+    /// what it held pending.
+    fn write(&self, offset: u64, data: &[u8]) {
+        if offset >= MSIX_PBA {
+            return;
+        }
+        let mut table = self.edu.msix.lock().unwrap_or_else(PoisonError::into_inner);
+        if table.write(offset, data).is_some()
+            && let Some(lines) = &self.edu.lines
+        {
+            self.edu.send_unmasked(lines, &mut table);
+        }
+    }
+
+    fn pause(&self) {}
+
+    fn resume(&self) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn save(&self, _: &mut Writer) {}
+
+    fn restore(&self, _: &mut Reader<'_>) -> codec::Result<()> {
+        Ok(())
+    }
+
+    fn unsaved(&self) -> Option<String> {
+        Some("its PCI functions' state is their devices' own".into())
+    }
 }
 
 impl MmioDevice for EduRegisters {
@@ -155,8 +268,8 @@ impl MmioDevice for EduRegisters {
         let value = get_le(data) as u32;
         match offset {
             REG_LIVENESS => self.liveness.store(value, Ordering::Relaxed),
-            REG_INTERRUPT_RAISE => self.edu.interrupt(|status| status | value, true),
-            REG_INTERRUPT_ACK => self.edu.interrupt(|status| status & !value, false),
+            REG_INTERRUPT_RAISE => self.edu.interrupt(|status| status | value, value),
+            REG_INTERRUPT_ACK => self.edu.interrupt(|status| status & !value, 0),
             _ => {}
         }
     }
@@ -205,13 +318,18 @@ mod tests {
     }
 
     fn edu() -> (Arc<Edu>, Arc<EduRegisters>, Arc<Recorded>) {
+        let (edu, regs, _, recorded) = edu_with_msix();
+        (edu, regs, recorded)
+    }
+
+    fn edu_with_msix() -> (Arc<Edu>, Arc<EduRegisters>, Arc<EduMsix>, Arc<Recorded>) {
         let recorded = Arc::new(Recorded::default());
         let lines = Lines {
             intx: Arc::new(Line(recorded.clone())),
             msi: Arc::new(Line(recorded.clone())),
         };
-        let (edu, regs) = Edu::new(0x1010_0000, Some(lines)).unwrap();
-        (edu, regs, recorded)
+        let (edu, regs, msix) = Edu::new(0x1010_0000, 0x1020_0000, Some(lines)).unwrap();
+        (edu, regs, msix, recorded)
     }
 
     fn word(f: &dyn PciFunction, offset: u16) -> u32 {
@@ -278,5 +396,58 @@ mod tests {
         regs.write(REG_INTERRUPT_RAISE, &0x8u32.to_le_bytes());
         assert_eq!(*rec.msis.lock().unwrap(), vec![(0x0802_0040, 64); 3]);
         assert_eq!(rec.levels.lock().unwrap().last(), Some(&false));
+    }
+
+    /// MSI-X (shards' own, beside edu's MSI): its capability after MSI's, its table and
+    /// pending bits in BAR 2. Vectors start masked, so a raise is held pending, and sent
+    /// as its vector is unmasked; the function's mask holds them all; a raise of bit k
+    /// sends vector k; and INTx and MSI stay quiet while MSI-X is on.
+    #[test]
+    fn edu_raises_its_msix_vectors() {
+        let (edu, regs, msix, rec) = edu_with_msix();
+        assert_eq!(
+            word(&*edu, MSI_CAP) >> 8 & 0xff,
+            u32::from(MSIX_CAP),
+            "MSI's next"
+        );
+        assert_eq!(word(&*edu, MSIX_CAP) & 0xff, u32::from(reg::CAP_MSIX));
+        assert_eq!(word(&*edu, MSIX_CAP) >> 16 & 0x7ff, u32::from(MSIX_VECTORS) - 1);
+        assert_eq!(
+            word(&*edu, MSIX_CAP + reg::MSIX_TABLE),
+            2,
+            "table at BAR 2's start"
+        );
+        assert_eq!(word(&*edu, MSIX_CAP + reg::MSIX_PBA), 0x802);
+        assert_eq!(word(&*edu, 0x18), 0x1020_0000, "BAR 2");
+        let dword = |offset: u64| {
+            let mut b = [0u8; 4];
+            msix.read(offset, &mut b);
+            u32::from_le_bytes(b)
+        };
+        assert_eq!(dword(12), reg::MSIX_ENTRY_MASKED, "masked from reset");
+        // Vector 1's message, written as a qword and a dword.
+        msix.write(16, &0x0802_0040u64.to_le_bytes());
+        msix.write(24, &81u32.to_le_bytes());
+        edu.config_write(MSIX_CAP + reg::MSIX_CONTROL, &reg::MSIX_ENABLE.to_le_bytes());
+        regs.write(REG_INTERRUPT_RAISE, &0b10u32.to_le_bytes());
+        assert!(rec.msis.lock().unwrap().is_empty(), "masked: held");
+        assert_eq!(dword(MSIX_PBA), 0b10, "pending");
+        msix.write(28, &0u32.to_le_bytes());
+        assert_eq!(
+            *rec.msis.lock().unwrap(),
+            vec![(0x0802_0040, 81)],
+            "sent as unmasked"
+        );
+        assert_eq!(dword(MSIX_PBA), 0);
+        // The function masked: held, then sent as it is unmasked.
+        edu.config_write(
+            MSIX_CAP + reg::MSIX_CONTROL,
+            &(reg::MSIX_ENABLE | reg::MSIX_MASK).to_le_bytes(),
+        );
+        regs.write(REG_INTERRUPT_RAISE, &0b10u32.to_le_bytes());
+        assert_eq!(rec.msis.lock().unwrap().len(), 1);
+        edu.config_write(MSIX_CAP + reg::MSIX_CONTROL, &reg::MSIX_ENABLE.to_le_bytes());
+        assert_eq!(rec.msis.lock().unwrap().len(), 2);
+        assert!(rec.levels.lock().unwrap().iter().all(|&l| !l), "INTx stays low");
     }
 }
