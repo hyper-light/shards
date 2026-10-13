@@ -217,7 +217,78 @@ impl Slots {
     }
 }
 
+/// Memory slots of a device's own (D154): a passed-through function's BARs, mapped into the
+/// guest while its memory decoding is on, which the guest then reaches without an exit.
+#[derive(Debug)]
+pub struct DeviceSlots {
+    fd: Arc<sys::VmFd>,
+    first: u32,
+    count: u32,
+}
+
+impl DeviceSlots {
+    fn slot(&self, i: u32) -> Result<u32> {
+        (i < self.count)
+            .then_some(self.first + i)
+            .ok_or_else(|| Error::Guest(format!("a device has {} memory slots, not {}", self.count, i + 1)))
+    }
+
+    /// Maps `len` bytes of host memory at `host` at `gpa`, as slot `i` of these.
+    ///
+    /// # Safety
+    /// `host..host+len` must stay mapped until slot `i` is unmapped or the VM is destroyed.
+    pub unsafe fn map(&self, i: u32, host: *mut u8, gpa: u64, len: usize) -> Result<()> {
+        let region = sys::kvm_userspace_memory_region {
+            slot: self.slot(i)?,
+            flags: 0,
+            guest_phys_addr: gpa,
+            memory_size: len as u64,
+            userspace_addr: host as u64,
+        };
+        // SAFETY: forwarded caller contract.
+        unsafe { self.fd.set_user_memory_region(&region) }.map_err(call("KVM_SET_USER_MEMORY_REGION"))
+    }
+
+    /// Unmaps slot `i`: the guest reaches its addresses as MMIO again.
+    pub fn unmap(&self, i: u32) -> Result<()> {
+        self.fd
+            .delete_user_memory_region(self.slot(i)?)
+            .map_err(call("KVM_SET_USER_MEMORY_REGION"))
+    }
+}
+
 impl Vm {
+    /// Tells KVM of VFIO's group `group` through KVM's VFIO device
+    /// (Documentation/virt/kvm/devices/vfio.rst), before any device of the group is opened,
+    /// as drivers that need the VM to open a device ask. The device is made with the first
+    /// group and kept as long as the VM: KVM forgets the groups as its descriptor closes
+    /// (virt/kvm/vfio.c, kvm_vfio_release).
+    pub fn add_vfio_group(&self, group: std::os::fd::RawFd) -> Result<()> {
+        let device = match self.vfio.get() {
+            Some(device) => device,
+            None => {
+                let device = self
+                    .slots
+                    .fd
+                    .create_device(sys::DEV_TYPE_VFIO)
+                    .map_err(call("KVM_CREATE_DEVICE"))?;
+                self.vfio.get_or_init(|| device)
+            }
+        };
+        device
+            .set_attr(sys::DEV_VFIO_FILE, sys::DEV_VFIO_FILE_ADD, &group)
+            .map_err(call("KVM_SET_DEVICE_ATTR"))
+    }
+
+    /// `count` memory slots of a device's own.
+    pub fn device_slots(&self, count: u32) -> DeviceSlots {
+        DeviceSlots {
+            fd: self.slots.fd.clone(),
+            first: self.slots.next.fetch_add(count, Ordering::Relaxed),
+            count,
+        }
+    }
+
     /// Maps `len` bytes of host memory at `host` as guest RAM at `gpa`, in a new memslot.
     ///
     /// # Safety

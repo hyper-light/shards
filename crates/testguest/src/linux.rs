@@ -1021,7 +1021,11 @@ fn work() -> Result<(), String> {
 
 /// A PCI bus's test function (D153): QEMU edu's IDs at 0000:00:01.0, and through its BAR
 /// 0, mapped from sysfs as a driver in user space maps one, its identification register
-/// and its liveness check, which reads back the inverse of what was written.
+/// and its liveness check, which reads back the inverse of what was written. With its
+/// memory space disabled through its configuration space, the function decodes nothing,
+/// so a read of BAR 0 is all ones, as an access no function claims (PCI 3.0 §6.2.2); enabled
+/// again, BAR 0 reads as before. Passed through, its BAR leaves the guest's memory and
+/// comes back (D154).
 fn pci() -> Result<(), String> {
     const DIR: &str = "/sys/bus/pci/devices/0000:00:01.0";
     let read = |f: &str| {
@@ -1061,11 +1065,32 @@ fn pci() -> Result<(), String> {
         regs.add(1).write_volatile(0x1234_5678);
         (identification, regs.add(1).read_volatile())
     };
+    let decoding = |on: bool| -> Result<u32, String> {
+        let config = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(format!("{DIR}/config"))
+            .map_err(|e| format!("{DIR}/config: {e}"))?;
+        let mut command = [0u8; 2];
+        pread_exact(config.as_raw_fd(), &mut command, 4)?;
+        let command = u16::from_le_bytes(command);
+        let command = if on { command | 2 } else { command & !2 };
+        pwrite_exact(config.as_raw_fd(), &command.to_le_bytes(), 4)?;
+        // SAFETY: a volatile read of the mapping's first register.
+        Ok(unsafe { regs.read_volatile() })
+    };
+    let (off, on) = (decoding(false), decoding(true));
     // SAFETY: the mapping made above.
     unsafe { libc::munmap(regs.cast(), 4096) };
     if identification != 0x0100_00ed || live != !0x1234_5678 {
         return Err(format!(
             "BAR 0 said identification {identification:#x}, liveness {live:#x}"
+        ));
+    }
+    let (off, on) = (off?, on?);
+    if off != u32::MAX || on != 0x0100_00ed {
+        return Err(format!(
+            "BAR 0 read {off:#x} with memory space off, {on:#x} with it on again"
         ));
     }
     Ok(())
@@ -1299,7 +1324,12 @@ fn host() -> Result<(), String> {
         std::fs::write("/sys/bus/pci/drivers_probe", &name)
             .map_err(|e| format!("binding {name} to vfio-pci: {e}"))?;
     }
-    let out = std::process::Command::new("/vm")
+    let mut vm = std::process::Command::new("/vm");
+    // The inner VM process's log, at `shards_l1_log`'s level where one is asked.
+    if let Ok(level) = std::env::var("shards_l1_log") {
+        vm.env("SHARDS_LOG", level);
+    }
+    let out = vm
         .args(["run", "--kernel", "/l2", "--init", "/init", "--cpus", "2"])
         .args(["--memory", "256", "--cmdline"])
         // A function the inner guest is given it takes through VFIO, in a no-IOMMU group.

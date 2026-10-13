@@ -35,6 +35,7 @@ pub const KVM_SET_MP_STATE: u64 = 0x4004_AE99;
 pub const KVM_SET_DEVICE_ATTR: u64 = 0x4018_AEE1;
 pub const KVM_GET_DEVICE_ATTR: u64 = 0x4018_AEE2;
 pub const KVM_IRQFD: u64 = 0x4020_AE76;
+pub const KVM_CREATE_DEVICE: u64 = 0xC00C_AEE0;
 
 /// Each structure is the size its ioctl numbers encode (bits 16-29).
 const _: () = {
@@ -46,6 +47,7 @@ const _: () = {
     assert!(size(KVM_GET_DEVICE_ATTR) == size_of::<kvm_device_attr>());
     assert!(size(KVM_SET_DEVICE_ATTR) == size_of::<kvm_device_attr>());
     assert!(size(KVM_IRQFD) == size_of::<kvm_irqfd>());
+    assert!(size(KVM_CREATE_DEVICE) == size_of::<kvm_create_device>());
 };
 
 pub const CAP_IRQCHIP: u64 = 0;
@@ -77,6 +79,20 @@ pub struct kvm_irqfd {
     pub resamplefd: u32,
     pub pad: [u8; 16],
 }
+
+#[repr(C)]
+#[derive(Debug, Default)]
+pub struct kvm_create_device {
+    pub kind: u32,
+    pub fd: u32,
+    pub flags: u32,
+}
+
+/// KVM's VFIO device (Documentation/virt/kvm/devices/vfio.rst): its type, and its group
+/// of attributes that add a VFIO file (a group), whose value is the file's descriptor.
+pub const DEV_TYPE_VFIO: u32 = 4;
+pub const DEV_VFIO_FILE: u32 = 1;
+pub const DEV_VFIO_FILE_ADD: u64 = 1;
 
 pub const IRQFD_FLAG_DEASSIGN: u32 = 1 << 0;
 pub const IRQFD_FLAG_RESAMPLE: u32 = 1 << 1;
@@ -127,6 +143,7 @@ const _: () = {
     assert!(size_of::<kvm_irq_level>() == 8);
     assert!(size_of::<kvm_device_attr>() == 24);
     assert!(size_of::<kvm_irqfd>() == 32);
+    assert!(size_of::<kvm_create_device>() == 12);
 };
 
 fn ret(r: libc::c_int) -> io::Result<libc::c_int> {
@@ -201,6 +218,17 @@ impl Kvm {
 #[derive(Debug)]
 pub struct VmFd(OwnedFd);
 
+/// An in-kernel device (`KVM_CREATE_DEVICE`): arm64's GICv3, KVM's VFIO device.
+#[derive(Debug)]
+pub struct DeviceFd(OwnedFd);
+
+impl DeviceFd {
+    /// Sets attribute `attr` of `group` to `value`, of the attribute's own type.
+    pub fn set_attr<T>(&self, group: u32, attr: u64, value: &T) -> io::Result<()> {
+        set_attr(self.0.as_raw_fd(), group, attr, value)
+    }
+}
+
 impl VmFd {
     fn fd(&self) -> RawFd {
         self.0.as_raw_fd()
@@ -218,6 +246,30 @@ impl VmFd {
             )
         }
         .map(drop)
+    }
+
+    /// Deletes memory slot `slot`, which the guest then reaches as MMIO (api.rst 4.35: a
+    /// slot of size 0).
+    pub fn delete_user_memory_region(&self, slot: u32) -> io::Result<()> {
+        let r = kvm_userspace_memory_region {
+            slot,
+            ..Default::default()
+        };
+        // SAFETY: a slot of no memory maps none.
+        unsafe { self.set_user_memory_region(&r) }
+    }
+
+    /// An in-kernel device of type `kind`, configured through its attributes.
+    pub fn create_device(&self, kind: u32) -> io::Result<DeviceFd> {
+        let mut d = kvm_create_device {
+            kind,
+            ..Default::default()
+        };
+        // SAFETY: KVM reads the type and writes the device's descriptor into `d`.
+        unsafe { ioctl(self.fd(), KVM_CREATE_DEVICE, (&raw mut d) as libc::c_ulong) }?;
+        let fd = RawFd::try_from(d.fd).map_err(io::Error::other)?;
+        // SAFETY: a fresh descriptor, owned from here on.
+        Ok(DeviceFd(unsafe { OwnedFd::from_raw_fd(fd) }))
     }
 
     /// Drives an interrupt line: a GSI on x86_64, an SPI or a PPI on arm64 (api.rst,

@@ -67,6 +67,7 @@ const VFIO_DMA_MAP_FLAG_READ: u32 = 1 << 0;
 const VFIO_DMA_MAP_FLAG_WRITE: u32 = 1 << 1;
 const VFIO_REGION_INFO_FLAG_READ: u32 = 1 << 0;
 const VFIO_REGION_INFO_FLAG_WRITE: u32 = 1 << 1;
+const VFIO_REGION_INFO_FLAG_MMAP: u32 = 1 << 2;
 /// The configuration space's region (VFIO_PCI_CONFIG_REGION_INDEX).
 const CONFIG_REGION: u32 = 7;
 /// A function's interrupts as VFIO indexes them (VFIO_PCI_INTX_IRQ_INDEX, _MSI_, _MSIX_),
@@ -202,14 +203,17 @@ impl Container {
         }
     }
 
-    /// The group at `path`, set in this container: the first sets its IOMMU and maps guest
-    /// RAM, `memory`, for their DMA; a group set already is the same.
-    fn group(&mut self, path: &Path, memory: &GuestMemory) -> Result<Arc<OwnedFd>, String> {
+    /// The group at `path`, set in this container and told of to `host`'s hypervisor: the
+    /// first sets its IOMMU and maps guest RAM, `memory`, for their DMA; a group set
+    /// already is the same.
+    fn group(&mut self, path: &Path, memory: &GuestMemory, host: &dyn Host) -> Result<Arc<OwnedFd>, String> {
         if let Some((_, fd)) = self.groups.iter().find(|(p, _)| p == path) {
             return Ok(fd.clone());
         }
         let err = |what: &str, e: io::Error| format!("{}: {what}: {e}", path.display());
         let group = open(path).map_err(|e| err("opening it", e))?;
+        host.add_group(group.as_raw_fd())
+            .map_err(|e| format!("{}: {e}", path.display()))?;
         let mut status = GroupStatus {
             argsz: size_of::<GroupStatus>() as u32,
             flags: 0,
@@ -342,10 +346,11 @@ impl Device {
         group: &Path,
         container: &mut Container,
         memory: &GuestMemory,
+        host: &dyn Host,
     ) -> Result<Device, String> {
         let err = |what: &str, e: io::Error| format!("{name}: {what}: {e}");
         let group = container
-            .group(group, memory)
+            .group(group, memory, host)
             .map_err(|e| format!("{name}: {e}"))?;
         let cname = CString::new(name).map_err(|_| format!("{name}: a NUL in its name"))?;
         // SAFETY: VFIO_GROUP_GET_DEVICE_FD reads a NUL-terminated device name.
@@ -399,6 +404,38 @@ impl Device {
                 r.size > 0 && r.flags & (VFIO_REGION_INFO_FLAG_READ | VFIO_REGION_INFO_FLAG_WRITE) != 0
             })
             .map(|r| (r.size, r.offset))
+    }
+
+    /// Region `index` mapped into this process, where vfio-pci lets it be
+    /// (VFIO_REGION_INFO_FLAG_MMAP: a memory BAR of a page or more, or alone in its page;
+    /// vfio_pci_core.c, vfio_pci_probe_mmaps).
+    fn map(&self, index: usize) -> Option<io::Result<Mapping>> {
+        let region = self.regions.get(index)?;
+        if region.flags & VFIO_REGION_INFO_FLAG_MMAP == 0 || region.size == 0 {
+            return None;
+        }
+        let (Ok(len), Ok(offset)) = (usize::try_from(region.size), libc::off_t::try_from(region.offset))
+        else {
+            return Some(Err(io::Error::other("a region past this process's addresses")));
+        };
+        // SAFETY: a new shared mapping of the device's region, unmapped as `Mapping` drops.
+        let host = unsafe {
+            libc::mmap(
+                std::ptr::null_mut(),
+                len,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_SHARED,
+                self.file.as_raw_fd(),
+                offset,
+            )
+        };
+        if host == libc::MAP_FAILED {
+            return Some(Err(io::Error::last_os_error()));
+        }
+        Some(Ok(Mapping {
+            host: host as usize,
+            len,
+        }))
     }
 
     /// Reads `data` at `offset` of region `index`; all ones where it cannot.
@@ -605,6 +642,93 @@ fn in_bars(bars: &[Bar], (index, offset): (u8, u32), len: u64) -> bool {
     })
 }
 
+/// What the machine gives the functions it passes through (D154): its hypervisor told of
+/// their groups, and memory slots for their BARs.
+pub trait Host {
+    /// Tells the hypervisor of VFIO's group `group`, before any device of it is opened.
+    fn add_group(&self, group: RawFd) -> Result<(), String>;
+    /// `count` memory slots, of one function's own.
+    fn slots(&self, count: u32) -> Box<dyn BarSlots>;
+}
+
+/// Memory slots of a passed-through function's own, which map its BARs into the guest.
+pub trait BarSlots: Send + Sync {
+    /// Maps `len` bytes at `host` at `gpa`, as slot `i`.
+    ///
+    /// # Safety
+    /// `host..host+len` must stay mapped until slot `i` is unmapped or the VM is destroyed.
+    unsafe fn map(&self, i: u32, host: *mut u8, gpa: u64, len: usize) -> Result<(), String>;
+    fn unmap(&self, i: u32) -> Result<(), String>;
+}
+
+impl std::fmt::Debug for dyn BarSlots {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("BarSlots")
+    }
+}
+
+/// A region of the device mapped into this process (mmap(2) of the device's descriptor at
+/// the region's offset): its place, as an address, and its length. Unmapped as it drops,
+/// after the VM whose slots map it: the machine drops its VM before its bus.
+#[derive(Debug)]
+struct Mapping {
+    host: usize,
+    len: usize,
+}
+
+impl Drop for Mapping {
+    fn drop(&mut self) {
+        // SAFETY: the mapping `Device::map` made, which nothing reaches past this.
+        unsafe { libc::munmap(self.host as *mut libc::c_void, self.len) };
+    }
+}
+
+/// Part of a BAR the guest reaches without an exit, while the function's memory decoding
+/// is on: `len` bytes at `host` in this process, at `gpa` in the guest.
+#[derive(Debug)]
+struct Window {
+    host: usize,
+    gpa: u64,
+    len: usize,
+}
+
+/// The parts of BAR `index`, `len` bytes of the device's region, that the guest can reach
+/// without exits, each an offset and a length: all of its pages but those of the MSI-X
+/// table and pending bits, which the VMM keeps; none where it is less than a page, as the
+/// page it would take in the guest holds other BARs.
+fn windows_of(index: usize, len: u64, msix: Option<MsixCap>, page: u64) -> Vec<(u64, u64)> {
+    if len < page || !len.is_multiple_of(page) {
+        return Vec::new();
+    }
+    let mut kept: Vec<(u64, u64)> = Vec::new();
+    if let Some(cap) = msix {
+        let size = u64::from(cap.size);
+        for ((bar, offset), bytes) in [
+            (cap.table, size * reg::MSIX_ENTRY),
+            (cap.pba, size.div_ceil(64) * 8),
+        ] {
+            if usize::from(bar) == index {
+                let start = u64::from(offset) / page * page;
+                let end = (u64::from(offset) + bytes).div_ceil(page) * page;
+                kept.push((start, end.min(len)));
+            }
+        }
+    }
+    kept.sort_unstable();
+    let mut out = Vec::new();
+    let mut at = 0;
+    for (start, end) in kept {
+        if start > at {
+            out.push((at, start - at));
+        }
+        at = at.max(end);
+    }
+    if at < len {
+        out.push((at, len - at));
+    }
+    out
+}
+
 /// How a passed-through function's interrupts reach the guest (D154): in the kernel, by
 /// irqfds of the machine's, which the VMM never sees.
 pub trait Route: Send + Sync {
@@ -703,6 +827,12 @@ pub struct VfioFunction {
     /// (MSI_FLAG_PCI_MSIX_ALLOC_DYN: x86's), or takes them all at once (arm64's).
     grows: bool,
     irqs: Mutex<Irqs>,
+    /// Its BARs' parts the guest reaches without exits, each a memory slot of `slots`,
+    /// mapped while its memory decoding is on (`mapped`), in `_mappings` of its regions.
+    windows: Vec<Window>,
+    slots: Option<Box<dyn BarSlots>>,
+    mapped: Mutex<bool>,
+    _mappings: Vec<Mapping>,
 }
 
 impl VfioFunction {
@@ -715,6 +845,7 @@ impl VfioFunction {
         bars: Vec<Bar>,
         route: Option<Arc<dyn Route>>,
         send: Option<Arc<dyn Msi>>,
+        host: &dyn Host,
     ) -> Result<VfioFunction, String> {
         let routed = route.is_some() && send.is_some();
         let pin = if routed && device.signals(IRQ_INTX) {
@@ -742,6 +873,28 @@ impl VfioFunction {
             }
             fits
         });
+        // Each BAR vfio-pci maps, in the guest but for the pages the VMM keeps.
+        let page = crate::platform::page_size().map_err(|e| e.to_string())? as u64;
+        let (mut windows, mut mappings) = (Vec::new(), Vec::new());
+        for bar in &bars {
+            let mapping = match device.map(bar.index) {
+                Some(Ok(mapping)) => mapping,
+                Some(Err(e)) => {
+                    crate::warn!("{}: BAR {} stays trapped: {e}", device.name, bar.index);
+                    continue;
+                }
+                None => continue,
+            };
+            for (offset, len) in windows_of(bar.index, mapping.len as u64, msix, page) {
+                windows.push(Window {
+                    host: mapping.host + offset as usize,
+                    gpa: bar.addr + offset,
+                    len: len as usize,
+                });
+            }
+            mappings.push(mapping);
+        }
+        let slots = (!windows.is_empty()).then(|| host.slots(windows.len() as u32));
         let kept = Header::with_interrupts(
             Identity {
                 vendor: 0,
@@ -771,7 +924,45 @@ impl VfioFunction {
                 table: msix.map(|cap| MsixTable::new(cap.size)),
                 ..Irqs::default()
             }),
+            windows,
+            slots,
+            mapped: Mutex::new(false),
+            _mappings: mappings,
         })
+    }
+
+    /// Maps its BARs' windows into the guest (`on`), or takes them out: as the guest turns
+    /// its memory decoding on, and before it turns it off, as vfio-pci then takes its own
+    /// mappings away (vfio_pci_config.c, vfio_basic_config_write) and a vCPU touching one
+    /// would fail its run (EFAULT). Out, they are trapped, as accesses to a device that
+    /// does not decode them.
+    fn map_windows(&self, on: bool) {
+        let Some(slots) = &self.slots else {
+            return;
+        };
+        let mut mapped = self.mapped.lock().unwrap_or_else(PoisonError::into_inner);
+        if *mapped == on {
+            return;
+        }
+        let mut done = 0;
+        for (i, window) in (0u32..).zip(&self.windows) {
+            let result = if on {
+                // SAFETY: the window lies in one of `_mappings`, which outlive the VM.
+                unsafe { slots.map(i, window.host as *mut u8, window.gpa, window.len) }
+            } else {
+                slots.unmap(i)
+            };
+            match result {
+                Ok(()) => done += 1,
+                Err(e) => crate::warn!("{}: a BAR's window at {:#x}: {e}", self.device.name, window.gpa),
+            }
+        }
+        *mapped = on;
+        crate::debug!(
+            "{}: BAR windows {} the guest: {done}",
+            self.device.name,
+            if on { "mapped into" } else { "taken from" },
+        );
     }
 
     /// Its BARs, where the VMM placed them.
@@ -1091,7 +1282,18 @@ impl PciFunction for VfioFunction {
     fn config_write(&self, offset: u16, data: &[u8]) {
         self.reach();
         if !kept(offset, &self.caps) {
+            // The command register's memory decoding, where this writes it.
+            let decoding = usize::from(reg::COMMAND)
+                .checked_sub(usize::from(offset))
+                .and_then(|i| data.get(i))
+                .map(|&b| u16::from(b) & reg::COMMAND_MEMORY != 0);
+            if decoding == Some(false) {
+                self.map_windows(false);
+            }
             self.device.write(CONFIG_REGION as usize, u64::from(offset), data);
+            if decoding == Some(true) {
+                self.map_windows(true);
+            }
             return;
         }
         self.kept.write(offset, data);
@@ -1166,6 +1368,37 @@ mod tests {
             assert!(!kept(offset, &caps), "{offset:#x}");
         }
         assert!(!kept(0x50, &[]));
+    }
+
+    /// A BAR's pages reach the guest without exits but for those of the MSI-X table and
+    /// pending bits, which the VMM keeps; a BAR of less than a page stays trapped whole.
+    #[test]
+    fn a_bar_is_mapped_but_for_its_msix_pages() {
+        let page = 0x1000;
+        let msix = |table: (u8, u32), pba: (u8, u32), size: u16| {
+            Some(MsixCap {
+                at: 0x70,
+                next: 0,
+                size,
+                table,
+                pba,
+            })
+        };
+        assert_eq!(windows_of(0, 0x10_0000, None, page), vec![(0, 0x10_0000)]);
+        assert_eq!(windows_of(0, 0x800, None, page), vec![], "under a page");
+        // Two vectors and their pending bits in one page: none of it mapped.
+        assert_eq!(windows_of(2, 0x1000, msix((2, 0), (2, 0x800), 2), page), vec![]);
+        // In another BAR: all of this one.
+        assert_eq!(
+            windows_of(0, 0x4000, msix((2, 0), (2, 0x800), 2), page),
+            vec![(0, 0x4000)]
+        );
+        // A table of 512 vectors (8 KiB) at 0x2000, its pending bits at 0x6008: the
+        // pages around each mapped.
+        assert_eq!(
+            windows_of(4, 0x10000, msix((4, 0x2000), (4, 0x6008), 512), page),
+            vec![(0, 0x2000), (0x4000, 0x2000), (0x7000, 0x9000)]
+        );
     }
 
     /// MSI-X's table and pending bits are the VMM's only where they lie in a memory BAR

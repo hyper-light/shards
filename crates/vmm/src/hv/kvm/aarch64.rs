@@ -178,6 +178,8 @@ pub struct Vm {
     init: sys::kvm_vcpu_init,
     /// The GICv3, once made, initialized once every vCPU exists ([`Vm::vcpus_created`]).
     gic: OnceLock<sys::DeviceFd>,
+    /// KVM's VFIO device, made as the first VFIO group is added ([`Vm::add_vfio_group`]).
+    pub(super) vfio: OnceLock<sys::DeviceFd>,
 }
 
 impl Vm {
@@ -221,6 +223,7 @@ impl Vm {
             el2: config.el2,
             init,
             gic: OnceLock::new(),
+            vfio: OnceLock::new(),
         })
     }
 

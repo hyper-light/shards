@@ -474,20 +474,18 @@ fn assemble(
         })),
     });
     let routes = lines.as_ref().map(|l| l as &dyn super::PciInterrupts);
-    let pci = super::pci_bus(
-        &mut bus.mmio,
-        layout::PCI_ECAM,
-        mem32,
-        pci,
-        config,
+    let machine = super::PciMachine {
+        vm: &vm,
         memory,
-        routes,
-    )?
-    .map(|routed| acpi::PciBridge {
-        ecam: (layout::PCI_ECAM, crate::devices::pci::ECAM_SIZE),
-        mem32,
-        intx: routed.intx,
-        gsi: layout::GSI_PCI,
+        irqs: routes,
+    };
+    let pci = super::pci_bus(&mut bus.mmio, layout::PCI_ECAM, mem32, pci, config, machine)?.map(|routed| {
+        acpi::PciBridge {
+            ecam: (layout::PCI_ECAM, crate::devices::pci::ECAM_SIZE),
+            mem32,
+            intx: routed.intx,
+            gsi: layout::GSI_PCI,
+        }
     });
     Ok(Assembled {
         vm,

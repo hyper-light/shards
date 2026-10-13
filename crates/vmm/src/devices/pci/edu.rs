@@ -169,6 +169,13 @@ impl Edu {
         }
     }
 
+    /// Whether it decodes its BARs' addresses: memory space enabled in its command register
+    /// (§6.2.2). It does not where the guest disabled it, and an access there ends as no
+    /// function claims it, a read all ones (§2.3.2).
+    fn decodes(&self) -> bool {
+        self.header.command() & reg::COMMAND_MEMORY != 0
+    }
+
     /// Sends each pending MSI-X vector the function and the vector leave unmasked.
     fn send_unmasked(&self, lines: &Lines, table: &mut MsixTable) {
         if !self.header.msix().is_some_and(|m| m.enabled && !m.masked) {
@@ -215,6 +222,10 @@ pub struct EduMsix {
 
 impl MmioDevice for EduMsix {
     fn read(&self, offset: u64, data: &mut [u8]) {
+        if !self.edu.decodes() {
+            data.fill(0xff);
+            return;
+        }
         let table = self.edu.msix.lock().unwrap_or_else(PoisonError::into_inner);
         match offset.checked_sub(MSIX_PBA) {
             Some(at) => table.read_pending(at, data),
@@ -225,7 +236,7 @@ impl MmioDevice for EduMsix {
     /// A write of the table, the pending bits being read-only; a vector unmasked sends
     /// what it held pending.
     fn write(&self, offset: u64, data: &[u8]) {
-        if offset >= MSIX_PBA {
+        if offset >= MSIX_PBA || !self.edu.decodes() {
             return;
         }
         let mut table = self.edu.msix.lock().unwrap_or_else(PoisonError::into_inner);
@@ -255,6 +266,10 @@ impl MmioDevice for EduMsix {
 
 impl MmioDevice for EduRegisters {
     fn read(&self, offset: u64, data: &mut [u8]) {
+        if !self.edu.decodes() {
+            data.fill(0xff);
+            return;
+        }
         let value = match offset {
             REG_IDENTIFICATION => IDENTIFICATION,
             REG_LIVENESS => !self.liveness.load(Ordering::Relaxed),
@@ -265,6 +280,9 @@ impl MmioDevice for EduRegisters {
     }
 
     fn write(&self, offset: u64, data: &[u8]) {
+        if !self.edu.decodes() {
+            return;
+        }
         let value = get_le(data) as u32;
         match offset {
             REG_LIVENESS => self.liveness.store(value, Ordering::Relaxed),
@@ -329,6 +347,8 @@ mod tests {
             msi: Arc::new(Line(recorded.clone())),
         };
         let (edu, regs, msix) = Edu::new(0x1010_0000, 0x1020_0000, Some(lines)).unwrap();
+        // Decoding its BARs, as a driver enables it.
+        edu.config_write(0x04, &reg::COMMAND_MEMORY.to_le_bytes());
         (edu, regs, msix, recorded)
     }
 
@@ -357,6 +377,26 @@ mod tests {
         assert_eq!(u32::from_le_bytes(b), !0x1234_5678);
     }
 
+    /// With its memory space disabled, edu decodes neither BAR: reads are all ones, as an
+    /// access no function claims, and writes go nowhere.
+    #[test]
+    fn edu_decodes_its_bars_only_with_memory_space_on() {
+        let (edu, regs, msix, rec) = edu_with_msix();
+        edu.config_write(0x04, &0u16.to_le_bytes());
+        let mut b = [0u8; 4];
+        regs.read(REG_IDENTIFICATION, &mut b);
+        assert_eq!(u32::from_le_bytes(b), u32::MAX);
+        msix.read(12, &mut b);
+        assert_eq!(u32::from_le_bytes(b), u32::MAX);
+        regs.write(REG_INTERRUPT_RAISE, &1u32.to_le_bytes());
+        edu.config_write(0x04, &reg::COMMAND_MEMORY.to_le_bytes());
+        regs.read(REG_IDENTIFICATION, &mut b);
+        assert_eq!(u32::from_le_bytes(b), IDENTIFICATION);
+        regs.read(REG_INTERRUPT_STATUS, &mut b);
+        assert_eq!(u32::from_le_bytes(b), 0, "the raise went nowhere");
+        assert!(!rec.levels.lock().unwrap().contains(&true));
+    }
+
     /// A raise asserts INTA# until it is acknowledged, unless the guest disabled INTx; with
     /// MSI enabled, each raise sends its message instead, as edu's, and INTA# stays low.
     #[test]
@@ -378,11 +418,11 @@ mod tests {
         // INTx disabled: a raise leaves the line low, and the status register still says
         // the interrupt is pending, as a driver masking INTx asks of it (vfio-pci's
         // pci_check_and_mask_intx); enabled again, the line rises.
-        edu.config_write(0x04, &reg::COMMAND_INTX_OFF.to_le_bytes());
+        edu.config_write(0x04, &(reg::COMMAND_MEMORY | reg::COMMAND_INTX_OFF).to_le_bytes());
         regs.write(REG_INTERRUPT_RAISE, &0x1u32.to_le_bytes());
         assert_eq!(rec.levels.lock().unwrap().last(), Some(&false));
         assert_ne!(word(&*edu, 0x04) >> 16 & u32::from(reg::STATUS_INTERRUPT), 0);
-        edu.config_write(0x04, &0u16.to_le_bytes());
+        edu.config_write(0x04, &reg::COMMAND_MEMORY.to_le_bytes());
         assert_eq!(rec.levels.lock().unwrap().last(), Some(&true));
         regs.write(REG_INTERRUPT_ACK, &0x1u32.to_le_bytes());
         assert_eq!(word(&*edu, 0x04) >> 16 & u32::from(reg::STATUS_INTERRUPT), 0);

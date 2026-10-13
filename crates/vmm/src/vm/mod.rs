@@ -558,11 +558,29 @@ pub(crate) struct PciBus {
     pub intx: Vec<(u8, u8)>,
 }
 
+/// What a machine gives its PCI bus: its VM, and its guest memory, which passed-through
+/// functions reach by DMA; and how its functions' interrupts reach the guest, where it
+/// routes them.
+#[cfg(hv)]
+pub(crate) struct PciMachine<'a> {
+    #[cfg_attr(
+        not(target_os = "linux"),
+        expect(dead_code, reason = "read by VFIO, Linux's alone")
+    )]
+    pub vm: &'a crate::hv::Vm,
+    #[cfg_attr(
+        not(target_os = "linux"),
+        expect(dead_code, reason = "read by VFIO, Linux's alone")
+    )]
+    pub memory: &'a crate::memory::GuestMemory,
+    pub irqs: Option<&'a dyn PciInterrupts>,
+}
+
 /// Puts the PCI bus `pci` asks for on `bus` (D153, D154), where it asks for one: its ECAM
 /// window at `ecam`, and its functions' BARs in the memory window `mem32`, each at the
 /// next multiple of its size; QEMU's edu at 00:01.0 where `pci.test`, then each function
-/// passed through, on the devices after. Their interrupts go where `irqs` says; with none,
-/// the functions the VMM emulates have none.
+/// passed through, on the devices after. Their interrupts go where `machine.irqs` says;
+/// with none, the functions the VMM emulates have none.
 #[cfg(hv)]
 fn pci_bus(
     bus: &mut crate::devices::MmioBus,
@@ -570,10 +588,10 @@ fn pci_bus(
     mem32: (u64, u64),
     pci: Pci<'_>,
     config: &crate::snapshot::MachineConfig,
-    memory: &crate::memory::GuestMemory,
-    irqs: Option<&dyn PciInterrupts>,
+    machine: PciMachine<'_>,
 ) -> Result<Option<PciBus>, String> {
     use crate::devices::pci;
+    let irqs = machine.irqs;
     if !pci.test && pci.vfio.is_empty() {
         return Ok(None);
     }
@@ -612,8 +630,7 @@ fn pci_bus(
             &mut window,
             pci.vfio,
             device,
-            memory,
-            irqs,
+            &machine,
             &mut routed,
         )?);
     }
@@ -649,19 +666,19 @@ impl BarWindow {
     }
 }
 
-/// Each function of `vfio` opened (its DMA mapped to `memory`), its BARs placed in
-/// `window` and put on `bus`, on device `first` and those after it.
+/// Each function of `vfio` opened (its DMA mapped to the machine's memory), its BARs
+/// placed in `window` and put on `bus`, on device `first` and those after it.
 #[cfg(all(hv, target_os = "linux"))]
 fn passed_through(
     bus: &mut crate::devices::MmioBus,
     window: &mut BarWindow,
     vfio: &[Vfio],
     first: u8,
-    memory: &crate::memory::GuestMemory,
-    irqs: Option<&dyn PciInterrupts>,
+    machine: &PciMachine<'_>,
     routed: &mut PciBus,
 ) -> Result<Vec<crate::devices::pci::Function>, String> {
     use crate::devices::pci::{self, vfio as v};
+    let PciMachine { vm, memory, irqs } = *machine;
     let mut functions: Vec<pci::Function> = Vec::new();
     // One container for the functions whose groups have an IOMMU, and one for those
     // whose have none.
@@ -672,7 +689,7 @@ fn passed_through(
             Some(c) => c,
             None => slot.insert(v::Container::open(f.noiommu).map_err(|e| format!("{}: {e}", f.name))?),
         };
-        let opened = v::Device::open(&f.name, &f.group, container, memory)?;
+        let opened = v::Device::open(&f.name, &f.group, container, memory, vm)?;
         let mut bars = Vec::new();
         for (index, size, kind) in opened.bars() {
             let addr = window
@@ -687,7 +704,7 @@ fn passed_through(
         }
         let route = irqs.and_then(|irqs| irqs.route(device));
         let send = irqs.map(|irqs| irqs.msi());
-        let function = Arc::new(v::VfioFunction::new(opened, bars, route, send)?);
+        let function = Arc::new(v::VfioFunction::new(opened, bars, route, send, vm)?);
         for bar in function.bars() {
             bus.insert(
                 bar.addr,
@@ -716,11 +733,35 @@ fn passed_through(
     _window: &mut BarWindow,
     _vfio: &[Vfio],
     _first: u8,
-    _memory: &crate::memory::GuestMemory,
-    _irqs: Option<&dyn PciInterrupts>,
+    _machine: &PciMachine<'_>,
     _routed: &mut PciBus,
 ) -> Result<Vec<crate::devices::pci::Function>, String> {
     Err("a host's PCI devices are passed through by VFIO, Linux's (D154)".into())
+}
+
+/// KVM as the host of the functions VFIO passes through (D154): its VFIO device told of
+/// their groups, and memory slots of each function's own for its BARs.
+#[cfg(all(hv, target_os = "linux"))]
+impl crate::devices::pci::vfio::Host for crate::hv::Vm {
+    fn add_group(&self, group: std::os::fd::RawFd) -> Result<(), String> {
+        self.add_vfio_group(group).map_err(|e| e.to_string())
+    }
+
+    fn slots(&self, count: u32) -> Box<dyn crate::devices::pci::vfio::BarSlots> {
+        Box::new(self.device_slots(count))
+    }
+}
+
+#[cfg(all(hv, target_os = "linux"))]
+impl crate::devices::pci::vfio::BarSlots for crate::hv::DeviceSlots {
+    unsafe fn map(&self, i: u32, host: *mut u8, gpa: u64, len: usize) -> Result<(), String> {
+        // SAFETY: forwarded caller contract.
+        unsafe { crate::hv::DeviceSlots::map(self, i, host, gpa, len) }.map_err(|e| e.to_string())
+    }
+
+    fn unmap(&self, i: u32) -> Result<(), String> {
+        crate::hv::DeviceSlots::unmap(self, i).map_err(|e| e.to_string())
+    }
 }
 
 /// The host side of a VM's virtio-vsock device.

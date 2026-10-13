@@ -582,7 +582,12 @@ fn assemble(
         frame,
     });
     let irqs = lines.as_ref().map(|l| l as &dyn super::PciInterrupts);
-    let pci = super::pci_bus(&mut bus, layout::PCI_ECAM, mem32, pci, config, memory, irqs)?.map(|routed| {
+    let machine = super::PciMachine {
+        vm: &vm,
+        memory,
+        irqs,
+    };
+    let pci = super::pci_bus(&mut bus, layout::PCI_ECAM, mem32, pci, config, machine)?.map(|routed| {
         boot::PciBridge {
             ecam: (layout::PCI_ECAM, crate::devices::pci::ECAM_SIZE),
             mem32,

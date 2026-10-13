@@ -4,7 +4,7 @@
 
 use std::io;
 use std::os::fd::RawFd;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use super::state::{VcpuState, VmState};
 use super::{Error, Kicker, Result, Slots, Thread, call, install_kick_handler, kvm, sys};
@@ -97,6 +97,8 @@ pub struct Vm {
     /// The MSIs routed to GSIs past the IOAPIC's, as the guest programmed its
     /// passed-through functions' (D154).
     routes: Arc<Mutex<Vec<MsiRoute>>>,
+    /// KVM's VFIO device, made as the first VFIO group is added ([`Vm::add_vfio_group`]).
+    pub(super) vfio: OnceLock<sys::DeviceFd>,
 }
 
 /// An MSI's route: the GSI an irqfd raises it by, and its message.
@@ -166,6 +168,7 @@ impl Vm {
             pre_fault,
             tsc_offsets,
             routes: Arc::new(Mutex::new(Vec::new())),
+            vfio: OnceLock::new(),
         })
     }
 

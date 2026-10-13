@@ -2,12 +2,12 @@
 //! Documentation/virt/kvm/api.rst and devices/arm-vgic-v3.rst).
 
 use std::io;
-use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
+use std::os::fd::AsRawFd;
 
 use super::{
-    KVM_CHECK_EXTENSION, KVM_CREATE_VCPU, KVM_CREATE_VM, KVM_GET_API_VERSION, KVM_GET_DEVICE_ATTR,
-    KVM_GET_MP_STATE, KVM_GET_VCPU_MMAP_SIZE, KVM_IRQ_LINE, KVM_IRQFD, KVM_RUN, KVM_SET_DEVICE_ATTR,
-    KVM_SET_MP_STATE, KVM_SET_USER_MEMORY_REGION, VcpuFd, VmFd, ioctl, set_attr,
+    DeviceFd, KVM_CHECK_EXTENSION, KVM_CREATE_DEVICE, KVM_CREATE_VCPU, KVM_CREATE_VM, KVM_GET_API_VERSION,
+    KVM_GET_DEVICE_ATTR, KVM_GET_MP_STATE, KVM_GET_VCPU_MMAP_SIZE, KVM_IRQ_LINE, KVM_IRQFD, KVM_RUN,
+    KVM_SET_DEVICE_ATTR, KVM_SET_MP_STATE, KVM_SET_USER_MEMORY_REGION, VcpuFd, VmFd, ioctl,
 };
 
 /// Every ioctl request shards makes of KVM: what its seccomp filter allows
@@ -37,7 +37,6 @@ pub const KVM_GET_ONE_REG: u64 = 0x4010_AEAB;
 pub const KVM_SET_ONE_REG: u64 = 0x4010_AEAC;
 pub const KVM_ARM_VCPU_INIT: u64 = 0x4020_AEAE;
 pub const KVM_ARM_PREFERRED_TARGET: u64 = 0x8020_AEAF;
-pub const KVM_CREATE_DEVICE: u64 = 0xC00C_AEE0;
 
 const _: () = {
     const fn size(request: u64) -> usize {
@@ -47,7 +46,6 @@ const _: () = {
     assert!(size(KVM_SET_ONE_REG) == size_of::<kvm_one_reg>());
     assert!(size(KVM_ARM_VCPU_INIT) == size_of::<kvm_vcpu_init>());
     assert!(size(KVM_ARM_PREFERRED_TARGET) == size_of::<kvm_vcpu_init>());
-    assert!(size(KVM_CREATE_DEVICE) == size_of::<kvm_create_device>());
 };
 
 /// The physical address width KVM can give a VM, or 0 where every VM has 40 bits.
@@ -124,18 +122,9 @@ pub struct kvm_one_reg {
     pub addr: u64,
 }
 
-#[repr(C)]
-#[derive(Debug, Default)]
-pub struct kvm_create_device {
-    pub kind: u32,
-    pub fd: u32,
-    pub flags: u32,
-}
-
 const _: () = {
     assert!(size_of::<kvm_vcpu_init>() == 32);
     assert!(size_of::<kvm_one_reg>() == 16);
-    assert!(size_of::<kvm_create_device>() == 12);
 };
 
 impl VmFd {
@@ -152,32 +141,10 @@ impl VmFd {
         }?;
         Ok(init)
     }
-
-    /// An in-kernel device of type `kind`, configured through its attributes.
-    pub fn create_device(&self, kind: u32) -> io::Result<DeviceFd> {
-        let mut d = kvm_create_device {
-            kind,
-            ..Default::default()
-        };
-        // SAFETY: KVM reads the type and writes the device's descriptor into `d`.
-        unsafe { ioctl(self.fd(), KVM_CREATE_DEVICE, (&raw mut d) as libc::c_ulong) }?;
-        let fd = RawFd::try_from(d.fd).map_err(io::Error::other)?;
-        // SAFETY: a fresh descriptor, owned from here on.
-        Ok(DeviceFd(unsafe { OwnedFd::from_raw_fd(fd) }))
-    }
 }
 
-/// An in-kernel device (`KVM_CREATE_DEVICE`): the GICv3.
-#[derive(Debug)]
-pub struct DeviceFd(OwnedFd);
-
 impl DeviceFd {
-    /// Sets attribute `attr` of `group` to `value`, of the attribute's own type.
-    pub fn set_attr<T>(&self, group: u32, attr: u64, value: &T) -> io::Result<()> {
-        set_attr(self.0.as_raw_fd(), group, attr, value)
-    }
-
-    /// Sets an attribute that takes no value: a control.
+    /// Sets an attribute that takes no value: a control (the GICv3's initialization).
     pub fn control(&self, group: u32, attr: u64) -> io::Result<()> {
         let a = super::kvm_device_attr {
             group,

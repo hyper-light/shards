@@ -3654,9 +3654,24 @@ one. So both, in that order.
   for the BARs, the expansion ROM and the interrupt line and pin, which the VMM keeps
   (D153's header); the memory BARs are placed in the bus's window, each at the next
   multiple of its size, and each access goes to the device's region at its offset; an
-  I/O BAR is left out, as the machine has no I/O window. A machine given a function has
-  no memory to plug, no balloon (its DMA mappings pinned; QEMU's
+  I/O BAR is left out, as the machine has no I/O window. Each group is added to KVM's
+  VFIO device (Documentation/virt/kvm/devices/vfio.rst) before its device is opened, as
+  drivers that need the VM to open one ask; through it KVM learns whether the function's
+  DMA snoops the CPU's caches, and on x86 honours the guest's memory types where it does
+  not (virt/kvm/vfio.c, kvm_vfio_update_coherency). The VM keeps that device as long as
+  it lives: KVM forgets its groups as its descriptor closes (kvm_vfio_release). A machine
+  given a function has no memory to plug, no balloon (its DMA mappings pinned; QEMU's
   `ram_block_discard_disable`) and no snapshot.
+- **BARs in the guest's memory.** Each BAR vfio-pci lets a user map
+  (VFIO_REGION_INFO_FLAG_MMAP: a memory BAR of a page or more, vfio_pci_probe_mmaps) is
+  mapped into the VM process, and its pages, but for those of the MSI-X table and pending
+  bits, which the VMM keeps, are memory slots of the function's own, which the guest
+  reaches without an exit. They are in the guest while it enables the function's memory
+  space, and leave before it disables it: vfio-pci then takes its mappings away
+  (vfio_basic_config_write) and a vCPU touching one would fail its run (EFAULT); out,
+  the BAR is trapped again, and a read with memory space off is all ones, as an access
+  no function claims (PCI 3.0 §6.2.2, §2.3.2), which the test function now does too. A
+  BAR of less than a page stays trapped whole, as its page in the guest holds others.
 - **Interrupts.** A PCI bus's functions interrupt as PCI's do. On arm64, each device's
   INTx on an SPI of its own, level-triggered (the devicetree's `interrupt-map`): KVM's
   GICv3 keeps one level a line, so a line the VMM drives and an irqfd must not share one.
@@ -3724,9 +3739,11 @@ one. So both, in that order.
   CPUs", its second vCPU's redistributor found, its test passed. Given `--pci-test`, the
   inner guest's PCI bus reaches the test function. Given the outer guest's test function,
   bound to vfio-pci there in a no-IOMMU group, the inner guest finds 1234:11e8 at 00:01.0
-  and reads the identification register and the liveness check's inverse through BAR 0:
-  the inner guest's access, the outer VM process, vfio-pci, the outer guest's access, the
-  outermost VMM's function. The inner guest takes INTx, MSI and MSI-X, both of the VMM's
+  and reads the identification register and the liveness check's inverse through BAR 0,
+  which the outer VM process maps into the inner guest (its log): the inner guest's access
+  reaches the outermost VMM's function with no exit to the outer VM process. With its
+  memory space off, BAR 0 leaves the inner guest and reads all ones through the outer VM
+  process and vfio-pci, and comes back as it is on again. The inner guest takes INTx, MSI and MSI-X, both of the VMM's
   own test function, through its emulated frame, and of the function passed through, by
   the outer VM process's irqfds: its vector 1 held while masked is the outer VM process's
   count, as the outermost function sends it at once. CI's arm64 runners give no KVM: the nested test runs where a
@@ -3735,12 +3752,9 @@ one. So both, in that order.
   `kvm` kernel, built now for x86_64 too, is pinned.
 - **Not yet:** snapshots of arm64 KVM VMs (`vm::SNAPSHOTS`; their GIC and vCPU state
   through KVM's registers); more vCPUs than one redistributor region holds (123). For
-  VFIO: MSI of more than one message, and its per-vector masking; the BARs mapped into
-  the guest (KVM memory slots of the regions vfio-pci maps, the MSI-X table's pages
-  trapped); a 64-bit window for
-  BARs past the 32-bit one; the kvm-vfio device, for x86's non-coherent DMA; DMA verified
-  on real VMs, which needs an IOMMU in the test's outer guest; then `--device
-  /dev/vfio/N`, `--gpus` and CDI's VFIO nodes.
+  VFIO: MSI of more than one message, and its per-vector masking; a 64-bit window for
+  BARs past the 32-bit one; DMA verified on real VMs, which needs an IOMMU in the test's
+  outer guest; then `--device /dev/vfio/N`, `--gpus` and CDI's VFIO nodes.
 
 ### D153. A PCI bus, for the devices a microVM is given (VFIO's first step)
 
