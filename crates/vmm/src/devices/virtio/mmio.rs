@@ -32,8 +32,11 @@ const QUEUE_DRIVER_LOW: u64 = 0x090;
 const QUEUE_DRIVER_HIGH: u64 = 0x094;
 const QUEUE_DEVICE_LOW: u64 = 0x0a0;
 const QUEUE_DEVICE_HIGH: u64 = 0x0a4;
+const SHM_SEL: u64 = 0x0ac;
 const SHM_LEN_LOW: u64 = 0x0b0;
 const SHM_LEN_HIGH: u64 = 0x0b4;
+const SHM_BASE_LOW: u64 = 0x0b8;
+const SHM_BASE_HIGH: u64 = 0x0bc;
 const CONFIG_GENERATION: u64 = 0x0fc;
 const CONFIG: u64 = 0x100;
 
@@ -50,6 +53,10 @@ struct State {
     driver_features_sel: u32,
     driver_features: u64,
     queue_sel: u32,
+    /// The shared memory region the driver selected (SHMSel): not in a snapshot, as a
+    /// driver selects one each time before it reads it (Linux virtio_mmio.c,
+    /// vm_get_shm_region).
+    shm_sel: u32,
     queues: Vec<QueueConfig>,
     config_generation: u32,
     /// Each queue's progress while paused, for a snapshot.
@@ -104,6 +111,7 @@ impl MmioTransport {
                 driver_features_sel: 0,
                 driver_features: 0,
                 queue_sel: 0,
+                shm_sel: 0,
                 queues,
                 config_generation: 0,
                 paused: Vec::new(),
@@ -122,6 +130,7 @@ impl MmioTransport {
         s.driver_features_sel = 0;
         s.driver_features = 0;
         s.queue_sel = 0;
+        s.shm_sel = 0;
         s.queues.iter_mut().for_each(|q| *q = QueueConfig::default());
         self.interrupt.clear();
     }
@@ -226,8 +235,20 @@ impl MmioDevice for MmioTransport {
             INTERRUPT_STATUS => self.interrupt.status(),
             STATUS if self.interrupt.failed() => s.status | status::DEVICE_NEEDS_RESET,
             STATUS => s.status,
-            // No shared memory regions: length reads as all-ones (§4.2.2).
-            SHM_LEN_LOW | SHM_LEN_HIGH => u32::MAX,
+            // The selected shared memory region's length and base; one the device has not
+            // reads as all-ones (§4.2.2).
+            SHM_LEN_LOW | SHM_LEN_HIGH | SHM_BASE_LOW | SHM_BASE_HIGH => {
+                let sel = s.shm_sel;
+                match s.device.shm_regions().iter().find(|r| u32::from(r.id) == sel) {
+                    Some(r) => match offset {
+                        SHM_LEN_LOW => low(r.len),
+                        SHM_LEN_HIGH => high(r.len),
+                        SHM_BASE_LOW => low(r.base),
+                        _ => high(r.base),
+                    },
+                    None => u32::MAX,
+                }
+            }
             CONFIG_GENERATION => s.config_generation.wrapping_add(s.device.config_generation()),
             _ => 0,
         };
@@ -257,6 +278,7 @@ impl MmioDevice for MmioTransport {
                 }
             }
             QUEUE_SEL => s.queue_sel = v,
+            SHM_SEL => s.shm_sel = v,
             QUEUE_NUM if configurable => {
                 if let Some(q) = Self::selected_queue(&mut s) {
                     q.size = v as u16;
@@ -377,5 +399,80 @@ impl MmioDevice for MmioTransport {
                 .map_err(|e| codec::DecodeError(format!("restoring virtio device: {e}")))?;
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+    use crate::devices::virtio::ShmRegion;
+
+    /// A device with nothing but shared memory regions.
+    struct Regions(Vec<ShmRegion>);
+
+    impl VirtioDevice for Regions {
+        fn device_id(&self) -> u32 {
+            16
+        }
+        fn features(&self) -> u64 {
+            0
+        }
+        fn queue_max_sizes(&self) -> &[u16] {
+            &[]
+        }
+        fn read_config(&self, _: u64, data: &mut [u8]) {
+            data.fill(0);
+        }
+        fn write_config(&mut self, _: u64, _: &[u8]) {}
+        fn shm_regions(&self) -> &[ShmRegion] {
+            &self.0
+        }
+        fn activate(&mut self, _: Activation) -> Result<(), String> {
+            Ok(())
+        }
+        fn notify(&self, _: u16) {}
+        fn reset(&mut self) {}
+        fn pause(&mut self) -> Vec<QueueState> {
+            Vec::new()
+        }
+        fn resume(&mut self) -> Result<(), String> {
+            Ok(())
+        }
+    }
+
+    struct Line;
+
+    impl Interrupt for Line {
+        fn set_level(&self, _: bool) {}
+    }
+
+    fn read(t: &MmioTransport, offset: u64) -> u32 {
+        let mut data = [0u8; 4];
+        t.read(offset, &mut data);
+        u32::from_le_bytes(data)
+    }
+
+    /// The region the driver selects reads its length and base, each in two halves; one
+    /// the device has not reads as all-ones, as virtio 1.3 §4.2.2 has it; a reset selects
+    /// region 0 again.
+    #[test]
+    fn shared_memory_regions_read_as_selected() {
+        let region = ShmRegion {
+            id: 1,
+            base: 0x1_2345_0000,
+            len: 0x2_0000_0000,
+        };
+        let memory = Arc::new(GuestMemory::anonymous(&[(0x8000_0000, 1 << 16)]).unwrap());
+        let t = MmioTransport::new(Box::new(Regions(vec![region])), memory, Arc::new(Line));
+        assert_eq!(read(&t, SHM_LEN_LOW), u32::MAX, "region 0 is not the device's");
+        assert_eq!(read(&t, SHM_LEN_HIGH), u32::MAX);
+        t.write(SHM_SEL, &1u32.to_le_bytes());
+        assert_eq!(read(&t, SHM_LEN_LOW), 0);
+        assert_eq!(read(&t, SHM_LEN_HIGH), 2);
+        assert_eq!(read(&t, SHM_BASE_LOW), 0x2345_0000);
+        assert_eq!(read(&t, SHM_BASE_HIGH), 1);
+        t.write(STATUS, &0u32.to_le_bytes());
+        assert_eq!(read(&t, SHM_LEN_LOW), u32::MAX, "a reset selects region 0");
     }
 }

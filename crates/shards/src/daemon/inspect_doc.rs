@@ -156,24 +156,57 @@ fn devices(run: &Run) -> Value {
     Value::List(Kind::Any, list)
 }
 
-/// HostConfig.DeviceRequests: the CDI devices' one request, as the CLI makes it, or nil.
+/// HostConfig.DeviceRequests, as the CLI makes them, or nil: each `--gpus` request
+/// (opts/gpus.go), then the CDI devices' one.
 fn device_requests(run: &Run) -> Value {
-    if run.cdi_devices.is_empty() {
+    let mut list: Vec<Value> = run
+        .gpus
+        .iter()
+        .filter_map(|v| shards_cmdline::gpus::gpu_request(v).ok())
+        .map(|r| {
+            let options = r.options.iter().map(|(k, v)| (k.clone(), s(v))).collect();
+            Struct::new("container.DeviceRequest")
+                .field("Driver", s(&r.driver))
+                .field("Count", int(r.count))
+                .tagged(
+                    "DeviceIDs",
+                    Some("DeviceIDs"),
+                    false,
+                    r.device_ids
+                        .as_deref()
+                        .map_or(Value::NilList(Kind::Any), |d| strs(d, false)),
+                )
+                .field(
+                    "Capabilities",
+                    Value::List(
+                        Kind::Any,
+                        r.capabilities.iter().map(|set| strs(set, false)).collect(),
+                    ),
+                )
+                .field("Options", Value::Map(Kind::String, options))
+                .value()
+        })
+        .collect();
+    if !run.cdi_devices.is_empty() {
+        list.push(
+            Struct::new("container.DeviceRequest")
+                .field("Driver", s("cdi"))
+                .field("Count", int(0))
+                .tagged(
+                    "DeviceIDs",
+                    Some("DeviceIDs"),
+                    false,
+                    strs(&run.cdi_devices, false),
+                )
+                .field("Capabilities", Value::NilList(Kind::Any))
+                .field("Options", Value::NilMap(Kind::String))
+                .value(),
+        );
+    }
+    if list.is_empty() {
         return Value::NilList(Kind::Any);
     }
-    let request = Struct::new("container.DeviceRequest")
-        .field("Driver", s("cdi"))
-        .field("Count", int(0))
-        .tagged(
-            "DeviceIDs",
-            Some("DeviceIDs"),
-            false,
-            strs(&run.cdi_devices, false),
-        )
-        .field("Capabilities", Value::NilList(Kind::Any))
-        .field("Options", Value::NilMap(Kind::String))
-        .value();
-    Value::List(Kind::Any, vec![request])
+    Value::List(Kind::Any, list)
 }
 
 fn int(n: i64) -> Value {

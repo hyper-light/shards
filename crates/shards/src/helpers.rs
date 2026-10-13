@@ -1,5 +1,7 @@
 //! The processes `shards` starts but is not: the VM process (`shards-vm`), one per
-//! microVM, and the network process (`shards-net`), one per networked microVM (D36).
+//! microVM, and the network process (`shards-net`), one per networked microVM (D36); and
+//! where this build carries it, the GPU's VM process (`shards-vm-gpu`, D144), the VM
+//! process of a microVM given a GPU.
 //!
 //! `shards` is the one binary there is to install. These two are carried inside it
 //! (build.rs) and written out the first time a build of it needs them, into a directory
@@ -23,22 +25,59 @@ mod carried {
 /// `SHARDS_VM_BINARY` names, an absolute path, for a VMM being worked on or a tool
 /// wrapped around the VM process (tests gate VMs' starts with one).
 pub fn vm() -> Result<PathBuf, String> {
-    if let Some(given) = std::env::var_os("SHARDS_VM_BINARY").filter(|v| !v.is_empty()) {
-        let given = PathBuf::from(given);
-        if !given.is_absolute() {
-            return Err(format!(
-                "SHARDS_VM_BINARY: {} is not an absolute path",
-                given.display()
-            ));
-        }
-        return Ok(given);
+    if let Some(given) = given() {
+        return given;
     }
     Ok(dir()?.join(format!("shards-vm{}", std::env::consts::EXE_SUFFIX)))
+}
+
+/// The VM process `SHARDS_VM_BINARY` names, an absolute path, if it names one.
+fn given() -> Option<Result<PathBuf, String>> {
+    let given = PathBuf::from(std::env::var_os("SHARDS_VM_BINARY").filter(|v| !v.is_empty())?);
+    Some(if given.is_absolute() {
+        Ok(given)
+    } else {
+        Err(format!(
+            "SHARDS_VM_BINARY: {} is not an absolute path",
+            given.display()
+        ))
+    })
 }
 
 /// The network process's binary, written out if this build's is not yet (D31, D142).
 pub fn net() -> Result<PathBuf, String> {
     Ok(dir()?.join(format!("shards-net{}", std::env::consts::EXE_SUFFIX)))
+}
+
+/// The GPU's VM process's binary (D144), written out the first time a GPU VM needs it,
+/// beside the others: none of its megabytes is written for a `shards` that runs no GPU.
+/// `SHARDS_VM_BINARY` names one instead, as it does the VM process.
+pub fn vm_gpu() -> Result<PathBuf, String> {
+    if let Some(given) = given() {
+        return given;
+    }
+    if carried::SHARDS_VM_GPU.is_empty() {
+        return Err(
+            "this shards was built without its GPU's VM process: scripts/gpu-libs builds the GPU's renderer, and SHARDS_GPU_LIBS names it to the build (D144)"
+                .into(),
+        );
+    }
+    let dir = dir()?;
+    let name = format!("shards-vm-gpu{}", std::env::consts::EXE_SUFFIX);
+    let path = dir.join(&name);
+    let len = carried::SHARDS_VM_GPU.len() as u64;
+    if fs::metadata(&path).is_ok_and(|m| m.len() == len) {
+        return Ok(path);
+    }
+    // Written beside it, synced, then moved into place whole, as the others are.
+    let at = |p: &Path, e: std::io::Error| format!("{}: {e}", p.display());
+    let temp = dir.join(format!(".{name}.{}", std::process::id()));
+    let _ = fs::remove_file(&temp);
+    let mut file = executable(&temp).map_err(|e| at(&temp, e))?;
+    file.write_all(carried::SHARDS_VM_GPU).map_err(|e| at(&temp, e))?;
+    file.sync_all().map_err(|e| at(&temp, e))?;
+    fs::rename(&temp, &path).map_err(|e| at(&path, e))?;
+    Ok(path)
 }
 
 /// What this build carries: each helper's name, bytes and SHA-256.
@@ -59,9 +98,13 @@ fn dir() -> Result<PathBuf, String> {
             );
         }
         let root = cache()?.join("helpers");
+        // Named by every helper's digest, the GPU's VM process's among them, so that a
+        // build of other ones never finds this build's.
         let id: String = carried()
             .iter()
-            .flat_map(|(_, _, sha)| sha.get(..12).unwrap_or(sha).chars())
+            .map(|(_, _, sha)| *sha)
+            .chain([carried::SHARDS_VM_GPU_SHA256])
+            .flat_map(|sha| sha.get(..12).unwrap_or(sha).chars())
             .collect();
         let dir = root.join(&id);
         if complete(&dir) {

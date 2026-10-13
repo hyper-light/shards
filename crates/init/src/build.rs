@@ -352,8 +352,12 @@ impl Builder {
             data.push_str(&format!(",upperdir={},workdir={}", u.display(), work.display()));
         }
         // What a layer holds as it was written: no index, no redirects, no metacopy, as
-        // BuildKit's differ needs of an upper directory (docs/research/buildkit-run.md §6).
-        data.push_str(",index=off,redirect_dir=off,metacopy=off");
+        // BuildKit's differ needs of an upper directory (docs/research/buildkit-run.md §6);
+        // one space of inode numbers for its layers (run::XINO).
+        data.push_str(&format!(
+            ",index=off,redirect_dir=off,metacopy=off,{}",
+            crate::run::XINO
+        ));
         if upper.is_some() {
             // A builder's upper directory is never needed after a crash.
             data.push_str(",volatile");
@@ -1613,7 +1617,9 @@ fn cdi_node(r: &Root, d: &shards_abi::build::Device) -> io::Result<()> {
                 )));
             }
         };
-        (kind, md.rdev(), d.mode.unwrap_or(md.mode() & 0o7777))
+        // The host's mode where CDI gives none: udev's, which the VM's devtmpfs lacks.
+        let mode = at.to_str().and_then(crate::devices::udev_mode);
+        (kind, md.rdev(), d.mode.or(mode).unwrap_or(md.mode() & 0o7777))
     };
     if let Some(parent) = d
         .path

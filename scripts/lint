@@ -33,6 +33,10 @@ for target in ${*:-$all}; do
 		;;
 	*)
 		cargo clippy --workspace --all-targets --target "$target" -- -D warnings
+		# The GPU's renderer (D144): behind vmm's `gpu` feature, the GPU's VM process's alone.
+		if [ "$target" = aarch64-apple-darwin ]; then
+			cargo clippy -p shards-vmm --features gpu --all-targets --target "$target" -- -D warnings
+		fi
 		;;
 	esac
 done

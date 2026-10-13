@@ -128,9 +128,20 @@ jobs:
             Windows) powershell -NoProfile -Command \
               "(Get-CimInstance Win32_Processor).Name; (Get-CimInstance Win32_ComputerSystem).HypervisorPresent; (Get-WindowsOptionalFeature -Online -FeatureName HypervisorPlatform).State" || true ;;
           esac
+      # The GPU's renderer (D144), from pinned sources: `shards` then carries shards-vm-gpu.
+      - name: The GPU's renderer
+        if: matrix.target == 'aarch64-apple-darwin'
+        shell: bash
+        run: |
+          scripts/gpu-libs "$RUNNER_TEMP/gpu-libs"
+          echo "SHARDS_GPU_LIBS=$RUNNER_TEMP/gpu-libs" >> "$GITHUB_ENV"
       - name: Lints (production code never panics; clippy.toml exempts tests)
         shell: bash
         run: cargo clippy --locked --workspace --all-targets --target ${{ matrix.target }} -- -D warnings
+      - name: Lints of the GPU's renderer
+        if: matrix.target == 'aarch64-apple-darwin'
+        shell: bash
+        run: cargo clippy --locked -p shards-vmm --features gpu --all-targets --target ${{ matrix.target }} -- -D warnings
       # The runner's /dev/kvm is root:kvm 0660 and the runner user is not in `kvm`.
       - name: KVM access (Linux)
         if: runner.os == 'Linux'
@@ -148,6 +159,12 @@ jobs:
             x86_64-unknown-linux-gnu | x86_64-pc-windows-msvc) export SHARDS_REQUIRE_VMS=1 ;;
           esac
           cargo test --locked --workspace --profile test-release --no-fail-fast --target ${{ matrix.target }}
+      - name: Tests of the GPU's renderer
+        if: matrix.target == 'aarch64-apple-darwin'
+        timeout-minutes: 15
+        shell: bash
+        run: |
+          cargo test --locked -p shards-vmm --features gpu --profile test-release --target ${{ matrix.target }} gpu::
       # The stack guards are release's (crates/rego: stack::LEAF, RULE_STEP, and the policy
       # thread's STACK): measured on release, whose fat LTO puts more in each frame than
       # test-release does, so the tests that hold every target to them run on release too

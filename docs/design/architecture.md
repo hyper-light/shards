@@ -3602,6 +3602,139 @@ No run-time labels, relays or declassifiers (§12 answer 14, decided by the user
 an internal-only domain to the world (D58), so there is no data to label. Code mode is
 D136.
 
+### D146. A run's `--device` by CDI name
+
+- **What:** `--device VENDOR/CLASS=NAME` gives a run what the device's CDI spec says, as
+  dockerd's CDI driver gives it as a container starts (moby daemon/cdi.go,
+  injectCDIDevices; CDI v1.1.0 Cache.InjectDevices, ContainerEdits.Apply): each name the
+  device of that name in the specs of the daemon's CDI directories (SHARDS_CDI_SPEC_DIRS,
+  else /etc/cdi and /var/run/cdi, read as builds read them, D96), the spec's edits once,
+  then each device's.
+  - Its variables over the workload's whole environment (AddMultipleProcessEnv).
+  - Its groups, but root's, once each (AddProcessAdditionalGid).
+  - Its nodes from the guest's own device at the host path, a host's numbers meaning
+    nothing in a guest, checked against the kind the spec says; the spec's mode, else the
+    device's (udev's); the spec's owner, else the process's user and group but root's,
+    which init resolves from the image's user database; the spec's cgroup access, else
+    `rwm`. A FIFO is made as one, outside the device filter.
+  - Its mounts as binds of the host path, read-only with `ro`, of the propagation its
+    options name, with `nosuid`, `nodev` and `noexec` on the guest's mount; a container's
+    record keeps none of them, as dockerd's keeps none.
+  - A node of the GPU's render node gives the run this Mac's GPU (D144, D145).
+- **As dockerd fails:** a name no spec has fails the start, not the making, in dockerd's
+  words (`CDI device injection failed: unresolvable CDI devices …`); a hook, a host's
+  network interface or an Intel RDT class, which only a container's host has, is refused
+  by name, as a build's step refuses it.
+- **Verified on real VMs** (containers.rs `cdi_devices_are_injected_as_dockers_are`,
+  gpu.rs): variables, groups, a node's owner, mode and access, a read-only nosuid nodev
+  bind, a name refused at start, a hook refused; `--device test.example/gpu=0` finds
+  Venus. Mutation-checked: without `nosuid` on the guest's mount, or with root as a
+  node's owner, the test fails.
+- **A joiner's nodes** (D119) are owned once its root is built: its user by name is
+  resolved by its own image's users, as a run's is; verified (`-u app`).
+
+### D145. A build's steps given the GPU by CDI name
+
+- **What:** a step given a CDI device whose edits bring the render node
+  `/dev/dri/renderD128`, the node Linux's virtio-gpu driver makes for a guest's first
+  GPU, has this Mac's GPU: the build's builder boots in `shards-vm-gpu` with `--gpu`, on
+  the gpu kernel where SHARDS_KERNEL names none (D144), and the step's node is made from
+  the guest's own, as each CDI node is (D96).
+- **Why by the node:** `RUN` asks for devices by CDI name alone (`--device`, BuildKit
+  v0.28.1, CDI v1.1.0), never for GPUs by count as `--gpus` does, and a CDI spec says
+  which nodes each device brings: a spec of the user's own (SHARDS_CDI_SPEC_DIRS, else
+  /etc/cdi and /var/run/cdi) names the GPU with nothing new to learn. A build's steps share
+  one builder, so all of them run in the GPU's VM process where any is given the GPU.
+- **Elsewhere:** a host without a GPU for microVMs (Linux and Windows, until VFIO) makes
+  the node from the guest's own device as before, which it has not.
+- **Verified on this Mac** (tests/gpu.rs): `RUN --device=test.example/gpu=0 vulkaninfo
+  --summary`, the device a spec of the test's brings the render node by (auto-allowed),
+  finds "Virtio-GPU Venus (Apple M5 Max)"; mutation-checked: with the builder never given
+  the GPU, the step fails.
+
+### D144. GPUs: macOS first, Venus in a VM process of its own build
+
+AGENTFILE_ARCH.md §11 row 978: a GPU given a run or a build's step (`--gpus`, `--device`'s
+CDI names, `RUN --device`), which shards creates rather than refuses (the user, 2026-10-10:
+"Then we create it"). The research set its shape (gpu-accelerators.md): a GPU costs nothing
+where it is not used (R1); on Linux, VFIO through iommufd, a GPU VM a class of its own
+assigned from a warm pool, as a device passed through pins all of a guest's memory and
+breaks copy-on-write restores (R2, R3); on macOS, virtio-gpu with Venus over MoltenVK,
+Vulkan compute in the guest, as libkrun gives it (R6). macOS is first: its hardware is here
+to test on, where no CI runner has a GPU behind an IOMMU.
+
+- **A VM process of its own build** (PM M214): MoltenVK links Metal, QuartzCore, IOSurface
+  and Foundation, which dyld loads as a process launches: 1.3 ms more at p50 and 480 KB
+  more footprint for every VM that linked them, a GPU's or not. A GPU VM runs
+  `shards-vm-gpu`, the VM process built with the renderer and MoltenVK in it, carried and
+  written out as `shards-vm` is (D36); every other VM's links neither. Its Metal device
+  costs it 19 ms as it boots, in its pool's refill.
+- **Rendering in that process**, as krunkit does: on macOS the renderer (virglrenderer's
+  Venus, in the 0.10.4e-krunkit fork libkrun's Homebrew formula builds) maps a blob's
+  device memory and hands its address (`virgl_renderer_resource_get_map_ptr`), which the
+  VMM maps into the device's shared memory window (hv_vm_map). A renderer in a process of
+  its own would need that memory shared between processes, which the fork does not export
+  on macOS.
+- **The transport's shared memory regions** (virtio 1.3 §4.2.2): the region a driver
+  selects reads its length and base; one a device has not, all-ones, as every one read
+  before.
+- **The device** (`devices::virtio::gpu`): what the Linux driver needs for Vulkan through
+  Venus (virtgpu_kms.c; Mesa's vn_renderer_virtgpu.c asks for 3D, blobs, contexts and the
+  host-visible region): VIRGL, RESOURCE_BLOB, CONTEXT_INIT and BLOB_ALIGNMENT offered, no
+  scanout, the renderer's capsets alone (Venus). A request is read once, copied, its
+  lengths held to what it holds and the whole to the guest's RAM. A blob of guest memory
+  is given to the renderer as its RAM's host addresses; one of host memory is mapped into
+  the window at the place the guest chose, of whole host pages, over nothing else mapped,
+  within the window. A fenced request's answer waits for its fence, after those before it
+  on its ring, as the driver signals a timeline's fences in order; one refused waits only
+  for those; one of no ring is answered as it is done. The renderer runs on the device's
+  worker; its threads signal fences to it. A request the driver made available again while
+  the device held it is a malformed ring.
+- **The window** is placed after RAM, the memory to plug and pmem, at a GiB boundary, as
+  long as the host's GPU says it has memory the host can map (Vulkan's host-visible heaps,
+  which Venus tells the guest): the most a guest can have mapped at once. On this Mac,
+  128 GiB (PM M216); the IPA's width grows to hold it. Blobs are mapped read and write,
+  never executed.
+- **Blobs held from their making** (PM M216): the renderer frees a blob's memory when the
+  guest frees it, blob or not, and the fork keeps only its address, which MoltenVK's next
+  allocation takes: mapped from it, a blob freed and then mapped would have given the guest
+  another context's memory. The device remaps each blob's pages as it is made
+  (`mach_vm_remap`, shared) and maps those, which no other allocation is given while held;
+  a blob said to be larger than its memory is refused, its region ending first.
+- **Blob alignment.** Host pages are 16 KiB, and a blob's place in the window must be
+  whole pages. The driver of Linux 7.2 aligns them where the device asks
+  (VIRTIO_GPU_F_BLOB_ALIGNMENT, commits 7b5121c3374e, 47248e0d8264, 6bd7e82e2653, for
+  libkrun on macOS), and Mesa's Venus rounds its blobs' sizes to it
+  (vn_renderer_virtgpu.c); an unaligned place is refused, said once.
+- **No snapshot.** A GPU's state is its host driver's, and the renderer's threads reach
+  guest memory without the VMM's access: a VM with a GPU is refused a snapshot policy.
+- **The gpu kernel variant** (resources/kernel/gpu.config): DRM's virtio-gpu driver without
+  modesetting, apart from every other guest's kernel; patch 0003 backports the blob
+  alignment to 6.18.48 and rounds a host blob's size up to it where upstream refuses it,
+  so that Mesa that aligns nothing, Debian trixie's 25.0.7 among them, maps its blobs too.
+- **`shards-vm-gpu`**, the VM process built with the renderer (`--features gpu`), built
+  and signed by build.rs where SHARDS_GPU_LIBS names the libraries scripts/gpu-libs builds
+  from pinned sources, carried in `shards` and written out the first time a GPU VM needs
+  it. MoltenVK says its errors alone (MVK_CONFIG_LOG_LEVEL 1).
+- **`--gpus`**, read as docker/cli reads it, gives a run this Mac's GPU where it asks for
+  any or for device 0: its microVM boots in `shards-vm-gpu` on the gpu kernel, never from
+  a template, and the run has the render node as `--device` gives one; inspect shows the
+  requests as the CLI makes them. More GPUs, another device or a driver of its own are
+  refused. `run --kernel … --gpu` does the same for a kernel booted directly.
+- **The render node's mode is a host's:** udev's 0666 (systemd v257
+  50-udev-default.rules.in, `KERNEL=="renderD*"`, group-render-mode's default), where the
+  guest's devtmpfs gives 0600, so a run's user other than root has the GPU, and a step's
+  node where its CDI spec gives no mode; verified (`--user 1000`), mutation-checked.
+- **Verified on this Mac** (tests/gpu.rs): `shards run --rm --gpus all` of an image with
+  Mesa's Venus finds "Virtio-GPU Venus (Apple M5 Max)", conformance 1.3; the guest's
+  driver negotiates VIRGL, RESOURCE_BLOB, CONTEXT_INIT and BLOB_ALIGNMENT.
+- **Built by CI and releases:** the macOS arm64 jobs run scripts/gpu-libs, so `shards`
+  carries `shards-vm-gpu`; CI lints vmm's `gpu` feature, which no workspace lint compiles,
+  and runs the renderer's tests, which skip where Metal finds no GPU (a virtual Mac).
+- **To build:** the gpu kernel pinned once a release publishes it (KERNEL_GPU; until then
+  SHARDS_KERNEL names one); the research's E6 measured on it; Linux's VFIO (R2). A
+  build's `RUN` steps: D145; a run's `--device` by CDI name: D146.
+
 ### D143. `RUN` on Windows hosts: the builder
 
 AGENTFILE_ARCH.md §11 row 975: a Windows host runs a build's `RUN` steps in a builder

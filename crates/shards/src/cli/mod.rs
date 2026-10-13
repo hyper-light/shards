@@ -822,9 +822,14 @@ fn utf8(args: &[OsString]) -> Result<Vec<String>, String> {
         .collect()
 }
 
-/// The VM process's binary, which `shards` carries and writes out (helpers.rs).
-fn vm_binary() -> Result<PathBuf, String> {
-    crate::helpers::vm()
+/// The VM process's binary for `args`, which `shards` carries and writes out (helpers.rs):
+/// the GPU's where its own options (those before `--`) ask for a GPU (D144).
+fn vm_binary(args: &[OsString]) -> Result<PathBuf, String> {
+    if args.iter().take_while(|a| *a != "--").any(|a| a == "--gpu") {
+        crate::helpers::vm_gpu()
+    } else {
+        crate::helpers::vm()
+    }
 }
 
 /// The daemon's binary: this one.
@@ -837,18 +842,27 @@ fn shardsd() -> Result<PathBuf, String> {
 #[cfg(unix)]
 fn instead(args: &[OsString]) -> ExitCode {
     use std::os::unix::process::CommandExt;
-    let bin = match vm_binary() {
+    let bin = match vm_binary(args) {
         Ok(bin) => bin,
         Err(e) => return failed(&e),
     };
-    let e = std::process::Command::new(&bin).args(args).exec();
+    let e = std::process::Command::new(&bin)
+        .args(args)
+        .env("MVK_CONFIG_LOG_LEVEL", MOLTENVK_LOG_LEVEL)
+        .exec();
     failed(&format!("{}: {e}", bin.display()))
 }
+
+/// What a GPU's VM process says of MoltenVK: its errors alone (MVK_CONFIG_LOG_LEVEL 1, its
+/// mvk_config.h), where its default, information, writes a page about the GPU as the
+/// renderer starts.
+#[cfg(unix)]
+const MOLTENVK_LOG_LEVEL: &str = "1";
 
 /// Runs the VM process's binary with `args`, and exits as it does: Windows has no exec.
 #[cfg(not(unix))]
 fn instead(args: &[OsString]) -> ExitCode {
-    let bin = match vm_binary() {
+    let bin = match vm_binary(args) {
         Ok(bin) => bin,
         Err(e) => return failed(&e),
     };
@@ -946,7 +960,7 @@ fn vm(args: &[OsString]) -> ExitCode {
     if !matches!(args.first().and_then(|a| a.to_str()), Some("run" | "restore")) {
         return instead(args);
     }
-    let bin = match vm_binary() {
+    let bin = match vm_binary(args) {
         Ok(bin) => bin,
         Err(e) => return failed(&e),
     };

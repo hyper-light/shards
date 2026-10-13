@@ -14515,3 +14515,64 @@ fn a_run_reaches_none_of_its_images_agents() {
     );
     let _ = shards(&["rm", "-f", "beside-live"]);
 }
+
+/// A `RUN` step's directories keep their numbers for as long as they live, and its files
+/// and directories share one device, as on BuildKit's one filesystem: its root's overlay
+/// maps its layers' inode numbers into one space (init's run::XINO). Without it, the
+/// kernel numbered a directory anew each time it dropped it from its caches, and GNU tar
+/// failed extracting Linux's sources in a step ("Directory renamed before its status could
+/// be extracted").
+#[test]
+fn a_steps_directories_keep_their_numbers() {
+    if cannot_run_vms() {
+        return;
+    }
+    let (image, _) = served();
+    let home = TempDir::new("build-numbers-home");
+    let ctx = context(
+        "build-numbers-ctx",
+        &format!(
+            "FROM {image}\n\
+             USER root\n\
+             RUN --security=insecure [\"/bin/testguest\", \"fs\", \"mkdir:/d\", \"mkdir:/d/e\", \"write:/d/f=x\", \"ino:/d\", \"ino:/d/e\", \"ino:/d/f\", \"write:/proc/sys/vm/drop_caches=2\", \"ino:/d\", \"ino:/d/e\", \"ino:/d/f\"]\n"
+        ),
+    );
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", kernel().as_os_str()),
+        ("SHARDS_INIT", guest_init().as_os_str()),
+    ];
+    let args = [
+        "--progress=plain",
+        "--no-cache",
+        "--allow",
+        "security.insecure",
+        ctx.to_str().unwrap(),
+    ];
+    let built = run_shards_env(&["build"], &args, &env, TIMEOUT);
+    let shown = format!("--- stdout\n{}\n--- stderr\n{}", built.stdout, built.stderr);
+    assert_eq!(built.status, Some(0), "{shown}");
+    // The step's lines, `#N T.TTT PATH DEV:INO`.
+    let n: Vec<(&str, &str)> = built
+        .stderr
+        .lines()
+        .filter_map(|l| {
+            let mut w = l.split_whitespace().skip(2);
+            match (w.next(), w.next()) {
+                (Some(p), Some(n)) if p.starts_with("/d") && n.contains(':') => Some((p, n)),
+                _ => None,
+            }
+        })
+        .collect();
+    assert_eq!(n.len(), 6, "{shown}");
+    assert_eq!(
+        n[..3],
+        n[3..],
+        "numbers changed as the kernel dropped its caches\n{shown}"
+    );
+    let devices: Vec<Option<&str>> = n.iter().map(|(_, n)| n.split(':').next()).collect();
+    assert!(
+        devices.iter().all(|d| *d == devices[0]),
+        "more than one device\n{shown}"
+    );
+}

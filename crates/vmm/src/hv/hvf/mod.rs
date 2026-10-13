@@ -123,6 +123,29 @@ impl Stage2 {
     }
 }
 
+/// Maps the host memory of a GPU's blobs into its device's window and unmaps it, from the
+/// device's worker, while the VM lives (D144): data the guest reads and writes, and never
+/// executes.
+#[derive(Debug, Clone, Copy)]
+pub struct Window(());
+
+impl Window {
+    /// Maps `len` bytes of host memory at `host` at `gpa`.
+    ///
+    /// # Safety
+    /// `host..host+len` must stay mapped in this process until unmapped here or the VM is
+    /// destroyed.
+    pub unsafe fn map(&self, host: *mut u8, gpa: u64, len: usize) -> Result<()> {
+        // SAFETY: forwarded caller contract; the handle exists only while the VM does.
+        Ok(unsafe { sys::map(host, gpa, len, sys::Perms::RW) }?)
+    }
+
+    /// Unmaps `len` bytes at `gpa`: the guest's accesses there exit as MMIO to nothing.
+    pub fn unmap(&self, gpa: u64, len: usize) -> Result<()> {
+        Ok(sys::unmap(gpa, len)?)
+    }
+}
+
 /// The process's VM. It must outlive every [`Vcpu`], and guest memory must outlive it.
 #[derive(Debug)]
 pub struct Vm {
@@ -184,6 +207,11 @@ impl Vm {
     /// `host..host+len` must stay mapped in this process until the VM is destroyed.
     pub unsafe fn add_hotplug(&self, _host: *mut u8, _gpa: u64, _len: usize) -> Result<Stage2> {
         Ok(Stage2(()))
+    }
+
+    /// What maps a GPU's blobs into its window (D144).
+    pub fn window(&self) -> Window {
+        Window(())
     }
 
     /// Maps device memory (a virtio-pmem region) at `gpa`, writable by the guest only if

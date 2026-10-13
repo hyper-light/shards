@@ -427,15 +427,24 @@ fn one_name(name: &str) -> bool {
 }
 
 /// Mounts a shared directory (D38), `TAG\0DEST\0FLAGS\0NAME`: by its virtio-fs tag at
-/// DEST, read-only with `ro`; with `copy`, the image's files at DEST copied into it first,
-/// where it is empty (moby daemon/create_unix.go populateVolume); with a NAME, only that
-/// file of it, bound at DEST, as a file bind mount is.
+/// DEST, read-only with `ro`, and `nosuid`, `nodev` and `noexec` as they say (a CDI
+/// mount's, D146); with `copy`, the image's files at DEST copied into it first, where it
+/// is empty (moby daemon/create_unix.go populateVolume); with a NAME, only that file of
+/// it, bound at DEST, as a file bind mount is.
 fn volume(spec: &str) -> io::Result<()> {
     let (tag, dest, flags, name) = shared_parts(spec)?;
     let file = (!name.is_empty()).then_some(name);
-    let ro = flags.split(',').any(|f| f == "ro");
     let copy = flags.split(',').any(|f| f == "copy");
-    let base = if ro { libc::MS_RDONLY } else { 0 };
+    // Read-only with `ro`; a CDI mount's `nosuid`, `nodev` and `noexec` too (D146).
+    let base = flags.split(',').fold(0, |base, f| {
+        base | match f {
+            "ro" => libc::MS_RDONLY,
+            "nosuid" => libc::MS_NOSUID,
+            "nodev" => libc::MS_NODEV,
+            "noexec" => libc::MS_NOEXEC,
+            _ => 0,
+        }
+    });
     let mount = |src: &str, dst: &str, fstype: Option<&str>, flags: libc::c_ulong| -> io::Result<()> {
         let (src, dst) = (
             c(src).ok_or(io::ErrorKind::InvalidInput)?,
@@ -461,8 +470,8 @@ fn volume(spec: &str) -> io::Result<()> {
                 std::fs::File::create(dest)?;
             }
             mount(&format!("{staging}/{name}"), dest, None, libc::MS_BIND)?;
-            if ro {
-                mount("", dest, None, libc::MS_BIND | libc::MS_REMOUNT | libc::MS_RDONLY)?;
+            if base != 0 {
+                mount("", dest, None, libc::MS_BIND | libc::MS_REMOUNT | base)?;
             }
             detach(&staging);
             let _ = std::fs::remove_dir(&staging);
@@ -476,8 +485,8 @@ fn volume(spec: &str) -> io::Result<()> {
                 copy_tree(std::path::Path::new(dest), std::path::Path::new(&staging))?;
             }
             mount(&staging, dest, None, libc::MS_MOVE)?;
-            if ro {
-                mount("", dest, None, libc::MS_BIND | libc::MS_REMOUNT | libc::MS_RDONLY)?;
+            if base != 0 {
+                mount("", dest, None, libc::MS_BIND | libc::MS_REMOUNT | base)?;
             }
             let _ = std::fs::remove_dir(&staging);
         }

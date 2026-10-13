@@ -587,6 +587,9 @@ pub struct Run {
     pub device_cgroup_rules: Vec<String>,
     /// `--device`s that name CDI devices (HostConfig.DeviceRequests, driver `cdi`).
     pub cdi_devices: Vec<String>,
+    /// `--gpus`, each as given (HostConfig.DeviceRequests, shards_cmdline::gpus): this
+    /// Mac's GPU, where one asks for any (D144).
+    pub gpus: Vec<String>,
     /// `--blkio-weight-device`s, each `PATH:WEIGHT` (HostConfig.BlkioWeightDevice).
     pub blkio_weight_device: Vec<String>,
     /// `--device-read-bps`, `--device-write-bps`, `--device-read-iops` and
@@ -962,6 +965,7 @@ impl Run {
             ("devices", self.devices.clone()),
             ("device-cgroup-rules", self.device_cgroup_rules.clone()),
             ("cdi-devices", self.cdi_devices.clone()),
+            ("gpus", self.gpus.clone()),
             ("blkio-weight-device", self.blkio_weight_device.clone()),
             ("device-read-bps", self.device_read_bps.clone()),
             ("device-write-bps", self.device_write_bps.clone()),
@@ -1121,6 +1125,7 @@ impl Run {
                     "devices" => run.devices = values,
                     "device-cgroup-rules" => run.device_cgroup_rules = values,
                     "cdi-devices" => run.cdi_devices = values,
+                    "gpus" => run.gpus = values,
                     "blkio-weight-device" => run.blkio_weight_device = values,
                     "device-read-bps" => run.device_read_bps = values,
                     "device-write-bps" => run.device_write_bps = values,
@@ -1679,6 +1684,7 @@ mod tests {
             devices: vec!["/dev/fuse:/dev/fuse:rwm".into()],
             device_cgroup_rules: vec!["c 1:3 r".into()],
             cdi_devices: vec!["vendor.com/gpu=0".into()],
+            gpus: vec!["all".into(), "\"device=0\",capabilities=compute".into()],
             blkio_weight_device: vec!["/dev/pmem0:300".into()],
             device_read_bps: vec!["/dev/pmem0:1048576".into()],
             device_write_bps: vec!["/dev/loop0:1".into()],
@@ -1725,6 +1731,7 @@ mod tests {
             devices: Vec::new(),
             device_cgroup_rules: Vec::new(),
             cdi_devices: Vec::new(),
+            gpus: Vec::new(),
             blkio_weight_device: Vec::new(),
             device_read_bps: Vec::new(),
             device_write_bps: Vec::new(),

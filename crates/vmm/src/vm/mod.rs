@@ -5,6 +5,8 @@ use std::path::PathBuf;
 #[cfg(hv)]
 use std::sync::Arc;
 
+#[cfg(hv = "hvf")]
+use crate::devices::virtio::gpu;
 #[cfg(hv)]
 use crate::devices::virtio::{mem, pmem, vsock};
 
@@ -206,8 +208,8 @@ fn hotplug_device(
 /// `config`'s virtio devices in the guest's probe order, which each machine gives the
 /// next of its MMIO windows and interrupt lines: its disks, its join disk, its pmem
 /// `regions`, its vsock device, its network device, its shared directories, its join share,
-/// and its memory to plug (`hotplug`, last: no other device's window moves for it); at
-/// most `max` of them. The devices share the regions:
+/// and the machine's own devices, `last`: its GPU, then its memory to plug (last of all: no
+/// other device's window moves for it); at most `max` of them. The devices share the regions:
 /// `regions`, made before the VM, holds them until after it on every early return, the
 /// hypervisor mapping them until its destroy.
 #[cfg(hv)]
@@ -215,7 +217,7 @@ fn virtio_devices(
     config: &crate::snapshot::MachineConfig,
     regions: &[(Arc<pmem::Region>, u64)],
     hosts: Hosts<'_>,
-    hotplug: Option<Box<dyn crate::devices::virtio::VirtioDevice>>,
+    last: Vec<Box<dyn crate::devices::virtio::VirtioDevice>>,
     max: u64,
 ) -> Result<Vec<Box<dyn crate::devices::virtio::VirtioDevice>>, String> {
     let slots = config.disks.len()
@@ -225,7 +227,7 @@ fn virtio_devices(
         + usize::from(config.net.is_some())
         + config.shares as usize
         + usize::from(config.join_share)
-        + usize::from(hotplug.is_some());
+        + last.len();
     if slots as u64 > max {
         return Err(format!("at most {max} virtio devices are supported"));
     }
@@ -291,8 +293,35 @@ fn virtio_devices(
             slot,
         )?));
     }
-    devices.extend(hotplug);
+    devices.extend(last);
     Ok(devices)
+}
+
+/// A GPU's renderer, and the length of the window its blobs are mapped into: what the
+/// host's GPU says it has of memory the host can map, which Venus tells the guest, the most
+/// a guest can have mapped at once (D144).
+#[cfg(all(hv = "hvf", feature = "gpu"))]
+fn gpu_renderer() -> Result<(Box<dyn gpu::Renderer>, u64), String> {
+    let venus = gpu::virgl::Venus::new()?;
+    let len = venus.host_visible();
+    Ok((Box::new(venus), len))
+}
+
+#[cfg(all(hv = "hvf", not(feature = "gpu")))]
+fn gpu_renderer() -> Result<(Box<dyn gpu::Renderer>, u64), String> {
+    Err("this VM process renders no GPU: shards' GPU VM process does, on macOS (D144)".into())
+}
+
+#[cfg(hv = "hvf")]
+impl gpu::Window for crate::hv::Window {
+    unsafe fn map(&self, host: *mut u8, gpa: u64, len: usize) -> Result<(), String> {
+        // SAFETY: forwarded caller contract.
+        unsafe { crate::hv::Window::map(self, host, gpa, len) }.map_err(|e| e.to_string())
+    }
+
+    fn unmap(&self, gpa: u64, len: usize) -> Result<(), String> {
+        crate::hv::Window::unmap(self, gpa, len).map_err(|e| e.to_string())
+    }
 }
 
 /// Where the serial console's output goes.
@@ -408,6 +437,10 @@ pub struct Config {
     /// The join share's slot (D119), which a server of its VM's joiners' volumes fills.
     #[cfg(unix)]
     pub join_share: Option<&'static crate::devices::virtio::fs::Slot>,
+    /// A virtio-gpu device, Vulkan through Venus (D144), rendered in this process: a VM
+    /// process built with the renderer (`shards-vm-gpu`) has one. Its VM is never
+    /// snapshotted: its GPU's state is its host driver's, which no snapshot holds.
+    pub gpu: bool,
 }
 
 /// The host side of a VM's virtio-vsock device.
@@ -466,6 +499,7 @@ impl Config {
             join_share: None,
             nested: false,
             hotplug_mib: 0,
+            gpu: false,
         }
     }
 }
@@ -749,11 +783,13 @@ mod tests {
             #[cfg(unix)]
             join_share: None,
         };
-        let e = virtio_devices(&config, &regions, hosts, None, 4).err().unwrap();
+        let e = virtio_devices(&config, &regions, hosts, Vec::new(), 4)
+            .err()
+            .unwrap();
         assert_eq!(e, "at most 4 virtio devices are supported");
         let plugging = || {
             let sizes = Arc::new(mem::Sizes::new(1 << 32, mem::ALIGN, mem::ALIGN));
-            Some(Box::new(mem::Mem::new(sizes, Unmapped)) as Box<dyn crate::devices::virtio::VirtioDevice>)
+            vec![Box::new(mem::Mem::new(sizes, Unmapped)) as Box<dyn crate::devices::virtio::VirtioDevice>]
         };
         let e = virtio_devices(&config, &regions, hosts, plugging(), 5)
             .err()
@@ -765,7 +801,7 @@ mod tests {
             .map(|d| d.device_id())
             .collect();
         assert_eq!(ids, [2, 2, 27, 19, 1, mem::DEVICE_ID]);
-        let devices = virtio_devices(&config, &regions, hosts, None, 5).unwrap();
+        let devices = virtio_devices(&config, &regions, hosts, Vec::new(), 5).unwrap();
         let ids: Vec<u32> = devices.iter().map(|d| d.device_id()).collect();
         assert_eq!(ids, [2, 2, 27, 19, 1]);
         let mut mac = [0u8; 6];
@@ -784,7 +820,9 @@ mod tests {
             #[cfg(unix)]
             join_share: None,
         };
-        let e = virtio_devices(&config, &regions, missing, None, 5).err().unwrap();
+        let e = virtio_devices(&config, &regions, missing, Vec::new(), 5)
+            .err()
+            .unwrap();
         assert!(e.contains("no host side"), "{e}");
         let missing = Hosts {
             vsock: Some(&vsock),
@@ -794,7 +832,9 @@ mod tests {
             #[cfg(unix)]
             join_share: None,
         };
-        let e = virtio_devices(&config, &regions, missing, None, 5).err().unwrap();
+        let e = virtio_devices(&config, &regions, missing, Vec::new(), 5)
+            .err()
+            .unwrap();
         assert!(e.contains("no network process"), "{e}");
         let _ = std::fs::remove_dir_all(&dir);
     }

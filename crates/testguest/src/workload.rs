@@ -1817,7 +1817,8 @@ fn addrs() -> i32 {
 /// File operations, in order: `mkdir:P`, `write:P=DATA`, `link:OLD:NEW`, `symlink:T:P`,
 /// `rm:P`, `rmdir:P` (and what it holds), `chmod:OCTAL:P`, `chown:UID:GID:P` (not
 /// followed), `mknod:b|c:MAJOR:MINOR:P`, `open:r|w:P`, `dev:P`, which prints a device
-/// node's type, numbers and mode, `print:P`, which prints a file, `readn:N:P`, which reads
+/// node's type, numbers and mode, `ino:P`, which prints P's device and inode numbers (not
+/// followed), `print:P`, which prints a file, `readn:N:P`, which reads
 /// N bytes of P, and `sleep:MS`; and the mount family, each its syscall alone:
 /// `mount:FSTYPE:SOURCE:TARGET`, `umount:TARGET`, `remount-rw:TARGET` (a bind's flags
 /// changed), `fsopen:FSTYPE` and `open-tree:P` (a detached clone). Stops at the first that
@@ -1853,6 +1854,10 @@ fn fs(ops: &[String]) -> i32 {
                     .and_then(|m| std::fs::set_permissions(p, std::fs::Permissions::from_mode(m)))
             }
             "mknod" => mknod(rest),
+            "ino" => std::fs::symlink_metadata(rest).map(|m| {
+                use std::os::unix::fs::MetadataExt as _;
+                let _ = writeln!(io::stdout(), "{rest} {}:{}", m.dev(), m.ino());
+            }),
             "mkfifo" => std::ffi::CString::new(rest)
                 .map_err(io::Error::other)
                 .and_then(|p| {

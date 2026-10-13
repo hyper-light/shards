@@ -18,7 +18,7 @@ use shards_vmm::vm::{
 use crate::spec::Options;
 use crate::terminal::RawTerminal;
 
-const RUN_USAGE: &str = "usage: shards run --kernel PATH [--initrd PATH | --init PATH] [--cmdline STR] [--cpus N] [--memory MIB] [--memory-max MIB] [--disk PATH[:ro]]... [--pmem PATH]... [--vsock PATH] [--nested] [--no-console] [--snapshot-dir DIR [--snapshot-then stop|resume]]
+const RUN_USAGE: &str = "usage: shards run --kernel PATH [--initrd PATH | --init PATH] [--cmdline STR] [--cpus N] [--memory MIB] [--memory-max MIB] [--disk PATH[:ro]]... [--pmem PATH]... [--vsock PATH] [--nested] [--gpu] [--no-console] [--snapshot-dir DIR [--snapshot-then stop|resume]]
        shards run --kernel PATH --init SHARDS-INIT --rootfs IMAGE [OPTIONS] [WORKLOAD OPTIONS] -- COMMAND [ARG...]
        shards run --kernel PATH --init SHARDS-INIT --rootfs IMAGE --snapshot-dir DIR [OPTIONS]
   --pmem: a read-only virtio-pmem device backed by PATH: /dev/pmem0, pmem1, ... in order.
@@ -37,6 +37,9 @@ const RUN_USAGE: &str = "usage: shards run --kernel PATH [--initrd PATH | --init
   --memory-max: the most memory the guest may have: --memory at boot, and up to this
             much in all as it asks for more through shards' control page, plugged by a
             virtio-mem device. Whole 2 MiB blocks; not with --snapshot-dir.
+  --gpu: this Mac's GPU, Vulkan through Venus, on the guest's render node
+         /dev/dri/renderD128, where its kernel has DRM's virtio-gpu driver. Not with
+         --snapshot-dir: a GPU's state is its host driver's.
   Console escape: Ctrl-A x stops the VM.";
 
 const RESTORE_USAGE: &str = "usage: shards restore DIR [--hold] [--vsock PATH] [--no-console] [--backing PATH[:ro]]... [--snapshot-dir DIR [--snapshot-then stop|resume]]
@@ -262,6 +265,7 @@ fn parse_run(args: impl Iterator<Item = OsString>) -> Result<Run, String> {
             "--join-share" => cfg.join_share = Some(give_join_share()),
             "--pmem" => cfg.pmem.push(PathBuf::from(value("--pmem")?)),
             "--nested" => cfg.nested = true,
+            "--gpu" => cfg.gpu = true,
             "--rootfs" => rootfs = Some(PathBuf::from(value("--rootfs")?)),
             "--warm" => {
                 let fd = text(value("--warm")?)?;
@@ -281,6 +285,9 @@ fn parse_run(args: impl Iterator<Item = OsString>) -> Result<Run, String> {
     common.check_workload()?;
     if cfg.nested && common.snapshot_dir.is_some() {
         return Err("--nested with --snapshot-dir: a VM with virtualization of its own is not snapshotted, its EL2 state not saved".into());
+    }
+    if cfg.gpu && common.snapshot_dir.is_some() {
+        return Err("--gpu with --snapshot-dir: a VM with a GPU is not snapshotted, its GPU's state its host driver's".into());
     }
     if let Some(max) = memory_max {
         cfg.hotplug_mib = max
@@ -658,6 +665,7 @@ pub fn run_in(mut cfg: Config, rootfs: PathBuf, workload: &Options) -> ExitCode 
     let source = Source::Given {
         options: workload,
         hold: false,
+        gpu: cfg.gpu,
     };
     serve_workload(cfg.vsock.take(), source, move |vsock| {
         cfg.vsock = Some(vsock);
@@ -728,6 +736,7 @@ pub fn restore(args: impl Iterator<Item = OsString>) -> ExitCode {
         let source = Source::Given {
             options: &workload,
             hold,
+            gpu: false,
         };
         return serve_workload(cfg.vsock.take(), source, move |vsock| {
             cfg.vsock = Some(vsock);
@@ -756,12 +765,22 @@ fn wait_for_release(handle: &Handle) {
 #[cfg_attr(not(unix), allow(dead_code))]
 enum Source<'a> {
     /// The command line's: sent once the guest connects or, with `hold`, once a line then
-    /// arrives on stdin.
-    Given { options: &'a Options, hold: bool },
+    /// arrives on stdin; given the GPU's render node where the VM has a GPU.
+    Given {
+        options: &'a Options,
+        hold: bool,
+        gpu: bool,
+    },
     /// A warm VM's: one request from the daemon (warm.rs).
     #[cfg(unix)]
     Warm(crate::warm::Link),
 }
+
+/// The setup entry that gives a GPU VM's workload its render node, as
+/// `--device /dev/dri/renderD128` gives it (setup.rs `devices`): `-`, not privileged, then
+/// the device, its path in the workload and its access (D144).
+#[cfg(unix)]
+const RENDER_NODE: &[u8] = b"devices=-\0d\0/dev/dri/renderD128\0/dev/dri/renderD128\0rwm\0";
 
 /// A warm VM's restore: `vm restore DIR --warm FD`.
 #[cfg(unix)]
@@ -836,14 +855,21 @@ fn serve_workload(
         Warm(crate::warm::Link),
     }
     let command = match source {
-        Source::Given { options, hold } => match crate::spec::spec(options, |name| std::env::var_os(name)) {
-            Ok(spec) => Command::Given {
-                spec: Box::new(spec),
-                interactive: options.interactive,
-                hold,
-            },
-            Err(e) => return failed(e),
-        },
+        Source::Given { options, hold, gpu } => {
+            match crate::spec::spec(options, |name| std::env::var_os(name)) {
+                Ok(mut spec) => {
+                    if gpu {
+                        spec.setup.push(RENDER_NODE.to_vec());
+                    }
+                    Command::Given {
+                        spec: Box::new(spec),
+                        interactive: options.interactive,
+                        hold,
+                    }
+                }
+                Err(e) => return failed(e),
+            }
+        }
         Source::Warm(daemon) => Command::Warm(daemon),
     };
     {

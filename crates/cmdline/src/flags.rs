@@ -758,6 +758,8 @@ pub fn value(flag: &Flag, value: &str) -> Result<String, String> {
         ("dns-search", Kind::Many("list")) => validate_dns_search(value),
         ("add-host", Kind::Many("list")) => validate_extra_host(value),
         ("device-cgroup-rule", Kind::Many("list")) => validate_device_cgroup_rule(value),
+        // GpuOpts.Set (opts/gpus.go): the value kept as given, once it reads.
+        ("gpus", Kind::Many("gpu-request")) => crate::gpus::gpu_request(value).map(|_| value.to_string()),
         // pflag's IP values: an address, as Go's net.IP prints it.
         (_, Kind::Many("ipSlice")) => go_ip(value.trim())
             .ok_or_else(|| format!("invalid string being converted to IP address: {value}")),

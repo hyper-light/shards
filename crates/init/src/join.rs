@@ -437,7 +437,10 @@ pub fn build(join: Join, cgroup: &str) -> Result<Built, String> {
         ROOT,
         "overlay",
         0,
-        "lowerdir=/dev/join/lower,upperdir=/dev/join/rw/upper,workdir=/dev/join/rw/work,volatile",
+        &format!(
+            "lowerdir=/dev/join/lower,upperdir=/dev/join/rw/upper,workdir=/dev/join/rw/work,volatile,{}",
+            crate::run::XINO
+        ),
     )?;
     // What it changed before, over its image's files, as a run's (D37): before its users
     // are read, which it may have changed, and before anything is mounted in its root.

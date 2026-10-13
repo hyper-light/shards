@@ -215,6 +215,12 @@ pub static RUN: Command = Command {
         Flag::many("security-opt", None, "list", "Security Options"),
         Flag::many("device", None, "list", "Add a host device to the container"),
         Flag::many(
+            "gpus",
+            None,
+            "gpu-request",
+            "GPU devices to add to the container ('all' to pass all GPUs)",
+        ),
+        Flag::many(
             "device-cgroup-rule",
             None,
             "list",
@@ -349,8 +355,7 @@ cpu-count - i 0 -\n\
 cpu-percent - i 0 -\n\
 cpu-rt-period - i 0 -\n\
 cpu-rt-runtime - i 0 -\n\
-cpuset-gpus - m - -\n\
-io-maxbandwidth - s 0 -\n\
+cpuset-io-maxbandwidth - s 0 -\n\
 io-maxiops - s 0 -\n\
 ipc - s - -\n\
 isolation - s - -\n\
@@ -563,6 +568,12 @@ pub static CREATE: Command = Command {
         Flag::many("security-opt", None, "list", "Security Options"),
         Flag::many("device", None, "list", "Add a host device to the container"),
         Flag::many(
+            "gpus",
+            None,
+            "gpu-request",
+            "GPU devices to add to the container ('all' to pass all GPUs)",
+        ),
+        Flag::many(
             "device-cgroup-rule",
             None,
             "list",
@@ -697,7 +708,6 @@ cpu-percent - i 0 -\n\
 cpu-rt-period - i 0 -\n\
 cpu-rt-runtime - i 0 -\n\
 cpus - s - -\n\
-gpus - m - -\n\
 io-maxbandwidth - s 0 -\n\
 io-maxiops - s 0 -\n\
 ipc - s - -\n\

@@ -288,7 +288,7 @@ fn go_lower(s: &str) -> String {
 }
 
 /// `strconv.Atoi`'s error, as `NumError.Err` says it: the value itself, or why not.
-fn atoi(s: &str) -> Result<i64, &'static str> {
+pub(crate) fn atoi(s: &str) -> Result<i64, &'static str> {
     let digits = s.strip_prefix(['+', '-']).unwrap_or(s);
     if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
         return Err("invalid syntax");
@@ -547,7 +547,7 @@ fn ipv6(input: &str) -> Result<Addr, ParseFail<'_>> {
 }
 
 /// `encoding/csv`'s `Reader.Read` of `input`: its first record, or its error's text.
-fn csv_first_record(input: &str) -> Result<Vec<String>, String> {
+pub(crate) fn csv_first_record(input: &str) -> Result<Vec<String>, String> {
     // readLine's lines, each with its \n, \r\n made \n, and a last \r before the end
     // dropped.
     let mut lines: Vec<Vec<u8>> = Vec::new();

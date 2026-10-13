@@ -842,7 +842,8 @@ fn image_root(skel: &OwnedFd, lower: std::os::fd::BorrowedFd<'_>) -> io::Result<
         lower.as_raw_fd()
     ))
     .map_err(io::Error::other)?;
-    detached(c"overlay", &[(c"lowerdir", layers.as_c_str())])
+    // One space of inode numbers for its layers (run::XINO).
+    detached(c"overlay", &[(c"lowerdir", layers.as_c_str()), (c"xino", c"on")])
 }
 
 /// The domains' memory, watched: past their share (`memory.high`), the domain holding the

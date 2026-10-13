@@ -301,6 +301,15 @@ fn chdir_chroot(path: &str, root: bool) -> Result<(), Failure> {
     Ok(())
 }
 
+/// Every overlay's option: one space of inode numbers for its layers. They are on more than
+/// one filesystem (EROFS, tmpfs), where overlayfs numbers a directory anew each time it
+/// takes it back into its caches (fs/overlayfs/inode.c, ovl_map_dev_ino), and gives a file
+/// its layer's device, not the directory's; xino maps its layers' own numbers into one
+/// space, persistent, under one device, as Docker's one filesystem gives them. Without it,
+/// GNU tar, which checks a directory's numbers as it ends it, failed extracting Linux's
+/// sources in a build step ("Directory renamed before its status could be extracted").
+pub const XINO: &str = "xino=on";
+
 fn mount_root(device: &str) -> Result<(), Failure> {
     for dir in ["/lower", "/rw", "/newroot"] {
         mkdir(dir)?;
@@ -315,7 +324,7 @@ fn mount_root(device: &str) -> Result<(), Failure> {
         "/newroot",
         "overlay",
         0,
-        "lowerdir=/lower,upperdir=/rw/upper,workdir=/rw/work,volatile",
+        &format!("lowerdir=/lower,upperdir=/rw/upper,workdir=/rw/work,volatile,{XINO}"),
     )?;
     // Kept for `diff` (changes.rs), which compares the layers the root hides.
     if let Err(e) = crate::changes::keep("/lower", "/rw/upper") {
@@ -2245,11 +2254,16 @@ impl Standby {
         // Its devices first, as dockerd finds them and runc makes their nodes, init's: in
         // the /dev it shares with the workload, the limits and filter on the cgroup it is
         // outside of.
+        // The process's owner, which CDI gives a node whose spec gives it none (D146).
+        let owner = || {
+            user::resolve(&spec.user, standby.passwd.as_deref(), standby.group.as_deref())
+                .map(|u| (u.uid, u.gid))
+        };
         let devices = spec
             .setup
             .iter()
             .find_map(|e| e.strip_prefix(b"devices="))
-            .map(crate::devices::prepare)
+            .map(|e| crate::devices::prepare(e, &owner))
             .transpose()
             .map_err(setup_failed)?;
         limit(&spec.cgroup, devices.as_ref())?;
@@ -2971,7 +2985,7 @@ fn start_joiner(
     };
     // Its devices, as the workload's are found and confined (D44): the VM's, their nodes
     // made in its own /dev once its root is built, its cgroup's filter theirs.
-    let devices = spec
+    let mut devices = spec
         .setup
         .iter()
         .find_map(|e| e.strip_prefix(b"devices="))
@@ -2999,7 +3013,18 @@ fn start_joiner(
         .partition(|e| e.starts_with(b"sysctl="));
     let mut inherited = Inherited::default();
     let ready = sysctls_in(pid, &sysctls)
-        .and_then(|()| devices.as_ref().map_or(Ok(()), |d| nodes_in(pid, d.nodes())))
+        .and_then(|()| match devices.as_mut() {
+            // Its CDI nodes' owner where their spec gives none (D146): its user, by the
+            // user database its image's root, now built, gave.
+            Some(d) => d
+                .own(&|| {
+                    user::resolve(&spec.user, standby.passwd.as_deref(), standby.group.as_deref())
+                        .map(|u| (u.uid, u.gid))
+                })
+                .map_err(setup_failed)
+                .and_then(|()| nodes_in(pid, d.nodes())),
+            None => Ok(()),
+        })
         .and_then(|()| limit_in(&crate::join::cgroup(id), &spec.cgroup, devices.as_ref(), Some(id)))
         .and_then(|()| sort_setup(&setup, &mut inherited))
         .and_then(|setup| reaper_ready(&mut standby, spec).map(|()| setup));

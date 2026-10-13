@@ -40,3 +40,7 @@ pub const KERNEL: Option<Pinned> = if cfg!(all(target_arch = "x86_64", windows))
 } else {
     None
 };
+
+/// The kernel of a guest given a GPU (D144): the `gpu` variant, DRM's virtio-gpu driver
+/// built in (resources/kernel/gpu.config). None until a release publishes it.
+pub const KERNEL_GPU: Option<Pinned> = None;

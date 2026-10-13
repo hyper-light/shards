@@ -624,6 +624,7 @@ fn request(parsed: &Parsed) -> Result<Run, String> {
         devices,
         device_cgroup_rules: parsed.many("device-cgroup-rule").to_vec(),
         cdi_devices,
+        gpus: parsed.many("gpus").to_vec(),
         blkio_weight_device: parsed.many("blkio-weight-device").to_vec(),
         device_read_bps: parsed.many("device-read-bps").to_vec(),
         device_write_bps: parsed.many("device-write-bps").to_vec(),

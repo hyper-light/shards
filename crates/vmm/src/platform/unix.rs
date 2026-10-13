@@ -255,7 +255,7 @@ pub unsafe fn untouched(ptr: *const u8, len: usize, page: usize) -> io::Result<O
                 address: *mut u64,
                 size: *mut u64,
                 flavor: i32,
-                info: *mut ExtendedInfo,
+                info: *mut i32,
                 count: *mut u32,
                 object_name: *mut libc::mach_port_t,
             ) -> libc::kern_return_t;
@@ -297,7 +297,7 @@ pub unsafe fn untouched(ptr: *const u8, len: usize, page: usize) -> io::Result<O
                     &mut address,
                     &mut size,
                     13,
-                    &mut info,
+                    (&raw mut info).cast(),
                     &mut count,
                     &mut object,
                 )

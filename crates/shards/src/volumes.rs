@@ -53,6 +53,47 @@ pub struct MountPoint {
     /// alone, so the run's own root does not mount it.
     #[serde(rename = "ShardsDomainsOnly", default)]
     pub domains_only: bool,
+    /// A CDI mount's `nosuid`, `nodev` and `noexec` (D146): made as the run starts, never
+    /// kept.
+    #[serde(skip)]
+    pub flags: Vec<String>,
+}
+
+/// CDI's mounts (D146), as CDI's Apply adds them to a container's spec: each a bind of
+/// its host path at its container path, read-only with `ro`, of the propagation its
+/// options name (rprivate where none), its `nosuid`, `nodev` and `noexec` the guest's
+/// mount's. A container's record keeps none of them, as dockerd's keeps none.
+pub fn cdi_points(given: &[crate::build::cdi::Mount]) -> Result<Vec<MountPoint>, String> {
+    given
+        .iter()
+        .map(|m| {
+            if !matches!(m.kind.as_str(), "" | "bind") {
+                return Err(format!(
+                    "CDI device injection failed: a {} mount at {}, where a microVM's run takes a host's binds alone",
+                    m.kind, m.container_path
+                ));
+            }
+            let has = |o: &str| m.options.iter().any(|g| g == o);
+            Ok(MountPoint {
+                kind: "bind".into(),
+                source: m.host_path.clone(),
+                destination: m.container_path.clone(),
+                rw: !has("ro"),
+                propagation: m
+                    .options
+                    .iter()
+                    .find(|o| PROPAGATIONS.contains(&o.as_str()))
+                    .cloned()
+                    .unwrap_or_else(|| "rprivate".into()),
+                flags: ["nosuid", "nodev", "noexec"]
+                    .into_iter()
+                    .filter(|f| has(f))
+                    .map(String::from)
+                    .collect(),
+                ..MountPoint::default()
+            })
+        })
+        .collect()
 }
 
 /// Why a run's mount cannot stand in for a volume its image's Agentfile gives its agents
@@ -911,7 +952,7 @@ pub fn open(points: &[MountPoint], first: bool, store: &Store) -> Result<Opened,
         let fd: OwnedFd = std::fs::File::open(dir)
             .map_err(|e| format!("error mounting \"{}\" to rootfs at \"{dest}\": {e}", p.source))?
             .into();
-        let mut flags: Vec<&str> = Vec::new();
+        let mut flags: Vec<&str> = p.flags.iter().map(String::as_str).collect();
         if !p.rw {
             flags.push("ro");
         }

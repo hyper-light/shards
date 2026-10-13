@@ -55,6 +55,8 @@ pub struct Perms(u64);
 impl Perms {
     pub const RWX: Perms = Perms(ffi::HV_MEMORY_READ | ffi::HV_MEMORY_WRITE | ffi::HV_MEMORY_EXEC);
     pub const RX: Perms = Perms(ffi::HV_MEMORY_READ | ffi::HV_MEMORY_EXEC);
+    /// Data alone: a GPU's blobs (D144).
+    pub const RW: Perms = Perms(ffi::HV_MEMORY_READ | ffi::HV_MEMORY_WRITE);
     #[cfg(test)]
     pub const R: Perms = Perms(ffi::HV_MEMORY_READ);
     /// No access: every touch exits to the VMM.

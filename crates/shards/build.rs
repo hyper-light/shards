@@ -12,6 +12,10 @@
 //!   inside `shards`. `SHARDS_HELPERS_DIR` names prebuilt ones; `SHARDS_HELPERS=skip`
 //!   carries none, for check builds of other targets (scripts/lint), and such a `shards`
 //!   refuses what needs them.
+//! - The GPU's VM process (`shards-vm-gpu`, D144): the VM process built with its renderer,
+//!   on Apple silicon where `SHARDS_GPU_LIBS` names the renderer's libraries
+//!   (scripts/gpu-libs), into `target/helpers-gpu`, signed as the VM process is; or
+//!   `SHARDS_HELPERS_DIR`'s. Without it, `shards` carries none and refuses a GPU.
 //!
 //! The init is built by a nested cargo, for `<arch>-unknown-linux-musl` with the `guest`
 //! profile, into a target directory of its own under `OUT_DIR`. It names its linker,
@@ -240,6 +244,7 @@ fn helpers() -> Result<(), String> {
     };
     let names = ["shards-vm", "shards-net"];
     let skip = env::var("SHARDS_HELPERS").is_ok_and(|v| v == "skip");
+    let _ = writeln!(out, "cargo::rerun-if-env-changed=SHARDS_GPU_LIBS");
     let built: Option<PathBuf> = if skip {
         None
     } else if let Some(dir) = env::var_os("SHARDS_HELPERS_DIR").filter(|d| !d.is_empty()) {
@@ -289,6 +294,41 @@ fn helpers() -> Result<(), String> {
             to.display().to_string()
         ));
     }
+    // The GPU's VM process: SHARDS_HELPERS_DIR's where it has one, else built where the
+    // renderer's libraries are given, else none (an empty file).
+    let gpu: Option<PathBuf> = match &built {
+        None => None,
+        Some(dir) if env::var_os("SHARDS_HELPERS_DIR").is_some_and(|d| !d.is_empty()) => {
+            let given = dir.join("shards-vm-gpu");
+            given.is_file().then_some(given)
+        }
+        Some(_) => match env::var_os("SHARDS_GPU_LIBS").filter(|d| !d.is_empty()) {
+            Some(libs) if var("TARGET")? == "aarch64-apple-darwin" => {
+                Some(compile_gpu_helper(&mut out, &PathBuf::from(libs))?)
+            }
+            _ => None,
+        },
+    };
+    let to = dir.join("shards-vm-gpu");
+    match &gpu {
+        Some(from) => {
+            fs::copy(from, &to).map_err(|e| format!("copying {}: {e}", from.display()))?;
+            sign("shards-vm-gpu", &to)?;
+        }
+        None => fs::write(&to, b"").map_err(|e| format!("{}: {e}", to.display()))?,
+    }
+    let bytes = fs::read(&to).map_err(|e| format!("{}: {e}", to.display()))?;
+    let digest: String = {
+        use sha2::Digest as _;
+        sha2::Sha256::digest(&bytes)
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect()
+    };
+    code.push_str(&format!(
+        "pub const SHARDS_VM_GPU: &[u8] = include_bytes!({:?});\npub const SHARDS_VM_GPU_SHA256: &str = {digest:?};\n",
+        to.display().to_string()
+    ));
     fs::write(out_dir.join("helpers.rs"), code).map_err(|e| format!("helpers.rs: {e}"))?;
     // For the package's tests and benchmarks: the copies carried, signed as they are.
     let _ = writeln!(out, "cargo::rustc-env=SHARDS_HELPERS_CARRIED={}", dir.display());
@@ -374,6 +414,64 @@ fn compile_helpers(out: &mut impl io::Write) -> Result<PathBuf, String> {
     Ok(target_dir.join(&target).join(dir_name))
 }
 
+/// Builds the GPU's VM process (D144): the VM process with its renderer, linked from the
+/// libraries in `libs`, for this profile into `target/helpers-gpu`; returns its binary.
+fn compile_gpu_helper(out: &mut impl io::Write, libs: &Path) -> Result<PathBuf, String> {
+    let var = |name: &str| env::var(name).map_err(|e| format!("{name}: {e}"));
+    if !libs.is_absolute() {
+        return Err(format!(
+            "SHARDS_GPU_LIBS: {} is not an absolute path",
+            libs.display()
+        ));
+    }
+    for lib in ["libvirglrenderer.a", "libepoxy.a", "libMoltenVK.a"] {
+        let _ = writeln!(out, "cargo::rerun-if-changed={}", libs.join(lib).display());
+    }
+    let root = Path::new(&var("CARGO_MANIFEST_DIR")?).join("..").join("..");
+    let target = var("TARGET")?;
+    let profile = profile()?;
+    let dir_name = if profile == "dev" {
+        "debug"
+    } else {
+        profile.as_str()
+    };
+    let target_dir = env::var_os("CARGO_TARGET_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| root.join("target"))
+        .join("helpers-gpu");
+    let output = Command::new(var("CARGO")?)
+        .current_dir(&root)
+        .args([
+            "build",
+            "--locked",
+            "-p",
+            "shards-vm-process",
+            "--features",
+            "gpu",
+            "--profile",
+        ])
+        .arg(&profile)
+        .args(["--target", &target, "--target-dir"])
+        .arg(&target_dir)
+        .env("SHARDS_GPU_LIBS", libs)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .output()
+        .map_err(|e| format!("building the GPU's VM process: {e}"))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let tail: Vec<&str> = stderr.lines().rev().take(20).collect();
+        let mut message = format!("building the GPU's VM process for {target} failed");
+        for line in tail.iter().rev() {
+            message.push('\n');
+            message.push_str(line);
+        }
+        return Err(message);
+    }
+    Ok(target_dir.join(&target).join(dir_name).join("shards-vm"))
+}
+
 /// The profile this build runs under, by its name: OUT_DIR is
 /// `<target>/[<triple>/]<profile>/build/<package>/out`, its directory `debug` for `dev`.
 /// PROFILE says only `release` or `debug`, for every profile that inherits from either
@@ -402,7 +500,7 @@ fn sign(name: &str, path: &Path) -> Result<(), String> {
         Path::new(&env::var("CARGO_MANIFEST_DIR").map_err(|e| e.to_string())?).join("../../resources");
     let mut command = Command::new("codesign");
     let entitlements = match name {
-        "shards-vm" => Some("vm.entitlements"),
+        "shards-vm" | "shards-vm-gpu" => Some("vm.entitlements"),
         "shards-net" => Some("net.entitlements"),
         _ => None,
     };

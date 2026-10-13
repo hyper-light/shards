@@ -41,9 +41,89 @@ pub fn kernel_of(boot: &Boot) -> &std::path::Path {
     }
 }
 
+/// What a run's CDI devices (`--device VENDOR/CLASS=NAME`) bring it, resolved as dockerd's
+/// CDI driver resolves them as a container starts (moby daemon/cdi.go, injectCDIDevices;
+/// CDI v1.1.0 Cache.InjectDevices): each name the device of that name in the specs of the
+/// daemon's CDI directories (SHARDS_CDI_SPEC_DIRS, else /etc/cdi and /var/run/cdi), their
+/// edits merged in CDI's order. What only a host can do is refused, as a build's step
+/// refuses it (D96, D146).
+pub fn cdi_edits(run: &Run) -> Result<Option<crate::build::cdi::Edits>, String> {
+    use crate::build::cdi;
+    if run.cdi_devices.is_empty() {
+        return Ok(None);
+    }
+    let registry = cdi::Registry::load(&cdi::spec_dirs(&|k| std::env::var(k).ok()), &[]);
+    let unresolved: Vec<&str> = run
+        .cdi_devices
+        .iter()
+        .filter(|d| !registry.has(d))
+        .map(String::as_str)
+        .collect();
+    if !unresolved.is_empty() {
+        return Err(format!(
+            "CDI device injection failed: unresolvable CDI devices {}",
+            unresolved.join(", ")
+        ));
+    }
+    let edits = registry.edits(&run.cdi_devices);
+    if !edits.host_only.is_empty() {
+        return Err(format!(
+            "CDI device injection failed: CDI devices ask for what only a container's host can do, which a microVM has none of: {}",
+            edits.host_only.join("; ")
+        ));
+    }
+    Ok(Some(edits))
+}
+
+/// The render node of a guest's GPU, as Linux's virtio-gpu driver makes it for the first
+/// (D144): a run or a step given it is given this Mac's GPU.
+pub const RENDER_NODE: &str = "/dev/dri/renderD128";
+
+/// Whether `--gpus`, each value as given, asks for this Mac's GPU (D144): a count other
+/// than none, or the device `0`. It has one, which renders through Venus: more, another
+/// device, or a driver of its own a request may not ask for, in dockerd's words where
+/// it finds no driver for a request (daemon/devices.go, handleDevice).
+pub fn wants_gpu(gpus: &[String]) -> Result<bool, String> {
+    let mut wants = false;
+    for value in gpus {
+        let r = shards_cmdline::gpus::gpu_request(value)?;
+        let caps = r
+            .capabilities
+            .iter()
+            .map(|set| format!("[{}]", set.join(" ")))
+            .collect::<Vec<_>>()
+            .join(" ");
+        if !r.driver.is_empty() || !cfg!(all(target_os = "macos", target_arch = "aarch64")) {
+            return Err(format!(
+                "could not select device driver {:?} with capabilities: [{caps}]",
+                r.driver
+            ));
+        }
+        let devices = r.device_ids.as_deref().unwrap_or_default();
+        if r.count > 1 || devices.iter().any(|d| d != "0") {
+            return Err(format!(
+                "this Mac has one GPU, device 0: --gpus {value} asks for {}",
+                if devices.is_empty() {
+                    format!("{}", r.count)
+                } else {
+                    format!("device {}", devices.join(","))
+                }
+            ));
+        }
+        wants |= r.count != 0 || !devices.is_empty();
+    }
+    Ok(wants)
+}
+
 /// A request made ready to run.
 pub struct Prepared {
     pub boot: Boot,
+    /// The kernel its guest boots with this Mac's GPU, where `--gpus` asks for it and
+    /// `boot` is the stored guest's (D144).
+    pub gpu: Option<PathBuf>,
+    /// What its CDI devices bring it (D146), or why they cannot be: its start fails then,
+    /// and not its making, as dockerd's resolves them as a container starts.
+    pub cdi: Result<Option<crate::build::cdi::Edits>, String>,
     /// The image's root filesystem.
     pub rootfs: PathBuf,
     pub spec: Spec,
@@ -294,6 +374,22 @@ pub fn prepare(
         }),
         _ => return Err("--kernel and --init (or SHARDS_KERNEL and SHARDS_INIT) go together".into()),
     };
+    let cdi = cdi_edits(request);
+    let renders = cdi.as_ref().ok().and_then(Option::as_ref).is_some_and(|e| {
+        let render = |p: &str| p == RENDER_NODE;
+        e.nodes.iter().any(|n| render(&n.path) || render(&n.host_path))
+    });
+    let gpu = match (
+        wants_gpu(&request.gpus)? || (cfg!(target_os = "macos") && renders),
+        &boot,
+    ) {
+        (false, _) => None,
+        // The kernel given is the one it boots.
+        (true, Boot::Given(cfg)) => Some(cfg.kernel.clone()),
+        (true, Boot::Stored(_)) => Some(crate::guest::gpu_kernel(home, say, Some(cancel), &|k| {
+            shards_ipc::env_value(&request.registry_env, k)
+        })?),
+    };
     let (image, lease) = find_image(
         &request.image,
         request.pull,
@@ -346,6 +442,8 @@ pub fn prepare(
     Ok(Prepared {
         agentfile,
         boot,
+        gpu,
+        cdi,
         rootfs,
         spec,
         interactive: options.interactive,
@@ -595,6 +693,37 @@ fn short(digest: &str) -> &str {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    /// `--gpus` asks for this Mac's one GPU with any count but none, or its device 0; more,
+    /// another device, or a driver of its own are refused, a driver in dockerd's words.
+    #[test]
+    fn gpus_ask_for_this_macs_one_gpu() {
+        let wants = |v: &[&str]| wants_gpu(&v.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+        if !cfg!(all(target_os = "macos", target_arch = "aarch64")) {
+            assert_eq!(
+                wants(&["all"]).unwrap_err(),
+                "could not select device driver \"\" with capabilities: [[gpu]]"
+            );
+            return;
+        }
+        assert_eq!(wants(&[]), Ok(false));
+        assert_eq!(wants(&["0"]), Ok(false));
+        for asks in [&["all"][..], &["1"], &["device=0"], &["capabilities=compute"]] {
+            assert_eq!(wants(asks), Ok(true), "{asks:?}");
+        }
+        assert_eq!(
+            wants(&["2"]).unwrap_err(),
+            "this Mac has one GPU, device 0: --gpus 2 asks for 2"
+        );
+        assert_eq!(
+            wants(&["\"device=0,1\""]).unwrap_err(),
+            "this Mac has one GPU, device 0: --gpus \"device=0,1\" asks for device 0,1"
+        );
+        assert_eq!(
+            wants(&["driver=nvidia"]).unwrap_err(),
+            "could not select device driver \"nvidia\" with capabilities: [[gpu]]"
+        );
+    }
 
     /// A template's origin is the daemon's record, beside the template where no VM
     /// process is granted (PM M165): it reads back as written; a record a VM could leave in

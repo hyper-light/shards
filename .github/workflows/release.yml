@@ -72,6 +72,13 @@ jobs:
           echo "161d0bfaff53c2f9e9f3e69fd0672323ebabafd1268976a5cec11be92a19aee7  $RUNNER_TEMP/nasm.zip" | sha256sum -c
           unzip -q "$RUNNER_TEMP/nasm.zip" -d "$RUNNER_TEMP"
           echo "$RUNNER_TEMP/nasm-3.02" >> "$GITHUB_PATH"
+      # The GPU's renderer (D144), from pinned sources: `shards` then carries shards-vm-gpu.
+      - name: The GPU's renderer
+        if: matrix.target == 'aarch64-apple-darwin'
+        shell: bash
+        run: |
+          scripts/gpu-libs "$RUNNER_TEMP/gpu-libs"
+          echo "SHARDS_GPU_LIBS=$RUNNER_TEMP/gpu-libs" >> "$GITHUB_ENV"
       - name: Build
         if: ${{ !matrix.musl }}
         shell: bash

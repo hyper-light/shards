@@ -28,13 +28,21 @@ pub struct Node {
 /// The modes systemd-udev's default rules give the devices a guest can have
 /// (systemd v257 rules.d/50-udev-default.rules.in), over devtmpfs's: the VM is the host a
 /// microVM's `--device` and `--privileged` take nodes from, and a host's are so.
-const UDEV_MODES: [(&str, u32); 5] = [
+const UDEV_MODES: [(&str, u32); 6] = [
+    // A GPU's render node: `KERNEL=="renderD*"`, MODE group-render-mode, 0666 by default
+    // (meson_options.txt); a guest has one GPU at most (D144).
+    ("/dev/dri/renderD128", 0o666),
     ("/dev/fuse", 0o666),
     ("/dev/net/tun", 0o666),
     ("/dev/vsock", 0o666),
     ("/dev/vfio/vfio", 0o666),
     ("/dev/rfkill", 0o664),
 ];
+
+/// The mode udev's default rules give the VM's device at `path`, where they give one.
+pub fn udev_mode(path: &str) -> Option<u32> {
+    UDEV_MODES.iter().find(|(p, _)| *p == path).map(|&(_, mode)| mode)
+}
 
 /// The VM's devices, as the kernel names their nodes (each `/sys/dev/{char,block}/M:N`'s
 /// uevent: DEVNAME, and DEVMODE, DEVUID and DEVGID where they are not devtmpfs's 0600 and
@@ -69,8 +77,8 @@ pub fn vm_devices() -> Vec<Node> {
         }
     }
     for n in &mut out {
-        if let Some((_, mode)) = UDEV_MODES.iter().find(|(p, _)| *p == n.path) {
-            n.mode = *mode;
+        if let Some(mode) = udev_mode(&n.path) {
+            n.mode = mode;
         }
     }
     out.sort_by(|a, b| a.path.split('/').cmp(b.path.split('/')));
@@ -179,6 +187,9 @@ struct Asked<'a> {
     devices: Vec<[&'a str; 3]>,
     rules: Vec<&'a str>,
     cdi: Vec<&'a str>,
+    /// CDI's nodes (D146): each its host path, path, cgroup access, kind, mode, owner's
+    /// user and group, `-` where its spec gives none.
+    cdi_nodes: Vec<[&'a str; 7]>,
     /// `--blkio-weight-device`'s and the four throttles', in that order: each its tag
     /// (`w`, `rb`, `wb`, `ri`, `wi`), path and number.
     io: Vec<[&'a str; 3]>,
@@ -197,6 +208,7 @@ fn asked(entry: &[u8]) -> Option<Asked<'_>> {
         devices: Vec::new(),
         rules: Vec::new(),
         cdi: Vec::new(),
+        cdi_nodes: Vec::new(),
         io: Vec::new(),
     };
     while let Some(tag) = words.next() {
@@ -204,6 +216,13 @@ fn asked(entry: &[u8]) -> Option<Asked<'_>> {
             "d" => a.devices.push([words.next()?, words.next()?, words.next()?]),
             "r" => a.rules.push(words.next()?),
             "i" => a.cdi.push(words.next()?),
+            "n" => {
+                let mut node = [""; 7];
+                for word in &mut node {
+                    *word = words.next()?;
+                }
+                a.cdi_nodes.push(node);
+            }
             "w" | "rb" | "wb" | "ri" | "wi" => a.io.push([tag, words.next()?, words.next()?]),
             _ => return None,
         }
@@ -219,26 +238,35 @@ pub struct Prepared {
     throttles: Vec<Vec<u8>>,
     rules: Option<Vec<Rule>>,
     nodes: Vec<Node>,
+    /// CDI's nodes whose spec gives no owner (D146): each its index in `nodes`, and
+    /// whether its user and its group are the process's.
+    unowned: Vec<(usize, bool, bool)>,
 }
 
 /// What setup entry `entry` asks, as dockerd makes a spec of it (WithResources, then
 /// WithDevices) and runc prepares a container's root (createDevices): the devices'
 /// numbers found, the CDI devices refused, and the nodes made in the `/dev` init shares
 /// with the workload. What failed, as dockerd or runc says it.
-pub fn prepare(entry: &[u8]) -> Result<Prepared, String> {
-    prepare_with(entry, true)
+///
+/// `owner` is the process's user and group, which CDI gives a node whose spec gives it none.
+pub fn prepare(entry: &[u8], owner: &dyn Fn() -> Result<(u32, u32), String>) -> Result<Prepared, String> {
+    let mut prepared = prepare_with(entry)?;
+    prepared.own(owner)?;
+    make_nodes(&prepared.nodes)?;
+    prepared.nodes.clear();
+    Ok(prepared)
 }
 
 /// [`prepare`] for a joiner (D119), whose nodes are made in its own `/dev`, in its mount
 /// namespace ([`Prepared::nodes`]), not in the one init shares with the workload.
 pub fn prepare_joiner(entry: &[u8]) -> Result<Prepared, String> {
-    prepare_with(entry, false)
+    prepare_with(entry)
 }
 
-fn prepare_with(entry: &[u8], here: bool) -> Result<Prepared, String> {
+fn prepare_with(entry: &[u8]) -> Result<Prepared, String> {
     let a = asked(entry).ok_or("a malformed devices entry")?;
     // Read only where a path is named.
-    let vm = if a.devices.is_empty() && a.io.is_empty() {
+    let vm = if a.devices.is_empty() && a.io.is_empty() && a.cdi_nodes.is_empty() {
         Vec::new()
     } else {
         vm_devices()
@@ -290,6 +318,64 @@ fn prepare_with(entry: &[u8], here: bool) -> Result<Prepared, String> {
             nodes.push(node);
         }
     }
+    let mut unowned = Vec::new();
+    // CDI's nodes (D146), as CDI's Apply makes them (fillMissingInfo, toOCI): the guest's
+    // own device at the host path, a host's numbers meaning nothing in a guest, of the kind
+    // the spec says; its mode and owner the spec's, else the device's mode and the
+    // process's owner, but root's. A FIFO is made as one, outside the device filter.
+    for [host, path, perms, kind, mode, uid, gid] in &a.cdi_nodes {
+        let number = |w: &str, radix: u32| -> Result<Option<u32>, String> {
+            match w {
+                "-" => Ok(None),
+                _ => u32::from_str_radix(w, radix)
+                    .map(Some)
+                    .map_err(|_| format!("CDI device {path}: {w} is no number")),
+            }
+        };
+        let (mode, uid, gid) = (number(mode, 8)?, number(uid, 10)?, number(gid, 10)?);
+        // The process's owner, given by `own` once its user is known.
+        if uid.is_none() || gid.is_none() {
+            unowned.push((nodes.len(), uid.is_none(), gid.is_none()));
+        }
+        if *kind == "p" {
+            nodes.push(Node {
+                path: (*path).to_string(),
+                kind: Kind::All,
+                major: 0,
+                minor: 0,
+                mode: mode.unwrap_or(0o666),
+                uid: uid.unwrap_or(0),
+                gid: gid.unwrap_or(0),
+            });
+            continue;
+        }
+        let mut found = devices_from_path(&vm, host, path, perms)?;
+        let (mut node, rule) = match (found.pop(), found.is_empty()) {
+            (Some(one), true) => one,
+            _ => {
+                return Err(format!(
+                    "CDI device {path}: {host} is a directory of devices, not one"
+                ));
+            }
+        };
+        match (*kind, node.kind) {
+            ("-" | "c" | "u", Kind::Char) | ("-" | "b", Kind::Block) => {}
+            (k, found) => {
+                return Err(format!(
+                    "CDI device {path}: specified device type {k:?} does not match host device type {:?}",
+                    found.letter().to_string()
+                ));
+            }
+        }
+        node.mode = mode.unwrap_or(node.mode);
+        node.uid = uid.unwrap_or(0);
+        node.gid = gid.unwrap_or(0);
+        given.push(dc::Given {
+            path: node.path.clone(),
+            rule,
+        });
+        nodes.push(node);
+    }
     let rules = if a.privileged {
         None
     } else {
@@ -306,15 +392,12 @@ fn prepare_with(entry: &[u8], here: bool) -> Result<Prepared, String> {
             a.cdi.join(", ")
         ));
     }
-    if here {
-        make_nodes(&nodes)?;
-        nodes.clear();
-    }
     Ok(Prepared {
         weights,
         throttles,
         rules,
         nodes,
+        unowned,
     })
 }
 
@@ -360,6 +443,28 @@ impl Prepared {
     /// The nodes still to make: a joiner's (D119), in its own `/dev`.
     pub fn nodes(&self) -> &[Node] {
         &self.nodes
+    }
+
+    /// CDI's nodes whose spec gives no owner (D146), given the process's user and group,
+    /// which `owner` says, asked once and only where a node has none: root's where the
+    /// process is root's, as CDI leaves such a node to its runtime's default.
+    pub fn own(&mut self, owner: &dyn Fn() -> Result<(u32, u32), String>) -> Result<(), String> {
+        if self.unowned.is_empty() {
+            return Ok(());
+        }
+        let (uid, gid) = owner()?;
+        for &(i, user, group) in &self.unowned {
+            if let Some(n) = self.nodes.get_mut(i) {
+                if user {
+                    n.uid = uid;
+                }
+                if group {
+                    n.gid = gid;
+                }
+            }
+        }
+        self.unowned.clear();
+        Ok(())
     }
 
     /// [`attach`](Self::attach) for a joiner's cgroup (D119), whose own filter, `default`,
@@ -430,7 +535,9 @@ fn make(node: &Node) -> Result<(), String> {
     }
     let kind = match node.kind {
         Kind::Block => libc::S_IFBLK,
-        _ => libc::S_IFCHR,
+        Kind::Char => libc::S_IFCHR,
+        // A CDI device's FIFO (D146), which no device filter's kind names.
+        Kind::All => libc::S_IFIFO,
     };
     // SAFETY: mknod(2), chmod(2) and lchown(2) of a NUL-terminated path.
     unsafe {

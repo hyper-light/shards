@@ -25,6 +25,10 @@ shards builds its own guest kernel. Firecracker's CI kernel lacks EROFS, which i
   `vmlinux-<version>-x86_64-hyperv`. Their partitions offer Hyper-V's clocks, and Linux
   keeps time by them only with CONFIG_HYPERV (PM M197, M198); a KVM or HVF guest would
   carry its code and use none of it.
+- **The `gpu` variant:** `gpu.config`, merged last, for a guest given a GPU (D144): DRM's
+  virtio-gpu driver without modesetting, Vulkan through Venus on its render node,
+  `Image-<version>-aarch64-gpu`. Every other guest's kernel stays without DRM: a GPU costs
+  nothing where it is not used.
 - **Patches:** `patches/*.patch`, applied in order with no fuzz. Each says what it fixes
   and why:
   - `0001`: an arm64 guest's first exec from a DAX-mapped file oopsed in `fs/dax.c`.
@@ -32,6 +36,11 @@ shards builds its own guest kernel. Firecracker's CI kernel lacks EROFS, which i
     raced the process for its command line in /proc, and a short-lived one had often
     ended by then (PM M176). The event now carries the command line the exec laid out,
     for the record of a run's processes (D123).
+  - `0003`: a host blob of a GPU is mapped into its guest in the host's pages, 16 KiB on
+    Apple silicon, so its place in the device's region must be whole host pages: Linux
+    7.2's VIRTIO_GPU_F_BLOB_ALIGNMENT, backported, with a host blob's size rounded up to
+    the alignment where upstream refuses it, so that userspace that aligns nothing gets
+    whole pages too (D144).
 - **The toolchain:** `builder.env` pins a Debian image by its multi-architecture index
   digest, and installs its compiler, linker and tools from Debian's snapshot archive at a
   fixed time. So every build of the same inputs gets the same toolchain, and a new
