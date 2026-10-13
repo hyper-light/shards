@@ -10135,7 +10135,20 @@ fn an_image_of_gigabytes_boots() {
         }
         big.flush().unwrap();
     }
-    let built = shards_in(&home, &["build", "-q", "-t", "big:1", ctx.to_str().unwrap()]);
+    // Its build copies 2 GiB through the builder: past TIMEOUT on CI's x86_64 runners,
+    // where it stays a guard against a hang.
+    let (kernel, init) = (kernel(), guest_init());
+    let env: [(&str, &OsStr); 3] = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", kernel.as_os_str()),
+        ("SHARDS_INIT", init.as_os_str()),
+    ];
+    let built = run_shards_env(
+        &[],
+        &["build", "-q", "-t", "big:1", ctx.to_str().unwrap()],
+        &env,
+        Duration::from_secs(600),
+    );
     assert_eq!(built.status, Some(0), "{built}");
     std::fs::remove_file(ctx.join("big")).unwrap();
     let ran = run_in(&home, "big:1", &["--rm"], &["fs", "open:r:/big"]);
