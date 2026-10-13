@@ -3687,6 +3687,25 @@ container's memory freed is its host's at once.
   nothing does; a template's init writes it before the template is saved (6 ms), through
   a sysfs of its own opened as it boots, its container's being read-only. A guest kernel
   without it reports as before.
+- **What a pass holds is free memory (patch 0006).** A pass holds up to 32 free blocks
+  of at most 4 MiB, 128 MiB, until the host answers, and the zones count them gone:
+  readings of the guest's free memory dipped by as much, and an allocation needing them
+  found nothing to reclaim, and the OOM killer ended a task in a guest whose memory was
+  free. A growing run was ended as a restore's pass came (4 of 8 asked at that moment), a
+  run of fixed size with three agents as its first pass came (6 of 8 runs of
+  `agents_out_of_memory_end_whole_and_spare_the_run`), and agents were given a share of
+  none, read during a pass (PM M224). Patch 0006 counts what a pass holds as free in
+  sysinfo(2) and /proc/meminfo, and has an allocation that would otherwise give up wait a
+  tick and try again while a pass holds any (`should_reclaim_retry`); the zones' own counts,
+  by which the allocator's watermarks see the pages gone until they are back, are as they
+  were. With it, `MemAvailable` moved 8 to 12 MiB as a pass held 128 MiB, as without
+  reporting, and the agents' test none of 24 times as it had: once, after its run was
+  spared and y ended, z was ended too, its memory read as 65,679,360 bytes where it holds
+  16 MiB, which is not yet explained.
+- **A guest kernel without it reports nothing.** shards-init reads `page_reporting.held`,
+  which 0006 adds, as it boots, before any template is saved: where its kernel has none,
+  it lets the virtio-balloon device's driver go (sysfs `unbind`), and the guest keeps what
+  it frees, as before D151.
 - **Measured (PM M222):** with the flush, runs cost what they did, wall time −5 µs
   [−94, +98] and the command's −11 µs [−22, +0], paired over 400; a run that touched
   512 MiB and freed it held 57 to 132 MiB at its end where an idle one held 94, and with
@@ -3699,9 +3718,13 @@ unmapped and mapped again around its pages, the rest of RAM as it was),
 `the_device_asks_for_nothing_and_keeps_actual`; on real microVMs,
 `a_runs_memory_freed_goes_back_to_the_host`: restores of a template reporting nothing in
 their first seconds, where the kernel has the flush (a VM's timing line says what its
-guest reported, `reported_kib`), and 512 MiB touched and freed given back. Mutation-checked:
-runs without the device hold 562 MiB; a template saved without the flush has its restores
-report 212,992 KiB.
+guest reported, `reported_kib`), and 512 MiB touched and freed given back, where its kernel
+has 0006, and nothing reported where it has not; and
+`agents_out_of_memory_end_whole_and_spare_the_run`, which a pass ended 6 times in 8 on a
+kernel whose allocations did not wait. Mutation-checked: runs without the device hold 562
+MiB; a template saved without the flush has its restores report 212,992 KiB. What a pass
+does to readings and to growing runs is shown by `reporting-dip` and
+`run-plug/report-race.py` (PM M224).
 
 ### D150. A GPU's runs restore templates of their own
 

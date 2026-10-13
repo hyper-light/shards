@@ -13,6 +13,7 @@ pub fn main() {
     } else if let Err(e) = crate::devices::keep_devtmpfs() {
         let _ = writeln!(io::stderr(), "shards-init: keeping /dev: {e}");
     }
+    crate::plug::settle_reporting();
     if let Err(e) = mark(marker::INIT_STARTED) {
         let _ = writeln!(io::stderr(), "shards-init: control page: {e}");
     }

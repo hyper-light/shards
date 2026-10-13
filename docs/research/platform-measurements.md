@@ -7936,3 +7936,50 @@ revision before comparing a changed API/implementation.
   sooner at the median, and 76 MiB less footprint. A run's devices are found by name in
   the VM's devtmpfs (D152): a device costs a run 0.1 ms where it cost 1.2. A GPU's filter
   is loaded as its run comes, which costs the run nothing measured.
+
+### M224. What a pass of free page reporting holds, and whom it starved (D151)
+
+- **Question.** Two gates' runs ended where they should not have, each as its guest
+  reported free memory: a restored run of `alloc 1024`, growing (D148), was ended (137)
+  with 106 MiB reported; a run's agents (`agents_out_of_memory_end_whole_and_spare_the_run`,
+  `-m 128m`) were given a share of none, and their run was ended. What does a pass of
+  reporting do to a guest's memory, and what keeps it from starving anyone?
+- **Method.** Apple M5 Max, macOS 26.4.1, 2026-10-13, load 12 to 25 (other projects'
+  builds). Guest kernels: the pinned one, b3f3b948641f (patches 0001-0004), and two built
+  here from 6.18.48 by scripts/build-kernel.sh in a builder microVM: A, with 0005 and with
+  0006 counting what a pass holds as free; B, 0006 whole (resources/kernel/patches), its
+  allocations also waiting for what a pass holds.
+  - Growth: `run-plug/report-race.py`, restored runs of `alloc 1024` whose request came as
+    the pinned kernel's template ran the pass its boot scheduled (about 1.85 s into a
+    restore's life), pauses seeded from 1.0 to 2.6 s (n=60), then aimed at the pass (1.6
+    to 1.9 s, n=60, two blocks of 30 per arm in turn).
+  - Readings: `reporting-dip`, in a guest: 512 MiB touched and freed, then `MemAvailable`,
+    `MemFree` and `page_reporting.held` read every millisecond for 5 s, 3 runs per kernel
+    in turn; its pass comes two seconds after the free.
+  - Allocations: the agents test itself, its run of fixed size booted cold (its first pass
+    two seconds into its life), kernels A and B in turn, and the pinned kernel.
+- **Results.**
+  - Growth, the pinned kernel: D150's init, 2 of 60 ended, both asked at 2,050 ms; aimed,
+    4 of 60, each asked at 2,000 to 2,049 ms, where 4 of 8 were. With room for a whole pass
+    beside `memory.high` (128 MiB), none of 60, and none of 60 aimed.
+  - Readings: the pinned kernel, reporting, `MemAvailable` ranged 132,044 KiB (129 MiB) as
+    the workload idled, its passes reporting 686 to 836 MiB; kernel A, a pass held 131,072
+    KiB at once, 32 blocks of 4 MiB, and `MemAvailable` ranged 7,684 to 12,704 KiB, as it
+    did without reporting, the pinned kernel with the device let go: 7,624 to 10,232 KiB.
+  - Allocations: kernel A, 6 of 8 failed, the run's command ended (137) as the first pass
+    held the run's free memory; kernel B, none of 24 so, and once otherwise: the run spared
+    and y ended, z was ended after it, its memory read as 65,679,360 bytes where it holds
+    16 MiB, not yet explained; the pinned kernel, the device let go, 0 of 8.
+- **Why.** A pass takes up to 32 free blocks of order 9 or more off the free lists, 4 MiB
+  at most each, and holds them until the device has reported them (mm/page_reporting.c
+  `page_reporting_cycle`); it starts only where the zone has its low watermark and 64 MiB
+  free (`page_reporting_process_zone`), and then takes what it finds. For that time the
+  zones count the pages gone: sysinfo(2) and /proc/meminfo showed that much less, and an
+  allocation needing them found nothing to reclaim, and the OOM killer ended a task in a
+  guest whose memory was free.
+- **Consequence (D151, patch 0006).** What a pass holds is free memory: counted so in
+  sysinfo(2) and /proc/meminfo, and waited for by an allocation that would otherwise fail.
+  A guest kernel without it reports nothing: shards-init lets its device go as it boots.
+  Room for a pass beside growth, which ended the kills in growing runs on the pinned
+  kernel, is not kept: with 0006 no allocation fails for a pass, and without it no pass
+  comes.

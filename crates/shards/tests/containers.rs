@@ -10217,21 +10217,35 @@ fn a_runs_memory_freed_goes_back_to_the_host() {
     assert_eq!(first.status, Some(0), "{first}");
     let idle = run(&["alloc-free", "0", "10"]);
     assert_eq!(idle.status, Some(0), "{idle}");
-    // A template is saved with what its boot freed reported, where its kernel can be told
-    // to report at once (`page_reporting.flush`, resources/kernel/patches/0005): a restore
-    // reports none of it, two seconds into its life, which its runs paid for. Measured:
-    // 0 KiB; with the pass left to run, 212,992.
-    let flushes = run(&["stat", "/sys/module/page_reporting/parameters/flush"]);
-    if flushes.status == Some(0) {
-        assert_eq!(idle.reported_kib(), Some(0), "{idle}");
-    } else {
-        println!("SKIP: this guest kernel cannot be told to report at once (D151)");
-    }
     // The guest reports memory freed two seconds on, and of each free list about 64
     // blocks a pass, a pass each two seconds (mm/page_reporting.c): 512 MiB in two.
     let r = run(&["alloc-free", "512", "10"]);
     assert_eq!(r.status, Some(0), "{r}");
     assert!(r.stdout.contains("freed 512"), "{r}");
+    // Only where its kernel counts what a pass holds as free (`page_reporting.held`,
+    // resources/kernel/patches/0006): elsewhere its init lets the device go as it boots,
+    // and it reports nothing (PM M224).
+    let counts = run(&["stat", "/sys/module/page_reporting/parameters/held"]);
+    if counts.status != Some(0) {
+        assert_eq!(r.reported_kib(), Some(0), "{r}");
+        println!("SKIP: this guest kernel does not count what a pass holds as free (D151)");
+        return;
+    }
+    // A template is saved with what its boot freed reported, where its kernel can be told
+    // to report at once (`page_reporting.flush`, resources/kernel/patches/0005): a restore
+    // reports none of it, two seconds into its life, which its runs paid for. Measured:
+    // 0 KiB, or 4,096 where a block was freed in its 20 s, the pool's and its run's; with
+    // the pass left to run, 212,992. Less than a pass's one batch of the smallest blocks
+    // (32 of 2 MiB) is none of it.
+    let flushes = run(&["stat", "/sys/module/page_reporting/parameters/flush"]);
+    if flushes.status == Some(0) {
+        assert!(
+            idle.reported_kib().is_some_and(|kib| kib < 32 * (2 << 10)),
+            "{idle}"
+        );
+    } else {
+        println!("SKIP: this guest kernel cannot be told to report at once (D151)");
+    }
     // Against a restore as long that frees nothing: the guest's own use, and what of it
     // it reports free in turn. Measured 94 MiB idle, and 57 and 132 MiB after 512 MiB
     // freed, a peak of 578 and 645 MiB; with none given back, the peak.
