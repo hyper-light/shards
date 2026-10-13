@@ -6,8 +6,9 @@ the test guest in `idle` mode, the same command line), each VMM's boots interlea
 1. VM exits: each boot under `perf kvm stat record`, to its ready line; `perf kvm stat
    report` per VMM: each exit reason's count and time, summed over the boots.
 2. The guest's own timeline: one boot each with the kernel's initcalls timed
-   (`initcall_debug`, not `quiet`), the console kept; each initcall's time, shards less
-   Firecracker, the largest differences first.
+   (`initcall_debug`), `quiet`, so that no console line costs them anything, the test
+   guest in `kmsg` mode printing the kernel's log once booted; each initcall's time,
+   shards less Firecracker, the largest differences first.
 3. shards' own: one boot with its log at debug, whose lines carry the VM process's
    microseconds since it started.
 
@@ -38,8 +39,8 @@ shards_vm = one("target/release/build/shards-*/out/helpers/shards-vm")
 print(f"kernel {kernel}\ninitrd {initrd}\nfirecracker {firecracker}\nshards-vm {shards_vm}")
 
 QUIET = "console=ttyS0 quiet panic=-1 shards_test=idle"
-# initcall_debug prints at KERN_DEBUG, which only loglevel 8 lets through to the console.
-VERBOSE = "console=ttyS0 printk.time=1 initcall_debug loglevel=8 panic=-1 shards_test=idle"
+# initcall_debug's lines, into a log large enough to hold them all, read from /dev/kmsg.
+TIMED = "console=ttyS0 quiet panic=-1 initcall_debug log_buf_len=4M shards_test=kmsg"
 
 
 def command(vmm, cmdline, name):
@@ -51,6 +52,7 @@ def command(vmm, cmdline, name):
         json.dump({
             "boot-source": {"kernel_image_path": kernel, "initrd_path": initrd,
                             "boot_args": f"{cmdline} reboot=k pci=off"},
+            "drives": [],
             "machine-config": {"vcpu_count": 1, "mem_size_mib": 128},
         }, f)
     return [firecracker, "--no-api", "--config-file", config, "--level", "error"]
@@ -70,8 +72,9 @@ def boot(argv, console, wrap=None, env=None):
         if "SHARDS-TEST READY" in line:
             ready = time.monotonic() - start
             break
-    # The VMM itself, not the wrapper: perf ends as its command does.
-    subprocess.run(["sudo", "pkill", "-KILL", "-f", argv[0]], check=False)
+    # The VMM itself, whose command line starts with its path, not the wrapper, whose
+    # holds it too: perf ends as its command does, and writes its record then.
+    subprocess.run(["sudo", "pkill", "-KILL", "-f", "^" + re.escape(argv[0])], check=False)
     lines.extend(raw.decode(errors="replace") for raw in p.stdout)
     p.wait()
     with open(console, "w") as f:
@@ -99,7 +102,7 @@ for vmm in ["shards", "firecracker"]:
         reports = []
         for i in range(boots):
             data = os.path.join(out, vmm, f"perf-{i}.data")
-            r = subprocess.run(["sudo", "perf", "kvm", "stat", "report", "-i", data, f"--event={event}",
+            r = subprocess.run(["sudo", "perf", "kvm", "-i", data, "stat", "report", f"--event={event}",
                                 "--key=time"], capture_output=True, text=True)
             reports.append(r.stdout + r.stderr)
         with open(os.path.join(out, f"{vmm}-{event}.txt"), "w") as f:
@@ -107,11 +110,16 @@ for vmm in ["shards", "firecracker"]:
         print(f"== {vmm} {event}, boot 0")
         print(reports[0])
 
-# 2. The guest's initcalls.
+# 2. The guest's initcalls, each VMM's guest run to its end.
 initcalls = {}
 for vmm in ["shards", "firecracker"]:
-    console = os.path.join(out, f"{vmm}-verbose.txt")
-    boot(command(vmm, VERBOSE, "fc-verbose.json"), console)
+    console = os.path.join(out, f"{vmm}-initcalls.txt")
+    with open(console, "w") as f:
+        try:
+            subprocess.run(command(vmm, TIMED, "fc-initcalls.json"), stdout=f, stderr=subprocess.STDOUT,
+                           timeout=60)
+        except subprocess.TimeoutExpired:
+            print(f"{vmm}: its guest did not end in 60 s")
     calls = {}
     for line in open(console, errors="replace"):
         m = re.search(r"initcall (\S+) returned \S+ after (\d+) usecs", line)
