@@ -375,11 +375,35 @@ fn assemble(
             .and_then(|end| end.checked_next_multiple_of(GIB))
             .ok_or("pmem regions overflow the address space")?,
     };
-    let (regions, _) = super::pmem_regions(config, first)?;
+    let (regions, end) = super::pmem_regions(config, first)?;
+    // The PCI bus's 64-bit window past all of that, as long as its 64-bit BARs need (D154).
+    let mem64 = match pci.mem64()? {
+        Some((len, align)) => Some((
+            end.checked_next_multiple_of(align.max(GIB))
+                .ok_or("the PCI 64-bit window overflows the address space")?,
+            len,
+        )),
+        None => None,
+    };
+    let top = match mem64 {
+        Some((at, len)) => at
+            .checked_add(len)
+            .ok_or("the PCI 64-bit window overflows the address space")?,
+        None => end,
+    };
     if config.nested {
         return Err("virtualization of a guest's own is not given on x86_64 yet".into());
     }
     let vm = hv::Vm::new(hv::VmConfig { vcpus: config.vcpus }).map_err(|e| e.to_string())?;
+    // Every address the guest is given lies within the physical addresses its CPU says it
+    // has: its kernel takes no memory or window past them (Linux's iomem_resource), and the
+    // hypervisor maps none.
+    let bits = vm.phys_bits().map_err(|e| e.to_string())?;
+    if top > 1 << bits {
+        return Err(format!(
+            "the guest's memory and devices end at {top:#x}, past the {bits} address bits its CPU has"
+        ));
+    }
     for (gpa, host, len) in memory.regions() {
         // SAFETY: `memory` outlives the VM: `Machine` and `Running` drop the VM first.
         unsafe { vm.map_ram(host, gpa, len) }.map_err(|e| e.to_string())?;
@@ -479,13 +503,21 @@ fn assemble(
         memory,
         irqs: routes,
     };
-    let pci = super::pci_bus(&mut bus.mmio, layout::PCI_ECAM, mem32, pci, config, machine)?.map(|routed| {
-        acpi::PciBridge {
-            ecam: (layout::PCI_ECAM, crate::devices::pci::ECAM_SIZE),
-            mem32,
-            intx: routed.intx,
-            gsi: layout::GSI_PCI,
-        }
+    let pci = super::pci_bus(
+        &mut bus.mmio,
+        layout::PCI_ECAM,
+        mem32,
+        mem64,
+        pci,
+        config,
+        machine,
+    )?
+    .map(|routed| acpi::PciBridge {
+        ecam: (layout::PCI_ECAM, crate::devices::pci::ECAM_SIZE),
+        mem32,
+        mem64,
+        intx: routed.intx,
+        gsi: layout::GSI_PCI,
     });
     Ok(Assembled {
         vm,

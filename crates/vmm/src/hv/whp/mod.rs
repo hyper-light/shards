@@ -630,6 +630,12 @@ impl Vm {
         unsafe { self.partition.map(host, gpa, len, flags) }
     }
 
+    /// The guest's physical address width, as its CPUID says: no address it is given may
+    /// be past it.
+    pub fn phys_bits(&self) -> Result<u32> {
+        Ok(cpuid::phys_bits(&host()?.cpuid))
+    }
+
     /// A handle for driving interrupt lines from any thread.
     pub fn irqs(&self) -> Irqs {
         Irqs {

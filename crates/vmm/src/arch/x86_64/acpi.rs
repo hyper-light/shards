@@ -18,6 +18,8 @@ use super::layout;
 pub struct PciBridge {
     pub ecam: (u64, u64),
     pub mem32: (u64, u64),
+    /// Its 64-bit window, above 4 GiB, where its functions have 64-bit BARs (D154).
+    pub mem64: Option<(u64, u64)>,
     /// Each device that raises INTx, and its pin (1 for INTA#), all on `gsi` (D154).
     pub intx: Vec<(u8, u8)>,
     pub gsi: u32,
@@ -278,6 +280,16 @@ mod aml {
         d
     }
 
+    /// QWord Address Space descriptor of memory `base..base+len`, as [`memory_window`]'s
+    /// (§6.4.3.5.1).
+    pub fn memory_window64(base: u64, len: u64) -> Vec<u8> {
+        let mut d = vec![0x8a, 43, 0, 0, 0x0c, 0x01];
+        for v in [0, base, base + (len - 1), 0, len] {
+            d.extend_from_slice(&v.to_le_bytes());
+        }
+        d
+    }
+
     /// Extended Interrupt descriptor: consumer, edge, active-high, exclusive (§6.4.3.6).
     pub fn interrupt_edge(gsi: u32) -> Vec<u8> {
         let mut d = vec![0x89, 6, 0, 0b0000_0011, 1];
@@ -398,7 +410,16 @@ fn pci_bridge(p: &PciBridge) -> Result<Vec<u8>, String> {
             aml::name(b"_BBN", aml::integer(0)),
             aml::name(
                 b"_CRS",
-                aml::resources(&[aml::bus_numbers(0, 0), aml::memory_window(base, len)]),
+                aml::resources(
+                    &[
+                        vec![aml::bus_numbers(0, 0), aml::memory_window(base, len)],
+                        p.mem64
+                            .map(|(base, len)| aml::memory_window64(base, len))
+                            .into_iter()
+                            .collect(),
+                    ]
+                    .concat(),
+                ),
             ),
             prt,
         ]
@@ -547,9 +568,9 @@ mod tests {
     }
 
     /// A PCI host bridge (D153): an MCFG table, linked and checksummed, of segment 0's
-    /// ECAM window for bus 0, and a PNP0A08 host bridge in the DSDT whose _CRS is bus 0
-    /// and the 32-bit memory window, and whose _PRT routes its devices' INTx (D154);
-    /// none of it without one.
+    /// ECAM window for bus 0, and a PNP0A08 host bridge in the DSDT whose _CRS is bus 0,
+    /// the 32-bit memory window and the 64-bit one, and whose _PRT routes its devices'
+    /// INTx (D154); none of it without one.
     #[test]
     fn a_pci_bridge_is_described_where_there_is_one() {
         let without = build(1, &[], None).unwrap();
@@ -557,6 +578,7 @@ mod tests {
         let bridge = PciBridge {
             ecam: (layout::PCI_ECAM, 1 << 20),
             mem32: (layout::PCI_MEM32, layout::PCI_MEM32_SIZE),
+            mem64: Some((0x2_0000_0000, 0x10_0000)),
             intx: vec![(1, 1), (2, 2)],
             gsi: layout::GSI_PCI,
         };
@@ -578,6 +600,7 @@ mod tests {
             layout::PCI_MEM32 as u32,
             layout::PCI_MEM32_SIZE as u32
         )));
+        assert!(has(&aml::memory_window64(0x2_0000_0000, 0x10_0000)));
         // _PRT: Package (2) { Package (4) { 0x1FFFF, 0, 0, 22 }, Package (4) { 0x2FFFF,
         // 1, 0, 22 } }, as iasl encodes it.
         let entry = |device: u8, pin: u8| {
@@ -619,6 +642,22 @@ mod tests {
             ]
             .concat()
         );
+        // QWordMemory (ResourceProducer, PosDecode, MinFixed, MaxFixed, NonCacheable,
+        // ReadWrite, 0, 0x2_0000_0000, 0x2_000F_FFFF, 0, 0x10_0000): the same flags, the
+        // QWord descriptor's tag and 43 bytes after its header (§6.4.3.5.1).
+        assert_eq!(
+            aml::memory_window64(0x2_0000_0000, 0x10_0000),
+            [
+                &[0x8a, 0x2b, 0x00, 0x00, 0x0c, 0x01][..],
+                &0u64.to_le_bytes(),
+                &0x2_0000_0000u64.to_le_bytes(),
+                &0x2_000f_ffffu64.to_le_bytes(),
+                &0u64.to_le_bytes(),
+                &0x10_0000u64.to_le_bytes(),
+            ]
+            .concat()
+        );
+        assert_eq!(aml::memory_window64(0, 0x1000).len(), 3 + 43);
         assert_eq!(aml::pkg_length(10), vec![11]);
         assert_eq!(aml::pkg_length(62), vec![63]);
         assert_eq!(aml::pkg_length(63), vec![0x41, 0x04]); // 65 = 0x41

@@ -3672,6 +3672,19 @@ one. So both, in that order.
   the BAR is trapped again, and a read with memory space off is all ones, as an access
   no function claims (PCI 3.0 §6.2.2, §2.3.2), which the test function now does too. A
   BAR of less than a page stays trapped whole, as its page in the guest holds others.
+- **A 64-bit window.** 64-bit BARs, a GPU's of tens of GiB among them, take a window of
+  their own above 4 GiB, past the rest of the guest's address map, as long as they need:
+  each placed at a multiple of its size, the test function's and then each
+  passed-through function's in order, from a start aligned to the largest. The window is
+  sized before the VM exists, as arm64's address width follows the map's top: a
+  function's 64-bit BARs are read from sysfs (`resource`: IORESOURCE_MEM_64) while it is
+  found, before the VM process is confined. It is not prefetchable, so BARs of either
+  kind fit it: the devicetree's second range, 64-bit memory (0x03000000), and on x86_64
+  the host bridge's QWordMemory (ACPI 6.5 §6.4.3.5.1). On x86_64, the guest's whole
+  address map, RAM, memory to plug, pmem and the window, must now lie within the
+  physical address width its CPUID gives it (0x80000008), on KVM and WHP alike, where
+  before nothing checked it. The test function has a 64-bit BAR 4 of its own, 1 MiB, its
+  first page a scratch.
 - **Interrupts.** A PCI bus's functions interrupt as PCI's do. On arm64, each device's
   INTx on an SPI of its own, level-triggered (the devicetree's `interrupt-map`): KVM's
   GICv3 keeps one level a line, so a line the VMM drives and an irqfd must not share one.
@@ -3743,7 +3756,9 @@ one. So both, in that order.
   which the outer VM process maps into the inner guest (its log): the inner guest's access
   reaches the outermost VMM's function with no exit to the outer VM process. With its
   memory space off, BAR 0 leaves the inner guest and reads all ones through the outer VM
-  process and vfio-pci, and comes back as it is on again. The inner guest takes INTx, MSI and MSI-X, both of the VMM's
+  process and vfio-pci, and comes back as it is on again. BAR 4 lies past 4 GiB in each
+  guest's 64-bit window, its scratch reading back what each wrote, in the inner guest
+  through the window the outer VM process sized from sysfs and mapped. The inner guest takes INTx, MSI and MSI-X, both of the VMM's
   own test function, through its emulated frame, and of the function passed through, by
   the outer VM process's irqfds: its vector 1 held while masked is the outer VM process's
   count, as the outermost function sends it at once. CI's arm64 runners give no KVM: the nested test runs where a
@@ -3752,9 +3767,9 @@ one. So both, in that order.
   `kvm` kernel, built now for x86_64 too, is pinned.
 - **Not yet:** snapshots of arm64 KVM VMs (`vm::SNAPSHOTS`; their GIC and vCPU state
   through KVM's registers); more vCPUs than one redistributor region holds (123). For
-  VFIO: MSI of more than one message, and its per-vector masking; a 64-bit window for
-  BARs past the 32-bit one; DMA verified on real VMs, which needs an IOMMU in the test's
-  outer guest; then `--device /dev/vfio/N`, `--gpus` and CDI's VFIO nodes.
+  VFIO: MSI of more than one message, and its per-vector masking; DMA verified on real
+  VMs, which needs an IOMMU in the test's outer guest; then `--device /dev/vfio/N`,
+  `--gpus` and CDI's VFIO nodes.
 
 ### D153. A PCI bus, for the devices a microVM is given (VFIO's first step)
 

@@ -540,26 +540,26 @@ fn a_nested_guest_runs_vms_of_its_own() {
         if test == "pci-irq" {
             interrupted(&passed_through);
         }
-        // BAR 0 in the inner guest's memory as the guest enables the function's memory
-        // space, reached without exits to the outer VM process; BAR 2, all MSI-X, trapped.
-        // Disabled, it leaves (`pci`), and comes back.
+        // BARs 0 and 4 in the inner guest's memory as the guest enables the function's
+        // memory space, reached without exits to the outer VM process; BAR 2, all MSI-X,
+        // trapped. Disabled, they leave (`pci`), and come back.
         let logged = |what: &str| {
             passed_through
                 .stdout
                 .lines()
                 .filter(|l| {
                     l.starts_with("L2 stderr: ")
-                        && l.ends_with(&format!("0000:00:01.0: BAR windows {what} the guest: 1"))
+                        && l.ends_with(&format!("0000:00:01.0: BAR windows {what} the guest: 2"))
                 })
                 .count()
         };
-        assert!(logged("mapped into") >= 1, "BAR 0 never mapped: {passed_through}");
+        assert!(logged("mapped into") >= 1, "BARs never mapped: {passed_through}");
         if test == "pci" {
             assert!(
                 logged("taken from") >= 1,
-                "BAR 0 never taken out: {passed_through}"
+                "BARs never taken out: {passed_through}"
             );
-            assert!(logged("mapped into") >= 2, "BAR 0 never back: {passed_through}");
+            assert!(logged("mapped into") >= 2, "BARs never back: {passed_through}");
         }
     }
 }

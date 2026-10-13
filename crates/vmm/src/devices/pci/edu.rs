@@ -32,6 +32,11 @@ pub const MSIX_VECTORS: u16 = 2;
 pub const MSIX_BAR_SIZE: u64 = 4096;
 const MSIX_BAR: u8 = 2;
 const MSIX_PBA: u64 = 0x800;
+/// Its BAR 4, of shards' own as its MSI-X is: 1 MiB of 64-bit memory, which the machine
+/// places in its 64-bit window, its first page a scratch the guest reads back.
+pub const SCRATCH_BAR: usize = 4;
+pub const SCRATCH_BAR_SIZE: u64 = 1 << 20;
+const SCRATCH_DWORDS: usize = 1024;
 /// Its INTx pin: INTA#.
 pub const PIN: u8 = 1;
 
@@ -53,19 +58,27 @@ pub struct Edu {
     lines: Option<Lines>,
 }
 
+/// Where the machine maps the function's BARs: BAR 0's registers, BAR 2's MSI-X table and
+/// BAR 4's scratch, in its 64-bit window.
+#[derive(Debug, Clone, Copy)]
+pub struct Places {
+    pub registers: u64,
+    pub msix: u64,
+    pub scratch: u64,
+}
+
+/// The function's BARs, for the machine to map where [`Places`] says.
+#[derive(Debug)]
+pub struct Bars {
+    pub registers: Arc<EduRegisters>,
+    pub msix: Arc<EduMsix>,
+    pub scratch: Arc<EduScratch>,
+}
+
 impl Edu {
-    /// The function, its BAR 0's registers, which the machine maps at `bar`, and BAR 2's,
-    /// its MSI-X table, mapped at `msix_bar`; its interrupts go to `lines`, and where a
-    /// machine takes none it has none.
-    #[expect(
-        clippy::type_complexity,
-        reason = "the function and its two BARs' registers, made together"
-    )]
-    pub fn new(
-        bar: u64,
-        msix_bar: u64,
-        lines: Option<Lines>,
-    ) -> Result<(Arc<Edu>, Arc<EduRegisters>, Arc<EduMsix>), String> {
+    /// The function and its BARs, which the machine maps at `at`; its interrupts go to
+    /// `lines`, and where a machine takes none it has none.
+    pub fn new(at: Places, lines: Option<Lines>) -> Result<(Arc<Edu>, Bars), String> {
         let interrupts = match lines {
             Some(_) => Interrupts {
                 pin: PIN,
@@ -97,15 +110,21 @@ impl Edu {
             vec![
                 Bar {
                     index: 0,
-                    addr: bar,
+                    addr: at.registers,
                     size: BAR_SIZE,
                     kind: BarKind::Memory32,
                 },
                 Bar {
                     index: usize::from(MSIX_BAR),
-                    addr: msix_bar,
+                    addr: at.msix,
                     size: MSIX_BAR_SIZE,
                     kind: BarKind::Memory32,
+                },
+                Bar {
+                    index: SCRATCH_BAR,
+                    addr: at.scratch,
+                    size: SCRATCH_BAR_SIZE,
+                    kind: BarKind::Memory64,
                 },
             ],
             interrupts,
@@ -116,14 +135,18 @@ impl Edu {
             msix: Mutex::new(MsixTable::new(MSIX_VECTORS)),
             lines,
         });
-        Ok((
-            edu.clone(),
-            Arc::new(EduRegisters {
+        let bars = Bars {
+            registers: Arc::new(EduRegisters {
                 edu: edu.clone(),
                 liveness: AtomicU32::new(0),
             }),
-            Arc::new(EduMsix { edu }),
-        ))
+            msix: Arc::new(EduMsix { edu: edu.clone() }),
+            scratch: Arc::new(EduScratch {
+                edu: edu.clone(),
+                scratch: Mutex::new(vec![0; SCRATCH_DWORDS]),
+            }),
+        };
+        Ok((edu, bars))
     }
 
     /// Changes the interrupt status as `change` says, and gives the guest what the status
@@ -212,6 +235,62 @@ impl PciFunction for Edu {
 pub struct EduRegisters {
     edu: Arc<Edu>,
     liveness: AtomicU32,
+}
+
+/// BAR 4: its first page what the guest last wrote there, a dword or a qword at a time; the
+/// rest reads zero and keeps nothing.
+#[derive(Debug)]
+pub struct EduScratch {
+    edu: Arc<Edu>,
+    scratch: Mutex<Vec<u32>>,
+}
+
+impl MmioDevice for EduScratch {
+    fn read(&self, offset: u64, data: &mut [u8]) {
+        if !self.edu.decodes() {
+            data.fill(0xff);
+            return;
+        }
+        let scratch = self.scratch.lock().unwrap_or_else(PoisonError::into_inner);
+        super::read_dwords(offset, data, |at| {
+            usize::try_from(at / 4)
+                .ok()
+                .and_then(|i| scratch.get(i))
+                .copied()
+                .unwrap_or(0)
+        });
+    }
+
+    fn write(&self, offset: u64, data: &[u8]) {
+        let len = data.len() as u64;
+        if !self.edu.decodes() || !matches!(len, 4 | 8) || !offset.is_multiple_of(len) {
+            return;
+        }
+        let value = get_le(data);
+        let mut scratch = self.scratch.lock().unwrap_or_else(PoisonError::into_inner);
+        let dwords = [value as u32, (value >> 32) as u32];
+        for (i, dword) in (offset / 4..).zip(dwords.into_iter().take(data.len() / 4)) {
+            if let Some(slot) = usize::try_from(i).ok().and_then(|i| scratch.get_mut(i)) {
+                *slot = dword;
+            }
+        }
+    }
+
+    fn pause(&self) {}
+
+    fn resume(&self) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn save(&self, _: &mut Writer) {}
+
+    fn restore(&self, _: &mut Reader<'_>) -> codec::Result<()> {
+        Ok(())
+    }
+
+    fn unsaved(&self) -> Option<String> {
+        Some("its PCI functions' state is their devices' own".into())
+    }
 }
 
 /// BAR 2: the MSI-X table, from its start, and the pending bits, read-only, at 0x800.
@@ -346,7 +425,16 @@ mod tests {
             intx: Arc::new(Line(recorded.clone())),
             msi: Arc::new(Line(recorded.clone())),
         };
-        let (edu, regs, msix) = Edu::new(0x1010_0000, 0x1020_0000, Some(lines)).unwrap();
+        let (edu, bars) = Edu::new(
+            Places {
+                registers: 0x1010_0000,
+                msix: 0x1020_0000,
+                scratch: 0x1_0010_0000,
+            },
+            Some(lines),
+        )
+        .unwrap();
+        let (regs, msix) = (bars.registers, bars.msix);
         // Decoding its BARs, as a driver enables it.
         edu.config_write(0x04, &reg::COMMAND_MEMORY.to_le_bytes());
         (edu, regs, msix, recorded)
@@ -375,6 +463,40 @@ mod tests {
         regs.write(REG_LIVENESS, &0x1234_5678u32.to_le_bytes());
         regs.read(REG_LIVENESS, &mut b);
         assert_eq!(u32::from_le_bytes(b), !0x1234_5678);
+    }
+
+    /// BAR 4, of 64 bits, is placed past 4 GiB, its address in two registers; its first
+    /// page reads back what was written, a dword or a qword at a time.
+    #[test]
+    fn edus_scratch_is_64_bit_memory() {
+        let recorded = Arc::new(Recorded::default());
+        let lines = Lines {
+            intx: Arc::new(Line(recorded.clone())),
+            msi: Arc::new(Line(recorded)),
+        };
+        let (edu, bars) = Edu::new(
+            Places {
+                registers: 0x1010_0000,
+                msix: 0x1020_0000,
+                scratch: 0x1_0010_0000,
+            },
+            Some(lines),
+        )
+        .unwrap();
+        edu.config_write(0x04, &reg::COMMAND_MEMORY.to_le_bytes());
+        assert_eq!(word(&*edu, 0x20), 0x0010_0004, "BAR 4: its low half, 64-bit");
+        assert_eq!(word(&*edu, 0x24), 1, "BAR 5: its high half");
+        let scratch = bars.scratch;
+        scratch.write(8, &0x1122_3344_5566_7788u64.to_le_bytes());
+        scratch.write(0x10, &0xdead_beefu32.to_le_bytes());
+        let mut q = [0u8; 8];
+        scratch.read(8, &mut q);
+        assert_eq!(u64::from_le_bytes(q), 0x1122_3344_5566_7788);
+        let mut d = [0u8; 4];
+        scratch.read(0x10, &mut d);
+        assert_eq!(u32::from_le_bytes(d), 0xdead_beef);
+        scratch.read(0x8_0000, &mut d);
+        assert_eq!(u32::from_le_bytes(d), 0, "past the page");
     }
 
     /// With its memory space disabled, edu decodes neither BAR: reads are all ones, as an

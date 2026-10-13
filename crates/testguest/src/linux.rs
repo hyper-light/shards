@@ -1025,7 +1025,8 @@ fn work() -> Result<(), String> {
 /// memory space disabled through its configuration space, the function decodes nothing,
 /// so a read of BAR 0 is all ones, as an access no function claims (PCI 3.0 §6.2.2); enabled
 /// again, BAR 0 reads as before. Passed through, its BAR leaves the guest's memory and
-/// comes back (D154).
+/// comes back (D154). Its BAR 4, 64-bit, lies past 4 GiB, its first page a scratch that
+/// reads back what was written.
 fn pci() -> Result<(), String> {
     const DIR: &str = "/sys/bus/pci/devices/0000:00:01.0";
     let read = |f: &str| {
@@ -1092,6 +1093,49 @@ fn pci() -> Result<(), String> {
         return Err(format!(
             "BAR 0 read {off:#x} with memory space off, {on:#x} with it on again"
         ));
+    }
+    // BAR 4, 64-bit, in the bus's 64-bit window past 4 GiB (D154): its first page reads
+    // back what was written to it.
+    let resources = read("resource")?;
+    let bar4 = resources
+        .lines()
+        .nth(4)
+        .and_then(|l| l.split_whitespace().next())
+        .and_then(|a| u64::from_str_radix(a.trim_start_matches("0x"), 16).ok())
+        .ok_or_else(|| format!("{DIR}/resource: no BAR 4 in {resources:?}"))?;
+    if bar4 < 1 << 32 {
+        return Err(format!("BAR 4 at {bar4:#x}, under 4 GiB"));
+    }
+    let bar = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(format!("{DIR}/resource4"))
+        .map_err(|e| format!("{DIR}/resource4: {e}"))?;
+    // SAFETY: a fresh shared mapping of BAR 4's first page, which nothing else maps.
+    let scratch = unsafe {
+        libc::mmap(
+            std::ptr::null_mut(),
+            4096,
+            libc::PROT_READ | libc::PROT_WRITE,
+            libc::MAP_SHARED,
+            bar.as_raw_fd(),
+            0,
+        )
+    };
+    if scratch == libc::MAP_FAILED {
+        return Err(format!("mapping BAR 4: {}", io::Error::last_os_error()));
+    }
+    let scratch = scratch.cast::<u32>();
+    // SAFETY: volatile accesses of the mapping's registers, in its first page.
+    let (first, last) = unsafe {
+        scratch.write_volatile(0x5ca7_c400);
+        scratch.add(1023).write_volatile(0x0dd_ba11);
+        (scratch.read_volatile(), scratch.add(1023).read_volatile())
+    };
+    // SAFETY: the mapping made above.
+    unsafe { libc::munmap(scratch.cast(), 4096) };
+    if (first, last) != (0x5ca7_c400, 0x0dd_ba11) {
+        return Err(format!("BAR 4 read back {first:#x} and {last:#x}"));
     }
     Ok(())
 }

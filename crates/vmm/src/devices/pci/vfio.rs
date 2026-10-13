@@ -327,6 +327,32 @@ pub fn group_of(name: &str) -> io::Result<(PathBuf, bool)> {
     )))
 }
 
+/// The sizes of function `name`'s 64-bit memory BARs, in their order, as the host's PCI
+/// core gives them (sysfs `resource`: each BAR's start, end and flags, IORESOURCE_MEM and
+/// IORESOURCE_MEM_64; drivers/pci/pci-sysfs.c, resource_show): what the machine's 64-bit
+/// window holds, known before its VM is.
+pub fn bars64_of(name: &str) -> io::Result<Vec<u64>> {
+    const MEM: u64 = 0x0000_0200;
+    const MEM_64: u64 = 0x0010_0000;
+    let path = format!("/sys/bus/pci/devices/{name}/resource");
+    let text = std::fs::read_to_string(&path)?;
+    let mut sizes = Vec::new();
+    // The six BARs come first; a 64-bit BAR's second register is a line of zeros.
+    for line in text.lines().take(6) {
+        let mut fields = line
+            .split_whitespace()
+            .map(|f| u64::from_str_radix(f.trim_start_matches("0x"), 16));
+        let (Some(Ok(start)), Some(Ok(end)), Some(Ok(flags))) = (fields.next(), fields.next(), fields.next())
+        else {
+            return Err(io::Error::other(format!("{path}: {line:?}")));
+        };
+        if flags & MEM != 0 && flags & MEM_64 != 0 && end > start {
+            sizes.push((end - start + 1).next_power_of_two());
+        }
+    }
+    Ok(sizes)
+}
+
 fn open(path: &Path) -> io::Result<OwnedFd> {
     let c = CString::new(path.as_os_str().as_encoded_bytes()).map_err(io::Error::other)?;
     // SAFETY: open(2) of a NUL-terminated path.

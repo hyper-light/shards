@@ -505,6 +505,9 @@ pub struct Vfio {
     /// Whether the group has no IOMMU (vfio's `enable_unsafe_noiommu_mode`): its function
     /// may make no DMA, and guest RAM is mapped for none.
     pub noiommu: bool,
+    /// Its 64-bit memory BARs' sizes, in their order: what they take of the machine's
+    /// 64-bit window.
+    pub bars64: Vec<u64>,
 }
 
 impl Vfio {
@@ -513,12 +516,14 @@ impl Vfio {
     pub fn of(name: &str) -> Result<Vfio, String> {
         #[cfg(target_os = "linux")]
         {
-            let (group, noiommu) =
-                crate::devices::pci::vfio::group_of(name).map_err(|e| format!("{name}: {e}"))?;
+            use crate::devices::pci::vfio;
+            let (group, noiommu) = vfio::group_of(name).map_err(|e| format!("{name}: {e}"))?;
+            let bars64 = vfio::bars64_of(name).map_err(|e| format!("{name}: its BARs: {e}"))?;
             Ok(Vfio {
                 name: name.to_string(),
                 group,
                 noiommu,
+                bars64,
             })
         }
         #[cfg(not(target_os = "linux"))]
@@ -534,6 +539,30 @@ impl Vfio {
 pub(crate) struct Pci<'a> {
     pub test: bool,
     pub vfio: &'a [Vfio],
+}
+
+#[cfg(hv)]
+impl Pci<'_> {
+    /// What its functions' 64-bit BARs take of the machine's 64-bit window, placed as the
+    /// bus places them, the test function's and then each passed-through function's in
+    /// order, each at a multiple of its size: the window's length, and the alignment of its
+    /// start, the largest BAR's; none where no BAR is 64-bit.
+    pub fn mem64(&self) -> Result<Option<(u64, u64)>, String> {
+        let sizes = self
+            .test
+            .then_some(crate::devices::pci::edu::SCRATCH_BAR_SIZE)
+            .into_iter()
+            .chain(self.vfio.iter().flat_map(|f| f.bars64.iter().copied()));
+        let (mut len, mut align) = (0u64, 0u64);
+        for size in sizes {
+            len = len
+                .checked_next_multiple_of(size)
+                .and_then(|at| at.checked_add(size))
+                .ok_or("the 64-bit BARs overflow the address space")?;
+            align = align.max(size);
+        }
+        Ok((len > 0).then_some((len, align)))
+    }
 }
 
 /// How a machine takes its PCI functions' interrupts (D154): the line of each device's
@@ -578,14 +607,16 @@ pub(crate) struct PciMachine<'a> {
 
 /// Puts the PCI bus `pci` asks for on `bus` (D153, D154), where it asks for one: its ECAM
 /// window at `ecam`, and its functions' BARs in the memory window `mem32`, each at the
-/// next multiple of its size; QEMU's edu at 00:01.0 where `pci.test`, then each function
-/// passed through, on the devices after. Their interrupts go where `machine.irqs` says;
-/// with none, the functions the VMM emulates have none.
+/// next multiple of its size, but for 64-bit BARs, in `mem64` ([`Pci::mem64`]); QEMU's edu
+/// at 00:01.0 where `pci.test`, then each function passed through, on the devices after.
+/// Their interrupts go where `machine.irqs` says; with none, the functions the VMM
+/// emulates have none.
 #[cfg(hv)]
 fn pci_bus(
     bus: &mut crate::devices::MmioBus,
     ecam: u64,
     mem32: (u64, u64),
+    mem64: Option<(u64, u64)>,
     pci: Pci<'_>,
     config: &crate::snapshot::MachineConfig,
     machine: PciMachine<'_>,
@@ -596,13 +627,8 @@ fn pci_bus(
         return Ok(None);
     }
     let mut routed = PciBus::default();
-    let mut window = BarWindow {
-        next: mem32.0,
-        end: mem32
-            .0
-            .checked_add(mem32.1)
-            .ok_or("the PCI window overflows the address space")?,
-    };
+    let mut window = BarWindow::of(mem32)?;
+    let mut window64 = mem64.map(BarWindow::of).transpose()?;
     let mut functions: Vec<pci::Function> = Vec::new();
     let mut device: u8 = 1;
     if pci.test {
@@ -614,10 +640,18 @@ fn pci_bus(
         if lines.is_some() {
             routed.intx.push((device, pci::edu::PIN));
         }
-        let msix_at = window.take(pci::edu::MSIX_BAR_SIZE)?;
-        let (edu, registers, msix) = pci::edu::Edu::new(at, msix_at, lines)?;
-        bus.insert(at, pci::edu::BAR_SIZE, registers)?;
-        bus.insert(msix_at, pci::edu::MSIX_BAR_SIZE, msix)?;
+        let places = pci::edu::Places {
+            registers: at,
+            msix: window.take(pci::edu::MSIX_BAR_SIZE)?,
+            scratch: window64
+                .as_mut()
+                .ok_or("the test function's BAR 4 has no 64-bit window")?
+                .take(pci::edu::SCRATCH_BAR_SIZE)?,
+        };
+        let (edu, bars) = pci::edu::Edu::new(places, lines)?;
+        bus.insert(places.registers, pci::edu::BAR_SIZE, bars.registers)?;
+        bus.insert(places.msix, pci::edu::MSIX_BAR_SIZE, bars.msix)?;
+        bus.insert(places.scratch, pci::edu::SCRATCH_BAR_SIZE, bars.scratch)?;
         functions.push((device << 3, edu));
         device += 1;
     }
@@ -627,7 +661,10 @@ fn pci_bus(
         }
         functions.extend(passed_through(
             bus,
-            &mut window,
+            [
+                &mut window,
+                window64.as_mut().unwrap_or(&mut BarWindow::default()),
+            ],
             pci.vfio,
             device,
             &machine,
@@ -640,7 +677,7 @@ fn pci_bus(
 
 /// What is left of a PCI memory window, BARs taken from its start.
 #[cfg(hv)]
-#[derive(Debug)]
+#[derive(Debug, Default)]
 struct BarWindow {
     next: u64,
     end: u64,
@@ -648,6 +685,16 @@ struct BarWindow {
 
 #[cfg(hv)]
 impl BarWindow {
+    /// The window `len` bytes at `base`, all of it left.
+    fn of((base, len): (u64, u64)) -> Result<BarWindow, String> {
+        Ok(BarWindow {
+            next: base,
+            end: base
+                .checked_add(len)
+                .ok_or("the PCI window overflows the address space")?,
+        })
+    }
+
     /// The place of a BAR of `size` bytes, a power of two: the next multiple of its size
     /// (PCI Local Bus 3.0 §6.2.5.1).
     fn take(&mut self, size: u64) -> Result<u64, String> {
@@ -667,11 +714,12 @@ impl BarWindow {
 }
 
 /// Each function of `vfio` opened (its DMA mapped to the machine's memory), its BARs
-/// placed in `window` and put on `bus`, on device `first` and those after it.
+/// placed in `windows`, the 32-bit one and the 64-bit one for 64-bit BARs, and put on
+/// `bus`, on device `first` and those after it.
 #[cfg(all(hv, target_os = "linux"))]
 fn passed_through(
     bus: &mut crate::devices::MmioBus,
-    window: &mut BarWindow,
+    mut windows: [&mut BarWindow; 2],
     vfio: &[Vfio],
     first: u8,
     machine: &PciMachine<'_>,
@@ -691,7 +739,13 @@ fn passed_through(
         };
         let opened = v::Device::open(&f.name, &f.group, container, memory, vm)?;
         let mut bars = Vec::new();
+        let [window, window64] = &mut windows;
         for (index, size, kind) in opened.bars() {
+            let window = if kind == pci::BarKind::Memory64 {
+                &mut **window64
+            } else {
+                &mut **window
+            };
             let addr = window
                 .take(size)
                 .map_err(|e| format!("{}: BAR {index}: {e}", f.name))?;
@@ -730,7 +784,7 @@ fn passed_through(
 #[cfg(all(hv, not(target_os = "linux")))]
 fn passed_through(
     _bus: &mut crate::devices::MmioBus,
-    _window: &mut BarWindow,
+    _windows: [&mut BarWindow; 2],
     _vfio: &[Vfio],
     _first: u8,
     _machine: &PciMachine<'_>,

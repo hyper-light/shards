@@ -37,6 +37,15 @@ const LEVEL_CORE: u32 = 2;
 const XTILE_CFG: u32 = 1 << 17;
 const XTILE_DATA: u32 = 1 << 18;
 
+/// The physical address width a guest given `template` has: leaf 0x80000008's EAX[7:0]
+/// (MAXPHYADDR), or 36 where its CPU has no such leaf (Intel SDM Vol. 3A §4.1.4).
+pub fn phys_bits(template: &[Leaf]) -> u32 {
+    template
+        .iter()
+        .find(|l| l.function == 0x8000_0008)
+        .map_or(36, |l| l.eax & 0xff)
+}
+
 /// Takes the tile configuration out of the XCR0 bits leaf 0xD offers where the tile data
 /// is not among them (review 1.10). Linux 5.17 to 6.3 offered it so to a process not
 /// permitted the data, and a guest that enables what it is offered takes #GP at XSETBV;

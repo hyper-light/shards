@@ -208,6 +208,8 @@ pub struct Machine<'a> {
 pub struct PciBridge {
     pub ecam: (u64, u64),
     pub mem32: (u64, u64),
+    /// Its 64-bit window, above 4 GiB, where its functions have 64-bit BARs (D154).
+    pub mem64: Option<(u64, u64)>,
     pub intx: Vec<Intx>,
     pub msi: Option<MsiFrame>,
 }
@@ -378,10 +380,11 @@ pub fn build_fdt(m: &Machine<'_>) -> Result<Vec<u8>, FdtError> {
     f.end_node();
 
     // Linux Documentation/devicetree/bindings/pci/host-generic-pci.yaml: ECAM's window,
-    // bus 0, and one range, 32-bit memory (phys.hi 0x02000000) at the same addresses in
-    // both spaces.
+    // bus 0, and its ranges at the same addresses in both spaces: 32-bit memory (phys.hi
+    // 0x02000000), and where its functions have 64-bit BARs, 64-bit memory (0x03000000),
+    // not prefetchable, so that BARs of either kind fit it (Documentation/devicetree/
+    // bindings/pci/pci.txt, IEEE 1275's PCI bus binding).
     if let Some(p) = &m.pci {
-        let (base, len) = p.mem32;
         f.begin_node(&format!("pcie@{:x}", p.ecam.0));
         f.prop_str("compatible", "pci-host-ecam-generic");
         f.prop_str("device_type", "pci");
@@ -389,18 +392,22 @@ pub fn build_fdt(m: &Machine<'_>) -> Result<Vec<u8>, FdtError> {
         f.prop_cells("bus-range", &[0, 0]);
         f.prop_u32("#address-cells", 3);
         f.prop_u32("#size-cells", 2);
-        f.prop_cells(
-            "ranges",
-            &[
-                0x0200_0000,
+        let range = |space: u32, (base, len): (u64, u64)| {
+            [
+                space,
                 (base >> 32) as u32,
                 base as u32,
                 (base >> 32) as u32,
                 base as u32,
                 (len >> 32) as u32,
                 len as u32,
-            ],
-        );
+            ]
+        };
+        let mut ranges = range(0x0200_0000, p.mem32).to_vec();
+        if let Some(mem64) = p.mem64 {
+            ranges.extend(range(0x0300_0000, mem64));
+        }
+        f.prop_cells("ranges", &ranges);
         f.prop_u32("linux,pci-domain", 0);
         f.prop_null("dma-coherent");
         // Each device's INTx by its device number and pin (the binding's interrupt-map,
@@ -562,6 +569,7 @@ mod tests {
         let pci = PciBridge {
             ecam: (layout::PCI_ECAM, 1 << 20),
             mem32: (layout::PCI_MEM32, layout::PCI_MEM32_SIZE),
+            mem64: Some((0x1_0000_0000, 0x10_0000)),
             intx: vec![Intx {
                 device: 1,
                 pin: 1,
@@ -582,7 +590,22 @@ mod tests {
         assert_eq!(bridge.cells("bus-range"), vec![0, 0]);
         assert_eq!(
             bridge.cells("ranges"),
-            vec![0x0200_0000, 0, 0x1000_0000, 0, 0x1000_0000, 0, 0x2f00_0000]
+            vec![
+                0x0200_0000,
+                0,
+                0x1000_0000,
+                0,
+                0x1000_0000,
+                0,
+                0x2f00_0000,
+                0x0300_0000,
+                1,
+                0,
+                1,
+                0,
+                0,
+                0x10_0000
+            ]
         );
         assert_eq!(with_pci.path("chosen").u32("linux,pci-probe-only"), 1);
         // Its devices' INTx (D154): device 1's INTA# on its own SPI, level-triggered, and

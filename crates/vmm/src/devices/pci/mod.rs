@@ -337,7 +337,7 @@ impl MsixTable {
 
 /// Reads `data` at `offset` of registers that `dword` gives a dword at a time: a qword
 /// as two, and a narrower read as its dword's bytes.
-fn read_dwords(offset: u64, data: &mut [u8], dword: impl Fn(u64) -> u32) {
+pub(crate) fn read_dwords(offset: u64, data: &mut [u8], dword: impl Fn(u64) -> u32) {
     let at = offset & !3;
     let value = if data.len() == 8 {
         u64::from(dword(at)) | (u64::from(dword(at + 4)) << 32)

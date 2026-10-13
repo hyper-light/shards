@@ -443,6 +443,24 @@ fn assemble(
             .ok_or("the GPU's window overflows the address space")?,
         None => top,
     };
+    // The PCI bus's 64-bit window past all of that, above 4 GiB, as long as its 64-bit
+    // BARs need (D154).
+    let mem64 = match pci.mem64()? {
+        Some((len, align)) => {
+            let at = top
+                .max(1 << 32)
+                .checked_next_multiple_of(align.max(GIB))
+                .ok_or("the PCI 64-bit window overflows the address space")?;
+            Some((at, len))
+        }
+        None => None,
+    };
+    let top = match mem64 {
+        Some((at, len)) => at
+            .checked_add(len)
+            .ok_or("the PCI 64-bit window overflows the address space")?,
+        None => top,
+    };
     let pmem: Vec<(u64, u64)> = regions
         .iter()
         .map(|(region, gpa)| (*gpa, region.len() as u64))
@@ -587,10 +605,11 @@ fn assemble(
         memory,
         irqs,
     };
-    let pci = super::pci_bus(&mut bus, layout::PCI_ECAM, mem32, pci, config, machine)?.map(|routed| {
+    let pci = super::pci_bus(&mut bus, layout::PCI_ECAM, mem32, mem64, pci, config, machine)?.map(|routed| {
         boot::PciBridge {
             ecam: (layout::PCI_ECAM, crate::devices::pci::ECAM_SIZE),
             mem32,
+            mem64,
             intx: routed
                 .intx
                 .into_iter()
