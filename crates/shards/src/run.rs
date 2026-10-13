@@ -491,25 +491,19 @@ pub fn prepare(
 }
 
 /// A run's microVM's vCPUs, the memory it boots with and the most it may have in all, in
-/// MiB (D148): it boots as a run without a limit does, and plugs memory as its workload
-/// asks, up to what its memory limit needs, or without one the host's memory, as a
-/// container without one may have. Where the host's memory is not known, it boots with
-/// what its limit needs, and plugs none.
+/// MiB (D148). Without a memory limit, it boots as before and plugs memory as its workload
+/// asks, up to the host's memory, as a container without one may have. With one, it boots
+/// with what its limit needs, as before: the memory a guest reports is what it has, which
+/// runtimes size their heaps by (Node.js's V8 by its total, 259 MiB of a microVM booted
+/// small where `-m 8g` was asked, PM M220), until it reports what it may plug. Where the
+/// host's memory is not known, it plugs none.
 pub fn sizes(resources: &shards_ipc::Resources, host: Option<u64>) -> (u32, u64, u64) {
     use shards_vmm::vm::MEMORY_MIB;
     let vcpus = crate::resources::vcpus(resources, crate::resources::host_cpus());
-    let limited = crate::resources::memory_mib(resources.memory, MEMORY_MIB, host, vcpus);
+    let boot = crate::resources::memory_mib(resources.memory, MEMORY_MIB, host, vcpus);
     match host {
-        Some(bytes) => {
-            let boot = crate::resources::memory_mib(0, MEMORY_MIB, host, vcpus);
-            let most = if resources.memory > 0 {
-                limited
-            } else {
-                (bytes >> 20) & !1
-            };
-            (vcpus, boot, most.max(boot))
-        }
-        None => (vcpus, limited, limited),
+        Some(bytes) if resources.memory <= 0 => (vcpus, boot, ((bytes >> 20) & !1).max(boot)),
+        _ => (vcpus, boot, boot),
     }
 }
 

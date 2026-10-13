@@ -7772,3 +7772,29 @@ revision before comparing a changed API/implementation.
     new; RSS 29.30 (29.34) old, 29.44 (29.53) new.
 - **Consequence (D148).** Every run may plug the host's memory for what its start costs
   already: within 0.1 ms and 0.2 MiB of a microVM fixed at boot.
+
+### M220. What a guest reports of its memory sizes a runtime's heap (D148)
+
+- **Question.** Runtimes size themselves by the memory they see: what does Node.js see,
+  and size its heap by, in a shards run and in a Docker container, with `-m` and without?
+- **Method.** `node:22-alpine`, `node -e` printing V8's `heap_size_limit`,
+  `os.totalmem()` and `process.constrainedMemory()`: in Docker 29.3.1 (shards-dind, its
+  VM's 62.7 GiB), and in shards at 7a132d35 (a run booted small, plugging up to its limit)
+  and with `-m` booting its limit again, on an Apple M5 Max of 128 GiB, macOS 26.4.1,
+  2026-10-12. Each value is the runtime's own computation from what it read, the same
+  every run.
+- **Results.** MiB:
+
+  | Run | heap_size_limit | totalmem | constrained |
+  |---|---|---|---|
+  | Docker, no `-m` | 4,144 | 64,186 | none |
+  | Docker, `-m 8g` | 2,096 | 64,186 | 8,192 |
+  | shards, no `-m` | 259 | 243 | none |
+  | shards, `-m 8g`, booted small | 259 | 243 | 8,192 |
+  | shards, `-m 8g`, booted with its limit | 2,096 | 8,362 | 8,192 |
+
+- **Consequence (D148).** Node sizes its heap by the smaller of the memory the kernel
+  reports and its cgroup's limit. A microVM booted small reports only what it has, so a
+  run with `-m` boots with what its limit needs, and sizes as Docker's does. A run without
+  one grows as it needs, but Node sizes its heap by the 243 MiB it boots with, where
+  Docker's sees its host's: what a guest reports must be what it may plug.

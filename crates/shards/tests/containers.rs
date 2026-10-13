@@ -10147,9 +10147,9 @@ fn an_image_of_gigabytes_boots() {
 }
 
 /// A run's memory, plugged as its workload needs it (D148): without `-m` it holds more
-/// than its microVM boots with, as a container may hold its host's; with `-m` it is ended
-/// past its limit, as Docker's is, and runs within it; and every limit restores the one
-/// template.
+/// than its microVM boots with, as a container may hold its host's, in the microVM that
+/// saved its template and in a restore of it; with `-m` it is ended past its limit, as
+/// Docker's is, and runs within it, its microVM booted with what its limit needs.
 #[test]
 fn a_runs_memory_grows_as_its_workload_needs_it() {
     let Some((home, image)) = home("containers-plug") else {
@@ -10191,11 +10191,12 @@ fn a_runs_memory_grows_as_its_workload_needs_it() {
     assert_eq!(r.status, Some(0), "{r}");
     assert!(r.stdout.contains("allocated 1024"), "{r}");
     // The templates, each a directory: the daemon's record of each is a file beside it.
+    // The runs without a limit share one; each limit has its own.
     let templates: Vec<_> = std::fs::read_dir(home.join("templates"))
         .unwrap()
         .map(|e| e.unwrap())
         .filter(|e| e.path().is_dir())
         .map(|e| e.file_name())
         .collect();
-    assert_eq!(templates.len(), 1, "{templates:?}");
+    assert_eq!(templates.len(), 3, "{templates:?}");
 }

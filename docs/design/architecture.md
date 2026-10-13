@@ -3611,14 +3611,16 @@ where a Docker container without `-m` may hold its host's memory (`memory.max` "
 page structures paid at boot (21 MiB and 4 ms per GiB, PM M82). D133's virtio-mem gives a
 builder memory as its build needs it; runs now have it too.
 
-- **Each run's microVM boots as a run without a limit does**, with a region to plug of the
-  host's memory less that, and is given memory as its processes reach what it has, up to
-  its run's own most: what its `-m` needs (`resources::memory_mib`), or without one the
-  host's memory, as a container without one may have. `-m` still ends a workload past it
-  (`memory.max`, 137), as Docker's does.
-- **One template for every limit.** A snapshot keeps the region to plug, none of it
-  plugged (format 13: the machine's `hotplug_mib`); a restore remakes it as boot made it,
-  withheld. What is plugged or asked for is not saved: a device says why
+- **A run without a limit** boots as before, with a region to plug of the host's memory
+  less that, and is given memory as its processes reach what it has, up to the host's
+  memory, as a container without one may have. **A run with `-m`** boots with what its
+  limit needs, as before, and `-m` ends a workload past it (`memory.max`, 137), as
+  Docker's does: a guest reports the memory it has, and Node.js sizes its heap by the
+  smaller of that and its cgroup's limit (PM M220), so a run with `-m` booted small sized
+  its heap at 259 MiB where Docker's sizes it at 2,096.
+- **Templates.** A snapshot keeps the region to plug, none of it plugged (format 13: the
+  machine's `hotplug_mib`); a restore remakes it as boot made it, withheld. The runs
+  without a limit share one template. What is plugged or asked for is not saved: a device says why
   (`VirtioDevice::unsaved`), and the snapshot is refused, not written without it. A run's
   most comes with the run (the `RUN` request) and the VM sets it before its guest hears
   of the run (`Handle::set_plug_most`): the host keeps the bound, never the guest.
@@ -3632,17 +3634,20 @@ builder memory as its build needs it; runs now have it too.
   tmpfs), as a container's are its host's; the domains count what may still be plugged.
 - **Verified on real VMs** (containers.rs `a_runs_memory_grows_as_its_workload_needs_it`):
   without `-m`, 1 GiB in a microVM booted with 256 MiB, in the one that saved the
-  template and in a restore; `-m 256m` ended at 137; `-m 1g` holding 512 MiB; one template
-  for all. boot.rs `a_snapshot_keeps_memory_to_plug`: a guest snapshotted with memory to
+  template and in a restore; `-m 256m` ended at 137; `-m 1g` holding 512 MiB.
+  `run_limits_resources_as_docker_run_does`: each limit, at 1 vCPU and at every one, held
+  to within 16 MiB of it. boot.rs `a_snapshot_keeps_memory_to_plug`: a guest snapshotted with memory to
   plug, the booted VM and two restores each plugging 512 MiB. Mutation-checked: without
   the grower, the 1 GiB run is ended (137); without the restored region, a restore fails.
 - **What it costs** (PM M219): a run's start and end within 0.1 ms of before (paired
   A/B, median +36 µs, 95% [-14, +100]), an idle run 0.2 MiB more of footprint; a region
   of 128 GiB costs a cold boot 0.8 ms. Found on the way: `SHARDS_TIMING`'s count of held
   pages asked the OS of the whole region, 7.75 ms a run; it asks of blocks ever plugged.
-- **Not yet:** memory given back as a long-lived run's workload frees it (D133's device
-  can unplug; a guest must ask for less), and `MemTotal`, which grows as memory is plugged
-  where a container's is its host's from the start: a JVM or Node.js sizes its heap by it.
+- **Not yet:** what a guest without a limit reports of its memory: what it has, 243 MiB
+  as it boots, where a container's is its host's, by which Node.js sizes its heap at 259
+  MiB where Docker's is 4,144 (PM M220): it must report what it may plug. Memory given
+  back as a long-lived run's workload frees it (D133's device can unplug; a guest must ask
+  for less).
 
 ### D147. Mounting a pmem root once libnvdimm has made it
 
