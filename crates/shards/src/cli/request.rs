@@ -597,6 +597,11 @@ fn request(parsed: &Parsed) -> Result<Run, String> {
     }
     let restart_policy = restart_policy(parsed.string("restart"))?;
     // A policy other than none restarts what --rm removes (opts.go parse).
+    // `-a`'s streams, the client's to attach: none to a run its client leaves (run.go).
+    let attach = parsed.many("attach").to_vec();
+    if !attach.is_empty() && parsed.bool("detach") {
+        return Err("--attach and --detach: a detached run's streams go to its log alone: give one".into());
+    }
     if parsed.bool("rm") && !matches!(restart_policy.0.as_str(), "" | "no") {
         return Err("--restart and --rm: a run removed as it ends is not restarted: give one".into());
     }
@@ -703,6 +708,7 @@ fn request(parsed: &Parsed) -> Result<Run, String> {
             },
         },
         storage_opt,
+        attach,
         // The flag's default is SHARDS_DEFAULT_PLATFORM's, else DOCKER_DEFAULT_PLATFORM's.
         platform: if parsed.changed("platform") {
             parsed.string("platform").to_string()

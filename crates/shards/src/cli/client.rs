@@ -47,12 +47,14 @@ pub fn run(
     sig_proxy: bool,
     cid: &mut Option<crate::cli::request::CidFile>,
 ) -> ExitCode {
+    let given = |stream: &str| request.attach.is_empty() || request.attach.iter().any(|a| a == stream);
     let asked = Attached {
         kind: kind::START,
         payload: request.encode(),
         interactive: request.interactive,
         detach: request.detach,
         tty: request.tty.is_some(),
+        streams: (given("stdout"), given("stderr")),
         proxies_signals: sig_proxy,
         card: request
             .detach
@@ -74,6 +76,7 @@ pub fn exec(home: &Path, daemon: &Path, request: &shards_ipc::Exec, detach_keys:
         interactive: request.interactive,
         detach: request.detach,
         tty: request.tty.is_some(),
+        streams: (true, true),
         proxies_signals: false,
         card: None,
         detach_said: None,
@@ -101,6 +104,7 @@ pub fn attach(
         interactive: request.stdin,
         detach: false,
         tty,
+        streams: (true, true),
         proxies_signals,
         card: None,
         detach_said: Some(("read escape sequence", 1)),
@@ -117,6 +121,9 @@ struct Attached {
     interactive: bool,
     detach: bool,
     tty: bool,
+    /// Whether its stdout and its stderr are this process's: `run -a` may leave either out,
+    /// its output then kept in its log alone.
+    streams: (bool, bool),
     /// The signals `docker run` passes on go to the command (not `docker exec`'s).
     proxies_signals: bool,
     /// A detached run's image and name: on a colour terminal its ID is shown in a card.
@@ -177,15 +184,24 @@ fn serve(
         None => Ok(()),
     };
     let mut threads = Some((filler, proxy));
+    // What a stream not attached is written to (`run -a`).
+    let null = match request.streams {
+        (true, true) => None,
+        _ => match File::options().write(true).open("/dev/null") {
+            Ok(null) => Some(null),
+            Err(e) => return failed(&format!("/dev/null: {e}")),
+        },
+    };
     // A daemon from another build answers RESTART once it has stepped aside.
     for _ in 0..2 {
         let conn = match connect(home, daemon, &mut started, &mut || forwarding(&mut signals)) {
             Ok(conn) => conn,
             Err(e) => return failed(&e),
         };
-        let [out, err] = [1, 2].map(|fd| {
+        let [out, err] = [(1, request.streams.0), (2, request.streams.1)].map(|(fd, given)| match &null {
+            Some(null) if !given => null.as_fd(),
             // SAFETY: this process's standard descriptors stay open while it runs.
-            unsafe { BorrowedFd::borrow_raw(fd) }
+            _ => unsafe { BorrowedFd::borrow_raw(fd) },
         });
         let stdio = [stdin.as_fd(), out, err];
         match shards_ipc::send(&conn, request.kind, &request.payload, &stdio) {

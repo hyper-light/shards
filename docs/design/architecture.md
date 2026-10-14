@@ -3614,6 +3614,26 @@ No run-time labels, relays or declassifiers (§12 answer 14, decided by the user
 an internal-only domain to the world (D58), so there is no data to label. Code mode is
 D136.
 
+### D160. The streams a run's client attaches (`-a`)
+
+`run -a` and `create -a` take `stdin`, `stdout` and `stderr`, in any case, as docker/cli
+reads them (validateAttach, its refusal held to the CLI by the docker-cli oracle). A
+run's client shows the streams it attaches and passes `/dev/null` for the others; its
+log keeps every stream, as every run's does, so `logs` shows what the client did not.
+None given, stdout and stderr; stdin is the command's with `-i` alone, as Docker's
+`OpenStdin`. A run attached to stdin alone shows nothing and ends with its command's
+status. `-a` with `-d` is refused: a detached run's streams go to its log alone.
+
+`inspect`'s `Config.AttachStdin`, `AttachStdout`, `AttachStderr` and `StdinOnce` say what
+the command line gave: a created container's as docker/cli's create keeps them (stdout
+and stderr without `-a`), which shards showed as detached before, its kept request losing
+that it was a create; `run -d`'s none.
+
+Tested on real microVMs (`a_run_attaches_the_streams_it_asks_for`): stdout alone, stderr
+alone, each run's log holding both; stdin alone, its status 3; `-d` refused; `create
+-a stdout` and plain `create` as `inspect` says them. Mutation-checked: the client
+attaching every stream; a create's request kept detached: each fails.
+
 ### D159. A run's swap, written to its host's memory at the guest's own speed
 
 `-m` with `--memory-swap` (by default as much swap again as memory), `--memory-swappiness`

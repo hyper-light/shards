@@ -10892,3 +10892,80 @@ fn a_microvm_takes_its_ipc_hostname_cgroups_umask_and_writable_layer() {
         assert_eq!(removed.status, Some(0), "{name}: {removed}");
     }
 }
+
+/// `-a` (docker/cli opts.go): its client gets the streams it attaches, its log every
+/// stream; with `-d`, refused in shards' words; `create`'s, as `inspect` says them.
+#[test]
+fn a_run_attaches_the_streams_it_asks_for() {
+    let Some((home, image)) = home("containers-attach") else {
+        return;
+    };
+    let shards = |args: &[&str]| shards_in(&home, args);
+    // What the command said, the timing line the tests' client adds left out.
+    let said = |r: &Run| {
+        let err: String = r
+            .stderr
+            .lines()
+            .filter(|l| !l.starts_with("shards-timing "))
+            .map(|l| format!("{l}\n"))
+            .collect();
+        (r.status, r.stdout.clone(), err)
+    };
+    let both = run_in(&home, &image, &["--name", "both"], &["streams", "out", "err"]);
+    assert_eq!(said(&both), (Some(0), "out\n".into(), "err\n".into()), "{both}");
+    let out = run_in(
+        &home,
+        &image,
+        &["--name", "out", "-a", "stdout"],
+        &["streams", "out", "err"],
+    );
+    assert_eq!(said(&out), (Some(0), "out\n".into(), String::new()), "{out}");
+    let err = run_in(
+        &home,
+        &image,
+        &["--name", "err", "-a", "STDERR"],
+        &["streams", "out", "err"],
+    );
+    assert_eq!(said(&err), (Some(0), String::new(), "err\n".into()), "{err}");
+    // Its log holds every stream, whichever were attached.
+    for name in ["out", "err"] {
+        let logged = shards(&["logs", name]);
+        assert_eq!(
+            said(&logged),
+            (Some(0), "out\n".into(), "err\n".into()),
+            "{name}: {logged}"
+        );
+    }
+    // Stdin alone: nothing shown, and its status the client's.
+    let quiet = run_in(&home, &image, &["-a", "stdin"], &["exit", "3"]);
+    assert_eq!(said(&quiet), (Some(3), String::new(), String::new()), "{quiet}");
+    let detached = run_in(&home, &image, &["-d", "-a", "stdout"], &["exit", "0"]);
+    assert_eq!(detached.status, Some(125), "{detached}");
+    assert!(
+        detached.stderr.starts_with(
+            "shards: --attach and --detach: a detached run's streams go to its log alone: give one\n"
+        ),
+        "{detached}"
+    );
+    let made = shards(&[
+        "create", "--pull", "never", "--name", "made", "-a", "stdout", &image,
+    ]);
+    assert_eq!(made.status, Some(0), "{made}");
+    let shown = shards(&[
+        "inspect",
+        "-f",
+        "{{.Config.AttachStdin}} {{.Config.AttachStdout}} {{.Config.AttachStderr}}",
+        "made",
+    ]);
+    assert_eq!(shown.stdout, "false true false\n", "{shown}");
+    // Without `-a`, stdout and stderr, as docker/cli's create keeps them.
+    let plain = shards(&["create", "--pull", "never", "--name", "plain", &image]);
+    assert_eq!(plain.status, Some(0), "{plain}");
+    let shown = shards(&[
+        "inspect",
+        "-f",
+        "{{.Config.AttachStdin}} {{.Config.AttachStdout}} {{.Config.AttachStderr}}",
+        "plain",
+    ]);
+    assert_eq!(shown.stdout, "false true true\n", "{shown}");
+}

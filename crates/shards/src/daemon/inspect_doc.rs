@@ -649,7 +649,12 @@ fn config(f: &Facts<'_>) -> (Option<Vec<String>>, Option<Vec<String>>, Value) {
         .stop_signal
         .clone()
         .unwrap_or_else(|| image_string(image, "StopSignal"));
-    let attach = !run.detach;
+    // The streams its client attached (`-a`; stdout and stderr where none was given, and
+    // stdin with `-i`), none where its run was detached (`run -d`): a created one's as its
+    // command line gave them, which `start -a` attaches.
+    let detached = run.detach && !run.create;
+    let attach =
+        |stream: &str| !detached && (run.attach.is_empty() || run.attach.iter().any(|a| a == stream));
     let hostname = run
         .hostname
         .clone()
@@ -658,13 +663,16 @@ fn config(f: &Facts<'_>) -> (Option<Vec<String>>, Option<Vec<String>>, Value) {
         .field("Hostname", s(&hostname))
         .field("Domainname", s(&run.domainname))
         .field("User", s(&user_or(&run.user, "User")))
-        .field("AttachStdin", Value::Bool(attach && run.interactive))
-        .field("AttachStdout", Value::Bool(attach))
-        .field("AttachStderr", Value::Bool(attach))
+        .field(
+            "AttachStdin",
+            Value::Bool(!detached && (run.interactive || run.attach.iter().any(|a| a == "stdin"))),
+        )
+        .field("AttachStdout", Value::Bool(attach("stdout")))
+        .field("AttachStderr", Value::Bool(attach("stderr")))
         .tagged("ExposedPorts", Some("ExposedPorts"), true, set(exposed))
         .field("Tty", Value::Bool(run.tty.is_some()))
         .field("OpenStdin", Value::Bool(run.interactive))
-        .field("StdinOnce", Value::Bool(attach && run.interactive))
+        .field("StdinOnce", Value::Bool(!detached && run.interactive))
         .field("Env", strs(&env, false))
         .field(
             "Cmd",
@@ -1483,9 +1491,11 @@ mod tests {
                 .iter()
                 .map(|a| a.as_str().unwrap().to_owned())
                 .collect();
-            let detached = case["verb"] == "run";
+            // As the CLI asks for them: `create`'s detached and a create (cli/request.rs
+            // `create`), each `run` case `-d`.
             let mut run = crate::cli::request::for_test(&args).unwrap();
-            run.detach = detached;
+            run.create = case["verb"] == "create";
+            run.detach = true;
             let want = &case["doc"];
             let started = want["State"]["Status"] == "running";
             // Its mount points, as the daemon registers them, its volumes in a store of

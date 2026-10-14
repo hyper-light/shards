@@ -104,6 +104,13 @@ pub fn main() -> ! {
             let _ = io::stderr().write_all(arg(1).as_bytes());
             0
         }
+        // OUT on stdout, then ERR on stderr, a line each: which streams a client attached.
+        "streams" => {
+            let _ = writeln!(io::stdout(), "{}", arg(1));
+            let _ = io::stdout().flush();
+            let _ = writeln!(io::stderr(), "{}", arg(2));
+            0
+        }
         "exit" => arg(1).parse().unwrap_or(1),
         "limits" => match limits() {
             Ok(()) => 0,

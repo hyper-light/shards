@@ -2196,11 +2196,9 @@ impl<D: Disk> Daemon<D> {
         // A new container keeps the request it was made by, for `shards start` (D37).
         if again.is_none() {
             let dir = lock(&self.containers).dir(&id);
-            // Detached as it was made, which its Config says (AttachStdout); a start says
-            // how it attaches then (`again_as`).
-            let mut kept = run.clone();
-            kept.create = false;
-            if let Err(e) = std::fs::write(dir.join(REQUEST), kept.encode()) {
+            // As it was made: a create's a create, whose Config says the streams its command
+            // line gave (AttachStdout); a start says how it attaches then (`again_as`).
+            if let Err(e) = std::fs::write(dir.join(REQUEST), run.encode()) {
                 log(format!(
                     "container {id}: keeping its request: {e}; it cannot be started again"
                 ));
