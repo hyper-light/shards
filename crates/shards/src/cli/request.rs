@@ -552,11 +552,11 @@ fn request(parsed: &Parsed) -> Result<Run, String> {
             "--cgroupns {cgroupns}: give private (a cgroup namespace of its own, the default) or host (the microVM's whole tree)"
         ));
     }
-    // container/opts.go parse: swappiness is -1 (unset) or 0 to 100.
+    // Swappiness: 0 to 100, the microVM's own (D159), or -1 to leave it its kernel's.
     let swappiness = parsed.int("memory-swappiness");
     if swappiness != -1 && !(0..=100).contains(&swappiness) {
         return Err(format!(
-            "invalid value: {swappiness}. Valid memory swappiness range is 0-100"
+            "--memory-swappiness {swappiness}: from 0 to 100, or -1 to leave the microVM's own"
         ));
     }
     let number = |name: &str| parsed.string(name).parse::<i64>().unwrap_or(0);
@@ -597,6 +597,11 @@ fn request(parsed: &Parsed) -> Result<Run, String> {
     }
     let restart_policy = restart_policy(parsed.string("restart"))?;
     // A policy other than none restarts what --rm removes (opts.go parse).
+    // `-a`'s streams, the client's to attach: none to a run its client leaves (run.go).
+    let attach = parsed.many("attach").to_vec();
+    if !attach.is_empty() && parsed.bool("detach") {
+        return Err("--attach and --detach: a detached run's streams go to its log alone: give one".into());
+    }
     if parsed.bool("rm") && !matches!(restart_policy.0.as_str(), "" | "no") {
         return Err("--restart and --rm: a run removed as it ends is not restarted: give one".into());
     }
@@ -703,6 +708,7 @@ fn request(parsed: &Parsed) -> Result<Run, String> {
             },
         },
         storage_opt,
+        attach,
         // The flag's default is SHARDS_DEFAULT_PLATFORM's, else DOCKER_DEFAULT_PLATFORM's.
         platform: if parsed.changed("platform") {
             parsed.string("platform").to_string()

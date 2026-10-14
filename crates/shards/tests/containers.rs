@@ -3680,12 +3680,8 @@ fn run_limits_a_microvms_resources() {
         &command,
     );
     assert_eq!(limited.status, Some(0), "{limited}");
-    assert!(
-        limited.stderr.starts_with(
-            "WARNING: Your kernel does not support memory swappiness capabilities or the cgroup is not mounted. Memory swappiness discarded.\n"
-        ),
-        "{limited}"
-    );
+    // Its swappiness is its microVM's own (D159): nothing is discarded, and nothing warned.
+    assert!(!limited.stderr.contains("WARNING"), "{limited}");
     let read: Vec<&str> = limited
         .stdout
         .lines()
@@ -3713,7 +3709,7 @@ fn run_limits_a_microvms_resources() {
         "limited",
     ]);
     assert_eq!(
-        shown.stdout, "67108864 134217728 33554432 1500000000 512 50 0 <nil>\n",
+        shown.stdout, "67108864 134217728 33554432 1500000000 512 50 0 50\n",
         "{shown}"
     );
     // JSON's names fail on the Go types, and are read from the JSON, where a null is no
@@ -3724,7 +3720,7 @@ fn run_limits_a_microvms_resources() {
         "{{.HostConfig.CpuShares}} {{.HostConfig.MemorySwappiness}}",
         "limited",
     ]);
-    assert_eq!(raw.stdout, "512 <no value>\n", "{raw}");
+    assert_eq!(raw.stdout, "512 50\n", "{raw}");
     // The microVM holds what the limit allows: what the kernel says may be allocated, and
     // the free pages its CPUs' lists hold, which it leaves out of that (M179), is at least
     // the limit, across the sizes where its own share steps up, as a run's guest keeps it;
@@ -3780,29 +3776,32 @@ fn run_limits_a_microvms_resources() {
         (Some(0), "allocated 16\n"),
         "{within}"
     );
-    // dockerd's refusals: `run` with the CLI's prefix, help and 125; `create` as they are.
+    // Its refusals, in shards' words (D158): `run` with the CLI's help line and 125;
+    // `create` as they are.
     let small = run_in(&home, &image, &["-m", "4m"], &["exit", "0"]);
     assert_eq!(
         (small.status, small.stderr.as_str()),
         (
             Some(125),
-            "shards: Minimum memory limit allowed is 6MB\n\nRun 'shards run --help' for more information\n"
+            "shards: --memory 4194304: a run's memory is at least 6 MiB\n\nRun 'shards run --help' for more information\n"
         ),
         "{small}"
     );
     let made = shards(&["create", "--pull", "never", "-m", "4m", &image]);
     assert_eq!(
         (made.status, made.stderr.as_str()),
-        (Some(1), "shards: Minimum memory limit allowed is 6MB\n"),
+        (
+            Some(1),
+            "shards: --memory 4194304: a run's memory is at least 6 MiB\n"
+        ),
         "{made}"
     );
     let cpus = std::thread::available_parallelism().unwrap().get();
     let many = run_in(&home, &image, &["--cpus", "100000"], &["exit", "0"]);
     assert_eq!(many.status, Some(125), "{many}");
     assert!(
-        many.stderr.contains(&format!(
-            "range of CPUs is from 0.01 to {cpus}.00, as there are only {cpus} CPUs available"
-        )),
+        many.stderr
+            .contains(&format!("--cpus 100000.00: from 0.01 to {cpus}, the host's CPUs")),
         "{many}"
     );
     let swappy = run_in(&home, &image, &["--memory-swappiness", "101"], &["exit", "0"]);
@@ -3810,7 +3809,7 @@ fn run_limits_a_microvms_resources() {
         (swappy.status, swappy.stderr.as_str()),
         (
             Some(125),
-            "shards: invalid value: 101. Valid memory swappiness range is 0-100\n\nRun 'shards run --help' for more information\n"
+            "shards: --memory-swappiness 101: from 0 to 100, or -1 to leave the microVM's own\n\nRun 'shards run --help' for more information\n"
         ),
         "{swappy}"
     );
@@ -8459,7 +8458,7 @@ fn update_changes_limits_of_running_microvms() {
         (refused.status, refused.stderr),
         (
             Some(1),
-            "shards: cannot update held: Memory limit should be smaller than already set memoryswap limit, update the memoryswap at the same time\n".to_string()
+            "shards: cannot update held: --memory 67108864: past its --memory-swap 0, the memory and the swap together: give --memory-swap too\n".to_string()
         )
     );
     let updated = shards(&[
@@ -8512,15 +8511,15 @@ fn update_changes_limits_of_running_microvms() {
     for (args, said) in [
         (
             &["--cpu-period", "50000", "held"][..],
-            "shards: cannot update held: Conflicting options: CPU Period cannot be updated as NanoCPUs has already been set\n".to_string(),
+            "shards: cannot update held: --cpu-period: its CPU time is set by --cpus already: update --cpus\n".to_string(),
         ),
         (
             &["-m", "1m", "held"][..],
-            "shards: Minimum memory limit allowed is 6MB\n".to_string(),
+            "shards: --memory 1048576: a run's memory is at least 6 MiB\n".to_string(),
         ),
         (
             &["--blkio-weight", "5", "held"][..],
-            "shards: Range of blkio weight is from 10 to 1000\n".to_string(),
+            "shards: --blkio-weight 5: from 10 to 1000\n".to_string(),
         ),
         (
             &["--cpus", "1", "nope"][..],
@@ -10487,6 +10486,156 @@ fn a_microvm_takes_its_cpus_real_time_isolation_and_annotations() {
     assert_eq!(listed.stdout, "annotated\n", "{listed}");
 }
 
+/// A run's swap and memory as its microVM has them (D159): swap as its limits allow,
+/// on a sparse file of its own past its memory (as much again by default), which its
+/// workload uses past its memory where no swap would have it killed; its swappiness, the
+/// microVM's own; and `--oom-kill-disable` a throttle at its memory, never the OOM
+/// killer. Shown by `inspect` as given.
+#[test]
+fn a_microvm_swaps_and_throttles_as_its_limits_say() {
+    let Some((home, image)) = home("containers-microvm-swap") else {
+        return;
+    };
+    let shards = |args: &[&str]| shards_in(&home, args);
+    let run = |flags: &[&str], cmd: &[&str]| {
+        let mut all = vec!["--rm"];
+        all.extend(flags);
+        run_in(&home, &image, &all, cmd)
+    };
+    // Swap as much again as its memory, by default, held to it by its cgroup: the
+    // workload goes past its memory.
+    let allowed = |flags: &[&str]| {
+        let r = run(flags, &["lines", "/sys/fs/cgroup/memory.swap.max", ""]);
+        let total = run(flags, &["meminfo", "SwapTotal"]);
+        (r.stdout, total.stdout != "SwapTotal: 0 kB\n")
+    };
+    assert_eq!(allowed(&["-m", "64m"]), ("67108864\n".to_string(), true));
+    // Each time: its swap's writes are done as the kernel makes them, so reclaim under its
+    // limit never waits on its host, where a block device's left one run in four killed
+    // within its swap (PM M230).
+    for _ in 0..5 {
+        let past = run(&["-m", "64m"], &["alloc", "96"]);
+        assert_eq!(
+            (past.status, past.stdout.as_str()),
+            (Some(0), "allocated 96\n"),
+            "{past}"
+        );
+    }
+    // None without a memory limit: its microVM grows to the host's memory instead (D148).
+    let none = run(&[], &["meminfo", "SwapTotal"]);
+    assert_eq!(none.stdout, "SwapTotal: 0 kB\n", "{none}");
+    // A run joining another's microVM is held to its own limits by its own cgroup there,
+    // and swaps to that microVM's swap, which its members share: mapped by the first with
+    // an allowance, each held to its own.
+    let provider = run_in(&home, &image, &["-d", "--name", "provider"], &["sleep"]);
+    assert_eq!(provider.status, Some(0), "{provider}");
+    let joiner = |flags: &[&str], cmd: &[&str]| {
+        let mut all = vec!["--network", "container:provider", "-m", "64m"];
+        all.extend(flags);
+        run(&all, cmd)
+    };
+    let held = joiner(&[], &["lines", "/sys/fs/cgroup/memory.max", ""]);
+    assert_eq!(held.stdout, "67108864\n", "{held}");
+    let killed = joiner(&["--memory-swap", "64m"], &["alloc", "96"]);
+    assert_eq!(killed.status, Some(137), "{killed}");
+    for _ in 0..2 {
+        let joined = joiner(&[], &["alloc", "96"]);
+        assert_eq!(
+            (joined.status, joined.stdout.as_str()),
+            (Some(0), "allocated 96\n"),
+            "{joined}"
+        );
+    }
+    assert_eq!(shards(&["rm", "-f", "provider"]).status, Some(0));
+    // None where its limits give none: killed past its memory.
+    assert_eq!(
+        allowed(&["-m", "64m", "--memory-swap", "64m"]),
+        ("0\n".to_string(), false)
+    );
+    let killed = run(&["-m", "64m", "--memory-swap", "64m"], &["alloc", "96"]);
+    assert_eq!(killed.status, Some(137), "{killed}");
+    assert_eq!(
+        allowed(&["-m", "64m", "--memory-swap", "160m"]),
+        ("100663296\n".to_string(), true)
+    );
+    let unlimited = run(&["-m", "64m", "--memory-swap", "-1"], &["alloc", "96"]);
+    assert_eq!(unlimited.status, Some(0), "{unlimited}");
+    // Its swappiness, its microVM's own.
+    let swappy = run(
+        &["--memory-swappiness", "10"],
+        &["slurp", "/proc/sys/vm/swappiness"],
+    );
+    assert_eq!(swappy.stdout, "slurp /proc/sys/vm/swappiness: 10\n", "{swappy}");
+    // The OOM killer kept off: slowed past its memory, never killed.
+    let kept = run(
+        &["-m", "64m", "--memory-swap", "64m", "--oom-kill-disable"],
+        &["alloc", "72"],
+    );
+    assert_eq!(
+        (kept.status, kept.stdout.as_str()),
+        (Some(0), "allocated 72\n"),
+        "{kept}"
+    );
+    for (flags, said) in [
+        (
+            &["--memory-swappiness", "101"][..],
+            "--memory-swappiness 101: from 0 to 100",
+        ),
+        (
+            &["--memory-swap", "64m"],
+            "--memory-swap without --memory: swap is what a run may use past its memory",
+        ),
+        (
+            &["-m", "64m", "--memory-swap", "32m"],
+            "--memory-swap 33554432 is less than --memory 67108864",
+        ),
+        (
+            &["-m", "1m"],
+            "--memory 1048576: a run's memory is at least 6 MiB",
+        ),
+    ] {
+        let r = run(flags, &["exit", "0"]);
+        assert_ne!(r.status, Some(0), "{flags:?}: {r}");
+        assert!(r.stderr.contains(said), "{flags:?}: {r}");
+    }
+    let made = run_in(
+        &home,
+        &image,
+        &[
+            "-d",
+            "--name",
+            "kept",
+            "-m",
+            "64m",
+            "--memory-swappiness",
+            "10",
+            "--oom-kill-disable",
+        ],
+        &["sleep"],
+    );
+    assert_eq!(made.status, Some(0), "{made}");
+    let shown = shards(&[
+        "inspect",
+        "-f",
+        "{{.HostConfig.MemorySwappiness}} {{.HostConfig.OomKillDisable}} {{.HostConfig.MemorySwap}}",
+        "kept",
+    ]);
+    assert_eq!(shown.stdout, "10 true 134217728\n", "{shown}");
+    // Its swap file is its microVM's alone once the microVM holds it: nothing of it is left
+    // in the container's directory.
+    let id = shards(&["inspect", "-f", "{{.Id}}", "kept"])
+        .stdout
+        .trim()
+        .to_string();
+    let file = home.join("containers").join(&id).join("swap");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while file.exists() && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert!(!file.exists(), "{}", file.display());
+    assert_eq!(shards(&["rm", "-f", "kept"]).status, Some(0));
+}
+
 /// A run's IPC, hostname, cgroups, umask and writable layer as its microVM has them (D156).
 /// A run has an IPC namespace and a 64 MiB /dev/shm of its own, which its execs share;
 /// `--shm-size` sizes it, `--ipc none` takes it away, and `--ipc host` gives the
@@ -10742,4 +10891,81 @@ fn a_microvm_takes_its_ipc_hostname_cgroups_umask_and_writable_layer() {
         let removed = shards(&["rm", "-f", name]);
         assert_eq!(removed.status, Some(0), "{name}: {removed}");
     }
+}
+
+/// `-a` (docker/cli opts.go): its client gets the streams it attaches, its log every
+/// stream; with `-d`, refused in shards' words; `create`'s, as `inspect` says them.
+#[test]
+fn a_run_attaches_the_streams_it_asks_for() {
+    let Some((home, image)) = home("containers-attach") else {
+        return;
+    };
+    let shards = |args: &[&str]| shards_in(&home, args);
+    // What the command said, the timing line the tests' client adds left out.
+    let said = |r: &Run| {
+        let err: String = r
+            .stderr
+            .lines()
+            .filter(|l| !l.starts_with("shards-timing "))
+            .map(|l| format!("{l}\n"))
+            .collect();
+        (r.status, r.stdout.clone(), err)
+    };
+    let both = run_in(&home, &image, &["--name", "both"], &["streams", "out", "err"]);
+    assert_eq!(said(&both), (Some(0), "out\n".into(), "err\n".into()), "{both}");
+    let out = run_in(
+        &home,
+        &image,
+        &["--name", "out", "-a", "stdout"],
+        &["streams", "out", "err"],
+    );
+    assert_eq!(said(&out), (Some(0), "out\n".into(), String::new()), "{out}");
+    let err = run_in(
+        &home,
+        &image,
+        &["--name", "err", "-a", "STDERR"],
+        &["streams", "out", "err"],
+    );
+    assert_eq!(said(&err), (Some(0), String::new(), "err\n".into()), "{err}");
+    // Its log holds every stream, whichever were attached.
+    for name in ["out", "err"] {
+        let logged = shards(&["logs", name]);
+        assert_eq!(
+            said(&logged),
+            (Some(0), "out\n".into(), "err\n".into()),
+            "{name}: {logged}"
+        );
+    }
+    // Stdin alone: nothing shown, and its status the client's.
+    let quiet = run_in(&home, &image, &["-a", "stdin"], &["exit", "3"]);
+    assert_eq!(said(&quiet), (Some(3), String::new(), String::new()), "{quiet}");
+    let detached = run_in(&home, &image, &["-d", "-a", "stdout"], &["exit", "0"]);
+    assert_eq!(detached.status, Some(125), "{detached}");
+    assert!(
+        detached.stderr.starts_with(
+            "shards: --attach and --detach: a detached run's streams go to its log alone: give one\n"
+        ),
+        "{detached}"
+    );
+    let made = shards(&[
+        "create", "--pull", "never", "--name", "made", "-a", "stdout", &image,
+    ]);
+    assert_eq!(made.status, Some(0), "{made}");
+    let shown = shards(&[
+        "inspect",
+        "-f",
+        "{{.Config.AttachStdin}} {{.Config.AttachStdout}} {{.Config.AttachStderr}}",
+        "made",
+    ]);
+    assert_eq!(shown.stdout, "false true false\n", "{shown}");
+    // Without `-a`, stdout and stderr, as docker/cli's create keeps them.
+    let plain = shards(&["create", "--pull", "never", "--name", "plain", &image]);
+    assert_eq!(plain.status, Some(0), "{plain}");
+    let shown = shards(&[
+        "inspect",
+        "-f",
+        "{{.Config.AttachStdin}} {{.Config.AttachStdout}} {{.Config.AttachStderr}}",
+        "plain",
+    ]);
+    assert_eq!(shown.stdout, "false true true\n", "{shown}");
 }

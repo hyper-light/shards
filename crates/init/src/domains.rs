@@ -1288,6 +1288,10 @@ pub fn start(
         .saturating_sub(promised);
     std::fs::write(format!("{CGROUPS}/memory.high"), available.to_string())
         .map_err(|e| format!("{CGROUPS}/memory.high: {e}"))?;
+    // None of the microVM's swap (D159), which a run's limits give it for its own: a
+    // domain's memory is what its Agentfile grants, and nothing grants one swap.
+    std::fs::write(format!("{CGROUPS}/memory.swap.max"), "0")
+        .map_err(|e| format!("{CGROUPS}/memory.swap.max: {e}"))?;
     let last_cap = crate::defaults::last_cap();
     landlock_abi()?;
     let lower =

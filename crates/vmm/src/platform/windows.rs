@@ -337,6 +337,65 @@ pub unsafe fn unmap_file_padded(ptr: NonNull<u8>, viewed: usize, len: usize) {
     }
 }
 
+/// The first `len` bytes of `file`, opened for writing, mapped shared and writable: a
+/// read-write section of the file and a view of it, whose writes are the file's through
+/// the cache (a run's swap, D159). `len` is page-aligned and within the file.
+pub fn map_file_shared(file: &File, len: usize) -> io::Result<NonNull<u8>> {
+    // SAFETY: a read-write section of the whole file, closed once its view holds it.
+    let section = unsafe {
+        CreateFileMappingW(
+            file.as_raw_handle(),
+            std::ptr::null(),
+            PAGE_READWRITE,
+            0,
+            0,
+            std::ptr::null(),
+        )
+    };
+    if section.is_null() {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: a fresh view of the section, which only the caller references.
+    let view = unsafe {
+        MapViewOfFile3(
+            section,
+            GetCurrentProcess(),
+            std::ptr::null(),
+            0,
+            len,
+            0,
+            PAGE_READWRITE,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    let failed = view.Value.is_null().then(io::Error::last_os_error);
+    // SAFETY: the section handle, which the view (if any) keeps alive by itself.
+    unsafe { CloseHandle(section) };
+    if let Some(e) = failed {
+        return Err(e);
+    }
+    NonNull::new(view.Value.cast::<u8>()).ok_or_else(|| io::Error::other("MapViewOfFile3 returned NULL"))
+}
+
+/// Unmaps what [`map_file_shared`] mapped.
+///
+/// # Safety
+/// `ptr` and `len` are a mapping's from [`map_file_shared`], which nothing uses any more:
+/// no hypervisor maps it.
+pub unsafe fn unmap_file_shared(ptr: NonNull<u8>, _len: usize) {
+    // SAFETY: forwarded caller contract.
+    unsafe {
+        UnmapViewOfFile2(
+            GetCurrentProcess(),
+            MEMORY_MAPPED_VIEW_ADDRESS {
+                Value: ptr.as_ptr().cast(),
+            },
+            0,
+        );
+    }
+}
+
 /// A file view cannot replace part of a `VirtualAlloc` region without placeholders
 /// (VirtualAlloc2 + MapViewOfFile3), so callers fall back to reading.
 ///

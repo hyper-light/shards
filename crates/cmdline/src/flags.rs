@@ -798,6 +798,7 @@ pub fn value(flag: &Flag, value: &str) -> Result<String, String> {
             go_ip(value.trim()).ok_or_else(|| format!("failed to parse IP: {}", crate::go::quote(value)))
         }
         ("link", Kind::Many("list")) => validate_link(value),
+        ("attach", Kind::Many("list")) => validate_attach(value),
         ("device-read-bps" | "device-write-bps", Kind::Many("list")) => validate_throttle_bps(value),
         ("device-read-iops" | "device-write-iops", Kind::Many("list")) => validate_throttle_iops(value),
         ("blkio-weight-device", Kind::Many("list")) => validate_weight_device(value),
@@ -847,6 +848,16 @@ fn go_cidr(s: &str) -> Option<String> {
             ))
         }
         _ => None,
+    }
+}
+
+/// validateAttach (cli/command/container/opts.go): a stream, in any case, kept lowercase.
+fn validate_attach(value: &str) -> Result<String, String> {
+    let stream = value.to_ascii_lowercase();
+    if ["stdin", "stdout", "stderr"].contains(&stream.as_str()) {
+        Ok(stream)
+    } else {
+        Err("valid streams are STDIN, STDOUT and STDERR".into())
     }
 }
 

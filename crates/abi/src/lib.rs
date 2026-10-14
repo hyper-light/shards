@@ -84,8 +84,17 @@ pub mod control {
     /// VM restored from a template is given its own as it is made, which its guest takes
     /// as it resumes, so that no run waits for it (D31, E1).
     pub const MAC: u64 = 0x30;
+    /// Read, 64 bits in one access: the length of the guest's swap window (D159), the
+    /// virtio-pmem device a run's swap file is mapped into, in bytes; 0 where it has none.
+    /// Write [`SHOW_SWAP`]: the guest is shown the device. Until then its transport reads as
+    /// no device (DeviceID 0, which a driver passes over: virtio 1.3 §4.2.3.1.1), so that
+    /// the kernel, probing devices as it boots, does not give the window page structures
+    /// (a 64th of it in memory, drivers/nvdimm/pmem.c, pmem_should_map_pages) that init
+    /// then has it probed without (`force_raw`).
+    pub const SWAP: u64 = 0x38;
 
     pub const SNAPSHOT_NOW: u32 = 1;
+    pub const SHOW_SWAP: u32 = 1;
 }
 
 /// Boot-phase markers written to the control page.

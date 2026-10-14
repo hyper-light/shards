@@ -55,6 +55,8 @@ mod run;
 #[cfg(target_os = "linux")]
 mod setup;
 #[cfg(target_os = "linux")]
+mod swap;
+#[cfg(target_os = "linux")]
 mod tree;
 
 fn main() {

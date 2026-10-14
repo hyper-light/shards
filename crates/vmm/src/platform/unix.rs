@@ -498,6 +498,38 @@ pub unsafe fn unmap_file_padded(ptr: NonNull<u8>, _viewed: usize, len: usize) {
     unsafe { release(ptr, len) };
 }
 
+/// The first `len` bytes of `file`, opened for writing, mapped shared and writable: what
+/// is written there is the file's, through the page cache, which writes it back as it
+/// would any file's (a run's swap, D159). `len` is page-aligned and within the file.
+pub fn map_file_shared(file: &File, len: usize) -> io::Result<NonNull<u8>> {
+    // SAFETY: a fresh shared mapping of the caller's file; the caller owns it until
+    // `unmap_file_shared`.
+    let p = unsafe {
+        libc::mmap(
+            std::ptr::null_mut(),
+            len,
+            libc::PROT_READ | libc::PROT_WRITE,
+            libc::MAP_SHARED,
+            file.as_raw_fd(),
+            0,
+        )
+    };
+    if p == libc::MAP_FAILED {
+        return Err(io::Error::last_os_error());
+    }
+    NonNull::new(p.cast()).ok_or_else(|| io::Error::other("mmap returned NULL"))
+}
+
+/// Unmaps what [`map_file_shared`] mapped.
+///
+/// # Safety
+/// `ptr` and `len` are a mapping's from [`map_file_shared`], which nothing uses any more:
+/// no hypervisor maps it.
+pub unsafe fn unmap_file_shared(ptr: NonNull<u8>, len: usize) {
+    // SAFETY: forwarded caller contract.
+    unsafe { libc::munmap(ptr.as_ptr().cast(), len) };
+}
+
 /// Faults in the `len` bytes at `ptr` writable, copying each page a private mapping
 /// still shares with its file: the copies the first writes would make, made ahead
 /// (madvise(2) MADV_POPULATE_WRITE, Linux 5.14: a write fault on each page, mm/madvise.c

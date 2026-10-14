@@ -16,6 +16,7 @@ pub static RUN: Command = Command {
     aliases: "shards container run, shards run",
     args: Args::AtLeast(1),
     flags: &[
+        Flag::many("attach", Some(b'a'), "list", "Attach to STDIN, STDOUT or STDERR"),
         Flag::bool(
             "detach",
             Some(b'd'),
@@ -400,7 +401,6 @@ pub static RUN: Command = Command {
         ),
     ],
     unserved: "\
-attach a m - -\n\
 cgroup-parent - s - -\n\
 io-maxbandwidth - bytes 0 -\n\
 io-maxiops - uint64 0 -\n\
@@ -420,6 +420,7 @@ pub static CREATE: Command = Command {
     aliases: "shards container create, shards create",
     args: Args::AtLeast(1),
     flags: &[
+        Flag::many("attach", Some(b'a'), "list", "Attach to STDIN, STDOUT or STDERR"),
         // Content trust is gone from the CLI; the flag only says so.
         Flag::bool(
             "disable-content-trust",
@@ -792,7 +793,6 @@ pub static CREATE: Command = Command {
         ),
     ],
     unserved: "\
-attach a m - -\n\
 cgroup-parent - s - -\n\
 io-maxbandwidth - bytes 0 -\n\
 io-maxiops - uint64 0 -\n\

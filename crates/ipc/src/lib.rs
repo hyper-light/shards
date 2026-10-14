@@ -617,6 +617,9 @@ pub struct Run {
     pub umask: Option<u32>,
     /// `--storage-opt`s, each `KEY=VALUE` (HostConfig.StorageOpt, D156).
     pub storage_opt: Vec<String>,
+    /// `-a`: the streams its client attaches, `stdin`, `stdout` and `stderr`; none given,
+    /// stdout and stderr, and stdin with `-i` (docker/cli opts.go).
+    pub attach: Vec<String>,
 }
 
 /// `run`'s resource flags as docker/cli sends them (container.Resources): memory in
@@ -1054,6 +1057,7 @@ impl Run {
                 self.umask.map(|u| vec![u.to_string()]).unwrap_or_default(),
             ),
             ("storage-opt", self.storage_opt.clone()),
+            ("attach", self.attach.clone()),
         ]
         .into_iter()
         .filter(|(_, v)| !v.is_empty())
@@ -1213,6 +1217,7 @@ impl Run {
                     "cgroupns" => run.cgroupns = values.into_iter().next().unwrap_or_default(),
                     "umask" => run.umask = Some(values.first()?.parse().ok()?),
                     "storage-opt" => run.storage_opt = values,
+                    "attach" => run.attach = values,
                     // One a later build added: not this one's to read.
                     _ => {}
                 }
@@ -1368,6 +1373,10 @@ pub const RUN_LAYER_IN: u8 = 32;
 /// A `kind::RUN` flag: the container stays once it stops, and its writable layer goes to
 /// a descriptor after those, told by `kind::LAYER_SAVED` once whole.
 pub const RUN_LAYER_OUT: u8 = 64;
+/// A `kind::RUN` flag: the run's swap comes with it (D159), a sparse file of what its
+/// limits allow, after the layers' descriptors, for its microVM's join disk to take as a
+/// range the guest writes and swaps to.
+pub const RUN_SWAP: u8 = 128;
 
 /// The largest payload a message may carry.
 pub const MAX_PAYLOAD: usize = 1 << 20;
@@ -1783,6 +1792,7 @@ mod tests {
             cgroupns: "private".into(),
             umask: Some(0o22),
             storage_opt: vec!["size=1G".into()],
+            attach: vec!["stdout".into(), "stdin".into()],
             init_process: Some(false),
             pid: "host".into(),
         };
@@ -1841,6 +1851,7 @@ mod tests {
             cgroupns: String::new(),
             umask: None,
             storage_opt: Vec::new(),
+            attach: Vec::new(),
             ..run.clone()
         };
         let boundary = earlier.encode().len() - 4;

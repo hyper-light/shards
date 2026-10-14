@@ -649,7 +649,12 @@ fn config(f: &Facts<'_>) -> (Option<Vec<String>>, Option<Vec<String>>, Value) {
         .stop_signal
         .clone()
         .unwrap_or_else(|| image_string(image, "StopSignal"));
-    let attach = !run.detach;
+    // The streams its client attached (`-a`; stdout and stderr where none was given, and
+    // stdin with `-i`), none where its run was detached (`run -d`): a created one's as its
+    // command line gave them, which `start -a` attaches.
+    let detached = run.detach && !run.create;
+    let attach =
+        |stream: &str| !detached && (run.attach.is_empty() || run.attach.iter().any(|a| a == stream));
     let hostname = run
         .hostname
         .clone()
@@ -658,13 +663,16 @@ fn config(f: &Facts<'_>) -> (Option<Vec<String>>, Option<Vec<String>>, Value) {
         .field("Hostname", s(&hostname))
         .field("Domainname", s(&run.domainname))
         .field("User", s(&user_or(&run.user, "User")))
-        .field("AttachStdin", Value::Bool(attach && run.interactive))
-        .field("AttachStdout", Value::Bool(attach))
-        .field("AttachStderr", Value::Bool(attach))
+        .field(
+            "AttachStdin",
+            Value::Bool(!detached && (run.interactive || run.attach.iter().any(|a| a == "stdin"))),
+        )
+        .field("AttachStdout", Value::Bool(attach("stdout")))
+        .field("AttachStderr", Value::Bool(attach("stderr")))
         .tagged("ExposedPorts", Some("ExposedPorts"), true, set(exposed))
         .field("Tty", Value::Bool(run.tty.is_some()))
         .field("OpenStdin", Value::Bool(run.interactive))
-        .field("StdinOnce", Value::Bool(attach && run.interactive))
+        .field("StdinOnce", Value::Bool(!detached && run.interactive))
         .field("Env", strs(&env, false))
         .field(
             "Cmd",
@@ -925,9 +933,9 @@ fn host_config(f: &Facts<'_>) -> Value {
                 .map_or_else(|| Struct::nil("uint32"), |m| int(i64::from(m))),
         )
         .field("Isolation", s(&run.isolation))
-        // Resources, embedded, as dockerd keeps them: swap twice the memory where only
-        // memory is limited (adaptContainerSettings), a pids limit of 0 or less unset
-        // (postContainersCreate), and swappiness discarded on cgroup v2.
+        // Resources, embedded: swap twice the memory where only memory is limited, as a
+        // host's container has (adaptContainerSettings), a pids limit of 0 or less unset
+        // (postContainersCreate), swappiness and the OOM killer as asked (D159).
         .tagged("CPUShares", Some("CpuShares"), false, int(res.cpu_shares))
         .field("Memory", int(res.memory))
         .tagged("NanoCPUs", Some("NanoCpus"), false, int(res.nano_cpus))
@@ -965,17 +973,11 @@ fn host_config(f: &Facts<'_>) -> Value {
         .field("DeviceRequests", device_requests(run))
         .field("MemoryReservation", int(res.memory_reservation))
         .field("MemorySwap", int(crate::resources::memory_swap(res)))
-        .field("MemorySwappiness", Struct::nil("int64"))
-        // Set false as it is made, and dropped as it starts where the kernel cannot
-        // keep the OOM killer away (daemon/daemon_unix.go): cgroup v2's.
         .field(
-            "OomKillDisable",
-            if f.container.started.is_some() {
-                Struct::nil("bool")
-            } else {
-                Value::Bool(false)
-            },
+            "MemorySwappiness",
+            res.memory_swappiness.map_or_else(|| Struct::nil("int64"), int),
         )
+        .field("OomKillDisable", Value::Bool(res.oom_kill_disable))
         .field(
             "PidsLimit",
             if res.pids_limit > 0 {
@@ -1489,9 +1491,11 @@ mod tests {
                 .iter()
                 .map(|a| a.as_str().unwrap().to_owned())
                 .collect();
-            let detached = case["verb"] == "run";
+            // As the CLI asks for them: `create`'s detached and a create (cli/request.rs
+            // `create`), each `run` case `-d`.
             let mut run = crate::cli::request::for_test(&args).unwrap();
-            run.detach = detached;
+            run.create = case["verb"] == "create";
+            run.detach = true;
             let want = &case["doc"];
             let started = want["State"]["Status"] == "running";
             // Its mount points, as the daemon registers them, its volumes in a store of
@@ -1553,6 +1557,14 @@ mod tests {
             let mut got: serde_json::Value = serde_json::from_str(&json(&document(&facts))).unwrap();
             let mut want = want.clone();
             normalize(&mut got, &mut want, started);
+            // Swappiness and the OOM killer kept off as given (D159), the run's microVM's
+            // own, which a cgroup v2 host's dockerd discards.
+            if let Some(s) = run.resources.memory_swappiness {
+                want["HostConfig"]["MemorySwappiness"] = serde_json::json!(s);
+            }
+            if run.resources.oom_kill_disable {
+                want["HostConfig"]["OomKillDisable"] = serde_json::json!(true);
+            }
             assert_eq!(got, want, "{args:?}");
         }
     }
@@ -1605,6 +1617,11 @@ mod tests {
             d["Driver"] = json!("erofs");
             d["Storage"]["RootFS"]["Snapshot"]["Name"] = json!("erofs");
             d["HostConfig"]["LogConfig"]["Type"] = json!("shards");
+            // The OOM killer's setting as given (D159), kept off where asked: a cgroup v2
+            // host's dockerd drops it as the container starts, having no control for it.
+            if d["HostConfig"]["OomKillDisable"].is_null() {
+                d["HostConfig"]["OomKillDisable"] = json!(false);
+            }
             d["NetworkSettings"]["SandboxID"] = json!("");
             d["NetworkSettings"]["SandboxKey"] = json!("");
             if let Some(nets) = d["NetworkSettings"]["Networks"].as_object_mut() {

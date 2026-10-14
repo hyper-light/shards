@@ -212,6 +212,18 @@ impl mem::Mapper for crate::hv::Stage2 {
     }
 }
 
+#[cfg(hv)]
+impl pmem::Slots for crate::hv::DeviceSlots {
+    unsafe fn map(&self, i: u32, host: *mut u8, gpa: u64, len: usize, writable: bool) -> Result<(), String> {
+        // SAFETY: forwarded caller contract.
+        unsafe { crate::hv::DeviceSlots::map(self, i, host, gpa, len, writable) }.map_err(|e| e.to_string())
+    }
+
+    fn unmap(&self, i: u32, gpa: u64, len: usize) -> Result<(), String> {
+        crate::hv::DeviceSlots::unmap(self, i, gpa, len).map_err(|e| e.to_string())
+    }
+}
+
 /// The virtio-mem device of `memory`'s memory to plug, and the sizes the control page
 /// shares with it (D133); none where it has none. The region is the VM's from here on,
 /// mapped as the hypervisor maps it ([`crate::hv::Vm::add_hotplug`]).
@@ -232,6 +244,60 @@ fn hotplug_device(
     let stage2 = unsafe { vm.add_hotplug(host, gpa, len) }.map_err(|e| e.to_string())?;
     let sizes = Arc::new(mem::Sizes::new(gpa, len as u64, most));
     Ok(Some((Box::new(mem::Mem::new(sizes.clone(), stage2)), sizes)))
+}
+
+/// Where `config`'s swap window goes (D159), if it has one: at the first GiB boundary at or
+/// past `top`, the end of everything else the guest is given, and no longer than the
+/// guest's addresses reach (`limit`, the first past them): `((gpa, len), end)`, `end` past
+/// the window, or `top` where there is none. A window cut short holds less swap than a
+/// run's limits allow, as a host's swap device smaller than a container's allowance does;
+/// the run's file is cut to it (`pmem::SwapWindow::attach`).
+#[cfg(hv)]
+fn swap_layout(
+    config: &crate::snapshot::MachineConfig,
+    top: u64,
+    limit: u64,
+) -> Result<(Option<(u64, u64)>, u64), String> {
+    const GIB: u64 = 1 << 30;
+    if config.swap_mib == 0 {
+        return Ok((None, top));
+    }
+    let overflow = || {
+        format!(
+            "a swap window of {} MiB overflows the address space",
+            config.swap_mib
+        )
+    };
+    let asked = config.swap_mib.checked_mul(1 << 20).ok_or_else(overflow)?;
+    let at = top.checked_next_multiple_of(GIB).ok_or_else(overflow)?;
+    let room = limit.saturating_sub(at) / pmem::ALIGN * pmem::ALIGN;
+    let len = asked.min(room);
+    if len < asked {
+        crate::warn!(
+            "a swap window of {} MiB where the guest's addresses leave {} MiB",
+            asked >> 20,
+            room >> 20
+        );
+    }
+    if len < pmem::ALIGN {
+        return Ok((None, top));
+    }
+    let end = at.checked_add(len).ok_or_else(overflow)?;
+    Ok((Some((at, len)), end))
+}
+
+/// The swap window of `layout` (D159), its head mapped through slots of its own, which the
+/// control page shares with its device; none where it has none.
+#[cfg(hv)]
+fn swap_window(
+    vm: &crate::hv::Vm,
+    layout: Option<(u64, u64)>,
+) -> Result<Option<Arc<pmem::SwapWindow>>, String> {
+    let Some((gpa, len)) = layout else {
+        return Ok(None);
+    };
+    let slots = Box::new(vm.device_slots(pmem::SWAP_SLOTS));
+    Ok(Some(Arc::new(pmem::SwapWindow::new(gpa, len, slots)?)))
 }
 
 /// The virtio-balloon device that gives the host back the memory the guest reports free
@@ -412,6 +478,7 @@ fn machine_config(cfg: &Config) -> Result<crate::snapshot::MachineConfig, String
         reporting: cfg.reporting,
         // Its window's length, once the machine has its renderer (aarch64.rs `build`).
         gpu: None,
+        swap_mib: cfg.swap_mib,
     })
 }
 
@@ -491,6 +558,10 @@ pub struct Config {
     /// once the guest has made a context or a resource, which are its host driver's and no
     /// snapshot holds; a template is saved before any (D150).
     pub gpu: bool,
+    /// A swap window of this many MiB (D159): a virtio-pmem device, last of its devices, a
+    /// run's swap file mapped into it as it is given one; 0 for none. Hidden from the guest
+    /// until its init shows it (`control::SHOW_SWAP`).
+    pub swap_mib: u64,
     /// A PCI bus with test functions on it, QEMU's edu's identification and liveness
     /// registers (D153), at each of these places on bus 0, `(device, function)`: what
     /// tests read to show that the bus reaches the VMM. A machine with a PCI bus saves no
@@ -1154,11 +1225,11 @@ impl crate::devices::pci::vfio::Host for crate::hv::Vm {
 impl crate::devices::pci::vfio::BarSlots for crate::hv::DeviceSlots {
     unsafe fn map(&self, i: u32, host: *mut u8, gpa: u64, len: usize) -> Result<(), String> {
         // SAFETY: forwarded caller contract.
-        unsafe { crate::hv::DeviceSlots::map(self, i, host, gpa, len) }.map_err(|e| e.to_string())
+        unsafe { crate::hv::DeviceSlots::map(self, i, host, gpa, len, true) }.map_err(|e| e.to_string())
     }
 
     fn unmap(&self, i: u32) -> Result<(), String> {
-        crate::hv::DeviceSlots::unmap(self, i).map_err(|e| e.to_string())
+        crate::hv::DeviceSlots::unmap(self, i, 0, 0).map_err(|e| e.to_string())
     }
 }
 
@@ -1220,6 +1291,7 @@ impl Config {
             hotplug_mib: 0,
             reporting: false,
             gpu: false,
+            swap_mib: 0,
             pci_test: Vec::new(),
             vfio: Vec::new(),
         }
@@ -1561,6 +1633,7 @@ mod tests {
             hotplug_mib: 0,
             reporting: false,
             gpu: None,
+            swap_mib: 0,
         }
     }
 

@@ -60,7 +60,8 @@ const MAGIC: [u8; 8] = *b"SHRDSNAP";
 /// 14: and whether a virtio-balloon device gives back the memory the guest reports free
 ///     (D151).
 /// 15: and the machine's GPU, by its window's length, if it has one (D150).
-const VERSION: u32 = 15;
+/// 16: and its swap window's length in MiB, none of it a run's (D159).
+const VERSION: u32 = 16;
 /// The snapshot format this build writes and reads: what a snapshot kept for reuse is
 /// keyed by.
 pub const FORMAT: u32 = VERSION;
@@ -111,6 +112,10 @@ pub struct MachineConfig {
     /// A virtio-gpu device (D144), by the length of the window its blobs are mapped into,
     /// as the guest saw it: a restore's renderer must offer at least as much (D150).
     pub gpu: Option<u64>,
+    /// The length of the guest's swap window in MiB (D159), 0 for none: a virtio-pmem
+    /// device a run's swap file is mapped into, last of its devices. A snapshot keeps it
+    /// with no run's file.
+    pub swap_mib: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -317,6 +322,7 @@ fn encode(s: &Snapshot, generation: &str, identities: &[Identity]) -> Result<Vec
     w.bool(s.config.reporting);
     w.bool(s.config.gpu.is_some());
     w.u64(s.config.gpu.unwrap_or(0));
+    w.u64(s.config.swap_mib);
     w.bytes(&s.arch);
     w.bytes(&s.devices);
     Ok(w.into_bytes())
@@ -394,6 +400,7 @@ fn decode(bytes: &[u8]) -> codec::Result<Decoded> {
     let reporting = r.bool()?;
     let has_gpu = r.bool()?;
     let gpu_window = r.u64()?;
+    let swap_mib = r.u64()?;
     let arch_state = r.bytes(usize::MAX)?.to_vec();
     let devices = r.bytes(usize::MAX)?.to_vec();
     r.finish()?;
@@ -413,6 +420,7 @@ fn decode(bytes: &[u8]) -> codec::Result<Decoded> {
                 hotplug_mib,
                 reporting,
                 gpu: has_gpu.then_some(gpu_window),
+                swap_mib,
             },
             arch: arch_state,
             devices,
@@ -889,6 +897,7 @@ mod tests {
                 hotplug_mib: 0,
                 reporting: false,
                 gpu: None,
+                swap_mib: 0,
             },
             arch: vec![marker, 2, 3],
             devices: vec![9; 100],

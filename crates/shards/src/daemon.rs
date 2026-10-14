@@ -108,6 +108,23 @@ pub(super) const LAYER: &str = "layer.tar";
 /// The request a container was made by, in its directory, for `shards start`.
 pub(super) const REQUEST: &str = "request";
 const LAYER_NEW: &str = "layer.new";
+/// A running container's swap (D159), in its directory until its microVM holds it.
+const SWAP: &str = "swap";
+
+/// A new, empty swap file of `bytes` at `at`, sparse, in place of any before it: only this
+/// user's.
+fn open_swap(at: &Path, bytes: u64) -> std::io::Result<std::fs::File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(at)?;
+    file.set_len(bytes)?;
+    Ok(file)
+}
 
 /// A new file for a container's layer to be written to, in place of any half-written
 /// one: only this user's.
@@ -2040,6 +2057,8 @@ impl<D: Disk> Daemon<D> {
             abandon(&id);
             return None;
         }
+        // Its limits, a joiner's too, held by its own cgroup in its microVM.
+        prepared.spec.cgroup = crate::resources::cgroup(&run.resources, crate::resources::host_cpus());
         // A user network's endpoint (D46): its address, as the microVM starts, or why
         // the start fails, the microVM kept.
         let mut network_setup = Vec::new();
@@ -2177,11 +2196,9 @@ impl<D: Disk> Daemon<D> {
         // A new container keeps the request it was made by, for `shards start` (D37).
         if again.is_none() {
             let dir = lock(&self.containers).dir(&id);
-            // Detached as it was made, which its Config says (AttachStdout); a start says
-            // how it attaches then (`again_as`).
-            let mut kept = run.clone();
-            kept.create = false;
-            if let Err(e) = std::fs::write(dir.join(REQUEST), kept.encode()) {
+            // As it was made: a create's a create, whose Config says the streams its command
+            // line gave (AttachStdout); a start says how it attaches then (`again_as`).
+            if let Err(e) = std::fs::write(dir.join(REQUEST), run.encode()) {
                 log(format!(
                     "container {id}: keeping its request: {e}; it cannot be started again"
                 ));
@@ -2436,6 +2453,32 @@ impl<D: Disk> Daemon<D> {
             flags |= shards_ipc::RUN_LAYER_OUT;
             fds.push(file.as_fd());
         }
+        // Its swap (D159): a sparse file of what its limits allow, made anew for each run,
+        // which its microVM maps into its swap window; unlinked once the microVM has it,
+        // so that what it swaps out is nowhere once the microVM has ended.
+        let swap = match crate::resources::swap_bytes(&run.resources) {
+            Some(bytes) => {
+                let at = lock(&self.containers).dir(&id).join(SWAP);
+                let vcpus = crate::resources::vcpus(&run.resources, crate::resources::host_cpus());
+                match open_swap(&at, crate::resources::swap_device_bytes(bytes, vcpus)) {
+                    Ok(file) => Some((file, at)),
+                    Err(e) => {
+                        refuse(&format!(
+                            "{}: its swap, {}: {e}",
+                            id.get(..12).unwrap_or(&id),
+                            at.display()
+                        ));
+                        abandon(&id);
+                        return None;
+                    }
+                }
+            }
+            None => None,
+        };
+        if let Some((file, _)) = &swap {
+            flags |= shards_ipc::RUN_SWAP;
+            fds.push(file.as_fd());
+        }
         if let Some(link) = &shares {
             fds.push(link.as_fd());
         }
@@ -2524,8 +2567,11 @@ impl<D: Disk> Daemon<D> {
                 _ => self.warm_for(threads, &prepared, &start, &say),
             },
         );
-        // Its VM has its root filesystem, or never will.
+        // Its VM has its root filesystem, or never will; and its swap, off the run's path.
         drop(prepared.lease.take());
+        if let Some((_, at)) = &swap {
+            let _ = std::fs::remove_file(at);
+        }
         match started {
             Ok(inbox) => Some((id, inbox)),
             Err(said) => {
@@ -2743,7 +2789,6 @@ impl<D: Disk> Daemon<D> {
             ));
             spec.hosts = Vec::new();
             spec.domainname = run.domainname.clone().into_bytes();
-            spec.cgroup = crate::resources::cgroup(&run.resources, crate::resources::host_cpus());
             spec.setup = crate::setup::setup(run, &[], crate::run::cdi_edits(run).ok().flatten().as_ref())?;
             return Ok(());
         }
@@ -2771,7 +2816,6 @@ impl<D: Disk> Daemon<D> {
             })
             .collect::<Result<_, &str>>()?;
         spec.domainname = run.domainname.clone().into_bytes();
-        spec.cgroup = crate::resources::cgroup(&run.resources, crate::resources::host_cpus());
         spec.setup = crate::setup::setup(run, &[], crate::run::cdi_edits(run).ok().flatten().as_ref())?;
         Ok(())
     }
@@ -4666,6 +4710,10 @@ impl<D: Disk> Daemon<D> {
             // And memory its workload frees given back to the host, as it reports it
             // free, as a container's is (D151).
             cfg.reporting = true;
+            // And a swap window as long as the host's memory (D159), which a run with a
+            // memory limit swaps to: as much as the most memory a run may have, the swap
+            // that limit gives by default.
+            cfg.swap_mib = crate::build::host_memory().map_or(0, |bytes| (bytes >> 20) & !1);
             cfg.pmem.extend(server.iter().cloned());
             // A slot for each directory it shares (D38), which its run fills.
             cfg.shares = (0..prepared.shares).map(|_| Arc::default()).collect();
@@ -5093,6 +5141,9 @@ impl<D: Disk> Daemon<D> {
         }
         if cfg.reporting {
             args.push("--reporting".into());
+        }
+        if cfg.swap_mib > 0 {
+            args.extend(["--swap-window".into(), cfg.swap_mib.to_string().into()]);
         }
         if let Some(init) = &cfg.init {
             args.extend(["--init".into(), init.into()]);

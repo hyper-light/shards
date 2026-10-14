@@ -316,6 +316,12 @@ fn parse_run(args: impl Iterator<Item = OsString>) -> Result<Run, String> {
             }
             // A join disk, empty until a container joins the VM's network (D119).
             "--join" => cfg.join = Some(give_join_disk()),
+            // A swap window of this many MiB (D159), a run's swap mapped into it.
+            "--swap-window" => {
+                cfg.swap_mib = text(value("--swap-window")?)?
+                    .parse()
+                    .map_err(|e| format!("--swap-window: {e}"))?
+            }
             // A join disk its builder attaches files to on this socket, a cache's layers
             // and the files its steps write theirs to (D134); the VM ends as the socket
             // closes, its builder gone (D137).
@@ -659,6 +665,20 @@ fn serve_attach(name: &str) -> Result<(), String> {
         .map_err(|e| format!("serving its builder: {e}"))
 }
 
+/// This VM's handle, once it runs: what a joiner's swap is mapped through (D159).
+#[cfg(unix)]
+static RUNNING: std::sync::OnceLock<Handle> = std::sync::OnceLock::new();
+
+/// Maps `file`, a joiner's swap, into this VM's swap window (D159), unless a member's is
+/// mapped already, which they share: its length where this one was mapped.
+#[cfg(unix)]
+pub fn attach_swap(file: std::fs::File) -> Result<Option<u64>, String> {
+    RUNNING
+        .get()
+        .ok_or("the microVM is not running yet")?
+        .attach_swap(file)
+}
+
 /// This VM's join disk, where it has one (D119).
 #[cfg_attr(not(unix), allow(dead_code))]
 pub fn join_disk() -> Option<&'static shards_vmm::devices::virtio::block::Join> {
@@ -997,6 +1017,7 @@ fn serve_workload(
         };
         let (tx, rx) = std::sync::mpsc::channel();
         let timing = &TIMING;
+        let _ = RUNNING.set(handle.clone());
         let stopper = handle.clone();
         let served = std::thread::Builder::new()
             .name("workload".into())
@@ -1104,12 +1125,24 @@ fn serve_workload(
                             if let Err(e) = stopper.set_plug_most(request.plug) {
                                 shards_vmm::debug!("{e}");
                             }
+                            // Its swap (D159), mapped into the guest's swap window before
+                            // its guest hears of the run, which init swaps to before the
+                            // command starts.
+                            let mut spec = request.spec;
+                            if let Some(file) = request.swap
+                                && let Some(len) = stopper
+                                    .attach_swap(file)
+                                    .map_err(|e| format!("its swap: {e}"))
+                                    .inspect_err(|e| report(e))?
+                            {
+                                spec.setup.push(format!("swap={len}").into_bytes());
+                            }
                             timing
                                 .asked
                                 .store(request.timing, std::sync::atomic::Ordering::Relaxed);
                             let _ = client.set(request.client);
                             Ok(workload::Asked {
-                                spec: request.spec,
+                                spec,
                                 interactive: request.interactive,
                                 detached: request.detached,
                                 log: request.log,

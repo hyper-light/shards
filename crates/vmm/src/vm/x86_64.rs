@@ -400,6 +400,8 @@ fn assemble(
     // has: its kernel takes no memory or window past them (Linux's iomem_resource), and the
     // hypervisor maps none.
     let bits = vm.phys_bits().map_err(|e| e.to_string())?;
+    // The swap window past all of that (D159), within them.
+    let (swap_at, top) = super::swap_layout(config, top, 1u64.checked_shl(bits).unwrap_or(u64::MAX))?;
     if top > 1 << bits {
         return Err(format!(
             "the guest's memory and devices end at {top:#x}, past the {bits} address bits its CPU has"
@@ -417,6 +419,7 @@ fn assemble(
     }
     let (hotplug, sizes) = super::hotplug_device(&vm, memory, config)?.unzip();
     let reporting = super::reporting_device(&vm, config);
+    let swap = super::swap_window(&vm, swap_at)?;
     let irqs = vm.irqs();
     debug!("VM created and RAM mapped");
 
@@ -434,7 +437,15 @@ fn assemble(
         config,
         &regions,
         hosts,
-        hotplug.into_iter().chain(reporting).chain(iommu_device).collect(),
+        hotplug
+            .into_iter()
+            .chain(reporting)
+            .chain(
+                swap.clone()
+                    .map(|w| Box::new(pmem::Pmem::swap(w)) as Box<dyn crate::devices::virtio::VirtioDevice>),
+            )
+            .chain(iommu_device)
+            .collect(),
         virtio_max,
     )?;
     let iommu_at = iommu.is_some().then(|| devices.len() - 1);
@@ -464,6 +475,9 @@ fn assemble(
         });
     }
     let control = Arc::new(Control::default());
+    if let Some(window) = swap {
+        control.on_swap(window);
+    }
     if let Some(sizes) = sizes {
         control.on_hotplug(sizes);
     }
