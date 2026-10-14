@@ -185,8 +185,13 @@ pub(crate) fn sync_clock() -> io::Result<()> {
 }
 
 pub(crate) fn power_off() -> ! {
-    // SAFETY: PID 1 flushing filesystems and asking the kernel to power off (PSCI SYSTEM_OFF).
+    // SAFETY: PID 1 waiting for its console to send what it wrote, flushing filesystems and
+    // asking the kernel to power off (PSCI SYSTEM_OFF). The console's tty holds a write
+    // until its UART has sent it, and the kernel's own lines as it powers off go past it:
+    // powering off at once can drop PID 1's last words.
     unsafe {
+        libc::tcdrain(1);
+        libc::tcdrain(2);
         libc::sync();
         libc::reboot(libc::RB_POWER_OFF);
     }

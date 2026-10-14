@@ -44,8 +44,11 @@ pub fn main() {
         Err(e) => format!("SHARDS-TEST FAIL {e}"),
     };
     let _ = writeln!(io::stdout(), "{line}");
-    // SAFETY: PID 1 flushing and powering off.
+    // SAFETY: PID 1 waiting for its console to send what it wrote, flushing and powering
+    // off. The console's tty holds a write until its UART has sent it, and the kernel's
+    // own lines as it powers off go past it: powering off at once can drop the last line.
     unsafe {
+        libc::tcdrain(1);
         libc::sync();
         libc::reboot(libc::RB_POWER_OFF);
     }
