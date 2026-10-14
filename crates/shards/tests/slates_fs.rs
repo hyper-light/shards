@@ -1,15 +1,19 @@
 //! A shards microVM mounts a slates volume over virtio-fs (§4.6, the slates integration; `docs/wip/shards/`).
 //!
 //! A slates daemon serves a one-file volume on a Unix socket — slates' `bridge-fuse` `shards_fs::serve`, built as
-//! the `shards_fs_serve` example and named here by the `SLATES_FS_SERVE` environment variable. `run --kernel …
-//! --slates-fs <socket>` fills a virtio-fs share slot from that socket (the slot speaks this device's own le32 +
-//! FUSE framing, which the slates backend mirrors), so the guest mounts tag `shards0` and reads `/hello` with no
-//! host mount and no DAX window — the achievable slates integration where the VMM has no DAX cache window.
+//! the `shards_fs_serve` example and named here by the `SLATES_FS_SERVE` environment variable. The test connects
+//! (unsandboxed) and passes the descriptor to `run --kernel … --slates-fs-fd <N>`, which fills a virtio-fs share
+//! slot from it (a VM process is App-Sandboxed and cannot open the socket itself); the slot speaks this device's
+//! own le32 + FUSE framing, which the slates backend mirrors, so the guest mounts tag `shards0` and reads `/hello`
+//! with no host mount and no DAX window — the achievable slates integration where the VMM has no DAX cache window.
 //!
-//! Skips loudly (prints and passes) where the host cannot run VMs or `SLATES_FS_SERVE` is unset — the pattern the
-//! other VM tests use, so a machine without the slates binary or a hypervisor does not false-fail.
+//! This runs on Linux (KVM) and macOS (HVF) and on both arches — the integration is Unix-only (fd-passing);
+//! Windows microVMs would pass a HANDLE and reach the backend over a named pipe, a follow-up, so the whole test is
+//! `#[cfg(unix)]`. It skips loudly (prints and passes) where the host cannot run VMs or `SLATES_FS_SERVE` is unset —
+//! the pattern the other VM tests use, so a machine without the slates binary or a hypervisor does not false-fail.
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
+#![cfg(unix)]
 
 mod common;
 
