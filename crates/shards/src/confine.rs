@@ -137,6 +137,9 @@ pub fn confine() -> Result<(), String> {
     // SAFETY: getpid(2) has no preconditions.
     let pid = unsafe { libc::getpid() };
     rules.push(Rule::with(libc::SYS_tgkill, 0, &[pid as u32]));
+    // A pidfd of this process alone: what a run's client waits on for its VM process's end
+    // where the VM holds a host's devices (warm.rs, `finish`).
+    rules.push(Rule::with(libc::SYS_pidfd_open, 0, &[pid as u32]));
     rules.push(Rule::with(libc::SYS_socket, 0, &[libc::AF_UNIX as u32]));
     rules.push(Rule::with(libc::SYS_socketpair, 0, &[libc::AF_UNIX as u32]));
     // Naming threads; and no_new_privs, which Landlock needs set and which only takes

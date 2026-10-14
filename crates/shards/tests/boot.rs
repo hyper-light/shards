@@ -674,12 +674,13 @@ fn a_nested_guest_runs_vms_of_its_own() {
 /// that has one to give: a nested guest given test functions, a device of one and a
 /// device of two (as a GPU with its audio function), runs shards as a Linux host does.
 /// The two functions, one IOMMU group of the outer guest's, its group 1, it gives
-/// vfio-pci, and a run is given their group, whose microVM shards' daemon boots with them
-/// behind the microVM's own IOMMU, one device there, which its guest takes as its own group
-/// 0. The run's workload, given the group's node where its guest's sysfs puts the group,
-/// takes each function through VFIO as DPDK finds one, by its address's group in sysfs,
-/// and moves a page through each by DMA, one container's mappings for both. An x86_64
-/// host gives no guest virtualization of its own yet.
+/// vfio-pci, and a run is given their group, by its node and then by a CDI device whose
+/// node it is, whose microVM shards' daemon boots with them behind the microVM's own
+/// IOMMU, one device there, which its guest takes as its own group 0. Each run's workload,
+/// given the group's node where its guest's sysfs puts the group, takes each function
+/// through VFIO as DPDK finds one, by its address's group in sysfs, and moves a page
+/// through each by DMA, one container's mappings for both. An x86_64 host gives no guest
+/// virtualization of its own yet.
 #[test]
 fn a_run_is_given_a_hosts_vfio_group() {
     if cannot_run_vms() {
@@ -748,8 +749,8 @@ fn a_run_is_given_a_hosts_vfio_group() {
     let lines = |want: &str| ran.stdout.lines().filter(|l| l.trim_end() == want).count();
     assert_eq!(
         lines(&format!("L2: {DMA_THROUGH_IOMMU}")),
-        2,
-        "the run's DMA: {ran}"
+        4,
+        "the runs' DMA: {ran}"
     );
     assert_eq!(lines("SHARDS-TEST PASS"), 1, "the outer guest: {ran}");
     assert_eq!(ran.status, Some(0), "{ran}");

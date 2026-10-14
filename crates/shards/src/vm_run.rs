@@ -888,6 +888,7 @@ fn warm_boot(mut cfg: Config, rootfs: PathBuf, fd: i32) -> ExitCode {
     let template = cfg.snapshot.is_some();
     boot_into(&mut cfg, rootfs, template);
     cfg.console = Console::Discard;
+    crate::warm::HOST_DEVICES.store(!cfg.vfio.is_empty(), std::sync::atomic::Ordering::Relaxed);
     serve_workload(None, Source::Warm(daemon), move |vsock| {
         cfg.vsock = Some(vsock);
         start(&cfg)

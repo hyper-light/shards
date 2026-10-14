@@ -412,21 +412,13 @@ fn cgroup_rule(text: &str) -> Result<Rule, String> {
     })
 }
 
-/// A `--device` as a `devices=` entry names it: a path of the VM's, with its path in the
-/// container and its cgroup access; or a host's VFIO group given the microVM (D154), with
-/// the path it was asked by, its functions' guest addresses (comma-separated), its path in
-/// the container (empty where it is the group's own; `-` where the run is given none of
-/// its own, a directory it was asked by holding it) and its cgroup access.
-#[derive(Debug, PartialEq, Eq)]
-enum Wanted<'a> {
-    Path([&'a str; 3]),
-    Vfio([&'a str; 4]),
-}
-
 /// What a `devices=` setup entry asks for (shards' setup.rs `devices`).
 struct Asked<'a> {
     privileged: bool,
-    devices: Vec<Wanted<'a>>,
+    /// The host's VFIO groups the microVM was given (D154): each its path on the host, and
+    /// its functions' addresses on the microVM's bus, comma-separated.
+    vfio: Vec<[&'a str; 2]>,
+    devices: Vec<[&'a str; 3]>,
     rules: Vec<&'a str>,
     cdi: Vec<&'a str>,
     /// CDI's nodes (D146): each its host path, path, cgroup access, kind, mode, owner's
@@ -447,6 +439,7 @@ fn asked(entry: &[u8]) -> Option<Asked<'_>> {
     };
     let mut a = Asked {
         privileged,
+        vfio: Vec::new(),
         devices: Vec::new(),
         rules: Vec::new(),
         cdi: Vec::new(),
@@ -455,15 +448,8 @@ fn asked(entry: &[u8]) -> Option<Asked<'_>> {
     };
     while let Some(tag) = words.next() {
         match tag {
-            "d" => a
-                .devices
-                .push(Wanted::Path([words.next()?, words.next()?, words.next()?])),
-            "v" => a.devices.push(Wanted::Vfio([
-                words.next()?,
-                words.next()?,
-                words.next()?,
-                words.next()?,
-            ])),
+            "d" => a.devices.push([words.next()?, words.next()?, words.next()?]),
+            "v" => a.vfio.push([words.next()?, words.next()?]),
             "r" => a.rules.push(words.next()?),
             "i" => a.cdi.push(words.next()?),
             "n" => {
@@ -517,35 +503,61 @@ fn prepare_with(entry: &[u8]) -> Result<Prepared, String> {
     let a = asked(entry).ok_or("a malformed devices entry")?;
     // Each host VFIO group the microVM was given a group of the guest's now (D154): its
     // functions given to vfio-pci here, as the host's were, through the sysfs boot kept,
-    // the run's root's being read-only; its node the workload's where the guest has it,
-    // as the guest's /sys names it there (Kata's agent does the same,
-    // vfio_device_handler.rs), unless the run asked for it elsewhere.
-    let mut devices: Vec<[String; 3]> = Vec::with_capacity(a.devices.len());
-    for wanted in &a.devices {
-        match wanted {
-            Wanted::Path(d) => devices.push(d.map(str::to_string)),
-            Wanted::Vfio([host, addresses, container, perms]) => {
-                let sys = SYSFS.get().ok_or_else(|| {
-                    gathering(
-                        host,
-                        "no sysfs to give its functions to vfio-pci in: the microVM was not booted for VFIO (shards_vfio)",
-                    )
-                })?;
-                let node = format!("/dev/vfio/{}", vfio_group(sys.as_fd(), host, addresses)?);
-                match *container {
-                    "-" => {}
-                    "" => devices.push([node.clone(), node, (*perms).to_string()]),
-                    elsewhere => devices.push([node, elsewhere.to_string(), (*perms).to_string()]),
-                }
-            }
-        }
+    // the run's root's being read-only. A device that names the group's host path, by
+    // `--device` or a CDI node, is the group's node in the guest, as the guest's /sys
+    // numbers it (Kata's agent does the same, vfio_device_handler.rs), and there in the
+    // container too where its path there is the host's.
+    let mut groups: Vec<(&str, String)> = Vec::with_capacity(a.vfio.len());
+    for [host, addresses] in &a.vfio {
+        let sys = SYSFS.get().ok_or_else(|| {
+            gathering(
+                host,
+                "no sysfs to give its functions to vfio-pci in: the microVM was not booted for VFIO (shards_vfio)",
+            )
+        })?;
+        groups.push((
+            host,
+            format!("/dev/vfio/{}", vfio_group(sys.as_fd(), host, addresses)?),
+        ));
     }
+    let mapped = |host: &str, container: &str| -> (String, String) {
+        let clean = host.trim_end_matches('/');
+        match groups.iter().find(|(h, _)| *h == clean) {
+            Some((_, node)) if container.trim_end_matches('/') == clean => (node.clone(), node.clone()),
+            Some((_, node)) => (node.clone(), container.to_string()),
+            None => (host.to_string(), container.to_string()),
+        }
+    };
+    let devices: Vec<[String; 3]> = a
+        .devices
+        .iter()
+        .map(|[host, container, perms]| {
+            let (host, container) = mapped(host, container);
+            [host, container, (*perms).to_string()]
+        })
+        .collect();
+    let cdi_nodes: Vec<[String; 7]> = a
+        .cdi_nodes
+        .iter()
+        .map(|[host, path, perms, kind, mode, uid, gid]| {
+            let (host, path) = mapped(host, path);
+            [
+                host,
+                path,
+                (*perms).to_string(),
+                (*kind).to_string(),
+                (*mode).to_string(),
+                (*uid).to_string(),
+                (*gid).to_string(),
+            ]
+        })
+        .collect();
     // Read where a path is named, at it and beneath it.
     let mut vm: Vec<Node> = devices
         .iter()
         .map(|[host, ..]| host.as_str())
         .chain(a.io.iter().map(|[_, path, _]| *path))
-        .chain(a.cdi_nodes.iter().map(|[host, ..]| *host))
+        .chain(cdi_nodes.iter().map(|[host, ..]| host.as_str()))
         .flat_map(vm_devices)
         .collect();
     vm.sort_by(|a, b| a.path.split('/').cmp(b.path.split('/')));
@@ -583,12 +595,13 @@ fn prepare_with(entry: &[u8]) -> Result<Prepared, String> {
     let throttles = throttles.into_iter().map(|(_, e)| e).collect();
     let mut nodes = Vec::new();
     let mut given = Vec::new();
-    for [host, container, perms] in &devices {
+    for d in &devices {
+        let [host, container, perms] = d.each_ref().map(String::as_str);
         // A privileged microVM's workload has the VM's devices where the VM has them already.
         if a.privileged && host == container {
             continue;
         }
-        let perms = if a.privileged { "rwm" } else { perms.as_str() };
+        let perms = if a.privileged { "rwm" } else { perms };
         for (node, rule) in devices_from_path(&vm, host, container, perms)? {
             given.push(dc::Given {
                 path: node.path.clone(),
@@ -602,7 +615,8 @@ fn prepare_with(entry: &[u8]) -> Result<Prepared, String> {
     // own device at the host path, a host's numbers meaning nothing in a guest, of the kind
     // the spec says; its mode and owner the spec's, else the device's mode and the
     // process's owner, but root's. A FIFO is made as one, outside the device filter.
-    for [host, path, perms, kind, mode, uid, gid] in &a.cdi_nodes {
+    for n in &cdi_nodes {
+        let [host, path, perms, kind, mode, uid, gid] = n.each_ref().map(String::as_str);
         let number = |w: &str, radix: u32| -> Result<Option<u32>, String> {
             match w {
                 "-" => Ok(None),
@@ -616,9 +630,9 @@ fn prepare_with(entry: &[u8]) -> Result<Prepared, String> {
         if uid.is_none() || gid.is_none() {
             unowned.push((nodes.len(), uid.is_none(), gid.is_none()));
         }
-        if *kind == "p" {
+        if kind == "p" {
             nodes.push(Node {
-                path: (*path).to_string(),
+                path: path.to_string(),
                 kind: Kind::All,
                 major: 0,
                 minor: 0,
@@ -637,7 +651,7 @@ fn prepare_with(entry: &[u8]) -> Result<Prepared, String> {
                 ));
             }
         };
-        match (*kind, node.kind) {
+        match (kind, node.kind) {
             ("-" | "c" | "u", Kind::Char) | ("-" | "b", Kind::Block) => {}
             (k, found) => {
                 return Err(format!(
@@ -1118,23 +1132,15 @@ mod tests {
     #[test]
     fn entries_are_read_as_setup_writes_them() {
         let a = asked(
-            b"-\0d\0/dev/fuse\0/dev/x\0r\0v\0/dev/vfio/42\x000000:00:01.0,0000:00:01.1\0\0rw\0r\0c 1:3 r\0i\0v.com/g=0\0",
+            b"-\0v\0/dev/vfio/42\x000000:00:01.0,0000:00:01.1\0d\0/dev/fuse\0/dev/x\0r\0r\0c 1:3 r\0i\0v.com/g=0\0",
         )
         .unwrap();
         assert!(!a.privileged);
-        assert_eq!(
-            a.devices,
-            [
-                Wanted::Path(["/dev/fuse", "/dev/x", "r"]),
-                Wanted::Vfio(["/dev/vfio/42", "0000:00:01.0,0000:00:01.1", "", "rw"])
-            ]
-        );
+        assert_eq!(a.vfio, [["/dev/vfio/42", "0000:00:01.0,0000:00:01.1"]]);
+        assert_eq!(a.devices, [["/dev/fuse", "/dev/x", "r"]]);
         assert_eq!((a.rules, a.cdi), (vec!["c 1:3 r"], vec!["v.com/g=0"]));
         assert!(asked(b"p\0d\0/dev/fuse\0").is_none());
-        assert!(
-            asked(b"-\0v\0/dev/vfio/42\x000000:00:01.0\0\0").is_none(),
-            "a word short"
-        );
+        assert!(asked(b"-\0v\0/dev/vfio/42\0").is_none(), "a word short");
     }
 
     /// A function's address is sysfs's: domain, bus and slot in lowercase hex, the slot

@@ -47,6 +47,28 @@ static RELEASE: std::sync::OnceLock<UnixStream> = std::sync::OnceLock::new();
 /// The run publishes ports (`RUN_PUBLISHED`): only then is there anything to close.
 static PUBLISHED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
+/// Whether the VM holds a host's devices, VFIO groups (D154): whose run is over for its
+/// client only once they are free, as `docker run` returns once its container's
+/// processes, which held its devices, have gone ([`finish`]).
+pub static HOST_DEVICES: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// This process's pidfd (pidfd_open(2)), which polls readable once it has ended, its
+/// files, a host's devices among them, closed before (exit_files runs before
+/// exit_notify). None where it cannot be had.
+#[cfg(target_os = "linux")]
+fn own_pidfd() -> Option<OwnedFd> {
+    // SAFETY: pidfd_open(2) of this process, no flags; a fresh descriptor on success.
+    let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, libc::getpid(), 0) };
+    let fd = RawFd::try_from(fd).ok().filter(|&fd| fd >= 0)?;
+    // SAFETY: the descriptor pidfd_open just made, owned from here on.
+    Some(unsafe { OwnedFd::from_raw_fd(fd) })
+}
+
+#[cfg(not(target_os = "linux"))]
+fn own_pidfd() -> Option<OwnedFd> {
+    None
+}
+
 /// The VM's network device's flush (`--net`), asked as the run ends.
 static FLUSH: std::sync::OnceLock<shards_vmm::devices::virtio::net::TxFlush> = std::sync::OnceLock::new();
 
@@ -912,6 +934,9 @@ pub fn started(link: &Link) {
 /// daemon's to tell: `DONE` carries the reason. With `timing`, the status carries the
 /// VM's timing line for the client to print. A `working_set` the VM recorded, with the name
 /// of its generation, goes to the daemon before `DONE`, which ends what it reads of the run.
+/// Where the VM holds a host's devices ([`HOST_DEVICES`]), the status goes with this
+/// process's pidfd, which its client waits on before it is done: the devices are free
+/// once this process has ended.
 pub fn finish(
     link: &Link,
     client: Option<&UnixStream>,
@@ -962,7 +987,12 @@ pub fn finish(
     if let Some(client) = client {
         let mut payload = vec![said_status];
         payload.extend_from_slice(timing.unwrap_or_default().as_bytes());
-        let _ = shards_ipc::send(client, kind::EXIT, &payload, &[]);
+        let pidfd = HOST_DEVICES
+            .load(std::sync::atomic::Ordering::Relaxed)
+            .then(own_pidfd)
+            .flatten();
+        let fds: Vec<std::os::fd::BorrowedFd<'_>> = pidfd.iter().map(std::os::fd::AsFd::as_fd).collect();
+        let _ = shards_ipc::send(client, kind::EXIT, &payload, &fds);
     }
 }
 

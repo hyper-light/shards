@@ -3783,11 +3783,21 @@ one. So both, in that order.
   raises its locked-memory limit to its hard limit, as far as it may unprivileged,
   against which type 1 pins what it maps (vfio_lock_acct), and says what type 1's EPERM
   means where it refuses a group: no isolated MSIs on the host, its administrator's to
-  allow. Verified on real VMs (`a_run_is_given_a_hosts_vfio_group`, mutation-checked): a
-  nested arm64 guest given test functions (`--pci-tests 01.0,02.0,02.1`) runs shards as
-  a Linux host does, and a run of it given the group of the device of two, its group 1,
-  has them as one device and its own group 0, whose node is its `/dev/vfio/0`, and moves
-  a page through each by DMA, its workload finding the group as DPDK does.
+  allow. A CDI device whose node is a host's VFIO group (D146) is the group's too, its
+  spec's mode and owner on the guest's node: the daemon declares each group to the
+  guest's init (`v`), which binds it, and a device that names the group's host path, by
+  `--device` or a CDI node, is the group's node in the guest. The run is over for its
+  client once the group is free, as `docker run` returns once its container's processes,
+  which held its devices, have gone: its VM process sends its own pidfd with the run's
+  status, and the client waits for it to poll readable (pidfd_open(2)), the process's
+  files closed before it can (exit_files before exit_notify); without, the next run given
+  the group found it open still (VFIO opens a group for one process at a time,
+  vfio_group_fops_open). Verified on real VMs (`a_run_is_given_a_hosts_vfio_group`,
+  mutation-checked): a nested arm64 guest given test functions (`--pci-tests
+  01.0,02.0,02.1`) runs shards as a Linux host does, and a run of it given the group of
+  the device of two, its group 1, by its node and then by a CDI device, has them as one
+  device and its own group 0, whose node is its `/dev/vfio/0`, and moves a page through
+  each by DMA, its workload finding the group as DPDK does.
 - **MSIs isolated on arm64 KVM, by an ITS.** A guest's VFIO refuses a group whose MSIs
   nothing isolates, unless told it may take one (vfio_iommu_type1.c,
   `allow_unsafe_interrupts`): a function's MSIs could forge another's. An arm64 KVM
@@ -3955,8 +3965,7 @@ one. So both, in that order.
   VFIO: MSI of more than one message, and its per-vector masking; isolated MSIs on x86_64
   and the host's addresses (above); iommufd's devices (`/dev/vfio/devices/vfioN` and `/dev/iommu`,
   which the `kvm` kernel lacks: IOMMUFD, VFIO_DEVICE_CDEV), whose address spaces would also
-  let followed functions share pinned pages; then `--gpus` on Linux and CDI's VFIO
-  nodes.
+  let followed functions share pinned pages; then `--gpus` on Linux.
 
 ### D153. A PCI bus, for the devices a microVM is given (VFIO's first step)
 
