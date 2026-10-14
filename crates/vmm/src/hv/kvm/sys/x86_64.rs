@@ -7,8 +7,8 @@ use std::os::fd::{AsRawFd, OwnedFd, RawFd};
 use super::{
     KVM_CHECK_EXTENSION, KVM_CREATE_DEVICE, KVM_CREATE_VCPU, KVM_CREATE_VM, KVM_GET_API_VERSION,
     KVM_GET_DEVICE_ATTR, KVM_GET_MP_STATE, KVM_GET_VCPU_MMAP_SIZE, KVM_IRQ_LINE, KVM_IRQFD, KVM_RUN,
-    KVM_SET_DEVICE_ATTR, KVM_SET_MP_STATE, KVM_SET_USER_MEMORY_REGION, Kvm, VcpuFd, VmFd, ioctl,
-    kvm_device_attr, set_attr,
+    KVM_SET_DEVICE_ATTR, KVM_SET_GSI_ROUTING, KVM_SET_MP_STATE, KVM_SET_USER_MEMORY_REGION, KVM_SIGNAL_MSI,
+    Kvm, VcpuFd, VmFd, ioctl, kvm_device_attr, set_attr,
 };
 
 /// Every ioctl request shards makes of KVM: what its seccomp filter allows
@@ -98,8 +98,6 @@ pub const KVM_SET_XCRS: u64 = 0x4188_AEA7;
 pub const KVM_KVMCLOCK_CTRL: u64 = 0xAEAD;
 pub const KVM_GET_XSAVE2: u64 = 0x9000_AECF;
 pub const KVM_PRE_FAULT_MEMORY: u64 = 0xC040_AED5;
-pub const KVM_SIGNAL_MSI: u64 = 0x4020_AEA5;
-pub const KVM_SET_GSI_ROUTING: u64 = 0x4008_AE6A;
 
 /// The sizes of the state structures above, which a snapshot keeps as their bytes.
 pub const LAPIC_SIZE: usize = 1024;
@@ -124,8 +122,6 @@ const _: () = {
     assert!(size(KVM_GET_CLOCK) == CLOCK_SIZE && size(KVM_SET_CLOCK) == CLOCK_SIZE);
     assert!(size(KVM_GET_REGS) == size_of::<kvm_regs>());
     assert!(size(KVM_PRE_FAULT_MEMORY) == size_of::<kvm_pre_fault_memory>());
-    assert!(size(KVM_SIGNAL_MSI) == size_of::<kvm_msi>());
-    assert!(size(KVM_SET_GSI_ROUTING) == 8);
 };
 /// `kvm_irqchip.chip_id`s.
 pub const IRQCHIP_PIC_MASTER: u32 = 0;
@@ -233,34 +229,6 @@ pub struct kvm_cpuid_entry2 {
     pub padding: [u32; 3],
 }
 
-/// An MSI for the VMM to deliver (api.rst 4.70, KVM_SIGNAL_MSI).
-#[repr(C)]
-#[derive(Debug, Default)]
-pub struct kvm_msi {
-    pub address_lo: u32,
-    pub address_hi: u32,
-    pub data: u32,
-    pub flags: u32,
-    pub devid: u32,
-    pub pad: [u8; 12],
-}
-
-/// An entry of the GSI routing table (api.rst 4.52, KVM_SET_GSI_ROUTING): a GSI's pin of
-/// an in-kernel irqchip, or the MSI it sends; its union padded to 32 bytes.
-#[repr(C)]
-#[derive(Debug, Default, Clone, Copy)]
-pub struct kvm_irq_routing_entry {
-    pub gsi: u32,
-    pub kind: u32,
-    pub flags: u32,
-    pub pad: u32,
-    pub u: [u32; 8],
-}
-
-/// kvm_irq_routing_entry types.
-pub const IRQ_ROUTING_IRQCHIP: u32 = 1;
-pub const IRQ_ROUTING_MSI: u32 = 2;
-
 /// A range of guest memory to map ahead (api.rst 4.143); KVM advances it as it goes.
 #[repr(C)]
 #[derive(Debug, Default, Clone, Copy)]
@@ -272,8 +240,6 @@ pub struct kvm_pre_fault_memory {
 }
 
 const _: () = {
-    assert!(size_of::<kvm_msi>() == 32);
-    assert!(size_of::<kvm_irq_routing_entry>() == 48);
     assert!(size_of::<kvm_pre_fault_memory>() == 64);
     assert!(size_of::<kvm_regs>() == 144);
     assert!(size_of::<kvm_segment>() == 24);
@@ -399,31 +365,6 @@ impl Kvm {
 }
 
 impl VmFd {
-    /// Delivers the MSI of `address` and `data` (api.rst 4.70).
-    pub fn signal_msi(&self, address: u64, data: u32) -> io::Result<()> {
-        let msi = kvm_msi {
-            address_lo: address as u32,
-            address_hi: (address >> 32) as u32,
-            data,
-            ..Default::default()
-        };
-        // SAFETY: KVM reads one kvm_msi.
-        unsafe { ioctl(self.fd(), KVM_SIGNAL_MSI, (&raw const msi) as libc::c_ulong) }.map(drop)
-    }
-
-    /// Replaces the GSI routing table with `entries` (api.rst 4.52): `struct
-    /// kvm_irq_routing`, its count and flags, then the entries.
-    pub fn set_gsi_routing(&self, entries: &[kvm_irq_routing_entry]) -> io::Result<()> {
-        let mut table: Vec<u32> = Vec::with_capacity(2 + 12 * entries.len());
-        table.extend([entries.len() as u32, 0]);
-        for e in entries {
-            table.extend([e.gsi, e.kind, e.flags, e.pad]);
-            table.extend(e.u);
-        }
-        // SAFETY: a kvm_irq_routing holding `nr` entries, which KVM reads.
-        unsafe { ioctl(self.fd(), KVM_SET_GSI_ROUTING, table.as_ptr() as libc::c_ulong) }.map(drop)
-    }
-
     /// As `Kvm::check_extension`, for capabilities that depend on the VM.
     pub fn check_extension(&self, cap: u64) -> io::Result<i32> {
         // SAFETY: the capability number is passed by value.

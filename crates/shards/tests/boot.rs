@@ -406,12 +406,25 @@ fn a_nested_guest_is_a_kvm_host() {
 /// What the test guest says of the interrupts it took (`pci-irq`).
 const INTERRUPTS: &str = "SHARDS-TEST INFO interrupts: INTx 2, MSI 1, MSI-X 3, 2 of them held";
 
+/// A guest's VFIO takes a group with an IOMMU only where its MSIs are isolated, or where
+/// told that they need not be (vfio_iommu_type1.c, `allow_unsafe_interrupts`): the tests'
+/// guests are told so where the machine isolates none (vm::ISOLATED_MSIS), and on arm64
+/// KVM, whose ITS isolates them, told nothing.
+fn unsafe_interrupts() -> &'static str {
+    if shards_vmm::vm::ISOLATED_MSIS {
+        ""
+    } else {
+        " vfio_iommu_type1.allow_unsafe_interrupts=1"
+    }
+}
+
 /// A PCI function's interrupts reach the guest (D154): the test function, taken by vfio-pci
-/// in the guest's own userspace (a no-IOMMU group), raises INTx twice, acknowledged and
-/// unmasked between, then one MSI, then MSI-X vectors three times, two of them held
-/// pending while masked and sent as unmasked, each signalled on an eventfd. On arm64, INTx
-/// on an SPI of the device's own and the MSIs through the GIC's GICv2m frame; on x86_64,
-/// INTx on the bus's GSI as the DSDT's _PRT says, and the MSIs to the local APICs.
+/// in the guest's own userspace, raises INTx twice, acknowledged and unmasked between,
+/// then one MSI, then MSI-X vectors three times, two of them held pending while masked and
+/// sent as unmasked, each signalled on an eventfd. On arm64, INTx on an SPI of the
+/// device's own and the MSIs through the GIC's ITS (KVM's) or its GICv2m frame
+/// (Hypervisor.framework's); on x86_64, INTx on the bus's GSI as the DSDT's _PRT says, and
+/// the MSIs to the local APICs.
 #[test]
 fn a_pci_functions_interrupts_reach_the_guest() {
     if cannot_run_vms() {
@@ -429,7 +442,10 @@ fn a_pci_functions_interrupts_reach_the_guest() {
             test_guest().to_str().unwrap(),
             "--pci-test",
             "--cmdline",
-            "console=ttyS0 panic=-1 vfio.enable_unsafe_noiommu_mode=1 vfio_iommu_type1.allow_unsafe_interrupts=1 shards_test=pci-irq",
+            &format!(
+                "console=ttyS0 panic=-1 vfio.enable_unsafe_noiommu_mode=1{} shards_test=pci-irq",
+                unsafe_interrupts()
+            ),
         ],
         TIMEOUT,
     );
@@ -441,10 +457,6 @@ fn a_pci_functions_interrupts_reach_the_guest() {
     );
 }
 
-/// A guest's GICv2m frame isolates no MSIs, and its IOMMU remaps no interrupts, so VFIO's
-/// type 1 takes a group of it only where told that a function's DMA may reach the frame
-/// (vfio_iommu_type1.c, `allow_unsafe_interrupts`): the tests' guests are told so.
-///
 /// A PCI function's DMA goes through the machine's IOMMU (D154): the test guest, its
 /// kernel virtio-iommu's driver, takes the test function through vfio-pci in a group with
 /// an IOMMU, maps two pages of its own at I/O addresses of its choosing, and has the
@@ -467,7 +479,10 @@ fn a_pci_functions_dma_goes_through_its_iommu() {
             test_guest().to_str().unwrap(),
             "--pci-test",
             "--cmdline",
-            "console=ttyS0 panic=-1 vfio_iommu_type1.allow_unsafe_interrupts=1 shards_test=pci-dma",
+            &format!(
+                "console=ttyS0 panic=-1{} shards_test=pci-dma",
+                unsafe_interrupts()
+            ),
         ],
         TIMEOUT,
     );

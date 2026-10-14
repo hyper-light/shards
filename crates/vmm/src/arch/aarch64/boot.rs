@@ -203,7 +203,7 @@ pub struct Machine<'a> {
 
 /// A PCI host bridge (D153): its ECAM window and the 32-bit memory window its functions'
 /// BARs are placed in, each an address and a length; each device that raises INTx, its
-/// pin and the SPI its line is; and the GICv2m frame its functions' MSIs go to (D154).
+/// pin and the SPI its line is; and where its functions' MSIs go (D154).
 #[derive(Debug, Clone)]
 pub struct PciBridge {
     pub ecam: (u64, u64),
@@ -213,7 +213,17 @@ pub struct PciBridge {
     /// The requester IDs of its functions the machine's IOMMU translates (D154).
     pub iommu: Vec<u32>,
     pub intx: Vec<Intx>,
-    pub msi: Option<MsiFrame>,
+    pub msi: Option<Msi>,
+}
+
+/// Where a PCI bus's MSIs go (D154): a GICv2m frame, whose doorbell's writes name SPIs; or
+/// the GIC's ITS, its register frame's address and length, which translates each MSI by
+/// the ID of the device that wrote it, its requester ID (Linux Documentation/devicetree/
+/// bindings/pci/pci-msi.txt, msi-map).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Msi {
+    V2m(MsiFrame),
+    Its { base: u64, size: u64 },
 }
 
 /// A PCI device's INTx: its device number on bus 0, its pin (1 for INTA#) and its SPI.
@@ -239,6 +249,7 @@ const PHANDLE_GIC: u32 = 1;
 const PHANDLE_APB_PCLK: u32 = 2;
 const PHANDLE_V2M: u32 = 3;
 const PHANDLE_IOMMU: u32 = 4;
+const PHANDLE_ITS: u32 = 5;
 const GIC_SPI: u32 = 0;
 const GIC_PPI: u32 = 1;
 const IRQ_EDGE_RISING: u32 = 1;
@@ -318,16 +329,29 @@ pub fn build_fdt(m: &Machine<'_>) -> Result<Vec<u8>, FdtError> {
     f.prop_u32("phandle", PHANDLE_GIC);
     // The GICv2m frame of a PCI bus's MSIs (D154): Linux's GICv3 driver takes one where
     // the distributor has no LPIs (irq-gic-v3.c, gicv2m_init), and the properties say its
-    // SPIs (irq-gic-v2m.c, "arm,msi-base-spi" by INTID).
-    if let Some(v2m) = m.pci.as_ref().and_then(|p| p.msi) {
-        f.begin_node(&format!("v2m@{:x}", v2m.base));
-        f.prop_str("compatible", "arm,gic-v2m-frame");
-        f.prop_null("msi-controller");
-        f.prop_u64s("reg", &[v2m.base, v2m.size]);
-        f.prop_u32("arm,msi-base-spi", v2m.first_intid);
-        f.prop_u32("arm,msi-num-spis", v2m.count);
-        f.prop_u32("phandle", PHANDLE_V2M);
-        f.end_node();
+    // SPIs (irq-gic-v2m.c, "arm,msi-base-spi" by INTID). Or its ITS (Documentation/
+    // devicetree/bindings/interrupt-controller/arm,gic-v3.yaml): one cell, the device ID.
+    match m.pci.as_ref().and_then(|p| p.msi) {
+        Some(Msi::V2m(v2m)) => {
+            f.begin_node(&format!("v2m@{:x}", v2m.base));
+            f.prop_str("compatible", "arm,gic-v2m-frame");
+            f.prop_null("msi-controller");
+            f.prop_u64s("reg", &[v2m.base, v2m.size]);
+            f.prop_u32("arm,msi-base-spi", v2m.first_intid);
+            f.prop_u32("arm,msi-num-spis", v2m.count);
+            f.prop_u32("phandle", PHANDLE_V2M);
+            f.end_node();
+        }
+        Some(Msi::Its { base, size }) => {
+            f.begin_node(&format!("its@{base:x}"));
+            f.prop_str("compatible", "arm,gic-v3-its");
+            f.prop_null("msi-controller");
+            f.prop_u32("#msi-cells", 1);
+            f.prop_u64s("reg", &[base, size]);
+            f.prop_u32("phandle", PHANDLE_ITS);
+            f.end_node();
+        }
+        None => {}
     }
     f.end_node();
 
@@ -437,8 +461,11 @@ pub fn build_fdt(m: &Machine<'_>) -> Result<Vec<u8>, FdtError> {
             }
             f.prop_cells("interrupt-map", &map);
         }
-        if p.msi.is_some() {
-            f.prop_u32("msi-parent", PHANDLE_V2M);
+        match p.msi {
+            Some(Msi::V2m(_)) => f.prop_u32("msi-parent", PHANDLE_V2M),
+            // Each function's requester ID its device ID at the ITS (pci-msi.txt).
+            Some(Msi::Its { .. }) => f.prop_cells("msi-map", &[0, PHANDLE_ITS, 0, 0x1_0000]),
+            None => {}
         }
         // Each function the IOMMU translates, by its requester ID, to the same ID of the
         // IOMMU's (Documentation/devicetree/bindings/pci/pci-iommu.txt); the rest, passed
@@ -597,12 +624,12 @@ mod tests {
                 pin: 1,
                 spi: layout::SPI_PCI,
             }],
-            msi: Some(MsiFrame {
+            msi: Some(Msi::V2m(MsiFrame {
                 base: layout::GIC_MSI,
                 size: 0x1_0000,
                 first_intid: 32 + layout::SPI_MSI,
                 count: layout::MSI_SPIS,
-            }),
+            })),
         };
         let with_pci = decode::parse(
             &build_fdt(&Machine {
@@ -652,6 +679,36 @@ mod tests {
         assert_eq!(v2m.u32("arm,msi-base-spi"), 32 + layout::SPI_MSI);
         assert_eq!(v2m.u32("arm,msi-num-spis"), layout::MSI_SPIS);
         assert_eq!(v2m.u32("phandle"), PHANDLE_V2M);
+        // Or to the GIC's ITS: each function's requester ID its device ID there.
+        let with_its = decode::parse(
+            &build_fdt(&Machine {
+                pci: Some(PciBridge {
+                    msi: Some(Msi::Its {
+                        base: layout::GIC_ITS,
+                        size: layout::GIC_ITS_SIZE,
+                    }),
+                    ..pci.clone()
+                }),
+                ..m
+            })
+            .unwrap(),
+        );
+        let bridge_its = with_its.path("pcie@3f000000");
+        assert!(!bridge_its.props.contains_key("msi-parent"));
+        assert_eq!(bridge_its.cells("msi-map"), vec![0, PHANDLE_ITS, 0, 0x1_0000]);
+        let its = with_its.path("intc@8000000/its@8080000");
+        assert_eq!(its.str("compatible"), "arm,gic-v3-its");
+        assert!(its.props.contains_key("msi-controller"));
+        assert_eq!(its.u32("#msi-cells"), 1);
+        assert_eq!(its.cells("reg"), vec![0, 0x0808_0000, 0, 0x2_0000]);
+        assert_eq!(its.u32("phandle"), PHANDLE_ITS);
+        assert!(
+            !with_its
+                .path("intc@8000000")
+                .children
+                .keys()
+                .any(|name| name.starts_with("v2m@"))
+        );
         // No IOMMU but where the machine has one (D154): its virtio node's one cell, the
         // endpoint's ID, and the bridge's map of each function it translates to it.
         assert!(!bridge.props.contains_key("iommu-map"));

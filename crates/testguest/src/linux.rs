@@ -1576,9 +1576,10 @@ fn host() -> Result<(), String> {
         .args(["run", "--kernel", "/l2", "--init", "/init", "--cpus", "2"])
         .args(["--memory", "256", "--cmdline"])
         // A function the inner guest is given it takes through VFIO: in a no-IOMMU group,
-        // or behind the inner machine's IOMMU, whose GICv2m frame isolates no MSIs.
+        // or behind the inner machine's IOMMU, KVM's, whose ITS isolates its MSIs, which
+        // VFIO's type 1 then needs no leave to take.
         .arg(format!(
-            "console=ttyS0 panic=-1 vfio.enable_unsafe_noiommu_mode=1 vfio_iommu_type1.allow_unsafe_interrupts=1 shards_test={test}"
+            "console=ttyS0 panic=-1 vfio.enable_unsafe_noiommu_mode=1 shards_test={test}"
         ))
         .args(args.split(',').filter(|a| !a.is_empty()))
         .output()

@@ -38,9 +38,11 @@ pub(super) fn prepare() {}
 /// KVM_DEV_ARM_VGIC_GRP_NR_IRQS).
 const NR_IRQS: u32 = (32 + layout::SPIS).next_multiple_of(32);
 
-/// Whether the GIC's MSI frame is in the kernel: KVM's GICv3 has none (its MSIs go to an
-/// ITS), so the machine puts a GICv2m frame of the VMM's on the bus.
-pub const MSI_FRAME_IN_KERNEL: bool = false;
+/// Whether a PCI bus's MSIs go to an ITS (D154): KVM's GICv3 has one (KVM_DEV_TYPE_ARM_VGIC_ITS),
+/// which translates each MSI by the ID of the device that wrote it, so that its MSIs are
+/// isolated from each other's, as Linux takes an ITS's (irq-gic-v3-its.c,
+/// IRQ_DOMAIN_FLAG_ISOLATED_MSI) and a guest's VFIO needs (vfio_iommu_type1.c).
+pub const ITS: bool = true;
 
 /// The maintenance interrupt of a guest with EL2: PPI 9, INTID 25, as its devicetree says
 /// (arch::aarch64::boot) and as Hypervisor.framework's.
@@ -75,8 +77,8 @@ pub const NO_EL2: &str = "this host's KVM gives a guest no EL2: virtualization o
 
 /// KVM's GICv3 geometry: a distributor of one 64 KiB frame, and two for each vCPU's
 /// redistributor, each placed on a 64 KiB boundary (arm-vgic-v3.rst); its SPIs, INTID 32
-/// on, as many as the machine asks ([`NR_IRQS`]); and the machine's MSI frame, one 64 KiB
-/// page of the VMM's.
+/// on, as many as the machine asks ([`NR_IRQS`]); and a 64 KiB place for a GICv2m frame,
+/// which its machines leave empty, their MSIs going to the ITS ([`ITS`]).
 #[derive(Debug, Clone, Copy)]
 pub struct GicParams {
     pub dist_size: u64,
@@ -110,29 +112,53 @@ pub struct MsiFrame {
     pub count: u32,
 }
 
+/// Where the GIC's parts are: its distributor and redistributors, and its ITS (KVM's
+/// machines have no GICv2m frame: `msi` is refused).
 #[derive(Debug, Clone, Copy)]
 pub struct GicLayout {
     pub dist_base: u64,
     pub redist_base: u64,
     pub msi: Option<MsiFrame>,
+    pub its: Option<u64>,
 }
 
-/// Drives the GIC's SPIs from any thread.
+/// Drives the GIC's SPIs, and the MSIs its ITS translates, from any thread.
 #[derive(Debug, Clone)]
-pub struct Gic(Arc<sys::VmFd>);
+pub struct Gic(Arc<GicState>);
+
+#[derive(Debug)]
+struct GicState {
+    fd: Arc<sys::VmFd>,
+    /// The MSIs routed to GSIs of their own for irqfds to raise ([`Gic::route_msi`]).
+    routes: Mutex<Vec<MsiRoute>>,
+}
+
+/// An MSI on a GSI of its own: its address and data, and the ID of the device that writes
+/// it, which the ITS translates by.
+#[derive(Debug, Clone, Copy)]
+struct MsiRoute {
+    gsi: u32,
+    address: u64,
+    data: u32,
+    devid: u32,
+}
 
 impl Gic {
     /// Drives SPI `intid`'s line. For an edge-configured INTID `true` makes it pending
     /// once and `false` does nothing, as KVM injects (vgic.c, kvm_vgic_inject_irq).
     pub fn set_spi(&self, intid: u32, level: bool) -> Result<()> {
         let irq = (sys::IRQ_TYPE_SPI << sys::IRQ_TYPE_SHIFT) | (intid & sys::IRQ_NUM_MASK);
-        self.0.irq_line(irq, level).map_err(call("KVM_IRQ_LINE"))
+        self.0.fd.irq_line(irq, level).map_err(call("KVM_IRQ_LINE"))
     }
 
-    /// Delivers an MSI that the machine's GICv2m frame, at `_doorbell`, took for SPI
-    /// `intid`: an edge on it, as the frame raises its SPIs (Linux irq-gic-v2m.c, edge).
-    pub fn send_msi(&self, _doorbell: u64, intid: u32) -> Result<()> {
-        self.set_spi(intid, true)
+    /// Delivers the MSI of `address` and `data` that device `devid` wrote to the ITS,
+    /// which translates it by that ID (api.rst 4.70, KVM_SIGNAL_MSI with
+    /// KVM_MSI_VALID_DEVID): as a function the VMM emulates sends one.
+    pub fn its_msi(&self, address: u64, data: u32, devid: u32) -> Result<()> {
+        self.0
+            .fd
+            .signal_msi(address, data, Some(devid))
+            .map_err(call("KVM_SIGNAL_MSI"))
     }
 
     /// Raises SPI `intid` each time `event` is written, in the kernel (KVM_IRQFD): its GSI
@@ -143,7 +169,7 @@ impl Gic {
         let gsi = intid
             .checked_sub(32)
             .ok_or_else(|| Error::Guest(format!("INTID {intid}: not an SPI")))?;
-        self.0.irqfd(event, gsi, resample).map_err(call("KVM_IRQFD"))
+        self.0.fd.irqfd(event, gsi, resample).map_err(call("KVM_IRQFD"))
     }
 
     /// Takes `event` from SPI `intid` again.
@@ -151,7 +177,75 @@ impl Gic {
         let gsi = intid
             .checked_sub(32)
             .ok_or_else(|| Error::Guest(format!("INTID {intid}: not an SPI")))?;
-        self.0.irqfd_remove(event, gsi).map_err(call("KVM_IRQFD"))
+        self.0.fd.irqfd_remove(event, gsi).map_err(call("KVM_IRQFD"))
+    }
+
+    /// A GSI past the SPIs' that sends the MSI of `address` and `data` from device `devid`
+    /// to the ITS, which `event` then raises (KVM_IRQFD); the routing table set whole, as
+    /// KVM_SET_GSI_ROUTING replaces it (api.rst 4.52): KVM's defaults, each SPI on the GSI
+    /// of its number (vgic-irqfd.c, kvm_vgic_setup_default_irq_routing), and every MSI
+    /// routed, each with its device's ID (KVM_MSI_VALID_DEVID).
+    pub fn route_msi(&self, event: RawFd, address: u64, data: u32, devid: u32) -> Result<u32> {
+        let mut routes = crate::sync::lock(&self.0.routes);
+        let gsi = (NR_IRQS - 32..)
+            .find(|gsi| routes.iter().all(|r| r.gsi != *gsi))
+            .ok_or_else(|| Error::Guest("no GSI left for an MSI".into()))?;
+        routes.push(MsiRoute {
+            gsi,
+            address,
+            data,
+            devid,
+        });
+        if let Err(e) = self.commit(&routes) {
+            routes.pop();
+            return Err(e);
+        }
+        if let Err(e) = self.0.fd.irqfd(event, gsi, None).map_err(call("KVM_IRQFD")) {
+            routes.pop();
+            let _ = self.commit(&routes);
+            return Err(e);
+        }
+        Ok(gsi)
+    }
+
+    /// Takes `event` from the MSI route of `gsi`, and the route from the table.
+    pub fn unroute_msi(&self, event: RawFd, gsi: u32) -> Result<()> {
+        let mut routes = crate::sync::lock(&self.0.routes);
+        self.0.fd.irqfd_remove(event, gsi).map_err(call("KVM_IRQFD"))?;
+        routes.retain(|r| r.gsi != gsi);
+        self.commit(&routes)
+    }
+
+    fn commit(&self, routes: &[MsiRoute]) -> Result<()> {
+        let mut entries: Vec<sys::kvm_irq_routing_entry> = (0..NR_IRQS - 32)
+            .map(|gsi| {
+                let mut u = [0u32; 8];
+                // struct kvm_irq_routing_irqchip: the irqchip, 0, and the pin, the SPI.
+                u[1] = gsi;
+                sys::kvm_irq_routing_entry {
+                    gsi,
+                    kind: sys::IRQ_ROUTING_IRQCHIP,
+                    u,
+                    ..Default::default()
+                }
+            })
+            .collect();
+        for r in routes {
+            let mut u = [0u32; 8];
+            // struct kvm_irq_routing_msi: address_lo, address_hi, data, devid.
+            (u[0], u[1], u[2], u[3]) = (r.address as u32, (r.address >> 32) as u32, r.data, r.devid);
+            entries.push(sys::kvm_irq_routing_entry {
+                gsi: r.gsi,
+                kind: sys::IRQ_ROUTING_MSI,
+                flags: sys::MSI_VALID_DEVID,
+                u,
+                ..Default::default()
+            });
+        }
+        self.0
+            .fd
+            .set_gsi_routing(&entries)
+            .map_err(call("KVM_SET_GSI_ROUTING"))
     }
 }
 
@@ -178,6 +272,8 @@ pub struct Vm {
     init: sys::kvm_vcpu_init,
     /// The GICv3, once made, initialized once every vCPU exists ([`Vm::vcpus_created`]).
     gic: OnceLock<sys::DeviceFd>,
+    /// Its ITS, where the machine has one.
+    its: OnceLock<sys::DeviceFd>,
     /// KVM's VFIO device, made as the first VFIO group is added ([`Vm::add_vfio_group`]).
     pub(super) vfio: OnceLock<sys::DeviceFd>,
 }
@@ -230,6 +326,7 @@ impl Vm {
             el2: config.el2,
             init,
             gic: OnceLock::new(),
+            its: OnceLock::new(),
             vfio: OnceLock::new(),
         })
     }
@@ -239,6 +336,11 @@ impl Vm {
     /// initialized once every vCPU exists ([`Vm::vcpus_created`]). `layout`'s MSI frame is
     /// the machine's to emulate ([`MSI_FRAME_IN_KERNEL`]).
     pub fn create_gic(&self, layout: &GicLayout) -> Result<Gic> {
+        if layout.msi.is_some() {
+            return Err(Error::Guest(
+                "KVM's GICv3 takes a PCI bus's MSIs at an ITS, not a GICv2m frame".into(),
+            ));
+        }
         let gic = self
             .fd
             .create_device(sys::DEV_TYPE_ARM_VGIC_V3)
@@ -260,7 +362,26 @@ impl Vm {
         self.gic
             .set(gic)
             .map_err(|_| Error::Guest("the VM has a GIC already".into()))?;
-        Ok(Gic(self.fd.clone()))
+        // Its ITS (devices/arm-vgic-its.rst): its frame placed, then initialized, before
+        // the GIC is, as every vCPU exists (KVM_DEV_ARM_VGIC_CTRL_INIT, which KVM's ITS
+        // takes as done).
+        if let Some(base) = layout.its {
+            let its = self
+                .fd
+                .create_device(sys::DEV_TYPE_ARM_VGIC_ITS)
+                .map_err(call("KVM_CREATE_DEVICE"))?;
+            its.set_attr(sys::VGIC_GRP_ADDR, sys::VGIC_ITS_ADDR_TYPE, &base)
+                .map_err(&attr)?;
+            its.control(sys::VGIC_GRP_CTRL, sys::VGIC_CTRL_INIT)
+                .map_err(&attr)?;
+            self.its
+                .set(its)
+                .map_err(|_| Error::Guest("the VM has an ITS already".into()))?;
+        }
+        Ok(Gic(Arc::new(GicState {
+            fd: self.fd.clone(),
+            routes: Mutex::new(Vec::new()),
+        })))
     }
 
     /// Initializes the GIC, once every vCPU exists and before any runs: its redistributors

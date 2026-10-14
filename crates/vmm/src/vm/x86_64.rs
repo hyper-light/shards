@@ -232,12 +232,13 @@ impl super::PciInterrupts for PciLines {
         self.intx.source(u32::from(device))
     }
 
-    fn msi(&self) -> Arc<dyn crate::devices::pci::Msi> {
+    /// The local APICs', which take an MSI whoever wrote it.
+    fn msi(&self, _requester: u32) -> Arc<dyn crate::devices::pci::Msi> {
         Arc::new(BackendMsi(self.irqs.clone()))
     }
 
     #[cfg(target_os = "linux")]
-    fn route(&self, _device: u8) -> Option<Arc<dyn crate::devices::pci::vfio::Route>> {
+    fn route(&self, _requester: u32) -> Option<Arc<dyn crate::devices::pci::vfio::Route>> {
         Some(Arc::new(IrqfdRoute {
             irqs: self.irqs.clone(),
             msis: std::sync::Mutex::new(Vec::new()),

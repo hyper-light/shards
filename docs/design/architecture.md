@@ -3788,13 +3788,26 @@ one. So both, in that order.
   a Linux host does, and a run of it given the group of the device of two, its group 1,
   has them as one device and its own group 0, whose node is its `/dev/vfio/0`, and moves
   a page through each by DMA, its workload finding the group as DPDK does.
-- **Its guest's VFIO takes interrupts it cannot isolate**: the microVM's guest is told
-  `vfio_iommu_type1.allow_unsafe_interrupts=1`, without which it refuses a group whose
-  MSIs nothing isolates (vfio_iommu_type1.c), as neither virtio-iommu nor GICv2m isolates
-  them. A function's MSIs reach the microVM's own interrupt controller alone, the host's
-  own remapping keeping them from the host's: what a workload with the function could
-  forge is an interrupt of the microVM's other PCI functions. To do: GICv3's ITS on arm64
-  KVM, which translates each MSI by its device's ID, and interrupt remapping on x86_64.
+- **MSIs isolated on arm64 KVM, by an ITS.** A guest's VFIO refuses a group whose MSIs
+  nothing isolates, unless told it may take one (vfio_iommu_type1.c,
+  `allow_unsafe_interrupts`): a function's MSIs could forge another's. An arm64 KVM
+  machine with a PCI bus takes its MSIs at its GIC's ITS (KVM_DEV_TYPE_ARM_VGIC_ITS,
+  devices/arm-vgic-its.rst; its frame at QEMU virt's place, 0x08080000), which
+  translates each by the ID of the function that wrote it, and which Linux marks so
+  (irq-gic-v3-its.c, IRQ_DOMAIN_FLAG_ISOLATED_MSI): the devicetree's `arm,gic-v3-its`
+  node, and the bridge's `msi-map`, each requester ID its device ID; a function the VMM
+  emulates sends its MSIs by KVM_SIGNAL_MSI with its ID (KVM_MSI_VALID_DEVID), and a
+  passed-through function's go by irqfds on GSIs routed to the ITS with it, the routing
+  table KVM's defaults, each SPI on its own number's GSI (vgic-irqfd.c), and the MSIs
+  routed (`Gic::route_msi`). Its guests are told nothing, and take groups (`vm::
+  ISOLATED_MSIS`). Hypervisor.framework's GIC has a GICv2m frame of its own and no ITS,
+  and x86_64's guests have no interrupt remapping yet: theirs are told they may
+  (`vfio_iommu_type1.allow_unsafe_interrupts=1`), as a function's MSIs reach the
+  microVM's own interrupt controller alone, the host's own remapping keeping them from
+  the host's. Verified on real VMs: the nested tests' inner guests, KVM's, take their
+  groups through type 1 told nothing, the daemon's run's among them; mutation-checked,
+  with the routes' device IDs left out, no MSI comes in 10 s. To do: interrupt remapping
+  on x86_64.
 - **Its addresses are the guest's.** A function sits at a place on the microVM's bus 0,
   not at the host's address, and its group has the guest's number: a workload told the
   host's address (DPDK's `-a 0000:3b:00.0`) finds no such function. Docker's container
@@ -3826,7 +3839,7 @@ one. So both, in that order.
   GICv3 keeps one level a line, so a line the VMM drives and an irqfd must not share one.
   MSIs go to a GICv2m frame (Linux's GICv3 driver takes one where the distributor has no
   LPIs, irq-gic-v3.c; its SPIs in the devicetree, irq-gic-v2m.c): Hypervisor.framework's
-  own, or on KVM one the VMM emulates. On x86_64, every device's INTx on GSI 22, wired-OR
+  own; on KVM, to the GIC's ITS (below). On x86_64, every device's INTx on GSI 22, wired-OR
   as PCI's may be, by the DSDT's `_PRT` (ACPI 6.5 §6.2.13), so that a machine with a PCI
   bus has one virtio device fewer (KVM's IOAPIC has 24 pins); MSIs to the local APICs,
   delivered by KVM_SIGNAL_MSI, or on WHP decoded as the IOAPIC's messages are (Intel SDM
@@ -3908,10 +3921,10 @@ one. So both, in that order.
   (`--vfio-iommu`), the inner guest's VFIO maps its pages at I/O addresses of its own
   (0x10_0000 and 0x20_0000, where the inner guest has no RAM), the outer VM process's
   container maps what the inner IOMMU maps, and the outermost function moves the page
-  through them; its MSI and MSI-X land through the inner guest's mapping of its GICv2m
+  through them; its MSI and MSI-X land through the inner guest's mapping of its ITS's
   doorbell. Mutation-checked: with the container's map left out, the page comes back
   zero; with MSIs routed by their I/O address, no interrupt comes in 10 s. The inner guest takes INTx, MSI and MSI-X, both of the VMM's
-  own test function, through its emulated frame, and of the function passed through, by
+  own test function, through its ITS, and of the function passed through, by
   the outer VM process's irqfds: its vector 1 held while masked is the outer VM process's
   count, as the outermost function sends it at once. CI's arm64 runners give no KVM: the nested test runs where a
   Mac gives a guest EL2. x86_64's interrupts are held to their encodings by unit tests
@@ -3939,8 +3952,8 @@ one. So both, in that order.
   host whose CPU has neither; CI's arm64 Linux runners' runs never met one, and pass.
 - **Not yet:** snapshots of arm64 KVM VMs (`vm::SNAPSHOTS`; their GIC and vCPU state
   through KVM's registers); more vCPUs than one redistributor region holds (123). For
-  VFIO: MSI of more than one message, and its per-vector masking; isolated MSIs and the
-  host's addresses (above); iommufd's devices (`/dev/vfio/devices/vfioN` and `/dev/iommu`,
+  VFIO: MSI of more than one message, and its per-vector masking; isolated MSIs on x86_64
+  and the host's addresses (above); iommufd's devices (`/dev/vfio/devices/vfioN` and `/dev/iommu`,
   which the `kvm` kernel lacks: IOMMUFD, VFIO_DEVICE_CDEV), whose address spaces would also
   let followed functions share pinned pages; then `--gpus` on Linux and CDI's VFIO
   nodes.

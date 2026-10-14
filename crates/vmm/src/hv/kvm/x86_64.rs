@@ -322,7 +322,9 @@ impl Irqs {
 
     /// Delivers the MSI of `address` and `data`, as a function the VMM emulates sends it.
     pub fn msi(&self, address: u64, data: u32) -> Result<()> {
-        self.fd.signal_msi(address, data).map_err(call("KVM_SIGNAL_MSI"))
+        self.fd
+            .signal_msi(address, data, None)
+            .map_err(call("KVM_SIGNAL_MSI"))
     }
 
     /// Raises `gsi` each time `event` is written, in the kernel (KVM_IRQFD); with

@@ -404,11 +404,14 @@ pub struct MsiFrame {
     pub count: u32,
 }
 
+/// Where the GIC's parts are: its distributor and redistributors, and its GICv2m frame
+/// (the framework's GIC has no ITS: `its` is refused).
 #[derive(Debug, Clone, Copy)]
 pub struct GicLayout {
     pub dist_base: u64,
     pub redist_base: u64,
     pub msi: Option<MsiFrame>,
+    pub its: Option<u64>,
 }
 
 /// Handle to the in-kernel GIC. Interrupt injection is legal from any thread

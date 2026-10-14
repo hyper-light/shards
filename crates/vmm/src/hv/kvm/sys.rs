@@ -36,6 +36,8 @@ pub const KVM_SET_DEVICE_ATTR: u64 = 0x4018_AEE1;
 pub const KVM_GET_DEVICE_ATTR: u64 = 0x4018_AEE2;
 pub const KVM_IRQFD: u64 = 0x4020_AE76;
 pub const KVM_CREATE_DEVICE: u64 = 0xC00C_AEE0;
+pub const KVM_SIGNAL_MSI: u64 = 0x4020_AEA5;
+pub const KVM_SET_GSI_ROUTING: u64 = 0x4008_AE6A;
 
 /// Each structure is the size its ioctl numbers encode (bits 16-29).
 const _: () = {
@@ -48,7 +50,41 @@ const _: () = {
     assert!(size(KVM_SET_DEVICE_ATTR) == size_of::<kvm_device_attr>());
     assert!(size(KVM_IRQFD) == size_of::<kvm_irqfd>());
     assert!(size(KVM_CREATE_DEVICE) == size_of::<kvm_create_device>());
+    assert!(size(KVM_SIGNAL_MSI) == size_of::<kvm_msi>());
+    assert!(size(KVM_SET_GSI_ROUTING) == 8);
 };
+
+/// An MSI for the VMM to deliver (api.rst 4.70, KVM_SIGNAL_MSI).
+#[repr(C)]
+#[derive(Debug, Default)]
+pub struct kvm_msi {
+    pub address_lo: u32,
+    pub address_hi: u32,
+    pub data: u32,
+    pub flags: u32,
+    pub devid: u32,
+    pub pad: [u8; 12],
+}
+
+/// An MSI's `devid` holds the ID of the device that wrote it (api.rst 4.70, 4.52): what
+/// an ITS translates by (arm64), which KVM_CAP_MSI_DEVID says a VM needs.
+pub const MSI_VALID_DEVID: u32 = 1;
+
+/// An entry of the GSI routing table (api.rst 4.52, KVM_SET_GSI_ROUTING): a GSI's pin of
+/// an in-kernel irqchip, or the MSI it sends; its union padded to 32 bytes.
+#[repr(C)]
+#[derive(Debug, Default, Clone, Copy)]
+pub struct kvm_irq_routing_entry {
+    pub gsi: u32,
+    pub kind: u32,
+    pub flags: u32,
+    pub pad: u32,
+    pub u: [u32; 8],
+}
+
+/// kvm_irq_routing_entry types.
+pub const IRQ_ROUTING_IRQCHIP: u32 = 1;
+pub const IRQ_ROUTING_MSI: u32 = 2;
 
 pub const CAP_IRQCHIP: u64 = 0;
 pub const CAP_USER_MEMORY: u64 = 3;
@@ -148,6 +184,8 @@ const _: () = {
     assert!(size_of::<kvm_device_attr>() == 24);
     assert!(size_of::<kvm_irqfd>() == 32);
     assert!(size_of::<kvm_create_device>() == 12);
+    assert!(size_of::<kvm_msi>() == 32);
+    assert!(size_of::<kvm_irq_routing_entry>() == 48);
 };
 
 fn ret(r: libc::c_int) -> io::Result<libc::c_int> {
@@ -261,6 +299,34 @@ impl VmFd {
         };
         // SAFETY: a slot of no memory maps none.
         unsafe { self.set_user_memory_region(&r) }
+    }
+
+    /// Delivers the MSI of `address` and `data`, from the device of ID `devid` where the
+    /// VM's interrupt controller translates by one (api.rst 4.70).
+    pub fn signal_msi(&self, address: u64, data: u32, devid: Option<u32>) -> io::Result<()> {
+        let msi = kvm_msi {
+            address_lo: address as u32,
+            address_hi: (address >> 32) as u32,
+            data,
+            flags: if devid.is_some() { MSI_VALID_DEVID } else { 0 },
+            devid: devid.unwrap_or(0),
+            ..Default::default()
+        };
+        // SAFETY: KVM reads one kvm_msi.
+        unsafe { ioctl(self.fd(), KVM_SIGNAL_MSI, (&raw const msi) as libc::c_ulong) }.map(drop)
+    }
+
+    /// Replaces the GSI routing table with `entries` (api.rst 4.52): `struct
+    /// kvm_irq_routing`, its count and flags, then the entries.
+    pub fn set_gsi_routing(&self, entries: &[kvm_irq_routing_entry]) -> io::Result<()> {
+        let mut table: Vec<u32> = Vec::with_capacity(2 + 12 * entries.len());
+        table.extend([entries.len() as u32, 0]);
+        for e in entries {
+            table.extend([e.gsi, e.kind, e.flags, e.pad]);
+            table.extend(e.u);
+        }
+        // SAFETY: a kvm_irq_routing holding `nr` entries, which KVM reads.
+        unsafe { ioctl(self.fd(), KVM_SET_GSI_ROUTING, table.as_ptr() as libc::c_ulong) }.map(drop)
     }
 
     /// An in-kernel device of type `kind`, configured through its attributes.

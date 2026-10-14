@@ -590,11 +590,13 @@ impl Pci<'_> {
 pub(crate) trait PciInterrupts {
     /// The INTx line of device `device` on bus 0.
     fn intx(&self, device: u8) -> Arc<dyn crate::devices::Interrupt>;
-    fn msi(&self) -> Arc<dyn crate::devices::pci::Msi>;
-    /// How a function passed through on device `device` interrupts the guest, by irqfds;
-    /// none where the machine routes it no interrupt.
+    /// Where the function of requester ID `requester` (its device and function on bus 0,
+    /// `device << 3 | function`) sends its MSIs.
+    fn msi(&self, requester: u32) -> Arc<dyn crate::devices::pci::Msi>;
+    /// How the function passed through at requester ID `requester` interrupts the guest,
+    /// by irqfds; none where the machine routes it no interrupt.
     #[cfg(target_os = "linux")]
-    fn route(&self, device: u8) -> Option<Arc<dyn crate::devices::pci::vfio::Route>>;
+    fn route(&self, requester: u32) -> Option<Arc<dyn crate::devices::pci::vfio::Route>>;
 }
 
 /// A machine's PCI bus (D153, D154): each device that raises INTx, and its pin, for the
@@ -619,6 +621,14 @@ pub(crate) struct PciMachine<'a> {
     pub irqs: Option<&'a dyn PciInterrupts>,
     pub iommu: Option<crate::devices::virtio::iommu::Shared>,
 }
+
+/// Whether a machine's PCI functions' MSIs are isolated from each other's, as a guest's
+/// VFIO needs to give a function to a process without being told it may anyway
+/// (vfio_iommu_type1.c, `allow_unsafe_interrupts`; D154): on arm64 KVM, whose GIC's ITS
+/// translates each MSI by the ID of the function that wrote it (Linux's irq-gic-v3-its.c
+/// marks its MSIs IRQ_DOMAIN_FLAG_ISOLATED_MSI). Not yet on x86_64, whose guests have no
+/// interrupt remapping, nor on Hypervisor.framework, whose GIC has a GICv2m frame alone.
+pub const ISOLATED_MSIS: bool = cfg!(all(target_os = "linux", target_arch = "aarch64"));
 
 /// The test function's device on bus 0 (D153) where a machine has one (`--pci-test`), and
 /// so its requester ID, `device << 3`, which the machine's IOMMU translates (D154): the
@@ -779,7 +789,7 @@ fn pci_bus(
         let at = window.take(pci::edu::BAR_SIZE)?;
         let lines = irqs.map(|irqs| pci::Lines {
             intx: irqs.intx(device),
-            msi: irqs.msi(),
+            msi: irqs.msi(u32::from(device << 3 | function)),
         });
         if lines.is_some() && role.intx {
             routed.intx.push((device, pci::edu::PIN));
@@ -961,8 +971,8 @@ fn passed_through(
                 kind,
             });
         }
-        let mut route = irqs.and_then(|irqs| irqs.route(device));
-        let mut send = irqs.map(|irqs| irqs.msi());
+        let mut route = irqs.and_then(|irqs| irqs.route(endpoint));
+        let mut send = irqs.map(|irqs| irqs.msi(endpoint));
         if let Some(translation) = behind {
             let translated = Arc::new(v::Translated::new(
                 translation,
