@@ -3614,6 +3614,87 @@ No run-time labels, relays or declassifiers (§12 answer 14, decided by the user
 an internal-only domain to the world (D58), so there is no data to label. Code mode is
 D136.
 
+### D166. A run's log sent to the journal; a container's own fields its own
+
+`--log-driver journald` is served on Linux, and sent as syslog's is (D163): from shards'
+store, by the daemon's shipper.
+
+- **Entries as Docker's.** Each line is an entry of systemd's native protocol (systemd.io,
+  "Native Journal Protocol"), written as go-systemd's journal.Send writes one. A field is
+  `NAME=value` and a newline; a value with a newline in it is its name, its length as a
+  little-endian u64, and itself. Its fields:
+  - PRIORITY (6 for stdout, 3 for stderr) and MESSAGE, the line;
+  - moby's:
+    - CONTAINER_ID (the short ID) and CONTAINER_ID_FULL;
+    - CONTAINER_NAME and IMAGE_NAME;
+    - CONTAINER_TAG and SYSLOG_IDENTIFIER (the tag: the short ID unless given);
+    - CONTAINER_LOG_EPOCH, an ID each shipper makes as it starts;
+    - CONTAINER_LOG_ORDINAL, the entry's place from 1;
+  - SYSLOG_TIMESTAMP, its output's time, RFC 3339 to the nanosecond;
+  - a part's place where a line is longer than 16 KiB: CONTAINER_PARTIAL_ID, _ORDINAL
+    and _LAST, and before the last, CONTAINER_PARTIAL_MESSAGE;
+  - the attributes asked for, named as moby's sanitizeKeyMod names them: letters in
+    upper case, every other character but a digit `_`, none leading.
+
+  All are held field for field to Docker 29.3.1's (`scripts/logdrivers/generate`, its
+  capture taking the journal's socket in the probe container):
+  - each stream's lines, and a 40,000-byte line's parts;
+  - a tag and attributes;
+  - an entry longer than a datagram;
+  - 7 cases of which options Docker takes.
+
+  Docker writes the fields in a Go map's random order; journald keeps them in none.
+- **An entry longer than a datagram** goes in a sealed memfd, passed with an empty
+  datagram, as systemd's own sd_journal_sendv passes one; journald takes that from any
+  sender. go-systemd writes a file in /dev/shm instead, which journald takes from there,
+  /tmp or /var/tmp alone.
+- **The journal's socket** is systemd's, /run/systemd/journal/socket, or the one
+  `SHARDS_JOURNAL_SOCKET` names. A datagram is in the journal's queue as it is sent:
+  delivered.
+- **Linux's.** macOS keeps no journal, and refuses the driver in shards' words. Docker
+  refuses it as its container starts on a host whose journal is not running ("journald is
+  not enabled on this host"). shards' run starts, and its shipper waits for the journal.
+- **Where Docker is wrong, shards is not.**
+  - An attribute whose field journald would drop (a digit first, or past 64 characters)
+    is left out, and the daemon's log says so. Docker sends it, and journald drops it
+    without a word.
+  - An attribute named as a field of the driver's own is left out. Docker's lets it
+    replace the container's own: a label `container.name` its CONTAINER_NAME, or
+    `container.id` its CONTAINER_ID, so an image's labels could say another container
+    wrote its lines. It can also stand beside the driver's, as a second MESSAGE or
+    PRIORITY.
+  - gelf's and fluentd's own fields win alike. A label `container_id` no longer replaces
+    gelf's `_container_id`, nor a label `log` fluentd's line.
+  - An entry that fails keeps its ordinal, and is sent again. Docker counts it, and
+    drops it.
+- **fluentd's record has no `tag`.** D165 sent the tag asked for as a member of the
+  record, as json-file's `--details` shows it. moby's fluentd sends its attributes from
+  logger.Info.ExtraAttributes, which leave the tag out. shards' now does too, as do its
+  gelf and journald.
+- **Not yet.** splunk, awslogs, gcplogs and etwlogs.
+
+Tested on real microVMs on Linux (`a_runs_log_is_sent_to_journald_as_its_options_say`),
+against a journal socket in the test:
+
+- a line on each stream: its priority, the container's fields, its time `logs -t`'s, and
+  its ordinal; an attribute asked for, and those left out;
+- a 40,000-byte line in three parts;
+- an entry past twice `wmem_max` (Linux doubles a send buffer) in a memfd, sealed against
+  every change.
+
+On macOS it tests the refusal.
+
+The fluentd test now asks for a tag. Mutation-checked: a record with the tag in it fails
+it.
+
+Unit tests cover:
+
+- every oracle entry against Docker's, but for the three recorded differences;
+- the options;
+- the fields' writing;
+- the names journald keeps;
+- gelf's and fluentd's own fields winning.
+
 ### D165. A run's log sent to fluentd
 
 `--log-driver fluentd` is served, sent as syslog's is (D163): from shards' store by the
@@ -3625,7 +3706,8 @@ daemon's shipper.
   - The time is whole seconds, as msgp's AppendInt64 writes them, or with
     `fluentd-sub-second-precision` an EventTime (extension 0: seconds and nanoseconds).
   - The record is moby's: `container_id`, `container_name` (Docker's, with its `/`),
-    `source`, `log`, the attributes asked for over them, and a part's place over all
+    `source`, `log`, the attributes asked for (an attribute named as one of those is
+    left out: D166), and a part's place over all
     (`partial_message`, `partial_id`, `partial_ordinal`, `partial_last`) where a line is
     longer than 16 KiB. Its members are sorted, where Go writes a map in no order.
   - Held to Docker 29.3.1's (`scripts/logdrivers/generate`): over TCP in whole seconds
@@ -3650,7 +3732,7 @@ daemon's shipper.
 - **Lines' parts.** A line the run left unfinished goes whole, or as its last part. moby's
   copier sends it as a part never the last, which leaves consumers that join parts
   waiting.
-- **Not yet.** journald, splunk, awslogs, gcplogs and etwlogs.
+- **Not yet.** splunk, awslogs, gcplogs and etwlogs; journald came with D166.
 
 Tested on real microVMs (`a_runs_log_is_sent_to_fluentd_as_its_options_say`), against a
 server in the test that acks as fluentd does:
@@ -3692,7 +3774,8 @@ starts whether or not its server is up, and nothing is lost to a server that is 
   the message. What a connection had not delivered goes on the next (D163). Docker's
   driver dials as its container starts, so a server that is down keeps the container
   from starting; shards' run starts regardless.
-- **Not yet.** journald, splunk, awslogs, gcplogs and etwlogs; fluentd came with D165.
+- **Not yet.** splunk, awslogs, gcplogs and etwlogs; fluentd and journald came with D165
+  and D166.
 
 Tested on real microVMs (`a_runs_log_is_sent_to_gelf_as_its_options_say`):
 
@@ -3786,8 +3869,8 @@ and the way every later one sends.
   next. D161's rule moved a record that did not fit whole into the next segment. On CI's
   x86_64 Linux, whose guest's records are 32 KiB, that left segments of 64,000 bytes half
   full and a log half its retention; D162's test caught it there.
-- **Not yet.** fluentd, journald, splunk, awslogs, gcplogs and etwlogs, each refused
-  with a word that says so; gelf came with D164.
+- **Not yet.** splunk, awslogs, gcplogs and etwlogs, each refused with a word that says
+  so; gelf, fluentd and journald came with D164 to D166.
 
 Tested on real microVMs (`a_runs_log_is_sent_to_syslog_as_its_options_say`):
 
@@ -6932,7 +7015,7 @@ the rest of a run's reach into its domains.
   | A run joining the microVM (`--network container:`, D119) | held to every rule of this table, by the daemon and again by init | it runs beside them as the microVM's own run does |
   | `--ipc` (`host` is init's namespace, theirs each their own), `--uts`, `--userns`, `--umask`, `--storage-opt` (D156); `--runtime`, `--isolation`, `--cpu-count`, `--cpu-percent`, `--cpu-rt-*` (D155) | given | the command's own namespaces, writable layer and limits |
   | `--link` | refused for every run, not served yet | |
-  | `--log-driver`, `--log-opt` (D161 to D165) | given | the command's own output, kept on the host by its VM process, in its container's directory, and sent elsewhere by the daemon, never by the microVM |
+  | `--log-driver`, `--log-opt` (D161 to D166) | given | the command's own output, kept on the host by its VM process, in its container's directory, and sent elsewhere by the daemon, never by the microVM |
   | `--cap-add` of any other: `DAC_READ_SEARCH`, `IPC_OWNER`, `IPC_LOCK`, `SYS_BOOT`, `SYS_RESOURCE`, `CHECKPOINT_RESTORE` among them | given | `open_by_handle_at` opens only on filesystems the command holds a mount of, a domain's own being none of them; IPC namespaces differ; `reboot(2)` ends the caller's own PID namespace's init (pid_namespaces(7)); the rest bound the command's own resources or namespaces |
   | `--cap-drop`, `no-new-privileges`, `writable-cgroups=true` (its cgroup namespace's subtree), `apparmor=`, `label=` (no LSM in the microVM: accepted, as on a Docker host without one) | given | narrows the command, or touches only its own |
   | `seccomp=` a profile or `unconfined` | given, recorded | its own filter; the domains keep theirs. Measured: unconfined, any uid makes a user namespace (`max_user_namespaces` 994), owning none of the domains' namespaces but reaching more of the kernel they share |

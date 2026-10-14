@@ -122,20 +122,6 @@ impl<'n> Asks<'n> {
     }
 }
 
-/// The time `ns` as Go's RFC3339Nano writes it in UTC.
-fn rfc3339_nano(ns: u128) -> String {
-    let secs = i64::try_from(ns / 1_000_000_000).unwrap_or(i64::MAX);
-    let frac = ns % 1_000_000_000;
-    let base = shards_cmdline::format::rfc3339_at(secs, 0);
-    let base = base.strip_suffix('Z').unwrap_or(&base).to_string();
-    if frac == 0 {
-        format!("{base}Z")
-    } else {
-        let digits = format!("{frac:09}");
-        format!("{base}.{}Z", digits.trim_end_matches('0'))
-    }
-}
-
 /// A random 64-hex ID, as dockerd's stringid makes a network's.
 fn new_id() -> Result<String, String> {
     crate::containers::new_id().map_err(|e| e.to_string())
@@ -1499,7 +1485,10 @@ impl<D: Disk> Daemon<D> {
         Struct::new("network.Inspect")
             .field("Name", Value::String(n.name.clone()))
             .field("Id", Value::String(n.id.clone()))
-            .field("Created", Value::String(rfc3339_nano(n.created)))
+            .field(
+                "Created",
+                Value::String(shards_cmdline::format::rfc3339_nano(n.created)),
+            )
             .field("Scope", Value::String(n.scope.clone()))
             .field("Driver", Value::String(n.driver.clone()))
             .field("EnableIPv4", Value::Bool(n.ipv4))
@@ -1804,10 +1793,6 @@ mod tests {
         assert_eq!(
             ipam_errors(&c[0]),
             ["--ip-range 10.10.0.0/16: larger than its subnet 10.10.0.0/24"]
-        );
-        assert_eq!(
-            rfc3339_nano(1_791_260_014_360_799_172),
-            "2026-10-06T04:13:34.360799172Z"
         );
     }
 }

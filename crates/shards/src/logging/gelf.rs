@@ -133,8 +133,9 @@ pub struct From {
 
 /// The container's own fields: `fields` its own (name and value, `_created` an RFC 3339
 /// time) and `attributes` those asked for, the latter's names given a `_` first, all
-/// sorted by name, as Go's encoding/json writes a map; an attribute named as a field of
-/// the container's own replaces it, as moby's driver lays them over each other.
+/// sorted by name, as Go's encoding/json writes a map. An attribute named as a field of
+/// the container's own is left out (D166): moby's driver lets it replace the field, so a
+/// label `container_id` says another container wrote the line.
 pub fn extra(fields: &[(&str, String)], attributes: &BTreeMap<String, String>) -> String {
     let mut all: BTreeMap<String, &str> = fields
         .iter()
@@ -146,7 +147,7 @@ pub fn extra(fields: &[(&str, String)], attributes: &BTreeMap<String, String>) -
         } else {
             format!("_{k}")
         };
-        all.insert(name, v);
+        all.entry(name).or_insert(v);
     }
     let mut out = String::new();
     for (i, (k, v)) in all.iter().enumerate() {
@@ -354,6 +355,20 @@ mod tests {
 
     /// A message past one datagram goes in chunks of at most 1,420 bytes, each its
     /// header, numbered in order; one past 128 of them is none.
+    /// An attribute named as a field of the container's own is left out: an image's label
+    /// says nothing of which container wrote a line.
+    #[test]
+    fn the_containers_own_fields_are_its_own() {
+        let attributes: BTreeMap<String, String> = [("container_id", "other"), ("team", "logs")]
+            .iter()
+            .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+            .collect();
+        assert_eq!(
+            extra(&[("_container_id", "mine".to_string())], &attributes),
+            r#""_container_id":"mine","_team":"logs""#
+        );
+    }
+
     #[test]
     fn messages_are_chunked_as_go_gelf_chunks_them() {
         let data = vec![b'x'; 3 * (CHUNK - CHUNK_HEAD) + 5];

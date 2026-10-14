@@ -1,7 +1,7 @@
 #!/bin/sh
-# Regenerates what Docker's syslog, gelf and fluentd log drivers send, and which of their
-# options Docker takes (crates/shards/src/logging/testdata/syslog.json, gelf.json and
-# fluentd.json), which crates/shards/src/logging and its tests hold shards to (D163 to
+# Regenerates what Docker's syslog, gelf, fluentd and journald log drivers send, and which
+# of their options Docker takes (crates/shards/src/logging/testdata/syslog.json, gelf.json,
+# fluentd.json and journald.json), which crates/shards/src/logging and its tests hold shards to (D163 to
 # D165).
 #
 # In shards-dind (CONTAINER), capture.go listens on UDP, TCP and TLS ports and on a unix
@@ -18,16 +18,24 @@ here=$(cd "$(dirname "$0")" && pwd)
 root=$(cd "$here/../.." && pwd)
 out="$root/crates/shards/src/logging/testdata/syslog.json"
 gelf_out="$root/crates/shards/src/logging/testdata/gelf.json"
+journald_out="$root/crates/shards/src/logging/testdata/journald.json"
 fluentd_out="$root/crates/shards/src/logging/testdata/fluentd.json"
 container=${CONTAINER:-shards-dind}
 image=alpine:3.22
 work=$(mktemp -d)
 dir=/root/shards-syslog-oracle-$$
 name=shards-syslog-oracle-$$
+# journald's entries go to the journal's socket, which the capture takes the place of: the
+# probe container has no journal of its own, and keeps none of this run's.
+journal=/run/systemd/journal/socket
+journal_made=
 cleanup() {
 	rm -rf "$work"
 	# Anchored, so that it matches the capture alone, not the shell that runs it.
 	docker exec "$container" sh -c "pkill -f '^$dir/capture'; for c in \$(docker ps -aq --filter name=$name); do docker rm -f \$c; done; rm -rf $dir" >/dev/null 2>&1 || true
+	if [ -n "$journal_made" ]; then
+		docker exec "$container" rm -f "$journal" >/dev/null 2>&1 || true
+	fi
 }
 trap cleanup EXIT
 
@@ -40,9 +48,15 @@ x86_64 | amd64) arch=amd64 ;;
 	;;
 esac
 (cd "$here" && GOOS=linux GOARCH="$arch" CGO_ENABLED=0 go build -o "$work/capture" capture.go)
-docker exec "$container" mkdir -p "$dir/cases" "$dir/gelf" "$dir/fluentd"
+docker exec "$container" mkdir -p "$dir/cases" "$dir/gelf" "$dir/fluentd" "$dir/journald"
 docker cp "$work/capture" "$container:$dir/capture"
-docker exec -d "$container" "$dir/capture" "$dir"
+if docker exec "$container" test -e "$journal"; then
+	echo "$container has $journal already: the capture takes the journal's place" >&2
+	exit 1
+fi
+docker exec "$container" mkdir -p "$(dirname "$journal")"
+journal_made=1
+docker exec -d "$container" "$dir/capture" "$dir" "$journal"
 until docker exec "$container" test -e "$dir/ready"; do sleep 0.2; done
 docker exec "$container" docker version --format '{{.Server.Version}}' >"$work/version"
 
@@ -116,7 +130,50 @@ for case in tcp-seconds tcp-nanoseconds unix-seconds; do
 	until [ "$(docker exec "$container" sh -c "ls $dir/out | wc -l")" -ge 1 ]; do sleep 0.1; done
 	docker exec "$container" sh -c "mkdir $dir/fluentd/$case && mv $dir/out/* $dir/fluentd/$case/"
 done
+# journald: a line on each stream and one of 40,000 bytes in parts, its tag the short ID;
+# a tag and attributes, among them one journald drops (a digit first), one named as the
+# driver's own MESSAGE and one as the container's CONTAINER_NAME, and an environment
+# variable's; and an entry longer than a datagram, which go-systemd passes in a file: its
+# labels together past the most a datagram takes (twice wmem_max, as Linux doubles a send
+# buffer), each of 60,000 bytes, as Docker's CLI reads no line of a label file past 64 KiB
+# (bufio.Scanner). Its entries are sent as its run runs.
+wmem_max=$(docker exec "$container" cat /proc/sys/net/core/wmem_max)
+labels=$(((wmem_max * 2 + 65536) / 60000 + 1))
+: >"$work/big.labels"
+for n in $(seq "$labels"); do
+	{
+		printf 'big%s=' "$n"
+		head -c 60000 /dev/zero | tr '\000' y
+		printf '\n'
+	} >>"$work/big.labels"
+done
+docker cp "$work/big.labels" "$container:$dir/big.labels"
+for case in streams attributes large; do
+	i=$((i + 1))
+	set -- --log-driver journald
+	command=$print
+	want=5
+	case $case in
+	attributes)
+		set -- "$@" --log-opt 'tag={{.Name}}' --log-opt labels=a.b,_c,1d,message,container.name \
+			--label a.b=1 --label _c=2 --label 1d=3 --label message=4 --label container.name=5 \
+			--log-opt env=E_F --env E_F=6
+		command='echo one'
+		want=1
+		;;
+	large)
+		set -- "$@" --label-file "$dir/big.labels" --log-opt labels-regex=^big
+		command='echo one'
+		want=1
+		;;
+	esac
+	docker exec "$container" docker run --rm --name "$name-$i" "$@" "$image" sh -c "$command" >/dev/null 2>&1
+	until [ "$(docker exec "$container" sh -c "ls $dir/out | wc -l")" -ge "$want" ]; do sleep 0.1; done
+	docker exec "$container" sh -c "mkdir $dir/journald/$case && mv $dir/out/* $dir/journald/$case/"
+done
 docker exec "$container" tar -C "$dir/cases" -c . | tar -x -C "$work"
+mkdir "$work/journald"
+docker exec "$container" tar -C "$dir/journald" -c . | tar -x -C "$work/journald"
 mkdir "$work/fluentd"
 docker exec "$container" tar -C "$dir/fluentd" -c . | tar -x -C "$work/fluentd"
 mkdir "$work/gelf"
@@ -232,10 +289,33 @@ for opts in \
 	fi
 done
 
-python3 -I - "$work" "$dir" "$out" "$gelf_out" "$fluentd_out" <<'EOF'
+# journald's: each case its options, separated by |. None dials the journal.
+for opts in \
+	"" \
+	"tag={{.Name}}" \
+	"labels=a|labels-regex=^a|env=B|env-regex=^B" \
+	"max-size=10m" \
+	"journald-color=red" \
+	"cache-disabled=true" \
+	"mode=non-blocking"; do
+	i=$((i + 1))
+	set --
+	old_ifs=$IFS
+	IFS='|'
+	for o in $opts; do set -- "$@" --log-opt "$o"; done
+	IFS=$old_ifs
+	if said=$(docker exec "$container" docker create --name "$name-o$i" --log-driver journald "$@" "$image" true 2>&1); then
+		docker exec "$container" docker rm "$name-o$i" >/dev/null 2>&1 || true
+		printf '%s\t\n' "$opts" >>"$work/journald-options"
+	else
+		printf '%s\t%s\n' "$opts" "$(printf '%s' "$said" | tr '\n' ' ')" >>"$work/journald-options"
+	fi
+done
+
+python3 -I - "$work" "$dir" "$out" "$gelf_out" "$fluentd_out" "$journald_out" "$name" <<'EOF'
 import gzip, json, os, re, struct, sys, zlib
 
-work, dind, out, gelf_out, fluentd_out = sys.argv[1:6]
+work, dind, out, gelf_out, fluentd_out, journald_out, name = sys.argv[1:8]
 version = open(os.path.join(work, "version")).read().strip()
 STAMP = r"[A-Z][a-z]{2} [ \d]\d \d\d:\d\d:\d\d"
 FORMATS = {
@@ -267,7 +347,7 @@ def content(c):
 cases = []
 for case in sorted(os.listdir(work)):
     path = os.path.join(work, case)
-    if not os.path.isdir(path) or case in ("gelf", "fluentd"):
+    if not os.path.isdir(path) or case in ("gelf", "fluentd", "journald"):
         continue
     transport, fmt, facility = case.split("-")
     files = [os.path.join(path, f) for f in sorted(os.listdir(path))]
@@ -426,4 +506,64 @@ for line in open(os.path.join(work, "fluentd-options")):
     fluentd_options.append({"options": [o for o in opts.split("|") if o], "refused": said or None})
 json.dump({"docker": version, "cases": fluentd_cases, "options": fluentd_options}, open(fluentd_out, "w"), indent=1)
 print(f"{fluentd_out}: {len(fluentd_cases)} cases, {len(fluentd_options)} options")
+
+def journal_fields(data):
+    """An entry's fields, in order, as journald reads the native protocol."""
+    out, i = [], 0
+    while i < len(data):
+        j = min(k for k in (data.find(b"\n", i), data.find(b"=", i)) if k != -1)
+        field = data[i:j].decode()
+        if data[j:j + 1] == b"=":
+            nl = data.index(b"\n", j)
+            value, i = data[j + 1:nl], nl + 1
+        else:
+            n = struct.unpack("<Q", data[j + 1:j + 9])[0]
+            value, i = data[j + 9:j + 9 + n], j + 10 + n
+        out.append((field, value.decode()))
+    return out
+
+RFC3339NANO = re.compile(r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(\.\d*[1-9])?Z$")
+
+def journal_normal(fields):
+    """An entry's fields sorted by name, the container's own values, its epoch, a part's
+    ID and its time made placeholders, and a run of one letter its length."""
+    full = dict(fields)["CONTAINER_ID_FULL"]
+    def value(field, v):
+        if field == "CONTAINER_ID_FULL":
+            return "{id}"
+        if v == full[:12]:
+            return "{id12}"
+        if field == "CONTAINER_LOG_EPOCH":
+            assert re.fullmatch(r"[0-9a-f]{64}", v), v
+            return "{epoch}"
+        if field == "CONTAINER_PARTIAL_ID":
+            return "{partial}"
+        if field == "SYSLOG_TIMESTAMP":
+            assert RFC3339NANO.match(v), v
+            return "{time}"
+        if re.fullmatch(re.escape(name) + r"-\d+", v):
+            return "{name}"
+        if len(v) > 1 and len(set(v)) == 1 and v[0] in "xy":
+            return {v[0]: len(v)}
+        return v
+    return sorted(([f, value(f, v)] for f, v in fields), key=lambda f: f[0])
+
+journald_cases = []
+for case in sorted(os.listdir(os.path.join(work, "journald"))):
+    path = os.path.join(work, "journald", case)
+    entries = []
+    for f in sorted(os.listdir(path)):
+        data = open(os.path.join(path, f), "rb").read()
+        via = "file" if f.endswith("journald-fd") else "datagram"
+        entries.append({"via": via, "fields": journal_normal(journal_fields(data))})
+    # Each stream's in its order, stderr's (priority 3) first.
+    entries.sort(key=lambda e: dict(map(tuple, e["fields"]))["PRIORITY"])
+    journald_cases.append({"case": case, "entries": entries})
+
+journald_options = []
+for line in open(os.path.join(work, "journald-options")):
+    opts, said = line.rstrip("\n").split("\t", 1)
+    journald_options.append({"options": [o for o in opts.split("|") if o], "refused": said or None})
+json.dump({"docker": version, "cases": journald_cases, "options": journald_options}, open(journald_out, "w"), indent=1)
+print(f"{journald_out}: {len(journald_cases)} cases, {len(journald_options)} options")
 EOF

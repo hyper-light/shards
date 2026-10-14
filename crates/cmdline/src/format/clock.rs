@@ -49,6 +49,21 @@ pub fn rfc3339_at(sec: i64, offset: i64) -> String {
     Clock { now: 0, zone: &zone }.rfc3339(sec)
 }
 
+/// `ns`, nanoseconds since the epoch, as Go's `time.RFC3339Nano` writes it in UTC: its
+/// fraction's trailing zeros dropped, and none at all for a whole second.
+pub fn rfc3339_nano(ns: u128) -> String {
+    let secs = i64::try_from(ns / 1_000_000_000).unwrap_or(i64::MAX);
+    let frac = ns % 1_000_000_000;
+    let base = rfc3339_at(secs, 0);
+    let base = base.strip_suffix('Z').unwrap_or(&base);
+    if frac == 0 {
+        format!("{base}Z")
+    } else {
+        let digits = format!("{frac:09}");
+        format!("{base}.{}Z", digits.trim_end_matches('0'))
+    }
+}
+
 impl Clock<'_> {
     /// `units.HumanDuration(time.Now().UTC().Sub(t)) + " ago"`, for `t` in nanoseconds
     /// since the epoch. Sub saturates at the longest durations Go has.
@@ -169,5 +184,11 @@ mod tests {
             "0001-01-01 00:00:00 +0000 UTC"
         );
         assert_eq!(clock.ago(-3_600 * NANOS), "About an hour ago");
+        assert_eq!(
+            rfc3339_nano(1_791_260_014_360_799_172),
+            "2026-10-06T04:13:34.360799172Z"
+        );
+        assert_eq!(rfc3339_nano(1_791_260_014_360_000_000), "2026-10-06T04:13:34.36Z");
+        assert_eq!(rfc3339_nano(1_791_260_014_000_000_000), "2026-10-06T04:13:34Z");
     }
 }

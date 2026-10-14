@@ -10,8 +10,8 @@
 //! Docker's does. In `mode=non-blocking` the run's output is queued for its log, at most
 //! `max-buffer-size` bytes, and what comes while the queue is full is dropped and counted.
 //!
-//! A driver that sends a run's log elsewhere (`syslog`, D163) keeps it in shards' store
-//! too, as its local copy, which `cache-max-size`, `cache-max-file` and `cache-compress`
+//! A driver that sends a run's log elsewhere (`syslog`, `gelf`, `fluentd`, and on Linux
+//! the journal, `journald`: D163 to D166) keeps it in shards' store too, as its local copy, which `cache-max-size`, `cache-max-file` and `cache-compress`
 //! bound as Docker documents them (Docker takes them and applies none) and which
 //! `cache-disabled` keeps from `logs`; the daemon sends it from there (daemon/ship.rs).
 
@@ -21,14 +21,21 @@ use shards_ipc::Run;
 
 pub mod fluentd;
 pub mod gelf;
+pub mod journald;
 pub mod syslog;
 
 /// The drivers that are shards' own store.
 const STORE: [&str; 3] = ["shards", "json-file", "local"];
-/// The drivers that send a log elsewhere, from shards' store (D163 to D165).
-const SENDS: [&str; 3] = ["syslog", "gelf", "fluentd"];
+/// The drivers that send a log elsewhere, from shards' store (D163 to D166); journald's on
+/// Linux alone, whose systemd keeps the journal.
+const SENDS: [&str; 4] = ["syslog", "gelf", "fluentd", "journald"];
 /// The drivers Docker sends a log elsewhere with, which shards does not yet.
-const ELSEWHERE: [&str; 5] = ["journald", "awslogs", "splunk", "etwlogs", "gcplogs"];
+const ELSEWHERE: [&str; 4] = ["awslogs", "splunk", "etwlogs", "gcplogs"];
+/// What a run's log can be, as a refusal says it.
+#[cfg(target_os = "linux")]
+const KINDS: &str = "shards keeps a run's log itself (shards, json-file or local), sends it to syslog, gelf, fluentd or the journal (journald), or keeps none (none)";
+#[cfg(not(target_os = "linux"))]
+const KINDS: &str = "shards keeps a run's log itself (shards, json-file or local), sends it to syslog, gelf or fluentd, or keeps none (none)";
 /// The store's own options: its segments' (moby jsonfilelog's ValidateLogOpt, local's).
 const STORE_OPTIONS: [&str; 3] = ["max-size", "max-file", "compress"];
 /// The options every driver takes: the attributes `logs --details` shows and the tag,
@@ -108,19 +115,23 @@ pub fn kept(run: &Run, default: crate::spec::LogRetention) -> Result<Option<Kept
     }
     if ELSEWHERE.contains(&name) {
         return Err(format!(
-            "--log-driver {name}: shards keeps a run's log itself (shards, json-file or local), sends it to syslog, gelf or fluentd, or keeps none (none); sending it to {name} is not here yet"
+            "--log-driver {name}: {KINDS}; sending it to {name} is not here yet"
+        ));
+    }
+    if name == "journald" && !cfg!(target_os = "linux") {
+        return Err(format!(
+            "--log-driver journald: the journal is systemd's, on Linux, and this host keeps none: {KINDS}"
         ));
     }
     let ships = SENDS.contains(&name);
     if !STORE.contains(&name) && !ships {
-        return Err(format!(
-            "--log-driver {name}: no such log driver: shards keeps a run's log itself (shards, json-file or local), sends it to syslog, gelf or fluentd, or keeps none (none)"
-        ));
+        return Err(format!("--log-driver {name}: no such log driver: {KINDS}"));
     }
     let own: &[&str] = match name {
         "syslog" => &syslog::OPTIONS,
         "gelf" => &gelf::OPTIONS,
         "fluentd" => &fluentd::OPTIONS,
+        "journald" => &journald::OPTIONS,
         _ => &STORE_OPTIONS,
     };
     if let Some(k) = opts
@@ -226,12 +237,13 @@ pub fn kept(run: &Run, default: crate::spec::LogRetention) -> Result<Option<Kept
     }))
 }
 
-/// Where a run's log is sent besides shards' store (D163, D164).
+/// Where a run's log is sent besides shards' store (D163 to D166).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Remote {
     Syslog(syslog::Config),
     Gelf(gelf::Config),
     Fluentd(fluentd::Config),
+    Journald,
 }
 
 /// The driver `run` sends its log elsewhere with, if one does.
@@ -245,6 +257,7 @@ fn remote_config(name: &str, opts: &BTreeMap<String, String>) -> Result<Option<R
         "syslog" => Ok(Some(Remote::Syslog(syslog::config(opts)?))),
         "gelf" => Ok(Some(Remote::Gelf(gelf::config(opts)?))),
         "fluentd" => Ok(Some(Remote::Fluentd(fluentd::config(opts)?))),
+        "journald" => Ok(Some(Remote::Journald)),
         _ => Ok(None),
     }
 }
@@ -326,10 +339,24 @@ pub struct Info<'a> {
 }
 
 /// The attributes `logs --details` shows before each of `run`'s lines, sorted by name as
-/// Go's encoding of a map sorts them: its labels' (`labels`, `labels-regex`), its
-/// environment's (`env`, `env-regex`) and its tag (`tag`), as moby's json-file keeps them
-/// (logger.Info.ExtraAttributes, loggerutils.ParseLogTag).
+/// Go's encoding of a map sorts them: [`extra`]'s, and its tag (`tag`), as moby's
+/// json-file keeps them (loggerutils.ParseLogTag).
 pub fn attributes(run: &Run, info: &Info<'_>) -> Result<BTreeMap<String, String>, String> {
+    let opts = options(run);
+    let mut extra = extra(run, info)?;
+    if let Some(tag) = opts.get("tag").filter(|v| !v.is_empty()) {
+        let tag = render_tag(tag, info, &opts)?;
+        if !tag.is_empty() {
+            extra.insert("tag".into(), tag);
+        }
+    }
+    Ok(extra)
+}
+
+/// The attributes a driver that sends `run`'s log elsewhere sends with each line: its
+/// labels' (`labels`, `labels-regex`) and its environment's (`env`, `env-regex`), as moby's
+/// logger.Info.ExtraAttributes picks them; its tag is each driver's own field.
+pub fn extra(run: &Run, info: &Info<'_>) -> Result<BTreeMap<String, String>, String> {
     let opts = options(run);
     let mut extra = BTreeMap::new();
     if let Some(keys) = opts.get("labels").filter(|v| !v.is_empty()) {
@@ -361,12 +388,6 @@ pub fn attributes(run: &Run, info: &Info<'_>) -> Result<BTreeMap<String, String>
             if re.is_match(k) {
                 extra.insert((*k).to_string(), (*v).to_string());
             }
-        }
-    }
-    if let Some(tag) = opts.get("tag").filter(|v| !v.is_empty()) {
-        let tag = render_tag(tag, info, &opts)?;
-        if !tag.is_empty() {
-            extra.insert("tag".into(), tag);
         }
     }
     Ok(extra)
@@ -577,11 +598,20 @@ mod tests {
                 "--log-opt max-size: --log-driver none keeps no log",
             ),
             (
-                "journald",
+                "awslogs",
                 &[],
-                "--log-driver journald: shards keeps a run's log itself",
+                "--log-driver awslogs: shards keeps a run's log itself",
             ),
             ("bogus", &[], "--log-driver bogus: no such log driver"),
+            (
+                "journald",
+                &["max-size=10m"],
+                if cfg!(target_os = "linux") {
+                    "--log-opt max-size: --log-driver journald takes labels"
+                } else {
+                    "--log-driver journald: the journal is systemd's, on Linux"
+                },
+            ),
             ("json-file", &["max-size=-1"], "--log-opt max-size=-1: a size"),
             (
                 "json-file",
@@ -692,5 +722,35 @@ mod tests {
             "web/0123456789ab/fedcba987654/alpine:3/sh -c x"
         );
         assert!(attrs(&["tag="]).is_empty());
+        // What a driver that sends a log elsewhere sends with each line: its tag is its own.
+        assert_eq!(
+            extra(&run("", &["labels=app", "tag={{.Name}}"]), &info).unwrap(),
+            [("app".to_string(), "web".to_string())].into()
+        );
+    }
+
+    /// journald sends a run's log to the journal on Linux, whose systemd keeps one; macOS
+    /// keeps none, and refuses it.
+    #[test]
+    fn the_journal_is_linux_s() {
+        let journald = kept(
+            &run("journald", &["tag=x", "labels=a", "cache-disabled=true"]),
+            DEFAULT,
+        );
+        if cfg!(target_os = "linux") {
+            let shipped = Kept {
+                ships: true,
+                cached: false,
+                ..kept_as(20 << 20, 5, false, None)
+            };
+            assert_eq!(journald, Ok(Some(shipped)));
+        } else {
+            assert!(
+                journald
+                    .as_ref()
+                    .is_err_and(|e| e.starts_with("--log-driver journald: the journal is systemd's")),
+                "{journald:?}"
+            );
+        }
     }
 }

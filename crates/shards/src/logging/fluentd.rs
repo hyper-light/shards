@@ -218,8 +218,10 @@ pub fn event(
     record.insert("container_name", from.name.as_bytes());
     record.insert("source", source);
     record.insert("log", line);
+    // An attribute named as one of the record's own is left out (D166): moby's lets it
+    // replace it, so that a label `log` takes the line's place.
     for (k, v) in &from.extra {
-        record.insert(k, v.as_bytes());
+        record.entry(k).or_insert(v.as_bytes());
     }
     let ordinal;
     if let Some(p) = &part {
@@ -511,5 +513,35 @@ mod tests {
         assert_eq!(got[3], serde_json::json!({"chunk": "Y2h1bms="}));
         // Time 0: a positive fixint, as msgp's AppendInt64 writes it.
         assert_eq!(event[3], 0x00);
+    }
+
+    /// An attribute named as one of a record's own is left out: a label `log` does not
+    /// take the line's place, nor one `container_id` say another container wrote it.
+    #[test]
+    fn a_records_own_keys_are_its_own() {
+        let config = Config {
+            to: To::Tcp(DEFAULT.into()),
+            sub_second: false,
+            ack: false,
+            retry_wait: Duration::from_secs(1),
+            max_retries: 0,
+            write_timeout: None,
+            read_timeout: None,
+        };
+        let from = From {
+            tag: "t".into(),
+            id: "i".into(),
+            name: "/n".into(),
+            extra: [("log", "spoof"), ("container_id", "other"), ("team", "logs")]
+                .iter()
+                .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+                .collect(),
+        };
+        let event = event(&config, &from, crate::spec::LOG_STDOUT, 0, b"x", None, None);
+        let mut at = 0;
+        assert_eq!(
+            unpack(&event, &mut at)[2],
+            serde_json::json!({"container_id": "i", "container_name": "/n", "source": "stdout", "log": "x", "team": "logs"})
+        );
     }
 }

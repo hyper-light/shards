@@ -1,11 +1,12 @@
-// Captures what Docker's syslog log driver sends (scripts/logdrivers/generate): UDP
-// datagrams on :5514, TCP and TLS streams on :5515 and :5516, and a unix datagram socket
-// and a unix stream socket in DIR. Each datagram, and each connection's bytes, goes to a
-// file of its own in DIR/out, named for its transport and the order it came in. The TLS
-// listener's certificate, for 127.0.0.1 and localhost, is made as it starts, and its
-// certificate is DIR/ca.pem, which the driver's syslog-tls-ca-cert names.
+// Captures what Docker's log drivers send (scripts/logdrivers/generate): UDP datagrams
+// on :5514, TCP and TLS streams on :5515 and :5516, a unix datagram socket and a unix
+// stream socket in DIR, and, where JOURNAL is given, the journal's socket there. Each
+// datagram, and each connection's bytes, goes to a file of its own in DIR/out, named for
+// its transport and the order it came in. The TLS listener's certificate, for 127.0.0.1
+// and localhost, is made as it starts, and its certificate is DIR/ca.pem, which the
+// syslog driver's syslog-tls-ca-cert names.
 //
-//	capture DIR
+//	capture DIR [JOURNAL]
 package main
 
 import (
@@ -24,6 +25,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync/atomic"
+	"syscall"
 	"time"
 )
 
@@ -57,6 +59,46 @@ func streams(dir, kind string, l net.Listener) {
 			b, _ := io.ReadAll(c)
 			save(dir, kind, b)
 		}()
+	}
+}
+
+// journal records each entry journald's socket is sent: its datagram's bytes, or, where
+// it is passed a descriptor instead (go-systemd's file in /dev/shm, for an entry too long
+// for a datagram), that file's.
+func journal(dir string, c *net.UnixConn) {
+	buf := make([]byte, 1<<20)
+	oob := make([]byte, 256)
+	for {
+		n, oobn, _, _, err := c.ReadMsgUnix(buf, oob)
+		if err != nil {
+			return
+		}
+		entry, kind := append([]byte(nil), buf[:n]...), "journald"
+		msgs, err := syscall.ParseSocketControlMessage(oob[:oobn])
+		if err != nil {
+			log.Fatal(err)
+		}
+		for _, m := range msgs {
+			fds, err := syscall.ParseUnixRights(&m)
+			if err != nil {
+				log.Fatal(err)
+			}
+			for _, fd := range fds {
+				f := os.NewFile(uintptr(fd), "entry")
+				info, err := f.Stat()
+				if err != nil {
+					log.Fatal(err)
+				}
+				// Its offset is its sender's, past what it wrote: read it from the start.
+				entry = make([]byte, info.Size())
+				if _, err := f.ReadAt(entry, 0); err != nil && err != io.EOF {
+					log.Fatal(err)
+				}
+				f.Close()
+				kind = "journald-fd"
+			}
+		}
+		save(dir, kind, entry)
 	}
 }
 
@@ -117,6 +159,13 @@ func main() {
 		log.Fatal(err)
 	}
 	go streams(dir, "unix", stream)
+	if len(os.Args) > 2 {
+		j, err := net.ListenUnixgram("unixgram", &net.UnixAddr{Name: os.Args[2], Net: "unixgram"})
+		if err != nil {
+			log.Fatal(err)
+		}
+		go journal(dir, j)
+	}
 	if err := os.WriteFile(filepath.Join(dir, "ready"), nil, 0o644); err != nil {
 		log.Fatal(err)
 	}

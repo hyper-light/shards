@@ -11899,6 +11899,7 @@ fn a_runs_log_is_sent_to_fluentd_as_its_options_say() {
             "fluentd-sub-second-precision=true",
             "fluentd-request-ack=true",
             "labels=team",
+            "tag={{.Name}}",
         ],
         &["streams", "out", "err"],
     );
@@ -11910,7 +11911,9 @@ fn a_runs_log_is_sent_to_fluentd_as_its_options_say() {
     for ((tag, at, record, option), (line, source)) in
         events.iter().zip([("err", "stderr"), ("out", "stdout")])
     {
-        assert_eq!(tag, id.get(..12).unwrap(), "its tag the short ID");
+        // Its tag the one asked for, which its record does not repeat (moby's fluentd sends
+        // logger.Info.ExtraAttributes, which leave it out).
+        assert_eq!(tag, "nanos", "its tag the one asked for");
         assert_eq!(
             record,
             &serde_json::json!({
@@ -11972,6 +11975,226 @@ fn a_runs_log_is_sent_to_fluentd_as_its_options_say() {
         let r = run_in(&home, &image, &flags, &["exit", "0"]);
         assert_eq!(r.status, Some(125), "{opts:?}: {r}");
         assert!(r.stderr.starts_with(said), "{opts:?}: {r}");
+    }
+}
+
+/// An entry the journal's socket was sent: its fields in order, and, where it came in a
+/// memfd, whether that was sealed against every change, as journald takes one from a
+/// sender it cannot vouch for.
+#[cfg(target_os = "linux")]
+fn journal_entry(journal: &std::os::unix::net::UnixDatagram) -> (Vec<(String, String)>, Option<bool>) {
+    use std::os::fd::{AsRawFd as _, FromRawFd as _};
+    use std::os::unix::fs::FileExt as _;
+    let mut data = vec![0u8; 1 << 20];
+    let mut control = [0u64; 8];
+    let mut iov = libc::iovec {
+        iov_base: data.as_mut_ptr().cast(),
+        iov_len: data.len(),
+    };
+    // SAFETY: an all-zero msghdr is valid; its buffers outlive the call.
+    let mut msg: libc::msghdr = unsafe { std::mem::zeroed() };
+    msg.msg_iov = &mut iov;
+    msg.msg_iovlen = 1;
+    msg.msg_control = control.as_mut_ptr().cast();
+    msg.msg_controllen = std::mem::size_of_val(&control) as _;
+    // SAFETY: recvmsg(2) into the buffers above, on a socket this test holds.
+    let n = unsafe { libc::recvmsg(journal.as_raw_fd(), &mut msg, libc::MSG_CMSG_CLOEXEC) };
+    assert!(n >= 0, "{}", std::io::Error::last_os_error());
+    data.truncate(usize::try_from(n).unwrap());
+    let mut sealed = None;
+    // SAFETY: the control message recvmsg wrote, read as CMSG_* read one; its descriptor
+    // is new to this process, and owned here.
+    unsafe {
+        let cmsg = libc::CMSG_FIRSTHDR(&msg);
+        if !cmsg.is_null() && (*cmsg).cmsg_type == libc::SCM_RIGHTS {
+            let fd = libc::CMSG_DATA(cmsg).cast::<libc::c_int>().read_unaligned();
+            let file = std::fs::File::from_raw_fd(fd);
+            data = vec![0u8; usize::try_from(file.metadata().unwrap().len()).unwrap()];
+            file.read_exact_at(&mut data, 0).unwrap();
+            let all = libc::F_SEAL_SHRINK | libc::F_SEAL_GROW | libc::F_SEAL_WRITE | libc::F_SEAL_SEAL;
+            sealed = Some(libc::fcntl(fd, libc::F_GET_SEALS) & all == all);
+        }
+    }
+    let mut fields = Vec::new();
+    let mut rest = data.as_slice();
+    while !rest.is_empty() {
+        let end = rest.iter().position(|&c| c == b'\n' || c == b'=').unwrap();
+        let name = String::from_utf8(rest[..end].to_vec()).unwrap();
+        let (value, next) = if rest[end] == b'=' {
+            let nl = end + 1 + rest[end + 1..].iter().position(|&c| c == b'\n').unwrap();
+            (&rest[end + 1..nl], &rest[nl + 1..])
+        } else {
+            let len =
+                usize::try_from(u64::from_le_bytes(rest[end + 1..end + 9].try_into().unwrap())).unwrap();
+            let at = end + 9;
+            assert_eq!(rest[at + len], b'\n');
+            (&rest[at..at + len], &rest[at + len + 1..])
+        };
+        fields.push((name, String::from_utf8(value.to_vec()).unwrap()));
+        rest = next;
+    }
+    (fields, sealed)
+}
+
+/// A run's log sent to the journal (D166), at the socket `SHARDS_JOURNAL_SOCKET` names,
+/// where systemd's is not a test's to read: each line an entry of systemd's native
+/// protocol, its priority, its line, the container's fields, its output's time and its
+/// ordinal; the attributes asked for named as journal fields, and those journald drops or
+/// named as the driver's own left out; a long line's parts; an entry too long for a
+/// datagram in a sealed memfd. The journal is Linux's: macOS refuses the driver.
+#[test]
+fn a_runs_log_is_sent_to_journald_as_its_options_say() {
+    #[cfg(not(target_os = "linux"))]
+    {
+        let Some((home, image)) = home("containers-journald") else {
+            return;
+        };
+        let r = run_in(&home, &image, &["--log-driver", "journald"], &["exit", "0"]);
+        assert_eq!(r.status, Some(125), "{r}");
+        assert!(
+            r.stderr
+                .starts_with("shards: --log-driver journald: the journal is systemd's, on Linux"),
+            "{r}"
+        );
+    }
+    #[cfg(target_os = "linux")]
+    {
+        if cannot_run_vms() {
+            return;
+        }
+        let sockets = TempDir::new("jd");
+        let path = sockets.join("j");
+        let journal = std::os::unix::net::UnixDatagram::bind(&path).unwrap();
+        journal.set_read_timeout(Some(TIMEOUT)).unwrap();
+        let (image, _) = served();
+        let home = TempDir::new("containers-journald");
+        let (kernel, init) = (kernel(), guest_init());
+        // The daemon, which the first command starts, told where the journal is.
+        let env: [(&str, &OsStr); 4] = [
+            ("SHARDS_HOME", home.as_os_str()),
+            ("SHARDS_KERNEL", kernel.as_os_str()),
+            ("SHARDS_INIT", init.as_os_str()),
+            ("SHARDS_JOURNAL_SOCKET", path.as_os_str()),
+        ];
+        let pulled = run_shards_env(&[], &["pull", "-q", &image], &env, TIMEOUT);
+        assert_eq!(pulled.status, Some(0), "{}", pulled.stderr);
+        let journald = |name: &str, flags: &[&str], command: &[&str]| {
+            let mut all = vec!["--name", name, "--log-driver", "journald"];
+            all.extend(flags);
+            let r = run_in(&home, &image, &all, command);
+            assert_eq!(r.status, Some(0), "{name}: {r}");
+            shards_in(&home, &["inspect", "-f", "{{.Id}}", name])
+                .stdout
+                .trim()
+                .to_string()
+        };
+        let field = |fields: &[(String, String)], name: &str| -> Vec<String> {
+            fields
+                .iter()
+                .filter(|(n, _)| n == name)
+                .map(|(_, v)| v.clone())
+                .collect()
+        };
+
+        // A line on each stream: its priority, info or err; the container's fields, its tag
+        // the short ID; its time its output's; its ordinal from 1. An attribute asked for,
+        // named as a field; those left out: one journald drops (a digit first), one named
+        // as the driver's own MESSAGE.
+        let id = journald(
+            "streams",
+            &[
+                "--label",
+                "app.tier=web",
+                "--label",
+                "1x=y",
+                "--label",
+                "message=spoof",
+                "--log-opt",
+                "labels=app.tier,1x,message",
+            ],
+            &["streams", "out", "err"],
+        );
+        let short = id.get(..12).unwrap();
+        let mut entries = [journal_entry(&journal), journal_entry(&journal)];
+        entries.sort_by_key(|(fields, _)| field(fields, "MESSAGE"));
+        let stamped = shards_in(&home, &["logs", "-t", "streams"]);
+        let rfc3339 = &time::format_description::well_known::Rfc3339;
+        let mut ordinals = Vec::new();
+        for ((fields, sealed), (line, priority)) in entries.iter().zip([("err", "3"), ("out", "6")]) {
+            assert_eq!(*sealed, None, "a datagram: {fields:?}");
+            assert_eq!(field(fields, "MESSAGE"), [line], "{fields:?}");
+            assert_eq!(field(fields, "PRIORITY"), [priority]);
+            assert_eq!(field(fields, "CONTAINER_ID"), [short]);
+            assert_eq!(field(fields, "CONTAINER_ID_FULL"), [id.as_str()]);
+            assert_eq!(field(fields, "CONTAINER_NAME"), ["streams"]);
+            assert_eq!(field(fields, "CONTAINER_TAG"), [short]);
+            assert_eq!(field(fields, "SYSLOG_IDENTIFIER"), [short]);
+            assert_eq!(field(fields, "IMAGE_NAME"), [image.as_str()]);
+            assert_eq!(field(fields, "APP_TIER"), ["web"]);
+            assert!(field(fields, "1X").is_empty(), "{fields:?}");
+            let epoch = field(fields, "CONTAINER_LOG_EPOCH");
+            assert!(epoch.len() == 1 && epoch[0].len() == 64, "{epoch:?}");
+            // Its time is its output's, as `logs -t` says it.
+            let sent = field(fields, "SYSLOG_TIMESTAMP");
+            let sent = time::OffsetDateTime::parse(&sent[0], rfc3339).unwrap();
+            let kept = [&stamped.stdout, &stamped.stderr]
+                .iter()
+                .flat_map(|s| s.lines())
+                .find_map(|l| l.strip_suffix(&format!(" {line}")))
+                .unwrap_or_else(|| panic!("{stamped}"));
+            assert_eq!(
+                sent,
+                time::OffsetDateTime::parse(kept, rfc3339).unwrap(),
+                "{stamped}"
+            );
+            ordinals.extend(field(fields, "CONTAINER_LOG_ORDINAL"));
+        }
+        ordinals.sort();
+        assert_eq!(ordinals, ["1", "2"]);
+
+        // A line of 40,000 bytes in parts of 16 KiB, as moby's copier cuts it.
+        journald("parts", &[], &["wide", "40000"]);
+        let parts: Vec<_> = (0..3).map(|_| journal_entry(&journal).0).collect();
+        let partial = field(&parts[0], "CONTAINER_PARTIAL_ID");
+        assert_eq!(partial[0].len(), 64);
+        for (i, fields) in parts.iter().enumerate() {
+            assert_eq!(field(fields, "MESSAGE")[0].len(), [16384, 16384, 7232][i]);
+            assert_eq!(field(fields, "CONTAINER_PARTIAL_ID"), partial);
+            assert_eq!(field(fields, "CONTAINER_PARTIAL_ORDINAL"), [(i + 1).to_string()]);
+            let last = i == 2;
+            assert_eq!(field(fields, "CONTAINER_PARTIAL_LAST"), [last.to_string()]);
+            assert_eq!(field(fields, "CONTAINER_PARTIAL_MESSAGE").is_empty(), last);
+        }
+
+        // An entry past the most a datagram takes (twice wmem_max, as Linux doubles a send
+        // buffer): in a memfd, sealed.
+        let wmem_max: usize = std::fs::read_to_string("/proc/sys/net/core/wmem_max")
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        let labels = (wmem_max * 2 + 65_536) / 60_000 + 1;
+        let file = sockets.join("labels");
+        let lines: String = (1..=labels)
+            .map(|n| format!("big{n}={}\n", "z".repeat(60_000)))
+            .collect();
+        std::fs::write(&file, lines).unwrap();
+        journald(
+            "large",
+            &[
+                "--label-file",
+                file.to_str().unwrap(),
+                "--log-opt",
+                "labels-regex=^big",
+            ],
+            &["wide", "10"],
+        );
+        let (fields, sealed) = journal_entry(&journal);
+        assert_eq!(sealed, Some(true), "in a memfd, sealed");
+        assert_eq!(field(&fields, "MESSAGE"), ["x".repeat(10)]);
+        for n in 1..=labels {
+            assert_eq!(field(&fields, &format!("BIG{n}")), ["z".repeat(60_000)]);
+        }
     }
 }
 
@@ -12098,8 +12321,8 @@ fn a_runs_log_is_kept_as_its_driver_and_options_say() {
     );
     for (flags, said) in [
         (
-            &["--log-driver", "journald"][..],
-            "shards: --log-driver journald: shards keeps a run's log itself",
+            &["--log-driver", "awslogs"][..],
+            "shards: --log-driver awslogs: shards keeps a run's log itself",
         ),
         (
             &["--log-driver", "bogus"],

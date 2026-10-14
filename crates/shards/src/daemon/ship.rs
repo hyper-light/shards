@@ -21,6 +21,8 @@ use crate::spec::LOG_STDERR;
 
 mod fluentd;
 mod gelf;
+#[cfg(target_os = "linux")]
+mod journald;
 mod sockets;
 mod stream;
 mod syslog;
@@ -603,7 +605,7 @@ impl<D: Disk> Daemon<D> {
                 },
             )?),
             crate::logging::Remote::Gelf(config) => {
-                let attributes = crate::logging::attributes(run, &details.info())?;
+                let attributes = crate::logging::extra(run, &details.info())?;
                 let fields = [
                     ("_container_id", details.id.clone()),
                     (
@@ -630,9 +632,37 @@ impl<D: Disk> Daemon<D> {
                     tag,
                     id: details.id.clone(),
                     name: details.name.clone(),
-                    extra: crate::logging::attributes(run, &details.info())?,
+                    extra: crate::logging::extra(run, &details.info())?,
                 },
             )?),
+            #[cfg(target_os = "linux")]
+            crate::logging::Remote::Journald => {
+                // Its epoch, which its ordinals count from: an ID of its own, as moby's
+                // newJournald makes one (stringid.GenerateRandomID).
+                let epoch = crate::containers::new_id().map_err(|e| e.to_string())?;
+                let from = crate::logging::journald::From::new(
+                    &details.id,
+                    &details.name,
+                    &details.image_name,
+                    &tag,
+                    &epoch,
+                    &crate::logging::extra(run, &details.info())?,
+                );
+                if !from.left_out.is_empty() {
+                    log(format!(
+                        "container {id}: its log's attributes {} are left out of the journal: no journal field can be named so, or the field is the driver's own",
+                        from.left_out.join(", ")
+                    ));
+                }
+                Box::new(journald::Journald::new(from))
+            }
+            #[cfg(not(target_os = "linux"))]
+            crate::logging::Remote::Journald => {
+                return Err(
+                    "--log-driver journald: the journal is systemd's, on Linux, and this host keeps none"
+                        .into(),
+                );
+            }
         }))
     }
 
