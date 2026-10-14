@@ -51,11 +51,12 @@ const RUN_USAGE: &str = "usage: shards run --kernel PATH [--initrd PATH | --init
   --vfio: the host's PCI function NAME (as 0000:01:00.0), passed through to the guest
           on its PCI bus: on Linux, bound to vfio-pci, as every other function in its
           IOMMU group must be. Not with --snapshot-dir, --memory-max or --reporting:
-          its DMA reaches guest RAM through mappings the host holds pinned.
+          its DMA reaches all of guest RAM through mappings the host holds pinned.
   --vfio-iommu: as --vfio, the function behind the guest's own IOMMU (virtio-iommu):
                 its DMA reaches only what the guest's IOMMU driver maps for it, as the
-                guest's own VFIO needs to give it to a process. The guest's kernel needs
-                VIRTIO_IOMMU.
+                guest's own VFIO needs to give it to a process, pinned as it is mapped,
+                so --memory-max and --reporting work beside it. The guest's kernel needs
+                VIRTIO_IOMMU. Not with --snapshot-dir.
   Console escape: Ctrl-A x stops the VM.";
 
 const RESTORE_USAGE: &str = "usage: shards restore DIR [--hold] [--vsock PATH] [--no-console] [--gpu] [--backing PATH[:ro]]... [--snapshot-dir DIR [--snapshot-then stop|resume]]
@@ -316,8 +317,8 @@ fn parse_run(args: impl Iterator<Item = OsString>) -> Result<Run, String> {
                 "--vfio or --vfio-iommu with --snapshot-dir: a host's device is not snapshotted, its state its own".into(),
             );
         }
-        if memory_max.is_some() || cfg.reporting {
-            return Err("--vfio or --vfio-iommu with --memory-max or --reporting: the device's DMA reaches guest RAM through mappings the host holds pinned, which neither may take away".into());
+        if cfg.vfio.iter().any(|f| !f.iommu) && (memory_max.is_some() || cfg.reporting) {
+            return Err("--vfio with --memory-max or --reporting: the device's DMA reaches all of guest RAM through mappings the host holds pinned, which neither may take away; behind the guest's IOMMU (--vfio-iommu) it reaches what the guest maps alone".into());
         }
     }
     if cfg.nested && common.snapshot_dir.is_some() {

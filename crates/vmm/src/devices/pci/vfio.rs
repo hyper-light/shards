@@ -313,17 +313,19 @@ impl Container {
 /// A followed container's mappings (D154): what the guest's IOMMU shows its function's
 /// endpoint ([`crate::devices::virtio::iommu::Follower`]), by type 1's map and unmap of
 /// I/O addresses. Each mapping of guest RAM pins it, against the process's locked-memory
-/// limit, as [`Container`]'s whole-RAM mapping does.
+/// limit, as [`Container`]'s whole-RAM mapping does, and guest memory keeps what it pins
+/// from being given back under the device ([`GuestMemory::pin`]).
 #[derive(Debug)]
 pub struct Followed {
     fd: Arc<OwnedFd>,
     memory: Arc<GuestMemory>,
-    /// What it maps now: each mapping's I/O address and length.
-    mapped: Mutex<std::collections::BTreeMap<u64, u64>>,
+    /// What it maps now: each mapping by its I/O address, its guest-physical address and
+    /// length.
+    mapped: Mutex<std::collections::BTreeMap<u64, (u64, u64)>>,
 }
 
 impl Followed {
-    fn mapped(&self) -> std::sync::MutexGuard<'_, std::collections::BTreeMap<u64, u64>> {
+    fn mapped(&self) -> std::sync::MutexGuard<'_, std::collections::BTreeMap<u64, (u64, u64)>> {
         self.mapped.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
@@ -357,21 +359,24 @@ impl crate::devices::virtio::iommu::Follower for Followed {
         self.clear()?;
         let mut mapped = self.mapped();
         for (gpa, host, len) in self.memory.regions() {
+            let len = len as u64;
             self.dma_map(
                 gpa,
                 host as u64,
-                len as u64,
+                len,
                 VFIO_DMA_MAP_FLAG_READ | VFIO_DMA_MAP_FLAG_WRITE,
             )?;
-            mapped.insert(gpa, len as u64);
+            self.memory.pin(gpa, len);
+            mapped.insert(gpa, (gpa, len));
         }
         Ok(())
     }
 
     fn clear(&self) -> io::Result<()> {
         let mut mapped = self.mapped();
-        while let Some((&iova, &len)) = mapped.first_key_value() {
+        while let Some((&iova, &(gpa, len))) = mapped.first_key_value() {
             self.dma_unmap(iova, len)?;
+            self.memory.unpin(gpa, len);
             mapped.remove(&iova);
         }
         Ok(())
@@ -390,14 +395,17 @@ impl crate::devices::virtio::iommu::Follower for Followed {
             if read { VFIO_DMA_MAP_FLAG_READ } else { 0 } | if write { VFIO_DMA_MAP_FLAG_WRITE } else { 0 };
         let mut mapped = self.mapped();
         self.dma_map(iova, host as u64, len, flags)?;
-        mapped.insert(iova, len);
+        self.memory.pin(gpa, len);
+        mapped.insert(iova, (gpa, len));
         Ok(())
     }
 
     fn unmap(&self, iova: u64, len: u64) -> io::Result<()> {
         let mut mapped = self.mapped();
         self.dma_unmap(iova, len)?;
-        mapped.remove(&iova);
+        if let Some((gpa, len)) = mapped.remove(&iova) {
+            self.memory.unpin(gpa, len);
+        }
         Ok(())
     }
 }

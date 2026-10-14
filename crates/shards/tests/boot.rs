@@ -608,12 +608,19 @@ fn a_nested_guest_runs_vms_of_its_own() {
         // gives the function I/O addresses of its own, 0x10_0000 and 0x20_0000, where the
         // inner guest has no RAM (it starts at 2 GiB), so its pages come back only where
         // the outer VM process's container maps what the inner IOMMU maps; and on arm64
-        // the inner guest maps its GICv2m doorbell there for the function's MSIs.
+        // the inner guest maps its GICv2m doorbell there for the function's MSIs. With
+        // memory to plug and free page reporting beside it, which take nothing the
+        // function's DMA holds pinned.
         if test != "pci" {
+            let more = if test == "pci-dma" {
+                ",--memory-max,1024,--reporting"
+            } else {
+                ""
+            };
             let behind = outer(
                 &["--pci-test"],
                 &format!(
-                    "shards_l2={test} shards_l1_vfio=0000:00:01.0 shards_l2_args=--vfio-iommu,0000:00:01.0 vfio_iommu_type1.allow_unsafe_interrupts=1"
+                    "shards_l2={test} shards_l1_vfio=0000:00:01.0 shards_l2_args=--vfio-iommu,0000:00:01.0{more} vfio_iommu_type1.allow_unsafe_interrupts=1"
                 ),
             );
             assert_eq!(behind.status, Some(0), "{behind}");

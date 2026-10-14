@@ -3694,9 +3694,15 @@ one. So both, in that order.
   I/O address there, translated as its DMA is; on x86_64 an MSI into the window lands
   untranslated, as Linux takes a reserved region of subtype MSI (IOMMU_RESV_MSI), where
   the test function's had been translated through its domain, which maps nothing there,
-  and dropped (`Translation::msi_target`). An endpoint attached to no domain bypasses translation until the driver
-  says otherwise (the configuration's `bypass`, 1 from reset, as QEMU's `boot-bypass`): a
-  guest without the driver keeps DMA by guest-physical address. Linux defers probing a
+  and dropped (`Translation::msi_target`). An endpoint attached to no domain bypasses
+  translation until the driver says otherwise (the configuration's `bypass`, 1 from the
+  start, as QEMU's `boot-bypass`): a guest without the driver keeps DMA by guest-physical
+  address. Where only functions passed through are behind it, it offers no bypass at all
+  (no VIRTIO_IOMMU_F_BYPASS_CONFIG, so no bypass domains, and a bypass flag refused as one
+  it does not recognize): they are blocked, and pin nothing of the host's, until the
+  guest's driver attaches them, as a guest needs the driver to give them to a process
+  anyway (virtio 1.3 §5.13.4.2: the device MAY initialize bypass to 1). A device reset
+  leaves `bypass` as it was, as the same section asks, where it had been set to 1 again. Linux defers probing a
   function behind an IOMMU it has no driver for, ten seconds where it has modules
   (driver_deferred_probe_check_state), so the `kvm` kernel has the driver.
 - **A passed-through function behind the guest's own IOMMU** (`run --kernel …
@@ -3717,7 +3723,21 @@ one. So both, in that order.
   the host cannot carry out (no memory to pin: S_NOMEM; a mapping of what is not RAM:
   S_RANGE) is refused and changes nothing; an UNMAP the host could not make keeps the
   mapping here too, as the device can still reach it. The guest's kernel needs the
-  driver, VIRTIO_IOMMU, as the `kvm` kernel has.
+  driver, VIRTIO_IOMMU, as the `kvm` kernel has. Offering no bypass there, the IOMMU
+  never shows a function all of RAM, which memory plugged later would outgrow: so memory
+  to plug and free page reporting (D148, D151) work beside it. The host's IOMMU keeps
+  the pages it pinned, so guest memory keeps each range a function's DMA holds pinned
+  (`GuestMemory::pin`) from being given back under it: a report of it free keeps it, and
+  an unplug of a block it meets is refused (virtio-mem's BUSY, which the driver retries)
+  until it is unpinned. A function outside the guest's IOMMU (`--vfio`) reaches all of
+  RAM, pinned, which neither may take from under it, so a machine given one has neither.
+- **A host slot's functions in one device** (`vm::vfio_places`): the functions passed
+  through from one host slot (`DDDD:BB:SS.F`) share a device on the guest's bus 0, so that
+  the guest takes them as one group, as the host does a multi-function device whose
+  functions nothing isolates from each other (Linux iommu.c, pci_device_group): what a
+  workload given `/dev/vfio/N` expects to find in it. Each keeps its function number where
+  the slot's function 0 is among them; else they are numbered from 0, as a guest scans a
+  device's other functions only where it has function 0.
 - **The test function's DMA** is edu's engine (edu.rst: source, destination, length and
   command at 0x80 of BAR 0, its 4 KiB buffer at 0x40000 of its DMA addresses), run at once
   rather than on edu's timer: guest memory is reached at what its endpoint's domain maps,

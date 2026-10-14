@@ -81,6 +81,9 @@ pub struct Translation {
     attached: BTreeMap<u32, u32>,
     domains: BTreeMap<u32, Domain>,
     bypass: bool,
+    /// Whether it offers bypass at all: the configuration's `bypass` and bypass domains
+    /// (VIRTIO_IOMMU_F_BYPASS_CONFIG).
+    offers_bypass: bool,
     /// The MSI window, its first and last address, never translated (a reserved region of
     /// subtype MSI, Linux's IOMMU_RESV_MSI), where the machine has one: x86_64's.
     msi: Option<(u64, u64)>,
@@ -185,17 +188,33 @@ impl Translation {
             attached: BTreeMap::new(),
             domains: BTreeMap::new(),
             bypass: true,
+            offers_bypass: true,
             msi,
             followers: BTreeMap::new(),
         }
     }
 
+    /// Whether it bypasses translation: by default it offers bypass, on from the start for
+    /// an endpoint attached to no domain, as QEMU's `boot-bypass`, so a guest without the
+    /// driver keeps DMA by guest-physical address. Off, it offers none (virtio 1.3
+    /// §5.13.3: no VIRTIO_IOMMU_F_BYPASS_CONFIG, so no bypass domains either): what every
+    /// endpoint passed through sees is what the guest maps for it alone, which its
+    /// container then maps and guest memory keeps pinned, and nothing until the guest's
+    /// driver attaches it. Neither a whole of RAM that memory plugged later would outgrow,
+    /// nor RAM that free page reporting would take from under the device (D154).
+    pub fn bypassing(mut self, on: bool) -> Translation {
+        self.bypass = on;
+        self.offers_bypass = on;
+        self
+    }
+
+    /// A device reset: no endpoint attached, and bypass as it was, which a device reset
+    /// leaves (virtio 1.3 §5.13.4.2).
     fn reset(&mut self) {
         self.attached.clear();
         self.domains.clear();
-        self.bypass = true;
-        for (endpoint, f) in &self.followers {
-            if let Err(e) = f.identity() {
+        for (&endpoint, f) in &self.followers {
+            if let Err(e) = show(&**f, self.view(endpoint)) {
                 crate::warn!("virtio-iommu: endpoint {endpoint:#x}'s host mappings at reset: {e}");
             }
         }
@@ -249,7 +268,8 @@ impl Translation {
     /// The configuration's bypass set to `on`: each endpoint attached to no domain then
     /// bypasses translation, or is blocked, its follower shown so.
     pub(crate) fn set_bypass(&mut self, on: bool) {
-        if self.bypass == on {
+        // A field it does not offer: the driver writes it only where it does (§5.13.4.1).
+        if self.bypass == on || !self.offers_bypass {
             return;
         }
         self.bypass = on;
@@ -324,7 +344,8 @@ impl Translation {
         if !self.known.contains(&endpoint) {
             return S_NOENT;
         }
-        if flags & !ATTACH_F_BYPASS != 0 {
+        // A flag it does not offer is one it does not recognize (§5.13.6.3.2).
+        if flags & !ATTACH_F_BYPASS != 0 || (flags & ATTACH_F_BYPASS != 0 && !self.offers_bypass) {
             return S_INVAL;
         }
         let bypass = flags & ATTACH_F_BYPASS != 0;
@@ -636,7 +657,13 @@ impl VirtioDevice for Iommu {
     }
 
     fn features(&self) -> u64 {
-        feature::VERSION_1 | F_INPUT_RANGE | F_DOMAIN_RANGE | F_MAP_UNMAP | F_PROBE | F_MMIO | F_BYPASS_CONFIG
+        let offers_bypass = self
+            .state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .offers_bypass;
+        let bypass = if offers_bypass { F_BYPASS_CONFIG } else { 0 };
+        feature::VERSION_1 | F_INPUT_RANGE | F_DOMAIN_RANGE | F_MAP_UNMAP | F_PROBE | F_MMIO | bypass
     }
 
     fn queue_max_sizes(&self) -> &[u16] {
@@ -958,7 +985,8 @@ mod tests {
     }
 
     /// A followed endpoint's host mappings are what it sees: all of RAM while it bypasses
-    /// translation, from reset and in a bypass domain; nothing while it is blocked; and its
+    /// translation, as it does from the start by default and in a bypass domain; nothing
+    /// while it is blocked, as after a device reset that left bypass off; and its
     /// domain's mappings of RAM, replayed as it attaches, then each MAP and UNMAP as they
     /// come, an MSI doorbell's (device memory) not among them. A request the host cannot
     /// carry out is refused, and leaves the domain and the endpoint as they were.
@@ -1027,8 +1055,24 @@ mod tests {
         assert!(host.whole());
         assert_eq!(status(&mut t, &attach(1, 8, 0)), S_OK);
         assert!(!host.whole());
+        // A device reset detaches it and leaves bypass off: blocked.
         t.reset();
+        assert!(!host.whole() && host.mappings().is_empty());
+        t.set_bypass(true);
         assert!(host.whole());
+        // An IOMMU of passed-through functions alone offers no bypass: blocked from the
+        // start, pinning nothing; no bypass domain, nor a bypass the driver writes.
+        let mut blocked = Translation::new(vec![8], None).bypassing(false);
+        let pinned = Arc::new(Shown::default());
+        blocked.follow(8, pinned.clone()).unwrap();
+        assert!(!pinned.whole() && pinned.mappings().is_empty());
+        assert_eq!(status(&mut blocked, &attach(1, 8, ATTACH_F_BYPASS)), S_INVAL);
+        blocked.set_bypass(true);
+        assert!(!pinned.whole(), "a field it does not offer");
+        assert_eq!(status(&mut blocked, &attach(1, 8, 0)), S_OK);
+        let both = MAP_F_READ | MAP_F_WRITE;
+        assert_eq!(status(&mut blocked, &map(1, 0, 0xfff, 0x8000_0000, both)), S_OK);
+        assert_eq!(pinned.mappings(), vec![(0, (0x8000_0000, 0x1000, true, true))]);
     }
 
     /// An MSI lands in the MSI window untranslated, as Linux's IOMMU_RESV_MSI has it, and
