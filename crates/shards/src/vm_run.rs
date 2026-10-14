@@ -238,6 +238,21 @@ fn parse_run(args: impl Iterator<Item = OsString>) -> Result<Run, String> {
                 cfg.shares = (0..n).map(|_| std::sync::Arc::default()).collect();
                 let _ = SHARES.set(cfg.shares.clone());
             }
+            // A shared directory backed by an external slates VFS over a Unix socket (slates'
+            // `shards_fs::serve`, which speaks this device's own le32+FUSE framing). Unlike --shares
+            // (empty slots a daemon fills from the share process), this connects now and fills the
+            // slot itself, so a direct `run --kernel` mounts a slates volume by its tag `shards<i>`
+            // with no share process and no host mount — the guest reaches slates over the socket.
+            #[cfg(unix)]
+            "--slates-fs" => {
+                let path = PathBuf::from(value("--slates-fs")?);
+                let conn = std::os::unix::net::UnixStream::connect(&path).map_err(|e| {
+                    format!("--slates-fs: connecting to the slates socket {}: {e}", path.display())
+                })?;
+                let slot: shards_vmm::devices::virtio::fs::Share = std::sync::Arc::default();
+                slot.attach(conn);
+                cfg.shares.push(slot);
+            }
             // A join disk, empty until a container joins the VM's network (D119).
             "--join" => cfg.join = Some(give_join_disk()),
             // A join share, served by none until a joiner brings volumes (D119).
