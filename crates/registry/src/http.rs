@@ -66,6 +66,9 @@ pub struct Client {
     patience: Patience,
     /// The addresses a connection may go to, where not all may (a build's proxy, D110).
     reach: Option<fn(std::net::IpAddr) -> bool>,
+    /// The name its servers' certificates are verified for, and TLS names them by, where
+    /// not each URL's host.
+    server_name: Option<String>,
 }
 
 /// How long a request waits on its server: for its response's head, and on any read or
@@ -335,7 +338,16 @@ impl Client {
             cancel: None,
             patience: Patience::default(),
             reach: None,
+            server_name: None,
         }
+    }
+
+    /// This client, verifying its servers' certificates for `name`, and naming them so to
+    /// TLS (SNI), where not each URL's host: Go's tls.Config.ServerName (a splunk log
+    /// driver's `splunk-caname`, D167).
+    pub fn with_server_name(mut self, name: &str) -> Client {
+        self.server_name = Some(name.to_string());
+        self
     }
 
     /// This client, its requests waiting on their servers as `patience` says.
@@ -631,7 +643,10 @@ impl Client {
     /// A TLS session with `url`'s host over `io`, its handshake done within 10 s.
     fn handshake<T: Wire>(&self, url: &Url, mut io: T) -> Result<Tls<T>, Error> {
         let config = (self.tls)(url)?;
-        let host = url.host().trim_start_matches('[').trim_end_matches(']');
+        let host = match &self.server_name {
+            Some(name) => name.as_str(),
+            None => url.host().trim_start_matches('[').trim_end_matches(']'),
+        };
         let name = ServerName::try_from(host.to_string()).map_err(|e| Error::new(format!("{url}: {e}")))?;
         let mut tls = ClientConnection::new(config, name)?;
         let deadline = Instant::now() + HANDSHAKE;

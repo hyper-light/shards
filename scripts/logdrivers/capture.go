@@ -1,6 +1,7 @@
 // Captures what Docker's log drivers send (scripts/logdrivers/generate): UDP datagrams
 // on :5514, TCP and TLS streams on :5515 and :5516, a unix datagram socket and a unix
-// stream socket in DIR, and, where JOURNAL is given, the journal's socket there. Each
+// stream socket in DIR, a Splunk HTTP Event Collector's requests on :8088 and, over TLS,
+// :8089, and, where JOURNAL is given, the journal's socket there. Each
 // datagram, and each connection's bytes, goes to a file of its own in DIR/out, named for
 // its transport and the order it came in. The TLS listener's certificate, for 127.0.0.1
 // and localhost, is made as it starts, and its certificate is DIR/ca.pem, which the
@@ -10,18 +11,22 @@
 package main
 
 import (
+	"bytes"
+	"compress/gzip"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/json"
 	"encoding/pem"
 	"fmt"
 	"io"
 	"log"
 	"math/big"
 	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"sync/atomic"
@@ -102,6 +107,43 @@ func journal(dir string, c *net.UnixConn) {
 	}
 }
 
+// hec records each request made of the Splunk HTTP Event Collector it stands in for: its
+// method, its path, the fields a driver sets and its body, unzipped where it says it is
+// gzip's; and answers as HEC does, with success.
+func hec(dir, kind string, l net.Listener) {
+	_ = http.Serve(l, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			log.Fatal(err)
+		}
+		if r.Header.Get("Content-Encoding") == "gzip" {
+			zr, err := gzip.NewReader(bytes.NewReader(body))
+			if err != nil {
+				log.Fatal(err)
+			}
+			if body, err = io.ReadAll(zr); err != nil {
+				log.Fatal(err)
+			}
+		}
+		rec, err := json.Marshal(map[string]any{
+			"method":        r.Method,
+			"path":          r.URL.Path,
+			"query":         r.URL.RawQuery,
+			"authorization": r.Header.Get("Authorization"),
+			"encoding":      r.Header.Get("Content-Encoding"),
+			"type":          r.Header.Get("Content-Type"),
+			"channel":       r.Header.Get("X-Splunk-Request-Channel"),
+			"body":          string(body),
+		})
+		if err != nil {
+			log.Fatal(err)
+		}
+		save(dir, kind, rec)
+		w.Header().Set("Content-Type", "application/json; charset=UTF-8")
+		_, _ = io.WriteString(w, `{"text":"Success","code":0}`)
+	}))
+}
+
 func main() {
 	dir := os.Args[1]
 	if err := os.MkdirAll(filepath.Join(dir, "out"), 0o755); err != nil {
@@ -148,6 +190,16 @@ func main() {
 		log.Fatal(err)
 	}
 	go streams(dir, "tls", tl)
+	hl, err := net.Listen("tcp", "127.0.0.1:8088")
+	if err != nil {
+		log.Fatal(err)
+	}
+	go hec(dir, "hec", hl)
+	hsl, err := tls.Listen("tcp", "127.0.0.1:8089", &tls.Config{Certificates: []tls.Certificate{cert}})
+	if err != nil {
+		log.Fatal(err)
+	}
+	go hec(dir, "hecs", hsl)
 
 	gram, err := net.ListenPacket("unixgram", filepath.Join(dir, "gram.sock"))
 	if err != nil {

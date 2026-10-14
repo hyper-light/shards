@@ -3614,6 +3614,72 @@ No run-time labels, relays or declassifiers (§12 answer 14, decided by the user
 an internal-only domain to the world (D58), so there is no data to label. Code mode is
 D136.
 
+### D167. A run's log sent to Splunk
+
+`--log-driver splunk` is served, sent as syslog's is (D163): from shards' store, by the
+daemon's shipper, to a Splunk HTTP Event Collector.
+
+- **Events as Docker's.** Each line is an event, as Go's encoding/json writes moby's
+  splunkMessage: `{"event":…,"time":"…","host":"…"}`, then `source`, `sourcetype` and
+  `index` where given. Its event, as its format says:
+  - `inline`, the default: `{"line":…,"source":"stdout","tag":…,"attrs":{…}}`, its tag
+    and attributes where it has them, `tag` given empty taking the tag away;
+  - `json`: the same, a line that is JSON written as Go writes a json.RawMessage,
+    compacted with HTML's characters escaped (`shards_image::json::compact_escaped`);
+  - `raw`: the tag, the attributes as `KEY=VALUE`, each followed by a space, then the
+    line; no event for a line of whitespace alone, which HEC takes none of.
+
+  Its time is its output's, as Go's `%f` writes the float64 of its nanoseconds over a
+  second's. A batch's events go in one post to `/services/collector/event/1.0`, with
+  `Authorization: Splunk TOKEN`, gzipped where asked. All are held byte for byte to Docker
+  29.3.1's (`scripts/logdrivers/generate`, its capture a fake HEC over HTTP and HTTPS): 7
+  cases of formats, gzip, TLS, fields and tag, and 17 cases of which options Docker takes.
+- **Batches posted as the log is caught up with.** A batch goes once full, 1,000 events or
+  `SPLUNK_LOGGING_DRIVER_POST_MESSAGES_BATCH_SIZE`, as moby's. It also goes whenever the
+  shipper has caught up with its log (`Driver::flush`). moby waits for a 5 s tick instead,
+  so a quiet run's last lines waited up to 5 s; shards' wait no longer than the log does.
+- **Delivered once HEC has it.** A post is delivered once HEC answers 200. A batch takes a
+  message only when it has room, so a refused post leaves the message for the next try,
+  and none is lost or doubled. moby drops what it cannot post once 10,000 messages wait.
+  Each post is given 30 s, moby's `batchSendTimeout`.
+- **Indexer acknowledgment, kept.** With `splunk-index-acknowledgment`, a post is
+  delivered once HEC says its events are indexed. Its ack is asked for on the driver's own
+  channel, a GUID, as the shipper catches up and as its run ends. One not acknowledged
+  within 5 minutes is posted again, as Splunk's documentation asks of a client ("About
+  HTTP Event Collector Indexer Acknowledgment"). moby sends each post on a new channel,
+  whose acks no one can ask for, and never asks.
+- **Where Docker is wrong, shards is not.**
+  - `splunk-insecureskipverify` is refused, its CA asked for instead: shards posts a log
+    only to a Splunk whose certificate it verifies.
+  - `splunk-capath`'s file is read as the run is made, so one that is not there is
+    refused then. Docker fails the container as it starts.
+  - `splunk-verify-connection` is taken, and moot. Docker's driver asks HEC (OPTIONS)
+    as its container starts, and a HEC that is down keeps the container from starting;
+    shards' run starts regardless.
+  - `raw`'s attributes go in name order, where Docker's go in a Go map's random one.
+- **`splunk-caname`** names the server its certificate is verified for, and SNI's name,
+  as Go's tls.Config.ServerName does: the registry client's `with_server_name`.
+- **Not yet.** awslogs, gcplogs and etwlogs.
+
+Tested on real microVMs (`a_runs_log_is_sent_to_splunk_as_its_options_say`), against a
+HEC in the test:
+
+- a line on each stream: its event, tag, attributes and host, its time `logs -t`'s to
+  the microsecond, its token;
+- a line posted while its run still runs;
+- indexer acknowledgment: posts and ack queries on one channel;
+- the refusals.
+
+Unit tests cover:
+
+- every oracle event, byte for byte but for the run's own time, host and tag;
+- the options;
+- the times as Go writes them;
+- the batches: full, flushed, and a refused post's messages given again
+  (mutation-checked: a message taken before its batch has room fails it);
+- indexer acknowledgment: delivered once indexed, the close waiting, a post not acked in
+  time posted again.
+
 ### D166. A run's log sent to the journal; a container's own fields its own
 
 `--log-driver journald` is served on Linux, and sent as syslog's is (D163): from shards'
@@ -3671,7 +3737,7 @@ store, by the daemon's shipper.
   record, as json-file's `--details` shows it. moby's fluentd sends its attributes from
   logger.Info.ExtraAttributes, which leave the tag out. shards' now does too, as do its
   gelf and journald.
-- **Not yet.** splunk, awslogs, gcplogs and etwlogs.
+- **Not yet.** awslogs, gcplogs and etwlogs; splunk came with D167.
 
 Tested on real microVMs on Linux (`a_runs_log_is_sent_to_journald_as_its_options_say`),
 against a journal socket in the test:
@@ -3732,7 +3798,7 @@ daemon's shipper.
 - **Lines' parts.** A line the run left unfinished goes whole, or as its last part. moby's
   copier sends it as a part never the last, which leaves consumers that join parts
   waiting.
-- **Not yet.** splunk, awslogs, gcplogs and etwlogs; journald came with D166.
+- **Not yet.** awslogs, gcplogs and etwlogs; journald and splunk came with D166 and D167.
 
 Tested on real microVMs (`a_runs_log_is_sent_to_fluentd_as_its_options_say`), against a
 server in the test that acks as fluentd does:
@@ -3774,8 +3840,8 @@ starts whether or not its server is up, and nothing is lost to a server that is 
   the message. What a connection had not delivered goes on the next (D163). Docker's
   driver dials as its container starts, so a server that is down keeps the container
   from starting; shards' run starts regardless.
-- **Not yet.** splunk, awslogs, gcplogs and etwlogs; fluentd and journald came with D165
-  and D166.
+- **Not yet.** awslogs, gcplogs and etwlogs; fluentd, journald and splunk came with D165
+  to D167.
 
 Tested on real microVMs (`a_runs_log_is_sent_to_gelf_as_its_options_say`):
 
@@ -3869,8 +3935,8 @@ and the way every later one sends.
   next. D161's rule moved a record that did not fit whole into the next segment. On CI's
   x86_64 Linux, whose guest's records are 32 KiB, that left segments of 64,000 bytes half
   full and a log half its retention; D162's test caught it there.
-- **Not yet.** splunk, awslogs, gcplogs and etwlogs, each refused with a word that says
-  so; gelf, fluentd and journald came with D164 to D166.
+- **Not yet.** awslogs, gcplogs and etwlogs, each refused with a word that says so; gelf,
+  fluentd, journald and splunk came with D164 to D167.
 
 Tested on real microVMs (`a_runs_log_is_sent_to_syslog_as_its_options_say`):
 
@@ -7015,7 +7081,7 @@ the rest of a run's reach into its domains.
   | A run joining the microVM (`--network container:`, D119) | held to every rule of this table, by the daemon and again by init | it runs beside them as the microVM's own run does |
   | `--ipc` (`host` is init's namespace, theirs each their own), `--uts`, `--userns`, `--umask`, `--storage-opt` (D156); `--runtime`, `--isolation`, `--cpu-count`, `--cpu-percent`, `--cpu-rt-*` (D155) | given | the command's own namespaces, writable layer and limits |
   | `--link` | refused for every run, not served yet | |
-  | `--log-driver`, `--log-opt` (D161 to D166) | given | the command's own output, kept on the host by its VM process, in its container's directory, and sent elsewhere by the daemon, never by the microVM |
+  | `--log-driver`, `--log-opt` (D161 to D167) | given | the command's own output, kept on the host by its VM process, in its container's directory, and sent elsewhere by the daemon, never by the microVM |
   | `--cap-add` of any other: `DAC_READ_SEARCH`, `IPC_OWNER`, `IPC_LOCK`, `SYS_BOOT`, `SYS_RESOURCE`, `CHECKPOINT_RESTORE` among them | given | `open_by_handle_at` opens only on filesystems the command holds a mount of, a domain's own being none of them; IPC namespaces differ; `reboot(2)` ends the caller's own PID namespace's init (pid_namespaces(7)); the rest bound the command's own resources or namespaces |
   | `--cap-drop`, `no-new-privileges`, `writable-cgroups=true` (its cgroup namespace's subtree), `apparmor=`, `label=` (no LSM in the microVM: accepted, as on a Docker host without one) | given | narrows the command, or touches only its own |
   | `seccomp=` a profile or `unconfined` | given, recorded | its own filter; the domains keep theirs. Measured: unconfined, any uid makes a user namespace (`max_user_namespaces` 994), owning none of the domains' namespaces but reaching more of the kernel they share |

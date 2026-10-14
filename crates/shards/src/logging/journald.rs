@@ -232,6 +232,7 @@ mod tests {
                     "CONTAINER_LOG_EPOCH" => json!("{epoch}"),
                     "CONTAINER_PARTIAL_ID" => json!("{partial}"),
                     "SYSLOG_TIMESTAMP" => json!("{time}"),
+                    "CONTAINER_LOG_ORDINAL" => json!("{ordinal}"),
                     _ if v == NAME => json!("{name}"),
                     _ if v.len() > 1 && ["x", "y"].iter().any(|c| v.bytes().all(|b| [b] == c.as_bytes())) => {
                         let letter = if v.starts_with('x') { "x" } else { "y" };
@@ -282,7 +283,7 @@ mod tests {
             if name == "attributes" {
                 assert_eq!(from.left_out, ["1d", "container.name", "message"]);
             }
-            for recorded in case["entries"].as_array().unwrap() {
+            for (i, recorded) in case["entries"].as_array().unwrap().iter().enumerate() {
                 let recorded = recorded["fields"].as_array().unwrap();
                 let get = |field: &str| -> Vec<&Value> {
                     recorded.iter().filter(|f| f[0] == field).map(|f| &f[1]).collect()
@@ -302,8 +303,14 @@ mod tests {
                     ordinal: ordinal.as_str().unwrap().parse().unwrap(),
                     last: get("CONTAINER_PARTIAL_LAST")[0] == "true",
                 });
-                let ordinal = get("CONTAINER_LOG_ORDINAL")[0].as_str().unwrap().parse().unwrap();
-                let ours = entry(&from, stream, 1_791_260_014_360_799_172, &line, part, ordinal);
+                let ours = entry(
+                    &from,
+                    stream,
+                    1_791_260_014_360_799_172,
+                    &line,
+                    part,
+                    i as u64 + 1,
+                );
                 let docker: Vec<Value> = recorded
                     .iter()
                     .filter(|f| !(name == "attributes" && (f[0] == "1D" || f == &&json!(["MESSAGE", "4"]))))

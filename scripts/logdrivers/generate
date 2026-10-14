@@ -1,7 +1,7 @@
 #!/bin/sh
-# Regenerates what Docker's syslog, gelf, fluentd and journald log drivers send, and which
-# of their options Docker takes (crates/shards/src/logging/testdata/syslog.json, gelf.json,
-# fluentd.json and journald.json), which crates/shards/src/logging and its tests hold shards to (D163 to
+# Regenerates what Docker's syslog, gelf, fluentd, journald and splunk log drivers send,
+# and which of their options Docker takes (crates/shards/src/logging/testdata/syslog.json,
+# gelf.json, fluentd.json, journald.json and splunk.json), which crates/shards/src/logging and its tests hold shards to (D163 to
 # D165).
 #
 # In shards-dind (CONTAINER), capture.go listens on UDP, TCP and TLS ports and on a unix
@@ -19,6 +19,7 @@ root=$(cd "$here/../.." && pwd)
 out="$root/crates/shards/src/logging/testdata/syslog.json"
 gelf_out="$root/crates/shards/src/logging/testdata/gelf.json"
 journald_out="$root/crates/shards/src/logging/testdata/journald.json"
+splunk_out="$root/crates/shards/src/logging/testdata/splunk.json"
 fluentd_out="$root/crates/shards/src/logging/testdata/fluentd.json"
 container=${CONTAINER:-shards-dind}
 image=alpine:3.22
@@ -48,7 +49,7 @@ x86_64 | amd64) arch=amd64 ;;
 	;;
 esac
 (cd "$here" && GOOS=linux GOARCH="$arch" CGO_ENABLED=0 go build -o "$work/capture" capture.go)
-docker exec "$container" mkdir -p "$dir/cases" "$dir/gelf" "$dir/fluentd" "$dir/journald"
+docker exec "$container" mkdir -p "$dir/cases" "$dir/gelf" "$dir/fluentd" "$dir/journald" "$dir/splunk"
 docker cp "$work/capture" "$container:$dir/capture"
 if docker exec "$container" test -e "$journal"; then
 	echo "$container has $journal already: the capture takes the journal's place" >&2
@@ -171,7 +172,36 @@ for case in streams attributes large; do
 	until [ "$(docker exec "$container" sh -c "ls $dir/out | wc -l")" -ge "$want" ]; do sleep 0.1; done
 	docker exec "$container" sh -c "mkdir $dir/journald/$case && mv $dir/out/* $dir/journald/$case/"
 done
+# splunk: its formats, inline (its default), json and raw; gzipped at a level; over HTTPS,
+# its CA given and the name its certificate is for; its source, sourcetype and index, and
+# indexer acknowledgment's channel; its tag left out. Lines that are JSON and not, HTML's
+# characters, one of whitespace, and one of 40,000 bytes in parts. Its driver asks HEC
+# whether it is there (OPTIONS) as its container starts, and posts its events every 5 s
+# or as its run ends.
+splunk_print='echo out; echo err >&2; echo "{\"a\": [1, 2], \"b\": \"<&>\"}"; echo "  "; echo 12; head -c 40000 /dev/zero | tr "\000" x; echo'
+token=00000000-0000-0000-0000-000000000000
+for case in inline json raw gzip https fields notag; do
+	i=$((i + 1))
+	set -- --log-driver splunk --log-opt splunk-token=$token --log-opt labels=a --label a=b
+	case $case in
+	https) set -- "$@" --log-opt splunk-url=https://127.0.0.1:8089 --log-opt "splunk-capath=$dir/ca.pem" --log-opt splunk-caname=localhost ;;
+	*) set -- "$@" --log-opt splunk-url=http://127.0.0.1:8088 ;;
+	esac
+	case $case in
+	json | raw) set -- "$@" --log-opt "splunk-format=$case" ;;
+	gzip) set -- "$@" --log-opt splunk-gzip=true --log-opt splunk-gzip-level=9 ;;
+	fields) set -- "$@" --log-opt splunk-source=src --log-opt splunk-sourcetype=st --log-opt splunk-index=main --log-opt splunk-index-acknowledgment=true ;;
+	notag) set -- "$@" --log-opt tag= ;;
+	esac
+	docker exec "$container" docker run --rm --name "$name-$i" "$@" "$image" sh -c "$splunk_print" >/dev/null 2>&1
+	# Its OPTIONS, then its posts: those in once its run has ended, and no more coming.
+	until [ "$(docker exec "$container" sh -c "ls $dir/out | wc -l")" -ge 2 ]; do sleep 0.1; done
+	sleep 1
+	docker exec "$container" sh -c "mkdir $dir/splunk/$case && mv $dir/out/* $dir/splunk/$case/"
+done
 docker exec "$container" tar -C "$dir/cases" -c . | tar -x -C "$work"
+mkdir "$work/splunk"
+docker exec "$container" tar -C "$dir/splunk" -c . | tar -x -C "$work/splunk"
 mkdir "$work/journald"
 docker exec "$container" tar -C "$dir/journald" -c . | tar -x -C "$work/journald"
 mkdir "$work/fluentd"
@@ -312,10 +342,44 @@ for opts in \
 	fi
 done
 
-python3 -I - "$work" "$dir" "$out" "$gelf_out" "$fluentd_out" "$journald_out" "$name" <<'EOF'
+# splunk's: each case its options, separated by |. None posts: verify-connection off.
+for opts in \
+	"" \
+	"splunk-url=http://127.0.0.1:8088" \
+	"splunk-url=http://127.0.0.1:8088|splunk-token=t|splunk-verify-connection=false" \
+	"splunk-url=ftp://127.0.0.1:8088|splunk-token=t|splunk-verify-connection=false" \
+	"splunk-url=http://127.0.0.1:8088/path|splunk-token=t|splunk-verify-connection=false" \
+	"splunk-url=http://127.0.0.1:8088/?q=1|splunk-token=t|splunk-verify-connection=false" \
+	"splunk-url=http://127.0.0.1:8088/|splunk-token=t|splunk-verify-connection=false" \
+	"splunk-url=127.0.0.1:8088|splunk-token=t|splunk-verify-connection=false" \
+	"splunk-url=http://127.0.0.1:8088|splunk-token=t|splunk-verify-connection=false|splunk-format=xml" \
+	"splunk-url=http://127.0.0.1:8088|splunk-token=t|splunk-verify-connection=false|splunk-gzip=maybe" \
+	"splunk-url=http://127.0.0.1:8088|splunk-token=t|splunk-verify-connection=false|splunk-gzip-level=10" \
+	"splunk-url=http://127.0.0.1:8088|splunk-token=t|splunk-verify-connection=false|splunk-gzip-level=-2" \
+	"splunk-url=http://127.0.0.1:8088|splunk-token=t|splunk-verify-connection=false|splunk-insecureskipverify=true" \
+	"splunk-url=http://127.0.0.1:8088|splunk-token=t|splunk-verify-connection=false|splunk-capath=/nonexistent" \
+	"splunk-url=http://127.0.0.1:8088|splunk-token=t|splunk-verify-connection=false|splunk-index-acknowledgment=yes" \
+	"splunk-url=http://127.0.0.1:8088|splunk-token=t|splunk-verify-connection=maybe" \
+	"splunk-url=http://127.0.0.1:8088|splunk-token=t|splunk-verify-connection=false|splunk-color=red"; do
+	i=$((i + 1))
+	set --
+	old_ifs=$IFS
+	IFS='|'
+	for o in $opts; do set -- "$@" --log-opt "$o"; done
+	IFS=$old_ifs
+	# Its options are checked as its container is made, and its driver made as it
+	# starts: a run says both.
+	if said=$(docker exec "$container" docker run --rm --name "$name-o$i" --log-driver splunk "$@" "$image" true 2>&1); then
+		printf '%s\t\n' "$opts" >>"$work/splunk-options"
+	else
+		printf '%s\t%s\n' "$opts" "$(printf '%s' "$said" | tr '\n' ' ')" >>"$work/splunk-options"
+	fi
+done
+
+python3 -I - "$work" "$dir" "$out" "$gelf_out" "$fluentd_out" "$journald_out" "$name" "$splunk_out" <<'EOF'
 import gzip, json, os, re, struct, sys, zlib
 
-work, dind, out, gelf_out, fluentd_out, journald_out, name = sys.argv[1:8]
+work, dind, out, gelf_out, fluentd_out, journald_out, name, splunk_out = sys.argv[1:9]
 version = open(os.path.join(work, "version")).read().strip()
 STAMP = r"[A-Z][a-z]{2} [ \d]\d \d\d:\d\d:\d\d"
 FORMATS = {
@@ -347,7 +411,7 @@ def content(c):
 cases = []
 for case in sorted(os.listdir(work)):
     path = os.path.join(work, case)
-    if not os.path.isdir(path) or case in ("gelf", "fluentd", "journald"):
+    if not os.path.isdir(path) or case in ("gelf", "fluentd", "journald", "splunk"):
         continue
     transport, fmt, facility = case.split("-")
     files = [os.path.join(path, f) for f in sorted(os.listdir(path))]
@@ -541,6 +605,10 @@ def journal_normal(fields):
         if field == "SYSLOG_TIMESTAMP":
             assert RFC3339NANO.match(v), v
             return "{time}"
+        # Its place among its log's entries, which each stream's goroutine in Docker's
+        # copier reaches its driver in no set order: each case's are 1 to its count.
+        if field == "CONTAINER_LOG_ORDINAL":
+            return "{ordinal}"
         if re.fullmatch(re.escape(name) + r"-\d+", v):
             return "{name}"
         if len(v) > 1 and len(set(v)) == 1 and v[0] in "xy":
@@ -552,10 +620,14 @@ journald_cases = []
 for case in sorted(os.listdir(os.path.join(work, "journald"))):
     path = os.path.join(work, "journald", case)
     entries = []
+    ordinals = []
     for f in sorted(os.listdir(path)):
         data = open(os.path.join(path, f), "rb").read()
         via = "file" if f.endswith("journald-fd") else "datagram"
-        entries.append({"via": via, "fields": journal_normal(journal_fields(data))})
+        fields = journal_fields(data)
+        ordinals += [int(v) for k, v in fields if k == "CONTAINER_LOG_ORDINAL"]
+        entries.append({"via": via, "fields": journal_normal(fields)})
+    assert sorted(ordinals) == list(range(1, len(entries) + 1)), (case, ordinals)
     # Each stream's in its order, stderr's (priority 3) first.
     entries.sort(key=lambda e: dict(map(tuple, e["fields"]))["PRIORITY"])
     journald_cases.append({"case": case, "entries": entries})
@@ -566,4 +638,72 @@ for line in open(os.path.join(work, "journald-options")):
     journald_options.append({"options": [o for o in opts.split("|") if o], "refused": said or None})
 json.dump({"docker": version, "cases": journald_cases, "options": journald_options}, open(journald_out, "w"), indent=1)
 print(f"{journald_out}: {len(journald_cases)} cases, {len(journald_options)} options")
+
+HOST = None
+def splunk_normal(text):
+    """An event as Docker posted it, its host, time and tag made placeholders."""
+    global HOST
+    m = json.loads(text)
+    HOST = HOST or m["host"]
+    assert m["host"] == HOST, m
+    assert re.fullmatch(r"\d+\.\d{6}", m["time"]), m
+    text = text.replace(json.dumps(m["host"]), '"{host}"', 1).replace(json.dumps(m["time"]), '"{time}"', 1)
+    return re.sub(r"\b[0-9a-f]{12}\b", "{id12}", text)
+
+def split_events(body):
+    """A post's events, one JSON object after another."""
+    out, depth, start, in_str, esc = [], 0, 0, False, False
+    for i, c in enumerate(body):
+        if in_str:
+            if esc:
+                esc = False
+            elif c == "\\":
+                esc = True
+            elif c == '"':
+                in_str = False
+        elif c == '"':
+            in_str = True
+        elif c == "{":
+            depth += 1
+        elif c == "}":
+            depth -= 1
+            if depth == 0:
+                out.append(body[start:i + 1])
+                start = i + 1
+    assert body[start:] == "", body[start:start + 80]
+    return out
+
+def stderr_event(e):
+    """Whether an event is the one line the oracle's run writes to stderr, `err`."""
+    event = json.loads(e)["event"]
+    if isinstance(event, dict):
+        return event["source"] == "stderr"
+    return event == "err" or event.endswith(" err")
+
+splunk_cases = []
+for case in sorted(os.listdir(os.path.join(work, "splunk"))):
+    path = os.path.join(work, "splunk", case)
+    # Each kind of request it made, and its events: as many posts as Docker's 5 s tick
+    # cuts them into, each stream's in its order, stderr's first, as each stream's
+    # goroutine in Docker's copier reaches its driver in no set order.
+    requests, events = [], []
+    for f in sorted(os.listdir(path)):
+        r = json.load(open(os.path.join(path, f)))
+        kind = {
+            "method": r["method"], "path": r["path"], "query": r["query"],
+            "authorization": r["authorization"], "encoding": r["encoding"], "type": r["type"],
+            "channel": bool(r["channel"]),
+        }
+        if kind not in requests:
+            requests.append(kind)
+        events += [splunk_normal(e) for e in split_events(r["body"])] if r["body"] else []
+    events.sort(key=lambda e: not stderr_event(e))
+    splunk_cases.append({"case": case, "requests": requests, "events": events})
+
+splunk_options = []
+for line in open(os.path.join(work, "splunk-options")):
+    opts, said = line.rstrip("\n").split("\t", 1)
+    splunk_options.append({"options": [o for o in opts.split("|") if o], "refused": re.sub(r"[0-9a-f]{64}", "{id}", said) or None})
+json.dump({"docker": version, "cases": splunk_cases, "options": splunk_options}, open(splunk_out, "w"), indent=1)
+print(f"{splunk_out}: {len(splunk_cases)} cases, {len(splunk_options)} options")
 EOF

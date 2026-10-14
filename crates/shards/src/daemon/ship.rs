@@ -24,6 +24,7 @@ mod gelf;
 #[cfg(target_os = "linux")]
 mod journald;
 mod sockets;
+mod splunk;
 mod stream;
 mod syslog;
 
@@ -45,6 +46,12 @@ pub(super) trait Driver: Send {
     /// the driver's own pace asks between its tries, and says whether the daemon stops
     /// meanwhile, which ends them.
     fn send(&mut self, m: &Message<'_>, wait: &Wait<'_>) -> io::Result<()>;
+
+    /// Sends what it holds back to send together (splunk's batch), as its shipper has
+    /// caught up with its log: nothing waits on a tick, nor longer than its log does.
+    fn flush(&mut self, _wait: &Wait<'_>) -> io::Result<()> {
+        Ok(())
+    }
 
     /// How many of the messages it has sent its receiver may not have yet (stream.rs):
     /// none where nothing says what arrives, as over UDP.
@@ -104,6 +111,13 @@ impl Sender<'_> {
         Ok(())
     }
 
+    /// Sends what its driver holds back, as its shipper has caught up, again until it is
+    /// sent; given up only as the daemon stops.
+    fn flush(&mut self) -> io::Result<()> {
+        let (driver, wait) = (&mut *self.driver, &self.wait);
+        until_done(self.id, wait, || driver.flush(wait))
+    }
+
     /// How many of the messages sent their receiver has.
     fn delivered(&mut self) -> u64 {
         let undelivered = u64::try_from(self.driver.undelivered()).unwrap_or(u64::MAX);
@@ -119,7 +133,9 @@ impl Sender<'_> {
 }
 
 /// Does `f` until it succeeds: again a second after it fails, half as long again after
-/// each failure, a minute at most ([`RETRY_FIRST`]); given up only as the daemon stops.
+/// each failure, a minute at most ([`RETRY_FIRST`]); given up only as the daemon stops. A
+/// receiver that has not yet done what it was asked (WouldBlock: splunk's indexing) is
+/// waited for so too, without a word.
 fn until_done(id: &str, wait: &Wait<'_>, mut f: impl FnMut() -> io::Result<()>) -> io::Result<()> {
     let mut pause = RETRY_FIRST;
     loop {
@@ -130,9 +146,11 @@ fn until_done(id: &str, wait: &Wait<'_>, mut f: impl FnMut() -> io::Result<()>) 
         if wait.pause(Duration::ZERO) {
             return Err(stops());
         }
-        log(format!(
-            "container {id}: sending its log: {e}; again in {pause:?}"
-        ));
+        if e.kind() != io::ErrorKind::WouldBlock {
+            log(format!(
+                "container {id}: sending its log: {e}; again in {pause:?}"
+            ));
+        }
         if wait.pause(pause) {
             return Err(stops());
         }
@@ -552,6 +570,7 @@ impl<D: Disk> Daemon<D> {
                         }
                         let fds = [watch.fd(), end.as_fd(), stopped.as_fd()];
                         if !ready_now(&fds) {
+                            sender.flush()?;
                             place.keep(id, dir, sender.delivered(), false, cached);
                         }
                         let ready = super::commands::wait_readable(&fds)?;
@@ -635,6 +654,20 @@ impl<D: Disk> Daemon<D> {
                     extra: crate::logging::extra(run, &details.info())?,
                 },
             )?),
+            crate::logging::Remote::Splunk(config) => {
+                // Its tag, unless `tag` is given empty, which takes it away (moby splunk New).
+                let untagged = crate::logging::options(run)
+                    .get("tag")
+                    .is_some_and(String::is_empty);
+                Box::new(splunk::Splunk::new(
+                    config,
+                    crate::logging::splunk::From {
+                        host: details.hostname.clone(),
+                        tag: (!untagged).then_some(tag),
+                        attrs: crate::logging::extra(run, &details.info())?,
+                    },
+                )?)
+            }
             #[cfg(target_os = "linux")]
             crate::logging::Remote::Journald => {
                 // Its epoch, which its ordinals count from: an ID of its own, as moby's

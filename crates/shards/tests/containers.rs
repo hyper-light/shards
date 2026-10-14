@@ -12198,6 +12198,249 @@ fn a_runs_log_is_sent_to_journald_as_its_options_say() {
     }
 }
 
+/// A request a Splunk HTTP Event Collector of the test's was sent: its method, its target,
+/// its fields (names in lower case) and its body.
+struct HecRequest {
+    method: String,
+    target: String,
+    fields: std::collections::BTreeMap<String, String>,
+    body: Vec<u8>,
+}
+
+/// A Splunk HTTP Event Collector on `listener`, as HEC answers with indexer
+/// acknowledgment: each post its ack's ID, numbered from 0, and each ack asked for
+/// indexed. Each connection on a thread of its own, as a driver keeps its own; each
+/// request sent on `seen`.
+fn hec(listener: std::net::TcpListener, seen: std::sync::mpsc::Sender<HecRequest>) {
+    use std::io::{BufRead as _, Read as _, Write as _};
+    let posted = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    std::thread::spawn(move || {
+        for conn in listener.incoming() {
+            let Ok(conn) = conn else {
+                return;
+            };
+            let (seen, posted) = (seen.clone(), posted.clone());
+            std::thread::spawn(move || {
+                let mut reader = std::io::BufReader::new(conn);
+                loop {
+                    let mut line = String::new();
+                    if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                        return;
+                    }
+                    let mut parts = line.split_whitespace();
+                    let (method, target) = (
+                        parts.next().unwrap().to_string(),
+                        parts.next().unwrap().to_string(),
+                    );
+                    let mut fields = std::collections::BTreeMap::new();
+                    loop {
+                        let mut field = String::new();
+                        reader.read_line(&mut field).unwrap();
+                        let field = field.trim_end();
+                        if field.is_empty() {
+                            break;
+                        }
+                        let (k, v) = field.split_once(':').unwrap();
+                        fields.insert(k.to_ascii_lowercase(), v.trim().to_string());
+                    }
+                    let len: usize = fields.get("content-length").map_or(0, |l| l.parse().unwrap());
+                    let mut body = vec![0u8; len];
+                    reader.read_exact(&mut body).unwrap();
+                    let answer = if target.starts_with("/services/collector/ack") {
+                        let asked: serde_json::Value = serde_json::from_slice(&body).unwrap();
+                        let acks: Vec<String> = asked["acks"]
+                            .as_array()
+                            .unwrap()
+                            .iter()
+                            .map(|id| format!("\"{id}\":true"))
+                            .collect();
+                        format!("{{\"acks\":{{{}}}}}", acks.join(","))
+                    } else {
+                        let id = posted.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        format!("{{\"text\":\"Success\",\"code\":0,\"ackId\":{id}}}")
+                    };
+                    let reply = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{answer}",
+                        answer.len()
+                    );
+                    if reader.get_mut().write_all(reply.as_bytes()).is_err() {
+                        return;
+                    }
+                    let _ = seen.send(HecRequest {
+                        method,
+                        target,
+                        fields,
+                        body,
+                    });
+                }
+            });
+        }
+    });
+}
+
+/// The events a post to HEC carried, one JSON object after another.
+fn hec_events(body: &[u8]) -> Vec<serde_json::Value> {
+    serde_json::Deserializer::from_slice(body)
+        .into_iter::<serde_json::Value>()
+        .map(Result::unwrap)
+        .collect()
+}
+
+/// A run's log sent to Splunk (D167), to an HTTP Event Collector in the test: each line an
+/// event as Docker's driver posts it, its line, source, tag and attributes, its host this
+/// one's and its time its output's, with its token; a line posted while its run still
+/// runs, as the shipper catches up, where Docker's waits for a tick; with indexer
+/// acknowledgment, its ack asked for on the channel it was posted on; the refusals in
+/// shards' words.
+#[test]
+fn a_runs_log_is_sent_to_splunk_as_its_options_say() {
+    let Some((home, image)) = home("containers-splunk") else {
+        return;
+    };
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!(
+        "splunk-url=http://127.0.0.1:{}",
+        listener.local_addr().unwrap().port()
+    );
+    let (seen, requests) = std::sync::mpsc::channel();
+    hec(listener, seen);
+    let shards = |args: &[&str]| shards_in(&home, args);
+    let splunk = |name: &str, opts: &[&str], command: &[&str], detach: bool| {
+        let mut flags = vec![
+            "--name",
+            name,
+            "--log-driver",
+            "splunk",
+            "--log-opt",
+            &url,
+            "--log-opt",
+            "splunk-token=t",
+        ];
+        if detach {
+            flags.insert(0, "-d");
+        }
+        for o in opts {
+            flags.extend(["--log-opt", o]);
+        }
+        flags.extend(["--label", "team=logs"]);
+        let r = run_in(&home, &image, &flags, command);
+        assert_eq!(r.status, Some(0), "{name}: {r}");
+    };
+    // The posts' events, as many as `want`: none waited for past its arrival.
+    let posted = |want: usize| -> (Vec<HecRequest>, Vec<serde_json::Value>) {
+        let (mut posts, mut events) = (Vec::new(), Vec::new());
+        while events.len() < want {
+            let request: HecRequest = requests.recv_timeout(TIMEOUT).unwrap();
+            if request.target == "/services/collector/event/1.0" {
+                events.extend(hec_events(&request.body));
+            }
+            posts.push(request);
+        }
+        (posts, events)
+    };
+
+    // A line on each stream: its fields, the label asked for, its token.
+    splunk("inline", &["labels=team"], &["streams", "out", "err"], false);
+    let (posts, mut events) = posted(2);
+    let id = shards(&["inspect", "-f", "{{.Id}}", "inline"])
+        .stdout
+        .trim()
+        .to_string();
+    let stamped = shards(&["logs", "-t", "inline"]);
+    events.sort_by_key(|e| e["event"]["line"].as_str().unwrap().to_string());
+    for (event, (line, source)) in events.iter().zip([("err", "stderr"), ("out", "stdout")]) {
+        assert_eq!(
+            event["event"],
+            serde_json::json!({"line": line, "source": source, "tag": id.get(..12).unwrap(), "attrs": {"team": "logs"}}),
+            "{event}"
+        );
+        let host = event["host"].as_str().unwrap();
+        assert!(!host.is_empty() && !host.contains(':'), "a host's name: {event}");
+        // Its time its output's, as `logs -t` says it, to the microsecond.
+        let kept = [&stamped.stdout, &stamped.stderr]
+            .iter()
+            .flat_map(|s| s.lines())
+            .find_map(|l| l.strip_suffix(&format!(" {line}")))
+            .unwrap_or_else(|| panic!("{stamped}"));
+        let kept = time::OffsetDateTime::parse(kept, &time::format_description::well_known::Rfc3339)
+            .unwrap()
+            .unix_timestamp_nanos();
+        let (secs, micros) = event["time"].as_str().unwrap().split_once('.').unwrap();
+        let sent =
+            i128::from(secs.parse::<i64>().unwrap()) * 1_000_000 + i128::from(micros.parse::<i64>().unwrap());
+        assert!((sent - kept / 1000).abs() <= 1, "{event}: {stamped}");
+    }
+    for post in &posts {
+        assert_eq!(post.method, "POST");
+        assert_eq!(post.fields["authorization"], "Splunk t");
+    }
+
+    // A line posted while its run still runs: the shipper caught up with its log.
+    splunk("live", &[], &["ignore", "TERM"], true);
+    let (_, events) = posted(1);
+    assert_eq!(events[0]["event"]["line"], "ready");
+    assert_eq!(
+        shards(&["inspect", "-f", "{{.State.Running}}", "live"])
+            .stdout
+            .trim(),
+        "true"
+    );
+    assert_eq!(shards(&["rm", "-f", "live"]).status, Some(0));
+
+    // Indexer acknowledgment: posted on a channel, its ack asked for there.
+    splunk(
+        "acked",
+        &["splunk-index-acknowledgment=true"],
+        &["streams", "out", "err"],
+        false,
+    );
+    let mut asked = Vec::new();
+    let mut channels = std::collections::BTreeSet::new();
+    let mut lines = 0;
+    while lines < 2 || asked.is_empty() {
+        let request: HecRequest = requests.recv_timeout(TIMEOUT).unwrap();
+        channels.insert(request.fields["x-splunk-request-channel"].clone());
+        if request.target.starts_with("/services/collector/ack") {
+            asked.push(request.target.clone());
+        } else {
+            lines += hec_events(&request.body).len();
+        }
+    }
+    let channel = channels.iter().next().unwrap().clone();
+    assert_eq!(channels.len(), 1, "one channel: {channels:?}");
+    assert_eq!(asked[0], format!("/services/collector/ack?channel={channel}"));
+
+    for (opts, said) in [
+        (
+            &["splunk-insecureskipverify=true"][..],
+            "shards: --log-opt splunk-insecureskipverify: shards posts a log only to a Splunk whose certificate it verifies",
+        ),
+        (
+            &["splunk-capath=/nonexistent"],
+            "shards: --log-opt splunk-capath=/nonexistent: ",
+        ),
+        (
+            &["splunk-format=xml"],
+            "shards: --log-opt splunk-format=xml: inline, json or raw",
+        ),
+    ] {
+        let mut flags = vec![
+            "--log-driver",
+            "splunk",
+            "--log-opt",
+            &url,
+            "--log-opt",
+            "splunk-token=t",
+        ];
+        for o in opts {
+            flags.extend(["--log-opt", o]);
+        }
+        let r = run_in(&home, &image, &flags, &["exit", "0"]);
+        assert_eq!(r.status, Some(125), "{opts:?}: {r}");
+        assert!(r.stderr.starts_with(said), "{opts:?}: {r}");
+    }
+}
+
 /// A run's log as `--log-driver` and `--log-opt` keep it (D161): shards' store, its
 /// segments as long and as many as asked; none with `none`, whose `logs` is refused and
 /// whose attached client still gets its output; `--details` showing the labels, the
