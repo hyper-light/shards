@@ -593,6 +593,7 @@ pub fn security_setup(
     run: &Run,
     kernel: shards_seccomp::Kernel,
     cdi: Option<&crate::build::cdi::Edits>,
+    vfio: &[crate::run::VfioGroup],
 ) -> Result<Vec<Vec<u8>>, String> {
     let mut out = Vec::new();
     let security = security(run)?;
@@ -602,7 +603,7 @@ pub fn security_setup(
     if security.writable_cgroups == Some(true) && !run.privileged {
         out.push(b"cgroups-rw".to_vec());
     }
-    if let Some(devices) = devices(run, cdi) {
+    if let Some(devices) = devices(run, cdi, vfio) {
         out.push(devices);
     }
     if security.no_new_privileges {
@@ -630,9 +631,17 @@ pub fn security_setup(
 /// them (D44): `devices=`, then, each NUL-ended, `p` where it is privileged (`-` where
 /// not), and `d` with each device's host and container paths and permissions, `r` with
 /// each `--device-cgroup-rule`, `i` with each CDI device, and `w`, `rb`, `wb`, `ri` and
-/// `wi` with each device weight's and throttle's path and number. Without one, a container keeps
-/// the filter of Docker's defaults that its VM booted with.
-fn devices(run: &Run, cdi: Option<&crate::build::cdi::Edits>) -> Option<Vec<u8>> {
+/// `wi` with each device weight's and throttle's path and number. A host's VFIO group the
+/// microVM is given (D154) is `v`, with its path as the run named it, its functions'
+/// addresses on the microVM's bus, its container path (empty where it is its own, which in
+/// the guest is the guest's group's; `-` where a directory named holds it, which `d` then
+/// walks) and permissions. Without one, a container keeps the filter of Docker's defaults
+/// that its VM booted with.
+fn devices(
+    run: &Run,
+    cdi: Option<&crate::build::cdi::Edits>,
+    vfio: &[crate::run::VfioGroup],
+) -> Option<Vec<u8>> {
     let cdi_nodes = cdi.map(|e| e.nodes.as_slice()).unwrap_or_default();
     let io = [
         (&b"w"[..], &run.blkio_weight_device),
@@ -655,12 +664,61 @@ fn devices(run: &Run, cdi: Option<&crate::build::cdi::Edits>) -> Option<Vec<u8>>
     let mut e = b"devices=".to_vec();
     e.extend_from_slice(if run.privileged { b"p\0" } else { b"-\0" });
     let render = gpu.then(|| format!("{0}:{0}:rwm", crate::run::RENDER_NODE));
-    for d in run.devices.iter().chain(render.iter()) {
+    // Where each function of the groups sits on the microVM's bus, placed as its VM
+    // process places the functions it is given (vm::vfio_places).
+    let functions = crate::run::vfio_functions(vfio);
+    let places = shards_vmm::vm::vfio_places(&functions, &[]);
+    let addresses = |group: &crate::run::VfioGroup| -> String {
+        let at: Vec<String> = group
+            .functions
+            .iter()
+            .filter_map(|f| {
+                let i = functions.iter().position(|a| a.name == f.name)?;
+                places
+                    .get(i)
+                    .copied()
+                    .flatten()
+                    .map(shards_vmm::vm::guest_address)
+            })
+            .collect();
+        at.join(",")
+    };
+    let word = |e: &mut Vec<u8>, w: &str| {
+        e.extend_from_slice(w.as_bytes());
+        e.push(0);
+    };
+    for (i, d) in run.devices.iter().chain(render.iter()).enumerate() {
         let mut parts = d.splitn(3, ':');
-        e.extend_from_slice(b"d\0");
-        for _ in 0..3 {
-            e.extend_from_slice(parts.next().unwrap_or_default().as_bytes());
-            e.push(0);
+        let (host, container, perms) = (
+            parts.next().unwrap_or_default(),
+            parts.next().unwrap_or_default(),
+            parts.next().unwrap_or_default(),
+        );
+        let groups: Vec<&crate::run::VfioGroup> = vfio.iter().filter(|g| g.asked == i).collect();
+        let path = host.trim_end_matches('/');
+        match groups.as_slice() {
+            [one] if one.path == path => {
+                e.extend_from_slice(b"v\0");
+                word(&mut e, host);
+                word(&mut e, &addresses(one));
+                word(&mut e, if container == path { "" } else { container });
+                word(&mut e, perms);
+            }
+            groups => {
+                // A directory of them: each bound to vfio-pci in the guest first, then the
+                // directory walked, as dockerd walks the host's.
+                for g in groups {
+                    e.extend_from_slice(b"v\0");
+                    word(&mut e, &g.path);
+                    word(&mut e, &addresses(g));
+                    word(&mut e, "-");
+                    word(&mut e, "");
+                }
+                e.extend_from_slice(b"d\0");
+                word(&mut e, host);
+                word(&mut e, container);
+                word(&mut e, perms);
+            }
         }
     }
     for v in &run.device_cgroup_rules {
@@ -823,7 +881,7 @@ mod tests {
     fn a_container_given_sys_admin_has_apparmors_mount_rule() {
         let kernel = shards_seccomp::Kernel(6, 1);
         let entries = |run: &Run| {
-            security_setup(run, kernel, None)
+            security_setup(run, kernel, None, &[])
                 .unwrap()
                 .into_iter()
                 .filter_map(|e| {

@@ -41,6 +41,29 @@ pub const KERNEL: Option<Pinned> = if cfg!(all(target_arch = "x86_64", windows))
     None
 };
 
+/// The kernel of a guest given a host's VFIO group (`--device /dev/vfio/N`, D154): the
+/// `kvm` variant, VFIO and virtio-iommu built in (resources/kernel/kvm.config). Of the
+/// pinned kernels' own release; none on Windows, whose hosts have no VFIO.
+pub const KERNEL_KVM: Option<Pinned> = if cfg!(windows) {
+    None
+} else if cfg!(target_arch = "x86_64") {
+    Some(Pinned {
+        name: "vmlinux-6.18.48-x86_64-kvm-6f2b217a4feb",
+        url: "https://github.com/hyper-light/shards/releases/download/kernel-6.18.48-6f2b217a4feb/vmlinux-6.18.48-x86_64-kvm",
+        size: 27_766_920,
+        sha256: "e8cf7f7c64a041f783f6e4a0b4937e975525690dbf54fc8679ec32e29a4161ab",
+    })
+} else if cfg!(target_arch = "aarch64") {
+    Some(Pinned {
+        name: "Image-6.18.48-aarch64-kvm-6f2b217a4feb",
+        url: "https://github.com/hyper-light/shards/releases/download/kernel-6.18.48-6f2b217a4feb/Image-6.18.48-aarch64-kvm",
+        size: 20_036_096,
+        sha256: "f2a433fb725592ec988ddf0c762258176c754ca2b0c497cadd38e58edbe52f28",
+    })
+} else {
+    None
+};
+
 /// The kernel of a guest given a GPU (D144): the `gpu` variant, DRM's virtio-gpu driver
 /// built in (resources/kernel/gpu.config); arm64's alone, as Hypervisor.framework's guests
 /// alone have a GPU yet. Of the pinned kernels' own release.

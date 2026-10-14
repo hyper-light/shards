@@ -231,6 +231,31 @@ pub fn guest(args: impl Iterator<Item = OsString>) -> ExitCode {
     }
 }
 
+const NO_KVM_KERNEL: &str = "shards pins no guest kernel with VFIO for this host: SHARDS_KERNEL and SHARDS_INIT name one, built with resources/kernel/kvm.config (scripts/build-kernel.sh ARCH OUT kvm)";
+
+/// The kernel a guest given a host's VFIO group boots in `home`'s store (D154): the pinned
+/// kernel's `kvm` variant, VFIO and virtio-iommu built in, downloaded as the pinned kernel
+/// is, said through `say`.
+pub fn kvm_kernel(
+    home: &Path,
+    say: &dyn Fn(&str),
+    cancel: Option<&Cancel>,
+    env: &dyn Fn(&str) -> Option<String>,
+) -> Result<PathBuf, String> {
+    let pinned = crate::kernel::KERNEL_KVM.ok_or(NO_KVM_KERNEL)?;
+    let dir = home.join("guest");
+    let kernel = dir.join(format!("sha256-{}", pinned.sha256));
+    if kernel.is_file() {
+        return Ok(kernel);
+    }
+    shards_vmm::platform::create_private_dir(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    let _held = hold(&dir)?;
+    if !kernel.is_file() {
+        download(&dir, &kernel, &pinned, say, cancel, env)?;
+    }
+    Ok(kernel)
+}
+
 const NO_GPU_KERNEL: &str = "shards pins no GPU guest kernel yet: SHARDS_KERNEL and SHARDS_INIT name one, built with resources/kernel/gpu.config (scripts/build-kernel.sh aarch64 OUT gpu)";
 
 /// The kernel a GPU's guest boots in `home`'s store (D144): the pinned kernel's `gpu`

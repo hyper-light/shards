@@ -270,8 +270,15 @@ impl Container {
             .map_err(|e| err("setting its container", e))?;
         if self.groups.is_empty() {
             // SAFETY: VFIO_SET_IOMMU takes an integer.
-            unsafe { ioctl(&*self.fd, VFIO_SET_IOMMU, Self::iommu(self.noiommu) as usize) }
-                .map_err(|e| err("setting its IOMMU", e))?;
+            unsafe { ioctl(&*self.fd, VFIO_SET_IOMMU, Self::iommu(self.noiommu) as usize) }.map_err(|e| {
+                // Type 1 refuses a group whose MSIs nothing isolates (vfio_iommu_type1.c,
+                // vfio_iommu_type1_attach_group), the host's administrator's to allow.
+                let hint = match e.raw_os_error() {
+                    Some(libc::EPERM) => ": the host's IOMMU does not isolate its functions' MSIs (no interrupt remapping), which the host's VFIO then refuses, unless its administrator allows it (vfio_iommu_type1.allow_unsafe_interrupts=1)",
+                    _ => "",
+                };
+                format!("{}: setting its IOMMU: {e}{hint}", path.display())
+            })?;
             if !self.noiommu && self.maps_ram {
                 self.map(memory)?;
             }
@@ -872,6 +879,75 @@ impl Device {
     }
 }
 
+/// `data`, read at `offset` of a configuration, with each of `overlays`' bits in place of
+/// the device's (a register's offset, the bits it reads, their mask).
+fn overlay(overlays: &[(u16, u32, u32)], offset: u16, data: &mut [u8]) {
+    for (at, byte) in (offset..).zip(data.iter_mut()) {
+        let shift = u32::from(at & 3) * 8;
+        for &(register, value, mask) in overlays {
+            if register == at & !3 {
+                let mask = (mask >> shift) as u8;
+                *byte = (*byte & !mask) | ((value >> shift) as u8 & mask);
+            }
+        }
+    }
+}
+
+/// The overlay that takes extended capability `id` out of the list a configuration whose
+/// registers `read` gives holds from 0x100 (PCIe 6.0 §7.6.3: each header's ID in its bits
+/// 15:0, the next one's offset in 31:20, none past one of 0): its predecessor's header
+/// made to point past it, or, where it is the first, a header of ID 0 there in its place,
+/// which a guest passes over (Linux's pci_find_next_ext_capability; as QEMU's vfio-pci
+/// hides one, vfio_add_ext_cap). None where the list does not hold it.
+fn ext_cap_taken_out(read: impl Fn(u16) -> u32, id: u32) -> Option<(u16, u32, u32)> {
+    const FIRST: u16 = 0x100;
+    let (mut at, mut before) = (FIRST, None);
+    // No more than fit, each header 4 bytes, in the 4 KiB configuration past 0x100.
+    for _ in 0..(4096 - usize::from(FIRST)) / 4 {
+        let header = read(at);
+        if header == 0 || header == u32::MAX {
+            return None;
+        }
+        let next = (header >> 20) & 0xffc;
+        if header & 0xffff == id {
+            return Some(match before {
+                Some(before) => (before, next << 20, 0xfff0_0000),
+                None => (FIRST, next << 20, u32::MAX),
+            });
+        }
+        before = Some(at);
+        at = u16::try_from(next).ok().filter(|&next| next >= FIRST)?;
+    }
+    None
+}
+
+/// Raises this process's locked-memory limit as far as it may go unprivileged, its hard
+/// limit: type 1 pins what each container maps against it (RLIMIT_MEMLOCK,
+/// vfio_iommu_type1.c, vfio_lock_acct), and a host gives a user who may pass a device
+/// through the limit such DMA needs as the hard one, which the soft one starts below
+/// (systemd's DefaultLimitMEMLOCK, limits.conf). What it could not raise stays, and a
+/// mapping past it says so ([`Container::map`]).
+pub fn raise_memlock() {
+    let mut limit = libc::rlimit {
+        rlim_cur: 0,
+        rlim_max: 0,
+    };
+    // SAFETY: getrlimit(2) fills the rlimit it is given.
+    if unsafe { libc::getrlimit(libc::RLIMIT_MEMLOCK, &raw mut limit) } != 0
+        || limit.rlim_cur == limit.rlim_max
+    {
+        return;
+    }
+    limit.rlim_cur = limit.rlim_max;
+    // SAFETY: setrlimit(2) reads the rlimit it is given.
+    if unsafe { libc::setrlimit(libc::RLIMIT_MEMLOCK, &raw const limit) } != 0 {
+        crate::warn!(
+            "raising the locked-memory limit for VFIO's DMA: {}",
+            io::Error::last_os_error()
+        );
+    }
+}
+
 /// Whether `offset` is a register the VMM keeps of a function whose MSI and MSI-X
 /// capabilities are at `caps`' places, of their lengths: the BARs, the expansion ROM, the
 /// interrupt line and pin (with PCIe's hardwired-zero Min_Gnt and Max_Lat beside them),
@@ -1080,19 +1156,33 @@ pub struct VfioFunction {
     slots: Option<Box<dyn BarSlots>>,
     mapped: Mutex<bool>,
     _mappings: Vec<Mapping>,
+    /// Bits of its configuration the guest reads as the VMM puts them, not as the device
+    /// has them: each a register's offset (a multiple of 4), the bits it reads, and the
+    /// mask of those bits.
+    overlays: Vec<(u16, u32, u32)>,
 }
+
+/// The header type's bit 7 in the register at 0x0c: a multi-function device's function
+/// (PCIe 6.0 §7.5.1.1.9).
+const MULTI_FUNCTION: u32 = 1 << 23;
+/// The register that holds the header type.
+const HEADER_TYPE_REGISTER: u16 = reg::HEADER_TYPE & !3;
+/// Access Control Services' extended capability (PCIe 6.0 §7.7.11).
+const EXT_CAP_ACS: u32 = 0x000d;
 
 impl VfioFunction {
     /// `device`, its BARs at `bars`, its interrupts reaching the guest by `route` and
     /// `send`, where the machine routes them: INTx from the guest's first look at the
     /// function ([`VfioFunction::reach`]), where it has a pin; MSI and MSI-X as the guest
-    /// enables them.
+    /// enables them. `together` where its device on the guest's bus holds other functions
+    /// too, of its host IOMMU group (`vm::vfio_places`).
     pub fn new(
         device: Device,
         bars: Vec<Bar>,
         route: Option<Arc<dyn Route>>,
         send: Option<Arc<dyn Msi>>,
         host: &dyn Host,
+        together: bool,
     ) -> Result<VfioFunction, String> {
         let routed = route.is_some() && send.is_some();
         let pin = if routed && device.signals(IRQ_INTX) {
@@ -1160,6 +1250,19 @@ impl VfioFunction {
         )?;
         let mut caps: Vec<(u16, u16)> = msi.map(|(cap, len)| (cap.at, len)).into_iter().collect();
         caps.extend(msix.map(|cap| (cap.at, reg::MSIX_LEN)));
+        // As the guest must see one host group's functions, which nothing keeps from each
+        // other's DMA: where its device holds others, a multi-function device's function,
+        // and one without ACS, whose controls would have the guest take it for isolated
+        // from them (Linux's pci_acs_enabled; get_pci_function_alias_group); else a single
+        // function, whose device has no others for the guest to look for.
+        let mut overlays = vec![(
+            HEADER_TYPE_REGISTER,
+            if together { MULTI_FUNCTION } else { 0 },
+            MULTI_FUNCTION,
+        )];
+        if together {
+            overlays.extend(ext_cap_taken_out(|at| device.config(at, 4), EXT_CAP_ACS));
+        }
         Ok(VfioFunction {
             device,
             kept,
@@ -1175,6 +1278,7 @@ impl VfioFunction {
             slots,
             mapped: Mutex::new(false),
             _mappings: mappings,
+            overlays,
         })
     }
 
@@ -1524,6 +1628,7 @@ impl PciFunction for VfioFunction {
         } else {
             self.device.read(CONFIG_REGION as usize, u64::from(offset), data);
         }
+        overlay(&self.overlays, offset, data);
     }
 
     fn config_write(&self, offset: u16, data: &[u8]) {
@@ -1615,6 +1720,71 @@ mod tests {
             assert!(!kept(offset, &caps), "{offset:#x}");
         }
         assert!(!kept(0x50, &[]));
+    }
+
+    /// What the guest reads of a function where the VMM puts bits of its own: those bits,
+    /// in whichever bytes of a read hold them; and an extended capability taken out of its
+    /// list, the first or one past it, the rest of the list as it was.
+    #[test]
+    fn the_guest_reads_overlaid_bits_and_a_list_without_acs() {
+        let overlays = [(0x0c, MULTI_FUNCTION, MULTI_FUNCTION)];
+        let mut header = [0x10, 0x00, 0x00, 0x00];
+        overlay(&overlays, 0x0c, &mut header);
+        assert_eq!(header, [0x10, 0x00, 0x80, 0x00]);
+        let mut byte = [0x01];
+        overlay(&overlays, 0x0e, &mut byte);
+        assert_eq!(byte, [0x81]);
+        let mut cleared = [0xff, 0xff];
+        overlay(&[(0x0c, 0, MULTI_FUNCTION)], 0x0e, &mut cleared);
+        assert_eq!(cleared, [0x7f, 0xff]);
+        let mut elsewhere = [0xff; 4];
+        overlay(&overlays, 0x10, &mut elsewhere);
+        assert_eq!(elsewhere, [0xff; 4]);
+        // AER at 0x100, ACS at 0x148, then SR-IOV at 0x160: AER points past ACS.
+        let space =
+            |list: Vec<(u16, u32)>| move |at: u16| list.iter().find(|(a, _)| *a == at).map_or(0, |&(_, h)| h);
+        let header = |id: u32, next: u32| id | (1 << 16) | (next << 20);
+        let three = vec![
+            (0x100, header(0x0001, 0x148)),
+            (0x148, header(0x000d, 0x160)),
+            (0x160, header(0x0010, 0)),
+        ];
+        assert_eq!(
+            ext_cap_taken_out(space(three.clone()), EXT_CAP_ACS),
+            Some((0x100, 0x160 << 20, 0xfff0_0000))
+        );
+        let mut first = header(0x0001, 0x148).to_le_bytes();
+        overlay(&[(0x100, 0x160 << 20, 0xfff0_0000)], 0x100, &mut first);
+        assert_eq!(u32::from_le_bytes(first), header(0x0001, 0x160));
+        // ACS first: a header of ID 0 pointing at the next.
+        let acs_first = vec![(0x100, header(0x000d, 0x160)), (0x160, header(0x0010, 0))];
+        assert_eq!(
+            ext_cap_taken_out(space(acs_first), EXT_CAP_ACS),
+            Some((0x100, 0x160 << 20, u32::MAX))
+        );
+        // ACS alone: no list at all.
+        assert_eq!(
+            ext_cap_taken_out(space(vec![(0x100, header(0x000d, 0))]), EXT_CAP_ACS),
+            Some((0x100, 0, u32::MAX))
+        );
+        assert_eq!(
+            ext_cap_taken_out(space(vec![(0x100, header(0x0001, 0))]), EXT_CAP_ACS),
+            None
+        );
+        assert_eq!(
+            ext_cap_taken_out(space(Vec::new()), EXT_CAP_ACS),
+            None,
+            "no extended space"
+        );
+        // A list that points back into the standard space, or at itself, ends.
+        assert_eq!(
+            ext_cap_taken_out(space(vec![(0x100, header(0x0001, 0x40))]), EXT_CAP_ACS),
+            None
+        );
+        assert_eq!(
+            ext_cap_taken_out(space(vec![(0x100, header(0x0001, 0x100))]), EXT_CAP_ACS),
+            None
+        );
     }
 
     /// A BAR's pages reach the guest without exits but for those of the MSI-X table and

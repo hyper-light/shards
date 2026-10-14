@@ -253,6 +253,25 @@ fn guest_binary(name: &str) -> PathBuf {
     guest_binary_in(name, name, "target/guest", &[])
 }
 
+/// shards itself for this architecture's Linux (static musl), for a guest that is itself
+/// a KVM host to run as a Linux host runs it (D154): of the tests' profile, stripped and
+/// without debug information, which a guest holds in its memory.
+pub fn guest_shards() -> &'static Path {
+    static S: OnceLock<PathBuf> = OnceLock::new();
+    S.get_or_init(|| {
+        guest_binary_with(
+            "shards",
+            "shards",
+            "target/guest-shards",
+            "test-release",
+            &[
+                ("CARGO_PROFILE_TEST_RELEASE_DEBUG", "false"),
+                ("CARGO_PROFILE_TEST_RELEASE_STRIP", "true"),
+            ],
+        )
+    })
+}
+
 /// shards' VM process for this architecture's Linux (static musl), for a guest that is
 /// itself a KVM host to run VMs of its own with (D132).
 pub fn guest_vm_process() -> &'static Path {
@@ -276,6 +295,17 @@ pub fn foreign_init() -> &'static Path {
 
 /// Builds guest package `package`'s binary `name` into `target_dir` with `env` added.
 fn guest_binary_in(package: &str, name: &str, target_dir: &str, env: &[(&str, &str)]) -> PathBuf {
+    guest_binary_with(package, name, target_dir, "guest", env)
+}
+
+/// [`guest_binary_in`], of cargo's profile `profile`.
+fn guest_binary_with(
+    package: &str,
+    name: &str,
+    target_dir: &str,
+    profile: &str,
+    env: &[(&str, &str)],
+) -> PathBuf {
     let target_dir = workspace().join(target_dir);
     let guest_target = format!("{ARCH}-unknown-linux-musl");
     // Go through the rustup proxy on PATH (not $CARGO, the bare cargo binary) and drop
@@ -327,7 +357,7 @@ fn guest_binary_in(package: &str, name: &str, target_dir: &str, env: &[(&str, &s
             "-p",
             package,
             "--profile",
-            "guest",
+            profile,
             "--target",
             &guest_target,
         ])
@@ -336,7 +366,7 @@ fn guest_binary_in(package: &str, name: &str, target_dir: &str, env: &[(&str, &s
         .status()
         .unwrap();
     assert!(st.success(), "building {name}");
-    let built = target_dir.join(&guest_target).join("guest").join(name);
+    let built = target_dir.join(&guest_target).join(profile).join(name);
     let mine = target_dir.join("by-process");
     // Copies of test processes that have ended go.
     for e in std::fs::read_dir(&mine).into_iter().flatten().flatten() {
@@ -1512,6 +1542,39 @@ pub fn test_image_with(variant: Option<&[u8]>) -> (Vec<u8>, Vec<Vec<u8>>) {
     )
     .into_bytes();
     (manifest, vec![config, layer])
+}
+
+/// The test image as `docker save` writes an archive of an image named `name` (`NAME:TAG`):
+/// an OCI layout (`oci-layout`, an `index.json` that names it, its blobs) with Docker's
+/// `manifest.json` beside, as Docker 25 and later write one.
+pub fn image_archive(name: &str) -> Vec<u8> {
+    let (manifest, blobs) = test_image();
+    let [config, layer] = &blobs[..] else {
+        panic!("the test image is a config and a layer");
+    };
+    let path = |b: &[u8]| format!("blobs/sha256/{}", sha256_digest(b).trim_start_matches("sha256:"));
+    let tag = name.rsplit_once(':').map_or("latest", |(_, tag)| tag);
+    let index = format!(
+        r#"{{"schemaVersion":2,"mediaType":"application/vnd.oci.image.index.v1+json","manifests":[{{"mediaType":"application/vnd.oci.image.manifest.v1+json","digest":"{}","size":{},"annotations":{{"io.containerd.image.name":"docker.io/library/{name}","org.opencontainers.image.ref.name":"{tag}"}}}}]}}"#,
+        sha256_digest(&manifest),
+        manifest.len()
+    );
+    let docker = format!(
+        r#"[{{"Config":"{}","RepoTags":["{name}"],"Layers":["{}"]}}]"#,
+        path(config),
+        path(layer)
+    );
+    let (manifest_at, config_at, layer_at) = (path(&manifest), path(config), path(layer));
+    tar(&[
+        ("blobs", 0o755, 0, None),
+        ("blobs/sha256", 0o755, 0, None),
+        (&config_at, 0o644, 0, Some(config)),
+        (&layer_at, 0o644, 0, Some(layer)),
+        (&manifest_at, 0o644, 0, Some(&manifest)),
+        ("index.json", 0o644, 0, Some(index.as_bytes())),
+        ("manifest.json", 0o644, 0, Some(docker.as_bytes())),
+        ("oci-layout", 0o644, 0, Some(br#"{"imageLayoutVersion":"1.0.0"}"#)),
+    ])
 }
 
 /// The test image behind an index, as multi-platform images are served: its manifest

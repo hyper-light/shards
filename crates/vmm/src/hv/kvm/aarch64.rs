@@ -199,6 +199,13 @@ impl Vm {
             0
         };
         let fd = Arc::new(kvm.create_vm(kind).map_err(call("KVM_CREATE_VM"))?);
+        // A data abort KVM cannot emulate, outside every memory slot with no access in its
+        // syndrome, returned to the VMM, which says where it was: else KVM_RUN fails with
+        // ENOSYS alone (api.rst 4.10, 7.20).
+        if has(u64::from(sys::CAP_ARM_NISV_TO_USER))? {
+            fd.enable_cap(sys::CAP_ARM_NISV_TO_USER)
+                .map_err(call("KVM_ENABLE_CAP(KVM_CAP_ARM_NISV_TO_USER)"))?;
+        }
         let mut init = fd.preferred_target().map_err(call("KVM_ARM_PREFERRED_TARGET"))?;
         let mut features = 1 << sys::VCPU_PSCI_0_2;
         // Pointer authentication where KVM gives both kinds, as the guest has it under

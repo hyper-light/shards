@@ -491,10 +491,11 @@ pub struct Config {
     /// once the guest has made a context or a resource, which are its host driver's and no
     /// snapshot holds; a template is saved before any (D150).
     pub gpu: bool,
-    /// A PCI bus with a test function on it, QEMU's edu's identification and liveness
-    /// registers (D153): what tests read to show that the bus reaches the VMM. A machine
-    /// with a PCI bus saves no snapshot.
-    pub pci_test: bool,
+    /// A PCI bus with test functions on it, QEMU's edu's identification and liveness
+    /// registers (D153), at each of these places on bus 0, `(device, function)`: what
+    /// tests read to show that the bus reaches the VMM. A machine with a PCI bus saves no
+    /// snapshot.
+    pub pci_test: Vec<(u8, u8)>,
     /// Host PCI functions passed through by VFIO, Linux's (D154), on the PCI bus after the
     /// test function. A machine given one outside its own IOMMU has no memory to plug and
     /// no balloon: the function's DMA reaches all of guest RAM through mappings the host's
@@ -553,7 +554,8 @@ impl Vfio {
 #[cfg(hv)]
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct Pci<'a> {
-    pub test: bool,
+    /// The test functions' places, `(device, function)`.
+    pub test: &'a [(u8, u8)],
     pub vfio: &'a [Vfio],
 }
 
@@ -566,8 +568,8 @@ impl Pci<'_> {
     pub fn mem64(&self) -> Result<Option<(u64, u64)>, String> {
         let sizes = self
             .test
-            .then_some(crate::devices::pci::edu::SCRATCH_BAR_SIZE)
-            .into_iter()
+            .iter()
+            .map(|_| crate::devices::pci::edu::SCRATCH_BAR_SIZE)
             .chain(self.vfio.iter().flat_map(|f| f.bars64.iter().copied()));
         let (mut len, mut align) = (0u64, 0u64);
         for size in sizes {
@@ -618,62 +620,80 @@ pub(crate) struct PciMachine<'a> {
     pub iommu: Option<crate::devices::virtio::iommu::Shared>,
 }
 
-/// The test function's device on bus 0 (D153), and so its requester ID, `device << 3`,
-/// which the machine's IOMMU translates (D154).
-pub(crate) const TEST_DEVICE: u8 = 1;
+/// The test function's device on bus 0 (D153) where a machine has one (`--pci-test`), and
+/// so its requester ID, `device << 3`, which the machine's IOMMU translates (D154): the
+/// first device a function takes.
+pub const TEST_DEVICE: u8 = 1;
+
+/// The first device of bus 0 after the test functions at `test` (D153).
+fn after_tests(test: &[(u8, u8)]) -> u8 {
+    test.iter()
+        .map(|&(device, _)| device.saturating_add(1))
+        .max()
+        .unwrap_or(TEST_DEVICE)
+}
 
 /// Where each function of `vfio` sits on bus 0, `(device, function)`, after the test
-/// function where the machine has it (`test`, D153). The functions of one host slot
-/// (`DDDD:BB:SS.F`) share a device, so that the guest takes them as one group, as Linux
-/// groups a multi-function device's functions that nothing isolates from each other
-/// (iommu.c, pci_device_group); each keeps its function number where the slot's function
-/// 0 is among them, else they are numbered from 0 in order, as a guest scans a device's
-/// other functions only where it has function 0. None past the bus's 32 devices, or for
-/// a function number past 7.
-pub fn vfio_places(vfio: &[Vfio], test: bool) -> Vec<Option<(u8, u8)>> {
-    let split = |name: &str| -> (String, Option<u8>) {
-        match name.rsplit_once('.') {
-            Some((slot, f)) => (
-                slot.to_string(),
-                u8::from_str_radix(f, 16).ok().filter(|&f| f < 8),
-            ),
-            None => (name.to_string(), Some(0)),
-        }
+/// functions at `test` (D153). The functions of one host IOMMU group
+/// share a device, which nothing isolates from each other ([`passed_functions`]), so that
+/// the guest takes them as one group too, as Linux groups a multi-function device's
+/// functions (iommu.c, pci_device_group, get_pci_function_alias_group): its IOMMU core
+/// then keeps them in one domain, as the host's container does, and a workload given
+/// `/dev/vfio/N` finds them all in it. Where they are one host slot's with its function 0,
+/// each keeps its function number; else they are numbered from 0 in the order of their
+/// addresses, as a guest scans a device's other functions only where it has function 0.
+/// None past the bus's 32 devices, nor for a group's functions past eight, nor for a
+/// function number past 7.
+pub fn vfio_places(vfio: &[Vfio], test: &[(u8, u8)]) -> Vec<Option<(u8, u8)>> {
+    let slot = |name: &str| name.rsplit_once('.').map(|(slot, _)| slot.to_string());
+    let number = |name: &str| {
+        name.rsplit_once('.')
+            .and_then(|(_, f)| u8::from_str_radix(f, 16).ok())
+            .filter(|&f| f < 8)
     };
-    let mut slots: Vec<String> = Vec::new();
+    let mut groups: Vec<&std::path::Path> = Vec::new();
     for f in vfio {
-        let (slot, _) = split(&f.name);
-        if !slots.contains(&slot) {
-            slots.push(slot);
+        if !groups.contains(&f.group.as_path()) {
+            groups.push(&f.group);
         }
     }
-    let first = TEST_DEVICE + u8::from(test);
+    let first = after_tests(test);
     vfio.iter()
         .map(|f| {
-            let (slot, function) = split(&f.name);
-            let function = function?;
-            let device = slots
+            number(&f.name)?;
+            let device = groups
                 .iter()
-                .position(|s| *s == slot)
+                .position(|g| *g == f.group)
                 .and_then(|i| u8::try_from(i).ok())
                 .and_then(|i| first.checked_add(i))
                 .filter(|&d| d < 32)?;
-            let mut together: Vec<u8> = vfio
+            // Its group's functions, by their addresses, which sysfs writes in fixed-width
+            // lowercase hex: in their numbers' order.
+            let mut members: Vec<&str> = vfio
                 .iter()
-                .map(|g| split(&g.name))
-                .filter(|(s, _)| *s == slot)
-                .filter_map(|(_, f)| f)
+                .filter(|g| g.group == f.group)
+                .map(|g| g.name.as_str())
                 .collect();
-            together.sort_unstable();
-            together.dedup();
-            let function = if together.contains(&0) {
-                function
+            members.sort_unstable();
+            members.dedup();
+            let one_slot = members.iter().all(|m| slot(m) == slot(&f.name));
+            let function = if one_slot && members.iter().any(|m| number(m) == Some(0)) {
+                number(&f.name)?
             } else {
-                u8::try_from(together.iter().position(|&g| g == function)?).ok()?
+                u8::try_from(members.iter().position(|m| *m == f.name)?)
+                    .ok()
+                    .filter(|&n| n < 8)?
             };
             Some((device, function))
         })
         .collect()
+}
+
+/// How many of `places` share each place's device: a device that holds more than one
+/// function is a multi-function device to the guest.
+#[cfg(all(hv, any(test, target_os = "linux")))]
+fn passed_functions(places: &[Option<(u8, u8)>], device: u8) -> usize {
+    places.iter().flatten().filter(|(d, _)| *d == device).count()
 }
 
 /// The guest's name of the PCI function at `place` ([`vfio_places`]), as sysfs has it.
@@ -705,8 +725,8 @@ fn iommu_of(
         .filter_map(|(_, place)| place);
     let endpoints: Vec<u32> = pci
         .test
-        .then_some((TEST_DEVICE, 0))
-        .into_iter()
+        .iter()
+        .copied()
         .chain(behind)
         .map(|(device, function)| u32::from(device) << 3 | u32::from(function))
         .collect();
@@ -717,7 +737,7 @@ fn iommu_of(
     // guest without the driver; blocked where only functions passed through are, whose
     // guest needs the driver to give them to a process anyway.
     let translation = Arc::new(std::sync::Mutex::new(
-        iommu::Translation::new(endpoints.clone(), msi).bypassing(pci.test),
+        iommu::Translation::new(endpoints.clone(), msi).bypassing(!pci.test.is_empty()),
     ));
     let device =
         Box::new(iommu::Iommu::new(translation.clone())) as Box<dyn crate::devices::virtio::VirtioDevice>;
@@ -727,7 +747,7 @@ fn iommu_of(
 /// Puts the PCI bus `pci` asks for on `bus` (D153, D154), where it asks for one: its ECAM
 /// window at `ecam`, and its functions' BARs in the memory window `mem32`, each at the
 /// next multiple of its size, but for 64-bit BARs, in `mem64` ([`Pci::mem64`]); QEMU's edu
-/// at 00:01.0 where `pci.test`, then each function passed through, on the devices after.
+/// at each of `pci.test`'s places, then each function passed through, on the devices after.
 /// Their interrupts go where `machine.irqs` says; with none, the functions the VMM
 /// emulates have none.
 #[cfg(hv)]
@@ -742,21 +762,26 @@ fn pci_bus(
 ) -> Result<Option<PciBus>, String> {
     use crate::devices::pci;
     let irqs = machine.irqs;
-    if !pci.test && pci.vfio.is_empty() {
+    if pci.test.is_empty() && pci.vfio.is_empty() {
         return Ok(None);
     }
     let mut routed = PciBus::default();
     let mut window = BarWindow::of(mem32)?;
     let mut window64 = mem64.map(BarWindow::of).transpose()?;
     let mut functions: Vec<pci::Function> = Vec::new();
-    if pci.test {
-        let device = TEST_DEVICE;
+    for &(device, function) in pci.test {
+        // Of a device of several, a multi-function device's function, its function 0
+        // alone with the device's INTx pin.
+        let role = pci::edu::Role {
+            multi_function: pci.test.iter().filter(|(d, _)| *d == device).count() > 1,
+            intx: function == 0,
+        };
         let at = window.take(pci::edu::BAR_SIZE)?;
         let lines = irqs.map(|irqs| pci::Lines {
             intx: irqs.intx(device),
             msi: irqs.msi(),
         });
-        if lines.is_some() {
+        if lines.is_some() && role.intx {
             routed.intx.push((device, pci::edu::PIN));
         }
         let places = pci::edu::Places {
@@ -767,15 +792,16 @@ fn pci_bus(
                 .ok_or("the test function's BAR 4 has no 64-bit window")?
                 .take(pci::edu::SCRATCH_BAR_SIZE)?,
         };
+        let devfn = device << 3 | function;
         let dma = pci::edu::Dma {
             memory: machine.memory.clone(),
-            iommu: machine.iommu.clone().map(|t| (t, u32::from(device) << 3)),
+            iommu: machine.iommu.clone().map(|t| (t, u32::from(devfn))),
         };
-        let (edu, bars) = pci::edu::Edu::new(places, lines, Some(dma))?;
+        let (edu, bars) = pci::edu::Edu::of(places, lines, Some(dma), role)?;
         bus.insert(places.registers, pci::edu::BAR_SIZE, bars.registers)?;
         bus.insert(places.msix, pci::edu::MSIX_BAR_SIZE, bars.msix)?;
         bus.insert(places.scratch, pci::edu::SCRATCH_BAR_SIZE, bars.scratch)?;
-        functions.push((device << 3, edu));
+        functions.push((devfn, edu));
     }
     if !pci.vfio.is_empty() {
         // All of guest RAM mapped for a function outside the guest's IOMMU, pinned: what
@@ -845,7 +871,7 @@ fn passed_through(
     bus: &mut crate::devices::MmioBus,
     mut windows: [&mut BarWindow; 2],
     vfio: &[Vfio],
-    test: bool,
+    test: &[(u8, u8)],
     machine: &PciMachine<'_>,
     routed: &mut PciBus,
 ) -> Result<Vec<crate::devices::pci::Function>, String> {
@@ -853,39 +879,57 @@ fn passed_through(
     let PciMachine { vm, memory, irqs, .. } = *machine;
     let mut functions: Vec<pci::Function> = Vec::new();
     // One container for the functions whose groups have an IOMMU, and one for those whose
-    // have none; and one of its own for each function behind the guest's IOMMU.
+    // have none; and one of its own for each group whose functions sit behind the guest's
+    // IOMMU, with what follows their endpoints into it, which they share, as a type 1
+    // container maps one set of I/O addresses for all of a group's devices.
     let (mut iommu, mut noiommu) = (None, None);
+    let mut followed: Vec<(PathBuf, v::Container, Arc<v::Followed>)> = Vec::new();
+    if !vfio.is_empty() {
+        v::raise_memlock();
+    }
     let places = vfio_places(vfio, test);
     for (i, (f, place)) in vfio.iter().zip(&places).enumerate() {
         let named = |e: String| format!("{}: {e}", f.name);
         let &Some((device, function)) = place else {
             return Err(named(format!(
-                "no place on bus 0, which has room for {} devices of eight functions",
-                32 - TEST_DEVICE - u8::from(test)
+                "no place on the guest's bus, which has room for {} devices, each the functions of one IOMMU group, eight at most",
+                32u8.saturating_sub(after_tests(test))
             )));
         };
         if vfio.iter().take(i).any(|g| g.name == f.name) {
             return Err(named("given twice".into()));
         }
-        let mut own = None;
-        let container = if f.iommu {
+        let (container, follower) = if f.iommu {
             if f.noiommu {
                 return Err(named("a group without an IOMMU cannot follow the guest's".into()));
             }
-            own.insert(v::Container::followed().map_err(named)?)
+            let at = match followed.iter().position(|(group, ..)| *group == f.group) {
+                Some(at) => at,
+                None => {
+                    let container = v::Container::followed().map_err(named)?;
+                    let follower = Arc::new(container.follower(memory.clone()));
+                    followed.push((f.group.clone(), container, follower));
+                    followed.len() - 1
+                }
+            };
+            let (_, container, follower) = followed
+                .get_mut(at)
+                .ok_or_else(|| named("its group's container".into()))?;
+            (container, Some(follower.clone()))
         } else {
             let slot = if f.noiommu { &mut noiommu } else { &mut iommu };
-            match slot {
+            let container = match slot {
                 Some(c) => c,
                 None => slot.insert(v::Container::open(f.noiommu).map_err(named)?),
-            }
+            };
+            (container, None)
         };
         let opened = v::Device::open(&f.name, &f.group, container, memory, vm)?;
-        // Behind the guest's IOMMU: its container maps what its endpoint sees there, and
-        // its MSIs land where the endpoint's domain maps their addresses.
+        // Behind the guest's IOMMU: its group's container maps what its endpoint sees
+        // there, and its MSIs land where the endpoint's domain maps their addresses.
         let endpoint = u32::from(device) << 3 | u32::from(function);
-        let behind = match &own {
-            Some(own) => {
+        let behind = match follower {
+            Some(follower) => {
                 let translation = machine
                     .iommu
                     .clone()
@@ -893,7 +937,7 @@ fn passed_through(
                 translation
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .follow(endpoint, Arc::new(own.follower(memory.clone())))
+                    .follow(endpoint, follower)
                     .map_err(|e| named(format!("its DMA mappings: {e}")))?;
                 Some(translation)
             }
@@ -929,7 +973,8 @@ fn passed_through(
             route = route.map(|_| translated.clone() as Arc<dyn v::Route>);
             send = send.map(|_| translated as Arc<dyn pci::Msi>);
         }
-        let passed = Arc::new(v::VfioFunction::new(opened, bars, route, send, vm)?);
+        let together = passed_functions(&places, device) > 1;
+        let passed = Arc::new(v::VfioFunction::new(opened, bars, route, send, vm, together)?);
         for bar in passed.bars() {
             bus.insert(
                 bar.addr,
@@ -950,7 +995,7 @@ fn passed_through(
     _bus: &mut crate::devices::MmioBus,
     _windows: [&mut BarWindow; 2],
     _vfio: &[Vfio],
-    _test: bool,
+    _test: &[(u8, u8)],
     _machine: &PciMachine<'_>,
     _routed: &mut PciBus,
 ) -> Result<Vec<crate::devices::pci::Function>, String> {
@@ -1040,7 +1085,7 @@ impl Config {
             hotplug_mib: 0,
             reporting: false,
             gpu: false,
-            pci_test: false,
+            pci_test: Vec::new(),
             vfio: Vec::new(),
         }
     }
@@ -1707,42 +1752,69 @@ mod tests {
     }
 
     /// Functions passed through sit on bus 0 after the test function where the machine has
-    /// it, a host slot's together in one device: with their own function numbers where the
-    /// slot's function 0 is among them, else numbered from 0; none past bus 0's room, nor
-    /// for a function number past 7.
+    /// it, a host IOMMU group's together in one device: with their own function numbers
+    /// where they are one slot's with its function 0, else numbered from 0 in their
+    /// addresses' order, a group of slots' too; none past bus 0's room, nor past a
+    /// device's eight functions.
     #[test]
-    fn functions_passed_through_keep_their_slots_together() {
-        let f = |name: &str| Vfio {
+    fn a_groups_functions_are_passed_through_as_one_device() {
+        let f = |name: &str, group: u32| Vfio {
             name: name.into(),
-            group: PathBuf::new(),
+            group: PathBuf::from(format!("/dev/vfio/{group}")),
             noiommu: false,
             bars64: Vec::new(),
             iommu: false,
         };
         let vfio = [
-            f("0000:01:00.0"),
-            f("0000:02:00.0"),
-            f("0000:01:00.1"),
-            f("0000:03:00.1"),
-            f("0000:03:00.3"),
-            f("0000:04:00.9"),
+            f("0000:01:00.0", 7),
+            f("0000:02:00.0", 9),
+            f("0000:01:00.1", 7),
+            f("0000:03:00.3", 4),
+            f("0000:03:00.1", 4),
+            // Two slots behind a switch that keeps neither from the other's DMA (no ACS).
+            f("0000:06:00.0", 5),
+            f("0000:05:00.0", 5),
+            f("0000:04:00.9", 6),
         ];
         assert_eq!(
-            vfio_places(&vfio, false),
+            vfio_places(&vfio, &[]),
             vec![
                 Some((1, 0)),
                 Some((2, 0)),
                 Some((1, 1)),
-                Some((3, 0)),
                 Some((3, 1)),
+                Some((3, 0)),
+                Some((4, 1)),
+                Some((4, 0)),
                 None
             ]
         );
-        assert_eq!(vfio_places(&vfio[..1], true), vec![Some((2, 0))], "after edu");
-        let many: Vec<Vfio> = (0..32).map(|i| f(&format!("0000:{i:02x}:00.0"))).collect();
-        let placed = vfio_places(&many, false);
+        let places = vfio_places(&vfio, &[]);
+        assert_eq!(
+            (passed_functions(&places, 1), passed_functions(&places, 2)),
+            (2, 1)
+        );
+        assert_eq!(
+            vfio_places(&vfio[..1], &[(1, 0)]),
+            vec![Some((2, 0))],
+            "after edu"
+        );
+        assert_eq!(
+            vfio_places(&vfio[..1], &[(1, 0), (3, 0), (3, 1)]),
+            vec![Some((4, 0))],
+            "after the last test device"
+        );
+        let many: Vec<Vfio> = (0..32).map(|i| f(&format!("0000:{i:02x}:00.0"), i)).collect();
+        let placed = vfio_places(&many, &[]);
         assert_eq!(placed[30], Some((31, 0)));
         assert_eq!(placed[31], None, "past bus 0's 32 devices");
+        let wide: Vec<Vfio> = (0..9).map(|i| f(&format!("0000:{i:02x}:00.0"), 3)).collect();
+        assert_eq!(vfio_places(&wide, &[])[7], Some((1, 7)));
+        assert_eq!(
+            vfio_places(&wide, &[])[8],
+            None,
+            "past a device's eight functions"
+        );
         assert_eq!(guest_address((3, 1)), "0000:00:03.1");
     }
 

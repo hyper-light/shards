@@ -41,6 +41,123 @@ pub fn kernel_of(boot: &Boot) -> &std::path::Path {
     }
 }
 
+/// A host's VFIO group that a run's `--device` names (D154): `/dev/vfio/N`, or each group
+/// in `/dev/vfio` where it names the directory, as dockerd's DevicesFromPath walks one.
+#[derive(Debug, Clone)]
+pub struct VfioGroup {
+    /// Which of the run's devices names it.
+    pub asked: usize,
+    /// Its path, `/dev/vfio/N`.
+    pub path: String,
+    /// Its functions the host gave vfio-pci, each given the run's microVM behind the
+    /// microVM's own IOMMU, by which its guest gives them to the workload as a group of its
+    /// own; one its guest's VFIO cannot give it otherwise.
+    pub functions: Vec<shards_vmm::vm::Vfio>,
+}
+
+/// The functions `groups` give a microVM, in the order its bus places them, each once.
+pub fn vfio_functions(groups: &[VfioGroup]) -> Vec<shards_vmm::vm::Vfio> {
+    let mut all: Vec<shards_vmm::vm::Vfio> = Vec::new();
+    for f in groups.iter().flat_map(|g| &g.functions) {
+        if !all.iter().any(|a| a.name == f.name) {
+            all.push(f.clone());
+        }
+    }
+    all
+}
+
+/// The host's VFIO groups among `devices`, each `HOST:CONTAINER:PERMISSIONS` (D154): a
+/// path `/dev/vfio/N` the host has, or each such in `/dev/vfio` where it names the
+/// directory, with the functions of IOMMU group N the host gave vfio-pci or another of
+/// VFIO's PCI drivers (the group's PCI bridges, which VFIO passes through no guest, and
+/// devices held by none, stay the host's); each group's members as sysfs lists them
+/// (/sys/kernel/iommu_groups/N/devices). A path the host has no group at is no group: the
+/// guest finds no device there either, and says so as dockerd does. A no-IOMMU group is
+/// refused: its DMA reaches all of the host's memory, which no microVM is given.
+pub fn vfio_groups(devices: &[String]) -> Result<Vec<VfioGroup>, String> {
+    let gathering = |host: &str, e: &str| {
+        format!("error gathering device information while adding custom device {host:?}: {e}")
+    };
+    let group_name = |n: &str| {
+        let number = n.strip_prefix("noiommu-").unwrap_or(n);
+        !number.is_empty() && number.bytes().all(|b| b.is_ascii_digit())
+    };
+    let mut groups: Vec<VfioGroup> = Vec::new();
+    for (asked, d) in devices.iter().enumerate() {
+        let host = d.split(':').next().unwrap_or_default();
+        let clean = host.trim_end_matches('/');
+        let paths: Vec<String> = if clean == "/dev/vfio" {
+            let Ok(entries) = std::fs::read_dir(clean) else {
+                continue;
+            };
+            let mut names: Vec<String> = entries
+                .filter_map(|e| e.ok()?.file_name().into_string().ok())
+                .filter(|n| group_name(n))
+                .collect();
+            names.sort_by_key(|n| (n.len(), n.clone()));
+            names.into_iter().map(|n| format!("/dev/vfio/{n}")).collect()
+        } else if clean.strip_prefix("/dev/vfio/").is_some_and(group_name) {
+            vec![clean.to_string()]
+        } else {
+            continue;
+        };
+        for path in paths {
+            if !Path::new(&path).exists() {
+                continue;
+            }
+            let name = path.strip_prefix("/dev/vfio/").unwrap_or_default();
+            if name.starts_with("noiommu-") {
+                return Err(gathering(
+                    host,
+                    &format!(
+                        "{path} is a group of no IOMMU, whose DMA reaches all of the host's memory: a microVM is given none"
+                    ),
+                ));
+            }
+            let members = Path::new("/sys/kernel/iommu_groups").join(name).join("devices");
+            let Ok(entries) = std::fs::read_dir(&members) else {
+                continue;
+            };
+            let mut names: Vec<String> = entries
+                .filter_map(|e| e.ok()?.file_name().into_string().ok())
+                .collect();
+            names.sort();
+            let mut functions = Vec::with_capacity(names.len());
+            for name in names {
+                let driver = std::fs::read_link(format!("/sys/bus/pci/devices/{name}/driver")).ok();
+                let vfio = driver
+                    .as_ref()
+                    .and_then(|d| d.file_name())
+                    .and_then(|d| d.to_str())
+                    .is_some_and(|d| d.ends_with("vfio-pci") || d.ends_with("vfio_pci"));
+                if !vfio {
+                    continue;
+                }
+                let f = shards_vmm::vm::Vfio::of(&name).map_err(|e| gathering(host, &e))?;
+                if f.group != Path::new(&path) {
+                    return Err(gathering(
+                        host,
+                        &format!("{name} is in {}, not this group", f.group.display()),
+                    ));
+                }
+                functions.push(shards_vmm::vm::Vfio { iommu: true, ..f });
+            }
+            if functions.is_empty() {
+                return Err(gathering(
+                    host,
+                    &format!("no function of {path} is bound to vfio-pci"),
+                ));
+            }
+            groups.push(VfioGroup {
+                asked,
+                path,
+                functions,
+            });
+        }
+    }
+    Ok(groups)
+}
+
 /// What a run's CDI devices (`--device VENDOR/CLASS=NAME`) bring it, resolved as dockerd's
 /// CDI driver resolves them as a container starts (moby daemon/cdi.go, injectCDIDevices;
 /// CDI v1.1.0 Cache.InjectDevices): each name the device of that name in the specs of the
@@ -121,6 +238,13 @@ pub struct Prepared {
     /// The kernel its guest boots with this Mac's GPU, where `--gpus` asks for it and
     /// `boot` is the stored guest's (D144).
     pub gpu: Option<PathBuf>,
+    /// The host's VFIO groups its `--device`s name (D154), or why they cannot be given it:
+    /// its start fails then, and not its making, as dockerd finds a device as a container
+    /// starts.
+    pub vfio: Result<Vec<VfioGroup>, String>,
+    /// The kernel its guest boots where it is given VFIO groups: the given one, or the
+    /// pinned kernel's `kvm` variant.
+    pub vfio_kernel: Option<PathBuf>,
     /// What its CDI devices bring it (D146), or why they cannot be: its start fails then,
     /// and not its making, as dockerd's resolves them as a container starts.
     pub cdi: Result<Option<crate::build::cdi::Edits>, String>,
@@ -392,6 +516,15 @@ pub fn prepare(
             shards_ipc::env_value(&request.registry_env, k)
         })?),
     };
+    let vfio = vfio_groups(&request.devices);
+    let vfio_kernel = match (&vfio, &boot) {
+        (Ok(groups), _) if groups.is_empty() => None,
+        (Err(_), _) => None,
+        (Ok(_), Boot::Given(cfg)) => Some(cfg.kernel.clone()),
+        (Ok(_), Boot::Stored(_)) => Some(crate::guest::kvm_kernel(home, say, Some(cancel), &|k| {
+            shards_ipc::env_value(&request.registry_env, k)
+        })?),
+    };
     let (image, lease) = find_image(
         &request.image,
         request.pull,
@@ -445,6 +578,8 @@ pub fn prepare(
         agentfile,
         boot,
         gpu,
+        vfio,
+        vfio_kernel,
         cdi,
         rootfs,
         spec,

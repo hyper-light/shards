@@ -687,7 +687,7 @@ mod mount_api {
 }
 
 /// A new mount of `fstype` with `options`, attached nowhere.
-fn detached(fstype: &CStr, options: &[(&CStr, &CStr)]) -> io::Result<OwnedFd> {
+pub(crate) fn detached(fstype: &CStr, options: &[(&CStr, &CStr)]) -> io::Result<OwnedFd> {
     detached_with(fstype, options, 0)
 }
 

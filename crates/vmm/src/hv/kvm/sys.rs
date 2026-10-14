@@ -110,6 +110,10 @@ pub const EXIT_FAIL_ENTRY: u32 = 9;
 pub const EXIT_INTR: u32 = 10;
 pub const EXIT_INTERNAL_ERROR: u32 = 17;
 pub const EXIT_SYSTEM_EVENT: u32 = 24;
+/// A data abort KVM could not emulate (api.rst, KVM_EXIT_ARM_NISV): its syndrome's valid
+/// bits and its IPA.
+#[cfg(target_arch = "aarch64")]
+pub const EXIT_ARM_NISV: u32 = 28;
 
 pub const SYSTEM_EVENT_SHUTDOWN: u32 = 1;
 pub const SYSTEM_EVENT_RESET: u32 = 2;
@@ -428,6 +432,13 @@ pub enum RunExit<'a> {
     Hlt,
     FailEntry(u64),
     InternalError(u32),
+    /// A data abort outside every memory slot whose syndrome holds no access (arm64):
+    /// ESR_EL2's valid bits, and the IPA.
+    #[cfg(target_arch = "aarch64")]
+    ArmNisv {
+        esr_iss: u64,
+        fault_ipa: u64,
+    },
     Other(u32),
 }
 
@@ -496,6 +507,11 @@ impl VcpuFd {
             EXIT_FAIL_ENTRY => RunExit::FailEntry(run.read(32)),
             EXIT_INTR => RunExit::Interrupted,
             EXIT_INTERNAL_ERROR => RunExit::InternalError(run.read(32)),
+            #[cfg(target_arch = "aarch64")]
+            EXIT_ARM_NISV => RunExit::ArmNisv {
+                esr_iss: run.read(32),
+                fault_ipa: run.read(40),
+            },
             other => RunExit::Other(other),
         })
     }
