@@ -247,6 +247,11 @@ fn serve(
                         let line = with_client_rss(&String::from_utf8_lossy(timing));
                         let _ = writeln!(io::stderr(), "shards-timing {line}");
                     }
+                    // A microVM given a host's devices (D154) sends its process's pidfd:
+                    // the run is over once that has ended, and the devices are free.
+                    if let Some(pidfd) = m.fds.first() {
+                        ended(pidfd);
+                    }
                     return ExitCode::from(status);
                 }
                 Ok(Some(m)) if m.kind == kind::RESTART => break,
@@ -276,6 +281,24 @@ fn serve(
         }
     }
     failed("the daemon kept asking for a restart")
+}
+
+/// Waits for the process whose pidfd `pidfd` is to end: it polls readable then
+/// (pidfd_open(2)). Whatever stops the wait short, it is over.
+fn ended(pidfd: &std::os::fd::OwnedFd) {
+    use std::os::fd::AsRawFd as _;
+    let mut poll = libc::pollfd {
+        fd: pidfd.as_raw_fd(),
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    loop {
+        // SAFETY: poll(2) of one pollfd this function owns, with no timeout.
+        let r = unsafe { libc::poll(&raw mut poll, 1, -1) };
+        if r >= 0 || io::Error::last_os_error().raw_os_error() != Some(libc::EINTR) {
+            return;
+        }
+    }
 }
 
 /// Runs a container command (`ps`, `wait`, `rm`, ...) in the daemon of `home`, whose

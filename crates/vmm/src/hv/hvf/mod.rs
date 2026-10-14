@@ -99,9 +99,10 @@ pub fn el2_supported() -> bool {
     sys::el2_supported()
 }
 
-/// Whether the GIC's MSI frame is the framework's own, which takes the guest's writes to
-/// its doorbell (hv_gic_config_set_msi_region_base): the VMM's need not be on the bus.
-pub const MSI_FRAME_IN_KERNEL: bool = true;
+/// Whether a PCI bus's MSIs go to an ITS: the framework's GIC has none, but a GICv2m frame
+/// of its own, which takes the guest's writes to its doorbell
+/// (hv_gic_config_set_msi_region_base).
+pub const ITS: bool = false;
 
 /// Why a guest is given no EL2 here.
 pub const NO_EL2: &str = "this Mac gives a guest no EL2: virtualization of a guest's own needs an M3 or later, on macOS 15 or later";
@@ -258,6 +259,11 @@ impl Vm {
 
     /// Creates the in-kernel GICv3. HVF requires it before any vCPU exists.
     pub fn create_gic(&self, layout: &GicLayout) -> Result<Gic> {
+        if layout.its.is_some() {
+            return Err(Error::Guest(
+                "the framework's GIC has no ITS: a PCI bus's MSIs go to its GICv2m frame".into(),
+            ));
+        }
         let redist_size = sys::gic_params()?.redist_size;
         let gic = self.sys.create_gic(layout)?;
         let _ = self.redist.set((layout.redist_base, redist_size));
@@ -1102,6 +1108,7 @@ mod tests {
                 dist_base: 0x0800_0000,
                 redist_base: 0x080a_0000,
                 msi: None,
+                its: None,
             })
             .unwrap();
 

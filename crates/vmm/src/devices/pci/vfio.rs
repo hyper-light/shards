@@ -248,7 +248,16 @@ impl Container {
             return Ok(fd.clone());
         }
         let err = |what: &str, e: io::Error| format!("{}: {what}: {e}", path.display());
-        let group = open(path).map_err(|e| err("opening it", e))?;
+        let group = open(path).map_err(|e| {
+            // VFIO opens a group for one process at a time (group.c, vfio_group_fops_open).
+            let hint = match e.raw_os_error() {
+                Some(libc::EBUSY) => {
+                    ": another process has it open, or a device of it through iommufd, as VFIO lets one at a time"
+                }
+                _ => "",
+            };
+            format!("{}: opening it: {e}{hint}", path.display())
+        })?;
         host.add_group(group.as_raw_fd())
             .map_err(|e| format!("{}: {e}", path.display()))?;
         let mut status = GroupStatus {

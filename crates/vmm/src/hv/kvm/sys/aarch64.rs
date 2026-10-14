@@ -7,7 +7,8 @@ use std::os::fd::AsRawFd;
 use super::{
     DeviceFd, KVM_CHECK_EXTENSION, KVM_CREATE_DEVICE, KVM_CREATE_VCPU, KVM_CREATE_VM, KVM_GET_API_VERSION,
     KVM_GET_DEVICE_ATTR, KVM_GET_MP_STATE, KVM_GET_VCPU_MMAP_SIZE, KVM_IRQ_LINE, KVM_IRQFD, KVM_RUN,
-    KVM_SET_DEVICE_ATTR, KVM_SET_MP_STATE, KVM_SET_USER_MEMORY_REGION, VcpuFd, VmFd, ioctl,
+    KVM_SET_DEVICE_ATTR, KVM_SET_GSI_ROUTING, KVM_SET_MP_STATE, KVM_SET_USER_MEMORY_REGION, KVM_SIGNAL_MSI,
+    VcpuFd, VmFd, ioctl,
 };
 
 /// Every ioctl request shards makes of KVM: what its seccomp filter allows
@@ -33,6 +34,8 @@ pub const IOCTLS: &[u64] = &[
     KVM_IRQFD,
     KVM_ENABLE_CAP,
     KVM_SET_VCPU_EVENTS,
+    KVM_SIGNAL_MSI,
+    KVM_SET_GSI_ROUTING,
 ];
 
 pub const KVM_GET_ONE_REG: u64 = 0x4010_AEAB;
@@ -112,6 +115,8 @@ pub const VCPU_HAS_EL2: u32 = 7;
 
 /// KVM_CREATE_DEVICE's type of an in-kernel GICv3.
 pub const DEV_TYPE_ARM_VGIC_V3: u32 = 7;
+/// The GICv3's ITS (devices/arm-vgic-its.rst): KVM_DEV_TYPE_ARM_VGIC_ITS.
+pub const DEV_TYPE_ARM_VGIC_ITS: u32 = 8;
 /// The GICv3's attribute groups, and in them its addresses and its control.
 pub const VGIC_GRP_ADDR: u32 = 0;
 pub const VGIC_GRP_NR_IRQS: u32 = 3;
@@ -119,6 +124,8 @@ pub const VGIC_GRP_CTRL: u32 = 4;
 pub const VGIC_GRP_MAINT_IRQ: u32 = 9;
 pub const VGIC_V3_ADDR_TYPE_DIST: u64 = 2;
 pub const VGIC_V3_ADDR_TYPE_REDIST: u64 = 3;
+/// The ITS's register frame, 128 KiB on a 64 KiB boundary (KVM_VGIC_ITS_ADDR_TYPE).
+pub const VGIC_ITS_ADDR_TYPE: u64 = 4;
 pub const VGIC_CTRL_INIT: u64 = 0;
 /// Its distributor's frame, and each vCPU's redistributor's two frames.
 pub const VGIC_V3_DIST_SIZE: u64 = 64 << 10;

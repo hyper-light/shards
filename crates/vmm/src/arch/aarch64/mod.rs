@@ -10,8 +10,12 @@ pub mod layout {
     /// GICv3 distributor (64 KiB).
     pub const GIC_DIST: u64 = 0x0800_0000;
     /// A GICv2m frame (64 KiB), its doorbell taking the MSIs of a PCI bus's functions
-    /// (D154).
+    /// (D154), where the GIC has no ITS.
     pub const GIC_MSI: u64 = 0x0802_0000;
+    /// An ITS's register frame (128 KiB, on a 64 KiB boundary), taking the MSIs of a PCI
+    /// bus's functions where the GIC has one (D154): QEMU virt's place.
+    pub const GIC_ITS: u64 = 0x0808_0000;
+    pub const GIC_ITS_SIZE: u64 = 0x2_0000;
     /// Redistributors: one 128 KiB frame per vCPU, contiguous.
     pub const GIC_REDIST: u64 = 0x080a_0000;
     pub const GIC_REDIST_MAX_END: u64 = 0x0900_0000;

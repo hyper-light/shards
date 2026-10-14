@@ -41,12 +41,11 @@ pub fn kernel_of(boot: &Boot) -> &std::path::Path {
     }
 }
 
-/// A host's VFIO group that a run's `--device` names (D154): `/dev/vfio/N`, or each group
-/// in `/dev/vfio` where it names the directory, as dockerd's DevicesFromPath walks one.
+/// A host's VFIO group that a run's device names (D154), by `--device` or a CDI node:
+/// `/dev/vfio/N`, or each group in `/dev/vfio` where it names the directory, as dockerd's
+/// DevicesFromPath walks one.
 #[derive(Debug, Clone)]
 pub struct VfioGroup {
-    /// Which of the run's devices names it.
-    pub asked: usize,
     /// Its path, `/dev/vfio/N`.
     pub path: String,
     /// Its functions the host gave vfio-pci, each given the run's microVM behind the
@@ -66,15 +65,15 @@ pub fn vfio_functions(groups: &[VfioGroup]) -> Vec<shards_vmm::vm::Vfio> {
     all
 }
 
-/// The host's VFIO groups among `devices`, each `HOST:CONTAINER:PERMISSIONS` (D154): a
-/// path `/dev/vfio/N` the host has, or each such in `/dev/vfio` where it names the
-/// directory, with the functions of IOMMU group N the host gave vfio-pci or another of
+/// The host's VFIO groups among the host paths `paths`, a run's devices' and its CDI
+/// nodes' (D154): a path `/dev/vfio/N` the host has, or each such in `/dev/vfio` where it
+/// names the directory, with the functions of IOMMU group N the host gave vfio-pci or another of
 /// VFIO's PCI drivers (the group's PCI bridges, which VFIO passes through no guest, and
 /// devices held by none, stay the host's); each group's members as sysfs lists them
 /// (/sys/kernel/iommu_groups/N/devices). A path the host has no group at is no group: the
 /// guest finds no device there either, and says so as dockerd does. A no-IOMMU group is
 /// refused: its DMA reaches all of the host's memory, which no microVM is given.
-pub fn vfio_groups(devices: &[String]) -> Result<Vec<VfioGroup>, String> {
+pub fn vfio_groups<'a>(paths: impl IntoIterator<Item = &'a str>) -> Result<Vec<VfioGroup>, String> {
     let gathering = |host: &str, e: &str| {
         format!("error gathering device information while adding custom device {host:?}: {e}")
     };
@@ -83,8 +82,7 @@ pub fn vfio_groups(devices: &[String]) -> Result<Vec<VfioGroup>, String> {
         !number.is_empty() && number.bytes().all(|b| b.is_ascii_digit())
     };
     let mut groups: Vec<VfioGroup> = Vec::new();
-    for (asked, d) in devices.iter().enumerate() {
-        let host = d.split(':').next().unwrap_or_default();
+    for host in paths {
         let clean = host.trim_end_matches('/');
         let paths: Vec<String> = if clean == "/dev/vfio" {
             let Ok(entries) = std::fs::read_dir(clean) else {
@@ -148,11 +146,9 @@ pub fn vfio_groups(devices: &[String]) -> Result<Vec<VfioGroup>, String> {
                     &format!("no function of {path} is bound to vfio-pci"),
                 ));
             }
-            groups.push(VfioGroup {
-                asked,
-                path,
-                functions,
-            });
+            if !groups.iter().any(|g| g.path == path) {
+                groups.push(VfioGroup { path, functions });
+            }
         }
     }
     Ok(groups)
@@ -516,7 +512,28 @@ pub fn prepare(
             shards_ipc::env_value(&request.registry_env, k)
         })?),
     };
-    let vfio = vfio_groups(&request.devices);
+    // Its devices' and its CDI nodes' host paths, each a VFIO group's where it names one.
+    let cdi_paths = cdi
+        .as_ref()
+        .ok()
+        .and_then(Option::as_ref)
+        .map(|e| e.nodes.as_slice())
+        .unwrap_or_default()
+        .iter()
+        .map(|n| {
+            if n.host_path.is_empty() {
+                n.path.as_str()
+            } else {
+                n.host_path.as_str()
+            }
+        });
+    let vfio = vfio_groups(
+        request
+            .devices
+            .iter()
+            .map(|d| d.split(':').next().unwrap_or_default())
+            .chain(cdi_paths),
+    );
     let vfio_kernel = match (&vfio, &boot) {
         (Ok(groups), _) if groups.is_empty() => None,
         (Err(_), _) => None,

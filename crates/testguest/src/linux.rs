@@ -1576,9 +1576,10 @@ fn host() -> Result<(), String> {
         .args(["run", "--kernel", "/l2", "--init", "/init", "--cpus", "2"])
         .args(["--memory", "256", "--cmdline"])
         // A function the inner guest is given it takes through VFIO: in a no-IOMMU group,
-        // or behind the inner machine's IOMMU, whose GICv2m frame isolates no MSIs.
+        // or behind the inner machine's IOMMU, KVM's, whose ITS isolates its MSIs, which
+        // VFIO's type 1 then needs no leave to take.
         .arg(format!(
-            "console=ttyS0 panic=-1 vfio.enable_unsafe_noiommu_mode=1 vfio_iommu_type1.allow_unsafe_interrupts=1 shards_test={test}"
+            "console=ttyS0 panic=-1 vfio.enable_unsafe_noiommu_mode=1 shards_test={test}"
         ))
         .args(args.split(',').filter(|a| !a.is_empty()))
         .output()
@@ -1603,9 +1604,10 @@ fn host() -> Result<(), String> {
 
 /// A guest that is a KVM host running shards (D154): its PCI functions
 /// `shards_l1_vfio` (comma-separated) given vfio-pci, as a host gives one a run is to be
-/// given, the image in /image.tar loaded, and a run of it given their group, `--device
-/// /dev/vfio/N`, its command `shards_l2` (comma-separated), by shards' daemon, which the
-/// run starts: what each says, as `L1: ` lines, and the run's as `L2: ` lines.
+/// given, the image in /image.tar loaded, and a run of it given their group, by its node
+/// (`--device /dev/vfio/N`) and then by a CDI device whose node it is (D146), its command
+/// `shards_l2` (comma-separated), by shards' daemon, which the first run starts: what each
+/// says, as `L1: ` lines, and the runs' as `L2: ` lines.
 fn daemon() -> Result<(), String> {
     if !Path::new("/dev/kvm").exists() {
         return Err("no /dev/kvm: this guest's kernel is no KVM host".into());
@@ -1658,23 +1660,31 @@ fn daemon() -> Result<(), String> {
         return Err(format!("shards load ended with {}", loaded.status));
     }
     let node = format!("/dev/vfio/{group}");
-    let mut args = vec![
-        "run",
-        "--rm",
-        "--network",
-        "none",
-        "--user",
-        "root",
-        "--device",
-        "/dev/vfio/vfio",
-        "--device",
-        &node,
-        "vfio-test",
-    ];
-    args.extend(command.split(',').filter(|a| !a.is_empty()));
-    let ran = shards(&args)?;
-    said("L2", &ran);
-    if !ran.status.success() {
+    let spec = format!(
+        r#"{{"cdiVersion":"0.6.0","kind":"shards.test/vfio","devices":[{{"name":"group","containerEdits":{{"deviceNodes":[{{"path":"{node}"}}]}}}}]}}"#
+    );
+    std::fs::create_dir_all("/etc/cdi").map_err(|e| format!("/etc/cdi: {e}"))?;
+    std::fs::write("/etc/cdi/shards-test-vfio.json", spec).map_err(|e| format!("the CDI spec: {e}"))?;
+    for device in [node.as_str(), "shards.test/vfio=group"] {
+        let mut args = vec![
+            "run",
+            "--rm",
+            "--network",
+            "none",
+            "--user",
+            "root",
+            "--device",
+            "/dev/vfio/vfio",
+            "--device",
+            device,
+            "vfio-test",
+        ];
+        args.extend(command.split(',').filter(|a| !a.is_empty()));
+        let ran = shards(&args)?;
+        said("L2", &ran);
+        if ran.status.success() {
+            continue;
+        }
         // Where the daemon says why, and the VM processes it ran, once all have ended.
         said("L1", &shards(&["stop", "daemon"])?);
         if let Ok(log) = std::fs::read_to_string("/tmp/shards/daemon.log") {
@@ -1683,7 +1693,7 @@ fn daemon() -> Result<(), String> {
                 let _ = writeln!(stdout, "L1 daemon: {line}");
             }
         }
-        return Err(format!("the run ended with {}", ran.status));
+        return Err(format!("the run given {device} ended with {}", ran.status));
     }
     Ok(())
 }
