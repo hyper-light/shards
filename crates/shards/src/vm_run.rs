@@ -18,7 +18,7 @@ use shards_vmm::vm::{
 use crate::spec::Options;
 use crate::terminal::RawTerminal;
 
-const RUN_USAGE: &str = "usage: shards run --kernel PATH [--initrd PATH | --init PATH] [--cmdline STR] [--cpus N] [--memory MIB] [--memory-max MIB] [--disk PATH[:ro]]... [--pmem PATH]... [--vsock PATH] [--nested] [--gpu] [--reporting] [--pci-test] [--vfio NAME]... [--no-console] [--snapshot-dir DIR [--snapshot-then stop|resume]]
+const RUN_USAGE: &str = "usage: shards run --kernel PATH [--initrd PATH | --init PATH] [--cmdline STR] [--cpus N] [--memory MIB] [--memory-max MIB] [--disk PATH[:ro]]... [--pmem PATH]... [--vsock PATH] [--nested] [--gpu] [--reporting] [--pci-test] [--vfio NAME]... [--vfio-iommu NAME]... [--no-console] [--snapshot-dir DIR [--snapshot-then stop|resume]]
        shards run --kernel PATH --init SHARDS-INIT --rootfs IMAGE [OPTIONS] [WORKLOAD OPTIONS] -- COMMAND [ARG...]
        shards run --kernel PATH --init SHARDS-INIT --rootfs IMAGE --snapshot-dir DIR [OPTIONS]
   --pmem: a read-only virtio-pmem device backed by PATH: /dev/pmem0, pmem1, ... in order.
@@ -52,6 +52,10 @@ const RUN_USAGE: &str = "usage: shards run --kernel PATH [--initrd PATH | --init
           on its PCI bus: on Linux, bound to vfio-pci, as every other function in its
           IOMMU group must be. Not with --snapshot-dir, --memory-max or --reporting:
           its DMA reaches guest RAM through mappings the host holds pinned.
+  --vfio-iommu: as --vfio, the function behind the guest's own IOMMU (virtio-iommu):
+                its DMA reaches only what the guest's IOMMU driver maps for it, as the
+                guest's own VFIO needs to give it to a process. The guest's kernel needs
+                VIRTIO_IOMMU.
   Console escape: Ctrl-A x stops the VM.";
 
 const RESTORE_USAGE: &str = "usage: shards restore DIR [--hold] [--vsock PATH] [--no-console] [--gpu] [--backing PATH[:ro]]... [--snapshot-dir DIR [--snapshot-then stop|resume]]
@@ -281,6 +285,10 @@ fn parse_run(args: impl Iterator<Item = OsString>) -> Result<Run, String> {
             "--gpu" => cfg.gpu = true,
             "--pci-test" => cfg.pci_test = true,
             "--vfio" => cfg.vfio.push(vm::Vfio::of(&text(value("--vfio")?)?)?),
+            "--vfio-iommu" => cfg.vfio.push(vm::Vfio {
+                iommu: true,
+                ..vm::Vfio::of(&text(value("--vfio-iommu")?)?)?
+            }),
             "--reporting" => cfg.reporting = true,
             "--rootfs" => rootfs = Some(PathBuf::from(value("--rootfs")?)),
             "--warm" => {
@@ -305,11 +313,11 @@ fn parse_run(args: impl Iterator<Item = OsString>) -> Result<Run, String> {
     if !cfg.vfio.is_empty() {
         if common.snapshot_dir.is_some() {
             return Err(
-                "--vfio with --snapshot-dir: a host's device is not snapshotted, its state its own".into(),
+                "--vfio or --vfio-iommu with --snapshot-dir: a host's device is not snapshotted, its state its own".into(),
             );
         }
         if memory_max.is_some() || cfg.reporting {
-            return Err("--vfio with --memory-max or --reporting: the device's DMA reaches guest RAM through mappings the host holds pinned, which neither may take away".into());
+            return Err("--vfio or --vfio-iommu with --memory-max or --reporting: the device's DMA reaches guest RAM through mappings the host holds pinned, which neither may take away".into());
         }
     }
     if cfg.nested && common.snapshot_dir.is_some() {

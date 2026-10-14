@@ -40,6 +40,7 @@ const VFIO_DEVICE_GET_IRQ_INFO: u64 = vfio_io(9);
 const VFIO_DEVICE_SET_IRQS: u64 = vfio_io(10);
 const VFIO_DEVICE_RESET: u64 = vfio_io(11);
 const VFIO_IOMMU_MAP_DMA: u64 = vfio_io(13);
+const VFIO_IOMMU_UNMAP_DMA: u64 = vfio_io(14);
 
 /// Every VFIO ioctl request shards makes: what its seccomp filter allows.
 pub const IOCTLS: &[u64] = &[
@@ -55,6 +56,7 @@ pub const IOCTLS: &[u64] = &[
     VFIO_DEVICE_SET_IRQS,
     VFIO_DEVICE_RESET,
     VFIO_IOMMU_MAP_DMA,
+    VFIO_IOMMU_UNMAP_DMA,
 ];
 
 const VFIO_API_VERSION: libc::c_int = 0;
@@ -130,6 +132,15 @@ struct DmaMap {
     size: u64,
 }
 
+#[repr(C)]
+#[derive(Default)]
+struct DmaUnmap {
+    argsz: u32,
+    flags: u32,
+    iova: u64,
+    size: u64,
+}
+
 /// ioctl(2) of `request` with `arg`, its result where it did not fail.
 ///
 /// # Safety
@@ -165,6 +176,9 @@ pub struct Container {
     fd: Arc<OwnedFd>,
     noiommu: bool,
     groups: Vec<(PathBuf, Arc<OwnedFd>)>,
+    /// Whether its first group maps guest RAM: not where what it maps follows a function's
+    /// endpoint behind the guest's own IOMMU ([`Container::followed`]).
+    maps_ram: bool,
 }
 
 impl Container {
@@ -192,7 +206,30 @@ impl Container {
             fd: Arc::new(fd),
             noiommu,
             groups: Vec::new(),
+            maps_ram: true,
         })
+    }
+
+    /// A container of its own for a group whose function sits behind the guest's own
+    /// IOMMU (D154): what it maps follows the function's endpoint there ([`Followed`]), as
+    /// a type 1 container maps one set of I/O addresses for all of its groups (Cloud
+    /// Hypervisor's device_manager.rs, add_vfio_device: a VfioOps of its own for each
+    /// device attached to its virtio-iommu, "a limitation of the legacy VFIO interface").
+    pub fn followed() -> Result<Container, String> {
+        Ok(Container {
+            maps_ram: false,
+            ..Container::open(false)?
+        })
+    }
+
+    /// What follows the endpoint of this container's function into its mappings, of guest
+    /// RAM `memory`.
+    pub fn follower(&self, memory: Arc<GuestMemory>) -> Followed {
+        Followed {
+            fd: self.fd.clone(),
+            memory,
+            mapped: Mutex::new(std::collections::BTreeMap::new()),
+        }
     }
 
     fn iommu(noiommu: bool) -> u64 {
@@ -235,7 +272,7 @@ impl Container {
             // SAFETY: VFIO_SET_IOMMU takes an integer.
             unsafe { ioctl(&*self.fd, VFIO_SET_IOMMU, Self::iommu(self.noiommu) as usize) }
                 .map_err(|e| err("setting its IOMMU", e))?;
-            if !self.noiommu {
+            if !self.noiommu && self.maps_ram {
                 self.map(memory)?;
             }
         }
@@ -270,6 +307,182 @@ impl Container {
             }
         }
         Ok(())
+    }
+}
+
+/// A followed container's mappings (D154): what the guest's IOMMU shows its function's
+/// endpoint ([`crate::devices::virtio::iommu::Follower`]), by type 1's map and unmap of
+/// I/O addresses. Each mapping of guest RAM pins it, against the process's locked-memory
+/// limit, as [`Container`]'s whole-RAM mapping does.
+#[derive(Debug)]
+pub struct Followed {
+    fd: Arc<OwnedFd>,
+    memory: Arc<GuestMemory>,
+    /// What it maps now: each mapping's I/O address and length.
+    mapped: Mutex<std::collections::BTreeMap<u64, u64>>,
+}
+
+impl Followed {
+    fn mapped(&self) -> std::sync::MutexGuard<'_, std::collections::BTreeMap<u64, u64>> {
+        self.mapped.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn dma_map(&self, iova: u64, host: u64, len: u64, flags: u32) -> io::Result<()> {
+        let map = DmaMap {
+            argsz: size_of::<DmaMap>() as u32,
+            flags,
+            vaddr: host,
+            iova,
+            size: len,
+        };
+        // SAFETY: VFIO_IOMMU_MAP_DMA reads a `vfio_iommu_type1_dma_map`; what it maps is
+        // guest RAM, this process's as long as the machine is.
+        unsafe { ioctl(&*self.fd, VFIO_IOMMU_MAP_DMA, (&raw const map) as usize) }.map(drop)
+    }
+
+    fn dma_unmap(&self, iova: u64, len: u64) -> io::Result<()> {
+        let mut unmap = DmaUnmap {
+            argsz: size_of::<DmaUnmap>() as u32,
+            flags: 0,
+            iova,
+            size: len,
+        };
+        // SAFETY: VFIO_IOMMU_UNMAP_DMA reads and updates a `vfio_iommu_type1_dma_unmap`.
+        unsafe { ioctl(&*self.fd, VFIO_IOMMU_UNMAP_DMA, (&raw mut unmap) as usize) }.map(drop)
+    }
+}
+
+impl crate::devices::virtio::iommu::Follower for Followed {
+    fn identity(&self) -> io::Result<()> {
+        self.clear()?;
+        let mut mapped = self.mapped();
+        for (gpa, host, len) in self.memory.regions() {
+            self.dma_map(
+                gpa,
+                host as u64,
+                len as u64,
+                VFIO_DMA_MAP_FLAG_READ | VFIO_DMA_MAP_FLAG_WRITE,
+            )?;
+            mapped.insert(gpa, len as u64);
+        }
+        Ok(())
+    }
+
+    fn clear(&self) -> io::Result<()> {
+        let mut mapped = self.mapped();
+        while let Some((&iova, &len)) = mapped.first_key_value() {
+            self.dma_unmap(iova, len)?;
+            mapped.remove(&iova);
+        }
+        Ok(())
+    }
+
+    fn map(&self, iova: u64, gpa: u64, len: u64, read: bool, write: bool) -> io::Result<()> {
+        let not_ram = || {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("{gpa:#x}+{len:#x} is not guest RAM"),
+            )
+        };
+        let size = usize::try_from(len).map_err(|_| not_ram())?;
+        let host = self.memory.host_ptr(gpa, size).map_err(|_| not_ram())?;
+        let flags =
+            if read { VFIO_DMA_MAP_FLAG_READ } else { 0 } | if write { VFIO_DMA_MAP_FLAG_WRITE } else { 0 };
+        let mut mapped = self.mapped();
+        self.dma_map(iova, host as u64, len, flags)?;
+        mapped.insert(iova, len);
+        Ok(())
+    }
+
+    fn unmap(&self, iova: u64, len: u64) -> io::Result<()> {
+        let mut mapped = self.mapped();
+        self.dma_unmap(iova, len)?;
+        mapped.remove(&iova);
+        Ok(())
+    }
+}
+
+/// A passed-through function's interrupts as they go behind the guest's own IOMMU (D154):
+/// an MSI it aims at an I/O address lands where its endpoint's domain maps that address
+/// for a write, or in the MSI window, untranslated
+/// ([`crate::devices::virtio::iommu::Translation::msi_target`]); where its domain maps
+/// nothing there, the write faults and goes nowhere. Each route's removal names where it
+/// was routed, whatever the domain maps by then.
+#[derive(Debug)]
+pub struct Translated {
+    translation: crate::devices::virtio::iommu::Shared,
+    endpoint: u32,
+    route: Option<Arc<dyn Route>>,
+    send: Option<Arc<dyn Msi>>,
+    routed: Mutex<std::collections::BTreeMap<RawFd, u64>>,
+}
+
+impl Translated {
+    pub fn new(
+        translation: crate::devices::virtio::iommu::Shared,
+        endpoint: u32,
+        route: Option<Arc<dyn Route>>,
+        send: Option<Arc<dyn Msi>>,
+    ) -> Translated {
+        Translated {
+            translation,
+            endpoint,
+            route,
+            send,
+            routed: Mutex::new(std::collections::BTreeMap::new()),
+        }
+    }
+
+    fn target(&self, address: u64) -> Option<u64> {
+        self.translation
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .msi_target(self.endpoint, address)
+    }
+}
+
+impl Route for Translated {
+    fn intx(&self, trigger: RawFd, resample: RawFd) -> Result<(), String> {
+        self.route.as_ref().ok_or("no route")?.intx(trigger, resample)
+    }
+
+    fn intx_off(&self, trigger: RawFd) -> Result<(), String> {
+        self.route.as_ref().ok_or("no route")?.intx_off(trigger)
+    }
+
+    fn msi(&self, event: RawFd, address: u64, data: u32) -> Result<(), String> {
+        let route = self.route.as_ref().ok_or("no route")?;
+        let to = self
+            .target(address)
+            .ok_or_else(|| format!("an MSI to {address:#x}, which its domain does not map"))?;
+        route.msi(event, to, data)?;
+        self.routed
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(event, to);
+        Ok(())
+    }
+
+    fn msi_off(&self, event: RawFd, address: u64, data: u32) -> Result<(), String> {
+        let route = self.route.as_ref().ok_or("no route")?;
+        let routed = self
+            .routed
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(&event);
+        match routed {
+            Some(to) => route.msi_off(event, to, data),
+            None => Err(format!("no MSI to {address:#x} routed by that eventfd")),
+        }
+    }
+}
+
+impl Msi for Translated {
+    fn send(&self, address: u64, data: u32) {
+        match (self.target(address), &self.send) {
+            (Some(to), Some(send)) => send.send(to, data),
+            _ => crate::debug!("an MSI to {address:#x}, which its domain does not map"),
+        }
     }
 }
 

@@ -515,6 +515,11 @@ pub struct Vfio {
     /// Its 64-bit memory BARs' sizes, in their order: what they take of the machine's
     /// 64-bit window.
     pub bars64: Vec<u64>,
+    /// Whether it sits behind the guest's own IOMMU, which the guest's VFIO needs to give
+    /// it to the guest's own processes: its group then has a container of its own, which
+    /// maps what the guest's IOMMU shows its endpoint (D154). Otherwise all of guest RAM is
+    /// its, untranslated, as a guest's kernel driving it needs nothing else.
+    pub iommu: bool,
 }
 
 impl Vfio {
@@ -531,6 +536,7 @@ impl Vfio {
                 group,
                 noiommu,
                 bars64,
+                iommu: false,
             })
         }
         #[cfg(not(target_os = "linux"))]
@@ -614,26 +620,49 @@ pub(crate) struct PciMachine<'a> {
 #[cfg(hv)]
 pub(crate) const TEST_DEVICE: u8 = 1;
 
-/// The IOMMU of the functions the VMM emulates (virtio-iommu, D154): where the machine has
-/// the test function, its translation of the test function's requester ID, and the device,
-/// the MSI window `msi`, its first and last address, bypassed where the machine has one.
+/// The device on bus 0 of the `i`th function passed through: after the test function,
+/// where the machine has it (D153); none past the bus's 32.
 #[cfg(hv)]
-fn test_iommu(
+fn vfio_device(pci: Pci<'_>, i: usize) -> Option<u8> {
+    u8::try_from(i)
+        .ok()
+        .and_then(|i| (TEST_DEVICE + u8::from(pci.test)).checked_add(i))
+        .filter(|&d| d < 32)
+}
+
+/// The IOMMU of the machine's PCI functions (virtio-iommu, D154), where any sits behind
+/// it: the test function, whose DMA the VMM translates, and each function passed through
+/// behind it ([`Vfio::iommu`]), whose group's container follows its endpoint. Its
+/// translation of their requester IDs, with the MSI window `msi`, its first and last
+/// address, where the machine has one; the device; and the requester IDs.
+#[cfg(hv)]
+fn iommu_of(
     pci: Pci<'_>,
     msi: Option<(u64, u64)>,
 ) -> Option<(
     crate::devices::virtio::iommu::Shared,
     Box<dyn crate::devices::virtio::VirtioDevice>,
+    Vec<u32>,
 )> {
     use crate::devices::virtio::iommu;
-    pci.test.then(|| {
-        let translation = Arc::new(std::sync::Mutex::new(iommu::Translation::new(vec![
-            u32::from(TEST_DEVICE) << 3,
-        ])));
-        let device = Box::new(iommu::Iommu::new(translation.clone(), msi))
-            as Box<dyn crate::devices::virtio::VirtioDevice>;
-        (translation, device)
-    })
+    let behind = pci.vfio.iter().enumerate().filter(|(_, f)| f.iommu);
+    let endpoints: Vec<u32> = pci
+        .test
+        .then_some(TEST_DEVICE)
+        .into_iter()
+        .chain(behind.filter_map(|(i, _)| vfio_device(pci, i)))
+        .map(|device| u32::from(device) << 3)
+        .collect();
+    if endpoints.is_empty() {
+        return None;
+    }
+    let translation = Arc::new(std::sync::Mutex::new(iommu::Translation::new(
+        endpoints.clone(),
+        msi,
+    )));
+    let device =
+        Box::new(iommu::Iommu::new(translation.clone())) as Box<dyn crate::devices::virtio::VirtioDevice>;
+    Some((translation, device, endpoints))
 }
 
 /// Puts the PCI bus `pci` asks for on `bus` (D153, D154), where it asks for one: its ECAM
@@ -763,16 +792,43 @@ fn passed_through(
     use crate::devices::pci::{self, vfio as v};
     let PciMachine { vm, memory, irqs, .. } = *machine;
     let mut functions: Vec<pci::Function> = Vec::new();
-    // One container for the functions whose groups have an IOMMU, and one for those
-    // whose have none.
+    // One container for the functions whose groups have an IOMMU, and one for those whose
+    // have none; and one of its own for each function behind the guest's IOMMU.
     let (mut iommu, mut noiommu) = (None, None);
     for (device, f) in (first..32).zip(vfio) {
-        let slot = if f.noiommu { &mut noiommu } else { &mut iommu };
-        let container = match slot {
-            Some(c) => c,
-            None => slot.insert(v::Container::open(f.noiommu).map_err(|e| format!("{}: {e}", f.name))?),
+        let named = |e: String| format!("{}: {e}", f.name);
+        let mut own = None;
+        let container = if f.iommu {
+            if f.noiommu {
+                return Err(named("a group without an IOMMU cannot follow the guest's".into()));
+            }
+            own.insert(v::Container::followed().map_err(named)?)
+        } else {
+            let slot = if f.noiommu { &mut noiommu } else { &mut iommu };
+            match slot {
+                Some(c) => c,
+                None => slot.insert(v::Container::open(f.noiommu).map_err(named)?),
+            }
         };
         let opened = v::Device::open(&f.name, &f.group, container, memory, vm)?;
+        // Behind the guest's IOMMU: its container maps what its endpoint sees there, and
+        // its MSIs land where the endpoint's domain maps their addresses.
+        let endpoint = u32::from(device) << 3;
+        let behind = match &own {
+            Some(own) => {
+                let translation = machine
+                    .iommu
+                    .clone()
+                    .ok_or_else(|| named("behind the guest's IOMMU, where the machine has none".into()))?;
+                translation
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .follow(endpoint, Arc::new(own.follower(memory.clone())))
+                    .map_err(|e| named(format!("its DMA mappings: {e}")))?;
+                Some(translation)
+            }
+            None => None,
+        };
         let mut bars = Vec::new();
         let [window, window64] = &mut windows;
         for (index, size, kind) in opened.bars() {
@@ -791,8 +847,18 @@ fn passed_through(
                 kind,
             });
         }
-        let route = irqs.and_then(|irqs| irqs.route(device));
-        let send = irqs.map(|irqs| irqs.msi());
+        let mut route = irqs.and_then(|irqs| irqs.route(device));
+        let mut send = irqs.map(|irqs| irqs.msi());
+        if let Some(translation) = behind {
+            let translated = Arc::new(v::Translated::new(
+                translation,
+                endpoint,
+                route.clone(),
+                send.clone(),
+            ));
+            route = route.map(|_| translated.clone() as Arc<dyn v::Route>);
+            send = send.map(|_| translated as Arc<dyn pci::Msi>);
+        }
         let function = Arc::new(v::VfioFunction::new(opened, bars, route, send, vm)?);
         for bar in function.bars() {
             bus.insert(
