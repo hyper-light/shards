@@ -812,7 +812,7 @@ mod tests {
             }),
             ..super::super::Meta::default()
         };
-        let platform = shards_dockerfile::platform::Platform::new("linux", "arm64");
+        let platform = shards_agentfile::platform::Platform::new("linux", "arm64");
         show(
             "input of an image with its chain",
             rounds(200, &mut || {

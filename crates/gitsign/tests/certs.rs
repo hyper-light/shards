@@ -18,7 +18,7 @@ fn utc(secs: i64) -> String {
 fn certificates_read_and_verify() {
     let answers: serde_json::Value = serde_json::from_str(include_str!("../testdata/certs.json")).unwrap();
     let b64 = base64::engine::general_purpose::STANDARD;
-    let quote = |b: &[u8]| shards_dockerfile::go::quote(b);
+    let quote = |b: &[u8]| shards_agentfile::go::quote(b);
     let mut failed = Vec::new();
     let mut certificates = 0;
     for c in answers["parse"].as_array().unwrap() {

@@ -98,16 +98,19 @@ const EXTENDED: &[(&str, &str)] = &[
     ("tag", CONVERT),
 ];
 
-/// Docker's flags for its VM-isolated containers, which its CLI hides and refuses against
-/// a Linux daemon: shards serves them, as every run is a microVM (`--cpu-count` its vCPUs,
-/// `--cpu-percent` a share of the host's CPU time), each a deliberate difference.
-const MICROVM_FLAGS: [&str; 2] = ["cpu-count", "cpu-percent"];
+/// The flags whose `--help` is shards' own, each a deliberate difference: Docker's for its
+/// VM-isolated containers, which its CLI hides and refuses against a Linux daemon and
+/// shards serves, as every run is a microVM (`--cpu-count` its vCPUs, `--cpu-percent` a
+/// share of the host's CPU time, D155); and those whose meaning is the microVM's
+/// (`--uts host` the host's hostname, `--cgroupns host` the microVM's cgroups,
+/// `--storage-opt` the writable layer's size, D156).
+const MICROVM_FLAGS: [&str; 5] = ["cpu-count", "cpu-percent", "cgroupns", "uts", "storage-opt"];
 
 /// What the CLI says of a flag of Windows' daemons against a Linux one.
 const WINDOWS_ONLY: &str = "is only supported on a Docker daemon running on windows";
 
-/// `got` (help), without the lines of [`MICROVM_FLAGS`], which the CLI hides: each flag's
-/// line and the lines its text wraps onto.
+/// `got` (help), without the lines of [`MICROVM_FLAGS`]: each flag's line and the lines its
+/// text wraps onto.
 fn without_microvm_flags(got: &str) -> String {
     let mut out = Vec::new();
     let mut skipping = false;
@@ -207,9 +210,10 @@ fn command_lines_are_answered_byte_for_byte() {
             continue;
         }
         let shown = without_microvm_flags(without_extensions(&argv, &stdout));
+        let wanted = without_microvm_flags(want.0);
         assert_eq!(
             (shown.as_str(), stderr.as_str(), u64::from(status)),
-            want,
+            (wanted.as_str(), want.1, want.2),
             "{argv:?}"
         );
     }

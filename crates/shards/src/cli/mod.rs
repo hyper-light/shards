@@ -33,6 +33,14 @@ pub(crate) mod version;
 /// `docker run`'s status when it could not run the command at all.
 const NOT_RUN: u8 = 125;
 
+/// The environment's value of shards' own variable `ours`, else of `theirs`, the name
+/// Docker's or buildx's tools read for the same: each set and not empty.
+pub(crate) fn env_ours_first(ours: &str, theirs: &str) -> Option<String> {
+    [ours, theirs]
+        .into_iter()
+        .find_map(|var| std::env::var(var).ok().filter(|v| !v.is_empty()))
+}
+
 pub fn main() -> ExitCode {
     let args: Vec<OsString> = std::env::args_os().skip(1).collect();
     dispatch(args)
@@ -292,7 +300,8 @@ fn container(
         );
         return ExitCode::FAILURE;
     }
-    // `volume prune --all` and a filter `all` both: the CLI's own refusal (volume/prune.go).
+    // `volume prune --all` and a filter `all` both, refused as the CLI refuses them
+    // (volume/prune.go), in shards' words.
     if std::ptr::eq(command, &shards_cmdline::commands::VOLUME_PRUNE)
         && parsed.bool("all")
         && parsed
@@ -302,7 +311,7 @@ fn container(
     {
         let _ = writeln!(
             std::io::stderr(),
-            "conflicting options: cannot specify both --all and --filter all=1"
+            "--all and --filter all=1 each prune every unused volume: give one"
         );
         return ExitCode::FAILURE;
     }
@@ -393,10 +402,9 @@ fn container(
         // daemon's to fetch (import.go runImport).
         let mut argv = argv;
         let input = if std::ptr::eq(command, &shards_cmdline::commands::IMPORT) {
-            // The flag's default is DOCKER_DEFAULT_PLATFORM.
+            // The flag's default is SHARDS_DEFAULT_PLATFORM's, else DOCKER_DEFAULT_PLATFORM's.
             if !parsed.changed("platform")
-                && let Ok(p) = std::env::var("DOCKER_DEFAULT_PLATFORM")
-                && !p.is_empty()
+                && let Some(p) = env_ours_first("SHARDS_DEFAULT_PLATFORM", "DOCKER_DEFAULT_PLATFORM")
             {
                 argv.splice(0..0, ["--platform".to_string(), p]);
             }

@@ -80,7 +80,7 @@ func options(c benchCase, src string, in any) []func(*rego.Rego) {
 		rego.Query("data.docker.decision"),
 		rego.SkipPartialNamespace(true),
 		rego.Compiler(comp),
-		rego.Module("builtin/buildx_defaults.rego", builtinsRego),
+		rego.Module("builtin/defaults.rego", builtinsRego),
 		rego.Module(c.File, src),
 		rego.EnablePrintStatements(true),
 		rego.PrintHook(&hook{}),

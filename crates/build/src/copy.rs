@@ -10,8 +10,8 @@
 
 use std::collections::HashMap;
 
-use shards_dockerfile::glob::{self, MatchInfo, PatternMatcher};
-use shards_dockerfile::go;
+use shards_agentfile::glob::{self, MatchInfo, PatternMatcher};
+use shards_agentfile::go;
 use shards_image::erofs::{Kind, Node, NodeId};
 
 use crate::mode;

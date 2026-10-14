@@ -1358,7 +1358,7 @@ fn name_constraints(value: &[u8], nfe: &mut Vec<String>) -> Result<(), String> {
         } else {
             Err(format!(
                 "x509: invalid constraint value: x509: {} cannot be encoded as an IA5String",
-                shards_dockerfile::go::quote(v)
+                shards_agentfile::go::quote(v)
             ))
         }
     };
@@ -1367,7 +1367,7 @@ fn name_constraints(value: &[u8], nfe: &mut Vec<String>) -> Result<(), String> {
         while !list.is_empty() {
             let mut seq = list.read(der::SEQUENCE).ok_or_else(invalid)?;
             let (tag, _, v) = seq.any_element().ok_or_else(invalid)?;
-            let q = || shards_dockerfile::go::quote(v);
+            let q = || shards_agentfile::go::quote(v);
             match tag {
                 0x82 => {
                     ia5(v)?;
@@ -1459,17 +1459,17 @@ fn san(value: &[u8], nfe: &mut Vec<String>) -> Result<(), String> {
         };
         match tag {
             6 => {
-                let parsed = shards_dockerfile::url::parse(data).map_err(|e| {
+                let parsed = shards_agentfile::url::parse(data).map_err(|e| {
                     format!(
                         "x509: cannot parse URI {}: {}",
-                        shards_dockerfile::go::quote(data),
+                        shards_agentfile::go::quote(data),
                         String::from_utf8_lossy(&e)
                     )
                 })?;
                 if !parsed.host.is_empty() && !reverse_labels_ok(&parsed.host) {
                     return Err(format!(
                         "x509: cannot parse URI {}: invalid domain",
-                        shards_dockerfile::go::quote(data)
+                        shards_agentfile::go::quote(data)
                     ));
                 }
             }

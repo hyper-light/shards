@@ -504,10 +504,10 @@ fn merge_labels(
 ) -> Result<std::collections::BTreeMap<String, String>, String> {
     for l in request {
         let (k, v) = l.split_once('=').unwrap_or((l.as_str(), ""));
-        if shards_dockerfile::agentfile::reserved_label(k.as_bytes()) {
+        if shards_agentfile::agentfile::reserved_label(k.as_bytes()) {
             return Err(format!(
                 "label {k:?} is reserved: shards' build sets the {} labels from the Agentfile, and a run may not set one",
-                String::from_utf8_lossy(shards_dockerfile::agentfile::LABEL_PREFIX)
+                String::from_utf8_lossy(shards_agentfile::agentfile::LABEL_PREFIX)
             ));
         }
         labels.insert(k.to_string(), v.to_string());
@@ -601,10 +601,10 @@ pub fn prepare(
         say,
         cancel,
     )?;
-    // Its config as Docker reads it to run it (daemon/containerd GetImage): one Go reads
-    // into no DockerOCIImage runs nothing.
+    // Its config, read as a run reads it (moby daemon/containerd GetImage): one that does
+    // not read runs nothing.
     if let Some(e) = &image.config.run_error {
-        return Err(format!("could not deserialize image config: {e}"));
+        return Err(format!("the image's config does not read: {e}"));
     }
     let options = compose(image.config.config.as_ref(), request)?;
     let stop_signal = request

@@ -595,7 +595,7 @@ fn overlay_upper(name: &str) -> Option<PathBuf> {
 }
 
 #[test]
-fn pack_as_go_archive() {
+fn packs_match_their_recorded_answers() {
     umask();
     let cases = load("cases.json");
     let answers = load("answers.json");
@@ -726,7 +726,7 @@ fn destination(case: &Value, top: &Path, trees: &serde_json::Map<String, Value>)
 }
 
 #[test]
-fn unpack_as_go_archive() {
+fn unpacks_match_their_recorded_answers() {
     umask();
     let cases = load("cases.json");
     let answers = load("answers.json");
@@ -766,7 +766,7 @@ fn unpack_as_go_archive() {
 }
 
 #[test]
-fn layer_as_go_archive() {
+fn layers_match_their_recorded_answers() {
     umask();
     let cases = load("cases.json");
     let answers = load("answers.json");
@@ -817,7 +817,7 @@ fn layer_as_go_archive() {
 }
 
 #[test]
-fn copy_as_go_archive() {
+fn copies_match_their_recorded_answers() {
     umask();
     let cases = load("cases.json");
     let answers = load("answers.json");
@@ -842,7 +842,7 @@ fn copy_as_go_archive() {
 }
 
 #[test]
-fn rebase_as_go_archive() {
+fn rebases_match_their_recorded_answers() {
     let cases = load("cases.json");
     let answers = load("answers.json");
     let mut failures = Vec::new();

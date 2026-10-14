@@ -431,10 +431,7 @@ d if data.docker.p.q[0]
         let cases: serde_json::Value =
             serde_json::from_str(include_str!("../../testdata/cases.json")).unwrap();
         let mut sets = Vec::new();
-        let builtins = (
-            "builtin/buildx_defaults.rego",
-            include_str!("../buildx_defaults.rego"),
-        );
+        let builtins = ("builtin/defaults.rego", include_str!("../defaults.rego"));
         let mut srcs: Vec<Vec<(String, String)>> = vec![vec![
             (builtins.0.into(), builtins.1.into()),
             ("shapes.rego".into(), SHAPES.into()),

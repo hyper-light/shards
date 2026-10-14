@@ -1,7 +1,7 @@
 package main
 
 // The Docker CLI's own answers to command lines, for shards-cmdline's tests to match
-// (crates/cmdline/tests/docker_cli.rs). `generate` copies this file into docker/cli's
+// (crates/cmdline/tests/command_lines.rs). `generate` copies this file into docker/cli's
 // cmd/docker and runs it there, against the CLI's real command tree: its root set up as
 // the CLI sets it up (cli.SetupRootCommand), its commands as the CLI adds them, named
 // `shards`, with the flags shards does not serve hidden (as dockerd's unsupported ones
@@ -26,7 +26,7 @@ import (
 
 // The flags shards serves, by command; the rest are hidden, as shards hides them.
 var served = map[string][]string{
-	"run": {"add-host", "annotation", "blkio-weight", "blkio-weight-device", "cap-add", "cap-drop", "cidfile", "cpu-count", "cpu-percent", "cpu-period", "cpu-quota", "cpu-rt-period", "cpu-rt-runtime", "cpu-shares", "cpus", "cpuset-cpus", "cpuset-mems", "detach", "detach-keys", "device", "device-cgroup-rule", "device-read-bps", "device-read-iops", "device-write-bps", "device-write-iops", "disable-content-trust", "dns", "dns-opt", "dns-option", "dns-search", "domainname", "entrypoint", "env", "env-file", "expose", "gpus", "group-add", "health-cmd", "health-interval", "health-retries", "health-start-interval", "health-start-period", "health-timeout", "help", "hostname", "init", "interactive", "io-maxbandwidth", "io-maxiops", "ip", "ip6", "isolation", "kernel-memory", "label", "label-file", "link-local-ip", "mac-address", "memory", "memory-reservation", "memory-swap", "memory-swappiness", "mount", "name", "net", "net-alias", "network", "network-alias", "no-healthcheck", "oom-kill-disable", "oom-score-adj", "pid", "pids-limit", "platform", "privileged", "publish", "publish-all", "pull", "quiet", "read-only", "restart", "rm", "runtime", "security-opt", "shm-size", "sig-proxy", "stop-signal", "stop-timeout", "sysctl", "tmpfs", "tty", "ulimit", "user", "volume", "volume-driver", "volumes-from", "workdir"},
+	"run": {"add-host", "annotation", "blkio-weight", "blkio-weight-device", "cap-add", "cap-drop", "cgroupns", "cidfile", "cpu-count", "cpu-percent", "cpu-period", "cpu-quota", "cpu-rt-period", "cpu-rt-runtime", "cpu-shares", "cpus", "cpuset-cpus", "cpuset-mems", "detach", "detach-keys", "device", "device-cgroup-rule", "device-read-bps", "device-read-iops", "device-write-bps", "device-write-iops", "disable-content-trust", "dns", "dns-opt", "dns-option", "dns-search", "domainname", "entrypoint", "env", "env-file", "expose", "gpus", "group-add", "health-cmd", "health-interval", "health-retries", "health-start-interval", "health-start-period", "health-timeout", "help", "hostname", "init", "interactive", "io-maxbandwidth", "io-maxiops", "ip", "ip6", "ipc", "isolation", "kernel-memory", "label", "label-file", "link-local-ip", "mac-address", "memory", "memory-reservation", "memory-swap", "memory-swappiness", "mount", "name", "net", "net-alias", "network", "network-alias", "no-healthcheck", "oom-kill-disable", "oom-score-adj", "pid", "pids-limit", "platform", "privileged", "publish", "publish-all", "pull", "quiet", "read-only", "restart", "rm", "runtime", "security-opt", "shm-size", "sig-proxy", "stop-signal", "stop-timeout", "storage-opt", "sysctl", "tmpfs", "tty", "ulimit", "umask", "user", "userns", "uts", "volume", "volume-driver", "volumes-from", "workdir"},
 	"ps":   {"all", "filter", "format", "help", "last", "latest", "no-trunc", "quiet", "size"},
 	"ls":   {"all", "filter", "format", "help", "last", "latest", "no-trunc", "quiet", "size"},
 	"wait": {"help"},
@@ -89,7 +89,7 @@ var served = map[string][]string{
 	"volume inspect":    {"format", "help"},
 	"volume rm":         {"force", "help"},
 	"volume prune":      {"all", "filter", "force", "help"},
-	"create": {"add-host", "annotation", "blkio-weight", "blkio-weight-device", "cap-add", "cap-drop", "cidfile", "cpu-count", "cpu-percent", "cpu-period", "cpu-quota", "cpu-rt-period", "cpu-rt-runtime", "cpu-shares", "cpus", "cpuset-cpus", "cpuset-mems", "device", "device-cgroup-rule", "device-read-bps", "device-read-iops", "device-write-bps", "device-write-iops", "disable-content-trust", "dns", "dns-opt", "dns-option", "dns-search", "domainname", "entrypoint", "env", "env-file", "expose", "gpus", "group-add", "health-cmd", "health-interval", "health-retries", "health-start-interval", "health-start-period", "health-timeout", "help", "hostname", "init", "interactive", "io-maxbandwidth", "io-maxiops", "ip", "ip6", "isolation", "kernel-memory", "label", "label-file", "link-local-ip", "mac-address", "memory", "memory-reservation", "memory-swap", "memory-swappiness", "mount", "name", "net", "net-alias", "network", "network-alias", "no-healthcheck", "oom-kill-disable", "oom-score-adj", "pid", "pids-limit", "platform", "privileged", "publish", "publish-all", "pull", "quiet", "read-only", "restart", "rm", "runtime", "security-opt", "shm-size", "stop-signal", "stop-timeout", "sysctl", "tmpfs", "tty", "ulimit", "user", "volume", "volume-driver", "volumes-from", "workdir"},
+	"create": {"add-host", "annotation", "blkio-weight", "blkio-weight-device", "cap-add", "cap-drop", "cgroupns", "cidfile", "cpu-count", "cpu-percent", "cpu-period", "cpu-quota", "cpu-rt-period", "cpu-rt-runtime", "cpu-shares", "cpus", "cpuset-cpus", "cpuset-mems", "device", "device-cgroup-rule", "device-read-bps", "device-read-iops", "device-write-bps", "device-write-iops", "disable-content-trust", "dns", "dns-opt", "dns-option", "dns-search", "domainname", "entrypoint", "env", "env-file", "expose", "gpus", "group-add", "health-cmd", "health-interval", "health-retries", "health-start-interval", "health-start-period", "health-timeout", "help", "hostname", "init", "interactive", "io-maxbandwidth", "io-maxiops", "ip", "ip6", "ipc", "isolation", "kernel-memory", "label", "label-file", "link-local-ip", "mac-address", "memory", "memory-reservation", "memory-swap", "memory-swappiness", "mount", "name", "net", "net-alias", "network", "network-alias", "no-healthcheck", "oom-kill-disable", "oom-score-adj", "pid", "pids-limit", "platform", "privileged", "publish", "publish-all", "pull", "quiet", "read-only", "restart", "rm", "runtime", "security-opt", "shm-size", "stop-signal", "stop-timeout", "storage-opt", "sysctl", "tmpfs", "tty", "ulimit", "umask", "user", "userns", "uts", "volume", "volume-driver", "volumes-from", "workdir"},
 	"container create": {
 		"disable-content-trust", "entrypoint", "env", "help",
 		"hostname", "init", "interactive", "kernel-memory", "name", "net", "network", "pull",
@@ -492,6 +492,17 @@ var cases = [][]string{
 	{"run", "--isolation="},
 	{"run", "--runtime", "runc", "alpine"},
 	{"create", "--runtime", "io.containerd.runc.v2", "--isolation", "process", "alpine"},
+	{"run", "--uts", "host", "--ipc", "shareable", "--userns", "host", "--cgroupns", "host", "alpine"},
+	{"run", "--ipc", "container:web", "alpine"},
+	{"run", "--ipc", "none", "--cgroupns", "private", "alpine"},
+	{"run", "--storage-opt", "size=1G", "--storage-opt", "size=2G", "alpine"},
+	{"run", "--umask", "022", "alpine"},
+	{"run", "--umask", "0", "alpine"},
+	{"run", "--umask", "7777", "alpine"},
+	{"run", "--umask", "8", "alpine"},
+	{"run", "--umask", "0o22", "alpine"},
+	{"run", "--umask", "77777777777", "alpine"},
+	{"create", "--umask=0077", "alpine"},
 	{"run", "--disable-content-trust", "alpine"},
 	{"run", "--kernel-memory", "0", "alpine"},
 	{"run", "-h", "host", "-u", "1000:1000", "-w", "/srv", "alpine", "pwd"},

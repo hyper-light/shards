@@ -77,7 +77,7 @@ const BUILTINS: [(&str, Func); 19] = [
     ("ne", Func::Ne),
 ];
 
-const DOCKER: [(&str, Func); 8] = [
+const ADDED: [(&str, Func); 8] = [
     ("json", Func::Json),
     ("split", Func::Split),
     ("join", Func::Join),
@@ -90,13 +90,13 @@ const DOCKER: [(&str, Func); 8] = [
 
 /// Whether a template may name the function (parse.go's hasFunction).
 pub(crate) fn defined(name: &str) -> bool {
-    DOCKER.iter().chain(BUILTINS.iter()).any(|(n, _)| *n == name)
+    ADDED.iter().chain(BUILTINS.iter()).any(|(n, _)| *n == name)
 }
 
 /// funcs.go's findFunction: the template's functions first (Docker's, or its header
 /// variants once `Funcs(HeaderFunctions)` replaced them), then the builtins.
 pub(crate) fn find(name: &str, header: bool) -> Option<(Func, bool)> {
-    if let Some((_, f)) = DOCKER.iter().find(|(n, _)| *n == name) {
+    if let Some((_, f)) = ADDED.iter().find(|(n, _)| *n == name) {
         let f = match (header, f) {
             (true, Func::Json | Func::Title | Func::Lower | Func::Upper) => Func::HeaderText,
             (true, Func::Split | Func::Join) => Func::HeaderPair,

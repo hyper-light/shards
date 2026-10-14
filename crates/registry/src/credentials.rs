@@ -2,8 +2,9 @@
 //! §3.3), so `docker login` works unchanged:
 //! - `config.json` from `$DOCKER_CONFIG`, else `~/.docker` (`cli/config/config.go`);
 //! - a registry's key is its host, or `https://index.docker.io/v1/` for Docker Hub;
-//! - `DOCKER_AUTH_CONFIG` first, then the registry's credential helper, the config's
-//!   `credsStore`, or its `auths` (`configfile/file.go`, `credentials/`);
+//! - `SHARDS_AUTH_CONFIG`, shards' own, else `DOCKER_AUTH_CONFIG`, first; then the
+//!   registry's credential helper, the config's `credsStore`, or its `auths`
+//!   (`configfile/file.go`, `credentials/`);
 //! - the platform's default helper when the config holds no credentials at all;
 //! - dockerd's precedence: a registry token, then an identity token, then a password
 //!   (`daemon/containerd/resolver.go`).
@@ -58,7 +59,7 @@ struct Entry {
     registrytoken: String,
 }
 
-/// `DOCKER_AUTH_CONFIG`: `auths` alone, each with `auth` alone.
+/// `SHARDS_AUTH_CONFIG` or `DOCKER_AUTH_CONFIG`: `auths` alone, each with `auth` alone.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct EnvConfig {
@@ -91,16 +92,18 @@ pub fn lookup(domain: &str, env: Env<'_>) -> Result<(Credentials, Vec<String>), 
         domain
     };
     let mut warnings = Vec::new();
-    if let Some(value) = env("DOCKER_AUTH_CONFIG").filter(|v| !v.is_empty()) {
-        match env_config(&value) {
+    // Credentials in the environment: shards' own variable, else Docker's.
+    let given = ["SHARDS_AUTH_CONFIG", "DOCKER_AUTH_CONFIG"]
+        .into_iter()
+        .find_map(|var| env(var).filter(|v| !v.is_empty()).map(|v| (var, v)));
+    if let Some((var, value)) = given {
+        match env_config(var, &value) {
             Ok(entries) => {
                 if let Some((username, password)) = entries.get(key) {
                     return Ok((password_credentials(username, password), warnings));
                 }
             }
-            Err(e) => warnings.push(format!(
-                "Failed to create credential store from DOCKER_AUTH_CONFIG: {e}"
-            )),
+            Err(e) => warnings.push(format!("Failed to create credential store from {var}: {e}")),
         }
     }
     let Some(dir) = config_dir(env) else {
@@ -241,8 +244,8 @@ fn decode_auth(auth: &str) -> Result<(String, String), Error> {
     }
 }
 
-/// `parseEnvConfig`.
-fn env_config(value: &str) -> Result<BTreeMap<String, (String, String)>, Error> {
+/// `parseEnvConfig` of variable `var`'s `value`.
+fn env_config(var: &str, value: &str) -> Result<BTreeMap<String, (String, String)>, Error> {
     let mut values = serde_json::Deserializer::from_str(value).into_iter::<EnvConfig>();
     let parsed = match values.next() {
         None => EnvConfig {
@@ -251,15 +254,15 @@ fn env_config(value: &str) -> Result<BTreeMap<String, (String, String)>, Error> 
         Some(parsed) => parsed.map_err(|e| Error::new(e.to_string()))?,
     };
     if values.next().is_some() {
-        return Err(Error::new(
-            "DOCKER_AUTH_CONFIG does not support more than one JSON object",
-        ));
+        return Err(Error::new(format!(
+            "{var} does not support more than one JSON object"
+        )));
     }
     let mut out = BTreeMap::new();
     for (addr, entry) in parsed.auths {
         if entry.auth.is_empty() {
             return Err(Error::new(format!(
-                "DOCKER_AUTH_CONFIG environment variable is missing key `auth` for {addr}"
+                "{var} environment variable is missing key `auth` for {addr}"
             )));
         }
         out.insert(addr, decode_auth(&entry.auth)?);
@@ -459,7 +462,7 @@ mod tests {
     }
 
     #[test]
-    fn logins_are_found_under_docker_s_keys() {
+    fn logins_are_found_under_legacy_registry_keys() {
         let config = format!(
             r#"{{"auths":{{"https://index.docker.io/v1/":{{"auth":"{}"}},"https://legacy.example:5000/v1/":{{"auth":"{}"}}}}}}"#,
             auth("hub:hubpass"),
@@ -512,7 +515,7 @@ mod tests {
     }
 
     #[test]
-    fn docker_auth_config_comes_first_and_falls_back_with_a_warning() {
+    fn an_auth_config_in_the_environment_comes_first_and_falls_back_with_a_warning() {
         let config = format!(
             r#"{{"auths":{{"a.example":{{"auth":"{}"}}}}}}"#,
             auth("file:filepass")
@@ -537,6 +540,26 @@ mod tests {
         )
         .unwrap();
         assert!(warnings[0].contains("missing key `auth`"), "{warnings:?}");
+        // shards' own variable before Docker's, and named in what it warns of.
+        let ours = format!(
+            r#"{{"auths":{{"a.example":{{"auth":"{}"}}}}}}"#,
+            auth("ours:ourpass")
+        );
+        let (found, warnings) = find(
+            &config,
+            &[("SHARDS_AUTH_CONFIG", &ours), ("DOCKER_AUTH_CONFIG", &env)],
+            "a.example",
+        )
+        .unwrap();
+        assert_eq!((found, warnings.len()), (password("ours", "ourpass"), 0));
+        let (found, warnings) = find(
+            &config,
+            &[("SHARDS_AUTH_CONFIG", &unknown), ("DOCKER_AUTH_CONFIG", &env)],
+            "a.example",
+        )
+        .unwrap();
+        assert_eq!(found, password("file", "filepass"));
+        assert!(warnings[0].starts_with("Failed to create credential store from SHARDS_AUTH_CONFIG"));
     }
 
     /// A helper that answers without reading its input, as Docker's client allows.

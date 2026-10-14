@@ -497,7 +497,7 @@ pub(super) fn userinfo(url: &str) -> Result<(String, Option<String>), String> {
 /// it: what Go takes in a path and RFC 3986 does not (a space, `|`, `{`) escaped, so that
 /// the strict parser takes it too.
 fn as_go_sends(url: &str) -> String {
-    match shards_dockerfile::url::parse(url.as_bytes()) {
+    match shards_agentfile::url::parse(url.as_bytes()) {
         Ok(u) => String::from_utf8_lossy(&u.string()).into_owned(),
         Err(_) => url.to_string(),
     }
@@ -730,7 +730,7 @@ fn parse_layout(layout: &[Part], mut v: &[u8]) -> Option<(i64, u32)> {
     if !v.is_empty() || day < 1 || day > days_in(month, year) {
         return None;
     }
-    let t = shards_dockerfile::go::Time {
+    let t = shards_agentfile::go::Time {
         year,
         month,
         day,

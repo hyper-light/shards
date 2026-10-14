@@ -173,7 +173,7 @@ pub fn verify_artifact<'r>(
     if !slsa_not_required && predicate != SLSA_V1 && predicate != SLSA_V02 {
         return Err(Error(format!(
             "unexpected predicate type {}, expecting SLSA provenance",
-            shards_dockerfile::go::quote(predicate.as_bytes())
+            shards_agentfile::go::quote(predicate.as_bytes())
         )));
     }
     let mut si = SignatureInfo {

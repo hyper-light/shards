@@ -157,7 +157,7 @@ pub fn unmarshal_entry(body: &[u8]) -> Result<V1, String> {
     if !KINDS.contains(&kind.as_str()) {
         return Err(format!(
             "invalid kind value: {}",
-            shards_dockerfile::go::quote(kind.as_bytes())
+            shards_agentfile::go::quote(kind.as_bytes())
         ));
     }
     if kind == "ProposedEntry" {

@@ -93,7 +93,7 @@ fn shards_takes_every_flag_of_its_commands() {
             let short = theirs["short"].as_str().and_then(|s| s.bytes().next());
             let go = theirs["type"].as_str().unwrap();
             let theirs_default = theirs["default"].as_str().unwrap();
-            // A default the CLI's help prints, shards' prints too (docker_cli.rs); one that
+            // A default the CLI's help prints, shards' prints too (command_lines.rs); one that
             // shards does not serve it takes alone, refusing any other value.
             let defaults = flag.supported || default(flag.default) == default(theirs_default);
             if flag.short != short || kind(flag) != go_kind(go) || !defaults {

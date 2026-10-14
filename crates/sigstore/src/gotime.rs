@@ -420,8 +420,8 @@ pub fn parse_exact(layout: &str, value: &[u8]) -> Result<Time, String> {
     if back.as_bytes() != value {
         return Err(format!(
             "asn1: time did not serialize back to the original value and may be invalid: given {}, but serialized as {}",
-            shards_dockerfile::go::quote(value),
-            shards_dockerfile::go::quote(back.as_bytes())
+            shards_agentfile::go::quote(value),
+            shards_agentfile::go::quote(back.as_bytes())
         ));
     }
     Ok(t)

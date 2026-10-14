@@ -22,8 +22,8 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 
+use shards_agentfile::platform::{self, Platform};
 use shards_cmdline::buildflags::{LogLevel, PolicyConfig};
-use shards_dockerfile::platform::{self, Platform};
 use shards_rego::ast::{Module, Term, TermValue};
 use shards_rego::compile::{Compiler, Function};
 use shards_rego::eval::{Host, HostError, Machine, Program, eval_query, partial_query};
@@ -33,22 +33,32 @@ use shards_rego::value::Value;
 pub use input::Env;
 use input::Input;
 
-/// buildx's own policy module, beside every policy's (policy/builtins.rego).
+/// The module every policy is compiled beside: its helpers, such as `docker_github_builder`
+/// (buildx v0.37.1 policy/builtins.rego, which policies written for it call).
 const BUILTIN_MODULE: (&str, &str) = (
-    "builtin/buildx_defaults.rego",
-    include_str!("../../../../rego/src/buildx_defaults.rego"),
+    "builtin/defaults.rego",
+    include_str!("../../../../rego/src/defaults.rego"),
 );
+
+/// The file policies written for buildx import the builtin module as
+/// (`import data.builtin.buildx_defaults`): shards' own, by the name they know it by.
+const BUILTIN_ALSO: &str = "builtin/buildx_defaults.rego";
+
+/// Whether an import's `file` is among the modules: by its name, or the builtin's other.
+fn imported(resolved: &BTreeMap<String, Module>, file: &str) -> bool {
+    resolved.contains_key(file) || (file == BUILTIN_ALSO && resolved.contains_key(BUILTIN_MODULE.0))
+}
 
 /// buildx's default policy (policy/default.rego), loaded as a policy file of this name.
 const DEFAULT_POLICY: (&str, &str) = (
-    "buildx_default_policy.rego",
-    include_str!("../../../../rego/src/buildx_default_policy.rego"),
+    "default_policy.rego",
+    include_str!("../../../../rego/src/default_policy.rego"),
 );
 
-/// DefaultPolicyEnabled: BUILDX_DEFAULT_POLICY, where strconv.ParseBool takes it.
+/// Whether the default policy is on: SHARDS_DEFAULT_POLICY, else BUILDX_DEFAULT_POLICY,
+/// where strconv.ParseBool takes it.
 pub fn default_policy_enabled() -> bool {
-    std::env::var("BUILDX_DEFAULT_POLICY")
-        .ok()
+    crate::cli::env_ours_first("SHARDS_DEFAULT_POLICY", "BUILDX_DEFAULT_POLICY")
         .and_then(|v| shards_cmdline::go::parse_bool(&v).ok())
         == Some(true)
 }
@@ -282,7 +292,7 @@ fn clean(p: &str) -> String {
     } else {
         p.to_string()
     };
-    String::from_utf8_lossy(&shards_dockerfile::go::clean(slashed.as_bytes())).into_owned()
+    String::from_utf8_lossy(&shards_agentfile::go::clean(slashed.as_bytes())).into_owned()
 }
 
 /// An absolute `name`'s path inside the absolute directory `dir`, if it is inside:
@@ -466,7 +476,7 @@ pub enum By {
     /// over all that wraps it (errorHasMoreContext, measured: PM M186).
     Policy,
     /// BuildKit's evaluator: too many requests, a metadata request failing.
-    BuildKit,
+    Builder,
 }
 
 impl Refused {
@@ -474,7 +484,7 @@ impl Refused {
     pub fn said(&self, wrapped: String) -> String {
         match self.by {
             By::Policy => self.error.clone(),
-            By::Decision | By::BuildKit => wrapped,
+            By::Decision | By::Builder => wrapped,
         }
     }
 
@@ -492,7 +502,7 @@ impl From<String> for Refused {
         Refused {
             error,
             messages: Vec::new(),
-            by: By::BuildKit,
+            by: By::Builder,
         }
     }
 }
@@ -795,7 +805,7 @@ impl Host for Funcs<'_> {
                     }
                 };
                 let keys = self.read_file(path, 128 * 1024)?;
-                let quote = |b: &[u8]| shards_dockerfile::go::quote(b);
+                let quote = |b: &[u8]| shards_agentfile::go::quote(b);
                 let formats = shards_gitsign::pgpsign::Formats {
                     quote: &quote,
                     time: &local_time,
@@ -1223,7 +1233,7 @@ fn import_modules(
                 continue;
             };
             let file = format!("{}.rego", pkg.replace('.', "/"));
-            if resolved.contains_key(&file) || out.contains_key(&file) {
+            if imported(resolved, &file) || out.contains_key(&file) {
                 continue;
             }
             let data = match fs.read(&file, remote) {

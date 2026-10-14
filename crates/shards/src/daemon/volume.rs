@@ -42,14 +42,13 @@ impl<D: Disk> Daemon<D> {
             .cloned()
             .unwrap_or_else(|| parsed.string("name").to_string());
         let refuse = |e: &str| {
-            reply.err(&format!("Error response from daemon: create {name}: {e}"));
+            reply.err(&format!("shards: volume {name}: {e}"));
             1
         };
         let driver = parsed.string("driver");
         if !driver.is_empty() && driver != "local" {
             return refuse(&format!(
-                "error looking up volume plugin {driver}: plugin {} not found",
-                shards_cmdline::go::quote(driver)
+                "--driver {driver}: shards keeps volumes itself (local): it has no plugins"
             ));
         }
         // opts.ConvertKVStringsToMap: `KEY` alone is an empty value.
@@ -66,12 +65,9 @@ impl<D: Disk> Daemon<D> {
         // shards' own namespace, which marks the volumes an Agentfile scopes (D115).
         if let Some(k) = labels
             .keys()
-            .find(|k| shards_dockerfile::agentfile::reserved_label(k.as_bytes()))
+            .find(|k| shards_agentfile::agentfile::reserved_label(k.as_bytes()))
         {
-            reply.err(&format!(
-                "Error response from daemon: {}",
-                crate::volumes::reserved(k)
-            ));
+            reply.err(&format!("shards: {}", crate::volumes::reserved(k)));
             return 1;
         }
         let made = {
@@ -82,7 +78,7 @@ impl<D: Disk> Daemon<D> {
             Ok((v, _)) => v,
             // The store's words name the volume already.
             Err(e) => {
-                reply.err(&format!("Error response from daemon: {e}"));
+                reply.err(&format!("shards: {e}"));
                 return 1;
             }
         };
@@ -171,7 +167,7 @@ impl<D: Disk> Daemon<D> {
         let volumes = match listed {
             Ok(v) => v,
             Err(e) => {
-                reply.err(&format!("Error response from daemon: {e}"));
+                reply.err(&format!("shards: {e}"));
                 return 1;
             }
         };
@@ -253,7 +249,7 @@ impl<D: Disk> Daemon<D> {
         for name in &parsed.args {
             match store.get(name) {
                 Some(v) => documents.push(self.volume_value(&v, i64::from(asker.utc_offset), None)),
-                None => errors.push(format!("Error response from daemon: get {name}: no such volume")),
+                None => errors.push(format!("shards: no volume is named {name}")),
             }
         }
         super::inspect::inspected(parsed.string("format"), &documents, errors, asker.styled(), reply)
@@ -284,11 +280,12 @@ impl<D: Disk> Daemon<D> {
                 let _held = crate::volumes::lock();
                 match store.get(name) {
                     None if force => Ok(()),
-                    None => Err(format!("get {name}: no such volume")),
+                    None => Err(format!("no volume is named {name}")),
                     Some(_) => match self.volume_refs(name) {
-                        refs if !refs.is_empty() => {
-                            Err(format!("remove {name}: volume is in use - [{}]", refs.join(", ")))
-                        }
+                        refs if !refs.is_empty() => Err(format!(
+                            "cannot remove volume {name}: in use by {}",
+                            refs.join(", ")
+                        )),
                         _ => store.remove(name),
                     },
                 }
@@ -302,7 +299,7 @@ impl<D: Disk> Daemon<D> {
                     }
                 }
                 Err(e) => {
-                    reply.err(&format!("Error response from daemon: {e}"));
+                    reply.err(&format!("shards: {e}"));
                     status = 1;
                 }
             }
@@ -329,7 +326,7 @@ impl<D: Disk> Daemon<D> {
         let (removed, reclaimed) = match self.prune_volumes(parsed.many("filter"), parsed.bool("all")) {
             Ok(r) => r,
             Err(e) => {
-                reply.err(&format!("Error response from daemon: {e}"));
+                reply.err(&format!("shards: {e}"));
                 return 1;
             }
         };

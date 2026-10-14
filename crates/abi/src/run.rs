@@ -244,9 +244,8 @@ impl HostListen {
     }
 }
 
-/// Why an exec did not start, as its [`kind::SYSTEM_ERR`] says first: the runtime could
-/// not start it (`docker exec`'s "OCI runtime exec failed"), or the daemon refuses it
-/// (an unknown user: "Error response from daemon").
+/// Why an exec did not start, as its [`kind::SYSTEM_ERR`] says first: the microVM's init
+/// could not start it, or the daemon refuses it (an unknown user).
 pub mod exec_failed {
     pub const RUNTIME: u8 = 0;
     pub const DAEMON: u8 = 1;
@@ -462,6 +461,14 @@ pub mod beside {
     pub fn network_host() -> String {
         format!(
             "cannot run the command on the host's network (--network host): {WHY}, and the microVM's network process, which holds their flows past it to their grants, would hold none on the host's"
+        )
+    }
+
+    /// Refusing `--cgroupns host` (D156): the microVM's cgroup namespace, whose tree holds
+    /// theirs.
+    pub fn cgroupns_host() -> String {
+        format!(
+            "cannot run the command in the microVM's cgroup namespace (--cgroupns host): {WHY}, and that namespace's tree holds their cgroups, whose use of the microVM the command would read"
         )
     }
 

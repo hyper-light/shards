@@ -1774,7 +1774,12 @@ pub(crate) mod tests {
         drop(w);
         // SAFETY: fcntl(2) on a descriptor we own.
         unsafe { libc::fcntl(r.as_raw_fd(), libc::F_SETFL, libc::O_NONBLOCK) };
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+        // The kernel closes what a message carried past the receiver's room after `recv`
+        // returns: on this Mac, with the crate's tests beside it, the end of the pipe came
+        // p50 1.2 ms, p90 1.6 ms, p99 49.8 ms after (n=60, 2026-10-14), and past 1 s while a
+        // whole workspace's tests ran (gate of 1e072493's successor). A leak is what never
+        // closes: so the wait is long.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
         loop {
             match r.read(&mut [0u8; 1]) {
                 Ok(0) => return true,

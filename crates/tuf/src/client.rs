@@ -275,7 +275,7 @@ mod tests {
     }
 
     fn when(rfc3339: &str) -> (i64, u32) {
-        shards_dockerfile::go::parse_rfc3339(rfc3339.as_bytes())
+        shards_agentfile::go::parse_rfc3339(rfc3339.as_bytes())
             .unwrap()
             .unix()
     }

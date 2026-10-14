@@ -175,8 +175,8 @@ fn inputs(case: &serde_json::Value, arch: Arch) -> Vec<Data> {
         for abi in abis {
             for name in &compared {
                 for n in [
-                    tables::libseccomp::resolve_name(*abi, name),
-                    tables::libseccomp::resolve_name_raw(*abi, name),
+                    tables::resolvers::resolve_name(*abi, name),
+                    tables::resolvers::resolve_name_raw(*abi, name),
                 ] {
                     if n >= 0 {
                         special.push(n as u32);
@@ -220,7 +220,7 @@ fn profile_mode_decides_each_syscall() {
         for (case, want) in cases().iter().zip(oracle["cases"].as_array().unwrap()) {
             let name = case["name"].as_str().unwrap();
             assert_eq!(want["name"], case["name"]);
-            let got = build(case, arch, Mode::Docker);
+            let got = build(case, arch, Mode::Reference);
             if let Some(e) = want["error"].as_str() {
                 assert_eq!(got.err().as_deref(), Some(e), "{key} {name}");
                 continue;
@@ -259,7 +259,7 @@ fn profile_mode_decides_each_syscall() {
 fn programs_decide_as_their_graphs() {
     for arch in [Arch::Amd64, Arch::Arm64] {
         for case in cases() {
-            for mode in [Mode::Shards, Mode::Docker] {
+            for mode in [Mode::Shards, Mode::Reference] {
                 let Ok(Some(c)) = build(&case, arch, mode) else {
                     continue;
                 };
@@ -332,7 +332,7 @@ fn shards_differs_only_where_it_does_better() {
                 let new_name = abi.is_some_and(|abi| {
                     listed.iter().any(|n| {
                         tables::kernel_nr(abi, n) == Some(d.nr as i32)
-                            && tables::libseccomp::resolve_name(abi, n) != d.nr as i32
+                            && tables::resolvers::resolve_name(abi, n) != d.nr as i32
                     })
                 });
                 let multiplexed = abi == Some(Abi::X86) && (d.nr == 102 || d.nr == 117);
@@ -445,7 +445,7 @@ fn x86_multiplexers_keep_what_a_profile_compares() {
     };
     let (allow, eperm) = (Some(compiler::ACT_ALLOW), Some(compiler::act_errno(1)));
     assert_eq!(
-        decide(Mode::Docker, 102, 1),
+        decide(Mode::Reference, 102, 1),
         allow,
         "Docker: socketcall(SYS_SOCKET), any family"
     );
@@ -457,7 +457,7 @@ fn x86_multiplexers_keep_what_a_profile_compares() {
     // shmget is ipc's 23; a version in the upper half is ignored by the kernel.
     assert_eq!(decide(Mode::Shards, 117, 0x1_0017), allow);
     assert_eq!(
-        decide(Mode::Docker, 117, 0x1_0017),
+        decide(Mode::Reference, 117, 0x1_0017),
         eperm,
         "Docker: the whole word"
     );
@@ -494,7 +494,7 @@ fn a_number_that_is_no_syscall_is_enosys() {
         Some(ENOSYS)
     );
     assert_eq!(
-        compiler::compile(&cfg, Arch::Amd64, Mode::Docker)
+        compiler::compile(&cfg, Arch::Amd64, Mode::Reference)
             .unwrap()
             .decide(&d),
         Some(compiler::act_errno(1))

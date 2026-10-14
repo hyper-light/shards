@@ -53,7 +53,7 @@ fn run(c: &serde_json::Value, dir: &std::path::Path) -> (String, String, i64) {
             std::fs::write(dir.join(k), b64(v.as_str().unwrap())).unwrap();
         }
     }
-    let now = shards_dockerfile::go::parse_rfc3339(c["now"].as_str().unwrap().as_bytes())
+    let now = shards_agentfile::go::parse_rfc3339(c["now"].as_str().unwrap().as_bytes())
         .unwrap()
         .unix();
     let root = b64(c["root"].as_str().unwrap());

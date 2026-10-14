@@ -304,6 +304,27 @@ pub fn main() -> ! {
                 unsafe { libc::pause() };
             }
         }
+        // Its IPC as it has it (D156): its namespace, its /dev/shm's size or none, and
+        // whether it sees System V segment KEY and file /dev/shm/KEY.
+        "ipc" => ipc_report(arg(1)),
+        // Makes System V segment KEY and file /dev/shm/KEY, says so, and holds them.
+        "ipc-hold" => match ipc_hold(arg(1)) {
+            0 => loop {
+                // SAFETY: blocks until a signal arrives.
+                unsafe { libc::pause() };
+            },
+            code => code,
+        },
+        // Its umask, as the kernel tells it (/proc/self/status).
+        "umask" => {
+            let status = std::fs::read_to_string("/proc/self/status").unwrap_or_default();
+            let mask = status
+                .lines()
+                .find_map(|l| l.strip_prefix("Umask:"))
+                .map_or("none", str::trim);
+            let _ = writeln!(io::stdout(), "umask {mask}");
+            0
+        }
         other => {
             let _ = writeln!(io::stderr(), "unknown mode {other:?}");
             2
@@ -4400,4 +4421,61 @@ fn big(path: &str, mib: u64) -> io::Result<()> {
         file.write_all(&chunk)?;
     }
     file.sync_all()
+}
+
+/// Says `ns`, the IPC namespace this process is in; `shm BYTES` for its /dev/shm, or `shm
+/// none` where /dev/shm is no mount of its own; and, for `key`, `sysv KEY` and `file KEY`,
+/// each `yes` or the errno of why not.
+fn ipc_report(key: &str) -> i32 {
+    use std::os::unix::fs::MetadataExt as _;
+    let ns =
+        std::fs::read_link("/proc/self/ns/ipc").map_or_else(|e| e.to_string(), |p| p.display().to_string());
+    let mut out = format!("ns {ns}\n");
+    let mounted = match (std::fs::metadata("/dev/shm"), std::fs::metadata("/dev")) {
+        (Ok(shm), Ok(dev)) => shm.dev() != dev.dev(),
+        _ => false,
+    };
+    // SAFETY: all-zero is a valid statfs, which statfs(2) fills.
+    let mut fs: libc::statfs = unsafe { std::mem::zeroed() };
+    // SAFETY: statfs(2) of a NUL-terminated literal into our own struct.
+    if mounted && unsafe { libc::statfs(c"/dev/shm".as_ptr(), &raw mut fs) } == 0 {
+        out.push_str(&format!("shm {}\n", fs.f_blocks as u64 * fs.f_bsize as u64));
+    } else {
+        out.push_str("shm none\n");
+    }
+    if let Ok(k) = key.parse::<libc::key_t>() {
+        // SAFETY: shmget(2) of an existing segment, made by none here.
+        let sysv = if unsafe { libc::shmget(k, 0, 0) } >= 0 {
+            "yes".to_string()
+        } else {
+            format!("errno {}", io::Error::last_os_error().raw_os_error().unwrap_or(0))
+        };
+        let file = match std::fs::metadata(format!("/dev/shm/{key}")) {
+            Ok(_) => "yes".to_string(),
+            Err(e) => format!("errno {}", e.raw_os_error().unwrap_or(0)),
+        };
+        out.push_str(&format!("sysv {key} {sysv}\nfile {key} {file}\n"));
+    }
+    let _ = write!(io::stdout(), "{out}");
+    0
+}
+
+/// Makes System V segment `key` and file /dev/shm/`key`, and says `held` once both are.
+fn ipc_hold(key: &str) -> i32 {
+    let Ok(k) = key.parse::<libc::key_t>() else {
+        let _ = writeln!(io::stdout(), "ipc-hold: a key is a number");
+        return 2;
+    };
+    // SAFETY: shmget(2) making a segment of one page.
+    if unsafe { libc::shmget(k, 4096, libc::IPC_CREAT | 0o600) } < 0 {
+        let _ = writeln!(io::stdout(), "ipc-hold: shmget: {}", io::Error::last_os_error());
+        return 1;
+    }
+    if let Err(e) = std::fs::write(format!("/dev/shm/{key}"), b"held") {
+        let _ = writeln!(io::stdout(), "ipc-hold: /dev/shm/{key}: {e}");
+        return 1;
+    }
+    let _ = writeln!(io::stdout(), "held");
+    let _ = io::stdout().flush();
+    0
 }

@@ -28,7 +28,7 @@ mod sniff;
 
 pub use self::server::{PORT, Proxy, Questions, Session};
 
-use shards_dockerfile::url as gourl;
+use shards_agentfile::url as gourl;
 
 /// What NO_PROXY says: the step's own loopback, never proxied.
 const NO_PROXY: &str = "127.0.0.1,localhost,::1";

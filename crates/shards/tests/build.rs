@@ -21,6 +21,90 @@ fn context(name: &str, dockerfile: &str) -> TempDir {
     dir
 }
 
+/// A build's ignore file: `.agentignore`, shards' own, read before `.dockerignore`, and one
+/// beside the build file (`NAME.agentignore`, then `NAME.dockerignore`) before the
+/// context's. The progress and a copy's warning name the file that was read.
+#[test]
+fn the_agentignore_is_read_before_the_dockerignore() {
+    let home = TempDir::new("agentignore-home");
+    let env = [("SHARDS_HOME", home.as_os_str())];
+    let build = |name: &str, files: &[(&str, &str)], dockerfile: &str| {
+        let ctx = context(name, dockerfile);
+        for (file, text) in [("a.txt", "a"), ("b.txt", "b"), ("c.txt", "c")]
+            .iter()
+            .chain(files)
+        {
+            std::fs::write(ctx.join(file), text).unwrap();
+        }
+        let out = ctx.join("out");
+        let built = run_shards_env(
+            &["build"],
+            &[
+                "--progress=plain",
+                "-o",
+                &format!("type=local,dest={}", out.display()),
+                ctx.to_str().unwrap(),
+            ],
+            &env,
+            TIMEOUT,
+        );
+        let mut kept: Vec<String> = std::fs::read_dir(&out)
+            .map(|d| {
+                d.map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+                    .collect()
+            })
+            .unwrap_or_default();
+        kept.retain(|f| f.ends_with(".txt"));
+        kept.sort();
+        (built, kept, ctx)
+    };
+    let copy_all = "FROM scratch\nCOPY . /\n";
+    let (built, kept, _ctx) = build(
+        "agentignore-both",
+        &[(".agentignore", "a.txt\n"), (".dockerignore", "b.txt\n")],
+        copy_all,
+    );
+    assert_eq!(built.status, Some(0), "{}", built.stderr);
+    assert_eq!(kept, ["b.txt", "c.txt"], "{}", built.stderr);
+    assert!(
+        built.stderr.contains("[internal] load .agentignore"),
+        "{}",
+        built.stderr
+    );
+    let (built, kept, _ctx) = build("agentignore-docker", &[(".dockerignore", "b.txt\n")], copy_all);
+    assert_eq!(built.status, Some(0), "{}", built.stderr);
+    assert_eq!(kept, ["a.txt", "c.txt"], "{}", built.stderr);
+    assert!(
+        built.stderr.contains("[internal] load .dockerignore"),
+        "{}",
+        built.stderr
+    );
+    let (built, kept, _ctx) = build(
+        "agentignore-beside",
+        &[
+            (".agentignore", "a.txt\n"),
+            ("Dockerfile.dockerignore", "b.txt\n"),
+            ("Dockerfile.agentignore", "c.txt\n"),
+        ],
+        copy_all,
+    );
+    assert_eq!(built.status, Some(0), "{}", built.stderr);
+    assert_eq!(kept, ["a.txt", "b.txt"], "{}", built.stderr);
+    // A copy of what it excludes, warned of by its name.
+    let (built, _, _ctx) = build(
+        "agentignore-warned",
+        &[(".agentignore", "a.txt\n")],
+        "FROM scratch\nCOPY a.txt b.txt /\n",
+    );
+    assert!(
+        built
+            .stderr
+            .contains("Attempting to Copy file \"a.txt\" that is excluded by .agentignore"),
+        "{}",
+        built.stderr
+    );
+}
+
 /// The root filesystem a build wrote of `reference`'s image from its last snapshot is the
 /// one the store stacks of its layers (shards_build::stack), byte for byte.
 /// Which way a build's export went, from the line SHARDS_TIMING (which the tests set) has
@@ -1278,7 +1362,7 @@ fn a_build_given_no_name_is_kept_dangling() {
 }
 
 #[test]
-fn a_dockerfile_error_shows_its_lines() {
+fn a_build_file_error_shows_its_lines() {
     let home = TempDir::new("build-error-home");
     let ctx = context("build-error-ctx", "FROM scratch\nFOO bar\n");
     let env = [("SHARDS_HOME", home.as_os_str())];
@@ -3582,18 +3666,18 @@ fn an_agentfile_is_found_first_and_built() {
     // The normalized Agentfile, a layer of its own, its digest the label's.
     let text = std::fs::read(ctx.join("Agentfile")).unwrap();
     let parsed =
-        shards_dockerfile::parser::parse_as(&text, shards_dockerfile::parser::Dialect::Agentfile).unwrap();
+        shards_agentfile::parser::parse_as(&text, shards_agentfile::parser::Dialect::Agentfile).unwrap();
     let ins =
-        shards_dockerfile::instructions::parse(&parsed, &shards_dockerfile::lint::Linter::default()).unwrap();
+        shards_agentfile::instructions::parse(&parsed, &shards_agentfile::lint::Linter::default()).unwrap();
     let directives: Vec<_> = ins.stages[0]
         .commands
         .iter()
         .filter_map(|c| match &c.kind {
-            shards_dockerfile::instructions::Kind::Agentfile(d) => Some(d.clone()),
+            shards_agentfile::instructions::Kind::Agentfile(d) => Some(d.clone()),
             _ => None,
         })
         .collect();
-    let want = shards_dockerfile::agentfile::digest(&shards_dockerfile::agentfile::spec(&directives));
+    let want = shards_agentfile::agentfile::digest(&shards_agentfile::agentfile::spec(&directives));
     assert_eq!(
         config["Labels"]["vnd.osi.agentfile.digest"]
             .as_str()
@@ -3839,7 +3923,7 @@ fn a_layerless_image_inspects_whole() {
 /// BUILDKIT_DISABLE_FILEOP refused once true, in Docker's words; BUILDKIT_GIT_ADVICE read as
 /// a bool, refused otherwise; neither in the way of a build that sets them off or on.
 #[test]
-fn dockeruis_build_args_are_read_as_it_reads_them() {
+fn frontend_build_args_are_read() {
     let home = TempDir::new("dockerui-args-home");
     let ctx = context("dockerui-args-ctx", "FROM scratch\n");
     let env = [
@@ -5741,7 +5825,7 @@ fn run_caches_are_shared_among_concurrent_builds() {
 /// by size; a filter leaves the totals out; a cache a running step holds is in use, sized
 /// 0B, as BuildKit's DiskUsage sizes a mutable record that is changing.
 #[test]
-fn buildx_du_lists_the_records_system_df_lists() {
+fn build_cache_usage_lists_every_record() {
     if cannot_run_vms() {
         return;
     }
@@ -6691,7 +6775,9 @@ fn run_steps_take_the_builds_hosts_shm_and_limits() {
     );
     let refused = shards(&["build", "--builder", "nope", ctx.to_str().unwrap()]);
     assert!(
-        refused.stderr.contains("no builder \"nope\" found"),
+        refused
+            .stderr
+            .contains("--builder \"nope\": shards builds with a builder of its own, shards (or default)"),
         "{}",
         refused.stderr
     );
@@ -6792,7 +6878,7 @@ fn builder_prune_removes_the_build_cache() {
 /// descriptor (an OCI layout's index, the metadata file), as BuildKit's image exporter puts
 /// them; an index's, and another platform's, refused in its words.
 #[test]
-fn annotations_land_where_buildkit_puts_them() {
+fn annotations_land_on_the_manifest_or_descriptor_named() {
     if cannot_run_vms() {
         return;
     }
@@ -13657,8 +13743,7 @@ fn policies_check_the_frontend_and_the_default_policy() {
     let (out, checks) = case("default-syntax", syntax, None, "linux/arm64", true);
     assert_eq!(out.status, Some(0), "{}", out.stderr);
     assert!(
-        out.stderr
-            .contains(" loading policies buildx_default_policy.rego\n"),
+        out.stderr.contains(" loading policies default_policy.rego\n"),
         "{}",
         out.stderr
     );
@@ -13946,7 +14031,7 @@ fn policy_test_runs() {
 /// warnings, the excerpt of the step's lines (a continued RUN's every line marked), then
 /// the error.
 #[test]
-fn a_failing_step_cites_its_dockerfile_lines() {
+fn a_failing_step_cites_its_build_file_lines() {
     if cannot_run_vms() {
         return;
     }
@@ -14649,6 +14734,10 @@ fn a_run_reaches_none_of_its_images_agents() {
             vec!["--pid", "host"],
             "cannot run the command in the microVM's PID namespace (--pid host)",
         ),
+        (
+            vec!["--cgroupns", "host"],
+            "cannot run the command in the microVM's cgroup namespace (--cgroupns host)",
+        ),
         // The reaper runs as the command's user: refused before it is born.
         (vec!["--init", "-u", "200000"], "cannot run as uid 200000"),
     ] {
@@ -14689,6 +14778,35 @@ fn a_run_reaches_none_of_its_images_agents() {
         assert!(
             refused.stderr.contains(said),
             "exec {args:?}: {said:?} not in\n{}",
+            refused.stderr
+        );
+    }
+    // A run joining the microVM is beside the agents too, and held the same way, by the
+    // daemon and again by the microVM's init.
+    for (args, said) in [
+        (vec!["--privileged"], "cannot run privileged"),
+        (
+            vec!["--cap-add", "NET_ADMIN"],
+            "cannot give the command CAP_NET_ADMIN",
+        ),
+        (
+            vec!["--cgroupns", "host"],
+            "cannot run the command in the microVM's cgroup namespace (--cgroupns host)",
+        ),
+    ] {
+        let mut run = vec!["run", "--rm", "--network", "container:beside-live"];
+        run.extend_from_slice(&args);
+        run.extend([image.as_str(), "report"]);
+        let refused = shards(&run);
+        assert_ne!(
+            refused.status,
+            Some(0),
+            "joiner {args:?} was allowed:\n{}",
+            refused.stderr
+        );
+        assert!(
+            refused.stderr.contains(said),
+            "joiner {args:?}: {said:?} not in\n{}",
             refused.stderr
         );
     }

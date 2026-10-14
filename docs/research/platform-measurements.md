@@ -4359,7 +4359,7 @@ revision before comparing a changed API/implementation.
   The scanner took two thirds of a reading, pushing a string's bytes into it one at a
   time; it now copies each run of bytes that stand for themselves (no quote, backslash,
   control or non-ASCII byte) at once, every answer unchanged (the oracles of
-  `shards-image` and `shards-dockerfile`; each byte of the run's end mutation-checked,
+  `shards-image` and `shards-agentfile`; each byte of the run's end mutation-checked,
   one of them by a new case of invalid UTF-8). Old and new alternated three times, back
   to back, on one host (Apple M5 Max, macOS 26.4.1, revision 1265bd5 and its string fast
   path, load average 13 to 26 with other builds running):
@@ -8089,3 +8089,31 @@ revision before comparing a changed API/implementation.
   into guest memory (an init's into its place in the archive there), and the copy is cut
   at each 2 MiB of guest memory, a huge page each, which the loader thread and then the
   main thread, its own work done, take in turn.
+
+### M228. What a run's own IPC namespace and /dev/shm cost a microVM (D156)
+
+- **Question.** D156 gives each run's standby an IPC namespace and a 64 MiB /dev/shm of
+  its own, made before the template's snapshot. What do they cost a restore's time, and a
+  microVM's memory, counted as memory per VM is counted ([M30]: `phys_footprint`)?
+- **Method.** `docs/research/measurements/ipc-namespace/restore.py`, as M170's: two
+  templates (`#a`, `#b`) of each of two inits from one tree, D156's (`d156`) and the same
+  init without the standby's `CLONE_NEWIPC` and its /dev/shm mount (`without`), so that
+  they differ in those alone; `alpine:3.22`'s root and the pinned kernel
+  (Image-6.18.48-aarch64-6f2b217a4feb); 150 restores of each,
+  `shards restore TEMPLATE -- /bin/true`, interleaved, their order rotating each round. A
+  release build of the tree on 1e072493 with D156; Apple M5 Max, macOS 26.4.1,
+  2026-10-14, load 6.1 to 9.4.
+- **Results.** The median difference against `without#a` [95%]:
+  - Memory per VM (`footprint_kib`, KiB): `d156#a` +32 [+16, +32], `d156#b` +16 [+16, +16],
+    where the other template without them is +16 [+0, +32]. p50 3,600 and 3,584 with,
+    3,568 and 3,584 without.
+  - RSS at the timing line (KiB): +256 [+240, +256] and +128 [+128, +144], the other
+    template without −16 [−32, +0]: pages of the template, shared by every microVM restored
+    from it, which `phys_footprint` leaves out (M170).
+  - Restore (`released_us`): +3 [−43, +39] and +15 [−10, +47], the other template without
+    −27 [−39, +6]; p50 2,561 and 2,589 µs with, 2,553 and 2,547 without; p99 2,917 and
+    3,033 with, 3,028 and 2,998 without. From spawn to reap: +45 [−67, +213] and −10
+    [−147, +77]. None resolved.
+- **Consequence.** Every run has an IPC namespace and a /dev/shm of its own (D156): no
+  restore time resolved, and memory per VM within one 16 KiB step of what two templates
+  of one machine differ by.

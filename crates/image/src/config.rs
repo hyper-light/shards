@@ -36,7 +36,7 @@ use crate::json::{self, Value};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum As {
     /// `dockerspec.DockerOCIImage`: running, creating and inspecting an image.
-    Docker,
+    Run,
     /// `ocispec.Image`: containerd's unpack of a pulled image.
     Oci,
     /// image_history.go's `struct { RootFS; History }`: `docker history`.
@@ -170,7 +170,7 @@ impl Read {
 
 /// `json.Unmarshal(text, &dockerspec.DockerOCIImage{})`: what Docker runs and inspects.
 pub fn decode(text: &[u8]) -> Result<Image, String> {
-    Read::new(text)?.read(As::Docker)
+    Read::new(text)?.read(As::Run)
 }
 
 /// `network.ParsePort` (moby api types/network port.go), as a container's config keeps an
@@ -217,10 +217,10 @@ impl Ty {
     fn name(self, as_: As) -> &'static str {
         match (self, as_) {
             (Ty::Is(name), _) => name,
-            (Ty::Document, As::Docker) => "v1.DockerOCIImage",
+            (Ty::Document, As::Run) => "v1.DockerOCIImage",
             (Ty::Document, As::Oci) => "v1.Image",
             (Ty::Document, As::History) => HISTORY_TYPE,
-            (Ty::Config, As::Docker) => "v1.DockerOCIImageConfig",
+            (Ty::Config, As::Run) => "v1.DockerOCIImageConfig",
             (Ty::Config, _) => "v1.ImageConfig",
         }
     }
@@ -274,7 +274,7 @@ impl F {
     /// to it, with the embedded structs' names on the way); `None` where `as_` has no such
     /// field.
     fn at(self, as_: As) -> Option<(&'static str, &'static str)> {
-        use As::{Docker, Oci};
+        use As::{Oci, Run};
         Some(match (as_, self) {
             (_, F::Document) => ("", ""),
             (As::History, F::RootFs) => ("", "rootfs"),
@@ -287,63 +287,63 @@ impl F {
             (As::History, F::Comment) => ("History", "history.comment"),
             (As::History, F::EmptyLayer) => ("History", "history.empty_layer"),
             (As::History, _) => return None,
-            (Docker, F::Created) => ("DockerOCIImage", "Image.created"),
-            (Docker, F::Author) => ("DockerOCIImage", "Image.author"),
-            (Docker, F::Architecture) => ("DockerOCIImage", "Image.Platform.architecture"),
-            (Docker, F::Os) => ("DockerOCIImage", "Image.Platform.os"),
-            (Docker, F::OsVersion) => ("DockerOCIImage", "Image.Platform.os.version"),
-            (Docker, F::OsFeatures) => ("DockerOCIImage", "Image.Platform.os.features"),
-            (Docker, F::Variant) => ("DockerOCIImage", "Image.Platform.variant"),
-            (Docker, F::Config) => ("DockerOCIImage", "config"),
-            (Docker, F::User) => ("DockerOCIImageConfig", "config.ImageConfig.User"),
-            (Docker, F::ExposedPorts) => ("DockerOCIImageConfig", "config.ImageConfig.ExposedPorts"),
-            (Docker, F::Env) => ("DockerOCIImageConfig", "config.ImageConfig.Env"),
-            (Docker, F::Entrypoint) => ("DockerOCIImageConfig", "config.ImageConfig.Entrypoint"),
-            (Docker, F::Cmd) => ("DockerOCIImageConfig", "config.ImageConfig.Cmd"),
-            (Docker, F::Volumes) => ("DockerOCIImageConfig", "config.ImageConfig.Volumes"),
-            (Docker, F::WorkingDir) => ("DockerOCIImageConfig", "config.ImageConfig.WorkingDir"),
-            (Docker, F::Labels) => ("DockerOCIImageConfig", "config.ImageConfig.Labels"),
-            (Docker, F::StopSignal) => ("DockerOCIImageConfig", "config.ImageConfig.StopSignal"),
-            (Docker, F::ArgsEscaped) => ("DockerOCIImageConfig", "config.ImageConfig.ArgsEscaped"),
-            (Docker, F::Healthcheck) => (
+            (Run, F::Created) => ("DockerOCIImage", "Image.created"),
+            (Run, F::Author) => ("DockerOCIImage", "Image.author"),
+            (Run, F::Architecture) => ("DockerOCIImage", "Image.Platform.architecture"),
+            (Run, F::Os) => ("DockerOCIImage", "Image.Platform.os"),
+            (Run, F::OsVersion) => ("DockerOCIImage", "Image.Platform.os.version"),
+            (Run, F::OsFeatures) => ("DockerOCIImage", "Image.Platform.os.features"),
+            (Run, F::Variant) => ("DockerOCIImage", "Image.Platform.variant"),
+            (Run, F::Config) => ("DockerOCIImage", "config"),
+            (Run, F::User) => ("DockerOCIImageConfig", "config.ImageConfig.User"),
+            (Run, F::ExposedPorts) => ("DockerOCIImageConfig", "config.ImageConfig.ExposedPorts"),
+            (Run, F::Env) => ("DockerOCIImageConfig", "config.ImageConfig.Env"),
+            (Run, F::Entrypoint) => ("DockerOCIImageConfig", "config.ImageConfig.Entrypoint"),
+            (Run, F::Cmd) => ("DockerOCIImageConfig", "config.ImageConfig.Cmd"),
+            (Run, F::Volumes) => ("DockerOCIImageConfig", "config.ImageConfig.Volumes"),
+            (Run, F::WorkingDir) => ("DockerOCIImageConfig", "config.ImageConfig.WorkingDir"),
+            (Run, F::Labels) => ("DockerOCIImageConfig", "config.ImageConfig.Labels"),
+            (Run, F::StopSignal) => ("DockerOCIImageConfig", "config.ImageConfig.StopSignal"),
+            (Run, F::ArgsEscaped) => ("DockerOCIImageConfig", "config.ImageConfig.ArgsEscaped"),
+            (Run, F::Healthcheck) => (
                 "DockerOCIImageConfig",
                 "config.DockerOCIImageConfigExt.Healthcheck",
             ),
-            (Docker, F::OnBuild) => ("DockerOCIImageConfig", "config.DockerOCIImageConfigExt.OnBuild"),
-            (Docker, F::Shell) => ("DockerOCIImageConfig", "config.DockerOCIImageConfigExt.Shell"),
-            (Docker, F::Test) => (
+            (Run, F::OnBuild) => ("DockerOCIImageConfig", "config.DockerOCIImageConfigExt.OnBuild"),
+            (Run, F::Shell) => ("DockerOCIImageConfig", "config.DockerOCIImageConfigExt.Shell"),
+            (Run, F::Test) => (
                 "HealthcheckConfig",
                 "config.DockerOCIImageConfigExt.Healthcheck.Test",
             ),
-            (Docker, F::Interval) => (
+            (Run, F::Interval) => (
                 "HealthcheckConfig",
                 "config.DockerOCIImageConfigExt.Healthcheck.Interval",
             ),
-            (Docker, F::Timeout) => (
+            (Run, F::Timeout) => (
                 "HealthcheckConfig",
                 "config.DockerOCIImageConfigExt.Healthcheck.Timeout",
             ),
-            (Docker, F::StartPeriod) => (
+            (Run, F::StartPeriod) => (
                 "HealthcheckConfig",
                 "config.DockerOCIImageConfigExt.Healthcheck.StartPeriod",
             ),
-            (Docker, F::StartInterval) => (
+            (Run, F::StartInterval) => (
                 "HealthcheckConfig",
                 "config.DockerOCIImageConfigExt.Healthcheck.StartInterval",
             ),
-            (Docker, F::Retries) => (
+            (Run, F::Retries) => (
                 "HealthcheckConfig",
                 "config.DockerOCIImageConfigExt.Healthcheck.Retries",
             ),
-            (Docker, F::RootFs) => ("DockerOCIImage", "Image.rootfs"),
-            (Docker, F::RootFsType) => ("RootFS", "Image.rootfs.type"),
-            (Docker, F::DiffIds) => ("RootFS", "Image.rootfs.diff_ids"),
-            (Docker, F::History) => ("DockerOCIImage", "Image.history"),
-            (Docker, F::HistoryCreated) => ("History", "Image.history.created"),
-            (Docker, F::CreatedBy) => ("History", "Image.history.created_by"),
-            (Docker, F::HistoryAuthor) => ("History", "Image.history.author"),
-            (Docker, F::Comment) => ("History", "Image.history.comment"),
-            (Docker, F::EmptyLayer) => ("History", "Image.history.empty_layer"),
+            (Run, F::RootFs) => ("DockerOCIImage", "Image.rootfs"),
+            (Run, F::RootFsType) => ("RootFS", "Image.rootfs.type"),
+            (Run, F::DiffIds) => ("RootFS", "Image.rootfs.diff_ids"),
+            (Run, F::History) => ("DockerOCIImage", "Image.history"),
+            (Run, F::HistoryCreated) => ("History", "Image.history.created"),
+            (Run, F::CreatedBy) => ("History", "Image.history.created_by"),
+            (Run, F::HistoryAuthor) => ("History", "Image.history.author"),
+            (Run, F::Comment) => ("History", "Image.history.comment"),
+            (Run, F::EmptyLayer) => ("History", "Image.history.empty_layer"),
             (Oci, F::Created) => ("Image", "created"),
             (Oci, F::Author) => ("Image", "author"),
             (Oci, F::Architecture) => ("Image", "Platform.architecture"),
@@ -863,8 +863,8 @@ mod tests {
             });
         }
         let c = &i.config;
-        let docker = as_ == As::Docker;
-        let healthcheck = c.healthcheck.as_ref().filter(|_| docker).map(|h| {
+        let run = as_ == As::Run;
+        let healthcheck = c.healthcheck.as_ref().filter(|_| run).map(|h| {
             json!({
                 "test": strings(&h.test),
                 "interval": h.interval,
@@ -874,7 +874,7 @@ mod tests {
                 "retries": h.retries,
             })
         });
-        let ports: Option<BTreeSet<String>> = docker.then(|| {
+        let ports: Option<BTreeSet<String>> = run.then(|| {
             c.exposed_ports
                 .iter()
                 .flatten()
@@ -904,8 +904,8 @@ mod tests {
                 "stop_signal": c.stop_signal,
                 "args_escaped": c.args_escaped,
                 "healthcheck": healthcheck,
-                "on_build": if docker { strings(&c.on_build) } else { Json::Null },
-                "shell": if docker { strings(&c.shell) } else { Json::Null },
+                "on_build": if run { strings(&c.on_build) } else { Json::Null },
+                "shell": if run { strings(&c.shell) } else { Json::Null },
             },
             "ports": ports.map(|p| p.into_iter().collect::<Vec<_>>()),
         })
@@ -926,7 +926,7 @@ mod tests {
                 .unwrap();
             let read = Read::new(&text);
             for (as_, error, image) in [
-                (As::Docker, "error", "image"),
+                (As::Run, "error", "image"),
                 (As::Oci, "oci_error", "oci_image"),
                 (As::History, "history_error", "history"),
             ] {

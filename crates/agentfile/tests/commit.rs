@@ -14,7 +14,7 @@
 use std::path::Path;
 
 use serde_json::{Value, json};
-use shards_dockerfile::commit::build_from_config;
+use shards_agentfile::commit::build_from_config;
 
 fn load(name: &str) -> Value {
     let path = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/testdata")).join(name);

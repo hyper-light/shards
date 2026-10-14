@@ -70,7 +70,7 @@ pub(crate) enum Mode {
     /// libseccomp 2.5.4's tables, runc's and libseccomp's ways: Docker's, for the tests
     /// that hold the shared parts to it.
     #[cfg(test)]
-    Docker,
+    Reference,
 }
 
 /// A compiled filter: its program, and the seccomp(2) flags it is loaded with.
@@ -143,7 +143,7 @@ fn native(arch: Arch) -> Abi {
 }
 
 /// runc's architecture names, as libseccomp's ABIs, or why libseccomp refuses one.
-fn runc_abi(arch: &str) -> Result<Option<Abi>, String> {
+fn abi_named(arch: &str) -> Result<Option<Abi>, String> {
     Ok(match arch {
         "amd64" => Some(Abi::X86_64),
         "x86" => Some(Abi::X86),
@@ -203,7 +203,7 @@ impl Build {
         match self.mode {
             Mode::Shards | Mode::Agent => self.rule_add_shards(name, action, args),
             #[cfg(test)]
-            Mode::Docker => self.rule_add_docker(name, action, args),
+            Mode::Reference => self.rule_add_native(name, action, args),
         }
     }
 
@@ -266,13 +266,13 @@ impl Build {
     /// translated for each ABI by name (arch_filter_rule_add), and x86's multiplexed
     /// calls rewritten as abi_rule_add rewrites them.
     #[cfg(test)]
-    fn rule_add_docker(
+    fn rule_add_native(
         &mut self,
         name: &str,
         action: u32,
         args: &[Option<ArgCmp>; 6],
     ) -> Result<(), AddError> {
-        use tables::libseccomp as ls;
+        use tables::resolvers as ls;
         let native = native(self.arch);
         let sys = ls::resolve_name(native, name);
         if (-99..=-1).contains(&sys) {
@@ -366,7 +366,7 @@ impl Build {
         match self.mode {
             Mode::Shards | Mode::Agent => tables::kernel_nr(abi, name),
             #[cfg(test)]
-            Mode::Docker => Some(tables::libseccomp::resolve_name(abi, name)),
+            Mode::Reference => Some(tables::resolvers::resolve_name(abi, name)),
         }
     }
 
@@ -377,8 +377,8 @@ impl Build {
                 .iter()
                 .any(|a| tables::kernel_nr(*a, name).is_some()),
             #[cfg(test)]
-            Mode::Docker => {
-                tables::libseccomp::resolve_name(native(self.arch), name) != tables::NR_SCMP_ERROR
+            Mode::Reference => {
+                tables::resolvers::resolve_name(native(self.arch), name) != tables::NR_SCMP_ERROR
             }
         }
     }
@@ -543,7 +543,7 @@ pub(crate) fn compile(cfg: &Config, arch: Arch, mode: Mode) -> Result<Compiled, 
     // The native ABI, then each the profile adds, once each.
     let mut abis = vec![native(arch)];
     for a in &cfg.architectures {
-        if let Some(abi) = runc_abi(a)?
+        if let Some(abi) = abi_named(a)?
             && guest_abis(arch).contains(&abi)
             && !abis.contains(&abi)
         {
@@ -577,7 +577,7 @@ pub(crate) fn compile(cfg: &Config, arch: Arch, mode: Mode) -> Result<Compiled, 
                 let mut f = Filter::new(abi);
                 #[cfg(test)]
                 {
-                    f.libseccomp_slip = mode == Mode::Docker;
+                    f.reference_slip = mode == Mode::Reference;
                 }
                 f
             })

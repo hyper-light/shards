@@ -13,7 +13,7 @@ workspace = true
 [dependencies]
 aws-lc-rs = { version = "1.18.1", default-features = false, features = ["aws-lc-sys"] }
 base64 = "0.23.1"
-shards-dockerfile = { path = "../dockerfile" }
+shards-agentfile = { path = "../agentfile" }
 shards-gitsign = { path = "../gitsign" }
 
 [dev-dependencies]

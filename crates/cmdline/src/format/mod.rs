@@ -13,7 +13,7 @@
 //! - `history`: `history` (image/formatter_history.go);
 //! - `disk`: `system df` and its `-v` (formatter/disk_usage.go, volume.go, buildcache.go);
 //! - `du`: buildx's `du` (buildx commands/diskusage.go), held to buildx by
-//!   tests/buildx_du.rs.
+//!   tests/build_cache_usage.rs.
 //!
 //! Times are relative to the [`Clock`] given and printed in its zone, where the CLI reads
 //! the host's clock and `time.Local`. crates/cmdline/tests/format.rs holds all of it to

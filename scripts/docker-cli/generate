@@ -4,9 +4,9 @@
 # - crates/cmdline/src/tables.rs, the character classes the CLI formats text with
 #   (tables/main.go);
 # - crates/cmdline/tests/docker-cli.json, the CLI's answers to the command lines in
-#   oracle_test.go, which crates/cmdline/tests/docker_cli.rs expects shards to give;
+#   oracle_test.go, which crates/cmdline/tests/command_lines.rs expects shards to give;
 # - crates/cmdline/tests/docker-flags.json, every flag of the CLI's commands that shards
-#   has (oracle_test.go, TestShardsFlags), which crates/cmdline/tests/docker_flags.rs
+#   has (oracle_test.go, TestShardsFlags), which crates/cmdline/tests/flags.rs
 #   expects shards' commands to take, served or not;
 # - crates/shards/src/daemon/docker-ps.json, the CLI's `ps` tables of the containers in
 #   ps_test.go, which daemon/commands.rs's tests expect shards to print;

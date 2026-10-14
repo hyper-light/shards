@@ -3,11 +3,11 @@
 #![allow(dead_code)]
 
 use serde_json::Value;
+use shards_agentfile::llb::{OpChown, OpUser};
 use shards_build::copy::Chown;
 use shards_build::data::Sources;
 use shards_build::ops::{self, CopyAction};
 use shards_build::vfs::Fs;
-use shards_dockerfile::llb::{OpChown, OpUser};
 use shards_image::erofs::{Dir, Kind, Meta, Node, NodeId, Tree};
 
 #[cfg(unix)]

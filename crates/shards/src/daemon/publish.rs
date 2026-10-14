@@ -243,7 +243,7 @@ fn bind_all(
             // its run ended is bound.
             if chosen != 0 && in_use(SocketAddr::new(*ip, chosen)) == InUse::Allocated {
                 return Err(format!(
-                    "Bind for {ip}:{chosen} failed: port is already allocated"
+                    "{ip}:{chosen}: port is already allocated, to another run"
                 ));
             }
             match listen(SocketAddr::new(*ip, chosen)) {
@@ -263,19 +263,20 @@ fn bind_all(
             Some((_, e)) if port == 0 && e.kind() == std::io::ErrorKind::AddrInUse && tries < TRIES => {
                 tries += 1;
             }
-            // dockerd's allocator's words for its own containers' ports, net.IP's address
-            // and the port; and bindTCPOrUDP's for the host's, netip.AddrPort's.
+            // Another run's port, or another of the host's programs': which, by the address
+            // and port, with the words scripts look for ("port is already allocated",
+            // "address already in use").
             Some((ip, e)) if e.kind() == std::io::ErrorKind::AddrInUse && !freed => {
                 match in_use(SocketAddr::new(*ip, chosen)) {
                     InUse::Allocated => {
                         return Err(format!(
-                            "Bind for {ip}:{chosen} failed: port is already allocated"
+                            "{ip}:{chosen}: port is already allocated, to another run"
                         ));
                     }
                     InUse::Freed => freed = true,
                     InUse::Host => {
                         return Err(format!(
-                            "failed to bind host port {}/{name}: {}",
+                            "{}/{name}: the host's port is taken: {}",
                             SocketAddr::new(*ip, chosen),
                             go_error(&e)
                         ));
@@ -284,7 +285,7 @@ fn bind_all(
             }
             Some((ip, e)) => {
                 return Err(format!(
-                    "failed to bind host port {}/{name}: {}",
+                    "{}/{name}: the host's port is taken: {}",
                     SocketAddr::new(*ip, chosen),
                     go_error(&e)
                 ));
@@ -450,11 +451,11 @@ mod tests {
         let host = |_| InUse::Host;
         assert_eq!(
             bind_one(&loopback, &port.to_string(), TCP, &host).unwrap_err(),
-            format!("failed to bind host port 127.0.0.1:{port}/tcp: address already in use")
+            format!("127.0.0.1:{port}/tcp: the host's port is taken: address already in use")
         );
         assert_eq!(
             bind_one(&loopback, &port.to_string(), TCP, &|_| InUse::Allocated).unwrap_err(),
-            format!("Bind for 127.0.0.1:{port} failed: port is already allocated")
+            format!("127.0.0.1:{port}: port is already allocated, to another run")
         );
         // An address let go of meanwhile is bound.
         let holder = std::cell::RefCell::new(Some(taken));
@@ -484,7 +485,7 @@ mod tests {
         assert_eq!(
             refused.0,
             format!(
-                "failed to bind host port [::1]:{}/tcp: address already in use",
+                "[::1]:{}/tcp: the host's port is taken: address already in use",
                 refused.1
             )
         );
@@ -535,7 +536,7 @@ mod tests {
         let loopback = [IpAddr::V4(Ipv4Addr::LOCALHOST)];
         assert_eq!(
             bind_all(&loopback, 41234, TCP, &in_use, &listening).unwrap_err(),
-            "Bind for 127.0.0.1:41234 failed: port is already allocated"
+            "127.0.0.1:41234: port is already allocated, to another run"
         );
         assert_eq!(bound.get(), 0, "bound before it was refused");
     }
@@ -688,7 +689,7 @@ mod tests {
         assert_eq!(sock.local_addr().unwrap(), SocketAddr::new(loopback[0], port));
         assert_eq!(
             bind_one(&loopback, &port.to_string(), UDP, &|_| InUse::Host).unwrap_err(),
-            format!("failed to bind host port 127.0.0.1:{port}/udp: address already in use")
+            format!("127.0.0.1:{port}/udp: the host's port is taken: address already in use")
         );
         // TCP's port of the same number is another, where no other process holds that one:
         // on a busy host one of a few ports is free in TCP, and a UDP bind that held TCP's

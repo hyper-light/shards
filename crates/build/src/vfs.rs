@@ -22,7 +22,7 @@
 use std::collections::BTreeSet;
 use std::fmt;
 
-use shards_dockerfile::go;
+use shards_agentfile::go;
 use shards_image::erofs::{DataRef, Dir, EntryId, Kind, Meta, Node, NodeId, Tree};
 
 /// MAXSYMLINKS: how many symlinks one path walk follows.

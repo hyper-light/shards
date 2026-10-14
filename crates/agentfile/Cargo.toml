@@ -1,7 +1,7 @@
 [package]
-name = "shards-dockerfile"
+name = "shards-agentfile"
 version = "0.1.0"
-description = "Dockerfiles as BuildKit reads them: the parser and the shell-like lexer"
+description = "Agentfiles, and the Dockerfiles they extend: the parser, the shell-like lexer and the plan"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true

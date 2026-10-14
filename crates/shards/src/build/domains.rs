@@ -12,8 +12,8 @@
 
 use std::collections::BTreeMap;
 
+use shards_agentfile::plan::DomainDir;
 use shards_build::vfs::Fs;
-use shards_dockerfile::plan::DomainDir;
 use shards_image::erofs::{Kind, NodeId, Tree};
 
 /// How many symlinks a resolution follows before it gives up, as Linux's (MAXSYMLINKS).

@@ -29,7 +29,7 @@ pub fn bundles(
     log: &dyn Fn(String),
 ) -> Result<Vec<Vec<u8>>, String> {
     let escaped =
-        String::from_utf8_lossy(&shards_dockerfile::url::query_escape(SLSA_V1.as_bytes())).into_owned();
+        String::from_utf8_lossy(&shards_agentfile::url::query_escape(SLSA_V1.as_bytes())).into_owned();
     let u = format!("https://api.github.com/repos/{repo}/attestations/{dgst}?predicate_type={escaped}");
     let raw = fetch(
         format!("[policy] fetch GitHub attestation {repo}@{dgst}"),
@@ -56,7 +56,7 @@ pub fn bundles(
                 continue;
             }
         };
-        let got = shards_dockerfile::go::trim_space(&got);
+        let got = shards_agentfile::go::trim_space(&got);
         if got.is_empty() || got == b"null" {
             continue;
         }
@@ -88,7 +88,7 @@ const ATTESTATION: Elem = Elem {
 /// githubAttestationBundlesFromResponse: the inline bundles and the bundle URLs of the
 /// API's answer, as json.Unmarshal reads it into buildx's struct; none where it cannot.
 pub fn from_response(raw: &[u8]) -> (Vec<Vec<u8>>, Vec<String>) {
-    let t = shards_dockerfile::go::trim_space(raw);
+    let t = shards_agentfile::go::trim_space(raw);
     if t.is_empty() {
         return (Vec::new(), Vec::new());
     }
@@ -146,12 +146,12 @@ pub fn from_response(raw: &[u8]) -> (Vec<Vec<u8>>, Vec<String>) {
 
 /// shouldDecodeSnappyBundleURL: whether the URL's path ends `.json.sn`.
 pub fn should_decode_snappy(raw: &str) -> bool {
-    shards_dockerfile::url::parse(raw.as_bytes()).is_ok_and(|u| u.path.ends_with(b".json.sn"))
+    shards_agentfile::url::parse(raw.as_bytes()).is_ok_and(|u| u.path.ends_with(b".json.sn"))
 }
 
 /// stripRawQuery: the URL without its query, as url.URL prints it.
 pub fn strip_raw_query(raw: &str) -> String {
-    match shards_dockerfile::url::parse(raw.as_bytes()) {
+    match shards_agentfile::url::parse(raw.as_bytes()) {
         Ok(mut u) => {
             u.raw_query.clear();
             String::from_utf8_lossy(&u.string()).into_owned()

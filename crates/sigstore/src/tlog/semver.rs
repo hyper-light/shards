@@ -26,19 +26,19 @@ fn parse_uint(s: &str) -> Result<u64, String> {
     if s.is_empty() {
         return Err(format!(
             "strconv.ParseUint: parsing {}: invalid syntax",
-            shards_dockerfile::go::quote(s.as_bytes())
+            shards_agentfile::go::quote(s.as_bytes())
         ));
     }
     s.parse::<u64>().map_err(|_| {
         format!(
             "strconv.ParseUint: parsing {}: value out of range",
-            shards_dockerfile::go::quote(s.as_bytes())
+            shards_agentfile::go::quote(s.as_bytes())
         )
     })
 }
 
 fn q(s: &str) -> String {
-    shards_dockerfile::go::quote(s.as_bytes())
+    shards_agentfile::go::quote(s.as_bytes())
 }
 
 /// semver.Parse.

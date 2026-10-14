@@ -111,30 +111,32 @@ pub fn check(
         .split_once(':')
         .filter(|(k, _)| *k == "container")
         .map(|(_, v)| v);
-    // dockerd's checks of a container network mode, in its order and words (moby
-    // daemon/internal/runconfig/hostconfig.go validateNetContainerMode); shards takes no
-    // `--link`. dockerd makes them of the request a container is created by alone
-    // (daemon/internal/runconfig/config.go decodeCreateRequest), never as it starts it
-    // again: a joiner's names are then its provider's (initializeNetworking).
+    // A run joining another's microVM (D119) takes that run's names and network: what it
+    // would set of them is refused as it is made, in the order moby checks them
+    // (daemon/internal/runconfig/hostconfig.go validateNetContainerMode), and never as it
+    // starts again, when its names are its provider's.
     let creating = run.again.is_none();
     if creating && (mode == "container" || container == Some("")) {
-        return Err("invalid network mode: invalid container format container:<name|id>".into());
+        return Err("--network container: name the run whose microVM to join, as container:NAME".into());
     }
     if creating && container.is_some() {
+        let theirs = |flag: &str, what: &str| {
+            format!("{flag}: a run joining another's microVM takes that run's {what}")
+        };
         if run.hostname.is_some() {
-            return Err("conflicting options: hostname and the network mode".into());
+            return Err(theirs("--hostname", "hostname"));
         }
         if !run.dns.is_empty() {
-            return Err("conflicting options: dns and the network mode".into());
+            return Err(theirs("--dns", "resolvers"));
         }
         if !run.add_hosts.is_empty() {
-            return Err("conflicting options: custom host-to-IP mapping and the network mode".into());
+            return Err(theirs("--add-host", "hosts file"));
         }
         if !run.publish.is_empty() || run.publish_all {
-            return Err("conflicting options: port publishing and the container type network mode".into());
+            return Err(theirs("-p", "ports: publish them on that run"));
         }
         if !run.expose.is_empty() {
-            return Err("conflicting options: port exposing and the container type network mode".into());
+            return Err(theirs("--expose", "ports: expose them on that run"));
         }
     }
     let mut endpoints: Vec<Endpoint> = Vec::with_capacity(run.endpoints.len());
@@ -150,9 +152,11 @@ pub fn check(
     let invalid: Vec<String> = endpoints
         .iter()
         .filter_map(|e| {
-            endpoint_settings(e, bridge, user)
-                .err()
-                .map(|why| format!("invalid config for network {}: {why}", e.network))
+            endpoint_settings(e, bridge, user).err().map(|why| {
+                // Several, each on a line of its own under the network's name.
+                let sep = if why.starts_with("* ") { "\n" } else { " " };
+                format!("--network {}:{sep}{why}", e.network)
+            })
         })
         .collect();
     if !invalid.is_empty() {
@@ -170,10 +174,7 @@ pub fn check(
         // the other is a bridge, dockerd tries its interface in the host's namespace, and
         // fails on what that host's routes are; shards says what it says of `none`.
         if endpoints.iter().any(|e| e.network != mode) {
-            return fails(
-                "failed to set up container networking: container sharing network namespace with another container or host cannot be connected to any other network"
-                    .into(),
-            );
+            return fails("--network host: a run on its host's network is on no other".into());
         }
         // runc's validator (libcontainer/configs/validate, sysctl): no net.* sysctl in the
         // host's network namespace; the first given, where runc's map order would choose.
@@ -183,7 +184,9 @@ pub fn check(
             .map(|kv| kv.split_once('=').map_or(kv.as_str(), |(k, _)| k))
             .find(|k| k.starts_with("net."));
         if let Some(key) = net_sysctl {
-            return fails(format!("sysctl \"{key}\" not allowed in host network namespace"));
+            return fails(format!(
+                "--sysctl {key}: a run on its host's network has no network of its own to set it in"
+            ));
         }
         return Ok(Start::Attach(Net::Host));
     }
@@ -195,12 +198,8 @@ pub fn check(
         user_net if user(user_net).is_some() => Net::User,
         _ => {
             return match container {
-                Some(name) => fails(format!(
-                    "joining network namespace of container: No such container: {name}"
-                )),
-                None => fails(format!(
-                    "failed to set up container networking: network {mode} not found"
-                )),
+                Some(name) => fails(format!("--network container:{name}: No such container: {name}")),
+                None => fails(format!("--network {mode}: no network is named {mode}")),
             };
         }
     };
@@ -217,12 +216,15 @@ pub fn check(
     }
     if let Some(e) = endpoints.iter().find(|e| e.network != mode) {
         let why = match e.network.as_str() {
-            "none" => "container cannot be connected to multiple networks with one of the networks in private (none) mode".to_string(),
-            _ if net == Net::None => "container cannot be connected to multiple networks with one of the networks in private (none) mode".to_string(),
-            "host" => "cannot connect container to host network - container must be created in host network mode".to_string(),
-            other => format!("network {other} not found"),
+            "none" => "--network none: a run with no network is on no other".to_string(),
+            _ if net == Net::None => "--network none: a run with no network is on no other".to_string(),
+            "host" => {
+                "--network host: a run is on its host's network as it is made, with --network host alone"
+                    .to_string()
+            }
+            other => format!("--network {other}: no network is named {other}"),
         };
-        return fails(format!("failed to set up container networking: {why}"));
+        return fails(why);
     }
     // As libnetwork makes the endpoint (network.go createEndpoint), on `none` too: each of
     // its link-local addresses one, else the first that is not fails the start (PM M175).
@@ -234,7 +236,7 @@ pub fn check(
         .find(|a| !link_local_unicast(a))
     {
         return fails(format!(
-            "failed to set up container networking: invalid link local IP address: {}",
+            "--link-local-ip {}: not a link-local address (169.254.0.0/16, fe80::/10)",
             bad.unmap().ip
         ));
     }
@@ -263,26 +265,29 @@ fn endpoint_settings(e: &Endpoint, bridge: Option<Bridge>, user: UserSubnets<'_>
     let mut errs: Vec<String> = Vec::new();
     if !is_user_defined(&e.network) {
         if ipv4.is_some() || ipv6.is_some() {
-            errs.push("user-specified IP address is supported on user-defined networks only".into());
+            errs.push("--ip: an address of its own is a run's on a network you made".into());
         }
         if !e.aliases.is_empty() {
-            errs.push("network-scoped aliases are only supported for user-defined networks".into());
+            errs.push(
+                "--network-alias: names are a run's on a network you made, where its peers ask for them"
+                    .into(),
+            );
         }
     }
     // normalizeEndpointIPAMConfig.
     if let Some(a) = &ipv4
         && (!a.is4() && !a.is4in6() || a.is_unspecified())
     {
-        errs.push(format!("invalid IPv4 address: {a}"));
+        errs.push(format!("--ip {a}: not an IPv4 address a run can have"));
     }
     if let Some(a) = &ipv6
         && (a.is4() || a.is4in6() || a.is_unspecified() || !a.zone.is_empty())
     {
-        errs.push(format!("invalid IPv6 address: {a}"));
+        errs.push(format!("--ip6 {a}: not an IPv6 address a run can have"));
     }
     for a in &link_local {
         if a.is_unspecified() {
-            errs.push(format!("invalid link-local IP address: {a}"));
+            errs.push(format!("--link-local-ip {a}: not an address a run can have"));
         }
     }
     // validateIPAMConfigIsInRange, for the networks dockerd has.
@@ -305,7 +310,7 @@ fn endpoint_settings(e: &Endpoint, bridge: Option<Bridge>, user: UserSubnets<'_>
             .flatten()
         {
             if !within(&a) {
-                errs.push(format!("no configured subnet contains IP address {a}"));
+                errs.push(format!("{a}: in none of the network's subnets"));
             }
         }
     }
@@ -317,16 +322,12 @@ fn endpoint_settings(e: &Endpoint, bridge: Option<Bridge>, user: UserSubnets<'_>
                 && matches!(parts.get(3), Some(&("IFNAME" | "ifname")));
             if !ok {
                 errs.push(format!(
-                    "unrecognised network interface sysctl '{sysctl}'; represent 'net.X.Y.ethN.Z=V' as 'net.X.Y.IFNAME.Z=V', 'X' must be 'ipv4', 'ipv6' or 'mpls'"
+                    "endpoint sysctl {sysctl}: name an interface's as net.X.Y.IFNAME.Z=V, X one of ipv4, ipv6 or mpls"
                 ));
             }
         }
     }
-    if errs.is_empty() {
-        Ok(())
-    } else {
-        Err(format!("invalid endpoint settings:\n{}", join(&errs)))
-    }
+    if errs.is_empty() { Ok(()) } else { Err(join(&errs)) }
 }
 
 /// moby's multierror.Join: one error as itself, trimmed; several as a list, each line
@@ -378,19 +379,19 @@ mod tests {
         }
     }
 
-    /// Every answer here is dockerd 29.3.1's, measured under Docker Desktop (2026-10-02).
+    /// Each refused or taken when moby 29.3.1 does it (measured under Docker Desktop,
+    /// 2026-10-02), in shards' words.
     #[test]
     fn run_networks_are_checked() {
         let none = |_: &str| false;
-        // Docker Desktop's bridge, where these were measured.
-        let docker: Option<Bridge> = "172.17.0.0/16".parse().ok();
-        let check = |networks: &[&str]| check(&run(networks), docker, none);
+        // The host bridge where these were measured.
+        let bridge: Option<Bridge> = "172.17.0.0/16".parse().ok();
+        let check = |networks: &[&str]| check(&run(networks), bridge, none);
         let attach = |net| Ok(Start::Attach(net));
         let fails = |why: &str| Ok(Start::Fails(why.to_string()));
         let invalid = |net: &str, why: &str| {
-            Err(format!(
-                "invalid config for network {net}: invalid endpoint settings:\n{why}"
-            ))
+            let sep = if why.starts_with("* ") { "\n" } else { " " };
+            Err(format!("--network {net}:{sep}{why}"))
         };
         assert_eq!(check(&[]), attach(Net::Bridge));
         assert_eq!(check(&["bridge"]), attach(Net::Bridge));
@@ -398,92 +399,85 @@ mod tests {
         assert_eq!(check(&["none"]), attach(Net::None));
         assert_eq!(check(&["default", "bridge"]), attach(Net::Bridge));
         assert_eq!(check(&["name=bridge,gw-priority=1"]), attach(Net::Bridge));
-        assert_eq!(
-            check(&["foo"]),
-            fails("failed to set up container networking: network foo not found")
-        );
+        assert_eq!(check(&["foo"]), fails("--network foo: no network is named foo"));
         assert_eq!(
             check(&["bridge", "default"]),
-            fails("failed to set up container networking: network default not found")
+            fails("--network default: no network is named default")
         );
         assert_eq!(
             check(&["bridge", "none"]),
-            fails(
-                "failed to set up container networking: container cannot be connected to multiple networks with one of the networks in private (none) mode"
-            )
+            fails("--network none: a run with no network is on no other")
         );
         assert_eq!(
             check(&["bridge", "host"]),
-            fails(
-                "failed to set up container networking: cannot connect container to host network - container must be created in host network mode"
-            )
+            fails("--network host: a run is on its host's network as it is made, with --network host alone")
         );
         assert_eq!(
             check(&["container:nope"]),
-            fails("joining network namespace of container: No such container: nope")
+            fails("--network container:nope: No such container: nope")
         );
         assert_eq!(
             check(&["container:nope", "none"]),
-            fails("joining network namespace of container: No such container: nope")
+            fails("--network container:nope: No such container: nope")
         );
         assert_eq!(
             check(&["name=bridge,ip=172.17.0.9"]),
             invalid(
                 "bridge",
-                "user-specified IP address is supported on user-defined networks only"
+                "--ip: an address of its own is a run's on a network you made"
             )
         );
         assert_eq!(
             check(&["name=bridge,ip=::ffff:172.17.0.9"]),
             invalid(
                 "bridge",
-                "user-specified IP address is supported on user-defined networks only"
+                "--ip: an address of its own is a run's on a network you made"
             )
         );
         assert_eq!(
             check(&["name=bridge,ip=10.1.1.1"]),
             invalid(
                 "bridge",
-                "* user-specified IP address is supported on user-defined networks only\n* no configured subnet contains IP address 10.1.1.1"
+                "* --ip: an address of its own is a run's on a network you made\n* 10.1.1.1: in none of the network's subnets"
             )
         );
         assert_eq!(
             check(&["name=bridge,ip=0.0.0.0"]),
             invalid(
                 "bridge",
-                "* user-specified IP address is supported on user-defined networks only\n* invalid IPv4 address: 0.0.0.0\n* no configured subnet contains IP address 0.0.0.0"
+                "* --ip: an address of its own is a run's on a network you made\n* --ip 0.0.0.0: not an IPv4 address a run can have\n* 0.0.0.0: in none of the network's subnets"
             )
         );
         assert_eq!(
             check(&["name=bridge,ip6=fd00::5"]),
             invalid(
                 "bridge",
-                "* user-specified IP address is supported on user-defined networks only\n* no configured subnet contains IP address fd00::5"
+                "* --ip: an address of its own is a run's on a network you made\n* fd00::5: in none of the network's subnets"
             )
         );
         assert_eq!(
             check(&["name=bridge,ip6=::ffff:1.2.3.4"]),
             invalid(
                 "bridge",
-                "* user-specified IP address is supported on user-defined networks only\n* invalid IPv6 address: ::ffff:1.2.3.4\n* no configured subnet contains IP address 1.2.3.4"
+                "* --ip: an address of its own is a run's on a network you made\n* --ip6 ::ffff:1.2.3.4: not an IPv6 address a run can have\n* 1.2.3.4: in none of the network's subnets"
             )
         );
         assert_eq!(
             check(&["name=bridge,ip6=fe80::1%eth0"]),
             invalid(
                 "bridge",
-                "* user-specified IP address is supported on user-defined networks only\n* invalid IPv6 address: fe80::1%eth0\n* no configured subnet contains IP address fe80::1%eth0"
+                "* --ip: an address of its own is a run's on a network you made\n* --ip6 fe80::1%eth0: not an IPv6 address a run can have\n* fe80::1%eth0: in none of the network's subnets"
             )
         );
         assert_eq!(
             check(&["name=bridge,link-local-ip=0.0.0.0"]),
-            invalid("bridge", "invalid link-local IP address: 0.0.0.0")
+            invalid("bridge", "--link-local-ip 0.0.0.0: not an address a run can have")
         );
         assert_eq!(
             check(&["name=bridge,driver-opt=com.docker.network.endpoint.sysctls=net.foo"]),
             invalid(
                 "bridge",
-                "unrecognised network interface sysctl 'net.foo'; represent 'net.X.Y.ethN.Z=V' as 'net.X.Y.IFNAME.Z=V', 'X' must be 'ipv4', 'ipv6' or 'mpls'"
+                "endpoint sysctl net.foo: name an interface's as net.X.Y.IFNAME.Z=V, X one of ipv4, ipv6 or mpls"
             )
         );
         for (net, ip) in [
@@ -497,7 +491,7 @@ mod tests {
                 invalid(
                     net,
                     &format!(
-                        "* user-specified IP address is supported on user-defined networks only\n* no configured subnet contains IP address {a}"
+                        "* --ip: an address of its own is a run's on a network you made\n* {a}: in none of the network's subnets"
                     )
                 )
             );
@@ -506,21 +500,21 @@ mod tests {
             check(&["name=default,ip=1.2.3.4"]),
             invalid(
                 "bridge",
-                "* user-specified IP address is supported on user-defined networks only\n* no configured subnet contains IP address 1.2.3.4"
+                "* --ip: an address of its own is a run's on a network you made\n* 1.2.3.4: in none of the network's subnets"
             )
         );
         assert_eq!(
             check(&["name=container:nope,ip=1.2.3.4"]),
             invalid(
                 "container:nope",
-                "user-specified IP address is supported on user-defined networks only"
+                "--ip: an address of its own is a run's on a network you made"
             )
         );
         let mut named = run(&["container:nope"]);
         named.hostname = Some("h".into());
         assert_eq!(
             check_with(&named),
-            Err("conflicting options: hostname and the network mode".into())
+            Err("--hostname: a run joining another's microVM takes that run's hostname".into())
         );
     }
 
@@ -530,36 +524,45 @@ mod tests {
     #[test]
     fn a_joiners_network_mode_is_checked() {
         let joined = || run(&["container:web"]);
-        let docker: Option<Bridge> = "172.17.0.0/16".parse().ok();
-        let check = |r: &Run| check(r, docker, |n| n == "web");
-        let said = |what: &str| Err(format!("conflicting options: {what}"));
+        let bridge: Option<Bridge> = "172.17.0.0/16".parse().ok();
+        let check = |r: &Run| check(r, bridge, |n| n == "web");
+        let said = |what: &str| Err(what.to_string());
         assert_eq!(
             check(&run(&["container:"])),
-            Err("invalid network mode: invalid container format container:<name|id>".into())
+            Err("--network container: name the run whose microVM to join, as container:NAME".into())
         );
         let mut r = joined();
         r.dns = vec!["1.1.1.1".into()];
-        assert_eq!(check(&r), said("dns and the network mode"));
+        assert_eq!(
+            check(&r),
+            said("--dns: a run joining another's microVM takes that run's resolvers")
+        );
         let mut r = joined();
         r.add_hosts = vec!["a:1.2.3.4".into()];
-        assert_eq!(check(&r), said("custom host-to-IP mapping and the network mode"));
+        assert_eq!(
+            check(&r),
+            said("--add-host: a run joining another's microVM takes that run's hosts file")
+        );
         let mut r = joined();
         r.publish_all = true;
         assert_eq!(
             check(&r),
-            said("port publishing and the container type network mode")
+            said("-p: a run joining another's microVM takes that run's ports: publish them on that run")
         );
         let mut r = joined();
         r.expose = vec!["80".into()];
         assert_eq!(
             check(&r),
-            said("port exposing and the container type network mode")
+            said("--expose: a run joining another's microVM takes that run's ports: expose them on that run")
         );
         // dns before exposing, as dockerd checks them.
         let mut r = joined();
         r.expose = vec!["80".into()];
         r.dns = vec!["1.1.1.1".into()];
-        assert_eq!(check(&r), said("dns and the network mode"));
+        assert_eq!(
+            check(&r),
+            said("--dns: a run joining another's microVM takes that run's resolvers")
+        );
         assert_eq!(check(&joined()), Ok(Start::Join("web".into())));
         // Started again, its names its provider's as its first start stored them: nothing
         // of what it was created by is checked again, as dockerd checks none.
@@ -571,7 +574,7 @@ mod tests {
         assert_eq!(
             check(&run(&["container:nope"])),
             Ok(Start::Fails(
-                "joining network namespace of container: No such container: nope".into()
+                "--network container:nope: No such container: nope".into()
             ))
         );
     }
@@ -591,13 +594,13 @@ mod tests {
         assert_eq!(
             check_with(&tuned),
             Ok(Start::Fails(
-                "sysctl \"net.core.somaxconn\" not allowed in host network namespace".into()
+                "--sysctl net.core.somaxconn: a run on its host's network has no network of its own to set it in".into()
             ))
         );
         assert_eq!(
             check_with(&run(&["host", "none"])),
             Ok(Start::Fails(
-                "failed to set up container networking: container sharing network namespace with another container or host cannot be connected to any other network".into()
+                "--network host: a run on its host's network is on no other".into()
             ))
         );
     }
@@ -606,16 +609,16 @@ mod tests {
     /// would have made one.
     #[test]
     fn what_shards_does_not_do_yet_is_refused_up_front() {
-        let docker: Option<Bridge> = "172.17.0.0/16".parse().ok();
+        let bridge: Option<Bridge> = "172.17.0.0/16".parse().ok();
         assert_eq!(
-            check(&run(&["container:web"]), docker, |n| n == "web"),
+            check(&run(&["container:web"]), bridge, |n| n == "web"),
             Ok(Start::Join("web".into()))
         );
         // An endpoint's MAC is taken (D46, PM M173).
         assert_eq!(
             check(
                 &run(&["name=bridge,mac-address=02:11:22:33:44:55"]),
-                docker,
+                bridge,
                 |_| false
             ),
             Ok(Start::Attach(Net::Bridge))
@@ -623,7 +626,7 @@ mod tests {
         // Link-local addresses are taken; one that is not link-local fails the start after
         // the network is found, on `none` too, the first of several (PM M175).
         assert_eq!(
-            check(&run(&["name=bridge,link-local-ip=169.254.1.1"]), docker, |_| {
+            check(&run(&["name=bridge,link-local-ip=169.254.1.1"]), bridge, |_| {
                 false
             }),
             Ok(Start::Attach(Net::Bridge))
@@ -637,34 +640,34 @@ mod tests {
             ),
         ] {
             assert_eq!(
-                check(&run(networks), docker, |_| false),
+                check(&run(networks), bridge, |_| false),
                 Ok(Start::Fails(format!(
-                    "failed to set up container networking: invalid link local IP address: {bad}"
+                    "--link-local-ip {bad}: not a link-local address (169.254.0.0/16, fe80::/10)"
                 ))),
                 "{networks:?}"
             );
         }
         assert_eq!(
-            check(&run(&["name=nope,link-local-ip=10.9.8.7"]), docker, |_| false),
-            Ok(Start::Fails(
-                "failed to set up container networking: network nope not found".into()
-            ))
+            check(&run(&["name=nope,link-local-ip=10.9.8.7"]), bridge, |_| false),
+            Ok(Start::Fails("--network nope: no network is named nope".into()))
         );
         // An endpoint's sysctls are taken (PM M171).
         assert_eq!(
             check(
                 &run(&[
-                    "name=bridge,driver-opt=com.docker.network.endpoint.sysctls=net.ipv4.conf.IFNAME.log_martians=1"
+                    "name=bridge,driver-opt=com.bridge.network.endpoint.sysctls=net.ipv4.conf.IFNAME.log_martians=1"
                 ]),
-                docker,
+                bridge,
                 |_| false
             ),
             Ok(Start::Attach(Net::Bridge))
         );
         // dockerd runs `none` then `bridge`; it refuses `bridge` then `none`, and so are both.
         assert_eq!(
-            check(&run(&["none", "bridge"]), docker, |_| false),
-            Ok(Start::Fails("failed to set up container networking: container cannot be connected to multiple networks with one of the networks in private (none) mode".into()))
+            check(&run(&["none", "bridge"]), bridge, |_| false),
+            Ok(Start::Fails(
+                "--network none: a run with no network is on no other".into()
+            ))
         );
     }
 
@@ -730,12 +733,12 @@ mod tests {
         let within = check(&run(&["name=bridge,ip=172.18.0.9"]), elected, |_| false);
         assert_eq!(
             within,
-            Err("invalid config for network bridge: invalid endpoint settings:\nuser-specified IP address is supported on user-defined networks only".into())
+            Err("--network bridge: --ip: an address of its own is a run's on a network you made".into())
         );
         let outside = check(&run(&["name=bridge,ip=172.17.0.9"]), elected, |_| false);
         assert_eq!(
             outside,
-            Err("invalid config for network bridge: invalid endpoint settings:\n* user-specified IP address is supported on user-defined networks only\n* no configured subnet contains IP address 172.17.0.9".into())
+            Err("--network bridge:\n* --ip: an address of its own is a run's on a network you made\n* 172.17.0.9: in none of the network's subnets".into())
         );
         assert_eq!(
             check(&run(&[]), None, |_| false),

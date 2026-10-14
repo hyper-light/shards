@@ -445,7 +445,7 @@ fn operator(s: &str) -> Result<crate::db::Op, String> {
 }
 
 /// runc's architecture names for a profile's (ConvertStringToArch).
-fn runc_arch(s: &str) -> Result<&'static str, String> {
+fn arch_named(s: &str) -> Result<&'static str, String> {
     Ok(match s {
         "SCMP_ARCH_X86" => "x86",
         "SCMP_ARCH_X86_64" => "amd64",
@@ -514,7 +514,7 @@ pub fn convert(spec: &Spec) -> Result<Option<Config>, String> {
     let architectures = spec
         .architectures
         .iter()
-        .map(|a| runc_arch(a))
+        .map(|a| arch_named(a))
         .collect::<Result<Vec<_>, _>>()?;
     let default_action = action(&spec.default_action)?;
     let mut syscalls = Vec::new();

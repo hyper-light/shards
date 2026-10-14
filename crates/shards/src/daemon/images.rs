@@ -154,7 +154,7 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
         {
             Ok(images) => images,
             Err(e) => {
-                reply.err(&format!("Error response from daemon: {e}"));
+                reply.err(&format!("shards: {e}"));
                 return 1;
             }
         };
@@ -354,7 +354,7 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
             let created = img
                 .created
                 .as_deref()
-                .and_then(|c| shards_dockerfile::go::parse_rfc3339(c.as_bytes()).ok())
+                .and_then(|c| shards_agentfile::go::parse_rfc3339(c.as_bytes()).ok())
                 .map_or(-62_135_596_800, |t| t.unix().0);
             images.push(Summary {
                 manifests: manifests(img, containers),
@@ -505,7 +505,7 @@ const IMAGE_FILTERS: [&str; 7] = [
 
 /// A config's `created` in nanoseconds since the epoch.
 fn created_ns(created: &str) -> Option<i128> {
-    let (s, n) = shards_dockerfile::go::parse_rfc3339(created.as_bytes())
+    let (s, n) = shards_agentfile::go::parse_rfc3339(created.as_bytes())
         .ok()?
         .unix();
     Some(i128::from(s) * 1_000_000_000 + i128::from(n))
@@ -600,7 +600,7 @@ fn reference_matches(patterns: &[&str], r: &shards_image::reference::Reference) 
     ];
     for pattern in patterns {
         for target in &targets {
-            match shards_dockerfile::glob::filepath_match(pattern.as_bytes(), target.as_bytes()) {
+            match shards_agentfile::glob::filepath_match(pattern.as_bytes(), target.as_bytes()) {
                 Ok(true) => return true,
                 Ok(false) => {}
                 Err(_) => return false,
@@ -677,15 +677,13 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
             Err(e) => return refuse(&invalid(target, &e)),
         };
         if tagged.digest.is_some() {
-            return refuse("refusing to create a tag with a digest reference");
+            return refuse("shards: a tag names an image by name and tag, not by digest");
         }
         let tagged = tagged.tag_name_only();
         let mut bare = tagged.clone();
         bare.tag = None;
         if bare.familiar() == "sha256" {
-            return refuse(
-                "Error response from daemon: refusing to create an ambiguous tag using digest algorithm as name",
-            );
+            return refuse("shards: an image named sha256 would read as a digest: give it another name");
         }
         let found = self.store().and_then(|store| {
             let store = store.ok_or_else(|| not_found(source))?;
@@ -697,11 +695,11 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
             if let Some(e) = config
                 .as_deref()
                 .and_then(|c| match shards_image::config::Read::new(c) {
-                    Ok(read) => read.error(shards_image::config::As::Docker),
+                    Ok(read) => read.error(shards_image::config::As::Run),
                     Err(e) => Some(e),
                 })
             {
-                return Err(format!("could not deserialize image config: {e}"));
+                return Err(format!("the image's config does not read: {e}"));
             }
             let existing = image.references.first().ok_or_else(|| not_found(source))?;
             store
@@ -724,7 +722,7 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
                 }
                 0
             }
-            Err(e) => refuse(&format!("Error response from daemon: {e}")),
+            Err(e) => refuse(&format!("shards: {e}")),
         }
     }
 }
@@ -768,7 +766,7 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
         let store = match self.store() {
             Ok(store) => store,
             Err(e) => {
-                reply.err(&format!("Error response from daemon: {e}"));
+                reply.err(&format!("shards: {e}"));
                 return 1;
             }
         };
@@ -794,13 +792,13 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
                 .unwrap_or_default();
             let removed = match &store {
                 None => Err(super::rmi::Refused {
-                    said: format!("Error response from daemon: {}", not_found(given)),
+                    said: format!("shards: {}", not_found(given)),
                     not_found: true,
                 }),
                 Some(s) => s
                     .references()
                     .map_err(|e| super::rmi::Refused {
-                        said: format!("Error response from daemon: {e}"),
+                        said: format!("shards: {e}"),
                         not_found: false,
                     })
                     .and_then(|records| {
@@ -845,11 +843,7 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
                     }
                 }
                 Err(e) if styled => {
-                    let said = e
-                        .said
-                        .strip_prefix("Error response from daemon: ")
-                        .unwrap_or(&e.said)
-                        .to_string();
+                    let said = e.said.strip_prefix("shards: ").unwrap_or(&e.said).to_string();
                     sheet.record(&[("given", given.clone()), ("error", said)]);
                     errors.push(e);
                 }
@@ -932,7 +926,7 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
         let image = match read {
             Ok(image) => image,
             Err(e) => {
-                reply.err(&format!("Error response from daemon: {e}"));
+                reply.err(&format!("shards: {e}"));
                 return 1;
             }
         };
@@ -943,9 +937,7 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
         });
         let history = match read {
             Some(Err(e)) => {
-                reply.err(&format!(
-                    "Error response from daemon: could not deserialize image config: {e}"
-                ));
+                reply.err(&format!("shards: the image's config does not read: {e}"));
                 return 1;
             }
             Some(Ok(i)) => i.history.unwrap_or_default(),
@@ -1327,7 +1319,7 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
         reply: &super::commands::Reply<'_>,
     ) -> u8 {
         let refuse = |e: String| {
-            reply.err(&format!("Error response from daemon: {e}"));
+            reply.err(&format!("shards: {e}"));
             1
         };
         let (now, offset) = (i128::from(asker.now), i64::from(asker.utc_offset));
@@ -1678,7 +1670,9 @@ pub(crate) fn resolve<'a>(
     match (matching.next(), matching.next()) {
         (None, _) => Err(not_found(given)),
         (Some(i), None) => Ok(i),
-        (Some(_), Some(_)) => Err("ambiguous reference".into()),
+        (Some(_), Some(_)) => Err(format!(
+            "{given} names more than one image: give its whole name or ID"
+        )),
     }
 }
 
@@ -2247,7 +2241,10 @@ mod tests {
         assert_eq!(found("sha256:cccccc"), Ok(c.clone()));
         assert_eq!(found("ccc"), Err("No such image: ccc:latest".into()), "too short");
         assert_eq!(found("aaaa1"), Ok(a.clone()));
-        assert_eq!(found("aaaa"), Err("ambiguous reference".into()));
+        assert_eq!(
+            found("aaaa"),
+            Err("aaaa names more than one image: give its whole name or ID".into())
+        );
         assert_eq!(found("nothing:1"), Err("No such image: nothing:1".into()));
         assert_eq!(found("busybox"), Err("No such image: busybox:latest".into()));
         assert_eq!(

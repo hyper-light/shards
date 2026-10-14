@@ -1011,11 +1011,11 @@ dependencies = [
  "serde_json",
  "sha2",
  "shards-abi",
+ "shards-agentfile",
  "shards-apple",
  "shards-archive",
  "shards-build",
  "shards-cmdline",
- "shards-dockerfile",
  "shards-flate",
  "shards-gateway",
  "shards-git",
@@ -1055,6 +1055,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "shards-agentfile"
+version = "0.1.0"
+dependencies = [
+ "base64",
+ "serde_json",
+ "sha2",
+ "shards-cmdline",
+ "shards-image",
+]
+
+[[package]]
 name = "shards-apple"
 version = "0.1.0"
 dependencies = [
@@ -1082,7 +1093,7 @@ dependencies = [
  "lzma-rust2",
  "serde_json",
  "shards-abi",
- "shards-dockerfile",
+ "shards-agentfile",
  "shards-image",
  "shards-testdir",
  "unicode-normalization",
@@ -1108,17 +1119,6 @@ name = "shards-devcgroup"
 version = "0.1.0"
 dependencies = [
  "serde_json",
-]
-
-[[package]]
-name = "shards-dockerfile"
-version = "0.1.0"
-dependencies = [
- "base64",
- "serde_json",
- "sha2",
- "shards-cmdline",
- "shards-image",
 ]
 
 [[package]]
@@ -1156,7 +1156,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "sha3",
- "shards-dockerfile",
+ "shards-agentfile",
  "zeroize",
 ]
 
@@ -1297,7 +1297,7 @@ dependencies = [
  "base64",
  "num-bigint",
  "serde_json",
- "shards-dockerfile",
+ "shards-agentfile",
  "shards-gitsign",
  "shards-tuf",
 ]
@@ -1339,7 +1339,7 @@ dependencies = [
  "aws-lc-rs",
  "base64",
  "serde_json",
- "shards-dockerfile",
+ "shards-agentfile",
  "shards-gitsign",
  "shards-testdir",
 ]

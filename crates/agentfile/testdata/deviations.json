@@ -1902,7 +1902,7 @@
  {
   "kind": "lint-source",
   "field": "sources[].definition",
-  "reason": "BuildKit's lint result names its file's LLB definition: the frontend's local source for loading it, which carries the BuildKit session of that one build (local.session), so no two builds write the same result. shards plans no such LLB and writes none; the field is omitempty in solver/pb, so readers of LintResults see a nil definition. scripts/dockerfile/generate clears it from BuildKit's record.",
+  "reason": "BuildKit's lint result names its file's LLB definition: the frontend's local source for loading it, which carries the BuildKit session of that one build (local.session), so no two builds write the same result. shards plans no such LLB and writes none; the field is omitempty in solver/pb, so readers of LintResults see a nil definition. scripts/agentfile/generate clears it from BuildKit's record.",
   "fields": {}
  },
  {

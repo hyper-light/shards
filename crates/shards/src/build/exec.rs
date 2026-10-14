@@ -13,15 +13,15 @@ use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::SystemTime;
 
+use shards_agentfile::export::Layer;
+use shards_agentfile::go::Time;
+use shards_agentfile::llb::{OpAction, OpActionKind, OpChown, OpUser};
 use shards_build::copy::Chown;
 use shards_build::data::Sources;
 use shards_build::ops::{self, CopyAction};
 use shards_build::stack::{Stack, Tally};
 use shards_build::vfs::Fs;
 use shards_build::{Error as BuildError, diff};
-use shards_dockerfile::export::Layer;
-use shards_dockerfile::go::Time;
-use shards_dockerfile::llb::{OpAction, OpActionKind, OpChown, OpUser};
 use shards_image::erofs::{self, DataRef, Kind, Meta, Node, Tree};
 use shards_image::layer;
 use shards_image::reference::Digest;
@@ -867,10 +867,10 @@ impl<'a> Exec<'a> {
 /// A `RUN`'s operation, as the definition has it, and what the build allows it.
 #[derive(Debug)]
 pub struct RunOp<'o> {
-    pub process: &'o shards_dockerfile::llb::Process,
-    pub mounts: &'o [shards_dockerfile::llb::OpMount],
-    pub network: shards_dockerfile::llb::NetMode,
-    pub security: shards_dockerfile::llb::Security,
+    pub process: &'o shards_agentfile::llb::Process,
+    pub mounts: &'o [shards_agentfile::llb::OpMount],
+    pub network: shards_agentfile::llb::NetMode,
+    pub security: shards_agentfile::llb::Security,
     /// Secrets as variables: secret id, the variable's name, whether it may be missing (as
     /// the plan gives them, `pb.SecretEnv`'s order).
     pub secret_env: &'o [(Vec<u8>, Vec<u8>, bool)],
@@ -885,7 +885,7 @@ pub struct RunOp<'o> {
     /// The SSH agents `--ssh` forwards, by id.
     pub agents: &'o super::Agents,
     /// Its limits, its op's (`--memory`, `--cpu-shares` and the like).
-    pub resources: Option<&'o shards_dockerfile::llb::LinuxResources>,
+    pub resources: Option<&'o shards_agentfile::llb::LinuxResources>,
     /// What its CDI devices bring it (D96), granted and merged.
     pub cdi: Option<&'o super::cdi::Edits>,
     /// The build's proxy, where its policies ask for one (D110): a step whose network is
@@ -961,7 +961,7 @@ pub fn cpu_weight(shares: u64) -> u64 {
 /// v0.0.4 fs2/memory.go `setMemory`, fs2/cpu.go `setCPU`, fs2/cpuset.go): the swap first,
 /// memory, the CPU's weight and maximum, the CPUs and memory nodes. A swap past the
 /// memory alone is refused as runc refuses it.
-pub fn cgroup_files(r: &shards_dockerfile::llb::LinuxResources) -> Result<CgroupFiles, String> {
+pub fn cgroup_files(r: &shards_agentfile::llb::LinuxResources) -> Result<CgroupFiles, String> {
     let mut out: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
     let mut put = |k: &str, v: String| out.push((k.as_bytes().to_vec(), v.into_bytes()));
     // ConvertMemorySwapToCgroupV2Value, memory never -1 here (dockerui takes it > 0).
@@ -1065,11 +1065,11 @@ impl Exec<'_> {
         else {
             return Ok(None);
         };
-        if *size > shards_user::BUILDKIT_USER_FILE as u64 {
+        if *size > shards_user::MAX_USER_FILE as u64 {
             return Err(format!(
                 "{:?} exceeds {} bytes",
                 String::from_utf8_lossy(path),
-                shards_user::BUILDKIT_USER_FILE
+                shards_user::MAX_USER_FILE
             ));
         }
         let mut buf = vec![0u8; *size as usize];
@@ -1162,7 +1162,7 @@ impl Exec<'_> {
         check: &mut dyn FnMut(&str, &str) -> bool,
     ) -> Result<(Vec<Ref>, Option<super::proxy::capture::Capture>), String> {
         use shards_abi::build::{Mount, Network, Step};
-        use shards_dockerfile::llb::{NetMode, OpMountKind, Security, Sharing};
+        use shards_agentfile::llb::{NetMode, OpMountKind, Security, Sharing};
 
         let p = op.process;
         let input = |i: i64| -> Result<Ref, String> {
@@ -1194,9 +1194,9 @@ impl Exec<'_> {
         let passwd = self.user_file(&root.fs, b"/etc/passwd");
         let group = self.user_file(&root.fs, b"/etc/group");
         let user = match (&passwd, &group) {
-            (Ok(pw), Ok(gr)) => shards_user::buildkit(&p.user, pw.as_deref(), gr.as_deref()),
+            (Ok(pw), Ok(gr)) => shards_user::step_user(&p.user, pw.as_deref(), gr.as_deref()),
             (Err(e), _) | (_, Err(e)) if !p.user.is_empty() => Err(e.clone()),
-            _ => shards_user::buildkit(b"", None, None),
+            _ => shards_user::step_user(b"", None, None),
         }
         .map_err(|e| fail(&e))?;
         // Secrets as variables: the build's, and a missing one empty or, when required, an
@@ -1289,7 +1289,7 @@ impl Exec<'_> {
                     .join(" ")
             );
             if *id != m.dest {
-                description.push_str(&format!(" with id {}", shards_dockerfile::go::quote(id)));
+                description.push_str(&format!(" with id {}", shards_agentfile::go::quote(id)));
             }
             let sharing = match sharing {
                 Sharing::Shared => store::Sharing::Shared,
@@ -1608,7 +1608,7 @@ mod tests {
     /// runc's cpu.weight for every --cpu-shares value, on this platform's floating point:
     /// Go's math is its own, this one's the platform's.
     #[test]
-    fn cpu_weights_are_runcs() {
+    fn cpu_shares_become_cpu_weights() {
         let table = include_str!("testdata/cpu-weight.txt");
         let points: Vec<(u64, u64)> = table
             .lines()
@@ -1629,7 +1629,7 @@ mod tests {
 
     #[test]
     fn step_limits_are_written() {
-        use shards_dockerfile::llb::LinuxResources;
+        use shards_agentfile::llb::LinuxResources;
         let files = |r: LinuxResources| {
             cgroup_files(&r).map(|f| {
                 f.into_iter()

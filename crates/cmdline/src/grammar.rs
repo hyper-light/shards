@@ -60,8 +60,8 @@ impl Thing {
 /// are not, and are read as they are.
 pub fn rewrite(args: &[String]) -> Option<Vec<String>> {
     let (first, second) = (args.first()?.as_str(), args.get(1).map(String::as_str));
-    // `shards image ls` is `shards ls image`: Docker's management form, turned round.
-    let docker_form = matches!(Thing::of(first), Some(Thing::Image | Thing::Container));
+    // `shards image ls` is `shards ls image`: the THING ACTION form, turned round.
+    let thing_first = matches!(Thing::of(first), Some(Thing::Image | Thing::Container));
     let (action, thing, rest) = match (Thing::of(first), second) {
         (Some(thing @ (Thing::Image | Thing::Container)), Some(action)) => (action, thing, args.get(2..)?),
         (
@@ -143,7 +143,7 @@ pub fn rewrite(args: &[String]) -> Option<Vec<String>> {
             out.extend(rest.iter().cloned());
             return Some(out);
         }
-        (action @ ("push" | "tag" | "save"), _) if !docker_form => {
+        (action @ ("push" | "tag" | "save"), _) if !thing_first => {
             let mut out = once(action, &[]);
             out.push("--convert".into());
             out.extend(rest.iter().cloned());
@@ -156,7 +156,7 @@ pub fn rewrite(args: &[String]) -> Option<Vec<String>> {
     };
     let mut out: Vec<String> = said
         .iter()
-        .filter(|w| !(docker_form && **w == "--convert"))
+        .filter(|w| !(thing_first && **w == "--convert"))
         .map(|w| (*w).to_string())
         .collect();
     out.extend(rest.iter().cloned());
@@ -615,7 +615,7 @@ mod tests {
     }
 
     #[test]
-    fn docker_words_and_the_vm_process_are_left_alone() {
+    fn compatible_commands_and_the_vm_process_are_left_alone() {
         for words in [
             "stop web",
             "rm -f web",

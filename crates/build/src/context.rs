@@ -6,8 +6,8 @@
 
 use std::path::Path;
 
-use shards_dockerfile::glob::{self, MatchInfo, PatternMatcher};
-use shards_dockerfile::go;
+use shards_agentfile::glob::{self, MatchInfo, PatternMatcher};
+use shards_agentfile::go;
 use shards_image::erofs::{Kind, Meta, Tree};
 
 use crate::Error;

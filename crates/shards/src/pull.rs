@@ -128,7 +128,7 @@ pub fn command(
                         ..named.clone()
                     })
                     .collect(),
-                Err(e) => return refuse(&format!("Error response from daemon: {e}")),
+                Err(e) => return refuse(&format!("shards: {e}")),
             }
         } else {
             vec![named.clone()]
@@ -180,11 +180,9 @@ pub fn command(
             let (pulled, same) = match pulled {
                 Ok(p) => p,
                 Err(e) if all => {
-                    return refuse(&format!(
-                        "Error response from daemon: error pulling {reference}: {e}"
-                    ));
+                    return refuse(&format!("shards: pulling {reference}: {e}"));
                 }
-                Err(e) => return refuse(&format!("Error response from daemon: {e}")),
+                Err(e) => return refuse(&format!("shards: {e}")),
             };
             // Docker's: up to date when the tag already named this image, or when a
             // digest's content was all here.
@@ -375,8 +373,8 @@ pub(crate) fn targets(given: &str) -> Result<Vec<Target>, String> {
     }
     let guest = image_platform::guest();
     let ours = guest.first().ok_or("no platform for this host's guests")?;
-    let build = shards_dockerfile::platform::Platform::new(&ours.os, &ours.architecture);
-    let parsed = shards_dockerfile::platform::parse(given.as_bytes(), &build)
+    let build = shards_agentfile::platform::Platform::new(&ours.os, &ours.architecture);
+    let parsed = shards_agentfile::platform::parse(given.as_bytes(), &build)
         .map_err(|e| String::from_utf8_lossy(&e).into_owned())?;
     let text = |b: &[u8]| String::from_utf8_lossy(b).into_owned();
     Ok(vec![image_platform::normalize(&shards_image::oci::Platform {

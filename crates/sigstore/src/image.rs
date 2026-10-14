@@ -812,7 +812,7 @@ pub fn verify_image_with<'r>(
                 return Err(fail(format!(
                     "signature manifest {} is not a bundle (artifact type {})",
                     sig.digest,
-                    shards_dockerfile::go::quote(m.artifact_type.as_bytes())
+                    shards_agentfile::go::quote(m.artifact_type.as_bytes())
                 )));
             }
             let b = read_blob(p, layer).map_err(|e| {
@@ -856,7 +856,7 @@ pub fn verify_image_with<'r>(
                 return Err(fail(format!(
                     "simple signing payload in manifest {} has invalid type {}",
                     sig.digest,
-                    shards_dockerfile::go::quote(ty.as_bytes())
+                    shards_agentfile::go::quote(ty.as_bytes())
                 )));
             }
             docker_reference = reference;

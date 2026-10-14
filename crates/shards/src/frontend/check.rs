@@ -21,7 +21,7 @@ use std::path::Path;
 use std::process::ExitCode;
 
 use sha2::Digest as _;
-use shards_dockerfile::plan::DomainDir;
+use shards_agentfile::plan::DomainDir;
 use shards_image::erofs::{DataRef, Dir, Kind, Meta, Node, NodeId, Tree};
 
 /// The check's spec, as the frontend writes it.

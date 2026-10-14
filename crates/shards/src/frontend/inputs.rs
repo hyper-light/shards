@@ -4,12 +4,12 @@
 
 use std::collections::BTreeMap;
 
-use shards_dockerfile::llb::{
+use shards_agentfile::llb::{
     Embedded, EmbeddedOp, GivenSource, Graph, GroupId, LinuxResources, Meta, Position, ProgressGroup, Range,
     RawSource, State,
 };
-use shards_dockerfile::pb::{self, Carried};
-use shards_dockerfile::platform::Platform;
+use shards_agentfile::pb::{self, Carried};
+use shards_agentfile::platform::Platform;
 use shards_gateway::wire::{Error, Reader, Value};
 
 /// Data no protobuf encoder writes, in protobuf-go's words.
@@ -369,9 +369,9 @@ mod tests {
 
     use std::collections::BTreeMap;
 
-    use shards_dockerfile::llb::{Action, CopyInfo, Graph, Meta, State};
-    use shards_dockerfile::pb::{self, Carried, SourceInfo};
-    use shards_dockerfile::platform::Platform;
+    use shards_agentfile::llb::{Action, CopyInfo, Graph, Meta, State};
+    use shards_agentfile::pb::{self, Carried, SourceInfo};
+    use shards_agentfile::platform::Platform;
     use shards_gateway::wire::Writer;
 
     use super::*;
@@ -490,9 +490,9 @@ mod tests {
     fn a_definition_given_is_refused() {
         let platform = Platform::new("linux", "arm64");
         let src = pb::op(
-            &shards_dockerfile::llb::Op {
+            &shards_agentfile::llb::Op {
                 inputs: Vec::new(),
-                kind: shards_dockerfile::llb::OpKind::Source {
+                kind: shards_agentfile::llb::OpKind::Source {
                     identifier: b"local://context".to_vec(),
                     attrs: BTreeMap::new(),
                 },

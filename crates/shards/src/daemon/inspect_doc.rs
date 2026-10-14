@@ -39,6 +39,12 @@ const READONLY: [&str; 5] = [
     "/proc/sysrq-trigger",
 ];
 
+/// A namespace's mode as a run gave it, `private` where it gave none: a namespace of its
+/// own in its microVM (D156).
+fn or_private(mode: &str) -> &str {
+    if mode.is_empty() { "private" } else { mode }
+}
+
 /// dockerd's default /dev/shm (daemon/config, DefaultShmSize).
 const SHM_SIZE: i64 = 64 << 20;
 
@@ -219,9 +225,9 @@ pub(super) fn go_time(ns: Option<u128>) -> String {
         return "0001-01-01T00:00:00Z".to_owned();
     };
     let secs = i64::try_from(ns / 1_000_000_000).unwrap_or(i64::MAX);
-    let time = shards_dockerfile::go::Time {
+    let time = shards_agentfile::go::Time {
         nanosecond: u32::try_from(ns % 1_000_000_000).unwrap_or(0),
-        ..shards_dockerfile::go::Time::from_unix(secs)
+        ..shards_agentfile::go::Time::from_unix(secs)
     };
     time.rfc3339_nano().unwrap_or_default()
 }
@@ -826,7 +832,8 @@ fn host_config(f: &Facts<'_>) -> Value {
         })
         .field("CapAdd", strs(&run.cap_add, run.cap_add.is_empty()))
         .field("CapDrop", strs(&run.cap_drop, run.cap_drop.is_empty()))
-        .field("CgroupnsMode", s("private"))
+        // Its namespaces as its microVM has them (D156), each default `private`'s.
+        .field("CgroupnsMode", s(or_private(&run.cgroupns)))
         // docker/cli's toNetipAddrSlice is nil for none; the rest never nil but ExtraHosts.
         .tagged("DNS", Some("Dns"), false, strs(&run.dns, run.dns.is_empty()))
         .tagged(
@@ -843,7 +850,7 @@ fn host_config(f: &Facts<'_>) -> Value {
         )
         .field("ExtraHosts", strs(&run.add_hosts, run.add_hosts.is_empty()))
         .field("GroupAdd", strs(&run.group_add, run.group_add.is_empty()))
-        .field("IpcMode", s("private"))
+        .field("IpcMode", s(or_private(&run.ipc)))
         .field("Cgroup", s(""))
         .field("Links", Value::NilList(Kind::String))
         .field("OomScoreAdj", int(run.oom_score_adj))
@@ -868,7 +875,14 @@ fn host_config(f: &Facts<'_>) -> Value {
             "StorageOpt",
             Some("StorageOpt"),
             true,
-            Value::NilMap(Kind::String),
+            if run.storage_opt.is_empty() {
+                Value::NilMap(Kind::String)
+            } else {
+                Value::string_map(run.storage_opt.iter().map(|kv| {
+                    let (k, v) = kv.split_once('=').unwrap_or((kv.as_str(), ""));
+                    (k.to_string(), v.to_string())
+                }))
+            },
         )
         .tagged(
             "Tmpfs",
@@ -883,8 +897,8 @@ fn host_config(f: &Facts<'_>) -> Value {
                 }))
             },
         )
-        .field("UTSMode", s(""))
-        .field("UsernsMode", s(""))
+        .field("UTSMode", s(&run.uts))
+        .field("UsernsMode", s(&run.userns))
         .field(
             "ShmSize",
             int(if run.shm_size == 0 { SHM_SIZE } else { run.shm_size }),
@@ -903,7 +917,13 @@ fn host_config(f: &Facts<'_>) -> Value {
             },
         )
         .tagged("Runtime", Some("Runtime"), true, s("shards"))
-        .tagged("Umask", Some("Umask"), true, Struct::nil("uint32"))
+        .tagged(
+            "Umask",
+            Some("Umask"),
+            true,
+            run.umask
+                .map_or_else(|| Struct::nil("uint32"), |m| int(i64::from(m))),
+        )
         .field("Isolation", s(&run.isolation))
         // Resources, embedded, as dockerd keeps them: swap twice the memory where only
         // memory is limited (adaptContainerSettings), a pids limit of 0 or less unset
@@ -1012,7 +1032,7 @@ fn host_config(f: &Facts<'_>) -> Value {
             "Init",
             Some("Init"),
             true,
-            run.docker_init.map_or_else(
+            run.init_process.map_or_else(
                 || Struct::nil("bool"),
                 |b| Struct::pointing("bool", Value::Bool(b)),
             ),

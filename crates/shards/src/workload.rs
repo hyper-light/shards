@@ -864,7 +864,7 @@ pub fn exec(to: &'static ToGuest, req: ExecRequest) -> Result<(), String> {
             let (status, answered) = match exec_session(to, &mut req) {
                 Ok(ended) => ended,
                 Err(e) => {
-                    let _ = writeln!(req.stderr, "Error response from daemon: {e}");
+                    let _ = writeln!(req.stderr, "shards: {e}");
                     (Some(1), false)
                 }
             };
@@ -1012,21 +1012,14 @@ fn exec_session(to: &'static ToGuest, req: &mut ExecRequest) -> Result<(Option<u
                     Some(match not_started {
                         None => status,
                         Some((run::exec_failed::DAEMON, why)) => {
-                            let _ = writeln!(req.stderr, "Error response from daemon: {why}");
+                            let _ = writeln!(req.stderr, "shards: {why}");
                             1
                         }
                         Some((_, why)) => {
-                            // dockerd's code for what the runtime could not start (moby
-                            // daemon/errors.go), in runc's words.
+                            // The status of what init could not start (126 or 127, as moby
+                            // daemon/errors.go sets them), and why.
                             let (_, code) = shards_cmdline::commands::start_failed(&why);
-                            let said = if why == "Cwd must be an absolute path" {
-                                format!("OCI runtime exec failed: exec failed: {why}")
-                            } else {
-                                format!(
-                                    "OCI runtime exec failed: exec failed: unable to start container process: {why}"
-                                )
-                            };
-                            let _ = writeln!(req.stderr, "{said}");
+                            let _ = writeln!(req.stderr, "shards: cannot start the command: {why}");
                             code
                         }
                     }),

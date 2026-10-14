@@ -34,8 +34,7 @@ use crate::netplan::HOSTS;
 pub(crate) struct Failure {
     status: u32,
     pub(crate) message: String,
-    /// The daemon's refusal, not the runtime's failure: an exec's unknown user, which
-    /// `docker exec` reports as "Error response from daemon".
+    /// The daemon's refusal, not init's failure to start it: an exec's unknown user.
     daemon: bool,
 }
 
@@ -383,6 +382,7 @@ fn mount_root(device: &str) -> Result<(), Failure> {
         None => None,
     };
     mount("tmpfs", "/rw", "tmpfs", 0, &rw)?;
+    crate::setup::keep_rw().map_err(|e| setup_failed(format!("/rw: {e}")))?;
     for dir in ["/rw/upper", "/rw/work"] {
         mkdir(dir)?;
     }
@@ -403,7 +403,14 @@ fn mount_root(device: &str) -> Result<(), Failure> {
     mount(".", "/", "", libc::MS_MOVE, "")?;
     chdir_chroot(".", true)?;
     chdir_chroot("/", false)?;
-    container_mounts()?;
+    // The microVM's /dev/shm, a run's under `--ipc host` (D156), as large as a host's is
+    // by default: half its memory (Documentation/filesystems/tmpfs.rst), all of it the
+    // plugged memory's where it has some.
+    let shm = match &plug {
+        Some(plug) => format!("mode=1777,size={}", plug.full() / 2),
+        None => "mode=1777".to_string(),
+    };
+    container_mounts(&shm)?;
     container_files()?;
     loopback_up().map_err(|e| setup_failed(e.to_string()))?;
     // A VM with a network: eth0 as the host named it, before any snapshot.
@@ -428,6 +435,8 @@ fn mount_root(device: &str) -> Result<(), Failure> {
     // Docker's device rules, before any snapshot: a run with them does nothing more.
     crate::devices::confine_by_default(WORKLOAD_CGROUP).map_err(setup_failed)?;
     crate::setup::keep_proc_sys().map_err(|e| setup_failed(format!("/proc/sys: {e}")))?;
+    crate::setup::keep_microvm_namespaces()
+        .map_err(|e| setup_failed(format!("the microVM's namespaces: {e}")))?;
     // Docker's own sysctls for a container with a network namespace of its own, where the
     // kernel has them, before any snapshot; a run's `--sysctl` is written after, as
     // dockerd merges the run's over them (moby daemon/oci_linux.go): ICMP echo sockets for
@@ -445,11 +454,15 @@ fn mount_root(device: &str) -> Result<(), Failure> {
     masked()
 }
 
-/// Docker's mounts for a container, in the root this process is in (moby
-/// daemon/pkg/oci/defaults.go, a 64 MiB /dev/shm from daemon/config/config.go), and its
-/// devices: /dev holds a container's devices alone, not the VM's disks, memory and
-/// console. The run's root has them as it boots; a joiner's (D119) as it builds its own.
-pub(crate) fn container_mounts() -> Result<(), Failure> {
+/// The options of a run's own /dev/shm (D156), 64 MiB, as Docker's default is (moby
+/// daemon/config/config.go).
+pub(crate) const OWN_SHM: &str = "mode=1777,size=65536k";
+
+/// A run's mounts, in the root this process is in, with /dev/shm of options `shm` (moby
+/// daemon/pkg/oci/defaults.go has the same), and its devices: /dev holds its devices
+/// alone, not the VM's disks, memory and console. The run's root has them as it boots,
+/// /dev/shm the microVM's; a joiner's (D119) as it builds its own.
+pub(crate) fn container_mounts(shm: &str) -> Result<(), Failure> {
     let (nosuid, noexec, nodev) = (libc::MS_NOSUID, libc::MS_NOEXEC, libc::MS_NODEV);
     for (source, target, fstype, flags, data) in [
         ("proc", "/proc", "proc", nosuid | noexec | nodev, ""),
@@ -474,13 +487,7 @@ pub(crate) fn container_mounts() -> Result<(), Failure> {
             nosuid | noexec,
             "newinstance,ptmxmode=0666,mode=0620,gid=5",
         ),
-        (
-            "shm",
-            "/dev/shm",
-            "tmpfs",
-            nosuid | noexec | nodev,
-            "mode=1777,size=65536k",
-        ),
+        ("shm", "/dev/shm", "tmpfs", nosuid | noexec | nodev, shm),
         ("mqueue", "/dev/mqueue", "mqueue", nosuid | noexec | nodev, ""),
     ] {
         mkdir(target)?;
@@ -538,8 +545,8 @@ static BESIDE: std::sync::OnceLock<Beside> = std::sync::OnceLock::new();
 
 impl Beside {
     /// Refuses what of `setup` reaches the domains: a privileged command (`what`, `run`
-    /// or `exec`), `/proc` unmasked, the microVM's PID namespace, the host's network
-    /// (D124), a capability of
+    /// or `exec`), `/proc` unmasked, the microVM's PID or cgroup namespace (D156), the
+    /// host's network (D124), a capability of
     /// [`shards_abi::run::beside`]'s, a net.* sysctl where their flows cross the
     /// command's network namespace.
     fn refuse(&self, setup: &[Vec<u8>], what: &str) -> Result<(), Failure> {
@@ -553,6 +560,9 @@ impl Beside {
             }
             if entry == b"pid=host" {
                 return Err(setup_failed(beside::pid_host()));
+            }
+            if entry == b"cgroupns=host" {
+                return Err(setup_failed(beside::cgroupns_host()));
             }
             if entry == b"network=host" {
                 return Err(setup_failed(beside::network_host()));
@@ -639,6 +649,9 @@ fn sort_setup(entries: &[Vec<u8>], into: &mut Inherited) -> Result<Vec<Vec<u8>>,
         } else if let Some(rt) = entry.strip_prefix(b"rt=") {
             // The guest's real-time budget, the run's (D155).
             crate::setup::real_time(rt).map_err(setup_failed)?;
+        } else if let Some(size) = entry.strip_prefix(b"rw-size=") {
+            // Its writable layer's size (D156), init's tmpfs.
+            crate::setup::rw_size(size).map_err(setup_failed)?;
         } else if let Some(caps) = entry.strip_prefix(b"caps=") {
             into.caps = std::str::from_utf8(caps).ok().and_then(|c| c.parse().ok());
         } else if let Some(group) = entry.strip_prefix(b"group=") {
@@ -667,6 +680,7 @@ fn sort_setup(entries: &[Vec<u8>], into: &mut Inherited) -> Result<Vec<Vec<u8>>,
         } else {
             if entry.starts_with(b"ulimit=")
                 || entry.starts_with(b"oom=")
+                || entry.starts_with(b"umask=")
                 || entry.starts_with(b"seccomp=")
                 || entry.starts_with(b"seccomp-mounts=")
                 || entry.starts_with(b"seccomp-binds=")
@@ -873,12 +887,11 @@ fn cgroups() -> Result<(), Failure> {
     mount("", "/", "", libc::MS_REC | libc::MS_SHARED, "")
 }
 
-/// Puts this process, a standby, in the workload's cgroup and in namespaces of its own,
-/// as runc puts a container's: a cgroup namespace rooted there, and a mount namespace,
-/// a slave of init's, in which `/sys/fs/cgroup` is that cgroup, read-only, as Docker's
-/// containers see theirs (moby daemon/pkg/oci/defaults.go). An exec's joins the
-/// workload's (`join`, its process), as runc's exec enters a container's. Returns the
-/// errno of the step that failed.
+/// Puts this process, a standby, in the workload's cgroup and in namespaces of its own: a
+/// cgroup namespace rooted there; an IPC namespace, with a /dev/shm of its own over the
+/// microVM's (D156); and a mount namespace, a slave of init's, in which `/sys/fs/cgroup`
+/// is that cgroup, read-only. An exec's joins the workload's (`join`, its process).
+/// Returns the errno of the step that failed.
 fn isolate(join: Option<libc::pid_t>, joiner: bool) -> Result<(), i32> {
     let errno = |e: io::Error| e.raw_os_error().unwrap_or(libc::EIO);
     // A joiner's exec joins the joiner's own cgroup (D119), which /proc names.
@@ -903,7 +916,11 @@ fn isolate(join: Option<libc::pid_t>, joiner: bool) -> Result<(), i32> {
                 ("mnt", libc::CLONE_NEWNS),
             ]
         } else {
-            &[("cgroup", libc::CLONE_NEWCGROUP), ("mnt", libc::CLONE_NEWNS)]
+            &[
+                ("cgroup", libc::CLONE_NEWCGROUP),
+                ("ipc", libc::CLONE_NEWIPC),
+                ("mnt", libc::CLONE_NEWNS),
+            ]
         };
         // Every one opened before any is entered: once the mount namespace is, `/proc` may
         // be one whose PIDs are not init's.
@@ -922,10 +939,11 @@ fn isolate(join: Option<libc::pid_t>, joiner: bool) -> Result<(), i32> {
         return Ok(());
     }
     let (nosuid, noexec, nodev) = (libc::MS_NOSUID, libc::MS_NOEXEC, libc::MS_NODEV);
-    // SAFETY: unshare(2), mount(2) and umount2(2) on NUL-terminated literals; this
-    // process is a single-threaded fork of init.
+    let own_shm = std::ffi::CString::new(OWN_SHM).map_err(|_| libc::EINVAL)?;
+    // SAFETY: unshare(2), mount(2) and umount2(2) on NUL-terminated strings that outlive
+    // the calls; this process is a single-threaded fork of init.
     unsafe {
-        if libc::unshare(libc::CLONE_NEWCGROUP | libc::CLONE_NEWNS) != 0 {
+        if libc::unshare(libc::CLONE_NEWCGROUP | libc::CLONE_NEWNS | libc::CLONE_NEWIPC) != 0 {
             return Err(last());
         }
         if libc::mount(
@@ -942,6 +960,14 @@ fn isolate(join: Option<libc::pid_t>, joiner: bool) -> Result<(), i32> {
                 c"cgroup2".as_ptr(),
                 libc::MS_RDONLY | nosuid | noexec | nodev,
                 std::ptr::null(),
+            ) != 0
+            // Its own /dev/shm, as its IPC namespace is (D156), over the microVM's.
+            || libc::mount(
+                c"shm".as_ptr(),
+                c"/dev/shm".as_ptr(),
+                c"tmpfs".as_ptr(),
+                nosuid | noexec | nodev,
+                own_shm.as_ptr().cast(),
             ) != 0
         {
             return Err(last());
@@ -3079,6 +3105,10 @@ fn start_joiner(
         .transpose()
         .map_err(setup_failed)?;
     joiner_takes(&spec.setup)?;
+    // Beside the microVM's agents and harnesses, as its run is (D115).
+    if let Some(b) = BESIDE.get() {
+        b.refuse(&spec.setup, "run")?;
+    }
     let join = crate::join::Join {
         offset,
         len,
@@ -3086,6 +3116,10 @@ fn start_joiner(
         layer,
         pid: crate::join::pid(&spec.setup, joiners).map_err(setup_failed)?,
         init: spec.setup.iter().any(|e| e == b"init"),
+        ipc: crate::join::ipc(&spec.setup, joiners).map_err(setup_failed)?,
+        uts_host: spec.setup.iter().any(|e| e == b"uts=host"),
+        cgroupns_host: spec.setup.iter().any(|e| e == b"cgroupns=host"),
+        rw_size: crate::join::rw_size(&spec.setup).map_err(setup_failed)?,
     };
     // Its devices, as the workload's are found and confined (D44): the VM's, their nodes
     // made in its own /dev once its root is built, its cgroup's filter theirs.
@@ -3110,9 +3144,11 @@ fn start_joiner(
     };
     // Its sysctls in its own namespaces, as runc writes a container's from within them:
     // init's own would be its provider's (`sort_setup`).
+    // What its build took (D156) is done, not applied again by its standby or init.
     let (sysctls, setup): (Vec<Vec<u8>>, Vec<Vec<u8>>) = spec
         .setup
         .iter()
+        .filter(|e| !crate::join::built_by(e))
         .cloned()
         .partition(|e| e.starts_with(b"sysctl="));
     let mut inherited = Inherited::default();

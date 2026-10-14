@@ -20,11 +20,11 @@ use std::collections::{BTreeMap, HashMap};
 use std::rc::Rc;
 
 use sha2::{Digest as _, Sha256};
+use shards_agentfile::export::Layer;
+use shards_agentfile::glob::{MatchInfo, PatternMatcher};
+use shards_agentfile::llb::{Op, OpActionKind, OpChown, OpKind, OpMountKind, OpUser, Sharing};
 use shards_build::data::Sources;
 use shards_build::vfs::Fs;
-use shards_dockerfile::export::Layer;
-use shards_dockerfile::glob::{MatchInfo, PatternMatcher};
-use shards_dockerfile::llb::{Op, OpActionKind, OpChown, OpKind, OpMountKind, OpUser, Sharing};
 use shards_image::erofs::{Kind, Node, NodeId, Source as _, Tree};
 
 /// The version of what a key covers: a change to how steps are made changes it.
@@ -362,7 +362,7 @@ pub fn reads(op: &Op) -> Vec<Option<Vec<Selector>>> {
                     continue;
                 }
                 let Some(i) = slot(m.input) else { continue };
-                let sel = shards_dockerfile::go::join(&[b"/", &m.selector]);
+                let sel = shards_agentfile::go::join(&[b"/", &m.selector]);
                 // A mount whose changes no step takes, one it cannot change, or one of all
                 // of its input reads it; the root mount aside. The last mount of an input
                 // says, as getMountDeps's does.
@@ -554,7 +554,7 @@ impl Digests {
         sel: &Selector,
         sources: &mut Sources,
     ) -> Result<Option<[u8; 32]>, String> {
-        let path = shards_dockerfile::go::join(&[b"/", &sel.path]);
+        let path = shards_agentfile::go::join(&[b"/", &sel.path]);
         let find = |p: &[u8]| if sel.follow { fs.stat(p) } else { fs.lstat(p) };
         if !sel.filtered() {
             return match find(&path) {
@@ -741,7 +741,7 @@ pub fn decode(body: &[u8]) -> Result<Vec<Vec<Layer>>, String> {
                         .unwrap_or_default();
                     let created = match field(&v, "created") {
                         Some(t) => Some(
-                            shards_dockerfile::go::parse_rfc3339(&t)
+                            shards_agentfile::go::parse_rfc3339(&t)
                                 .map_err(|e| String::from_utf8_lossy(&e).into_owned())?,
                         ),
                         None => None,
@@ -767,8 +767,8 @@ pub fn decode(body: &[u8]) -> Result<Vec<Vec<Layer>>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use shards_agentfile::llb::{Input, OpAction, OpMount, Process, ProxyEnv};
     use shards_build::vfs::Fs;
-    use shards_dockerfile::llb::{Input, OpAction, OpMount, Process, ProxyEnv};
     use shards_image::erofs::Meta;
 
     fn source(id: &str) -> Op {
@@ -870,7 +870,7 @@ mod tests {
                 process: Box::new(Process {
                     args: vec![b"sh".to_vec()],
                     proxy,
-                    extra_hosts: vec![shards_dockerfile::llb::HostIp {
+                    extra_hosts: vec![shards_agentfile::llb::HostIp {
                         host: b"h".to_vec(),
                         ip: ip.to_vec(),
                     }],
@@ -906,7 +906,7 @@ mod tests {
 
     /// file.go's and exec.go's choices: which inputs a step reads, and how much of each.
     #[test]
-    fn steps_read_what_buildkit_checksums() {
+    fn steps_read_the_inputs_their_keys_need() {
         let copy = |input: i64, secondary: i64, src: &str| OpAction {
             input,
             secondary_input: secondary,
@@ -1159,7 +1159,7 @@ mod tests {
             size: 7,
             diff_id: b"sha256:bb".to_vec(),
             annotations: [(b"k".to_vec(), b"v".to_vec())].into_iter().collect(),
-            created: Some(shards_dockerfile::go::Time::from_unix(1_600_000_000)),
+            created: Some(shards_agentfile::go::Time::from_unix(1_600_000_000)),
             description: b"RUN x".to_vec(),
         };
         let outputs = vec![vec![layer.clone()], Vec::new()];

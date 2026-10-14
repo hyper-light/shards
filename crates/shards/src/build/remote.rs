@@ -18,8 +18,8 @@ use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 
+use shards_agentfile::export::Layer;
 use shards_cmdline::buildflags::CacheEntry;
-use shards_dockerfile::export::Layer;
 use shards_image::oci::{self, Descriptor, Document};
 use shards_image::reference::{Digest, Reference};
 use shards_image::store::Store;

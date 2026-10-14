@@ -211,6 +211,22 @@ pub fn parse_uint_bits(s: &str, bits: u32) -> Result<u64, NumError> {
     }
 }
 
+/// Go's `ParseUint(s, 8, 32)`: octal digits alone, no sign, prefix or underscore, the
+/// number fitting 32 bits (docker/cli's UmaskOpt).
+pub fn parse_octal32(s: &str) -> Result<u32, NumError> {
+    if s.is_empty() || !s.bytes().all(|b| (b'0'..=b'7').contains(&b)) {
+        return Err(NumError::syntax("ParseUint", s));
+    }
+    let mut n: u64 = 0;
+    for b in s.bytes() {
+        n = n
+            .checked_mul(8)
+            .and_then(|n| n.checked_add(u64::from(b - b'0')))
+            .ok_or_else(|| NumError::range("ParseUint", s))?;
+    }
+    u32::try_from(n).map_err(|_| NumError::range("ParseUint", s))
+}
+
 /// Go's `ParseUint(s, 0, 64)`: the number, or whether it failed by overflow (`true`)
 /// rather than syntax.
 fn parse_uint(s: &str) -> Result<u64, bool> {

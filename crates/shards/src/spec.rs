@@ -17,7 +17,7 @@ pub const NOT_RUN: u8 = 125;
 /// toStatusError).
 pub fn not_run(said: &str) -> (String, u8) {
     (
-        format!("shards: Error response from daemon: {said}\n\nRun 'shards run --help' for more information"),
+        format!("shards: {said}\n\nRun 'shards run --help' for more information"),
         shards_cmdline::commands::run_status(said),
     )
 }

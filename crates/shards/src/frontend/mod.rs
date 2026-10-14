@@ -20,12 +20,12 @@ use std::ffi::OsString;
 use std::io::{Read, Write};
 use std::process::ExitCode;
 
-use shards_dockerfile::lint::Warning;
-use shards_dockerfile::llb::{Definition, Input, Meta, Op, OpKind};
-use shards_dockerfile::parser::Dialect;
-use shards_dockerfile::pb::{self, Carried, Marshalled, SourceInfo};
-use shards_dockerfile::plan::{self, EpochSource, MainContext, Options, Resolved, Resolver};
-use shards_dockerfile::platform::{self, Platform};
+use shards_agentfile::lint::Warning;
+use shards_agentfile::llb::{Definition, Input, Meta, Op, OpKind};
+use shards_agentfile::parser::Dialect;
+use shards_agentfile::pb::{self, Carried, Marshalled, SourceInfo};
+use shards_agentfile::plan::{self, EpochSource, MainContext, Options, Resolved, Resolver};
+use shards_agentfile::platform::{self, Platform};
 use shards_gateway::gateway::{self as gw, Client, Pong, Ref, Returned, RpcStatus, Solve};
 use shards_gateway::grpc;
 
@@ -267,7 +267,7 @@ impl Caps {
 
     /// `llbCaps.Supports(id)`: none where the worker has it, else its refusal.
     fn llb_refusal(&self, id: &str, product: &str) -> Option<String> {
-        use shards_dockerfile::caps::{Lacks, refusal};
+        use shards_agentfile::caps::{Lacks, refusal};
         match self.llb.get(id) {
             Some((true, _)) => None,
             Some((false, reason)) => Some(refusal(id, Lacks::Disabled(reason), product)),
@@ -352,17 +352,17 @@ fn config(opts: &mut BTreeMap<String, String>, env: &Env, caps: &Caps) -> Result
         }
     }
     let resolve_mode =
-        shards_dockerfile::dockerui::resolve_mode(opt(opts, "image-resolve-mode")).map_err(Failure::new)?;
-    let extra_hosts = shards_dockerfile::dockerui::extra_hosts(opt(opts, "add-hosts"))
+        shards_agentfile::run_options::resolve_mode(opt(opts, "image-resolve-mode")).map_err(Failure::new)?;
+    let extra_hosts = shards_agentfile::run_options::extra_hosts(opt(opts, "add-hosts"))
         .map_err(|e| Failure::new(format!("failed to parse additional hosts: {e}")))?;
-    let shm_size = shards_dockerfile::dockerui::shm_size(opt(opts, "shm-size"))
+    let shm_size = shards_agentfile::run_options::shm_size(opt(opts, "shm-size"))
         .map_err(|e| Failure::new(format!("failed to parse shm size: {e}")))?;
     let ulimits =
         ulimits(opt(opts, "ulimit")).map_err(|e| Failure::new(format!("failed to parse ulimit: {e}")))?;
-    let linux_resources = shards_dockerfile::dockerui::linux_resources(opts)
+    let linux_resources = shards_agentfile::run_options::linux_resources(opts)
         .map_err(|e| Failure::new(format!("failed to parse resource limits: {e}")))?;
     let network_mode =
-        shards_dockerfile::dockerui::net_mode(opt(opts, "force-network-mode")).map_err(Failure::new)?;
+        shards_agentfile::run_options::net_mode(opt(opts, "force-network-mode")).map_err(Failure::new)?;
     let no_cache = opts.get("no-cache").map(|v| {
         if v.is_empty() {
             Vec::new()
@@ -398,7 +398,7 @@ fn config(opts: &mut BTreeMap<String, String>, env: &Env, caps: &Caps) -> Result
         opts.insert("hostname".into(), v);
     }
     if let Some(v) = opts.get("build-arg:BUILDKIT_DOCKERFILE_CHECK") {
-        shards_dockerfile::lint::parse_options(v.as_bytes()).map_err(|e| {
+        shards_agentfile::lint::parse_options(v.as_bytes()).map_err(|e| {
             Failure::new(format!(
                 "failed to parse build-arg:BUILDKIT_DOCKERFILE_CHECK: {}",
                 String::from_utf8_lossy(&e)
@@ -428,18 +428,18 @@ fn config(opts: &mut BTreeMap<String, String>, env: &Env, caps: &Caps) -> Result
         .cloned()
         .unwrap_or_else(|| "context".into());
     let context_url = opt(opts, &context_key).to_string();
-    let main_context = match shards_dockerfile::git::parse_git_ref(context_url.as_bytes()) {
-        shards_dockerfile::git::Parsed::Git(_) => MainContext::Git {
+    let main_context = match shards_agentfile::git::parse_git_ref(context_url.as_bytes()) {
+        shards_agentfile::git::Parsed::Git(_) => MainContext::Git {
             url: context_url.as_bytes().to_vec(),
             keep_git_dir: shards_image::go::parse_bool(
                 opt(opts, "build-arg:BUILDKIT_CONTEXT_KEEP_GIT_DIR").as_bytes(),
             )
             .unwrap_or(false),
         },
-        shards_dockerfile::git::Parsed::BadGit(e) => {
+        shards_agentfile::git::Parsed::BadGit(e) => {
             return Err(Failure::new(String::from_utf8_lossy(&e)));
         }
-        shards_dockerfile::git::Parsed::NotGit
+        shards_agentfile::git::Parsed::NotGit
             if context_url.starts_with("http://") || context_url.starts_with("https://") =>
         {
             MainContext::Http {
@@ -447,7 +447,7 @@ fn config(opts: &mut BTreeMap<String, String>, env: &Env, caps: &Caps) -> Result
                 archive: false,
             }
         }
-        shards_dockerfile::git::Parsed::NotGit => MainContext::Local,
+        shards_agentfile::git::Parsed::NotGit => MainContext::Local,
     };
     let (dockerfile_local, force_local_dockerfile) = match opts.get("dockerfilekey") {
         Some(k) => (k.clone(), true),
@@ -470,6 +470,9 @@ fn config(opts: &mut BTreeMap<String, String>, env: &Env, caps: &Caps) -> Result
         multi_platform,
         context_id: env.session.as_bytes().to_vec(),
         excludes: Vec::new(),
+        // Read from the client's context as the build goes (`context_excludes`): its
+        // `.dockerignore`, the one the client's frontend asks for.
+        ignore_name: Vec::new(),
         dialect: dialect_of(&filename),
         contexts: filter(opts, "context:"),
         context_keys: filter(opts, "sharedkey:localdir:"),
@@ -582,7 +585,7 @@ fn dialect_of(name: &str) -> Dialect {
 }
 
 /// parseUlimits: CSV fields, each go-units' ulimit.
-fn ulimits(v: &str) -> Result<Vec<shards_dockerfile::llb::Ulimit>, String> {
+fn ulimits(v: &str) -> Result<Vec<shards_agentfile::llb::Ulimit>, String> {
     if v.is_empty() {
         return Ok(Vec::new());
     }
@@ -591,7 +594,7 @@ fn ulimits(v: &str) -> Result<Vec<shards_dockerfile::llb::Ulimit>, String> {
     let mut out = Vec::with_capacity(fields.len());
     for f in fields {
         let u = shards_cmdline::buildflags::parse_ulimit(&String::from_utf8_lossy(&f))?;
-        out.push(shards_dockerfile::llb::Ulimit {
+        out.push(shards_agentfile::llb::Ulimit {
             name: u.name.into_bytes(),
             soft: u.soft,
             hard: u.hard,
@@ -724,7 +727,7 @@ fn local_definition(name: &str, follow: &[&str], session: &str, key: &str, custo
     attrs.insert(b"local.differ".to_vec(), b"none".to_vec());
     let mut json = String::new();
     let follow: Vec<Vec<u8>> = follow.iter().map(|f| f.as_bytes().to_vec()).collect();
-    shards_dockerfile::json::write_strings(&mut json, &follow);
+    shards_agentfile::json::write_strings(&mut json, &follow);
     attrs.insert(b"local.followpaths".to_vec(), json.into_bytes());
     if !session.is_empty() {
         attrs.insert(b"local.session".to_vec(), session.as_bytes().to_vec());
@@ -770,7 +773,7 @@ struct Gateway<'c, R, W> {
     /// different times.
     epochs: RefCell<BTreeMap<EpochSource, Option<plan::Epoch>>>,
     /// The Dockerfile's own .dockerignore, else the context's once read.
-    dockerignore: RefCell<Option<Vec<u8>>>,
+    ignore_file: RefCell<Option<Vec<u8>>>,
     /// The file being built, for warnings, while a plan for which they are sent is made.
     warn_into: RefCell<Option<(String, Vec<u8>)>>,
     /// The OSI artifacts build contexts gave, by the source the planner names each by
@@ -964,13 +967,13 @@ impl<R: Read, W: Write> Gateway<'_, R, W> {
                 .collect(),
         };
         let mut ops: Vec<(Op, Meta)> = vec![(me.clone(), Meta::default())];
-        let mut mounts = vec![shards_dockerfile::llb::OpMount {
+        let mut mounts = vec![shards_agentfile::llb::OpMount {
             input: 0,
             selector: Vec::new(),
             dest: b"/".to_vec(),
             output: -1,
             readonly: true,
-            kind: shards_dockerfile::llb::OpMountKind::Bind,
+            kind: shards_agentfile::llb::OpMountKind::Bind,
         }];
         let mut inputs = vec![Input { op: 0, index: 0 }];
         for (i, (layer, _)) in spec.layers.iter().enumerate() {
@@ -979,29 +982,29 @@ impl<R: Read, W: Write> Gateway<'_, R, W> {
                 op: ops.len() - 1,
                 index: 0,
             });
-            mounts.push(shards_dockerfile::llb::OpMount {
+            mounts.push(shards_agentfile::llb::OpMount {
                 input: inputs.len() as i64 - 1,
                 selector: Vec::new(),
                 dest: format!("/layers/{i}").into_bytes(),
                 output: -1,
                 readonly: true,
-                kind: shards_dockerfile::llb::OpMountKind::Bind,
+                kind: shards_agentfile::llb::OpMountKind::Bind,
             });
         }
         for (dest, output) in [(&b"/out"[..], 0), (&b"/report"[..], 1)] {
-            mounts.push(shards_dockerfile::llb::OpMount {
+            mounts.push(shards_agentfile::llb::OpMount {
                 input: -1,
                 selector: Vec::new(),
                 dest: dest.to_vec(),
                 output,
                 readonly: false,
-                kind: shards_dockerfile::llb::OpMountKind::Bind,
+                kind: shards_agentfile::llb::OpMountKind::Bind,
             });
         }
         let exec = Op {
             inputs,
             kind: OpKind::Exec {
-                process: Box::new(shards_dockerfile::llb::Process {
+                process: Box::new(shards_agentfile::llb::Process {
                     args: vec![
                         b"/shards".to_vec(),
                         b"frontend".to_vec(),
@@ -1012,8 +1015,8 @@ impl<R: Read, W: Write> Gateway<'_, R, W> {
                     ..Default::default()
                 }),
                 mounts,
-                network: shards_dockerfile::llb::NetMode::None,
-                security: shards_dockerfile::llb::Security::Sandbox,
+                network: shards_agentfile::llb::NetMode::None,
+                security: shards_agentfile::llb::Security::Sandbox,
                 secret_env: Vec::new(),
                 devices: Vec::new(),
             },
@@ -1155,7 +1158,7 @@ impl<R: Read, W: Write> Gateway<'_, R, W> {
         &self,
         asked: &sbom::Asked,
         config: &Config,
-    ) -> Result<(Vec<u8>, shards_dockerfile::image::Image, Platform), Failure> {
+    ) -> Result<(Vec<u8>, shards_agentfile::image::Image, Platform), Failure> {
         let platform = config
             .options
             .build_platforms
@@ -1186,7 +1189,7 @@ impl<R: Read, W: Write> Gateway<'_, R, W> {
             .strip_prefix("docker-image://")
             .unwrap_or(&meta.identifier);
         let reference = reference.strip_prefix("oci-layout://").unwrap_or(reference);
-        let config = shards_dockerfile::image::Image::from_json(&image.config)
+        let config = shards_agentfile::image::Image::from_json(&image.config)
             .map_err(|e| Failure::new(String::from_utf8_lossy(&e)))?;
         Ok((reference.as_bytes().to_vec(), config, platform))
     }
@@ -1340,7 +1343,7 @@ impl<R: Read, W: Write> Resolver for Gateway<'_, R, W> {
     }
 
     fn context_excludes(&self) -> Result<Option<Vec<Vec<u8>>>, Vec<u8>> {
-        let known = self.dockerignore.borrow().clone();
+        let known = self.ignore_file.borrow().clone();
         let text = match known {
             Some(t) => t,
             None => {
@@ -1377,11 +1380,11 @@ impl<R: Read, W: Write> Resolver for Gateway<'_, R, W> {
                     },
                     None => Vec::new(),
                 };
-                *self.dockerignore.borrow_mut() = Some(text.clone());
+                *self.ignore_file.borrow_mut() = Some(text.clone());
                 text
             }
         };
-        Ok(Some(shards_dockerfile::ignore::read_all(&text)))
+        Ok(Some(shards_agentfile::ignore::read_all(&text)))
     }
 
     fn local_excludes(&self, key: &[u8], name: &[u8]) -> Result<Option<Vec<Vec<u8>>>, Vec<u8>> {
@@ -1413,7 +1416,7 @@ impl<R: Read, W: Write> Resolver for Gateway<'_, R, W> {
             Err(ReadError::TooLarge(n)) => return Err(failed(ReadError::TooLarge(n).failure())),
             Err(ReadError::Call(_)) => Vec::new(),
         };
-        Ok(Some(shards_dockerfile::ignore::read_all(&text)))
+        Ok(Some(shards_agentfile::ignore::read_all(&text)))
     }
 
     fn resolve_layout(
@@ -1601,7 +1604,7 @@ fn build<R: Read, W: Write>(client: &mut Client<R, W>, env: &Env) -> Result<Outc
         failed: RefCell::new(None),
         resolved: RefCell::new(BTreeMap::new()),
         epochs: RefCell::new(BTreeMap::new()),
-        dockerignore: RefCell::new(None),
+        ignore_file: RefCell::new(None),
         warn_into: RefCell::new(None),
         artifacts: RefCell::new(BTreeMap::new()),
         me: self_image(),
@@ -1613,7 +1616,7 @@ fn build<R: Read, W: Write>(client: &mut Client<R, W>, env: &Env) -> Result<Outc
             let first = cmdline.split_whitespace().next().unwrap_or_default();
             return forward(&gateway, first, cmdline);
         }
-        if let Some((name, cmdline, line)) = shards_dockerfile::parser::detect_syntax(&entry.data) {
+        if let Some((name, cmdline, line)) = shards_agentfile::parser::detect_syntax(&entry.data) {
             let name = String::from_utf8_lossy(&name).into_owned();
             let cmdline = String::from_utf8_lossy(&cmdline).into_owned();
             return forward(&gateway, &name, &cmdline).map_err(|f| {
@@ -1643,7 +1646,7 @@ fn subrequest<R: Read, W: Write>(
     entry: &Entrypoint,
     req: &str,
 ) -> Result<Outcome, Failure> {
-    use shards_dockerfile::subrequests;
+    use shards_agentfile::subrequests;
     let failed = |e: plan::Error| {
         let base = g
             .failed
@@ -1752,12 +1755,12 @@ fn read_entrypoint<R: Read, W: Write>(
     } else if !config.force_local_dockerfile
         && let Some(given) = config.options.inputs.get(config.dockerfile_local.as_bytes())
     {
-        let mut graph = shards_dockerfile::llb::Graph::default();
-        let st = shards_dockerfile::llb::State {
+        let mut graph = shards_agentfile::llb::Graph::default();
+        let st = shards_agentfile::llb::State {
             output: graph
                 .embed(&given.definition)
                 .map_err(|e| Failure::new(format!("failed to marshal local source: {e}")))?,
-            ..shards_dockerfile::llb::State::scratch()
+            ..shards_agentfile::llb::State::scratch()
         };
         let def = graph.marshal(&st, &g.env.own);
         let filename = config.filename.clone();
@@ -1859,12 +1862,12 @@ fn read_from<R: Read, W: Write>(
             None => return Err(f),
         },
     };
-    let dockerignore = match g.read_file(&r, &format!("{filename}.dockerignore")) {
+    let ignore = match g.read_file(&r, &format!("{filename}.dockerignore")) {
         Ok(d) => Some(d),
         Err(ReadError::TooLarge(n)) => return Err(ReadError::TooLarge(n).failure()),
         Err(ReadError::Call(_)) => None,
     };
-    *g.dockerignore.borrow_mut() = dockerignore;
+    *g.ignore_file.borrow_mut() = ignore;
     Ok(Entrypoint {
         filename: filename.to_string(),
         data,
@@ -1913,7 +1916,7 @@ fn remote_context<R: Read, W: Write>(
                 .borrow_mut()
                 .read_file(&r.id, "context", Some((0, 1024)))
                 .map_err(Failure::call)?;
-            let archive = shards_dockerfile::dockerui::is_archive(&head);
+            let archive = shards_agentfile::run_options::is_archive(&head);
             config.options.main_context = MainContext::Http { url, archive };
             if archive {
                 let def = plan::context_definition(&unscoped(config.options.main_context.clone()))
@@ -2142,7 +2145,7 @@ const ATTESTATION_BUNDLE: i32 = 1;
 /// its config label's, and its agents' and harnesses' names, each list comma-separated in
 /// name order, as shards build annotates its manifest.
 fn agentfile_annotations(planned: &plan::Plan) -> Vec<(String, Vec<u8>)> {
-    use shards_dockerfile::agentfile;
+    use shards_agentfile::agentfile;
     let mut out = Vec::new();
     let Some(digest) = planned.image.config.labels.get(agentfile::DIGEST_LABEL) else {
         return out;
@@ -2333,13 +2336,13 @@ fn check_domains<R: Read, W: Write>(
     let mut checks: Vec<Check> = Vec::new();
     let add = |def: &mut Definition, spec: check::Spec, before: Option<Input>, target: Input, shown: &str| {
         let mut inputs = vec![me];
-        let mut mounts = vec![shards_dockerfile::llb::OpMount {
+        let mut mounts = vec![shards_agentfile::llb::OpMount {
             input: 0,
             selector: Vec::new(),
             dest: b"/".to_vec(),
             output: -1,
             readonly: true,
-            kind: shards_dockerfile::llb::OpMountKind::Bind,
+            kind: shards_agentfile::llb::OpMountKind::Bind,
         }];
         let mount = |dest: &[u8], from: Option<Input>, inputs: &mut Vec<Input>| {
             let input = match from {
@@ -2349,13 +2352,13 @@ fn check_domains<R: Read, W: Write>(
                 }
                 None => -1,
             };
-            shards_dockerfile::llb::OpMount {
+            shards_agentfile::llb::OpMount {
                 input,
                 selector: Vec::new(),
                 dest: dest.to_vec(),
                 output: -1,
                 readonly: true,
-                kind: shards_dockerfile::llb::OpMountKind::Bind,
+                kind: shards_agentfile::llb::OpMountKind::Bind,
             }
         };
         if spec.guard.is_some() {
@@ -2364,15 +2367,15 @@ fn check_domains<R: Read, W: Write>(
         } else {
             mounts.push(mount(b"/target", Some(target), &mut inputs));
         }
-        mounts.push(shards_dockerfile::llb::OpMount {
+        mounts.push(shards_agentfile::llb::OpMount {
             input: -1,
             selector: Vec::new(),
             dest: b"/out".to_vec(),
             output: 0,
             readonly: false,
-            kind: shards_dockerfile::llb::OpMountKind::Bind,
+            kind: shards_agentfile::llb::OpMountKind::Bind,
         });
-        let process = shards_dockerfile::llb::Process {
+        let process = shards_agentfile::llb::Process {
             args: vec![
                 b"/shards".to_vec(),
                 b"frontend".to_vec(),
@@ -2387,8 +2390,8 @@ fn check_domains<R: Read, W: Write>(
             kind: OpKind::Exec {
                 process: Box::new(process),
                 mounts,
-                network: shards_dockerfile::llb::NetMode::None,
-                security: shards_dockerfile::llb::Security::Sandbox,
+                network: shards_agentfile::llb::NetMode::None,
+                security: shards_agentfile::llb::Security::Sandbox,
                 secret_env: Vec::new(),
                 devices: Vec::new(),
             },
@@ -2480,7 +2483,7 @@ struct Check {
     report: String,
     at: usize,
     step: Option<Vec<u8>>,
-    locations: Vec<shards_dockerfile::instructions::Location>,
+    locations: Vec<shards_agentfile::instructions::Location>,
 }
 
 /// Each OSI artifact a build context gave (D113) laid into `def` in its source's place: the
@@ -2664,7 +2667,7 @@ fn lay_skills<R: Read, W: Write>(
 
 fn json_string(s: &str) -> String {
     let mut out = String::new();
-    shards_dockerfile::json::write_string(&mut out, s.as_bytes());
+    shards_agentfile::json::write_string(&mut out, s.as_bytes());
     out
 }
 
@@ -2672,7 +2675,7 @@ fn json_string(s: &str) -> String {
 fn platform_json(p: &Platform) -> String {
     let s = |b: &[u8]| {
         let mut out = String::new();
-        shards_dockerfile::json::write_string(&mut out, b);
+        shards_agentfile::json::write_string(&mut out, b);
         out
     };
     let mut fields = vec![
@@ -2684,7 +2687,7 @@ fn platform_json(p: &Platform) -> String {
     }
     if !p.os_features.is_empty() {
         let mut list = String::new();
-        shards_dockerfile::json::write_strings(&mut list, &p.os_features);
+        shards_agentfile::json::write_strings(&mut list, &p.os_features);
         fields.push(format!("\"os.features\":{list}"));
     }
     if !p.variant.is_empty() {
@@ -3008,7 +3011,7 @@ mod tests {
             failed: RefCell::new(None),
             resolved: RefCell::new(BTreeMap::new()),
             epochs: RefCell::new(BTreeMap::new()),
-            dockerignore: RefCell::new(None),
+            ignore_file: RefCell::new(None),
             warn_into: RefCell::new(None),
             artifacts: RefCell::new(BTreeMap::new()),
             me: Some(my_image()),
@@ -3081,7 +3084,7 @@ mod tests {
             };
             assert_eq!(inputs, &vec![Input { op: 0, index: 0 }]);
             assert_eq!(actions.len(), 1);
-            let shards_dockerfile::llb::OpActionKind::Copy {
+            let shards_agentfile::llb::OpActionKind::Copy {
                 src,
                 dest,
                 dir_copy_contents,
@@ -3115,7 +3118,7 @@ mod tests {
             failed: RefCell::new(None),
             resolved: RefCell::new(BTreeMap::new()),
             epochs: RefCell::new(BTreeMap::new()),
-            dockerignore: RefCell::new(None),
+            ignore_file: RefCell::new(None),
             warn_into: RefCell::new(None),
             artifacts: RefCell::new(BTreeMap::new()),
             me: Some(my_image()),
@@ -3258,7 +3261,7 @@ mod tests {
                 Op {
                     inputs: vec![Input { op: 0, index: 0 }],
                     kind: OpKind::Exec {
-                        process: Box::new(shards_dockerfile::llb::Process {
+                        process: Box::new(shards_agentfile::llb::Process {
                             args: vec![
                                 b"/bin/sh".to_vec(),
                                 b"-c".to_vec(),
@@ -3266,16 +3269,16 @@ mod tests {
                             ],
                             ..Default::default()
                         }),
-                        mounts: vec![shards_dockerfile::llb::OpMount {
+                        mounts: vec![shards_agentfile::llb::OpMount {
                             input: 0,
                             selector: Vec::new(),
                             dest: b"/".to_vec(),
                             output: 0,
                             readonly: false,
-                            kind: shards_dockerfile::llb::OpMountKind::Bind,
+                            kind: shards_agentfile::llb::OpMountKind::Bind,
                         }],
-                        network: shards_dockerfile::llb::NetMode::Sandbox,
-                        security: shards_dockerfile::llb::Security::Sandbox,
+                        network: shards_agentfile::llb::NetMode::Sandbox,
+                        security: shards_agentfile::llb::Security::Sandbox,
                         secret_env: Vec::new(),
                         devices: Vec::new(),
                     },
@@ -3412,7 +3415,7 @@ mod tests {
             .image
             .config
             .labels
-            .get(shards_dockerfile::agentfile::DIGEST_LABEL)
+            .get(shards_agentfile::agentfile::DIGEST_LABEL)
             .unwrap()
             .clone();
         assert_eq!(
@@ -3542,7 +3545,7 @@ mod tests {
                 process.args[..3],
                 [b"/shards".to_vec(), b"frontend".to_vec(), b"osi".to_vec()]
             );
-            assert_eq!(*network, shards_dockerfile::llb::NetMode::None);
+            assert_eq!(*network, shards_agentfile::llb::NetMode::None);
             let dests: Vec<&[u8]> = mounts.iter().map(|m| m.dest.as_slice()).collect();
             assert_eq!(dests, [&b"/"[..], b"/layers/0", b"/out", b"/report"]);
             // Its inputs: the frontend's image and the layer's blob, appended.
@@ -3623,7 +3626,7 @@ mod tests {
     /// every call made in that frontend's order, each request what it asked (maps aside),
     /// the result returned with the same image config, base config and platforms.
     #[test]
-    fn a_build_asks_and_returns_what_docker_dockerfile_did() {
+    fn a_frontend_build_makes_the_captured_calls_and_returns_its_result() {
         let mut written = Vec::new();
         serve_on(std::io::Cursor::new(SERVER), &mut written, &captured_env()).unwrap();
         let ours = messages(&written);

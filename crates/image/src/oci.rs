@@ -292,7 +292,7 @@ pub fn parse_document(bytes: &[u8], content_type: &str) -> Result<Document, Erro
 /// ([`ImageConfig::run_error`]).
 pub fn parse_config(bytes: &[u8]) -> Result<ImageConfig, Error> {
     let read = crate::config::Read::new(bytes).map_err(|e| Error(format!("image config: {e}")))?;
-    let run_error = read.error(crate::config::As::Docker);
+    let run_error = read.error(crate::config::As::Run);
     let config = ImageConfig::new(read.into_image(), run_error);
     if config.rootfs.kind != "layers" {
         return bad(format!("rootfs type {:?} is not \"layers\"", config.rootfs.kind));

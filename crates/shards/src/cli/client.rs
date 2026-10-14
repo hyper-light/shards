@@ -462,7 +462,7 @@ fn answer<'s>(
                     let said: Vec<&str> = text
                         .lines()
                         .filter(|l| !l.trim().is_empty())
-                        .map(|l| l.strip_prefix("Error response from daemon: ").unwrap_or(l))
+                        .map(|l| l.strip_prefix("shards: ").unwrap_or(l))
                         .collect();
                     crate::cli::look::panel(p, &said.join("\n"), !paged);
                 }

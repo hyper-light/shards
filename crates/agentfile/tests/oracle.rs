@@ -1,4 +1,4 @@
-//! The parser and lexer against BuildKit's own (scripts/dockerfile/generate): every file
+//! The parser and lexer against BuildKit's own (scripts/agentfile/generate): every file
 //! of testdata's corpus and BuildKit's parser test files, every case of BuildKit's lexer
 //! tables and of testdata/lex-cases.json, field by field, byte for byte. Where
 //! testdata/deviations.json names a case, its fields are what shards gives instead, by
@@ -14,9 +14,9 @@
 use std::path::Path;
 
 use serde_json::Value;
-use shards_dockerfile::go::quote;
-use shards_dockerfile::lex::{EnvList, Lex};
-use shards_dockerfile::parser;
+use shards_agentfile::go::quote;
+use shards_agentfile::lex::{EnvList, Lex};
+use shards_agentfile::parser;
 
 fn testdata() -> &'static Path {
     Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/testdata"))
@@ -119,7 +119,7 @@ fn expected(e: &Value) -> Value {
 }
 
 #[test]
-fn dockerfiles_parse() {
+fn build_files_parse() {
     let devs = deviations("parse");
     let mut failures = Vec::new();
     let mut used = 0;
@@ -243,7 +243,7 @@ fn ranges_v(r: &[(usize, usize)]) -> Value {
     serde_json::json!(r.iter().map(|&(a, b)| [a, b]).collect::<Vec<_>>())
 }
 
-fn kvs(kv: &[shards_dockerfile::instructions::KeyValue]) -> Value {
+fn kvs(kv: &[shards_agentfile::instructions::KeyValue]) -> Value {
     Value::Array(
         kv.iter()
             .map(|p| serde_json::json!([qv(&p.key), qv(&p.value), p.no_delim]))
@@ -251,7 +251,7 @@ fn kvs(kv: &[shards_dockerfile::instructions::KeyValue]) -> Value {
     )
 }
 
-fn shell_v(c: &shards_dockerfile::instructions::CmdLine) -> Value {
+fn shell_v(c: &shards_agentfile::instructions::CmdLine) -> Value {
     let files: Vec<Value> = c
         .files
         .iter()
@@ -264,7 +264,7 @@ fn shell_v(c: &shards_dockerfile::instructions::CmdLine) -> Value {
     })
 }
 
-fn sources_v(s: &shards_dockerfile::instructions::Sources) -> Value {
+fn sources_v(s: &shards_agentfile::instructions::Sources) -> Value {
     let contents: Vec<Value> = s
         .contents
         .iter()
@@ -277,8 +277,8 @@ fn sources_v(s: &shards_dockerfile::instructions::Sources) -> Value {
 }
 
 /// A command in the oracle's terms.
-fn command_v(c: &shards_dockerfile::instructions::Command) -> Value {
-    use shards_dockerfile::instructions::Kind;
+fn command_v(c: &shards_agentfile::instructions::Command) -> Value {
+    use shards_agentfile::instructions::Kind;
     let opt = |b: &Option<Vec<u8>>| b.as_ref().map_or(Value::Null, |v| qv(v));
     let (kind, fields): (&str, Value) = match &c.kind {
         Kind::Env(e) => ("EnvCommand", serde_json::json!({ "env": kvs(e) })),
@@ -362,11 +362,11 @@ fn normalize(v: &Value) -> Value {
 }
 
 fn instructions_of(text: &[u8]) -> Value {
-    use shards_dockerfile::{instructions, lint};
+    use shards_agentfile::{instructions, lint};
     let Ok(parsed) = parser::parse(text) else {
         return serde_json::json!({ "parse_error": true });
     };
-    let check = shards_dockerfile::parser::directive_value(text, b"check").unwrap_or_default();
+    let check = shards_agentfile::parser::directive_value(text, b"check").unwrap_or_default();
     let config = match lint::parse_options(&check) {
         Ok(c) => c,
         Err(e) => {
@@ -478,7 +478,7 @@ fn config_text(v: &Value) -> Vec<u8> {
 /// included.
 #[test]
 fn image_configs_read_and_write_as_gos() {
-    use shards_dockerfile::image::Image;
+    use shards_agentfile::image::Image;
     let answers = load("configs-answers.json");
     let answers = answers.as_array().unwrap();
     assert_eq!(answers.len(), load("configs.json").as_array().unwrap().len());
@@ -504,7 +504,7 @@ fn sizes_read_as_go_units_reads_them() {
     let devs = deviations("sizes");
     for a in load("sizes-answers.json").as_array().unwrap() {
         let input = a["input"].as_str().unwrap();
-        let got = match shards_dockerfile::go::ram_in_bytes(input.as_bytes()) {
+        let got = match shards_agentfile::go::ram_in_bytes(input.as_bytes()) {
             Ok(n) => serde_json::json!({ "input": input, "bytes": n.to_string() }),
             Err(e) => serde_json::json!({ "input": input, "error": quote(&e) }),
         };
@@ -521,18 +521,18 @@ fn sizes_read_as_go_units_reads_them() {
 /// The fake base images of testdata/images.json, by reference.
 struct Images(serde_json::Map<String, Value>);
 
-impl shards_dockerfile::plan::Resolver for Images {
+impl shards_agentfile::plan::Resolver for Images {
     fn resolve(
         &self,
         name: &[u8],
-        _: Option<&shards_dockerfile::platform::Platform>,
+        _: Option<&shards_agentfile::platform::Platform>,
         _: &[u8],
-    ) -> Result<shards_dockerfile::plan::Resolved, Vec<u8>> {
+    ) -> Result<shards_agentfile::plan::Resolved, Vec<u8>> {
         let key = String::from_utf8_lossy(name).to_string();
         let Some(img) = self.0.get(&key) else {
             return Err(format!("{key}: not found").into_bytes());
         };
-        Ok(shards_dockerfile::plan::Resolved {
+        Ok(shards_agentfile::plan::Resolved {
             reference: img["ref"].as_str().unwrap().as_bytes().to_vec(),
             digest: img["digest"].as_str().map(|d| d.as_bytes().to_vec()),
             config: serde_json::to_vec(&img["config"]).unwrap(),
@@ -542,8 +542,8 @@ impl shards_dockerfile::plan::Resolver for Images {
     /// The generator plans with no client, with which BuildKit resolves no source's time.
     fn epoch(
         &self,
-        _: &shards_dockerfile::plan::EpochSource,
-    ) -> Result<Option<shards_dockerfile::plan::Epoch>, Vec<u8>> {
+        _: &shards_agentfile::plan::EpochSource,
+    ) -> Result<Option<shards_agentfile::plan::Epoch>, Vec<u8>> {
         Ok(None)
     }
 }
@@ -571,7 +571,7 @@ fn put(o: &mut serde_json::Map<String, Value>, key: &str, v: Value) {
     }
 }
 
-fn platform_v(p: &shards_dockerfile::platform::Platform) -> Value {
+fn platform_v(p: &shards_agentfile::platform::Platform) -> Value {
     let mut o = serde_json::Map::new();
     put(&mut o, "Architecture", ustr(&p.architecture));
     put(&mut o, "OS", ustr(&p.os));
@@ -581,8 +581,8 @@ fn platform_v(p: &shards_dockerfile::platform::Platform) -> Value {
     Value::Object(o)
 }
 
-fn owner_v(c: &Option<shards_dockerfile::llb::OpChown>) -> Value {
-    use shards_dockerfile::llb::OpUser;
+fn owner_v(c: &Option<shards_agentfile::llb::OpChown>) -> Value {
+    use shards_agentfile::llb::OpUser;
     let Some(c) = c else {
         return Value::Null;
     };
@@ -603,8 +603,8 @@ fn owner_v(c: &Option<shards_dockerfile::llb::OpChown>) -> Value {
 }
 
 /// An operation as the oracle prints it: protojson with BuildKit's field names.
-fn op_v(op: &shards_dockerfile::llb::Op, md: &shards_dockerfile::llb::Meta, order: &[usize]) -> Value {
-    use shards_dockerfile::llb::{NetMode, OpActionKind, OpKind, OpMountKind, Security, Sharing};
+fn op_v(op: &shards_agentfile::llb::Op, md: &shards_agentfile::llb::Meta, order: &[usize]) -> Value {
+    use shards_agentfile::llb::{NetMode, OpActionKind, OpKind, OpMountKind, Security, Sharing};
     let pos = |i: usize| order.iter().position(|&o| o == i).unwrap();
     let mut o = serde_json::Map::new();
     o.insert("constraints".into(), serde_json::json!({}));
@@ -912,7 +912,7 @@ fn op_v(op: &shards_dockerfile::llb::Op, md: &shards_dockerfile::llb::Meta, orde
     Value::Object(o)
 }
 
-fn meta_v(md: &shards_dockerfile::llb::Meta) -> Value {
+fn meta_v(md: &shards_agentfile::llb::Meta) -> Value {
     let mut m = serde_json::Map::new();
     put(&mut m, "ignore_cache", Value::Bool(md.ignore_cache));
     let mut d = serde_json::Map::new();
@@ -977,7 +977,7 @@ fn base64(b: &[u8]) -> String {
 /// reads it, then the end itself, which reads the target's output.
 /// The digest of `def`'s root as the oracle records it: each op's bytes, its local source's
 /// unique ID as "*" and its inputs named by their own ops so marshalled.
-fn normalized_root(def: &shards_dockerfile::llb::Definition) -> String {
+fn normalized_root(def: &shards_agentfile::llb::Definition) -> String {
     use sha2::Digest as _;
     let sha = |b: &[u8]| -> Vec<u8> {
         let hex: String = sha2::Sha256::digest(b)
@@ -989,19 +989,19 @@ fn normalized_root(def: &shards_dockerfile::llb::Definition) -> String {
     let mut digests: Vec<Vec<u8>> = Vec::new();
     for op in &def.ops {
         let mut op = op.clone();
-        if let shards_dockerfile::llb::OpKind::Source { attrs, .. } = &mut op.kind
+        if let shards_agentfile::llb::OpKind::Source { attrs, .. } = &mut op.kind
             && let Some(v) = attrs.get_mut(b"local.unique".as_slice())
         {
             *v = b"*".to_vec();
         }
         let inputs: Vec<Vec<u8>> = op.inputs.iter().map(|i| digests[i.op].clone()).collect();
-        digests.push(sha(&shards_dockerfile::pb::op(&op, &inputs).unwrap()));
+        digests.push(sha(&shards_agentfile::pb::op(&op, &inputs).unwrap()));
     }
     let root = def.root.unwrap();
-    String::from_utf8(sha(&shards_dockerfile::pb::root(&digests[root.op], root.index))).unwrap()
+    String::from_utf8(sha(&shards_agentfile::pb::root(&digests[root.op], root.index))).unwrap()
 }
 
-fn definition_v(def: &shards_dockerfile::llb::Definition) -> Value {
+fn definition_v(def: &shards_agentfile::llb::Definition) -> Value {
     let Some(root) = def.root else {
         return Value::Array(Vec::new());
     };
@@ -1009,7 +1009,7 @@ fn definition_v(def: &shards_dockerfile::llb::Definition) -> Value {
     let mut seen = std::collections::BTreeSet::new();
     fn visit(
         i: usize,
-        def: &shards_dockerfile::llb::Definition,
+        def: &shards_agentfile::llb::Definition,
         seen: &mut std::collections::BTreeSet<usize>,
         order: &mut Vec<usize>,
     ) {
@@ -1028,14 +1028,14 @@ fn definition_v(def: &shards_dockerfile::llb::Definition) -> Value {
     let mut out: Vec<Value> = Vec::new();
     for &i in &order {
         let mut op = def.ops[i].clone();
-        if let shards_dockerfile::llb::OpKind::Source { attrs, .. } = &mut op.kind
+        if let shards_agentfile::llb::OpKind::Source { attrs, .. } = &mut op.kind
             && let Some(v) = attrs.get_mut(b"local.unique".as_slice())
         {
             *v = b"*".to_vec();
         }
         let inputs: Vec<Vec<u8>> = op.inputs.iter().map(|inp| digests[&inp.op].clone()).collect();
         let mut v = op_v(&def.ops[i], &def.metadata[i], &order);
-        if let Some(bytes) = shards_dockerfile::pb::op(&op, &inputs) {
+        if let Some(bytes) = shards_agentfile::pb::op(&op, &inputs) {
             use sha2::Digest as _;
             let sum = sha2::Sha256::digest(&bytes);
             let hex: String = sum.iter().map(|b| format!("{b:02x}")).collect();
@@ -1047,7 +1047,7 @@ fn definition_v(def: &shards_dockerfile::llb::Definition) -> Value {
     let pos = order.iter().position(|&o| o == root.op).unwrap();
     let mut last = serde_json::json!({ "inputs": [[pos, root.index]], "metadata": {} });
     if let Some(d) = digests.get(&root.op) {
-        last["pb"] = Value::String(base64(&shards_dockerfile::pb::root(d, root.index)));
+        last["pb"] = Value::String(base64(&shards_agentfile::pb::root(d, root.index)));
     }
     out.push(last);
     Value::Array(out)
@@ -1057,10 +1057,10 @@ fn definition_v(def: &shards_dockerfile::llb::Definition) -> Value {
 /// with its options, against images.json's base images. The graph op by op, the image
 /// config byte for byte, the checks' warnings and any error.
 /// The options BuildKit's frontend planned `file` with: its `.opts.json`, as buildx sends
-/// them and dockerui reads them (scripts/dockerfile/oracle convertOpt).
-fn options_of(file: &str) -> shards_dockerfile::plan::Options {
-    use shards_dockerfile::plan::Options;
-    use shards_dockerfile::platform::Platform;
+/// them and dockerui reads them (scripts/agentfile/oracle convertOpt).
+fn options_of(file: &str) -> shards_agentfile::plan::Options {
+    use shards_agentfile::plan::Options;
+    use shards_agentfile::platform::Platform;
     let opts_v: Value = std::fs::read(testdata().join(format!("{file}.opts.json")))
         .map(|b| serde_json::from_slice(&b).unwrap())
         .unwrap_or(Value::Null);
@@ -1109,7 +1109,7 @@ fn options_of(file: &str) -> shards_dockerfile::plan::Options {
                     .map(|f| {
                         let u = shards_cmdline::buildflags::parse_ulimit(std::str::from_utf8(f).unwrap())
                             .unwrap();
-                        shards_dockerfile::llb::Ulimit {
+                        shards_agentfile::llb::Ulimit {
                             name: u.name.into_bytes(),
                             soft: u.soft,
                             hard: u.hard,
@@ -1121,31 +1121,33 @@ fn options_of(file: &str) -> shards_dockerfile::plan::Options {
         multi_platform: false,
         context_id: b"*".to_vec(),
         excludes: Vec::new(),
-        dialect: shards_dockerfile::parser::Dialect::Dockerfile,
+        // The recordings' warnings name `.dockerignore`, as none is given.
+        ignore_name: Vec::new(),
+        dialect: shards_agentfile::parser::Dialect::Dockerfile,
         all_stages: false,
         contexts: map(&opts_v["contexts"]),
         context_keys: map(&opts_v["shared_keys"]),
         context_excludes: Default::default(),
         // dockerui: the option's comma-separated stages, every stage where it is "".
-        extra_hosts: shards_dockerfile::dockerui::extra_hosts(frontend("add-hosts")).unwrap(),
-        shm_size: shards_dockerfile::dockerui::shm_size(frontend("shm-size")).unwrap(),
+        extra_hosts: shards_agentfile::run_options::extra_hosts(frontend("add-hosts")).unwrap(),
+        shm_size: shards_agentfile::run_options::shm_size(frontend("shm-size")).unwrap(),
         cgroup_parent: frontend("cgroup-parent").as_bytes().to_vec(),
-        linux_resources: shards_dockerfile::dockerui::linux_resources(&frontend_map).unwrap(),
-        network_mode: shards_dockerfile::dockerui::net_mode(frontend("force-network-mode")).unwrap(),
-        image_resolve_mode: shards_dockerfile::dockerui::resolve_mode(frontend("image-resolve-mode"))
+        linux_resources: shards_agentfile::run_options::linux_resources(&frontend_map).unwrap(),
+        network_mode: shards_agentfile::run_options::net_mode(frontend("force-network-mode")).unwrap(),
+        image_resolve_mode: shards_agentfile::run_options::resolve_mode(frontend("image-resolve-mode"))
             .unwrap()
             .to_vec(),
         // dockerui's initContext: the `context` option a Git or HTTP(S) URL, an HTTP
         // download an archive by its first bytes (the oracle's `http_context`).
         main_context: {
-            use shards_dockerfile::plan::MainContext;
+            use shards_agentfile::plan::MainContext;
             let url = frontend("context").as_bytes().to_vec();
             let keep = frontend("build-arg:BUILDKIT_CONTEXT_KEEP_GIT_DIR");
             if url.is_empty() {
                 MainContext::Local
             } else if !matches!(
-                shards_dockerfile::git::parse_git_ref(&url),
-                shards_dockerfile::git::Parsed::NotGit
+                shards_agentfile::git::parse_git_ref(&url),
+                shards_agentfile::git::Parsed::NotGit
             ) {
                 MainContext::Git {
                     url,
@@ -1158,7 +1160,7 @@ fn options_of(file: &str) -> shards_dockerfile::plan::Options {
                     .unwrap();
                 MainContext::Http {
                     url,
-                    archive: shards_dockerfile::dockerui::is_archive(head.get(..1024).unwrap_or(&head)),
+                    archive: shards_agentfile::run_options::is_archive(head.get(..1024).unwrap_or(&head)),
                 }
             }
         },
@@ -1183,8 +1185,8 @@ fn options_of(file: &str) -> shards_dockerfile::plan::Options {
 }
 
 #[test]
-fn plans_are_buildkits() {
-    use shards_dockerfile::plan::plan;
+fn plans_match_their_recorded_answers() {
+    use shards_agentfile::plan::plan;
     let images = Images(load("images.json").as_object().unwrap().clone());
     let devs = deviations("plan");
     let mut failures = Vec::new();
@@ -1194,7 +1196,7 @@ fn plans_are_buildkits() {
         let opts = options_of(file);
         let mut got = serde_json::Map::new();
         got.insert("file".into(), file.into());
-        let warnings = |ws: &[shards_dockerfile::lint::Warning]| -> Value {
+        let warnings = |ws: &[shards_agentfile::lint::Warning]| -> Value {
             if ws.is_empty() {
                 return Value::Null;
             }
@@ -1286,14 +1288,14 @@ fn plans_are_buildkits() {
     );
 }
 
-/// `--call`'s subrequests, as BuildKit's frontend answers them (scripts/dockerfile/oracle
+/// `--call`'s subrequests, as BuildKit's frontend answers them (scripts/agentfile/oracle
 /// subrequestsFile): each plan's outline and targets, their result.json and the text
 /// buildx prints of each, byte for byte, and the subrequests described. Where BuildKit's
 /// ListTargets panics (a stage's `check=` comment, with no linter), shards lists them.
 #[test]
-fn subrequests_are_buildkits() {
-    use shards_dockerfile::plan::{outline, targets};
-    use shards_dockerfile::subrequests;
+fn subrequests_match_their_recorded_answers() {
+    use shards_agentfile::plan::{outline, targets};
+    use shards_agentfile::subrequests;
     let images = Images(load("images.json").as_object().unwrap().clone());
     let subs = load("subrequests.json");
     assert_eq!(
@@ -1362,7 +1364,7 @@ fn subrequests_are_buildkits() {
         let panicked = want["targets_error"]
             .as_str()
             .is_some_and(|e| e.starts_with("\"panic: "));
-        match targets(&text, shards_dockerfile::parser::Dialect::Dockerfile) {
+        match targets(&text, shards_agentfile::parser::Dialect::Dockerfile) {
             Ok(_) if panicked => {}
             Ok(t) => {
                 check("targets", quote(t.json().as_bytes()), "targets");
@@ -1371,14 +1373,14 @@ fn subrequests_are_buildkits() {
             Err(e) => check("targets error", quote(&e.message), "targets_error"),
         }
         // The lint subrequest, its file named as a Dockerfile in the context's root is.
-        match shards_dockerfile::plan::lint(&text, &opts, &images) {
+        match shards_agentfile::plan::lint(&text, &opts, &images) {
             Ok(l) => {
                 let results = subrequests::LintResults {
                     warnings: &l.warnings,
                     filename: b"Dockerfile",
                     data: &text,
                     language: b"Dockerfile",
-                    // The oracle clears the source's definition (scripts/dockerfile).
+                    // The oracle clears the source's definition (scripts/agentfile).
                     definition: None,
                     error: l.error.as_ref().map(|(m, loc)| (m.as_slice(), loc)),
                 };
@@ -1410,7 +1412,7 @@ fn subrequests_are_buildkits() {
 /// read them: every case of testdata/urls.json.
 #[test]
 fn urls_read_as_gos() {
-    use shards_dockerfile::{git, url};
+    use shards_agentfile::{git, url};
     let s = |b: &[u8]| String::from_utf8(b.to_vec()).unwrap();
     let mut failures = Vec::new();
     for want in load("urls-answers.json").as_array().unwrap() {
@@ -1490,11 +1492,11 @@ fn urls_read_as_gos() {
 /// Images exported as BuildKit's exporter exports them: every case of testdata/exports.json,
 /// its config and manifest byte for byte.
 #[test]
-fn exports_are_buildkits() {
+fn exports_match_their_recorded_images() {
     use sha2::{Digest as _, Sha256};
-    use shards_dockerfile::export::{self, Layer};
-    use shards_dockerfile::go::Time;
-    use shards_dockerfile::image::Image;
+    use shards_agentfile::export::{self, Layer};
+    use shards_agentfile::go::Time;
+    use shards_agentfile::image::Image;
     let digest = |s: &str| {
         let h = Sha256::digest(s.as_bytes());
         let hex: String = h.iter().map(|b| format!("{b:02x}")).collect();
@@ -1577,7 +1579,7 @@ fn exports_are_buildkits() {
 /// testdata/patterns.json.
 #[test]
 fn patterns_match_as_gos() {
-    use shards_dockerfile::glob::{self, MatchInfo, PatternMatcher};
+    use shards_agentfile::glob::{self, MatchInfo, PatternMatcher};
     let ans = |r: Result<bool, Vec<u8>>| match r {
         Ok(b) => b.to_string(),
         Err(e) => format!("error {}", String::from_utf8_lossy(&e)),
@@ -1664,7 +1666,7 @@ fn patterns_match_as_gos() {
 
 /// .dockerignore files read as ignorefile.ReadAll reads them: testdata/ignores.json.
 #[test]
-fn dockerignore_files_are_read() {
+fn ignore_files_are_read() {
     let files: Vec<String> =
         serde_json::from_slice(&std::fs::read(testdata().join("ignores.json")).unwrap()).unwrap();
     let answers = load("ignores-answers.json");
@@ -1674,7 +1676,7 @@ fn dockerignore_files_are_read() {
     for (i, (file, want)) in files.iter().zip(answers).enumerate() {
         let mut got = serde_json::Map::new();
         got.insert("file".into(), qv(file.as_bytes()));
-        let p = shards_dockerfile::ignore::read_all(file.as_bytes());
+        let p = shards_agentfile::ignore::read_all(file.as_bytes());
         got.insert(
             "patterns".into(),
             if p.is_empty() { Value::Null } else { qvs(&p) },
@@ -1698,16 +1700,16 @@ fn a_long_chain_of_stages_plans() {
         text.push_str(&format!("FROM scratch AS s{i}\nCOPY --from=s{} /a /a\n", i + 1));
     }
     text.push_str(&format!("FROM scratch AS s{}\n", STAGES - 1));
-    let opts = shards_dockerfile::plan::Options {
-        target_platform: shards_dockerfile::platform::Platform::new("linux", "amd64"),
-        build_platforms: vec![shards_dockerfile::platform::Platform::new("linux", "amd64")],
+    let opts = shards_agentfile::plan::Options {
+        target_platform: shards_agentfile::platform::Platform::new("linux", "amd64"),
+        build_platforms: vec![shards_agentfile::platform::Platform::new("linux", "amd64")],
         ..Default::default()
     };
     let none = Images(serde_json::Map::new());
-    let planned = shards_dockerfile::plan::plan(text.as_bytes(), &opts, &none);
+    let planned = shards_agentfile::plan::plan(text.as_bytes(), &opts, &none);
     assert!(planned.is_ok(), "{:?}", planned.err());
     text.push_str("COPY --from=s0 /a /a\n");
-    let cycle = shards_dockerfile::plan::plan(text.as_bytes(), &opts, &none);
+    let cycle = shards_agentfile::plan::plan(text.as_bytes(), &opts, &none);
     let said = cycle
         .err()
         .map(|e| String::from_utf8_lossy(&e.message).into_owned());

@@ -8,7 +8,7 @@
 
 use std::collections::BTreeMap;
 
-use shards_dockerfile::export::json_string;
+use shards_agentfile::export::json_string;
 
 /// A JSON value, written as Go's encoding/json writes the structs BuildKit marshals:
 /// fields in the order given, strings HTML-escaped.
@@ -227,8 +227,8 @@ pub type Mounts = (Vec<(String, bool)>, Vec<(String, bool)>, bool);
 /// network, as BuildKit captures them (captureProvenance, Capture.AddSecret and AddSSH:
 /// one optional only where every mount of it is, each list sorted by ID); a Git source's
 /// credentials and SSH agent too (GitIdentifier.Capture), each optional.
-pub fn capture_mounts(def: &shards_dockerfile::llb::Definition) -> Mounts {
-    use shards_dockerfile::llb::{NetMode, OpKind, OpMountKind};
+pub fn capture_mounts(def: &shards_agentfile::llb::Definition) -> Mounts {
+    use shards_agentfile::llb::{NetMode, OpKind, OpMountKind};
     let add = |list: &mut Vec<(String, bool)>, id: &[u8], optional: bool| {
         let id = String::from_utf8_lossy(id).into_owned();
         match list.iter_mut().find(|(i, _)| *i == id) {
@@ -282,11 +282,8 @@ pub fn capture_mounts(def: &shards_dockerfile::llb::Definition) -> Mounts {
 /// The base images the build read (ImageIdentifier.Capture): each source's reference,
 /// its pin (the digest it resolved to) dropped where it has a tag, its platform; each
 /// once, by reference.
-pub fn capture_images(
-    def: &shards_dockerfile::llb::Definition,
-    unplatformed: Option<&[u8]>,
-) -> Vec<Material> {
-    use shards_dockerfile::llb::OpKind;
+pub fn capture_images(def: &shards_agentfile::llb::Definition, unplatformed: Option<&[u8]>) -> Vec<Material> {
+    use shards_agentfile::llb::OpKind;
     let mut out: Vec<(String, Material)> = Vec::new();
     for op in &def.ops {
         let OpKind::Source { identifier, .. } = &op.kind else {
@@ -310,7 +307,7 @@ pub fn capture_images(
             .platform
             .as_ref()
             .filter(|_| unplatformed != Some(identifier.as_slice()))
-            .map(|p| String::from_utf8_lossy(&shards_dockerfile::platform::format(p)).into_owned())
+            .map(|p| String::from_utf8_lossy(&shards_agentfile::platform::format(p)).into_owned())
             .unwrap_or_default();
         let key = format!("{reference} {platform}");
         if out.iter().any(|(k, _)| *k == key) {
@@ -336,8 +333,8 @@ pub fn capture_images(
 /// type names an artifact of a registry (purl-spec types/oci-definition.json): its
 /// repository's last name, lowercased, the digest its version, its repository and tag as
 /// qualifiers, sorted. Each once, sorted by its URI.
-pub fn capture_artifacts(def: &shards_dockerfile::llb::Definition) -> Vec<Material> {
-    use shards_dockerfile::llb::OpKind;
+pub fn capture_artifacts(def: &shards_agentfile::llb::Definition) -> Vec<Material> {
+    use shards_agentfile::llb::OpKind;
     let mut out: Vec<Material> = Vec::new();
     for op in &def.ops {
         let OpKind::Source { identifier, .. } = &op.kind else {
@@ -399,7 +396,7 @@ fn filter_args(args: &BTreeMap<String, String>) -> BTreeMap<String, String> {
 /// Go's `time.Time` as `MarshalJSON` writes it: RFC 3339 in UTC, its nanoseconds with
 /// no trailing zeros.
 fn rfc3339_nano((secs, nanos): (i64, u32)) -> String {
-    let mut t = shards_dockerfile::go::Time::from_unix(secs);
+    let mut t = shards_agentfile::go::Time::from_unix(secs);
     t.nanosecond = nanos;
     t.rfc3339_nano().unwrap_or_default()
 }
@@ -503,7 +500,7 @@ pub fn predicate(c: &Capture, run: &Run) -> Json {
         ("finishedOn", Json::s(rfc3339_nano(run.finished))),
         (
             "buildkit_metadata",
-            buildkit_metadata(c.max.as_ref(), c.proxy.as_deref()),
+            builder_metadata(c.max.as_ref(), c.proxy.as_deref()),
         ),
     ];
     if complete_materials && !c.network {
@@ -555,7 +552,7 @@ pub fn image_statements(
 }
 
 /// `BuildKitMetadata`: for `mode=max`, its source map and its steps' layers.
-fn buildkit_metadata(max: Option<&Max>, proxy: Option<&[ProxyIncomplete]>) -> Json {
+fn builder_metadata(max: Option<&Max>, proxy: Option<&[ProxyIncomplete]>) -> Json {
     let mut f = Vec::new();
     if let Some(m) = max {
         f.push(("source", m.source.clone()));
@@ -595,8 +592,8 @@ fn buildkit_metadata(max: Option<&Max>, proxy: Option<&[ProxyIncomplete]>) -> Js
 /// `recomputeDigests`): its marshalled bytes, its inputs' own digests in them, and under
 /// the build's proxy (D110) an exec op with the network marked so
 /// (`\0buildkit.proxy-network.v0` after its bytes), which every op after it then shows.
-pub fn vertex_digests(def: &shards_dockerfile::llb::Definition, proxy: bool) -> Vec<String> {
-    use shards_dockerfile::llb::{NetMode, OpKind};
+pub fn vertex_digests(def: &shards_agentfile::llb::Definition, proxy: bool) -> Vec<String> {
+    use shards_agentfile::llb::{NetMode, OpKind};
     let mut digests: Vec<String> = Vec::with_capacity(def.ops.len());
     for op in &def.ops {
         let inputs: Vec<Vec<u8>> = op
@@ -604,7 +601,7 @@ pub fn vertex_digests(def: &shards_dockerfile::llb::Definition, proxy: bool) -> 
             .iter()
             .map(|i| digests.get(i.op).cloned().unwrap_or_default().into_bytes())
             .collect();
-        let mut bytes = shards_dockerfile::pb::op(op, &inputs).unwrap_or_default();
+        let mut bytes = shards_agentfile::pb::op(op, &inputs).unwrap_or_default();
         if proxy && matches!(&op.kind, OpKind::Exec { network, .. } if *network != NetMode::None) {
             bytes.extend_from_slice(b"\0buildkit.proxy-network.v0");
         }
@@ -879,7 +876,7 @@ pub struct Steps {
     pub step_of: Vec<Option<usize>>,
 }
 
-pub fn steps(def: &shards_dockerfile::llb::Definition) -> Steps {
+pub fn steps(def: &shards_agentfile::llb::Definition) -> Steps {
     // Each op's digest, its inputs before it (the marshal's order).
     let mut digests: Vec<Vec<u8>> = Vec::with_capacity(def.ops.len());
     for op in &def.ops {
@@ -888,7 +885,7 @@ pub fn steps(def: &shards_dockerfile::llb::Definition) -> Steps {
             .iter()
             .map(|i| digests.get(i.op).cloned().unwrap_or_default())
             .collect();
-        let bytes = shards_dockerfile::pb::op(op, &inputs).unwrap_or_default();
+        let bytes = shards_agentfile::pb::op(op, &inputs).unwrap_or_default();
         digests.push(sha256(&bytes).into_bytes());
     }
     let mut out = Steps {
@@ -922,7 +919,7 @@ pub fn steps(def: &shards_dockerfile::llb::Definition) -> Steps {
             }
         }
     }
-    let input_names = |inputs: &[shards_dockerfile::llb::Input], step_of: &[Option<usize>]| -> Vec<Json> {
+    let input_names = |inputs: &[shards_agentfile::llb::Input], step_of: &[Option<usize>]| -> Vec<Json> {
         inputs
             .iter()
             .map(|i| {
@@ -948,7 +945,7 @@ pub fn steps(def: &shards_dockerfile::llb::Definition) -> Steps {
     let n = order.len();
     let root_digest = digests
         .get(root.op)
-        .map(|d| sha256(&shards_dockerfile::pb::root(d, root.index)))
+        .map(|d| sha256(&shards_agentfile::pb::root(d, root.index)))
         .unwrap_or_default();
     let root_step = out.step_of.get(root.op).copied().flatten().unwrap_or(0);
     out.steps.push(Json::obj(vec![
@@ -989,16 +986,23 @@ pub fn build_config(s: &Steps) -> Json {
     ]))
 }
 
-/// The Dockerfile's own definition, as dockerui loads it (`load build definition from`):
-/// a local source of the Dockerfile and its `.dockerignore` (and `dockerfile`, Docker's
-/// other casing, beside a `Dockerfile`), for a session of the build's.
-pub fn dockerfile_definition(
+/// The build file's own definition (`load build definition from`): a local source of
+/// the file and the ignore file beside it, `.agentignore` where the build read one
+/// (`agentignore`), else `.dockerignore` (and `dockerfile`, the other casing, beside a
+/// `Dockerfile`), for a session of the build's.
+pub fn build_file_definition(
     filename: &str,
     local: &str,
     session: &str,
-) -> shards_dockerfile::llb::Definition {
-    use shards_dockerfile::llb::{Definition, Input, Meta, Op, OpKind};
-    let mut paths = vec![filename.to_string(), format!("{filename}.dockerignore")];
+    agentignore: bool,
+) -> shards_agentfile::llb::Definition {
+    use shards_agentfile::llb::{Definition, Input, Meta, Op, OpKind};
+    let kind = if agentignore {
+        "agentignore"
+    } else {
+        "dockerignore"
+    };
+    let mut paths = vec![filename.to_string(), format!("{filename}.{kind}")];
     let (dir, base) = filename.rsplit_once('/').unwrap_or(("", filename));
     if base == "Dockerfile" {
         paths.push(if dir.is_empty() {
@@ -1032,7 +1036,7 @@ pub fn dockerfile_definition(
 /// `buildkit_metadata.source`: each step's locations in the Dockerfile (its lines, the
 /// source map's first source), and the Dockerfile itself with its own definition's steps.
 pub fn source(
-    def: &shards_dockerfile::llb::Definition,
+    def: &shards_agentfile::llb::Definition,
     s: &Steps,
     info: (&str, &[u8]),
     info_def: &Steps,
@@ -1107,8 +1111,8 @@ fn declared(step: Json) -> Json {
 /// `pb.Op` as Go's encoding/json writes it (solver/pb/json.go): what it does under `Op`,
 /// its platform and its constraints, every field left out at its zero value; its inputs
 /// left out, as the steps name them. Fields in the structs' order.
-pub fn op_json(op: &shards_dockerfile::llb::Op) -> Json {
-    use shards_dockerfile::llb::{NetMode, OpKind, Security};
+pub fn op_json(op: &shards_agentfile::llb::Op) -> Json {
+    use shards_agentfile::llb::{NetMode, OpKind, Security};
     let kind = match &op.kind {
         OpKind::Exec {
             process,
@@ -1199,7 +1203,7 @@ pub fn op_json(op: &shards_dockerfile::llb::Op) -> Json {
         // A frontend's input, given whole, which shards build plans none of: its digest.
         OpKind::Raw { bytes, .. } => vec![(
             "raw",
-            Json::s(String::from_utf8_lossy(&shards_dockerfile::pb::digest(bytes))),
+            Json::s(String::from_utf8_lossy(&shards_agentfile::pb::digest(bytes))),
         )],
     };
     let mut out = vec![("Op", Json::obj(kind))];
@@ -1248,7 +1252,7 @@ fn strs(v: &[Vec<u8>]) -> Json {
     Json::Arr(v.iter().map(|s| Json::s(String::from_utf8_lossy(s))).collect())
 }
 
-fn meta_json(p: &shards_dockerfile::llb::Process) -> Json {
+fn meta_json(p: &shards_agentfile::llb::Process) -> Json {
     let mut m = Vec::new();
     if !p.args.is_empty() {
         m.push(("args", strs(&p.args)));
@@ -1300,8 +1304,8 @@ fn meta_json(p: &shards_dockerfile::llb::Process) -> Json {
     Json::obj(m)
 }
 
-fn mount_json(mt: &shards_dockerfile::llb::OpMount) -> Json {
-    use shards_dockerfile::llb::{OpMountKind, Sharing};
+fn mount_json(mt: &shards_agentfile::llb::OpMount) -> Json {
+    use shards_agentfile::llb::{OpMountKind, Sharing};
     let mut x = Vec::new();
     put_int(&mut x, "input", mt.input);
     put_str(&mut x, "selector", &mt.selector);
@@ -1355,8 +1359,8 @@ fn mount_json(mt: &shards_dockerfile::llb::OpMount) -> Json {
     Json::obj(x)
 }
 
-fn chown_json(o: &shards_dockerfile::llb::OpChown) -> Json {
-    use shards_dockerfile::llb::OpUser;
+fn chown_json(o: &shards_agentfile::llb::OpChown) -> Json {
+    use shards_agentfile::llb::OpUser;
     let user = |u: &OpUser| {
         let inner = match u {
             OpUser::Name { name, input } => {
@@ -1383,9 +1387,9 @@ fn chown_json(o: &shards_dockerfile::llb::OpChown) -> Json {
     Json::obj(f)
 }
 
-fn action_json(a: &shards_dockerfile::llb::OpAction) -> Json {
+fn action_json(a: &shards_agentfile::llb::OpAction) -> Json {
     use base64::Engine as _;
-    use shards_dockerfile::llb::OpActionKind;
+    use shards_agentfile::llb::OpActionKind;
     let (key, body) = match &a.action {
         OpActionKind::Copy {
             src,
@@ -1521,20 +1525,20 @@ mod tests {
     /// Any image, resolved to busybox's digest with an empty config, for planning.
     struct AnyImage;
 
-    impl shards_dockerfile::plan::Resolver for AnyImage {
+    impl shards_agentfile::plan::Resolver for AnyImage {
         fn resolve(
             &self,
             name: &[u8],
-            _: Option<&shards_dockerfile::platform::Platform>,
+            _: Option<&shards_agentfile::platform::Platform>,
             _: &[u8],
-        ) -> Result<shards_dockerfile::plan::Resolved, Vec<u8>> {
+        ) -> Result<shards_agentfile::plan::Resolved, Vec<u8>> {
             let mut reference = name.to_vec();
             if !reference.contains(&b'@') {
                 reference.extend_from_slice(
                     b"@sha256:73aaf090f3d85aa34ee199857f03fa3a95c8ede2ffd4cc2cdb5b94e566b11662",
                 );
             }
-            Ok(shards_dockerfile::plan::Resolved {
+            Ok(shards_agentfile::plan::Resolved {
                 reference,
                 digest: Some(b"sha256:73aaf090f3d85aa34ee199857f03fa3a95c8ede2ffd4cc2cdb5b94e566b11662".to_vec()),
                 // A layer, as busybox has: an image of none is planned as scratch.
@@ -1544,8 +1548,8 @@ mod tests {
 
         fn epoch(
             &self,
-            _: &shards_dockerfile::plan::EpochSource,
-        ) -> Result<Option<shards_dockerfile::plan::Epoch>, Vec<u8>> {
+            _: &shards_agentfile::plan::EpochSource,
+        ) -> Result<Option<shards_agentfile::plan::Epoch>, Vec<u8>> {
             Ok(None)
         }
     }
@@ -1554,15 +1558,15 @@ mod tests {
     /// its digest, and the parts of its config a plan reads.
     struct Curl;
 
-    impl shards_dockerfile::plan::Resolver for Curl {
+    impl shards_agentfile::plan::Resolver for Curl {
         fn resolve(
             &self,
             name: &[u8],
-            _: Option<&shards_dockerfile::platform::Platform>,
+            _: Option<&shards_agentfile::platform::Platform>,
             _: &[u8],
-        ) -> Result<shards_dockerfile::plan::Resolved, Vec<u8>> {
+        ) -> Result<shards_agentfile::plan::Resolved, Vec<u8>> {
             const DIGEST: &[u8] = b"sha256:c1fe1679c34d9784c1b0d1e5f62ac0a79fca01fb6377cdd33e90473c6f9f9a69";
-            Ok(shards_dockerfile::plan::Resolved {
+            Ok(shards_agentfile::plan::Resolved {
                 reference: [name, b"@", DIGEST].concat(),
                 digest: Some(DIGEST.to_vec()),
                 config: br#"{"architecture":"arm64","os":"linux","config":{"User":"curl_user","Env":["PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin","CURL_CA_BUNDLE=/cacert.pem"],"WorkingDir":"/home/curl_user"},"rootfs":{"type":"layers","diff_ids":["sha256:0000000000000000000000000000000000000000000000000000000000000001"]}}"#.to_vec(),
@@ -1571,8 +1575,8 @@ mod tests {
 
         fn epoch(
             &self,
-            _: &shards_dockerfile::plan::EpochSource,
-        ) -> Result<Option<shards_dockerfile::plan::Epoch>, Vec<u8>> {
+            _: &shards_agentfile::plan::EpochSource,
+        ) -> Result<Option<shards_agentfile::plan::Epoch>, Vec<u8>> {
             Ok(None)
         }
     }
@@ -1584,12 +1588,12 @@ mod tests {
     /// the step before it was.
     #[test]
     fn proxied_steps_are_named() {
-        let opts = shards_dockerfile::plan::Options {
-            target_platform: shards_dockerfile::platform::Platform::new("linux", "arm64"),
-            build_platforms: vec![shards_dockerfile::platform::Platform::new("linux", "arm64")],
+        let opts = shards_agentfile::plan::Options {
+            target_platform: shards_agentfile::platform::Platform::new("linux", "arm64"),
+            build_platforms: vec![shards_agentfile::platform::Platform::new("linux", "arm64")],
             ..Default::default()
         };
-        let def = shards_dockerfile::plan::plan(include_bytes!("testdata/proxy.Dockerfile"), &opts, &Curl)
+        let def = shards_agentfile::plan::plan(include_bytes!("testdata/proxy.Dockerfile"), &opts, &Curl)
             .unwrap()
             .definition();
         let mut mapping = steps(&def).mapping;
@@ -1628,7 +1632,7 @@ mod tests {
             .ops
             .iter()
             .position(|op| {
-                matches!(&op.kind, shards_dockerfile::llb::OpKind::Exec { process, .. }
+                matches!(&op.kind, shards_agentfile::llb::OpKind::Exec { process, .. }
                     if process.args.last().is_some_and(|a| a.starts_with(b"C=")))
             })
             .unwrap();
@@ -1645,7 +1649,7 @@ mod tests {
     /// network metadata (the step's requests that are no material, sorted as BuildKit
     /// sorts them), its dependencies incomplete and the build not hermetic.
     #[test]
-    fn a_proxied_builds_provenance_is_buildkits() {
+    fn a_proxied_builds_provenance_records_its_requests() {
         let want: serde_json::Value =
             serde_json::from_str(include_str!("testdata/proxy-provenance.json")).unwrap();
         let materials: Vec<Material> = want["materials"]
@@ -1711,18 +1715,18 @@ mod tests {
         assert_eq!(metadata["buildkit_completeness"]["resolvedDependencies"], true);
     }
 
-    fn plan_of(dockerfile: &str) -> shards_dockerfile::llb::Definition {
-        let opts = shards_dockerfile::plan::Options {
-            target_platform: shards_dockerfile::platform::Platform::new("linux", "arm64"),
-            build_platforms: vec![shards_dockerfile::platform::Platform::new("linux", "arm64")],
-            // As buildx asks Docker's builder (buildx_attrs).
+    fn plan_of(dockerfile: &str) -> shards_agentfile::llb::Definition {
+        let opts = shards_agentfile::plan::Options {
+            target_platform: shards_agentfile::platform::Platform::new("linux", "arm64"),
+            build_platforms: vec![shards_agentfile::platform::Platform::new("linux", "arm64")],
+            // As buildx asks Docker's builder (frontend_attrs).
             image_resolve_mode: b"local".to_vec(),
             main_context: Default::default(),
             context_subdir: None,
             git_advice: false,
             ..Default::default()
         };
-        shards_dockerfile::plan::plan(dockerfile.as_bytes(), &opts, &AnyImage)
+        shards_agentfile::plan::plan(dockerfile.as_bytes(), &opts, &AnyImage)
             .unwrap()
             .definition()
     }
@@ -1760,7 +1764,7 @@ mod tests {
         let p = &st["predicate"];
         let md = &p["runDetails"]["metadata"];
         let time = |v: &serde_json::Value| -> (i64, u32) {
-            shards_dockerfile::go::parse_rfc3339(v.as_str().unwrap().as_bytes())
+            shards_agentfile::go::parse_rfc3339(v.as_str().unwrap().as_bytes())
                 .unwrap()
                 .unix()
         };
@@ -1796,10 +1800,10 @@ mod tests {
     }
 
     /// Each recorded statement, given the frontend's options buildx sent for its flags
-    /// (`super::super::buildx_attrs`), the locals, and what the builder alone decided;
+    /// (`super::super::frontend_attrs`), the locals, and what the builder alone decided;
     /// then the attestation's config and manifest, and the index, byte for byte.
     #[test]
-    fn provenance_is_buildkits() {
+    fn provenance_statements_match_their_recordings() {
         let all = cases();
         assert!(all.len() >= 12);
         let mut checked = 0;
@@ -1820,7 +1824,7 @@ mod tests {
             })
             .collect();
         let capture = Capture {
-            args: super::super::buildx_attrs_of(&local.flags).unwrap(),
+            args: super::super::frontend_attrs_of(&local.flags).unwrap(),
             materials,
             locals: vec!["context".into(), "dockerfile".into()],
             ..Capture::default()
@@ -1846,7 +1850,7 @@ mod tests {
         bare["subject"] = serde_json::json!([]);
         let s = super::super::sbom::statement("sbom.spdx.json", bare.to_string().as_bytes()).unwrap();
         assert_eq!(
-            String::from_utf8(shards_dockerfile::json_indent(
+            String::from_utf8(shards_agentfile::json_indent(
                 super::super::sbom::intoto(&s, &files).as_bytes()
             ))
             .unwrap(),
@@ -1856,7 +1860,7 @@ mod tests {
             let Some(st) = &case.statement else { continue };
             let recorded: serde_json::Value = serde_json::from_str(st).unwrap();
             let (run, materials) = run_and_materials(&recorded);
-            let args = super::super::buildx_attrs_of(&case.flags).unwrap();
+            let args = super::super::frontend_attrs_of(&case.flags).unwrap();
             let named: Vec<String> = case
                 .flags
                 .iter()
@@ -1891,7 +1895,12 @@ mod tests {
                 let dockerfile = case.dockerfile.as_ref().unwrap();
                 let def = plan_of(dockerfile);
                 let s = steps(&def);
-                let info = steps(&dockerfile_definition("Dockerfile", "dockerfile", "session"));
+                let info = steps(&build_file_definition(
+                    "Dockerfile",
+                    "dockerfile",
+                    "session",
+                    false,
+                ));
                 let md = &recorded["predicate"]["runDetails"]["metadata"]["buildkit_metadata"];
                 let layers = md["layers"]
                     .as_object()

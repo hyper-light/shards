@@ -246,7 +246,7 @@ pub struct Checkpoint {
 
 /// strconv.ParseUint(s, 10, 64)'s error.
 fn parse_uint(s: &[u8]) -> Result<u64, String> {
-    let q = shards_dockerfile::go::quote(s);
+    let q = shards_agentfile::go::quote(s);
     if s.is_empty() || !s.iter().all(u8::is_ascii_digit) {
         return Err(format!("strconv.ParseUint: parsing {q}: invalid syntax"));
     }
@@ -496,8 +496,8 @@ pub fn verify_checkpoint(envelope: &[u8], v: &NoteVerifier<'_>) -> Result<Checkp
         if cp.origin != v.name {
             return Err(format!(
                 "got Origin {} but expected {}",
-                shards_dockerfile::go::quote(cp.origin.as_bytes()),
-                shards_dockerfile::go::quote(v.name.as_bytes())
+                shards_agentfile::go::quote(cp.origin.as_bytes()),
+                shards_agentfile::go::quote(v.name.as_bytes())
             ));
         }
         Ok(cp)

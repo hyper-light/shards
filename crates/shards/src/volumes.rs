@@ -431,7 +431,7 @@ fn scoped_to(
 pub fn reserved(key: &str) -> String {
     format!(
         "label {key:?} is reserved: shards sets the {} labels from an image's Agentfile, and no other may set one",
-        String::from_utf8_lossy(shards_dockerfile::agentfile::LABEL_PREFIX)
+        String::from_utf8_lossy(shards_agentfile::agentfile::LABEL_PREFIX)
     )
 }
 
@@ -788,7 +788,7 @@ fn register_into(
                 .unwrap_or_default();
             if let Some(k) = labels
                 .keys()
-                .find(|k| shards_dockerfile::agentfile::reserved_label(k.as_bytes()))
+                .find(|k| shards_agentfile::agentfile::reserved_label(k.as_bytes()))
             {
                 return Err(reserved(k));
             }
@@ -816,7 +816,7 @@ fn register_into(
         // run's own root's: the domain's are its init's.
         let ours = k < image_owned
             && agent_volumes.is_some()
-            && !shards_dockerfile::agentfile::covers_domain_mounts(dest.as_bytes());
+            && !shards_agentfile::agentfile::covers_domain_mounts(dest.as_bytes());
         let agent = agent_volumes
             .unwrap_or_default()
             .iter()

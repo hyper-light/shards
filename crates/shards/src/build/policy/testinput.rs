@@ -45,7 +45,7 @@ pub struct GoHttp {
 }
 
 /// A time.Time as JSON wrote it back: RFC 3339 to the nanosecond in its zone.
-type GoTime = shards_dockerfile::go::Time;
+type GoTime = shards_agentfile::go::Time;
 
 #[derive(Debug, Clone, Default)]
 pub struct GoActor {
@@ -402,7 +402,7 @@ fn time(d: &mut Dec, v: &JValue, dst: &mut GoTime, raw: &Raw<'_>) {
     };
     // parseStrictRFC3339, whose strict checks Go 1.26 leaves disabled (go.dev/issue/54580):
     // time.Parse's RFC 3339.
-    match shards_dockerfile::go::parse_rfc3339(inner) {
+    match shards_agentfile::go::parse_rfc3339(inner) {
         Ok(t) => *dst = t,
         Err(e) => d.save_error(String::from_utf8_lossy(&e).into_owned()),
     }

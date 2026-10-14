@@ -66,17 +66,15 @@ fn policies_evaluate_as_opa_evaluates_them() {
         let name = c["name"].as_str().unwrap();
         let mut modules = BTreeMap::new();
         let mut parse_failed = false;
-        for (file, src) in std::iter::once((
-            "builtin/buildx_defaults.rego",
-            include_str!("../src/buildx_defaults.rego"),
-        ))
-        .chain(
-            c["modules"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .map(|m| (m[0].as_str().unwrap(), m[1].as_str().unwrap())),
-        ) {
+        for (file, src) in std::iter::once(("builtin/defaults.rego", include_str!("../src/defaults.rego")))
+            .chain(
+                c["modules"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|m| (m[0].as_str().unwrap(), m[1].as_str().unwrap())),
+            )
+        {
             match parse_module(file, src) {
                 Ok(m) => {
                     modules.insert(file.to_string(), m);

@@ -318,7 +318,7 @@ mod tests {
     /// containerd's pick: the most leading components shared, the later on a tie, never
     /// the target itself or another registry's.
     #[test]
-    fn blobs_mount_from_the_repository_containerd_picks() {
+    fn blobs_mount_from_the_closest_repository() {
         let target = Reference::parse_normalized("registry.example/team/app/web").unwrap();
         let sources = |s: &[&str]| s.iter().map(|s| (*s).to_string()).collect::<Vec<_>>();
         let pick = |s: &[&str]| mount_source(&sources(s), &target);

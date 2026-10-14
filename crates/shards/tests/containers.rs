@@ -281,19 +281,19 @@ fn a_joiner_is_a_container_of_its_own() {
     };
     refused(
         &["--network", "container:joiner", "-p", "80"],
-        "conflicting options: port publishing and the container type network mode",
+        "-p: a run joining another's microVM takes that run's ports: publish them on that run",
     );
     refused(
         &["--network", "container:joiner", "--hostname", "h"],
-        "conflicting options: hostname and the network mode",
+        "--hostname: a run joining another's microVM takes that run's hostname",
     );
     refused(
         &["--network", "container:joiner"],
-        "cannot join network namespace of a non running container: container joiner is exited",
+        "--network container:joiner: joiner is exited, and a run joins a running one's microVM",
     );
     refused(
         &["--network", "container:nope"],
-        "joining network namespace of container: No such container: nope",
+        "--network container:nope: No such container: nope",
     );
 }
 
@@ -636,9 +636,12 @@ fn a_joiner_may_share_its_providers_pid_namespace() {
     };
     refused(
         &["--pid", "container:prov"],
-        "\"--pid container:NAME\" is not supported by shards yet without \"--network container:NAME\" of the same container",
+        "--pid container:prov: a run shares another's PID namespace inside that run's microVM, which it joins with --network container:prov",
     );
-    refused(&["--pid", "container:nope"], "No such container: nope");
+    refused(
+        &["--pid", "container:nope"],
+        "--pid container:nope: no run is named nope",
+    );
     assert_eq!(shards(&["stop", "-t", "1", "prov"]).status, Some(0));
     let _ = exit(&mut provider);
 }
@@ -944,10 +947,7 @@ fn a_run_leaves_its_container_until_rm() {
     );
     let again = shards_in(&home, &["rm", "web"]);
     assert_eq!(again.status, Some(1));
-    assert_eq!(
-        again.stderr,
-        "Error response from daemon: No such container: web\n"
-    );
+    assert_eq!(again.stderr, "shards: No such container: web\n");
     // A name is free again once its container is gone.
     let reused = run_in(&home, &image, &["--name", "web"], &["exit", "0"]);
     assert_eq!(reused.status, Some(0), "{}", reused.stderr);
@@ -965,9 +965,7 @@ fn names_are_unique_and_rm_leaves_nothing() {
     let taken = run_in(&home, &image, &["--name", "one"], &["exit", "0"]);
     assert_eq!(taken.status, Some(125));
     assert!(
-        taken
-            .stderr
-            .contains("Conflict. The container name \"/one\" is already in use"),
+        taken.stderr.contains("--name one: the name is in use by microVM"),
         "{}",
         taken.stderr
     );
@@ -1078,7 +1076,7 @@ fn stats_measures_each_microvm_from_its_guest() {
     let missing = shards_in(&home, &["stats", "--no-stream", "nobody"]);
     assert_eq!(
         (missing.status, missing.stderr.as_str()),
-        (Some(1), "Error response from daemon: No such container: nobody\n"),
+        (Some(1), "shards: No such container: nobody\n"),
         "{missing}"
     );
     for name in ["spinner", "sleeper"] {
@@ -1342,16 +1340,18 @@ fn a_command_is_pid_1_as_a_containers_is() {
         r.status == Some(0) && lines.len() == 3 && lines[0] != "1" && lines[1..] == ["kthreadd", "denied"],
         "{r}"
     );
-    // The CLI's and dockerd's answers to the rest.
+    // The rest, refused in shards' words.
     let r = run(&["--pid", "foo", ALPINE, "true"]);
     assert!(
-        r.status == Some(125) && r.stderr.contains("--pid: invalid PID mode\n"),
+        r.status == Some(125)
+            && r.stderr
+                .contains("--pid foo: give host (the microVM's PID namespace) or container:NAME"),
         "{r}"
     );
     let r = shards(&["create", "--pid", "container:nope", ALPINE, "true"]);
     assert_eq!(
         (r.status, r.stderr.as_str()),
-        (Some(1), "Error response from daemon: No such container: nope\n"),
+        (Some(1), "shards: --pid container:nope: no run is named nope\n"),
         "{r}"
     );
     for (name, flags, want) in [
@@ -1374,7 +1374,7 @@ fn a_command_is_pid_1_as_a_containers_is() {
         (r.status, r.stderr.as_str()),
         (
             Some(1),
-            "Error response from daemon: \"--pid container:NAME\" is not supported by shards yet without \"--network container:NAME\" of the same container\n"
+            "shards: --pid container:i0: a run shares another's PID namespace inside that run's microVM, which it joins with --network container:i0\n"
         ),
         "{r}"
     );
@@ -1495,18 +1495,14 @@ fn pause_freezes_a_microvm_until_unpause_or_stop() {
     );
     let again = shards(&["pause", "frozen"]);
     assert_eq!(again.status, Some(1));
-    assert!(again.stderr.ends_with("is already paused\n"), "{again}");
+    assert!(again.stderr.ends_with("is paused already\n"), "{again}");
     assert!(cpu() < 5.0, "a frozen microVM spun");
     let ps = shards(&["ps"]);
     assert!(ps.stdout.contains(" (Paused) "), "{ps}");
     let inspected = shards(&["container", "inspect", "frozen"]);
     assert!(inspected.stdout.contains(r#""Status": "paused""#), "{inspected}");
     let rm = shards(&["rm", "frozen"]);
-    assert!(
-        rm.stderr
-            .ends_with("container is paused and must be unpaused first\n"),
-        "{rm}"
-    );
+    assert!(rm.stderr.ends_with("it is paused: unpause it first\n"), "{rm}");
     let unpaused = shards(&["unpause", "frozen"]);
     assert_eq!(
         (unpaused.status, unpaused.stdout.as_str()),
@@ -1568,10 +1564,7 @@ fn top_lists_a_microvms_processes() {
     let refused = shards(&["top", "listed", "-o", "user=PID"]);
     assert_eq!(
         (refused.status, refused.stderr.as_str()),
-        (
-            Some(1),
-            "Error response from daemon: specifying \"user=PID\" is not allowed\n"
-        ),
+        (Some(1), "shards: specifying \"user=PID\" is not allowed\n"),
         "{refused}"
     );
     assert_eq!(shards(&["pause", "listed"]).status, Some(0));
@@ -1848,7 +1841,7 @@ fn cp_copies_files_into_and_out_of_a_microvm() {
         (missing.status, missing.stderr.as_str()),
         (
             Some(1),
-            "Error response from daemon: Could not find the file /nope in container copier\n"
+            "shards: Could not find the file /nope in container copier\n"
         ),
         "{missing}"
     );
@@ -2003,7 +1996,7 @@ fn a_refused_start_leaves_its_container_as_it_was() {
     assert_eq!(started.status, Some(1), "{started}");
     let why = started
         .stderr
-        .strip_prefix("Error response from daemon: ")
+        .strip_prefix("shards: ")
         .and_then(|s| s.strip_suffix("\nfailed to start containers: left\n"))
         .unwrap_or_else(|| panic!("{started}"));
     assert!(why.contains("10.77.0.5"), "{started}");
@@ -2019,10 +2012,7 @@ fn a_refused_start_leaves_its_container_as_it_was() {
     let restarted = shards(&["restart", "left"]);
     assert_eq!(
         (restarted.status, restarted.stderr),
-        (
-            Some(1),
-            format!("Error response from daemon: Cannot restart container left: {why}\n")
-        ),
+        (Some(1), format!("shards: cannot restart left: {why}\n")),
     );
     let state = shards(&["inspect", "-f", "{{.State.Status}}", "left"]);
     assert_eq!(state.stdout, "created\n", "{state}");
@@ -2114,7 +2104,7 @@ fn an_endpoints_sysctls_are_its_interfaces() {
     );
     assert_eq!(
         (made.status, made.stderr.as_str()),
-        (Some(1), format!("Error response from daemon: {said}\n").as_str()),
+        (Some(1), format!("shards: {said}\n").as_str()),
         "{made}"
     );
 }
@@ -2372,17 +2362,17 @@ fn a_runs_link_local_addresses_are_its_own() {
         (
             &["--link-local-ip", "10.9.8.7"][..],
             125,
-            format!("{failed} invalid link local IP address: 10.9.8.7"),
+            "--link-local-ip 10.9.8.7: not a link-local address (169.254.0.0/16, fe80::/10)".to_string(),
         ),
         (
             &["--network", "none", "--link-local-ip", "10.9.8.7"],
             125,
-            format!("{failed} invalid link local IP address: 10.9.8.7"),
+            "--link-local-ip 10.9.8.7: not a link-local address (169.254.0.0/16, fe80::/10)".to_string(),
         ),
         (
             &["--link-local-ip", "169.254.12.1", "--link-local-ip", "10.9.8.6"],
             125,
-            format!("{failed} invalid link local IP address: 10.9.8.6"),
+            "--link-local-ip 10.9.8.6: not a link-local address (169.254.0.0/16, fe80::/10)".to_string(),
         ),
         (
             &["--link-local-ip", "fe80::1234"],
@@ -2401,7 +2391,7 @@ fn a_runs_link_local_addresses_are_its_own() {
         (
             &["--link-local-ip", "0.0.0.0"],
             125,
-            "invalid config for network bridge: invalid endpoint settings:\ninvalid link-local IP address: 0.0.0.0".to_string(),
+            "--network bridge: --link-local-ip 0.0.0.0: not an address a run can have".to_string(),
         ),
         (
             &[
@@ -3040,7 +3030,7 @@ fn start_runs_a_stopped_microvm_again_over_its_own_files() {
         (missing.status, missing.stderr.as_str()),
         (
             Some(1),
-            "Error response from daemon: No such container: nobody\nfailed to start containers: nobody\n"
+            "shards: No such container: nobody\nfailed to start containers: nobody\n"
         ),
         "{missing}"
     );
@@ -3112,10 +3102,7 @@ fn commit_makes_an_image_of_what_a_microvm_changed() {
     let both = shards(&["commit", "--pause", "--no-pause", "live"]);
     assert_eq!(
         (both.status, both.stderr.as_str()),
-        (
-            Some(1),
-            "conflicting options: --no-pause and --pause cannot be used together\n"
-        ),
+        (Some(1), "--pause and --no-pause: give one\n"),
         "{both}"
     );
     assert_eq!(shards(&["rm", "-f", "live"]).status, Some(0));
@@ -3130,11 +3117,7 @@ fn rm_refuses_a_running_container_unless_forced() {
     let mut sleeper = start(&home, &image, &["--name", "busy"], &["sleep"]);
     let refused = shards_in(&home, &["rm", "busy"]);
     assert_eq!(refused.status, Some(1));
-    assert!(
-        refused.stderr.contains("container is running"),
-        "{}",
-        refused.stderr
-    );
+    assert!(refused.stderr.contains("it is running"), "{}", refused.stderr);
     let forced = shards_in(&home, &["rm", "-f", "busy"]);
     assert_eq!(
         (forced.status, forced.stdout.as_str()),
@@ -3219,7 +3202,7 @@ fn ps_filters_microvms() {
         let refused = shards(&["ps", "-f", filter]);
         assert_eq!(
             (refused.status, refused.stderr.as_str()),
-            (Some(1), format!("Error response from daemon: {said}\n").as_str()),
+            (Some(1), format!("shards: {said}\n").as_str()),
             "{refused}"
         );
     }
@@ -3272,7 +3255,7 @@ fn images_and_prunes_filter() {
         let refused = shards(&["images", "-f", filter]);
         assert_eq!(
             (refused.status, refused.stderr.as_str()),
-            (Some(1), format!("Error response from daemon: {said}\n").as_str()),
+            (Some(1), format!("shards: {said}\n").as_str()),
             "{refused}"
         );
     }
@@ -3291,14 +3274,11 @@ fn images_and_prunes_filter() {
         "until=2h",
     ]);
     assert_eq!(
-        twice.stderr, "Error response from daemon: more than one until filter specified\n",
+        twice.stderr, "shards: more than one until filter specified\n",
         "{twice}"
     );
     let wrong = shards(&["system", "prune", "-f", "--filter", "dangling=true"]);
-    assert_eq!(
-        wrong.stderr, "Error response from daemon: invalid filter 'dangling'\n",
-        "{wrong}"
-    );
+    assert_eq!(wrong.stderr, "shards: invalid filter 'dangling'\n", "{wrong}");
     let stopped = shards(&["container", "prune", "-f"]);
     assert!(stopped.stdout.starts_with("Deleted Containers:\n"), "{stopped}");
     // Every unused image the label names, and no other.
@@ -3375,10 +3355,7 @@ fn inspect_describes_microvms_and_images() {
         "{none}"
     );
     let volume = shards(&["inspect", "--type", "volume", "v"]);
-    assert_eq!(
-        volume.stderr, "Error response from daemon: get v: no such volume\n",
-        "{volume}"
-    );
+    assert_eq!(volume.stderr, "shards: no volume is named v\n", "{volume}");
     let empty = shards(&["inspect", "--type", "", "x"]);
     assert!(
         empty
@@ -3809,17 +3786,14 @@ fn run_limits_a_microvms_resources() {
         (small.status, small.stderr.as_str()),
         (
             Some(125),
-            "shards: Error response from daemon: Minimum memory limit allowed is 6MB\n\nRun 'shards run --help' for more information\n"
+            "shards: Minimum memory limit allowed is 6MB\n\nRun 'shards run --help' for more information\n"
         ),
         "{small}"
     );
     let made = shards(&["create", "--pull", "never", "-m", "4m", &image]);
     assert_eq!(
         (made.status, made.stderr.as_str()),
-        (
-            Some(1),
-            "Error response from daemon: Minimum memory limit allowed is 6MB\n"
-        ),
+        (Some(1), "shards: Minimum memory limit allowed is 6MB\n"),
         "{made}"
     );
     let cpus = std::thread::available_parallelism().unwrap().get();
@@ -3925,10 +3899,7 @@ fn run_sets_up_mounts_limits_and_sysctls() {
     let copied = shards(&["cp", file.to_str().unwrap(), "sealed:/copied.txt"]);
     assert_eq!(
         (copied.status, copied.stderr.as_str()),
-        (
-            Some(1),
-            "Error response from daemon: container rootfs is marked read-only\n"
-        ),
+        (Some(1), "shards: container rootfs is marked read-only\n"),
         "{copied}"
     );
     assert_eq!(shards(&["kill", "sealed"]).status, Some(0));
@@ -3972,10 +3943,7 @@ fn run_sets_up_mounts_limits_and_sysctls() {
             .collect();
         assert_eq!(
             (r.status, stderr.as_str()),
-            (
-                Some(status),
-                format!("shards: Error response from daemon: {words}{help}").as_str()
-            ),
+            (Some(status), format!("shards: {words}{help}").as_str()),
             "{options:?}"
         );
     }
@@ -4120,10 +4088,7 @@ fn run_sets_capabilities_groups_and_privileges() {
             .collect();
         assert_eq!(
             (r.status, stderr.as_str()),
-            (
-                Some(125),
-                format!("shards: Error response from daemon: {words}{help}").as_str()
-            ),
+            (Some(125), format!("shards: {words}{help}").as_str()),
             "{options:?}"
         );
     }
@@ -4288,15 +4253,15 @@ fn logs_keep_what_a_container_wrote() {
     for (window, said) in [
         (
             "x",
-            "invalid value for \"since\": failed to parse value as time or duration: \"x\"\n",
+            "shards: --since x: failed to parse value as time or duration: \"x\"\n",
         ),
         (
             "2013-13-01",
-            "invalid value for \"since\": parsing time \"2013-13-01\": month out of range\n",
+            "shards: --since 2013-13-01: parsing time \"2013-13-01\": month out of range\n",
         ),
         (
             "1.+5",
-            "Error response from daemon: invalid value for \"since\": invalid timestamp \"1.+5\": invalid nanoseconds: invalid character '+' at position 0\n",
+            "shards: --since 1.+5: invalid timestamp \"1.+5\": invalid nanoseconds: invalid character '+' at position 0\n",
         ),
     ] {
         let bad = shards_in(&home, &["logs", "--since", window, "reporter"]);
@@ -4304,10 +4269,7 @@ fn logs_keep_what_a_container_wrote() {
     }
     // The container is found first, as the CLI inspects it first.
     let missing = shards_in(&home, &["logs", "--since", "x", "nosuch"]);
-    assert_eq!(
-        missing.stderr,
-        "Error response from daemon: No such container: nosuch\n"
-    );
+    assert_eq!(missing.stderr, "shards: No such container: nosuch\n");
 
     let errs = run_in(&home, &image, &["--name", "errs"], &["stderr", "to stderr"]);
     assert_eq!(errs.status, Some(0), "{}", errs.stderr);
@@ -4409,7 +4371,7 @@ fn a_command_that_cannot_start_says_why() {
     let Some((home, image)) = home("containers-unstarted") else {
         return;
     };
-    let said = "shards: Error response from daemon: exec: \"/nonexistent\": stat /nonexistent: no such file or directory\n\nRun 'shards run --help' for more information\n";
+    let said = "shards: exec: \"/nonexistent\": stat /nonexistent: no such file or directory\n\nRun 'shards run --help' for more information\n";
     let attached = run_in(
         &home,
         &image,
@@ -4672,8 +4634,7 @@ fn rm_cancels_a_run_whose_vm_is_not_ready() {
     let waited = waiting.finish();
     assert!(
         waited.status == Some(0) && waited.stdout == "0\n"
-            || waited.status == Some(1)
-                && waited.stderr == "Error response from daemon: No such container: racer\n",
+            || waited.status == Some(1) && waited.stderr == "shards: No such container: racer\n",
         "{waited}"
     );
     gated.open();
@@ -4681,9 +4642,7 @@ fn rm_cancels_a_run_whose_vm_is_not_ready() {
     assert_eq!(run.status, Some(125), "{run}");
     assert_eq!(
         untimed(&run.stderr),
-        format!(
-            "shards: Error response from daemon: No such container: {id}\n\nRun 'shards run --help' for more information\n"
-        ),
+        format!("shards: No such container: {id}\n\nRun 'shards run --help' for more information\n"),
         "{run}"
     );
     assert_eq!(run.stdout, "", "{run}");
@@ -4759,7 +4718,7 @@ fn a_stopping_daemon_starts_no_pending_run() {
     assert_eq!(run.status, Some(125), "{run}");
     assert_eq!(
         untimed(&run.stderr),
-        "shards: Error response from daemon: the daemon is shutting down\n\nRun 'shards run --help' for more information\n",
+        "shards: the daemon is shutting down\n\nRun 'shards run --help' for more information\n",
         "{run}"
     );
     let stopped = stopping.finish();
@@ -5330,16 +5289,15 @@ fn a_run_on_the_hosts_network_is_on_the_hosts_network() {
         );
     }
 
-    // What dockerd refuses on the host's network, in its words; runc's sysctl refusal
-    // without containerd's and runc's prefixes, as every start's.
+    // What a run on its host's network is refused, in shards' words.
     for (options, said) in [
         (
             &["--sysctl", "net.ipv4.ip_forward=1"][..],
-            "Error response from daemon: sysctl \"net.ipv4.ip_forward\" not allowed in host network namespace\n",
+            "--sysctl net.ipv4.ip_forward: a run on its host's network has no network of its own to set it in\n",
         ),
         (
             &["--ip", "172.17.0.9"][..],
-            "Error response from daemon: invalid config for network host: invalid endpoint settings:\n* user-specified IP address is supported on user-defined networks only\n* no configured subnet contains IP address 172.17.0.9\n",
+            "--network host:\n* --ip: an address of its own is a run's on a network you made\n* 172.17.0.9: in none of the network's subnets\n",
         ),
         (
             &["--network-alias", "a"][..],
@@ -5347,7 +5305,7 @@ fn a_run_on_the_hosts_network_is_on_the_hosts_network() {
         ),
         (
             &["--network", "none"][..],
-            "Error response from daemon: failed to set up container networking: container sharing network namespace with another container or host cannot be connected to any other network\n",
+            "--network host: a run on its host's network is on no other\n",
         ),
     ] {
         let ran = run_in(&home, &image, &[&host[..], options].concat(), &["exit", "0"]);
@@ -5732,7 +5690,7 @@ fn a_run_on_a_network_it_cannot_have_says_why() {
         (missing.status, missing.stderr.as_str()),
         (
             Some(125),
-            format!("shards: Error response from daemon: failed to set up container networking: network foo not found{help}").as_str()
+            format!("shards: --network foo: no network is named foo{help}").as_str()
         ),
         "{missing}"
     );
@@ -5754,7 +5712,7 @@ fn a_run_on_a_network_it_cannot_have_says_why() {
     assert!(
         removed
             .stderr
-            .contains("one of the networks in private (none) mode"),
+            .contains("--network none: a run with no network is on no other"),
         "{removed}"
     );
     // An address on the bridge the daemon elected, which only a user-defined network takes.
@@ -5765,11 +5723,11 @@ fn a_run_on_a_network_it_cannot_have_says_why() {
     for (options, said) in [
         (
             &["--network", on_bridge.as_str()][..],
-            "shards: Error response from daemon: invalid config for network bridge: invalid endpoint settings:\nuser-specified IP address is supported on user-defined networks only",
+            "shards: --network bridge: --ip: an address of its own is a run's on a network you made",
         ),
         (
             &["--network", "container:x", "--hostname", "h"][..],
-            "shards: Error response from daemon: conflicting options: hostname and the network mode",
+            "shards: --hostname: a run joining another's microVM takes that run's hostname",
         ),
         (&["--network", ""][..], "shards: no name set for network"),
     ] {
@@ -5836,7 +5794,7 @@ fn stop_sends_a_containers_own_stop_signal() {
         (refused.status, refused.stderr.as_str()),
         (
             Some(125),
-            "shards: Error response from daemon: invalid signal: BOGUS\n\nRun 'shards run --help' for more information\n"
+            "shards: BOGUS is no signal: give its name (TERM, SIGKILL, RTMIN+3) or its number\n\nRun 'shards run --help' for more information\n"
         ),
         "{refused}"
     );
@@ -5958,20 +5916,16 @@ fn exec_runs_commands_in_a_running_microvm() {
             "{args:?}\n{r}"
         );
     };
-    let oci = "OCI runtime exec failed: exec failed:";
+    let oci = "shards: cannot start the command:";
     refused(
         &["ex", "nonexistent"],
         127,
-        &format!(
-            "{oci} unable to start container process: exec: \"nonexistent\": executable file not found in $PATH\n"
-        ),
+        &format!("{oci} exec: \"nonexistent\": executable file not found in $PATH\n"),
     );
     refused(
         &["-w", "/nonexistent", "ex", "/bin/testguest", "report"],
         127,
-        &format!(
-            "{oci} unable to start container process: chdir to cwd (\"/nonexistent\") failed: no such file or directory\n"
-        ),
+        &format!("{oci} chdir to cwd (\"/nonexistent\") failed: no such file or directory\n"),
     );
     refused(
         &["-w", "rel", "ex", "/bin/testguest", "report"],
@@ -5981,24 +5935,24 @@ fn exec_runs_commands_in_a_running_microvm() {
     refused(
         &["nope", "/bin/testguest", "report"],
         1,
-        "Error response from daemon: No such container: nope\n",
+        "shards: No such container: nope\n",
     );
     let unknown = exec(&["-u", "nobodyhere", "ex", "/bin/testguest", "report"]);
     assert_eq!(unknown.status, Some(1), "{unknown}");
     assert!(
         unknown
             .stderr
-            .starts_with("Error response from daemon: unable to find user nobodyhere"),
+            .starts_with("shards: unable to find user nobodyhere"),
         "{unknown}"
     );
     // -it with a stdin that is no terminal: refused once the container is found, and not
     // with -d; the detach keys are checked before it is looked for (docker/cli exec.go).
-    let untty = "cannot attach stdin to a TTY-enabled container because stdin is not a terminal\n";
+    let untty = "-it: stdin is not a terminal, so it cannot be the command's: leave out -t, or run it from a terminal\n";
     refused(&["-it", "ex", "/bin/testguest", "report"], 1, untty);
     refused(
         &["-it", "nope", "/bin/testguest", "report"],
         1,
-        "Error response from daemon: No such container: nope\n",
+        "shards: No such container: nope\n",
     );
     assert_eq!(exec(&["-dit", "ex", "/bin/testguest", "sleep"]).status, Some(0));
     refused(
@@ -6016,14 +5970,10 @@ fn exec_runs_commands_in_a_running_microvm() {
     let stopped = shards_in(&home, &["stop", "ex"]);
     assert_eq!(stopped.status, Some(0), "{stopped}");
     let _ = exit(&mut run);
-    let id = shards_in(&home, &["ps", "-aq", "--no-trunc"])
-        .stdout
-        .trim()
-        .to_string();
     refused(
         &["ex", "/bin/testguest", "report"],
         1,
-        &format!("Error response from daemon: container {id} is not running\n"),
+        "shards: ex is not running\n",
     );
     // Before the exec is made: before whether the container runs is asked.
     refused(&["-it", "ex", "/bin/testguest", "report"], 1, untty);
@@ -6268,7 +6218,7 @@ fn published_ports_reach_the_guest() {
             &b"over IPv6"[..]
         )
     );
-    // Taken by a running container: dockerd's allocator's words, the container left
+    // Taken by a running microVM: refused with the words scripts look for, the run left
     // created.
     let help = "\n\nRun 'shards run --help' for more information\n";
     let late = run_in(
@@ -6277,20 +6227,15 @@ fn published_ports_reach_the_guest() {
         &["--name", "late", "-p", &format!("{n}:7000")],
         &["exit", "0"],
     );
-    let said = late.stderr.strip_suffix(help).unwrap_or_default();
-    let (before, after) = said.split_once(" (").unwrap_or_default();
     assert_eq!(
-        (late.status, before),
+        (late.status, late.stderr.as_str()),
         (
             Some(125),
-            "shards: Error response from daemon: failed to set up container networking: driver failed programming external connectivity on endpoint late"
+            format!(
+                "shards: -p: publishing late's ports: 0.0.0.0:{n}: port is already allocated, to another run{help}"
+            )
+            .as_str()
         ),
-        "{late}"
-    );
-    assert!(
-        after.ends_with(&format!(
-            "): Bind for 0.0.0.0:{n} failed: port is already allocated"
-        )),
         "{late}"
     );
     // And at one address of the family a running container holds the port at every
@@ -6305,7 +6250,7 @@ fn published_ports_reach_the_guest() {
     assert_eq!(narrow.status, Some(125), "{narrow}");
     assert!(
         narrow.stderr.contains(&format!(
-            "Bind for 127.0.0.1:{n} failed: port is already allocated"
+            "127.0.0.1:{n}: port is already allocated, to another run"
         )),
         "{narrow}"
     );
@@ -6328,7 +6273,7 @@ fn published_ports_reach_the_guest() {
     assert_eq!(refused.status, Some(125), "{refused}");
     assert!(
         refused.stderr.contains(&format!(
-            "): failed to bind host port 0.0.0.0:{h}/tcp: address already in use{help}"
+            "0.0.0.0:{h}/tcp: the host's port is taken: address already in use{help}"
         )),
         "{refused}"
     );
@@ -6392,7 +6337,7 @@ fn published_ports_reach_the_guest() {
     );
     assert!(
         refused.stderr.contains(&format!(
-            "): failed to bind host port 0.0.0.0:{p}/tcp: address already in use"
+            "0.0.0.0:{p}/tcp: the host's port is taken: address already in use"
         )),
         "{refused}"
     );
@@ -6673,9 +6618,7 @@ fn images_lists_what_was_pulled() {
     assert_eq!(refused.stdout, "", "{refused}");
     assert_eq!(
         refused.stderr,
-        format!(
-            "Error response from daemon: failed to resolve reference \"{missing}\": {missing}: not found\n"
-        ),
+        format!("shards: failed to resolve reference \"{missing}\": {missing}: not found\n"),
         "{refused}"
     );
     let short = id.strip_prefix("sha256:").and_then(|hex| hex.get(..12)).unwrap();
@@ -6882,25 +6825,19 @@ fn tag_names_an_image_again() {
     assert_eq!(ran.status, Some(3), "{ran}");
     let digest = format!("x@sha256:{}", "0".repeat(64));
     for (args, said) in [
-        (
-            &["nosuch:1", "y"][..],
-            "Error response from daemon: No such image: nosuch:1",
-        ),
-        (
-            &["dead", "y"],
-            "Error response from daemon: No such image: dead:latest",
-        ),
+        (&["nosuch:1", "y"][..], "shards: No such image: nosuch:1"),
+        (&["dead", "y"], "shards: No such image: dead:latest"),
         (
             &[image.as_str(), "Bad:1"],
             "error parsing reference: \"Bad:1\" is not a valid repository/tag: invalid reference format: repository name (library/Bad) must be lowercase",
         ),
         (
             &[image.as_str(), &digest],
-            "refusing to create a tag with a digest reference",
+            "shards: a tag names an image by name and tag, not by digest",
         ),
         (
             &[image.as_str(), "sha256"],
-            "Error response from daemon: refusing to create an ambiguous tag using digest algorithm as name",
+            "shards: an image named sha256 would read as a digest: give it another name",
         ),
     ] {
         let refused = shards(&[&["tag"][..], args].concat());
@@ -6940,7 +6877,7 @@ fn rmi_removes_images() {
         (
             Some(1),
             "Untagged: shp/a:1\n",
-            "Error response from daemon: No such image: shp/nosuch:1\n"
+            "shards: No such image: shp/nosuch:1\n"
         ),
         "{untagged}"
     );
@@ -6960,7 +6897,7 @@ fn rmi_removes_images() {
         (
             Some(1),
             format!(
-                "Error response from daemon: conflict: unable to delete {image} (must be forced) - container {container} is using its referenced image {id}\n"
+                "shards: cannot remove image {image}: microVM {container} was made of it, {id}: -f removes it anyway\n"
             )
         ),
         "{used}"
@@ -6969,7 +6906,7 @@ fn rmi_removes_images() {
     assert_eq!(
         hard.stderr,
         format!(
-            "Error response from daemon: conflict: unable to delete {id} (cannot be forced) - image is being used by running container {container}\n"
+            "shards: cannot remove image {id}: microVM {container} runs it, which -f does not take from it\n"
         ),
         "{hard}"
     );
@@ -6991,7 +6928,7 @@ fn rmi_removes_images() {
     let stopped = shards(&["rmi", &id]);
     assert!(
         stopped.stderr.contains(&format!(
-            "(must be forced) - image is being used by stopped container {container}"
+            "microVM {container} was made of it: -f removes it anyway"
         )),
         "{stopped}"
     );
@@ -7041,10 +6978,7 @@ fn image_inspect_describes_images() {
     let repo = format!("127.0.0.1:{port}/test/image");
     let shown = shards(&["image", "inspect", &image, "nosuch:1"]);
     assert_eq!(shown.status, Some(1), "{shown}");
-    assert_eq!(
-        shown.stderr,
-        "Error response from daemon: No such image: nosuch:1\n"
-    );
+    assert_eq!(shown.stderr, "shards: No such image: nosuch:1\n");
     let doc: serde_json::Value = serde_json::from_str(&shown.stdout).unwrap();
     let doc = &doc[0];
     assert_eq!(doc["Id"], id.as_str());
@@ -7274,7 +7208,7 @@ fn save_writes_images() {
     let refused = shards(&["save", "-o", missing.to_str().unwrap(), &image, "nosuch:1"]);
     assert_eq!(
         (refused.status, refused.stderr.as_str()),
-        (Some(1), "Error response from daemon: No such image: nosuch:1\n"),
+        (Some(1), "shards: No such image: nosuch:1\n"),
         "{refused}"
     );
     assert!(!missing.exists());
@@ -7299,10 +7233,7 @@ fn save_writes_images() {
     let failed = shards(&["save", "-o", broken.to_str().unwrap(), &image]);
     std::fs::set_permissions(&layer, std::fs::Permissions::from_mode(0o444)).unwrap();
     assert_eq!(failed.status, Some(1), "{failed}");
-    assert!(
-        failed.stderr.starts_with("Error response from daemon: "),
-        "{failed}"
-    );
+    assert!(failed.stderr.starts_with("shards: "), "{failed}");
     assert!(!broken.exists());
     assert_eq!(std::fs::read_dir(&*out).unwrap().count(), 1, "only image.tar");
     // By ID: no name, so neither name annotation nor tag.
@@ -7356,10 +7287,7 @@ fn save_writes_images() {
     let none = shards(&["save", "-o", repo_tar.to_str().unwrap(), "nosuchrepo"]);
     assert_eq!(
         (none.status, none.stderr.as_str()),
-        (
-            Some(1),
-            "Error response from daemon: No such image: nosuchrepo:latest\n"
-        ),
+        (Some(1), "shards: No such image: nosuchrepo:latest\n"),
         "{none}"
     );
     // To stdout, the same archive.
@@ -8320,10 +8248,7 @@ fn volume_commands_keep_volumes() {
     let refused = shards(&["volume", "create", "-o", "bad=1", "other"]);
     assert_eq!(
         (refused.status, refused.stderr.as_str()),
-        (
-            Some(1),
-            "Error response from daemon: create other: invalid option: \"bad\"\n"
-        )
+        (Some(1), "shards: create other: invalid option: \"bad\"\n")
     );
     // Written by one microVM, read by the next.
     let wrote = run_in(
@@ -8349,7 +8274,7 @@ fn volume_commands_keep_volumes() {
         (in_use.status, in_use.stderr),
         (
             Some(1),
-            format!("Error response from daemon: remove data: volume is in use - [{id}]\n")
+            format!("shards: cannot remove volume data: in use by {id}\n")
         )
     );
     let listed = shards(&[
@@ -8375,11 +8300,7 @@ fn volume_commands_keep_volumes() {
     let missing = shards(&["volume", "inspect", "nope"]);
     assert_eq!(
         (missing.status, missing.stdout.as_str(), missing.stderr.as_str()),
-        (
-            Some(1),
-            "[]\n",
-            "Error response from daemon: get nope: no such volume\n"
-        )
+        (Some(1), "[]\n", "shards: no volume is named nope\n")
     );
     // system df counts it, in use.
     let df = shards(&[
@@ -8533,18 +8454,12 @@ fn update_changes_limits_of_running_microvms() {
     };
     let shards = |args: &[&str]| shards_in(&home, args);
     let mut held = start(&home, &image, &["--name", "held"], &["sleep"]);
-    let id = shards(&["inspect", "-f", "{{.Id}}", "held"])
-        .stdout
-        .trim()
-        .to_string();
     let refused = shards(&["update", "-m", "64m", "held"]);
     assert_eq!(
         (refused.status, refused.stderr),
         (
             Some(1),
-            format!(
-                "Error response from daemon: Cannot update container {id}: Memory limit should be smaller than already set memoryswap limit, update the memoryswap at the same time\n"
-            )
+            "shards: cannot update held: Memory limit should be smaller than already set memoryswap limit, update the memoryswap at the same time\n".to_string()
         )
     );
     let updated = shards(&[
@@ -8597,21 +8512,19 @@ fn update_changes_limits_of_running_microvms() {
     for (args, said) in [
         (
             &["--cpu-period", "50000", "held"][..],
-            format!(
-                "Error response from daemon: Cannot update container {id}: Conflicting options: CPU Period cannot be updated as NanoCPUs has already been set\n"
-            ),
+            "shards: cannot update held: Conflicting options: CPU Period cannot be updated as NanoCPUs has already been set\n".to_string(),
         ),
         (
             &["-m", "1m", "held"][..],
-            "Error response from daemon: Minimum memory limit allowed is 6MB\n".to_string(),
+            "shards: Minimum memory limit allowed is 6MB\n".to_string(),
         ),
         (
             &["--blkio-weight", "5", "held"][..],
-            "Error response from daemon: Range of blkio weight is from 10 to 1000\n".to_string(),
+            "shards: Range of blkio weight is from 10 to 1000\n".to_string(),
         ),
         (
             &["--cpus", "1", "nope"][..],
-            "Error response from daemon: No such container: nope\n".to_string(),
+            "shards: No such container: nope\n".to_string(),
         ),
     ] {
         let mut all = vec!["update"];
@@ -8844,7 +8757,7 @@ fn import_makes_images_of_tarballs() {
         ),
         (
             &["import", "-c", "RUN x", tar.to_str().unwrap()][..],
-            "Error response from daemon: RUN is not a valid change command\n",
+            "shards: RUN is not a valid change command\n",
         ),
         (
             &["import", tar.to_str().unwrap(), "BAD:REF:x"][..],
@@ -9016,12 +8929,9 @@ fn security_opt_confines_the_workload() {
         ("bogus", "invalid --security-opt: \"bogus\""),
         (
             "no-new-privileges=yes",
-            "Error response from daemon: invalid --security-opt 2: \"no-new-privileges=yes\"",
+            "shards: invalid --security-opt 2: \"no-new-privileges=yes\"",
         ),
-        (
-            "bogus=1",
-            "Error response from daemon: invalid --security-opt 2: \"bogus=1\"",
-        ),
+        ("bogus=1", "shards: invalid --security-opt 2: \"bogus=1\""),
     ] {
         let out = shards(&["run", "--rm", "--security-opt", opt, &image, "exit", "0"]);
         assert_eq!(out.status, Some(125), "{out}");
@@ -9273,7 +9183,7 @@ fn devices_are_given_and_confined() {
     assert_eq!(started.status, Some(1), "{started}");
     assert_eq!(
         started.stderr,
-        format!("Error response from daemon: {missing}\nfailed to start containers: nodev\n")
+        format!("shards: {missing}\nfailed to start containers: nodev\n")
     );
     let state = shards(&[
         "inspect",
@@ -9510,7 +9420,7 @@ fn attach_joins_a_running_microvm() {
     let missing = shards(&["attach", "nope"]);
     assert_eq!(
         (missing.status, missing.stderr.as_str()),
-        (Some(1), "Error response from daemon: No such container: nope\n")
+        (Some(1), "shards: No such container: nope\n")
     );
     let made = run_in(&home, &image, &["-d", "--name", "held"], &["sleep"]);
     assert_eq!(made.status, Some(0), "{made}");
@@ -9528,7 +9438,7 @@ fn attach_joins_a_running_microvm() {
         (piped.status, piped.stderr.as_str()),
         (
             Some(1),
-            "cannot attach stdin to a TTY-enabled container because stdin is not a terminal\n"
+            "-it: stdin is not a terminal, so it cannot be the command's: leave out -t, or run it from a terminal\n"
         )
     );
     assert_eq!(shards(&["rm", "-f", "term"]).status, Some(0));
@@ -9746,12 +9656,17 @@ fn microvms_on_a_network_reach_one_another_by_name() {
         &["exit", "0"],
     );
     assert!(
-        r.stderr.contains("invalid config for network lan: invalid endpoint settings:\nno configured subnet contains IP address 10.9.9.9"),
+        r.stderr
+            .contains("--network lan: 10.9.9.9: in none of the network's subnets"),
         "{r}"
     );
     let rm = shards(&["network", "rm", "lan"]);
     assert_eq!(rm.status, Some(1), "{rm}");
-    assert!(rm.stderr.starts_with("Error response from daemon: error while removing network: network lan has active endpoints (name:\"srv\" id:\""), "{rm}");
+    assert!(
+        rm.stderr
+            .starts_with("shards: cannot remove network lan: runs are on it (name:\"srv\" id:\""),
+        "{rm}"
+    );
     assert!(rm.stderr.ends_with("\")\nexit status 1\n"), "{rm}");
     assert_eq!(shards(&["rm", "-f", "srv"]).status, Some(0));
     let _ = srv.kill();
@@ -9765,23 +9680,23 @@ fn microvms_on_a_network_reach_one_another_by_name() {
     for (args, said) in [
         (
             &["network", "create", "lan"][..],
-            "Error response from daemon: network with name lan already exists\n",
+            "shards: a network is named lan already\n",
         ),
         (
             &["network", "create", "bridge"],
-            "Error response from daemon: operation is not permitted on predefined bridge network \n",
+            "shards: bridge is one of shards' own networks, bridge, host and none: give yours another name\n",
         ),
         (
             &["network", "create", "--subnet", "10.77.0.0/24", "other"],
-            "Error response from daemon: invalid pool request: Pool overlaps with other one on this address space\n",
+            "shards: invalid pool request: Pool overlaps with other one on this address space\n",
         ),
         (
             &["network", "create", "--gateway", "1.2.3.4", "other"],
-            "every ip-range or gateway must have a corresponding subnet\n",
+            "--ip-range and --gateway each belong to a --subnet: give its subnet\n",
         ),
         (
             &["network", "rm", "bridge"],
-            "Error response from daemon: bridge is a pre-defined network and cannot be removed\nexit status 1\n",
+            "shards: bridge is one of shards' own networks, and stays\nexit status 1\n",
         ),
     ] {
         let r = shards(args);
@@ -9856,17 +9771,14 @@ fn image_configs_run_key_by_key() {
         &config.replacen(r#""User":"app""#, r#""User":"app","Healthcheck":5"#, 1),
     );
     load("badhist:1", &config.replacen('{', r#"{"history":5,"#, 1));
-    let hc = "could not deserialize image config: json: cannot unmarshal number into Go struct field DockerOCIImageConfig.config.DockerOCIImageConfigExt.Healthcheck of type v1.HealthcheckConfig";
+    let hc = "the image's config does not read: json: cannot unmarshal number into Go struct field DockerOCIImageConfig.config.DockerOCIImageConfigExt.Healthcheck of type v1.HealthcheckConfig";
     let ran = run_in(&home, "badhc:1", &["--rm"], &["report"]);
     assert_eq!(
         (ran.status, ran.stdout.as_str(), ran.stderr.as_str()),
         (
             Some(125),
             "",
-            format!(
-                "shards: Error response from daemon: {hc}\n\nRun 'shards run --help' for more information\n"
-            )
-            .as_str()
+            format!("shards: {hc}\n\nRun 'shards run --help' for more information\n").as_str()
         ),
         "{ran}"
     );
@@ -9874,7 +9786,7 @@ fn image_configs_run_key_by_key() {
         let said = shards(args);
         assert_eq!(
             (said.status, said.stderr.as_str()),
-            (Some(1), format!("Error response from daemon: {hc}\n").as_str()),
+            (Some(1), format!("shards: {hc}\n").as_str()),
             "{args:?}: {said}"
         );
     }
@@ -9882,11 +9794,7 @@ fn image_configs_run_key_by_key() {
         let said = shards(args);
         assert_eq!(
             (said.status, said.stdout.as_str(), said.stderr.as_str()),
-            (
-                Some(1),
-                "[]\n",
-                format!("Error response from daemon: failed to read image config: {hc}\n").as_str()
-            ),
+            (Some(1), "[]\n", format!("shards: {hc}\n").as_str()),
             "{args:?}: {said}"
         );
     }
@@ -9898,7 +9806,7 @@ fn image_configs_run_key_by_key() {
         (history.status, history.stderr.as_str()),
         (
             Some(1),
-            "Error response from daemon: could not deserialize image config: json: cannot unmarshal number into Go struct field .history of type []v1.History\n"
+            "shards: the image's config does not read: json: cannot unmarshal number into Go struct field .history of type []v1.History\n"
         ),
         "{history}"
     );
@@ -9907,7 +9815,7 @@ fn image_configs_run_key_by_key() {
         (ran.status, ran.stderr.as_str()),
         (
             Some(125),
-            "shards: Error response from daemon: could not deserialize image config: json: cannot unmarshal number into Go struct field DockerOCIImage.Image.history of type []v1.History\n\nRun 'shards run --help' for more information\n"
+            "shards: the image's config does not read: json: cannot unmarshal number into Go struct field DockerOCIImage.Image.history of type []v1.History\n\nRun 'shards run --help' for more information\n"
         ),
         "{ran}"
     );
@@ -10567,7 +10475,7 @@ fn a_microvm_takes_its_cpus_real_time_isolation_and_annotations() {
         args.extend(&flags);
         args.push(&image);
         let refused = shards(&args);
-        let want = format!("Error response from daemon: {said}\n");
+        let want = format!("shards: {said}\n");
         assert_eq!(
             (refused.status, refused.stderr.as_str()),
             (Some(1), want.as_str()),
@@ -10577,4 +10485,261 @@ fn a_microvm_takes_its_cpus_real_time_isolation_and_annotations() {
     // Nothing is left of the refused.
     let listed = shards(&["ps", "-a", "--format", "{{.Names}}"]);
     assert_eq!(listed.stdout, "annotated\n", "{listed}");
+}
+
+/// A run's IPC, hostname, cgroups, umask and writable layer as its microVM has them (D156).
+/// A run has an IPC namespace and a 64 MiB /dev/shm of its own, which its execs share;
+/// `--shm-size` sizes it, `--ipc none` takes it away, and `--ipc host` gives the
+/// microVM's, as large as half its memory. A run joining another's microVM shares that
+/// one's (`--ipc container:NAME`) only where it said so (`--ipc shareable`), a joiner's
+/// too; `--ipc host` runs share the microVM's. `--uts host` names the run by its host,
+/// `--cgroupns host` shows it the microVM's cgroup tree, `--umask` is its command's and its
+/// execs', and `--storage-opt size=` holds its writable layer to that size. Each refusal
+/// in shards' words; `inspect` says each as given.
+#[test]
+fn a_microvm_takes_its_ipc_hostname_cgroups_umask_and_writable_layer() {
+    let Some((home, image)) = home("containers-microvm-ipc") else {
+        return;
+    };
+    let shards = |args: &[&str]| shards_in(&home, args);
+    let ipc = |flags: &[&str], key: &str| {
+        let mut all = vec!["--rm"];
+        all.extend(flags);
+        let r = run_in(&home, &image, &all, &["ipc", key]);
+        assert_eq!(r.status, Some(0), "{flags:?}: {r}");
+        r.stdout
+    };
+    let shm = |said: &str| {
+        said.lines()
+            .find_map(|l| l.strip_prefix("shm "))
+            .unwrap_or_default()
+            .to_string()
+    };
+    // Its own /dev/shm, and the sizes asked of it.
+    assert_eq!(shm(&ipc(&[], "")), (64u64 << 20).to_string());
+    assert_eq!(shm(&ipc(&["--shm-size", "16m"], "")), (16u64 << 20).to_string());
+    assert_eq!(shm(&ipc(&["--ipc", "none"], "")), "none");
+    let host_shm: u64 = shm(&ipc(&["--ipc", "host"], "")).parse().unwrap();
+    assert!(host_shm > 64 << 20, "the microVM's /dev/shm: {host_shm}");
+    for (flags, said) in [
+        (&["--ipc", "bogus"][..], "--ipc bogus: give private"),
+        (
+            &["--ipc", "none", "--shm-size", "16m"],
+            "--shm-size sizes a run's own /dev/shm, and --ipc none gives it none",
+        ),
+        (
+            &["--ipc", "host", "--shm-size", "16m"],
+            "--shm-size sizes a run's own /dev/shm, and it is the microVM's (--ipc host)",
+        ),
+        (
+            &["--uts", "host", "--hostname", "h"],
+            "--hostname and --uts host each name the microVM's host: give one",
+        ),
+        (&["--uts", "other"], "--uts other: give host"),
+        (&["--cgroupns", "other"], "--cgroupns other: give private"),
+        (&["--userns", "other"], "--userns other: give host"),
+        (&["--umask", "7777"], "--umask 07777: a umask is at most 0777"),
+        (
+            &["--storage-opt", "inodes=10"],
+            "--storage-opt inodes=10: a run's writable layer takes size alone",
+        ),
+        (
+            &["--storage-opt", "size=0"],
+            "--storage-opt size=0: a size is a number of bytes above 0",
+        ),
+        (
+            &["--memory", "512m", "--storage-opt", "size=1g"],
+            "--storage-opt size=1073741824: a run's writable layer is held in its microVM's memory, and 1073741824 bytes is more than its memory (--memory 536870912)",
+        ),
+    ] {
+        let mut all = vec!["--rm"];
+        all.extend(flags);
+        let r = run_in(&home, &image, &all, &["exit", "0"]);
+        assert_ne!(r.status, Some(0), "{flags:?}: {r}");
+        assert!(r.stderr.contains(said), "{flags:?}: {r}");
+    }
+    // Its execs in its IPC namespace and /dev/shm, with its umask.
+    let held = |name: &str, flags: &[&str], key: &str| {
+        let mut all = vec!["-d", "--name", name];
+        all.extend(flags);
+        let r = run_in(&home, &image, &all, &["ipc-hold", key]);
+        assert_eq!(r.status, Some(0), "{name}: {r}");
+        let deadline = Instant::now() + TIMEOUT;
+        while !shards(&["logs", name]).stdout.contains("held") {
+            assert!(
+                Instant::now() < deadline,
+                "{name} never held its segment: {}",
+                shards(&["logs", name])
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    };
+    held("owner", &["--ipc", "shareable", "--umask", "027"], "42");
+    let exec = shards(&["exec", "owner", "/bin/testguest", "ipc", "42"]);
+    assert!(exec.stdout.contains("sysv 42 yes\nfile 42 yes\n"), "{exec}");
+    let mask = shards(&["exec", "owner", "/bin/testguest", "umask"]);
+    assert_eq!(mask.stdout, "umask 0027\n", "{mask}");
+    let mask = run_in(&home, &image, &["--rm", "--umask", "077"], &["umask"]);
+    assert_eq!(mask.stdout, "umask 0077\n", "{mask}");
+    // A joiner shares a shareable run's IPC where it asks to, and has its own otherwise.
+    let shared = ipc(
+        &["--network", "container:owner", "--ipc", "container:owner"],
+        "42",
+    );
+    assert!(shared.contains("sysv 42 yes\nfile 42 yes\n"), "{shared}");
+    let own = ipc(&["--network", "container:owner"], "42");
+    assert!(
+        own.contains("shm 67108864\nsysv 42 errno 2\nfile 42 errno 2\n"),
+        "{own}"
+    );
+    let microvms = ipc(&["--network", "container:owner", "--ipc", "host"], "42");
+    assert!(
+        microvms.contains("sysv 42 errno 2\nfile 42 errno 2\n"),
+        "{microvms}"
+    );
+    // A joiner's, shared with another joiner.
+    held(
+        "first",
+        &["--network", "container:owner", "--ipc", "shareable"],
+        "45",
+    );
+    let second = ipc(
+        &["--network", "container:owner", "--ipc", "container:first"],
+        "45",
+    );
+    assert!(second.contains("sysv 45 yes\nfile 45 yes\n"), "{second}");
+    // A joiner's writable layer and cgroup namespace, as a run's.
+    let joined_layer = run_in(
+        &home,
+        &image,
+        &["--rm", "--network", "container:owner", "--storage-opt", "size=4m"],
+        &["big", "/tmp/big", "8"],
+    );
+    assert_ne!(joined_layer.status, Some(0), "{joined_layer}");
+    assert!(
+        joined_layer.stderr.contains("No space left on device"),
+        "{joined_layer}"
+    );
+    let joined_tree = run_in(
+        &home,
+        &image,
+        &["--rm", "--network", "container:owner", "--cgroupns", "host"],
+        &["slurp", "/proc/self/cgroup"],
+    );
+    assert!(
+        joined_tree.stdout.starts_with("slurp /proc/self/cgroup: 0::/")
+            && joined_tree.stdout != "slurp /proc/self/cgroup: 0::/\n",
+        "{joined_tree}"
+    );
+    // The microVM's, shared by the runs that ask for it.
+    held("hosts", &["--ipc", "host"], "44");
+    let joined = ipc(&["--network", "container:hosts", "--ipc", "host"], "44");
+    assert!(joined.contains("sysv 44 yes\nfile 44 yes\n"), "{joined}");
+    // A run that keeps its own, and one sharing without joining.
+    held("private", &[], "43");
+    for (flags, said) in [
+        (
+            &["--network", "container:private", "--ipc", "container:private"][..],
+            "--ipc container:private: private keeps its IPC its own (--ipc private); run it with --ipc shareable to share it",
+        ),
+        (
+            &["--ipc", "container:owner"],
+            "--ipc container:owner: a run shares another's IPC inside that run's microVM, which it joins with --network container:owner",
+        ),
+    ] {
+        let mut all = vec!["--rm"];
+        all.extend(flags);
+        let r = run_in(&home, &image, &all, &["exit", "0"]);
+        assert_ne!(r.status, Some(0), "{flags:?}: {r}");
+        assert!(r.stderr.contains(said), "{flags:?}: {r}");
+    }
+    // Its host's hostname; the microVM's cgroup tree.
+    let mut name = [0u8; 256];
+    // SAFETY: gethostname(2) into our own buffer, of its length.
+    let got = unsafe { libc::gethostname(name.as_mut_ptr().cast(), name.len()) };
+    assert_eq!(got, 0);
+    let host = String::from_utf8_lossy(name.split(|&b| b == 0).next().unwrap()).to_string();
+    let host = host.get(..host.len().min(64)).unwrap().to_string();
+    let named = run_in(
+        &home,
+        &image,
+        &["--rm", "--uts", "host"],
+        &["slurp", "/proc/sys/kernel/hostname"],
+    );
+    assert_eq!(
+        named.stdout,
+        format!("slurp /proc/sys/kernel/hostname: {host}\n"),
+        "{named}"
+    );
+    let own_tree = run_in(&home, &image, &["--rm"], &["slurp", "/proc/self/cgroup"]);
+    assert_eq!(own_tree.stdout, "slurp /proc/self/cgroup: 0::/\n", "{own_tree}");
+    let whole = run_in(
+        &home,
+        &image,
+        &["--rm", "--cgroupns", "host"],
+        &["slurp", "/proc/self/cgroup"],
+    );
+    assert!(
+        whole.stdout.starts_with("slurp /proc/self/cgroup: 0::/") && whole.stdout != own_tree.stdout,
+        "{whole}"
+    );
+    // Its writable layer, held to its size.
+    let layer = |size: &str, mib: &str| {
+        run_in(
+            &home,
+            &image,
+            &["--rm", "--storage-opt", &format!("size={size}")],
+            &["big", "/tmp/big", mib],
+        )
+    };
+    let fits = layer("16m", "4");
+    assert_eq!(fits.status, Some(0), "{fits}");
+    let past = layer("4m", "8");
+    assert_ne!(past.status, Some(0), "{past}");
+    assert!(past.stderr.contains("No space left on device"), "{past}");
+    // As given, in inspect.
+    let made = run_in(
+        &home,
+        &image,
+        &[
+            "-d",
+            "--name",
+            "described",
+            "--ipc",
+            "none",
+            "--uts",
+            "host",
+            "--userns",
+            "host",
+            "--cgroupns",
+            "host",
+            "--umask",
+            "022",
+            "--storage-opt",
+            "size=64m",
+        ],
+        &["sleep"],
+    );
+    assert_eq!(made.status, Some(0), "{made}");
+    let described = shards(&[
+        "inspect",
+        "-f",
+        "{{.HostConfig.IpcMode}} {{.HostConfig.UTSMode}} {{.HostConfig.UsernsMode}} {{.HostConfig.CgroupnsMode}} {{json .HostConfig.StorageOpt}} {{.HostConfig.Umask}}",
+        "described",
+    ]);
+    assert_eq!(
+        described.stdout, "none host host host {\"size\":\"64m\"} 18\n",
+        "{described}"
+    );
+    let plain = shards(&[
+        "inspect",
+        "-f",
+        "{{.HostConfig.IpcMode}} {{.HostConfig.CgroupnsMode}}",
+        "private",
+    ]);
+    assert_eq!(plain.stdout, "private private\n", "{plain}");
+    for name in ["owner", "first", "hosts", "private", "described"] {
+        let removed = shards(&["rm", "-f", name]);
+        assert_eq!(removed.status, Some(0), "{name}: {removed}");
+    }
 }

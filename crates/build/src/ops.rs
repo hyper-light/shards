@@ -5,8 +5,8 @@
 //! Paths in errors are inside the snapshot, as BuildKit trims its mount's directory from
 //! them.
 
-use shards_dockerfile::go;
-use shards_dockerfile::llb::{OpChown, OpUser};
+use shards_agentfile::go;
+use shards_agentfile::llb::{OpChown, OpUser};
 use shards_image::erofs::{DataRef, Kind, Source};
 
 use crate::Error;

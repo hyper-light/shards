@@ -1,10 +1,8 @@
-//! A container joining the workload's network (`--network container:NAME`, D119): its
-//! image a range of the microVM's join disk, its root that image under a tmpfs overlay, its
-//! mount, PID, IPC, UTS and cgroup namespaces its own, its network namespace the
-//! workload's, as Docker's container network mode gives one container another's network
-//! namespace and nothing else (moby daemon/oci_linux.go). It takes the workload's hostname
-//! and its `/etc/hostname`, `/etc/hosts` and `/etc/resolv.conf`, the same files, as dockerd
-//! gives a joiner the other's (daemon/container_operations.go initializeNetworkingPaths).
+//! A run joining the workload's microVM and network (`--network container:NAME`, D119):
+//! its image a range of the microVM's join disk, its root that image under a tmpfs overlay,
+//! its mount, PID, IPC, UTS and cgroup namespaces its own unless it asks to share them
+//! (D156), its network namespace the workload's. It takes the workload's hostname and its
+//! `/etc/hostname`, `/etc/hosts` and `/etc/resolv.conf`, the same files.
 
 use std::ffi::CString;
 use std::fs::File;
@@ -22,8 +20,79 @@ pub struct Join {
     pub workload: libc::pid_t,
     pub layer: Option<(u64, u64)>,
     pub pid: Pid,
-    /// A reaper first in a PID namespace of its own, docker-init's part (`--init`).
+    /// A reaper first in a PID namespace of its own (`--init`).
     pub init: bool,
+    /// Its IPC namespace and /dev/shm (D156).
+    pub ipc: Ipc,
+    /// The microVM's UTS namespace, its workload's, rather than one of its own (`--uts
+    /// host`).
+    pub uts_host: bool,
+    /// The microVM's cgroup namespace, rather than one rooted at its cgroup (`--cgroupns
+    /// host`).
+    pub cgroupns_host: bool,
+    /// Its writable layer's size in bytes (`--storage-opt size=`), else the tmpfs default.
+    pub rw_size: Option<u64>,
+}
+
+/// Whose IPC namespace and /dev/shm a joiner has (D156): its own (`private`, `shareable`);
+/// its own, with no /dev/shm (`none`); the microVM's, init's (`host`); or those of the
+/// workload or another joiner, its command's process here, which it shares
+/// (`container:NAME`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Ipc {
+    Own,
+    None,
+    Host,
+    Workload,
+    Joiner(libc::pid_t),
+}
+
+/// The IPC namespace `setup` asks for: another joiner's found by its exec's id among
+/// `joiners`, each an id and its command's process.
+pub fn ipc(setup: &[Vec<u8>], joiners: &[(u32, libc::pid_t)]) -> Result<Ipc, String> {
+    for entry in setup {
+        match entry.as_slice() {
+            b"ipc=none" => return Ok(Ipc::None),
+            b"ipc=host" => return Ok(Ipc::Host),
+            b"ipc=workload" => return Ok(Ipc::Workload),
+            _ => {}
+        }
+        if let Some(id) = entry.strip_prefix(b"ipc=joiner=") {
+            let id: u32 = std::str::from_utf8(id)
+                .ok()
+                .and_then(|id| id.parse().ok())
+                .ok_or("a malformed ipc=joiner entry")?;
+            return joiners
+                .iter()
+                .find(|(j, _)| *j == id)
+                .map(|&(_, pid)| Ipc::Joiner(pid))
+                .ok_or_else(|| "the run whose IPC namespace it shares is not running".to_string());
+        }
+    }
+    Ok(Ipc::Own)
+}
+
+/// Whether setup `entry` is one a joiner's root and namespaces are built by ([`build`]),
+/// rather than one its standby applies or init does for the microVM's own run.
+pub fn built_by(entry: &[u8]) -> bool {
+    entry.starts_with(b"ipc=")
+        || entry == b"uts=host"
+        || entry == b"cgroupns=host"
+        || entry.starts_with(b"rw-size=")
+}
+
+/// The writable layer's size `setup` asks for, in bytes.
+pub fn rw_size(setup: &[Vec<u8>]) -> Result<Option<u64>, String> {
+    setup
+        .iter()
+        .find_map(|e| e.strip_prefix(b"rw-size="))
+        .map(|n| {
+            std::str::from_utf8(n)
+                .ok()
+                .and_then(|n| n.parse().ok())
+                .ok_or_else(|| "a malformed rw-size entry".to_string())
+        })
+        .transpose()
 }
 
 /// Whose PID namespace a joiner's processes are in: one of its own, its command that
@@ -260,9 +329,80 @@ fn mknod(path: &str, kind: libc::mode_t, major: u32, minor: u32) -> Result<(), S
 fn enter(pid: libc::pid_t, ns: &str, kind: libc::c_int) -> Result<(), String> {
     let file = File::open(format!("/proc/{pid}/ns/{ns}"))
         .map_err(|e| format!("the workload's {ns} namespace: {e}"))?;
+    setns(&file, kind, ns)
+}
+
+fn setns(file: &File, kind: libc::c_int, ns: &str) -> Result<(), String> {
     // SAFETY: setns(2) on a descriptor this process holds.
     if unsafe { libc::setns(file.as_raw_fd(), kind) } != 0 {
-        return Err(last(&format!("joining the workload's {ns} namespace")));
+        return Err(last(&format!("joining the {ns} namespace")));
+    }
+    Ok(())
+}
+
+/// A copy of the mount at `path` in the mount namespace of `from`'s process, or in this
+/// process's own, detached from either (open_tree(2), `OPEN_TREE_CLONE`), for
+/// [`attach`] to put in this one: a mount of another namespace no bind reaches
+/// (fs/namespace.c, `may_copy_tree`), but its copy, an anonymous namespace's root, moves
+/// into any (`do_move_mount`).
+fn clone_tree(from: Option<libc::pid_t>, path: &str) -> Result<OwnedFd, String> {
+    let back = match from {
+        Some(pid) => {
+            let own = File::open("/proc/self/ns/mnt").map_err(|e| format!("its mount namespace: {e}"))?;
+            enter(pid, "mnt", libc::CLONE_NEWNS)?;
+            Some(own)
+        }
+        None => None,
+    };
+    let p = c(path)?;
+    // SAFETY: open_tree(2) of a NUL-terminated path, which returns a descriptor or -1.
+    let fd = unsafe {
+        libc::syscall(
+            libc::SYS_open_tree,
+            libc::AT_FDCWD,
+            p.as_ptr(),
+            libc::OPEN_TREE_CLONE | libc::OPEN_TREE_CLOEXEC,
+        )
+    };
+    let cloned = (fd >= 0)
+        .then(|| {
+            // SAFETY: a fresh descriptor nothing else owns.
+            unsafe { OwnedFd::from_raw_fd(fd as libc::c_int) }
+        })
+        .ok_or_else(|| last(&format!("copying the mount at {path}")));
+    // Back in its own namespace before anything else, whatever the copy did.
+    if let Some(own) = back {
+        setns(&own, libc::CLONE_NEWNS, "its own mount")?;
+    }
+    cloned
+}
+
+/// Puts `tree`, from [`clone_tree`], at `path` in this process's mount namespace.
+fn attach(tree: &OwnedFd, path: &str) -> Result<(), String> {
+    let (empty, p) = (c("")?, c(path)?);
+    // SAFETY: move_mount(2) of our own descriptor to a NUL-terminated path.
+    let rc = unsafe {
+        libc::syscall(
+            libc::SYS_move_mount,
+            tree.as_raw_fd(),
+            empty.as_ptr(),
+            libc::AT_FDCWD,
+            p.as_ptr(),
+            libc::MOVE_MOUNT_F_EMPTY_PATH,
+        )
+    };
+    if rc != 0 {
+        return Err(last(&format!("putting the shared mount at {path}")));
+    }
+    Ok(())
+}
+
+/// Detaches the mount at `path`.
+fn detach(path: &str) -> Result<(), String> {
+    let p = c(path)?;
+    // SAFETY: umount2(2) of a NUL-terminated path.
+    if unsafe { libc::umount2(p.as_ptr(), libc::MNT_DETACH) } != 0 {
+        return Err(last(&format!("unmounting {path}")));
     }
     Ok(())
 }
@@ -408,12 +548,33 @@ pub fn build(join: Join, cgroup: &str) -> Result<Built, String> {
             return Err(last("its mounts made private"));
         }
     }
-    // The workload's hostname, in a namespace of its own, as Docker's joiner takes the
-    // other's (initializeNetworking).
+    // The workload's hostname, in a namespace of its own unless it shares the microVM's
+    // (`--uts host`, D156).
     enter(join.workload, "uts", libc::CLONE_NEWUTS)?;
     enter(join.workload, "net", libc::CLONE_NEWNET)?;
+    // Its IPC namespace (D156): its own, the microVM's, or another run's of this microVM,
+    // with the /dev/shm that goes with a shared one, copied while the mount it copies is
+    // in reach, before /dev is its scratch, and put in its root once that has its own /dev.
+    let shm = match join.ipc {
+        Ipc::Own | Ipc::None => None,
+        Ipc::Host => {
+            crate::setup::enter_microvm(libc::CLONE_NEWIPC)
+                .map_err(|e| format!("the microVM's IPC namespace: {}", io::Error::from_raw_os_error(e)))?;
+            Some(clone_tree(None, "/dev/shm")?)
+        }
+        Ipc::Workload => {
+            enter(join.workload, "ipc", libc::CLONE_NEWIPC)?;
+            Some(clone_tree(Some(join.workload), "/dev/shm")?)
+        }
+        Ipc::Joiner(pid) => {
+            enter(pid, "ipc", libc::CLONE_NEWIPC)?;
+            Some(clone_tree(Some(pid), "/dev/shm")?)
+        }
+    };
+    let own = if join.uts_host { 0 } else { libc::CLONE_NEWUTS }
+        | if shm.is_some() { 0 } else { libc::CLONE_NEWIPC };
     // SAFETY: unshare(2), in a single-threaded fork of init's.
-    if unsafe { libc::unshare(libc::CLONE_NEWUTS | libc::CLONE_NEWIPC) } != 0 {
+    if own != 0 && unsafe { libc::unshare(own) } != 0 {
         return Err(last("its UTS and IPC namespaces"));
     }
     // What only it sees as it builds its root.
@@ -428,7 +589,12 @@ pub fn build(join: Join, cgroup: &str) -> Result<Built, String> {
         mkdir(dir)?;
     }
     mount(&device, LOWER, "erofs", libc::MS_RDONLY, "")?;
-    mount("tmpfs", RW, "tmpfs", 0, "mode=0755")?;
+    // Its writable layer, the size it asks for (`--storage-opt size=`, D156).
+    let rw = match join.rw_size {
+        Some(size) => format!("mode=0755,size={size}"),
+        None => "mode=0755".to_string(),
+    };
+    mount("tmpfs", RW, "tmpfs", 0, &rw)?;
     for dir in ["/dev/join/rw/upper", "/dev/join/rw/work"] {
         mkdir(dir)?;
     }
@@ -489,12 +655,22 @@ pub fn build(join: Join, cgroup: &str) -> Result<Built, String> {
         .open(format!("{cgroup}/cgroup.procs"))
         .and_then(|mut f| f.write_all(b"0"))
         .map_err(|e| format!("its cgroup: {e}"))?;
+    // A cgroup namespace rooted there, unless it sees the microVM's (`--cgroupns host`).
     // SAFETY: unshare(2), in a single-threaded fork of init's.
-    if unsafe { libc::unshare(libc::CLONE_NEWCGROUP) } != 0 {
+    if !join.cgroupns_host && unsafe { libc::unshare(libc::CLONE_NEWCGROUP) } != 0 {
         return Err(last("its cgroup namespace"));
     }
     pivot()?;
-    crate::run::container_mounts().map_err(|f| f.message)?;
+    crate::run::container_mounts(crate::run::OWN_SHM).map_err(|f| f.message)?;
+    // Its /dev/shm (D156): the one it shares in place of its own, or none.
+    match (&shm, join.ipc) {
+        (Some(tree), _) => {
+            detach("/dev/shm")?;
+            attach(tree, "/dev/shm")?;
+        }
+        (None, Ipc::None) => detach("/dev/shm")?,
+        (None, _) => {}
+    }
     // Its cgroup, read-only, as Docker's containers see theirs.
     mount(
         "cgroup2",

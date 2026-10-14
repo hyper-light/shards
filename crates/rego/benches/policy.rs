@@ -43,10 +43,7 @@ fn compile(case: &Case) -> (Program, f64, f64) {
     let t0 = Instant::now();
     let mut modules = BTreeMap::new();
     for (file, text) in [
-        (
-            "builtin/buildx_defaults.rego",
-            include_str!("../src/buildx_defaults.rego"),
-        ),
+        ("builtin/defaults.rego", include_str!("../src/defaults.rego")),
         (case.file.as_str(), case.src.as_str()),
     ] {
         modules.insert(

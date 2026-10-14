@@ -184,13 +184,13 @@ fn open(json: &[u8], password: &[u8]) -> Result<Vec<u8>, String> {
     if data.kdf_name != "scrypt" {
         return Err(format!(
             "encrypted: unknown kdf name {}",
-            shards_dockerfile::go::quote(data.kdf_name.as_bytes())
+            shards_agentfile::go::quote(data.kdf_name.as_bytes())
         ));
     }
     if data.cipher_name != "nacl/secretbox" {
         return Err(format!(
             "encrypted: unknown cipher name {}",
-            shards_dockerfile::go::quote(data.cipher_name.as_bytes())
+            shards_agentfile::go::quote(data.cipher_name.as_bytes())
         ));
     }
     let params = (data.n, data.r, data.p);

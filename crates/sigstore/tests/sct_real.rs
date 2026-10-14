@@ -19,14 +19,14 @@ fn b64(s: &serde_json::Value) -> Vec<u8> {
 
 fn time(v: &serde_json::Value) -> Option<Time> {
     v.as_str().map(|s| {
-        let t = shards_dockerfile::go::parse_rfc3339(s.as_bytes()).unwrap();
+        let t = shards_agentfile::go::parse_rfc3339(s.as_bytes()).unwrap();
         let (s, n) = t.unix();
         Time::utc(s, n)
     })
 }
 
 #[test]
-fn the_buildkit_attestation_s_certificate_has_a_verified_sct() {
+fn a_real_attestations_certificate_has_a_verified_sct() {
     let root: serde_json::Value =
         serde_json::from_str(include_str!("../../tuf/roots/sigstore/targets/trusted_root.json")).unwrap();
     let bundle: serde_json::Value = serde_json::from_str(include_str!(

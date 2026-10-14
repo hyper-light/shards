@@ -33,7 +33,7 @@ fn rekor_logs() -> BTreeMap<String, TransparencyLog> {
         }
         let id = b64(&t["logId"]["keyId"]);
         let key = x509::parse_pkix_public_key(&b64(&t["publicKey"]["rawBytes"])).unwrap();
-        let start = shards_dockerfile::go::parse_rfc3339(
+        let start = shards_agentfile::go::parse_rfc3339(
             t["publicKey"]["validFor"]["start"].as_str().unwrap().as_bytes(),
         )
         .unwrap()
@@ -56,7 +56,7 @@ fn rekor_logs() -> BTreeMap<String, TransparencyLog> {
 }
 
 #[test]
-fn the_buildkit_attestation_s_entry_is_in_rekor() {
+fn a_real_attestations_entry_is_in_rekor() {
     let bundle: serde_json::Value = serde_json::from_str(include_str!(
         "../testdata/real/buildkit-v0.28.1-arm64.bundle.json"
     ))

@@ -337,7 +337,7 @@ impl<'a> Decoder<'a> {
                                     self.at,
                                     &format!(
                                         "invalid escape code {} in string",
-                                        shards_dockerfile::go::quote(s)
+                                        shards_agentfile::go::quote(s)
                                     ),
                                 )
                             };
@@ -385,7 +385,7 @@ impl<'a> Decoder<'a> {
                                 self.at,
                                 &format!(
                                     "invalid escape code {} in string",
-                                    shards_dockerfile::go::quote(input.get(i..i + 2).unwrap_or_default())
+                                    shards_agentfile::go::quote(input.get(i..i + 2).unwrap_or_default())
                                 ),
                             ));
                         }
@@ -1106,7 +1106,7 @@ fn timestamp(d: &mut Decoder<'_>) -> Result<Val, ProtoError> {
     }
     let raw = String::from_utf8_lossy(&tok.raw).into_owned();
     let invalid = || format!("invalid google.protobuf.Timestamp value {raw}");
-    let t = shards_dockerfile::go::parse_rfc3339(tok.text.as_bytes())
+    let t = shards_agentfile::go::parse_rfc3339(tok.text.as_bytes())
         .map_err(|_| d.new_error(tok.pos, &invalid()))?;
     let (secs, nanos) = t.unix();
     if !(-62_135_596_800..=253_402_300_799).contains(&secs) {

@@ -66,9 +66,11 @@ pub struct Options {
     pub multi_platform: bool,
     /// The build context's `local.unique`.
     pub context_id: Vec<u8>,
-    /// The `.dockerignore` patterns the context is sent without (`local.excludepatterns`,
-    /// as dockerui's MainContext sets them).
+    /// The ignore file's patterns the context is sent without (`local.excludepatterns`).
     pub excludes: Vec<Vec<u8>>,
+    /// The ignore file `excludes` came from, which its warnings name: `.agentignore`,
+    /// `.dockerignore`, or one beside the build file; `.dockerignore` where none is given.
+    pub ignore_name: Vec<u8>,
     /// What the file is read as: a Dockerfile, or an Agentfile (D35).
     pub dialect: parser::Dialect,
     /// The named contexts (`--build-context`): the frontend's `context:KEY` options, each
@@ -88,7 +90,7 @@ pub struct Options {
     /// The frontend's `no-cache` option (dockerui's `ignoreCache`): the stages whose steps
     /// the cache is not asked for, every stage where it is empty, none where it is absent.
     pub no_cache: Option<Vec<Vec<u8>>>,
-    /// Each RUN's, as the frontend's options give them (dockerui.rs): hosts added to its
+    /// Each RUN's, as the frontend's options give them (run_options.rs): hosts added to its
     /// `/etc/hosts` (`add-hosts`), its `/dev/shm`'s size (`shm-size`, none if 0), its
     /// cgroup's parent (`cgroup-parent`) and its limits (`memory` and the like).
     pub extra_hosts: Vec<llb::HostIp>,
@@ -97,7 +99,7 @@ pub struct Options {
     pub linux_resources: Option<llb::LinuxResources>,
     /// Each stage's network unless a RUN says otherwise (`force-network-mode`).
     pub network_mode: NetMode,
-    /// How a stage's base image is resolved (`image-resolve-mode`, dockerui.rs): its image
+    /// How a stage's base image is resolved (`image-resolve-mode`, run_options.rs): its image
     /// source's `image.resolvemode`, none for the default.
     pub image_resolve_mode: Vec<u8>,
     /// The build context: the client's directory, or a Git or HTTP(S) URL's (dockerui's
@@ -613,8 +615,10 @@ struct Planner<'a> {
     /// stage has said which of its paths it uses.
     context: Output,
     proxy: Option<llb::ProxyEnv>,
-    /// The .dockerignore's patterns, once dispatch begins, if it has any.
+    /// The ignore file's patterns, once dispatch begins, if it has any.
     ignore: Option<crate::glob::PatternMatcher>,
+    /// Its name, which its warnings say ([`Options::ignore_name`]).
+    ignore_name: Vec<u8>,
     /// The build context's .dockerignore patterns: [`Options::excludes`], or what the
     /// resolver read as dispatch began ([`Resolver::context_excludes`]).
     excludes: Vec<Vec<u8>>,
@@ -695,7 +699,7 @@ fn check_frontend(text: &[u8], opts: &Options, resolver: &dyn Resolver) -> Resul
 
 /// What dockerui's Client.init takes from build args, each in place of the option it
 /// names, the check's in place of `# check=` (dockerfile/1.27.1 frontend/dockerui).
-struct Dockerui {
+struct BuildArgOptions {
     multi_platform: bool,
     cache_ns: Vec<u8>,
     hostname: Vec<u8>,
@@ -705,7 +709,7 @@ struct Dockerui {
 /// Client.init's reading of BUILDKIT_MULTI_PLATFORM, BUILDKIT_CACHE_MOUNT_NS,
 /// BUILDKIT_SANDBOX_HOSTNAME and BUILDKIT_DOCKERFILE_CHECK, in that order, its errors
 /// dockerui's.
-fn dockerui(opts: &Options) -> Result<Dockerui, Vec<u8>> {
+fn build_arg_options(opts: &Options) -> Result<BuildArgOptions, Vec<u8>> {
     let arg = |k: &str| opts.build_args.get(k.as_bytes());
     let mut multi_platform = opts.multi_platform;
     if let Some(v) = arg("BUILDKIT_MULTI_PLATFORM").filter(|v| !v.is_empty()) {
@@ -725,7 +729,7 @@ fn dockerui(opts: &Options) -> Result<Dockerui, Vec<u8>> {
                 .map_err(|e| errb(&[b"failed to parse build-arg:BUILDKIT_DOCKERFILE_CHECK: ", &e]))
         })
         .transpose()?;
-    Ok(Dockerui {
+    Ok(BuildArgOptions {
         multi_platform,
         cache_ns: arg("BUILDKIT_CACHE_MOUNT_NS").cloned().unwrap_or_default(),
         hostname,
@@ -740,7 +744,7 @@ pub fn plan(text: &[u8], opts: &Options, resolver: &dyn Resolver) -> Result<Plan
         location: Vec::new(),
         warnings: Vec::new(),
     };
-    let mut ui = dockerui(opts).map_err(fail)?;
+    let mut ui = build_arg_options(opts).map_err(fail)?;
     check_frontend(text, opts, resolver).map_err(|Fail(message, location)| Error {
         message,
         location,
@@ -793,7 +797,7 @@ pub fn outline(text: &[u8], opts: &Options, resolver: &dyn Resolver) -> Result<O
         location: Vec::new(),
         warnings: Vec::new(),
     };
-    let mut ui = dockerui(opts).map_err(fail)?;
+    let mut ui = build_arg_options(opts).map_err(fail)?;
     check_frontend(text, opts, resolver).map_err(|Fail(message, location)| Error {
         message,
         location,
@@ -844,7 +848,7 @@ pub fn lint(text: &[u8], opts: &Options, resolver: &dyn Resolver) -> Result<Lint
     // dockerui's settings and the frontend the file names fail the request itself, before
     // the subrequest is asked (builder.Build); what follows fails only the plan, which
     // the result says.
-    let mut ui = dockerui(&opts).map_err(fail)?;
+    let mut ui = build_arg_options(&opts).map_err(fail)?;
     check_frontend(text, &opts, resolver).map_err(|Fail(message, location)| Error {
         message,
         location,
@@ -967,7 +971,7 @@ enum Planned {
 fn plan_with(
     text: &[u8],
     opts: &Options,
-    ui: &Dockerui,
+    ui: &BuildArgOptions,
     resolver: &dyn Resolver,
     linter: &Linter,
     mode: Mode,
@@ -1060,6 +1064,7 @@ fn plan_with(
         graph,
         context,
         ignore: None,
+        ignore_name: opts.ignore_name.clone(),
         excludes: opts.excludes.clone(),
         named_excludes: BTreeMap::new(),
         named_locals: Vec::new(),
@@ -3959,11 +3964,11 @@ impl Planner<'_> {
                 });
                 continue;
             }
-            // What ADD reads, and COPY from the context, is held to the .dockerignore.
+            // What ADD reads, and COPY from the context, is held to the ignore file.
             if cfg.from.is_none()
                 && let Some(ignore) = self.ignore.as_mut()
             {
-                validate_copy_source_path(ignore, src, cfg.is_add, loc, lint);
+                validate_copy_source_path(ignore, &self.ignore_name, src, cfg.is_add, loc, lint);
             }
             let (mut src, mut patterns, mut required) = (src.clone(), Vec::new(), Vec::new());
             if cfg.parents {
@@ -5165,11 +5170,13 @@ struct CopyConfig {
     location: Location,
 }
 
-/// `validateCopySourcePath`: a warning for a source the .dockerignore excludes. Nothing is
-/// said where its patterns hold an exclusion, which a file under an excluded directory may
-/// be named by, nor of the context's root unless a pattern excludes every entry of it.
+/// `validateCopySourcePath`: a warning for a source the ignore file, `name`, excludes.
+/// Nothing is said where its patterns hold an exclusion, which a file under an excluded
+/// directory may be named by, nor of the context's root unless a pattern excludes every
+/// entry of it.
 fn validate_copy_source_path(
     ignore: &mut crate::glob::PatternMatcher,
+    name: &[u8],
     src: &[u8],
     is_add: bool,
     loc: &Location,
@@ -5196,7 +5203,12 @@ fn validate_copy_source_path(
             cmd,
             b" file ",
             go::quote(&src).as_bytes(),
-            b" that is excluded by .dockerignore",
+            b" that is excluded by ",
+            if name.is_empty() {
+                &b".dockerignore"[..]
+            } else {
+                name
+            },
         ]);
         lint.run(&lint::COPY_IGNORED_FILE, loc, Some(&msg));
     }
@@ -6568,7 +6580,7 @@ mod tests {
     /// nothing is said of a stage's files, of anything once a pattern excludes from the
     /// exclusions, or of the context's root unless a pattern excludes all of it.
     #[test]
-    fn copying_what_the_dockerignore_excludes_is_warned_of() {
+    fn copying_what_the_ignore_file_excludes_is_warned_of() {
         let text = "FROM scratch AS s\nFROM scratch\nCOPY ./docs/../README.md /\nADD secret/key notes.txt /\n\
                     COPY --from=s README.md /\nCOPY . /\n";
         assert_eq!(
