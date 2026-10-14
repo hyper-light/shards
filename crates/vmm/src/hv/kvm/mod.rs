@@ -374,11 +374,69 @@ fn run(fd: &mut sys::VcpuFd, io: &dyn Io) -> Result<Exit> {
             sys::RunExit::InternalError(suberror) => {
                 return Err(Error::Guest(format!("KVM internal error (suberror {suberror})")));
             }
+            // A data abort KVM cannot emulate, its syndrome naming no access (api.rst
+            // 7.20): a cache maintenance instruction on read-only memory not yet mapped at
+            // stage 2, as a guest's I/D cache sync of a page of its DAX root, mapped for
+            // execution (arm64 mm/flush.c, __sync_icache_dcache), makes where its CPU
+            // has neither CTR_EL0.IDC nor DIC; or an access to no memory by an
+            // instruction whose syndrome names no register (a pair, a writeback, SIMD).
+            #[cfg(target_arch = "aarch64")]
+            sys::RunExit::ArmNisv { esr_iss, fault_ipa } => {
+                if esr_iss & ESR_ISS_CM != 0 {
+                    skip_cmo(fd, fault_ipa)?;
+                    continue;
+                }
+                // What an access to nothing does on hardware, an external abort, as
+                // QEMU gives one (target/arm/kvm.c, kvm_arm_handle_dabt_nisv).
+                if fd.inject_ext_dabt().is_ok() {
+                    continue;
+                }
+                let pc = fd
+                    .get_reg(sys::REG_PC)
+                    .map_or_else(|e| format!("its PC unread: {e}"), |pc| format!("at PC {pc:#x}"));
+                return Err(Error::Guest(format!(
+                    "the guest reached {fault_ipa:#x}, outside its memory, by an access KVM cannot emulate, {pc} (ESR_EL2 ISS {esr_iss:#x}, no syndrome: KVM_EXIT_ARM_NISV)"
+                )));
+            }
+
             sys::RunExit::Other(reason) => {
                 return Err(Error::Guest(format!("unexpected KVM exit {reason}")));
             }
         }
     }
+}
+
+/// ESR_ELx's CM bit: a fault by a cache maintenance instruction (Arm ARM D24.2.40, ISS
+/// encoding for an exception from a Data Abort).
+#[cfg(target_arch = "aarch64")]
+const ESR_ISS_CM: u64 = 1 << 8;
+
+/// The cache maintenance instructions skipped so far, for the log.
+#[cfg(target_arch = "aarch64")]
+static CMOS_SKIPPED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Skips the cache maintenance instruction the vCPU stopped at, as KVM skips one outside
+/// guest memory (arch/arm64/kvm/mmu.c, kvm_handle_guest_abort; "Handle out-of-RAM cache
+/// maintenance as a NOP"): KVM takes one on read-only memory not yet mapped at stage 2
+/// for a write (its WnR is 1), which the memory refuses, and cannot emulate it. Skipped,
+/// it changes nothing the guest could see: the guest cannot have written memory it may
+/// not write, and KVM cleans and invalidates what the host wrote there as it maps a page
+/// for the guest. As kvm_skip_instr: past the instruction, PSTATE's BTYPE and SS cleared.
+#[cfg(target_arch = "aarch64")]
+fn skip_cmo(fd: &mut sys::VcpuFd, fault_ipa: u64) -> Result<()> {
+    const BTYPE: u64 = 0b11 << 10;
+    const SS: u64 = 1 << 21;
+    let pc = fd.get_reg(sys::REG_PC).map_err(call("KVM_GET_ONE_REG"))?;
+    let pstate = fd.get_reg(sys::REG_PSTATE).map_err(call("KVM_GET_ONE_REG"))?;
+    fd.set_reg(sys::REG_PC, pc.wrapping_add(4))
+        .map_err(call("KVM_SET_ONE_REG"))?;
+    fd.set_reg(sys::REG_PSTATE, pstate & !(BTYPE | SS))
+        .map_err(call("KVM_SET_ONE_REG"))?;
+    let n = CMOS_SKIPPED.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+    if n.is_power_of_two() {
+        crate::debug!("cache maintenance skipped: {n} so far, the last at {fault_ipa:#x}, PC {pc:#x}");
+    }
+    Ok(())
 }
 
 /// A thread, as tgkill(2) names it: its process and its own ID.

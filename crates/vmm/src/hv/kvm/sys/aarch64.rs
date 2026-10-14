@@ -31,9 +31,52 @@ pub const IOCTLS: &[u64] = &[
     KVM_ARM_PREFERRED_TARGET,
     KVM_CREATE_DEVICE,
     KVM_IRQFD,
+    KVM_ENABLE_CAP,
+    KVM_SET_VCPU_EVENTS,
 ];
 
 pub const KVM_GET_ONE_REG: u64 = 0x4010_AEAB;
+/// _IOW(KVMIO, 0xa3, struct kvm_enable_cap).
+pub const KVM_ENABLE_CAP: u64 = 0x4068_AEA3;
+/// _IOW(KVMIO, 0xa0, struct kvm_vcpu_events), arm64's.
+pub const KVM_SET_VCPU_EVENTS: u64 = 0x4040_AEA0;
+/// Returns a data abort KVM cannot emulate to the VMM, in place of KVM_RUN's ENOSYS
+/// (api.rst 7.20).
+pub const CAP_ARM_NISV_TO_USER: u32 = 177;
+
+/// struct kvm_enable_cap, its 64 bytes of padding as eight words.
+#[repr(C)]
+#[derive(Debug, Default)]
+struct kvm_enable_cap {
+    cap: u32,
+    flags: u32,
+    args: [u64; 4],
+    pad: [u64; 8],
+}
+
+/// arm64's struct kvm_vcpu_events (api.rst 4.31).
+#[repr(C)]
+#[derive(Debug, Default)]
+struct kvm_vcpu_events {
+    serror_pending: u8,
+    serror_has_esr: u8,
+    ext_dabt_pending: u8,
+    pad: [u8; 5],
+    serror_esr: u64,
+    reserved: [u32; 12],
+}
+
+impl VmFd {
+    /// Enables the VM's capability `cap`, without arguments (KVM_ENABLE_CAP, api.rst 4.37).
+    pub fn enable_cap(&self, cap: u32) -> io::Result<()> {
+        let c = kvm_enable_cap {
+            cap,
+            ..Default::default()
+        };
+        // SAFETY: KVM_ENABLE_CAP reads the kvm_enable_cap it is given.
+        unsafe { ioctl(self.fd(), KVM_ENABLE_CAP, (&raw const c) as libc::c_ulong) }.map(drop)
+    }
+}
 pub const KVM_SET_ONE_REG: u64 = 0x4010_AEAC;
 pub const KVM_ARM_VCPU_INIT: u64 = 0x4020_AEAE;
 pub const KVM_ARM_PREFERRED_TARGET: u64 = 0x8020_AEAF;
@@ -43,6 +86,8 @@ const _: () = {
         ((request >> 16) & 0x3fff) as usize
     }
     assert!(size(KVM_GET_ONE_REG) == size_of::<kvm_one_reg>());
+    assert!(size(KVM_ENABLE_CAP) == size_of::<kvm_enable_cap>());
+    assert!(size(KVM_SET_VCPU_EVENTS) == size_of::<kvm_vcpu_events>());
     assert!(size(KVM_SET_ONE_REG) == size_of::<kvm_one_reg>());
     assert!(size(KVM_ARM_VCPU_INIT) == size_of::<kvm_vcpu_init>());
     assert!(size(KVM_ARM_PREFERRED_TARGET) == size_of::<kvm_vcpu_init>());
@@ -102,6 +147,8 @@ pub const fn reg_x(n: u8) -> u64 {
 }
 /// `regs.pc`, after the 31 general registers and SP.
 pub const REG_PC: u64 = core(2 * 32);
+/// PSTATE, after PC in struct user_pt_regs.
+pub const REG_PSTATE: u64 = core(2 * 33);
 
 /// The system register of encoding `enc` (op0:op1:CRn:CRm:op2, as arch::aarch64::sysreg).
 pub const fn sysreg(enc: u16) -> u64 {
@@ -172,6 +219,24 @@ impl VcpuFd {
     }
 
     /// Reads the 64-bit register `id`.
+    /// An external data abort pending in the vCPU, at the address of the access its last
+    /// exit stopped at (api.rst 4.32: after KVM_EXIT_MMIO or KVM_EXIT_ARM_NISV).
+    pub fn inject_ext_dabt(&self) -> io::Result<()> {
+        let events = kvm_vcpu_events {
+            ext_dabt_pending: 1,
+            ..Default::default()
+        };
+        // SAFETY: KVM_SET_VCPU_EVENTS reads the kvm_vcpu_events it is given.
+        unsafe {
+            ioctl(
+                self.fd(),
+                KVM_SET_VCPU_EVENTS,
+                (&raw const events) as libc::c_ulong,
+            )
+        }
+        .map(drop)
+    }
+
     pub fn get_reg(&self, id: u64) -> io::Result<u64> {
         let mut value = 0u64;
         let reg = kvm_one_reg {
