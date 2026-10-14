@@ -493,7 +493,7 @@ fn assemble(
     let gp = hv::gic_params().map_err(|e| e.to_string())?;
     let redist_total = gp.redist_size * u64::from(config.vcpus);
     // A PCI bus's MSIs go to a GICv2m frame (D154): the backend's own, or the VMM's.
-    let msi = (pci.test || !pci.vfio.is_empty()).then_some(boot::MsiFrame {
+    let msi = (!pci.test.is_empty() || !pci.vfio.is_empty()).then_some(boot::MsiFrame {
         base: layout::GIC_MSI,
         size: gp.msi_size,
         first_intid: SPI_INTID_BASE + layout::SPI_MSI,
@@ -707,7 +707,7 @@ pub fn build(cfg: &Config) -> Result<Machine, String> {
             hosts,
             cfg.gpu.then_some(0),
             super::Pci {
-                test: cfg.pci_test,
+                test: &cfg.pci_test,
                 vfio: &cfg.vfio,
             },
         )?;

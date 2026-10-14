@@ -655,6 +655,91 @@ fn a_nested_guest_runs_vms_of_its_own() {
     }
 }
 
+/// A run given a host's VFIO group (`shards run --device /dev/vfio/N`, D154), on a host
+/// that has one to give: a nested guest given test functions, a device of one and a
+/// device of two (as a GPU with its audio function), runs shards as a Linux host does.
+/// The two functions, one IOMMU group of the outer guest's, its group 1, it gives
+/// vfio-pci, and a run is given their group, whose microVM shards' daemon boots with them
+/// behind the microVM's own IOMMU, one device there, which its guest takes as its own group
+/// 0. The run's workload, given the group's node where its guest's sysfs puts the group,
+/// takes each function through VFIO as DPDK finds one, by its address's group in sysfs,
+/// and moves a page through each by DMA, one container's mappings for both. An x86_64
+/// host gives no guest virtualization of its own yet.
+#[test]
+fn a_run_is_given_a_hosts_vfio_group() {
+    if cannot_run_vms() {
+        return;
+    }
+    let Some(nested) = common::nested_kernel() else {
+        eprintln!("SKIP: no nested guest kernel for {}", common::ARCH);
+        return;
+    };
+    let dir = common::TempDir::new("nest-run");
+    let read = |p: &std::path::Path| std::fs::read(p).unwrap();
+    let base = |cpio: &mut shards_vmm::initramfs::Cpio| {
+        cpio.dir("dev", 0o755)
+            .char_dev("dev/console", 0o600, 5, 1)
+            .dir("proc", 0o555)
+            .dir("sys", 0o555)
+            .file("init", 0o755, &read(test_guest()));
+    };
+    let outer = |initrd: &std::path::Path, cmdline: &str| {
+        let cmdline = format!("console=ttyS0 panic=-1 {cmdline}");
+        vm_run(
+            &[
+                "--kernel",
+                nested.to_str().unwrap(),
+                "--initrd",
+                initrd.to_str().unwrap(),
+                "--nested",
+                "--pci-tests",
+                "01.0,02.0,02.1",
+                "--cpus",
+                "2",
+                "--memory",
+                "2048",
+                "--cmdline",
+                &cmdline,
+            ],
+            TIMEOUT * 3,
+        )
+    };
+    // Whether this host gives a guest EL2, before shards is built for one.
+    let probe = dir.join("probe.cpio");
+    let mut cpio = shards_vmm::initramfs::Cpio::new();
+    base(&mut cpio);
+    std::fs::write(&probe, cpio.finish()).unwrap();
+    let probed = outer(&probe, "shards_test=kmsg");
+    if probed.stderr.contains("gives a guest no EL2") {
+        eprintln!("SKIP: this host gives a guest no EL2");
+        return;
+    }
+    assert_eq!(probed.status, Some(0), "{probed}");
+    let initrd = dir.join("l1.cpio");
+    let mut cpio = shards_vmm::initramfs::Cpio::new();
+    base(&mut cpio);
+    cpio.file("shards", 0o755, &read(common::guest_shards()))
+        .file("shards-init", 0o755, &read(common::guest_init()))
+        // The run's kernel, with VFIO and virtio-iommu.
+        .file("l2", 0o644, &read(nested))
+        .file("image.tar", 0o644, &common::image_archive("vfio-test:latest"));
+    std::fs::write(&initrd, cpio.finish()).unwrap();
+    // The outer guest is a host whose IOMMU isolates no MSIs (GICv2m's), whose VFIO its
+    // administrator allows them.
+    let ran = outer(
+        &initrd,
+        "shards_test=daemon shards_l1_vfio=0000:00:02.0,0000:00:02.1 shards_l2=vfio-dma,0000:00:01.0,0000:00:01.1 vfio_iommu_type1.allow_unsafe_interrupts=1 shards_l1_log=debug",
+    );
+    let lines = |want: &str| ran.stdout.lines().filter(|l| l.trim_end() == want).count();
+    assert_eq!(
+        lines(&format!("L2: {DMA_THROUGH_IOMMU}")),
+        2,
+        "the run's DMA: {ran}"
+    );
+    assert_eq!(lines("SHARDS-TEST PASS"), 1, "the outer guest: {ran}");
+    assert_eq!(ran.status, Some(0), "{ran}");
+}
+
 /// A snapshot of a guest with memory to plug, none of it plugged (D148): the VM that
 /// booted and each VM restored from it plug memory as their guest asks, and write it.
 #[test]

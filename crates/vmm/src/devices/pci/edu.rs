@@ -88,8 +88,27 @@ pub struct Edu {
     status: Mutex<u32>,
     msix: Mutex<MsixTable>,
     lines: Option<Lines>,
+    /// Whether it has an INTx pin: of its device's functions, its function 0 alone, as
+    /// they would share its device's line.
+    intx: bool,
     engine: Mutex<Engine>,
     dma: Option<Dma>,
+}
+
+/// What of a device a function is: one of several, a multi-function device's (its
+/// header's bit 7); and whether it has the device's INTx pin.
+#[derive(Debug, Clone, Copy)]
+pub struct Role {
+    pub multi_function: bool,
+    pub intx: bool,
+}
+
+impl Role {
+    /// A device's only function.
+    pub const ALONE: Role = Role {
+        multi_function: false,
+        intx: true,
+    };
 }
 
 /// Where the machine maps the function's BARs: BAR 0's registers, BAR 2's MSI-X table and
@@ -114,9 +133,19 @@ impl Edu {
     /// `lines`, and where a machine takes none it has none; its DMA goes as `dma` says,
     /// and without it nowhere.
     pub fn new(at: Places, lines: Option<Lines>, dma: Option<Dma>) -> Result<(Arc<Edu>, Bars), String> {
+        Edu::of(at, lines, dma, Role::ALONE)
+    }
+
+    /// [`Edu::new`], the function of its device that `role` says.
+    pub fn of(
+        at: Places,
+        lines: Option<Lines>,
+        dma: Option<Dma>,
+        role: Role,
+    ) -> Result<(Arc<Edu>, Bars), String> {
         let interrupts = match lines {
             Some(_) => Interrupts {
-                pin: PIN,
+                pin: if role.intx { PIN } else { 0 },
                 msi: Some(MsiCap {
                     at: MSI_CAP,
                     next: MSIX_CAP as u8,
@@ -164,11 +193,17 @@ impl Edu {
             ],
             interrupts,
         )?;
+        let header = if role.multi_function {
+            header.multi_function()
+        } else {
+            header
+        };
         let edu = Arc::new(Edu {
             header,
             status: Mutex::new(0),
             msix: Mutex::new(MsixTable::new(MSIX_VECTORS)),
             lines,
+            intx: role.intx,
             engine: Mutex::new(Engine {
                 registers: [0; DMA_REGISTERS],
                 buffer: vec![0; DMA_BUFFER_SIZE],
@@ -202,9 +237,15 @@ impl Edu {
         let Some(lines) = &self.lines else {
             return;
         };
+        // Its device's line, where it has the pin.
+        let level = |on: bool| {
+            if self.intx {
+                lines.intx.set_level(on);
+            }
+        };
         if self.header.msix().is_some_and(|m| m.enabled) {
             self.header.set_interrupt_status(false);
-            lines.intx.set_level(false);
+            level(false);
             let mut table = self.msix.lock().unwrap_or_else(PoisonError::into_inner);
             for k in 0..table.vectors() {
                 if raised & (1 << k) != 0 {
@@ -217,7 +258,7 @@ impl Edu {
         match self.header.msi() {
             Some((address, data)) => {
                 self.header.set_interrupt_status(false);
-                lines.intx.set_level(false);
+                level(false);
                 if raised != 0 && *status != 0 {
                     self.send_msi(lines, address, data);
                 }
@@ -225,9 +266,7 @@ impl Edu {
             None => {
                 let pending = *status != 0;
                 self.header.set_interrupt_status(pending);
-                lines
-                    .intx
-                    .set_level(pending && self.header.command() & reg::COMMAND_INTX_OFF == 0);
+                level(pending && self.header.command() & reg::COMMAND_INTX_OFF == 0);
             }
         }
     }

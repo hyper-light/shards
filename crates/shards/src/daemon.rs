@@ -2296,11 +2296,18 @@ impl<D: Disk> Daemon<D> {
                         .into_iter()
                         .map(|kv| format!("endpoint-sysctl={kv}").into_bytes()),
                 );
-                let kernel = crate::guest::version_of(crate::run::kernel_of(&prepared.boot))?;
+                // The version of the kernel it boots, which its seccomp profile is read by.
+                let booted = prepared
+                    .vfio_kernel
+                    .as_deref()
+                    .or(prepared.gpu.as_deref())
+                    .unwrap_or_else(|| crate::run::kernel_of(&prepared.boot));
+                let kernel = crate::guest::version_of(booted)?;
                 prepared.spec.setup.extend(crate::setup::security_setup(
                     &run,
                     kernel,
                     prepared.cdi.as_ref().ok().and_then(Option::as_ref),
+                    prepared.vfio.as_deref().unwrap_or_default(),
                 )?);
                 // A joiner of a container on the host's network: its binds the host's too,
                 // by its provider's process for them (D124).
@@ -4504,6 +4511,25 @@ impl<D: Disk> Daemon<D> {
                 cfg.cmdline.push_str(&bridge.cmdline());
             }
         };
+        // A run given a host's VFIO groups (D154): a microVM booted for it, their functions
+        // behind its own IOMMU, with a kernel with VFIO; of no template, as a host's device
+        // is no snapshot's. Its guest's VFIO takes MSIs it cannot tell apart from the
+        // microVM's other functions' (vfio_iommu_type1.c: no isolated MSI, as GICv2m and
+        // virtio-iommu give none), which reach the microVM's own interrupt controller alone.
+        let vfio = prepared.vfio.as_ref().map_err(String::clone)?;
+        if let Some(kernel) = &prepared.vfio_kernel {
+            let mut cfg = match &prepared.boot {
+                Boot::Given(cfg) => (**cfg).clone(),
+                Boot::Stored(guest) => Config::new(kernel.clone(), Some(guest.init.clone())),
+            };
+            on_network(&mut cfg);
+            cfg.vfio = crate::run::vfio_functions(vfio);
+            // And its init told to keep a sysfs of its own (`shards_vfio`), through which
+            // it gives the functions to vfio-pci.
+            cfg.cmdline
+                .push_str(" vfio_iommu_type1.allow_unsafe_interrupts=1 shards_vfio=1");
+            return self.cold(threads, &cfg, &prepared.rootfs, None);
+        }
         let guest = match &prepared.boot {
             Boot::Given(cfg) => {
                 let mut cfg = (**cfg).clone();
@@ -4911,6 +4937,10 @@ impl<D: Disk> Daemon<D> {
         }
         if cfg.gpu {
             args.push("--gpu".into());
+        }
+        for f in &cfg.vfio {
+            let flag = if f.iommu { "--vfio-iommu" } else { "--vfio" };
+            args.extend([flag.into(), f.name.clone().into()]);
         }
         if !cfg.shares.is_empty() {
             args.extend(["--shares".into(), cfg.shares.len().to_string().into()]);
@@ -5794,6 +5824,8 @@ mod tests {
             let prepared = Prepared {
                 boot: Boot::Given(Box::new(Config::new(PathBuf::from("kernel"), None))),
                 gpu: None,
+                vfio: Ok(Vec::new()),
+                vfio_kernel: None,
                 cdi: Ok(None),
                 rootfs: PathBuf::new(),
                 spec: shards_abi::run::Spec {

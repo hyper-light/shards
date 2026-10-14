@@ -18,7 +18,7 @@ use shards_vmm::vm::{
 use crate::spec::Options;
 use crate::terminal::RawTerminal;
 
-const RUN_USAGE: &str = "usage: shards run --kernel PATH [--initrd PATH | --init PATH] [--cmdline STR] [--cpus N] [--memory MIB] [--memory-max MIB] [--disk PATH[:ro]]... [--pmem PATH]... [--vsock PATH] [--nested] [--gpu] [--reporting] [--pci-test] [--vfio NAME]... [--vfio-iommu NAME]... [--no-console] [--snapshot-dir DIR [--snapshot-then stop|resume]]
+const RUN_USAGE: &str = "usage: shards run --kernel PATH [--initrd PATH | --init PATH] [--cmdline STR] [--cpus N] [--memory MIB] [--memory-max MIB] [--disk PATH[:ro]]... [--pmem PATH]... [--vsock PATH] [--nested] [--gpu] [--reporting] [--pci-test | --pci-tests SS.F,...] [--vfio NAME]... [--vfio-iommu NAME]... [--no-console] [--snapshot-dir DIR [--snapshot-then stop|resume]]
        shards run --kernel PATH --init SHARDS-INIT --rootfs IMAGE [OPTIONS] [WORKLOAD OPTIONS] -- COMMAND [ARG...]
        shards run --kernel PATH --init SHARDS-INIT --rootfs IMAGE --snapshot-dir DIR [OPTIONS]
   --pmem: a read-only virtio-pmem device backed by PATH: /dev/pmem0, pmem1, ... in order.
@@ -48,6 +48,9 @@ const RUN_USAGE: &str = "usage: shards run --kernel PATH [--initrd PATH | --init
   --pci-test: a PCI bus with a test function at 00:01.0, the identification and liveness
               registers of QEMU's edu device in its BAR 0, for testing the bus. Not with
               --snapshot-dir.
+  --pci-tests: test functions at each of these places on bus 0, as 01.0,02.0,02.1: a
+               device of several a multi-function device, its function 0 alone with an
+               INTx pin, and each device given its function 0.
   --vfio: the host's PCI function NAME (as 0000:01:00.0), passed through to the guest
           on its PCI bus: on Linux, bound to vfio-pci, as every other function in its
           IOMMU group must be. Not with --snapshot-dir, --memory-max or --reporting:
@@ -87,6 +90,37 @@ fn text(arg: OsString) -> Result<String, String> {
 }
 
 /// A `--disk` value: its path, and whether it ends in `:ro`.
+/// `--pci-tests`' places, each `SS.F` in hex, as `01.0,02.0,02.1` (D153): devices 1 to 31
+/// of bus 0, functions 0 to 7, each once, and each device with its function 0, by which a
+/// guest finds its others.
+fn pci_tests(text: &str) -> Result<Vec<(u8, u8)>, String> {
+    let bad = |what: String| format!("--pci-tests {text}: {what}");
+    let mut places: Vec<(u8, u8)> = Vec::new();
+    for place in text.split(',') {
+        let (device, function) = place
+            .split_once('.')
+            .ok_or_else(|| bad(format!("{place:?} is not SS.F")))?;
+        let device = u8::from_str_radix(device, 16)
+            .ok()
+            .filter(|d| (1..32).contains(d))
+            .ok_or_else(|| bad(format!("{place:?}: its device is one of 01 to 1f")))?;
+        let function = u8::from_str_radix(function, 16)
+            .ok()
+            .filter(|f| *f < 8)
+            .ok_or_else(|| bad(format!("{place:?}: its function is one of 0 to 7")))?;
+        if places.contains(&(device, function)) {
+            return Err(bad(format!("{place} twice")));
+        }
+        places.push((device, function));
+    }
+    if let Some(&(device, _)) = places.iter().find(|&&(d, _)| !places.contains(&(d, 0))) {
+        return Err(bad(format!(
+            "device {device:02x} has no function 0, by which a guest finds its others"
+        )));
+    }
+    Ok(places)
+}
+
 fn disk(spec: OsString) -> Disk {
     let bytes = spec.as_encoded_bytes();
     match bytes.strip_suffix(b":ro") {
@@ -284,7 +318,8 @@ fn parse_run(args: impl Iterator<Item = OsString>) -> Result<Run, String> {
             "--pmem" => cfg.pmem.push(PathBuf::from(value("--pmem")?)),
             "--nested" => cfg.nested = true,
             "--gpu" => cfg.gpu = true,
-            "--pci-test" => cfg.pci_test = true,
+            "--pci-test" => cfg.pci_test = vec![(vm::TEST_DEVICE, 0)],
+            "--pci-tests" => cfg.pci_test = pci_tests(&text(value("--pci-tests")?)?)?,
             "--vfio" => cfg.vfio.push(vm::Vfio::of(&text(value("--vfio")?)?)?),
             "--vfio-iommu" => cfg.vfio.push(vm::Vfio {
                 iommu: true,
@@ -308,7 +343,7 @@ fn parse_run(args: impl Iterator<Item = OsString>) -> Result<Run, String> {
         }
     }
     common.check_workload()?;
-    if cfg.pci_test && common.snapshot_dir.is_some() {
+    if !cfg.pci_test.is_empty() && common.snapshot_dir.is_some() {
         return Err("--pci-test with --snapshot-dir: a machine with a PCI bus is not snapshotted, its functions' state their devices' own".into());
     }
     if !cfg.vfio.is_empty() {
@@ -1906,6 +1941,26 @@ fn supervise(started: Result<(Handle, Running), String>, console: Console, templ
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    /// `--pci-tests` takes places on bus 0 in hex, each once, each device with its
+    /// function 0; anything else it refuses, saying why.
+    #[test]
+    fn test_functions_are_placed_as_asked() {
+        assert_eq!(pci_tests("01.0,02.0,02.1"), Ok(vec![(1, 0), (2, 0), (2, 1)]));
+        assert_eq!(pci_tests("1f.7,1f.0"), Ok(vec![(31, 7), (31, 0)]));
+        for (bad, why) in [
+            ("00.0", "its device is one of 01 to 1f"),
+            ("20.0", "its device is one of 01 to 1f"),
+            ("01.8", "its function is one of 0 to 7"),
+            ("01", "is not SS.F"),
+            ("01.0,01.0", "01.0 twice"),
+            ("01.0,02.1", "device 02 has no function 0"),
+            ("", "is not SS.F"),
+        ] {
+            let e = pci_tests(bad).unwrap_err();
+            assert!(e.contains(why), "{bad}: {e}");
+        }
+    }
     use std::os::unix::ffi::OsStrExt as _;
 
     fn args(list: &[&[u8]]) -> impl Iterator<Item = OsString> {

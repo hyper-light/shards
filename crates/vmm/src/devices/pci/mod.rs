@@ -382,6 +382,16 @@ pub struct Identity {
 }
 
 impl Header {
+    /// The header of a function of a multi-function device: its header type's bit 7
+    /// (PCIe 6.0 §7.5.1.1.9), by which a guest looks for the device's other functions.
+    pub fn multi_function(mut self) -> Header {
+        let space = self.space.get_mut().unwrap_or_else(PoisonError::into_inner);
+        if let Some(t) = space.get_mut(usize::from(reg::HEADER_TYPE)) {
+            *t |= 0x80;
+        }
+        self
+    }
+
     /// A function's header with `bars`, each placed where its address is a multiple of its
     /// size (§6.2.5.1), sizes powers of two of at least 16 bytes (memory) or 4 (I/O), and
     /// no interrupt.

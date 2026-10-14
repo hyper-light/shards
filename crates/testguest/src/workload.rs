@@ -35,6 +35,14 @@ pub fn main() -> ! {
     let code = match arg(0) {
         "report" => report(),
         "cat" => cat(),
+        // DMA through each PCI function at ADDRESS..., one group's, by its VFIO (D154).
+        "vfio-dma" => match crate::linux::vfio_dma(args.get(1..).unwrap_or_default()) {
+            Ok(()) => 0,
+            Err(e) => {
+                let _ = writeln!(io::stderr(), "vfio-dma: {e}");
+                1
+            }
+        },
         // Each file read whole: its first line, or the errno that refused it.
         "slurp" => {
             for p in args.get(1..).unwrap_or_default() {

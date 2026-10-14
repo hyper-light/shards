@@ -3731,13 +3731,78 @@ one. So both, in that order.
   an unplug of a block it meets is refused (virtio-mem's BUSY, which the driver retries)
   until it is unpinned. A function outside the guest's IOMMU (`--vfio`) reaches all of
   RAM, pinned, which neither may take from under it, so a machine given one has neither.
-- **A host slot's functions in one device** (`vm::vfio_places`): the functions passed
-  through from one host slot (`DDDD:BB:SS.F`) share a device on the guest's bus 0, so that
-  the guest takes them as one group, as the host does a multi-function device whose
-  functions nothing isolates from each other (Linux iommu.c, pci_device_group): what a
-  workload given `/dev/vfio/N` expects to find in it. Each keeps its function number where
-  the slot's function 0 is among them; else they are numbered from 0, as a guest scans a
-  device's other functions only where it has function 0.
+- **A host IOMMU group's functions in one device** (`vm::vfio_places`): the functions of
+  one host IOMMU group, which the host cannot keep from each other's DMA (that is what
+  makes them one group: Linux iommu.c, pci_device_group; peer-to-peer through a switch
+  without ACS), share a device on the guest's bus 0, eight at most, so that the guest
+  takes them as one group too and its IOMMU core keeps them in one domain, as the host's
+  container does; and a workload given `/dev/vfio/N` finds all of them in it. Where they
+  are one host slot's with its function 0, each keeps its function number; else they are
+  numbered from 0 in their addresses' order, as a guest scans a device's other functions
+  only where it has function 0. Each function of such a device reads as a multi-function
+  device's (the header type's bit 7, PCIe 6.0 §7.5.1.1.9), and one of a device of one
+  function as a single function's, whatever its own device says: Linux groups a
+  multi-function device's functions by each one's own bit (get_pci_function_alias_group).
+  And a function of a device of several reads as having no ACS, its extended capability
+  taken out of the list (its predecessor's next pointer past it, or a header of ID 0 in
+  its place at 0x100, which a guest passes over, as QEMU's vfio-pci hides one): ACS
+  controls the host set would have the guest take it for isolated from the others
+  (pci_acs_enabled), which it is not. Placed by slot alone, as at first, the functions of
+  a group of several slots would have been groups of the guest's, whose domains one host
+  container could not keep apart; and two functions of one group behind the guest's IOMMU
+  each opened the group in a container of its own, which VFIO refuses (a group opens
+  once): so a GPU with its audio function, the commonest passthrough, failed.
+- **A group's endpoints share their follower** (`iommu::Follows`): one container for each
+  host group behind the guest's IOMMU, which a type 1 container maps one set of I/O
+  addresses for (vfio.rst). It shows the view of the last of the group's endpoints
+  attached or detached, as the guest's IOMMU core attaches a group's devices one after
+  another (__iommu_group_set_domain), and each MAP and UNMAP of the domain it shows
+  reaches it once. A guest that kept the endpoints in domains apart would have the last
+  one's view for all of them: of its own RAM still, all a container is given.
+- **A run given a host's VFIO group** (`shards run --device /dev/vfio/N`, Linux, as
+  Docker's is given a VFIO group's node; `/dev/vfio` gives each group in it, as
+  DevicesFromPath walks it). The daemon finds the group's functions the host gave
+  vfio-pci or another of VFIO's PCI drivers (/sys/kernel/iommu_groups/N/devices; its PCI
+  bridges, which VFIO gives no guest, and what no driver holds stay the host's), as the
+  run starts, a group it cannot give failing the start as dockerd's device does
+  (`run::vfio_groups`), and boots the run's microVM for it, of no template, as a host's
+  device is no snapshot's: the functions behind the microVM's own IOMMU, so that its
+  guest's VFIO can give them to a process, with the pinned kernel's `kvm` variant
+  (`KERNEL_KVM`), which has VFIO and virtio-iommu, or the kernel given. Its guest's init
+  gives each function to vfio-pci, through a sysfs of its own attached nowhere (the run's
+  root's is read-only), as the host's was, and the workload is given the group's node
+  where the guest's sysfs puts the group, `/dev/vfio/G`, G the guest's number, unless the
+  run named a path of its own for it: a VFIO user finds a function's group by its
+  address's `iommu_group` in sysfs (DPDK's rte_vfio_get_group_num), which in the microVM
+  is the guest's; Kata's agent does the same (vfio_device_handler.rs: the guest's group
+  path for the container's, its numbers the guest's). Linux's sysfs is one superblock for
+  each network namespace (kernfs, sysfs_init_fs_context), read-only where its first mount
+  is, as the run's root's is: so a microVM booted for VFIO has its init keep a sysfs of
+  its own from boot (`shards_vfio`), attached nowhere, through which it binds them. A
+  no-IOMMU group is refused: its DMA reaches all of the host's memory. The VM process
+  raises its locked-memory limit to its hard limit, as far as it may unprivileged,
+  against which type 1 pins what it maps (vfio_lock_acct), and says what type 1's EPERM
+  means where it refuses a group: no isolated MSIs on the host, its administrator's to
+  allow. Verified on real VMs (`a_run_is_given_a_hosts_vfio_group`, mutation-checked): a
+  nested arm64 guest given test functions (`--pci-tests 01.0,02.0,02.1`) runs shards as
+  a Linux host does, and a run of it given the group of the device of two, its group 1,
+  has them as one device and its own group 0, whose node is its `/dev/vfio/0`, and moves
+  a page through each by DMA, its workload finding the group as DPDK does.
+- **Its guest's VFIO takes interrupts it cannot isolate**: the microVM's guest is told
+  `vfio_iommu_type1.allow_unsafe_interrupts=1`, without which it refuses a group whose
+  MSIs nothing isolates (vfio_iommu_type1.c), as neither virtio-iommu nor GICv2m isolates
+  them. A function's MSIs reach the microVM's own interrupt controller alone, the host's
+  own remapping keeping them from the host's: what a workload with the function could
+  forge is an interrupt of the microVM's other PCI functions. To do: GICv3's ITS on arm64
+  KVM, which translates each MSI by its device's ID, and interrupt remapping on x86_64.
+- **Its addresses are the guest's.** A function sits at a place on the microVM's bus 0,
+  not at the host's address, and its group has the guest's number: a workload told the
+  host's address (DPDK's `-a 0000:3b:00.0`) finds no such function. Docker's container
+  sees the host's own sysfs; Kata's rewrites the SR-IOV device plugin's variables
+  (`PCIDEVICE_*`) instead. To do: the host's addresses kept, a host bridge of the guest's
+  for each host domain and bus, which Linux allows one of per domain on a devicetree
+  (pci.c, of_pci_bus_find_domain_nr) and whose buses behind bridges it renumbers but where
+  told not to (`linux,pci-probe-only`, pci-host-common.c).
 - **The test function's DMA** is edu's engine (edu.rst: source, destination, length and
   command at 0x80 of BAR 0, its 4 KiB buffer at 0x40000 of its DMA addresses), run at once
   rather than on edu's timer: guest memory is reached at what its endpoint's domain maps,
@@ -3852,11 +3917,33 @@ one. So both, in that order.
   Mac gives a guest EL2. x86_64's interrupts are held to their encodings by unit tests
   (the `_PRT` as iasl compiles it, an MSI's decoding), and run on CI's KVM runner once its
   `kvm` kernel, built now for x86_64 too, is pinned.
+- **A cache maintenance instruction KVM cannot take is skipped** (hv/kvm, `skip_cmo`).
+  A Linux arm64 guest cleans and invalidates each page it maps for execution to the point
+  of unification, line by line, where its CPU has neither CTR_EL0.IDC nor DIC (arm64
+  mm/flush.c, __sync_icache_dcache; cache.S, caches_clean_inval_pou): with its root on
+  DAX, a page of the read-only pmem slot. KVM maps a slot's pages as the guest first
+  touches them, takes a cache maintenance fault for a write (its WnR is 1), which a
+  read-only slot refuses, skips one only outside every slot (mmu.c,
+  kvm_handle_guest_abort; "Handle out-of-RAM cache maintenance as a NOP", 2016), and so
+  fails KVM_RUN with ENOSYS, an access with no syndrome it cannot emulate (api.rst 4.10):
+  every run of an image on such a host failed. KVM returns such an access to the VMM
+  instead (KVM_CAP_ARM_NISV_TO_USER, KVM_EXIT_ARM_NISV), which skips one of cache
+  maintenance (ISS.CM) as KVM skips its own, PC past it and PSTATE's BTYPE and SS cleared
+  (kvm_skip_instr): skipped, it changes nothing the guest could see, as the guest cannot
+  have written memory it may not write and KVM cleans and invalidates what the host wrote
+  there as it maps the page; and gives the guest an external data abort for any other,
+  as QEMU does (target/arm/kvm.c, kvm_arm_handle_dabt_nisv), or, where KVM cannot, ends
+  the VM saying where. Found nested, where KVM's guest's CPU, Apple's, has neither: a run
+  of the test image skipped 2,048 to 4,095, all at one PC, 64 to a page, about 40 µs
+  each nested (shards' debug log). Not yet measured: what the skips cost on a bare-metal
+  host whose CPU has neither; CI's arm64 Linux runners' runs never met one, and pass.
 - **Not yet:** snapshots of arm64 KVM VMs (`vm::SNAPSHOTS`; their GIC and vCPU state
   through KVM's registers); more vCPUs than one redistributor region holds (123). For
-  VFIO: MSI of more than one message, and its per-vector masking; iommufd, whose address
-  spaces would let followed functions share pinned pages; then `--device /dev/vfio/N`,
-  `--gpus` on Linux and CDI's VFIO nodes.
+  VFIO: MSI of more than one message, and its per-vector masking; isolated MSIs and the
+  host's addresses (above); iommufd's devices (`/dev/vfio/devices/vfioN` and `/dev/iommu`,
+  which the `kvm` kernel lacks: IOMMUFD, VFIO_DEVICE_CDEV), whose address spaces would also
+  let followed functions share pinned pages; then `--gpus` on Linux and CDI's VFIO
+  nodes.
 
 ### D153. A PCI bus, for the devices a microVM is given (VFIO's first step)
 

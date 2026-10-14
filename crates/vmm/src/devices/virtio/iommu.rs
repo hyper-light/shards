@@ -87,8 +87,26 @@ pub struct Translation {
     /// The MSI window, its first and last address, never translated (a reserved region of
     /// subtype MSI, Linux's IOMMU_RESV_MSI), where the machine has one: x86_64's.
     msi: Option<(u64, u64)>,
-    /// What follows the view of each endpoint whose DMA the host translates.
-    followers: BTreeMap<u32, Arc<dyn Follower>>,
+    /// What follows the views of the endpoints whose DMA the host translates: each
+    /// follower, the endpoints that share it, and the one whose view it shows.
+    followers: Vec<Follows>,
+}
+
+/// A follower, the endpoints that share it, and the one of them whose view it shows.
+/// Endpoints that a host's IOMMU translates as one, the functions of one IOMMU group,
+/// share one: a type 1 container maps one set of I/O addresses for all of its groups'
+/// devices (Documentation/driver-api/vfio.rst), and the host could not keep them from
+/// each other's DMA anyway, which is why they are one group. The guest is shown them as
+/// one group too (the machine's bus puts them in one device, `vm::vfio_places`), whose
+/// endpoints its IOMMU core attaches to a domain together, one after another
+/// (iommu.c, __iommu_group_set_domain): the follower shows the view of the last of them
+/// attached or detached. A guest that kept them in domains apart would have the last
+/// one's view for all of them: of its own RAM still, all that a container is given.
+#[derive(Debug)]
+struct Follows {
+    endpoints: Vec<u32>,
+    follower: Arc<dyn Follower>,
+    shows: u32,
 }
 
 /// What follows an endpoint's view of guest memory where the endpoint's DMA is not the
@@ -190,7 +208,7 @@ impl Translation {
             bypass: true,
             offers_bypass: true,
             msi,
-            followers: BTreeMap::new(),
+            followers: Vec::new(),
         }
     }
 
@@ -213,15 +231,19 @@ impl Translation {
     fn reset(&mut self) {
         self.attached.clear();
         self.domains.clear();
-        for (&endpoint, f) in &self.followers {
-            if let Err(e) = show(&**f, self.view(endpoint)) {
-                crate::warn!("virtio-iommu: endpoint {endpoint:#x}'s host mappings at reset: {e}");
+        for f in &self.followers {
+            if let Err(e) = show(&*f.follower, self.view(f.shows)) {
+                crate::warn!(
+                    "virtio-iommu: endpoint {:#x}'s host mappings at reset: {e}",
+                    f.shows
+                );
             }
         }
     }
 
     /// Has `follower` follow the view of `endpoint`, one this IOMMU translates, from the
-    /// view it has now.
+    /// view it has now; or, where it follows other endpoints already, with theirs, as one
+    /// ([`Follows`]).
     pub fn follow(&mut self, endpoint: u32, follower: Arc<dyn Follower>) -> io::Result<()> {
         if !self.known.contains(&endpoint) {
             return Err(io::Error::new(
@@ -229,9 +251,43 @@ impl Translation {
                 format!("endpoint {endpoint:#x} is not one this IOMMU translates"),
             ));
         }
+        if self.follows(endpoint).is_some() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("endpoint {endpoint:#x} is followed already"),
+            ));
+        }
+        if let Some(f) = self
+            .followers
+            .iter_mut()
+            .find(|f| Arc::ptr_eq(&f.follower, &follower))
+        {
+            f.endpoints.push(endpoint);
+            return Ok(());
+        }
         show(&*follower, self.view(endpoint))?;
-        self.followers.insert(endpoint, follower);
+        self.followers.push(Follows {
+            endpoints: vec![endpoint],
+            follower,
+            shows: endpoint,
+        });
         Ok(())
+    }
+
+    /// What follows `endpoint`, where something does.
+    fn follows(&self, endpoint: u32) -> Option<&Follows> {
+        self.followers.iter().find(|f| f.endpoints.contains(&endpoint))
+    }
+
+    /// `endpoint`'s view, the one its follower shows now.
+    fn shown_by(&mut self, endpoint: u32) {
+        if let Some(f) = self
+            .followers
+            .iter_mut()
+            .find(|f| f.endpoints.contains(&endpoint))
+        {
+            f.shows = endpoint;
+        }
     }
 
     /// What `endpoint` sees now.
@@ -244,12 +300,12 @@ impl Translation {
         }
     }
 
-    /// The followers of the endpoints attached to `domain`.
+    /// The followers showing `domain`, each once, with the endpoint whose view they show.
     fn followers_of(&self, domain: u32) -> Vec<(u32, Arc<dyn Follower>)> {
-        self.attached
+        self.followers
             .iter()
-            .filter(|&(_, &d)| d == domain)
-            .filter_map(|(&endpoint, _)| self.followers.get(&endpoint).map(|f| (endpoint, f.clone())))
+            .filter(|f| self.attached.get(&f.shows) == Some(&domain))
+            .map(|f| (f.shows, f.follower.clone()))
             .collect()
     }
 
@@ -257,8 +313,8 @@ impl Translation {
     /// again as it was, which the request then leaves as it found it.
     fn refused(&self, endpoint: u32, e: &io::Error) -> u8 {
         crate::warn!("virtio-iommu: endpoint {endpoint:#x}'s host mappings: {e}");
-        if let Some(f) = self.followers.get(&endpoint)
-            && let Err(e) = show(&**f, self.view(endpoint))
+        if let Some(f) = self.follows(endpoint)
+            && let Err(e) = show(&*f.follower, self.view(f.shows))
         {
             crate::warn!("virtio-iommu: endpoint {endpoint:#x}'s host mappings, as they were: {e}");
         }
@@ -273,11 +329,11 @@ impl Translation {
             return;
         }
         self.bypass = on;
-        for (&endpoint, f) in &self.followers {
-            if !self.attached.contains_key(&endpoint)
-                && let Err(e) = show(&**f, self.view(endpoint))
+        for f in &self.followers {
+            if !self.attached.contains_key(&f.shows)
+                && let Err(e) = show(&*f.follower, self.view(f.shows))
             {
-                crate::warn!("virtio-iommu: endpoint {endpoint:#x}'s host mappings: {e}");
+                crate::warn!("virtio-iommu: endpoint {:#x}'s host mappings: {e}", f.shows);
             }
         }
     }
@@ -353,9 +409,18 @@ impl Translation {
             return S_INVAL;
         }
         if self.attached.get(&endpoint) == Some(&domain) {
+            // Attached there already: its follower shows its view, where it showed another's.
+            if let Some(f) = self.follows(endpoint)
+                && f.shows != endpoint
+            {
+                if let Err(e) = show(&*f.follower, self.view(endpoint)) {
+                    return self.refused(endpoint, &e);
+                }
+                self.shown_by(endpoint);
+            }
             return S_OK;
         }
-        if let Some(f) = self.followers.get(&endpoint) {
+        if let Some(f) = self.follows(endpoint) {
             // What the endpoint will see: the domain as it is, or a new one, empty.
             let empty = BTreeMap::new();
             let view = match self.domains.get(&domain) {
@@ -364,7 +429,7 @@ impl Translation {
                 None if bypass => View::Identity,
                 None => View::Mapped(&empty),
             };
-            if let Err(e) = show(&**f, view) {
+            if let Err(e) = show(&*f.follower, view) {
                 return self.refused(endpoint, &e);
             }
         }
@@ -373,6 +438,7 @@ impl Translation {
         d.bypass = bypass;
         d.endpoints += 1;
         self.attached.insert(endpoint, domain);
+        self.shown_by(endpoint);
         S_OK
     }
 
@@ -380,17 +446,18 @@ impl Translation {
         if self.attached.get(&endpoint) != Some(&domain) {
             return S_INVAL;
         }
-        if let Some(f) = self.followers.get(&endpoint) {
+        if let Some(f) = self.follows(endpoint) {
             let view = if self.bypass {
                 View::Identity
             } else {
                 View::Blocked
             };
-            if let Err(e) = show(&**f, view) {
+            if let Err(e) = show(&*f.follower, view) {
                 return self.refused(endpoint, &e);
             }
         }
         self.detach(endpoint);
+        self.shown_by(endpoint);
         S_OK
     }
 
@@ -974,7 +1041,12 @@ mod tests {
             if *self.refusing.lock().unwrap() {
                 return Err(io::Error::from(io::ErrorKind::OutOfMemory));
             }
-            self.mapped.lock().unwrap().insert(iova, (gpa, len, read, write));
+            // As VFIO refuses a mapping where one is (vfio_dma_do_map: EEXIST).
+            let mut mapped = self.mapped.lock().unwrap();
+            if mapped.contains_key(&iova) {
+                return Err(io::Error::from(io::ErrorKind::AlreadyExists));
+            }
+            mapped.insert(iova, (gpa, len, read, write));
             Ok(())
         }
 
@@ -1073,6 +1145,70 @@ mod tests {
         let both = MAP_F_READ | MAP_F_WRITE;
         assert_eq!(status(&mut blocked, &map(1, 0, 0xfff, 0x8000_0000, both)), S_OK);
         assert_eq!(pinned.mappings(), vec![(0, (0x8000_0000, 0x1000, true, true))]);
+    }
+
+    /// The endpoints of one host group share a follower, its container: it shows the view
+    /// of the last of them attached or detached, and each MAP and UNMAP of the domain it
+    /// shows reaches it once; one already followed is refused another follower.
+    #[test]
+    fn a_groups_endpoints_share_their_follower() {
+        let mut t = Translation::new(vec![8, 9, 16], None).bypassing(false);
+        let group = Arc::new(Shown::default());
+        t.follow(8, group.clone()).unwrap();
+        t.follow(9, group.clone()).unwrap();
+        assert!(
+            t.follow(9, Arc::new(Shown::default())).is_err(),
+            "followed already"
+        );
+        assert!(!group.whole() && group.mappings().is_empty(), "blocked");
+        // The guest attaches the group to domain 1, one endpoint after the other.
+        assert_eq!(status(&mut t, &attach(1, 8, 0)), S_OK);
+        let both = MAP_F_READ | MAP_F_WRITE;
+        assert_eq!(
+            status(&mut t, &map(1, 0x10_0000, 0x10_0fff, 0x8000_0000, both)),
+            S_OK
+        );
+        assert_eq!(status(&mut t, &attach(1, 9, 0)), S_OK);
+        assert_eq!(
+            status(&mut t, &map(1, 0x20_0000, 0x20_0fff, 0x8000_1000, MAP_F_READ)),
+            S_OK,
+            "mapped once, not once for each endpoint"
+        );
+        assert_eq!(
+            group.mappings(),
+            vec![
+                (0x10_0000, (0x8000_0000, 0x1000, true, true)),
+                (0x20_0000, (0x8000_1000, 0x1000, true, false))
+            ]
+        );
+        assert_eq!(status(&mut t, &unmap(1, 0x10_0000, 0x10_0fff)), S_OK);
+        assert_eq!(group.mappings().len(), 1);
+        // Then to domain 2: the follower shows it from its first endpoint's attach, and a
+        // MAP of domain 1, which 9 is still in, is the guest's alone.
+        assert_eq!(status(&mut t, &attach(2, 8, 0)), S_OK);
+        assert!(group.mappings().is_empty(), "domain 2 maps nothing yet");
+        assert_eq!(
+            status(&mut t, &map(1, 0x30_0000, 0x30_0fff, 0x8000_2000, MAP_F_READ)),
+            S_OK
+        );
+        assert!(group.mappings().is_empty());
+        assert_eq!(t.translate(9, 0x30_0000, 4, false), Some(vec![(0x8000_2000, 4)]));
+        assert_eq!(status(&mut t, &attach(2, 9, 0)), S_OK);
+        assert_eq!(status(&mut t, &map(2, 0, 0xfff, 0x8000_3000, both)), S_OK);
+        assert_eq!(group.mappings(), vec![(0, (0x8000_3000, 0x1000, true, true))]);
+        // Detached, the last of them blocked: and attached again to the domain the other
+        // is in, its view again.
+        assert_eq!(status(&mut t, &detach(2, 8)), S_OK);
+        assert!(group.mappings().is_empty());
+        assert_eq!(status(&mut t, &attach(2, 9, 0)), S_OK, "9 is in domain 2 already");
+        assert_eq!(group.mappings(), vec![(0, (0x8000_3000, 0x1000, true, true))]);
+        // An endpoint followed alone keeps its own.
+        let alone = Arc::new(Shown::default());
+        t.follow(16, alone.clone()).unwrap();
+        assert_eq!(status(&mut t, &attach(2, 16, 0)), S_OK);
+        assert_eq!(alone.mappings(), group.mappings());
+        assert_eq!(status(&mut t, &map(2, 0x1000, 0x1fff, 0x8000_4000, both)), S_OK);
+        assert_eq!((alone.mappings().len(), group.mappings().len()), (2, 2));
     }
 
     /// An MSI lands in the MSI window untranslated, as Linux's IOMMU_RESV_MSI has it, and

@@ -36,6 +36,7 @@ pub fn main() {
             "pci-irq" => pci_irq(),
             "pci-dma" => pci_dma(),
             "host" => host(),
+            "daemon" => daemon(),
             other => Err(format!("unknown test {other:?}")),
         },
     );
@@ -1232,11 +1233,48 @@ fn pci_irq() -> Result<(), String> {
 /// (/proc/self/pagemap).
 fn pci_dma() -> Result<(), String> {
     const NAME: &str = "0000:00:01.0";
+    let (device, iommu) = vfio::take(NAME)?;
+    let through = edu_dma(device, iommu, 0x10_0000)?;
+    let _ = writeln!(io::stdout(), "{}", dma_line(through));
+    Ok(())
+}
+
+/// What a test of the function's DMA says it moved, and through what.
+fn dma_line(through: &str) -> String {
+    format!("SHARDS-TEST INFO dma: 4096 bytes into the function and back, through {through}")
+}
+
+/// A workload's DMA through each function at `names` it was given by their group,
+/// `--device /dev/vfio/N` (D154): their group found as DPDK finds a
+/// function's, by its address in sysfs (/sys/bus/pci/devices/NAME/iommu_group; DPDK's
+/// rte_vfio_get_group_num), its node the one at that number in `/dev/vfio`, which the
+/// workload must have been given there; the functions bound to vfio-pci already, as a
+/// host's are. One container, the group's, maps each function's pages at I/O addresses of
+/// its own.
+pub(crate) fn vfio_dma(names: &[String]) -> Result<(), String> {
+    let first = names.first().map(String::as_str).ok_or("no function named")?;
+    let group = vfio::group_of(first)?;
+    let (container, fd) = vfio::open(first)?;
+    for (k, name) in (0u64..).zip(names) {
+        let theirs = vfio::group_of(name)?;
+        if theirs != group {
+            return Err(format!("{name} is in group {theirs}, not {first}'s {group}"));
+        }
+        let device = vfio::device(fd, name)?;
+        let through = edu_dma(device, container, 0x10_0000 + k * 0x100_0000)?;
+        let _ = writeln!(io::stdout(), "{}", dma_line(through));
+    }
+    Ok(())
+}
+
+/// edu's DMA engine at `device`, whose group's container is `iommu` where it has an IOMMU,
+/// its pages mapped from I/O address `base` there: a page into its buffer and back,
+/// through what it was reached by.
+fn edu_dma(device: libc::c_int, iommu: Option<libc::c_int>, base: u64) -> Result<&'static str, String> {
     const PAGE: usize = 4096;
     const BUFFER: u64 = 0x40000;
     const RUN: u64 = 1;
     const TO_MEMORY: u64 = 2;
-    let (device, iommu) = vfio::take(NAME)?;
     let bar = vfio::region(device, 0)?;
     let page = || -> Result<*mut u8, String> {
         // SAFETY: a fresh anonymous mapping of a page, locked in memory: its address is the
@@ -1260,9 +1298,9 @@ fn pci_dma() -> Result<(), String> {
     // Where the function reaches each page: an I/O address mapped for it, or its own.
     let addresses = match iommu {
         Some(container) => {
-            vfio::map_dma(container, from as u64, 0x10_0000, PAGE as u64)?;
-            vfio::map_dma(container, to as u64, 0x20_0000, PAGE as u64)?;
-            (0x10_0000, 0x20_0000)
+            vfio::map_dma(container, from as u64, base, PAGE as u64)?;
+            vfio::map_dma(container, to as u64, base + 0x10_0000, PAGE as u64)?;
+            (base, base + 0x10_0000)
         }
         None => (physical(from)?, physical(to)?),
     };
@@ -1301,18 +1339,13 @@ fn pci_dma() -> Result<(), String> {
             return Err(format!("byte {i} came back {b:#x}"));
         }
     }
-    let through = if iommu.is_some() {
+    if iommu.is_some() {
         // To an I/O address nothing is mapped at: nothing moves, and the transfer ends.
-        transfer(BUFFER, 0x30_0000, RUN | TO_MEMORY)?;
-        "its IOMMU"
+        transfer(BUFFER, base + 0x20_0000, RUN | TO_MEMORY)?;
+        Ok("its IOMMU")
     } else {
-        "guest-physical addresses"
-    };
-    let _ = writeln!(
-        io::stdout(),
-        "SHARDS-TEST INFO dma: {PAGE} bytes into the function and back, through {through}"
-    );
-    Ok(())
+        Ok("guest-physical addresses")
+    }
 }
 
 /// The guest-physical address of the page at `virt`, resident and locked: its frame in
@@ -1367,16 +1400,42 @@ mod vfio {
     /// The PCI function `name`, bound to vfio-pci, and the container of its group where
     /// the group has an IOMMU (type 1), none where it has not (no-IOMMU).
     pub fn take(name: &str) -> Result<(libc::c_int, Option<libc::c_int>), String> {
+        bind(name)?;
+        open_group(name)
+    }
+
+    /// Binds the PCI function `name` to vfio-pci.
+    pub fn bind(name: &str) -> Result<(), String> {
         let dir = format!("/sys/bus/pci/devices/{name}");
         std::fs::write(format!("{dir}/driver_override"), "vfio-pci")
             .map_err(|e| format!("{dir}/driver_override: {e}"))?;
-        std::fs::write("/sys/bus/pci/drivers_probe", name).map_err(|e| format!("binding {name}: {e}"))?;
+        std::fs::write("/sys/bus/pci/drivers_probe", name).map_err(|e| format!("binding {name}: {e}"))
+    }
+
+    /// The number of the IOMMU group of the PCI function `name`, as sysfs gives it.
+    pub fn group_of(name: &str) -> Result<String, String> {
+        let dir = format!("/sys/bus/pci/devices/{name}");
         let group = std::fs::read_link(format!("{dir}/iommu_group"))
             .map_err(|e| format!("{dir}/iommu_group: {e}"))?;
-        let group = group
+        group
             .file_name()
             .and_then(|n| n.to_str())
-            .ok_or("an IOMMU group without a number")?;
+            .map(str::to_string)
+            .ok_or_else(|| "an IOMMU group without a number".into())
+    }
+
+    /// The PCI function `name`, bound to vfio-pci already, through its group: and the
+    /// group's container where it has an IOMMU (type 1), none where it has not.
+    pub fn open_group(name: &str) -> Result<(libc::c_int, Option<libc::c_int>), String> {
+        let (container, group) = open(name)?;
+        Ok((device(group, name)?, container))
+    }
+
+    /// The group of the PCI function `name`, bound to vfio-pci already, set in a container
+    /// of its own: the container where the group has an IOMMU (type 1), none where it has
+    /// not, and the group.
+    pub fn open(name: &str) -> Result<(Option<libc::c_int>, libc::c_int), String> {
+        let group = group_of(name)?;
         let plain = format!("/dev/vfio/{group}");
         let (path, iommu) = if std::path::Path::new(&plain).exists() {
             (plain, TYPE1V2_IOMMU)
@@ -1387,9 +1446,13 @@ mod vfio {
         let group = super::open(&path, libc::O_RDWR)?;
         ioctl(group, GROUP_SET_CONTAINER, (&raw const container) as usize)?;
         ioctl(container, SET_IOMMU, iommu as usize)?;
+        Ok(((iommu == TYPE1V2_IOMMU).then_some(container), group))
+    }
+
+    /// The device of the group `group`'s function `name`.
+    pub fn device(group: libc::c_int, name: &str) -> Result<libc::c_int, String> {
         let cname = std::ffi::CString::new(name).map_err(|e| e.to_string())?;
-        let device = ioctl(group, GROUP_GET_DEVICE_FD, cname.as_ptr() as usize)?;
-        Ok((device, (iommu == TYPE1V2_IOMMU).then_some(container)))
+        ioctl(group, GROUP_GET_DEVICE_FD, cname.as_ptr() as usize)
     }
 
     /// Maps `len` bytes of this process at `vaddr` at I/O address `iova` of the
@@ -1534,6 +1597,93 @@ fn host() -> Result<(), String> {
         .any(|l| l.trim_end() == "SHARDS-TEST PASS");
     if !passed {
         return Err("the inner guest did not pass".into());
+    }
+    Ok(())
+}
+
+/// A guest that is a KVM host running shards (D154): its PCI functions
+/// `shards_l1_vfio` (comma-separated) given vfio-pci, as a host gives one a run is to be
+/// given, the image in /image.tar loaded, and a run of it given their group, `--device
+/// /dev/vfio/N`, its command `shards_l2` (comma-separated), by shards' daemon, which the
+/// run starts: what each says, as `L1: ` lines, and the run's as `L2: ` lines.
+fn daemon() -> Result<(), String> {
+    if !Path::new("/dev/kvm").exists() {
+        return Err("no /dev/kvm: this guest's kernel is no KVM host".into());
+    }
+    let functions = std::env::var("shards_l1_vfio").map_err(|_| "shards_l1_vfio not set".to_string())?;
+    let command = std::env::var("shards_l2").map_err(|_| "shards_l2 not set".to_string())?;
+    let mut group = None;
+    for name in functions.split(',') {
+        vfio::bind(name)?;
+        let this = vfio::group_of(name)?;
+        if group.get_or_insert_with(|| this.clone()) != &this {
+            return Err(format!("{functions}: in groups {group:?} and {this}"));
+        }
+    }
+    let group = group.ok_or("shards_l1_vfio names no function")?;
+    for dir in ["/tmp/home", "/tmp/cache"] {
+        std::fs::create_dir_all(dir).map_err(|e| format!("{dir}: {e}"))?;
+    }
+    // The daemon's and its VM processes' log at `shards_l1_log`'s level where one is asked.
+    let level = std::env::var("shards_l1_log").ok();
+    let shards = |args: &[&str]| {
+        let mut command = std::process::Command::new("/shards");
+        command
+            .args(args)
+            .env("HOME", "/tmp/home")
+            .env("SHARDS_HOME", "/tmp/shards")
+            .env("XDG_CACHE_HOME", "/tmp/cache")
+            .env("SHARDS_KERNEL", "/l2")
+            .env("SHARDS_INIT", "/shards-init")
+            .stdin(std::process::Stdio::null());
+        if let Some(level) = &level {
+            command.env("SHARDS_LOG", level);
+        }
+        command.output().map_err(|e| format!("/shards: {e}"))
+    };
+    let said = |who: &str, out: &std::process::Output| {
+        let mut stdout = io::stdout().lock();
+        for (stream, bytes) in [
+            (who.to_string(), &out.stdout),
+            (format!("{who} stderr"), &out.stderr),
+        ] {
+            for line in String::from_utf8_lossy(bytes).lines() {
+                let _ = writeln!(stdout, "{stream}: {}", line.trim_end());
+            }
+        }
+    };
+    let loaded = shards(&["load", "-i", "/image.tar"])?;
+    said("L1", &loaded);
+    if !loaded.status.success() {
+        return Err(format!("shards load ended with {}", loaded.status));
+    }
+    let node = format!("/dev/vfio/{group}");
+    let mut args = vec![
+        "run",
+        "--rm",
+        "--network",
+        "none",
+        "--user",
+        "root",
+        "--device",
+        "/dev/vfio/vfio",
+        "--device",
+        &node,
+        "vfio-test",
+    ];
+    args.extend(command.split(',').filter(|a| !a.is_empty()));
+    let ran = shards(&args)?;
+    said("L2", &ran);
+    if !ran.status.success() {
+        // Where the daemon says why, and the VM processes it ran, once all have ended.
+        said("L1", &shards(&["stop", "daemon"])?);
+        if let Ok(log) = std::fs::read_to_string("/tmp/shards/daemon.log") {
+            let mut stdout = io::stdout().lock();
+            for line in log.lines() {
+                let _ = writeln!(stdout, "L1 daemon: {line}");
+            }
+        }
+        return Err(format!("the run ended with {}", ran.status));
     }
     Ok(())
 }

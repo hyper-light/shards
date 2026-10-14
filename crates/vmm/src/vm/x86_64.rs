@@ -420,7 +420,7 @@ fn assemble(
     debug!("VM created and RAM mapped");
 
     // A PCI bus takes the last of the virtio devices' GSIs for its INTx (D154).
-    let has_pci = pci.test || !pci.vfio.is_empty();
+    let has_pci = !pci.test.is_empty() || !pci.vfio.is_empty();
     let virtio_max = layout::VIRTIO_MMIO_MAX - u64::from(has_pci);
     // The IOMMU of the PCI functions behind it, last of the virtio devices, the local
     // APICs' MSI window bypassed (D154; virtio 1.3 §5.13.3: the x86 MSI range,
@@ -593,7 +593,7 @@ pub fn build(cfg: &Config) -> Result<Machine, String> {
             hosts,
             cfg.gpu.then_some(0),
             super::Pci {
-                test: cfg.pci_test,
+                test: &cfg.pci_test,
                 vfio: &cfg.vfio,
             },
         )?;

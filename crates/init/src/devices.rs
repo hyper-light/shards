@@ -7,9 +7,11 @@
 //! (opencontainers/cgroups devices, `shards-devcgroup`). Init does it all, outside the
 //! workload's cgroup, before the standby runs anything there.
 
-use std::ffi::CString;
-use std::io;
-use std::os::fd::OwnedFd;
+use std::ffi::{CString, OsStr};
+use std::io::{self, Write as _};
+use std::os::fd::{AsFd as _, AsRawFd as _, BorrowedFd, FromRawFd as _, OwnedFd};
+use std::os::unix::ffi::OsStrExt as _;
+use std::path::PathBuf;
 
 use shards_devcgroup::{self as dc, Kind, Rule};
 
@@ -64,6 +66,21 @@ pub fn keep_devtmpfs() -> io::Result<()> {
     }
     // SAFETY: a fresh descriptor nothing else owns.
     let _ = DEVTMPFS.set(unsafe { <OwnedFd as std::os::fd::FromRawFd>::from_raw_fd(fd) });
+    Ok(())
+}
+
+/// A sysfs of init's own, attached nowhere, made at boot where the microVM was booted for
+/// the host's VFIO groups (`shards_vfio`, D154), before a run's root mounts its own
+/// read-only: Linux's sysfs is one superblock for each network namespace (kernfs,
+/// sysfs_init_fs_context), read-only where its first mount is, as the root's would be, and
+/// every later mount of it then too. Through it init gives the functions to vfio-pci.
+static SYSFS: std::sync::OnceLock<OwnedFd> = std::sync::OnceLock::new();
+
+/// Keeps [`SYSFS`], where the kernel's command line asks (`shards_vfio`).
+pub fn keep_sysfs() -> io::Result<()> {
+    if std::env::var_os("shards_vfio").is_some() {
+        let _ = SYSFS.set(crate::domains::detached(c"sysfs", &[])?);
+    }
     Ok(())
 }
 
@@ -186,6 +203,119 @@ fn names(dev: &OwnedFd, at: &std::ffi::CStr) -> Vec<String> {
     out
 }
 
+/// dockerd's words for a device it could not gather, `host` as the run named it.
+fn gathering(host: &str, e: &str) -> String {
+    format!("error gathering device information while adding custom device \"{host}\": {e}")
+}
+
+/// The guest's IOMMU group of its PCI functions at `addresses` (comma-separated, as
+/// `0000:00:01.0`): the functions of a host's VFIO group, `host` as the run named it, that
+/// the microVM was given behind its own IOMMU, one group of the guest's as of the host's
+/// (`vm::vfio_places`). Each is taken from any driver the guest's kernel gave it and
+/// given to vfio-pci (sysfs's `driver_override` and `drivers_probe`,
+/// Documentation/ABI/testing/sysfs-bus-pci), as the host's were before the run was given
+/// their group, through `sys`, a sysfs.
+fn vfio_group(sys: BorrowedFd<'_>, host: &str, addresses: &str) -> Result<String, String> {
+    let mut group: Option<String> = None;
+    for address in addresses.split(',') {
+        if !pci_address(address) {
+            return Err(gathering(
+                host,
+                &format!("{address:?} is no PCI function's address"),
+            ));
+        }
+        let dir = format!("bus/pci/devices/{address}");
+        let failed = |what: &str, e: io::Error| gathering(host, &format!("{address}: {what}: {e}"));
+        let driver = |sys| link_at(sys, &format!("{dir}/driver")).ok();
+        let vfio =
+            |d: &Option<PathBuf>| d.as_ref().and_then(|d| d.file_name()) == Some(OsStr::new("vfio-pci"));
+        let bound = driver(sys);
+        if !vfio(&bound) {
+            if bound.is_some() {
+                write_at(sys, &format!("{dir}/driver/unbind"), address)
+                    .map_err(|e| failed("taking it from its driver", e))?;
+            }
+            write_at(sys, &format!("{dir}/driver_override"), "vfio-pci")
+                .map_err(|e| failed("its driver_override", e))?;
+            // A probe that no driver takes the function in succeeds too (bus.c,
+            // drivers_probe_store): whether vfio-pci did is its driver's link.
+            write_at(sys, "bus/pci/drivers_probe", address)
+                .map_err(|e| failed("giving it to vfio-pci", e))?;
+            if !vfio(&driver(sys)) {
+                return Err(gathering(
+                    host,
+                    &format!("{address}: the guest's vfio-pci did not take it"),
+                ));
+            }
+        }
+        let link = link_at(sys, &format!("{dir}/iommu_group")).map_err(|e| {
+            failed(
+                "its IOMMU group, which the microVM's IOMMU gives it where the guest's kernel has VIRTIO_IOMMU",
+                e,
+            )
+        })?;
+        let this = link
+            .file_name()
+            .and_then(|n| n.to_str())
+            .ok_or_else(|| gathering(host, &format!("{address}: an IOMMU group without a number")))?
+            .to_string();
+        match &group {
+            Some(other) if *other != this => {
+                return Err(gathering(
+                    host,
+                    &format!("its functions are in the guest's groups {other} and {this}, not one"),
+                ));
+            }
+            _ => group = Some(this),
+        }
+    }
+    group.ok_or_else(|| gathering(host, "a group of no functions"))
+}
+
+/// Writes `value` to the attribute at `path` beneath `dir`, a sysfs, in one write, as an
+/// attribute takes a value.
+fn write_at(dir: BorrowedFd<'_>, path: &str, value: &str) -> io::Result<()> {
+    let c = CString::new(path).map_err(io::Error::other)?;
+    // SAFETY: openat(2) of a NUL-terminated path beneath a descriptor of init's.
+    let fd = unsafe { libc::openat(dir.as_raw_fd(), c.as_ptr(), libc::O_WRONLY | libc::O_CLOEXEC) };
+    if fd < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: the descriptor openat just made, owned here alone.
+    let file = std::fs::File::from(unsafe { OwnedFd::from_raw_fd(fd) });
+    (&file).write_all(value.as_bytes())
+}
+
+/// What the link at `path` beneath `dir` holds.
+fn link_at(dir: BorrowedFd<'_>, path: &str) -> io::Result<PathBuf> {
+    let c = CString::new(path).map_err(io::Error::other)?;
+    let mut buf = [0u8; 4096];
+    // SAFETY: readlinkat(2) of a NUL-terminated path into a buffer of the length given.
+    let n = unsafe { libc::readlinkat(dir.as_raw_fd(), c.as_ptr(), buf.as_mut_ptr().cast(), buf.len()) };
+    let n = usize::try_from(n).map_err(|_| io::Error::last_os_error())?;
+    Ok(PathBuf::from(OsStr::from_bytes(buf.get(..n).unwrap_or_default())))
+}
+
+/// Whether `a` is a PCI function's address as sysfs names it: `DDDD:BB:SS.F`, in
+/// lowercase hex, the function 0 to 7.
+fn pci_address(a: &str) -> bool {
+    let hex = |s: &str, n: usize| s.len() == n && s.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'));
+    let mut parts = a.splitn(3, ':');
+    match (parts.next(), parts.next(), parts.next()) {
+        (Some(domain), Some(bus), Some(rest)) => match rest.split_once('.') {
+            Some((slot, function)) => {
+                hex(domain, 4)
+                    && hex(bus, 2)
+                    && hex(slot, 2)
+                    && slot <= "1f"
+                    && matches!(function, "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7")
+            }
+            None => false,
+        },
+        _ => false,
+    }
+}
+
 /// DevicesFromPath: the device at `host`, or each under it where it is a directory, at
 /// `container` instead, with `perms`; or dockerd's refusal. The VM has no files but its
 /// devices: a path that names none and holds none is not there.
@@ -282,10 +412,21 @@ fn cgroup_rule(text: &str) -> Result<Rule, String> {
     })
 }
 
+/// A `--device` as a `devices=` entry names it: a path of the VM's, with its path in the
+/// container and its cgroup access; or a host's VFIO group given the microVM (D154), with
+/// the path it was asked by, its functions' guest addresses (comma-separated), its path in
+/// the container (empty where it is the group's own; `-` where the run is given none of
+/// its own, a directory it was asked by holding it) and its cgroup access.
+#[derive(Debug, PartialEq, Eq)]
+enum Wanted<'a> {
+    Path([&'a str; 3]),
+    Vfio([&'a str; 4]),
+}
+
 /// What a `devices=` setup entry asks for (shards' setup.rs `devices`).
 struct Asked<'a> {
     privileged: bool,
-    devices: Vec<[&'a str; 3]>,
+    devices: Vec<Wanted<'a>>,
     rules: Vec<&'a str>,
     cdi: Vec<&'a str>,
     /// CDI's nodes (D146): each its host path, path, cgroup access, kind, mode, owner's
@@ -314,7 +455,15 @@ fn asked(entry: &[u8]) -> Option<Asked<'_>> {
     };
     while let Some(tag) = words.next() {
         match tag {
-            "d" => a.devices.push([words.next()?, words.next()?, words.next()?]),
+            "d" => a
+                .devices
+                .push(Wanted::Path([words.next()?, words.next()?, words.next()?])),
+            "v" => a.devices.push(Wanted::Vfio([
+                words.next()?,
+                words.next()?,
+                words.next()?,
+                words.next()?,
+            ])),
             "r" => a.rules.push(words.next()?),
             "i" => a.cdi.push(words.next()?),
             "n" => {
@@ -366,11 +515,35 @@ pub fn prepare_joiner(entry: &[u8]) -> Result<Prepared, String> {
 
 fn prepare_with(entry: &[u8]) -> Result<Prepared, String> {
     let a = asked(entry).ok_or("a malformed devices entry")?;
+    // Each host VFIO group the microVM was given a group of the guest's now (D154): its
+    // functions given to vfio-pci here, as the host's were, through the sysfs boot kept,
+    // the run's root's being read-only; its node the workload's where the guest has it,
+    // as the guest's /sys names it there (Kata's agent does the same,
+    // vfio_device_handler.rs), unless the run asked for it elsewhere.
+    let mut devices: Vec<[String; 3]> = Vec::with_capacity(a.devices.len());
+    for wanted in &a.devices {
+        match wanted {
+            Wanted::Path(d) => devices.push(d.map(str::to_string)),
+            Wanted::Vfio([host, addresses, container, perms]) => {
+                let sys = SYSFS.get().ok_or_else(|| {
+                    gathering(
+                        host,
+                        "no sysfs to give its functions to vfio-pci in: the microVM was not booted for VFIO (shards_vfio)",
+                    )
+                })?;
+                let node = format!("/dev/vfio/{}", vfio_group(sys.as_fd(), host, addresses)?);
+                match *container {
+                    "-" => {}
+                    "" => devices.push([node.clone(), node, (*perms).to_string()]),
+                    elsewhere => devices.push([node, elsewhere.to_string(), (*perms).to_string()]),
+                }
+            }
+        }
+    }
     // Read where a path is named, at it and beneath it.
-    let mut vm: Vec<Node> = a
-        .devices
+    let mut vm: Vec<Node> = devices
         .iter()
-        .map(|[host, ..]| *host)
+        .map(|[host, ..]| host.as_str())
         .chain(a.io.iter().map(|[_, path, _]| *path))
         .chain(a.cdi_nodes.iter().map(|[host, ..]| *host))
         .flat_map(vm_devices)
@@ -410,12 +583,12 @@ fn prepare_with(entry: &[u8]) -> Result<Prepared, String> {
     let throttles = throttles.into_iter().map(|(_, e)| e).collect();
     let mut nodes = Vec::new();
     let mut given = Vec::new();
-    for [host, container, perms] in &a.devices {
+    for [host, container, perms] in &devices {
         // A privileged microVM's workload has the VM's devices where the VM has them already.
         if a.privileged && host == container {
             continue;
         }
-        let perms = if a.privileged { "rwm" } else { perms };
+        let perms = if a.privileged { "rwm" } else { perms.as_str() };
         for (node, rule) in devices_from_path(&vm, host, container, perms)? {
             given.push(dc::Given {
                 path: node.path.clone(),
@@ -944,10 +1117,46 @@ mod tests {
 
     #[test]
     fn entries_are_read_as_setup_writes_them() {
-        let a = asked(b"-\0d\0/dev/fuse\0/dev/x\0r\0r\0c 1:3 r\0i\0v.com/g=0\0").unwrap();
+        let a = asked(
+            b"-\0d\0/dev/fuse\0/dev/x\0r\0v\0/dev/vfio/42\x000000:00:01.0,0000:00:01.1\0\0rw\0r\0c 1:3 r\0i\0v.com/g=0\0",
+        )
+        .unwrap();
         assert!(!a.privileged);
-        assert_eq!(a.devices, [["/dev/fuse", "/dev/x", "r"]]);
+        assert_eq!(
+            a.devices,
+            [
+                Wanted::Path(["/dev/fuse", "/dev/x", "r"]),
+                Wanted::Vfio(["/dev/vfio/42", "0000:00:01.0,0000:00:01.1", "", "rw"])
+            ]
+        );
         assert_eq!((a.rules, a.cdi), (vec!["c 1:3 r"], vec!["v.com/g=0"]));
         assert!(asked(b"p\0d\0/dev/fuse\0").is_none());
+        assert!(
+            asked(b"-\0v\0/dev/vfio/42\x000000:00:01.0\0\0").is_none(),
+            "a word short"
+        );
+    }
+
+    /// A function's address is sysfs's: domain, bus and slot in lowercase hex, the slot
+    /// one of 32, the function one of 8.
+    #[test]
+    fn a_function_is_named_as_sysfs_names_it() {
+        for good in ["0000:00:01.0", "0001:3b:1f.7", "ffff:ff:00.3"] {
+            assert!(pci_address(good), "{good}");
+        }
+        for bad in [
+            "0000:00:01",
+            "0000:00:01.8",
+            "0000:00:20.0",
+            "0000:00:01.0,",
+            "000:00:01.0",
+            "0000:0:01.0",
+            "0000:00:0A.0",
+            "0000:00:01.0:0",
+            "../../x",
+            "",
+        ] {
+            assert!(!pci_address(bad), "{bad}");
+        }
     }
 }
