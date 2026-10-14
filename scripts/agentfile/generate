@@ -1,32 +1,32 @@
 #!/bin/sh
-# Regenerates what crates/dockerfile takes from BuildKit's Dockerfile frontend, from
+# Regenerates what crates/agentfile takes from BuildKit's Dockerfile frontend, from
 # moby/buildkit dockerfile/1.27.1 built and run by the Go its go.mod names, in that Go's
 # linux/amd64 image (Docker), where BuildKit runs:
-# - crates/dockerfile/testdata/buildkit/, BuildKit's parser test files and lexer tables,
+# - crates/agentfile/testdata/buildkit/, BuildKit's parser test files and lexer tables,
 #   copied unmodified under its Apache-2.0 licence;
-# - crates/dockerfile/testdata/parse.json and lex.json, what BuildKit's parser and lexer
-#   make of them and of crates/dockerfile/testdata/corpus and lex-cases.json, which the
+# - crates/agentfile/testdata/parse.json and lex.json, what BuildKit's parser and lexer
+#   make of them and of crates/agentfile/testdata/corpus and lex-cases.json, which the
 #   crate's tests expect byte for byte (oracle/main.go);
-# - crates/dockerfile/testdata/instructions.json and plan.json, the typed instructions and
+# - crates/agentfile/testdata/instructions.json and plan.json, the typed instructions and
 #   the build plan (Dockerfile2LLB's graph, image config and warnings, with the fake base
 #   images of images.json) BuildKit makes of the corpus;
-# - crates/dockerfile/testdata/subrequests.json, what the frontend answers `--call`'s
+# - crates/agentfile/testdata/subrequests.json, what the frontend answers `--call`'s
 #   subrequests with for each plan corpus file: its outline, its targets, and its lint
 #   results (DockerfileLint, the source's LLB definition cleared), and the describe;
-# - crates/dockerfile/testdata/configs-answers.json, what Go's encoding/json makes of each
+# - crates/agentfile/testdata/configs-answers.json, what Go's encoding/json makes of each
 #   image config in configs.json, read into BuildKit's DockerOCIImage and written back;
-# - crates/dockerfile/testdata/sizes-answers.json and urls-answers.json, what go-units,
+# - crates/agentfile/testdata/sizes-answers.json and urls-answers.json, what go-units,
 #   net/url and BuildKit's git URL parsing make of sizes.json and urls.json;
-# - crates/dockerfile/testdata/exports.json, what BuildKit's image exporter writes for each
+# - crates/agentfile/testdata/exports.json, what BuildKit's image exporter writes for each
 #   planned image, its config and manifest, over layers made up for it (export_test.go);
-# - crates/dockerfile/src/tables.rs, Go's character classes the parser and lexer use.
+# - crates/agentfile/src/tables.rs, Go's character classes the parser and lexer use.
 #
-#   scripts/dockerfile/generate [BUILDKIT_CHECKOUT]
+#   scripts/agentfile/generate [BUILDKIT_CHECKOUT]
 set -eu
 
 here=$(cd "$(dirname "$0")" && pwd)
 root=$(cd "$here/../.." && pwd)
-data="$root/crates/dockerfile/testdata"
+data="$root/crates/agentfile/testdata"
 tag=dockerfile/1.27.1
 commit=08f4630c67a49ff3158f218e99fd93ad97a90747
 bk=${1:-}
@@ -52,7 +52,7 @@ cat >"$data/buildkit/README.md" <<EOF
 \`parser/\`, \`parser-negative/\` and \`shell/\` are moby/buildkit's
 \`frontend/dockerfile/parser/testfiles\`, \`testfiles-negative\` and \`shell\`'s
 \`envVarTest\` and \`wordsTest\` at $tag ($commit), unmodified, under BuildKit's
-Apache-2.0 licence in \`LICENSE\`. Regenerate with \`scripts/dockerfile/generate\`.
+Apache-2.0 licence in \`LICENSE\`. Regenerate with \`scripts/agentfile/generate\`.
 EOF
 
 mkdir -p "$bk/shards-oracle"
@@ -65,7 +65,7 @@ trap 'cleanup; [ -z "${1:-}" ] && rm -rf "$bk"' EXIT
 go=$(sed -n 's/^go //p' "$bk/go.mod")
 docker run --rm --platform linux/amd64 --user "$(id -u):$(id -g)" \
 	-e HOME=/tmp -e GOCACHE=/tmp/go-cache -e GOFLAGS=-mod=vendor -e GOTOOLCHAIN=local \
-	-v "$bk:/bk" -v "$root/crates/dockerfile:/crate" -w /bk "golang:$go" sh -c '
+	-v "$bk:/bk" -v "$root/crates/agentfile:/crate" -w /bk "golang:$go" sh -c '
 		go run ./shards-oracle /crate/testdata &&
 		SHARDS_PLANS=/crate/testdata/plan.json SHARDS_EXPORT_OUT=/crate/testdata/exports.json \
 			go test -count=1 -run "^TestShardsExport$" ./exporter/containerimage/'

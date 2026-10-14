@@ -66,7 +66,7 @@ pub fn save<W: Write>(store: &Store, asked: &[Asked<'_>], out: W) -> Result<(), 
                 (0o755, Content::Dir),
             );
         }
-        manifests.push(docker_manifest(store, image, names)?);
+        manifests.push(archive_manifest(store, image, names)?);
     }
     records.insert("blobs/".into(), (0o755, Content::Dir));
     let index = format!(
@@ -205,7 +205,7 @@ fn index_entry(asked: &Asked<'_>) -> Result<String, Error> {
 }
 
 /// `manifest.json`'s entry for `image`: our platform's config and layers, and `names`.
-fn docker_manifest(store: &Store, image: &Image, names: &[String]) -> Result<String, Error> {
+fn archive_manifest(store: &Store, image: &Image, names: &[String]) -> Result<String, Error> {
     let desc = oci::Descriptor {
         media_type: oci::media::OCI_MANIFEST.into(),
         digest: image.manifest.to_string(),

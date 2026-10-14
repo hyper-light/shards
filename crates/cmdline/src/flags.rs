@@ -764,6 +764,18 @@ pub fn value(flag: &Flag, value: &str) -> Result<String, String> {
         ("memory-swap", Kind::Value("bytes")) if value == "-1" => Ok(value.to_string()),
         (_, Kind::Value("bytes")) => crate::resources::ram_in_bytes(value).map(|n| n.to_string()),
         (_, Kind::Value("decimal")) => crate::resources::parse_cpus(value).map(|n| n.to_string()),
+        // UmaskOpt: octal, shown as `%#04o` (docker/cli opts.go): its digits zero-padded to
+        // four, then a leading 0 where they do not start with one (fmt's fmtInteger).
+        (_, Kind::Value("umask")) => crate::go::parse_octal32(value)
+            .map(|n| {
+                let digits = format!("{n:04o}");
+                if digits.starts_with('0') {
+                    digits
+                } else {
+                    format!("0{digits}")
+                }
+            })
+            .map_err(|e| e.to_string()),
         (_, Kind::Value(go @ ("uint16" | "uint64"))) => {
             crate::go::parse_uint_bits(value, if go == "uint16" { 16 } else { 64 })
                 .map(|n| n.to_string())

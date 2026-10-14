@@ -208,7 +208,7 @@ fn digest_for_verifying(
     if !supported.contains(&hashed_with) {
         return Err(format!(
             "unsupported hash algorithm: {} not in {}",
-            shards_dockerfile::go::quote(hashed_with.map_or("unknown hash value 0", Hash::name).as_bytes()),
+            shards_agentfile::go::quote(hashed_with.map_or("unknown hash value 0", Hash::name).as_bytes()),
             hash_list(supported)
         ));
     }

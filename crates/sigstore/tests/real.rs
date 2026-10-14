@@ -191,7 +191,7 @@ fn index_desc() -> shards_sigstore::image::Descriptor {
 }
 
 #[test]
-fn the_image_s_signature_is_docker_s_github_builder_s() {
+fn a_real_images_signature_is_its_github_builders() {
     use shards_sigstore::helpers::{Kind, SignatureType};
     use shards_sigstore::platforms::Platform;
     let arm64 = Platform {

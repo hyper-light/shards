@@ -1426,7 +1426,7 @@ fn answering_as_a_build(q: Questions, done: &AtomicBool, policy: bool) {
         configs: &[],
         env: policy::Env::default(),
         cwd: dir.to_path_buf(),
-        default_platform: shards_dockerfile::platform::Platform::new("linux", "arm64"),
+        default_platform: shards_agentfile::platform::Platform::new("linux", "arm64"),
         debug: false,
         default_policy: false,
         remote: None,

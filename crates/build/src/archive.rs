@@ -12,7 +12,7 @@ use std::io::{self, BufRead, BufReader, BufWriter, Read, Write};
 use std::path::Path;
 use std::sync::mpsc;
 
-use shards_dockerfile::go;
+use shards_agentfile::go;
 use shards_image::erofs::{DataRef, Kind, Source};
 use shards_image::store::{Limits, Room};
 use shards_image::tar::{self, Type};

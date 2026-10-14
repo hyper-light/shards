@@ -63,8 +63,8 @@ fn types_check_as_opa_checks_them() {
         let name = c["name"].as_str().unwrap();
         assert_eq!(name, want["name"].as_str().unwrap());
         let mut srcs = vec![(
-            "builtin/buildx_defaults.rego".to_string(),
-            include_str!("../src/buildx_defaults.rego").to_string(),
+            "builtin/defaults.rego".to_string(),
+            include_str!("../src/defaults.rego").to_string(),
         )];
         for m in c["modules"].as_array().unwrap() {
             srcs.push((

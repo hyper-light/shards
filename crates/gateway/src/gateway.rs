@@ -793,7 +793,7 @@ mod tests {
     /// (Docker 29.3.1; D113's spy in `shards-dind`), answering this client's calls made in
     /// that frontend's order: every response and error read as grpc-go read them.
     #[test]
-    fn buildkits_own_answers_are_read_as_grpc_go_read_them() {
+    fn recorded_gateway_answers_are_read() {
         let server = std::io::Cursor::new(include_bytes!("../testdata/dockerfile-1.server.bin").to_vec());
         let mut c = Client::new(server, Vec::new()).unwrap();
         let pong = c.ping().unwrap();

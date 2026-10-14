@@ -976,7 +976,7 @@ impl Refusal {
             "unexpected status from {method} request to {}: {}",
             self.url, self.text
         );
-        let mut said = dockerd(self.status, body);
+        let mut said = refusal_said(self.status, body);
         if let Some(limits) = self.limits {
             let limits = format!(" ({limits})");
             message.push_str(&limits);
@@ -1078,7 +1078,7 @@ const UNKNOWN: (&str, &str) = ("UNKNOWN", "unknown error");
 ///
 /// Codes are distribution's strings, as the spec has them; Go would read a number too.
 /// What the registry says is printed with its control characters escaped.
-fn dockerd(status: u16, body: &[u8]) -> Said {
+fn refusal_said(status: u16, body: &[u8]) -> Said {
     let Ok(body) = serde_json::from_slice::<serde_json::Value>(body) else {
         return Said::Before("unknown");
     };
@@ -1688,7 +1688,7 @@ mod tests {
     /// says it of what containerd decoded (errcode.go).
     #[test]
     fn refusals_are_said_with_the_registrys_words() {
-        let whole = |status, body: &str| match dockerd(status, body.as_bytes()) {
+        let whole = |status, body: &str| match refusal_said(status, body.as_bytes()) {
             Said::Instead(said) => said,
             Said::Before(word) => format!("{word}: <the error>"),
         };
@@ -1862,7 +1862,7 @@ mod tests {
     /// The statuses containerd takes: an upload begun with 200, 202 or 204, or found there
     /// already with 201; done with 200, 201 or 204, its digest checked when sent.
     #[test]
-    fn uploads_take_the_statuses_containerd_takes() {
+    fn uploads_take_every_status_registries_answer_with() {
         for (begun, done) in [
             ("200 OK", "200 OK"),
             ("204 No Content", "204 No Content"),

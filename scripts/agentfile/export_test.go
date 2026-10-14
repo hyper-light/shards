@@ -1,6 +1,6 @@
 package containerimage
 
-// BuildKit's image exporter's own answers, for crates/dockerfile's export.rs to match.
+// BuildKit's image exporter's own answers, for crates/agentfile's export.rs to match.
 // `generate` copies this file into BuildKit's exporter/containerimage, where the
 // exporter's functions live, and runs it there. For each image plan.json records, it
 // exports the config with layers made up for it, fewer, as many and more than its history

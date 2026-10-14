@@ -11,9 +11,9 @@ use std::io::{Read, Write};
 use std::path::Path;
 use std::process::ExitCode;
 
+use shards_agentfile::platform::{self, Platform};
 use shards_cmdline::commands::{POLICY, POLICY_COMMANDS, POLICY_EVAL, POLICY_TEST};
 use shards_cmdline::flags::{self, Command, Outcome, Parsed};
-use shards_dockerfile::platform::{self, Platform};
 
 use super::{Bases, Progress, host_platform, http, policy};
 
@@ -235,7 +235,7 @@ fn os_error(e: &std::io::Error) -> String {
 /// parseSource: an image, pinned to its tag where it names none; a Git repository; an
 /// HTTP(S) URL, or a Git repository behind one; or a path, which is the build's context.
 fn parse_source(input: &str) -> Result<policy::Source, String> {
-    use shards_dockerfile::git::{Parsed, parse_git_ref};
+    use shards_agentfile::git::{Parsed, parse_git_ref};
     if let Some(r) = input.strip_prefix("docker-image://") {
         let mut r = shards_image::reference::Reference::parse_normalized(r)
             .map_err(|e| format!("failed to parse image source reference: {e}"))?;

@@ -159,7 +159,7 @@ fn the_bundle_is_the_one_sign_bundle_assembles() {
 fn service(v: &Value) -> Service {
     let at = |s: &Value| {
         s.as_str()
-            .map(|s| shards_dockerfile::go::parse_rfc3339(s.as_bytes()).unwrap().unix())
+            .map(|s| shards_agentfile::go::parse_rfc3339(s.as_bytes()).unwrap().unix())
     };
     Service {
         url: v["url"].as_str().unwrap().into(),
@@ -183,7 +183,7 @@ fn services_are_selected_as_sigstore_go_selects_them() {
             .iter()
             .map(|v| u32::try_from(v.as_u64().unwrap()).unwrap())
             .collect();
-        let now = shards_dockerfile::go::parse_rfc3339(c["now"].as_str().unwrap().as_bytes())
+        let now = shards_agentfile::go::parse_rfc3339(c["now"].as_str().unwrap().as_bytes())
             .unwrap()
             .unix();
         let all = ServiceConfiguration {

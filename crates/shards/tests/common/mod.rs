@@ -232,14 +232,14 @@ pub fn kvm_kernel() -> Option<&'static Path> {
         let pinned = match ARCH {
             _ if cfg!(windows) => return None,
             "aarch64" => Artifact {
-                name: "Image-6.18.48-aarch64-kvm-6f2b217a4feb",
-                url: "https://github.com/hyper-light/shards/releases/download/kernel-6.18.48-6f2b217a4feb/Image-6.18.48-aarch64-kvm",
-                sha256: "f2a433fb725592ec988ddf0c762258176c754ca2b0c497cadd38e58edbe52f28",
+                name: "Image-6.18.48-aarch64-kvm-a6cbab8c9218",
+                url: "https://github.com/hyper-light/shards/releases/download/kernel-6.18.48-a6cbab8c9218/Image-6.18.48-aarch64-kvm",
+                sha256: "9f4f21d0f27fb5ade9f9868ade6e34ed56acd2ea1313490be693cfdfca0050df",
             },
             "x86_64" => Artifact {
-                name: "vmlinux-6.18.48-x86_64-kvm-6f2b217a4feb",
-                url: "https://github.com/hyper-light/shards/releases/download/kernel-6.18.48-6f2b217a4feb/vmlinux-6.18.48-x86_64-kvm",
-                sha256: "e8cf7f7c64a041f783f6e4a0b4937e975525690dbf54fc8679ec32e29a4161ab",
+                name: "vmlinux-6.18.48-x86_64-kvm-a6cbab8c9218",
+                url: "https://github.com/hyper-light/shards/releases/download/kernel-6.18.48-a6cbab8c9218/vmlinux-6.18.48-x86_64-kvm",
+                sha256: "c37b04b1c3b4f4f9062489931de7392f983ed11c6d5556626cf899f73b1dd7f9",
             },
             _ => return None,
         };
@@ -1559,7 +1559,7 @@ pub fn image_archive(name: &str) -> Vec<u8> {
         sha256_digest(&manifest),
         manifest.len()
     );
-    let docker = format!(
+    let archive_manifest = format!(
         r#"[{{"Config":"{}","RepoTags":["{name}"],"Layers":["{}"]}}]"#,
         path(config),
         path(layer)
@@ -1572,7 +1572,7 @@ pub fn image_archive(name: &str) -> Vec<u8> {
         (&layer_at, 0o644, 0, Some(layer)),
         (&manifest_at, 0o644, 0, Some(&manifest)),
         ("index.json", 0o644, 0, Some(index.as_bytes())),
-        ("manifest.json", 0o644, 0, Some(docker.as_bytes())),
+        ("manifest.json", 0o644, 0, Some(archive_manifest.as_bytes())),
         ("oci-layout", 0o644, 0, Some(br#"{"imageLayoutVersion":"1.0.0"}"#)),
     ])
 }

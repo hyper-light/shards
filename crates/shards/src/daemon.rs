@@ -1896,24 +1896,26 @@ impl<D: Disk> Daemon<D> {
             if let Some(pid) = by_id(&run.pid) {
                 run.pid = pid;
             }
+            if let Some(ipc) = by_id(&run.ipc) {
+                run.ipc = ipc;
+            }
         }
-        // `--pid container:NAME`, as dockerd checks it as the container is made: one that
-        // is not, in its words. One that is runs in a microVM of its own, whose PID
-        // namespace no other microVM's process can join (D115): a container joining its
-        // network, which runs in its microVM (D119), joins it.
+        // `--pid container:NAME`: a run in a microVM of its own, whose PID namespace no
+        // other microVM's process can join (D115), is joined by a run joining its microVM
+        // (D119), or one of its joiners'.
         if again.is_none()
-            && let Some(name) = run.pid.strip_prefix("container:")
+            && let Some(id) = run.pid.strip_prefix("container:")
+            && let Err(e) = self.in_joined_microvm(&run, id, "--pid", "PID namespace")
         {
-            if self.resolve(name).is_err() {
-                refused(&format!("No such container: {name}"));
-                return None;
-            }
-            if run.network.strip_prefix("container:") != Some(name) {
-                refused(
-                    "\"--pid container:NAME\" is not supported by shards yet without \"--network container:NAME\" of the same container",
-                );
-                return None;
-            }
+            refused(&e);
+            return None;
+        }
+        // Its IPC, hostname and writable layer, as its microVM has them (D156).
+        if again.is_none()
+            && let Err(e) = microvm_namespaces(&run).and_then(|()| self.shared_ipc(&run))
+        {
+            refused(&e);
+            return None;
         }
         let mut start = match network::check(
             &run,
@@ -1967,7 +1969,10 @@ impl<D: Disk> Daemon<D> {
             run.hostname = Some(hostname);
             run.domainname = domainname;
         }
-        if run.hostname.is_none() && start == network::Start::Attach(network::Net::Host) {
+        // On the host's network, or asked for (`--uts host`, D156): the host's hostname.
+        if run.hostname.is_none()
+            && (start == network::Start::Attach(network::Net::Host) || run.uts == "host")
+        {
             run.hostname = info::host_name().map(|n| guest_hostname(&n));
         }
         if run.hostname.is_none() {
@@ -2011,6 +2016,21 @@ impl<D: Disk> Daemon<D> {
             && prepared.agentfile.is_some()
         {
             refuse("an Agentfile's image is not supported in a container joining another's network yet");
+            abandon(&id);
+            return None;
+        }
+        // A joiner runs beside the agents and harnesses of the microVM it joins, as that
+        // microVM's own run does, and is held to what reaches them (D115); init refuses it
+        // again as it starts the joiner.
+        let beside = match &start {
+            network::Start::Join(name) => self.microvm_agentfile(name),
+            _ => prepared.agentfile.clone(),
+        };
+        if let network::Start::Join(_) = &start
+            && let Some(a) = &beside
+            && let Err(e) = a.refuse(&run)
+        {
+            refuse(&e);
             abandon(&id);
             return None;
         }
@@ -2262,9 +2282,14 @@ impl<D: Disk> Daemon<D> {
                         e.clone_from(&entry);
                     }
                 }
+                // `--ipc container:` (D156): the IPC namespace of the run it shares.
+                if let Some(other) = run.ipc.strip_prefix("container:") {
+                    prepared.spec.setup.push(self.shared_ipc_entry(other)?);
+                }
                 // Beside agents whose flows past the microVM cross the command's network
-                // namespace, Docker's default CAP_NET_RAW is not the command's (D115).
-                if let Some(a) = prepared.agentfile.as_ref().filter(|a| a.domains > 0 && a.uplink) {
+                // namespace, Docker's default CAP_NET_RAW is not the command's (D115): its
+                // own microVM's, or the one it joins.
+                if let Some(a) = beside.as_ref().filter(|a| a.domains > 0 && a.uplink) {
                     prepared.spec.setup.retain(|e| !e.starts_with(b"caps="));
                     prepared
                         .spec
@@ -4249,6 +4274,138 @@ impl<D: Disk> Daemon<D> {
         Err(format!("container {id}: its PID namespace is too far removed"))
     }
 
+    /// `--ipc container:NAME` (D156): a run shares another's IPC namespace and /dev/shm
+    /// inside that run's microVM, which it joins with its network; the other shares them
+    /// only where it said so (`--ipc shareable`), or where they are the microVM's (`--ipc
+    /// host`). One that shares a third's is followed to it.
+    fn shared_ipc(&self, run: &Run) -> Result<(), String> {
+        let Some(id) = run.ipc.strip_prefix("container:") else {
+            return Ok(());
+        };
+        let name = |id: &str| {
+            lock(&self.containers)
+                .get(id)
+                .map_or_else(|| id.to_string(), |c| c.name.trim_start_matches('/').to_string())
+        };
+        if self.resolve(id).is_err() {
+            return Err(format!("--ipc container:{id}: no run is named {id}"));
+        }
+        let given = name(id);
+        self.in_joined_microvm(run, id, "--ipc", "IPC")?;
+        let mut at = id.to_string();
+        // Each names one made before it, so no chain loops; bounded all the same.
+        for _ in 0..64 {
+            let dir = lock(&self.containers).dir(&at);
+            let other = std::fs::read(dir.join(REQUEST))
+                .ok()
+                .and_then(|b| Run::decode(&b))
+                .ok_or_else(|| format!("run {}: its request is lost", name(&at)))?;
+            match other.ipc.as_str() {
+                "shareable" | "host" => return Ok(()),
+                ipc => match ipc.strip_prefix("container:") {
+                    Some(next) => at = next.to_string(),
+                    None => {
+                        return Err(format!(
+                            "--ipc container:{given}: {} keeps its IPC its own (--ipc {}); run it with --ipc shareable to share it",
+                            name(&at),
+                            if ipc.is_empty() { "private" } else { ipc }
+                        ));
+                    }
+                },
+            }
+        }
+        Err(format!(
+            "--ipc container:{given}: its IPC namespace is too far removed"
+        ))
+    }
+
+    /// The Agentfile of the microVM the run `name` names runs in, its own run's image's
+    /// (D109): what a run joining it runs beside (D115).
+    fn microvm_agentfile(&self, name: &str) -> Option<crate::agentfile::Agentfile> {
+        let id = self.resolve(name).ok()?;
+        let runs = lock(&self.runs);
+        let owner = match runs.get(&id) {
+            Some(RunState::Tracked(t)) => t.joined.clone().unwrap_or(id),
+            _ => id,
+        };
+        match runs.get(&owner) {
+            Some(RunState::Tracked(t)) => t.base.agentfile.clone(),
+            _ => None,
+        }
+    }
+
+    /// Whether the run `id` names is in the microVM `run` joins (D119): the one whose
+    /// network it joins, or another joiner of that microVM. What `flag` (`--pid`, `--ipc`)
+    /// shares of it, `what`, is shared there alone, each microVM's its own.
+    fn in_joined_microvm(&self, run: &Run, id: &str, flag: &str, what: &str) -> Result<(), String> {
+        let name = |id: &str| {
+            lock(&self.containers)
+                .get(id)
+                .map_or_else(|| id.to_string(), |c| c.name.trim_start_matches('/').to_string())
+        };
+        if self.resolve(id).is_err() {
+            return Err(format!("{flag} container:{id}: no run is named {id}"));
+        }
+        let given = name(id);
+        let joined = match run.network.strip_prefix("container:") {
+            Some(provider) => Some(self.microvm_of(provider)?),
+            None => None,
+        };
+        if joined.as_deref() != Some(self.microvm_of(id)?.as_str()) {
+            return Err(format!(
+                "{flag} container:{given}: a run shares another's {what} inside that run's microVM, which it joins with --network container:{given}"
+            ));
+        }
+        Ok(())
+    }
+
+    /// The run whose microVM run `id` runs in: itself, or, for a joiner (D119), the run
+    /// whose network it joins, followed.
+    fn microvm_of(&self, id: &str) -> Result<String, String> {
+        let mut at = self.resolve(id)?;
+        // Each names one made before it, so no chain loops; bounded all the same.
+        for _ in 0..64 {
+            let dir = lock(&self.containers).dir(&at);
+            let run = std::fs::read(dir.join(REQUEST))
+                .ok()
+                .and_then(|b| Run::decode(&b))
+                .ok_or_else(|| format!("container {at}: its request is lost"))?;
+            match run.network.strip_prefix("container:") {
+                Some(provider) => at = self.resolve(provider)?,
+                None => return Ok(at),
+            }
+        }
+        Err(format!("container {id}: its microVM is too far removed"))
+    }
+
+    /// Whose IPC namespace a run sharing `id`'s takes (D156), as a setup entry: the
+    /// microVM's, the workload's, or a joiner's by its exec's id in its provider's guest.
+    fn shared_ipc_entry(&self, id: &str) -> Result<Vec<u8>, String> {
+        let mut at = id.to_string();
+        for _ in 0..64 {
+            let dir = lock(&self.containers).dir(&at);
+            let run = std::fs::read(dir.join(REQUEST))
+                .ok()
+                .and_then(|b| Run::decode(&b))
+                .ok_or_else(|| format!("container {at}: its request is lost"))?;
+            if run.ipc == "host" {
+                return Ok(b"ipc=host".to_vec());
+            }
+            if let Some(other) = run.ipc.strip_prefix("container:") {
+                at = other.to_string();
+                continue;
+            }
+            if !self.joined_run(&at) {
+                return Ok(b"ipc=workload".to_vec());
+            }
+            let guest = self.inbox_of(&at).and_then(|inbox| lock(&inbox).guest);
+            return guest
+                .map(|g| format!("ipc=joiner={g}").into_bytes())
+                .ok_or_else(|| format!("container {at} is not running"));
+        }
+        Err(format!("container {id}: its IPC namespace is too far removed"))
+    }
+
     /// The hostname and domain name of the container `name` names, as its run gave them
     /// (its request), for a container joining its network (D119).
     fn names_of(&self, name: &str) -> Option<(String, String)> {
@@ -5330,6 +5487,45 @@ fn again_as(stored: Run, client: &Run, id: &str) -> Run {
         restart: false,
         ..stored
     }
+}
+
+/// A run's IPC, UTS and writable layer as its microVM has them (D156): a /dev/shm sized
+/// where it is the run's own alone; a hostname given once; `--storage-opt` its writable
+/// layer's size alone, no more than the memory that layer is held in.
+fn microvm_namespaces(run: &Run) -> Result<(), String> {
+    if run.shm_size != 0 {
+        let whose = match run.ipc.as_str() {
+            "none" => Some("--ipc none gives it none".to_string()),
+            "host" => Some("it is the microVM's (--ipc host), half the microVM's memory".to_string()),
+            ipc => ipc
+                .strip_prefix("container:")
+                .map(|other| format!("it is that of the run it shares it with (--ipc container:{other})")),
+        };
+        if let Some(whose) = whose {
+            return Err(format!("--shm-size sizes a run's own /dev/shm, and {whose}"));
+        }
+    }
+    if run.uts == "host" && run.hostname.is_some() {
+        return Err("--hostname and --uts host each name the microVM's host: give one".into());
+    }
+    if let Some(size) = crate::setup::storage_size(run)? {
+        let (limit, of) = match run.resources.memory {
+            0 => (
+                crate::build::host_memory().unwrap_or(u64::MAX),
+                "its host's memory, which the microVM grows to".to_string(),
+            ),
+            m => (
+                u64::try_from(m).unwrap_or(0),
+                format!("its memory (--memory {m})"),
+            ),
+        };
+        if size > limit {
+            return Err(format!(
+                "--storage-opt size={size}: a run's writable layer is held in its microVM's memory, and {size} bytes is more than {of}, {limit} bytes"
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// A run's `--isolation` (D155): every run is isolated in a microVM of its own, with a

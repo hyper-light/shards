@@ -30,7 +30,7 @@ shards-user = { path = "../user" }
 shards-template = { path = "../template" }
 shards-build = { path = "../build" }
 shards-cmdline = { path = "../cmdline" }
-shards-dockerfile = { path = "../dockerfile" }
+shards-agentfile = { path = "../agentfile" }
 shards-gateway = { path = "../gateway" }
 shards-flate = { path = "../flate" }
 shards-zstd = { path = "../zstd" }

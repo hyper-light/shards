@@ -13,16 +13,16 @@
 //! - `go`: the Go string, path and time handling all of them inherit.
 //!
 //! Each is held to BuildKit's own code byte for byte by `tests/oracle.rs`, against what
-//! scripts/dockerfile/generate records BuildKit doing; each module's documentation lists
+//! scripts/agentfile/generate records BuildKit doing; each module's documentation lists
 //! where it deliberately does better, and testdata/deviations.json each case of it.
 
 pub mod agentfile;
 pub mod caps;
 pub mod commit;
-pub mod dockerui;
 pub mod export;
 pub mod git;
 pub mod glob;
+pub mod run_options;
 pub use shards_image::go;
 pub mod ignore;
 pub mod image;

@@ -1,8 +1,8 @@
 #!/bin/sh
 # Regenerates crates/cmdline/tests/buildx.json: buildx v0.37.1's answers to the `build`
-# command lines in oracle_test.go, which crates/cmdline/tests/buildx.rs expects shards to
+# command lines in oracle_test.go, which crates/cmdline/tests/build_command_lines.rs expects shards to
 # give; and crates/cmdline/tests/buildx-du.json: its `du`'s answers to du_test.go's cases,
-# which crates/cmdline/tests/buildx_du.rs expects. `docker build` is buildx's `build`, run as the CLI's plugin; the test runs it the
+# which crates/cmdline/tests/build_cache_usage.rs expects. `docker build` is buildx's `build`, run as the CLI's plugin; the test runs it the
 # same way in buildx's own module, with the packages buildx vendors and the Go its go.mod
 # asks for.
 #

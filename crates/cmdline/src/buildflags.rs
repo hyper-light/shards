@@ -2,7 +2,7 @@
 //! answered as buildx v0.37.1 reads them (util/buildflags/secrets.go and entitlements.go,
 //! with docker/cli's opts/ulimit.go and go-units' ulimit.go for `--ulimit`), and the
 //! secrets are found as BuildKit's store finds them (secretsprovider/store.go), held to
-//! buildx's own answers by tests/buildx.rs (scripts/buildx/oracle_test.go). Where buildx
+//! buildx's own answers by tests/build_command_lines.rs (scripts/buildx/oracle_test.go). Where buildx
 //! refuses or misbehaves for reasons of its own machinery, shards does better, each
 //! difference listed there with its reason:
 //! - a secret may be as large as a build step carries it, not 500 KiB, the cap BuildKit's

@@ -4,8 +4,8 @@
 
 use std::net::IpAddr;
 
-use shards_dockerfile::go;
-use shards_dockerfile::llb::{HostIp, ProxyEnv};
+use shards_agentfile::go;
+use shards_agentfile::llb::{HostIp, ProxyEnv};
 
 /// The `PATH` a step gets when its environment has none (util/system/path.go).
 pub const DEFAULT_PATH: &[u8] = b"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
@@ -261,7 +261,7 @@ mod tests {
     }
 
     #[test]
-    fn a_steps_environment_is_buildkits() {
+    fn a_steps_environment_takes_its_proxy_and_path() {
         let own = vec![b"A=1".to_vec()];
         let proxy = ProxyEnv {
             http: b"http://p:3128".to_vec(),
@@ -285,7 +285,7 @@ mod tests {
     }
 
     #[test]
-    fn hosts_are_buildkits() {
+    fn a_steps_hosts_file_lists_its_extra_hosts() {
         let extra = [HostIp {
             host: b"db".to_vec(),
             ip: b"10.0.0.2".to_vec(),

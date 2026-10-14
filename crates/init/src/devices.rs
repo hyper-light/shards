@@ -841,7 +841,7 @@ fn make(node: &Node) -> Result<(), String> {
             })?;
     }
     let path = CString::new(node.path.as_str()).map_err(|_| format!("{}: a NUL in its path", node.path))?;
-    if dc::RUNC_PATHS.contains(&node.path.as_str()) {
+    if dc::ALWAYS_PATHS.contains(&node.path.as_str()) {
         // SAFETY: unlink(2) of a NUL-terminated path.
         unsafe { libc::unlink(path.as_ptr()) };
     }

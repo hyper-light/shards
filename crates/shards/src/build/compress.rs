@@ -7,7 +7,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write as _;
 
-use shards_dockerfile::export::Layer;
+use shards_agentfile::export::Layer;
 use shards_image::reference::Digest;
 use shards_image::store::{self, Limits, Store};
 

@@ -1224,7 +1224,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
     /// what it reaches, the agent or harness its image's Agentfile names for it (at its own
     /// port, where it maps one), else the run's own command.
     fn read_ports(&self, args: &[String], reply: &Reply<'_>) -> u8 {
-        use shards_dockerfile::agentfile::TargetKind;
+        use shards_agentfile::agentfile::TargetKind;
         let Some(reference) = args.first() else {
             return 1;
         };

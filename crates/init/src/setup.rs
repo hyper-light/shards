@@ -13,6 +13,89 @@ use std::sync::OnceLock;
 /// `/proc/sys`, opened before it is made read-only (run.rs `masked`).
 static PROC_SYS: OnceLock<OwnedFd> = OnceLock::new();
 
+/// The microVM's own IPC and cgroup namespaces, init's, opened before any standby forks
+/// (D156): what a run's `--ipc host` and `--cgroupns host` enter.
+static MICROVM_NS: OnceLock<(OwnedFd, OwnedFd)> = OnceLock::new();
+
+/// The run's writable layer, the tmpfs at `/rw`, opened before the root moves over it:
+/// what `--storage-opt size=` sizes (D156).
+static RW: OnceLock<OwnedFd> = OnceLock::new();
+
+/// Opens `path` for this process alone, `flags` besides `O_CLOEXEC`.
+fn open_kept(path: &std::ffi::CStr, flags: libc::c_int) -> io::Result<OwnedFd> {
+    // SAFETY: open(2) of a NUL-terminated path.
+    let fd = unsafe { libc::open(path.as_ptr(), flags | libc::O_CLOEXEC) };
+    if fd < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: a fresh descriptor nothing else owns.
+    Ok(unsafe { OwnedFd::from_raw_fd(fd) })
+}
+
+/// Opens init's IPC and cgroup namespaces, the microVM's, for [`apply`]'s `ipc=host` and
+/// `cgroupns=host`; a standby, forked after, has them, and its command does not.
+pub fn keep_microvm_namespaces() -> io::Result<()> {
+    let ipc = open_kept(c"/proc/self/ns/ipc", libc::O_RDONLY)?;
+    let cgroup = open_kept(c"/proc/self/ns/cgroup", libc::O_RDONLY)?;
+    let _ = MICROVM_NS.set((ipc, cgroup));
+    Ok(())
+}
+
+/// Opens `/rw`, the writable layer's tmpfs, for [`rw_size`], before the root moves over it.
+pub fn keep_rw() -> io::Result<()> {
+    let _ = RW.set(open_kept(c"/rw", libc::O_PATH | libc::O_DIRECTORY)?);
+    Ok(())
+}
+
+/// Sizes the run's writable layer, `text` bytes (`--storage-opt size=`, D156): its tmpfs
+/// remounted at that size, which it may not be below what it holds already.
+pub fn rw_size(text: &[u8]) -> Result<(), String> {
+    let size = std::str::from_utf8(text)
+        .ok()
+        .and_then(|t| t.parse::<u64>().ok())
+        .ok_or("a malformed writable layer size")?;
+    let rw = RW.get().ok_or("the writable layer was not kept")?;
+    let path = CString::new(format!("/proc/self/fd/{}", rw.as_raw_fd())).map_err(|_| "a NUL in a path")?;
+    let data = CString::new(format!("size={size}")).map_err(|_| "a NUL in a size")?;
+    // SAFETY: mount(2) of NUL-terminated strings that outlive the call.
+    let rc = unsafe {
+        libc::mount(
+            std::ptr::null(),
+            path.as_ptr(),
+            std::ptr::null(),
+            libc::MS_REMOUNT,
+            data.as_ptr().cast(),
+        )
+    };
+    if rc != 0 {
+        let e = io::Error::last_os_error();
+        // SAFETY: all-zero is a valid statfs, which fstatfs(2) fills from our descriptor.
+        let mut fs: libc::statfs = unsafe { std::mem::zeroed() };
+        let held = (e.raw_os_error() == Some(libc::EINVAL)
+            // SAFETY: as above.
+            && unsafe { libc::fstatfs(rw.as_raw_fd(), &raw mut fs) } == 0)
+            .then(|| (fs.f_blocks as u64).saturating_sub(fs.f_bfree as u64) * fs.f_bsize as u64);
+        return Err(match held {
+            Some(held) if held > size => {
+                format!("--storage-opt size={size}: the run's writable layer holds {held} bytes as it begins")
+            }
+            _ => format!("--storage-opt size={size}: {}", errno_words(&e)),
+        });
+    }
+    Ok(())
+}
+
+/// Enters init's namespace of `kind`, the microVM's ([`keep_microvm_namespaces`]).
+pub fn enter_microvm(kind: libc::c_int) -> Result<(), i32> {
+    let (ipc, cgroup) = MICROVM_NS.get().ok_or(libc::ENOENT)?;
+    let fd = if kind == libc::CLONE_NEWIPC { ipc } else { cgroup };
+    // SAFETY: setns(2) on a descriptor this process holds; a single-threaded fork of init.
+    if unsafe { libc::setns(fd.as_raw_fd(), kind) } != 0 {
+        return Err(io::Error::last_os_error().raw_os_error().unwrap_or(libc::EIO));
+    }
+    Ok(())
+}
+
 /// Opens `/proc/sys` for [`write_sysctl`], before it is made read-only.
 pub fn keep_proc_sys() -> io::Result<()> {
     // SAFETY: open(2) of a NUL-terminated literal.
@@ -441,6 +524,33 @@ pub fn apply(entry: &[u8]) -> Result<(), i32> {
         volume(rest).map_err(|e| e.raw_os_error().unwrap_or(libc::EIO))?;
     } else if let Some(rest) = text.strip_prefix("join-volume=") {
         join_volume(rest).map_err(|e| e.raw_os_error().unwrap_or(libc::EIO))?;
+    } else if text == "ipc=none" {
+        // `--ipc none` (D156): its IPC namespace of its own, with no /dev/shm: neither its
+        // own nor the microVM's under it.
+        detach_or("/dev/shm")?;
+        detach_or("/dev/shm")?;
+    } else if text == "ipc=host" {
+        // `--ipc host`: the microVM's IPC namespace, init's, and its /dev/shm, under the
+        // run's own.
+        enter_microvm(libc::CLONE_NEWIPC)?;
+        detach_or("/dev/shm")?;
+    } else if text == "cgroupns=host" {
+        // `--cgroupns host`: the microVM's cgroup namespace, its whole tree read-only at
+        // /sys/fs/cgroup.
+        enter_microvm(libc::CLONE_NEWCGROUP)?;
+        detach_or("/sys/fs/cgroup")?;
+        mount(
+            "cgroup2",
+            "/sys/fs/cgroup",
+            "cgroup2",
+            libc::MS_RDONLY | libc::MS_NOSUID | libc::MS_NOEXEC | libc::MS_NODEV,
+            "",
+        )?;
+    } else if let Some(mask) = text.strip_prefix("umask=") {
+        // `--umask`: the command's, and its execs'.
+        let mask = u32::from_str_radix(mask, 8).map_err(|_| libc::EINVAL)?;
+        // SAFETY: umask(2) of this process.
+        unsafe { libc::umask(mask as libc::mode_t) };
     } else if let Some(n) = text.strip_prefix("oom=") {
         // runc sets the container's process's own (setupOOMScoreAdj, before exec).
         std::fs::write("/proc/self/oom_score_adj", n).map_err(|e| e.raw_os_error().unwrap_or(libc::EIO))?;
@@ -627,6 +737,16 @@ fn detach(path: &str) {
         // SAFETY: umount2(2) of a NUL-terminated path.
         unsafe { libc::umount2(p.as_ptr(), libc::MNT_DETACH) };
     }
+}
+
+/// Detaches the mount at `path`, or the errno of why not.
+fn detach_or(path: &str) -> Result<(), i32> {
+    let p = c(path).ok_or(libc::EINVAL)?;
+    // SAFETY: umount2(2) of a NUL-terminated path.
+    if unsafe { libc::umount2(p.as_ptr(), libc::MNT_DETACH) } != 0 {
+        return Err(io::Error::last_os_error().raw_os_error().unwrap_or(libc::EIO));
+    }
+    Ok(())
 }
 
 /// Copies directory `src`'s contents into `dst`, and its own owner, mode and times, as

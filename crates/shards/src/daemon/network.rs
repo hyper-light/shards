@@ -382,9 +382,9 @@ mod tests {
     #[test]
     fn run_networks_are_checked() {
         let none = |_: &str| false;
-        // Docker Desktop's bridge, where these were measured.
-        let docker: Option<Bridge> = "172.17.0.0/16".parse().ok();
-        let check = |networks: &[&str]| check(&run(networks), docker, none);
+        // The host bridge where these were measured.
+        let bridge: Option<Bridge> = "172.17.0.0/16".parse().ok();
+        let check = |networks: &[&str]| check(&run(networks), bridge, none);
         let attach = |net| Ok(Start::Attach(net));
         let fails = |why: &str| Ok(Start::Fails(why.to_string()));
         let invalid = |net: &str, why: &str| {
@@ -530,8 +530,8 @@ mod tests {
     #[test]
     fn a_joiners_network_mode_is_checked() {
         let joined = || run(&["container:web"]);
-        let docker: Option<Bridge> = "172.17.0.0/16".parse().ok();
-        let check = |r: &Run| check(r, docker, |n| n == "web");
+        let bridge: Option<Bridge> = "172.17.0.0/16".parse().ok();
+        let check = |r: &Run| check(r, bridge, |n| n == "web");
         let said = |what: &str| Err(format!("conflicting options: {what}"));
         assert_eq!(
             check(&run(&["container:"])),
@@ -606,16 +606,16 @@ mod tests {
     /// would have made one.
     #[test]
     fn what_shards_does_not_do_yet_is_refused_up_front() {
-        let docker: Option<Bridge> = "172.17.0.0/16".parse().ok();
+        let bridge: Option<Bridge> = "172.17.0.0/16".parse().ok();
         assert_eq!(
-            check(&run(&["container:web"]), docker, |n| n == "web"),
+            check(&run(&["container:web"]), bridge, |n| n == "web"),
             Ok(Start::Join("web".into()))
         );
         // An endpoint's MAC is taken (D46, PM M173).
         assert_eq!(
             check(
                 &run(&["name=bridge,mac-address=02:11:22:33:44:55"]),
-                docker,
+                bridge,
                 |_| false
             ),
             Ok(Start::Attach(Net::Bridge))
@@ -623,7 +623,7 @@ mod tests {
         // Link-local addresses are taken; one that is not link-local fails the start after
         // the network is found, on `none` too, the first of several (PM M175).
         assert_eq!(
-            check(&run(&["name=bridge,link-local-ip=169.254.1.1"]), docker, |_| {
+            check(&run(&["name=bridge,link-local-ip=169.254.1.1"]), bridge, |_| {
                 false
             }),
             Ok(Start::Attach(Net::Bridge))
@@ -637,7 +637,7 @@ mod tests {
             ),
         ] {
             assert_eq!(
-                check(&run(networks), docker, |_| false),
+                check(&run(networks), bridge, |_| false),
                 Ok(Start::Fails(format!(
                     "failed to set up container networking: invalid link local IP address: {bad}"
                 ))),
@@ -645,7 +645,7 @@ mod tests {
             );
         }
         assert_eq!(
-            check(&run(&["name=nope,link-local-ip=10.9.8.7"]), docker, |_| false),
+            check(&run(&["name=nope,link-local-ip=10.9.8.7"]), bridge, |_| false),
             Ok(Start::Fails(
                 "failed to set up container networking: network nope not found".into()
             ))
@@ -654,16 +654,16 @@ mod tests {
         assert_eq!(
             check(
                 &run(&[
-                    "name=bridge,driver-opt=com.docker.network.endpoint.sysctls=net.ipv4.conf.IFNAME.log_martians=1"
+                    "name=bridge,driver-opt=com.bridge.network.endpoint.sysctls=net.ipv4.conf.IFNAME.log_martians=1"
                 ]),
-                docker,
+                bridge,
                 |_| false
             ),
             Ok(Start::Attach(Net::Bridge))
         );
         // dockerd runs `none` then `bridge`; it refuses `bridge` then `none`, and so are both.
         assert_eq!(
-            check(&run(&["none", "bridge"]), docker, |_| false),
+            check(&run(&["none", "bridge"]), bridge, |_| false),
             Ok(Start::Fails("failed to set up container networking: container cannot be connected to multiple networks with one of the networks in private (none) mode".into()))
         );
     }

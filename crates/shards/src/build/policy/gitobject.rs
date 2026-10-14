@@ -218,7 +218,7 @@ fn actor(s: &str) -> Actor {
 
 /// An actor's time as encoding/json writes it, in its zone; none where Go's fails.
 pub fn rfc3339((unix, offset): (i64, i32)) -> Option<String> {
-    shards_dockerfile::go::Time::from_unix_in(unix, offset)
+    shards_agentfile::go::Time::from_unix_in(unix, offset)
         .rfc3339_nano()
         .ok()
 }

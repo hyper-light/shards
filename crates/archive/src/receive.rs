@@ -272,7 +272,7 @@ mod tests {
     /// on directories too; an existing destination is merged into, and with a mirror
     /// asked for, emptied of the rest; no symlink takes a write outside it.
     #[test]
-    fn a_tree_is_received_as_fsutil_receives_it() {
+    fn a_tree_is_received_whole() {
         let tmp_dir = shards_testdir::TempDir::new("receive").unwrap();
         let tmp = tmp_dir.join("receive");
         let _ = std::fs::remove_dir_all(&tmp);

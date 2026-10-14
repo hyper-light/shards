@@ -5,7 +5,7 @@
 
 use std::collections::BTreeSet;
 
-use shards_dockerfile::platform::Platform;
+use shards_agentfile::platform::Platform;
 
 use super::input::Input;
 use super::signatures::Trust;

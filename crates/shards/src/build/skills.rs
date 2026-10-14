@@ -10,9 +10,9 @@
 //! The tree is read through [`Fetched`]: `shards build`'s own snapshot, or what BuildKit's
 //! gateway answers of a solved one (the frontend, D113), the check the same for both.
 
+use shards_agentfile::llb::{OpAction, OpActionKind};
 use shards_build::data::Sources;
 use shards_build::skill;
-use shards_dockerfile::llb::{OpAction, OpActionKind};
 use shards_image::erofs::{Kind, NodeId, Source as _, Tree};
 
 use super::exec::Ref;

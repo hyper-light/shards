@@ -354,7 +354,7 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
             let created = img
                 .created
                 .as_deref()
-                .and_then(|c| shards_dockerfile::go::parse_rfc3339(c.as_bytes()).ok())
+                .and_then(|c| shards_agentfile::go::parse_rfc3339(c.as_bytes()).ok())
                 .map_or(-62_135_596_800, |t| t.unix().0);
             images.push(Summary {
                 manifests: manifests(img, containers),
@@ -505,7 +505,7 @@ const IMAGE_FILTERS: [&str; 7] = [
 
 /// A config's `created` in nanoseconds since the epoch.
 fn created_ns(created: &str) -> Option<i128> {
-    let (s, n) = shards_dockerfile::go::parse_rfc3339(created.as_bytes())
+    let (s, n) = shards_agentfile::go::parse_rfc3339(created.as_bytes())
         .ok()?
         .unix();
     Some(i128::from(s) * 1_000_000_000 + i128::from(n))
@@ -600,7 +600,7 @@ fn reference_matches(patterns: &[&str], r: &shards_image::reference::Reference) 
     ];
     for pattern in patterns {
         for target in &targets {
-            match shards_dockerfile::glob::filepath_match(pattern.as_bytes(), target.as_bytes()) {
+            match shards_agentfile::glob::filepath_match(pattern.as_bytes(), target.as_bytes()) {
                 Ok(true) => return true,
                 Ok(false) => {}
                 Err(_) => return false,
@@ -697,7 +697,7 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
             if let Some(e) = config
                 .as_deref()
                 .and_then(|c| match shards_image::config::Read::new(c) {
-                    Ok(read) => read.error(shards_image::config::As::Docker),
+                    Ok(read) => read.error(shards_image::config::As::Run),
                     Err(e) => Some(e),
                 })
             {

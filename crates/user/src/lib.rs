@@ -51,14 +51,14 @@ pub fn resolve(spec: &[u8], passwd: Option<&[u8]>, group: Option<&[u8]>) -> Resu
 
 /// The largest /etc/passwd or /etc/group BuildKit reads (executor/oci/user.go,
 /// maxUserFileBytes): a larger one is an error.
-pub const BUILDKIT_USER_FILE: usize = 10 << 20;
+pub const MAX_USER_FILE: usize = 10 << 20;
 
 /// The user a BuildKit step runs as (dockerfile/1.27.1 executor/oci/user.go, GetUser and
 /// WithUIDGID): no user is `0`, whose lookup cannot fail; `uid:gid`, each a decimal
 /// number or `root`, is taken as it is, the files unread, with no supplementary groups;
 /// anything else is moby's GetExecUser with no defaults. The primary group is always
 /// among the groups, first if it was missing.
-pub fn buildkit(spec: &[u8], passwd: Option<&[u8]>, group: Option<&[u8]>) -> Result<ExecUser, String> {
+pub fn step_user(spec: &[u8], passwd: Option<&[u8]>, group: Option<&[u8]>) -> Result<ExecUser, String> {
     let (spec, default) = if spec.is_empty() {
         (&b"0"[..], true)
     } else {
@@ -487,7 +487,7 @@ mod tests {
     fn a_steps_user_is_resolved() {
         let passwd = Some(&b"root:x:0:0:root:/root:/bin/sh\napp:x:1000:1001:app:/home/app:/bin/sh\n"[..]);
         let group = Some(&b"root:x:0:\napp:x:1001:\ndev:x:50:app\nwheel:x:10:other\n"[..]);
-        let user = |spec: &[u8], p, g| buildkit(spec, p, g).map(|u| (u.uid, u.gid, u.groups));
+        let user = |spec: &[u8], p, g| step_user(spec, p, g).map(|u| (u.uid, u.gid, u.groups));
         // No user: root, even with no files and a lookup that cannot work.
         assert_eq!(user(b"", None, None), Ok((0, 0, vec![0])));
         // Both numbers: taken as they are, the files unread, no other groups.
@@ -563,7 +563,7 @@ this is just some garbage data
 
     /// moby/sys/user v0.4.1 user_test.go, TestGetExecUser.
     #[test]
-    fn get_exec_user_matches_moby() {
+    fn exec_users_resolve_from_passwd_and_group() {
         let group = group_content();
         let d = &[8888];
         for (spec, want) in [
@@ -594,7 +594,7 @@ this is just some garbage data
 
     /// TestGetExecUserInvalid.
     #[test]
-    fn invalid_specs_fail_as_in_moby() {
+    fn invalid_user_specs_fail() {
         let passwd = "
 root:x:0:0:root user:/root:/bin/bash
 adm:x:42:43:adm:/var/adm:/bin/false
@@ -671,7 +671,7 @@ this is just some garbage data
     }
 
     #[test]
-    fn moby_lists_the_primary_group_first() {
+    fn the_primary_group_is_listed_first() {
         let passwd = "app:x:1000:1000::/home/app:/bin/sh\n";
         let group = "app:x:1000:\nstaff:x:50:app\nwheel:x:10:app,root\n";
         let user = resolve(b"app", Some(passwd.as_bytes()), Some(group.as_bytes())).unwrap();

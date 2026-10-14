@@ -7,10 +7,10 @@
 
 use std::collections::BTreeMap;
 
+use shards_agentfile::image::Image;
+use shards_agentfile::llb::{EnvList, Graph, Meta, Mount, MountKind, Run, State};
+use shards_agentfile::platform::Platform;
 use shards_build::data::Sources;
-use shards_dockerfile::image::Image;
-use shards_dockerfile::llb::{EnvList, Graph, Meta, Mount, MountKind, Run, State};
-use shards_dockerfile::platform::Platform;
 use shards_image::erofs::{Kind, Source as _, Tree};
 
 /// The predicate type an SBOM's statement has (in-toto's `PredicateSPDX`).
@@ -231,7 +231,7 @@ pub fn statement(path: &str, text: &[u8]) -> Result<Scanned, String> {
             .unwrap_or_default();
         subjects.push((name.to_string(), digest));
     }
-    let compact = shards_dockerfile::json_compact(text)?;
+    let compact = shards_agentfile::json_compact(text)?;
     let predicate = member(&compact, b"predicate")
         .map(escape_html)
         .unwrap_or_else(|| b"null".to_vec());

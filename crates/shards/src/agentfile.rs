@@ -26,7 +26,7 @@ const AGENTFILE_MOST: u64 = 1 << 20;
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Agentfile {
     pub volumes: Vec<AgentVolume>,
-    pub grants: shards_dockerfile::agentfile::Grants,
+    pub grants: shards_agentfile::agentfile::Grants,
     /// How many agents and harnesses it declares, the domains its init numbers (D59) and
     /// whose IDs no other process takes (D115).
     pub domains: u32,
@@ -34,13 +34,14 @@ pub struct Agentfile {
     /// network namespace, the command's, on their way to eth0 (D59, D115).
     pub uplink: bool,
     /// Who each port coming in past the microVM reaches (D122), for `shards read ports`.
-    pub receivers: Vec<shards_dockerfile::agentfile::Receiver>,
+    pub receivers: Vec<shards_agentfile::agentfile::Receiver>,
 }
 
 impl Agentfile {
     /// What of `run` reaches the image's domains (D115), in the words its init refuses
     /// it with again (`shards_abi::run::beside`): a privileged command, `/proc` unmasked,
-    /// the microVM's PID namespace or the host's network (D124), a capability that reaches
+    /// the microVM's PID or cgroup namespace (D156) or the host's network (D124), a
+    /// capability that reaches
     /// them, a net.* sysctl where their flows cross the command's network namespace, a uid
     /// or gid of theirs, and no network where they are granted what lies past the microVM.
     /// None where it declares no domain.
@@ -57,6 +58,9 @@ impl Agentfile {
         }
         if run.pid == "host" {
             return Err(beside::pid_host());
+        }
+        if run.cgroupns == "host" {
+            return Err(beside::cgroupns_host());
         }
         if run.network == "host" {
             return Err(beside::network_host());
@@ -119,16 +123,16 @@ impl Agentfile {
             .fold(caps, |m, &(c, _)| m & !(1 << c))
     }
 
-    /// The capabilities Docker would give `run`'s command that [`Agentfile::caps`]
-    /// withholds, each by number and what it reaches of the domains: CAP_NET_RAW, one of
-    /// Docker's defaults, where their flows past the microVM cross the command's network
-    /// namespace. The run says so as it is made, as dockerd's warnings are said.
+    /// The default capabilities of `run`'s command that [`Agentfile::caps`] withholds,
+    /// each by number and what it reaches of the domains: CAP_NET_RAW, where their flows
+    /// past the microVM cross the command's network namespace. The run warns of each as it
+    /// is made.
     pub fn withheld(&self, run: &shards_ipc::Run) -> Vec<(u32, &'static str)> {
-        let (docker, kept) = (crate::setup::capabilities(run), self.caps(run));
+        let (defaults, kept) = (crate::setup::capabilities(run), self.caps(run));
         shards_abi::run::beside::UPLINK
             .iter()
             .copied()
-            .filter(|&(c, _)| c < 64 && docker & (1 << c) != 0 && kept & (1 << c) == 0)
+            .filter(|&(c, _)| c < 64 && defaults & (1 << c) != 0 && kept & (1 << c) == 0)
             .collect()
     }
 
@@ -161,7 +165,7 @@ impl Agentfile {
 /// passed no build): its volumes and grants derived from those, never from its labels,
 /// which an image sets as it likes. Read once for each root and digest a process meets.
 pub fn agentfile(rootfs: &std::path::Path, digest: &str) -> Result<Agentfile, String> {
-    use shards_dockerfile::agentfile::{self as af, Directive};
+    use shards_agentfile::agentfile::{self as af, Directive};
     use std::sync::{Mutex, OnceLock, PoisonError};
     type Read = BTreeMap<(std::path::PathBuf, String), Agentfile>;
     static READ: OnceLock<Mutex<Read>> = OnceLock::new();
@@ -257,7 +261,7 @@ mod tests {
         let beside = |uplink: bool| Agentfile {
             domains: 2,
             uplink,
-            grants: shards_dockerfile::agentfile::Grants {
+            grants: shards_agentfile::agentfile::Grants {
                 egress: if uplink { vec![b"443".to_vec()] } else { Vec::new() },
                 ..Default::default()
             },
@@ -371,10 +375,10 @@ mod tests {
             Ok(())
         );
         let net_raw = 1u64 << 13;
-        let docker = crate::setup::capabilities(&Run::default());
-        assert_ne!(docker & net_raw, 0);
-        assert_eq!(beside(true).caps(&Run::default()), docker & !net_raw);
-        assert_eq!(beside(false).caps(&Run::default()), docker);
+        let defaults = crate::setup::capabilities(&Run::default());
+        assert_ne!(defaults & net_raw, 0);
+        assert_eq!(beside(true).caps(&Run::default()), defaults & !net_raw);
+        assert_eq!(beside(false).caps(&Run::default()), defaults);
         let booted = caps(&["CAP_SYS_BOOT"]);
         assert_eq!(
             beside(true).caps(&booted),
@@ -390,7 +394,7 @@ mod tests {
     /// no further; refused where the root holds none, or something else there.
     #[test]
     fn an_images_agentfile_is_read_from_its_root_and_checked() {
-        use shards_dockerfile::agentfile::{
+        use shards_agentfile::agentfile::{
             Connect, Direction, Directive, Domain, Exposure, Grants, Network, Processes, Scope, Volume, spec,
         };
         use shards_image::erofs::{DataRef, Kind, Meta, Node, Source, Tree};
@@ -437,7 +441,7 @@ mod tests {
                 json.to_vec(),
             ))
         };
-        let digest = |json: &[u8]| String::from_utf8(shards_dockerfile::agentfile::digest(json)).unwrap();
+        let digest = |json: &[u8]| String::from_utf8(shards_agentfile::agentfile::digest(json)).unwrap();
         let b = |s: &str| s.as_bytes().to_vec();
         let agent = |name: &str| {
             Directive::Agent(Domain {

@@ -1785,7 +1785,7 @@ mod tests {
     /// given: a root that reads nothing, an op of no metadata, a root at a negative
     /// output; and, where BuildKit's crashes, an op it reads that is not there.
     #[test]
-    fn a_definition_given_whole_is_refused_where_buildkit_refuses_it() {
+    fn a_broken_definition_given_whole_is_refused() {
         let src = crate::pb::op(&source_op(b"local://context"), &[]).unwrap();
         let src_digest = crate::pb::digest(&src);
         let with = |metadata: Option<Meta>, index: i64, read: &[u8]| Embedded {

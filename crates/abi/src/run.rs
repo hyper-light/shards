@@ -465,6 +465,14 @@ pub mod beside {
         )
     }
 
+    /// Refusing `--cgroupns host` (D156): the microVM's cgroup namespace, whose tree holds
+    /// theirs.
+    pub fn cgroupns_host() -> String {
+        format!(
+            "cannot run the command in the microVM's cgroup namespace (--cgroupns host): {WHY}, and that namespace's tree holds their cgroups, whose use of the microVM the command would read"
+        )
+    }
+
     /// Refusing `--pid host`: the microVM's PID namespace, the parent of theirs.
     pub fn pid_host() -> String {
         format!(

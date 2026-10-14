@@ -14,7 +14,7 @@ fn err(s: &str) -> X509Error {
 }
 
 fn quote(b: &[u8]) -> String {
-    shards_dockerfile::go::quote(b)
+    shards_agentfile::go::quote(b)
 }
 
 /// A name constraints extension's subtrees, as Go keeps them.
@@ -154,7 +154,7 @@ pub fn parse_mailbox(input: &[u8]) -> Option<Mailbox> {
 
 /// net.ParseIP's verdict: an address netip.ParseAddr reads, without a zone.
 pub fn is_ip(s: &[u8]) -> bool {
-    shards_dockerfile::url::parse_addr(s).is_ok() && !s.contains(&b'%')
+    shards_agentfile::url::parse_addr(s).is_ok() && !s.contains(&b'%')
 }
 
 /// The values of one list of subtrees: DNS, IPs, emails, URI domains.
@@ -723,7 +723,7 @@ fn parse_uris(c: &Certificate) -> Result<Vec<ParsedUri>, String> {
                 .to_vec();
         }
         let bracketed = host.first() == Some(&b'[') && host.last() == Some(&b']');
-        if shards_dockerfile::url::parse_addr(&host).is_ok() || bracketed {
+        if shards_agentfile::url::parse_addr(&host).is_ok() || bracketed {
             return Err(format!(
                 "URI with IP ({}) cannot be matched against constraints",
                 quote(text.as_bytes())

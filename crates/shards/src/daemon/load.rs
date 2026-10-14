@@ -31,7 +31,7 @@ const OCI_LAYER_ZSTD: &str = "application/vnd.oci.image.layer.v1.tar+zstd";
 /// One of Docker's manifest.json's entries.
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "PascalCase")]
-struct DockerManifest {
+struct ArchiveManifest {
     config: String,
     #[serde(default)]
     repo_tags: Option<Vec<String>>,
@@ -99,7 +99,7 @@ fn go_tar(e: &shards_image::Error) -> String {
 fn import(store: &Store, input: &mut dyn Read) -> Result<(oci::Index, Vec<Digest>), String> {
     let mut tar = shards_image::tar::Reader::new(input);
     let mut layout: Option<String> = None;
-    let mut docker: Option<Vec<DockerManifest>> = None;
+    let mut archive: Option<Vec<ArchiveManifest>> = None;
     let mut blobs: BTreeMap<String, (Digest, u64)> = BTreeMap::new();
     let mut symlinks: Vec<(String, String)> = Vec::new();
     while let Some(entry) = tar.next_entry().map_err(|e| go_tar(&e))? {
@@ -109,7 +109,7 @@ fn import(store: &Store, input: &mut dyn Read) -> Result<(oci::Index, Vec<Digest
                 // path.Join(path.Dir(name), link), as containerd's importer resolves one:
                 // cleaned, so that a legacy archive's `../<id>/layer.tar` names its blob.
                 let dir = name.rsplit_once('/').map_or("", |(d, _)| d);
-                let joined = shards_dockerfile::go::join(&[dir.as_bytes(), &entry.link]);
+                let joined = shards_agentfile::go::join(&[dir.as_bytes(), &entry.link]);
                 symlinks.push((name, String::from_utf8_lossy(&joined).into_owned()));
                 continue;
             }
@@ -128,7 +128,7 @@ fn import(store: &Store, input: &mut dyn Read) -> Result<(oci::Index, Vec<Digest
                 layout = Some(l.version);
             }
             "manifest.json" => {
-                docker = Some(
+                archive = Some(
                     untar_json(&mut tar, entry.size)
                         .map_err(|e| format!("untar manifest \"manifest.json\": {e}"))?,
                 );
@@ -159,7 +159,7 @@ fn import(store: &Store, input: &mut dyn Read) -> Result<(oci::Index, Vec<Digest
         let index: oci::Index = serde_json::from_slice(&bytes).map_err(|e| format!("index.json: {e}"))?;
         return Ok((index, contents));
     }
-    let Some(manifests) = docker else {
+    let Some(manifests) = archive else {
         return Err("unrecognized image format".into());
     };
     for (name, target) in symlinks {

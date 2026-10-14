@@ -398,7 +398,7 @@ fn quote_char(c: u8) -> String {
         b'"' => "'\"'".into(),
         c => {
             let mut buf = [0u8; 4];
-            let q = shards_dockerfile::go::quote(char::from(c).encode_utf8(&mut buf).as_bytes());
+            let q = shards_agentfile::go::quote(char::from(c).encode_utf8(&mut buf).as_bytes());
             format!("'{}'", q.get(1..q.len().saturating_sub(1)).unwrap_or_default())
         }
     }

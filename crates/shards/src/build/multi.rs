@@ -10,9 +10,9 @@ use std::collections::BTreeMap;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
+use shards_agentfile::platform::{self, Platform};
 use shards_cmdline::buildflags;
 use shards_cmdline::flags::Parsed;
-use shards_dockerfile::platform::{self, Platform};
 use shards_image::oci::{self, Descriptor};
 use shards_image::reference::{Digest, Reference};
 use shards_image::store::{self, Store};
@@ -540,7 +540,7 @@ pub(super) fn run(
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(0));
-        let created = shards_dockerfile::go::Time::from_unix(epoch.unwrap_or(now))
+        let created = shards_agentfile::go::Time::from_unix(epoch.unwrap_or(now))
             .rfc3339_nano()
             .map_err(|e| fail(show(&e)))?;
         progress

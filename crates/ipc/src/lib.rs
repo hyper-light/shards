@@ -576,7 +576,7 @@ pub struct Run {
     pub restart_policy: (String, i64),
     /// `--init` where given (HostConfig.Init, a `*bool`): with true, a reaper, docker-init's
     /// part, is PID 1 of the command's PID namespace (D115); else the command is.
-    pub docker_init: Option<bool>,
+    pub init_process: Option<bool>,
     /// `--pid` (HostConfig.PidMode): empty for a PID namespace of the command's own,
     /// `host` for the microVM's own (D115).
     pub pid: String,
@@ -605,6 +605,18 @@ pub struct Run {
     pub isolation: String,
     /// `--runtime` (HostConfig.Runtime), as given: empty for the default.
     pub runtime: String,
+    /// `--ipc` (HostConfig.IpcMode), as given (D156).
+    pub ipc: String,
+    /// `--uts` (HostConfig.UTSMode), as given: `host` for the host's hostname (D156).
+    pub uts: String,
+    /// `--userns` (HostConfig.UsernsMode), as given (D156).
+    pub userns: String,
+    /// `--cgroupns` (HostConfig.CgroupnsMode), as given (D156).
+    pub cgroupns: String,
+    /// `--umask`, where given (D156).
+    pub umask: Option<u32>,
+    /// `--storage-opt`s, each `KEY=VALUE` (HostConfig.StorageOpt, D156).
+    pub storage_opt: Vec<String>,
 }
 
 /// `run`'s resource flags as docker/cli sends them (container.Resources): memory in
@@ -794,6 +806,15 @@ impl Endpoint {
             },
             gw_priority: i64::from_be_bytes(r.take(8)?.try_into().ok()?),
         })
+    }
+}
+
+/// A request's text as an extension's values: none where it is empty.
+fn one(text: &str) -> Vec<String> {
+    if text.is_empty() {
+        Vec::new()
+    } else {
+        vec![text.to_string()]
     }
 }
 
@@ -996,8 +1017,8 @@ impl Run {
             ("device-read-iops", self.device_read_iops.clone()),
             ("device-write-iops", self.device_write_iops.clone()),
             (
-                "docker-init",
-                self.docker_init.map(|b| vec![b.to_string()]).unwrap_or_default(),
+                "init-process",
+                self.init_process.map(|b| vec![b.to_string()]).unwrap_or_default(),
             ),
             (
                 "pid",
@@ -1024,6 +1045,15 @@ impl Run {
                     vec![self.runtime.clone()]
                 },
             ),
+            ("ipc", one(&self.ipc)),
+            ("uts", one(&self.uts)),
+            ("userns", one(&self.userns)),
+            ("cgroupns", one(&self.cgroupns)),
+            (
+                "umask",
+                self.umask.map(|u| vec![u.to_string()]).unwrap_or_default(),
+            ),
+            ("storage-opt", self.storage_opt.clone()),
         ]
         .into_iter()
         .filter(|(_, v)| !v.is_empty())
@@ -1172,11 +1202,17 @@ impl Run {
                     "device-write-bps" => run.device_write_bps = values,
                     "device-read-iops" => run.device_read_iops = values,
                     "device-write-iops" => run.device_write_iops = values,
-                    "docker-init" => run.docker_init = Some(values.first()?.parse().ok()?),
+                    "init-process" => run.init_process = Some(values.first()?.parse().ok()?),
                     "pid" => run.pid = values.into_iter().next().unwrap_or_default(),
                     "annotations" => run.annotations = values,
                     "isolation" => run.isolation = values.into_iter().next().unwrap_or_default(),
                     "runtime" => run.runtime = values.into_iter().next().unwrap_or_default(),
+                    "ipc" => run.ipc = values.into_iter().next().unwrap_or_default(),
+                    "uts" => run.uts = values.into_iter().next().unwrap_or_default(),
+                    "userns" => run.userns = values.into_iter().next().unwrap_or_default(),
+                    "cgroupns" => run.cgroupns = values.into_iter().next().unwrap_or_default(),
+                    "umask" => run.umask = Some(values.first()?.parse().ok()?),
+                    "storage-opt" => run.storage_opt = values,
                     // One a later build added: not this one's to read.
                     _ => {}
                 }
@@ -1741,7 +1777,13 @@ mod tests {
             annotations: vec!["a=1".into(), "b".into()],
             isolation: "default".into(),
             runtime: "runc".into(),
-            docker_init: Some(false),
+            ipc: "shareable".into(),
+            uts: "host".into(),
+            userns: "host".into(),
+            cgroupns: "private".into(),
+            umask: Some(0o22),
+            storage_opt: vec!["size=1G".into()],
+            init_process: Some(false),
             pid: "host".into(),
         };
         let bytes = run.encode();
@@ -1788,11 +1830,17 @@ mod tests {
             device_write_bps: Vec::new(),
             device_read_iops: Vec::new(),
             device_write_iops: Vec::new(),
-            docker_init: None,
+            init_process: None,
             pid: String::new(),
             annotations: Vec::new(),
             isolation: String::new(),
             runtime: String::new(),
+            ipc: String::new(),
+            uts: String::new(),
+            userns: String::new(),
+            cgroupns: String::new(),
+            umask: None,
+            storage_opt: Vec::new(),
             ..run.clone()
         };
         let boundary = earlier.encode().len() - 4;

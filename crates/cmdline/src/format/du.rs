@@ -1,7 +1,7 @@
 //! `buildx du`'s records (buildx v0.37.1 commands/diskusage.go): runDiskUsage's formats
 //! and summary and its diskusageContext, through docker/cli's formatter as buildx vendors
 //! it, the records sorted as BuildKit's client sorts them (client/diskusage.go). Held to
-//! buildx's own output by tests/buildx_du.rs (scripts/buildx/du_test.go).
+//! buildx's own output by tests/build_cache_usage.rs (scripts/buildx/du_test.go).
 
 use shards_template::{Kind, Value};
 

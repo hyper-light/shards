@@ -4,7 +4,7 @@
 //! written back as go-tuf writes it, which is what its signatures are checked over
 //! (cjson of the re-encoding).
 
-use shards_dockerfile::go::{Time, parse_rfc3339};
+use shards_agentfile::go::{Time, parse_rfc3339};
 
 use crate::Error;
 use crate::gojson::{Canon, Value, int};

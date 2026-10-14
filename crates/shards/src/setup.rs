@@ -550,8 +550,26 @@ pub fn setup(
     mounts.extend(points.iter().cloned());
     mounts.sort_by_key(|(dest, _)| dest.split('/').filter(|p| !p.is_empty()).count());
     out.extend(mounts.into_iter().map(|(_, entry)| entry));
+    // Its IPC namespace and /dev/shm (D156): none, or the microVM's, before the size of
+    // one of its own; another run's is the daemon's to name (`shared_ipc_entry`).
+    if run.ipc == "none" || run.ipc == "host" {
+        out.push(format!("ipc={}", run.ipc).into_bytes());
+    }
     if run.shm_size != 0 {
         out.push(format!("shm={}", run.shm_size).into_bytes());
+    }
+    // The microVM's UTS and cgroup namespaces (D156), and its writable layer's size.
+    if run.uts == "host" {
+        out.push(b"uts=host".to_vec());
+    }
+    if run.cgroupns == "host" {
+        out.push(b"cgroupns=host".to_vec());
+    }
+    if let Some(size) = storage_size(run)? {
+        out.push(format!("rw-size={size}").into_bytes());
+    }
+    if let Some(mask) = run.umask {
+        out.push(format!("umask={mask:o}").into_bytes());
     }
     for u in shards_cmdline::buildflags::ulimits(&run.ulimits)? {
         out.push(format!("ulimit={u}").into_bytes());
@@ -590,7 +608,7 @@ pub fn setup(
     }
     // Where the command is born (D115): PID 1 of a PID namespace of its own, but for these;
     // dockerd's init only in a namespace of the container's own (moby daemon/oci_linux.go).
-    if run.docker_init == Some(true) && run.pid.is_empty() {
+    if run.init_process == Some(true) && run.pid.is_empty() {
         out.push(b"init".to_vec());
     }
     // Its guest's real-time budget (D155), the run's alone in its microVM: each 0 to keep
@@ -607,6 +625,29 @@ pub fn setup(
         out.push(b"pid=workload".to_vec());
     }
     Ok(out)
+}
+
+/// `--storage-opt`'s size of the run's writable layer, in bytes (D156): the one key a
+/// microVM's writable layer, a tmpfs, takes, read as `--memory` is.
+pub(crate) fn storage_size(run: &Run) -> Result<Option<u64>, String> {
+    let mut size = None;
+    for opt in &run.storage_opt {
+        let (key, value) = opt.split_once('=').unwrap_or((opt.as_str(), ""));
+        if !key.eq_ignore_ascii_case("size") {
+            return Err(format!(
+                "--storage-opt {opt}: a run's writable layer takes size alone, as size=10G"
+            ));
+        }
+        let bytes = shards_cmdline::resources::ram_in_bytes(value)
+            .ok()
+            .and_then(|b| u64::try_from(b).ok())
+            .filter(|&b| b > 0)
+            .ok_or_else(|| {
+                format!("--storage-opt {opt}: a size is a number of bytes above 0, as 10G or 512m")
+            })?;
+        size = Some(bytes);
+    }
+    Ok(size)
 }
 
 /// `--security-opt`'s setup entries, after the rest: the paths left unmasked, the cgroup

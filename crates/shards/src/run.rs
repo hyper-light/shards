@@ -504,10 +504,10 @@ fn merge_labels(
 ) -> Result<std::collections::BTreeMap<String, String>, String> {
     for l in request {
         let (k, v) = l.split_once('=').unwrap_or((l.as_str(), ""));
-        if shards_dockerfile::agentfile::reserved_label(k.as_bytes()) {
+        if shards_agentfile::agentfile::reserved_label(k.as_bytes()) {
             return Err(format!(
                 "label {k:?} is reserved: shards' build sets the {} labels from the Agentfile, and a run may not set one",
-                String::from_utf8_lossy(shards_dockerfile::agentfile::LABEL_PREFIX)
+                String::from_utf8_lossy(shards_agentfile::agentfile::LABEL_PREFIX)
             ));
         }
         labels.insert(k.to_string(), v.to_string());

@@ -1219,7 +1219,7 @@ its record after it, until `shards rm` removes it; `--rm` removes it once it end
     reaping as docker-init does.
   - **Evidence:** a differential test. The real docker/cli command tree answers 110
     command lines (scripts/docker-cli/oracle_test.go), and shards gives the same stdout,
-    stderr and status byte for byte (crates/cmdline/tests/docker_cli.rs), except where it
+    stderr and status byte for byte (crates/cmdline/tests/command_lines.rs), except where it
     refuses a flag it does not serve, which the test checks the CLI ran.
   - Escapes and widths come from the CLI's own code, dumped by scripts/docker-cli/generate:
     Go 1.26.1's `strconv.IsPrint`, go-runewidth v0.0.29 for the tables it aligns, and
@@ -2110,12 +2110,12 @@ Compose files that shards reads. Evidence: docs/research/oci-engines.md.
 image config and history, the same steps cached. RUN steps run in microVMs, not
 containers. Evidence: docs/research/image-build.md (§3 ranks the choices below).
 
-- **The frontend is BuildKit's, reimplemented and held to its code** (`crates/dockerfile`).
+- **The frontend is BuildKit's, reimplemented and held to its code** (`crates/agentfile`).
   It parses, lexes, types the instructions and plans the build as dockerfile/1.27.1's
   `Dockerfile2LLB` does. That covers stages, ONBUILD, ARG and ENV scoping, every step's
   command, environment, directory, user and mounts, file operations, the image config's
   bytes and history, progress names, and every build check.
-  - Evidence: `scripts/dockerfile/generate` runs BuildKit's own packages over a corpus.
+  - Evidence: `scripts/agentfile/generate` runs BuildKit's own packages over a corpus.
     `tests/oracle.rs` expects the same bytes: 75 plans op by op, 146 image configs, 63
     URLs, the parser's and the lexer's test tables. Deliberate differences are listed in
     `testdata/deviations.json` and the modules' documentation. Examples: no Go map order,
@@ -2328,7 +2328,7 @@ microVM rather than a container on the build host's kernel.
   configuration"): the daemon's gate guards a host the builder VM does not share. A
   guest's change stream is exact, so nothing diffs the lower tree.
 - **The build's secrets and limits** (`--secret`, `--ulimit`; shards_cmdline::buildflags,
-  held to buildx's answers by crates/cmdline/tests/buildx.rs, and to BuildKit's plans by
+  held to buildx's answers by crates/cmdline/tests/build_command_lines.rs, and to BuildKit's plans by
   the corpus). Secrets are read once, as the build starts, so every step sees one value,
   where BuildKit reads one each time a step asks; held in the client's memory alone and
   overwritten when dropped; as large as a step's frame carries (1 MiB,
@@ -3310,7 +3310,7 @@ NamedContext, dockerfile/1.27.1):
   for word (`invalid context specifier`, `unsupported context source`).
 
 Held to BuildKit by 14 plan cases its own converter planned through a gateway client that
-`scripts/dockerfile/oracle` fakes (images.json's images, contexts with no
+`scripts/agentfile/oracle` fakes (images.json's images, contexts with no
 `.dockerignore`); one recorded deviation: an SSH Git context carries no host keys scanned
 over the network while planning (BuildKit's sshutil.SSHKeyScan), the fetch verifies them.
 Also held to buildx: a `local` or `tar` output refused beside `--iidfile`. Tested on a
@@ -3612,6 +3612,101 @@ No run-time labels, relays or declassifiers (§12 answer 14, decided by the user
 2026-10-07): every path between domains is a grant, and the build refuses any that joins
 an internal-only domain to the world (D58), so there is no data to label. Code mode is
 D136.
+
+### D157. shards' own names first; Docker's and buildx's still read
+
+What a user writes or sets for shards carries shards' own name, as its build file is an
+Agentfile before a Dockerfile (D35). The name Docker's or buildx's tools read for the same
+is read after it, so that what a user has keeps working.
+
+- **Ignore files.** A build's context is sent without what `.agentignore` excludes, else
+  `.dockerignore`; one beside the build file, `NAME.agentignore`, else `NAME.dockerignore`,
+  takes the context's place, as BuildKit's beside a Dockerfile does (frontend/dockerui).
+  The progress and a copy's warning (`CopyIgnoredFile`) name the file read; a build's
+  `mode=max` provenance lists the one beside the build file it read. Verified
+  (`the_agentignore_is_read_before_the_dockerignore`, mutation-checked: Docker's name
+  looked for first; the warning naming `.dockerignore` whichever was read). The frontend
+  image, which runs in another builder and reads what that builder's client sends, asks
+  for `.dockerignore` as docker/dockerfile does; it takes `.agentignore` with its own work,
+  which comes last.
+- **Environment.** `SHARDS_DEFAULT_PLATFORM` before `DOCKER_DEFAULT_PLATFORM`,
+  `SHARDS_BUILDER` before `BUILDX_BUILDER`, `SHARDS_DEFAULT_POLICY` before
+  `BUILDX_DEFAULT_POLICY`, `SHARDS_NO_DEFAULT_ATTESTATIONS` before
+  `BUILDX_NO_DEFAULT_ATTESTATIONS`, `SHARDS_AUTH_CONFIG` before `DOCKER_AUTH_CONFIG`, each
+  where set and not empty; a value one of them gets wrong is said of it by its name.
+  `DOCKER_HOST`, `DOCKER_CONFIG` and `DOCKER_CONTEXT` stay where shards finds the user's
+  Docker engine to read images from it: they are that engine's settings.
+- **The policies' builtin module** is `builtin/defaults.rego`; a policy written for buildx
+  imports it as `data.builtin.buildx_defaults` and gets it too
+  (`the_builtin_is_imported_by_either_name`).
+- **Code.** The crate that reads Agentfiles and Dockerfiles is `crates/agentfile`, its
+  recorder `scripts/agentfile`. Functions, tests and files say what shards does, never
+  that it is another tool: what a recording holds shards to is named as a recording
+  (`plans_match_their_recorded_answers`), the recordings named for what they record.
+
+### D156. A run's IPC, hostname, cgroups, umask and writable layer, as its microVM has them
+
+A run's flags for the namespaces it has, its umask and its writable layer are taken as
+Docker's CLI takes them, and mean what they can for a microVM: a run shares no kernel
+with its host, so "host" is the microVM's, and what one run shares with another it shares
+inside the microVM the other runs in (D119).
+
+- **IPC: a namespace and a /dev/shm of the run's own.** A run's standby enters an IPC
+  namespace of its own and mounts its own 64 MiB /dev/shm before the template's snapshot,
+  and its execs enter both. Before, a workload shared init's IPC namespace and /dev/shm.
+  No restore time resolved, and memory per VM within one 16 KiB step of what two
+  templates of one machine differ by (PM M228).
+  - `--ipc private` (the default) and `shareable`: its own; another run may share a
+    `shareable` run's alone, as Docker's daemon allows (moby
+    daemon/container_operations_unix.go, getIPCContainer). `--shm-size` sizes its own.
+  - `--ipc none`: its own namespace, and no /dev/shm at all.
+  - `--ipc host`: the microVM's, init's namespace and /dev/shm, which no run has unless it
+    asks. A host's /dev/shm is half its memory by default (tmpfs's default size,
+    Documentation/filesystems/tmpfs.rst), and runs ask for the host's for a /dev/shm larger
+    than 64 MiB: the microVM's is half the microVM's memory, all it may plug (D148).
+  - `--ipc container:NAME`: NAME's namespace and /dev/shm, inside the microVM this run
+    joins (`--network container:` of a run in NAME's microVM, D119), NAME `shareable` (or
+    `host`, the microVM's); a run sharing a third's is followed to it. A joiner's own is
+    shared as the workload's is: init copies the other run's /dev/shm mount from that
+    run's mount namespace with open_tree(2) and attaches the copy with move_mount(2) (no
+    bind reaches another namespace's mount; its copy, an anonymous namespace's root, moves
+    into any: fs/namespace.c, may_copy_tree and do_move_mount). `--pid container:NAME`
+    takes the same rule: any run of the microVM it joins.
+  - A /dev/shm a run does not own is not its to size: `--shm-size` with `none`, `host` or
+    `container:` is refused in shards' words, where Docker ignores it.
+- **`--uts host`: its host's hostname.** The microVM's hostname is the host's, as a run on
+  the host's network has it (D124), inspect's and the guest's the same (dockerd gives
+  `--uts host` a configured hostname its processes do not have). A joiner with it shares
+  its microVM's UTS namespace. `--hostname` with it is refused: each names the host.
+- **`--userns`**: a run's users are its microVM's own, unmapped, either way; `host` and
+  none are both taken and shown.
+- **`--cgroupns host`: the microVM's cgroup tree**, read-only, where by default a run sees
+  its own cgroup as the root. Beside an Agentfile's agents it is refused, by the daemon and
+  again by init, in shards' words (`beside::cgroupns_host`): their cgroups are in that
+  tree.
+- **`--umask`**: its command's and its execs', as the workload's limits are (Docker's
+  daemon keeps the container's for an exec too: moby daemon/exec_linux.go). At most 0777,
+  the bits a umask clears.
+- **`--storage-opt size=`: its writable layer's size.** A run's writable layer is a tmpfs in
+  its microVM's memory (D25): init remounts it at the size asked, through a descriptor of
+  it kept from before the root moved over it; a joiner's is made at it. Docker serves
+  `size` only on overlay over XFS with project quotas; every run here takes it. `size` is
+  the one key; above 0; no more than the memory the layer is held in (`--memory`, or the
+  host's, which the microVM may grow to), refused in shards' words where it is, as a layer
+  a run could never fill to its size holds nothing back.
+- **A joiner beside an Agentfile's agents.** A run joining a microVM was held to its own
+  image's rules alone, and the microVM's agents' went unchecked: a joiner could run
+  `--privileged` beside them. It is now held to that microVM's (D115), by the daemon and
+  again by init, either alone enough (`a_run_reaches_none_of_its_images_agents`,
+  mutation-checked: with neither, a privileged joiner ran).
+- Each refusal in shards' words; `inspect` says each mode as given (`private` where none).
+  Verified on real microVMs
+  (`a_microvm_takes_its_ipc_hostname_cgroups_umask_and_writable_layer`, mutation-checked,
+  each caught: execs outside the workload's IPC namespace; no /dev/shm of the run's own;
+  `none` leaving the microVM's; umask not applied, or not to execs; the layer not sized;
+  `--cgroupns host` not entered; a joiner not entering the workload's IPC namespace; a
+  joiner's donor's /dev/shm not copied from its namespace; sharing without the donor's
+  leave; `--uts host` not naming the run by its host).
 
 ### D155. A run's CPUs, real-time time, isolation and runtime, as its microVM has them
 
@@ -6387,7 +6482,10 @@ the rest of a run's reach into its domains.
   | `--privileged` (run, exec); `--cap-add` of the twelve that cross the PID namespace, or `NET_ADMIN`/`NET_RAW` where the flows cross, or `ALL`; `systempaths=unconfined`; a `net.*` sysctl where the flows cross; `-u`/`--group-add`/exec `-u` of a domain's or server's ID; `--pid host`; `--network none` with egress granted | refused (daemon and init; the image's `USER` at build) | each reaches a domain (above) |
   | Docker's default `CAP_NET_RAW` where the flows cross | withheld, said (`WARNING:`) | it reads and writes their packets |
   | `--volumes-from`, a named mount of a scoped volume; `vnd.osi.agentfile.*` labels (`--label`, `volume create`, `--mount volume-label`); `-p` of a port declared `AS egress` | refused (D109, D59) | a domain's alone |
-  | `--ipc`, `--uts`, `--userns`, `--cgroupns`, `--network host`, `--network container:`, `--pid container:`, `--link`, `--log-*`, `--runtime`, `--isolation`, `--storage-opt` | refused for every run, not supported by shards | |
+  | `--cgroupns host` (D156); `--network host` (D124) | refused (daemon and init) | the microVM's cgroup tree holds their cgroups; the host's network holds none of their flows |
+  | A run joining the microVM (`--network container:`, D119) | held to every rule of this table, by the daemon and again by init | it runs beside them as the microVM's own run does |
+  | `--ipc` (`host` is init's namespace, theirs each their own), `--uts`, `--userns`, `--umask`, `--storage-opt` (D156); `--runtime`, `--isolation`, `--cpu-count`, `--cpu-percent`, `--cpu-rt-*` (D155) | given | the command's own namespaces, writable layer and limits |
+  | `--link`, `--log-driver`, `--log-opt` | refused for every run, not served yet | |
   | `--cap-add` of any other: `DAC_READ_SEARCH`, `IPC_OWNER`, `IPC_LOCK`, `SYS_BOOT`, `SYS_RESOURCE`, `CHECKPOINT_RESTORE` among them | given | `open_by_handle_at` opens only on filesystems the command holds a mount of, a domain's own being none of them; IPC namespaces differ; `reboot(2)` ends the caller's own PID namespace's init (pid_namespaces(7)); the rest bound the command's own resources or namespaces |
   | `--cap-drop`, `no-new-privileges`, `writable-cgroups=true` (its cgroup namespace's subtree), `apparmor=`, `label=` (no LSM in the microVM: accepted, as on a Docker host without one) | given | narrows the command, or touches only its own |
   | `seccomp=` a profile or `unconfined` | given, recorded | its own filter; the domains keep theirs. Measured: unconfined, any uid makes a user namespace (`max_user_namespaces` 994), owning none of the domains' namespaces but reaching more of the kernel they share |
@@ -6573,7 +6671,7 @@ it never reads ran it again; and nothing bounded what the cache kept.
   left out under a filter; a cache a running step holds in use and sized 0B, as BuildKit's
   DiskUsage sizes a mutable record that is changing. Held to buildx's own answers
   (`scripts/buildx/generate`, `crates/cmdline/tests/buildx-du.json`) and on real
-  microVMs (`buildx_du_lists_the_records_system_df_lists`; mutation-checked: an in-use
+  microVMs (`build_cache_usage_lists_every_record`; mutation-checked: an in-use
   cache sized). shards keeps no `source.local` records, BuildKit's copy of each local
   context: a context is staged for its build alone (cloned where the filesystem can) and
   let go after, so `du` lists none. Whether keeping one would pay (a large context staged
@@ -6739,7 +6837,7 @@ and BuildKit build an Agentfile, no shards installed. The frontend is `shards` i
     run of either.
   - The replay test, and the gateway client's.
   - The definitions and source detail held byte for byte to the capture
-    (`crates/dockerfile/tests/gateway.rs`).
+    (`crates/agentfile/tests/gateway.rs`).
   - The isolation checks over host trees, and as BuildKit is asked to run them (a fake
     gateway).
   - The skills layout through the gateway, and the annotations.
@@ -7062,7 +7160,7 @@ The `vnd.osi.agentfile.*` labels stay the build's record for Docker and Kubernet
 see; a build's `LABEL` or `--label`, or a run's `--label`, may not set one (audit N; Docker
 reserves no label: recorded as ours).
 
-**The build** (`shards_dockerfile::agentfile`), and the daemon again:
+**The build** (`shards_agentfile::agentfile`), and the daemon again:
 - No volume over a domain's root, `/proc`, `/sys` or `/dev` (`covers_domain_mounts`), its
   path rooted at `/` as Docker roots a relative `VOLUME` (measured: `VOLUME rel` mounts at
   `/rel`): a domain's are its init's.
@@ -7260,7 +7358,7 @@ recap of the failed steps, the build's warnings, then the excerpt of the Dockerf
 each location of the failing operation (BuildKit's source map), then the error; a
 content checksum's failure (a COPY of a missing file) on its step without the cache
 key's stage, which the build's error carries. Before, a solve error ended with its error
-alone, and the warnings came before the recap. E2E: `a_failing_step_cites_its_dockerfile_lines`.
+alone, and the warnings came before the recap. E2E: `a_failing_step_cites_its_build_file_lines`.
 
 **`ATTACH` on a microVM**: `harnesses_message_their_attached_agents` holds D60's channels
 from a harness to the agents `ATTACH` gives it: the harness sends, the agent answers and may
@@ -7291,8 +7389,8 @@ step of its own and checked the Dockerfile again (`multi::Sub::policy_step`).
 
 **The default policy.** With `BUILDX_DEFAULT_POLICY` true (as `strconv.ParseBool` reads
 it) and no policy disabled, buildx's own `default.rego` (carried byte for byte as
-`buildx_default_policy.rego`) comes before every other policy, its caps never asked
-(`SkipCaps`), its step named with it (`loading policies buildx_default_policy.rego, …`).
+`default_policy.rego`) comes before every other policy, its caps never asked
+(`SkipCaps`), its step named with it (`loading policies default_policy.rego, …`).
 It requires Docker's GitHub builder's signature (D106) of docker/dockerfile from 1.21 and
 its floating tags, docker/buildkit-syft-scanner from 1.10, and moby/buildkit's floating
 tags and releases from v0.27.0, each signed for its own tag; everything else passes to
@@ -7756,7 +7854,7 @@ subdirectory, a commit's name, the default branch, an HTTP source with a query, 
 with `--checksum`. shards gives every input byte for byte as buildx did for the same
 repositories and URLs:
 - **Git.** `schema`, `host` and `remote` come from the URL, `gitutil.ParseURL` (shards'
-  port in `shards_dockerfile::git`), and from the `git.fullurl` attribute where it is set.
+  port in `shards_agentfile::git`), and from the `git.fullurl` attribute where it is set.
   The ref is resolved as BuildKit resolves it, and `checksum` is the object the ref names:
   an annotated tag's own object, with `commitChecksum`, `isAnnotatedTag` and `tagName`. A
   commit's name stays its `ref`, with `isCommitRef`.
@@ -8340,7 +8438,7 @@ The last two `BUILDKIT_*` build arguments, as frontend 1.27.1's dockerui reads t
 Tested:
 - The plan oracle: `add-git-advice` and `context-git-advice` (the scripts now pass
   dockerui's `GitAdvice` on).
-- `dockeruis_build_args_are_read_as_it_reads_them` covers both refusals in Docker's
+- `frontend_build_args_are_read` covers both refusals in Docker's
   words, and builds with the arguments off and on.
 - Mutation-checked: planning no advice fails both oracle cases.
 
@@ -8358,7 +8456,7 @@ Evidence:
 - buildx's `LoadInputs` (stdin, `-f`, the `context` frontend option, its two refusals).
 - dockerui's `initContext`, `DetectGitContext`, `DetectHTTPContext`, `isArchive` and
   `scopeToSubDir`.
-- The plan oracle: `scripts/dockerfile/generate` now gives dockerui the `context`,
+- The plan oracle: `scripts/agentfile/generate` now gives dockerui the `context`,
   `contextsubdir` and `build-arg:BUILDKIT_CONTEXT_KEEP_GIT_DIR` options, and serves an
   HTTP download's first bytes. Seven corpus files (`corpus/plan/context-*`) cover:
   - a Git URL with `#REF:SUBDIR`;
@@ -8832,10 +8930,10 @@ is held to the build's isolation. A scan's output larger than the build's byte l
 refused rather than held.
 
 Tested:
-- `plans_are_buildkits` holds the scan targets to BuildKit's: the context and a stage,
+- `plans_match_their_recorded_answers` holds the scan targets to BuildKit's: the context and a stage,
   and a global ARG naming a stage. Mutation-checked: a list of stage names read as false
   fails.
-- `provenance_is_buildkits` holds two SBOM builds Docker made with its real scanner
+- `provenance_statements_match_their_recordings` holds two SBOM builds Docker made with its real scanner
   (`sbom-base`; `sbom-extras`, with a stage and the context) to their statements byte
   for byte, the attestation manifest and its config, and a local output's
   `sbom.spdx.json`.
@@ -8884,7 +8982,7 @@ Planning was given what this needs:
 Provenance's `mode=max` records the build's LLB definition: each operation, and a mapping
 from each operation's digest to its step. BuildKit names each operation by the SHA-256 of
 its `pb.Op` message as protobuf-go's deterministic marshal writes it (`client/llb`). So
-shards writes those bytes itself (`crates/dockerfile` `pb`), from `solver/pb/ops.proto` at
+shards writes those bytes itself (`crates/agentfile` `pb`), from `solver/pb/ops.proto` at
 dockerfile/1.27.1:
 - fields go in number order, except that a message's oneof goes after its other fields
   (protobuf-go's `order.LegacyFieldOrder`), so an op's inputs, platform and constraints
@@ -8900,11 +8998,11 @@ No protobuf library is taken for it: the messages are few, and a library's own
 serializer would still have to be held to protobuf-go's order and choices.
 
 Tested:
-- `plans_are_buildkits` holds every op's locations to BuildKit's (the oracle now gives
+- `plans_match_their_recorded_answers` holds every op's locations to BuildKit's (the oracle now gives
   the plan a source map, as dockerui does), and `resolve-local` and `resolve-pull` hold
   `image-resolve-mode` to it. Mutation-checked: an op made of several vertices keeping
   only the first's locations changes 7 plans.
-- `provenance_is_buildkits` holds three mode=max builds Docker made (`max-base`;
+- `provenance_statements_match_their_recordings` holds three mode=max builds Docker made (`max-base`;
   `max-mounts`, every mount kind with `--network=none`, a secret, an SSH agent, a build
   argument and a label; `max-stages`, a stage copied from, WORKDIR, `--link`, `--chown`
   and a heredoc) to their statements byte for byte, each digest mapping as its steps
@@ -8915,8 +9013,8 @@ Tested:
   a heredoc's file. Mutation-checked: without the image's own layers, the result has
   none.
 
-The encoder's own tests: `plans_are_buildkits` holds every op of the 117 plans BuildKit makes of
-`testdata/corpus/plan` to BuildKit's own bytes. `scripts/dockerfile/generate` records
+The encoder's own tests: `plans_match_their_recorded_answers` holds every op of the 117 plans BuildKit makes of
+`testdata/corpus/plan` to BuildKit's own bytes. `scripts/agentfile/generate` records
 them (`pb`), with a local source's unique ID as `*` and each input named by its own op's
 normalized digest. The one plan whose ops are a recorded deviation (`named-git-ssh`,
 known SSH hosts) is compared without them. Mutation-checked: an op whose mount stubs are
@@ -9087,7 +9185,7 @@ directive, multi-stage builds, `--link`, heredocs, `ADD` of a tar, and `.dockeri
 Each is built at SOURCE_DATE_EPOCH with `rewrite-timestamp=true` for `linux/amd64` into
 an OCI layout. Each makes the manifest digest that Docker 29.3.1's BuildKit makes, byte
 for byte; `scripts/repro/generate` records Docker's in the `shards-dind` container. The
-generator runs Docker with the frontend `crates/dockerfile` is held to
+generator runs Docker with the frontend `crates/agentfile` is held to
 (`BUILDKIT_SYNTAX=docker/dockerfile:1.27.1`). The one built into Docker 29.3.1 (BuildKit
 v0.28.1) is older and writes HEALTHCHECK's history as Go's `%q` of a pointer
 (`&{["CMD" "/bin/hc"] "5s" … '\x02'}`), which 1.27.1 replaced with `%+v`. Mutation-checked:
@@ -9225,8 +9323,8 @@ frontend's LLB for loading the Dockerfile, which carries that build's session ID
 (solver/pb), so readers see a nil one (testdata/deviations.json, `lint-source`). An
 Agentfile's language is `Agentfile`.
 
-Tested: `subrequests_are_buildkits`, against `DockerfileLint`'s `result.json` and status
-code for every plan corpus file (`scripts/dockerfile/generate`; with an unreached stage,
+Tested: `subrequests_match_their_recorded_answers`, against `DockerfileLint`'s `result.json` and status
+code for every plan corpus file (`scripts/agentfile/generate`; with an unreached stage,
 with a target, an error in an unreached stage, a base not found), mutation-checked (no
 `AllStages`; no merging); `check_says_the_builds_warnings` on a real build
 (the JSON, an unreached stage with and without a target, an error's text and JSON). Four
@@ -9268,7 +9366,7 @@ does with Docker 29.3.1 (its BuildKit v0.28.1; buildx asks for
 true, so an image in an OCI or docker archive carries none, as there):
 
 - **The statement** (in-toto Statement v0.1, SLSA provenance v1, `mode=min`): the
-  request as buildx sends it (`buildx_attrs`: the frontend's options for every flag, its
+  request as buildx sends it (`frontend_attrs`: the frontend's options for every flag, its
   host's filtered out as FilterArgs does, build arguments and labels then dropped and the
   request said incomplete, as min does; the Dockerfile's name as the config source's path;
   the locals, named contexts' too); the materials, sorted as Capture.Sort sorts them: base
@@ -9296,7 +9394,7 @@ identical builds have one manifest and two IDs, the manifest's being the content
 The flags are D72's. A local named context's shared key carries no node identifier
 (buildx appends its own; shards has one builder).
 
-Tested: `provenance_is_buildkits`, against what `scripts/provenance/generate` records
+Tested: `provenance_statements_match_their_recordings`, against what `scripts/provenance/generate` records
 Docker's own builds making in `shards-dind` (18 builds: no flag to an OCI layout, min,
 build arguments, labels and every frontend option, secret and SSH mounts, base images of
 Docker Hub, another registry, a registry with a port, by digest and untagged, HTTP and Git
@@ -9342,9 +9440,9 @@ Better than BuildKit's:
 - A misspelt official image's suggestion names `docker.io/library/<name>` (as the plan's,
   `testdata/deviations.json`).
 
-Tested: `subrequests_are_buildkits`, every plan of the corpus (114, with outline-specific
+Tested: `subrequests_match_their_recorded_answers`, every plan of the corpus (114, with outline-specific
 cases: doc comments, arguments naming others, secrets and SSH mounts across dependent
-stages, a named target, platforms) held byte for byte to what `scripts/dockerfile/generate`
+stages, a named target, platforms) held byte for byte to what `scripts/agentfile/generate`
 records BuildKit answering, JSON and text, and the subrequests described;
 mutation-checked (dependencies' arguments, arguments named by defaults, doc comments). On
 a real build (`call_answers_the_frontends_subrequests`): each subrequest, text and JSON,
@@ -9489,7 +9587,7 @@ annotations not supported for single platform export". An Agentfile's own annota
   without a word (`Platform(nil)`), and one for another is refused in the words BuildKit
   refuses a platform the build lacks ("invalid annotation: no platform … found in source").
 
-Tested on a real build (`annotations_land_where_buildkit_puts_them`, mutation-checked:
+Tested on a real build (`annotations_land_on_the_manifest_or_descriptor_named`, mutation-checked:
 without the manifest's annotations, it fails).
 
 ### D65. `builder prune`
@@ -9520,7 +9618,7 @@ the filters, keep bytes, order and table as unit tests.
 `--memory`, `--memory-swap`, `--cpu-shares`, `--cpu-period`, `--cpu-quota`,
 `--cpuset-cpus` and `--cpuset-mems`, as buildx v0.37.1 sends them (build/opt.go,
 build/utils.go `toBuildkitExtraHosts`, `ParseResourceLimits`), dockerui reads them
-(frontend/dockerui/attr.go, ported in `shards_dockerfile::dockerui` with its errors) and
+(frontend/dockerui/attr.go, ported in `shards_agentfile::dockerui` with its errors) and
 Dockerfile2LLB applies them (convert.go `dispatchRun`): each RUN's hosts, its `/dev/shm`
 tmpfs, its cgroup's parent and its op's `linux_resources`, the stage's next state keeping
 none of them; `--network` the network each stage's steps have unless one says otherwise,
@@ -9536,7 +9634,7 @@ gateway on the bridge it is elected on; reaching the host stays refused (D31).
   cpusets (`build::exec::cgroup_files`). The builder's init starts such a step with
   `clone3` into a cgroup of its own under `steps/`, its namespace rooted there, so that the
   step sees its own limits as a container does, and removes it once the step is reaped.
-  `cpu.weight` is held to Go's own answers for every share value (`cpu_weights_are_runcs`,
+  `cpu.weight` is held to Go's own answers for every share value (`cpu_shares_become_cpu_weights`,
   `testdata/cpu-weight.txt`, made by runc's function run in Go 1.26.1): Go's `math.Pow` is
   its own, and the platform's libm may not agree, so each CI target checks its own.
 - **The classic builder's flags**, which buildx takes and BuildKit ignores: `--rm`,

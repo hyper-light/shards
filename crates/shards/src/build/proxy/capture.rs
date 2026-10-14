@@ -6,7 +6,7 @@
 //! be one, and why. URLs are recorded as BuildKit records them: a scheme's default port
 //! left out, credentials redacted.
 
-use shards_dockerfile::url::{self, Url};
+use shards_agentfile::url::{self, Url};
 
 /// A request as the step's log lists it (`ProxyRequest`): its URL, and where it
 /// redirected, as [`capture_url`] makes them.

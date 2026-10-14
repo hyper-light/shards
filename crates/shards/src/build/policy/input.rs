@@ -5,8 +5,8 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use shards_dockerfile::json::Value as JsonValue;
-use shards_dockerfile::platform::{self, Platform};
+use shards_agentfile::json::Value as JsonValue;
+use shards_agentfile::platform::{self, Platform};
 use shards_image::reference::Reference;
 
 use shards_cmdline::buildflags::LogLevel;
@@ -595,7 +595,7 @@ pub fn of_source(
             inp.image = Some(img);
         }
         "http" | "https" => {
-            let u = shards_dockerfile::url::parse(source.identifier.as_bytes())
+            let u = shards_agentfile::url::parse(source.identifier.as_bytes())
                 .map_err(|e| format!("failed to parse http source url: {}", String::from_utf8_lossy(&e)))?;
             let text = |b: &[u8]| String::from_utf8_lossy(b).into_owned();
             let mut http = Http {
@@ -726,10 +726,10 @@ fn config_fields(img: &mut Image, raw: &[u8]) -> Result<(), String> {
 /// a slice or map nil and leaving a string as it was; every field's type checked, the
 /// first mismatch kept while the rest is read; a time parsed from its text as written,
 /// its failure ending the reading at once. The document is scanned without recursion
-/// (shards_dockerfile::json), so no nesting exhausts a thread's stack.
+/// (shards_agentfile::json), so no nesting exhausts a thread's stack.
 #[derive(Debug, Default)]
 struct OciImage {
-    created: Option<shards_dockerfile::go::Time>,
+    created: Option<shards_agentfile::go::Time>,
     user: Vec<u8>,
     env: GoStrings,
     volumes: BTreeSet<Vec<u8>>,
@@ -972,12 +972,12 @@ impl Reader {
     }
 
     /// A `*time.Time`: Time.UnmarshalJSON reads the value's text as written.
-    fn time(v: &JsonValue, into: &mut Option<shards_dockerfile::go::Time>) -> Result<(), Abort> {
+    fn time(v: &JsonValue, into: &mut Option<shards_agentfile::go::Time>) -> Result<(), Abort> {
         match v {
             JsonValue::Null => *into = None,
             JsonValue::String(s, raw) => {
                 *into =
-                    Some(shards_dockerfile::go::parse_rfc3339(raw.as_deref().unwrap_or(s)).map_err(Abort)?);
+                    Some(shards_agentfile::go::parse_rfc3339(raw.as_deref().unwrap_or(s)).map_err(Abort)?);
             }
             _ => return Err(Abort(b"Time.UnmarshalJSON: input is not a JSON string".to_vec())),
         }
@@ -1043,7 +1043,7 @@ impl Reader {
 impl OciImage {
     /// `json.Unmarshal(raw, &ocispecs.Image{})`'s reading, or its error.
     fn from_json(raw: &[u8]) -> Result<OciImage, Vec<u8>> {
-        let v = shards_dockerfile::json::parse(raw)?;
+        let v = shards_agentfile::json::parse(raw)?;
         let mut image = OciImage::default();
         let mut r = Reader::default();
         r.image(&v, &mut image).map_err(|Abort(e)| e)?;
@@ -1055,22 +1055,22 @@ impl OciImage {
 }
 
 /// `Time.Format(time.RFC3339)`: to the second, `Z` for UTC, else the offset.
-fn rfc3339(t: &shards_dockerfile::go::Time) -> String {
+fn rfc3339(t: &shards_agentfile::go::Time) -> String {
     let mut whole = *t;
     whole.nanosecond = 0;
     whole.rfc3339_nano().unwrap_or_default()
 }
 
 /// gitutil.ParseURL of a git source's URL, a transport's or else `https://`'s.
-fn parse_git_url(url: &str) -> Result<shards_dockerfile::git::GitUrl, String> {
-    let url = if shards_dockerfile::git::is_git_transport(url.as_bytes()) {
+fn parse_git_url(url: &str) -> Result<shards_agentfile::git::GitUrl, String> {
+    let url = if shards_agentfile::git::is_git_transport(url.as_bytes()) {
         url.to_string()
     } else {
         format!("https://{url}")
     };
-    shards_dockerfile::git::parse_url(url.as_bytes()).map_err(|e| match e {
-        shards_dockerfile::git::UrlError::UnknownProtocol => "unknown protocol".to_string(),
-        shards_dockerfile::git::UrlError::Other(e) => String::from_utf8_lossy(&e).into_owned(),
+    shards_agentfile::git::parse_url(url.as_bytes()).map_err(|e| match e {
+        shards_agentfile::git::UrlError::UnknownProtocol => "unknown protocol".to_string(),
+        shards_agentfile::git::UrlError::Other(e) => String::from_utf8_lossy(&e).into_owned(),
     })
 }
 
@@ -1090,13 +1090,13 @@ fn git_input(source: &Source, rest: &str, meta: &Meta) -> Result<(Git, Vec<&'sta
     if let Some((r, sub)) = &u.opts {
         reference = text(r);
         g.subdir = text(sub);
-        let cleaned = String::from_utf8_lossy(&shards_dockerfile::go::clean(sub)).into_owned();
+        let cleaned = String::from_utf8_lossy(&shards_agentfile::go::clean(sub)).into_owned();
         if cleaned == "/" || cleaned == "." {
             g.subdir.clear();
         }
     }
     if let Some(full) = source.attrs.get("git.fullurl") {
-        let v = if shards_dockerfile::git::is_git_transport(full.as_bytes()) {
+        let v = if shards_agentfile::git::is_git_transport(full.as_bytes()) {
             full.clone()
         } else {
             format!("https://{full}")

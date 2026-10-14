@@ -1393,17 +1393,17 @@ impl Certificate {
                 0x82 => self.dns_names.push(text("dNSName")?),
                 0x86 => {
                     let uri = text("uniformResourceIdentifier")?;
-                    let parsed = shards_dockerfile::url::parse(uri.as_bytes()).map_err(|e| {
+                    let parsed = shards_agentfile::url::parse(uri.as_bytes()).map_err(|e| {
                         X509Error(format!(
                             "x509: cannot parse URI {}: {}",
-                            shards_dockerfile::go::quote(uri.as_bytes()),
+                            shards_agentfile::go::quote(uri.as_bytes()),
                             String::from_utf8_lossy(&e)
                         ))
                     })?;
                     if !parsed.host.is_empty() && !domain_name_valid(&parsed.host, false) {
                         return Err(X509Error(format!(
                             "x509: cannot parse URI {}: invalid domain",
-                            shards_dockerfile::go::quote(uri.as_bytes())
+                            shards_agentfile::go::quote(uri.as_bytes())
                         )));
                     }
                     self.uris
@@ -1938,8 +1938,8 @@ fn build_chains<'c>(
             }
             format!(
                 "x509: certificate signed by unknown authority (possibly because of {} while trying to verify candidate authority certificate {})",
-                shards_dockerfile::go::quote(h.0.as_bytes()),
-                shards_dockerfile::go::quote(name.as_bytes())
+                shards_agentfile::go::quote(h.0.as_bytes()),
+                shards_agentfile::go::quote(name.as_bytes())
             )
         }
         None => "x509: certificate signed by unknown authority".into(),

@@ -12,8 +12,8 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 
+use shards_agentfile::platform::{self, Platform};
 use shards_cmdline::buildflags::{LogLevel, os_error};
-use shards_dockerfile::platform::{self, Platform};
 use shards_rego::ast::{Module, Term, TermValue};
 use shards_rego::compile::Compiler;
 use shards_rego::eval::{Machine, Program, eval_query};
@@ -154,7 +154,7 @@ pub(super) fn import_modules(root: &Path, resolved: &Modules, packages: bool) ->
                 continue;
             }
             let file = format!("{}.rego", pkg.replace('.', "/"));
-            if resolved.contains_key(&file) {
+            if super::imported(resolved, &file) {
                 continue;
             }
             stat(root, &file).map_err(|e| format!("import {pv} not found for module {k}: {e}"))?;
@@ -208,8 +208,7 @@ fn load_test_modules(root: &Path, path: &str) -> Result<Modules, String> {
             }
             // filepath.Join: cleaned.
             let joined = format!("{path}/{name}");
-            files
-                .push(String::from_utf8_lossy(&shards_dockerfile::go::clean(joined.as_bytes())).into_owned());
+            files.push(String::from_utf8_lossy(&shards_agentfile::go::clean(joined.as_bytes())).into_owned());
         }
     } else {
         if !path.ends_with("_test.rego") {
@@ -930,8 +929,10 @@ mod tests {
         "test_a: FAIL (allow=false)\ninput:\n{\n  \"git\": {\n    \"commit\": {\n      \"tree\": \"t\"\n    }\n  }\n}\ndecision:\n{\n  \"allow\": false\n}\n",
     )];
 
-    /// Every tree of scripts/policy/tester_oracle_test.go, run as buildx v0.37.1 runs it:
-    /// what it prints, the error it ends with, and its status.
+    /// Every recorded tree (scripts/policy/tester_oracle_test.go, v0.37.1): what `policy
+    /// test` prints, the error it ends with, and its status. The trees name the recorder's
+    /// builtin module, `builtin/buildx_defaults.rego`; a file there stands at shards' own,
+    /// `builtin/defaults.rego`.
     #[test]
     fn policy_tests_run() {
         let cases: serde_json::Value =
@@ -943,7 +944,9 @@ mod tests {
         for (i, c) in cases.as_array().unwrap().iter().enumerate() {
             let dir = base.join(i.to_string());
             std::fs::create_dir_all(&dir).unwrap();
+            let ours = |name: &str| name.replace("builtin/buildx_defaults", "builtin/defaults");
             for (name, data) in c["files"].as_object().unwrap() {
+                let name = &ours(name);
                 let p = dir.join(name);
                 if name.ends_with('/') {
                     std::fs::create_dir_all(&p).unwrap();
@@ -954,7 +957,7 @@ mod tests {
             }
             let opts = TestOptions {
                 run: c["run"].as_str().unwrap().to_string(),
-                filename: c["filename"].as_str().unwrap().to_string(),
+                filename: ours(c["filename"].as_str().unwrap()),
                 root: dir.clone(),
             };
             let (stdout, err, status) =
@@ -980,7 +983,7 @@ mod tests {
             // is buildx's on the host the oracle ran on, Linux. On Windows Go's words are
             // Windows' (os.Stat's GetFileAttributesEx, FormatMessage's text), which the
             // oracle does not record: there the error short of its last path error alone
-            // is compared, as tests/buildx.rs compares one.
+            // is compared, as tests/build_command_lines.rs compares one.
             let windows_words = cfg!(windows)
                 && ["no such file or directory", "is a directory"]
                     .iter()
@@ -1005,5 +1008,46 @@ mod tests {
             failures.len(),
             failures.join("\n")
         );
+    }
+
+    /// A policy imports the builtin module by shards' name for it, or by the one policies
+    /// written for buildx use; a name that is neither is looked for as a file.
+    #[test]
+    fn the_builtin_is_imported_by_either_name() {
+        let base_dir = shards_testdir::TempDir::new("policy-builtin").unwrap();
+        for (i, (import, want)) in [
+            ("data.builtin.defaults", Ok("test_a: PASS (allow=true)\n")),
+            ("data.builtin.buildx_defaults", Ok("test_a: PASS (allow=true)\n")),
+            (
+                "data.builtin.other",
+                Err(
+                    "compile: 1 error occurred: rego_compile_error: import data.builtin.other not found for module Dockerfile.rego: stat builtin/other.rego: no such file or directory",
+                ),
+            ),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let dir = base_dir.join(i.to_string());
+            std::fs::create_dir_all(&dir).unwrap();
+            let policy = format!("package docker\n\nimport {import}\n\ndecision := {{\"allow\": true}}\n");
+            std::fs::write(dir.join("Dockerfile.rego"), policy).unwrap();
+            std::fs::write(
+                dir.join("p_test.rego"),
+                "package docker\n\ntest_a if decision.allow with input as {\"image\": {\"repo\": \"alpine\"}}\n",
+            )
+            .unwrap();
+            let opts = TestOptions {
+                run: String::new(),
+                filename: "Dockerfile".to_string(),
+                root: dir.clone(),
+            };
+            let got = run_policy_tests(".", &opts, Some(&Fake)).map(|summary| {
+                let mut out = Vec::new();
+                assert_eq!(report(&summary, &mut out), 0, "{import}");
+                String::from_utf8(out).unwrap()
+            });
+            assert_eq!(got, want.map(str::to_string).map_err(str::to_string), "{import}");
+        }
     }
 }

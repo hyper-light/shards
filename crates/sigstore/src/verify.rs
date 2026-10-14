@@ -288,7 +288,7 @@ fn verify_tlog_entries(
                             .into(),
                     );
                 }
-                let url = shards_dockerfile::url::parse(log.base_url.as_bytes())
+                let url = shards_agentfile::url::parse(log.base_url.as_bytes())
                     .map_err(|e| String::from_utf8_lossy(&e).into_owned())?;
                 let host = url_hostname(&url.host);
                 let hash = v2_entry_hash(&sig_content, content, material, &entity_signature)?;

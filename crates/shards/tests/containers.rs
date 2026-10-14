@@ -636,9 +636,12 @@ fn a_joiner_may_share_its_providers_pid_namespace() {
     };
     refused(
         &["--pid", "container:prov"],
-        "\"--pid container:NAME\" is not supported by shards yet without \"--network container:NAME\" of the same container",
+        "--pid container:prov: a run shares another's PID namespace inside that run's microVM, which it joins with --network container:prov",
     );
-    refused(&["--pid", "container:nope"], "No such container: nope");
+    refused(
+        &["--pid", "container:nope"],
+        "--pid container:nope: no run is named nope",
+    );
     assert_eq!(shards(&["stop", "-t", "1", "prov"]).status, Some(0));
     let _ = exit(&mut provider);
 }
@@ -1342,16 +1345,21 @@ fn a_command_is_pid_1_as_a_containers_is() {
         r.status == Some(0) && lines.len() == 3 && lines[0] != "1" && lines[1..] == ["kthreadd", "denied"],
         "{r}"
     );
-    // The CLI's and dockerd's answers to the rest.
+    // The rest, refused in shards' words.
     let r = run(&["--pid", "foo", ALPINE, "true"]);
     assert!(
-        r.status == Some(125) && r.stderr.contains("--pid: invalid PID mode\n"),
+        r.status == Some(125)
+            && r.stderr
+                .contains("--pid foo: give host (the microVM's PID namespace) or container:NAME"),
         "{r}"
     );
     let r = shards(&["create", "--pid", "container:nope", ALPINE, "true"]);
     assert_eq!(
         (r.status, r.stderr.as_str()),
-        (Some(1), "Error response from daemon: No such container: nope\n"),
+        (
+            Some(1),
+            "Error response from daemon: --pid container:nope: no run is named nope\n"
+        ),
         "{r}"
     );
     for (name, flags, want) in [
@@ -1374,7 +1382,7 @@ fn a_command_is_pid_1_as_a_containers_is() {
         (r.status, r.stderr.as_str()),
         (
             Some(1),
-            "Error response from daemon: \"--pid container:NAME\" is not supported by shards yet without \"--network container:NAME\" of the same container\n"
+            "Error response from daemon: --pid container:i0: a run shares another's PID namespace inside that run's microVM, which it joins with --network container:i0\n"
         ),
         "{r}"
     );
@@ -10577,4 +10585,238 @@ fn a_microvm_takes_its_cpus_real_time_isolation_and_annotations() {
     // Nothing is left of the refused.
     let listed = shards(&["ps", "-a", "--format", "{{.Names}}"]);
     assert_eq!(listed.stdout, "annotated\n", "{listed}");
+}
+
+/// A run's IPC, hostname, cgroups, umask and writable layer as its microVM has them (D156).
+/// A run has an IPC namespace and a 64 MiB /dev/shm of its own, which its execs share;
+/// `--shm-size` sizes it, `--ipc none` takes it away, and `--ipc host` gives the
+/// microVM's, as large as half its memory. A run joining another's microVM shares that
+/// one's (`--ipc container:NAME`) only where it said so (`--ipc shareable`), a joiner's
+/// too; `--ipc host` runs share the microVM's. `--uts host` names the run by its host,
+/// `--cgroupns host` shows it the microVM's cgroup tree, `--umask` is its command's and its
+/// execs', and `--storage-opt size=` holds its writable layer to that size. Each refusal
+/// in shards' words; `inspect` says each as given.
+#[test]
+fn a_microvm_takes_its_ipc_hostname_cgroups_umask_and_writable_layer() {
+    let Some((home, image)) = home("containers-microvm-ipc") else {
+        return;
+    };
+    let shards = |args: &[&str]| shards_in(&home, args);
+    let ipc = |flags: &[&str], key: &str| {
+        let mut all = vec!["--rm"];
+        all.extend(flags);
+        let r = run_in(&home, &image, &all, &["ipc", key]);
+        assert_eq!(r.status, Some(0), "{flags:?}: {r}");
+        r.stdout
+    };
+    let shm = |said: &str| {
+        said.lines()
+            .find_map(|l| l.strip_prefix("shm "))
+            .unwrap_or_default()
+            .to_string()
+    };
+    // Its own /dev/shm, and the sizes asked of it.
+    assert_eq!(shm(&ipc(&[], "")), (64u64 << 20).to_string());
+    assert_eq!(shm(&ipc(&["--shm-size", "16m"], "")), (16u64 << 20).to_string());
+    assert_eq!(shm(&ipc(&["--ipc", "none"], "")), "none");
+    let host_shm: u64 = shm(&ipc(&["--ipc", "host"], "")).parse().unwrap();
+    assert!(host_shm > 64 << 20, "the microVM's /dev/shm: {host_shm}");
+    for (flags, said) in [
+        (&["--ipc", "bogus"][..], "--ipc bogus: give private"),
+        (
+            &["--ipc", "none", "--shm-size", "16m"],
+            "--shm-size sizes a run's own /dev/shm, and --ipc none gives it none",
+        ),
+        (
+            &["--ipc", "host", "--shm-size", "16m"],
+            "--shm-size sizes a run's own /dev/shm, and it is the microVM's (--ipc host)",
+        ),
+        (
+            &["--uts", "host", "--hostname", "h"],
+            "--hostname and --uts host each name the microVM's host: give one",
+        ),
+        (&["--uts", "other"], "--uts other: give host"),
+        (&["--cgroupns", "other"], "--cgroupns other: give private"),
+        (&["--userns", "other"], "--userns other: give host"),
+        (&["--umask", "7777"], "--umask 07777: a umask is at most 0777"),
+        (
+            &["--storage-opt", "inodes=10"],
+            "--storage-opt inodes=10: a run's writable layer takes size alone",
+        ),
+        (
+            &["--storage-opt", "size=0"],
+            "--storage-opt size=0: a size is a number of bytes above 0",
+        ),
+        (
+            &["--memory", "512m", "--storage-opt", "size=1g"],
+            "--storage-opt size=1073741824: a run's writable layer is held in its microVM's memory, and 1073741824 bytes is more than its memory (--memory 536870912)",
+        ),
+    ] {
+        let mut all = vec!["--rm"];
+        all.extend(flags);
+        let r = run_in(&home, &image, &all, &["exit", "0"]);
+        assert_ne!(r.status, Some(0), "{flags:?}: {r}");
+        assert!(r.stderr.contains(said), "{flags:?}: {r}");
+    }
+    // Its execs in its IPC namespace and /dev/shm, with its umask.
+    let held = |name: &str, flags: &[&str], key: &str| {
+        let mut all = vec!["-d", "--name", name];
+        all.extend(flags);
+        let r = run_in(&home, &image, &all, &["ipc-hold", key]);
+        assert_eq!(r.status, Some(0), "{name}: {r}");
+        let deadline = Instant::now() + TIMEOUT;
+        while !shards(&["logs", name]).stdout.contains("held") {
+            assert!(
+                Instant::now() < deadline,
+                "{name} never held its segment: {}",
+                shards(&["logs", name])
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    };
+    held("owner", &["--ipc", "shareable", "--umask", "027"], "42");
+    let exec = shards(&["exec", "owner", "/bin/testguest", "ipc", "42"]);
+    assert!(exec.stdout.contains("sysv 42 yes\nfile 42 yes\n"), "{exec}");
+    let mask = shards(&["exec", "owner", "/bin/testguest", "umask"]);
+    assert_eq!(mask.stdout, "umask 0027\n", "{mask}");
+    let mask = run_in(&home, &image, &["--rm", "--umask", "077"], &["umask"]);
+    assert_eq!(mask.stdout, "umask 0077\n", "{mask}");
+    // A joiner shares a shareable run's IPC where it asks to, and has its own otherwise.
+    let shared = ipc(
+        &["--network", "container:owner", "--ipc", "container:owner"],
+        "42",
+    );
+    assert!(shared.contains("sysv 42 yes\nfile 42 yes\n"), "{shared}");
+    let own = ipc(&["--network", "container:owner"], "42");
+    assert!(
+        own.contains("shm 67108864\nsysv 42 errno 2\nfile 42 errno 2\n"),
+        "{own}"
+    );
+    let microvms = ipc(&["--network", "container:owner", "--ipc", "host"], "42");
+    assert!(
+        microvms.contains("sysv 42 errno 2\nfile 42 errno 2\n"),
+        "{microvms}"
+    );
+    // A joiner's, shared with another joiner.
+    held(
+        "first",
+        &["--network", "container:owner", "--ipc", "shareable"],
+        "45",
+    );
+    let second = ipc(
+        &["--network", "container:owner", "--ipc", "container:first"],
+        "45",
+    );
+    assert!(second.contains("sysv 45 yes\nfile 45 yes\n"), "{second}");
+    // The microVM's, shared by the runs that ask for it.
+    held("hosts", &["--ipc", "host"], "44");
+    let joined = ipc(&["--network", "container:hosts", "--ipc", "host"], "44");
+    assert!(joined.contains("sysv 44 yes\nfile 44 yes\n"), "{joined}");
+    // A run that keeps its own, and one sharing without joining.
+    held("private", &[], "43");
+    for (flags, said) in [
+        (
+            &["--network", "container:private", "--ipc", "container:private"][..],
+            "--ipc container:private: private keeps its IPC its own (--ipc private); run it with --ipc shareable to share it",
+        ),
+        (
+            &["--ipc", "container:owner"],
+            "--ipc container:owner: a run shares another's IPC inside that run's microVM, which it joins with --network container:owner",
+        ),
+    ] {
+        let mut all = vec!["--rm"];
+        all.extend(flags);
+        let r = run_in(&home, &image, &all, &["exit", "0"]);
+        assert_ne!(r.status, Some(0), "{flags:?}: {r}");
+        assert!(r.stderr.contains(said), "{flags:?}: {r}");
+    }
+    // Its host's hostname; the microVM's cgroup tree.
+    let mut name = [0u8; 256];
+    // SAFETY: gethostname(2) into our own buffer, of its length.
+    let got = unsafe { libc::gethostname(name.as_mut_ptr().cast(), name.len()) };
+    assert_eq!(got, 0);
+    let host = String::from_utf8_lossy(name.split(|&b| b == 0).next().unwrap()).to_string();
+    let host = host.get(..host.len().min(64)).unwrap().to_string();
+    let named = run_in(
+        &home,
+        &image,
+        &["--rm", "--uts", "host"],
+        &["slurp", "/proc/sys/kernel/hostname"],
+    );
+    assert_eq!(
+        named.stdout,
+        format!("slurp /proc/sys/kernel/hostname: {host}\n"),
+        "{named}"
+    );
+    let own_tree = run_in(&home, &image, &["--rm"], &["slurp", "/proc/self/cgroup"]);
+    assert_eq!(own_tree.stdout, "slurp /proc/self/cgroup: 0::/\n", "{own_tree}");
+    let whole = run_in(
+        &home,
+        &image,
+        &["--rm", "--cgroupns", "host"],
+        &["slurp", "/proc/self/cgroup"],
+    );
+    assert!(
+        whole.stdout.starts_with("slurp /proc/self/cgroup: 0::/") && whole.stdout != own_tree.stdout,
+        "{whole}"
+    );
+    // Its writable layer, held to its size.
+    let layer = |size: &str, mib: &str| {
+        run_in(
+            &home,
+            &image,
+            &["--rm", "--storage-opt", &format!("size={size}")],
+            &["big", "/tmp/big", mib],
+        )
+    };
+    let fits = layer("16m", "4");
+    assert_eq!(fits.status, Some(0), "{fits}");
+    let past = layer("4m", "8");
+    assert_ne!(past.status, Some(0), "{past}");
+    assert!(past.stderr.contains("No space left on device"), "{past}");
+    // As given, in inspect.
+    let made = run_in(
+        &home,
+        &image,
+        &[
+            "-d",
+            "--name",
+            "described",
+            "--ipc",
+            "none",
+            "--uts",
+            "host",
+            "--userns",
+            "host",
+            "--cgroupns",
+            "host",
+            "--umask",
+            "022",
+            "--storage-opt",
+            "size=64m",
+        ],
+        &["sleep"],
+    );
+    assert_eq!(made.status, Some(0), "{made}");
+    let described = shards(&[
+        "inspect",
+        "-f",
+        "{{.HostConfig.IpcMode}} {{.HostConfig.UTSMode}} {{.HostConfig.UsernsMode}} {{.HostConfig.CgroupnsMode}} {{json .HostConfig.StorageOpt}} {{.HostConfig.Umask}}",
+        "described",
+    ]);
+    assert_eq!(
+        described.stdout, "none host host host {\"size\":\"64m\"} 18\n",
+        "{described}"
+    );
+    let plain = shards(&[
+        "inspect",
+        "-f",
+        "{{.HostConfig.IpcMode}} {{.HostConfig.CgroupnsMode}}",
+        "private",
+    ]);
+    assert_eq!(plain.stdout, "private private\n", "{plain}");
+    for name in ["owner", "first", "hosts", "private", "described"] {
+        let removed = shards(&["rm", "-f", name]);
+        assert_eq!(removed.status, Some(0), "{name}: {removed}");
+    }
 }

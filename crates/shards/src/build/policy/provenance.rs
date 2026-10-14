@@ -15,8 +15,8 @@
 use std::collections::BTreeMap;
 use std::sync::OnceLock;
 
+use shards_agentfile::platform::{self, Platform};
 use shards_cmdline::buildflags::LogLevel;
-use shards_dockerfile::platform::{self, Platform};
 use shards_image::reference::{Digest, Reference};
 use shards_sigstore::image::{SLSA_V1, SLSA_V02};
 
@@ -564,12 +564,12 @@ fn build_args(args: Option<&BTreeMap<String, String>>) -> BTreeMap<String, Strin
 }
 
 /// formatProvenanceTime: in UTC, to the second (`t.UTC().Format(time.RFC3339)`).
-fn provenance_time(t: Option<&shards_dockerfile::go::Time>) -> String {
+fn provenance_time(t: Option<&shards_agentfile::go::Time>) -> String {
     let Some(t) = t else {
         return String::new();
     };
     let (secs, _) = t.unix();
-    let u = shards_dockerfile::go::Time::from_unix(secs);
+    let u = shards_agentfile::go::Time::from_unix(secs);
     // appendInt(year, 4): a sign, then at least four digits.
     let year = if u.year < 0 {
         format!("-{:04}", u.year.unsigned_abs())
@@ -588,9 +588,9 @@ fn provenance_time(t: Option<&shards_dockerfile::go::Time>) -> String {
 pub fn parse_material(m: &Material) -> Result<(Source, Option<Platform>), String> {
     let q = shards_cmdline::go::quote;
     if m.uri.starts_with("pkg:docker/") {
-        return docker_material(&m.uri, &m.digest);
+        return image_material(&m.uri, &m.digest);
     }
-    if let Ok(gu) = shards_dockerfile::git::parse_url(m.uri.as_bytes()) {
+    if let Ok(gu) = shards_agentfile::git::parse_url(m.uri.as_bytes()) {
         let path = go_lower(&String::from_utf8_lossy(&gu.path));
         if path.ends_with(".git") || (gu.scheme != b"http" && gu.scheme != b"https") {
             return git_material(&m.uri);
@@ -603,7 +603,7 @@ pub fn parse_material(m: &Material) -> Result<(Source, Option<Platform>), String
 }
 
 /// dockerMaterialSource: the image a purl names, pinned to the material's digest.
-fn docker_material(
+fn image_material(
     uri: &str,
     digest: &BTreeMap<String, String>,
 ) -> Result<(Source, Option<Platform>), String> {
@@ -631,9 +631,9 @@ fn docker_material(
 
 /// gitMaterialSource: a git source, its full URL the material's.
 fn git_material(uri: &str) -> Result<(Source, Option<Platform>), String> {
-    let gu = shards_dockerfile::git::parse_url(uri.as_bytes()).map_err(|e| match e {
-        shards_dockerfile::git::UrlError::UnknownProtocol => "unknown protocol".to_string(),
-        shards_dockerfile::git::UrlError::Other(e) => String::from_utf8_lossy(&e).into_owned(),
+    let gu = shards_agentfile::git::parse_url(uri.as_bytes()).map_err(|e| match e {
+        shards_agentfile::git::UrlError::UnknownProtocol => "unknown protocol".to_string(),
+        shards_agentfile::git::UrlError::Other(e) => String::from_utf8_lossy(&e).into_owned(),
     })?;
     if !matches!(gu.scheme.as_slice(), b"https" | b"http" | b"ssh" | b"git") {
         return Err(format!(
@@ -642,7 +642,7 @@ fn git_material(uri: &str) -> Result<(Source, Option<Platform>), String> {
         ));
     }
     let mut id = gu.host.clone();
-    id.extend_from_slice(&shards_dockerfile::go::join(&[b"/", &gu.path]));
+    id.extend_from_slice(&shards_agentfile::go::join(&[b"/", &gu.path]));
     if let Some((r, sub)) = &gu.opts
         && (!r.is_empty() || !sub.is_empty())
     {
@@ -735,7 +735,7 @@ fn package_url(purl: &str) -> Result<PackageUrl, String> {
             let Some(value) = kv.next() else {
                 return Err(format!(
                     "invalid qualifier {}: no value",
-                    shards_dockerfile::go::quote(item)
+                    shards_agentfile::go::quote(item)
                 ));
             };
             if value.is_empty() {
@@ -812,10 +812,7 @@ fn path_unescape(s: &[u8]) -> Result<Vec<u8>, String> {
             }
             _ => {
                 let bad = s.get(i..(i + 3).min(s.len())).unwrap_or_default();
-                return Err(format!(
-                    "invalid URL escape {}",
-                    shards_dockerfile::go::quote(bad)
-                ));
+                return Err(format!("invalid URL escape {}", shards_agentfile::go::quote(bad)));
             }
         }
     }
@@ -847,7 +844,7 @@ fn parse_digest(b: &[u8]) -> Result<Digest, String> {
 
 /// purl.PURLToRef: the image reference a docker purl names, and the platform it names.
 fn purl_to_ref(purl: &str) -> Result<(String, Option<Platform>), String> {
-    let q = shards_dockerfile::go::quote;
+    let q = shards_agentfile::go::quote;
     let p = package_url(purl)?;
     if p.kind != b"docker" {
         return Err(format!("invalid package type {}, expecting docker", q(&p.kind)));
@@ -1502,7 +1499,7 @@ impl Schema {
                     );
                     true
                 }
-                (Ty::Time, Kind::Str(_)) => shards_dockerfile::go::parse_rfc3339(doc.raw_string(n)).is_ok(),
+                (Ty::Time, Kind::Str(_)) => shards_agentfile::go::parse_rfc3339(doc.raw_string(n)).is_ok(),
                 _ => false,
             };
             if !ok {
@@ -1596,10 +1593,10 @@ fn set_map(doc: &Doc<'_>, n: usize, m: &mut Option<BTreeMap<String, String>>) {
 }
 
 /// A `*time.Time`: null clears it, a string replaces it.
-fn set_time(doc: &Doc<'_>, n: usize, t: &mut Option<shards_dockerfile::go::Time>) {
+fn set_time(doc: &Doc<'_>, n: usize, t: &mut Option<shards_agentfile::go::Time>) {
     match doc.node(n).map(|x| &x.kind) {
         Some(Kind::Null) => *t = None,
-        Some(Kind::Str(_)) => *t = shards_dockerfile::go::parse_rfc3339(doc.raw_string(n)).ok(),
+        Some(Kind::Str(_)) => *t = shards_agentfile::go::parse_rfc3339(doc.raw_string(n)).ok(),
         _ => {}
     }
 }
@@ -1658,8 +1655,8 @@ struct Dep {
 #[derive(Debug, Default)]
 struct Metadata {
     invocation_id: String,
-    started: Option<shards_dockerfile::go::Time>,
-    finished: Option<shards_dockerfile::go::Time>,
+    started: Option<shards_agentfile::go::Time>,
+    finished: Option<shards_agentfile::go::Time>,
     hermetic: bool,
     reproducible: bool,
     parameters: bool,

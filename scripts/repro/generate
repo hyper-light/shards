@@ -1,6 +1,6 @@
 #!/bin/sh
 # Regenerates crates/shards/tests/repro/docker.json: what Docker 29.3.1's own BuildKit
-# (in the shards-dind container), running the Dockerfile frontend crates/dockerfile is
+# (in the shards-dind container), running the Dockerfile frontend crates/agentfile is
 # held to (docker/dockerfile:1.27.1, newer than the one Docker 29.3.1 carries), makes of
 # each case of crates/shards/tests/repro/cases.json,
 # built reproducibly (SOURCE_DATE_EPOCH, rewrite-timestamp=true, a pinned platform) into an

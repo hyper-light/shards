@@ -1,7 +1,7 @@
 package main
 
 // buildx's own answers to `build` command lines, for shards-cmdline's tests to match
-// (crates/cmdline/tests/buildx.rs). `generate` copies this file into buildx's cmd/buildx
+// (crates/cmdline/tests/build_command_lines.rs). `generate` copies this file into buildx's cmd/buildx
 // and runs it there. Each case runs as `docker build ...` runs buildx: as the CLI plugin,
 // its root built by commands.NewRootCmd and wrapped by the CLI's plugin.RunPlugin, its
 // errors printed and its exit status chosen as main does. The flags shards does not

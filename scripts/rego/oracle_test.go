@@ -123,7 +123,7 @@ func run(c Case) Result {
 		rego.Query(c.Query),
 		rego.SkipPartialNamespace(true),
 		rego.Compiler(comp),
-		rego.Module("builtin/buildx_defaults.rego", builtinsRego),
+		rego.Module("builtin/defaults.rego", builtinsRego),
 		rego.EnablePrintStatements(true),
 		rego.PrintHook(h),
 	}
@@ -430,7 +430,7 @@ func TestShardsCompile(t *testing.T) {
 		r := result{Name: c.Name}
 		popts := ast.ParserOptions{RegoVersion: ast.RegoV1, Capabilities: caps}
 		mods := map[string]*ast.Module{}
-		srcs := append([][2]string{{"builtin/buildx_defaults.rego", builtinsRego}}, c.Modules...)
+		srcs := append([][2]string{{"builtin/defaults.rego", builtinsRego}}, c.Modules...)
 		var perr error
 		for _, m := range srcs {
 			mod, err := ast.ParseModuleWithOpts(m[0], m[1], popts)
@@ -627,7 +627,7 @@ func TestShardsIndex(t *testing.T) {
 		for i, l := range c.Lookups {
 			r.Lookups[i].Path = l.Path
 		}
-		srcs := append([][2]string{{"builtin/buildx_defaults.rego", builtinsRego}}, c.Modules...)
+		srcs := append([][2]string{{"builtin/defaults.rego", builtinsRego}}, c.Modules...)
 		for run := 0; run < indexRuns && r.Error == ""; run++ {
 			popts := ast.ParserOptions{RegoVersion: ast.RegoV1, Capabilities: caps}
 			mods := map[string]*ast.Module{}
@@ -950,7 +950,7 @@ func TestShardsCheck(t *testing.T) {
 		for range 20 {
 			var a answer
 			mods := map[string]*ast.Module{}
-			srcs := append([][2]string{{"builtin/buildx_defaults.rego", builtinsRego}}, c.Modules...)
+			srcs := append([][2]string{{"builtin/defaults.rego", builtinsRego}}, c.Modules...)
 			for _, m := range srcs {
 				mod, err := ast.ParseModuleWithOpts(m[0], m[1], popts)
 				if err != nil {

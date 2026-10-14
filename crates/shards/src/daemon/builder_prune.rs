@@ -69,7 +69,7 @@ fn said(r: &Record, verbose: bool, first: bool) -> String {
     };
     if verbose {
         // time.Time's String, in UTC: what the record keeps is its second.
-        let created = shards_dockerfile::go::Time::from_unix(r.created)
+        let created = shards_agentfile::go::Time::from_unix(r.created)
             .rfc3339_nano()
             .map(|t| format!("{} +0000 UTC", t.trim_end_matches('Z').replacen('T', " ", 1)))
             .unwrap_or_default();

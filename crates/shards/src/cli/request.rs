@@ -515,11 +515,40 @@ fn request(parsed: &Parsed) -> Result<Run, String> {
         labels.extend(kv_file(file, false)?);
     }
     labels.extend(parsed.many("label").iter().cloned());
-    // `--pid`, as the CLI checks it next (container/opts.go parse, PidMode.Valid): none,
-    // `host`, or `container:` and a name.
+    // A run's namespaces in its microVM (D115, D156): each mode it may have, said where
+    // one given is not.
     let pid = parsed.string("pid");
     if !(pid.is_empty() || pid == "host" || pid.strip_prefix("container:").is_some_and(|c| !c.is_empty())) {
-        return Err("--pid: invalid PID mode".into());
+        return Err(format!(
+            "--pid {pid}: give host (the microVM's PID namespace) or container:NAME (that of a run whose microVM it joins), or leave it out for one of its own"
+        ));
+    }
+    let ipc = parsed.string("ipc");
+    if !(ipc.is_empty()
+        || matches!(ipc, "private" | "shareable" | "none" | "host")
+        || ipc.strip_prefix("container:").is_some_and(|c| !c.is_empty()))
+    {
+        return Err(format!(
+            "--ipc {ipc}: give private (its own, the default), shareable (its own, which runs joining its microVM may share), none (its own, with no /dev/shm), host (the microVM's) or container:NAME (that of a run whose microVM it joins)"
+        ));
+    }
+    let uts = parsed.string("uts");
+    if !(uts.is_empty() || uts == "host") {
+        return Err(format!(
+            "--uts {uts}: give host (its host's hostname), or leave it out for the microVM's own"
+        ));
+    }
+    let userns = parsed.string("userns");
+    if !(userns.is_empty() || userns == "host") {
+        return Err(format!(
+            "--userns {userns}: give host, or leave it out: a run's users are its microVM's own either way"
+        ));
+    }
+    let cgroupns = parsed.string("cgroupns");
+    if !(cgroupns.is_empty() || cgroupns == "host" || cgroupns == "private") {
+        return Err(format!(
+            "--cgroupns {cgroupns}: give private (a cgroup namespace of its own, the default) or host (the microVM's whole tree)"
+        ));
     }
     // container/opts.go parse: swappiness is -1 (unset) or 0 to 100.
     let swappiness = parsed.int("memory-swappiness");
@@ -550,6 +579,11 @@ fn request(parsed: &Parsed) -> Result<Run, String> {
     };
     let (cap_add, cap_drop) = effective_caps(parsed.many("cap-add"), parsed.many("cap-drop"));
     let (security_opt, system_paths) = security_opts(parsed.many("security-opt"))?;
+    // Each KEY=VALUE, which the daemon reads (D156).
+    let storage_opt = parsed.many("storage-opt").to_vec();
+    if let Some(o) = storage_opt.iter().find(|o| !o.contains('=')) {
+        return Err(format!("--storage-opt {o}: an option is KEY=VALUE, as size=10G"));
+    }
     let (devices, cdi_devices) = devices(parsed.many("device"))?;
     let (binds, volumes, mounts) = volumes(parsed)?;
     // Each range a port at a time, as the CLI exposes them (container/opts.go).
@@ -645,16 +679,34 @@ fn request(parsed: &Parsed) -> Result<Run, String> {
         volume_driver: parsed.string("volume-driver").to_string(),
         restart_policy,
         // HostConfig.Init, set where the flag is given (container/opts.go parse).
-        docker_init: parsed.changed("init").then(|| parsed.bool("init")),
+        init_process: parsed.changed("init").then(|| parsed.bool("init")),
         pid: pid.to_string(),
         annotations: parsed.many("annotation").to_vec(),
         isolation: parsed.string("isolation").to_string(),
         runtime: parsed.string("runtime").to_string(),
-        // The flag's default is DOCKER_DEFAULT_PLATFORM (docker/cli run.go, create.go).
+        ipc: ipc.to_string(),
+        uts: uts.to_string(),
+        userns: userns.to_string(),
+        cgroupns: cgroupns.to_string(),
+        // The permission bits it clears, at most all nine.
+        umask: match parsed.string("umask") {
+            "<nil>" | "" => None,
+            octal => match u32::from_str_radix(octal, 8) {
+                Ok(mask) if mask <= 0o777 => Some(mask),
+                _ => {
+                    return Err(format!(
+                        "--umask {octal}: a umask is at most 0777, the nine permission bits it clears"
+                    ));
+                }
+            },
+        },
+        storage_opt,
+        // The flag's default is SHARDS_DEFAULT_PLATFORM's, else DOCKER_DEFAULT_PLATFORM's.
         platform: if parsed.changed("platform") {
             parsed.string("platform").to_string()
         } else {
-            std::env::var("DOCKER_DEFAULT_PLATFORM").unwrap_or_default()
+            crate::cli::env_ours_first("SHARDS_DEFAULT_PLATFORM", "DOCKER_DEFAULT_PLATFORM")
+                .unwrap_or_default()
         },
         ..Run::default()
     })
@@ -937,7 +989,7 @@ fn security_opts(opts: &[String]) -> Result<(Vec<String>, bool), String> {
         if k == "seccomp" && v != "builtin" && v != "unconfined" {
             let text = std::fs::read(v)
                 .map_err(|e| format!("opening seccomp profile ({v}) failed: open {v}: {}", go_errno(&e)))?;
-            let compacted = shards_dockerfile::json_compact(&text)
+            let compacted = shards_agentfile::json_compact(&text)
                 .map_err(|e| format!("compacting json for seccomp profile ({v}) failed: {e}"))?;
             out.push(format!("seccomp={}", String::from_utf8_lossy(&compacted)));
             continue;

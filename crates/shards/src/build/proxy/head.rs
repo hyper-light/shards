@@ -304,7 +304,7 @@ pub fn read(r: &mut impl BufRead, server: bool, after_post: bool) -> Result<Head
     } else {
         target.clone()
     };
-    shards_dockerfile::url::parse_request_uri(raw.as_bytes()).map_err(|_| Fault::Malformed)?;
+    shards_agentfile::url::parse_request_uri(raw.as_bytes()).map_err(|_| Fault::Malformed)?;
     // readMIMEHeader: no leading space on its first line.
     if matches!(lines.peek(), Some(b' ' | b'\t')) {
         return Err(Fault::Malformed);
@@ -740,7 +740,7 @@ mod tests {
     }
 
     #[test]
-    fn requests_pass_on_what_buildkit_passes_on() {
+    fn proxied_requests_drop_hop_by_hop_headers() {
         let h = head(
             "GET / HTTP/1.1\r\nHost: h\r\nConnection: x\r\nProxy-Authorization: p\r\nAccept-Encoding: gzip\r\nUser-Agent: curl\r\nPragma: no-cache\r\nTE: trailers\r\n\r\n",
         )

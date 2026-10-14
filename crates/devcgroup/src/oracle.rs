@@ -17,7 +17,7 @@ fn perms(s: &str) -> u8 {
 }
 
 #[test]
-fn the_filter_is_runcs_own() {
+fn device_filters_match_their_recorded_programs() {
     let cases: serde_json::Value = serde_json::from_str(include_str!("../testdata/cases.json")).unwrap();
     let answers: serde_json::Value = serde_json::from_str(include_str!("../testdata/oracle.json")).unwrap();
     let (cases, answers) = (cases.as_array().unwrap(), answers.as_array().unwrap());

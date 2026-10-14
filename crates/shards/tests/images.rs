@@ -534,10 +534,14 @@ fn actions_on_an_image_not_here_convert_it_first() {
         assert_eq!(r.status, Some(0), "{}", shown(&r));
     };
 
-    // Neither Docker's order nor removal fetches anything.
-    let docker = shards(&["image", "inspect", image.as_str()]);
-    assert_eq!(docker.status, Some(1), "{}", shown(&docker));
-    assert!(docker.stderr.contains("No such image"), "{}", shown(&docker));
+    // Neither the image-first order nor removal fetches anything.
+    let inspected = shards(&["image", "inspect", image.as_str()]);
+    assert_eq!(inspected.status, Some(1), "{}", shown(&inspected));
+    assert!(
+        inspected.stderr.contains("No such image"),
+        "{}",
+        shown(&inspected)
+    );
     let removed = shards(&["remove", "image", image.as_str()]);
     assert_ne!(removed.status, Some(0), "{}", shown(&removed));
     assert_eq!(served.load(Ordering::SeqCst), 0, "nothing was fetched");

@@ -182,7 +182,7 @@ thread_local! {
 
 /// libseccomp 2.5.4's resolvers, by which Docker's runc reads a profile's names.
 #[cfg(test)]
-pub mod libseccomp {
+pub mod resolvers {
     use super::*;
 
     pub(super) struct Row {
@@ -285,7 +285,7 @@ pub mod libseccomp {
 
 #[cfg(test)]
 mod tests {
-    use super::libseccomp::*;
+    use super::resolvers::*;
     use super::*;
 
     fn dump(arch: &str) -> serde_json::Value {
@@ -297,7 +297,7 @@ mod tests {
     /// (scripts/seccomp/generate, by libseccomp-golang's GetSyscallFromNameByArch),
     /// resolves here to the same number.
     #[test]
-    fn names_resolve_as_libseccomp_resolves_them() {
+    fn syscall_names_resolve_on_every_abi() {
         for (arch, abis) in [
             (
                 "amd64",

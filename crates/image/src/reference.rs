@@ -213,7 +213,7 @@ impl Reference {
                 "invalid repository name ({s}), cannot specify 64-byte hexadecimal strings"
             ));
         }
-        let (domain, remainder) = split_docker_domain(s);
+        let (domain, remainder) = split_domain(s);
         let remote = remainder.split_once(':').map_or(remainder.as_str(), |(r, _)| r);
         if remote.to_lowercase() != remote {
             return bad(format!(
@@ -316,7 +316,7 @@ fn parse(s: &str) -> Result<Reference, Error> {
 
 /// `splitDockerDomain`: the domain, if the first component names one, else Docker Hub,
 /// where one-component names are official images.
-fn split_docker_domain(name: &str) -> (String, String) {
+fn split_domain(name: &str) -> (String, String) {
     let Some((first, rest)) = name.split_once('/') else {
         return (DOCKER_HUB.into(), format!("{OFFICIAL_PREFIX}{name}"));
     };

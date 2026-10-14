@@ -80,7 +80,7 @@ fn ring(keys: &str) -> serde_json::Value {
 #[test]
 fn git_signatures_verify() {
     let cases: serde_json::Value = serde_json::from_str(include_str!("../testdata/verify.json")).unwrap();
-    let quote = |b: &[u8]| shards_dockerfile::go::quote(b);
+    let quote = |b: &[u8]| shards_agentfile::go::quote(b);
     let formats = Formats {
         quote: &quote,
         time: &utc,

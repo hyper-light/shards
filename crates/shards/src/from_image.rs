@@ -9,7 +9,7 @@
 use std::io::Write as _;
 use std::process::ExitCode;
 
-use shards_dockerfile::image::{Healthcheck, Image};
+use shards_agentfile::image::{Healthcheck, Image};
 use shards_image::oci::{self, Document};
 use shards_image::reference::Reference;
 
@@ -46,7 +46,7 @@ fn word(v: &[u8]) -> Option<String> {
 fn exec_form(items: &[Vec<u8>]) -> String {
     let items: Vec<String> = items
         .iter()
-        .map(|i| shards_dockerfile::export::json_string(i))
+        .map(|i| shards_agentfile::export::json_string(i))
         .collect();
     format!("[{}]", items.join(", "))
 }

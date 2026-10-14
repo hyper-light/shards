@@ -311,6 +311,30 @@ pub static RUN: Command = Command {
         .defaulting("map[]"),
         Flag::string("isolation", None, "", "Container isolation technology"),
         Flag::string("runtime", None, "", "Runtime to use for this container"),
+        // Namespaces as the microVM has them (D156): its own `--ipc` and `--userns`, as
+        // Docker's are; `--uts host` its host's hostname, `--cgroupns host` its microVM's
+        // cgroups, `--storage-opt size` its writable layer's: shards' own words.
+        Flag::string("ipc", None, "", "IPC mode to use"),
+        Flag::string("userns", None, "", "User namespace to use"),
+        Flag::string(
+            "uts",
+            None,
+            "",
+            "UTS namespace to use ('host': the host's hostname)",
+        ),
+        Flag::string(
+            "cgroupns",
+            None,
+            "",
+            "Cgroup namespace to use (host|private)\n'host':    Run the workload in its microVM's cgroup namespace\n'private': Run the workload in a cgroup namespace of its own (default)",
+        ),
+        Flag::many(
+            "storage-opt",
+            None,
+            "list",
+            "Writable layer options (size: its most bytes)",
+        ),
+        Flag::value("umask", None, "umask", "Set umask for the container").defaulting("<nil>"),
         Flag::value(
             "blkio-weight",
             None,
@@ -378,18 +402,12 @@ pub static RUN: Command = Command {
     unserved: "\
 attach a m - -\n\
 cgroup-parent - s - -\n\
-cgroupns - s - -\n\
 io-maxbandwidth - bytes 0 -\n\
 io-maxiops - uint64 0 -\n\
-ipc - s - -\n\
 link - m - -\n\
 log-driver - s - -\n\
 log-opt - m - -\n\
-storage-opt - m - -\n\
-umask - s - -\n\
-use-api-socket - b false -\n\
-userns - s - -\n\
-uts - s - -",
+use-api-socket - b false -",
     interspersed: false,
     error_prefix: "",
 };
@@ -686,6 +704,30 @@ pub static CREATE: Command = Command {
         .defaulting("map[]"),
         Flag::string("isolation", None, "", "Container isolation technology"),
         Flag::string("runtime", None, "", "Runtime to use for this container"),
+        // Namespaces as the microVM has them (D156): its own `--ipc` and `--userns`, as
+        // Docker's are; `--uts host` its host's hostname, `--cgroupns host` its microVM's
+        // cgroups, `--storage-opt size` its writable layer's: shards' own words.
+        Flag::string("ipc", None, "", "IPC mode to use"),
+        Flag::string("userns", None, "", "User namespace to use"),
+        Flag::string(
+            "uts",
+            None,
+            "",
+            "UTS namespace to use ('host': the host's hostname)",
+        ),
+        Flag::string(
+            "cgroupns",
+            None,
+            "",
+            "Cgroup namespace to use (host|private)\n'host':    Run the workload in its microVM's cgroup namespace\n'private': Run the workload in a cgroup namespace of its own (default)",
+        ),
+        Flag::many(
+            "storage-opt",
+            None,
+            "list",
+            "Writable layer options (size: its most bytes)",
+        ),
+        Flag::value("umask", None, "umask", "Set umask for the container").defaulting("<nil>"),
         Flag::value(
             "blkio-weight",
             None,
@@ -752,18 +794,12 @@ pub static CREATE: Command = Command {
     unserved: "\
 attach a m - -\n\
 cgroup-parent - s - -\n\
-cgroupns - s - -\n\
 io-maxbandwidth - bytes 0 -\n\
 io-maxiops - uint64 0 -\n\
-ipc - s - -\n\
 link - m - -\n\
 log-driver - s - -\n\
 log-opt - m - -\n\
-storage-opt - m - -\n\
-umask - s - -\n\
-use-api-socket - b false -\n\
-userns - s - -\n\
-uts - s - -",
+use-api-socket - b false -",
     interspersed: false,
     error_prefix: "",
 };

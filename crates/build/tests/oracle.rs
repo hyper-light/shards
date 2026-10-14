@@ -58,7 +58,7 @@ fn listing(layer: &[u8]) -> String {
 }
 
 #[test]
-fn file_operations_and_layers_match_buildkit() {
+fn file_operations_and_layers_match_their_recorded_answers() {
     let cases: Value = serde_json::from_str(include_str!("../testdata/ops.json")).unwrap();
     let answers: Value = serde_json::from_str(include_str!("../testdata/ops-answers.json")).unwrap();
     let mut failed = Vec::new();

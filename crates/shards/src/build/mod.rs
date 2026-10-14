@@ -1,7 +1,7 @@
 //! `shards build`: builds an image as `docker build` does (docs/design/architecture.md
 //! D33). The command line is buildx's (`shards_cmdline::commands::BUILD`); the plan is
-//! BuildKit's (`shards_dockerfile::plan`); the image is written to this user's store as
-//! BuildKit's exporter writes it (`shards_dockerfile::export`), so `shards run` boots it.
+//! BuildKit's (`shards_agentfile::plan`); the image is written to this user's store as
+//! BuildKit's exporter writes it (`shards_agentfile::export`), so `shards run` boots it.
 //! Progress is BuildKit's plain display.
 //!
 //! Every Dockerfile instruction runs: file operations (COPY, ADD of the context, of
@@ -17,16 +17,16 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Instant;
 
+use shards_agentfile::export::{self, Layer};
+use shards_agentfile::go::Time;
+use shards_agentfile::image::Image;
+use shards_agentfile::llb::OpKind;
+use shards_agentfile::parser::Dialect;
+use shards_agentfile::plan::{self, EpochSource, Options, Resolved, Resolver};
+use shards_agentfile::platform::{self, Platform};
 use shards_cmdline::buildflags;
 use shards_cmdline::commands::BUILD;
 use shards_cmdline::flags::{self, Outcome, Parsed};
-use shards_dockerfile::export::{self, Layer};
-use shards_dockerfile::go::Time;
-use shards_dockerfile::image::Image;
-use shards_dockerfile::llb::OpKind;
-use shards_dockerfile::parser::Dialect;
-use shards_dockerfile::plan::{self, EpochSource, Options, Resolved, Resolver};
-use shards_dockerfile::platform::{self, Platform};
 use shards_image::oci::{self, Descriptor, Document};
 use shards_image::platform as image_platform;
 use shards_image::reference::{Algorithm, Digest, Reference};
@@ -111,7 +111,7 @@ pub fn build(args: impl Iterator<Item = OsString>) -> ExitCode {
     };
     if let Some(s) = &stdin
         && context_stdin
-        && !shards_dockerfile::dockerui::is_archive(&s.head)
+        && !shards_agentfile::run_options::is_archive(&s.head)
         && !parsed.string("file").is_empty()
     {
         return failed("ambiguous Dockerfile source: both stdin and flag correspond to Dockerfiles");
@@ -711,7 +711,7 @@ impl StepLog {
 /// digest of what it reads ([`cache::reads`]), of the others their keys (`keys`). None where
 /// a path it reads is not there, which the step then finds as it runs.
 fn read_key(
-    op: &shards_dockerfile::llb::Op,
+    op: &shards_agentfile::llb::Op,
     reads: &[Option<Vec<cache::Selector>>],
     inputs: &[exec::Ref],
     keys: &[&str],
@@ -1987,7 +1987,7 @@ fn policies_of(
             base = "dockerfile".into();
         }
         let rego = dir.join(format!("{base}.rego"));
-        let filename = show(&shards_dockerfile::go::clean(rego.to_string_lossy().as_bytes()));
+        let filename = show(&shards_agentfile::go::clean(rego.to_string_lossy().as_bytes()));
         match std::fs::read(&rego) {
             Ok(data) => default.files.push(policy::FileSpec {
                 filename,
@@ -2016,7 +2016,7 @@ fn policies_of(
     let filename = if file.is_empty() || file == "-" {
         defined
     } else {
-        let clean = show(&shards_dockerfile::go::clean(file.as_bytes()));
+        let clean = show(&shards_agentfile::go::clean(file.as_bytes()));
         match Path::new(&clean).file_name() {
             Some(n) if clean != "." && clean != "/" => n.to_string_lossy().into_owned(),
             _ => "Dockerfile".into(),
@@ -2222,8 +2222,24 @@ fn read_if_present(path: &Path, name: &str) -> Result<Option<Vec<u8>>, String> {
     }
 }
 
-/// A Dockerfile's name, its text, and the ignore file beside it.
-type Dockerfile = (String, Vec<u8>, Option<Vec<u8>>);
+/// A build file's name, its text, and the ignore file beside it, by its name.
+type BuildFile = (String, Vec<u8>, Option<(String, Vec<u8>)>);
+
+/// The ignore files' kinds, in the order they are looked for: shards' own name first,
+/// Docker's after.
+const IGNORE_KINDS: [&str; 2] = ["agentignore", "dockerignore"];
+
+/// The ignore file at `dir`, `PREFIX.agentignore`, else `PREFIX.dockerignore` (`prefix`
+/// empty for a context's own), by its name, or none.
+fn ignore_file(dir: &Path, prefix: &str) -> Result<Option<(String, Vec<u8>)>, String> {
+    for kind in IGNORE_KINDS {
+        let name = format!("{prefix}.{kind}");
+        if let Some(text) = read_if_present(&dir.join(&name), &name)? {
+            return Ok(Some((name, text)));
+        }
+    }
+    Ok(None)
+}
 
 /// What a file named `name` is read as: an Agentfile where it is named as one, as Docker's
 /// names a Dockerfile (`Agentfile`, `*.Agentfile`, `Agentfile.*`), else a Dockerfile (D35).
@@ -2264,9 +2280,9 @@ fn definition(parsed: &Parsed, context: &Path) -> (Option<PathBuf>, String) {
 
 /// The Dockerfile, found as the frontend finds it (dockerui's Client.ReadEntrypoint):
 /// `-f`'s file, stdin's, or PATH's `Dockerfile`, then `dockerfile` for the default name.
-/// Its name, text, and the `<name>.dockerignore` beside it, which overrides the
-/// context's `.dockerignore`. An Agentfile is found before them (`definition`).
-fn dockerfile(parsed: &Parsed, context: &Path) -> Result<Dockerfile, String> {
+/// Its name, text, and the `<name>.agentignore` or `<name>.dockerignore` beside it, which
+/// overrides the context's own. An Agentfile is found before them (`definition`).
+fn build_file(parsed: &Parsed, context: &Path) -> Result<BuildFile, String> {
     let read_failed = |e: String| format!("failed to read dockerfile: {e}");
     let (path, name) = definition(parsed, context);
     let Some(path) = path else {
@@ -2288,8 +2304,7 @@ fn dockerfile(parsed: &Parsed, context: &Path) -> Result<Dockerfile, String> {
             "failed to read dockerfile: open {name}: no such file or directory"
         ));
     };
-    let beside_name = format!("{name}.dockerignore");
-    let beside = read_if_present(&dir.join(&beside_name), &beside_name)?;
+    let beside = ignore_file(dir, &name)?;
     Ok((name, text, beside))
 }
 
@@ -2357,16 +2372,15 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
         &env,
         u64::from(shards_abi::run::MAX_PAYLOAD),
     )?;
-    // --builder, or BUILDX_BUILDER: shards' own builder, or Docker's default context's,
-    // which here is the same one; any other, as buildx refuses a name it does not know
-    // (storeutil.GetNodeGroup).
+    // --builder, or SHARDS_BUILDER, else BUILDX_BUILDER: shards' own builder, which
+    // `default` names too; any other is none shards has.
     let builder_name = match parsed.string("builder") {
-        "" => std::env::var("BUILDX_BUILDER").unwrap_or_default(),
+        "" => crate::cli::env_ours_first("SHARDS_BUILDER", "BUILDX_BUILDER").unwrap_or_default(),
         b => b.to_string(),
     };
     if !matches!(builder_name.as_str(), "" | "shards" | "default") {
         return Err(format!(
-            "no builder {} found",
+            "--builder {}: shards builds with a builder of its own, shards (or default)",
             shards_cmdline::go::quote(&builder_name)
         ));
     }
@@ -2394,10 +2408,10 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
             if !allowed.grants(buildflags::NETWORK_HOST) {
                 allowed.granted.push(buildflags::NETWORK_HOST.to_string());
             }
-            shards_dockerfile::llb::NetMode::Host
+            shards_agentfile::llb::NetMode::Host
         }
-        "none" => shards_dockerfile::llb::NetMode::None,
-        "" | "default" => shards_dockerfile::llb::NetMode::Sandbox,
+        "none" => shards_agentfile::llb::NetMode::None,
+        "" | "default" => shards_agentfile::llb::NetMode::Sandbox,
         other => {
             return Err(format!(
                 "network mode {} not supported by buildkit - you can define a custom network for your builder using the network driver-opt in buildx create",
@@ -2469,9 +2483,9 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
     if pushes && parsed.many("tag").is_empty() {
         return Err("failed to build: tag is needed when pushing to registry".into());
     }
-    let ulimits: Vec<shards_dockerfile::llb::Ulimit> = buildflags::ulimits(parsed.many("ulimit"))?
+    let ulimits: Vec<shards_agentfile::llb::Ulimit> = buildflags::ulimits(parsed.many("ulimit"))?
         .into_iter()
-        .map(|u| shards_dockerfile::llb::Ulimit {
+        .map(|u| shards_agentfile::llb::Ulimit {
             name: u.name.into_bytes(),
             soft: u.soft,
             hard: u.hard,
@@ -2521,13 +2535,13 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
     let stdin = STDIN.get();
     let remote: Option<plan::MainContext> = if context_arg == "-" {
         let s = stdin.ok_or("stdin was not read")?;
-        shards_dockerfile::dockerui::is_archive(&s.head).then(|| plan::MainContext::Http {
+        shards_agentfile::run_options::is_archive(&s.head).then(|| plan::MainContext::Http {
             url: format!("http://buildkit-session/{}", s.digest.hex()).into_bytes(),
             archive: true,
         })
     } else if !matches!(
-        shards_dockerfile::git::parse_git_ref(context_arg.as_bytes()),
-        shards_dockerfile::git::Parsed::NotGit
+        shards_agentfile::git::parse_git_ref(context_arg.as_bytes()),
+        shards_agentfile::git::Parsed::NotGit
     ) {
         let keep = build_args(parsed.many("build-arg"), true)
             .get(b"BUILDKIT_CONTEXT_KEEP_GIT_DIR".as_slice())
@@ -2722,13 +2736,13 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
         // A platform's build of several reads it again, said once by the build of them.
         if multi::active() {
             let (name, text, ignore) =
-                dockerfile(parsed, &context).map_err(|e| format!("failed to build: failed to solve: {e}"))?;
+                build_file(parsed, &context).map_err(|e| format!("failed to build: failed to solve: {e}"))?;
             (name, text, ignore)
         } else {
             let v = progress
                 .borrow_mut()
                 .start(&format!("[internal] load build definition from {shown}"));
-            match dockerfile(parsed, &context) {
+            match build_file(parsed, &context) {
                 Ok((name, text, ignore)) => {
                     let p = progress.borrow();
                     p.line(&v, &format!("read {} done", human_size(text.len() as u64)));
@@ -2743,25 +2757,24 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
         }
     };
 
-    // The context's .dockerignore, unless one is beside the Dockerfile; its vertex shows
-    // after the metadata, as the frontend reads it once the stages are planned. A remote
-    // context has none: dockerui excludes nothing of it.
+    // The context's .agentignore or .dockerignore, unless one is beside the build file;
+    // its vertex shows after the metadata, once the stages are planned. A remote context
+    // has none: nothing of it is excluded.
     let context_ignore = match &beside {
         Some(_) => None,
         None if remote.is_some() => None,
-        None => Some(
-            read_if_present(&context.join(".dockerignore"), ".dockerignore").map_err(|e| {
-                format!("failed to build: failed to solve: failed to read dockerignore patterns: {e}")
-            })?,
-        ),
+        None => Some(ignore_file(&context, "").map_err(|e| {
+            format!("failed to build: failed to solve: failed to read the ignore file's patterns: {e}")
+        })?),
     };
-    // `<Dockerfile>.dockerignore` beside the Dockerfile, else the context's.
-    let ignore_text = beside
+    // The ignore file beside the build file, else the context's: its name and text.
+    let ignore = beside
         .as_ref()
         .or(context_ignore.as_ref().and_then(Option::as_ref));
-    let excludes = ignore_text
-        .map(|t| shards_dockerfile::ignore::read_all(t))
+    let excludes = ignore
+        .map(|(_, t)| shards_agentfile::ignore::read_all(t))
         .unwrap_or_default();
+    let ignore_name = ignore.map_or(".agentignore", |(n, _)| n.as_str()).to_string();
 
     let named = named_contexts(&named)?;
     let imported = remote::Imported::read(&cache_from, &store, &progress, &env)?;
@@ -2822,7 +2835,7 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
     let filename = Path::new(&name)
         .file_name()
         .map_or_else(|| "Dockerfile".to_string(), |n| n.to_string_lossy().into_owned());
-    let request_attrs = buildx_attrs(parsed, &filename, &add_hosts, &resource_attrs, &named)?;
+    let request_attrs = frontend_attrs(parsed, &filename, &add_hosts, &resource_attrs, &named)?;
     // A remote context is no local of the request's, and its Dockerfile none either
     // unless it came from the host; buildx sends its URL as `context`.
     let mut request_locals: Vec<String> = match &remote {
@@ -2860,6 +2873,7 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
         multi_platform: multi::active(),
         context_id: format!("shards-{}", std::process::id()).into_bytes(),
         excludes,
+        ignore_name: ignore_name.into_bytes(),
         dialect: dialect_of(&name),
         all_stages: false,
         contexts: named.contexts,
@@ -2877,15 +2891,15 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
                 .collect();
             (!names.is_empty()).then_some(names)
         },
-        extra_hosts: shards_dockerfile::dockerui::extra_hosts(&add_hosts)
+        extra_hosts: shards_agentfile::run_options::extra_hosts(&add_hosts)
             .map_err(|e| format!("failed to parse additional hosts: {e}"))?,
-        shm_size: shards_dockerfile::dockerui::shm_size(parsed.string("shm-size"))
+        shm_size: shards_agentfile::run_options::shm_size(parsed.string("shm-size"))
             .map_err(|e| format!("failed to parse shm size: {e}"))?,
         cgroup_parent: parsed.string("cgroup-parent").as_bytes().to_vec(),
-        linux_resources: shards_dockerfile::dockerui::linux_resources(&resource_attrs)
+        linux_resources: shards_agentfile::run_options::linux_resources(&resource_attrs)
             .map_err(|e| format!("failed to parse resource limits: {e}"))?,
         network_mode,
-        // As buildx sends it (buildx_attrs): the moby driver resolves images it has.
+        // As buildx sends it (frontend_attrs): the moby driver resolves images it has.
         image_resolve_mode: if parsed.bool("pull") {
             b"pull".to_vec()
         } else {
@@ -2940,13 +2954,13 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
             let n = lint.warnings.len();
             let mut out = String::new();
             if json {
-                let results = shards_dockerfile::subrequests::LintResults {
+                let results = shards_agentfile::subrequests::LintResults {
                     warnings: &lint.warnings,
                     filename: name.as_bytes(),
                     data: &text,
                     language: match opts.dialect {
-                        shards_dockerfile::parser::Dialect::Agentfile => b"Agentfile",
-                        shards_dockerfile::parser::Dialect::Dockerfile => b"Dockerfile",
+                        shards_agentfile::parser::Dialect::Agentfile => b"Agentfile",
+                        shards_agentfile::parser::Dialect::Dockerfile => b"Dockerfile",
                     },
                     definition: None,
                     error: lint.error.as_ref().map(|(m, loc)| (m.as_slice(), loc)),
@@ -2981,8 +2995,8 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
         Some(Call::Describe { json }) => {
             answer(
                 json,
-                shards_dockerfile::subrequests::DESCRIBE.to_string(),
-                shards_dockerfile::subrequests::describe_text(),
+                shards_agentfile::subrequests::DESCRIBE.to_string(),
+                shards_agentfile::subrequests::describe_text(),
             );
             return Ok(());
         }
@@ -3048,8 +3062,9 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
                 );
                 p.denied.borrow_mut().clear();
             }
-            let v = progress.borrow_mut().start("[internal] load .dockerignore");
-            if let Some(t) = found {
+            let shown = found.as_ref().map_or(".agentignore", |(n, _)| n.as_str());
+            let v = progress.borrow_mut().start(&format!("[internal] load {shown}"));
+            if let Some((_, t)) = found {
                 progress
                     .borrow()
                     .line(&v, &format!("read {} done", human_size(t.len() as u64)));
@@ -3073,9 +3088,8 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
                     format!("[internal] load metadata for {}", asked.generator).as_bytes(),
                 )
                 .map_err(|e| format!("failed to build: failed to solve: {}", show(&e)))?;
-            let config =
-                shards_dockerfile::image::Image::from_json(&resolved.config).map_err(|e| show(&e))?;
-            let id = show(&shards_dockerfile::platform::format_all(&plan.platform));
+            let config = shards_agentfile::image::Image::from_json(&resolved.config).map_err(|e| show(&e))?;
+            let id = show(&shards_agentfile::platform::format_all(&plan.platform));
             let state = plan.state.clone();
             let extras = plan.sbom_extras.clone();
             let pin = resolved.digest.clone().unwrap_or_default();
@@ -3153,7 +3167,7 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
         }
     }
     // The base a source op names, as it was resolved for the op's platform.
-    let op_base = |op: &shards_dockerfile::llb::Op, reference: &str| {
+    let op_base = |op: &shards_agentfile::llb::Op, reference: &str| {
         base_key(reference, op.platform.as_ref().unwrap_or(&opts.target_platform))
     };
     crate::phase("plan");
@@ -3323,7 +3337,7 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
             continue;
         }
         for m in mounts {
-            if let shards_dockerfile::llb::OpMountKind::Cache { id, .. } = &m.kind {
+            if let shards_agentfile::llb::OpMountKind::Cache { id, .. } = &m.kind {
                 let id = if id.is_empty() { &m.dest } else { id };
                 store
                     .prune_mounts(&show(id), m.input != -1)
@@ -3403,7 +3417,7 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
         // A step with the network under the build's proxy (D110) is keyed apart, by
         // either of its keys.
         let proxied = proxy_cap
-            && matches!(&op.kind, OpKind::Exec { network, .. } if *network != shards_dockerfile::llb::NetMode::None);
+            && matches!(&op.kind, OpKind::Exec { network, .. } if *network != shards_agentfile::llb::NetMode::None);
         let apart = |k: String| if proxied { cache::proxied_key(&k) } else { k };
         // Its keys (D114): from each input's own key, which a build that changed nothing
         // the step reads finds at once; and, asked only where that one finds nothing, from
@@ -4031,7 +4045,7 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
         builder_id: builder_id.clone(),
         reproducible,
     };
-    let host_platform_shown = show(&shards_dockerfile::platform::format(&host_platform()));
+    let host_platform_shown = show(&shards_agentfile::platform::format(&host_platform()));
     // An explicit provenance, not inline-only, goes in every output.
     let everywhere = matches!(
         provenance_asked,
@@ -4045,7 +4059,8 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
     // output is, so far the bases' (a local output is written before the image's).
     if wants_max {
         let steps = provenance::steps(&def);
-        let info_def = provenance::dockerfile_definition(&filename, "dockerfile", &invocation);
+        let agentignore = beside.as_ref().is_some_and(|(n, _)| n.ends_with(".agentignore"));
+        let info_def = provenance::build_file_definition(&filename, "dockerfile", &invocation, agentignore);
         let info_steps = provenance::steps(&info_def);
         capture.max = Some(provenance::Max {
             build_config: provenance::build_config(&steps),
@@ -4226,12 +4241,9 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
         .image
         .config
         .labels
-        .get(shards_dockerfile::agentfile::DIGEST_LABEL)
+        .get(shards_agentfile::agentfile::DIGEST_LABEL)
     {
-        annotations.insert(
-            shards_dockerfile::agentfile::DIGEST_LABEL.to_vec(),
-            digest.clone(),
-        );
+        annotations.insert(shards_agentfile::agentfile::DIGEST_LABEL.to_vec(), digest.clone());
         let names = |harness: bool| -> Vec<u8> {
             let mut n: Vec<&[u8]> = plan
                 .domains
@@ -4244,8 +4256,8 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
             n.join(&b","[..])
         };
         for (key, harness) in [
-            (shards_dockerfile::agentfile::AGENTS_ANNOTATION, false),
-            (shards_dockerfile::agentfile::HARNESSES_ANNOTATION, true),
+            (shards_agentfile::agentfile::AGENTS_ANNOTATION, false),
+            (shards_agentfile::agentfile::HARNESSES_ANNOTATION, true),
         ] {
             let list = names(harness);
             if !list.is_empty() {
@@ -5231,13 +5243,13 @@ fn named_contexts(named: &BTreeMap<String, String>) -> Result<NamedContexts, Str
                     .map(|n| n.to_string_lossy().into_owned())
                     .unwrap_or_default()
             });
-        let ignore = read_if_present(&dir.join(".dockerignore"), ".dockerignore").map_err(|e| {
-            format!("failed to build: failed to solve: failed to read dockerignore patterns: {e}")
+        let ignore = ignore_file(&dir, "").map_err(|e| {
+            format!("failed to build: failed to solve: failed to read the ignore file's patterns: {e}")
         })?;
         out.excludes.insert(
             local.clone().into_bytes(),
             ignore
-                .map(|t| shards_dockerfile::ignore::read_all(&t))
+                .map(|(_, t)| shards_agentfile::ignore::read_all(&t))
                 .unwrap_or_default(),
         );
         out.contexts
@@ -5406,7 +5418,7 @@ fn import_layout(store: &Store, dir: &Path, digest: &Digest) -> Result<Descripto
 /// A guarded step's writes (D55, §9.2): what its new layers hold, read entry by entry, in
 /// no domain but the one its own directive writes, if it is one. A removal is a write.
 fn guard(
-    meta: &shards_dockerfile::llb::Meta,
+    meta: &shards_agentfile::llb::Meta,
     inputs: &[exec::Ref],
     outs: &[exec::Ref],
     domains: &[plan::DomainDir],
@@ -5606,7 +5618,7 @@ fn sha256(bytes: &[u8]) -> Digest {
 /// loadInputs, v0.37.1), which its provenance records as the request: build arguments
 /// and labels, the target, the cache's and network's settings, hosts, `/dev/shm`, ulimits,
 /// limits, the Dockerfile's name, and the named contexts.
-fn buildx_attrs(
+fn frontend_attrs(
     parsed: &Parsed,
     filename: &str,
     add_hosts: &str,
@@ -5656,7 +5668,7 @@ fn buildx_attrs(
     if !add_hosts.is_empty() {
         a.insert("add-hosts".into(), add_hosts.to_string());
     }
-    let shm = shards_dockerfile::dockerui::shm_size(parsed.string("shm-size")).unwrap_or(0);
+    let shm = shards_agentfile::run_options::shm_size(parsed.string("shm-size")).unwrap_or(0);
     if shm > 0 {
         a.insert("shm-size".into(), shm.to_string());
     }
@@ -5684,10 +5696,10 @@ fn buildx_attrs(
     Ok(a)
 }
 
-/// [`buildx_attrs`] of a build given `flags` alone: a named context's directory taken
+/// [`frontend_attrs`] of a build given `flags` alone: a named context's directory taken
 /// as one, by its name, wherever it is.
 #[cfg(test)]
-fn buildx_attrs_of(flags: &[String]) -> Result<BTreeMap<String, String>, String> {
+fn frontend_attrs_of(flags: &[String]) -> Result<BTreeMap<String, String>, String> {
     // The attestations' own flags are none of the request's (FilterArgs).
     let mut argv: Vec<String> = Vec::new();
     let mut skip = false;
@@ -5725,7 +5737,7 @@ fn buildx_attrs_of(flags: &[String]) -> Result<BTreeMap<String, String>, String>
     } else {
         file.rsplit('/').next().unwrap_or(file)
     };
-    buildx_attrs(&parsed, filename, &add_hosts, &resources, &named)
+    frontend_attrs(&parsed, filename, &add_hosts, &resources, &named)
 }
 
 /// What a build asks of its provenance (D71, D72).
@@ -5847,15 +5859,18 @@ fn provenance_of(parsed: &Parsed) -> Result<(Provenance, Option<sbom::Asked>), S
     Ok((out, sbom_asked))
 }
 
-/// Whether an image the build stores or pushes carries its provenance, as buildx asks
-/// for it by default (`attest:provenance=mode=min,inline-only=true`), unless
-/// BUILDX_NO_DEFAULT_ATTESTATIONS says not.
+/// Whether an image the build stores or pushes carries its provenance by default
+/// (`attest:provenance=mode=min,inline-only=true`), unless SHARDS_NO_DEFAULT_ATTESTATIONS,
+/// else BUILDX_NO_DEFAULT_ATTESTATIONS, says not.
 fn attests(env: &dyn Fn(&str) -> Option<String>) -> Result<bool, String> {
-    match env("BUILDX_NO_DEFAULT_ATTESTATIONS") {
+    let given = ["SHARDS_NO_DEFAULT_ATTESTATIONS", "BUILDX_NO_DEFAULT_ATTESTATIONS"]
+        .into_iter()
+        .find_map(|var| env(var).map(|v| (var, v)));
+    match given {
         None => Ok(true),
-        Some(v) => shards_cmdline::go::parse_bool(&v)
+        Some((var, v)) => shards_cmdline::go::parse_bool(&v)
             .map(|off| !off)
-            .map_err(|e| format!("invalid BUILDX_NO_DEFAULT_ATTESTATIONS: {e}")),
+            .map_err(|e| format!("invalid {var}: {e}")),
     }
 }
 
@@ -5994,8 +6009,8 @@ fn call_of(parsed: &Parsed) -> Result<Option<Call>, String> {
 
 /// The build's checks as BuildKit's lint subrequest prints them (frontend/subrequests/lint
 /// `LintResults.PrintTo`): by line, each its rule, URL, message and lines.
-pub(crate) fn lint_text(warnings: &[shards_dockerfile::lint::Warning], file: &str, text: &[u8]) -> String {
-    let mut sorted: Vec<&shards_dockerfile::lint::Warning> = warnings.iter().collect();
+pub(crate) fn lint_text(warnings: &[shards_agentfile::lint::Warning], file: &str, text: &[u8]) -> String {
+    let mut sorted: Vec<&shards_agentfile::lint::Warning> = warnings.iter().collect();
     sorted.sort_by(|a, b| match (a.location.first(), b.location.first()) {
         (None, None) => a.rule.cmp(b.rule),
         (None, Some(_)) => std::cmp::Ordering::Less,
@@ -6017,7 +6032,7 @@ pub(crate) fn lint_text(warnings: &[shards_dockerfile::lint::Warning], file: &st
 }
 
 fn print_warnings(
-    warnings: &[shards_dockerfile::lint::Warning],
+    warnings: &[shards_agentfile::lint::Warning],
     quiet: bool,
     debug: bool,
     file: &str,
@@ -6032,7 +6047,7 @@ fn print_warnings(
 
 /// What [`print_warnings`] prints.
 fn warnings_text(
-    warnings: &[shards_dockerfile::lint::Warning],
+    warnings: &[shards_agentfile::lint::Warning],
     quiet: bool,
     debug: bool,
     file: &str,
@@ -6266,7 +6281,7 @@ fn fetch_context(
         // dockerui reads them; the download is not fetched again.
         if let plan::MainContext::Http { archive: false, .. } = main {
             let head = exec.read_head(&r, b"/context", 1024)?.unwrap_or_default();
-            if shards_dockerfile::dockerui::is_archive(&head) {
+            if shards_agentfile::run_options::is_archive(&head) {
                 if let plan::MainContext::Http { archive, .. } = main {
                     *archive = true;
                 }

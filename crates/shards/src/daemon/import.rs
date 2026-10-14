@@ -18,8 +18,8 @@ const LAYER_GZIP: &str = "application/vnd.oci.image.layer.v1.tar+gzip";
 const LAYER_ZSTD: &str = "application/vnd.oci.image.layer.v1.tar+zstd";
 
 /// What the CLI and dockerd say before they import: the reference and the platform read.
-fn read_args(parsed: &Parsed) -> Result<(Option<Reference>, shards_dockerfile::platform::Platform), String> {
-    use shards_dockerfile::platform;
+fn read_args(parsed: &Parsed) -> Result<(Option<Reference>, shards_agentfile::platform::Platform), String> {
+    use shards_agentfile::platform;
     let arch = match std::env::consts::ARCH {
         "aarch64" => "arm64",
         "x86_64" => "amd64",
@@ -81,7 +81,7 @@ impl<D: Disk> Daemon<D> {
             Err(e) => return refuse(e),
         };
         // BuildFromConfig of an empty config, before anything is read.
-        let config = match shards_dockerfile::commit::build_from_config(
+        let config = match shards_agentfile::commit::build_from_config(
             &serde_json::json!({}),
             parsed.many("change"),
             "linux",
@@ -218,7 +218,7 @@ impl<D: Disk> Daemon<D> {
         store: &shards_image::store::Store,
         raw: &shards_image::reference::Digest,
         config: serde_json::Value,
-        platform: &shards_dockerfile::platform::Platform,
+        platform: &shards_agentfile::platform::Platform,
         comment: &str,
         named: Option<&Reference>,
     ) -> Result<(String, shards_image::oci::Descriptor), String> {

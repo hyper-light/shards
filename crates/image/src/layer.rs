@@ -819,7 +819,7 @@ mod tests {
     }
 
     #[test]
-    fn attributes_are_the_ones_containerd_sets() {
+    fn layer_attributes_are_applied_to_their_files() {
         let mut w = Writer::default();
         w.pax(&[
             ("mtime", b"1700000000.5"),

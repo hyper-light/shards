@@ -116,7 +116,7 @@ pub fn provider(body: &[u8], issuer: &str) -> Result<Provider, String> {
 
 /// Go's `%q` of a string.
 pub fn go_quote(s: &str) -> String {
-    shards_dockerfile::go::quote(s.as_bytes())
+    shards_agentfile::go::quote(s.as_bytes())
 }
 
 /// url.QueryEscape: unreserved bytes kept, space as `+`, the rest `%XX`.

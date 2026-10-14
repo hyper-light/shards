@@ -215,7 +215,7 @@ mod tests {
     }
 
     #[test]
-    fn ps_prints_what_procps_prints() {
+    fn top_lays_out_every_recorded_case() {
         let dump = dump();
         let mut failed = Vec::new();
         for (i, case) in CASES.lines().enumerate() {

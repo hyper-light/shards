@@ -62,8 +62,8 @@ fn modules_compile_as_opa_compiles_them() {
         }
         total += 1;
         let mut srcs = vec![(
-            "builtin/buildx_defaults.rego".to_string(),
-            include_str!("../src/buildx_defaults.rego").to_string(),
+            "builtin/defaults.rego".to_string(),
+            include_str!("../src/defaults.rego").to_string(),
         )];
         for m in c["modules"].as_array().unwrap() {
             srcs.push((
@@ -145,12 +145,8 @@ fn a_long_chain_of_rules_compiles_in_time() {
         .spawn(move || {
             let mut modules = BTreeMap::new();
             modules.insert(
-                "builtin/buildx_defaults.rego".to_string(),
-                parse_module(
-                    "builtin/buildx_defaults.rego",
-                    include_str!("../src/buildx_defaults.rego"),
-                )
-                .unwrap(),
+                "builtin/defaults.rego".to_string(),
+                parse_module("builtin/defaults.rego", include_str!("../src/defaults.rego")).unwrap(),
             );
             modules.insert(
                 "chain.rego".to_string(),
@@ -193,12 +189,8 @@ fn a_wide_policy_without_cycles_compiles_in_time() {
         .spawn(move || {
             let mut modules = BTreeMap::new();
             modules.insert(
-                "builtin/buildx_defaults.rego".to_string(),
-                parse_module(
-                    "builtin/buildx_defaults.rego",
-                    include_str!("../src/buildx_defaults.rego"),
-                )
-                .unwrap(),
+                "builtin/defaults.rego".to_string(),
+                parse_module("builtin/defaults.rego", include_str!("../src/defaults.rego")).unwrap(),
             );
             modules.insert(
                 "layers.rego".to_string(),
@@ -242,12 +234,8 @@ fn closures_nested_deep_compile_in_time() {
             .spawn(move || {
                 let mut modules = BTreeMap::new();
                 modules.insert(
-                    "builtin/buildx_defaults.rego".to_string(),
-                    parse_module(
-                        "builtin/buildx_defaults.rego",
-                        include_str!("../src/buildx_defaults.rego"),
-                    )
-                    .unwrap(),
+                    "builtin/defaults.rego".to_string(),
+                    parse_module("builtin/defaults.rego", include_str!("../src/defaults.rego")).unwrap(),
                 );
                 modules.insert(
                     "policy.rego".to_string(),

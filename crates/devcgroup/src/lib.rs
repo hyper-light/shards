@@ -351,7 +351,7 @@ pub fn container(given: &[Given], rules: &[Rule], privileged: bool) -> Vec<Rule>
             allow: true,
         }]
     } else {
-        let mut out = moby_defaults();
+        let mut out = default_rules();
         out.extend(given.iter().map(|g| g.rule));
         for r in rules {
             if r.kind == Kind::All && (r.major != ANY || r.minor != ANY || r.perms != RWM) {
@@ -370,7 +370,7 @@ pub fn container(given: &[Given], rules: &[Rule], privileged: bool) -> Vec<Rule>
         out
     };
     out.extend(
-        RUNC_ALLOWED
+        ALWAYS_ALLOWED
             .iter()
             .filter(|(path, _)| path.is_empty() || given.iter().all(|g| g.path != *path))
             .map(|(_, r)| *r),
@@ -380,7 +380,7 @@ pub fn container(given: &[Given], rules: &[Rule], privileged: bool) -> Vec<Rule>
 
 /// moby's default rules, a container's (daemon/pkg/oci/defaults.go): none but
 /// /dev/null, zero, urandom, random, tty and console, and /dev/fuse denied.
-pub fn moby_defaults() -> Vec<Rule> {
+pub fn default_rules() -> Vec<Rule> {
     let c = |major, minor, allow| Rule {
         kind: Kind::Char,
         major,
@@ -417,7 +417,7 @@ const fn allowed(kind: Kind, major: i64, minor: i64, perms: u8) -> Rule {
 }
 
 /// The paths runc's own devices are at, which a device given at one takes the place of.
-pub const RUNC_PATHS: [&str; 6] = [
+pub const ALWAYS_PATHS: [&str; 6] = [
     "/dev/null",
     "/dev/random",
     "/dev/full",
@@ -429,7 +429,7 @@ pub const RUNC_PATHS: [&str; 6] = [
 /// runc's AllowedDevices (libcontainer/specconv), appended after a workload's own, each
 /// with its path: mknod of any device, /dev/null, random, full, tty, zero, urandom, the
 /// ptys and ptmx, and /dev/net/tun.
-const RUNC_ALLOWED: [(&str, Rule); 11] = [
+const ALWAYS_ALLOWED: [(&str, Rule); 11] = [
     ("", allowed(Kind::Char, ANY, ANY, MKNOD)),
     ("", allowed(Kind::Block, ANY, ANY, MKNOD)),
     ("/dev/null", allowed(Kind::Char, 1, 3, RWM)),
@@ -487,7 +487,7 @@ pub fn run(program: &[Insn], kind: Kind, access: u8, major: u32, minor: u32) -> 
 mod tests {
     use super::*;
 
-    fn docker(extra: &[Rule]) -> Vec<Rule> {
+    fn defaults_and(extra: &[Rule]) -> Vec<Rule> {
         container(&[], extra, false)
     }
 
@@ -495,7 +495,7 @@ mod tests {
     /// other read: /dev/pmem0 (259:0), which shards' guests mount their image from, is not.
     #[test]
     fn a_default_microvm_reaches_its_default_devices_alone() {
-        let (allow, clean) = reduce(&docker(&[])).unwrap();
+        let (allow, clean) = reduce(&defaults_and(&[])).unwrap();
         assert!(!allow);
         let p = program(allow, &clean).unwrap();
         for (major, minor) in [
@@ -534,11 +534,11 @@ mod tests {
     #[test]
     fn a_device_given_is_reached() {
         let fuse = allowed(Kind::Char, 10, 229, RWM);
-        let (allow, clean) = reduce(&docker(&[fuse])).unwrap();
+        let (allow, clean) = reduce(&defaults_and(&[fuse])).unwrap();
         let p = program(allow, &clean).unwrap();
         assert_eq!(run(&p, Kind::Char, READ | WRITE, 10, 229), Some(true));
         let read_only = Rule { perms: READ, ..fuse };
-        let (allow, clean) = reduce(&docker(&[read_only])).unwrap();
+        let (allow, clean) = reduce(&defaults_and(&[read_only])).unwrap();
         let p = program(allow, &clean).unwrap();
         assert_eq!(run(&p, Kind::Char, READ, 10, 229), Some(true));
         assert_eq!(run(&p, Kind::Char, WRITE, 10, 229), Some(false));
@@ -560,27 +560,27 @@ mod tests {
     #[test]
     fn a_narrow_all_rule_allows_what_it_says() {
         let r = allowed(Kind::All, ANY, ANY, READ);
-        let (allow, clean) = reduce(&docker(&[r])).unwrap();
+        let (allow, clean) = reduce(&defaults_and(&[r])).unwrap();
         let p = program(allow, &clean).unwrap();
         assert_eq!(run(&p, Kind::Block, READ, 259, 0), Some(true));
         assert_eq!(run(&p, Kind::Block, WRITE, 259, 0), Some(false));
         let r = allowed(Kind::All, 1, 2, MKNOD);
-        let (allow, clean) = reduce(&docker(&[r])).unwrap();
+        let (allow, clean) = reduce(&defaults_and(&[r])).unwrap();
         let p = program(allow, &clean).unwrap();
         assert_eq!(run(&p, Kind::Block, READ, 259, 0), Some(false));
         let all = allowed(Kind::All, ANY, ANY, RWM);
-        assert_eq!(reduce(&docker(&[all])).unwrap(), (true, Vec::new()));
+        assert_eq!(reduce(&defaults_and(&[all])).unwrap(), (true, Vec::new()));
     }
 
     /// A device given at a path runc names drops runc's rule for it.
     #[test]
-    fn a_device_at_runcs_path_takes_its_rule() {
-        let named: Vec<&str> = RUNC_ALLOWED
+    fn a_device_at_an_always_allowed_path_takes_its_rule() {
+        let named: Vec<&str> = ALWAYS_ALLOWED
             .iter()
             .map(|(p, _)| *p)
             .filter(|p| !p.is_empty())
             .collect();
-        assert_eq!(named, RUNC_PATHS);
+        assert_eq!(named, ALWAYS_PATHS);
         let fuse = Given {
             path: "/dev/full".into(),
             rule: allowed(Kind::Char, 10, 229, RWM),

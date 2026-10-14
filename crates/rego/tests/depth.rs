@@ -100,10 +100,7 @@ fn long_text(s: &str) -> Json {
 fn check(src: &str) -> (&'static str, String) {
     let mut modules = BTreeMap::new();
     for (file, text) in [
-        (
-            "builtin/buildx_defaults.rego",
-            include_str!("../src/buildx_defaults.rego"),
-        ),
+        ("builtin/defaults.rego", include_str!("../src/defaults.rego")),
         ("policy.rego", src),
     ] {
         match parse_module(file, text) {

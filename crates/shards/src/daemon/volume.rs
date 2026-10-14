@@ -66,7 +66,7 @@ impl<D: Disk> Daemon<D> {
         // shards' own namespace, which marks the volumes an Agentfile scopes (D115).
         if let Some(k) = labels
             .keys()
-            .find(|k| shards_dockerfile::agentfile::reserved_label(k.as_bytes()))
+            .find(|k| shards_agentfile::agentfile::reserved_label(k.as_bytes()))
         {
             reply.err(&format!(
                 "Error response from daemon: {}",

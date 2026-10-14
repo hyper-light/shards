@@ -116,7 +116,7 @@ pub struct Filter {
     /// libseccomp 2.5.4's own slip kept: merging a 64-bit LT or LE comparison whose false
     /// action differs from one there, it sets the true action (db.c `_db_tree_add`).
     /// Docker's runc has it; shards sets the false action, as its comment means to.
-    pub libseccomp_slip: bool,
+    pub reference_slip: bool,
     pub(crate) nodes: Vec<Node>,
     pub(crate) syscalls: Vec<Sys>,
 }
@@ -125,7 +125,7 @@ impl Filter {
     pub fn new(abi: Abi) -> Filter {
         Filter {
             abi,
-            libseccomp_slip: false,
+            reference_slip: false,
             nodes: Vec::new(),
             syscalls: Vec::new(),
         }
@@ -589,7 +589,7 @@ impl Filter {
                     } else if nn.act_f != xn.act_f {
                         // The action taken by the full 64-bit value, for LT/LE.
                         if nn.arg_h && nn.datum_full < xn.datum_full {
-                            if self.libseccomp_slip {
+                            if self.reference_slip {
                                 self.node_mut(x)?.act_t = nn.act_t;
                             } else {
                                 self.node_mut(x)?.act_f = nn.act_f;

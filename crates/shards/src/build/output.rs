@@ -21,11 +21,11 @@ use std::collections::{BTreeMap, HashMap};
 use std::io::{self, Write};
 use std::path::Path;
 
+use shards_agentfile::export::{self, Layer, json_string};
 use shards_archive::receive::{self, Receiver};
 use shards_archive::tar::{self as gotar, Header};
 use shards_build::data::Sources;
 use shards_build::vfs::Fs;
-use shards_dockerfile::export::{self, Layer, json_string};
 use shards_image::erofs::{DataRef, Kind, Node, NodeId, Source as _, Tree};
 use shards_image::reference::{Digest, Reference};
 use shards_image::store::Store;
@@ -394,7 +394,7 @@ pub fn attestations(
     })?;
     let mut files = Vec::new();
     for s in &capture.sboms {
-        let text = shards_dockerfile::json_indent(super::sbom::intoto(s, &subjects).as_bytes());
+        let text = shards_agentfile::json_indent(super::sbom::intoto(s, &subjects).as_bytes());
         let name = Path::new(&s.path)
             .file_name()
             .ok_or_else(|| format!("{}: no file name", s.path))?

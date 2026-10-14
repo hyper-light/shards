@@ -74,7 +74,7 @@ impl Canon<'_> {
             _ => {
                 self.set_error(format!(
                     "strconv.ParseUint: parsing {}: invalid syntax",
-                    shards_dockerfile::go::quote(text)
+                    shards_agentfile::go::quote(text)
                 ));
                 0
             }
@@ -338,7 +338,7 @@ fn go_parse_float(s: &str) -> Result<f64, String> {
         }
         ok && i == b.len()
     };
-    let q = shards_dockerfile::go::quote(s.as_bytes());
+    let q = shards_agentfile::go::quote(s.as_bytes());
     if !json_number {
         return Err(format!("strconv.ParseFloat: parsing {q}: invalid syntax"));
     }

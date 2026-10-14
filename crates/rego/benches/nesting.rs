@@ -61,12 +61,9 @@ fn check(src: &str) -> ([f64; 3], String) {
     let t0 = Instant::now();
     let mut modules = BTreeMap::new();
     modules.insert(
-        "builtin/buildx_defaults.rego".to_string(),
-        shards_rego::parser::parse_module(
-            "builtin/buildx_defaults.rego",
-            include_str!("../src/buildx_defaults.rego"),
-        )
-        .unwrap(),
+        "builtin/defaults.rego".to_string(),
+        shards_rego::parser::parse_module("builtin/defaults.rego", include_str!("../src/defaults.rego"))
+            .unwrap(),
     );
     let parsed = shards_rego::parser::parse_module("policy.rego", src);
     let t_parse = t0.elapsed();

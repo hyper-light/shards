@@ -151,10 +151,10 @@ fn lookups_find_the_rules_opa_finds() {
         assert_eq!(cname, want["name"].as_str().unwrap());
         assert!(want.get("error").is_none(), "{cname}: OPA: {}", want["error"]);
         let mut modules = BTreeMap::new();
-        let defaults = include_str!("../src/buildx_defaults.rego");
+        let defaults = include_str!("../src/defaults.rego");
         modules.insert(
-            "builtin/buildx_defaults.rego".to_string(),
-            parse_module("builtin/buildx_defaults.rego", defaults).unwrap(),
+            "builtin/defaults.rego".to_string(),
+            parse_module("builtin/defaults.rego", defaults).unwrap(),
         );
         for m in c["modules"].as_array().unwrap() {
             let file = m[0].as_str().unwrap();

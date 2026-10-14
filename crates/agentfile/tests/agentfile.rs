@@ -3,13 +3,13 @@
 //! that reads none of them, as BuildKit reads none.
 #![allow(clippy::unwrap_used, clippy::panic)]
 
-use shards_dockerfile::agentfile::{
+use shards_agentfile::agentfile::{
     Attach, Connect, Direction, Directive, Domain, Exposure, Mcp, Processes, Scope, SkillSource, TargetKind,
     Volume,
 };
-use shards_dockerfile::instructions::{self, Kind};
-use shards_dockerfile::lint::Linter;
-use shards_dockerfile::parser::{self, Dialect};
+use shards_agentfile::instructions::{self, Kind};
+use shards_agentfile::lint::Linter;
+use shards_agentfile::parser::{self, Dialect};
 
 /// The instructions of `body`, an Agentfile's stage's lines after `FROM scratch`.
 fn kinds(body: &str) -> Result<Vec<Kind>, String> {
@@ -269,10 +269,10 @@ fn expose_takes_a_direction_and_networks_and_stays_plain_without_them() {
         })
     );
     assert_eq!(
-        shards_dockerfile::agentfile::outside(b"8081:80/udp"),
+        shards_agentfile::agentfile::outside(b"8081:80/udp"),
         b("8081/udp")
     );
-    assert_eq!(shards_dockerfile::agentfile::inside(b"8081:80/udp"), b("80/udp"));
+    assert_eq!(shards_agentfile::agentfile::inside(b"8081:80/udp"), b("80/udp"));
     assert!(refused("EXPOSE --agents=web 3000").contains("name members of the networks after FOR"));
     assert!(refused("EXPOSE --mcps=search 3000 FOR front").contains("MCP servers do not join networks yet"));
     assert!(refused("EXPOSE 8081:80 AS egress FOR front").contains("ingress's alone"));
@@ -376,7 +376,7 @@ fn checked(text: &str) -> Result<(), String> {
         .map_err(|e| String::from_utf8_lossy(&e.message).into_owned())?;
     let ins = instructions::parse(&parsed, &Linter::default())
         .map_err(|e| String::from_utf8_lossy(&e.message).into_owned())?;
-    shards_dockerfile::agentfile::check(&ins).map_err(|e| String::from_utf8_lossy(&e.message).into_owned())
+    shards_agentfile::agentfile::check(&ins).map_err(|e| String::from_utf8_lossy(&e.message).into_owned())
 }
 
 /// One volume at a mount point in a stage's lineage, however its path is written: a
@@ -540,7 +540,7 @@ fn the_normalized_agentfile_holds_what_was_declared() {
         one("EXPOSE 8080 AS ingress FOR back"),
         one("VOLUME data /data FOR main"),
     ];
-    let spec = String::from_utf8(shards_dockerfile::agentfile::spec(&directives)).unwrap();
+    let spec = String::from_utf8(shards_agentfile::agentfile::spec(&directives)).unwrap();
     assert_eq!(
         spec,
         concat!(
@@ -559,7 +559,7 @@ fn the_normalized_agentfile_holds_what_was_declared() {
     let parsed: serde_json::Value = serde_json::from_str(&spec).unwrap();
     assert_eq!(parsed["schemaVersion"], 1);
     assert_eq!(
-        shards_dockerfile::agentfile::digest(b"").as_slice(),
+        shards_agentfile::agentfile::digest(b"").as_slice(),
         &b"sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"[..]
     );
 }
@@ -581,7 +581,7 @@ fn reached(text: &str) -> Result<(), String> {
             _ => None,
         })
         .collect();
-    shards_dockerfile::agentfile::reach(&directives).map_err(|e| String::from_utf8_lossy(&e).into_owned())
+    shards_agentfile::agentfile::reach(&directives).map_err(|e| String::from_utf8_lossy(&e).into_owned())
 }
 
 /// Reach is transitive (§9.5, §9.8): an internal-only domain, with a path of declared
@@ -663,8 +663,8 @@ fn reach_through_any_declared_edge_is_reach() {
 /// written from, which the daemon holds a run to, never the labels.
 #[test]
 fn a_normalized_agentfile_reads_back_as_its_grants() {
-    use shards_dockerfile::agentfile::{Grants, from_spec, grants, spec};
-    use shards_dockerfile::instructions::Kind;
+    use shards_agentfile::agentfile::{Grants, from_spec, grants, spec};
+    use shards_agentfile::instructions::Kind;
     let directives = |text: &str| -> Vec<Directive> {
         let parsed = parser::parse_as(text.as_bytes(), Dialect::Agentfile).unwrap();
         let ins = instructions::parse(&parsed, &Linter::default()).unwrap();
@@ -749,7 +749,7 @@ fn a_normalized_agentfile_reads_back_as_its_grants() {
 /// microVM's for it (`EXPOSE ... FOR`) open outward (§12 answer 6); each once.
 #[test]
 fn egress_is_what_joined_networks_open() {
-    use shards_dockerfile::instructions::Kind;
+    use shards_agentfile::instructions::Kind;
     let directives = |text: &str| -> Vec<_> {
         let parsed = parser::parse_as(text.as_bytes(), Dialect::Agentfile).unwrap();
         let ins = instructions::parse(&parsed, &Linter::default()).unwrap();
@@ -765,7 +765,7 @@ fn egress_is_what_joined_networks_open() {
             .collect()
     };
     let ports = |text: &str| -> Vec<String> {
-        shards_dockerfile::agentfile::egress(&directives(text))
+        shards_agentfile::agentfile::egress(&directives(text))
             .into_iter()
             .map(|p| String::from_utf8(p).unwrap())
             .collect::<std::collections::BTreeSet<_>>()
@@ -798,7 +798,7 @@ fn egress_is_what_joined_networks_open() {
 /// one a connection is for no directive says, and the build says so rather than guess.
 #[test]
 fn ingress_reaches_a_networks_one_member() {
-    use shards_dockerfile::instructions::Kind;
+    use shards_agentfile::instructions::Kind;
     let check = |text: &str| -> Result<(), String> {
         let parsed = parser::parse_as(text.as_bytes(), Dialect::Agentfile).unwrap();
         let ins = instructions::parse(&parsed, &Linter::default()).unwrap();
@@ -813,7 +813,7 @@ fn ingress_reaches_a_networks_one_member() {
                 _ => None,
             })
             .collect();
-        shards_dockerfile::agentfile::ingress(&directives)
+        shards_agentfile::agentfile::ingress(&directives)
             .map(drop)
             .map_err(|e| String::from_utf8_lossy(&e).into_owned())
     };
@@ -884,7 +884,7 @@ fn ingress_reaches_a_networks_one_member() {
 /// (§12 answer 6); a port also declared both ways or for ingress is publishable.
 #[test]
 fn egress_declared_ports_are_named_for_the_run() {
-    use shards_dockerfile::instructions::Kind;
+    use shards_agentfile::instructions::Kind;
     let parsed = parser::parse_as(
         b"FROM alpine\nAGENT a FROM ./a\nNETWORK out\nEXPOSE 443 9000-9010/udp AS egress FOR out\n\
           EXPOSE 8443 AS egress FOR out\nEXPOSE 8443 FOR out\nCONNECT a WITH a ON out\n",
@@ -903,7 +903,7 @@ fn egress_declared_ports_are_named_for_the_run() {
             _ => None,
         })
         .collect();
-    let got: Vec<String> = shards_dockerfile::agentfile::egress_declared(&directives)
+    let got: Vec<String> = shards_agentfile::agentfile::egress_declared(&directives)
         .into_iter()
         .map(|p| String::from_utf8(p).unwrap())
         .collect();
@@ -913,7 +913,7 @@ fn egress_declared_ports_are_named_for_the_run() {
 /// A remote MCP server's host and port, as its URL says or its scheme's own (§4.4).
 #[test]
 fn a_remote_mcp_servers_endpoint_is_its_urls() {
-    use shards_dockerfile::agentfile::mcp_endpoint;
+    use shards_agentfile::agentfile::mcp_endpoint;
     let e = |u: &str| mcp_endpoint(u.as_bytes()).map(|(h, p)| (String::from_utf8(h).unwrap(), p));
     assert_eq!(
         e("https://MCP.example.com/sse"),
@@ -940,7 +940,7 @@ fn a_remote_mcp_servers_endpoint_is_its_urls() {
 /// membership alone is no way from one agent to another.
 #[test]
 fn connections_grant_only_what_their_networks_let_in() {
-    use shards_dockerfile::instructions::Kind;
+    use shards_agentfile::instructions::Kind;
     let directives = |text: &str| -> Vec<_> {
         let parsed = parser::parse_as(text.as_bytes(), Dialect::Agentfile).unwrap();
         let ins = instructions::parse(&parsed, &Linter::default()).unwrap();
@@ -956,7 +956,7 @@ fn connections_grant_only_what_their_networks_let_in() {
             .collect()
     };
     let check = |text: &str| {
-        shards_dockerfile::agentfile::connections(&directives(text))
+        shards_agentfile::agentfile::connections(&directives(text))
             .map_err(|e| String::from_utf8_lossy(&e).into_owned())
     };
     let base = "FROM alpine\nAGENT a FROM ./a\nAGENT b FROM ./b\n";
@@ -989,7 +989,7 @@ fn connections_grant_only_what_their_networks_let_in() {
     assert!(e.contains("an internal network has no resolver"), "{e}");
     // Members of one network, never paired: no edge between them for reach to follow.
     assert_eq!(
-        shards_dockerfile::agentfile::reach(&directives(&format!(
+        shards_agentfile::agentfile::reach(&directives(&format!(
             "{base}NETWORK --internal inner\nNETWORK --egress=443 out\nEXPOSE 443 FOR out\n\
              CONNECT b WITH b ON inner\nCONNECT a WITH a ON inner out\n"
         )))
@@ -1002,7 +1002,7 @@ fn connections_grant_only_what_their_networks_let_in() {
 /// port of another refused, and Unix sockets, carried only where named, granted by name.
 #[test]
 fn networks_carry_only_their_protocols() {
-    use shards_dockerfile::instructions::Kind;
+    use shards_agentfile::instructions::Kind;
     let directives = |text: &str| -> Result<Vec<_>, String> {
         let parsed = parser::parse_as(text.as_bytes(), Dialect::Agentfile).unwrap();
         let ins = instructions::parse(&parsed, &Linter::default())
@@ -1020,7 +1020,7 @@ fn networks_carry_only_their_protocols() {
             .collect())
     };
     let check = |text: &str| -> Result<(), String> {
-        shards_dockerfile::agentfile::connections(&directives(text)?)
+        shards_agentfile::agentfile::connections(&directives(text)?)
             .map_err(|e| String::from_utf8_lossy(&e).into_owned())
     };
     let base = "FROM alpine\nAGENT a FROM ./a\nAGENT b FROM ./b\n";

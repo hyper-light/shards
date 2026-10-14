@@ -49,7 +49,7 @@ pub(super) fn parse_normalized_named(s: &str) -> Option<Named> {
     if s.len() == 64 && s.bytes().all(|b| matches!(b, b'a'..=b'f' | b'0'..=b'9')) {
         return None;
     }
-    let (domain, remainder) = split_docker_domain(s);
+    let (domain, remainder) = split_domain(s);
     let remote = remainder.split(':').next().unwrap_or_default();
     if remote.to_lowercase() != remote {
         return None;
@@ -58,7 +58,7 @@ pub(super) fn parse_normalized_named(s: &str) -> Option<Named> {
 }
 
 /// normalize.go's splitDockerDomain.
-fn split_docker_domain(name: &str) -> (String, String) {
+fn split_domain(name: &str) -> (String, String) {
     let Some((maybe_domain, maybe_remote)) = name.split_once('/') else {
         return ("docker.io".into(), format!("library/{name}"));
     };

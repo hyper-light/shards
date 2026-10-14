@@ -1,7 +1,7 @@
 package commands
 
 // buildx's own answers to `du`, for shards-cmdline's tests to match
-// (crates/cmdline/tests/buildx_du.rs). `generate` copies this file into buildx's commands
+// (crates/cmdline/tests/build_cache_usage.rs). `generate` copies this file into buildx's commands
 // package and runs it there: each case runs runDiskUsage itself, against a builder of the
 // remote driver whose BuildKit is a fake one here, which answers DiskUsage with the case's
 // records, as BuildKit would once it had filtered them. What it printed, its error, and

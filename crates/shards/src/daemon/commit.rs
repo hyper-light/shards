@@ -86,7 +86,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
         // json.Marshal writes one: what the new image keeps of it is what Go read.
         let base_config: serde_json::Value = match base.config.as_deref() {
             None => serde_json::Value::Null,
-            Some(c) => match shards_dockerfile::image::Image::from_json(c).and_then(|i| i.to_json()) {
+            Some(c) => match shards_agentfile::image::Image::from_json(c).and_then(|i| i.to_json()) {
                 Ok(json) => serde_json::from_str(&json).unwrap_or(serde_json::Value::Null),
                 Err(e) => return refuse(String::from_utf8_lossy(&e).into_owned()),
             },
@@ -100,7 +100,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
         let changes = parsed.many("change");
         if !changes.is_empty() {
             // moby's dockerfile.BuildFromConfig, before the config is merged (commit.go).
-            config = match shards_dockerfile::commit::build_from_config(&config, changes, "linux") {
+            config = match shards_agentfile::commit::build_from_config(&config, changes, "linux") {
                 Ok(c) => c,
                 Err(e) => return refuse(e),
             };

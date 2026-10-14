@@ -6,7 +6,7 @@
 
 use std::time::SystemTime;
 
-use shards_dockerfile::image::{Image as Config, json_string};
+use shards_agentfile::image::{Image as Config, json_string};
 use shards_image::reference::Reference;
 use shards_image::store::Image;
 
@@ -47,7 +47,7 @@ fn strings(list: &[String]) -> String {
 /// A time as Go's time.Time marshals it, in UTC: RFC 3339 with what fraction it has.
 fn time_json(t: SystemTime) -> String {
     let since = t.duration_since(SystemTime::UNIX_EPOCH).unwrap_or_default();
-    let mut time = shards_dockerfile::go::Time::from_unix(i64::try_from(since.as_secs()).unwrap_or(i64::MAX));
+    let mut time = shards_agentfile::go::Time::from_unix(i64::try_from(since.as_secs()).unwrap_or(i64::MAX));
     time.nanosecond = since.subsec_nanos();
     time.rfc3339_nano()
         .map_or_else(|_| "\"1970-01-01T00:00:00Z\"".into(), |s| format!("\"{s}\""))

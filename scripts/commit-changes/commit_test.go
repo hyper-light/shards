@@ -1,7 +1,7 @@
 package dockerfile
 
 // What moby's dockerd makes of `docker commit --change` and `docker import --change`, for
-// shards to match (crates/dockerfile/src/commit.rs, testdata/commit-changes.json).
+// shards to match (crates/agentfile/src/commit.rs, testdata/commit-changes.json).
 // `generate` copies this file into moby's daemon/builder/dockerfile and runs it there, on
 // Linux, as dockerd runs: BuildFromConfig applies each case's changes to its base config,
 // and the test records the config it returns, as the API writes it, or its error.

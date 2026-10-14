@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, mpsc};
 use std::time::{Duration, Instant};
 
-use shards_dockerfile::url as gourl;
+use shards_agentfile::url as gourl;
 use shards_registry::http::{Cancel, Client, Patience, Request};
 use shards_registry::url::{Scheme, Url};
 

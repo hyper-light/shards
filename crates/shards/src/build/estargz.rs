@@ -180,7 +180,7 @@ fn modtime(t: gotar::Time) -> String {
     } else {
         t.sec
     };
-    shards_dockerfile::go::Time::from_unix(secs)
+    shards_agentfile::go::Time::from_unix(secs)
         .rfc3339_nano()
         .unwrap_or_default()
 }
@@ -315,7 +315,7 @@ pub fn write<R: Read, O: Write>(src: R, out: O, level: i32) -> Result<(O, Writte
 /// entries (`null` where there are none), each field left out at its zero value.
 fn toc_json(entries: &[Entry]) -> Vec<u8> {
     use base64::Engine as _;
-    use shards_dockerfile::export::json_string;
+    use shards_agentfile::export::json_string;
     let mut out = String::from("{\"version\":1,\"entries\":");
     if entries.is_empty() {
         out.push_str("null");
@@ -398,7 +398,7 @@ fn toc_json(entries: &[Entry]) -> Vec<u8> {
         out.push(']');
     }
     out.push('}');
-    shards_dockerfile::json_indent_with(out.as_bytes(), b"\t")
+    shards_agentfile::json_indent_with(out.as_bytes(), b"\t")
 }
 
 /// `gzipFooterBytes`: an empty gzip member, stored, whose extra field (`SG`, its length,
@@ -469,7 +469,7 @@ fn entry<O: Write>(w: &mut Writer<O>, h: &Header) -> Result<Entry, String> {
 
 /// `cleanEntryName`: the name as `path.Clean` of `/` and it makes it, without its root.
 fn clean_name(name: &[u8]) -> Vec<u8> {
-    let joined = shards_dockerfile::go::join(&[b"/", name]);
+    let joined = shards_agentfile::go::join(&[b"/", name]);
     joined.strip_prefix(b"/").map(<[u8]>::to_vec).unwrap_or(joined)
 }
 

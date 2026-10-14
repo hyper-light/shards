@@ -1,6 +1,6 @@
 //! What `builder prune` and `buildx du` ask BuildKit for, from their `--filter`s: buildx
 //! v0.37.1's `toBuildkitPruneInfo` (commands/prune.go) over docker/cli's FilterOpt
-//! (opts/opts.go), held to buildx's own answers by tests/buildx_du.rs.
+//! (opts/opts.go), held to buildx's own answers by tests/build_cache_usage.rs.
 
 use std::collections::{BTreeMap, BTreeSet};
 

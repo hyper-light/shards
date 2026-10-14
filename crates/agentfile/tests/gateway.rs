@@ -10,10 +10,10 @@
 
 use std::collections::BTreeMap;
 
-use shards_dockerfile::llb::{Definition, Input, Meta, Op, OpKind};
-use shards_dockerfile::pb::{self, Carried, SourceInfo};
-use shards_dockerfile::plan::{self, EpochSource, Options, Resolved, Resolver};
-use shards_dockerfile::platform::Platform;
+use shards_agentfile::llb::{Definition, Input, Meta, Op, OpKind};
+use shards_agentfile::pb::{self, Carried, SourceInfo};
+use shards_agentfile::plan::{self, EpochSource, Options, Resolved, Resolver};
+use shards_agentfile::platform::Platform;
 
 fn testdata(name: &str) -> Vec<u8> {
     std::fs::read(
@@ -115,11 +115,11 @@ fn canonical(b: &[u8], kind: Kind) -> Vec<(u64, Vec<u8>)> {
 
 /// dockerui's ReadEntrypoint source: the Dockerfile, its .dockerignore and Docker's other
 /// casing, from the client's `dockerfile` directory.
-fn dockerfile_definition() -> Definition {
-    dockerfile_definition_of(SESSION)
+fn build_file_definition() -> Definition {
+    build_file_definition_of(SESSION)
 }
 
-fn dockerfile_definition_of(session: &[u8]) -> Definition {
+fn build_file_definition_of(session: &[u8]) -> Definition {
     let mut attrs = BTreeMap::new();
     attrs.insert(b"local.differ".to_vec(), b"none".to_vec());
     attrs.insert(
@@ -150,8 +150,8 @@ fn dockerfile_definition_of(session: &[u8]) -> Definition {
 }
 
 #[test]
-fn the_dockerfiles_own_definition_is_docker_dockerfiles() {
-    let m = pb::definition(&dockerfile_definition(), &Carried::default()).unwrap();
+fn the_build_files_own_definition_is_the_recorded_one() {
+    let m = pb::definition(&build_file_definition(), &Carried::default()).unwrap();
     let want = testdata("dockerfile-definition.pb");
     assert_eq!(
         canonical(&m.bytes, Kind::Definition),
@@ -216,7 +216,7 @@ fn captured_options() -> Options {
 /// message, and the errdefs.Source detail BuildKit's client prints the excerpt from,
 /// byte for byte (its Go stacks aside, which shards has none of).
 #[test]
-fn a_dockerfiles_error_carries_the_source_docker_dockerfile_gives() {
+fn a_parse_error_carries_its_source_lines() {
     let text = testdata("parse.Dockerfile");
     let err = plan::plan(&text, &captured_options(), &Captured).unwrap_err();
     assert_eq!(
@@ -225,7 +225,7 @@ fn a_dockerfiles_error_carries_the_source_docker_dockerfile_gives() {
     );
     assert_eq!(err.location, vec![vec![(3, 3)]]);
     let definition = pb::definition_json(
-        &dockerfile_definition_of(b"uxhd6dqtv1jb2lphceh83tpxa"),
+        &build_file_definition_of(b"uxhd6dqtv1jb2lphceh83tpxa"),
         &Carried::default(),
     )
     .unwrap();
@@ -242,10 +242,10 @@ fn a_dockerfiles_error_carries_the_source_docker_dockerfile_gives() {
 }
 
 #[test]
-fn a_dockerfiles_build_is_planned() {
+fn a_build_files_build_is_planned() {
     let text = testdata("build.Dockerfile");
     let planned = plan::plan(&text, &captured_options(), &Captured).unwrap();
-    let dockerfile = pb::definition(&dockerfile_definition(), &Carried::default()).unwrap();
+    let dockerfile = pb::definition(&build_file_definition(), &Carried::default()).unwrap();
     let carried = Carried {
         source: Some(SourceInfo {
             filename: b"Dockerfile",
