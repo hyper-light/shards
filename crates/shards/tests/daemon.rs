@@ -1182,7 +1182,12 @@ fn a_pool_of_none_serves_every_run() {
     }
     let (image, _) = served();
     let home = home_with("daemon-pool-none");
-    let env: [(&str, &OsStr); 2] = [("SHARDS_HOME", home.as_os_str()), ("SHARDS_POOL", "0".as_ref())];
+    // Each run's timing line (SHARDS_TIMING): where a slow one's time went, said if it is.
+    let env: [(&str, &OsStr); 3] = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_POOL", "0".as_ref()),
+        ("SHARDS_TIMING", "1".as_ref()),
+    ];
     let templates = home.join("templates").to_string_lossy().into_owned();
     for i in 0..3 {
         let t0 = Instant::now();
@@ -1191,8 +1196,9 @@ fn a_pool_of_none_serves_every_run() {
         if i > 0 {
             assert!(
                 t0.elapsed() < Duration::from_secs(10),
-                "run {i}: {:?}",
-                t0.elapsed()
+                "run {i}: {:?}\n{}",
+                t0.elapsed(),
+                run.stderr
             );
         }
     }

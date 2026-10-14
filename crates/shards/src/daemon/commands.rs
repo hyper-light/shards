@@ -179,7 +179,7 @@ const RTMAX: i64 = 64;
 /// A signal as dockerd reads it (moby/sys/signal ParseSignal): a number other than 0, or a
 /// name in any case, with or without `SIG`; `RTMIN+n` and `RTMAX-n` for n up to 15 and 14.
 pub(super) fn parse_signal(given: &str) -> Result<i64, String> {
-    let invalid = || format!("invalid signal: {given}");
+    let invalid = || format!("{given} is no signal: give its name (TERM, SIGKILL, RTMIN+3) or its number");
     if let Some(n) = atoi(given) {
         return if n == 0 { Err(invalid()) } else { Ok(n) };
     }
@@ -260,7 +260,9 @@ impl<D: crate::containers::Disk> Daemon<D> {
         // is made, and not with -d, which attaches nothing (docker/cli exec.go RunExec,
         // streams/in.go CheckTty).
         if exec.tty.is_some() && exec.interactive && !exec.detach && !exec.stdin_terminal {
-            return refuse("cannot attach stdin to a TTY-enabled container because stdin is not a terminal");
+            return refuse(
+                "-it: stdin is not a terminal, so it cannot be the command's: leave out -t, or run it from a terminal",
+            );
         }
         // One being started is seen through, as `docker exec` finds it started or not.
         self.await_start(&id);
@@ -268,15 +270,14 @@ impl<D: crate::containers::Disk> Daemon<D> {
         // its follower holds the inbox while it ends the run, which takes `runs`.
         if lock(&self.paused).contains(&id) {
             return refuse(&format!(
-                "Error response from daemon: Container {id} is paused, unpause the container before exec"
+                "shards: {} is paused: unpause it to run a command in it",
+                exec.container
             ));
         }
         let (base, socket, inbox) = match lock(&self.runs).get(&id) {
             Some(RunState::Tracked(run)) => (run.base.clone(), run.socket.clone(), run.inbox.clone()),
             _ => {
-                return refuse(&format!(
-                    "Error response from daemon: container {id} is not running"
-                ));
+                return refuse(&format!("shards: {} is not running", exec.container));
             }
         };
         // Beside its image's agents and harnesses, an exec is held to what its run was
@@ -288,7 +289,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
                 a.ids(&exec.user, &[])
             };
             if let Err(e) = refused {
-                return refuse(&format!("Error response from daemon: {e}"));
+                return refuse(&format!("shards: {e}"));
             }
         }
         let base = &base.options;
@@ -312,7 +313,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
         };
         let mut spec = match crate::spec::spec(&options, |_| None) {
             Ok(spec) => spec,
-            Err(e) => return refuse(&format!("Error response from daemon: {e}")),
+            Err(e) => return refuse(&format!("shards: {e}")),
         };
         // `--privileged`: every capability (moby daemon/exec_linux.go); the rest of its
         // process is the workload's.
@@ -336,9 +337,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
         let held = match conn.try_clone() {
             Ok(held) => held,
             Err(e) => {
-                return refuse(&format!(
-                    "Error response from daemon: holding the connection: {e}"
-                ));
+                return refuse(&format!("shards: holding the connection: {e}"));
             }
         };
         let exec_id = self.exec_events(&id, &options.argv);
@@ -355,9 +354,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
             held.execs_in_flight.retain(|(n, _)| *n != number);
             held.exec_ids.retain(|(n, _)| *n != number);
             drop(held);
-            refuse(&format!(
-                "Error response from daemon: the container's microVM: {e}"
-            ));
+            refuse(&format!("shards: the container's microVM: {e}"));
         }
     }
 
@@ -413,18 +410,14 @@ impl<D: crate::containers::Disk> Daemon<D> {
         let held = match conn.try_clone() {
             Ok(held) => held,
             Err(e) => {
-                return refuse(&format!(
-                    "Error response from daemon: holding the connection: {e}"
-                ));
+                return refuse(&format!("shards: holding the connection: {e}"));
             }
         };
         lock(&inbox).execs_in_flight.push((number, held));
         let fds = [conn.as_fd(), stdin.as_fd(), stdout.as_fd(), stderr.as_fd()];
         if let Err(e) = socket.send(kind::ATTACH_RUN, &payload, &fds) {
             lock(&inbox).execs_in_flight.retain(|(n, _)| *n != number);
-            refuse(&format!(
-                "Error response from daemon: the container's microVM: {e}"
-            ));
+            refuse(&format!("shards: the container's microVM: {e}"));
         }
     }
 
@@ -599,7 +592,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
             return 1;
         };
         let refuse = |said: String| {
-            reply.err(&format!("Error response from daemon: {said}"));
+            reply.err(&format!("shards: {said}"));
             1
         };
         let id = match self.resolve(given) {
@@ -654,7 +647,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
             return 1;
         };
         let refuse = |said: String| {
-            reply.err(&format!("Error response from daemon: {said}"));
+            reply.err(&format!("shards: {said}"));
             1
         };
         let id = match self.resolve(given) {
@@ -795,7 +788,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
             return 1;
         };
         let refuse = |said: String| {
-            reply.err(&format!("Error response from daemon: {said}"));
+            reply.err(&format!("shards: {said}"));
             1
         };
         let id = match self.resolve(given) {
@@ -871,7 +864,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
             return 1;
         };
         let refuse = |said: String| {
-            reply.err(&format!("Error response from daemon: {said}"));
+            reply.err(&format!("shards: {said}"));
             1
         };
         // As the client sends them (one query value, joined by spaces) and dockerd splits
@@ -896,11 +889,11 @@ impl<D: crate::containers::Disk> Daemon<D> {
         };
         self.await_start(&id);
         if !self.running(&id) {
-            return refuse(format!("container {id} is not running"));
+            return refuse(format!("{given} is not running"));
         }
         if lock(&self.paused).contains(&id) {
             return refuse(format!(
-                "container {id} is paused: its processes can be listed once it is unpaused"
+                "{given} is paused: its processes can be listed once it is unpaused"
             ));
         }
         let spec = shards_abi::run::Spec {
@@ -909,8 +902,8 @@ impl<D: crate::containers::Disk> Daemon<D> {
         };
         let quiet = match self.exec_quietly(&id, &spec, None, TOP_LIMIT, super::TAKE_TIMEOUT) {
             Ok(q) if q.status == Some(0) && !q.more => q,
-            Ok(_) => return refuse(format!("container {id}: its processes could not be read")),
-            Err(e) => return refuse(format!("container {id}: reading its processes: {e}")),
+            Ok(_) => return refuse(format!("{given}: its processes could not be read")),
+            Err(e) => return refuse(format!("{given}: reading its processes: {e}")),
         };
         let args: Vec<&str> = joined.split(' ').collect();
         let listed =
@@ -1113,7 +1106,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
             return 1;
         };
         let refuse = |said: String| {
-            reply.err(&format!("Error response from daemon: {said}"));
+            reply.err(&format!("shards: {said}"));
             1
         };
         if !crate::containers::valid_name(new) {
@@ -1125,11 +1118,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
         let id = match self.resolve(given) {
             Ok(id) => id,
             Err(e) => {
-                return refuse(
-                    e.strip_prefix("Error response from daemon: ")
-                        .unwrap_or(&e)
-                        .to_string(),
-                );
+                return refuse(e.strip_prefix("shards: ").unwrap_or(&e).to_string());
             }
         };
         let old = {
@@ -1138,12 +1127,13 @@ impl<D: crate::containers::Disk> Daemon<D> {
                 return refuse(format!("No such container: {given}"));
             };
             if old == new {
-                return refuse("Renaming a container with the same name as its current name".into());
+                return refuse(format!("{given} is named {new} already"));
             }
             if let Some(holder) = registry.name_taken(&new) {
                 let holder = holder.id.clone();
                 return refuse(format!(
-                    "Error when allocating new name: Conflict. The container name \"/{new}\" is already in use by container \"{holder}\". You have to remove (or rename) that container to be able to reuse that name."
+                    "{new}: the name is in use by microVM {}: remove or rename it to use the name",
+                    holder.get(..12).unwrap_or(&holder)
                 ));
             }
             if let Err(e) = registry.rename(&id, &new) {
@@ -1365,12 +1355,10 @@ impl<D: crate::containers::Disk> Daemon<D> {
             let mut matching = registry.id_prefixed(reference);
             match (matching.next(), matching.next()) {
                 (Some(_), Some(_)) => Err(format!(
-                    "Error response from daemon: multiple IDs found with provided prefix: {reference}"
+                    "shards: {reference} begins more than one microVM's ID: give more of it"
                 )),
                 (Some(only), None) => Ok(only.id.clone()),
-                (None, _) => Err(format!(
-                    "Error response from daemon: No such container: {reference}"
-                )),
+                (None, _) => Err(format!("shards: No such container: {reference}")),
             }
         };
         (registry, found)
@@ -1469,17 +1457,14 @@ impl<D: crate::containers::Disk> Daemon<D> {
                     Err(e) => return Step::Now(Err(e)),
                 };
                 self.await_start(&id);
+                let shown = reference.trim();
                 if !self.running(&id) {
-                    return Step::Now(Err(format!(
-                        "Error response from daemon: container {id} is not running"
-                    )));
+                    return Step::Now(Err(format!("shards: {shown} is not running")));
                 }
                 let paused = lock(&self.paused).contains(&id);
                 if freeze {
                     if paused {
-                        return Step::Now(Err(format!(
-                            "Error response from daemon: container {id} is already paused"
-                        )));
+                        return Step::Now(Err(format!("shards: {shown} is paused already")));
                     }
                     // Its last sample, for `stats` to show while it cannot answer.
                     let _ = self.usage_of(&id);
@@ -1499,23 +1484,17 @@ impl<D: crate::containers::Disk> Daemon<D> {
                             self.container_event(&id, "pause", &[]);
                             Ok(true)
                         }
-                        Err(e) => Err(format!(
-                            "Error response from daemon: cannot pause container {id}: {e}"
-                        )),
+                        Err(e) => Err(format!("shards: cannot pause {shown}: {e}")),
                     });
                 }
                 if !paused {
-                    return Step::Now(Err(format!(
-                        "Error response from daemon: Container {id} is not paused"
-                    )));
+                    return Step::Now(Err(format!("shards: {shown} is not paused")));
                 }
                 Step::Now(if self.thaw(&id) {
                     self.container_event(&id, "unpause", &[]);
                     Ok(true)
                 } else {
-                    Err(format!(
-                        "Error response from daemon: Cannot unpause container {id}: it is not running"
-                    ))
+                    Err(format!("shards: cannot unpause {shown}: it is not running"))
                 })
             },
             reply,
@@ -1630,12 +1609,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
                 Some(Ok(false)) => ("none", String::new()),
                 Some(Err(e)) => {
                     failed = true;
-                    (
-                        "error",
-                        e.strip_prefix("Error response from daemon: ")
-                            .unwrap_or(&e)
-                            .to_string(),
-                    )
+                    ("error", e.strip_prefix("shards: ").unwrap_or(&e).to_string())
                 }
                 None => ("none", String::new()),
             };
@@ -1869,13 +1843,9 @@ impl<D: crate::containers::Disk> Daemon<D> {
                     Err(_) if force => return Step::Now(Ok(false)),
                     Err(e) => return Step::Now(Err(e)),
                 };
-                let cannot = move |reference: &str, why: &str| {
-                    format!("Error response from daemon: cannot remove container \"{reference}\": {why}")
-                };
+                let cannot = move |reference: &str, why: &str| format!("shards: cannot remove {reference}: {why}");
                 if !lock(&self.removing).insert(id.clone()) {
-                    return Step::Now(Err(format!(
-                        "Error response from daemon: removal of container {reference} is already in progress"
-                    )));
+                    return Step::Now(Err(format!("shards: {reference} is being removed already")));
                 }
                 // Taken out of sight, set aside out of the registry's lock, which every
                 // run's end takes, then made durable: an `rm` answered is never undone by
@@ -1895,7 +1865,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
                                     }
                                     completed.map(|()| true).map_err(|e| {
                                         format!(
-                                            "Error response from daemon: container \"{reference}\" is removed, but its removal may not outlast a crash: {e}"
+                                            "shards: {reference} is removed, but its removal may not outlast a crash: {e}"
                                         )
                                     })
                                 }),
@@ -1913,7 +1883,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
                         lock(&self.removing).remove(&id);
                         return Step::Now(Err(cannot(
                             &reference,
-                            "container is restarting: stop the container before removing or force remove",
+                            "it is restarting: stop it first, or remove it with -f",
                         )));
                     }
                     self.exit_on_next(&id, 9);
@@ -1926,14 +1896,14 @@ impl<D: crate::containers::Disk> Daemon<D> {
                         lock(&self.removing).remove(&id);
                         return Step::Now(Err(cannot(
                             &reference,
-                            "container is paused and must be unpaused first",
+                            "it is paused: unpause it first",
                         )));
                     }
                     if !force {
                         lock(&self.removing).remove(&id);
                         return Step::Now(Err(cannot(
                             &reference,
-                            "container is running: stop the container before removing or force remove",
+                            "it is running: stop it first, or remove it with -f",
                         )));
                     }
                     self.exit_on_next(&id, 9);
@@ -1969,7 +1939,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
     /// where `docker run -d` prints it after.
     fn stop(&self, parsed: &Parsed, styled: bool, reply: &Reply<'_>) -> u8 {
         if parsed.changed("time") && parsed.changed("timeout") {
-            reply.err("conflicting options: cannot specify both --timeout and --time");
+            reply.err("--timeout and --time each give the grace: give one");
             return 1;
         }
         let told = (parsed.changed("timeout") || parsed.changed("time")).then(|| parsed.int("timeout"));
@@ -1998,9 +1968,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
                 if !self.running(&id) {
                     return Step::Now(Ok(true));
                 }
-                let cannot = |why: &str| {
-                    format!("Error response from daemon: cannot stop container: {reference}: {why}")
-                };
+                let cannot = |why: &str| format!("shards: cannot stop {reference}: {why}");
                 // Unless told, the container's own (`own_stop`).
                 let (own_signal, own_grace) = self.own_stop(&id);
                 let grace = told.map_or(own_grace, grace_of);
@@ -2049,8 +2017,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
         if !self.running(&id) {
             return Ok(id);
         }
-        let cannot =
-            |why: &str| format!("Error response from daemon: Cannot restart container {given}: {why}");
+        let cannot = |why: &str| format!("shards: cannot restart {given}: {why}");
         let (own_signal, own_grace) = self.own_stop(&id);
         let grace = timeout.map_or(own_grace, grace_of);
         let linux = match signal {
@@ -2103,9 +2070,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
             &|reference| {
                 // As the Docker CLI's client sends it (`resolve`), dockerd's words name it.
                 let reference = reference.trim();
-                let cannot = |why: &str| {
-                    format!("Error response from daemon: cannot kill container: {reference}: {why}")
-                };
+                let cannot = |why: &str| format!("shards: cannot kill {reference}: {why}");
                 let linux = if signal.is_empty() {
                     9
                 } else {
@@ -2126,13 +2091,13 @@ impl<D: crate::containers::Disk> Daemon<D> {
                 let id = match self.resolve(reference) {
                     Ok(id) => id,
                     Err(e) => {
-                        return Step::Now(Err(match e.strip_prefix("Error response from daemon: ") {
+                        return Step::Now(Err(match e.strip_prefix("shards: ") {
                             Some(said) => cannot(said),
                             None => e,
                         }));
                     }
                 };
-                let not_running = cannot(&format!("container {id} is not running"));
+                let not_running = cannot("it is not running");
                 self.await_start(&id);
                 // One waiting to restart runs, to dockerd: the kill stops it there.
                 if self.is_restarting(&id) {
@@ -2171,7 +2136,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
         let (list, all) = match self.ps_listing(parsed) {
             Ok(l) => (l.containers, l.all),
             Err(e) => {
-                reply.err(&format!("Error response from daemon: {e}"));
+                reply.err(&format!("shards: {e}"));
                 return 1;
             }
         };
@@ -2364,7 +2329,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
             {
                 Ok(sent) => sent,
                 Err(e) => {
-                    reply.err(&format!("invalid value for \"{flag}\": {e}"));
+                    reply.err(&format!("shards: --{flag} {given}: {e}"));
                     return 1;
                 }
             };
@@ -2374,9 +2339,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
             match gotime::parse_unix_timestamp(&sent) {
                 Ok(at) => *bound = at,
                 Err(e) => {
-                    reply.err(&format!(
-                        "Error response from daemon: invalid value for \"{flag}\": {e}"
-                    ));
+                    reply.err(&format!("shards: --{flag} {given}: {e}"));
                     return 1;
                 }
             }
@@ -2385,9 +2348,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
         let log = match LogFile::open(&dir) {
             Ok(log) => log,
             Err(e) => {
-                reply.err(&format!(
-                    "Error response from daemon: container {id}: its log: {e}"
-                ));
+                reply.err(&format!("shards: {reference}: its log: {e}"));
                 return 1;
             }
         };
@@ -2462,16 +2423,14 @@ impl<D: crate::containers::Disk> Daemon<D> {
             return undelivered(&e, reply);
         }
         if let Err(e) = read {
-            reply.err(&format!(
-                "Error response from daemon: container {id}: its log: {e}"
-            ));
+            reply.err(&format!("shards: {reference}: its log: {e}"));
             return 1;
         }
         // Output a log could not keep, it does not pretend to hold (audit A12).
         let lost = lock(&self.containers).get(&id).map_or(0, |c| c.log_lost);
         if lost > 0 {
             reply.err(&format!(
-                "shards: {lost} bytes of container {id}'s output could not be kept in its log"
+                "shards: {lost} bytes of {reference}'s output could not be kept in its log"
             ));
             return 1;
         }
@@ -2822,7 +2781,13 @@ mod tests {
         for bad in [
             "", "0", "SIG", "NOPE", "RTMIN+16", "RTMIN+01", "RTMAX-0", "1.5", " 9",
         ] {
-            assert_eq!(parse_signal(bad), Err(format!("invalid signal: {bad}")), "{bad}");
+            assert_eq!(
+                parse_signal(bad),
+                Err(format!(
+                    "{bad} is no signal: give its name (TERM, SIGKILL, RTMIN+3) or its number"
+                )),
+                "{bad}"
+            );
         }
         assert_eq!(linux_signal(31), Some(31));
         assert_eq!(linux_signal(34), Some(34));

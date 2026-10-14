@@ -90,10 +90,7 @@ fn familiar(name: &str) -> String {
 
 /// ErrImageDoesNotExist's words for `given`.
 fn missing(given: &str) -> Refused {
-    not_found(format!(
-        "Error response from daemon: {}",
-        super::images::not_found(given)
-    ))
+    not_found(format!("shards: {}", super::images::not_found(given)))
 }
 
 /// TagNameOnly's string: `latest` for a name that names neither tag nor digest.
@@ -104,8 +101,7 @@ fn tagged(r: &Reference) -> String {
 /// resolveAllReferences: the record `given` names, if it names one, and every record of
 /// its image.
 fn resolve_all(records: &[Record], given: &str) -> Result<(Option<Record>, Vec<Record>), Refused> {
-    let parsed =
-        AnyReference::parse(given).map_err(|e| refused(format!("Error response from daemon: {e}")))?;
+    let parsed = AnyReference::parse(given).map_err(|e| refused(format!("shards: {e}")))?;
     let mut id: Option<Digest> = None;
     let mut found: Option<Record> = None;
     if let Some(prefix) = super::images::truncated_id(given) {
@@ -133,9 +129,9 @@ fn resolve_all(records: &[Record], given: &str) -> Result<(Option<Record>, Vec<R
                     }
                     match &id {
                         Some(d) if *d != r.id => {
-                            return Err(not_found(
-                                "Error response from daemon: ambiguous reference".into(),
-                            ));
+                            return Err(not_found(format!(
+                                "shards: {given} names more than one image: give its whole name or ID"
+                            )));
                         }
                         Some(_) => {}
                         None => id = Some(r.id.clone()),
@@ -148,9 +144,7 @@ fn resolve_all(records: &[Record], given: &str) -> Result<(Option<Record>, Vec<R
         }
     } else {
         let AnyReference::Named(named) = &parsed else {
-            return Err(refused(
-                "Error response from daemon: invalid name reference".into(),
-            ));
+            return Err(refused(format!("shards: {given} is not an image's name")));
         };
         id = named.digest.clone();
         match records.iter().find(|r| r.name == tagged(named)) {
@@ -230,15 +224,16 @@ fn same_references(named: Option<&Reference>, all: &[Record]) -> Vec<Record> {
     same
 }
 
-/// imageDeleteConflict's words.
+/// Why image `reference` is not removed, `message`; and, where `-f` would remove it
+/// (`hard` false), that it would.
 fn conflict(reference: &str, hard: bool, message: &str) -> Refused {
     let force = if hard {
-        "cannot be forced"
+        ", which -f does not take from it"
     } else {
-        "must be forced"
+        ": -f removes it anyway"
     };
     refused(format!(
-        "Error response from daemon: conflict: unable to delete {reference} ({force}) - {message}"
+        "shards: cannot remove image {reference}: {message}{force}"
     ))
 }
 
@@ -256,10 +251,7 @@ fn check_conflict(id: &Digest, all: &[Record], users: &[User], mask: u8) -> Resu
         return Err(conflict(
             super::images::truncate_id(&image),
             true,
-            &format!(
-                "image is being used by running container {}",
-                super::images::truncate_id(&u.id)
-            ),
+            &format!("microVM {} runs it", super::images::truncate_id(&u.id)),
         ));
     }
     if mask & STOPPED != 0
@@ -268,17 +260,14 @@ fn check_conflict(id: &Digest, all: &[Record], users: &[User], mask: u8) -> Resu
         return Err(conflict(
             super::images::truncate_id(&image),
             false,
-            &format!(
-                "image is being used by stopped container {}",
-                super::images::truncate_id(&u.id)
-            ),
+            &format!("microVM {} was made of it", super::images::truncate_id(&u.id)),
         ));
     }
     if mask & ACTIVE_REFERENCE != 0 && all.len() > 1 {
         return Err(conflict(
             super::images::truncate_id(&image),
             false,
-            "image is referenced in multiple repositories",
+            "more than one name refers to it",
         ));
     }
     Ok(())
@@ -323,8 +312,8 @@ pub(super) fn delete(
             if id_prefix(&id, given) || explicit_dangling {
                 return delete_all(store, &id, &all, users, mask);
             }
-            let parsed = Reference::parse_normalized(&record.name)
-                .map_err(|e| refused(format!("Error response from daemon: {e}")))?;
+            let parsed =
+                Reference::parse_normalized(&record.name).map_err(|e| refused(format!("shards: {e}")))?;
             let same = same_references(Some(&parsed), &all);
             if same.len() != all.len() {
                 return untag(store, &same);
@@ -339,7 +328,7 @@ pub(super) fn delete(
                         &name,
                         false,
                         &format!(
-                            "container {} is using its referenced image {}",
+                            "microVM {} was made of it, {}",
                             super::images::truncate_id(&u.id),
                             super::images::truncate_id(&image)
                         ),
@@ -349,11 +338,11 @@ pub(super) fn delete(
                 if all.len() == 1 {
                     store
                         .alias(&format!("{DANGLING}{id}"), &record.name)
-                        .map_err(|e| refused(format!("Error response from daemon: {e}")))?;
+                        .map_err(|e| refused(format!("shards: {e}")))?;
                 }
                 store
                     .untag(&record.name)
-                    .map_err(|e| refused(format!("Error response from daemon: {e}")))?;
+                    .map_err(|e| refused(format!("shards: {e}")))?;
                 return Ok(vec![Removed::Untagged(name)]);
             }
             id
@@ -368,7 +357,7 @@ fn untag(store: &mut dyn Records, same: &[Record]) -> Result<Vec<Removed>, Refus
     for r in same {
         store
             .untag(&r.name)
-            .map_err(|e| refused(format!("Error response from daemon: {e}")))?;
+            .map_err(|e| refused(format!("shards: {e}")))?;
         if Reference::parse_normalized(&r.name).is_ok() {
             removed.push(Removed::Untagged(familiar(&r.name)));
         }
@@ -389,7 +378,7 @@ fn delete_all(
         check_conflict(id, all, users, RUNNING | extra)?;
         store
             .untag(&r.name)
-            .map_err(|e| refused(format!("Error response from daemon: {e}")))?;
+            .map_err(|e| refused(format!("shards: {e}")))?;
         if !r.dangling() {
             removed.push(Removed::Untagged(familiar(&r.name)));
         }
@@ -477,7 +466,7 @@ mod tests {
         assert!(fake.0.is_empty());
         assert_eq!(
             rmi(&mut fake, &[], "shp/nosuch:1", false),
-            Err("Error response from daemon: No such image: shp/nosuch:1".into())
+            Err("shards: No such image: shp/nosuch:1".into())
         );
 
         let b = |n| record(n, 'b');
@@ -486,7 +475,7 @@ mod tests {
         assert_eq!(
             rmi(&mut fake, &[], id, false),
             Err(format!(
-                "Error response from daemon: conflict: unable to delete {id} (must be forced) - image is referenced in multiple repositories"
+                "shards: cannot remove image {id}: more than one name refers to it: -f removes it anyway"
             ))
         );
         assert_eq!(fake.0.len(), 2);
@@ -504,11 +493,11 @@ mod tests {
         let running = [user(true, 'c')];
         assert_eq!(
             rmi(&mut fake, &running, "shp/u:1", false),
-            Err("Error response from daemon: conflict: unable to delete shp/u:1 (must be forced) - container ffffffffffff is using its referenced image cccccccccccc".into())
+            Err("shards: cannot remove image shp/u:1: microVM ffffffffffff was made of it, cccccccccccc: -f removes it anyway".into())
         );
         assert_eq!(
             rmi(&mut fake, &running, "cccccccccccc", true),
-            Err("Error response from daemon: conflict: unable to delete cccccccccccc (cannot be forced) - image is being used by running container ffffffffffff".into())
+            Err("shards: cannot remove image cccccccccccc: microVM ffffffffffff runs it, which -f does not take from it".into())
         );
         assert_eq!(
             rmi(&mut fake, &running, "shp/u:1", true),
@@ -526,7 +515,7 @@ mod tests {
         let stopped = [user(false, 'c')];
         assert_eq!(
             rmi(&mut fake, &stopped, "cccc", false),
-            Err("Error response from daemon: conflict: unable to delete cccccccccccc (must be forced) - image is being used by stopped container ffffffffffff".into())
+            Err("shards: cannot remove image cccccccccccc: microVM ffffffffffff was made of it: -f removes it anyway".into())
         );
         assert_eq!(
             rmi(&mut fake, &stopped, "cccc", true),
@@ -578,11 +567,11 @@ mod tests {
         );
         assert_eq!(
             rmi(&mut fake, &[], "abcd", true),
-            Err("Error response from daemon: ambiguous reference".into())
+            Err("shards: abcd names more than one image: give its whole name or ID".into())
         );
         assert_eq!(
             rmi(&mut fake, &[], "abc", false),
-            Err("Error response from daemon: No such image: abc:latest".into())
+            Err("shards: No such image: abc:latest".into())
         );
         assert_eq!(fake.0.len(), 2);
     }

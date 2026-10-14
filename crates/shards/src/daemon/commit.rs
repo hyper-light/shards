@@ -20,14 +20,14 @@ impl<D: crate::containers::Disk> Daemon<D> {
     pub(super) fn commit_image(&self, parsed: &Parsed, asker: &Asker, reply: &Reply<'_>) -> u8 {
         let _ = asker;
         let refuse = |said: String| {
-            reply.err(&format!("Error response from daemon: {said}"));
+            reply.err(&format!("shards: {said}"));
             1
         };
         let Some(given) = parsed.args.first() else {
             return 1;
         };
         if parsed.changed("pause") && parsed.changed("no-pause") {
-            reply.err("conflicting options: --no-pause and --pause cannot be used together");
+            reply.err("--pause and --no-pause: give one");
             return 1;
         }
         // The name it is given, read as the CLI reads it before it asks (commit.go).
@@ -35,7 +35,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
             None => None,
             Some(r) => match Reference::parse_normalized(r) {
                 Ok(r) if r.digest.is_some() => {
-                    reply.err("refusing to create a tag with a digest reference");
+                    reply.err("shards: a tag names an image by name and tag, not by digest");
                     return 1;
                 }
                 Ok(r) => Some(r.tag_name_only()),

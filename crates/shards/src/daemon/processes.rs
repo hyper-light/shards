@@ -262,9 +262,7 @@ impl<D: Disk> Daemon<D> {
             result
         })();
         if let Err(e) = followed {
-            reply.err(&format!(
-                "Error response from daemon: container {id}: its record of processes: {e}"
-            ));
+            reply.err(&format!("shards: {reference}: its record of processes: {e}"));
             return 1;
         }
         0

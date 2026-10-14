@@ -47,7 +47,9 @@ pub fn run(path: &str, args: &[OsString]) -> ExitCode {
     // Checked before anything is created, in the CLI's order, and said as plain errors:
     // exit 1, no prefix (docker/cli run.go runContainer, streams/in.go CheckTty).
     if request.tty.is_some() && request.interactive && !request.detach && !std::io::stdin().is_terminal() {
-        return refuse("cannot attach stdin to a TTY-enabled container because stdin is not a terminal");
+        return refuse(
+            "-it: stdin is not a terminal, so it cannot be the command's: leave out -t, or run it from a terminal",
+        );
     }
     let keys = parsed.string("detach-keys");
     let detach_keys = if keys.is_empty() {
@@ -205,7 +207,7 @@ pub fn restart(path: &str, args: &[OsString]) -> ExitCode {
     };
     let _ = std::io::stdout().write_all(parsed.notices.as_bytes());
     if parsed.changed("time") && parsed.changed("timeout") {
-        return refuse("conflicting options: cannot specify both --timeout and --time");
+        return refuse("--timeout and --time each give the grace: give one");
     }
     let signal = parsed.string("signal");
     let timeout = (parsed.changed("timeout") || parsed.changed("time")).then(|| parsed.int("timeout"));
@@ -353,9 +355,7 @@ fn inspected(container: &str) -> Result<(PathBuf, PathBuf, Identity, bool, bool)
             let (tty, open_stdin) = (words.next() == Some("true"), words.next() == Some("true"));
             Ok((home, daemon, identity, tty, open_stdin))
         }
-        Ok(_) => Err(refuse(&format!(
-            "Error response from daemon: No such container: {container}"
-        ))),
+        Ok(_) => Err(refuse(&format!("shards: No such container: {container}"))),
         Err(e) => Err(crate::cli::failed(&e)),
     }
 }
@@ -396,7 +396,9 @@ pub fn attach(path: &str, args: &[OsString]) -> ExitCode {
         };
         // In().CheckTty(!NoStdin, Tty).
         if tty && !no_stdin && !std::io::stdin().is_terminal() {
-            return refuse("cannot attach stdin to a TTY-enabled container because stdin is not a terminal");
+            return refuse(
+                "-it: stdin is not a terminal, so it cannot be the command's: leave out -t, or run it from a terminal",
+            );
         }
         let request = shards_ipc::Attach {
             container,
@@ -596,7 +598,7 @@ fn request(parsed: &Parsed) -> Result<Run, String> {
     let restart_policy = restart_policy(parsed.string("restart"))?;
     // A policy other than none restarts what --rm removes (opts.go parse).
     if parsed.bool("rm") && !matches!(restart_policy.0.as_str(), "" | "no") {
-        return Err("conflicting options: cannot specify both --restart and --rm".into());
+        return Err("--restart and --rm: a run removed as it ends is not restarted: give one".into());
     }
     Ok(Run {
         image: image.clone(),

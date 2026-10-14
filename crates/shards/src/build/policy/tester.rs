@@ -1018,10 +1018,11 @@ mod tests {
         for (i, (import, want)) in [
             ("data.builtin.defaults", Ok("test_a: PASS (allow=true)\n")),
             ("data.builtin.buildx_defaults", Ok("test_a: PASS (allow=true)\n")),
+            // The file looked for, missing: the error the host's file system gives after.
             (
                 "data.builtin.other",
                 Err(
-                    "compile: 1 error occurred: rego_compile_error: import data.builtin.other not found for module Dockerfile.rego: stat builtin/other.rego: no such file or directory",
+                    "compile: 1 error occurred: rego_compile_error: import data.builtin.other not found for module Dockerfile.rego: stat builtin/other.rego: ",
                 ),
             ),
         ]
@@ -1047,7 +1048,10 @@ mod tests {
                 assert_eq!(report(&summary, &mut out), 0, "{import}");
                 String::from_utf8(out).unwrap()
             });
-            assert_eq!(got, want.map(str::to_string).map_err(str::to_string), "{import}");
+            match (got, want) {
+                (Err(got), Err(want)) => assert!(got.starts_with(want), "{import}: {got}"),
+                (got, want) => assert_eq!(got, want.map(str::to_string).map_err(str::to_string), "{import}"),
+            }
         }
     }
 }

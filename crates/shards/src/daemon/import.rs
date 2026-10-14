@@ -58,7 +58,7 @@ impl<D: Disk> Daemon<D> {
     /// URL` for a URL, as the CLI shows dockerd's stream on a pipe.
     pub(super) fn import(&self, parsed: &Parsed, asker: &Asker, reply: &Reply<'_>) -> u8 {
         let refuse = |said: String| {
-            reply.err(&format!("Error response from daemon: {said}"));
+            reply.err(&format!("shards: {said}"));
             1
         };
         let Some(source) = parsed.args.first() else {
@@ -159,11 +159,11 @@ impl<D: Disk> Daemon<D> {
                 if let (Some(n), true) = (&named, one)
                     && let Err(e) = store.alias(&n.to_string(), &image.name)
                 {
-                    reply.err(&format!("Error response from daemon: {e}"));
+                    reply.err(&format!("shards: {e}"));
                     status = 1;
                 }
                 if let Some(Err(e)) = &image.unpacked {
-                    reply.err(&format!("Error response from daemon: {}: {e}", image.shown));
+                    reply.err(&format!("shards: {}: {e}", image.shown));
                     status = 1;
                 }
                 self.image_event(&image.digest, &image.digest, "import");
@@ -204,7 +204,7 @@ impl<D: Disk> Daemon<D> {
             }
             // Kept, as a pull keeps an image another platform's guests run.
             Err(e) => {
-                reply.err(&format!("Error response from daemon: {shown}: {e}"));
+                reply.err(&format!("shards: {shown}: {e}"));
                 1
             }
         }

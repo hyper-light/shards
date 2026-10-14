@@ -34,8 +34,7 @@ use crate::netplan::HOSTS;
 pub(crate) struct Failure {
     status: u32,
     pub(crate) message: String,
-    /// The daemon's refusal, not the runtime's failure: an exec's unknown user, which
-    /// `docker exec` reports as "Error response from daemon".
+    /// The daemon's refusal, not init's failure to start it: an exec's unknown user.
     daemon: bool,
 }
 

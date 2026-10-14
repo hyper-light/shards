@@ -128,7 +128,7 @@ pub fn command(
                         ..named.clone()
                     })
                     .collect(),
-                Err(e) => return refuse(&format!("Error response from daemon: {e}")),
+                Err(e) => return refuse(&format!("shards: {e}")),
             }
         } else {
             vec![named.clone()]
@@ -180,11 +180,9 @@ pub fn command(
             let (pulled, same) = match pulled {
                 Ok(p) => p,
                 Err(e) if all => {
-                    return refuse(&format!(
-                        "Error response from daemon: error pulling {reference}: {e}"
-                    ));
+                    return refuse(&format!("shards: pulling {reference}: {e}"));
                 }
-                Err(e) => return refuse(&format!("Error response from daemon: {e}")),
+                Err(e) => return refuse(&format!("shards: {e}")),
             };
             // Docker's: up to date when the tag already named this image, or when a
             // digest's content was all here.

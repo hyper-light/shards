@@ -1784,7 +1784,7 @@ impl<D: Disk> Daemon<D> {
         let creating = run.create;
         let refuse = |said: &str| {
             if creating {
-                say(&format!("Error response from daemon: {said}"));
+                say(&format!("shards: {said}"));
                 let _ = shards_ipc::send(conn, kind::EXIT, &[1], &[]);
             } else {
                 refuse(said);
@@ -1827,11 +1827,9 @@ impl<D: Disk> Daemon<D> {
         let refuse = |said: &str| match &asked_again {
             Some(given) => {
                 if restarting {
-                    say(&format!(
-                        "Error response from daemon: Cannot restart container {given}: {said}"
-                    ));
+                    say(&format!("shards: cannot restart {given}: {said}"));
                 } else {
-                    say(&format!("Error response from daemon: {said}"));
+                    say(&format!("shards: {said}"));
                 }
                 let _ = shards_ipc::send(conn, kind::EXIT, &[1], &[]);
             }
@@ -2377,9 +2375,7 @@ impl<D: Disk> Daemon<D> {
             }
         };
         if let Some(e) = unbound {
-            start = network::Start::Fails(format!(
-                "failed to set up container networking: driver failed programming external connectivity on endpoint {name} ({id}): {e}"
-            ));
+            start = network::Start::Fails(format!("-p: publishing {name}'s ports: {e}"));
         }
         match &again {
             // `docker start` names what it started, once it has (container/start.go).
@@ -2790,9 +2786,7 @@ impl<D: Disk> Daemon<D> {
         self.settle();
         let id = self.resolve(given)?;
         if lock(&self.removing).contains(&id) {
-            return Err(
-                "Error response from daemon: container is marked for removal and cannot be started".into(),
-            );
+            return Err(format!("shards: {given} is being removed: it cannot start"));
         }
         // A visit to its files (visit.rs) ends first; it starts only where no run is.
         loop {
@@ -2813,13 +2807,11 @@ impl<D: Disk> Daemon<D> {
         let found = std::fs::read(dir.join(REQUEST))
             .ok()
             .and_then(|b| Run::decode(&b))
-            .ok_or_else(|| {
-                format!("Error response from daemon: container {id} was not made to be started again")
-            })
+            .ok_or_else(|| format!("shards: {given} was not made to be started again"))
             .and_then(|stored| {
                 newest_log(&dir)
                     .map(|log| (stored, log))
-                    .map_err(|e| format!("Error response from daemon: container {id}: its log: {e}"))
+                    .map_err(|e| format!("shards: {given}: its log: {e}"))
             });
         match found {
             Ok((stored, log)) => Ok(Some((id, log, stored))),
@@ -2869,11 +2861,7 @@ impl<D: Disk> Daemon<D> {
         let store = crate::volumes::Store::new(&self.home);
         let from = |id: &str| -> Result<Vec<crate::volumes::MountPoint>, String> {
             let (registry, found) = self.resolve_held(lock(&self.containers), id);
-            let found = found.map_err(|e| {
-                e.strip_prefix("Error response from daemon: ")
-                    .unwrap_or(&e)
-                    .to_string()
-            })?;
+            let found = found.map_err(|e| e.strip_prefix("shards: ").unwrap_or(&e).to_string())?;
             Ok(registry.get(&found).map(|c| c.mounts.clone()).unwrap_or_default())
         };
         let image_volumes: Vec<String> = prepared
@@ -3018,8 +3006,8 @@ impl<D: Disk> Daemon<D> {
                 let name = given.strip_prefix('/').unwrap_or(given);
                 match registry.name_taken(name) {
                     Some(holder) => Err(format!(
-                        "Conflict. The container name \"/{name}\" is already in use by container \"{}\". You have to remove (or rename) that container to be able to reuse that name.",
-                        holder.id
+                        "--name {name}: the name is in use by microVM {}: remove or rename it to use the name",
+                        holder.id.get(..12).unwrap_or(&holder.id)
                     )),
                     None => Ok(name.to_string()),
                 }
@@ -3986,7 +3974,7 @@ impl<D: Disk> Daemon<D> {
         if let Some(client) = inbox.detached.take() {
             let said = said.as_deref().unwrap_or_default();
             let (text, exits) = if inbox.named.is_some() {
-                (format!("Error response from daemon: {said}"), 1)
+                (format!("shards: {said}"), 1)
             } else {
                 crate::spec::not_run(said)
             };
@@ -4449,10 +4437,12 @@ impl<D: Disk> Daemon<D> {
         prepared: &Prepared,
         volumes: &[((OwnedFd, bool, OsString), String)],
     ) -> Result<Ready, String> {
-        let not_found = || format!("joining network namespace of container: No such container: {name}");
+        let not_found = || format!("--network container:{name}: No such container: {name}");
         let found = self.resolve(name).map_err(|_| not_found())?;
         if found == id {
-            return Err("cannot join own network namespace".into());
+            return Err(format!(
+                "--network container:{name}: a run cannot join its own microVM"
+            ));
         }
         let (shown, restarting) = lock(&self.containers)
             .get(&found)
@@ -4481,12 +4471,12 @@ impl<D: Disk> Daemon<D> {
                 "exited"
             };
             return Err(format!(
-                "cannot join network namespace of a non running container: container {shown} is {state}"
+                "--network container:{shown}: {shown} is {state}, and a run joins a running one's microVM"
             ));
         };
         if lock(&self.paused).contains(&provider) || lock(&self.paused).contains(&found) {
             return Err(format!(
-                "cannot join the network of container {shown}, which is paused: its microVM is stopped until it is unpaused"
+                "--network container:{shown}: {shown} is paused: its microVM is stopped until it is unpaused"
             ));
         }
         let given = lock(&self.joiner_links)
@@ -6474,7 +6464,7 @@ mod tests {
             assert_eq!((status, out.as_str()), (1, ""));
             assert_eq!(
                 err,
-                "Error response from daemon: cannot remove container \"racer\": container is running: stop the container before removing or force remove\n"
+                "shards: cannot remove racer: it is running: stop it first, or remove it with -f\n"
             );
             say(&vm, kind::STARTED, &[]);
             say(&vm, kind::DONE, &[7]);
@@ -7820,8 +7810,7 @@ mod tests {
                 (
                     1,
                     String::new(),
-                    "Error response from daemon: cannot remove container \"staying\": a failing disk\n"
-                        .into()
+                    "shards: cannot remove staying: a failing disk\n".into()
                 )
             );
             let (_, out, _) = t.ask(&["ps", "-a"]);
@@ -7863,16 +7852,14 @@ mod tests {
             // Resolved: a container with no ports says none.
             assert_eq!(t.ask(&["port", "  racer  "]), (0, String::new(), String::new()));
             assert_eq!(t.ask(&["rm", " racer "]), (0, " racer \n".into(), String::new()));
-            // dockerd's words name a reference as the client sent it: trimmed.
-            let (id, starting, vm) = running(t, "busy");
+            // A reference is named as the client sent it: trimmed.
+            let (_, starting, vm) = running(t, "busy");
             assert_eq!(
                 t.ask(&["rm", " busy "]),
                 (
                     1,
                     String::new(),
-                    "Error response from daemon: cannot remove container \"busy\": container is running: \
-                     stop the container before removing or force remove\n"
-                        .into()
+                    "shards: cannot remove busy: it is running: stop it first, or remove it with -f\n".into()
                 )
             );
             say(&vm, kind::DONE, &[0]);
@@ -7882,7 +7869,7 @@ mod tests {
                 (
                     1,
                     String::new(),
-                    format!("Error response from daemon: cannot kill container: busy: container {id} is not running\n")
+                    "shards: cannot kill busy: it is not running\n".to_string()
                 )
             );
         });
@@ -8911,7 +8898,7 @@ mod tests {
             let _ = starting.run.join();
             let (status, _, err) = ask(&t.daemon, &["logs", "racer"]);
             assert_eq!(status, 1, "{err}");
-            assert!(err.contains("7 bytes of container"), "{err}");
+            assert!(err.contains("7 bytes of racer's output"), "{err}");
             assert_eq!(lock(&t.daemon.containers).get(&id).map(|c| c.log_lost), Some(7));
 
             let gone = t.create("gone");

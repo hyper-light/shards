@@ -133,7 +133,7 @@ impl<D: Disk> Daemon<D> {
             match done {
                 Ok(()) => reply.out(given),
                 Err(e) => {
-                    reply.err(&format!("Error response from daemon: {e}"));
+                    reply.err(&format!("shards: {e}"));
                     status = 1;
                 }
             }
@@ -147,16 +147,12 @@ impl<D: Disk> Daemon<D> {
     /// Container `given` updated: merged, kept with its request (which its next start
     /// and inspect read), and written to its workload's cgroup if it runs.
     fn update_one(&self, given: &str, new: &Resources, policy: Option<&(String, i64)>) -> Result<(), String> {
-        let id = self.resolve(given).map_err(|e| {
-            e.strip_prefix("Error response from daemon: ")
-                .unwrap_or(&e)
-                .to_string()
-        })?;
-        let cannot = |e: String| format!("Cannot update container {id}: {e}");
+        let id = self
+            .resolve(given)
+            .map_err(|e| e.strip_prefix("shards: ").unwrap_or(&e).to_string())?;
+        let cannot = |e: String| format!("cannot update {given}: {e}");
         if lock(&self.removing).contains(&id) {
-            return Err(cannot(
-                r#"container is marked for removal and cannot be "update""#.into(),
-            ));
+            return Err(cannot("it is being removed".into()));
         }
         let dir = lock(&self.containers).dir(&id);
         let mut run = std::fs::read(dir.join(REQUEST))

@@ -61,7 +61,7 @@ pub(super) fn document(image: &Image, record: Option<&str>) -> Result<String, St
     let config = match image.config.as_deref() {
         Some(b) => Some(Config::from_json(b).map_err(|e| {
             format!(
-                "failed to read image config: could not deserialize image config: {}",
+                "the image's config does not read: {}",
                 String::from_utf8_lossy(&e)
             )
         })?),
@@ -276,13 +276,13 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
             Ok(Some(store)) => match store.named() {
                 Ok(images) => (Some(store), images),
                 Err(e) => {
-                    reply.err(&format!("Error response from daemon: {e}"));
+                    reply.err(&format!("shards: {e}"));
                     return 1;
                 }
             },
             Ok(None) => (None, Vec::new()),
             Err(e) => {
-                reply.err(&format!("Error response from daemon: {e}"));
+                reply.err(&format!("shards: {e}"));
                 return 1;
             }
         };
@@ -298,7 +298,7 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
             });
             match read.and_then(|image| document(&image, record_name(given).as_deref())) {
                 Ok(d) => documents.push(super::inspect_doc::image_value(&d)),
-                Err(e) => errors.push(format!("Error response from daemon: {e}")),
+                Err(e) => errors.push(format!("shards: {e}")),
             }
         }
         inspected(parsed.string("format"), &documents, errors, styled, reply)
@@ -326,12 +326,9 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
             Ok(Some(store)) => store,
             Ok(None) => {
                 let given = args.first().map(String::as_str).unwrap_or_default();
-                return refuse(&format!(
-                    "Error response from daemon: {}",
-                    super::images::not_found(given)
-                ));
+                return refuse(&format!("shards: {}", super::images::not_found(given)));
             }
-            Err(e) => return refuse(&format!("Error response from daemon: {e}")),
+            Err(e) => return refuse(&format!("shards: {e}")),
         };
         let lease = store.lease();
         let images = match lease
@@ -340,7 +337,7 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
             .and_then(|_| store.named().map_err(|e| e.to_string()))
         {
             Ok(images) => images,
-            Err(e) => return refuse(&format!("Error response from daemon: {e}")),
+            Err(e) => return refuse(&format!("shards: {e}")),
         };
         let mut asked: Vec<(&shards_image::store::Named, Option<String>)> = Vec::with_capacity(args.len());
         for given in args {
@@ -372,10 +369,7 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
                     .collect();
                 tagged.sort_by(|a, b| a.0.cmp(&b.0));
                 if tagged.is_empty() {
-                    return refuse(&format!(
-                        "Error response from daemon: No such image: {}:latest",
-                        repo.familiar()
-                    ));
+                    return refuse(&format!("shards: No such image: {}:latest", repo.familiar()));
                 }
                 for (name, image) in tagged {
                     asked.push((image, Some(name)));
@@ -384,7 +378,7 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
             }
             let image = match resolved {
                 Ok(image) => image,
-                Err(e) => return refuse(&format!("Error response from daemon: {e}")),
+                Err(e) => return refuse(&format!("shards: {e}")),
             };
             // Asked by name, the name it was found by; by ID or digest, none.
             let name = match AnyReference::parse(given) {
@@ -406,7 +400,7 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
                     Ok(image) => {
                         read.insert(&named.id, image);
                     }
-                    Err(e) => return refuse(&format!("Error response from daemon: {e}")),
+                    Err(e) => return refuse(&format!("shards: {e}")),
                 }
             }
         }
@@ -429,7 +423,7 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
                 }
                 0
             }
-            Err(e) => refuse(&format!("Error response from daemon: {e}")),
+            Err(e) => refuse(&format!("shards: {e}")),
         }
     }
 }
@@ -466,7 +460,7 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
             match found {
                 Ok(c) => documents.push(self.container_value(&c, parsed.bool("size"))),
                 Err(e) if e.starts_with("Error response") => errors.push(e),
-                Err(e) => errors.push(format!("Error response from daemon: {e}")),
+                Err(e) => errors.push(format!("shards: {e}")),
             }
         }
         inspected(parsed.string("format"), &documents, errors, styled, reply)
@@ -748,13 +742,12 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
                     ));
                 }
                 match kind {
-                    "network" => Err(format!("Error response from daemon: network {given} not found")),
-                    "volume" => Err(format!("Error response from daemon: get {given}: no such volume")),
-                    "plugin" => Err(format!("Error response from daemon: plugin {} not found", go_quote(given))),
-                    "node" | "service" | "task" | "secret" | "config" => Err(
-                        "Error response from daemon: This node is not a swarm manager: shards has no swarm mode"
-                            .into(),
-                    ),
+                    "network" => Err(format!("shards: no network is named {given}")),
+                    "volume" => Err(format!("shards: no volume is named {given}")),
+                    "plugin" => Err(format!("shards: shards has no plugins: {}", go_quote(given))),
+                    "node" | "service" | "task" | "secret" | "config" => {
+                        Err("shards: shards has no swarm mode".into())
+                    }
                     _ => Err(format!("error: no such object: {given}")),
                 }
             })();
@@ -792,7 +785,7 @@ fn daemon_said(e: &str) -> String {
     if e.starts_with("Error response") {
         e.to_owned()
     } else {
-        format!("Error response from daemon: {e}")
+        format!("shards: {e}")
     }
 }
 

@@ -3613,6 +3613,33 @@ No run-time labels, relays or declassifiers (§12 answer 14, decided by the user
 an internal-only domain to the world (D58), so there is no data to label. Code mode is
 D136.
 
+### D158. What shards refuses, in its own words
+
+A refusal says what shards does with its microVMs and how to get what was asked; it does
+not repeat what dockerd's or the Docker CLI's code says. An error reads `shards: MESSAGE`,
+as Unix tools name themselves; the Docker client's `Error response from daemon:` is gone
+(on a terminal the panel showed the message alone already). What scripts match is kept in
+each message: `No such container: NAME`, `No such image: NAME`, `is not running`,
+`port is already allocated`, `address already in use`, `executable file not found`; exit
+statuses are unchanged. Compose and the Docker CLI decide by the API's status codes, not
+by these texts: Compose matches its own "no such service" (cmd/compose/run.go), the CLI
+the API's own words where it tries kinds of object (cli/command/system/inspect.go).
+
+- **Reworded.** The microVMs' lifecycle (exec, pause, unpause, rm, stop, restart, kill,
+  rename, logs, top, update); a run's network checks (what a joiner takes of its
+  provider, the host's and no network, addresses, link-local addresses, endpoint
+  sysctls); the network commands (connect, disconnect, create, rm, inspect, and the subnet
+  checks, which leaked Go's netip errors); port publishing (another run's port, or another
+  program's); image tags and removals (which microVM uses an image, and whether `-f`
+  would remove it); volumes; the time windows of logs and events; signals; flags given
+  together. An exec that does not start says `shards: cannot start the command: WHY`.
+  Each names the flag, or the run as it was given, never a 64-digit ID.
+- **Not yet.** The build's texts, which its oracles hold byte for byte to BuildKit's; the
+  CLI's usage and help texts and its checks of flags' values (crates/cmdline), byte for
+  byte docker/cli's when piped; filters' and
+  `inspect`'s validation; the Go errors of an image config that does not read; the
+  guest's network setup errors.
+
 ### D157. shards' own names first; Docker's and buildx's still read
 
 What a user writes or sets for shards carries shards' own name, as its build file is an
@@ -3706,7 +3733,8 @@ inside the microVM the other runs in (D119).
   `none` leaving the microVM's; umask not applied, or not to execs; the layer not sized;
   `--cgroupns host` not entered; a joiner not entering the workload's IPC namespace; a
   joiner's donor's /dev/shm not copied from its namespace; sharing without the donor's
-  leave; `--uts host` not naming the run by its host).
+  leave; `--uts host` not naming the run by its host; a joiner's writable layer not
+  sized; a joiner not in the microVM's cgroup namespace with `--cgroupns host`).
 
 ### D155. A run's CPUs, real-time time, isolation and runtime, as its microVM has them
 

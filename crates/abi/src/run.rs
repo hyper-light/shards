@@ -244,9 +244,8 @@ impl HostListen {
     }
 }
 
-/// Why an exec did not start, as its [`kind::SYSTEM_ERR`] says first: the runtime could
-/// not start it (`docker exec`'s "OCI runtime exec failed"), or the daemon refuses it
-/// (an unknown user: "Error response from daemon").
+/// Why an exec did not start, as its [`kind::SYSTEM_ERR`] says first: the microVM's init
+/// could not start it, or the daemon refuses it (an unknown user).
 pub mod exec_failed {
     pub const RUNTIME: u8 = 0;
     pub const DAEMON: u8 = 1;

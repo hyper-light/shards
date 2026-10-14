@@ -369,16 +369,14 @@ impl<D: crate::containers::Disk> Daemon<D> {
             {
                 Ok(sent) => sent,
                 Err(e) => {
-                    reply.err(&format!("invalid value for \"{flag}\": {e}"));
+                    reply.err(&format!("shards: --{flag} {given}: {e}"));
                     return 1;
                 }
             };
             match gotime::parse_unix_timestamp(&sent) {
                 Ok(at) => *bound = at,
                 Err(e) => {
-                    reply.err(&format!(
-                        "Error response from daemon: invalid value for '{flag}': {e}"
-                    ));
+                    reply.err(&format!("shards: --{flag} {given}: {e}"));
                     return 1;
                 }
             }
@@ -388,7 +386,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
             && u < s
         {
             reply.err(&format!(
-                "Error response from daemon: `since` time ({}) cannot be after `until` time ({})",
+                "shards: --since {} is after --until {}",
                 parsed.string("since"),
                 parsed.string("until")
             ));

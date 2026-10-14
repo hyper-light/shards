@@ -153,9 +153,9 @@ fn kv_map(given: &[String]) -> BTreeMap<String, String> {
         .collect()
 }
 
-/// Go's net.ParseCIDR of `s`: its address and its network, or the error's words.
+/// `s` as ADDRESS/BITS (Go's net.ParseCIDR): its address and its network, or why not.
 fn go_parse_cidr(s: &str) -> Result<(std::net::IpAddr, std::net::IpAddr, u8), String> {
-    let bad = || format!("invalid CIDR address: {s}");
+    let bad = || format!("{s} is no subnet: give ADDRESS/BITS, as 10.10.0.0/16");
     let (addr, bits) = s.split_once('/').ok_or_else(bad)?;
     let ip: std::net::IpAddr = addr.parse().map_err(|_| bad())?;
     let bits: u8 = bits.parse().map_err(|_| bad())?;
@@ -190,22 +190,19 @@ fn net_contains(net: std::net::IpAddr, bits: u8, ip: std::net::IpAddr) -> bool {
 
 /// subnetMatches(subnet, data): whether `data`'s address is in `subnet`.
 fn subnet_matches(subnet: &str, data: &str) -> Result<bool, String> {
-    let (_, net, bits) = go_parse_cidr(subnet).map_err(|e| format!("invalid subnet: {e}"))?;
+    let (_, net, bits) = go_parse_cidr(subnet).map_err(|e| format!("--subnet {e}"))?;
     Ok(go_parse_cidr(data).is_ok_and(|(ip, _, _)| net_contains(net, bits, ip)))
 }
 
-/// netip.ParsePrefix's words for `s`, as the CLI prints them.
+/// `s` as ADDRESS/BITS, the address and the prefix's length (Go's netip.ParsePrefix: no
+/// zero before a length), or why not.
 fn netip_prefix(s: &str) -> Result<(std::net::IpAddr, u8), String> {
-    let quoted = shards_cmdline::go::quote(s);
     let Some((addr, bits)) = s.split_once('/') else {
-        return Err(format!("netip.ParsePrefix({quoted}): no '/'"));
+        return Err(format!("--subnet {s}: give ADDRESS/BITS, as 10.10.0.0/16"));
     };
-    let ip: std::net::IpAddr = addr.parse().map_err(|_| {
-        format!(
-            "netip.ParsePrefix({quoted}): ParseAddr({}): unable to parse IP",
-            shards_cmdline::go::quote(addr)
-        )
-    })?;
+    let ip: std::net::IpAddr = addr
+        .parse()
+        .map_err(|_| format!("--subnet {s}: {addr} is no IP address"))?;
     let ok = !bits.is_empty()
         && bits.bytes().all(|b| b.is_ascii_digit())
         && !(bits.len() > 1 && bits.starts_with('0'));
@@ -215,14 +212,14 @@ fn netip_prefix(s: &str) -> Result<(std::net::IpAddr, u8), String> {
         u32::MAX
     };
     if !ok {
-        return Err(format!(
-            "netip.ParsePrefix({quoted}): bad bits after slash: {}",
-            shards_cmdline::go::quote(bits)
-        ));
+        return Err(format!("--subnet {s}: {bits} is no prefix length"));
     }
     let max = if ip.is_ipv4() { 32 } else { 128 };
     if n > max {
-        return Err(format!("netip.ParsePrefix({quoted}): prefix length out of range"));
+        return Err(format!(
+            "--subnet {s}: an IPv{} prefix is at most {max} bits",
+            if max == 32 { 4 } else { 6 }
+        ));
     }
     Ok((ip, u8::try_from(n).unwrap_or(0)))
 }
@@ -237,8 +234,9 @@ struct Asked {
     aux: BTreeMap<String, String>,
 }
 
-/// createIPAMConfig (cli/command/network/create.go, consolidateIpam), in its order and
-/// words, which the CLI prints bare.
+/// The subnets, ranges, gateways and auxiliary addresses a network is made with, each
+/// range, gateway and address matched to its subnet, checked in the order createIPAMConfig
+/// checks them (cli/command/network/create.go, consolidateIpam).
 fn consolidate(
     subnets: &[String],
     ranges: &[String],
@@ -246,13 +244,13 @@ fn consolidate(
     aux: &BTreeMap<String, String>,
 ) -> Result<Vec<Asked>, String> {
     if subnets.len() < ranges.len() || subnets.len() < gateways.len() {
-        return Err("every ip-range or gateway must have a corresponding subnet".into());
+        return Err("--ip-range and --gateway each belong to a --subnet: give its subnet".into());
     }
     let mut configs: Vec<Asked> = Vec::new();
     for s in subnets {
         for k in &configs {
             if subnet_matches(s, &k.subnet)? || subnet_matches(&k.subnet, s)? {
-                return Err("multiple overlapping subnet configuration is not supported".into());
+                return Err(format!("--subnet {s} overlaps --subnet {}", k.subnet));
             }
         }
         netip_prefix(s)?;
@@ -267,7 +265,7 @@ fn consolidate(
             if subnet_matches(&c.subnet, r)? {
                 if !c.ip_range.is_empty() {
                     return Err(format!(
-                        "cannot configure multiple ranges ({r}, {}) on the same subnet ({})",
+                        "--ip-range {r} and --ip-range {}: subnet {} takes one range",
                         c.ip_range, c.subnet
                     ));
                 }
@@ -276,18 +274,18 @@ fn consolidate(
             }
         }
         if !matched {
-            return Err(format!("no matching subnet for range {r}"));
+            return Err(format!("--ip-range {r}: in none of the subnets given"));
         }
     }
     for g in gateways {
         let mut matched = false;
         for c in &mut configs {
-            let (_, net, bits) = go_parse_cidr(&c.subnet).map_err(|e| format!("invalid subnet: {e}"))?;
+            let (_, net, bits) = go_parse_cidr(&c.subnet).map_err(|e| format!("--subnet {e}"))?;
             let ip: Option<std::net::IpAddr> = g.parse().ok();
             if ip.is_some_and(|ip| net_contains(net, bits, ip)) {
                 if !c.gateway.is_empty() {
                     return Err(format!(
-                        "cannot configure multiple gateways ({g}, {}) for the same subnet ({})",
+                        "--gateway {g} and --gateway {}: subnet {} takes one gateway",
                         c.gateway, c.subnet
                     ));
                 }
@@ -296,29 +294,28 @@ fn consolidate(
             }
         }
         if !matched {
-            return Err(format!("no matching subnet for gateway {g}"));
+            return Err(format!("--gateway {g}: in none of the subnets given"));
         }
     }
     for (name, value) in aux {
         if value.is_empty() {
             continue;
         }
-        let ip: std::net::IpAddr = value.parse().map_err(|_| {
-            format!(
-                "ParseAddr({}): unable to parse IP",
-                shards_cmdline::go::quote(value)
-            )
-        })?;
+        let ip: std::net::IpAddr = value
+            .parse()
+            .map_err(|_| format!("--aux-address {name}={value}: {value} is no IP address"))?;
         let mut matched = false;
         for c in &mut configs {
-            let (_, net, bits) = go_parse_cidr(&c.subnet).map_err(|e| format!("invalid subnet: {e}"))?;
+            let (_, net, bits) = go_parse_cidr(&c.subnet).map_err(|e| format!("--subnet {e}"))?;
             if net_contains(net, bits, ip) {
                 c.aux.insert(name.clone(), value.clone());
                 matched = true;
             }
         }
         if !matched {
-            return Err(format!("no matching subnet for aux-address {value}"));
+            return Err(format!(
+                "--aux-address {name}={value}: in none of the subnets given"
+            ));
         }
     }
     Ok(configs)
@@ -334,7 +331,10 @@ fn ipam_errors(c: &Asked) -> Vec<String> {
         return errs;
     };
     if ip != net {
-        errs.push(format!("invalid subnet {}: it should be {net}/{bits}", c.subnet));
+        errs.push(format!(
+            "--subnet {}: its network's address is {net}/{bits}",
+            c.subnet
+        ));
     }
     let family = |a: std::net::IpAddr| if a.is_ipv4() { 4 } else { 6 };
     if !c.ip_range.is_empty()
@@ -342,18 +342,18 @@ fn ipam_errors(c: &Asked) -> Vec<String> {
     {
         if family(rip) != family(net) {
             errs.push(format!(
-                "invalid ip-range {}: parent subnet is an IPv{} block",
+                "--ip-range {}: its subnet is IPv{}",
                 c.ip_range,
                 family(net)
             ));
         } else if rbits < bits {
             errs.push(format!(
-                "invalid ip-range {}: CIDR block is bigger than its parent subnet {}",
+                "--ip-range {}: larger than its subnet {}",
                 c.ip_range, c.subnet
             ));
         } else if !net_contains(net, bits, rnet) {
             errs.push(format!(
-                "invalid ip-range {}: parent subnet {} doesn't contain ip-range",
+                "--ip-range {}: outside its subnet {}",
                 c.ip_range, c.subnet
             ));
         }
@@ -361,13 +361,13 @@ fn ipam_errors(c: &Asked) -> Vec<String> {
     if let Ok(gw) = c.gateway.parse::<std::net::IpAddr>() {
         if family(gw) != family(net) {
             errs.push(format!(
-                "invalid gateway {}: parent subnet is an IPv{} block",
+                "--gateway {}: its subnet is IPv{}",
                 c.gateway,
                 family(net)
             ));
         } else if !net_contains(net, bits, gw) {
             errs.push(format!(
-                "invalid gateway {}: parent subnet {} doesn't contain this address",
+                "--gateway {}: outside its subnet {}",
                 c.gateway, c.subnet
             ));
         }
@@ -375,30 +375,13 @@ fn ipam_errors(c: &Asked) -> Vec<String> {
     for (name, value) in &c.aux {
         if let Ok(a) = value.parse::<std::net::IpAddr>() {
             if family(a) != family(net) {
-                errs.push(format!(
-                    "invalid auxiliary address {name}: parent subnet is an IPv{} block",
-                    family(net)
-                ));
+                errs.push(format!("--aux-address {name}: its subnet is IPv{}", family(net)));
             } else if !net_contains(net, bits, a) {
-                errs.push(format!(
-                    "invalid auxiliary address {name}: parent subnet {} doesn't contain this address",
-                    c.subnet
-                ));
+                errs.push(format!("--aux-address {name}: outside its subnet {}", c.subnet));
             }
         }
     }
     errs
-}
-
-/// dockerd's multi-error: one as itself, several as a list (multierror.Join).
-fn joined(head: &str, errs: &[String]) -> String {
-    match errs {
-        [one] => format!("{head}\n{one}"),
-        many => {
-            let lines: Vec<String> = many.iter().map(|e| format!("* {e}")).collect();
-            format!("{head}\n{}", lines.join("\n"))
-        }
-    }
 }
 
 impl<D: Disk> Daemon<D> {
@@ -506,11 +489,9 @@ impl<D: Disk> Daemon<D> {
     /// MicroVM `given`'s kept request, and its ID, for connect and disconnect; dockerd's
     /// words where there is none.
     fn request_of(&self, given: &str) -> Result<(String, shards_ipc::Run), String> {
-        let id = self.resolve(given).map_err(|e| {
-            e.strip_prefix("Error response from daemon: ")
-                .unwrap_or(&e)
-                .to_string()
-        })?;
+        let id = self
+            .resolve(given)
+            .map_err(|e| e.strip_prefix("shards: ").unwrap_or(&e).to_string())?;
         let dir = lock(&self.containers).dir(&id);
         let run = std::fs::read(dir.join(super::REQUEST))
             .ok()
@@ -534,7 +515,7 @@ impl<D: Disk> Daemon<D> {
             return 1;
         };
         let daemon = |e: &str| {
-            reply.err(&format!("Error response from daemon: {e}"));
+            reply.err(&format!("shards: {e}"));
             1
         };
         let (id, mut run) = match self.request_of(given) {
@@ -546,8 +527,8 @@ impl<D: Disk> Daemon<D> {
             Found::One(n) => Some(n.clone()),
             Found::Ambiguous(count, by_name) => {
                 return daemon(&format!(
-                    "network {term} is ambiguous ({count} matches found {})",
-                    if by_name { "on name" } else { "based on ID prefix" }
+                    "{term} names {count} networks by {}: give more of its ID",
+                    if by_name { "name" } else { "their IDs' beginning" }
                 ));
             }
             Found::None => None,
@@ -561,7 +542,7 @@ impl<D: Disk> Daemon<D> {
             |run: &shards_ipc::Run| mode == name || run.endpoints.iter().any(|e| e.network == name);
         if self.running(&id) {
             let Some(n) = &found else {
-                return daemon(&format!("network {term} not found"));
+                return daemon(&format!("no network is named {term}"));
             };
             if connected(&run) {
                 let cname = lock(&self.containers)
@@ -569,7 +550,8 @@ impl<D: Disk> Daemon<D> {
                     .map(|c| c.name.clone())
                     .unwrap_or_default();
                 return daemon(&format!(
-                    "endpoint with name {cname} already exists in network {}",
+                    "{} is on network {} already",
+                    cname.trim_start_matches('/'),
                     n.name
                 ));
             }
@@ -578,14 +560,10 @@ impl<D: Disk> Daemon<D> {
             );
         }
         if name == "host" {
-            return daemon(
-                "cannot connect container to host network - container must be created in host network mode",
-            );
+            return daemon("a run is on its host's network as it is made, with --network host alone");
         }
         if (name == "none") != (mode == "none") {
-            return daemon(
-                "container cannot be connected to multiple networks with one of the networks in private (none) mode",
-            );
+            return daemon("a run with no network (--network none) is on no other");
         }
         if found.is_some() && connected(&run) {
             return 0;
@@ -619,23 +597,22 @@ impl<D: Disk> Daemon<D> {
             let mut errs = Vec::new();
             if n.predefined() {
                 if !endpoint.ipv4.is_empty() || !endpoint.ipv6.is_empty() {
-                    errs.push(
-                        "user-specified IP address is supported on user-defined networks only".to_string(),
-                    );
+                    errs.push("--ip: an address of its own is a run's on a network you made".to_string());
                 }
                 if !endpoint.aliases.is_empty() {
                     errs.push(
-                        "network-scoped aliases are only supported for user-defined networks".to_string(),
+                        "--alias: names are a run's on a network you made, where its peers ask for them"
+                            .to_string(),
                     );
                 }
             }
             if let Ok(ip) = endpoint.ipv4.parse::<Ipv4Addr>()
                 && !n.pools.iter().any(|p| nets::contains(p.subnet, ip))
             {
-                errs.push(format!("no configured subnet contains IP address {ip}"));
+                errs.push(format!("{ip}: in none of the network's subnets"));
             }
             if !errs.is_empty() {
-                return daemon(&joined("invalid endpoint settings:", &errs));
+                return daemon(&errs.join("\n"));
             }
         }
         run.endpoints.push(endpoint);
@@ -653,7 +630,7 @@ impl<D: Disk> Daemon<D> {
             return 1;
         };
         let daemon = |e: &str| {
-            reply.err(&format!("Error response from daemon: {e}"));
+            reply.err(&format!("shards: {e}"));
             1
         };
         let networks = self.all_networks();
@@ -661,8 +638,8 @@ impl<D: Disk> Daemon<D> {
             Found::One(n) => Some(n.clone()),
             Found::Ambiguous(count, by_name) => {
                 return daemon(&format!(
-                    "network {term} is ambiguous ({count} matches found {})",
-                    if by_name { "on name" } else { "based on ID prefix" }
+                    "{term} names {count} networks by {}: give more of its ID",
+                    if by_name { "name" } else { "their IDs' beginning" }
                 ));
             }
             Found::None => None,
@@ -671,8 +648,8 @@ impl<D: Disk> Daemon<D> {
             Ok(r) => r,
             Err(_) if parsed.bool("force") => {
                 return match found {
-                    Some(_) => daemon(&format!("endpoint {given} not found")),
-                    None => daemon(&format!("network {term} not found")),
+                    Some(_) => daemon(&format!("{given} is on no network {term}")),
+                    None => daemon(&format!("no network is named {term}")),
                 };
             }
             Err(e) => return daemon(&e),
@@ -684,15 +661,13 @@ impl<D: Disk> Daemon<D> {
         };
         if self.running(&id) {
             if found.is_none() {
-                return daemon(&format!("network {term} not found"));
+                return daemon(&format!("no network is named {term}"));
             }
             if mode == "host" && name == "host" {
-                return daemon(
-                    "cannot disconnect container from host network - container was created in host network mode",
-                );
+                return daemon("a run made on its host's network stays on it");
             }
             if self.membership(&id).is_none_or(|(n, _)| n.name != name) && mode != name {
-                return daemon(&format!("container {id} is not connected to network {name}"));
+                return daemon(&format!("{given} is not on network {name}"));
             }
             return daemon("disconnecting a running microVM from its network is not supported by shards yet");
         }
@@ -700,7 +675,7 @@ impl<D: Disk> Daemon<D> {
         run.endpoints.retain(|e| e.network != name);
         let primary = mode == name;
         if run.endpoints.len() == had && !primary {
-            return daemon(&format!("container {id} is not connected to the network {name}"));
+            return daemon(&format!("{given} is not on network {name}"));
         }
         if primary {
             run.network = "none".into();
@@ -816,20 +791,16 @@ impl<D: Disk> Daemon<D> {
         let _held = nets::lock();
         let network = self
             .user_network(term)
-            .ok_or_else(|| fail(&format!("network {term} not found")))?;
+            .ok_or_else(|| fail(&format!("no network is named {term}")))?;
         let pool = network
             .pools
             .first()
             .cloned()
-            .ok_or_else(|| fail(&format!("network {} has no IPv4 pool", network.name)))?;
+            .ok_or_else(|| fail(&format!("network {} has no IPv4 subnet", network.name)))?;
         let others: Vec<Ipv4Addr> = self.members_of(&network.id).iter().map(|m| m.ip).collect();
         let ip = if asked_ip.is_empty() {
-            nets::allocate(&pool, &others).ok_or_else(|| {
-                fail(&format!(
-                    "no available IPv4 addresses on this network's address pools: {} ({})",
-                    network.name, network.id
-                ))
-            })?
+            nets::allocate(&pool, &others)
+                .ok_or_else(|| fail(&format!("network {} has no IPv4 address left", network.name)))?
         } else {
             let ip: Ipv4Addr = asked_ip
                 .trim_start_matches("::ffff:")
@@ -849,12 +820,8 @@ impl<D: Disk> Daemon<D> {
                     .filter_map(|m| m.ip6)
                     .collect();
                 Some(if asked_ip6.is_empty() {
-                    nets::allocate6(pool6, &others6).ok_or_else(|| {
-                        fail(&format!(
-                            "no available IPv6 addresses on this network's address pools: {} ({})",
-                            network.name, network.id
-                        ))
-                    })?
+                    nets::allocate6(pool6, &others6)
+                        .ok_or_else(|| fail(&format!("network {} has no IPv6 address left", network.name)))?
                 } else {
                     let ip6: Ipv6Addr = asked_ip6.parse().map_err(|_| fail("Address already in use"))?;
                     if nets::in_use6(pool6, &others6).contains(&ip6) {
@@ -1102,7 +1069,7 @@ impl<D: Disk> Daemon<D> {
             return 1;
         };
         let daemon = |e: &str| {
-            reply.err(&format!("Error response from daemon: {e}"));
+            reply.err(&format!("shards: {e}"));
             1
         };
         let aux = kv_map(parsed.many("aux-address"));
@@ -1120,7 +1087,7 @@ impl<D: Disk> Daemon<D> {
         };
         if nets::PREDEFINED.contains(&name.as_str()) {
             return daemon(&format!(
-                "operation is not permitted on predefined {name} network "
+                "{name} is one of shards' own networks, bridge, host and none: give yours another name"
             ));
         }
         let driver = match parsed.string("driver") {
@@ -1128,9 +1095,7 @@ impl<D: Disk> Daemon<D> {
             d => d,
         };
         if driver == "overlay" {
-            return daemon(
-                "This node is not a swarm manager. Use \"docker swarm init\" or \"docker swarm join\" to connect this node to swarm and try again.",
-            );
+            return daemon("--driver overlay: shards has no swarm mode, whose networks overlay ones are");
         }
         let mut options = kv_map(parsed.many("opt"));
         let config_from = parsed.string("config-from").to_string();
@@ -1164,15 +1129,15 @@ impl<D: Disk> Daemon<D> {
             .collect();
         let errs: Vec<String> = configs.iter().flat_map(ipam_errors).collect();
         if !errs.is_empty() {
-            return daemon(&joined("invalid network config:", &errs));
+            return daemon(&errs.join("\n"));
         }
         if name.trim().is_empty() {
-            return daemon("invalid name: name is empty");
+            return daemon("a network needs a name");
         }
         let _held = nets::lock();
         let networks = self.all_networks();
         if networks.iter().any(|n| &n.name == name) {
-            return daemon(&format!("network with name {name} already exists"));
+            return daemon(&format!("a network is named {name} already"));
         }
         let config_only = parsed.bool("config-only");
         let (driver, scope) = if config_only {
@@ -1184,51 +1149,52 @@ impl<D: Disk> Daemon<D> {
         if !config_from.is_empty() {
             let Some(source) = networks.iter().find(|n| n.name == config_from && n.config_only) else {
                 return daemon(&format!(
-                    "configuration network {} does not exist",
-                    shards_cmdline::go::quote(&config_from)
+                    "--config-from {config_from}: no config-only network is named so"
                 ));
             };
             if config_only {
-                return daemon("a configuration network cannot depend on another configuration network");
+                return daemon(
+                    "--config-from with --config-only: a config-only network takes its settings from none",
+                );
             }
             if !configs.is_empty() {
-                return daemon(
-                    "user-specified configurations are not supported if the network depends on a configuration network",
-                );
+                return daemon(&format!(
+                    "--config-from {config_from}: the network's subnets come from it: give none of your own"
+                ));
             }
             if !options.is_empty() {
-                return daemon(
-                    "network driver options are not supported if the network depends on a configuration network",
-                );
+                return daemon(&format!(
+                    "--config-from {config_from}: the network's options come from it: give none of your own"
+                ));
             }
             from = Some(source.clone());
         }
         match driver {
             "bridge" | "null" | "macvlan" | "ipvlan" | "host" => {}
-            other => return daemon(&format!("plugin {} not found", shards_cmdline::go::quote(other))),
+            other => {
+                return daemon(&format!(
+                    "--driver {other}: shards' networks are bridge, macvlan, ipvlan, host and null: it has no plugins"
+                ));
+            }
         }
         if !config_only && (driver == "host" || (driver == "null" && !config_only)) {
             let kind = if driver == "host" { "host" } else { "null" };
-            return daemon(&format!(
-                "only one instance of {} network is allowed",
-                shards_cmdline::go::quote(kind)
-            ));
+            return daemon(&format!("--driver {kind}: shards has one {kind} network already"));
         }
         let ipam_driver = parsed.string("ipam-driver").to_string();
         if !matches!(ipam_driver.as_str(), "default" | "") {
             return daemon(&format!(
-                "plugin {} not found",
-                shards_cmdline::go::quote(&ipam_driver)
+                "--ipam-driver {ipam_driver}: shards gives a network's addresses itself (default): it has no plugins"
             ));
         }
         if scope == "swarm" {
-            return daemon("cannot create a swarm scoped network when swarm is not active");
+            return daemon("--scope swarm: shards has no swarm mode");
         }
         if parsed.bool("ingress") {
-            return daemon("Ingress network can only be global scope network");
+            return daemon("--ingress: shards has no swarm mode, whose ingress network it is");
         }
         if !ipv4 && !ipv6 {
-            return daemon("IPv4 or IPv6 must be enabled");
+            return daemon("--ipv4=false with --ipv6=false: a network needs addresses of one family");
         }
         let Ok(id) = new_id() else {
             return daemon("making the network's ID");
@@ -1253,7 +1219,7 @@ impl<D: Disk> Daemon<D> {
         let mut pools = Vec::new();
         if ipv4 && !config_only {
             if driver == "bridge" && v4.len() > 1 {
-                return daemon("bridge driver doesn't support multiple subnets");
+                return daemon("a bridge network has one IPv4 subnet in shards, yet");
             }
             let allocated: Vec<shards_net::bridge::Prefix> =
                 self.allocated(&networks).iter().map(|p| p.subnet).collect();
@@ -1582,10 +1548,10 @@ impl<D: Disk> Daemon<D> {
             match nets::find(&networks, term) {
                 Found::One(n) => documents.push(self.network_value(n)),
                 Found::Ambiguous(count, by_name) => errors.push(format!(
-                    "Error response from daemon: {count} matches found based on {}: network {term} is ambiguous",
-                    if by_name { "name" } else { "ID prefix" }
+                    "shards: {term} names {count} networks by {}: give more of its ID",
+                    if by_name { "name" } else { "their IDs' beginning" }
                 )),
-                Found::None => errors.push(format!("Error response from daemon: network {term} not found")),
+                Found::None => errors.push(format!("shards: no network is named {term}")),
             }
         }
         super::inspect::inspected(parsed.string("format"), &documents, errors, asker.styled(), reply)
@@ -1606,7 +1572,7 @@ impl<D: Disk> Daemon<D> {
         let networks = match listed {
             Ok(n) => n,
             Err(e) => {
-                reply.err(&format!("Error response from daemon: {e}"));
+                reply.err(&format!("shards: {e}"));
                 return 1;
             }
         };
@@ -1670,10 +1636,9 @@ impl<D: Disk> Daemon<D> {
             let _held = nets::lock();
             let networks = self.all_networks();
             let said = match nets::find(&networks, term) {
-                Found::One(n) if n.predefined() => Err(format!(
-                    "{} is a pre-defined network and cannot be removed",
-                    n.name
-                )),
+                Found::One(n) if n.predefined() => {
+                    Err(format!("{} is one of shards' own networks, and stays", n.name))
+                }
                 Found::One(n) => {
                     let members = self.members_of(&n.id);
                     if !members.is_empty() {
@@ -1688,30 +1653,30 @@ impl<D: Disk> Daemon<D> {
                             })
                             .collect();
                         Err(format!(
-                            "error while removing network: network {} has active endpoints ({})",
+                            "cannot remove network {}: runs are on it ({})",
                             n.name,
                             listed.join(", ")
                         ))
                     } else if n.config_only && networks.iter().any(|o| o.config_from == n.name) {
                         Err(format!(
-                            "error while removing network: configuration network {} is in use",
-                            shards_cmdline::go::quote(&n.name)
+                            "cannot remove network {}: networks take their settings from it",
+                            n.name
                         ))
                     } else {
                         Store::new(&self.home).remove(&n.id)
                     }
                 }
                 Found::Ambiguous(count, by_name) => Err(format!(
-                    "network {term} is ambiguous ({count} matches found based on {})",
-                    if by_name { "name" } else { "ID prefix" }
+                    "{term} names {count} networks by {}: give more of its ID",
+                    if by_name { "name" } else { "their IDs' beginning" }
                 )),
                 Found::None if parsed.bool("force") => continue,
-                Found::None => Err(format!("network {term} not found")),
+                Found::None => Err(format!("no network is named {term}")),
             };
             match said {
                 Ok(()) => reply.out(term),
                 Err(e) => {
-                    reply.err(&format!("Error response from daemon: {e}"));
+                    reply.err(&format!("shards: {e}"));
                     failed = true;
                 }
             }
@@ -1739,7 +1704,7 @@ impl<D: Disk> Daemon<D> {
                 0
             }
             Err(e) => {
-                reply.err(&format!("Error response from daemon: {e}"));
+                reply.err(&format!("shards: {e}"));
                 1
             }
         }
@@ -1790,25 +1755,26 @@ mod tests {
         v.iter().map(|x| x.to_string()).collect()
     }
 
-    /// createIPAMConfig's words, as docker/cli 29.3.1 printed them (shards-dind).
+    /// A network's subnets, ranges, gateways and auxiliary addresses, each checked and
+    /// refused in shards' words, in the order docker/cli 29.3.1 checks them.
     #[test]
     fn ipam_configs_are_consolidated() {
         let none = BTreeMap::new();
         assert_eq!(
             consolidate(&[], &[], &s(&["10.0.0.1"]), &none).unwrap_err(),
-            "every ip-range or gateway must have a corresponding subnet"
+            "--ip-range and --gateway each belong to a --subnet: give its subnet"
         );
         assert_eq!(
             consolidate(&s(&["10.10.0.0/16", "10.10.1.0/24"]), &[], &[], &none).unwrap_err(),
-            "multiple overlapping subnet configuration is not supported"
+            "--subnet 10.10.1.0/24 overlaps --subnet 10.10.0.0/16"
         );
         assert_eq!(
             consolidate(&s(&["bogus"]), &[], &[], &none).unwrap_err(),
-            "netip.ParsePrefix(\"bogus\"): no '/'"
+            "--subnet bogus: give ADDRESS/BITS, as 10.10.0.0/16"
         );
         assert_eq!(
             consolidate(&s(&["10.10.0.0/33"]), &[], &[], &none).unwrap_err(),
-            "netip.ParsePrefix(\"10.10.0.0/33\"): prefix length out of range"
+            "--subnet 10.10.0.0/33: an IPv4 prefix is at most 32 bits"
         );
         assert_eq!(
             consolidate(
@@ -1818,26 +1784,26 @@ mod tests {
                 &none
             )
             .unwrap_err(),
-            "cannot configure multiple ranges (10.10.0.0/24, 10.10.1.0/24) on the same subnet (10.10.0.0/16)"
+            "--ip-range 10.10.0.0/24 and --ip-range 10.10.1.0/24: subnet 10.10.0.0/16 takes one range"
         );
         assert_eq!(
             consolidate(&s(&["10.10.0.0/16"]), &[], &s(&["10.20.0.1"]), &none).unwrap_err(),
-            "no matching subnet for gateway 10.20.0.1"
+            "--gateway 10.20.0.1: in none of the subnets given"
         );
         let aux = BTreeMap::from([("a".to_string(), "bogus".to_string())]);
         assert_eq!(
             consolidate(&s(&["10.10.0.0/16"]), &[], &[], &aux).unwrap_err(),
-            "ParseAddr(\"bogus\"): unable to parse IP"
+            "--aux-address a=bogus: bogus is no IP address"
         );
         let c = consolidate(&s(&["10.10.0.5/16"]), &[], &[], &none).unwrap();
         assert_eq!(
             ipam_errors(&c[0]),
-            ["invalid subnet 10.10.0.5/16: it should be 10.10.0.0/16"]
+            ["--subnet 10.10.0.5/16: its network's address is 10.10.0.0/16"]
         );
         let c = consolidate(&s(&["10.10.0.0/24"]), &s(&["10.10.0.0/16"]), &[], &none).unwrap();
         assert_eq!(
             ipam_errors(&c[0]),
-            ["invalid ip-range 10.10.0.0/16: CIDR block is bigger than its parent subnet 10.10.0.0/24"]
+            ["--ip-range 10.10.0.0/16: larger than its subnet 10.10.0.0/24"]
         );
         assert_eq!(
             rfc3339_nano(1_791_260_014_360_799_172),

@@ -475,9 +475,7 @@ fn warm_vms_serve_one_request_on_the_clients_stdio() {
             client.stderr.read_to_string(&mut err).unwrap();
             assert_eq!(
                 err,
-                format!(
-                    "shards: Error response from daemon: {why}\n\nRun 'shards run --help' for more information\n"
-                )
+                format!("shards: {why}\n\nRun 'shards run --help' for more information\n")
             );
         }
         warm.ends(status, not_run);

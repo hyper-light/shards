@@ -300,7 +300,8 @@ fn container(
         );
         return ExitCode::FAILURE;
     }
-    // `volume prune --all` and a filter `all` both: the CLI's own refusal (volume/prune.go).
+    // `volume prune --all` and a filter `all` both, refused as the CLI refuses them
+    // (volume/prune.go), in shards' words.
     if std::ptr::eq(command, &shards_cmdline::commands::VOLUME_PRUNE)
         && parsed.bool("all")
         && parsed
@@ -310,7 +311,7 @@ fn container(
     {
         let _ = writeln!(
             std::io::stderr(),
-            "conflicting options: cannot specify both --all and --filter all=1"
+            "--all and --filter all=1 each prune every unused volume: give one"
         );
         return ExitCode::FAILURE;
     }

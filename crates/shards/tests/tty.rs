@@ -272,7 +272,7 @@ fn a_tty_for_stdin_needs_a_terminal_and_detach_keys_must_parse() {
         (refused.status, refused.stderr.as_str()),
         (
             Some(1),
-            "cannot attach stdin to a TTY-enabled container because stdin is not a terminal\n"
+            "-it: stdin is not a terminal, so it cannot be the command's: leave out -t, or run it from a terminal\n"
         )
     );
     let keys = shards_in(
