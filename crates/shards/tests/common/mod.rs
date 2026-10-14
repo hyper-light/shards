@@ -211,24 +211,39 @@ pub fn carries_gpu_vm() -> bool {
     std::fs::metadata(carried().join("shards-vm-gpu")).is_ok_and(|m| m.len() > 0)
 }
 
-/// The pinned kernel's `kvm` variant (resources/kernel/kvm.config), for a guest that is
-/// itself a KVM host (`--nested`, D132), and for one that takes a PCI function it was given
-/// through VFIO (D154): arm64's so far. Of the pinned kernels' own release, or the one
-/// SHARDS_TEST_NESTED_KERNEL names, as SHARDS_TEST_KERNEL names another kernel for every
-/// other guest.
+/// The kernel of a guest that is itself a KVM host (`--nested`, D132): the `kvm` variant
+/// ([`kvm_kernel`]), arm64's alone, as an x86_64 host gives no guest virtualization of its
+/// own yet.
 pub fn nested_kernel() -> Option<&'static Path> {
+    (ARCH == "aarch64").then(kvm_kernel).flatten()
+}
+
+/// The pinned kernel's `kvm` variant (resources/kernel/kvm.config): KVM, VFIO and
+/// virtio-iommu, for a guest that takes a PCI function it was given through VFIO (D154) or
+/// runs VMs of its own, of the pinned kernels' own release, or the one
+/// SHARDS_TEST_NESTED_KERNEL names, as SHARDS_TEST_KERNEL names another kernel for every
+/// other guest. None on Windows, whose guests boot the `hyperv` variant.
+pub fn kvm_kernel() -> Option<&'static Path> {
     static K: OnceLock<Option<PathBuf>> = OnceLock::new();
     K.get_or_init(|| {
         if let Some(path) = std::env::var_os("SHARDS_TEST_NESTED_KERNEL") {
             return Some(PathBuf::from(path));
         }
-        (ARCH == "aarch64").then(|| {
-            fetch(&Artifact {
-                name: "Image-6.18.48-aarch64-kvm-5bcf70b135d5",
-                url: "https://github.com/hyper-light/shards/releases/download/kernel-6.18.48-5bcf70b135d5/Image-6.18.48-aarch64-kvm",
-                sha256: "99642875933b506a4b3f753d719b111a233f4e0aa258c4fcf1c060262b779ef9",
-            })
-        })
+        let pinned = match ARCH {
+            _ if cfg!(windows) => return None,
+            "aarch64" => Artifact {
+                name: "Image-6.18.48-aarch64-kvm-6f2b217a4feb",
+                url: "https://github.com/hyper-light/shards/releases/download/kernel-6.18.48-6f2b217a4feb/Image-6.18.48-aarch64-kvm",
+                sha256: "f2a433fb725592ec988ddf0c762258176c754ca2b0c497cadd38e58edbe52f28",
+            },
+            "x86_64" => Artifact {
+                name: "vmlinux-6.18.48-x86_64-kvm-6f2b217a4feb",
+                url: "https://github.com/hyper-light/shards/releases/download/kernel-6.18.48-6f2b217a4feb/vmlinux-6.18.48-x86_64-kvm",
+                sha256: "e8cf7f7c64a041f783f6e4a0b4937e975525690dbf54fc8679ec32e29a4161ab",
+            },
+            _ => return None,
+        };
+        Some(fetch(&pinned))
     })
     .as_deref()
 }

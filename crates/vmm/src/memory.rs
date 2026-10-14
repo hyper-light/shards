@@ -19,6 +19,7 @@
 //!   without an access held, as the guest's own accesses go: the kernel, like the guest,
 //!   is outside Rust's abstract machine.
 
+use std::collections::BTreeMap;
 use std::fmt;
 use std::fs::File;
 use std::io;
@@ -189,6 +190,28 @@ struct Blocks<'a> {
     size: usize,
 }
 
+/// Guest-physical ranges a device's DMA holds pinned through the host's IOMMU: what a
+/// function passed through behind the guest's own IOMMU has mapped (D154). The host's
+/// IOMMU keeps the pages it pinned, so a page given back to the host and replaced (a
+/// report of free memory, an unplug) would leave the device the old one: a range a pin
+/// meets is kept. Each pinned range by its first address, as many lengths as are pinned
+/// there; the longest ever, so that a look for those meeting a range starts no further
+/// back.
+#[derive(Debug, Default)]
+struct Pins {
+    ranges: BTreeMap<u64, Vec<u64>>,
+    longest: u64,
+}
+
+impl Pins {
+    fn meets(&self, gpa: u64, len: u64) -> bool {
+        let end = gpa.saturating_add(len);
+        self.ranges
+            .range(gpa.saturating_sub(self.longest)..end)
+            .any(|(&start, lens)| lens.iter().any(|&n| start.saturating_add(n) > gpa))
+    }
+}
+
 /// Guest RAM regions, each backed by its own host reservation, and the memory a virtio-mem
 /// device plugs, where the guest has one.
 #[derive(Debug)]
@@ -200,6 +223,8 @@ pub struct GuestMemory {
     file_backed: bool,
     /// The bytes the guest has reported free, given back or not (D151).
     reported: AtomicU64,
+    /// What a device's DMA holds pinned ([`GuestMemory::pin`]).
+    pins: Mutex<Pins>,
     /// Held by the thread with the [`Access`].
     host: Mutex<()>,
     /// That thread's [`token`], or 0.
@@ -244,6 +269,7 @@ impl GuestMemory {
             file_backed: false,
             host: Mutex::new(()),
             reported: AtomicU64::new(0),
+            pins: Mutex::new(Pins::default()),
             holder: AtomicUsize::new(0),
         };
         for &(gpa, len) in ranges {
@@ -531,6 +557,32 @@ impl GuestMemory {
         Ok(h.host(gpa))
     }
 
+    /// Pins `gpa..gpa+len` for a device's DMA, as the host's IOMMU has mapped it ([`Pins`]),
+    /// until [`unpin`](Self::unpin)ned as many times.
+    pub fn pin(&self, gpa: u64, len: u64) {
+        let mut pins = lock(&self.pins);
+        pins.ranges.entry(gpa).or_default().push(len);
+        pins.longest = pins.longest.max(len);
+    }
+
+    /// One pin of `gpa..gpa+len` let go.
+    pub fn unpin(&self, gpa: u64, len: u64) {
+        let mut pins = lock(&self.pins);
+        if let Some(lens) = pins.ranges.get_mut(&gpa) {
+            if let Some(i) = lens.iter().position(|&n| n == len) {
+                lens.swap_remove(i);
+            }
+            if lens.is_empty() {
+                pins.ranges.remove(&gpa);
+            }
+        }
+    }
+
+    /// Whether a pin meets `gpa..gpa+len`.
+    fn pinned(&self, gpa: u64, len: u64) -> bool {
+        lock(&self.pins).meets(gpa, len)
+    }
+
     /// The bytes the guest has reported free since this memory was made, given back or
     /// not ([`Access::discard`], D151).
     pub fn reported(&self) -> u64 {
@@ -610,7 +662,8 @@ impl<'a> Access<'a> {
         Ok(())
     }
 
-    /// Unplugs `gpa..gpa+len`, whole blocks of the memory to plug, all of them plugged:
+    /// Unplugs `gpa..gpa+len`, whole blocks of the memory to plug, all of them plugged and
+    /// none of them pinned for a device's DMA ([`GuestMemory::pin`]):
     /// keeps the host's devices from them, has `unmap` take them from the guest where the
     /// hypervisor's stage 2 holds what it maps, then gives their pages back to the host
     /// ([`platform::withhold`]). Under this access, so no host thread is between finding
@@ -626,6 +679,9 @@ impl<'a> Access<'a> {
         let Blocks { h, blocks, at, size } = self.whole_blocks(gpa, len)?;
         if !blocks.clone().all(|b| h.is_plugged(b)) {
             return Err(format!("{gpa:#x}+{len:#x} is not plugged"));
+        }
+        if self.mem.pinned(gpa, len) {
+            return Err(format!("{gpa:#x}+{len:#x} is pinned for a device's DMA"));
         }
         h.set(blocks.clone(), false);
         if let Err(e) = unmap(gpa, size) {
@@ -646,7 +702,7 @@ impl<'a> Access<'a> {
 
     /// Gives the host back the pages of `gpa..gpa+len`, guest RAM the guest holds free and
     /// has reported (D151): the host's whole pages within it, of its RAM or of memory
-    /// plugged. As unplug and plug in turn, but the range stays the guest's: `unmap` takes
+    /// plugged, unless a device's DMA holds some of them pinned ([`GuestMemory::pin`]). As unplug and plug in turn, but the range stays the guest's: `unmap` takes
     /// it from the guest where the hypervisor's stage 2 holds what it maps, its pages go
     /// back to the host and fresh ones, zero-filled as first touched, take their place
     /// ([`platform::discard`]), and `map` gives it to the guest again, whether its pages
@@ -672,6 +728,12 @@ impl<'a> Access<'a> {
         );
         if end <= start {
             return Ok(0);
+        }
+        if self.mem.pinned(start, end - start) {
+            return Err(format!(
+                "{start:#x}+{:#x} is pinned for a device's DMA",
+                end - start
+            ));
         }
         let size = usize::try_from(end - start).map_err(|e| e.to_string())?;
         let host = self.mem.host_ptr(start, size).map_err(|e| e.to_string())?;
@@ -965,6 +1027,48 @@ mod tests {
         let dir = shards_testdir::TempDir::new("plug-save").unwrap();
         let file = std::fs::File::create(dir.join("mem")).unwrap();
         assert!(m.save(&file).is_err(), "memory plugged is not saved");
+    }
+
+    /// A range a device's DMA holds pinned is kept: a report of it free gives nothing back
+    /// and says why, and an unplug of a block it meets is refused, the block plugged still;
+    /// let go as many times as pinned, both go through.
+    #[test]
+    fn what_a_devices_dma_holds_pinned_is_kept() {
+        let p = page_size().unwrap();
+        let block = (2 << 20).max(p as u64);
+        let ram = [(0x8000_0000u64, 16 * p)];
+        let hot = 0x1_0000_0000u64;
+        let m = GuestMemory::with_hotplug(&ram, hot, 2 * block as usize, block).unwrap();
+        let a = m.access().unwrap();
+        a.plug(hot, 2 * block, |_, _, _| Ok(())).unwrap();
+        a.write_obj(0x8000_0000 + 4 * p as u64, 7u64).unwrap();
+        a.write_obj(hot + block, 9u64).unwrap();
+        let (two, pages) = (2 * p as u64, 0x8000_0000 + 4 * p as u64);
+        m.pin(pages + p as u64, p as u64);
+        m.pin(pages + p as u64, p as u64);
+        m.pin(hot + block + 8, 8);
+        let kept = a.discard(pages, two, |_, _| Ok(()), |_, _, _| Ok(()));
+        assert!(kept.unwrap_err().contains("pinned"), "a pin within it");
+        assert_eq!(a.read_obj::<u64>(pages).unwrap(), 7, "nothing went");
+        assert!(
+            a.unplug(hot + block, block, |_, _| Ok(()))
+                .unwrap_err()
+                .contains("pinned")
+        );
+        assert_eq!(a.read_obj::<u64>(hot + block).unwrap(), 9, "plugged still");
+        a.unplug(hot, block, |_, _| Ok(())).unwrap();
+        m.unpin(pages + p as u64, p as u64);
+        assert!(
+            a.discard(pages, two, |_, _| Ok(()), |_, _, _| Ok(())).is_err(),
+            "pinned twice"
+        );
+        m.unpin(pages + p as u64, p as u64);
+        assert_eq!(
+            a.discard(pages, two, |_, _| Ok(()), |_, _, _| Ok(())).unwrap(),
+            two
+        );
+        m.unpin(hot + block + 8, 8);
+        a.unplug(hot + block, block, |_, _| Ok(())).unwrap();
     }
 
     /// A snapshot keeps memory to plug where none of it is plugged (D148): its RAM is

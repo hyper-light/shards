@@ -541,11 +541,11 @@ fn assemble(
                 as Box<dyn crate::devices::virtio::VirtioDevice>)
         }
     };
-    // The IOMMU of the functions the VMM emulates, last of the virtio devices (D154): no
-    // MSI window bypassed, as Linux has the IOMMU map the GICv2m frame's doorbell.
-    let (iommu, iommu_device) = match msi {
-        Some(_) => super::test_iommu(pci, None).unzip(),
-        None => (None, None),
+    // The IOMMU of the PCI functions behind it, last of the virtio devices (D154): no MSI
+    // window bypassed, as Linux has the IOMMU map the GICv2m frame's doorbell.
+    let (iommu, iommu_device, behind) = match msi.and_then(|_| super::iommu_of(pci, None)) {
+        Some((translation, device, endpoints)) => (Some(translation), Some(device), endpoints),
+        None => (None, None, Vec::new()),
     };
     let last = gpu
         .into_iter()
@@ -624,7 +624,7 @@ fn assemble(
             ecam: (layout::PCI_ECAM, crate::devices::pci::ECAM_SIZE),
             mem32,
             mem64,
-            iommu: iommu.iter().map(|_| u32::from(super::TEST_DEVICE) << 3).collect(),
+            iommu: behind,
             intx: routed
                 .intx
                 .into_iter()

@@ -300,8 +300,7 @@ impl Edu {
             Some((translation, endpoint)) => translation
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)
-                .translate(*endpoint, address, 4, true)
-                .and_then(|parts| parts.first().map(|&(gpa, _)| gpa)),
+                .msi_target(*endpoint, address),
             None => Some(address),
         };
         match to {
@@ -652,7 +651,7 @@ mod tests {
     fn edus_dma_goes_through_its_iommu() {
         use crate::devices::virtio::iommu::{MAP_F_READ, MAP_F_WRITE, Translation};
         let memory = Arc::new(GuestMemory::anonymous(&[(0x8000_0000, 1 << 20)]).unwrap());
-        let translation = Arc::new(Mutex::new(Translation::new(vec![8])));
+        let translation = Arc::new(Mutex::new(Translation::new(vec![8], None)));
         let (edu, bars) = Edu::new(
             Places {
                 registers: 0x1010_0000,

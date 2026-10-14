@@ -417,7 +417,7 @@ fn a_pci_functions_interrupts_reach_the_guest() {
     if cannot_run_vms() {
         return;
     }
-    let Some(kernel) = common::nested_kernel() else {
+    let Some(kernel) = common::kvm_kernel() else {
         eprintln!("SKIP: no pinned kernel with VFIO for {}", common::ARCH);
         return;
     };
@@ -455,7 +455,7 @@ fn a_pci_functions_dma_goes_through_its_iommu() {
     if cannot_run_vms() {
         return;
     }
-    let Some(kernel) = common::nested_kernel() else {
+    let Some(kernel) = common::kvm_kernel() else {
         eprintln!("SKIP: no pinned kernel with VFIO for {}", common::ARCH);
         return;
     };
@@ -492,7 +492,10 @@ const DMA_BY_ADDRESS: &str =
 /// reaches the test function, whose interrupts reach it, INTx and MSI, through the VMM's
 /// GICv2m frame; and a PCI function the outer guest was given, bound to vfio-pci there,
 /// reaches the inner guest passed through by VFIO, its configuration space and its BAR the
-/// outer function's, and its INTx and MSI by KVM's irqfds. An x86_64 host gives no guest
+/// outer function's, and its INTx and MSI by KVM's irqfds; behind the inner machine's own
+/// IOMMU, its MSIs land where the inner guest's IOMMU maps their addresses, and its DMA
+/// reaches the inner guest's pages at the inner guest's own I/O addresses, which the outer
+/// VM process's container maps as the inner IOMMU does. An x86_64 host gives no guest
 /// virtualization of its own yet.
 #[test]
 fn a_nested_guest_runs_vms_of_its_own() {
@@ -600,6 +603,33 @@ fn a_nested_guest_runs_vms_of_its_own() {
         // the outer guest's IOMMU, which the outermost VMM's function's DMA goes through.
         if test == "pci-dma" {
             dma(&passed_through, DMA_BY_ADDRESS);
+        }
+        // Behind the inner machine's own IOMMU (`--vfio-iommu`): the inner guest's VFIO
+        // gives the function I/O addresses of its own, 0x10_0000 and 0x20_0000, where the
+        // inner guest has no RAM (it starts at 2 GiB), so its pages come back only where
+        // the outer VM process's container maps what the inner IOMMU maps; and on arm64
+        // the inner guest maps its GICv2m doorbell there for the function's MSIs. With
+        // memory to plug and free page reporting beside it, which take nothing the
+        // function's DMA holds pinned.
+        if test != "pci" {
+            let more = if test == "pci-dma" {
+                ",--memory-max,1024,--reporting"
+            } else {
+                ""
+            };
+            let behind = outer(
+                &["--pci-test"],
+                &format!(
+                    "shards_l2={test} shards_l1_vfio=0000:00:01.0 shards_l2_args=--vfio-iommu,0000:00:01.0{more} vfio_iommu_type1.allow_unsafe_interrupts=1"
+                ),
+            );
+            assert_eq!(behind.status, Some(0), "{behind}");
+            passed(&behind);
+            if test == "pci-irq" {
+                interrupted(&behind);
+            } else {
+                dma(&behind, DMA_THROUGH_IOMMU);
+            }
         }
         // BARs 0 and 4 in the inner guest's memory as the guest enables the function's
         // memory space, reached without exits to the outer VM process; BAR 2, all MSI-X,

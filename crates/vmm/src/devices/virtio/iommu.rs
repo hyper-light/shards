@@ -14,8 +14,16 @@
 //! software MSI window Linux's driver adds where the device reports no MSI region
 //! (virtio-iommu.c, viommu_get_resv_regions); a function's MSIs are then writes to an I/O
 //! address, translated as its DMA is.
+//!
+//! A function passed through (D154) can sit behind it too: its DMA is the host IOMMU's to
+//! translate, by its group's container, which a [`Follower`] keeps mapping what the
+//! function's endpoint sees here, as Cloud Hypervisor's external DMA mappings follow its
+//! virtio-iommu (virtio-devices/src/iommu.rs); and where the endpoint bypasses
+//! translation, all of guest RAM, as virtio 1.3 §5.13 has a bypassing endpoint's DMA go
+//! untranslated.
 
 use std::collections::BTreeMap;
+use std::io;
 use std::sync::{Arc, Mutex, PoisonError};
 
 use super::queue::{Chain, Queue};
@@ -47,6 +55,7 @@ const S_DEVERR: u8 = 3;
 const S_INVAL: u8 = 4;
 const S_RANGE: u8 = 5;
 const S_NOENT: u8 = 6;
+const S_NOMEM: u8 = 8;
 const ATTACH_F_BYPASS: u32 = 1 << 0;
 pub(crate) const MAP_F_READ: u32 = 1 << 0;
 pub(crate) const MAP_F_WRITE: u32 = 1 << 1;
@@ -72,6 +81,92 @@ pub struct Translation {
     attached: BTreeMap<u32, u32>,
     domains: BTreeMap<u32, Domain>,
     bypass: bool,
+    /// Whether it offers bypass at all: the configuration's `bypass` and bypass domains
+    /// (VIRTIO_IOMMU_F_BYPASS_CONFIG).
+    offers_bypass: bool,
+    /// The MSI window, its first and last address, never translated (a reserved region of
+    /// subtype MSI, Linux's IOMMU_RESV_MSI), where the machine has one: x86_64's.
+    msi: Option<(u64, u64)>,
+    /// What follows the view of each endpoint whose DMA the host translates.
+    followers: BTreeMap<u32, Arc<dyn Follower>>,
+}
+
+/// What follows an endpoint's view of guest memory where the endpoint's DMA is not the
+/// VMM's to translate: a function passed through, whose DMA the host's IOMMU translates by
+/// its group's container (D154). It is shown the view as it changes: all of guest RAM at
+/// the addresses the guest knows it by where the endpoint bypasses translation, nothing
+/// where it is blocked, and its domain's mappings of guest RAM otherwise.
+pub trait Follower: Send + Sync + std::fmt::Debug {
+    /// All of guest RAM at its own addresses, in place of whatever was mapped.
+    fn identity(&self) -> io::Result<()>;
+    /// Nothing mapped.
+    fn clear(&self) -> io::Result<()>;
+    /// `len` bytes of guest RAM at `gpa`, mapped at `iova`, for the device to read where
+    /// `read` and to write where `write`.
+    fn map(&self, iova: u64, gpa: u64, len: u64, read: bool, write: bool) -> io::Result<()>;
+    /// The mapping of `len` bytes at `iova`, gone.
+    fn unmap(&self, iova: u64, len: u64) -> io::Result<()>;
+}
+
+/// What an endpoint sees of guest memory.
+enum View<'a> {
+    /// All of it, untranslated.
+    Identity,
+    /// Nothing.
+    Blocked,
+    /// What its domain maps.
+    Mapped(&'a BTreeMap<u64, (u64, u64, u32)>),
+}
+
+/// Shows `follower` `view`, in place of what it showed.
+fn show(follower: &dyn Follower, view: View<'_>) -> io::Result<()> {
+    match view {
+        View::Identity => follower.identity(),
+        View::Blocked => follower.clear(),
+        View::Mapped(mappings) => {
+            follower.clear()?;
+            for (&first, &(last, phys, flags)) in mappings {
+                mirror(follower, first, last, phys, flags)?;
+            }
+            Ok(())
+        }
+    }
+}
+
+/// A domain's mapping as its endpoints' followers take it: of guest RAM alone, which the
+/// device reaches. One of device memory is an MSI doorbell's, whose writes the host's own
+/// interrupt remapping takes (VFIO's), and one of no access maps nothing.
+fn mirror(follower: &dyn Follower, first: u64, last: u64, phys: u64, flags: u32) -> io::Result<()> {
+    let (read, write) = (flags & MAP_F_READ != 0, flags & MAP_F_WRITE != 0);
+    if flags & MAP_F_MMIO != 0 || !(read || write) {
+        return Ok(());
+    }
+    follower.map(first, phys, span(first, last)?, read, write)
+}
+
+/// [`mirror`]'s mapping, gone.
+fn unmirror(follower: &dyn Follower, first: u64, last: u64, flags: u32) -> io::Result<()> {
+    if flags & MAP_F_MMIO != 0 || flags & (MAP_F_READ | MAP_F_WRITE) == 0 {
+        return Ok(());
+    }
+    follower.unmap(first, span(first, last)?)
+}
+
+/// The bytes from `first` to `last`: none past what 64 bits count.
+fn span(first: u64, last: u64) -> io::Result<u64> {
+    last.checked_sub(first)
+        .and_then(|n| n.checked_add(1))
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "a mapping of every address"))
+}
+
+/// The status of a request a follower could not carry out: no memory where the host had
+/// none to pin, a range where the guest's is not RAM, else the device's error.
+fn status_of(e: &io::Error) -> u8 {
+    match e.kind() {
+        io::ErrorKind::OutOfMemory => S_NOMEM,
+        io::ErrorKind::InvalidInput => S_RANGE,
+        _ => S_DEVERR,
+    }
 }
 
 /// A domain: whether it bypasses translation (attached with BYPASS), the endpoints
@@ -85,20 +180,121 @@ struct Domain {
 }
 
 impl Translation {
-    /// The translation of `endpoints`, as from reset: nothing attached, bypass on.
-    pub fn new(endpoints: Vec<u32>) -> Translation {
+    /// The translation of `endpoints`, as from reset: nothing attached, bypass on; with the
+    /// MSI window `msi`, its first and last address, where the machine has one.
+    pub fn new(endpoints: Vec<u32>, msi: Option<(u64, u64)>) -> Translation {
         Translation {
             known: endpoints,
             attached: BTreeMap::new(),
             domains: BTreeMap::new(),
             bypass: true,
+            offers_bypass: true,
+            msi,
+            followers: BTreeMap::new(),
         }
     }
 
+    /// Whether it bypasses translation: by default it offers bypass, on from the start for
+    /// an endpoint attached to no domain, as QEMU's `boot-bypass`, so a guest without the
+    /// driver keeps DMA by guest-physical address. Off, it offers none (virtio 1.3
+    /// §5.13.3: no VIRTIO_IOMMU_F_BYPASS_CONFIG, so no bypass domains either): what every
+    /// endpoint passed through sees is what the guest maps for it alone, which its
+    /// container then maps and guest memory keeps pinned, and nothing until the guest's
+    /// driver attaches it. Neither a whole of RAM that memory plugged later would outgrow,
+    /// nor RAM that free page reporting would take from under the device (D154).
+    pub fn bypassing(mut self, on: bool) -> Translation {
+        self.bypass = on;
+        self.offers_bypass = on;
+        self
+    }
+
+    /// A device reset: no endpoint attached, and bypass as it was, which a device reset
+    /// leaves (virtio 1.3 §5.13.4.2).
     fn reset(&mut self) {
         self.attached.clear();
         self.domains.clear();
-        self.bypass = true;
+        for (&endpoint, f) in &self.followers {
+            if let Err(e) = show(&**f, self.view(endpoint)) {
+                crate::warn!("virtio-iommu: endpoint {endpoint:#x}'s host mappings at reset: {e}");
+            }
+        }
+    }
+
+    /// Has `follower` follow the view of `endpoint`, one this IOMMU translates, from the
+    /// view it has now.
+    pub fn follow(&mut self, endpoint: u32, follower: Arc<dyn Follower>) -> io::Result<()> {
+        if !self.known.contains(&endpoint) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("endpoint {endpoint:#x} is not one this IOMMU translates"),
+            ));
+        }
+        show(&*follower, self.view(endpoint))?;
+        self.followers.insert(endpoint, follower);
+        Ok(())
+    }
+
+    /// What `endpoint` sees now.
+    fn view(&self, endpoint: u32) -> View<'_> {
+        match self.attached.get(&endpoint).and_then(|id| self.domains.get(id)) {
+            Some(d) if d.bypass => View::Identity,
+            Some(d) => View::Mapped(&d.mappings),
+            None if self.bypass => View::Identity,
+            None => View::Blocked,
+        }
+    }
+
+    /// The followers of the endpoints attached to `domain`.
+    fn followers_of(&self, domain: u32) -> Vec<(u32, Arc<dyn Follower>)> {
+        self.attached
+            .iter()
+            .filter(|&(_, &d)| d == domain)
+            .filter_map(|(&endpoint, _)| self.followers.get(&endpoint).map(|f| (endpoint, f.clone())))
+            .collect()
+    }
+
+    /// The status of a request `endpoint`'s follower could not carry out, its view shown it
+    /// again as it was, which the request then leaves as it found it.
+    fn refused(&self, endpoint: u32, e: &io::Error) -> u8 {
+        crate::warn!("virtio-iommu: endpoint {endpoint:#x}'s host mappings: {e}");
+        if let Some(f) = self.followers.get(&endpoint)
+            && let Err(e) = show(&**f, self.view(endpoint))
+        {
+            crate::warn!("virtio-iommu: endpoint {endpoint:#x}'s host mappings, as they were: {e}");
+        }
+        status_of(e)
+    }
+
+    /// The configuration's bypass set to `on`: each endpoint attached to no domain then
+    /// bypasses translation, or is blocked, its follower shown so.
+    pub(crate) fn set_bypass(&mut self, on: bool) {
+        // A field it does not offer: the driver writes it only where it does (§5.13.4.1).
+        if self.bypass == on || !self.offers_bypass {
+            return;
+        }
+        self.bypass = on;
+        for (&endpoint, f) in &self.followers {
+            if !self.attached.contains_key(&endpoint)
+                && let Err(e) = show(&**f, self.view(endpoint))
+            {
+                crate::warn!("virtio-iommu: endpoint {endpoint:#x}'s host mappings: {e}");
+            }
+        }
+    }
+
+    /// Where an MSI `endpoint` aims at `address` lands in guest memory: at `address` within
+    /// the MSI window, which is never translated, else where the endpoint's domain maps it
+    /// for a write. None where it maps nothing there: the write faults.
+    pub fn msi_target(&self, endpoint: u32, address: u64) -> Option<u64> {
+        if self
+            .msi
+            .is_some_and(|(first, last)| (first..=last).contains(&address))
+        {
+            return Some(address);
+        }
+        self.translate(endpoint, address, 4, true)?
+            .first()
+            .map(|&(gpa, _)| gpa)
     }
 
     /// Where `len` bytes at I/O virtual address `iova` are in guest memory for a DMA of
@@ -148,7 +344,8 @@ impl Translation {
         if !self.known.contains(&endpoint) {
             return S_NOENT;
         }
-        if flags & !ATTACH_F_BYPASS != 0 {
+        // A flag it does not offer is one it does not recognize (§5.13.6.3.2).
+        if flags & !ATTACH_F_BYPASS != 0 || (flags & ATTACH_F_BYPASS != 0 && !self.offers_bypass) {
             return S_INVAL;
         }
         let bypass = flags & ATTACH_F_BYPASS != 0;
@@ -157,6 +354,19 @@ impl Translation {
         }
         if self.attached.get(&endpoint) == Some(&domain) {
             return S_OK;
+        }
+        if let Some(f) = self.followers.get(&endpoint) {
+            // What the endpoint will see: the domain as it is, or a new one, empty.
+            let empty = BTreeMap::new();
+            let view = match self.domains.get(&domain) {
+                Some(d) if d.bypass => View::Identity,
+                Some(d) => View::Mapped(&d.mappings),
+                None if bypass => View::Identity,
+                None => View::Mapped(&empty),
+            };
+            if let Err(e) = show(&**f, view) {
+                return self.refused(endpoint, &e);
+            }
         }
         self.detach(endpoint);
         let d = self.domains.entry(domain).or_default();
@@ -170,11 +380,22 @@ impl Translation {
         if self.attached.get(&endpoint) != Some(&domain) {
             return S_INVAL;
         }
+        if let Some(f) = self.followers.get(&endpoint) {
+            let view = if self.bypass {
+                View::Identity
+            } else {
+                View::Blocked
+            };
+            if let Err(e) = show(&**f, view) {
+                return self.refused(endpoint, &e);
+            }
+        }
         self.detach(endpoint);
         S_OK
     }
 
     pub(crate) fn map(&mut self, domain: u32, first: u64, last: u64, phys: u64, flags: u32) -> u8 {
+        let followers = self.followers_of(domain);
         let Some(d) = self.domains.get_mut(&domain) else {
             return S_NOENT;
         };
@@ -195,11 +416,24 @@ impl Translation {
         if before.is_some_and(|(_, &(end, _, _))| end >= first) {
             return S_INVAL;
         }
+        // Each follower of the domain's endpoints maps it as well, or the domain does not.
+        for (i, (endpoint, f)) in followers.iter().enumerate() {
+            if let Err(e) = mirror(&**f, first, last, phys, flags) {
+                crate::warn!("virtio-iommu: endpoint {endpoint:#x}'s host mapping of {first:#x}: {e}");
+                for (_, mapped) in followers.iter().take(i) {
+                    if let Err(e) = unmirror(&**mapped, first, last, flags) {
+                        crate::warn!("virtio-iommu: a host mapping of {first:#x}, undone: {e}");
+                    }
+                }
+                return status_of(&e);
+            }
+        }
         d.mappings.insert(first, (last, phys, flags));
         S_OK
     }
 
     fn unmap(&mut self, domain: u32, first: u64, last: u64) -> u8 {
+        let followers = self.followers_of(domain);
         let Some(d) = self.domains.get_mut(&domain) else {
             return S_NOENT;
         };
@@ -220,7 +454,19 @@ impl Translation {
         if !whole {
             return S_RANGE;
         }
+        // Each goes from the host first: one a follower keeps stays here too, as the
+        // device can still reach it.
         for start in touched {
+            if let Some(&(end, _, flags)) = d.mappings.get(&start) {
+                for (endpoint, f) in &followers {
+                    if let Err(e) = unmirror(&**f, start, end, flags) {
+                        crate::warn!(
+                            "virtio-iommu: endpoint {endpoint:#x}'s host mapping of {start:#x}, kept: {e}"
+                        );
+                        return status_of(&e);
+                    }
+                }
+            }
             d.mappings.remove(&start);
         }
         S_OK
@@ -243,7 +489,7 @@ fn le64(req: &[u8], at: usize) -> Option<u64> {
 /// Answers request `req`, its device-readable part: its status, and for PROBE the
 /// endpoint's properties, `PROBE_SIZE` bytes: the MSI window `msi`, its first and last
 /// address, as a reserved region of subtype MSI, where there is one, and then none.
-fn answer_request(state: &mut Translation, msi: Option<(u64, u64)>, req: &[u8]) -> (u8, Vec<u8>) {
+fn answer_request(state: &mut Translation, req: &[u8]) -> (u8, Vec<u8>) {
     let short = (S_INVAL, Vec::new());
     let Some(&kind) = req.first() else {
         return short;
@@ -280,7 +526,7 @@ fn answer_request(state: &mut Translation, msi: Option<(u64, u64)>, req: &[u8]) 
                 let mut props = vec![0u8; PROBE_SIZE as usize];
                 // struct virtio_iommu_probe_resv_mem: its head (type, the length after
                 // it), subtype, three reserved bytes, and the region's first and last.
-                if let Some((first, last)) = msi {
+                if let Some((first, last)) = state.msi {
                     let mut resv = Vec::with_capacity(24);
                     resv.extend_from_slice(&PROBE_T_RESV_MEM.to_le_bytes());
                     resv.extend_from_slice(&20u16.to_le_bytes());
@@ -304,7 +550,7 @@ fn answer_request(state: &mut Translation, msi: Option<(u64, u64)>, req: &[u8]) 
 /// then writes its device-writable part, PROBE's properties at its start and the tail,
 /// the status and three reserved bytes, at its end. Returns the bytes written: all of
 /// that part.
-fn answer(chain: &Chain, mem: &Access<'_>, state: &Mutex<Translation>, msi: Option<(u64, u64)>) -> u32 {
+fn answer(chain: &Chain, mem: &Access<'_>, state: &Mutex<Translation>) -> u32 {
     let mut req = [0u8; READABLE_MAX];
     let mut len = 0usize;
     for d in chain.readable() {
@@ -324,7 +570,7 @@ fn answer(chain: &Chain, mem: &Access<'_>, state: &Mutex<Translation>, msi: Opti
     }
     let (status, props) = {
         let mut state = state.lock().unwrap_or_else(PoisonError::into_inner);
-        let (status, props) = answer_request(&mut state, msi, req.get(..len).unwrap_or_default());
+        let (status, props) = answer_request(&mut state, req.get(..len).unwrap_or_default());
         // PROBE's properties must fit before the tail.
         if props.len() > total - 4 {
             (S_DEVERR, Vec::new())
@@ -353,12 +599,10 @@ fn answer(chain: &Chain, mem: &Access<'_>, state: &Mutex<Translation>, msi: Opti
     total as u32
 }
 
-/// The device: its translation, which the functions' DMA shares, the MSI window it
-/// reports, where it reports one, and its request queue's worker, the event queue held
-/// unused (it reports no faults).
+/// The device: its translation, which the functions' DMA shares, and its request queue's
+/// worker, the event queue held unused (it reports no faults).
 pub struct Iommu {
     state: Shared,
-    msi: Option<(u64, u64)>,
     context: Option<(Arc<GuestMemory>, Arc<DeviceInterrupt>)>,
     worker: Option<Worker>,
     events: Option<Queue>,
@@ -367,19 +611,15 @@ pub struct Iommu {
 
 impl std::fmt::Debug for Iommu {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Iommu")
-            .field("msi", &self.msi)
-            .finish_non_exhaustive()
+        f.debug_struct("Iommu").finish_non_exhaustive()
     }
 }
 
 impl Iommu {
-    /// The IOMMU of `state`'s endpoints, its MSI window `msi`, its first and last address,
-    /// bypassed where there is one.
-    pub fn new(state: Shared, msi: Option<(u64, u64)>) -> Iommu {
+    /// The IOMMU of `state`'s endpoints.
+    pub fn new(state: Shared) -> Iommu {
         Iommu {
             state,
-            msi,
             context: None,
             worker: None,
             events: None,
@@ -392,8 +632,8 @@ impl Iommu {
             self.paused = Some(queue);
             return Err("virtio-iommu started before activation".into());
         };
-        let (mem, state, msi) = (memory.clone(), self.state.clone(), self.msi);
-        let answering = move |chain: &Chain| mem.access().map_or(0, |a| answer(chain, &a, &state, msi));
+        let (mem, state) = (memory.clone(), self.state.clone());
+        let answering = move |chain: &Chain| mem.access().map_or(0, |a| answer(chain, &a, &state));
         match Worker::start("virtio-iommu", queue, memory, interrupt, answering) {
             Ok(worker) => {
                 self.worker = Some(worker);
@@ -417,7 +657,13 @@ impl VirtioDevice for Iommu {
     }
 
     fn features(&self) -> u64 {
-        feature::VERSION_1 | F_INPUT_RANGE | F_DOMAIN_RANGE | F_MAP_UNMAP | F_PROBE | F_MMIO | F_BYPASS_CONFIG
+        let offers_bypass = self
+            .state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .offers_bypass;
+        let bypass = if offers_bypass { F_BYPASS_CONFIG } else { 0 };
+        feature::VERSION_1 | F_INPUT_RANGE | F_DOMAIN_RANGE | F_MAP_UNMAP | F_PROBE | F_MMIO | bypass
     }
 
     fn queue_max_sizes(&self) -> &[u16] {
@@ -454,7 +700,10 @@ impl VirtioDevice for Iommu {
             .and_then(|i| usize::try_from(i).ok())
             .and_then(|i| data.get(i))
         {
-            self.state.lock().unwrap_or_else(PoisonError::into_inner).bypass = b & 1 != 0;
+            self.state
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .set_bypass(b & 1 != 0);
         }
     }
 
@@ -562,7 +811,7 @@ mod tests {
     }
 
     fn status(t: &mut Translation, req: &[u8]) -> u8 {
-        answer_request(t, MSI, req).0
+        answer_request(t, req).0
     }
 
     /// An endpoint attached to no domain bypasses translation until the driver turns it
@@ -570,7 +819,7 @@ mod tests {
     /// each mapping allows, and a byte the domain does not map faults the whole access.
     #[test]
     fn dma_reaches_what_its_domain_maps() {
-        let mut t = Translation::new(vec![8]);
+        let mut t = Translation::new(vec![8], MSI);
         assert_eq!(
             t.translate(8, 0x1000, 16, true),
             Some(vec![(0x1000, 16)]),
@@ -614,7 +863,7 @@ mod tests {
     /// would split a mapping.
     #[test]
     fn mappings_are_whole_pages_and_go_whole() {
-        let mut t = Translation::new(vec![8]);
+        let mut t = Translation::new(vec![8], MSI);
         assert_eq!(status(&mut t, &map(1, 0, 0xfff, 0, MAP_F_READ)), S_NOENT);
         assert_eq!(status(&mut t, &attach(1, 8, 0)), S_OK);
         assert_eq!(status(&mut t, &map(1, 0x800, 0xfff, 0, MAP_F_READ)), S_RANGE);
@@ -655,7 +904,7 @@ mod tests {
     /// domain is one kind or the other.
     #[test]
     fn domains_go_with_their_last_endpoint() {
-        let mut t = Translation::new(vec![8, 16]);
+        let mut t = Translation::new(vec![8, 16], MSI);
         assert_eq!(status(&mut t, &attach(1, 8, 0)), S_OK);
         assert_eq!(status(&mut t, &attach(1, 16, 0)), S_OK);
         assert_eq!(status(&mut t, &map(1, 0, 0xfff, 0x5000, MAP_F_READ)), S_OK);
@@ -679,32 +928,194 @@ mod tests {
         assert_eq!(t.translate(16, 0, 4, false), None, "its mappings went with it");
     }
 
+    /// What a follower was shown, as a host's IOMMU would hold it: all of RAM, or each
+    /// mapping by its I/O address (its guest-physical address, length, read, write); every
+    /// map refused for want of memory while `refusing`.
+    #[derive(Debug, Default)]
+    struct Shown {
+        identity: Mutex<bool>,
+        mapped: Mutex<BTreeMap<u64, (u64, u64, bool, bool)>>,
+        refusing: Mutex<bool>,
+    }
+
+    impl Shown {
+        fn whole(&self) -> bool {
+            *self.identity.lock().unwrap()
+        }
+
+        fn mappings(&self) -> Vec<(u64, (u64, u64, bool, bool))> {
+            self.mapped
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|(&k, &v)| (k, v))
+                .collect()
+        }
+
+        fn refuse(&self, on: bool) {
+            *self.refusing.lock().unwrap() = on;
+        }
+    }
+
+    impl Follower for Shown {
+        fn identity(&self) -> io::Result<()> {
+            self.clear()?;
+            *self.identity.lock().unwrap() = true;
+            Ok(())
+        }
+
+        fn clear(&self) -> io::Result<()> {
+            *self.identity.lock().unwrap() = false;
+            self.mapped.lock().unwrap().clear();
+            Ok(())
+        }
+
+        fn map(&self, iova: u64, gpa: u64, len: u64, read: bool, write: bool) -> io::Result<()> {
+            if *self.refusing.lock().unwrap() {
+                return Err(io::Error::from(io::ErrorKind::OutOfMemory));
+            }
+            self.mapped.lock().unwrap().insert(iova, (gpa, len, read, write));
+            Ok(())
+        }
+
+        fn unmap(&self, iova: u64, _len: u64) -> io::Result<()> {
+            self.mapped.lock().unwrap().remove(&iova);
+            Ok(())
+        }
+    }
+
+    /// A followed endpoint's host mappings are what it sees: all of RAM while it bypasses
+    /// translation, as it does from the start by default and in a bypass domain; nothing
+    /// while it is blocked, as after a device reset that left bypass off; and its
+    /// domain's mappings of RAM, replayed as it attaches, then each MAP and UNMAP as they
+    /// come, an MSI doorbell's (device memory) not among them. A request the host cannot
+    /// carry out is refused, and leaves the domain and the endpoint as they were.
+    #[test]
+    fn a_followed_endpoint_maps_what_it_sees() {
+        let mut t = Translation::new(vec![8, 16], None);
+        let host = Arc::new(Shown::default());
+        t.follow(8, host.clone()).unwrap();
+        assert!(host.whole(), "bypass from reset");
+        assert!(
+            t.follow(24, host.clone()).is_err(),
+            "an endpoint it does not translate"
+        );
+        // Domain 1 maps a page before 8 attaches to it; 16, which nothing follows, is in it.
+        assert_eq!(status(&mut t, &attach(1, 16, 0)), S_OK);
+        assert_eq!(
+            status(&mut t, &map(1, 0x10_0000, 0x10_0fff, 0x8000_0000, MAP_F_READ)),
+            S_OK
+        );
+        assert_eq!(status(&mut t, &attach(1, 8, 0)), S_OK);
+        assert!(!host.whole());
+        assert_eq!(
+            host.mappings(),
+            vec![(0x10_0000, (0x8000_0000, 0x1000, true, false))],
+            "replayed"
+        );
+        let both = MAP_F_READ | MAP_F_WRITE;
+        assert_eq!(
+            status(&mut t, &map(1, 0x20_0000, 0x20_1fff, 0x9000_0000, both)),
+            S_OK
+        );
+        assert_eq!(
+            status(
+                &mut t,
+                &map(1, 0x30_0000, 0x30_0fff, 0x0802_0000, MAP_F_WRITE | MAP_F_MMIO)
+            ),
+            S_OK
+        );
+        assert_eq!(host.mappings().len(), 2, "the doorbell is not the host's to map");
+        assert_eq!(status(&mut t, &unmap(1, 0x10_0000, 0x10_0fff)), S_OK);
+        assert_eq!(
+            host.mappings(),
+            vec![(0x20_0000, (0x9000_0000, 0x2000, true, true))]
+        );
+        // A host with no memory to pin: the MAP refused, the domain without it.
+        host.refuse(true);
+        assert_eq!(
+            status(&mut t, &map(1, 0x40_0000, 0x40_0fff, 0xa000_0000, MAP_F_READ)),
+            S_NOMEM
+        );
+        assert_eq!(t.translate(16, 0x40_0000, 4, false), None, "nor for 16");
+        host.refuse(false);
+        // Detached, it bypasses; with bypass off, it is blocked.
+        assert_eq!(status(&mut t, &detach(1, 8)), S_OK);
+        assert!(host.whole());
+        t.set_bypass(false);
+        assert!(!host.whole() && host.mappings().is_empty(), "blocked");
+        // An attach the host cannot carry out leaves it where it was: blocked.
+        host.refuse(true);
+        assert_eq!(status(&mut t, &attach(1, 8, 0)), S_NOMEM);
+        assert!(!host.whole() && host.mappings().is_empty());
+        assert_eq!(t.translate(8, 0x20_0000, 4, false), None, "not attached");
+        host.refuse(false);
+        // A bypass domain: all of RAM; and from reset, bypass again.
+        assert_eq!(status(&mut t, &attach(2, 8, ATTACH_F_BYPASS)), S_OK);
+        assert!(host.whole());
+        assert_eq!(status(&mut t, &attach(1, 8, 0)), S_OK);
+        assert!(!host.whole());
+        // A device reset detaches it and leaves bypass off: blocked.
+        t.reset();
+        assert!(!host.whole() && host.mappings().is_empty());
+        t.set_bypass(true);
+        assert!(host.whole());
+        // An IOMMU of passed-through functions alone offers no bypass: blocked from the
+        // start, pinning nothing; no bypass domain, nor a bypass the driver writes.
+        let mut blocked = Translation::new(vec![8], None).bypassing(false);
+        let pinned = Arc::new(Shown::default());
+        blocked.follow(8, pinned.clone()).unwrap();
+        assert!(!pinned.whole() && pinned.mappings().is_empty());
+        assert_eq!(status(&mut blocked, &attach(1, 8, ATTACH_F_BYPASS)), S_INVAL);
+        blocked.set_bypass(true);
+        assert!(!pinned.whole(), "a field it does not offer");
+        assert_eq!(status(&mut blocked, &attach(1, 8, 0)), S_OK);
+        let both = MAP_F_READ | MAP_F_WRITE;
+        assert_eq!(status(&mut blocked, &map(1, 0, 0xfff, 0x8000_0000, both)), S_OK);
+        assert_eq!(pinned.mappings(), vec![(0, (0x8000_0000, 0x1000, true, true))]);
+    }
+
+    /// An MSI lands in the MSI window untranslated, as Linux's IOMMU_RESV_MSI has it, and
+    /// elsewhere where its endpoint's domain maps the address for a write; where the
+    /// domain maps nothing there, nowhere.
+    #[test]
+    fn msis_land_untranslated_in_the_window_and_translated_elsewhere() {
+        let mut t = Translation::new(vec![8], MSI);
+        assert_eq!(status(&mut t, &attach(1, 8, 0)), S_OK);
+        assert_eq!(t.msi_target(8, 0xfee0_1000), Some(0xfee0_1000), "the window");
+        assert_eq!(t.msi_target(8, 0x800_0040), None, "unmapped");
+        assert_eq!(
+            status(
+                &mut t,
+                &map(1, 0x800_0000, 0x800_0fff, 0x0802_0000, MAP_F_WRITE | MAP_F_MMIO)
+            ),
+            S_OK
+        );
+        assert_eq!(t.msi_target(8, 0x800_0040), Some(0x0802_0040), "its doorbell");
+    }
+
     /// PROBE answers an endpoint's reserved regions: the MSI window, of subtype MSI, where
     /// the machine has one (x86_64's), then nothing; an endpoint it does not translate has
     /// none.
     #[test]
     fn probe_gives_the_msi_doorbell() {
-        let mut t = Translation::new(vec![8]);
+        let mut t = Translation::new(vec![8], MSI);
         let mut probe = vec![T_PROBE, 0, 0, 0];
         probe.extend_from_slice(&8u32.to_le_bytes());
         probe.extend_from_slice(&[0; 64]);
-        let (s, props) = answer_request(&mut t, MSI, &probe);
+        let (s, props) = answer_request(&mut t, &probe);
         assert_eq!(s, S_OK);
         assert_eq!(props.len(), PROBE_SIZE as usize);
         assert_eq!(&props[..8], &[1, 0, 20, 0, RESV_MEM_T_MSI, 0, 0, 0]);
         assert_eq!(&props[8..16], &0xfee0_0000u64.to_le_bytes());
         assert_eq!(&props[16..24], &0xfeef_ffffu64.to_le_bytes());
         assert!(props[24..].iter().all(|&b| b == 0), "then none");
-        let (s, props) = answer_request(&mut t, None, &probe);
+        let (s, props) = answer_request(&mut Translation::new(vec![8], None), &probe);
         assert_eq!(s, S_OK);
         assert!(props.iter().all(|&b| b == 0), "arm64's: no window, none");
         probe[4] = 9;
-        assert_eq!(answer_request(&mut t, MSI, &probe).0, S_NOENT);
-        assert_eq!(
-            answer_request(&mut t, MSI, &[T_ATTACH, 0, 0, 0]).0,
-            S_INVAL,
-            "short"
-        );
-        assert_eq!(answer_request(&mut t, MSI, &[9, 0, 0, 0]).0, S_UNSUPP);
+        assert_eq!(answer_request(&mut t, &probe).0, S_NOENT);
+        assert_eq!(answer_request(&mut t, &[T_ATTACH, 0, 0, 0]).0, S_INVAL, "short");
+        assert_eq!(answer_request(&mut t, &[9, 0, 0, 0]).0, S_UNSUPP);
     }
 }
