@@ -1,0 +1,3983 @@
+{
+  "attach": [
+    {
+      "name": "detach-keys",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "no-stdin",
+      "type": "bool",
+      "default": "false"
+    },
+    {
+      "name": "sig-proxy",
+      "type": "bool",
+      "default": "true"
+    }
+  ],
+  "bake": [],
+  "commit": [
+    {
+      "name": "author",
+      "short": "a",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "change",
+      "short": "c",
+      "type": "list",
+      "default": ""
+    },
+    {
+      "name": "message",
+      "short": "m",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "no-pause",
+      "type": "bool",
+      "default": "false"
+    },
+    {
+      "name": "pause",
+      "short": "p",
+      "type": "bool",
+      "default": "true",
+      "deprecated": true
+    }
+  ],
+  "container attach": [
+    {
+      "name": "detach-keys",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "no-stdin",
+      "type": "bool",
+      "default": "false"
+    },
+    {
+      "name": "sig-proxy",
+      "type": "bool",
+      "default": "true"
+    }
+  ],
+  "container commit": [
+    {
+      "name": "author",
+      "short": "a",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "change",
+      "short": "c",
+      "type": "list",
+      "default": ""
+    },
+    {
+      "name": "message",
+      "short": "m",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "no-pause",
+      "type": "bool",
+      "default": "false"
+    },
+    {
+      "name": "pause",
+      "short": "p",
+      "type": "bool",
+      "default": "true",
+      "deprecated": true
+    }
+  ],
+  "container cp": [
+    {
+      "name": "archive",
+      "short": "a",
+      "type": "bool",
+      "default": "false"
+    },
+    {
+      "name": "follow-link",
+      "short": "L",
+      "type": "bool",
+      "default": "false"
+    },
+    {
+      "name": "quiet",
+      "short": "q",
+      "type": "bool",
+      "default": "false"
+    }
+  ],
+  "container create": [
+    {
+      "name": "add-host",
+      "type": "list",
+      "default": ""
+    },
+    {
+      "name": "annotation",
+      "type": "map",
+      "default": "map[]"
+    },
+    {
+      "name": "attach",
+      "short": "a",
+      "type": "list",
+      "default": ""
+    },
+    {
+      "name": "blkio-weight",
+      "type": "uint16",
+      "default": "0"
+    },
+    {
+      "name": "blkio-weight-device",
+      "type": "list",
+      "default": "[]"
+    },
+    {
+      "name": "cap-add",
+      "type": "list",
+      "default": ""
+    },
+    {
+      "name": "cap-drop",
+      "type": "list",
+      "default": ""
+    },
+    {
+      "name": "cgroup-parent",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "cgroupns",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "cidfile",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "cpu-count",
+      "type": "int64",
+      "default": "0"
+    },
+    {
+      "name": "cpu-percent",
+      "type": "int64",
+      "default": "0"
+    },
+    {
+      "name": "cpu-period",
+      "type": "int64",
+      "default": "0"
+    },
+    {
+      "name": "cpu-quota",
+      "type": "int64",
+      "default": "0"
+    },
+    {
+      "name": "cpu-rt-period",
+      "type": "int64",
+      "default": "0"
+    },
+    {
+      "name": "cpu-rt-runtime",
+      "type": "int64",
+      "default": "0"
+    },
+    {
+      "name": "cpu-shares",
+      "short": "c",
+      "type": "int64",
+      "default": "0"
+    },
+    {
+      "name": "cpus",
+      "type": "decimal",
+      "default": ""
+    },
+    {
+      "name": "cpuset-cpus",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "cpuset-mems",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "device",
+      "type": "list",
+      "default": ""
+    },
+    {
+      "name": "device-cgroup-rule",
+      "type": "list",
+      "default": ""
+    },
+    {
+      "name": "device-read-bps",
+      "type": "list",
+      "default": "[]"
+    },
+    {
+      "name": "device-read-iops",
+      "type": "list",
+      "default": "[]"
+    },
+    {
+      "name": "device-write-bps",
+      "type": "list",
+      "default": "[]"
+    },
+    {
+      "name": "device-write-iops",
+      "type": "list",
+      "default": "[]"
+    },
+    {
+      "name": "disable-content-trust",
+      "type": "bool",
+      "default": "true",
+      "deprecated": true
+    },
+    {
+      "name": "dns",
+      "type": "list",
+      "default": ""
+    },
+    {
+      "name": "dns-opt",
+      "type": "list",
+      "default": ""
+    },
+    {
+      "name": "dns-option",
+      "type": "list",
+      "default": "",
+      "shares": "dns-opt"
+    },
+    {
+      "name": "dns-search",
+      "type": "list",
+      "default": ""
+    },
+    {
+      "name": "domainname",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "entrypoint",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "env",
+      "short": "e",
+      "type": "list",
+      "default": ""
+    },
+    {
+      "name": "env-file",
+      "type": "list",
+      "default": ""
+    },
+    {
+      "name": "expose",
+      "type": "list",
+      "default": ""
+    },
+    {
+      "name": "gpus",
+      "type": "gpu-request",
+      "default": ""
+    },
+    {
+      "name": "group-add",
+      "type": "list",
+      "default": ""
+    },
+    {
+      "name": "health-cmd",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "health-interval",
+      "type": "duration",
+      "default": "0s"
+    },
+    {
+      "name": "health-retries",
+      "type": "int",
+      "default": "0"
+    },
+    {
+      "name": "health-start-interval",
+      "type": "duration",
+      "default": "0s"
+    },
+    {
+      "name": "health-start-period",
+      "type": "duration",
+      "default": "0s"
+    },
+    {
+      "name": "health-timeout",
+      "type": "duration",
+      "default": "0s"
+    },
+    {
+      "name": "hostname",
+      "short": "h",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "init",
+      "type": "bool",
+      "default": "false"
+    },
+    {
+      "name": "interactive",
+      "short": "i",
+      "type": "bool",
+      "default": "false"
+    },
+    {
+      "name": "io-maxbandwidth",
+      "type": "bytes",
+      "default": "0"
+    },
+    {
+      "name": "io-maxiops",
+      "type": "uint64",
+      "default": "0"
+    },
+    {
+      "name": "ip",
+      "type": "ip",
+      "default": "\u003cnil\u003e"
+    },
+    {
+      "name": "ip6",
+      "type": "ip",
+      "default": "\u003cnil\u003e"
+    },
+    {
+      "name": "ipc",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "isolation",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "kernel-memory",
+      "type": "bytes",
+      "default": "0",
+      "deprecated": true
+    },
+    {
+      "name": "label",
+      "short": "l",
+      "type": "list",
+      "default": ""
+    },
+    {
+      "name": "label-file",
+      "type": "list",
+      "default": ""
+    },
+    {
+      "name": "link",
+      "type": "list",
+      "default": ""
+    },
+    {
+      "name": "link-local-ip",
+      "type": "list",
+      "default": ""
+    },
+    {
+      "name": "log-driver",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "log-opt",
+      "type": "list",
+      "default": ""
+    },
+    {
+      "name": "mac-address",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "memory",
+      "short": "m",
+      "type": "bytes",
+      "default": "0"
+    },
+    {
+      "name": "memory-reservation",
+      "type": "bytes",
+      "default": "0"
+    },
+    {
+      "name": "memory-swap",
+      "type": "bytes",
+      "default": "0"
+    },
+    {
+      "name": "memory-swappiness",
+      "type": "int64",
+      "default": "-1"
+    },
+    {
+      "name": "mount",
+      "type": "mount",
+      "default": ""
+    },
+    {
+      "name": "name",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "net",
+      "type": "network",
+      "default": ""
+    },
+    {
+      "name": "net-alias",
+      "type": "list",
+      "default": ""
+    },
+    {
+      "name": "network",
+      "type": "network",
+      "default": "",
+      "shares": "net"
+    },
+    {
+      "name": "network-alias",
+      "type": "list",
+      "default": "",
+      "shares": "net-alias"
+    },
+    {
+      "name": "no-healthcheck",
+      "type": "bool",
+      "default": "false"
+    },
+    {
+      "name": "oom-kill-disable",
+      "type": "bool",
+      "default": "false"
+    },
+    {
+      "name": "oom-score-adj",
+      "type": "int",
+      "default": "0"
+    },
+    {
+      "name": "pid",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "pids-limit",
+      "type": "int64",
+      "default": "0"
+    },
+    {
+      "name": "platform",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "privileged",
+      "type": "bool",
+      "default": "false"
+    },
+    {
+      "name": "publish",
+      "short": "p",
+      "type": "list",
+      "default": ""
+    },
+    {
+      "name": "publish-all",
+      "short": "P",
+      "type": "bool",
+      "default": "false"
+    },
+    {
+      "name": "pull",
+      "type": "string",
+      "default": "missing"
+    },
+    {
+      "name": "quiet",
+      "short": "q",
+      "type": "bool",
+      "default": "false"
+    },
+    {
+      "name": "read-only",
+      "type": "bool",
+      "default": "false"
+    },
+    {
+      "name": "restart",
+      "type": "string",
+      "default": "no"
+    },
+    {
+      "name": "rm",
+      "type": "bool",
+      "default": "false"
+    },
+    {
+      "name": "runtime",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "security-opt",
+      "type": "list",
+      "default": ""
+    },
+    {
+      "name": "shm-size",
+      "type": "bytes",
+      "default": "0"
+    },
+    {
+      "name": "stop-signal",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "stop-timeout",
+      "type": "int",
+      "default": "0"
+    },
+    {
+      "name": "storage-opt",
+      "type": "list",
+      "default": ""
+    },
+    {
+      "name": "sysctl",
+      "type": "map",
+      "default": "map[]"
+    },
+    {
+      "name": "tmpfs",
+      "type": "list",
+      "default": ""
+    },
+    {
+      "name": "tty",
+      "short": "t",
+      "type": "bool",
+      "default": "false"
+    },
+    {
+      "name": "ulimit",
+      "type": "ulimit",
+      "default": "[]"
+    },
+    {
+      "name": "umask",
+      "type": "umask",
+      "default": "\u003cnil\u003e"
+    },
+    {
+      "name": "use-api-socket",
+      "type": "bool",
+      "default": "false"
+    },
+    {
+      "name": "user",
+      "short": "u",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "userns",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "uts",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "volume",
+      "short": "v",
+      "type": "list",
+      "default": ""
+    },
+    {
+      "name": "volume-driver",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "volumes-from",
+      "type": "list",
+      "default": ""
+    },
+    {
+      "name": "workdir",
+      "short": "w",
+      "type": "string",
+      "default": ""
+    }
+  ],
+  "container diff": [],
+  "container exec": [
+    {
+      "name": "detach",
+      "short": "d",
+      "type": "bool",
+      "default": "false"
+    },
+    {
+      "name": "detach-keys",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "env",
+      "short": "e",
+      "type": "list",
+      "default": ""
+    },
+    {
+      "name": "env-file",
+      "type": "list",
+      "default": ""
+    },
+    {
+      "name": "interactive",
+      "short": "i",
+      "type": "bool",
+      "default": "false"
+    },
+    {
+      "name": "privileged",
+      "type": "bool",
+      "default": "false"
+    },
+    {
+      "name": "tty",
+      "short": "t",
+      "type": "bool",
+      "default": "false"
+    },
+    {
+      "name": "user",
+      "short": "u",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "workdir",
+      "short": "w",
+      "type": "string",
+      "default": ""
+    }
+  ],
+  "container export": [
+    {
+      "name": "output",
+      "short": "o",
+      "type": "string",
+      "default": ""
+    }
+  ],
+  "container inspect": [
+    {
+      "name": "format",
+      "short": "f",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "size",
+      "short": "s",
+      "type": "bool",
+      "default": "false"
+    }
+  ],
+  "container kill": [
+    {
+      "name": "signal",
+      "short": "s",
+      "type": "string",
+      "default": ""
+    }
+  ],
+  "container logs": [
+    {
+      "name": "details",
+      "type": "bool",
+      "default": "false"
+    },
+    {
+      "name": "follow",
+      "short": "f",
+      "type": "bool",
+      "default": "false"
+    },
+    {
+      "name": "since",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "tail",
+      "short": "n",
+      "type": "string",
+      "default": "all"
+    },
+    {
+      "name": "timestamps",
+      "short": "t",
+      "type": "bool",
+      "default": "false"
+    },
+    {
+      "name": "until",
+      "type": "string",
+      "default": ""
+    }
+  ],
+  "container ls": [
+    {
+      "name": "all",
+      "short": "a",
+      "type": "bool",
+      "default": "false"
+    },
+    {
+      "name": "filter",
+      "short": "f",
+      "type": "filter",
+      "default": ""
+    },
+    {
+      "name": "format",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "last",
+      "short": "n",
+      "type": "int",
+      "default": "-1"
+    },
+    {
+      "name": "latest",
+      "short": "l",
+      "type": "bool",
+      "default": "false"
+    },
+    {
+      "name": "no-trunc",
+      "type": "bool",
+      "default": "false"
+    },
+    {
+      "name": "quiet",
+      "short": "q",
+      "type": "bool",
+      "default": "false"
+    },
+    {
+      "name": "size",
+      "short": "s",
+      "type": "bool",
+      "default": "false"
+    }
+  ],
+  "container pause": [],
+  "container port": [],
+  "container prune": [
+    {
+      "name": "filter",
+      "type": "filter",
+      "default": ""
+    },
+    {
+      "name": "force",
+      "short": "f",
+      "type": "bool",
+      "default": "false"
+    }
+  ],
+  "container rename": [],
+  "container restart": [
+    {
+      "name": "signal",
+      "short": "s",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "time",
+      "type": "int",
+      "default": "0",
+      "deprecated": true
+    },
+    {
+      "name": "timeout",
+      "short": "t",
+      "type": "int",
+      "default": "0",
+      "shares": "time"
+    }
+  ],
+  "container rm": [
+    {
+      "name": "force",
+      "short": "f",
+      "type": "bool",
+      "default": "false"
+    },
+    {
+      "name": "link",
+      "short": "l",
+      "type": "bool",
+      "default": "false"
+    },
+    {
+      "name": "volumes",
+      "short": "v",
+      "type": "bool",
+      "default": "false"
+    }
+  ],
+  "container run": [
+    {
+      "name": "add-host",
+      "type": "list",
+      "default": ""
+    },
+    {
+      "name": "annotation",
+      "type": "map",
+      "default": "map[]"
+    },
+    {
+      "name": "attach",
+      "short": "a",
+      "type": "list",
+      "default": ""
+    },
+    {
+      "name": "blkio-weight",
+      "type": "uint16",
+      "default": "0"
+    },
+    {
+      "name": "blkio-weight-device",
+      "type": "list",
+      "default": "[]"
+    },
+    {
+      "name": "cap-add",
+      "type": "list",
+      "default": ""
+    },
+    {
+      "name": "cap-drop",
+      "type": "list",
+      "default": ""
+    },
+    {
+      "name": "cgroup-parent",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "cgroupns",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "cidfile",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "cpu-count",
+      "type": "int64",
+      "default": "0"
+    },
+    {
+      "name": "cpu-percent",
+      "type": "int64",
+      "default": "0"
+    },
+    {
+      "name": "cpu-period",
+      "type": "int64",
+      "default": "0"
+    },
+    {
+      "name": "cpu-quota",
+      "type": "int64",
+      "default": "0"
+    },
+    {
+      "name": "cpu-rt-period",
+      "type": "int64",
+      "default": "0"
+    },
+    {
+      "name": "cpu-rt-runtime",
+      "type": "int64",
+      "default": "0"
+    },
+    {
+      "name": "cpu-shares",
+      "short": "c",
+      "type": "int64",
+      "default": "0"
+    },
+    {
+      "name": "cpus",
+      "type": "decimal",
+      "default": ""
+    },
+    {
+      "name": "cpuset-cpus",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "cpuset-mems",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "detach",
+      "short": "d",
+      "type": "bool",
+      "default": "false"
+    },
+    {
+      "name": "detach-keys",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "device",
+      "type": "list",
+      "default": ""
+    },
+    {
+      "name": "device-cgroup-rule",
+      "type": "list",
+      "default": ""
+    },
+    {
+      "name": "device-read-bps",
+      "type": "list",
+      "default": "[]"
+    },
+    {
+      "name": "device-read-iops",
+      "type": "list",
+      "default": "[]"
+    },
+    {
+      "name": "device-write-bps",
+      "type": "list",
+      "default": "[]"
+    },
+    {
+      "name": "device-write-iops",
+      "type": "list",
+      "default": "[]"
+    },
+    {
+      "name": "disable-content-trust",
+      "type": "bool",
+      "default": "true",
+      "deprecated": true
+    },
+    {
+      "name": "dns",
+      "type": "list",
+      "default": ""
+    },
+    {
+      "name": "dns-opt",
+      "type": "list",
+      "default": ""
+    },
+    {
+      "name": "dns-option",
+      "type": "list",
+      "default": "",
+      "shares": "dns-opt"
+    },
+    {
+      "name": "dns-search",
+      "type": "list",
+      "default": ""
+    },
+    {
+      "name": "domainname",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "entrypoint",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "env",
+      "short": "e",
+      "type": "list",
+      "default": ""
+    },
+    {
+      "name": "env-file",
+      "type": "list",
+      "default": ""
+    },
+    {
+      "name": "expose",
+      "type": "list",
+      "default": ""
+    },
+    {
+      "name": "gpus",
+      "type": "gpu-request",
+      "default": ""
+    },
+    {
+      "name": "group-add",
+      "type": "list",
+      "default": ""
+    },
+    {
+      "name": "health-cmd",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "health-interval",
+      "type": "duration",
+      "default": "0s"
+    },
+    {
+      "name": "health-retries",
+      "type": "int",
+      "default": "0"
+    },
+    {
+      "name": "health-start-interval",
+      "type": "duration",
+      "default": "0s"
+    },
+    {
+      "name": "health-start-period",
+      "type": "duration",
+      "default": "0s"
+    },
+    {
+      "name": "health-timeout",
+      "type": "duration",
+      "default": "0s"
+    },
+    {
+      "name": "hostname",
+      "short": "h",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "init",
+      "type": "bool",
+      "default": "false"
+    },
+    {
+      "name": "interactive",
+      "short": "i",
+      "type": "bool",
+      "default": "false"
+    },
+    {
+      "name": "io-maxbandwidth",
+      "type": "bytes",
+      "default": "0"
+    },
+    {
+      "name": "io-maxiops",
+      "type": "uint64",
+      "default": "0"
+    },
+    {
+      "name": "ip",
+      "type": "ip",
+      "default": "\u003cnil\u003e"
+    },
+    {
+      "name": "ip6",
+      "type": "ip",
+      "default": "\u003cnil\u003e"
+    },
+    {
+      "name": "ipc",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "isolation",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "kernel-memory",
+      "type": "bytes",
+      "default": "0",
+      "deprecated": true
+    },
+    {
+      "name": "label",
+      "short": "l",
+      "type": "list",
+      "default": ""
+    },
+    {
+      "name": "label-file",
+      "type": "list",
+      "default": ""
+    },
+    {
+      "name": "link",
+      "type": "list",
+      "default": ""
+    },
+    {
+      "name": "link-local-ip",
+      "type": "list",
+      "default": ""
+    },
+    {
+      "name": "log-driver",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "log-opt",
+      "type": "list",
+      "default": ""
+    },
+    {
+      "name": "mac-address",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "memory",
+      "short": "m",
+      "type": "bytes",
+      "default": "0"
+    },
+    {
+      "name": "memory-reservation",
+      "type": "bytes",
+      "default": "0"
+    },
+    {
+      "name": "memory-swap",
+      "type": "bytes",
+      "default": "0"
+    },
+    {
+      "name": "memory-swappiness",
+      "type": "int64",
+      "default": "-1"
+    },
+    {
+      "name": "mount",
+      "type": "mount",
+      "default": ""
+    },
+    {
+      "name": "name",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "net",
+      "type": "network",
+      "default": ""
+    },
+    {
+      "name": "net-alias",
+      "type": "list",
+      "default": ""
+    },
+    {
+      "name": "network",
+      "type": "network",
+      "default": "",
+      "shares": "net"
+    },
+    {
+      "name": "network-alias",
+      "type": "list",
+      "default": "",
+      "shares": "net-alias"
+    },
+    {
+      "name": "no-healthcheck",
+      "type": "bool",
+      "default": "false"
+    },
+    {
+      "name": "oom-kill-disable",
+      "type": "bool",
+      "default": "false"
+    },
+    {
+      "name": "oom-score-adj",
+      "type": "int",
+      "default": "0"
+    },
+    {
+      "name": "pid",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "pids-limit",
+      "type": "int64",
+      "default": "0"
+    },
+    {
+      "name": "platform",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "privileged",
+      "type": "bool",
+      "default": "false"
+    },
+    {
+      "name": "publish",
+      "short": "p",
+      "type": "list",
+      "default": ""
+    },
+    {
+      "name": "publish-all",
+      "short": "P",
+      "type": "bool",
+      "default": "false"
+    },
+    {
+      "name": "pull",
+      "type": "string",
+      "default": "missing"
+    },
+    {
+      "name": "quiet",
+      "short": "q",
+      "type": "bool",
+      "default": "false"
+    },
+    {
+      "name": "read-only",
+      "type": "bool",
+      "default": "false"
+    },
+    {
+      "name": "restart",
+      "type": "string",
+      "default": "no"
+    },
+    {
+      "name": "rm",
+      "type": "bool",
+      "default": "false"
+    },
+    {
+      "name": "runtime",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "security-opt",
+      "type": "list",
+      "default": ""
+    },
+    {
+      "name": "shm-size",
+      "type": "bytes",
+      "default": "0"
+    },
+    {
+      "name": "sig-proxy",
+      "type": "bool",
+      "default": "true"
+    },
+    {
+      "name": "stop-signal",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "stop-timeout",
+      "type": "int",
+      "default": "0"
+    },
+    {
+      "name": "storage-opt",
+      "type": "list",
+      "default": ""
+    },
+    {
+      "name": "sysctl",
+      "type": "map",
+      "default": "map[]"
+    },
+    {
+      "name": "tmpfs",
+      "type": "list",
+      "default": ""
+    },
+    {
+      "name": "tty",
+      "short": "t",
+      "type": "bool",
+      "default": "false"
+    },
+    {
+      "name": "ulimit",
+      "type": "ulimit",
+      "default": "[]"
+    },
+    {
+      "name": "umask",
+      "type": "umask",
+      "default": "\u003cnil\u003e"
+    },
+    {
+      "name": "use-api-socket",
+      "type": "bool",
+      "default": "false"
+    },
+    {
+      "name": "user",
+      "short": "u",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "userns",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "uts",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "volume",
+      "short": "v",
+      "type": "list",
+      "default": ""
+    },
+    {
+      "name": "volume-driver",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "volumes-from",
+      "type": "list",
+      "default": ""
+    },
+    {
+      "name": "workdir",
+      "short": "w",
+      "type": "string",
+      "default": ""
+    }
+  ],
+  "container start": [
+    {
+      "name": "attach",
+      "short": "a",
+      "type": "bool",
+      "default": "false"
+    },
+    {
+      "name": "checkpoint",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "checkpoint-dir",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "detach-keys",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "interactive",
+      "short": "i",
+      "type": "bool",
+      "default": "false"
+    }
+  ],
+  "container stats": [
+    {
+      "name": "all",
+      "short": "a",
+      "type": "bool",
+      "default": "false"
+    },
+    {
+      "name": "format",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "no-stream",
+      "type": "bool",
+      "default": "false"
+    },
+    {
+      "name": "no-trunc",
+      "type": "bool",
+      "default": "false"
+    }
+  ],
+  "container stop": [
+    {
+      "name": "signal",
+      "short": "s",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "time",
+      "type": "int",
+      "default": "0",
+      "deprecated": true
+    },
+    {
+      "name": "timeout",
+      "short": "t",
+      "type": "int",
+      "default": "0",
+      "shares": "time"
+    }
+  ],
+  "container top": [],
+  "container unpause": [],
+  "container update": [
+    {
+      "name": "blkio-weight",
+      "type": "uint16",
+      "default": "0"
+    },
+    {
+      "name": "cpu-period",
+      "type": "int64",
+      "default": "0"
+    },
+    {
+      "name": "cpu-quota",
+      "type": "int64",
+      "default": "0"
+    },
+    {
+      "name": "cpu-rt-period",
+      "type": "int64",
+      "default": "0"
+    },
+    {
+      "name": "cpu-rt-runtime",
+      "type": "int64",
+      "default": "0"
+    },
+    {
+      "name": "cpu-shares",
+      "short": "c",
+      "type": "int64",
+      "default": "0"
+    },
+    {
+      "name": "cpus",
+      "type": "decimal",
+      "default": ""
+    },
+    {
+      "name": "cpuset-cpus",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "cpuset-mems",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "kernel-memory",
+      "type": "bytes",
+      "default": "0",
+      "deprecated": true
+    },
+    {
+      "name": "memory",
+      "short": "m",
+      "type": "bytes",
+      "default": "0"
+    },
+    {
+      "name": "memory-reservation",
+      "type": "bytes",
+      "default": "0"
+    },
+    {
+      "name": "memory-swap",
+      "type": "bytes",
+      "default": "0"
+    },
+    {
+      "name": "pids-limit",
+      "type": "int64",
+      "default": "0"
+    },
+    {
+      "name": "restart",
+      "type": "string",
+      "default": ""
+    }
+  ],
+  "container wait": [],
+  "cp": [
+    {
+      "name": "archive",
+      "short": "a",
+      "type": "bool",
+      "default": "false"
+    },
+    {
+      "name": "follow-link",
+      "short": "L",
+      "type": "bool",
+      "default": "false"
+    },
+    {
+      "name": "quiet",
+      "short": "q",
+      "type": "bool",
+      "default": "false"
+    }
+  ],
+  "create": [
+    {
+      "name": "add-host",
+      "type": "list",
+      "default": ""
+    },
+    {
+      "name": "annotation",
+      "type": "map",
+      "default": "map[]"
+    },
+    {
+      "name": "attach",
+      "short": "a",
+      "type": "list",
+      "default": ""
+    },
+    {
+      "name": "blkio-weight",
+      "type": "uint16",
+      "default": "0"
+    },
+    {
+      "name": "blkio-weight-device",
+      "type": "list",
+      "default": "[]"
+    },
+    {
+      "name": "cap-add",
+      "type": "list",
+      "default": ""
+    },
+    {
+      "name": "cap-drop",
+      "type": "list",
+      "default": ""
+    },
+    {
+      "name": "cgroup-parent",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "cgroupns",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "cidfile",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "cpu-count",
+      "type": "int64",
+      "default": "0"
+    },
+    {
+      "name": "cpu-percent",
+      "type": "int64",
+      "default": "0"
+    },
+    {
+      "name": "cpu-period",
+      "type": "int64",
+      "default": "0"
+    },
+    {
+      "name": "cpu-quota",
+      "type": "int64",
+      "default": "0"
+    },
+    {
+      "name": "cpu-rt-period",
+      "type": "int64",
+      "default": "0"
+    },
+    {
+      "name": "cpu-rt-runtime",
+      "type": "int64",
+      "default": "0"
+    },
+    {
+      "name": "cpu-shares",
+      "short": "c",
+      "type": "int64",
+      "default": "0"
+    },
+    {
+      "name": "cpus",
+      "type": "decimal",
+      "default": ""
+    },
+    {
+      "name": "cpuset-cpus",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "cpuset-mems",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "device",
+      "type": "list",
+      "default": ""
+    },
+    {
+      "name": "device-cgroup-rule",
+      "type": "list",
+      "default": ""
+    },
+    {
+      "name": "device-read-bps",
+      "type": "list",
+      "default": "[]"
+    },
+    {
+      "name": "device-read-iops",
+      "type": "list",
+      "default": "[]"
+    },
+    {
+      "name": "device-write-bps",
+      "type": "list",
+      "default": "[]"
+    },
+    {
+      "name": "device-write-iops",
+      "type": "list",
+      "default": "[]"
+    },
+    {
+      "name": "disable-content-trust",
+      "type": "bool",
+      "default": "true",
+      "deprecated": true
+    },
+    {
+      "name": "dns",
+      "type": "list",
+      "default": ""
+    },
+    {
+      "name": "dns-opt",
+      "type": "list",
+      "default": ""
+    },
+    {
+      "name": "dns-option",
+      "type": "list",
+      "default": "",
+      "shares": "dns-opt"
+    },
+    {
+      "name": "dns-search",
+      "type": "list",
+      "default": ""
+    },
+    {
+      "name": "domainname",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "entrypoint",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "env",
+      "short": "e",
+      "type": "list",
+      "default": ""
+    },
+    {
+      "name": "env-file",
+      "type": "list",
+      "default": ""
+    },
+    {
+      "name": "expose",
+      "type": "list",
+      "default": ""
+    },
+    {
+      "name": "gpus",
+      "type": "gpu-request",
+      "default": ""
+    },
+    {
+      "name": "group-add",
+      "type": "list",
+      "default": ""
+    },
+    {
+      "name": "health-cmd",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "health-interval",
+      "type": "duration",
+      "default": "0s"
+    },
+    {
+      "name": "health-retries",
+      "type": "int",
+      "default": "0"
+    },
+    {
+      "name": "health-start-interval",
+      "type": "duration",
+      "default": "0s"
+    },
+    {
+      "name": "health-start-period",
+      "type": "duration",
+      "default": "0s"
+    },
+    {
+      "name": "health-timeout",
+      "type": "duration",
+      "default": "0s"
+    },
+    {
+      "name": "hostname",
+      "short": "h",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "init",
+      "type": "bool",
+      "default": "false"
+    },
+    {
+      "name": "interactive",
+      "short": "i",
+      "type": "bool",
+      "default": "false"
+    },
+    {
+      "name": "io-maxbandwidth",
+      "type": "bytes",
+      "default": "0"
+    },
+    {
+      "name": "io-maxiops",
+      "type": "uint64",
+      "default": "0"
+    },
+    {
+      "name": "ip",
+      "type": "ip",
+      "default": "\u003cnil\u003e"
+    },
+    {
+      "name": "ip6",
+      "type": "ip",
+      "default": "\u003cnil\u003e"
+    },
+    {
+      "name": "ipc",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "isolation",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "kernel-memory",
+      "type": "bytes",
+      "default": "0",
+      "deprecated": true
+    },
+    {
+      "name": "label",
+      "short": "l",
+      "type": "list",
+      "default": ""
+    },
+    {
+      "name": "label-file",
+      "type": "list",
+      "default": ""
+    },
+    {
+      "name": "link",
+      "type": "list",
+      "default": ""
+    },
+    {
+      "name": "link-local-ip",
+      "type": "list",
+      "default": ""
+    },
+    {
+      "name": "log-driver",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "log-opt",
+      "type": "list",
+      "default": ""
+    },
+    {
+      "name": "mac-address",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "memory",
+      "short": "m",
+      "type": "bytes",
+      "default": "0"
+    },
+    {
+      "name": "memory-reservation",
+      "type": "bytes",
+      "default": "0"
+    },
+    {
+      "name": "memory-swap",
+      "type": "bytes",
+      "default": "0"
+    },
+    {
+      "name": "memory-swappiness",
+      "type": "int64",
+      "default": "-1"
+    },
+    {
+      "name": "mount",
+      "type": "mount",
+      "default": ""
+    },
+    {
+      "name": "name",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "net",
+      "type": "network",
+      "default": ""
+    },
+    {
+      "name": "net-alias",
+      "type": "list",
+      "default": ""
+    },
+    {
+      "name": "network",
+      "type": "network",
+      "default": "",
+      "shares": "net"
+    },
+    {
+      "name": "network-alias",
+      "type": "list",
+      "default": "",
+      "shares": "net-alias"
+    },
+    {
+      "name": "no-healthcheck",
+      "type": "bool",
+      "default": "false"
+    },
+    {
+      "name": "oom-kill-disable",
+      "type": "bool",
+      "default": "false"
+    },
+    {
+      "name": "oom-score-adj",
+      "type": "int",
+      "default": "0"
+    },
+    {
+      "name": "pid",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "pids-limit",
+      "type": "int64",
+      "default": "0"
+    },
+    {
+      "name": "platform",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "privileged",
+      "type": "bool",
+      "default": "false"
+    },
+    {
+      "name": "publish",
+      "short": "p",
+      "type": "list",
+      "default": ""
+    },
+    {
+      "name": "publish-all",
+      "short": "P",
+      "type": "bool",
+      "default": "false"
+    },
+    {
+      "name": "pull",
+      "type": "string",
+      "default": "missing"
+    },
+    {
+      "name": "quiet",
+      "short": "q",
+      "type": "bool",
+      "default": "false"
+    },
+    {
+      "name": "read-only",
+      "type": "bool",
+      "default": "false"
+    },
+    {
+      "name": "restart",
+      "type": "string",
+      "default": "no"
+    },
+    {
+      "name": "rm",
+      "type": "bool",
+      "default": "false"
+    },
+    {
+      "name": "runtime",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "security-opt",
+      "type": "list",
+      "default": ""
+    },
+    {
+      "name": "shm-size",
+      "type": "bytes",
+      "default": "0"
+    },
+    {
+      "name": "stop-signal",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "stop-timeout",
+      "type": "int",
+      "default": "0"
+    },
+    {
+      "name": "storage-opt",
+      "type": "list",
+      "default": ""
+    },
+    {
+      "name": "sysctl",
+      "type": "map",
+      "default": "map[]"
+    },
+    {
+      "name": "tmpfs",
+      "type": "list",
+      "default": ""
+    },
+    {
+      "name": "tty",
+      "short": "t",
+      "type": "bool",
+      "default": "false"
+    },
+    {
+      "name": "ulimit",
+      "type": "ulimit",
+      "default": "[]"
+    },
+    {
+      "name": "umask",
+      "type": "umask",
+      "default": "\u003cnil\u003e"
+    },
+    {
+      "name": "use-api-socket",
+      "type": "bool",
+      "default": "false"
+    },
+    {
+      "name": "user",
+      "short": "u",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "userns",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "uts",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "volume",
+      "short": "v",
+      "type": "list",
+      "default": ""
+    },
+    {
+      "name": "volume-driver",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "volumes-from",
+      "type": "list",
+      "default": ""
+    },
+    {
+      "name": "workdir",
+      "short": "w",
+      "type": "string",
+      "default": ""
+    }
+  ],
+  "diff": [],
+  "events": [
+    {
+      "name": "filter",
+      "short": "f",
+      "type": "filter",
+      "default": ""
+    },
+    {
+      "name": "format",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "since",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "until",
+      "type": "string",
+      "default": ""
+    }
+  ],
+  "exec": [
+    {
+      "name": "detach",
+      "short": "d",
+      "type": "bool",
+      "default": "false"
+    },
+    {
+      "name": "detach-keys",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "env",
+      "short": "e",
+      "type": "list",
+      "default": ""
+    },
+    {
+      "name": "env-file",
+      "type": "list",
+      "default": ""
+    },
+    {
+      "name": "interactive",
+      "short": "i",
+      "type": "bool",
+      "default": "false"
+    },
+    {
+      "name": "privileged",
+      "type": "bool",
+      "default": "false"
+    },
+    {
+      "name": "tty",
+      "short": "t",
+      "type": "bool",
+      "default": "false"
+    },
+    {
+      "name": "user",
+      "short": "u",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "workdir",
+      "short": "w",
+      "type": "string",
+      "default": ""
+    }
+  ],
+  "export": [
+    {
+      "name": "output",
+      "short": "o",
+      "type": "string",
+      "default": ""
+    }
+  ],
+  "history": [
+    {
+      "name": "format",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "human",
+      "short": "H",
+      "type": "bool",
+      "default": "true"
+    },
+    {
+      "name": "no-trunc",
+      "type": "bool",
+      "default": "false"
+    },
+    {
+      "name": "platform",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "quiet",
+      "short": "q",
+      "type": "bool",
+      "default": "false"
+    }
+  ],
+  "image history": [
+    {
+      "name": "format",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "human",
+      "short": "H",
+      "type": "bool",
+      "default": "true"
+    },
+    {
+      "name": "no-trunc",
+      "type": "bool",
+      "default": "false"
+    },
+    {
+      "name": "platform",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "quiet",
+      "short": "q",
+      "type": "bool",
+      "default": "false"
+    }
+  ],
+  "image import": [
+    {
+      "name": "change",
+      "short": "c",
+      "type": "list",
+      "default": ""
+    },
+    {
+      "name": "message",
+      "short": "m",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "platform",
+      "type": "string",
+      "default": ""
+    }
+  ],
+  "image inspect": [
+    {
+      "name": "format",
+      "short": "f",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "platform",
+      "type": "string",
+      "default": ""
+    }
+  ],
+  "image load": [
+    {
+      "name": "input",
+      "short": "i",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "platform",
+      "type": "stringSlice",
+      "default": "[]"
+    },
+    {
+      "name": "quiet",
+      "short": "q",
+      "type": "bool",
+      "default": "false"
+    }
+  ],
+  "image ls": [
+    {
+      "name": "all",
+      "short": "a",
+      "type": "bool",
+      "default": "false"
+    },
+    {
+      "name": "digests",
+      "type": "bool",
+      "default": "false"
+    },
+    {
+      "name": "filter",
+      "short": "f",
+      "type": "filter",
+      "default": ""
+    },
+    {
+      "name": "format",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "no-trunc",
+      "type": "bool",
+      "default": "false"
+    },
+    {
+      "name": "quiet",
+      "short": "q",
+      "type": "bool",
+      "default": "false"
+    },
+    {
+      "name": "tree",
+      "type": "bool",
+      "default": "false"
+    }
+  ],
+  "image prune": [
+    {
+      "name": "all",
+      "short": "a",
+      "type": "bool",
+      "default": "false"
+    },
+    {
+      "name": "filter",
+      "type": "filter",
+      "default": ""
+    },
+    {
+      "name": "force",
+      "short": "f",
+      "type": "bool",
+      "default": "false"
+    }
+  ],
+  "image pull": [
+    {
+      "name": "all-tags",
+      "short": "a",
+      "type": "bool",
+      "default": "false"
+    },
+    {
+      "name": "disable-content-trust",
+      "type": "bool",
+      "default": "true",
+      "deprecated": true
+    },
+    {
+      "name": "platform",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "quiet",
+      "short": "q",
+      "type": "bool",
+      "default": "false"
+    }
+  ],
+  "image push": [
+    {
+      "name": "all-tags",
+      "short": "a",
+      "type": "bool",
+      "default": "false"
+    },
+    {
+      "name": "disable-content-trust",
+      "type": "bool",
+      "default": "true",
+      "deprecated": true
+    },
+    {
+      "name": "platform",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "quiet",
+      "short": "q",
+      "type": "bool",
+      "default": "false"
+    }
+  ],
+  "image rm": [
+    {
+      "name": "force",
+      "short": "f",
+      "type": "bool",
+      "default": "false"
+    },
+    {
+      "name": "no-prune",
+      "type": "bool",
+      "default": "false"
+    },
+    {
+      "name": "platform",
+      "type": "stringSlice",
+      "default": "[]"
+    }
+  ],
+  "image save": [
+    {
+      "name": "output",
+      "short": "o",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "platform",
+      "type": "stringSlice",
+      "default": "[]"
+    }
+  ],
+  "image tag": [],
+  "images": [
+    {
+      "name": "all",
+      "short": "a",
+      "type": "bool",
+      "default": "false"
+    },
+    {
+      "name": "digests",
+      "type": "bool",
+      "default": "false"
+    },
+    {
+      "name": "filter",
+      "short": "f",
+      "type": "filter",
+      "default": ""
+    },
+    {
+      "name": "format",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "no-trunc",
+      "type": "bool",
+      "default": "false"
+    },
+    {
+      "name": "quiet",
+      "short": "q",
+      "type": "bool",
+      "default": "false"
+    },
+    {
+      "name": "tree",
+      "type": "bool",
+      "default": "false"
+    }
+  ],
+  "import": [
+    {
+      "name": "change",
+      "short": "c",
+      "type": "list",
+      "default": ""
+    },
+    {
+      "name": "message",
+      "short": "m",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "platform",
+      "type": "string",
+      "default": ""
+    }
+  ],
+  "info": [
+    {
+      "name": "format",
+      "short": "f",
+      "type": "string",
+      "default": ""
+    }
+  ],
+  "inspect": [
+    {
+      "name": "format",
+      "short": "f",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "size",
+      "short": "s",
+      "type": "bool",
+      "default": "false"
+    },
+    {
+      "name": "type",
+      "type": "string",
+      "default": ""
+    }
+  ],
+  "kill": [
+    {
+      "name": "signal",
+      "short": "s",
+      "type": "string",
+      "default": ""
+    }
+  ],
+  "load": [
+    {
+      "name": "input",
+      "short": "i",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "platform",
+      "type": "stringSlice",
+      "default": "[]"
+    },
+    {
+      "name": "quiet",
+      "short": "q",
+      "type": "bool",
+      "default": "false"
+    }
+  ],
+  "login": [
+    {
+      "name": "password",
+      "short": "p",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "password-stdin",
+      "type": "bool",
+      "default": "false"
+    },
+    {
+      "name": "username",
+      "short": "u",
+      "type": "string",
+      "default": ""
+    }
+  ],
+  "logout": [],
+  "logs": [
+    {
+      "name": "details",
+      "type": "bool",
+      "default": "false"
+    },
+    {
+      "name": "follow",
+      "short": "f",
+      "type": "bool",
+      "default": "false"
+    },
+    {
+      "name": "since",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "tail",
+      "short": "n",
+      "type": "string",
+      "default": "all"
+    },
+    {
+      "name": "timestamps",
+      "short": "t",
+      "type": "bool",
+      "default": "false"
+    },
+    {
+      "name": "until",
+      "type": "string",
+      "default": ""
+    }
+  ],
+  "network connect": [
+    {
+      "name": "alias",
+      "type": "stringSlice",
+      "default": "[]"
+    },
+    {
+      "name": "driver-opt",
+      "type": "stringSlice",
+      "default": "[]"
+    },
+    {
+      "name": "gw-priority",
+      "type": "int",
+      "default": "0"
+    },
+    {
+      "name": "ip",
+      "type": "ip",
+      "default": "\u003cnil\u003e"
+    },
+    {
+      "name": "ip6",
+      "type": "ip",
+      "default": "\u003cnil\u003e"
+    },
+    {
+      "name": "link",
+      "type": "list",
+      "default": ""
+    },
+    {
+      "name": "link-local-ip",
+      "type": "ipSlice",
+      "default": "[]"
+    }
+  ],
+  "network create": [
+    {
+      "name": "attachable",
+      "type": "bool",
+      "default": "false"
+    },
+    {
+      "name": "aux-address",
+      "type": "map",
+      "default": "map[]"
+    },
+    {
+      "name": "config-from",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "config-only",
+      "type": "bool",
+      "default": "false"
+    },
+    {
+      "name": "driver",
+      "short": "d",
+      "type": "string",
+      "default": "bridge"
+    },
+    {
+      "name": "gateway",
+      "type": "ipSlice",
+      "default": "[]"
+    },
+    {
+      "name": "ingress",
+      "type": "bool",
+      "default": "false"
+    },
+    {
+      "name": "internal",
+      "type": "bool",
+      "default": "false"
+    },
+    {
+      "name": "ip-range",
+      "type": "ipNetSlice",
+      "default": "[]"
+    },
+    {
+      "name": "ipam-driver",
+      "type": "string",
+      "default": "default"
+    },
+    {
+      "name": "ipam-opt",
+      "type": "map",
+      "default": "map[]"
+    },
+    {
+      "name": "ipv4",
+      "type": "bool",
+      "default": "true"
+    },
+    {
+      "name": "ipv6",
+      "type": "bool",
+      "default": "false"
+    },
+    {
+      "name": "label",
+      "type": "list",
+      "default": ""
+    },
+    {
+      "name": "opt",
+      "short": "o",
+      "type": "map",
+      "default": "map[]"
+    },
+    {
+      "name": "scope",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "subnet",
+      "type": "stringSlice",
+      "default": "[]"
+    }
+  ],
+  "network disconnect": [
+    {
+      "name": "force",
+      "short": "f",
+      "type": "bool",
+      "default": "false"
+    }
+  ],
+  "network inspect": [
+    {
+      "name": "format",
+      "short": "f",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "verbose",
+      "short": "v",
+      "type": "bool",
+      "default": "false"
+    }
+  ],
+  "network ls": [
+    {
+      "name": "filter",
+      "short": "f",
+      "type": "filter",
+      "default": ""
+    },
+    {
+      "name": "format",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "no-trunc",
+      "type": "bool",
+      "default": "false"
+    },
+    {
+      "name": "quiet",
+      "short": "q",
+      "type": "bool",
+      "default": "false"
+    }
+  ],
+  "network prune": [
+    {
+      "name": "filter",
+      "type": "filter",
+      "default": ""
+    },
+    {
+      "name": "force",
+      "short": "f",
+      "type": "bool",
+      "default": "false"
+    }
+  ],
+  "network rm": [
+    {
+      "name": "force",
+      "short": "f",
+      "type": "bool",
+      "default": "false"
+    }
+  ],
+  "pause": [],
+  "port": [],
+  "ps": [
+    {
+      "name": "all",
+      "short": "a",
+      "type": "bool",
+      "default": "false"
+    },
+    {
+      "name": "filter",
+      "short": "f",
+      "type": "filter",
+      "default": ""
+    },
+    {
+      "name": "format",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "last",
+      "short": "n",
+      "type": "int",
+      "default": "-1"
+    },
+    {
+      "name": "latest",
+      "short": "l",
+      "type": "bool",
+      "default": "false"
+    },
+    {
+      "name": "no-trunc",
+      "type": "bool",
+      "default": "false"
+    },
+    {
+      "name": "quiet",
+      "short": "q",
+      "type": "bool",
+      "default": "false"
+    },
+    {
+      "name": "size",
+      "short": "s",
+      "type": "bool",
+      "default": "false"
+    }
+  ],
+  "pull": [
+    {
+      "name": "all-tags",
+      "short": "a",
+      "type": "bool",
+      "default": "false"
+    },
+    {
+      "name": "disable-content-trust",
+      "type": "bool",
+      "default": "true",
+      "deprecated": true
+    },
+    {
+      "name": "platform",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "quiet",
+      "short": "q",
+      "type": "bool",
+      "default": "false"
+    }
+  ],
+  "push": [
+    {
+      "name": "all-tags",
+      "short": "a",
+      "type": "bool",
+      "default": "false"
+    },
+    {
+      "name": "disable-content-trust",
+      "type": "bool",
+      "default": "true",
+      "deprecated": true
+    },
+    {
+      "name": "platform",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "quiet",
+      "short": "q",
+      "type": "bool",
+      "default": "false"
+    }
+  ],
+  "rename": [],
+  "restart": [
+    {
+      "name": "signal",
+      "short": "s",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "time",
+      "type": "int",
+      "default": "0",
+      "deprecated": true
+    },
+    {
+      "name": "timeout",
+      "short": "t",
+      "type": "int",
+      "default": "0",
+      "shares": "time"
+    }
+  ],
+  "rm": [
+    {
+      "name": "force",
+      "short": "f",
+      "type": "bool",
+      "default": "false"
+    },
+    {
+      "name": "link",
+      "short": "l",
+      "type": "bool",
+      "default": "false"
+    },
+    {
+      "name": "volumes",
+      "short": "v",
+      "type": "bool",
+      "default": "false"
+    }
+  ],
+  "rmi": [
+    {
+      "name": "force",
+      "short": "f",
+      "type": "bool",
+      "default": "false"
+    },
+    {
+      "name": "no-prune",
+      "type": "bool",
+      "default": "false"
+    },
+    {
+      "name": "platform",
+      "type": "stringSlice",
+      "default": "[]"
+    }
+  ],
+  "run": [
+    {
+      "name": "add-host",
+      "type": "list",
+      "default": ""
+    },
+    {
+      "name": "annotation",
+      "type": "map",
+      "default": "map[]"
+    },
+    {
+      "name": "attach",
+      "short": "a",
+      "type": "list",
+      "default": ""
+    },
+    {
+      "name": "blkio-weight",
+      "type": "uint16",
+      "default": "0"
+    },
+    {
+      "name": "blkio-weight-device",
+      "type": "list",
+      "default": "[]"
+    },
+    {
+      "name": "cap-add",
+      "type": "list",
+      "default": ""
+    },
+    {
+      "name": "cap-drop",
+      "type": "list",
+      "default": ""
+    },
+    {
+      "name": "cgroup-parent",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "cgroupns",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "cidfile",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "cpu-count",
+      "type": "int64",
+      "default": "0"
+    },
+    {
+      "name": "cpu-percent",
+      "type": "int64",
+      "default": "0"
+    },
+    {
+      "name": "cpu-period",
+      "type": "int64",
+      "default": "0"
+    },
+    {
+      "name": "cpu-quota",
+      "type": "int64",
+      "default": "0"
+    },
+    {
+      "name": "cpu-rt-period",
+      "type": "int64",
+      "default": "0"
+    },
+    {
+      "name": "cpu-rt-runtime",
+      "type": "int64",
+      "default": "0"
+    },
+    {
+      "name": "cpu-shares",
+      "short": "c",
+      "type": "int64",
+      "default": "0"
+    },
+    {
+      "name": "cpus",
+      "type": "decimal",
+      "default": ""
+    },
+    {
+      "name": "cpuset-cpus",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "cpuset-mems",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "detach",
+      "short": "d",
+      "type": "bool",
+      "default": "false"
+    },
+    {
+      "name": "detach-keys",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "device",
+      "type": "list",
+      "default": ""
+    },
+    {
+      "name": "device-cgroup-rule",
+      "type": "list",
+      "default": ""
+    },
+    {
+      "name": "device-read-bps",
+      "type": "list",
+      "default": "[]"
+    },
+    {
+      "name": "device-read-iops",
+      "type": "list",
+      "default": "[]"
+    },
+    {
+      "name": "device-write-bps",
+      "type": "list",
+      "default": "[]"
+    },
+    {
+      "name": "device-write-iops",
+      "type": "list",
+      "default": "[]"
+    },
+    {
+      "name": "disable-content-trust",
+      "type": "bool",
+      "default": "true",
+      "deprecated": true
+    },
+    {
+      "name": "dns",
+      "type": "list",
+      "default": ""
+    },
+    {
+      "name": "dns-opt",
+      "type": "list",
+      "default": ""
+    },
+    {
+      "name": "dns-option",
+      "type": "list",
+      "default": "",
+      "shares": "dns-opt"
+    },
+    {
+      "name": "dns-search",
+      "type": "list",
+      "default": ""
+    },
+    {
+      "name": "domainname",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "entrypoint",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "env",
+      "short": "e",
+      "type": "list",
+      "default": ""
+    },
+    {
+      "name": "env-file",
+      "type": "list",
+      "default": ""
+    },
+    {
+      "name": "expose",
+      "type": "list",
+      "default": ""
+    },
+    {
+      "name": "gpus",
+      "type": "gpu-request",
+      "default": ""
+    },
+    {
+      "name": "group-add",
+      "type": "list",
+      "default": ""
+    },
+    {
+      "name": "health-cmd",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "health-interval",
+      "type": "duration",
+      "default": "0s"
+    },
+    {
+      "name": "health-retries",
+      "type": "int",
+      "default": "0"
+    },
+    {
+      "name": "health-start-interval",
+      "type": "duration",
+      "default": "0s"
+    },
+    {
+      "name": "health-start-period",
+      "type": "duration",
+      "default": "0s"
+    },
+    {
+      "name": "health-timeout",
+      "type": "duration",
+      "default": "0s"
+    },
+    {
+      "name": "hostname",
+      "short": "h",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "init",
+      "type": "bool",
+      "default": "false"
+    },
+    {
+      "name": "interactive",
+      "short": "i",
+      "type": "bool",
+      "default": "false"
+    },
+    {
+      "name": "io-maxbandwidth",
+      "type": "bytes",
+      "default": "0"
+    },
+    {
+      "name": "io-maxiops",
+      "type": "uint64",
+      "default": "0"
+    },
+    {
+      "name": "ip",
+      "type": "ip",
+      "default": "\u003cnil\u003e"
+    },
+    {
+      "name": "ip6",
+      "type": "ip",
+      "default": "\u003cnil\u003e"
+    },
+    {
+      "name": "ipc",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "isolation",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "kernel-memory",
+      "type": "bytes",
+      "default": "0",
+      "deprecated": true
+    },
+    {
+      "name": "label",
+      "short": "l",
+      "type": "list",
+      "default": ""
+    },
+    {
+      "name": "label-file",
+      "type": "list",
+      "default": ""
+    },
+    {
+      "name": "link",
+      "type": "list",
+      "default": ""
+    },
+    {
+      "name": "link-local-ip",
+      "type": "list",
+      "default": ""
+    },
+    {
+      "name": "log-driver",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "log-opt",
+      "type": "list",
+      "default": ""
+    },
+    {
+      "name": "mac-address",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "memory",
+      "short": "m",
+      "type": "bytes",
+      "default": "0"
+    },
+    {
+      "name": "memory-reservation",
+      "type": "bytes",
+      "default": "0"
+    },
+    {
+      "name": "memory-swap",
+      "type": "bytes",
+      "default": "0"
+    },
+    {
+      "name": "memory-swappiness",
+      "type": "int64",
+      "default": "-1"
+    },
+    {
+      "name": "mount",
+      "type": "mount",
+      "default": ""
+    },
+    {
+      "name": "name",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "net",
+      "type": "network",
+      "default": ""
+    },
+    {
+      "name": "net-alias",
+      "type": "list",
+      "default": ""
+    },
+    {
+      "name": "network",
+      "type": "network",
+      "default": "",
+      "shares": "net"
+    },
+    {
+      "name": "network-alias",
+      "type": "list",
+      "default": "",
+      "shares": "net-alias"
+    },
+    {
+      "name": "no-healthcheck",
+      "type": "bool",
+      "default": "false"
+    },
+    {
+      "name": "oom-kill-disable",
+      "type": "bool",
+      "default": "false"
+    },
+    {
+      "name": "oom-score-adj",
+      "type": "int",
+      "default": "0"
+    },
+    {
+      "name": "pid",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "pids-limit",
+      "type": "int64",
+      "default": "0"
+    },
+    {
+      "name": "platform",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "privileged",
+      "type": "bool",
+      "default": "false"
+    },
+    {
+      "name": "publish",
+      "short": "p",
+      "type": "list",
+      "default": ""
+    },
+    {
+      "name": "publish-all",
+      "short": "P",
+      "type": "bool",
+      "default": "false"
+    },
+    {
+      "name": "pull",
+      "type": "string",
+      "default": "missing"
+    },
+    {
+      "name": "quiet",
+      "short": "q",
+      "type": "bool",
+      "default": "false"
+    },
+    {
+      "name": "read-only",
+      "type": "bool",
+      "default": "false"
+    },
+    {
+      "name": "restart",
+      "type": "string",
+      "default": "no"
+    },
+    {
+      "name": "rm",
+      "type": "bool",
+      "default": "false"
+    },
+    {
+      "name": "runtime",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "security-opt",
+      "type": "list",
+      "default": ""
+    },
+    {
+      "name": "shm-size",
+      "type": "bytes",
+      "default": "0"
+    },
+    {
+      "name": "sig-proxy",
+      "type": "bool",
+      "default": "true"
+    },
+    {
+      "name": "stop-signal",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "stop-timeout",
+      "type": "int",
+      "default": "0"
+    },
+    {
+      "name": "storage-opt",
+      "type": "list",
+      "default": ""
+    },
+    {
+      "name": "sysctl",
+      "type": "map",
+      "default": "map[]"
+    },
+    {
+      "name": "tmpfs",
+      "type": "list",
+      "default": ""
+    },
+    {
+      "name": "tty",
+      "short": "t",
+      "type": "bool",
+      "default": "false"
+    },
+    {
+      "name": "ulimit",
+      "type": "ulimit",
+      "default": "[]"
+    },
+    {
+      "name": "umask",
+      "type": "umask",
+      "default": "\u003cnil\u003e"
+    },
+    {
+      "name": "use-api-socket",
+      "type": "bool",
+      "default": "false"
+    },
+    {
+      "name": "user",
+      "short": "u",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "userns",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "uts",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "volume",
+      "short": "v",
+      "type": "list",
+      "default": ""
+    },
+    {
+      "name": "volume-driver",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "volumes-from",
+      "type": "list",
+      "default": ""
+    },
+    {
+      "name": "workdir",
+      "short": "w",
+      "type": "string",
+      "default": ""
+    }
+  ],
+  "save": [
+    {
+      "name": "output",
+      "short": "o",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "platform",
+      "type": "stringSlice",
+      "default": "[]"
+    }
+  ],
+  "search": [
+    {
+      "name": "filter",
+      "short": "f",
+      "type": "filter",
+      "default": ""
+    },
+    {
+      "name": "format",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "limit",
+      "type": "int",
+      "default": "0"
+    },
+    {
+      "name": "no-trunc",
+      "type": "bool",
+      "default": "false"
+    }
+  ],
+  "start": [
+    {
+      "name": "attach",
+      "short": "a",
+      "type": "bool",
+      "default": "false"
+    },
+    {
+      "name": "checkpoint",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "checkpoint-dir",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "detach-keys",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "interactive",
+      "short": "i",
+      "type": "bool",
+      "default": "false"
+    }
+  ],
+  "stats": [
+    {
+      "name": "all",
+      "short": "a",
+      "type": "bool",
+      "default": "false"
+    },
+    {
+      "name": "format",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "no-stream",
+      "type": "bool",
+      "default": "false"
+    },
+    {
+      "name": "no-trunc",
+      "type": "bool",
+      "default": "false"
+    }
+  ],
+  "stop": [
+    {
+      "name": "signal",
+      "short": "s",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "time",
+      "type": "int",
+      "default": "0",
+      "deprecated": true
+    },
+    {
+      "name": "timeout",
+      "short": "t",
+      "type": "int",
+      "default": "0",
+      "shares": "time"
+    }
+  ],
+  "system df": [
+    {
+      "name": "format",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "verbose",
+      "short": "v",
+      "type": "bool",
+      "default": "false"
+    }
+  ],
+  "system dial-stdio": [],
+  "system events": [
+    {
+      "name": "filter",
+      "short": "f",
+      "type": "filter",
+      "default": ""
+    },
+    {
+      "name": "format",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "since",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "until",
+      "type": "string",
+      "default": ""
+    }
+  ],
+  "system info": [
+    {
+      "name": "format",
+      "short": "f",
+      "type": "string",
+      "default": ""
+    }
+  ],
+  "system prune": [
+    {
+      "name": "all",
+      "short": "a",
+      "type": "bool",
+      "default": "false"
+    },
+    {
+      "name": "filter",
+      "type": "filter",
+      "default": ""
+    },
+    {
+      "name": "force",
+      "short": "f",
+      "type": "bool",
+      "default": "false"
+    },
+    {
+      "name": "volumes",
+      "type": "bool",
+      "default": "false"
+    }
+  ],
+  "tag": [],
+  "top": [],
+  "unpause": [],
+  "update": [
+    {
+      "name": "blkio-weight",
+      "type": "uint16",
+      "default": "0"
+    },
+    {
+      "name": "cpu-period",
+      "type": "int64",
+      "default": "0"
+    },
+    {
+      "name": "cpu-quota",
+      "type": "int64",
+      "default": "0"
+    },
+    {
+      "name": "cpu-rt-period",
+      "type": "int64",
+      "default": "0"
+    },
+    {
+      "name": "cpu-rt-runtime",
+      "type": "int64",
+      "default": "0"
+    },
+    {
+      "name": "cpu-shares",
+      "short": "c",
+      "type": "int64",
+      "default": "0"
+    },
+    {
+      "name": "cpus",
+      "type": "decimal",
+      "default": ""
+    },
+    {
+      "name": "cpuset-cpus",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "cpuset-mems",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "kernel-memory",
+      "type": "bytes",
+      "default": "0",
+      "deprecated": true
+    },
+    {
+      "name": "memory",
+      "short": "m",
+      "type": "bytes",
+      "default": "0"
+    },
+    {
+      "name": "memory-reservation",
+      "type": "bytes",
+      "default": "0"
+    },
+    {
+      "name": "memory-swap",
+      "type": "bytes",
+      "default": "0"
+    },
+    {
+      "name": "pids-limit",
+      "type": "int64",
+      "default": "0"
+    },
+    {
+      "name": "restart",
+      "type": "string",
+      "default": ""
+    }
+  ],
+  "version": [
+    {
+      "name": "format",
+      "short": "f",
+      "type": "string",
+      "default": ""
+    }
+  ],
+  "volume create": [
+    {
+      "name": "availability",
+      "type": "string",
+      "default": "active"
+    },
+    {
+      "name": "driver",
+      "short": "d",
+      "type": "string",
+      "default": "local"
+    },
+    {
+      "name": "group",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "label",
+      "type": "list",
+      "default": ""
+    },
+    {
+      "name": "limit-bytes",
+      "type": "bytes",
+      "default": "0"
+    },
+    {
+      "name": "name",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "opt",
+      "short": "o",
+      "type": "map",
+      "default": "map[]"
+    },
+    {
+      "name": "required-bytes",
+      "type": "bytes",
+      "default": "0"
+    },
+    {
+      "name": "scope",
+      "type": "string",
+      "default": "single"
+    },
+    {
+      "name": "secret",
+      "type": "map",
+      "default": "map[]"
+    },
+    {
+      "name": "sharing",
+      "type": "string",
+      "default": "none"
+    },
+    {
+      "name": "topology-preferred",
+      "type": "list",
+      "default": ""
+    },
+    {
+      "name": "topology-required",
+      "type": "list",
+      "default": ""
+    },
+    {
+      "name": "type",
+      "type": "string",
+      "default": "block"
+    }
+  ],
+  "volume inspect": [
+    {
+      "name": "format",
+      "short": "f",
+      "type": "string",
+      "default": ""
+    }
+  ],
+  "volume ls": [
+    {
+      "name": "cluster",
+      "type": "bool",
+      "default": "false"
+    },
+    {
+      "name": "filter",
+      "short": "f",
+      "type": "filter",
+      "default": ""
+    },
+    {
+      "name": "format",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "quiet",
+      "short": "q",
+      "type": "bool",
+      "default": "false"
+    }
+  ],
+  "volume prune": [
+    {
+      "name": "all",
+      "short": "a",
+      "type": "bool",
+      "default": "false"
+    },
+    {
+      "name": "filter",
+      "type": "filter",
+      "default": ""
+    },
+    {
+      "name": "force",
+      "short": "f",
+      "type": "bool",
+      "default": "false"
+    }
+  ],
+  "volume rm": [
+    {
+      "name": "force",
+      "short": "f",
+      "type": "bool",
+      "default": "false"
+    }
+  ],
+  "volume update": [
+    {
+      "name": "availability",
+      "type": "string",
+      "default": "active"
+    }
+  ],
+  "wait": []
+}

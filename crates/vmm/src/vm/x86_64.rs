@@ -15,7 +15,7 @@ use crate::devices::power::Power;
 use crate::devices::serial::Serial;
 use crate::devices::virtio::{mmio as virtio_mmio, pmem};
 use crate::devices::vmgenid::VmGenId;
-use crate::devices::{Interrupt, MmioBus};
+use crate::devices::{Interrupt, MmioBus, SharedLine};
 use crate::hv::{self, Io};
 use crate::memory::GuestMemory;
 use crate::snapshot::codec::{Reader, Writer};
@@ -28,7 +28,9 @@ const GIB: u64 = 1 << 30;
 const MIN_MEMORY_MIB: u64 = 128;
 /// Kernel parameters the machine depends on: restart through the i8042 (the device the
 /// VMM emulates), and no PCI bus (there is none yet).
-const MACHINE_CMDLINE: &str = "reboot=k pci=off";
+const MACHINE_CMDLINE: &str = "reboot=k";
+/// Where the machine has no PCI bus, its kernel looks for none (D153).
+const NO_PCI_CMDLINE: &str = "pci=off";
 
 /// How the vCPUs start.
 #[derive(Debug)]
@@ -217,6 +219,92 @@ struct EdgeLine {
     gsi: u32,
 }
 
+/// A PCI bus's interrupts on this machine (D154): every device's INTx# on GSI_PCI,
+/// wired-OR, level-triggered, as the DSDT's _PRT says; the MSIs of the functions the VMM
+/// emulates delivered by the backend; and a passed-through function's by KVM's irqfds.
+struct PciLines {
+    irqs: hv::Irqs,
+    intx: Arc<SharedLine>,
+}
+
+impl super::PciInterrupts for PciLines {
+    fn intx(&self, device: u8) -> Arc<dyn Interrupt> {
+        self.intx.source(u32::from(device))
+    }
+
+    fn msi(&self) -> Arc<dyn crate::devices::pci::Msi> {
+        Arc::new(BackendMsi(self.irqs.clone()))
+    }
+
+    #[cfg(target_os = "linux")]
+    fn route(&self, _device: u8) -> Option<Arc<dyn crate::devices::pci::vfio::Route>> {
+        Some(Arc::new(IrqfdRoute {
+            irqs: self.irqs.clone(),
+            msis: std::sync::Mutex::new(Vec::new()),
+        }))
+    }
+}
+
+/// MSIs delivered by the backend: KVM_SIGNAL_MSI's, or WHP's as its IOAPIC delivers.
+struct BackendMsi(hv::Irqs);
+
+impl crate::devices::pci::Msi for BackendMsi {
+    fn send(&self, address: u64, data: u32) {
+        if let Err(e) = self.0.msi(address, data) {
+            warn!("an MSI to {address:#x} with {data:#x}: {e}");
+        }
+    }
+}
+
+/// A passed-through function's interrupts by KVM's irqfds (D154): INTx on GSI_PCI,
+/// resampled at the guest's EOI; each MSI on a GSI routed to its message, and which GSI
+/// each eventfd raises.
+#[cfg(target_os = "linux")]
+struct IrqfdRoute {
+    irqs: hv::Irqs,
+    msis: std::sync::Mutex<Vec<(std::os::fd::RawFd, u32)>>,
+}
+
+#[cfg(target_os = "linux")]
+impl crate::devices::pci::vfio::Route for IrqfdRoute {
+    fn intx(&self, trigger: std::os::fd::RawFd, resample: std::os::fd::RawFd) -> Result<(), String> {
+        self.irqs
+            .irqfd(trigger, layout::GSI_PCI, Some(resample))
+            .map_err(|e| e.to_string())
+    }
+
+    fn intx_off(&self, trigger: std::os::fd::RawFd) -> Result<(), String> {
+        self.irqs
+            .irqfd_remove(trigger, layout::GSI_PCI)
+            .map_err(|e| e.to_string())
+    }
+
+    /// An MSI the guest aimed at its local APICs (Intel SDM Vol. 3A §11.11.1: 0xFEE in
+    /// the address's bits 31:20), routed to a GSI of its own.
+    fn msi(&self, event: std::os::fd::RawFd, address: u64, data: u32) -> Result<(), String> {
+        if address >> 20 != 0xfee {
+            return Err(format!("an MSI to {address:#x}: not the local APICs'"));
+        }
+        let gsi = self.irqs.route_msi(address, data).map_err(|e| e.to_string())?;
+        if let Err(e) = self.irqs.irqfd(event, gsi, None) {
+            let _ = self.irqs.unroute_msi(gsi);
+            return Err(e.to_string());
+        }
+        crate::sync::lock(&self.msis).push((event, gsi));
+        Ok(())
+    }
+
+    fn msi_off(&self, event: std::os::fd::RawFd, _address: u64, _data: u32) -> Result<(), String> {
+        let mut msis = crate::sync::lock(&self.msis);
+        let Some(at) = msis.iter().position(|&(e, _)| e == event) else {
+            return Ok(());
+        };
+        let (_, gsi) = msis.swap_remove(at);
+        self.irqs.irqfd_remove(event, gsi).map_err(|e| e.to_string())?;
+        self.irqs.unroute_msi(gsi).map_err(|e| e.to_string())
+    }
+}
+
 impl Interrupt for EdgeLine {
     fn set_level(&self, level: bool) {
         if level && let Err(e) = self.irqs.pulse(self.gsi) {
@@ -235,6 +323,8 @@ struct Assembled {
     power: Arc<Power>,
     vmgenid: VmGenId,
     virtio: Vec<acpi::MmioDevice>,
+    /// Its PCI host bridge, where it has a PCI bus (D153).
+    pci: Option<acpi::PciBridge>,
 }
 
 /// Where the memory to plug starts (D133): above 4 GiB, at the first GiB boundary after
@@ -267,6 +357,7 @@ fn assemble(
     console: Console,
     hosts: super::Hosts<'_>,
     gpu: Option<u64>,
+    pci: super::Pci<'_>,
 ) -> Result<Assembled, String> {
     if gpu.is_some() {
         return Err("a GPU is given on macOS hosts alone so far (D144)".into());
@@ -284,11 +375,35 @@ fn assemble(
             .and_then(|end| end.checked_next_multiple_of(GIB))
             .ok_or("pmem regions overflow the address space")?,
     };
-    let (regions, _) = super::pmem_regions(config, first)?;
+    let (regions, end) = super::pmem_regions(config, first)?;
+    // The PCI bus's 64-bit window past all of that, as long as its 64-bit BARs need (D154).
+    let mem64 = match pci.mem64()? {
+        Some((len, align)) => Some((
+            end.checked_next_multiple_of(align.max(GIB))
+                .ok_or("the PCI 64-bit window overflows the address space")?,
+            len,
+        )),
+        None => None,
+    };
+    let top = match mem64 {
+        Some((at, len)) => at
+            .checked_add(len)
+            .ok_or("the PCI 64-bit window overflows the address space")?,
+        None => end,
+    };
     if config.nested {
         return Err("virtualization of a guest's own is not given on x86_64 yet".into());
     }
     let vm = hv::Vm::new(hv::VmConfig { vcpus: config.vcpus }).map_err(|e| e.to_string())?;
+    // Every address the guest is given lies within the physical addresses its CPU says it
+    // has: its kernel takes no memory or window past them (Linux's iomem_resource), and the
+    // hypervisor maps none.
+    let bits = vm.phys_bits().map_err(|e| e.to_string())?;
+    if top > 1 << bits {
+        return Err(format!(
+            "the guest's memory and devices end at {top:#x}, past the {bits} address bits its CPU has"
+        ));
+    }
     for (gpa, host, len) in memory.regions() {
         // SAFETY: `memory` outlives the VM: `Machine` and `Running` drop the VM first.
         unsafe { vm.map_ram(host, gpa, len) }.map_err(|e| e.to_string())?;
@@ -304,13 +419,21 @@ fn assemble(
     let irqs = vm.irqs();
     debug!("VM created and RAM mapped");
 
+    // A PCI bus takes the last of the virtio devices' GSIs for its INTx (D154).
+    let has_pci = pci.test || !pci.vfio.is_empty();
+    let virtio_max = layout::VIRTIO_MMIO_MAX - u64::from(has_pci);
+    // The IOMMU of the functions the VMM emulates, last of the virtio devices, the local
+    // APICs' MSI window bypassed (D154; virtio 1.3 §5.13.3: the x86 MSI range,
+    // 0xfee00000 to 0xfeefffff).
+    let (iommu, iommu_device) = super::test_iommu(pci, Some((0xfee0_0000, 0xfeef_ffff))).unzip();
     let devices = super::virtio_devices(
         config,
         &regions,
         hosts,
-        hotplug.into_iter().chain(reporting).collect(),
-        layout::VIRTIO_MMIO_MAX,
+        hotplug.into_iter().chain(reporting).chain(iommu_device).collect(),
+        virtio_max,
     )?;
+    let iommu_at = iommu.is_some().then(|| devices.len() - 1);
     let mut bus = Bus {
         pmem: regions
             .iter()
@@ -333,6 +456,7 @@ fn assemble(
             base,
             size: virtio_mmio::WINDOW,
             gsi,
+            iommu: iommu_at == Some(i),
         });
     }
     let control = Arc::new(Control::default());
@@ -366,10 +490,43 @@ fn assemble(
         memory.clone(),
         layout::VMGENID,
         Arc::new(EdgeLine {
-            irqs,
+            irqs: irqs.clone(),
             gsi: layout::GSI_GED,
         }),
     );
+    // A PCI bus (D153, D154): its functions from 00:01.0, their BARs in its window.
+    let mem32 = (layout::PCI_MEM32, layout::PCI_MEM32_SIZE);
+    let lines = has_pci.then(|| PciLines {
+        irqs: irqs.clone(),
+        intx: SharedLine::new(Arc::new(LevelLine {
+            irqs: irqs.clone(),
+            gsi: layout::GSI_PCI,
+        })),
+    });
+    let routes = lines.as_ref().map(|l| l as &dyn super::PciInterrupts);
+    let machine = super::PciMachine {
+        vm: &vm,
+        memory,
+        irqs: routes,
+        iommu: iommu.clone(),
+    };
+    let pci = super::pci_bus(
+        &mut bus.mmio,
+        layout::PCI_ECAM,
+        mem32,
+        mem64,
+        pci,
+        config,
+        machine,
+    )?
+    .map(|routed| acpi::PciBridge {
+        ecam: (layout::PCI_ECAM, crate::devices::pci::ECAM_SIZE),
+        mem32,
+        mem64,
+        intx: routed.intx,
+        gsi: layout::GSI_PCI,
+        iommu: iommu.iter().map(|_| u16::from(super::TEST_DEVICE) << 3).collect(),
+    });
     Ok(Assembled {
         vm,
         bus,
@@ -378,6 +535,7 @@ fn assemble(
         power,
         vmgenid,
         virtio,
+        pci,
     })
 }
 
@@ -394,38 +552,62 @@ pub fn build(cfg: &Config) -> Result<Machine, String> {
 
     let kernel_file = crate::platform::open_input(&cfg.kernel, false)
         .map_err(|e| format!("{}: {e}", cfg.kernel.display()))?;
-    let kernel = boot::load_kernel(&memory, &kernel_file, low_ram_end).map_err(|e| e.to_string())?;
-    debug!("kernel loaded");
-
-    let hosts = super::Hosts {
-        vsock: cfg.vsock.as_ref(),
-        net: cfg.net.as_ref(),
-        #[cfg(unix)]
-        shares: &cfg.shares,
-        join: cfg.join,
-        #[cfg(unix)]
-        join_share: cfg.join_share,
-    };
-    let a = assemble(&memory, &config, cfg.console, hosts, cfg.gpu.then_some(0))?;
-    let tables = acpi::build(cfg.vcpus, &a.virtio)?.blobs;
-    let access = memory.access().map_err(|e| e.to_string())?;
-    for (addr, bytes) in tables {
-        access.write(addr, &bytes).map_err(|e| e.to_string())?;
-    }
-    drop(access);
-    a.vmgenid.write_new_id()?;
-
-    // Between the kernel and the end of low RAM, at its top (boot.rs, load_initrd).
-    let room = low_ram_end.min(layout::MMIO_GAP).saturating_sub(kernel.end);
-    let initrd_bytes = super::initrd(cfg, room)?;
-    let initrd = match initrd_bytes {
+    // Where the kernel and the initrd go, from the kernel's headers and the initrd's
+    // length: the initrd between the kernel and the end of low RAM, at its top (boot.rs,
+    // place_initrd). Their bytes are copied in as the machine is made.
+    let (kernel, spans) = boot::plan_kernel(&kernel_file, low_ram_end).map_err(|e| e.to_string())?;
+    let mut pieces: Vec<super::Piece> = spans
+        .into_iter()
+        .map(|span| super::Piece {
+            span,
+            file: &kernel_file,
+            path: &cfg.kernel,
+        })
+        .collect();
+    let initrd_file = super::initrd(cfg, low_ram_end.saturating_sub(kernel.end))?;
+    let initrd = match &initrd_file {
         None => None,
-        Some(bytes) => Some(
-            boot::load_initrd(&memory, &bytes, kernel.end, low_ram_end.min(layout::MMIO_GAP))
-                .map_err(|e| e.to_string())?,
-        ),
+        Some(i) => {
+            let start = boot::place_initrd(i.len(), kernel.end, low_ram_end).map_err(|e| e.to_string())?;
+            pieces.push(i.place(&memory, start)?);
+            Some((start, i.len()))
+        }
     };
-    let cmdline = format!("{} {MACHINE_CMDLINE}", cfg.cmdline);
+    let a = super::beside_copy(&memory, &pieces, || {
+        let hosts = super::Hosts {
+            vsock: cfg.vsock.as_ref(),
+            net: cfg.net.as_ref(),
+            #[cfg(unix)]
+            shares: &cfg.shares,
+            join: cfg.join,
+            #[cfg(unix)]
+            join_share: cfg.join_share,
+        };
+        let a = assemble(
+            &memory,
+            &config,
+            cfg.console,
+            hosts,
+            cfg.gpu.then_some(0),
+            super::Pci {
+                test: cfg.pci_test,
+                vfio: &cfg.vfio,
+            },
+        )?;
+        let tables = acpi::build(cfg.vcpus, &a.virtio, a.pci.as_ref())?.blobs;
+        let access = memory.access().map_err(|e| e.to_string())?;
+        for (addr, bytes) in tables {
+            access.write(addr, &bytes).map_err(|e| e.to_string())?;
+        }
+        drop(access);
+        a.vmgenid.write_new_id()?;
+        Ok(a)
+    })?;
+    debug!("kernel and initrd copied");
+    let cmdline = match &a.pci {
+        Some(_) => format!("{} {MACHINE_CMDLINE}", cfg.cmdline),
+        None => format!("{} {MACHINE_CMDLINE} {NO_PCI_CMDLINE}", cfg.cmdline),
+    };
     let boot_state = boot::write_boot_state(
         &memory,
         kernel.entry,
@@ -434,6 +616,7 @@ pub fn build(cfg: &Config) -> Result<Machine, String> {
             ram,
             initrd,
             rsdp: layout::RSDP,
+            pci_ecam: a.pci.as_ref().map(|p| p.ecam),
         },
     )
     .map_err(|e| e.to_string())?;
@@ -478,7 +661,15 @@ pub fn restore(
         &snap.config,
         plug_at(ram),
     )?);
-    let a = assemble(&memory, &snap.config, console, hosts, snap.config.gpu)?;
+    // A machine with a PCI bus saves no snapshot, so a restored one has none.
+    let a = assemble(
+        &memory,
+        &snap.config,
+        console,
+        hosts,
+        snap.config.gpu,
+        super::Pci::default(),
+    )?;
     let guest: Vec<(u64, u64)> = memory
         .regions()
         .map(|(gpa, _, len)| (gpa, len as u64))

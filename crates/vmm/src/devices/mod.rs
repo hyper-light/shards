@@ -3,6 +3,7 @@
 pub mod acpi_sleep;
 pub mod control;
 pub mod i8042;
+pub mod pci;
 pub mod power;
 pub mod rtc;
 pub mod serial;
@@ -59,6 +60,54 @@ pub fn get_le(data: &[u8]) -> u64 {
 pub trait Interrupt: Send + Sync {
     /// Sets the line level. For edge-triggered lines, `true` produces one edge.
     fn set_level(&self, level: bool);
+}
+
+/// A level-triggered line several sources drive, asserted while any of them asserts it:
+/// PCI's INTx#, wired-OR (PCI Local Bus 3.0 §2.2.6), as a machine with fewer lines than
+/// devices shares one.
+pub struct SharedLine {
+    line: Arc<dyn Interrupt>,
+    asserted: std::sync::Mutex<u64>,
+}
+
+impl std::fmt::Debug for SharedLine {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SharedLine").finish_non_exhaustive()
+    }
+}
+
+impl SharedLine {
+    pub fn new(line: Arc<dyn Interrupt>) -> Arc<SharedLine> {
+        Arc::new(SharedLine {
+            line,
+            asserted: std::sync::Mutex::new(0),
+        })
+    }
+
+    /// Source `n`'s hold on the line, `n` below 64.
+    pub fn source(self: &Arc<Self>, n: u32) -> Arc<dyn Interrupt> {
+        Arc::new(SharedSource {
+            shared: self.clone(),
+            bit: 1u64.checked_shl(n).unwrap_or(0),
+        })
+    }
+}
+
+struct SharedSource {
+    shared: Arc<SharedLine>,
+    bit: u64,
+}
+
+impl Interrupt for SharedSource {
+    fn set_level(&self, level: bool) {
+        let mut asserted = crate::sync::lock(&self.shared.asserted);
+        if level {
+            *asserted |= self.bit;
+        } else {
+            *asserted &= !self.bit;
+        }
+        self.shared.line.set_level(*asserted != 0);
+    }
 }
 
 #[derive(Default)]

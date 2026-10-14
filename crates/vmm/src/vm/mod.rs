@@ -1,9 +1,16 @@
 //! A microVM: configuration, lifecycle, and exit reasons, independent of the backend
 //! that runs it.
 
+#[cfg(hv)]
+use std::path::Path;
 use std::path::PathBuf;
 #[cfg(hv)]
 use std::sync::Arc;
+#[cfg(hv)]
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+#[cfg(hv)]
+use crate::memory::{FileSpan, GuestMemory};
 
 #[cfg(hv = "hvf")]
 use crate::devices::virtio::gpu;
@@ -18,9 +25,9 @@ use aarch64 as machine;
 mod x86_64;
 #[cfg(all(hv, target_arch = "x86_64"))]
 use x86_64 as machine;
-/// Whether this build's VMs can be snapshotted and restored: HVF's and KVM's can, WHP's
-/// not yet (D140).
-pub const SNAPSHOTS: bool = cfg!(any(hv = "hvf", hv = "kvm"));
+/// Whether this build's VMs can be snapshotted and restored: HVF's and x86_64 KVM's can,
+/// arm64 KVM's and WHP's not yet (D140).
+pub const SNAPSHOTS: bool = cfg!(any(hv = "hvf", all(hv = "kvm", target_arch = "x86_64")));
 /// Whether a VM resumed from its snapshot records its working set, for restores to
 /// prefetch: HVF's at stage 2 (hv::hvf::Watch), KVM's from the pages its host maps
 /// (vm::x86_64::recorder).
@@ -484,6 +491,366 @@ pub struct Config {
     /// once the guest has made a context or a resource, which are its host driver's and no
     /// snapshot holds; a template is saved before any (D150).
     pub gpu: bool,
+    /// A PCI bus with a test function on it, QEMU's edu's identification and liveness
+    /// registers (D153): what tests read to show that the bus reaches the VMM. A machine
+    /// with a PCI bus saves no snapshot.
+    pub pci_test: bool,
+    /// Host PCI functions passed through by VFIO, Linux's (D154), on the PCI bus after the
+    /// test function. A machine given any has no memory to plug and no balloon: the
+    /// functions' DMA reaches guest RAM through mappings the host's IOMMU holds pinned,
+    /// which neither may take from under them (as QEMU's `ram_block_discard_disable`).
+    pub vfio: Vec<Vfio>,
+}
+
+/// A host PCI function a VM is given (D154): its name as the host has it (`0000:01:00.0`)
+/// and its IOMMU group's VFIO device, found before the VM process is confined
+/// ([`Vfio::of`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Vfio {
+    pub name: String,
+    pub group: PathBuf,
+    /// Whether the group has no IOMMU (vfio's `enable_unsafe_noiommu_mode`): its function
+    /// may make no DMA, and guest RAM is mapped for none.
+    pub noiommu: bool,
+    /// Its 64-bit memory BARs' sizes, in their order: what they take of the machine's
+    /// 64-bit window.
+    pub bars64: Vec<u64>,
+}
+
+impl Vfio {
+    /// The host's function `name`, by the VFIO group it is in: it must be bound to
+    /// vfio-pci, as must every other function in its IOMMU group.
+    pub fn of(name: &str) -> Result<Vfio, String> {
+        #[cfg(target_os = "linux")]
+        {
+            use crate::devices::pci::vfio;
+            let (group, noiommu) = vfio::group_of(name).map_err(|e| format!("{name}: {e}"))?;
+            let bars64 = vfio::bars64_of(name).map_err(|e| format!("{name}: its BARs: {e}"))?;
+            Ok(Vfio {
+                name: name.to_string(),
+                group,
+                noiommu,
+                bars64,
+            })
+        }
+        #[cfg(not(target_os = "linux"))]
+        Err(format!(
+            "{name}: a host's PCI devices are passed through by VFIO, Linux's (D154)"
+        ))
+    }
+}
+
+/// The PCI functions a machine is given (D153, D154).
+#[cfg(hv)]
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct Pci<'a> {
+    pub test: bool,
+    pub vfio: &'a [Vfio],
+}
+
+#[cfg(hv)]
+impl Pci<'_> {
+    /// What its functions' 64-bit BARs take of the machine's 64-bit window, placed as the
+    /// bus places them, the test function's and then each passed-through function's in
+    /// order, each at a multiple of its size: the window's length, and the alignment of its
+    /// start, the largest BAR's; none where no BAR is 64-bit.
+    pub fn mem64(&self) -> Result<Option<(u64, u64)>, String> {
+        let sizes = self
+            .test
+            .then_some(crate::devices::pci::edu::SCRATCH_BAR_SIZE)
+            .into_iter()
+            .chain(self.vfio.iter().flat_map(|f| f.bars64.iter().copied()));
+        let (mut len, mut align) = (0u64, 0u64);
+        for size in sizes {
+            len = len
+                .checked_next_multiple_of(size)
+                .and_then(|at| at.checked_add(size))
+                .ok_or("the 64-bit BARs overflow the address space")?;
+            align = align.max(size);
+        }
+        Ok((len > 0).then_some((len, align)))
+    }
+}
+
+/// How a machine takes its PCI functions' interrupts (D154): the line of each device's
+/// INTx pin, which its firmware tables route there, and where the MSIs of the functions
+/// the VMM emulates go.
+#[cfg(hv)]
+pub(crate) trait PciInterrupts {
+    /// The INTx line of device `device` on bus 0.
+    fn intx(&self, device: u8) -> Arc<dyn crate::devices::Interrupt>;
+    fn msi(&self) -> Arc<dyn crate::devices::pci::Msi>;
+    /// How a function passed through on device `device` interrupts the guest, by irqfds;
+    /// none where the machine routes it no interrupt.
+    #[cfg(target_os = "linux")]
+    fn route(&self, device: u8) -> Option<Arc<dyn crate::devices::pci::vfio::Route>>;
+}
+
+/// A machine's PCI bus (D153, D154): each device that raises INTx, and its pin, for the
+/// machine's firmware tables to route to [`PciInterrupts::intx`]'s line.
+#[cfg(hv)]
+#[derive(Debug, Default)]
+pub(crate) struct PciBus {
+    pub intx: Vec<(u8, u8)>,
+}
+
+/// What a machine gives its PCI bus: its VM, and its guest memory, which its functions
+/// reach by DMA; how their interrupts reach the guest, where it routes them; and its
+/// IOMMU's translation, which the test function's DMA goes through, where it has one.
+#[cfg(hv)]
+pub(crate) struct PciMachine<'a> {
+    #[cfg_attr(
+        not(target_os = "linux"),
+        expect(dead_code, reason = "read by VFIO, Linux's alone")
+    )]
+    pub vm: &'a crate::hv::Vm,
+    pub memory: &'a Arc<crate::memory::GuestMemory>,
+    pub irqs: Option<&'a dyn PciInterrupts>,
+    pub iommu: Option<crate::devices::virtio::iommu::Shared>,
+}
+
+/// The test function's device on bus 0 (D153), and so its requester ID, `device << 3`,
+/// which the machine's IOMMU translates (D154).
+#[cfg(hv)]
+pub(crate) const TEST_DEVICE: u8 = 1;
+
+/// The IOMMU of the functions the VMM emulates (virtio-iommu, D154): where the machine has
+/// the test function, its translation of the test function's requester ID, and the device,
+/// the MSI window `msi`, its first and last address, bypassed where the machine has one.
+#[cfg(hv)]
+fn test_iommu(
+    pci: Pci<'_>,
+    msi: Option<(u64, u64)>,
+) -> Option<(
+    crate::devices::virtio::iommu::Shared,
+    Box<dyn crate::devices::virtio::VirtioDevice>,
+)> {
+    use crate::devices::virtio::iommu;
+    pci.test.then(|| {
+        let translation = Arc::new(std::sync::Mutex::new(iommu::Translation::new(vec![
+            u32::from(TEST_DEVICE) << 3,
+        ])));
+        let device = Box::new(iommu::Iommu::new(translation.clone(), msi))
+            as Box<dyn crate::devices::virtio::VirtioDevice>;
+        (translation, device)
+    })
+}
+
+/// Puts the PCI bus `pci` asks for on `bus` (D153, D154), where it asks for one: its ECAM
+/// window at `ecam`, and its functions' BARs in the memory window `mem32`, each at the
+/// next multiple of its size, but for 64-bit BARs, in `mem64` ([`Pci::mem64`]); QEMU's edu
+/// at 00:01.0 where `pci.test`, then each function passed through, on the devices after.
+/// Their interrupts go where `machine.irqs` says; with none, the functions the VMM
+/// emulates have none.
+#[cfg(hv)]
+fn pci_bus(
+    bus: &mut crate::devices::MmioBus,
+    ecam: u64,
+    mem32: (u64, u64),
+    mem64: Option<(u64, u64)>,
+    pci: Pci<'_>,
+    config: &crate::snapshot::MachineConfig,
+    machine: PciMachine<'_>,
+) -> Result<Option<PciBus>, String> {
+    use crate::devices::pci;
+    let irqs = machine.irqs;
+    if !pci.test && pci.vfio.is_empty() {
+        return Ok(None);
+    }
+    let mut routed = PciBus::default();
+    let mut window = BarWindow::of(mem32)?;
+    let mut window64 = mem64.map(BarWindow::of).transpose()?;
+    let mut functions: Vec<pci::Function> = Vec::new();
+    let mut device: u8 = TEST_DEVICE;
+    if pci.test {
+        let at = window.take(pci::edu::BAR_SIZE)?;
+        let lines = irqs.map(|irqs| pci::Lines {
+            intx: irqs.intx(device),
+            msi: irqs.msi(),
+        });
+        if lines.is_some() {
+            routed.intx.push((device, pci::edu::PIN));
+        }
+        let places = pci::edu::Places {
+            registers: at,
+            msix: window.take(pci::edu::MSIX_BAR_SIZE)?,
+            scratch: window64
+                .as_mut()
+                .ok_or("the test function's BAR 4 has no 64-bit window")?
+                .take(pci::edu::SCRATCH_BAR_SIZE)?,
+        };
+        let dma = pci::edu::Dma {
+            memory: machine.memory.clone(),
+            iommu: machine.iommu.clone().map(|t| (t, u32::from(device) << 3)),
+        };
+        let (edu, bars) = pci::edu::Edu::new(places, lines, Some(dma))?;
+        bus.insert(places.registers, pci::edu::BAR_SIZE, bars.registers)?;
+        bus.insert(places.msix, pci::edu::MSIX_BAR_SIZE, bars.msix)?;
+        bus.insert(places.scratch, pci::edu::SCRATCH_BAR_SIZE, bars.scratch)?;
+        functions.push((device << 3, edu));
+        device += 1;
+    }
+    if !pci.vfio.is_empty() {
+        if config.hotplug_mib > 0 || config.reporting {
+            return Err("a VM given a host's PCI device has no memory to plug and no balloon: the device's DMA reaches guest RAM through mappings the host holds pinned (D154)".into());
+        }
+        functions.extend(passed_through(
+            bus,
+            [
+                &mut window,
+                window64.as_mut().unwrap_or(&mut BarWindow::default()),
+            ],
+            pci.vfio,
+            device,
+            &machine,
+            &mut routed,
+        )?);
+    }
+    bus.insert(ecam, pci::ECAM_SIZE, Arc::new(pci::Ecam::new(functions)))?;
+    Ok(Some(routed))
+}
+
+/// What is left of a PCI memory window, BARs taken from its start.
+#[cfg(hv)]
+#[derive(Debug, Default)]
+struct BarWindow {
+    next: u64,
+    end: u64,
+}
+
+#[cfg(hv)]
+impl BarWindow {
+    /// The window `len` bytes at `base`, all of it left.
+    fn of((base, len): (u64, u64)) -> Result<BarWindow, String> {
+        Ok(BarWindow {
+            next: base,
+            end: base
+                .checked_add(len)
+                .ok_or("the PCI window overflows the address space")?,
+        })
+    }
+
+    /// The place of a BAR of `size` bytes, a power of two: the next multiple of its size
+    /// (PCI Local Bus 3.0 §6.2.5.1).
+    fn take(&mut self, size: u64) -> Result<u64, String> {
+        let at = self
+            .next
+            .checked_next_multiple_of(size)
+            .filter(|at| at.checked_add(size).is_some_and(|end| end <= self.end))
+            .ok_or_else(|| {
+                format!(
+                    "a BAR of {size:#x} bytes: the PCI window has {:#x} left",
+                    self.end.saturating_sub(self.next)
+                )
+            })?;
+        self.next = at + size;
+        Ok(at)
+    }
+}
+
+/// Each function of `vfio` opened (its DMA mapped to the machine's memory), its BARs
+/// placed in `windows`, the 32-bit one and the 64-bit one for 64-bit BARs, and put on
+/// `bus`, on device `first` and those after it.
+#[cfg(all(hv, target_os = "linux"))]
+fn passed_through(
+    bus: &mut crate::devices::MmioBus,
+    mut windows: [&mut BarWindow; 2],
+    vfio: &[Vfio],
+    first: u8,
+    machine: &PciMachine<'_>,
+    routed: &mut PciBus,
+) -> Result<Vec<crate::devices::pci::Function>, String> {
+    use crate::devices::pci::{self, vfio as v};
+    let PciMachine { vm, memory, irqs, .. } = *machine;
+    let mut functions: Vec<pci::Function> = Vec::new();
+    // One container for the functions whose groups have an IOMMU, and one for those
+    // whose have none.
+    let (mut iommu, mut noiommu) = (None, None);
+    for (device, f) in (first..32).zip(vfio) {
+        let slot = if f.noiommu { &mut noiommu } else { &mut iommu };
+        let container = match slot {
+            Some(c) => c,
+            None => slot.insert(v::Container::open(f.noiommu).map_err(|e| format!("{}: {e}", f.name))?),
+        };
+        let opened = v::Device::open(&f.name, &f.group, container, memory, vm)?;
+        let mut bars = Vec::new();
+        let [window, window64] = &mut windows;
+        for (index, size, kind) in opened.bars() {
+            let window = if kind == pci::BarKind::Memory64 {
+                &mut **window64
+            } else {
+                &mut **window
+            };
+            let addr = window
+                .take(size)
+                .map_err(|e| format!("{}: BAR {index}: {e}", f.name))?;
+            bars.push(pci::Bar {
+                index,
+                addr,
+                size,
+                kind,
+            });
+        }
+        let route = irqs.and_then(|irqs| irqs.route(device));
+        let send = irqs.map(|irqs| irqs.msi());
+        let function = Arc::new(v::VfioFunction::new(opened, bars, route, send, vm)?);
+        for bar in function.bars() {
+            bus.insert(
+                bar.addr,
+                bar.size,
+                Arc::new(v::VfioBar::new(function.clone(), bar.index)),
+            )?;
+        }
+        if function.pin() != 0 {
+            routed.intx.push((device, function.pin()));
+        }
+        functions.push((device << 3, function));
+    }
+    if functions.len() < vfio.len() {
+        return Err(format!(
+            "{} PCI devices: bus 0 has room for {}",
+            vfio.len(),
+            32 - usize::from(first)
+        ));
+    }
+    Ok(functions)
+}
+
+#[cfg(all(hv, not(target_os = "linux")))]
+fn passed_through(
+    _bus: &mut crate::devices::MmioBus,
+    _windows: [&mut BarWindow; 2],
+    _vfio: &[Vfio],
+    _first: u8,
+    _machine: &PciMachine<'_>,
+    _routed: &mut PciBus,
+) -> Result<Vec<crate::devices::pci::Function>, String> {
+    Err("a host's PCI devices are passed through by VFIO, Linux's (D154)".into())
+}
+
+/// KVM as the host of the functions VFIO passes through (D154): its VFIO device told of
+/// their groups, and memory slots of each function's own for its BARs.
+#[cfg(all(hv, target_os = "linux"))]
+impl crate::devices::pci::vfio::Host for crate::hv::Vm {
+    fn add_group(&self, group: std::os::fd::RawFd) -> Result<(), String> {
+        self.add_vfio_group(group).map_err(|e| e.to_string())
+    }
+
+    fn slots(&self, count: u32) -> Box<dyn crate::devices::pci::vfio::BarSlots> {
+        Box::new(self.device_slots(count))
+    }
+}
+
+#[cfg(all(hv, target_os = "linux"))]
+impl crate::devices::pci::vfio::BarSlots for crate::hv::DeviceSlots {
+    unsafe fn map(&self, i: u32, host: *mut u8, gpa: u64, len: usize) -> Result<(), String> {
+        // SAFETY: forwarded caller contract.
+        unsafe { crate::hv::DeviceSlots::map(self, i, host, gpa, len) }.map_err(|e| e.to_string())
+    }
+
+    fn unmap(&self, i: u32) -> Result<(), String> {
+        crate::hv::DeviceSlots::unmap(self, i).map_err(|e| e.to_string())
+    }
 }
 
 /// The host side of a VM's virtio-vsock device.
@@ -544,6 +911,8 @@ impl Config {
             hotplug_mib: 0,
             reporting: false,
             gpu: false,
+            pci_test: false,
+            vfio: Vec::new(),
         }
     }
 }
@@ -630,12 +999,12 @@ pub fn run(cfg: &Config) -> Result<ExitReason, String> {
     Ok(running.wait())
 }
 
-/// The initrd a machine boots: `--initrd`'s file, or an initramfs holding `--init`'s. Its
-/// file is read only once its length is seen to fit the `room` bytes of RAM there are for
-/// it, and an init is read straight into its place in the archive (audit D13).
+/// The initrd a machine boots: `--initrd`'s file, or an initramfs holding `--init`'s,
+/// opened once its length is seen to fit the `room` bytes of RAM there are for it. Its
+/// file is read only as it is copied in, straight into guest memory, an init into its
+/// place in the archive there (audit D13, [`Initrd::place`]).
 #[cfg(hv)]
-fn initrd(cfg: &Config, room: u64) -> Result<Option<Vec<u8>>, String> {
-    use std::io::Read as _;
+fn initrd(cfg: &Config, room: u64) -> Result<Option<Initrd>, String> {
     let open = |p: &PathBuf| -> Result<(std::fs::File, usize), String> {
         let at = |e: std::io::Error| format!("{}: {e}", p.display());
         let file = crate::platform::open_input(p, false).map_err(at)?;
@@ -654,31 +1023,190 @@ fn initrd(cfg: &Config, room: u64) -> Result<Option<Vec<u8>>, String> {
     };
     match (&cfg.initrd, &cfg.init) {
         (Some(_), Some(_)) => Err("--initrd and --init are mutually exclusive".into()),
+        // Only the length that was seen to fit is copied, though the file grow meanwhile;
+        // one that shrinks is an error as it is copied.
         (Some(p), None) => {
             let (file, len) = open(p)?;
             fits(p, len)?;
-            let mut bytes = Vec::new();
-            bytes
-                .try_reserve_exact(len)
-                .map_err(|e| format!("{}: {e}", p.display()))?;
-            // Only the length that was seen to fit, though the file grow meanwhile.
-            file.take(len as u64)
-                .read_to_end(&mut bytes)
-                .map_err(|e| format!("{}: {e}", p.display()))?;
-            if bytes.len() != len {
-                return Err(format!("{}: shorter than its {len} bytes", p.display()));
-            }
-            Ok(Some(bytes))
+            Ok(Some(Initrd {
+                file,
+                path: p.clone(),
+                file_len: len,
+                before: Vec::new(),
+                after: Vec::new(),
+            }))
         }
         (None, Some(p)) => {
-            let (mut file, len) = open(p)?;
+            let (file, len) = open(p)?;
             fits(p, crate::initramfs::archive_len(len))?;
-            crate::initramfs::with_init_from(&mut file, len)
-                .map(Some)
-                .map_err(|e| format!("{}: {e}", p.display()))
+            let (before, after) = crate::initramfs::frame(len);
+            Ok(Some(Initrd {
+                file,
+                path: p.clone(),
+                file_len: len,
+                before,
+                after,
+            }))
         }
         (None, None) => Ok(None),
     }
+}
+
+/// A boot's initrd before it is copied in: the file whose bytes it holds, and around them
+/// the bytes of the archive an init is given in (`--init`, [`initramfs::frame`]); a
+/// `--initrd`'s file is the initrd whole.
+///
+/// [`initramfs::frame`]: crate::initramfs::frame
+#[cfg(hv)]
+#[derive(Debug)]
+pub(crate) struct Initrd {
+    file: std::fs::File,
+    path: PathBuf,
+    file_len: usize,
+    before: Vec<u8>,
+    after: Vec<u8>,
+}
+
+#[cfg(hv)]
+impl Initrd {
+    /// The guest memory it takes.
+    pub(crate) fn len(&self) -> u64 {
+        (self.before.len() + self.file_len + self.after.len()) as u64
+    }
+
+    /// Writes its archive's own bytes at `start` in `memory`, around where its file's go:
+    /// the piece left to copy in.
+    pub(crate) fn place(&self, memory: &GuestMemory, start: u64) -> Result<Piece<'_>, String> {
+        let overflows = || "the initrd overflows the address space".to_string();
+        let data = start
+            .checked_add(self.before.len() as u64)
+            .ok_or_else(overflows)?;
+        let after = data.checked_add(self.file_len as u64).ok_or_else(overflows)?;
+        let access = memory.access().map_err(|e| e.to_string())?;
+        for (at, bytes) in [(start, &self.before), (after, &self.after)] {
+            if !bytes.is_empty() {
+                access.write(at, bytes).map_err(|e| e.to_string())?;
+            }
+        }
+        Ok(Piece {
+            span: FileSpan {
+                gpa: data,
+                len: self.file_len,
+                offset: 0,
+            },
+            file: &self.file,
+            path: &self.path,
+        })
+    }
+}
+
+/// A span of guest memory and the file that fills it (`path` names it in errors): what a
+/// boot copies in of its kernel and initrd.
+#[cfg(hv)]
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Piece<'f> {
+    pub span: FileSpan,
+    pub file: &'f std::fs::File,
+    pub path: &'f Path,
+}
+
+/// The unit a boot's copy is shared out in: a huge page of guest memory, which one thread
+/// alone then faults in (THP's, PM M157).
+#[cfg(hv)]
+const COPY_UNIT: u64 = 2 << 20;
+
+/// `pieces`, cut where each [`COPY_UNIT`] of guest memory begins.
+#[cfg(hv)]
+fn chunks<'f>(pieces: &[Piece<'f>]) -> Vec<Piece<'f>> {
+    let mut out = Vec::new();
+    for p in pieces {
+        let FileSpan {
+            mut gpa,
+            len,
+            mut offset,
+        } = p.span;
+        let mut left = len as u64;
+        while left > 0 {
+            let len = left.min(COPY_UNIT - gpa % COPY_UNIT);
+            out.push(Piece {
+                span: FileSpan {
+                    gpa,
+                    len: len as usize,
+                    offset,
+                },
+                ..*p
+            });
+            // Within the piece, whose own sums were checked as it was planned.
+            gpa = gpa.saturating_add(len);
+            offset = offset.saturating_add(len);
+            left -= len;
+        }
+    }
+    out
+}
+
+/// Copies in the chunks `next` hands out until none is left: what each thread a boot's
+/// copy has runs, however many.
+#[cfg(hv)]
+fn copy_in(memory: &GuestMemory, chunks: &[Piece<'_>], next: &AtomicUsize) -> Result<(), String> {
+    while let Some(c) = chunks.get(next.fetch_add(1, Ordering::Relaxed)) {
+        memory
+            .read_file(c.span.gpa, c.span.len, c.file, c.span.offset)
+            .map_err(|e| format!("{}: {e}", c.path.display()))?;
+    }
+    Ok(())
+}
+
+/// Runs `own`, the machine's making, while a thread of its own copies `pieces` into
+/// `memory`, the most of a cold boot's setup (PM M226), which the VM, its devices and its
+/// firmware tables need none of, nor touch any of; then this thread takes its share of
+/// what is left of the copy (PM M227). Where no thread can be made, or two pieces meet in
+/// memory, this one copies all of it after `own`, in the pieces' order: where two meet,
+/// the later one's bytes are the ones there, as a copy of one piece after another leaves
+/// them.
+#[cfg(hv)]
+fn beside_copy<T>(
+    memory: &GuestMemory,
+    pieces: &[Piece<'_>],
+    own: impl FnOnce() -> Result<T, String>,
+) -> Result<T, String> {
+    let chunks = chunks(pieces);
+    let next = AtomicUsize::new(0);
+    let copy = || copy_in(memory, &chunks, &next);
+    let mut spans: Vec<&FileSpan> = pieces.iter().map(|p| &p.span).collect();
+    spans.sort_unstable_by_key(|s| s.gpa);
+    let meet = spans
+        .windows(2)
+        .any(|w| matches!(w, [a, b] if a.gpa.saturating_add(a.len as u64) > b.gpa));
+    std::thread::scope(|s| {
+        // None where pieces meet, or where no thread can be made.
+        let loader = (!meet)
+            .then(|| {
+                std::thread::Builder::new()
+                    .name("shards-load".into())
+                    .spawn_scoped(s, copy)
+                    .ok()
+            })
+            .flatten();
+        let made = own();
+        let mine = match made {
+            Ok(_) => copy(),
+            // No machine to boot: what is left of the copy is left.
+            Err(_) => {
+                next.store(chunks.len(), Ordering::Relaxed);
+                Ok(())
+            }
+        };
+        let theirs = match loader {
+            Some(loader) => loader
+                .join()
+                .map_err(|_| "the kernel's loader ended abnormally".to_string())?,
+            None => Ok(()),
+        };
+        let made = made?;
+        mine.and(theirs)?;
+        Ok(made)
+    })
 }
 
 #[cfg(all(test, hv))]
@@ -689,6 +1217,25 @@ mod tests {
     use crate::snapshot::MachineConfig;
     #[cfg(unix)]
     use crate::snapshot::Snapshot;
+
+    /// BARs are placed from the window's start, each at the next multiple of its size,
+    /// and one past the window's end is refused, the window as it was.
+    #[test]
+    fn bars_are_placed_at_multiples_of_their_sizes() {
+        let mut w = BarWindow {
+            next: 0x1000_0000,
+            end: 0x1080_0000,
+        };
+        assert_eq!(w.take(0x1000).unwrap(), 0x1000_0000);
+        assert_eq!(w.take(0x10_0000).unwrap(), 0x1010_0000);
+        assert_eq!(w.take(0x10).unwrap(), 0x1020_0000);
+        assert_eq!(w.take(0x20_0000).unwrap(), 0x1040_0000);
+        // 4 MiB fits from 0x10800000 alone, past the end.
+        assert!(w.take(0x40_0000).is_err(), "{w:?}");
+        assert_eq!(w.next, 0x1060_0000);
+        assert_eq!(w.take(0x20_0000).unwrap(), 0x1060_0000);
+        assert!(w.take(0x10).is_err(), "{w:?}");
+    }
 
     fn machine(vsock: bool, net: Option<[u8; 6]>) -> MachineConfig {
         MachineConfig {
@@ -905,27 +1452,129 @@ mod tests {
         assert!(machine_config(&cfg).unwrap_err().starts_with("no-such-file: "));
     }
 
-    /// An init or initrd is read only if it fits where it goes: one longer than the room
-    /// is refused, saying so; one that fits becomes the archive, or the initrd, whole
-    /// (audit D13). `Cargo.toml` stands in for either.
+    /// An init or initrd is taken only if it fits where it goes: one longer than the room
+    /// is refused, saying so; one that fits is the archive, or the initrd, whole, once
+    /// placed and copied in, across a huge page's edge too (audit D13). `Cargo.toml`
+    /// stands in for either.
     #[test]
-    fn an_initrd_is_read_only_if_it_fits() {
-        let len = std::fs::metadata("Cargo.toml").unwrap().len() as usize;
+    fn an_initrd_is_taken_only_if_it_fits() {
+        let bytes = std::fs::read("Cargo.toml").unwrap();
+        let len = bytes.len();
+        let memory = GuestMemory::anonymous(&[(0, 8 << 20)]).unwrap();
+        let copied = |i: &Initrd, start: u64| {
+            let piece = i.place(&memory, start).unwrap();
+            copy_in(&memory, &chunks(&[piece]), &AtomicUsize::new(0)).unwrap();
+            let mut back = vec![0u8; i.len() as usize];
+            memory.access().unwrap().read(start, &mut back).unwrap();
+            back
+        };
         let mut cfg = Config::new(PathBuf::from("kernel"), Some(PathBuf::from("Cargo.toml")));
         let archive = crate::initramfs::archive_len(len) as u64;
         let e = initrd(&cfg, archive - 1).unwrap_err();
         assert!(e.contains("room for"), "{e}");
-        let built = initrd(&cfg, archive).unwrap().unwrap();
-        assert_eq!(
-            built,
-            crate::initramfs::with_init(&std::fs::read("Cargo.toml").unwrap())
-        );
+        let framed = initrd(&cfg, archive).unwrap().unwrap();
+        assert_eq!(framed.len(), archive);
+        assert_eq!(copied(&framed, 0x1000), crate::initramfs::with_init(&bytes));
         cfg.init = None;
         cfg.initrd = Some(PathBuf::from("Cargo.toml"));
         assert!(initrd(&cfg, len as u64 - 1).unwrap_err().contains("room for"));
-        assert_eq!(initrd(&cfg, len as u64).unwrap().unwrap().len(), len);
+        let whole = initrd(&cfg, len as u64).unwrap().unwrap();
+        assert_eq!(copied(&whole, COPY_UNIT - 7), bytes);
         cfg.init = Some(PathBuf::from("Cargo.toml"));
         assert!(initrd(&cfg, u64::MAX).is_err(), "both at once");
+    }
+
+    /// A boot's copy is cut where each 2 MiB of guest memory begins, every byte in one
+    /// chunk alone, each read from where its own bytes lie in the file.
+    #[test]
+    fn a_boots_copy_is_cut_at_each_huge_page() {
+        let file = std::fs::File::open("Cargo.toml").unwrap();
+        let path = Path::new("Cargo.toml");
+        let piece = |gpa, len, offset| Piece {
+            span: FileSpan { gpa, len, offset },
+            file: &file,
+            path,
+        };
+        let cut = chunks(&[piece(0x1f_f000, 0x40_2000, 7), piece(0x80_0000, 5, 0)]);
+        let spans: Vec<FileSpan> = cut.iter().map(|p| p.span).collect();
+        let span = |gpa, len, offset| FileSpan { gpa, len, offset };
+        assert_eq!(
+            spans,
+            vec![
+                span(0x1f_f000, 0x1000, 7),
+                span(0x20_0000, 0x20_0000, 0x1007),
+                span(0x40_0000, 0x20_0000, 0x20_1007),
+                span(0x60_0000, 0x1000, 0x40_1007),
+                span(0x80_0000, 5, 0),
+            ]
+        );
+    }
+
+    /// Pieces that meet in memory are copied in their order, the later one's bytes where
+    /// they meet, as a copy of one after another leaves them.
+    #[test]
+    fn pieces_that_meet_are_copied_in_their_order() {
+        let dir = shards_testdir::TempDir::new("meet").unwrap();
+        let (a, b) = (dir.path().join("a"), dir.path().join("b"));
+        std::fs::write(&a, vec![b'a'; 3 << 20]).unwrap();
+        std::fs::write(&b, vec![b'b'; 1 << 20]).unwrap();
+        let (fa, fb) = (std::fs::File::open(&a).unwrap(), std::fs::File::open(&b).unwrap());
+        let memory = GuestMemory::anonymous(&[(0, 8 << 20)]).unwrap();
+        let piece = |file, path, gpa, len| Piece {
+            span: FileSpan { gpa, len, offset: 0 },
+            file,
+            path,
+        };
+        let pieces = [
+            piece(&fa, a.as_path(), 0x10_0000, 3 << 20),
+            piece(&fb, b.as_path(), 0x20_0000, 1 << 20),
+        ];
+        beside_copy(&memory, &pieces, || Ok(())).unwrap();
+        let mut back = vec![0u8; 3 << 20];
+        memory.access().unwrap().read(0x10_0000, &mut back).unwrap();
+        let (before, rest) = back.split_at(1 << 20);
+        let (met, after) = rest.split_at(1 << 20);
+        assert!(before.iter().all(|&x| x == b'a'));
+        assert!(
+            met.iter().all(|&x| x == b'b'),
+            "the later piece's bytes where they meet"
+        );
+        assert!(after.iter().all(|&x| x == b'a'));
+    }
+
+    /// Threads sharing one boot's copy copy every byte where it goes; a file shorter than
+    /// its plan is an error naming it, not a short copy.
+    #[test]
+    fn a_boots_copy_is_shared_by_its_threads() {
+        let dir = shards_testdir::TempDir::new("copy").unwrap();
+        let path = dir.path().join("image");
+        let bytes: Vec<u8> = (0..(5 << 20) + 3).map(|i| (i % 251) as u8).collect();
+        std::fs::write(&path, &bytes).unwrap();
+        let file = std::fs::File::open(&path).unwrap();
+        let memory = GuestMemory::anonymous(&[(0, 16 << 20)]).unwrap();
+        let at = 0x10_0009;
+        let piece = |len| Piece {
+            span: FileSpan {
+                gpa: at,
+                len,
+                offset: 0,
+            },
+            file: &file,
+            path: &path,
+        };
+        let plan = chunks(&[piece(bytes.len())]);
+        let next = AtomicUsize::new(0);
+        std::thread::scope(|s| {
+            let other = s.spawn(|| copy_in(&memory, &plan, &next));
+            copy_in(&memory, &plan, &next).unwrap();
+            other.join().unwrap().unwrap();
+        });
+        let mut back = vec![0u8; bytes.len()];
+        memory.access().unwrap().read(at, &mut back).unwrap();
+        assert_eq!(back, bytes);
+        let short = chunks(&[piece(bytes.len() + 1)]);
+        let e = copy_in(&memory, &short, &AtomicUsize::new(0)).unwrap_err();
+        assert!(e.contains("image"), "{e}");
     }
 
     /// A working set naming a page the guest does not have is not prefetched at all

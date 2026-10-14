@@ -5,6 +5,9 @@
 #   (tables/main.go);
 # - crates/cmdline/tests/docker-cli.json, the CLI's answers to the command lines in
 #   oracle_test.go, which crates/cmdline/tests/docker_cli.rs expects shards to give;
+# - crates/cmdline/tests/docker-flags.json, every flag of the CLI's commands that shards
+#   has (oracle_test.go, TestShardsFlags), which crates/cmdline/tests/docker_flags.rs
+#   expects shards' commands to take, served or not;
 # - crates/shards/src/daemon/docker-ps.json, the CLI's `ps` tables of the containers in
 #   ps_test.go, which daemon/commands.rs's tests expect shards to print;
 # - crates/cmdline/tests/go-network.json, what the CLI makes of `--network` values
@@ -65,6 +68,8 @@ cd "$cli"
 ./scripts/with-go-mod.sh go run -mod=vendor ./shards-time >"$root/crates/cmdline/tests/docker-time.json"
 SHARDS_ORACLE_OUT="$root/crates/cmdline/tests/docker-cli.json" \
 	./scripts/with-go-mod.sh go test -mod=vendor -count=1 -run '^TestShardsOracle$' ./cmd/docker/
+SHARDS_FLAGS_OUT="$root/crates/cmdline/tests/docker-flags.json" \
+	./scripts/with-go-mod.sh go test -mod=vendor -count=1 -run '^TestShardsFlags$' ./cmd/docker/
 SHARDS_PS_OUT="$root/crates/shards/src/daemon/docker-ps.json" \
 	./scripts/with-go-mod.sh go test -mod=vendor -count=1 -run '^TestShardsPs$' ./cli/command/formatter/
 SHARDS_NETWORK_OUT="$root/crates/cmdline/tests/go-network.json" \

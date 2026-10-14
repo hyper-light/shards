@@ -9,7 +9,8 @@ pub mod state;
 pub mod layout {
     /// GICv3 distributor (64 KiB).
     pub const GIC_DIST: u64 = 0x0800_0000;
-    /// GICv2m-style MSI frame (64 KiB), reserved for PCI MSI.
+    /// A GICv2m frame (64 KiB), its doorbell taking the MSIs of a PCI bus's functions
+    /// (D154).
     pub const GIC_MSI: u64 = 0x0802_0000;
     /// Redistributors: one 128 KiB frame per vCPU, contiguous.
     pub const GIC_REDIST: u64 = 0x080a_0000;
@@ -28,6 +29,11 @@ pub mod layout {
     /// does (hv::Vcpu::prefetch): 1 GiB between the devices and RAM that nothing else uses.
     pub const PREFETCH: u64 = 0x4000_0000;
     pub const DRAM_BASE: u64 = 0x8000_0000;
+    /// A PCI bus's 32-bit memory window, where its functions' BARs are placed, and its
+    /// ECAM window above it, bus 0 alone (D153): QEMU virt's places.
+    pub const PCI_MEM32: u64 = 0x1000_0000;
+    pub const PCI_MEM32_SIZE: u64 = 0x2f00_0000;
+    pub const PCI_ECAM: u64 = PCI_MEM32 + PCI_MEM32_SIZE;
     /// The first 2 MiB of DRAM hold data the VMM writes for guest drivers that map it as
     /// a device (VMGenID). Left out of the devicetree's memory node, so Linux can
     /// ioremap it; the kernel loads above it, 2 MiB aligned (Firecracker's layout:
@@ -44,6 +50,14 @@ pub mod layout {
     pub const SPI_RTC: u32 = 2;
     pub const SPI_VMGENID: u32 = 3;
     pub const SPI_VIRTIO_MMIO: u32 = 16;
+    /// The INTx line of PCI device `n` (1 to 31) on bus 0 is SPI `SPI_PCI + n - 1`: one
+    /// line for each device, none shared (D154).
+    pub const SPI_PCI: u32 = SPI_VIRTIO_MMIO + VIRTIO_MMIO_MAX as u32;
+    /// The SPIs the GICv2m frame raises for MSIs, `MSI_SPIS` of them from `SPI_MSI`.
+    pub const SPI_MSI: u32 = SPI_PCI + 32;
+    pub const MSI_SPIS: u32 = 64;
+    /// One more than the highest SPI the machine uses.
+    pub const SPIS: u32 = SPI_MSI + MSI_SPIS;
 }
 
 /// Where a vCPU enters the guest: the kernel entry with X0 = DTB address for the boot

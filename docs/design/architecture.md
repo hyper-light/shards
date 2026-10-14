@@ -167,7 +167,7 @@ the guest arch is always the host arch.
 | Host OS | Arch (Rust triple / OCI name) | Backend (`hv`) | Status |
 |---|---|---|---|
 | Linux (glibc, musl) | x86_64 / amd64 | KVM | booting Linux: SMP, ACPI, virtio-blk; snapshots with cold and warm restore; CI on both libcs |
-| Linux (glibc, musl) | aarch64 / arm64 | KVM | planned |
+| Linux (glibc, musl) | aarch64 / arm64 | KVM | booting Linux: SMP, GICv3 and PSCI (KVM's), virtio, PCI and VFIO; no snapshots yet (D154) |
 | macOS | aarch64 / arm64 | Hypervisor.framework (arm64 API) | booting Linux; snapshots with cold and warm restore |
 | macOS | x86_64 / amd64 | Hypervisor.framework (x86 VMX API) | planned |
 | Windows | x86_64 / amd64 | Windows Hypervisor Platform | booting Linux: SMP, virtio-blk, pmem and vsock; no snapshots yet (D140) |
@@ -3612,6 +3612,248 @@ No run-time labels, relays or declassifiers (§12 answer 14, decided by the user
 2026-10-07): every path between domains is a grant, and the build refuses any that joins
 an internal-only domain to the world (D58), so there is no data to label. Code mode is
 D136.
+
+### D154. KVM on arm64, and a host's PCI function passed through (VFIO)
+
+D13 planned KVM on arm64 Linux hosts, and none ran a VM: the KVM backend was x86_64's.
+D153's test path for VFIO is a guest given the test function, passing it to a guest of
+its own, on an arm64 Mac (D132): shards' VM process inside that guest is an arm64 Linux
+one. So both, in that order.
+
+- **One KVM backend for both architectures.** What is KVM's everywhere is shared (hv/kvm):
+  /dev/kvm opened and checked once, guest memory's slots, the run loop, the kick. Each
+  architecture's VM and vCPUs are its own module's, and so are its ioctls.
+- **arm64's VM is the arm64 machine's** (vm/aarch64.rs), as Hypervisor.framework's is,
+  with KVM's semantics behind the same names. Its GICv3 is KVM's
+  (KVM_DEV_TYPE_ARM_VGIC_V3, Documentation/virt/kvm/devices/arm-vgic-v3.rst): the
+  distributor and redistributors at the machine's places; 96 interrupts, 32 private and
+  then the SPIs the machine's devices use, in KVM's steps of 32; initialized once every
+  vCPU exists, before any runs (KVM_DEV_ARM_VGIC_CTRL_INIT), as the machine's `finish`
+  now asks of every backend. PSCI is KVM's (KVM_ARM_VCPU_PSCI_0_2, api.rst 4.82): the boot
+  vCPU enters at the kernel with X0 the devicetree, the others start powered off, CPU_ON
+  and CPU_OFF are the kernel's, SYSTEM_OFF and SYSTEM_RESET come back as system events.
+  Each vCPU's MPIDR, which KVM derives from its id, is checked against the devicetree's
+  (`arch::aarch64::mpidr`). The address width is asked of KVM
+  (KVM_CAP_ARM_VM_IPA_SIZE); pointer authentication is on where KVM gives both kinds, as
+  the guest has it under Hypervisor.framework; EL2 where KVM gives it (KVM_CAP_ARM_EL2: a
+  CPU with FEAT_NV2 and a host booted with kvm-arm.mode=nested, arch/arm64/kernel/
+  cpufeature.c has_nested_virt_support), its maintenance interrupt the devicetree's,
+  INTID 25, which KVM reads from the attribute's `addr` (arm64/kvm/vgic/
+  vgic-kvm-device.c), where arm-vgic-v3.rst says its `attr`.
+- **Confined as on x86_64** (D30): Landlock, and the seccomp filter, whose system calls
+  are x86_64's but those the generic ABI has none of (open, stat, access, mkdir, rename,
+  unlink, readlink, poll, dup2), whose `*at` forms musl and glibc make there instead.
+- **VFIO** (`run --kernel … --vfio NAME`, Linux): VFIO's container, group and device
+  (include/uapi/linux/vfio.h; Documentation/driver-api/vfio.rst). The function's group is
+  found by its `iommu_group` before the VM process is confined, and the container and the
+  group are the only devices Landlock then lets it reach (IOCTL_DEV); VFIO's requests are
+  in the seccomp filter, of no use without them. A group with an IOMMU takes type 1 with
+  all of guest RAM mapped for the function's DMA, pinned; a no-IOMMU group
+  (vfio.enable_unsafe_noiommu_mode) maps none, for a function that makes no DMA. The
+  configuration space is vfio-pci's, which keeps from a user what it must not touch, but
+  for the BARs, the expansion ROM and the interrupt line and pin, which the VMM keeps
+  (D153's header); the memory BARs are placed in the bus's window, each at the next
+  multiple of its size, and each access goes to the device's region at its offset; an
+  I/O BAR is left out, as the machine has no I/O window. Each group is added to KVM's
+  VFIO device (Documentation/virt/kvm/devices/vfio.rst) before its device is opened, as
+  drivers that need the VM to open one ask; through it KVM learns whether the function's
+  DMA snoops the CPU's caches, and on x86 honours the guest's memory types where it does
+  not (virt/kvm/vfio.c, kvm_vfio_update_coherency). The VM keeps that device as long as
+  it lives: KVM forgets its groups as its descriptor closes (kvm_vfio_release). A machine
+  given a function has no memory to plug, no balloon (its DMA mappings pinned; QEMU's
+  `ram_block_discard_disable`) and no snapshot.
+- **BARs in the guest's memory.** Each BAR vfio-pci lets a user map
+  (VFIO_REGION_INFO_FLAG_MMAP: a memory BAR of a page or more, vfio_pci_probe_mmaps) is
+  mapped into the VM process, and its pages, but for those of the MSI-X table and pending
+  bits, which the VMM keeps, are memory slots of the function's own, which the guest
+  reaches without an exit. They are in the guest while it enables the function's memory
+  space, and leave before it disables it: vfio-pci then takes its mappings away
+  (vfio_basic_config_write) and a vCPU touching one would fail its run (EFAULT); out,
+  the BAR is trapped again, and a read with memory space off is all ones, as an access
+  no function claims (PCI 3.0 §6.2.2, §2.3.2), which the test function now does too. A
+  BAR of less than a page stays trapped whole, as its page in the guest holds others.
+- **An IOMMU for the functions the VMM emulates** (virtio-iommu, virtio 1.3 §5.13;
+  include/uapi/linux/virtio_iommu.h): a machine with the test function has one, last of
+  its virtio devices, which translates the test function's requester ID alone: the
+  devicetree's `iommu-map` on the host bridge (Documentation/devicetree/bindings/pci/
+  pci-iommu.txt) and, on x86_64, ACPI's VIOT (ACPICA's actbl3.h; Linux
+  drivers/acpi/viot.c). A passed-through function stays out of it, as its DMA reaches
+  guest RAM through the host's mappings of all of it, which a guest's own mappings would
+  not move. The guest's driver attaches each endpoint to a domain and maps I/O addresses
+  in it to guest-physical ones, a domain going with its mappings once its last endpoint
+  leaves it, as Linux's driver expects (virtio-iommu.c, viommu_attach_dev); MAP refuses
+  what is not whole pages or overlaps a mapping, UNMAP what would split one. On x86_64,
+  PROBE gives each endpoint the local APICs' window, 0xfee00000 to 0xfeefffff, as a
+  reserved region of subtype MSI (virtio 1.3 §5.13.3), so that MSIs need no mapping. On
+  arm64 it gives none: Linux's MSI parents, GICv2m's and the ITS's, have the IOMMU map
+  their doorbell for the device's domain (iommu.c, iommu_dma_prepare_msi), which VFIO's
+  type 1 can do only in the software MSI window Linux's driver adds where the device
+  reports no MSI region, mapped as device memory (IOMMU_MMIO), which the driver maps only
+  where the device offers VIRTIO_IOMMU_F_MMIO; with a bypassed region instead, VFIO's
+  MSIs failed (ENOSPC, msi_handle_pci_fail). The test function's MSIs are writes to an
+  I/O address there, translated as its DMA is. An endpoint attached to no domain bypasses translation until the driver
+  says otherwise (the configuration's `bypass`, 1 from reset, as QEMU's `boot-bypass`): a
+  guest without the driver keeps DMA by guest-physical address. Linux defers probing a
+  function behind an IOMMU it has no driver for, ten seconds where it has modules
+  (driver_deferred_probe_check_state), so the `kvm` kernel has the driver.
+- **The test function's DMA** is edu's engine (edu.rst: source, destination, length and
+  command at 0x80 of BAR 0, its 4 KiB buffer at 0x40000 of its DMA addresses), run at once
+  rather than on edu's timer: guest memory is reached at what its endpoint's domain maps,
+  each part read or written as the mapping allows, and a transfer to what it does not map
+  moves nothing, as an IOMMU's fault ends a device's DMA.
+- **A 64-bit window.** 64-bit BARs, a GPU's of tens of GiB among them, take a window of
+  their own above 4 GiB, past the rest of the guest's address map, as long as they need:
+  each placed at a multiple of its size, the test function's and then each
+  passed-through function's in order, from a start aligned to the largest. The window is
+  sized before the VM exists, as arm64's address width follows the map's top: a
+  function's 64-bit BARs are read from sysfs (`resource`: IORESOURCE_MEM_64) while it is
+  found, before the VM process is confined. It is not prefetchable, so BARs of either
+  kind fit it: the devicetree's second range, 64-bit memory (0x03000000), and on x86_64
+  the host bridge's QWordMemory (ACPI 6.5 §6.4.3.5.1). On x86_64, the guest's whole
+  address map, RAM, memory to plug, pmem and the window, must now lie within the
+  physical address width its CPUID gives it (0x80000008), on KVM and WHP alike, where
+  before nothing checked it. The test function has a 64-bit BAR 4 of its own, 1 MiB, its
+  first page a scratch.
+- **Interrupts.** A PCI bus's functions interrupt as PCI's do. On arm64, each device's
+  INTx on an SPI of its own, level-triggered (the devicetree's `interrupt-map`): KVM's
+  GICv3 keeps one level a line, so a line the VMM drives and an irqfd must not share one.
+  MSIs go to a GICv2m frame (Linux's GICv3 driver takes one where the distributor has no
+  LPIs, irq-gic-v3.c; its SPIs in the devicetree, irq-gic-v2m.c): Hypervisor.framework's
+  own, or on KVM one the VMM emulates. On x86_64, every device's INTx on GSI 22, wired-OR
+  as PCI's may be, by the DSDT's `_PRT` (ACPI 6.5 §6.2.13), so that a machine with a PCI
+  bus has one virtio device fewer (KVM's IOAPIC has 24 pins); MSIs to the local APICs,
+  delivered by KVM_SIGNAL_MSI, or on WHP decoded as the IOAPIC's messages are (Intel SDM
+  Vol. 3A §11.11). The test function raises INTA# and MSIs as edu does, its status
+  register's Interrupt Status set while its interrupt is pending whether or not INTx is
+  disabled (PCI 3.0 §6.2.3): with it clear while disabled, a guest's vfio-pci, which masks
+  INTx by disabling it, took the next for another device's and the kernel shut the line
+  ("irq 15: nobody cared").
+- **A passed-through function's interrupts** reach the guest in the kernel, the VMM never
+  seeing them: VFIO signals an eventfd (VFIO_DEVICE_SET_IRQS) that a KVM irqfd raises a
+  line by. INTx level-triggered: VFIO masks it as it fires, and KVM's resample eventfd,
+  written as the guest ends the interrupt, unmasks it in vfio-pci, which takes that
+  eventfd only for INTx it already signals (vfio_pci_set_intx_unmask). INTx is routed as
+  the guest first reaches the function, as KVM takes no irqfd before its interrupt
+  controller is initialized, after every vCPU exists (kvm_irqfd_assign: EAGAIN). The VMM
+  keeps the function's MSI capability, at the device's place and of its length, as
+  vfio-pci leaves MSI's enable to VFIO_DEVICE_SET_IRQS (vfio_msi_config_write): as the
+  guest enables it, INTx goes off and the message is routed: on arm64 to the frame's SPI
+  it names (KVM's default routes, GSI n to SPI n), on x86_64 to a GSI past the IOAPIC's
+  by KVM_SET_GSI_ROUTING, the table KVM's defaults and every route, whole each time.
+  irqfds with resampling are among what KVM must offer.
+- **MSI-X** (PCI 3.0 §6.8.2): one table, `pci::MsixTable`, for the functions the VMM
+  emulates and those it passes through: each vector's message and mask, masked from
+  reset, reached a dword or an aligned qword at a time, and its pending bit, set as a
+  masked vector would have been sent and cleared as it is sent unmasked. The test function
+  has an MSI-X capability of shards' own beside edu's MSI, as edu has none: two vectors,
+  a raise of bit k sending vector k, the table and pending bits in BAR 2. A passed-through
+  function's table is the VMM's, as vfio-pci keeps a user from the device's
+  (vfio_pci_rdwr.c, vfio_pci_bar_rw), and so is its capability, as vfio-pci enables MSI-X
+  only through VFIO_DEVICE_SET_IRQS. As the guest enables MSI-X, INTx and MSI go off and
+  VFIO enables MSI-X with no vector signalled (eventfd -1). Where VFIO cannot add a vector
+  later (VFIO_IRQ_INFO_NORESIZE: a host whose MSI domain allocates no vectors on demand,
+  MSI_FLAG_PCI_MSIX_ALLOC_DYN, which x86's does and arm64's GICv2m and ITS do not:
+  arch/x86/include/asm/msi.h, irq-gic-v2m.c, irq-gic-its-msi-parent.c), every vector at
+  once, as one added by disabling MSI-X and enabling it again, which vfio.h leaves to a
+  user, would lose the interrupts between; else vector 0 alone, and each other as the
+  guest first unmasks it, so the host allocates only vectors in use. A vector gets its
+  eventfd as the guest first unmasks it, routed by its message through an irqfd. Masked,
+  by itself or by the function, it loses only its irqfd: VFIO keeps signalling, and the
+  eventfd counts, where a new eventfd would cost a host interrupt freed and requested
+  again (vfio_msi_set_vector_signal). A read of the pending bits takes each masked
+  vector's count as its pending bit, with the device's own bits, set for vectors VFIO
+  signals on nothing, which the host leaves masked at the device; an unmasked vector
+  sends what pended, by the machine's MSIs. KVM injects what an eventfd counted as its
+  irqfd is assigned but leaves the count (virt/kvm/eventfd.c, kvm_irqfd_assign), so the
+  VMM takes the count before assigning, to send it once, and after, so that it is not
+  sent again at the next mask. The host's pending bit trails the device by the host's
+  interrupt: a guest polls it as it would a device's.
+- **Verified on real VMs** (`a_pci_functions_interrupts_reach_the_guest`,
+  `a_nested_guest_runs_vms_of_its_own`), on an M5 Max, macOS 26.4.1. The test guest takes
+  the test function through vfio-pci in its own userspace and waits on eventfds: INTA#
+  twice, acknowledged and unmasked between, then one MSI, then MSI-X: its two vectors
+  enabled with no eventfd, so masked, a raise of vector 0 held, its pending bit read,
+  and sent as VFIO is given its eventfd; vector 1 sent at once, then held while VFIO
+  has freed it, and sent as given its eventfd again ("interrupts: INTx 2, MSI 1, MSI-X
+  3, 2 of them held"), on Hypervisor.framework. Nested: shards boots the `kvm` kernel at EL2 with an initramfs
+  of the test guest, shards' VM process for arm64 Linux and the `kvm` kernel again. In it, shards' KVM backend boots a
+  guest of its own, under its seccomp filter and Landlock: "smp: Brought up 1 node, 2
+  CPUs", its second vCPU's redistributor found, its test passed. Given `--pci-test`, the
+  inner guest's PCI bus reaches the test function. Given the outer guest's test function,
+  bound to vfio-pci there in a no-IOMMU group, the inner guest finds 1234:11e8 at 00:01.0
+  and reads the identification register and the liveness check's inverse through BAR 0,
+  which the outer VM process maps into the inner guest (its log): the inner guest's access
+  reaches the outermost VMM's function with no exit to the outer VM process. With its
+  memory space off, BAR 0 leaves the inner guest and reads all ones through the outer VM
+  process and vfio-pci, and comes back as it is on again. BAR 4 lies past 4 GiB in each
+  guest's 64-bit window, its scratch reading back what each wrote, in the inner guest
+  through the window the outer VM process sized from sysfs and mapped. DMA: the test
+  guest takes the test function through vfio-pci in a group with the IOMMU (its INTx, MSI
+  and MSI-X as before, the MSIs through the domain to the doorbell), maps two pages at
+  I/O addresses of its own (type 1), and the function moves a page of a pattern
+  from one into its buffer and back to the other, then to an address never mapped,
+  which moves nothing. Nested, the inner guest does the same behind the outer VM
+  process's IOMMU; and given the outer guest's function, its group now with an IOMMU,
+  so that the outer VM process maps all of the inner guest's RAM for it through the
+  outer guest's IOMMU (type 1), the inner guest, which has none, gives the function its
+  pages' guest-physical addresses (pagemap), and the outermost VMM's function reaches
+  them through the outer guest's mappings. The inner guest takes INTx, MSI and MSI-X, both of the VMM's
+  own test function, through its emulated frame, and of the function passed through, by
+  the outer VM process's irqfds: its vector 1 held while masked is the outer VM process's
+  count, as the outermost function sends it at once. CI's arm64 runners give no KVM: the nested test runs where a
+  Mac gives a guest EL2. x86_64's interrupts are held to their encodings by unit tests
+  (the `_PRT` as iasl compiles it, an MSI's decoding), and run on CI's KVM runner once its
+  `kvm` kernel, built now for x86_64 too, is pinned.
+- **Not yet:** snapshots of arm64 KVM VMs (`vm::SNAPSHOTS`; their GIC and vCPU state
+  through KVM's registers); more vCPUs than one redistributor region holds (123). For
+  VFIO: MSI of more than one message, and its per-vector masking; a passed-through
+  function behind the guest's own IOMMU, its host mappings following the guest's (what a
+  workload's VFIO in a microVM needs); then `--device /dev/vfio/N`, `--gpus` and CDI's
+  VFIO nodes.
+
+### D153. A PCI bus, for the devices a microVM is given (VFIO's first step)
+
+AGENTFILE_ARCH.md §11 row 978: Linux's VFIO is the last gap of `--device` and `--gpus`.
+A Docker container on Linux is given a host's device by its node; a microVM's guest
+kernel drives a device only as a device on a bus of its own, and VFIO (Linux
+Documentation/driver-api/vfio.rst) hands a process a PCI device: its configuration space,
+its BARs and its interrupts, its DMA confined to what the process maps. Every shards
+machine had virtio-mmio alone, and x86_64's kernel was told `pci=off`. First, the bus.
+
+- **One segment, bus 0**, each function's configuration space reached through an ECAM
+  window (PCI Express Base 6.0 §7.2.2, 1 MiB for 32 devices of 8 functions); an access a
+  function does not claim reads as all ones (§2.3.2). An arm64 guest finds it by a
+  `pci-host-ecam-generic` node (Linux Documentation/devicetree/bindings/pci/
+  host-generic-pci.yaml), its window at QEMU virt's places, 0x3f000000, and one 32-bit
+  memory range below it from 0x10000000; an x86_64 guest by ACPI, an MCFG table (PCI
+  Firmware 3.3 §4.1.2) and a PNP0A08 host bridge whose _CRS is bus 0 and a 32-bit memory
+  window from 0xc1000000, the ECAM window at 0xe0000000 reserved in the e820 map, without
+  which Linux takes no MMCONFIG (arch/x86/pci/mmconfig-shared.c), and no `pci=off`.
+- **BARs where the VMM places them.** A function's type 0 header (PCI Local Bus 3.0
+  §6.1) is the VMM's: its BARs sized as §6.2.5.1 asks and otherwise kept, which the guest
+  is told to keep (`/chosen/linux,pci-probe-only`; x86_64's Linux keeps firmware's
+  placement inside the bridge's windows), the command register's enables, the interrupt
+  line.
+- **A test function**, for the bus's tests and VFIO's to come (`run --kernel …
+  --pci-test`): QEMU's edu device's IDs, 1234:11e8, and its identification and liveness
+  registers in its BAR 0 (QEMU docs/specs/edu.rst), reached with no driver, through sysfs.
+- **No snapshot** of a machine with a PCI bus: its functions' state is their devices'
+  own, a passed-through device's above all.
+- **Verified on real VMs** (`a_pci_bus_reaches_its_function`): an arm64 guest on
+  Hypervisor.framework says "pci-host-generic 3f000000.pcie: ECAM at [mem
+  0x3f000000-0x3f0fffff] for [bus 00]" and "pci 0000:00:01.0: [1234:11e8] type 00 class
+  0xff0000", BAR 0 kept at 0x10000000, and the test guest maps it from sysfs and reads
+  0x010000ed and the liveness check's inverse; unit tests hold the ECAM decode, BAR
+  sizing, the devicetree node and the ACPI tables to their specs' encodings. x86_64's
+  guests on KVM and WHP, by CI.
+- **To build:** VFIO (Linux): the container, group and device; a passed-through
+  function's configuration space read from the device but for its BARs and MSI/MSI-X
+  capabilities, which the VMM keeps; its memory BARs mapped into the guest, the MSI-X
+  table's pages trapped; INTx and MSI through irqfds; all of guest RAM mapped for its
+  DMA, pinned, so that a machine with one boots with all its memory and no balloon. Then
+  `--device /dev/vfio/N`, `--gpus` and CDI's VFIO nodes. Its tests: a shards microVM on
+  an M3 or later, with KVM inside (`--nested`), given the test function, binding it to
+  vfio-pci and passing it to a microVM of its own.
 
 ### D152. A run's devices found by name in the VM's devtmpfs
 

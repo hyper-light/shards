@@ -32,6 +32,10 @@ pub fn main() {
             "hotplug" => hotplug(),
             "snapshot-plug" => snapshot_plug(),
             "limits" => limits(),
+            "pci" => pci(),
+            "pci-irq" => pci_irq(),
+            "pci-dma" => pci_dma(),
+            "host" => host(),
             other => Err(format!("unknown test {other:?}")),
         },
     );
@@ -40,8 +44,11 @@ pub fn main() {
         Err(e) => format!("SHARDS-TEST FAIL {e}"),
     };
     let _ = writeln!(io::stdout(), "{line}");
-    // SAFETY: PID 1 flushing and powering off.
+    // SAFETY: PID 1 waiting for its console to send what it wrote, flushing and powering
+    // off. The console's tty holds a write until its UART has sent it, and the kernel's
+    // own lines as it powers off go past it: powering off at once can drop the last line.
     unsafe {
+        libc::tcdrain(1);
         libc::sync();
         libc::reboot(libc::RB_POWER_OFF);
     }
@@ -1013,6 +1020,521 @@ fn work() -> Result<(), String> {
         .map_err(|e| format!("shards_work_mib: {e}"))?;
     let hash = shards_testguest::pattern_hash(1, mib << 20);
     let _ = writeln!(io::stdout(), "SHARDS-TEST HASH {hash:016x}");
+    Ok(())
+}
+
+/// A PCI bus's test function (D153): QEMU edu's IDs at 0000:00:01.0, and through its BAR
+/// 0, mapped from sysfs as a driver in user space maps one, its identification register
+/// and its liveness check, which reads back the inverse of what was written. With its
+/// memory space disabled through its configuration space, the function decodes nothing,
+/// so a read of BAR 0 is all ones, as an access no function claims (PCI 3.0 §6.2.2); enabled
+/// again, BAR 0 reads as before. Passed through, its BAR leaves the guest's memory and
+/// comes back (D154). Its BAR 4, 64-bit, lies past 4 GiB, its first page a scratch that
+/// reads back what was written.
+fn pci() -> Result<(), String> {
+    const DIR: &str = "/sys/bus/pci/devices/0000:00:01.0";
+    let read = |f: &str| {
+        std::fs::read_to_string(format!("{DIR}/{f}"))
+            .map(|s| s.trim().to_string())
+            .map_err(|e| format!("{DIR}/{f}: {e}"))
+    };
+    let (vendor, device) = (read("vendor")?, read("device")?);
+    if (vendor.as_str(), device.as_str()) != ("0x1234", "0x11e8") {
+        return Err(format!("00:01.0 is {vendor}:{device}"));
+    }
+    std::fs::write(format!("{DIR}/enable"), "1").map_err(|e| format!("{DIR}/enable: {e}"))?;
+    let bar = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(format!("{DIR}/resource0"))
+        .map_err(|e| format!("{DIR}/resource0: {e}"))?;
+    use std::os::fd::AsRawFd as _;
+    // SAFETY: a fresh shared mapping of the BAR's first page, which nothing else maps.
+    let regs = unsafe {
+        libc::mmap(
+            std::ptr::null_mut(),
+            4096,
+            libc::PROT_READ | libc::PROT_WRITE,
+            libc::MAP_SHARED,
+            bar.as_raw_fd(),
+            0,
+        )
+    };
+    if regs == libc::MAP_FAILED {
+        return Err(format!("mapping BAR 0: {}", io::Error::last_os_error()));
+    }
+    let regs = regs.cast::<u32>();
+    // SAFETY: volatile accesses of the mapping's first two registers, a device's.
+    let (identification, live) = unsafe {
+        let identification = regs.read_volatile();
+        regs.add(1).write_volatile(0x1234_5678);
+        (identification, regs.add(1).read_volatile())
+    };
+    let decoding = |on: bool| -> Result<u32, String> {
+        let config = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(format!("{DIR}/config"))
+            .map_err(|e| format!("{DIR}/config: {e}"))?;
+        let mut command = [0u8; 2];
+        pread_exact(config.as_raw_fd(), &mut command, 4)?;
+        let command = u16::from_le_bytes(command);
+        let command = if on { command | 2 } else { command & !2 };
+        pwrite_exact(config.as_raw_fd(), &command.to_le_bytes(), 4)?;
+        // SAFETY: a volatile read of the mapping's first register.
+        Ok(unsafe { regs.read_volatile() })
+    };
+    let (off, on) = (decoding(false), decoding(true));
+    // SAFETY: the mapping made above.
+    unsafe { libc::munmap(regs.cast(), 4096) };
+    if identification != 0x0100_00ed || live != !0x1234_5678 {
+        return Err(format!(
+            "BAR 0 said identification {identification:#x}, liveness {live:#x}"
+        ));
+    }
+    let (off, on) = (off?, on?);
+    if off != u32::MAX || on != 0x0100_00ed {
+        return Err(format!(
+            "BAR 0 read {off:#x} with memory space off, {on:#x} with it on again"
+        ));
+    }
+    // BAR 4, 64-bit, in the bus's 64-bit window past 4 GiB (D154): its first page reads
+    // back what was written to it.
+    let resources = read("resource")?;
+    let bar4 = resources
+        .lines()
+        .nth(4)
+        .and_then(|l| l.split_whitespace().next())
+        .and_then(|a| u64::from_str_radix(a.trim_start_matches("0x"), 16).ok())
+        .ok_or_else(|| format!("{DIR}/resource: no BAR 4 in {resources:?}"))?;
+    if bar4 < 1 << 32 {
+        return Err(format!("BAR 4 at {bar4:#x}, under 4 GiB"));
+    }
+    let bar = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(format!("{DIR}/resource4"))
+        .map_err(|e| format!("{DIR}/resource4: {e}"))?;
+    // SAFETY: a fresh shared mapping of BAR 4's first page, which nothing else maps.
+    let scratch = unsafe {
+        libc::mmap(
+            std::ptr::null_mut(),
+            4096,
+            libc::PROT_READ | libc::PROT_WRITE,
+            libc::MAP_SHARED,
+            bar.as_raw_fd(),
+            0,
+        )
+    };
+    if scratch == libc::MAP_FAILED {
+        return Err(format!("mapping BAR 4: {}", io::Error::last_os_error()));
+    }
+    let scratch = scratch.cast::<u32>();
+    // SAFETY: volatile accesses of the mapping's registers, in its first page.
+    let (first, last) = unsafe {
+        scratch.write_volatile(0x5ca7_c400);
+        scratch.add(1023).write_volatile(0x0dd_ba11);
+        (scratch.read_volatile(), scratch.add(1023).read_volatile())
+    };
+    // SAFETY: the mapping made above.
+    unsafe { libc::munmap(scratch.cast(), 4096) };
+    if (first, last) != (0x5ca7_c400, 0x0dd_ba11) {
+        return Err(format!("BAR 4 read back {first:#x} and {last:#x}"));
+    }
+    Ok(())
+}
+
+/// The test function's interrupts (D154): bound to vfio-pci in a no-IOMMU group (the
+/// kernel's `vfio.enable_unsafe_noiommu_mode=1`), it raises INTA# through its BAR's raise
+/// register, which VFIO signals on an eventfd, twice, the second after acknowledging and
+/// unmasking the first; then, INTx's eventfd taken away, one MSI; then MSI-X, raise bit k
+/// sending vector k. Its two vectors start with no eventfd, so the kernel leaves them
+/// masked: a raise of vector 0 is held, its pending bit set, and sent as VFIO is given
+/// its eventfd, which unmasks it; vector 1 is sent at once, and again held, masked as
+/// VFIO frees it, and sent as it is given its eventfd again.
+fn pci_irq() -> Result<(), String> {
+    const NAME: &str = "0000:00:01.0";
+    let (device, _) = vfio::take(NAME)?;
+    let bar = vfio::region(device, 0)?;
+    let raise = |value: u32| pwrite_exact(device, &value.to_le_bytes(), bar + 0x60);
+    let ack = |value: u32| pwrite_exact(device, &value.to_le_bytes(), bar + 0x64);
+    let status = || {
+        let mut b = [0u8; 4];
+        pread_exact(device, &mut b, bar + 0x24).map(|()| u32::from_le_bytes(b))
+    };
+    let intx = vfio::eventfd()?;
+    vfio::trigger(device, vfio::INTX, &[intx]).map_err(|e| format!("INTx on: {e}"))?;
+    for round in 1..=2u32 {
+        raise(round)?;
+        vfio::wait(intx).map_err(|e| format!("INTx {round}: {e}"))?;
+        if status()? != round {
+            return Err(format!("INTx {round}: status {:#x}", status()?));
+        }
+        ack(round)?;
+        vfio::unmask_intx(device).map_err(|e| format!("INTx unmasked: {e}"))?;
+    }
+    vfio::trigger(device, vfio::INTX, &[]).map_err(|e| format!("INTx off: {e}"))?;
+    let msi = vfio::eventfd()?;
+    vfio::trigger(device, vfio::MSI, &[msi]).map_err(|e| format!("MSI on: {e}"))?;
+    raise(4)?;
+    vfio::wait(msi).map_err(|e| format!("MSI: {e}"))?;
+    ack(4)?;
+    vfio::trigger(device, vfio::MSI, &[])?;
+    // MSI-X: its table and pending bits in BAR 2, the pending bits at 0x800.
+    let pba = vfio::region(device, 2)? + 0x800;
+    let pending = |vector: u32| {
+        let mut b = [0u8; 4];
+        pread_exact(device, &mut b, pba).map(|()| u32::from_le_bytes(b) & (1 << vector) != 0)
+    };
+    // Held while masked: its pending bit set as the host has the raise (VFIO's host
+    // takes it as an interrupt first, where the function is passed through again).
+    let held = |vector: u32| -> Result<(), String> {
+        raise(1 << vector)?;
+        let start = std::time::Instant::now();
+        while !pending(vector)? {
+            if start.elapsed() > std::time::Duration::from_secs(10) {
+                return Err(format!("MSI-X vector {vector}: masked, nothing pending in 10 s"));
+            }
+            std::thread::yield_now();
+        }
+        Ok(())
+    };
+    let vectors = [vfio::eventfd()?, vfio::eventfd()?];
+    vfio::msix(device, 0, &[-1, -1]).map_err(|e| format!("MSI-X on: {e}"))?;
+    held(0)?;
+    vfio::msix(device, 0, &vectors[..1])?;
+    vfio::wait(vectors[0]).map_err(|e| format!("MSI-X vector 0, held: {e}"))?;
+    if pending(0)? {
+        return Err("MSI-X vector 0: still pending, sent".into());
+    }
+    vfio::msix(device, 1, &vectors[1..])?;
+    raise(2)?;
+    vfio::wait(vectors[1]).map_err(|e| format!("MSI-X vector 1: {e}"))?;
+    vfio::msix(device, 1, &[-1])?;
+    held(1)?;
+    vfio::msix(device, 1, &vectors[1..])?;
+    vfio::wait(vectors[1]).map_err(|e| format!("MSI-X vector 1, held: {e}"))?;
+    ack(3)?;
+    vfio::trigger(device, vfio::MSIX, &[])?;
+    let _ = writeln!(
+        io::stdout(),
+        "SHARDS-TEST INFO interrupts: INTx 2, MSI 1, MSI-X 3, 2 of them held"
+    );
+    Ok(())
+}
+
+/// The test function's DMA (D154): taken through vfio-pci, its DMA engine (edu's: source,
+/// destination, length and command at 0x80 of BAR 0, its buffer at 0x40000 of its DMA
+/// addresses) moves a page of a pattern from memory into its buffer, and back to another
+/// page. Where the function's group has an IOMMU, the pages are mapped for it at I/O
+/// addresses of the test's own (VFIO_IOMMU_MAP_DMA), and a transfer to one unmapped moves
+/// nothing; where it has none, the function is given the pages' guest-physical addresses
+/// (/proc/self/pagemap).
+fn pci_dma() -> Result<(), String> {
+    const NAME: &str = "0000:00:01.0";
+    const PAGE: usize = 4096;
+    const BUFFER: u64 = 0x40000;
+    const RUN: u64 = 1;
+    const TO_MEMORY: u64 = 2;
+    let (device, iommu) = vfio::take(NAME)?;
+    let bar = vfio::region(device, 0)?;
+    let page = || -> Result<*mut u8, String> {
+        // SAFETY: a fresh anonymous mapping of a page, locked in memory: its address is the
+        // function's for as long as the test runs.
+        let p = unsafe {
+            libc::mmap(
+                std::ptr::null_mut(),
+                PAGE,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_PRIVATE | libc::MAP_ANONYMOUS | libc::MAP_LOCKED | libc::MAP_POPULATE,
+                -1,
+                0,
+            )
+        };
+        if p == libc::MAP_FAILED {
+            return Err(format!("mmap: {}", io::Error::last_os_error()));
+        }
+        Ok(p.cast())
+    };
+    let (from, to) = (page()?, page()?);
+    // Where the function reaches each page: an I/O address mapped for it, or its own.
+    let addresses = match iommu {
+        Some(container) => {
+            vfio::map_dma(container, from as u64, 0x10_0000, PAGE as u64)?;
+            vfio::map_dma(container, to as u64, 0x20_0000, PAGE as u64)?;
+            (0x10_0000, 0x20_0000)
+        }
+        None => (physical(from)?, physical(to)?),
+    };
+    for i in 0..PAGE {
+        // SAFETY: within the page mapped above.
+        unsafe { from.add(i).write_volatile((i * 7 + 3) as u8) };
+    }
+    let transfer = |source: u64, destination: u64, command: u64| -> Result<(), String> {
+        for (offset, value) in [
+            (0x80, source),
+            (0x88, destination),
+            (0x90, PAGE as u64),
+            (0x98, command),
+        ] {
+            pwrite_exact(device, &value.to_le_bytes(), bar + offset)?;
+        }
+        let start = std::time::Instant::now();
+        loop {
+            let mut c = [0u8; 8];
+            pread_exact(device, &mut c, bar + 0x98)?;
+            if u64::from_le_bytes(c) & RUN == 0 {
+                return Ok(());
+            }
+            if start.elapsed() > std::time::Duration::from_secs(10) {
+                return Err("a DMA still running after 10 s".into());
+            }
+            std::thread::yield_now();
+        }
+    };
+    transfer(addresses.0, BUFFER, RUN)?;
+    transfer(BUFFER, addresses.1, RUN | TO_MEMORY)?;
+    for i in 0..PAGE {
+        // SAFETY: within the page mapped above.
+        let b = unsafe { to.add(i).read_volatile() };
+        if b != (i * 7 + 3) as u8 {
+            return Err(format!("byte {i} came back {b:#x}"));
+        }
+    }
+    let through = if iommu.is_some() {
+        // To an I/O address nothing is mapped at: nothing moves, and the transfer ends.
+        transfer(BUFFER, 0x30_0000, RUN | TO_MEMORY)?;
+        "its IOMMU"
+    } else {
+        "guest-physical addresses"
+    };
+    let _ = writeln!(
+        io::stdout(),
+        "SHARDS-TEST INFO dma: {PAGE} bytes into the function and back, through {through}"
+    );
+    Ok(())
+}
+
+/// The guest-physical address of the page at `virt`, resident and locked: its frame in
+/// /proc/self/pagemap (Documentation/admin-guide/mm/pagemap.rst: bits 0-54, bit 63
+/// present).
+fn physical(virt: *mut u8) -> Result<u64, String> {
+    let fd = open("/proc/self/pagemap", libc::O_RDONLY)?;
+    let mut entry = [0u8; 8];
+    let read = pread_exact(fd, &mut entry, (virt as u64 / 4096) * 8);
+    // SAFETY: closing our own descriptor.
+    unsafe { libc::close(fd) };
+    read?;
+    let entry = u64::from_le_bytes(entry);
+    if entry & (1 << 63) == 0 || entry & ((1 << 55) - 1) == 0 {
+        return Err(format!("page {virt:?}: no frame in pagemap ({entry:#x})"));
+    }
+    Ok((entry & ((1 << 55) - 1)) * 4096)
+}
+
+/// The VFIO a test guest makes of its PCI function (include/uapi/linux/vfio.h).
+mod vfio {
+    use std::io;
+
+    const fn io(n: u64) -> u64 {
+        ((b';' as u64) << 8) | (100 + n)
+    }
+    const GROUP_SET_CONTAINER: u64 = io(4);
+    const SET_IOMMU: u64 = io(2);
+    const GROUP_GET_DEVICE_FD: u64 = io(6);
+    const DEVICE_GET_REGION_INFO: u64 = io(8);
+    const DEVICE_SET_IRQS: u64 = io(10);
+    const NOIOMMU_IOMMU: u64 = 8;
+    const TYPE1V2_IOMMU: u64 = 3;
+    const IOMMU_MAP_DMA: u64 = io(13);
+    pub const INTX: u32 = 0;
+    pub const MSI: u32 = 1;
+    pub const MSIX: u32 = 2;
+    const DATA_NONE: u32 = 1 << 0;
+    const DATA_EVENTFD: u32 = 1 << 2;
+    const ACTION_UNMASK: u32 = 1 << 4;
+    const ACTION_TRIGGER: u32 = 1 << 5;
+
+    fn ioctl(fd: libc::c_int, request: u64, arg: usize) -> Result<libc::c_int, String> {
+        // SAFETY: each caller passes what its request reads and writes.
+        let r = unsafe { libc::ioctl(fd, request as _, arg) };
+        if r < 0 {
+            return Err(format!("ioctl {request:#x}: {}", io::Error::last_os_error()));
+        }
+        Ok(r)
+    }
+
+    /// The PCI function `name`, bound to vfio-pci, and the container of its group where
+    /// the group has an IOMMU (type 1), none where it has not (no-IOMMU).
+    pub fn take(name: &str) -> Result<(libc::c_int, Option<libc::c_int>), String> {
+        let dir = format!("/sys/bus/pci/devices/{name}");
+        std::fs::write(format!("{dir}/driver_override"), "vfio-pci")
+            .map_err(|e| format!("{dir}/driver_override: {e}"))?;
+        std::fs::write("/sys/bus/pci/drivers_probe", name).map_err(|e| format!("binding {name}: {e}"))?;
+        let group = std::fs::read_link(format!("{dir}/iommu_group"))
+            .map_err(|e| format!("{dir}/iommu_group: {e}"))?;
+        let group = group
+            .file_name()
+            .and_then(|n| n.to_str())
+            .ok_or("an IOMMU group without a number")?;
+        let plain = format!("/dev/vfio/{group}");
+        let (path, iommu) = if std::path::Path::new(&plain).exists() {
+            (plain, TYPE1V2_IOMMU)
+        } else {
+            (format!("/dev/vfio/noiommu-{group}"), NOIOMMU_IOMMU)
+        };
+        let container = super::open("/dev/vfio/vfio", libc::O_RDWR)?;
+        let group = super::open(&path, libc::O_RDWR)?;
+        ioctl(group, GROUP_SET_CONTAINER, (&raw const container) as usize)?;
+        ioctl(container, SET_IOMMU, iommu as usize)?;
+        let cname = std::ffi::CString::new(name).map_err(|e| e.to_string())?;
+        let device = ioctl(group, GROUP_GET_DEVICE_FD, cname.as_ptr() as usize)?;
+        Ok((device, (iommu == TYPE1V2_IOMMU).then_some(container)))
+    }
+
+    /// Maps `len` bytes of this process at `vaddr` at I/O address `iova` of the
+    /// container's IOMMU, for the function to read and write (struct
+    /// vfio_iommu_type1_dma_map).
+    pub fn map_dma(container: libc::c_int, vaddr: u64, iova: u64, len: u64) -> Result<(), String> {
+        let mut map = [0u8; 32];
+        map[0..4].copy_from_slice(&32u32.to_le_bytes());
+        map[4..8].copy_from_slice(&3u32.to_le_bytes());
+        map[8..16].copy_from_slice(&vaddr.to_le_bytes());
+        map[16..24].copy_from_slice(&iova.to_le_bytes());
+        map[24..32].copy_from_slice(&len.to_le_bytes());
+        ioctl(container, IOMMU_MAP_DMA, map.as_ptr() as usize).map(drop)
+    }
+
+    /// Where region `index` (a BAR) is in the device's descriptor.
+    pub fn region(device: libc::c_int, index: u32) -> Result<u64, String> {
+        // struct vfio_region_info: argsz, flags, index, cap_offset, size, offset.
+        let mut info = [0u32; 8];
+        info[0] = 32;
+        info[2] = index;
+        ioctl(device, DEVICE_GET_REGION_INFO, info.as_mut_ptr() as usize)?;
+        Ok(u64::from(info[6]) | (u64::from(info[7]) << 32))
+    }
+
+    /// struct vfio_irq_set: argsz, flags, index, start, count, then the data.
+    fn set_irqs(
+        device: libc::c_int,
+        flags: u32,
+        index: u32,
+        start: u32,
+        fds: &[libc::c_int],
+    ) -> Result<(), String> {
+        let mut set: Vec<u32> = vec![(20 + 4 * fds.len()) as u32, flags, index, start, fds.len() as u32];
+        set.extend(fds.iter().map(|&fd| fd as u32));
+        match ioctl(device, DEVICE_SET_IRQS, set.as_ptr() as usize)? {
+            0 => Ok(()),
+            could => Err(format!("{could} of {} interrupts", fds.len())),
+        }
+    }
+
+    /// Signals `fds` for interrupts `0..` of `index`; none, its interrupts off.
+    pub fn trigger(device: libc::c_int, index: u32, fds: &[libc::c_int]) -> Result<(), String> {
+        match fds {
+            [] => set_irqs(device, ACTION_TRIGGER | DATA_NONE, index, 0, &[]),
+            fds => set_irqs(device, ACTION_TRIGGER | DATA_EVENTFD, index, 0, fds),
+        }
+    }
+
+    /// Signals MSI-X vectors `start..` on `fds`, -1 for a vector signalled on nothing,
+    /// which the kernel leaves masked.
+    pub fn msix(device: libc::c_int, start: u32, fds: &[libc::c_int]) -> Result<(), String> {
+        set_irqs(device, ACTION_TRIGGER | DATA_EVENTFD, MSIX, start, fds)
+    }
+
+    /// Unmasks INTx, which VFIO masked as it signalled it.
+    pub fn unmask_intx(device: libc::c_int) -> Result<(), String> {
+        // One interrupt, no data: count 1.
+        let set: [u32; 5] = [20, ACTION_UNMASK | DATA_NONE, INTX, 0, 1];
+        ioctl(device, DEVICE_SET_IRQS, set.as_ptr() as usize).map(drop)
+    }
+
+    pub fn eventfd() -> Result<libc::c_int, String> {
+        // SAFETY: eventfd(2) with flags.
+        let fd = unsafe { libc::eventfd(0, libc::EFD_CLOEXEC) };
+        if fd < 0 {
+            return Err(format!("eventfd: {}", io::Error::last_os_error()));
+        }
+        Ok(fd)
+    }
+
+    /// Waits up to 10 s for `fd` to be signalled, and takes its count.
+    pub fn wait(fd: libc::c_int) -> Result<u64, String> {
+        let mut p = libc::pollfd {
+            fd,
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        // SAFETY: one pollfd of ours.
+        match unsafe { libc::poll(&raw mut p, 1, 10_000) } {
+            1 => {}
+            0 => return Err("no interrupt in 10 s".into()),
+            _ => return Err(format!("poll: {}", io::Error::last_os_error())),
+        }
+        let mut count = [0u8; 8];
+        // SAFETY: eight bytes of ours.
+        if unsafe { libc::read(fd, count.as_mut_ptr().cast(), 8) } != 8 {
+            return Err(format!("reading the eventfd: {}", io::Error::last_os_error()));
+        }
+        Ok(u64::from_ne_bytes(count))
+    }
+}
+
+/// A guest that is itself a host (D132): it boots a VM of its own with shards' VM process
+/// for this architecture's Linux, `/vm` in its initramfs, the kernel `/l2` and itself as
+/// that VM's init, whose test is `shards_l2`, and `shards_l2_args`' arguments (comma
+/// separated) besides, having given vfio-pci the PCI function `shards_l1_vfio` names, if
+/// any. Each line of the inner VM's console is printed after `L2: `, and
+/// the test passes where the inner VM ended well and its guest passed.
+fn host() -> Result<(), String> {
+    let test = std::env::var("shards_l2").map_err(|_| "shards_l2 not set".to_string())?;
+    let args = std::env::var("shards_l2_args").unwrap_or_default();
+    if !Path::new("/dev/kvm").exists() {
+        return Err("no /dev/kvm: this guest's kernel is no KVM host".into());
+    }
+    // A PCI function of this guest's own, given to vfio-pci (`shards_l1_vfio`), for the
+    // inner VM to be given in turn (D154).
+    if let Ok(name) = std::env::var("shards_l1_vfio") {
+        let dir = format!("/sys/bus/pci/devices/{name}");
+        std::fs::write(format!("{dir}/driver_override"), "vfio-pci")
+            .map_err(|e| format!("{dir}/driver_override: {e}"))?;
+        std::fs::write("/sys/bus/pci/drivers_probe", &name)
+            .map_err(|e| format!("binding {name} to vfio-pci: {e}"))?;
+    }
+    let mut vm = std::process::Command::new("/vm");
+    // The inner VM process's log, at `shards_l1_log`'s level where one is asked.
+    if let Ok(level) = std::env::var("shards_l1_log") {
+        vm.env("SHARDS_LOG", level);
+    }
+    let out = vm
+        .args(["run", "--kernel", "/l2", "--init", "/init", "--cpus", "2"])
+        .args(["--memory", "256", "--cmdline"])
+        // A function the inner guest is given it takes through VFIO: in a no-IOMMU group,
+        // or behind the inner machine's IOMMU, whose GICv2m frame isolates no MSIs.
+        .arg(format!(
+            "console=ttyS0 panic=-1 vfio.enable_unsafe_noiommu_mode=1 vfio_iommu_type1.allow_unsafe_interrupts=1 shards_test={test}"
+        ))
+        .args(args.split(',').filter(|a| !a.is_empty()))
+        .output()
+        .map_err(|e| format!("/vm: {e}"))?;
+    let mut stdout = io::stdout().lock();
+    for (stream, bytes) in [("L2", &out.stdout), ("L2 stderr", &out.stderr)] {
+        for line in String::from_utf8_lossy(bytes).lines() {
+            let _ = writeln!(stdout, "{stream}: {}", line.trim_end());
+        }
+    }
+    if !out.status.success() {
+        return Err(format!("the inner VM ended with {}", out.status));
+    }
+    let passed = String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .any(|l| l.trim_end() == "SHARDS-TEST PASS");
+    if !passed {
+        return Err("the inner guest did not pass".into());
+    }
     Ok(())
 }
 

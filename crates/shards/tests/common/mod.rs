@@ -212,16 +212,21 @@ pub fn carries_gpu_vm() -> bool {
 }
 
 /// The pinned kernel's `kvm` variant (resources/kernel/kvm.config), for a guest that is
-/// itself a KVM host (`--nested`, D132): arm64 alone so far, where a guest can have EL2.
-/// Of the pinned kernels' own release.
+/// itself a KVM host (`--nested`, D132), and for one that takes a PCI function it was given
+/// through VFIO (D154): arm64's so far. Of the pinned kernels' own release, or the one
+/// SHARDS_TEST_NESTED_KERNEL names, as SHARDS_TEST_KERNEL names another kernel for every
+/// other guest.
 pub fn nested_kernel() -> Option<&'static Path> {
     static K: OnceLock<Option<PathBuf>> = OnceLock::new();
     K.get_or_init(|| {
+        if let Some(path) = std::env::var_os("SHARDS_TEST_NESTED_KERNEL") {
+            return Some(PathBuf::from(path));
+        }
         (ARCH == "aarch64").then(|| {
             fetch(&Artifact {
-                name: "Image-6.18.48-aarch64-kvm-b3f3b948641f",
-                url: "https://github.com/hyper-light/shards/releases/download/kernel-6.18.48-b3f3b948641f/Image-6.18.48-aarch64-kvm",
-                sha256: "89a48e06e78bdd098ef384ae6a1db16842f430ec83908238747e34aa025f5d9e",
+                name: "Image-6.18.48-aarch64-kvm-5bcf70b135d5",
+                url: "https://github.com/hyper-light/shards/releases/download/kernel-6.18.48-5bcf70b135d5/Image-6.18.48-aarch64-kvm",
+                sha256: "99642875933b506a4b3f753d719b111a233f4e0aa258c4fcf1c060262b779ef9",
             })
         })
     })
@@ -230,7 +235,14 @@ pub fn nested_kernel() -> Option<&'static Path> {
 
 /// Builds guest package `name` (static musl, `guest` profile) and returns its binary.
 fn guest_binary(name: &str) -> PathBuf {
-    guest_binary_in(name, "target/guest", &[])
+    guest_binary_in(name, name, "target/guest", &[])
+}
+
+/// shards' VM process for this architecture's Linux (static musl), for a guest that is
+/// itself a KVM host to run VMs of its own with (D132).
+pub fn guest_vm_process() -> &'static Path {
+    static V: OnceLock<PathBuf> = OnceLock::new();
+    V.get_or_init(|| guest_binary_in("shards-vm-process", "shards-vm", "target/guest", &[]))
 }
 
 /// shards-init built as if for another shards: its contract's identity is not this build's
@@ -240,14 +252,15 @@ pub fn foreign_init() -> &'static Path {
     F.get_or_init(|| {
         guest_binary_in(
             "shards-init",
+            "shards-init",
             "target/guest-foreign",
             &[("SHARDS_ABI_IDENTITY", "1")],
         )
     })
 }
 
-/// Builds guest package `name` into `target_dir` with `env` added.
-fn guest_binary_in(name: &str, target_dir: &str, env: &[(&str, &str)]) -> PathBuf {
+/// Builds guest package `package`'s binary `name` into `target_dir` with `env` added.
+fn guest_binary_in(package: &str, name: &str, target_dir: &str, env: &[(&str, &str)]) -> PathBuf {
     let target_dir = workspace().join(target_dir);
     let guest_target = format!("{ARCH}-unknown-linux-musl");
     // Go through the rustup proxy on PATH (not $CARGO, the bare cargo binary) and drop
@@ -297,7 +310,7 @@ fn guest_binary_in(name: &str, target_dir: &str, env: &[(&str, &str)]) -> PathBu
         .args([
             "build",
             "-p",
-            name,
+            package,
             "--profile",
             "guest",
             "--target",

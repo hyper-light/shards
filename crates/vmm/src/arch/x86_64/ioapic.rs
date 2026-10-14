@@ -43,6 +43,19 @@ pub struct Message {
 }
 
 impl Message {
+    /// The interrupt an MSI of `address` and `data` asks for (Intel SDM Vol. 3A §11.11:
+    /// the address's destination ID, bits 19:12, and destination mode, bit 2; the data's
+    /// vector, bits 7:0, delivery mode, 10:8, and trigger mode, 15).
+    pub fn of_msi(address: u64, data: u32) -> Message {
+        Message {
+            vector: data as u8,
+            delivery: ((data >> 8) & 7) as u8,
+            logical: address & (1 << 2) != 0,
+            level: data & (1 << 15) != 0,
+            destination: (address >> 12) as u8,
+        }
+    }
+
     fn of(entry: u64) -> Message {
         Message {
             vector: entry as u8,
@@ -66,6 +79,13 @@ impl Sent {
         Sent {
             messages: [None; PINS],
         }
+    }
+
+    /// One message, as an MSI sends it.
+    pub fn one(message: Message) -> Sent {
+        let mut sent = Sent::none();
+        sent.push(0, message);
+        sent
     }
 
     fn push(&mut self, pin: usize, message: Message) {

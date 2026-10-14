@@ -11,7 +11,10 @@
 //! writes (D134), its first content (`from=`), or layers merged. What a step writes goes to
 //! a `.part` file there first, and is named once kept. A key's records are looked through,
 //! made and written under the lock of `cachemounts/v2/keys/<SHA-256 of the key>`, as
-//! BuildKit looks through and makes them under its `cacheRefsLocker` of the key.
+//! BuildKit looks through and makes them under its `cacheRefsLocker` of the key. What is no
+//! step and looks whether one holds a record (a listing, a collection's sweep, a removal)
+//! looks under that lock too, so that its own moment's hold on the record passes for no
+//! step's, to a step looking for one or to another look ([`Store::looked_at`]).
 //!
 //! A record keeps few layers, and few bytes past what it shows ([`plan`]): what its steps'
 //! changes hide below them goes as layers are merged, which a step that keeps changes does
@@ -242,6 +245,27 @@ impl Store {
         let lock = open_lock(&self.mounts_dir().join("keys").join(hash))?;
         lock.lock()?;
         Ok(lock)
+    }
+
+    /// Record `id` as it is with its key's lock held, that lock, and the record's lock
+    /// file, open and not yet taken: how what is no step (a listing, a collection's sweep,
+    /// a removal) looks whether a step holds a record. A step looks through a key's
+    /// records and takes one under the key's lock ([`Store::take_mount`]), and lets go of
+    /// none under it: so the look's own hold on the record, a moment's, passes for a step
+    /// neither to a step looking for one nor to another look.
+    fn looked_at(&self, id: &str) -> Result<Option<(MountRecord, File, File)>, Error> {
+        let Some(record) = self.read_mount(id)? else {
+            return Ok(None);
+        };
+        let keys = self.key_lock(&record.key)?;
+        // As it is now: it is written under that lock alone.
+        let Some(record) = self.read_mount(id)? else {
+            return Ok(None);
+        };
+        let Some(lock) = listed_lock(&self.mount_dir(id)?.join("lock"))? else {
+            return Ok(None);
+        };
+        Ok(Some((record, keys, lock)))
     }
 
     fn read_mount(&self, id: &str) -> Result<Option<MountRecord>, Error> {
@@ -649,18 +673,15 @@ impl Store {
         })
     }
 
-    /// Every record, in use or not.
+    /// Every record, in use or not: in use where a step holds it ([`Store::looked_at`]).
     pub fn mount_entries(&self) -> Result<Vec<MountEntry>, Error> {
         let mut out = Vec::new();
         for id in self.mount_ids()? {
-            let Some(record) = self.read_mount(&id)? else {
-                continue;
-            };
-            let Some(lock) = listed_lock(&self.mount_dir(&id)?.join("lock"))? else {
+            let Some((record, keys, lock)) = self.looked_at(&id)? else {
                 continue;
             };
             let in_use = !try_lock(&lock, false)?;
-            drop(lock);
+            drop((lock, keys));
             out.push(MountEntry {
                 description: record.description,
                 size: record.layers.iter().fold(0u64, |n, l| n.saturating_add(l.size)),
@@ -677,7 +698,7 @@ impl Store {
     /// Removes record `id` unless a step holds it: whether it went, its layers with it.
     pub fn remove_mount(&self, id: &str) -> Result<bool, Error> {
         let dir = self.mount_dir(id)?;
-        let Some(lock) = listed_lock(&dir.join("lock"))? else {
+        let Some((_, keys, lock)) = self.looked_at(id)? else {
             return Ok(false);
         };
         if !try_lock(&lock, false)? {
@@ -690,7 +711,7 @@ impl Store {
             Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(false),
             Err(e) => return Err(e.into()),
         }
-        drop(lock);
+        drop((lock, keys));
         // Then its directory, once its lock is let go of: Windows moves no directory with a
         // file open in it.
         self.take_away(id)?;
@@ -751,15 +772,12 @@ impl Store {
     /// The files in record `id`'s `layers/` that no layer of it is, removed unless a step
     /// holds it.
     fn sweep_layers(&self, id: &str) -> Result<(), Error> {
-        let Some(lock) = listed_lock(&self.mount_dir(id)?.join("lock"))? else {
+        let Some((record, _keys, lock)) = self.looked_at(id)? else {
             return Ok(());
         };
         if !try_lock(&lock, false)? {
             return Ok(());
         }
-        let Some(record) = self.read_mount(id)? else {
-            return Ok(());
-        };
         let entries = match fs::read_dir(self.layers_dir(id)?) {
             Ok(entries) => entries,
             Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
@@ -1007,6 +1025,39 @@ mod tests {
         drop(first);
         let joined = take(Sharing::Shared, "z3");
         assert_eq!(joined.id, "p");
+    }
+
+    /// What looks whether a step holds a record looks under the record's key's lock, as a
+    /// step takes a key's records (a listing, as a collection's sweep is looking; a sweep,
+    /// as a step is taking one): a listing never counts a look's moment as a step's hold,
+    /// nor a step a sweep's, which would make it a new record.
+    #[test]
+    fn a_look_at_a_record_passes_for_no_step() {
+        let (_d, s) = store();
+        drop(s.take_mount("/k", Sharing::Private, "c", "a").unwrap());
+        // A look as a sweep makes one: the key's lock, then the record's.
+        let (_, keys, lock) = s.looked_at("a").unwrap().unwrap();
+        assert!(try_lock(&lock, false).unwrap());
+        std::thread::scope(|scope| {
+            let listing = scope.spawn(|| s.mount_entries().unwrap());
+            std::thread::sleep(Duration::from_millis(300));
+            assert!(!listing.is_finished(), "listed during the look");
+            drop((lock, keys));
+            let entries = listing.join().unwrap();
+            assert_eq!(entries.len(), 1);
+            assert!(!entries[0].in_use, "the look counted as a step's");
+        });
+        // A sweep waits for a step's taking, which holds the key's lock.
+        let taking = s.key_lock("/k").unwrap();
+        std::thread::scope(|scope| {
+            let sweep = scope.spawn(|| s.sweep_mounts().unwrap());
+            std::thread::sleep(Duration::from_millis(300));
+            assert!(!sweep.is_finished(), "swept during a taking");
+            drop(taking);
+            sweep.join().unwrap();
+        });
+        let again = s.take_mount("/k", Sharing::Private, "c", "b").unwrap();
+        assert_eq!((again.id.as_str(), again.fresh), ("a", false));
     }
 
     /// A locked taker waits while every record is held, and takes the first let go.

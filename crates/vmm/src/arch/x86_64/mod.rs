@@ -46,6 +46,11 @@ pub mod layout {
     /// GSIs 5-22 are free IOAPIC pins: at most 18 virtio devices.
     pub const VIRTIO_MMIO_MAX: u64 = 18;
     /// The IOAPIC (KVM's in-kernel one, the VMM's own on WHP) and the LAPIC.
+    /// A PCI bus's 32-bit memory window, where its functions' BARs are placed, and its
+    /// ECAM window above it, bus 0 alone (D153), in the MMIO gap.
+    pub const PCI_MEM32: u64 = 0xc100_0000;
+    pub const PCI_MEM32_SIZE: u64 = 0x1f00_0000;
+    pub const PCI_ECAM: u64 = PCI_MEM32 + PCI_MEM32_SIZE;
     pub const IOAPIC: u64 = 0xfec0_0000;
     pub const LAPIC: u64 = 0xfee0_0000;
     /// Pages KVM reserves on Intel for the real-mode identity map and TSS.
@@ -59,6 +64,10 @@ pub mod layout {
     /// The Generic Event Device's, which tells the guest of a new VM generation ID: the
     /// IOAPIC's last pin.
     pub const GSI_GED: u32 = 23;
+    /// A PCI bus's INTx#, every device's on this one shared line, as PCI's INTx# may be
+    /// (D154): the last of the virtio devices' pins, so that a machine with a PCI bus has
+    /// one virtio device fewer.
+    pub const GSI_PCI: u32 = 22;
     /// The i8042 data and command ports (only the reset command is emulated).
     pub const I8042: u16 = 0x60;
     /// ACPI SLEEP_CONTROL_REG and SLEEP_STATUS_REG (HW-reduced ACPI), a free port pair.

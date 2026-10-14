@@ -18,7 +18,7 @@ use shards_vmm::vm::{
 use crate::spec::Options;
 use crate::terminal::RawTerminal;
 
-const RUN_USAGE: &str = "usage: shards run --kernel PATH [--initrd PATH | --init PATH] [--cmdline STR] [--cpus N] [--memory MIB] [--memory-max MIB] [--disk PATH[:ro]]... [--pmem PATH]... [--vsock PATH] [--nested] [--gpu] [--reporting] [--no-console] [--snapshot-dir DIR [--snapshot-then stop|resume]]
+const RUN_USAGE: &str = "usage: shards run --kernel PATH [--initrd PATH | --init PATH] [--cmdline STR] [--cpus N] [--memory MIB] [--memory-max MIB] [--disk PATH[:ro]]... [--pmem PATH]... [--vsock PATH] [--nested] [--gpu] [--reporting] [--pci-test] [--vfio NAME]... [--no-console] [--snapshot-dir DIR [--snapshot-then stop|resume]]
        shards run --kernel PATH --init SHARDS-INIT --rootfs IMAGE [OPTIONS] [WORKLOAD OPTIONS] -- COMMAND [ARG...]
        shards run --kernel PATH --init SHARDS-INIT --rootfs IMAGE --snapshot-dir DIR [OPTIONS]
   --pmem: a read-only virtio-pmem device backed by PATH: /dev/pmem0, pmem1, ... in order.
@@ -34,8 +34,10 @@ const RUN_USAGE: &str = "usage: shards run --kernel PATH [--initrd PATH | --init
            `CONNECT <port>`; the guest's connections to host port P reach PATH_P.
   --snapshot-dir: where to write a snapshot when the guest asks for one (then stop, by default)
   --nested: virtualization for the guest itself: on arm64 its vCPUs have EL2, entered
-            there, so that its kernel may be a hypervisor (KVM); an M3 or later on
-            macOS 15 or later. Not with --snapshot-dir: its EL2 state is not saved.
+            there, so that its kernel may be a hypervisor (KVM): on a Mac an M3 or
+            later on macOS 15 or later, on Linux a CPU with FEAT_NV2 and a kernel booted
+            with kvm-arm.mode=nested. Not with --snapshot-dir: its EL2 state is not
+            saved.
   --memory-max: the most memory the guest may have: --memory at boot, and up to this
             much in all as it asks for more through shards' control page, plugged by a
             virtio-mem device. Whole 2 MiB blocks. A snapshot keeps none plugged.
@@ -43,6 +45,13 @@ const RUN_USAGE: &str = "usage: shards run --kernel PATH [--initrd PATH | --init
          /dev/dri/renderD128, where its kernel has DRM's virtio-gpu driver. With
          --snapshot-dir, a snapshot is refused once the guest has made a context or a
          resource of the GPU's: those are its host driver's, which no snapshot holds.
+  --pci-test: a PCI bus with a test function at 00:01.0, the identification and liveness
+              registers of QEMU's edu device in its BAR 0, for testing the bus. Not with
+              --snapshot-dir.
+  --vfio: the host's PCI function NAME (as 0000:01:00.0), passed through to the guest
+          on its PCI bus: on Linux, bound to vfio-pci, as every other function in its
+          IOMMU group must be. Not with --snapshot-dir, --memory-max or --reporting:
+          its DMA reaches guest RAM through mappings the host holds pinned.
   Console escape: Ctrl-A x stops the VM.";
 
 const RESTORE_USAGE: &str = "usage: shards restore DIR [--hold] [--vsock PATH] [--no-console] [--gpu] [--backing PATH[:ro]]... [--snapshot-dir DIR [--snapshot-then stop|resume]]
@@ -270,6 +279,8 @@ fn parse_run(args: impl Iterator<Item = OsString>) -> Result<Run, String> {
             "--pmem" => cfg.pmem.push(PathBuf::from(value("--pmem")?)),
             "--nested" => cfg.nested = true,
             "--gpu" => cfg.gpu = true,
+            "--pci-test" => cfg.pci_test = true,
+            "--vfio" => cfg.vfio.push(vm::Vfio::of(&text(value("--vfio")?)?)?),
             "--reporting" => cfg.reporting = true,
             "--rootfs" => rootfs = Some(PathBuf::from(value("--rootfs")?)),
             "--warm" => {
@@ -288,6 +299,19 @@ fn parse_run(args: impl Iterator<Item = OsString>) -> Result<Run, String> {
         }
     }
     common.check_workload()?;
+    if cfg.pci_test && common.snapshot_dir.is_some() {
+        return Err("--pci-test with --snapshot-dir: a machine with a PCI bus is not snapshotted, its functions' state their devices' own".into());
+    }
+    if !cfg.vfio.is_empty() {
+        if common.snapshot_dir.is_some() {
+            return Err(
+                "--vfio with --snapshot-dir: a host's device is not snapshotted, its state its own".into(),
+            );
+        }
+        if memory_max.is_some() || cfg.reporting {
+            return Err("--vfio with --memory-max or --reporting: the device's DMA reaches guest RAM through mappings the host holds pinned, which neither may take away".into());
+        }
+    }
     if cfg.nested && common.snapshot_dir.is_some() {
         return Err("--nested with --snapshot-dir: a VM with virtualization of its own is not snapshotted, its EL2 state not saved".into());
     }
@@ -1241,6 +1265,11 @@ fn start(cfg: &Config) -> Result<(Handle, Running), String> {
     paths.read.extend(cfg.initrd.iter().cloned());
     paths.read.extend(cfg.init.iter().cloned());
     paths.read.extend(cfg.pmem.iter().cloned());
+    // A function passed through: VFIO's container, and its group (D154).
+    if !cfg.vfio.is_empty() {
+        paths.devices.push(PathBuf::from("/dev/vfio/vfio"));
+        paths.devices.extend(cfg.vfio.iter().map(|v| v.group.clone()));
+    }
     for disk in &cfg.disks {
         let list = if disk.read_only {
             &mut paths.read
@@ -1713,6 +1742,9 @@ fn granted(paths: &crate::confine::Paths) -> Result<(), String> {
     }
     if !paths.sockets_under.is_empty() {
         return Err("a directory of sockets cannot be granted to a confined VM process".into());
+    }
+    if !paths.devices.is_empty() {
+        return Err("a host's device is passed through by VFIO, Linux's (D154)".into());
     }
     let wanted: Vec<crate::grant::Wanted> = paths
         .read

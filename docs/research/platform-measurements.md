@@ -7983,3 +7983,105 @@ revision before comparing a changed API/implementation.
   Room for a pass beside growth, which ended the kills in growing runs on the pinned
   kernel, is not kept: with 0006 no allocation fails for a pass, and without it no pass
   comes.
+
+### M225. Huge pages advised or not, where the host's THP is always on (M157)
+
+- **Question.** shards advises huge pages for guest RAM (MADV_HUGEPAGE,
+  platform/unix.rs). Under `defrag=madvise` an advised region's fault may stall in direct
+  compaction, which an unadvised one never does. Is that the tail `to_ready` showed beside
+  Firecracker?
+- **Method.** CI's x86_64 KVM runner, AMD EPYC 7763, Linux 6.17.0-1022-azure, revision
+  07385b7, 2026-10-13, load 1.1 to 2.7; THP `enabled=[always]`, `defrag=[madvise]`, 2 MiB
+  pages. `cargo bench -p shards --bench firecracker -- --thp-ab all,unadvised --runs 30`:
+  the comparison's idle guest (1 vCPU, 128 MiB) booted to ready, each boot followed by a
+  1 GiB guest writing 512 MiB and reading it at random (`walk`), the arms interleaved and
+  their order alternating; `unadvised` is the VM process with SHARDS_THP_ADVICE=never. The
+  same job's comparison with Firecracker v1.17.0, n=30, beside it.
+- **Results** (p50 / p90 / p99 / max).
+  - Boot `to_ready`: advised 129.4 / 195.9 / 202.2 / 202.2 ms, unadvised 128.6 / 199.0 /
+    202.4 / 202.4 ms; huge anonymous memory 56.0 MiB at the median in both, 58.0 at most.
+  - Work: writing 327.7 ms against 328.2 ms at the median, reading 202.7 against 202.6 ms.
+  - The comparison: shards 123.0 / 129.7 / 130.2 / 130.2 ms, Firecracker 124.0 / 128.9 /
+    206.0 / 206.0 ms, tied at the median (−483 µs, interval −1,948 to +1,516); in the
+    guest 77.9 against 80.3 ms at the median, outside it 44.6 against 44.4 ms, Firecracker's
+    outside 117.7 ms at p99.
+- **Why.** With THP always on, every anonymous region is given huge pages, advised or not,
+  and both arms were: the advice changed nothing here, its tail included. The tail both
+  arms of the A/B show, 67 to 70 ms past their median at p90, the comparison's boots do
+  not, which follow no 1 GiB guest: it is not the advice's, and its cause is not yet
+  known.
+- **Consequence.** The advice stays: on a host whose THP is `madvise`, it is what gives
+  guest RAM huge pages at all (M157). SHARDS_THP_ADVICE=never stays the A/B's knob.
+
+### M226. Where a cold boot's time goes beside Firecracker's, and the kernel's load overlapped
+
+- **Question.** The comparison's `to_ready` ties with Firecracker's (M225) and fails the
+  envelope where a run's interval lands above zero (2 of 4 runs, 2026-10-13). Where does
+  each VMM's boot spend its time, and what of it is shards' own to cut?
+- **Method.** `docs/research/measurements/boot-exits/measure.py` on CI's x86_64 KVM
+  runners (AMD EPYC 9V74, Linux 6.17.0-1022-azure, revision 3df7f5c, two runners): the
+  comparison's idle guest, 10 boots each VMM interleaved under `perf kvm stat record`,
+  VM exits by reason; each VMM's guest booted once with `initcall_debug`, `quiet`, its
+  kernel log read from /dev/kmsg once booted; shards once at `SHARDS_LOG=debug`.
+  `docs/research/measurements/kernel-load/ab.py`: two builds of the VM process
+  interleaved, n=30, time to the vCPU's first entry, on an M5 Max, macOS 26.4.1, load 10
+  to 13.
+- **Results.**
+  - VM exits per boot, p50 (shards / Firecracker): nested page faults 341 / 269 (3.6 /
+    2.9 ms handled), MSR 143 / 200 (4.8 / 4.8 ms), CPUID 221 / 477 (0.45 / 0.96 ms),
+    port I/O 245 / 244, interrupts 152 / 151; 13.0 against 13.9 ms of exits handled in
+    all, of a boot of about 120 ms.
+  - shards' VM process, at debug: confined at 0.2 ms, the kernel loaded at 3.4 ms, the
+    VM made and RAM mapped at 3.7 ms, its vCPU ready at 4.9 ms: the kernel's copy, 3.1 ms,
+    is most of its setup, and runs before the VM's assembly, which needs none of it.
+  - Initcalls, quiet: 67.8 ms of shards' guest's against 64.6 of Firecracker's, the
+    difference within initcalls timed before a fine clocksource (4 ms steps); the crypto
+    self-tests 12.4 against 25.2 ms, deferred probing 7.9 against 0.01 ms (shards' guest's
+    worker, on its one vCPU, behind the tests' threads).
+  - The kernel's load on a thread of its own while the VM is made, macOS: time to entry
+    2,614 / 3,089 / 3,446 / 3,446 µs before, 2,586 / 3,021 / 3,114 / 3,114 µs after (p50 /
+    p90 / p99 / max), −32 µs at the median paired: Hypervisor.framework's assembly is
+    short beside the copy.
+- **Why.** shards' guest takes 72 more nested page faults at the median: its first 2 MiB
+  is on small pages (M157), where the kernel's scans of low memory (the MP floating
+  pointer's areas, 0xF0000 to 0xFFFFF among them, as shards gives no MP table; the
+  option ROMs from 0xC0000) each fault a page that Firecracker's huge page holds whole.
+- **Consequence.** The kernel's load overlaps the VM's assembly on every backend; what it
+  buys on x86_64 KVM is read from the comparison's next runs. The boot pages are next:
+  mapped ahead of the guest (KVM_PRE_FAULT_MEMORY, a read fault: a page the guest only
+  scans maps to the zero page, no memory resident).
+
+### M227. A cold boot's copy, shared by two threads and read straight into guest memory
+
+- **Question.** From the VM process's exec to its vCPU's first entry, shards took 1.0 and
+  1.8 ms longer than Firecracker on CI's x86_64 KVM runners (boot-exits pass 4, revision
+  ce8f85d, run 38483758187, 10 boots each, interleaved: p50 6,423 against 5,425 µs on one
+  runner, 7,711 against 5,982 on the other). Where does that time go, and what of it can
+  go?
+- **Method.** `perf trace` of one boot each (the same run): every system call in order,
+  its thread and duration. Then `docs/research/measurements/kernel-load/ab.py` on an M5
+  Max, macOS 26.4.1, load 6.5 to 8.4: the VM process of revision ce8f85d (A) against one
+  whose kernel and initrd are planned first and copied by two threads (B), both `release`
+  and signed as `crates/shards/build.rs` signs them, n=30 each, interleaved, twice.
+- **Results.**
+  - shards, traced: its main thread made the machine (the VM, its devices, their tables)
+    in 0.83 ms, then waited 4.74 ms for the loader thread, which read the kernel's two
+    segments into guest memory (17.7 MB in 2.73 ms, 3.5 MB in 0.53 ms, 6.5 GB/s), then
+    the initrd into a buffer of its own (2.59 MB in 1.14 ms, 2.3 GB/s), copied it into
+    guest memory (0.25 ms from the read's end to the buffer's unmapping) and unmapped the
+    buffer (0.15 ms).
+  - Firecracker, traced: all on one thread; the kernel's segments read at 6.6 to 6.9
+    GB/s, the initrd read straight into guest memory in 0.29 ms.
+  - The A/B, entry µs p50 / p90 / p99 / max: A 2,405 / 2,540 / 2,572 / 2,572, B 1,740 /
+    1,901 / 2,021 / 2,021, B less A −652 µs at the median paired; again, A 2,583 / 2,968
+    / 3,191 / 3,191, B 2,080 / 2,497 / 2,650 / 2,650, −626 µs.
+- **Why.** The copy is the boot's setup's longest part, and the machine's making, which
+  needs none of it, is the shorter: one thread copying while the other waits leaves the
+  copy whole on the path to the first entry. An initrd read through a buffer pays its
+  pages' faults and a second copy.
+- **Consequence.** `vm::beside_copy`: the kernel's and the initrd's places are planned
+  from the kernel's headers and the initrd's length, the initrd's file is read straight
+  into guest memory (an init's into its place in the archive there), and the copy is cut
+  at each 2 MiB of guest memory, a huge page each, which the loader thread and then the
+  main thread, its own work done, take in turn. x86_64 KVM's numbers are read from the
+  next runs of the harness and the comparison.

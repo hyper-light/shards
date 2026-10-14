@@ -165,6 +165,166 @@ impl Interrupt for GicLine {
     }
 }
 
+/// The SPI of PCI device `device`'s INTx (layout::SPI_PCI).
+fn pci_intx_spi(device: u8) -> u32 {
+    layout::SPI_PCI + u32::from(device).saturating_sub(1)
+}
+
+/// A PCI bus's interrupts on this machine (D154): each device's INTx on an SPI of its own,
+/// level-triggered, and MSIs to the GICv2m frame `frame`, whose SPIs they name.
+struct PciLines {
+    gic: Gic,
+    frame: boot::MsiFrame,
+}
+
+impl super::PciInterrupts for PciLines {
+    fn intx(&self, device: u8) -> Arc<dyn Interrupt> {
+        Arc::new(GicLine {
+            gic: self.gic.clone(),
+            intid: SPI_INTID_BASE + pci_intx_spi(device),
+        })
+    }
+
+    fn msi(&self) -> Arc<dyn crate::devices::pci::Msi> {
+        Arc::new(V2mFrame {
+            gic: self.gic.clone(),
+            frame: self.frame,
+        })
+    }
+
+    /// KVM's irqfds: INTx on the device's SPI, resampled at its EOI; each MSI on the SPI
+    /// the guest aimed it at in the GICv2m frame.
+    #[cfg(target_os = "linux")]
+    fn route(&self, device: u8) -> Option<Arc<dyn crate::devices::pci::vfio::Route>> {
+        Some(Arc::new(IrqfdRoute {
+            gic: self.gic.clone(),
+            intx: SPI_INTID_BASE + pci_intx_spi(device),
+            frame: self.frame,
+        }))
+    }
+}
+
+/// A passed-through function's interrupts by KVM's irqfds (D154): its INTx on SPI `intx`,
+/// its MSIs on the SPIs of the GICv2m frame `frame` they name.
+#[cfg(target_os = "linux")]
+struct IrqfdRoute {
+    gic: Gic,
+    intx: u32,
+    frame: boot::MsiFrame,
+}
+
+#[cfg(target_os = "linux")]
+impl IrqfdRoute {
+    /// The SPI an MSI the guest aimed at `address` with `data` raises: one of the frame's,
+    /// at its doorbell.
+    fn spi(&self, address: u64, data: u32) -> Result<u32, String> {
+        let f = &self.frame;
+        if address != f.base + V2M_MSI_SETSPI_NS || data < f.first_intid || data - f.first_intid >= f.count {
+            return Err(format!(
+                "an MSI to {address:#x} with {data:#x}: not one of the GICv2m frame's"
+            ));
+        }
+        Ok(data)
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl crate::devices::pci::vfio::Route for IrqfdRoute {
+    fn intx(&self, trigger: std::os::fd::RawFd, resample: std::os::fd::RawFd) -> Result<(), String> {
+        self.gic
+            .irqfd(trigger, self.intx, Some(resample))
+            .map_err(|e| e.to_string())
+    }
+
+    fn intx_off(&self, trigger: std::os::fd::RawFd) -> Result<(), String> {
+        self.gic
+            .irqfd_remove(trigger, self.intx)
+            .map_err(|e| e.to_string())
+    }
+
+    fn msi(&self, event: std::os::fd::RawFd, address: u64, data: u32) -> Result<(), String> {
+        let spi = self.spi(address, data)?;
+        self.gic.irqfd(event, spi, None).map_err(|e| e.to_string())
+    }
+
+    fn msi_off(&self, event: std::os::fd::RawFd, address: u64, data: u32) -> Result<(), String> {
+        let spi = self.spi(address, data)?;
+        self.gic.irqfd_remove(event, spi).map_err(|e| e.to_string())
+    }
+}
+
+/// A GICv2m frame (Arm's GICv2m specification, its registers as Linux's irq-gic-v2m.c
+/// reads them): its type register says its SPIs, and a write to its doorbell, MSI_SETSPI_NS,
+/// raises the one it names, edge-triggered. The VMM's where the backend's GIC has none of
+/// its own (KVM's), and the MSIs of the functions the VMM emulates on any.
+#[derive(Debug)]
+struct V2mFrame {
+    gic: Gic,
+    frame: boot::MsiFrame,
+}
+
+const V2M_MSI_TYPER: u64 = 0x008;
+const V2M_MSI_SETSPI_NS: u64 = 0x040;
+
+impl V2mFrame {
+    /// Raises SPI `intid`, where it is one of the frame's.
+    fn raise(&self, intid: u32) {
+        let f = &self.frame;
+        if intid < f.first_intid || intid - f.first_intid >= f.count {
+            warn!("an MSI for INTID {intid}, none of the GICv2m frame's");
+            return;
+        }
+        if let Err(e) = self.gic.send_msi(f.base + V2M_MSI_SETSPI_NS, intid) {
+            warn!("MSI {intid}: {e}");
+        }
+    }
+}
+
+impl crate::devices::pci::Msi for V2mFrame {
+    /// An MSI the guest aimed at the frame's doorbell; any other address is none of its.
+    fn send(&self, address: u64, data: u32) {
+        if address != self.frame.base + V2M_MSI_SETSPI_NS {
+            warn!("an MSI to {address:#x}, not the GICv2m frame's doorbell");
+            return;
+        }
+        self.raise(data);
+    }
+}
+
+impl crate::devices::MmioDevice for V2mFrame {
+    fn read(&self, offset: u64, data: &mut [u8]) {
+        let value = match offset {
+            // BASE (25:16), the first SPI's INTID; NUMBER (9:0).
+            V2M_MSI_TYPER => (self.frame.first_intid << 16) | self.frame.count,
+            _ => 0,
+        };
+        crate::devices::put_le(data, u64::from(value));
+    }
+
+    fn write(&self, offset: u64, data: &[u8]) {
+        if offset == V2M_MSI_SETSPI_NS {
+            self.raise(crate::devices::get_le(data) as u32);
+        }
+    }
+
+    fn pause(&self) {}
+
+    fn resume(&self) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn save(&self, _: &mut Writer) {}
+
+    fn restore(&self, _: &mut Reader<'_>) -> crate::snapshot::codec::Result<()> {
+        Ok(())
+    }
+
+    /// A machine with a PCI bus saves no snapshot (D153).
+    fn unsaved(&self) -> Option<String> {
+        Some("a PCI bus's MSI frame".into())
+    }
+}
+
 /// The smallest architected IPA width that covers guest RAM, within the host's limit.
 fn ipa_bits(end: u64) -> Result<u32, String> {
     let needed = 64 - end.saturating_sub(1).leading_zeros();
@@ -214,6 +374,8 @@ struct Assembled {
     pmem: Vec<(u64, u64)>,
     /// The GPU's window's length, where it has a GPU.
     gpu_window: Option<u64>,
+    /// Its PCI host bridge, where it has a PCI bus (D153).
+    pci: Option<boot::PciBridge>,
 }
 
 /// `vsock` is the host side of the vsock device `config` asks for; `gpu`, whether it has a
@@ -225,6 +387,7 @@ fn assemble(
     console: Console,
     hosts: super::Hosts<'_>,
     gpu: Option<u64>,
+    pci: super::Pci<'_>,
 ) -> Result<Assembled, String> {
     let ram = ram_bytes(config.memory_mib)?;
     // Memory to plug, where the guest has any, starts at the first GiB boundary after RAM
@@ -241,7 +404,14 @@ fn assemble(
     let (regions, end) = super::pmem_regions(config, pmem_at)?;
     let top = if regions.is_empty() { plug_end } else { end };
     // A GPU's window, at the first GiB boundary past all of that, as long as the renderer
-    // says (D144).
+    // says (D144): on macOS alone so far.
+    #[cfg(not(hv = "hvf"))]
+    if gpu.is_some() {
+        return Err("a GPU is given on macOS hosts alone so far (D144)".into());
+    }
+    #[cfg(not(hv = "hvf"))]
+    let gpu: Option<((), crate::devices::virtio::ShmRegion)> = None;
+    #[cfg(hv = "hvf")]
     let gpu = match gpu {
         None => None,
         Some(saw) => {
@@ -273,6 +443,24 @@ fn assemble(
             .ok_or("the GPU's window overflows the address space")?,
         None => top,
     };
+    // The PCI bus's 64-bit window past all of that, above 4 GiB, as long as its 64-bit
+    // BARs need (D154).
+    let mem64 = match pci.mem64()? {
+        Some((len, align)) => {
+            let at = top
+                .max(1 << 32)
+                .checked_next_multiple_of(align.max(GIB))
+                .ok_or("the PCI 64-bit window overflows the address space")?;
+            Some((at, len))
+        }
+        None => None,
+    };
+    let top = match mem64 {
+        Some((at, len)) => at
+            .checked_add(len)
+            .ok_or("the PCI 64-bit window overflows the address space")?,
+        None => top,
+    };
     let pmem: Vec<(u64, u64)> = regions
         .iter()
         .map(|(region, gpa)| (*gpa, region.len() as u64))
@@ -280,10 +468,7 @@ fn assemble(
     let ipa_bits = ipa_bits(top)?;
     let mpidrs: Vec<u64> = (0..config.vcpus).map(aarch64::mpidr).collect();
     if config.nested && !hv::el2_supported() {
-        return Err(
-            "this Mac gives a guest no EL2: virtualization of a guest's own needs an M3 or later, on macOS 15 or later"
-                .into(),
-        );
+        return Err(hv::NO_EL2.into());
     }
     let vm = hv::Vm::new(hv::VmConfig {
         ipa_bits,
@@ -307,10 +492,21 @@ fn assemble(
 
     let gp = hv::gic_params().map_err(|e| e.to_string())?;
     let redist_total = gp.redist_size * u64::from(config.vcpus);
+    // A PCI bus's MSIs go to a GICv2m frame (D154): the backend's own, or the VMM's.
+    let msi = (pci.test || !pci.vfio.is_empty()).then_some(boot::MsiFrame {
+        base: layout::GIC_MSI,
+        size: gp.msi_size,
+        first_intid: SPI_INTID_BASE + layout::SPI_MSI,
+        count: layout::MSI_SPIS,
+    });
     if !layout::GIC_DIST.is_multiple_of(gp.dist_align)
         || !layout::GIC_REDIST.is_multiple_of(gp.redist_align)
+        || !layout::GIC_MSI.is_multiple_of(gp.msi_align)
         || layout::GIC_DIST + gp.dist_size > layout::GIC_MSI
+        || layout::GIC_MSI + gp.msi_size > layout::GIC_REDIST
         || layout::GIC_REDIST + redist_total > layout::GIC_REDIST_MAX_END
+        || gp.spi_base > SPI_INTID_BASE
+        || SPI_INTID_BASE + layout::SPIS > gp.spi_base + gp.spi_count
     {
         return Err(format!(
             "host GIC geometry {gp:?} does not fit the guest memory map"
@@ -320,12 +516,19 @@ fn assemble(
         .create_gic(&GicLayout {
             dist_base: layout::GIC_DIST,
             redist_base: layout::GIC_REDIST,
-            msi: None,
+            msi: msi.map(|f| hv::MsiFrame {
+                base: f.base,
+                first_intid: f.first_intid,
+                count: f.count,
+            }),
         })
         .map_err(|e| e.to_string())?;
     debug!("GIC created");
 
     let gpu_window = gpu.as_ref().map(|(_, region)| region.len);
+    #[cfg(not(hv = "hvf"))]
+    let gpu: Option<Box<dyn crate::devices::virtio::VirtioDevice>> = None;
+    #[cfg(hv = "hvf")]
     let gpu = match gpu {
         None => None,
         Some((renderer, region)) => {
@@ -338,16 +541,40 @@ fn assemble(
                 as Box<dyn crate::devices::virtio::VirtioDevice>)
         }
     };
-    let last = gpu.into_iter().chain(hotplug).chain(reporting).collect();
+    // The IOMMU of the functions the VMM emulates, last of the virtio devices (D154): no
+    // MSI window bypassed, as Linux has the IOMMU map the GICv2m frame's doorbell.
+    let (iommu, iommu_device) = match msi {
+        Some(_) => super::test_iommu(pci, None).unzip(),
+        None => (None, None),
+    };
+    let last = gpu
+        .into_iter()
+        .chain(hotplug)
+        .chain(reporting)
+        .chain(iommu_device)
+        .collect();
     let devices = super::virtio_devices(config, &regions, hosts, last, layout::VIRTIO_MMIO_MAX)?;
+    let iommu_at = iommu.is_some().then(|| devices.len() - 1);
     let mut bus = MmioBus::default();
+    if let Some(frame) = msi
+        && !hv::MSI_FRAME_IN_KERNEL
+    {
+        bus.insert(
+            frame.base,
+            frame.size,
+            Arc::new(V2mFrame {
+                gic: gic.clone(),
+                frame,
+            }),
+        )?;
+    }
     let mut virtio = Vec::with_capacity(devices.len());
     // Each virtio device takes the next MMIO window and SPI, in the guest's probe order.
     for (i, device) in devices.into_iter().enumerate() {
         let spi = layout::SPI_VIRTIO_MMIO + i as u32;
         let base = layout::VIRTIO_MMIO + i as u64 * layout::VIRTIO_MMIO_STRIDE;
         let line = Arc::new(GicLine {
-            gic,
+            gic: gic.clone(),
             intid: SPI_INTID_BASE + spi,
         });
         let transport = virtio_mmio::MmioTransport::new(device, memory.clone(), line);
@@ -356,12 +583,13 @@ fn assemble(
             base,
             size: virtio_mmio::WINDOW,
             spi,
+            iommu: iommu_at == Some(i),
         });
     }
     let serial = Arc::new(Serial::new(
         super::console_out(console)?,
         Arc::new(GicLine {
-            gic,
+            gic: gic.clone(),
             intid: SPI_INTID_BASE + layout::SPI_UART,
         }),
     ));
@@ -377,6 +605,38 @@ fn assemble(
         control.on_mac(net.mac);
     }
     bus.insert(layout::CONTROL, 0x1000, control.clone())?;
+    // A PCI bus (D153, D154): its functions from 00:01.0, their BARs in its window, each
+    // device's INTx on an SPI of its own, its MSIs to the GICv2m frame.
+    let mem32 = (layout::PCI_MEM32, layout::PCI_MEM32_SIZE);
+    let lines = msi.map(|frame| PciLines {
+        gic: gic.clone(),
+        frame,
+    });
+    let irqs = lines.as_ref().map(|l| l as &dyn super::PciInterrupts);
+    let machine = super::PciMachine {
+        vm: &vm,
+        memory,
+        irqs,
+        iommu: iommu.clone(),
+    };
+    let pci = super::pci_bus(&mut bus, layout::PCI_ECAM, mem32, mem64, pci, config, machine)?.map(|routed| {
+        boot::PciBridge {
+            ecam: (layout::PCI_ECAM, crate::devices::pci::ECAM_SIZE),
+            mem32,
+            mem64,
+            iommu: iommu.iter().map(|_| u32::from(super::TEST_DEVICE) << 3).collect(),
+            intx: routed
+                .intx
+                .into_iter()
+                .map(|(device, pin)| boot::Intx {
+                    device,
+                    pin,
+                    spi: pci_intx_spi(device),
+                })
+                .collect(),
+            msi,
+        }
+    });
     let vmgenid = VmGenId::new(
         memory.clone(),
         layout::VMGENID,
@@ -397,6 +657,7 @@ fn assemble(
         mpidrs,
         pmem,
         gpu_window,
+        pci,
     })
 }
 
@@ -405,38 +666,57 @@ pub fn build(cfg: &Config) -> Result<Machine, String> {
     let ram = ram_bytes(cfg.memory_mib)?;
     let mut config = super::machine_config(cfg)?;
     let memory = Arc::new(super::guest_memory(&ram_ranges(ram)?, &config, plug_at(ram))?);
-    // A bad kernel fails the start before any hypervisor state exists. The image is copied,
-    // not mapped: a mapped image stalled boots for up to 1 s (platform-measurements M16).
+    // The image is copied, not mapped: a mapped image stalled boots for up to 1 s
+    // (platform-measurements M16). Where it and the initrd go, from its header and the
+    // initrd's length: the initrd between the kernel, at the next 2 MiB, and the device
+    // tree (boot.rs, place_initrd). Their bytes are copied in as the machine is made.
     let kernel_file = crate::platform::open_input(&cfg.kernel, false)
         .map_err(|e| format!("{}: {e}", cfg.kernel.display()))?;
-    let kernel = boot::load_kernel(&memory, &kernel_file, ram).map_err(|e| e.to_string())?;
-    debug!("kernel loaded");
-
-    let hosts = super::Hosts {
-        vsock: cfg.vsock.as_ref(),
-        #[cfg(unix)]
-        net: cfg.net.as_ref(),
-        #[cfg(unix)]
-        shares: &cfg.shares,
-        join: cfg.join,
-        #[cfg(unix)]
-        join_share: cfg.join_share,
-    };
-    let a = assemble(&memory, &config, cfg.console, hosts, cfg.gpu.then_some(0))?;
-    // Its GPU's window as the guest sees it, which a snapshot keeps for a restore (D150).
-    config.gpu = a.gpu_window;
-    a.vmgenid.write_new_id()?;
-
     let fdt_addr = layout::DRAM_BASE + ram - boot::FDT_MAX;
-    // Between the kernel, at the next 2 MiB, and the device tree (boot.rs, load_initrd).
+    let (kernel, span) = boot::plan_kernel(&kernel_file, ram).map_err(|e| e.to_string())?;
+    let mut pieces = vec![super::Piece {
+        span,
+        file: &kernel_file,
+        path: &cfg.kernel,
+    }];
     let room = fdt_addr.saturating_sub(kernel.end.next_multiple_of(2 << 20));
-    let initrd_bytes = super::initrd(cfg, room)?;
-    let initrd = match initrd_bytes {
+    let initrd_file = super::initrd(cfg, room)?;
+    let initrd = match &initrd_file {
         None => None,
-        Some(bytes) => {
-            Some(boot::load_initrd(&memory, &bytes, kernel.end, fdt_addr).map_err(|e| e.to_string())?)
+        Some(i) => {
+            let start = boot::place_initrd(i.len(), kernel.end, fdt_addr).map_err(|e| e.to_string())?;
+            pieces.push(i.place(&memory, start)?);
+            Some((start, i.len()))
         }
     };
+    let a = super::beside_copy(&memory, &pieces, || {
+        let hosts = super::Hosts {
+            vsock: cfg.vsock.as_ref(),
+            #[cfg(unix)]
+            net: cfg.net.as_ref(),
+            #[cfg(unix)]
+            shares: &cfg.shares,
+            join: cfg.join,
+            #[cfg(unix)]
+            join_share: cfg.join_share,
+        };
+        let a = assemble(
+            &memory,
+            &config,
+            cfg.console,
+            hosts,
+            cfg.gpu.then_some(0),
+            super::Pci {
+                test: cfg.pci_test,
+                vfio: &cfg.vfio,
+            },
+        )?;
+        a.vmgenid.write_new_id()?;
+        Ok(a)
+    })?;
+    debug!("kernel and initrd copied");
+    // Its GPU's window as the guest sees it, which a snapshot keeps for a restore (D150).
+    config.gpu = a.gpu_window;
     let mut rng_seed = [0u8; 64];
     platform::fill_random(&mut rng_seed).map_err(|e| format!("host entropy: {e}"))?;
     let fdt = boot::build_fdt(&boot::Machine {
@@ -449,6 +729,7 @@ pub fn build(cfg: &Config) -> Result<Machine, String> {
         virtio: &a.virtio,
         rng_seed,
         el2: cfg.nested,
+        pci: a.pci,
     })
     .map_err(|e| e.to_string())?;
     memory
@@ -482,19 +763,37 @@ pub fn build(cfg: &Config) -> Result<Machine, String> {
 pub const PAGE: u64 = hv::PAGE;
 
 /// What records a working set.
+#[cfg(hv = "hvf")]
 pub type Recorder = Arc<hv::Watch>;
+
+/// Nothing records one: a VM on arm64 KVM is not snapshotted yet (vm::SNAPSHOTS).
+#[cfg(hv = "kvm")]
+#[derive(Debug)]
+pub enum Recorder {}
 
 /// Starts recording `vm`'s working set: its stage 2 watches RAM and pmem alike. Every
 /// vCPU must be out of the guest.
+#[cfg(hv = "hvf")]
 pub fn record(vm: &hv::Vm) -> Result<Option<Recorder>, String> {
     let watch = vm.watch();
     watch.start().map_err(|e| e.to_string())?;
     Ok(Some(watch))
 }
 
+#[cfg(hv = "kvm")]
+pub fn record(_vm: &hv::Vm) -> Result<Option<Recorder>, String> {
+    Ok(None)
+}
+
 /// Stops recording; the pages touched since [`record`], in order.
+#[cfg(hv = "hvf")]
 pub fn recorded(recorder: &Recorder) -> Result<Vec<hv::Touch>, String> {
     Ok(recorder.stop())
+}
+
+#[cfg(hv = "kvm")]
+pub fn recorded(recorder: &Recorder) -> Result<Vec<hv::Touch>, String> {
+    match *recorder {}
 }
 
 /// None: on HVF, the run that saves a template records its working set ([`record`]).
@@ -562,7 +861,15 @@ pub fn restore(
         &snap.config,
         plug_at(ram),
     )?);
-    let a = assemble(&memory, &snap.config, console, hosts, snap.config.gpu)?;
+    // A machine with a PCI bus saves no snapshot, so a restored one has none.
+    let a = assemble(
+        &memory,
+        &snap.config,
+        console,
+        hosts,
+        snap.config.gpu,
+        super::Pci::default(),
+    )?;
     let guest: Vec<(u64, u64)> = memory
         .regions()
         .map(|(gpa, _, len)| (gpa, len as u64))
@@ -589,7 +896,8 @@ pub fn restore(
     })
 }
 
-/// Completes the machine once every vCPU exists and before any runs. A restore applies
+/// Completes the machine once every vCPU exists and before any runs: KVM initializes its
+/// GIC now, whose redistributors are the vCPUs' (arm-vgic-v3.rst). A restore applies
 /// the GIC's state only now, as Hypervisor.framework requires (hv_gic.h): HVF routes an
 /// SPI to its vCPU, and routing to a CPU that does not exist yet loses the SPI for good.
 /// Found by the snapshot E2E test; SPIs were pending but never delivered. The state is
@@ -599,6 +907,7 @@ pub fn restore(
 /// re-raise their interrupt lines as they restore. Last, the restored guest gets a new
 /// generation ID, so it reseeds its RNG before it runs anything that uses it.
 pub fn finish(vm: &hv::Vm, bus: &MmioBus, vmgenid: &VmGenId, rest: Option<&Remainder>) -> Result<(), String> {
+    vm.vcpus_created().map_err(|e| e.to_string())?;
     let Some(r) = rest else {
         return Ok(());
     };
@@ -619,7 +928,7 @@ pub fn setup_vcpu(vm: &hv::Vm, index: usize, start: VcpuStart) -> Result<(hv::Vc
     match start {
         VcpuStart::Boot(entry) => {
             if let Some(entry) = entry {
-                vcpu.boot(entry);
+                vcpu.boot(entry).map_err(e)?;
             }
         }
         VcpuStart::Restore { state, first } => {

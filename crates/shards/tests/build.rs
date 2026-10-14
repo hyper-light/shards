@@ -4820,8 +4820,11 @@ fn add_fetches_git_over_ssh() {
             .spawn()
             .unwrap(),
     );
-    for _ in 0..100 {
-        if sock.exists() {
+    // Ready once it takes connections: its socket's file is there from its bind(2), before
+    // its listen(2), and a connection between the two is refused, as one was on a loaded
+    // host ("Error connecting to agent: Connection refused").
+    for _ in 0..500 {
+        if std::os::unix::net::UnixStream::connect(&sock).is_ok() {
             break;
         }
         std::thread::sleep(Duration::from_millis(20));

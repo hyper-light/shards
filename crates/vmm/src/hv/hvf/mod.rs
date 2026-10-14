@@ -99,6 +99,13 @@ pub fn el2_supported() -> bool {
     sys::el2_supported()
 }
 
+/// Whether the GIC's MSI frame is the framework's own, which takes the guest's writes to
+/// its doorbell (hv_gic_config_set_msi_region_base): the VMM's need not be on the bus.
+pub const MSI_FRAME_IN_KERNEL: bool = true;
+
+/// Why a guest is given no EL2 here.
+pub const NO_EL2: &str = "this Mac gives a guest no EL2: virtualization of a guest's own needs an M3 or later, on macOS 15 or later";
+
 /// Maps the memory a virtio-mem device plugs into the guest and unmaps it, from whichever
 /// thread plugs it, while the VM lives ([`Vm::add_hotplug`]). The pages it maps are the
 /// VM's until it unmaps them: replaced in the host while mapped, the guest kept the old
@@ -241,6 +248,11 @@ impl Vm {
             len: len as u64,
             perms,
         });
+        Ok(())
+    }
+
+    /// Nothing to complete once every vCPU exists: HVF's GIC was whole as it was made.
+    pub fn vcpus_created(&self) -> Result<()> {
         Ok(())
     }
 
@@ -469,8 +481,9 @@ impl Vcpu {
 
     /// Makes this the boot vCPU: it enters at `entry` on its first `run`. Others stay
     /// off until PSCI CPU_ON.
-    pub fn boot(&mut self, entry: Entry) {
+    pub fn boot(&mut self, entry: Entry) -> Result<()> {
         self.power.boot(self.index, entry);
+        Ok(())
     }
 
     /// Runs the guest until it powers off, resets, or a kick arrives. Returns an error for

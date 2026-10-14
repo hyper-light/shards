@@ -17,9 +17,11 @@ shards builds its own guest kernel. Firecracker's CI kernel lacks EROFS, which i
   M66); no option is named by both. Each line says why. The build fails if
   any of them does not survive `make olddefconfig`.
 - **The `kvm` variant:** `kvm.config`, merged last, for a guest that is itself a KVM host,
-  booted at EL2 (`run --kernel --nested`, D132): `Image-<version>-aarch64-kvm`. The kernel
-  every other guest boots stays without KVM's 800 KiB of text, which saves or spends no
-  boot or restore time (PM M192).
+  on arm64 booted at EL2 (`run --kernel --nested`, D132), and for a guest that takes a PCI
+  function it was given through VFIO, its interrupts among it, as the tests of passing a
+  device through do (D154): `Image-<version>-aarch64-kvm` and `vmlinux-<version>-x86_64-kvm`.
+  The kernel every other guest boots stays without KVM's 800 KiB of text, which saves or
+  spends no boot or restore time (PM M192).
 - **The `hyperv` variant:** `hyperv.config`, merged last, for the guests of a Windows host,
   which runs them in Windows Hypervisor Platform partitions (D140):
   `vmlinux-<version>-x86_64-hyperv`. Their partitions offer Hyper-V's clocks, and Linux

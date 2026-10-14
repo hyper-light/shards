@@ -174,6 +174,15 @@ var cases = [][]string{
 	{"update"},
 	{"run", "--ip", "10.1.0.5", "--ip6", "fd00::5", "--network-alias", "a", "--net-alias", "b", "--network", "n", "img"},
 	{"run", "--ip", "bogus", "img"},
+	// Flags shards does not serve yet, which parse as the CLI's do and are refused.
+	{"run", "--cgroup-parent", "/x", "img"},
+	{"create", "--cgroup-parent", "/x", "img"},
+	{"run", "--io-maxbandwidth", "10m", "img"},
+	{"run", "--io-maxbandwidth", "lots", "img"},
+	{"run", "--io-maxiops", "abc", "img"},
+	{"run", "--io-maxiops", "-1", "img"},
+	{"create", "--io-maxiops", "0", "img"},
+	{"save", "--platform", "arm64", "--platform", "amd64", "-o", "f", "img"},
 	{"network", "create", "--help"},
 	{"network", "create", "--subnet", "10.1.0.0/16,10.2.0.0/16", "--gateway", "10.1.0.1", "--ip-range", "10.1.0.5/24", "--aux-address", "a=10.1.0.9", "-o", "k=v", "--label", "l", "--ipv6", "--internal", "n1"},
 	{"network", "create", "--gateway", "bogus", "n"},
@@ -665,6 +674,76 @@ func TestShardsOracle(t *testing.T) {
 		answers = append(answers, answer{argv, stdout.String(), stderr.String(), status})
 	}
 	data, err := json.MarshalIndent(answers, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(out, append(data, '\n'), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A flag as the CLI defines it, served by shards or not: its shorthand, its pflag type,
+// its default, and the first flag defined of those bound to one value with it, if any.
+type flagRecord struct {
+	Name       string `json:"name"`
+	Short      string `json:"short,omitempty"`
+	Type       string `json:"type"`
+	Default    string `json:"default"`
+	Shares     string `json:"shares,omitempty"`
+	Deprecated bool   `json:"deprecated,omitempty"`
+}
+
+// TestShardsFlags records the flags of the CLI's commands that shards has: the top-level
+// ones and the container, image, network, volume and system commands, but for build,
+// whose flags are buildx's (scripts/buildx), and the help flag every command inherits.
+func TestShardsFlags(t *testing.T) {
+	out := os.Getenv("SHARDS_FLAGS_OUT")
+	if out == "" {
+		t.Skip("SHARDS_FLAGS_OUT names the file to write")
+	}
+	var stdout, stderr bytes.Buffer
+	records := map[string][]flagRecord{}
+	var visit func(c *cobra.Command)
+	visit = func(c *cobra.Command) {
+		for _, sub := range c.Commands() {
+			visit(sub)
+		}
+		words := strings.Fields(strings.TrimPrefix(c.CommandPath(), "shards"))
+		switch {
+		case len(words) == 0, c.Name() == "build":
+			return
+		case len(words) == 1 && c.HasSubCommands():
+			return
+		case len(words) == 2 && !contains([]string{"container", "image", "network", "system", "volume"}, words[0]):
+			return
+		case len(words) > 2:
+			return
+		}
+		var owners []*pflag.Flag
+		flags := []flagRecord{}
+		fs := c.LocalFlags()
+		// In the order they were defined: a value's owner is its first flag.
+		fs.SortFlags = false
+		fs.VisitAll(func(f *pflag.Flag) {
+			if f.Name == "help" {
+				return
+			}
+			r := flagRecord{f.Name, f.Shorthand, f.Value.Type(), f.DefValue, "", f.Deprecated != ""}
+			for _, o := range owners {
+				if o.Value == f.Value {
+					r.Shares = o.Name
+					break
+				}
+			}
+			if r.Shares == "" {
+				owners = append(owners, f)
+			}
+			flags = append(flags, r)
+		})
+		records[strings.Join(words, " ")] = flags
+	}
+	visit(root(t, &stdout, &stderr))
+	data, err := json.MarshalIndent(records, "", "  ")
 	if err != nil {
 		t.Fatal(err)
 	}
