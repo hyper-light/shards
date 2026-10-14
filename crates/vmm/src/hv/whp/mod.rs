@@ -470,6 +470,35 @@ impl Stage2 {
 const RWX: WHV_MAP_GPA_RANGE_FLAGS =
     WHvMapGpaRangeFlagRead | WHvMapGpaRangeFlagWrite | WHvMapGpaRangeFlagExecute;
 
+/// Device memory a device maps into the guest and unmaps, while the VM lives: a swap
+/// window's (D159). Slots are KVM's notion; the partition maps by address, so the index
+/// names nothing here.
+#[derive(Debug, Clone)]
+pub struct DeviceSlots(Arc<Partition>);
+
+impl DeviceSlots {
+    /// Maps `len` bytes of host memory at `host` at `gpa`, read-only to the guest unless
+    /// `writable`, never executable.
+    ///
+    /// # Safety
+    /// `host..host+len` must stay mapped in this process until unmapped here or the VM is
+    /// destroyed.
+    pub unsafe fn map(&self, _i: u32, host: *mut u8, gpa: u64, len: usize, writable: bool) -> Result<()> {
+        let flags = if writable {
+            WHvMapGpaRangeFlagRead | WHvMapGpaRangeFlagWrite
+        } else {
+            WHvMapGpaRangeFlagRead
+        };
+        // SAFETY: forwarded caller contract.
+        unsafe { self.0.map(host, gpa, len, flags) }
+    }
+
+    /// Unmaps `len` bytes at `gpa`: the guest's accesses there exit as MMIO to nothing.
+    pub fn unmap(&self, _i: u32, gpa: u64, len: usize) -> Result<()> {
+        self.0.unmap(gpa, len as u64)
+    }
+}
+
 /// The VM. Guest memory must outlive it.
 #[derive(Debug)]
 pub struct Vm {
@@ -598,6 +627,12 @@ impl Vm {
     /// its pages back to the host as the guest reports them free (D151).
     pub fn stage2(&self) -> Stage2 {
         Stage2(self.partition.clone())
+    }
+
+    /// What maps a device's memory into the guest while the VM lives, `count` slots of it
+    /// on KVM; here the partition's mappings, by address.
+    pub fn device_slots(&self, _count: u32) -> DeviceSlots {
+        DeviceSlots(self.partition.clone())
     }
 
     /// The memory a virtio-mem device plugs, `len` bytes at `host` seen at `gpa` (D133):

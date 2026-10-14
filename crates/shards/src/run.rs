@@ -702,7 +702,16 @@ pub fn prepare(
 pub fn sizes(resources: &shards_ipc::Resources, host: Option<u64>) -> (u32, u64, u64) {
     use shards_vmm::vm::MEMORY_MIB;
     let vcpus = crate::resources::vcpus(resources, crate::resources::host_cpus());
-    let boot = crate::resources::memory_mib(resources.memory, MEMORY_MIB, host, vcpus);
+    // Its swap's bookkeeping too, its kernel's and not its workload's (D159).
+    let kernel = crate::resources::swap_bytes(resources).map_or(0, |allowance| {
+        let device = crate::resources::swap_device_bytes(allowance, vcpus);
+        crate::resources::swap_kernel_bytes(device.min(host.unwrap_or(u64::MAX)))
+    });
+    let limit = match resources.memory {
+        m if m > 0 => m.saturating_add(i64::try_from(kernel).unwrap_or(i64::MAX)),
+        m => m,
+    };
+    let boot = crate::resources::memory_mib(limit, MEMORY_MIB, host, vcpus);
     match host {
         Some(bytes) if resources.memory <= 0 => (vcpus, boot, ((bytes >> 20) & !1).max(boot)),
         _ => (vcpus, boot, boot),
@@ -724,6 +733,7 @@ pub fn template(home: &Path, guest: &Guest, rootfs: &Path, cfg: &Config) -> Path
         shares(cfg),
     ) + &pmem(cfg)
         + &plug(cfg)
+        + &swap(cfg)
         + gpu(cfg)
         + JOIN_SHARE;
     let hex: String = Sha256::digest(key.as_bytes())
@@ -747,6 +757,14 @@ fn plug(cfg: &Config) -> String {
     match cfg.hotplug_mib {
         0 => String::new(),
         mib => format!("memory to plug {mib}\n"),
+    }
+}
+
+/// A template's swap window (D159), in its key where it has one.
+fn swap(cfg: &Config) -> String {
+    match cfg.swap_mib {
+        0 => String::new(),
+        mib => format!("swap window {mib}\n"),
     }
 }
 

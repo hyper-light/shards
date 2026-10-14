@@ -8117,3 +8117,79 @@ revision before comparing a changed API/implementation.
 - **Consequence.** Every run has an IPC namespace and a /dev/shm of its own (D156): no
   restore time resolved, and memory per VM within one 16 KiB step of what two templates
   of one machine differ by.
+
+### M229. What a run's swap costs its guest's kernel, and why a device sized to its allowance alone fails (D159)
+
+- **Question.** D159 gives a run with a memory limit a swap area on a sparse file of its
+  own. How large must the device be for the allowance its cgroup holds it to
+  (`memory.swap.max`) to be usable, and what does its size cost the guest?
+- **Method.** Real microVMs on an M5 Max (macOS 26.4.1, 18 CPUs, 128 GiB), 2026-10-14, the
+  test image's workload: `/proc/meminfo` (`SwapTotal`, `VmallocUsed`), `/proc/vmstat`
+  (`pswpout`), the workload cgroup's `memory.swap.events` and `memory.events`, and
+  `alloc 96` (96 MiB touched a page at a time) under `-m 64m`, its swap allowance 64 MiB.
+  Three runs of each size.
+- **Results.**
+  - A device exactly the allowance (64 MiB): the workload was killed with 30 MiB in swap,
+    `memory.swap.events` fail 3,677, its whole device written once (pswpout 16,389). Each
+    CPU keeps a cluster partly used for each order of folio it swaps out
+    (mm/swapfile.c, percpu_swap_cluster; 10 orders with THP swap, 2 MiB clusters), so 18
+    vCPUs may hold up to 360 MiB of clusters no other can take.
+  - The allowance and that room (64 MiB + 18 × 10 × 2 MiB = 424 MiB, sparse): `alloc 96`
+    done, fail 0, no OOM kill.
+  - The guest's bookkeeping, `VmallocUsed`: 3,348 to 3,396 kB without swap; 3,748 to
+    3,764 kB with 424 MiB; 4,436 to 4,468 kB with 1,384 MiB; 108,388 kB with 128 GiB (an
+    unlimited allowance sized as the host's memory), in a guest of 226 MiB whose workload
+    was then killed (`memory.events` oom 72, swapcached 58 MiB). About 0.8 KiB a MiB of
+    device: swap_map's byte and swap_cgroup's two a page.
+- **Consequence.** The device is the allowance and 20 MiB a vCPU, the cgroup holding the
+  workload to the allowance; unlimited swap is as much again as the memory. The kernel's
+  bookkeeping is counted into the microVM's memory, beside its limit: 128 KiB and 13 bytes
+  a 16 KiB of device, above every point measured here (`resources::swap_kernel_bytes`).
+
+### M230. A run's swap on a virtio-pmem window, against a block device's; what it costs (D159)
+
+- **Question.** D159's first swap was a writable range of the join disk (virtio-blk,
+  through a loop device): did it hold a workload within its swap? And the swap window that
+  replaced it: what does it cost a run's start, a workload that swaps, a template's boot,
+  and the guest's memory accesses, whose address space it widens?
+- **Method.** Real microVMs on the M5 Max (macOS 26.4.1, 18 CPUs, 128 GiB), 2026-10-14, a
+  release build of the tree on 036989e0 with D159.
+  - The block device: `-m 64m`, `alloc 96` (96 MiB touched a page at a time), four
+    detached runs, each run's cgroup's `memory.events` and `memory.stat` read after.
+  - The window: `docs/research/measurements/swap/swap.py`, an image of the test guest's
+    binary loaded into a fresh home, each pair of arms interleaved, their order alternating,
+    100 turns, the host's load 9 to 11. `start`: `run --rm -m 64m IMAGE exit 0`, with swap
+    and without (`--memory-swap 64m`), both restoring one template. `swapping`: `alloc 96`
+    under `-m 64m`, against `-m 128m --memory-swap 128m`, which swaps none. `boot`: a
+    microVM booted with a 64 GiB window, which init shows and probes raw, against one
+    without. `walk`: a page-strided pointer chase over 512 MiB (`walk 512 4000000`), its
+    guest's address space 40 bits with the window and 36 without.
+- **Results.**
+  - The block device: one run in four killed (137) within its swap, its cgroup's
+    `memory.events` oom 45, 44 MiB in the swap cache when it was: pages written, or being
+    written, that reclaim could not yet free. The others swapped 33 MiB out, 14,600 pages.
+  - The window: none killed, in five runs of the E2E test in a row and three passes of the
+    harness, 100 swapping runs each. `swapping`: +12.6 ms [+12.1, +13.1] from request to
+    answer, p50 26.7 ms without, 39.6 ms with: 32 MiB past the limit swapped out, and the
+    workload's end; +11.7 and +13.7 ms in two earlier passes.
+  - `start`, from request to answer: +170 µs [+148, +182], p50 731 µs without and 889 with,
+    p99 889 and 1,038. Where it goes (`markers.py`, n=100, the tree instrumented by
+    `markers.apply.py`): the guest's header write 23 µs at p50, 31 at p99, 113 at most;
+    swapon 25 µs, 44 at p99. Before the host wrote the file's first page, that write, the
+    guest's first to the sparse file through the mapping, was 72 µs at p50, 3.4 ms at p90,
+    35 ms at p99 and 80 ms at most (n=60), and the start +287 µs [+234, +321] in a pass of
+    `swap.py`; with init swapping on from a child of its own, in a mount namespace and a
+    `/dev` of its own, +471 µs [+455, +489]. The VM's mapping alone, its guest doing
+    nothing with it: −2.5 µs [−15.0, +14.5].
+  - Reserving the file's disk instead (`prealloc.c`, n=50): `F_PREALLOCATE` and
+    `ftruncate` of 424 MiB 5,332 µs at p50 and 17.6 ms at most, of 4,456 MiB 29 ms at p50
+    and 523 ms at most; `ftruncate` alone 8 µs at p50, 4.1 ms at most.
+  - `boot`: +0.6 ms [+0.4, +1.0] from spawn to reap, p50 38.5 ms without (+0.85 ms [+0.37,
+    +1.19] in a pass before): the window shown and probed, once a template.
+  - `walk`: 98.2 ns a step without, 98.4 with, the paired difference +2.3 ns [+0.1, +4.2];
+    in a pass before, 123.0 and 124.1, −0.1 ns [−1.3, +2.2].
+- **Consequence.** Swap is the window (D159). The host writes a run's swap file's first
+  64 KiB before it maps it, and the file stays sparse past that. The address space the
+  window adds costs a load whose every step misses translation at most about 2%, on hosts
+  whose microVMs would otherwise fit 36 bits; the window is as long as the host's memory,
+  Docker's default swap of the largest run.

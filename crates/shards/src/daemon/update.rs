@@ -28,27 +28,21 @@ fn asked(parsed: &Parsed) -> Resources {
     }
 }
 
-/// UpdateContainer's merge: what `new` gives over what `had`, refused where they
-/// conflict, in its words and order.
+/// What `new` gives over what `had`, as UpdateContainer merges them and in its order,
+/// refused where they conflict, in shards' words (D158).
 fn merge(had: &Resources, new: &Resources) -> Result<Resources, String> {
     let conflict = |why: &str| Err(why.to_string());
     if new.nano_cpus > 0 && had.cpu_period > 0 {
-        return conflict(
-            "Conflicting options: Nano CPUs cannot be updated as CPU Period has already been set",
-        );
+        return conflict("--cpus: its CPU time is set by --cpu-period already: update that and --cpu-quota");
     }
     if new.nano_cpus > 0 && had.cpu_quota > 0 {
-        return conflict(
-            "Conflicting options: Nano CPUs cannot be updated as CPU Quota has already been set",
-        );
+        return conflict("--cpus: its CPU time is set by --cpu-quota already: update that and --cpu-period");
     }
     if new.cpu_period > 0 && had.nano_cpus > 0 {
-        return conflict(
-            "Conflicting options: CPU Period cannot be updated as NanoCPUs has already been set",
-        );
+        return conflict("--cpu-period: its CPU time is set by --cpus already: update --cpus");
     }
     if new.cpu_quota > 0 && had.nano_cpus > 0 {
-        return conflict("Conflicting options: CPU Quota cannot be updated as NanoCPUs has already been set");
+        return conflict("--cpu-quota: its CPU time is set by --cpus already: update --cpus");
     }
     let mut r = had.clone();
     if new.blkio_weight != 0 {
@@ -76,9 +70,10 @@ fn merge(had: &Resources, new: &Resources) -> Result<Resources, String> {
         // dockerd keeps the swap it worked out at create (twice the memory), or none.
         let swap = crate::resources::memory_swap(had);
         if new.memory > swap && new.memory_swap == 0 {
-            return conflict(
-                "Memory limit should be smaller than already set memoryswap limit, update the memoryswap at the same time",
-            );
+            return Err(format!(
+                "--memory {}: past its --memory-swap {swap}, the memory and the swap together: give --memory-swap too",
+                new.memory
+            ));
         }
         r.memory = new.memory;
         // The swap it had stays what it was worked out to be, not twice the new memory.
@@ -164,7 +159,7 @@ impl<D: Disk> Daemon<D> {
             let auto_remove = lock(&self.containers).get(&id).is_some_and(|c| c.auto_remove);
             if auto_remove && !matches!(p.0.as_str(), "" | "no") {
                 return Err(cannot(
-                    "Restart policy cannot be updated because AutoRemove is enabled for the container".into(),
+                    "--restart: it is removed as it ends (--rm), so it is never restarted".into(),
                 ));
             }
             run.restart_policy = p.clone();
@@ -219,9 +214,9 @@ fn restart_policy(policy: &str) -> Result<(String, i64), String> {
 mod tests {
     use super::*;
 
-    /// What dockerd's UpdateContainer made of the same updates (probed on Docker Engine
+    /// Updates merged as dockerd's UpdateContainer merges them (probed on Docker Engine
     /// 29.3.1): a memory limit over no swap refused, with swap taken; CPU limits that
-    /// conflict with what is set refused.
+    /// conflict with what is set refused, in shards' words.
     #[test]
     fn updates_merge_with_the_limits_set() {
         let none = Resources::default();
@@ -231,7 +226,7 @@ mod tests {
         };
         assert_eq!(
             merge(&none, &memory),
-            Err("Memory limit should be smaller than already set memoryswap limit, update the memoryswap at the same time".into())
+            Err("--memory 67108864: past its --memory-swap 0, the memory and the swap together: give --memory-swap too".into())
         );
         let with_swap = Resources {
             memory_swap: 128 << 20,
@@ -260,11 +255,11 @@ mod tests {
         };
         assert_eq!(
             merge(&cpus, &period),
-            Err("Conflicting options: CPU Period cannot be updated as NanoCPUs has already been set".into())
+            Err("--cpu-period: its CPU time is set by --cpus already: update --cpus".into())
         );
         assert_eq!(
             merge(&period, &cpus),
-            Err("Conflicting options: Nano CPUs cannot be updated as CPU Period has already been set".into())
+            Err("--cpus: its CPU time is set by --cpu-period already: update that and --cpu-quota".into())
         );
     }
 }

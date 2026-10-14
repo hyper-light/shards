@@ -84,6 +84,23 @@ pub fn keep_sysfs() -> io::Result<()> {
     Ok(())
 }
 
+/// The VM's device `name` in its devtmpfs, opened `O_PATH`: a handle a process may open
+/// it through again (`/proc/self/fd/N`) wherever its root is.
+pub fn device_handle(name: &str) -> io::Result<OwnedFd> {
+    use std::os::fd::AsRawFd as _;
+    let dev = DEVTMPFS
+        .get()
+        .ok_or_else(|| io::Error::other("boot kept no /dev"))?;
+    let c = CString::new(name).map_err(io::Error::other)?;
+    // SAFETY: openat(2) of a NUL-terminated name beneath a descriptor init holds.
+    let fd = unsafe { libc::openat(dev.as_raw_fd(), c.as_ptr(), libc::O_PATH | libc::O_CLOEXEC) };
+    if fd < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: a fresh descriptor nothing else owns.
+    Ok(unsafe { <OwnedFd as std::os::fd::FromRawFd>::from_raw_fd(fd) })
+}
+
 /// The VM's devices at `path` and beneath it ([`devices_at`] of its devtmpfs); none where
 /// boot kept none.
 pub fn vm_devices(path: &str) -> Vec<Node> {

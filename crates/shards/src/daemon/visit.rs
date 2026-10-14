@@ -126,8 +126,9 @@ impl<D: crate::containers::Disk> Daemon<D> {
             .ok_or_else(|| format!("container {id} was not made to be started again"))?;
         let cancel = shards_registry::http::Cancel::new();
         let mut prepared = crate::run::prepare(&stored, &self.home, &|_| {}, &cancel)?;
-        // Its files as its runs see them, init's own included (handle()).
+        // Its files as its runs see them, init's own included (handle()), and its limits.
         self.name_guest(&stored, &mut prepared.spec)?;
+        prepared.spec.cgroup = crate::resources::cgroup(&stored.resources, crate::resources::host_cpus());
         prepared.spec.builtin = shards_abi::run::builtin::HOLD;
         let (ours, theirs) = UnixStream::pair().map_err(|e| format!("a visit's connection: {e}"))?;
         let null = File::open("/dev/null").map_err(|e| format!("/dev/null: {e}"))?;

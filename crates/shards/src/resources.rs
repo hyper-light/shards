@@ -23,70 +23,88 @@ pub fn host_cpus() -> usize {
     std::thread::available_parallelism().map_or(1, std::num::NonZero::get)
 }
 
-/// What dockerd says of `r` as it makes a container: an error, or its warnings. The
-/// checks and their words are verifyPlatformContainerResources', in its order, for a
-/// cgroup v2 kernel: swappiness and OomKillDisable are not v2's, and are discarded with
-/// its warnings. One difference: `--cpuset-mems` is checked against the guest's memory
-/// nodes (one, node 0); dockerd checks it against the host's CPUs
-/// (pkg/sysinfo/cgroup2_linux.go parses `info.Cpus` into `MemSets`), and runc then fails
-/// to write a node that is not there as the container starts.
-/// `update` checks what an update asks for, which may give swap alone (dockerd's
-/// update flag).
+/// What a run's limits may ask (D155, D159), checked as it is made, in the order moby's
+/// verifyPlatformContainerResources checks them, and refused in shards' words: an error,
+/// or what to warn of. Its microVM's kernel is the run's own, so what a host shared by
+/// containers cannot give one, it gives: swappiness, the microVM's own, and the OOM
+/// killer kept off, the limit a throttle (`cgroup`). `--cpuset-mems` names the guest's
+/// memory nodes (one, node 0). `update` checks what an update asks for, which may give
+/// swap alone.
 pub fn verify(r: &Resources, cpus: usize, update: bool) -> Result<Vec<String>, String> {
-    let mut warnings = Vec::new();
+    let warnings = Vec::new();
+    let mib = |bytes: i64| bytes / (1 << 20);
     if r.memory != 0 && r.memory < MIN_MEMORY {
-        return Err("Minimum memory limit allowed is 6MB".into());
+        return Err(format!(
+            "--memory {}: a run's memory is at least {} MiB",
+            r.memory,
+            mib(MIN_MEMORY)
+        ));
     }
     if r.memory > 0 && r.memory_swap > 0 && r.memory_swap < r.memory {
-        return Err("Minimum memoryswap limit should be larger than memory limit, see usage".into());
+        return Err(format!(
+            "--memory-swap {} is less than --memory {}: it is the memory and the swap together",
+            r.memory_swap, r.memory
+        ));
     }
     if r.memory == 0 && r.memory_swap > 0 && !update {
-        return Err("You should always set the Memory limit when using Memoryswap limit, see usage".into());
-    }
-    if r.memory_swappiness.is_some() {
-        warnings.push(
-            "Your kernel does not support memory swappiness capabilities or the cgroup is not mounted. Memory swappiness discarded."
+        return Err(
+            "--memory-swap without --memory: swap is what a run may use past its memory: give --memory too"
                 .into(),
         );
     }
+    if let Some(s) = r.memory_swappiness
+        && !(0..=100).contains(&s)
+    {
+        return Err(format!("--memory-swappiness {s}: from 0 to 100"));
+    }
     if r.memory_reservation > 0 && r.memory_reservation < MIN_MEMORY {
-        return Err("Minimum memory reservation allowed is 6MB".into());
+        return Err(format!(
+            "--memory-reservation {}: at least {} MiB",
+            r.memory_reservation,
+            mib(MIN_MEMORY)
+        ));
     }
     if r.memory > 0 && r.memory_reservation > 0 && r.memory < r.memory_reservation {
-        return Err("Minimum memory limit can not be less than memory reservation limit, see usage".into());
-    }
-    if r.oom_kill_disable {
-        warnings.push("Your kernel does not support OomKillDisable. OomKillDisable discarded.".into());
+        return Err(format!(
+            "--memory {} is less than --memory-reservation {}",
+            r.memory, r.memory_reservation
+        ));
     }
     if r.nano_cpus > 0 && r.cpu_period > 0 {
-        return Err("Conflicting options: Nano CPUs and CPU Period cannot both be set".into());
+        return Err("--cpus and --cpu-period each set the CPU period: give one".into());
     }
     if r.nano_cpus > 0 && r.cpu_quota > 0 {
-        return Err("Conflicting options: Nano CPUs and CPU Quota cannot both be set".into());
+        return Err("--cpus and --cpu-quota each cap the CPU time: give one".into());
     }
     let count = i64::try_from(cpus).unwrap_or(i64::MAX);
     if r.nano_cpus != 0 && (r.nano_cpus < 0 || r.nano_cpus > count.saturating_mul(1_000_000_000)) {
         return Err(format!(
-            "range of CPUs is from 0.01 to {cpus}.00, as there are only {cpus} CPUs available"
+            "--cpus {}.{:02}: from 0.01 to {cpus}, the host's CPUs",
+            r.nano_cpus / 1_000_000_000,
+            (r.nano_cpus % 1_000_000_000).abs() / 10_000_000
         ));
     }
     if r.cpu_period != 0 && !(1000..=1_000_000).contains(&r.cpu_period) {
-        return Err(
-            "CPU cfs period can not be less than 1ms (i.e. 1000) or larger than 1s (i.e. 1000000)".into(),
-        );
+        return Err(format!(
+            "--cpu-period {}: from 1000 to 1000000 microseconds",
+            r.cpu_period
+        ));
     }
     if r.cpu_quota > 0 && r.cpu_quota < 1000 {
-        return Err("CPU cfs quota can not be less than 1ms (i.e. 1000)".into());
+        return Err(format!(
+            "--cpu-quota {}: at least 1000 microseconds a period",
+            r.cpu_quota
+        ));
     }
     microvm_cpus(r, cpus)?;
     let available = |list: &str, size: usize, what: &str, words: &str, have: &str| {
         // isCpusetListAvailable: at least 8,192 may be named, so that a list is not
         // read into an excessive set (CVE-2018-20699).
-        let named = parse_uint_list(list, 8192.max(size))
-            .map_err(|e| format!("Invalid value {list} for cpuset {what}: {e}"))?;
+        let named =
+            parse_uint_list(list, 8192.max(size)).map_err(|e| format!("--cpuset-{what} {list}: {e}"))?;
         if named.iter().any(|&n| n >= size) {
             return Err(format!(
-                "Requested {words} are not available - requested {list}, available: {have}"
+                "--cpuset-{what} {list}: the microVM's {words} are {have}"
             ));
         }
         Ok(())
@@ -99,15 +117,11 @@ pub fn verify(r: &Resources, cpus: usize, update: bool) -> Result<Vec<String>, S
     available(&r.cpuset_cpus, cpus, "cpus", "CPUs", &have)?;
     available(&r.cpuset_mems, 1, "mems", "memory nodes", "0")?;
     if r.cpu_shares < 0 {
-        return Err(format!(
-            "invalid CPU shares ({}): value must be a positive integer",
-            r.cpu_shares
-        ));
+        return Err(format!("--cpu-shares {}: not below 0", r.cpu_shares));
     }
-    // verifyPlatformContainerResources: a weight in range; the guest kernel has BFQ and
-    // io.cost, so it is kept.
+    // A weight in range; the guest kernel has BFQ and io.cost, so it is kept.
     if r.blkio_weight > 0 && !(10..=1000).contains(&r.blkio_weight) {
-        return Err("Range of blkio weight is from 10 to 1000".into());
+        return Err(format!("--blkio-weight {}: from 10 to 1000", r.blkio_weight));
     }
     Ok(warnings)
 }
@@ -215,6 +229,57 @@ fn parse_uint_list(val: &str, maximum: usize) -> Result<Vec<usize>, String> {
     Ok(named)
 }
 
+/// The swap a run's limits give its microVM (D159), in bytes, whole pages: what
+/// `--memory-swap` allows past `--memory`, as much again by default, as a host's container
+/// has. Unlimited (-1), as much again too, the cgroup holding it to none less: a device as
+/// large as the host's memory cost the guest's kernel about three bytes a page of it
+/// (swap_map, and swap_cgroup's two), 108 MiB of a 226 MiB guest for 128 GiB, and its
+/// workload was killed under that pressure (PM M229), so a run's swap that grows as it
+/// fills is what unlimited is to become. None without a memory limit, where the microVM
+/// grows to the host's memory, which its host swaps as it would any process's; or where
+/// it is less than a swap area's header page and one page to swap to (mm/swapfile.c,
+/// read_swap_header).
+pub fn swap_bytes(r: &Resources) -> Option<u64> {
+    const PAGE: u64 = 4096;
+    if r.memory <= 0 {
+        return None;
+    }
+    let total = memory_swap(r);
+    let bytes = if total == -1 {
+        u64::try_from(r.memory).ok()?
+    } else {
+        u64::try_from(total.checked_sub(r.memory)?).ok()?
+    };
+    let bytes = bytes / PAGE * PAGE;
+    (bytes >= 2 * PAGE).then_some(bytes)
+}
+
+/// The size of the swap device that holds `allowance` for a microVM of `vcpus` (D159): the
+/// allowance, which the workload's cgroup holds it to (`memory.swap.max`), and room for the
+/// cluster each vCPU may keep partly used for each order of folio it swaps out
+/// (mm/swapfile.c, percpu_swap_cluster: SWAP_NR_ORDERS each, PMD_ORDER + 1 with THP swap,
+/// which the guest kernel has; a cluster HPAGE_PMD_NR pages, 2 MiB), without which the
+/// device ran out of clusters with the allowance half used (`memory.swap.events` fail, PM
+/// M229); in whole 2 MiB, as the swap window maps it (vmm `pmem::ALIGN`). The file is
+/// sparse: the room costs the host's disk nothing until written.
+pub fn swap_device_bytes(allowance: u64, vcpus: u32) -> u64 {
+    const ORDERS: u64 = 10;
+    const CLUSTER: u64 = 2 << 20;
+    let bytes = allowance.saturating_add(u64::from(vcpus).saturating_mul(ORDERS).saturating_mul(CLUSTER));
+    bytes
+        .checked_next_multiple_of(CLUSTER)
+        .unwrap_or(u64::MAX / CLUSTER * CLUSTER)
+}
+
+/// What a swap device of `device` bytes costs its guest's kernel, in bytes (D159): its
+/// pages' swap_map byte and swap_cgroup's two, its zero map's bit and its clusters' records
+/// (mm/swapfile.c, mm/swap_cgroup.c), 0.80 to 0.81 KiB a MiB of device measured past a
+/// fixed part, 0.98 KiB a MiB in all for the smallest (VmallocUsed, PM M229): 128 KiB, and
+/// 13 bytes for each 16 KiB.
+pub fn swap_kernel_bytes(device: u64) -> u64 {
+    (128 << 10) + device / 16384 * 13
+}
+
 /// MemorySwap as dockerd keeps it (adaptContainerSettings): twice the memory, where a
 /// memory limit is set and swap is not.
 pub fn memory_swap(r: &Resources) -> i64 {
@@ -289,7 +354,12 @@ pub fn cgroup(r: &Resources, cpus: usize) -> Vec<Vec<u8>> {
             let only = swap.saturating_sub(memory);
             out.push(format!("memory.swap.max={only}"));
         }
-        if memory > 0 {
+        // `--oom-kill-disable` (D159): the limit a throttle, never the OOM killer's: past
+        // it the workload is put under reclaim and slowed, as cgroup v1's OOM control held
+        // a container's tasks, where cgroup v2 has no such control.
+        if memory > 0 && r.oom_kill_disable {
+            out.push(format!("memory.high={memory}"));
+        } else if memory > 0 {
             out.push(format!("memory.max={memory}"));
         }
         if r.memory_reservation > 0 {
@@ -495,7 +565,8 @@ mod tests {
         Resources::default()
     }
 
-    /// dockerd 29.3.1's answers, on a cgroup v2 host of 18 CPUs.
+    /// What a run's limits may ask, on a host of 18 CPUs, refused in shards' words (D158):
+    /// swappiness and the OOM killer kept off are the microVM's own (D159).
     #[test]
     fn resources_are_checked() {
         let swappy = Resources {
@@ -503,62 +574,71 @@ mod tests {
             oom_kill_disable: true,
             ..r()
         };
-        assert_eq!(
-            verify(&swappy, 18, false),
-            Ok(vec![
-                "Your kernel does not support memory swappiness capabilities or the cgroup is not mounted. Memory swappiness discarded.".to_string(),
-                "Your kernel does not support OomKillDisable. OomKillDisable discarded.".to_string(),
-            ])
-        );
+        assert_eq!(verify(&swappy, 18, false), Ok(Vec::new()));
         let refused = |r: Resources| verify(&r, 18, false).unwrap_err();
+        assert_eq!(
+            refused(Resources {
+                memory_swappiness: Some(101),
+                ..r()
+            }),
+            "--memory-swappiness 101: from 0 to 100"
+        );
         assert_eq!(
             refused(Resources {
                 nano_cpus: 99_000_000_000,
                 ..r()
             }),
-            "range of CPUs is from 0.01 to 18.00, as there are only 18 CPUs available"
+            "--cpus 99.00: from 0.01 to 18, the host's CPUs"
         );
         assert_eq!(
             refused(Resources {
                 cpuset_cpus: "99".into(),
                 ..r()
             }),
-            "Requested CPUs are not available - requested 99, available: 0-17"
+            "--cpuset-cpus 99: the microVM's CPUs are 0-17"
         );
         assert_eq!(
             refused(Resources {
                 cpuset_cpus: "1-0".into(),
                 ..r()
             }),
-            "Invalid value 1-0 for cpuset cpus: invalid format: 1-0"
+            "--cpuset-cpus 1-0: invalid format: 1-0"
         );
         assert_eq!(
             refused(Resources {
                 memory: 4 << 20,
                 ..r()
             }),
-            "Minimum memory limit allowed is 6MB"
+            "--memory 4194304: a run's memory is at least 6 MiB"
         );
         assert_eq!(
             refused(Resources {
                 memory_swap: 4 << 30,
                 ..r()
             }),
-            "You should always set the Memory limit when using Memoryswap limit, see usage"
+            "--memory-swap without --memory: swap is what a run may use past its memory: give --memory too"
+        );
+        assert_eq!(
+            refused(Resources {
+                memory: 64 << 20,
+                memory_swap: 32 << 20,
+                ..r()
+            }),
+            "--memory-swap 33554432 is less than --memory 67108864: it is the memory and the swap together"
         );
         assert_eq!(
             refused(Resources {
                 cpuset_mems: "1".into(),
                 ..r()
             }),
-            "Requested memory nodes are not available - requested 1, available: 0"
+            "--cpuset-mems 1: the microVM's memory nodes are 0"
         );
         assert_eq!(
             refused(Resources {
                 cpuset_cpus: "9000".into(),
                 ..r()
             }),
-            "Invalid value 9000 for cpuset cpus: value of out range, maximum is 8192"
+            "--cpuset-cpus 9000: value of out range, maximum is 8192"
         );
         assert_eq!(
             verify(

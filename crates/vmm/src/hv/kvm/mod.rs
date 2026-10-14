@@ -233,14 +233,15 @@ impl DeviceSlots {
             .ok_or_else(|| Error::Guest(format!("a device has {} memory slots, not {}", self.count, i + 1)))
     }
 
-    /// Maps `len` bytes of host memory at `host` at `gpa`, as slot `i` of these.
+    /// Maps `len` bytes of host memory at `host` at `gpa`, as slot `i` of these, read-only
+    /// to the guest unless `writable`: its writes there exit as MMIO writes to nothing.
     ///
     /// # Safety
     /// `host..host+len` must stay mapped until slot `i` is unmapped or the VM is destroyed.
-    pub unsafe fn map(&self, i: u32, host: *mut u8, gpa: u64, len: usize) -> Result<()> {
+    pub unsafe fn map(&self, i: u32, host: *mut u8, gpa: u64, len: usize, writable: bool) -> Result<()> {
         let region = sys::kvm_userspace_memory_region {
             slot: self.slot(i)?,
-            flags: 0,
+            flags: if writable { 0 } else { sys::MEM_READONLY },
             guest_phys_addr: gpa,
             memory_size: len as u64,
             userspace_addr: host as u64,
@@ -249,8 +250,9 @@ impl DeviceSlots {
         unsafe { self.fd.set_user_memory_region(&region) }.map_err(call("KVM_SET_USER_MEMORY_REGION"))
     }
 
-    /// Unmaps slot `i`: the guest reaches its addresses as MMIO again.
-    pub fn unmap(&self, i: u32) -> Result<()> {
+    /// Unmaps slot `i`, at `gpa` for `len` bytes as it was mapped: the guest reaches its
+    /// addresses as MMIO again.
+    pub fn unmap(&self, i: u32, _gpa: u64, _len: usize) -> Result<()> {
         self.fd
             .delete_user_memory_region(self.slot(i)?)
             .map_err(call("KVM_SET_USER_MEMORY_REGION"))

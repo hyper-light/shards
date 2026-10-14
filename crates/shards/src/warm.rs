@@ -177,6 +177,9 @@ pub struct Request {
     pub layer_out: Option<File>,
     /// The most memory its guest may plug, in bytes: the run's own (D148).
     pub plug: u64,
+    /// Its swap (D159), a sparse file of what its limits allow, which the VM maps into its
+    /// guest's swap window.
+    pub swap: Option<File>,
 }
 
 /// Takes a connection for each of `slots` from the run's share process, in order, and
@@ -329,6 +332,12 @@ pub fn receive(
     } else {
         None
     };
+    // Its swap (D159), a sparse file of what its limits allow.
+    let swap = if flags & shards_ipc::RUN_SWAP != 0 {
+        Some(File::from(next()?))
+    } else {
+        None
+    };
     // Its share process (D38), where this VM was made with shared directories.
     let slots = crate::vm_run::SHARES.get().map(Vec::as_slice).unwrap_or_default();
     let share_link = if slots.is_empty() {
@@ -393,6 +402,7 @@ pub fn receive(
     Ok(Request {
         client,
         plug,
+        swap,
         spec,
         interactive: flags & shards_ipc::RUN_INTERACTIVE != 0,
         detached,
@@ -733,6 +743,13 @@ fn joiner(link: &UnixStream, range: Result<(u64, u64), String>, to: &'static ToG
     } else {
         None
     };
+    // Its swap (D159), which the microVM maps where none of its members' is yet: they
+    // share one.
+    let swap = if flags & shards_ipc::RUN_SWAP != 0 {
+        Some(File::from(next()?))
+    } else {
+        None
+    };
     if fds.next().is_some() {
         return Err(format!("a request brings too many descriptors: {count}"));
     }
@@ -775,6 +792,11 @@ fn joiner(link: &UnixStream, range: Result<(u64, u64), String>, to: &'static ToG
             spec.setup.push(format!("join={offset},{len}").into_bytes());
             if let Some((at, len)) = layer? {
                 spec.setup.push(format!("join-layer={at},{len}").into_bytes());
+            }
+            if let Some(file) = swap
+                && let Some(len) = crate::vm_run::attach_swap(file).map_err(|e| format!("its swap: {e}"))?
+            {
+                spec.setup.push(format!("swap={len}").into_bytes());
             }
             workload::join(
                 to,

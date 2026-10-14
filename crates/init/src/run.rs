@@ -97,6 +97,11 @@ fn flush_page_reports() {
 /// template (`template`), it asks for a snapshot once the image is mounted: every VM
 /// restored from it continues from there, and dials the host for its own workload.
 pub fn main(device: &str, template: bool) -> ! {
+    // Its swap window shown (D159), before anything mounts sysfs read-only: what a run's
+    // swap is made on.
+    if let Err(e) = crate::swap::show_window() {
+        let _ = writeln!(io::stderr(), "shards-init: its swap window: {e}");
+    }
     // Docker's limits for what it starts, inherited by the standby and so the workload.
     defaults::limits();
     if template {
@@ -652,6 +657,9 @@ fn sort_setup(entries: &[Vec<u8>], into: &mut Inherited) -> Result<Vec<Vec<u8>>,
         } else if let Some(size) = entry.strip_prefix(b"rw-size=") {
             // Its writable layer's size (D156), init's tmpfs.
             crate::setup::rw_size(size).map_err(setup_failed)?;
+        } else if let Some(len) = entry.strip_prefix(b"swap=") {
+            // Its swap (D159), the file its host mapped into the swap window.
+            swap_on(len)?;
         } else if let Some(caps) = entry.strip_prefix(b"caps=") {
             into.caps = std::str::from_utf8(caps).ok().and_then(|c| c.parse().ok());
         } else if let Some(group) = entry.strip_prefix(b"group=") {
@@ -3215,6 +3223,16 @@ fn reaper_ready(standby: &mut Standby, spec: &Spec) -> Result<(), Failure> {
         .write_all(&[uid.to_be_bytes(), gid.to_be_bytes()].concat())
         .map_err(|e| setup_failed(format!("the joiner's PID namespace: {e}")))?;
     await_reaper(first, ready, "the joiner's").map(drop)
+}
+
+/// Makes the first `len` bytes of the swap window, the file its host mapped there, the
+/// microVM's swap (D159, [`crate::swap::on`]): what failed, said as the run's.
+fn swap_on(len: &[u8]) -> Result<(), Failure> {
+    let len = std::str::from_utf8(len)
+        .ok()
+        .and_then(|l| l.parse::<u64>().ok())
+        .ok_or_else(|| setup_failed("a malformed swap entry"))?;
+    crate::swap::on(len).map_err(|e| setup_failed(format!("its swap: {e}")))
 }
 
 /// Writes `entries`, `sysctl=KEY=VALUE` each, from within the IPC, UTS and network

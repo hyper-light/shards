@@ -1368,6 +1368,10 @@ pub const RUN_LAYER_IN: u8 = 32;
 /// A `kind::RUN` flag: the container stays once it stops, and its writable layer goes to
 /// a descriptor after those, told by `kind::LAYER_SAVED` once whole.
 pub const RUN_LAYER_OUT: u8 = 64;
+/// A `kind::RUN` flag: the run's swap comes with it (D159), a sparse file of what its
+/// limits allow, after the layers' descriptors, for its microVM's join disk to take as a
+/// range the guest writes and swaps to.
+pub const RUN_SWAP: u8 = 128;
 
 /// The largest payload a message may carry.
 pub const MAX_PAYLOAD: usize = 1 << 20;

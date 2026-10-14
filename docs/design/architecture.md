@@ -1532,9 +1532,10 @@ its record after it, until `shards rm` removes it; `--rm` removes it once it end
   `--memory-swappiness`, `--oom-kill-disable`, `--cpus`, `--cpu-period`, `--cpu-quota`,
   `-c`, `--cpuset-cpus`, `--cpuset-mems` and `--pids-limit` as docker/cli v29.8.1 reads
   them (MemBytes through go-units' RAMInBytes, NanoCPUs through math/big's Rat, each held
-  to the real CLI by the docker-cli oracle), and dockerd checks them as on a cgroup v2
-  host (verifyPlatformContainerResources: its errors, and its warnings for swappiness and
-  OomKillDisable, which v2 has not). A container's limits are a cgroup's, inside the
+  to the real CLI by the docker-cli oracle), and checked as dockerd checks them on a cgroup
+  v2 host (verifyPlatformContainerResources), in shards' words (D158); swap, swappiness
+  and `--oom-kill-disable` are the run's microVM's own (D159). A container's limits are a
+  cgroup's, inside the
   microVM as on a Linux host: the guest kernel has cgroup v2 with every controller runc
   uses, init mounts it with `nsdelegate`, and each workload process joins one cgroup, in
   a cgroup namespace rooted there and a mount namespace (a slave of init's) where
@@ -3613,6 +3614,89 @@ No run-time labels, relays or declassifiers (§12 answer 14, decided by the user
 an internal-only domain to the world (D58), so there is no data to label. Code mode is
 D136.
 
+### D159. A run's swap, written to its host's memory at the guest's own speed
+
+`-m` with `--memory-swap` (by default as much swap again as memory), `--memory-swappiness`
+and `--oom-kill-disable` are the run's microVM's own. Docker's swap is its host's swap
+device, which a host may not have; on a cgroup v2 host it discards swappiness and
+`--oom-kill-disable` with a warning. A microVM is its own kernel, and its host's memory
+and disk are its swap.
+
+- **The swap window.** Every run's microVM has one: a virtio-pmem device as long as the
+  host's memory, the most a run may have and so its default swap, past everything else
+  the guest is given and within the addresses the host allows (a window cut short holds
+  less, as a host's swap device smaller than a container's allowance does). A run with
+  swap gets a sparse file of its own, made anew each run in its container's directory and
+  unlinked there once its microVM holds it, off the run's path: what it swapped out is
+  nowhere once the microVM has ended. Its VM writes the file's first 64 KiB through the
+  file's own path, then maps it at the window's start, shared and writable; init writes
+  the swap header there (past the page cache) and swaps on before the command starts. The
+  guest's CPUs write swapped pages as memory, into the host's page cache of the file:
+  pmem completes each write as reclaim makes it (BLK_FEAT_SYNCHRONOUS), so reclaim frees
+  each page at once (mm/vmscan.c, shrink_folio_list) and never waits on a host thread.
+  The first page is the host's to write: the guest's first write to a page of the sparse
+  file, through the mapping, takes the host's fault path to make the page, 3.4 ms at
+  p90 and 80 ms at worst for the header, where written first by the host it is 23 µs at
+  p50 and 31 µs at p99 (PM M230). The rest stays sparse: reserving the file's disk
+  (`F_PREALLOCATE`) cost 5.3 ms at p50 for 424 MiB on APFS, 29 ms for 4.4 GiB (M230).
+- **Why not a block device.** Swap was first a writable range of the join disk (D119),
+  through a loop device, buffered and then direct. A workload within its swap was killed:
+  under `-m 64m`, allocating 96 MiB, one run in four ended 137. Reclaim under a cgroup v2
+  limit passes over anonymous folios under writeback rather than wait for them (mm/vmscan.c,
+  folio_check_dirty_writeback and shrink_folio_list's second case), and 16 rounds without
+  progress call the OOM killer (mm/memcontrol.c, try_charge_memcg). The VMM's worker
+  completing the writes, on its own host thread, was too late under load (PM M230).
+- **Hidden as the kernel boots.** Probed then, libnvdimm would give the window page
+  structures, a 64th of it (2 GiB of a 128 GiB window: drivers/nvdimm/pmem.c,
+  pmem_should_map_pages); swap needs none. Its transport reads as no device (DeviceID 0,
+  virtio 1.3 §4.2.3.1.1) until init shows it (the control page's `SWAP`), with
+  libnvdimm's drivers kept from binding of themselves meanwhile, and has its namespace
+  probed raw (`force_raw`): mapped, never described. Before the template's snapshot, so
+  a restore pays nothing for it. Its head reads as zeros until a run's file is mapped
+  over it, what the kernel's partition scan reads; a snapshot keeps the window and never
+  a run's file.
+- **Sizes.** The device is the allowance and 20 MiB a vCPU (the clusters each CPU keeps,
+  PM M229), whole 2 MiB, which the run's cgroup holds to the allowance
+  (`memory.swap.max`); unlimited (`-1`) is as much again as the memory: a device as large
+  as the host's memory would cost the guest's kernel 0.8 KiB a MiB of it (M229). The
+  kernel's bookkeeping is in the microVM's memory, beside the limit (`swap_kernel_bytes`).
+  A run without `-m` has none: its microVM grows to the host's memory (D148).
+- **Swappiness** is the microVM's (`vm.swappiness`): the run's kernel is its own.
+  **`--oom-kill-disable`** makes the limit a throttle (`memory.high`): past it the
+  workload is slowed under reclaim and never killed, as cgroup v1's OOM control held a
+  container's tasks, which cgroup v2 has no control for. `inspect` says both as given.
+- **Agents take none.** An Agentfile's agents and harnesses (D59) have the memory their
+  Agentfile grants and no swap (`memory.swap.max` 0 over their domains' cgroups): given
+  the run's microVM's swap, an agent past its limit swapped rather than ended
+  (`agents_out_of_memory_end_whole_and_spare_the_run`, which holds it).
+- **Members share.** A run joining another's microVM (D119) swaps to that microVM's swap:
+  the first member with an allowance maps its file, and the rest share it, each held to
+  its own allowance by its cgroup, as a host's containers share its swap. Joiners had
+  none of their own limits before: the daemon set them where it named a run's guest,
+  which a joiner skips, its names its provider's; every run's are now set apart.
+- **Costs** (PM M230, n=100 a side, interleaved). A run's start: +170 µs [+148, +182] from
+  request to answer (p50 731 µs without, 889 with), of which the guest's header write is
+  23 µs and swapon 25 µs (p50; 31 and 44 at p99), the rest the file's first page and its
+  mapping. A workload 32 MiB past `-m 64m`: +12.6 ms [+12.1, +13.1], its pages swapped
+  out at memory's speed where the block device's took seconds, or killed it. A template's
+  boot, its window shown and probed: +0.6 ms [+0.4, +1.0]. The guest's address space, 40
+  bits with a 64 GiB window where 36 without: a page-strided walk, every step a
+  translation's miss, −0.1 ns [−1.3, +2.2] in one pass and +2.3 [+0.1, +4.2] in another,
+  of 98 to 124 ns a step: at most about 2% of such a load, on the hosts whose microVMs the
+  window takes past 36 bits (on this one, every microVM has 40 without it).
+- **Not yet.** `update --memory-swap` past the swap a run started with, which its device
+  holds; a build's `--memory-swap` (D64), whose builder has no swap window; what a host
+  whose disk is full does to a microVM writing a new page of its sparse swap file, which
+  is not measured.
+
+Tested on real microVMs (`a_microvm_swaps_and_throttles_as_its_limits_say`): under `-m
+64m`, 96 MiB allocated, five runs in a row; no swap with `--memory-swap 64m` (137) or
+without `-m`; `memory.swap.max` for each allowance; unlimited; swappiness 10;
+`--oom-kill-disable` past the limit; the refusals; `inspect`; a joiner held to its own
+`memory.max`, killed without swap and swapping to its provider's microVM, twice.
+Mutation-checked: without swapon; with `--oom-kill-disable` a hard limit; a joiner's swap
+not mapped; a joiner's limits not set: each fails.
+
 ### D158. What shards refuses, in its own words
 
 A refusal says what shards does with its microVMs and how to get what was asked; it does
@@ -3632,7 +3716,8 @@ the API's own words where it tries kinds of object (cli/command/system/inspect.g
   checks, which leaked Go's netip errors); port publishing (another run's port, or another
   program's); image tags and removals (which microVM uses an image, and whether `-f`
   would remove it); volumes; the time windows of logs and events; signals; flags given
-  together. An exec that does not start says `shards: cannot start the command: WHY`.
+  together; a run's limits (`resources::verify`, with D159) and what `update` refuses of
+  them (the CPU time set one way, updated another; memory past the swap already set). An exec that does not start says `shards: cannot start the command: WHY`.
   Each names the flag, or the run as it was given, never a 64-digit ID.
 - **Not yet.** The build's texts, which its oracles hold byte for byte to BuildKit's; the
   CLI's usage and help texts and its checks of flags' values (crates/cmdline), byte for

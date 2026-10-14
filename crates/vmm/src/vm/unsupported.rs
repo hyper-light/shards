@@ -61,6 +61,10 @@ impl Handle {
         match self.0 {}
     }
 
+    pub fn attach_swap(&self, _file: std::fs::File) -> Result<Option<u64>, String> {
+        match self.0 {}
+    }
+
     pub fn entered_at_us(&self) -> Option<u128> {
         match self.0 {}
     }

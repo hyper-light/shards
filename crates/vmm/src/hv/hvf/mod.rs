@@ -154,6 +154,31 @@ impl Window {
     }
 }
 
+/// Device memory a device maps into the guest and unmaps, while the VM lives: a swap
+/// window's (D159). Slots are KVM's notion; the framework maps by address, so the index
+/// names nothing here.
+#[derive(Debug, Clone, Copy)]
+pub struct DeviceSlots(());
+
+impl DeviceSlots {
+    /// Maps `len` bytes of host memory at `host` at `gpa`, read-only to the guest unless
+    /// `writable`, never executable.
+    ///
+    /// # Safety
+    /// `host..host+len` must stay mapped in this process until unmapped here or the VM is
+    /// destroyed.
+    pub unsafe fn map(&self, _i: u32, host: *mut u8, gpa: u64, len: usize, writable: bool) -> Result<()> {
+        let perms = if writable { sys::Perms::RW } else { sys::Perms::R };
+        // SAFETY: forwarded caller contract; the handle exists only while the VM does.
+        Ok(unsafe { sys::map(host, gpa, len, perms) }?)
+    }
+
+    /// Unmaps `len` bytes at `gpa`: the guest's accesses there exit as MMIO to nothing.
+    pub fn unmap(&self, _i: u32, gpa: u64, len: usize) -> Result<()> {
+        Ok(sys::unmap(gpa, len)?)
+    }
+}
+
 /// The process's VM. It must outlive every [`Vcpu`], and guest memory must outlive it.
 #[derive(Debug)]
 pub struct Vm {
@@ -226,6 +251,12 @@ impl Vm {
     /// What maps a GPU's blobs into its window (D144).
     pub fn window(&self) -> Window {
         Window(())
+    }
+
+    /// What maps a device's memory into the guest while the VM lives, `count` slots of it
+    /// on KVM; here the framework's mappings, by address.
+    pub fn device_slots(&self, _count: u32) -> DeviceSlots {
+        DeviceSlots(())
     }
 
     /// Maps device memory (a virtio-pmem region) at `gpa`, writable by the guest only if

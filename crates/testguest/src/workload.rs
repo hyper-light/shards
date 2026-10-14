@@ -136,6 +136,11 @@ pub fn main() -> ! {
             let _ = writeln!(io::stdout(), "allocated {}", held.len());
             0
         }
+        // Walks MIB MiB, one word a page, STEPS times in an order of its own, each step
+        // the address the step before read, and says the nanoseconds a step took: a load
+        // whose translation every step misses, as a host's address space shapes it (D159,
+        // PM M230).
+        "walk" => walk(arg(1).parse().unwrap_or(0), arg(2).parse().unwrap_or(0)),
         // Touches N MiB as `alloc` does, frees it, says so, and idles for SECONDS: memory
         // its microVM may give back (D151).
         "alloc-free" => {
@@ -315,6 +320,45 @@ pub fn main() -> ! {
             },
             code => code,
         },
+        // The lines of file PATH holding any of WORDS (/proc/vmstat, /dev/kmsg's, ...).
+        "lines" => {
+            let text = std::fs::read(arg(1)).map(|b| String::from_utf8_lossy(&b).into_owned());
+            match text {
+                Ok(text) => {
+                    for line in text.lines() {
+                        if args
+                            .get(2..)
+                            .unwrap_or_default()
+                            .iter()
+                            .any(|w| line.contains(w.as_str()))
+                        {
+                            let _ = writeln!(io::stdout(), "{line}");
+                        }
+                    }
+                    0
+                }
+                Err(e) => {
+                    let _ = writeln!(io::stdout(), "lines {}: {e}", arg(1));
+                    1
+                }
+            }
+        }
+        // Each KEY's line of /proc/meminfo, as the kernel says it (`SwapTotal`, ...).
+        "meminfo" => {
+            let info = std::fs::read_to_string("/proc/meminfo").unwrap_or_default();
+            for key in args.get(1..).unwrap_or_default() {
+                let line = info
+                    .lines()
+                    .find(|l| l.split(':').next() == Some(key.as_str()))
+                    .unwrap_or("none");
+                let _ = writeln!(
+                    io::stdout(),
+                    "{}",
+                    line.split_whitespace().collect::<Vec<_>>().join(" ")
+                );
+            }
+            0
+        }
         // Its umask, as the kernel tells it (/proc/self/status).
         "umask" => {
             let status = std::fs::read_to_string("/proc/self/status").unwrap_or_default();
@@ -4477,5 +4521,44 @@ fn ipc_hold(key: &str) -> i32 {
     }
     let _ = writeln!(io::stdout(), "held");
     let _ = io::stdout().flush();
+    0
+}
+
+/// Walks `mib` MiB, one word a page, `steps` times in an order of its own, each step the
+/// address the step before read, and says the nanoseconds a step took: a load whose
+/// translation every step misses, as a host's address space shapes it (D159, PM M230).
+fn walk(mib: usize, steps: u64) -> i32 {
+    const PAGE_WORDS: usize = 4096 / 8;
+    let pages = (mib << 20) / 4096;
+    if pages < 2 {
+        let _ = writeln!(io::stdout(), "walk: at least 8 KiB");
+        return 1;
+    }
+    let mut words = vec![0usize; pages * PAGE_WORDS];
+    // A cycle through every page, in an order a xorshift sets (Sattolo's shuffle, which
+    // leaves one cycle).
+    let mut order: Vec<usize> = (0..pages).collect();
+    let mut x: u64 = 0x9e37_79b9_7f4a_7c15;
+    for i in (1..pages).rev() {
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        let j = usize::try_from(x % i as u64).unwrap_or(0);
+        order.swap(i, j);
+    }
+    let first = order.first().copied().unwrap_or(0);
+    for (i, &page) in order.iter().enumerate() {
+        let next = order.get(i + 1).copied().unwrap_or(first);
+        if let Some(w) = words.get_mut(page * PAGE_WORDS) {
+            *w = next * PAGE_WORDS;
+        }
+    }
+    let mut at = 0usize;
+    let start = std::time::Instant::now();
+    for _ in 0..steps {
+        at = words.get(at).copied().unwrap_or(0);
+    }
+    let ns = start.elapsed().as_nanos() as f64 / steps.max(1) as f64;
+    let _ = writeln!(io::stdout(), "walk {ns:.2} ns ended at {at}");
     0
 }

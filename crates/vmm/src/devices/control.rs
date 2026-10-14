@@ -11,6 +11,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use shards_abi::{control, marker};
 
 use super::virtio::mem::Sizes;
+use super::virtio::pmem::SwapWindow;
 use super::{MmioDevice, get_le, put_le};
 use crate::snapshot::codec::{Reader, Result, Writer};
 
@@ -34,6 +35,8 @@ pub struct Control {
     hotplug: OnceLock<std::sync::Arc<Sizes>>,
     /// The MAC the VMM was given for the guest's network device (`control::MAC`), or 0.
     mac: AtomicU64,
+    /// The guest's swap window, where it has one (D159).
+    swap: OnceLock<std::sync::Arc<SwapWindow>>,
 }
 
 impl std::fmt::Debug for Control {
@@ -75,6 +78,17 @@ impl Control {
         self.hotplug.get().map(|s| s.set_most(bytes)).is_some()
     }
 
+    /// The guest's swap window (D159), which the guest is shown here and a run's swap is
+    /// mapped into.
+    pub fn on_swap(&self, window: std::sync::Arc<SwapWindow>) {
+        let _ = self.swap.set(window);
+    }
+
+    /// The guest's swap window, where it has one.
+    pub fn swap(&self) -> Option<&std::sync::Arc<SwapWindow>> {
+        self.swap.get()
+    }
+
     /// The MAC the VMM was given for the guest's network device, which the guest reads
     /// (`control::MAC`): a restored VM's own, where its guest still has its template's.
     pub fn on_mac(&self, mac: [u8; 6]) {
@@ -109,6 +123,7 @@ impl MmioDevice for Control {
             control::HOTPLUG_SIZE if data.len() == 8 => self.hotplug.get().map_or(0, |s| s.most()),
             control::HOTPLUG_REQUEST if data.len() == 8 => self.hotplug.get().map_or(0, |s| s.requested()),
             control::MAC if data.len() == 8 => self.mac.load(Ordering::Acquire),
+            control::SWAP if data.len() == 8 => self.swap.get().map_or(0, |w| w.len()),
             _ => 0,
         };
         put_le(data, value);
@@ -140,6 +155,11 @@ impl MmioDevice for Control {
                         .is_ok()
                 {
                     crate::info!("guest marker {value} at {at} us");
+                }
+            }
+            control::SWAP if value == control::SHOW_SWAP => {
+                if let Some(window) = self.swap.get() {
+                    window.show();
                 }
             }
             control::SNAPSHOT if value == control::SNAPSHOT_NOW => match self.on_snapshot.get() {

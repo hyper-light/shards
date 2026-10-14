@@ -582,6 +582,10 @@ pub fn setup(
     for (k, v) in sysctls {
         out.push(format!("sysctl={k}={v}").into_bytes());
     }
+    // Its swappiness (D159): its microVM's, whose kernel is the run's own.
+    if let Some(s) = run.resources.memory_swappiness {
+        out.push(format!("sysctl=vm.swappiness={s}").into_bytes());
+    }
     // The process's: capabilities, groups and OOM score, which its execs take too.
     if run.privileged || !run.cap_add.is_empty() || !run.cap_drop.is_empty() {
         out.push(format!("caps={}", capabilities(run)).into_bytes());

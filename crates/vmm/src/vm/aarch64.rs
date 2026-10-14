@@ -11,7 +11,7 @@ use crate::devices::control::Control;
 use crate::devices::power::Power;
 use crate::devices::rtc::Pl031;
 use crate::devices::serial::Serial;
-use crate::devices::virtio::mmio as virtio_mmio;
+use crate::devices::virtio::{mmio as virtio_mmio, pmem};
 use crate::devices::vmgenid::VmGenId;
 use crate::devices::{Interrupt, MmioBus};
 use crate::hv::{self, Gic, GicLayout};
@@ -320,10 +320,26 @@ impl crate::devices::pci::Msi for V2mFrame {
 }
 
 /// The smallest architected IPA width that covers guest RAM, within the host's limit.
+/// The IPA sizes a VM may be given, of which [`ipa_bits`] takes the least that holds its
+/// memory and devices.
+const IPA_SIZES: [u32; 5] = [36, 40, 42, 44, 48];
+
+/// The first guest address past those a VM may be given on this host: of the largest IPA
+/// size it allows.
+fn ipa_reach() -> Result<u64, String> {
+    let max = hv::max_ipa_bits().map_err(|e| e.to_string())?;
+    let bits = IPA_SIZES
+        .into_iter()
+        .filter(|&b| b <= max)
+        .max()
+        .ok_or_else(|| format!("the host allows {max} address bits, fewer than a guest needs"))?;
+    Ok(1 << bits)
+}
+
 fn ipa_bits(end: u64) -> Result<u32, String> {
     let needed = 64 - end.saturating_sub(1).leading_zeros();
     let max = hv::max_ipa_bits().map_err(|e| e.to_string())?;
-    [36, 40, 42, 44, 48]
+    IPA_SIZES
         .into_iter()
         .find(|&b| b >= needed && b <= max)
         .ok_or_else(|| {
@@ -455,6 +471,8 @@ fn assemble(
             .ok_or("the PCI 64-bit window overflows the address space")?,
         None => top,
     };
+    // The swap window past all of that (D159), within the addresses the host can give.
+    let (swap_at, top) = super::swap_layout(config, top, ipa_reach()?)?;
     let pmem: Vec<(u64, u64)> = regions
         .iter()
         .map(|(region, gpa)| (*gpa, region.len() as u64))
@@ -482,6 +500,7 @@ fn assemble(
     }
     let (hotplug, sizes) = super::hotplug_device(&vm, memory, config)?.unzip();
     let reporting = super::reporting_device(&vm, config);
+    let swap = super::swap_window(&vm, swap_at)?;
     debug!("VM created and RAM mapped");
 
     let gp = hv::gic_params().map_err(|e| e.to_string())?;
@@ -559,10 +578,14 @@ fn assemble(
         Some((translation, device, endpoints)) => (Some(translation), Some(device), endpoints),
         None => (None, None, Vec::new()),
     };
+    let swap_device = swap
+        .clone()
+        .map(|w| Box::new(pmem::Pmem::swap(w)) as Box<dyn crate::devices::virtio::VirtioDevice>);
     let last = gpu
         .into_iter()
         .chain(hotplug)
         .chain(reporting)
+        .chain(swap_device)
         .chain(iommu_device)
         .collect();
     let devices = super::virtio_devices(config, &regions, hosts, last, layout::VIRTIO_MMIO_MAX)?;
@@ -596,6 +619,9 @@ fn assemble(
     bus.insert(layout::UART, 0x1000, serial.clone())?;
     bus.insert(layout::RTC, 0x1000, Arc::new(Pl031::default()))?;
     let control = Arc::new(Control::default());
+    if let Some(window) = swap {
+        control.on_swap(window);
+    }
     if let Some(sizes) = sizes {
         control.on_hotplug(sizes);
     }

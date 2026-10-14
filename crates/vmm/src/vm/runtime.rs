@@ -61,6 +61,16 @@ impl Handle {
         }
     }
 
+    /// Maps `file`, a run's swap, into the guest's swap window (D159), writable by the guest;
+    /// returns its length, or nothing where a run's is mapped already, which the guest's
+    /// members share. An error where the VM has no swap window.
+    pub fn attach_swap(&self, file: std::fs::File) -> Result<Option<u64>, String> {
+        self.control
+            .swap()
+            .ok_or("the microVM has no swap window")?
+            .attach(file)
+    }
+
     /// Guest markers as `(marker, µs since VMM start)`.
     pub fn markers(&self) -> Vec<(u32, u128)> {
         self.control.markers()
@@ -800,6 +810,7 @@ mod tests {
                 hotplug_mib: 0,
                 reporting: false,
                 gpu: None,
+                swap_mib: 0,
             },
             arch: Vec::new(),
             devices: Vec::new(),
