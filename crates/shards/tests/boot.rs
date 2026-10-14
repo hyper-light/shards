@@ -417,7 +417,7 @@ fn a_pci_functions_interrupts_reach_the_guest() {
     if cannot_run_vms() {
         return;
     }
-    let Some(kernel) = common::nested_kernel() else {
+    let Some(kernel) = common::kvm_kernel() else {
         eprintln!("SKIP: no pinned kernel with VFIO for {}", common::ARCH);
         return;
     };
@@ -455,7 +455,7 @@ fn a_pci_functions_dma_goes_through_its_iommu() {
     if cannot_run_vms() {
         return;
     }
-    let Some(kernel) = common::nested_kernel() else {
+    let Some(kernel) = common::kvm_kernel() else {
         eprintln!("SKIP: no pinned kernel with VFIO for {}", common::ARCH);
         return;
     };
