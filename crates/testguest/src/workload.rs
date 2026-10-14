@@ -104,6 +104,8 @@ pub fn main() -> ! {
             let _ = io::stderr().write_all(arg(1).as_bytes());
             0
         }
+        // N lines on stdout, `line 1` to `line N`: a log's text, past its size.
+        "count" => count(arg(1).parse().unwrap_or(0)),
         // OUT on stdout, then ERR on stderr, a line each: which streams a client attached.
         "streams" => {
             let _ = writeln!(io::stdout(), "{}", arg(1));
@@ -4568,4 +4570,15 @@ fn walk(mib: usize, steps: u64) -> i32 {
     let ns = start.elapsed().as_nanos() as f64 / steps.max(1) as f64;
     let _ = writeln!(io::stdout(), "walk {ns:.2} ns ended at {at}");
     0
+}
+
+/// Writes `n` lines on stdout, `line 1` to `line N`.
+fn count(n: u64) -> i32 {
+    let mut out = io::BufWriter::new(io::stdout().lock());
+    for i in 1..=n {
+        if writeln!(out, "line {i}").is_err() {
+            return 1;
+        }
+    }
+    i32::from(out.flush().is_err())
 }

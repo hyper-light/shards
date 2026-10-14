@@ -309,7 +309,7 @@ pub fn receive(
     // The log's first segment; the daemon makes the rest, as this VM reaches no
     // container's directory (D30), and its answers arrive with its signals.
     let (segments, answers) = mpsc::channel();
-    let log = if detached || logged {
+    let log = if logged {
         let (log, index) = (File::from(next()?), File::from(next()?));
         let asker = daemon
             .try_clone()
@@ -721,7 +721,7 @@ fn joiner(link: &UnixStream, range: Result<(u64, u64), String>, to: &'static ToG
         (Some(File::from(next()?)), Some(File::from(next()?)))
     };
     let (segments, answers) = mpsc::channel();
-    let log = if detached || logged {
+    let log = if logged {
         let (log, index) = (File::from(next()?), File::from(next()?));
         let asker = link.try_clone().map_err(|e| format!("its connection: {e}"))?;
         Some(

@@ -620,6 +620,10 @@ pub struct Run {
     /// `-a`: the streams its client attaches, `stdin`, `stdout` and `stderr`; none given,
     /// stdout and stderr, and stdin with `-i` (docker/cli opts.go).
     pub attach: Vec<String>,
+    /// `--log-driver`, as given; empty for shards' own (D161).
+    pub log_driver: String,
+    /// `--log-opt`s, each `KEY=VALUE` or `KEY`.
+    pub log_opts: Vec<String>,
 }
 
 /// `run`'s resource flags as docker/cli sends them (container.Resources): memory in
@@ -1058,6 +1062,8 @@ impl Run {
             ),
             ("storage-opt", self.storage_opt.clone()),
             ("attach", self.attach.clone()),
+            ("log-driver", one(&self.log_driver)),
+            ("log-opts", self.log_opts.clone()),
         ]
         .into_iter()
         .filter(|(_, v)| !v.is_empty())
@@ -1218,6 +1224,8 @@ impl Run {
                     "umask" => run.umask = Some(values.first()?.parse().ok()?),
                     "storage-opt" => run.storage_opt = values,
                     "attach" => run.attach = values,
+                    "log-driver" => run.log_driver = values.into_iter().next().unwrap_or_default(),
+                    "log-opts" => run.log_opts = values,
                     // One a later build added: not this one's to read.
                     _ => {}
                 }
@@ -1793,6 +1801,8 @@ mod tests {
             umask: Some(0o22),
             storage_opt: vec!["size=1G".into()],
             attach: vec!["stdout".into(), "stdin".into()],
+            log_driver: "json-file".into(),
+            log_opts: vec!["max-size=10m".into(), "mode".into()],
             init_process: Some(false),
             pid: "host".into(),
         };
@@ -1852,6 +1862,8 @@ mod tests {
             umask: None,
             storage_opt: Vec::new(),
             attach: Vec::new(),
+            log_driver: String::new(),
+            log_opts: Vec::new(),
             ..run.clone()
         };
         let boundary = earlier.encode().len() - 4;

@@ -2304,9 +2304,10 @@ impl<D: crate::containers::Disk> Daemon<D> {
             .parse::<i64>()
             .ok()
             .and_then(|n| usize::try_from(n).ok());
-        let shown = Shown {
+        let mut shown = Shown {
             stamps: parsed.bool("timestamps"),
             details: parsed.bool("details"),
+            attributes: Vec::new(),
         };
         let follow = parsed.bool("follow");
         // The CLI finds the container before it reads the times (docker/cli logs.go).
@@ -2317,6 +2318,30 @@ impl<D: crate::containers::Disk> Daemon<D> {
                 return 1;
             }
         };
+        // Its log as its run keeps it (D161): none where it was run with none.
+        let dir = lock(&self.containers).dir(&id);
+        let request = std::fs::read(dir.join(super::REQUEST))
+            .ok()
+            .and_then(|b| shards_ipc::Run::decode(&b));
+        if let Some(r) = &request
+            && crate::logging::driver(r) == "none"
+        {
+            reply.err(&format!(
+                "shards: {reference} keeps no log: it was run with --log-driver none"
+            ));
+            return 1;
+        }
+        if shown.details
+            && let Some(r) = request.as_ref().filter(|r| !r.log_opts.is_empty())
+        {
+            match self.log_attributes(&id, r) {
+                Ok(a) => shown.attributes = a,
+                Err(e) => {
+                    reply.err(&format!("shards: {reference}: its log's attributes: {e}"));
+                    return 1;
+                }
+            }
+        }
         let mut window = Window::default();
         for (flag, bound) in [("since", &mut window.since), ("until", &mut window.until)] {
             let given = parsed.string(flag);
@@ -2489,6 +2514,7 @@ impl Show<'_, '_> {
                     self.gathered.push(b' ');
                 }
                 if piece.first && self.shown.details {
+                    self.gathered.extend_from_slice(&self.shown.attributes);
                     self.gathered.push(b' ');
                 }
                 self.gathered.extend_from_slice(piece.bytes);
@@ -2603,6 +2629,7 @@ mod tests {
             shown: Shown {
                 stamps: false,
                 details: false,
+                attributes: Vec::new(),
             },
             window: Window::default(),
             admitted: [Admit::Pass, Admit::Pass],
@@ -3335,10 +3362,14 @@ pub(super) fn wait_readable(fds: &[BorrowedFd<'_>; 3]) -> io::Result<[bool; 3]> 
 
 /// What `docker logs` puts before each line: its time with `-t`, and with `--details` its
 /// attributes and a space.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct Shown {
     stamps: bool,
     details: bool,
+    /// The attributes `--details` shows, as dockerd writes them before a line (its log
+    /// stream's attrsByteSlice): sorted by name, each `NAME=VALUE` query-escaped, joined
+    /// by commas (D161).
+    attributes: Vec<u8>,
 }
 
 /// A time in nanoseconds since the Unix epoch as RFC 3339 in UTC with nine digits of

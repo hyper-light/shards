@@ -3614,6 +3614,49 @@ No run-time labels, relays or declassifiers (§12 answer 14, decided by the user
 an internal-only domain to the world (D58), so there is no data to label. Code mode is
 D136.
 
+### D161. A run's log, as `--log-driver` and `--log-opt` keep it
+
+`run` and `create` take `--log-driver` and `--log-opt` as docker/cli reads them (served,
+held to the CLI by the docker-cli oracle; options with `none` refused as the CLI refuses
+them). A run's log is shards' own store (D27's segments), which `shards`, the default,
+`json-file` and `local` name; `none` keeps none. `inspect` says the driver given, shards'
+own where none was, and the options as a map (`HostConfig.LogConfig`).
+
+- **Its bound, its own.** `max-size` (go-units' FromHumanSize, decimal, as both of
+  Docker's file drivers read it) is each segment's most bytes, `max-file` how many it
+  keeps, the newest written; they go to the run's VM with its request, and the daemon
+  rotates by the run's count. A record goes whole into the segment written where it fits,
+  else into the next; one longer than a segment holds is cut into records that each fill
+  one, each saying whether it ends a line, so no segment is longer than asked and a line
+  so cut is read whole. Before, a segment took a whole frame past its size (12 KB a
+  segment where 1 KB was asked). json-file
+  keeps one file where only `max-size` is given, as Docker's does; where neither is, every
+  driver keeps the daemon's bound (`SHARDS_LOG_MAX_SIZE`, `SHARDS_LOG_MAX_FILE`), where
+  Docker's json-file keeps one file that grows without end.
+- **None.** No `RUN_LOG`, no segments sent: a detached run's output goes nowhere, an
+  attached one's to its client alone, and `logs` is refused (`NAME keeps no log: it was
+  run with --log-driver none`).
+- **Details.** `labels`, `labels-regex`, `env`, `env-regex` and `tag` (a Go template of the
+  container: `{{.Name}}`, `{{.ID}}`, `{{.ImageName}}`, `{{.Command}}`, ...) are what `logs
+  --details` shows before each line, as dockerd writes them: sorted by name, each
+  `NAME=VALUE` query-escaped, joined by commas (moby logger.Info.ExtraAttributes,
+  loggerutils.ParseLogTag), from what `inspect` says of the container's environment,
+  labels and command.
+- **Refused, in shards' words.** An unknown driver or option; values that do not read
+  (`max-size`, `max-file`, `compress`, `mode`, the regexes); `max-buffer-size` without
+  non-blocking mode.
+- **Not yet.** `compress=true` (rotated segments compressed); `mode=non-blocking` (a log
+  that drops what it cannot keep up with rather than hold the workload); the drivers that
+  send a log elsewhere (`syslog`, `journald`, `gelf`, `fluentd`, `awslogs`, `splunk`,
+  `gcplogs`, `etwlogs`), each refused with a word that says so.
+
+Tested on real microVMs (`a_runs_log_is_kept_as_its_driver_and_options_say`): 10,000
+lines through `max-size=1k` and `max-file=2`, the log the output's newest lines, two
+segments; `none`: its client's output, nothing written, `logs` refused; `--details` with a
+label, a variable (escaped) and a tag; the refusals; `inspect`. Mutation-checked: a run
+logged whatever its driver fails it. Unit tests: each option's reading and refusal, the
+attributes and the tag.
+
 ### D160. The streams a run's client attaches (`-a`)
 
 `run -a` and `create -a` take `stdin`, `stdout` and `stderr`, in any case, as docker/cli

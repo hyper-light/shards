@@ -26,6 +26,8 @@ pub(super) enum Job {
         id: String,
         dir: PathBuf,
         seq: u64,
+        /// How many segments the log keeps, the newest made (D161).
+        files: u64,
         socket: Arc<RunSocket>,
     },
     /// The working set `set` a VM recorded from generation `name` of the template in
@@ -152,9 +154,15 @@ impl<D: Disk> Daemon<D> {
 
     fn make(&self, job: Job) {
         match job {
-            Job::Segment { id, dir, seq, socket } => {
+            Job::Segment {
+                id,
+                dir,
+                seq,
+                files,
+                socket,
+            } => {
                 let made = File::open(&dir)
-                    .and_then(|d| crate::segments::new_segment(&d, seq, self.logs.files))
+                    .and_then(|d| crate::segments::new_segment(&d, seq, files))
                     .map_err(|e| log(format!("container {id}: log segment {seq}: {e}")))
                     .ok();
                 let sent = match &made {

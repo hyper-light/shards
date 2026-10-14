@@ -409,6 +409,8 @@ struct Keep<'a> {
     named: Option<String>,
     /// Its VM saves its writable layer as it stops (`RUN_LAYER_OUT`).
     layer_pending: bool,
+    /// How many segments its log keeps (D161): its own, else the daemon's.
+    log_files: u64,
     /// A visit to a stopped container's files (visit.rs): no start, no end, no state of
     /// the container's changes with it.
     visit: bool,
@@ -495,6 +497,8 @@ struct Inbox {
     /// the daemon made.
     container: PathBuf,
     segment: u64,
+    /// How many segments its log keeps (D161).
+    log_files: u64,
     /// Exec clients' connections handed to the VM and not yet taken, by number: held
     /// meanwhile, as XNU collects a socket in flight that no process holds (M24).
     execs_in_flight: Vec<(u64, UnixStream)>,
@@ -1932,6 +1936,20 @@ impl<D: Disk> Daemon<D> {
             refused(&e);
             return None;
         }
+        // Its log (D161): shards' store, as its options keep it, or none.
+        let kept = match crate::logging::kept(
+            &run,
+            crate::logging::Kept {
+                size: self.logs.size,
+                files: self.logs.files,
+            },
+        ) {
+            Ok(kept) => kept,
+            Err(e) => {
+                refused(&e);
+                return None;
+            }
+        };
         let mut start = match network::check(
             &run,
             self.bridge,
@@ -2407,7 +2425,8 @@ impl<D: Disk> Daemon<D> {
                 }
             }
         }
-        let mut flags = shards_ipc::RUN_LOG;
+        // Its output kept where it has a log (D161).
+        let mut flags = if kept.is_some() { shards_ipc::RUN_LOG } else { 0 };
         if prepared.interactive {
             flags |= shards_ipc::RUN_INTERACTIVE;
         }
@@ -2424,7 +2443,9 @@ impl<D: Disk> Daemon<D> {
         } else {
             vec![conn.as_fd(), stdin.as_fd(), stdout.as_fd(), stderr.as_fd()]
         };
-        fds.extend([container_log.log.as_fd(), container_log.index.as_fd()]);
+        if kept.is_some() {
+            fds.extend([container_log.log.as_fd(), container_log.index.as_fd()]);
+        }
         // A container that stays keeps its writable layer once it stops (D37): written
         // beside its log, and kept once whole (`run_ended`); a joiner's (D119) as any.
         let layer_out = if run.remove {
@@ -2498,8 +2519,12 @@ impl<D: Disk> Daemon<D> {
         // allocation (audit D10).
         let mut payload = Vec::with_capacity(33 + prepared.spec.encoded_len().unwrap_or(0));
         payload.push(flags);
-        payload.extend(self.logs.size.to_be_bytes());
-        payload.extend(self.logs.files.to_be_bytes());
+        let retention = kept.unwrap_or(crate::logging::Kept {
+            size: self.logs.size,
+            files: self.logs.files,
+        });
+        payload.extend(retention.size.to_be_bytes());
+        payload.extend(retention.files.to_be_bytes());
         payload.extend(container_log.seq.to_be_bytes());
         // The most memory its guest may plug, in bytes: its own (D148).
         let plug = prepared
@@ -2556,6 +2581,7 @@ impl<D: Disk> Daemon<D> {
                 published,
                 named: again.clone().filter(|_| run.detach),
                 layer_pending: layer_out.is_some(),
+                log_files: kept.map_or(self.logs.files, |k| k.files),
                 visit: false,
                 egress,
                 agentfile: prepared.agentfile.clone(),
@@ -3516,6 +3542,7 @@ impl<D: Disk> Daemon<D> {
             published,
             named,
             layer_pending,
+            log_files,
             visit,
             egress,
             agentfile,
@@ -3569,6 +3596,7 @@ impl<D: Disk> Daemon<D> {
             working_set: WorkingSet::default(),
             container: lock(&self.containers).dir(id),
             segment: 0,
+            log_files,
             execs_in_flight: Vec::new(),
             exec_ids: Vec::new(),
             layer_pending,
@@ -3758,6 +3786,7 @@ impl<D: Disk> Daemon<D> {
                     id: id.to_string(),
                     dir: inbox.container.clone(),
                     seq,
+                    files: inbox.log_files,
                     socket: inbox.socket.clone(),
                 });
             }
@@ -6179,6 +6208,7 @@ mod tests {
                         published: Vec::new(),
                         named: None,
                         layer_pending: false,
+                        log_files: DEFAULT_LOGS.files,
                         visit: false,
                         egress: None,
                         agentfile: None,
@@ -6467,6 +6497,7 @@ mod tests {
                             published: Vec::new(),
                             named: None,
                             layer_pending: false,
+                            log_files: DEFAULT_LOGS.files,
                             visit: false,
                             egress: None,
                             agentfile: None,
@@ -8122,6 +8153,7 @@ mod tests {
                 published: Vec::new(),
                 named: None,
                 layer_pending: false,
+                log_files: DEFAULT_LOGS.files,
                 visit: false,
                 egress: None,
                 agentfile: None,
@@ -8167,6 +8199,7 @@ mod tests {
                 published: Vec::new(),
                 named: None,
                 layer_pending: false,
+                log_files: DEFAULT_LOGS.files,
                 visit: false,
                 egress: None,
                 agentfile: None,
@@ -8979,6 +9012,7 @@ mod tests {
                 id: "made".into(),
                 dir: dir.clone(),
                 seq: 1,
+                files: DEFAULT_LOGS.files,
                 socket: Arc::new(RunSocket::new(ours)),
             });
             t.daemon.make_soon(files::Job::Hold(last));
