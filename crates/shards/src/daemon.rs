@@ -2221,12 +2221,22 @@ impl<D: Disk> Daemon<D> {
         }
         // Its name is a member's name on its network (DNSNames' first).
         self.name_member(&id, &name);
-        // A new container keeps the request it was made by, for `shards start` (D37).
+        // A driver that ships its log to a cloud finds its credentials with this client's
+        // environment, kept in memory alone (D168).
+        self.shipping.give(&id, &run);
+        // A new container keeps the request it was made by, for `shards start` (D37): but
+        // its client's environments, its registries' and its cloud's, which hold
+        // credentials and are no container's, and which each client that starts it gives.
         if again.is_none() {
             let dir = lock(&self.containers).dir(&id);
+            let kept = Run {
+                registry_env: Vec::new(),
+                cloud_env: Vec::new(),
+                ..run.clone()
+            };
             // As it was made: a create's a create, whose Config says the streams its command
             // line gave (AttachStdout); a start says how it attaches then (`again_as`).
-            if let Err(e) = std::fs::write(dir.join(REQUEST), run.encode()) {
+            if let Err(e) = std::fs::write(dir.join(REQUEST), kept.encode()) {
                 log(format!(
                     "container {id}: keeping its request: {e}; it cannot be started again"
                 ));
@@ -3294,6 +3304,7 @@ impl<D: Disk> Daemon<D> {
         }
         if set.is_ok() {
             let c = &removal.container;
+            self.shipping.forget(id);
             self.event_for(id, &c.name, &c.image, "destroy", &[]);
         }
         self.arrived.notify_all();
@@ -5584,6 +5595,7 @@ fn again_as(stored: Run, client: &Run, id: &str) -> Run {
         timing: client.timing,
         pull: shards_ipc::Pull::Never,
         registry_env: client.registry_env.clone(),
+        cloud_env: client.cloud_env.clone(),
         daemon: client.daemon,
         again: Some(id.to_string()),
         create: false,

@@ -207,6 +207,35 @@ pub fn compact(text: &[u8]) -> Result<Vec<u8>, String> {
     Ok(out)
 }
 
+/// `text`, one JSON value, as `json.Marshal` writes a `json.RawMessage` of it: compacted,
+/// and `<`, `>`, `&`, U+2028 and U+2029 escaped (encoding/json appendCompact, escaping);
+/// else the scanner's message for what it refuses.
+pub fn compact_escaped(text: &[u8]) -> Result<Vec<u8>, String> {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let compacted = compact(text)?;
+    let mut out = Vec::with_capacity(compacted.len());
+    let mut at = 0;
+    while let Some(&c) = compacted.get(at) {
+        match (c, compacted.get(at + 1..at + 3)) {
+            (b'<' | b'>' | b'&', _) => {
+                out.extend_from_slice(b"\\u00");
+                for nibble in [c >> 4, c & 0xf] {
+                    out.push(HEX.get(usize::from(nibble)).copied().unwrap_or(b'0'));
+                }
+            }
+            // U+2028 and U+2029: E2 80 A8 and E2 80 A9.
+            (0xe2, Some(&[0x80, last @ (0xa8 | 0xa9)])) => {
+                out.extend_from_slice(b"\\u202");
+                out.push(HEX.get(usize::from(last & 0xf)).copied().unwrap_or(b'8'));
+                at += 2;
+            }
+            _ => out.push(c),
+        }
+        at += 1;
+    }
+    Ok(out)
+}
+
 /// `text` as one JSON value with only whitespace around it, or Go's `SyntaxError` message
 /// for the first thing its scanner refuses.
 pub fn parse(text: &[u8]) -> Result<Value, Vec<u8>> {
@@ -570,6 +599,18 @@ pub fn write_strings(out: &mut String, items: &[Vec<u8>]) {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    /// A raw value is written as json.Marshal writes a json.RawMessage: compacted, HTML's
+    /// characters and the line and paragraph separators escaped.
+    #[test]
+    fn raw_values_are_compacted_and_escaped_as_go_marshals_them() {
+        assert_eq!(
+            compact_escaped(b" {\"a\": [1, 2], \"b\": \"<&>\xe2\x80\xa8\xe2\x80\xa9\"} ").unwrap(),
+            br#"{"a":[1,2],"b":"\u003c\u0026\u003e\u2028\u2029"}"#
+        );
+        assert_eq!(compact_escaped(b"12").unwrap(), b"12");
+        assert!(compact_escaped(b"  ").is_err());
+    }
 
     /// Nesting is Go's to its limit, and scanned without recursion.
     #[test]

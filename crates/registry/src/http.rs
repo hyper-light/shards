@@ -66,14 +66,20 @@ pub struct Client {
     patience: Patience,
     /// The addresses a connection may go to, where not all may (a build's proxy, D110).
     reach: Option<fn(std::net::IpAddr) -> bool>,
+    /// The name its servers' certificates are verified for, and TLS names them by, where
+    /// not each URL's host.
+    server_name: Option<String>,
 }
 
-/// How long a request waits on its server: for its response's head, and on any read or
-/// write that makes no progress. `None` waits for as long as it takes, until the request
-/// is cancelled. A registry's are bounded ([`HEAD`] and 30 s); a build's proxy waits as
-/// long as the step it serves does, as Go's transport has no bound of its own (D110).
+/// How long a request waits on its server: to connect, its name's lookup included; for
+/// its response's head; and on any read or write that makes no progress. `None` waits
+/// for as long as it takes, until the request is cancelled. A registry's are bounded (30
+/// s, [`HEAD`] and 30 s); a build's proxy waits as long as the step it serves does, as Go's
+/// transport has no bound of its own (D110); EC2's instance metadata is given 250 ms to
+/// connect, as the AWS SDK gives it (D168).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Patience {
+    pub connect: Duration,
     pub head: Option<Duration>,
     pub stall: Option<Duration>,
 }
@@ -81,6 +87,7 @@ pub struct Patience {
 impl Default for Patience {
     fn default() -> Patience {
         Patience {
+            connect: CONNECT,
             head: Some(HEAD),
             stall: Some(STALL),
         }
@@ -335,7 +342,16 @@ impl Client {
             cancel: None,
             patience: Patience::default(),
             reach: None,
+            server_name: None,
         }
+    }
+
+    /// This client, verifying its servers' certificates for `name`, and naming them so to
+    /// TLS (SNI), where not each URL's host: Go's tls.Config.ServerName (a splunk log
+    /// driver's `splunk-caname`, D167).
+    pub fn with_server_name(mut self, name: &str) -> Client {
+        self.server_name = Some(name.to_string());
+        self
     }
 
     /// This client, its requests waiting on their servers as `patience` says.
@@ -597,10 +613,11 @@ impl Client {
             }
             None => self.reach,
         };
-        let tcp = dial(first, self.cancel.as_ref(), reach).map_err(|e| match proxy {
-            Some(p) => e.context(format!("proxyconnect {}", p.url.authority())),
-            None => e,
-        })?;
+        let tcp =
+            dial(first, self.cancel.as_ref(), reach, self.patience.connect).map_err(|e| match proxy {
+                Some(p) => e.context(format!("proxyconnect {}", p.url.authority())),
+                None => e,
+            })?;
         let _ = tcp.set_nodelay(true);
         // Watched from here, the handshakes and tunnel included.
         let watch = self.cancel.as_ref().map(|c| c.watch(&tcp));
@@ -631,7 +648,10 @@ impl Client {
     /// A TLS session with `url`'s host over `io`, its handshake done within 10 s.
     fn handshake<T: Wire>(&self, url: &Url, mut io: T) -> Result<Tls<T>, Error> {
         let config = (self.tls)(url)?;
-        let host = url.host().trim_start_matches('[').trim_end_matches(']');
+        let host = match &self.server_name {
+            Some(name) => name.as_str(),
+            None => url.host().trim_start_matches('[').trim_end_matches(']'),
+        };
         let name = ServerName::try_from(host.to_string()).map_err(|e| Error::new(format!("{url}: {e}")))?;
         let mut tls = ClientConnection::new(config, name)?;
         let deadline = Instant::now() + HANDSHAKE;
@@ -1048,9 +1068,10 @@ fn dial(
     url: &Url,
     cancel: Option<&Cancel>,
     reach: Option<fn(std::net::IpAddr) -> bool>,
+    within: Duration,
 ) -> Result<TcpStream, Error> {
     // The name's lookup is within the dial's time, as Go's Dialer counts it.
-    let deadline = Instant::now() + CONNECT;
+    let deadline = Instant::now() + within;
     let mut addrs = resolve(url, deadline, cancel)?;
     if let Some(reach) = reach {
         addrs.retain(|a| reach(a.ip()));
@@ -2039,6 +2060,7 @@ mod tests {
         let patient = plain().with_patience(Patience {
             head: None,
             stall: None,
+            ..Patience::default()
         });
         let conn = patient.connect(&url, Key::of(&url, None), None).unwrap();
         let tcp = conn.io.get_ref().tcp();

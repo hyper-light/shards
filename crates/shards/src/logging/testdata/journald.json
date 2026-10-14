@@ -33,7 +33,7 @@
       ],
       [
        "CONTAINER_LOG_ORDINAL",
-       "1"
+       "{ordinal}"
       ],
       [
        "CONTAINER_NAME",
@@ -149,7 +149,7 @@
       ],
       [
        "CONTAINER_LOG_ORDINAL",
-       "1"
+       "{ordinal}"
       ],
       [
        "CONTAINER_NAME",
@@ -203,7 +203,7 @@
       ],
       [
        "CONTAINER_LOG_ORDINAL",
-       "2"
+       "{ordinal}"
       ],
       [
        "CONTAINER_NAME",
@@ -252,7 +252,7 @@
       ],
       [
        "CONTAINER_LOG_ORDINAL",
-       "1"
+       "{ordinal}"
       ],
       [
        "CONTAINER_NAME",
@@ -301,7 +301,7 @@
       ],
       [
        "CONTAINER_LOG_ORDINAL",
-       "3"
+       "{ordinal}"
       ],
       [
        "CONTAINER_NAME",
@@ -368,7 +368,7 @@
       ],
       [
        "CONTAINER_LOG_ORDINAL",
-       "4"
+       "{ordinal}"
       ],
       [
        "CONTAINER_NAME",
@@ -435,7 +435,7 @@
       ],
       [
        "CONTAINER_LOG_ORDINAL",
-       "5"
+       "{ordinal}"
       ],
       [
        "CONTAINER_NAME",

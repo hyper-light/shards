@@ -11,6 +11,7 @@ mod agent;
 mod agentfile;
 #[cfg(all(feature = "alloc-count", unix))]
 mod alloc_count;
+mod aws;
 mod build;
 mod cli;
 #[cfg(unix)]
@@ -134,6 +135,24 @@ pub(crate) fn split(_phase: &str, _part: &str, _took: std::time::Duration, _byte
             _took.as_secs_f64() * 1e3
         );
     }
+}
+
+/// A random UUID, version 4 (RFC 9562 §5.4): a splunk channel's (D167), a DPoP proof's
+/// (D168).
+pub(crate) fn random_uuid() -> std::io::Result<String> {
+    let mut b = [0u8; 16];
+    shards_vmm::platform::fill_random(&mut b)?;
+    b[6] = (b[6] & 0x0f) | 0x40;
+    b[8] = (b[8] & 0x3f) | 0x80;
+    let hex: String = b.iter().map(|x| format!("{x:02x}")).collect();
+    Ok(format!(
+        "{}-{}-{}-{}-{}",
+        hex.get(..8).unwrap_or_default(),
+        hex.get(8..12).unwrap_or_default(),
+        hex.get(12..16).unwrap_or_default(),
+        hex.get(16..20).unwrap_or_default(),
+        hex.get(20..).unwrap_or_default()
+    ))
 }
 
 fn usage_error(message: &str) -> ExitCode {

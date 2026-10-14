@@ -232,6 +232,7 @@ mod tests {
                     "CONTAINER_LOG_EPOCH" => json!("{epoch}"),
                     "CONTAINER_PARTIAL_ID" => json!("{partial}"),
                     "SYSLOG_TIMESTAMP" => json!("{time}"),
+                    "CONTAINER_LOG_ORDINAL" => json!("{ordinal}"),
                     _ if v == NAME => json!("{name}"),
                     _ if v.len() > 1 && ["x", "y"].iter().any(|c| v.bytes().all(|b| [b] == c.as_bytes())) => {
                         let letter = if v.starts_with('x') { "x" } else { "y" };
@@ -248,12 +249,13 @@ mod tests {
         out
     }
 
-    /// Every entry Docker's driver sent is what shards makes of the same line, field for
-    /// field, but for the attributes shards leaves out (D166): one journald drops (a digit
-    /// first, `1D`), one named as the driver's own MESSAGE, which Docker sends as a second,
-    /// and one named as the container's CONTAINER_NAME, which Docker lets replace it.
+    /// Every entry the recording holds (scripts/logdrivers/generate) is what shards makes of
+    /// the same line, field for field, but for the attributes shards leaves out (D166): one
+    /// journald drops (a digit first, `1D`), one named as the driver's own MESSAGE, which the
+    /// recording sends as a second, and one named as the run's CONTAINER_NAME, which the
+    /// recording lets replace it.
     #[test]
-    fn entries_are_docker_s() {
+    fn entries_match_the_recording() {
         for case in oracle()["cases"].as_array().unwrap() {
             let name = case["case"].as_str().unwrap();
             let (tag, attributes): (&str, BTreeMap<String, String>) = match name {
@@ -282,12 +284,12 @@ mod tests {
             if name == "attributes" {
                 assert_eq!(from.left_out, ["1d", "container.name", "message"]);
             }
-            for recorded in case["entries"].as_array().unwrap() {
+            for (i, recorded) in case["entries"].as_array().unwrap().iter().enumerate() {
                 let recorded = recorded["fields"].as_array().unwrap();
                 let get = |field: &str| -> Vec<&Value> {
                     recorded.iter().filter(|f| f[0] == field).map(|f| &f[1]).collect()
                 };
-                // The line, its stream, its part and its ordinal, as Docker sent them.
+                // The line, its stream, its part and its ordinal, as recorded.
                 let line = match get("MESSAGE")[0] {
                     Value::String(s) => s.as_bytes().to_vec(),
                     run => vec![b'x'; usize::try_from(run["x"].as_u64().unwrap()).unwrap()],
@@ -302,9 +304,15 @@ mod tests {
                     ordinal: ordinal.as_str().unwrap().parse().unwrap(),
                     last: get("CONTAINER_PARTIAL_LAST")[0] == "true",
                 });
-                let ordinal = get("CONTAINER_LOG_ORDINAL")[0].as_str().unwrap().parse().unwrap();
-                let ours = entry(&from, stream, 1_791_260_014_360_799_172, &line, part, ordinal);
-                let docker: Vec<Value> = recorded
+                let ours = entry(
+                    &from,
+                    stream,
+                    1_791_260_014_360_799_172,
+                    &line,
+                    part,
+                    i as u64 + 1,
+                );
+                let expected: Vec<Value> = recorded
                     .iter()
                     .filter(|f| !(name == "attributes" && (f[0] == "1D" || f == &&json!(["MESSAGE", "4"]))))
                     .map(|f| {
@@ -315,7 +323,7 @@ mod tests {
                         }
                     })
                     .collect();
-                assert_eq!(normal(fields(&ours).unwrap()), docker, "{name}");
+                assert_eq!(normal(fields(&ours).unwrap()), expected, "{name}");
             }
         }
     }
@@ -354,9 +362,10 @@ mod tests {
         }
     }
 
-    /// Which options Docker took, shards takes, where the journal is; elsewhere none.
+    /// The options the recording accepted, shards accepts where the journal is; elsewhere
+    /// none.
     #[test]
-    fn options_are_taken_as_docker_takes_them() {
+    fn options_are_accepted_and_refused_as_recorded() {
         for case in oracle()["options"].as_array().unwrap() {
             let opts: Vec<String> = case["options"]
                 .as_array()
@@ -380,7 +389,7 @@ mod tests {
             assert_eq!(
                 ours.is_err(),
                 refused,
-                "{opts:?}: Docker {}, shards {ours:?}",
+                "{opts:?}: recorded {}, shards {ours:?}",
                 case["refused"]
             );
         }

@@ -12198,6 +12198,645 @@ fn a_runs_log_is_sent_to_journald_as_its_options_say() {
     }
 }
 
+/// A request a Splunk HTTP Event Collector of the test's was sent: its method, its target,
+/// its fields (names in lower case) and its body.
+struct HecRequest {
+    method: String,
+    target: String,
+    fields: std::collections::BTreeMap<String, String>,
+    body: Vec<u8>,
+}
+
+/// A Splunk HTTP Event Collector on `listener`, as HEC answers with indexer
+/// acknowledgment: each post its ack's ID, numbered from 0, and each ack asked for
+/// indexed. Each connection on a thread of its own, as a driver keeps its own; each
+/// request sent on `seen`.
+fn hec(listener: std::net::TcpListener, seen: std::sync::mpsc::Sender<HecRequest>) {
+    use std::io::{BufRead as _, Read as _, Write as _};
+    let posted = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    std::thread::spawn(move || {
+        for conn in listener.incoming() {
+            let Ok(conn) = conn else {
+                return;
+            };
+            let (seen, posted) = (seen.clone(), posted.clone());
+            std::thread::spawn(move || {
+                let mut reader = std::io::BufReader::new(conn);
+                loop {
+                    let mut line = String::new();
+                    if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                        return;
+                    }
+                    let mut parts = line.split_whitespace();
+                    let (method, target) = (
+                        parts.next().unwrap().to_string(),
+                        parts.next().unwrap().to_string(),
+                    );
+                    let mut fields = std::collections::BTreeMap::new();
+                    loop {
+                        let mut field = String::new();
+                        reader.read_line(&mut field).unwrap();
+                        let field = field.trim_end();
+                        if field.is_empty() {
+                            break;
+                        }
+                        let (k, v) = field.split_once(':').unwrap();
+                        fields.insert(k.to_ascii_lowercase(), v.trim().to_string());
+                    }
+                    let len: usize = fields.get("content-length").map_or(0, |l| l.parse().unwrap());
+                    let mut body = vec![0u8; len];
+                    reader.read_exact(&mut body).unwrap();
+                    let answer = if target.starts_with("/services/collector/ack") {
+                        let asked: serde_json::Value = serde_json::from_slice(&body).unwrap();
+                        let acks: Vec<String> = asked["acks"]
+                            .as_array()
+                            .unwrap()
+                            .iter()
+                            .map(|id| format!("\"{id}\":true"))
+                            .collect();
+                        format!("{{\"acks\":{{{}}}}}", acks.join(","))
+                    } else {
+                        let id = posted.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        format!("{{\"text\":\"Success\",\"code\":0,\"ackId\":{id}}}")
+                    };
+                    let reply = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{answer}",
+                        answer.len()
+                    );
+                    if reader.get_mut().write_all(reply.as_bytes()).is_err() {
+                        return;
+                    }
+                    let _ = seen.send(HecRequest {
+                        method,
+                        target,
+                        fields,
+                        body,
+                    });
+                }
+            });
+        }
+    });
+}
+
+/// The events a post to HEC carried, one JSON object after another.
+fn hec_events(body: &[u8]) -> Vec<serde_json::Value> {
+    serde_json::Deserializer::from_slice(body)
+        .into_iter::<serde_json::Value>()
+        .map(Result::unwrap)
+        .collect()
+}
+
+/// A run's log sent to Splunk (D167), to an HTTP Event Collector in the test: each line an
+/// event as Docker's driver posts it, its line, source, tag and attributes, its host this
+/// one's and its time its output's, with its token; a line posted while its run still
+/// runs, as the shipper catches up, where Docker's waits for a tick; with indexer
+/// acknowledgment, its ack asked for on the channel it was posted on; the refusals in
+/// shards' words.
+#[test]
+fn a_runs_log_is_sent_to_splunk_as_its_options_say() {
+    let Some((home, image)) = home("containers-splunk") else {
+        return;
+    };
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!(
+        "splunk-url=http://127.0.0.1:{}",
+        listener.local_addr().unwrap().port()
+    );
+    let (seen, requests) = std::sync::mpsc::channel();
+    hec(listener, seen);
+    let shards = |args: &[&str]| shards_in(&home, args);
+    let splunk = |name: &str, opts: &[&str], command: &[&str], detach: bool| {
+        let mut flags = vec![
+            "--name",
+            name,
+            "--log-driver",
+            "splunk",
+            "--log-opt",
+            &url,
+            "--log-opt",
+            "splunk-token=t",
+        ];
+        if detach {
+            flags.insert(0, "-d");
+        }
+        for o in opts {
+            flags.extend(["--log-opt", o]);
+        }
+        flags.extend(["--label", "team=logs"]);
+        let r = run_in(&home, &image, &flags, command);
+        assert_eq!(r.status, Some(0), "{name}: {r}");
+    };
+    // The posts' events, as many as `want`: none waited for past its arrival.
+    let posted = |want: usize| -> (Vec<HecRequest>, Vec<serde_json::Value>) {
+        let (mut posts, mut events) = (Vec::new(), Vec::new());
+        while events.len() < want {
+            let request: HecRequest = requests.recv_timeout(TIMEOUT).unwrap();
+            if request.target == "/services/collector/event/1.0" {
+                events.extend(hec_events(&request.body));
+            }
+            posts.push(request);
+        }
+        (posts, events)
+    };
+
+    // A line on each stream: its fields, the label asked for, its token.
+    splunk("inline", &["labels=team"], &["streams", "out", "err"], false);
+    let (posts, mut events) = posted(2);
+    let id = shards(&["inspect", "-f", "{{.Id}}", "inline"])
+        .stdout
+        .trim()
+        .to_string();
+    let stamped = shards(&["logs", "-t", "inline"]);
+    events.sort_by_key(|e| e["event"]["line"].as_str().unwrap().to_string());
+    for (event, (line, source)) in events.iter().zip([("err", "stderr"), ("out", "stdout")]) {
+        assert_eq!(
+            event["event"],
+            serde_json::json!({"line": line, "source": source, "tag": id.get(..12).unwrap(), "attrs": {"team": "logs"}}),
+            "{event}"
+        );
+        let host = event["host"].as_str().unwrap();
+        assert!(!host.is_empty() && !host.contains(':'), "a host's name: {event}");
+        // Its time its output's, as `logs -t` says it, to the microsecond.
+        let kept = [&stamped.stdout, &stamped.stderr]
+            .iter()
+            .flat_map(|s| s.lines())
+            .find_map(|l| l.strip_suffix(&format!(" {line}")))
+            .unwrap_or_else(|| panic!("{stamped}"));
+        let kept = time::OffsetDateTime::parse(kept, &time::format_description::well_known::Rfc3339)
+            .unwrap()
+            .unix_timestamp_nanos();
+        let (secs, micros) = event["time"].as_str().unwrap().split_once('.').unwrap();
+        let sent =
+            i128::from(secs.parse::<i64>().unwrap()) * 1_000_000 + i128::from(micros.parse::<i64>().unwrap());
+        assert!((sent - kept / 1000).abs() <= 1, "{event}: {stamped}");
+    }
+    for post in &posts {
+        assert_eq!(post.method, "POST");
+        assert_eq!(post.fields["authorization"], "Splunk t");
+    }
+
+    // A line posted while its run still runs: the shipper caught up with its log.
+    splunk("live", &[], &["ignore", "TERM"], true);
+    let (_, events) = posted(1);
+    assert_eq!(events[0]["event"]["line"], "ready");
+    assert_eq!(
+        shards(&["inspect", "-f", "{{.State.Running}}", "live"])
+            .stdout
+            .trim(),
+        "true"
+    );
+    assert_eq!(shards(&["rm", "-f", "live"]).status, Some(0));
+
+    // Indexer acknowledgment: posted on a channel, its ack asked for there.
+    splunk(
+        "acked",
+        &["splunk-index-acknowledgment=true"],
+        &["streams", "out", "err"],
+        false,
+    );
+    let mut asked = Vec::new();
+    let mut channels = std::collections::BTreeSet::new();
+    let mut lines = 0;
+    while lines < 2 || asked.is_empty() {
+        let request: HecRequest = requests.recv_timeout(TIMEOUT).unwrap();
+        channels.insert(request.fields["x-splunk-request-channel"].clone());
+        if request.target.starts_with("/services/collector/ack") {
+            asked.push(request.target.clone());
+        } else {
+            lines += hec_events(&request.body).len();
+        }
+    }
+    let channel = channels.iter().next().unwrap().clone();
+    assert_eq!(channels.len(), 1, "one channel: {channels:?}");
+    assert_eq!(asked[0], format!("/services/collector/ack?channel={channel}"));
+
+    for (opts, said) in [
+        (
+            &["splunk-insecureskipverify=true"][..],
+            "shards: --log-opt splunk-insecureskipverify: shards posts a log only to a Splunk whose certificate it verifies",
+        ),
+        (
+            &["splunk-capath=/nonexistent"],
+            "shards: --log-opt splunk-capath=/nonexistent: ",
+        ),
+        (
+            &["splunk-format=xml"],
+            "shards: --log-opt splunk-format=xml: inline, json or raw",
+        ),
+    ] {
+        let mut flags = vec![
+            "--log-driver",
+            "splunk",
+            "--log-opt",
+            &url,
+            "--log-opt",
+            "splunk-token=t",
+        ];
+        for o in opts {
+            flags.extend(["--log-opt", o]);
+        }
+        let r = run_in(&home, &image, &flags, &["exit", "0"]);
+        assert_eq!(r.status, Some(125), "{opts:?}: {r}");
+        assert!(r.stderr.starts_with(said), "{opts:?}: {r}");
+    }
+}
+
+/// A request CloudWatch Logs was sent in a test.
+struct CloudWatchRequest {
+    target: String,
+    fields: std::collections::BTreeMap<String, String>,
+    body: serde_json::Value,
+}
+
+/// CloudWatch Logs on `listener`, as its JSON 1.1 API answers: the group `existing` there
+/// from the start, others once made; a stream made in a group not there refused as
+/// ResourceNotFoundException, one made twice as ResourceAlreadyExistsException; events
+/// put to a stream there. Each connection on a thread of its own, as a client keeps its
+/// own; each request sent on `seen`.
+fn cloudwatch(listener: std::net::TcpListener, seen: std::sync::mpsc::Sender<CloudWatchRequest>) {
+    use std::io::{BufRead as _, Read as _, Write as _};
+    type Made = (
+        std::collections::BTreeSet<String>,
+        std::collections::BTreeSet<(String, String)>,
+    );
+    let made: std::sync::Arc<std::sync::Mutex<Made>> = std::sync::Arc::new(std::sync::Mutex::new((
+        ["existing".to_string()].into(),
+        std::collections::BTreeSet::new(),
+    )));
+    std::thread::spawn(move || {
+        for conn in listener.incoming() {
+            let Ok(conn) = conn else {
+                return;
+            };
+            let (seen, made) = (seen.clone(), made.clone());
+            std::thread::spawn(move || {
+                let mut reader = std::io::BufReader::new(conn);
+                loop {
+                    let mut line = String::new();
+                    if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                        return;
+                    }
+                    let mut fields = std::collections::BTreeMap::new();
+                    loop {
+                        let mut field = String::new();
+                        reader.read_line(&mut field).unwrap();
+                        let field = field.trim_end();
+                        if field.is_empty() {
+                            break;
+                        }
+                        let (k, v) = field.split_once(':').unwrap();
+                        fields.insert(k.to_ascii_lowercase(), v.trim().to_string());
+                    }
+                    let len: usize = fields.get("content-length").map_or(0, |l| l.parse().unwrap());
+                    let mut body = vec![0u8; len];
+                    reader.read_exact(&mut body).unwrap();
+                    let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+                    let target = fields.get("x-amz-target").cloned().unwrap_or_default();
+                    let text = |k: &str| body[k].as_str().unwrap_or_default().to_string();
+                    let (group, stream) = (text("logGroupName"), text("logStreamName"));
+                    let refused = |kind: &str, message: &str| {
+                        (
+                            400,
+                            format!("{{\"__type\":\"{kind}\",\"message\":\"{message}\"}}"),
+                        )
+                    };
+                    let (status, answer) = {
+                        let mut made = made.lock().unwrap();
+                        match target.as_str() {
+                            "Logs_20140328.CreateLogGroup" => {
+                                made.0.insert(group);
+                                (200, "{}".to_string())
+                            }
+                            "Logs_20140328.CreateLogStream" if !made.0.contains(&group) => refused(
+                                "ResourceNotFoundException",
+                                "The specified log group does not exist.",
+                            ),
+                            "Logs_20140328.CreateLogStream"
+                                if !made.1.insert((group.clone(), stream.clone())) =>
+                            {
+                                refused(
+                                    "ResourceAlreadyExistsException",
+                                    "The specified log stream already exists",
+                                )
+                            }
+                            "Logs_20140328.CreateLogStream" => (200, "{}".to_string()),
+                            "Logs_20140328.PutLogEvents"
+                                if !made.1.contains(&(group.clone(), stream.clone())) =>
+                            {
+                                refused(
+                                    "ResourceNotFoundException",
+                                    "The specified log stream does not exist.",
+                                )
+                            }
+                            "Logs_20140328.PutLogEvents" => {
+                                (200, "{\"nextSequenceToken\":\"t\"}".to_string())
+                            }
+                            _ => refused("UnknownOperationException", "unknown"),
+                        }
+                    };
+                    let reply = format!(
+                        "HTTP/1.1 {status} X\r\nContent-Type: application/x-amz-json-1.1\r\nContent-Length: {}\r\n\r\n{answer}",
+                        answer.len()
+                    );
+                    if reader.get_mut().write_all(reply.as_bytes()).is_err() {
+                        return;
+                    }
+                    let _ = seen.send(CloudWatchRequest { target, fields, body });
+                }
+            });
+        }
+    });
+}
+
+/// A run's log sent to CloudWatch Logs (D168), to CloudWatch in the test: its stream made,
+/// named for its container's whole ID; each line an event at its output's time, to the
+/// millisecond; signed with what the environment of the client that started the run
+/// finds, not the daemon's: a second client's keys its own, a credential process run in
+/// its client's environment; its group made where the options say; lines joined where a
+/// pattern says; a line put while its run still runs; nothing of the client's secrets in
+/// the request the daemon keeps on disk; the refusals in shards' words.
+#[test]
+fn a_runs_log_is_sent_to_cloudwatch_logs_as_its_options_say() {
+    let Some((home, image)) = home("containers-awslogs") else {
+        return;
+    };
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let endpoint = format!(
+        "awslogs-endpoint=http://127.0.0.1:{}",
+        listener.local_addr().unwrap().port()
+    );
+    let (seen, requests) = std::sync::mpsc::channel();
+    cloudwatch(listener, seen);
+    let (kernel, init) = (kernel(), guest_init());
+    let config = home.join("aws-config");
+    std::fs::write(
+        &config,
+        "[profile process]\ncredential_process = printf '{\"Version\": 1, \"AccessKeyId\": \"PROCESS\", \"SecretAccessKey\": \"process-secret\"}'\n",
+    )
+    .unwrap();
+    let none = home.join("no-aws-credentials");
+    let lines = home.join("lines");
+    std::fs::create_dir_all(&lines).unwrap();
+    std::fs::write(
+        lines.join("lines.txt"),
+        "1 first\n  more\n2 second\n  more\n3 third\n",
+    )
+    .unwrap();
+    let bind = format!("{}:/data:ro", lines.display());
+    let first: &[(&str, &str)] = &[
+        ("AWS_ACCESS_KEY_ID", "AKIDFIRST"),
+        ("AWS_SECRET_ACCESS_KEY", "first-secret-key"),
+        ("AWS_SESSION_TOKEN", "first-session-token"),
+        (
+            "DOCKER_AUTH_CONFIG",
+            r#"{"auths":{"registry.test":{"auth":"cmVnaXN0cnktc2VjcmV0"}}}"#,
+        ),
+    ];
+    // A client's environment: the run's home, and of AWS's only what `aws` gives; whatever
+    // the test's own environment holds of AWS's is set empty, which is none.
+    let shards_with = |aws: &[(&str, &str)], args: &[&str]| {
+        let mut env: Vec<(&str, std::ffi::OsString)> = vec![
+            ("SHARDS_HOME", home.as_os_str().to_owned()),
+            ("SHARDS_KERNEL", kernel.as_os_str().to_owned()),
+            ("SHARDS_INIT", init.as_os_str().to_owned()),
+            ("AWS_CONFIG_FILE", config.as_os_str().to_owned()),
+            ("AWS_SHARED_CREDENTIALS_FILE", none.as_os_str().to_owned()),
+        ];
+        for k in [
+            "AWS_PROFILE",
+            "AWS_DEFAULT_PROFILE",
+            "AWS_ACCESS_KEY_ID",
+            "AWS_SECRET_ACCESS_KEY",
+            "AWS_SESSION_TOKEN",
+            "AWS_CA_BUNDLE",
+            "AWS_ENDPOINT_URL",
+            "AWS_WEB_IDENTITY_TOKEN_FILE",
+            "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI",
+            "AWS_CONTAINER_CREDENTIALS_FULL_URI",
+        ] {
+            env.push((k, std::ffi::OsString::new()));
+        }
+        env.push(("AWS_EC2_METADATA_DISABLED", "true".into()));
+        for (k, v) in aws {
+            env.retain(|(name, _)| name != k);
+            env.push((k, (*v).into()));
+        }
+        let env: Vec<(&str, &std::ffi::OsStr)> = env.iter().map(|(k, v)| (*k, v.as_os_str())).collect();
+        run_shards_env(&[], args, &env, TIMEOUT)
+    };
+    let shards = |args: &[&str]| shards_in(&home, args);
+    let id_of = |name: &str| {
+        shards(&["inspect", "-f", "{{.Id}}", name])
+            .stdout
+            .trim()
+            .to_string()
+    };
+    let awslogs = |name: &str, flags: &[&str], opts: &[&str], command: &[&str], aws: &[(&str, &str)]| {
+        let mut args = vec![
+            "run",
+            "--pull",
+            "never",
+            "--name",
+            name,
+            "--log-driver",
+            "awslogs",
+            "--log-opt",
+            "awslogs-region=us-east-1",
+            "--log-opt",
+            &endpoint,
+        ];
+        args.extend(flags);
+        for o in opts {
+            args.extend(["--log-opt", o]);
+        }
+        args.push(&image);
+        args.extend(command);
+        shards_with(aws, &args)
+    };
+    // The requests asked of CloudWatch until `stream` has `want` events put: none waited
+    // for past its arrival.
+    let put = |stream: &str, want: usize| -> (Vec<CloudWatchRequest>, Vec<serde_json::Value>) {
+        let (mut asked, mut events) = (Vec::new(), Vec::new());
+        while events.len() < want {
+            let r: CloudWatchRequest = requests.recv_timeout(TIMEOUT).unwrap();
+            if r.target == "Logs_20140328.PutLogEvents" && r.body["logStreamName"] == stream {
+                events.extend(r.body["logEvents"].as_array().unwrap().iter().cloned());
+            }
+            asked.push(r);
+        }
+        (asked, events)
+    };
+    let signed_by = |asked: &[CloudWatchRequest], key: &str| {
+        for r in asked {
+            let auth = &r.fields["authorization"];
+            assert!(
+                auth.starts_with(&format!("AWS4-HMAC-SHA256 Credential={key}/"))
+                    && auth.contains("/us-east-1/logs/aws4_request"),
+                "{}: {auth}",
+                r.target
+            );
+            assert_eq!(r.fields["content-type"], "application/x-amz-json-1.1");
+        }
+    };
+
+    // A line on each stream: its stream made first, for its container's whole ID; each
+    // line an event at its output's time; signed with this client's keys and token.
+    let ran = awslogs(
+        "first",
+        &[],
+        &["awslogs-group=existing"],
+        &["streams", "out", "err"],
+        first,
+    );
+    assert_eq!(ran.status, Some(0), "{ran}");
+    let id = id_of("first");
+    let (asked, events) = put(&id, 2);
+    assert_eq!(asked[0].target, "Logs_20140328.CreateLogStream");
+    assert_eq!(
+        asked[0].body,
+        serde_json::json!({"logGroupName": "existing", "logStreamName": id})
+    );
+    signed_by(&asked, "AKIDFIRST");
+    assert!(
+        asked
+            .iter()
+            .all(|r| r.fields["x-amz-security-token"] == "first-session-token")
+    );
+    let stamped = shards(&["logs", "-t", "first"]);
+    let mut messages: Vec<&str> = events.iter().map(|e| e["message"].as_str().unwrap()).collect();
+    messages.sort_unstable();
+    assert_eq!(messages, ["err", "out"]);
+    for e in &events {
+        let line = e["message"].as_str().unwrap();
+        let kept = [&stamped.stdout, &stamped.stderr]
+            .iter()
+            .flat_map(|s| s.lines())
+            .find_map(|l| l.strip_suffix(&format!(" {line}")))
+            .unwrap_or_else(|| panic!("{stamped}"));
+        let kept = time::OffsetDateTime::parse(kept, &time::format_description::well_known::Rfc3339)
+            .unwrap()
+            .unix_timestamp_nanos();
+        assert_eq!(
+            i128::from(e["timestamp"].as_i64().unwrap()),
+            kept / 1_000_000,
+            "{e}"
+        );
+    }
+    // Nothing of the client's secrets in the request the container keeps.
+    let kept = std::fs::read(home.join("containers").join(&id).join("request")).unwrap();
+    for secret in ["first-secret-key", "first-session-token", "cmVnaXN0cnktc2VjcmV0"] {
+        assert!(
+            !kept.windows(secret.len()).any(|w| w == secret.as_bytes()),
+            "{secret} kept on disk"
+        );
+    }
+
+    // Another client's keys: its run's own, the daemon started by another.
+    let second = [
+        ("AWS_ACCESS_KEY_ID", "AKIDSECOND"),
+        ("AWS_SECRET_ACCESS_KEY", "second-secret-key"),
+    ];
+    let ran = awslogs(
+        "second",
+        &[],
+        &["awslogs-group=existing"],
+        &["streams", "a", "b"],
+        &second,
+    );
+    assert_eq!(ran.status, Some(0), "{ran}");
+    let (asked, _) = put(&id_of("second"), 2);
+    signed_by(&asked, "AKIDSECOND");
+    assert!(
+        asked
+            .iter()
+            .all(|r| !r.fields.contains_key("x-amz-security-token"))
+    );
+
+    // A credential process, run by the daemon in its client's environment.
+    let ran = awslogs(
+        "processed",
+        &[],
+        &["awslogs-group=existing"],
+        &["streams", "c", "d"],
+        &[("AWS_PROFILE", "process")],
+    );
+    assert_eq!(ran.status, Some(0), "{ran}");
+    let (asked, _) = put(&id_of("processed"), 2);
+    signed_by(&asked, "PROCESS");
+
+    // A group not there, made as the options say, then its stream.
+    let ran = awslogs(
+        "made",
+        &[],
+        &["awslogs-group=fresh", "awslogs-create-group=true"],
+        &["streams", "e", "f"],
+        first,
+    );
+    assert_eq!(ran.status, Some(0), "{ran}");
+    let (asked, _) = put(&id_of("made"), 2);
+    let targets: Vec<&str> = asked.iter().map(|r| r.target.as_str()).collect();
+    assert_eq!(
+        targets.get(..3).unwrap(),
+        [
+            "Logs_20140328.CreateLogStream",
+            "Logs_20140328.CreateLogGroup",
+            "Logs_20140328.CreateLogStream"
+        ],
+        "{targets:?}"
+    );
+
+    // Lines joined where a pattern says where an event starts.
+    let ran = awslogs(
+        "joined",
+        &["-v", &bind],
+        &["awslogs-group=existing", "awslogs-multiline-pattern=^[0-9]"],
+        &["lines", "/data/lines.txt", ""],
+        first,
+    );
+    assert_eq!(ran.status, Some(0), "{ran}");
+    let (_, events) = put(&id_of("joined"), 3);
+    let messages: Vec<&str> = events.iter().map(|e| e["message"].as_str().unwrap()).collect();
+    assert_eq!(messages, ["1 first\n  more\n", "2 second\n  more\n", "3 third\n"]);
+
+    // A line put while its run still runs: its shipper caught up with its log.
+    let ran = awslogs(
+        "live",
+        &["-d"],
+        &["awslogs-group=existing"],
+        &["ignore", "TERM"],
+        first,
+    );
+    assert_eq!(ran.status, Some(0), "{ran}");
+    let (_, events) = put(&id_of("live"), 1);
+    assert_eq!(events[0]["message"], "ready");
+    assert_eq!(
+        shards(&["inspect", "-f", "{{.State.Running}}", "live"])
+            .stdout
+            .trim(),
+        "true"
+    );
+    assert_eq!(shards(&["rm", "-f", "live"]).status, Some(0));
+
+    for (opts, said) in [
+        (
+            &[][..],
+            "shards: --log-opt awslogs-group: the log group to send the log to",
+        ),
+        (
+            &["awslogs-group=existing", "awslogs-format=xml"],
+            "shards: --log-opt awslogs-format=xml: json/emf, or none",
+        ),
+        (
+            &["awslogs-group=a b"],
+            "shards: --log-opt awslogs-group=a b: a log group's name",
+        ),
+    ] {
+        let r = awslogs("refused", &[], opts, &["exit", "0"], first);
+        assert_eq!(r.status, Some(125), "{opts:?}: {r}");
+        assert!(r.stderr.starts_with(said), "{opts:?}: {r}");
+    }
+}
+
 /// A run's log as `--log-driver` and `--log-opt` keep it (D161): shards' store, its
 /// segments as long and as many as asked; none with `none`, whose `logs` is refused and
 /// whose attached client still gets its output; `--details` showing the labels, the
@@ -12321,8 +12960,8 @@ fn a_runs_log_is_kept_as_its_driver_and_options_say() {
     );
     for (flags, said) in [
         (
-            &["--log-driver", "awslogs"][..],
-            "shards: --log-driver awslogs: shards keeps a run's log itself",
+            &["--log-driver", "gcplogs"][..],
+            "shards: --log-driver gcplogs: shards keeps a run's log itself",
         ),
         (
             &["--log-driver", "bogus"],

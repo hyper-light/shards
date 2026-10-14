@@ -250,12 +250,12 @@ mod tests {
         serde_json::from_str(include_str!("testdata/gelf.json")).unwrap()
     }
 
-    /// Every message Docker's driver sent, over UDP compressed every way and over TCP, is
-    /// what shards makes of the same line: its fields in Go's order, written as Go writes
-    /// them, the container's own sorted after them; over UDP in as many chunks, compressed
-    /// as asked.
+    /// Every message the recording holds (scripts/logdrivers/generate), over UDP compressed
+    /// every way and over TCP, is what shards makes of the same line: its fields in their
+    /// order, written as Go's encoder writes them, the run's own sorted after them; over UDP
+    /// in as many chunks, compressed as asked.
     #[test]
-    fn messages_are_docker_s() {
+    fn messages_match_the_recording() {
         let fields = [
             ("_container_id", "{id}".to_string()),
             ("_container_name", "{name}".to_string()),
@@ -320,9 +320,9 @@ mod tests {
         }
     }
 
-    /// The options Docker takes, shards takes; those it refuses, shards refuses.
+    /// The options the recording accepted, shards accepts; those it refused, shards refuses.
     #[test]
-    fn options_are_taken_as_docker_takes_them() {
+    fn options_are_accepted_and_refused_as_recorded() {
         let oracle = oracle();
         for case in oracle["options"].as_array().unwrap() {
             let opts: Vec<String> = case["options"]
@@ -347,7 +347,7 @@ mod tests {
             assert_eq!(
                 ours.is_err(),
                 refused,
-                "{opts:?}: Docker {}, shards {ours:?}",
+                "{opts:?}: recorded {}, shards {ours:?}",
                 case["refused"]
             );
         }
