@@ -392,11 +392,11 @@ mod tests {
         }
     }
 
-    /// Every event Docker's driver sent, in whole seconds and to the nanosecond, over TCP
-    /// and a unix socket, is what shards sends of the same line: its tag, its time's form,
-    /// its record, a part's place in it, and its options.
+    /// Every event the recording holds (scripts/logdrivers/generate), in whole seconds and
+    /// to the nanosecond, over TCP and a unix socket, is what shards sends of the same line:
+    /// its tag, its time's form, its record, a part's place in it, and its options.
     #[test]
-    fn events_are_docker_s() {
+    fn events_match_the_recording() {
         let from = From {
             tag: "oracle".into(),
             id: "{id}".into(),
@@ -448,9 +448,9 @@ mod tests {
         }
     }
 
-    /// The options Docker takes, shards takes; those it refuses, shards refuses.
+    /// The options the recording accepted, shards accepts; those it refused, shards refuses.
     #[test]
-    fn options_are_taken_as_docker_takes_them() {
+    fn options_are_accepted_and_refused_as_recorded() {
         let oracle = oracle();
         for case in oracle["options"].as_array().unwrap() {
             let opts: Vec<String> = case["options"]
@@ -475,7 +475,7 @@ mod tests {
             assert_eq!(
                 ours.is_err(),
                 refused,
-                "{opts:?}: Docker {}, shards {ours:?}",
+                "{opts:?}: recorded {}, shards {ours:?}",
                 case["refused"]
             );
         }

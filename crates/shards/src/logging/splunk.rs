@@ -278,11 +278,12 @@ mod tests {
         lines
     }
 
-    /// Every event Docker's driver posted, in every format, gzipped or not, over HTTP or
-    /// HTTPS, with its fields or its tag taken away, is what shards makes of the same line,
-    /// byte for byte, but for its time, its host and its tag, which are the run's.
+    /// Every event the recording holds (scripts/logdrivers/generate), in every format,
+    /// gzipped or not, over HTTP or HTTPS, with its fields or its tag taken away, is what
+    /// shards makes of the same line, byte for byte, but for its time, its host and its tag,
+    /// which are the run's.
     #[test]
-    fn events_are_docker_s() {
+    fn events_match_the_recording() {
         for case in oracle()["cases"].as_array().unwrap() {
             let name = case["case"].as_str().unwrap();
             let mut opts: BTreeMap<String, String> = [
@@ -319,13 +320,13 @@ mod tests {
                         .replace("\"1791260014.360799\"", "\"{time}\"")
                 })
                 .collect();
-            let docker: Vec<&str> = case["events"]
+            let recorded: Vec<&str> = case["events"]
                 .as_array()
                 .unwrap()
                 .iter()
                 .map(|e| e.as_str().unwrap())
                 .collect();
-            assert_eq!(ours, docker, "{name}");
+            assert_eq!(ours, recorded, "{name}");
             // Posted with its token, to HEC's path, gzipped where asked.
             let post = &case["requests"].as_array().unwrap()[1];
             assert_eq!(post["path"], EVENTS);
@@ -362,10 +363,10 @@ mod tests {
         assert_eq!(time(0), "0.000000");
     }
 
-    /// Which options Docker took, shards takes, but for its own refusals: no certificate
-    /// left unverified, and a CA's file read as the run is made.
+    /// The options the recording accepted, shards accepts, but for its own refusals: no
+    /// certificate left unverified, and a CA's file read as the run is made.
     #[test]
-    fn options_are_taken_as_docker_takes_them() {
+    fn options_are_accepted_and_refused_as_recorded() {
         for case in oracle()["options"].as_array().unwrap() {
             let opts: Vec<String> = case["options"]
                 .as_array()
@@ -390,7 +391,7 @@ mod tests {
             assert_eq!(
                 ours.is_err(),
                 refused,
-                "{opts:?}: Docker {}, shards {ours:?}",
+                "{opts:?}: recorded {}, shards {ours:?}",
                 case["refused"]
             );
         }

@@ -624,6 +624,11 @@ pub struct Run {
     pub log_driver: String,
     /// `--log-opt`s, each `KEY=VALUE` or `KEY`.
     pub log_opts: Vec<String>,
+    /// The client's environment a log driver that ships to a cloud finds its credentials
+    /// by, `NAME=VALUE` (awslogs': `AWS_*`, the home, `PATH` and the proxies, D168): as the
+    /// client's shell would find them, not as the daemon's happened to be when it started.
+    /// The daemon keeps it in memory alone, never in the request a container keeps.
+    pub cloud_env: Vec<String>,
 }
 
 /// `run`'s resource flags as docker/cli sends them (container.Resources): memory in
@@ -1064,6 +1069,7 @@ impl Run {
             ("attach", self.attach.clone()),
             ("log-driver", one(&self.log_driver)),
             ("log-opts", self.log_opts.clone()),
+            ("cloud-env", self.cloud_env.clone()),
         ]
         .into_iter()
         .filter(|(_, v)| !v.is_empty())
@@ -1226,6 +1232,7 @@ impl Run {
                     "attach" => run.attach = values,
                     "log-driver" => run.log_driver = values.into_iter().next().unwrap_or_default(),
                     "log-opts" => run.log_opts = values,
+                    "cloud-env" => run.cloud_env = values,
                     // One a later build added: not this one's to read.
                     _ => {}
                 }
@@ -1895,6 +1902,7 @@ mod tests {
             attach: vec!["stdout".into(), "stdin".into()],
             log_driver: "json-file".into(),
             log_opts: vec!["max-size=10m".into(), "mode".into()],
+            cloud_env: vec!["AWS_PROFILE=p".into(), "HOME=/h".into()],
             init_process: Some(false),
             pid: "host".into(),
         };
@@ -1956,6 +1964,7 @@ mod tests {
             attach: Vec::new(),
             log_driver: String::new(),
             log_opts: Vec::new(),
+            cloud_env: Vec::new(),
             ..run.clone()
         };
         let boundary = earlier.encode().len() - 4;

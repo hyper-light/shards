@@ -61,11 +61,13 @@ impl Splunk {
         .with_patience(Patience {
             head: Some(POST),
             stall: Some(POST),
+            ..Patience::default()
         });
         if let Some(name) = &config.caname {
             client = client.with_server_name(name);
         }
-        let channel = guid().map_err(|e| e.to_string())?;
+        // A random GUID, as indexer acknowledgment's channel is one.
+        let channel = crate::random_uuid().map_err(|e| e.to_string())?;
         let events = Url::parse(&format!("{}{}", config.base, splunk::EVENTS)).map_err(|e| e.to_string())?;
         let acks = Url::parse(&format!("{}{}?channel={channel}", config.base, splunk::ACKS))
             .map_err(|e| e.to_string())?;
@@ -217,23 +219,6 @@ impl Driver for Splunk {
             )),
         }
     }
-}
-
-/// A random GUID (RFC 9562's version 4), as indexer acknowledgment's channel is one.
-fn guid() -> io::Result<String> {
-    let mut b = [0u8; 16];
-    shards_vmm::platform::fill_random(&mut b)?;
-    b[6] = (b[6] & 0x0f) | 0x40;
-    b[8] = (b[8] & 0x3f) | 0x80;
-    let hex: String = b.iter().map(|x| format!("{x:02x}")).collect();
-    Ok(format!(
-        "{}-{}-{}-{}-{}",
-        hex.get(..8).unwrap_or_default(),
-        hex.get(8..12).unwrap_or_default(),
-        hex.get(12..16).unwrap_or_default(),
-        hex.get(16..20).unwrap_or_default(),
-        hex.get(20..).unwrap_or_default()
-    ))
 }
 
 /// The ack HEC names in its answer to a post, `ackId` (or, as its documentation spells

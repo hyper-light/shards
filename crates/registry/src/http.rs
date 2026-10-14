@@ -71,12 +71,15 @@ pub struct Client {
     server_name: Option<String>,
 }
 
-/// How long a request waits on its server: for its response's head, and on any read or
-/// write that makes no progress. `None` waits for as long as it takes, until the request
-/// is cancelled. A registry's are bounded ([`HEAD`] and 30 s); a build's proxy waits as
-/// long as the step it serves does, as Go's transport has no bound of its own (D110).
+/// How long a request waits on its server: to connect, its name's lookup included; for
+/// its response's head; and on any read or write that makes no progress. `None` waits
+/// for as long as it takes, until the request is cancelled. A registry's are bounded (30
+/// s, [`HEAD`] and 30 s); a build's proxy waits as long as the step it serves does, as Go's
+/// transport has no bound of its own (D110); EC2's instance metadata is given 250 ms to
+/// connect, as the AWS SDK gives it (D168).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Patience {
+    pub connect: Duration,
     pub head: Option<Duration>,
     pub stall: Option<Duration>,
 }
@@ -84,6 +87,7 @@ pub struct Patience {
 impl Default for Patience {
     fn default() -> Patience {
         Patience {
+            connect: CONNECT,
             head: Some(HEAD),
             stall: Some(STALL),
         }
@@ -609,10 +613,11 @@ impl Client {
             }
             None => self.reach,
         };
-        let tcp = dial(first, self.cancel.as_ref(), reach).map_err(|e| match proxy {
-            Some(p) => e.context(format!("proxyconnect {}", p.url.authority())),
-            None => e,
-        })?;
+        let tcp =
+            dial(first, self.cancel.as_ref(), reach, self.patience.connect).map_err(|e| match proxy {
+                Some(p) => e.context(format!("proxyconnect {}", p.url.authority())),
+                None => e,
+            })?;
         let _ = tcp.set_nodelay(true);
         // Watched from here, the handshakes and tunnel included.
         let watch = self.cancel.as_ref().map(|c| c.watch(&tcp));
@@ -1063,9 +1068,10 @@ fn dial(
     url: &Url,
     cancel: Option<&Cancel>,
     reach: Option<fn(std::net::IpAddr) -> bool>,
+    within: Duration,
 ) -> Result<TcpStream, Error> {
     // The name's lookup is within the dial's time, as Go's Dialer counts it.
-    let deadline = Instant::now() + CONNECT;
+    let deadline = Instant::now() + within;
     let mut addrs = resolve(url, deadline, cancel)?;
     if let Some(reach) = reach {
         addrs.retain(|a| reach(a.ip()));
@@ -2054,6 +2060,7 @@ mod tests {
         let patient = plain().with_patience(Patience {
             head: None,
             stall: None,
+            ..Patience::default()
         });
         let conn = patient.connect(&url, Key::of(&url, None), None).unwrap();
         let tcp = conn.io.get_ref().tcp();

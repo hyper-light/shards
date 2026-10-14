@@ -10,8 +10,9 @@
 //! Docker's does. In `mode=non-blocking` the run's output is queued for its log, at most
 //! `max-buffer-size` bytes, and what comes while the queue is full is dropped and counted.
 //!
-//! A driver that sends a run's log elsewhere (`syslog`, `gelf`, `fluentd`, `splunk`, and on
-//! Linux the journal, `journald`: D163 to D167) keeps it in shards' store too, as its local
+//! A driver that sends a run's log elsewhere (`syslog`, `gelf`, `fluentd`, `splunk`, CloudWatch
+//! Logs' `awslogs`, and on Linux the journal, `journald`: D163 to D168) keeps it in shards'
+//! store too, as its local
 //! copy, which `cache-max-size`, `cache-max-file` and `cache-compress`
 //! bound as Docker documents them (Docker takes them and applies none) and which
 //! `cache-disabled` keeps from `logs`; the daemon sends it from there (daemon/ship.rs).
@@ -20,6 +21,7 @@ use std::collections::BTreeMap;
 
 use shards_ipc::Run;
 
+pub mod awslogs;
 pub mod fluentd;
 pub mod gelf;
 pub mod journald;
@@ -28,16 +30,16 @@ pub mod syslog;
 
 /// The drivers that are shards' own store.
 const STORE: [&str; 3] = ["shards", "json-file", "local"];
-/// The drivers that send a log elsewhere, from shards' store (D163 to D167); journald's on
+/// The drivers that send a log elsewhere, from shards' store (D163 to D168); journald's on
 /// Linux alone, whose systemd keeps the journal.
-const SENDS: [&str; 5] = ["syslog", "gelf", "fluentd", "splunk", "journald"];
+const SENDS: [&str; 6] = ["syslog", "gelf", "fluentd", "splunk", "awslogs", "journald"];
 /// The drivers Docker sends a log elsewhere with, which shards does not yet.
-const ELSEWHERE: [&str; 3] = ["awslogs", "etwlogs", "gcplogs"];
+const ELSEWHERE: [&str; 2] = ["etwlogs", "gcplogs"];
 /// What a run's log can be, as a refusal says it.
 #[cfg(target_os = "linux")]
-const KINDS: &str = "shards keeps a run's log itself (shards, json-file or local), sends it to syslog, gelf, fluentd, splunk or the journal (journald), or keeps none (none)";
+const KINDS: &str = "shards keeps a run's log itself (shards, json-file or local), sends it to syslog, gelf, fluentd, splunk, CloudWatch Logs (awslogs) or the journal (journald), or keeps none (none)";
 #[cfg(not(target_os = "linux"))]
-const KINDS: &str = "shards keeps a run's log itself (shards, json-file or local), sends it to syslog, gelf, fluentd or splunk, or keeps none (none)";
+const KINDS: &str = "shards keeps a run's log itself (shards, json-file or local), sends it to syslog, gelf, fluentd, splunk or CloudWatch Logs (awslogs), or keeps none (none)";
 /// The store's own options: its segments' (moby jsonfilelog's ValidateLogOpt, local's).
 const STORE_OPTIONS: [&str; 3] = ["max-size", "max-file", "compress"];
 /// The options every driver takes: the attributes `logs --details` shows and the tag,
@@ -135,6 +137,7 @@ pub fn kept(run: &Run, default: crate::spec::LogRetention) -> Result<Option<Kept
         "fluentd" => &fluentd::OPTIONS,
         "journald" => &journald::OPTIONS,
         "splunk" => &splunk::OPTIONS,
+        "awslogs" => &awslogs::OPTIONS,
         _ => &STORE_OPTIONS,
     };
     if let Some(k) = opts
@@ -240,7 +243,7 @@ pub fn kept(run: &Run, default: crate::spec::LogRetention) -> Result<Option<Kept
     }))
 }
 
-/// Where a run's log is sent besides shards' store (D163 to D167).
+/// Where a run's log is sent besides shards' store (D163 to D168).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Remote {
     Syslog(syslog::Config),
@@ -248,6 +251,7 @@ pub enum Remote {
     Fluentd(fluentd::Config),
     Journald,
     Splunk(splunk::Config),
+    Awslogs(awslogs::Config),
 }
 
 /// The driver `run` sends its log elsewhere with, if one does.
@@ -263,6 +267,7 @@ fn remote_config(name: &str, opts: &BTreeMap<String, String>) -> Result<Option<R
         "fluentd" => Ok(Some(Remote::Fluentd(fluentd::config(opts)?))),
         "journald" => Ok(Some(Remote::Journald)),
         "splunk" => Ok(Some(Remote::Splunk(splunk::config(opts)?))),
+        "awslogs" => Ok(Some(Remote::Awslogs(awslogs::config(opts)?))),
         _ => Ok(None),
     }
 }
@@ -270,11 +275,17 @@ fn remote_config(name: &str, opts: &BTreeMap<String, String>) -> Result<Option<R
 /// `run`'s tag (`--log-opt tag`): its template run against `info`, or, where it gives
 /// none, the container's short ID (moby loggerutils.ParseLogTag, DefaultTemplate).
 pub fn tag(run: &Run, info: &Info<'_>) -> Result<String, String> {
+    tag_or(run, info, "{{.ID}}")
+}
+
+/// `run`'s tag, `default` the template where `tag` gives none: awslogs' is the container's
+/// whole ID.
+pub fn tag_or(run: &Run, info: &Info<'_>, default: &str) -> Result<String, String> {
     let opts = options(run);
     let text = opts
         .get("tag")
         .filter(|t| !t.is_empty())
-        .map_or("{{.ID}}", String::as_str);
+        .map_or(default, String::as_str);
     render_tag(text, info, &opts)
 }
 
@@ -603,9 +614,9 @@ mod tests {
                 "--log-opt max-size: --log-driver none keeps no log",
             ),
             (
-                "awslogs",
+                "gcplogs",
                 &[],
-                "--log-driver awslogs: shards keeps a run's log itself",
+                "--log-driver gcplogs: shards keeps a run's log itself",
             ),
             ("bogus", &[], "--log-driver bogus: no such log driver"),
             (

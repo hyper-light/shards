@@ -3614,6 +3614,123 @@ No run-time labels, relays or declassifiers (§12 answer 14, decided by the user
 an internal-only domain to the world (D58), so there is no data to label. Code mode is
 D136.
 
+### D168. A run's log sent to CloudWatch Logs, signed with its client's credentials
+
+`--log-driver awslogs` is served, sent as syslog's is (D163): from shards' store, by the
+daemon's shipper, never by the microVM, to CloudWatch Logs' JSON 1.1 API
+(`X-Amz-Target: Logs_20140328.*`), signed for `logs` with Signature Version 4
+(crates/shards/src/aws/sigv4.rs, the S3 cache's signer, D88).
+
+- **Credentials are the client's.** A run's credentials are found with the environment of
+  the client that started it: its `AWS_*` variables, its home, `PATH` and proxies, sent
+  with the run (`Run::cloud_env`), so they are what that client's shell would find. One
+  daemon serves every run of its home, started by whichever client came first; finding
+  credentials in its own environment, as dockerd does, would sign one shell's runs with
+  another shell's account. The daemon keeps the environment in memory alone. The request a
+  container keeps on disk holds neither it nor, any longer, the client's registry
+  environment, `DOCKER_AUTH_CONFIG`'s credentials among it. A container started again is
+  signed with the credentials of the client that starts it; a daemon that restarts before
+  a run's log is sent sends the rest once a client starts the run again.
+- **The whole default chain** (crates/shards/src/aws/credentials.rs), in the order
+  aws-sdk-go-v2 v1.41 resolves one (config/resolve_credentials.go):
+  - the environment's keys, then its web identity (STS AssumeRoleWithWebIdentity);
+  - then the profile, one `AWS_PROFILE` names and no file has refused: its source profile
+    and role (STS AssumeRole, signed, its session name, external ID and duration as the
+    profile says; an MFA code refused, as no one is there to give it), its keys, its
+    `credential_source`, SSO (the token cache by the SHA-1 of the session's name,
+    refreshed through SSO OIDC once a session's expires, written back whole), an `aws
+    login` session (refreshed through sign-in with an ES256 DPoP proof), its
+    `credential_process` (`sh -c` in the client's environment, a minute at most, 1 MiB of
+    output at most);
+  - else the container's endpoint (a relative URI at the ECS agent's address; a full one
+    over HTTP only to loopback or the ECS or EKS agent's), its token file read each time;
+  - else EC2's instance metadata: an IMDSv2 token of 300 s, IMDSv1 where the token is
+    refused unless that is disabled, 250 ms to connect and 500 ms for an answer's head, as
+    the SDK gives it (the HTTP client's `Patience` now bounds a connect too).
+
+  `AWS_CA_BUNDLE`, or the profile's `ca_bundle`, takes the platform's roots' place, as the
+  SDK trusts the bundle alone. Credentials are found again 5 minutes before they expire,
+  and as soon as CloudWatch refuses them. Where shards does better: a DPoP proof's key
+  coordinates are 32 bytes each, as RFC 7518 §6.2.1.2 has them, where the SDK drops their
+  leading zero bytes; a token file's trailing line ending is left out, where the SDK
+  refuses the token.
+- **The S3 build cache uses the same chain** (D88). It took keys alone before, and refused
+  profiles that assume a role or sign in with SSO, a process or a web identity, as CI on
+  AWS does. Its region falls back to `AWS_DEFAULT_REGION` and the profile's, where
+  BuildKit refuses the cache.
+- **Region and address.** The region is `awslogs-region`'s, else `AWS_REGION`'s,
+  `AWS_DEFAULT_REGION`'s, the profile's, else EC2's instance metadata's; dockerd skips the
+  two in the middle, so off EC2 it refuses a run whose profile names a region. The
+  address is `awslogs-endpoint`, else the configured endpoint (`AWS_ENDPOINT_URL_CLOUDWATCH_LOGS`,
+  `AWS_ENDPOINT_URL`, the profile's services section), which dockerd's client discards,
+  else the partition's own by the SDK's endpoint rules, FIPS's and dual-stack's where asked.
+- **Events.** Each line is an event at its output's time in milliseconds. A line of up to
+  262,118 bytes, as CloudWatch counts them (a byte that is not UTF-8 counted as U+FFFD's
+  three), is whole: the shipper cuts this driver's lines in parts of that length
+  (`Driver::part`), not 16 KiB. A longer one is cut where no character is. With
+  `awslogs-multiline-pattern`, or `awslogs-datetime-format` made a pattern by its strftime
+  table, lines are joined, each followed by a newline, until one matches. Lines held wait
+  `awslogs-force-flush-interval-seconds` (5 s) for more, the shipper woken for them
+  (`Driver::due`). A joined event's time is its first line's: moby's keeps an older one
+  after its tick flushes the buffer. An empty line is no event, as CloudWatch takes no
+  empty message. The JSON is written as smithy-go's encoder writes it. The bodies are
+  held byte for byte to Docker 29.3.1's (`scripts/logdrivers/generate`, its capture a fake
+  CloudWatch Logs, its credentials an ECS endpoint's): 7 cases (each stream, a named
+  stream, a tag, a group made, multiline, datetime, EMF) and 15 of which options it takes.
+  The recorded requests' signatures are made again.
+- **Puts.** A put holds at most 10,000 events and 1 MiB, each counted 26 bytes more,
+  sorted by time; and they lie less than 24 hours apart, which CloudWatch requires of one
+  put and moby does not check, so a shipper catching up on an old log never makes a put
+  CloudWatch refuses forever. A put goes once full, and whenever the shipper has caught
+  up with its log. One CloudWatch refuses is put again, never dropped; moby logs the
+  failure and drops it. One whose stream or group was deleted since makes them again
+  first. Events CloudWatch takes and does not keep (too old for it or the group, too far
+  ahead) are said in the daemon's log.
+- **Its stream** (`awslogs-stream`, else the run's tag, by default its container's whole
+  ID) is made as the shipper starts, one already there taken as made, its group first
+  where CloudWatch says it is not there and `awslogs-create-group` says to make it. The run
+  starts regardless; dockerd refuses to start a container whose stream it cannot make.
+- **Options checked as the run is made.** moby's checks, then what CloudWatch would refuse
+  of every put: a group's name (1 to 512 of `A-Z a-z 0-9 . - _ / #`), a stream's (no `:`
+  or `*`), the region a host's label, the endpoint a URL, the pattern compiled. Docker
+  29.8's entity (`awslogs-entity-service-name`, `-environment`, `-attributes`), newer
+  than the recording, is taken as its source takes it. `awslogs-max-buffered-events` is
+  taken and holds nothing back: the log is on disk until sent, and no event waits in a
+  queue to be dropped from.
+- **Not yet.** gcplogs and etwlogs.
+
+Tested on real microVMs (`a_runs_log_is_sent_to_cloudwatch_logs_as_its_options_say`),
+against CloudWatch Logs in the test:
+
+- a line on each stream: its stream made first, named for its container's whole ID; each
+  line an event at its `logs -t` time to the millisecond; signed with the client's keys
+  and token;
+- a second client's keys, its run's own, the daemon having been started by another;
+- a credential process the daemon runs in its client's environment;
+- a group not there, made as asked, then its stream;
+- lines joined by a pattern;
+- a line put while its run still runs;
+- nothing of the client's keys, token or registry credentials in the request the
+  container keeps;
+- the refusals.
+
+Mutation-checked: with the client's registry environment kept in the request, its
+credentials are found on disk; with the daemon's environment in the client's place, no
+put is ever made.
+
+Unit tests cover:
+
+- every recorded request's body, byte for byte but for the run's stream name, and its
+  signature;
+- the options;
+- cutting, joining, the strftime table, entity attributes as one CSV record, the batch
+  bounds, smithy-go's string escaping, CloudWatch's names;
+- the chain against a fake STS, SSO, SSO OIDC, sign-in, IMDS and container endpoint: its
+  order, roles assumed with their source's keys and form, web identity, the container's
+  token file, IMDSv2 and its IMDSv1 fallback, SSO's cache and refresh, a login session's
+  refresh and its DPoP proof verified, a credential process; mutation-checked on the role
+  duration's rule and `AWS_PROFILE`'s refusal.
+
 ### D167. A run's log sent to Splunk
 
 `--log-driver splunk` is served, sent as syslog's is (D163): from shards' store, by the
@@ -7081,7 +7198,7 @@ the rest of a run's reach into its domains.
   | A run joining the microVM (`--network container:`, D119) | held to every rule of this table, by the daemon and again by init | it runs beside them as the microVM's own run does |
   | `--ipc` (`host` is init's namespace, theirs each their own), `--uts`, `--userns`, `--umask`, `--storage-opt` (D156); `--runtime`, `--isolation`, `--cpu-count`, `--cpu-percent`, `--cpu-rt-*` (D155) | given | the command's own namespaces, writable layer and limits |
   | `--link` | refused for every run, not served yet | |
-  | `--log-driver`, `--log-opt` (D161 to D167) | given | the command's own output, kept on the host by its VM process, in its container's directory, and sent elsewhere by the daemon, never by the microVM |
+  | `--log-driver`, `--log-opt` (D161 to D168) | given | the command's own output, kept on the host by its VM process, in its container's directory, and sent elsewhere by the daemon, never by the microVM |
   | `--cap-add` of any other: `DAC_READ_SEARCH`, `IPC_OWNER`, `IPC_LOCK`, `SYS_BOOT`, `SYS_RESOURCE`, `CHECKPOINT_RESTORE` among them | given | `open_by_handle_at` opens only on filesystems the command holds a mount of, a domain's own being none of them; IPC namespaces differ; `reboot(2)` ends the caller's own PID namespace's init (pid_namespaces(7)); the rest bound the command's own resources or namespaces |
   | `--cap-drop`, `no-new-privileges`, `writable-cgroups=true` (its cgroup namespace's subtree), `apparmor=`, `label=` (no LSM in the microVM: accepted, as on a Docker host without one) | given | narrows the command, or touches only its own |
   | `seccomp=` a profile or `unconfined` | given, recorded | its own filter; the domains keep theirs. Measured: unconfined, any uid makes a user namespace (`max_user_namespaces` 994), owning none of the domains' namespaces but reaching more of the kernel they share |

@@ -794,6 +794,7 @@ impl<'p> Session<'p> {
             .with_patience(Patience {
                 head: None,
                 stall: None,
+                ..Patience::default()
             })
             .reaching(proxy.reach)
             .with_proxies(upstream)

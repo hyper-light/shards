@@ -19,6 +19,7 @@ use super::{Daemon, Threads, lock, log};
 use crate::containers::Disk;
 use crate::spec::LOG_STDERR;
 
+mod awslogs;
 mod fluentd;
 mod gelf;
 #[cfg(target_os = "linux")]
@@ -57,6 +58,18 @@ pub(super) trait Driver: Send {
     /// none where nothing says what arrives, as over UDP.
     fn undelivered(&mut self) -> usize {
         0
+    }
+
+    /// The longest message it is given: longer lines go in parts of it ([`PART`]).
+    fn part(&self) -> usize {
+        PART
+    }
+
+    /// How long until it would flush what it holds back though its shipper has nothing
+    /// new for it (awslogs' joined lines, which wait so long for more): none where it waits
+    /// for nothing.
+    fn due(&self) -> Option<Duration> {
+        None
     }
 
     /// Ends its connection once its receiver has all it was sent (stream.rs), or says why
@@ -173,10 +186,28 @@ const RETRY_MOST: Duration = Duration::from_secs(60);
 const CURSOR: &str = "ship";
 const CURSOR_NEW: &str = "ship.new";
 
-/// The shippers running, by container: each one's end, which is told to stop.
+/// The shippers running, by container: each one's end, which is told to stop; and the
+/// environments that runs' clients gave, by container, where its driver ships to a cloud
+/// (D168): in memory alone.
 #[derive(Default)]
 pub(super) struct Shipping {
     running: std::sync::Mutex<HashMap<String, UnixStream>>,
+    clouds: std::sync::Mutex<HashMap<String, Vec<String>>>,
+}
+
+impl Shipping {
+    /// Keeps `run`'s client's environment for container `id`'s shipper, where its driver
+    /// ships to AWS: the latest client's, which started it.
+    pub(super) fn give(&self, id: &str, run: &shards_ipc::Run) {
+        if crate::logging::driver(run) == "awslogs" {
+            lock(&self.clouds).insert(id.to_string(), run.cloud_env.clone());
+        }
+    }
+
+    /// Lets container `id`'s environment go, as it is removed.
+    pub(super) fn forget(&self, id: &str) {
+        lock(&self.clouds).remove(id);
+    }
 }
 
 impl Shipping {
@@ -193,10 +224,11 @@ impl Shipping {
 /// copySrc): a line of less than [`PART`] bytes is one message; a longer one, parts of
 /// [`PART`] bytes, then the rest, which may be nothing, with an ID in common and their
 /// places, the last saying so. A line the run left unfinished goes whole, or as its last
-/// part, where moby's copier sends it as a part that is never the last.
-#[derive(Default)]
+/// part, where moby's copier sends it as a part that is never the last. A driver's parts
+/// may be longer (Driver::part).
 struct Lines {
     open: [Open; 2],
+    part: usize,
 }
 
 #[derive(Default)]
@@ -208,6 +240,13 @@ struct Open {
 }
 
 impl Lines {
+    fn new(part: usize) -> Lines {
+        Lines {
+            open: Default::default(),
+            part,
+        }
+    }
+
     /// Takes `piece`, sending each message it completes with `send`, which returns once
     /// it is sent, or says why it never will be.
     fn take(
@@ -230,8 +269,8 @@ impl Lines {
         open.held.extend_from_slice(bytes);
         // A part as soon as one is held whole, without its newline: the copier's buffer
         // full, which holds the line's newline only where there is room for it.
-        while open.held.len() >= PART {
-            let rest = open.held.split_off(PART);
+        while open.held.len() >= self.part {
+            let rest = open.held.split_off(self.part);
             let part = std::mem::replace(&mut open.held, rest);
             open.send_part(stream, &part, false, send)?;
         }
@@ -429,6 +468,39 @@ fn ready_now(fds: &[std::os::fd::BorrowedFd<'_>; 3]) -> bool {
     ready > 0
 }
 
+/// Waits until one of `fds` is readable, or `within` has passed, where it is given:
+/// which are.
+fn wait_ready(fds: &[BorrowedFd<'_>; 3], within: Option<Duration>) -> io::Result<[bool; 3]> {
+    let deadline = within.and_then(|d| std::time::Instant::now().checked_add(d));
+    let mut polled = fds.map(|fd| libc::pollfd {
+        fd: fd.as_raw_fd(),
+        events: libc::POLLIN,
+        revents: 0,
+    });
+    loop {
+        // Rounded up: a wait of 0 ms would return at once, and spin.
+        let ms = match (within, deadline) {
+            (None, _) | (Some(_), None) => -1,
+            (Some(_), Some(at)) => libc::c_int::try_from(
+                at.saturating_duration_since(std::time::Instant::now())
+                    .as_micros()
+                    .div_ceil(1000),
+            )
+            .unwrap_or(libc::c_int::MAX),
+        };
+        // SAFETY: poll(2) on three pollfds of descriptors the caller holds open.
+        let n = unsafe { libc::poll(polled.as_mut_ptr(), 3, ms) };
+        if n >= 0 {
+            break;
+        }
+        let e = io::Error::last_os_error();
+        if e.kind() != io::ErrorKind::Interrupted {
+            return Err(e);
+        }
+    }
+    Ok(polled.map(|p| p.revents != 0))
+}
+
 /// How a shipper's following of a run ended.
 enum Shipped {
     /// Its run ended, and all it wrote is sent.
@@ -539,7 +611,7 @@ impl<D: Disk> Daemon<D> {
             Some((at, _)) => Reader::from(at),
             None => Reader::new(),
         };
-        let mut lines = Lines::default();
+        let mut lines = Lines::new(driver.part());
         let mut place = Place::default();
         let mut sender = Sender {
             id,
@@ -573,7 +645,8 @@ impl<D: Disk> Daemon<D> {
                             sender.flush()?;
                             place.keep(id, dir, sender.delivered(), false, cached);
                         }
-                        let ready = super::commands::wait_readable(&fds)?;
+                        // Woken as the driver asks, for what it holds back.
+                        let ready = wait_ready(&fds, sender.driver.due())?;
                         if ready[1] {
                             return Ok(Shipped::Ended);
                         }
@@ -654,6 +727,25 @@ impl<D: Disk> Daemon<D> {
                     extra: crate::logging::extra(run, &details.info())?,
                 },
             )?),
+            crate::logging::Remote::Awslogs(config) => {
+                let env = lock(&self.shipping.clouds).get(id).cloned().ok_or(
+                    "its credentials are found with the environment of the client that starts its run, which no daemon keeps: the rest of its log is sent once it is started again",
+                )?;
+                // Its stream: as the options name it, else the run's tag, which is the
+                // container's whole ID unless `tag` says (moby awslogs newStreamConfig).
+                let stream = match &config.stream {
+                    Some(s) => s.clone(),
+                    None => crate::logging::tag_or(run, &details.info(), "{{.FullID}}")?,
+                };
+                crate::logging::awslogs::stream_name(&stream)
+                    .map_err(|why| format!("--log-opt tag: it makes {stream:?} of this run: {why}"))?;
+                let entity = config
+                    .entity
+                    .as_ref()
+                    .map(|e| crate::logging::awslogs::render(e, run, &details.info()))
+                    .transpose()?;
+                Box::new(awslogs::Awslogs::new(config, env, stream, entity)?)
+            }
             crate::logging::Remote::Splunk(config) => {
                 // Its tag, unless `tag` is given empty, which takes it away (moby splunk New).
                 let untagged = crate::logging::options(run)
@@ -729,7 +821,7 @@ mod tests {
     fn cut(pieces: &[(u8, u64, bool, &[u8])]) -> Vec<(u8, u64, Vec<u8>)> {
         let mut sent = Vec::new();
         let mut ids: [Option<String>; 2] = [None, None];
-        let mut lines = Lines::default();
+        let mut lines = Lines::new(PART);
         let mut send = |m: &Message<'_>| {
             let s = usize::from(m.stream == LOG_STDERR);
             match &m.part {
@@ -762,11 +854,11 @@ mod tests {
         sent
     }
 
-    /// Lines are cut where moby's copier cuts them: one of less than 16 KiB whole; one of
-    /// 16 KiB exactly, or longer, in parts of 16 KiB, then what is left, nothing where
-    /// nothing is; each stream its own; and a line the run left unfinished whole.
+    /// A line of less than 16 KiB goes whole; one of 16 KiB exactly, or longer, in parts of
+    /// 16 KiB, then what is left, nothing where nothing is; each stream its own; and a line
+    /// the run left unfinished whole.
     #[test]
-    fn lines_are_cut_as_moby_s_copier_cuts_them() {
+    fn long_lines_go_in_parts_of_16_kib() {
         let x = |n: usize| vec![b'x'; n];
         let line = |n: usize| [x(n), b"\n".to_vec()].concat();
         assert_eq!(

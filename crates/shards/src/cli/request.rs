@@ -656,6 +656,7 @@ fn request(parsed: &Parsed) -> Result<Run, String> {
             .collect(),
         publish_all: parsed.bool("publish-all"),
         registry_env: shards_ipc::registry_env(),
+        cloud_env: crate::aws::environment(),
         cidfile: match parsed.string("cidfile") {
             "" => String::new(),
             path => std::path::absolute(path)

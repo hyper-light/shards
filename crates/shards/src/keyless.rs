@@ -148,6 +148,7 @@ fn client(wait: Duration) -> Result<Client, String> {
     .with_patience(Patience {
         head: Some(wait),
         stall: Some(wait),
+        ..Patience::default()
     }))
 }
 

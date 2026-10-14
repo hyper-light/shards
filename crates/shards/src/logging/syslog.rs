@@ -425,11 +425,12 @@ mod tests {
         serde_json::from_str(include_str!("testdata/syslog.json")).unwrap()
     }
 
-    /// Every message Docker's driver sent, on every transport, in every format and
-    /// facility, is what shards makes of the same line: its time, host and process ID
-    /// those a test gives (Docker's host was its socket's address, D163).
+    /// Every message the recording holds (scripts/logdrivers/generate), on every
+    /// transport, in every format and facility, is what shards makes of the same line: its
+    /// time, host and process ID those a test gives (the recording's host was its socket's
+    /// address, D163).
     #[test]
-    fn messages_are_docker_s() {
+    fn messages_match_the_recording() {
         let from = From {
             tag: "oracle".into(),
             hostname: "host.example".into(),
@@ -511,10 +512,10 @@ mod tests {
         }
     }
 
-    /// The options Docker takes, shards takes, and those it refuses, shards refuses; but
-    /// for what shards refuses and Docker takes, each for its reason (D163).
+    /// The options the recording accepted, shards accepts, and those it refused, shards
+    /// refuses; but for those shards refuses for reasons of its own, each given (D163).
     #[test]
-    fn options_are_taken_as_docker_takes_them() {
+    fn options_are_accepted_and_refused_as_recorded() {
         let dir = shards_testdir::TempDir::new("syslog-options").unwrap();
         for socket in ["stream.sock", "gram.sock"] {
             std::fs::write(dir.join(socket), b"").unwrap();
@@ -546,7 +547,7 @@ mod tests {
             assert_eq!(
                 ours.is_err(),
                 refused != deviates,
-                "{given}: Docker {}, shards {ours:?}",
+                "{given}: recorded {}, shards {ours:?}",
                 if refused { "refused" } else { "took" }
             );
         }

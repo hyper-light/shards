@@ -463,9 +463,9 @@ fn failed(op: &str, mut r: Response<'_>) -> String {
     let code = r
         .header("x-ms-error-code")
         .map(str::to_string)
-        .or_else(|| super::s3::xml_text(&body, "Code"))
+        .or_else(|| crate::aws::xml_text(&body, "Code"))
         .unwrap_or_default();
-    let message = super::s3::xml_text(&body, "Message")
+    let message = crate::aws::xml_text(&body, "Message")
         .map(|m| m.lines().next().unwrap_or_default().to_string())
         .unwrap_or_default();
     format!("{op}: {}: {code}: {message}", r.status_text())
