@@ -49,6 +49,39 @@ impl Pos {
         no: 0,
         byte: 0,
     };
+
+    /// Its segment.
+    pub fn seq(self) -> u64 {
+        self.seq
+    }
+
+    /// Its bytes, as a shipper keeps its place (D163): its three fields, big-endian.
+    pub fn to_bytes(self) -> [u8; 24] {
+        let mut b = [0u8; 24];
+        for (field, n) in b
+            .as_chunks_mut::<8>()
+            .0
+            .iter_mut()
+            .zip([self.seq, self.no, self.byte])
+        {
+            field.copy_from_slice(&n.to_be_bytes());
+        }
+        b
+    }
+
+    /// The place [`to_bytes`](Self::to_bytes) wrote.
+    pub fn from_bytes(b: &[u8; 24]) -> Pos {
+        let field = |i: usize| {
+            b.get(i * 8..i * 8 + 8)
+                .and_then(|f| <[u8; 8]>::try_from(f).ok())
+                .map_or(0, u64::from_be_bytes)
+        };
+        Pos {
+            seq: field(0),
+            no: field(1),
+            byte: field(2),
+        }
+    }
 }
 
 /// A record: its stream (0 for stdout, 1 for stderr), when its output came, and where the
@@ -461,6 +494,8 @@ struct Open {
     at: u64,
     started: bool,
     held: Vec<u8>,
+    /// Where its first byte is.
+    start: Pos,
 }
 
 /// Where a reader of the log is: the next record, the segment it is read from, and each
@@ -505,6 +540,19 @@ impl Reader {
     /// The segment read last, to watch for more of it.
     pub fn segment(&self) -> Option<&Segment> {
         self.segment.as_ref()
+    }
+
+    /// Where a reader would start that goes on from here, for each stream (D163): where
+    /// its line in progress starts, or past what this one has read.
+    pub fn resume_at(&self) -> [Pos; 2] {
+        let mut at = [self.next; 2];
+        for ((at, open), from) in at.iter_mut().zip(&self.open).zip(self.from) {
+            *at = match open {
+                Some(line) => line.start,
+                None => (*at).max(from),
+            };
+        }
+        at
     }
 
     /// Reads the records whole so far, and gives each line's pieces to `each` as they
@@ -724,6 +772,7 @@ impl Reader {
                     at: record.at,
                     started: false,
                     held: Vec::new(),
+                    start: at,
                 });
             }
             if let Some(line) = slot {
@@ -837,9 +886,10 @@ mod tests {
         }
     }
 
-    /// The segments of at most `size` bytes the workload's `Logger` writes `records` in: a
-    /// record goes to the last, or begins the next. So one more record changes only the
-    /// segment it goes to.
+    /// The segments of at most `size` bytes a writer keeps `records` in whole, as shards
+    /// before D163 did: a record goes to the last, or begins the next. So one more record
+    /// changes only the segment it goes to. Readers read logs so written, and those the
+    /// workload's `Logger` now writes, its records cut to fill each segment, alike.
     fn split(records: &[(u8, u64, Vec<u8>)], size: u64) -> Vec<Vec<(u8, u64, Vec<u8>)>> {
         let mut segments: Vec<Vec<(u8, u64, Vec<u8>)>> = vec![Vec::new()];
         let mut logged = 0u64;
@@ -1075,6 +1125,57 @@ mod tests {
                     }
                 }
             }
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A reader started where another got to (`resume_at`, D163), as a log is written on,
+    /// shows each line the other did not, from its start: together they show every line
+    /// once, whatever the segments and wherever the first stopped.
+    #[test]
+    fn a_reader_resumed_where_another_got_to_shows_the_rest() {
+        let dir = temp("resumed");
+        for seed in 1..200u64 {
+            // Lines shorter than a piece, which a reader never shows in part before they
+            // end: what it holds of one is what the next reader shows whole.
+            let records = random(seed);
+            if expected(&records, None, true)
+                .iter()
+                .flatten()
+                .any(|(_, line)| line.len() >= PIECE)
+            {
+                continue;
+            }
+            let size = [1, 100, 2_000, 5 * PIECE as u64][seed as usize % 4];
+            let cut = records.len() / 2;
+            let mut out: [Vec<(u64, Vec<u8>)>; 2] = [Vec::new(), Vec::new()];
+            fn gather(out: &mut [Vec<(u64, Vec<u8>)>; 2]) -> impl FnMut(Piece<'_>) -> Flow + '_ {
+                |p: Piece<'_>| {
+                    let s = usize::from(p.stream == LOG_STDERR);
+                    if p.first {
+                        out[s].push((p.at, Vec::new()));
+                    }
+                    out[s].last_mut().unwrap().1.extend_from_slice(p.bytes);
+                    Ok(true)
+                }
+            }
+            write_segments(&dir, &records[..cut], size, u64::MAX, 0);
+            let mut first = Reader::new();
+            first
+                .read(&LogFile::open(&dir).unwrap(), &mut gather(&mut out))
+                .unwrap();
+            let at = first.resume_at();
+            write_segments(&dir, &records, size, u64::MAX, 0);
+            let at = at.map(|p| Pos::from_bytes(&p.to_bytes()));
+            let mut next = Reader::from(at);
+            next.read(&LogFile::open(&dir).unwrap(), &mut gather(&mut out))
+                .unwrap();
+            next.finish(&mut gather(&mut out)).unwrap();
+            assert_eq!(
+                out,
+                expected(&records, None, true),
+                "seed {seed}, size {size}, cut {cut}"
+            );
         }
         let _ = std::fs::remove_dir_all(&dir);
     }

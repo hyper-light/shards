@@ -1,0 +1,957 @@
+{
+ "docker": "29.3.1",
+ "cases": [
+  {
+   "transport": "tcp",
+   "format": "rfc3164",
+   "facility": "daemon",
+   "framing": "newline",
+   "messages": [
+    {
+     "head": "<27>{stamp} {host} oracle[{pid}]: ",
+     "content": "err"
+    },
+    {
+     "head": "<30>{stamp} {host} oracle[{pid}]: ",
+     "content": "out"
+    },
+    {
+     "head": "<30>{stamp} {host} oracle[{pid}]: ",
+     "content": {
+      "x": 16384
+     }
+    },
+    {
+     "head": "<30>{stamp} {host} oracle[{pid}]: ",
+     "content": {
+      "x": 16384
+     }
+    },
+    {
+     "head": "<30>{stamp} {host} oracle[{pid}]: ",
+     "content": {
+      "x": 7232
+     }
+    }
+   ]
+  },
+  {
+   "transport": "tcp",
+   "format": "rfc5424",
+   "facility": "daemon",
+   "framing": "newline",
+   "messages": [
+    {
+     "head": "<30>1 {time} {host} oracle {pid} oracle - ",
+     "content": "out"
+    },
+    {
+     "head": "<27>1 {time} {host} oracle {pid} oracle - ",
+     "content": "err"
+    },
+    {
+     "head": "<30>1 {time} {host} oracle {pid} oracle - ",
+     "content": {
+      "x": 16384
+     }
+    },
+    {
+     "head": "<30>1 {time} {host} oracle {pid} oracle - ",
+     "content": {
+      "x": 16384
+     }
+    },
+    {
+     "head": "<30>1 {time} {host} oracle {pid} oracle - ",
+     "content": {
+      "x": 7232
+     }
+    }
+   ]
+  },
+  {
+   "transport": "tcp",
+   "format": "rfc5424",
+   "facility": "local7",
+   "framing": "newline",
+   "messages": [
+    {
+     "head": "<190>1 {time} {host} oracle {pid} oracle - ",
+     "content": "out"
+    },
+    {
+     "head": "<187>1 {time} {host} oracle {pid} oracle - ",
+     "content": "err"
+    },
+    {
+     "head": "<190>1 {time} {host} oracle {pid} oracle - ",
+     "content": {
+      "x": 16384
+     }
+    },
+    {
+     "head": "<190>1 {time} {host} oracle {pid} oracle - ",
+     "content": {
+      "x": 16384
+     }
+    },
+    {
+     "head": "<190>1 {time} {host} oracle {pid} oracle - ",
+     "content": {
+      "x": 7232
+     }
+    }
+   ]
+  },
+  {
+   "transport": "tcp",
+   "format": "rfc5424micro",
+   "facility": "daemon",
+   "framing": "newline",
+   "messages": [
+    {
+     "head": "<30>1 {time} {host} oracle {pid} oracle - ",
+     "content": "out"
+    },
+    {
+     "head": "<27>1 {time} {host} oracle {pid} oracle - ",
+     "content": "err"
+    },
+    {
+     "head": "<30>1 {time} {host} oracle {pid} oracle - ",
+     "content": {
+      "x": 16384
+     }
+    },
+    {
+     "head": "<30>1 {time} {host} oracle {pid} oracle - ",
+     "content": {
+      "x": 16384
+     }
+    },
+    {
+     "head": "<30>1 {time} {host} oracle {pid} oracle - ",
+     "content": {
+      "x": 7232
+     }
+    }
+   ]
+  },
+  {
+   "transport": "tcp",
+   "format": "unix",
+   "facility": "daemon",
+   "framing": "newline",
+   "messages": [
+    {
+     "head": "<27>{stamp} oracle[{pid}]: ",
+     "content": "err"
+    },
+    {
+     "head": "<30>{stamp} oracle[{pid}]: ",
+     "content": "out"
+    },
+    {
+     "head": "<30>{stamp} oracle[{pid}]: ",
+     "content": {
+      "x": 16384
+     }
+    },
+    {
+     "head": "<30>{stamp} oracle[{pid}]: ",
+     "content": {
+      "x": 16384
+     }
+    },
+    {
+     "head": "<30>{stamp} oracle[{pid}]: ",
+     "content": {
+      "x": 7232
+     }
+    }
+   ]
+  },
+  {
+   "transport": "tls",
+   "format": "rfc3164",
+   "facility": "daemon",
+   "framing": "newline",
+   "messages": [
+    {
+     "head": "<30>{stamp} {host} oracle[{pid}]: ",
+     "content": "out"
+    },
+    {
+     "head": "<27>{stamp} {host} oracle[{pid}]: ",
+     "content": "err"
+    },
+    {
+     "head": "<30>{stamp} {host} oracle[{pid}]: ",
+     "content": {
+      "x": 16384
+     }
+    },
+    {
+     "head": "<30>{stamp} {host} oracle[{pid}]: ",
+     "content": {
+      "x": 16384
+     }
+    },
+    {
+     "head": "<30>{stamp} {host} oracle[{pid}]: ",
+     "content": {
+      "x": 7232
+     }
+    }
+   ]
+  },
+  {
+   "transport": "tls",
+   "format": "rfc5424",
+   "facility": "daemon",
+   "framing": "octet-counted",
+   "messages": [
+    {
+     "head": "<30>1 {time} {host} oracle {pid} oracle - ",
+     "content": "out"
+    },
+    {
+     "head": "<27>1 {time} {host} oracle {pid} oracle - ",
+     "content": "err"
+    },
+    {
+     "head": "<30>1 {time} {host} oracle {pid} oracle - ",
+     "content": {
+      "x": 16384
+     }
+    },
+    {
+     "head": "<30>1 {time} {host} oracle {pid} oracle - ",
+     "content": {
+      "x": 16384
+     }
+    },
+    {
+     "head": "<30>1 {time} {host} oracle {pid} oracle - ",
+     "content": {
+      "x": 7232
+     }
+    }
+   ]
+  },
+  {
+   "transport": "tls",
+   "format": "rfc5424",
+   "facility": "local7",
+   "framing": "octet-counted",
+   "messages": [
+    {
+     "head": "<190>1 {time} {host} oracle {pid} oracle - ",
+     "content": "out"
+    },
+    {
+     "head": "<187>1 {time} {host} oracle {pid} oracle - ",
+     "content": "err"
+    },
+    {
+     "head": "<190>1 {time} {host} oracle {pid} oracle - ",
+     "content": {
+      "x": 16384
+     }
+    },
+    {
+     "head": "<190>1 {time} {host} oracle {pid} oracle - ",
+     "content": {
+      "x": 16384
+     }
+    },
+    {
+     "head": "<190>1 {time} {host} oracle {pid} oracle - ",
+     "content": {
+      "x": 7232
+     }
+    }
+   ]
+  },
+  {
+   "transport": "tls",
+   "format": "rfc5424micro",
+   "facility": "daemon",
+   "framing": "octet-counted",
+   "messages": [
+    {
+     "head": "<30>1 {time} {host} oracle {pid} oracle - ",
+     "content": "out"
+    },
+    {
+     "head": "<27>1 {time} {host} oracle {pid} oracle - ",
+     "content": "err"
+    },
+    {
+     "head": "<30>1 {time} {host} oracle {pid} oracle - ",
+     "content": {
+      "x": 16384
+     }
+    },
+    {
+     "head": "<30>1 {time} {host} oracle {pid} oracle - ",
+     "content": {
+      "x": 16384
+     }
+    },
+    {
+     "head": "<30>1 {time} {host} oracle {pid} oracle - ",
+     "content": {
+      "x": 7232
+     }
+    }
+   ]
+  },
+  {
+   "transport": "tls",
+   "format": "unix",
+   "facility": "daemon",
+   "framing": "newline",
+   "messages": [
+    {
+     "head": "<27>{stamp} oracle[{pid}]: ",
+     "content": "err"
+    },
+    {
+     "head": "<30>{stamp} oracle[{pid}]: ",
+     "content": "out"
+    },
+    {
+     "head": "<30>{stamp} oracle[{pid}]: ",
+     "content": {
+      "x": 16384
+     }
+    },
+    {
+     "head": "<30>{stamp} oracle[{pid}]: ",
+     "content": {
+      "x": 16384
+     }
+    },
+    {
+     "head": "<30>{stamp} oracle[{pid}]: ",
+     "content": {
+      "x": 7232
+     }
+    }
+   ]
+  },
+  {
+   "transport": "udp",
+   "format": "rfc3164",
+   "facility": "daemon",
+   "framing": "datagram",
+   "messages": [
+    {
+     "head": "<27>{stamp} {host} oracle[{pid}]: ",
+     "content": "err"
+    },
+    {
+     "head": "<30>{stamp} {host} oracle[{pid}]: ",
+     "content": "out"
+    },
+    {
+     "head": "<30>{stamp} {host} oracle[{pid}]: ",
+     "content": {
+      "x": 16384
+     }
+    },
+    {
+     "head": "<30>{stamp} {host} oracle[{pid}]: ",
+     "content": {
+      "x": 16384
+     }
+    },
+    {
+     "head": "<30>{stamp} {host} oracle[{pid}]: ",
+     "content": {
+      "x": 7232
+     }
+    }
+   ]
+  },
+  {
+   "transport": "udp",
+   "format": "rfc5424",
+   "facility": "daemon",
+   "framing": "datagram",
+   "messages": [
+    {
+     "head": "<30>1 {time} {host} oracle {pid} oracle - ",
+     "content": "out"
+    },
+    {
+     "head": "<27>1 {time} {host} oracle {pid} oracle - ",
+     "content": "err"
+    },
+    {
+     "head": "<30>1 {time} {host} oracle {pid} oracle - ",
+     "content": {
+      "x": 16384
+     }
+    },
+    {
+     "head": "<30>1 {time} {host} oracle {pid} oracle - ",
+     "content": {
+      "x": 16384
+     }
+    },
+    {
+     "head": "<30>1 {time} {host} oracle {pid} oracle - ",
+     "content": {
+      "x": 7232
+     }
+    }
+   ]
+  },
+  {
+   "transport": "udp",
+   "format": "rfc5424",
+   "facility": "local7",
+   "framing": "datagram",
+   "messages": [
+    {
+     "head": "<187>1 {time} {host} oracle {pid} oracle - ",
+     "content": "err"
+    },
+    {
+     "head": "<190>1 {time} {host} oracle {pid} oracle - ",
+     "content": "out"
+    },
+    {
+     "head": "<190>1 {time} {host} oracle {pid} oracle - ",
+     "content": {
+      "x": 16384
+     }
+    },
+    {
+     "head": "<190>1 {time} {host} oracle {pid} oracle - ",
+     "content": {
+      "x": 16384
+     }
+    },
+    {
+     "head": "<190>1 {time} {host} oracle {pid} oracle - ",
+     "content": {
+      "x": 7232
+     }
+    }
+   ]
+  },
+  {
+   "transport": "udp",
+   "format": "rfc5424micro",
+   "facility": "daemon",
+   "framing": "datagram",
+   "messages": [
+    {
+     "head": "<27>1 {time} {host} oracle {pid} oracle - ",
+     "content": "err"
+    },
+    {
+     "head": "<30>1 {time} {host} oracle {pid} oracle - ",
+     "content": "out"
+    },
+    {
+     "head": "<30>1 {time} {host} oracle {pid} oracle - ",
+     "content": {
+      "x": 16384
+     }
+    },
+    {
+     "head": "<30>1 {time} {host} oracle {pid} oracle - ",
+     "content": {
+      "x": 16384
+     }
+    },
+    {
+     "head": "<30>1 {time} {host} oracle {pid} oracle - ",
+     "content": {
+      "x": 7232
+     }
+    }
+   ]
+  },
+  {
+   "transport": "udp",
+   "format": "unix",
+   "facility": "daemon",
+   "framing": "datagram",
+   "messages": [
+    {
+     "head": "<27>{stamp} oracle[{pid}]: ",
+     "content": "err"
+    },
+    {
+     "head": "<30>{stamp} oracle[{pid}]: ",
+     "content": "out"
+    },
+    {
+     "head": "<30>{stamp} oracle[{pid}]: ",
+     "content": {
+      "x": 16384
+     }
+    },
+    {
+     "head": "<30>{stamp} oracle[{pid}]: ",
+     "content": {
+      "x": 16384
+     }
+    },
+    {
+     "head": "<30>{stamp} oracle[{pid}]: ",
+     "content": {
+      "x": 7232
+     }
+    }
+   ]
+  },
+  {
+   "transport": "unix",
+   "format": "rfc3164",
+   "facility": "daemon",
+   "framing": "newline",
+   "messages": [
+    {
+     "head": "<27>{stamp} {host} oracle[{pid}]: ",
+     "content": "err"
+    },
+    {
+     "head": "<30>{stamp} {host} oracle[{pid}]: ",
+     "content": "out"
+    },
+    {
+     "head": "<30>{stamp} {host} oracle[{pid}]: ",
+     "content": {
+      "x": 16384
+     }
+    },
+    {
+     "head": "<30>{stamp} {host} oracle[{pid}]: ",
+     "content": {
+      "x": 16384
+     }
+    },
+    {
+     "head": "<30>{stamp} {host} oracle[{pid}]: ",
+     "content": {
+      "x": 7232
+     }
+    }
+   ]
+  },
+  {
+   "transport": "unix",
+   "format": "rfc5424",
+   "facility": "daemon",
+   "framing": "newline",
+   "messages": [
+    {
+     "head": "<27>1 {time} {host} oracle {pid} oracle - ",
+     "content": "err"
+    },
+    {
+     "head": "<30>1 {time} {host} oracle {pid} oracle - ",
+     "content": "out"
+    },
+    {
+     "head": "<30>1 {time} {host} oracle {pid} oracle - ",
+     "content": {
+      "x": 16384
+     }
+    },
+    {
+     "head": "<30>1 {time} {host} oracle {pid} oracle - ",
+     "content": {
+      "x": 16384
+     }
+    },
+    {
+     "head": "<30>1 {time} {host} oracle {pid} oracle - ",
+     "content": {
+      "x": 7232
+     }
+    }
+   ]
+  },
+  {
+   "transport": "unix",
+   "format": "rfc5424",
+   "facility": "local7",
+   "framing": "newline",
+   "messages": [
+    {
+     "head": "<190>1 {time} {host} oracle {pid} oracle - ",
+     "content": "out"
+    },
+    {
+     "head": "<187>1 {time} {host} oracle {pid} oracle - ",
+     "content": "err"
+    },
+    {
+     "head": "<190>1 {time} {host} oracle {pid} oracle - ",
+     "content": {
+      "x": 16384
+     }
+    },
+    {
+     "head": "<190>1 {time} {host} oracle {pid} oracle - ",
+     "content": {
+      "x": 16384
+     }
+    },
+    {
+     "head": "<190>1 {time} {host} oracle {pid} oracle - ",
+     "content": {
+      "x": 7232
+     }
+    }
+   ]
+  },
+  {
+   "transport": "unix",
+   "format": "rfc5424micro",
+   "facility": "daemon",
+   "framing": "newline",
+   "messages": [
+    {
+     "head": "<30>1 {time} {host} oracle {pid} oracle - ",
+     "content": "out"
+    },
+    {
+     "head": "<27>1 {time} {host} oracle {pid} oracle - ",
+     "content": "err"
+    },
+    {
+     "head": "<30>1 {time} {host} oracle {pid} oracle - ",
+     "content": {
+      "x": 16384
+     }
+    },
+    {
+     "head": "<30>1 {time} {host} oracle {pid} oracle - ",
+     "content": {
+      "x": 16384
+     }
+    },
+    {
+     "head": "<30>1 {time} {host} oracle {pid} oracle - ",
+     "content": {
+      "x": 7232
+     }
+    }
+   ]
+  },
+  {
+   "transport": "unix",
+   "format": "unix",
+   "facility": "daemon",
+   "framing": "newline",
+   "messages": [
+    {
+     "head": "<30>{stamp} oracle[{pid}]: ",
+     "content": "out"
+    },
+    {
+     "head": "<27>{stamp} oracle[{pid}]: ",
+     "content": "err"
+    },
+    {
+     "head": "<30>{stamp} oracle[{pid}]: ",
+     "content": {
+      "x": 16384
+     }
+    },
+    {
+     "head": "<30>{stamp} oracle[{pid}]: ",
+     "content": {
+      "x": 16384
+     }
+    },
+    {
+     "head": "<30>{stamp} oracle[{pid}]: ",
+     "content": {
+      "x": 7232
+     }
+    }
+   ]
+  },
+  {
+   "transport": "unixgram",
+   "format": "rfc3164",
+   "facility": "daemon",
+   "framing": "datagram",
+   "messages": [
+    {
+     "head": "<30>{stamp} {host} oracle[{pid}]: ",
+     "content": "out"
+    },
+    {
+     "head": "<27>{stamp} {host} oracle[{pid}]: ",
+     "content": "err"
+    },
+    {
+     "head": "<30>{stamp} {host} oracle[{pid}]: ",
+     "content": {
+      "x": 16384
+     }
+    },
+    {
+     "head": "<30>{stamp} {host} oracle[{pid}]: ",
+     "content": {
+      "x": 16384
+     }
+    },
+    {
+     "head": "<30>{stamp} {host} oracle[{pid}]: ",
+     "content": {
+      "x": 7232
+     }
+    }
+   ]
+  },
+  {
+   "transport": "unixgram",
+   "format": "rfc5424",
+   "facility": "daemon",
+   "framing": "datagram",
+   "messages": [
+    {
+     "head": "<30>1 {time} {host} oracle {pid} oracle - ",
+     "content": "out"
+    },
+    {
+     "head": "<27>1 {time} {host} oracle {pid} oracle - ",
+     "content": "err"
+    },
+    {
+     "head": "<30>1 {time} {host} oracle {pid} oracle - ",
+     "content": {
+      "x": 16384
+     }
+    },
+    {
+     "head": "<30>1 {time} {host} oracle {pid} oracle - ",
+     "content": {
+      "x": 16384
+     }
+    },
+    {
+     "head": "<30>1 {time} {host} oracle {pid} oracle - ",
+     "content": {
+      "x": 7232
+     }
+    }
+   ]
+  },
+  {
+   "transport": "unixgram",
+   "format": "rfc5424",
+   "facility": "local7",
+   "framing": "datagram",
+   "messages": [
+    {
+     "head": "<190>1 {time} {host} oracle {pid} oracle - ",
+     "content": "out"
+    },
+    {
+     "head": "<187>1 {time} {host} oracle {pid} oracle - ",
+     "content": "err"
+    },
+    {
+     "head": "<190>1 {time} {host} oracle {pid} oracle - ",
+     "content": {
+      "x": 16384
+     }
+    },
+    {
+     "head": "<190>1 {time} {host} oracle {pid} oracle - ",
+     "content": {
+      "x": 16384
+     }
+    },
+    {
+     "head": "<190>1 {time} {host} oracle {pid} oracle - ",
+     "content": {
+      "x": 7232
+     }
+    }
+   ]
+  },
+  {
+   "transport": "unixgram",
+   "format": "rfc5424micro",
+   "facility": "daemon",
+   "framing": "datagram",
+   "messages": [
+    {
+     "head": "<30>1 {time} {host} oracle {pid} oracle - ",
+     "content": "out"
+    },
+    {
+     "head": "<27>1 {time} {host} oracle {pid} oracle - ",
+     "content": "err"
+    },
+    {
+     "head": "<30>1 {time} {host} oracle {pid} oracle - ",
+     "content": {
+      "x": 16384
+     }
+    },
+    {
+     "head": "<30>1 {time} {host} oracle {pid} oracle - ",
+     "content": {
+      "x": 16384
+     }
+    },
+    {
+     "head": "<30>1 {time} {host} oracle {pid} oracle - ",
+     "content": {
+      "x": 7232
+     }
+    }
+   ]
+  },
+  {
+   "transport": "unixgram",
+   "format": "unix",
+   "facility": "daemon",
+   "framing": "datagram",
+   "messages": [
+    {
+     "head": "<27>{stamp} oracle[{pid}]: ",
+     "content": "err"
+    },
+    {
+     "head": "<30>{stamp} oracle[{pid}]: ",
+     "content": "out"
+    },
+    {
+     "head": "<30>{stamp} oracle[{pid}]: ",
+     "content": {
+      "x": 16384
+     }
+    },
+    {
+     "head": "<30>{stamp} oracle[{pid}]: ",
+     "content": {
+      "x": 16384
+     }
+    },
+    {
+     "head": "<30>{stamp} oracle[{pid}]: ",
+     "content": {
+      "x": 7232
+     }
+    }
+   ]
+  }
+ ],
+ "options": [
+  {
+   "option": "syslog-address=udp://127.0.0.1:5514",
+   "refused": null
+  },
+  {
+   "option": "syslog-address=tcp://127.0.0.1",
+   "refused": null
+  },
+  {
+   "option": "syslog-address=tcp+tls://127.0.0.1:5516",
+   "refused": null
+  },
+  {
+   "option": "syslog-address=unix://{dir}/stream.sock",
+   "refused": null
+  },
+  {
+   "option": "syslog-address=unixgram://{dir}/gram.sock",
+   "refused": null
+  },
+  {
+   "option": "syslog-address=unix://{dir}/missing.sock",
+   "refused": "Error response from daemon: stat {dir}/missing.sock: no such file or directory"
+  },
+  {
+   "option": "syslog-address=unix://host{dir}/stream.sock",
+   "refused": null
+  },
+  {
+   "option": "syslog-address=http://127.0.0.1:514",
+   "refused": "Error response from daemon: unsupported scheme: 'http'"
+  },
+  {
+   "option": "syslog-address=udp://127.0.0.1:port",
+   "refused": "Error response from daemon: parse \"udp://127.0.0.1:port\": invalid port \":port\" after host"
+  },
+  {
+   "option": "syslog-address=udp://::1",
+   "refused": "Error response from daemon: address ::1: too many colons in address"
+  },
+  {
+   "option": "syslog-address=udp://[::1]",
+   "refused": null
+  },
+  {
+   "option": "syslog-address=127.0.0.1:514",
+   "refused": "Error response from daemon: parse \"127.0.0.1:514\": first path segment in URL cannot contain colon"
+  },
+  {
+   "option": "syslog-facility=local0",
+   "refused": null
+  },
+  {
+   "option": "syslog-facility=23",
+   "refused": null
+  },
+  {
+   "option": "syslog-facility=24",
+   "refused": "Error response from daemon: invalid syslog facility"
+  },
+  {
+   "option": "syslog-facility=bogus",
+   "refused": "Error response from daemon: invalid syslog facility"
+  },
+  {
+   "option": "syslog-format=rfc5424micro",
+   "refused": null
+  },
+  {
+   "option": "syslog-format=bogus",
+   "refused": "Error response from daemon: Invalid syslog format"
+  },
+  {
+   "option": "syslog-tls-skip-verify=true",
+   "refused": null
+  },
+  {
+   "option": "syslog-color=red",
+   "refused": "Error response from daemon: unknown log opt 'syslog-color' for syslog log driver"
+  },
+  {
+   "option": "max-size=10m",
+   "refused": "Error response from daemon: unknown log opt 'max-size' for syslog log driver"
+  },
+  {
+   "option": "cache-max-size=10m",
+   "refused": null
+  },
+  {
+   "option": "cache-disabled=maybe",
+   "refused": "Error response from daemon: invalid value for option cache-disabled: maybe"
+  },
+  {
+   "option": "mode=non-blocking",
+   "refused": null
+  },
+  {
+   "option": "tag={{.Name}}",
+   "refused": null
+  }
+ ]
+}

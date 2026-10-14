@@ -176,6 +176,11 @@ impl<D: Disk> Daemon<D> {
         // log's rotated segments compressed on another (packed.rs).
         self.start_files(threads);
         self.start_packer(threads);
+        // And sent where its driver says, on a thread of its own (ship.rs, D163): its
+        // record written yet or not.
+        if lock(&self.containers).made(&id).is_some_and(|c| c.log_ships) {
+            self.ship_soon(threads, &id);
+        }
         if let Err(e) = added {
             lock(&f.runs).remove(&token);
             log(format!("container {id}: following its run with the others: {e}"));

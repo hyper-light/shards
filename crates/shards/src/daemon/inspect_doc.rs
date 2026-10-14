@@ -1527,6 +1527,7 @@ mod tests {
                 log_lost: 0,
                 log_dropped: 0,
                 log_compress: false,
+                log_ships: false,
                 stop_signal: None,
                 stop_timeout: run.stop_timeout,
                 ports: Vec::new(),

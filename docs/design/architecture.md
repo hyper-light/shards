@@ -3614,6 +3614,83 @@ No run-time labels, relays or declassifiers (§12 answer 14, decided by the user
 an internal-only domain to the world (D58), so there is no data to label. Code mode is
 D136.
 
+### D163. A run's log sent to syslog, by the daemon, from shards' store
+
+`--log-driver syslog` is served, the first of Docker's drivers that send a log elsewhere,
+and the way every later one sends.
+
+- **From the store, by the daemon.** The run's VM keeps its output in shards' store as
+  every run's does (D161). The daemon follows the log of each container whose driver
+  sends it elsewhere, on a thread of its own (`daemon/ship.rs`), as `logs -f` follows
+  one, and sends each line. So:
+  - the VM, its guest and its run reach no network for their log;
+  - a server that is slow or down holds up nothing but its own sending, retried after
+    1 s, half as long again each time, at most 60 s (fluent-logger-golang's waits, through
+    which moby's fluentd driver sends);
+  - a run starts whether or not its server is up, where Docker's would not start;
+  - what is not yet sent waits in the store, bounded as the store is, and survives the
+    daemon's restarts: the shipper keeps its place beside the log (`ship`), and the next
+    daemon sends what is left. Docker sends from the run's copier and loses what it had
+    not sent.
+- **Lines as Docker's.** Each line is a message, cut as moby's copier cuts it: past
+  16 KiB, in parts of 16 KiB, then the rest.
+- **Messages as Docker's.** Its formats (srslog's Unix format, rfc3164, rfc5424,
+  rfc5424micro), its facilities, info for stdout and err for stderr, the tag (the short ID
+  unless given), its framing (newlines, octet counting over TLS for RFC 5424), and udp,
+  tcp, tcp+tls, unix, unixgram and the host's own syslog. All are held byte for byte to
+  Docker 29.3.1's (`scripts/logdrivers/generate`: 25 transport, format and facility
+  cases, recorded in shards-dind, and which options Docker takes).
+- **Where Docker is wrong, shards is not.** Each difference is recorded, in the oracle's
+  test where it has one:
+  - a message is stamped with when its output came; srslog stamps when it sends;
+  - it names this host; srslog names its socket's local address and port, which no RFC
+    5424 HOSTNAME is;
+  - its tag fills its fields: RFC 5424's APP-NAME and MSGID are printable ASCII of at most
+    48 and 32 characters, and a space would end either format's tag early;
+  - a datagram socket's send buffer grows to each message, since macOS takes none longer
+    than it (PM M232). A line whose datagram its receiver refuses for its size goes in
+    halves, down to RFC 5426's 480 octets. moby drops it;
+  - nothing is dropped: a send that fails is sent again;
+  - `syslog-tls-skip-verify` is refused, its CA asked for instead: shards sends only to a
+    server whose certificate it verifies;
+  - `unix://host/path` is refused. Go's parser takes `host` for a host, and moby's driver
+    drops it.
+- **The local copy.** A driver that sends its log elsewhere keeps it in the store too, as
+  Docker's dual logging does.
+  - `cache-max-size`, `cache-max-file` and `cache-compress` bound it. Docker takes them and
+    applies none: its cache is the local driver with its defaults
+    (loggerutils/cache.WithLocalCache passes the options unchanged).
+  - `cache-disabled=true` keeps it from `logs`, which says so. The segments wholly sent go.
+  - Every driver takes the `cache-*` options, as Docker's do; D161 refused them.
+- **`inspect`'s LogPath** is empty, as dockerd leaves its local driver's: shards' store is
+  its own, no file a reader of Docker's json-file logs could read.
+- **Segments filled.** A record fills the room its segment has, the rest going on in the
+  next. D161's rule moved a record that did not fit whole into the next segment. On CI's
+  x86_64 Linux, whose guest's records are 32 KiB, that left segments of 64,000 bytes half
+  full and a log half its retention; D162's test caught it there.
+- **Not yet.** gelf, fluentd, journald, splunk, awslogs, gcplogs and etwlogs, each
+  refused with a word that says so.
+
+Tested on real microVMs (`a_runs_log_is_sent_to_syslog_as_its_options_say`):
+
+- UDP in srslog's format;
+- TCP in rfc5424micro and local0, its time `logs -t`'s to the microsecond and its host a
+  name;
+- TLS with a CA made for the test, octet-counted;
+- a unix datagram socket, a 40,000-byte line in 16,384 + 16,384 + 7,232;
+- a server that comes up only after the run, and one up only after the daemon restarted;
+- `cache-disabled`, `logs` refusing it;
+- the refusals, and an empty LogPath.
+
+Unit tests cover:
+
+- every message of the oracle, byte for byte;
+- the options, against what Docker takes;
+- addresses, ports and tag fields;
+- the copier's cuts;
+- the shipper's place, and a reader resumed from it showing every line once;
+- the segments wholly sent going.
+
 ### D162. A run's rotated log segments compressed, seekably; a log that never holds up its run
 
 D162 serves two of Docker's log options that D161 refused, `compress` and
@@ -3659,7 +3736,8 @@ D162 serves two of Docker's log options that D161 refused, `compress` and
     dropped, as they came while its log's queue was full (--log-opt mode=non-blocking)`.
     `logs` still exits 0, since dropping is what the run asked for.
   - All that is queued is kept before the run's end is told.
-- **Not yet.** The drivers that send a log elsewhere (D161's list).
+- **Not yet.** The drivers that send a log elsewhere (D161's list), of which D163 serves
+  syslog.
 
 Tested on real microVMs (`a_runs_log_is_compressed_and_queued_as_its_options_say`):
 
@@ -3692,11 +3770,12 @@ own where none was, and the options as a map (`HostConfig.LogConfig`).
 - **Its bound, its own.** `max-size` (go-units' FromHumanSize, decimal, as both of
   Docker's file drivers read it) is each segment's most bytes, `max-file` how many it
   keeps, the newest written; they go to the run's VM with its request, and the daemon
-  rotates by the run's count. A record goes whole into the segment written where it fits,
-  else into the next; one longer than a segment holds is cut into records that each fill
-  one, each saying whether it ends a line, so no segment is longer than asked and a line
-  so cut is read whole. Before, a segment took a whole frame past its size (12 KB a
-  segment where 1 KB was asked). json-file
+  rotates by the run's count. A record fills what room the segment written has, the rest
+  going on in the next, each saying whether it ends a line, so no segment is longer than
+  asked, each is as long as it may be, and a line so cut is read whole. Before, a segment
+  took a whole frame past its size (12 KB a segment where 1 KB was asked); then, until
+  D163, a record that did not fit went whole into the next segment, which left segments
+  of 64,000 bytes half full of a Linux guest's 32 KiB records. json-file
   keeps one file where only `max-size` is given, as Docker's does; where neither is, every
   driver keeps the daemon's bound (`SHARDS_LOG_MAX_SIZE`, `SHARDS_LOG_MAX_FILE`), where
   Docker's json-file keeps one file that grows without end.
@@ -6728,7 +6807,7 @@ the rest of a run's reach into its domains.
   | A run joining the microVM (`--network container:`, D119) | held to every rule of this table, by the daemon and again by init | it runs beside them as the microVM's own run does |
   | `--ipc` (`host` is init's namespace, theirs each their own), `--uts`, `--userns`, `--umask`, `--storage-opt` (D156); `--runtime`, `--isolation`, `--cpu-count`, `--cpu-percent`, `--cpu-rt-*` (D155) | given | the command's own namespaces, writable layer and limits |
   | `--link` | refused for every run, not served yet | |
-  | `--log-driver`, `--log-opt` (D161, D162) | given | the command's own output, kept on the host by its VM process, in its container's directory |
+  | `--log-driver`, `--log-opt` (D161 to D163) | given | the command's own output, kept on the host by its VM process, in its container's directory, and sent elsewhere by the daemon, never by the microVM |
   | `--cap-add` of any other: `DAC_READ_SEARCH`, `IPC_OWNER`, `IPC_LOCK`, `SYS_BOOT`, `SYS_RESOURCE`, `CHECKPOINT_RESTORE` among them | given | `open_by_handle_at` opens only on filesystems the command holds a mount of, a domain's own being none of them; IPC namespaces differ; `reboot(2)` ends the caller's own PID namespace's init (pid_namespaces(7)); the rest bound the command's own resources or namespaces |
   | `--cap-drop`, `no-new-privileges`, `writable-cgroups=true` (its cgroup namespace's subtree), `apparmor=`, `label=` (no LSM in the microVM: accepted, as on a Docker host without one) | given | narrows the command, or touches only its own |
   | `seccomp=` a profile or `unconfined` | given, recorded | its own filter; the domains keep theirs. Measured: unconfined, any uid makes a user namespace (`max_user_namespaces` 994), owning none of the domains' namespaces but reaching more of the kernel they share |

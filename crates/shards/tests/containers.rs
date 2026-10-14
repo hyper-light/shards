@@ -11058,8 +11058,36 @@ fn a_runs_log_is_compressed_and_queued_as_its_options_say() {
     assert_eq!(kept.iter().filter(|n| n.ends_with(".zst")).count(), 3, "{kept:?}");
     let logged = shards(&["logs", "rotating"]);
     assert_eq!((logged.status, logged.stderr.as_str()), (Some(0), ""), "{logged}");
+    // What its segments hold, compressed or not, past their records' heads: the output's
+    // newest, all of it, each segment filled to its size but the newest.
+    let dir = dir_of("rotating");
+    let mut seqs: Vec<u64> = std::fs::read_dir(&dir)
+        .unwrap()
+        .filter_map(|e| {
+            let name = e.unwrap().file_name().into_string().unwrap();
+            name.strip_prefix("log.")?.strip_suffix(".idx")?.parse().ok()
+        })
+        .collect();
+    seqs.sort_unstable();
+    let mut payload = 0;
+    for (i, seq) in seqs.iter().enumerate() {
+        let log = segment_log(&dir, *seq).len() as u64;
+        let records = std::fs::metadata(dir.join(format!("log.{seq}.idx")))
+            .unwrap()
+            .len()
+            / 8;
+        // Filled until less is left than a record's head and a byte.
+        if i + 1 < seqs.len() {
+            assert!(
+                (64_000 - 13..=64_000).contains(&log),
+                "segment {seq}: {log} bytes"
+            );
+        }
+        payload += log - 13 * records;
+    }
+    assert_eq!(logged.stdout.len() as u64, payload);
     assert!(
-        logged.stdout.len() > 150_000 && rotating.stdout.ends_with(&logged.stdout),
+        rotating.stdout.ends_with(&logged.stdout),
         "{} bytes logged: not the output's newest",
         logged.stdout.len()
     );
@@ -11172,6 +11200,394 @@ fn a_runs_log_is_compressed_and_queued_as_its_options_say() {
         let r = run_in(&home, &image, flags, &["exit", "0"]);
         assert_eq!(r.status, Some(125), "{flags:?}: {r}");
         assert!(r.stderr.starts_with(said), "{flags:?}: {r}");
+    }
+}
+
+/// `listener`'s first connection, within [`TIMEOUT`]: none where none comes, which a test
+/// then fails on, not waits for ever.
+fn accept_within(listener: &std::net::TcpListener) -> Option<std::net::TcpStream> {
+    listener.set_nonblocking(true).unwrap();
+    let deadline = Instant::now() + TIMEOUT;
+    loop {
+        match listener.accept() {
+            Ok((conn, _)) => {
+                conn.set_nonblocking(false).unwrap();
+                return Some(conn);
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock && Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            Err(_) => return None,
+        }
+    }
+}
+
+/// What a syslog server reads on `listener`'s first connection: its lines until `lines`
+/// have come, or all it gets until the connection ends; none where none comes.
+fn syslog_lines(listener: std::net::TcpListener, lines: usize) -> std::thread::JoinHandle<Vec<String>> {
+    std::thread::spawn(move || {
+        let Some(conn) = accept_within(&listener) else {
+            return Vec::new();
+        };
+        conn.set_read_timeout(Some(TIMEOUT)).unwrap();
+        let mut read = BufReader::new(conn);
+        let mut got = Vec::new();
+        while got.len() < lines {
+            let mut line = String::new();
+            if read.read_line(&mut line).unwrap() == 0 {
+                break;
+            }
+            got.push(line);
+        }
+        got.sort();
+        got
+    })
+}
+
+/// A port nothing listens on now, which a test may listen on later.
+fn free_port() -> u16 {
+    std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port()
+}
+
+/// A run's log sent to syslog (D163): by the daemon, from shards' store, so that its run
+/// waits for no server. Each line is a message as Docker's syslog driver sends it:
+/// - over UDP, TCP, TLS (octet-counted) and a unix datagram socket;
+/// - its severity info for stdout and err for stderr, of the facility asked for;
+/// - its tag as asked, else the container's short ID;
+/// - stamped with when its output came (Docker stamps when it sends);
+/// - naming this host (Docker names its socket's address and port);
+/// - a line longer than 16 KiB in parts.
+///
+/// One sent to a server that comes up only after its run gets there, and so does one
+/// whose daemon restarted meanwhile: Docker's would not start without its server, and
+/// would lose what was not yet sent. `logs` reads the local copy, and refuses where
+/// `cache-disabled` keeps it. The refusals are in shards' words.
+#[test]
+fn a_runs_log_is_sent_to_syslog_as_its_options_say() {
+    let Some((home, image)) = home("containers-syslog") else {
+        return;
+    };
+    let shards = |args: &[&str]| shards_in(&home, args);
+    let syslog = |name: &str, opts: &[&str], command: &[&str]| {
+        let mut flags = vec!["--name", name, "--log-driver", "syslog"];
+        for o in opts {
+            flags.extend(["--log-opt", o]);
+        }
+        let r = run_in(&home, &image, &flags, command);
+        assert_eq!(r.status, Some(0), "{name}: {r}");
+        r
+    };
+    // UDP, srslog's Unix format and its facility, daemon: info 30, err 27.
+    let udp = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+    udp.set_read_timeout(Some(TIMEOUT)).unwrap();
+    let datagram = |s: &std::net::UdpSocket| {
+        let mut b = vec![0u8; 1 << 16];
+        let n = s.recv(&mut b).unwrap();
+        String::from_utf8(b[..n].to_vec()).unwrap()
+    };
+    syslog(
+        "udp",
+        &[
+            &format!("syslog-address=udp://{}", udp.local_addr().unwrap()),
+            "tag={{.Name}}",
+        ],
+        &["streams", "out", "err"],
+    );
+    let mut got = [datagram(&udp), datagram(&udp)];
+    got.sort();
+    let unix =
+        regex::Regex::new(r"^<(\d+)>[A-Z][a-z]{2} [ \d]\d \d\d:\d\d:\d\d udp\[\d+\]: (\w+)\n$").unwrap();
+    let said: Vec<(String, String)> = got
+        .iter()
+        .map(|m| {
+            let c = unix.captures(m).unwrap_or_else(|| panic!("{m:?}"));
+            (c[1].to_string(), c[2].to_string())
+        })
+        .collect();
+    assert_eq!(said, [("27".into(), "err".into()), ("30".into(), "out".into())]);
+    assert_eq!(shards(&["logs", "udp"]).stdout, "out\n");
+    assert_eq!(shards(&["inspect", "-f", "{{.LogPath}}", "udp"]).stdout, "\n");
+
+    // TCP, RFC 5424 to the microsecond, local0: its tag the short ID, its host this one's,
+    // its time its output's.
+    let tcp = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = format!("syslog-address=tcp://{}", tcp.local_addr().unwrap());
+    let reading = syslog_lines(tcp, 2);
+    syslog(
+        "tcp",
+        &[&address, "syslog-format=rfc5424micro", "syslog-facility=local0"],
+        &["streams", "out", "err"],
+    );
+    let got = reading.join().unwrap();
+    let id = shards(&["inspect", "-f", "{{.Id}}", "tcp"]).stdout;
+    let short = id.get(..12).unwrap();
+    let micro = regex::Regex::new(r"^<(\d+)>1 (\S+) (\S+) (\S+) (\d+) (\S+) - (\w+)\n$").unwrap();
+    let stamped = shards(&["logs", "-t", "tcp"]);
+    for m in &got {
+        let c = micro.captures(m).unwrap_or_else(|| panic!("{m:?}"));
+        let (pri, time, host, app, msgid, line) = (&c[1], &c[2], &c[3], &c[4], &c[6], &c[7]);
+        assert_eq!((app, msgid), (short, short), "{m:?}");
+        assert!(
+            !host.is_empty() && !host.contains(':'),
+            "a host's name, not an address: {m:?}"
+        );
+        let pri: u32 = pri.parse().unwrap();
+        assert_eq!(
+            (pri >> 3, pri & 7),
+            (16, if line == "err" { 3 } else { 6 }),
+            "{m:?}"
+        );
+        // Its time is its output's, as `logs -t` says it, to the microsecond.
+        let rfc3339 = &time::format_description::well_known::Rfc3339;
+        let sent = time::OffsetDateTime::parse(time, rfc3339)
+            .unwrap()
+            .unix_timestamp_nanos();
+        let kept = [&stamped.stdout, &stamped.stderr]
+            .iter()
+            .flat_map(|s| s.lines())
+            .find_map(|l| l.strip_suffix(&format!(" {line}")))
+            .unwrap_or_else(|| panic!("{stamped}"));
+        let kept = time::OffsetDateTime::parse(kept, rfc3339)
+            .unwrap()
+            .unix_timestamp_nanos();
+        assert_eq!(sent, kept / 1000 * 1000, "{m:?}: {stamped}");
+    }
+
+    // TLS to a server whose CA it is given, RFC 5424: octet-counted (RFC 5425).
+    let now = time::OffsetDateTime::now_utc();
+    let mut ca = rcgen::CertificateParams::new(Vec::new()).unwrap();
+    ca.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+    ca.key_usages = vec![
+        rcgen::KeyUsagePurpose::KeyCertSign,
+        rcgen::KeyUsagePurpose::DigitalSignature,
+    ];
+    ca.not_before = now - time::Duration::hours(1);
+    ca.not_after = now + time::Duration::days(1);
+    let ca_key = rcgen::KeyPair::generate().unwrap();
+    let ca = rcgen::CertifiedIssuer::self_signed(ca, ca_key).unwrap();
+    let mut leaf = rcgen::CertificateParams::new(vec!["localhost".into()]).unwrap();
+    leaf.not_before = now - time::Duration::hours(1);
+    leaf.not_after = now + time::Duration::days(1);
+    leaf.extended_key_usages = vec![rcgen::ExtendedKeyUsagePurpose::ServerAuth];
+    let leaf_key = rcgen::KeyPair::generate().unwrap();
+    let cert = leaf.signed_by(&leaf_key, &ca).unwrap();
+    let ca_file = home.join("syslog-ca.pem");
+    std::fs::write(&ca_file, ca.pem()).unwrap();
+    let server = std::sync::Arc::new(
+        rustls::ServerConfig::builder_with_provider(std::sync::Arc::new(
+            rustls::crypto::aws_lc_rs::default_provider(),
+        ))
+        .with_safe_default_protocol_versions()
+        .unwrap()
+        .with_no_client_auth()
+        .with_single_cert(
+            vec![cert.der().clone()],
+            rustls::pki_types::PrivateKeyDer::Pkcs8(rustls::pki_types::PrivatePkcs8KeyDer::from(
+                leaf_key.serialize_der(),
+            )),
+        )
+        .unwrap(),
+    );
+    let tls = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = tls.local_addr().unwrap().port();
+    let reading = std::thread::spawn(move || {
+        let Some(conn) = accept_within(&tls) else {
+            return String::new();
+        };
+        conn.set_read_timeout(Some(TIMEOUT)).unwrap();
+        let mut stream = rustls::StreamOwned::new(rustls::ServerConnection::new(server).unwrap(), conn);
+        let mut got = Vec::new();
+        let mut buf = [0u8; 4096];
+        // Two frames, each its length, a space, and its message.
+        loop {
+            let frames = String::from_utf8_lossy(&got).matches(" <").count();
+            if frames >= 2 && String::from_utf8_lossy(&got).ends_with('\n') {
+                return String::from_utf8(got).unwrap();
+            }
+            match std::io::Read::read(&mut stream, &mut buf) {
+                Ok(0) | Err(_) => return String::from_utf8(got).unwrap(),
+                Ok(n) => got.extend_from_slice(&buf[..n]),
+            }
+        }
+    });
+    syslog(
+        "tls",
+        &[
+            &format!("syslog-address=tcp+tls://localhost:{port}"),
+            &format!("syslog-tls-ca-cert={}", ca_file.display()),
+            "syslog-format=rfc5424",
+            "tag=tls",
+        ],
+        &["streams", "out", "err"],
+    );
+    let mut framed = reading.join().unwrap();
+    let mut messages = Vec::new();
+    while !framed.is_empty() {
+        let (len, rest) = framed.split_once(' ').unwrap_or_else(|| panic!("{framed:?}"));
+        let len: usize = len.parse().unwrap_or_else(|_| panic!("{framed:?}"));
+        messages.push(rest.get(..len).unwrap().to_string());
+        framed = rest.get(len..).unwrap().to_string();
+    }
+    messages.sort();
+    let tls_said = regex::Regex::new(r"^<(\d+)>1 \S+ \S+ tls \d+ tls - (\w+)\n$").unwrap();
+    let said: Vec<(String, String)> = messages
+        .iter()
+        .map(|m| {
+            let c = tls_said.captures(m).unwrap_or_else(|| panic!("{m:?}"));
+            (c[1].to_string(), c[2].to_string())
+        })
+        .collect();
+    assert_eq!(said, [("27".into(), "err".into()), ("30".into(), "out".into())]);
+
+    // A unix datagram socket; a line of 40,000 bytes in parts of 16 KiB.
+    let sockets = TempDir::new("sl");
+    let gram = sockets.join("g");
+    let unixgram = std::os::unix::net::UnixDatagram::bind(&gram).unwrap();
+    unixgram.set_read_timeout(Some(TIMEOUT)).unwrap();
+    // Room for a part whole: macOS's receive buffer takes no datagram longer (PM M232).
+    let room: libc::c_int = 1 << 16;
+    // SAFETY: setsockopt(2) of an int from `room` on a socket this test holds.
+    let set = unsafe {
+        libc::setsockopt(
+            std::os::fd::AsRawFd::as_raw_fd(&unixgram),
+            libc::SOL_SOCKET,
+            libc::SO_RCVBUF,
+            (&raw const room).cast(),
+            std::mem::size_of::<libc::c_int>() as libc::socklen_t,
+        )
+    };
+    assert_eq!(set, 0);
+    syslog(
+        "gram",
+        &[&format!("syslog-address=unixgram://{}", gram.display()), "tag=g"],
+        &["wide", "40000"],
+    );
+    let mut parts = Vec::new();
+    for _ in 0..3 {
+        let mut b = vec![0u8; 1 << 16];
+        let n = unixgram.recv(&mut b).unwrap();
+        let m = String::from_utf8(b[..n].to_vec()).unwrap();
+        let body = m.split_once("]: ").unwrap().1.trim_end_matches('\n');
+        assert!(body.bytes().all(|b| b == b'x'), "{m:?}");
+        parts.push(body.len());
+    }
+    assert_eq!(parts, [16384, 16384, 7232]);
+
+    // A server that comes up only after the run: its log waits in the store, and goes.
+    let port = free_port();
+    syslog(
+        "later",
+        &[&format!("syslog-address=tcp://127.0.0.1:{port}"), "tag=later"],
+        &["streams", "out", "err"],
+    );
+    let reading = syslog_lines(std::net::TcpListener::bind(("127.0.0.1", port)).unwrap(), 2);
+    let got = reading.join().unwrap();
+    assert!(
+        got.len() == 2 && got[0].ends_with(": err\n") && got[1].ends_with(": out\n"),
+        "{got:?}"
+    );
+
+    // One whose daemon stops before its server comes up: the next daemon sends it.
+    let port = free_port();
+    syslog(
+        "restarted",
+        &[&format!("syslog-address=tcp://127.0.0.1:{port}"), "tag=restarted"],
+        &["streams", "out", "err"],
+    );
+    let stopped = without_vms(&home, &["daemon", "stop"]);
+    assert_eq!(stopped.status, Some(0), "{stopped}");
+    let reading = syslog_lines(std::net::TcpListener::bind(("127.0.0.1", port)).unwrap(), 2);
+    assert_eq!(shards(&["ps", "-a", "-q"]).status, Some(0));
+    let got = reading.join().unwrap();
+    assert!(
+        got.len() == 2 && got[0].ends_with(": err\n") && got[1].ends_with(": out\n"),
+        "{got:?}"
+    );
+
+    // Started again: its next run's lines go too, as the first's have.
+    syslog(
+        "again",
+        &[
+            &format!("syslog-address=udp://{}", udp.local_addr().unwrap()),
+            "tag=again",
+        ],
+        &["streams", "one", "two"],
+    );
+    let mut first = [datagram(&udp), datagram(&udp)];
+    first.sort();
+    let started = shards(&["start", "-a", "again"]);
+    assert_eq!(started.status, Some(0), "{started}");
+    let mut next = [datagram(&udp), datagram(&udp)];
+    next.sort();
+    // Sorted, stderr's err (27) before stdout's info (30).
+    for got in [first, next] {
+        assert!(
+            got[0].ends_with(": two\n") && got[1].ends_with(": one\n"),
+            "{got:?}"
+        );
+    }
+
+    // Its local copy kept from `logs`.
+    syslog(
+        "uncached",
+        &[
+            &format!("syslog-address=udp://{}", udp.local_addr().unwrap()),
+            "cache-disabled=true",
+        ],
+        &["streams", "out", "err"],
+    );
+    let mut got = [datagram(&udp), datagram(&udp)];
+    got.sort();
+    assert!(
+        got[0].ends_with(": err\n") && got[1].ends_with(": out\n"),
+        "{got:?}"
+    );
+    let refused = shards(&["logs", "uncached"]);
+    assert_eq!(
+        (refused.status, refused.stderr.as_str()),
+        (
+            Some(1),
+            "shards: uncached keeps no copy of its log: it was run with --log-opt cache-disabled=true, and its log goes to syslog alone\n"
+        ),
+        "{refused}"
+    );
+
+    for (opts, said) in [
+        (
+            &["syslog-tls-skip-verify=true"][..],
+            "shards: --log-opt syslog-tls-skip-verify: shards sends a log only to a syslog server whose certificate it verifies",
+        ),
+        (
+            &["syslog-address=http://h"],
+            "shards: --log-opt syslog-address=http://h: the scheme http",
+        ),
+        (
+            &["syslog-facility=24"],
+            "shards: --log-opt syslog-facility=24: a facility's name",
+        ),
+        (
+            &["max-size=1m"],
+            "shards: --log-opt max-size: --log-driver syslog takes syslog-address",
+        ),
+        (
+            &[
+                "syslog-address=tcp+tls://localhost:6514",
+                "syslog-tls-ca-cert=/nonexistent/ca.pem",
+            ],
+            "shards: --log-opt syslog-tls-ca-cert=/nonexistent/ca.pem: ",
+        ),
+    ] {
+        let mut flags = vec!["--log-driver", "syslog"];
+        for o in opts {
+            flags.extend(["--log-opt", o]);
+        }
+        let r = run_in(&home, &image, &flags, &["exit", "0"]);
+        assert_eq!(r.status, Some(125), "{opts:?}: {r}");
+        assert!(r.stderr.starts_with(said), "{opts:?}: {r}");
     }
 }
 
@@ -11298,8 +11714,8 @@ fn a_runs_log_is_kept_as_its_driver_and_options_say() {
     );
     for (flags, said) in [
         (
-            &["--log-driver", "syslog"][..],
-            "shards: --log-driver syslog: shards keeps a run's log itself",
+            &["--log-driver", "gelf"][..],
+            "shards: --log-driver gelf: shards keeps a run's log itself",
         ),
         (
             &["--log-driver", "bogus"],
@@ -11311,7 +11727,7 @@ fn a_runs_log_is_kept_as_its_driver_and_options_say() {
         ),
         (
             &["--log-opt", "color=red"],
-            "shards: --log-opt color: a run's log takes max-size",
+            "shards: --log-opt color: --log-driver shards takes max-size",
         ),
         (
             &["--log-driver", "none", "--log-opt", "max-size=1m"],

@@ -468,14 +468,13 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
 
     /// Container `c`'s InspectResponse, from its record, its request, its image and its
     /// VM (inspect_doc.rs).
-    /// The attributes `logs --details` shows before each of container `id`'s lines, as its
-    /// run's `--log-opt`s ask (D161): from what `inspect` says of it, its environment, its
-    /// labels and its command as its image and its run made them; written as dockerd writes
-    /// them (its log stream's attrsByteSlice: sorted, each `NAME=VALUE` query-escaped,
-    /// joined by commas).
-    pub(super) fn log_attributes(&self, id: &str, run: &shards_ipc::Run) -> Result<Vec<u8>, String> {
+    /// What container `id` is, as `inspect` says it, for its log's tag and attributes
+    /// (D161, D163): its environment, its labels and its command as its image and its run
+    /// made them, and this host's name.
+    pub(super) fn log_details(&self, id: &str) -> Result<crate::logging::Details, String> {
+        // Its record written yet or not: a run's shipper asks as it starts.
         let c = super::lock(&self.containers)
-            .get(id)
+            .made(id)
             .cloned()
             .ok_or_else(|| format!("No such container: {id}"))?;
         let doc: serde_json::Value =
@@ -489,33 +488,28 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
                 .map(|a| a.iter().map(text).collect())
                 .unwrap_or_default()
         };
-        let labels: std::collections::BTreeMap<String, String> = at("/Config/Labels")
-            .as_object()
-            .map(|m| m.iter().map(|(k, v)| (k.clone(), text(v))).collect())
-            .unwrap_or_default();
-        let (env, args) = (strings("/Config/Env"), strings("/Args"));
-        let (id, name, image_id, image_name, entrypoint) = (
-            text(&at("/Id")),
-            text(&at("/Name")),
-            text(&at("/Image")),
-            text(&at("/Config/Image")),
-            text(&at("/Path")),
-        );
-        let hostname = super::info::host_name().unwrap_or_default();
-        let attrs = crate::logging::attributes(
-            run,
-            &crate::logging::Info {
-                id: &id,
-                name: &name,
-                image_id: &image_id,
-                image_name: &image_name,
-                entrypoint: &entrypoint,
-                args: &args,
-                env: &env,
-                labels: &labels,
-                hostname: &hostname,
-            },
-        )?;
+        Ok(crate::logging::Details {
+            id: text(&at("/Id")),
+            name: text(&at("/Name")),
+            image_id: text(&at("/Image")),
+            image_name: text(&at("/Config/Image")),
+            entrypoint: text(&at("/Path")),
+            args: strings("/Args"),
+            env: strings("/Config/Env"),
+            labels: at("/Config/Labels")
+                .as_object()
+                .map(|m| m.iter().map(|(k, v)| (k.clone(), text(v))).collect())
+                .unwrap_or_default(),
+            hostname: super::info::host_name().unwrap_or_default(),
+        })
+    }
+
+    /// The attributes `logs --details` shows before each of container `id`'s lines, as its
+    /// run's `--log-opt`s ask (D161): written as dockerd writes them (its log stream's
+    /// attrsByteSlice: sorted, each `NAME=VALUE` query-escaped, joined by commas).
+    pub(super) fn log_attributes(&self, id: &str, run: &shards_ipc::Run) -> Result<Vec<u8>, String> {
+        let details = self.log_details(id)?;
+        let attrs = crate::logging::attributes(run, &details.info())?;
         Ok(attrs
             .iter()
             .map(|(k, v)| format!("{}={}", query_escape(k), query_escape(v)))
@@ -637,7 +631,9 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
             pid,
             health,
             exec_ids,
-            log_path: dir.join("log").display().to_string(),
+            // shards' store is its own (D161), no file a reader of Docker's could read, as
+            // dockerd names none of its local driver's.
+            log_path: String::new(),
             net,
             user_net,
             size: sized.then(|| self.container_sizes(c)),

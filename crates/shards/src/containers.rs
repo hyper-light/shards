@@ -50,6 +50,10 @@ pub struct Container {
     /// compressed one left, the next compresses.
     #[serde(default)]
     pub log_compress: bool,
+    /// Its log's driver sends it elsewhere (D163): what a daemon that ended had not sent of
+    /// it, the next sends.
+    #[serde(default)]
+    pub log_ships: bool,
     /// What `stop` sends it unless told: `--stop-signal`'s, or its image's `StopSignal`,
     /// read once as it is created (moby container.StopSignal; SIGTERM if neither).
     #[serde(default)]
@@ -715,6 +719,7 @@ mod tests {
             log_lost: 0,
             log_dropped: 0,
             log_compress: false,
+            log_ships: false,
             stop_signal: None,
             stop_timeout: None,
             ports: Vec::new(),

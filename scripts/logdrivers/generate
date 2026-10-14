@@ -1,0 +1,189 @@
+#!/bin/sh
+# Regenerates what Docker's syslog log driver sends, and which of its options Docker
+# takes (crates/shards/src/logging/testdata/syslog.json), which crates/shards/src/logging
+# and its tests hold shards to (D163).
+#
+# In shards-dind (CONTAINER), capture.go listens on UDP, TCP and TLS ports and on a unix
+# datagram and stream socket. Each case's container prints a line on stdout, one on
+# stderr, and one of 40,000 bytes, which moby's copier cuts into parts. Every message
+# Docker's driver sends is recorded, its time, host and process ID made placeholders.
+# Then `docker create` with each option case says which Docker takes. Everything is made
+# in a directory and under names of its own, removed after.
+#
+#   scripts/logdrivers/generate
+set -eu
+
+here=$(cd "$(dirname "$0")" && pwd)
+root=$(cd "$here/../.." && pwd)
+out="$root/crates/shards/src/logging/testdata/syslog.json"
+container=${CONTAINER:-shards-dind}
+image=alpine:3.22
+work=$(mktemp -d)
+dir=/root/shards-syslog-oracle-$$
+name=shards-syslog-oracle-$$
+cleanup() {
+	rm -rf "$work"
+	# Anchored, so that it matches the capture alone, not the shell that runs it.
+	docker exec "$container" sh -c "pkill -f '^$dir/capture'; for c in \$(docker ps -aq --filter name=$name); do docker rm -f \$c; done; rm -rf $dir" >/dev/null 2>&1 || true
+}
+trap cleanup EXIT
+
+case $(uname -m) in
+arm64 | aarch64) arch=arm64 ;;
+x86_64 | amd64) arch=amd64 ;;
+*)
+	echo "unknown architecture $(uname -m)" >&2
+	exit 1
+	;;
+esac
+(cd "$here" && GOOS=linux GOARCH="$arch" CGO_ENABLED=0 go build -o "$work/capture" capture.go)
+docker exec "$container" mkdir -p "$dir/cases"
+docker cp "$work/capture" "$container:$dir/capture"
+docker exec -d "$container" "$dir/capture" "$dir"
+until docker exec "$container" test -e "$dir/ready"; do sleep 0.2; done
+docker exec "$container" docker version --format '{{.Server.Version}}' >"$work/version"
+
+# What each case's container prints: a line on each stream, then one of 40,000 bytes.
+print='echo out; echo err >&2; head -c 40000 /dev/zero | tr "\000" x; echo'
+# Each case: its name, its transport's address, its format, its facility. A case is done
+# once its messages are in: five datagrams, or its connection's end.
+i=0
+for transport in udp tcp tls unixgram unix; do
+	case $transport in
+	udp) address=udp://127.0.0.1:5514 ;;
+	tcp) address=tcp://127.0.0.1:5515 ;;
+	tls) address=tcp+tls://127.0.0.1:5516 ;;
+	unixgram) address=unixgram://$dir/gram.sock ;;
+	unix) address=unix://$dir/stream.sock ;;
+	esac
+	for format in unix rfc3164 rfc5424 rfc5424micro; do
+		for facility in daemon local7; do
+			# Every format on every transport, with its default facility; one other.
+			[ "$facility" = local7 ] && [ "$format" != rfc5424 ] && continue
+			i=$((i + 1))
+			set -- --log-driver syslog --log-opt "syslog-address=$address" --log-opt tag=oracle \
+				--log-opt "syslog-facility=$facility"
+			[ "$format" = unix ] || set -- "$@" --log-opt "syslog-format=$format"
+			[ "$transport" = tls ] && set -- "$@" --log-opt "syslog-tls-ca-cert=$dir/ca.pem"
+			docker exec "$container" docker run --rm --name "$name-$i" "$@" "$image" sh -c "$print" >/dev/null 2>&1
+			case $transport in
+			udp | unixgram) want=5 ;;
+			*) want=1 ;;
+			esac
+			until [ "$(docker exec "$container" sh -c "ls $dir/out | wc -l")" -ge "$want" ]; do sleep 0.1; done
+			docker exec "$container" sh -c "mkdir $dir/cases/$transport-$format-$facility && mv $dir/out/* $dir/cases/$transport-$format-$facility/"
+		done
+	done
+done
+docker exec "$container" tar -C "$dir/cases" -c . | tar -x -C "$work"
+
+# Which options Docker takes, as `docker create` answers them: none dials.
+i=0
+for opt in \
+	"syslog-address=udp://127.0.0.1:5514" \
+	"syslog-address=tcp://127.0.0.1" \
+	"syslog-address=tcp+tls://127.0.0.1:5516" \
+	"syslog-address=unix://$dir/stream.sock" \
+	"syslog-address=unixgram://$dir/gram.sock" \
+	"syslog-address=unix://$dir/missing.sock" \
+	"syslog-address=unix://host$dir/stream.sock" \
+	"syslog-address=http://127.0.0.1:514" \
+	"syslog-address=udp://127.0.0.1:port" \
+	"syslog-address=udp://::1" \
+	"syslog-address=udp://[::1]" \
+	"syslog-address=127.0.0.1:514" \
+	"syslog-facility=local0" \
+	"syslog-facility=23" \
+	"syslog-facility=24" \
+	"syslog-facility=bogus" \
+	"syslog-format=rfc5424micro" \
+	"syslog-format=bogus" \
+	"syslog-tls-skip-verify=true" \
+	"syslog-color=red" \
+	"max-size=10m" \
+	"cache-max-size=10m" \
+	"cache-disabled=maybe" \
+	"mode=non-blocking" \
+	"tag={{.Name}}"; do
+	i=$((i + 1))
+	if said=$(docker exec "$container" docker create --name "$name-o$i" --log-driver syslog --log-opt "$opt" "$image" true 2>&1); then
+		docker exec "$container" docker rm "$name-o$i" >/dev/null 2>&1 || true
+		printf '%s\t\n' "$opt" >>"$work/options"
+	else
+		printf '%s\t%s\n' "$opt" "$(printf '%s' "$said" | tr '\n' ' ')" >>"$work/options"
+	fi
+done
+
+python3 -I - "$work" "$dir" "$out" <<'EOF'
+import json, os, re, sys
+
+work, dind, out = sys.argv[1:4]
+version = open(os.path.join(work, "version")).read().strip()
+STAMP = r"[A-Z][a-z]{2} [ \d]\d \d\d:\d\d:\d\d"
+FORMATS = {
+    "unix": re.compile(rf"^<(\d+)>({STAMP}) (\S*)\[(\d+)\]: (.*)\n$", re.S),
+    "rfc3164": re.compile(rf"^<(\d+)>({STAMP}) (\S*) (\S*)\[(\d+)\]: (.*)\n$", re.S),
+    "rfc5424": re.compile(r"^<(\d+)>1 (\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:Z|[+-]\d\d:\d\d)) (\S*) (\S+) (\d+) (\S+) - (.*)\n$", re.S),
+    "rfc5424micro": re.compile(r"^<(\d+)>1 (\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{6}(?:Z|[+-]\d\d:\d\d)) (\S*) (\S+) (\d+) (\S+) - (.*)\n$", re.S),
+}
+
+def split(transport, fmt, files):
+    """The messages of a case, as its transport frames them."""
+    blobs = [open(f, "rb").read() for f in files]
+    if transport in ("udp", "unixgram"):
+        return blobs, "datagram"
+    data = b"".join(blobs)
+    if transport == "tls" and fmt.startswith("rfc5424"):
+        msgs = []
+        while data:
+            n, rest = data.split(b" ", 1)
+            msgs.append(rest[: int(n)])
+            data = rest[int(n):]
+        return msgs, "octet-counted"
+    return [m + b"\n" for m in data.split(b"\n")[:-1]], "newline"
+
+def content(c):
+    """A message's content, a run of x by its length."""
+    return {"x": len(c)} if c and set(c) == {"x"} else c
+
+cases = []
+for case in sorted(os.listdir(work)):
+    path = os.path.join(work, case)
+    if not os.path.isdir(path):
+        continue
+    transport, fmt, facility = case.split("-")
+    files = [os.path.join(path, f) for f in sorted(os.listdir(path))]
+    msgs, framing = split(transport, fmt, files)
+    out_msgs = []
+    for m in msgs:
+        text = m.decode()
+        g = FORMATS[fmt].match(text)
+        assert g, (case, text[:120])
+        if fmt == "unix":
+            pri, _, tag, _, body = g.groups()
+            head = f"<{pri}>{{stamp}} {tag}[{{pid}}]: "
+        elif fmt == "rfc3164":
+            pri, _, _, tag, _, body = g.groups()
+            head = f"<{pri}>{{stamp}} {{host}} {tag}[{{pid}}]: "
+        else:
+            pri, _, _, app, _, msgid, body = g.groups()
+            head = f"<{pri}>1 {{time}} {{host}} {app} {{pid}} {msgid} - "
+        out_msgs.append({"head": head, "content": content(body)})
+    # Docker sends each stream's messages from a goroutine of its own: their order between
+    # the streams is not Docker's to keep, so each stream's are kept in theirs.
+    cases.append({
+        "transport": transport,
+        "format": fmt,
+        "facility": facility,
+        "framing": framing,
+        "messages": out_msgs,
+    })
+
+options = []
+for line in open(os.path.join(work, "options")):
+    opt, said = line.rstrip("\n").split("\t", 1)
+    options.append({"option": opt.replace(dind, "{dir}"), "refused": said.replace(dind, "{dir}") or None})
+
+json.dump({"docker": version, "cases": cases, "options": options}, open(out, "w"), indent=1)
+print(f"{out}: {len(cases)} cases, {len(options)} options, Docker {version}")
+EOF

@@ -9,31 +9,43 @@
 //! or its driver is json-file, which keeps them as written unless told to compress, as
 //! Docker's does. In `mode=non-blocking` the run's output is queued for its log, at most
 //! `max-buffer-size` bytes, and what comes while the queue is full is dropped and counted.
+//!
+//! A driver that sends a run's log elsewhere (`syslog`, D163) keeps it in shards' store
+//! too, as its local copy, which `cache-max-size`, `cache-max-file` and `cache-compress`
+//! bound as Docker documents them (Docker takes them and applies none) and which
+//! `cache-disabled` keeps from `logs`; the daemon sends it from there (daemon/ship.rs).
 
 use std::collections::BTreeMap;
 
 use shards_ipc::Run;
 
+pub mod syslog;
+
 /// The drivers that are shards' own store.
 const STORE: [&str; 3] = ["shards", "json-file", "local"];
+/// The drivers that send a log elsewhere, from shards' store (D163).
+const SENDS: [&str; 1] = ["syslog"];
 /// The drivers Docker sends a log elsewhere with, which shards does not yet.
-const ELSEWHERE: [&str; 8] = [
-    "syslog", "journald", "gelf", "fluentd", "awslogs", "splunk", "etwlogs", "gcplogs",
+const ELSEWHERE: [&str; 7] = [
+    "journald", "gelf", "fluentd", "awslogs", "splunk", "etwlogs", "gcplogs",
 ];
-/// The options the store takes: its segments', and the attributes `logs --details`
-/// shows (moby daemon/logger: jsonfilelog's ValidateLogOpt, local's, and the modes every
-/// driver takes, factory.go builtInLogOpts).
-const OPTIONS: [&str; 10] = [
-    "max-size",
-    "max-file",
-    "compress",
-    "mode",
-    "max-buffer-size",
+/// The store's own options: its segments' (moby jsonfilelog's ValidateLogOpt, local's).
+const STORE_OPTIONS: [&str; 3] = ["max-size", "max-file", "compress"];
+/// The options every driver takes: the attributes `logs --details` shows and the tag,
+/// the modes (moby factory.go, builtInLogOpts), and the local copy's of a driver that
+/// sends its log elsewhere (loggerutils/cache, builtInCacheLogOpts).
+const EVERY: [&str; 11] = [
     "labels",
     "labels-regex",
     "env",
     "env-regex",
     "tag",
+    "mode",
+    "max-buffer-size",
+    "cache-disabled",
+    "cache-max-size",
+    "cache-max-file",
+    "cache-compress",
 ];
 
 /// What a run's log keeps, and how.
@@ -48,6 +60,11 @@ pub struct Kept {
     /// Non-blocking (`mode=non-blocking`): the most bytes of output queued for the log,
     /// past which more is dropped; none where the run waits for its log.
     pub queue: Option<u64>,
+    /// Its driver sends it elsewhere, from the store (D163).
+    pub ships: bool,
+    /// `logs` reads it: not where `cache-disabled` keeps a driver's local copy from it,
+    /// which then holds only what is not yet sent.
+    pub cached: bool,
 }
 
 /// The queue of a non-blocking log whose options give no `max-buffer-size`: moby's ring
@@ -91,17 +108,43 @@ pub fn kept(run: &Run, default: crate::spec::LogRetention) -> Result<Option<Kept
     }
     if ELSEWHERE.contains(&name) {
         return Err(format!(
-            "--log-driver {name}: shards keeps a run's log itself (shards, json-file or local) or none (none); sending it to {name} is not here yet"
+            "--log-driver {name}: shards keeps a run's log itself (shards, json-file or local), sends it to syslog, or keeps none (none); sending it to {name} is not here yet"
         ));
     }
-    if !STORE.contains(&name) {
+    let ships = SENDS.contains(&name);
+    if !STORE.contains(&name) && !ships {
         return Err(format!(
-            "--log-driver {name}: no such log driver: shards keeps a run's log itself (shards, json-file or local) or none (none)"
+            "--log-driver {name}: no such log driver: shards keeps a run's log itself (shards, json-file or local), sends it to syslog, or keeps none (none)"
         ));
     }
-    if let Some(k) = opts.keys().find(|k| !OPTIONS.contains(&k.as_str())) {
-        return Err(format!("--log-opt {k}: a run's log takes {}", OPTIONS.join(", ")));
+    let own: &[&str] = if ships { &syslog::OPTIONS } else { &STORE_OPTIONS };
+    if let Some(k) = opts
+        .keys()
+        .find(|k| !own.contains(&k.as_str()) && !EVERY.contains(&k.as_str()))
+    {
+        let takes: Vec<&str> = own.iter().chain(&EVERY).copied().collect();
+        return Err(format!(
+            "--log-opt {k}: --log-driver {name} takes {}",
+            takes.join(", ")
+        ));
     }
+    let cached = match opts.get("cache-disabled") {
+        Some(v) => match go_bool(v) {
+            Some(disabled) => !disabled,
+            None => return Err(format!("--log-opt cache-disabled={v}: true or false")),
+        },
+        None => true,
+    };
+    if ships {
+        syslog::config(&opts)?;
+    }
+    // The store's bound: a store driver's own options; a driver that sends the log
+    // elsewhere, its local copy's.
+    let [size_key, files_key, compress_key] = if ships {
+        ["cache-max-size", "cache-max-file", "cache-compress"]
+    } else {
+        ["max-size", "max-file", "compress"]
+    };
     let queue = match opts.get("mode").map(String::as_str) {
         None | Some("" | "blocking") => {
             if opts.contains_key("max-buffer-size") {
@@ -121,28 +164,30 @@ pub fn kept(run: &Run, default: crate::spec::LogRetention) -> Result<Option<Kept
         }),
         Some(m) => return Err(format!("--log-opt mode={m}: blocking or non-blocking")),
     };
-    let size = match opts.get("max-size") {
+    let size = match opts.get(size_key) {
         Some(v) => match shards_cmdline::resources::from_human_size(v).map(u64::try_from) {
             Ok(Ok(n)) if n > 0 => Some(n),
             _ => {
                 return Err(format!(
-                    "--log-opt max-size={v}: a size, more than 0 bytes (10m, 1g)"
+                    "--log-opt {size_key}={v}: a size, more than 0 bytes (10m, 1g)"
                 ));
             }
         },
         None => None,
     };
-    let files = match opts.get("max-file") {
+    let files = match opts.get(files_key) {
         Some(v) => match v.parse::<u64>() {
             Ok(n) if n >= 1 => Some(n),
-            _ => return Err(format!("--log-opt max-file={v}: how many files, at least 1")),
+            _ => {
+                return Err(format!("--log-opt {files_key}={v}: how many files, at least 1"));
+            }
         },
         None => None,
     };
-    let compress = match opts.get("compress") {
+    let compress = match opts.get(compress_key) {
         Some(v) => match go_bool(v) {
             Some(c) => Some(c),
-            None => return Err(format!("--log-opt compress={v}: true or false")),
+            None => return Err(format!("--log-opt {compress_key}={v}: true or false")),
         },
         None => None,
     };
@@ -162,16 +207,45 @@ pub fn kept(run: &Run, default: crate::spec::LogRetention) -> Result<Option<Kept
     });
     if compress == Some(true) && files < 2 {
         return Err(format!(
-            "--log-opt compress=true: its log is one file (max-file {files}), never rotated, so nothing of it is compressed: give --log-opt max-file 2 or more"
+            "--log-opt {compress_key}=true: its log is one file ({files_key} {files}), never rotated, so nothing of it is compressed: give --log-opt {files_key} 2 or more"
         ));
     }
+    // One file is never rotated, so never compressed; nor is a local copy `logs` never
+    // reads, whose segments go once sent.
+    let compressed = name != "json-file" && files >= 2 && (!ships || cached);
     Ok(Some(Kept {
         size: size.unwrap_or(default.size),
         files,
-        // One file is never rotated, so never compressed.
-        compress: compress.unwrap_or(name != "json-file" && files >= 2),
+        compress: compress.unwrap_or(compressed),
         queue,
+        ships,
+        cached: !ships || cached,
     }))
+}
+
+/// Where a run's log is sent besides shards' store (D163).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Remote {
+    Syslog(syslog::Config),
+}
+
+/// The driver `run` sends its log elsewhere with, if one does.
+pub fn remote(run: &Run) -> Result<Option<Remote>, String> {
+    match driver(run) {
+        "syslog" => Ok(Some(Remote::Syslog(syslog::config(&options(run))?))),
+        _ => Ok(None),
+    }
+}
+
+/// `run`'s tag (`--log-opt tag`): its template run against `info`, or, where it gives
+/// none, the container's short ID (moby loggerutils.ParseLogTag, DefaultTemplate).
+pub fn tag(run: &Run, info: &Info<'_>) -> Result<String, String> {
+    let opts = options(run);
+    let text = opts
+        .get("tag")
+        .filter(|t| !t.is_empty())
+        .map_or("{{.ID}}", String::as_str);
+    render_tag(text, info, &opts)
 }
 
 /// A boolean as Go's strconv.ParseBool reads it.
@@ -180,6 +254,37 @@ fn go_bool(s: &str) -> Option<bool> {
         "1" | "t" | "T" | "TRUE" | "true" | "True" => Some(true),
         "0" | "f" | "F" | "FALSE" | "false" | "False" => Some(false),
         _ => None,
+    }
+}
+
+/// What a run's container is, owned, as `inspect` says it: for its log's tag and
+/// attributes ([`Info`]).
+#[derive(Debug, Clone, Default)]
+pub struct Details {
+    pub id: String,
+    pub name: String,
+    pub image_id: String,
+    pub image_name: String,
+    pub entrypoint: String,
+    pub args: Vec<String>,
+    pub env: Vec<String>,
+    pub labels: BTreeMap<String, String>,
+    pub hostname: String,
+}
+
+impl Details {
+    pub fn info(&self) -> Info<'_> {
+        Info {
+            id: &self.id,
+            name: &self.name,
+            image_id: &self.image_id,
+            image_name: &self.image_name,
+            entrypoint: &self.entrypoint,
+            args: &self.args,
+            env: &self.env,
+            labels: &self.labels,
+            hostname: &self.hostname,
+        }
     }
 }
 
@@ -363,6 +468,8 @@ mod tests {
             files,
             compress,
             queue,
+            ships: false,
+            cached: true,
         }
     }
 
@@ -417,17 +524,37 @@ mod tests {
             kept("local", &["mode=non-blocking", "max-buffer-size=0"]),
             Ok(Some(kept_as(20 << 20, 5, true, Some(0))))
         );
+        // A driver that sends its log elsewhere keeps its local copy as its cache options
+        // say, which Docker takes and applies none of; every driver takes them.
+        let shipped = |size, files, compress, cached| Kept {
+            ships: true,
+            cached,
+            ..kept_as(size, files, compress, None)
+        };
+        assert_eq!(kept("syslog", &[]), Ok(Some(shipped(20 << 20, 5, true, true))));
+        assert_eq!(
+            kept(
+                "syslog",
+                &["cache-max-size=1m", "cache-max-file=2", "cache-compress=false"]
+            ),
+            Ok(Some(shipped(1_000_000, 2, false, true)))
+        );
+        // Kept from `logs`, its segments go once sent: none compressed.
+        assert_eq!(
+            kept("syslog", &["cache-disabled=true"]),
+            Ok(Some(shipped(20 << 20, 5, false, false)))
+        );
+        assert_eq!(
+            kept("json-file", &["cache-max-size=1m", "cache-disabled=true"]),
+            Ok(Some(kept_as(20 << 20, 5, false, None)))
+        );
         for (driver, opts, said) in [
             (
                 "none",
                 &["max-size=1m"][..],
                 "--log-opt max-size: --log-driver none keeps no log",
             ),
-            (
-                "syslog",
-                &[],
-                "--log-driver syslog: shards keeps a run's log itself",
-            ),
+            ("gelf", &[], "--log-driver gelf: shards keeps a run's log itself"),
             ("bogus", &[], "--log-driver bogus: no such log driver"),
             ("json-file", &["max-size=-1"], "--log-opt max-size=-1: a size"),
             (
@@ -474,7 +601,27 @@ mod tests {
             (
                 "json-file",
                 &["color=red"],
-                "--log-opt color: a run's log takes max-size",
+                "--log-opt color: --log-driver json-file takes max-size",
+            ),
+            (
+                "syslog",
+                &["max-size=10m"],
+                "--log-opt max-size: --log-driver syslog takes syslog-address",
+            ),
+            (
+                "syslog",
+                &["cache-max-file=0"],
+                "--log-opt cache-max-file=0: how many files, at least 1",
+            ),
+            (
+                "syslog",
+                &["cache-disabled=maybe"],
+                "--log-opt cache-disabled=maybe: true or false",
+            ),
+            (
+                "syslog",
+                &["syslog-tls-skip-verify=true"],
+                "--log-opt syslog-tls-skip-verify: shards sends a log only to a syslog server whose certificate it verifies",
             ),
         ] {
             let got = kept(driver, opts).unwrap_err();

@@ -62,6 +62,7 @@ mod record;
 mod refill;
 mod restart;
 mod rmi;
+mod ship;
 mod top;
 mod update;
 mod visit;
@@ -789,6 +790,8 @@ struct Daemon<D: Disk = Real> {
     files: files::Files,
     /// The rotated log segments to compress, on the packer's thread (packed.rs, D162).
     packing: packed::Packing,
+    /// The logs being sent where their drivers say, a thread each (ship.rs, D163).
+    shipping: ship::Shipping,
     /// The pools to refill and the spare to make, on the refiller's thread (refill.rs).
     refills: refill::Refills,
     /// When each running container's health check is next due (health.rs).
@@ -1068,8 +1071,9 @@ fn serve(ready: Option<File>) -> Result<(), String> {
         daemon.start_completer(threads);
         daemon.start_recorder(threads);
         daemon.start_packer(threads);
-        // What a daemon before this one left uncompressed as it ended.
+        // What a daemon before this one left uncompressed, and unsent, as it ended.
         daemon.pack_left();
+        daemon.ship_left(threads);
         daemon.start_collector(threads);
         daemon.restart_at_start(threads);
         daemon.listen(threads, listener);
@@ -1275,6 +1279,7 @@ impl<D: Disk> Daemon<D> {
             completing: follow::Completing::default(),
             files: files::Files::default(),
             packing: packed::Packing::default(),
+            shipping: ship::Shipping::default(),
             refills: refill::Refills::default(),
             checks: health::Checks::default(),
             booting: Mutex::default(),
@@ -3006,6 +3011,8 @@ impl<D: Disk> Daemon<D> {
             .as_deref()
             .map(commands::parse_signal)
             .transpose()?;
+        // Its log as its options keep it, checked as its run was (D161).
+        let kept = crate::logging::kept(run, self.logs).ok().flatten();
         if let Some(h) = &prepared.health {
             // dockerd's floor for each duration set (daemon/container.go, translate:
             // containertypes.MinimumDuration), and no negative retries.
@@ -3123,10 +3130,8 @@ impl<D: Disk> Daemon<D> {
             auto_remove: run.remove,
             log_lost: 0,
             log_dropped: 0,
-            log_compress: crate::logging::kept(run, self.logs)
-                .ok()
-                .flatten()
-                .is_some_and(|k| k.compress),
+            log_compress: kept.is_some_and(|k| k.compress),
+            log_ships: kept.is_some_and(|k| k.ships),
             stop_signal,
             stop_timeout: run.stop_timeout,
             ports,
@@ -6325,6 +6330,7 @@ mod tests {
             daemon.completing.end();
             daemon.files.end();
             daemon.packing.end();
+            daemon.shipping.end();
             daemon.checks.end();
             daemon.refills.end();
             daemon.collecting.end();

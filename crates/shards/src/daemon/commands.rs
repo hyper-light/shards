@@ -2331,6 +2331,19 @@ impl<D: crate::containers::Disk> Daemon<D> {
             ));
             return 1;
         }
+        // One whose driver sends it elsewhere, its local copy kept from `logs` (D163).
+        if let Some(r) = &request
+            && crate::logging::kept(r, self.logs)
+                .ok()
+                .flatten()
+                .is_some_and(|k| !k.cached)
+        {
+            reply.err(&format!(
+                "shards: {reference} keeps no copy of its log: it was run with --log-opt cache-disabled=true, and its log goes to {} alone",
+                crate::logging::driver(r)
+            ));
+            return 1;
+        }
         if shown.details
             && let Some(r) = request.as_ref().filter(|r| !r.log_opts.is_empty())
         {

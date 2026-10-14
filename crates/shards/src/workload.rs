@@ -224,21 +224,30 @@ impl Logger {
         self
     }
 
-    /// Keeps `bytes` of `stream` as a record, in the segment written where it fits, else in
-    /// the next; one longer than a segment holds is cut into records that each fill one: a
-    /// segment is never longer than its size (D161), and a record whole wherever it fits.
-    /// A record says whether it ends a line (INDEX_LINE), so a line cut so is read whole.
+    /// Keeps `bytes` of `stream` as records: as much as the segment written has room for,
+    /// then the rest in the next, so that each segment is as long as its size and the log
+    /// keeps all its retention allows. A segment's first record takes a byte at least,
+    /// however small its size. Each record says whether it ends a line (INDEX_LINE), so a
+    /// line cut across records, or segments, is read whole. Before, a record that did not
+    /// fit went whole into the next segment: a guest's 32 KiB records left segments of
+    /// 64,000 bytes half full, and a log half its retention (CI's x86_64 Linux, D162).
     fn keep(&mut self, stream: u8, mut bytes: &[u8]) {
-        // The most bytes a record of a segment of its size holds; a byte at least.
-        let most = usize::try_from(self.retention.size.saturating_sub(LOG_HEAD).max(1)).unwrap_or(usize::MAX);
         while !bytes.is_empty() {
-            let (part, rest) = bytes.split_at(most.min(bytes.len()));
-            let record_len = LOG_HEAD + part.len() as u64;
-            if self.logged > 0 && self.logged + record_len > self.retention.size && self.rotate().is_err() {
-                // A log that cannot go on within its bound keeps nothing more.
-                self.lost = self.lost.saturating_add(bytes.len() as u64);
-                return;
+            let room = self
+                .retention
+                .size
+                .saturating_sub(self.logged)
+                .saturating_sub(LOG_HEAD);
+            let room = if self.logged == 0 { room.max(1) } else { room };
+            if room == 0 {
+                if self.rotate().is_err() {
+                    // A log that cannot go on within its bound keeps nothing more.
+                    self.lost = self.lost.saturating_add(bytes.len() as u64);
+                    return;
+                }
+                continue;
             }
+            let (part, rest) = bytes.split_at(usize::try_from(room).unwrap_or(usize::MAX).min(bytes.len()));
             self.record(stream, part);
             bytes = rest;
         }
@@ -1985,8 +1994,9 @@ mod tests {
         }
         let (log, index) = first();
         let mut logger = Logger::new(log, index, 0, retention, in_dir(&dir, retention)).unwrap();
-        // 13 + 20 bytes a record: one a segment, since a second would pass 64; then 100
-        // bytes, cut in two: 51 and 49.
+        // Ten of 20 bytes, then 100: each segment filled to its 64 bytes before the next,
+        // a record cut where it ends. Every third segment repeats the first's: 20 and 18
+        // of two; 2, 20 and 3; 17 and 20, the 1 byte left too few for a head and a byte.
         for i in 0..10u8 {
             logger.keep(LOG_STDOUT, &[b'a' + i; 20]);
         }
@@ -1999,39 +2009,49 @@ mod tests {
         names.sort();
         assert_eq!(
             names,
-            [
-                "log.10",
-                "log.10.idx",
-                "log.11",
-                "log.11.idx",
-                "log.9",
-                "log.9.idx"
-            ]
+            ["log.5", "log.5.idx", "log.6", "log.6.idx", "log.7", "log.7.idx"]
         );
-        for (seq, byte, len) in [(9, b'j', 20), (10, b'z', 51), (11, b'z', 49)] {
+        for (seq, records) in [
+            (5, vec![(LOG_STDOUT, b'i', 17), (LOG_STDOUT, b'j', 20)]),
+            (6, vec![(LOG_STDERR, b'z', 51)]),
+            (7, vec![(LOG_STDERR, b'z', 49)]),
+        ] {
             let (l, i) = log_segment(seq);
             let bytes = fs::read(dir.join(l)).unwrap();
-            assert_eq!(bytes.len(), 13 + len, "segment {seq}");
-            assert!(bytes[13..].iter().all(|&b| b == byte), "segment {seq}");
-            assert_eq!(fs::read(dir.join(i)).unwrap().len(), 8, "segment {seq}");
+            let mut at = 0;
+            for &(stream, byte, len) in &records {
+                assert_eq!(bytes[at], stream, "segment {seq}");
+                assert_eq!(
+                    &bytes[at + 13..at + 13 + len],
+                    &vec![byte; len][..],
+                    "segment {seq}"
+                );
+                at += 13 + len;
+            }
+            assert_eq!(at, bytes.len(), "segment {seq}");
+            assert_eq!(
+                fs::read(dir.join(i)).unwrap().len(),
+                8 * records.len(),
+                "segment {seq}"
+            );
         }
 
         // The next segment's log there already, then its index: neither is taken, and
         // what is there stays.
         for taken in [0, 1] {
-            let name = if taken == 0 { "log.12" } else { "log.12.idx" };
+            let name = if taken == 0 { "log.8" } else { "log.8.idx" };
             fs::write(dir.join(name), b"taken").unwrap();
             logger.keep(LOG_STDOUT, &[b'q'; 40]);
             assert_eq!(logger.lost(), 40 * (taken + 1));
             assert_eq!(fs::read(dir.join(name)).unwrap(), b"taken");
-            let other = if taken == 0 { "log.12.idx" } else { "log.12" };
+            let other = if taken == 0 { "log.8.idx" } else { "log.8" };
             assert!(!dir.join(other).exists(), "{other} left of a segment not started");
             fs::remove_file(dir.join(name)).unwrap();
         }
         logger.keep(LOG_STDOUT, &[b'r'; 40]);
         assert_eq!(logger.lost(), 80);
-        assert_eq!(fs::read(dir.join("log.12")).unwrap().len(), 53);
-        assert!(!dir.join("log.9.idx").exists() && !dir.join("log.9").exists());
+        assert_eq!(fs::read(dir.join("log.8")).unwrap().len(), 53);
+        assert!(!dir.join("log.5.idx").exists() && !dir.join("log.5").exists());
         let _ = fs::remove_dir_all(&dir);
     }
 

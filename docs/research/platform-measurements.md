@@ -8251,3 +8251,33 @@ revision before comparing a changed API/implementation.
   decompresses a whole rotated file to read any of it. Frames of 4 MiB would save 0.09
   points for four times the read; frames of 256 KiB cost 0.37 points. Only the ratios hold
   on every host. The times are arm64 macOS's; x86_64 and Linux are unmeasured.
+
+### M232. How long a datagram a socket sends and takes on macOS, by its buffers (D163)
+
+- **Question.** A syslog driver sends a line's 16 KiB parts as datagrams, over UDP or a
+  unix socket, as moby's does. What does macOS take, and what lets it take more?
+- **Method.** `docs/research/measurements/dgram-limits/probe.py`, on the M5 Max (macOS
+  26.4.1), 2026-10-14:
+  - the host's limits (sysctl);
+  - a unix datagram of 3,000, 16,684 and 40,000 bytes, sent with a send buffer
+    (`SO_SNDBUF`) one byte short of it, as long as it, and 16 bytes longer, to a receiver
+    with a buffer of 1 MiB;
+  - one of 16,684 bytes to receivers whose buffers (`SO_RCVBUF`) are as long as it plus 0,
+    16, 64 and 512 bytes;
+  - a UDP datagram of 16,684 bytes with the default send buffer, and with one as long as
+    it.
+- **Results.**
+  - Limits: `net.local.dgram.maxdgram` 2,048, `net.local.dgram.recvspace` 4,096,
+    `net.inet.udp.maxdgram` 9,216.
+  - Sending, at all three sizes: a send buffer one byte short of the datagram is refused
+    with EMSGSIZE, and one as long as it sends.
+  - Receiving: a receive buffer exactly as long as the datagram is refused with ENOBUFS;
+    16 bytes longer takes it.
+  - UDP: 16,684 bytes are refused (EMSGSIZE) with the default send buffer, and sent with
+    one as long as them.
+- **Consequence.** D163 raises a datagram socket's send buffer to each message's length
+  before sending it, and never lowers it. Linux's buffers are already larger than any
+  message. A receiver's buffer is not the sender's to raise. So a line whose datagram is
+  refused for its size (EMSGSIZE or ENOBUFS) goes in halves, each its own message, down
+  to the 480 octets every receiver takes (RFC 5426 §3.2): nothing is lost, and nothing
+  waits for ever.
