@@ -3614,6 +3614,55 @@ No run-time labels, relays or declassifiers (§12 answer 14, decided by the user
 an internal-only domain to the world (D58), so there is no data to label. Code mode is
 D136.
 
+### D165. A run's log sent to fluentd
+
+`--log-driver fluentd` is served, sent as syslog's is (D163): from shards' store by the
+daemon's shipper.
+
+- **Events as Docker's.** Each line is an event of Fluentd's forward protocol in Message
+  mode, MessagePack written as fluent-logger-golang's EncodeData writes it: an array of
+  the tag (the short ID unless given), the time, the record and the options.
+  - The time is whole seconds, as msgp's AppendInt64 writes them, or with
+    `fluentd-sub-second-precision` an EventTime (extension 0: seconds and nanoseconds).
+  - The record is moby's: `container_id`, `container_name` (Docker's, with its `/`),
+    `source`, `log`, the attributes asked for over them, and a part's place over all
+    (`partial_message`, `partial_id`, `partial_ordinal`, `partial_last`) where a line is
+    longer than 16 KiB. Its members are sorted, where Go writes a map in no order.
+  - Held to Docker 29.3.1's (`scripts/logdrivers/generate`): over TCP in whole seconds
+    and to the nanosecond, over a unix socket, and 26 cases of which options Docker
+    takes.
+- **Acks.** With `fluentd-request-ack` each event's options name its chunk, fluent-logger-
+  golang's ID (its seconds and a random number, base64), and the server's ack is read back
+  and matched.
+- **Transports.** `tcp` (the default, 127.0.0.1:24224), `tls` (verified against the
+  platform's roots, as fluent-logger-golang's tls.Dial is), `unix`.
+- **Retries.** A failed send is tried again after `fluentd-retry-wait`, half as long again
+  each time up to a minute, `fluentd-max-retries` times, as fluent-logger-golang tries it.
+  Then the shipper's own waits take over, where fluent-logger-golang gives the event up.
+  `fluentd-write-timeout` and `fluentd-read-timeout` bound a write and an ack.
+- **Taken, and moot.** `fluentd-async`, `fluentd-async-reconnect-interval` and
+  `fluentd-buffer-limit` are read and checked as moby reads them. They change nothing:
+  every log is sent off its run's path, with the store as its buffer. Docker's driver
+  without `fluentd-async` dials as its container starts, so a server that is down keeps
+  the container from starting.
+- **Lines' parts.** A line the run left unfinished goes whole, or as its last part. moby's
+  copier sends it as a part never the last, which leaves consumers that join parts
+  waiting.
+- **Not yet.** journald, splunk, awslogs, gcplogs and etwlogs.
+
+Tested on real microVMs (`a_runs_log_is_sent_to_fluentd_as_its_options_say`), against a
+server in the test that acks as fluentd does:
+
+- TCP to the nanosecond with acks: each event's tag, record (the label asked for) and
+  chunk, its time `logs -t`'s exactly;
+- a unix socket in whole seconds, a 40,000-byte line in three parts, one ID, its places
+  and its last;
+- the refusals.
+
+Mutation-checked: an ack never asked for fails it. Unit tests cover every oracle event
+decoded against Docker's, the options against Docker's, an ack's chunk, and the cutter's
+parts.
+
 ### D164. A run's log sent to a GELF server
 
 `--log-driver gelf` is served, sent as syslog's is (D163): from shards' store, by the
@@ -3640,7 +3689,7 @@ starts whether or not its server is up, and nothing is lost to a server that is 
   as go-gelf tries it. After that the shipper's own waits take over, where go-gelf drops
   the message. Docker's driver dials as its container starts, so a server that is down
   keeps the container from starting; shards' run starts regardless.
-- **Not yet.** fluentd, journald, splunk, awslogs, gcplogs and etwlogs.
+- **Not yet.** journald, splunk, awslogs, gcplogs and etwlogs; fluentd came with D165.
 
 Tested on real microVMs (`a_runs_log_is_sent_to_gelf_as_its_options_say`):
 
@@ -6848,7 +6897,7 @@ the rest of a run's reach into its domains.
   | A run joining the microVM (`--network container:`, D119) | held to every rule of this table, by the daemon and again by init | it runs beside them as the microVM's own run does |
   | `--ipc` (`host` is init's namespace, theirs each their own), `--uts`, `--userns`, `--umask`, `--storage-opt` (D156); `--runtime`, `--isolation`, `--cpu-count`, `--cpu-percent`, `--cpu-rt-*` (D155) | given | the command's own namespaces, writable layer and limits |
   | `--link` | refused for every run, not served yet | |
-  | `--log-driver`, `--log-opt` (D161 to D164) | given | the command's own output, kept on the host by its VM process, in its container's directory, and sent elsewhere by the daemon, never by the microVM |
+  | `--log-driver`, `--log-opt` (D161 to D165) | given | the command's own output, kept on the host by its VM process, in its container's directory, and sent elsewhere by the daemon, never by the microVM |
   | `--cap-add` of any other: `DAC_READ_SEARCH`, `IPC_OWNER`, `IPC_LOCK`, `SYS_BOOT`, `SYS_RESOURCE`, `CHECKPOINT_RESTORE` among them | given | `open_by_handle_at` opens only on filesystems the command holds a mount of, a domain's own being none of them; IPC namespaces differ; `reboot(2)` ends the caller's own PID namespace's init (pid_namespaces(7)); the rest bound the command's own resources or namespaces |
   | `--cap-drop`, `no-new-privileges`, `writable-cgroups=true` (its cgroup namespace's subtree), `apparmor=`, `label=` (no LSM in the microVM: accepted, as on a Docker host without one) | given | narrows the command, or touches only its own |
   | `seccomp=` a profile or `unconfined` | given, recorded | its own filter; the domains keep theirs. Measured: unconfined, any uid makes a user namespace (`max_user_namespaces` 994), owning none of the domains' namespaces but reaching more of the kernel they share |

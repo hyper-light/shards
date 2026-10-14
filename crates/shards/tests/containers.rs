@@ -11770,6 +11770,213 @@ fn a_runs_log_is_sent_to_gelf_as_its_options_say() {
     }
 }
 
+/// The events of Fluentd's forward protocol a server reads on `conn` (Message mode: tag,
+/// time, record, options), until `count` have come: each its tag, its time in nanoseconds
+/// (whole seconds, or an EventTime's), its record, and its options. Where the options ask
+/// for an ack, it is sent back, as fluentd does.
+fn fluentd_events(
+    conn: &mut (impl std::io::Read + std::io::Write),
+    count: usize,
+) -> Vec<(String, i128, serde_json::Value, serde_json::Value)> {
+    fn read<const N: usize>(r: &mut impl std::io::Read) -> [u8; N] {
+        let mut b = [0u8; N];
+        r.read_exact(&mut b).unwrap();
+        b
+    }
+    fn value(r: &mut impl std::io::Read) -> serde_json::Value {
+        use serde_json::Value;
+        let [t] = read::<1>(r);
+        let len = |r: &mut dyn FnMut(usize) -> Vec<u8>, n| {
+            r(n).iter().fold(0usize, |a, &x| a << 8 | usize::from(x))
+        };
+        let mut take = |n: usize| {
+            let mut b = vec![0u8; n];
+            r.read_exact(&mut b).unwrap();
+            b
+        };
+        match t {
+            0x00..=0x7f => Value::from(t),
+            0x80..=0x8f | 0xde => {
+                let n = if t == 0xde {
+                    len(&mut take, 2)
+                } else {
+                    usize::from(t & 0x0f)
+                };
+                let mut m = serde_json::Map::new();
+                for _ in 0..n {
+                    let k = value(r);
+                    let v = value(r);
+                    m.insert(k.as_str().unwrap().to_string(), v);
+                }
+                Value::Object(m)
+            }
+            0x90..=0x9f => Value::Array((0..usize::from(t & 0x0f)).map(|_| value(r)).collect()),
+            0xa0..=0xbf | 0xd9 | 0xda | 0xdb => {
+                let n = match t {
+                    0xd9 => len(&mut take, 1),
+                    0xda => len(&mut take, 2),
+                    0xdb => len(&mut take, 4),
+                    _ => usize::from(t & 0x1f),
+                };
+                Value::String(String::from_utf8(take(n)).unwrap())
+            }
+            0xd2 => Value::from(i32::from_be_bytes(take(4).try_into().unwrap())),
+            0xd7 => {
+                assert_eq!(take(1), [0], "EventTime is extension 0");
+                let b = take(8);
+                let secs = u32::from_be_bytes(b[..4].try_into().unwrap());
+                let nanos = u32::from_be_bytes(b[4..].try_into().unwrap());
+                serde_json::json!({ "secs": secs, "nanos": nanos })
+            }
+            t => panic!("a MessagePack form {t:#x} no event holds"),
+        }
+    }
+    let mut events = Vec::new();
+    while events.len() < count {
+        let e = value(conn);
+        let [tag, time, record, option] =
+            <[serde_json::Value; 4]>::try_from(e.as_array().unwrap().clone()).unwrap();
+        let nanos = match &time {
+            serde_json::Value::Number(n) => i128::from(n.as_i64().unwrap()) * 1_000_000_000,
+            t => {
+                i128::from(t["secs"].as_u64().unwrap()) * 1_000_000_000
+                    + i128::from(t["nanos"].as_u64().unwrap())
+            }
+        };
+        if let Some(chunk) = option.get("chunk").and_then(|c| c.as_str()) {
+            let mut ack = vec![0x81, 0xa3, b'a', b'c', b'k', 0xa0 | chunk.len() as u8];
+            ack.extend_from_slice(chunk.as_bytes());
+            conn.write_all(&ack).unwrap();
+        }
+        events.push((tag.as_str().unwrap().to_string(), nanos, record, option));
+    }
+    events.sort_by_key(|e| e.2["source"] != "stderr");
+    events
+}
+
+/// A run's log sent to fluentd (D165), from shards' store by the daemon as syslog's is
+/// (D163): each line an event of Fluentd's forward protocol as Docker's fluentd driver
+/// sends it: its tag, its time (whole seconds, or to the nanosecond), its record (the
+/// container's ID and name, the stream, the line, the attributes asked for, and a part's
+/// place in a line longer than 16 KiB), and an ack asked for where told. Over TCP and a
+/// unix socket.
+#[test]
+fn a_runs_log_is_sent_to_fluentd_as_its_options_say() {
+    let Some((home, image)) = home("containers-fluentd") else {
+        return;
+    };
+    let shards = |args: &[&str]| shards_in(&home, args);
+    let fluentd = |name: &str, opts: &[&str], command: &[&str]| {
+        let mut flags = vec!["--name", name, "--log-driver", "fluentd", "--label", "team=logs"];
+        for o in opts {
+            flags.extend(["--log-opt", o]);
+        }
+        let r = run_in(&home, &image, &flags, command);
+        assert_eq!(r.status, Some(0), "{name}: {r}");
+    };
+    let rfc3339 = &time::format_description::well_known::Rfc3339;
+    let stamped = |name: &str, line: &str| {
+        let s = shards(&["logs", "-t", name]);
+        let at = [&s.stdout, &s.stderr]
+            .iter()
+            .flat_map(|o| o.lines())
+            .find_map(|l| l.strip_suffix(&format!(" {line}")).map(str::to_string))
+            .unwrap_or_else(|| panic!("{s}"));
+        time::OffsetDateTime::parse(&at, rfc3339)
+            .unwrap()
+            .unix_timestamp_nanos()
+    };
+    // TCP, to the nanosecond, an ack asked for each.
+    let tcp = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = format!("fluentd-address={}", tcp.local_addr().unwrap());
+    let reading = std::thread::spawn(move || {
+        let mut conn = accept_within(&tcp).unwrap();
+        conn.set_read_timeout(Some(TIMEOUT)).unwrap();
+        fluentd_events(&mut conn, 2)
+    });
+    fluentd(
+        "nanos",
+        &[
+            &address,
+            "fluentd-sub-second-precision=true",
+            "fluentd-request-ack=true",
+            "labels=team",
+        ],
+        &["streams", "out", "err"],
+    );
+    let id = shards(&["inspect", "-f", "{{.Id}}", "nanos"])
+        .stdout
+        .trim()
+        .to_string();
+    let events = reading.join().unwrap();
+    for ((tag, at, record, option), (line, source)) in
+        events.iter().zip([("err", "stderr"), ("out", "stdout")])
+    {
+        assert_eq!(tag, id.get(..12).unwrap(), "its tag the short ID");
+        assert_eq!(
+            record,
+            &serde_json::json!({
+                "container_id": id, "container_name": "/nanos", "source": source, "log": line, "team": "logs",
+            })
+        );
+        assert!(
+            option
+                .get("chunk")
+                .is_some_and(|c| c.as_str().is_some_and(|c| c.len() == 24)),
+            "{option}"
+        );
+        assert_eq!(*at, stamped("nanos", line), "its time its output's");
+    }
+
+    // A unix socket, whole seconds, a line of 40,000 bytes in parts.
+    let sockets = TempDir::new("fd");
+    let path = sockets.join("f");
+    let unix = std::os::unix::net::UnixListener::bind(&path).unwrap();
+    let reading = std::thread::spawn(move || {
+        let (mut conn, _) = unix.accept().unwrap();
+        conn.set_read_timeout(Some(TIMEOUT)).unwrap();
+        fluentd_events(&mut conn, 3)
+    });
+    fluentd(
+        "parts",
+        &[&format!("fluentd-address=unix://{}", path.display())],
+        &["wide", "40000"],
+    );
+    let events = reading.join().unwrap();
+    let id = events[0].2["partial_id"].clone();
+    for (i, (_, at, record, _)) in events.iter().enumerate() {
+        assert_eq!(record["log"].as_str().unwrap().len(), [16384, 16384, 7232][i]);
+        assert_eq!(record["partial_message"], "true");
+        assert_eq!(record["partial_id"], id);
+        assert_eq!(record["partial_ordinal"], (i + 1).to_string());
+        assert_eq!(record["partial_last"], if i == 2 { "true" } else { "false" });
+        assert_eq!(*at % 1_000_000_000, 0, "whole seconds");
+    }
+
+    for (opts, said) in [
+        (
+            &["fluentd-address=http://h:1"][..],
+            "shards: --log-opt fluentd-address=http://h:1: the scheme http",
+        ),
+        (
+            &["fluentd-address=tcp://h:1/x"],
+            "shards: --log-opt fluentd-address=tcp://h:1/x: a host and a port, without a path",
+        ),
+        (
+            &["fluentd-retry-wait=soon"],
+            "shards: --log-opt fluentd-retry-wait=soon: a duration",
+        ),
+    ] {
+        let mut flags = vec!["--log-driver", "fluentd"];
+        for o in opts {
+            flags.extend(["--log-opt", o]);
+        }
+        let r = run_in(&home, &image, &flags, &["exit", "0"]);
+        assert_eq!(r.status, Some(125), "{opts:?}: {r}");
+        assert!(r.stderr.starts_with(said), "{opts:?}: {r}");
+    }
+}
+
 /// A run's log as `--log-driver` and `--log-opt` keep it (D161): shards' store, its
 /// segments as long and as many as asked; none with `none`, whose `logs` is refused and
 /// whose attached client still gets its output; `--details` showing the labels, the
@@ -11893,8 +12100,8 @@ fn a_runs_log_is_kept_as_its_driver_and_options_say() {
     );
     for (flags, said) in [
         (
-            &["--log-driver", "fluentd"][..],
-            "shards: --log-driver fluentd: shards keeps a run's log itself",
+            &["--log-driver", "journald"][..],
+            "shards: --log-driver journald: shards keeps a run's log itself",
         ),
         (
             &["--log-driver", "bogus"],

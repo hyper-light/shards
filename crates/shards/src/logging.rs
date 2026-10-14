@@ -19,15 +19,16 @@ use std::collections::BTreeMap;
 
 use shards_ipc::Run;
 
+pub mod fluentd;
 pub mod gelf;
 pub mod syslog;
 
 /// The drivers that are shards' own store.
 const STORE: [&str; 3] = ["shards", "json-file", "local"];
-/// The drivers that send a log elsewhere, from shards' store (D163, D164).
-const SENDS: [&str; 2] = ["syslog", "gelf"];
+/// The drivers that send a log elsewhere, from shards' store (D163 to D165).
+const SENDS: [&str; 3] = ["syslog", "gelf", "fluentd"];
 /// The drivers Docker sends a log elsewhere with, which shards does not yet.
-const ELSEWHERE: [&str; 6] = ["journald", "fluentd", "awslogs", "splunk", "etwlogs", "gcplogs"];
+const ELSEWHERE: [&str; 5] = ["journald", "awslogs", "splunk", "etwlogs", "gcplogs"];
 /// The store's own options: its segments' (moby jsonfilelog's ValidateLogOpt, local's).
 const STORE_OPTIONS: [&str; 3] = ["max-size", "max-file", "compress"];
 /// The options every driver takes: the attributes `logs --details` shows and the tag,
@@ -107,18 +108,19 @@ pub fn kept(run: &Run, default: crate::spec::LogRetention) -> Result<Option<Kept
     }
     if ELSEWHERE.contains(&name) {
         return Err(format!(
-            "--log-driver {name}: shards keeps a run's log itself (shards, json-file or local), sends it to syslog or gelf, or keeps none (none); sending it to {name} is not here yet"
+            "--log-driver {name}: shards keeps a run's log itself (shards, json-file or local), sends it to syslog, gelf or fluentd, or keeps none (none); sending it to {name} is not here yet"
         ));
     }
     let ships = SENDS.contains(&name);
     if !STORE.contains(&name) && !ships {
         return Err(format!(
-            "--log-driver {name}: no such log driver: shards keeps a run's log itself (shards, json-file or local), sends it to syslog or gelf, or keeps none (none)"
+            "--log-driver {name}: no such log driver: shards keeps a run's log itself (shards, json-file or local), sends it to syslog, gelf or fluentd, or keeps none (none)"
         ));
     }
     let own: &[&str] = match name {
         "syslog" => &syslog::OPTIONS,
         "gelf" => &gelf::OPTIONS,
+        "fluentd" => &fluentd::OPTIONS,
         _ => &STORE_OPTIONS,
     };
     if let Some(k) = opts
@@ -229,6 +231,7 @@ pub fn kept(run: &Run, default: crate::spec::LogRetention) -> Result<Option<Kept
 pub enum Remote {
     Syslog(syslog::Config),
     Gelf(gelf::Config),
+    Fluentd(fluentd::Config),
 }
 
 /// The driver `run` sends its log elsewhere with, if one does.
@@ -241,6 +244,7 @@ fn remote_config(name: &str, opts: &BTreeMap<String, String>) -> Result<Option<R
     match name {
         "syslog" => Ok(Some(Remote::Syslog(syslog::config(opts)?))),
         "gelf" => Ok(Some(Remote::Gelf(gelf::config(opts)?))),
+        "fluentd" => Ok(Some(Remote::Fluentd(fluentd::config(opts)?))),
         _ => Ok(None),
     }
 }
@@ -573,9 +577,9 @@ mod tests {
                 "--log-opt max-size: --log-driver none keeps no log",
             ),
             (
-                "fluentd",
+                "journald",
                 &[],
-                "--log-driver fluentd: shards keeps a run's log itself",
+                "--log-driver journald: shards keeps a run's log itself",
             ),
             ("bogus", &[], "--log-driver bogus: no such log driver"),
             ("json-file", &["max-size=-1"], "--log-opt max-size=-1: a size"),

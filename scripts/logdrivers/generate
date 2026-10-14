@@ -1,7 +1,8 @@
 #!/bin/sh
-# Regenerates what Docker's syslog and gelf log drivers send, and which of their options
-# Docker takes (crates/shards/src/logging/testdata/syslog.json and gelf.json), which
-# crates/shards/src/logging and its tests hold shards to (D163, D164).
+# Regenerates what Docker's syslog, gelf and fluentd log drivers send, and which of their
+# options Docker takes (crates/shards/src/logging/testdata/syslog.json, gelf.json and
+# fluentd.json), which crates/shards/src/logging and its tests hold shards to (D163 to
+# D165).
 #
 # In shards-dind (CONTAINER), capture.go listens on UDP, TCP and TLS ports and on a unix
 # datagram and stream socket. Each case's container prints a line on stdout, one on
@@ -17,6 +18,7 @@ here=$(cd "$(dirname "$0")" && pwd)
 root=$(cd "$here/../.." && pwd)
 out="$root/crates/shards/src/logging/testdata/syslog.json"
 gelf_out="$root/crates/shards/src/logging/testdata/gelf.json"
+fluentd_out="$root/crates/shards/src/logging/testdata/fluentd.json"
 container=${CONTAINER:-shards-dind}
 image=alpine:3.22
 work=$(mktemp -d)
@@ -38,7 +40,7 @@ x86_64 | amd64) arch=amd64 ;;
 	;;
 esac
 (cd "$here" && GOOS=linux GOARCH="$arch" CGO_ENABLED=0 go build -o "$work/capture" capture.go)
-docker exec "$container" mkdir -p "$dir/cases" "$dir/gelf"
+docker exec "$container" mkdir -p "$dir/cases" "$dir/gelf" "$dir/fluentd"
 docker cp "$work/capture" "$container:$dir/capture"
 docker exec -d "$container" "$dir/capture" "$dir"
 until docker exec "$container" test -e "$dir/ready"; do sleep 0.2; done
@@ -98,7 +100,25 @@ for case in udp-gzip udp-zlib udp-none tcp-none; do
 	fi
 	docker exec "$container" sh -c "mkdir $dir/gelf/$case && mv $dir/out/* $dir/gelf/$case/"
 done
+# fluentd: TCP in whole seconds and to the nanosecond, and a unix socket; its record's
+# label asked for. Its driver dials as its container starts, and sends as it runs.
+for case in tcp-seconds tcp-nanoseconds unix-seconds; do
+	transport=${case%%-*}
+	i=$((i + 1))
+	case $transport in
+	tcp) address=tcp://127.0.0.1:5515 ;;
+	unix) address=unix://$dir/stream.sock ;;
+	esac
+	set -- --log-driver fluentd --log-opt "fluentd-address=$address" --log-opt tag=oracle \
+		--log-opt labels=a --label a=b
+	[ "$case" = tcp-nanoseconds ] && set -- "$@" --log-opt fluentd-sub-second-precision=true
+	docker exec "$container" docker run --rm --name "$name-$i" "$@" "$image" sh -c "$print" >/dev/null 2>&1
+	until [ "$(docker exec "$container" sh -c "ls $dir/out | wc -l")" -ge 1 ]; do sleep 0.1; done
+	docker exec "$container" sh -c "mkdir $dir/fluentd/$case && mv $dir/out/* $dir/fluentd/$case/"
+done
 docker exec "$container" tar -C "$dir/cases" -c . | tar -x -C "$work"
+mkdir "$work/fluentd"
+docker exec "$container" tar -C "$dir/fluentd" -c . | tar -x -C "$work/fluentd"
 mkdir "$work/gelf"
 docker exec "$container" tar -C "$dir/gelf" -c . | tar -x -C "$work/gelf"
 
@@ -138,6 +158,47 @@ for opt in \
 		printf '%s\t%s\n' "$opt" "$(printf '%s' "$said" | tr '\n' ' ')" >>"$work/options"
 	fi
 done
+# fluentd's: each case its options, separated by |.
+for opts in \
+	"" \
+	"fluentd-address=127.0.0.1:24224" \
+	"fluentd-address=tcp://127.0.0.1" \
+	"fluentd-address=tls://127.0.0.1:24224" \
+	"fluentd-address=unix:///tmp/f.sock" \
+	"fluentd-address=unix://" \
+	"fluentd-address=http://127.0.0.1:24224" \
+	"fluentd-address=tcp://127.0.0.1:24224/path" \
+	"fluentd-address=tcp://127.0.0.1:70000" \
+	"fluentd-async=true" \
+	"fluentd-async=maybe" \
+	"fluentd-buffer-limit=8m" \
+	"fluentd-buffer-limit=lots" \
+	"fluentd-retry-wait=500ms" \
+	"fluentd-retry-wait=soon" \
+	"fluentd-max-retries=3" \
+	"fluentd-max-retries=-1" \
+	"fluentd-max-retries=4294967296" \
+	"fluentd-request-ack=true" \
+	"fluentd-sub-second-precision=true" \
+	"fluentd-write-timeout=2s" \
+	"fluentd-write-timeout=-1s" \
+	"fluentd-read-timeout=2s" \
+	"fluentd-async-reconnect-interval=1s" \
+	"fluentd-async-reconnect-interval=20s" \
+	"fluentd-color=red"; do
+	i=$((i + 1))
+	set --
+	old_ifs=$IFS
+	IFS='|'
+	for o in $opts; do set -- "$@" --log-opt "$o"; done
+	IFS=$old_ifs
+	if said=$(docker exec "$container" docker create --name "$name-o$i" --log-driver fluentd "$@" "$image" true 2>&1); then
+		docker exec "$container" docker rm "$name-o$i" >/dev/null 2>&1 || true
+		printf '%s\t\n' "$opts" >>"$work/fluentd-options"
+	else
+		printf '%s\t%s\n' "$opts" "$(printf '%s' "$said" | tr '\n' ' ')" >>"$work/fluentd-options"
+	fi
+done
 # gelf's: each case its options, separated by |.
 for opts in \
 	"" \
@@ -171,10 +232,10 @@ for opts in \
 	fi
 done
 
-python3 -I - "$work" "$dir" "$out" "$gelf_out" <<'EOF'
-import gzip, json, os, re, sys, zlib
+python3 -I - "$work" "$dir" "$out" "$gelf_out" "$fluentd_out" <<'EOF'
+import gzip, json, os, re, struct, sys, zlib
 
-work, dind, out, gelf_out = sys.argv[1:5]
+work, dind, out, gelf_out, fluentd_out = sys.argv[1:6]
 version = open(os.path.join(work, "version")).read().strip()
 STAMP = r"[A-Z][a-z]{2} [ \d]\d \d\d:\d\d:\d\d"
 FORMATS = {
@@ -206,7 +267,7 @@ def content(c):
 cases = []
 for case in sorted(os.listdir(work)):
     path = os.path.join(work, case)
-    if not os.path.isdir(path) or case == "gelf":
+    if not os.path.isdir(path) or case in ("gelf", "fluentd"):
         continue
     transport, fmt, facility = case.split("-")
     files = [os.path.join(path, f) for f in sorted(os.listdir(path))]
@@ -304,4 +365,65 @@ for line in open(os.path.join(work, "gelf-options")):
     gelf_options.append({"options": [o for o in opts.split("|") if o], "refused": said or None})
 json.dump({"docker": version, "cases": gelf_cases, "options": gelf_options}, open(gelf_out, "w"), indent=1)
 print(f"{gelf_out}: {len(gelf_cases)} cases, {len(gelf_options)} options")
+
+def unpack(b, i):
+    """The MessagePack value at b[i], and where the next one starts: the forms an event
+    holds."""
+    t = b[i]
+    if t <= 0x7f:
+        return t, i + 1
+    if 0x80 <= t <= 0x8f or t in (0xde, 0xdf):
+        n, i = (t & 0x0f, i + 1) if t <= 0x8f else ((struct.unpack(">H", b[i+1:i+3])[0], i + 3) if t == 0xde else (struct.unpack(">I", b[i+1:i+5])[0], i + 5))
+        m = {}
+        for _ in range(n):
+            k, i = unpack(b, i)
+            v, i = unpack(b, i)
+            m[k] = v
+        return m, i
+    if 0x90 <= t <= 0x9f or t in (0xdc, 0xdd):
+        n, i = (t & 0x0f, i + 1) if t <= 0x9f else ((struct.unpack(">H", b[i+1:i+3])[0], i + 3) if t == 0xdc else (struct.unpack(">I", b[i+1:i+5])[0], i + 5))
+        a = []
+        for _ in range(n):
+            v, i = unpack(b, i)
+            a.append(v)
+        return a, i
+    if 0xa0 <= t <= 0xbf or t in (0xd9, 0xda, 0xdb):
+        if t <= 0xbf:
+            n, i = t & 0x1f, i + 1
+        else:
+            w = {0xd9: 1, 0xda: 2, 0xdb: 4}[t]
+            n, i = int.from_bytes(b[i+1:i+1+w], "big"), i + 1 + w
+        return b[i:i+n].decode(), i + n
+    if t in (0xd0, 0xd1, 0xd2, 0xd3):
+        w = {0xd0: 1, 0xd1: 2, 0xd2: 4, 0xd3: 8}[t]
+        return ("int" + str(8 * w), int.from_bytes(b[i+1:i+1+w], "big", signed=True)), i + 1 + w
+    if t == 0xd7:
+        return ("ext" + str(b[i+1]), b[i+2:i+10].hex()), i + 10
+    raise ValueError(f"MessagePack form {t:#x}")
+
+fluentd_cases = []
+for case in sorted(os.listdir(os.path.join(work, "fluentd"))):
+    path = os.path.join(work, "fluentd", case)
+    data = b"".join(open(os.path.join(path, f), "rb").read() for f in sorted(os.listdir(path)))
+    events, i = [], 0
+    while i < len(data):
+        e, i = unpack(data, i)
+        tag, tm, record, option = e
+        kind = tm[0] if isinstance(tm, tuple) else "fixint"
+        for k, holder in (("container_id", "{id}"), ("container_name", "{name}")):
+            assert k in record, (k, record)
+            record[k] = holder
+        if "partial_id" in record:
+            record["partial_id"] = "{partial}"
+        events.append({"tag": tag, "time": kind, "record": dict(sorted(record.items())), "option": option})
+    # Each stream's in its order, stderr's first.
+    events.sort(key=lambda e: e["record"]["source"] != "stderr")
+    fluentd_cases.append({"case": case, "events": events})
+
+fluentd_options = []
+for line in open(os.path.join(work, "fluentd-options")):
+    opts, said = line.rstrip("\n").split("\t", 1)
+    fluentd_options.append({"options": [o for o in opts.split("|") if o], "refused": said or None})
+json.dump({"docker": version, "cases": fluentd_cases, "options": fluentd_options}, open(fluentd_out, "w"), indent=1)
+print(f"{fluentd_out}: {len(fluentd_cases)} cases, {len(fluentd_options)} options")
 EOF

@@ -19,6 +19,7 @@ use super::{Daemon, Threads, lock, log};
 use crate::containers::Disk;
 use crate::spec::LOG_STDERR;
 
+mod fluentd;
 mod gelf;
 mod sockets;
 mod syslog;
@@ -30,6 +31,9 @@ pub(super) struct Message<'a> {
     pub at: u64,
     /// Its bytes, without the line's newline.
     pub line: &'a [u8],
+    /// Its place in its line, where the line is longer than [`PART`] (moby's
+    /// PartialLogMetaData).
+    pub part: Option<crate::logging::fluentd::Part<'a>>,
 }
 
 /// What sends a run's messages where its driver says.
@@ -73,7 +77,9 @@ impl Shipping {
 
 /// Each stream's line as its messages go, cut as moby's copier cuts one (copier.go,
 /// copySrc): a line of less than [`PART`] bytes is one message; a longer one, parts of
-/// [`PART`] bytes, then the rest, which may be nothing.
+/// [`PART`] bytes, then the rest, which may be nothing, with an ID in common and their
+/// places, the last saying so. A line the run left unfinished goes whole, or as its last
+/// part, where moby's copier sends it as a part that is never the last.
 #[derive(Default)]
 struct Lines {
     open: [Open; 2],
@@ -83,6 +89,8 @@ struct Lines {
 struct Open {
     held: Vec<u8>,
     at: u64,
+    /// Its parts sent so far: their ID, and the next one's place.
+    parts: Option<(String, u32)>,
 }
 
 impl Lines {
@@ -111,11 +119,7 @@ impl Lines {
         while open.held.len() >= PART {
             let rest = open.held.split_off(PART);
             let part = std::mem::replace(&mut open.held, rest);
-            send(&Message {
-                stream,
-                at: open.at,
-                line: &part,
-            })?;
+            open.send_part(stream, &part, false, send)?;
         }
         if ends {
             open.finish(stream, send)?;
@@ -131,7 +135,7 @@ impl Lines {
             } else {
                 crate::spec::LOG_STDOUT
             };
-            if !open.held.is_empty() {
+            if !open.held.is_empty() || open.parts.is_some() {
                 open.finish(stream, send)?;
             }
         }
@@ -140,15 +144,58 @@ impl Lines {
 }
 
 impl Open {
-    /// Sends the rest of the line.
-    fn finish(&mut self, stream: u8, send: &mut dyn FnMut(&Message<'_>) -> io::Result<()>) -> io::Result<()> {
-        let held = std::mem::take(&mut self.held);
+    /// Sends `part` as the line's next part.
+    fn send_part(
+        &mut self,
+        stream: u8,
+        part: &[u8],
+        last: bool,
+        send: &mut dyn FnMut(&Message<'_>) -> io::Result<()>,
+    ) -> io::Result<()> {
+        if self.parts.is_none() {
+            self.parts = Some((partial_id()?, 1));
+        }
+        let Some((id, ordinal)) = &mut self.parts else {
+            return Ok(());
+        };
         send(&Message {
             stream,
             at: self.at,
-            line: &held,
-        })
+            line: part,
+            part: Some(crate::logging::fluentd::Part {
+                id,
+                ordinal: *ordinal,
+                last,
+            }),
+        })?;
+        *ordinal = ordinal.saturating_add(1);
+        Ok(())
     }
+
+    /// Sends the rest of the line: whole, or as its last part.
+    fn finish(&mut self, stream: u8, send: &mut dyn FnMut(&Message<'_>) -> io::Result<()>) -> io::Result<()> {
+        let held = std::mem::take(&mut self.held);
+        if self.parts.is_some() {
+            self.send_part(stream, &held, true, send)?;
+        } else {
+            send(&Message {
+                stream,
+                at: self.at,
+                line: &held,
+                part: None,
+            })?;
+        }
+        self.parts = None;
+        Ok(())
+    }
+}
+
+/// A line's ID for its parts, as moby's copier makes one (stringid.GenerateRandomID): 32
+/// random bytes in hex.
+fn partial_id() -> io::Result<String> {
+    let mut b = [0u8; 32];
+    shards_vmm::platform::fill_random(&mut b)?;
+    Ok(b.iter().map(|x| format!("{x:02x}")).collect())
 }
 
 /// Where a shipper of the log in `dir` got to: each stream's place, and whether its run
@@ -454,6 +501,15 @@ impl<D: Disk> Daemon<D> {
                     },
                 ))
             }
+            crate::logging::Remote::Fluentd(config) => Box::new(fluentd::Fluentd::new(
+                config,
+                crate::logging::fluentd::From {
+                    tag,
+                    id: details.id.clone(),
+                    name: details.name.clone(),
+                    extra: crate::logging::attributes(run, &details.info())?,
+                },
+            )?),
         }))
     }
 
@@ -482,11 +538,24 @@ mod tests {
     use super::*;
     use crate::spec::LOG_STDOUT;
 
-    /// The messages `pieces` make, then the run's end: each its stream, time and bytes.
+    /// The messages `pieces` make, then the run's end: each its stream, time and bytes;
+    /// each part's place and whether it is the last, every part of a line one ID.
     fn cut(pieces: &[(u8, u64, bool, &[u8])]) -> Vec<(u8, u64, Vec<u8>)> {
         let mut sent = Vec::new();
+        let mut ids: [Option<String>; 2] = [None, None];
         let mut lines = Lines::default();
         let mut send = |m: &Message<'_>| {
+            let s = usize::from(m.stream == LOG_STDERR);
+            match &m.part {
+                Some(p) => {
+                    let id = ids[s].get_or_insert_with(|| p.id.to_string());
+                    assert_eq!((p.id.len(), &**id), (64, p.id), "one ID a line");
+                    if p.last {
+                        ids[s] = None;
+                    }
+                }
+                None => assert!(ids[s].is_none(), "a whole line amid a line's parts"),
+            }
             sent.push((m.stream, m.at, m.line.to_vec()));
             Ok(())
         };
