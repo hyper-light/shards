@@ -239,16 +239,21 @@ fn parse_run(args: impl Iterator<Item = OsString>) -> Result<Run, String> {
                 let _ = SHARES.set(cfg.shares.clone());
             }
             // A shared directory backed by an external slates VFS over a Unix socket (slates'
-            // `shards_fs::serve`, which speaks this device's own le32+FUSE framing). Unlike --shares
-            // (empty slots a daemon fills from the share process), this connects now and fills the
-            // slot itself, so a direct `run --kernel` mounts a slates volume by its tag `shards<i>`
-            // with no share process and no host mount — the guest reaches slates over the socket.
+            // `shards_fs::serve`, which speaks this device's own le32+FUSE framing): an already-connected
+            // descriptor the spawner hands in, as --warm and --grants are, and this fills a share slot with
+            // it. The connection is made by the unsandboxed spawner, never here — a VM process is App-Sandboxed
+            // (D30) and cannot open the socket itself — so the guest mounts a slates volume by its tag
+            // `shards<i>` with no share process and no host mount, reaching slates over the inherited socket.
             #[cfg(unix)]
-            "--slates-fs" => {
-                let path = PathBuf::from(value("--slates-fs")?);
-                let conn = std::os::unix::net::UnixStream::connect(&path).map_err(|e| {
-                    format!("--slates-fs: connecting to the slates socket {}: {e}", path.display())
-                })?;
+            "--slates-fs-fd" => {
+                use std::os::fd::FromRawFd;
+                let raw = text(value("--slates-fs-fd")?)?;
+                let raw: i32 = raw
+                    .parse()
+                    .map_err(|_| format!("--slates-fs-fd: {raw:?} is not a descriptor"))?;
+                // SAFETY: the spawner passed this connected slates socket as an inherited descriptor (as the
+                // daemon passes --warm/--grants); we adopt it exactly once into the share slot's stream.
+                let conn = unsafe { std::os::unix::net::UnixStream::from_raw_fd(raw) };
                 let slot: shards_vmm::devices::virtio::fs::Share = std::sync::Arc::default();
                 slot.attach(conn);
                 cfg.shares.push(slot);

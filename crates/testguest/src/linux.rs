@@ -29,6 +29,7 @@ pub fn main() {
             "vsock_snapshot_held" => vsock_snapshot_held(),
             "pmem" => pmem(),
             "erofs" => erofs(),
+            "slates_fs" => slates_fs(),
             other => Err(format!("unknown test {other:?}")),
         },
     );
@@ -56,6 +57,25 @@ fn setup() -> Result<(), String> {
         if unsafe { libc::mount(src.as_ptr(), target.as_ptr(), fs.as_ptr(), 0, std::ptr::null()) } != 0 {
             return Err(format!("mount {target:?}: {}", io::Error::last_os_error()));
         }
+    }
+    Ok(())
+}
+
+/// Mounts the slates-backed virtio-fs share (tag `shards0`, filled by `run --kernel … --slates-fs <socket>`
+/// from a slates daemon over shards' fs framing) and reads `/hello` from it: proof a microVM reaches a slates
+/// volume through virtio-fs with no host mount and no DAX window (the slates integration, §4.6).
+fn slates_fs() -> Result<(), String> {
+    let c = |s: &str| CString::new(s).map_err(|e| e.to_string());
+    std::fs::create_dir_all("/mnt").map_err(|e| format!("mkdir /mnt: {e}"))?;
+    let (src, target, fs) = (c("shards0")?, c("/mnt")?, c("virtiofs")?);
+    // SAFETY: NUL-terminated strings, no data argument — as setup() mounts the pseudo-filesystems.
+    if unsafe { libc::mount(src.as_ptr(), target.as_ptr(), fs.as_ptr(), 0, std::ptr::null()) } != 0 {
+        return Err(format!("mount shards0 (virtiofs): {}", io::Error::last_os_error()));
+    }
+    let got = std::fs::read_to_string("/mnt/hello").map_err(|e| format!("read /mnt/hello: {e}"))?;
+    let want = "hello from slates over shards virtio-fs\n";
+    if got != want {
+        return Err(format!("slates served {got:?}, expected {want:?}"));
     }
     Ok(())
 }
