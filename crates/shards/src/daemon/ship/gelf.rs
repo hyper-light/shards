@@ -3,29 +3,36 @@
 //! them (udpwriter.go, tcpwriter.go). Over TCP a write that fails is tried again on a new
 //! connection, `gelf-tcp-max-reconnect` times, `gelf-tcp-reconnect-delay` seconds apart,
 //! as go-gelf tries it; then the shipper's own waits take over, where go-gelf drops the
-//! message.
+//! message. And a message is held until its receiver has it, and written again on the
+//! next connection should one end first (stream.rs), where go-gelf's are lost.
 
-use std::io::{self, Write as _};
-use std::net::{TcpStream, UdpSocket};
+use std::io;
+use std::net::UdpSocket;
 use std::time::Duration;
 
-use super::{Driver, Message};
+use super::stream::{self, Stream};
+use super::{Driver, Message, Wait};
 use crate::logging::gelf::{self, Config, From, To};
 
 pub(super) struct Gelf {
     config: Config,
     from: From,
     udp: Option<UdpSocket>,
-    tcp: Option<TcpStream>,
+    /// Over TCP: its stream.
+    tcp: Option<Stream>,
 }
 
 impl Gelf {
     pub(super) fn new(config: Config, from: From) -> Gelf {
+        let tcp = match &config.to {
+            To::Tcp(address) => Some(Stream::new(stream::To::Tcp(address.clone()), [None; 2])),
+            To::Udp(_) => None,
+        };
         Gelf {
             config,
             from,
             udp: None,
-            tcp: None,
+            tcp,
         }
     }
 
@@ -55,36 +62,32 @@ impl Gelf {
         Ok(())
     }
 
-    fn send_tcp(&mut self, address: &str, message: &[u8], wait: &dyn Fn(Duration) -> bool) -> io::Result<()> {
+    fn send_tcp(&mut self, address: &str, message: &[u8], wait: &Wait<'_>) -> io::Result<()> {
+        let Some(stream) = &mut self.tcp else {
+            return Err(io::Error::from(io::ErrorKind::NotConnected));
+        };
         let mut framed = message.to_vec();
         framed.push(0);
         let mut tries = 0;
         loop {
-            if let Some(conn) = &mut self.tcp
-                && conn.write_all(&framed).is_ok()
-            {
+            let Err(e) = stream.send(&framed) else {
                 return Ok(());
-            }
-            self.tcp = None;
+            };
+            tries += 1;
             if tries > self.config.reconnects {
                 return Err(io::Error::other(format!(
-                    "{address}: no connection took the message in {} tries",
-                    tries
+                    "{address}: no connection took the message in {tries} tries: {e}"
                 )));
             }
-            if tries > 0 && wait(Duration::from_secs(u64::from(self.config.delay))) {
-                return Err(io::Error::new(io::ErrorKind::Interrupted, "the daemon stops"));
-            }
-            tries += 1;
-            if let Ok(conn) = TcpStream::connect(address) {
-                self.tcp = Some(conn);
+            if wait.pause(Duration::from_secs(u64::from(self.config.delay))) {
+                return Err(super::stops());
             }
         }
     }
 }
 
 impl Driver for Gelf {
-    fn send(&mut self, m: &Message<'_>, wait: &dyn Fn(Duration) -> bool) -> io::Result<()> {
+    fn send(&mut self, m: &Message<'_>, wait: &Wait<'_>) -> io::Result<()> {
         // moby's gelfLogger sends no empty line.
         if m.line.is_empty() {
             return Ok(());
@@ -94,5 +97,13 @@ impl Driver for Gelf {
             To::Udp(address) => self.send_udp(&address, &message),
             To::Tcp(address) => self.send_tcp(&address, &message, wait),
         }
+    }
+
+    fn undelivered(&mut self) -> usize {
+        self.tcp.as_mut().map_or(0, Stream::undelivered)
+    }
+
+    fn close(&mut self, wait: &Wait<'_>) -> io::Result<()> {
+        self.tcp.as_mut().map_or(Ok(()), |s| s.close(wait))
     }
 }

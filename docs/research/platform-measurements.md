@@ -8281,3 +8281,84 @@ revision before comparing a changed API/implementation.
   refused for its size (EMSGSIZE or ENOBUFS) goes in halves, each its own message, down
   to the 480 octets every receiver takes (RFC 5426 §3.2): nothing is lost, and nothing
   waits for ever.
+
+### M233. What a TCP socket closed with bytes unread loses, and what its kernel says of what its receiver has (D163)
+
+- **Question.** D163's first CI lost a run's last syslog line over TLS on every x86_64
+  Linux run: its server got the line before it and then a reset. Why, and what can a
+  sender learn of what its receiver has?
+- **Method.** `docs/research/measurements/close-unread/`, 2026-10-14, at 29fc5846. Each
+  probe ran on the M5 Max (macOS 26.4.1, Python 3.14.7, OpenSSL 3.6.4) and in a shards
+  microVM on it (python:3-alpine: Linux 6.18.48 aarch64, Python 3.15.0, OpenSSL 3.5.9).
+  - `probe.py`: a TLS 1.3 server on loopback (two session tickets, OpenSSL's default)
+    reads until its connection ends. The client writes `out\n` and `err\n` as two
+    records and ends its connection, 200 rounds each way:
+    - `late-close`: 50 ms after the handshake, so the tickets have come, unread, it
+      writes and closes at once, as the shipper did;
+    - `late-nodelay`: the same, with TCP_NODELAY;
+    - `late-drain`: the same, but it shuts its write side, reads until the server's
+      EOF, then closes.
+
+    Also 300 rounds each of `close`, `nodelay` and `drain`, which write as soon as the
+    handshake is done.
+  - `acked.py`: what the sender's kernel counts as unacknowledged, its RTO and its TCP
+    state (Linux: SIOCOUTQ and TCP_INFO; macOS: TCP_CONNECTION_INFO's tcpi_snd_sbbytes,
+    tcpi_rto and tcpi_state).
+    Measured four times:
+    1. 1,000 bytes written to a receiver that reads none;
+    2. written on until the sender's buffer takes no more, the receiver's buffer set to
+       4,096 bytes;
+    3. all read, the receiver's buffer grown again;
+    4. after shutdown(SHUT_WR), at once and 200 ms on.
+
+    Two runs on each OS.
+  - `unixq.py`: the same counts on a unix stream socket, 1,000 bytes unread, then 400
+    read.
+  - `held.py` (Linux): a listener's SO_RCVBUF of 1, three 1 KiB writes, then the
+    receiver's SO_LINGER-0 close.
+- **Results.**
+  - `late-close` loses `err\n` in 200 of 200 rounds on Linux and 90 of 200 on macOS. The
+    server sees a reset in all 400.
+  - `late-nodelay` delivers both lines in all 400 rounds; the server still sees a reset
+    in every one.
+  - `late-drain` delivers both in all 400, each ending in a clean EOF.
+  - `close`, `nodelay` and `drain` deliver both in all 900 rounds on Linux, since the
+    tickets come after the client has closed. Their server sees a broken pipe or a reset
+    as it writes them, except under `drain`.
+  - `acked.py` on Linux, both runs:
+    1. 0 unacknowledged;
+    2. 2,568,704 of 2,604,032 bytes unacknowledged;
+    3. 0;
+    4. 1 at once (its FIN), in FIN_WAIT1; 0 200 ms on, in FIN_WAIT2.
+
+    RTO 201 to 206 ms throughout.
+  - `acked.py` on macOS:
+    1. 0;
+    2. the receiver's buffer is 526,720 bytes whatever it was set to. In one run the
+       sender's buffer took no more after 327,212 bytes, none unacknowledged; in the
+       other, 450,092 of 974,172 were unacknowledged;
+    3. 0;
+    4. 0 at once, in FIN_WAIT_1, and 0 200 ms on, in FIN_WAIT_2: macOS leaves the FIN
+       out of the count. Its RTO reads 230 ms while the FIN is out and 0 otherwise.
+  - `unixq.py`: macOS's SO_NWRITE reads 0. Linux's SIOCOUTQ reads 2,304 both before and
+    after the 400-byte read: buffer memory, not bytes.
+  - `held.py`:
+    - the receiver's buffer is 2,304 bytes;
+    - 2,048 bytes stay unacknowledged;
+    - after the reset, SO_ERROR is 104 (ECONNRESET) and SIOCOUTQ still 2,048;
+    - the next write fails with EPIPE.
+- **Consequence.** A socket closed with bytes unread resets its connection, and what is
+  not yet sent goes with it. The shipper lost the line Nagle's algorithm held back behind
+  the one before it. TCP_NODELAY narrows that window but keeps the reset. Shutting the
+  write side and reading the receiver's bytes until its end delivers everything.
+
+  D163's streams (`daemon/ship/stream.rs`) therefore:
+  - count a message delivered once its last byte is acknowledged. Linux's SIOCOUTQ counts
+    the FIN; on macOS the FIN is added while the state is FIN_WAIT_1, CLOSING or LAST_ACK;
+  - hold what is not yet delivered, and write it again on the next connection;
+  - end a connection only once all is acknowledged, between checks waiting for the
+    receiver's bytes or the kernel's RTO (RFC 6298's 1 s where it gives none);
+  - keep the shipper's place only as far as what is delivered.
+
+  Over a unix stream socket nothing can be counted. Its bytes are in the receiver's
+  buffer once written, and no close resets them, so they are delivered as written.

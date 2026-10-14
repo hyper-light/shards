@@ -1,10 +1,12 @@
-//! Datagram sockets as the drivers that send a run's log over them use them (D163, D164):
-//! a UDP socket connected to its address, and a datagram sent whole, the socket's send
-//! buffer grown to it first, as macOS takes none longer (PM M232).
+//! Sockets as the drivers that send a run's log over them use them (D163 to D165): a UDP
+//! socket connected to its address, and a datagram sent whole, the socket's send buffer
+//! grown to it first, as macOS takes none longer (PM M232); and what a TCP connection's
+//! kernel knows of what its receiver has acknowledged (PM M233).
 
 use std::io;
-use std::net::{ToSocketAddrs as _, UdpSocket};
+use std::net::{TcpStream, ToSocketAddrs as _, UdpSocket};
 use std::os::fd::{AsRawFd, RawFd};
+use std::time::Duration;
 
 /// A UDP socket connected to `address`, of its first address's family.
 pub(super) fn udp(address: &str) -> io::Result<UdpSocket> {
@@ -91,4 +93,84 @@ pub(super) fn fit(fd: RawFd, len: usize) {
 /// macOS takes none longer than it (ENOBUFS, PM M232).
 pub(super) fn too_large(e: &io::Error) -> bool {
     matches!(e.raw_os_error(), Some(libc::EMSGSIZE | libc::ENOBUFS))
+}
+
+/// Of TCP connection `socket`: how many of the bytes written on it its receiver has not
+/// acknowledged, its FIN one of them until it is, and how long its kernel waits for an
+/// acknowledgement before it sends again; an error where the connection has ended without
+/// them, reset or given up (PM M233). Linux: SIOCOUTQ, which counts the FIN, and TCP_INFO
+/// (tcp(7)); macOS: TCP_CONNECTION_INFO's bytes in the send buffer, which keeps them until
+/// they are acknowledged, its state for the FIN, and its RTO (netinet/tcp.h).
+pub(super) fn unacknowledged(socket: &TcpStream) -> io::Result<(u64, Duration)> {
+    if let Some(e) = socket.take_error()? {
+        return Err(e);
+    }
+    let fd = socket.as_raw_fd();
+    #[cfg(target_os = "linux")]
+    {
+        let mut queued: libc::c_int = 0;
+        // SAFETY: ioctl(2) SIOCOUTQ, whose number is TIOCOUTQ's, of an int into `queued`.
+        if unsafe { libc::ioctl(fd, libc::TIOCOUTQ, &raw mut queued) } != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        // SAFETY: tcp_info is integers, of which all zeros are a value.
+        let mut info: libc::tcp_info = unsafe { std::mem::zeroed() };
+        let mut len = std::mem::size_of::<libc::tcp_info>() as libc::socklen_t;
+        // SAFETY: getsockopt(2) of TCP_INFO into `info`, `len` its size.
+        let read = unsafe {
+            libc::getsockopt(
+                fd,
+                libc::IPPROTO_TCP,
+                libc::TCP_INFO,
+                (&raw mut info).cast(),
+                &mut len,
+            )
+        };
+        if read != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        // TCP_CLOSE (include/net/tcp_states.h): both sides' FINs acknowledged, the
+        // connection handed to a TIME_WAIT socket of its own, or reset or given up, which
+        // take_error says; bytes unacknowledged in it are never acknowledged now.
+        let queued = u64::try_from(queued).unwrap_or(0);
+        if info.tcpi_state == 7 && queued > 0 {
+            return Err(ended());
+        }
+        Ok((queued, Duration::from_micros(u64::from(info.tcpi_rto))))
+    }
+    #[cfg(target_os = "macos")]
+    {
+        // SAFETY: tcp_connection_info is integers, of which all zeros are a value.
+        let mut info: libc::tcp_connection_info = unsafe { std::mem::zeroed() };
+        let mut len = std::mem::size_of::<libc::tcp_connection_info>() as libc::socklen_t;
+        // SAFETY: getsockopt(2) of TCP_CONNECTION_INFO into `info`, `len` its size.
+        let read = unsafe {
+            libc::getsockopt(
+                fd,
+                libc::IPPROTO_TCP,
+                libc::TCP_CONNECTION_INFO,
+                (&raw mut info).cast(),
+                &mut len,
+            )
+        };
+        if read != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        // netinet/tcp_fsm.h: FIN_WAIT_1, CLOSING and LAST_ACK, a FIN sent and not yet
+        // acknowledged; TCPS_CLOSED, reset or given up, which take_error says, and bytes
+        // unacknowledged in it never acknowledged now.
+        let fin = u64::from(matches!(info.tcpi_state, 6..=8));
+        let queued = u64::from(info.tcpi_snd_sbbytes) + fin;
+        if info.tcpi_state == 0 && queued > 0 {
+            return Err(ended());
+        }
+        Ok((queued, Duration::from_millis(u64::from(info.tcpi_rto))))
+    }
+}
+
+fn ended() -> io::Error {
+    io::Error::new(
+        io::ErrorKind::ConnectionReset,
+        "the connection ended before its receiver had all written on it",
+    )
 }

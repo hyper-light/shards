@@ -3639,7 +3639,9 @@ daemon's shipper.
 - **Retries.** A failed send is tried again after `fluentd-retry-wait`, half as long again
   each time up to a minute, `fluentd-max-retries` times, as fluent-logger-golang tries it.
   Then the shipper's own waits take over, where fluent-logger-golang gives the event up.
-  `fluentd-write-timeout` and `fluentd-read-timeout` bound a write and an ack.
+  `fluentd-write-timeout` and `fluentd-read-timeout` bound a write and an ack. Without
+  acks, an event is delivered once its receiver's TCP has it; what a connection had not
+  delivered goes on the next (D163). With acks, an event's ack says it is delivered.
 - **Taken, and moot.** `fluentd-async`, `fluentd-async-reconnect-interval` and
   `fluentd-buffer-limit` are read and checked as moby reads them. They change nothing:
   every log is sent off its run's path, with the store as its buffer. Docker's driver
@@ -3687,8 +3689,9 @@ starts whether or not its server is up, and nothing is lost to a server that is 
 - **TCP.** Each message is followed by a NUL. A write that fails is tried again on new
   connections `gelf-tcp-max-reconnect` times, `gelf-tcp-reconnect-delay` seconds apart,
   as go-gelf tries it. After that the shipper's own waits take over, where go-gelf drops
-  the message. Docker's driver dials as its container starts, so a server that is down
-  keeps the container from starting; shards' run starts regardless.
+  the message. What a connection had not delivered goes on the next (D163). Docker's
+  driver dials as its container starts, so a server that is down keeps the container
+  from starting; shards' run starts regardless.
 - **Not yet.** journald, splunk, awslogs, gcplogs and etwlogs; fluentd came with D165.
 
 Tested on real microVMs (`a_runs_log_is_sent_to_gelf_as_its_options_say`):
@@ -3724,6 +3727,30 @@ and the way every later one sends.
     not sent.
 - **Lines as Docker's.** Each line is a message, cut as moby's copier cuts it: past
   16 KiB, in parts of 16 KiB, then the rest.
+- **Delivered, not written** (`daemon/ship/stream.rs`, PM M233). Over TCP, TLS or a unix
+  stream socket, a message counts as sent only once its receiver has it.
+  - Over TCP, that is once its receiver's TCP has acknowledged its last byte, as the
+    kernel counts them: Linux's SIOCOUTQ, macOS's TCP_CONNECTION_INFO. A unix socket's
+    bytes are in its receiver's buffer as they are written.
+  - The shipper keeps its place only as far as what is delivered. So a daemon that stops
+    or dies costs sending again what was not yet delivered, and loses no line.
+  - What a connection had not delivered when it ended (a reset, a receiver that
+    restarts, a timeout after a partition) is held, and written again, in order, on the
+    next. srslog, go-gelf and fluent-logger-golang lose it.
+  - A connection ends only once its receiver has all of it:
+    - TLS's close_notify is sent;
+    - its write side is shut;
+    - what the receiver still sends is read and let go;
+    - the socket closes once all is acknowledged.
+
+    A socket closed with bytes unread resets its connection, and what is not yet sent
+    goes with it. TLS 1.3's session tickets are such bytes: no sender that only writes
+    reads them. D163's first CI lost a run's last line this way, held back by Nagle's
+    algorithm behind the line before it, on every x86_64 Linux run; the probe loses it in
+    200 of 200 rounds on Linux and 90 of 200 on macOS. Docker's drivers close their
+    sockets this way.
+  - A receiver's TCP having a message is as far as TCP can say. fluentd's acks (D165)
+    say its receiver has it.
 - **Messages as Docker's.** Its formats (srslog's Unix format, rfc3164, rfc5424,
   rfc5424micro), its facilities, info for stdout and err for stderr, the tag (the short ID
   unless given), its framing (newlines, octet counting over TLS for RFC 5424), and udp,
@@ -3740,7 +3767,8 @@ and the way every later one sends.
   - a datagram socket's send buffer grows to each message, since macOS takes none longer
     than it (PM M232). A line whose datagram its receiver refuses for its size goes in
     halves, down to RFC 5426's 480 octets. moby drops it;
-  - nothing is dropped: a send that fails is sent again;
+  - nothing is dropped: a send that fails is sent again, and what a connection had not
+    delivered goes on the next;
   - `syslog-tls-skip-verify` is refused, its CA asked for instead: shards sends only to a
     server whose certificate it verifies;
   - `unix://host/path` is refused. Go's parser takes `host` for a host, and moby's driver
@@ -3766,7 +3794,8 @@ Tested on real microVMs (`a_runs_log_is_sent_to_syslog_as_its_options_say`):
 - UDP in srslog's format;
 - TCP in rfc5424micro and local0, its time `logs -t`'s to the microsecond and its host a
   name;
-- TLS with a CA made for the test, octet-counted;
+- TLS with a CA made for the test, octet-counted, its connection ended cleanly with
+  close_notify;
 - a unix datagram socket, a 40,000-byte line in 16,384 + 16,384 + 7,232;
 - a server that comes up only after the run, and one up only after the daemon restarted;
 - `cache-disabled`, `logs` refusing it;
@@ -3778,7 +3807,13 @@ Unit tests cover:
 - the options, against what Docker takes;
 - addresses, ports and tag fields;
 - the copier's cuts;
-- the shipper's place, and a reader resumed from it showing every line once;
+- the shipper's place, kept only as far as its receiver has the messages before it, and a
+  reader resumed from it showing every line once;
+- a TLS stream closed at once after its last writes, its receiver's session tickets
+  unread, delivering all of them and ending with close_notify (mutation-checked: closed
+  at once, its receiver sees a reset);
+- what a connection reset by its receiver had not delivered, written again on the next,
+  in order, before what comes after (mutation-checked: what is held dropped fails it);
 - the segments wholly sent going.
 
 ### D162. A run's rotated log segments compressed, seekably; a log that never holds up its run

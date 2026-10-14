@@ -7,9 +7,9 @@
 //! through the daemon's restarts. moby sends from the run's own copier, and drops what its
 //! driver refuses (daemon/logger/copier.go, logDriverError).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::io;
-use std::os::fd::{AsFd as _, AsRawFd as _};
+use std::os::fd::{AsFd as _, AsRawFd as _, BorrowedFd};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -22,6 +22,7 @@ use crate::spec::LOG_STDERR;
 mod fluentd;
 mod gelf;
 mod sockets;
+mod stream;
 mod syslog;
 
 /// A line of a run's output, or a part of a longer one, as a driver is given it.
@@ -41,7 +42,100 @@ pub(super) trait Driver: Send {
     /// Sends `m`, or says why it could not, and is given it again. `wait` waits as long as
     /// the driver's own pace asks between its tries, and says whether the daemon stops
     /// meanwhile, which ends them.
-    fn send(&mut self, m: &Message<'_>, wait: &dyn Fn(Duration) -> bool) -> io::Result<()>;
+    fn send(&mut self, m: &Message<'_>, wait: &Wait<'_>) -> io::Result<()>;
+
+    /// How many of the messages it has sent its receiver may not have yet (stream.rs):
+    /// none where nothing says what arrives, as over UDP.
+    fn undelivered(&mut self) -> usize {
+        0
+    }
+
+    /// Ends its connection once its receiver has all it was sent (stream.rs), or says why
+    /// it could not, and is asked again.
+    fn close(&mut self, _wait: &Wait<'_>) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+/// How a driver waits: a while, or for a socket of its own to be readable, either cut
+/// short as the daemon stops.
+pub(super) struct Wait<'a>(&'a UnixStream);
+
+impl Wait<'_> {
+    /// Waits `d`: whether the daemon stops meanwhile.
+    pub(super) fn pause(&self, d: Duration) -> bool {
+        stopped_within(self.0, None, d)
+    }
+
+    /// Waits until `fd` is readable, or `d` has passed; an error where the daemon stops
+    /// first.
+    pub(super) fn readable(&self, fd: BorrowedFd<'_>, d: Duration) -> io::Result<()> {
+        if stopped_within(self.0, Some(fd), d) {
+            Err(stops())
+        } else {
+            Ok(())
+        }
+    }
+}
+
+/// What a wait ended by the daemon's stop says.
+pub(super) fn stops() -> io::Error {
+    io::Error::new(io::ErrorKind::Interrupted, "the daemon stops")
+}
+
+/// A driver as a shipper gives it messages: each until it is sent, and a count of them.
+struct Sender<'d> {
+    id: &'d str,
+    driver: &'d mut dyn Driver,
+    wait: Wait<'d>,
+    /// The messages sent.
+    sent: u64,
+}
+
+impl Sender<'_> {
+    /// Sends `m`, again until it is sent, whatever the driver's failures meanwhile; given
+    /// up only as the daemon stops.
+    fn send(&mut self, m: &Message<'_>) -> io::Result<()> {
+        let (driver, wait) = (&mut *self.driver, &self.wait);
+        until_done(self.id, wait, || driver.send(m, wait))?;
+        self.sent += 1;
+        Ok(())
+    }
+
+    /// How many of the messages sent their receiver has.
+    fn delivered(&mut self) -> u64 {
+        let undelivered = u64::try_from(self.driver.undelivered()).unwrap_or(u64::MAX);
+        self.sent.saturating_sub(undelivered)
+    }
+
+    /// Ends its driver's connection once its receiver has all sent, asked again until it
+    /// does; given up only as the daemon stops.
+    fn close(&mut self) -> io::Result<()> {
+        let (driver, wait) = (&mut *self.driver, &self.wait);
+        until_done(self.id, wait, || driver.close(wait))
+    }
+}
+
+/// Does `f` until it succeeds: again a second after it fails, half as long again after
+/// each failure, a minute at most ([`RETRY_FIRST`]); given up only as the daemon stops.
+fn until_done(id: &str, wait: &Wait<'_>, mut f: impl FnMut() -> io::Result<()>) -> io::Result<()> {
+    let mut pause = RETRY_FIRST;
+    loop {
+        let Err(e) = f() else {
+            return Ok(());
+        };
+        // The daemon stops: no failure of the driver's.
+        if wait.pause(Duration::ZERO) {
+            return Err(stops());
+        }
+        log(format!(
+            "container {id}: sending its log: {e}; again in {pause:?}"
+        ));
+        if wait.pause(pause) {
+            return Err(stops());
+        }
+        pause = pause.mul_f64(1.5).min(RETRY_MOST);
+    }
 }
 
 /// The longest message: moby's copier's buffer (copier.go, defaultBufSize), past which a
@@ -243,13 +337,18 @@ fn drop_sent(dir: &Path, at: [Pos; 2]) {
 }
 
 /// Where a shipper keeps its place, and when: as the segment it reads changes, as it
-/// catches up, and as its run ends. So a crash costs sending again at most a segment's
-/// lines, a log written on without pause costs a write a segment, not one a line, and
-/// where `logs` keeps no copy (`cache-disabled`) the segments wholly sent go as they are.
+/// catches up, and as its run ends; and only as far as its receiver has the messages
+/// before it (stream.rs). So a crash, or the daemon's stop, costs sending again at most a
+/// segment's lines and what was not yet delivered, never a line lost; a log written on
+/// without pause costs a write a segment, not one a line; and where `logs` keeps no copy
+/// (`cache-disabled`) the segments wholly delivered go as they are.
 #[derive(Default)]
 struct Place {
     kept: Option<([Pos; 2], bool)>,
     seq: Option<u64>,
+    /// The places read to, oldest first, each with how many messages had been sent by
+    /// then: kept once those are delivered.
+    read: VecDeque<(u64, [Pos; 2])>,
 }
 
 impl Place {
@@ -258,7 +357,28 @@ impl Place {
         Some(first(at)) != self.seq
     }
 
-    fn keep(&mut self, id: &str, dir: &Path, at: [Pos; 2], done: bool, cached: bool) {
+    /// Notes that the log is read to `at`, `sent` messages sent by then.
+    fn reached(&mut self, sent: u64, at: [Pos; 2]) {
+        match self.read.back_mut() {
+            Some((s, place)) if *s == sent => *place = at,
+            _ => self.read.push_back((sent, at)),
+        }
+    }
+
+    /// Keeps the furthest place read to whose messages are among the first `delivered`
+    /// sent; with `done`, where that is the last, as its run's end, all of it delivered.
+    fn keep(&mut self, id: &str, dir: &Path, delivered: u64, done: bool, cached: bool) {
+        let mut at = self.kept.map(|(at, _)| at);
+        while let Some(&(sent, place)) = self.read.front()
+            && sent <= delivered
+        {
+            at = Some(place);
+            self.read.pop_front();
+        }
+        let Some(at) = at else {
+            return;
+        };
+        let done = done && self.read.is_empty();
         if self.kept == Some((at, done)) {
             return;
         }
@@ -297,22 +417,23 @@ enum Shipped {
     Stopped,
 }
 
-/// Waits until `stop` is told, or `wait` has passed: whether it was told. A wait poll(2)
-/// cannot make is taken for a stop: none is left to wait with.
-fn stopped_within(stop: &UnixStream, wait: Duration) -> bool {
+/// Waits until `stop` is told, or `also` is readable, or `wait` has passed: whether `stop`
+/// was told. A wait poll(2) cannot make is taken for a stop: none is left to wait with.
+fn stopped_within(stop: &UnixStream, also: Option<BorrowedFd<'_>>, wait: Duration) -> bool {
     let deadline = std::time::Instant::now() + wait;
     loop {
-        let mut pfd = libc::pollfd {
-            fd: stop.as_raw_fd(),
+        // poll(2) passes over a negative descriptor.
+        let mut polled = [stop.as_raw_fd(), also.map_or(-1, |fd| fd.as_raw_fd())].map(|fd| libc::pollfd {
+            fd,
             events: libc::POLLIN,
             revents: 0,
-        };
+        });
         let left = deadline.saturating_duration_since(std::time::Instant::now());
-        let ms = libc::c_int::try_from(left.as_millis()).unwrap_or(libc::c_int::MAX);
-        // SAFETY: poll(2) on one pollfd of a descriptor this thread holds open.
-        match unsafe { libc::poll(&mut pfd, 1, ms) } {
+        let ms = libc::c_int::try_from(left.as_micros().div_ceil(1000)).unwrap_or(libc::c_int::MAX);
+        // SAFETY: poll(2) on two pollfds, of descriptors the caller holds open or none.
+        match unsafe { libc::poll(polled.as_mut_ptr(), 2, ms) } {
             0 => return false,
-            n if n > 0 => return true,
+            n if n > 0 => return polled[0].revents != 0,
             _ if io::Error::last_os_error().kind() == io::ErrorKind::Interrupted => {}
             _ => return true,
         }
@@ -400,67 +521,69 @@ impl<D: Disk> Daemon<D> {
         };
         let mut lines = Lines::default();
         let mut place = Place::default();
-        // Sent once it is, whatever the driver's failures meanwhile; given up only as the
-        // daemon stops, its place kept from before it.
-        let mut send = |m: &Message<'_>| -> io::Result<()> {
-            let mut wait = RETRY_FIRST;
-            loop {
-                let Err(e) = driver.send(m, &|d| stopped_within(stopped, d)) else {
-                    return Ok(());
-                };
-                log(format!("container {id}: sending its log: {e}; again in {wait:?}"));
-                if stopped_within(stopped, wait) {
-                    return Err(io::Error::new(io::ErrorKind::Interrupted, "the daemon stops"));
-                }
-                wait = wait.mul_f64(1.5).min(RETRY_MOST);
-            }
+        let mut sender = Sender {
+            id,
+            driver,
+            wait: Wait(stopped),
+            sent: 0,
         };
-        // Followed as it is written, while its run runs.
-        if let Some((number, end)) = self.wake_at_end(id)? {
-            let followed = (|| -> io::Result<Shipped> {
-                let mut watch = shards_vmm::platform::FileWatch::new(file.dir())?;
-                let mut watched = None;
-                loop {
-                    let mut each = |p: Piece<'_>| lines.take(&p, &mut send).map(|()| true);
-                    reader.read(&file, &mut each)?;
-                    let at = reader.resume_at();
-                    if place.moved(at) {
-                        place.keep(id, dir, at, false, cached);
+        let shipped = (|| -> io::Result<Shipped> {
+            // Followed as it is written, while its run runs.
+            if let Some((number, end)) = self.wake_at_end(id)? {
+                let followed = (|| -> io::Result<Shipped> {
+                    let mut watch = shards_vmm::platform::FileWatch::new(file.dir())?;
+                    let mut watched = None;
+                    loop {
+                        let mut each = |p: Piece<'_>| lines.take(&p, &mut |m| sender.send(m)).map(|()| true);
+                        reader.read(&file, &mut each)?;
+                        let at = reader.resume_at();
+                        place.reached(sender.sent, at);
+                        if place.moved(at) {
+                            place.keep(id, dir, sender.delivered(), false, cached);
+                        }
+                        if let Some(segment) = reader.segment()
+                            && watched != Some(segment.seq())
+                        {
+                            watch.file(segment.index())?;
+                            watched = Some(segment.seq());
+                            continue;
+                        }
+                        let fds = [watch.fd(), end.as_fd(), stopped.as_fd()];
+                        if !ready_now(&fds) {
+                            place.keep(id, dir, sender.delivered(), false, cached);
+                        }
+                        let ready = super::commands::wait_readable(&fds)?;
+                        if ready[1] {
+                            return Ok(Shipped::Ended);
+                        }
+                        if ready[2] {
+                            return Ok(Shipped::Stopped);
+                        }
+                        watch.clear();
                     }
-                    if let Some(segment) = reader.segment()
-                        && watched != Some(segment.seq())
-                    {
-                        watch.file(segment.index())?;
-                        watched = Some(segment.seq());
-                        continue;
-                    }
-                    let fds = [watch.fd(), end.as_fd(), stopped.as_fd()];
-                    if !ready_now(&fds) {
-                        place.keep(id, dir, at, false, cached);
-                    }
-                    let ready = super::commands::wait_readable(&fds)?;
-                    if ready[1] {
-                        return Ok(Shipped::Ended);
-                    }
-                    if ready[2] {
-                        return Ok(Shipped::Stopped);
-                    }
-                    watch.clear();
+                })();
+                self.forget_waiter(id, number);
+                if let Shipped::Stopped = followed? {
+                    return Ok(Shipped::Stopped);
                 }
-            })();
-            self.forget_waiter(id, number);
-            if let Shipped::Stopped = followed? {
-                return Ok(Shipped::Stopped);
             }
+            // Its run is over: what it left, whole, and its place kept as all of it sent
+            // once its receiver has all of it.
+            let mut each = |p: Piece<'_>| lines.take(&p, &mut |m| sender.send(m)).map(|()| true);
+            if reader.read(&file, &mut each)? {
+                reader.finish(&mut each)?;
+                lines.finish(&mut |m| sender.send(m))?;
+            }
+            place.reached(sender.sent, reader.resume_at());
+            sender.close()?;
+            place.keep(id, dir, sender.delivered(), true, cached);
+            Ok(Shipped::Ended)
+        })();
+        // However else it ends: its place, as far as its receiver has what was sent.
+        if !matches!(shipped, Ok(Shipped::Ended)) {
+            place.keep(id, dir, sender.delivered(), false, cached);
         }
-        // Its run is over: what it left, whole.
-        let mut each = |p: Piece<'_>| lines.take(&p, &mut send).map(|()| true);
-        if reader.read(&file, &mut each)? {
-            reader.finish(&mut each)?;
-            lines.finish(&mut send)?;
-        }
-        place.keep(id, dir, reader.resume_at(), true, cached);
-        Ok(Shipped::Ended)
+        shipped
     }
 
     /// The driver container `id`'s run sends its log with, if one sends it elsewhere.
@@ -627,6 +750,31 @@ mod tests {
         assert_eq!(read_cursor(&dir), Some((at, true)));
         std::fs::write(dir.join(CURSOR), b"short").unwrap();
         assert_eq!(read_cursor(&dir), None);
+    }
+
+    /// A shipper keeps its place only as far as its receiver has the messages before it,
+    /// and keeps it as its run's end, all sent, only once its receiver has them all.
+    #[test]
+    fn a_place_is_kept_as_far_as_its_messages_are_delivered() {
+        let dir = shards_testdir::TempDir::new("ship-place").unwrap();
+        let at = |n: u8| [Pos::from_bytes(&[n; 24]); 2];
+        let mut place = Place::default();
+        place.reached(0, at(1));
+        place.reached(3, at(2));
+        // Read on, no message sent since.
+        place.reached(3, at(3));
+        place.reached(5, at(4));
+        // None delivered: the place before the first message.
+        place.keep("c", &dir, 0, false, true);
+        assert_eq!(read_cursor(&dir), Some((at(1), false)));
+        // Four delivered: the furthest place read to with three sent.
+        place.keep("c", &dir, 4, false, true);
+        assert_eq!(read_cursor(&dir), Some((at(3), false)));
+        // Its run's end, one not yet delivered: not all sent.
+        place.keep("c", &dir, 4, true, true);
+        assert_eq!(read_cursor(&dir), Some((at(3), false)));
+        place.keep("c", &dir, 5, true, true);
+        assert_eq!(read_cursor(&dir), Some((at(4), true)));
     }
 
     /// A log kept from `logs` loses the segments wholly sent: those before the first either

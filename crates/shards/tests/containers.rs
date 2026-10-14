@@ -11396,23 +11396,17 @@ fn a_runs_log_is_sent_to_syslog_as_its_options_say() {
     let port = tls.local_addr().unwrap().port();
     let reading = std::thread::spawn(move || {
         let Some(conn) = accept_within(&tls) else {
-            return String::new();
+            return (String::new(), Err(std::io::ErrorKind::NotConnected));
         };
         conn.set_read_timeout(Some(TIMEOUT)).unwrap();
         let mut stream = rustls::StreamOwned::new(rustls::ServerConnection::new(server).unwrap(), conn);
         let mut got = Vec::new();
-        let mut buf = [0u8; 4096];
-        // Two frames, each its length, a space, and its message.
-        loop {
-            let frames = String::from_utf8_lossy(&got).matches(" <").count();
-            if frames >= 2 && String::from_utf8_lossy(&got).ends_with('\n') {
-                return String::from_utf8(got).unwrap();
-            }
-            match std::io::Read::read(&mut stream, &mut buf) {
-                Ok(0) | Err(_) => return String::from_utf8(got).unwrap(),
-                Ok(n) => got.extend_from_slice(&buf[..n]),
-            }
-        }
+        // Its frames, each its length, a space, and its message; then its end: Ok at TLS's
+        // close_notify, an error at a reset or an end without it.
+        let ended = std::io::Read::read_to_end(&mut stream, &mut got)
+            .map(|_| ())
+            .map_err(|e| e.kind());
+        (String::from_utf8(got).unwrap(), ended)
     });
     syslog(
         "tls",
@@ -11424,7 +11418,11 @@ fn a_runs_log_is_sent_to_syslog_as_its_options_say() {
         ],
         &["streams", "out", "err"],
     );
-    let mut framed = reading.join().unwrap();
+    // Its run's end ends its connection only once the server has all of it, cleanly: a
+    // socket closed with the server's session tickets unread resets the connection, and
+    // took the run's last line with it (D163's CI, PM M233).
+    let (mut framed, ended) = reading.join().unwrap();
+    assert_eq!(ended, Ok(()), "{framed:?}");
     let mut messages = Vec::new();
     while !framed.is_empty() {
         let (len, rest) = framed.split_once(' ').unwrap_or_else(|| panic!("{framed:?}"));

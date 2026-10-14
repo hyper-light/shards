@@ -3,17 +3,17 @@
 //! write): with `fluentd-request-ack`, the server's ack read back for each, its chunk's ID
 //! matched; a failure tried again after `fluentd-retry-wait`, half as long again each time
 //! up to a minute, `fluentd-max-retries` times; then the shipper's own waits, where
-//! fluent-logger-golang gives the event up.
+//! fluent-logger-golang gives the event up. Without acks, an event is held until its
+//! receiver's TCP has it, and written again on the next connection should one end first
+//! (stream.rs), where fluent-logger-golang's are lost.
 
-use std::io::{self, Read, Write};
-use std::net::TcpStream;
-use std::os::unix::net::UnixStream;
-use std::sync::Arc;
+use std::io::{self, Read};
 use std::time::Duration;
 
 use base64::Engine as _;
 
-use super::{Driver, Message};
+use super::stream::{self, Stream};
+use super::{Driver, Message, Wait};
 use crate::logging::fluentd::{self, Config, From, To};
 
 /// The longest wait between tries (fluent-logger-golang's defaultMaxRetryWait).
@@ -24,125 +24,37 @@ const ACK_MOST: usize = 1024;
 pub(super) struct Fluentd {
     config: Config,
     from: From,
-    /// For `tls`: the platform's roots, as fluent-logger-golang's tls.Dial verifies.
-    tls: Option<Arc<rustls::ClientConfig>>,
-    conn: Option<Conn>,
-}
-
-enum Conn {
-    Tcp(TcpStream),
-    Tls(Box<rustls::StreamOwned<rustls::ClientConnection, TcpStream>>),
-    Unix(UnixStream),
-}
-
-impl Conn {
-    fn timeouts(&self, write: Option<Duration>, read: Option<Duration>) -> io::Result<()> {
-        match self {
-            Conn::Tcp(s) => {
-                s.set_write_timeout(write)?;
-                s.set_read_timeout(read)
-            }
-            Conn::Tls(s) => {
-                s.sock.set_write_timeout(write)?;
-                s.sock.set_read_timeout(read)
-            }
-            Conn::Unix(s) => {
-                s.set_write_timeout(write)?;
-                s.set_read_timeout(read)
-            }
-        }
-    }
-}
-
-impl Read for Conn {
-    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        match self {
-            Conn::Tcp(s) => s.read(buf),
-            Conn::Tls(s) => s.read(buf),
-            Conn::Unix(s) => s.read(buf),
-        }
-    }
-}
-
-impl Write for Conn {
-    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        match self {
-            Conn::Tcp(s) => s.write(buf),
-            Conn::Tls(s) => s.write(buf),
-            Conn::Unix(s) => s.write(buf),
-        }
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        match self {
-            Conn::Tcp(s) => s.flush(),
-            Conn::Tls(s) => s.flush(),
-            Conn::Unix(s) => s.flush(),
-        }
-    }
+    stream: Stream,
 }
 
 impl Fluentd {
     pub(super) fn new(config: Config, from: From) -> Result<Fluentd, String> {
-        let tls = match &config.to {
-            To::Tls(_) => {
-                Some(shards_registry::tls::client_config(Vec::new(), None).map_err(|e| e.to_string())?)
-            }
-            _ => None,
+        let to = match &config.to {
+            To::Tcp(address) => stream::To::Tcp(address.clone()),
+            // The platform's roots, as fluent-logger-golang's tls.Dial verifies.
+            To::Tls(address) => stream::To::Tls(
+                address.clone(),
+                shards_registry::tls::client_config(Vec::new(), None).map_err(|e| e.to_string())?,
+            ),
+            To::Unix(path) => stream::To::Unix(path.clone()),
         };
-        Ok(Fluentd {
-            config,
-            from,
-            tls,
-            conn: None,
-        })
-    }
-
-    fn connect(&self) -> io::Result<Conn> {
-        Ok(match &self.config.to {
-            To::Tcp(address) => Conn::Tcp(TcpStream::connect(address)?),
-            To::Tls(address) => {
-                let config = self
-                    .tls
-                    .clone()
-                    .ok_or_else(|| io::Error::other("no TLS configuration"))?;
-                let host = address
-                    .rsplit_once(':')
-                    .map_or(address.as_str(), |(host, _)| host)
-                    .trim_start_matches('[')
-                    .trim_end_matches(']');
-                let name = rustls::pki_types::ServerName::try_from(host.to_string())
-                    .map_err(|e| io::Error::other(format!("{host}: {e}")))?;
-                let conn = rustls::ClientConnection::new(config, name).map_err(io::Error::other)?;
-                Conn::Tls(Box::new(rustls::StreamOwned::new(
-                    conn,
-                    TcpStream::connect(address)?,
-                )))
-            }
-            To::Unix(path) => Conn::Unix(UnixStream::connect(path)?),
-        })
+        let stream = Stream::new(to, [config.write_timeout, config.read_timeout]);
+        Ok(Fluentd { config, from, stream })
     }
 
     /// Writes `event`, and where `chunk` is given, reads its ack.
     fn try_send(&mut self, event: &[u8], chunk: Option<&str>) -> io::Result<()> {
-        if self.conn.is_none() {
-            let conn = self.connect()?;
-            conn.timeouts(self.config.write_timeout, self.config.read_timeout)?;
-            self.conn = Some(conn);
-        }
-        let Some(conn) = &mut self.conn else {
-            return Err(io::Error::other("no connection"));
-        };
-        conn.write_all(event)?;
-        conn.flush()?;
+        self.stream.send(event)?;
         if let Some(chunk) = chunk {
-            let ack = read_ack(conn)?;
+            let ack = read_ack(&mut self.stream)?;
             if ack != chunk.as_bytes() {
                 return Err(io::Error::other(format!(
                     "an ack of {} where {chunk} was sent",
                     String::from_utf8_lossy(&ack)
                 )));
             }
+            // Its receiver has it, and so all before it.
+            self.stream.let_go();
         }
         Ok(())
     }
@@ -211,7 +123,7 @@ fn read_string(conn: &mut impl Read) -> io::Result<Vec<u8>> {
 }
 
 impl Driver for Fluentd {
-    fn send(&mut self, m: &Message<'_>, wait: &dyn Fn(Duration) -> bool) -> io::Result<()> {
+    fn send(&mut self, m: &Message<'_>, wait: &Wait<'_>) -> io::Result<()> {
         let chunk = if self.config.ack {
             Some(unique_id(m.at)?)
         } else {
@@ -232,17 +144,30 @@ impl Driver for Fluentd {
             match self.try_send(&event, chunk.as_deref()) {
                 Ok(()) => return Ok(()),
                 Err(e) => {
-                    self.conn = None;
+                    // An ack not read leaves its connection's state unknown; the event,
+                    // held, is this loop's to send again.
+                    if chunk.is_some() {
+                        self.stream.drop_connection();
+                        self.stream.let_go();
+                    }
                     if tries >= self.config.max_retries {
                         return Err(e);
                     }
                     tries += 1;
-                    if wait(pause) {
-                        return Err(io::Error::new(io::ErrorKind::Interrupted, "the daemon stops"));
+                    if wait.pause(pause) {
+                        return Err(super::stops());
                     }
                     pause = pause.mul_f64(1.5).min(MOST_WAIT);
                 }
             }
         }
+    }
+
+    fn undelivered(&mut self) -> usize {
+        self.stream.undelivered()
+    }
+
+    fn close(&mut self, wait: &Wait<'_>) -> io::Result<()> {
+        self.stream.close(wait)
     }
 }

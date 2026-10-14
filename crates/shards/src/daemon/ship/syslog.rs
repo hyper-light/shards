@@ -2,14 +2,17 @@
 //! TLS or a unix socket, as srslog sends them: on a connection made as the first message
 //! goes and kept, made again once where a write on it fails (srslog writer.go,
 //! writeAndRetry); the host's own syslog, where no address is given, at the first of its
-//! sockets that takes a connection (srslog_unix.go, unixSyslog).
+//! sockets that takes a connection (srslog_unix.go, unixSyslog). Over a stream, a message
+//! is held until its receiver has it, and written again on the next connection should one
+//! end first (stream.rs), where srslog's are lost.
 
-use std::io::{self, Write as _};
-use std::net::{TcpStream, UdpSocket};
+use std::io;
+use std::net::UdpSocket;
 use std::os::unix::net::{UnixDatagram, UnixStream};
-use std::sync::Arc;
+use std::path::PathBuf;
 
-use super::{Driver, Message};
+use super::stream::{self, Stream};
+use super::{Driver, Message, Wait};
 use crate::logging::syslog::{Config, From, Local, To};
 
 /// The host's own syslog's sockets, tried in turn (srslog unixSyslog's logPaths).
@@ -22,89 +25,60 @@ const EVERY_RECEIVER: usize = 480;
 pub(super) struct Syslog {
     config: Config,
     from: From,
-    /// For `tcp+tls`: the platform's roots, the CA given, and the client's certificate.
-    tls: Option<Arc<rustls::ClientConfig>>,
-    conn: Option<Conn>,
+    /// Over TCP, TLS or a unix stream socket: its stream.
+    stream: Option<Stream>,
+    /// Over UDP or a unix datagram socket: its socket, made as a message goes, and again
+    /// after one fails.
+    datagrams: Option<Datagrams>,
 }
 
-enum Conn {
+enum Datagrams {
     Udp(UdpSocket),
-    Tcp(TcpStream),
-    Tls(Box<rustls::StreamOwned<rustls::ClientConnection, TcpStream>>),
-    Stream(UnixStream),
-    Datagram(UnixDatagram),
-}
-
-impl Conn {
-    /// Writes `m` whole: a datagram, or on a stream.
-    fn write(&mut self, m: &[u8]) -> io::Result<()> {
-        match self {
-            Conn::Udp(s) => super::sockets::send_datagram(s, m),
-            Conn::Datagram(s) => super::sockets::send_datagram(s, m),
-            Conn::Tcp(s) => s.write_all(m),
-            Conn::Stream(s) => s.write_all(m),
-            Conn::Tls(s) => {
-                s.write_all(m)?;
-                s.flush()
-            }
-        }
-    }
+    Unix(UnixDatagram),
 }
 
 impl Syslog {
     pub(super) fn new(config: Config, from: From) -> Result<Syslog, String> {
-        let tls = match &config.to {
-            To::Tls(_) => {
+        let stream = match &config.to {
+            To::Tcp(address) => Some(stream::To::Tcp(address.clone())),
+            To::Tls(address) => {
+                // The platform's roots, the CA given, and the client's certificate.
                 let (roots, client) = config.tls_material()?;
-                Some(shards_registry::tls::client_config(roots, client).map_err(|e| e.to_string())?)
+                let tls = shards_registry::tls::client_config(roots, client).map_err(|e| e.to_string())?;
+                Some(stream::To::Tls(address.clone(), tls))
             }
-            _ => None,
+            To::Unix(path) => Some(stream::To::Unix(path.clone())),
+            To::Udp(_) | To::Unixgram(_) | To::Local => None,
         };
         Ok(Syslog {
             config,
             from,
-            tls,
-            conn: None,
+            stream: stream.map(|to| Stream::new(to, [None; 2])),
+            datagrams: None,
         })
     }
 
-    fn connect(&self) -> io::Result<Conn> {
-        Ok(match &self.config.to {
-            To::Udp(address) => Conn::Udp(super::sockets::udp(address)?),
-            To::Tcp(address) => Conn::Tcp(TcpStream::connect(address)?),
-            To::Tls(address) => {
-                let config = self
-                    .tls
-                    .clone()
-                    .ok_or_else(|| io::Error::other("no TLS configuration"))?;
-                let host = address
-                    .rsplit_once(':')
-                    .map_or(address.as_str(), |(host, _)| host)
-                    .trim_start_matches('[')
-                    .trim_end_matches(']');
-                let name = rustls::pki_types::ServerName::try_from(host.to_string())
-                    .map_err(|e| io::Error::other(format!("{host}: {e}")))?;
-                let conn = rustls::ClientConnection::new(config, name).map_err(io::Error::other)?;
-                Conn::Tls(Box::new(rustls::StreamOwned::new(
-                    conn,
-                    TcpStream::connect(address)?,
-                )))
-            }
-            To::Unix(path) => Conn::Stream(UnixStream::connect(path)?),
+    /// Makes its datagram socket; or, where the host's own syslog takes only a stream, its
+    /// stream.
+    fn open(&mut self) -> io::Result<()> {
+        let datagrams = match &self.config.to {
+            To::Udp(address) => Datagrams::Udp(super::sockets::udp(address)?),
             To::Unixgram(path) => {
                 let s = UnixDatagram::unbound()?;
                 s.connect(path)?;
-                Conn::Datagram(s)
+                Datagrams::Unix(s)
             }
             To::Local => {
                 for path in LOCAL {
                     if let Ok(s) = UnixDatagram::unbound().and_then(|s| s.connect(path).map(|()| s)) {
-                        return Ok(Conn::Datagram(s));
+                        self.datagrams = Some(Datagrams::Unix(s));
+                        return Ok(());
                     }
                 }
                 for path in LOCAL {
                     if let Ok(s) = UnixStream::connect(path) {
-                        return Ok(Conn::Stream(s));
+                        self.stream = Some(Stream::unix(PathBuf::from(path), s));
+                        return Ok(());
                     }
                 }
                 return Err(io::Error::other(format!(
@@ -112,7 +86,41 @@ impl Syslog {
                     LOCAL.join(", ")
                 )));
             }
-        })
+            To::Tcp(_) | To::Tls(_) | To::Unix(_) => {
+                return Err(io::Error::other("a stream's address, for a datagram"));
+            }
+        };
+        self.datagrams = Some(datagrams);
+        Ok(())
+    }
+
+    /// Writes `bytes` as a message: on its stream, or as a datagram.
+    fn write_once(&mut self, bytes: &[u8]) -> io::Result<()> {
+        if self.stream.is_none() && self.datagrams.is_none() {
+            self.open()?;
+        }
+        if let Some(stream) = &mut self.stream {
+            return stream.send(bytes);
+        }
+        let sent = match &self.datagrams {
+            Some(Datagrams::Udp(s)) => super::sockets::send_datagram(s, bytes),
+            Some(Datagrams::Unix(s)) => super::sockets::send_datagram(s, bytes),
+            None => Err(io::Error::from(io::ErrorKind::NotConnected)),
+        };
+        if sent.is_err() {
+            self.datagrams = None;
+        }
+        sent
+    }
+
+    /// Writes `bytes`, once more on a new connection where that fails, as srslog's
+    /// writeAndRetry does; a datagram its receiver takes none so long of is not tried
+    /// again whole.
+    fn write(&mut self, bytes: &[u8]) -> io::Result<()> {
+        match self.write_once(bytes) {
+            Err(e) if !super::sockets::too_large(&e) => self.write_once(bytes),
+            written => written,
+        }
     }
 }
 
@@ -132,29 +140,23 @@ impl Syslog {
             written => written,
         }
     }
-
-    /// Writes `bytes` on its connection, made again once if a write on it fails.
-    fn write(&mut self, bytes: &[u8]) -> io::Result<()> {
-        if let Some(conn) = &mut self.conn
-            && conn.write(bytes).is_ok()
-        {
-            return Ok(());
-        }
-        self.conn = None;
-        let mut conn = self.connect()?;
-        conn.write(bytes)?;
-        self.conn = Some(conn);
-        Ok(())
-    }
 }
 
 impl Driver for Syslog {
-    fn send(&mut self, m: &Message<'_>, _wait: &dyn Fn(std::time::Duration) -> bool) -> io::Result<()> {
+    fn send(&mut self, m: &Message<'_>, _wait: &Wait<'_>) -> io::Result<()> {
         // moby's syslogger sends no empty line.
         if m.line.is_empty() {
             return Ok(());
         }
         let zone = Local::of(m.at).ok_or_else(|| io::Error::other("a time localtime(3) cannot give"))?;
         self.send_line(m.stream, m.at, &zone, m.line)
+    }
+
+    fn undelivered(&mut self) -> usize {
+        self.stream.as_mut().map_or(0, Stream::undelivered)
+    }
+
+    fn close(&mut self, wait: &Wait<'_>) -> io::Result<()> {
+        self.stream.as_mut().map_or(Ok(()), |s| s.close(wait))
     }
 }
