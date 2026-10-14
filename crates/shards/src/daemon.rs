@@ -5977,10 +5977,44 @@ mod tests {
         h.join_now().unwrap()
     }
 
+    /// What a test's disk lets through as its test ends, failing or not, so that no
+    /// daemon thread waits on it past its test ([`Ending`]).
+    trait Opens {
+        fn open(&self) {}
+    }
+
+    impl Opens for Real {}
+
+    impl Opens for Held {
+        fn open(&self) {
+            self.let_through();
+        }
+    }
+
+    std::thread_local! {
+        /// What this thread last panicked with, and where: for the watchdog to say, as
+        /// libtest's capture of a failing test's output goes with the tests it aborts.
+        static PANICKED: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
+    }
+
+    /// Has every thread's panic kept in [`PANICKED`], then said as before.
+    fn keep_panics() {
+        static KEEPING: std::sync::Once = std::sync::Once::new();
+        KEEPING.call_once(|| {
+            let before = std::panic::take_hook();
+            std::panic::set_hook(Box::new(move |info| {
+                let what = info.payload_as_str().unwrap_or("a panic");
+                let at = info.location().map(|l| format!(" at {l}")).unwrap_or_default();
+                let _ = PANICKED.try_with(|p| *p.borrow_mut() = Some(format!("{what}{at}")));
+                before(info);
+            }));
+        });
+    }
+
     /// A daemon of a home of its own, which starts no VM itself: its tests play the warm
     /// VMs, over socket pairs, and hold each step of a run's start as long as they like
     /// (audit A06).
-    struct Test<D: Disk = Real> {
+    struct Test<D: Disk + Opens = Real> {
         daemon: Daemon<D>,
         home: shards_testdir::TempDir,
         /// The processes of the warm VMs played, ended with the test.
@@ -5993,10 +6027,11 @@ mod tests {
         }
     }
 
-    impl<D: Disk> Test<D> {
+    impl<D: Disk + Opens> Test<D> {
         /// A daemon whose containers are kept on `disk`, which the test reaches as
         /// `t.daemon.disk`.
         fn on(tag: &str, disk: D) -> Test<D> {
+            keep_panics();
             // A home of its own: a daemon's refill thread may still make a spare container
             // as its test ends, and must not make it in another test's home.
             static HOMES: AtomicUsize = AtomicUsize::new(0);
@@ -6088,7 +6123,7 @@ mod tests {
         }
     }
 
-    impl<D: Disk> Drop for Test<D> {
+    impl<D: Disk + Opens> Drop for Test<D> {
         fn drop(&mut self) {
             for vm in lock(&self.vms).drain(..) {
                 let _ = vm.kill(libc::SIGKILL);
@@ -6107,19 +6142,19 @@ mod tests {
 
     /// A test's daemon while its threads may run ([`Test::run`]): the test, and the
     /// scope its daemon's threads run in.
-    struct In<'s, 'e, D: Disk> {
+    struct In<'s, 'e, D: Disk + Opens> {
         t: &'e Test<D>,
         threads: &'s Threads<'s, 'e>,
     }
 
-    impl<'e, D: Disk> std::ops::Deref for In<'_, 'e, D> {
+    impl<'e, D: Disk + Opens> std::ops::Deref for In<'_, 'e, D> {
         type Target = Test<D>;
         fn deref(&self) -> &Test<D> {
             self.t
         }
     }
 
-    impl<'s, 'e, D: Disk> In<'s, 'e, D> {
+    impl<'s, 'e, D: Disk + Opens> In<'s, 'e, D> {
         /// Creates container `name` as a client's run does, in a directory of its own; its
         /// ID, once it is seen.
         fn create(&self, name: &str) -> String {
@@ -6243,14 +6278,16 @@ mod tests {
     /// Ends a test's daemon's threads as its body ends ([`Test::run`]): the recorder's
     /// queue closes, clients are let go, and the VMs played end, so that every thread the
     /// daemon started returns; a watchdog aborts the tests if one does not in time.
-    struct Ending<'e, D: Disk> {
+    struct Ending<'e, D: Disk + Opens> {
         test: &'e Test<D>,
         joining: Option<mpsc::Receiver<()>>,
     }
 
-    impl<D: Disk> Drop for Ending<'_, D> {
+    impl<D: Disk + Opens> Drop for Ending<'_, D> {
         fn drop(&mut self) {
             let daemon = &self.test.daemon;
+            // What the test held, a failing one too, is let through.
+            daemon.disk.open();
             daemon.recording.end();
             daemon.followers.end();
             // A run's thread waiting for its end, which no follower takes now, returns.
@@ -6275,9 +6312,10 @@ mod tests {
                 // its failure, are captured, and lost as the tests abort.
                 let test = std::thread::current().name().unwrap_or("a test").to_string();
                 let how = if std::thread::panicking() {
-                    "failed"
+                    let why = PANICKED.with(|p| p.borrow_mut().take());
+                    format!("failed: {}", why.as_deref().unwrap_or("its panic unknown"))
                 } else {
-                    "returned"
+                    "returned".into()
                 };
                 // Its own thread ends as the scope does: the sender goes once all are joined.
                 let _ = std::thread::Builder::new()
@@ -7669,13 +7707,15 @@ mod tests {
             let held = &t.daemon.disk;
             held.holding_writes.store(true, Ordering::SeqCst);
             let id = t.reserve("racer");
+            // Held before the run starts, on the recorder's thread, which a loaded host
+            // may start late.
+            t.until("the record's write is held", |d| {
+                d.disk.writing.load(Ordering::SeqCst)
+            });
             let starting = t.start(&id);
             let (ready, vm) = t.warm_vm(None);
             starting.warm.send(ready).unwrap();
             serve(&vm, 3);
-            t.until("the record's write is held", |d| {
-                d.disk.writing.load(Ordering::SeqCst)
-            });
             let ended = finishes(&starting.run);
             let arriving = lock(&t.daemon.containers).is_arriving(&id);
             held.let_through();
@@ -7701,6 +7741,11 @@ mod tests {
             let held = &t.daemon.disk;
             held.holding_writes.store(true, Ordering::SeqCst);
             let id = t.reserve_with("racer", None, true);
+            // Held before the run starts: a run that ended first would leave no record
+            // to write (seen on CI, its recorder's thread started late).
+            t.until("the record's write is held", |d| {
+                d.disk.writing.load(Ordering::SeqCst)
+            });
             let starting = t.start(&id);
             let (ready, vm) = t.warm_vm(None);
             starting.warm.send(ready).unwrap();
@@ -7708,9 +7753,6 @@ mod tests {
             assert_eq!(heard(&vm).0, kind::RUN);
             say(&vm, kind::TAKEN, &[]);
             say(&vm, kind::DONE, &[127]);
-            t.until("the record's write is held", |d| {
-                d.disk.writing.load(Ordering::SeqCst)
-            });
             let ended = finishes(&starting.run);
             // Set aside before the record's write goes on, which then finds no directory.
             let dir = t.home.join("containers").join(&id);

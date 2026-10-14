@@ -3,12 +3,6 @@
 version = 4
 
 [[package]]
-name = "adler2"
-version = "2.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
-
-[[package]]
 name = "aho-corasick"
 version = "1.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -22,6 +16,12 @@ name = "arbitrary"
 version = "1.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c3d036a3c4ab069c7b410a2ce876bd74808d2d0888a82667669f8e783a898bf1"
+
+[[package]]
+name = "autocfg"
+version = "1.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f2032f911046de80f0a198e0901378627c33f59ea0ac00e363d481118bd70a53"
 
 [[package]]
 name = "aws-lc-rs"
@@ -191,7 +191,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6e634e2e0ebac1ee034020da1ca582e17ffe4e0f5e985823721e168928136dcb"
 dependencies = [
  "crc32fast",
- "miniz_oxide",
  "zlib-rs",
 ]
 
@@ -351,13 +350,13 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
 
 [[package]]
-name = "miniz_oxide"
-version = "0.9.1"
+name = "num-bigint"
+version = "0.4.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b63fbc4a50860e98e7b2aa7804ded1db5cbc3aff9193adaff57a6931bf7c4b4c"
+checksum = "c89e69e7e0f03bea5ef08013795c25018e101932225a656383bd384495ecc367"
 dependencies = [
- "adler2",
- "simd-adler32",
+ "num-integer",
+ "num-traits",
 ]
 
 [[package]]
@@ -365,6 +364,24 @@ name = "num-conv"
 version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "521739c6d2bac4aa25192232afe6841231376b2b26d4d9fae5ecf8ca5772e441"
+
+[[package]]
+name = "num-integer"
+version = "0.1.47"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7ce2d95d4b3734dc35aa2f45e1aa22cd416814592a4f9d9205e11affd5b8e10b"
+dependencies = [
+ "num-traits",
+]
+
+[[package]]
+name = "num-traits"
+version = "0.2.19"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "071dfc062690e90b734c0b2273ce72ad0ffa95f0c74596bc250dcfd960262841"
+dependencies = [
+ "autocfg",
+]
 
 [[package]]
 name = "once_cell"
@@ -474,9 +491,9 @@ dependencies = [
 
 [[package]]
 name = "rustls"
-version = "0.23.45"
+version = "0.23.46"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0d41d731c7d2f962d1ccc364cec258de3c0e93b38c2fb3ba97ac74513048d634"
+checksum = "48e13bd8c0e9365c43cfa5c9e8f9ad49d3c8444926c9aac819e0e4dc503c8fdf"
 dependencies = [
  "aws-lc-rs",
  "once_cell",
@@ -661,7 +678,33 @@ name = "shards-abi"
 version = "0.1.0"
 
 [[package]]
+name = "shards-afunix"
+version = "0.1.0"
+dependencies = [
+ "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "shards-apple"
+version = "0.1.0"
+dependencies = [
+ "libc",
+]
+
+[[package]]
 name = "shards-cmdline"
+version = "0.1.0"
+dependencies = [
+ "num-bigint",
+ "num-integer",
+ "num-traits",
+ "regex",
+ "shards-template",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "shards-erofs"
 version = "0.1.0"
 
 [[package]]
@@ -680,11 +723,21 @@ name = "shards-image"
 version = "0.1.0"
 dependencies = [
  "flate2",
+ "libc",
  "regex",
  "ruzstd",
  "serde",
  "serde_json",
  "sha2",
+ "shards-erofs",
+]
+
+[[package]]
+name = "shards-ipc"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -692,6 +745,8 @@ name = "shards-netring"
 version = "0.1.0"
 dependencies = [
  "libc",
+ "shards-afunix",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -703,15 +758,29 @@ dependencies = [
  "form_urlencoded",
  "httparse",
  "iri-string",
+ "libc",
  "rustls",
  "rustls-platform-verifier",
  "serde",
  "serde_json",
  "sha2",
+ "shards-apple",
  "shards-image",
+ "shards-ipc",
  "time",
  "windows-sys 0.61.2",
 ]
+
+[[package]]
+name = "shards-syscall-filter"
+version = "0.1.0"
+dependencies = [
+ "libc",
+]
+
+[[package]]
+name = "shards-template"
+version = "0.1.0"
 
 [[package]]
 name = "shards-vmm"
@@ -719,7 +788,9 @@ version = "0.1.0"
 dependencies = [
  "libc",
  "shards-abi",
+ "shards-afunix",
  "shards-netring",
+ "shards-syscall-filter",
  "windows-sys 0.61.2",
 ]
 
@@ -728,12 +799,6 @@ name = "shlex"
 version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f8fadd59c855ef2080decdef8ff161eb6661b86933c9d82e5ba29dc602a55aba"
-
-[[package]]
-name = "simd-adler32"
-version = "0.3.10"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3a219298ac11a56ea9a6d2120044824d6f01aeb034955e7af7bc16858527deea"
 
 [[package]]
 name = "simd_cesu8"
