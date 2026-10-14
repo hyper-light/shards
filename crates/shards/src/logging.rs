@@ -19,16 +19,15 @@ use std::collections::BTreeMap;
 
 use shards_ipc::Run;
 
+pub mod gelf;
 pub mod syslog;
 
 /// The drivers that are shards' own store.
 const STORE: [&str; 3] = ["shards", "json-file", "local"];
-/// The drivers that send a log elsewhere, from shards' store (D163).
-const SENDS: [&str; 1] = ["syslog"];
+/// The drivers that send a log elsewhere, from shards' store (D163, D164).
+const SENDS: [&str; 2] = ["syslog", "gelf"];
 /// The drivers Docker sends a log elsewhere with, which shards does not yet.
-const ELSEWHERE: [&str; 7] = [
-    "journald", "gelf", "fluentd", "awslogs", "splunk", "etwlogs", "gcplogs",
-];
+const ELSEWHERE: [&str; 6] = ["journald", "fluentd", "awslogs", "splunk", "etwlogs", "gcplogs"];
 /// The store's own options: its segments' (moby jsonfilelog's ValidateLogOpt, local's).
 const STORE_OPTIONS: [&str; 3] = ["max-size", "max-file", "compress"];
 /// The options every driver takes: the attributes `logs --details` shows and the tag,
@@ -108,16 +107,20 @@ pub fn kept(run: &Run, default: crate::spec::LogRetention) -> Result<Option<Kept
     }
     if ELSEWHERE.contains(&name) {
         return Err(format!(
-            "--log-driver {name}: shards keeps a run's log itself (shards, json-file or local), sends it to syslog, or keeps none (none); sending it to {name} is not here yet"
+            "--log-driver {name}: shards keeps a run's log itself (shards, json-file or local), sends it to syslog or gelf, or keeps none (none); sending it to {name} is not here yet"
         ));
     }
     let ships = SENDS.contains(&name);
     if !STORE.contains(&name) && !ships {
         return Err(format!(
-            "--log-driver {name}: no such log driver: shards keeps a run's log itself (shards, json-file or local), sends it to syslog, or keeps none (none)"
+            "--log-driver {name}: no such log driver: shards keeps a run's log itself (shards, json-file or local), sends it to syslog or gelf, or keeps none (none)"
         ));
     }
-    let own: &[&str] = if ships { &syslog::OPTIONS } else { &STORE_OPTIONS };
+    let own: &[&str] = match name {
+        "syslog" => &syslog::OPTIONS,
+        "gelf" => &gelf::OPTIONS,
+        _ => &STORE_OPTIONS,
+    };
     if let Some(k) = opts
         .keys()
         .find(|k| !own.contains(&k.as_str()) && !EVERY.contains(&k.as_str()))
@@ -135,9 +138,7 @@ pub fn kept(run: &Run, default: crate::spec::LogRetention) -> Result<Option<Kept
         },
         None => true,
     };
-    if ships {
-        syslog::config(&opts)?;
-    }
+    remote_config(name, &opts)?;
     // The store's bound: a store driver's own options; a driver that sends the log
     // elsewhere, its local copy's.
     let [size_key, files_key, compress_key] = if ships {
@@ -223,16 +224,23 @@ pub fn kept(run: &Run, default: crate::spec::LogRetention) -> Result<Option<Kept
     }))
 }
 
-/// Where a run's log is sent besides shards' store (D163).
+/// Where a run's log is sent besides shards' store (D163, D164).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Remote {
     Syslog(syslog::Config),
+    Gelf(gelf::Config),
 }
 
 /// The driver `run` sends its log elsewhere with, if one does.
 pub fn remote(run: &Run) -> Result<Option<Remote>, String> {
-    match driver(run) {
-        "syslog" => Ok(Some(Remote::Syslog(syslog::config(&options(run))?))),
+    remote_config(driver(run), &options(run))
+}
+
+/// Driver `name`'s, as `opts` ask for it, if it sends a log elsewhere.
+fn remote_config(name: &str, opts: &BTreeMap<String, String>) -> Result<Option<Remote>, String> {
+    match name {
+        "syslog" => Ok(Some(Remote::Syslog(syslog::config(opts)?))),
+        "gelf" => Ok(Some(Remote::Gelf(gelf::config(opts)?))),
         _ => Ok(None),
     }
 }
@@ -270,9 +278,19 @@ pub struct Details {
     pub env: Vec<String>,
     pub labels: BTreeMap<String, String>,
     pub hostname: String,
+    /// When it was made, as Go's RFC3339Nano writes it.
+    pub created: String,
 }
 
 impl Details {
+    /// Its entrypoint and its arguments, as moby's logger.Info.Command joins them.
+    pub fn command(&self) -> String {
+        std::iter::once(self.entrypoint.as_str())
+            .chain(self.args.iter().map(String::as_str))
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
     pub fn info(&self) -> Info<'_> {
         Info {
             id: &self.id,
@@ -554,7 +572,11 @@ mod tests {
                 &["max-size=1m"][..],
                 "--log-opt max-size: --log-driver none keeps no log",
             ),
-            ("gelf", &[], "--log-driver gelf: shards keeps a run's log itself"),
+            (
+                "fluentd",
+                &[],
+                "--log-driver fluentd: shards keeps a run's log itself",
+            ),
             ("bogus", &[], "--log-driver bogus: no such log driver"),
             ("json-file", &["max-size=-1"], "--log-opt max-size=-1: a size"),
             (

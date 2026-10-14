@@ -3614,6 +3614,47 @@ No run-time labels, relays or declassifiers (§12 answer 14, decided by the user
 an internal-only domain to the world (D58), so there is no data to label. Code mode is
 D136.
 
+### D164. A run's log sent to a GELF server
+
+`--log-driver gelf` is served, sent as syslog's is (D163): from shards' store, by the
+daemon, on the shipper's thread, so the microVM reaches no network for its log, a run
+starts whether or not its server is up, and nothing is lost to a server that is down.
+
+- **Messages as Docker's.** Each line is a GELF 1.1 message, as go-gelf's
+  MarshalJSONBuf writes it:
+  - first its own fields in their order: the version, this host's name, the line, the
+    time in seconds to the millisecond (GELF 1.1's), and the level, 6 for stdout and 3 for
+    stderr;
+  - then the container's own, as moby's gelf driver makes them: `_container_id`,
+    `_container_name`, `_image_id`, `_image_name`, `_command`, `_tag` and `_created`;
+  - then the attributes asked for (`labels`, `env`, their regexes), each named with a `_`
+    first, all sorted by name and HTML-escaped, as Go's encoding/json writes a map.
+
+  Held byte for byte to Docker 29.3.1's (`scripts/logdrivers/generate`: UDP gzipped, zlib'd
+  and uncompressed, TCP, and 17 cases of which options Docker takes).
+- **UDP.** gzip unless told, at go-gelf's level 1 unless `gelf-compression-level` says;
+  zlib, or none. A message past 1,420 bytes goes in chunks of 1,420, each with its magic,
+  a random 8-byte ID, its number and how many, 128 at most.
+- **TCP.** Each message is followed by a NUL. A write that fails is tried again on new
+  connections `gelf-tcp-max-reconnect` times, `gelf-tcp-reconnect-delay` seconds apart,
+  as go-gelf tries it. After that the shipper's own waits take over, where go-gelf drops
+  the message. Docker's driver dials as its container starts, so a server that is down
+  keeps the container from starting; shards' run starts regardless.
+- **Not yet.** fluentd, journald, splunk, awslogs, gcplogs and etwlogs.
+
+Tested on real microVMs (`a_runs_log_is_sent_to_gelf_as_its_options_say`):
+
+- UDP gzipped: every field checked against `inspect`, a label asked for, and the time
+  `logs -t`'s to the millisecond;
+- uncompressed, a 40,000-byte line in 16,384 + 16,384 + 7,232, each its own message in
+  chunks;
+- TCP, each message ended by a NUL;
+- the refusals.
+
+Mutation-checked: the attributes left out fail it. Unit tests cover every oracle message
+byte for byte (with its chunk count and compression), the options against Docker's, and
+chunking.
+
 ### D163. A run's log sent to syslog, by the daemon, from shards' store
 
 `--log-driver syslog` is served, the first of Docker's drivers that send a log elsewhere,
@@ -3668,8 +3709,8 @@ and the way every later one sends.
   next. D161's rule moved a record that did not fit whole into the next segment. On CI's
   x86_64 Linux, whose guest's records are 32 KiB, that left segments of 64,000 bytes half
   full and a log half its retention; D162's test caught it there.
-- **Not yet.** gelf, fluentd, journald, splunk, awslogs, gcplogs and etwlogs, each
-  refused with a word that says so.
+- **Not yet.** fluentd, journald, splunk, awslogs, gcplogs and etwlogs, each refused
+  with a word that says so; gelf came with D164.
 
 Tested on real microVMs (`a_runs_log_is_sent_to_syslog_as_its_options_say`):
 
@@ -6807,7 +6848,7 @@ the rest of a run's reach into its domains.
   | A run joining the microVM (`--network container:`, D119) | held to every rule of this table, by the daemon and again by init | it runs beside them as the microVM's own run does |
   | `--ipc` (`host` is init's namespace, theirs each their own), `--uts`, `--userns`, `--umask`, `--storage-opt` (D156); `--runtime`, `--isolation`, `--cpu-count`, `--cpu-percent`, `--cpu-rt-*` (D155) | given | the command's own namespaces, writable layer and limits |
   | `--link` | refused for every run, not served yet | |
-  | `--log-driver`, `--log-opt` (D161 to D163) | given | the command's own output, kept on the host by its VM process, in its container's directory, and sent elsewhere by the daemon, never by the microVM |
+  | `--log-driver`, `--log-opt` (D161 to D164) | given | the command's own output, kept on the host by its VM process, in its container's directory, and sent elsewhere by the daemon, never by the microVM |
   | `--cap-add` of any other: `DAC_READ_SEARCH`, `IPC_OWNER`, `IPC_LOCK`, `SYS_BOOT`, `SYS_RESOURCE`, `CHECKPOINT_RESTORE` among them | given | `open_by_handle_at` opens only on filesystems the command holds a mount of, a domain's own being none of them; IPC namespaces differ; `reboot(2)` ends the caller's own PID namespace's init (pid_namespaces(7)); the rest bound the command's own resources or namespaces |
   | `--cap-drop`, `no-new-privileges`, `writable-cgroups=true` (its cgroup namespace's subtree), `apparmor=`, `label=` (no LSM in the microVM: accepted, as on a Docker host without one) | given | narrows the command, or touches only its own |
   | `seccomp=` a profile or `unconfined` | given, recorded | its own filter; the domains keep theirs. Measured: unconfined, any uid makes a user namespace (`max_user_namespaces` 994), owning none of the domains' namespaces but reaching more of the kernel they share |

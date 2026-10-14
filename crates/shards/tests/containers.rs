@@ -11591,6 +11591,185 @@ fn a_runs_log_is_sent_to_syslog_as_its_options_say() {
     }
 }
 
+/// The GELF messages of `datagrams`, as a GELF server reads them: chunks gathered by
+/// their message's ID, then gzip's, zlib's or as they are; each message's JSON.
+fn gelf_messages(datagrams: &[Vec<u8>]) -> Vec<serde_json::Value> {
+    use std::io::Read as _;
+    let open = |data: &[u8]| -> serde_json::Value {
+        let mut text = Vec::new();
+        match data {
+            [0x1f, 0x8b, ..] => {
+                flate2::read::GzDecoder::new(data).read_to_end(&mut text).unwrap();
+            }
+            [0x78, ..] => {
+                flate2::read::ZlibDecoder::new(data)
+                    .read_to_end(&mut text)
+                    .unwrap();
+            }
+            _ => text = data.to_vec(),
+        }
+        serde_json::from_slice(&text).unwrap()
+    };
+    // Each message's chunks, by its ID: each chunk's number, how many, and its bytes.
+    type Chunks = Vec<(u8, u8, Vec<u8>)>;
+    let mut chunked: std::collections::BTreeMap<Vec<u8>, Chunks> = Default::default();
+    let mut got = Vec::new();
+    for d in datagrams {
+        match d.as_slice() {
+            [0x1e, 0x0f, rest @ ..] => {
+                let parts = chunked.entry(rest[..8].to_vec()).or_default();
+                parts.push((rest[8], rest[9], rest[10..].to_vec()));
+                if parts.len() == usize::from(rest[9]) {
+                    parts.sort();
+                    let whole: Vec<u8> = parts.iter().flat_map(|p| p.2.clone()).collect();
+                    got.push(open(&whole));
+                }
+            }
+            _ => got.push(open(d)),
+        }
+    }
+    got
+}
+
+/// A run's log sent to a GELF server (D164), from shards' store by the daemon as syslog's
+/// is (D163): over UDP gzipped, as Docker's is unless told, and uncompressed in chunks;
+/// over TCP, each message followed by a NUL. Each message is GELF 1.1 with the container's
+/// own fields and the attributes asked for, as Docker's gelf driver sends it, stamped with
+/// when its output came, to the millisecond.
+#[test]
+fn a_runs_log_is_sent_to_gelf_as_its_options_say() {
+    let Some((home, image)) = home("containers-gelf") else {
+        return;
+    };
+    let shards = |args: &[&str]| shards_in(&home, args);
+    let gelf = |name: &str, opts: &[&str], command: &[&str]| {
+        let mut flags = vec!["--name", name, "--log-driver", "gelf", "--label", "team=logs"];
+        for o in opts {
+            flags.extend(["--log-opt", o]);
+        }
+        let r = run_in(&home, &image, &flags, command);
+        assert_eq!(r.status, Some(0), "{name}: {r}");
+        r
+    };
+    let udp = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+    udp.set_read_timeout(Some(TIMEOUT)).unwrap();
+    let address = format!("gelf-address=udp://{}", udp.local_addr().unwrap());
+    let receive = |n: usize| {
+        let mut datagrams = Vec::new();
+        while gelf_messages(&datagrams).len() < n {
+            let mut b = vec![0u8; 1 << 16];
+            let got = udp.recv(&mut b).unwrap();
+            b.truncate(got);
+            datagrams.push(b);
+        }
+        let mut messages = gelf_messages(&datagrams);
+        messages.sort_by_key(|m| m["level"].as_u64());
+        messages
+    };
+    gelf(
+        "udp",
+        &[&address, "labels=team", "tag={{.Name}}"],
+        &["streams", "out", "err"],
+    );
+    let got = receive(2);
+    let field = |path: &str, name: &str| {
+        let r = shards(&["inspect", "-f", path, name]);
+        r.stdout.trim_end().to_string()
+    };
+    let stamped = shards(&["logs", "-t", "udp"]);
+    for (m, (line, level)) in got.iter().zip([("err", 3), ("out", 6)]) {
+        assert_eq!(m["version"], "1.1", "{m}");
+        assert_eq!(
+            (m["short_message"].as_str(), m["level"].as_u64()),
+            (Some(line), Some(level)),
+            "{m}"
+        );
+        assert!(!m["host"].as_str().unwrap().is_empty(), "{m}");
+        assert_eq!(m["_container_id"], field("{{.Id}}", "udp").as_str(), "{m}");
+        assert_eq!(m["_container_name"], "udp", "{m}");
+        assert_eq!(m["_image_id"], field("{{.Image}}", "udp").as_str(), "{m}");
+        assert_eq!(m["_image_name"], image.as_str(), "{m}");
+        assert_eq!(m["_command"], "/bin/testguest streams out err", "{m}");
+        assert_eq!(m["_tag"], "udp", "{m}");
+        assert_eq!(m["_created"], field("{{.Created}}", "udp").as_str(), "{m}");
+        assert_eq!(m["_team"], "logs", "{m}");
+        // Its time its output's, as `logs -t` says it, to the millisecond.
+        let kept = [&stamped.stdout, &stamped.stderr]
+            .iter()
+            .flat_map(|s| s.lines())
+            .find_map(|l| l.strip_suffix(&format!(" {line}")))
+            .unwrap_or_else(|| panic!("{stamped}"));
+        let rfc3339 = &time::format_description::well_known::Rfc3339;
+        let kept_ms = time::OffsetDateTime::parse(kept, rfc3339)
+            .unwrap()
+            .unix_timestamp_nanos()
+            / 1_000_000;
+        let sent_ms = (m["timestamp"].as_f64().unwrap() * 1000.0).round() as i128;
+        assert_eq!(sent_ms, kept_ms, "{m}: {stamped}");
+    }
+
+    // Uncompressed: a line of 40,000 bytes, in parts of 16 KiB, each its own message in
+    // chunks.
+    gelf(
+        "wide",
+        &[&address, "gelf-compression-type=none"],
+        &["wide", "40000"],
+    );
+    let parts: Vec<usize> = receive(3)
+        .iter()
+        .map(|m| m["short_message"].as_str().unwrap().len())
+        .collect();
+    assert_eq!(parts, [16384, 16384, 7232]);
+
+    // TCP: each message followed by a NUL.
+    let tcp = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = format!("gelf-address=tcp://{}", tcp.local_addr().unwrap());
+    let reading = std::thread::spawn(move || {
+        let conn = accept_within(&tcp).unwrap();
+        conn.set_read_timeout(Some(TIMEOUT)).unwrap();
+        let mut read = BufReader::new(conn);
+        let mut got = Vec::new();
+        while got.len() < 2 {
+            let mut m = Vec::new();
+            if read.read_until(0, &mut m).unwrap() == 0 {
+                break;
+            }
+            assert_eq!(m.pop(), Some(0));
+            got.push(serde_json::from_slice::<serde_json::Value>(&m).unwrap());
+        }
+        got
+    });
+    gelf("tcp", &[&address], &["streams", "out", "err"]);
+    let mut got = reading.join().unwrap();
+    got.sort_by_key(|m| m["level"].as_u64());
+    let lines: Vec<&str> = got.iter().map(|m| m["short_message"].as_str().unwrap()).collect();
+    assert_eq!(lines, ["err", "out"]);
+
+    for (opts, said) in [
+        (&[][..], "shards: --log-opt gelf-address: where to send the log"),
+        (
+            &["gelf-address=udp://h"],
+            "shards: --log-opt gelf-address=udp://h: a host and its port",
+        ),
+        (
+            &["gelf-address=tcp://h:1", "gelf-compression-type=gzip"],
+            "shards: --log-opt gelf-compression-type: compression is UDP's",
+        ),
+        (
+            &["gelf-address=udp://h:1", "gelf-tcp-max-reconnect=2"],
+            "shards: --log-opt gelf-tcp-max-reconnect: TCP's",
+        ),
+    ] {
+        let mut flags = vec!["--log-driver", "gelf"];
+        for o in opts {
+            flags.extend(["--log-opt", o]);
+        }
+        let r = run_in(&home, &image, &flags, &["exit", "0"]);
+        assert_eq!(r.status, Some(125), "{opts:?}: {r}");
+        assert!(r.stderr.starts_with(said), "{opts:?}: {r}");
+    }
+}
+
 /// A run's log as `--log-driver` and `--log-opt` keep it (D161): shards' store, its
 /// segments as long and as many as asked; none with `none`, whose `logs` is refused and
 /// whose attached client still gets its output; `--details` showing the labels, the
@@ -11714,8 +11893,8 @@ fn a_runs_log_is_kept_as_its_driver_and_options_say() {
     );
     for (flags, said) in [
         (
-            &["--log-driver", "gelf"][..],
-            "shards: --log-driver gelf: shards keeps a run's log itself",
+            &["--log-driver", "fluentd"][..],
+            "shards: --log-driver fluentd: shards keeps a run's log itself",
         ),
         (
             &["--log-driver", "bogus"],

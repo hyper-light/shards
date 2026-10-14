@@ -501,6 +501,7 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
                 .map(|m| m.iter().map(|(k, v)| (k.clone(), text(v))).collect())
                 .unwrap_or_default(),
             hostname: super::info::host_name().unwrap_or_default(),
+            created: text(&at("/Created")),
         })
     }
 

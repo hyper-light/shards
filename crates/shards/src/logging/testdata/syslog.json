@@ -42,12 +42,12 @@
    "framing": "newline",
    "messages": [
     {
-     "head": "<30>1 {time} {host} oracle {pid} oracle - ",
-     "content": "out"
-    },
-    {
      "head": "<27>1 {time} {host} oracle {pid} oracle - ",
      "content": "err"
+    },
+    {
+     "head": "<30>1 {time} {host} oracle {pid} oracle - ",
+     "content": "out"
     },
     {
      "head": "<30>1 {time} {host} oracle {pid} oracle - ",
@@ -76,12 +76,12 @@
    "framing": "newline",
    "messages": [
     {
-     "head": "<190>1 {time} {host} oracle {pid} oracle - ",
-     "content": "out"
-    },
-    {
      "head": "<187>1 {time} {host} oracle {pid} oracle - ",
      "content": "err"
+    },
+    {
+     "head": "<190>1 {time} {host} oracle {pid} oracle - ",
+     "content": "out"
     },
     {
      "head": "<190>1 {time} {host} oracle {pid} oracle - ",
@@ -110,12 +110,12 @@
    "framing": "newline",
    "messages": [
     {
-     "head": "<30>1 {time} {host} oracle {pid} oracle - ",
-     "content": "out"
-    },
-    {
      "head": "<27>1 {time} {host} oracle {pid} oracle - ",
      "content": "err"
+    },
+    {
+     "head": "<30>1 {time} {host} oracle {pid} oracle - ",
+     "content": "out"
     },
     {
      "head": "<30>1 {time} {host} oracle {pid} oracle - ",
@@ -178,12 +178,12 @@
    "framing": "newline",
    "messages": [
     {
-     "head": "<30>{stamp} {host} oracle[{pid}]: ",
-     "content": "out"
-    },
-    {
      "head": "<27>{stamp} {host} oracle[{pid}]: ",
      "content": "err"
+    },
+    {
+     "head": "<30>{stamp} {host} oracle[{pid}]: ",
+     "content": "out"
     },
     {
      "head": "<30>{stamp} {host} oracle[{pid}]: ",
@@ -212,12 +212,12 @@
    "framing": "octet-counted",
    "messages": [
     {
-     "head": "<30>1 {time} {host} oracle {pid} oracle - ",
-     "content": "out"
-    },
-    {
      "head": "<27>1 {time} {host} oracle {pid} oracle - ",
      "content": "err"
+    },
+    {
+     "head": "<30>1 {time} {host} oracle {pid} oracle - ",
+     "content": "out"
     },
     {
      "head": "<30>1 {time} {host} oracle {pid} oracle - ",
@@ -246,12 +246,12 @@
    "framing": "octet-counted",
    "messages": [
     {
-     "head": "<190>1 {time} {host} oracle {pid} oracle - ",
-     "content": "out"
-    },
-    {
      "head": "<187>1 {time} {host} oracle {pid} oracle - ",
      "content": "err"
+    },
+    {
+     "head": "<190>1 {time} {host} oracle {pid} oracle - ",
+     "content": "out"
     },
     {
      "head": "<190>1 {time} {host} oracle {pid} oracle - ",
@@ -280,12 +280,12 @@
    "framing": "octet-counted",
    "messages": [
     {
-     "head": "<30>1 {time} {host} oracle {pid} oracle - ",
-     "content": "out"
-    },
-    {
      "head": "<27>1 {time} {host} oracle {pid} oracle - ",
      "content": "err"
+    },
+    {
+     "head": "<30>1 {time} {host} oracle {pid} oracle - ",
+     "content": "out"
     },
     {
      "head": "<30>1 {time} {host} oracle {pid} oracle - ",
@@ -382,12 +382,12 @@
    "framing": "datagram",
    "messages": [
     {
-     "head": "<30>1 {time} {host} oracle {pid} oracle - ",
-     "content": "out"
-    },
-    {
      "head": "<27>1 {time} {host} oracle {pid} oracle - ",
      "content": "err"
+    },
+    {
+     "head": "<30>1 {time} {host} oracle {pid} oracle - ",
+     "content": "out"
     },
     {
      "head": "<30>1 {time} {host} oracle {pid} oracle - ",
@@ -586,12 +586,12 @@
    "framing": "newline",
    "messages": [
     {
-     "head": "<190>1 {time} {host} oracle {pid} oracle - ",
-     "content": "out"
-    },
-    {
      "head": "<187>1 {time} {host} oracle {pid} oracle - ",
      "content": "err"
+    },
+    {
+     "head": "<190>1 {time} {host} oracle {pid} oracle - ",
+     "content": "out"
     },
     {
      "head": "<190>1 {time} {host} oracle {pid} oracle - ",
@@ -620,12 +620,12 @@
    "framing": "newline",
    "messages": [
     {
-     "head": "<30>1 {time} {host} oracle {pid} oracle - ",
-     "content": "out"
-    },
-    {
      "head": "<27>1 {time} {host} oracle {pid} oracle - ",
      "content": "err"
+    },
+    {
+     "head": "<30>1 {time} {host} oracle {pid} oracle - ",
+     "content": "out"
     },
     {
      "head": "<30>1 {time} {host} oracle {pid} oracle - ",
@@ -654,12 +654,12 @@
    "framing": "newline",
    "messages": [
     {
-     "head": "<30>{stamp} oracle[{pid}]: ",
-     "content": "out"
-    },
-    {
      "head": "<27>{stamp} oracle[{pid}]: ",
      "content": "err"
+    },
+    {
+     "head": "<30>{stamp} oracle[{pid}]: ",
+     "content": "out"
     },
     {
      "head": "<30>{stamp} oracle[{pid}]: ",
@@ -688,12 +688,12 @@
    "framing": "datagram",
    "messages": [
     {
-     "head": "<30>{stamp} {host} oracle[{pid}]: ",
-     "content": "out"
-    },
-    {
      "head": "<27>{stamp} {host} oracle[{pid}]: ",
      "content": "err"
+    },
+    {
+     "head": "<30>{stamp} {host} oracle[{pid}]: ",
+     "content": "out"
     },
     {
      "head": "<30>{stamp} {host} oracle[{pid}]: ",
@@ -722,12 +722,12 @@
    "framing": "datagram",
    "messages": [
     {
-     "head": "<30>1 {time} {host} oracle {pid} oracle - ",
-     "content": "out"
-    },
-    {
      "head": "<27>1 {time} {host} oracle {pid} oracle - ",
      "content": "err"
+    },
+    {
+     "head": "<30>1 {time} {host} oracle {pid} oracle - ",
+     "content": "out"
     },
     {
      "head": "<30>1 {time} {host} oracle {pid} oracle - ",
@@ -756,12 +756,12 @@
    "framing": "datagram",
    "messages": [
     {
-     "head": "<190>1 {time} {host} oracle {pid} oracle - ",
-     "content": "out"
-    },
-    {
      "head": "<187>1 {time} {host} oracle {pid} oracle - ",
      "content": "err"
+    },
+    {
+     "head": "<190>1 {time} {host} oracle {pid} oracle - ",
+     "content": "out"
     },
     {
      "head": "<190>1 {time} {host} oracle {pid} oracle - ",
@@ -790,12 +790,12 @@
    "framing": "datagram",
    "messages": [
     {
-     "head": "<30>1 {time} {host} oracle {pid} oracle - ",
-     "content": "out"
-    },
-    {
      "head": "<27>1 {time} {host} oracle {pid} oracle - ",
      "content": "err"
+    },
+    {
+     "head": "<30>1 {time} {host} oracle {pid} oracle - ",
+     "content": "out"
     },
     {
      "head": "<30>1 {time} {host} oracle {pid} oracle - ",

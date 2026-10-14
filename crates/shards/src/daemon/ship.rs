@@ -19,6 +19,8 @@ use super::{Daemon, Threads, lock, log};
 use crate::containers::Disk;
 use crate::spec::LOG_STDERR;
 
+mod gelf;
+mod sockets;
 mod syslog;
 
 /// A line of a run's output, or a part of a longer one, as a driver is given it.
@@ -32,8 +34,10 @@ pub(super) struct Message<'a> {
 
 /// What sends a run's messages where its driver says.
 pub(super) trait Driver: Send {
-    /// Sends `m`, or says why it could not, and is given it again.
-    fn send(&mut self, m: &Message<'_>) -> io::Result<()>;
+    /// Sends `m`, or says why it could not, and is given it again. `wait` waits as long as
+    /// the driver's own pace asks between its tries, and says whether the daemon stops
+    /// meanwhile, which ends them.
+    fn send(&mut self, m: &Message<'_>, wait: &dyn Fn(Duration) -> bool) -> io::Result<()>;
 }
 
 /// The longest message: moby's copier's buffer (copier.go, defaultBufSize), past which a
@@ -354,7 +358,7 @@ impl<D: Disk> Daemon<D> {
         let mut send = |m: &Message<'_>| -> io::Result<()> {
             let mut wait = RETRY_FIRST;
             loop {
-                let Err(e) = driver.send(m) else {
+                let Err(e) = driver.send(m, &|d| stopped_within(stopped, d)) else {
                     return Ok(());
                 };
                 log(format!("container {id}: sending its log: {e}; again in {wait:?}"));
@@ -428,6 +432,28 @@ impl<D: Disk> Daemon<D> {
                     pid: std::process::id(),
                 },
             )?),
+            crate::logging::Remote::Gelf(config) => {
+                let attributes = crate::logging::attributes(run, &details.info())?;
+                let fields = [
+                    ("_container_id", details.id.clone()),
+                    (
+                        "_container_name",
+                        details.name.trim_start_matches('/').to_string(),
+                    ),
+                    ("_image_id", details.image_id.clone()),
+                    ("_image_name", details.image_name.clone()),
+                    ("_command", details.command()),
+                    ("_tag", tag),
+                    ("_created", details.created.clone()),
+                ];
+                Box::new(gelf::Gelf::new(
+                    config,
+                    crate::logging::gelf::From {
+                        host: details.hostname.clone(),
+                        extra: crate::logging::gelf::extra(&fields, &attributes),
+                    },
+                ))
+            }
         }))
     }
 

@@ -55,6 +55,8 @@ aws-lc-rs = { version = "1.18.1", default-features = false, features = ["aws-lc-
 # A build's proxy (D110): its CA and each host's certificate, and the TLS it speaks to a
 # step's clients, with AWS-LC as everything else's.
 rcgen = { version = "0.14.10", default-features = false, features = ["aws_lc_rs", "pem"] }
+# GELF's UDP messages, gzipped or zlib'd (D164); built layers, read back in tests.
+flate2 = { version = "1", default-features = false, features = ["zlib-rs", "runtime_detection"] }
 rustls = { version = "0.23.45", default-features = false, features = ["std", "tls12", "aws_lc_rs", "prefer-post-quantum"] }
 base64 = "0.23.1"
 zeroize = "1"
@@ -93,8 +95,6 @@ shards-testguest = { path = "../testguest" }
 bzip2 = "0.6"
 lzma-rust2 = { version = "0.21", default-features = false, features = ["std", "xz", "encoder"] }
 ruzstd = "0.9"
-# Built layers, gzipped (D75), read back (tests/build.rs).
-flate2 = { version = "1", default-features = false, features = ["zlib-rs", "runtime_detection"] }
 
 [[bench]]
 name = "boot"

@@ -5,8 +5,7 @@
 //! sockets that takes a connection (srslog_unix.go, unixSyslog).
 
 use std::io::{self, Write as _};
-use std::net::{TcpStream, ToSocketAddrs as _, UdpSocket};
-use std::os::fd::{AsRawFd as _, RawFd};
+use std::net::{TcpStream, UdpSocket};
 use std::os::unix::net::{UnixDatagram, UnixStream};
 use std::sync::Arc;
 
@@ -39,25 +38,9 @@ enum Conn {
 impl Conn {
     /// Writes `m` whole: a datagram, or on a stream.
     fn write(&mut self, m: &[u8]) -> io::Result<()> {
-        let whole = |n: usize| {
-            if n == m.len() {
-                Ok(())
-            } else {
-                Err(io::Error::other(format!(
-                    "{n} bytes of a {}-byte datagram sent",
-                    m.len()
-                )))
-            }
-        };
         match self {
-            Conn::Udp(s) => {
-                fit(s.as_raw_fd(), m.len());
-                whole(s.send(m)?)
-            }
-            Conn::Datagram(s) => {
-                fit(s.as_raw_fd(), m.len());
-                whole(s.send(m)?)
-            }
+            Conn::Udp(s) => super::sockets::send_datagram(s, m),
+            Conn::Datagram(s) => super::sockets::send_datagram(s, m),
             Conn::Tcp(s) => s.write_all(m),
             Conn::Stream(s) => s.write_all(m),
             Conn::Tls(s) => {
@@ -66,46 +49,6 @@ impl Conn {
             }
         }
     }
-}
-
-/// Lets the datagram socket `fd` send a datagram of `len` bytes: macOS takes none longer
-/// than its send buffer, 9,216 bytes for UDP and 2,048 for a unix socket unless raised,
-/// and one exactly as long as it once it is (PM M232). Linux's are larger than any
-/// message, and stay as they are.
-fn fit(fd: RawFd, len: usize) {
-    let mut have: libc::c_int = 0;
-    let mut size = std::mem::size_of::<libc::c_int>() as libc::socklen_t;
-    // SAFETY: getsockopt(2) of an int into `have`, `size` its length.
-    let read = unsafe {
-        libc::getsockopt(
-            fd,
-            libc::SOL_SOCKET,
-            libc::SO_SNDBUF,
-            (&raw mut have).cast(),
-            &mut size,
-        )
-    };
-    if read == 0
-        && usize::try_from(have).is_ok_and(|have| have < len)
-        && let Ok(want) = libc::c_int::try_from(len)
-    {
-        // SAFETY: setsockopt(2) of an int from `want`. A refusal leaves the send to say so.
-        unsafe {
-            libc::setsockopt(
-                fd,
-                libc::SOL_SOCKET,
-                libc::SO_SNDBUF,
-                (&raw const want).cast(),
-                std::mem::size_of::<libc::c_int>() as libc::socklen_t,
-            );
-        }
-    }
-}
-
-/// A datagram refused for its size: by this host, or by its receiver's buffer, which on
-/// macOS takes none longer than it (ENOBUFS, PM M232).
-fn too_large(e: &io::Error) -> bool {
-    matches!(e.raw_os_error(), Some(libc::EMSGSIZE | libc::ENOBUFS))
 }
 
 impl Syslog {
@@ -127,20 +70,7 @@ impl Syslog {
 
     fn connect(&self) -> io::Result<Conn> {
         Ok(match &self.config.to {
-            To::Udp(address) => {
-                let to = address
-                    .to_socket_addrs()?
-                    .next()
-                    .ok_or_else(|| io::Error::other(format!("{address}: no address")))?;
-                let any: std::net::SocketAddr = if to.is_ipv4() {
-                    (std::net::Ipv4Addr::UNSPECIFIED, 0).into()
-                } else {
-                    (std::net::Ipv6Addr::UNSPECIFIED, 0).into()
-                };
-                let s = UdpSocket::bind(any)?;
-                s.connect(to)?;
-                Conn::Udp(s)
-            }
+            To::Udp(address) => Conn::Udp(super::sockets::udp(address)?),
             To::Tcp(address) => Conn::Tcp(TcpStream::connect(address)?),
             To::Tls(address) => {
                 let config = self
@@ -194,7 +124,7 @@ impl Syslog {
     fn send_line(&mut self, stream: u8, at: u64, zone: &Local, line: &[u8]) -> io::Result<()> {
         let bytes = self.config.message(&self.from, stream, at, zone, line);
         match self.write(&bytes) {
-            Err(e) if too_large(&e) && bytes.len() > EVERY_RECEIVER && line.len() > 1 => {
+            Err(e) if super::sockets::too_large(&e) && bytes.len() > EVERY_RECEIVER && line.len() > 1 => {
                 let (first, rest) = line.split_at(line.len() / 2);
                 self.send_line(stream, at, zone, first)?;
                 self.send_line(stream, at, zone, rest)
@@ -219,7 +149,7 @@ impl Syslog {
 }
 
 impl Driver for Syslog {
-    fn send(&mut self, m: &Message<'_>) -> io::Result<()> {
+    fn send(&mut self, m: &Message<'_>, _wait: &dyn Fn(std::time::Duration) -> bool) -> io::Result<()> {
         // moby's syslogger sends no empty line.
         if m.line.is_empty() {
             return Ok(());

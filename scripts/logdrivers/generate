@@ -1,7 +1,7 @@
 #!/bin/sh
-# Regenerates what Docker's syslog log driver sends, and which of its options Docker
-# takes (crates/shards/src/logging/testdata/syslog.json), which crates/shards/src/logging
-# and its tests hold shards to (D163).
+# Regenerates what Docker's syslog and gelf log drivers send, and which of their options
+# Docker takes (crates/shards/src/logging/testdata/syslog.json and gelf.json), which
+# crates/shards/src/logging and its tests hold shards to (D163, D164).
 #
 # In shards-dind (CONTAINER), capture.go listens on UDP, TCP and TLS ports and on a unix
 # datagram and stream socket. Each case's container prints a line on stdout, one on
@@ -16,6 +16,7 @@ set -eu
 here=$(cd "$(dirname "$0")" && pwd)
 root=$(cd "$here/../.." && pwd)
 out="$root/crates/shards/src/logging/testdata/syslog.json"
+gelf_out="$root/crates/shards/src/logging/testdata/gelf.json"
 container=${CONTAINER:-shards-dind}
 image=alpine:3.22
 work=$(mktemp -d)
@@ -37,7 +38,7 @@ x86_64 | amd64) arch=amd64 ;;
 	;;
 esac
 (cd "$here" && GOOS=linux GOARCH="$arch" CGO_ENABLED=0 go build -o "$work/capture" capture.go)
-docker exec "$container" mkdir -p "$dir/cases"
+docker exec "$container" mkdir -p "$dir/cases" "$dir/gelf"
 docker cp "$work/capture" "$container:$dir/capture"
 docker exec -d "$container" "$dir/capture" "$dir"
 until docker exec "$container" test -e "$dir/ready"; do sleep 0.2; done
@@ -75,7 +76,31 @@ for transport in udp tcp tls unixgram unix; do
 		done
 	done
 done
+# gelf: UDP, gzipped (its default), zlib'd and not, the last in chunks; and TCP. A label
+# asked for, as the container's fields go with it.
+for case in udp-gzip udp-zlib udp-none tcp-none; do
+	transport=${case%%-*}
+	compression=${case#*-}
+	i=$((i + 1))
+	case $transport in
+	udp) address=udp://127.0.0.1:5514 ;;
+	tcp) address=tcp://127.0.0.1:5515 ;;
+	esac
+	set -- --log-driver gelf --log-opt "gelf-address=$address" --log-opt tag=oracle \
+		--log-opt labels=a --label a=b
+	[ "$transport" = udp ] && set -- "$@" --log-opt "gelf-compression-type=$compression"
+	docker exec "$container" docker run --rm --name "$name-$i" "$@" "$image" sh -c "$print" >/dev/null 2>&1
+	if [ "$transport" = udp ]; then
+		# Its datagrams are sent as its run ends: those in, and no more coming.
+		sleep 1
+	else
+		until [ "$(docker exec "$container" sh -c "ls $dir/out | wc -l")" -ge 1 ]; do sleep 0.1; done
+	fi
+	docker exec "$container" sh -c "mkdir $dir/gelf/$case && mv $dir/out/* $dir/gelf/$case/"
+done
 docker exec "$container" tar -C "$dir/cases" -c . | tar -x -C "$work"
+mkdir "$work/gelf"
+docker exec "$container" tar -C "$dir/gelf" -c . | tar -x -C "$work/gelf"
 
 # Which options Docker takes, as `docker create` answers them: none dials.
 i=0
@@ -113,11 +138,43 @@ for opt in \
 		printf '%s\t%s\n' "$opt" "$(printf '%s' "$said" | tr '\n' ' ')" >>"$work/options"
 	fi
 done
+# gelf's: each case its options, separated by |.
+for opts in \
+	"" \
+	"gelf-address=udp://127.0.0.1:12201" \
+	"gelf-address=tcp://127.0.0.1:12201" \
+	"gelf-address=http://127.0.0.1:12201" \
+	"gelf-address=udp://127.0.0.1" \
+	"gelf-address=udp://127.0.0.1:12201|gelf-compression-type=zlib" \
+	"gelf-address=udp://127.0.0.1:12201|gelf-compression-type=lz4" \
+	"gelf-address=tcp://127.0.0.1:12201|gelf-compression-type=gzip" \
+	"gelf-address=udp://127.0.0.1:12201|gelf-compression-level=9" \
+	"gelf-address=udp://127.0.0.1:12201|gelf-compression-level=-1" \
+	"gelf-address=udp://127.0.0.1:12201|gelf-compression-level=10" \
+	"gelf-address=tcp://127.0.0.1:12201|gelf-tcp-max-reconnect=5" \
+	"gelf-address=tcp://127.0.0.1:12201|gelf-tcp-max-reconnect=-1" \
+	"gelf-address=udp://127.0.0.1:12201|gelf-tcp-max-reconnect=5" \
+	"gelf-address=tcp://127.0.0.1:12201|gelf-tcp-reconnect-delay=2" \
+	"gelf-address=udp://127.0.0.1:12201|gelf-color=red" \
+	"gelf-address=udp://127.0.0.1:12201|tag={{.Name}}"; do
+	i=$((i + 1))
+	set --
+	old_ifs=$IFS
+	IFS='|'
+	for o in $opts; do set -- "$@" --log-opt "$o"; done
+	IFS=$old_ifs
+	if said=$(docker exec "$container" docker create --name "$name-o$i" --log-driver gelf "$@" "$image" true 2>&1); then
+		docker exec "$container" docker rm "$name-o$i" >/dev/null 2>&1 || true
+		printf '%s\t\n' "$opts" >>"$work/gelf-options"
+	else
+		printf '%s\t%s\n' "$opts" "$(printf '%s' "$said" | tr '\n' ' ')" >>"$work/gelf-options"
+	fi
+done
 
-python3 -I - "$work" "$dir" "$out" <<'EOF'
-import json, os, re, sys
+python3 -I - "$work" "$dir" "$out" "$gelf_out" <<'EOF'
+import gzip, json, os, re, sys, zlib
 
-work, dind, out = sys.argv[1:4]
+work, dind, out, gelf_out = sys.argv[1:5]
 version = open(os.path.join(work, "version")).read().strip()
 STAMP = r"[A-Z][a-z]{2} [ \d]\d \d\d:\d\d:\d\d"
 FORMATS = {
@@ -149,7 +206,7 @@ def content(c):
 cases = []
 for case in sorted(os.listdir(work)):
     path = os.path.join(work, case)
-    if not os.path.isdir(path):
+    if not os.path.isdir(path) or case == "gelf":
         continue
     transport, fmt, facility = case.split("-")
     files = [os.path.join(path, f) for f in sorted(os.listdir(path))]
@@ -170,7 +227,9 @@ for case in sorted(os.listdir(work)):
             head = f"<{pri}>1 {{time}} {{host}} {app} {{pid}} {msgid} - "
         out_msgs.append({"head": head, "content": content(body)})
     # Docker sends each stream's messages from a goroutine of its own: their order between
-    # the streams is not Docker's to keep, so each stream's are kept in theirs.
+    # the streams is not Docker's to keep, so each stream's are kept in theirs, stderr's
+    # first (a stable sort by their heads, which differ by severity alone).
+    out_msgs.sort(key=lambda m: m["head"])
     cases.append({
         "transport": transport,
         "format": fmt,
@@ -186,4 +245,63 @@ for line in open(os.path.join(work, "options")):
 
 json.dump({"docker": version, "cases": cases, "options": options}, open(out, "w"), indent=1)
 print(f"{out}: {len(cases)} cases, {len(options)} options, Docker {version}")
+
+def gelf_message(data):
+    """A GELF message's JSON, from its datagram's bytes: gzip's, zlib's, or as they are."""
+    if data[:2] == b"\x1f\x8b":
+        return gzip.decompress(data), "gzip"
+    if data[:1] == b"\x78":
+        return zlib.decompress(data), "zlib"
+    return data, "none"
+
+def gelf_normal(text):
+    """A message, its host, time and the container's own values made placeholders."""
+    m = json.loads(text)
+    for key, holder in (("host", "{host}"), ("_container_id", "{id}"), ("_container_name", "{name}"),
+                        ("_created", "{created}"), ("_image_id", "{image}")):
+        assert key in m, (key, text[:200])
+        text = text.replace(json.dumps(m[key]), json.dumps(holder), 1)
+    return re.sub(r'"timestamp":[0-9.e+]+', '"timestamp":{time}', text, count=1)
+
+gelf_cases = []
+for case in sorted(os.listdir(os.path.join(work, "gelf"))):
+    path = os.path.join(work, "gelf", case)
+    files = [open(os.path.join(path, f), "rb").read() for f in sorted(os.listdir(path))]
+    transport, compression = case.split("-")
+    messages = []
+    if transport == "udp":
+        chunked = {}
+        order = []
+        for d in files:
+            if d[:2] == b"\x1e\x0f":
+                mid = d[2:10]
+                if mid not in chunked:
+                    order.append(("chunks", mid))
+                chunked.setdefault(mid, {})[d[10]] = (d[11], d[12:])
+            else:
+                order.append(("whole", d))
+        for kind, v in order:
+            if kind == "whole":
+                text, how = gelf_message(v)
+                chunks = 1
+            else:
+                parts = chunked[v]
+                count = next(iter(parts.values()))[0]
+                text, how = gelf_message(b"".join(parts[i][1] for i in range(count)))
+                chunks = count
+            messages.append({"json": gelf_normal(text.decode()), "compression": how, "chunks": chunks})
+    else:
+        for m in b"".join(files).split(b"\0"):
+            if m:
+                messages.append({"json": gelf_normal(m.decode()), "compression": "none", "chunks": 1})
+    # Each stream's in its order, stderr's first, as syslog's.
+    messages.sort(key=lambda m: '"level":6' in m["json"])
+    gelf_cases.append({"transport": transport, "compression": compression, "messages": messages})
+
+gelf_options = []
+for line in open(os.path.join(work, "gelf-options")):
+    opts, said = line.rstrip("\n").split("\t", 1)
+    gelf_options.append({"options": [o for o in opts.split("|") if o], "refused": said or None})
+json.dump({"docker": version, "cases": gelf_cases, "options": gelf_options}, open(gelf_out, "w"), indent=1)
+print(f"{gelf_out}: {len(gelf_cases)} cases, {len(gelf_options)} options")
 EOF
