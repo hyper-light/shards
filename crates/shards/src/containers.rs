@@ -42,6 +42,18 @@ pub struct Container {
     /// Bytes of its output its log could not keep (audit A12).
     #[serde(default)]
     pub log_lost: u64,
+    /// Bytes of its output its log dropped, non-blocking, as they came while its queue was
+    /// full (`--log-opt mode=non-blocking`, D162).
+    #[serde(default)]
+    pub log_dropped: u64,
+    /// Its log's rotated segments are compressed (D162): what a daemon that ended as it
+    /// compressed one left, the next compresses.
+    #[serde(default)]
+    pub log_compress: bool,
+    /// Its log's driver sends it elsewhere (D163): what a daemon that ended had not sent of
+    /// it, the next sends.
+    #[serde(default)]
+    pub log_ships: bool,
     /// What `stop` sends it unless told: `--stop-signal`'s, or its image's `StopSignal`,
     /// read once as it is created (moby container.StopSignal; SIGTERM if neither).
     #[serde(default)]
@@ -705,6 +717,9 @@ mod tests {
             error: String::new(),
             auto_remove: false,
             log_lost: 0,
+            log_dropped: 0,
+            log_compress: false,
+            log_ships: false,
             stop_signal: None,
             stop_timeout: None,
             ports: Vec::new(),

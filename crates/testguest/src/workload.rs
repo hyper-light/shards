@@ -106,6 +106,16 @@ pub fn main() -> ! {
         }
         // N lines on stdout, `line 1` to `line N`: a log's text, past its size.
         "count" => count(arg(1).parse().unwrap_or(0)),
+        // One line of N `x`s on stdout: longer than a log driver takes whole.
+        "wide" => {
+            let line = [vec![b'x'; arg(1).parse().unwrap_or(0)], b"\n".to_vec()].concat();
+            i32::from(
+                io::stdout()
+                    .write_all(&line)
+                    .and_then(|()| io::stdout().flush())
+                    .is_err(),
+            )
+        }
         // OUT on stdout, then ERR on stderr, a line each: which streams a client attached.
         "streams" => {
             let _ = writeln!(io::stdout(), "{}", arg(1));

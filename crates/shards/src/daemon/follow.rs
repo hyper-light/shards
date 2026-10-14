@@ -172,8 +172,15 @@ impl<D: Disk> Daemon<D> {
             lock(&f.runs).insert(token, (id.clone(), inbox.clone()));
             f.poller.add(held.socket.stream.as_fd(), token)
         };
-        // The files its VM asks for are made on a thread of their own (files.rs).
+        // The files its VM asks for are made on a thread of their own (files.rs), and its
+        // log's rotated segments compressed on another (packed.rs).
         self.start_files(threads);
+        self.start_packer(threads);
+        // And sent where its driver says, on a thread of its own (ship.rs, D163): its
+        // record written yet or not.
+        if lock(&self.containers).made(&id).is_some_and(|c| c.log_ships) {
+            self.ship_soon(threads, &id);
+        }
         if let Err(e) = added {
             lock(&f.runs).remove(&token);
             log(format!("container {id}: following its run with the others: {e}"));

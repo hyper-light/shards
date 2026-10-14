@@ -8193,3 +8193,172 @@ revision before comparing a changed API/implementation.
   window adds costs a load whose every step misses translation at most about 2%, on hosts
   whose microVMs would otherwise fit 36 bits; the window is as long as the host's memory,
   Docker's default swap of the largest run.
+
+### M231. A run's rotated log segments compressed: which codec, at what level, in what frames (D162)
+
+- **Question.** Which of the codecs shards already carries keeps a run's rotated log
+  segments in the least disk, at a cost a thread of the daemon can bear and with reads as
+  fast as `logs` needs: gzip (flate2 on zlib-rs), or zstd (shards-zstd, klauspost's
+  encoder ported; ruzstd reads it). Which level? And in frames of what size, each
+  compressed alone, so that a reader decompresses one frame to read a record, not the
+  whole segment? What does that cost in size?
+- **Method.** On the M5 Max (macOS 26.4.1, 18 CPUs, 128 GiB), 2026-10-14, the tree at
+  8d7f4795.
+  - The logs are real. From Loghub (He et al., "Loghub: A Large Collection of System Log
+    Datasets for AI-driven Log Analytics", ISSRE 2023): the 2,000-line sample of each of
+    its 16 systems, and the full logs of eight: Apache, HealthApp, HPC, Mac,
+    OpenStack, OpenSSH, Zookeeper and a Hadoop container's (Zenodo record 8196385). Also
+    three of shards' own CI job logs: cargo's output, escape sequences kept.
+  - Each was written through shards' store as a run writes it.
+    `docs/research/measurements/log-compress/segments.sh` prints each file a line at a
+    time, one write a line (busybox awk with `fflush`), in a microVM (alpine:3.22). Its
+    log has `--log-opt max-size=20m`, and the script keeps the first segment, its records
+    as the guest's output came: Apache's 56,481 lines in 10,999 records. That makes 27
+    segments, 128.9 MB in all, six of them 17 to 20 MB.
+  - `log-compress` (same directory) compresses each segment whole with each codec and
+    level, the codecs interleaved in each of 25 turns. It records the size, the time to
+    compress, and the time to read the result back as a stream in 64 KiB reads. Then it
+    cuts each segment into frames of 64 KiB, 256 KiB, 1 MiB and 4 MiB, each compressed
+    alone, and records their size, with 8 bytes a frame for a seek table, and the time to
+    read one frame back (25 turns, a frame in turn).
+- **Results.** Size, all 27 segments, as a share of 128.9 MB:
+
+  | | whole | 64 KiB frames | 256 KiB | 1 MiB | 4 MiB |
+  |---|---|---|---|---|---|
+  | gzip -1 | 14.20% | 15.12% | 14.43% | 14.26% | 14.21% |
+  | gzip -6, Docker's | 9.20% | 10.31% | 9.47% | 9.27% | 9.22% |
+  | gzip -9 | 8.91% | 10.06% | 9.20% | 8.98% | 8.93% |
+  | zstd -1 | 9.17% | 10.59% | 9.53% | 9.24% | 9.18% |
+  | zstd -3 | 9.38% | 10.60% | 9.60% | 9.35% | 9.35% |
+  | zstd -7 | 8.38% | 9.91% | 8.80% | 8.46% | 8.38% |
+  | zstd -11 | 7.53% | 9.19% | 8.00% | 7.63% | 7.54% |
+
+  Time, over the eight segments of 5 MB and more, n=25 each:
+  - **Compress.**
+    - gzip -6: 11 to 103 ms at p50 (195 to 778 MB/s), 108 ms at most.
+    - gzip -9: 18 to 215 ms (93 to 485 MB/s), 220 ms at most.
+    - zstd -7: 8 to 57 ms (350 to 942 MB/s), 63 ms at most.
+    - zstd -11: 24 to 175 ms at p50 (114 to 368 MB/s), 184 ms at p99 and at most.
+  - **Read back whole.** gzip at 1.8 to 6.6 GB/s. ruzstd's zstd at 0.65 to 3.7 GB/s;
+    zstd -11's at 0.88 to 3.7 GB/s, 23 ms at most for a segment of 20 MB.
+  - **One frame of 1 MiB read back.** gzip -6 in 0.17 to 0.55 ms at p50, 0.75 ms at most.
+    zstd -11 in 0.33 to 1.21 ms at p50, 1.71 ms at p99 and at most.
+- **Consequence.** D162 compresses with zstd at klauspost's best level
+  (`EncoderLevelFromZstd(11)`), in frames of 1 MiB with zstd's seekable format's seek
+  table. That keeps 7.63% of the logs, where Docker's gzip of each whole file keeps 9.20%:
+  17% less disk. It costs at most 184 ms of the packer's thread for a 20 MB segment. Any
+  record is read by decompressing its 1 MiB frame, 1.7 ms at most, where Docker
+  decompresses a whole rotated file to read any of it. Frames of 4 MiB would save 0.09
+  points for four times the read; frames of 256 KiB cost 0.37 points. Only the ratios hold
+  on every host. The times are arm64 macOS's; x86_64 and Linux are unmeasured.
+
+### M232. How long a datagram a socket sends and takes on macOS, by its buffers (D163)
+
+- **Question.** A syslog driver sends a line's 16 KiB parts as datagrams, over UDP or a
+  unix socket, as moby's does. What does macOS take, and what lets it take more?
+- **Method.** `docs/research/measurements/dgram-limits/probe.py`, on the M5 Max (macOS
+  26.4.1), 2026-10-14:
+  - the host's limits (sysctl);
+  - a unix datagram of 3,000, 16,684 and 40,000 bytes, sent with a send buffer
+    (`SO_SNDBUF`) one byte short of it, as long as it, and 16 bytes longer, to a receiver
+    with a buffer of 1 MiB;
+  - one of 16,684 bytes to receivers whose buffers (`SO_RCVBUF`) are as long as it plus 0,
+    16, 64 and 512 bytes;
+  - a UDP datagram of 16,684 bytes with the default send buffer, and with one as long as
+    it.
+- **Results.**
+  - Limits: `net.local.dgram.maxdgram` 2,048, `net.local.dgram.recvspace` 4,096,
+    `net.inet.udp.maxdgram` 9,216.
+  - Sending, at all three sizes: a send buffer one byte short of the datagram is refused
+    with EMSGSIZE, and one as long as it sends.
+  - Receiving: a receive buffer exactly as long as the datagram is refused with ENOBUFS;
+    16 bytes longer takes it.
+  - UDP: 16,684 bytes are refused (EMSGSIZE) with the default send buffer, and sent with
+    one as long as them.
+- **Consequence.** D163 raises a datagram socket's send buffer to each message's length
+  before sending it, and never lowers it. Linux's buffers are already larger than any
+  message. A receiver's buffer is not the sender's to raise. So a line whose datagram is
+  refused for its size (EMSGSIZE or ENOBUFS) goes in halves, each its own message, down
+  to the 480 octets every receiver takes (RFC 5426 §3.2): nothing is lost, and nothing
+  waits for ever.
+
+### M233. What a TCP socket closed with bytes unread loses, and what its kernel says of what its receiver has (D163)
+
+- **Question.** D163's first CI lost a run's last syslog line over TLS on every x86_64
+  Linux run: its server got the line before it and then a reset. Why, and what can a
+  sender learn of what its receiver has?
+- **Method.** `docs/research/measurements/close-unread/`, 2026-10-14, at 29fc5846. Each
+  probe ran on the M5 Max (macOS 26.4.1, Python 3.14.7, OpenSSL 3.6.4) and in a shards
+  microVM on it (python:3-alpine: Linux 6.18.48 aarch64, Python 3.15.0, OpenSSL 3.5.9).
+  - `probe.py`: a TLS 1.3 server on loopback (two session tickets, OpenSSL's default)
+    reads until its connection ends. The client writes `out\n` and `err\n` as two
+    records and ends its connection, 200 rounds each way:
+    - `late-close`: 50 ms after the handshake, so the tickets have come, unread, it
+      writes and closes at once, as the shipper did;
+    - `late-nodelay`: the same, with TCP_NODELAY;
+    - `late-drain`: the same, but it shuts its write side, reads until the server's
+      EOF, then closes.
+
+    Also 300 rounds each of `close`, `nodelay` and `drain`, which write as soon as the
+    handshake is done.
+  - `acked.py`: what the sender's kernel counts as unacknowledged, its RTO and its TCP
+    state (Linux: SIOCOUTQ and TCP_INFO; macOS: TCP_CONNECTION_INFO's tcpi_snd_sbbytes,
+    tcpi_rto and tcpi_state).
+    Measured four times:
+    1. 1,000 bytes written to a receiver that reads none;
+    2. written on until the sender's buffer takes no more, the receiver's buffer set to
+       4,096 bytes;
+    3. all read, the receiver's buffer grown again;
+    4. after shutdown(SHUT_WR), at once and 200 ms on.
+
+    Two runs on each OS.
+  - `unixq.py`: the same counts on a unix stream socket, 1,000 bytes unread, then 400
+    read.
+  - `held.py` (Linux): a listener's SO_RCVBUF of 1, three 1 KiB writes, then the
+    receiver's SO_LINGER-0 close.
+- **Results.**
+  - `late-close` loses `err\n` in 200 of 200 rounds on Linux and 90 of 200 on macOS. The
+    server sees a reset in all 400.
+  - `late-nodelay` delivers both lines in all 400 rounds; the server still sees a reset
+    in every one.
+  - `late-drain` delivers both in all 400, each ending in a clean EOF.
+  - `close`, `nodelay` and `drain` deliver both in all 900 rounds on Linux, since the
+    tickets come after the client has closed. Their server sees a broken pipe or a reset
+    as it writes them, except under `drain`.
+  - `acked.py` on Linux, both runs:
+    1. 0 unacknowledged;
+    2. 2,568,704 of 2,604,032 bytes unacknowledged;
+    3. 0;
+    4. 1 at once (its FIN), in FIN_WAIT1; 0 200 ms on, in FIN_WAIT2.
+
+    RTO 201 to 206 ms throughout.
+  - `acked.py` on macOS:
+    1. 0;
+    2. the receiver's buffer is 526,720 bytes whatever it was set to. In one run the
+       sender's buffer took no more after 327,212 bytes, none unacknowledged; in the
+       other, 450,092 of 974,172 were unacknowledged;
+    3. 0;
+    4. 0 at once, in FIN_WAIT_1, and 0 200 ms on, in FIN_WAIT_2: macOS leaves the FIN
+       out of the count. Its RTO reads 230 ms while the FIN is out and 0 otherwise.
+  - `unixq.py`: macOS's SO_NWRITE reads 0. Linux's SIOCOUTQ reads 2,304 both before and
+    after the 400-byte read: buffer memory, not bytes.
+  - `held.py`:
+    - the receiver's buffer is 2,304 bytes;
+    - 2,048 bytes stay unacknowledged;
+    - after the reset, SO_ERROR is 104 (ECONNRESET) and SIOCOUTQ still 2,048;
+    - the next write fails with EPIPE.
+- **Consequence.** A socket closed with bytes unread resets its connection, and what is
+  not yet sent goes with it. The shipper lost the line Nagle's algorithm held back behind
+  the one before it. TCP_NODELAY narrows that window but keeps the reset. Shutting the
+  write side and reading the receiver's bytes until its end delivers everything.
+
+  D163's streams (`daemon/ship/stream.rs`) therefore:
+  - count a message delivered once its last byte is acknowledged. Linux's SIOCOUTQ counts
+    the FIN; on macOS the FIN is added while the state is FIN_WAIT_1, CLOSING or LAST_ACK;
+  - hold what is not yet delivered, and write it again on the next connection;
+  - end a connection only once all is acknowledged, between checks waiting for the
+    receiver's bytes or the kernel's RTO (RFC 6298's 1 s where it gives none);
+  - keep the shipper's place only as far as what is delivered.
+
+  Over a unix stream socket nothing can be counted. Its bytes are in the receiver's
+  buffer once written, and no close resets them, so they are delivered as written.

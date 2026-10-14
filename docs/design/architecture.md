@@ -3614,6 +3614,359 @@ No run-time labels, relays or declassifiers (§12 answer 14, decided by the user
 an internal-only domain to the world (D58), so there is no data to label. Code mode is
 D136.
 
+### D166. A run's log sent to the journal; a container's own fields its own
+
+`--log-driver journald` is served on Linux, and sent as syslog's is (D163): from shards'
+store, by the daemon's shipper.
+
+- **Entries as Docker's.** Each line is an entry of systemd's native protocol (systemd.io,
+  "Native Journal Protocol"), written as go-systemd's journal.Send writes one. A field is
+  `NAME=value` and a newline; a value with a newline in it is its name, its length as a
+  little-endian u64, and itself. Its fields:
+  - PRIORITY (6 for stdout, 3 for stderr) and MESSAGE, the line;
+  - moby's:
+    - CONTAINER_ID (the short ID) and CONTAINER_ID_FULL;
+    - CONTAINER_NAME and IMAGE_NAME;
+    - CONTAINER_TAG and SYSLOG_IDENTIFIER (the tag: the short ID unless given);
+    - CONTAINER_LOG_EPOCH, an ID each shipper makes as it starts;
+    - CONTAINER_LOG_ORDINAL, the entry's place from 1;
+  - SYSLOG_TIMESTAMP, its output's time, RFC 3339 to the nanosecond;
+  - a part's place where a line is longer than 16 KiB: CONTAINER_PARTIAL_ID, _ORDINAL
+    and _LAST, and before the last, CONTAINER_PARTIAL_MESSAGE;
+  - the attributes asked for, named as moby's sanitizeKeyMod names them: letters in
+    upper case, every other character but a digit `_`, none leading.
+
+  All are held field for field to Docker 29.3.1's (`scripts/logdrivers/generate`, its
+  capture taking the journal's socket in the probe container):
+  - each stream's lines, and a 40,000-byte line's parts;
+  - a tag and attributes;
+  - an entry longer than a datagram;
+  - 7 cases of which options Docker takes.
+
+  Docker writes the fields in a Go map's random order; journald keeps them in none.
+- **An entry longer than a datagram** goes in a sealed memfd, passed with an empty
+  datagram, as systemd's own sd_journal_sendv passes one; journald takes that from any
+  sender. go-systemd writes a file in /dev/shm instead, which journald takes from there,
+  /tmp or /var/tmp alone.
+- **The journal's socket** is systemd's, /run/systemd/journal/socket, or the one
+  `SHARDS_JOURNAL_SOCKET` names. A datagram is in the journal's queue as it is sent:
+  delivered.
+- **Linux's.** macOS keeps no journal, and refuses the driver in shards' words. Docker
+  refuses it as its container starts on a host whose journal is not running ("journald is
+  not enabled on this host"). shards' run starts, and its shipper waits for the journal.
+- **Where Docker is wrong, shards is not.**
+  - An attribute whose field journald would drop (a digit first, or past 64 characters)
+    is left out, and the daemon's log says so. Docker sends it, and journald drops it
+    without a word.
+  - An attribute named as a field of the driver's own is left out. Docker's lets it
+    replace the container's own: a label `container.name` its CONTAINER_NAME, or
+    `container.id` its CONTAINER_ID, so an image's labels could say another container
+    wrote its lines. It can also stand beside the driver's, as a second MESSAGE or
+    PRIORITY.
+  - gelf's and fluentd's own fields win alike. A label `container_id` no longer replaces
+    gelf's `_container_id`, nor a label `log` fluentd's line.
+  - An entry that fails keeps its ordinal, and is sent again. Docker counts it, and
+    drops it.
+- **fluentd's record has no `tag`.** D165 sent the tag asked for as a member of the
+  record, as json-file's `--details` shows it. moby's fluentd sends its attributes from
+  logger.Info.ExtraAttributes, which leave the tag out. shards' now does too, as do its
+  gelf and journald.
+- **Not yet.** splunk, awslogs, gcplogs and etwlogs.
+
+Tested on real microVMs on Linux (`a_runs_log_is_sent_to_journald_as_its_options_say`),
+against a journal socket in the test:
+
+- a line on each stream: its priority, the container's fields, its time `logs -t`'s, and
+  its ordinal; an attribute asked for, and those left out;
+- a 40,000-byte line in three parts;
+- an entry past twice `wmem_max` (Linux doubles a send buffer) in a memfd, sealed against
+  every change.
+
+On macOS it tests the refusal.
+
+The fluentd test now asks for a tag. Mutation-checked: a record with the tag in it fails
+it.
+
+Unit tests cover:
+
+- every oracle entry against Docker's, but for the three recorded differences;
+- the options;
+- the fields' writing;
+- the names journald keeps;
+- gelf's and fluentd's own fields winning.
+
+### D165. A run's log sent to fluentd
+
+`--log-driver fluentd` is served, sent as syslog's is (D163): from shards' store by the
+daemon's shipper.
+
+- **Events as Docker's.** Each line is an event of Fluentd's forward protocol in Message
+  mode, MessagePack written as fluent-logger-golang's EncodeData writes it: an array of
+  the tag (the short ID unless given), the time, the record and the options.
+  - The time is whole seconds, as msgp's AppendInt64 writes them, or with
+    `fluentd-sub-second-precision` an EventTime (extension 0: seconds and nanoseconds).
+  - The record is moby's: `container_id`, `container_name` (Docker's, with its `/`),
+    `source`, `log`, the attributes asked for (an attribute named as one of those is
+    left out: D166), and a part's place over all
+    (`partial_message`, `partial_id`, `partial_ordinal`, `partial_last`) where a line is
+    longer than 16 KiB. Its members are sorted, where Go writes a map in no order.
+  - Held to Docker 29.3.1's (`scripts/logdrivers/generate`): over TCP in whole seconds
+    and to the nanosecond, over a unix socket, and 26 cases of which options Docker
+    takes.
+- **Acks.** With `fluentd-request-ack` each event's options name its chunk, fluent-logger-
+  golang's ID (its seconds and a random number, base64), and the server's ack is read back
+  and matched.
+- **Transports.** `tcp` (the default, 127.0.0.1:24224), `tls` (verified against the
+  platform's roots, as fluent-logger-golang's tls.Dial is), `unix`.
+- **Retries.** A failed send is tried again after `fluentd-retry-wait`, half as long again
+  each time up to a minute, `fluentd-max-retries` times, as fluent-logger-golang tries it.
+  Then the shipper's own waits take over, where fluent-logger-golang gives the event up.
+  `fluentd-write-timeout` and `fluentd-read-timeout` bound a write and an ack. Without
+  acks, an event is delivered once its receiver's TCP has it; what a connection had not
+  delivered goes on the next (D163). With acks, an event's ack says it is delivered.
+- **Taken, and moot.** `fluentd-async`, `fluentd-async-reconnect-interval` and
+  `fluentd-buffer-limit` are read and checked as moby reads them. They change nothing:
+  every log is sent off its run's path, with the store as its buffer. Docker's driver
+  without `fluentd-async` dials as its container starts, so a server that is down keeps
+  the container from starting.
+- **Lines' parts.** A line the run left unfinished goes whole, or as its last part. moby's
+  copier sends it as a part never the last, which leaves consumers that join parts
+  waiting.
+- **Not yet.** splunk, awslogs, gcplogs and etwlogs; journald came with D166.
+
+Tested on real microVMs (`a_runs_log_is_sent_to_fluentd_as_its_options_say`), against a
+server in the test that acks as fluentd does:
+
+- TCP to the nanosecond with acks: each event's tag, record (the label asked for) and
+  chunk, its time `logs -t`'s exactly;
+- a unix socket in whole seconds, a 40,000-byte line in three parts, one ID, its places
+  and its last;
+- the refusals.
+
+Mutation-checked: an ack never asked for fails it. Unit tests cover every oracle event
+decoded against Docker's, the options against Docker's, an ack's chunk, and the cutter's
+parts.
+
+### D164. A run's log sent to a GELF server
+
+`--log-driver gelf` is served, sent as syslog's is (D163): from shards' store, by the
+daemon, on the shipper's thread, so the microVM reaches no network for its log, a run
+starts whether or not its server is up, and nothing is lost to a server that is down.
+
+- **Messages as Docker's.** Each line is a GELF 1.1 message, as go-gelf's
+  MarshalJSONBuf writes it:
+  - first its own fields in their order: the version, this host's name, the line, the
+    time in seconds to the millisecond (GELF 1.1's), and the level, 6 for stdout and 3 for
+    stderr;
+  - then the container's own, as moby's gelf driver makes them: `_container_id`,
+    `_container_name`, `_image_id`, `_image_name`, `_command`, `_tag` and `_created`;
+  - then the attributes asked for (`labels`, `env`, their regexes), each named with a `_`
+    first, all sorted by name and HTML-escaped, as Go's encoding/json writes a map.
+
+  Held byte for byte to Docker 29.3.1's (`scripts/logdrivers/generate`: UDP gzipped, zlib'd
+  and uncompressed, TCP, and 17 cases of which options Docker takes).
+- **UDP.** gzip unless told, at go-gelf's level 1 unless `gelf-compression-level` says;
+  zlib, or none. A message past 1,420 bytes goes in chunks of 1,420, each with its magic,
+  a random 8-byte ID, its number and how many, 128 at most.
+- **TCP.** Each message is followed by a NUL. A write that fails is tried again on new
+  connections `gelf-tcp-max-reconnect` times, `gelf-tcp-reconnect-delay` seconds apart,
+  as go-gelf tries it. After that the shipper's own waits take over, where go-gelf drops
+  the message. What a connection had not delivered goes on the next (D163). Docker's
+  driver dials as its container starts, so a server that is down keeps the container
+  from starting; shards' run starts regardless.
+- **Not yet.** splunk, awslogs, gcplogs and etwlogs; fluentd and journald came with D165
+  and D166.
+
+Tested on real microVMs (`a_runs_log_is_sent_to_gelf_as_its_options_say`):
+
+- UDP gzipped: every field checked against `inspect`, a label asked for, and the time
+  `logs -t`'s to the millisecond;
+- uncompressed, a 40,000-byte line in 16,384 + 16,384 + 7,232, each its own message in
+  chunks;
+- TCP, each message ended by a NUL;
+- the refusals.
+
+Mutation-checked: the attributes left out fail it. Unit tests cover every oracle message
+byte for byte (with its chunk count and compression), the options against Docker's, and
+chunking.
+
+### D163. A run's log sent to syslog, by the daemon, from shards' store
+
+`--log-driver syslog` is served, the first of Docker's drivers that send a log elsewhere,
+and the way every later one sends.
+
+- **From the store, by the daemon.** The run's VM keeps its output in shards' store as
+  every run's does (D161). The daemon follows the log of each container whose driver
+  sends it elsewhere, on a thread of its own (`daemon/ship.rs`), as `logs -f` follows
+  one, and sends each line. So:
+  - the VM, its guest and its run reach no network for their log;
+  - a server that is slow or down holds up nothing but its own sending, retried after
+    1 s, half as long again each time, at most 60 s (fluent-logger-golang's waits, through
+    which moby's fluentd driver sends);
+  - a run starts whether or not its server is up, where Docker's would not start;
+  - what is not yet sent waits in the store, bounded as the store is, and survives the
+    daemon's restarts: the shipper keeps its place beside the log (`ship`), and the next
+    daemon sends what is left. Docker sends from the run's copier and loses what it had
+    not sent.
+- **Lines as Docker's.** Each line is a message, cut as moby's copier cuts it: past
+  16 KiB, in parts of 16 KiB, then the rest.
+- **Delivered, not written** (`daemon/ship/stream.rs`, PM M233). Over TCP, TLS or a unix
+  stream socket, a message counts as sent only once its receiver has it.
+  - Over TCP, that is once its receiver's TCP has acknowledged its last byte, as the
+    kernel counts them: Linux's SIOCOUTQ, macOS's TCP_CONNECTION_INFO. A unix socket's
+    bytes are in its receiver's buffer as they are written.
+  - The shipper keeps its place only as far as what is delivered. So a daemon that stops
+    or dies costs sending again what was not yet delivered, and loses no line.
+  - What a connection had not delivered when it ended (a reset, a receiver that
+    restarts, a timeout after a partition) is held, and written again, in order, on the
+    next. srslog, go-gelf and fluent-logger-golang lose it.
+  - A connection ends only once its receiver has all of it:
+    - TLS's close_notify is sent;
+    - its write side is shut;
+    - what the receiver still sends is read and let go;
+    - the socket closes once all is acknowledged.
+
+    A socket closed with bytes unread resets its connection, and what is not yet sent
+    goes with it. TLS 1.3's session tickets are such bytes: no sender that only writes
+    reads them. D163's first CI lost a run's last line this way, held back by Nagle's
+    algorithm behind the line before it, on every x86_64 Linux run; the probe loses it in
+    200 of 200 rounds on Linux and 90 of 200 on macOS. Docker's drivers close their
+    sockets this way.
+  - A receiver's TCP having a message is as far as TCP can say. fluentd's acks (D165)
+    say its receiver has it.
+- **Messages as Docker's.** Its formats (srslog's Unix format, rfc3164, rfc5424,
+  rfc5424micro), its facilities, info for stdout and err for stderr, the tag (the short ID
+  unless given), its framing (newlines, octet counting over TLS for RFC 5424), and udp,
+  tcp, tcp+tls, unix, unixgram and the host's own syslog. All are held byte for byte to
+  Docker 29.3.1's (`scripts/logdrivers/generate`: 25 transport, format and facility
+  cases, recorded in shards-dind, and which options Docker takes).
+- **Where Docker is wrong, shards is not.** Each difference is recorded, in the oracle's
+  test where it has one:
+  - a message is stamped with when its output came; srslog stamps when it sends;
+  - it names this host; srslog names its socket's local address and port, which no RFC
+    5424 HOSTNAME is;
+  - its tag fills its fields: RFC 5424's APP-NAME and MSGID are printable ASCII of at most
+    48 and 32 characters, and a space would end either format's tag early;
+  - a datagram socket's send buffer grows to each message, since macOS takes none longer
+    than it (PM M232). A line whose datagram its receiver refuses for its size goes in
+    halves, down to RFC 5426's 480 octets. moby drops it;
+  - nothing is dropped: a send that fails is sent again, and what a connection had not
+    delivered goes on the next;
+  - `syslog-tls-skip-verify` is refused, its CA asked for instead: shards sends only to a
+    server whose certificate it verifies;
+  - `unix://host/path` is refused. Go's parser takes `host` for a host, and moby's driver
+    drops it.
+- **The local copy.** A driver that sends its log elsewhere keeps it in the store too, as
+  Docker's dual logging does.
+  - `cache-max-size`, `cache-max-file` and `cache-compress` bound it. Docker takes them and
+    applies none: its cache is the local driver with its defaults
+    (loggerutils/cache.WithLocalCache passes the options unchanged).
+  - `cache-disabled=true` keeps it from `logs`, which says so. The segments wholly sent go.
+  - Every driver takes the `cache-*` options, as Docker's do; D161 refused them.
+- **`inspect`'s LogPath** is empty, as dockerd leaves its local driver's: shards' store is
+  its own, no file a reader of Docker's json-file logs could read.
+- **Segments filled.** A record fills the room its segment has, the rest going on in the
+  next. D161's rule moved a record that did not fit whole into the next segment. On CI's
+  x86_64 Linux, whose guest's records are 32 KiB, that left segments of 64,000 bytes half
+  full and a log half its retention; D162's test caught it there.
+- **Not yet.** splunk, awslogs, gcplogs and etwlogs, each refused with a word that says
+  so; gelf, fluentd and journald came with D164 to D166.
+
+Tested on real microVMs (`a_runs_log_is_sent_to_syslog_as_its_options_say`):
+
+- UDP in srslog's format;
+- TCP in rfc5424micro and local0, its time `logs -t`'s to the microsecond and its host a
+  name;
+- TLS with a CA made for the test, octet-counted, its connection ended cleanly with
+  close_notify;
+- a unix datagram socket, a 40,000-byte line in 16,384 + 16,384 + 7,232;
+- a server that comes up only after the run, and one up only after the daemon restarted;
+- `cache-disabled`, `logs` refusing it;
+- the refusals, and an empty LogPath.
+
+Unit tests cover:
+
+- every message of the oracle, byte for byte;
+- the options, against what Docker takes;
+- addresses, ports and tag fields;
+- the copier's cuts;
+- the shipper's place, kept only as far as its receiver has the messages before it, and a
+  reader resumed from it showing every line once;
+- a TLS stream closed at once after its last writes, its receiver's session tickets
+  unread, delivering all of them and ending with close_notify (mutation-checked: closed
+  at once, its receiver sees a reset);
+- what a connection reset by its receiver had not delivered, written again on the next,
+  in order, before what comes after (mutation-checked: what is held dropped fails it);
+- the segments wholly sent going.
+
+### D162. A run's rotated log segments compressed, seekably; a log that never holds up its run
+
+D162 serves two of Docker's log options that D161 refused, `compress` and
+`mode=non-blocking`, and serves both better than Docker does.
+
+- **`compress`: rotated segments, seekable.** The daemon's packer thread compresses each
+  segment once it has rotated. That thread is off every run's path, and off the files'
+  thread that makes the segments runs wait for (D161).
+  - Each segment becomes zstd frames of 1 MiB of it, each compressed alone at
+    klauspost's best level. Their seek table follows, as zstd's seekable format lays it
+    out (facebook/zstd contrib/seekable_format, v0.1.0). The file is `log.N.zst`, beside
+    the segment's index, which stays as written.
+  - Real logs come to 7.63% of their size, against 9.20% for Docker's gzip of each whole
+    rotated file (PM M231).
+  - A reader (`logs`, and its `--tail`) reads any record by decompressing its frame
+    alone, 1.7 ms at most, its checksum checked. Docker decompresses a whole rotated file
+    into a temporary file to read any of it. `zstd -d` reads the file whole.
+- **Whole on every path.**
+  - The compressed file is made durable before the segment as written goes, so a reader
+    finds one or the other whole. It looks for the one as written first.
+  - Retention removes either. A segment removed as it is compressed leaves nothing, and
+    a container being removed is left to its removal.
+  - As a daemon starts, it compresses what one before it left as written, including a
+    file a crash left half compressed. The container's record says which logs compress
+    (`log_compress`).
+- **Which logs.**
+  - `shards`, shards' own driver, compresses by default: 13 times less disk, for at most
+    184 ms of a thread a 20 MB segment (PM M231). So does `local`, as Docker's default
+    does.
+  - json-file compresses only when asked, as Docker's does. Its `compress=true` without
+    `max-size` is taken: Docker refuses it for want of a bound, and shards' store always
+    has one.
+  - One file (`max-file 1`) never rotates, so it is never compressed. Asking for that is
+    refused in shards' words.
+- **`mode=non-blocking`.** The run's output is queued in its VM for the log's own thread,
+  so a log that falls behind never holds up the run's output.
+  - The queue holds at most `max-buffer-size` bytes (go-units' RAMInBytes, binary units),
+    or moby's 1,000,000 when none is given. Output that comes while it is full is
+    dropped, as moby's ring logger drops it: output that would pass the size goes only
+    into an empty queue.
+  - Docker drops in silence. shards counts what it drops (`LOST`'s second count, the
+    record's `log_dropped`), and `logs` says it on stderr: `N bytes of NAME's output were
+    dropped, as they came while its log's queue was full (--log-opt mode=non-blocking)`.
+    `logs` still exits 0, since dropping is what the run asked for.
+  - All that is queued is kept before the run's end is told.
+- **Not yet.** The drivers that send a log elsewhere (D161's list), of which D163 serves
+  syslog.
+
+Tested on real microVMs (`a_runs_log_is_compressed_and_queued_as_its_options_say`):
+
+- 30,000 lines through segments of 64,000 bytes, four kept: three compressed, `logs` the
+  output's newest, and `--tail 12000` read from the middle of compressed segments.
+- json-file: none compressed by default, three with `compress=true`.
+- `max-buffer-size=0`: what was kept and what was dropped add up to the output exactly,
+  with 36 to 51% dropped in three runs, and the drop said. 4 MiB: all of it kept, nothing
+  said.
+- The refusals.
+
+Mutation-checked: drops left uncounted, and shards' own driver not compressing, each fail
+it. Unit tests cover:
+
+- the format, read back across frames and as one stream;
+- damage refused, in the seek table and in a frame's checksum;
+- a segment removed as it is compressed, and retention;
+- what a daemon compresses as it starts;
+- every read of a log in compressed segments, against the plain way;
+- the queue's drops, and the options.
+
 ### D161. A run's log, as `--log-driver` and `--log-opt` keep it
 
 `run` and `create` take `--log-driver` and `--log-opt` as docker/cli reads them (served,
@@ -3625,11 +3978,12 @@ own where none was, and the options as a map (`HostConfig.LogConfig`).
 - **Its bound, its own.** `max-size` (go-units' FromHumanSize, decimal, as both of
   Docker's file drivers read it) is each segment's most bytes, `max-file` how many it
   keeps, the newest written; they go to the run's VM with its request, and the daemon
-  rotates by the run's count. A record goes whole into the segment written where it fits,
-  else into the next; one longer than a segment holds is cut into records that each fill
-  one, each saying whether it ends a line, so no segment is longer than asked and a line
-  so cut is read whole. Before, a segment took a whole frame past its size (12 KB a
-  segment where 1 KB was asked). json-file
+  rotates by the run's count. A record fills what room the segment written has, the rest
+  going on in the next, each saying whether it ends a line, so no segment is longer than
+  asked, each is as long as it may be, and a line so cut is read whole. Before, a segment
+  took a whole frame past its size (12 KB a segment where 1 KB was asked); then, until
+  D163, a record that did not fit went whole into the next segment, which left segments
+  of 64,000 bytes half full of a Linux guest's 32 KiB records. json-file
   keeps one file where only `max-size` is given, as Docker's does; where neither is, every
   driver keeps the daemon's bound (`SHARDS_LOG_MAX_SIZE`, `SHARDS_LOG_MAX_FILE`), where
   Docker's json-file keeps one file that grows without end.
@@ -3645,10 +3999,9 @@ own where none was, and the options as a map (`HostConfig.LogConfig`).
 - **Refused, in shards' words.** An unknown driver or option; values that do not read
   (`max-size`, `max-file`, `compress`, `mode`, the regexes); `max-buffer-size` without
   non-blocking mode.
-- **Not yet.** `compress=true` (rotated segments compressed); `mode=non-blocking` (a log
-  that drops what it cannot keep up with rather than hold the workload); the drivers that
-  send a log elsewhere (`syslog`, `journald`, `gelf`, `fluentd`, `awslogs`, `splunk`,
-  `gcplogs`, `etwlogs`), each refused with a word that says so.
+- **Not yet.** The drivers that send a log elsewhere (`syslog`, `journald`, `gelf`,
+  `fluentd`, `awslogs`, `splunk`, `gcplogs`, `etwlogs`), each refused with a word that
+  says so. `compress` and `mode=non-blocking` came with D162.
 
 Tested on real microVMs (`a_runs_log_is_kept_as_its_driver_and_options_say`): 10,000
 lines through `max-size=1k` and `max-file=2`, the log the output's newest lines, two
@@ -6661,7 +7014,8 @@ the rest of a run's reach into its domains.
   | `--cgroupns host` (D156); `--network host` (D124) | refused (daemon and init) | the microVM's cgroup tree holds their cgroups; the host's network holds none of their flows |
   | A run joining the microVM (`--network container:`, D119) | held to every rule of this table, by the daemon and again by init | it runs beside them as the microVM's own run does |
   | `--ipc` (`host` is init's namespace, theirs each their own), `--uts`, `--userns`, `--umask`, `--storage-opt` (D156); `--runtime`, `--isolation`, `--cpu-count`, `--cpu-percent`, `--cpu-rt-*` (D155) | given | the command's own namespaces, writable layer and limits |
-  | `--link`, `--log-driver`, `--log-opt` | refused for every run, not served yet | |
+  | `--link` | refused for every run, not served yet | |
+  | `--log-driver`, `--log-opt` (D161 to D166) | given | the command's own output, kept on the host by its VM process, in its container's directory, and sent elsewhere by the daemon, never by the microVM |
   | `--cap-add` of any other: `DAC_READ_SEARCH`, `IPC_OWNER`, `IPC_LOCK`, `SYS_BOOT`, `SYS_RESOURCE`, `CHECKPOINT_RESTORE` among them | given | `open_by_handle_at` opens only on filesystems the command holds a mount of, a domain's own being none of them; IPC namespaces differ; `reboot(2)` ends the caller's own PID namespace's init (pid_namespaces(7)); the rest bound the command's own resources or namespaces |
   | `--cap-drop`, `no-new-privileges`, `writable-cgroups=true` (its cgroup namespace's subtree), `apparmor=`, `label=` (no LSM in the microVM: accepted, as on a Docker host without one) | given | narrows the command, or touches only its own |
   | `seccomp=` a profile or `unconfined` | given, recorded | its own filter; the domains keep theirs. Measured: unconfined, any uid makes a user namespace (`max_user_namespaces` 994), owning none of the domains' namespaces but reaching more of the kernel they share |

@@ -4755,6 +4755,36 @@ fn retained_output(home: &Path, args: &[&str]) -> Vec<u8> {
     out.stdout
 }
 
+/// Segment `seq`'s log in container directory `dir`, as written: its file as written, or,
+/// once the daemon has compressed it (D162), every zstd frame of its compressed file, the
+/// seek table's skippable frame passed over. The file as written goes only once the
+/// compressed one is whole, so it is read first.
+fn segment_log(dir: &Path, seq: u64) -> Vec<u8> {
+    use ruzstd::decoding::errors::{FrameDecoderError, ReadFrameHeaderError};
+    use ruzstd::decoding::{BlockDecodingStrategy, FrameDecoder};
+    match std::fs::read(dir.join(format!("log.{seq}"))) {
+        Ok(written) => return written,
+        Err(e) => assert_eq!(e.kind(), std::io::ErrorKind::NotFound, "{e}"),
+    }
+    let packed = std::fs::read(dir.join(format!("log.{seq}.zst"))).unwrap();
+    let mut src = packed.as_slice();
+    let mut out = Vec::new();
+    while !src.is_empty() {
+        let mut frame = FrameDecoder::new();
+        match frame.reset(&mut src) {
+            Ok(()) => {
+                frame.decode_blocks(&mut src, BlockDecodingStrategy::All).unwrap();
+                out.extend(frame.collect().unwrap_or_default());
+            }
+            Err(FrameDecoderError::ReadFrameHeaderError(ReadFrameHeaderError::SkipFrame {
+                length, ..
+            })) => src = &src[length as usize..],
+            Err(e) => panic!("segment {seq}: {e}"),
+        }
+    }
+    out
+}
+
 /// A container's log keeps only its newest output: at most SHARDS_LOG_MAX_FILE segments of
 /// SHARDS_LOG_MAX_SIZE bytes, as Docker's `local` driver keeps `max-file` of `max-size`.
 /// `logs` shows what is kept, `--tail` its last lines, and a follower gets every byte once
@@ -4806,7 +4836,8 @@ fn a_log_keeps_its_newest_output_within_its_retention() {
     assert!(!dir.join("log").exists() && !dir.join("log.idx").exists());
     let mut payload = 0u64;
     for seq in &seqs {
-        let log = std::fs::metadata(dir.join(format!("log.{seq}"))).unwrap().len();
+        // Compressed once rotated (D162), on the daemon's own time: as written, or not.
+        let log = segment_log(&dir, *seq).len() as u64;
         let records = std::fs::metadata(dir.join(format!("log.{seq}.idx")))
             .unwrap()
             .len()
@@ -10970,6 +11001,1203 @@ fn a_run_attaches_the_streams_it_asks_for() {
     assert_eq!(shown.stdout, "false true true\n", "{shown}");
 }
 
+/// A run's log compressed and queued as its options say (D162). Its rotated segments are
+/// compressed, seekably, unless its driver is json-file, which compresses them only when
+/// asked (as Docker's does, though Docker refuses json-file's `compress` without a
+/// `max-size`). `logs` reads them back whole and from their middle (`--tail`). A
+/// non-blocking log never holds up its run: what it keeps and what it drops add up to the
+/// run's output, and `logs` says what it dropped. Its refusals are in shards' words.
+#[test]
+fn a_runs_log_is_compressed_and_queued_as_its_options_say() {
+    let Some((home, image)) = home("containers-log-packing") else {
+        return;
+    };
+    let shards = |args: &[&str]| shards_in(&home, args);
+    let dir_of = |name: &str| {
+        let id = shards(&["inspect", "-f", "{{.Id}}", name]).stdout;
+        home.join("containers").join(id.trim())
+    };
+    let names = |dir: &Path| {
+        let mut names: Vec<String> = std::fs::read_dir(dir)
+            .unwrap()
+            .filter_map(|e| e.ok()?.file_name().into_string().ok())
+            .filter(|n| n.starts_with("log") && !n.ends_with(".idx"))
+            .collect();
+        names.sort();
+        names
+    };
+    // Every segment but the newest compressed, by the packer's thread, as they rotate.
+    let packed = |dir: &Path| {
+        let deadline = Instant::now() + Duration::from_secs(60);
+        loop {
+            let names = names(dir);
+            let plain = names.iter().filter(|n| !n.ends_with(".zst")).count();
+            if plain == 1 || Instant::now() > deadline {
+                return names;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    };
+    // 30,000 lines through segments of 64,000 bytes, four kept.
+    let rotating = run_in(
+        &home,
+        &image,
+        &[
+            "--name",
+            "rotating",
+            "--log-opt",
+            "max-size=64k",
+            "--log-opt",
+            "max-file=4",
+        ],
+        &["count", "30000"],
+    );
+    assert_eq!(rotating.status, Some(0), "{rotating}");
+    let kept = packed(&dir_of("rotating"));
+    assert_eq!(kept.len(), 4, "{kept:?}");
+    assert_eq!(kept.iter().filter(|n| n.ends_with(".zst")).count(), 3, "{kept:?}");
+    let logged = shards(&["logs", "rotating"]);
+    assert_eq!((logged.status, logged.stderr.as_str()), (Some(0), ""), "{logged}");
+    // What its segments hold, compressed or not, past their records' heads: the output's
+    // newest, all of it, each segment filled to its size but the newest.
+    let dir = dir_of("rotating");
+    let mut seqs: Vec<u64> = std::fs::read_dir(&dir)
+        .unwrap()
+        .filter_map(|e| {
+            let name = e.unwrap().file_name().into_string().unwrap();
+            name.strip_prefix("log.")?.strip_suffix(".idx")?.parse().ok()
+        })
+        .collect();
+    seqs.sort_unstable();
+    let mut payload = 0;
+    for (i, seq) in seqs.iter().enumerate() {
+        let log = segment_log(&dir, *seq).len() as u64;
+        let records = std::fs::metadata(dir.join(format!("log.{seq}.idx")))
+            .unwrap()
+            .len()
+            / 8;
+        // Filled until less is left than a record's head and a byte.
+        if i + 1 < seqs.len() {
+            assert!(
+                (64_000 - 13..=64_000).contains(&log),
+                "segment {seq}: {log} bytes"
+            );
+        }
+        payload += log - 13 * records;
+    }
+    assert_eq!(logged.stdout.len() as u64, payload);
+    assert!(
+        rotating.stdout.ends_with(&logged.stdout),
+        "{} bytes logged: not the output's newest",
+        logged.stdout.len()
+    );
+    // Its last lines, from the middle of a compressed segment.
+    let tail = shards(&["logs", "--tail", "12000", "rotating"]);
+    let want: Vec<&str> = rotating.stdout.lines().skip(30000 - 12000).collect();
+    assert_eq!(tail.stdout.lines().collect::<Vec<_>>(), want);
+    // json-file keeps them as written, unless asked to compress them.
+    for (compress, zst) in [(None, 0), (Some("compress=true"), 3)] {
+        let name = format!("json-{}", zst);
+        let mut flags = vec![
+            "--name",
+            name.as_str(),
+            "--log-driver",
+            "json-file",
+            "--log-opt",
+            "max-size=64k",
+            "--log-opt",
+            "max-file=4",
+        ];
+        if let Some(c) = compress {
+            flags.extend(["--log-opt", c]);
+        }
+        let r = run_in(&home, &image, &flags, &["count", "30000"]);
+        assert_eq!(r.status, Some(0), "{r}");
+        let kept = if zst > 0 {
+            packed(&dir_of(&name))
+        } else {
+            names(&dir_of(&name))
+        };
+        assert_eq!(
+            kept.iter().filter(|n| n.ends_with(".zst")).count(),
+            zst,
+            "{compress:?}: {kept:?}"
+        );
+        let logged = shards(&["logs", &name]);
+        assert!(r.stdout.ends_with(&logged.stdout), "{compress:?}");
+    }
+    // Non-blocking, a queue of none: what the log kept and what it dropped are the output.
+    let queued = run_in(
+        &home,
+        &image,
+        &[
+            "--name",
+            "queued",
+            "--log-opt",
+            "mode=non-blocking",
+            "--log-opt",
+            "max-buffer-size=0",
+            "--log-opt",
+            "max-size=10m",
+        ],
+        &["count", "30000"],
+    );
+    assert_eq!(queued.status, Some(0), "{queued}");
+    let logged = shards(&["logs", "queued"]);
+    assert_eq!(logged.status, Some(0), "{logged}");
+    let dropped: usize = match logged.stderr.as_str() {
+        "" => 0,
+        said => said
+            .strip_prefix("shards: ")
+            .and_then(|s| s.split_once(" bytes of queued's output were dropped, as they came while its log's queue was full (--log-opt mode=non-blocking)\n"))
+            .and_then(|(n, rest)| rest.is_empty().then(|| n.parse().ok()).flatten())
+            .unwrap_or_else(|| panic!("{logged}")),
+    };
+    assert_eq!(
+        logged.stdout.len() + dropped,
+        queued.stdout.len(),
+        "{dropped} dropped"
+    );
+    // A queue it never fills: all of it, and nothing said.
+    let roomy = run_in(
+        &home,
+        &image,
+        &[
+            "--name",
+            "roomy",
+            "--log-opt",
+            "mode=non-blocking",
+            "--log-opt",
+            "max-buffer-size=4m",
+            "--log-opt",
+            "max-size=10m",
+        ],
+        &["count", "30000"],
+    );
+    assert_eq!(roomy.status, Some(0), "{roomy}");
+    let logged = shards(&["logs", "roomy"]);
+    assert_eq!((logged.status, logged.stderr.as_str()), (Some(0), ""), "{logged}");
+    assert_eq!(logged.stdout, roomy.stdout);
+    for (flags, said) in [
+        (
+            &["--log-opt", "compress=true", "--log-opt", "max-file=1"][..],
+            "shards: --log-opt compress=true: its log is one file (max-file 1), never rotated",
+        ),
+        (
+            &[
+                "--log-opt",
+                "mode=non-blocking",
+                "--log-opt",
+                "max-buffer-size=lots",
+            ],
+            "shards: --log-opt max-buffer-size=lots: a size",
+        ),
+        (
+            &["--log-opt", "max-buffer-size=1m"],
+            "shards: --log-opt max-buffer-size: a buffer is non-blocking mode's",
+        ),
+    ] {
+        let r = run_in(&home, &image, flags, &["exit", "0"]);
+        assert_eq!(r.status, Some(125), "{flags:?}: {r}");
+        assert!(r.stderr.starts_with(said), "{flags:?}: {r}");
+    }
+}
+
+/// `listener`'s first connection, within [`TIMEOUT`]: none where none comes, which a test
+/// then fails on, not waits for ever.
+fn accept_within(listener: &std::net::TcpListener) -> Option<std::net::TcpStream> {
+    listener.set_nonblocking(true).unwrap();
+    let deadline = Instant::now() + TIMEOUT;
+    loop {
+        match listener.accept() {
+            Ok((conn, _)) => {
+                conn.set_nonblocking(false).unwrap();
+                return Some(conn);
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock && Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            Err(_) => return None,
+        }
+    }
+}
+
+/// What a syslog server reads on `listener`'s first connection: its lines until `lines`
+/// have come, or all it gets until the connection ends; none where none comes.
+fn syslog_lines(listener: std::net::TcpListener, lines: usize) -> std::thread::JoinHandle<Vec<String>> {
+    std::thread::spawn(move || {
+        let Some(conn) = accept_within(&listener) else {
+            return Vec::new();
+        };
+        conn.set_read_timeout(Some(TIMEOUT)).unwrap();
+        let mut read = BufReader::new(conn);
+        let mut got = Vec::new();
+        while got.len() < lines {
+            let mut line = String::new();
+            if read.read_line(&mut line).unwrap() == 0 {
+                break;
+            }
+            got.push(line);
+        }
+        got.sort();
+        got
+    })
+}
+
+/// A port nothing listens on now, which a test may listen on later.
+fn free_port() -> u16 {
+    std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port()
+}
+
+/// A run's log sent to syslog (D163): by the daemon, from shards' store, so that its run
+/// waits for no server. Each line is a message as Docker's syslog driver sends it:
+/// - over UDP, TCP, TLS (octet-counted) and a unix datagram socket;
+/// - its severity info for stdout and err for stderr, of the facility asked for;
+/// - its tag as asked, else the container's short ID;
+/// - stamped with when its output came (Docker stamps when it sends);
+/// - naming this host (Docker names its socket's address and port);
+/// - a line longer than 16 KiB in parts.
+///
+/// One sent to a server that comes up only after its run gets there, and so does one
+/// whose daemon restarted meanwhile: Docker's would not start without its server, and
+/// would lose what was not yet sent. `logs` reads the local copy, and refuses where
+/// `cache-disabled` keeps it. The refusals are in shards' words.
+#[test]
+fn a_runs_log_is_sent_to_syslog_as_its_options_say() {
+    let Some((home, image)) = home("containers-syslog") else {
+        return;
+    };
+    let shards = |args: &[&str]| shards_in(&home, args);
+    let syslog = |name: &str, opts: &[&str], command: &[&str]| {
+        let mut flags = vec!["--name", name, "--log-driver", "syslog"];
+        for o in opts {
+            flags.extend(["--log-opt", o]);
+        }
+        let r = run_in(&home, &image, &flags, command);
+        assert_eq!(r.status, Some(0), "{name}: {r}");
+        r
+    };
+    // UDP, srslog's Unix format and its facility, daemon: info 30, err 27.
+    let udp = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+    udp.set_read_timeout(Some(TIMEOUT)).unwrap();
+    let datagram = |s: &std::net::UdpSocket| {
+        let mut b = vec![0u8; 1 << 16];
+        let n = s.recv(&mut b).unwrap();
+        String::from_utf8(b[..n].to_vec()).unwrap()
+    };
+    syslog(
+        "udp",
+        &[
+            &format!("syslog-address=udp://{}", udp.local_addr().unwrap()),
+            "tag={{.Name}}",
+        ],
+        &["streams", "out", "err"],
+    );
+    let mut got = [datagram(&udp), datagram(&udp)];
+    got.sort();
+    let unix =
+        regex::Regex::new(r"^<(\d+)>[A-Z][a-z]{2} [ \d]\d \d\d:\d\d:\d\d udp\[\d+\]: (\w+)\n$").unwrap();
+    let said: Vec<(String, String)> = got
+        .iter()
+        .map(|m| {
+            let c = unix.captures(m).unwrap_or_else(|| panic!("{m:?}"));
+            (c[1].to_string(), c[2].to_string())
+        })
+        .collect();
+    assert_eq!(said, [("27".into(), "err".into()), ("30".into(), "out".into())]);
+    assert_eq!(shards(&["logs", "udp"]).stdout, "out\n");
+    assert_eq!(shards(&["inspect", "-f", "{{.LogPath}}", "udp"]).stdout, "\n");
+
+    // TCP, RFC 5424 to the microsecond, local0: its tag the short ID, its host this one's,
+    // its time its output's.
+    let tcp = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = format!("syslog-address=tcp://{}", tcp.local_addr().unwrap());
+    let reading = syslog_lines(tcp, 2);
+    syslog(
+        "tcp",
+        &[&address, "syslog-format=rfc5424micro", "syslog-facility=local0"],
+        &["streams", "out", "err"],
+    );
+    let got = reading.join().unwrap();
+    let id = shards(&["inspect", "-f", "{{.Id}}", "tcp"]).stdout;
+    let short = id.get(..12).unwrap();
+    let micro = regex::Regex::new(r"^<(\d+)>1 (\S+) (\S+) (\S+) (\d+) (\S+) - (\w+)\n$").unwrap();
+    let stamped = shards(&["logs", "-t", "tcp"]);
+    for m in &got {
+        let c = micro.captures(m).unwrap_or_else(|| panic!("{m:?}"));
+        let (pri, time, host, app, msgid, line) = (&c[1], &c[2], &c[3], &c[4], &c[6], &c[7]);
+        assert_eq!((app, msgid), (short, short), "{m:?}");
+        assert!(
+            !host.is_empty() && !host.contains(':'),
+            "a host's name, not an address: {m:?}"
+        );
+        let pri: u32 = pri.parse().unwrap();
+        assert_eq!(
+            (pri >> 3, pri & 7),
+            (16, if line == "err" { 3 } else { 6 }),
+            "{m:?}"
+        );
+        // Its time is its output's, as `logs -t` says it, to the microsecond.
+        let rfc3339 = &time::format_description::well_known::Rfc3339;
+        let sent = time::OffsetDateTime::parse(time, rfc3339)
+            .unwrap()
+            .unix_timestamp_nanos();
+        let kept = [&stamped.stdout, &stamped.stderr]
+            .iter()
+            .flat_map(|s| s.lines())
+            .find_map(|l| l.strip_suffix(&format!(" {line}")))
+            .unwrap_or_else(|| panic!("{stamped}"));
+        let kept = time::OffsetDateTime::parse(kept, rfc3339)
+            .unwrap()
+            .unix_timestamp_nanos();
+        assert_eq!(sent, kept / 1000 * 1000, "{m:?}: {stamped}");
+    }
+
+    // TLS to a server whose CA it is given, RFC 5424: octet-counted (RFC 5425).
+    let now = time::OffsetDateTime::now_utc();
+    let mut ca = rcgen::CertificateParams::new(Vec::new()).unwrap();
+    ca.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+    ca.key_usages = vec![
+        rcgen::KeyUsagePurpose::KeyCertSign,
+        rcgen::KeyUsagePurpose::DigitalSignature,
+    ];
+    ca.not_before = now - time::Duration::hours(1);
+    ca.not_after = now + time::Duration::days(1);
+    let ca_key = rcgen::KeyPair::generate().unwrap();
+    let ca = rcgen::CertifiedIssuer::self_signed(ca, ca_key).unwrap();
+    let mut leaf = rcgen::CertificateParams::new(vec!["localhost".into()]).unwrap();
+    leaf.not_before = now - time::Duration::hours(1);
+    leaf.not_after = now + time::Duration::days(1);
+    leaf.extended_key_usages = vec![rcgen::ExtendedKeyUsagePurpose::ServerAuth];
+    let leaf_key = rcgen::KeyPair::generate().unwrap();
+    let cert = leaf.signed_by(&leaf_key, &ca).unwrap();
+    let ca_file = home.join("syslog-ca.pem");
+    std::fs::write(&ca_file, ca.pem()).unwrap();
+    let server = std::sync::Arc::new(
+        rustls::ServerConfig::builder_with_provider(std::sync::Arc::new(
+            rustls::crypto::aws_lc_rs::default_provider(),
+        ))
+        .with_safe_default_protocol_versions()
+        .unwrap()
+        .with_no_client_auth()
+        .with_single_cert(
+            vec![cert.der().clone()],
+            rustls::pki_types::PrivateKeyDer::Pkcs8(rustls::pki_types::PrivatePkcs8KeyDer::from(
+                leaf_key.serialize_der(),
+            )),
+        )
+        .unwrap(),
+    );
+    let tls = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = tls.local_addr().unwrap().port();
+    let reading = std::thread::spawn(move || {
+        let Some(conn) = accept_within(&tls) else {
+            return (String::new(), Err(std::io::ErrorKind::NotConnected));
+        };
+        conn.set_read_timeout(Some(TIMEOUT)).unwrap();
+        let mut stream = rustls::StreamOwned::new(rustls::ServerConnection::new(server).unwrap(), conn);
+        let mut got = Vec::new();
+        // Its frames, each its length, a space, and its message; then its end: Ok at TLS's
+        // close_notify, an error at a reset or an end without it.
+        let ended = std::io::Read::read_to_end(&mut stream, &mut got)
+            .map(|_| ())
+            .map_err(|e| e.kind());
+        (String::from_utf8(got).unwrap(), ended)
+    });
+    syslog(
+        "tls",
+        &[
+            &format!("syslog-address=tcp+tls://localhost:{port}"),
+            &format!("syslog-tls-ca-cert={}", ca_file.display()),
+            "syslog-format=rfc5424",
+            "tag=tls",
+        ],
+        &["streams", "out", "err"],
+    );
+    // Its run's end ends its connection only once the server has all of it, cleanly: a
+    // socket closed with the server's session tickets unread resets the connection, and
+    // took the run's last line with it (D163's CI, PM M233).
+    let (mut framed, ended) = reading.join().unwrap();
+    assert_eq!(ended, Ok(()), "{framed:?}");
+    let mut messages = Vec::new();
+    while !framed.is_empty() {
+        let (len, rest) = framed.split_once(' ').unwrap_or_else(|| panic!("{framed:?}"));
+        let len: usize = len.parse().unwrap_or_else(|_| panic!("{framed:?}"));
+        messages.push(rest.get(..len).unwrap().to_string());
+        framed = rest.get(len..).unwrap().to_string();
+    }
+    messages.sort();
+    let tls_said = regex::Regex::new(r"^<(\d+)>1 \S+ \S+ tls \d+ tls - (\w+)\n$").unwrap();
+    let said: Vec<(String, String)> = messages
+        .iter()
+        .map(|m| {
+            let c = tls_said.captures(m).unwrap_or_else(|| panic!("{m:?}"));
+            (c[1].to_string(), c[2].to_string())
+        })
+        .collect();
+    assert_eq!(said, [("27".into(), "err".into()), ("30".into(), "out".into())]);
+
+    // A unix datagram socket; a line of 40,000 bytes in parts of 16 KiB.
+    let sockets = TempDir::new("sl");
+    let gram = sockets.join("g");
+    let unixgram = std::os::unix::net::UnixDatagram::bind(&gram).unwrap();
+    unixgram.set_read_timeout(Some(TIMEOUT)).unwrap();
+    // Room for a part whole: macOS's receive buffer takes no datagram longer (PM M232).
+    let room: libc::c_int = 1 << 16;
+    // SAFETY: setsockopt(2) of an int from `room` on a socket this test holds.
+    let set = unsafe {
+        libc::setsockopt(
+            std::os::fd::AsRawFd::as_raw_fd(&unixgram),
+            libc::SOL_SOCKET,
+            libc::SO_RCVBUF,
+            (&raw const room).cast(),
+            std::mem::size_of::<libc::c_int>() as libc::socklen_t,
+        )
+    };
+    assert_eq!(set, 0);
+    syslog(
+        "gram",
+        &[&format!("syslog-address=unixgram://{}", gram.display()), "tag=g"],
+        &["wide", "40000"],
+    );
+    let mut parts = Vec::new();
+    for _ in 0..3 {
+        let mut b = vec![0u8; 1 << 16];
+        let n = unixgram.recv(&mut b).unwrap();
+        let m = String::from_utf8(b[..n].to_vec()).unwrap();
+        let body = m.split_once("]: ").unwrap().1.trim_end_matches('\n');
+        assert!(body.bytes().all(|b| b == b'x'), "{m:?}");
+        parts.push(body.len());
+    }
+    assert_eq!(parts, [16384, 16384, 7232]);
+
+    // A server that comes up only after the run: its log waits in the store, and goes.
+    let port = free_port();
+    syslog(
+        "later",
+        &[&format!("syslog-address=tcp://127.0.0.1:{port}"), "tag=later"],
+        &["streams", "out", "err"],
+    );
+    let reading = syslog_lines(std::net::TcpListener::bind(("127.0.0.1", port)).unwrap(), 2);
+    let got = reading.join().unwrap();
+    assert!(
+        got.len() == 2 && got[0].ends_with(": err\n") && got[1].ends_with(": out\n"),
+        "{got:?}"
+    );
+
+    // One whose daemon stops before its server comes up: the next daemon sends it.
+    let port = free_port();
+    syslog(
+        "restarted",
+        &[&format!("syslog-address=tcp://127.0.0.1:{port}"), "tag=restarted"],
+        &["streams", "out", "err"],
+    );
+    let stopped = without_vms(&home, &["daemon", "stop"]);
+    assert_eq!(stopped.status, Some(0), "{stopped}");
+    let reading = syslog_lines(std::net::TcpListener::bind(("127.0.0.1", port)).unwrap(), 2);
+    assert_eq!(shards(&["ps", "-a", "-q"]).status, Some(0));
+    let got = reading.join().unwrap();
+    assert!(
+        got.len() == 2 && got[0].ends_with(": err\n") && got[1].ends_with(": out\n"),
+        "{got:?}"
+    );
+
+    // Started again: its next run's lines go too, as the first's have.
+    syslog(
+        "again",
+        &[
+            &format!("syslog-address=udp://{}", udp.local_addr().unwrap()),
+            "tag=again",
+        ],
+        &["streams", "one", "two"],
+    );
+    let mut first = [datagram(&udp), datagram(&udp)];
+    first.sort();
+    let started = shards(&["start", "-a", "again"]);
+    assert_eq!(started.status, Some(0), "{started}");
+    let mut next = [datagram(&udp), datagram(&udp)];
+    next.sort();
+    // Sorted, stderr's err (27) before stdout's info (30).
+    for got in [first, next] {
+        assert!(
+            got[0].ends_with(": two\n") && got[1].ends_with(": one\n"),
+            "{got:?}"
+        );
+    }
+
+    // Its local copy kept from `logs`.
+    syslog(
+        "uncached",
+        &[
+            &format!("syslog-address=udp://{}", udp.local_addr().unwrap()),
+            "cache-disabled=true",
+        ],
+        &["streams", "out", "err"],
+    );
+    let mut got = [datagram(&udp), datagram(&udp)];
+    got.sort();
+    assert!(
+        got[0].ends_with(": err\n") && got[1].ends_with(": out\n"),
+        "{got:?}"
+    );
+    let refused = shards(&["logs", "uncached"]);
+    assert_eq!(
+        (refused.status, refused.stderr.as_str()),
+        (
+            Some(1),
+            "shards: uncached keeps no copy of its log: it was run with --log-opt cache-disabled=true, and its log goes to syslog alone\n"
+        ),
+        "{refused}"
+    );
+
+    for (opts, said) in [
+        (
+            &["syslog-tls-skip-verify=true"][..],
+            "shards: --log-opt syslog-tls-skip-verify: shards sends a log only to a syslog server whose certificate it verifies",
+        ),
+        (
+            &["syslog-address=http://h"],
+            "shards: --log-opt syslog-address=http://h: the scheme http",
+        ),
+        (
+            &["syslog-facility=24"],
+            "shards: --log-opt syslog-facility=24: a facility's name",
+        ),
+        (
+            &["max-size=1m"],
+            "shards: --log-opt max-size: --log-driver syslog takes syslog-address",
+        ),
+        (
+            &[
+                "syslog-address=tcp+tls://localhost:6514",
+                "syslog-tls-ca-cert=/nonexistent/ca.pem",
+            ],
+            "shards: --log-opt syslog-tls-ca-cert=/nonexistent/ca.pem: ",
+        ),
+    ] {
+        let mut flags = vec!["--log-driver", "syslog"];
+        for o in opts {
+            flags.extend(["--log-opt", o]);
+        }
+        let r = run_in(&home, &image, &flags, &["exit", "0"]);
+        assert_eq!(r.status, Some(125), "{opts:?}: {r}");
+        assert!(r.stderr.starts_with(said), "{opts:?}: {r}");
+    }
+}
+
+/// The GELF messages of `datagrams`, as a GELF server reads them: chunks gathered by
+/// their message's ID, then gzip's, zlib's or as they are; each message's JSON.
+fn gelf_messages(datagrams: &[Vec<u8>]) -> Vec<serde_json::Value> {
+    use std::io::Read as _;
+    let open = |data: &[u8]| -> serde_json::Value {
+        let mut text = Vec::new();
+        match data {
+            [0x1f, 0x8b, ..] => {
+                flate2::read::GzDecoder::new(data).read_to_end(&mut text).unwrap();
+            }
+            [0x78, ..] => {
+                flate2::read::ZlibDecoder::new(data)
+                    .read_to_end(&mut text)
+                    .unwrap();
+            }
+            _ => text = data.to_vec(),
+        }
+        serde_json::from_slice(&text).unwrap()
+    };
+    // Each message's chunks, by its ID: each chunk's number, how many, and its bytes.
+    type Chunks = Vec<(u8, u8, Vec<u8>)>;
+    let mut chunked: std::collections::BTreeMap<Vec<u8>, Chunks> = Default::default();
+    let mut got = Vec::new();
+    for d in datagrams {
+        match d.as_slice() {
+            [0x1e, 0x0f, rest @ ..] => {
+                let parts = chunked.entry(rest[..8].to_vec()).or_default();
+                parts.push((rest[8], rest[9], rest[10..].to_vec()));
+                if parts.len() == usize::from(rest[9]) {
+                    parts.sort();
+                    let whole: Vec<u8> = parts.iter().flat_map(|p| p.2.clone()).collect();
+                    got.push(open(&whole));
+                }
+            }
+            _ => got.push(open(d)),
+        }
+    }
+    got
+}
+
+/// A run's log sent to a GELF server (D164), from shards' store by the daemon as syslog's
+/// is (D163): over UDP gzipped, as Docker's is unless told, and uncompressed in chunks;
+/// over TCP, each message followed by a NUL. Each message is GELF 1.1 with the container's
+/// own fields and the attributes asked for, as Docker's gelf driver sends it, stamped with
+/// when its output came, to the millisecond.
+#[test]
+fn a_runs_log_is_sent_to_gelf_as_its_options_say() {
+    let Some((home, image)) = home("containers-gelf") else {
+        return;
+    };
+    let shards = |args: &[&str]| shards_in(&home, args);
+    let gelf = |name: &str, opts: &[&str], command: &[&str]| {
+        let mut flags = vec!["--name", name, "--log-driver", "gelf", "--label", "team=logs"];
+        for o in opts {
+            flags.extend(["--log-opt", o]);
+        }
+        let r = run_in(&home, &image, &flags, command);
+        assert_eq!(r.status, Some(0), "{name}: {r}");
+        r
+    };
+    let udp = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+    udp.set_read_timeout(Some(TIMEOUT)).unwrap();
+    let address = format!("gelf-address=udp://{}", udp.local_addr().unwrap());
+    let receive = |n: usize| {
+        let mut datagrams = Vec::new();
+        while gelf_messages(&datagrams).len() < n {
+            let mut b = vec![0u8; 1 << 16];
+            let got = udp.recv(&mut b).unwrap();
+            b.truncate(got);
+            datagrams.push(b);
+        }
+        let mut messages = gelf_messages(&datagrams);
+        messages.sort_by_key(|m| m["level"].as_u64());
+        messages
+    };
+    gelf(
+        "udp",
+        &[&address, "labels=team", "tag={{.Name}}"],
+        &["streams", "out", "err"],
+    );
+    let got = receive(2);
+    let field = |path: &str, name: &str| {
+        let r = shards(&["inspect", "-f", path, name]);
+        r.stdout.trim_end().to_string()
+    };
+    let stamped = shards(&["logs", "-t", "udp"]);
+    for (m, (line, level)) in got.iter().zip([("err", 3), ("out", 6)]) {
+        assert_eq!(m["version"], "1.1", "{m}");
+        assert_eq!(
+            (m["short_message"].as_str(), m["level"].as_u64()),
+            (Some(line), Some(level)),
+            "{m}"
+        );
+        assert!(!m["host"].as_str().unwrap().is_empty(), "{m}");
+        assert_eq!(m["_container_id"], field("{{.Id}}", "udp").as_str(), "{m}");
+        assert_eq!(m["_container_name"], "udp", "{m}");
+        assert_eq!(m["_image_id"], field("{{.Image}}", "udp").as_str(), "{m}");
+        assert_eq!(m["_image_name"], image.as_str(), "{m}");
+        assert_eq!(m["_command"], "/bin/testguest streams out err", "{m}");
+        assert_eq!(m["_tag"], "udp", "{m}");
+        assert_eq!(m["_created"], field("{{.Created}}", "udp").as_str(), "{m}");
+        assert_eq!(m["_team"], "logs", "{m}");
+        // Its time its output's, as `logs -t` says it, to the millisecond.
+        let kept = [&stamped.stdout, &stamped.stderr]
+            .iter()
+            .flat_map(|s| s.lines())
+            .find_map(|l| l.strip_suffix(&format!(" {line}")))
+            .unwrap_or_else(|| panic!("{stamped}"));
+        let rfc3339 = &time::format_description::well_known::Rfc3339;
+        let kept_ms = time::OffsetDateTime::parse(kept, rfc3339)
+            .unwrap()
+            .unix_timestamp_nanos()
+            / 1_000_000;
+        let sent_ms = (m["timestamp"].as_f64().unwrap() * 1000.0).round() as i128;
+        assert_eq!(sent_ms, kept_ms, "{m}: {stamped}");
+    }
+
+    // Uncompressed: a line of 40,000 bytes, in parts of 16 KiB, each its own message in
+    // chunks.
+    gelf(
+        "wide",
+        &[&address, "gelf-compression-type=none"],
+        &["wide", "40000"],
+    );
+    let parts: Vec<usize> = receive(3)
+        .iter()
+        .map(|m| m["short_message"].as_str().unwrap().len())
+        .collect();
+    assert_eq!(parts, [16384, 16384, 7232]);
+
+    // TCP: each message followed by a NUL.
+    let tcp = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = format!("gelf-address=tcp://{}", tcp.local_addr().unwrap());
+    let reading = std::thread::spawn(move || {
+        let conn = accept_within(&tcp).unwrap();
+        conn.set_read_timeout(Some(TIMEOUT)).unwrap();
+        let mut read = BufReader::new(conn);
+        let mut got = Vec::new();
+        while got.len() < 2 {
+            let mut m = Vec::new();
+            if read.read_until(0, &mut m).unwrap() == 0 {
+                break;
+            }
+            assert_eq!(m.pop(), Some(0));
+            got.push(serde_json::from_slice::<serde_json::Value>(&m).unwrap());
+        }
+        got
+    });
+    gelf("tcp", &[&address], &["streams", "out", "err"]);
+    let mut got = reading.join().unwrap();
+    got.sort_by_key(|m| m["level"].as_u64());
+    let lines: Vec<&str> = got.iter().map(|m| m["short_message"].as_str().unwrap()).collect();
+    assert_eq!(lines, ["err", "out"]);
+
+    for (opts, said) in [
+        (&[][..], "shards: --log-opt gelf-address: where to send the log"),
+        (
+            &["gelf-address=udp://h"],
+            "shards: --log-opt gelf-address=udp://h: a host and its port",
+        ),
+        (
+            &["gelf-address=tcp://h:1", "gelf-compression-type=gzip"],
+            "shards: --log-opt gelf-compression-type: compression is UDP's",
+        ),
+        (
+            &["gelf-address=udp://h:1", "gelf-tcp-max-reconnect=2"],
+            "shards: --log-opt gelf-tcp-max-reconnect: TCP's",
+        ),
+    ] {
+        let mut flags = vec!["--log-driver", "gelf"];
+        for o in opts {
+            flags.extend(["--log-opt", o]);
+        }
+        let r = run_in(&home, &image, &flags, &["exit", "0"]);
+        assert_eq!(r.status, Some(125), "{opts:?}: {r}");
+        assert!(r.stderr.starts_with(said), "{opts:?}: {r}");
+    }
+}
+
+/// The events of Fluentd's forward protocol a server reads on `conn` (Message mode: tag,
+/// time, record, options), until `count` have come: each its tag, its time in nanoseconds
+/// (whole seconds, or an EventTime's), its record, and its options. Where the options ask
+/// for an ack, it is sent back, as fluentd does.
+fn fluentd_events(
+    conn: &mut (impl std::io::Read + std::io::Write),
+    count: usize,
+) -> Vec<(String, i128, serde_json::Value, serde_json::Value)> {
+    fn read<const N: usize>(r: &mut impl std::io::Read) -> [u8; N] {
+        let mut b = [0u8; N];
+        r.read_exact(&mut b).unwrap();
+        b
+    }
+    fn value(r: &mut impl std::io::Read) -> serde_json::Value {
+        use serde_json::Value;
+        let [t] = read::<1>(r);
+        let len = |r: &mut dyn FnMut(usize) -> Vec<u8>, n| {
+            r(n).iter().fold(0usize, |a, &x| a << 8 | usize::from(x))
+        };
+        let mut take = |n: usize| {
+            let mut b = vec![0u8; n];
+            r.read_exact(&mut b).unwrap();
+            b
+        };
+        match t {
+            0x00..=0x7f => Value::from(t),
+            0x80..=0x8f | 0xde => {
+                let n = if t == 0xde {
+                    len(&mut take, 2)
+                } else {
+                    usize::from(t & 0x0f)
+                };
+                let mut m = serde_json::Map::new();
+                for _ in 0..n {
+                    let k = value(r);
+                    let v = value(r);
+                    m.insert(k.as_str().unwrap().to_string(), v);
+                }
+                Value::Object(m)
+            }
+            0x90..=0x9f => Value::Array((0..usize::from(t & 0x0f)).map(|_| value(r)).collect()),
+            0xa0..=0xbf | 0xd9 | 0xda | 0xdb => {
+                let n = match t {
+                    0xd9 => len(&mut take, 1),
+                    0xda => len(&mut take, 2),
+                    0xdb => len(&mut take, 4),
+                    _ => usize::from(t & 0x1f),
+                };
+                Value::String(String::from_utf8(take(n)).unwrap())
+            }
+            0xd2 => Value::from(i32::from_be_bytes(take(4).try_into().unwrap())),
+            0xd7 => {
+                assert_eq!(take(1), [0], "EventTime is extension 0");
+                let b = take(8);
+                let secs = u32::from_be_bytes(b[..4].try_into().unwrap());
+                let nanos = u32::from_be_bytes(b[4..].try_into().unwrap());
+                serde_json::json!({ "secs": secs, "nanos": nanos })
+            }
+            t => panic!("a MessagePack form {t:#x} no event holds"),
+        }
+    }
+    let mut events = Vec::new();
+    while events.len() < count {
+        let e = value(conn);
+        let [tag, time, record, option] =
+            <[serde_json::Value; 4]>::try_from(e.as_array().unwrap().clone()).unwrap();
+        let nanos = match &time {
+            serde_json::Value::Number(n) => i128::from(n.as_i64().unwrap()) * 1_000_000_000,
+            t => {
+                i128::from(t["secs"].as_u64().unwrap()) * 1_000_000_000
+                    + i128::from(t["nanos"].as_u64().unwrap())
+            }
+        };
+        if let Some(chunk) = option.get("chunk").and_then(|c| c.as_str()) {
+            let mut ack = vec![0x81, 0xa3, b'a', b'c', b'k', 0xa0 | chunk.len() as u8];
+            ack.extend_from_slice(chunk.as_bytes());
+            conn.write_all(&ack).unwrap();
+        }
+        events.push((tag.as_str().unwrap().to_string(), nanos, record, option));
+    }
+    events.sort_by_key(|e| e.2["source"] != "stderr");
+    events
+}
+
+/// A run's log sent to fluentd (D165), from shards' store by the daemon as syslog's is
+/// (D163): each line an event of Fluentd's forward protocol as Docker's fluentd driver
+/// sends it: its tag, its time (whole seconds, or to the nanosecond), its record (the
+/// container's ID and name, the stream, the line, the attributes asked for, and a part's
+/// place in a line longer than 16 KiB), and an ack asked for where told. Over TCP and a
+/// unix socket.
+#[test]
+fn a_runs_log_is_sent_to_fluentd_as_its_options_say() {
+    let Some((home, image)) = home("containers-fluentd") else {
+        return;
+    };
+    let shards = |args: &[&str]| shards_in(&home, args);
+    let fluentd = |name: &str, opts: &[&str], command: &[&str]| {
+        let mut flags = vec!["--name", name, "--log-driver", "fluentd", "--label", "team=logs"];
+        for o in opts {
+            flags.extend(["--log-opt", o]);
+        }
+        let r = run_in(&home, &image, &flags, command);
+        assert_eq!(r.status, Some(0), "{name}: {r}");
+    };
+    let rfc3339 = &time::format_description::well_known::Rfc3339;
+    let stamped = |name: &str, line: &str| {
+        let s = shards(&["logs", "-t", name]);
+        let at = [&s.stdout, &s.stderr]
+            .iter()
+            .flat_map(|o| o.lines())
+            .find_map(|l| l.strip_suffix(&format!(" {line}")).map(str::to_string))
+            .unwrap_or_else(|| panic!("{s}"));
+        time::OffsetDateTime::parse(&at, rfc3339)
+            .unwrap()
+            .unix_timestamp_nanos()
+    };
+    // TCP, to the nanosecond, an ack asked for each.
+    let tcp = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = format!("fluentd-address={}", tcp.local_addr().unwrap());
+    let reading = std::thread::spawn(move || {
+        let mut conn = accept_within(&tcp).unwrap();
+        conn.set_read_timeout(Some(TIMEOUT)).unwrap();
+        fluentd_events(&mut conn, 2)
+    });
+    fluentd(
+        "nanos",
+        &[
+            &address,
+            "fluentd-sub-second-precision=true",
+            "fluentd-request-ack=true",
+            "labels=team",
+            "tag={{.Name}}",
+        ],
+        &["streams", "out", "err"],
+    );
+    let id = shards(&["inspect", "-f", "{{.Id}}", "nanos"])
+        .stdout
+        .trim()
+        .to_string();
+    let events = reading.join().unwrap();
+    for ((tag, at, record, option), (line, source)) in
+        events.iter().zip([("err", "stderr"), ("out", "stdout")])
+    {
+        // Its tag the one asked for, which its record does not repeat (moby's fluentd sends
+        // logger.Info.ExtraAttributes, which leave it out).
+        assert_eq!(tag, "nanos", "its tag the one asked for");
+        assert_eq!(
+            record,
+            &serde_json::json!({
+                "container_id": id, "container_name": "/nanos", "source": source, "log": line, "team": "logs",
+            })
+        );
+        assert!(
+            option
+                .get("chunk")
+                .is_some_and(|c| c.as_str().is_some_and(|c| c.len() == 24)),
+            "{option}"
+        );
+        assert_eq!(*at, stamped("nanos", line), "its time its output's");
+    }
+
+    // A unix socket, whole seconds, a line of 40,000 bytes in parts.
+    let sockets = TempDir::new("fd");
+    let path = sockets.join("f");
+    let unix = std::os::unix::net::UnixListener::bind(&path).unwrap();
+    let reading = std::thread::spawn(move || {
+        let (mut conn, _) = unix.accept().unwrap();
+        conn.set_read_timeout(Some(TIMEOUT)).unwrap();
+        fluentd_events(&mut conn, 3)
+    });
+    fluentd(
+        "parts",
+        &[&format!("fluentd-address=unix://{}", path.display())],
+        &["wide", "40000"],
+    );
+    let events = reading.join().unwrap();
+    let id = events[0].2["partial_id"].clone();
+    for (i, (_, at, record, _)) in events.iter().enumerate() {
+        assert_eq!(record["log"].as_str().unwrap().len(), [16384, 16384, 7232][i]);
+        assert_eq!(record["partial_message"], "true");
+        assert_eq!(record["partial_id"], id);
+        assert_eq!(record["partial_ordinal"], (i + 1).to_string());
+        assert_eq!(record["partial_last"], if i == 2 { "true" } else { "false" });
+        assert_eq!(*at % 1_000_000_000, 0, "whole seconds");
+    }
+
+    for (opts, said) in [
+        (
+            &["fluentd-address=http://h:1"][..],
+            "shards: --log-opt fluentd-address=http://h:1: the scheme http",
+        ),
+        (
+            &["fluentd-address=tcp://h:1/x"],
+            "shards: --log-opt fluentd-address=tcp://h:1/x: a host and a port, without a path",
+        ),
+        (
+            &["fluentd-retry-wait=soon"],
+            "shards: --log-opt fluentd-retry-wait=soon: a duration",
+        ),
+    ] {
+        let mut flags = vec!["--log-driver", "fluentd"];
+        for o in opts {
+            flags.extend(["--log-opt", o]);
+        }
+        let r = run_in(&home, &image, &flags, &["exit", "0"]);
+        assert_eq!(r.status, Some(125), "{opts:?}: {r}");
+        assert!(r.stderr.starts_with(said), "{opts:?}: {r}");
+    }
+}
+
+/// An entry the journal's socket was sent: its fields in order, and, where it came in a
+/// memfd, whether that was sealed against every change, as journald takes one from a
+/// sender it cannot vouch for.
+#[cfg(target_os = "linux")]
+fn journal_entry(journal: &std::os::unix::net::UnixDatagram) -> (Vec<(String, String)>, Option<bool>) {
+    use std::os::fd::{AsRawFd as _, FromRawFd as _};
+    use std::os::unix::fs::FileExt as _;
+    let mut data = vec![0u8; 1 << 20];
+    let mut control = [0u64; 8];
+    let mut iov = libc::iovec {
+        iov_base: data.as_mut_ptr().cast(),
+        iov_len: data.len(),
+    };
+    // SAFETY: an all-zero msghdr is valid; its buffers outlive the call.
+    let mut msg: libc::msghdr = unsafe { std::mem::zeroed() };
+    msg.msg_iov = &mut iov;
+    msg.msg_iovlen = 1;
+    msg.msg_control = control.as_mut_ptr().cast();
+    msg.msg_controllen = std::mem::size_of_val(&control) as _;
+    // SAFETY: recvmsg(2) into the buffers above, on a socket this test holds.
+    let n = unsafe { libc::recvmsg(journal.as_raw_fd(), &mut msg, libc::MSG_CMSG_CLOEXEC) };
+    assert!(n >= 0, "{}", std::io::Error::last_os_error());
+    data.truncate(usize::try_from(n).unwrap());
+    let mut sealed = None;
+    // SAFETY: the control message recvmsg wrote, read as CMSG_* read one; its descriptor
+    // is new to this process, and owned here.
+    unsafe {
+        let cmsg = libc::CMSG_FIRSTHDR(&msg);
+        if !cmsg.is_null() && (*cmsg).cmsg_type == libc::SCM_RIGHTS {
+            let fd = libc::CMSG_DATA(cmsg).cast::<libc::c_int>().read_unaligned();
+            let file = std::fs::File::from_raw_fd(fd);
+            data = vec![0u8; usize::try_from(file.metadata().unwrap().len()).unwrap()];
+            file.read_exact_at(&mut data, 0).unwrap();
+            let all = libc::F_SEAL_SHRINK | libc::F_SEAL_GROW | libc::F_SEAL_WRITE | libc::F_SEAL_SEAL;
+            sealed = Some(libc::fcntl(fd, libc::F_GET_SEALS) & all == all);
+        }
+    }
+    let mut fields = Vec::new();
+    let mut rest = data.as_slice();
+    while !rest.is_empty() {
+        let end = rest.iter().position(|&c| c == b'\n' || c == b'=').unwrap();
+        let name = String::from_utf8(rest[..end].to_vec()).unwrap();
+        let (value, next) = if rest[end] == b'=' {
+            let nl = end + 1 + rest[end + 1..].iter().position(|&c| c == b'\n').unwrap();
+            (&rest[end + 1..nl], &rest[nl + 1..])
+        } else {
+            let len =
+                usize::try_from(u64::from_le_bytes(rest[end + 1..end + 9].try_into().unwrap())).unwrap();
+            let at = end + 9;
+            assert_eq!(rest[at + len], b'\n');
+            (&rest[at..at + len], &rest[at + len + 1..])
+        };
+        fields.push((name, String::from_utf8(value.to_vec()).unwrap()));
+        rest = next;
+    }
+    (fields, sealed)
+}
+
+/// A run's log sent to the journal (D166), at the socket `SHARDS_JOURNAL_SOCKET` names,
+/// where systemd's is not a test's to read: each line an entry of systemd's native
+/// protocol, its priority, its line, the container's fields, its output's time and its
+/// ordinal; the attributes asked for named as journal fields, and those journald drops or
+/// named as the driver's own left out; a long line's parts; an entry too long for a
+/// datagram in a sealed memfd. The journal is Linux's: macOS refuses the driver.
+#[test]
+fn a_runs_log_is_sent_to_journald_as_its_options_say() {
+    #[cfg(not(target_os = "linux"))]
+    {
+        let Some((home, image)) = home("containers-journald") else {
+            return;
+        };
+        let r = run_in(&home, &image, &["--log-driver", "journald"], &["exit", "0"]);
+        assert_eq!(r.status, Some(125), "{r}");
+        assert!(
+            r.stderr
+                .starts_with("shards: --log-driver journald: the journal is systemd's, on Linux"),
+            "{r}"
+        );
+    }
+    #[cfg(target_os = "linux")]
+    {
+        if cannot_run_vms() {
+            return;
+        }
+        let sockets = TempDir::new("jd");
+        let path = sockets.join("j");
+        let journal = std::os::unix::net::UnixDatagram::bind(&path).unwrap();
+        journal.set_read_timeout(Some(TIMEOUT)).unwrap();
+        let (image, _) = served();
+        let home = TempDir::new("containers-journald");
+        let (kernel, init) = (kernel(), guest_init());
+        // The daemon, which the first command starts, told where the journal is.
+        let env: [(&str, &OsStr); 4] = [
+            ("SHARDS_HOME", home.as_os_str()),
+            ("SHARDS_KERNEL", kernel.as_os_str()),
+            ("SHARDS_INIT", init.as_os_str()),
+            ("SHARDS_JOURNAL_SOCKET", path.as_os_str()),
+        ];
+        let pulled = run_shards_env(&[], &["pull", "-q", &image], &env, TIMEOUT);
+        assert_eq!(pulled.status, Some(0), "{}", pulled.stderr);
+        let journald = |name: &str, flags: &[&str], command: &[&str]| {
+            let mut all = vec!["--name", name, "--log-driver", "journald"];
+            all.extend(flags);
+            let r = run_in(&home, &image, &all, command);
+            assert_eq!(r.status, Some(0), "{name}: {r}");
+            shards_in(&home, &["inspect", "-f", "{{.Id}}", name])
+                .stdout
+                .trim()
+                .to_string()
+        };
+        let field = |fields: &[(String, String)], name: &str| -> Vec<String> {
+            fields
+                .iter()
+                .filter(|(n, _)| n == name)
+                .map(|(_, v)| v.clone())
+                .collect()
+        };
+
+        // A line on each stream: its priority, info or err; the container's fields, its tag
+        // the short ID; its time its output's; its ordinal from 1. An attribute asked for,
+        // named as a field; those left out: one journald drops (a digit first), one named
+        // as the driver's own MESSAGE.
+        let id = journald(
+            "streams",
+            &[
+                "--label",
+                "app.tier=web",
+                "--label",
+                "1x=y",
+                "--label",
+                "message=spoof",
+                "--log-opt",
+                "labels=app.tier,1x,message",
+            ],
+            &["streams", "out", "err"],
+        );
+        let short = id.get(..12).unwrap();
+        let mut entries = [journal_entry(&journal), journal_entry(&journal)];
+        entries.sort_by_key(|(fields, _)| field(fields, "MESSAGE"));
+        let stamped = shards_in(&home, &["logs", "-t", "streams"]);
+        let rfc3339 = &time::format_description::well_known::Rfc3339;
+        let mut ordinals = Vec::new();
+        for ((fields, sealed), (line, priority)) in entries.iter().zip([("err", "3"), ("out", "6")]) {
+            assert_eq!(*sealed, None, "a datagram: {fields:?}");
+            assert_eq!(field(fields, "MESSAGE"), [line], "{fields:?}");
+            assert_eq!(field(fields, "PRIORITY"), [priority]);
+            assert_eq!(field(fields, "CONTAINER_ID"), [short]);
+            assert_eq!(field(fields, "CONTAINER_ID_FULL"), [id.as_str()]);
+            assert_eq!(field(fields, "CONTAINER_NAME"), ["streams"]);
+            assert_eq!(field(fields, "CONTAINER_TAG"), [short]);
+            assert_eq!(field(fields, "SYSLOG_IDENTIFIER"), [short]);
+            assert_eq!(field(fields, "IMAGE_NAME"), [image.as_str()]);
+            assert_eq!(field(fields, "APP_TIER"), ["web"]);
+            assert!(field(fields, "1X").is_empty(), "{fields:?}");
+            let epoch = field(fields, "CONTAINER_LOG_EPOCH");
+            assert!(epoch.len() == 1 && epoch[0].len() == 64, "{epoch:?}");
+            // Its time is its output's, as `logs -t` says it.
+            let sent = field(fields, "SYSLOG_TIMESTAMP");
+            let sent = time::OffsetDateTime::parse(&sent[0], rfc3339).unwrap();
+            let kept = [&stamped.stdout, &stamped.stderr]
+                .iter()
+                .flat_map(|s| s.lines())
+                .find_map(|l| l.strip_suffix(&format!(" {line}")))
+                .unwrap_or_else(|| panic!("{stamped}"));
+            assert_eq!(
+                sent,
+                time::OffsetDateTime::parse(kept, rfc3339).unwrap(),
+                "{stamped}"
+            );
+            ordinals.extend(field(fields, "CONTAINER_LOG_ORDINAL"));
+        }
+        ordinals.sort();
+        assert_eq!(ordinals, ["1", "2"]);
+
+        // A line of 40,000 bytes in parts of 16 KiB, as moby's copier cuts it.
+        journald("parts", &[], &["wide", "40000"]);
+        let parts: Vec<_> = (0..3).map(|_| journal_entry(&journal).0).collect();
+        let partial = field(&parts[0], "CONTAINER_PARTIAL_ID");
+        assert_eq!(partial[0].len(), 64);
+        for (i, fields) in parts.iter().enumerate() {
+            assert_eq!(field(fields, "MESSAGE")[0].len(), [16384, 16384, 7232][i]);
+            assert_eq!(field(fields, "CONTAINER_PARTIAL_ID"), partial);
+            assert_eq!(field(fields, "CONTAINER_PARTIAL_ORDINAL"), [(i + 1).to_string()]);
+            let last = i == 2;
+            assert_eq!(field(fields, "CONTAINER_PARTIAL_LAST"), [last.to_string()]);
+            assert_eq!(field(fields, "CONTAINER_PARTIAL_MESSAGE").is_empty(), last);
+        }
+
+        // An entry past the most a datagram takes (twice wmem_max, as Linux doubles a send
+        // buffer): in a memfd, sealed.
+        let wmem_max: usize = std::fs::read_to_string("/proc/sys/net/core/wmem_max")
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        let labels = (wmem_max * 2 + 65_536) / 60_000 + 1;
+        let file = sockets.join("labels");
+        let lines: String = (1..=labels)
+            .map(|n| format!("big{n}={}\n", "z".repeat(60_000)))
+            .collect();
+        std::fs::write(&file, lines).unwrap();
+        journald(
+            "large",
+            &[
+                "--label-file",
+                file.to_str().unwrap(),
+                "--log-opt",
+                "labels-regex=^big",
+            ],
+            &["wide", "10"],
+        );
+        let (fields, sealed) = journal_entry(&journal);
+        assert_eq!(sealed, Some(true), "in a memfd, sealed");
+        assert_eq!(field(&fields, "MESSAGE"), ["x".repeat(10)]);
+        for n in 1..=labels {
+            assert_eq!(field(&fields, &format!("BIG{n}")), ["z".repeat(60_000)]);
+        }
+    }
+}
+
 /// A run's log as `--log-driver` and `--log-opt` keep it (D161): shards' store, its
 /// segments as long and as many as asked; none with `none`, whose `logs` is refused and
 /// whose attached client still gets its output; `--details` showing the labels, the
@@ -11093,8 +12321,8 @@ fn a_runs_log_is_kept_as_its_driver_and_options_say() {
     );
     for (flags, said) in [
         (
-            &["--log-driver", "syslog"][..],
-            "shards: --log-driver syslog: shards keeps a run's log itself",
+            &["--log-driver", "awslogs"][..],
+            "shards: --log-driver awslogs: shards keeps a run's log itself",
         ),
         (
             &["--log-driver", "bogus"],
@@ -11106,7 +12334,7 @@ fn a_runs_log_is_kept_as_its_driver_and_options_say() {
         ),
         (
             &["--log-opt", "color=red"],
-            "shards: --log-opt color: a run's log takes max-size",
+            "shards: --log-opt color: --log-driver shards takes max-size",
         ),
         (
             &["--log-driver", "none", "--log-opt", "max-size=1m"],

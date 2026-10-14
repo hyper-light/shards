@@ -20,11 +20,17 @@ pub fn log_segment(seq: u64) -> (String, String) {
     }
 }
 
+/// The name of segment `seq`'s log once its daemon has compressed it, rotated (D162):
+/// `log.zst`, `log.1.zst`, and on.
+pub fn packed_segment(seq: u64) -> String {
+    format!("{}.zst", log_segment(seq).0)
+}
+
 /// Makes segment `seq` of the log in the container directory `dir` holds open, and removes
-/// the oldest past `files` segments. A segment is there for readers once its index is, so
-/// its log is made first, and its index goes first; the index there says the segment
-/// before is done ([`log_segment`]). A segment already there is not taken, and one
-/// that cannot be made whole leaves nothing of itself.
+/// the oldest past `files` segments, its log compressed or not. A segment is there for
+/// readers once its index is, so its log is made first, and its index goes first; the
+/// index there says the segment before is done ([`log_segment`]). A segment already there
+/// is not taken, and one that cannot be made whole leaves nothing of itself.
 pub fn new_segment(dir: &fs::File, seq: u64, files: u64) -> io::Result<(fs::File, fs::File)> {
     let (log_name, index_name) = log_segment(seq);
     let log = open_in(dir, &log_name)?;
@@ -39,6 +45,7 @@ pub fn new_segment(dir: &fs::File, seq: u64, files: u64) -> io::Result<(fs::File
         let (log_name, index_name) = log_segment(gone);
         let _ = unlink_in(dir, &index_name);
         let _ = unlink_in(dir, &log_name);
+        let _ = unlink_in(dir, &packed_segment(gone));
     }
     Ok((log, index))
 }
@@ -60,7 +67,7 @@ fn open_in(dir: &fs::File, name: &str) -> io::Result<fs::File> {
 }
 
 /// Removes `name` from the directory `dir` holds open.
-fn unlink_in(dir: &fs::File, name: &str) -> io::Result<()> {
+pub(crate) fn unlink_in(dir: &fs::File, name: &str) -> io::Result<()> {
     use std::os::fd::AsRawFd as _;
     let name = std::ffi::CString::new(name)
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "a name with NUL"))?;

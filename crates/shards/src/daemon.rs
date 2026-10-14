@@ -52,6 +52,7 @@ mod load;
 mod logs;
 mod network;
 mod networks;
+mod packed;
 mod processes;
 mod ps;
 mod publish;
@@ -61,6 +62,7 @@ mod record;
 mod refill;
 mod restart;
 mod rmi;
+mod ship;
 mod top;
 mod update;
 mod visit;
@@ -411,6 +413,8 @@ struct Keep<'a> {
     layer_pending: bool,
     /// How many segments its log keeps (D161): its own, else the daemon's.
     log_files: u64,
+    /// Its log's rotated segments are compressed (D162).
+    log_compress: bool,
     /// A visit to a stopped container's files (visit.rs): no start, no end, no state of
     /// the container's changes with it.
     visit: bool,
@@ -499,6 +503,8 @@ struct Inbox {
     segment: u64,
     /// How many segments its log keeps (D161).
     log_files: u64,
+    /// Its log's rotated segments are compressed (D162).
+    log_compress: bool,
     /// Exec clients' connections handed to the VM and not yet taken, by number: held
     /// meanwhile, as XNU collects a socket in flight that no process holds (M24).
     execs_in_flight: Vec<(u64, UnixStream)>,
@@ -782,6 +788,10 @@ struct Daemon<D: Disk = Real> {
     completing: follow::Completing,
     /// The files runs' VMs ask for, made on a thread of their own (files.rs).
     files: files::Files,
+    /// The rotated log segments to compress, on the packer's thread (packed.rs, D162).
+    packing: packed::Packing,
+    /// The logs being sent where their drivers say, a thread each (ship.rs, D163).
+    shipping: ship::Shipping,
     /// The pools to refill and the spare to make, on the refiller's thread (refill.rs).
     refills: refill::Refills,
     /// When each running container's health check is next due (health.rs).
@@ -1060,6 +1070,10 @@ fn serve(ready: Option<File>) -> Result<(), String> {
     std::thread::scope(|threads| {
         daemon.start_completer(threads);
         daemon.start_recorder(threads);
+        daemon.start_packer(threads);
+        // What a daemon before this one left uncompressed, and unsent, as it ended.
+        daemon.pack_left();
+        daemon.ship_left(threads);
         daemon.start_collector(threads);
         daemon.restart_at_start(threads);
         daemon.listen(threads, listener);
@@ -1264,6 +1278,8 @@ impl<D: Disk> Daemon<D> {
             followers: follow::Followers::new()?,
             completing: follow::Completing::default(),
             files: files::Files::default(),
+            packing: packed::Packing::default(),
+            shipping: ship::Shipping::default(),
             refills: refill::Refills::default(),
             checks: health::Checks::default(),
             booting: Mutex::default(),
@@ -1937,13 +1953,7 @@ impl<D: Disk> Daemon<D> {
             return None;
         }
         // Its log (D161): shards' store, as its options keep it, or none.
-        let kept = match crate::logging::kept(
-            &run,
-            crate::logging::Kept {
-                size: self.logs.size,
-                files: self.logs.files,
-            },
-        ) {
+        let kept = match crate::logging::kept(&run, self.logs) {
             Ok(kept) => kept,
             Err(e) => {
                 refused(&e);
@@ -2515,23 +2525,27 @@ impl<D: Disk> Daemon<D> {
         if grants.is_some() {
             prepared.spec.setup.push(b"confine-eth0".to_vec());
         }
-        // The flags, the retention's two u64s, the log's segment, then the spec, in one
-        // allocation (audit D10).
-        let mut payload = Vec::with_capacity(33 + prepared.spec.encoded_len().unwrap_or(0));
-        payload.push(flags);
-        let retention = kept.unwrap_or(crate::logging::Kept {
-            size: self.logs.size,
-            files: self.logs.files,
+        // Its head, then the spec, in one allocation (audit D10).
+        let mut payload =
+            Vec::with_capacity(shards_ipc::RunHead::LEN + prepared.spec.encoded_len().unwrap_or(0));
+        let retention = kept.map_or(self.logs, |k| LogRetention {
+            size: k.size,
+            files: k.files,
         });
-        payload.extend(retention.size.to_be_bytes());
-        payload.extend(retention.files.to_be_bytes());
-        payload.extend(container_log.seq.to_be_bytes());
-        // The most memory its guest may plug, in bytes: its own (D148).
-        let plug = prepared
-            .memory_max
-            .saturating_sub(prepared.size.1)
-            .saturating_mul(1 << 20);
-        payload.extend(plug.to_be_bytes());
+        shards_ipc::RunHead {
+            flags,
+            log_size: retention.size,
+            log_files: retention.files,
+            first: container_log.seq,
+            // The most memory its guest may plug, in bytes: its own (D148).
+            plug: prepared
+                .memory_max
+                .saturating_sub(prepared.size.1)
+                .saturating_mul(1 << 20),
+            // Non-blocking, its queue (D162).
+            queue: kept.and_then(|k| k.queue),
+        }
+        .encode_into(&mut payload);
         prepared.spec.encode_into(&mut payload);
         let detached = run.detach.then_some(conn);
         // An Agentfile's egress grants and remote MCP servers (D59), as the daemon read
@@ -2582,6 +2596,7 @@ impl<D: Disk> Daemon<D> {
                 named: again.clone().filter(|_| run.detach),
                 layer_pending: layer_out.is_some(),
                 log_files: kept.map_or(self.logs.files, |k| k.files),
+                log_compress: kept.is_some_and(|k| k.compress),
                 visit: false,
                 egress,
                 agentfile: prepared.agentfile.clone(),
@@ -2996,6 +3011,8 @@ impl<D: Disk> Daemon<D> {
             .as_deref()
             .map(commands::parse_signal)
             .transpose()?;
+        // Its log as its options keep it, checked as its run was (D161).
+        let kept = crate::logging::kept(run, self.logs).ok().flatten();
         if let Some(h) = &prepared.health {
             // dockerd's floor for each duration set (daemon/container.go, translate:
             // containertypes.MinimumDuration), and no negative retries.
@@ -3112,6 +3129,9 @@ impl<D: Disk> Daemon<D> {
             error: String::new(),
             auto_remove: run.remove,
             log_lost: 0,
+            log_dropped: 0,
+            log_compress: kept.is_some_and(|k| k.compress),
+            log_ships: kept.is_some_and(|k| k.ships),
             stop_signal,
             stop_timeout: run.stop_timeout,
             ports,
@@ -3543,6 +3563,7 @@ impl<D: Disk> Daemon<D> {
             named,
             layer_pending,
             log_files,
+            log_compress,
             visit,
             egress,
             agentfile,
@@ -3597,6 +3618,7 @@ impl<D: Disk> Daemon<D> {
             container: lock(&self.containers).dir(id),
             segment: 0,
             log_files,
+            log_compress,
             execs_in_flight: Vec::new(),
             exec_ids: Vec::new(),
             layer_pending,
@@ -3787,6 +3809,7 @@ impl<D: Disk> Daemon<D> {
                     dir: inbox.container.clone(),
                     seq,
                     files: inbox.log_files,
+                    pack: inbox.log_compress,
                     socket: inbox.socket.clone(),
                 });
             }
@@ -3867,14 +3890,24 @@ impl<D: Disk> Daemon<D> {
         }
     }
 
+    /// What run `id`'s log lost, then what it dropped, non-blocking (D162), as its VM
+    /// counted them: `LOST`'s two counts, the second none from a VM that counts no drops.
     fn log_lost(&self, id: &str, payload: &[u8]) {
-        let Some(lost) = payload.first_chunk::<8>().map(|b| u64::from_be_bytes(*b)) else {
+        let Some((lost, rest)) = payload.split_first_chunk::<8>() else {
             return;
         };
-        log(format!(
-            "container {id}: {lost} bytes of its output could not be kept in its log"
-        ));
-        match lock(&self.containers).change(id, |c| c.log_lost = c.log_lost.saturating_add(lost)) {
+        let lost = u64::from_be_bytes(*lost);
+        let dropped = rest.first_chunk::<8>().map_or(0, |b| u64::from_be_bytes(*b));
+        if lost > 0 {
+            log(format!(
+                "container {id}: {lost} bytes of its output could not be kept in its log"
+            ));
+        }
+        let changed = lock(&self.containers).change(id, |c| {
+            c.log_lost = c.log_lost.saturating_add(lost);
+            c.log_dropped = c.log_dropped.saturating_add(dropped);
+        });
+        match changed {
             Ok(()) => self.record_soon(id, Vec::new()),
             Err(e) => log(format!("container {id}: what its log lost is lost: {e}")),
         }
@@ -6244,6 +6277,7 @@ mod tests {
                         named: None,
                         layer_pending: false,
                         log_files: DEFAULT_LOGS.files,
+                        log_compress: false,
                         visit: false,
                         egress: None,
                         agentfile: None,
@@ -6295,6 +6329,8 @@ mod tests {
             daemon.resolved.notify_all();
             daemon.completing.end();
             daemon.files.end();
+            daemon.packing.end();
+            daemon.shipping.end();
             daemon.checks.end();
             daemon.refills.end();
             daemon.collecting.end();
@@ -6536,6 +6572,7 @@ mod tests {
                             named: None,
                             layer_pending: false,
                             log_files: DEFAULT_LOGS.files,
+                            log_compress: false,
                             visit: false,
                             egress: None,
                             agentfile: None,
@@ -8196,6 +8233,7 @@ mod tests {
                 named: None,
                 layer_pending: false,
                 log_files: DEFAULT_LOGS.files,
+                log_compress: false,
                 visit: false,
                 egress: None,
                 agentfile: None,
@@ -8242,6 +8280,7 @@ mod tests {
                 named: None,
                 layer_pending: false,
                 log_files: DEFAULT_LOGS.files,
+                log_compress: false,
                 visit: false,
                 egress: None,
                 agentfile: None,
@@ -8690,6 +8729,55 @@ mod tests {
         });
     }
 
+    /// A daemon compresses, as it starts, the rotated segments a daemon before it left
+    /// as written (D162): of each container whose log compresses them, every segment but
+    /// the newest, and one a crash left half compressed; none of any other container.
+    #[test]
+    fn rotated_segments_left_as_written_are_compressed_at_start() {
+        let t = Test::new("pack-left");
+        t.run(|t| {
+            // As `run` makes them: compressed but with json-file's options.
+            let packs = t.create("packs");
+            let keeps = t.create("keeps");
+            assert!(t.record(&packs).unwrap().log_compress);
+            lock(&t.daemon.containers)
+                .change(&keeps, |c| c.log_compress = false)
+                .unwrap();
+            let lines: Vec<u8> = (0..5000)
+                .flat_map(|i| format!("line {i}\n").into_bytes())
+                .collect();
+            for id in [&packs, &keeps] {
+                let dir = t.home.join("containers").join(id);
+                for seq in 0..3 {
+                    let (log, index) = crate::segments::log_segment(seq);
+                    std::fs::write(dir.join(log), &lines).unwrap();
+                    std::fs::write(dir.join(index), []).unwrap();
+                }
+                // Half compressed as a daemon ended.
+                std::fs::write(dir.join("log.1.zst"), b"half").unwrap();
+            }
+            t.daemon.pack_left();
+            let names = |id: &str| {
+                let mut names: Vec<String> = std::fs::read_dir(t.home.join("containers").join(id))
+                    .unwrap()
+                    .filter_map(|e| e.ok()?.file_name().into_string().ok())
+                    .filter(|n| n.starts_with("log") && !n.ends_with(".idx"))
+                    .collect();
+                names.sort();
+                names
+            };
+            assert_eq!(names(&packs), ["log.1.zst", "log.2", "log.zst"]);
+            assert_eq!(names(&keeps), ["log", "log.1", "log.1.zst", "log.2"]);
+            let dir = shards_vmm::platform::open_dir(&t.home.join("containers").join(&packs)).unwrap();
+            for seq in [0, 1] {
+                let log = packed::open_log(&dir, seq).unwrap();
+                let mut back = vec![0u8; lines.len()];
+                log.read_exact_at(&mut back, 0).unwrap();
+                assert_eq!(back, lines, "segment {seq}");
+            }
+        });
+    }
+
     /// The host's filesystem, but its directory syncs wait until the test lets them
     /// through, and while `failing` its renames fail.
     #[derive(Debug, Default)]
@@ -9055,6 +9143,7 @@ mod tests {
                 dir: dir.clone(),
                 seq: 1,
                 files: DEFAULT_LOGS.files,
+                pack: false,
                 socket: Arc::new(RunSocket::new(ours)),
             });
             t.daemon.make_soon(files::Job::Hold(last));

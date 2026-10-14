@@ -28,6 +28,8 @@ pub(super) enum Job {
         seq: u64,
         /// How many segments the log keeps, the newest made (D161).
         files: u64,
+        /// The segment before, rotated now, is compressed (D162).
+        pack: bool,
         socket: Arc<RunSocket>,
     },
     /// The working set `set` a VM recorded from generation `name` of the template in
@@ -159,6 +161,7 @@ impl<D: Disk> Daemon<D> {
                 dir,
                 seq,
                 files,
+                pack,
                 socket,
             } => {
                 let made = File::open(&dir)
@@ -173,6 +176,17 @@ impl<D: Disk> Daemon<D> {
                 };
                 if let Err(e) = sent {
                     log(format!("container {id}: answering for its log: {e}"));
+                }
+                // Once the VM writes the new one, the one before is done.
+                if pack
+                    && made.is_some()
+                    && let Some(rotated) = seq.checked_sub(1)
+                {
+                    self.pack_soon(super::packed::Job::Segment {
+                        id,
+                        dir,
+                        seq: rotated,
+                    });
                 }
             }
             Job::WorkingSet { dir, name, set } => {
