@@ -8075,6 +8075,11 @@ revision before comparing a changed API/implementation.
   - The A/B, entry µs p50 / p90 / p99 / max: A 2,405 / 2,540 / 2,572 / 2,572, B 1,740 /
     1,901 / 2,021 / 2,021, B less A −652 µs at the median paired; again, A 2,583 / 2,968
     / 3,191 / 3,191, B 2,080 / 2,497 / 2,650 / 2,650, −626 µs.
+  - x86_64 KVM, the Firecracker comparison on CI (revision f9da33c, AMD EPYC 9V74, Linux
+    6.17.0-1022-azure, n=30, interleaved): `to_ready` 98,394 µs against Firecracker's
+    100,435 µs at the median, −1,627 µs paired, interval [−2,644, −1,075]: better, where
+    it had tied on this runner type (M226's runs: −564 µs [−1,100, +243] and +622 µs
+    [−62, +1,897]); outside the guest's clock −2,682 µs at the median paired.
 - **Why.** The copy is the boot's setup's longest part, and the machine's making, which
   needs none of it, is the shorter: one thread copying while the other waits leaves the
   copy whole on the path to the first entry. An initrd read through a buffer pays its
@@ -8083,5 +8088,4 @@ revision before comparing a changed API/implementation.
   from the kernel's headers and the initrd's length, the initrd's file is read straight
   into guest memory (an init's into its place in the archive there), and the copy is cut
   at each 2 MiB of guest memory, a huge page each, which the loader thread and then the
-  main thread, its own work done, take in turn. x86_64 KVM's numbers are read from the
-  next runs of the harness and the comparison.
+  main thread, its own work done, take in turn.
