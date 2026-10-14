@@ -334,7 +334,8 @@ fn enabled(name: &str) -> bool {
         "filesystem" => std::fs::metadata(FILESYSTEM_TOKEN).is_ok(),
         "github-actions" => set("ACTIONS_ID_TOKEN_REQUEST_TOKEN") && set("ACTIONS_ID_TOKEN_REQUEST_URL"),
         "google-workload-identity" => {
-            crate::google::on_gce() && crate::google::workload_identity("garbage").is_ok()
+            crate::google::on_gce(&crate::google::own_env)
+                && crate::google::workload_identity("garbage").is_ok()
         }
         "google-impersonate" => set("GOOGLE_SERVICE_ACCOUNT_NAME"),
         "spiffe" => std::fs::metadata(crate::spiffe::socket()).is_ok(),

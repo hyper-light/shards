@@ -3614,6 +3614,70 @@ No run-time labels, relays or declassifiers (§12 answer 14, decided by the user
 an internal-only domain to the world (D58), so there is no data to label. Code mode is
 D136.
 
+### D169. A run's log sent to Cloud Logging
+
+`--log-driver gcplogs` is served, sent as syslog's is (D163): from shards' store, by the
+daemon's shipper, never by the microVM, to Cloud Logging's `entries:write` (its REST
+form; moby's client sends the same request over gRPC, WriteLogEntries).
+
+- **Credentials are the client's**, as awslogs' are (D168): the client gives its
+  Google variables with the run (`GOOGLE_*`, `CLOUDSDK_*`, `GCE_METADATA_*`, beside AWS's,
+  `crate::cloud_environment`), kept in the daemon's memory alone. An access token for
+  `logging.write` (the client's WriteScope) is found as FindDefaultCredentials finds one
+  (crate::google, now for any environment given): Application Default Credentials'
+  JSON (a service account's key, a user's refresh token, an impersonated service account,
+  workload identity federation), else GCE's metadata server, asked for that scope. A token
+  is asked for again 5 minutes before it expires, and as soon as Cloud Logging refuses
+  it. A user's quota project goes with each write (`x-goog-user-project`, or
+  `GOOGLE_CLOUD_QUOTA_PROJECT`).
+- **The metadata server is reached directly**, never through a proxy: Google's metadata
+  client has none, so an instance's token reaches no proxy. Keyless signing's Google
+  providers (D126) sent theirs through the environment's proxy; they no longer do.
+- **Entries.** Each line is an entry at its output's time, its JSON payload moby's
+  dockerLogEntry as Go's encoding/json writes it (daemon/logger/gcplogs/gcplogging.go):
+  `instance` (zone, name and ID) where there is one; `container`, the run's name (`/`
+  first), ID, image, image ID, `created` always, `command` with `gcp-log-cmd=true`, and its
+  attributes as `metadata`; `message`, none for an empty line, a byte that is not UTF-8 a
+  U+FFFD of its own. Its stream is a label (`stream: stdout|stderr`): moby's leaves it
+  out, so the two cannot be told apart there.
+- **Project and resource.** The project is `gcp-project`'s, else GCE's metadata server's,
+  else the credentials' JSON's `project_id`, else `GOOGLE_CLOUD_PROJECT`'s; moby's asks the
+  option and the metadata server alone, and refuses the run without them. On GCE the
+  resource is its instance (`gce_instance`, its zone and ID) and the payload its instance;
+  off it, the instance `gcp-meta-zone`, `-name` and `-id` name, where given; else the
+  project's `global`.
+- **shards' own log name.** Entries are written to `projects/P/logs/shards`, unless
+  `gcp-log-name` (shards' own option) names another. moby's driver writes to
+  `gcplogs-docker-driver`, which `gcp-log-name` gives to keep a query, a metric or a sink
+  written for it.
+- **Writes.** A batch goes once it holds 1,000 entries or 8 MiB (the client's bundle) and
+  whenever the shipper has caught up with its log, where moby's waits up to a second. A
+  write is delivered once Cloud Logging answers 200; one that fails is written again,
+  never dropped, where moby's client drops what overflows its buffer and what a write fails
+  with. Each asks partial success, so that an entry Cloud Logging refuses holds up none of
+  the others; those it refuses are said in the daemon's log. No entry is written as the
+  run starts to see that the service answers (moby's Ping, whose failure refuses the run);
+  shards' run starts regardless, its log sent once the service takes it.
+- **Options checked as the run is made.** `tag` is refused, as moby refuses it: an entry is
+  named by the run's details and its log. `gcp-project` is to be a project's ID,
+  `gcp-log-name` a log's name, `gcp-endpoint` (shards' own: a private endpoint, a
+  restricted VIP's) a URL. `gcp-log-cmd` says so with `true` alone, as moby reads it.
+- **Not yet.** etwlogs, Event Tracing for Windows' own, waits for shards' daemon on Windows.
+
+Tested on real microVMs (`a_runs_log_is_sent_to_cloud_logging_as_its_options_say`),
+against Google in the test:
+
+- a user's credentials: their refresh token's access token, their quota project with each
+  write; the options' project and its `global` resource; each line an entry of the run's
+  details, at its `logs -t` time, its stream a label;
+- GCE's metadata server: its project, instance and token, asked for `logging.write`, the
+  `Metadata-Flavor` asked; the log name the options give;
+- the refusals.
+
+Unit tests cover the entries as Go writes them, HTML's characters escaped; the resource
+and the log name; the options; bytes that are not UTF-8; and a partial success's
+refusals read.
+
 ### D168. A run's log sent to CloudWatch Logs, signed with its client's credentials
 
 `--log-driver awslogs` is served, sent as syslog's is (D163): from shards' store, by the
@@ -3697,7 +3761,7 @@ daemon's shipper, never by the microVM, to CloudWatch Logs' JSON 1.1 API
   than the recording, is taken as its source takes it. `awslogs-max-buffered-events` is
   taken and holds nothing back: the log is on disk until sent, and no event waits in a
   queue to be dropped from.
-- **Not yet.** gcplogs and etwlogs.
+- **Not yet.** gcplogs and etwlogs; gcplogs came with D169.
 
 Tested on real microVMs (`a_runs_log_is_sent_to_cloudwatch_logs_as_its_options_say`),
 against CloudWatch Logs in the test:
@@ -7198,7 +7262,7 @@ the rest of a run's reach into its domains.
   | A run joining the microVM (`--network container:`, D119) | held to every rule of this table, by the daemon and again by init | it runs beside them as the microVM's own run does |
   | `--ipc` (`host` is init's namespace, theirs each their own), `--uts`, `--userns`, `--umask`, `--storage-opt` (D156); `--runtime`, `--isolation`, `--cpu-count`, `--cpu-percent`, `--cpu-rt-*` (D155) | given | the command's own namespaces, writable layer and limits |
   | `--link` | refused for every run, not served yet | |
-  | `--log-driver`, `--log-opt` (D161 to D168) | given | the command's own output, kept on the host by its VM process, in its container's directory, and sent elsewhere by the daemon, never by the microVM |
+  | `--log-driver`, `--log-opt` (D161 to D169) | given | the command's own output, kept on the host by its VM process, in its container's directory, and sent elsewhere by the daemon, never by the microVM |
   | `--cap-add` of any other: `DAC_READ_SEARCH`, `IPC_OWNER`, `IPC_LOCK`, `SYS_BOOT`, `SYS_RESOURCE`, `CHECKPOINT_RESTORE` among them | given | `open_by_handle_at` opens only on filesystems the command holds a mount of, a domain's own being none of them; IPC namespaces differ; `reboot(2)` ends the caller's own PID namespace's init (pid_namespaces(7)); the rest bound the command's own resources or namespaces |
   | `--cap-drop`, `no-new-privileges`, `writable-cgroups=true` (its cgroup namespace's subtree), `apparmor=`, `label=` (no LSM in the microVM: accepted, as on a Docker host without one) | given | narrows the command, or touches only its own |
   | `seccomp=` a profile or `unconfined` | given, recorded | its own filter; the domains keep theirs. Measured: unconfined, any uid makes a user namespace (`max_user_namespaces` 994), owning none of the domains' namespaces but reaching more of the kernel they share |

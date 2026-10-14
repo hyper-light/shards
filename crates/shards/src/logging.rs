@@ -11,8 +11,8 @@
 //! `max-buffer-size` bytes, and what comes while the queue is full is dropped and counted.
 //!
 //! A driver that sends a run's log elsewhere (`syslog`, `gelf`, `fluentd`, `splunk`, CloudWatch
-//! Logs' `awslogs`, and on Linux the journal, `journald`: D163 to D168) keeps it in shards'
-//! store too, as its local
+//! Logs' `awslogs`, Cloud Logging's `gcplogs`, and on Linux the journal, `journald`: D163 to
+//! D169) keeps it in shards' store too, as its local
 //! copy, which `cache-max-size`, `cache-max-file` and `cache-compress`
 //! bound as Docker documents them (Docker takes them and applies none) and which
 //! `cache-disabled` keeps from `logs`; the daemon sends it from there (daemon/ship.rs).
@@ -23,6 +23,7 @@ use shards_ipc::Run;
 
 pub mod awslogs;
 pub mod fluentd;
+pub mod gcplogs;
 pub mod gelf;
 pub mod journald;
 pub mod splunk;
@@ -30,16 +31,16 @@ pub mod syslog;
 
 /// The drivers that are shards' own store.
 const STORE: [&str; 3] = ["shards", "json-file", "local"];
-/// The drivers that send a log elsewhere, from shards' store (D163 to D168); journald's on
+/// The drivers that send a log elsewhere, from shards' store (D163 to D169); journald's on
 /// Linux alone, whose systemd keeps the journal.
-const SENDS: [&str; 6] = ["syslog", "gelf", "fluentd", "splunk", "awslogs", "journald"];
-/// The drivers Docker sends a log elsewhere with, which shards does not yet.
-const ELSEWHERE: [&str; 2] = ["etwlogs", "gcplogs"];
+const SENDS: [&str; 7] = [
+    "syslog", "gelf", "fluentd", "splunk", "awslogs", "gcplogs", "journald",
+];
 /// What a run's log can be, as a refusal says it.
 #[cfg(target_os = "linux")]
-const KINDS: &str = "shards keeps a run's log itself (shards, json-file or local), sends it to syslog, gelf, fluentd, splunk, CloudWatch Logs (awslogs) or the journal (journald), or keeps none (none)";
+const KINDS: &str = "shards keeps a run's log itself (shards, json-file or local), sends it to syslog, gelf, fluentd, splunk, CloudWatch Logs (awslogs), Cloud Logging (gcplogs) or the journal (journald), or keeps none (none)";
 #[cfg(not(target_os = "linux"))]
-const KINDS: &str = "shards keeps a run's log itself (shards, json-file or local), sends it to syslog, gelf, fluentd, splunk or CloudWatch Logs (awslogs), or keeps none (none)";
+const KINDS: &str = "shards keeps a run's log itself (shards, json-file or local), sends it to syslog, gelf, fluentd, splunk, CloudWatch Logs (awslogs) or Cloud Logging (gcplogs), or keeps none (none)";
 /// The store's own options: its segments' (moby jsonfilelog's ValidateLogOpt, local's).
 const STORE_OPTIONS: [&str; 3] = ["max-size", "max-file", "compress"];
 /// The options every driver takes: the attributes `logs --details` shows and the tag,
@@ -117,9 +118,10 @@ pub fn kept(run: &Run, default: crate::spec::LogRetention) -> Result<Option<Kept
             None => Ok(None),
         };
     }
-    if ELSEWHERE.contains(&name) {
+    // Event Tracing for Windows is Windows' own, and shards' daemon is not there yet.
+    if name == "etwlogs" {
         return Err(format!(
-            "--log-driver {name}: {KINDS}; sending it to {name} is not here yet"
+            "--log-driver etwlogs: Event Tracing for Windows is Windows' own, and this host's daemon sends no log to it: {KINDS}"
         ));
     }
     if name == "journald" && !cfg!(target_os = "linux") {
@@ -138,6 +140,7 @@ pub fn kept(run: &Run, default: crate::spec::LogRetention) -> Result<Option<Kept
         "journald" => &journald::OPTIONS,
         "splunk" => &splunk::OPTIONS,
         "awslogs" => &awslogs::OPTIONS,
+        "gcplogs" => &gcplogs::OPTIONS,
         _ => &STORE_OPTIONS,
     };
     if let Some(k) = opts
@@ -243,7 +246,7 @@ pub fn kept(run: &Run, default: crate::spec::LogRetention) -> Result<Option<Kept
     }))
 }
 
-/// Where a run's log is sent besides shards' store (D163 to D168).
+/// Where a run's log is sent besides shards' store (D163 to D169).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Remote {
     Syslog(syslog::Config),
@@ -252,6 +255,7 @@ pub enum Remote {
     Journald,
     Splunk(splunk::Config),
     Awslogs(awslogs::Config),
+    Gcplogs(gcplogs::Config),
 }
 
 /// The driver `run` sends its log elsewhere with, if one does.
@@ -268,6 +272,7 @@ fn remote_config(name: &str, opts: &BTreeMap<String, String>) -> Result<Option<R
         "journald" => Ok(Some(Remote::Journald)),
         "splunk" => Ok(Some(Remote::Splunk(splunk::config(opts)?))),
         "awslogs" => Ok(Some(Remote::Awslogs(awslogs::config(opts)?))),
+        "gcplogs" => Ok(Some(Remote::Gcplogs(gcplogs::config(opts)?))),
         _ => Ok(None),
     }
 }
@@ -614,9 +619,9 @@ mod tests {
                 "--log-opt max-size: --log-driver none keeps no log",
             ),
             (
-                "gcplogs",
+                "etwlogs",
                 &[],
-                "--log-driver gcplogs: shards keeps a run's log itself",
+                "--log-driver etwlogs: Event Tracing for Windows is Windows' own",
             ),
             ("bogus", &[], "--log-driver bogus: no such log driver"),
             (

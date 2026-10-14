@@ -1,19 +1,119 @@
-//! Google's identity tokens for keyless signing, as cosign v3.1.3's Google providers get
-//! them (pkg/providers/google over google.golang.org/api v0.284.0 and
-//! cloud.google.com/go/compute/metadata v0.9.0): on Google's machines, from the metadata
-//! server; from Application Default Credentials (a service account's key, an impersonated
-//! service account, or workload identity federation from a file or URL); and a service
-//! account impersonated through IAM's generateIdToken.
+//! Google's tokens, as Google's Go libraries get them (google.golang.org/api v0.284.0,
+//! golang.org/x/oauth2/google, cloud.google.com/go/compute/metadata v0.9.0): on Google's
+//! machines, from the metadata server; from Application Default Credentials (a service
+//! account's key, a user's refresh token, an impersonated service account, or workload
+//! identity federation from a file or URL). Identity tokens for keyless signing, as
+//! cosign v3.1.3's Google providers get them (and a service account impersonated through
+//! IAM's generateIdToken); access tokens for a scope, and when they expire, for Cloud
+//! Logging (D169).
+//!
+//! Every lookup is in an environment given ([`Env`]): the process's for keyless signing; a
+//! run's client's, for a log the daemon sends (D169).
 
 use std::io::{Read as _, Write as _};
 use std::net::{TcpStream, ToSocketAddrs as _};
 use std::sync::OnceLock;
 use std::sync::mpsc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
+use shards_registry::http::{Client, Patience, Redirects, Request};
+use shards_registry::url::Url;
+use shards_sigstore::keyless::Answer;
 use shards_sigstore::tlog::gojson::{self, JValue};
 
-use crate::keyless::exchange;
+/// An environment's variables, by name.
+pub type Env<'a> = &'a dyn Fn(&str) -> Option<String>;
+
+/// This process's environment.
+pub fn own_env(k: &str) -> Option<String> {
+    std::env::var(k).ok()
+}
+
+fn var(env: Env<'_>, k: &str) -> Option<String> {
+    env(k).filter(|v| !v.is_empty())
+}
+
+/// An access token, and when it expires, where its issuer says.
+pub struct Token {
+    pub value: zeroize::Zeroizing<String>,
+    // Read by the daemon's log shipper, which is Unix's alone as yet.
+    #[cfg_attr(not(unix), allow(dead_code))]
+    pub expires: Option<SystemTime>,
+}
+
+impl Token {
+    fn of(value: String, lasts: Option<u64>) -> Token {
+        Token {
+            value: zeroize::Zeroizing::new(value),
+            expires: lasts.and_then(|s| SystemTime::now().checked_add(Duration::from_secs(s))),
+        }
+    }
+
+    /// Whether it has expired, or will within `window`.
+    #[cfg_attr(not(unix), allow(dead_code))]
+    pub fn expiring(&self, window: Duration) -> bool {
+        self.expires
+            .is_some_and(|t| SystemTime::now().checked_add(window).is_none_or(|soon| t <= soon))
+    }
+}
+
+/// An HTTP exchange in `env`: through its proxies, unless `direct`, as the metadata server
+/// is reached (Google's metadata client has no proxy, so its tokens reach no proxy); the
+/// answer's status, ETag and body (at most `max` bytes). The credentials in
+/// `authorization` go to `url`'s origin alone; a redirect elsewhere is refused.
+#[allow(clippy::too_many_arguments)]
+fn exchange(
+    env: Env<'_>,
+    direct: bool,
+    method: &str,
+    url: &str,
+    authorization: Option<&str>,
+    headers: &[(&str, &str)],
+    body: &[u8],
+    wait: Duration,
+    max: u64,
+) -> Result<Answer, String> {
+    let parsed = Url::parse(url).map_err(|e| format!("{url}: {e}"))?;
+    let config = shards_registry::tls::client_config(Vec::new(), None).map_err(|e| e.to_string())?;
+    let mut client = Client::new(
+        Box::new(move |_| Ok(config.clone())),
+        &format!("shards/{}", env!("CARGO_PKG_VERSION")),
+    )
+    .with_patience(Patience {
+        head: Some(wait),
+        stall: Some(wait),
+        ..Patience::default()
+    });
+    if !direct {
+        client = client.with_proxies(shards_registry::proxy::Proxies::from_env(env));
+    }
+    let request = Request {
+        method,
+        url: &parsed,
+        headers,
+        body,
+        file: None,
+    };
+    let auth = authorization.map(str::to_string);
+    let origin = parsed.clone();
+    let mut response = client
+        .follow(
+            &request,
+            &|u| Ok(auth.clone().filter(|_| u.same_origin(&origin))),
+            Redirects::SameOrigin,
+        )
+        .map_err(|e| e.to_string())?;
+    let mut out = Vec::new();
+    (&mut response)
+        .take(max)
+        .read_to_end(&mut out)
+        .map_err(|e| format!("{method} {url}: {e}"))?;
+    Ok(Answer {
+        status: response.status,
+        etag: response.header("etag").unwrap_or_default().to_string(),
+        body: out,
+    })
+}
 
 /// The metadata server's documented address (metadataIP), unless GCE_METADATA_HOST names
 /// another.
@@ -22,11 +122,8 @@ const IAM_CREDENTIALS: &str = "https://iamcredentials.googleapis.com";
 const CLOUD_PLATFORM: &str = "https://www.googleapis.com/auth/cloud-platform";
 const JWT_BEARER: &str = "urn:ietf:params:oauth:grant-type:jwt-bearer";
 
-fn metadata_host() -> String {
-    std::env::var("GCE_METADATA_HOST")
-        .ok()
-        .filter(|h| !h.is_empty())
-        .unwrap_or_else(|| METADATA_IP.into())
+fn metadata_host(env: Env<'_>) -> String {
+    var(env, "GCE_METADATA_HOST").unwrap_or_else(|| METADATA_IP.into())
 }
 
 /// Whether the machine's own description says it is Google's (systemInfoSuggestsGCE).
@@ -112,15 +209,15 @@ fn metadata_resolves() -> bool {
         .is_ok_and(|mut a| a.any(|s| s.ip().to_string() == METADATA_IP))
 }
 
-/// metadata.OnGCE: GCE_METADATA_HOST set, or the metadata server answering or resolving,
-/// whichever probe answers first; where the machine says it is Google's, a probe saying
-/// no is given 5 s for the other to say yes. Asked once.
-pub fn on_gce() -> bool {
+/// metadata.OnGCE: GCE_METADATA_HOST set in `env`, or the metadata server answering or
+/// resolving, whichever probe answers first; where the machine says it is Google's, a
+/// probe saying no is given 5 s for the other to say yes. The machine is asked once.
+pub fn on_gce(env: Env<'_>) -> bool {
+    if var(env, "GCE_METADATA_HOST").is_some() {
+        return true;
+    }
     static ON: OnceLock<bool> = OnceLock::new();
     *ON.get_or_init(|| {
-        if std::env::var_os("GCE_METADATA_HOST").is_some_and(|h| !h.is_empty()) {
-            return true;
-        }
         let (tx, rx) = mpsc::channel();
         let probes: [fn() -> bool; 2] = [metadata_answers, metadata_resolves];
         for probe in probes {
@@ -142,15 +239,17 @@ pub fn on_gce() -> bool {
 }
 
 /// metadata.Get of `suffix`: its value, or the server's refusal in the client's words.
-fn metadata_get(suffix: &str) -> Result<String, String> {
+pub fn metadata_get(env: Env<'_>, suffix: &str) -> Result<String, String> {
     let url = format!(
         "http://{}/computeMetadata/v1/{}",
-        metadata_host(),
+        metadata_host(env),
         suffix.trim_start_matches('/')
     );
     let mut attempt = 0;
     loop {
         let got = exchange(
+            env,
+            true,
             "GET",
             &url,
             None,
@@ -187,19 +286,19 @@ fn metadata_get(suffix: &str) -> Result<String, String> {
 
 /// Application Default Credentials' JSON: GOOGLE_APPLICATION_CREDENTIALS's file, else
 /// gcloud's well-known file, if either is there.
-fn adc_json() -> Result<Option<Vec<u8>>, String> {
-    if let Some(path) = std::env::var_os("GOOGLE_APPLICATION_CREDENTIALS").filter(|p| !p.is_empty()) {
+fn adc_json(env: Env<'_>) -> Result<Option<Vec<u8>>, String> {
+    if let Some(path) = var(env, "GOOGLE_APPLICATION_CREDENTIALS") {
         return std::fs::read(&path)
             .map(Some)
             .map_err(|e| format!("google: error getting credentials using GOOGLE_APPLICATION_CREDENTIALS environment variable: {e}"));
     }
-    let dir = match std::env::var_os("CLOUDSDK_CONFIG").filter(|p| !p.is_empty()) {
+    let dir = match var(env, "CLOUDSDK_CONFIG") {
         Some(d) => std::path::PathBuf::from(d),
         None => {
             #[cfg(windows)]
-            let base = std::env::var_os("APPDATA").map(std::path::PathBuf::from);
+            let base = var(env, "APPDATA").map(std::path::PathBuf::from);
             #[cfg(not(windows))]
-            let base = std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".config"));
+            let base = var(env, "HOME").map(|h| std::path::PathBuf::from(h).join(".config"));
             match base {
                 Some(b) => b.join("gcloud"),
                 None => return Ok(None),
@@ -253,9 +352,25 @@ fn signed_jwt(account: &JValue, claims: &str) -> Result<String, String> {
     Ok(format!("{input}.{}", shards_sigstore::oidc::base64url(&sig)))
 }
 
-/// A form posted to a token endpoint, and the field it answers with.
-fn token_from(url: &str, form: &[(&str, &str)], field: &str) -> Result<String, String> {
+/// How long a token lasts, as an answer says it: `expires_in`'s seconds.
+fn lasts(v: &JValue) -> Option<u64> {
+    match v.get("expires_in") {
+        Some(JValue::Number(n)) => n.split('.').next().and_then(|s| s.parse().ok()),
+        Some(JValue::Str(n)) => n.parse().ok(),
+        _ => None,
+    }
+}
+
+/// A form posted to a token endpoint: the field it answers with, and how long it lasts.
+fn token_from(
+    env: Env<'_>,
+    url: &str,
+    form: &[(&str, &str)],
+    field: &str,
+) -> Result<(String, Option<u64>), String> {
     let a = exchange(
+        env,
+        false,
         "POST",
         url,
         None,
@@ -276,12 +391,17 @@ fn token_from(url: &str, form: &[(&str, &str)], field: &str) -> Result<String, S
     if t.is_empty() {
         return Err(format!("oauth2: server response missing {field}"));
     }
-    Ok(t)
+    Ok((t, lasts(&v)))
 }
 
 /// A service account key's assertion exchanged at its token URI: an ID token for
-/// `audience` (target_audience), or an access token for cloud-platform.
-fn service_account(account: &JValue, audience: Option<&str>) -> Result<String, String> {
+/// `audience` (target_audience), or an access token for `scope`.
+fn service_account(
+    env: Env<'_>,
+    account: &JValue,
+    audience: Option<&str>,
+    scope: &str,
+) -> Result<(String, Option<u64>), String> {
     let token_uri = Some(text(account, "token_uri"))
         .filter(|u| !u.is_empty())
         .unwrap_or_else(|| "https://oauth2.googleapis.com/token".into());
@@ -298,7 +418,7 @@ fn service_account(account: &JValue, audience: Option<&str>) -> Result<String, S
         None => format!(
             r#"{{"iss":{},"scope":{},"aud":{},"exp":{},"iat":{iat}}}"#,
             q(&text(account, "client_email")),
-            q(CLOUD_PLATFORM),
+            q(scope),
             q(&token_uri),
             iat + 3600
         ),
@@ -310,6 +430,7 @@ fn service_account(account: &JValue, audience: Option<&str>) -> Result<String, S
         "access_token"
     };
     token_from(
+        env,
         &token_uri,
         &[("grant_type", JWT_BEARER), ("assertion", &assertion)],
         field,
@@ -325,24 +446,38 @@ fn impersonated_account(url: &str) -> Result<String, String> {
     Ok(rest.split(':').next().unwrap_or(rest).to_string())
 }
 
-/// IAM's generateAccessToken for `account`, as `bearer`.
-fn generate_access_token(account: &str, bearer: &str, delegates: &[String]) -> Result<String, String> {
+/// IAM's generateAccessToken for `account` and `scope`, as `bearer`: the token, and its
+/// `expireTime`.
+fn generate_access_token(
+    env: Env<'_>,
+    account: &str,
+    bearer: &str,
+    delegates: &[String],
+    scope: &str,
+) -> Result<Token, String> {
     let url = format!("{IAM_CREDENTIALS}/v1/projects/-/serviceAccounts/{account}:generateAccessToken");
-    iam(
+    let v = iam(
+        env,
         &url,
         bearer,
-        &format!(
-            r#""scope":[{}]"#,
-            shards_sigstore::fulcio::go_json_string(CLOUD_PLATFORM)
-        ),
+        &format!(r#""scope":[{}]"#, shards_sigstore::fulcio::go_json_string(scope)),
         delegates,
-        "accessToken",
-    )
+    )?;
+    let expires = v.get("expireTime").and_then(JValue::as_str).and_then(|t| {
+        let t = time::OffsetDateTime::parse(t, &time::format_description::well_known::Rfc3339).ok()?;
+        let secs = u64::try_from(t.unix_timestamp()).ok()?;
+        Some(SystemTime::UNIX_EPOCH + Duration::from_secs(secs))
+    });
+    Ok(Token {
+        value: zeroize::Zeroizing::new(text(&v, "accessToken")),
+        expires,
+    })
 }
 
 /// IAM's generateIdToken for `account` and `audience`, as `bearer` (the impersonate
 /// package's request: the audience, the email included).
 fn generate_id_token(
+    env: Env<'_>,
     account: &str,
     audience: &str,
     bearer: &str,
@@ -353,10 +488,10 @@ fn generate_id_token(
         r#""audience":{},"includeEmail":true"#,
         shards_sigstore::fulcio::go_json_string(audience)
     );
-    iam(&url, bearer, &body, delegates, "token")
+    Ok(text(&iam(env, &url, bearer, &body, delegates)?, "token"))
 }
 
-fn iam(url: &str, bearer: &str, fields: &str, delegates: &[String], answer: &str) -> Result<String, String> {
+fn iam(env: Env<'_>, url: &str, bearer: &str, fields: &str, delegates: &[String]) -> Result<JValue, String> {
     let mut body = format!("{{{fields}");
     if !delegates.is_empty() {
         let list: Vec<String> = delegates
@@ -368,6 +503,8 @@ fn iam(url: &str, bearer: &str, fields: &str, delegates: &[String], answer: &str
     body.push('}');
     let auth = format!("Bearer {bearer}");
     let a = exchange(
+        env,
+        false,
         "POST",
         url,
         Some(&auth),
@@ -384,8 +521,7 @@ fn iam(url: &str, bearer: &str, fields: &str, delegates: &[String], answer: &str
             String::from_utf8_lossy(&a.body)
         ));
     }
-    let v = gojson::unmarshal(&a.body).map_err(|e| format!("impersonate: unable to parse response: {e}"))?;
-    Ok(text(&v, answer))
+    gojson::unmarshal(&a.body).map_err(|e| format!("impersonate: unable to parse response: {e}"))
 }
 
 fn delegates(v: &JValue) -> Vec<String> {
@@ -400,7 +536,7 @@ fn delegates(v: &JValue) -> Vec<String> {
 
 /// Workload identity federation's subject token: its credential source's file or URL,
 /// as text or as a JSON field.
-fn subject_token(source: &JValue) -> Result<String, String> {
+fn subject_token(env: Env<'_>, source: &JValue) -> Result<String, String> {
     let raw = if let Some(file) = source.get("file").and_then(JValue::as_str) {
         std::fs::read(file).map_err(|e| {
             format!("oauth2/google/externalaccount: failed to load credentials from file: {e}")
@@ -414,7 +550,17 @@ fn subject_token(source: &JValue) -> Result<String, String> {
             _ => Vec::new(),
         };
         let refs: Vec<(&str, &str)> = headers.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
-        let a = exchange("GET", url, None, &refs, &[], Duration::from_secs(30), 1 << 20)?;
+        let a = exchange(
+            env,
+            false,
+            "GET",
+            url,
+            None,
+            &refs,
+            &[],
+            Duration::from_secs(30),
+            1 << 20,
+        )?;
         if !(200..300).contains(&a.status) {
             return Err(format!(
                 "oauth2/google/externalaccount: status code {}: {}",
@@ -450,22 +596,23 @@ fn subject_token(source: &JValue) -> Result<String, String> {
     }
 }
 
-/// Workload identity federation's access token: the subject token exchanged at Google's
-/// STS.
-fn external_access_token(account: &JValue) -> Result<String, String> {
+/// Workload identity federation's access token for `scope`: the subject token exchanged
+/// at Google's STS.
+fn external_access_token(env: Env<'_>, account: &JValue, scope: &str) -> Result<Token, String> {
     let source = account
         .get("credential_source")
         .ok_or("oauth2/google/externalaccount: missing credential_source")?;
-    let subject = subject_token(source)?;
+    let subject = subject_token(env, source)?;
     let token_url = Some(text(account, "token_url"))
         .filter(|u| !u.is_empty())
         .unwrap_or_else(|| "https://sts.googleapis.com/v1/token".into());
-    token_from(
+    let (value, lasts) = token_from(
+        env,
         &token_url,
         &[
             ("grant_type", "urn:ietf:params:oauth:grant-type:token-exchange"),
             ("audience", &text(account, "audience")),
-            ("scope", CLOUD_PLATFORM),
+            ("scope", scope),
             (
                 "requested_token_type",
                 "urn:ietf:params:oauth:token-type:access_token",
@@ -474,40 +621,48 @@ fn external_access_token(account: &JValue) -> Result<String, String> {
             ("subject_token_type", &text(account, "subject_token_type")),
         ],
         "access_token",
-    )
+    )?;
+    Ok(Token::of(value, lasts))
 }
 
-/// An access token from credentials of any type ADC knows.
-fn access_token(account: &JValue) -> Result<String, String> {
+/// An access token for `scope` from credentials of any type ADC knows.
+fn access_token(env: Env<'_>, account: &JValue, scope: &str) -> Result<Token, String> {
     match text(account, "type").as_str() {
-        "service_account" => service_account(account, None),
-        "authorized_user" => token_from(
-            &Some(text(account, "token_uri"))
-                .filter(|u| !u.is_empty())
-                .unwrap_or_else(|| "https://oauth2.googleapis.com/token".into()),
-            &[
-                ("grant_type", "refresh_token"),
-                ("client_id", &text(account, "client_id")),
-                ("client_secret", &text(account, "client_secret")),
-                ("refresh_token", &text(account, "refresh_token")),
-            ],
-            "access_token",
-        ),
+        "service_account" => {
+            let (value, lasts) = service_account(env, account, None, scope)?;
+            Ok(Token::of(value, lasts))
+        }
+        "authorized_user" => {
+            let (value, lasts) = token_from(
+                env,
+                &Some(text(account, "token_uri"))
+                    .filter(|u| !u.is_empty())
+                    .unwrap_or_else(|| "https://oauth2.googleapis.com/token".into()),
+                &[
+                    ("grant_type", "refresh_token"),
+                    ("client_id", &text(account, "client_id")),
+                    ("client_secret", &text(account, "client_secret")),
+                    ("refresh_token", &text(account, "refresh_token")),
+                ],
+                "access_token",
+            )?;
+            Ok(Token::of(value, lasts))
+        }
         "impersonated_service_account" => {
             let source = account
                 .get("source_credentials")
                 .ok_or("google: missing source_credentials")?;
-            let bearer = access_token(source)?;
+            let bearer = access_token(env, source, CLOUD_PLATFORM)?;
             let target = impersonated_account(&text(account, "service_account_impersonation_url"))?;
-            generate_access_token(&target, &bearer, &delegates(account))
+            generate_access_token(env, &target, &bearer.value, &delegates(account), scope)
         }
-        "external_account" => {
-            let token = external_access_token(account)?;
-            match text(account, "service_account_impersonation_url").as_str() {
-                "" => Ok(token),
-                url => generate_access_token(&impersonated_account(url)?, &token, &[]),
+        "external_account" => match text(account, "service_account_impersonation_url").as_str() {
+            "" => external_access_token(env, account, scope),
+            url => {
+                let token = external_access_token(env, account, CLOUD_PLATFORM)?;
+                generate_access_token(env, &impersonated_account(url)?, &token.value, &[], scope)
             }
-        }
+        },
         other => Err(format!(
             "google: unknown credential type: {}",
             shards_sigstore::oidc::go_quote(other)
@@ -515,46 +670,79 @@ fn access_token(account: &JValue) -> Result<String, String> {
     }
 }
 
-/// The default credentials' access token: their JSON's, else the metadata server's.
-fn default_access_token() -> Result<String, String> {
-    if let Some(json) = adc_json()? {
+/// The default credentials' access token for `scope` (FindDefaultCredentials): their
+/// JSON's, else the metadata server's, asked for that scope.
+pub fn access(env: Env<'_>, scope: &str) -> Result<Token, String> {
+    if let Some(json) = adc_json(env)? {
         let v = gojson::unmarshal(&json).map_err(|e| format!("google: {e}"))?;
-        return access_token(&v);
+        return access_token(env, &v, scope);
     }
-    if on_gce() {
-        let body = metadata_get("instance/service-accounts/default/token")?;
+    if on_gce(env) {
+        let query = shards_sigstore::oidc::form(&[("scopes", scope)]);
+        let body = metadata_get(env, &format!("instance/service-accounts/default/token?{query}"))?;
         let v = gojson::unmarshal(body.as_bytes()).map_err(|e| format!("google: {e}"))?;
-        return Ok(text(&v, "access_token"));
+        return Ok(Token::of(text(&v, "access_token"), lasts(&v)));
     }
     Err("google: could not find default credentials. See https://cloud.google.com/docs/authentication/external/set-up-adc for more information".into())
+}
+
+/// The project the default credentials' JSON names (`project_id`, a service account's), as
+/// FindDefaultCredentials gives it.
+#[cfg_attr(not(unix), allow(dead_code))]
+pub fn credentials_project(env: Env<'_>) -> Option<String> {
+    let json = adc_json(env).ok().flatten()?;
+    let v = gojson::unmarshal(&json).ok()?;
+    Some(text(&v, "project_id")).filter(|p| !p.is_empty())
+}
+
+/// The project a request is billed and counted to, where not the resource's:
+/// GOOGLE_CLOUD_QUOTA_PROJECT, else the credentials' `quota_project_id` (a user's), sent as
+/// `x-goog-user-project`.
+#[cfg_attr(not(unix), allow(dead_code))]
+pub fn quota_project(env: Env<'_>) -> Option<String> {
+    var(env, "GOOGLE_CLOUD_QUOTA_PROJECT").or_else(|| {
+        let json = adc_json(env).ok().flatten()?;
+        let v = gojson::unmarshal(&json).ok()?;
+        Some(text(&v, "quota_project_id")).filter(|p| !p.is_empty())
+    })
+}
+
+/// Whether Google's credentials, projects or metadata server are found by variable
+/// `name`: a run's client gives these with the run (D169).
+pub fn reads(name: &str) -> bool {
+    name.starts_with("GOOGLE_")
+        || name.starts_with("CLOUDSDK_")
+        || name.starts_with("GCE_METADATA_")
+        || name == "APPDATA"
 }
 
 /// The google-workload-identity provider: idtoken.NewTokenSource's token for `audience`,
 /// from the default credentials' JSON (a service account, an impersonated one, or
 /// federation through one) or, on Google's machines, the metadata server's identity.
 pub fn workload_identity(audience: &str) -> Result<String, String> {
+    let env: Env<'_> = &own_env;
     if audience.is_empty() {
         return Err("idtoken: must supply a non-empty audience".into());
     }
-    if let Some(json) = adc_json()? {
+    if let Some(json) = adc_json(env)? {
         let v = gojson::unmarshal(&json).map_err(|e| format!("idtoken: {e}"))?;
         return match text(&v, "type").as_str() {
-            "service_account" => service_account(&v, Some(audience)),
+            "service_account" => service_account(env, &v, Some(audience), CLOUD_PLATFORM).map(|(t, _)| t),
             "impersonated_service_account" => {
                 let source = v
                     .get("source_credentials")
                     .ok_or("idtoken: missing source_credentials")?;
-                let bearer = access_token(source)?;
+                let bearer = access_token(env, source, CLOUD_PLATFORM)?;
                 let target = impersonated_account(&text(&v, "service_account_impersonation_url"))?;
-                generate_id_token(&target, audience, &bearer, &delegates(&v))
+                generate_id_token(env, &target, audience, &bearer.value, &delegates(&v))
             }
             "external_account" => {
                 let url = text(&v, "service_account_impersonation_url");
                 if url.is_empty() {
                     return Err("idtoken: unsupported credentials type".into());
                 }
-                let token = external_access_token(&v)?;
-                generate_id_token(&impersonated_account(&url)?, audience, &token, &[])
+                let token = external_access_token(env, &v, CLOUD_PLATFORM)?;
+                generate_id_token(env, &impersonated_account(&url)?, audience, &token.value, &[])
             }
             other => Err(format!(
                 "idtoken: credential type {} not supported",
@@ -562,9 +750,12 @@ pub fn workload_identity(audience: &str) -> Result<String, String> {
             )),
         };
     }
-    if on_gce() {
+    if on_gce(env) {
         let query = shards_sigstore::oidc::form(&[("audience", audience), ("format", "full")]);
-        let token = metadata_get(&format!("instance/service-accounts/default/identity?{query}"))?;
+        let token = metadata_get(
+            env,
+            &format!("instance/service-accounts/default/identity?{query}"),
+        )?;
         if token.is_empty() {
             return Err("idtoken: invalid response from metadata service".into());
         }
@@ -576,14 +767,15 @@ pub fn workload_identity(audience: &str) -> Result<String, String> {
 /// The google-impersonate provider: `account`'s ID token for `audience`, IAM's
 /// generateIdToken as the default credentials.
 pub fn impersonate(account: &str, audience: &str) -> Result<String, String> {
+    let env: Env<'_> = &own_env;
     if audience.is_empty() {
         return Err("impersonate: an audience must be provided".into());
     }
     if account.is_empty() {
         return Err("impersonate: a target service account must be provided".into());
     }
-    let bearer = default_access_token()?;
-    generate_id_token(account, audience, &bearer, &[])
+    let bearer = access(env, CLOUD_PLATFORM)?;
+    generate_id_token(env, account, audience, &bearer.value, &[])
 }
 
 #[cfg(test)]
@@ -614,17 +806,20 @@ mod tests {
         let src = |s: String| gojson::unmarshal(s.as_bytes()).unwrap();
         let q = |p: &std::path::Path| shards_sigstore::fulcio::go_json_string(&p.display().to_string());
         assert_eq!(
-            subject_token(&src(format!(r#"{{"file":{}}}"#, q(&plain)))).unwrap(),
+            subject_token(&own_env, &src(format!(r#"{{"file":{}}}"#, q(&plain)))).unwrap(),
             "tok"
         );
         assert_eq!(
-            subject_token(&src(format!(
-                r#"{{"file":{},"format":{{"type":"json","subject_token_field_name":"value"}}}}"#,
-                q(&json)
-            )))
+            subject_token(
+                &own_env,
+                &src(format!(
+                    r#"{{"file":{},"format":{{"type":"json","subject_token_field_name":"value"}}}}"#,
+                    q(&json)
+                ))
+            )
             .unwrap(),
             "jtok"
         );
-        assert!(subject_token(&src(r#"{"executable":{"command":"x"}}"#.into())).is_err());
+        assert!(subject_token(&own_env, &src(r#"{"executable":{"command":"x"}}"#.into())).is_err());
     }
 }

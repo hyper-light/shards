@@ -36,18 +36,6 @@ pub fn reads(name: &str) -> bool {
     name.starts_with("AWS_") || OTHERS.contains(&name)
 }
 
-/// This process's variables that [`reads`] takes, `NAME=VALUE`: what a client gives the
-/// daemon with a run, for a log driver that ships to AWS to find credentials by as the
-/// client's shell would (D168).
-pub fn environment() -> Vec<String> {
-    std::env::vars_os()
-        .filter_map(|(k, v)| {
-            let (k, v) = (k.into_string().ok()?, v.into_string().ok()?);
-            reads(&k).then(|| format!("{k}={v}"))
-        })
-        .collect()
-}
-
 /// Every variable the chain, and the endpoints and proxies of what it asks, are found by
 /// (aws-sdk-go-v2 config/env_config.go's, those it reads elsewhere, the proxies'), for a
 /// caller that asks again later to keep what an environment says of them.
