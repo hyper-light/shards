@@ -21,6 +21,7 @@ use crate::spec::LOG_STDERR;
 
 mod awslogs;
 mod fluentd;
+mod gcplogs;
 mod gelf;
 #[cfg(target_os = "linux")]
 mod journald;
@@ -197,9 +198,9 @@ pub(super) struct Shipping {
 
 impl Shipping {
     /// Keeps `run`'s client's environment for container `id`'s shipper, where its driver
-    /// ships to AWS: the latest client's, which started it.
+    /// ships to a cloud (AWS's, Google's): the latest client's, which started it.
     pub(super) fn give(&self, id: &str, run: &shards_ipc::Run) {
-        if crate::logging::driver(run) == "awslogs" {
+        if matches!(crate::logging::driver(run), "awslogs" | "gcplogs") {
             lock(&self.clouds).insert(id.to_string(), run.cloud_env.clone());
         }
     }
@@ -745,6 +746,13 @@ impl<D: Disk> Daemon<D> {
                     .map(|e| crate::logging::awslogs::render(e, run, &details.info()))
                     .transpose()?;
                 Box::new(awslogs::Awslogs::new(config, env, stream, entity)?)
+            }
+            crate::logging::Remote::Gcplogs(config) => {
+                let env = lock(&self.shipping.clouds).get(id).cloned().ok_or(
+                    "its credentials are found with the environment of the client that starts its run, which no daemon keeps: the rest of its log is sent once it is started again",
+                )?;
+                let attributes = crate::logging::extra(run, &details.info())?;
+                Box::new(gcplogs::Gcplogs::new(config, env, details.clone(), attributes)?)
             }
             crate::logging::Remote::Splunk(config) => {
                 // Its tag, unless `tag` is given empty, which takes it away (moby splunk New).

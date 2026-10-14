@@ -12837,6 +12837,312 @@ fn a_runs_log_is_sent_to_cloudwatch_logs_as_its_options_say() {
     }
 }
 
+/// A request Google was sent in a test: its method, target, fields and body.
+struct GoogleRequest {
+    method: String,
+    target: String,
+    fields: std::collections::BTreeMap<String, String>,
+    body: String,
+}
+
+/// Google on `listener`, as a run's log reaches it: an OAuth token endpoint, which gives a
+/// refresh token's access token; Cloud Logging's entries:write, which takes any; and
+/// GCE's metadata server, its project, its instance and its default account's token. Each
+/// connection on a thread of its own; each request sent on `seen`.
+fn google(listener: std::net::TcpListener, seen: std::sync::mpsc::Sender<GoogleRequest>) {
+    use std::io::{BufRead as _, Read as _, Write as _};
+    std::thread::spawn(move || {
+        for conn in listener.incoming() {
+            let Ok(conn) = conn else {
+                return;
+            };
+            let seen = seen.clone();
+            std::thread::spawn(move || {
+                let mut reader = std::io::BufReader::new(conn);
+                loop {
+                    let mut line = String::new();
+                    if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                        return;
+                    }
+                    let mut parts = line.split_whitespace();
+                    let (method, target) = (
+                        parts.next().unwrap().to_string(),
+                        parts.next().unwrap().to_string(),
+                    );
+                    let mut fields = std::collections::BTreeMap::new();
+                    loop {
+                        let mut field = String::new();
+                        reader.read_line(&mut field).unwrap();
+                        let field = field.trim_end();
+                        if field.is_empty() {
+                            break;
+                        }
+                        let (k, v) = field.split_once(':').unwrap();
+                        fields.insert(k.to_ascii_lowercase(), v.trim().to_string());
+                    }
+                    let len: usize = fields.get("content-length").map_or(0, |l| l.parse().unwrap());
+                    let mut body = vec![0u8; len];
+                    reader.read_exact(&mut body).unwrap();
+                    let path = target.split('?').next().unwrap_or_default();
+                    let answer = match path {
+                        "/token" => {
+                            r#"{"access_token":"ya29.refreshed","expires_in":3599,"token_type":"Bearer"}"#
+                        }
+                        "/v2/entries:write" => "{}",
+                        "/computeMetadata/v1/project/project-id" => "meta-project-1",
+                        "/computeMetadata/v1/instance/zone" => "projects/123/zones/us-central1-a",
+                        "/computeMetadata/v1/instance/name" => "gce-vm",
+                        "/computeMetadata/v1/instance/id" => "4242",
+                        "/computeMetadata/v1/instance/service-accounts/default/token" => {
+                            r#"{"access_token":"ya29.instance","expires_in":3599,"token_type":"Bearer"}"#
+                        }
+                        _ => "",
+                    };
+                    let status = if answer.is_empty() {
+                        "404 Not Found"
+                    } else {
+                        "200 OK"
+                    };
+                    let reply = format!(
+                        "HTTP/1.1 {status}\r\nMetadata-Flavor: Google\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{answer}",
+                        answer.len()
+                    );
+                    if reader.get_mut().write_all(reply.as_bytes()).is_err() {
+                        return;
+                    }
+                    let body = String::from_utf8_lossy(&body).into_owned();
+                    let _ = seen.send(GoogleRequest {
+                        method,
+                        target,
+                        fields,
+                        body,
+                    });
+                }
+            });
+        }
+    });
+}
+
+/// A run's log sent to Cloud Logging (D169), to Google in the test: each line an entry at
+/// its output's time, its payload the run's details and its line, its stream a label;
+/// written with an access token the environment of the client that started the run finds:
+/// a user's refresh token in its credentials (their quota project sent with each write),
+/// or GCE's metadata server, whose project and instance it is logged for; under shards'
+/// own log name, or the one the options give; the refusals in shards' words.
+#[test]
+fn a_runs_log_is_sent_to_cloud_logging_as_its_options_say() {
+    let Some((home, image)) = home("containers-gcplogs") else {
+        return;
+    };
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let at = format!("127.0.0.1:{}", listener.local_addr().unwrap().port());
+    let endpoint = format!("gcp-endpoint=http://{at}");
+    let (seen, requests) = std::sync::mpsc::channel();
+    google(listener, seen);
+    let (kernel, init) = (kernel(), guest_init());
+    let credentials = home.join("adc.json");
+    std::fs::write(
+        &credentials,
+        format!(
+            r#"{{"type":"authorized_user","client_id":"client","client_secret":"secret","refresh_token":"the-refresh-token","token_uri":"http://{at}/token","quota_project_id":"quota-project-1"}}"#
+        ),
+    )
+    .unwrap();
+    let gcloud = home.join("gcloud");
+    std::fs::create_dir_all(&gcloud).unwrap();
+    // A client's environment: its home's, and of Google's only what `google` gives;
+    // whatever the test's own holds of Google's is set empty, which is none.
+    let shards_with = |google: &[(&str, &str)], args: &[&str]| {
+        let mut env: Vec<(&str, std::ffi::OsString)> = vec![
+            ("SHARDS_HOME", home.as_os_str().to_owned()),
+            ("SHARDS_KERNEL", kernel.as_os_str().to_owned()),
+            ("SHARDS_INIT", init.as_os_str().to_owned()),
+            ("CLOUDSDK_CONFIG", gcloud.as_os_str().to_owned()),
+        ];
+        for k in [
+            "GOOGLE_APPLICATION_CREDENTIALS",
+            "GOOGLE_CLOUD_PROJECT",
+            "GOOGLE_CLOUD_QUOTA_PROJECT",
+            "GCE_METADATA_HOST",
+        ] {
+            env.push((k, std::ffi::OsString::new()));
+        }
+        for (k, v) in google {
+            env.retain(|(name, _)| name != k);
+            env.push((k, (*v).into()));
+        }
+        let env: Vec<(&str, &std::ffi::OsStr)> = env.iter().map(|(k, v)| (*k, v.as_os_str())).collect();
+        run_shards_env(&[], args, &env, TIMEOUT)
+    };
+    let shards = |args: &[&str]| shards_in(&home, args);
+    let gcplogs = |name: &str, opts: &[&str], command: &[&str], google: &[(&str, &str)]| {
+        let mut args = vec![
+            "run",
+            "--pull",
+            "never",
+            "--name",
+            name,
+            "--log-driver",
+            "gcplogs",
+            "--log-opt",
+            &endpoint,
+        ];
+        for o in opts {
+            args.extend(["--log-opt", o]);
+        }
+        args.push(&image);
+        args.extend(command);
+        shards_with(google, &args)
+    };
+    // The requests asked of Google until `want` entries are written: none waited for past
+    // its arrival.
+    let written = |want: usize| -> (Vec<GoogleRequest>, Vec<serde_json::Value>) {
+        let (mut asked, mut entries) = (Vec::new(), Vec::new());
+        while entries.len() < want {
+            let r: GoogleRequest = requests.recv_timeout(TIMEOUT).unwrap();
+            if r.target == "/v2/entries:write" {
+                let body: serde_json::Value = serde_json::from_str(&r.body).unwrap();
+                entries.extend(body["entries"].as_array().unwrap().iter().cloned());
+            }
+            asked.push(r);
+        }
+        (asked, entries)
+    };
+
+    // A user's credentials: their refresh token's access token, their quota project with
+    // each write; the project the options name, its `global` resource; each line an entry
+    // of the run's details, at its output's time, its stream a label.
+    let adc = credentials.display().to_string();
+    let ran = gcplogs(
+        "user",
+        &["gcp-project=my-project-1", "gcp-log-cmd=true", "labels=team"],
+        &["streams", "out", "err"],
+        &[("GOOGLE_APPLICATION_CREDENTIALS", &adc)],
+    );
+    assert_eq!(ran.status, Some(0), "{ran}");
+    let (asked, entries) = written(2);
+    let token = asked
+        .iter()
+        .find(|r| r.target == "/token")
+        .expect("a token asked for");
+    assert!(
+        token.body.contains("grant_type=refresh_token")
+            && token.body.contains("refresh_token=the-refresh-token"),
+        "{}",
+        token.body
+    );
+    let id = shards(&["inspect", "-f", "{{.Id}}", "user"])
+        .stdout
+        .trim()
+        .to_string();
+    for w in asked.iter().filter(|r| r.target == "/v2/entries:write") {
+        assert_eq!(w.method, "POST");
+        assert_eq!(w.fields["authorization"], "Bearer ya29.refreshed");
+        assert_eq!(w.fields["x-goog-user-project"], "quota-project-1");
+        let body: serde_json::Value = serde_json::from_str(&w.body).unwrap();
+        assert_eq!(body["logName"], "projects/my-project-1/logs/shards");
+        assert_eq!(
+            body["resource"],
+            serde_json::json!({"type": "global", "labels": {"project_id": "my-project-1"}})
+        );
+        assert_eq!(body["partialSuccess"], true);
+    }
+    let stamped = shards(&["logs", "-t", "user"]);
+    let mut by_line: Vec<(String, String)> = Vec::new();
+    for e in &entries {
+        let payload = &e["jsonPayload"];
+        let line = payload["message"].as_str().unwrap().to_string();
+        let container = &payload["container"];
+        assert_eq!(container["name"], "/user");
+        assert_eq!(container["id"], id);
+        assert!(container["imageId"].as_str().unwrap().starts_with("sha256:"));
+        assert!(
+            container["command"].as_str().unwrap().contains("streams out err"),
+            "{container}"
+        );
+        assert!(container["created"].as_str().is_some());
+        let kept = [&stamped.stdout, &stamped.stderr]
+            .iter()
+            .flat_map(|s| s.lines())
+            .find_map(|l| l.strip_suffix(&format!(" {line}")))
+            .unwrap_or_else(|| panic!("{stamped}"));
+        let kept = time::OffsetDateTime::parse(kept, &time::format_description::well_known::Rfc3339).unwrap();
+        let sent = time::OffsetDateTime::parse(
+            e["timestamp"].as_str().unwrap(),
+            &time::format_description::well_known::Rfc3339,
+        )
+        .unwrap();
+        assert_eq!(kept, sent, "{e}");
+        by_line.push((line, e["labels"]["stream"].as_str().unwrap().to_string()));
+    }
+    by_line.sort();
+    assert_eq!(
+        by_line,
+        [
+            ("err".to_string(), "stderr".to_string()),
+            ("out".to_string(), "stdout".to_string())
+        ]
+    );
+
+    // On GCE: its metadata server's project, instance and token; the log name the options
+    // give.
+    let ran = gcplogs(
+        "instance",
+        &["gcp-log-name=gcplogs-docker-driver"],
+        &["streams", "a", "b"],
+        &[("GCE_METADATA_HOST", &at)],
+    );
+    assert_eq!(ran.status, Some(0), "{ran}");
+    let (asked, entries) = written(2);
+    let w = asked.iter().find(|r| r.target == "/v2/entries:write").unwrap();
+    assert_eq!(w.fields["authorization"], "Bearer ya29.instance");
+    assert!(!w.fields.contains_key("x-goog-user-project"));
+    let body: serde_json::Value = serde_json::from_str(&w.body).unwrap();
+    assert_eq!(
+        body["logName"],
+        "projects/meta-project-1/logs/gcplogs-docker-driver"
+    );
+    assert_eq!(
+        body["resource"],
+        serde_json::json!({"type": "gce_instance", "labels": {"instance_id": "4242", "zone": "us-central1-a"}})
+    );
+    assert_eq!(
+        entries[0]["jsonPayload"]["instance"],
+        serde_json::json!({"zone": "us-central1-a", "name": "gce-vm", "id": "4242"})
+    );
+    let token = asked
+        .iter()
+        .find(|r| {
+            r.target
+                .starts_with("/computeMetadata/v1/instance/service-accounts/default/token")
+        })
+        .expect("the instance's token asked for");
+    assert!(
+        token
+            .target
+            .contains("scopes=https%3A%2F%2Fwww.googleapis.com%2Fauth%2Flogging.write"),
+        "{}",
+        token.target
+    );
+    assert_eq!(token.fields["metadata-flavor"], "Google");
+
+    for (opts, said) in [
+        (&["tag=x"][..], "shards: --log-opt tag: gcplogs names each entry"),
+        (
+            &["gcp-project=Not_A_Project"],
+            "shards: --log-opt gcp-project=Not_A_Project: a project's ID",
+        ),
+        (
+            &["gcp-log-name=a b"],
+            "shards: --log-opt gcp-log-name=a b: a log's name",
+        ),
+    ] {
+        let r = gcplogs("refused", opts, &["exit", "0"], &[]);
+        assert_eq!(r.status, Some(125), "{opts:?}: {r}");
+        assert!(r.stderr.starts_with(said), "{opts:?}: {r}");
+    }
+}
+
 /// A run's log as `--log-driver` and `--log-opt` keep it (D161): shards' store, its
 /// segments as long and as many as asked; none with `none`, whose `logs` is refused and
 /// whose attached client still gets its output; `--details` showing the labels, the
@@ -12960,8 +13266,8 @@ fn a_runs_log_is_kept_as_its_driver_and_options_say() {
     );
     for (flags, said) in [
         (
-            &["--log-driver", "gcplogs"][..],
-            "shards: --log-driver gcplogs: shards keeps a run's log itself",
+            &["--log-driver", "etwlogs"][..],
+            "shards: --log-driver etwlogs: Event Tracing for Windows is Windows' own",
         ),
         (
             &["--log-driver", "bogus"],

@@ -137,6 +137,18 @@ pub(crate) fn split(_phase: &str, _part: &str, _took: std::time::Duration, _byte
     }
 }
 
+/// This process's variables a log driver that ships to a cloud finds its credentials by,
+/// `NAME=VALUE`: AWS's (D168) and Google's (D169), and the home, `PATH` and proxies. A
+/// client gives them with a run, so that its credentials are found as its shell would.
+pub(crate) fn cloud_environment() -> Vec<String> {
+    std::env::vars_os()
+        .filter_map(|(k, v)| {
+            let (k, v) = (k.into_string().ok()?, v.into_string().ok()?);
+            (aws::reads(&k) || google::reads(&k)).then(|| format!("{k}={v}"))
+        })
+        .collect()
+}
+
 /// A random UUID, version 4 (RFC 9562 §5.4): a splunk channel's (D167), a DPoP proof's
 /// (D168).
 pub(crate) fn random_uuid() -> std::io::Result<String> {
