@@ -524,6 +524,10 @@ pub struct Vfio {
     /// maps what the guest's IOMMU shows its endpoint (D154). Otherwise all of guest RAM is
     /// its, untranslated, as a guest's kernel driving it needs nothing else.
     pub iommu: bool,
+    /// Its VFIO device node, where it is taken by that and iommufd, not its group
+    /// (`/dev/vfio/devices/vfioN`; vfio.rst, "VFIO Device cdev"): `group` then names its
+    /// IOMMU group, whose node it needs not.
+    pub cdev: Option<PathBuf>,
 }
 
 impl Vfio {
@@ -541,11 +545,39 @@ impl Vfio {
                 noiommu,
                 bars64,
                 iommu: false,
+                cdev: None,
             })
         }
         #[cfg(not(target_os = "linux"))]
         Err(format!(
             "{name}: a host's PCI devices are passed through by VFIO, Linux's (D154)"
+        ))
+    }
+
+    /// The host's function whose VFIO device node is `cdev` (`/dev/vfio/devices/vfioN`),
+    /// taken by that and iommufd (D154): it must be bound to vfio-pci, as must every other
+    /// function in its IOMMU group.
+    pub fn of_cdev(cdev: &std::path::Path) -> Result<Vfio, String> {
+        #[cfg(target_os = "linux")]
+        {
+            use crate::devices::pci::vfio;
+            let at = |e: std::io::Error| format!("{}: {e}", cdev.display());
+            let name = vfio::cdev_function(cdev).map_err(at)?;
+            let group = vfio::group_number(&name).map_err(|e| format!("{name}: its IOMMU group: {e}"))?;
+            let bars64 = vfio::bars64_of(&name).map_err(|e| format!("{name}: its BARs: {e}"))?;
+            Ok(Vfio {
+                name,
+                group: PathBuf::from(format!("/dev/vfio/{group}")),
+                noiommu: false,
+                bars64,
+                iommu: false,
+                cdev: Some(cdev.to_path_buf()),
+            })
+        }
+        #[cfg(not(target_os = "linux"))]
+        Err(format!(
+            "{}: a host's PCI devices are passed through by VFIO, Linux's (D154)",
+            cdev.display()
         ))
     }
 }
@@ -641,6 +673,54 @@ fn after_tests(test: &[(u8, u8)]) -> u8 {
         .map(|&(device, _)| device.saturating_add(1))
         .max()
         .unwrap_or(TEST_DEVICE)
+}
+
+/// Whether the functions `vfio` can be given a machine together (D154): each once, none
+/// without a host's IOMMU behind the guest's, and each group's taken one way, through the
+/// group or each by its device node, as VFIO gives a group one way at a time
+/// (vfio_device_block_group), and all behind the guest's IOMMU or all outside it, as a
+/// group's functions share the host's mappings of their DMA.
+pub fn vfio_given(vfio: &[Vfio]) -> Result<(), String> {
+    let way = |f: &Vfio| match f.cdev {
+        Some(_) => "by its device node",
+        None => "through its group",
+    };
+    let behind = |f: &Vfio| match f.iommu {
+        true => "behind the guest's IOMMU",
+        false => "outside the guest's IOMMU",
+    };
+    for (i, f) in vfio.iter().enumerate() {
+        let named = |e: String| format!("{}: {e}", f.name);
+        let before = vfio.get(..i).unwrap_or_default();
+        if before.iter().any(|g| g.name == f.name) {
+            return Err(named("given twice".into()));
+        }
+        if f.iommu && f.noiommu {
+            return Err(named("a group without an IOMMU cannot follow the guest's".into()));
+        }
+        let Some(g) = before.iter().find(|g| g.group == f.group) else {
+            continue;
+        };
+        if g.cdev.is_some() != f.cdev.is_some() {
+            return Err(named(format!(
+                "taken {}, and {} of its group {} {}: VFIO gives a group's functions one way at a time",
+                way(f),
+                g.name,
+                f.group.display(),
+                way(g)
+            )));
+        }
+        if g.iommu != f.iommu {
+            return Err(named(format!(
+                "{}, and {} of its group {} {}: a group's functions share the host's mappings of their DMA",
+                behind(f),
+                g.name,
+                f.group.display(),
+                behind(g)
+            )));
+        }
+    }
+    Ok(())
 }
 
 /// Where each function of `vfio` sits on bus 0, `(device, function)`, after the test
@@ -894,11 +974,18 @@ fn passed_through(
     // container maps one set of I/O addresses for all of a group's devices.
     let (mut iommu, mut noiommu) = (None, None);
     let mut followed: Vec<(PathBuf, v::Container, Arc<v::Followed>)> = Vec::new();
+    // The functions taken by their device nodes: iommufd, opened once; an I/O address
+    // space for each group behind the guest's IOMMU, with what follows its endpoints into
+    // it; and one that maps all of guest RAM for those outside it.
+    let mut iommufd: Option<v::Iommufd> = None;
+    let mut spaces: Vec<(PathBuf, v::Ioas, Arc<v::Followed>)> = Vec::new();
+    let mut whole: Option<v::Ioas> = None;
+    vfio_given(vfio)?;
     if !vfio.is_empty() {
         v::raise_memlock();
     }
     let places = vfio_places(vfio, test);
-    for (i, (f, place)) in vfio.iter().zip(&places).enumerate() {
+    for (f, place) in vfio.iter().zip(&places) {
         let named = |e: String| format!("{}: {e}", f.name);
         let &Some((device, function)) = place else {
             return Err(named(format!(
@@ -906,35 +993,73 @@ fn passed_through(
                 32u8.saturating_sub(after_tests(test))
             )));
         };
-        if vfio.iter().take(i).any(|g| g.name == f.name) {
-            return Err(named("given twice".into()));
-        }
-        let (container, follower) = if f.iommu {
-            if f.noiommu {
-                return Err(named("a group without an IOMMU cannot follow the guest's".into()));
-            }
-            let at = match followed.iter().position(|(group, ..)| *group == f.group) {
-                Some(at) => at,
-                None => {
-                    let container = v::Container::followed().map_err(named)?;
-                    let follower = Arc::new(container.follower(memory.clone()));
-                    followed.push((f.group.clone(), container, follower));
-                    followed.len() - 1
+        let (opened, follower) = match &f.cdev {
+            Some(cdev) => {
+                let fd = match &iommufd {
+                    Some(fd) => fd,
+                    None => iommufd.insert(v::Iommufd::open().map_err(named)?),
+                };
+                if f.iommu {
+                    let at = match spaces.iter().position(|(group, ..)| *group == f.group) {
+                        Some(at) => at,
+                        None => {
+                            let ioas = fd.ioas().map_err(named)?;
+                            let follower = Arc::new(ioas.follower(memory.clone()));
+                            spaces.push((f.group.clone(), ioas, follower));
+                            spaces.len() - 1
+                        }
+                    };
+                    let (_, ioas, follower) = spaces
+                        .get(at)
+                        .ok_or_else(|| named("its group's address space".into()))?;
+                    (
+                        v::Device::open_cdev(&f.name, cdev, ioas, vm)?,
+                        Some(follower.clone()),
+                    )
+                } else {
+                    // Mapped once its first function is attached, as iommufd pins what it
+                    // maps for a device then.
+                    let fresh = whole.is_none();
+                    let ioas = match &whole {
+                        Some(ioas) => ioas,
+                        None => whole.insert(fd.ioas().map_err(named)?),
+                    };
+                    let opened = v::Device::open_cdev(&f.name, cdev, ioas, vm)?;
+                    if fresh {
+                        ioas.map_ram(memory).map_err(named)?;
+                    }
+                    (opened, None)
                 }
-            };
-            let (_, container, follower) = followed
-                .get_mut(at)
-                .ok_or_else(|| named("its group's container".into()))?;
-            (container, Some(follower.clone()))
-        } else {
-            let slot = if f.noiommu { &mut noiommu } else { &mut iommu };
-            let container = match slot {
-                Some(c) => c,
-                None => slot.insert(v::Container::open(f.noiommu).map_err(named)?),
-            };
-            (container, None)
+            }
+            None => {
+                let (container, follower) = if f.iommu {
+                    let at = match followed.iter().position(|(group, ..)| *group == f.group) {
+                        Some(at) => at,
+                        None => {
+                            let container = v::Container::followed().map_err(named)?;
+                            let follower = Arc::new(container.follower(memory.clone()));
+                            followed.push((f.group.clone(), container, follower));
+                            followed.len() - 1
+                        }
+                    };
+                    let (_, container, follower) = followed
+                        .get_mut(at)
+                        .ok_or_else(|| named("its group's container".into()))?;
+                    (container, Some(follower.clone()))
+                } else {
+                    let slot = if f.noiommu { &mut noiommu } else { &mut iommu };
+                    let container = match slot {
+                        Some(c) => c,
+                        None => slot.insert(v::Container::open(f.noiommu).map_err(named)?),
+                    };
+                    (container, None)
+                };
+                (
+                    v::Device::open(&f.name, &f.group, container, memory, vm)?,
+                    follower,
+                )
+            }
         };
-        let opened = v::Device::open(&f.name, &f.group, container, memory, vm)?;
         // Behind the guest's IOMMU: its group's container maps what its endpoint sees
         // there, and its MSIs land where the endpoint's domain maps their addresses.
         let endpoint = u32::from(device) << 3 | u32::from(function);
@@ -1013,11 +1138,11 @@ fn passed_through(
 }
 
 /// KVM as the host of the functions VFIO passes through (D154): its VFIO device told of
-/// their groups, and memory slots of each function's own for its BARs.
+/// their groups' or their own files, and memory slots of each function's own for its BARs.
 #[cfg(all(hv, target_os = "linux"))]
 impl crate::devices::pci::vfio::Host for crate::hv::Vm {
-    fn add_group(&self, group: std::os::fd::RawFd) -> Result<(), String> {
-        self.add_vfio_group(group).map_err(|e| e.to_string())
+    fn add_file(&self, file: std::os::fd::RawFd) -> Result<(), String> {
+        self.add_vfio_file(file).map_err(|e| e.to_string())
     }
 
     fn slots(&self, count: u32) -> Box<dyn crate::devices::pci::vfio::BarSlots> {
@@ -1774,6 +1899,7 @@ mod tests {
             noiommu: false,
             bars64: Vec::new(),
             iommu: false,
+            cdev: None,
         };
         let vfio = [
             f("0000:01:00.0", 7),
@@ -1826,6 +1952,50 @@ mod tests {
             "past a device's eight functions"
         );
         assert_eq!(guest_address((3, 1)), "0000:00:03.1");
+    }
+
+    /// Functions are given a machine once each, and a group's functions one way: all
+    /// through the group or all by their device nodes, all behind the guest's IOMMU or all
+    /// outside it.
+    #[test]
+    fn a_groups_functions_are_taken_one_way() {
+        let f = |name: &str, group: u32, cdev: bool, iommu: bool| Vfio {
+            name: name.into(),
+            group: PathBuf::from(format!("/dev/vfio/{group}")),
+            noiommu: false,
+            bars64: Vec::new(),
+            iommu,
+            cdev: cdev.then(|| PathBuf::from(format!("/dev/vfio/devices/vfio{group}"))),
+        };
+        let fine = [
+            f("0000:01:00.0", 7, true, true),
+            f("0000:01:00.1", 7, true, true),
+            f("0000:02:00.0", 9, false, false),
+            f("0000:03:00.0", 4, false, true),
+            f("0000:03:00.1", 4, false, true),
+        ];
+        assert_eq!(vfio_given(&fine), Ok(()));
+        assert_eq!(vfio_given(&[]), Ok(()));
+        let twice = [fine[0].clone(), fine[2].clone(), fine[0].clone()];
+        assert_eq!(vfio_given(&twice), Err("0000:01:00.0: given twice".into()));
+        let ways = [fine[0].clone(), f("0000:01:00.1", 7, false, true)];
+        assert_eq!(
+            vfio_given(&ways),
+            Err("0000:01:00.1: taken through its group, and 0000:01:00.0 of its group /dev/vfio/7 by its device node: VFIO gives a group's functions one way at a time".into())
+        );
+        let views = [fine[3].clone(), f("0000:03:00.1", 4, false, false)];
+        assert_eq!(
+            vfio_given(&views),
+            Err("0000:03:00.1: outside the guest's IOMMU, and 0000:03:00.0 of its group /dev/vfio/4 behind the guest's IOMMU: a group's functions share the host's mappings of their DMA".into())
+        );
+        let unsafe_follow = [Vfio {
+            noiommu: true,
+            ..f("0000:05:00.0", 2, false, true)
+        }];
+        assert_eq!(
+            vfio_given(&unsafe_follow),
+            Err("0000:05:00.0: a group without an IOMMU cannot follow the guest's".into())
+        );
     }
 
     /// A working set naming a page the guest does not have is not prefetched at all

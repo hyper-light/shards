@@ -97,7 +97,7 @@ pub struct Vm {
     /// The MSIs routed to GSIs past the IOAPIC's, as the guest programmed its
     /// passed-through functions' (D154).
     routes: Arc<Mutex<Vec<MsiRoute>>>,
-    /// KVM's VFIO device, made as the first VFIO group is added ([`Vm::add_vfio_group`]).
+    /// KVM's VFIO device, made as the first VFIO file is added ([`Vm::add_vfio_file`]).
     pub(super) vfio: OnceLock<sys::DeviceFd>,
 }
 

@@ -4514,9 +4514,9 @@ impl<D: Disk> Daemon<D> {
         // A run given a host's VFIO groups (D154): a microVM booted for it, their functions
         // behind its own IOMMU, with a kernel with VFIO; of no template, as a host's device
         // is no snapshot's. Where the microVM's MSIs are not isolated (vm::ISOLATED_MSIS:
-        // x86_64 has no interrupt remapping yet), its guest's VFIO is told to take them
-        // anyway (vfio_iommu_type1.c), as they reach the microVM's own interrupt controller
-        // alone.
+        // x86_64 has no interrupt remapping yet), its guest's VFIO and iommufd are told to
+        // take them anyway (vfio_iommu_type1.c; iommufd/device.c, iommufd_device_bind), as
+        // they reach the microVM's own interrupt controller alone.
         let vfio = prepared.vfio.as_ref().map_err(String::clone)?;
         if let Some(kernel) = &prepared.vfio_kernel {
             let mut cfg = match &prepared.boot {
@@ -4526,8 +4526,9 @@ impl<D: Disk> Daemon<D> {
             on_network(&mut cfg);
             cfg.vfio = crate::run::vfio_functions(vfio);
             if !shards_vmm::vm::ISOLATED_MSIS {
-                cfg.cmdline
-                    .push_str(" vfio_iommu_type1.allow_unsafe_interrupts=1");
+                cfg.cmdline.push_str(
+                    " vfio_iommu_type1.allow_unsafe_interrupts=1 iommufd.allow_unsafe_interrupts=1",
+                );
             }
             // And its init told to keep a sysfs of its own (`shards_vfio`), through which
             // it gives the functions to vfio-pci.
@@ -4944,7 +4945,12 @@ impl<D: Disk> Daemon<D> {
         }
         for f in &cfg.vfio {
             let flag = if f.iommu { "--vfio-iommu" } else { "--vfio" };
-            args.extend([flag.into(), f.name.clone().into()]);
+            // By its device node where it is taken by that (D154).
+            let given: OsString = f
+                .cdev
+                .as_ref()
+                .map_or_else(|| f.name.clone().into(), |c| c.clone().into_os_string());
+            args.extend([flag.into(), given]);
         }
         if !cfg.shares.is_empty() {
             args.extend(["--shares".into(), cfg.shares.len().to_string().into()]);

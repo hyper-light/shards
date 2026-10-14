@@ -1234,7 +1234,8 @@ fn pci_irq() -> Result<(), String> {
 fn pci_dma() -> Result<(), String> {
     const NAME: &str = "0000:00:01.0";
     let (device, iommu) = vfio::take(NAME)?;
-    let through = edu_dma(device, iommu, 0x10_0000)?;
+    let map = iommu.map(|c| move |vaddr, iova, len| vfio::map_dma(c, vaddr, iova, len));
+    let through = edu_dma(device, map.as_ref().map(|m| m as &Map), 0x10_0000)?;
     let _ = writeln!(io::stdout(), "{}", dma_line(through));
     Ok(())
 }
@@ -1261,16 +1262,49 @@ pub(crate) fn vfio_dma(names: &[String]) -> Result<(), String> {
             return Err(format!("{name} is in group {theirs}, not {first}'s {group}"));
         }
         let device = vfio::device(fd, name)?;
-        let through = edu_dma(device, container, 0x10_0000 + k * 0x100_0000)?;
+        let map = container.map(|c| move |vaddr, iova, len| vfio::map_dma(c, vaddr, iova, len));
+        let through = edu_dma(
+            device,
+            map.as_ref().map(|m| m as &Map),
+            0x10_0000 + k * 0x100_0000,
+        )?;
         let _ = writeln!(io::stdout(), "{}", dma_line(through));
     }
     Ok(())
 }
 
-/// edu's DMA engine at `device`, whose group's container is `iommu` where it has an IOMMU,
-/// its pages mapped from I/O address `base` there: a page into its buffer and back,
-/// through what it was reached by.
-fn edu_dma(device: libc::c_int, iommu: Option<libc::c_int>, base: u64) -> Result<&'static str, String> {
+/// A workload's DMA through each function at `names` it was given by its VFIO device
+/// node and iommufd (`/dev/vfio/devices/vfioN`, `/dev/iommu`; D154): each node found by
+/// its address in sysfs (vfio-dev), all of them bound to one iommufd and attached to one
+/// I/O address space, as their group's must be, which maps each one's pages at addresses
+/// of its own (vfio.rst, "Device cdev Example").
+pub(crate) fn vfio_dma_cdev(names: &[String]) -> Result<(), String> {
+    let iommufd = open("/dev/iommu", libc::O_RDWR)?;
+    let mut ioas = None;
+    for (k, name) in (0u64..).zip(names) {
+        let node = vfio::cdev_of(name)?;
+        let device = open(&node, libc::O_RDWR)?;
+        vfio::bind_iommufd(device, iommufd)?;
+        let id = match ioas {
+            Some(id) => id,
+            None => *ioas.insert(vfio::ioas_alloc(iommufd)?),
+        };
+        vfio::attach(device, id)?;
+        let map = move |vaddr, iova, len| vfio::ioas_map(iommufd, id, vaddr, iova, len);
+        let through = edu_dma(device, Some(&map), 0x10_0000 + k * 0x100_0000)?;
+        let _ = writeln!(io::stdout(), "{}", dma_line(through));
+    }
+    Ok(())
+}
+
+/// How a page of this process is mapped for a function's DMA: at an I/O address, `len`
+/// bytes at `vaddr`.
+type Map = dyn Fn(u64, u64, u64) -> Result<(), String>;
+
+/// edu's DMA engine at `device`, its pages mapped by `map` from I/O address `base` where
+/// its group has an IOMMU, else given it by their guest-physical addresses: a page into its
+/// buffer and back, through what it was reached by.
+fn edu_dma(device: libc::c_int, map: Option<&Map>, base: u64) -> Result<&'static str, String> {
     const PAGE: usize = 4096;
     const BUFFER: u64 = 0x40000;
     const RUN: u64 = 1;
@@ -1296,10 +1330,10 @@ fn edu_dma(device: libc::c_int, iommu: Option<libc::c_int>, base: u64) -> Result
     };
     let (from, to) = (page()?, page()?);
     // Where the function reaches each page: an I/O address mapped for it, or its own.
-    let addresses = match iommu {
-        Some(container) => {
-            vfio::map_dma(container, from as u64, base, PAGE as u64)?;
-            vfio::map_dma(container, to as u64, base + 0x10_0000, PAGE as u64)?;
+    let addresses = match map {
+        Some(map) => {
+            map(from as u64, base, PAGE as u64)?;
+            map(to as u64, base + 0x10_0000, PAGE as u64)?;
             (base, base + 0x10_0000)
         }
         None => (physical(from)?, physical(to)?),
@@ -1339,7 +1373,7 @@ fn edu_dma(device: libc::c_int, iommu: Option<libc::c_int>, base: u64) -> Result
             return Err(format!("byte {i} came back {b:#x}"));
         }
     }
-    if iommu.is_some() {
+    if map.is_some() {
         // To an I/O address nothing is mapped at: nothing moves, and the transfer ends.
         transfer(BUFFER, base + 0x20_0000, RUN | TO_MEMORY)?;
         Ok("its IOMMU")
@@ -1380,6 +1414,11 @@ mod vfio {
     const NOIOMMU_IOMMU: u64 = 8;
     const TYPE1V2_IOMMU: u64 = 3;
     const IOMMU_MAP_DMA: u64 = io(13);
+    const DEVICE_BIND_IOMMUFD: u64 = io(18);
+    const DEVICE_ATTACH_IOMMUFD_PT: u64 = io(19);
+    /// iommufd's (iommufd.h): `_IO(';', n)`.
+    const IOAS_ALLOC: u64 = ((b';' as u64) << 8) | 0x81;
+    const IOAS_MAP: u64 = ((b';' as u64) << 8) | 0x85;
     pub const INTX: u32 = 0;
     pub const MSI: u32 = 1;
     pub const MSIX: u32 = 2;
@@ -1453,6 +1492,57 @@ mod vfio {
     pub fn device(group: libc::c_int, name: &str) -> Result<libc::c_int, String> {
         let cname = std::ffi::CString::new(name).map_err(|e| e.to_string())?;
         ioctl(group, GROUP_GET_DEVICE_FD, cname.as_ptr() as usize)
+    }
+
+    /// The VFIO device node of the PCI function `name`, bound to vfio-pci already
+    /// (/sys/bus/pci/devices/NAME/vfio-dev/vfioN).
+    pub fn cdev_of(name: &str) -> Result<String, String> {
+        let dir = format!("/sys/bus/pci/devices/{name}/vfio-dev");
+        let mut nodes: Vec<String> = std::fs::read_dir(&dir)
+            .map_err(|e| format!("{dir}: {e}"))?
+            .filter_map(|e| e.ok()?.file_name().into_string().ok())
+            .collect();
+        match (nodes.pop(), nodes.is_empty()) {
+            (Some(node), true) => Ok(format!("/dev/vfio/devices/{node}")),
+            _ => Err(format!("{dir}: not one VFIO device node")),
+        }
+    }
+
+    /// Binds the VFIO device `device`, opened by its node, to `iommufd`
+    /// (struct vfio_device_bind_iommufd, as Linux 6.6 has it).
+    pub fn bind_iommufd(device: libc::c_int, iommufd: libc::c_int) -> Result<(), String> {
+        let mut bind = [0u32; 4];
+        bind[0] = 16;
+        bind[2] = iommufd as u32;
+        ioctl(device, DEVICE_BIND_IOMMUFD, bind.as_mut_ptr() as usize).map(drop)
+    }
+
+    /// A new I/O address space of `iommufd`'s, its ID (struct iommu_ioas_alloc).
+    pub fn ioas_alloc(iommufd: libc::c_int) -> Result<u32, String> {
+        let mut alloc = [12u32, 0, 0];
+        ioctl(iommufd, IOAS_ALLOC, alloc.as_mut_ptr() as usize)?;
+        Ok(alloc[2])
+    }
+
+    /// Attaches `device`, bound to iommufd, to its I/O address space `ioas`
+    /// (struct vfio_device_attach_iommufd_pt, as Linux 6.6 has it).
+    pub fn attach(device: libc::c_int, ioas: u32) -> Result<(), String> {
+        let mut attach = [12u32, 0, ioas];
+        ioctl(device, DEVICE_ATTACH_IOMMUFD_PT, attach.as_mut_ptr() as usize).map(drop)
+    }
+
+    /// Maps `len` bytes of this process at `vaddr` at I/O address `iova` of iommufd's I/O
+    /// address space `ioas`, for the function to read and write (struct iommu_ioas_map:
+    /// FIXED_IOVA, WRITEABLE, READABLE).
+    pub fn ioas_map(iommufd: libc::c_int, ioas: u32, vaddr: u64, iova: u64, len: u64) -> Result<(), String> {
+        let mut map = [0u8; 40];
+        map[0..4].copy_from_slice(&40u32.to_le_bytes());
+        map[4..8].copy_from_slice(&7u32.to_le_bytes());
+        map[8..12].copy_from_slice(&ioas.to_le_bytes());
+        map[16..24].copy_from_slice(&vaddr.to_le_bytes());
+        map[24..32].copy_from_slice(&len.to_le_bytes());
+        map[32..40].copy_from_slice(&iova.to_le_bytes());
+        ioctl(iommufd, IOAS_MAP, map.as_mut_ptr() as usize).map(drop)
     }
 
     /// Maps `len` bytes of this process at `vaddr` at I/O address `iova` of the
@@ -1665,26 +1755,52 @@ fn daemon() -> Result<(), String> {
     );
     std::fs::create_dir_all("/etc/cdi").map_err(|e| format!("/etc/cdi: {e}"))?;
     std::fs::write("/etc/cdi/shards-test-vfio.json", spec).map_err(|e| format!("the CDI spec: {e}"))?;
-    for device in [node.as_str(), "shards.test/vfio=group"] {
-        let mut args = vec![
-            "run",
-            "--rm",
-            "--network",
-            "none",
-            "--user",
-            "root",
-            "--device",
-            "/dev/vfio/vfio",
-            "--device",
-            device,
-            "vfio-test",
-        ];
-        args.extend(command.split(',').filter(|a| !a.is_empty()));
+    let words: Vec<&str> = command.split(',').filter(|a| !a.is_empty()).collect();
+    // The runs: given the group by its node, then by a CDI device, then by the directory
+    // of VFIO's nodes, as dockerd walks one; then, where this guest's kernel makes them
+    // (VFIO_DEVICE_CDEV), each function by its device node and iommufd, and by the
+    // directory of the device nodes, its workload taking them so too.
+    let cdevs: Vec<String> = functions
+        .split(',')
+        .filter_map(|n| vfio::cdev_of(n).ok())
+        .collect();
+    let mut runs: Vec<(Vec<String>, Vec<&str>)> = vec![
+        (vec!["/dev/vfio/vfio".into(), node.clone()], words.clone()),
+        (
+            vec!["/dev/vfio/vfio".into(), "shards.test/vfio=group".into()],
+            words.clone(),
+        ),
+        (vec!["/dev/vfio".into()], words.clone()),
+    ];
+    if !cdevs.is_empty() {
+        let mut by_node = words.clone();
+        if let Some(first) = by_node.first_mut() {
+            *first = "vfio-dma-cdev";
+        }
+        runs.push((
+            std::iter::once("/dev/iommu".to_string()).chain(cdevs).collect(),
+            by_node.clone(),
+        ));
+        runs.push((vec!["/dev/iommu".into(), "/dev/vfio/devices".into()], by_node));
+    } else {
+        let _ = writeln!(
+            io::stdout(),
+            "L1: no VFIO device nodes: this kernel lacks VFIO_DEVICE_CDEV"
+        );
+    }
+    for (devices, workload) in &runs {
+        let mut args = vec!["run", "--rm", "--network", "none", "--user", "root"];
+        for d in devices {
+            args.extend(["--device", d.as_str()]);
+        }
+        args.push("vfio-test");
+        args.extend(workload.iter().copied());
         let ran = shards(&args)?;
         said("L2", &ran);
         if ran.status.success() {
             continue;
         }
+        let device = devices.join(" ");
         // Where the daemon says why, and the VM processes it ran, once all have ended.
         said("L1", &shards(&["stop", "daemon"])?);
         if let Ok(log) = std::fs::read_to_string("/tmp/shards/daemon.log") {

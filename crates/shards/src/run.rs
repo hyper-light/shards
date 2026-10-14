@@ -43,10 +43,12 @@ pub fn kernel_of(boot: &Boot) -> &std::path::Path {
 
 /// A host's VFIO group that a run's device names (D154), by `--device` or a CDI node:
 /// `/dev/vfio/N`, or each group in `/dev/vfio` where it names the directory, as dockerd's
-/// DevicesFromPath walks one.
+/// DevicesFromPath walks one; or a function of one by its VFIO device node,
+/// `/dev/vfio/devices/vfioN`, or each in `/dev/vfio/devices`, its group's other functions
+/// the host's.
 #[derive(Debug, Clone)]
 pub struct VfioGroup {
-    /// Its path, `/dev/vfio/N`.
+    /// Its path, `/dev/vfio/N` or `/dev/vfio/devices/vfioN`.
     pub path: String,
     /// Its functions the host gave vfio-pci, each given the run's microVM behind the
     /// microVM's own IOMMU, by which its guest gives them to the workload as a group of its
@@ -54,12 +56,26 @@ pub struct VfioGroup {
     pub functions: Vec<shards_vmm::vm::Vfio>,
 }
 
-/// The functions `groups` give a microVM, in the order its bus places them, each once.
+/// The functions `groups` give a microVM, in the order its bus places them, each once:
+/// through its group where a run names the group too, whose node gives all of its
+/// functions, as VFIO gives a group's functions one way at a time (vm::vfio_given), and
+/// its guest still gives the workload each node it names.
 pub fn vfio_functions(groups: &[VfioGroup]) -> Vec<shards_vmm::vm::Vfio> {
     let mut all: Vec<shards_vmm::vm::Vfio> = Vec::new();
     for f in groups.iter().flat_map(|g| &g.functions) {
         if !all.iter().any(|a| a.name == f.name) {
             all.push(f.clone());
+        }
+    }
+    let named: Vec<std::path::PathBuf> = groups
+        .iter()
+        .flat_map(|g| &g.functions)
+        .filter(|f| f.cdev.is_none())
+        .map(|f| f.group.clone())
+        .collect();
+    for f in &mut all {
+        if named.contains(&f.group) {
+            f.cdev = None;
         }
     }
     all
@@ -81,9 +97,43 @@ pub fn vfio_groups<'a>(paths: impl IntoIterator<Item = &'a str>) -> Result<Vec<V
         let number = n.strip_prefix("noiommu-").unwrap_or(n);
         !number.is_empty() && number.bytes().all(|b| b.is_ascii_digit())
     };
+    let cdev_name = |n: &str| {
+        n.strip_prefix("vfio")
+            .is_some_and(|number| !number.is_empty() && number.bytes().all(|b| b.is_ascii_digit()))
+    };
     let mut groups: Vec<VfioGroup> = Vec::new();
     for host in paths {
         let clean = host.trim_end_matches('/');
+        // A function by its device node: iommufd its DMA's (vfio.rst, "VFIO Device cdev").
+        let cdevs: Vec<String> = if clean == "/dev/vfio/devices" {
+            let mut names: Vec<String> = std::fs::read_dir(clean)
+                .into_iter()
+                .flatten()
+                .filter_map(|e| e.ok()?.file_name().into_string().ok())
+                .filter(|n| cdev_name(n))
+                .collect();
+            names.sort_by_key(|n| (n.len(), n.clone()));
+            names.into_iter().map(|n| format!("{clean}/{n}")).collect()
+        } else if clean.strip_prefix("/dev/vfio/devices/").is_some_and(cdev_name) {
+            vec![clean.to_string()]
+        } else {
+            Vec::new()
+        };
+        for cdev in &cdevs {
+            if !Path::new(cdev).exists() {
+                continue;
+            }
+            let f = shards_vmm::vm::Vfio::of_cdev(Path::new(cdev)).map_err(|e| gathering(host, &e))?;
+            if !groups.iter().any(|g| g.path == *cdev) {
+                groups.push(VfioGroup {
+                    path: cdev.clone(),
+                    functions: vec![shards_vmm::vm::Vfio { iommu: true, ..f }],
+                });
+            }
+        }
+        if !cdevs.is_empty() || clean.starts_with("/dev/vfio/devices") {
+            continue;
+        }
         let paths: Vec<String> = if clean == "/dev/vfio" {
             let Ok(entries) = std::fs::read_dir(clean) else {
                 continue;
@@ -891,6 +941,50 @@ fn short(digest: &str) -> &str {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    /// A microVM is given each function once, through its group where the run names the
+    /// group as well as the function's device node, whichever it names first.
+    #[test]
+    fn a_group_named_too_gives_its_functions() {
+        let f = |name: &str, cdev: Option<&str>| shards_vmm::vm::Vfio {
+            name: name.into(),
+            group: "/dev/vfio/7".into(),
+            noiommu: false,
+            bars64: Vec::new(),
+            iommu: true,
+            cdev: cdev.map(Into::into),
+        };
+        let node = |n: &str, function: &str| VfioGroup {
+            path: format!("/dev/vfio/devices/vfio{n}"),
+            functions: vec![f(function, Some(format!("/dev/vfio/devices/vfio{n}").as_str()))],
+        };
+        let group = VfioGroup {
+            path: "/dev/vfio/7".into(),
+            functions: vec![f("0000:01:00.0", None), f("0000:01:00.1", None)],
+        };
+        let by_group = vec![f("0000:01:00.1", None), f("0000:01:00.0", None)];
+        assert_eq!(
+            vfio_functions(&[node("1", "0000:01:00.1"), group.clone()]),
+            by_group
+        );
+        assert_eq!(
+            vfio_functions(&[group.clone(), node("1", "0000:01:00.1")]),
+            vec![f("0000:01:00.0", None), f("0000:01:00.1", None)]
+        );
+        let nodes = [node("0", "0000:01:00.0"), node("1", "0000:01:00.1")];
+        assert_eq!(
+            vfio_functions(&nodes),
+            vec![
+                f("0000:01:00.0", Some("/dev/vfio/devices/vfio0")),
+                f("0000:01:00.1", Some("/dev/vfio/devices/vfio1"))
+            ]
+        );
+        assert_eq!(shards_vmm::vm::vfio_given(&vfio_functions(&nodes)), Ok(()));
+        assert_eq!(
+            shards_vmm::vm::vfio_given(&vfio_functions(&[node("1", "0000:01:00.1"), group])),
+            Ok(())
+        );
+    }
 
     /// `--gpus` asks for this Mac's one GPU with any count but none, or its device 0; more,
     /// another device, or a driver of its own are refused, a driver in dockerd's words.

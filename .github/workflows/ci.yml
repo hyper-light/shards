@@ -38,7 +38,7 @@ jobs:
       - run: rustup toolchain install "$TOOLCHAIN" --profile minimal
       - name: cargo-deny 0.20.2, the published build, pinned
         run: |
-          curl -fsSL --retry 5 -o "$RUNNER_TEMP/deny.tgz" https://github.com/EmbarkStudios/cargo-deny/releases/download/0.20.2/cargo-deny-0.20.2-x86_64-unknown-linux-musl.tar.gz
+          curl -fsSL --retry 5 --retry-all-errors --retry-delay 10 -o "$RUNNER_TEMP/deny.tgz" https://github.com/EmbarkStudios/cargo-deny/releases/download/0.20.2/cargo-deny-0.20.2-x86_64-unknown-linux-musl.tar.gz
           echo "9f12ed4c49936e09b48bf862b595cde2fe64fcbd9d74dfacac6131ca824c8d5f  $RUNNER_TEMP/deny.tgz" | sha256sum -c
           tar xzf "$RUNNER_TEMP/deny.tgz" -C "$RUNNER_TEMP"
           echo "$RUNNER_TEMP/cargo-deny-0.20.2-x86_64-unknown-linux-musl" >> "$GITHUB_PATH"

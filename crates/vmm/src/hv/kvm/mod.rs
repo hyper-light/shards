@@ -258,12 +258,12 @@ impl DeviceSlots {
 }
 
 impl Vm {
-    /// Tells KVM of VFIO's group `group` through KVM's VFIO device
-    /// (Documentation/virt/kvm/devices/vfio.rst), before any device of the group is opened,
-    /// as drivers that need the VM to open a device ask. The device is made with the first
-    /// group and kept as long as the VM: KVM forgets the groups as its descriptor closes
-    /// (virt/kvm/vfio.c, kvm_vfio_release).
-    pub fn add_vfio_group(&self, group: std::os::fd::RawFd) -> Result<()> {
+    /// Tells KVM of VFIO's file `file`, a group's or a device's opened by its node, through
+    /// KVM's VFIO device (Documentation/virt/kvm/devices/vfio.rst, KVM_DEV_VFIO_FILE_ADD),
+    /// before the device is opened or bound, as drivers that need the VM to open a device
+    /// ask. The device is made with the first file and kept as long as the VM: KVM forgets
+    /// the files as its descriptor closes (virt/kvm/vfio.c, kvm_vfio_release).
+    pub fn add_vfio_file(&self, file: std::os::fd::RawFd) -> Result<()> {
         let device = match self.vfio.get() {
             Some(device) => device,
             None => {
@@ -276,7 +276,7 @@ impl Vm {
             }
         };
         device
-            .set_attr(sys::DEV_VFIO_FILE, sys::DEV_VFIO_FILE_ADD, &group)
+            .set_attr(sys::DEV_VFIO_FILE, sys::DEV_VFIO_FILE_ADD, &file)
             .map_err(call("KVM_SET_DEVICE_ATTR"))
     }
 

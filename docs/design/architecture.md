@@ -3795,9 +3795,50 @@ one. So both, in that order.
   vfio_group_fops_open). Verified on real VMs (`a_run_is_given_a_hosts_vfio_group`,
   mutation-checked): a nested arm64 guest given test functions (`--pci-tests
   01.0,02.0,02.1`) runs shards as a Linux host does, and a run of it given the group of
-  the device of two, its group 1, by its node and then by a CDI device, has them as one
-  device and its own group 0, whose node is its `/dev/vfio/0`, and moves a page through
-  each by DMA, its workload finding the group as DPDK does.
+  the device of two, its group 1, by its node, by a CDI device and by the directory
+  `/dev/vfio`, has them as one device and its own group 0, whose node is its
+  `/dev/vfio/0`, and moves a page through each by DMA, its workload finding the group as
+  DPDK does.
+- **A function by its VFIO device node, and iommufd** (`--device /dev/vfio/devices/vfioN`
+  and `/dev/iommu`, or each node in `/dev/vfio/devices`; `run --kernel --vfio[-iommu]
+  /dev/vfio/devices/vfioN`): the other way Linux hands a process a function (vfio.rst,
+  "VFIO Device cdev"; Documentation/userspace-api/iommufd.rst), as hosts that give a user
+  a device but not its group do. The VM process opens the node, tells KVM's VFIO device of
+  it before binding it, as a driver that needs the VM finds it then (KVM_DEV_VFIO_FILE_ADD
+  takes a group's file or a device's), binds it to /dev/iommu and attaches it to an I/O
+  address space (IOMMU_IOAS_ALLOC, VFIO_DEVICE_BIND_IOMMUFD,
+  VFIO_DEVICE_ATTACH_IOMMUFD_PT), each struct as Linux 6.6 first had it, its `argsz`
+  saying so, which every host since takes: one address space for each group behind the
+  guest's IOMMU, which the group's follower maps into (IOMMU_IOAS_MAP and UNMAP), as
+  iommufd attaches a group's devices to one; and one that maps all of guest RAM for those
+  outside it, once the first is attached. iommufd pins what it maps for an attached device
+  then (iopt_area_fill_domains), and counts what it pins for all of a user's processes
+  together against the pinning process's locked-memory limit (incr_user_locked_vm;
+  /dev/iommu's default, which only CAP_SYS_RESOURCE changes), where type 1 counts each
+  process's alone: a user's microVMs given functions so share that limit, as its refusal
+  says. iommufd, like type 1, binds a function whose MSIs its host isolates, or where its
+  administrator allows them (`iommufd.allow_unsafe_interrupts`; iommufd/device.c,
+  iommufd_device_bind): a microVM whose MSIs are not isolated (`ISOLATED_MSIS`) has its
+  guest's iommufd told so too, as its VFIO is. A group's functions are each taken one way,
+  by the group's node or by their own, and all behind the guest's IOMMU or none, as VFIO
+  gives a group one way at a time (vfio_device_block_group) and its functions share the
+  host's mappings (`vm::vfio_given`); a run that names a group and a node of one of its
+  functions takes the group by its node, which gives all of them, its guest still giving
+  the workload each node named (`run::vfio_functions`). Each refusal of the kernel's at
+  the bind says which holder it means: the group's node open elsewhere (EBUSY), the device
+  open elsewhere (EINVAL), MSIs not isolated or the group's DMA another's (EPERM), a VF
+  whose PF is vfio-pci's (EACCES). The function's group is still the group the bus places
+  it by; a no-IOMMU function has no device node ("cdev does not support noiommu device",
+  vfio.h). The guest's kernel, the `kvm` variant, makes VFIO's device nodes too (IOMMUFD,
+  VFIO_DEVICE_CDEV), and a device that names the host's node is the guest's node of the
+  function (sysfs's `vfio-dev`), there in the container too where its path there is the
+  host's; `/dev/iommu` is the guest's. Verified on real VMs (mutation-checked: the guest's
+  node of the function, the follower's maps, guest RAM's address space): the daemon's runs
+  given the two functions' nodes and /dev/iommu, and the directory of the nodes, whose
+  workload takes them so, binding both to one iommufd and one address space
+  (`a_run_is_given_a_hosts_vfio_group`); and the VM process given a function by its node,
+  outside the guest's IOMMU, its interrupts and its DMA by guest-physical address
+  (`a_nested_guest_runs_vms_of_its_own`).
 - **MSIs isolated on arm64 KVM, by an ITS.** A guest's VFIO refuses a group whose MSIs
   nothing isolates, unless told it may take one (vfio_iommu_type1.c,
   `allow_unsafe_interrupts`): a function's MSIs could forge another's. An arm64 KVM
@@ -3963,9 +4004,8 @@ one. So both, in that order.
 - **Not yet:** snapshots of arm64 KVM VMs (`vm::SNAPSHOTS`; their GIC and vCPU state
   through KVM's registers); more vCPUs than one redistributor region holds (123). For
   VFIO: MSI of more than one message, and its per-vector masking; isolated MSIs on x86_64
-  and the host's addresses (above); iommufd's devices (`/dev/vfio/devices/vfioN` and `/dev/iommu`,
-  which the `kvm` kernel lacks: IOMMUFD, VFIO_DEVICE_CDEV), whose address spaces would also
-  let followed functions share pinned pages; then `--gpus` on Linux.
+  and the host's addresses (above); a VF whose PF is bound to vfio-pci, which VFIO gives
+  only with the PF's VF token (vfio_pci_core_match_token_uuid); then `--gpus` on Linux.
 
 ### D153. A PCI bus, for the devices a microVM is given (VFIO's first step)
 
