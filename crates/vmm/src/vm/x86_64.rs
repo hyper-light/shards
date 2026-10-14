@@ -552,27 +552,28 @@ pub fn build(cfg: &Config) -> Result<Machine, String> {
 
     let kernel_file = crate::platform::open_input(&cfg.kernel, false)
         .map_err(|e| format!("{}: {e}", cfg.kernel.display()))?;
-    // The kernel and the initrd, copied into guest RAM: most of a cold boot's setup, which
-    // the VM, its devices and its firmware tables need none of, nor touch any of. So it
-    // runs on a thread of its own while they are made, and inline where no thread can be.
-    let load = || -> Result<(boot::LoadedKernel, Option<(u64, u64)>), String> {
-        let kernel = boot::load_kernel(&memory, &kernel_file, low_ram_end).map_err(|e| e.to_string())?;
-        debug!("kernel loaded");
-        // Between the kernel and the end of low RAM, at its top (boot.rs, load_initrd).
-        let room = low_ram_end.min(layout::MMIO_GAP).saturating_sub(kernel.end);
-        let initrd = match super::initrd(cfg, room)? {
-            None => None,
-            Some(bytes) => Some(
-                boot::load_initrd(&memory, &bytes, kernel.end, low_ram_end.min(layout::MMIO_GAP))
-                    .map_err(|e| e.to_string())?,
-            ),
-        };
-        Ok((kernel, initrd))
+    // Where the kernel and the initrd go, from the kernel's headers and the initrd's
+    // length: the initrd between the kernel and the end of low RAM, at its top (boot.rs,
+    // place_initrd). Their bytes are copied in as the machine is made.
+    let (kernel, spans) = boot::plan_kernel(&kernel_file, low_ram_end).map_err(|e| e.to_string())?;
+    let mut pieces: Vec<super::Piece> = spans
+        .into_iter()
+        .map(|span| super::Piece {
+            span,
+            file: &kernel_file,
+            path: &cfg.kernel,
+        })
+        .collect();
+    let initrd_file = super::initrd(cfg, low_ram_end.saturating_sub(kernel.end))?;
+    let initrd = match &initrd_file {
+        None => None,
+        Some(i) => {
+            let start = boot::place_initrd(i.len(), kernel.end, low_ram_end).map_err(|e| e.to_string())?;
+            pieces.push(i.place(&memory, start)?);
+            Some((start, i.len()))
+        }
     };
-    let (a, (kernel, initrd)) = std::thread::scope(|s| -> Result<_, String> {
-        let loader = std::thread::Builder::new()
-            .name("shards-load".into())
-            .spawn_scoped(s, load);
+    let a = super::beside_copy(&memory, &pieces, || {
         let hosts = super::Hosts {
             vsock: cfg.vsock.as_ref(),
             net: cfg.net.as_ref(),
@@ -600,14 +601,9 @@ pub fn build(cfg: &Config) -> Result<Machine, String> {
         }
         drop(access);
         a.vmgenid.write_new_id()?;
-        let loaded = match loader {
-            Ok(loader) => loader
-                .join()
-                .map_err(|_| "the kernel's loader ended abnormally".to_string())??,
-            Err(_) => load()?,
-        };
-        Ok((a, loaded))
+        Ok(a)
     })?;
+    debug!("kernel and initrd copied");
     let cmdline = match &a.pci {
         Some(_) => format!("{} {MACHINE_CMDLINE}", cfg.cmdline),
         None => format!("{} {MACHINE_CMDLINE} {NO_PCI_CMDLINE}", cfg.cmdline),

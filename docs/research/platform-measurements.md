@@ -8050,3 +8050,38 @@ revision before comparing a changed API/implementation.
   buys on x86_64 KVM is read from the comparison's next runs. The boot pages are next:
   mapped ahead of the guest (KVM_PRE_FAULT_MEMORY, a read fault: a page the guest only
   scans maps to the zero page, no memory resident).
+
+### M227. A cold boot's copy, shared by two threads and read straight into guest memory
+
+- **Question.** From the VM process's exec to its vCPU's first entry, shards took 1.0 and
+  1.8 ms longer than Firecracker on CI's x86_64 KVM runners (boot-exits pass 4, revision
+  ce8f85d, run 38483758187, 10 boots each, interleaved: p50 6,423 against 5,425 µs on one
+  runner, 7,711 against 5,982 on the other). Where does that time go, and what of it can
+  go?
+- **Method.** `perf trace` of one boot each (the same run): every system call in order,
+  its thread and duration. Then `docs/research/measurements/kernel-load/ab.py` on an M5
+  Max, macOS 26.4.1, load 6.5 to 8.4: the VM process of revision ce8f85d (A) against one
+  whose kernel and initrd are planned first and copied by two threads (B), both `release`
+  and signed as `crates/shards/build.rs` signs them, n=30 each, interleaved, twice.
+- **Results.**
+  - shards, traced: its main thread made the machine (the VM, its devices, their tables)
+    in 0.83 ms, then waited 4.74 ms for the loader thread, which read the kernel's two
+    segments into guest memory (17.7 MB in 2.73 ms, 3.5 MB in 0.53 ms, 6.5 GB/s), then
+    the initrd into a buffer of its own (2.59 MB in 1.14 ms, 2.3 GB/s), copied it into
+    guest memory (0.25 ms from the read's end to the buffer's unmapping) and unmapped the
+    buffer (0.15 ms).
+  - Firecracker, traced: all on one thread; the kernel's segments read at 6.6 to 6.9
+    GB/s, the initrd read straight into guest memory in 0.29 ms.
+  - The A/B, entry µs p50 / p90 / p99 / max: A 2,405 / 2,540 / 2,572 / 2,572, B 1,740 /
+    1,901 / 2,021 / 2,021, B less A −652 µs at the median paired; again, A 2,583 / 2,968
+    / 3,191 / 3,191, B 2,080 / 2,497 / 2,650 / 2,650, −626 µs.
+- **Why.** The copy is the boot's setup's longest part, and the machine's making, which
+  needs none of it, is the shorter: one thread copying while the other waits leaves the
+  copy whole on the path to the first entry. An initrd read through a buffer pays its
+  pages' faults and a second copy.
+- **Consequence.** `vm::beside_copy`: the kernel's and the initrd's places are planned
+  from the kernel's headers and the initrd's length, the initrd's file is read straight
+  into guest memory (an init's into its place in the archive there), and the copy is cut
+  at each 2 MiB of guest memory, a huge page each, which the loader thread and then the
+  main thread, its own work done, take in turn. x86_64 KVM's numbers are read from the
+  next runs of the harness and the comparison.

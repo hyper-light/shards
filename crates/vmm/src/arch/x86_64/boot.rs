@@ -7,7 +7,7 @@ use std::fmt;
 use std::fs::File;
 
 use super::{Boot, Segment, layout};
-use crate::memory::{GuestMemory, OutOfBounds, Reentered};
+use crate::memory::{FileSpan, GuestMemory, OutOfBounds, Reentered};
 use crate::platform;
 
 #[derive(Debug)]
@@ -154,9 +154,10 @@ pub struct LoadedKernel {
     pub end: u64,
 }
 
-/// Copies each PT_LOAD to its physical address. Segments must lie in low RAM, above
-/// 1 MiB and inside the identity map, which is all `startup_64` can reach.
-pub fn load_kernel(mem: &GuestMemory, kernel: &File, low_ram_end: u64) -> Result<LoadedKernel, BootError> {
+/// Where each PT_LOAD of `kernel` goes, from its headers alone: at its physical address,
+/// in low RAM, above 1 MiB and inside the identity map, which is all `startup_64` can
+/// reach. Its segments' bytes are copied in later, as the spans of the file this gives.
+pub fn plan_kernel(kernel: &File, low_ram_end: u64) -> Result<(LoadedKernel, Vec<FileSpan>), BootError> {
     let mut header = [0u8; 64];
     platform::read_exact_at(kernel, &mut header, 0)?;
     let elf = parse_elf(&header, |offset, len| {
@@ -164,8 +165,15 @@ pub fn load_kernel(mem: &GuestMemory, kernel: &File, low_ram_end: u64) -> Result
         platform::read_exact_at(kernel, &mut table, offset)?;
         Ok(table)
     })?;
+    spans(&elf, low_ram_end)
+}
+
+/// [`plan_kernel`]'s spans of `elf`'s segments, in the file's order: where two meet in
+/// memory, the later one's bytes are the ones copied there ([`crate::vm`]'s copy).
+fn spans(elf: &Elf, low_ram_end: u64) -> Result<(LoadedKernel, Vec<FileSpan>), BootError> {
     let limit = low_ram_end.min(layout::IDENTITY_MAPPED);
     let mut end = 0u64;
+    let mut spans = Vec::with_capacity(elf.loads.len());
     for seg in &elf.loads {
         let seg_end = seg.paddr.checked_add(seg.memsz);
         if seg.paddr < layout::HIMEM || seg_end.is_none_or(|e| e > limit) {
@@ -176,35 +184,36 @@ pub fn load_kernel(mem: &GuestMemory, kernel: &File, low_ram_end: u64) -> Result
             });
         }
         let len = usize::try_from(seg.filesz).map_err(|_| BootError::NotAnElf("segment size"))?;
-        mem.read_file(seg.paddr, len, kernel, seg.offset)?;
         // Fresh guest RAM is zero, so bss (memsz beyond filesz) needs no clearing.
+        spans.push(FileSpan {
+            gpa: seg.paddr,
+            len,
+            offset: seg.offset,
+        });
         end = end.max(seg_end.unwrap_or(0));
     }
     if elf.entry < layout::HIMEM || elf.entry >= end {
         return Err(BootError::NotAnElf("entry point outside the loaded image"));
     }
-    Ok(LoadedKernel {
-        entry: elf.entry,
-        end,
-    })
+    Ok((
+        LoadedKernel {
+            entry: elf.entry,
+            end,
+        },
+        spans,
+    ))
 }
 
 /// The guest's page: an initrd starts on one.
 const PAGE: u64 = 0x1000;
 
-/// Places the initrd at the top of RAM below `limit`, page-aligned, above the kernel's end
-/// (`after`), as Firecracker and QEMU place it: beside what the guest kernel takes there
-/// from the top down early in boot (its memblock allocations), so that the two share the
-/// host's huge pages. 2 MiB above the kernel, a 3 MiB initrd held one more of them
-/// (PM M157).
-pub fn load_initrd(
-    mem: &GuestMemory,
-    initrd: &[u8],
-    after: u64,
-    limit: u64,
-) -> Result<(u64, u64), BootError> {
-    let len = initrd.len() as u64;
-    let start = limit
+/// Where an initrd of `len` bytes starts: at the top of RAM below `limit`, page-aligned,
+/// above the kernel's end (`after`), as Firecracker and QEMU place it: beside what the
+/// guest kernel takes there from the top down early in boot (its memblock allocations),
+/// so that the two share the host's huge pages. 2 MiB above the kernel, a 3 MiB initrd
+/// held one more of them (PM M157).
+pub fn place_initrd(len: u64, after: u64, limit: u64) -> Result<u64, BootError> {
+    limit
         .checked_sub(len)
         .map(|s| s & !(PAGE - 1))
         .filter(|s| *s >= after)
@@ -212,9 +221,7 @@ pub fn load_initrd(
             what: "initrd",
             at: after,
             len,
-        })?;
-    mem.access()?.write(start, initrd)?;
-    Ok((start, len))
+        })
 }
 
 const E820_RAM: u32 = 1;
@@ -397,26 +404,57 @@ mod tests {
         assert!(!ds.long && ds.db && ds.present);
     }
 
-    /// The initrd ends within a page of the top of low RAM, starts on a page, holds what it
-    /// was given, and fails where it would reach below the kernel's end.
+    /// The initrd ends within a page of the top of low RAM, starts on a page, and is
+    /// refused where it would reach below the kernel's end.
     #[test]
     fn the_initrd_goes_at_the_top_of_low_ram() {
-        let mem = GuestMemory::anonymous(&[(0, 64 << 20)]).unwrap();
-        let initrd: Vec<u8> = (0..(3 << 20) + 5).map(|i| (i % 251) as u8).collect();
-        let (start, len) = load_initrd(&mem, &initrd, 40 << 20, 64 << 20).unwrap();
-        assert_eq!(len, initrd.len() as u64);
+        let len = (3 << 20) + 5;
+        let start = place_initrd(len, 40 << 20, 64 << 20).unwrap();
         assert_eq!(start % PAGE, 0);
         assert!(
             start + len <= 64 << 20 && start + len > (64 << 20) - PAGE,
             "{start:#x}"
         );
-        let mut back = vec![0u8; initrd.len()];
-        mem.access().unwrap().read(start, &mut back).unwrap();
-        assert_eq!(back, initrd);
         assert!(matches!(
-            load_initrd(&mem, &vec![0u8; 30 << 20], 40 << 20, 64 << 20),
+            place_initrd(30 << 20, 40 << 20, 64 << 20),
             Err(BootError::DoesNotFit { what: "initrd", .. })
         ));
+    }
+
+    /// A kernel's segments are spans of its file, each where its physical address says,
+    /// in the file's order, bss left out.
+    #[test]
+    fn a_kernels_segments_are_spans_of_its_file() {
+        let seg = |paddr, filesz, memsz, offset| Segment64 {
+            offset,
+            paddr,
+            filesz,
+            memsz,
+        };
+        let elf = Elf {
+            entry: 0x100_0000,
+            loads: vec![
+                seg(0x120_0000, 0x1000, 0x8_0000, 0x30_0000),
+                seg(0x100_0000, 0x10_0000, 0x10_0000, 0x20_0000),
+            ],
+        };
+        let (kernel, got) = spans(&elf, 64 << 20).unwrap();
+        assert_eq!((kernel.entry, kernel.end), (0x100_0000, 0x128_0000));
+        assert_eq!(
+            got,
+            vec![
+                FileSpan {
+                    gpa: 0x120_0000,
+                    len: 0x1000,
+                    offset: 0x30_0000
+                },
+                FileSpan {
+                    gpa: 0x100_0000,
+                    len: 0x10_0000,
+                    offset: 0x20_0000
+                },
+            ]
+        );
     }
 
     #[test]

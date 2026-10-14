@@ -30,6 +30,15 @@ use std::sync::{Mutex, MutexGuard};
 use crate::platform;
 use crate::sync::lock;
 
+/// `len` bytes of guest memory from `gpa`, which a file fills from `offset`: a piece of a
+/// kernel or an initrd as a boot plans its copy ([`GuestMemory::read_file`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FileSpan {
+    pub gpa: u64,
+    pub len: usize,
+    pub offset: u64,
+}
+
 /// A guest-physical range that is not backed by guest RAM.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct OutOfBounds {

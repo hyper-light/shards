@@ -141,17 +141,19 @@ pub fn with_init(init: &[u8]) -> Vec<u8> {
     c.finish()
 }
 
-/// [`with_init`] of the init binary `file` holds, `len` bytes of it, read straight into
-/// its place in the archive (audit D13).
-pub fn with_init_from(file: &mut impl std::io::Read, len: usize) -> std::io::Result<Vec<u8>> {
-    let mut c = Cpio::with_capacity(archive_len(len));
+/// [`with_init`]'s archive around an init of `len` bytes: the bytes before the init's own
+/// and those after them, so that the init's are read straight into their place between,
+/// wherever the archive is (audit D13).
+pub fn frame(len: usize) -> (Vec<u8>, Vec<u8>) {
+    let mut c = Cpio::new();
     root(&mut c);
     c.header("init", S_IFREG | 0o755, len, (0, 0));
-    let at = c.buf.len();
-    c.buf.resize(at + len, 0);
-    file.read_exact(c.buf.get_mut(at..).unwrap_or_default())?;
-    c.pad();
-    Ok(c.finish())
+    let before = std::mem::take(&mut c.buf);
+    // The init's padding, then the trailer, which starts where newc's 4-byte alignment
+    // puts it.
+    let mut after = vec![0; pad4(len) - len];
+    after.extend(c.finish());
+    (before, after)
 }
 
 #[cfg(test)]
@@ -162,22 +164,17 @@ mod tests {
     type Entry = (String, u32, (u32, u32), Vec<u8>);
 
     /// The archive is exactly as long as `archive_len` says, held in one allocation of that
-    /// size, and an init read from a file makes the same bytes as one given whole (audit
-    /// D13).
+    /// size, and its frame around an init's bytes makes the same bytes as the init given
+    /// whole (audit D13).
     #[test]
-    fn archives_are_sized_once_and_read_in_place() {
-        for len in [0usize, 1, 3, 4, 1 << 20, (1 << 20) + 3] {
+    fn archives_are_sized_once_and_framed_in_place() {
+        for len in [0usize, 1, 2, 3, 4, 5, 1 << 20, (1 << 20) + 3] {
             let init: Vec<u8> = (0..len).map(|i| (i * 7) as u8).collect();
             let whole = with_init(&init);
             assert_eq!(whole.len(), archive_len(len), "{len}");
             assert_eq!(whole.capacity(), archive_len(len), "{len}: room past its length");
-            let read = with_init_from(&mut &init[..], len).unwrap();
-            assert_eq!(read, whole, "{len}");
-            assert_eq!(read.capacity(), archive_len(len), "{len}");
-            // A file shorter than it said is an error, not a short archive.
-            if len > 0 {
-                assert!(with_init_from(&mut &init[..len - 1], len).is_err());
-            }
+            let (before, after) = frame(len);
+            assert_eq!([&before[..], &init, &after].concat(), whole, "{len}");
         }
         assert_eq!(&hex8(0x0123_abcd), b"0123abcd");
     }

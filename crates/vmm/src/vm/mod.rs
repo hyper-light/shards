@@ -1,9 +1,16 @@
 //! A microVM: configuration, lifecycle, and exit reasons, independent of the backend
 //! that runs it.
 
+#[cfg(hv)]
+use std::path::Path;
 use std::path::PathBuf;
 #[cfg(hv)]
 use std::sync::Arc;
+#[cfg(hv)]
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+#[cfg(hv)]
+use crate::memory::{FileSpan, GuestMemory};
 
 #[cfg(hv = "hvf")]
 use crate::devices::virtio::gpu;
@@ -992,12 +999,12 @@ pub fn run(cfg: &Config) -> Result<ExitReason, String> {
     Ok(running.wait())
 }
 
-/// The initrd a machine boots: `--initrd`'s file, or an initramfs holding `--init`'s. Its
-/// file is read only once its length is seen to fit the `room` bytes of RAM there are for
-/// it, and an init is read straight into its place in the archive (audit D13).
+/// The initrd a machine boots: `--initrd`'s file, or an initramfs holding `--init`'s,
+/// opened once its length is seen to fit the `room` bytes of RAM there are for it. Its
+/// file is read only as it is copied in, straight into guest memory, an init into its
+/// place in the archive there (audit D13, [`Initrd::place`]).
 #[cfg(hv)]
-fn initrd(cfg: &Config, room: u64) -> Result<Option<Vec<u8>>, String> {
-    use std::io::Read as _;
+fn initrd(cfg: &Config, room: u64) -> Result<Option<Initrd>, String> {
     let open = |p: &PathBuf| -> Result<(std::fs::File, usize), String> {
         let at = |e: std::io::Error| format!("{}: {e}", p.display());
         let file = crate::platform::open_input(p, false).map_err(at)?;
@@ -1016,31 +1023,190 @@ fn initrd(cfg: &Config, room: u64) -> Result<Option<Vec<u8>>, String> {
     };
     match (&cfg.initrd, &cfg.init) {
         (Some(_), Some(_)) => Err("--initrd and --init are mutually exclusive".into()),
+        // Only the length that was seen to fit is copied, though the file grow meanwhile;
+        // one that shrinks is an error as it is copied.
         (Some(p), None) => {
             let (file, len) = open(p)?;
             fits(p, len)?;
-            let mut bytes = Vec::new();
-            bytes
-                .try_reserve_exact(len)
-                .map_err(|e| format!("{}: {e}", p.display()))?;
-            // Only the length that was seen to fit, though the file grow meanwhile.
-            file.take(len as u64)
-                .read_to_end(&mut bytes)
-                .map_err(|e| format!("{}: {e}", p.display()))?;
-            if bytes.len() != len {
-                return Err(format!("{}: shorter than its {len} bytes", p.display()));
-            }
-            Ok(Some(bytes))
+            Ok(Some(Initrd {
+                file,
+                path: p.clone(),
+                file_len: len,
+                before: Vec::new(),
+                after: Vec::new(),
+            }))
         }
         (None, Some(p)) => {
-            let (mut file, len) = open(p)?;
+            let (file, len) = open(p)?;
             fits(p, crate::initramfs::archive_len(len))?;
-            crate::initramfs::with_init_from(&mut file, len)
-                .map(Some)
-                .map_err(|e| format!("{}: {e}", p.display()))
+            let (before, after) = crate::initramfs::frame(len);
+            Ok(Some(Initrd {
+                file,
+                path: p.clone(),
+                file_len: len,
+                before,
+                after,
+            }))
         }
         (None, None) => Ok(None),
     }
+}
+
+/// A boot's initrd before it is copied in: the file whose bytes it holds, and around them
+/// the bytes of the archive an init is given in (`--init`, [`initramfs::frame`]); a
+/// `--initrd`'s file is the initrd whole.
+///
+/// [`initramfs::frame`]: crate::initramfs::frame
+#[cfg(hv)]
+#[derive(Debug)]
+pub(crate) struct Initrd {
+    file: std::fs::File,
+    path: PathBuf,
+    file_len: usize,
+    before: Vec<u8>,
+    after: Vec<u8>,
+}
+
+#[cfg(hv)]
+impl Initrd {
+    /// The guest memory it takes.
+    pub(crate) fn len(&self) -> u64 {
+        (self.before.len() + self.file_len + self.after.len()) as u64
+    }
+
+    /// Writes its archive's own bytes at `start` in `memory`, around where its file's go:
+    /// the piece left to copy in.
+    pub(crate) fn place(&self, memory: &GuestMemory, start: u64) -> Result<Piece<'_>, String> {
+        let overflows = || "the initrd overflows the address space".to_string();
+        let data = start
+            .checked_add(self.before.len() as u64)
+            .ok_or_else(overflows)?;
+        let after = data.checked_add(self.file_len as u64).ok_or_else(overflows)?;
+        let access = memory.access().map_err(|e| e.to_string())?;
+        for (at, bytes) in [(start, &self.before), (after, &self.after)] {
+            if !bytes.is_empty() {
+                access.write(at, bytes).map_err(|e| e.to_string())?;
+            }
+        }
+        Ok(Piece {
+            span: FileSpan {
+                gpa: data,
+                len: self.file_len,
+                offset: 0,
+            },
+            file: &self.file,
+            path: &self.path,
+        })
+    }
+}
+
+/// A span of guest memory and the file that fills it (`path` names it in errors): what a
+/// boot copies in of its kernel and initrd.
+#[cfg(hv)]
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Piece<'f> {
+    pub span: FileSpan,
+    pub file: &'f std::fs::File,
+    pub path: &'f Path,
+}
+
+/// The unit a boot's copy is shared out in: a huge page of guest memory, which one thread
+/// alone then faults in (THP's, PM M157).
+#[cfg(hv)]
+const COPY_UNIT: u64 = 2 << 20;
+
+/// `pieces`, cut where each [`COPY_UNIT`] of guest memory begins.
+#[cfg(hv)]
+fn chunks<'f>(pieces: &[Piece<'f>]) -> Vec<Piece<'f>> {
+    let mut out = Vec::new();
+    for p in pieces {
+        let FileSpan {
+            mut gpa,
+            len,
+            mut offset,
+        } = p.span;
+        let mut left = len as u64;
+        while left > 0 {
+            let len = left.min(COPY_UNIT - gpa % COPY_UNIT);
+            out.push(Piece {
+                span: FileSpan {
+                    gpa,
+                    len: len as usize,
+                    offset,
+                },
+                ..*p
+            });
+            // Within the piece, whose own sums were checked as it was planned.
+            gpa = gpa.saturating_add(len);
+            offset = offset.saturating_add(len);
+            left -= len;
+        }
+    }
+    out
+}
+
+/// Copies in the chunks `next` hands out until none is left: what each thread a boot's
+/// copy has runs, however many.
+#[cfg(hv)]
+fn copy_in(memory: &GuestMemory, chunks: &[Piece<'_>], next: &AtomicUsize) -> Result<(), String> {
+    while let Some(c) = chunks.get(next.fetch_add(1, Ordering::Relaxed)) {
+        memory
+            .read_file(c.span.gpa, c.span.len, c.file, c.span.offset)
+            .map_err(|e| format!("{}: {e}", c.path.display()))?;
+    }
+    Ok(())
+}
+
+/// Runs `own`, the machine's making, while a thread of its own copies `pieces` into
+/// `memory`, the most of a cold boot's setup (PM M226), which the VM, its devices and its
+/// firmware tables need none of, nor touch any of; then this thread takes its share of
+/// what is left of the copy (PM M227). Where no thread can be made, or two pieces meet in
+/// memory, this one copies all of it after `own`, in the pieces' order: where two meet,
+/// the later one's bytes are the ones there, as a copy of one piece after another leaves
+/// them.
+#[cfg(hv)]
+fn beside_copy<T>(
+    memory: &GuestMemory,
+    pieces: &[Piece<'_>],
+    own: impl FnOnce() -> Result<T, String>,
+) -> Result<T, String> {
+    let chunks = chunks(pieces);
+    let next = AtomicUsize::new(0);
+    let copy = || copy_in(memory, &chunks, &next);
+    let mut spans: Vec<&FileSpan> = pieces.iter().map(|p| &p.span).collect();
+    spans.sort_unstable_by_key(|s| s.gpa);
+    let meet = spans
+        .windows(2)
+        .any(|w| matches!(w, [a, b] if a.gpa.saturating_add(a.len as u64) > b.gpa));
+    std::thread::scope(|s| {
+        // None where pieces meet, or where no thread can be made.
+        let loader = (!meet)
+            .then(|| {
+                std::thread::Builder::new()
+                    .name("shards-load".into())
+                    .spawn_scoped(s, copy)
+                    .ok()
+            })
+            .flatten();
+        let made = own();
+        let mine = match made {
+            Ok(_) => copy(),
+            // No machine to boot: what is left of the copy is left.
+            Err(_) => {
+                next.store(chunks.len(), Ordering::Relaxed);
+                Ok(())
+            }
+        };
+        let theirs = match loader {
+            Some(loader) => loader
+                .join()
+                .map_err(|_| "the kernel's loader ended abnormally".to_string())?,
+            None => Ok(()),
+        };
+        let made = made?;
+        mine.and(theirs)?;
+        Ok(made)
+    })
 }
 
 #[cfg(all(test, hv))]
@@ -1286,27 +1452,129 @@ mod tests {
         assert!(machine_config(&cfg).unwrap_err().starts_with("no-such-file: "));
     }
 
-    /// An init or initrd is read only if it fits where it goes: one longer than the room
-    /// is refused, saying so; one that fits becomes the archive, or the initrd, whole
-    /// (audit D13). `Cargo.toml` stands in for either.
+    /// An init or initrd is taken only if it fits where it goes: one longer than the room
+    /// is refused, saying so; one that fits is the archive, or the initrd, whole, once
+    /// placed and copied in, across a huge page's edge too (audit D13). `Cargo.toml`
+    /// stands in for either.
     #[test]
-    fn an_initrd_is_read_only_if_it_fits() {
-        let len = std::fs::metadata("Cargo.toml").unwrap().len() as usize;
+    fn an_initrd_is_taken_only_if_it_fits() {
+        let bytes = std::fs::read("Cargo.toml").unwrap();
+        let len = bytes.len();
+        let memory = GuestMemory::anonymous(&[(0, 8 << 20)]).unwrap();
+        let copied = |i: &Initrd, start: u64| {
+            let piece = i.place(&memory, start).unwrap();
+            copy_in(&memory, &chunks(&[piece]), &AtomicUsize::new(0)).unwrap();
+            let mut back = vec![0u8; i.len() as usize];
+            memory.access().unwrap().read(start, &mut back).unwrap();
+            back
+        };
         let mut cfg = Config::new(PathBuf::from("kernel"), Some(PathBuf::from("Cargo.toml")));
         let archive = crate::initramfs::archive_len(len) as u64;
         let e = initrd(&cfg, archive - 1).unwrap_err();
         assert!(e.contains("room for"), "{e}");
-        let built = initrd(&cfg, archive).unwrap().unwrap();
-        assert_eq!(
-            built,
-            crate::initramfs::with_init(&std::fs::read("Cargo.toml").unwrap())
-        );
+        let framed = initrd(&cfg, archive).unwrap().unwrap();
+        assert_eq!(framed.len(), archive);
+        assert_eq!(copied(&framed, 0x1000), crate::initramfs::with_init(&bytes));
         cfg.init = None;
         cfg.initrd = Some(PathBuf::from("Cargo.toml"));
         assert!(initrd(&cfg, len as u64 - 1).unwrap_err().contains("room for"));
-        assert_eq!(initrd(&cfg, len as u64).unwrap().unwrap().len(), len);
+        let whole = initrd(&cfg, len as u64).unwrap().unwrap();
+        assert_eq!(copied(&whole, COPY_UNIT - 7), bytes);
         cfg.init = Some(PathBuf::from("Cargo.toml"));
         assert!(initrd(&cfg, u64::MAX).is_err(), "both at once");
+    }
+
+    /// A boot's copy is cut where each 2 MiB of guest memory begins, every byte in one
+    /// chunk alone, each read from where its own bytes lie in the file.
+    #[test]
+    fn a_boots_copy_is_cut_at_each_huge_page() {
+        let file = std::fs::File::open("Cargo.toml").unwrap();
+        let path = Path::new("Cargo.toml");
+        let piece = |gpa, len, offset| Piece {
+            span: FileSpan { gpa, len, offset },
+            file: &file,
+            path,
+        };
+        let cut = chunks(&[piece(0x1f_f000, 0x40_2000, 7), piece(0x80_0000, 5, 0)]);
+        let spans: Vec<FileSpan> = cut.iter().map(|p| p.span).collect();
+        let span = |gpa, len, offset| FileSpan { gpa, len, offset };
+        assert_eq!(
+            spans,
+            vec![
+                span(0x1f_f000, 0x1000, 7),
+                span(0x20_0000, 0x20_0000, 0x1007),
+                span(0x40_0000, 0x20_0000, 0x20_1007),
+                span(0x60_0000, 0x1000, 0x40_1007),
+                span(0x80_0000, 5, 0),
+            ]
+        );
+    }
+
+    /// Pieces that meet in memory are copied in their order, the later one's bytes where
+    /// they meet, as a copy of one after another leaves them.
+    #[test]
+    fn pieces_that_meet_are_copied_in_their_order() {
+        let dir = shards_testdir::TempDir::new("meet").unwrap();
+        let (a, b) = (dir.path().join("a"), dir.path().join("b"));
+        std::fs::write(&a, vec![b'a'; 3 << 20]).unwrap();
+        std::fs::write(&b, vec![b'b'; 1 << 20]).unwrap();
+        let (fa, fb) = (std::fs::File::open(&a).unwrap(), std::fs::File::open(&b).unwrap());
+        let memory = GuestMemory::anonymous(&[(0, 8 << 20)]).unwrap();
+        let piece = |file, path, gpa, len| Piece {
+            span: FileSpan { gpa, len, offset: 0 },
+            file,
+            path,
+        };
+        let pieces = [
+            piece(&fa, a.as_path(), 0x10_0000, 3 << 20),
+            piece(&fb, b.as_path(), 0x20_0000, 1 << 20),
+        ];
+        beside_copy(&memory, &pieces, || Ok(())).unwrap();
+        let mut back = vec![0u8; 3 << 20];
+        memory.access().unwrap().read(0x10_0000, &mut back).unwrap();
+        let (before, rest) = back.split_at(1 << 20);
+        let (met, after) = rest.split_at(1 << 20);
+        assert!(before.iter().all(|&x| x == b'a'));
+        assert!(
+            met.iter().all(|&x| x == b'b'),
+            "the later piece's bytes where they meet"
+        );
+        assert!(after.iter().all(|&x| x == b'a'));
+    }
+
+    /// Threads sharing one boot's copy copy every byte where it goes; a file shorter than
+    /// its plan is an error naming it, not a short copy.
+    #[test]
+    fn a_boots_copy_is_shared_by_its_threads() {
+        let dir = shards_testdir::TempDir::new("copy").unwrap();
+        let path = dir.path().join("image");
+        let bytes: Vec<u8> = (0..(5 << 20) + 3).map(|i| (i % 251) as u8).collect();
+        std::fs::write(&path, &bytes).unwrap();
+        let file = std::fs::File::open(&path).unwrap();
+        let memory = GuestMemory::anonymous(&[(0, 16 << 20)]).unwrap();
+        let at = 0x10_0009;
+        let piece = |len| Piece {
+            span: FileSpan {
+                gpa: at,
+                len,
+                offset: 0,
+            },
+            file: &file,
+            path: &path,
+        };
+        let plan = chunks(&[piece(bytes.len())]);
+        let next = AtomicUsize::new(0);
+        std::thread::scope(|s| {
+            let other = s.spawn(|| copy_in(&memory, &plan, &next));
+            copy_in(&memory, &plan, &next).unwrap();
+            other.join().unwrap().unwrap();
+        });
+        let mut back = vec![0u8; bytes.len()];
+        memory.access().unwrap().read(at, &mut back).unwrap();
+        assert_eq!(back, bytes);
+        let short = chunks(&[piece(bytes.len() + 1)]);
+        let e = copy_in(&memory, &short, &AtomicUsize::new(0)).unwrap_err();
+        assert!(e.contains("image"), "{e}");
     }
 
     /// A working set naming a page the guest does not have is not prefetched at all

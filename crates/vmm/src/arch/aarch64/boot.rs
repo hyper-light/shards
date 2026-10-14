@@ -8,7 +8,7 @@ use std::fs::File;
 
 use super::layout;
 use crate::fdt::{Fdt, FdtError};
-use crate::memory::{GuestMemory, OutOfBounds, Reentered};
+use crate::memory::{FileSpan, OutOfBounds, Reentered};
 use crate::platform;
 
 const IMAGE_MAGIC: u32 = 0x644d_5241; // "ARM\x64"
@@ -117,8 +117,9 @@ pub fn parse_image_header(h: &[u8]) -> Result<ImageHeader, BootError> {
     })
 }
 
-/// Loads `kernel` at [`layout::KERNEL_BASE`] (+ text_offset), 2 MiB aligned.
-pub fn load_kernel(mem: &GuestMemory, kernel: &File, ram_size: u64) -> Result<LoadedKernel, BootError> {
+/// Where `kernel` goes, from its header alone: at [`layout::KERNEL_BASE`] (+ text_offset),
+/// 2 MiB aligned. The Image is copied in later, whole, as the span of the file this gives.
+pub fn plan_kernel(kernel: &File, ram_size: u64) -> Result<(LoadedKernel, FileSpan), BootError> {
     let file_len = kernel.metadata()?.len();
     let mut header = [0u8; IMAGE_HEADER_LEN];
     platform::read_exact_at(kernel, &mut header, 0)?;
@@ -143,19 +144,21 @@ pub fn load_kernel(mem: &GuestMemory, kernel: &File, ram_size: u64) -> Result<Lo
     if end > layout::KERNEL_BASE.saturating_add(have) {
         return Err(too_big(footprint));
     }
-    read_into_guest(mem, kernel, load, file_len)?;
-    Ok(LoadedKernel { entry: load, end })
+    let len = usize::try_from(file_len).map_err(|_| too_big(footprint))?;
+    Ok((
+        LoadedKernel { entry: load, end },
+        FileSpan {
+            gpa: load,
+            len,
+            offset: 0,
+        },
+    ))
 }
 
-/// Places an initrd directly after the kernel footprint, which keeps it inside the
-/// 1 GiB-aligned, ≤32 GiB window that must also cover the Image (booting.rst).
-pub fn load_initrd(
-    mem: &GuestMemory,
-    initrd: &[u8],
-    after: u64,
-    limit: u64,
-) -> Result<(u64, u64), BootError> {
-    let len = initrd.len() as u64;
+/// Where an initrd of `len` bytes starts: directly after the kernel footprint, which keeps
+/// it inside the 1 GiB-aligned, ≤32 GiB window that must also cover the Image
+/// (booting.rst).
+pub fn place_initrd(len: u64, after: u64, limit: u64) -> Result<u64, BootError> {
     let start = after.checked_next_multiple_of(SZ_2M).unwrap_or(u64::MAX);
     if start.checked_add(len).is_none_or(|end| end > limit) {
         return Err(BootError::DoesNotFit {
@@ -164,13 +167,7 @@ pub fn load_initrd(
             have: limit.saturating_sub(start),
         });
     }
-    mem.access()?.write(start, initrd)?;
-    Ok((start, len))
-}
-
-fn read_into_guest(mem: &GuestMemory, file: &File, gpa: u64, len: u64) -> Result<(), BootError> {
-    let len = usize::try_from(len).map_err(|_| BootError::Memory(OutOfBounds { gpa, len }))?;
-    Ok(mem.read_file(gpa, len, file, 0)?)
+    Ok(start)
 }
 
 /// A virtio-mmio transport to describe in the devicetree.
