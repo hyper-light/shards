@@ -1525,6 +1525,8 @@ mod tests {
                 error: String::new(),
                 auto_remove: run.remove,
                 log_lost: 0,
+                log_dropped: 0,
+                log_compress: false,
                 stop_signal: None,
                 stop_timeout: run.stop_timeout,
                 ports: Vec::new(),

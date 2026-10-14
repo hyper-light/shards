@@ -1386,6 +1386,69 @@ pub const RUN_LAYER_OUT: u8 = 64;
 /// range the guest writes and swaps to.
 pub const RUN_SWAP: u8 = 128;
 
+/// A `kind::RUN` request's head, before its command's encoded spec, as the daemon writes
+/// it and a warm VM's run and a joiner's (D119) read it: its flags, its log's retention
+/// (each segment's most bytes, how many segments it keeps), its log's first segment, the
+/// most memory its guest may plug in bytes (D148), and its log's queue (D162): none where
+/// the run's output is kept as it comes, else the most bytes queued for its log.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct RunHead {
+    pub flags: u8,
+    pub log_size: u64,
+    pub log_files: u64,
+    pub first: u64,
+    pub plug: u64,
+    pub queue: Option<u64>,
+}
+
+/// The big-endian u64 `rest` begins with, `rest` then past it.
+fn take_u64(rest: &mut &[u8]) -> Option<u64> {
+    let (n, after) = rest.split_first_chunk::<8>()?;
+    *rest = after;
+    Some(u64::from_be_bytes(*n))
+}
+
+impl RunHead {
+    /// Its length: the flags, four big-endian u64s, the queue's mode (0 blocking, 1
+    /// non-blocking), then the queue's.
+    pub const LEN: usize = 1 + 4 * 8 + 1 + 8;
+
+    pub fn encode_into(&self, out: &mut Vec<u8>) {
+        out.push(self.flags);
+        for n in [self.log_size, self.log_files, self.first, self.plug] {
+            out.extend(n.to_be_bytes());
+        }
+        out.push(u8::from(self.queue.is_some()));
+        out.extend(self.queue.unwrap_or(0).to_be_bytes());
+    }
+
+    /// The head `payload` begins with, and what follows it; why not, where it holds none.
+    pub fn decode(payload: &[u8]) -> Result<(RunHead, &[u8]), String> {
+        const SHORT: &str = "a request shorter than its head";
+        let (&flags, mut rest) = payload.split_first().ok_or(SHORT)?;
+        let log_size = take_u64(&mut rest).ok_or(SHORT)?;
+        let log_files = take_u64(&mut rest).ok_or(SHORT)?;
+        let first = take_u64(&mut rest).ok_or(SHORT)?;
+        let plug = take_u64(&mut rest).ok_or(SHORT)?;
+        let (&mode, mut rest) = rest.split_first().ok_or(SHORT)?;
+        let queued = take_u64(&mut rest).ok_or(SHORT)?;
+        let queue = match mode {
+            0 => None,
+            1 => Some(queued),
+            m => return Err(format!("a request whose log's mode is {m}")),
+        };
+        let head = RunHead {
+            flags,
+            log_size,
+            log_files,
+            first,
+            plug,
+            queue,
+        };
+        Ok((head, rest))
+    }
+}
+
 /// The largest payload a message may carry.
 pub const MAX_PAYLOAD: usize = 1 << 20;
 
@@ -1535,6 +1598,35 @@ mod tests {
     }
 
     use super::*;
+
+    /// A run's head reads back as written, with what follows it; one cut short, or of a
+    /// mode no build writes, is refused.
+    #[test]
+    fn a_run_head_reads_back_as_written() {
+        for queue in [None, Some(0), Some(1_000_000)] {
+            let head = RunHead {
+                flags: RUN_LOG | RUN_DETACHED,
+                log_size: 20 << 20,
+                log_files: 5,
+                first: 3,
+                plug: 1 << 30,
+                queue,
+            };
+            let mut bytes = Vec::new();
+            head.encode_into(&mut bytes);
+            assert_eq!(bytes.len(), RunHead::LEN);
+            bytes.extend(b"spec");
+            assert_eq!(RunHead::decode(&bytes), Ok((head, &b"spec"[..])));
+            assert!(RunHead::decode(&bytes[..RunHead::LEN - 1]).is_err());
+        }
+        let mut bytes = Vec::new();
+        RunHead::default().encode_into(&mut bytes);
+        bytes[33] = 2;
+        assert_eq!(
+            RunHead::decode(&bytes),
+            Err("a request whose log's mode is 2".to_string())
+        );
+    }
 
     /// A daemon is ending its runs while the process its file names lives: this one is,
     /// one that has gone is not, and neither is a file naming no single process.

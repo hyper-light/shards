@@ -4755,6 +4755,36 @@ fn retained_output(home: &Path, args: &[&str]) -> Vec<u8> {
     out.stdout
 }
 
+/// Segment `seq`'s log in container directory `dir`, as written: its file as written, or,
+/// once the daemon has compressed it (D162), every zstd frame of its compressed file, the
+/// seek table's skippable frame passed over. The file as written goes only once the
+/// compressed one is whole, so it is read first.
+fn segment_log(dir: &Path, seq: u64) -> Vec<u8> {
+    use ruzstd::decoding::errors::{FrameDecoderError, ReadFrameHeaderError};
+    use ruzstd::decoding::{BlockDecodingStrategy, FrameDecoder};
+    match std::fs::read(dir.join(format!("log.{seq}"))) {
+        Ok(written) => return written,
+        Err(e) => assert_eq!(e.kind(), std::io::ErrorKind::NotFound, "{e}"),
+    }
+    let packed = std::fs::read(dir.join(format!("log.{seq}.zst"))).unwrap();
+    let mut src = packed.as_slice();
+    let mut out = Vec::new();
+    while !src.is_empty() {
+        let mut frame = FrameDecoder::new();
+        match frame.reset(&mut src) {
+            Ok(()) => {
+                frame.decode_blocks(&mut src, BlockDecodingStrategy::All).unwrap();
+                out.extend(frame.collect().unwrap_or_default());
+            }
+            Err(FrameDecoderError::ReadFrameHeaderError(ReadFrameHeaderError::SkipFrame {
+                length, ..
+            })) => src = &src[length as usize..],
+            Err(e) => panic!("segment {seq}: {e}"),
+        }
+    }
+    out
+}
+
 /// A container's log keeps only its newest output: at most SHARDS_LOG_MAX_FILE segments of
 /// SHARDS_LOG_MAX_SIZE bytes, as Docker's `local` driver keeps `max-file` of `max-size`.
 /// `logs` shows what is kept, `--tail` its last lines, and a follower gets every byte once
@@ -4806,7 +4836,8 @@ fn a_log_keeps_its_newest_output_within_its_retention() {
     assert!(!dir.join("log").exists() && !dir.join("log.idx").exists());
     let mut payload = 0u64;
     for seq in &seqs {
-        let log = std::fs::metadata(dir.join(format!("log.{seq}"))).unwrap().len();
+        // Compressed once rotated (D162), on the daemon's own time: as written, or not.
+        let log = segment_log(&dir, *seq).len() as u64;
         let records = std::fs::metadata(dir.join(format!("log.{seq}.idx")))
             .unwrap()
             .len()
@@ -10968,6 +10999,180 @@ fn a_run_attaches_the_streams_it_asks_for() {
         "plain",
     ]);
     assert_eq!(shown.stdout, "false true true\n", "{shown}");
+}
+
+/// A run's log compressed and queued as its options say (D162). Its rotated segments are
+/// compressed, seekably, unless its driver is json-file, which compresses them only when
+/// asked (as Docker's does, though Docker refuses json-file's `compress` without a
+/// `max-size`). `logs` reads them back whole and from their middle (`--tail`). A
+/// non-blocking log never holds up its run: what it keeps and what it drops add up to the
+/// run's output, and `logs` says what it dropped. Its refusals are in shards' words.
+#[test]
+fn a_runs_log_is_compressed_and_queued_as_its_options_say() {
+    let Some((home, image)) = home("containers-log-packing") else {
+        return;
+    };
+    let shards = |args: &[&str]| shards_in(&home, args);
+    let dir_of = |name: &str| {
+        let id = shards(&["inspect", "-f", "{{.Id}}", name]).stdout;
+        home.join("containers").join(id.trim())
+    };
+    let names = |dir: &Path| {
+        let mut names: Vec<String> = std::fs::read_dir(dir)
+            .unwrap()
+            .filter_map(|e| e.ok()?.file_name().into_string().ok())
+            .filter(|n| n.starts_with("log") && !n.ends_with(".idx"))
+            .collect();
+        names.sort();
+        names
+    };
+    // Every segment but the newest compressed, by the packer's thread, as they rotate.
+    let packed = |dir: &Path| {
+        let deadline = Instant::now() + Duration::from_secs(60);
+        loop {
+            let names = names(dir);
+            let plain = names.iter().filter(|n| !n.ends_with(".zst")).count();
+            if plain == 1 || Instant::now() > deadline {
+                return names;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    };
+    // 30,000 lines through segments of 64,000 bytes, four kept.
+    let rotating = run_in(
+        &home,
+        &image,
+        &[
+            "--name",
+            "rotating",
+            "--log-opt",
+            "max-size=64k",
+            "--log-opt",
+            "max-file=4",
+        ],
+        &["count", "30000"],
+    );
+    assert_eq!(rotating.status, Some(0), "{rotating}");
+    let kept = packed(&dir_of("rotating"));
+    assert_eq!(kept.len(), 4, "{kept:?}");
+    assert_eq!(kept.iter().filter(|n| n.ends_with(".zst")).count(), 3, "{kept:?}");
+    let logged = shards(&["logs", "rotating"]);
+    assert_eq!((logged.status, logged.stderr.as_str()), (Some(0), ""), "{logged}");
+    assert!(
+        logged.stdout.len() > 150_000 && rotating.stdout.ends_with(&logged.stdout),
+        "{} bytes logged: not the output's newest",
+        logged.stdout.len()
+    );
+    // Its last lines, from the middle of a compressed segment.
+    let tail = shards(&["logs", "--tail", "12000", "rotating"]);
+    let want: Vec<&str> = rotating.stdout.lines().skip(30000 - 12000).collect();
+    assert_eq!(tail.stdout.lines().collect::<Vec<_>>(), want);
+    // json-file keeps them as written, unless asked to compress them.
+    for (compress, zst) in [(None, 0), (Some("compress=true"), 3)] {
+        let name = format!("json-{}", zst);
+        let mut flags = vec![
+            "--name",
+            name.as_str(),
+            "--log-driver",
+            "json-file",
+            "--log-opt",
+            "max-size=64k",
+            "--log-opt",
+            "max-file=4",
+        ];
+        if let Some(c) = compress {
+            flags.extend(["--log-opt", c]);
+        }
+        let r = run_in(&home, &image, &flags, &["count", "30000"]);
+        assert_eq!(r.status, Some(0), "{r}");
+        let kept = if zst > 0 {
+            packed(&dir_of(&name))
+        } else {
+            names(&dir_of(&name))
+        };
+        assert_eq!(
+            kept.iter().filter(|n| n.ends_with(".zst")).count(),
+            zst,
+            "{compress:?}: {kept:?}"
+        );
+        let logged = shards(&["logs", &name]);
+        assert!(r.stdout.ends_with(&logged.stdout), "{compress:?}");
+    }
+    // Non-blocking, a queue of none: what the log kept and what it dropped are the output.
+    let queued = run_in(
+        &home,
+        &image,
+        &[
+            "--name",
+            "queued",
+            "--log-opt",
+            "mode=non-blocking",
+            "--log-opt",
+            "max-buffer-size=0",
+            "--log-opt",
+            "max-size=10m",
+        ],
+        &["count", "30000"],
+    );
+    assert_eq!(queued.status, Some(0), "{queued}");
+    let logged = shards(&["logs", "queued"]);
+    assert_eq!(logged.status, Some(0), "{logged}");
+    let dropped: usize = match logged.stderr.as_str() {
+        "" => 0,
+        said => said
+            .strip_prefix("shards: ")
+            .and_then(|s| s.split_once(" bytes of queued's output were dropped, as they came while its log's queue was full (--log-opt mode=non-blocking)\n"))
+            .and_then(|(n, rest)| rest.is_empty().then(|| n.parse().ok()).flatten())
+            .unwrap_or_else(|| panic!("{logged}")),
+    };
+    assert_eq!(
+        logged.stdout.len() + dropped,
+        queued.stdout.len(),
+        "{dropped} dropped"
+    );
+    // A queue it never fills: all of it, and nothing said.
+    let roomy = run_in(
+        &home,
+        &image,
+        &[
+            "--name",
+            "roomy",
+            "--log-opt",
+            "mode=non-blocking",
+            "--log-opt",
+            "max-buffer-size=4m",
+            "--log-opt",
+            "max-size=10m",
+        ],
+        &["count", "30000"],
+    );
+    assert_eq!(roomy.status, Some(0), "{roomy}");
+    let logged = shards(&["logs", "roomy"]);
+    assert_eq!((logged.status, logged.stderr.as_str()), (Some(0), ""), "{logged}");
+    assert_eq!(logged.stdout, roomy.stdout);
+    for (flags, said) in [
+        (
+            &["--log-opt", "compress=true", "--log-opt", "max-file=1"][..],
+            "shards: --log-opt compress=true: its log is one file (max-file 1), never rotated",
+        ),
+        (
+            &[
+                "--log-opt",
+                "mode=non-blocking",
+                "--log-opt",
+                "max-buffer-size=lots",
+            ],
+            "shards: --log-opt max-buffer-size=lots: a size",
+        ),
+        (
+            &["--log-opt", "max-buffer-size=1m"],
+            "shards: --log-opt max-buffer-size: a buffer is non-blocking mode's",
+        ),
+    ] {
+        let r = run_in(&home, &image, flags, &["exit", "0"]);
+        assert_eq!(r.status, Some(125), "{flags:?}: {r}");
+        assert!(r.stderr.starts_with(said), "{flags:?}: {r}");
+    }
 }
 
 /// A run's log as `--log-driver` and `--log-opt` keep it (D161): shards' store, its

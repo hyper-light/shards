@@ -2451,8 +2451,16 @@ impl<D: crate::containers::Disk> Daemon<D> {
             reply.err(&format!("shards: {reference}: its log: {e}"));
             return 1;
         }
-        // Output a log could not keep, it does not pretend to hold (audit A12).
-        let lost = lock(&self.containers).get(&id).map_or(0, |c| c.log_lost);
+        // Output a log could not keep, it does not pretend to hold (audit A12); what a
+        // non-blocking log dropped, as its run asked, it says too (D162).
+        let (lost, dropped) = lock(&self.containers)
+            .get(&id)
+            .map_or((0, 0), |c| (c.log_lost, c.log_dropped));
+        if dropped > 0 {
+            reply.err(&format!(
+                "shards: {dropped} bytes of {reference}'s output were dropped, as they came while its log's queue was full (--log-opt mode=non-blocking)"
+            ));
+        }
         if lost > 0 {
             reply.err(&format!(
                 "shards: {lost} bytes of {reference}'s output could not be kept in its log"

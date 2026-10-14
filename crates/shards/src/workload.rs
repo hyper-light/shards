@@ -17,7 +17,7 @@ use std::os::unix::net::UnixStream;
 #[cfg(unix)]
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 #[cfg(unix)]
-use std::sync::{Mutex, PoisonError};
+use std::sync::{Condvar, Mutex, PoisonError};
 
 #[cfg(unix)]
 use shards_abi::run::{self, Size, Spec, kind};
@@ -139,6 +139,9 @@ pub struct Ended {
     pub not_run: Option<String>,
     /// Bytes of its output its log could not keep.
     pub lost: u64,
+    /// Bytes of its output a non-blocking log dropped, as they came while its queue was
+    /// full (D162).
+    pub dropped: u64,
     /// The kernel killed a process of it for want of memory.
     pub oom: bool,
 }
@@ -162,6 +165,9 @@ pub struct Logger {
     logged: u64,
     indexed: u64,
     lost: u64,
+    /// Non-blocking (D162): the most bytes of output queued for it ([`Queue`]); none
+    /// where the run waits for its log.
+    queue: Option<u64>,
 }
 
 /// Makes a log's segment `seq`, its log and index to append to, and removes the oldest
@@ -208,7 +214,14 @@ impl Logger {
             logged,
             indexed,
             lost: 0,
+            queue: None,
         })
+    }
+
+    /// Non-blocking where `queue` is some: the most bytes of output queued for it.
+    pub fn with_queue(mut self, queue: Option<u64>) -> Logger {
+        self.queue = queue;
+        self
     }
 
     /// Keeps `bytes` of `stream` as a record, in the segment written where it fits, else in
@@ -269,6 +282,136 @@ impl Logger {
     pub fn lost(&self) -> u64 {
         self.lost
     }
+}
+
+/// Where a run's output goes to be kept: its log, at once; or a non-blocking log's queue.
+#[cfg(unix)]
+enum Sink<'a> {
+    Now(&'a mut Logger),
+    Queued(&'a Queue),
+}
+
+#[cfg(unix)]
+impl Sink<'_> {
+    fn keep(&mut self, stream: u8, bytes: &[u8]) {
+        match self {
+            Sink::Now(log) => log.keep(stream, bytes),
+            Sink::Queued(queue) => queue.push(stream, bytes),
+        }
+    }
+}
+
+/// A non-blocking log's queue (`--log-opt mode=non-blocking`, D162): the run's output as
+/// it comes, at most `max` bytes of it, for the log's own thread to keep, so that a log
+/// that falls behind never holds up its run. What comes while it is full is dropped and
+/// counted, as moby's ring logger drops it (daemon/logger/ring.go, `Enqueue`): output that
+/// would pass `max` is taken only into an empty queue.
+#[cfg(unix)]
+struct Queue {
+    max: u64,
+    state: Mutex<Queued>,
+    changed: Condvar,
+}
+
+#[cfg(unix)]
+#[derive(Default)]
+struct Queued {
+    items: std::collections::VecDeque<(u8, Vec<u8>)>,
+    bytes: u64,
+    closed: bool,
+    dropped: u64,
+}
+
+#[cfg(unix)]
+impl Queue {
+    fn new(max: u64) -> Queue {
+        Queue {
+            max,
+            state: Mutex::default(),
+            changed: Condvar::new(),
+        }
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, Queued> {
+        self.state.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn push(&self, stream: u8, bytes: &[u8]) {
+        let len = bytes.len() as u64;
+        let mut q = self.lock();
+        if q.bytes.saturating_add(len) > self.max && !q.items.is_empty() {
+            q.dropped = q.dropped.saturating_add(len);
+            return;
+        }
+        q.items.push_back((stream, bytes.to_vec()));
+        q.bytes = q.bytes.saturating_add(len);
+        drop(q);
+        self.changed.notify_one();
+    }
+
+    /// No more comes: its thread returns once it has kept what is queued.
+    fn close(&self) {
+        self.lock().closed = true;
+        self.changed.notify_all();
+    }
+
+    /// Keeps what is queued in `log`, in turn, until it is closed and empty.
+    fn keep_into(&self, log: &mut Logger) {
+        loop {
+            let (stream, bytes) = {
+                let mut q = self.lock();
+                loop {
+                    if let Some(item) = q.items.pop_front() {
+                        q.bytes = q.bytes.saturating_sub(item.1.len() as u64);
+                        break item;
+                    }
+                    if q.closed {
+                        return;
+                    }
+                    q = self.changed.wait(q).unwrap_or_else(PoisonError::into_inner);
+                }
+            };
+            log.keep(stream, &bytes);
+        }
+    }
+
+    fn dropped(&self) -> u64 {
+        self.lock().dropped
+    }
+}
+
+/// Runs `relay` with the run's output kept through `log`'s sink: the log itself, or, where
+/// it is non-blocking, its queue, which a thread of its own keeps in it, all of it kept
+/// before this returns. What `relay` returned, then the bytes the log lost and dropped.
+#[cfg(unix)]
+fn with_sink<T>(
+    log: Option<&mut Logger>,
+    relay: impl FnOnce(Option<&mut Sink<'_>>) -> T,
+) -> Result<(T, u64, u64), String> {
+    let Some(log) = log else {
+        return Ok((relay(None), 0, 0));
+    };
+    let Some(max) = log.queue else {
+        let out = relay(Some(&mut Sink::Now(&mut *log)));
+        return Ok((out, log.lost(), 0));
+    };
+    let queue = Queue::new(max);
+    std::thread::scope(|s| {
+        let queue = &queue;
+        let writer = std::thread::Builder::new()
+            .name("log".into())
+            .spawn_scoped(s, move || {
+                queue.keep_into(log);
+                log.lost()
+            })
+            .map_err(|e| format!("the log's thread: {e}"))?;
+        let out = relay(Some(&mut Sink::Queued(queue)));
+        queue.close();
+        let lost = writer
+            .join()
+            .map_err(|_| "the log's thread ended in a panic".to_string())?;
+        Ok((out, lost, queue.dropped()))
+    })
 }
 
 /// Serves the guest: sends the command, relays stdio, and returns how the workload ended.
@@ -439,7 +582,24 @@ pub fn serve(
 fn relay(
     conn: &mut io::BufReader<&UnixStream>,
     timing: &Timing,
-    mut log: Option<&mut Logger>,
+    log: Option<&mut Logger>,
+    started: Option<&(dyn Fn() + Sync)>,
+    processes: Option<&Records<'_>>,
+    host_net: Option<&Records<'_>>,
+) -> Result<Ended, String> {
+    let (ended, lost, dropped) = with_sink(log, |sink| {
+        relay_frames(conn, timing, sink, started, processes, host_net)
+    })?;
+    ended.map(|e| Ended { lost, dropped, ..e })
+}
+
+/// [`relay`]'s frames, its output kept through `log`; what its log lost is said by
+/// [`with_sink`].
+#[cfg(unix)]
+fn relay_frames(
+    conn: &mut io::BufReader<&UnixStream>,
+    timing: &Timing,
+    mut log: Option<&mut Sink<'_>>,
     started: Option<&(dyn Fn() + Sync)>,
     processes: Option<&Records<'_>>,
     host_net: Option<&Records<'_>>,
@@ -514,7 +674,8 @@ fn relay(
                 return Ok(Ended {
                     status,
                     not_run,
-                    lost: log.as_deref().map_or(0, Logger::lost),
+                    lost: 0,
+                    dropped: 0,
                     oom,
                 });
             }
@@ -1307,56 +1468,66 @@ pub fn join(
     let mut frame = Vec::new();
     let mut not_run: Option<String> = None;
     let mut conn = io::BufReader::with_capacity(run::BUFFERED, &stream);
-    loop {
-        let mut h = [0u8; run::HEADER];
-        conn.read_exact(&mut h)
-            .map_err(|e| format!("the guest stopped before the command ended: {e}"))?;
-        let (which, len) = run::parse_header(h).ok_or("the guest sent a malformed frame")?;
-        let len = len as usize;
-        if frame.len() < len {
-            frame.resize(len, 0);
-        }
-        let payload = frame.get_mut(..len).ok_or("a frame past its buffer")?;
-        conn.read_exact(payload)
-            .map_err(|e| format!("the guest stopped mid-frame: {e}"))?;
-        let payload = &*payload;
-        match which {
-            kind::STARTED => started(),
-            kind::STDOUT | kind::STDERR => {
-                let (out, stream) = if which == kind::STDOUT {
-                    (&mut stdout, crate::spec::LOG_STDOUT)
-                } else {
-                    (&mut stderr, crate::spec::LOG_STDERR)
-                };
-                if let Some(log) = &mut log {
-                    log.keep(stream, payload);
+    let (ended, lost, dropped) = with_sink(log.as_mut(), |mut log| {
+        loop {
+            let mut h = [0u8; run::HEADER];
+            conn.read_exact(&mut h)
+                .map_err(|e| format!("the guest stopped before the command ended: {e}"))?;
+            let (which, len) = run::parse_header(h).ok_or("the guest sent a malformed frame")?;
+            let len = len as usize;
+            if frame.len() < len {
+                frame.resize(len, 0);
+            }
+            let payload = frame.get_mut(..len).ok_or("a frame past its buffer")?;
+            conn.read_exact(payload)
+                .map_err(|e| format!("the guest stopped mid-frame: {e}"))?;
+            let payload = &*payload;
+            match which {
+                kind::STARTED => started(),
+                kind::STDOUT | kind::STDERR => {
+                    let (out, stream) = if which == kind::STDOUT {
+                        (&mut stdout, crate::spec::LOG_STDOUT)
+                    } else {
+                        (&mut stderr, crate::spec::LOG_STDERR)
+                    };
+                    if let Some(log) = &mut log {
+                        log.keep(stream, payload);
+                    }
+                    fan_out_joined(id, payload, which == kind::STDERR);
+                    // A detached joiner's output goes to its log alone, as a detached run's.
+                    if !detached && let Some(o) = out {
+                        let _ = o.write_all(payload);
+                    }
                 }
-                fan_out_joined(id, payload, which == kind::STDERR);
-                // A detached joiner's output goes to its log alone, as a detached run's.
-                if !detached && let Some(o) = out {
-                    let _ = o.write_all(payload);
+                kind::SYSTEM_ERR => {
+                    let (_, why) = payload.split_first().ok_or("an empty failure")?;
+                    not_run = Some(String::from_utf8_lossy(why).into_owned());
                 }
+                // Its end, and its connection, on which the host may ask for its writable
+                // layer (`receive_layer`) before it closes it: the guest sends nothing more
+                // until then.
+                kind::EXIT => {
+                    let status: [u8; 4] = payload.try_into().map_err(|_| "malformed exit status")?;
+                    return Ok(Ended {
+                        status: u8::try_from(u32::from_be_bytes(status)).unwrap_or(u8::MAX),
+                        not_run: not_run.take(),
+                        lost: 0,
+                        dropped: 0,
+                        oom: false,
+                    });
+                }
+                _ => return Err(format!("the guest sent an unknown frame kind {which}")),
             }
-            kind::SYSTEM_ERR => {
-                let (_, why) = payload.split_first().ok_or("an empty failure")?;
-                not_run = Some(String::from_utf8_lossy(why).into_owned());
-            }
-            // Its end, and its connection, on which the host may ask for its writable
-            // layer (`receive_layer`) before it closes it: the guest sends nothing more
-            // until then.
-            kind::EXIT => {
-                let status: [u8; 4] = payload.try_into().map_err(|_| "malformed exit status")?;
-                let ended = Ended {
-                    status: u8::try_from(u32::from_be_bytes(status)).unwrap_or(u8::MAX),
-                    not_run,
-                    lost: log.as_ref().map_or(0, Logger::lost),
-                    oom: false,
-                };
-                return Ok((ended, stream));
-            }
-            _ => return Err(format!("the guest sent an unknown frame kind {which}")),
         }
-    }
+    })?;
+    Ok((
+        Ended {
+            lost,
+            dropped,
+            ..ended?
+        },
+        stream,
+    ))
 }
 
 /// Copies shards' stdin to the workload's, then closes it, where its end is the
@@ -1862,6 +2033,74 @@ mod tests {
         assert_eq!(fs::read(dir.join("log.12")).unwrap().len(), 53);
         assert!(!dir.join("log.9.idx").exists() && !dir.join("log.9").exists());
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// The records of the log at `path`: each its stream and its bytes.
+    fn records(path: &Path) -> Vec<(u8, Vec<u8>)> {
+        let log = fs::read(path).unwrap();
+        let mut records = Vec::new();
+        let mut at = 0;
+        while at < log.len() {
+            let len = u32::from_be_bytes(log[at + 9..at + 13].try_into().unwrap()) as usize;
+            records.push((log[at], log[at + 13..at + 13 + len].to_vec()));
+            at += 13 + len;
+        }
+        records
+    }
+
+    /// A non-blocking log's queue (D162) keeps what it holds, in order, and drops what
+    /// comes while it is full, counting it, as moby's ring logger does: output that would
+    /// pass its size goes only into an empty queue. Through its own thread, a run's output
+    /// that never fills it is kept whole, in order, before the run's relay returns.
+    #[test]
+    fn a_non_blocking_log_drops_only_what_comes_while_its_queue_is_full() {
+        let dir = temp("queue");
+        let retention = LogRetention {
+            size: 1 << 20,
+            files: 2,
+        };
+        let open = || {
+            let (log, index) = (append(&dir.join("log")), append(&dir.join("log.idx")));
+            Logger::new(log, index, 0, retention, in_dir(&dir, retention)).unwrap()
+        };
+        let queue = Queue::new(100);
+        queue.push(LOG_STDOUT, &[b'a'; 60]);
+        // 110 past 100: dropped; 100 is not past it.
+        queue.push(LOG_STDOUT, &[b'b'; 50]);
+        queue.push(LOG_STDERR, &[b'c'; 40]);
+        queue.push(LOG_STDOUT, b"d");
+        assert_eq!(queue.dropped(), 51);
+        queue.close();
+        let mut logger = open();
+        queue.keep_into(&mut logger);
+        assert_eq!(
+            records(&dir.join("log")),
+            [(LOG_STDOUT, vec![b'a'; 60]), (LOG_STDERR, vec![b'c'; 40])]
+        );
+        // Into an empty queue, however large; so a queue of 0 bytes holds one at a time.
+        let none = Queue::new(0);
+        none.push(LOG_STDOUT, b"x");
+        none.push(LOG_STDOUT, b"y");
+        assert_eq!(none.dropped(), 1);
+        for f in ["log", "log.idx"] {
+            fs::remove_file(dir.join(f)).unwrap();
+        }
+        let mut logger = open().with_queue(Some(1 << 20));
+        let (relayed, lost, dropped) = with_sink(Some(&mut logger), |sink| {
+            let sink = sink.unwrap();
+            for i in 0..1000u32 {
+                sink.keep(LOG_STDOUT, format!("line {i}\n").as_bytes());
+            }
+            "relayed"
+        })
+        .unwrap();
+        assert_eq!((relayed, lost, dropped), ("relayed", 0, 0));
+        let kept: Vec<u8> = records(&dir.join("log"))
+            .into_iter()
+            .flat_map(|(_, b)| b)
+            .collect();
+        let sent: String = (0..1000).map(|i| format!("line {i}\n")).collect();
+        assert_eq!(kept, sent.into_bytes());
     }
 
     /// Takes at most five bytes a call, and is interrupted every third.

@@ -3614,6 +3614,73 @@ No run-time labels, relays or declassifiers (§12 answer 14, decided by the user
 an internal-only domain to the world (D58), so there is no data to label. Code mode is
 D136.
 
+### D162. A run's rotated log segments compressed, seekably; a log that never holds up its run
+
+D162 serves two of Docker's log options that D161 refused, `compress` and
+`mode=non-blocking`, and serves both better than Docker does.
+
+- **`compress`: rotated segments, seekable.** The daemon's packer thread compresses each
+  segment once it has rotated. That thread is off every run's path, and off the files'
+  thread that makes the segments runs wait for (D161).
+  - Each segment becomes zstd frames of 1 MiB of it, each compressed alone at
+    klauspost's best level. Their seek table follows, as zstd's seekable format lays it
+    out (facebook/zstd contrib/seekable_format, v0.1.0). The file is `log.N.zst`, beside
+    the segment's index, which stays as written.
+  - Real logs come to 7.63% of their size, against 9.20% for Docker's gzip of each whole
+    rotated file (PM M231).
+  - A reader (`logs`, and its `--tail`) reads any record by decompressing its frame
+    alone, 1.7 ms at most, its checksum checked. Docker decompresses a whole rotated file
+    into a temporary file to read any of it. `zstd -d` reads the file whole.
+- **Whole on every path.**
+  - The compressed file is made durable before the segment as written goes, so a reader
+    finds one or the other whole. It looks for the one as written first.
+  - Retention removes either. A segment removed as it is compressed leaves nothing, and
+    a container being removed is left to its removal.
+  - As a daemon starts, it compresses what one before it left as written, including a
+    file a crash left half compressed. The container's record says which logs compress
+    (`log_compress`).
+- **Which logs.**
+  - `shards`, shards' own driver, compresses by default: 13 times less disk, for at most
+    184 ms of a thread a 20 MB segment (PM M231). So does `local`, as Docker's default
+    does.
+  - json-file compresses only when asked, as Docker's does. Its `compress=true` without
+    `max-size` is taken: Docker refuses it for want of a bound, and shards' store always
+    has one.
+  - One file (`max-file 1`) never rotates, so it is never compressed. Asking for that is
+    refused in shards' words.
+- **`mode=non-blocking`.** The run's output is queued in its VM for the log's own thread,
+  so a log that falls behind never holds up the run's output.
+  - The queue holds at most `max-buffer-size` bytes (go-units' RAMInBytes, binary units),
+    or moby's 1,000,000 when none is given. Output that comes while it is full is
+    dropped, as moby's ring logger drops it: output that would pass the size goes only
+    into an empty queue.
+  - Docker drops in silence. shards counts what it drops (`LOST`'s second count, the
+    record's `log_dropped`), and `logs` says it on stderr: `N bytes of NAME's output were
+    dropped, as they came while its log's queue was full (--log-opt mode=non-blocking)`.
+    `logs` still exits 0, since dropping is what the run asked for.
+  - All that is queued is kept before the run's end is told.
+- **Not yet.** The drivers that send a log elsewhere (D161's list).
+
+Tested on real microVMs (`a_runs_log_is_compressed_and_queued_as_its_options_say`):
+
+- 30,000 lines through segments of 64,000 bytes, four kept: three compressed, `logs` the
+  output's newest, and `--tail 12000` read from the middle of compressed segments.
+- json-file: none compressed by default, three with `compress=true`.
+- `max-buffer-size=0`: what was kept and what was dropped add up to the output exactly,
+  with 36 to 51% dropped in three runs, and the drop said. 4 MiB: all of it kept, nothing
+  said.
+- The refusals.
+
+Mutation-checked: drops left uncounted, and shards' own driver not compressing, each fail
+it. Unit tests cover:
+
+- the format, read back across frames and as one stream;
+- damage refused, in the seek table and in a frame's checksum;
+- a segment removed as it is compressed, and retention;
+- what a daemon compresses as it starts;
+- every read of a log in compressed segments, against the plain way;
+- the queue's drops, and the options.
+
 ### D161. A run's log, as `--log-driver` and `--log-opt` keep it
 
 `run` and `create` take `--log-driver` and `--log-opt` as docker/cli reads them (served,
@@ -3645,10 +3712,9 @@ own where none was, and the options as a map (`HostConfig.LogConfig`).
 - **Refused, in shards' words.** An unknown driver or option; values that do not read
   (`max-size`, `max-file`, `compress`, `mode`, the regexes); `max-buffer-size` without
   non-blocking mode.
-- **Not yet.** `compress=true` (rotated segments compressed); `mode=non-blocking` (a log
-  that drops what it cannot keep up with rather than hold the workload); the drivers that
-  send a log elsewhere (`syslog`, `journald`, `gelf`, `fluentd`, `awslogs`, `splunk`,
-  `gcplogs`, `etwlogs`), each refused with a word that says so.
+- **Not yet.** The drivers that send a log elsewhere (`syslog`, `journald`, `gelf`,
+  `fluentd`, `awslogs`, `splunk`, `gcplogs`, `etwlogs`), each refused with a word that
+  says so. `compress` and `mode=non-blocking` came with D162.
 
 Tested on real microVMs (`a_runs_log_is_kept_as_its_driver_and_options_say`): 10,000
 lines through `max-size=1k` and `max-file=2`, the log the output's newest lines, two
@@ -6661,7 +6727,8 @@ the rest of a run's reach into its domains.
   | `--cgroupns host` (D156); `--network host` (D124) | refused (daemon and init) | the microVM's cgroup tree holds their cgroups; the host's network holds none of their flows |
   | A run joining the microVM (`--network container:`, D119) | held to every rule of this table, by the daemon and again by init | it runs beside them as the microVM's own run does |
   | `--ipc` (`host` is init's namespace, theirs each their own), `--uts`, `--userns`, `--umask`, `--storage-opt` (D156); `--runtime`, `--isolation`, `--cpu-count`, `--cpu-percent`, `--cpu-rt-*` (D155) | given | the command's own namespaces, writable layer and limits |
-  | `--link`, `--log-driver`, `--log-opt` | refused for every run, not served yet | |
+  | `--link` | refused for every run, not served yet | |
+  | `--log-driver`, `--log-opt` (D161, D162) | given | the command's own output, kept on the host by its VM process, in its container's directory |
   | `--cap-add` of any other: `DAC_READ_SEARCH`, `IPC_OWNER`, `IPC_LOCK`, `SYS_BOOT`, `SYS_RESOURCE`, `CHECKPOINT_RESTORE` among them | given | `open_by_handle_at` opens only on filesystems the command holds a mount of, a domain's own being none of them; IPC namespaces differ; `reboot(2)` ends the caller's own PID namespace's init (pid_namespaces(7)); the rest bound the command's own resources or namespaces |
   | `--cap-drop`, `no-new-privileges`, `writable-cgroups=true` (its cgroup namespace's subtree), `apparmor=`, `label=` (no LSM in the microVM: accepted, as on a Docker host without one) | given | narrows the command, or touches only its own |
   | `seccomp=` a profile or `unconfined` | given, recorded | its own filter; the domains keep theirs. Measured: unconfined, any uid makes a user namespace (`max_user_namespaces` 994), owning none of the domains' namespaces but reaching more of the kernel they share |

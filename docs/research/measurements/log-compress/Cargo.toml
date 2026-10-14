@@ -1,0 +1,16 @@
+# What compressing a run's rotated log segments costs and saves: gzip against zstd, on
+# segments shards wrote of real logs (PM M231, D162). Not a workspace member: run with
+# `cargo run --release --manifest-path docs/research/measurements/log-compress/Cargo.toml
+# -- N SEGMENT...` after `segments.sh`.
+[package]
+name = "log-compress"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+flate2 = { version = "1", default-features = false, features = ["zlib-rs", "runtime_detection"] }
+ruzstd = "0.9"
+shards-zstd = { path = "../../../../crates/zstd" }

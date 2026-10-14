@@ -213,43 +213,43 @@ fn shared(link: &UnixStream, slots: &[shards_vmm::devices::virtio::fs::Share]) -
 /// has taken it. Until then the daemon holds its own copies of the client's descriptors,
 /// and gives the request to another VM if this one fails. Then makes the client's stdio
 /// this process's, and starts passing the client's signals to the workload through `to`.
-/// A `RUN` request's head, as the daemon writes it: its flags, its log's retention, its
-/// log's first segment, the most memory its guest may plug in bytes (D148), and its
-/// command's encoded spec. A warm VM's run and a joiner's (D119) read it alike.
+/// A `RUN` request as a warm VM's run and a joiner's (D119) read it: its head
+/// (`shards_ipc::RunHead`), then its command's encoded spec.
 struct Head<'a> {
     flags: u8,
     retention: crate::spec::LogRetention,
     first: u64,
     plug: u64,
+    /// Non-blocking: the most bytes of output queued for its log.
+    queue: Option<u64>,
     spec: &'a [u8],
 }
 
+/// Tells the daemon what the run's log lost, and what its log dropped, non-blocking
+/// (D162): `LOST`, the two counts, where either is some.
+fn tell_lost(daemon: &UnixStream, ended: &workload::Ended) {
+    if ended.lost > 0 || ended.dropped > 0 {
+        let mut counts = ended.lost.to_be_bytes().to_vec();
+        counts.extend(ended.dropped.to_be_bytes());
+        let _ = shards_ipc::send(daemon, kind::LOST, &counts, &[]);
+    }
+}
+
 fn head(payload: &[u8]) -> Result<Head<'_>, String> {
-    let (&flags, rest) = payload.split_first().ok_or("an empty request")?;
-    let (size, rest) = rest
-        .split_first_chunk::<8>()
-        .ok_or("a request without its log's retention")?;
-    let (files, rest) = rest
-        .split_first_chunk::<8>()
-        .ok_or("a request without its log's retention")?;
-    let (first, rest) = rest
-        .split_first_chunk::<8>()
-        .ok_or("a request without its log's segment")?;
-    let (plug, spec) = rest
-        .split_first_chunk::<8>()
-        .ok_or("a request without the memory its guest may plug")?;
+    let (head, spec) = shards_ipc::RunHead::decode(payload)?;
     let retention = crate::spec::LogRetention {
-        size: u64::from_be_bytes(*size),
-        files: u64::from_be_bytes(*files),
+        size: head.log_size,
+        files: head.log_files,
     };
     if retention.size == 0 || retention.files == 0 {
         return Err("a request whose log keeps nothing".into());
     }
     Ok(Head {
-        flags,
+        flags: head.flags,
         retention,
-        first: u64::from_be_bytes(*first),
-        plug: u64::from_be_bytes(*plug),
+        first: head.first,
+        plug: head.plug,
+        queue: head.queue,
         spec,
     })
 }
@@ -276,6 +276,7 @@ pub fn receive(
         retention,
         first,
         plug,
+        queue,
         spec,
     } = head(&request.payload)?;
     let spec = Spec::decode(spec).ok_or("a malformed command")?;
@@ -317,7 +318,8 @@ pub fn receive(
         let next = segments_from(asker, answers);
         Some(
             workload::Logger::new(log, index, first, retention, next)
-                .map_err(|e| format!("the container's log: {e}"))?,
+                .map_err(|e| format!("the container's log: {e}"))?
+                .with_queue(queue),
         )
     } else {
         None
@@ -697,6 +699,7 @@ fn joiner(link: &UnixStream, range: Result<(u64, u64), String>, to: &'static ToG
         flags,
         retention,
         first,
+        queue,
         spec,
         ..
     } = head(&request.payload)?;
@@ -726,7 +729,8 @@ fn joiner(link: &UnixStream, range: Result<(u64, u64), String>, to: &'static ToG
         let asker = link.try_clone().map_err(|e| format!("its connection: {e}"))?;
         Some(
             workload::Logger::new(log, index, first, retention, segments_from(asker, answers))
-                .map_err(|e| format!("its log: {e}"))?,
+                .map_err(|e| format!("its log: {e}"))?
+                .with_queue(queue),
         )
     } else {
         None
@@ -890,10 +894,8 @@ fn joined_finish(
         said_status = exits;
         status = *kept;
     }
-    if let Ok(ended) = served
-        && ended.lost > 0
-    {
-        let _ = shards_ipc::send(link, kind::LOST, &ended.lost.to_be_bytes(), &[]);
+    if let Ok(ended) = served {
+        tell_lost(link, ended);
     }
     let mut done = vec![status];
     if let Some((said, _)) = &failed {
@@ -990,10 +992,8 @@ pub fn finish(
     if let Some((said, _)) = &failed {
         done.extend_from_slice(said.as_bytes());
     }
-    if let Ok(ended) = &served
-        && ended.lost > 0
-    {
-        let _ = shards_ipc::send(&link.daemon, kind::LOST, &ended.lost.to_be_bytes(), &[]);
+    if let Ok(ended) = &served {
+        tell_lost(&link.daemon, ended);
     }
     if served.as_ref().is_ok_and(|ended| ended.oom) {
         let _ = shards_ipc::send(&link.daemon, kind::OOM, &[], &[]);
@@ -1144,12 +1144,15 @@ mod tests {
             let refused = std::thread::scope(|s| {
                 let receiving = s.spawn(|| receive(&link, &TO_GUEST, &|| Ok(())));
                 assert_eq!(shards_ipc::recv(&daemon).unwrap().unwrap().kind, kind::READY);
-                let mut payload = vec![shards_ipc::RUN_DETACHED | shards_ipc::RUN_LOG];
-                payload.extend(1u64.to_be_bytes());
-                payload.extend(1u64.to_be_bytes());
+                let mut payload = Vec::new();
                 // Its log's first segment, and memory to plug: none (D148).
-                payload.extend(0u64.to_be_bytes());
-                payload.extend(0u64.to_be_bytes());
+                shards_ipc::RunHead {
+                    flags: shards_ipc::RUN_DETACHED | shards_ipc::RUN_LOG,
+                    log_size: 1,
+                    log_files: 1,
+                    ..Default::default()
+                }
+                .encode_into(&mut payload);
                 Spec::default().encode_into(&mut payload);
                 shards_ipc::send(&daemon, kind::RUN, &payload, &fds).unwrap();
                 receiving.join().unwrap().err()

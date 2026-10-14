@@ -16,6 +16,7 @@ use std::path::Path;
 
 use shards_vmm::platform;
 
+use super::packed::{SegmentLog, open_log};
 use crate::segments::log_segment;
 use crate::spec::{INDEX_LINE, INDEX_START, INDEX_STDERR, LOG_HEAD, LOG_STDERR, LOG_STDOUT};
 
@@ -67,11 +68,12 @@ pub struct LogFile {
     dir: File,
 }
 
-/// A segment of a log, opened: read on, whatever its writer removes since.
+/// A segment of a log, opened: read on, whatever its writer removes since, its log as
+/// written or compressed (packed.rs).
 #[derive(Debug)]
 pub struct Segment {
     seq: u64,
-    log: File,
+    log: SegmentLog,
     index: File,
 }
 
@@ -125,7 +127,7 @@ impl LogFile {
     /// Segment `seq`, its index opened.
     fn segment_of_index(&self, seq: u64, index: File) -> io::Result<Option<Segment>> {
         let (log_name, index_name) = log_segment(seq);
-        match platform::open_in(&self.dir, &log_name) {
+        match open_log(&self.dir, seq) {
             Ok(log) => Ok(Some(Segment { seq, log, index })),
             // Removed since its index was opened, as its writer removes it, index first;
             // with its index still there, it is damage.
@@ -185,7 +187,7 @@ impl Segment {
         let entry = self.entry(no)?;
         let mut head = [0u8; LOG_HEAD as usize];
         self.log.read_exact_at(&mut head, entry & INDEX_START)?;
-        self.check(no, entry, head, self.log.metadata().map_or(0, |m| m.len()))
+        self.check(no, entry, head, self.log.len().unwrap_or(0))
     }
 
     /// Record `no`, its entry `entry` and its head `head`, checked against the log, `len`
@@ -236,7 +238,7 @@ impl Segment {
 }
 
 /// The segment a file `name` is the index of.
-fn segment_of(name: &str) -> Option<u64> {
+pub(super) fn segment_of(name: &str) -> Option<u64> {
     if name == INDEX {
         return Some(0);
     }
@@ -572,7 +574,7 @@ impl Reader {
         let count = segment.count()?;
         // The records counted are whole in it: their writer writes a record, then its
         // entry.
-        let log_len = segment.log.metadata()?.len();
+        let log_len = segment.log.len()?;
         // At least one, so that each pass takes one or fails.
         let per = (entries.len() / 8).max(1) as u64;
         while self.next.no < count {
@@ -1040,6 +1042,35 @@ mod tests {
                             shown(&dir, n, ended),
                             expected(&kept, n, ended),
                             "seed {seed}, size {size}, {total} segments, files {files}, drop {drop}, tail {n:?}, ended {ended}"
+                        );
+                    }
+                }
+            }
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A log whose rotated segments are compressed (D162) reads as their records do, as
+    /// one kept as written does: whole or its last n lines, the container ended or not.
+    #[test]
+    fn logs_in_packed_segments_read_as_their_records_do() {
+        let dir = temp("packed");
+        for seed in 1..60u64 {
+            let records = random(seed);
+            let size = [1, 100, 2_000, PIECE as u64, 5 * PIECE as u64][seed as usize % 5];
+            for (files, drop) in [(u64::MAX, 0), (3, 0)] {
+                let (kept, total) = write_segments(&dir, &records, size, files, drop);
+                let open = platform::open_dir(&dir).unwrap();
+                let first = total.saturating_sub(files.min(total));
+                for seq in first..total.saturating_sub(1) {
+                    assert!(super::super::packed::pack_for_test(&open, seq).unwrap());
+                }
+                for n in [None, Some(0), Some(1), Some(3), Some(50), Some(1000)] {
+                    for ended in [true, false] {
+                        assert_eq!(
+                            shown(&dir, n, ended),
+                            expected(&kept, n, ended),
+                            "seed {seed}, size {size}, {total} segments, files {files}, tail {n:?}, ended {ended}"
                         );
                     }
                 }

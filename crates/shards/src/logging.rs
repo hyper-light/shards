@@ -4,6 +4,11 @@
 //! keeps no log. Docker's own default keeps one file that grows without bound (json-file
 //! with neither `max-size` nor `max-file`); shards' keeps its daemon's bound
 //! (`SHARDS_LOG_MAX_SIZE`, `SHARDS_LOG_MAX_FILE`) where the options give none.
+//!
+//! Rotated segments are compressed (D162), seekably, unless a run's options say not to,
+//! or its driver is json-file, which keeps them as written unless told to compress, as
+//! Docker's does. In `mode=non-blocking` the run's output is queued for its log, at most
+//! `max-buffer-size` bytes, and what comes while the queue is full is dropped and counted.
 
 use std::collections::BTreeMap;
 
@@ -31,14 +36,23 @@ const OPTIONS: [&str; 10] = [
     "tag",
 ];
 
-/// What a run's log keeps.
+/// What a run's log keeps, and how.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Kept {
     /// Each segment's most bytes.
     pub size: u64,
     /// How many segments it keeps, the newest written.
     pub files: u64,
+    /// Its segments are compressed once rotated (D162).
+    pub compress: bool,
+    /// Non-blocking (`mode=non-blocking`): the most bytes of output queued for the log,
+    /// past which more is dropped; none where the run waits for its log.
+    pub queue: Option<u64>,
 }
+
+/// The queue of a non-blocking log whose options give no `max-buffer-size`: moby's ring
+/// logger's (daemon/logger/ring.go, defaultRingMaxSize), what the option means unsaid.
+pub const QUEUE: u64 = 1_000_000;
 
 /// The driver a run's log is kept by, as `inspect` says it: as given, else shards' own.
 pub fn driver(run: &Run) -> &str {
@@ -61,9 +75,10 @@ pub fn options(run: &Run) -> BTreeMap<String, String> {
         .collect()
 }
 
-/// What `run`'s log keeps, `default` where its options say nothing; none for `none`.
-/// Refused in shards' words where its driver or its options are none it takes.
-pub fn kept(run: &Run, default: Kept) -> Result<Option<Kept>, String> {
+/// What `run`'s log keeps, the daemon's bound, `default`, where its options say nothing;
+/// none for `none`. Refused in shards' words where its driver or its options are none it
+/// takes.
+pub fn kept(run: &Run, default: crate::spec::LogRetention) -> Result<Option<Kept>, String> {
     let name = driver(run);
     let opts = options(run);
     if name == "none" {
@@ -87,21 +102,25 @@ pub fn kept(run: &Run, default: Kept) -> Result<Option<Kept>, String> {
     if let Some(k) = opts.keys().find(|k| !OPTIONS.contains(&k.as_str())) {
         return Err(format!("--log-opt {k}: a run's log takes {}", OPTIONS.join(", ")));
     }
-    match opts.get("mode").map(String::as_str) {
+    let queue = match opts.get("mode").map(String::as_str) {
         None | Some("" | "blocking") => {
             if opts.contains_key("max-buffer-size") {
                 return Err(
                     "--log-opt max-buffer-size: a buffer is non-blocking mode's (mode=non-blocking)".into(),
                 );
             }
+            None
         }
-        Some("non-blocking") => {
-            return Err(
-                "--log-opt mode=non-blocking: shards' store is written as the run writes; a mode that drops what it cannot keep up with is not here yet".into(),
-            );
-        }
+        // As moby reads it (ValidateLogOpts): go-units' RAMInBytes, binary units.
+        Some("non-blocking") => Some(match opts.get("max-buffer-size") {
+            None => QUEUE,
+            Some(v) => match shards_cmdline::resources::ram_in_bytes(v).map(u64::try_from) {
+                Ok(Ok(n)) => n,
+                _ => return Err(format!("--log-opt max-buffer-size={v}: a size (1m, 512k)")),
+            },
+        }),
         Some(m) => return Err(format!("--log-opt mode={m}: blocking or non-blocking")),
-    }
+    };
     let size = match opts.get("max-size") {
         Some(v) => match shards_cmdline::resources::from_human_size(v).map(u64::try_from) {
             Ok(Ok(n)) if n > 0 => Some(n),
@@ -120,17 +139,13 @@ pub fn kept(run: &Run, default: Kept) -> Result<Option<Kept>, String> {
         },
         None => None,
     };
-    if let Some(v) = opts.get("compress") {
-        match go_bool(v) {
-            Some(false) => {}
-            Some(true) => {
-                return Err(
-                    "--log-opt compress=true: shards' store keeps its segments as written; compressing those it has rotated is not here yet".into(),
-                );
-            }
+    let compress = match opts.get("compress") {
+        Some(v) => match go_bool(v) {
+            Some(c) => Some(c),
             None => return Err(format!("--log-opt compress={v}: true or false")),
-        }
-    }
+        },
+        None => None,
+    };
     for k in ["labels-regex", "env-regex"] {
         if let Some(v) = opts.get(k)
             && let Err(e) = regex::Regex::new(v)
@@ -145,9 +160,17 @@ pub fn kept(run: &Run, default: Kept) -> Result<Option<Kept>, String> {
     } else {
         default.files
     });
+    if compress == Some(true) && files < 2 {
+        return Err(format!(
+            "--log-opt compress=true: its log is one file (max-file {files}), never rotated, so nothing of it is compressed: give --log-opt max-file 2 or more"
+        ));
+    }
     Ok(Some(Kept {
         size: size.unwrap_or(default.size),
         files,
+        // One file is never rotated, so never compressed.
+        compress: compress.unwrap_or(name != "json-file" && files >= 2),
+        queue,
     }))
 }
 
@@ -329,42 +352,70 @@ mod tests {
         }
     }
 
-    const DEFAULT: Kept = Kept {
+    const DEFAULT: crate::spec::LogRetention = crate::spec::LogRetention {
         size: 20 << 20,
         files: 5,
     };
 
+    const fn kept_as(size: u64, files: u64, compress: bool, queue: Option<u64>) -> Kept {
+        Kept {
+            size,
+            files,
+            compress,
+            queue,
+        }
+    }
+
     #[test]
     fn a_runs_log_is_kept_as_its_options_say() {
         let kept = |driver: &str, opts: &[&str]| kept(&run(driver, opts), DEFAULT);
-        assert_eq!(kept("", &[]), Ok(Some(DEFAULT)));
+        // Compressed once rotated but where json-file is asked for, as Docker's is.
+        assert_eq!(kept("", &[]), Ok(Some(kept_as(20 << 20, 5, true, None))));
         assert_eq!(kept("none", &[]), Ok(None));
         // Decimal units, as go-units' FromHumanSize reads them.
         assert_eq!(
             kept("json-file", &["max-size=10m", "max-file=3"]),
-            Ok(Some(Kept {
-                size: 10_000_000,
-                files: 3
-            }))
+            Ok(Some(kept_as(10_000_000, 3, false, None)))
         );
         // json-file keeps one file where only its size is given; the others, the bound.
         assert_eq!(
             kept("json-file", &["max-size=1k"]),
-            Ok(Some(Kept { size: 1000, files: 1 }))
+            Ok(Some(kept_as(1000, 1, false, None)))
         );
         assert_eq!(
             kept("local", &["max-size=1k"]),
-            Ok(Some(Kept { size: 1000, files: 5 }))
+            Ok(Some(kept_as(1000, 5, true, None)))
         );
         assert_eq!(
             kept(
                 "shards",
                 &["max-file=2", "compress=false", "mode=blocking", "tag={{.Name}}"]
             ),
-            Ok(Some(Kept {
-                size: 20 << 20,
-                files: 2
-            }))
+            Ok(Some(kept_as(20 << 20, 2, false, None)))
+        );
+        // json-file without max-size is kept to the bound, so it may be compressed, which
+        // Docker refuses for want of a bound.
+        assert_eq!(
+            kept("json-file", &["compress=true"]),
+            Ok(Some(kept_as(20 << 20, 5, true, None)))
+        );
+        // A single file is never compressed, and not refused unless asked to be.
+        assert_eq!(
+            kept("local", &["max-file=1"]),
+            Ok(Some(kept_as(20 << 20, 1, false, None)))
+        );
+        // Non-blocking: moby's ring's size unless given, in binary units, 0 too.
+        assert_eq!(
+            kept("", &["mode=non-blocking"]),
+            Ok(Some(kept_as(20 << 20, 5, true, Some(1_000_000))))
+        );
+        assert_eq!(
+            kept("json-file", &["mode=non-blocking", "max-buffer-size=4m"]),
+            Ok(Some(kept_as(20 << 20, 5, false, Some(4 << 20))))
+        );
+        assert_eq!(
+            kept("local", &["mode=non-blocking", "max-buffer-size=0"]),
+            Ok(Some(kept_as(20 << 20, 5, true, Some(0))))
         );
         for (driver, opts, said) in [
             (
@@ -393,6 +444,21 @@ mod tests {
                 "json-file",
                 &["compress=maybe"],
                 "--log-opt compress=maybe: true or false",
+            ),
+            (
+                "json-file",
+                &["max-size=1m", "compress=true"],
+                "--log-opt compress=true: its log is one file (max-file 1)",
+            ),
+            (
+                "local",
+                &["max-file=1", "compress=1"],
+                "--log-opt compress=true: its log is one file (max-file 1)",
+            ),
+            (
+                "local",
+                &["mode=non-blocking", "max-buffer-size=lots"],
+                "--log-opt max-buffer-size=lots: a size",
             ),
             (
                 "json-file",

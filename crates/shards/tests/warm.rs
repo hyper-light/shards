@@ -235,12 +235,14 @@ impl Warm {
         let (stdin_r, _stdin_w) = pipe();
         let (_stdout_r, stdout_w) = pipe();
         let (_stderr_r, stderr_w) = pipe();
-        let mut payload = vec![0];
-        payload.extend((20u64 << 20).to_be_bytes());
-        payload.extend(5u64.to_be_bytes());
+        let mut payload = Vec::new();
         // Its first segment, and memory to plug: none (D148).
-        payload.extend(0u64.to_be_bytes());
-        payload.extend(0u64.to_be_bytes());
+        shards_ipc::RunHead {
+            log_size: 20 << 20,
+            log_files: 5,
+            ..Default::default()
+        }
+        .encode_into(&mut payload);
         payload.extend(spec.encode());
         shards_ipc::send(
             &self.daemon,
@@ -296,17 +298,20 @@ impl Warm {
         let (stdin_r, stdin_w) = pipe();
         let (stdout_r, stdout_w) = pipe();
         let (stderr_r, stderr_w) = pipe();
-        let mut payload = vec![if interactive {
-            shards_ipc::RUN_INTERACTIVE
-        } else {
-            0
-        }];
-        // The log's retention, which a run without a log has no use for.
-        payload.extend((20u64 << 20).to_be_bytes());
-        payload.extend(5u64.to_be_bytes());
-        // Its first segment, and memory to plug: none (D148).
-        payload.extend(0u64.to_be_bytes());
-        payload.extend(0u64.to_be_bytes());
+        let mut payload = Vec::new();
+        // The log's retention, which a run without a log has no use for; its first
+        // segment, and memory to plug: none (D148).
+        shards_ipc::RunHead {
+            flags: if interactive {
+                shards_ipc::RUN_INTERACTIVE
+            } else {
+                0
+            },
+            log_size: 20 << 20,
+            log_files: 5,
+            ..Default::default()
+        }
+        .encode_into(&mut payload);
         payload.extend(spec.encode());
         shards_ipc::send(
             &self.daemon,
