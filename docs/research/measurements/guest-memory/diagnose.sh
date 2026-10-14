@@ -1,7 +1,7 @@
 #!/bin/sh
 # Where a run's guest keeps its microVM's memory, for two builds of shards on one host:
 # CI's x86_64 runs found `-m` short of its limit from 504cd087 on
-# (run_limits_resources_as_docker_run_does), where M155 measured a margin (its table on dev
+# (run_limits_a_microvms_resources), where M155 measured a margin (its table on dev
 # from 088ee68d).
 #   diagnose.sh SHARDS_A SHARDS_B [LIMIT...]
 # For each build and each limit (700m and 2500m, the test's, by default), a run's guest

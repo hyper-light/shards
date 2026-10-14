@@ -226,7 +226,7 @@ mod tests {
     /// buildx's own cases (commands/policy/eval_test.go TestSelectReloadFields,
     /// TestFilterInvalidFields, TestMaterialFieldPrerequisites), each as it asserts it.
     #[test]
-    fn fields_are_selected_as_buildx_selects_them() {
+    fn policy_fields_are_selected() {
         let unknowns = s(&[
             "image.provenance",
             "image.provenance.materials[0].image.hasProvenance",
@@ -335,7 +335,7 @@ mod tests {
 
     /// summarizeEvalUnknowns, as eval.go defines it.
     #[test]
-    fn unknowns_are_summarized_as_buildx_does() {
+    fn policy_unknowns_are_summarized() {
         let unknowns = s(&[
             "image.checksum",
             "image.labels",

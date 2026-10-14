@@ -119,7 +119,7 @@ fn expected(e: &Value) -> Value {
 }
 
 #[test]
-fn files_parse_as_buildkit_parses_them() {
+fn dockerfiles_parse() {
     let devs = deviations("parse");
     let mut failures = Vec::new();
     let mut used = 0;
@@ -180,7 +180,7 @@ fn lexed(c: &Value) -> Value {
 }
 
 #[test]
-fn words_process_as_buildkits_lexer_processes_them() {
+fn words_are_expanded_and_split() {
     let devs = deviations("lex");
     let mut failures = Vec::new();
     let mut used = std::collections::BTreeSet::new();
@@ -416,7 +416,7 @@ fn instructions_of(text: &[u8]) -> Value {
 }
 
 #[test]
-fn instructions_parse_as_buildkits_do() {
+fn instructions_parse() {
     let devs = deviations("instructions");
     let mut failures = Vec::new();
     let mut used = 0;
@@ -1664,7 +1664,7 @@ fn patterns_match_as_gos() {
 
 /// .dockerignore files read as ignorefile.ReadAll reads them: testdata/ignores.json.
 #[test]
-fn dockerignore_files_read_as_buildkits_frontend_reads_them() {
+fn dockerignore_files_are_read() {
     let files: Vec<String> =
         serde_json::from_slice(&std::fs::read(testdata().join("ignores.json")).unwrap()).unwrap();
     let answers = load("ignores-answers.json");

@@ -494,7 +494,7 @@ mod tests {
     /// A default microVM's: its few devices read and written, any device made, no
     /// other read: /dev/pmem0 (259:0), which shards' guests mount their image from, is not.
     #[test]
-    fn a_default_container_reaches_dockers_devices_alone() {
+    fn a_default_microvm_reaches_its_default_devices_alone() {
         let (allow, clean) = reduce(&docker(&[])).unwrap();
         assert!(!allow);
         let p = program(allow, &clean).unwrap();

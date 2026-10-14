@@ -1628,7 +1628,7 @@ mod tests {
     }
 
     #[test]
-    fn limits_are_written_as_runc_writes_them() {
+    fn step_limits_are_written() {
         use shards_dockerfile::llb::LinuxResources;
         let files = |r: LinuxResources| {
             cgroup_files(&r).map(|f| {

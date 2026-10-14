@@ -864,7 +864,7 @@ mod tests {
     /// the last `@` ending them; refused as net/url refuses them.
     /// pathutil.SafeFileName's names (its tests, and the cases between).
     #[test]
-    fn file_names_are_made_safe_as_buildkit_makes_them() {
+    fn download_file_names_are_made_safe() {
         for (name, want) in [
             (&b"file.txt"[..], &b"file.txt"[..]),
             (b"  file.txt \t", b"file.txt"),

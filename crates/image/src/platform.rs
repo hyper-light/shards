@@ -127,7 +127,7 @@ mod tests {
     }
 
     #[test]
-    fn aliases_normalize_as_containerd_normalizes_them() {
+    fn platform_aliases_normalize() {
         let n = |arch: &str, variant: Option<&str>| {
             let t = normalize(&Platform {
                 architecture: arch.into(),

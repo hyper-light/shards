@@ -11,7 +11,7 @@ use shards_cmdline::format::{Clock, Context, du, utc};
 const NANOS: i128 = 1_000_000_000;
 
 #[test]
-fn du_answers_as_buildx_does() {
+fn builder_du_answers_byte_for_byte() {
     let data: serde_json::Value = serde_json::from_str(include_str!("buildx-du.json")).unwrap();
     // Any moment: what the records say of their last use is relative to it.
     let now = 1_800_000_000 * NANOS;

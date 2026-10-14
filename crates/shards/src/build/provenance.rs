@@ -1583,7 +1583,7 @@ mod tests {
     /// incomplete requests named it (`sha256:eb76…`): the step's bytes marked, after
     /// the step before it was.
     #[test]
-    fn proxied_steps_are_named_as_buildkits_solver_names_them() {
+    fn proxied_steps_are_named() {
         let opts = shards_dockerfile::plan::Options {
             target_platform: shards_dockerfile::platform::Platform::new("linux", "arm64"),
             build_platforms: vec![shards_dockerfile::platform::Platform::new("linux", "arm64")],
@@ -2058,7 +2058,7 @@ mod tests {
     }
 
     #[test]
-    fn images_are_package_urls_as_buildkit_writes_them() {
+    fn images_are_package_urls() {
         use shards_image::reference::Reference;
         let p = |r: &str| image_purl(&Reference::parse(r).unwrap(), "linux/arm64");
         assert_eq!(

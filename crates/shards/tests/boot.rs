@@ -406,15 +406,16 @@ fn a_nested_guest_is_a_kvm_host() {
 /// What the test guest says of the interrupts it took (`pci-irq`).
 const INTERRUPTS: &str = "SHARDS-TEST INFO interrupts: INTx 2, MSI 1, MSI-X 3, 2 of them held";
 
-/// A guest's VFIO takes a group with an IOMMU only where its MSIs are isolated, or where
-/// told that they need not be (vfio_iommu_type1.c, `allow_unsafe_interrupts`): the tests'
+/// A guest's VFIO takes a group with an IOMMU, and its iommufd a function, only where
+/// their MSIs are isolated, or where told that they need not be (vfio_iommu_type1.c;
+/// iommufd/device.c, iommufd_device_bind; each's `allow_unsafe_interrupts`): the tests'
 /// guests are told so where the machine isolates none (vm::ISOLATED_MSIS), and on arm64
 /// KVM, whose ITS isolates them, told nothing.
 fn unsafe_interrupts() -> &'static str {
     if shards_vmm::vm::ISOLATED_MSIS {
         ""
     } else {
-        " vfio_iommu_type1.allow_unsafe_interrupts=1"
+        " vfio_iommu_type1.allow_unsafe_interrupts=1 iommufd.allow_unsafe_interrupts=1"
     }
 }
 
@@ -510,8 +511,10 @@ const DMA_BY_ADDRESS: &str =
 /// outer function's, and its INTx and MSI by KVM's irqfds; behind the inner machine's own
 /// IOMMU, its MSIs land where the inner guest's IOMMU maps their addresses, and its DMA
 /// reaches the inner guest's pages at the inner guest's own I/O addresses, which the outer
-/// VM process's container maps as the inner IOMMU does. An x86_64 host gives no guest
-/// virtualization of its own yet.
+/// VM process's container maps as the inner IOMMU does. Taken by its VFIO device node and
+/// iommufd instead, its interrupts are the same, and its DMA reaches all of the inner
+/// guest's RAM, which an I/O address space of the outer guest's maps. An x86_64 host
+/// gives no guest virtualization of its own yet.
 #[test]
 fn a_nested_guest_runs_vms_of_its_own() {
     if cannot_run_vms() {
@@ -619,6 +622,25 @@ fn a_nested_guest_runs_vms_of_its_own() {
         if test == "pci-dma" {
             dma(&passed_through, DMA_BY_ADDRESS);
         }
+        // By its VFIO device node and the outer guest's iommufd (`--vfio
+        // /dev/vfio/devices/vfio0`, the outer guest's one VFIO device), not its group: all
+        // of the inner guest's RAM mapped in an I/O address space once the function is
+        // attached to it, its interrupts as through its group; told nothing of type 1.
+        if test != "pci" {
+            let by_node = outer(
+                &["--pci-test"],
+                &format!(
+                    "shards_l2={test} shards_l1_vfio=0000:00:01.0 shards_l2_args=--vfio,/dev/vfio/devices/vfio0 iommufd.allow_unsafe_interrupts=1 shards_l1_log=debug"
+                ),
+            );
+            assert_eq!(by_node.status, Some(0), "{by_node}");
+            passed(&by_node);
+            if test == "pci-irq" {
+                interrupted(&by_node);
+            } else {
+                dma(&by_node, DMA_BY_ADDRESS);
+            }
+        }
         // Behind the inner machine's own IOMMU (`--vfio-iommu`): the inner guest's VFIO
         // gives the function I/O addresses of its own, 0x10_0000 and 0x20_0000, where the
         // inner guest has no RAM (it starts at 2 GiB), so its pages come back only where
@@ -674,12 +696,14 @@ fn a_nested_guest_runs_vms_of_its_own() {
 /// that has one to give: a nested guest given test functions, a device of one and a
 /// device of two (as a GPU with its audio function), runs shards as a Linux host does.
 /// The two functions, one IOMMU group of the outer guest's, its group 1, it gives
-/// vfio-pci, and a run is given their group, by its node and then by a CDI device whose
-/// node it is, whose microVM shards' daemon boots with them behind the microVM's own
-/// IOMMU, one device there, which its guest takes as its own group 0. Each run's workload,
-/// given the group's node where its guest's sysfs puts the group, takes each function
-/// through VFIO as DPDK finds one, by its address's group in sysfs, and moves a page
-/// through each by DMA, one container's mappings for both. An x86_64 host gives no guest
+/// vfio-pci, and a run is given their group, by its node, by a CDI device whose node it
+/// is and by the directory of VFIO's nodes, then each function by its VFIO device node and
+/// iommufd, and by the directory of those; whose microVM
+/// shards' daemon boots with them behind the microVM's own IOMMU, one device there, which
+/// its guest takes as its own group 0. Each run's workload, given the group's node, or
+/// the functions', where its guest's sysfs puts them, takes each function through VFIO as
+/// DPDK finds one, by its address in sysfs, and moves a page through each by DMA, one
+/// container's or address space's mappings for both. An x86_64 host gives no guest
 /// virtualization of its own yet.
 #[test]
 fn a_run_is_given_a_hosts_vfio_group() {
@@ -740,16 +764,20 @@ fn a_run_is_given_a_hosts_vfio_group() {
         .file("l2", 0o644, &read(nested))
         .file("image.tar", 0o644, &common::image_archive("vfio-test:latest"));
     std::fs::write(&initrd, cpio.finish()).unwrap();
-    // The outer guest is a host whose IOMMU isolates no MSIs (GICv2m's), whose VFIO its
-    // administrator allows them.
+    // The outer guest is a host whose IOMMU isolates no MSIs (GICv2m's), whose VFIO and
+    // iommufd its administrator allows them.
     let ran = outer(
         &initrd,
-        "shards_test=daemon shards_l1_vfio=0000:00:02.0,0000:00:02.1 shards_l2=vfio-dma,0000:00:01.0,0000:00:01.1 vfio_iommu_type1.allow_unsafe_interrupts=1 shards_l1_log=debug",
+        "shards_test=daemon shards_l1_vfio=0000:00:02.0,0000:00:02.1 shards_l2=vfio-dma,0000:00:01.0,0000:00:01.1 vfio_iommu_type1.allow_unsafe_interrupts=1 iommufd.allow_unsafe_interrupts=1 shards_l1_log=debug",
     );
     let lines = |want: &str| ran.stdout.lines().filter(|l| l.trim_end() == want).count();
+    assert!(
+        !ran.stdout.contains("L1: no VFIO device nodes"),
+        "the nested kernel makes no VFIO device nodes: {ran}"
+    );
     assert_eq!(
         lines(&format!("L2: {DMA_THROUGH_IOMMU}")),
-        4,
+        10,
         "the runs' DMA: {ran}"
     );
     assert_eq!(lines("SHARDS-TEST PASS"), 1, "the outer guest: {ran}");

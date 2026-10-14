@@ -1792,7 +1792,7 @@ mod tests {
 
     /// createIPAMConfig's words, as docker/cli 29.3.1 printed them (shards-dind).
     #[test]
-    fn ipam_configs_are_consolidated_as_the_cli_consolidates_them() {
+    fn ipam_configs_are_consolidated() {
         let none = BTreeMap::new();
         assert_eq!(
             consolidate(&[], &[], &s(&["10.0.0.1"]), &none).unwrap_err(),

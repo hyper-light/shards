@@ -372,7 +372,7 @@ mod tests {
     }
 
     #[test]
-    fn paths_clean_as_buildkit_cleans_them() {
+    fn paths_are_cleaned() {
         assert_eq!(clean_path(b"a/b"), b"/a/b");
         assert_eq!(clean_path(b"a/b/"), b"/a/b/");
         assert_eq!(clean_path(b"a/b/."), b"/a/b/.");

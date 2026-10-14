@@ -463,7 +463,7 @@ mod tests {
     /// running container's cannot be; forced, a used image's last name goes and the image
     /// stays, dangling.
     #[test]
-    fn images_go_as_dockerd_removes_them() {
+    fn images_are_untagged_and_removed() {
         let a = |n| record(n, 'a');
         let mut fake = Fake(vec![a("docker.io/shp/a:1"), a("docker.io/shp/a:2")]);
         assert_eq!(
@@ -538,7 +538,7 @@ mod tests {
     /// A name with a digest takes every tag of its repository; a tag of another
     /// repository stays; a short ID shared by two images is ambiguous.
     #[test]
-    fn names_with_digests_and_short_ids_resolve_as_dockerd_resolves_them() {
+    fn names_with_digests_and_short_ids_resolve() {
         let mut fake = Fake(vec![
             record("docker.io/library/alpine:3.22", 'a'),
             record("docker.io/library/alpine:latest", 'a'),

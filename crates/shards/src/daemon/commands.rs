@@ -2560,7 +2560,7 @@ impl Show<'_, '_> {
 mod tests {
 
     #[test]
-    fn top_refuses_pid_headers_on_other_fields_as_dockerd_does() {
+    fn top_refuses_pid_headers_on_other_fields() {
         // moby daemon/top_unix_test.go, TestContainerTopValidatePSArgs, and the regexp's
         // backtracking.
         for ok in [
@@ -2685,7 +2685,7 @@ mod tests {
     }
 
     #[test]
-    fn times_print_as_docker_logs_prints_them() {
+    fn log_timestamps_print_in_full() {
         assert_eq!(rfc3339_nano(0), "1970-01-01T00:00:00.000000000Z");
         // 2026-09-29T09:12:34.000000005Z
         assert_eq!(
@@ -2700,7 +2700,7 @@ mod tests {
     }
 
     #[test]
-    fn log_windows_filter_as_dockerd_forwards() {
+    fn log_windows_filter_what_is_forwarded() {
         let mut window = Window {
             since: Some(10),
             until: Some(20),
@@ -2729,7 +2729,7 @@ mod tests {
     /// The PORTS column as docker/cli's DisplayablePorts writes it, for each set of ports in
     /// docker-ps.json.
     #[test]
-    fn ports_show_as_docker_ps_shows_them() {
+    fn ps_tables_and_ports_print_byte_for_byte() {
         let golden: serde_json::Value = serde_json::from_str(include_str!("docker-ps.json")).unwrap();
         for set in golden["ports"].as_array().unwrap() {
             assert_eq!(
@@ -2779,7 +2779,7 @@ mod tests {
     }
 
     #[test]
-    fn commands_show_as_dockerd_lists_them() {
+    fn commands_show_quoted_in_listings() {
         let argv = |w: &[&str]| w.iter().map(|s| (*s).to_string()).collect::<Vec<_>>();
         assert_eq!(command_line(&argv(&["sh", "-c", "echo hi"])), "sh -c 'echo hi'");
     }
@@ -2801,7 +2801,7 @@ mod tests {
     }
 
     #[test]
-    fn signals_are_taken_as_dockerd_takes_them() {
+    fn signals_are_taken_by_name_and_number() {
         for (given, n) in [
             ("KILL", 9),
             ("SIGTERM", 15),

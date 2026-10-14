@@ -447,7 +447,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn mounts_read_as_docker_cli_reads_them() {
+    fn mounts_read_field_by_field() {
         let m = parse_mount("type=bind,src=/a,dst=/b,readonly,bind-propagation=rshared", None).unwrap();
         assert_eq!(
             (m.kind.as_str(), m.source.as_str(), m.target.as_str(), m.read_only),

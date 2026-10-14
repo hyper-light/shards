@@ -245,7 +245,7 @@ mod tests {
     /// restartmanager_test.go's cases: the policies, the doubling wait, its start over
     /// after a long run, and the retry limit.
     #[test]
-    fn restarts_are_decided_as_dockerds_restart_manager_decides() {
+    fn restarts_are_decided_by_policy_and_backoff() {
         let mut m = Manager::default();
         let always = container("always", 0, 0, false);
         let waits: Vec<_> = (0..12)

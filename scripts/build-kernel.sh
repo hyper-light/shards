@@ -38,7 +38,7 @@ out=$(cd "$out" && pwd)
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 
-curl -fsSL --retry 3 -o "$work/linux.tar.xz" \
+curl -fsSL --retry 5 --retry-all-errors --retry-delay 10 -o "$work/linux.tar.xz" \
     "https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-$version.tar.xz"
 echo "$tarball_sha256  $work/linux.tar.xz" | sha256sum -c --quiet -
 tar -xJf "$work/linux.tar.xz" -C "$work"

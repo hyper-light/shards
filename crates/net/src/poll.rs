@@ -241,7 +241,9 @@ mod windows {
     use std::cell::RefCell;
     use std::collections::HashMap;
     use std::io;
-    use std::os::windows::io::{AsRawHandle as _, FromRawHandle as _, OwnedHandle, RawHandle};
+    use std::os::windows::io::{
+        AsRawHandle as _, BorrowedHandle, FromRawHandle as _, OwnedHandle, RawHandle,
+    };
     use std::time::Duration;
 
     use windows_sys::Win32::Foundation::{HANDLE, INVALID_HANDLE_VALUE, WAIT_TIMEOUT};
@@ -283,6 +285,9 @@ mod windows {
         token: u64,
         ends: bool,
         _post: Box<Post>,
+        /// The poller's own handle of what is watched, closed only once its wait is
+        /// unregistered ([`Poller::watch`]).
+        _handle: OwnedHandle,
     }
 
     /// A socket's registration: its token, what it waits for, and the filter it is armed
@@ -485,18 +490,24 @@ mod windows {
         /// once. Its signal comes as a packet a thread-pool wait posts (PM M213).
         pub fn watch(&self, handle: RawHandle, token: u64, ends: bool) -> io::Result<()> {
             let key = usize::try_from(token).map_err(|_| io::Error::other("a token past a key"))?;
+            // Its own handle of the object, closed only after its wait is unregistered: a
+            // handle closed while a wait is registered on it is undefined
+            // (RegisterWaitForSingleObject), which a caller closing theirs first made the
+            // thread pool fault (0xC000070A, CI run 38520300393).
+            // SAFETY: a handle its caller holds open for this call.
+            let own = unsafe { BorrowedHandle::borrow_raw(handle) }.try_clone_to_owned()?;
             let post = Box::new(Post {
                 port: self.port.as_raw_handle() as usize,
                 key,
             });
             let mut wait: HANDLE = std::ptr::null_mut();
             let once = if ends { WT_EXECUTEONLYONCE } else { 0 };
-            // SAFETY: a handle its owner keeps open while it is watched; the Post outlives
-            // the wait, which Drop ends first.
+            // SAFETY: the poller's own handle, open while it is watched; it and the Post
+            // outlive the wait, which Drop ends first.
             let ok = unsafe {
                 RegisterWaitForSingleObject(
                     &raw mut wait,
-                    handle,
+                    own.as_raw_handle(),
                     Some(posted),
                     std::ptr::from_ref::<Post>(&post).cast(),
                     INFINITE,
@@ -511,6 +522,7 @@ mod windows {
                 token,
                 ends,
                 _post: post,
+                _handle: own,
             });
             Ok(())
         }

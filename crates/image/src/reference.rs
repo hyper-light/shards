@@ -346,7 +346,7 @@ mod tests {
     /// From normalize_test.go (TestParseRepositoryInfo, TestParseDockerRef): input →
     /// (domain, path, tag, familiar form).
     #[test]
-    fn references_normalize_as_docker_normalizes_them() {
+    fn references_normalize_to_their_familiar_forms() {
         for (input, domain, path, tag, familiar) in [
             (
                 "fooo/bar",

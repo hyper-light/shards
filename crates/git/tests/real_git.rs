@@ -267,7 +267,7 @@ impl shards_git::remote::Transport for UploadPack<'_> {
 /// Refs resolve as BuildKit resolves an ADD's (source.go resolveMetadata): the default
 /// branch, a branch before a tag of its name, an annotated tag peeled, a missing ref none.
 #[test]
-fn refs_resolve_as_buildkit_resolves_them() {
+fn refs_resolve_against_real_git() {
     use shards_git::remote::{Limits, Remote, Resolved};
     if Command::new("git").arg("--version").output().is_err() {
         eprintln!("SKIP: no git on this host");

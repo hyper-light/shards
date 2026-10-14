@@ -393,7 +393,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn formats_become_templates_as_the_cli_makes_them() {
+    fn formats_become_templates() {
         assert_eq!(
             template_string("table {{.ID}}\\t{{.Names}}"),
             "{{.ID}}\t{{.Names}}"

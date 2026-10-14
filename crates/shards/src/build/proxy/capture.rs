@@ -197,7 +197,7 @@ mod tests {
 
     /// BuildKit's own cases (TestRedactCredentials, TestCaptureURLNormalizesDefaultPort).
     #[test]
-    fn urls_are_recorded_as_buildkit_records_them() {
+    fn urls_are_recorded() {
         for (given, want) in [
             (
                 "https://user:password@host.tld/this:that",
@@ -242,7 +242,7 @@ mod tests {
     /// Held to BuildKit v0.33.0's own captureURL, redactURL and finalURL, as
     /// scripts/proxy/generate records them.
     #[test]
-    fn urls_are_captured_as_buildkits_proxy_captures_them() {
+    fn urls_are_captured() {
         let oracle: serde_json::Value =
             serde_json::from_str(include_str!("../testdata/proxy-oracle.json")).unwrap();
         for u in oracle["urls"].as_array().unwrap() {

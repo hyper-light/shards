@@ -3823,7 +3823,7 @@ mod tests {
     }
 
     #[test]
-    fn ownership_is_docker_desktops() {
+    fn ownership_records_read_and_write_back() {
         let owner = Owner::parse(br#"{"UID":1234,"GID":5678,"mode":600}"#).unwrap();
         assert_eq!((owner.uid, owner.gid, owner.mode), (1234, 5678, Some(0o600)));
         assert_eq!(owner.encode(), r#"{"UID":1234,"GID":5678,"mode":600}"#);

@@ -134,7 +134,7 @@ fn report(out: &Output) -> BTreeMap<String, String> {
 }
 
 #[test]
-fn commands_run_in_the_image_as_docker_runs_them() {
+fn commands_run_in_the_image() {
     if cannot_run_vms() {
         return;
     }
@@ -240,7 +240,7 @@ fn commands_run_in_the_image_as_docker_runs_them() {
 }
 
 #[test]
-fn exit_statuses_are_the_ones_docker_run_gives() {
+fn exit_statuses_are_the_commands() {
     if cannot_run_vms() {
         return;
     }
@@ -330,7 +330,7 @@ fn stdio_carries_bulk_data_both_ways() {
 /// there: `/etc/hostname` naming the run, `/etc/hosts` as Docker writes it, `/etc/mtab` a
 /// link to `/proc/mounts` (moby daemon/initlayer/setup_unix.go), and loopback up.
 #[test]
-fn a_run_has_the_files_docker_gives_a_container_and_loopback() {
+fn a_run_has_its_hostname_hosts_and_mtab_and_loopback() {
     if cannot_run_vms() {
         return;
     }
@@ -522,7 +522,7 @@ fn signaled_ignoring(image: &Path, command: &[&str], signals: &[libc::c_int], ig
 }
 
 #[test]
-fn signals_reach_the_command_as_docker_run_forwards_them() {
+fn signals_reach_the_command() {
     if cannot_run_vms() {
         return;
     }

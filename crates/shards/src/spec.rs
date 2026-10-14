@@ -222,7 +222,7 @@ mod tests {
     }
 
     #[test]
-    fn environments_compose_as_docker_composes_them() {
+    fn environments_compose() {
         assert_eq!(
             env_of(&[], "box"),
             [format!("PATH={DEFAULT_PATH}"), "HOSTNAME=box".into()]
@@ -288,7 +288,7 @@ mod tests {
     }
 
     #[test]
-    fn a_terminal_brings_term_as_dockerd_sets_it() {
+    fn a_terminal_brings_term() {
         let env = |given: &[&str]| {
             let o = Options {
                 argv: vec!["x".into()],

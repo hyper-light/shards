@@ -35,14 +35,23 @@ pub fn main() -> ! {
     let code = match arg(0) {
         "report" => report(),
         "cat" => cat(),
-        // DMA through each PCI function at ADDRESS..., one group's, by its VFIO (D154).
-        "vfio-dma" => match crate::linux::vfio_dma(args.get(1..).unwrap_or_default()) {
-            Ok(()) => 0,
-            Err(e) => {
-                let _ = writeln!(io::stderr(), "vfio-dma: {e}");
-                1
+        // DMA through each PCI function at ADDRESS..., one group's, by its VFIO (D154):
+        // its group's, or its own device node's and iommufd.
+        "vfio-dma" | "vfio-dma-cdev" => {
+            let functions = args.get(1..).unwrap_or_default();
+            let done = if arg(0) == "vfio-dma" {
+                crate::linux::vfio_dma(functions)
+            } else {
+                crate::linux::vfio_dma_cdev(functions)
+            };
+            match done {
+                Ok(()) => 0,
+                Err(e) => {
+                    let _ = writeln!(io::stderr(), "{}: {e}", arg(0));
+                    1
+                }
             }
-        },
+        }
         // Each file read whole: its first line, or the errno that refused it.
         "slurp" => {
             for p in args.get(1..).unwrap_or_default() {
@@ -52,6 +61,32 @@ pub fn main() -> ! {
                 };
                 let _ = writeln!(io::stdout(), "slurp {p}: {said}");
             }
+            0
+        }
+        // Real-time scheduling asked for: SCHED_FIFO at priority 1, or the errno that
+        // refused it.
+        "fifo" => {
+            // SAFETY: sched_param is plain integers, all zero valid (musl's has more than
+            // the priority).
+            let mut param: libc::sched_param = unsafe { std::mem::zeroed() };
+            param.sched_priority = 1;
+            // The system call itself, as glibc makes it: musl's wrapper says ENOSYS without
+            // asking the kernel (src/sched/sched_setscheduler.c).
+            // SAFETY: sched_setscheduler(2) reads the sched_param it is given.
+            let said = if unsafe {
+                libc::syscall(
+                    libc::SYS_sched_setscheduler,
+                    0,
+                    libc::SCHED_FIFO,
+                    &raw const param,
+                )
+            } == 0
+            {
+                "ok".to_string()
+            } else {
+                format!("errno {}", io::Error::last_os_error().raw_os_error().unwrap_or(0))
+            };
+            let _ = writeln!(io::stdout(), "fifo: {said}");
             0
         }
         "stat" => stat(args.get(1..).unwrap_or_default()),

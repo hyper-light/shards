@@ -72,6 +72,70 @@ pub fn write_sysctl(key: &str, value: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// The value of sysctl `key`, read beneath init's own `/proc/sys`.
+fn read_sysctl(key: &str) -> Result<String, String> {
+    let path = key.replace('.', "/");
+    let dir = PROC_SYS
+        .get()
+        .ok_or_else(|| format!("reading /proc/sys/{path}: no /proc/sys kept"))?;
+    let c = CString::new(path.clone()).map_err(|_| format!("reading /proc/sys/{path}: a NUL in its name"))?;
+    // SAFETY: openat(2) of a NUL-terminated path below our own descriptor.
+    let fd = unsafe { libc::openat(dir.as_raw_fd(), c.as_ptr(), libc::O_RDONLY | libc::O_CLOEXEC) };
+    if fd < 0 {
+        let e = io::Error::last_os_error();
+        return Err(format!("reading /proc/sys/{path}: {}", errno_words(&e)));
+    }
+    // SAFETY: a fresh descriptor nothing else owns.
+    let file = std::fs::File::from(unsafe { OwnedFd::from_raw_fd(fd) });
+    let mut text = String::new();
+    io::Read::read_to_string(&mut &file, &mut text).map_err(|e| format!("reading /proc/sys/{path}: {e}"))?;
+    Ok(text.trim().to_string())
+}
+
+/// Sets the guest's real-time budget to a run's `--cpu-rt-period` and `--cpu-rt-runtime`
+/// (D155), `entry` being `PERIOD,RUNTIME` in microseconds, each 0 for the guest kernel's
+/// own: the run's alone, as the microVM is its own. The period first where it holds the
+/// runtime the kernel has now, else the runtime first, as the kernel takes neither write
+/// that leaves the runtime past the period (kernel/sched/rt.c, sched_rt_global_validate);
+/// one asked of a kernel whose own value it does not fit is refused, in shards' words.
+pub fn real_time(entry: &[u8]) -> Result<(), String> {
+    const PERIOD: &str = "kernel.sched_rt_period_us";
+    const RUNTIME: &str = "kernel.sched_rt_runtime_us";
+    let text = std::str::from_utf8(entry).map_err(|_| "a malformed real-time entry".to_string())?;
+    let (period, runtime) = text
+        .split_once(',')
+        .and_then(|(p, r)| Some((p.parse::<i64>().ok()?, r.parse::<i64>().ok()?)))
+        .ok_or_else(|| format!("a malformed real-time entry: {text}"))?;
+    let now = |key: &str| -> Result<i64, String> {
+        read_sysctl(key)?
+            .parse::<i64>()
+            .map_err(|e| format!("reading {key}: {e}"))
+    };
+    let (have_period, have_runtime) = (now(PERIOD)?, now(RUNTIME)?);
+    let period = if period > 0 { period } else { have_period };
+    let runtime = if runtime > 0 { runtime } else { have_runtime };
+    if runtime > period {
+        return Err(if entry.starts_with(b"0,") {
+            format!(
+                "--cpu-rt-runtime {runtime} is more than this guest's real-time period, {period} microseconds: give --cpu-rt-period too"
+            )
+        } else {
+            format!(
+                "--cpu-rt-period {period} is less than this guest's real-time runtime, {runtime} microseconds: give --cpu-rt-runtime too"
+            )
+        });
+    }
+    let writes = if period >= have_runtime {
+        [(PERIOD, period), (RUNTIME, runtime)]
+    } else {
+        [(RUNTIME, runtime), (PERIOD, period)]
+    };
+    for (key, value) in writes {
+        write_sysctl(key, &value.to_string())?;
+    }
+    Ok(())
+}
+
 /// Sets an endpoint's sysctl `kv`, `net.X.Y.IFNAME.Z=V`, on interface `ifname`, as
 /// libnetwork sets it as it configures the interface (moby
 /// daemon/libnetwork/osl/interface_linux.go, setSysctls): the interface's name in place of

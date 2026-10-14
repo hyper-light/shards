@@ -2047,7 +2047,7 @@ mod tests {
     }
 
     #[test]
-    fn provenance_reads_as_buildx_reads_it() {
+    fn provenance_is_read() {
         let cases: Vec<J> =
             serde_json::from_slice(&std::fs::read(data().join("provenance.json")).unwrap()).unwrap();
         let mut failures = Vec::new();

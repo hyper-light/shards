@@ -32,7 +32,7 @@ fn mode_of(m: u64) -> u64 {
 }
 
 #[test]
-fn contexts_are_sent_as_buildx_sends_them() {
+fn build_contexts_are_sent_whole() {
     let spec: Value = serde_json::from_str(include_str!("../testdata/contexts.json")).unwrap();
     let answers: Value = serde_json::from_str(include_str!("../testdata/contexts-answers.json")).unwrap();
     let tmp = shards_testdir::TempDir::new("context-test").unwrap();

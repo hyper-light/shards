@@ -1123,7 +1123,7 @@ mod tests {
     /// BuildKit's measured answers (Docker Engine 29.3.1), but for the annotated tag's,
     /// whose tag name BuildKit loses ("got  or ...").
     #[test]
-    fn checksums_are_checked_as_buildkit_checks_them() {
+    fn git_checksums_are_checked() {
         let c = Oid::parse(b"540d46b365c5df8d9809be74b5470dd61048f373").unwrap();
         let t = Oid::parse(b"ed61d74300000000000000000000000000000000").unwrap();
         let plain = Resolved {

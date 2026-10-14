@@ -95,7 +95,7 @@ mod tests {
 
     /// The proxy's variables, in BuildKit's order and words (measured in the step's env).
     #[test]
-    fn a_step_is_given_the_proxy_as_buildkit_gives_it() {
+    fn a_step_is_given_the_proxy() {
         let got: Vec<String> = env("http://10.0.2.2:3128")
             .into_iter()
             .map(|kv| String::from_utf8(kv).unwrap())
@@ -137,7 +137,7 @@ mod tests {
     /// its value never said; held to BuildKit v0.33.0's parseProxyEnvironmentValue
     /// (scripts/proxy/generate).
     #[test]
-    fn the_builds_own_proxies_are_checked_as_buildkit_checks_them() {
+    fn the_builds_own_proxies_are_checked() {
         let check = |vars: &[(&str, &str)]| {
             let vars: Vec<(String, String)> =
                 vars.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();

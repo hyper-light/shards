@@ -911,7 +911,7 @@ mod tests {
 
     /// containerd's TestParseAuthHeaderBearer and TestParseAuthHeader.
     #[test]
-    fn challenges_parse_as_containerd_parses_them() {
+    fn auth_challenges_parse() {
         for scope in [
             "repository:foo/bar:pull,push",
             "repository:foo/bar:pull,push repository:foo/baz:pull repository:foo/foo:push",

@@ -1385,7 +1385,7 @@ fn a_command_is_pid_1_as_a_containers_is() {
 /// works without CAP_NET_RAW, and every port bindable without CAP_NET_BIND_SERVICE; as
 /// Docker 29.3.1 answered (M145).
 #[test]
-fn dockers_default_sysctls_let_ping_go_without_net_raw() {
+fn default_sysctls_let_ping_go_without_net_raw() {
     let Some(home) = pulled("containers-sysctls", ALPINE) else {
         return;
     };
@@ -1534,7 +1534,7 @@ fn pause_freezes_a_microvm_until_unpause_or_stop() {
 }
 
 #[test]
-fn top_lists_a_microvms_processes_as_docker_top_does() {
+fn top_lists_a_microvms_processes() {
     let Some((home, image)) = home("containers-top") else {
         return;
     };
@@ -1585,7 +1585,7 @@ fn top_lists_a_microvms_processes_as_docker_top_does() {
 }
 
 #[test]
-fn diff_shows_what_a_microvm_changed_as_docker_diff_does() {
+fn diff_shows_what_a_microvm_changed() {
     let Some((home, image)) = home("containers-diff") else {
         return;
     };
@@ -1627,7 +1627,7 @@ fn diff_shows_what_a_microvm_changed_as_docker_diff_does() {
 }
 
 #[test]
-fn events_tell_a_microvms_life_as_docker_events_does() {
+fn events_tell_a_microvms_life() {
     let Some((home, image)) = home("containers-events") else {
         return;
     };
@@ -1791,7 +1791,7 @@ fn export_writes_a_microvms_files_as_a_tar_archive() {
 }
 
 #[test]
-fn cp_copies_files_into_and_out_of_a_microvm_as_docker_cp_does() {
+fn cp_copies_files_into_and_out_of_a_microvm() {
     let Some((home, image)) = home("containers-cp") else {
         return;
     };
@@ -1880,7 +1880,7 @@ fn cp_copies_files_into_and_out_of_a_microvm_as_docker_cp_does() {
 }
 
 #[test]
-fn a_stopped_microvms_files_are_read_and_written_as_dockerd_does() {
+fn a_stopped_microvms_files_are_read_and_written() {
     let Some((home, image)) = home("containers-visit") else {
         return;
     };
@@ -2127,7 +2127,7 @@ fn an_endpoints_sysctls_are_its_interfaces() {
 /// and no interface has it. A published port reaches a run past its change, and two given
 /// one MAC on a network reach one another, as on Docker's bridge they would not.
 #[test]
-fn a_runs_mac_is_its_own_as_dockerd_gives_it() {
+fn a_runs_mac_is_its_own() {
     use std::io::{Read as _, Write as _};
     let Some((home, image)) = home("containers-mac") else {
         return;
@@ -2333,7 +2333,7 @@ fn a_runs_mac_is_its_own_as_dockerd_gives_it() {
 /// on one with IPv6, a member reaches another's at the address its kernel makes of its
 /// MAC, as on dockerd's bridge.
 #[test]
-fn a_runs_link_local_addresses_are_its_own_as_dockerd_gives_them() {
+fn a_runs_link_local_addresses_are_its_own() {
     let Some((home, image)) = home("containers-link-local") else {
         return;
     };
@@ -2943,7 +2943,7 @@ fn a_container_given_sys_admin_mounts_nothing_as_apparmor_keeps_it() {
 /// terminal, whose command hears them; not to one with a terminal, whose own keys are its
 /// signals: the client ends by the signal alone, the container running on.
 #[test]
-fn start_attached_passes_signals_on_as_docker_start_does() {
+fn start_attached_passes_signals_on() {
     let Some((home, image)) = home("containers-start-signals") else {
         return;
     };
@@ -3147,7 +3147,7 @@ fn rm_refuses_a_running_container_unless_forced() {
 }
 
 #[test]
-fn ps_filters_microvms_as_dockerd_filters_containers() {
+fn ps_filters_microvms() {
     let Some((home, image)) = home("containers-ps-filter") else {
         return;
     };
@@ -3228,7 +3228,7 @@ fn ps_filters_microvms_as_dockerd_filters_containers() {
 }
 
 #[test]
-fn images_and_prunes_filter_as_dockerd_does() {
+fn images_and_prunes_filter() {
     let Some((home, image)) = home("containers-image-filter") else {
         return;
     };
@@ -3313,7 +3313,7 @@ fn images_and_prunes_filter_as_dockerd_does() {
 }
 
 #[test]
-fn inspect_answers_as_docker_inspect_does() {
+fn inspect_describes_microvms_and_images() {
     let Some((home, image)) = home("containers-inspect-any") else {
         return;
     };
@@ -3391,7 +3391,7 @@ fn inspect_answers_as_docker_inspect_does() {
 }
 
 #[test]
-fn run_labels_names_and_resolves_as_docker_run_does() {
+fn run_labels_names_and_resolves() {
     let Some((home, image)) = home("containers-run-flags") else {
         return;
     };
@@ -3503,7 +3503,7 @@ fn run_labels_names_and_resolves_as_docker_run_does() {
 /// reads it, and one this host's microVMs cannot run refused before anything is pulled;
 /// signals kept from the command.
 #[test]
-fn run_writes_cidfiles_pulls_quietly_and_keeps_signals_as_docker_run_does() {
+fn run_writes_cidfiles_pulls_quietly_and_keeps_signals() {
     let Some((home, image)) = home("containers-cidfile") else {
         return;
     };
@@ -3661,7 +3661,7 @@ fn run_writes_cidfiles_pulls_quietly_and_keeps_signals_as_docker_run_does() {
 /// as runc limits it, seen read-only at /sys/fs/cgroup as a container sees its own; a
 /// workload past its memory killed, and OOMKilled, as Docker reports it.
 #[test]
-fn run_limits_resources_as_docker_run_does() {
+fn run_limits_a_microvms_resources() {
     let Some((home, image)) = home("containers-resources") else {
         return;
     };
@@ -3847,7 +3847,7 @@ fn run_limits_resources_as_docker_run_does() {
 /// which an exec joins; its rlimits, which an exec takes too; its sysctls set; inspect
 /// as dockerd keeps them; and dockerd's and runc's refusals.
 #[test]
-fn run_sets_up_mounts_limits_and_sysctls_as_docker_run_does() {
+fn run_sets_up_mounts_limits_and_sysctls() {
     let Some((home, image)) = home("containers-setup") else {
         return;
     };
@@ -3986,7 +3986,7 @@ fn run_sets_up_mounts_limits_and_sysctls_as_docker_run_does() {
 /// moby adds them, the OOM score set before the command, an exec taking the workload's;
 /// a privileged microVM unmasked, its /sys writable, every capability; dockerd's refusals.
 #[test]
-fn run_sets_capabilities_groups_and_privileges_as_docker_run_does() {
+fn run_sets_capabilities_groups_and_privileges() {
     let Some((home, image)) = home("containers-privileges") else {
         return;
     };
@@ -4130,7 +4130,7 @@ fn run_sets_capabilities_groups_and_privileges_as_docker_run_does() {
 }
 
 #[test]
-fn info_and_disk_usage_format_as_docker_does() {
+fn info_and_disk_usage_format() {
     let Some((home, image)) = home("containers-info-df") else {
         return;
     };
@@ -4185,7 +4185,7 @@ fn info_and_disk_usage_format_as_docker_does() {
 }
 
 #[test]
-fn ps_lists_containers_as_docker_ps_does() {
+fn ps_lists_microvms() {
     let Some((home, image)) = home("containers-ps") else {
         return;
     };
@@ -4405,7 +4405,7 @@ fn detached_runs_print_their_id_and_go_on() {
 }
 
 #[test]
-fn a_command_that_cannot_start_says_why_as_docker_run_does() {
+fn a_command_that_cannot_start_says_why() {
     let Some((home, image)) = home("containers-unstarted") else {
         return;
     };
@@ -4994,7 +4994,7 @@ fn logs_carry_lines_longer_than_a_message() {
 /// own address, refuses it, as nothing has granted it egress. Its own name is its address
 /// in /etc/hosts, and its resolvers are the host's, none of them loopback ones.
 #[test]
-fn a_run_is_on_a_network_as_docker_runs_it() {
+fn a_run_is_on_the_default_bridge() {
     let Some((home, image)) = home("containers-net") else {
         return;
     };
@@ -5722,7 +5722,7 @@ fn answers_lost_without_the_gateways_mac() {
 /// exist fails the start, the container left created with 128 (`--rm` takes it); what
 /// dockerd refuses outright makes no container.
 #[test]
-fn a_run_on_a_network_it_cannot_have_says_why_as_dockerd_does() {
+fn a_run_on_a_network_it_cannot_have_says_why() {
     let Some((home, image)) = home("containers-badnet") else {
         return;
     };
@@ -5848,7 +5848,7 @@ fn stop_sends_a_containers_own_stop_signal() {
 /// stdio, `-i` its stdin, `-t` a terminal of its own; with its own status; refused in
 /// dockerd's words for what the daemon refuses, and in runc's for what cannot start.
 #[test]
-fn exec_runs_commands_in_a_running_container_as_docker_exec_does() {
+fn exec_runs_commands_in_a_running_microvm() {
     use std::io::Write as _;
     let Some((home, image)) = home("containers-exec") else {
         return;
@@ -6133,7 +6133,7 @@ fn listeners_of(port: u16) -> String {
 /// allocator's, another program's as its bind's; and a run's ports are free again as soon
 /// as it has ended.
 #[test]
-fn published_ports_reach_the_guest_as_dockerd_publishes_them() {
+fn published_ports_reach_the_guest() {
     use std::io::{Read as _, Write as _};
     use std::net::{SocketAddr, TcpStream};
     let Some((home, image)) = home("containers-publish") else {
@@ -6648,7 +6648,7 @@ fn size_shows(shown: &str, bytes: u64) -> bool {
 /// here of it, its platforms with `--tree`, in use while a container of it is; the table
 /// with `-q`, `--no-trunc` and `--digests`; and only what a pattern matches when given.
 #[test]
-fn images_lists_what_was_pulled_as_docker_images_does() {
+fn images_lists_what_was_pulled() {
     if cannot_run_vms() {
         return;
     }
@@ -6854,7 +6854,7 @@ fn an_image_whose_last_name_moves_stays_dangling() {
 }
 
 #[test]
-fn tag_names_an_image_again_as_docker_tag_does() {
+fn tag_names_an_image_again() {
     let Some((home, image)) = home("containers-tag") else {
         return;
     };
@@ -6918,7 +6918,7 @@ fn tag_names_an_image_again_as_docker_tag_does() {
 /// running container's image cannot be removed by ID at all; with `-f`, an image not
 /// found is said and forgiven.
 #[test]
-fn rmi_removes_images_as_docker_rmi_does() {
+fn rmi_removes_images() {
     let Some((home, image)) = home("containers-rmi") else {
         return;
     };
@@ -7016,7 +7016,7 @@ fn rmi_removes_images_as_docker_rmi_does() {
 /// reference resolved to, its pull's repository; one array for all, and what was not found
 /// said after.
 #[test]
-fn image_inspect_describes_images_as_docker_does() {
+fn image_inspect_describes_images() {
     if cannot_run_vms() {
         return;
     }
@@ -7186,7 +7186,7 @@ fn an_interrupted_save_leaves_nothing_behind() {
 /// attestation included, Docker's manifest.json beside it; `-o` written whole, mode 0600,
 /// or not at all; an image not found refused before anything is written.
 #[test]
-fn save_writes_images_as_docker_save_does() {
+fn save_writes_images() {
     use std::os::unix::fs::PermissionsExt as _;
     if cannot_run_vms() {
         return;
@@ -7381,7 +7381,7 @@ fn save_writes_images_as_docker_save_does() {
 /// `<id>/layer.tar`; an image with no name by its ID; and a broken archive refused in Go's
 /// words.
 #[test]
-fn load_reads_archives_as_docker_load_does() {
+fn load_reads_archives() {
     use std::io::Write as _;
     if cannot_run_vms() {
         return;
@@ -7848,7 +7848,7 @@ fn a_push_ends_with_its_client_and_the_daemon() {
 /// (POSIX.1-2024, XCU 2.9.3.1), and an ignored SIGINT ends no client, as it ends no
 /// Docker CLI.
 #[test]
-fn a_run_interrupted_as_it_pulls_ends_as_docker_runs_do() {
+fn a_run_interrupted_as_it_pulls_ends_at_once() {
     use std::os::unix::process::CommandExt as _;
     use std::sync::atomic::Ordering;
     if cannot_run_vms() {
@@ -7988,7 +7988,7 @@ fn a_push_goes_with_its_clients_credentials() {
 }
 
 #[test]
-fn push_uploads_images_as_docker_push_does() {
+fn push_uploads_images() {
     if cannot_run_vms() {
         return;
     }
@@ -8132,7 +8132,7 @@ fn a_shared_directorys_files_stay_open_past_the_shares_descriptors() {
 /// mounts; anonymous volumes removed with `--rm` and `rm -v`, and kept by `rm`.
 #[cfg(unix)]
 #[test]
-fn run_mounts_binds_volumes_and_tmpfs_as_docker_run_does() {
+fn run_mounts_binds_volumes_and_tmpfs() {
     let Some((home, image)) = home("containers-volumes") else {
         return;
     };
@@ -8308,7 +8308,7 @@ fn run_mounts_binds_volumes_and_tmpfs_as_docker_run_does() {
 /// local volume with `o=bind` mounts its host directory; `system df` counts them.
 #[cfg(unix)]
 #[test]
-fn volume_commands_keep_volumes_as_docker_volume_does() {
+fn volume_commands_keep_volumes() {
     let Some((home, image)) = home("containers-volume-commands") else {
         return;
     };
@@ -8435,7 +8435,7 @@ fn volume_commands_keep_volumes_as_docker_volume_does() {
 /// what was stopped by hand.
 #[cfg(unix)]
 #[test]
-fn restart_policies_start_containers_again_as_dockerd_does() {
+fn restart_policies_start_microvms_again() {
     let Some((home, image)) = home("containers-restart") else {
         return;
     };
@@ -8527,7 +8527,7 @@ fn restart_policies_start_containers_again_as_dockerd_does() {
 /// workload's cgroup as it runs, and kept; dockerd's refusals; the restart policy.
 #[cfg(unix)]
 #[test]
-fn update_changes_limits_of_running_microvms_as_docker_update_does() {
+fn update_changes_limits_of_running_microvms() {
     let Some((home, image)) = home("containers-update") else {
         return;
     };
@@ -8639,7 +8639,7 @@ fn update_changes_limits_of_running_microvms_as_docker_update_does() {
 /// guest while it runs and as its last run left it after, and with its image's root.
 #[cfg(unix)]
 #[test]
-fn sizes_are_listed_as_docker_ps_and_inspect_list_them() {
+fn microvm_sizes_are_listed() {
     let Some((home, image)) = home("containers-sizes") else {
         return;
     };
@@ -8677,7 +8677,7 @@ fn sizes_are_listed_as_docker_ps_and_inspect_list_them() {
 /// and run; dockerd's refusals.
 #[cfg(unix)]
 #[test]
-fn import_makes_images_of_tarballs_as_docker_import_does() {
+fn import_makes_images_of_tarballs() {
     let Some((home, image)) = home("containers-import") else {
         return;
     };
@@ -8921,7 +8921,7 @@ fn inspecting_a_run_as_it_ends_never_deadlocks() {
 /// unmasked, and refusals in dockerd's words: of an option as the container is made, of
 /// a profile as it starts, the container kept, created, with State.Error.
 #[test]
-fn security_opt_confines_as_docker_does() {
+fn security_opt_confines_the_workload() {
     let Some((home, image)) = home("containers-security-opt") else {
         return;
     };
@@ -9067,7 +9067,7 @@ fn security_opt_confines_as_docker_does() {
 /// runtime's: open files 1048576, processes and locked memory unlimited), not the guest
 /// kernel's own init's; `--ulimit` sets its own over them, in an exec too.
 #[test]
-fn workloads_start_with_dockers_limits() {
+fn workloads_start_with_high_file_and_process_limits() {
     let Some((home, image)) = home("containers-limits") else {
         return;
     };
@@ -9103,7 +9103,7 @@ fn workloads_start_with_dockers_limits() {
 /// its limit, its processes, and its interfaces' and block devices' bytes, laid out as
 /// docker/cli lays them out, `--format` included; a stopped one's zeros under `-a`.
 #[test]
-fn stats_read_the_guest_as_docker_reads_a_container() {
+fn stats_read_each_microvms_guest() {
     let Some((home, image)) = home("containers-stats-guest") else {
         return;
     };
@@ -9164,7 +9164,7 @@ fn stats_read_the_guest_as_docker_reads_a_container() {
 /// takes the VM's devices, as Docker's takes its host's; every refusal is Docker's (probed
 /// on Docker Engine 29.3.1); `a` rules allow what they say.
 #[test]
-fn devices_are_given_and_confined_as_dockers_are() {
+fn devices_are_given_and_confined() {
     let Some((home, image)) = home("containers-devices") else {
         return;
     };
@@ -9327,7 +9327,7 @@ fn devices_are_given_and_confined_as_dockers_are() {
 /// setIo) and the kernel keeps them: a read of the image's disk held to its rate; every
 /// refusal Docker's (probed on Docker Engine 29.3.1), and inspect's lists.
 #[test]
-fn block_io_limits_hold_as_dockers_do() {
+fn block_io_limits_hold() {
     let Some((home, image)) = home("containers-block-io") else {
         return;
     };
@@ -9457,7 +9457,7 @@ fn block_io_limits_hold_as_dockers_do() {
 /// refuses it. Its stdin's end leaves a detached container's open and its output still
 /// coming, where Docker's attach ends with its stdin and loses what follows.
 #[test]
-fn attach_joins_a_running_container_as_docker_attach_does() {
+fn attach_joins_a_running_microvm() {
     use std::io::Write as _;
     let Some((home, image)) = home("containers-attach") else {
         return;
@@ -9803,7 +9803,7 @@ fn microvms_on_a_network_reach_one_another_by_name() {
 /// and inspect are refused in Docker's words; its history is read as Docker's history reads
 /// its own part of it (each answer measured from Docker 29.3.1, its name ours).
 #[test]
-fn configs_are_read_as_docker_reads_them() {
+fn image_configs_run_key_by_key() {
     if cannot_run_vms() {
         return;
     }
@@ -10003,7 +10003,7 @@ fn a_runs_directories_keep_their_numbers() {
 /// has fails the start, not the making; a hook, which runs on a container's host, is
 /// refused.
 #[test]
-fn cdi_devices_are_injected_as_dockers_are() {
+fn cdi_devices_are_given_to_microvms() {
     let Some((home, image)) = home("containers-cdi") else {
         return;
     };
@@ -10379,4 +10379,202 @@ fn a_runs_memory_grows_as_its_workload_needs_it() {
         .map(|e| e.file_name())
         .collect();
     assert_eq!(templates.len(), 3, "{templates:?}");
+}
+
+/// A run's CPUs, real-time time, isolation and runtime as its microVM has them (D155):
+/// real-time scheduling for a workload let have it (`--cap-add sys_nice`), within the
+/// guest's real-time budget, which `--cpu-rt-period` and `--cpu-rt-runtime` set, the run's
+/// alone in its microVM; `--cpu-count` its vCPUs; `--cpu-percent` the share of the host's
+/// CPU time its workload may use, on vCPUs enough for it; isolation by its microVM,
+/// `default` or `hyperv`, never a kernel shared; its runtime the microVM, by runc's names
+/// or Kata's. Its annotations kept, shown and matched; each refusal in shards' words.
+#[test]
+fn a_microvm_takes_its_cpus_real_time_isolation_and_annotations() {
+    let Some((home, image)) = home("containers-microvm-cpus") else {
+        return;
+    };
+    let shards = |args: &[&str]| shards_in(&home, args);
+    let host = std::thread::available_parallelism().unwrap().get();
+    // Real-time scheduling: root's with CAP_SYS_NICE, and the image's user's within its
+    // RLIMIT_RTPRIO; root's without the capability, and the user's without the limit,
+    // refused (EPERM), as the kernel decides it (kernel/sched/syscalls.c).
+    for (options, said) in [
+        (&["--user", "root", "--cap-add", "sys_nice"][..], "fifo: ok\n"),
+        (&["--ulimit", "rtprio=1"], "fifo: ok\n"),
+        (&["--user", "root"], "fifo: errno 1\n"),
+        (&[], "fifo: errno 1\n"),
+    ] {
+        let mut flags = vec!["--rm"];
+        flags.extend(options);
+        let fifo = run_in(&home, &image, &flags, &["fifo"]);
+        assert_eq!(
+            (fifo.status, fifo.stdout.as_str()),
+            (Some(0), said),
+            "{options:?}: {fifo}"
+        );
+    }
+    let budget = run_in(
+        &home,
+        &image,
+        &["--rm", "--cpu-rt-period", "100000", "--cpu-rt-runtime", "50000"],
+        &[
+            "slurp",
+            "/proc/sys/kernel/sched_rt_period_us",
+            "/proc/sys/kernel/sched_rt_runtime_us",
+        ],
+    );
+    assert_eq!(
+        budget.stdout,
+        "slurp /proc/sys/kernel/sched_rt_period_us: 100000\nslurp /proc/sys/kernel/sched_rt_runtime_us: 50000\n",
+        "{budget}"
+    );
+    // A runtime alone, past the guest kernel's own period: refused as the run starts.
+    let past = run_in(
+        &home,
+        &image,
+        &["--rm", "--cpu-rt-runtime", "2000000"],
+        &["exit", "0"],
+    );
+    assert_ne!(past.status, Some(0), "{past}");
+    assert!(
+        past.stderr
+            .contains("--cpu-rt-runtime 2000000 is more than this guest's real-time period, 1000000 microseconds: give --cpu-rt-period too"),
+        "{past}"
+    );
+    if host >= 2 {
+        let two = run_in(
+            &home,
+            &image,
+            &["--rm", "--cpu-count", "2"],
+            &["slurp", "/sys/devices/system/cpu/online"],
+        );
+        assert_eq!(two.stdout, "slurp /sys/devices/system/cpu/online: 0-1\n", "{two}");
+    }
+    let half = run_in(
+        &home,
+        &image,
+        &["--rm", "--cpu-percent", "50"],
+        &[
+            "slurp",
+            "/sys/fs/cgroup/cpu.max",
+            "/sys/devices/system/cpu/online",
+        ],
+    );
+    let vcpus = (host * 50).div_ceil(100);
+    let online = if vcpus == 1 {
+        "0".to_string()
+    } else {
+        format!("0-{}", vcpus - 1)
+    };
+    assert_eq!(
+        half.stdout,
+        format!(
+            "slurp /sys/fs/cgroup/cpu.max: {} 100000\nslurp /sys/devices/system/cpu/online: {online}\n",
+            50 * host * 1000
+        ),
+        "{half}"
+    );
+    for (flag, value) in [
+        ("--isolation", "hyperv"),
+        ("--isolation", "DEFAULT"),
+        ("--runtime", "runc"),
+        ("--runtime", "io.containerd.runc.v2"),
+        ("--runtime", "kata"),
+        ("--runtime", "io.containerd.kata.v2"),
+    ] {
+        let ran = run_in(&home, &image, &["--rm", flag, value], &["exit", "0"]);
+        assert_eq!(ran.status, Some(0), "{flag} {value}: {ran}");
+    }
+    let made = shards(&[
+        "create",
+        "--pull",
+        "never",
+        "--name",
+        "annotated",
+        "--annotation",
+        "a=1",
+        "--annotation",
+        "b",
+        "--annotation",
+        "a=2",
+        "--isolation",
+        "hyperv",
+        "--cpu-count",
+        "1",
+        "--cpu-rt-period",
+        "100000",
+        "--cpu-rt-runtime",
+        "50000",
+        &image,
+    ]);
+    assert_eq!(made.status, Some(0), "{made}");
+    let shown = shards(&[
+        "inspect",
+        "-f",
+        "{{json .HostConfig.Annotations}} {{.HostConfig.Isolation}} {{.HostConfig.Runtime}} {{.HostConfig.CpuCount}} {{.HostConfig.CpuRealtimePeriod}} {{.HostConfig.CpuRealtimeRuntime}}",
+        "annotated",
+    ]);
+    assert_eq!(
+        shown.stdout, "{\"a\":\"2\",\"b\":\"\"} hyperv shards 1 100000 50000\n",
+        "{shown}"
+    );
+    for (filter, listed) in [
+        ("annotation=a=2", "annotated\n"),
+        ("annotation=b", "annotated\n"),
+        ("annotation=a=1", ""),
+        ("annotation=c", ""),
+    ] {
+        let ps = shards(&["ps", "-a", "--filter", filter, "--format", "{{.Names}}"]);
+        assert_eq!(
+            (ps.status, ps.stdout.as_str()),
+            (Some(0), listed),
+            "{filter}: {ps}"
+        );
+    }
+    let past_host = (host + 1).to_string();
+    let refusals: Vec<(Vec<&str>, String)> = vec![
+        (
+            vec!["--isolation", "process"],
+            "--isolation process: every run is isolated in a microVM of its own, which shares no kernel with its host or another run: its isolation is default, or hyperv, a VM's".into(),
+        ),
+        (
+            vec!["--runtime", "nope"],
+            "--runtime nope: every run is a microVM of its own, whose runtime is shards (asked for by runc's or Kata's names too)".into(),
+        ),
+        (
+            vec!["--cpu-count", &past_host],
+            format!("--cpu-count {past_host}: a microVM has from 1 vCPU to as many as its host has CPUs, {host}"),
+        ),
+        (
+            vec!["--cpu-percent", "101"],
+            "--cpu-percent 101: a share of the host's CPU time is from 1 to 100 percent".into(),
+        ),
+        (
+            vec!["--cpu-percent", "50", "--cpus", "1"],
+            "--cpu-percent and --cpus each cap the microVM's CPU time: give one".into(),
+        ),
+        (
+            vec!["--cpu-rt-period", "100000", "--cpu-rt-runtime", "150000"],
+            "--cpu-rt-runtime 150000 is more than its period, --cpu-rt-period 100000".into(),
+        ),
+        (
+            vec!["--annotation", "=x"],
+            "--annotation =x: an annotation needs a key".into(),
+        ),
+    ];
+    for (flags, said) in refusals {
+        let mut args = vec!["create", "--pull", "never"];
+        args.extend(&flags);
+        args.push(&image);
+        let refused = shards(&args);
+        let want = format!("Error response from daemon: {said}\n");
+        assert_eq!(
+            (refused.status, refused.stderr.as_str()),
+            (Some(1), want.as_str()),
+            "{flags:?}: {refused}"
+        );
+    }
+    // Nothing is left of the refused.
+    let listed = shards(&["ps", "-a", "--format", "{{.Names}}"]);
+    assert_eq!(listed.stdout, "annotated\n", "{listed}");
 }

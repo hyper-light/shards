@@ -28,7 +28,7 @@ fn json_of(p: &Platform) -> Value {
 }
 
 #[test]
-fn platforms_match_and_order_as_containerd_s() {
+fn platforms_match_and_order() {
     let file: Value = serde_json::from_str(include_str!("../testdata/platforms.json")).unwrap();
     let goos = match file["goos"].as_str().unwrap() {
         "darwin" => "darwin",

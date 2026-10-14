@@ -605,8 +605,9 @@ impl Builder {
             // where memory online as movable alone could leave the kernel short with
             // memory free (Documentation/admin-guide/mm/memory-hotplug.rst, "ZONE_MOVABLE
             // Sizing Considerations").
+            // Real-time scheduling for a step that asks for it, as for a run (D155).
             format!(
-                "console=ttyS0 earlycon panic=-1 shards_build=1 memhp_default_state=online_kernel {}",
+                "console=ttyS0 earlycon panic=-1 shards_build=1 memhp_default_state=online_kernel rt_group_sched=0 {}",
                 bridge.cmdline()
             )
             .into(),

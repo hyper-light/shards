@@ -455,7 +455,7 @@ pub(super) mod tests {
 
     /// The real chain: the blobs BuildKit sends, its provenance only when asked for.
     #[test]
-    fn the_real_chain_is_read_as_buildkit_reads_it() {
+    fn a_real_attestation_chain_is_read() {
         let ac = chain_from(&hub(), &index(), &arm64(), &slsa1()).unwrap().unwrap();
         assert_eq!(ac.root, INDEX);
         assert_eq!(ac.attestation_manifest, ATTESTATION);

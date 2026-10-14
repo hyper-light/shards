@@ -636,6 +636,9 @@ fn sort_setup(entries: &[Vec<u8>], into: &mut Inherited) -> Result<Vec<Vec<u8>>,
             let kv = String::from_utf8_lossy(kv);
             let (k, v) = kv.split_once('=').unwrap_or((&kv, ""));
             crate::setup::write_sysctl(k, v).map_err(setup_failed)?;
+        } else if let Some(rt) = entry.strip_prefix(b"rt=") {
+            // The guest's real-time budget, the run's (D155).
+            crate::setup::real_time(rt).map_err(setup_failed)?;
         } else if let Some(caps) = entry.strip_prefix(b"caps=") {
             into.caps = std::str::from_utf8(caps).ok().and_then(|c| c.parse().ok());
         } else if let Some(group) = entry.strip_prefix(b"group=") {

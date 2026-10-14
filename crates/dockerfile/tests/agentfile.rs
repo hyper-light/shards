@@ -217,7 +217,7 @@ fn harnesses_are_attached_to_agents_by_name() {
 }
 
 #[test]
-fn expose_takes_a_direction_and_networks_and_stays_dockers_without_them() {
+fn expose_takes_a_direction_and_networks_and_stays_plain_without_them() {
     assert_eq!(
         one("EXPOSE 3000 3001/udp AS ingress FOR front back"),
         Directive::Expose(Exposure {

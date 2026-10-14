@@ -3219,7 +3219,7 @@ revision before comparing a changed API/implementation.
   run's end hold the loop, behind which every other run's messages wait, and what does
   keeping the end in memory change, the removal set aside by the completer?
 - **Method.** First a probe (not kept) of the loop under
-  `published_ports_reach_the_guest_as_dockerd_publishes_them`, four at once, three
+  `published_ports_reach_the_guest`, four at once, three
   rounds, at 65e940a's code: each run's end, its wait for the record, and the rename,
   2026-10-03, load average 6 to 7 from other work. Then 65e940a against the change
   (c2f9b6a, at c104b6f), each built with a probe (not kept) timing each batch of a run's
@@ -4023,7 +4023,7 @@ revision before comparing a changed API/implementation.
   `resources::memory_mib` takes the overhead of the next measured size up, which bounds
   it where it does not decrease (it never did here), and past 16 GiB adds the 8 to 16 GiB
   slope, 25.4 KiB a MiB, rounded up to 26. The table is this kernel's on arm64; x86_64 uses
-  it until measured on x86_64, and `run_limits_resources_as_docker_run_does` holds, on
+  it until measured on x86_64, and `run_limits_a_microvms_resources` holds, on
   each CI architecture, that a workload limited to L has L available.
 
 ### M118. What a local Docker engine does with an upload cut off part way
@@ -5943,7 +5943,7 @@ revision before comparing a changed API/implementation.
 
 - **Question.** `-m`'s table (`resources::overhead_kib`) says what the guest keeps at each
   VM size, so that the VM holds the limit. CI's x86_64 jobs failed
-  `run_limits_resources_as_docker_run_does` at 700m (220 KiB short) and 2500m (1,856 KiB
+  `run_limits_a_microvms_resources` at 700m (220 KiB short) and 2500m (1,856 KiB
   short): the table, M155's, came from one runner's boot of each size.
 - **Method.** `docs/research/measurements/guest-memory/measure-run.py` by its workflow
   (`guest-memory.yml`): each size's template booted B times (the daemon stopped and the
@@ -5972,7 +5972,7 @@ revision before comparing a changed API/implementation.
     table, MemAvailable's, counted as kept.
 - **Consequence.** What the guest keeps is the VM's KiB less MemAvailable and the listed
   pages; the table is each size's most over every boot measured, the measured midpoints
-  among its sizes; `run_limits_resources_as_docker_run_does` counts the listed pages as
+  among its sizes; `run_limits_a_microvms_resources` counts the listed pages as
   the kernel's allocator does. From 8 GiB, x86_64 keeps M123's cold boots' values, which
   leave those pages out and so keep more.
 
@@ -7430,7 +7430,7 @@ revision before comparing a changed API/implementation.
   run's init does (`defaults::limits`), and every step inherits them; `--ulimit` sets its
   own over them. D133 no longer sizes processes by the builder's memory: they are Docker's,
   unlimited. Pending signals stay the kernel's, by the builder's memory, as Docker's are by
-  its host's. `run_steps_start_with_dockers_limits` holds a step to them.
+  its host's. `run_steps_start_with_high_file_and_process_limits` holds a step to them.
 
 ### M212. A network process's connections to its host, on Windows (D142)
 

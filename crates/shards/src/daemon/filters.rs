@@ -138,7 +138,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn filters_match_as_dockerds_do() {
+    fn filters_match() {
         let f = Filters::from_flags(&["type=container".into(), "container=we".into(), String::new()]);
         assert!(f.exact("type", "container") && !f.exact("type", "image"));
         assert!(f.exact("event", "anything"), "a name not filtered on");
@@ -153,7 +153,7 @@ mod tests {
 
     /// moby's parse_test.go cases for Match, GetBoolOrDefault and Validate.
     #[test]
-    fn match_bools_and_validation_are_dockerds() {
+    fn filters_match_bools_and_validate() {
         let f =
             |given: &[&str]| Filters::from_flags(&given.iter().map(|s| s.to_string()).collect::<Vec<_>>());
         let names = f(&["name=^ab", "name=x.z", "name=[bad"]);

@@ -86,7 +86,7 @@ mod tests {
     /// Requests read as the CLI reads them: a count alone, `all`, keys, defaults (one GPU,
     /// `gpu` capability), and its refusals in its words.
     #[test]
-    fn requests_read_as_the_cli_reads_them() {
+    fn gpu_requests_are_read() {
         let all = gpu_request("all").unwrap();
         assert_eq!(
             (all.count, all.capabilities.clone()),

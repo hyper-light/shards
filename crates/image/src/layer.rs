@@ -785,7 +785,7 @@ mod tests {
     }
 
     #[test]
-    fn parents_are_made_as_containerd_makes_them() {
+    fn layer_parents_are_chained() {
         let (tree, mut archives) = flatten(&[
             vec![
                 dir(b"kept/", 0o700),

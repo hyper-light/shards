@@ -214,7 +214,7 @@ fn cases() -> Vec<serde_json::Value> {
 
 /// Docker mode decides as runc's program does, and refuses as runc and dockerd do.
 #[test]
-fn docker_mode_decides_as_runcs_program() {
+fn profile_mode_decides_each_syscall() {
     for (key, arch) in [("amd64", Arch::Amd64), ("arm64", Arch::Arm64)] {
         let oracle = json(&format!("oracle-{key}.json"));
         for (case, want) in cases().iter().zip(oracle["cases"].as_array().unwrap()) {
@@ -285,7 +285,7 @@ const ENOSYS: u32 = 0x0005_0026;
 /// line is drawn by Docker's tables, shards' by the kernel's, and shards' answers too for
 /// numbers that are no syscall), and x86's multiplexers.
 #[test]
-fn shards_differs_from_docker_only_where_it_does_better() {
+fn shards_differs_only_where_it_does_better() {
     for (key, arch) in [("amd64", Arch::Amd64), ("arm64", Arch::Arm64)] {
         let oracle = json(&format!("oracle-{key}.json"));
         for (case, want) in cases().iter().zip(oracle["cases"].as_array().unwrap()) {
@@ -348,7 +348,7 @@ fn shards_differs_from_docker_only_where_it_does_better() {
 
 /// What shards does better, case by case.
 #[test]
-fn shards_allows_what_dockers_default_profile_allows() {
+fn shards_allows_what_the_default_profile_allows() {
     let none: Vec<String> = Vec::new();
     let default_caps: Vec<String> = cases()[0]["caps"]
         .as_array()

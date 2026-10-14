@@ -933,7 +933,7 @@ mod tests {
     /// Every tree of scripts/policy/tester_oracle_test.go, run as buildx v0.37.1 runs it:
     /// what it prints, the error it ends with, and its status.
     #[test]
-    fn policy_tests_run_as_buildx_runs_them() {
+    fn policy_tests_run() {
         let cases: serde_json::Value =
             serde_json::from_str(include_str!("../../../testdata/policy/tester.json")).unwrap();
         let base_dir = shards_testdir::TempDir::new("policy-tester").unwrap();

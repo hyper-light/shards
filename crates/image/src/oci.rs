@@ -451,7 +451,7 @@ mod tests {
     /// Go takes them, its ports as a container keeps them, its time as Docker writes it;
     /// one only running fails on stored, with what running it says.
     #[test]
-    fn configs_are_read_as_docker_reads_them() {
+    fn image_configs_are_read_key_by_key() {
         let json = r#"{"architecture":"arm64","os":"linux","variant":"","created":"2024-01-02T03:04:05.100000000+24:00",
             "config":{"User":"root","user":"nobody","Env":["A","B"],"Env":[null],"ExposedPorts":{"80/TCP":{},"x":{},"53/udp":{},"80":{}}},
             "rootfs":{"type":"layers","diff_ids":[]}}"#;
@@ -716,7 +716,7 @@ mod tests {
     }
 
     #[test]
-    fn layers_are_read_as_containerd_reads_their_media_types() {
+    fn layers_are_read_by_media_type() {
         use LayerCompression::{None as Raw, Sniffed};
         for (media_type, want) in [
             ("application/vnd.oci.image.layer.v1.tar", Some(Raw)),

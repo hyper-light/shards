@@ -150,7 +150,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn commit_names_are_told_from_refs_as_buildkit_tells_them() {
+    fn commit_names_are_told_from_refs() {
         assert!(is_commit_name(&"a".repeat(40)));
         assert!(is_commit_name(&"0".repeat(64)));
         assert!(!is_commit_name(&"A".repeat(40)));

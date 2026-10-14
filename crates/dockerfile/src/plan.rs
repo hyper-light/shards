@@ -6662,7 +6662,7 @@ mod tests {
     /// check; BUILDKIT_SANDBOX_HOSTNAME names RUN's host; BUILDKIT_CACHE_MOUNT_NS is what
     /// cache mounts' IDs are under.
     #[test]
-    fn buildkits_build_arg_options_are_read_as_dockerui_reads_them() {
+    fn build_arg_options_are_read() {
         let message = |text: &str, args: &[(&str, &str)]| {
             planned(text, args, Ok(None))
                 .0
@@ -6800,7 +6800,7 @@ mod tests {
     /// files take the commit's time where SOURCE_DATE_EPOCH is a build arg, the URL's
     /// `mtime=` over it; a named context only the URL's; Git's advice where asked.
     #[test]
-    fn git_contexts_take_their_times_and_advice_as_dockerui_gives_them() {
+    fn git_contexts_take_their_times_and_advice() {
         let git_attrs = |opts: &Options| -> BTreeMap<Vec<u8>, Vec<u8>> {
             let def = context_definition(opts).unwrap();
             def.ops

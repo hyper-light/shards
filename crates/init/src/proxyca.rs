@@ -348,7 +348,7 @@ mod tests {
     }
 
     #[test]
-    fn the_ca_goes_in_and_comes_out_as_buildkit_puts_it() {
+    fn the_proxy_ca_goes_in_and_comes_out() {
         let der = first_certificate(CERT).unwrap();
         let bundle = b"-----BEGIN CERTIFICATE-----\nAAAA\n-----END CERTIFICATE-----";
         let with = appended(bundle, CERT);
@@ -377,7 +377,7 @@ mod tests {
     /// v0.33.0's InjectProxyCA and its cleanup made them (scripts/proxy/generate): the CA
     /// refused, held already, or appended, then taken out.
     #[test]
-    fn bundles_are_what_buildkits_inject_proxy_ca_makes_them() {
+    fn proxy_ca_bundles_are_injected() {
         let oracle = crate::json::parse(include_bytes!("../testdata/proxyca.json")).unwrap();
         let bytes = |v: Option<&crate::json::Value>| -> Vec<u8> {
             let v = v.unwrap();

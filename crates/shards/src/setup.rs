@@ -436,6 +436,14 @@ pub fn verify(run: &Run) -> Result<(), String> {
     if run.shm_size < 0 {
         return Err("SHM size can not be less than 0".into());
     }
+    // Its runtime (D155): its microVM, which `inspect` names `shards`, asked for by that
+    // name, by runc's, the default runtime's, or by Kata's, whose runs are VMs too.
+    if !runtime_is_the_microvm(&run.runtime) {
+        return Err(format!(
+            "--runtime {}: every run is a microVM of its own, whose runtime is shards (asked for by runc's or Kata's names too)",
+            run.runtime
+        ));
+    }
     for dest in tmpfs_map(run).keys() {
         let dest = dest.replace('\\', "/");
         if clean(&dest) == "/" {
@@ -448,6 +456,16 @@ pub fn verify(run: &Run) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+/// Whether `--runtime` `name` asks for what a run is, its microVM (D155): shards, runc by
+/// either of its names (the default runtime), or Kata Containers', whose runs are VMs.
+fn runtime_is_the_microvm(name: &str) -> bool {
+    matches!(
+        name,
+        "" | "shards" | "runc" | "io.containerd.runc.v2" | "kata" | "kata-runtime"
+    ) || name.starts_with("kata-")
+        || (name.starts_with("io.containerd.kata") && name.ends_with(".v2"))
 }
 
 /// moby/sys/mount's flags table: each option that names a flag, and the flag it names,
@@ -574,6 +592,12 @@ pub fn setup(
     // dockerd's init only in a namespace of the container's own (moby daemon/oci_linux.go).
     if run.docker_init == Some(true) && run.pid.is_empty() {
         out.push(b"init".to_vec());
+    }
+    // Its guest's real-time budget (D155), the run's alone in its microVM: each 0 to keep
+    // the guest kernel's own.
+    let r = &run.resources;
+    if r.cpu_realtime_period > 0 || r.cpu_realtime_runtime > 0 {
+        out.push(format!("rt={},{}", r.cpu_realtime_period, r.cpu_realtime_runtime).into_bytes());
     }
     if run.pid == "host" {
         out.push(b"pid=host".to_vec());
@@ -758,7 +782,7 @@ mod tests {
 
     /// moby's TweakCapabilities, and dockerd's refusals.
     #[test]
-    fn capabilities_are_tweaked_as_dockerd_tweaks_them() {
+    fn capabilities_are_added_and_dropped() {
         let caps = |add: &[&str], drop: &[&str], privileged: bool| {
             capabilities(&Run {
                 cap_add: add.iter().map(|s| (*s).to_string()).collect(),
@@ -795,7 +819,7 @@ mod tests {
 
     /// dockerd 29.3.1's refusals, and moby's merged options.
     #[test]
-    fn namespaces_are_set_up_as_dockerd_sets_them() {
+    fn namespaces_are_set_up() {
         assert_eq!(
             verify(&run(&["/"])),
             Err("invalid specification: destination can't be '/'".into())

@@ -62,6 +62,10 @@ pub struct Container {
     /// record from before shards kept them.
     #[serde(default)]
     pub labels: std::collections::BTreeMap<String, String>,
+    /// Its annotations (HostConfig.Annotations), which `ps --filter annotation` matches;
+    /// none in a record from before shards kept them.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub annotations: std::collections::BTreeMap<String, String>,
     /// The kernel killed a process of its last run for want of memory (State.OOMKilled),
     /// until it runs again.
     #[serde(default)]
@@ -706,6 +710,7 @@ mod tests {
             ports: Vec::new(),
             image_id: None,
             labels: Default::default(),
+            annotations: Default::default(),
             oom_killed: false,
             mounts: Vec::new(),
             restart: Default::default(),
@@ -836,7 +841,7 @@ mod tests {
     }
 
     #[test]
-    fn names_are_what_dockerd_accepts() {
+    fn microvm_names_are_checked() {
         for ok in ["ab", "a1", "web.1", "a_b-c", "/web", "X9"] {
             assert!(valid_name(ok), "{ok}");
         }

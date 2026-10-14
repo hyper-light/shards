@@ -547,7 +547,7 @@ mod tests {
 
     /// handleProbeResult's rules, case by case.
     #[test]
-    fn results_move_the_status_as_dockerd_moves_it() {
+    fn probe_results_move_the_health_status() {
         let cfg = Config {
             retries: 2,
             ..Config::default()
@@ -600,7 +600,7 @@ mod tests {
 
     /// getInterval and the defaults of timeoutWithDefault.
     #[test]
-    fn probes_come_as_often_as_dockerd_sends_them() {
+    fn probes_come_at_their_intervals() {
         let cfg = Config {
             interval: 2 * SECOND,
             start_period: 10 * SECOND,

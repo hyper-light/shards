@@ -57,7 +57,7 @@ fn bound<'a>(names: impl Iterator<Item = &'a str>, owner: impl Fn(&'a str) -> &'
 }
 
 #[test]
-fn shards_takes_every_flag_the_docker_cli_takes() {
+fn shards_takes_every_flag_of_its_commands() {
     let golden: serde_json::Value = serde_json::from_str(include_str!("docker-flags.json")).unwrap();
     let mut wrong = Vec::new();
     for (path, flags) in golden.as_object().unwrap() {

@@ -487,7 +487,7 @@ mod tests {
     /// read; a last op that reads nothing. And, as it is read, what BuildKit's marshal of
     /// it refuses: an op of no metadata.
     #[test]
-    fn a_definition_given_is_refused_as_buildkit_refuses_it() {
+    fn a_definition_given_is_refused() {
         let platform = Platform::new("linux", "arm64");
         let src = pb::op(
             &shards_dockerfile::llb::Op {

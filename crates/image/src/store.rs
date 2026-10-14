@@ -3365,7 +3365,7 @@ mod tests {
     }
 
     #[test]
-    fn compression_is_detected_as_containerd_detects_it() {
+    fn compression_is_detected() {
         let skippable = [0x5f, 0x2a, 0x4d, 0x18, 0, 0, 0, 0];
         for (head, gzip, zstd) in [
             (&[0x1f, 0x8b, 0x08][..], true, false),

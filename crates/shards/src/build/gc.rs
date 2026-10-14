@@ -381,7 +381,7 @@ mod tests {
     }
 
     #[test]
-    fn records_match_filters_by_buildkits_fields() {
+    fn cache_records_match_filters() {
         let all = |given: &[&str], r: &Record| {
             given
                 .iter()
@@ -411,7 +411,7 @@ mod tests {
 
     /// calculateKeepBytes, case by case.
     #[test]
-    fn what_stays_is_buildkits_keep() {
+    fn what_the_collector_keeps() {
         assert_eq!(keep_bytes(100, 0, 0, 0, 0), 0);
         assert_eq!(keep_bytes(100, 0, 40, 0, 0), 40);
         assert_eq!(keep_bytes(100, 0, 40, 60, 0), 60);
@@ -515,7 +515,7 @@ mod tests {
     /// a disk of 2,014 GiB, `docker buildx inspect` in shards-dind (Docker 29.3.1, M141)
     /// shows these rules, 25.99GiB, 188.1GiB, 1.466TiB and 375.3GiB as go-units says them.
     #[test]
-    fn the_default_policy_is_dockerds_for_the_disk() {
+    fn the_default_policy_is_derived_from_the_disk() {
         let rules = default_policy(Some(2014 * (1 << 30) + 1));
         let shown: Vec<(usize, bool, Option<u64>, i64, i64, i64)> = rules
             .iter()

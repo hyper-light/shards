@@ -206,7 +206,7 @@ mod tests {
     const DIGEST: &str = "sha256:4bcff63911fcb4448bd4fdacec207030997caf25e9bea4045fa6c8c44de311d1";
 
     #[test]
-    fn references_parse_as_distribution_parses_them() {
+    fn references_parse() {
         let r = parse_normalized_named("nginx:alpine").unwrap();
         assert_eq!((r.familiar_name(), r.tag.as_str()), ("nginx".into(), "alpine"));
         let r = parse_normalized_named(&format!("localhost:5000/team/app:v1@{DIGEST}")).unwrap();

@@ -41,6 +41,20 @@ const VFIO_DEVICE_SET_IRQS: u64 = vfio_io(10);
 const VFIO_DEVICE_RESET: u64 = vfio_io(11);
 const VFIO_IOMMU_MAP_DMA: u64 = vfio_io(13);
 const VFIO_IOMMU_UNMAP_DMA: u64 = vfio_io(14);
+const VFIO_DEVICE_BIND_IOMMUFD: u64 = vfio_io(18);
+const VFIO_DEVICE_ATTACH_IOMMUFD_PT: u64 = vfio_io(19);
+
+/// `_IO(';', n)`: iommufd's ioctls, which carry the size of their own (iommufd.h).
+const fn iommufd_io(n: u64) -> u64 {
+    ((b';' as u64) << 8) | n
+}
+
+const IOMMU_IOAS_ALLOC: u64 = iommufd_io(0x81);
+const IOMMU_IOAS_MAP: u64 = iommufd_io(0x85);
+const IOMMU_IOAS_UNMAP: u64 = iommufd_io(0x86);
+const IOMMU_IOAS_MAP_FIXED_IOVA: u32 = 1 << 0;
+const IOMMU_IOAS_MAP_WRITEABLE: u32 = 1 << 1;
+const IOMMU_IOAS_MAP_READABLE: u32 = 1 << 2;
 
 /// Every VFIO ioctl request shards makes: what its seccomp filter allows.
 pub const IOCTLS: &[u64] = &[
@@ -57,6 +71,11 @@ pub const IOCTLS: &[u64] = &[
     VFIO_DEVICE_RESET,
     VFIO_IOMMU_MAP_DMA,
     VFIO_IOMMU_UNMAP_DMA,
+    VFIO_DEVICE_BIND_IOMMUFD,
+    VFIO_DEVICE_ATTACH_IOMMUFD_PT,
+    IOMMU_IOAS_ALLOC,
+    IOMMU_IOAS_MAP,
+    IOMMU_IOAS_UNMAP,
 ];
 
 const VFIO_API_VERSION: libc::c_int = 0;
@@ -141,6 +160,63 @@ struct DmaUnmap {
     size: u64,
 }
 
+/// struct vfio_device_bind_iommufd as its first kernel had it (Linux 6.6): what every host
+/// since takes, its `argsz` saying so.
+#[repr(C)]
+#[derive(Default)]
+struct BindIommufd {
+    argsz: u32,
+    flags: u32,
+    iommufd: i32,
+    out_devid: u32,
+}
+
+/// struct vfio_device_attach_iommufd_pt as its first kernel had it (Linux 6.6).
+#[repr(C)]
+#[derive(Default)]
+struct AttachPt {
+    argsz: u32,
+    flags: u32,
+    pt_id: u32,
+}
+
+#[repr(C)]
+#[derive(Default)]
+struct IoasAlloc {
+    size: u32,
+    flags: u32,
+    out_ioas_id: u32,
+}
+
+#[repr(C)]
+#[derive(Default)]
+struct IoasMap {
+    size: u32,
+    flags: u32,
+    ioas_id: u32,
+    reserved: u32,
+    user_va: u64,
+    length: u64,
+    iova: u64,
+}
+
+#[repr(C)]
+#[derive(Default)]
+struct IoasUnmap {
+    size: u32,
+    ioas_id: u32,
+    iova: u64,
+    length: u64,
+}
+
+const _: () = {
+    assert!(size_of::<BindIommufd>() == 16);
+    assert!(size_of::<AttachPt>() == 12);
+    assert!(size_of::<IoasAlloc>() == 12);
+    assert!(size_of::<IoasMap>() == 40);
+    assert!(size_of::<IoasUnmap>() == 24);
+};
+
 /// ioctl(2) of `request` with `arg`, its result where it did not fail.
 ///
 /// # Safety
@@ -162,9 +238,9 @@ pub struct Device {
     /// Its descriptor, whose regions are reached at their offsets.
     file: File,
     regions: Vec<RegionInfo>,
-    /// Its group and their container, held open as long as it is (vfio.rst).
-    _group: Arc<OwnedFd>,
-    _container: Arc<OwnedFd>,
+    /// What it is had through, held open as long as it is (vfio.rst): its group and their
+    /// container, or iommufd.
+    _holds: Vec<Arc<OwnedFd>>,
 }
 
 /// VFIO's container of a VM's passed-through functions (vfio.rst, "VFIO Usage
@@ -226,7 +302,7 @@ impl Container {
     /// RAM `memory`.
     pub fn follower(&self, memory: Arc<GuestMemory>) -> Followed {
         Followed {
-            fd: self.fd.clone(),
+            mapper: Mapper::Type1(self.fd.clone()),
             memory,
             mapped: Mutex::new(std::collections::BTreeMap::new()),
         }
@@ -258,7 +334,7 @@ impl Container {
             };
             format!("{}: opening it: {e}{hint}", path.display())
         })?;
-        host.add_group(group.as_raw_fd())
+        host.add_file(group.as_raw_fd())
             .map_err(|e| format!("{}: {e}", path.display()))?;
         let mut status = GroupStatus {
             argsz: size_of::<GroupStatus>() as u32,
@@ -333,7 +409,7 @@ impl Container {
 /// from being given back under the device ([`GuestMemory::pin`]).
 #[derive(Debug)]
 pub struct Followed {
-    fd: Arc<OwnedFd>,
+    mapper: Mapper,
     memory: Arc<GuestMemory>,
     /// What it maps now: each mapping by its I/O address, its guest-physical address and
     /// length.
@@ -346,27 +422,164 @@ impl Followed {
     }
 
     fn dma_map(&self, iova: u64, host: u64, len: u64, flags: u32) -> io::Result<()> {
-        let map = DmaMap {
-            argsz: size_of::<DmaMap>() as u32,
-            flags,
-            vaddr: host,
+        self.mapper.map(
             iova,
-            size: len,
-        };
-        // SAFETY: VFIO_IOMMU_MAP_DMA reads a `vfio_iommu_type1_dma_map`; what it maps is
-        // guest RAM, this process's as long as the machine is.
-        unsafe { ioctl(&*self.fd, VFIO_IOMMU_MAP_DMA, (&raw const map) as usize) }.map(drop)
+            host,
+            len,
+            flags & VFIO_DMA_MAP_FLAG_READ != 0,
+            flags & VFIO_DMA_MAP_FLAG_WRITE != 0,
+        )
     }
 
     fn dma_unmap(&self, iova: u64, len: u64) -> io::Result<()> {
-        let mut unmap = DmaUnmap {
-            argsz: size_of::<DmaUnmap>() as u32,
-            flags: 0,
-            iova,
-            size: len,
+        self.mapper.unmap(iova, len)
+    }
+}
+
+/// Where a function's DMA mappings are made: its group's container, by type 1, or an I/O
+/// address space of iommufd's (iommufd.h, IOMMU_IOAS_MAP), each of `len` bytes at `host`
+/// in this process at I/O address `iova`.
+#[derive(Debug, Clone)]
+enum Mapper {
+    Type1(Arc<OwnedFd>),
+    Ioas(Ioas),
+}
+
+impl Mapper {
+    fn map(&self, iova: u64, host: u64, len: u64, read: bool, write: bool) -> io::Result<()> {
+        match self {
+            Mapper::Type1(fd) => {
+                let flags = if read { VFIO_DMA_MAP_FLAG_READ } else { 0 }
+                    | if write { VFIO_DMA_MAP_FLAG_WRITE } else { 0 };
+                let map = DmaMap {
+                    argsz: size_of::<DmaMap>() as u32,
+                    flags,
+                    vaddr: host,
+                    iova,
+                    size: len,
+                };
+                // SAFETY: VFIO_IOMMU_MAP_DMA reads a `vfio_iommu_type1_dma_map`; what it
+                // maps is guest RAM, this process's as long as the machine is.
+                unsafe { ioctl(&**fd, VFIO_IOMMU_MAP_DMA, (&raw const map) as usize) }.map(drop)
+            }
+            Mapper::Ioas(ioas) => ioas.map(iova, host, len, read, write),
+        }
+    }
+
+    fn unmap(&self, iova: u64, len: u64) -> io::Result<()> {
+        match self {
+            Mapper::Type1(fd) => {
+                let mut unmap = DmaUnmap {
+                    argsz: size_of::<DmaUnmap>() as u32,
+                    flags: 0,
+                    iova,
+                    size: len,
+                };
+                // SAFETY: VFIO_IOMMU_UNMAP_DMA reads and updates a
+                // `vfio_iommu_type1_dma_unmap`.
+                unsafe { ioctl(&**fd, VFIO_IOMMU_UNMAP_DMA, (&raw mut unmap) as usize) }.map(drop)
+            }
+            Mapper::Ioas(ioas) => ioas.unmap(iova, len),
+        }
+    }
+}
+
+/// iommufd (/dev/iommu; Documentation/userspace-api/iommufd.rst): the I/O address spaces
+/// of the functions a VM takes by their device nodes, VFIO's cdev
+/// (/dev/vfio/devices/vfioN; vfio.rst, "VFIO Device cdev"), as a host gives a user a
+/// device but not its group.
+#[derive(Debug)]
+pub struct Iommufd {
+    fd: Arc<OwnedFd>,
+}
+
+impl Iommufd {
+    pub fn open() -> Result<Iommufd, String> {
+        let fd = open(Path::new("/dev/iommu")).map_err(|e| format!("/dev/iommu: {e}"))?;
+        Ok(Iommufd { fd: Arc::new(fd) })
+    }
+
+    /// A new I/O address space, mapping nothing (IOMMU_IOAS_ALLOC).
+    pub fn ioas(&self) -> Result<Ioas, String> {
+        let mut alloc = IoasAlloc {
+            size: size_of::<IoasAlloc>() as u32,
+            ..IoasAlloc::default()
         };
-        // SAFETY: VFIO_IOMMU_UNMAP_DMA reads and updates a `vfio_iommu_type1_dma_unmap`.
-        unsafe { ioctl(&*self.fd, VFIO_IOMMU_UNMAP_DMA, (&raw mut unmap) as usize) }.map(drop)
+        // SAFETY: IOMMU_IOAS_ALLOC reads and fills a `struct iommu_ioas_alloc`.
+        unsafe { ioctl(&*self.fd, IOMMU_IOAS_ALLOC, (&raw mut alloc) as usize) }
+            .map_err(|e| format!("/dev/iommu: an I/O address space: {e}"))?;
+        Ok(Ioas {
+            fd: self.fd.clone(),
+            id: alloc.out_ioas_id,
+        })
+    }
+}
+
+/// An I/O address space of iommufd's, by its ID.
+#[derive(Debug, Clone)]
+pub struct Ioas {
+    fd: Arc<OwnedFd>,
+    id: u32,
+}
+
+impl Ioas {
+    fn map(&self, iova: u64, host: u64, len: u64, read: bool, write: bool) -> io::Result<()> {
+        let mut map = IoasMap {
+            size: size_of::<IoasMap>() as u32,
+            flags: IOMMU_IOAS_MAP_FIXED_IOVA
+                | if read { IOMMU_IOAS_MAP_READABLE } else { 0 }
+                | if write { IOMMU_IOAS_MAP_WRITEABLE } else { 0 },
+            ioas_id: self.id,
+            user_va: host,
+            length: len,
+            iova,
+            ..IoasMap::default()
+        };
+        // SAFETY: IOMMU_IOAS_MAP reads and updates a `struct iommu_ioas_map`; what it maps
+        // is guest RAM, this process's as long as the machine is.
+        unsafe { ioctl(&*self.fd, IOMMU_IOAS_MAP, (&raw mut map) as usize) }.map(drop)
+    }
+
+    fn unmap(&self, iova: u64, len: u64) -> io::Result<()> {
+        let mut unmap = IoasUnmap {
+            size: size_of::<IoasUnmap>() as u32,
+            ioas_id: self.id,
+            iova,
+            length: len,
+        };
+        // SAFETY: IOMMU_IOAS_UNMAP reads and updates a `struct iommu_ioas_unmap`.
+        unsafe { ioctl(&*self.fd, IOMMU_IOAS_UNMAP, (&raw mut unmap) as usize) }.map(drop)
+    }
+
+    /// All of guest RAM `memory`, at the addresses the guest knows it by, for the DMA of
+    /// the functions outside the guest's IOMMU, attached to it already: iommufd pins it as
+    /// it maps it for a device (iopt_area_fill_domains), counting what it pins for all of
+    /// the user's processes together against the pinning process's locked-memory limit
+    /// (incr_user_locked_vm), where type 1 counts the process's alone.
+    pub fn map_ram(&self, memory: &GuestMemory) -> Result<(), String> {
+        for (gpa, host, len) in memory.regions() {
+            self.map(gpa, host as u64, len as u64, true, true).map_err(|e| {
+                let hint = match e.raw_os_error() {
+                    Some(libc::ENOMEM) => format!(
+                        ": iommufd pins guest RAM for a device's DMA, counting what it pins for all of this user's processes together against this process's locked-memory limit (RLIMIT_MEMLOCK, `ulimit -l`), {}",
+                        memlock()
+                    ),
+                    _ => String::new(),
+                };
+                format!("mapping guest RAM {gpa:#x}+{len:#x} for DMA: {e}{hint}")
+            })?;
+        }
+        Ok(())
+    }
+
+    /// What follows the endpoint of a group's functions into this address space, of
+    /// guest RAM `memory` (D154).
+    pub fn follower(&self, memory: Arc<GuestMemory>) -> Followed {
+        Followed {
+            mapper: Mapper::Ioas(self.clone()),
+            memory,
+            mapped: Mutex::new(std::collections::BTreeMap::new()),
+        }
     }
 }
 
@@ -564,6 +777,40 @@ pub fn group_of(name: &str) -> io::Result<(PathBuf, bool)> {
     )))
 }
 
+/// The PCI function whose VFIO device node is `cdev` (`/dev/vfio/devices/vfioN`): the
+/// device sysfs names for it (/sys/class/vfio-dev/vfioN/device, vfio.rst, "Device cdev
+/// Example").
+pub fn cdev_function(cdev: &Path) -> io::Result<String> {
+    let node = cdev
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "no VFIO device's node"))?;
+    let device = std::fs::read_link(format!("/sys/class/vfio-dev/{node}/device")).map_err(|e| match e.kind() {
+        io::ErrorKind::NotFound => io::Error::new(
+            e.kind(),
+            format!(
+                "no such VFIO device (/sys/class/vfio-dev/{node}): a function has a device node while it is bound to vfio-pci, on a host whose kernel has VFIO_DEVICE_CDEV"
+            ),
+        ),
+        _ => e,
+    })?;
+    device
+        .file_name()
+        .and_then(|n| n.to_str())
+        .map(str::to_string)
+        .ok_or_else(|| io::Error::other("a VFIO device of no PCI function"))
+}
+
+/// The number of the IOMMU group of the host's function `name`
+/// (/sys/bus/pci/devices/NAME/iommu_group), its group's node or none.
+pub fn group_number(name: &str) -> io::Result<String> {
+    let link = std::fs::read_link(format!("/sys/bus/pci/devices/{name}/iommu_group"))?;
+    link.file_name()
+        .and_then(|n| n.to_str())
+        .map(str::to_string)
+        .ok_or_else(|| io::Error::other("an IOMMU group without a number"))
+}
+
 /// The sizes of function `name`'s 64-bit memory BARs, in their order, as the host's PCI
 /// core gives them (sysfs `resource`: each BAR's start, end and flags, IORESOURCE_MEM and
 /// IORESOURCE_MEM_64; drivers/pci/pci-sysfs.c, resource_show): what the machine's 64-bit
@@ -621,6 +868,57 @@ impl Device {
             .map_err(|e| err("its device", e))?;
         // SAFETY: the descriptor the ioctl just returned, ours alone.
         let file = File::from(unsafe { OwnedFd::from_raw_fd(fd) });
+        Device::of_file(name, file, vec![group, container.fd.clone()])
+    }
+
+    /// The host's function `name` by its device node `cdev` (vfio.rst, "VFIO Device
+    /// cdev"): told of to `host`'s hypervisor, bound to iommufd and attached to `ioas`,
+    /// where its DMA's mappings are made; reset where it can be.
+    pub fn open_cdev(name: &str, cdev: &Path, ioas: &Ioas, host: &dyn Host) -> Result<Device, String> {
+        let err = |what: &str, e: io::Error| format!("{name}: {} {what}: {e}", cdev.display());
+        let fd = open(cdev).map_err(|e| err("opening it", e))?;
+        // Before it is bound, as a driver that needs the VM finds it then (vfio.rst).
+        host.add_file(fd.as_raw_fd())
+            .map_err(|e| format!("{name}: {}: {e}", cdev.display()))?;
+        let mut bind = BindIommufd {
+            argsz: size_of::<BindIommufd>() as u32,
+            iommufd: ioas.fd.as_raw_fd(),
+            ..BindIommufd::default()
+        };
+        // SAFETY: VFIO_DEVICE_BIND_IOMMUFD reads and fills a `vfio_device_bind_iommufd`.
+        unsafe { ioctl(&fd, VFIO_DEVICE_BIND_IOMMUFD, (&raw mut bind) as usize) }.map_err(|e| {
+            // What each refusal of VFIO's means, all else this asks being valid
+            // (vfio_df_ioctl_bind_iommufd, iommu_device_claim_dma_owner).
+            let hint = match e.raw_os_error() {
+                Some(libc::EBUSY) => {
+                    ": another process has its group open by the group's node, as VFIO gives a group by that or by its functions' device nodes, not both"
+                }
+                Some(libc::EPERM) => {
+                    ": iommufd refuses a function whose MSIs the host's IOMMU does not isolate (no interrupt remapping), unless its administrator allows it (iommufd.allow_unsafe_interrupts=1), and one of a group another process has a function of through iommufd, or the host's kernel drives one of, as VFIO gives a group's functions to one iommufd at a time"
+                }
+                Some(libc::EINVAL) => ": another process has it open, as VFIO gives a function to one at a time",
+                Some(libc::EACCES) => {
+                    ": a VF whose PF is bound to vfio-pci, which VFIO gives only with the PF's VF token (vf_token), which shards gives none"
+                }
+                _ => "",
+            };
+            format!("{name}: {} binding it to iommufd: {e}{hint}", cdev.display())
+        })?;
+        let mut attach = AttachPt {
+            argsz: size_of::<AttachPt>() as u32,
+            pt_id: ioas.id,
+            ..AttachPt::default()
+        };
+        // SAFETY: VFIO_DEVICE_ATTACH_IOMMUFD_PT reads and fills a
+        // `vfio_device_attach_iommufd_pt`.
+        unsafe { ioctl(&fd, VFIO_DEVICE_ATTACH_IOMMUFD_PT, (&raw mut attach) as usize) }
+            .map_err(|e| err("attaching it to its I/O address space", e))?;
+        Device::of_file(name, File::from(fd), vec![ioas.fd.clone()])
+    }
+
+    /// The function `name` whose device descriptor is `file`, had through `holds`.
+    fn of_file(name: &str, file: File, holds: Vec<Arc<OwnedFd>>) -> Result<Device, String> {
+        let err = |what: &str, e: io::Error| format!("{name}: {what}: {e}");
         let mut info = DeviceInfo {
             argsz: size_of::<DeviceInfo>() as u32,
             ..DeviceInfo::default()
@@ -654,8 +952,7 @@ impl Device {
             name: name.to_string(),
             file,
             regions,
-            _group: group,
-            _container: container.fd.clone(),
+            _holds: holds,
         })
     }
 
@@ -975,10 +1272,11 @@ fn in_bars(bars: &[Bar], (index, offset): (u8, u32), len: u64) -> bool {
 }
 
 /// What the machine gives the functions it passes through (D154): its hypervisor told of
-/// their groups, and memory slots for their BARs.
+/// their groups or of their own files, and memory slots for their BARs.
 pub trait Host {
-    /// Tells the hypervisor of VFIO's group `group`, before any device of it is opened.
-    fn add_group(&self, group: RawFd) -> Result<(), String>;
+    /// Tells the hypervisor of VFIO's file `file`, a group's, before any device of it is
+    /// opened, or a device's opened by its node, before it is bound.
+    fn add_file(&self, file: RawFd) -> Result<(), String>;
     /// `count` memory slots, of one function's own.
     fn slots(&self, count: u32) -> Box<dyn BarSlots>;
 }

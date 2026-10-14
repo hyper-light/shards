@@ -221,7 +221,7 @@ mod tests {
     }
 
     #[test]
-    fn cells_align_as_the_cli_aligns_them() {
+    fn cells_align() {
         assert_eq!(
             table("A\tB\nlonger-than-ten\tx\n"),
             "A                 B\nlonger-than-ten   x\n"

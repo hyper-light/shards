@@ -274,7 +274,7 @@ pub struct Vm {
     gic: OnceLock<sys::DeviceFd>,
     /// Its ITS, where the machine has one.
     its: OnceLock<sys::DeviceFd>,
-    /// KVM's VFIO device, made as the first VFIO group is added ([`Vm::add_vfio_group`]).
+    /// KVM's VFIO device, made as the first VFIO file is added ([`Vm::add_vfio_file`]).
     pub(super) vfio: OnceLock<sys::DeviceFd>,
 }
 

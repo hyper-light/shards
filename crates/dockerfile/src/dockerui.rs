@@ -214,7 +214,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn options_read_as_dockerui_reads_them() {
+    fn build_frontend_options_are_read() {
         let hosts = extra_hosts("Db=10.0.0.2,v6=::FFFF:1.2.3.4,x=fe80::1").unwrap();
         let shown: Vec<(String, String)> = hosts
             .iter()

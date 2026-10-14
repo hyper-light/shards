@@ -178,7 +178,7 @@ impl<D: Disk> Daemon<D> {
         if self.running(&id) && !restarting {
             let spec = shards_abi::run::Spec {
                 builtin: shards_abi::run::builtin::CGROUP,
-                argv: crate::resources::cgroup(&merged),
+                argv: crate::resources::cgroup(&merged, crate::resources::host_cpus()),
                 ..Default::default()
             };
             let q = self
@@ -227,7 +227,7 @@ mod tests {
     /// 29.3.1): a memory limit over no swap refused, with swap taken; CPU limits that
     /// conflict with what is set refused.
     #[test]
-    fn updates_merge_as_dockerd_merges_them() {
+    fn updates_merge_with_the_limits_set() {
         let none = Resources::default();
         let memory = Resources {
             memory: 64 << 20,

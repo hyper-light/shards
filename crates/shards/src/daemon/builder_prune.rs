@@ -236,7 +236,7 @@ mod tests {
     }
 
     #[test]
-    fn filters_are_asked_as_buildx_asks_them() {
+    fn prune_filters_are_asked() {
         let v = |a: &[&str]| a.iter().map(|s| (*s).to_string()).collect::<Vec<_>>();
         // `shared=`: FilterOpt takes no filter without `=`; an empty value asks `shared==`.
         let (until, filters) = prune_info(&v(&["until=24h", "id=ab", "shared="])).unwrap();
@@ -275,7 +275,7 @@ mod tests {
 
     /// As Go's text/tabwriter with buildx's settings lays them out.
     #[test]
-    fn tables_are_tabbed_as_buildx_tabs_them() {
+    fn prune_tables_are_tabbed() {
         assert_eq!(tabs(&[vec!["Total:".into(), "0B".into()]]), "Total:\t0B\n");
         let row = vec![
             format!("{:<40}", "abc"),
@@ -303,7 +303,7 @@ mod tests {
     /// A cache mount's record said in full, as buildx said one (M141): mutable, described,
     /// no type.
     #[test]
-    fn a_cache_mounts_record_is_said_as_buildx_says_it() {
+    fn a_cache_mounts_record_is_said() {
         let mount = Record {
             id: "6c81e0q93yn12ftnxfg6z64pl".into(),
             size: 8192,

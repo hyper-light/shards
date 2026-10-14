@@ -7,7 +7,7 @@
 use shards_cmdline::gotime::{get_timestamp, parse_timestamp, parse_unix_timestamp};
 
 #[test]
-fn timestamps_are_read_as_the_docker_client_and_dockerd_read_them() {
+fn log_times_are_read_both_ways() {
     let golden: serde_json::Value = serde_json::from_str(include_str!("docker-time.json")).unwrap();
     let now = i128::from(golden["now_ns"].as_i64().unwrap());
     let cases = golden["since"].as_array().unwrap();

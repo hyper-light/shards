@@ -515,10 +515,29 @@ fn prepare_with(entry: &[u8]) -> Result<Prepared, String> {
                 "no sysfs to give its functions to vfio-pci in: the microVM was not booted for VFIO (shards_vfio)",
             )
         })?;
-        groups.push((
-            host,
-            format!("/dev/vfio/{}", vfio_group(sys.as_fd(), host, addresses)?),
-        ));
+        let group = vfio_group(sys.as_fd(), host, addresses)?;
+        // A function by its device node (/dev/vfio/devices/vfioN): the guest's own of it,
+        // which the guest's vfio-pci made as it took it (sysfs's `vfio-dev`; vfio.rst,
+        // "Device cdev Example").
+        let node = if host.starts_with("/dev/vfio/devices/") {
+            let address = addresses.split(',').next().unwrap_or_default();
+            let at = CString::new(format!("bus/pci/devices/{address}/vfio-dev"))
+                .map_err(|e| gathering(host, &e.to_string()))?;
+            match names(sys, &at).as_slice() {
+                [one] => format!("/dev/vfio/devices/{one}"),
+                _ => {
+                    return Err(gathering(
+                        host,
+                        &format!(
+                            "{address}: no VFIO device node of its own, which the guest's kernel makes where it has VFIO_DEVICE_CDEV"
+                        ),
+                    ));
+                }
+            }
+        } else {
+            format!("/dev/vfio/{group}")
+        };
+        groups.push((host, node));
     }
     let mapped = |host: &str, container: &str| -> (String, String) {
         let clean = host.trim_end_matches('/');
@@ -1046,7 +1065,7 @@ mod tests {
 
     /// DevicesFromPath over the VM's devices: a device, a directory's, none.
     #[test]
-    fn devices_are_found_as_dockerd_finds_a_hosts() {
+    fn devices_are_found_in_the_microvm() {
         let vm = vec![
             node("/dev/fuse", Kind::Char, 10, 229),
             node("/dev/net/tun", Kind::Char, 10, 200),
@@ -1116,7 +1135,7 @@ mod tests {
 
     /// AppendDevicePermissionsFromCgroupRules' refusals.
     #[test]
-    fn cgroup_rules_are_read_as_dockerd_reads_them() {
+    fn cgroup_rules_are_read_and_refused() {
         assert_eq!(cgroup_rule("c 1:3 r").unwrap().perms, dc::READ);
         assert_eq!(cgroup_rule("b *:* rwm").unwrap().major, -1);
         assert_eq!(

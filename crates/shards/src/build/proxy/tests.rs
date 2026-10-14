@@ -231,7 +231,7 @@ fn dated(s: &[u8]) -> String {
 }
 
 #[test]
-fn plain_requests_are_checked_and_passed_on_as_buildkit_passes_them() {
+fn plain_requests_are_checked_and_passed_on() {
     let (port, asked) = upstream(None, answer);
     let base = format!("http://127.0.0.1:{port}");
     let ((hello, origin, refused, chunked, big), checked, capture) = with_proxy(
@@ -1061,7 +1061,7 @@ fn urls_of(checked: &[String]) -> Vec<String> {
 /// byte for byte, but where D110 records shards' difference: a field value that is not
 /// UTF-8 (obs-text) is refused, as shards' client writes fields as text.
 #[test]
-fn requests_are_read_as_buildkits_proxy_reads_them() {
+fn requests_are_read() {
     let oracle = oracle();
     let mut failed = Vec::new();
     for (i, case) in oracle["plain"].as_array().unwrap().iter().enumerate() {
@@ -1152,7 +1152,7 @@ fn tunnel_exchange(
 }
 
 #[test]
-fn tunnels_are_read_as_buildkits_proxy_reads_them() {
+fn tunnels_are_read() {
     let oracle = oracle();
     let mut failed = Vec::new();
     for (i, case) in oracle["tunnels"].as_array().unwrap().iter().enumerate() {
@@ -1320,7 +1320,7 @@ fn passed_differently(kind: &str, name: &str) -> Option<&'static str> {
 /// what the proxy recorded of each, as BuildKit's proxy on Go's server passes them on and
 /// records them, byte for byte, but for chunk boundaries and what D110 records.
 #[test]
-fn requests_are_passed_on_as_buildkits_proxy_passes_them() {
+fn requests_are_passed_on() {
     let oracle = oracle();
     let (port, _) = upstream(None, oracle_answer);
     let (tls, root) = https_server();

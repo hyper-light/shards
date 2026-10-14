@@ -132,7 +132,7 @@ mod tests {
 
     /// What `docker network ls` (29.3.1) printed of the same networks.
     #[test]
-    fn networks_are_listed_as_the_cli_lists_them() {
+    fn networks_are_listed() {
         let n = Network {
             id: "88552681c572c8e5054c20d6e316c923140de7e93785ff54fbe773950c8b9fe5".into(),
             name: "zzf1".into(),

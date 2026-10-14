@@ -519,7 +519,7 @@ mod tests {
     }
 
     #[test]
-    fn events_print_as_docker_cli_prints_them() {
+    fn events_print_line_by_line() {
         let e = event(
             "container",
             "start",
@@ -548,7 +548,7 @@ mod tests {
     }
 
     #[test]
-    fn events_are_filtered_as_dockerd_filters_them() {
+    fn events_are_filtered() {
         let start = event(
             "container",
             "start",

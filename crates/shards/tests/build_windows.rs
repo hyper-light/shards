@@ -103,7 +103,7 @@ fn run_steps_run_in_a_confined_builder_and_their_changes_are_built() {
     let root = reports
         .first()
         .unwrap_or_else(|| panic!("no step reported\n{shown}"));
-    // Docker's build steps' limits, as on every host (`run_steps_start_with_dockers_limits`).
+    // Docker's build steps' limits, as on every host (`run_steps_start_with_high_file_and_process_limits`).
     for (k, v) in [
         ("uid", "0"),
         ("gid", "0"),

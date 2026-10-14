@@ -153,7 +153,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn ellipses_cut_as_the_cli_cuts() {
+    fn ellipses_cut_at_their_width() {
         assert_eq!(ellipsis("/bin/testguest sleep", 20), "/bin/testguest sleep");
         assert_eq!(
             ellipsis("/bin/testguest trap INT", 20),

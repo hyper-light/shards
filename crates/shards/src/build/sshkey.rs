@@ -751,7 +751,7 @@ mod tests {
     /// buildx's agent, case by case (scripts/sshkey/generate): the keys it takes and
     /// how it answers, byte for byte, but where shards does better, each named here.
     #[test]
-    fn key_files_are_served_as_buildx_serves_them() {
+    fn ssh_key_files_are_served() {
         let cases: Vec<Case> = serde_json::from_str(include_str!("testdata/sshkey.json")).unwrap();
         assert!(cases.len() >= 30);
         // Keys buildx takes and shards refuses, in shards' words.

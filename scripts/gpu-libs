@@ -27,7 +27,7 @@ work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 
 fetch() {
-    curl -fsSL --retry 3 -o "$work/$2" "$1"
+    curl -fsSL --retry 5 --retry-all-errors --retry-delay 10 -o "$work/$2" "$1"
     echo "$3  $work/$2" | shasum -a 256 -c --quiet -
 }
 fetch "$virgl_url" virgl.tar.gz "$virgl_sha256"

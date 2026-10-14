@@ -209,7 +209,7 @@ fn run(roots: &Value, c: &Value) -> (String, Value, Vec<String>) {
 }
 
 #[test]
-fn images_are_verified_as_buildkit_s_policy_helpers_verify_them() {
+fn images_are_verified_by_their_signatures() {
     let file: Value = serde_json::from_str(include_str!("../testdata/image.json")).unwrap();
     let mut failed = Vec::new();
     let all = file["cases"].as_array().unwrap();

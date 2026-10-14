@@ -3353,7 +3353,7 @@ mod tests {
     /// The SBOM asked for, as dockerui reads `attest:` and `build-arg:BUILDKIT_ATTEST_`
     /// (attestations.Parse, Validate, Client.init).
     #[test]
-    fn attestations_are_read_as_dockerui_reads_them() {
+    fn attestation_options_are_read() {
         let asked = |pairs: &[(&str, &str)]| {
             let opts: BTreeMap<String, String> = pairs
                 .iter()

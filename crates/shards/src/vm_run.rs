@@ -18,7 +18,7 @@ use shards_vmm::vm::{
 use crate::spec::Options;
 use crate::terminal::RawTerminal;
 
-const RUN_USAGE: &str = "usage: shards run --kernel PATH [--initrd PATH | --init PATH] [--cmdline STR] [--cpus N] [--memory MIB] [--memory-max MIB] [--disk PATH[:ro]]... [--pmem PATH]... [--vsock PATH] [--nested] [--gpu] [--reporting] [--pci-test | --pci-tests SS.F,...] [--vfio NAME]... [--vfio-iommu NAME]... [--no-console] [--snapshot-dir DIR [--snapshot-then stop|resume]]
+const RUN_USAGE: &str = "usage: shards run --kernel PATH [--initrd PATH | --init PATH] [--cmdline STR] [--cpus N] [--memory MIB] [--memory-max MIB] [--disk PATH[:ro]]... [--pmem PATH]... [--vsock PATH] [--nested] [--gpu] [--reporting] [--pci-test | --pci-tests SS.F,...] [--vfio NAME|NODE]... [--vfio-iommu NAME|NODE]... [--no-console] [--snapshot-dir DIR [--snapshot-then stop|resume]]
        shards run --kernel PATH --init SHARDS-INIT --rootfs IMAGE [OPTIONS] [WORKLOAD OPTIONS] -- COMMAND [ARG...]
        shards run --kernel PATH --init SHARDS-INIT --rootfs IMAGE --snapshot-dir DIR [OPTIONS]
   --pmem: a read-only virtio-pmem device backed by PATH: /dev/pmem0, pmem1, ... in order.
@@ -53,8 +53,10 @@ const RUN_USAGE: &str = "usage: shards run --kernel PATH [--initrd PATH | --init
                INTx pin, and each device given its function 0.
   --vfio: the host's PCI function NAME (as 0000:01:00.0), passed through to the guest
           on its PCI bus: on Linux, bound to vfio-pci, as every other function in its
-          IOMMU group must be. Not with --snapshot-dir, --memory-max or --reporting:
-          its DMA reaches all of guest RAM through mappings the host holds pinned.
+          IOMMU group must be. Or its VFIO device node (/dev/vfio/devices/vfioN), taken
+          through /dev/iommu, not its group's node. Not with --snapshot-dir, --memory-max
+          or --reporting: its DMA reaches all of guest RAM through mappings the host
+          holds pinned.
   --vfio-iommu: as --vfio, the function behind the guest's own IOMMU (virtio-iommu):
                 its DMA reaches only what the guest's IOMMU driver maps for it, as the
                 guest's own VFIO needs to give it to a process, pinned as it is mapped,
@@ -89,7 +91,16 @@ fn text(arg: OsString) -> Result<String, String> {
         .map_err(|a| format!("argument {a:?} is not valid UTF-8"))
 }
 
-/// A `--disk` value: its path, and whether it ends in `:ro`.
+/// `--vfio`'s or `--vfio-iommu`'s function: by its name, through its group; or by its
+/// VFIO device node, `/dev/vfio/devices/vfioN`, through iommufd (D154).
+fn vfio(given: &str) -> Result<vm::Vfio, String> {
+    if given.starts_with("/dev/vfio/devices/") {
+        vm::Vfio::of_cdev(Path::new(given))
+    } else {
+        vm::Vfio::of(given)
+    }
+}
+
 /// `--pci-tests`' places, each `SS.F` in hex, as `01.0,02.0,02.1` (D153): devices 1 to 31
 /// of bus 0, functions 0 to 7, each once, and each device with its function 0, by which a
 /// guest finds its others.
@@ -121,6 +132,7 @@ fn pci_tests(text: &str) -> Result<Vec<(u8, u8)>, String> {
     Ok(places)
 }
 
+/// A `--disk` value: its path, and whether it ends in `:ro`.
 fn disk(spec: OsString) -> Disk {
     let bytes = spec.as_encoded_bytes();
     match bytes.strip_suffix(b":ro") {
@@ -320,10 +332,10 @@ fn parse_run(args: impl Iterator<Item = OsString>) -> Result<Run, String> {
             "--gpu" => cfg.gpu = true,
             "--pci-test" => cfg.pci_test = vec![(vm::TEST_DEVICE, 0)],
             "--pci-tests" => cfg.pci_test = pci_tests(&text(value("--pci-tests")?)?)?,
-            "--vfio" => cfg.vfio.push(vm::Vfio::of(&text(value("--vfio")?)?)?),
+            "--vfio" => cfg.vfio.push(vfio(&text(value("--vfio")?)?)?),
             "--vfio-iommu" => cfg.vfio.push(vm::Vfio {
                 iommu: true,
-                ..vm::Vfio::of(&text(value("--vfio-iommu")?)?)?
+                ..vfio(&text(value("--vfio-iommu")?)?)?
             }),
             "--reporting" => cfg.reporting = true,
             "--rootfs" => rootfs = Some(PathBuf::from(value("--rootfs")?)),
@@ -750,7 +762,14 @@ fn boot_into(cfg: &mut Config, rootfs: PathBuf, template: bool) {
     // Without automatic task groups: in most templates, a restored guest's first setsid(2)
     // stalled until the next tick (docs/benchmarks.md, "Run"). Docker's containers never
     // get them anyway, since they live in cgroups (kernel/sched/autogroup.c).
-    cfg.cmdline.push_str(" quiet noautogroup shards_root=/dev/pmem0");
+    // Without real-time group scheduling (D155): a workload's cgroup, which cgroup v2 gives
+    // no real-time time (its files are cgroup v1's, kernel/sched/core.c
+    // cpu_rt_group_init), was refused SCHED_FIFO and SCHED_RR even with CAP_SYS_NICE
+    // (EPERM, kernel/sched/syscalls.c); `rt_group_sched=0` (Linux 6.16) leaves real-time
+    // time to the guest's own budget, which a run's `--cpu-rt-period` and
+    // `--cpu-rt-runtime` set.
+    cfg.cmdline
+        .push_str(" quiet noautogroup rt_group_sched=0 shards_root=/dev/pmem0");
     if template {
         cfg.cmdline.push_str(" shards_template=1");
     }
@@ -1310,10 +1329,16 @@ fn start(cfg: &Config) -> Result<(Handle, Running), String> {
     paths.read.extend(cfg.initrd.iter().cloned());
     paths.read.extend(cfg.init.iter().cloned());
     paths.read.extend(cfg.pmem.iter().cloned());
-    // A function passed through: VFIO's container, and its group (D154).
-    if !cfg.vfio.is_empty() {
+    // A function passed through (D154): VFIO's container and its group, or iommufd and its
+    // device node.
+    let (cdevs, groups): (Vec<&vm::Vfio>, Vec<&vm::Vfio>) = cfg.vfio.iter().partition(|v| v.cdev.is_some());
+    if !groups.is_empty() {
         paths.devices.push(PathBuf::from("/dev/vfio/vfio"));
-        paths.devices.extend(cfg.vfio.iter().map(|v| v.group.clone()));
+        paths.devices.extend(groups.iter().map(|v| v.group.clone()));
+    }
+    if !cdevs.is_empty() {
+        paths.devices.push(PathBuf::from("/dev/iommu"));
+        paths.devices.extend(cdevs.iter().filter_map(|v| v.cdev.clone()));
     }
     for disk in &cfg.disks {
         let list = if disk.read_only {

@@ -166,7 +166,7 @@ fn built(parsed: &flags::Parsed, out: &mut String) -> Result<(), String> {
 }
 
 #[test]
-fn build_answers_as_buildx() {
+fn build_answers_byte_for_byte() {
     let path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/buildx.json");
     let answers: serde_json::Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
     // The oracle's directory of secrets (oracle_test.go, TestShardsOracle).
