@@ -211,18 +211,30 @@ impl Logger {
         })
     }
 
-    fn keep(&mut self, stream: u8, bytes: &[u8]) {
-        // Nothing is no output: a record of it would tell no stream's last byte.
-        if bytes.is_empty() {
-            return;
+    /// Keeps `bytes` of `stream` as a record, in the segment written where it fits, else in
+    /// the next; one longer than a segment holds is cut into records that each fill one: a
+    /// segment is never longer than its size (D161), and a record whole wherever it fits.
+    /// A record says whether it ends a line (INDEX_LINE), so a line cut so is read whole.
+    fn keep(&mut self, stream: u8, mut bytes: &[u8]) {
+        // The most bytes a record of a segment of its size holds; a byte at least.
+        let most = usize::try_from(self.retention.size.saturating_sub(LOG_HEAD).max(1)).unwrap_or(usize::MAX);
+        while !bytes.is_empty() {
+            let (part, rest) = bytes.split_at(most.min(bytes.len()));
+            let record_len = LOG_HEAD + part.len() as u64;
+            if self.logged > 0 && self.logged + record_len > self.retention.size && self.rotate().is_err() {
+                // A log that cannot go on within its bound keeps nothing more.
+                self.lost = self.lost.saturating_add(bytes.len() as u64);
+                return;
+            }
+            self.record(stream, part);
+            bytes = rest;
         }
+    }
+
+    /// Writes `bytes` of `stream` as one record of the segment written.
+    fn record(&mut self, stream: u8, bytes: &[u8]) {
         let head = log_head(stream, bytes);
         let record_len = LOG_HEAD + bytes.len() as u64;
-        if self.logged > 0 && self.logged + record_len > self.retention.size && self.rotate().is_err() {
-            // A log that cannot go on within its bound keeps nothing more.
-            self.lost = self.lost.saturating_add(bytes.len() as u64);
-            return;
-        }
         let mut entry = self.logged & INDEX_START;
         if stream == LOG_STDERR {
             entry |= INDEX_STDERR;
@@ -1780,8 +1792,9 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
     }
 
-    /// A log goes on in segments of at most its retention's size, a record too big for
-    /// any alone in one, and keeps only its retention's newest files; a segment that
+    /// A log's records each in a segment within its size: whole where it fits, in the next
+    /// segment where the one written has no room, cut into segments' worth where it is
+    /// longer than one (D161); only its retention's newest segments kept; a segment that
     /// cannot be started costs the records that would go in it, and leaves nothing of
     /// itself (audit A12).
     #[test]
@@ -1791,16 +1804,18 @@ mod tests {
         let first = || (append(&dir.join("log")), append(&dir.join("log.idx")));
         let (log, index) = first();
         let mut logger = Logger::new(log, index, 0, retention, in_dir(&dir, retention)).unwrap();
-        // A first record past a segment's size is the first segment's, not an empty one's
-        // successor's.
+        // 70 bytes, past a segment's 64: 51 of them filling the first, 19 the second.
         logger.keep(LOG_STDOUT, &[b'_'; 70]);
-        assert_eq!(fs::read(dir.join("log")).unwrap().len(), 83);
-        assert!(!dir.join("log.1").exists());
-        fs::remove_file(dir.join("log")).unwrap();
-        fs::remove_file(dir.join("log.idx")).unwrap();
+        assert_eq!(fs::read(dir.join("log")).unwrap().len(), 64);
+        assert_eq!(fs::read(dir.join("log.1")).unwrap().len(), 13 + 19);
+        for f in ["log", "log.1"] {
+            fs::remove_file(dir.join(f)).unwrap();
+            fs::remove_file(dir.join(format!("{f}.idx"))).unwrap();
+        }
         let (log, index) = first();
         let mut logger = Logger::new(log, index, 0, retention, in_dir(&dir, retention)).unwrap();
-        // 13 + 20 bytes a record: one a segment, since a second would pass 64.
+        // 13 + 20 bytes a record: one a segment, since a second would pass 64; then 100
+        // bytes, cut in two: 51 and 49.
         for i in 0..10u8 {
             logger.keep(LOG_STDOUT, &[b'a' + i; 20]);
         }
@@ -1813,9 +1828,16 @@ mod tests {
         names.sort();
         assert_eq!(
             names,
-            ["log.10", "log.10.idx", "log.8", "log.8.idx", "log.9", "log.9.idx"]
+            [
+                "log.10",
+                "log.10.idx",
+                "log.11",
+                "log.11.idx",
+                "log.9",
+                "log.9.idx"
+            ]
         );
-        for (seq, byte, len) in [(8, b'i', 20), (9, b'j', 20), (10, b'z', 100)] {
+        for (seq, byte, len) in [(9, b'j', 20), (10, b'z', 51), (11, b'z', 49)] {
             let (l, i) = log_segment(seq);
             let bytes = fs::read(dir.join(l)).unwrap();
             assert_eq!(bytes.len(), 13 + len, "segment {seq}");
@@ -1826,19 +1848,19 @@ mod tests {
         // The next segment's log there already, then its index: neither is taken, and
         // what is there stays.
         for taken in [0, 1] {
-            let name = if taken == 0 { "log.11" } else { "log.11.idx" };
+            let name = if taken == 0 { "log.12" } else { "log.12.idx" };
             fs::write(dir.join(name), b"taken").unwrap();
-            logger.keep(LOG_STDOUT, &[b'q'; 60]);
-            assert_eq!(logger.lost(), 60 * (taken + 1));
+            logger.keep(LOG_STDOUT, &[b'q'; 40]);
+            assert_eq!(logger.lost(), 40 * (taken + 1));
             assert_eq!(fs::read(dir.join(name)).unwrap(), b"taken");
-            let other = if taken == 0 { "log.11.idx" } else { "log.11" };
+            let other = if taken == 0 { "log.12.idx" } else { "log.12" };
             assert!(!dir.join(other).exists(), "{other} left of a segment not started");
             fs::remove_file(dir.join(name)).unwrap();
         }
-        logger.keep(LOG_STDOUT, &[b'r'; 60]);
-        assert_eq!(logger.lost(), 120);
-        assert_eq!(fs::read(dir.join("log.11")).unwrap().len(), 73);
-        assert!(!dir.join("log.8.idx").exists() && !dir.join("log.8").exists());
+        logger.keep(LOG_STDOUT, &[b'r'; 40]);
+        assert_eq!(logger.lost(), 80);
+        assert_eq!(fs::read(dir.join("log.12")).unwrap().len(), 53);
+        assert!(!dir.join("log.9.idx").exists() && !dir.join("log.9").exists());
         let _ = fs::remove_dir_all(&dir);
     }
 

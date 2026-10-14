@@ -468,6 +468,62 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
 
     /// Container `c`'s InspectResponse, from its record, its request, its image and its
     /// VM (inspect_doc.rs).
+    /// The attributes `logs --details` shows before each of container `id`'s lines, as its
+    /// run's `--log-opt`s ask (D161): from what `inspect` says of it, its environment, its
+    /// labels and its command as its image and its run made them; written as dockerd writes
+    /// them (its log stream's attrsByteSlice: sorted, each `NAME=VALUE` query-escaped,
+    /// joined by commas).
+    pub(super) fn log_attributes(&self, id: &str, run: &shards_ipc::Run) -> Result<Vec<u8>, String> {
+        let c = super::lock(&self.containers)
+            .get(id)
+            .cloned()
+            .ok_or_else(|| format!("No such container: {id}"))?;
+        let doc: serde_json::Value =
+            serde_json::from_str(&super::inspect_doc::json(&self.container_value(&c, false)))
+                .map_err(|e| e.to_string())?;
+        let at = |path: &str| doc.pointer(path).cloned().unwrap_or_default();
+        let text = |v: &serde_json::Value| v.as_str().unwrap_or_default().to_string();
+        let strings = |path: &str| -> Vec<String> {
+            at(path)
+                .as_array()
+                .map(|a| a.iter().map(text).collect())
+                .unwrap_or_default()
+        };
+        let labels: std::collections::BTreeMap<String, String> = at("/Config/Labels")
+            .as_object()
+            .map(|m| m.iter().map(|(k, v)| (k.clone(), text(v))).collect())
+            .unwrap_or_default();
+        let (env, args) = (strings("/Config/Env"), strings("/Args"));
+        let (id, name, image_id, image_name, entrypoint) = (
+            text(&at("/Id")),
+            text(&at("/Name")),
+            text(&at("/Image")),
+            text(&at("/Config/Image")),
+            text(&at("/Path")),
+        );
+        let hostname = super::info::host_name().unwrap_or_default();
+        let attrs = crate::logging::attributes(
+            run,
+            &crate::logging::Info {
+                id: &id,
+                name: &name,
+                image_id: &image_id,
+                image_name: &image_name,
+                entrypoint: &entrypoint,
+                args: &args,
+                env: &env,
+                labels: &labels,
+                hostname: &hostname,
+            },
+        )?;
+        Ok(attrs
+            .iter()
+            .map(|(k, v)| format!("{}={}", query_escape(k), query_escape(v)))
+            .collect::<Vec<_>>()
+            .join(",")
+            .into_bytes())
+    }
+
     fn container_value(&self, c: &crate::containers::Container, sized: bool) -> shards_template::Value {
         use super::inspect_doc::{Facts, Health, Net, document};
         let dir = super::lock(&self.containers).dir(&c.id);
@@ -924,6 +980,20 @@ fn raw_value(v: &serde_json::Value) -> shards_template::Value {
         J::Array(l) => Value::list(l.iter().map(raw_value).collect()),
         J::Object(m) => Value::map(m.iter().map(|(k, v)| (k.clone(), raw_value(v))).collect()),
     }
+}
+
+/// Go's url.QueryEscape: what is not a letter, a digit or one of `-_.~` as `%XX`, and a
+/// space as `+`.
+fn query_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => out.push(char::from(b)),
+            b' ' => out.push('+'),
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
 }
 
 #[cfg(test)]

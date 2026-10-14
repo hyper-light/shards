@@ -13,6 +13,17 @@ use crate::go;
 /// alone; a space may stand between. Go converts the float to int64 as arm64 does,
 /// saturating, and NaN to 0.
 pub fn ram_in_bytes(size: &str) -> Result<i64, String> {
+    parse_size(size, 1024.0)
+}
+
+/// go-units v0.5.0 FromHumanSize: [`ram_in_bytes`]'s reading, its units decimal (a `k`
+/// of 1000), as moby's json-file and local log drivers read `max-size`.
+pub fn from_human_size(size: &str) -> Result<i64, String> {
+    parse_size(size, 1000.0)
+}
+
+/// go-units' parseSize, each unit `base` times the one before.
+fn parse_size(size: &str, base: f64) -> Result<i64, String> {
     let invalid = || format!("invalid size: '{size}'");
     let sep = size
         .rfind(|c: char| c.is_ascii_digit() || c == '.' || c == ' ')
@@ -51,11 +62,11 @@ pub fn ram_in_bytes(size: &str) -> Result<i64, String> {
         };
     }
     let mul: f64 = match first {
-        b'k' => 1024.0,
-        b'm' => 1_048_576.0,
-        b'g' => 1_073_741_824.0,
-        b't' => 1_099_511_627_776.0,
-        b'p' => 1_125_899_906_842_624.0,
+        b'k' => base,
+        b'm' => base * base,
+        b'g' => base * base * base,
+        b't' => base * base * base * base,
+        b'p' => base * base * base * base * base,
         _ => return Err(bad()),
     };
     match lower.len() {

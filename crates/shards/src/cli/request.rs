@@ -599,6 +599,13 @@ fn request(parsed: &Parsed) -> Result<Run, String> {
     // A policy other than none restarts what --rm removes (opts.go parse).
     // `-a`'s streams, the client's to attach: none to a run its client leaves (run.go).
     let attach = parsed.many("attach").to_vec();
+    // Its log (D161): options for none refused, as the CLI refuses them (opts.go,
+    // parseLoggingOpts); the rest the daemon's to check.
+    let log_driver = parsed.string("log-driver").to_string();
+    let log_opts = parsed.many("log-opt").to_vec();
+    if log_driver == "none" && !log_opts.is_empty() {
+        return Err("--log-opt with --log-driver none: a run with no log takes no log options".into());
+    }
     if !attach.is_empty() && parsed.bool("detach") {
         return Err("--attach and --detach: a detached run's streams go to its log alone: give one".into());
     }
@@ -709,6 +716,8 @@ fn request(parsed: &Parsed) -> Result<Run, String> {
         },
         storage_opt,
         attach,
+        log_driver,
+        log_opts,
         // The flag's default is SHARDS_DEFAULT_PLATFORM's, else DOCKER_DEFAULT_PLATFORM's.
         platform: if parsed.changed("platform") {
             parsed.string("platform").to_string()

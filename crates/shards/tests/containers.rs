@@ -10969,3 +10969,152 @@ fn a_run_attaches_the_streams_it_asks_for() {
     ]);
     assert_eq!(shown.stdout, "false true true\n", "{shown}");
 }
+
+/// A run's log as `--log-driver` and `--log-opt` keep it (D161): shards' store, its
+/// segments as long and as many as asked; none with `none`, whose `logs` is refused and
+/// whose attached client still gets its output; `--details` showing the labels, the
+/// environment and the tag asked for; the refusals in shards' words; `inspect` as given.
+#[test]
+fn a_runs_log_is_kept_as_its_driver_and_options_say() {
+    let Some((home, image)) = home("containers-logging") else {
+        return;
+    };
+    let shards = |args: &[&str]| shards_in(&home, args);
+    let id_of = |name: &str| {
+        shards(&["inspect", "-f", "{{.Id}}", name])
+            .stdout
+            .trim()
+            .to_string()
+    };
+    // 10,000 lines through segments of 1,000 bytes, two kept: the newest, nothing more.
+    let small = run_in(
+        &home,
+        &image,
+        &[
+            "--name",
+            "small",
+            "--log-driver",
+            "json-file",
+            "--log-opt",
+            "max-size=1k",
+            "--log-opt",
+            "max-file=2",
+        ],
+        &["count", "10000"],
+    );
+    assert_eq!(small.status, Some(0), "{small}");
+    let logged = shards(&["logs", "small"]);
+    assert_eq!(logged.status, Some(0), "{logged}");
+    assert!(
+        logged.stdout.len() < 10_000 && logged.stdout.ends_with("line 10000\n"),
+        "{} bytes, ending {:?}",
+        logged.stdout.len(),
+        logged.stdout.get(logged.stdout.len().saturating_sub(40)..)
+    );
+    assert!(
+        small.stdout.ends_with(&logged.stdout),
+        "the log is not the output's newest lines"
+    );
+    let dir = home.join("containers").join(id_of("small"));
+    let segments = std::fs::read_dir(&dir)
+        .unwrap()
+        .filter_map(|e| e.ok()?.file_name().into_string().ok())
+        .filter(|n| n.starts_with("log") && !n.ends_with(".idx"))
+        .count();
+    assert_eq!(segments, 2, "{}", dir.display());
+    let shown = shards(&[
+        "inspect",
+        "-f",
+        "{{.HostConfig.LogConfig.Type}} {{json .HostConfig.LogConfig.Config}}",
+        "small",
+    ]);
+    assert_eq!(
+        shown.stdout, "json-file {\"max-file\":\"2\",\"max-size\":\"1k\"}\n",
+        "{shown}"
+    );
+    // None kept: its output its attached client's alone.
+    let quiet = run_in(
+        &home,
+        &image,
+        &["--name", "quiet", "--log-driver", "none"],
+        &["streams", "out", "err"],
+    );
+    assert_eq!(
+        (quiet.status, quiet.stdout.as_str()),
+        (Some(0), "out\n"),
+        "{quiet}"
+    );
+    let quiet_dir = home.join("containers").join(id_of("quiet"));
+    let written: u64 = std::fs::read_dir(&quiet_dir)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_name().to_string_lossy().starts_with("log"))
+        .map(|e| e.metadata().map_or(0, |m| m.len()))
+        .sum();
+    assert_eq!(written, 0, "{}", quiet_dir.display());
+    let refused = shards(&["logs", "quiet"]);
+    assert_eq!(
+        (refused.status, refused.stderr.as_str()),
+        (
+            Some(1),
+            "shards: quiet keeps no log: it was run with --log-driver none\n"
+        ),
+        "{refused}"
+    );
+    // Details: the labels, the environment and the tag asked for, sorted, before each line.
+    let tagged = run_in(
+        &home,
+        &image,
+        &[
+            "--name",
+            "tagged",
+            "--label",
+            "app=web",
+            "-e",
+            "E=one two",
+            "--log-opt",
+            "labels=app",
+            "--log-opt",
+            "env=E",
+            "--log-opt",
+            "tag={{.Name}}",
+        ],
+        &["streams", "out", "err"],
+    );
+    assert_eq!(tagged.status, Some(0), "{tagged}");
+    let details = shards(&["logs", "--details", "tagged"]);
+    assert_eq!(
+        (details.stdout.as_str(), details.stderr.as_str()),
+        (
+            "E=one+two,app=web,tag=tagged out\n",
+            "E=one+two,app=web,tag=tagged err\n"
+        ),
+        "{details}"
+    );
+    for (flags, said) in [
+        (
+            &["--log-driver", "syslog"][..],
+            "shards: --log-driver syslog: shards keeps a run's log itself",
+        ),
+        (
+            &["--log-driver", "bogus"],
+            "shards: --log-driver bogus: no such log driver",
+        ),
+        (
+            &["--log-opt", "max-file=0"],
+            "shards: --log-opt max-file=0: how many files, at least 1",
+        ),
+        (
+            &["--log-opt", "color=red"],
+            "shards: --log-opt color: a run's log takes max-size",
+        ),
+        (
+            &["--log-driver", "none", "--log-opt", "max-size=1m"],
+            "shards: --log-opt with --log-driver none: a run with no log takes no log options",
+        ),
+    ] {
+        let r = run_in(&home, &image, flags, &["exit", "0"]);
+        assert_eq!(r.status, Some(125), "{flags:?}: {r}");
+        assert!(r.stderr.starts_with(said), "{flags:?}: {r}");
+    }
+}

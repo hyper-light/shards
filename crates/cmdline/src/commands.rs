@@ -399,14 +399,14 @@ pub static RUN: Command = Command {
             "list",
             "Read in a line delimited file of labels",
         ),
+        Flag::string("log-driver", None, "", "Logging driver for the container"),
+        Flag::many("log-opt", None, "list", "Log driver options"),
     ],
     unserved: "\
 cgroup-parent - s - -\n\
 io-maxbandwidth - bytes 0 -\n\
 io-maxiops - uint64 0 -\n\
 link - m - -\n\
-log-driver - s - -\n\
-log-opt - m - -\n\
 use-api-socket - b false -",
     interspersed: false,
     error_prefix: "",
@@ -791,14 +791,14 @@ pub static CREATE: Command = Command {
             "list",
             "Read in a line delimited file of labels",
         ),
+        Flag::string("log-driver", None, "", "Logging driver for the container"),
+        Flag::many("log-opt", None, "list", "Log driver options"),
     ],
     unserved: "\
 cgroup-parent - s - -\n\
 io-maxbandwidth - bytes 0 -\n\
 io-maxiops - uint64 0 -\n\
 link - m - -\n\
-log-driver - s - -\n\
-log-opt - m - -\n\
 use-api-socket - b false -",
     interspersed: false,
     error_prefix: "",

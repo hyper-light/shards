@@ -797,9 +797,10 @@ fn host_config(f: &Facts<'_>) -> Value {
         .field("ContainerIDFile", s(&run.cidfile))
         .field(
             "LogConfig",
+            // As its run gave them, shards' own store unless given (D161).
             Struct::new("container.LogConfig")
-                .field("Type", s("shards"))
-                .field("Config", Value::string_map(Vec::<(String, String)>::new()))
+                .field("Type", s(crate::logging::driver(run)))
+                .field("Config", Value::string_map(crate::logging::options(run)))
                 .value(),
         )
         .field("NetworkMode", s(mode))
