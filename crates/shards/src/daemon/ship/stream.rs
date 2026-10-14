@@ -375,12 +375,16 @@ mod tests {
         }
     }
 
-    /// What its receiver had not acknowledged when its connection was reset, a stream
-    /// writes again on its next, in order, before what comes after (PM M233): written
-    /// until two messages are unacknowledged, in flight or behind the window of a
-    /// receiver that reads none.
+    /// What its receiver had not acknowledged when its connection was dropped, a stream
+    /// writes again on its next, in order, before what comes after (PM M233). Its receiver
+    /// reads none: messages go until a write makes no progress for the stream's write
+    /// timeout, both buffers full, and the stream drops the connection, holding exactly
+    /// what was never acknowledged; the receiver then resets it, as one that closes with
+    /// bytes unread does. Waiting on a receive buffer's size instead failed under load:
+    /// macOS takes some 520 KiB however small a buffer it reports (5 of 200 runs lost the
+    /// held messages to it, and one hung).
     #[test]
-    fn what_a_reset_connection_had_not_delivered_goes_on_the_next() {
+    fn what_a_dropped_connection_had_not_delivered_goes_on_the_next() {
         use std::os::fd::AsRawFd as _;
         let set = |fd: std::os::fd::RawFd, option: libc::c_int, value: &[libc::c_int]| {
             // SAFETY: setsockopt(2) of `value`'s ints, its length theirs.
@@ -396,28 +400,26 @@ mod tests {
             assert_eq!(set, 0);
         };
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        // The least receive buffer the kernel takes, and a receiver that reads none: macOS
-        // grows it to 526,720 bytes as they come, Linux keeps it at 2,304 (PM M233).
+        // The least receive buffer the kernel takes, so that the buffers fill soon.
         set(listener.as_raw_fd(), libc::SO_RCVBUF, &[1]);
-        let mut stream = Stream::new(To::Tcp(listener.local_addr().unwrap().to_string()), [None; 2]);
+        let mut stream = Stream::new(
+            To::Tcp(listener.local_addr().unwrap().to_string()),
+            [Some(Duration::from_millis(300)), None],
+        );
         let message = |i: u32| i.to_be_bytes().repeat(256);
         let mut sent = 0u32;
-        while stream.undelivered() < 2 {
-            assert!(sent < 4096, "nothing held");
-            stream.send(&message(sent)).unwrap();
+        while stream.send(&message(sent)).is_ok() {
             sent += 1;
+            assert!(sent < 65_536, "its receiver took 64 MiB");
         }
+        assert!(
+            stream.conn.is_none(),
+            "a write that failed dropped its connection"
+        );
         // Its receiver resets the connection: a close with SO_LINGER 0.
         let (first, _) = listener.accept().unwrap();
         set(first.as_raw_fd(), libc::SO_LINGER, &[1, 0]);
         drop(first);
-        // Its next write fails, or its close does: what is held then goes on the next.
-        let (_stop, stopped) = UnixStream::pair().unwrap();
-        let wait = Wait(&stopped);
-        let mut last = stream.send(b"last").is_ok();
-        while stream.conn.is_some() {
-            let _ = stream.close(&wait);
-        }
         let held: Vec<Vec<u8>> = stream.held.iter().map(|(m, _)| m.clone()).collect();
         assert!(held.len() >= 2, "{} held", held.len());
         let reading = std::thread::spawn(move || {
@@ -426,18 +428,14 @@ mod tests {
             second.read_to_end(&mut got).unwrap();
             got
         });
-        if !last {
-            stream.send(b"last").unwrap();
-            last = true;
-        }
-        stream.close(&wait).unwrap();
+        let (_stop, stopped) = UnixStream::pair().unwrap();
+        stream.send(b"last").unwrap();
+        stream.close(&Wait(&stopped)).unwrap();
         // The messages held are the last sent, in order; and after them, the next.
-        let unsent: Vec<Vec<u8>> = held.iter().filter(|m| m.as_slice() != b"last").cloned().collect();
-        let first_held = sent - u32::try_from(unsent.len()).unwrap();
-        assert_eq!(unsent, (first_held..sent).map(message).collect::<Vec<_>>());
-        let mut want: Vec<u8> = unsent.concat();
+        let first_held = sent - u32::try_from(held.len()).unwrap();
+        assert_eq!(held, (first_held..sent).map(message).collect::<Vec<_>>());
+        let mut want: Vec<u8> = held.concat();
         want.extend_from_slice(b"last");
-        assert!(last);
         assert_eq!(reading.join().unwrap(), want);
     }
 }
