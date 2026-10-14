@@ -424,7 +424,7 @@ mod tests {
     }
 
     #[test]
-    fn only_matches_and_orders_as_containerd_s() {
+    fn only_matching_platforms_are_ordered() {
         let only = Only::new(&p("linux", "arm64", ""));
         assert!(only.matches(&p("linux", "arm64", "v8")));
         assert!(only.matches(&p("linux", "arm", "v7")));

@@ -462,7 +462,7 @@ mod tests {
     }
 
     #[test]
-    fn the_engine_is_found_as_the_cli_finds_it() {
+    fn a_local_engine_is_found() {
         let dir_guard = shards_testdir::TempDir::new("engine").unwrap();
         let dir = dir_guard.join("engine");
         let _ = std::fs::remove_dir_all(&dir);

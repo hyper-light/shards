@@ -253,7 +253,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_root_lists_as_docker_lists() {
+    fn the_root_lists_every_command() {
         let top = top();
         assert!(top.starts_with("Usage:  shards COMMAND\n\n"));
         // cobra's padding: names to 11, then a space.

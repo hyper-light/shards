@@ -22,7 +22,7 @@ fn load(name: &str) -> Value {
 }
 
 #[test]
-fn changes_apply_as_dockerd_applies_them() {
+fn commit_changes_apply_to_the_config() {
     let devs: Vec<Value> = load("deviations.json")
         .as_array()
         .unwrap()

@@ -521,7 +521,7 @@ mod tests {
     /// onUntarJSON (containerd v2.4.1): the first value of the first 20 MiB, what follows
     /// it unread; nothing is Go's `EOF`, and a value cut short its `unexpected EOF`.
     #[test]
-    fn archive_json_is_read_as_containerd_reads_it() {
+    fn archive_json_is_read() {
         let read = |data: &[u8]| {
             let (value, ended) = read_one(data);
             assert!(ended, "the entry read to its end");

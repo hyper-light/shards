@@ -45,7 +45,7 @@ pub fn push(
     report: &(dyn Fn(&Digest, Layer) + Sync),
 ) -> Result<(), Error> {
     // As dockerd reports a push's failure (daemon/containerd/image_push.go).
-    pushed(registry, store, target, tag, from, report).map_err(Error::in_dockerds_words)
+    pushed(registry, store, target, tag, from, report).map_err(Error::into_reported)
 }
 
 fn pushed(
@@ -362,7 +362,7 @@ mod tests {
     /// with basic authentication, measured: without credentials, its upload refused in
     /// containerd's words; with wrong ones, its first check of what is there.
     #[test]
-    fn refused_authorization_is_reported_as_dockerd_reports_it() {
+    fn refused_authorization_is_reported() {
         let dir = shards_testdir::TempDir::new("push-refused").unwrap();
         let store = Store::open(&dir).unwrap();
         let [config, manifest] = layerless();

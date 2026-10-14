@@ -282,6 +282,35 @@ pub static RUN: Command = Command {
             "0",
             "Limit CPU CFS (Completely Fair Scheduler) quota",
         ),
+        Flag::int(
+            "cpu-rt-period",
+            None,
+            "0",
+            "Limit CPU real-time period in microseconds",
+        ),
+        Flag::int(
+            "cpu-rt-runtime",
+            None,
+            "0",
+            "Limit CPU real-time runtime in microseconds",
+        ),
+        // Docker's flags for its VM-isolated containers, as every run is a microVM.
+        Flag::int("cpu-count", None, "0", "vCPUs of the microVM"),
+        Flag::int(
+            "cpu-percent",
+            None,
+            "0",
+            "Most of the host's CPU time the microVM may use, in percent",
+        ),
+        Flag::many(
+            "annotation",
+            None,
+            "map",
+            "Add an annotation to the container (passed through to the OCI runtime)",
+        )
+        .defaulting("map[]"),
+        Flag::string("isolation", None, "", "Container isolation technology"),
+        Flag::string("runtime", None, "", "Runtime to use for this container"),
         Flag::value(
             "blkio-weight",
             None,
@@ -347,22 +376,15 @@ pub static RUN: Command = Command {
         ),
     ],
     unserved: "\
-annotation - m - -\n\
 attach a m - -\n\
 cgroup-parent - s - -\n\
 cgroupns - s - -\n\
-cpu-count - i 0 -\n\
-cpu-percent - i 0 -\n\
-cpu-rt-period - i 0 -\n\
-cpu-rt-runtime - i 0 -\n\
 io-maxbandwidth - bytes 0 -\n\
 io-maxiops - uint64 0 -\n\
 ipc - s - -\n\
-isolation - s - -\n\
 link - m - -\n\
 log-driver - s - -\n\
 log-opt - m - -\n\
-runtime - s - -\n\
 storage-opt - m - -\n\
 umask - s - -\n\
 use-api-socket - b false -\n\
@@ -635,6 +657,35 @@ pub static CREATE: Command = Command {
             "0",
             "Limit CPU CFS (Completely Fair Scheduler) quota",
         ),
+        Flag::int(
+            "cpu-rt-period",
+            None,
+            "0",
+            "Limit CPU real-time period in microseconds",
+        ),
+        Flag::int(
+            "cpu-rt-runtime",
+            None,
+            "0",
+            "Limit CPU real-time runtime in microseconds",
+        ),
+        // Docker's flags for its VM-isolated containers, as every run is a microVM.
+        Flag::int("cpu-count", None, "0", "vCPUs of the microVM"),
+        Flag::int(
+            "cpu-percent",
+            None,
+            "0",
+            "Most of the host's CPU time the microVM may use, in percent",
+        ),
+        Flag::many(
+            "annotation",
+            None,
+            "map",
+            "Add an annotation to the container (passed through to the OCI runtime)",
+        )
+        .defaulting("map[]"),
+        Flag::string("isolation", None, "", "Container isolation technology"),
+        Flag::string("runtime", None, "", "Runtime to use for this container"),
         Flag::value(
             "blkio-weight",
             None,
@@ -699,22 +750,15 @@ pub static CREATE: Command = Command {
         ),
     ],
     unserved: "\
-annotation - m - -\n\
 attach a m - -\n\
 cgroup-parent - s - -\n\
 cgroupns - s - -\n\
-cpu-count - i 0 -\n\
-cpu-percent - i 0 -\n\
-cpu-rt-period - i 0 -\n\
-cpu-rt-runtime - i 0 -\n\
 io-maxbandwidth - bytes 0 -\n\
 io-maxiops - uint64 0 -\n\
 ipc - s - -\n\
-isolation - s - -\n\
 link - m - -\n\
 log-driver - s - -\n\
 log-opt - m - -\n\
-runtime - s - -\n\
 storage-opt - m - -\n\
 umask - s - -\n\
 use-api-socket - b false -\n\

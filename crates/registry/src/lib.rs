@@ -98,9 +98,9 @@ impl Error {
         }
     }
 
-    /// The error as dockerd reports a pull's or a push's: a registry's refusal in its
+    /// The error a pull or a push reports: a registry's refusal in the registry's own
     /// words, anything else as it is.
-    pub(crate) fn in_dockerds_words(self) -> Error {
+    pub(crate) fn into_reported(self) -> Error {
         let message = match self.said {
             Some(Said::Instead(message)) => message,
             Some(Said::Before(word)) => format!("{word}: {}", self.message),

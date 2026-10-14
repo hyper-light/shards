@@ -380,7 +380,7 @@ mod tests {
 
     /// Every answer here is dockerd 29.3.1's, measured under Docker Desktop (2026-10-02).
     #[test]
-    fn networks_are_taken_as_dockerd_takes_them() {
+    fn run_networks_are_checked() {
         let none = |_: &str| false;
         // Docker Desktop's bridge, where these were measured.
         let docker: Option<Bridge> = "172.17.0.0/16".parse().ok();
@@ -528,7 +528,7 @@ mod tests {
     /// (validateNetContainerMode), in its order and words: each conflict alone, then two,
     /// of which the first in dockerd's order is said.
     #[test]
-    fn a_container_network_mode_is_checked_as_dockerd_checks_it() {
+    fn a_joiners_network_mode_is_checked() {
         let joined = || run(&["container:web"]);
         let docker: Option<Bridge> = "172.17.0.0/16".parse().ok();
         let check = |r: &Run| check(r, docker, |n| n == "web");
@@ -584,7 +584,7 @@ mod tests {
     /// network namespace of its own there, and a second network, fail the start in runc's
     /// and libnetwork's words.
     #[test]
-    fn the_hosts_network_is_taken_as_dockerd_takes_it() {
+    fn the_hosts_network_is_taken_alone() {
         assert_eq!(check_with(&run(&["host"])), Ok(Start::Attach(Net::Host)));
         let mut tuned = run(&["host"]);
         tuned.sysctls = vec!["kernel.shmmax=1".into(), "net.core.somaxconn=1024".into()];

@@ -447,7 +447,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn invalid_filters_are_dockerds_words() {
+    fn invalid_volume_filters_are_refused() {
         let f = Filters::from_flags(&["bogus=1".into()]);
         assert_eq!(f.validate(&LIST_FILTERS), Err(invalid("bogus", None)));
         assert_eq!(f.validate(&LIST_FILTERS), Err("invalid filter 'bogus'".into()));

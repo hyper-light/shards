@@ -466,7 +466,7 @@ mod tests {
 
     /// moby/sys/user's GetAdditionalGroups cases (user_test.go).
     #[test]
-    fn additional_groups_are_found_as_moby_finds_them() {
+    fn additional_groups_are_found() {
         let group = b"root:x:0:\nadm:x:4343:root,adm-duplicate\nadm-duplicate:x:4344:\n";
         let groups = |args: &[&str]| {
             let args: Vec<Vec<u8>> = args.iter().map(|a| a.as_bytes().to_vec()).collect();
@@ -484,7 +484,7 @@ mod tests {
 
     /// BuildKit's rules, beside Docker's (executor/oci/user.go).
     #[test]
-    fn buildkit_resolves_a_steps_user_as_buildkit_does() {
+    fn a_steps_user_is_resolved() {
         let passwd = Some(&b"root:x:0:0:root:/root:/bin/sh\napp:x:1000:1001:app:/home/app:/bin/sh\n"[..]);
         let group = Some(&b"root:x:0:\napp:x:1001:\ndev:x:50:app\nwheel:x:10:other\n"[..]);
         let user = |spec: &[u8], p, g| buildkit(spec, p, g).map(|u| (u.uid, u.gid, u.groups));
@@ -695,7 +695,7 @@ this is just some garbage data
     }
 
     #[test]
-    fn environments_are_prepared_as_runc_prepares_them() {
+    fn environments_are_prepared() {
         let passwd = b"root:x:0:0::/root:/bin/sh\napp:x:1000:1000::/home/app:/bin/sh\n".as_slice();
         let env = |v: &[&str]| v.iter().map(|s| s.as_bytes().to_vec()).collect::<Vec<_>>();
         assert_eq!(

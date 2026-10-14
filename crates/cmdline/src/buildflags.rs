@@ -806,7 +806,7 @@ mod windows_agent {
         /// A pipe's path by isWindowsPipePath's pattern, its separators either slash, one
         /// or more; a file's is none.
         #[test]
-        fn pipe_paths_are_told_as_buildkit_tells_them() {
+        fn pipe_paths_are_told_apart() {
             for p in [PIPE, "//./pipe/x", r"\\host\\pipe\x", r"\\./pipe//x"] {
                 assert!(is_pipe_path(p), "{p}");
             }
@@ -1278,7 +1278,7 @@ mod tests {
     }
 
     #[test]
-    fn hosts_and_resources_are_sent_as_buildx_sends_them() {
+    fn hosts_and_resources_are_sent() {
         let gw = || Ok("172.17.0.1".to_string());
         let v = |a: &[&str]| a.iter().map(|s| (*s).to_string()).collect::<Vec<_>>();
         assert_eq!(
@@ -1315,7 +1315,7 @@ mod tests {
     }
 
     #[test]
-    fn cache_entries_are_read_as_buildx_reads_them() {
+    fn cache_entries_are_read() {
         let none = |_: &str| None;
         let one = |v: &str| cache_entries(&[v.to_string()], &none);
         let entry = |kind: &str, attrs: &[(&str, &str)]| CacheEntry {
@@ -1358,7 +1358,7 @@ mod tests {
 
     /// buildx's: `ID[=PATH,...]`, each kept; BuildKit's provider's refusals.
     #[test]
-    fn ssh_specs_are_read_as_buildx_reads_them() {
+    fn ssh_specs_are_read() {
         let s = |v: &[&str]| parse_ssh(&v.iter().map(|x| x.to_string()).collect::<Vec<_>>());
         let ssh = |id: &str, paths: &[&str]| Ssh {
             id: id.into(),
@@ -1454,7 +1454,7 @@ mod tests {
     /// A secret past the limit is refused in BuildKit's words, with the limit it is past:
     /// BuildKit's own, as buildx printed it (tests/buildx.json), and shards' step's.
     #[test]
-    fn a_secret_past_the_limit_is_refused_in_buildkits_words() {
+    fn a_secret_past_the_limit_is_refused() {
         assert_eq!(
             too_big("big", 0, 500 * 1024),
             "secret big too big. max size 500KiB"

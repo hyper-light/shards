@@ -762,7 +762,14 @@ fn boot_into(cfg: &mut Config, rootfs: PathBuf, template: bool) {
     // Without automatic task groups: in most templates, a restored guest's first setsid(2)
     // stalled until the next tick (docs/benchmarks.md, "Run"). Docker's containers never
     // get them anyway, since they live in cgroups (kernel/sched/autogroup.c).
-    cfg.cmdline.push_str(" quiet noautogroup shards_root=/dev/pmem0");
+    // Without real-time group scheduling (D155): a workload's cgroup, which cgroup v2 gives
+    // no real-time time (its files are cgroup v1's, kernel/sched/core.c
+    // cpu_rt_group_init), was refused SCHED_FIFO and SCHED_RR even with CAP_SYS_NICE
+    // (EPERM, kernel/sched/syscalls.c); `rt_group_sched=0` (Linux 6.16) leaves real-time
+    // time to the guest's own budget, which a run's `--cpu-rt-period` and
+    // `--cpu-rt-runtime` set.
+    cfg.cmdline
+        .push_str(" quiet noautogroup rt_group_sched=0 shards_root=/dev/pmem0");
     if template {
         cfg.cmdline.push_str(" shards_template=1");
     }

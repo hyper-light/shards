@@ -987,7 +987,7 @@ mod tests {
 
     /// What BuildKit's CacheMap leaves out of an exec's digest is no part of its key.
     #[test]
-    fn keys_leave_out_what_buildkits_leave_out() {
+    fn cache_keys_leave_out_what_cannot_change_a_result() {
         let deps = [Dep::Key("a"), Dep::Key("b")];
         let root = mount(0, "/", "", false, 0, OpMountKind::Bind);
         let cache = |id: &str, sharing| {
@@ -1124,7 +1124,7 @@ mod tests {
     /// A file's digest takes the extended attributes BuildKit's checksum takes: not
     /// `security.*` but `security.capability`, nor `system.*`.
     #[test]
-    fn a_files_digest_takes_the_attributes_buildkits_takes() {
+    fn a_files_digest_takes_its_attributes() {
         let mut sources = Sources::default();
         let mut d = Digests::default();
         let mut with = |attr: Option<(&[u8], &[u8])>| {

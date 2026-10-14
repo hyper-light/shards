@@ -546,6 +546,7 @@ pub enum Outcome {
     Run(Parsed),
     /// Help (`help`), for stdout after `notices`; the status is 0.
     Help { notices: String },
+
     /// Nothing it can have: `notices` for stdout, then `text` and a newline for stderr,
     /// and the status to exit with.
     Fail {

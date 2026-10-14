@@ -291,7 +291,7 @@ fn policies_hold_an_agent_to_its_signature() {
 // Its scanner's build runs in a builder VM, as above.
 #[cfg(unix)]
 #[test]
-fn an_agents_sbom_is_a_referrer_scanned_as_buildkit_scans() {
+fn an_agents_sbom_is_a_scanned_referrer() {
     if common::cannot_run_vms() {
         return;
     }
@@ -303,7 +303,7 @@ fn an_agents_sbom_is_a_referrer_scanned_as_buildkit_scans() {
         ("SHARDS_INIT", common::guest_init().as_os_str()),
     ];
     let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
-    // The scanner: the test guest's, as sboms_are_scanned_as_buildkit_scans_them makes it.
+    // The scanner: the test guest's, as sboms_are_scanned makes it.
     let scanner_ctx = TempDir::new("referrers-sbom-scanner");
     std::fs::write(
         scanner_ctx.join("Dockerfile"),

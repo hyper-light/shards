@@ -124,7 +124,7 @@ mod tests {
     /// What `docker volume ls` (29.3.1) printed of the same volumes, sorted by name as
     /// the CLI sorts them before writing.
     #[test]
-    fn volumes_are_listed_as_the_cli_lists_them() {
+    fn volumes_are_listed() {
         let local = |name: &str, labels: &[(&str, &str)]| Volume {
             name: name.into(),
             driver: "local".into(),

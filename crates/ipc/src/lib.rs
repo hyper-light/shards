@@ -598,6 +598,13 @@ pub struct Run {
     pub device_write_bps: Vec<String>,
     pub device_read_iops: Vec<String>,
     pub device_write_iops: Vec<String>,
+    /// `--annotation`s, each `KEY=VALUE` or `KEY` as given (HostConfig.Annotations, a map
+    /// whose last value of a key stands).
+    pub annotations: Vec<String>,
+    /// `--isolation` (HostConfig.Isolation), as given.
+    pub isolation: String,
+    /// `--runtime` (HostConfig.Runtime), as given: empty for the default.
+    pub runtime: String,
 }
 
 /// `run`'s resource flags as docker/cli sends them (container.Resources): memory in
@@ -628,6 +635,15 @@ pub struct Resources {
     pub pids_limit: i64,
     /// `--blkio-weight`: 10 to 1000, 0 for none.
     pub blkio_weight: u16,
+    /// `--cpu-rt-period` and `--cpu-rt-runtime`, in microseconds: its guest's real-time
+    /// budget (D155).
+    pub cpu_realtime_period: i64,
+    pub cpu_realtime_runtime: i64,
+    /// `--cpu-count`: its microVM's vCPUs, 0 for as many as its other limits need (D155).
+    pub cpu_count: i64,
+    /// `--cpu-percent`: the most of its host's CPU time its microVM may use, 1 to 100, 0
+    /// for no such cap (D155).
+    pub cpu_percent: i64,
 }
 
 impl Resources {
@@ -648,6 +664,10 @@ impl Resources {
         int("cpu-quota", self.cpu_quota);
         int("pids-limit", self.pids_limit);
         int("blkio-weight", i64::from(self.blkio_weight));
+        int("cpu-rt-period", self.cpu_realtime_period);
+        int("cpu-rt-runtime", self.cpu_realtime_runtime);
+        int("cpu-count", self.cpu_count);
+        int("cpu-percent", self.cpu_percent);
         if let Some(s) = self.memory_swappiness {
             out.push(format!("memory-swappiness={s}"));
         }
@@ -682,6 +702,10 @@ impl Resources {
                 "cpu-quota" => r.cpu_quota = int()?,
                 "pids-limit" => r.pids_limit = int()?,
                 "blkio-weight" => r.blkio_weight = value.parse().ok()?,
+                "cpu-rt-period" => r.cpu_realtime_period = int()?,
+                "cpu-rt-runtime" => r.cpu_realtime_runtime = int()?,
+                "cpu-count" => r.cpu_count = int()?,
+                "cpu-percent" => r.cpu_percent = int()?,
                 "memory-swappiness" => r.memory_swappiness = Some(int()?),
                 "oom-kill-disable" => r.oom_kill_disable = value == "true",
                 "cpuset-cpus" => r.cpuset_cpus = value.to_string(),
@@ -983,6 +1007,23 @@ impl Run {
                     vec![self.pid.clone()]
                 },
             ),
+            ("annotations", self.annotations.clone()),
+            (
+                "isolation",
+                if self.isolation.is_empty() {
+                    Vec::new()
+                } else {
+                    vec![self.isolation.clone()]
+                },
+            ),
+            (
+                "runtime",
+                if self.runtime.is_empty() {
+                    Vec::new()
+                } else {
+                    vec![self.runtime.clone()]
+                },
+            ),
         ]
         .into_iter()
         .filter(|(_, v)| !v.is_empty())
@@ -1133,6 +1174,9 @@ impl Run {
                     "device-write-iops" => run.device_write_iops = values,
                     "docker-init" => run.docker_init = Some(values.first()?.parse().ok()?),
                     "pid" => run.pid = values.into_iter().next().unwrap_or_default(),
+                    "annotations" => run.annotations = values,
+                    "isolation" => run.isolation = values.into_iter().next().unwrap_or_default(),
+                    "runtime" => run.runtime = values.into_iter().next().unwrap_or_default(),
                     // One a later build added: not this one's to read.
                     _ => {}
                 }
@@ -1659,6 +1703,10 @@ mod tests {
                 cpuset_mems: "0".into(),
                 pids_limit: -1,
                 blkio_weight: 300,
+                cpu_realtime_period: 1000,
+                cpu_realtime_runtime: 950,
+                cpu_count: 2,
+                cpu_percent: 50,
             },
             read_only: true,
             tmpfs: vec!["/run:size=1m".into(), "/tmp".into()],
@@ -1690,6 +1738,9 @@ mod tests {
             device_write_bps: vec!["/dev/loop0:1".into()],
             device_read_iops: vec!["/dev/loop0:2".into()],
             device_write_iops: vec!["/dev/loop0:3".into()],
+            annotations: vec!["a=1".into(), "b".into()],
+            isolation: "default".into(),
+            runtime: "runc".into(),
             docker_init: Some(false),
             pid: "host".into(),
         };
@@ -1739,6 +1790,9 @@ mod tests {
             device_write_iops: Vec::new(),
             docker_init: None,
             pid: String::new(),
+            annotations: Vec::new(),
+            isolation: String::new(),
+            runtime: String::new(),
             ..run.clone()
         };
         let boundary = earlier.encode().len() - 4;

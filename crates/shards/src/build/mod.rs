@@ -5906,7 +5906,7 @@ mod memory_tests {
 #[cfg(test)]
 mod redact_tests {
     #[test]
-    fn credentials_are_redacted_as_buildkit_redacts_them() {
+    fn credentials_are_redacted() {
         let r = super::redact_credentials;
         assert_eq!(
             r("https://user:pw@host.tld/path.git"),
@@ -6096,7 +6096,7 @@ mod tests {
     /// Byte counts as tonistiigi/units' `%#g` writes them (measured, go1.26 in BuildKit's
     /// module).
     #[test]
-    fn byte_counts_read_as_buildkits() {
+    fn byte_counts_read() {
         for (b, want) in [
             (2 << 20, "2MiB"),
             (200 << 10, "200KiB"),
@@ -6116,7 +6116,7 @@ mod tests {
     /// nothing after; the tail keeps what came from the clipped write on; within its first
     /// second a stream may print its speed's worth.
     #[test]
-    fn streams_are_clipped_as_buildkitd_clips_them() {
+    fn step_streams_are_clipped() {
         let size = LogLimits { size: 10, speed: -1 };
         let mut c = Clip::new();
         assert_eq!(c.write(b"abcdef", size), b"abcdef");
@@ -6163,7 +6163,7 @@ mod tests {
     /// Lines are stamped when they begin, to 3 places, 2 past 10 s and 1 past 100; a
     /// line not ended is printed as far as it goes and continued as the rest comes.
     #[test]
-    fn build_refs_are_buildkits_ids() {
+    fn build_refs_are_ids() {
         let r = build_ref().unwrap();
         assert_eq!(r.len(), 25, "{r}");
         assert!(
@@ -6174,7 +6174,7 @@ mod tests {
     }
 
     #[test]
-    fn metadata_is_written_as_buildx_writes_it() {
+    fn build_metadata_is_written() {
         let manifest = Digest::parse(&format!("sha256:{}", "b".repeat(64))).unwrap();
         // As Go's MarshalIndent writes buildx's map: keys sorted, two spaces, the
         // descriptor's fields in its own order.

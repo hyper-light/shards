@@ -191,7 +191,7 @@ mod tests {
     /// into what an earlier one decoded, raw bundles as written, and nothing at all from
     /// one with an error anywhere.
     #[test]
-    fn responses_are_read_as_buildx_reads_them() {
+    fn github_responses_are_read() {
         for c in cases()["responses"].as_array().unwrap() {
             let (bundles, urls) = from_response(c["in"].as_str().unwrap().as_bytes());
             let bundles: Vec<String> = bundles
@@ -210,7 +210,7 @@ mod tests {
     }
 
     #[test]
-    fn bundle_urls_are_read_as_buildx_reads_them() {
+    fn bundle_urls_are_read() {
         for c in cases()["urls"].as_array().unwrap() {
             let url = c["url"].as_str().unwrap();
             assert_eq!(should_decode_snappy(url), c["snappy"].as_bool().unwrap(), "{url}");

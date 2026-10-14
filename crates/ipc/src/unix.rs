@@ -1341,7 +1341,7 @@ pub(crate) mod tests {
     /// below 34, which the C library keeps; SIGPWR and SIGSTKFLT too.
     #[cfg(any(target_os = "linux", target_os = "android"))]
     #[test]
-    fn linux_names_its_own_signals_as_docker_does() {
+    fn linux_names_its_own_real_time_signals() {
         let top = libc::SIGRTMAX();
         assert_eq!(linux_signal(top), u32::try_from(top).ok());
         assert_eq!(linux_signal(33), None);

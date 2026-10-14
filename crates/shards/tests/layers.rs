@@ -230,7 +230,7 @@ fn layers() -> (Vec<Vec<u8>>, String) {
 }
 
 #[test]
-fn a_guest_sees_layers_stacked_as_containerd_stacks_them() {
+fn a_guest_sees_its_image_layers_stacked() {
     if cannot_run_vms() {
         return;
     }

@@ -994,7 +994,7 @@ mod tests {
 
     /// mount.go's choices, step by step: what a key's takers get while others hold it.
     #[test]
-    fn records_are_taken_as_buildkit_takes_cache_directories() {
+    fn cache_records_are_taken() {
         let (_d, s) = store();
         let take = |sharing, id: &str| s.take_mount("/k", sharing, "cached mount /c", id).unwrap();
         // None yet: a new one.

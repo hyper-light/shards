@@ -78,6 +78,7 @@ pub fn verify(r: &Resources, cpus: usize, update: bool) -> Result<Vec<String>, S
     if r.cpu_quota > 0 && r.cpu_quota < 1000 {
         return Err("CPU cfs quota can not be less than 1ms (i.e. 1000)".into());
     }
+    microvm_cpus(r, cpus)?;
     let available = |list: &str, size: usize, what: &str, words: &str, have: &str| {
         // isCpusetListAvailable: at least 8,192 may be named, so that a list is not
         // read into an excessive set (CVE-2018-20699).
@@ -109,6 +110,71 @@ pub fn verify(r: &Resources, cpus: usize, update: bool) -> Result<Vec<String>, S
         return Err("Range of blkio weight is from 10 to 1000".into());
     }
     Ok(warnings)
+}
+
+/// What a microVM's own CPU flags may ask (D155), in shards' words: from 1 vCPU to as many
+/// as the host has CPUs, and only CPUs it has for `--cpuset-cpus`; a share of the host's CPU
+/// time from 1 to 100 percent, one cap of its CPU time at most; and a real-time budget the
+/// guest kernel takes, its runtime within its period where both are given (what the guest
+/// keeps of either, its kernel's own, init checks as the run starts).
+fn microvm_cpus(r: &Resources, cpus: usize) -> Result<(), String> {
+    let host = i64::try_from(cpus).unwrap_or(i64::MAX);
+    if !(0..=host).contains(&r.cpu_count) {
+        return Err(format!(
+            "--cpu-count {}: a microVM has from 1 vCPU to as many as its host has CPUs, {cpus}",
+            r.cpu_count
+        ));
+    }
+    if r.cpu_count > 0
+        && let Ok(named) = parse_uint_list(&r.cpuset_cpus, cpus)
+        && let Some(&highest) = named.iter().max()
+        && i64::try_from(highest).unwrap_or(i64::MAX) >= r.cpu_count
+    {
+        return Err(format!(
+            "--cpuset-cpus {}: a microVM of {} vCPUs has CPUs 0 to {}",
+            r.cpuset_cpus,
+            r.cpu_count,
+            r.cpu_count - 1
+        ));
+    }
+    if !(0..=100).contains(&r.cpu_percent) {
+        return Err(format!(
+            "--cpu-percent {}: a share of the host's CPU time is from 1 to 100 percent",
+            r.cpu_percent
+        ));
+    }
+    if r.cpu_percent > 0 {
+        for (given, flag) in [(r.nano_cpus, "--cpus"), (r.cpu_quota, "--cpu-quota")] {
+            if given != 0 {
+                return Err(format!(
+                    "--cpu-percent and {flag} each cap the microVM's CPU time: give one"
+                ));
+            }
+        }
+    }
+    // The kernel's ranges (kernel/sched/rt.c, sched_rt_period_us and sched_rt_runtime_us):
+    // a period of 1 microsecond or more, a runtime of 0 or more, each an int's. No runtime
+    // without a limit (-1): the guest's init and the run's agents share its CPUs.
+    let most = i64::from(i32::MAX);
+    if !(0..=most).contains(&r.cpu_realtime_period) {
+        return Err(format!(
+            "--cpu-rt-period {}: a real-time period is from 1 to {most} microseconds",
+            r.cpu_realtime_period
+        ));
+    }
+    if !(0..=most).contains(&r.cpu_realtime_runtime) {
+        return Err(format!(
+            "--cpu-rt-runtime {}: real-time time is from 0 to {most} microseconds a period",
+            r.cpu_realtime_runtime
+        ));
+    }
+    if r.cpu_realtime_period > 0 && r.cpu_realtime_runtime > r.cpu_realtime_period {
+        return Err(format!(
+            "--cpu-rt-runtime {} is more than its period, --cpu-rt-period {}",
+            r.cpu_realtime_runtime, r.cpu_realtime_period
+        ));
+    }
+    Ok(())
 }
 
 /// moby's parseUintList (pkg/sysinfo/sysinfo_linux.go): `7`, `1-6`, `0,3-4,7`, each
@@ -159,8 +225,9 @@ pub fn memory_swap(r: &Resources) -> i64 {
     }
 }
 
-/// The CPU time `r` allows per period, as cpu.max's quota and period, if it limits it.
-fn cpu_max(r: &Resources) -> Option<(i64, i64)> {
+/// The CPU time `r` allows per period, as cpu.max's quota and period, if it limits it, of
+/// a host of `cpus` CPUs.
+fn cpu_max(r: &Resources, cpus: usize) -> Option<(i64, i64)> {
     let (mut quota, mut period) = (0, 0);
     if r.nano_cpus > 0 {
         period = CPU_PERIOD;
@@ -172,7 +239,16 @@ fn cpu_max(r: &Resources) -> Option<(i64, i64)> {
     if r.cpu_quota != 0 {
         quota = r.cpu_quota;
     }
-    (quota != 0 || period != 0).then_some((quota, if period == 0 { CPU_PERIOD } else { period }))
+    let period = if period == 0 { CPU_PERIOD } else { period };
+    // `--cpu-percent` (D155): that share of all the host's CPUs' time in each period.
+    if r.cpu_percent > 0 {
+        let host = i64::try_from(cpus).unwrap_or(i64::MAX);
+        return Some((
+            r.cpu_percent.saturating_mul(host).saturating_mul(period) / 100,
+            period,
+        ));
+    }
+    (quota != 0 || r.nano_cpus > 0 || r.cpu_period != 0).then_some((quota, period))
 }
 
 /// opencontainers/cgroups ConvertCPUSharesToCgroupV2Value: shares (2 to 262,144, 1,024
@@ -196,9 +272,9 @@ fn cpu_weight(shares: u64) -> u64 {
     w
 }
 
-/// The workload's cgroup settings, `FILE=VALUE`, as runc's fs2 Manager.Set writes them,
-/// in its order: pids, memory, io, cpu, cpuset.
-pub fn cgroup(r: &Resources) -> Vec<Vec<u8>> {
+/// The workload's cgroup settings, `FILE=VALUE`, in the order runc's fs2 Manager.Set
+/// writes them: pids, memory, io, cpu, cpuset; of a host of `cpus` CPUs.
+pub fn cgroup(r: &Resources, cpus: usize) -> Vec<Vec<u8>> {
     let mut out: Vec<String> = Vec::new();
     // getPidsLimit: none for 0 or less, which the API takes as unset.
     if r.pids_limit > 0 {
@@ -229,7 +305,7 @@ pub fn cgroup(r: &Resources) -> Vec<Vec<u8>> {
     if weight != 0 {
         out.push(format!("cpu.weight={weight}"));
     }
-    if let Some((quota, period)) = cpu_max(r) {
+    if let Some((quota, period)) = cpu_max(r, cpus) {
         let quota = if quota > 0 {
             quota.to_string()
         } else {
@@ -246,12 +322,16 @@ pub fn cgroup(r: &Resources) -> Vec<Vec<u8>> {
     out.into_iter().map(String::into_bytes).collect()
 }
 
-/// The vCPUs a microVM has for `r`, of a host of `cpus`: as many as `--cpus` or the quota
-/// uses, and every CPU `--cpuset-cpus` names; with none of them, every CPU of the host's,
-/// as a Docker container sees and uses every one (D125); one at least, and no more than the
-/// host's.
+/// The vCPUs a microVM has for `r`, of a host of `cpus`: `--cpu-count`'s (D155); else as
+/// many as `--cpus`, `--cpu-percent` or the quota uses, and every CPU `--cpuset-cpus`
+/// names; with none of them, every CPU of the host's, as a container sees and uses every
+/// one (D125); one at least, and no more than the host's.
 pub fn vcpus(r: &Resources, cpus: usize) -> u32 {
-    let quota = cpu_max(r).filter(|&(quota, period)| quota > 0 && period > 0);
+    let host = i64::try_from(cpus).unwrap_or(i64::MAX);
+    if r.cpu_count > 0 {
+        return u32::try_from(r.cpu_count.min(host)).unwrap_or(1);
+    }
+    let quota = cpu_max(r, cpus).filter(|&(quota, period)| quota > 0 && period > 0);
     let mut need: i64 = if quota.is_none() && r.cpuset_cpus.is_empty() {
         i64::try_from(cpus).unwrap_or(i64::MAX)
     } else {
@@ -417,7 +497,7 @@ mod tests {
 
     /// dockerd 29.3.1's answers, on a cgroup v2 host of 18 CPUs.
     #[test]
-    fn resources_are_checked_as_dockerd_checks_them() {
+    fn resources_are_checked() {
         let swappy = Resources {
             memory_swappiness: Some(50),
             oom_kill_disable: true,
@@ -495,9 +575,9 @@ mod tests {
 
     /// runc's writes for what moby passes it.
     #[test]
-    fn limits_are_written_as_runc_writes_them() {
+    fn workload_limits_are_written() {
         let text = |r: &Resources| -> Vec<String> {
-            cgroup(r)
+            cgroup(r, 8)
                 .into_iter()
                 .map(|b| String::from_utf8(b).unwrap())
                 .collect()
@@ -540,10 +620,111 @@ mod tests {
             ["cpu.max=max 50000"]
         );
         assert!(text(&r()).is_empty());
+        // `--cpu-percent` (D155): that share of all 8 of the host's CPUs' time.
+        assert_eq!(
+            text(&Resources {
+                cpu_percent: 50,
+                ..r()
+            }),
+            ["cpu.max=400000 100000"]
+        );
         // ConvertCPUSharesToCgroupV2Value's fixed points, and its default.
         assert_eq!(
             (cpu_weight(2), cpu_weight(1024), cpu_weight(262_144)),
             (1, 100, 10_000)
+        );
+    }
+
+    /// A microVM's own CPU flags, as shards checks them (D155): vCPUs from 1 to the host's
+    /// CPUs and only CPUs it has named; a share of the host's CPU time from 1 to 100
+    /// percent, one cap at most; a real-time budget the guest kernel takes.
+    #[test]
+    fn a_microvms_own_cpu_flags_are_checked() {
+        let checked = |r: Resources| verify(&r, 8, false);
+        assert!(checked(Resources { cpu_count: 8, ..r() }).is_ok());
+        assert_eq!(
+            checked(Resources { cpu_count: 9, ..r() }),
+            Err("--cpu-count 9: a microVM has from 1 vCPU to as many as its host has CPUs, 8".into())
+        );
+        assert_eq!(
+            checked(Resources { cpu_count: -1, ..r() }),
+            Err("--cpu-count -1: a microVM has from 1 vCPU to as many as its host has CPUs, 8".into())
+        );
+        assert!(
+            checked(Resources {
+                cpu_count: 2,
+                cpuset_cpus: "0-1".into(),
+                ..r()
+            })
+            .is_ok()
+        );
+        assert_eq!(
+            checked(Resources {
+                cpu_count: 2,
+                cpuset_cpus: "1,3".into(),
+                ..r()
+            }),
+            Err("--cpuset-cpus 1,3: a microVM of 2 vCPUs has CPUs 0 to 1".into())
+        );
+        assert!(
+            checked(Resources {
+                cpu_percent: 100,
+                ..r()
+            })
+            .is_ok()
+        );
+        assert_eq!(
+            checked(Resources {
+                cpu_percent: 101,
+                ..r()
+            }),
+            Err("--cpu-percent 101: a share of the host's CPU time is from 1 to 100 percent".into())
+        );
+        assert_eq!(
+            checked(Resources {
+                cpu_percent: 50,
+                nano_cpus: 1_000_000_000,
+                ..r()
+            }),
+            Err("--cpu-percent and --cpus each cap the microVM's CPU time: give one".into())
+        );
+        assert_eq!(
+            checked(Resources {
+                cpu_percent: 50,
+                cpu_quota: 50_000,
+                ..r()
+            }),
+            Err("--cpu-percent and --cpu-quota each cap the microVM's CPU time: give one".into())
+        );
+        assert!(
+            checked(Resources {
+                cpu_realtime_period: 100_000,
+                cpu_realtime_runtime: 50_000,
+                ..r()
+            })
+            .is_ok()
+        );
+        assert_eq!(
+            checked(Resources {
+                cpu_realtime_period: 100_000,
+                cpu_realtime_runtime: 150_000,
+                ..r()
+            }),
+            Err("--cpu-rt-runtime 150000 is more than its period, --cpu-rt-period 100000".into())
+        );
+        assert_eq!(
+            checked(Resources {
+                cpu_realtime_runtime: -1,
+                ..r()
+            }),
+            Err("--cpu-rt-runtime -1: real-time time is from 0 to 2147483647 microseconds a period".into())
+        );
+        assert_eq!(
+            checked(Resources {
+                cpu_realtime_period: 1 << 31,
+                ..r()
+            }),
+            Err("--cpu-rt-period 2147483648: a real-time period is from 1 to 2147483647 microseconds".into())
         );
     }
 
@@ -592,6 +773,20 @@ mod tests {
             ),
             8
         );
+        // `--cpu-count`'s vCPUs, whatever else is asked; `--cpu-percent`'s as many as its
+        // share of the host's CPU time needs (D155).
+        let count = |cpu_count, nano_cpus| Resources {
+            cpu_count,
+            nano_cpus,
+            ..r()
+        };
+        assert_eq!(vcpus(&count(3, 0), 8), 3);
+        assert_eq!(vcpus(&count(3, 1_500_000_000), 8), 3);
+        assert_eq!(vcpus(&count(1, 0), 8), 1);
+        let percent = |cpu_percent| Resources { cpu_percent, ..r() };
+        assert_eq!(vcpus(&percent(50), 8), 4);
+        assert_eq!(vcpus(&percent(33), 18), 6);
+        assert_eq!(vcpus(&percent(100), 18), 18);
         assert_eq!(memory_mib(0, 256, None, 1), 256);
         assert_eq!(memory_mib(1, 256, None, 1), 256);
         // The default, grown by what its vCPUs keep: as much may be allocated in it as in

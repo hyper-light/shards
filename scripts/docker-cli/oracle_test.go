@@ -19,13 +19,14 @@ import (
 	"github.com/docker/cli/cli"
 	"github.com/docker/cli/cli/command"
 	"github.com/docker/cli/cli/command/commands"
+	"github.com/moby/moby/client"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 )
 
 // The flags shards serves, by command; the rest are hidden, as shards hides them.
 var served = map[string][]string{
-	"run": {"add-host", "blkio-weight", "blkio-weight-device", "cap-add", "cap-drop", "cidfile", "cpu-period", "cpu-quota", "cpu-shares", "cpus", "cpuset-cpus", "cpuset-mems", "detach", "detach-keys", "device", "device-cgroup-rule", "device-read-bps", "device-read-iops", "device-write-bps", "device-write-iops", "disable-content-trust", "dns", "dns-opt", "dns-option", "dns-search", "domainname", "entrypoint", "env", "env-file", "expose", "gpus", "group-add", "health-cmd", "health-interval", "health-retries", "health-start-interval", "health-start-period", "health-timeout", "help", "hostname", "init", "interactive", "ip", "ip6", "kernel-memory", "label", "label-file", "link-local-ip", "mac-address", "memory", "memory-reservation", "memory-swap", "memory-swappiness", "mount", "name", "net", "net-alias", "network", "network-alias", "no-healthcheck", "oom-kill-disable", "oom-score-adj", "pid", "pids-limit", "platform", "privileged", "publish", "publish-all", "pull", "quiet", "read-only", "restart", "rm", "security-opt", "shm-size", "sig-proxy", "stop-signal", "stop-timeout", "sysctl", "tmpfs", "tty", "ulimit", "user", "volume", "volume-driver", "volumes-from", "workdir"},
+	"run": {"add-host", "annotation", "blkio-weight", "blkio-weight-device", "cap-add", "cap-drop", "cidfile", "cpu-count", "cpu-percent", "cpu-period", "cpu-quota", "cpu-rt-period", "cpu-rt-runtime", "cpu-shares", "cpus", "cpuset-cpus", "cpuset-mems", "detach", "detach-keys", "device", "device-cgroup-rule", "device-read-bps", "device-read-iops", "device-write-bps", "device-write-iops", "disable-content-trust", "dns", "dns-opt", "dns-option", "dns-search", "domainname", "entrypoint", "env", "env-file", "expose", "gpus", "group-add", "health-cmd", "health-interval", "health-retries", "health-start-interval", "health-start-period", "health-timeout", "help", "hostname", "init", "interactive", "io-maxbandwidth", "io-maxiops", "ip", "ip6", "isolation", "kernel-memory", "label", "label-file", "link-local-ip", "mac-address", "memory", "memory-reservation", "memory-swap", "memory-swappiness", "mount", "name", "net", "net-alias", "network", "network-alias", "no-healthcheck", "oom-kill-disable", "oom-score-adj", "pid", "pids-limit", "platform", "privileged", "publish", "publish-all", "pull", "quiet", "read-only", "restart", "rm", "runtime", "security-opt", "shm-size", "sig-proxy", "stop-signal", "stop-timeout", "sysctl", "tmpfs", "tty", "ulimit", "user", "volume", "volume-driver", "volumes-from", "workdir"},
 	"ps":   {"all", "filter", "format", "help", "last", "latest", "no-trunc", "quiet", "size"},
 	"ls":   {"all", "filter", "format", "help", "last", "latest", "no-trunc", "quiet", "size"},
 	"wait": {"help"},
@@ -88,7 +89,7 @@ var served = map[string][]string{
 	"volume inspect":    {"format", "help"},
 	"volume rm":         {"force", "help"},
 	"volume prune":      {"all", "filter", "force", "help"},
-	"create": {"add-host", "blkio-weight", "blkio-weight-device", "cap-add", "cap-drop", "cidfile", "cpu-period", "cpu-quota", "cpu-shares", "cpus", "cpuset-cpus", "cpuset-mems", "device", "device-cgroup-rule", "device-read-bps", "device-read-iops", "device-write-bps", "device-write-iops", "disable-content-trust", "dns", "dns-opt", "dns-option", "dns-search", "domainname", "entrypoint", "env", "env-file", "expose", "gpus", "group-add", "health-cmd", "health-interval", "health-retries", "health-start-interval", "health-start-period", "health-timeout", "help", "hostname", "init", "interactive", "ip", "ip6", "kernel-memory", "label", "label-file", "link-local-ip", "mac-address", "memory", "memory-reservation", "memory-swap", "memory-swappiness", "mount", "name", "net", "net-alias", "network", "network-alias", "no-healthcheck", "oom-kill-disable", "oom-score-adj", "pid", "pids-limit", "platform", "privileged", "publish", "publish-all", "pull", "quiet", "read-only", "restart", "rm", "security-opt", "shm-size", "stop-signal", "stop-timeout", "sysctl", "tmpfs", "tty", "ulimit", "user", "volume", "volume-driver", "volumes-from", "workdir"},
+	"create": {"add-host", "annotation", "blkio-weight", "blkio-weight-device", "cap-add", "cap-drop", "cidfile", "cpu-count", "cpu-percent", "cpu-period", "cpu-quota", "cpu-rt-period", "cpu-rt-runtime", "cpu-shares", "cpus", "cpuset-cpus", "cpuset-mems", "device", "device-cgroup-rule", "device-read-bps", "device-read-iops", "device-write-bps", "device-write-iops", "disable-content-trust", "dns", "dns-opt", "dns-option", "dns-search", "domainname", "entrypoint", "env", "env-file", "expose", "gpus", "group-add", "health-cmd", "health-interval", "health-retries", "health-start-interval", "health-start-period", "health-timeout", "help", "hostname", "init", "interactive", "io-maxbandwidth", "io-maxiops", "ip", "ip6", "isolation", "kernel-memory", "label", "label-file", "link-local-ip", "mac-address", "memory", "memory-reservation", "memory-swap", "memory-swappiness", "mount", "name", "net", "net-alias", "network", "network-alias", "no-healthcheck", "oom-kill-disable", "oom-score-adj", "pid", "pids-limit", "platform", "privileged", "publish", "publish-all", "pull", "quiet", "read-only", "restart", "rm", "runtime", "security-opt", "shm-size", "stop-signal", "stop-timeout", "sysctl", "tmpfs", "tty", "ulimit", "user", "volume", "volume-driver", "volumes-from", "workdir"},
 	"container create": {
 		"disable-content-trust", "entrypoint", "env", "help",
 		"hostname", "init", "interactive", "kernel-memory", "name", "net", "network", "pull",
@@ -473,6 +474,24 @@ var cases = [][]string{
 	{"run", "--pid", "foo", "alpine"},
 	{"run", "--pid"},
 	{"create", "--pid", "host", "alpine"},
+	{"run", "--annotation", "a=1", "--annotation", "b", "--annotation", "=x", "alpine"},
+	{"create", "--annotation", "k=v", "--annotation", "k=w", "alpine"},
+	{"run", "--cpu-count", "2", "alpine"},
+	{"run", "--cpu-count", "0", "alpine"},
+	{"run", "--cpu-count", "x", "alpine"},
+	{"run", "--cpu-percent", "50", "--io-maxiops", "5", "--cpu-count", "1", "alpine"},
+	{"run", "--io-maxbandwidth", "10m", "alpine"},
+	{"run", "--io-maxbandwidth", "x", "alpine"},
+	{"run", "--io-maxiops", "-1", "alpine"},
+	{"run", "--cpu-count", "2", "--help"},
+	{"create", "--cpu-percent", "1", "--isolation", "hyperv", "alpine"},
+	{"run", "--cpu-rt-period", "1000", "--cpu-rt-runtime", "950", "alpine"},
+	{"run", "--cpu-rt-runtime", "x", "alpine"},
+	{"run", "--isolation", "default", "alpine"},
+	{"run", "--isolation", "hyperv", "alpine"},
+	{"run", "--isolation="},
+	{"run", "--runtime", "runc", "alpine"},
+	{"create", "--runtime", "io.containerd.runc.v2", "--isolation", "process", "alpine"},
 	{"run", "--disable-content-trust", "alpine"},
 	{"run", "--kernel-memory", "0", "alpine"},
 	{"run", "-h", "host", "-u", "1000:1000", "-w", "/srv", "alpine", "pwd"},
@@ -597,6 +616,21 @@ func root(t *testing.T, stdout, stderr *bytes.Buffer) *cobra.Command {
 	cmd.SetErr(stderr)
 	cli.SetupRootCommand(cmd)
 	commands.AddCommands(cmd, dockerCli)
+	// As the CLI checks and hides what its daemon does not support (docker.go, isSupported
+	// in PersistentPreRunE and hideUnsupportedFeatures in setHelpFunc), against shards'
+	// daemon: Linux, of the CLI's own API version, without experimental features.
+	cmd.PersistentPreRunE = func(c *cobra.Command, _ []string) error {
+		return isSupported(c, linuxDaemon{})
+	}
+	defaultHelp := cmd.HelpFunc()
+	cmd.SetHelpFunc(func(c *cobra.Command, args []string) {
+		if err := isSupported(c, linuxDaemon{}); err != nil {
+			c.Println(err)
+			return
+		}
+		hideUnsupportedFeatures(c, linuxDaemon{})
+		defaultHelp(c, args)
+	})
 	var visit func(c *cobra.Command)
 	visit = func(c *cobra.Command) {
 		for _, sub := range c.Commands() {
@@ -641,6 +675,15 @@ func root(t *testing.T, stdout, stderr *bytes.Buffer) *cobra.Command {
 	visit(cmd)
 	return cmd
 }
+
+// linuxDaemon is shards' daemon as the CLI's support checks see it (versionDetails): a
+// Docker Engine on Linux, of the CLI's own API version (client.MaxAPIVersion, which a CLI
+// with no connection reports too), its experimental features off.
+type linuxDaemon struct{}
+
+func (linuxDaemon) CurrentVersion() string { return client.MaxAPIVersion }
+
+func (linuxDaemon) ServerInfo() command.ServerInfo { return command.ServerInfo{OSType: "linux"} }
 
 func contains(list []string, s string) bool {
 	i := sort.SearchStrings(list, s)

@@ -57,6 +57,9 @@ CASES = [
      "type=tmpfs,dst=/t,tmpfs-size=1m,tmpfs-mode=1770", "--mount",
      "type=volume,src=shards-inspect-oracle-2,dst=/v,volume-nocopy,volume-label=a=b",
      "--volume-driver", "local"],
+    ["create", "--annotation", "a=1", "--annotation", "b", "--annotation", "a=2",
+     "--isolation", "default", "--runtime", "runc"],
+    ["create", "--isolation", "DEFAULT", "--runtime", "io.containerd.runc.v2"],
 ]
 # The named volumes the cases make, removed after.
 VOLUMES = ["shards-inspect-oracle", "shards-inspect-oracle-2"]
@@ -133,7 +136,8 @@ def main():
                  "--cpus", "-c", "--cpuset-cpus", "--cpuset-mems", "--pids-limit",
                  "--memory-swappiness", "--cpu-period", "--cpu-quota", "--memory-swap",
                  "--tmpfs", "--shm-size", "--ulimit", "--sysctl", "--cap-add", "--cap-drop",
-                 "--group-add", "--oom-score-adj", "-v", "--mount", "--volume-driver"}
+                 "--group-add", "--oom-score-adj", "-v", "--mount", "--volume-driver",
+                 "--annotation", "--isolation", "--runtime"}
         while words:
             w = words.pop(0)
             if w in takes:

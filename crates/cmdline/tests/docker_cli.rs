@@ -98,6 +98,40 @@ const EXTENDED: &[(&str, &str)] = &[
     ("tag", CONVERT),
 ];
 
+/// Docker's flags for its VM-isolated containers, which its CLI hides and refuses against
+/// a Linux daemon: shards serves them, as every run is a microVM (`--cpu-count` its vCPUs,
+/// `--cpu-percent` a share of the host's CPU time), each a deliberate difference.
+const MICROVM_FLAGS: [&str; 2] = ["cpu-count", "cpu-percent"];
+
+/// What the CLI says of a flag of Windows' daemons against a Linux one.
+const WINDOWS_ONLY: &str = "is only supported on a Docker daemon running on windows";
+
+/// `got` (help), without the lines of [`MICROVM_FLAGS`], which the CLI hides: each flag's
+/// line and the lines its text wraps onto.
+fn without_microvm_flags(got: &str) -> String {
+    let mut out = Vec::new();
+    let mut skipping = false;
+    for line in got.lines() {
+        let flag = line
+            .trim_start()
+            .strip_prefix("--")
+            .map(|f| f.split(' ').next().unwrap_or_default());
+        if let Some(name) = flag {
+            skipping = MICROVM_FLAGS.contains(&name);
+        } else if !line.starts_with("          ") {
+            skipping = false;
+        }
+        if !skipping {
+            out.push(line);
+        }
+    }
+    let mut text = out.join("\n");
+    if got.ends_with('\n') {
+        text.push('\n');
+    }
+    text
+}
+
 /// `got`, with the section shards adds to `argv`'s help taken off: that section must be
 /// what [`EXTENDED`] says, and the rest is the CLI's.
 fn without_extensions<'a>(argv: &[String], got: &'a str) -> &'a str {
@@ -112,7 +146,7 @@ fn without_extensions<'a>(argv: &[String], got: &'a str) -> &'a str {
 }
 
 #[test]
-fn command_lines_are_answered_as_the_docker_cli_answers_them() {
+fn command_lines_are_answered_byte_for_byte() {
     let golden: serde_json::Value = serde_json::from_str(include_str!("docker-cli.json")).unwrap();
     let cases = golden.as_array().unwrap();
     assert!(cases.len() > 100, "{} cases", cases.len());
@@ -151,6 +185,17 @@ fn command_lines_are_answered_as_the_docker_cli_answers_them() {
             assert_eq!(status, 0, "{argv:?}");
             continue;
         }
+        // A flag of Windows' VM-isolated containers, which the CLI refuses against a Linux
+        // daemon: shards runs it, its microVM's (MICROVM_FLAGS) or one it does not serve
+        // yet that asks for nothing (its default), shows its help, or says it does not
+        // serve it yet.
+        if want.0.contains(WINDOWS_ONLY) || want.1.contains(WINDOWS_ONLY) {
+            assert!(
+                refusal || stdout.starts_with("RUN") || stdout.contains("Usage:"),
+                "{argv:?}: {stdout:?} {stderr:?}"
+            );
+            continue;
+        }
         if refusal {
             // The CLI ran it; shards says which flags it does not serve yet.
             assert!(
@@ -161,12 +206,9 @@ fn command_lines_are_answered_as_the_docker_cli_answers_them() {
             refused += 1;
             continue;
         }
+        let shown = without_microvm_flags(without_extensions(&argv, &stdout));
         assert_eq!(
-            (
-                without_extensions(&argv, &stdout),
-                stderr.as_str(),
-                u64::from(status)
-            ),
+            (shown.as_str(), stderr.as_str(), u64::from(status)),
             want,
             "{argv:?}"
         );

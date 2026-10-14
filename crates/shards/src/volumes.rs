@@ -1271,7 +1271,7 @@ mod tests {
 
     /// moby's linux_parser_test.go cases, and what dockerd says of them.
     #[test]
-    fn binds_and_volumes_read_as_dockerd_reads_them() {
+    fn binds_and_volumes_are_read() {
         let ok = |raw: &str| parse_raw(raw, "").unwrap();
         let b = ok("/host:/ctr:ro");
         assert_eq!(

@@ -354,7 +354,7 @@ mod tests {
     /// the host's and the bridge's, a freed one reused; gateways the span's first free
     /// address; members' the lowest free; and Status' counts.
     #[test]
-    fn addresses_are_given_as_dockers_ipam_gives_them() {
+    fn network_addresses_are_given_lowest_first() {
         let none = BTreeMap::new();
         // The host on 172.17/16, the bridge on 172.18/16: the next is 172.19.
         let taken = [p("172.17.0.0/16"), p("172.18.0.0/16")];

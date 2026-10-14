@@ -63,6 +63,32 @@ pub fn main() -> ! {
             }
             0
         }
+        // Real-time scheduling asked for: SCHED_FIFO at priority 1, or the errno that
+        // refused it.
+        "fifo" => {
+            // SAFETY: sched_param is plain integers, all zero valid (musl's has more than
+            // the priority).
+            let mut param: libc::sched_param = unsafe { std::mem::zeroed() };
+            param.sched_priority = 1;
+            // The system call itself, as glibc makes it: musl's wrapper says ENOSYS without
+            // asking the kernel (src/sched/sched_setscheduler.c).
+            // SAFETY: sched_setscheduler(2) reads the sched_param it is given.
+            let said = if unsafe {
+                libc::syscall(
+                    libc::SYS_sched_setscheduler,
+                    0,
+                    libc::SCHED_FIFO,
+                    &raw const param,
+                )
+            } == 0
+            {
+                "ok".to_string()
+            } else {
+                format!("errno {}", io::Error::last_os_error().raw_os_error().unwrap_or(0))
+            };
+            let _ = writeln!(io::stdout(), "fifo: {said}");
+            0
+        }
         "stat" => stat(args.get(1..).unwrap_or_default()),
         "tree" => tree(arg(1)),
         "ps" => ps(),

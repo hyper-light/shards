@@ -1367,7 +1367,7 @@ mod tests {
     }
 
     #[test]
-    fn existence_is_asked_as_containerd_asks_it() {
+    fn existence_is_asked_by_head() {
         use std::sync::Arc;
         use std::sync::atomic::{AtomicU16, Ordering};
         let ours = format!("sha256:{}", "a".repeat(64));
@@ -1530,7 +1530,7 @@ mod tests {
     /// Blobs are asked for compressed for their transfer and decoded as containerd's
     /// fetcher decodes them; a resumed download asks for the blob as it is.
     #[test]
-    fn transfer_encodings_are_decoded_as_containerd_decodes_them() {
+    fn transfer_encodings_are_decoded() {
         use std::io::Write as _;
         use std::sync::atomic::{AtomicUsize, Ordering};
         use std::sync::{Arc, Mutex};
@@ -1687,7 +1687,7 @@ mod tests {
     /// What dockerd says of a refusal, from its status and body, as translateRegistryError
     /// says it of what containerd decoded (errcode.go).
     #[test]
-    fn refusals_are_said_in_dockerds_words() {
+    fn refusals_are_said_with_the_registrys_words() {
         let whole = |status, body: &str| match dockerd(status, body.as_bytes()) {
             Said::Instead(said) => said,
             Said::Before(word) => format!("{word}: <the error>"),
@@ -1791,7 +1791,7 @@ mod tests {
     /// URL asked; a manifest is put with 200, 201 or 204 only; a 429's rate limits follow
     /// what the registry says of it.
     #[test]
-    fn refusals_are_worded_as_containerd_words_them() {
+    fn refusals_are_worded_in_full() {
         let serving = |answer: &'static [u8]| {
             let server = route(None, move |_| Some((answer.to_vec(), After::Keep)));
             let reference = Reference::parse(&format!("127.0.0.1:{}/test/image:v1", server.port)).unwrap();
@@ -1853,7 +1853,7 @@ mod tests {
              (limit 100 per 21600 s; 0 left)"
         );
         assert_eq!(
-            limited.in_dockerds_words().to_string(),
+            limited.into_reported().to_string(),
             "error from registry: You have reached your pull rate limit. (limit 100 per 21600 s; 0 left)"
         );
         let _ = std::fs::remove_dir_all(&dir);

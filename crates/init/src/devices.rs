@@ -1065,7 +1065,7 @@ mod tests {
 
     /// DevicesFromPath over the VM's devices: a device, a directory's, none.
     #[test]
-    fn devices_are_found_as_dockerd_finds_a_hosts() {
+    fn devices_are_found_in_the_microvm() {
         let vm = vec![
             node("/dev/fuse", Kind::Char, 10, 229),
             node("/dev/net/tun", Kind::Char, 10, 200),
@@ -1135,7 +1135,7 @@ mod tests {
 
     /// AppendDevicePermissionsFromCgroupRules' refusals.
     #[test]
-    fn cgroup_rules_are_read_as_dockerd_reads_them() {
+    fn cgroup_rules_are_read_and_refused() {
         assert_eq!(cgroup_rule("c 1:3 r").unwrap().perms, dc::READ);
         assert_eq!(cgroup_rule("b *:* rwm").unwrap().major, -1);
         assert_eq!(

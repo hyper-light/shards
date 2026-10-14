@@ -543,6 +543,10 @@ fn request(parsed: &Parsed) -> Result<Run, String> {
         cpuset_mems: parsed.string("cpuset-mems").to_string(),
         pids_limit: parsed.int("pids-limit"),
         blkio_weight: parsed.string("blkio-weight").parse().unwrap_or(0),
+        cpu_realtime_period: parsed.int("cpu-rt-period"),
+        cpu_realtime_runtime: parsed.int("cpu-rt-runtime"),
+        cpu_count: parsed.int("cpu-count"),
+        cpu_percent: parsed.int("cpu-percent"),
     };
     let (cap_add, cap_drop) = effective_caps(parsed.many("cap-add"), parsed.many("cap-drop"));
     let (security_opt, system_paths) = security_opts(parsed.many("security-opt"))?;
@@ -643,6 +647,9 @@ fn request(parsed: &Parsed) -> Result<Run, String> {
         // HostConfig.Init, set where the flag is given (container/opts.go parse).
         docker_init: parsed.changed("init").then(|| parsed.bool("init")),
         pid: pid.to_string(),
+        annotations: parsed.many("annotation").to_vec(),
+        isolation: parsed.string("isolation").to_string(),
+        runtime: parsed.string("runtime").to_string(),
         // The flag's default is DOCKER_DEFAULT_PLATFORM (docker/cli run.go, create.go).
         platform: if parsed.changed("platform") {
             parsed.string("platform").to_string()

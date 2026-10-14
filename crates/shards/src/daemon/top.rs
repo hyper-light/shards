@@ -236,7 +236,7 @@ mod tests {
     }
 
     #[test]
-    fn tables_are_taken_apart_as_dockerd_takes_them() {
+    fn top_tables_are_taken_apart() {
         let dump = dump();
         let t = table(&ps(&dump, &["-ef"], 0).unwrap()).unwrap();
         assert_eq!(
@@ -267,7 +267,7 @@ mod tests {
     }
 
     #[test]
-    fn failures_read_as_dockerd_reports_them() {
+    fn top_failures_read_as_reported() {
         let dump = dump();
         assert_eq!(
             ps(&dump, &["-Q"], 0).unwrap_err(),

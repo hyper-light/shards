@@ -403,7 +403,7 @@ mod tests {
 
     /// Specifiers parse, normalize and format as containerd's do.
     #[test]
-    fn specifiers_parse_as_containerds() {
+    fn platform_specifiers_parse() {
         let build = Platform::new("linux", "arm64");
         let p = |s: &str| parse(s.as_bytes(), &build).map(|p| String::from_utf8(format_all(&p)).unwrap());
         assert_eq!(p("linux/amd64").unwrap(), "linux/amd64");

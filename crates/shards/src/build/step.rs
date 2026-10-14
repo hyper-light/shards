@@ -338,7 +338,7 @@ mod tests {
     }
 
     #[test]
-    fn a_failure_is_worded_as_buildkit_words_it() {
+    fn a_step_failure_is_worded() {
         let args = [
             b"/bin/sh".to_vec(),
             b"-c".to_vec(),

@@ -2,7 +2,7 @@
 //! daemon/list.go: Containers, foldFilter, filterByNameIDMatches, includeContainerInList),
 //! its `--filter`s included.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::HashSet;
 
 use shards_cmdline::flags::Parsed;
 
@@ -120,7 +120,6 @@ impl<D: crate::containers::Disk> Daemon<D> {
             filters.matcher("id"),
             filters.matcher("status"),
         );
-        let no_annotations = BTreeMap::new();
         let mut listed = Vec::new();
         for c in candidates {
             if let Some(b) = &before {
@@ -147,8 +146,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
             if task_filter && is_task {
                 continue;
             }
-            // Nor has annotations: `--annotation` is unserved.
-            if !filters.kv("label", &c.labels) || !filters.kv("annotation", &no_annotations) {
+            if !filters.kv("label", &c.labels) || !filters.kv("annotation", &c.annotations) {
                 continue;
             }
             if limit.is_some_and(|l| listed.len() == l) {
@@ -337,7 +335,7 @@ mod tests {
 
     /// moby's port_test.go cases for ParsePortRange, and its words.
     #[test]
-    fn port_ranges_parse_as_mobys_do() {
+    fn port_ranges_parse() {
         assert_eq!(
             shards_cmdline::ports::parse_port_range("80"),
             Ok((80, 80, "tcp".into()))

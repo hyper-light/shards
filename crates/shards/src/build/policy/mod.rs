@@ -2164,7 +2164,7 @@ mod tests {
 
     // build/build_test.go's TestWithPolicyConfig cases, as withPolicyConfig answers them.
     #[test]
-    fn policy_flags_combine_as_buildx_combines_them() {
+    fn policy_flags_combine() {
         let default = Opt {
             files: vec![FileSpec {
                 filename: "Dockerfile.rego".into(),
@@ -2228,7 +2228,7 @@ mod tests {
 
     // validate.go's trimKey and collectUnknowns, as buildx's tests pin them.
     #[test]
-    fn unknowns_are_collected_as_buildx_collects_them() {
+    fn policy_unknowns_are_collected() {
         assert_eq!(trim_key("input.image.labels[\"a\"]"), "image.labels");
         assert_eq!(trim_key("input.image"), "image");
         assert_eq!(

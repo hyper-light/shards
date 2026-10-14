@@ -242,7 +242,7 @@ fn a_dockerfiles_error_carries_the_source_docker_dockerfile_gives() {
 }
 
 #[test]
-fn a_dockerfiles_build_is_planned_as_docker_dockerfile_plans_it() {
+fn a_dockerfiles_build_is_planned() {
     let text = testdata("build.Dockerfile");
     let planned = plan::plan(&text, &captured_options(), &Captured).unwrap();
     let dockerfile = pb::definition(&dockerfile_definition(), &Carried::default()).unwrap();

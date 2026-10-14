@@ -208,7 +208,7 @@ mod tests {
 
     /// Docker 29.3.1's own `docker version`, its values given, laid out the same.
     #[test]
-    fn version_prints_as_the_docker_cli_prints_it() {
+    fn version_lays_out_its_values() {
         let c = Client {
             platform: None,
             version: "29.3.1".into(),

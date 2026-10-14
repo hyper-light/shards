@@ -465,7 +465,7 @@ mod tests {
     }
 
     #[test]
-    fn names_are_answered_as_dockers_embedded_dns_answers() {
+    fn names_are_answered_by_the_embedded_resolver() {
         let n = names();
         let a = n.answer(&query("WEB", TYPE_A)).unwrap();
         assert_eq!(&a[..2], &[0x12, 0x34]);

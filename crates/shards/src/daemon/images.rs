@@ -2163,7 +2163,7 @@ mod tests {
     /// The reference filter as docker-v29.8.1's setupFilters matches: familiar and
     /// canonical, with and without the tag; a pattern Go cannot read fails the name.
     #[test]
-    fn references_match_as_dockerd_matches_them() {
+    fn reference_filters_match_familiar_and_canonical_names() {
         let r = shards_image::reference::Reference::parse_normalized("alpine:3.22").unwrap();
         for pattern in [
             "alpine",
@@ -2213,7 +2213,7 @@ mod tests {
     /// name with a digest only in its repository, by name with `latest` as its tag, and
     /// by an ID's prefix of 4 or more hex digits, refused where it is not one image's.
     #[test]
-    fn images_resolve_as_dockerd_resolves_them() {
+    fn images_resolve_by_digest_id_and_name() {
         let (a, b, c) = (
             "aaaa1".repeat(12) + "aaaa",
             "aaaa2".repeat(12) + "aaaa",
@@ -2268,7 +2268,7 @@ mod tests {
     }
 
     #[test]
-    fn trees_show_as_docker_images_shows_them() {
+    fn image_trees_show_their_platforms() {
         let golden = golden();
         let trees = golden["trees"].as_array().unwrap();
         assert!(trees.len() > 60);

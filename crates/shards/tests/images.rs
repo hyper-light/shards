@@ -37,7 +37,7 @@ fn now_ns() -> u128 {
 }
 
 #[test]
-fn images_run_from_a_registry_as_docker_run_runs_them() {
+fn images_run_from_a_registry() {
     if cannot_run_vms() {
         eprintln!("SKIP: this host cannot run VMs");
         return;

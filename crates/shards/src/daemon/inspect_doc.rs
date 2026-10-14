@@ -816,12 +816,14 @@ fn host_config(f: &Facts<'_>) -> Value {
                 vec![Value::Uint(u64::from(rows)), Value::Uint(u64::from(cols))],
             ),
         )
-        .tagged(
-            "Annotations",
-            Some("Annotations"),
-            true,
-            Value::NilMap(Kind::String),
-        )
+        .tagged("Annotations", Some("Annotations"), true, {
+            let annotations = crate::daemon::annotations(run);
+            if annotations.is_empty() {
+                Value::NilMap(Kind::String)
+            } else {
+                Value::string_map(annotations)
+            }
+        })
         .field("CapAdd", strs(&run.cap_add, run.cap_add.is_empty()))
         .field("CapDrop", strs(&run.cap_drop, run.cap_drop.is_empty()))
         .field("CgroupnsMode", s("private"))
@@ -902,7 +904,7 @@ fn host_config(f: &Facts<'_>) -> Value {
         )
         .tagged("Runtime", Some("Runtime"), true, s("shards"))
         .tagged("Umask", Some("Umask"), true, Struct::nil("uint32"))
-        .field("Isolation", s(""))
+        .field("Isolation", s(&run.isolation))
         // Resources, embedded, as dockerd keeps them: swap twice the memory where only
         // memory is limited (adaptContainerSettings), a pids limit of 0 or less unset
         // (postContainersCreate), and swappiness discarded on cgroup v2.
@@ -921,8 +923,18 @@ fn host_config(f: &Facts<'_>) -> Value {
         .field("BlkioDeviceWriteIOps", io_devices(&run.device_write_iops, "Rate"))
         .tagged("CPUPeriod", Some("CpuPeriod"), false, int(res.cpu_period))
         .tagged("CPUQuota", Some("CpuQuota"), false, int(res.cpu_quota))
-        .tagged("CPURealtimePeriod", Some("CpuRealtimePeriod"), false, int(0))
-        .tagged("CPURealtimeRuntime", Some("CpuRealtimeRuntime"), false, int(0))
+        .tagged(
+            "CPURealtimePeriod",
+            Some("CpuRealtimePeriod"),
+            false,
+            int(res.cpu_realtime_period),
+        )
+        .tagged(
+            "CPURealtimeRuntime",
+            Some("CpuRealtimeRuntime"),
+            false,
+            int(res.cpu_realtime_runtime),
+        )
         .field("CpusetCpus", s(&res.cpuset_cpus))
         .field("CpusetMems", s(&res.cpuset_mems))
         .field("Devices", devices(run))
@@ -969,8 +981,8 @@ fn host_config(f: &Facts<'_>) -> Value {
                     .collect(),
             ),
         )
-        .tagged("CPUCount", Some("CpuCount"), false, int(0))
-        .tagged("CPUPercent", Some("CpuPercent"), false, int(0))
+        .tagged("CPUCount", Some("CpuCount"), false, int(res.cpu_count))
+        .tagged("CPUPercent", Some("CpuPercent"), false, int(res.cpu_percent))
         .field("IOMaximumIOps", Value::Uint(0))
         .field("IOMaximumBandwidth", Value::Uint(0))
         .tagged("Mounts", Some("Mounts"), true, api_mounts(&run.mounts))
@@ -1447,7 +1459,7 @@ mod tests {
     /// shards' CLI makes it, into the document dockerd made of it, but for what only a
     /// host or a moment can say, and what is shards' own (DEVIATIONS).
     #[test]
-    fn documents_are_dockerds() {
+    fn inspect_documents_hold_what_each_microvm_was_made_with() {
         let golden: serde_json::Value = serde_json::from_str(include_str!("testdata/inspect.json")).unwrap();
         let image = &golden["image_config"];
         for case in golden["cases"].as_array().unwrap() {
@@ -1493,6 +1505,7 @@ mod tests {
                 ports: Vec::new(),
                 image_id: Some(golden["image_id"].as_str().unwrap().to_owned()),
                 labels: Default::default(),
+                annotations: crate::daemon::annotations(&run),
                 oom_killed: false,
                 mounts,
                 restart: crate::containers::Restart {

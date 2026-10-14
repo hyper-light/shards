@@ -15,7 +15,7 @@ fn utc(secs: i64) -> String {
 }
 
 #[test]
-fn certificates_read_and_verify_as_buildx_reads_and_verifies_them() {
+fn certificates_read_and_verify() {
     let answers: serde_json::Value = serde_json::from_str(include_str!("../testdata/certs.json")).unwrap();
     let b64 = base64::engine::general_purpose::STANDARD;
     let quote = |b: &[u8]| shards_dockerfile::go::quote(b);

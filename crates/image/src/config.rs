@@ -914,7 +914,7 @@ mod tests {
     /// Every case scripts/image-config/generate records from moby's own types, read as
     /// each of the three: its error, or all it holds, nil and empty told apart.
     #[test]
-    fn configs_read_as_moby_reads_them() {
+    fn configs_fold_their_keys() {
         let data: Json = serde_json::from_str(include_str!("../testdata/image-config.json")).unwrap();
         let cases = data["cases"].as_array().unwrap();
         assert!(cases.len() > 300, "{}", cases.len());
@@ -958,7 +958,7 @@ mod tests {
 
     /// network.ParsePort's own cases (port_test.go), and its normalizing.
     #[test]
-    fn ports_parse_as_moby_parses_them() {
+    fn exposed_ports_parse() {
         for (s, want) in [
             ("80", Some("80/tcp")),
             ("80/tcp", Some("80/tcp")),

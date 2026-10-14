@@ -320,7 +320,7 @@ fn a_builders_memory_is_plugged_as_its_build_needs_it() {
     let (stepped, booted) = (limits_said(&built.stderr), limits_said(&full.stdout));
     let mut wrong = Vec::new();
     // Processes are Docker's, unlimited, whatever the memory
-    // (`run_steps_start_with_dockers_limits`).
+    // (`run_steps_start_with_high_file_and_process_limits`).
     for name in shards_testguest::LIMITS
         .iter()
         .copied()
@@ -466,7 +466,7 @@ fn a_killed_build_takes_its_builder_with_it() {
 /// directory made for the step's user; and what a step changes is its layer, a removal a
 /// whiteout, as the image then boots.
 #[test]
-fn run_steps_run_in_a_builder_as_buildkit_runs_them() {
+fn run_steps_run_in_a_builder_microvm() {
     if cannot_run_vms() {
         return;
     }
@@ -717,7 +717,7 @@ fn run_steps_take_the_builds_secrets_ulimits_and_entitlements() {
 /// files 1048576, processes and locked memory unlimited, no core file; not the builder's
 /// kernel's own (1024 of 4096 files, processes and locked memory by its memory).
 #[test]
-fn run_steps_start_with_dockers_limits() {
+fn run_steps_start_with_high_file_and_process_limits() {
     if cannot_run_vms() {
         return;
     }
@@ -1293,7 +1293,7 @@ fn a_dockerfile_error_shows_its_lines() {
 /// upper one, which the builder's empty directory makes up); a source the context lacks
 /// fails the build before its step runs, as BuildKit's content checksum does.
 #[test]
-fn steps_bind_one_layer_trees_as_buildkit_binds_them() {
+fn steps_bind_one_layer_trees() {
     if cannot_run_vms() {
         return;
     }
@@ -1792,7 +1792,7 @@ fn an_images_stop_signal_is_what_stop_sends() {
 /// or `(unhealthy)` once failures, or probes past their timeout, reach its retries; a
 /// run's `--health-*` overrides the image's.
 #[test]
-fn an_images_healthcheck_runs_as_dockerd_runs_it() {
+fn an_images_healthcheck_probes_its_microvm() {
     if cannot_run_vms() {
         return;
     }
@@ -2127,7 +2127,7 @@ fn call_answers_the_frontends_subrequests() {
 /// given its parameters, and is among the provenance's materials. A local output holds the
 /// SBOM beside its files, and no provenance (inline-only).
 #[test]
-fn sboms_are_scanned_as_buildkit_scans_them() {
+fn sboms_are_scanned() {
     if cannot_run_vms() {
         return;
     }
@@ -2437,7 +2437,7 @@ fn provenance_max_records_a_builds_steps_and_layers() {
 }
 
 #[test]
-fn builds_attest_their_provenance_as_docker_does() {
+fn builds_attest_their_provenance() {
     if cannot_run_vms() {
         return;
     }
@@ -3232,7 +3232,7 @@ fn files_the_frontend_reads_are_read_whole() {
 /// step ends; BUILDKIT_STEP_LOG_MAX_SIZE and _MAX_SPEED set the limits as buildkitd reads
 /// them, and under them nothing is clipped.
 #[test]
-fn a_steps_output_is_clipped_as_buildkitd_clips_it() {
+fn a_steps_output_is_clipped() {
     if cannot_run_vms() {
         return;
     }
@@ -3342,7 +3342,7 @@ fn add_checks_a_checksum_by_its_own_algorithm() {
 ///   checksum that differs (whatever the status) while the snapshot is made;
 /// - a failed fetch fails the build at once, while another still hangs.
 #[test]
-fn add_fetches_urls_as_buildkit_does() {
+fn add_fetches_urls() {
     if cannot_run_vms() {
         return;
     }
@@ -3541,7 +3541,7 @@ fn bases_whose_names_share_a_start_are_each_their_own() {
 /// ports it listens on exposed, egress ones not, its volumes' mount points listed (D35,
 /// AGENTFILE_ARCH.md §12.6, §12.8); an error shows its own lines.
 #[test]
-fn an_agentfile_is_found_first_and_built_as_docker_sees_it() {
+fn an_agentfile_is_found_first_and_built() {
     let (image, _) = served();
     let home = TempDir::new("build-agentfile-home");
     let ctx = context(
@@ -3806,7 +3806,7 @@ fn git_http_server(root: std::path::PathBuf, accepted: Vec<String>) -> u16 {
 /// config's `diff_ids` null as BuildKit writes them, inspects and filters as Docker shows
 /// it: its labels, platform and config, behind the index its provenance makes.
 #[test]
-fn a_layerless_image_inspects_as_docker_shows_it() {
+fn a_layerless_image_inspects_whole() {
     let home = TempDir::new("layerless-home");
     let ctx = context("layerless-ctx", "FROM scratch\nLABEL tier=web\n");
     let env = [
@@ -5632,7 +5632,7 @@ fn a_caches_changes_are_layered_as_a_directory_shows_them() {
 /// held, `locked` waits until it is free; what each build writes is kept, none of it lost.
 /// Each mode's steps name it: an exec's key leaves out its caches' id and sharing.
 #[test]
-fn run_caches_are_taken_as_buildkit_takes_them_among_concurrent_builds() {
+fn run_caches_are_shared_among_concurrent_builds() {
     if cannot_run_vms() {
         return;
     }
@@ -6724,7 +6724,7 @@ fn run_steps_take_the_builds_hosts_shm_and_limits() {
 /// buildx's table, and the steps run again; `until` keeps what was used since; a record
 /// whose layer an image holds stays unless `--all`; the totals as buildx says them.
 #[test]
-fn builder_prune_removes_the_build_cache_as_buildx_does() {
+fn builder_prune_removes_the_build_cache() {
     if cannot_run_vms() {
         return;
     }
@@ -6882,7 +6882,7 @@ fn annotations_land_where_buildkit_puts_them() {
 /// built, exit 1 for warnings unless `ignorestatus`, and for an error planning it, said
 /// where it is; with `--debug`, a build's warnings in full.
 #[test]
-fn check_says_the_builds_warnings_as_buildx_does() {
+fn check_says_the_builds_warnings() {
     if cannot_run_vms() {
         return;
     }
@@ -7285,7 +7285,7 @@ fn tar_entries(bytes: &[u8]) -> Vec<(shards_archive::tar::Header, Vec<u8>)> {
 /// none of them leaves an image in the store; what BuildKit refuses before it solves is
 /// refused before any step runs.
 #[test]
-fn builds_write_each_output_as_buildkit_exports_it() {
+fn builds_write_each_output() {
     use std::os::unix::fs::MetadataExt as _;
     if cannot_run_vms() {
         return;
@@ -11743,7 +11743,7 @@ fn builds_for_another_platform_run_only_the_build_platforms_steps() {
 /// a type BuildKit does not know refused in its words. That the bytes are Go's own is
 /// crates/flate's oracle.
 #[test]
-fn layers_are_compressed_as_buildkit_compresses_them() {
+fn layers_are_compressed() {
     if cannot_run_vms() {
         return;
     }
@@ -11996,7 +11996,7 @@ fn layers_are_compressed_as_buildkit_compresses_them() {
 /// descriptor annotated with the epoch, the config's DiffID its own; the base's layer is
 /// left as it came; without an epoch, BuildKit's warning, and nothing rewritten.
 #[test]
-fn rewrite_timestamp_rewrites_the_builds_layers_as_buildkit_does() {
+fn rewrite_timestamp_rewrites_the_builds_layers() {
     if cannot_run_vms() {
         return;
     }
@@ -12414,7 +12414,7 @@ fn an_agentfile_made_from_an_image_builds_its_config() {
 /// Docker 29.3.1 makes of it (`scripts/repro/generate`), byte for byte; where it does not,
 /// the manifest and config said beside Docker's.
 #[test]
-fn reproducible_builds_are_dockers() {
+fn builds_are_reproducible_byte_for_byte() {
     use std::os::unix::fs::PermissionsExt as _;
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/repro");
     let spec: serde_json::Value =
@@ -12738,7 +12738,7 @@ fn policies_hold_over_remote_contexts() {
 /// context is asked of as itself, which buildx builds no input for: refused, never taken
 /// for the registry's image its stand-in name names (D128, measured: PM M186).
 #[test]
-fn a_policys_own_error_ends_the_build_as_buildx_ends_it() {
+fn a_policys_own_error_ends_the_build() {
     let (image, _) = served();
     let home = TempDir::new("build-policy-err-home");
     let env = [("SHARDS_HOME", home.as_os_str())];
@@ -12838,7 +12838,7 @@ fn a_policys_own_error_ends_the_build_as_buildx_ends_it() {
 /// asked of every source the build loads as buildx v0.37.1 asks them and BuildKit v0.28.1
 /// heeds them, each line and refusal in their words (measured in `shards-dind`).
 #[test]
-fn builds_heed_their_policies_as_buildx_does() {
+fn builds_heed_their_policies() {
     let (image, _) = served();
     let home = TempDir::new("build-policy-home");
     let env = [("SHARDS_HOME", home.as_os_str())];
@@ -13147,7 +13147,7 @@ fn builds_heed_their_policies_as_buildx_does() {
 /// annotated tag's object and the commit's, their actors and messages; an HTTP source's
 /// URL, query and digest, resolved by fetching it.
 #[test]
-fn policies_read_git_and_http_sources_as_buildx_does() {
+fn policies_read_git_and_http_sources() {
     if cannot_run_vms() {
         return;
     }
@@ -13743,7 +13743,7 @@ fn policies_check_the_frontend_and_the_default_policy() {
 /// a source's input printed, its fields resolved and the rest summarized; a policy's
 /// decision, its refusals in buildx's words; and the sources and flags buildx refuses.
 #[test]
-fn policy_eval_answers_as_buildx_does() {
+fn policy_eval_answers() {
     let home = TempDir::new("policy-eval-home");
     let dir = TempDir::new("policy-eval");
     let write = |sub: &str, rego: &str| {
@@ -13878,7 +13878,7 @@ fn policy_eval_answers_as_buildx_does() {
 /// that pass and fail, an image input resolved from its registry (pinned, for one
 /// platform), `--run`, a test file named alone, and the paths and policies buildx refuses.
 #[test]
-fn policy_test_runs_as_buildx_does() {
+fn policy_test_runs() {
     let home = TempDir::new("policy-test-home");
     let dir = TempDir::new("policy-test");
     for sub in ["basic", "notests"] {

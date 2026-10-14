@@ -118,7 +118,7 @@ fn pull_as(
                 ),
             );
         }
-        e.in_dockerds_words()
+        e.into_reported()
     })
 }
 
@@ -1256,7 +1256,7 @@ mod tests {
     /// and containerd v2.4.1's words them (translateRegistryError, withGETErrorBody,
     /// invalidAuthorization).
     #[test]
-    fn failures_are_reported_as_dockerd_reports_them() {
+    fn pull_failures_are_reported_in_full() {
         let tokens = route(None, |_| {
             Some((
                 http(

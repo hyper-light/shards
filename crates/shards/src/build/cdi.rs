@@ -863,7 +863,7 @@ mod tests {
     /// Names resolve as BuildKit's CDI manager resolves them, and grants as its
     /// `ValidateEntitlements` grants them, in its words.
     #[test]
-    fn devices_resolve_and_are_granted_as_buildkits() {
+    fn cdi_devices_resolve_and_are_granted() {
         let d = dir_with(&[("gpu.yaml", GPU), ("bad.json", "{\"cdiVersion\":\"9.9\"}")]);
         let r = Registry::load(&[d.to_path_buf()], &[]);
         assert_eq!(r.errors.len(), 1, "{:?}", r.errors);

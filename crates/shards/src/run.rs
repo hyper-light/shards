@@ -1092,7 +1092,7 @@ mod tests {
     /// A run's health check merged with its image's as dockerd merges them (measured
     /// against dockerd 29.3.1, 2026-10-02).
     #[test]
-    fn health_checks_merge_as_dockerd_merges_them() {
+    fn health_checks_merge_with_the_images() {
         let image = shards_image::oci::HealthConfig {
             test: Some(vec!["CMD-SHELL".into(), "echo img".into()]),
             interval: 7_000_000_000,
@@ -1132,7 +1132,7 @@ mod tests {
 
     /// dockerd's merge, case by case (moby `daemon/commit.go`).
     #[test]
-    fn images_and_command_lines_merge_as_dockerd_merges_them() {
+    fn images_and_command_lines_merge() {
         let run = |asked: Run| compose(Some(&image()), &asked).unwrap();
         let plain = run(Run::default());
         assert_eq!(plain.argv, strings(&["/entry.sh", "serve", "--port", "80"]));

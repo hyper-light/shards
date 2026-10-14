@@ -474,7 +474,7 @@ mod tests {
     /// behind its `bundle_url`, verified as buildx v0.37.1 verified it in shards-dind
     /// (`github_attestation(input.http, "cli/cli")`, printed): field for field.
     #[test]
-    fn a_github_release_attestation_verifies_as_buildx_verified_it() {
+    fn a_github_release_attestation_verifies() {
         let bundle = super::super::snappy::decode(include_bytes!(
             "../testdata/gh-2.102.0-linux-arm64.attestation.json.sn"
         ))
@@ -592,7 +592,7 @@ mod tests {
     }
 
     #[test]
-    fn the_real_chain_verifies_and_reads_as_buildx_reads_it() {
+    fn a_real_signature_chain_verifies_and_reads() {
         let chain = real_chain();
         let trust = carried_trust();
         let arm64 = shards_sigstore::platforms::Platform {

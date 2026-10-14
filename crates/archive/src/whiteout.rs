@@ -180,7 +180,7 @@ mod tests {
 
     // moby/sys/userns v0.1.0 userns_linux_test.go, TestUIDMapInUserNS.
     #[test]
-    fn uid_maps_as_moby() {
+    fn uid_maps_tell_a_user_namespace() {
         assert!(!uid_map_in_user_ns(b"         0          0 4294967295\n"));
         assert!(uid_map_in_user_ns(b"         0          0          1\n"));
         assert!(uid_map_in_user_ns(

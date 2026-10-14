@@ -906,7 +906,7 @@ mod tests {
     }
 
     #[test]
-    fn an_uncompressed_layer_is_fetched_whole_as_containerd_fetches_it() {
+    fn an_uncompressed_layer_is_fetched_whole() {
         let tar = blob(100_000, 6);
         let fake = fake(
             vec![tar.clone()],

@@ -443,7 +443,7 @@ mod tests {
     /// one the kernel picks is the same at IPv4 and IPv6; a range takes its first free
     /// port.
     #[test]
-    fn ports_bind_as_dockerd_binds_them() {
+    fn ports_bind_on_the_host() {
         let taken = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = taken.local_addr().unwrap().port();
         let loopback = [IpAddr::V4(Ipv4Addr::LOCALHOST)];
@@ -504,7 +504,7 @@ mod tests {
     /// every one of its addresses, as dockerd's allocator counts them; families apart, and
     /// ports apart, do not.
     #[test]
-    fn bindings_overlap_as_dockerds_allocator_counts_them() {
+    fn bindings_overlap_across_a_familys_addresses() {
         let at = |s: &str| s.parse::<SocketAddr>().unwrap();
         assert!(overlaps(at("0.0.0.0:8080"), at("127.0.0.1:8080")));
         assert!(overlaps(at("127.0.0.1:8080"), at("0.0.0.0:8080")));
@@ -681,7 +681,7 @@ mod tests {
     /// A UDP port is bound as dockerd binds one: a datagram socket, in use at the same
     /// port refused in bindTCPOrUDP's words, and apart from TCP's at that port.
     #[test]
-    fn udp_ports_bind_as_dockerd_binds_them() {
+    fn udp_ports_bind_apart_from_tcp() {
         let loopback = [IpAddr::V4(Ipv4Addr::LOCALHOST)];
         let (fds, port) = bind_one(&loopback, "", UDP, &|_| InUse::Host).unwrap();
         let sock = std::net::UdpSocket::from(fds.into_iter().next().unwrap());

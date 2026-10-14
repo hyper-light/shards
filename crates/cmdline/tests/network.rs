@@ -232,7 +232,7 @@ fn published_ports_read_as_run_reads_them() {
 }
 
 #[test]
-fn port_arguments_read_as_docker_port_reads_them() {
+fn port_arguments_are_read() {
     let golden = golden();
     for case in golden["port_args"].as_array().unwrap() {
         let got = shards_cmdline::ports::parse_port(text(&case["arg"]));
@@ -244,7 +244,7 @@ fn port_arguments_read_as_docker_port_reads_them() {
 }
 
 #[test]
-fn port_lines_sort_as_docker_port_sorts_them() {
+fn port_lines_are_sorted() {
     let golden = golden();
     let sorted = list(&golden["natural"]);
     let mut lines = sorted.clone();

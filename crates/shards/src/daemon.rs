@@ -1927,6 +1927,13 @@ impl<D: Disk> Daemon<D> {
                 return None;
             }
         };
+        // Its isolation, which is its microVM's (D155).
+        if again.is_none()
+            && let Err(e) = isolation(&run)
+        {
+            refused(&e);
+            return None;
+        }
         // The container's ID first: it names the command's host unless the run does
         // (moby daemon/container.go).
         let (again, id, container_log) = match again {
@@ -2715,7 +2722,7 @@ impl<D: Disk> Daemon<D> {
             ));
             spec.hosts = Vec::new();
             spec.domainname = run.domainname.clone().into_bytes();
-            spec.cgroup = crate::resources::cgroup(&run.resources);
+            spec.cgroup = crate::resources::cgroup(&run.resources, crate::resources::host_cpus());
             spec.setup = crate::setup::setup(run, &[], crate::run::cdi_edits(run).ok().flatten().as_ref())?;
             return Ok(());
         }
@@ -2743,7 +2750,7 @@ impl<D: Disk> Daemon<D> {
             })
             .collect::<Result<_, &str>>()?;
         spec.domainname = run.domainname.clone().into_bytes();
-        spec.cgroup = crate::resources::cgroup(&run.resources);
+        spec.cgroup = crate::resources::cgroup(&run.resources, crate::resources::host_cpus());
         spec.setup = crate::setup::setup(run, &[], crate::run::cdi_edits(run).ok().flatten().as_ref())?;
         Ok(())
     }
@@ -2927,6 +2934,14 @@ impl<D: Disk> Daemon<D> {
                 }
             }
         }
+        // Each annotation keyed (D155).
+        if let Some(given) = run
+            .annotations
+            .iter()
+            .find(|kv| kv.split_once('=').map_or(kv.as_str(), |(k, _)| k).is_empty())
+        {
+            return Err(format!("--annotation {given}: an annotation needs a key"));
+        }
         // Its resources (verifyPlatformContainerResources), whose warnings it says once
         // it is made.
         crate::resources::verify(&run.resources, crate::resources::host_cpus(), false)?;
@@ -3018,6 +3033,7 @@ impl<D: Disk> Daemon<D> {
             stop_timeout: run.stop_timeout,
             ports,
             labels: prepared.labels.clone(),
+            annotations: annotations(run),
             oom_killed: false,
             mounts,
             restart: containers::Restart {
@@ -5316,6 +5332,36 @@ fn again_as(stored: Run, client: &Run, id: &str) -> Run {
     }
 }
 
+/// A run's `--isolation` (D155): every run is isolated in a microVM of its own, with a
+/// kernel of its own, so `default` and `hyperv` (a VM's isolation) ask for what it has, in
+/// any case; `process`, a kernel shared with the host, is what no run has.
+fn isolation(run: &Run) -> Result<(), String> {
+    let given = run.isolation.to_ascii_lowercase();
+    match given.as_str() {
+        "" | "default" | "hyperv" => Ok(()),
+        "process" => Err(format!(
+            "--isolation {}: every run is isolated in a microVM of its own, which shares no kernel with its host or another run: its isolation is default, or hyperv, a VM's",
+            run.isolation
+        )),
+        _ => Err(format!(
+            "--isolation {}: every run is isolated in a microVM of its own: its isolation is default, or hyperv, a VM's",
+            run.isolation
+        )),
+    }
+}
+
+/// A run's annotations as dockerd keeps them (HostConfig.Annotations, which docker/cli's
+/// MapOpts makes): each key's last value, a key alone given the empty one.
+pub(crate) fn annotations(run: &Run) -> std::collections::BTreeMap<String, String> {
+    run.annotations
+        .iter()
+        .map(|kv| {
+            let (k, v) = kv.split_once('=').unwrap_or((kv.as_str(), ""));
+            (k.to_string(), v.to_string())
+        })
+        .collect()
+}
+
 /// ValidateRestartPolicy (moby api/types/container/hostconfig.go): a known policy's name,
 /// a retry count only `on-failure`'s and never negative; none given passes, as from a CLI
 /// before dockerd v25.
@@ -7593,7 +7639,7 @@ mod tests {
     /// in its words; `rm`'s own refusal comes first. Found once trimmed, each is said as
     /// given.
     #[test]
-    fn container_references_are_taken_as_the_docker_cli_sends_them() {
+    fn references_to_microvms_are_trimmed_and_checked() {
         let t = Test::new("references");
         t.run(|t| {
             t.create("racer");
