@@ -8388,3 +8388,114 @@ revision before comparing a changed API/implementation.
   throttled. A throttled lookup is its own result's alone. A repository without
   `latest` is said to have none: `shards run REPO` asks for `latest`, so that is the
   answer to whether it runs here.
+
+### M235. CI's x86_64 musl test job, two weeks on: its slow runners at the step's edge
+
+- **Question.** Gpu 9c7f6dca's x86_64 musl test job ran out of its step's 45 minutes
+  (M187 set the split it runs under). How long does the job take now, runner to runner,
+  and what limit does its step need?
+- **Method.** GitHub's records of the `x86_64-unknown-linux-musl` test job in the last 14
+  CI runs (2026-10-14 and 15, runs 38658570865 to 38688863631): the start and end of the
+  job and of its test step; and the phases of 9c7f6dca's job log, by its timestamps.
+- **Results.**
+  - Two clusters. Three jobs took 29.2, 30.2 and 31.6 minutes; eleven took 37.4, 42.0,
+    42.6, 43.3, 43.5, 43.6, 43.8, 43.9, 44.0, 44.9 and 45.3. Their medians, 43.6 and
+    30.2 minutes, differ 1.44 times; M187's runners differed 1.7 times.
+  - Each step took 0.1 to 0.2 minutes less than its job. Nine of the eleven slow steps
+    reached 42 minutes, within three of the limit, and 9c7f6dca's was stopped by it.
+  - 9c7f6dca's build took 28 min 10 s (M187: 13.5 to 22.7). Its tests then ran for 16.6
+    minutes, and were stopped in `shards-seccomp`'s, among the workspace's last.
+- **Consequence.** The step's limit becomes 60 minutes and the job's 70: a third above
+  the slowest job measured, for the suite's growth until the job is split again. A limit
+  this far out ends a hang, and paces nothing.
+
+### M236. A read waiting on a socket as its peer half-closes, and SHUT_RDWR after one (D175)
+
+- **Question.** Gpu's gate for D174 hung 9 hours in `a_compose_project_runs_as_microvms`,
+  at `docker compose exec -T app testguest ask db:7000`.
+  - The command had ended: db served it, and app's `top` showed its workload alone.
+  - Compose waited for its stream's end. Its goroutine dump: `stdcopy.StdCopy` under
+    `beginOutputStream`, in IO wait for 564 minutes.
+  - The daemon's thread copying the client's stdin waited in `recvfrom` on the client's
+    connection (`containers.rs:104`; lldb gave its descriptor), and the call's thread in
+    its scope's join.
+  - `lsof -T f` gave the client's socket SS_CANTSENDMORE: Compose's `CloseWrite` once
+    its stdin, /dev/null, ended (docker/cli v29.2.1 hijack.go). The daemon's socket had
+    SS_CANTRCVMORE but not SS_CANTSENDMORE: the end had come and its reader slept on,
+    and the shutdown(SHUT_RDWR) that was to end the client's stream had shut nothing.
+
+  How can a read sleep on a socket that has ended, how often does it, and what does
+  SHUT_RDWR do there?
+- **Source.** XNU (apple-oss-distributions/xnu, main).
+  - `soreceive` (bsd/kern/uipc_socket.c), with nothing to read, looks for SS_CANTRCVMORE,
+    lets go of its receive buffer and calls `pru_rcvd`. It then sleeps (`sbwait`) where
+    `so_should_wait` still holds, which looks only at data and the low-water mark.
+  - For AF_UNIX streams `pru_rcvd` is `uipc_rcvd` (bsd/kern/uipc_usrreq.c). Its
+    `unp_get_locks_in_order` lets go of the reader's socket to take the peer's lock first,
+    where the reader's socket has the higher address. A peer's shutdown(SHUT_WR) landing
+    then (`unp_shutdown`, `socantrcvmore`) finds no sleeper to wake. A disconnect waits
+    for it (UNP_DONTDISCONNECT); a half-close does not.
+  - `soshutdownlock_final` refuses SHUT_RDWR (ENOTCONN) once SS_CANTRCVMORE is set,
+    before it shuts the write side.
+  - Linux (net/unix/af_unix.c): `unix_stream_data_wait` puts the reader on its wait
+    queue and then looks for RCV_SHUTDOWN under `unix_state_lock`, which `unix_shutdown`
+    takes to set it before it wakes the queue.
+- **Method.** `docs/research/measurements/half-close/`, 2026-10-15, at 9c7f6dca.
+  - `race`: each round a new socket pair. A reader thread enters recv(2) as the peer's
+    thread calls shutdown(SHUT_WR), the two released together, each after a random spin
+    of 0 to 399 iterations. A reader still waiting 1 s after the peer's shutdown
+    returned counts as asleep, and a poll(2) of its socket then says whether its end was
+    there. 50,000 rounds of each case.
+  - `rdwr`: shutdown(SHUT_RDWR) of a socket whose peer half-closed 100 ms before, and of
+    one whose peer is open, on AF_UNIX and on TCP; and whether the peer reads an end.
+  - `roundtrip`: what waiting costs. Two processes pass a byte back and forth over an
+    AF_UNIX socketpair, 100 batches of 1,000 round trips for each way of waiting, the
+    ways in turn and rotated each batch, timed on the requester's side. Each side spins
+    PAUSE µs before it sends: 0, and 50, so that each read waits on the other's work.
+    The ways: `recv`, a recv(2) that may block; `poll`, a recv(2) with MSG_DONTWAIT,
+    then poll(2) where nothing came, then the recv(2) again; `checked`, `poll` with the
+    fcntl(2) and getsockopt(2) a read that keeps O_NONBLOCK and SO_RCVTIMEO makes;
+    `kevent`, `poll` waiting in a kqueue that keeps the socket added; `oneshot`, the
+    socket added to a kqueue with EV_ONESHOT in the kevent(2) that waits. Run three
+    times, the host busy with other projects' builds (load average 12, 9 and 9).
+  - On the M5 Max (macOS 26.4.1), and for `race` and `rdwr` in a shards microVM on it
+    (alpine:3.22, Linux 6.18.48 aarch64, 18 vCPUs; built by zig 0.16.0 for
+    aarch64-linux-musl).
+- **Results.**
+  - macOS, AF_UNIX, a recv(2) that may sleep: 360 of 50,000 readers asleep a second
+    after the half-close, every one on a socket poll(2) found ended.
+  - macOS, AF_UNIX, poll(2) for POLLIN then recv(2) with MSG_DONTWAIT: 0 of 50,000.
+  - macOS, TCP on loopback: 0 of 50,000; and 0 of 50,000 where the reader had read 64
+    KiB just before, so that its read updates the window.
+  - Linux: 0 of 50,000 in each of the four cases.
+  - macOS, SHUT_RDWR after the peer's half-close: ENOTCONN on AF_UNIX and on TCP, and
+    the peer never reads an end. With the peer open it succeeds and the peer reads one.
+    On Linux it succeeds in all four, and the peer reads its end.
+  - `roundtrip` on macOS, the first run, n 99,900 each, µs:
+
+    | PAUSE | way | p50 | p90 | p99 | max |
+    |---|---|---|---|---|---|
+    | 0 | recv | 6.08 | 11.54 | 38.71 | 6,317.79 |
+    | 0 | poll | 8.00 | 16.62 | 47.62 | 1,683.38 |
+    | 0 | checked | 8.08 | 16.46 | 52.21 | 2,574.12 |
+    | 0 | kevent | 6.58 | 13.46 | 46.67 | 6,760.54 |
+    | 0 | oneshot | 7.25 | 14.46 | 37.38 | 3,094.25 |
+    | 50 | recv | 8.83 | 23.29 | 60.25 | 4,652.17 |
+    | 50 | poll | 11.00 | 26.96 | 56.17 | 6,144.50 |
+    | 50 | checked | 12.62 | 28.79 | 66.17 | 3,901.00 |
+    | 50 | kevent | 10.21 | 26.04 | 60.21 | 3,748.54 |
+    | 50 | oneshot | 10.58 | 26.00 | 57.58 | 3,905.50 |
+
+    The second and third runs, `recv` and `checked`, p50 and p99 in µs:
+    - PAUSE 0: `recv` 5.92 and 40.29, then 8.96 and 428.67; `checked` 8.17 and 51.38,
+      then 14.79 and 435.92.
+    - PAUSE 50: `recv` 14.71 and 478.79, then 14.33 and 536.38; `checked` 18.00 and
+      457.88, then 18.25 and 473.50.
+- **Consequence (D175).** On macOS no read of a Unix stream socket waits in the read: it
+  waits in poll(2), which sees the end, the `checked` way, and then reads what is there
+  without blocking. Over the three runs a round trip whose two ends both waited took
+  2.0 to 5.8 µs more than with `recv` at p50 and 7.3 to 13.5 µs more at p99 at PAUSE 0;
+  3.3 to 3.9 µs more at p50 at PAUSE 50, where p99 moved either way (−62.9 to +5.9).
+  Linux's reads, which missed no end, and TCP's, stay as they are, and so cost nothing
+  more. A stream, Unix or TCP, is ended one way at a time, SHUT_WR then SHUT_RD, so that
+  its peer reads the end whichever side half-closed first.

@@ -16,12 +16,13 @@
 use std::ffi::{CString, OsStr};
 use std::io::{self, Write};
 use std::mem::{MaybeUninit, size_of};
-use std::os::fd::{AsRawFd, BorrowedFd, FromRawFd, OwnedFd, RawFd};
+use std::net::Shutdown;
+use std::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, OwnedFd, RawFd};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, PoisonError};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use crate::{Identity, MAX_FDS, MAX_PAYLOAD};
 
@@ -501,17 +502,100 @@ fn fill(
     Ok(())
 }
 
-/// Waits until `sock` has something to read, or has ended; `TimedOut` at `deadline`.
-fn await_readable(sock: &UnixStream, deadline: Instant) -> io::Result<()> {
+/// Reads what `fd` has into `buf`, as read(2) does; but a socket on macOS is waited for in
+/// poll(2), never in the read. There a read waiting on a Unix stream socket can sleep
+/// through its peer's shutdown(SHUT_WR), and then on a stream that has ended, for good
+/// where the peer waits for this side's end: XNU's soreceive lets go of the socket to take
+/// its peer's lock first (uipc_rcvd), a half-close landing then finds no reader to wake,
+/// and the reader looks only for data before it sleeps. Poll sees the end. Linux's reader
+/// looks for the end under the lock its waker takes, and missed none; a pipe or a
+/// terminal is no socket (docs/research/platform-measurements.md M236). Those are read as
+/// they are.
+///
+/// On macOS a socket is read with `MSG_DONTWAIT`, and waited for only where nothing has
+/// come, as a read waits: not at all where `fd` is set not to block, and no longer than
+/// its receive timeout, `WouldBlock` either way. A read a signal cut short is made again.
+pub fn read(fd: impl AsFd, buf: &mut [u8]) -> io::Result<usize> {
+    let fd = fd.as_fd();
+    let mut socket = cfg!(target_os = "macos");
     loop {
-        let left = deadline.saturating_duration_since(Instant::now());
-        if left.is_zero() {
-            return Err(io::ErrorKind::TimedOut.into());
+        let n = if socket {
+            // SAFETY: recv(2) into `buf`, at most its length.
+            unsafe {
+                libc::recv(
+                    fd.as_raw_fd(),
+                    buf.as_mut_ptr().cast(),
+                    buf.len(),
+                    libc::MSG_DONTWAIT,
+                )
+            }
+        } else {
+            // SAFETY: read(2) into `buf`, at most its length.
+            unsafe { libc::read(fd.as_raw_fd(), buf.as_mut_ptr().cast(), buf.len()) }
+        };
+        if let Ok(n) = usize::try_from(n) {
+            return Ok(n);
         }
-        // Rounded up: a wait of 0 ms would return at once, and spin.
-        let ms = libc::c_int::try_from(left.as_micros().div_ceil(1000)).unwrap_or(libc::c_int::MAX);
+        let e = io::Error::last_os_error();
+        match e.raw_os_error() {
+            Some(libc::EINTR) => {}
+            Some(libc::ENOTSOCK) if socket => socket = false,
+            _ if socket && e.kind() == io::ErrorKind::WouldBlock => await_readable(fd, None)?,
+            _ => return Err(e),
+        }
+    }
+}
+
+/// What reads through [`read`]: a socket, a pipe or a terminal read with
+/// `BufReader::new(Polled(&conn))`, `io::copy(&mut Polled(&conn), …)` and the like.
+#[derive(Debug)]
+pub struct Polled<S>(pub S);
+
+impl<S: AsFd> io::Read for Polled<S> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        read(&self.0, buf)
+    }
+}
+
+/// Ends `sock` both ways, one way at a time: its peer reads its end, and what reads it
+/// here, its own. XNU shuts both at once or neither, and neither once the peer has ended
+/// its side (ENOTCONN, soshutdownlock_final), so a peer that half-closed first would never
+/// read this side's end while another copy of it stays open (PM M236).
+pub fn end(sock: &UnixStream) {
+    let _ = sock.shutdown(Shutdown::Write);
+    let _ = sock.shutdown(Shutdown::Read);
+}
+
+/// Waits in poll(2) until `fd` has something to read, or has ended: until `deadline`
+/// where there is one (`TimedOut`); else as a read would, not at all where `fd` is set
+/// not to block, and no longer than a socket's receive timeout (`WouldBlock`).
+fn await_readable(fd: BorrowedFd<'_>, deadline: Option<Instant>) -> io::Result<()> {
+    let (deadline, expired) = match deadline {
+        Some(deadline) => (Some(deadline), io::ErrorKind::TimedOut),
+        None => {
+            // SAFETY: fcntl(2) reading the flags of a descriptor the caller holds open.
+            let flags = unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_GETFL) };
+            if flags >= 0 && flags & libc::O_NONBLOCK != 0 {
+                return Err(io::ErrorKind::WouldBlock.into());
+            }
+            let timeout = receive_timeout(fd).and_then(|t| Instant::now().checked_add(t));
+            (timeout, io::ErrorKind::WouldBlock)
+        }
+    };
+    loop {
+        let ms = match deadline {
+            None => -1,
+            Some(deadline) => {
+                let left = deadline.saturating_duration_since(Instant::now());
+                if left.is_zero() {
+                    return Err(expired.into());
+                }
+                // Rounded up: a wait of 0 ms would return at once, and spin.
+                libc::c_int::try_from(left.as_micros().div_ceil(1000)).unwrap_or(libc::c_int::MAX)
+            }
+        };
         let mut pfd = libc::pollfd {
-            fd: sock.as_raw_fd(),
+            fd: fd.as_raw_fd(),
             events: libc::POLLIN,
             revents: 0,
         };
@@ -530,19 +614,51 @@ fn await_readable(sock: &UnixStream, deadline: Instant) -> io::Result<()> {
     }
 }
 
-/// One `recvmsg` into `buf`, once something arrives, by `deadline` if there is one.
-/// Returns the bytes read, and adds the descriptors that came with them to `fds`, owned
-/// and close-on-exec.
+/// A socket's receive timeout (SO_RCVTIMEO), the longest a read of it waits: none for
+/// anything else, or for a socket without one.
+fn receive_timeout(fd: BorrowedFd<'_>) -> Option<Duration> {
+    let mut tv = libc::timeval {
+        tv_sec: 0,
+        tv_usec: 0,
+    };
+    let mut len = libc::socklen_t::try_from(size_of::<libc::timeval>()).ok()?;
+    // SAFETY: getsockopt(2) into a timeval, of its length.
+    let got = unsafe {
+        libc::getsockopt(
+            fd.as_raw_fd(),
+            libc::SOL_SOCKET,
+            libc::SO_RCVTIMEO,
+            (&raw mut tv).cast(),
+            &mut len,
+        )
+    };
+    if got != 0 {
+        return None;
+    }
+    let micros = u32::try_from(tv.tv_usec).ok()?.checked_mul(1000)?;
+    let timeout = Duration::new(u64::try_from(tv.tv_sec).ok()?, micros);
+    (!timeout.is_zero()).then_some(timeout)
+}
+
+/// One `recvmsg` into `buf`, once something arrives, by `deadline` if there is one; on
+/// macOS waited for in poll(2), as [`read`] waits. Returns the bytes read, and adds the
+/// descriptors that came with them to `fds`, owned and close-on-exec.
 fn recv_part(
     sock: &UnixStream,
     buf: &mut [u8],
     fds: &mut Vec<OwnedFd>,
     deadline: Option<Instant>,
 ) -> io::Result<usize> {
-    if let Some(deadline) = deadline {
-        await_readable(sock, deadline)?;
+    // Elsewhere a read may wait in the kernel, where no deadline bounds it (M236).
+    if deadline.is_none() && !cfg!(target_os = "macos") {
+        return recv_msg(sock, buf, fds, 0);
     }
-    recv_msg(sock, buf, fds, 0)
+    loop {
+        match recv_msg(sock, buf, fds, libc::MSG_DONTWAIT) {
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock => await_readable(sock.as_fd(), deadline)?,
+            got => return got,
+        }
+    }
 }
 
 /// Messages from a peer, taken as each comes in whole: what has come of one is kept until
@@ -1849,5 +1965,138 @@ pub(crate) mod tests {
         let len = u32::try_from(MAX_PAYLOAD + 1).unwrap().to_be_bytes();
         (&a).write_all(&[1, len[0], len[1], len[2], len[3]]).unwrap();
         assert_eq!(recv(&b).unwrap_err().kind(), io::ErrorKind::InvalidData);
+    }
+
+    /// A read, or a message's, entering the kernel just as its peer ends its side sees the
+    /// end: on macOS one that waited in recv(2) missed it in 360 of 50,000 such races, and
+    /// waited on (PM M236). The two meet at points spread around the read's start, the
+    /// same each run.
+    #[test]
+    fn a_read_sees_its_peers_end_that_lands_as_it_starts() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::time::Duration;
+        static GO: AtomicUsize = AtomicUsize::new(usize::MAX);
+        let spin = |n: u64| {
+            for i in 0..n {
+                std::hint::black_box(i);
+            }
+        };
+        let mut seed = 0x9e37_79b9_7f4a_7c15_u64;
+        let mut next = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed % 400
+        };
+        for round in 0..20_000 {
+            let (a, b) = UnixStream::pair().unwrap();
+            let (reader_spins, peer_spins) = (next(), next());
+            let (said, heard) = std::sync::mpsc::channel();
+            // Not scoped: a reader that misses the end fails the test rather than hold it.
+            std::thread::spawn(move || {
+                while GO.load(Ordering::Acquire) != round {
+                    std::hint::spin_loop();
+                }
+                spin(reader_spins);
+                let got = if round % 2 == 0 {
+                    read(&b, &mut [0u8; 64]).map(|n| n == 0)
+                } else {
+                    recv(&b).map(|m| m.is_none())
+                };
+                let _ = said.send(got.map_err(|e| e.kind()));
+            });
+            let peer = std::thread::spawn(move || {
+                while GO.load(Ordering::Acquire) != round {
+                    std::hint::spin_loop();
+                }
+                spin(peer_spins);
+                a.shutdown(Shutdown::Write).unwrap();
+                a
+            });
+            GO.store(round, Ordering::Release);
+            let a = peer.join().unwrap();
+            assert_eq!(
+                heard.recv_timeout(Duration::from_secs(10)),
+                Ok(Ok(true)),
+                "round {round}: the reader missed its peer's end"
+            );
+            drop(a);
+        }
+    }
+
+    /// [`read`] waits as a read would: no longer than its socket's receive timeout, and
+    /// not at all where it is set not to block, as messages do; and it reads a pipe once
+    /// something comes, and a socket to its end through [`Polled`].
+    #[test]
+    fn a_read_waits_as_a_read_would() {
+        use std::time::Duration;
+        let (_a, b) = UnixStream::pair().unwrap();
+        let timeout = Duration::from_millis(100);
+        b.set_read_timeout(Some(timeout)).unwrap();
+        for message in [false, true] {
+            let start = Instant::now();
+            let failed = if message {
+                recv(&b).unwrap_err()
+            } else {
+                read(&b, &mut [0u8; 8]).unwrap_err()
+            };
+            assert_eq!(failed.kind(), io::ErrorKind::WouldBlock);
+            let waited = start.elapsed();
+            assert!(waited >= timeout && waited < 50 * timeout, "{waited:?}");
+        }
+        b.set_read_timeout(None).unwrap();
+        b.set_nonblocking(true).unwrap();
+        let start = Instant::now();
+        assert_eq!(
+            read(&b, &mut [0u8; 8]).unwrap_err().kind(),
+            io::ErrorKind::WouldBlock
+        );
+        assert_eq!(recv(&b).unwrap_err().kind(), io::ErrorKind::WouldBlock);
+        assert!(start.elapsed() < Duration::from_secs(1));
+
+        let (r, mut w) = pipe();
+        let writer = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(50));
+            w.write_all(b"late").unwrap();
+            w
+        });
+        let mut got = [0u8; 8];
+        assert_eq!(read(&r, &mut got).unwrap(), 4);
+        assert_eq!(&got[..4], b"late");
+        drop(writer.join().unwrap());
+
+        // Ended as a socket: a child spawned meanwhile by another test may hold a copy.
+        let (a, b) = UnixStream::pair().unwrap();
+        (&a).write_all(b"whole").unwrap();
+        a.shutdown(Shutdown::Write).unwrap();
+        let mut all = String::new();
+        Polled(&b).read_to_string(&mut all).unwrap();
+        assert_eq!(all, "whole");
+    }
+
+    /// [`end`] reaches a peer that ended its side first, where SHUT_RDWR at once says
+    /// ENOTCONN on macOS and shuts nothing (PM M236); and it ends a read waiting here.
+    #[test]
+    fn ending_a_stream_reaches_a_peer_that_ended_its_side_first() {
+        use std::time::Duration;
+        let (a, b) = UnixStream::pair().unwrap();
+        // Before the shutdowns: XNU takes no option on a socket shut both ways (EINVAL).
+        b.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+        b.shutdown(Shutdown::Write).unwrap();
+        assert_eq!(read(&a, &mut [0u8; 8]).unwrap(), 0);
+        end(&a);
+        assert_eq!(
+            read(&b, &mut [0u8; 8]).map_err(|e| e.kind()),
+            Ok(0),
+            "its peer read no end"
+        );
+
+        let (a, _b) = UnixStream::pair().unwrap();
+        std::thread::scope(|s| {
+            let waiting = s.spawn(|| read(&a, &mut [0u8; 8]).map_err(|e| e.kind()));
+            std::thread::sleep(Duration::from_millis(50));
+            end(&a);
+            assert_eq!(waiting.join().unwrap(), Ok(0));
+        });
     }
 }

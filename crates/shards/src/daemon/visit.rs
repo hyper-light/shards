@@ -8,7 +8,6 @@
 //! is.
 
 use std::fs::File;
-use std::io::Read as _;
 use std::os::fd::{AsFd as _, AsRawFd as _, BorrowedFd};
 use std::os::unix::net::UnixStream;
 use std::sync::{Arc, Mutex, PoisonError};
@@ -230,7 +229,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
             .name("visit-client".into())
             .spawn_scoped(threads, move || {
                 let mut sink = [0u8; 4096];
-                while matches!((&ours).read(&mut sink), Ok(n) if n > 0) {}
+                while matches!(shards_ipc::read(&ours, &mut sink), Ok(n) if n > 0) {}
             });
         if let Err(e) = drained {
             log(format!("container {id}: a visit's client: {e}"));

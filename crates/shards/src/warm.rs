@@ -860,7 +860,7 @@ fn joiner(link: &UnixStream, range: Result<(u64, u64), String>, to: &'static ToG
             }
         }
         // Its connection's reads end here, whatever the daemon does with its end.
-        let _ = link.shutdown(std::net::Shutdown::Both);
+        shards_ipc::end(link);
         if let Some(r) = relayed {
             let _ = r.join();
         }

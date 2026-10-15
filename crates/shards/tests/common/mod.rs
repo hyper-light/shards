@@ -1022,6 +1022,72 @@ pub fn run_shards_in<S: AsRef<std::ffi::OsStr>>(
     run_shards_with(command, args, &[], Some(dir), timeout)
 }
 
+/// `cmd`'s output, as [`Command::output`] gives it, within `timeout`: a client of shards'
+/// (docker, Compose) that hangs fails its test with what it said, rather than hold the
+/// suite. Past `timeout` it is sent SIGQUIT first, on which a Go program writes where each
+/// of its goroutines waits and exits, then killed.
+pub fn output_within(cmd: &mut Command, timeout: Duration) -> std::process::Output {
+    let start = Instant::now();
+    let mut child = cmd
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawning a client");
+    // Each read on a thread of its own, handed over as it comes: a process the client
+    // started may hold its pipes past it, and what came before is kept.
+    let collect = |mut r: Box<dyn Read + Send>| {
+        let (tx, rx) = std::sync::mpsc::channel::<Vec<u8>>();
+        std::thread::spawn(move || {
+            let mut b = vec![0u8; 64 * 1024];
+            while let Ok(n @ 1..) = r.read(&mut b) {
+                if tx.send(b[..n].to_vec()).is_err() {
+                    return;
+                }
+            }
+        });
+        rx
+    };
+    let out = collect(Box::new(child.stdout.take().unwrap()));
+    let err = collect(Box::new(child.stderr.take().unwrap()));
+    let took = |rx: &std::sync::mpsc::Receiver<Vec<u8>>| {
+        let until = Instant::now() + Duration::from_secs(10);
+        let mut got = Vec::new();
+        while let Ok(chunk) = rx.recv_timeout(until.saturating_duration_since(Instant::now())) {
+            got.extend_from_slice(&chunk);
+        }
+        got
+    };
+    let status = loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            break status;
+        }
+        if start.elapsed() > timeout {
+            #[cfg(unix)]
+            {
+                // SAFETY: kill(2) of the child this holds, not yet waited for.
+                unsafe { libc::kill(i32::try_from(child.id()).unwrap(), libc::SIGQUIT) };
+                let quit = Instant::now();
+                while child.try_wait().unwrap().is_none() && quit.elapsed() < Duration::from_secs(5) {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+            }
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!(
+                "{cmd:?} did not exit within {timeout:?}\n--- stdout\n{}\n--- stderr\n{}",
+                String::from_utf8_lossy(&took(&out)),
+                String::from_utf8_lossy(&took(&err))
+            );
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    std::process::Output {
+        status,
+        stdout: took(&out),
+        stderr: took(&err),
+    }
+}
+
 fn run_shards_with<S: AsRef<std::ffi::OsStr>>(
     command: &[&str],
     args: &[S],

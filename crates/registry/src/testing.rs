@@ -143,8 +143,10 @@ impl Drop for Server {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner),
         );
+        // One way at a time: on macOS SHUT_RDWR after the client's FIN shuts nothing (PM M236).
         for (tcp, thread) in conns {
-            let _ = tcp.shutdown(Shutdown::Both);
+            let _ = tcp.shutdown(Shutdown::Write);
+            let _ = tcp.shutdown(Shutdown::Read);
             let _ = thread.join();
         }
     }
@@ -219,7 +221,8 @@ pub(crate) fn route(
                 struct Closes(TcpStream);
                 impl Drop for Closes {
                     fn drop(&mut self) {
-                        let _ = self.0.shutdown(Shutdown::Both);
+                        let _ = self.0.shutdown(Shutdown::Write);
+                        let _ = self.0.shutdown(Shutdown::Read);
                     }
                 }
                 let _closes = Closes(closer);

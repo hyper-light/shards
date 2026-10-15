@@ -303,7 +303,7 @@ impl<D: Disk> Daemon<D> {
     /// Ends every API connection: the daemon stops.
     pub(super) fn end_engine(&self) {
         for conn in lock(&self.engine.conns).values() {
-            let _ = conn.shutdown(std::net::Shutdown::Both);
+            shards_ipc::end(conn);
         }
     }
 
@@ -312,7 +312,7 @@ impl<D: Disk> Daemon<D> {
         let Ok(reading) = conn.try_clone() else {
             return;
         };
-        let mut reader = BufReader::new(reading);
+        let mut reader = BufReader::new(shards_ipc::Polled(reading));
         let mut after_post = false;
         loop {
             let head = match head::read(&mut reader, true, after_post) {
@@ -340,7 +340,7 @@ impl<D: Disk> Daemon<D> {
         threads: &'s Threads<'s, 'e>,
         conn: &UnixStream,
         head: &Head,
-        reader: &mut BufReader<UnixStream>,
+        reader: &mut BufReader<shards_ipc::Polled<UnixStream>>,
     ) -> bool {
         let (target, query) = head.target.split_once('?').unwrap_or((&head.target, ""));
         // Its version, where its path gives one (moby's router: `/v{version:[0-9.]+}`).
@@ -356,7 +356,7 @@ impl<D: Disk> Daemon<D> {
         };
         // A call refused before its body is read: the rest of its body read and dropped,
         // as much as Go's server drops to keep a connection, past which it closes.
-        let refuse = |reader: &mut BufReader<UnixStream>, answer: Answer| {
+        let refuse = |reader: &mut BufReader<shards_ipc::Polled<UnixStream>>, answer: Answer| {
             let mut body = Body::new(reader, framing);
             let dropped = io::copy(&mut (&mut body).take(head::DISCARD), &mut io::sink());
             let whole = dropped.is_ok() && body.ended();

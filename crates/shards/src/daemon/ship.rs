@@ -216,7 +216,7 @@ impl Shipping {
     #[cfg(test)]
     pub(super) fn end(&self) {
         for stop in lock(&self.running).values() {
-            let _ = stop.shutdown(std::net::Shutdown::Both);
+            shards_ipc::end(stop);
         }
     }
 }

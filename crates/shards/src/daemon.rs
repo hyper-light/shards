@@ -1686,7 +1686,7 @@ impl<D: Disk> Daemon<D> {
             if lock(&self.unread).remove(number) {
                 let _ = shards_ipc::send(conn, kind::RESTART, &[], &[]);
             }
-            let _ = conn.shutdown(std::net::Shutdown::Both);
+            shards_ipc::end(conn);
         }
         for cancel in lock(&self.preparing).values() {
             cancel.cancel();

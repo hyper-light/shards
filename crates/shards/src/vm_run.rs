@@ -1929,7 +1929,7 @@ fn confine(paths: &crate::confine::Paths) -> Result<(), String> {
         Some(vsock) => dial_through_spawner(vsock),
         None => {
             if let Some(link) = GRANTS.get() {
-                let _ = link.shutdown(std::net::Shutdown::Both);
+                shards_ipc::end(link);
             }
             Ok(())
         }

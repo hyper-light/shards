@@ -6103,6 +6103,26 @@ fn os_bytes(v: std::ffi::OsString) -> Vec<u8> {
     }
 }
 
+/// What reads a connection: on Unix [`shards_ipc::Polled`], whose reads wait in poll(2),
+/// where one waiting in the read can sleep through its peer's half-close (PM M236).
+#[cfg(unix)]
+fn reading(conn: &shards_vmm::platform::UnixStream) -> shards_ipc::Polled<&shards_vmm::platform::UnixStream> {
+    shards_ipc::Polled(conn)
+}
+#[cfg(windows)]
+fn reading(conn: &shards_vmm::platform::UnixStream) -> &shards_vmm::platform::UnixStream {
+    conn
+}
+
+/// Ends a connection both ways: on Unix [`shards_ipc::end`], one way at a time, where
+/// SHUT_RDWR after its peer's half-close shuts nothing (PM M236).
+fn end(conn: &shards_vmm::platform::UnixStream) {
+    #[cfg(unix)]
+    shards_ipc::end(conn);
+    #[cfg(windows)]
+    let _ = conn.shutdown(std::net::Shutdown::Both);
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {

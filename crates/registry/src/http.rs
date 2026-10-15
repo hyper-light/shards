@@ -155,9 +155,12 @@ impl Cancel {
 /// another thread waits in on Linux and macOS, where Winsock's leaves it waiting (the
 /// cancel test took the 30 s read timeout on Windows), so there the socket's I/O is
 /// cancelled too: `CancelIoEx` cancels a handle's I/O whichever thread issued it, and a
-/// base provider's socket handle is a file handle.
+/// base provider's socket handle is a file handle. One way at a time: XNU shuts both at
+/// once or neither, and neither once the server has sent its FIN (ENOTCONN, PM M236), when
+/// a write waiting for room would wait on.
 fn end(tcp: &TcpStream) {
-    let _ = tcp.shutdown(Shutdown::Both);
+    let _ = tcp.shutdown(Shutdown::Write);
+    let _ = tcp.shutdown(Shutdown::Read);
     #[cfg(windows)]
     {
         use std::os::windows::io::AsRawSocket;

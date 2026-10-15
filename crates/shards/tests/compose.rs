@@ -16,6 +16,9 @@ use std::time::Duration;
 use common::{TempDir, cannot_run_vms, guest_init, kernel, run_shards_env, served};
 
 const TIMEOUT: Duration = Duration::from_secs(60);
+/// A client's call past this is taken for hung, and fails its test with what it said
+/// (`common::output_within`): well past the longest wait a call here asks for, `up`'s 120 s.
+const CLIENT: Duration = Duration::from_secs(600);
 
 /// docker compose, where this host has it: on `PATH`, or where the Docker CLI looks for
 /// its plugins (cli-plugins/manager's system directories, and Docker Desktop's).
@@ -104,19 +107,20 @@ volumes:
     std::fs::create_dir_all(&no_helpers).unwrap();
     let host = format!("unix://{}", home.join("engine.sock").display());
     let run = |args: &[&str]| {
-        let out = std::process::Command::new(&compose)
-            .current_dir(&project)
-            .args(["-p", "shp"])
-            .args(args)
-            .env("DOCKER_HOST", &host)
-            .env("DOCKER_CONFIG", &config)
-            .env("PATH", &no_helpers)
-            .env_remove("DOCKER_CONTEXT")
-            .env_remove("COMPOSE_PROJECT_NAME")
-            .env_remove("COMPOSE_FILE")
-            .stdin(std::process::Stdio::null())
-            .output()
-            .unwrap();
+        let out = common::output_within(
+            std::process::Command::new(&compose)
+                .current_dir(&project)
+                .args(["-p", "shp"])
+                .args(args)
+                .env("DOCKER_HOST", &host)
+                .env("DOCKER_CONFIG", &config)
+                .env("PATH", &no_helpers)
+                .env_remove("DOCKER_CONTEXT")
+                .env_remove("COMPOSE_PROJECT_NAME")
+                .env_remove("COMPOSE_FILE")
+                .stdin(std::process::Stdio::null()),
+            CLIENT,
+        );
         (
             out.status.code(),
             String::from_utf8_lossy(&out.stdout).into_owned(),
@@ -266,20 +270,21 @@ configs:
     std::fs::create_dir_all(&no_helpers).unwrap();
     let host = format!("unix://{}", home.join("engine.sock").display());
     let run = |args: &[&str]| {
-        let out = std::process::Command::new(&compose)
-            .current_dir(&project)
-            .args(args)
-            .env("DOCKER_HOST", &host)
-            .env("DOCKER_CONFIG", &config)
-            .env("PATH", &no_helpers)
-            .env("SHP_TOKEN", "from-env")
-            .env_remove("DOCKER_CONTEXT")
-            .env_remove("COMPOSE_PROJECT_NAME")
-            .env_remove("COMPOSE_FILE")
-            .env_remove("COMPOSE_PROFILES")
-            .stdin(std::process::Stdio::null())
-            .output()
-            .unwrap();
+        let out = common::output_within(
+            std::process::Command::new(&compose)
+                .current_dir(&project)
+                .args(args)
+                .env("DOCKER_HOST", &host)
+                .env("DOCKER_CONFIG", &config)
+                .env("PATH", &no_helpers)
+                .env("SHP_TOKEN", "from-env")
+                .env_remove("DOCKER_CONTEXT")
+                .env_remove("COMPOSE_PROJECT_NAME")
+                .env_remove("COMPOSE_FILE")
+                .env_remove("COMPOSE_PROFILES")
+                .stdin(std::process::Stdio::null()),
+            CLIENT,
+        );
         (
             out.status.code(),
             String::from_utf8_lossy(&out.stdout).into_owned(),
@@ -350,7 +355,8 @@ configs:
 
 /// A service built from its Dockerfile, as Compose builds where the client's builder is
 /// the API's first one (`DOCKER_BUILDKIT=0`); and `up` attached, its status the exit
-/// code of the service it names.
+/// code of the service it names. That one starts once the built one has ended well, so
+/// the built one's output is all out before `up` ends with the other's.
 #[test]
 fn a_compose_service_is_built_and_run_attached() {
     let Some(compose) = compose() else {
@@ -377,7 +383,9 @@ services:
   done:
     image: built-app
     command: ["exit", "5"]
-    depends_on: [app]
+    depends_on:
+      app:
+        condition: service_completed_successfully
 "#,
     )
     .unwrap();
@@ -387,19 +395,20 @@ services:
     std::fs::create_dir_all(&no_helpers).unwrap();
     let host = format!("unix://{}", home.join("engine.sock").display());
     let run = |args: &[&str], set: &[(&str, &str)]| {
-        let out = std::process::Command::new(&compose)
-            .current_dir(&project)
-            .args(args)
-            .env("DOCKER_HOST", &host)
-            .env("DOCKER_CONFIG", &config)
-            .env("PATH", &no_helpers)
-            .env_remove("DOCKER_CONTEXT")
-            .env_remove("COMPOSE_PROJECT_NAME")
-            .env_remove("COMPOSE_FILE")
-            .envs(set.iter().copied())
-            .stdin(std::process::Stdio::null())
-            .output()
-            .unwrap();
+        let out = common::output_within(
+            std::process::Command::new(&compose)
+                .current_dir(&project)
+                .args(args)
+                .env("DOCKER_HOST", &host)
+                .env("DOCKER_CONFIG", &config)
+                .env("PATH", &no_helpers)
+                .env_remove("DOCKER_CONTEXT")
+                .env_remove("COMPOSE_PROJECT_NAME")
+                .env_remove("COMPOSE_FILE")
+                .envs(set.iter().copied())
+                .stdin(std::process::Stdio::null()),
+            CLIENT,
+        );
         (
             out.status.code(),
             String::from_utf8_lossy(&out.stdout).into_owned(),

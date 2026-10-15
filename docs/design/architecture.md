@@ -3614,6 +3614,49 @@ No run-time labels, relays or declassifiers (§12 answer 14, decided by the user
 an internal-only domain to the world (D58), so there is no data to label. Code mode is
 D136.
 
+### D175. Sockets read in poll(2) on macOS, and streams ended one way at a time
+
+On macOS a read waiting on a Unix stream socket can sleep through its peer's half-close,
+and SHUT_RDWR after one shuts nothing (PM M236). Together they hung `docker compose exec`
+long after its command had ended:
+
+1. Compose shut its writing once its stdin ended, as a Docker client does on every
+   attached stream (docker/cli hijack.go, `CloseWrite`).
+2. The daemon's copy of that stdin slept on in recv(2).
+3. The shutdown(SHUT_RDWR) that was to end the client's stream said ENOTCONN, and the
+   stream stayed open.
+
+Others half-close as well: the guest's init as a run ends, and the VMM, passing on a
+guest's half-close (vsock `Shutdown::Write`).
+
+- **On macOS a socket's read waits in poll(2), never in the read** (`shards_ipc::read`,
+  and `Polled` for what takes a reader).
+  - It reads with MSG_DONTWAIT, and waits in poll(2) where nothing has come, as a read
+    would wait: not at all where the descriptor is set not to block, and no longer than
+    its receive timeout. Messages (`shards_ipc::recv`) wait the same way.
+  - A read that finds data is the one recv(2) it was. One that waits makes a failed
+    recv(2), an fcntl(2) and a getsockopt(2) first: over three runs a round trip whose
+    two ends both waited took 2.0 to 5.8 µs more at p50 than with recv(2), and 3.3 to
+    3.9 µs more where each reply came 50 µs on (M236).
+  - Linux's read looks for the end under the lock its waker takes and missed none, and
+    a pipe or a terminal is no socket: those are read as they were.
+  - Read through it: the Engine API's connections and the stdin they attach; the VM
+    process's guest streams and the stdins it copies to them; the CLI's stdin; the
+    builder's connection, its ssh agent's and its proxy's; the local image store's
+    answers; a log shipper's Unix endpoint.
+- **A stream ends one way at a time** (`shards_ipc::end`): SHUT_WR, so that its peer
+  reads the end, then SHUT_RD, so that readers here read theirs. On Windows the build's
+  connections end as they did.
+- **TCP** lost no end in M236 and keeps its reads. Its SHUT_RDWR is XNU's too, so the
+  registry client and the tests' registry end a connection one way at a time.
+
+Held by shards_ipc's tests, each mutation-checked on macOS:
+- `a_read_sees_its_peers_end_that_lands_as_it_starts`: 20,000 races, reads and messages.
+  A recv(2) that may sleep, in either, missed an end by round 1,722.
+- `a_read_waits_as_a_read_would`.
+- `ending_a_stream_reaches_a_peer_that_ended_its_side_first`: with SHUT_RDWR, the peer
+  read no end.
+
 ### D174. Overlays on volumes: runtimes nested in a microVM
 
 A runtime nested in a microVM keeps its images' layers as overlays on a volume: buildx's

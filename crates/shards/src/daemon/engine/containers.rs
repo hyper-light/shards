@@ -89,7 +89,7 @@ impl Outputs {
     /// Ends every connection: the stream is over.
     pub(super) fn end(&self) {
         for (conn, _) in self.to.lock().unwrap_or_else(PoisonError::into_inner).iter() {
-            let _ = conn.shutdown(std::net::Shutdown::Both);
+            shards_ipc::end(conn);
         }
     }
 }
@@ -101,7 +101,7 @@ pub(super) fn input(conn: &UnixStream, to: &mut PipeWriter, keys: Option<&[u8]>)
     let mut proxy = keys.map(EscapeProxy::new);
     let mut buf = [0u8; 4096];
     loop {
-        let n = match (&mut &*conn).read(&mut buf) {
+        let n = match shards_ipc::read(conn, &mut buf) {
             Ok(0) | Err(_) => return false,
             Ok(n) => n,
         };
@@ -755,14 +755,14 @@ impl<D: Disk> Daemon<D> {
             // closes the command's; or until it detaches, which keeps it open for later.
             Some(mut stdin) => {
                 if input(conn, &mut stdin, tty.then_some(&keys)) {
-                    let _ = conn.shutdown(std::net::Shutdown::Both);
+                    shards_ipc::end(conn);
                     lock(&self.engine.stdins).insert(id, stdin);
                 }
             }
             // What its client sends is not read: it ends as the start's output does.
             None => {
                 let mut sink = [0u8; 4096];
-                while matches!((&mut &*conn).read(&mut sink), Ok(n) if n > 0) {}
+                while matches!(shards_ipc::read(conn, &mut sink), Ok(n) if n > 0) {}
             }
         }
         Done::Close

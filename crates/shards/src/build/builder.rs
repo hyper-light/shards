@@ -786,7 +786,7 @@ impl Builder {
 
     fn read_frame(&self, buf: &mut Vec<u8>) -> Result<u8, String> {
         let mut h = [0u8; run::HEADER];
-        let mut r = &self.conn;
+        let mut r = super::reading(&self.conn);
         r.read_exact(&mut h)
             .map_err(|e| format!("hearing the builder: {e}"))?;
         let (which, len) = run::parse_header(h).ok_or("the builder sent a malformed frame")?;
@@ -1108,18 +1108,19 @@ fn accept_agents<'s, 'e>(
 /// each request the step makes, passed to the agent if a read-only agent takes it,
 /// refused (SSH_AGENT_FAILURE) if not.
 fn serve_agent(
-    mut conn: UnixStream,
+    conn: UnixStream,
     grants: &[([u8; 16], Vec<u8>)],
     agents: &super::Agents,
 ) -> std::io::Result<()> {
     use std::io::{Read as _, Write as _};
     conn.set_nonblocking(false)?;
+    let mut from = super::reading(&conn);
     let mut token = [0u8; 16];
-    conn.read_exact(&mut token)?;
+    from.read_exact(&mut token)?;
     let mut len = [0u8; 2];
-    conn.read_exact(&mut len)?;
+    from.read_exact(&mut len)?;
     let mut id = vec![0u8; usize::from(u16::from_be_bytes(len))];
-    conn.read_exact(&mut id)?;
+    from.read_exact(&mut id)?;
     if !grants.iter().any(|(t, i)| *t == token && *i == id) {
         return Ok(());
     }
@@ -1149,24 +1150,24 @@ fn serve_agent(
         Agent::Socket(path) => path,
         // The keys of files: answered here, as BuildKit's keyring answers, read-only.
         Agent::Keys(keys) => {
-            while let Some(request) = read_msg(&mut conn)? {
-                write_msg(&mut conn, &super::sshkey::answer(keys, &request))?;
+            while let Some(request) = read_msg(&mut from)? {
+                write_msg(&mut &conn, &super::sshkey::answer(keys, &request))?;
             }
             return Ok(());
         }
     };
     let mut agent = super::ssh::agent_stream(path)?;
-    while let Some(request) = read_msg(&mut conn)? {
+    while let Some(request) = read_msg(&mut from)? {
         let allowed = request.first().is_some_and(|t| AGENT_ALLOWED.contains(t));
         if !allowed {
-            conn.write_all(&[0, 0, 0, 1, 5])?;
+            (&conn).write_all(&[0, 0, 0, 1, 5])?;
             continue;
         }
         write_msg(&mut agent, &request)?;
         let Some(answer) = read_msg(&mut agent)? else {
             return Ok(());
         };
-        write_msg(&mut conn, &answer)?;
+        write_msg(&mut &conn, &answer)?;
     }
     Ok(())
 }
@@ -1193,7 +1194,7 @@ fn whole_of(origin: &Origin) -> Option<(u64, Rc<Fs>)> {
 impl Drop for Builder {
     fn drop(&mut self) {
         // The guest powers off as its connection closes.
-        let _ = self.conn.shutdown(std::net::Shutdown::Both);
+        super::end(&self.conn);
         let deadline = Instant::now() + Duration::from_secs(5);
         while self.vm.try_wait().is_none() {
             if Instant::now() > deadline {

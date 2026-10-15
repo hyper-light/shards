@@ -233,12 +233,12 @@ fn join() -> ExitCode {
             });
         let answered = answer(server, conn);
         // Its VM gone, so are its joiners: the daemon's links let go of, once no more come.
-        let _ = daemon.shutdown(std::net::Shutdown::Both);
+        shards_ipc::end(&daemon);
         if let Ok(t) = linked {
             let _ = t.join();
         }
         for link in lock(links).values() {
-            let _ = link.shutdown(std::net::Shutdown::Both);
+            shards_ipc::end(link);
         }
         match answered {
             Ok(()) => ExitCode::SUCCESS,

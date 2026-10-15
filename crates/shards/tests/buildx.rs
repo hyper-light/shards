@@ -16,6 +16,9 @@ use std::time::Duration;
 use common::{TempDir, cannot_run_vms, guest_init, kernel, run_shards_env, served};
 
 const TIMEOUT: Duration = Duration::from_secs(60);
+/// A client's call past this is taken for hung, and fails its test with what it said
+/// (`common::output_within`).
+const CLIENT: Duration = Duration::from_secs(600);
 /// The BuildKit the builder runs: pinned, as the research it is held to is
 /// (docs/research/docker-compose-compat.md, BK).
 const BUILDKIT: &str = "moby/buildkit:v0.33.0";
@@ -81,16 +84,17 @@ fn buildx_builds_with_its_own_builder_in_a_microvm() {
     std::fs::create_dir_all(&no_helpers).unwrap();
     let host = format!("unix://{}", home.join("engine.sock").display());
     let docker = |args: &[&str]| {
-        let out = std::process::Command::new(&docker)
-            .args(args)
-            .env("DOCKER_HOST", &host)
-            .env("DOCKER_CONFIG", &config)
-            .env("PATH", &no_helpers)
-            .env_remove("DOCKER_CONTEXT")
-            .env("BUILDX_NO_DEFAULT_ATTESTATIONS", "1")
-            .stdin(std::process::Stdio::null())
-            .output()
-            .unwrap();
+        let out = common::output_within(
+            std::process::Command::new(&docker)
+                .args(args)
+                .env("DOCKER_HOST", &host)
+                .env("DOCKER_CONFIG", &config)
+                .env("PATH", &no_helpers)
+                .env_remove("DOCKER_CONTEXT")
+                .env("BUILDX_NO_DEFAULT_ATTESTATIONS", "1")
+                .stdin(std::process::Stdio::null()),
+            CLIENT,
+        );
         (
             out.status.code(),
             String::from_utf8_lossy(&out.stdout).into_owned(),

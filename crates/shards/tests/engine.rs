@@ -26,6 +26,9 @@ use common::{Run, TempDir, cannot_run_vms, guest_init, kernel, run_shards_env, s
 use serde_json::{Value, json};
 
 const TIMEOUT: Duration = Duration::from_secs(60);
+/// A client's call past this is taken for hung, and fails its test with what it said
+/// (`common::output_within`).
+const CLIENT: Duration = Duration::from_secs(600);
 
 /// `shards ARGS` in `home`, whose runs boot the test kernel and init.
 fn shards_in(home: &Path, args: &[&str]) -> Run {
@@ -1953,17 +1956,18 @@ fn the_docker_cli_runs_microvms_through_the_engine() {
     std::fs::create_dir_all(&no_helpers).unwrap();
     let host = format!("unix://{}", home.join("engine.sock").display());
     let docker_with = |args: &[&str], set: &[(&str, &str)]| {
-        let out = std::process::Command::new(&docker)
-            .args(args)
-            .env("DOCKER_HOST", &host)
-            .env("DOCKER_CONFIG", &config)
-            .env("PATH", &no_helpers)
-            .env_remove("DOCKER_CONTEXT")
-            .env("DOCKER_CLI_HINTS", "false")
-            .envs(set.iter().copied())
-            .stdin(std::process::Stdio::null())
-            .output()
-            .unwrap();
+        let out = common::output_within(
+            std::process::Command::new(&docker)
+                .args(args)
+                .env("DOCKER_HOST", &host)
+                .env("DOCKER_CONFIG", &config)
+                .env("PATH", &no_helpers)
+                .env_remove("DOCKER_CONTEXT")
+                .env("DOCKER_CLI_HINTS", "false")
+                .envs(set.iter().copied())
+                .stdin(std::process::Stdio::null()),
+            CLIENT,
+        );
         (
             out.status.code(),
             String::from_utf8_lossy(&out.stdout).into_owned(),
