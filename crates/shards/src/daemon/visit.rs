@@ -216,6 +216,15 @@ impl<D: crate::containers::Disk> Daemon<D> {
         drop(fds);
         drop((theirs, null, layer_in, layer_out, link));
         let inbox = started?;
+        let held = self.await_holding(id, &inbox);
+        self.follow(threads, id.to_string(), inbox);
+        if let Err(e) = held {
+            // Why, as its VM told its client: what it said on stderr, read until it ends.
+            return Err(match said_to(&ours) {
+                said if said.is_empty() => e,
+                said => format!("{e}: {said}"),
+            });
+        }
         // What the VM says to its client, which nobody reads, read to its end.
         let drained = std::thread::Builder::new()
             .name("visit-client".into())
@@ -226,9 +235,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
         if let Err(e) = drained {
             log(format!("container {id}: a visit's client: {e}"));
         }
-        let held = self.await_holding(id, &inbox);
-        self.follow(threads, id.to_string(), inbox);
-        held
+        Ok(())
     }
 
     /// Takes run `id`'s messages until its VM says it holds: the built-ins' requests then
@@ -261,6 +268,19 @@ impl<D: crate::containers::Disk> Daemon<D> {
             unsafe { libc::poll(&raw mut polled, 1, ms) };
         }
     }
+}
+
+/// What a visit's VM said on stderr to its client, `client`, until it ended (a second at
+/// most), trimmed: why it ended before it held.
+fn said_to(client: &UnixStream) -> String {
+    let _ = client.set_read_timeout(Some(Duration::from_secs(1)));
+    let mut said = Vec::new();
+    while let Ok(Some(m)) = shards_ipc::recv(client) {
+        if m.kind == kind::ERR {
+            said.extend(m.payload);
+        }
+    }
+    String::from_utf8_lossy(&said).trim().to_string()
 }
 
 /// The container container command `argv` reads the files of, given as its client gave

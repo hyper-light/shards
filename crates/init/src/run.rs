@@ -1866,9 +1866,6 @@ struct Workload {
     stderr: Option<OwnedFd>,
     sigchld: OwnedFd,
     tty: bool,
-    /// A held standby's orders, never sent: it waits on them until it is killed
-    /// ([`run::builtin::HOLD`]).
-    _held: Option<OwnedFd>,
     /// The image's agents and harnesses, started before it (D59): their output is relayed
     /// on its stderr, each line prefixed with the domain.
     domains: Vec<crate::domains::Started>,
@@ -2370,30 +2367,7 @@ impl Standby {
             if let Some(size) = spec.setup.iter().find_map(|e| e.strip_prefix(b"rw-size=")) {
                 crate::setup::rw_size(size).map_err(setup_failed)?;
             }
-            hold_mounts(standby.pid, &spec.setup)?;
-            let Standby {
-                pid,
-                orders,
-                stdout,
-                stderr,
-                sigchld,
-                ..
-            } = standby;
-            let held = Workload {
-                pid,
-                stdin: None,
-                stdout: Some(stdout),
-                stderr: Some(stderr),
-                sigchld,
-                tty: false,
-                _held: Some(orders),
-                domains: Vec::new(),
-                memory: None,
-                procs: None,
-                binds: None,
-                hosts: None,
-            };
-            return Ok((held, None));
+            return standby.hold(&spec.setup).map(|held| (held, None));
         }
         // Its devices first, as dockerd finds them and runc makes their nodes, init's: in
         // the /dev it shares with the workload, the limits and filter on the cgroup it is
@@ -2447,6 +2421,80 @@ impl Standby {
         }
         w.hosts = hosts;
         Ok((w, declared))
+    }
+
+    /// A visit's standby (`HOLD`, D37): orders with no command, by which it sets up its
+    /// namespaces as a run's standby does, a copy's view of the container's files (its
+    /// shared directories, D38, and its root read-only where its runs' is, of `setup`),
+    /// then holds on in them until it is killed. Its error channel says when it is done,
+    /// so that nothing enters its namespaces before they are whole, or what failed.
+    fn hold(self, setup: &[Vec<u8>]) -> Result<Workload, Failure> {
+        let mounts: Vec<Vec<u8>> = setup
+            .iter()
+            .filter(|e| e.starts_with(b"volume=") || *e == b"readonly")
+            .cloned()
+            .collect();
+        let orders = Orders {
+            uid: 0,
+            gid: 0,
+            groups: Vec::new(),
+            cwd: b"/".to_vec(),
+            explicit: false,
+            candidates: Vec::new(),
+            argv: Vec::new(),
+            env: Vec::new(),
+            tty: Vec::new(),
+            null_stdin: true,
+            setup: mounts.clone(),
+            caps: default_caps(),
+        }
+        .encode();
+        let Standby {
+            pid,
+            orders: to_standby,
+            err,
+            stdout,
+            stderr,
+            sigchld,
+            ..
+        } = self;
+        File::from(to_standby)
+            .write_all(&orders)
+            .map_err(|e| setup_failed(format!("holding the container's files: {e}")))?;
+        let (_, report) = reports(&err);
+        drop(err);
+        if let [which, e0, e1, e2, e3, c0, c1, c2, c3] = report[..] {
+            // The standby exits right after reporting.
+            // SAFETY: waits for our own child.
+            unsafe { libc::waitpid(pid, std::ptr::null_mut(), 0) };
+            let errno = i32::from_be_bytes([e0, e1, e2, e3]);
+            let message = if which == step::SETUP {
+                let entry = usize::try_from(u32::from_be_bytes([c0, c1, c2, c3]))
+                    .ok()
+                    .and_then(|i| mounts.get(i))
+                    .map_or(&[][..], Vec::as_slice);
+                crate::setup::failed(entry, errno)
+            } else {
+                format!(
+                    "the container's files: its namespaces: {}",
+                    io::Error::from_raw_os_error(errno)
+                )
+            };
+            return Err(setup_failed(message));
+        }
+        Ok(Workload {
+            pid,
+            stdin: None,
+            stdout: Some(stdout),
+            stderr: Some(stderr),
+            sigchld,
+            tty: false,
+            domains: Vec::new(),
+            memory: None,
+            procs: None,
+            binds: None,
+            hosts: None,
+        })
     }
 
     /// Resolves the spec as Docker and runc do, then has the standby exec it. The
@@ -2605,7 +2653,6 @@ impl Standby {
                 stderr: Some(stderr),
                 sigchld,
                 tty: false,
-                _held: None,
                 domains: Vec::new(),
                 memory: None,
                 procs: None,
@@ -2625,7 +2672,6 @@ impl Standby {
             stderr: None,
             sigchld,
             tty: true,
-            _held: None,
             domains: Vec::new(),
             memory: None,
             procs: None,
@@ -2707,6 +2753,15 @@ fn standby(ends: Ends, isolation: Isolation) -> ! {
     for (i, entry) in o.setup.iter().enumerate() {
         if let Err(errno) = crate::setup::apply(entry) {
             fail(step::SETUP, errno, i);
+        }
+    }
+    // A visit's (`HOLD`): no command. Its namespaces are set up, which its error channel
+    // closed says, and it holds on in them until it is killed.
+    if argv.is_empty() {
+        drop(err);
+        loop {
+            // SAFETY: pause(2) waits for a signal; a held standby ends by SIGKILL.
+            unsafe { libc::pause() };
         }
     }
     let (argv_ptrs, envp_ptrs) = (pointers(&argv), pointers(&envp));
@@ -2915,7 +2970,10 @@ fn builtin(
                 }
             });
             if let Err(e) = entered {
-                let _ = writeln!(File::from(stderr_w), "{whose}: {e}");
+                let _ = writeln!(
+                    File::from(stderr_w),
+                    "{whose}: entering the mount namespace of process {joined}: {e}"
+                );
                 // SAFETY: _exit(2) ends the child without running init's exit paths.
                 unsafe { libc::_exit(1) }
             }
@@ -3048,95 +3106,33 @@ fn builtin(
 /// run's root holds its files alone: init's `/proc`, `/sys` and `/dev`, and what is
 /// mounted on them, unmounted, so that each is the directory the image has there.
 fn files_alone() -> io::Result<()> {
+    let failed = |step: &str| {
+        let e = io::Error::last_os_error();
+        io::Error::new(e.kind(), format!("{step}: {e}"))
+    };
     // SAFETY: unshare(2), mount(2) and umount2(2) of NUL-terminated literals, in a
     // single-threaded child of init's.
     unsafe {
-        if libc::unshare(libc::CLONE_NEWNS) != 0
-            || libc::mount(
-                std::ptr::null(),
-                c"/".as_ptr(),
-                std::ptr::null(),
-                libc::MS_REC | libc::MS_PRIVATE,
-                std::ptr::null(),
-            ) != 0
+        if libc::unshare(libc::CLONE_NEWNS) != 0 {
+            return Err(failed("a mount namespace of its own"));
+        }
+        if libc::mount(
+            std::ptr::null(),
+            c"/".as_ptr(),
+            std::ptr::null(),
+            libc::MS_REC | libc::MS_PRIVATE,
+            std::ptr::null(),
+        ) != 0
         {
-            return Err(io::Error::last_os_error());
+            return Err(failed("its root made private"));
         }
         for kernel in [c"/proc", c"/sys", c"/dev"] {
             if libc::umount2(kernel.as_ptr(), libc::MNT_DETACH) != 0 {
-                return Err(io::Error::last_os_error());
+                return Err(failed(&format!("{} unmounted", kernel.to_string_lossy())));
             }
         }
     }
     Ok(())
-}
-
-/// A copy's visit to a stopped container (D37): its shared directories (D38), and its root
-/// read-only where its runs' is, as `setup` gives them, mounted in held standby
-/// `standby`'s mount namespace, which the copy built-ins enter, so that a file copied in
-/// is where its command will find it, and none goes where its runs could not write. By a
-/// child of init's in that namespace, ended once they are mounted.
-fn hold_mounts(standby: libc::pid_t, setup: &[Vec<u8>]) -> Result<(), Failure> {
-    let entries: Vec<&[u8]> = setup
-        .iter()
-        .map(Vec::as_slice)
-        .filter(|e| e.starts_with(b"volume=") || *e == b"readonly")
-        .collect();
-    if entries.is_empty() {
-        return Ok(());
-    }
-    let failed = |e: io::Error| setup_failed(format!("the container's files: {e}"));
-    let ns = File::open(format!("/proc/{standby}/ns/mnt")).map_err(failed)?;
-    let (said_r, said_w) = pipe()?;
-    // SAFETY: init is single-threaded, so its child may run anything.
-    let pid = unsafe { libc::fork() };
-    if pid < 0 {
-        return Err(failed(io::Error::last_os_error()));
-    }
-    if pid == 0 {
-        drop(said_r);
-        let mut said = File::from(said_w);
-        // SAFETY: setns(2) on a descriptor this process holds, a single-threaded fork of
-        // init.
-        if unsafe { libc::setns(ns.as_raw_fd(), libc::CLONE_NEWNS) } != 0 {
-            let _ = write!(said, "the container's files: {}", io::Error::last_os_error());
-            // SAFETY: _exit(2) ends the child without running init's exit paths.
-            unsafe { libc::_exit(1) }
-        }
-        for entry in &entries {
-            if let Err(errno) = crate::setup::apply(entry) {
-                let _ = write!(said, "{}", crate::setup::failed(entry, errno));
-                // SAFETY: as above.
-                unsafe { libc::_exit(1) }
-            }
-        }
-        // SAFETY: as above.
-        unsafe { libc::_exit(0) }
-    }
-    drop((ns, said_w));
-    let mut why = String::new();
-    let _ = File::from(said_r).read_to_string(&mut why);
-    let mut status = 0;
-    let waited = loop {
-        // SAFETY: waitpid(2) of init's own child, with a valid status pointer; init's
-        // loop, which reaps the others, is not running while this waits.
-        let got = unsafe { libc::waitpid(pid, &mut status, 0) };
-        if got == pid {
-            break Ok(());
-        }
-        let e = io::Error::last_os_error();
-        if e.kind() != io::ErrorKind::Interrupted {
-            break Err(e);
-        }
-    };
-    waited.map_err(failed)?;
-    if libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0 {
-        Ok(())
-    } else if why.is_empty() {
-        Err(setup_failed("the container's files were not mounted"))
-    } else {
-        Err(setup_failed(why))
-    }
 }
 
 /// File `name` of directory `dir`, read whole.
