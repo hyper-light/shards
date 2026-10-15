@@ -212,6 +212,19 @@ impl<D: Disk> Daemon<D> {
         0
     }
 
+    /// The volumes the filters `given` keep (`KEY=VALUE`, `volume ls`'s), each as its
+    /// inspect document gives it, its time in a zone `offset` seconds east of UTC.
+    pub(super) fn volumes_listed(&self, given: &[String], offset: i64) -> Result<Vec<Value>, String> {
+        self.await_removals();
+        let filters = Filters::from_flags(given);
+        filters.validate(&LIST_FILTERS)?;
+        Ok(self
+            .volumes_by(&filters)?
+            .iter()
+            .map(|v| self.volume_value(v, offset, None))
+            .collect())
+    }
+
     /// The volumes `filters` keep (filtersToBy): by driver, name (Match), labels
     /// (MatchKVList, and `label!`'s none), and whether any container mounts them
     /// (`dangling`).
@@ -417,6 +430,13 @@ impl<D: Disk> Daemon<D> {
                 removed.push(v.name);
             }
         }
+        // Said as dockerd says each prune (daemon/volume/service, Prune): what it reclaimed.
+        self.events.log(
+            "volume",
+            "prune",
+            "",
+            std::collections::BTreeMap::from([("reclaimed".to_string(), reclaimed.to_string())]),
+        );
         Ok((removed, reclaimed))
     }
 

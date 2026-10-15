@@ -3901,6 +3901,14 @@ fn run_sets_up_mounts_limits_and_sysctls() {
         (Some(1), "shards: container rootfs is marked read-only\n"),
         "{copied}"
     );
+    // Its tmpfs takes it, where its command finds it: a copy is made on the mounts its
+    // command sees. dockerd refuses it as the root's (checkWritablePath: a `--tmpfs` is
+    // none of its mount points), and its copies write a tmpfs of their own, which the
+    // container never sees (containerfs_linux.go, containerFSView).
+    let copied = shards(&["cp", file.to_str().unwrap(), "sealed:/run/"]);
+    assert_eq!(copied.status, Some(0), "{copied}");
+    let found = exec(&["stat", "/run/copied.txt"]);
+    assert!(found.stdout.contains("\n= x\n"), "{found}");
     assert_eq!(shards(&["kill", "sealed"]).status, Some(0));
     exit(&mut held);
     // dockerd's refusals as it makes the container, then runc's as it starts it.

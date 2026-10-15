@@ -51,6 +51,30 @@ fn home(name: &str) -> Option<(TempDir, String)> {
     Some((home, image))
 }
 
+/// A home whose daemon boots the guest it records (`shards guest use`), as a user's does,
+/// so that runs save and restore their images' templates; with the test image pulled.
+fn home_with_guest(name: &str) -> Option<(TempDir, String)> {
+    if cannot_run_vms() {
+        return None;
+    }
+    let (image, _) = served();
+    let home = TempDir::new(name);
+    let env = [("SHARDS_HOME", home.as_os_str())];
+    let (kernel, init) = (kernel(), guest_init());
+    let args = [
+        "use".as_ref(),
+        "--kernel".as_ref(),
+        kernel.as_os_str(),
+        "--init".as_ref(),
+        init.as_os_str(),
+    ];
+    let recorded = run_shards_env(&["guest"], &args, &env, TIMEOUT);
+    assert_eq!(recorded.status, Some(0), "{}", recorded.stderr);
+    let pulled = run_shards_env(&["pull"], &["-q", image.as_str()], &env, TIMEOUT);
+    assert_eq!(pulled.status, Some(0), "{}", pulled.stderr);
+    Some((home, image))
+}
+
 /// An answer: its status, its fields (names in lower case), its content.
 #[derive(Debug)]
 struct Answered {
@@ -492,6 +516,281 @@ fn microvms_are_watched_and_managed() {
     let pruned = pruned.json();
     assert_eq!(pruned["ContainersDeleted"], json!([id]), "{pruned}");
     assert!(pruned["SpaceReclaimed"].as_u64().is_some(), "{pruned}");
+    // The prune said as an event too, with what it reclaimed, as dockerd says it.
+    let until = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+        + 1;
+    let events = api.call(
+        "GET",
+        &format!("/events?since={since}&until={until}&filters=%7B%22event%22%3A%5B%22prune%22%5D%7D"),
+        None,
+    );
+    let prunes: Vec<Value> = events
+        .text()
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    assert_eq!(prunes.len(), 1, "{}", events.text());
+    assert_eq!(
+        (&prunes[0]["Type"], &prunes[0]["Actor"]["Attributes"]["reclaimed"]),
+        (&json!("container"), &json!(pruned["SpaceReclaimed"].to_string())),
+        "{}",
+        events.text()
+    );
+}
+
+/// A volume's data outlives the microVM that wrote it: made, listed, inspected; files
+/// copied into it through a microVM that mounts it, a running one whose root takes no
+/// writes, and a stopped one, whose copy reaches the volume as its command will see it,
+/// not its root; read by another after; its removal refused while mounted, done after;
+/// and an unused one pruned, its bytes counted.
+#[test]
+fn a_volumes_data_outlives_the_microvm_that_wrote_it() {
+    let Some((home, image)) = home("eng-volume") else {
+        return;
+    };
+    let mut api = Api::new(&home);
+    let made = api.call(
+        "POST",
+        "/volumes/create",
+        Some(json!({"Name": "work", "Labels": {"k": "v"}})),
+    );
+    assert_eq!(made.status, 201, "{}", made.text());
+    let doc = made.json();
+    assert_eq!(
+        (&doc["Name"], &doc["Driver"], &doc["Labels"]["k"]),
+        (&json!("work"), &json!("local"), &json!("v")),
+        "{doc}"
+    );
+    let listed = api.call("GET", "/volumes", None).json();
+    assert!(
+        listed["Volumes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|v| v["Name"] == "work"),
+        "{listed}"
+    );
+    assert_eq!(api.call("GET", "/volumes/work", None).status, 200);
+    assert_eq!(api.call("GET", "/volumes/nothing", None).status, 404);
+    let mounting = |api: &mut Api, name: &str, host: Value| {
+        let made = api.call(
+            "POST",
+            &format!("/containers/create?name={name}"),
+            Some(json!({"Image": image, "Cmd": ["sleep"], "HostConfig": host})),
+        );
+        assert_eq!(made.status, 201, "{}", made.text());
+    };
+    let put = |api: &mut Api, name: &str, path: &str, file: &str| {
+        let archive = tar(&[(file, 0o644, 0, Some(b"kept\n"))]);
+        api.upload(
+            "PUT",
+            &format!("/containers/{name}/archive?path={path}"),
+            "application/x-tar",
+            &archive,
+        )
+    };
+    // A running microVM whose root takes no writes: its writable volume takes files.
+    mounting(
+        &mut api,
+        "writer",
+        json!({"Binds": ["work:/data"], "ReadonlyRootfs": true}),
+    );
+    assert_eq!(api.call("POST", "/containers/writer/start", None).status, 204);
+    let into_volume = put(&mut api, "writer", "/data", "running.txt");
+    assert_eq!(into_volume.status, 200, "{}", into_volume.text());
+    let into_root = put(&mut api, "writer", "/", "root.txt");
+    assert_eq!(into_root.status, 403, "{}", into_root.text());
+    assert!(
+        into_root.text().contains("container rootfs is marked read-only"),
+        "{}",
+        into_root.text()
+    );
+    assert_eq!(api.call("DELETE", "/containers/writer?force=1", None).status, 204);
+    // A stopped one: what is copied in is in the volume, read out of it, and not in its
+    // root's changes.
+    mounting(&mut api, "reader", json!({"Binds": ["work:/data"]}));
+    let stopped = put(&mut api, "reader", "/data", "stopped.txt");
+    assert_eq!(stopped.status, 200, "{}", stopped.text());
+    for file in ["running.txt", "stopped.txt"] {
+        let read = Api::new(&home).downloaded(&format!("/containers/reader/archive?path=/data/{file}"));
+        assert_eq!(read.status, 200, "{file}: {read:?}");
+        assert_eq!(untar(&read.body), [(file.to_string(), Some(b"kept\n".to_vec()))]);
+    }
+    let changes = api.call("GET", "/containers/reader/changes", None).text();
+    assert!(!changes.contains(".txt"), "{changes}");
+    // Started, its command finds both where it mounts the volume.
+    assert_eq!(api.call("POST", "/containers/reader/start", None).status, 204);
+    let found = api.call(
+        "POST",
+        "/containers/reader/exec",
+        Some(json!({"Cmd": ["/bin/testguest", "stat", "/data/running.txt", "/data/stopped.txt"], "AttachStdout": true})),
+    );
+    assert_eq!(found.status, 201, "{}", found.text());
+    let exec = found.json()["Id"].as_str().unwrap().to_string();
+    let (status, _, streamed) = Api::new(&home).upgraded(
+        &format!("/exec/{exec}/start"),
+        Some(json!({"Detach": false, "Tty": false})),
+    );
+    assert_eq!(status, 101);
+    let (out, _) = demux(&streamed);
+    assert_eq!(out.matches("= kept\\n").count(), 2, "{out}");
+    let in_use = api.call("DELETE", "/volumes/work", None);
+    assert_eq!(in_use.status, 409, "{}", in_use.text());
+    assert_eq!(api.call("DELETE", "/containers/reader?force=1", None).status, 204);
+    assert_eq!(api.call("DELETE", "/volumes/work", None).status, 204);
+    // Unused, pruned with `all`.
+    assert_eq!(
+        api.call("POST", "/volumes/create", Some(json!({"Name": "spare"})))
+            .status,
+        201
+    );
+    let pruned = api.call(
+        "POST",
+        "/volumes/prune?filters=%7B%22all%22%3A%5B%22true%22%5D%7D",
+        None,
+    );
+    assert_eq!(pruned.status, 200, "{}", pruned.text());
+    let pruned = pruned.json();
+    assert_eq!(pruned["VolumesDeleted"], json!(["spare"]), "{pruned}");
+    assert!(pruned["SpaceReclaimed"].as_u64().is_some(), "{pruned}");
+}
+
+/// The output of microVM `name`'s command so far, both streams, as its log has it.
+fn output_of(api: &mut Api, name: &str) -> String {
+    let logs = api.call("GET", &format!("/containers/{name}/logs?stdout=1&stderr=1"), None);
+    let (out, err) = demux(&logs.body);
+    out + &err
+}
+
+/// MicroVMs on one network reach each other by name and nothing else: made through the
+/// API, its members told how it is closed; a microVM off it reaches none of them; one
+/// not yet started joins and leaves it, a running one keeps the network it started on;
+/// a network with members stays, one without goes, and an unused one is pruned.
+#[test]
+fn microvms_on_a_network_reach_each_other_and_nothing_else() {
+    let Some((home, image)) = home("eng-net") else {
+        return;
+    };
+    let mut api = Api::new(&home);
+    let made = api.call("POST", "/networks/create", Some(json!({"Name": "team"})));
+    assert_eq!(made.status, 201, "{}", made.text());
+    assert!(
+        made.json()["Warning"]
+            .as_str()
+            .unwrap()
+            .contains("closed to all but its members"),
+        "{}",
+        made.text()
+    );
+    let internal = api.call(
+        "POST",
+        "/networks/create",
+        Some(json!({"Name": "inner", "Internal": true})),
+    );
+    assert_eq!(internal.json()["Warning"], json!(""), "{}", internal.text());
+    let listed = api.call("GET", "/networks", None).json();
+    let team = listed
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|n| n["Name"] == "team")
+        .unwrap_or_else(|| panic!("{listed}"));
+    assert!(team.get("Containers").is_none(), "{team}");
+    let inspected = api.call("GET", "/networks/team", None);
+    assert_eq!(inspected.status, 200, "{}", inspected.text());
+    assert_eq!(api.call("GET", "/networks/nowhere", None).status, 404);
+    let on = |api: &mut Api, name: &str, network: &str, cmd: Value| {
+        let made = api.call(
+            "POST",
+            &format!("/containers/create?name={name}"),
+            Some(json!({"Image": image, "Cmd": cmd, "HostConfig": {"NetworkMode": network}})),
+        );
+        assert_eq!(made.status, 201, "{}", made.text());
+        assert_eq!(
+            api.call("POST", &format!("/containers/{name}/start"), None)
+                .status,
+            204
+        );
+    };
+    // Two connections: the asker's, and none of the outsider's, so it runs on.
+    on(&mut api, "srv", "team", json!(["serve", "7000", "2"]));
+    let ready = (0..400).any(|_| {
+        output_of(&mut api, "srv").contains("ready") || {
+            std::thread::sleep(Duration::from_millis(25));
+            false
+        }
+    });
+    assert!(ready, "{}", output_of(&mut api, "srv"));
+    // A member, by name; one off it, not at all.
+    on(&mut api, "asker", "team", json!(["ask", "srv:7000"]));
+    assert_eq!(
+        api.call("POST", "/containers/asker/wait", None).json()["StatusCode"],
+        json!(0)
+    );
+    assert!(
+        output_of(&mut api, "asker").starts_with("ask from "),
+        "{}",
+        output_of(&mut api, "asker")
+    );
+    on(&mut api, "outsider", "bridge", json!(["ask", "srv:7000"]));
+    assert_eq!(
+        api.call("POST", "/containers/outsider/wait", None).json()["StatusCode"],
+        json!(1)
+    );
+    assert!(
+        output_of(&mut api, "outsider").starts_with("ask error"),
+        "{}",
+        output_of(&mut api, "outsider")
+    );
+    // One not yet started joins it, and leaves it; a running one keeps the one it has.
+    let late = api.call(
+        "POST",
+        "/containers/create?name=late",
+        Some(json!({"Image": image, "Cmd": ["sleep"]})),
+    );
+    assert_eq!(late.status, 201, "{}", late.text());
+    let joined = api.call(
+        "POST",
+        "/networks/team/connect",
+        Some(json!({"Container": "late", "EndpointConfig": {"Aliases": ["tardy"]}})),
+    );
+    assert_eq!(joined.status, 200, "{}", joined.text());
+    let doc = api.call("GET", "/containers/late/json", None).json();
+    assert!(doc["NetworkSettings"]["Networks"].get("team").is_some(), "{doc}");
+    let left = api.call(
+        "POST",
+        "/networks/team/disconnect",
+        Some(json!({"Container": "late"})),
+    );
+    assert_eq!(left.status, 200, "{}", left.text());
+    let running = api.call(
+        "POST",
+        "/networks/inner/connect",
+        Some(json!({"Container": "srv"})),
+    );
+    assert_eq!(running.status, 400, "{}", running.text());
+    // A network with members stays; without, it goes; an unused one is pruned.
+    let kept = api.call("DELETE", "/networks/team", None);
+    assert!(kept.status >= 400, "{}", kept.text());
+    for name in ["srv", "asker", "outsider", "late"] {
+        assert_eq!(
+            api.call("DELETE", &format!("/containers/{name}?force=1"), None)
+                .status,
+            204
+        );
+    }
+    assert_eq!(api.call("DELETE", "/networks/team", None).status, 204);
+    let pruned = api.call("POST", "/networks/prune", None);
+    assert_eq!(pruned.status, 200, "{}", pruned.text());
+    assert_eq!(
+        pruned.json()["NetworksDeleted"],
+        json!(["inner"]),
+        "{}",
+        pruned.text()
+    );
 }
 
 /// The engine answers on its socket file in the home: `_ping`, and `version` with the
@@ -968,8 +1267,8 @@ fn a_command_runs_in_a_running_container_by_exec() {
     assert_eq!(removed.status, 204, "{}", removed.text());
 }
 
-/// Images as the API lists, inspects and pulls them: the pull a stream of JSON messages,
-/// its failure the last of them.
+/// Images as the API lists, inspects and pulls them: the pull a stream of JSON messages; a
+/// pull that fails before it says anything answered by its status.
 #[test]
 fn images_are_listed_inspected_and_pulled() {
     let Some((home, image)) = home("eng-images") else {
@@ -1014,9 +1313,404 @@ fn images_are_listed_inspected_and_pulled() {
         !messages.is_empty() && messages.iter().all(|m| m.get("error").is_none()),
         "{messages:?}"
     );
+    // One that fails before it says anything is answered by its status, as dockerd answers
+    // one whose stream it has not flushed, which clients read as an error of the call.
     let failed = api.call("POST", "/images/create?fromImage=127.0.0.1:1/none&tag=x", None);
-    let last: Value = serde_json::from_str(failed.text().lines().last().unwrap()).unwrap();
-    assert!(last["error"].is_string(), "{}", failed.text());
+    assert_eq!(failed.status, 500, "{}", failed.text());
+    // A tag the registry has not: not found, as clients read a pull of nothing.
+    let missing = api.call(
+        "POST",
+        &format!("/images/create?fromImage={name}&tag=nothere"),
+        None,
+    );
+    assert_eq!(missing.status, 404, "{}", missing.text());
+    assert!(
+        failed.json()["message"]
+            .as_str()
+            .unwrap()
+            .contains("failed to resolve reference"),
+        "{}",
+        failed.text()
+    );
+}
+
+/// Images named, traced and removed as the API asks: a tag made by its repo and tag, one
+/// that names no repository refused; its history newest first, the image's ID and names
+/// on the newest; a name removed, the image itself refused while a microVM was made of
+/// it; what shards takes on disk, each kind's usage, the fields of clients before 1.52
+/// but with `verbose`, and its microVMs' templates, which go with the image they were
+/// made of; and unused images pruned, their bytes counted.
+#[test]
+fn images_are_tagged_traced_removed_and_pruned() {
+    let Some((home, image)) = home_with_guest("eng-imgs") else {
+        return;
+    };
+    let mut api = Api::new(&home);
+    let id = api.call("GET", &format!("/images/{image}/json"), None).json()["Id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let tagged = api.call(
+        "POST",
+        &format!("/images/{image}/tag?repo=shp/named&tag=v1"),
+        None,
+    );
+    assert_eq!(tagged.status, 201, "{}", tagged.text());
+    let named = api.call("GET", "/images/shp/named:v1/json", None).json();
+    assert_eq!(named["Id"], json!(id), "{named}");
+    let unnamed = api.call("POST", &format!("/images/{image}/tag"), None);
+    assert_eq!(unnamed.status, 400, "{}", unnamed.text());
+    let missing = api.call("POST", "/images/nothing:here/tag?repo=x", None);
+    assert_eq!(missing.status, 404, "{}", missing.text());
+    // A history: the newest step the image's, with its names; the one before `<missing>`,
+    // its layer's size.
+    let (_, blobs) = common::test_image_with(Some(b"history"));
+    let config = String::from_utf8(blobs[0].clone()).unwrap().replacen(
+        '{',
+        r#"{"history":[{"created":"2026-01-02T03:04:05Z","created_by":"ADD layer","comment":"first"},{"created":"2026-01-02T03:04:06Z","created_by":"ENV x=1","empty_layer":true}],"#,
+        1,
+    );
+    let archive = tar(&[
+        ("cfg.json", 0o644, 0, Some(config.as_bytes())),
+        ("abc", 0o755, 0, None),
+        ("abc/layer.tar", 0o644, 0, Some(blobs[1].as_slice())),
+        (
+            "manifest.json",
+            0o644,
+            0,
+            Some(br#"[{"Config":"cfg.json","RepoTags":["shp/hist:1"],"Layers":["abc/layer.tar"]}]"#),
+        ),
+    ]);
+    let at = home.join("hist.tar");
+    std::fs::write(&at, archive).unwrap();
+    let loaded = shards_in(&home, &["load", "-i", at.to_str().unwrap()]);
+    assert_eq!(loaded.status, Some(0), "{loaded}");
+    let hist = api.call("GET", "/images/shp/hist:1/json", None).json()["Id"].clone();
+    let history = api.call("GET", "/images/shp/hist:1/history", None);
+    assert_eq!(history.status, 200, "{}", history.text());
+    let steps = history.json();
+    assert_eq!(
+        (
+            &steps[0]["Id"],
+            &steps[0]["Tags"],
+            &steps[0]["CreatedBy"],
+            &steps[0]["Created"],
+            &steps[0]["Size"]
+        ),
+        (
+            &hist,
+            &json!(["shp/hist:1"]),
+            &json!("ENV x=1"),
+            &json!(1_767_323_046),
+            &json!(0)
+        ),
+        "{steps}"
+    );
+    assert_eq!(
+        (
+            &steps[1]["Id"],
+            &steps[1]["Tags"],
+            &steps[1]["Comment"],
+            &steps[1]["Created"]
+        ),
+        (
+            &json!("<missing>"),
+            &Value::Null,
+            &json!("first"),
+            &json!(1_767_323_045)
+        ),
+        "{steps}"
+    );
+    assert!(steps[1]["Size"].as_i64().unwrap() > 0, "{steps}");
+    assert_eq!(steps.as_array().unwrap().len(), 2, "{steps}");
+    let platform = api.call(
+        "GET",
+        "/images/shp/hist:1/history?platform=%7B%22os%22%3A%22linux%22%7D",
+        None,
+    );
+    assert_eq!(platform.status, 400, "{}", platform.text());
+    assert!(platform.text().contains("--platform"), "{}", platform.text());
+    // A run of it, which a template is made of where this host saves them.
+    let made = api.call(
+        "POST",
+        "/containers/create?name=user",
+        Some(json!({"Image": "shp/named:v1", "Cmd": ["exit", "0"]})),
+    );
+    assert_eq!(made.status, 201, "{}", made.text());
+    assert_eq!(api.call("POST", "/containers/user/start", None).status, 204);
+    assert_eq!(
+        api.call("POST", "/containers/user/wait", None).json()["StatusCode"],
+        json!(0)
+    );
+    let saved = std::fs::read_dir(home.join("templates"))
+        .map(|d| d.flatten().filter(|e| e.path().is_dir()).count())
+        .unwrap_or(0);
+    // The image is refused while a microVM was made of it; a name of it goes.
+    let refused = api.call("DELETE", &format!("/images/{id}"), None);
+    assert_eq!(refused.status, 409, "{}", refused.text());
+    let untagged = api.call("DELETE", "/images/shp/named:v1", None);
+    assert_eq!(untagged.status, 200, "{}", untagged.text());
+    assert_eq!(untagged.json(), json!([{"Untagged": "shp/named:v1"}]));
+    // What shards takes on disk.
+    let df = api.call("GET", "/system/df", None);
+    assert_eq!(df.status, 200, "{}", df.text());
+    let df = df.json();
+    assert_eq!(df["ImageUsage"]["TotalCount"], json!(2), "{df}");
+    assert_eq!(df["ContainerUsage"]["TotalCount"], json!(1), "{df}");
+    assert!(
+        df["Images"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|i| i["Id"] == json!(id)),
+        "{df}"
+    );
+    assert_eq!(df["Containers"][0]["Names"], json!(["/user"]), "{df}");
+    assert!(df["LayersSize"].as_i64().unwrap() > 0, "{df}");
+    // Where this build has snapshots, the run saved its image's template.
+    assert_eq!(saved > 0, shards_vmm::vm::SNAPSHOTS, "{saved} templates");
+    match saved {
+        0 => assert_eq!(df["TemplateUsage"], json!({}), "{df}"),
+        n => assert_eq!(df["TemplateUsage"]["TotalCount"], json!(n), "{df}"),
+    }
+    let verbose = api.call("GET", "/system/df?verbose=1", None).json();
+    assert!(
+        verbose.get("Images").is_none() && verbose.get("LayersSize").is_none(),
+        "{verbose}"
+    );
+    assert_eq!(
+        verbose["ImageUsage"]["Items"].as_array().unwrap().len(),
+        2,
+        "{verbose}"
+    );
+    let typed = api.call("GET", "/system/df?type=volume", None).json();
+    let mut kinds: Vec<&String> = typed.as_object().unwrap().keys().collect();
+    kinds.sort();
+    assert_eq!(kinds, ["VolumeUsage", "Volumes"], "{typed}");
+    assert_eq!(api.call("GET", "/system/df?type=disks", None).status, 400);
+    // Pruned: nothing dangling, then every image no microVM was made of, its bytes
+    // counted; the templates made of it go after.
+    let none = api.call("POST", "/images/prune", None).json();
+    assert_eq!(none, json!({"ImagesDeleted": [], "SpaceReclaimed": 0}), "{none}");
+    assert_eq!(api.call("DELETE", "/containers/user", None).status, 204);
+    let pruned = api.call(
+        "POST",
+        "/images/prune?filters=%7B%22dangling%22%3A%5B%22false%22%5D%7D",
+        None,
+    );
+    assert_eq!(pruned.status, 200, "{}", pruned.text());
+    let pruned = pruned.json();
+    let deleted = pruned["ImagesDeleted"].as_array().unwrap();
+    assert!(deleted.contains(&json!({"Deleted": id})), "{pruned}");
+    assert!(pruned["SpaceReclaimed"].as_i64().unwrap() > 0, "{pruned}");
+    let gone = (0..200).any(|_| {
+        api.call("GET", "/system/df", None).json()["TemplateUsage"] == json!({}) || {
+            std::thread::sleep(Duration::from_millis(50));
+            false
+        }
+    });
+    assert!(gone, "{}", api.call("GET", "/system/df", None).text());
+}
+
+/// Images pushed, saved, loaded and imported as the API asks. A push goes with its
+/// client's credentials alone, each layer said by its ID, its digest an `aux` message,
+/// and our platform's manifest pushed alone, where the index was not all here, the `aux`
+/// the docker CLI tells of it by; a tag not here said in its stream. An image saved
+/// is an archive written as it is made, loaded back as it comes; one not here is 404. A
+/// root filesystem is imported from the body, named, with its message and changes; a
+/// source that is neither http nor the body is refused, and `scratch` is no image to pull.
+#[test]
+fn images_are_pushed_saved_loaded_and_imported() {
+    if cannot_run_vms() {
+        return;
+    }
+    let (index, blobs) = common::test_index();
+    let (from, _) = common::registry(index.clone(), blobs.clone());
+    let source = format!("127.0.0.1:{from}/test/image:v1");
+    let home = TempDir::new("eng-push");
+    let pulled = shards_in(&home, &["pull", "-q", &source]);
+    assert_eq!(pulled.status, Some(0), "{pulled}");
+    let basic = format!(
+        "Basic {}",
+        base64::engine::general_purpose::STANDARD.encode("pusher:secret")
+    );
+    let (port, repos) = common::writable_registry_requiring(Some(basic));
+    let repo = format!("127.0.0.1:{port}/team/app");
+    let mut api = Api::new(&home);
+    let tagged = api.call("POST", &format!("/images/{source}/tag?repo={repo}&tag=1"), None);
+    assert_eq!(tagged.status, 201, "{}", tagged.text());
+    let lines = |a: &Answered| -> Vec<Value> {
+        a.text()
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect()
+    };
+    // Without its client's credentials, the registry refuses it.
+    let refused = api.call("POST", &format!("/images/{repo}/push?tag=1"), None);
+    assert_eq!(refused.status, 200, "{}", refused.text());
+    assert!(
+        lines(&refused).last().unwrap()["error"].is_string(),
+        "{}",
+        refused.text()
+    );
+    // With them, it goes.
+    let auth = base64::engine::general_purpose::URL_SAFE.encode(
+        json!({"username": "pusher", "password": "secret", "serveraddress": format!("127.0.0.1:{port}")})
+            .to_string(),
+    );
+    api.send(
+        "POST",
+        &format!("/images/{repo}/push?tag=1"),
+        None,
+        &[("X-Registry-Auth", &auth)],
+    );
+    let pushed = api.answer("POST");
+    assert_eq!(pushed.status, 200, "{}", pushed.text());
+    let (manifest, layer) = (&blobs[2], &blobs[1]);
+    let short = common::sha256_digest(layer);
+    let short = short.trim_start_matches("sha256:").get(..12).unwrap().to_string();
+    let digest = common::sha256_digest(manifest);
+    assert_eq!(
+        lines(&pushed),
+        [
+            json!({"status": format!("The push refers to repository [{repo}]")}),
+            json!({"status": "Pushed", "progressDetail": {}, "id": short}),
+            json!({"status": format!("1: digest: {digest} size: {}", manifest.len())}),
+            json!({"progressDetail": {}, "aux": {"Tag": "1", "Digest": digest, "Size": manifest.len()}}),
+            json!({"progressDetail": {}, "aux": {
+                "manifestPushedInsteadOfIndex": true,
+                "originalIndex": {"mediaType": "application/vnd.oci.image.index.v1+json", "digest": common::sha256_digest(&index), "size": 0},
+                "selectedManifest": {"mediaType": "application/vnd.oci.image.manifest.v1+json", "digest": digest, "size": 0},
+            }}),
+        ],
+        "{}",
+        pushed.text()
+    );
+    assert_eq!(repos.lock().unwrap().manifests["team/app"]["1"].1, *manifest);
+    // A tag not here: said after the repository, as dockerd says it.
+    let missing = api.call("POST", &format!("/images/{repo}/push?tag=nope"), None);
+    assert_eq!(missing.status, 200, "{}", missing.text());
+    assert!(
+        lines(&missing).last().unwrap()["error"]
+            .as_str()
+            .unwrap()
+            .starts_with("tag does not exist"),
+        "{}",
+        missing.text()
+    );
+    // Saved as it is made, removed, and loaded back as it comes.
+    let saved = Api::new(&home).downloaded(&format!("/images/{repo}:1/get"));
+    assert_eq!(
+        (saved.status, saved.field("content-type")),
+        (200, Some("application/x-tar")),
+        "{saved:?}"
+    );
+    let names: Vec<String> = untar(&saved.body).into_iter().map(|(n, _)| n).collect();
+    assert!(
+        names.iter().any(|n| n == "index.json") && names.iter().any(|n| n == "manifest.json"),
+        "{names:?}"
+    );
+    assert_eq!(api.call("GET", "/images/nothing:here/get", None).status, 404);
+    assert_eq!(api.call("DELETE", &format!("/images/{repo}:1"), None).status, 200);
+    let loaded = api.upload("POST", "/images/load", "application/x-tar", &saved.body);
+    assert_eq!(loaded.status, 200, "{}", loaded.text());
+    assert_eq!(
+        lines(&loaded),
+        [json!({"stream": format!("Loaded image: {repo}:1\n")})],
+        "{}",
+        loaded.text()
+    );
+    assert_eq!(
+        api.call("GET", &format!("/images/{repo}:1/json"), None).status,
+        200
+    );
+    // A root filesystem imported from the body: named, its message and change kept.
+    let imported = api.upload(
+        "POST",
+        "/images/create?fromSrc=-&repo=shp/imported&tag=1&message=from%20the%20api&changes=CMD%20%5B%22sleep%22%5D",
+        "application/x-tar",
+        layer,
+    );
+    assert_eq!(imported.status, 200, "{}", imported.text());
+    let id = lines(&imported).last().unwrap()["status"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(id.starts_with("sha256:"), "{}", imported.text());
+    let doc = api.call("GET", "/images/shp/imported:1/json", None).json();
+    assert_eq!(
+        (&doc["Id"], &doc["Config"]["Cmd"]),
+        (&json!(id), &json!(["sleep"])),
+        "{doc}"
+    );
+    let history = api.call("GET", "/images/shp/imported:1/history", None).json();
+    assert_eq!(history[0]["Comment"], json!("from the api"), "{history}");
+    let elsewhere = api.call("POST", "/images/create?fromSrc=ftp://example.com/root.tar", None);
+    assert_eq!(elsewhere.status, 400, "{}", elsewhere.text());
+    let scratch = api.call("POST", "/images/create?fromImage=scratch&tag=latest", None);
+    assert_eq!(scratch.status, 403, "{}", scratch.text());
+}
+
+/// A microVM committed as the API asks: named, its author, comment and Dockerfile changes
+/// kept, its files as it left them; an empty config is none, another refused.
+#[test]
+fn a_microvm_is_committed_as_an_image() {
+    let Some((home, image)) = home("eng-commit") else {
+        return;
+    };
+    let mut api = Api::new(&home);
+    let made = api.call(
+        "POST",
+        "/containers/create?name=worked",
+        Some(json!({"Image": image, "Cmd": ["fs", "write:/tmp/made=1"]})),
+    );
+    assert_eq!(made.status, 201, "{}", made.text());
+    assert_eq!(api.call("POST", "/containers/worked/start", None).status, 204);
+    assert_eq!(
+        api.call("POST", "/containers/worked/wait", None).json()["StatusCode"],
+        json!(0)
+    );
+    let committed = api.call(
+        "POST",
+        "/commit?container=worked&repo=shp/worked&tag=1&author=api&comment=its%20work&changes=ENV%20K%3Dv",
+        Some(json!({})),
+    );
+    assert_eq!(committed.status, 201, "{}", committed.text());
+    let id = committed.json()["Id"].as_str().unwrap().to_string();
+    let doc = api.call("GET", "/images/shp/worked:1/json", None).json();
+    assert_eq!((&doc["Id"], &doc["Author"]), (&json!(id), &json!("api")), "{doc}");
+    assert!(
+        doc["Config"]["Env"].as_array().unwrap().contains(&json!("K=v")),
+        "{doc}"
+    );
+    let history = api.call("GET", "/images/shp/worked:1/history", None).json();
+    assert_eq!(history[0]["Comment"], json!("its work"), "{history}");
+    // Its files as it left them, in a microVM of the new image.
+    let read = api.call(
+        "POST",
+        "/containers/create?name=reread",
+        Some(json!({"Image": "shp/worked:1", "Cmd": ["stat", "/tmp/made"]})),
+    );
+    assert_eq!(read.status, 201, "{}", read.text());
+    assert_eq!(api.call("POST", "/containers/reread/start", None).status, 204);
+    assert_eq!(
+        api.call("POST", "/containers/reread/wait", None).json()["StatusCode"],
+        json!(0)
+    );
+    assert!(
+        output_of(&mut api, "reread").contains("= 1"),
+        "{}",
+        output_of(&mut api, "reread")
+    );
+    let configured = api.call(
+        "POST",
+        "/commit?container=worked&repo=shp/worked&tag=2",
+        Some(json!({"Cmd": ["other"]})),
+    );
+    assert_eq!(configured.status, 400, "{}", configured.text());
+    assert!(configured.text().contains("changes"), "{}", configured.text());
+    let nothing = api.call("POST", "/commit?container=nothing", None);
+    assert_eq!(nothing.status, 404, "{}", nothing.text());
 }
 
 /// The docker CLI runs microVMs through the engine, as it runs Docker's containers: `run`
@@ -1176,6 +1870,72 @@ fn the_docker_cli_runs_microvms_through_the_engine() {
     assert!(out.starts_with("Deleted Containers:\n"), "{out}");
     let (_, out, _) = docker(&["ps", "-aq"]);
     assert_eq!(out.trim(), "");
+    // Images named, traced, removed and pruned; what shards takes on disk.
+    let (status, _, err) = docker(&["tag", &image, "shp/cli:1"]);
+    assert_eq!(status, Some(0), "{err}");
+    let (status, out, err) = docker(&["history", "-q", "shp/cli:1"]);
+    assert_eq!(status, Some(0), "{err}");
+    let (_, id, _) = docker(&["image", "inspect", "--format", "{{.Id}}", "shp/cli:1"]);
+    let short = id
+        .trim()
+        .trim_start_matches("sha256:")
+        .get(..12)
+        .unwrap_or_default()
+        .to_string();
+    assert!(out.lines().all(|l| l == short || l == "<missing>"), "{out}");
+    let (status, out, err) = docker(&["rmi", "shp/cli:1"]);
+    assert_eq!(
+        (status, out.as_str()),
+        (Some(0), "Untagged: shp/cli:1\n"),
+        "{err}"
+    );
+    let (status, out, err) = docker(&["system", "df", "--format", "{{.Type}} {{.TotalCount}}"]);
+    assert_eq!(status, Some(0), "{err}");
+    let images: usize = out
+        .lines()
+        .find_map(|l| l.strip_prefix("Images "))
+        .and_then(|n| n.parse().ok())
+        .unwrap_or(0);
+    assert!(images >= 1, "{out}");
+    let (status, out, err) = docker(&["image", "prune", "-f"]);
+    assert_eq!(
+        (status, out.as_str()),
+        (Some(0), "Total reclaimed space: 0B\n"),
+        "{err}"
+    );
+    // A microVM committed; images saved, loaded, imported and pushed.
+    let (status, _, err) = docker(&["run", "--name", "cli-work", &image, "fs", "write:/tmp/w=1"]);
+    assert_eq!(status, Some(0), "{err}");
+    let (status, out, err) = docker(&["commit", "cli-work", "shp/cli-work:1"]);
+    assert_eq!(status, Some(0), "{err}");
+    assert!(out.trim().starts_with("sha256:"), "{out}");
+    let (status, _, err) = docker(&["rm", "cli-work"]);
+    assert_eq!(status, Some(0), "{err}");
+    let saved = home.join("cli-saved.tar");
+    let (status, _, err) = docker(&["save", "-o", saved.to_str().unwrap(), "shp/cli-work:1"]);
+    assert_eq!(status, Some(0), "{err}");
+    let (status, _, err) = docker(&["rmi", "shp/cli-work:1"]);
+    assert_eq!(status, Some(0), "{err}");
+    let (status, out, err) = docker(&["load", "-i", saved.to_str().unwrap()]);
+    assert_eq!(
+        (status, out.as_str()),
+        (Some(0), "Loaded image: shp/cli-work:1\n"),
+        "{err}"
+    );
+    let (_, blobs) = common::test_image_with(None);
+    let root = home.join("cli-root.tar");
+    std::fs::write(&root, &blobs[1]).unwrap();
+    let (status, out, err) = docker(&["import", root.to_str().unwrap(), "shp/cli-root:1"]);
+    assert_eq!(status, Some(0), "{err}");
+    assert!(out.trim().starts_with("sha256:"), "{out}");
+    let (port, repos) = common::writable_registry();
+    let pushed = format!("127.0.0.1:{port}/team/cli:1");
+    let (status, _, err) = docker(&["tag", "shp/cli-work:1", &pushed]);
+    assert_eq!(status, Some(0), "{err}");
+    let (status, out, err) = docker(&["push", &pushed]);
+    assert_eq!(status, Some(0), "{out}{err}");
+    assert!(out.contains("1: digest: sha256:"), "{out}");
+    assert!(repos.lock().unwrap().manifests["team/cli"].contains_key("1"));
 }
 
 /// `name` on PATH.

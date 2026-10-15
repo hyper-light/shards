@@ -34,7 +34,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
         threads: &'s Threads<'s, 'e>,
         argv: &[String],
     ) -> Option<String> {
-        let given = target(argv)?;
+        let (given, copies) = target(argv)?;
         // What any client has seen of its last run first, as every command takes it
         // (`settle`): a run that has just returned its status may have sent a DONE not yet
         // taken, and the container would read as running still, its files then read in a
@@ -64,7 +64,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
         if free {
             // Its files as its last run left them.
             self.await_settled(&id);
-            match self.start_visit(threads, &id) {
+            match self.start_visit(threads, &id, copies) {
                 Ok(()) => return Some(id),
                 Err(e) => {
                     log(format!("container {id}: visiting its files: {e}"));
@@ -117,8 +117,14 @@ impl<D: crate::containers::Disk> Daemon<D> {
         }
     }
 
-    /// Boots a VM over container `id`'s files, holding, as its run, pending in `runs`.
-    fn start_visit<'s, 'e>(&'s self, threads: &'s Threads<'s, 'e>, id: &str) -> Result<(), String> {
+    /// Boots a VM over container `id`'s files, holding, as its run, pending in `runs`; for
+    /// a copy (`copies`), with its shared directories.
+    fn start_visit<'s, 'e>(
+        &'s self,
+        threads: &'s Threads<'s, 'e>,
+        id: &str,
+        copies: bool,
+    ) -> Result<(), String> {
         let dir = lock(&self.containers).dir(id);
         let stored = std::fs::read(dir.join(REQUEST))
             .ok()
@@ -130,6 +136,26 @@ impl<D: crate::containers::Disk> Daemon<D> {
         self.name_guest(&stored, &mut prepared.spec)?;
         prepared.spec.cgroup = crate::resources::cgroup(&stored.resources, crate::resources::host_cpus());
         prepared.spec.builtin = shards_abi::run::builtin::HOLD;
+        // A copy sees the files its runs see (D38): its shared directories served and
+        // mounted where they mount them, and its root read-only where theirs is, so that
+        // a file copied in is where its command will find it, and none goes where its runs
+        // could not write. A tmpfs is a run's own, and no stopped container's; a
+        // directory only its agents mount is none of its root's.
+        let link = if copies {
+            let (points, first) = lock(&self.containers)
+                .made(id)
+                .map(|c| (c.mounts.clone(), c.started.is_none()))
+                .unwrap_or_default();
+            let points: Vec<_> = points.into_iter().filter(|p| !p.domains_only).collect();
+            let opened = crate::volumes::open(&points, first, &crate::volumes::Store::new(&self.home))?;
+            prepared.spec.setup = crate::setup::setup(&stored, &opened.mounts, None)?;
+            crate::spec::fits(&prepared.spec)?;
+            let link = self.start_shares(threads, &opened.dirs)?;
+            prepared.shares = u32::try_from(opened.dirs.len()).map_err(|_| "too many shares")?;
+            link
+        } else {
+            None
+        };
         let (ours, theirs) = UnixStream::pair().map_err(|e| format!("a visit's connection: {e}"))?;
         let null = File::open("/dev/null").map_err(|e| format!("/dev/null: {e}"))?;
         let layer_in = File::open(dir.join(LAYER)).ok();
@@ -141,6 +167,9 @@ impl<D: crate::containers::Disk> Daemon<D> {
             fds.push(file.as_fd());
         }
         fds.push(layer_out.as_fd());
+        if let Some(link) = &link {
+            fds.push(link.as_fd());
+        }
         let mut payload =
             Vec::with_capacity(shards_ipc::RunHead::LEN + prepared.spec.encoded_len().unwrap_or(0));
         shards_ipc::RunHead {
@@ -185,8 +214,17 @@ impl<D: crate::containers::Disk> Daemon<D> {
         );
         drop(prepared.lease.take());
         drop(fds);
-        drop((theirs, null, layer_in, layer_out));
+        drop((theirs, null, layer_in, layer_out, link));
         let inbox = started?;
+        let held = self.await_holding(id, &inbox);
+        self.follow(threads, id.to_string(), inbox);
+        if let Err(e) = held {
+            // Why, as its VM told its client: what it said on stderr, read until it ends.
+            return Err(match said_to(&ours) {
+                said if said.is_empty() => e,
+                said => format!("{e}: {said}"),
+            });
+        }
         // What the VM says to its client, which nobody reads, read to its end.
         let drained = std::thread::Builder::new()
             .name("visit-client".into())
@@ -197,9 +235,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
         if let Err(e) = drained {
             log(format!("container {id}: a visit's client: {e}"));
         }
-        let held = self.await_holding(id, &inbox);
-        self.follow(threads, id.to_string(), inbox);
-        held
+        Ok(())
     }
 
     /// Takes run `id`'s messages until its VM says it holds: the built-ins' requests then
@@ -234,12 +270,25 @@ impl<D: crate::containers::Disk> Daemon<D> {
     }
 }
 
+/// What a visit's VM said on stderr to its client, `client`, until it ended (a second at
+/// most), trimmed: why it ended before it held.
+fn said_to(client: &UnixStream) -> String {
+    let _ = client.set_read_timeout(Some(Duration::from_secs(1)));
+    let mut said = Vec::new();
+    while let Ok(Some(m)) = shards_ipc::recv(client) {
+        if m.kind == kind::ERR {
+            said.extend(m.payload);
+        }
+    }
+    String::from_utf8_lossy(&said).trim().to_string()
+}
+
 /// The container container command `argv` reads the files of, given as its client gave
-/// it: `cp`'s steps', `diff`'s and `export`'s.
-fn target(argv: &[String]) -> Option<String> {
+/// it: `cp`'s steps', `diff`'s and `export`'s; and whether it copies.
+fn target(argv: &[String]) -> Option<(String, bool)> {
     use shards_cmdline::commands::{self, DIFF, EXPORT};
     if argv.first().is_some_and(|a| a == super::COPY_STEP) {
-        return argv.get(2).cloned();
+        return argv.get(2).cloned().map(|c| (c, true));
     }
     let words: Vec<&str> = argv.iter().map(String::as_str).collect();
     let (command, path, named) = commands::find(&words)?;
@@ -252,7 +301,7 @@ fn target(argv: &[String]) -> Option<String> {
         argv.get(named..).unwrap_or_default(),
         &flags::value,
     ) {
-        Outcome::Run(parsed) => parsed.args.first().cloned(),
+        Outcome::Run(parsed) => parsed.args.first().cloned().map(|c| (c, false)),
         _ => None,
     }
 }

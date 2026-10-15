@@ -911,41 +911,51 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
     }
 }
 
+/// An image's history (dockerd's ImageHistory): its ID, its names, and each step, the
+/// newest first.
+pub(super) struct History {
+    pub id: String,
+    pub tags: Vec<String>,
+    pub steps: Vec<Step>,
+}
+
+/// A step of an image's history: when (Unix seconds), by what, its comment, the size of the
+/// layer it made (its compressed size, where dockerd's is unpacked), and whether it made
+/// none.
+pub(super) struct Step {
+    pub created: i64,
+    pub by: String,
+    pub comment: String,
+    pub size: i64,
+    pub empty: bool,
+}
+
 impl<D: crate::containers::Disk> super::Daemon<D> {
-    /// `shards history IMAGE` (docker/cli history.go): each step of the image's config
-    /// history, newest first: the image's ID on the newest, `<missing>` on the rest, as
-    /// dockerd's containerd store has it; when, by what, the size of the layer it made, and
-    /// its comment. A layer's size is its compressed size, where dockerd's is unpacked.
-    pub(super) fn history(
-        &self,
-        parsed: &shards_cmdline::flags::Parsed,
-        asker: &super::commands::Asker,
-        reply: &super::commands::Reply<'_>,
-    ) -> u8 {
-        let given = parsed.args.first().map(String::as_str).unwrap_or_default();
-        let read = self.store().and_then(|store| {
+    /// The history of the image `given` names, as dockerd's containerd store reads it
+    /// (daemon/containerd/image_history.go): its config's history, newest first, each
+    /// layer's size from our platform's manifest; its names those of its references but a
+    /// dangling one, as each is said. Or why not, its words without `shards: `.
+    pub(super) fn history_of(&self, given: &str) -> Result<History, String> {
+        let (image, tags) = self.store().and_then(|store| {
             let store = store.ok_or_else(|| not_found(given))?;
             let images = store.named().map_err(|e| e.to_string())?;
             let named = resolve(&images, given)?;
-            store.image(named).map_err(|e| e.to_string())
-        });
-        let image = match read {
-            Ok(image) => image,
-            Err(e) => {
-                reply.err(&format!("shards: {e}"));
-                return 1;
-            }
-        };
+            let tags = named
+                .references
+                .iter()
+                .filter(|r| !r.starts_with(super::rmi::DANGLING))
+                .filter_map(|r| shards_image::reference::Reference::parse_normalized(r).ok())
+                .map(|r| r.familiar())
+                .collect();
+            Ok((store.image(named).map_err(|e| e.to_string())?, tags))
+        })?;
         // Its config as dockerd's history reads it (image_history.go): its rootfs and
         // history alone, read as Go reads them, failing as that fails; the rest unread.
         let read = image.config.as_deref().map(|c| {
             shards_image::config::Read::new(c).and_then(|r| r.read(shards_image::config::As::History))
         });
         let history = match read {
-            Some(Err(e)) => {
-                reply.err(&format!("shards: the image's config does not read: {e}"));
-                return 1;
-            }
+            Some(Err(e)) => return Err(format!("the image's config does not read: {e}")),
             Some(Ok(i)) => i.history.unwrap_or_default(),
             None => Vec::new(),
         };
@@ -959,7 +969,7 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
             .map(|m| m.layers.iter().map(|l| l.size).collect())
             .unwrap_or_default();
         let mut layer = 0;
-        let mut steps: Vec<(i64, String, String, i64, bool)> = Vec::new();
+        let mut steps: Vec<Step> = Vec::new();
         for h in history {
             let size = if h.empty_layer {
                 0
@@ -968,26 +978,54 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
                 layer += 1;
                 s
             };
-            let when = h.created.map_or(0, |t| t.unix().0);
-            steps.push((when, h.created_by, h.comment, size, h.empty_layer));
+            steps.push(Step {
+                created: h.created.map_or(0, |t| t.unix().0),
+                by: h.created_by,
+                comment: h.comment,
+                size,
+                empty: h.empty_layer,
+            });
         }
         steps.reverse();
-        let now = asker.now / 1_000_000_000;
-        let id = truncate_id(&image.id.to_string()).to_string();
+        Ok(History {
+            id: image.id.to_string(),
+            tags,
+            steps,
+        })
+    }
+
+    /// `shards history IMAGE` (docker/cli history.go): each step of the image's config
+    /// history, newest first: the image's ID on the newest, `<missing>` on the rest, as
+    /// dockerd's containerd store has it; when, by what, the size of the layer it made, and
+    /// its comment.
+    pub(super) fn history(
+        &self,
+        parsed: &shards_cmdline::flags::Parsed,
+        asker: &super::commands::Asker,
+        reply: &super::commands::Reply<'_>,
+    ) -> u8 {
+        let given = parsed.args.first().map(String::as_str).unwrap_or_default();
+        let History { id: full, steps, .. } = match self.history_of(given) {
+            Ok(h) => h,
+            Err(e) => {
+                reply.err(&format!("shards: {e}"));
+                return 1;
+            }
+        };
         if asker.styled() && !parsed.bool("quiet") && parsed.string("format").is_empty() {
             let mut sheet = shards_ipc::Sheet::new("history");
             sheet.record(&[
                 ("kind", "head".into()),
                 ("image", given.to_string()),
-                ("id", id.clone()),
+                ("id", truncate_id(&full).to_string()),
             ]);
-            for (when, by, comment, size, empty) in &steps {
+            for step in &steps {
                 sheet.record(&[
-                    ("created", when.to_string()),
-                    ("by", by.clone()),
-                    ("size", size.to_string()),
-                    ("empty", empty.to_string()),
-                    ("comment", comment.clone()),
+                    ("created", step.created.to_string()),
+                    ("by", step.by.clone()),
+                    ("size", step.size.to_string()),
+                    ("empty", step.empty.to_string()),
+                    ("comment", step.comment.clone()),
                 ]);
             }
             reply.sheet(&sheet);
@@ -995,21 +1033,19 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
         }
         // The CLI's forms are the client's to lay out (cli/listing.rs): each step, the
         // newest first, the image's ID on it alone, as dockerd's history gives them.
-        let full = image.id.to_string();
         let rows: Vec<serde_json::Value> = steps
             .iter()
             .enumerate()
-            .map(|(i, (when, by, comment, size, _))| {
+            .map(|(i, step)| {
                 serde_json::json!({
                     "id": if i == 0 { full.as_str() } else { "<missing>" },
-                    "created": when,
-                    "created_by": by,
-                    "size": size,
-                    "comment": comment,
+                    "created": step.created,
+                    "created_by": step.by,
+                    "size": step.size,
+                    "comment": step.comment,
                 })
             })
             .collect();
-        let _ = (now, &id);
         let mut sheet = shards_ipc::Sheet::new("history-rows");
         sheet.record(&[("rows", serde_json::Value::Array(rows).to_string())]);
         reply.sheet(&sheet);
@@ -1125,23 +1161,15 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
             .collect()
     }
 
-    /// `shards system df` (docker/cli formatter/disk_usage.go): images, containers, local
-    /// volumes and the build cache, each its count, how many are in use, its size, and
-    /// what removing the unused would free. A colour terminal also hears of the microVMs'
+    /// What shards takes on disk (`shards inspect disk`; docker/cli
+    /// formatter/disk_usage.go): images, microVMs, local volumes and the build cache,
+    /// each its count, how many are in use, its size and what removing the unused would
+    /// free, and each one as the CLI lays it out, with its shared size where `verbose`
+    /// (images read at `now`, in a zone `offset` seconds east of UTC); and the microVMs'
     /// templates, which only shards has.
-    pub(super) fn system_df(
-        &self,
-        parsed: &shards_cmdline::flags::Parsed,
-        asker: &super::commands::Asker,
-        reply: &super::commands::Reply<'_>,
-    ) -> u8 {
+    pub(super) fn disk_usage(&self, verbose: bool, now: i128, offset: i64) -> DiskUsage {
         let images = self
-            .listed(
-                &Filters::default(),
-                false,
-                i128::from(asker.now),
-                i64::from(asker.utc_offset),
-            )
+            .listed(&Filters::default(), false, now, offset)
             .unwrap_or_default();
         let (img_total, img_active) = (images.len(), images.iter().filter(|i| i.containers > 0).count());
         let img_size: i64 = images.iter().map(|i| i.size).sum();
@@ -1186,112 +1214,152 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
             })
             .unwrap_or(0);
         let t_size = i64::try_from(on_disk(&templates)).unwrap_or(i64::MAX);
-        let (format, verbose) = (parsed.string("format"), parsed.bool("verbose"));
-        if !asker.styled() || !format.is_empty() || verbose {
-            // The usage, which the client lays out as docker/cli's DiskUsageContext does
-            // (cli/listing.rs): each kind's counts and sizes, and with `-v` each one.
-            let mut kept: Vec<crate::containers::Container> =
-                super::lock(&self.containers).all().cloned().collect();
-            kept.sort_by_key(|c| std::cmp::Reverse(c.created));
-            let mut items = self.container_rows(&kept);
-            // SizeRw: what it keeps of its own, its writable layer and log.
-            for (row, c) in items.iter_mut().zip(&kept) {
-                let bytes = on_disk(&self.home.join("containers").join(&c.id));
-                row["size"] = serde_json::json!(i64::try_from(bytes).unwrap_or(i64::MAX));
-            }
-            let shared = if verbose {
-                self.shared_sizes()
-            } else {
-                Default::default()
-            };
-            let image_rows: Vec<serde_json::Value> = images
-                .iter()
-                .map(|i| {
-                    serde_json::json!({
-                        "id": i.id, "tags": i.tags, "digests": i.digests, "created": i.created,
-                        "size": i.size, "containers": i.containers,
-                        "shared": shared.get(&i.id).copied().unwrap_or(-1),
-                    })
+        // The usage, which the client lays out as docker/cli's DiskUsageContext does
+        // (cli/listing.rs): each kind's counts and sizes, and with `-v` each one.
+        let mut kept: Vec<crate::containers::Container> =
+            super::lock(&self.containers).all().cloned().collect();
+        kept.sort_by_key(|c| std::cmp::Reverse(c.created));
+        let mut items = self.container_rows(&kept);
+        // SizeRw: what it keeps of its own, its writable layer and log.
+        for (row, c) in items.iter_mut().zip(&kept) {
+            let bytes = on_disk(&self.home.join("containers").join(&c.id));
+            row["size"] = serde_json::json!(i64::try_from(bytes).unwrap_or(i64::MAX));
+        }
+        let shared = if verbose {
+            self.shared_sizes()
+        } else {
+            Default::default()
+        };
+        let image_rows: Vec<serde_json::Value> = images
+            .iter()
+            .map(|i| {
+                serde_json::json!({
+                    "id": i.id, "tags": i.tags, "digests": i.digests, "created": i.created,
+                    "size": i.size, "containers": i.containers,
+                    "shared": shared.get(&i.id).copied().unwrap_or(-1),
                 })
-                .collect();
-            // The build cache's records (D50): each step's own layer, shared where an image
-            // holds it too, reclaimable where not; none is in use, no build running here.
-            // Then the cache mounts' (D114), in use while a step holds one.
-            let (mut b_total, mut b_active, mut b_size, mut b_free, mut cache_rows) =
-                (0usize, 0usize, 0i64, 0i64, Vec::new());
-            let ns = |s: i64| i128::from(s) * 1_000_000_000;
-            if let Ok(Some(store)) = self.store() {
-                let held = store.referenced_blobs().unwrap_or_default();
-                for e in store.cache_entries().unwrap_or_default() {
-                    let shared = e.own.as_ref().is_some_and(|d| held.contains(&store.blob_path(d)));
-                    let size = i64::try_from(e.size).unwrap_or(i64::MAX);
-                    b_total += 1;
-                    b_size = b_size.saturating_add(size);
-                    if !shared {
-                        b_free = b_free.saturating_add(size);
-                    }
-                    cache_rows.push(serde_json::json!({
-                        "id": e.key.get(..25).unwrap_or(&e.key), "type": "regular", "size": size,
-                        "shared": shared, "created": ns(e.created).to_string(),
-                        "last_used": ns(e.last_used).to_string(), "usage": e.usage,
-                    }));
+            })
+            .collect();
+        // The build cache's records (D50): each step's own layer, shared where an image
+        // holds it too, reclaimable where not; none is in use, no build running here.
+        // Then the cache mounts' (D114), in use while a step holds one.
+        let (mut b_total, mut b_active, mut b_size, mut b_free, mut cache_rows) =
+            (0usize, 0usize, 0i64, 0i64, Vec::new());
+        let ns = |s: i64| i128::from(s) * 1_000_000_000;
+        if let Ok(Some(store)) = self.store() {
+            let held = store.referenced_blobs().unwrap_or_default();
+            for e in store.cache_entries().unwrap_or_default() {
+                let shared = e.own.as_ref().is_some_and(|d| held.contains(&store.blob_path(d)));
+                let size = i64::try_from(e.size).unwrap_or(i64::MAX);
+                b_total += 1;
+                b_size = b_size.saturating_add(size);
+                if !shared {
+                    b_free = b_free.saturating_add(size);
                 }
-                for e in store.mount_entries().unwrap_or_default() {
-                    let size = i64::try_from(e.size).unwrap_or(i64::MAX);
-                    b_total += 1;
-                    b_size = b_size.saturating_add(size);
-                    if e.in_use {
-                        b_active += 1;
-                    } else {
-                        b_free = b_free.saturating_add(size);
-                    }
-                    cache_rows.push(serde_json::json!({
-                        "id": e.id, "type": "exec.cachemount", "size": size, "shared": false,
-                        "in_use": e.in_use, "description": e.description,
-                        "created": ns(e.created).to_string(), "last_used": ns(e.last_used).to_string(),
-                        "usage": e.usage,
-                    }));
-                }
+                cache_rows.push(serde_json::json!({
+                    "id": e.key.get(..25).unwrap_or(&e.key), "type": "regular", "size": size,
+                    "shared": shared, "created": ns(e.created).to_string(),
+                    "last_used": ns(e.last_used).to_string(), "usage": e.usage,
+                }));
             }
-            let kind = |total: usize, active: usize, size: i64, free: i64, items: Vec<serde_json::Value>| serde_json::json!({"total": total, "active": active, "size": size, "reclaimable": free, "items": items});
-            let rows = serde_json::json!({
-                "images": kind(img_total, img_active, img_size, img_free, image_rows),
-                "containers": kind(c_total, c_active, c_size, c_free, items),
-                "volumes": kind(v_total, v_active, v_size, v_free, volumes
-                    .iter()
-                    .map(|(v, size, refs)| serde_json::json!({
-                        "Name": v.name, "Driver": "local", "Scope": "local",
-                        "Mountpoint": crate::volumes::Store::new(&self.home).data(&v.name).display().to_string(),
-                        "Labels": v.labels,
-                        "UsageData": {"RefCount": refs, "Size": size},
-                    }))
-                    .collect()),
-                "build_cache": kind(b_total, b_active, b_size, b_free, cache_rows),
-            });
+            for e in store.mount_entries().unwrap_or_default() {
+                let size = i64::try_from(e.size).unwrap_or(i64::MAX);
+                b_total += 1;
+                b_size = b_size.saturating_add(size);
+                if e.in_use {
+                    b_active += 1;
+                } else {
+                    b_free = b_free.saturating_add(size);
+                }
+                cache_rows.push(serde_json::json!({
+                    "id": e.id, "type": "exec.cachemount", "size": size, "shared": false,
+                    "in_use": e.in_use, "description": e.description,
+                    "created": ns(e.created).to_string(), "last_used": ns(e.last_used).to_string(),
+                    "usage": e.usage,
+                }));
+            }
+        }
+        let kind = |total: usize, active: usize, size: i64, free: i64, items: Vec<serde_json::Value>| serde_json::json!({"total": total, "active": active, "size": size, "reclaimable": free, "items": items});
+        let rows = serde_json::json!({
+            "images": kind(img_total, img_active, img_size, img_free, image_rows),
+            "containers": kind(c_total, c_active, c_size, c_free, items),
+            "volumes": kind(v_total, v_active, v_size, v_free, volumes
+                .iter()
+                .map(|(v, size, refs)| serde_json::json!({
+                    "Name": v.name, "Driver": "local", "Scope": "local",
+                    "Mountpoint": crate::volumes::Store::new(&self.home).data(&v.name).display().to_string(),
+                    "Labels": v.labels,
+                    "UsageData": {"RefCount": refs, "Size": size},
+                }))
+                .collect()),
+            "build_cache": kind(b_total, b_active, b_size, b_free, cache_rows),
+        });
+        DiskUsage {
+            rows,
+            templates: (t_total, t_size),
+        }
+    }
+
+    /// `shards system df`, `shards inspect disk` ([`disk_usage`](Self::disk_usage)): its
+    /// rows, for the client to lay out; a colour terminal's page hears of the microVMs'
+    /// templates too.
+    pub(super) fn system_df(
+        &self,
+        parsed: &shards_cmdline::flags::Parsed,
+        asker: &super::commands::Asker,
+        reply: &super::commands::Reply<'_>,
+    ) -> u8 {
+        let (format, verbose) = (parsed.string("format"), parsed.bool("verbose"));
+        let usage = self.disk_usage(verbose, i128::from(asker.now), i64::from(asker.utc_offset));
+        if !asker.styled() || !format.is_empty() || verbose {
             let mut sheet = shards_ipc::Sheet::new("df-rows");
-            sheet.record(&[("rows", rows.to_string())]);
+            sheet.record(&[("rows", usage.rows.to_string())]);
             reply.sheet(&sheet);
             return 0;
         }
         // A colour terminal's page: shards' templates too, which only it has.
         let mut sheet = shards_ipc::Sheet::new("df");
-        for (kind, total, active, bytes, freeable) in [
-            ("images", img_total, img_active, img_size, img_free),
-            ("microVMs", c_total, c_active, c_size, c_free),
-            ("volumes", v_total, v_active, v_size, v_free),
-            ("templates", t_total, t_total, t_size, 0),
+        let of = |kind: &str, field: &str| {
+            usage
+                .rows
+                .get(kind)
+                .and_then(|k| k.get(field))
+                .and_then(serde_json::Value::as_i64)
+                .unwrap_or(0)
+                .to_string()
+        };
+        for (kind, rows) in [
+            ("images", "images"),
+            ("microVMs", "containers"),
+            ("volumes", "volumes"),
         ] {
             sheet.record(&[
                 ("kind", kind.into()),
-                ("total", total.to_string()),
-                ("active", active.to_string()),
-                ("size", bytes.to_string()),
-                ("reclaimable", freeable.to_string()),
+                ("total", of(rows, "total")),
+                ("active", of(rows, "active")),
+                ("size", of(rows, "size")),
+                ("reclaimable", of(rows, "reclaimable")),
             ]);
         }
+        let (t_total, t_size) = usage.templates;
+        sheet.record(&[
+            ("kind", "templates".into()),
+            ("total", t_total.to_string()),
+            ("active", t_total.to_string()),
+            ("size", t_size.to_string()),
+            ("reclaimable", "0".into()),
+        ]);
         reply.sheet(&sheet);
         0
     }
+}
+
+/// What shards takes on disk ([`disk_usage`](super::Daemon::disk_usage)): each kind's
+/// counts, sizes and items, as `system df`'s rows; and its microVMs' templates, their
+/// count and size.
+pub(super) struct DiskUsage {
+    pub rows: serde_json::Value,
+    pub templates: (usize, i64),
 }
 
 /// go-units' HumanSize: four significant digits, as prune reports what it reclaimed.
@@ -1362,7 +1430,122 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
                 removed_vms.push((id, name));
             }
         }
+        // Said as dockerd says each prune (daemon/prune.go): what it reclaimed.
+        self.events.log(
+            "container",
+            "prune",
+            "",
+            std::collections::BTreeMap::from([("reclaimed".to_string(), reclaimed.to_string())]),
+        );
         Ok((removed_vms, reclaimed))
+    }
+
+    /// The image names `shards prune image` removes: those the filters `given` keep
+    /// (dangling, label, label!, until, read at `now` in a zone `offset` seconds east of
+    /// UTC), dangling ones alone unless `dangling=false`, as dockerd prunes them
+    /// (daemon/containerd/image_prune.go, ImagePrune): what was untagged and deleted, and
+    /// the bytes reclaimed.
+    pub(super) fn prune_images(
+        &self,
+        given: &[String],
+        now: i128,
+        offset: i64,
+    ) -> Result<(Vec<super::rmi::Removed>, i64), String> {
+        let mut removed_images: Vec<super::rmi::Removed> = Vec::new();
+        let mut reclaimed: i64 = 0;
+        let Ok(Some(store)) = self.store() else {
+            return Ok((removed_images, reclaimed));
+        };
+        use super::rmi::{Record, Records};
+        struct Store<'s>(&'s shards_image::store::Store);
+        impl Records for Store<'_> {
+            fn untag(&mut self, name: &str) -> Result<(), String> {
+                self.0.untag(name).map_err(|e| e.to_string())
+            }
+            fn alias(&mut self, name: &str, existing: &str) -> Result<(), String> {
+                self.0.alias(name, existing).map_err(|e| e.to_string())
+            }
+        }
+        let filters = Filters::from_flags(given);
+        filters.validate(&["dangling", "label", "label!", "until"])?;
+        let dangling_only = filters.bool_or("dangling", true)?;
+        // Its dangling values are Del'd before the rest are set up.
+        let rest = filters.without("dangling");
+        let named = store.named().map_err(|e| e.to_string())?;
+        let filter = RecordFilter::new(&store, &named, &rest, now, offset)?;
+        let sizes: Vec<(String, u64)> = store
+            .images()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|i| (i.id.to_string(), i.content.saturating_add(i.unpacked)))
+            .collect();
+        // pruneUnused: each record the filters keep, by name, its image's records
+        // counted.
+        let mut names: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+        let mut doomed: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new();
+        for n in &named {
+            let mut read = Read::default();
+            for name in &n.references {
+                *names.entry(n.id.to_string()).or_default() += 1;
+                if (!dangling_only || name.starts_with(super::rmi::DANGLING))
+                    && filter.keeps(&store, n, name, &mut read).unwrap_or(false)
+                {
+                    doomed.insert(name.clone(), n.id.to_string());
+                }
+            }
+        }
+        // filterImagesUsedByContainers: a container's dangling image and the name it
+        // was made by stay, and an image it named by ID or digest is used.
+        let mut used: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for c in super::lock(&self.containers).all() {
+            let Some(id) = &c.image_id else {
+                continue;
+            };
+            doomed.remove(&format!("{}{id}", super::rmi::DANGLING));
+            let normalized = format!("sha256:{}", c.image.strip_prefix("sha256:").unwrap_or(&c.image));
+            if id.starts_with(&normalized) || c.image.ends_with(&format!("@{id}")) {
+                used.insert(id.clone());
+            }
+            if let Ok(r) = shards_image::reference::Reference::parse_normalized(&c.image) {
+                let tagged = r.clone().tag_name_only();
+                doomed.remove(&tagged.to_string());
+                if tagged.digest.is_some() && tagged.tag.is_some() {
+                    let mut bare = tagged;
+                    bare.digest = None;
+                    doomed.remove(&bare.to_string());
+                }
+            }
+        }
+        let mut pruned: Vec<String> = Vec::new();
+        for (name, id) in &doomed {
+            let left = names.entry(id.clone()).or_default();
+            if *left > 1 {
+                *left -= 1;
+            } else if used.contains(id) {
+                continue;
+            }
+            pruned.push(name.clone());
+        }
+        let users = super::rmi::users(super::lock(&self.containers).all());
+        for given in pruned {
+            let records: Vec<Record> = store
+                .references()
+                .unwrap_or_default()
+                .into_iter()
+                .map(|(name, id)| Record { name, id })
+                .collect();
+            if let Ok(removed) = super::rmi::delete(&mut Store(&store), &records, &users, &given, false) {
+                for r in removed {
+                    if let super::rmi::Removed::Deleted(id) = &r {
+                        let freed = sizes.iter().find(|(i, _)| i == id).map_or(0, |(_, n)| *n);
+                        reclaimed = reclaimed.saturating_add(i64::try_from(freed).unwrap_or(i64::MAX));
+                        self.collect_soon();
+                    }
+                    removed_images.push(r);
+                }
+            }
+        }
+        Ok((removed_images, reclaimed))
     }
 
     /// `shards prune vm`, `prune image` and `prune system` (docker/cli container/prune.go,
@@ -1402,7 +1585,7 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
         // (pruner.pruneOrder: containers, networks, volumes, images).
         let mut removed_networks: Vec<String> = Vec::new();
         if images && containers {
-            match self.prune_networks(given, asker) {
+            match self.prune_networks(given, now, offset) {
                 Ok(names) => removed_networks = names,
                 Err(e) => return refuse(e),
             }
@@ -1420,115 +1603,26 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
             }
         }
         let mut removed_images: Vec<super::rmi::Removed> = Vec::new();
-        if images && let Ok(Some(store)) = self.store() {
-            use super::rmi::{Record, Records};
-            struct Store<'s>(&'s shards_image::store::Store);
-            impl Records for Store<'_> {
-                fn untag(&mut self, name: &str) -> Result<(), String> {
-                    self.0.untag(name).map_err(|e| e.to_string())
-                }
-                fn alias(&mut self, name: &str, existing: &str) -> Result<(), String> {
-                    self.0.alias(name, existing).map_err(|e| e.to_string())
-                }
-            }
+        if images {
             // The CLI asks for the dangling ones alone unless `all` (image/prune.go).
             let mut with_dangling = given.to_vec();
             with_dangling.push(format!("dangling={}", !parsed.bool("all")));
-            let filters = Filters::from_flags(&with_dangling);
-            if let Err(e) = filters.validate(&["dangling", "label", "label!", "until"]) {
-                return refuse(e);
-            }
-            let dangling_only = match filters.bool_or("dangling", true) {
-                Ok(d) => d,
+            match self.prune_images(&with_dangling, now, offset) {
+                Ok((removed, bytes)) => {
+                    removed_images = removed;
+                    reclaimed = reclaimed.saturating_add(bytes);
+                }
                 Err(e) => return refuse(e),
-            };
-            // Its dangling values are Del'd before the rest are set up.
-            let rest = filters.without("dangling");
-            let named = match store.named() {
-                Ok(n) => n,
-                Err(e) => return refuse(e.to_string()),
-            };
-            let filter = match RecordFilter::new(&store, &named, &rest, now, offset) {
-                Ok(f) => f,
-                Err(e) => return refuse(e),
-            };
-            let sizes: Vec<(String, u64)> = store
-                .images()
-                .unwrap_or_default()
-                .into_iter()
-                .map(|i| (i.id.to_string(), i.content.saturating_add(i.unpacked)))
-                .collect();
-            // pruneUnused: each record the filters keep, by name, its image's records
-            // counted.
-            let mut names: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
-            let mut doomed: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new();
-            for n in &named {
-                let mut read = Read::default();
-                for name in &n.references {
-                    *names.entry(n.id.to_string()).or_default() += 1;
-                    if (!dangling_only || name.starts_with(super::rmi::DANGLING))
-                        && filter.keeps(&store, n, name, &mut read).unwrap_or(false)
-                    {
-                        doomed.insert(name.clone(), n.id.to_string());
-                    }
-                }
-            }
-            // filterImagesUsedByContainers: a container's dangling image and the name it
-            // was made by stay, and an image it named by ID or digest is used.
-            let mut used: std::collections::HashSet<String> = std::collections::HashSet::new();
-            for c in super::lock(&self.containers).all() {
-                let Some(id) = &c.image_id else {
-                    continue;
-                };
-                doomed.remove(&format!("{}{id}", super::rmi::DANGLING));
-                let normalized = format!("sha256:{}", c.image.strip_prefix("sha256:").unwrap_or(&c.image));
-                if id.starts_with(&normalized) || c.image.ends_with(&format!("@{id}")) {
-                    used.insert(id.clone());
-                }
-                if let Ok(r) = shards_image::reference::Reference::parse_normalized(&c.image) {
-                    let tagged = r.clone().tag_name_only();
-                    doomed.remove(&tagged.to_string());
-                    if tagged.digest.is_some() && tagged.tag.is_some() {
-                        let mut bare = tagged;
-                        bare.digest = None;
-                        doomed.remove(&bare.to_string());
-                    }
-                }
-            }
-            let mut pruned: Vec<String> = Vec::new();
-            for (name, id) in &doomed {
-                let left = names.entry(id.clone()).or_default();
-                if *left > 1 {
-                    *left -= 1;
-                } else if used.contains(id) {
-                    continue;
-                }
-                pruned.push(name.clone());
-            }
-            let users = super::rmi::users(super::lock(&self.containers).all());
-            for given in pruned {
-                let records: Vec<Record> = store
-                    .references()
-                    .unwrap_or_default()
-                    .into_iter()
-                    .map(|(name, id)| Record { name, id })
-                    .collect();
-                if let Ok(removed) = super::rmi::delete(&mut Store(&store), &records, &users, &given, false) {
-                    for r in removed {
-                        if let super::rmi::Removed::Deleted(id) = &r {
-                            let freed = sizes.iter().find(|(i, _)| i == id).map_or(0, |(_, n)| *n);
-                            reclaimed = reclaimed.saturating_add(i64::try_from(freed).unwrap_or(i64::MAX));
-                            self.collect_soon();
-                        }
-                        removed_images.push(r);
-                    }
-                }
             }
         }
-        // The build cache, all of it, as `docker system prune` removes all that no build is
-        // using; what an image shares stays until the image goes.
+        // `system prune` alone: the build cache, all of it, as `docker system prune` removes
+        // all that no build is using; what an image shares stays until the image goes.
+        // Pruning microVMs or images leaves it, as docker's container and image prunes do.
         let mut removed_cache: Vec<String> = Vec::new();
-        if let Ok(Some(store)) = self.store() {
+        if images
+            && containers
+            && let Ok(Some(store)) = self.store()
+        {
             let held = store.referenced_blobs().unwrap_or_default();
             for e in store.cache_entries().unwrap_or_default() {
                 if store.cache_remove(&e.key).is_err() {

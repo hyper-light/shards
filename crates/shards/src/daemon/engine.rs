@@ -10,15 +10,18 @@
 
 mod containers;
 mod create;
+mod disk;
 mod exec;
 mod files;
 mod http;
 mod images;
+mod networks;
+mod volumes;
 mod watch;
 
 use std::collections::HashMap;
 use std::io::{self, BufReader, PipeReader, Read as _, Write as _};
-use std::os::fd::BorrowedFd;
+use std::os::fd::{AsFd as _, BorrowedFd};
 use std::os::unix::net::UnixStream;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
@@ -78,6 +81,14 @@ impl Call<'_> {
     /// Query parameter `key`'s first value.
     fn query(&self, key: &str) -> Option<&str> {
         self.query.iter().find(|(k, _)| k == key).map(|(_, v)| v.as_str())
+    }
+
+    /// Query parameter `key`'s values, each as given, in order.
+    fn all<'a>(&'a self, key: &'a str) -> impl Iterator<Item = &'a str> + 'a {
+        self.query
+            .iter()
+            .filter(move |(k, _)| k == key)
+            .map(|(_, v)| v.as_str())
     }
 
     /// Query parameter `key` as a flag, as dockerd reads one (httputils.BoolValue):
@@ -142,31 +153,53 @@ fn parse_query(query: &str) -> Vec<(String, String)> {
         .collect()
 }
 
-/// The status the API answers an error with, by what it says: a thing that is not there
-/// 404, a conflict with what is 409, a daemon going 503; `otherwise` else.
+/// The status the API answers an error with, by what it says, as dockerd's error kinds
+/// give each (errdefs; api/server/httpstatus): the first of [`STATUSES`] it says, else
+/// `otherwise`.
 fn status_of(said: &str, otherwise: u16) -> u16 {
-    if said.contains("No such ") || said.contains("Could not find the file") {
-        404
-    } else if said.contains("marked read-only") {
-        403
-    } else if [
-        "is in use",
-        "already in use",
-        "is not running",
-        "is paused",
-        "is not paused",
-        "is restarting",
-    ]
-    .iter()
-    .any(|s| said.contains(s))
-    {
-        409
-    } else if said.contains("shutting down") {
-        503
-    } else {
-        otherwise
-    }
+    STATUSES
+        .iter()
+        .find(|(words, _)| said.contains(words))
+        .map_or(otherwise, |&(_, status)| status)
 }
+
+/// Words of shards' refusals, and the status of the error kind dockerd gives the same
+/// refusal (moby docker-v29.4.0).
+const STATUSES: &[(&str, u16)] = &[
+    // NotFound.
+    ("No such ", 404),
+    ("Could not find the file", 404),
+    ("no network is named", 404),
+    // A reference a registry has not, or will not show (daemon/containerd/image_pull.go:
+    // containerd's NotFound kept, and "pull access denied for" made one).
+    (": not found", 404),
+    ("pull access denied for", 404),
+    // Forbidden: PutContainerArchive's own description (dockerd's checkWritablePath says
+    // InvalidParameter); a predefined network, one with members, one others take their
+    // settings from (daemon/network.go deleteNetwork; libnetwork's ActiveEndpointsError,
+    // "configuration network is in use").
+    ("marked read-only", 403),
+    ("is one of shards' own networks", 403),
+    ("runs are on it", 403),
+    ("networks take their settings from it", 403),
+    // Forbidden: `scratch` pulled (postImagesCreate, validateRepoName).
+    ("names no image to pull", 403),
+    // InvalidParameter: a term more than one network answers to (daemon/network.go).
+    ("networks by name", 400),
+    ("networks by their IDs' beginning", 400),
+    // Conflict: a name or volume in use, a run's state, a running microVM removed
+    // without force (daemon/delete.go), an image a microVM was made of or that more
+    // names refer to (daemon/containerd/image_delete.go).
+    ("in use", 409),
+    ("is not running", 409),
+    ("is paused", 409),
+    ("is not paused", 409),
+    ("is restarting", 409),
+    ("it is running", 409),
+    ("cannot remove image", 409),
+    // Unavailable.
+    ("shutting down", 503),
+];
 
 /// What the daemon said, as the API says it: its text without the CLI's prefixes and its
 /// last newline.
@@ -182,6 +215,16 @@ fn plain(said: &str) -> String {
 fn refused(said: &str, otherwise: u16) -> Answer {
     let message = plain(said);
     Answer::error(status_of(&message, otherwise), message)
+}
+
+/// A call whose body is taken as it comes, and what takes it.
+enum Upload {
+    /// `PUT /containers/{id}/archive`: files copied into microVM `id`.
+    Files(String),
+    /// `POST /images/load`: an archive of images.
+    Images,
+    /// `POST /images/create?fromSrc=-`: a root filesystem.
+    Root,
 }
 
 /// How a call was answered.
@@ -339,14 +382,22 @@ impl<D: Disk> Daemon<D> {
             query: parse_query(query),
             body: Vec::new(),
         };
-        // An upload is taken as it comes, never whole: `shards copy vm` into a microVM.
-        if let ("PUT", [containers, id, archive]) = (head.method.as_str(), call.path.as_slice())
-            && containers == "containers"
-            && archive == "archive"
-        {
-            let id = id.clone();
+        // An upload is taken as it comes, never whole: files copied into a microVM, an
+        // archive of images loaded, a root filesystem imported.
+        let path: Vec<&str> = call.path.iter().map(String::as_str).collect();
+        let upload = match (head.method.as_str(), path.as_slice()) {
+            ("PUT", ["containers", id, "archive"]) => Some(Upload::Files((*id).to_string())),
+            ("POST", ["images", "load"]) => Some(Upload::Images),
+            ("POST", ["images", "create"]) if call.query("fromSrc") == Some("-") => Some(Upload::Root),
+            _ => None,
+        };
+        if let Some(upload) = upload {
             let mut body = Body::new(reader, framing);
-            let done = self.engine_extract(threads, &id, &call, &mut body);
+            let done = match upload {
+                Upload::Files(id) => self.engine_extract(threads, &id, &call, &mut body),
+                Upload::Images => self.engine_load(threads, conn, &call, &mut body),
+                Upload::Root => self.engine_import(threads, conn, &call, Some(&mut body)),
+            };
             let whole = body.ended();
             return match done {
                 Done::Answer(answer) => answer.write(conn, head, whole).is_ok() && whole,
@@ -412,12 +463,48 @@ impl<D: Disk> Daemon<D> {
             ("POST", ["containers", id, "rename"]) => self.engine_rename(threads, id, call),
             ("POST", ["containers", id, "update"]) => self.engine_update(threads, id, call),
             ("GET", ["events"]) => return self.engine_events(threads, conn, call),
+            ("GET", ["volumes"]) => self.engine_volumes(call),
+            ("POST", ["volumes", "create"]) => self.engine_volume_create(threads, call),
+            ("POST", ["volumes", "prune"]) => self.engine_volume_prune(call),
+            ("GET", ["volumes", name]) => self.engine_volume(name),
+            ("DELETE", ["volumes", name]) => self.engine_volume_remove(threads, name, call),
+            ("GET", ["networks"]) => self.engine_networks(call),
+            ("POST", ["networks", "create"]) => self.engine_network_create(threads, call),
+            ("POST", ["networks", "prune"]) => self.engine_network_prune(call),
+            ("GET", ["networks", term]) => self.engine_network(term),
+            ("DELETE", ["networks", term]) => self.engine_network_remove(threads, term),
+            ("POST", ["networks", term, "connect"]) => self.engine_network_join(threads, term, call, true),
+            ("POST", ["networks", term, "disconnect"]) => {
+                self.engine_network_join(threads, term, call, false)
+            }
             ("POST", ["exec", id, "resize"]) => self.engine_resize(id, call),
             ("POST", ["containers", id, "exec"]) => self.engine_exec_create(id, call),
             ("POST", ["exec", id, "start"]) => return self.engine_exec_start(threads, conn, id, call),
             ("GET", ["exec", id, "json"]) => self.engine_exec_inspect(id),
             ("GET", ["images", "json"]) => self.engine_images(call),
             ("POST", ["images", "create"]) => return self.engine_pull(threads, conn, call),
+            ("POST", ["images", "prune"]) => self.engine_image_prune(call),
+            ("GET", ["images", "get"]) => {
+                let names: Vec<String> = call.all("names").map(str::to_string).collect();
+                return self.engine_save(threads, conn, &names, call);
+            }
+            ("GET", ["images", name @ .., "get"]) if !name.is_empty() => {
+                return self.engine_save(threads, conn, &[name.join("/")], call);
+            }
+            ("POST", ["images", name @ .., "push"]) if !name.is_empty() => {
+                return self.engine_push(threads, conn, &name.join("/"), call);
+            }
+            ("POST", ["commit"]) => self.engine_commit(threads, call),
+            ("POST", ["images", name @ .., "tag"]) if !name.is_empty() => {
+                self.engine_image_tag(threads, &name.join("/"), call)
+            }
+            ("GET", ["images", name @ .., "history"]) if !name.is_empty() => {
+                self.engine_image_history(threads, &name.join("/"), call)
+            }
+            ("DELETE", ["images", name @ ..]) if !name.is_empty() => {
+                self.engine_image_remove(threads, &name.join("/"), call)
+            }
+            ("GET", ["system", "df"]) => self.engine_df(call),
             ("GET", ["images", name @ .., "json"]) if !name.is_empty() => {
                 self.engine_image_inspect(&name.join("/"))
             }
@@ -482,6 +569,50 @@ impl<D: Disk> Daemon<D> {
         argv: &[&str],
     ) -> Result<(u8, Vec<u8>, Vec<u8>), String> {
         self.ask_command_with(threads, argv, &[])
+    }
+
+    /// [`ask_command`](Self::ask_command), the command given `body` as the file it reads,
+    /// as the CLI gives one (`-i`, a copy's archive, an import's `-`): the body into it as
+    /// it comes, never staged, and the daemon's answer heard meanwhile, so that a command
+    /// that refuses stops reading and its answer still comes.
+    fn ask_with_body<'s, 'e, R: io::BufRead>(
+        &'s self,
+        threads: &'s Threads<'s, 'e>,
+        argv: &[&str],
+        body: &mut Body<'_, R>,
+    ) -> Result<(u8, Vec<u8>, Vec<u8>), String> {
+        let (from, mut into) = io::pipe().map_err(|e| format!("a pipe: {e}"))?;
+        let ipc = self.command_conn_with(threads, argv, shards_ipc::registry_env(), &[from.as_fd()])?;
+        drop(from);
+        std::thread::scope(|s| {
+            let answer = std::thread::Builder::new()
+                .name("engine-upload".into())
+                .spawn_scoped(s, || {
+                    let (mut out, mut err) = (Vec::new(), Vec::new());
+                    loop {
+                        match shards_ipc::recv(&ipc) {
+                            Ok(Some(m)) if m.kind == kind::OUT => out.extend(m.payload),
+                            Ok(Some(m)) if m.kind == kind::ERR => err.extend(m.payload),
+                            Ok(Some(m)) if m.kind == kind::END => {
+                                return Ok((m.payload.first().copied().unwrap_or(1), out, err));
+                            }
+                            Ok(Some(m)) if m.kind == kind::RESTART => {
+                                return Err("the daemon is shutting down".to_string());
+                            }
+                            Ok(Some(_)) => {}
+                            Ok(None) | Err(_) => {
+                                return Err("the daemon ended before it answered".to_string());
+                            }
+                        }
+                    }
+                })
+                .map_err(|e| format!("its answer's thread: {e}"))?;
+            let _ = io::copy(body, &mut into);
+            drop(into);
+            answer
+                .join()
+                .unwrap_or_else(|_| Err("its answer was lost".to_string()))
+        })
     }
 
     /// [`ask_command`](Self::ask_command), the command given `files` as the CLI gives

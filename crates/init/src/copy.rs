@@ -95,6 +95,7 @@ pub fn extract(
     if !std::fs::symlink_metadata(&abs)?.is_dir() {
         return Err(Failed(INVALID, "extraction point is not a directory".into()));
     }
+    writable(&abs)?;
     let chown = match user.filter(|u| !u.is_empty()) {
         Some(u) => Some(uid_gid(u).map_err(|e| Failed(INVALID, e))?),
         None => None,
@@ -105,6 +106,35 @@ pub fn extract(
         ..Default::default()
     };
     shards_archive::untar(input, &abs, &opts).map_err(|e| Failed(1, e.to_string()))
+}
+
+/// Refuses unpacking into directory `dir`, its links followed, where what it is on is
+/// mounted read-only, in dockerd's words (archive_unix.go, checkIfPathIsInAVolume): the
+/// container's root (`--read-only`), or a volume mounted read-only. Its mounts are the
+/// ones its command sees, so a writable volume of a read-only root takes files, and one
+/// that only looks like a volume's path, a link back into the root, does not.
+fn writable(dir: &Path) -> Result<(), Failed> {
+    let path = std::ffi::CString::new(dir.as_os_str().as_bytes())
+        .map_err(|_| Failed(INVALID, "a path with a NUL byte".into()))?;
+    // SAFETY: a plain C struct, all zeros a valid value of it.
+    let mut fs: libc::statvfs = unsafe { std::mem::zeroed() };
+    // SAFETY: statvfs(2) of a NUL-terminated path into a buffer of its type.
+    if unsafe { libc::statvfs(path.as_ptr(), &mut fs) } != 0 {
+        return Err(io::Error::last_os_error().into());
+    }
+    if fs.f_flag & libc::ST_RDONLY == 0 {
+        return Ok(());
+    }
+    let root = std::fs::metadata(dir)?.dev() == std::fs::metadata("/")?.dev();
+    Err(Failed(
+        INVALID,
+        if root {
+            "container rootfs is marked read-only"
+        } else {
+            "mounted volume is marked read-only"
+        }
+        .into(),
+    ))
 }
 
 /// FollowSymlinkInScope(path, "/") in a root that is the container's: each link on the

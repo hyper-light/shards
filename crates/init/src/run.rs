@@ -1866,9 +1866,6 @@ struct Workload {
     stderr: Option<OwnedFd>,
     sigchld: OwnedFd,
     tty: bool,
-    /// A held standby's orders, never sent: it waits on them until it is killed
-    /// ([`run::builtin::HOLD`]).
-    _held: Option<OwnedFd>,
     /// The image's agents and harnesses, started before it (D59): their output is relayed
     /// on its stderr, each line prefixed with the domain.
     domains: Vec<crate::domains::Started>,
@@ -2363,31 +2360,14 @@ impl Standby {
             write_file("/etc/resolv.conf", r)?;
         }
         // A visit to a stopped container's files (`shards cp`, `diff`, `export`): the
-        // standby is the workload, run nothing of the image's, and holds until killed.
+        // standby is the workload, run nothing of the image's, and holds until killed; a
+        // copy's sees its shared directories as its runs do, and what it copies in is held
+        // to its writable layer's size as theirs is (D156).
         if spec.builtin == run::builtin::HOLD {
-            let Standby {
-                pid,
-                orders,
-                stdout,
-                stderr,
-                sigchld,
-                ..
-            } = standby;
-            let held = Workload {
-                pid,
-                stdin: None,
-                stdout: Some(stdout),
-                stderr: Some(stderr),
-                sigchld,
-                tty: false,
-                _held: Some(orders),
-                domains: Vec::new(),
-                memory: None,
-                procs: None,
-                binds: None,
-                hosts: None,
-            };
-            return Ok((held, None));
+            if let Some(size) = spec.setup.iter().find_map(|e| e.strip_prefix(b"rw-size=")) {
+                crate::setup::rw_size(size).map_err(setup_failed)?;
+            }
+            return standby.hold(&spec.setup).map(|held| (held, None));
         }
         // Its devices first, as dockerd finds them and runc makes their nodes, init's: in
         // the /dev it shares with the workload, the limits and filter on the cgroup it is
@@ -2441,6 +2421,80 @@ impl Standby {
         }
         w.hosts = hosts;
         Ok((w, declared))
+    }
+
+    /// A visit's standby (`HOLD`, D37): orders with no command, by which it sets up its
+    /// namespaces as a run's standby does, a copy's view of the container's files (its
+    /// shared directories, D38, and its root read-only where its runs' is, of `setup`),
+    /// then holds on in them until it is killed. Its error channel says when it is done,
+    /// so that nothing enters its namespaces before they are whole, or what failed.
+    fn hold(self, setup: &[Vec<u8>]) -> Result<Workload, Failure> {
+        let mounts: Vec<Vec<u8>> = setup
+            .iter()
+            .filter(|e| e.starts_with(b"volume=") || *e == b"readonly")
+            .cloned()
+            .collect();
+        let orders = Orders {
+            uid: 0,
+            gid: 0,
+            groups: Vec::new(),
+            cwd: b"/".to_vec(),
+            explicit: false,
+            candidates: Vec::new(),
+            argv: Vec::new(),
+            env: Vec::new(),
+            tty: Vec::new(),
+            null_stdin: true,
+            setup: mounts.clone(),
+            caps: default_caps(),
+        }
+        .encode();
+        let Standby {
+            pid,
+            orders: to_standby,
+            err,
+            stdout,
+            stderr,
+            sigchld,
+            ..
+        } = self;
+        File::from(to_standby)
+            .write_all(&orders)
+            .map_err(|e| setup_failed(format!("holding the container's files: {e}")))?;
+        let (_, report) = reports(&err);
+        drop(err);
+        if let [which, e0, e1, e2, e3, c0, c1, c2, c3] = report[..] {
+            // The standby exits right after reporting.
+            // SAFETY: waits for our own child.
+            unsafe { libc::waitpid(pid, std::ptr::null_mut(), 0) };
+            let errno = i32::from_be_bytes([e0, e1, e2, e3]);
+            let message = if which == step::SETUP {
+                let entry = usize::try_from(u32::from_be_bytes([c0, c1, c2, c3]))
+                    .ok()
+                    .and_then(|i| mounts.get(i))
+                    .map_or(&[][..], Vec::as_slice);
+                crate::setup::failed(entry, errno)
+            } else {
+                format!(
+                    "the container's files: its namespaces: {}",
+                    io::Error::from_raw_os_error(errno)
+                )
+            };
+            return Err(setup_failed(message));
+        }
+        Ok(Workload {
+            pid,
+            stdin: None,
+            stdout: Some(stdout),
+            stderr: Some(stderr),
+            sigchld,
+            tty: false,
+            domains: Vec::new(),
+            memory: None,
+            procs: None,
+            binds: None,
+            hosts: None,
+        })
     }
 
     /// Resolves the spec as Docker and runc do, then has the standby exec it. The
@@ -2599,7 +2653,6 @@ impl Standby {
                 stderr: Some(stderr),
                 sigchld,
                 tty: false,
-                _held: None,
                 domains: Vec::new(),
                 memory: None,
                 procs: None,
@@ -2619,7 +2672,6 @@ impl Standby {
             stderr: None,
             sigchld,
             tty: true,
-            _held: None,
             domains: Vec::new(),
             memory: None,
             procs: None,
@@ -2701,6 +2753,15 @@ fn standby(ends: Ends, isolation: Isolation) -> ! {
     for (i, entry) in o.setup.iter().enumerate() {
         if let Err(errno) = crate::setup::apply(entry) {
             fail(step::SETUP, errno, i);
+        }
+    }
+    // A visit's (`HOLD`): no command. Its namespaces are set up, which its error channel
+    // closed says, and it holds on in them until it is killed.
+    if argv.is_empty() {
+        drop(err);
+        loop {
+            // SAFETY: pause(2) waits for a signal; a held standby ends by SIGKILL.
+            unsafe { libc::pause() };
         }
     }
     let (argv_ptrs, envp_ptrs) = (pointers(&argv), pointers(&envp));
@@ -2806,9 +2867,15 @@ enum Save {
 /// One of init's own for an exec ([`Spec::builtin`]), done in a child of init's, so that
 /// the relay goes on, its output on a pipe as a command's: what is asked for on stdout,
 /// status 0; why it could not be had on stderr, status 1.
-/// Init's built-in `kind`, for the workload, or for joiner `joiner` (D119): in its mount
-/// namespace, whose root and `/proc` are its own, and with its cgroup.
-fn builtin(kind: u8, args: &[Vec<u8>], joiner: Option<(libc::pid_t, u32)>) -> Result<Started, Failure> {
+/// Init's built-in `kind`, for the workload, process `workload`, or for joiner `joiner`
+/// (D119): in its mount namespace, whose root and `/proc` are its own, and with its
+/// cgroup.
+fn builtin(
+    kind: u8,
+    args: &[Vec<u8>],
+    joiner: Option<(libc::pid_t, u32)>,
+    workload: libc::pid_t,
+) -> Result<Started, Failure> {
     // A joiner's layers, kept as its root was built (D119): their descriptors, which its
     // diff, size and commit read here as the workload's are read.
     let layers = match joiner {
@@ -2870,18 +2937,29 @@ fn builtin(kind: u8, args: &[Vec<u8>], joiner: Option<(libc::pid_t, u32)>) -> Re
                 .open("/proc")
         });
         // A joiner's files and processes: its mount namespace, its root and its `/proc`
-        // with it. Its cgroup's, and its layers', are read where init sees them.
-        if let Some(joined) = joiner.filter(|_| {
-            matches!(
-                kind,
-                run::builtin::STAT
-                    | run::builtin::ARCHIVE
-                    | run::builtin::EXTRACT
-                    | run::builtin::EXPORT
-                    | run::builtin::PROCESSES
-                    | run::builtin::CHANGES
-            )
-        }) {
+        // with it. Its cgroup's, and its layers', are read where init sees them. A copy into
+        // or out of the workload is in the workload's mount namespace too: its volumes and
+        // tmpfs mounts (D38) are there alone, so a file copied in reaches what it reads, and
+        // one in a volume is read out of the volume. Its export and changes stay init's
+        // view: its own files, without what is mounted over them.
+        let copies = matches!(
+            kind,
+            run::builtin::STAT | run::builtin::ARCHIVE | run::builtin::EXTRACT
+        );
+        let into = match joiner {
+            Some(pid)
+                if copies
+                    || matches!(
+                        kind,
+                        run::builtin::EXPORT | run::builtin::PROCESSES | run::builtin::CHANGES
+                    ) =>
+            {
+                Some((pid, "the joiner's files"))
+            }
+            None if copies => Some((workload, "the workload's files")),
+            _ => None,
+        };
+        if let Some((joined, whose)) = into {
             let entered = File::open(format!("/proc/{joined}/ns/mnt")).and_then(|ns| {
                 // SAFETY: setns(2) on a descriptor this process holds, a single-threaded
                 // fork of init.
@@ -2892,7 +2970,10 @@ fn builtin(kind: u8, args: &[Vec<u8>], joiner: Option<(libc::pid_t, u32)>) -> Re
                 }
             });
             if let Err(e) = entered {
-                let _ = writeln!(File::from(stderr_w), "the joiner's files: {e}");
+                let _ = writeln!(
+                    File::from(stderr_w),
+                    "{whose}: entering the mount namespace of process {joined}: {e}"
+                );
                 // SAFETY: _exit(2) ends the child without running init's exit paths.
                 unsafe { libc::_exit(1) }
             }
@@ -3025,23 +3106,29 @@ fn builtin(kind: u8, args: &[Vec<u8>], joiner: Option<(libc::pid_t, u32)>) -> Re
 /// run's root holds its files alone: init's `/proc`, `/sys` and `/dev`, and what is
 /// mounted on them, unmounted, so that each is the directory the image has there.
 fn files_alone() -> io::Result<()> {
+    let failed = |step: &str| {
+        let e = io::Error::last_os_error();
+        io::Error::new(e.kind(), format!("{step}: {e}"))
+    };
     // SAFETY: unshare(2), mount(2) and umount2(2) of NUL-terminated literals, in a
     // single-threaded child of init's.
     unsafe {
-        if libc::unshare(libc::CLONE_NEWNS) != 0
-            || libc::mount(
-                std::ptr::null(),
-                c"/".as_ptr(),
-                std::ptr::null(),
-                libc::MS_REC | libc::MS_PRIVATE,
-                std::ptr::null(),
-            ) != 0
+        if libc::unshare(libc::CLONE_NEWNS) != 0 {
+            return Err(failed("a mount namespace of its own"));
+        }
+        if libc::mount(
+            std::ptr::null(),
+            c"/".as_ptr(),
+            std::ptr::null(),
+            libc::MS_REC | libc::MS_PRIVATE,
+            std::ptr::null(),
+        ) != 0
         {
-            return Err(io::Error::last_os_error());
+            return Err(failed("its root made private"));
         }
         for kernel in [c"/proc", c"/sys", c"/dev"] {
             if libc::umount2(kernel.as_ptr(), libc::MNT_DETACH) != 0 {
-                return Err(io::Error::last_os_error());
+                return Err(failed(&format!("{} unmounted", kernel.to_string_lossy())));
             }
         }
     }
@@ -3445,7 +3532,7 @@ impl Exec {
                 // Init's own work, in the joiner's namespaces and cgroup.
                 Some(&(id, pid)) if spec.builtin != 0 => {
                     exec.into_joiner = true;
-                    builtin(spec.builtin, &spec.argv, Some((pid, id)))
+                    builtin(spec.builtin, &spec.argv, Some((pid, id)), workload)
                 }
                 Some(&(joiner, pid)) => {
                     // The joiner's process, but for what the exec says (`--privileged`).
@@ -3474,7 +3561,7 @@ impl Exec {
                 }),
             }
         } else if spec.builtin != 0 && running {
-            builtin(spec.builtin, &spec.argv, None)
+            builtin(spec.builtin, &spec.argv, None, workload)
         } else if running {
             // The workload's process, but for what the exec says (`--privileged`), which
             // the run refuses beside its domains as it refused the workload's (D115).
