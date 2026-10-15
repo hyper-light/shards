@@ -260,7 +260,23 @@ pub mod kind {
     pub const DISK_DETACH: u8 = 54;
     /// A VM process → its builder: why it did not attach or detach what was asked.
     pub const DISK_REFUSED: u8 = 55;
+    /// Daemon → a VM, on its link (D176): save the running microVM into a generation the
+    /// daemon prepared (`shards_vmm::snapshot::prepare`). Payload: `SAVE_*` flags, then the
+    /// generation's name, the snapshot's and the microVM's, each after a NUL but the first;
+    /// descriptors its memory, its state, and the run's swap where the run has one.
+    /// Answered with `SAVED`.
+    pub const SAVE: u8 = 56;
+    /// A VM → its daemon: the save asked for is written, an empty payload, or why it is
+    /// not. A microVM that stops after its save stops once this is sent.
+    pub const SAVED: u8 = 57;
 }
+
+/// A `SAVE` flag: the microVM goes on running once saved, rather than stopping.
+pub const SAVE_LEAVE_RUNNING: u8 = 1;
+
+/// The status of a run its save stopped (D176), as a shell says of a job it stopped, 128
+/// plus SIGTSTP's number on Linux (20): not ended, but stopped where it is, to be resumed.
+pub const SAVED_STATUS: u8 = 148;
 
 /// An `ATTACH_RUN` flag: the client's stdin goes to the command's.
 pub const ATTACH_STDIN: u8 = 1;

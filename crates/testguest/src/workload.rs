@@ -343,6 +343,18 @@ pub fn main() -> ! {
             }
             await_process(arg(2), arg(3).parse().unwrap_or(1), "")
         }
+        // A counter in memory, printed as it grows, every `arg(1)` ms (100 if none): what a
+        // saved microVM keeps, and a restore of it goes on from (D176).
+        "counter" => {
+            let every = std::time::Duration::from_millis(arg(1).parse().unwrap_or(100));
+            let _ = writeln!(io::stdout(), "ready");
+            let mut n = 0u64;
+            loop {
+                n += 1;
+                let _ = writeln!(io::stdout(), "{n}");
+                std::thread::sleep(every);
+            }
+        }
         "sleep" => {
             let _ = writeln!(io::stdout(), "ready");
             loop {

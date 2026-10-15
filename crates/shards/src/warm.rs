@@ -508,6 +508,15 @@ fn relay_signals(conn: &UnixStream, to: &'static ToGuest, from: From<'_>) {
                     HOST.said.notify_all();
                 }
             }
+            // Saved here, on the relay's thread: the guest is paused throughout, and what
+            // the daemon says meanwhile waits for it to run again. A microVM to stop after
+            // it stops once the daemon has heard (`Saved`).
+            kind::SAVE if matches!(from, From::Daemon(_)) => {
+                let saved = save_request(message);
+                let said = saved.as_ref().err().map(String::as_bytes).unwrap_or_default();
+                let _ = shards_ipc::send(conn, kind::SAVED, said, &[]);
+                drop(saved);
+            }
             kind::SIGNAL => {
                 if let Ok(signal) = <[u8; 4]>::try_from(message.payload.as_slice()) {
                     let signal = u32::from_be_bytes(signal);
@@ -580,6 +589,55 @@ fn relay_signals(conn: &UnixStream, to: &'static ToGuest, from: From<'_>) {
     if client && let Ok(null) = File::open("/dev/null") {
         let_go(&null);
     }
+}
+
+/// The microVM's name and the snapshot it was saved as, where the save stopped it (D176):
+/// its end is told as the save's.
+static SAVED: std::sync::OnceLock<(String, String)> = std::sync::OnceLock::new();
+
+/// Saves this microVM as the daemon's `SAVE` asks (D176): into the generation's files it
+/// brings, its memory, its state and the run's swap where it has one, then on or stopped.
+fn save_request(message: shards_ipc::Message) -> Result<shards_vmm::vm::Saved, String> {
+    let (flags, names) = message.payload.split_first().ok_or("a save without its flags")?;
+    let mut names = names.split(|&b| b == 0).map(|n| {
+        std::str::from_utf8(n)
+            .map(str::to_string)
+            .map_err(|_| "a save's names are no text")
+    });
+    let (Some(name), Some(snapshot), Some(microvm), None) =
+        (names.next(), names.next(), names.next(), names.next())
+    else {
+        return Err("a save without its generation's, snapshot's and microVM's names".into());
+    };
+    let (name, snapshot, microvm) = (name?, snapshot?, microvm?);
+    let count = message.fds.len();
+    let mut fds = message.fds.into_iter().map(File::from);
+    let (Some(memory), Some(state)) = (fds.next(), fds.next()) else {
+        return Err(format!(
+            "a save brings {count} descriptors, without its memory and state"
+        ));
+    };
+    let swap = fds.next();
+    if fds.next().is_some() {
+        return Err(format!("a save brings too many descriptors: {count}"));
+    }
+    let then = if flags & shards_ipc::SAVE_LEAVE_RUNNING != 0 {
+        shards_vmm::vm::AfterSnapshot::Resume
+    } else {
+        shards_vmm::vm::AfterSnapshot::Stop
+    };
+    let saved = crate::vm_run::save(shards_vmm::vm::Save {
+        name,
+        memory,
+        state,
+        swap,
+        then,
+    })?;
+    // Before the microVM stops, as the guard goes: its end is the save's.
+    if then == shards_vmm::vm::AfterSnapshot::Stop {
+        let _ = SAVED.set((microvm, snapshot));
+    }
+    Ok(saved)
 }
 
 /// Starts the exec the daemon's `EXEC_RUN` asks for (workload::exec): its flags and spec,
@@ -968,9 +1026,21 @@ pub fn finish(
     timing: Option<&str>,
     working_set: Option<&(String, Vec<u8>)>,
 ) {
-    let (mut status, not_run) = match served {
-        Ok(ended) => (ended.status, ended.not_run.as_deref()),
-        Err(e) => {
+    // A microVM its save stopped (D176): its command goes on once it is restored, and its
+    // client hears it was saved, with the status a shell gives a job it stopped.
+    let saved = SAVED.get();
+    let (mut status, not_run) = match (saved, served) {
+        (Some((microvm, snapshot)), _) => {
+            if client.is_some() {
+                let _ = writeln!(
+                    io::stderr(),
+                    "shards: {microvm} was saved as {snapshot}, and stopped"
+                );
+            }
+            (shards_ipc::SAVED_STATUS, None)
+        }
+        (None, Ok(ended)) => (ended.status, ended.not_run.as_deref()),
+        (None, Err(e)) => {
             let _ = writeln!(io::stderr(), "shards: {e}");
             (NOT_RUN, None)
         }

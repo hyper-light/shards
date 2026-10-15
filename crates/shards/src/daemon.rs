@@ -64,6 +64,7 @@ mod refill;
 mod restart;
 mod rmi;
 mod ship;
+mod snapshots;
 mod top;
 mod update;
 mod visit;
@@ -535,6 +536,10 @@ struct Inbox {
     joiners: u32,
     /// A joiner's: its provider's run, whose microVM it runs in.
     provider: Option<Arc<Mutex<Inbox>>>,
+    /// A save its VM was asked for and has yet to answer (D176).
+    saving: Option<snapshots::Saving>,
+    /// The snapshot it was saved as, where the save stops it: its end is the save's.
+    saved_as: Option<String>,
 }
 
 /// A part of the working set run `id`'s VM recorded (`kind::WORKING_SET`), which the
@@ -3237,6 +3242,7 @@ impl<D: Disk> Daemon<D> {
                 ..Default::default()
             },
             size_rw: None,
+            saved: None,
         });
         self.event_for(id, &name, &run.image, &prepared.labels, "create", &[]);
         // Its run is owned from the moment the container is visible.
@@ -3360,7 +3366,10 @@ impl<D: Disk> Daemon<D> {
             log(format!("container {id}: its end is lost: {e}"));
             return None;
         }
-        if registry.made(id).is_some_and(|c| c.auto_remove) {
+        if registry
+            .made(id)
+            .is_some_and(|c| c.auto_remove && c.saved.is_none())
+        {
             let removal = registry.take_out(id);
             // One still arriving is so no more.
             self.arrived.notify_all();
@@ -3730,6 +3739,8 @@ impl<D: Disk> Daemon<D> {
             host_net,
             joiners: 0,
             provider,
+            saving: None,
+            saved_as: None,
         }));
         let tracked = Tracked {
             base: Arc::new(Base {
@@ -3781,6 +3792,10 @@ impl<D: Disk> Daemon<D> {
                 // What has come of the next is kept for the rest.
                 Ok(shards_ipc::Took::Partial) => break,
                 Ok(shards_ipc::Took::Ended) | Err(_) => {
+                    // A save it never answered is not written (D176).
+                    if let Some(saving) = inbox.saving.take() {
+                        let _ = saving.told.send(Err("its microVM stopped".into()));
+                    }
                     if !inbox.ended {
                         self.run_ended(id, inbox, None);
                     }
@@ -3838,6 +3853,9 @@ impl<D: Disk> Daemon<D> {
                     }
                 }
                 kind::LOG_SEGMENT => self.ask_segment(id, inbox, &m.payload),
+                // Its VM's answer to a save (D176), before anything after it: a microVM the
+                // save stops ends as saved.
+                kind::SAVED => snapshots::answered(inbox, &m.payload),
                 kind::EXEC_TAKEN => {
                     if let Ok(n) = <[u8; 8]>::try_from(m.payload.as_slice()).map(u64::from_be_bytes) {
                         inbox.execs_in_flight.retain(|(held, _)| *held != n);
@@ -4091,9 +4109,14 @@ impl<D: Disk> Daemon<D> {
             return;
         }
         let (pid, started) = (inbox.pid, inbox.started);
+        // A microVM its save stopped (D176): its command did not end, and nothing of it
+        // failed. It is not started again, by its policy or otherwise, nor removed with its
+        // snapshots: `restore vm` resumes it.
+        let saved = inbox.saved_as.take();
         // DONE carries the status, and for a command that never started what dockerd
         // would say and the code its container keeps (warm.rs finish).
         let (status, said) = match done.and_then(<[u8]>::split_first) {
+            _ if saved.is_some() => (shards_ipc::SAVED_STATUS, None),
             Some((&status, said)) => (
                 status,
                 (!started).then(|| String::from_utf8_lossy(said).into_owned()),
@@ -4125,7 +4148,7 @@ impl<D: Disk> Daemon<D> {
             .unwrap_or_default();
         // Its policy's say (handleContainerExit): started again after a wait, or not; a
         // command that never started is never restarted.
-        let restart_after = if started {
+        let restart_after = if started && saved.is_none() {
             self.should_restart(id, status, ran)
         } else {
             None
@@ -4134,6 +4157,7 @@ impl<D: Disk> Daemon<D> {
             let mut registry = lock(&self.containers);
             let removal = self.end_container(&mut registry, id, |c| {
                 c.exit_code = Some(status);
+                c.saved = saved;
                 if let Some(why) = &said {
                     c.error.clone_from(why);
                 }

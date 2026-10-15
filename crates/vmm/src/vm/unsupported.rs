@@ -1,7 +1,7 @@
 //! Targets without a hypervisor backend: every start fails with an explanation. The
 //! handle types hold a private uninhabited field, so no value of them can exist.
 
-use super::{Config, ExitReason, RestoreConfig};
+use super::{Config, ExitReason, RestoreConfig, Save};
 
 fn no_backend() -> String {
     format!(
@@ -48,6 +48,9 @@ enum Never {}
 #[derive(Debug, Clone)]
 pub struct Handle(Never);
 
+#[derive(Debug)]
+pub struct Saved(Never);
+
 impl Handle {
     pub fn markers(&self) -> Vec<(u32, u128)> {
         match self.0 {}
@@ -62,6 +65,10 @@ impl Handle {
     }
 
     pub fn attach_swap(&self, _file: std::fs::File) -> Result<Option<u64>, String> {
+        match self.0 {}
+    }
+
+    pub fn save(&self, _save: Save) -> Result<Saved, String> {
         match self.0 {}
     }
 

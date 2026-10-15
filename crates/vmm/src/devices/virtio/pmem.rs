@@ -9,7 +9,7 @@
 use std::fs::File;
 use std::path::Path;
 use std::ptr::NonNull;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use super::queue::{Chain, Queue};
@@ -144,6 +144,9 @@ pub struct SwapWindow {
     head: Zeros,
     /// A run's file, mapped at the window's start, once given.
     run: Mutex<Option<Shared>>,
+    /// The length of the run's file a snapshot of a run kept (D176), which its restore maps
+    /// back before any vCPU runs; 0 for none.
+    kept: AtomicU64,
 }
 
 impl std::fmt::Debug for SwapWindow {
@@ -177,6 +180,7 @@ impl SwapWindow {
             slots,
             head,
             run: Mutex::new(None),
+            kept: AtomicU64::new(0),
         })
     }
 
@@ -207,6 +211,74 @@ impl SwapWindow {
         if run.is_some() {
             return Ok(None);
         }
+        let size = self.fit(&file)?;
+        // Its first page written here, through the file's own path, where the guest writes
+        // the swap area's header: written first through the mapping, a page of the sparse
+        // file took the host's fault path to be made, 3.4 ms at p90 and 80 ms at worst (PM
+        // M230). 64 KiB, the largest page a guest has.
+        platform::write_all_at(&file, &vec![0; FIRST_PAGE], 0).map_err(|e| format!("its swap file: {e}"))?;
+        self.map_run(&mut run, file, size).map(Some)
+    }
+
+    /// Maps `file`, the run's swap a snapshot of the run kept (D176), back where its guest
+    /// had it, before any vCPU runs: the length the snapshot kept, exactly, whose every
+    /// page the guest may have written. A snapshot that kept none takes none.
+    pub fn restore_run(&self, file: Option<File>) -> Result<(), String> {
+        let kept = self.kept.load(Ordering::Acquire);
+        let file = match (kept, file) {
+            (0, None) => return Ok(()),
+            (0, Some(_)) => return Err("a run's swap for a snapshot that kept none".into()),
+            (_, None) => {
+                return Err(format!(
+                    "the snapshot kept {kept} bytes of its run's swap, which the restore was not given"
+                ));
+            }
+            (_, Some(file)) => file,
+        };
+        let size = file.metadata().map_err(|e| format!("its swap file: {e}"))?.len();
+        if size != kept {
+            return Err(format!(
+                "a swap file of {size} bytes for a snapshot that kept {kept}"
+            ));
+        }
+        let size = self.fit(&file)?;
+        let mut run = lock(&self.run);
+        if run.is_some() {
+            return Err("a restored swap window with a run's file mapped already".into());
+        }
+        self.map_run(&mut run, file, size).map(|_| ())
+    }
+
+    /// Copies the run's swap into `to` (D176), the guest's every write to it flushed to its
+    /// file first: the ranges the file holds data in, of them the blocks not all zeros, and
+    /// `to` as long as it after. Returns its length, 0 where no run's is mapped. The machine
+    /// is paused: nothing writes it meanwhile.
+    pub fn save_run(&self, to: &File) -> Result<u64, String> {
+        let run = lock(&self.run);
+        let at = |e: std::io::Error| format!("its swap: {e}");
+        let Some(mapped) = run.as_ref() else {
+            to.set_len(0).map_err(at)?;
+            return Ok(0);
+        };
+        // Flushed first. APFS and Linux's own file systems count a page written through
+        // the mapping as data before it is written back (APFS on M5 Max, the test below
+        // without this; ext4 and XFS reserve its block as it is dirtied,
+        // ext4_da_get_block_prep, xfs_buffered_write_iomap_begin), but one that gives it a
+        // block only as it writes it back would count none, and the copy would lose it.
+        // SAFETY: the mapping `mapped` holds, which stays while its lock is held.
+        unsafe { platform::flush_shared(mapped.host, mapped.len) }.map_err(at)?;
+        copy_used(&mapped.file, to, mapped.len as u64).map_err(at)?;
+        Ok(mapped.len as u64)
+    }
+
+    /// The length of the run's file mapped, which a snapshot keeps; 0 for none.
+    fn mapped_len(&self) -> u64 {
+        lock(&self.run).as_ref().map_or(0, |mapped| mapped.len as u64)
+    }
+
+    /// The length of `file` the window maps: whole multiples of [`ALIGN`], at least the
+    /// head; one longer than the window is cut to it, all the guest can reach.
+    fn fit(&self, file: &File) -> Result<u64, String> {
         let mut size = file.metadata().map_err(|e| format!("its swap file: {e}"))?.len();
         if size > self.len {
             file.set_len(self.len)
@@ -221,12 +293,13 @@ impl SwapWindow {
                 HEAD >> 20
             ));
         }
+        Ok(size)
+    }
+
+    /// Maps `file`, `size` bytes of it ([`fit`](Self::fit)), in place of the head; returns
+    /// its length.
+    fn map_run(&self, run: &mut Option<Shared>, file: File, size: u64) -> Result<u64, String> {
         let len = usize::try_from(size).map_err(|_| format!("a swap file of {size} bytes"))?;
-        // Its first page written here, through the file's own path, where the guest writes
-        // the swap area's header: written first through the mapping, a page of the sparse
-        // file took the host's fault path to be made, 3.4 ms at p90 and 80 ms at worst (PM
-        // M230). 64 KiB, the largest page a guest has.
-        write_zeros(&file, FIRST_PAGE).map_err(|e| format!("its swap file: {e}"))?;
         let mapped = Shared::map(file, len).map_err(|e| format!("its swap file: {e}"))?;
         self.slots.unmap(HEAD_SLOT, self.gpa, HEAD)?;
         // SAFETY: the mapping stays until the window drops, after the VM.
@@ -237,11 +310,11 @@ impl SwapWindow {
             return Err(e);
         }
         *run = Some(mapped);
-        Ok(Some(size))
+        Ok(size)
     }
 
-    /// Whether a run's file is mapped: a snapshot keeps no run's swap.
-    fn attached(&self) -> bool {
+    /// Whether a run's file is mapped: a template keeps no run's swap.
+    pub fn attached(&self) -> bool {
         lock(&self.run).is_some()
     }
 }
@@ -250,20 +323,45 @@ impl SwapWindow {
 /// kernel has (arm64's 64 KiB), which holds its swap area's header.
 const FIRST_PAGE: usize = 64 << 10;
 
-/// Writes `len` zero bytes at the start of `file`, through its own path.
-fn write_zeros(file: &File, len: usize) -> std::io::Result<()> {
-    let zeros = vec![0u8; len];
-    let mut at = 0;
-    while at < len {
-        let rest = zeros.get(at..).unwrap_or_default();
-        // SAFETY: a buffer of `rest.len()` bytes, read alone.
-        let n = unsafe { platform::write_at(file, rest.as_ptr(), rest.len(), at as u64) }?;
-        if n == 0 {
-            return Err(std::io::Error::from(std::io::ErrorKind::WriteZero));
+/// Copies `from`'s first `len` bytes into `to`, which is `len` bytes long after: the ranges
+/// its OS says hold data, and of them only the blocks not all zeros, so that `to` takes no
+/// more of a disk than `from` does.
+fn copy_used(from: &File, to: &File, len: u64) -> std::io::Result<()> {
+    const CHUNK: usize = 1 << 20;
+    const BLOCK: usize = 4 << 10;
+    to.set_len(0)?;
+    let mut buf = vec![0u8; CHUNK];
+    for (start, n) in platform::data_ranges(from, len)? {
+        let end = start.saturating_add(n).min(len);
+        let mut at = start;
+        while at < end {
+            let want = usize::try_from(end - at).map_or(CHUNK, |rest| rest.min(CHUNK));
+            let chunk = buf.get_mut(..want).ok_or(std::io::ErrorKind::InvalidInput)?;
+            platform::read_exact_at(from, chunk, at)?;
+            // Each run of blocks not all zeros, in one write.
+            let mut run = None;
+            for (i, block) in chunk.chunks(BLOCK).enumerate() {
+                let used = block.iter().any(|&b| b != 0);
+                match (run, used) {
+                    (None, true) => run = Some(i * BLOCK),
+                    (Some(first), false) => {
+                        platform::write_all_at(
+                            to,
+                            chunk.get(first..i * BLOCK).unwrap_or_default(),
+                            at + first as u64,
+                        )?;
+                        run = None;
+                    }
+                    _ => {}
+                }
+            }
+            if let Some(first) = run {
+                platform::write_all_at(to, chunk.get(first..).unwrap_or_default(), at + first as u64)?;
+            }
+            at += want as u64;
         }
-        at += n;
     }
-    Ok(())
+    to.set_len(len)
 }
 
 /// Read-only zeros for a window's head: an anonymous reservation never written.
@@ -301,11 +399,11 @@ impl Drop for Zeros {
 struct Shared {
     host: NonNull<u8>,
     len: usize,
-    _file: File,
+    file: File,
 }
 
 // SAFETY: the mapping is owned by this value; the guest writes it, through the
-// hypervisor, and this process never touches it.
+// hypervisor, and this process only flushes it to its file (`save_run`).
 unsafe impl Send for Shared {}
 // SAFETY: as above.
 unsafe impl Sync for Shared {}
@@ -313,11 +411,7 @@ unsafe impl Sync for Shared {}
 impl Shared {
     fn map(file: File, len: usize) -> std::io::Result<Shared> {
         let host = platform::map_file_shared(&file, len)?;
-        Ok(Shared {
-            host,
-            len,
-            _file: file,
-        })
+        Ok(Shared { host, len, file })
     }
 
     fn host(&self) -> *mut u8 {
@@ -500,30 +594,30 @@ impl VirtioDevice for Pmem {
         }
     }
 
-    /// A swap window's: whether the guest was shown it.
+    /// A swap window's: whether the guest was shown it, and the length of the run's swap
+    /// mapped, whose bytes a snapshot of the run keeps beside it (D176).
     fn save(&self, w: &mut Writer) {
         if let Backing::Swap(window) = &self.backing {
             w.bool(window.shown());
+            w.u64(window.mapped_len());
         }
     }
 
     fn restore(&mut self, r: &mut Reader<'_>) -> codec::Result<()> {
-        if let Backing::Swap(window) = &self.backing
-            && r.bool()?
-        {
-            window.show();
+        if let Backing::Swap(window) = &self.backing {
+            if r.bool()? {
+                window.show();
+            }
+            let kept = r.u64()?;
+            if kept > window.len() || !kept.is_multiple_of(ALIGN) {
+                return Err(codec::DecodeError(format!(
+                    "a run's swap of {kept} bytes kept for a window of {}",
+                    window.len()
+                )));
+            }
+            window.kept.store(kept, Ordering::Release);
         }
         Ok(())
-    }
-
-    /// A run's swap is the run's alone: no template or snapshot holds it.
-    fn unsaved(&self) -> Option<String> {
-        match &self.backing {
-            Backing::Swap(window) if window.attached() => {
-                Some("a run's swap is mapped into the microVM's swap window".into())
-            }
-            _ => None,
-        }
     }
 }
 
@@ -549,5 +643,100 @@ fn answer(chain: &Chain, mem: &Access<'_>) -> u32 {
     match mem.write_obj(resp.addr, ret.to_le()) {
         Ok(()) => 4,
         Err(_) => 0,
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::indexing_slicing)]
+mod tests {
+    use super::*;
+
+    /// Slots no hypervisor maps: whatever a window asks of them is done.
+    struct Unmapped;
+
+    impl Slots for Unmapped {
+        unsafe fn map(&self, _: u32, _: *mut u8, _: u64, _: usize, _: bool) -> Result<(), String> {
+            Ok(())
+        }
+
+        fn unmap(&self, _: u32, _: u64, _: usize) -> Result<(), String> {
+            Ok(())
+        }
+    }
+
+    fn window() -> Arc<SwapWindow> {
+        Arc::new(SwapWindow::new(1 << 32, 8 * ALIGN, Box::new(Unmapped)).unwrap())
+    }
+
+    fn file(dir: &Path, name: &str, len: u64) -> File {
+        let f = File::options()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .open(dir.join(name))
+            .unwrap();
+        f.set_len(len).unwrap();
+        f
+    }
+
+    /// What the guest wrote to a run's swap through its mapping, never flushed, a save
+    /// copies into the snapshot's swap, holes where it wrote nothing; the device's state
+    /// keeps its length, and a restore maps the copy back at that length alone, before any
+    /// vCPU runs (D176).
+    #[test]
+    fn a_runs_swap_is_kept_by_a_save_and_mapped_back_by_its_restore() {
+        let dir = shards_testdir::TempDir::new("swap-save").unwrap();
+        let len = 4 * ALIGN;
+        let saved = window();
+        assert_eq!(saved.attach(file(&dir, "run", len)).unwrap(), Some(len));
+        let host = lock(&saved.run).as_ref().unwrap().host();
+        // SAFETY: within the mapping, which the window holds.
+        unsafe {
+            host.add(4096).write_bytes(7, 4096);
+            host.add(3 << 20).write_bytes(9, 100);
+        }
+        let device = Pmem::swap(saved.clone());
+        let mut w = Writer::default();
+        device.save(&mut w);
+        let kept = file(&dir, "kept", 0);
+        assert_eq!(saved.save_run(&kept).unwrap(), len);
+        assert_eq!(kept.metadata().unwrap().len(), len);
+        let mut bytes = vec![0u8; len as usize];
+        platform::read_exact_at(&kept, &mut bytes, 0).unwrap();
+        assert!(bytes[4096..8192].iter().all(|&b| b == 7));
+        assert!(bytes[3 << 20..(3 << 20) + 100].iter().all(|&b| b == 9));
+        assert_eq!(bytes.iter().filter(|&&b| b != 0).count(), 4096 + 100);
+        // No more of a disk than what was written: a block or two of its 8 MiB.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt as _;
+            let on_disk = kept.metadata().unwrap().blocks() * 512;
+            assert!(on_disk <= 1 << 20, "{on_disk} bytes on disk");
+        }
+
+        let restored = window();
+        let mut device = Pmem::swap(restored.clone());
+        let state = w.into_bytes();
+        device.restore(&mut Reader::new(&state)).unwrap();
+        let e = restored.restore_run(None).unwrap_err();
+        assert!(e.contains("which the restore was not given"), "{e}");
+        let e = restored
+            .restore_run(Some(file(&dir, "short", 2 * ALIGN)))
+            .unwrap_err();
+        assert!(e.contains("for a snapshot that kept"), "{e}");
+        restored.restore_run(Some(kept)).unwrap();
+        let host = lock(&restored.run).as_ref().unwrap().host();
+        // SAFETY: within the mapping, which the window holds.
+        unsafe {
+            assert_eq!(*host.add(4096), 7);
+            assert_eq!(*host.add((3 << 20) + 99), 9);
+            assert_eq!(*host.add(1 << 20), 0);
+        }
+
+        // A window that kept none takes none.
+        let none = window();
+        none.restore_run(None).unwrap();
+        let e = none.restore_run(Some(file(&dir, "stray", len))).unwrap_err();
+        assert!(e.contains("kept none"), "{e}");
     }
 }

@@ -3,15 +3,16 @@
 
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Condvar, Mutex, OnceLock, mpsc};
+use std::sync::{Arc, Condvar, Mutex, OnceLock, Weak, mpsc};
 use std::thread::JoinHandle;
 
 use super::barrier::Barrier;
 use super::machine::{self, Machine};
-use super::{AfterSnapshot, Config, ExitReason, RestoreConfig, SnapshotPolicy};
+use super::{AfterSnapshot, Config, ExitReason, RestoreConfig, Save, SnapshotPolicy};
 use crate::devices::control::Control;
 use crate::devices::power::PowerEvent;
 use crate::devices::serial::Serial;
+use crate::devices::virtio::block::Join;
 use crate::devices::virtio::pmem;
 use crate::hv;
 use crate::memory::GuestMemory;
@@ -69,6 +70,98 @@ impl Handle {
             .swap()
             .ok_or("the microVM has no swap window")?
             .attach(file)
+    }
+
+    /// Saves the running machine into `save`'s files, a generation its spawner prepared and
+    /// commits once this returns (D176), with its vCPUs parked and its devices quiet, as a
+    /// template is saved. A machine that goes on runs again before this returns; one that
+    /// stops waits, parked, until the [`Saved`] returned goes, so that its spawner hears of
+    /// the save before it ends. A save that fails leaves the machine running as it was.
+    pub fn save(&self, save: Save) -> Result<Saved, String> {
+        let sh = &self.shared;
+        if !super::SNAPSHOTS {
+            return Err("this host's microVMs take no snapshots yet".into());
+        }
+        let parts = sh.parts.get().ok_or("the microVM has not started")?;
+        if sh.released_at_us.get().is_none() {
+            return Err("the microVM has not started".into());
+        }
+        // A template's snapshot, which the guest asks for, is the only other: its
+        // coordinator would take this one's request for it.
+        if sh.template.load(Ordering::Acquire) {
+            return Err("the microVM has its template still to save".into());
+        }
+        {
+            let mut saving = lock(&sh.saving);
+            if sh.exiting() {
+                return Err("the microVM has stopped".into());
+            }
+            if *saving {
+                return Err("the microVM is being saved already".into());
+            }
+            *saving = true;
+        }
+        let saved = self.save_parked(parts, save);
+        *lock(&sh.saving) = false;
+        sh.saved.notify_all();
+        saved
+    }
+
+    /// [`save`](Handle::save)'s snapshot: what it holds of the machine goes before the
+    /// machine may be taken apart.
+    fn save_parked(&self, parts: &Parts, save: Save) -> Result<Saved, String> {
+        let sh = &self.shared;
+        let (Some(vm), Some(bus)) = (parts.vm.upgrade(), parts.bus.upgrade()) else {
+            return Err("the microVM has stopped".into());
+        };
+        let t0 = crate::log::uptime_us();
+        if !sh.snapshot.request() {
+            return Err("the microVM is being saved already".into());
+        }
+        sh.kick_all();
+        let cut = Cut {
+            sh,
+            vm: &vm,
+            bus: &bus,
+            memory: &self.memory,
+            config: &parts.config,
+            join: parts.join,
+            swap: self.control.swap().map(|w| &**w),
+        };
+        if !sh.snapshot.wait_parked(&|| sh.exiting()) {
+            return Err("the microVM has stopped".into());
+        }
+        let snap = match cut.take(true) {
+            Ok(Some(snap)) => snap,
+            Ok(None) => return Err("the microVM has stopped".into()),
+            Err(e) => {
+                cut.go_on();
+                return Err(e);
+            }
+        };
+        let swap = cut.swap.filter(|w| w.attached());
+        let written = snapshot::fill(&save.name, &snap, &self.memory, &save.memory, &save.state).and_then(
+            |()| match (swap, &save.swap) {
+                (None, _) => Ok(()),
+                (Some(window), Some(file)) => window.save_run(file).map(|_| ()),
+                (Some(_), None) => Err("its run's swap has nowhere to go".into()),
+            },
+        );
+        if let Err(e) = written {
+            cut.go_on();
+            return Err(e);
+        }
+        info!(
+            "saved for the host in {} us",
+            crate::log::uptime_us().saturating_sub(t0)
+        );
+        Ok(match save.then {
+            AfterSnapshot::Resume => {
+                cut.go_on();
+                Saved(None)
+            }
+            AfterSnapshot::Stop => Saved(Some(self.shared.clone())),
+        })
     }
 
     /// Guest markers as `(marker, µs since VMM start)`.
@@ -185,6 +278,39 @@ struct Shared {
     /// runs again before the commit ends (PM M63).
     committing: Mutex<bool>,
     committed: Condvar,
+    /// What a snapshot the host asks for reads, once the machine is launched (D176).
+    parts: OnceLock<Parts>,
+    /// Whether a template's snapshot is still to be taken, its coordinator waiting.
+    template: AtomicBool,
+    /// Whether a snapshot the host asked for is being taken: one at a time, and the
+    /// machine is taken apart only once it is done (`Running::teardown`).
+    saving: Mutex<bool>,
+    saved: Condvar,
+}
+
+/// What a snapshot the host asks for reads of the machine (D176): its VM and devices by
+/// weak references, which `Running` alone owns, so that one held never keeps them past
+/// the machine's teardown.
+#[derive(Debug)]
+struct Parts {
+    vm: Weak<hv::Vm>,
+    bus: Weak<machine::Bus>,
+    config: MachineConfig,
+    join: Option<&'static Join>,
+}
+
+/// A save the host asked for, done ([`Handle::save`]): a machine to stop after it stops as
+/// this goes, its vCPUs parked until then.
+#[derive(Debug)]
+#[must_use = "a machine to stop after its save stops as this goes"]
+pub struct Saved(Option<Arc<Shared>>);
+
+impl Drop for Saved {
+    fn drop(&mut self) {
+        if let Some(sh) = self.0.take() {
+            sh.stop(ExitReason::Snapshotted);
+        }
+    }
 }
 
 #[derive(Debug, Default)]
@@ -213,6 +339,18 @@ impl Shared {
             recorded: Mutex::new(None),
             committing: Mutex::new(false),
             committed: Condvar::new(),
+            parts: OnceLock::new(),
+            template: AtomicBool::new(false),
+            saving: Mutex::new(false),
+            saved: Condvar::new(),
+        }
+    }
+
+    /// Waits until no save the host asked for reads the machine.
+    fn await_save(&self) {
+        let mut saving = lock(&self.saving);
+        while *saving {
+            saving = wait(&self.saved, saving);
         }
     }
 
@@ -334,6 +472,8 @@ impl Running {
         for t in self.threads.drain(..) {
             let _ = t.join();
         }
+        // A save the host asked for holds the VM and its devices until it is done.
+        self.shared.await_save();
         if let Some(vm) = self.vm.take() {
             // The device workers go quiet before the VM they raise interrupts in goes.
             self.bus.pause();
@@ -435,6 +575,19 @@ pub fn restore_from(cfg: &RestoreConfig, pinned: snapshot::Pinned) -> Result<(Ha
         },
         working_set.unwrap_or_default(),
     )?;
+    // The run's swap a snapshot of a run kept (D176), back where its guest had it before
+    // any vCPU runs.
+    let swap = cfg
+        .swap
+        .as_ref()
+        .map(std::fs::File::try_clone)
+        .transpose()
+        .map_err(|e| format!("its swap file: {e}"))?;
+    match machine.control.swap() {
+        Some(window) => window.restore_run(swap)?,
+        None if swap.is_some() => return Err("a run's swap for a microVM without a swap window".into()),
+        None => {}
+    }
     // A working set is saved into the generation it was recorded from.
     let recorder = if recording {
         machine::recorder(&machine).map(|r| (r, name))
@@ -506,8 +659,15 @@ fn launch(
         })
     }));
 
+    let _ = shared.parts.set(Parts {
+        vm: Arc::downgrade(&vm),
+        bus: Arc::downgrade(&bus),
+        config: config.clone(),
+        join,
+    });
     let mut threads = Vec::with_capacity(vcpus as usize + 1);
     if let Some(policy) = snapshots {
+        shared.template.store(true, Ordering::Release);
         let sh = shared.clone();
         // One snapshot per VM, a template's: a guest's later requests are passed by,
         // rather than each parking every vCPU and writing all of memory again.
@@ -522,6 +682,7 @@ fn launch(
             vm: vm.clone(),
             bus: bus.clone(),
             memory: memory.clone(),
+            control: control.clone(),
             config,
             policy,
             join,
@@ -662,16 +823,19 @@ struct Coordinator {
     vm: Arc<hv::Vm>,
     bus: Arc<machine::Bus>,
     memory: Arc<GuestMemory>,
+    control: Arc<Control>,
     config: MachineConfig,
     policy: SnapshotPolicy,
     /// The machine's join disk (D119), which a snapshot keeps only empty.
-    join: Option<&'static crate::devices::virtio::block::Join>,
+    join: Option<&'static Join>,
 }
 
 impl Coordinator {
     fn run(self) {
         let stopping = || self.sh.exiting();
-        if !self.sh.snapshot.wait_parked(&stopping) {
+        let parked = self.sh.snapshot.wait_parked(&stopping);
+        self.sh.template.store(false, Ordering::Release);
+        if !parked {
             return;
         }
         let t0 = crate::log::uptime_us();
@@ -681,16 +845,24 @@ impl Coordinator {
         self.sh.committed.notify_all();
     }
 
+    fn cut(&self) -> Cut<'_> {
+        Cut {
+            sh: &self.sh,
+            vm: &self.vm,
+            bus: &self.bus,
+            memory: &self.memory,
+            config: &self.config,
+            join: self.join,
+            swap: self.control.swap().map(|w| &**w),
+        }
+    }
+
     /// Takes the snapshot, its vCPUs parked. A VM that resumes after it serves its run
     /// whatever becomes of the snapshot: one that fails is only a template lost, which
     /// the daemon finds missing; a VM that only saves one ends with why.
     fn take(&self, t0: u128) {
-        let stopping = || self.sh.exiting();
         let resume = matches!(self.policy.then, AfterSnapshot::Resume);
-        let go_on = || match self.bus.resume() {
-            Ok(()) => self.sh.snapshot.release(),
-            Err(e) => self.sh.stop(ExitReason::Error(format!("resuming devices: {e}"))),
-        };
+        let cut = self.cut();
         // `parked`: whether the guest still waits for the snapshot.
         let failed = |e: String, parked: bool| {
             if !resume {
@@ -698,30 +870,15 @@ impl Coordinator {
             }
             warn!("{e}; the VM goes on without its snapshot");
             if parked {
-                go_on();
+                cut.go_on();
             }
         };
-        // Every vCPU is out of the guest: the devices go quiet, and only then does each
-        // vCPU capture its state.
-        self.bus.pause();
-        // A snapshot keeps no range of a join disk: a container's image is the joining
-        // run's, and every restore of a template is a microVM no container has joined.
-        if self.join.is_some_and(|j| !j.is_empty()) {
-            return failed(
-                "snapshot: a container has joined this microVM, whose image a snapshot cannot keep".into(),
-                true,
-            );
-        }
-        // What a paused device cannot save refuses the snapshot, not lost in it (D148).
-        if let Some(why) = self.bus.unsaved() {
-            return failed(format!("snapshot: {why}"), true);
-        }
-        let captured = match self.sh.snapshot.capture(&stopping) {
-            None => return,
-            Some(Err(e)) => return failed(format!("snapshot: {e}"), true),
-            Some(Ok(captured)) => captured,
+        let snap = match cut.take(false) {
+            Ok(Some(snap)) => snap,
+            Ok(None) => return,
+            Err(e) => return failed(format!("snapshot: {e}"), true),
         };
-        let staged = match self.stage(captured) {
+        let staged = match snapshot::stage(&self.policy.dir, &snap, &self.memory) {
             Ok(staged) => staged,
             Err(e) => return failed(format!("snapshot: {e}"), true),
         };
@@ -734,7 +891,7 @@ impl Coordinator {
             if self.policy.working_set {
                 self.record(staged.name().to_string());
             }
-            go_on();
+            cut.go_on();
         }
         // Durable, and in use, with the guest running again: its files hold all of it
         // already (PM M63). The process ends only once this thread has.
@@ -764,20 +921,67 @@ impl Coordinator {
             Err(e) => warn!("not recording a working set: {e}"),
         }
     }
+}
 
-    /// Stages the interrupt controller, the devices and memory, of a machine whose vCPUs
-    /// have parked with their state captured and whose devices are quiet.
-    fn stage(&self, captured: Vec<machine::Captured>) -> Result<snapshot::Staged, String> {
-        let arch = machine::encode_state(&self.vm, captured)?;
+/// A machine's parts, which a snapshot reads once every vCPU has parked: the guest's or
+/// the host's (D176).
+struct Cut<'a> {
+    sh: &'a Shared,
+    vm: &'a hv::Vm,
+    bus: &'a machine::Bus,
+    memory: &'a GuestMemory,
+    config: &'a MachineConfig,
+    /// The machine's join disk (D119), which a snapshot keeps only empty.
+    join: Option<&'static Join>,
+    /// Its swap window (D159), where it has one.
+    swap: Option<&'a pmem::SwapWindow>,
+}
+
+impl Cut<'_> {
+    /// Quiets the devices, refuses what a snapshot cannot hold, and takes the machine's
+    /// state, each vCPU's captured on its own thread; none once the machine stops. With
+    /// `run`, a run's snapshot, which keeps the run's swap beside it; a template keeps
+    /// none. The devices stay quiet and the vCPUs parked until [`go_on`](Cut::go_on).
+    fn take(&self, run: bool) -> Result<Option<Snapshot>, String> {
+        // Every vCPU is out of the guest: the devices go quiet, and only then does each
+        // vCPU capture its state.
+        self.bus.pause();
+        // A snapshot keeps no range of a join disk: a container's image is the joining
+        // run's, and every restore of a snapshot is a microVM no container has joined.
+        if self.join.is_some_and(|j| !j.is_empty()) {
+            return Err("a container has joined this microVM, whose image a snapshot cannot keep".into());
+        }
+        if !run && self.swap.is_some_and(pmem::SwapWindow::attached) {
+            return Err(
+                "a run's swap is mapped into the microVM's swap window, which a template keeps none of"
+                    .into(),
+            );
+        }
+        // What a paused device cannot save refuses the snapshot, not lost in it (D148).
+        if let Some(why) = self.bus.unsaved() {
+            return Err(why);
+        }
+        let captured = match self.sh.snapshot.capture(&|| self.sh.exiting()) {
+            None => return Ok(None),
+            Some(captured) => captured?,
+        };
+        let arch = machine::encode_state(self.vm, captured)?;
         let mut w = Writer::default();
         self.bus.save(&mut w);
-        let snap = Snapshot {
+        Ok(Some(Snapshot {
             config: self.config.clone(),
             plugged: self.memory.plugged_runs(),
             arch,
             devices: w.into_bytes(),
-        };
-        snapshot::stage(&self.policy.dir, &snap, &self.memory)
+        }))
+    }
+
+    /// Lets the machine run again after its snapshot.
+    fn go_on(&self) {
+        match self.bus.resume() {
+            Ok(()) => self.sh.snapshot.release(),
+            Err(e) => self.sh.stop(ExitReason::Error(format!("resuming devices: {e}"))),
+        }
     }
 }
 

@@ -11,7 +11,7 @@ use windows_sys::Win32::Storage::FileSystem::{
 };
 use windows_sys::Win32::System::IO::OVERLAPPED;
 use windows_sys::Win32::System::Memory::{
-    CreateFileMappingW, MEM_COMMIT, MEM_DECOMMIT, MEM_PRESERVE_PLACEHOLDER, MEM_RELEASE,
+    CreateFileMappingW, FlushViewOfFile, MEM_COMMIT, MEM_DECOMMIT, MEM_PRESERVE_PLACEHOLDER, MEM_RELEASE,
     MEM_REPLACE_PLACEHOLDER, MEM_RESERVE, MEM_RESERVE_PLACEHOLDER, MEMORY_MAPPED_VIEW_ADDRESS,
     MapViewOfFile3, PAGE_NOACCESS, PAGE_READONLY, PAGE_READWRITE, UnmapViewOfFile2, VirtualAlloc,
     VirtualAlloc2, VirtualFree, VirtualProtect,
@@ -376,6 +376,26 @@ pub fn map_file_shared(file: &File, len: usize) -> io::Result<NonNull<u8>> {
         return Err(e);
     }
     NonNull::new(view.Value.cast::<u8>()).ok_or_else(|| io::Error::other("MapViewOfFile3 returned NULL"))
+}
+
+/// Writes what was written through `ptr..ptr + len`, a view [`map_file_shared`] made, to
+/// its file (FlushViewOfFile).
+///
+/// # Safety
+/// `ptr` and `len` are a view's from [`map_file_shared`], still mapped.
+pub unsafe fn flush_shared(ptr: NonNull<u8>, len: usize) -> io::Result<()> {
+    // SAFETY: forwarded caller contract.
+    if unsafe { FlushViewOfFile(ptr.as_ptr().cast(), len) } != 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
+}
+
+/// The ranges of `file`'s first `len` bytes that hold data: all of it, as no Windows
+/// backend takes snapshots, whose saves alone ask (`vm::SNAPSHOTS`).
+pub fn data_ranges(_file: &File, len: u64) -> io::Result<Vec<(u64, u64)>> {
+    Ok(vec![(0, len)])
 }
 
 /// Unmaps what [`map_file_shared`] mapped.

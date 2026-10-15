@@ -44,7 +44,7 @@ mod barrier;
 mod runtime;
 #[cfg(hv)]
 pub use runtime::{
-    Handle, Running, accept_working_set, check_host, max_vcpus, restore, restore_from, start,
+    Handle, Running, Saved, accept_working_set, check_host, max_vcpus, restore, restore_from, start,
     working_set_limit,
 };
 
@@ -52,7 +52,7 @@ pub use runtime::{
 mod unsupported;
 #[cfg(not(hv))]
 pub use unsupported::{
-    Handle, Running, accept_working_set, check_host, max_vcpus, restore, restore_from, start,
+    Handle, Running, Saved, accept_working_set, check_host, max_vcpus, restore, restore_from, start,
     working_set_limit,
 };
 
@@ -1323,7 +1323,7 @@ impl Config {
 }
 
 /// Starts a VM from a snapshot instead of booting one.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct RestoreConfig {
     /// The snapshot directory.
     pub dir: PathBuf,
@@ -1354,6 +1354,9 @@ pub struct RestoreConfig {
     /// Record a working set for the snapshot, where it has none and this backend records
     /// restores' ([`RESTORES_RECORD`]), until [`Handle::take_working_set`] takes it.
     pub record: bool,
+    /// A copy of the run's swap a snapshot of a run kept (D176), the restore's own, mapped
+    /// where its guest had it before any vCPU runs.
+    pub swap: Option<std::fs::File>,
 }
 
 #[derive(Debug, Clone)]
@@ -1364,6 +1367,19 @@ pub struct SnapshotPolicy {
     /// Once resumed from its snapshot, record the pages the guest touches, until
     /// [`Handle::take_working_set`] takes them, for the snapshot.
     pub working_set: bool,
+}
+
+/// A snapshot the host asks of a running machine (D176), into the files of a generation
+/// its spawner prepared (`snapshot::prepare`): no VM opens a path of its own (D30).
+#[derive(Debug)]
+pub struct Save {
+    /// The generation's name, which its state records.
+    pub name: String,
+    pub memory: std::fs::File,
+    pub state: std::fs::File,
+    /// Where the run's swap goes (D159), where the machine maps one.
+    pub swap: Option<std::fs::File>,
+    pub then: AfterSnapshot,
 }
 
 /// What the VM does once its snapshot is written.

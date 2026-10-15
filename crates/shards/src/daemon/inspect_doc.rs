@@ -1545,6 +1545,7 @@ mod tests {
                     ..Default::default()
                 },
                 size_rw: None,
+                saved: None,
             };
             let manifest = &want["ImageManifestDescriptor"];
             let facts = Facts {

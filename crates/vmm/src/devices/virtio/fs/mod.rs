@@ -64,6 +64,14 @@ impl Slot {
         *self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(conn);
     }
 
+    /// Whether a server is in it.
+    fn attached(&self) -> bool {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .is_some()
+    }
+
     /// The server's reply to `req`, none for one that takes none; Err with no server, or
     /// with one that has gone. One request at a time: each queue's worker asks in turn.
     fn ask(&self, req: &[u8]) -> io::Result<Option<Vec<u8>>> {
@@ -318,6 +326,15 @@ impl VirtioDevice for Fs {
         } else {
             self.start(queues)
         }
+    }
+
+    /// A served share's files are its server's, which the guest holds by node IDs that
+    /// live in the server alone: a snapshot would resume a guest whose every open file of
+    /// it the restore's server knows nothing of (D176).
+    fn unsaved(&self) -> Option<String> {
+        self.server.attached().then(|| {
+            "a volume is mounted in the microVM, whose open files a snapshot does not keep yet".into()
+        })
     }
 }
 

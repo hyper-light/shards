@@ -3649,6 +3649,42 @@ running microVM has done both, so a save keeps them:
   more than it booted with, and only then asks for a snapshot; the VM that booted and two
   restores find all it wrote. Mutation-checked: without the plug again, the restored guest
   faults at the first address of the region it reads.
+- **Swap** (part 2). A run's swap file is unlinked once its microVM maps it (D159), so the
+  VM process copies it, the guest's writes flushed to it first (msync(2)), into the
+  generation's `swap`: the ranges the file holds data in (lseek(2) SEEK_DATA, SEEK_HOLE),
+  of them the 4 KiB blocks not all zeros. The swap window's state keeps the length, and a
+  restore maps a copy of its own back at that length before any vCPU runs (snapshot format
+  18). Held by
+  `a_runs_swap_is_kept_by_a_save_and_mapped_back_by_its_restore`. APFS counts a page
+  written through the mapping as data before it is written back (that test passes on
+  this host without the flush), as ext4 and XFS do, reserving its block as it is dirtied
+  (`ext4_da_get_block_prep`, `xfs_buffered_write_iomap_begin`); the flush is for a file
+  system that gives a page its block only at write-back.
+
+A save is the host's to ask for (part 2), where a template's is the guest's. The daemon
+prepares a generation in the container's directory, `snapshots/NAME/`: its memory, state
+and swap files, empty, created there, since the VM process opens no path of its own (D30).
+It hands them to the VM process with `SAVE`. The VM process parks the vCPUs, quiets the
+devices, fills the files and answers `SAVED`, then goes on or stops; the daemon commits
+the generation, synced, renamed into place, its pointer moved, as the VMM commits a
+template. One save at a time, and none while a template is still to save, whose
+coordinator would take the request for its own. The machine is taken apart only once a
+save has let go of it: the save holds the VM and its devices by weak references, which
+`Running` alone owns. What a save cannot keep whole refuses it, and the microVM goes on as
+it was, with nothing of the save left: a host's devices (VFIO), a GPU's contexts, a
+container joined to it (D119), and, until part 7, a mounted volume, whose open files are
+its server's by node IDs no snapshot holds.
+
+Saved with `--leave-running`, the microVM goes on. Otherwise its save stops it, as `docker
+checkpoint create` stops a container, and it is told as stopped, not ended: its attached
+client says it was saved and as which snapshot, and exits 148, the status a shell gives a
+job it stopped (128 + SIGTSTP); the container records that status. A container Docker
+checkpoints is an exit like any other (moby daemon/monitor.go, handleContainerExit): its
+restart policy restarts it, and `--rm` removes it with its checkpoints. A saved microVM is
+neither restarted nor removed: what it is saved as is there to resume. Held, on real
+microVMs, by `a_running_microvm_is_saved_whole_left_running_or_stopped` and
+`a_save_refused_leaves_the_microvm_running_and_nothing_behind` (tests/saved.rs).
+Mutation-checked: removed with `--rm`, and saved with its volume mounted.
 
 ### D175. Sockets read in poll(2) on macOS, and streams ended one way at a time
 
