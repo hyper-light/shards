@@ -3739,6 +3739,19 @@ unchanged (`DOCKER_HOST=unix://HOME/engine.sock`). What they gain, each for the 
   body that gives another is refused (changes say each field a config has), and an
   empty one, `{}`, which docker-py sends when given none, is none, where dockerd's merge
   of it drops the microVM's Shell and OnBuild (daemon/commit.go, merge).
+- **Images built** as `shards build image` builds them, from a context in the call's body
+  or `remote`'s: what docker-py's and docker-java's builds send (Testcontainers' images
+  from Dockerfiles among them), and the docker CLI's legacy builder. Each RUN step runs
+  in a microVM, never a container on the host's kernel, by BuildKit's plan and cache,
+  where dockerd answers the API's first version, which those clients ask for, with its
+  legacy builder. The build is a `shards build` process of its own, each option the flag
+  it takes it by; each line it says is a `stream` message, then the image's ID (`aux`,
+  from API 1.30) and the "Successfully built" and "tagged" lines docker-py finds an
+  image by; with `q`, the ID alone. Its client's registry credentials
+  (X-Registry-Config) stay in memory; a client that goes ends the build. A context sent
+  through a BuildKit session, as `docker build` sends one where buildx is installed, is
+  refused, saying so: BuildKit's session and control API on the engine's socket is a
+  slice of its own.
 - **A pull or push refused before it says anything is answered by its status**, as
   dockerd answers one whose stream it has not flushed; SDKs read that as the call's error
   (a 404 as not found). `pull -a`'s trailing `:` is taken as moby takes it, and `scratch`
@@ -3774,7 +3787,7 @@ Served now: `_ping`, `version`, `info`, events; microVMs' create, list, inspect,
 attach, wait, logs, resize, stop, kill, removal, copy in and out, export, changes,
 processes, stats, pause and unpause, restart, rename, update and prune; exec's create,
 start, inspect and resize; images' pull, list, inspect, tag, history, removal, prune,
-push, save, load and import; commit;
+push, save, load and import; commit; build;
 volumes' create, list, inspect, removal and prune; networks' create, list, inspect,
 removal, join, leave and prune; what is on disk. Held on real microVMs by
 tests/engine.rs, raw and through the docker CLI, copies into tmpfs mounts over a

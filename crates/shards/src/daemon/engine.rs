@@ -8,6 +8,7 @@
 //! what the CLI gets, its checks and refusals among them. Requests are read as Go's server
 //! reads them (build/proxy/head.rs), as dockerd's is Go's.
 
+mod build;
 mod containers;
 mod create;
 mod disk;
@@ -225,6 +226,8 @@ enum Upload {
     Images,
     /// `POST /images/create?fromSrc=-`: a root filesystem.
     Root,
+    /// `POST /build`: a build's context.
+    Build,
 }
 
 /// How a call was answered.
@@ -389,6 +392,7 @@ impl<D: Disk> Daemon<D> {
             ("PUT", ["containers", id, "archive"]) => Some(Upload::Files((*id).to_string())),
             ("POST", ["images", "load"]) => Some(Upload::Images),
             ("POST", ["images", "create"]) if call.query("fromSrc") == Some("-") => Some(Upload::Root),
+            ("POST", ["build"]) => Some(Upload::Build),
             _ => None,
         };
         if let Some(upload) = upload {
@@ -397,6 +401,7 @@ impl<D: Disk> Daemon<D> {
                 Upload::Files(id) => self.engine_extract(threads, &id, &call, &mut body),
                 Upload::Images => self.engine_load(threads, conn, &call, &mut body),
                 Upload::Root => self.engine_import(threads, conn, &call, Some(&mut body)),
+                Upload::Build => self.engine_build(conn, &call, &mut body),
             };
             let whole = body.ended();
             return match done {
