@@ -519,7 +519,11 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
             .into_bytes())
     }
 
-    fn container_value(&self, c: &crate::containers::Container, sized: bool) -> shards_template::Value {
+    pub(super) fn container_value(
+        &self,
+        c: &crate::containers::Container,
+        sized: bool,
+    ) -> shards_template::Value {
         use super::inspect_doc::{Facts, Health, Net, document};
         let dir = super::lock(&self.containers).dir(&c.id);
         let request = std::fs::read(dir.join(super::REQUEST))
@@ -813,7 +817,7 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
     }
 
     /// Image `given`'s InspectResponse, or why not.
-    fn image_doc(&self, given: &str) -> Result<shards_template::Value, Missing> {
+    pub(super) fn image_doc(&self, given: &str) -> Result<shards_template::Value, Missing> {
         let store = self
             .store()
             .map_err(Missing::Not)?
@@ -828,7 +832,7 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
 
 /// Why an image has no document: not found, which `inspect` without a `--type` passes
 /// over to the next kind of object, or found and failed, which it says.
-enum Missing {
+pub(super) enum Missing {
     Not(String),
     Failed(String),
 }

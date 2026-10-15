@@ -887,32 +887,10 @@ impl<D: crate::containers::Disk> Daemon<D> {
                 return 1;
             }
         };
-        self.await_start(&id);
-        if !self.running(&id) {
-            return refuse(format!("{given} is not running"));
-        }
-        if lock(&self.paused).contains(&id) {
-            return refuse(format!(
-                "{given} is paused: its processes can be listed once it is unpaused"
-            ));
-        }
-        let spec = shards_abi::run::Spec {
-            builtin: shards_abi::run::builtin::PROCESSES,
-            ..Default::default()
-        };
-        let quiet = match self.exec_quietly(&id, &spec, None, TOP_LIMIT, super::TAKE_TIMEOUT) {
-            Ok(q) if q.status == Some(0) && !q.more => q,
-            Ok(_) => return refuse(format!("{given}: its processes could not be read")),
-            Err(e) => return refuse(format!("{given}: reading its processes: {e}")),
-        };
-        let args: Vec<&str> = joined.split(' ').collect();
-        let listed =
-            super::top::ps(&quiet.output, &args, asker.utc_offset).and_then(|out| super::top::table(&out));
-        let table = match listed {
+        let table = match self.top_table(given, &id, &joined, asker.utc_offset) {
             Ok(t) => t,
             Err(e) => return refuse(e),
         };
-        self.container_event(&id, "top", &[]);
         if asker.styled() {
             let mut sheet = shards_ipc::Sheet::new("top");
             sheet.record(&[
@@ -934,6 +912,42 @@ impl<D: crate::containers::Disk> Daemon<D> {
         }
         let _ = reply.bytes(LOG_STDOUT, text.as_bytes());
         0
+    }
+
+    /// The processes of microVM `id` (named `given`) as `ps` lays them out with options
+    /// `joined`, in a zone `utc_offset` seconds east of UTC, from what its init reads of
+    /// them in `/proc`; or why not.
+    pub(super) fn top_table(
+        &self,
+        given: &str,
+        id: &str,
+        joined: &str,
+        utc_offset: i32,
+    ) -> Result<super::top::Table, String> {
+        ps_args_allowed(joined)?;
+        self.await_start(id);
+        if !self.running(id) {
+            return Err(format!("{given} is not running"));
+        }
+        if lock(&self.paused).contains(id) {
+            return Err(format!(
+                "{given} is paused: its processes can be listed once it is unpaused"
+            ));
+        }
+        let spec = shards_abi::run::Spec {
+            builtin: shards_abi::run::builtin::PROCESSES,
+            ..Default::default()
+        };
+        let quiet = match self.exec_quietly(id, &spec, None, TOP_LIMIT, super::TAKE_TIMEOUT) {
+            Ok(q) if q.status == Some(0) && !q.more => q,
+            Ok(_) => return Err(format!("{given}: its processes could not be read")),
+            Err(e) => return Err(format!("{given}: reading its processes: {e}")),
+        };
+        let args: Vec<&str> = joined.split(' ').collect();
+        let table =
+            super::top::ps(&quiet.output, &args, utc_offset).and_then(|out| super::top::table(&out))?;
+        self.container_event(id, "top", &[]);
+        Ok(table)
     }
 
     /// `shards stats [CONTAINER...]` (docker/cli cli/command/container/stats.go): what each
@@ -2916,7 +2930,7 @@ pub(super) fn displayable_ports(mut ports: Vec<PortSummary>) -> String {
 
 /// A container's command as the API shows it: the path, then the arguments, each in single
 /// quotes if it holds a space (moby daemon/container/view.go).
-fn command_line(argv: &[String]) -> String {
+pub(super) fn command_line(argv: &[String]) -> String {
     let Some((path, args)) = argv.split_first() else {
         return String::new();
     };
@@ -2980,7 +2994,7 @@ static LAST_USAGE: std::sync::Mutex<std::collections::BTreeMap<String, Usage>> =
 
 impl<D: crate::containers::Disk> Daemon<D> {
     /// Container `id`'s use of its microVM, as its guest's STATS says it; kept as its last.
-    fn usage_of(&self, id: &str) -> Option<Usage> {
+    pub(super) fn usage_of(&self, id: &str) -> Option<Usage> {
         let spec = shards_abi::run::Spec {
             builtin: shards_abi::run::builtin::STATS,
             ..Default::default()
@@ -2999,18 +3013,18 @@ impl<D: crate::containers::Disk> Daemon<D> {
 
 /// A workload's use of its microVM, as shards-init's STATS says it.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-struct Usage {
-    cpu: u64,
-    system: u64,
-    online: u64,
-    memory: u64,
-    inactive_file: u64,
-    limit: u64,
-    pids: u64,
-    read: u64,
-    write: u64,
-    rx: u64,
-    tx: u64,
+pub(super) struct Usage {
+    pub cpu: u64,
+    pub system: u64,
+    pub online: u64,
+    pub memory: u64,
+    pub inactive_file: u64,
+    pub limit: u64,
+    pub pids: u64,
+    pub read: u64,
+    pub write: u64,
+    pub rx: u64,
+    pub tx: u64,
 }
 
 impl Usage {
@@ -3141,7 +3155,7 @@ pub(super) fn human_duration(ns: u128) -> String {
 /// A container's status as dockerd words it (moby daemon/container/state.go): up for how
 /// long, with its health if it has a check; else being removed, if it is; or exited with
 /// what status how long ago, or created and never started.
-fn status(
+pub(super) fn status(
     c: &Container,
     at: u128,
     health: Option<super::health::Status>,

@@ -807,7 +807,7 @@ fn now_ns() -> i64 {
 /// This process's time zone's offset east of UTC now, in seconds, as Go's `time.Now()`
 /// has it in its `Local` zone: localtime(3)'s `tm_gmtoff`.
 #[cfg(unix)]
-fn utc_offset() -> i32 {
+pub(crate) fn utc_offset() -> i32 {
     // SAFETY: time(3) and localtime_r(3) write only into the locals given.
     unsafe {
         let now = libc::time(std::ptr::null_mut());

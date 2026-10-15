@@ -242,14 +242,38 @@ pub fn cdi_edits(run: &Run) -> Result<Option<crate::build::cdi::Edits>, String> 
 /// (D144): a run or a step given it is given this Mac's GPU.
 pub const RENDER_NODE: &str = "/dev/dri/renderD128";
 
-/// Whether `--gpus`, each value as given, asks for this Mac's GPU (D144): a count other
-/// than none, or the device `0`. It has one, which renders through Venus: more, another
-/// device, or a driver of its own a request may not ask for, in dockerd's words where
-/// it finds no driver for a request (daemon/devices.go, handleDevice).
-pub fn wants_gpu(gpus: &[String]) -> Result<bool, String> {
+/// A run's GPU requests, each with how it was asked for: `--gpus`'s values as the CLI
+/// reads them, then those an Engine API create gave (D170).
+pub fn gpu_requests(run: &Run) -> Result<Vec<(String, shards_cmdline::gpus::GpuRequest)>, String> {
+    let mut out = Vec::with_capacity(run.gpus.len() + run.device_requests.len());
+    for value in &run.gpus {
+        out.push((
+            format!("--gpus {value}"),
+            shards_cmdline::gpus::gpu_request(value)?,
+        ));
+    }
+    for r in &run.device_requests {
+        out.push((
+            "HostConfig.DeviceRequests".to_string(),
+            shards_cmdline::gpus::GpuRequest {
+                driver: r.driver.clone(),
+                count: r.count,
+                device_ids: r.device_ids.clone(),
+                capabilities: r.capabilities.clone(),
+                options: r.options.iter().cloned().collect(),
+            },
+        ));
+    }
+    Ok(out)
+}
+
+/// Whether a run's GPU requests ask for this Mac's GPU (D144): a count other than none,
+/// or the device `0`. It has one, which renders through Venus: more, another device, or
+/// a driver of its own a request may not ask for, in dockerd's words where it finds no
+/// driver for a request (daemon/devices.go, handleDevice).
+pub fn wants_gpu(run: &Run) -> Result<bool, String> {
     let mut wants = false;
-    for value in gpus {
-        let r = shards_cmdline::gpus::gpu_request(value)?;
+    for (asked, r) in gpu_requests(run)? {
         let caps = r
             .capabilities
             .iter()
@@ -265,7 +289,7 @@ pub fn wants_gpu(gpus: &[String]) -> Result<bool, String> {
         let devices = r.device_ids.as_deref().unwrap_or_default();
         if r.count > 1 || devices.iter().any(|d| d != "0") {
             return Err(format!(
-                "this Mac has one GPU, device 0: --gpus {value} asks for {}",
+                "this Mac has one GPU, device 0: {asked} asks for {}",
                 if devices.is_empty() {
                     format!("{}", r.count)
                 } else {
@@ -552,7 +576,7 @@ pub fn prepare(
         e.nodes.iter().any(|n| render(&n.path) || render(&n.host_path))
     });
     let gpu = match (
-        wants_gpu(&request.gpus)? || (cfg!(target_os = "macos") && renders),
+        wants_gpu(request)? || (cfg!(target_os = "macos") && renders),
         &boot,
     ) {
         (false, _) => None,
@@ -1008,7 +1032,12 @@ mod tests {
     /// another device, or a driver of its own are refused, a driver in dockerd's words.
     #[test]
     fn gpus_ask_for_this_macs_one_gpu() {
-        let wants = |v: &[&str]| wants_gpu(&v.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+        let wants = |v: &[&str]| {
+            wants_gpu(&Run {
+                gpus: v.iter().map(|s| s.to_string()).collect(),
+                ..Run::default()
+            })
+        };
         if !cfg!(all(target_os = "macos", target_arch = "aarch64")) {
             assert_eq!(
                 wants(&["all"]).unwrap_err(),
@@ -1032,6 +1061,26 @@ mod tests {
         assert_eq!(
             wants(&["driver=nvidia"]).unwrap_err(),
             "could not select device driver \"nvidia\" with capabilities: [[gpu]]"
+        );
+        // An Engine API create's, as it gave them (D170).
+        let requests = |device_requests| {
+            wants_gpu(&Run {
+                device_requests,
+                ..Run::default()
+            })
+        };
+        let gpu = |count, ids: Option<&[&str]>| shards_ipc::DeviceRequest {
+            count,
+            device_ids: ids.map(|i| i.iter().map(|s| s.to_string()).collect()),
+            capabilities: vec![vec!["gpu".into(), "utility".into()]],
+            ..shards_ipc::DeviceRequest::default()
+        };
+        assert_eq!(requests(vec![gpu(-1, None)]), Ok(true));
+        assert_eq!(requests(vec![gpu(0, Some(&["0"]))]), Ok(true));
+        assert_eq!(requests(vec![gpu(0, None)]), Ok(false));
+        assert_eq!(
+            requests(vec![gpu(2, None)]).unwrap_err(),
+            "this Mac has one GPU, device 0: HostConfig.DeviceRequests asks for 2"
         );
     }
 

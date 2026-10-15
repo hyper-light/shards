@@ -629,6 +629,120 @@ pub struct Run {
     /// client's shell would find them, not as the daemon's happened to be when it started.
     /// The daemon keeps it in memory alone, never in the request a container keeps.
     pub cloud_env: Vec<String>,
+    /// The streams an Engine API create says its client attaches, as it says them (D170);
+    /// `None` for a run a command line made, whose `attach`, `interactive` and `detach`
+    /// say them.
+    pub streams: Option<Streams>,
+    /// The GPU requests an Engine API create gives (HostConfig.DeviceRequests but CDI's),
+    /// as it gives them (D170); a command line's are `gpus`.
+    pub device_requests: Vec<DeviceRequest>,
+}
+
+/// The streams a create says its client attaches (Config.AttachStdin, AttachStdout and
+/// AttachStderr), and whether its stdin closes once the first client that attached it
+/// leaves (StdinOnce).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Streams {
+    pub stdin: bool,
+    pub stdout: bool,
+    pub stderr: bool,
+    pub stdin_once: bool,
+}
+
+impl Streams {
+    fn values(&self) -> Vec<String> {
+        [self.stdin, self.stdout, self.stderr, self.stdin_once]
+            .map(|on| if on { "1" } else { "0" }.to_string())
+            .to_vec()
+    }
+
+    fn of(values: &[String]) -> Option<Streams> {
+        let on = |i: usize| match values.get(i).map(String::as_str) {
+            Some("1") => Some(true),
+            Some("0") => Some(false),
+            _ => None,
+        };
+        if values.len() != 4 {
+            return None;
+        }
+        Some(Streams {
+            stdin: on(0)?,
+            stdout: on(1)?,
+            stderr: on(2)?,
+            stdin_once: on(3)?,
+        })
+    }
+}
+
+/// A request for devices of a driver (moby's container.DeviceRequest): how many (-1 for
+/// all), or which by ID; the capabilities they must have, any one set of them; and the
+/// driver's options.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct DeviceRequest {
+    pub driver: String,
+    pub count: i64,
+    pub device_ids: Option<Vec<String>>,
+    pub capabilities: Vec<Vec<String>>,
+    /// Each key once, in order.
+    pub options: Vec<(String, String)>,
+}
+
+impl DeviceRequest {
+    /// As a named field's values: its driver and count; its IDs' number, `-` for none
+    /// given, and each; its sets' number, and each set's number and capabilities; its
+    /// options' number, and each key and value.
+    fn put(&self, out: &mut Vec<String>) {
+        out.push(self.driver.clone());
+        out.push(self.count.to_string());
+        match &self.device_ids {
+            Some(ids) => {
+                out.push(ids.len().to_string());
+                out.extend(ids.iter().cloned());
+            }
+            None => out.push("-".into()),
+        }
+        out.push(self.capabilities.len().to_string());
+        for set in &self.capabilities {
+            out.push(set.len().to_string());
+            out.extend(set.iter().cloned());
+        }
+        out.push(self.options.len().to_string());
+        for (k, v) in &self.options {
+            out.push(k.clone());
+            out.push(v.clone());
+        }
+    }
+
+    fn take(values: &mut std::slice::Iter<'_, String>) -> Option<DeviceRequest> {
+        let mut next = || values.next().cloned();
+        let number = |n: Option<String>| n?.parse::<usize>().ok();
+        let driver = next()?;
+        let count = next()?.parse().ok()?;
+        let device_ids = match next()?.as_str() {
+            "-" => None,
+            n => {
+                let n: usize = n.parse().ok()?;
+                Some((0..n).map(|_| next()).collect::<Option<Vec<_>>>()?)
+            }
+        };
+        let sets = number(next())?;
+        let mut capabilities = Vec::new();
+        for _ in 0..sets {
+            let n = number(next())?;
+            capabilities.push((0..n).map(|_| next()).collect::<Option<Vec<_>>>()?);
+        }
+        let n = number(next())?;
+        let options = (0..n)
+            .map(|_| Some((next()?, next()?)))
+            .collect::<Option<Vec<_>>>()?;
+        Some(DeviceRequest {
+            driver,
+            count,
+            device_ids,
+            capabilities,
+            options,
+        })
+    }
 }
 
 /// `run`'s resource flags as docker/cli sends them (container.Resources): memory in
@@ -1070,6 +1184,14 @@ impl Run {
             ("log-driver", one(&self.log_driver)),
             ("log-opts", self.log_opts.clone()),
             ("cloud-env", self.cloud_env.clone()),
+            ("streams", self.streams.map(|s| s.values()).unwrap_or_default()),
+            ("device-requests", {
+                let mut values = Vec::new();
+                for r in &self.device_requests {
+                    r.put(&mut values);
+                }
+                values
+            }),
         ]
         .into_iter()
         .filter(|(_, v)| !v.is_empty())
@@ -1233,6 +1355,13 @@ impl Run {
                     "log-driver" => run.log_driver = values.into_iter().next().unwrap_or_default(),
                     "log-opts" => run.log_opts = values,
                     "cloud-env" => run.cloud_env = values,
+                    "streams" => run.streams = Some(Streams::of(&values)?),
+                    "device-requests" => {
+                        let mut rest = values.iter();
+                        while rest.len() > 0 {
+                            run.device_requests.push(DeviceRequest::take(&mut rest)?);
+                        }
+                    }
                     // One a later build added: not this one's to read.
                     _ => {}
                 }
@@ -1903,6 +2032,25 @@ mod tests {
             log_driver: "json-file".into(),
             log_opts: vec!["max-size=10m".into(), "mode".into()],
             cloud_env: vec!["AWS_PROFILE=p".into(), "HOME=/h".into()],
+            streams: Some(Streams {
+                stdin: false,
+                stdout: true,
+                stderr: false,
+                stdin_once: true,
+            }),
+            device_requests: vec![
+                DeviceRequest {
+                    driver: "nvidia".into(),
+                    count: -1,
+                    device_ids: None,
+                    capabilities: vec![vec!["gpu".into(), "utility".into()], Vec::new()],
+                    options: vec![("a".into(), String::new()), ("b".into(), "c=d".into())],
+                },
+                DeviceRequest {
+                    device_ids: Some(vec!["0".into(), String::new()]),
+                    ..DeviceRequest::default()
+                },
+            ],
             init_process: Some(false),
             pid: "host".into(),
         };
@@ -1965,6 +2113,8 @@ mod tests {
             log_driver: String::new(),
             log_opts: Vec::new(),
             cloud_env: Vec::new(),
+            streams: None,
+            device_requests: Vec::new(),
             ..run.clone()
         };
         let boundary = earlier.encode().len() - 4;

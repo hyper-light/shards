@@ -12538,10 +12538,13 @@ fn cloudwatch(listener: std::net::TcpListener, seen: std::sync::mpsc::Sender<Clo
                         "HTTP/1.1 {status} X\r\nContent-Type: application/x-amz-json-1.1\r\nContent-Length: {}\r\n\r\n{answer}",
                         answer.len()
                     );
+                    // Seen before it is answered: what its answer lets the client ask next
+                    // comes after it (a reply first let the next connection's be seen
+                    // before it on a loaded host).
+                    let _ = seen.send(CloudWatchRequest { target, fields, body });
                     if reader.get_mut().write_all(reply.as_bytes()).is_err() {
                         return;
                     }
-                    let _ = seen.send(CloudWatchRequest { target, fields, body });
                 }
             });
         }
@@ -12907,9 +12910,9 @@ fn google(listener: std::net::TcpListener, seen: std::sync::mpsc::Sender<GoogleR
                         "HTTP/1.1 {status}\r\nMetadata-Flavor: Google\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{answer}",
                         answer.len()
                     );
-                    if reader.get_mut().write_all(reply.as_bytes()).is_err() {
-                        return;
-                    }
+                    // Seen before it is answered: the token its answer gives is used on
+                    // another connection, whose writes were seen before it on a loaded
+                    // host (dev CI, run 38651721133).
                     let body = String::from_utf8_lossy(&body).into_owned();
                     let _ = seen.send(GoogleRequest {
                         method,
@@ -12917,6 +12920,9 @@ fn google(listener: std::net::TcpListener, seen: std::sync::mpsc::Sender<GoogleR
                         fields,
                         body,
                     });
+                    if reader.get_mut().write_all(reply.as_bytes()).is_err() {
+                        return;
+                    }
                 }
             });
         }

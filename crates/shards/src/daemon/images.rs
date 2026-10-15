@@ -289,7 +289,13 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
     /// an image listed by the names kept, and a dangling one by none; with `all`, the
     /// dangling images another was made from as well. `now` and `offset` read a time in
     /// `until` as the asker's clock and zone.
-    fn listed(&self, filters: &Filters, all: bool, now: i128, offset: i64) -> Result<Vec<Summary>, String> {
+    pub(super) fn listed(
+        &self,
+        filters: &Filters,
+        all: bool,
+        now: i128,
+        offset: i64,
+    ) -> Result<Vec<Summary>, String> {
         use shards_image::reference::Reference;
         filters.validate(&IMAGE_FILTERS)?;
         let Some(store) = self.store()? else {
@@ -1302,6 +1308,63 @@ pub(super) fn human_size4(size: i64) -> String {
 }
 
 impl<D: crate::containers::Disk> super::Daemon<D> {
+    /// The stopped microVMs `shards prune vm` removes, those the filters `given` keep
+    /// (label, label!, until, read at `now` in a zone `offset` seconds east of UTC): each
+    /// one's ID and name, and the bytes reclaimed.
+    pub(super) fn prune_microvms(
+        &self,
+        given: &[String],
+        now: i128,
+        offset: i64,
+    ) -> Result<(Vec<(String, String)>, i64), String> {
+        let mut reclaimed: i64 = 0;
+        let mut removed_vms: Vec<(String, String)> = Vec::new();
+        let filters = Filters::from_flags(given);
+        filters.validate(&["label", "label!", "until"])?;
+        // getUntilFromPruneFilters: one time at most.
+        let until: Vec<&str> = filters.get("until").collect();
+        if until.len() > 1 {
+            return Err("more than one until filter specified".into());
+        }
+        let until = until
+            .first()
+            .map(|u| shards_cmdline::gotime::parse_timestamp(u, now, offset))
+            .transpose()?;
+        // matchLabels, over each microVM's labels.
+        let labelled = |labels: &std::collections::BTreeMap<String, String>| {
+            filters.kv("label", labels) && !(filters.contains("label!") && filters.kv("label!", labels))
+        };
+        let stopped: Vec<(String, String)> = super::lock(&self.containers)
+            .all()
+            .filter(|c| c.state != crate::containers::State::Running)
+            .filter(|c| until.is_none_or(|u| i128::try_from(c.created).is_ok_and(|at| at <= u)))
+            .filter(|c| labelled(&c.labels))
+            .map(|c| (c.id.clone(), c.name.clone()))
+            .collect();
+        for (id, name) in stopped {
+            if !super::lock(&self.removing).insert(id.clone()) {
+                continue;
+            }
+            let bytes = on_disk(&self.home.join("containers").join(&id));
+            let taken = super::lock(&self.containers).take_out(&id);
+            let gone = match taken {
+                Some(removal) => {
+                    self.set_aside(&removal).is_ok() && {
+                        let _ = self.complete(&removal);
+                        true
+                    }
+                }
+                None => false,
+            };
+            super::lock(&self.removing).remove(&id);
+            if gone {
+                reclaimed = reclaimed.saturating_add(i64::try_from(bytes).unwrap_or(i64::MAX));
+                removed_vms.push((id, name));
+            }
+        }
+        Ok((removed_vms, reclaimed))
+    }
+
     /// `shards prune vm`, `prune image` and `prune system` (docker/cli container/prune.go,
     /// image/prune.go, system/prune.go; the confirmation is the client's), as dockerd
     /// prunes (moby daemon/prune.go, ContainerPrune; daemon/containerd/image_prune.go,
@@ -1327,54 +1390,12 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
         let mut reclaimed: i64 = 0;
         let mut removed_vms: Vec<(String, String)> = Vec::new();
         if containers {
-            let filters = Filters::from_flags(given);
-            if let Err(e) = filters.validate(&["label", "label!", "until"]) {
-                return refuse(e);
-            }
-            // getUntilFromPruneFilters: one time at most.
-            let until: Vec<&str> = filters.get("until").collect();
-            if until.len() > 1 {
-                return refuse("more than one until filter specified".into());
-            }
-            let until = match until
-                .first()
-                .map(|u| shards_cmdline::gotime::parse_timestamp(u, now, offset))
-            {
-                Some(Err(e)) => return refuse(e),
-                Some(Ok(t)) => Some(t),
-                None => None,
-            };
-            // matchLabels, over each microVM's labels.
-            let labelled = |labels: &std::collections::BTreeMap<String, String>| {
-                filters.kv("label", labels) && !(filters.contains("label!") && filters.kv("label!", labels))
-            };
-            let stopped: Vec<(String, String)> = super::lock(&self.containers)
-                .all()
-                .filter(|c| c.state != crate::containers::State::Running)
-                .filter(|c| until.is_none_or(|u| i128::try_from(c.created).is_ok_and(|at| at <= u)))
-                .filter(|c| labelled(&c.labels))
-                .map(|c| (c.id.clone(), c.name.clone()))
-                .collect();
-            for (id, name) in stopped {
-                if !super::lock(&self.removing).insert(id.clone()) {
-                    continue;
+            match self.prune_microvms(given, now, offset) {
+                Ok((removed, bytes)) => {
+                    removed_vms = removed;
+                    reclaimed = reclaimed.saturating_add(bytes);
                 }
-                let bytes = on_disk(&self.home.join("containers").join(&id));
-                let taken = super::lock(&self.containers).take_out(&id);
-                let gone = match taken {
-                    Some(removal) => {
-                        self.set_aside(&removal).is_ok() && {
-                            let _ = self.complete(&removal);
-                            true
-                        }
-                    }
-                    None => false,
-                };
-                super::lock(&self.removing).remove(&id);
-                if gone {
-                    reclaimed = reclaimed.saturating_add(i64::try_from(bytes).unwrap_or(i64::MAX));
-                    removed_vms.push((id, name));
-                }
+                Err(e) => return refuse(e),
             }
         }
         // `system prune`: the user networks no microVM is on, after the microVMs that were

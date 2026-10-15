@@ -324,6 +324,27 @@ impl shards_template::Object for Actor {
     }
 }
 
+/// The times events are watched from and to, each given as `by` names it (`--since`, or
+/// the API's `since`): read as the client reads them, then as the daemon reads that; none
+/// where not given. A start after the end is refused.
+pub(super) fn bounds(given: [(&str, &str); 2], now: i128, offset: i64) -> Result<[Option<i128>; 2], String> {
+    let mut out = [None, None];
+    for ((value, by), bound) in given.iter().zip(&mut out) {
+        if value.is_empty() {
+            continue;
+        }
+        let sent = gotime::get_timestamp(value, now, offset).map_err(|e| format!("{by} {value}: {e}"))?;
+        *bound = gotime::parse_unix_timestamp(&sent).map_err(|e| format!("{by} {value}: {e}"))?;
+    }
+    if let [Some(s), Some(u)] = out
+        && u < s
+    {
+        let [(since, since_by), (until, until_by)] = given;
+        return Err(format!("{since_by} {since} is after {until_by} {until}"));
+    }
+    Ok(out)
+}
+
 /// `--format` as docker/cli reads it for events (events.go, makeTemplate): `json` is
 /// `{{json .}}`; a template must parse and run against an empty event.
 fn template(format: &str) -> Result<Option<shards_template::Template>, String> {
@@ -358,40 +379,17 @@ impl<D: crate::containers::Disk> Daemon<D> {
     /// `shards events [--since T] [--until T] [--filter F]... [--format json]`
     /// (system_routes.go, getEvents; docker/cli system/events.go).
     pub(super) fn events(&self, parsed: &Parsed, asker: &Asker, reply: &Reply<'_>) -> u8 {
-        let mut bounds = [None, None];
-        for (flag, bound) in ["since", "until"].iter().zip(&mut bounds) {
-            let given = parsed.string(flag);
-            if given.is_empty() {
-                continue;
+        let given = [
+            (parsed.string("since"), "--since"),
+            (parsed.string("until"), "--until"),
+        ];
+        let [since, until] = match bounds(given, i128::from(asker.now), i64::from(asker.utc_offset)) {
+            Ok(b) => b,
+            Err(e) => {
+                reply.err(&format!("shards: {e}"));
+                return 1;
             }
-            // What the client makes of it, then what dockerd makes of that.
-            let sent = match gotime::get_timestamp(given, i128::from(asker.now), i64::from(asker.utc_offset))
-            {
-                Ok(sent) => sent,
-                Err(e) => {
-                    reply.err(&format!("shards: --{flag} {given}: {e}"));
-                    return 1;
-                }
-            };
-            match gotime::parse_unix_timestamp(&sent) {
-                Ok(at) => *bound = at,
-                Err(e) => {
-                    reply.err(&format!("shards: --{flag} {given}: {e}"));
-                    return 1;
-                }
-            }
-        }
-        let [since, until] = bounds;
-        if let (Some(s), Some(u)) = (since, until)
-            && u < s
-        {
-            reply.err(&format!(
-                "shards: --since {} is after --until {}",
-                parsed.string("since"),
-                parsed.string("until")
-            ));
-            return 1;
-        }
+        };
         let format = parsed.string("format");
         // As the CLI parses it before it asks (status 64, cli.StatusError).
         let template = match template(format) {

@@ -13,9 +13,17 @@ use shards_cmdline::format::version::{Client, Component, Server, render};
 
 const VERSION_TEXT: &str = env!("CARGO_PKG_VERSION");
 
-/// What shards has where Docker has an Engine API version: none, as it serves no Docker
-/// API.
+/// What the client has where Docker's has an Engine API version: none, as shards' CLI asks
+/// its daemon over its own socket.
 const NO_API: &str = "none";
+
+/// The Engine API the daemon serves (D170): docker/cli v29.8.1's (its moby/moby/api
+/// v1.56.0, moby's MaxAPIVersion), from moby's oldest by default; none where the daemon is
+/// not yet.
+#[cfg(unix)]
+pub(crate) const ENGINE_API: (&str, &str) = ("1.56", "1.40");
+#[cfg(not(unix))]
+pub(crate) const ENGINE_API: (&str, &str) = (NO_API, NO_API);
 
 /// The compiler that built this binary (build.rs), where Docker names Go's.
 fn compiler() -> String {
@@ -69,7 +77,7 @@ fn host_kernel() -> String {
 }
 
 /// The client's half and the server's, of this shards.
-fn info() -> (Client, Server) {
+pub(crate) fn info() -> (Client, Server) {
     let (os, arch) = platform();
     let client = Client {
         platform: None,
@@ -98,14 +106,14 @@ fn info() -> (Client, Server) {
             name: "Engine".to_owned(),
             version: VERSION_TEXT.to_owned(),
             details: details(&[
-                ("ApiVersion", NO_API.to_owned()),
+                ("ApiVersion", ENGINE_API.0.to_owned()),
                 ("Arch", arch.clone()),
                 ("BuildTime", build_time()),
                 ("Experimental", "false".to_owned()),
                 ("GitCommit", commit()),
                 ("GoVersion", compiler()),
                 ("KernelVersion", host_kernel()),
-                ("MinAPIVersion", NO_API.to_owned()),
+                ("MinAPIVersion", ENGINE_API.1.to_owned()),
                 ("Os", os.clone()),
             ]),
         },
@@ -130,8 +138,8 @@ fn info() -> (Client, Server) {
     let server = Server {
         platform: "shards".to_owned(),
         version: VERSION_TEXT.to_owned(),
-        api_version: NO_API.to_owned(),
-        min_api_version: NO_API.to_owned(),
+        api_version: ENGINE_API.0.to_owned(),
+        min_api_version: ENGINE_API.1.to_owned(),
         os,
         arch,
         components,

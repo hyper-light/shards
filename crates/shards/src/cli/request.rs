@@ -517,48 +517,22 @@ fn request(parsed: &Parsed) -> Result<Run, String> {
         labels.extend(kv_file(file, false)?);
     }
     labels.extend(parsed.many("label").iter().cloned());
-    // A run's namespaces in its microVM (D115, D156): each mode it may have, said where
-    // one given is not.
-    let pid = parsed.string("pid");
-    if !(pid.is_empty() || pid == "host" || pid.strip_prefix("container:").is_some_and(|c| !c.is_empty())) {
-        return Err(format!(
-            "--pid {pid}: give host (the microVM's PID namespace) or container:NAME (that of a run whose microVM it joins), or leave it out for one of its own"
-        ));
-    }
-    let ipc = parsed.string("ipc");
-    if !(ipc.is_empty()
-        || matches!(ipc, "private" | "shareable" | "none" | "host")
-        || ipc.strip_prefix("container:").is_some_and(|c| !c.is_empty()))
-    {
-        return Err(format!(
-            "--ipc {ipc}: give private (its own, the default), shareable (its own, which runs joining its microVM may share), none (its own, with no /dev/shm), host (the microVM's) or container:NAME (that of a run whose microVM it joins)"
-        ));
-    }
-    let uts = parsed.string("uts");
-    if !(uts.is_empty() || uts == "host") {
-        return Err(format!(
-            "--uts {uts}: give host (its host's hostname), or leave it out for the microVM's own"
-        ));
-    }
-    let userns = parsed.string("userns");
-    if !(userns.is_empty() || userns == "host") {
-        return Err(format!(
-            "--userns {userns}: give host, or leave it out: a run's users are its microVM's own either way"
-        ));
-    }
-    let cgroupns = parsed.string("cgroupns");
-    if !(cgroupns.is_empty() || cgroupns == "host" || cgroupns == "private") {
-        return Err(format!(
-            "--cgroupns {cgroupns}: give private (a cgroup namespace of its own, the default) or host (the microVM's whole tree)"
-        ));
-    }
-    // Swappiness: 0 to 100, the microVM's own (D159), or -1 to leave it its kernel's.
+    let (pid, ipc, uts, userns, cgroupns) = (
+        parsed.string("pid"),
+        parsed.string("ipc"),
+        parsed.string("uts"),
+        parsed.string("userns"),
+        parsed.string("cgroupns"),
+    );
+    namespace_modes([
+        (pid, "--pid"),
+        (ipc, "--ipc"),
+        (uts, "--uts"),
+        (userns, "--userns"),
+        (cgroupns, "--cgroupns"),
+    ])?;
     let swappiness = parsed.int("memory-swappiness");
-    if swappiness != -1 && !(0..=100).contains(&swappiness) {
-        return Err(format!(
-            "--memory-swappiness {swappiness}: from 0 to 100, or -1 to leave the microVM's own"
-        ));
-    }
+    check_swappiness(swappiness, "--memory-swappiness")?;
     let number = |name: &str| parsed.string(name).parse::<i64>().unwrap_or(0);
     let resources = shards_ipc::Resources {
         memory: number("memory"),
@@ -736,30 +710,38 @@ fn request(parsed: &Parsed) -> Result<Run, String> {
 /// anything is pulled: Docker would pull it and fail as it starts, or start it under
 /// emulation, which a microVM has none of.
 fn before_create(request: &Run) -> Result<Option<CidFile>, String> {
-    if !request.platform.is_empty() {
-        let wanted = crate::pull::targets(&request.platform)?;
-        let runs = shards_image::platform::guest();
-        if let Some(other) = wanted.iter().find(|t| !runs.contains(t)) {
-            let name = |t: &shards_image::platform::Target| {
-                [t.os.as_str(), t.architecture.as_str(), t.variant.as_str()]
-                    .iter()
-                    .filter(|p| !p.is_empty())
-                    .copied()
-                    .collect::<Vec<_>>()
-                    .join("/")
-            };
-            let ours: Vec<String> = runs.iter().map(name).collect();
-            return Err(format!(
-                "this host's microVMs run {}, not {}",
-                ours.join(" and "),
-                name(other)
-            ));
-        }
-    }
+    check_platform(&request.platform)?;
     if request.cidfile.is_empty() {
         return Ok(None);
     }
     CidFile::new(&request.cidfile).map(Some)
+}
+
+/// A platform a run asks for, read as containerd reads it, that this host's microVMs run;
+/// none asked for is theirs.
+pub(crate) fn check_platform(platform: &str) -> Result<(), String> {
+    if platform.is_empty() {
+        return Ok(());
+    }
+    let wanted = crate::pull::targets(platform)?;
+    let runs = shards_image::platform::guest();
+    if let Some(other) = wanted.iter().find(|t| !runs.contains(t)) {
+        let name = |t: &shards_image::platform::Target| {
+            [t.os.as_str(), t.architecture.as_str(), t.variant.as_str()]
+                .iter()
+                .filter(|p| !p.is_empty())
+                .copied()
+                .collect::<Vec<_>>()
+                .join("/")
+        };
+        let ours: Vec<String> = runs.iter().map(name).collect();
+        return Err(format!(
+            "this host's microVMs run {}, not {}",
+            ours.join(" and "),
+            name(other)
+        ));
+    }
+    Ok(())
 }
 
 /// `--cidfile`'s file, as docker/cli's cidFile keeps it: made before the container, its ID
@@ -942,6 +924,59 @@ fn volumes(parsed: &Parsed) -> Result<Volumes, String> {
     Ok((binds, anonymous, mounts))
 }
 
+/// A run's namespaces in its microVM (D115, D156), its PID, IPC, UTS, user and cgroup
+/// modes, each with how it was given: each mode it may have, said where one given is
+/// not.
+pub(crate) fn namespace_modes(modes: [(&str, &str); 5]) -> Result<(), String> {
+    let [
+        (pid, pid_by),
+        (ipc, ipc_by),
+        (uts, uts_by),
+        (userns, userns_by),
+        (cgroupns, cgroupns_by),
+    ] = modes;
+    if !(pid.is_empty() || pid == "host" || pid.strip_prefix("container:").is_some_and(|c| !c.is_empty())) {
+        return Err(format!(
+            "{pid_by} {pid}: give host (the microVM's PID namespace) or container:NAME (that of a run whose microVM it joins), or leave it out for one of its own"
+        ));
+    }
+    if !(ipc.is_empty()
+        || matches!(ipc, "private" | "shareable" | "none" | "host")
+        || ipc.strip_prefix("container:").is_some_and(|c| !c.is_empty()))
+    {
+        return Err(format!(
+            "{ipc_by} {ipc}: give private (its own, the default), shareable (its own, which runs joining its microVM may share), none (its own, with no /dev/shm), host (the microVM's) or container:NAME (that of a run whose microVM it joins)"
+        ));
+    }
+    if !(uts.is_empty() || uts == "host") {
+        return Err(format!(
+            "{uts_by} {uts}: give host (its host's hostname), or leave it out for the microVM's own"
+        ));
+    }
+    if !(userns.is_empty() || userns == "host") {
+        return Err(format!(
+            "{userns_by} {userns}: give host, or leave it out: a run's users are its microVM's own either way"
+        ));
+    }
+    if !(cgroupns.is_empty() || cgroupns == "host" || cgroupns == "private") {
+        return Err(format!(
+            "{cgroupns_by} {cgroupns}: give private (a cgroup namespace of its own, the default) or host (the microVM's whole tree)"
+        ));
+    }
+    Ok(())
+}
+
+/// Swappiness, given as `by` says: 0 to 100, the microVM's own (D159), or -1 to leave it
+/// its kernel's.
+pub(crate) fn check_swappiness(swappiness: i64, by: &str) -> Result<(), String> {
+    if swappiness != -1 && !(0..=100).contains(&swappiness) {
+        return Err(format!(
+            "{by} {swappiness}: from 0 to 100, or -1 to leave the microVM's own"
+        ));
+    }
+    Ok(())
+}
+
 /// `--restart` as docker/cli reads it (opts.ParseRestartPolicy): `NAME[:COUNT]`, an empty
 /// value none at all; the name checked by the daemon.
 fn restart_policy(policy: &str) -> Result<(String, i64), String> {
@@ -966,7 +1001,7 @@ fn restart_policy(policy: &str) -> Result<(String, i64), String> {
 /// `--cap-add` and `--cap-drop` as dockerd keeps them (moby daemon/pkg/oci/caps,
 /// NormalizeLegacyCapabilities): upper case, `CAP_` before each but `ALL`, in the order
 /// given, duplicates and all; docker/cli sends them as given.
-fn effective_caps(add: &[String], drop: &[String]) -> (Vec<String>, Vec<String>) {
+pub(crate) fn effective_caps(add: &[String], drop: &[String]) -> (Vec<String>, Vec<String>) {
     let normalize = |list: &[String]| -> Vec<String> {
         list.iter()
             .map(|c| {
@@ -1022,7 +1057,7 @@ fn security_opts(opts: &[String]) -> Result<(Vec<String>, bool), String> {
 /// `--device`, as docker/cli reads it for a Linux daemon (cli/command/container/opts.go):
 /// a CDI device's qualified name kept apart, for its device request; each other checked
 /// (validateLinuxPath) and parsed (parseLinuxDevice) into `HOST:CONTAINER:PERMISSIONS`.
-fn devices(given: &[String]) -> Result<(Vec<String>, Vec<String>), String> {
+pub(crate) fn devices(given: &[String]) -> Result<(Vec<String>, Vec<String>), String> {
     let (mut devices, mut cdi) = (Vec::new(), Vec::new());
     for device in given {
         if is_cdi_name(device) {
