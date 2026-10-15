@@ -1115,12 +1115,21 @@ impl Server {
                     empty(perm)?;
                     Kept::mode(perm)
                 } else {
+                    // A device node takes the guest's mode as it is: this process never
+                    // opens one (the guest's kernel opens a device itself), and none can hold
+                    // the owner's attribute (`open_meta`), so the owner's access a FIFO or a
+                    // socket keeps would only misstate its mode.
+                    let on_host = if matches!(kind, S_IFCHR | S_IFBLK) {
+                        perm
+                    } else {
+                        host_perm(perm, false)
+                    };
                     // SAFETY: mknodat(2) of a NUL-terminated name in a directory we hold.
                     let made = unsafe {
                         libc::mknodat(
                             dir,
                             name.as_ptr(),
-                            (kind | host_perm(perm, false)) as libc::mode_t,
+                            (kind | on_host) as libc::mode_t,
                             host::decode_dev(rdev),
                         )
                     } == 0;

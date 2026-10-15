@@ -3677,9 +3677,11 @@ Now, each held by the server's unit tests and by an overlay on a volume in a mic
 - **What the host cannot hold is kept beside it**, in the owner's attribute Docker
   Desktop's file sharing writes (D38).
   - A mode that would lock the share process out of its own file keeps the host file's
-    owner access (`rwx` for a directory, `rw` for the rest). The guest's exact mode is
-    kept in the attribute where the two differ, and the guest's kernel checks it
-    (`default_permissions`).
+    owner access (`rwx` for a directory, `rw` for a file, a FIFO or a socket). The guest's
+    exact mode is kept in the attribute where the two differ, and the guest's kernel
+    checks it (`default_permissions`). A device node takes the guest's mode as it is: the
+    share process never opens one, and none can hold the attribute (on Linux, which makes
+    an unprivileged process the whiteout, the owner's access showed as the guest's).
   - A device node the host makes only for a privileged process (overlayfs's whiteout is
     one, of 0:0) is an empty regular file whose kind and number the attribute holds. The
     guest sees, lists and looks it up as the node it made; its kernel opens a device
