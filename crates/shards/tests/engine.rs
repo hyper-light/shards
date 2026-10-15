@@ -1713,6 +1713,123 @@ fn a_microvm_is_committed_as_an_image() {
     assert_eq!(nothing.status, 404, "{}", nothing.text());
 }
 
+/// Images built as the API asks, from a context in the call's body: each line of the build
+/// a `stream` message, then its image's ID (`aux`) and the lines clients find it by; its
+/// tags, build arguments and labels kept, its RUN step run in a microVM; with `q`, the ID
+/// alone. A build that fails says why last; one through a BuildKit session is refused.
+#[test]
+fn images_are_built_from_a_context_in_the_body() {
+    let Some((home, image)) = home("eng-build") else {
+        return;
+    };
+    let mut api = Api::new(&home);
+    let lines = |a: &Answered| -> Vec<Value> {
+        a.text()
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect()
+    };
+    let dockerfile = format!(
+        "FROM {image}\nARG GREETING\nCOPY note.txt /note.txt\nRUN [\"/bin/testguest\", \"fs\", \"write:/tmp/made=1\"]\nLABEL k=v\nENV SAID=$GREETING\n"
+    );
+    let context = tar(&[
+        ("Dockerfile", 0o644, 0, Some(dockerfile.as_bytes())),
+        ("note.txt", 0o644, 0, Some(b"from the context\n")),
+    ]);
+    let built = api.upload(
+        "POST",
+        "/build?t=shp/built:1&buildargs=%7B%22GREETING%22%3A%22hi%22%7D&labels=%7B%22made%22%3A%22api%22%7D",
+        "application/x-tar",
+        &context,
+    );
+    assert_eq!(built.status, 200, "{}", built.text());
+    let said = lines(&built);
+    assert!(said.iter().all(|m| m.get("error").is_none()), "{}", built.text());
+    let id = said
+        .iter()
+        .find_map(|m| m["aux"]["ID"].as_str())
+        .unwrap_or_else(|| panic!("{}", built.text()))
+        .to_string();
+    let short = id.trim_start_matches("sha256:").get(..12).unwrap().to_string();
+    for wanted in [
+        format!("Successfully built {short}\n"),
+        "Successfully tagged shp/built:1\n".to_string(),
+    ] {
+        assert!(
+            said.contains(&json!({ "stream": wanted })),
+            "{wanted}: {}",
+            built.text()
+        );
+    }
+    let doc = api.call("GET", "/images/shp/built:1/json", None).json();
+    assert_eq!(
+        (
+            &doc["Id"],
+            &doc["Config"]["Labels"]["made"],
+            &doc["Config"]["Labels"]["k"]
+        ),
+        (&json!(id), &json!("api"), &json!("v")),
+        "{doc}"
+    );
+    assert!(
+        doc["Config"]["Env"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("SAID=hi")),
+        "{doc}"
+    );
+    // Its files: the context's, and what its RUN step made in its microVM.
+    let made = api.call(
+        "POST",
+        "/containers/create?name=from-build",
+        Some(json!({"Image": "shp/built:1", "Cmd": ["stat", "/note.txt", "/tmp/made"]})),
+    );
+    assert_eq!(made.status, 201, "{}", made.text());
+    assert_eq!(api.call("POST", "/containers/from-build/start", None).status, 204);
+    assert_eq!(
+        api.call("POST", "/containers/from-build/wait", None).json()["StatusCode"],
+        json!(0)
+    );
+    let out = output_of(&mut api, "from-build");
+    assert!(
+        out.contains("= from the context\\n") && out.contains("= 1"),
+        "{out}"
+    );
+    // `q`: the ID alone.
+    let quiet = api.upload("POST", "/build?q=1&t=shp/built:2", "application/x-tar", &context);
+    assert_eq!(quiet.status, 200, "{}", quiet.text());
+    let quiet = lines(&quiet);
+    assert_eq!(quiet.len(), 1, "{quiet:?}");
+    assert!(
+        quiet[0]["stream"].as_str().unwrap().starts_with("sha256:"),
+        "{quiet:?}"
+    );
+    // A RUN that fails: why, the stream's last message.
+    let failing = format!("FROM {image}\nRUN [\"/bin/testguest\", \"exit\", \"3\"]\n");
+    let failed = api.upload(
+        "POST",
+        "/build",
+        "application/x-tar",
+        &tar(&[("Dockerfile", 0o644, 0, Some(failing.as_bytes()))]),
+    );
+    assert_eq!(failed.status, 200, "{}", failed.text());
+    let last = lines(&failed).pop().unwrap();
+    assert!(
+        last["error"].as_str().unwrap().contains("exit code: 3"),
+        "{}",
+        failed.text()
+    );
+    // A context sent through a BuildKit session: refused, with why.
+    let session = api.upload(
+        "POST",
+        "/build?version=2&session=s1",
+        "application/x-tar",
+        &context,
+    );
+    assert_eq!(session.status, 400, "{}", session.text());
+    assert!(session.text().contains("session"), "{}", session.text());
+}
+
 /// The docker CLI runs microVMs through the engine, as it runs Docker's containers: `run`
 /// attached with its streams and status, `--rm`, `-d`, `exec`, `logs`, `ps`, `inspect`
 /// and `rm -f`.
@@ -1728,13 +1845,14 @@ fn the_docker_cli_runs_microvms_through_the_engine() {
     let config = home.join("docker-config");
     std::fs::create_dir_all(&config).unwrap();
     let host = format!("unix://{}", home.join("engine.sock").display());
-    let docker = |args: &[&str]| {
+    let docker_with = |args: &[&str], set: &[(&str, &str)]| {
         let out = std::process::Command::new(&docker)
             .args(args)
             .env("DOCKER_HOST", &host)
             .env("DOCKER_CONFIG", &config)
             .env_remove("DOCKER_CONTEXT")
             .env("DOCKER_CLI_HINTS", "false")
+            .envs(set.iter().copied())
             .stdin(std::process::Stdio::null())
             .output()
             .unwrap();
@@ -1744,6 +1862,7 @@ fn the_docker_cli_runs_microvms_through_the_engine() {
             String::from_utf8_lossy(&out.stderr).into_owned(),
         )
     };
+    let docker = |args: &[&str]| docker_with(args, &[]);
     let (status, out, err) = docker(&["version", "--format", "{{.Server.APIVersion}} {{.Server.Os}}"]);
     assert_eq!(status, Some(0), "{out}{err}");
     assert!(out.trim().ends_with(" linux"), "{out}");
@@ -1936,6 +2055,23 @@ fn the_docker_cli_runs_microvms_through_the_engine() {
     assert_eq!(status, Some(0), "{out}{err}");
     assert!(out.contains("1: digest: sha256:"), "{out}");
     assert!(repos.lock().unwrap().manifests["team/cli"].contains_key("1"));
+    // Built by the CLI's builder of the API's first version, which sends its context in
+    // the call's body (DOCKER_BUILDKIT=0; its config has no buildx).
+    let context = home.join("cli-context");
+    std::fs::create_dir_all(&context).unwrap();
+    std::fs::write(
+        context.join("Dockerfile"),
+        format!("FROM {image}\nRUN [\"/bin/testguest\", \"fs\", \"write:/tmp/c=1\"]\n"),
+    )
+    .unwrap();
+    let (status, out, err) = docker_with(
+        &["build", "-t", "shp/cli-built:1", context.to_str().unwrap()],
+        &[("DOCKER_BUILDKIT", "0")],
+    );
+    assert_eq!(status, Some(0), "{out}{err}");
+    assert!(out.contains("Successfully tagged shp/cli-built:1"), "{out}");
+    let (status, _, err) = docker(&["image", "inspect", "shp/cli-built:1"]);
+    assert_eq!(status, Some(0), "{err}");
 }
 
 /// `name` on PATH.
