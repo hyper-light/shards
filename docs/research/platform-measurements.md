@@ -8540,3 +8540,37 @@ revision before comparing a changed API/implementation.
   where z's server spent a second of CPU in them. Over three runs it spent 0 s; with the
   peer put back in the poll set it spent 3 s of 3, and the test failed. Init's word as it
   ends a domain for the agents' memory says what the domain held.
+
+### M238. A log stream's close read as cut short on Linux: its send queue before its state
+
+- **Question.** dev's CI at db1562db failed one test on x86_64 musl:
+  `a_stream_closed_delivers_all_it_wrote` (D163, PM M233), "the connection ended before its
+  receiver had all written on it", from a close of a TLS stream to a local server. It had
+  passed in every gate and CI run since D175 (c7330e7b) changed the stream last. Was
+  anything lost, and why did the close say so?
+- **Method.** At 78811e3b, on the M5 Max (macOS 26.4.1), the guest Linux 6.18.48 aarch64,
+  `docs/research/measurements/stream-close/`: `run.sh` builds shards' unit tests for the
+  host's Linux and runs the test in a microVM of 2 vCPUs, eight loops at once of 25 runs
+  each (`load.sh`); each run closes 20 streams, 4,000 a round. Then the guest kernel's
+  TCP resets and aborts (`/proc/net/netstat`, `/proc/net/snmp`). `probe.patch` has a close
+  that fails say its socket's TCP_INFO and what the server got.
+  - Alone on a microVM of every host CPU, one loop of 50 runs: 1,000 closes.
+  - Under load: rounds of 4,000 closes, before the change below, and after.
+- **Results.**
+  - Alone: 1,000 closes, no failure.
+  - Under load, before: 4 failures in 6 rounds, 24,000 closes. In each, the server had
+    got every byte, `first\nout\nerr\n`, and TLS's close_notify after them. The
+    client's socket was closed (TCP_CLOSE) with no error pending, SIOCOUTQ 77 (the last
+    two lines' TLS records, the close_notify's and the FIN), and TCP_INFO's unacknowledged
+    packets 0. The guest sent and took no reset: TcpExt's aborts were all 0, and Tcp's
+    EstabResets 0. (Its OutRsts and AttemptFails, one per stream, are `localhost`'s ::1,
+    tried first and refused by the IPv4 listener.)
+  - Under load, after: 0 failures in 6 rounds, 24,000 closes.
+- **Source.** The close read SIOCOUTQ, `write_seq - snd_una` (net/ipv4/tcp.c, `tcp_ioctl`),
+  then TCP_INFO's state, in two calls. The server's acknowledgement of the last records,
+  and its FIN, came between them: the socket went to TIME_WAIT, its own state TCP_CLOSE
+  (net/ipv4/tcp_minisocks.c, `tcp_time_wait`), and the close read the count from before
+  and the state from after. A connection read as closed takes no more acknowledgements,
+  so a count read after the state is its last.
+- **Consequence.** `ship::sockets::unacknowledged` reads TCP_INFO first, then SIOCOUTQ.
+  macOS reads both in TCP_CONNECTION_INFO, one call, and never had it.

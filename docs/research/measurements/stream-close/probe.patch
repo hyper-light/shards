@@ -1,0 +1,26 @@
+--- a/crates/shards/src/daemon/ship/sockets.rs
++++ b/crates/shards/src/daemon/ship/sockets.rs
+@@ -134,7 +134,7 @@
+         // take_error says; bytes unacknowledged in it are never acknowledged now.
+         let queued = u64::try_from(queued).unwrap_or(0);
+         if info.tcpi_state == 7 && queued > 0 {
+-            return Err(ended());
++            return Err(io::Error::new(io::ErrorKind::ConnectionReset, format!("PROBE queued={queued} unacked={} retrans={} total_retrans={} lost={} sacked={} rto={} snd_cwnd={} last_data_sent={} last_ack_recv={}", info.tcpi_unacked, info.tcpi_retransmits, info.tcpi_total_retrans, info.tcpi_lost, info.tcpi_sacked, info.tcpi_rto, info.tcpi_snd_cwnd, info.tcpi_last_data_sent, info.tcpi_last_ack_recv)));
+         }
+         Ok((queued, Duration::from_micros(u64::from(info.tcpi_rto))))
+     }
+--- a/crates/shards/src/daemon/ship/stream.rs
++++ b/crates/shards/src/daemon/ship/stream.rs
+@@ -365,8 +365,11 @@
+             std::thread::sleep(Duration::from_millis(50));
+             stream.send(b"out\n").unwrap();
+             stream.send(b"err\n").unwrap();
+-            stream.close(&Wait(&stopped)).unwrap();
++            let closed = stream.close(&Wait(&stopped));
+             let (got, ended) = reading.join().unwrap();
++            if let Err(e) = &closed {
++                panic!("PROBE close: {e}; the server got {:?}, ended {ended:?}", String::from_utf8_lossy(&got));
++            }
+             assert_eq!(
+                 (String::from_utf8(got).unwrap(), ended),
+                 ("first\nout\nerr\n".into(), Ok(()))
