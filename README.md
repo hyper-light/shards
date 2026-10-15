@@ -111,7 +111,8 @@ still applies. The program each microVM runs first, `shards-init`, is part of sh
 ### Programs that speak Docker's API
 
 Programs that make containers through Docker's Engine API (Docker's SDKs, Testcontainers,
-agent frameworks, the `docker` CLI itself) make microVMs with shards, unchanged. Point them
+agent frameworks, the `docker` CLI and `docker compose` themselves) make microVMs with
+shards, unchanged: each Compose service is a microVM of its own. Point them
 at shards' socket, a file in shards' home that only your user can reach (no network port):
 
 ```console

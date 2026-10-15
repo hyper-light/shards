@@ -4317,6 +4317,44 @@ fn eventually(what: &str, check: impl Fn() -> bool) {
     }
 }
 
+/// An exec into a microVM whose command nests its own cgroups, as a nested runtime does
+/// (BuildKit's buildkitd, which buildx runs as a builder, and Docker in Docker): the
+/// workload's cgroup then takes no process, and the exec joins the one its command moved
+/// into, as runc's exec joins container init's (runc#2356).
+#[test]
+fn an_exec_joins_a_workload_that_nests_its_cgroups() {
+    let Some((home, image)) = home("containers-nest") else {
+        return;
+    };
+    let run = run_in(
+        &home,
+        &image,
+        &["-d", "--name", "nester", "--privileged", "-u", "0"],
+        &["nest"],
+    );
+    assert_eq!(run.status, Some(0), "{run}");
+    let mut said = String::new();
+    let nested = (0..400).any(|_| {
+        said = shards_in(&home, &["logs", "nester"]).stdout;
+        said.contains("nested") || {
+            std::thread::sleep(Duration::from_millis(25));
+            false
+        }
+    });
+    assert!(nested, "{said}");
+    let exec = shards_in(
+        &home,
+        &["exec", "nester", "/bin/testguest", "slurp", "/proc/self/cgroup"],
+    );
+    assert_eq!(
+        (exec.status, exec.stdout.as_str()),
+        (Some(0), "slurp /proc/self/cgroup: 0::/init\n"),
+        "{exec}"
+    );
+    let removed = shards_in(&home, &["rm", "-f", "nester"]);
+    assert_eq!(removed.status, Some(0), "{removed}");
+}
+
 #[test]
 fn detached_runs_print_their_id_and_go_on() {
     let Some((home, image)) = home("containers-detached") else {

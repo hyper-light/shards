@@ -841,6 +841,10 @@ fn a_container_is_made_started_waited_for_logged_and_removed() {
     let Some((home, image)) = home("eng-life") else {
         return;
     };
+    let since = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
     let mut api = Api::new(&home);
     let made = api.call(
         "POST",
@@ -918,6 +922,45 @@ fn a_container_is_made_started_waited_for_logged_and_removed() {
     assert_eq!(removed.status, 204, "{}", removed.text());
     let gone = api.call("GET", &format!("/containers/{id}/json"), None);
     assert_eq!(gone.status, 404, "{}", gone.text());
+    // Its events carry its labels, as dockerd's do: what a client that follows its own
+    // filters them by (Compose follows its project's).
+    let until = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+        + 1;
+    let events = api.call(
+        "GET",
+        &format!("/events?since={since}&until={until}&filters=%7B%22label%22%3A%5B%22k%3Dv%22%5D%7D"),
+        None,
+    );
+    assert_eq!(events.status, 200, "{}", events.text());
+    let said: Vec<(String, Value)> = events
+        .text()
+        .lines()
+        .map(|l| serde_json::from_str::<Value>(l).unwrap())
+        .map(|e| {
+            (
+                e["Action"].as_str().unwrap().to_string(),
+                e["Actor"]["Attributes"].clone(),
+            )
+        })
+        .collect();
+    let actions: Vec<&str> = said.iter().map(|(a, _)| a.as_str()).collect();
+    assert_eq!(
+        actions,
+        ["create", "start", "die", "destroy"],
+        "{}",
+        events.text()
+    );
+    for (action, attributes) in &said {
+        assert_eq!(
+            (&attributes["k"], &attributes["name"]),
+            (&json!("v"), &json!("life")),
+            "{action}: {attributes}"
+        );
+    }
+    assert_eq!(said[2].1["exitCode"], json!("0"));
 }
 
 /// `docker run`'s calls: a create, an attach to it before it starts, a wait for its next

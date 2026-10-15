@@ -3238,7 +3238,7 @@ impl<D: Disk> Daemon<D> {
             },
             size_rw: None,
         });
-        self.event_for(id, &name, &run.image, "create", &[]);
+        self.event_for(id, &name, &run.image, &prepared.labels, "create", &[]);
         // Its run is owned from the moment the container is visible.
         lock(&self.runs).insert(id.to_string(), RunState::Pending { cancelled: false });
         Ok(name)
@@ -3387,7 +3387,7 @@ impl<D: Disk> Daemon<D> {
         if set.is_ok() {
             let c = &removal.container;
             self.shipping.forget(id);
-            self.event_for(id, &c.name, &c.image, "destroy", &[]);
+            self.event_for(id, &c.name, &c.image, &c.labels, "destroy", &[]);
         }
         self.arrived.notify_all();
         if let Err(e) = &set {
@@ -3398,27 +3398,33 @@ impl<D: Disk> Daemon<D> {
     }
 
     /// Logs container event `action` (moby daemon/events.go,
-    /// LogContainerEventWithAttributes): `extra`, the container's image and its name.
+    /// LogContainerEventWithAttributes): `extra`, the container's labels over them, its
+    /// image and its name.
     pub(super) fn container_event(&self, id: &str, action: impl Into<String>, extra: &[(&str, String)]) {
-        let (name, image) = lock(&self.containers)
+        let (name, image, labels) = lock(&self.containers)
             .made(id)
-            .map(|c| (c.name.clone(), c.image.clone()))
+            .map(|c| (c.name.clone(), c.image.clone(), c.labels.clone()))
             .unwrap_or_default();
-        self.event_for(id, &name, &image, action, extra);
+        self.event_for(id, &name, &image, &labels, action, extra);
     }
 
     /// [`container_event`](Self::container_event), of a container named `name` made
-    /// from `image`.
+    /// from `image`, with `labels`: what clients that follow events filter them by, as
+    /// Compose follows its project's (`label=com.docker.compose.project=P`). Its own
+    /// attributes first, its labels over them, then its image and name, in moby's order
+    /// (copyAttributes).
     pub(super) fn event_for(
         &self,
         id: &str,
         name: &str,
         image: &str,
+        labels: &std::collections::BTreeMap<String, String>,
         action: impl Into<String>,
         extra: &[(&str, String)],
     ) {
         let mut attributes: std::collections::BTreeMap<String, String> =
             extra.iter().map(|(k, v)| ((*k).to_string(), v.clone())).collect();
+        attributes.extend(labels.iter().map(|(k, v)| (k.clone(), v.clone())));
         if !image.is_empty() {
             attributes.insert("image".into(), image.to_string());
         }
@@ -3975,13 +3981,13 @@ impl<D: Disk> Daemon<D> {
     fn oom_killed(&self, id: &str) {
         let named = lock(&self.containers)
             .made(id)
-            .map(|c| (c.name.clone(), c.image.clone()));
+            .map(|c| (c.name.clone(), c.image.clone(), c.labels.clone()));
         match lock(&self.containers).change(id, |c| c.oom_killed = true) {
             Ok(()) => self.record_soon(id, Vec::new()),
             Err(e) => log(format!("container {id}: its OOM is not recorded: {e}")),
         }
-        if let Some((name, image)) = named {
-            self.event_for(id, &name, &image, "oom", &[]);
+        if let Some((name, image, labels)) = named {
+            self.event_for(id, &name, &image, &labels, "oom", &[]);
         }
     }
 
@@ -4110,11 +4116,11 @@ impl<D: Disk> Daemon<D> {
         // reservation, for the record (`end_container`).
         // What `die` says of it (moby daemon/monitor.go): its status, and how long it ran
         // in whole seconds; a command that never started does not die.
-        let (ran, name, image) = lock(&self.containers)
+        let (ran, name, image, labels) = lock(&self.containers)
             .made(id)
             .map(|c| {
                 let ran = c.started.map(|s| containers::now().saturating_sub(s));
-                (ran, c.name.clone(), c.image.clone())
+                (ran, c.name.clone(), c.image.clone(), c.labels.clone())
             })
             .unwrap_or_default();
         // Its policy's say (handleContainerExit): started again after a wait, or not; a
@@ -4151,6 +4157,7 @@ impl<D: Disk> Daemon<D> {
                     id,
                     &name,
                     &image,
+                    &labels,
                     "die",
                     &[
                         ("exitCode", status.to_string()),

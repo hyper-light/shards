@@ -3614,6 +3614,58 @@ No run-time labels, relays or declassifiers (§12 answer 14, decided by the user
 an internal-only domain to the world (D58), so there is no data to label. Code mode is
 D136.
 
+### D173. Compose projects through the Engine API
+
+Agent stacks are written as Compose files: an agent, its MCP servers, a database, a
+store. With `DOCKER_HOST` at shards' socket, `docker compose` (Docker's own client,
+unchanged; v5.1.0 tested) makes each service a microVM. Most of it is a control surface,
+given by D170's calls. What a project gains, each for the microVM:
+
+- **Each service its own kernel.** A service is a microVM, never a process on a kernel it
+  shares with the rest of the project and the host. Its project's networks are closed to
+  all but their members, who reach each other by service name (D46), where Docker's
+  reach the internet unless `internal`. Its volumes are served by its run's share process
+  (D38). Its secrets and configs are written as Compose writes them, packed into the
+  microVM by its init (D170).
+- **What Compose asks, kept.** Held by tests/compose.rs with Compose's own client:
+  - `up -d --wait` with `service_healthy` and `service_completed_successfully`;
+    `up --exit-code-from`, attached;
+  - `ps`, `exec` by service name, `logs`, `cp` in and out of a named volume, `port` (the
+    host reaches it there), `run --rm` and its status, `stop`, `start`, `restart`,
+    `pause`, `unpause`, `top`;
+  - profiles, replicas, `network_mode: service:`, `environment` and `env_file`, secrets
+    from a file and from the environment, configs of their own content, `read_only` with
+    a `tmpfs`, `init`, `hostname`;
+  - `build` with the API's first builder (where buildx is absent, or with
+    `DOCKER_BUILDKIT=0`), and `down -v --rmi local`.
+- **A container's events carry its labels**, as dockerd's do (daemon/events.go,
+  LogContainerEventWithAttributes: copyAttributes, then image and name). They carried
+  none, so `docker compose up`, attached, never heard its services end (its monitor
+  follows its project's label: `label=com.docker.compose.project=P`) and waited for
+  ever, and `docker events --filter label=…` matched nothing.
+- **An exec joins a workload that nests its own cgroups.** A nested runtime (BuildKit's
+  buildkitd, Docker in Docker) moves itself into a cgroup below its own and enables
+  controllers for that one's children. cgroup v2 then keeps every process out of its own
+  (no internal processes), and an exec failed with EBUSY. It now joins the cgroup the
+  workload's process is in, as runc's exec joins container init's
+  (libcontainer/process_linux.go, addIntoCgroupV2; runc#2356), within the workload's own
+  alone.
+- **Not yet: builds through buildx.** Where buildx is installed, Compose builds with
+  `buildx bake`, and buildx gives a non-dockerd engine a BuildKit of its own: moby/buildkit
+  as a privileged container (its docker-container driver), which in shards is a
+  microVM. It boots now; on the default bridge, default deny gives it no way out, and
+  with `--driver-opt network=host` it is on the host's network (D124), resolves and pulls
+  its bases, and fails its first `RUN`. Its snapshots are overlays on its state volume,
+  which is shards' virtiofs from the run's share process (D38). overlayfs makes its
+  `work/work` directory with mode 0, which the guest's root may write in and the share
+  process, unprivileged on the host, may not (EACCES), so the overlay mounts read-only
+  (the guest kernel's log, measured in the builder). A runtime nested in a microVM
+  (buildkitd, Docker in Docker) needs overlays on its volumes: a slice of its own, as is
+  the engine's own BuildKit API (buildx's docker driver: `/session` and `/grpc`).
+
+Held by tests/compose.rs (three projects), tests/engine.rs (a container's events by its
+label) and tests/containers.rs (an exec into a workload that nests its cgroups).
+
 ### D172. Images found in registries: `shards search image`, and `GET /images/search`
 
 An agent's sandbox starts from an image that someone, or the agent itself, chose. A

@@ -328,6 +328,29 @@ pub fn main() -> ! {
                 unsafe { libc::pause() };
             }
         }
+        // As a nested runtime starts (BuildKit's buildkitd, Docker in Docker's entrypoint):
+        // moves itself into a cgroup below its own, and enables a controller for its own
+        // cgroup's children, so that cgroup v2 keeps every process out of it from then on
+        // (no internal processes); says `nested`, then sleeps.
+        "nest" => {
+            let root = "/sys/fs/cgroup";
+            let nested = std::fs::create_dir_all(format!("{root}/init"))
+                .and_then(|()| std::fs::write(format!("{root}/init/cgroup.procs"), "0"))
+                .and_then(|()| std::fs::write(format!("{root}/cgroup.subtree_control"), "+pids"));
+            match nested {
+                Ok(()) => {
+                    let _ = writeln!(io::stdout(), "nested");
+                    loop {
+                        // SAFETY: blocks until a signal arrives.
+                        unsafe { libc::pause() };
+                    }
+                }
+                Err(e) => {
+                    let _ = writeln!(io::stdout(), "nest error {e}");
+                    1
+                }
+            }
+        }
         // Its IPC as it has it (D156): its namespace, its /dev/shm's size or none, and
         // whether it sees System V segment KEY and file /dev/shm/KEY.
         "ipc" => ipc_report(arg(1)),
