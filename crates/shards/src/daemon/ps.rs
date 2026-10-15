@@ -310,23 +310,9 @@ fn atoi(s: &str) -> Result<i64, String> {
         .map_err(|_| format!("strconv.Atoi: parsing {}: value out of range", go_quote(s)))
 }
 
-/// `s` as Go's strconv.Quote writes it, for the printable ASCII a filter holds; other
-/// characters escaped as `\u` or `\x`.
+/// `s` as Go's strconv.Quote writes it.
 fn go_quote(s: &str) -> String {
-    let mut out = String::from("\"");
-    for c in s.chars() {
-        match c {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\t' => out.push_str("\\t"),
-            '\r' => out.push_str("\\r"),
-            c if c.is_control() => out.push_str(&format!("\\x{:02x}", c as u32)),
-            c => out.push(c),
-        }
-    }
-    out.push('"');
-    out
+    shards_cmdline::go::quote(s)
 }
 
 #[cfg(test)]
