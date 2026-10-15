@@ -156,6 +156,23 @@ pub fn read_exact_at(file: &File, buf: &mut [u8], offset: u64) -> io::Result<()>
     Ok(())
 }
 
+/// Writes all of `buf` to `file` at `offset`, whatever the file's own offset.
+pub fn write_all_at(file: &File, buf: &[u8], offset: u64) -> io::Result<()> {
+    let mut done = 0;
+    while let Some(rest) = buf.get(done..).filter(|r| !r.is_empty()) {
+        let at = offset
+            .checked_add(done as u64)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "file offset overflows"))?;
+        // SAFETY: `rest` is a live buffer of `rest.len()` bytes, only read.
+        let n = unsafe { write_at(file, rest.as_ptr(), rest.len(), at)? };
+        if n == 0 {
+            return Err(io::ErrorKind::WriteZero.into());
+        }
+        done += n;
+    }
+    Ok(())
+}
+
 /// An unbuffered handle to this process's standard output, independent of `std::io::stdout`'s
 /// lock and line buffering.
 pub fn stdout_file() -> io::Result<File> {

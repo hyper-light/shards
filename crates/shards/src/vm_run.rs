@@ -508,6 +508,7 @@ fn parse_restore(args: impl Iterator<Item = OsString>) -> Result<Restore, String
         prefetch: hold || warm.is_some(),
         // A warm VM's request ends the recording as it ends a template's (RECORD_FOR).
         record: warm.is_some(),
+        swap: None,
     };
     Ok(Restore {
         cfg,
@@ -526,6 +527,13 @@ pub static SHARES: std::sync::OnceLock<Vec<shards_vmm::devices::virtio::fs::Shar
 static JOIN: shards_vmm::devices::virtio::block::Join = shards_vmm::devices::virtio::block::Join::new();
 /// Whether this VM has [`JOIN`]: its device given it.
 static HAS_JOIN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Saves this VM for its daemon (D176): into the files of a generation the daemon
+/// prepared, then on or stopped ([`Handle::save`]).
+#[cfg(unix)]
+pub fn save(save: vm::Save) -> Result<vm::Saved, String> {
+    RUNNING.get().ok_or("the microVM has not started")?.save(save)
+}
 
 /// This VM's join disk, for its device.
 fn give_join_disk() -> &'static shards_vmm::devices::virtio::block::Join {
@@ -849,16 +857,15 @@ pub fn restore(args: impl Iterator<Item = OsString>) -> ExitCode {
         };
         return serve_workload(cfg.vsock.take(), source, move |vsock| {
             cfg.vsock = Some(vsock);
-            restore_vm(&cfg)
+            restore_vm(cfg)
         });
     }
-    let started = restore_vm(&cfg);
-    if cfg.hold
-        && let Ok((handle, _)) = &started
-    {
+    let (hold, console) = (cfg.hold, cfg.console);
+    let started = restore_vm(cfg);
+    if hold && let Ok((handle, _)) = &started {
         wait_for_release(handle);
     }
-    supervise(started, cfg.console, false)
+    supervise(started, console, false)
 }
 
 /// `--hold`: announces the prepared VM and releases it when a line (or end of input)
@@ -904,7 +911,7 @@ fn warm_restore(mut cfg: RestoreConfig, fd: i32) -> ExitCode {
     cfg.console = Console::Discard;
     serve_workload(None, Source::Warm(daemon), move |vsock| {
         cfg.vsock = Some(vsock);
-        restore_vm(&cfg)
+        restore_vm(cfg)
     })
 }
 
@@ -1408,15 +1415,13 @@ fn snapshots() -> Result<(), String> {
 }
 
 /// [`start`] for a restore: the snapshot's directory, and the files it restores against.
-fn restore_vm(cfg: &RestoreConfig) -> Result<(Handle, Running), String> {
-    let mut cfg = cfg.clone();
+fn restore_vm(mut cfg: RestoreConfig) -> Result<(Handle, Running), String> {
     for path in std::iter::once(&mut cfg.dir)
         .chain(cfg.snapshot.as_mut().map(|p| &mut p.dir))
         .chain(cfg.vsock.as_mut().and_then(|v| v.path.as_mut()))
     {
         *path = absolute(path)?;
     }
-    let cfg = &cfg;
     // A host that runs no VM says so, before its files are confined: the check reads no
     // input of the VM's.
     vm::check_host()?;
@@ -1481,25 +1486,21 @@ fn restore_vm(cfg: &RestoreConfig) -> Result<(Handle, Running), String> {
     };
     // A slot for each of its shared directories, which its run fills (D38), and its own
     // join disk where the snapshot has one (D119).
-    let cfg = &{
-        let mut cfg = cfg.clone();
-        #[cfg(unix)]
-        {
-            cfg.shares = (0..pinned.snapshot.config.shares)
-                .map(|_| std::sync::Arc::default())
-                .collect();
-            let _ = SHARES.set(cfg.shares.clone());
-        }
-        if pinned.snapshot.config.join {
-            cfg.join = Some(give_join_disk());
-        }
-        #[cfg(unix)]
-        if pinned.snapshot.config.join_share {
-            cfg.join_share = Some(give_join_share());
-        }
-        cfg
-    };
-    vm::restore_from(cfg, pinned)
+    #[cfg(unix)]
+    {
+        cfg.shares = (0..pinned.snapshot.config.shares)
+            .map(|_| std::sync::Arc::default())
+            .collect();
+        let _ = SHARES.set(cfg.shares.clone());
+    }
+    if pinned.snapshot.config.join {
+        cfg.join = Some(give_join_disk());
+    }
+    #[cfg(unix)]
+    if pinned.snapshot.config.join_share {
+        cfg.join_share = Some(give_join_share());
+    }
+    vm::restore_from(&cfg, pinned)
 }
 
 /// `path` made whole against the working directory, and normalized as

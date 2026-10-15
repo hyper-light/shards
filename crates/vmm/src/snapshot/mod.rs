@@ -7,6 +7,7 @@
 //!   interrupt-controller state, and the devices' state
 //! - `g-<id>/memory`: guest RAM, one region after another, then the memory a virtio-mem
 //!   device had plugged, one run of its blocks after another, with all-zero pages as holes
+//! - `g-<id>/swap`: in a snapshot of a run, the run's swap as its guest had it (D176)
 //!
 //! and, once a VM resumed from the generation has recorded one, a third:
 //!
@@ -39,6 +40,8 @@ const LOCK: &str = ".lock";
 const STATE: &str = "state";
 const MEMORY: &str = "memory";
 const WORKING_SET: &str = "working-set";
+/// A run's swap, as its guest had it, where a snapshot of a run keeps one (D176).
+const SWAP: &str = "swap";
 const WORKING_SET_MAGIC: [u8; 8] = *b"SHRDWSET";
 const WORKING_SET_VERSION: u32 = 1;
 /// A working set's bytes before its entries: magic, version, architecture, page size
@@ -64,7 +67,9 @@ const MAGIC: [u8; 8] = *b"SHRDSNAP";
 /// 16: and its swap window's length in MiB, none of it a run's (D159).
 /// 17: the memory plugged, run by run, its bytes after the RAM's in the memory file; and
 ///     virtio-mem's sizes, what it asks for and what is plugged (D176).
-const VERSION: u32 = 17;
+/// 18: a swap window's state keeps the length of the run's swap mapped, whose bytes a
+///     snapshot of a run keeps beside it (D176).
+const VERSION: u32 = 18;
 /// The snapshot format this build writes and reads: what a snapshot kept for reuse is
 /// keyed by.
 pub const FORMAT: u32 = VERSION;
@@ -558,14 +563,17 @@ fn write_with(
 /// VM that goes on runs again before [`Staged::commit`] makes it durable and points `dir`
 /// at it, since its memory and state are in their files by then (PM M63). Until then it
 /// is a staging directory, which no reader takes for a generation; dropped uncommitted,
-/// it is a dead writer's, which the next write removes.
+/// it goes with its files, and what a dead writer left the next write removes.
 #[derive(Debug)]
 pub struct Staged {
     dir: PathBuf,
     name: String,
     staging: PathBuf,
-    /// Its memory and state, made durable by the commit.
-    files: [File; 2],
+    /// Its files, made durable by the commit: its memory and state, and a run's swap
+    /// where it keeps one (D176).
+    files: Vec<File>,
+    /// Whether its commit has run, which leaves nothing of it the staging's to remove.
+    committed: bool,
     /// Writers to one snapshot take turns, this one until its commit.
     _lock: File,
 }
@@ -585,14 +593,92 @@ fn stage_with(
     // The state first: a configuration a restore could not use fails before anything is
     // written.
     let name = fresh_name();
+    let state = state_of(snap, &name).map_err(|e| at(&e))?;
+    let mut staged = staging(dir, name)?;
+    let files = (|| -> io::Result<Vec<File>> {
+        let memory_file = create_unsynced(&staged.staging.join(MEMORY), |f| memory.save(f))?;
+        after(Step::Memory)?;
+        let state_file = create_unsynced(&staged.staging.join(STATE), |mut f| f.write_all(&state))?;
+        after(Step::State)?;
+        Ok(vec![memory_file, state_file])
+    })();
+    match files {
+        Ok(files) => {
+            staged.files = files;
+            Ok(staged)
+        }
+        Err(e) => {
+            // Under the lock, which the staging holds until it goes.
+            tidy(dir);
+            Err(at(&e))
+        }
+    }
+}
+
+/// Stages an empty generation in `dir`, creating `dir` if needed, for a VM to fill
+/// ([`fill`]) that writes only the files it is handed (D30): its memory and state and,
+/// with `swap`, the run's swap (D176). The VM's are [`Staged::handed`]; the commit makes
+/// the generation durable and the one in use once the VM has filled them.
+pub fn prepare(dir: &Path, swap: bool) -> Result<Staged, String> {
+    let mut staged = staging(dir, fresh_name())?;
+    let names = [MEMORY, STATE, SWAP];
+    let made = names
+        .iter()
+        .take(if swap { 3 } else { 2 })
+        .map(|name| create_unsynced(&staged.staging.join(name), |_| Ok(())))
+        .collect::<io::Result<Vec<File>>>();
+    match made {
+        Ok(files) => {
+            staged.files = files;
+            Ok(staged)
+        }
+        Err(e) => {
+            tidy(dir);
+            Err(format!("{}: {e}", dir.display()))
+        }
+    }
+}
+
+/// Fills a generation [`prepare`] made, in the VM it is for: the state of `snap`, a paused
+/// machine's, which names the generation `name`, and its memory (D176). Whoever prepared
+/// it commits it.
+pub fn fill(
+    name: &str,
+    snap: &Snapshot,
+    memory: &GuestMemory,
+    memory_file: &File,
+    state_file: &File,
+) -> Result<(), String> {
+    if !is_generation(name) {
+        return Err(format!("{name:?} names no generation"));
+    }
+    let state = state_of(snap, name)?;
+    memory.save(memory_file).map_err(|e| format!("its memory: {e}"))?;
+    write_whole(state_file, &state).map_err(|e| format!("its state: {e}"))
+}
+
+/// The state file of `snap` for generation `name`, with its backing files' identities as
+/// they are now.
+fn state_of(snap: &Snapshot, name: &str) -> Result<Vec<u8>, String> {
     let identities = backing(&snap.config)
         .map(|(path, _)| {
             path_bytes(path)?;
             Identity::of(path).map_err(|e| format!("{}: {e}", path.display()))
         })
-        .collect::<Result<Vec<_>, String>>()
-        .map_err(|e| at(&e))?;
-    let state = encode(snap, &name, &identities).map_err(|e| at(&e))?;
+        .collect::<Result<Vec<_>, String>>()?;
+    encode(snap, name, &identities)
+}
+
+/// `bytes`, all of `file`, whatever its offset: one its spawner also holds shares it.
+fn write_whole(file: &File, bytes: &[u8]) -> io::Result<()> {
+    file.set_len(0)?;
+    platform::write_all_at(file, bytes, 0)
+}
+
+/// A new generation's staging directory in `dir`, named for `name`, with `dir`'s lock
+/// held: no files yet.
+fn staging(dir: &Path, name: String) -> Result<Staged, String> {
+    let at = |e: &dyn std::fmt::Display| format!("{}: {e}", dir.display());
     fs::create_dir_all(dir).map_err(|e| at(&e))?;
     // Writers to one snapshot take turns: a generation another writer has renamed into
     // place but not yet pointed at is never removed as superseded.
@@ -606,26 +692,14 @@ fn stage_with(
     lock_exclusive(&lock).map_err(|e| at(&e))?;
     let staging = dir.join(format!(".{name}.tmp"));
     fs::create_dir(&staging).map_err(|e| at(&e))?;
-    let files = (|| -> io::Result<[File; 2]> {
-        let memory_file = create_unsynced(&staging.join(MEMORY), |f| memory.save(f))?;
-        after(Step::Memory)?;
-        let state_file = create_unsynced(&staging.join(STATE), |mut f| f.write_all(&state))?;
-        after(Step::State)?;
-        Ok([memory_file, state_file])
-    })();
-    match files {
-        Ok(files) => Ok(Staged {
-            dir: dir.to_path_buf(),
-            name,
-            staging,
-            files,
-            _lock: lock,
-        }),
-        Err(e) => {
-            tidy(dir);
-            Err(at(&e))
-        }
-    }
+    Ok(Staged {
+        dir: dir.to_path_buf(),
+        name,
+        staging,
+        files: Vec::new(),
+        committed: false,
+        _lock: lock,
+    })
 }
 
 impl Staged {
@@ -640,33 +714,48 @@ impl Staged {
         platform::open_dir(&self.staging).map_err(|e| format!("{}: {e}", self.staging.display()))
     }
 
+    /// Its files for the VM that fills them ([`prepare`]): its memory, its state, and its
+    /// swap where it has one, each a descriptor of its own.
+    pub fn handed(&self) -> Result<Vec<File>, String> {
+        self.files
+            .iter()
+            .map(File::try_clone)
+            .collect::<io::Result<Vec<File>>>()
+            .map_err(|e| format!("{}: {e}", self.staging.display()))
+    }
+
     /// Makes the snapshot durable and the one in use.
     pub fn commit(self) -> Result<(), String> {
         self.commit_with(&mut |_| Ok(()))
     }
 
-    fn commit_with(self, after: &mut dyn FnMut(Step) -> io::Result<()>) -> Result<(), String> {
-        let Staged {
-            dir,
-            name,
-            staging,
-            files,
-            _lock,
-        } = self;
+    fn commit_with(mut self, after: &mut dyn FnMut(Step) -> io::Result<()>) -> Result<(), String> {
+        self.committed = true;
+        let (dir, name, staging) = (&self.dir, &self.name, &self.staging);
         let committed = (|| -> io::Result<()> {
-            for file in &files {
+            for file in &self.files {
                 platform::sync_durable(file)?;
             }
-            platform::sync_dir(&staging)?;
+            platform::sync_dir(staging)?;
             after(Step::Staged)?;
-            fs::rename(&staging, dir.join(&name))?;
+            fs::rename(staging, dir.join(name))?;
             after(Step::Renamed)?;
-            platform::sync_dir(&dir)?;
-            point(&dir, &name)?;
+            platform::sync_dir(dir)?;
+            point(dir, name)?;
             after(Step::Pointed)
         })();
-        tidy(&dir);
+        tidy(dir);
         committed.map_err(|e| format!("{}: {e}", dir.display()))
+    }
+}
+
+impl Drop for Staged {
+    /// One dropped uncommitted, a save that failed, goes with its files, under the lock it
+    /// holds until then: what it wrote is a guest's memory, which nothing will read.
+    fn drop(&mut self) {
+        if !self.committed {
+            let _ = fs::remove_dir_all(&self.staging);
+        }
     }
 }
 
@@ -1121,6 +1210,46 @@ mod tests {
                 .collect();
             names.sort();
             names
+        }
+
+        /// A generation prepared for a VM that writes only what it is handed (D30, D176):
+        /// filled through its files and committed, it reads as one the VM wrote, the run's
+        /// swap kept beside it; until the commit, the one before is in use.
+        #[test]
+        fn a_prepared_generation_filled_and_committed_reads_back() {
+            let s = Scratch::new("prepared");
+            let dir = s.0.join("snap");
+            write(&dir, &sample(&s.0, 1), &ram(1)).unwrap();
+            let staged = prepare(&dir, true).unwrap();
+            let handed = staged.handed().unwrap();
+            assert_eq!(handed.len(), 3);
+            let name = staged.name().to_string();
+            fill(&name, &sample(&s.0, 2), &ram(2), &handed[0], &handed[1]).unwrap();
+            platform::write_all_at(&handed[2], b"swap", 0).unwrap();
+            assert_eq!(markers(&read(&dir).unwrap()), (1, 1));
+            staged.commit().unwrap();
+            let p = read(&dir).unwrap();
+            assert_eq!(markers(&p), (2, 2));
+            assert_eq!(p.name, name);
+            assert_eq!(fs::read(p.path.join(SWAP)).unwrap(), b"swap");
+            assert_eq!(generations(&dir).len(), 2, "{:?}", generations(&dir));
+        }
+
+        /// One dropped before its commit, a save that failed, leaves nothing behind; and a
+        /// fill under a name no generation has is refused.
+        #[test]
+        fn a_prepared_generation_dropped_leaves_nothing() {
+            let s = Scratch::new("dropped");
+            let dir = s.0.join("snap");
+            let staged = prepare(&dir, false).unwrap();
+            let handed = staged.handed().unwrap();
+            assert_eq!(handed.len(), 2);
+            assert_eq!(generations(&dir).len(), 1, "{:?}", generations(&dir));
+            let e = fill("../g-1", &sample(&s.0, 1), &ram(1), &handed[0], &handed[1]).unwrap_err();
+            assert!(e.contains("names no generation"), "{e}");
+            drop(staged);
+            assert_eq!(generations(&dir), Vec::<String>::new());
+            assert!(!exists(&dir));
         }
 
         /// A memory file holds the RAM and then each run of the memory plugged (D176): one

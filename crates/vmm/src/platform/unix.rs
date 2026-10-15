@@ -520,6 +520,61 @@ pub fn map_file_shared(file: &File, len: usize) -> io::Result<NonNull<u8>> {
     NonNull::new(p.cast()).ok_or_else(|| io::Error::other("mmap returned NULL"))
 }
 
+/// Writes what was written through `ptr..ptr + len`, a mapping [`map_file_shared`] made,
+/// to its file, and waits until it has (msync(2) MS_SYNC): the file's blocks then hold it,
+/// which [`data_ranges`] says.
+///
+/// # Safety
+/// `ptr` and `len` are a mapping's from [`map_file_shared`], still mapped.
+pub unsafe fn flush_shared(ptr: NonNull<u8>, len: usize) -> io::Result<()> {
+    // SAFETY: forwarded caller contract.
+    if unsafe { libc::msync(ptr.as_ptr().cast(), len, libc::MS_SYNC) } == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
+}
+
+/// The ranges of `file`'s first `len` bytes that hold data, `(offset, length)` in order:
+/// what lseek(2)'s SEEK_DATA and SEEK_HOLE say of it. A file system that keeps no holes
+/// answers that all of it does, and one that cannot be asked (EINVAL) is taken to.
+pub fn data_ranges(file: &File, len: u64) -> io::Result<Vec<(u64, u64)>> {
+    let end = libc::off_t::try_from(len).map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?;
+    let seek = |at: libc::off_t, whence: libc::c_int| {
+        // SAFETY: lseek(2) on an owned, open descriptor; it moves only its offset, which
+        // nothing here reads by.
+        let to = unsafe { libc::lseek(file.as_raw_fd(), at, whence) };
+        if to < 0 {
+            Err(io::Error::last_os_error())
+        } else {
+            Ok(to)
+        }
+    };
+    let mut ranges = Vec::new();
+    let mut at = 0;
+    while at < end {
+        let data = match seek(at, libc::SEEK_DATA) {
+            Ok(data) => data,
+            // No data past `at`.
+            Err(e) if e.raw_os_error() == Some(libc::ENXIO) => break,
+            Err(e) if e.raw_os_error() == Some(libc::EINVAL) && at == 0 => return Ok(vec![(0, len)]),
+            Err(e) => return Err(e),
+        };
+        if data >= end {
+            break;
+        }
+        let hole = seek(data, libc::SEEK_HOLE)?.min(end);
+        if hole <= data {
+            return Err(io::Error::other(format!(
+                "a hole at {hole} before data at {data}"
+            )));
+        }
+        ranges.push((data.unsigned_abs(), (hole - data).unsigned_abs()));
+        at = hole;
+    }
+    Ok(ranges)
+}
+
 /// Unmaps what [`map_file_shared`] mapped.
 ///
 /// # Safety

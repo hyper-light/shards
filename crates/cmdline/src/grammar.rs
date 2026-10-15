@@ -150,6 +150,9 @@ pub fn rewrite(args: &[String]) -> Option<Vec<String>> {
             out.extend(rest.iter().cloned());
             return Some(out);
         }
+        // A running microVM saved whole, to restore later (D176): shards' own, as Docker's
+        // `checkpoint create` is its own command.
+        ("save", Thing::Vm | Thing::Container) => &["save", "vm"],
         (action @ ("push" | "tag" | "save"), _) if !thing_first => {
             let mut out = once(action, &[]);
             out.push("--convert".into());
@@ -197,6 +200,12 @@ pub static ACTIONS: &[(&str, &str, &str, &str)] = &[
         "run",
         "vm | daemon",
         "Run a command in a new microVM, or the daemon that serves them",
+    ),
+    (
+        "run",
+        "save",
+        "vm | image",
+        "Save a running microVM whole, to restore later, or images to a tar archive",
     ),
     (
         "run",
@@ -305,7 +314,6 @@ pub static ACTIONS: &[(&str, &str, &str, &str)] = &[
         "Download an image, and make it a microVM",
     ),
     ("images", "push", "image", "Upload an image to a registry"),
-    ("images", "save", "image", "Save images to a tar archive"),
     (
         "images",
         "search",
@@ -342,6 +350,12 @@ pub static USES: &[(&str, &str, &str, &str)] = &[
         "Make a volume microVMs can mount, named or not",
     ),
     ("run", "restore", "vm DIR", "Resume a microVM from a snapshot"),
+    (
+        "run",
+        "save",
+        "vm NAME [SNAPSHOT]",
+        "Save a running microVM whole, its memory, processes and devices as they are; then stop it, or leave it running",
+    ),
     (
         "run",
         "run",
@@ -605,6 +619,13 @@ mod tests {
         );
         assert_eq!(said("push image mine").as_deref(), Some("push --convert mine"));
         assert_eq!(said("save image a b").as_deref(), Some("save --convert a b"));
+        // A running microVM saved whole (D176), however it is named.
+        assert_eq!(said("save vm web").as_deref(), Some("save vm web"));
+        assert_eq!(
+            said("save microvm web first --leave-running").as_deref(),
+            Some("save vm web first --leave-running")
+        );
+        assert_eq!(said("save container web").as_deref(), Some("save vm web"));
         assert_eq!(said("pull image alpine").as_deref(), Some("pull alpine"));
         assert_eq!(
             said("run vm --kernel k --cpus 2").as_deref(),

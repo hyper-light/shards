@@ -91,6 +91,10 @@ pub struct Container {
     /// The disk its writable layer used in its guest as its last run ended (SizeRw).
     #[serde(default)]
     pub size_rw: Option<u64>,
+    /// The snapshot its last run was saved as, which stopped it (D176): `restore vm`'s,
+    /// and what keeps `--rm` from removing it, snapshots and all, as it stops.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub saved: Option<String>,
 }
 
 /// A container's restart policy (HostConfig.RestartPolicy) and what its restart manager
@@ -730,6 +734,7 @@ mod tests {
             mounts: Vec::new(),
             restart: Default::default(),
             size_rw: None,
+            saved: None,
         }
     }
 

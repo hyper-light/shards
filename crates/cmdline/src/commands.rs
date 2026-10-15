@@ -2041,6 +2041,25 @@ pub static READ_PROCESSES: Command = Command {
     error_prefix: "",
 };
 
+/// `shards save vm` (D176): a running microVM saved whole, as a snapshot of it to restore.
+pub static SAVE_VM: Command = Command {
+    usage: "[OPTIONS] MICROVM [SNAPSHOT]",
+    about: "Save a running microVM whole, its memory, processes and devices as they are, to restore later",
+    aliases: "shards save vm",
+    args: Args::Range(1, 2),
+    flags: &[
+        HELP,
+        Flag::bool(
+            "leave-running",
+            None,
+            "Leave the microVM running once it is saved, rather than stopping it",
+        ),
+    ],
+    unserved: "",
+    interspersed: true,
+    error_prefix: "",
+};
+
 /// `shards watch processes` (D123): [`READ_PROCESSES`], then each as it comes.
 pub static WATCH_PROCESSES: Command = Command {
     usage: "MICROVM",
@@ -2701,6 +2720,7 @@ pub fn find(words: &[&str]) -> Option<(&'static Command, &'static str, usize)> {
         ["watch", "processes", ..] => (&WATCH_PROCESSES, "shards watch processes", 2),
         ["images", ..] => (&IMAGES, "shards images", 1),
         ["tag", ..] => (&TAG, "shards tag", 1),
+        ["save", "vm", ..] => (&SAVE_VM, "shards save vm", 2),
         ["save", ..] => (&SAVE, "shards save", 1),
         ["load", ..] => (&LOAD, "shards load", 1),
         ["pull", ..] => (&PULL, "shards pull", 1),

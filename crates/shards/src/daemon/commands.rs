@@ -490,6 +490,8 @@ impl<D: crate::containers::Disk> Daemon<D> {
             self.port(&parsed.args, asker.styled(), reply)
         } else if std::ptr::eq(command, &READ_PORTS) {
             self.read_ports(&parsed.args, reply)
+        } else if std::ptr::eq(command, &shards_cmdline::commands::SAVE_VM) {
+            self.save_vm(&parsed, reply)
         } else if std::ptr::eq(command, &READ_PROCESSES) {
             self.read_processes(&parsed.args, false, asker.client, reply)
         } else if std::ptr::eq(command, &commands::WATCH_PROCESSES) {
