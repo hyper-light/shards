@@ -3,9 +3,12 @@
 //! `shards_vmm::snapshot` keeps one: a generation the daemon prepares, which the microVM's
 //! VM process fills, as it writes only what it is handed (D30), and the daemon commits.
 
+use std::ffi::OsString;
 use std::os::fd::{AsFd as _, BorrowedFd};
+use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 
+use serde::{Deserialize, Serialize};
 use shards_cmdline::flags::Parsed;
 use shards_ipc::kind;
 
@@ -15,6 +18,52 @@ use crate::containers::Disk;
 
 /// Where a container's snapshots are, in its directory.
 pub(super) const SNAPSHOTS: &str = "snapshots";
+
+/// The file a snapshot's generation keeps its [`Resume`] in.
+pub(super) const RESUME: &str = "resume";
+
+/// What a snapshot of a run keeps beside what its VM wrote, for its restore: the save's
+/// tokens, which only the guest's init holds, and with which the restored guest dials the
+/// host again; and its interface's identity, which its guest holds as it was: its MAC,
+/// and its addresses on the network it is on, which its restore asks for again as `--ip`
+/// asks for one.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(super) struct Resume {
+    /// The two tokens, the workload connection's then the signals', in hex.
+    pub(super) tokens: String,
+    /// Its MAC on its network, where it has an interface of its own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) mac: Option<String>,
+    /// The user network it is on, by ID, and its addresses there.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) network: Option<Address>,
+}
+
+/// A microVM's addresses on a user network (D46).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(super) struct Address {
+    pub(super) network: String,
+    pub(super) ipv4: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub(super) ipv6: String,
+}
+
+/// `bytes` in lowercase hex.
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// The bytes `text`, in hex, says; none for text that is not hex.
+pub(super) fn unhex(text: &str) -> Option<Vec<u8>> {
+    let digits = text.as_bytes();
+    if !digits.len().is_multiple_of(2) {
+        return None;
+    }
+    digits
+        .chunks(2)
+        .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).ok()?, 16).ok())
+        .collect()
+}
 
 /// A save a run's VM was asked for (`kind::SAVE`), waiting for its answer
 /// (`kind::SAVED`).
@@ -64,7 +113,245 @@ fn fresh(taken: &dyn Fn(&str) -> bool) -> String {
         .unwrap_or(stamp)
 }
 
+/// `run`, a container's request, as its microVM resumed from a snapshot has its interface
+/// (D176): its own endpoint given the guest's MAC, as `--mac-address` gives it one, and its
+/// addresses on its network, as `--ip` and `--ip6` ask for them.
+pub(super) fn resume_interface(run: &mut shards_ipc::Run, resume: &Resume) {
+    if resume.mac.is_none() && resume.network.is_none() {
+        return;
+    }
+    if crate::setup::own_endpoint(run).is_none() {
+        run.endpoints.push(shards_ipc::Endpoint {
+            network: run.network.clone(),
+            ..shards_ipc::Endpoint::default()
+        });
+    }
+    let ours = |n: &str| {
+        n == run.network
+            || matches!(
+                (n, run.network.as_str()),
+                ("bridge", "default") | ("default", "bridge")
+            )
+    };
+    if let Some(e) = run.endpoints.iter_mut().find(|e| ours(&e.network)) {
+        if let Some(mac) = &resume.mac {
+            e.mac.clone_from(mac);
+        }
+        if let Some(address) = &resume.network {
+            e.ipv4.clone_from(&address.ipv4);
+            e.ipv6.clone_from(&address.ipv6);
+        }
+    }
+}
+
+/// A copy of the swap a snapshot's `generation` kept (D176), at `at`, for a run resumed
+/// from it, only this user's and as sparse as the swap was; none where it kept none.
+pub(super) fn copy_swap(generation: &Path, at: &Path) -> std::io::Result<Option<std::fs::File>> {
+    use std::os::unix::fs::OpenOptionsExt as _;
+    let kept = std::fs::File::open(shards_vmm::snapshot::swap_of(generation))?;
+    let len = kept.metadata()?.len();
+    if len == 0 {
+        return Ok(None);
+    }
+    let copy = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(at)?;
+    shards_vmm::platform::copy_used(&kept, &copy, len)?;
+    Ok(Some(copy))
+}
+
+/// When a generation named `name` was written, in nanoseconds since the epoch: `g-` and the
+/// time, in hex (vmm snapshot.rs, `fresh_name`).
+fn saved_at(name: &str) -> Option<i64> {
+    let hex = name.strip_prefix("g-")?.split('-').next()?;
+    i64::try_from(u128::from_str_radix(hex, 16).ok()?).ok()
+}
+
+/// The disk the files in `generation` take: their blocks, as sparse as each is.
+fn on_disk(generation: &Path) -> u64 {
+    use std::os::unix::fs::MetadataExt as _;
+    std::fs::read_dir(generation)
+        .map(|entries| {
+            entries
+                .flatten()
+                .filter_map(|e| e.metadata().ok())
+                .map(|m| m.blocks().saturating_mul(512))
+                .fold(0, u64::saturating_add)
+        })
+        .unwrap_or(0)
+}
+
+/// A snapshot of a container to resume it from (D176): its directory, its generation,
+/// and what it kept for its restore, its tokens read.
+pub(super) struct Resumable {
+    pub(super) dir: PathBuf,
+    pub(super) generation: PathBuf,
+    pub(super) resume: Resume,
+    pub(super) tokens: Vec<u8>,
+}
+
+/// The most a resume record holds: its tokens, a MAC, and a network's ID and addresses.
+const MAX_RESUME: u64 = 4 << 10;
+
+/// The newest snapshot in `snapshots`, a container's: the one whose generation was written
+/// last, which its name says (`g-` and the time in nanoseconds, in hex).
+fn newest(snapshots: &Path) -> Option<String> {
+    std::fs::read_dir(snapshots)
+        .ok()?
+        .flatten()
+        .filter_map(|entry| {
+            let name = entry.file_name().into_string().ok()?;
+            let generation = shards_vmm::snapshot::generation(&entry.path()).ok()?;
+            Some((generation.file_name()?.to_string_lossy().into_owned(), name))
+        })
+        .max()
+        .map(|(_, name)| name)
+}
+
 impl<D: Disk> Daemon<D> {
+    /// Container `id`'s snapshot `asked`, or its newest where `asked` is empty, to resume
+    /// it from, `given` naming the container as its client did: why not, where it has none.
+    pub(super) fn resumable(&self, id: &str, given: &str, asked: &str) -> Result<Resumable, String> {
+        let snapshots = lock(&self.containers).dir(id).join(SNAPSHOTS);
+        let name = match asked {
+            "" => newest(&snapshots).ok_or_else(|| format!("{given} has no snapshot to restore"))?,
+            asked if valid(asked) => asked.to_string(),
+            asked => return Err(format!("{asked:?} names no snapshot")),
+        };
+        let dir = snapshots.join(&name);
+        let generation = shards_vmm::snapshot::generation(&dir)
+            .map_err(|_| format!("{given} has no snapshot named {name}"))?;
+        let unusable = |e: &dyn std::fmt::Display| format!("{given}'s snapshot {name}: {e}");
+        let record = shards_vmm::platform::read_input(&generation.join(RESUME), MAX_RESUME)
+            .map_err(|e| unusable(&e))?
+            .ok_or_else(|| unusable(&"it was saved by no run"))?;
+        let resume: Resume = serde_json::from_slice(&record).map_err(|e| unusable(&e))?;
+        let tokens = unhex(&resume.tokens)
+            .filter(|t| t.len() == 2 * shards_abi::run::TOKEN)
+            .ok_or_else(|| unusable(&"its tokens"))?;
+        Ok(Resumable {
+            dir,
+            generation,
+            resume,
+            tokens,
+        })
+    }
+
+    /// A VM restoring `r`, a snapshot of a run, for that run resumed (D176), ready: given
+    /// the files the snapshot restores against, as it names them, which the daemon wrote;
+    /// in the GPU's VM process where it has a GPU; its network process framing to `mac`,
+    /// the guest's own.
+    pub(super) fn resumed_vm<'s, 'e>(
+        &'s self,
+        threads: &'s super::Threads<'s, 'e>,
+        r: &Resumable,
+        mac: Option<[u8; 6]>,
+    ) -> Result<super::Ready, String> {
+        let pinned = shards_vmm::snapshot::read(&r.dir)?;
+        let mut args: Vec<OsString> = vec![
+            "restore".into(),
+            r.dir.clone().into_os_string(),
+            "--resume".into(),
+            "3".into(),
+        ];
+        for (path, read_only) in shards_vmm::snapshot::backing_of(&pinned) {
+            let mut backing = path.into_os_string();
+            if read_only {
+                backing.push(":ro");
+            }
+            args.extend(["--backing".into(), backing]);
+        }
+        if pinned.snapshot.config.gpu.is_some() {
+            args.push("--gpu".into());
+        }
+        let net = pinned.snapshot.config.net.map(|saved| mac.unwrap_or(saved));
+        drop(pinned);
+        self.start_for_run(threads, &args, net)
+    }
+
+    /// `shards list snapshots MICROVM` (D176): its snapshots, newest first, each one's name,
+    /// when it was saved, and the disk its files take.
+    pub(super) fn list_snapshots(&self, parsed: &Parsed, reply: &Reply<'_>) -> u8 {
+        let reference = parsed.args.first().map(|r| r.trim()).unwrap_or_default();
+        let id = match self.resolve(reference) {
+            Ok(id) => id,
+            Err(e) => {
+                reply.err(&e);
+                return 1;
+            }
+        };
+        let dir = lock(&self.containers).dir(&id).join(SNAPSHOTS);
+        let now = i64::try_from(crate::containers::now()).unwrap_or(i64::MAX);
+        let mut rows: Vec<(String, [String; 3])> = std::fs::read_dir(&dir)
+            .map(|entries| {
+                entries
+                    .flatten()
+                    .filter_map(|entry| {
+                        let name = entry.file_name().into_string().ok()?;
+                        let generation = shards_vmm::snapshot::generation(&entry.path()).ok()?;
+                        let written = generation.file_name()?.to_string_lossy().into_owned();
+                        let saved = saved_at(&written).map_or_else(
+                            || "-".to_string(),
+                            |at| {
+                                format!(
+                                    "{} ago",
+                                    shards_cmdline::format::human_duration(now.saturating_sub(at))
+                                )
+                            },
+                        );
+                        let size = shards_cmdline::format::human_size(on_disk(&generation) as f64);
+                        Some((written, [name, saved, size]))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        rows.sort_by(|a, b| b.0.cmp(&a.0));
+        let widths = rows.iter().fold(
+            ["SNAPSHOT".len(), "SAVED".len()],
+            |[n, s], (_, [name, saved, _])| [n.max(name.len()), s.max(saved.len())],
+        );
+        let [n, s] = widths;
+        reply.out(&format!("{:<n$}   {:<s$}   SIZE", "SNAPSHOT", "SAVED"));
+        for (_, [name, saved, size]) in rows {
+            reply.out(&format!("{name:<n$}   {saved:<s$}   {size}"));
+        }
+        0
+    }
+
+    /// `shards remove snapshot MICROVM SNAPSHOT...` (D176): each named, as given, once
+    /// removed; then the errors, and the status 1 where there was one.
+    pub(super) fn remove_snapshots(&self, parsed: &Parsed, reply: &Reply<'_>) -> u8 {
+        let reference = parsed.args.first().map(|r| r.trim()).unwrap_or_default();
+        let id = match self.resolve(reference) {
+            Ok(id) => id,
+            Err(e) => {
+                reply.err(&e);
+                return 1;
+            }
+        };
+        let dir = lock(&self.containers).dir(&id).join(SNAPSHOTS);
+        let mut errors = Vec::new();
+        for name in parsed.args.iter().skip(1) {
+            let at = dir.join(name);
+            if !valid(name) || shards_vmm::snapshot::generation(&at).is_err() {
+                errors.push(format!("shards: {reference} has no snapshot named {name}"));
+                continue;
+            }
+            match std::fs::remove_dir_all(&at) {
+                Ok(()) => reply.out(name),
+                Err(e) => errors.push(format!("shards: removing {reference}'s snapshot {name}: {e}")),
+            }
+        }
+        for e in &errors {
+            reply.err(e);
+        }
+        u8::from(!errors.is_empty())
+    }
+
     /// `shards save vm MICROVM [SNAPSHOT] [--leave-running]` (D176): the running microVM
     /// saved whole, its memory, every process and pty, its devices and its run's swap as
     /// they are, its vCPUs parked for the save; then stopped, as `docker checkpoint
@@ -97,6 +384,17 @@ impl<D: Disk> Daemon<D> {
                 "shards: {reference} runs in another container's microVM: save that microVM"
             ));
         }
+        // On the host's network its guest's sockets are the host's, the daemon's to bind
+        // (D124): a restored copy would hold sockets no host socket answers.
+        let (inbox, mac) = match lock(&self.runs).get(&id) {
+            Some(RunState::Tracked(t)) => (t.inbox.clone(), t.mac),
+            _ => return Err(format!("shards: {reference} is not running")),
+        };
+        if lock(&inbox).host_net.is_some() {
+            return Err(format!(
+                "shards: {reference} is on the host's network, whose sockets of the host's no snapshot keeps"
+            ));
+        }
         let dir = lock(&self.containers).dir(&id).join(SNAPSHOTS);
         let name = match parsed.args.get(1) {
             Some(name) if valid(name) => name.clone(),
@@ -117,10 +415,26 @@ impl<D: Disk> Daemon<D> {
         {
             return Err(failed(&e));
         }
+        // Its tokens, which its guest is given, and its interface's identity, kept beside
+        // it for its restore.
+        let mut tokens = [0u8; 2 * shards_abi::run::TOKEN];
+        shards_vmm::platform::fill_random(&mut tokens).map_err(|e| failed(&format!("its tokens: {e}")))?;
+        let resume = Resume {
+            tokens: hex(&tokens),
+            mac: mac.map(|m| shards_net::Mac(m).to_string()),
+            network: self.membership(&id).map(|(network, me)| Address {
+                network: network.id,
+                ipv4: me.ip.to_string(),
+                ipv6: me.ip6.map(|ip| ip.to_string()).unwrap_or_default(),
+            }),
+        };
+        let record = serde_json::to_vec(&resume).map_err(|e| failed(&e))?;
         // With room for the run's swap, which a run without one leaves empty.
-        let staged = shards_vmm::snapshot::prepare(&at, true).map_err(|e| failed(&e))?;
-        let asked = self.ask_save(&id, &staged, &name, leave_running);
-        let saved = asked.and_then(|()| staged.commit());
+        let mut staged = shards_vmm::snapshot::prepare(&at, true).map_err(|e| failed(&e))?;
+        let asked = self.ask_save(&id, &staged, &name, &tokens, leave_running);
+        let saved = asked
+            .and_then(|()| staged.add(RESUME, &record))
+            .and_then(|()| staged.commit());
         if let Err(e) = saved {
             // Nothing of it stays: a name it took is free again.
             let _ = std::fs::remove_dir_all(&at);
@@ -148,6 +462,7 @@ impl<D: Disk> Daemon<D> {
         id: &str,
         staged: &shards_vmm::snapshot::Staged,
         snapshot: &str,
+        tokens: &[u8],
         leave_running: bool,
     ) -> Result<(), String> {
         let (inbox, socket, vm) = match lock(&self.runs).get(id) {
@@ -178,6 +493,7 @@ impl<D: Disk> Daemon<D> {
             0
         };
         let mut payload = vec![flags];
+        payload.extend_from_slice(tokens);
         for (i, name) in [staged.name(), snapshot, &microvm].into_iter().enumerate() {
             if i > 0 {
                 payload.push(0);

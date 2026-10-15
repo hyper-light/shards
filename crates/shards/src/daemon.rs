@@ -1931,6 +1931,15 @@ impl<D: Disk> Daemon<D> {
                     run = again_as(stored, &run, &id);
                     again = Some((given, id, log));
                 }
+                // A running one is left so, and named; a snapshot restores only a stopped
+                // one (D176).
+                Ok(None) if run.resume.is_some() => {
+                    say(&format!(
+                        "shards: {given} is running: a snapshot restores a stopped microVM"
+                    ));
+                    let _ = shards_ipc::send(conn, kind::EXIT, &[1], &[]);
+                    return None;
+                }
                 Ok(None) => {
                     let _ = shards_ipc::send(conn, kind::OUT, format!("{given}\n").as_bytes(), &[]);
                     let _ = shards_ipc::send(conn, kind::EXIT, &[0], &[]);
@@ -1966,6 +1975,23 @@ impl<D: Disk> Daemon<D> {
                 self.not_again(id);
             }
         };
+        // `shards restore vm` (D176): the container resumed from a snapshot of its own, its
+        // command going on where it was saved, in a VM restoring it. Its guest's interface
+        // is as it was: its MAC, and its address on its network asked for again, as `--ip`
+        // asks for one, which a restore finding it another's fails on, as a start does.
+        let resuming = match (&again, run.resume.as_deref()) {
+            (Some((given, id, _)), Some(asked)) => match self.resumable(id, given, asked) {
+                Ok(r) => Some(r),
+                Err(e) => {
+                    refused(&e);
+                    return None;
+                }
+            },
+            _ => None,
+        };
+        if let Some(r) = &resuming {
+            snapshots::resume_interface(&mut run, &r.resume);
+        }
         // dockerd's create route first, before its daemon checks anything (moby
         // handleSysctlBC): an interface's sysctl given as the container's own is refused.
         if again.is_none()
@@ -2568,9 +2594,10 @@ impl<D: Disk> Daemon<D> {
                 }
             }
         };
-        // What it changed before, to put back (D37).
+        // What it changed before, to put back (D37); a resumed one's is in its memory.
         let layer_in = again
             .as_ref()
+            .filter(|_| resuming.is_none())
             .and_then(|_| File::open(lock(&self.containers).dir(&id).join(LAYER)).ok());
         if let Some(file) = &layer_in {
             flags |= shards_ipc::RUN_LAYER_IN;
@@ -2583,8 +2610,21 @@ impl<D: Disk> Daemon<D> {
         // Its swap (D159): a sparse file of what its limits allow, made anew for each run,
         // which its microVM maps into its swap window; unlinked once the microVM has it,
         // so that what it swaps out is nowhere once the microVM has ended.
-        let swap = match crate::resources::swap_bytes(&run.resources) {
-            Some(bytes) => {
+        let swap = match (&resuming, crate::resources::swap_bytes(&run.resources)) {
+            // A resumed run's: a copy of the swap its save kept, as its guest swapped to it
+            // (D176), the snapshot's own kept for its other restores.
+            (Some(r), _) => {
+                let at = lock(&self.containers).dir(&id).join(SWAP);
+                match snapshots::copy_swap(&r.generation, &at) {
+                    Ok(copied) => copied.map(|file| (file, at)),
+                    Err(e) => {
+                        refuse(&format!("{}: its swap: {e}", id.get(..12).unwrap_or(&id)));
+                        abandon(&id);
+                        return None;
+                    }
+                }
+            }
+            (None, Some(bytes)) => {
                 let at = lock(&self.containers).dir(&id).join(SWAP);
                 let vcpus = crate::resources::vcpus(&run.resources, crate::resources::host_cpus());
                 match open_swap(&at, crate::resources::swap_device_bytes(bytes, vcpus)) {
@@ -2600,7 +2640,7 @@ impl<D: Disk> Daemon<D> {
                     }
                 }
             }
-            None => None,
+            (None, None) => None,
         };
         if let Some((file, _)) = &swap {
             flags |= shards_ipc::RUN_SWAP;
@@ -2642,7 +2682,12 @@ impl<D: Disk> Daemon<D> {
             queue: kept.and_then(|k| k.queue),
         }
         .encode_into(&mut payload);
-        prepared.spec.encode_into(&mut payload);
+        // A resumed run's command runs already: its request brings its save's tokens instead,
+        // with which its guest dials the host again (D176).
+        match &resuming {
+            Some(r) => payload.extend_from_slice(&r.tokens),
+            None => prepared.spec.encode_into(&mut payload),
+        }
         let detached = run.detach.then_some(conn);
         // An Agentfile's egress grants and remote MCP servers (D59), as the daemon read
         // them from the image's own normalized Agentfile, checked against its digest
@@ -2702,7 +2747,22 @@ impl<D: Disk> Daemon<D> {
             },
             || match &start {
                 network::Start::Join(name) => self.join_vm(threads, &id, name, &prepared, &join_volumes),
-                _ => self.warm_for(threads, &prepared, &start, &say),
+                // A resumed run's VM restores its snapshot (D176), on the network its start
+                // set up, or not, for why it failed, as `warm_for` says it.
+                network::Start::Fails(why) if resuming.is_some() => {
+                    Err(match resuming.as_ref().and_then(|r| r.resume.network.as_ref()) {
+                        Some(saved) => format!("{why}: the snapshot's address, {}", saved.ipv4),
+                        None => why.clone(),
+                    })
+                }
+                _ => match &resuming {
+                    Some(r) => self.resumed_vm(
+                        threads,
+                        r,
+                        run_mac.as_deref().and_then(|m| m.first_chunk::<6>().copied()),
+                    ),
+                    None => self.warm_for(threads, &prepared, &start, &say),
+                },
             },
         );
         // Its VM has its root filesystem, or never will; and its swap, off the run's path.
@@ -4046,6 +4106,8 @@ impl<D: Disk> Daemon<D> {
         let changed = lock(&self.containers).change(id, |c| {
             c.state = Life::Running;
             c.started = Some(containers::now());
+            // Running again, as a snapshot resumes it or not: no save stopped it (D176).
+            c.saved = None;
             c.exit_code = None;
             c.oom_killed = false;
             c.error.clear();
@@ -5398,6 +5460,17 @@ impl<D: Disk> Daemon<D> {
         } else {
             None
         };
+        self.start_for_run(threads, &args, net)
+    }
+
+    /// Starts shards-vm with `args` for one run, and waits until it is ready: a VM booted
+    /// for it, or restoring a snapshot of its own (D176).
+    fn start_for_run<'s, 'e>(
+        &'s self,
+        threads: &'s Threads<'s, 'e>,
+        args: &[OsString],
+        net: Option<[u8; 6]>,
+    ) -> Result<Ready, String> {
         let (tx, rx) = mpsc::channel();
         // Told by a shutdown too: registered, then checked, so a shutdown either finds it
         // or came before (`step_aside`).
@@ -5407,7 +5480,7 @@ impl<D: Disk> Daemon<D> {
             lock(&self.booting).remove(&waiting);
             return Err("the daemon is shutting down".into());
         }
-        let started = self.start(threads, &args, net, For::Run(tx));
+        let started = self.start(threads, args, net, For::Run(tx));
         // A VM given up on ends as its socket closes, the daemon's end dropped with it.
         let ready = started.and_then(|_| {
             rx.recv()
@@ -5743,6 +5816,7 @@ fn again_as(stored: Run, client: &Run, id: &str) -> Run {
         cloud_env: client.cloud_env.clone(),
         daemon: client.daemon,
         again: Some(id.to_string()),
+        resume: client.resume.clone(),
         create: false,
         restart: false,
         ..stored

@@ -67,7 +67,11 @@ const RUN_USAGE: &str = "usage: shards run --kernel PATH [--initrd PATH | --init
 const RESTORE_USAGE: &str = "usage: shards restore DIR [--hold] [--vsock PATH] [--no-console] [--gpu] [--backing PATH[:ro]]... [--snapshot-dir DIR [--snapshot-then stop|resume]]
        shards restore DIR [--hold] [--backing PATH[:ro]]... [WORKLOAD OPTIONS] -- COMMAND [ARG...]
        shards restore DIR --warm FD [--backing PATH[:ro]]...
-  Resumes the VM in snapshot directory DIR. With a COMMAND, DIR is a template saved by
+       shards restore DIR --resume FD [--backing PATH[:ro]]...
+       shards restore MICROVM [SNAPSHOT]
+  Resumes the VM in snapshot directory DIR. Given a microVM's name rather than a directory
+  holding a snapshot, resumes that stopped microVM from a snapshot of its own (`shards save
+  vm`), its newest unless SNAPSHOT names one, where it was saved. With a COMMAND, DIR is a template saved by
   `shards run --rootfs`, and the command runs there as `docker run` would.
   Workload options, as for `docker run`: -e NAME[=VALUE], -w DIR, -u USER[:GROUP],
   --hostname NAME, -i.
@@ -79,6 +83,8 @@ const RESTORE_USAGE: &str = "usage: shards restore DIR [--hold] [--vsock PATH] [
           request costs only the command.
   --warm: resume at once and connect, then take one command, with the stdio and connection
           of the client it is for, from the daemon on the Unix socket at descriptor FD.
+  --resume: DIR is a run's snapshot, its command running already: take its run's stdio,
+            log and swap from the daemon at descriptor FD, then resume it.
   --backing: a file the snapshot restores against, read-only with :ro: given, a snapshot
              naming any other is refused, its state being what the VM saving it wrote.
   --gpu: restore in the GPU's VM process, which a snapshot of a VM with a GPU needs.
@@ -431,11 +437,14 @@ struct Restore {
     workload: Options,
     /// `--warm FD`: the daemon's socket.
     warm: Option<i32>,
+    /// `--resume FD`, in place of `--warm FD`: the snapshot is a run's, whose command goes
+    /// on (D176).
+    resume: bool,
 }
 
 fn parse_restore(args: impl Iterator<Item = OsString>) -> Result<Restore, String> {
     let mut args = args;
-    let (mut dir, mut common, mut hold, mut warm) = (None, Common::new(), false, None);
+    let (mut dir, mut common, mut hold, mut warm, mut resume) = (None, Common::new(), false, None, false);
     let mut backing = Vec::new();
     while let Some(arg) = args.next() {
         // The snapshot directory is a path, in whatever bytes; every option is text.
@@ -463,6 +472,16 @@ fn parse_restore(args: impl Iterator<Item = OsString>) -> Result<Restore, String
                     fd.parse::<i32>()
                         .map_err(|_| format!("--warm: {fd:?} is not a descriptor"))?,
                 );
+            }
+            // A run's snapshot (D176): served as a warm VM's run is, its command running
+            // already.
+            "--resume" => {
+                let fd = text(value("--resume")?)?;
+                warm = Some(
+                    fd.parse::<i32>()
+                        .map_err(|_| format!("--resume: {fd:?} is not a descriptor"))?,
+                );
+                resume = true;
             }
             "--" => {
                 common.workload.argv = args.by_ref().map(text).collect::<Result<_, _>>()?;
@@ -494,7 +513,9 @@ fn parse_restore(args: impl Iterator<Item = OsString>) -> Result<Restore, String
         dir,
         console: common.console,
         snapshot: common.policy(),
-        hold,
+        // A run's, held until its request maps its swap back and its guest's connections
+        // are awaited, which its guest dials as it resumes (D176).
+        hold: hold || resume,
         vsock: common.vsock.map(VsockHost::at),
         net: common.net.take(),
         // Its slots are made once its snapshot is read (`restore_vm`).
@@ -506,14 +527,16 @@ fn parse_restore(args: impl Iterator<Item = OsString>) -> Result<Restore, String
         join_share: None,
         // Restored ahead of its request: the prefetch costs the request nothing.
         prefetch: hold || warm.is_some(),
-        // A warm VM's request ends the recording as it ends a template's (RECORD_FOR).
-        record: warm.is_some(),
+        // A warm VM's request ends the recording as it ends a template's (RECORD_FOR); a
+        // run's snapshot is no template, which restores prefetch from.
+        record: warm.is_some() && !resume,
         swap: None,
     };
     Ok(Restore {
         cfg,
         workload: common.workload,
         warm,
+        resume,
     })
 }
 
@@ -838,12 +861,13 @@ pub fn restore(args: impl Iterator<Item = OsString>) -> ExitCode {
         mut cfg,
         workload,
         warm,
+        resume,
     } = match parsed(parse_restore(args), RESTORE_USAGE) {
         Ok(restore) => restore,
         Err(code) => return code,
     };
     if let Some(fd) = warm {
-        return warm_restore(cfg, fd);
+        return warm_restore(cfg, fd, resume);
     }
     if !workload.argv.is_empty() {
         cfg.console = Console::Discard;
@@ -887,9 +911,10 @@ enum Source<'a> {
         hold: bool,
         gpu: bool,
     },
-    /// A warm VM's: one request from the daemon (warm.rs).
+    /// A warm VM's: one request from the daemon (warm.rs); with `true`, for a run its
+    /// microVM was restored from a save of (D176).
     #[cfg(unix)]
-    Warm(crate::warm::Link),
+    Warm(crate::warm::Link, bool),
 }
 
 /// The setup entry that gives a GPU VM's workload its render node, as
@@ -898,9 +923,9 @@ enum Source<'a> {
 #[cfg(unix)]
 const RENDER_NODE: &[u8] = b"devices=-\0d\0/dev/dri/renderD128\0/dev/dri/renderD128\0rwm\0";
 
-/// A warm VM's restore: `vm restore DIR --warm FD`.
+/// A warm VM's restore: `vm restore DIR --warm FD`, or a run's, `--resume FD` (D176).
 #[cfg(unix)]
-fn warm_restore(mut cfg: RestoreConfig, fd: i32) -> ExitCode {
+fn warm_restore(mut cfg: RestoreConfig, fd: i32, resume: bool) -> ExitCode {
     let daemon = match crate::warm::Link::new(fd) {
         Ok(link) => link,
         Err(e) => {
@@ -909,14 +934,14 @@ fn warm_restore(mut cfg: RestoreConfig, fd: i32) -> ExitCode {
         }
     };
     cfg.console = Console::Discard;
-    serve_workload(None, Source::Warm(daemon), move |vsock| {
+    serve_workload(None, Source::Warm(daemon, resume), move |vsock| {
         cfg.vsock = Some(vsock);
         restore_vm(cfg)
     })
 }
 
 #[cfg(not(unix))]
-fn warm_restore(_: RestoreConfig, _: i32) -> ExitCode {
+fn warm_restore(_: RestoreConfig, _: i32, _: bool) -> ExitCode {
     report("warm VMs need Unix sockets, which shards does not support on this platform yet");
     ExitCode::from(125)
 }
@@ -935,7 +960,7 @@ fn warm_boot(mut cfg: Config, rootfs: PathBuf, fd: i32) -> ExitCode {
     boot_into(&mut cfg, rootfs, template);
     cfg.console = Console::Discard;
     crate::warm::HOST_DEVICES.store(!cfg.vfio.is_empty(), std::sync::atomic::Ordering::Relaxed);
-    serve_workload(None, Source::Warm(daemon), move |vsock| {
+    serve_workload(None, Source::Warm(daemon, false), move |vsock| {
         cfg.vsock = Some(vsock);
         start(&cfg)
     })
@@ -969,7 +994,7 @@ fn serve_workload(
             interactive: bool,
             hold: bool,
         },
-        Warm(crate::warm::Link),
+        Warm(crate::warm::Link, bool),
     }
     let command = match source {
         Source::Given { options, hold, gpu } => {
@@ -987,14 +1012,19 @@ fn serve_workload(
                 Err(e) => return failed(e),
             }
         }
-        Source::Warm(daemon) => Command::Warm(daemon),
+        Source::Warm(daemon, resumed) => Command::Warm(daemon, resumed),
     };
     {
         let mut vsock = given.unwrap_or_default();
         let (run_port, listener) = std::sync::mpsc::channel();
         let (signal_port, signals) = std::sync::mpsc::channel();
-        vsock.ports.push((shards_abi::run::PORT, run_port));
-        vsock.ports.push((shards_abi::run::SIGNAL_PORT, signal_port));
+        // A run restored from a save of it has no ports of its own: its guest dials the
+        // exec port again, by the save's tokens, where its workload, running already, could
+        // dial a fresh port first (D176).
+        if !matches!(command, Command::Warm(_, true)) {
+            vsock.ports.push((shards_abi::run::PORT, run_port));
+            vsock.ports.push((shards_abi::run::SIGNAL_PORT, signal_port));
+        }
         let (exec_port, execs) = std::sync::mpsc::channel();
         vsock.every.push((shards_abi::run::EXEC_PORT, exec_port));
         // A warm VM's signals come from its client. The command line's are this process's:
@@ -1003,7 +1033,7 @@ fn serve_workload(
         static TO_GUEST: workload::ToGuest = workload::ToGuest::new(workload::Signals::new());
         static TIMING: workload::Timing = workload::Timing::new();
         let to_guest = &TO_GUEST;
-        let warm = matches!(command, Command::Warm(_));
+        let warm = matches!(command, Command::Warm(..));
         if let Command::Given { interactive, .. } = &command {
             // SAFETY: isatty(3) on this process's stdin.
             let reads_terminal = *interactive && unsafe { libc::isatty(0) } == 1;
@@ -1060,6 +1090,7 @@ fn serve_workload(
                                 saved: None,
                                 processes: None,
                                 host_net: None,
+                                resumed: None,
                             })
                         };
                         let request = if hold || SEAL.get().is_some() {
@@ -1071,11 +1102,11 @@ fn serve_workload(
                             }
                         };
                         (
-                            workload::serve(&listener, signals, request, to_guest, timing, &guest_abi),
+                            workload::serve(Some((&listener, signals)), request, to_guest, timing, &guest_abi),
                             false,
                         )
                     }
-                    Command::Warm(link) => {
+                    Command::Warm(link, resumed) => {
                         let client: std::sync::OnceLock<Option<std::os::unix::net::UnixStream>> =
                             std::sync::OnceLock::new();
                         let started = || {
@@ -1123,9 +1154,12 @@ fn serve_workload(
                             // said here, in its daemon's log, before its link closes.
                             stopper.wait_for_snapshot();
                             seal().inspect_err(|e| report(e))?;
-                            let request = crate::warm::receive(&link, to_guest, &|| {
-                                moved().inspect_err(|e| report(e))
-                            })?;
+                            let request = crate::warm::receive(
+                                &link,
+                                to_guest,
+                                &|| moved().inspect_err(|e| report(e)),
+                                resumed,
+                            )?;
                             // The run's own most memory to plug, before its guest hears of
                             // it (D148), none included: the template's is the host's. A VM
                             // with none to plug has what it booted with.
@@ -1135,15 +1169,46 @@ fn serve_workload(
                             // Its swap (D159), mapped into the guest's swap window before
                             // its guest hears of the run, which init swaps to before the
                             // command starts.
+                            // A run restored from a save of it maps back a copy of the swap its
+                            // save kept, which its guest swaps to already (D176).
                             let mut spec = request.spec;
-                            if let Some(file) = request.swap
-                                && let Some(len) = stopper
-                                    .attach_swap(file)
+                            match request.swap {
+                                Some(file) if resumed => stopper
+                                    .restore_swap(file)
                                     .map_err(|e| format!("its swap: {e}"))
-                                    .inspect_err(|e| report(e))?
-                            {
-                                spec.setup.push(format!("swap={len}").into_bytes());
+                                    .inspect_err(|e| report(e))?,
+                                Some(file) => {
+                                    if let Some(len) = stopper
+                                        .attach_swap(file)
+                                        .map_err(|e| format!("its swap: {e}"))
+                                        .inspect_err(|e| report(e))?
+                                    {
+                                        spec.setup.push(format!("swap={len}").into_bytes());
+                                    }
+                                }
+                                None => {}
                             }
+                            // And its connections, awaited before its guest runs, which dials
+                            // them again as it resumes, by its save's tokens; in a guest whose
+                            // init speaks this shards' protocol, as a run is handed only to
+                            // such a guest.
+                            let conns = match &request.tokens {
+                                Some(tokens) => {
+                                    let conns = workload::await_resumed(tokens).inspect_err(|e| report(e))?;
+                                    let abi = stopper.guest_abi();
+                                    if abi != Some(shards_abi::IDENTITY) {
+                                        let spoken = abi.map_or_else(|| "none".to_string(), |abi| format!("{abi:016x}"));
+                                        return Err(format!(
+                                            "the saved microVM's shards-init speaks another shards' protocol ({spoken}, \
+                                             where this shards speaks {:016x}): restore it with the shards that saved it",
+                                            shards_abi::IDENTITY
+                                        ));
+                                    }
+                                    stopper.release();
+                                    Some(conns)
+                                }
+                                None => None,
+                            };
                             timing
                                 .asked
                                 .store(request.timing, std::sync::atomic::Ordering::Relaxed);
@@ -1160,11 +1225,12 @@ fn serve_workload(
                                 saved: Some(&saved),
                                 processes: Some(&processes),
                                 host_net: Some(&host_net),
+                                resumed: conns,
                             })
                         };
+                        let ports = (!resumed).then_some((&listener, signals));
                         let served = workload::serve(
-                            &listener,
-                            signals,
+                            ports,
                             Request::Later(&ask),
                             to_guest,
                             timing,

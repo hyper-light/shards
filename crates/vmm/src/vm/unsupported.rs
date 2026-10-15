@@ -68,6 +68,10 @@ impl Handle {
         match self.0 {}
     }
 
+    pub fn restore_swap(&self, _file: std::fs::File) -> Result<(), String> {
+        match self.0 {}
+    }
+
     pub fn save(&self, _save: Save) -> Result<Saved, String> {
         match self.0 {}
     }

@@ -72,6 +72,15 @@ impl Handle {
             .attach(file)
     }
 
+    /// Maps `file` back into the guest's swap window, a copy of the run's swap a snapshot of
+    /// the run kept (D176), before a held restore's vCPUs run: the length it kept alone.
+    pub fn restore_swap(&self, file: std::fs::File) -> Result<(), String> {
+        self.control
+            .swap()
+            .ok_or("the microVM has no swap window")?
+            .restore_run(Some(file))
+    }
+
     /// Saves the running machine into `save`'s files, a generation its spawner prepared and
     /// commits once this returns (D176), with its vCPUs parked and its devices quiet, as a
     /// template is saved. A machine that goes on runs again before this returns; one that
@@ -199,8 +208,15 @@ impl Handle {
     }
 
     /// Starts the vCPUs of a VM restored with `hold`. Everything else is ready, so this
-    /// is all a start request costs.
+    /// is all a start request costs. A guest whose snapshot kept its run's swap runs only
+    /// with a copy of it mapped back ([`restore_swap`](Handle::restore_swap), D176): one
+    /// without stops, rather than find zeros where it swapped.
     pub fn release(&self) {
+        if self.control.swap().is_some_and(|w| w.wants_run()) {
+            return self.shared.stop(ExitReason::Error(
+                "its snapshot kept its run's swap, which the restore was not given".into(),
+            ));
+        }
         self.shared.release_vcpus();
     }
 
@@ -583,8 +599,10 @@ pub fn restore_from(cfg: &RestoreConfig, pinned: snapshot::Pinned) -> Result<(Ha
         .map(std::fs::File::try_clone)
         .transpose()
         .map_err(|e| format!("its swap file: {e}"))?;
+    // Held, it may be given later, before its vCPUs run (`Handle::restore_swap`).
     match machine.control.swap() {
-        Some(window) => window.restore_run(swap)?,
+        Some(window) if swap.is_some() || !cfg.hold => window.restore_run(swap)?,
+        Some(_) => {}
         None if swap.is_some() => return Err("a run's swap for a microVM without a swap window".into()),
         None => {}
     }

@@ -492,6 +492,10 @@ impl<D: crate::containers::Disk> Daemon<D> {
             self.read_ports(&parsed.args, reply)
         } else if std::ptr::eq(command, &shards_cmdline::commands::SAVE_VM) {
             self.save_vm(&parsed, reply)
+        } else if std::ptr::eq(command, &shards_cmdline::commands::SNAPSHOT_LS) {
+            self.list_snapshots(&parsed, reply)
+        } else if std::ptr::eq(command, &shards_cmdline::commands::SNAPSHOT_RM) {
+            self.remove_snapshots(&parsed, reply)
         } else if std::ptr::eq(command, &READ_PROCESSES) {
             self.read_processes(&parsed.args, false, asker.client, reply)
         } else if std::ptr::eq(command, &commands::WATCH_PROCESSES) {

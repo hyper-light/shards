@@ -3686,6 +3686,50 @@ microVMs, by `a_running_microvm_is_saved_whole_left_running_or_stopped` and
 `a_save_refused_leaves_the_microvm_running_and_nothing_behind` (tests/saved.rs).
 Mutation-checked: removed with `--rm`, and saved with its volume mounted.
 
+`shards restore vm NAME [SNAPSHOT]` resumes a stopped microVM from a snapshot of its own,
+its newest unless named (part 3). It is a start of the container again, as `docker start
+--checkpoint` is one, whose VM restores the snapshot rather than a template: its run's
+log, ports, events and end are a start's. Three things a start does not have make it whole:
+
+- **A cut with nothing in flight.** What the guest's init wrote to the host and the host
+  had not yet read when the vCPUs parked is in neither the host's log nor the guest's
+  memory: lost from every copy restored, and, for a microVM its save stops, from the
+  microVM. So the VM process first asks init to QUIESCE, on the run's connection: init
+  sends all it holds, then QUIESCED, then nothing until RESUME, and the VM process saves
+  once it has read QUIESCED, all before it in the log. What the host sends meanwhile, its
+  stdin and signals, comes after the cut in a restored copy, where it is not, as anything
+  sent after the cut is. Held by `a_microvm_saved_as_it_writes_loses_none_of_its_output`,
+  a guest writing as fast as it can through its save: every count once, up to the save
+  and on from it. Mutation-checked: saved without waiting for QUIESCED, a restored copy's
+  log went from 56,812 to 57,686, the 873 counts between them lost.
+- **Its connections, dialed again, and only by init.** A restore resets the streams the
+  snapshot held (D12). The VM process's run and signal ports take one connection each, so
+  that a workload dialing one finds it taken (AGENTFILE_ARCH.md §9.7); in a restored copy
+  the workload runs already, and would find a fresh port first. So a restored VM process
+  has no run or signal port: the daemon gives each save two tokens, which init holds from
+  QUIESCE on and the generation keeps (`resume`), and a restored init, finding its
+  connection reset and its lineage's generation past the relay's (control::GENERATION),
+  dials the exec port twice, each HELLO one token, as an exec's connection is checked:
+  compared whole, in constant time, by the exec port's one reader. The VM process waits
+  for them before its vCPUs run, and only where the restored init speaks this build's
+  protocol (control::ABI).
+- **Its interface, as its guest holds it.** Its MAC, and its address on a network of its
+  own (D46), are kept with the snapshot, and asked for again as `--mac-address` and `--ip`
+  ask: a member that took the address meanwhile keeps it, and the restore fails with
+  dockerd's words and the snapshot's address. Its swap, a copy of the one the save kept,
+  as sparse, is mapped back before its vCPUs run. Held by
+  `a_saved_microvm_on_a_network_is_restored_at_its_address`, its peers reaching it at its
+  name and that address, mutation-checked (restored at the lowest address free), and by
+  `a_saved_microvm_keeps_what_it_swapped`: 96 MiB of a pattern under a 64 MiB limit, read
+  back whole after the restore.
+
+A microVM restored resumes where it was saved, as often as its snapshot is restored: its
+log goes on from the save, once for each restore. `shards list snapshots NAME` lists a
+microVM's snapshots, newest first, when each was saved and the disk it takes; `shards
+remove snapshot NAME SNAPSHOT...` removes them, and `shards rm` with the microVM. A run on
+the host's network (D124) is not saved: its guest's sockets are the host's, which no
+snapshot keeps.
+
 ### D175. Sockets read in poll(2) on macOS, and streams ended one way at a time
 
 On macOS a read waiting on a Unix stream socket can sleep through its peer's half-close,

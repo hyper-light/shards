@@ -417,6 +417,30 @@ pub fn attach(path: &str, args: &[OsString]) -> ExitCode {
 }
 
 /// Says `why` as the CLI says a plain error, and exits 1 (docker/cli cmd/docker/docker.go).
+/// `shards restore vm MICROVM [SNAPSHOT]` (D176): a stopped microVM resumed by its daemon
+/// from a snapshot of its own, its newest unless named, as `shards start` starts one:
+/// named once it runs.
+pub fn restore(path: &str, args: &[OsString]) -> ExitCode {
+    let argv = match crate::cli::utf8(args) {
+        Ok(argv) => argv,
+        Err(e) => return crate::cli::failed(&e),
+    };
+    let parsed = match crate::cli::read(&shards_cmdline::commands::RESTORE_VM, path, &argv, &validate) {
+        Ok(parsed) => parsed,
+        Err(answered) => return answered,
+    };
+    let Some(microvm) = parsed.args.first().cloned() else {
+        return crate::cli::failed("a microVM is required");
+    };
+    let mut request = Run {
+        again: Some(microvm),
+        resume: Some(parsed.args.get(1).cloned().unwrap_or_default()),
+        detach: true,
+        ..Run::default()
+    };
+    send(&mut request, term::DETACH_KEYS, &mut None, false)
+}
+
 fn refuse(why: &str) -> ExitCode {
     let _ = writeln!(std::io::stderr(), "{why}");
     ExitCode::FAILURE

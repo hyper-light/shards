@@ -120,6 +120,99 @@ pub struct Asked<'a> {
     /// Given its guest's asks of the host on the host's network (D124): each frame's kind,
     /// then its payload.
     pub host_net: Option<&'a Records<'a>>,
+    /// A run its microVM was restored from a save of (D176): no command to send, its
+    /// command running already, and its connections the ones its guest dials again, by the
+    /// save's tokens ([`await_resumed`]).
+    pub resumed: Option<Resumed>,
+}
+
+/// The connections of a run its microVM was restored from a save of (D176), as its guest
+/// dials them again: the workload's, then the signals'.
+#[cfg(unix)]
+pub struct Resumed {
+    run: std::sync::mpsc::Receiver<Result<UnixStream, String>>,
+    signals: std::sync::mpsc::Receiver<Result<UnixStream, String>>,
+}
+
+/// Waits for the connections a restored guest dials again with `tokens` (D176), the
+/// workload's and the signals', as an exec's connection is waited for: by its HELLO on the
+/// exec port, which a workload dialing it learns nothing of a token from.
+#[cfg(unix)]
+pub fn await_resumed(tokens: &[u8]) -> Result<Resumed, String> {
+    let (Some((run, rest)), true) = (
+        tokens.split_first_chunk::<{ run::TOKEN }>(),
+        tokens.len() == 2 * run::TOKEN,
+    ) else {
+        return Err(format!("a resumed run's tokens are {} bytes", tokens.len()));
+    };
+    let signal: [u8; run::TOKEN] = rest.try_into().map_err(|_| "a resumed run's signals token")?;
+    let mut waiting = pending();
+    let mut wait = |token: [u8; run::TOKEN]| {
+        let (to, from) = std::sync::mpsc::channel();
+        let id = NEXT_EXEC.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        waiting.push(Waiting { token, id, to });
+        from
+    };
+    let (run, signals) = (wait(*run), wait(signal));
+    Ok(Resumed { run, signals })
+}
+
+/// A save of the run, as its relay sees it (D176): the guest has said all it held, or the
+/// run's end came first.
+#[cfg(unix)]
+struct Quiescing {
+    quiet: bool,
+    ended: bool,
+}
+
+#[cfg(unix)]
+static QUIESCING: Mutex<Quiescing> = Mutex::new(Quiescing {
+    quiet: false,
+    ended: false,
+});
+#[cfg(unix)]
+static QUIET: std::sync::Condvar = std::sync::Condvar::new();
+
+#[cfg(unix)]
+fn quiescing() -> std::sync::MutexGuard<'static, Quiescing> {
+    QUIESCING.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// Has the guest go quiet for a save of the run (D176), `tokens` the two it dials the host
+/// again with in a microVM restored from it, and waits until it has: all it held said, and
+/// read here, so that none of it is on its way as the save is taken. What the host sends
+/// it meanwhile, its stdin and signals, comes after the save in a restored copy, where it
+/// is not. An error where its command has ended, or has yet to start.
+#[cfg(unix)]
+pub fn quiesce(tokens: &[u8]) -> Result<(), String> {
+    {
+        let mut q = quiescing();
+        if q.ended {
+            return Err("its command has ended".into());
+        }
+        q.quiet = false;
+    }
+    match lock_stdin().as_mut() {
+        Some(conn) => send(conn, kind::QUIESCE, tokens).map_err(|e| format!("asking its guest: {e}"))?,
+        None => return Err("its command has not started".into()),
+    }
+    let mut q = quiescing();
+    while !q.quiet && !q.ended {
+        q = QUIET.wait(q).unwrap_or_else(PoisonError::into_inner);
+    }
+    if !q.quiet {
+        return Err("its command ended first".into());
+    }
+    q.quiet = false;
+    Ok(())
+}
+
+/// Lets the guest go on after a save, taken or not (D176).
+#[cfg(unix)]
+pub fn resume_guest() {
+    if let Some(conn) = lock_stdin().as_mut() {
+        let _ = send(conn, kind::RESUME, &[]);
+    }
 }
 
 /// What hears how a served command ended (`Asked::told`).
@@ -427,18 +520,26 @@ fn with_sink<T>(
 /// Signals go through `to`, on the connection the guest makes to `signals`. The command
 /// goes only to a guest whose init announced this build's contract, `guest_abi`
 /// (shards_abi::control::ABI): an init built for another shards could misread it.
+/// A run its microVM was restored from a save of (D176) has no ports of its own: its
+/// guest dials the exec port again instead ([`Asked::resumed`]).
 #[cfg(unix)]
 pub fn serve(
-    listener: &Port,
-    signals: Port,
+    ports: Option<(&Port, Port)>,
     request: Request<'_>,
     to: &'static ToGuest,
     timing: &Timing,
     guest_abi: &dyn Fn() -> Option<u64>,
 ) -> Result<Ended, String> {
-    let mut conn = listener
-        .recv()
-        .map_err(|_| "the microVM ended before its guest connected".to_string())?;
+    let (listener, signals) = match ports {
+        Some((listener, signals)) => (Some(listener), Some(signals)),
+        None => (None, None),
+    };
+    let first = listener
+        .map(|l| {
+            l.recv()
+                .map_err(|_| "the microVM ended before its guest connected".to_string())
+        })
+        .transpose()?;
     let Asked {
         spec,
         interactive,
@@ -451,6 +552,7 @@ pub fn serve(
         saved,
         processes,
         host_net,
+        resumed,
     } = match request {
         Request::Now { spec, interactive } => Asked {
             spec: *spec,
@@ -464,9 +566,26 @@ pub fn serve(
             saved: None,
             processes: None,
             host_net: None,
+            resumed: None,
         },
         Request::Later(ask) => ask()?,
     };
+    // A restored run's connections, as its guest dials them again (D176): the workload's
+    // now, the signals' on their own thread, below. Its command runs already.
+    let (mut conn, resumed_signals) = match (first, resumed) {
+        (Some(conn), None) => (conn, None),
+        (None, Some(Resumed { run, signals })) => {
+            let conn = run
+                .recv()
+                .map_err(|_| "the microVM ended before its guest dialed again".to_string())??;
+            if let Some(started) = started {
+                started();
+            }
+            (conn, Some(signals))
+        }
+        _ => return Err("a run with no connection to come".into()),
+    };
+    let resuming = resumed_signals.is_some();
     let _ = timing.request_us.set(shards_vmm::log::uptime_us());
     let abi = guest_abi();
     if abi != Some(shards_abi::IDENTITY) {
@@ -477,10 +596,12 @@ pub fn serve(
             shards_abi::IDENTITY
         ));
     }
-    if let Some(layer) = layer_in {
-        send_layer(&mut conn, layer).map_err(|e| format!("sending the container's files: {e}"))?;
+    if !resuming {
+        if let Some(layer) = layer_in {
+            send_layer(&mut conn, layer).map_err(|e| format!("sending the container's files: {e}"))?;
+        }
+        send(&mut conn, kind::SPEC, &spec.encode()).map_err(|e| format!("sending the command: {e}"))?;
     }
-    send(&mut conn, kind::SPEC, &spec.encode()).map_err(|e| format!("sending the command: {e}"))?;
     // The command's stdin, which its client, then those attached, write (`attach`); a
     // detached run's stays open for them, an attached run's closes with its client's
     // (Docker's StdinOnce).
@@ -495,7 +616,7 @@ pub fn serve(
             .name("stdin".into())
             .spawn(forward_stdin)
             .map_err(|e| format!("stdin: {e}"))?;
-    } else if !interactive {
+    } else if !interactive && !resuming {
         send(&mut conn, kind::STDIN, &[]).map_err(|e| format!("closing stdin: {e}"))?;
     }
     lock(to).running = true;
@@ -503,7 +624,12 @@ pub fn serve(
         .name("signal-conn".into())
         .spawn(move || {
             // Ends with the microVM, if the guest never dials.
-            let Ok(mut c) = signals.recv() else {
+            let dialed = match (signals, resumed_signals) {
+                (Some(port), _) => port.recv().ok(),
+                (None, Some(again)) => again.recv().ok().and_then(Result::ok),
+                (None, None) => None,
+            };
+            let Some(mut c) = dialed else {
                 return;
             };
             let mut state = lock(to);
@@ -524,6 +650,9 @@ pub fn serve(
     // past one part is the next part's (review 8.20's reads, which take what has come).
     let mut reader = io::BufReader::with_capacity(run::BUFFERED, shards_ipc::Polled(&conn));
     let status = relay(&mut reader, timing, log.as_mut(), started, processes, host_net);
+    // A save waiting for the guest to go quiet waits no more: its command has ended.
+    quiescing().ended = true;
+    QUIET.notify_all();
     if let Some(told) = told {
         told(&status);
     }
@@ -658,6 +787,11 @@ fn relay_frames(
             }
             kind::SYSTEM_ERR => not_run = Some(String::from_utf8_lossy(payload).into_owned()),
             kind::EXEC_FAILED => exec_failed(payload),
+            // All the guest held is here, the save it was asked for waits on it (D176).
+            kind::QUIESCED => {
+                quiescing().quiet = true;
+                QUIET.notify_all();
+            }
             kind::OOM => oom = true,
             kind::PROCESS => {
                 if let Some(processes) = processes {

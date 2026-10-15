@@ -49,8 +49,10 @@ pub fn main() -> ExitCode {
 /// The commands shards has besides the catalog's: the daemon side's own words.
 /// `daemon` and `guest` are what `run daemon`, `stop daemon` and `configure guest` are
 /// said as, and how the client starts the daemon.
-const OWN: [&str; 20] = [
+const OWN: [&str; 21] = [
     "system",
+    // A microVM's snapshots (`list snapshots`, `remove snapshot`, D176).
+    "snapshot",
     // shards' grammar's views of a microVM (`read ports`, D122; `read` and `watch
     // processes`, D123).
     "read",
@@ -178,7 +180,12 @@ fn dispatch(args: Vec<OsString>) -> ExitCode {
             Ok(home) => client::stop(&home),
             Err(e) => failed(&e),
         },
-        // `shards restore DIR`: a microVM resumed from its snapshot.
+        // `shards restore DIR`: a microVM resumed from the snapshot a directory holds, in
+        // the VM process; anything else names a stopped microVM, which its daemon resumes
+        // from a snapshot of its own (D176).
+        ["restore", target, ..] if names_a_microvm(target) => {
+            request::restore("shards restore vm", args.get(1..).unwrap_or_default())
+        }
         ["restore", ..] => vm(&args),
         // This shards' own version: nothing asked of a daemon (version.rs).
         ["version", ..] => version::run(args.get(1..).unwrap_or_default()),
@@ -199,6 +206,22 @@ fn dispatch(args: Vec<OsString>) -> ExitCode {
             None => crate::shardsd(args.clone()),
         },
     }
+}
+
+/// Whether `restore`'s first argument names a microVM, which its daemon resumes from a
+/// snapshot of its own (D176), rather than a directory holding a snapshot: a name a
+/// microVM may have, and so no path, and no directory of that name here holding a
+/// snapshot's pointer, damaged or not. A path is always a directory's, whose restore says
+/// what is wrong with it.
+fn names_a_microvm(target: &str) -> bool {
+    // As a container's name is (moby daemon/names/names.go): `[a-zA-Z0-9][a-zA-Z0-9_.-]+`.
+    let name = target.as_bytes();
+    let named = name.len() > 1
+        && name.first().is_some_and(u8::is_ascii_alphanumeric)
+        && name
+            .iter()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'.' | b'-'));
+    named && !shards_vmm::snapshot::pointer(std::path::Path::new(target)).exists()
 }
 
 /// A container command, `named` words of `words` naming it: read here, and run by the

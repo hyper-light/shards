@@ -108,6 +108,18 @@ pub mod kind {
     /// guest listening, or its UDP socket bound; what comes to it then going to the guest's
     /// port named ([`HostListen`](super::HostListen)).
     pub const LISTEN: u8 = 34;
+    /// Host to guest, on the workload's connection (D176): the microVM is to be saved. Two
+    /// [`TOKEN`](super::TOKEN)s follow, the workload connection's and then the signal
+    /// connection's. The guest sends all it holds, then [`QUIESCED`], and nothing more
+    /// until [`RESUME`]; or, in a microVM restored from the save, until it has dialed
+    /// [`EXEC_PORT`](super::EXEC_PORT) again for each connection, its [`HELLO`] that
+    /// connection's token.
+    pub const QUIESCE: u8 = 35;
+    /// Guest to host: all it held is sent, and nothing of it is on its way: the microVM may
+    /// be saved.
+    pub const QUIESCED: u8 = 36;
+    /// Host to guest: the microVM goes on as it was, saved or not: send again.
+    pub const RESUME: u8 = 37;
 }
 
 /// A bind of the run's processes on the host's network (`--network host`, D124), as

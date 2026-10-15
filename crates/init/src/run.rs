@@ -183,15 +183,17 @@ pub fn main(device: &str, template: bool) -> ! {
         }
         Ok(workload)
     });
-    let (status, reported) = match started {
+    // The relay hands its connection back: in a microVM restored from a save of the run,
+    // the one it dialed again (D176).
+    let (status, reported, conn) = match started {
         Ok(workload) => {
             let _ = crate::linux::control_write(control::MARKER, marker::WORKLOAD_STARTED);
             let _ = send(&conn, kind::STARTED, &[]);
-            workload.relay(&conn, signals)
+            workload.relay(conn, signals)
         }
         Err(f) => {
             let _ = send(&conn, kind::SYSTEM_ERR, f.message.as_bytes());
-            (f.status, false)
+            (f.status, false, conn)
         }
     };
     // Said by the relay already where containers joined to its network outlived it (D119).
@@ -3805,8 +3807,11 @@ impl Workload {
     /// Relays the workload, and its execs, until they end: its status, and whether its end
     /// was said already, as it is where containers joined to its network outlive it (D119):
     /// its OOM and EXIT as soon as its own output is drained, and its writable layer saved
-    /// as the host asks, while the joiners go on.
-    fn relay(mut self, conn: &File, mut signals: Option<File>) -> (u32, bool) {
+    /// as the host asks, while the joiners go on. And the host's connection, which a save of
+    /// the run may have it dial again (D176): the microVM saved goes quiet for the save, and
+    /// a microVM restored from it dials the host anew, with the tokens the save gave.
+    fn relay(mut self, conn: File, mut signals: Option<File>) -> (u32, bool, File) {
+        let mut conn = conn;
         let mut host = Some(conn.as_raw_fd());
         for fd in [host, self.stdin.as_ref().map(AsRawFd::as_raw_fd)]
             .into_iter()
@@ -3823,6 +3828,19 @@ impl Workload {
         let mut status: Option<u32> = None;
         let mut execs: Vec<Exec> = Vec::new();
         let mut buf = vec![0u8; CHUNK];
+        // A save of the run (D176): asked to QUIESCE, it sends the host all it holds and then
+        // QUIESCED (`flushing`), then nothing more (`quiet`) until the host says RESUME or, in
+        // a microVM restored from the save, until it has dialed the host again with the save's
+        // `tokens`; what comes meanwhile waits in `to_host`. A lineage's generation past
+        // `born` says its microVM was restored since (control::GENERATION); `lost`, that the
+        // host's connection was, in one.
+        let mut flushing: Option<Outbox> = None;
+        let mut quiet = false;
+        // The host's end of its connection read: nothing more comes on it.
+        let mut host_eof = false;
+        let mut tokens: Option<Tokens> = None;
+        let mut born = generation();
+        let mut lost = false;
         // The workload ended while containers joined to its network ran (D119); its end
         // said; the host's ask for its writable layer heard, or its end of asking; the
         // child of init's sending that layer meanwhile.
@@ -3885,6 +3903,8 @@ impl Workload {
             // or closed the connection, which the run's end after the loop does not
             // wait for again (D119).
             if exited
+                && flushing.is_none()
+                && !quiet
                 && self.stdout.is_none()
                 && self.stderr.is_none()
                 && (to_host.is_empty() || host.is_none())
@@ -3914,12 +3934,23 @@ impl Workload {
                 }
             };
             poll(Some(self.sigchld.as_raw_fd()), libc::POLLIN, Owner::Sigchld);
-            let host_events = if (!exited && !stdin_eof && to_stdin.len() < BUFFERED) || (reported && !asked)
+            // Quiet for a save, it reads on: the host's RESUME, or a restore's reset (D176).
+            let sending = match &flushing {
+                Some(f) => !f.is_empty(),
+                None => !quiet && !to_host.is_empty(),
+            };
+            // Read while the run goes on, its stdin closed or not: the host asks for a save
+            // on it, and a restore resets it (D176). Its stdin waits while it holds enough.
+            let host_events = if !host_eof
+                && ((!exited && (stdin_eof || to_stdin.len() < BUFFERED))
+                    || (reported && !asked)
+                    || quiet
+                    || flushing.is_some())
             {
                 libc::POLLIN
             } else {
                 0
-            } | if to_host.is_empty() { 0 } else { libc::POLLOUT };
+            } | if sending { libc::POLLOUT } else { 0 };
             // The workload's layer is written to it meanwhile, by a child of init's: what
             // init has for the host waits until it has been, after it.
             poll(host.filter(|_| packing.is_none()), host_events, Owner::Host);
@@ -4102,36 +4133,68 @@ impl Workload {
                     }
                     Owner::Host => {
                         if p.revents & libc::POLLOUT != 0 {
-                            match write(fd, to_host.pending()) {
-                                Ok(n) => to_host.written(n),
+                            let out = flushing.as_mut().unwrap_or(&mut to_host);
+                            match write(fd, out.pending()) {
+                                Ok(n) => out.written(n),
+                                // A connection a restore reset is dialed again, below
+                                // (D176).
+                                Err(_) if tokens.is_some() && generation() > born => lost = true,
                                 Err(_) => host = None,
                             }
+                            // All it held is said, and QUIESCED after it: quiet from here.
+                            if flushing.as_ref().is_some_and(Outbox::is_empty) {
+                                flushing = None;
+                                quiet = true;
+                            }
                         }
-                        if p.revents & (libc::POLLIN | libc::POLLHUP | libc::POLLERR) != 0 && host.is_some() {
+                        if p.revents & (libc::POLLIN | libc::POLLHUP | libc::POLLERR) != 0
+                            && host.is_some()
+                            && !lost
+                        {
                             match read(fd, &mut buf) {
                                 Err(e) if e.kind() == io::ErrorKind::WouldBlock => {}
+                                Ok(0) | Err(_) if tokens.is_some() && generation() > born => lost = true,
                                 // The host is gone: nothing more for stdin, nor any ask.
                                 Ok(0) | Err(_) => {
                                     stdin_eof = true;
+                                    host_eof = true;
                                     asked |= reported;
                                 }
                                 Ok(n) => {
                                     from_host.extend_from_slice(buf.get(..n).unwrap_or_default());
                                     let mut closed = false;
                                     let mut save = false;
+                                    let (mut quiesce, mut resume) = (None, false);
                                     let whole = each_frame(&mut from_host, |which, payload| {
                                         if which == kind::STDIN && !reported {
                                             closed |= payload.is_empty();
                                             to_stdin.extend(&[payload]);
                                         }
                                         save |= which == kind::SAVE && reported;
+                                        if which == kind::QUIESCE {
+                                            quiesce = Tokens::read(payload);
+                                        }
+                                        resume |= which == kind::RESUME;
                                     });
                                     stdin_eof |= closed || !whole;
                                     // Its writable layer, as the host asks once it has the
                                     // end (layer.rs), sent beside its joiners as they go on.
                                     if save && !asked {
                                         asked = true;
-                                        packing = send_workload_layer(conn);
+                                        packing = send_workload_layer(&conn);
+                                    }
+                                    // A save asked for (D176): what it holds goes, then
+                                    // QUIESCED, and nothing that comes after either.
+                                    if let Some(t) = quiesce
+                                        && flushing.is_none()
+                                        && !quiet
+                                    {
+                                        tokens = Some(t);
+                                        to_host.extend(&[&run::header(kind::QUIESCED, 0)]);
+                                        flushing = Some(std::mem::take(&mut to_host));
+                                    }
+                                    if resume {
+                                        quiet = false;
                                     }
                                 }
                             }
@@ -4339,6 +4402,36 @@ impl Workload {
                     }
                 }
             }
+            // Restored from a save of the run (D176): the host's connections, which the
+            // restore reset, dialed again with the save's tokens, and what waited goes on.
+            // Execs' connections are their clients', which went with the microVM saved.
+            if lost {
+                lost = false;
+                match tokens.take().map(|t| redial(&t)) {
+                    Some(Ok((run, signal))) => {
+                        conn = run;
+                        set_nonblocking(conn.as_raw_fd(), true);
+                        host = Some(conn.as_raw_fd());
+                        host_eof = false;
+                        from_host.clear();
+                        signals = Some(signal);
+                        signals_connected = true;
+                        from_signals.clear();
+                        quiet = false;
+                        born = generation();
+                    }
+                    failed => {
+                        if let Some(Err(e)) = failed {
+                            let _ =
+                                writeln!(io::stderr(), "shards-init: dialing the host after a restore: {e}");
+                        }
+                        host = None;
+                        stdin_eof = true;
+                        asked |= reported;
+                        quiet = false;
+                    }
+                }
+            }
             if stdin_eof && to_stdin.is_empty() {
                 self.stdin = None;
             }
@@ -4361,8 +4454,50 @@ impl Workload {
         if let Some(fd) = host {
             set_nonblocking(fd, false);
         }
-        (status.unwrap_or(NOT_RUN), reported)
+        (status.unwrap_or(NOT_RUN), reported, conn)
     }
+}
+
+/// A save's tokens (D176), each a connection's to dial the host again with in a microVM
+/// restored from it: the workload's, then the signals'.
+#[derive(Clone, Copy)]
+struct Tokens {
+    run: [u8; run::TOKEN],
+    signal: [u8; run::TOKEN],
+}
+
+impl Tokens {
+    /// The tokens a QUIESCE frame carries; none from one of another length.
+    fn read(payload: &[u8]) -> Option<Tokens> {
+        let (run, signal) = payload.split_first_chunk::<{ run::TOKEN }>()?;
+        Some(Tokens {
+            run: *run,
+            signal: <[u8; run::TOKEN]>::try_from(signal).ok()?,
+        })
+    }
+}
+
+/// How many restores this microVM's lineage went through (control::GENERATION): one more
+/// than the relay saw says it was restored meanwhile.
+fn generation() -> u64 {
+    crate::linux::control_read64(control::GENERATION).unwrap_or(0)
+}
+
+/// Dials the host again in a microVM restored from a save of the run (D176): the
+/// workload's connection and the signals', each a connection to the exec port whose
+/// [`kind::HELLO`] is the save's token for it, which init alone holds: the host's own ports
+/// are gone with the microVM saved, and the workload, running already, could dial a fresh
+/// one first. The signals' is nonblocking, as the relay reads it.
+fn redial(tokens: &Tokens) -> io::Result<(File, File)> {
+    let hello = |token: &[u8; run::TOKEN]| -> io::Result<File> {
+        let conn = dial(run::EXEC_PORT, true)?;
+        send(&conn, kind::HELLO, token)?;
+        Ok(conn)
+    };
+    let run = hello(&tokens.run)?;
+    let signal = hello(&tokens.signal)?;
+    set_nonblocking(signal.as_raw_fd(), true);
+    Ok((run, signal))
 }
 
 /// Reaps every exited child, telling `exited` each one's pid and status: its code, or

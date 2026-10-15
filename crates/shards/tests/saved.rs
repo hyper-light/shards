@@ -176,6 +176,30 @@ fn a_running_microvm_is_saved_whole_left_running_or_stopped() {
     let not = shards(&["save", "vm", "counter", "later"]);
     assert_eq!(not.status, Some(1), "{not}");
     assert!(not.stderr.ends_with("counter is not running\n"), "{not}");
+    // Its snapshots, newest first; removed by name, each said as it goes.
+    let listed = shards(&["list", "snapshots", "counter"]);
+    assert_eq!(listed.status, Some(0), "{listed}");
+    let rows: Vec<Vec<&str>> = listed
+        .stdout
+        .lines()
+        .map(|l| l.split_whitespace().collect())
+        .collect();
+    assert_eq!(rows[0], ["SNAPSHOT", "SAVED", "SIZE"], "{listed}");
+    let names: Vec<&str> = rows[1..].iter().map(|r| r[0]).collect();
+    assert_eq!(names, [name.as_str(), "first"], "{listed}");
+    assert!(rows[1].contains(&"ago"), "{listed}");
+    let removed = shards(&["remove", "snapshot", "counter", "first", "never"]);
+    assert_eq!(
+        (removed.status, removed.stdout.as_str()),
+        (Some(1), "first\n"),
+        "{removed}"
+    );
+    assert!(
+        removed.stderr.ends_with("counter has no snapshot named never\n"),
+        "{removed}"
+    );
+    let left = shards(&["list", "snapshots", "counter"]);
+    assert_eq!(left.stdout.lines().count(), 2, "{left}");
 }
 
 /// A save a microVM cannot keep whole is refused, and the microVM goes on as it was, with
@@ -212,4 +236,358 @@ fn a_save_refused_leaves_the_microvm_running_and_nothing_behind() {
     assert!(left.is_empty(), "{left:?}");
     let _ = shards(&["kill", "mounted"]);
     let _ = exit(&mut client);
+    // On the host's network its guest's sockets are the host's, which no snapshot keeps.
+    let run = shards(&[
+        "run",
+        "-d",
+        "--pull",
+        "never",
+        "--name",
+        "hosted",
+        "--network",
+        "host",
+        &image,
+        "sleep",
+    ]);
+    assert_eq!(run.status, Some(0), "{run}");
+    let refused = shards(&["save", "vm", "hosted"]);
+    assert_eq!(refused.status, Some(1), "{refused}");
+    assert!(refused.stderr.contains("on the host's network"), "{refused}");
+    assert_eq!(shards(&["rm", "-f", "hosted"]).status, Some(0));
+}
+
+/// `shards logs NAME`'s stdout.
+fn logs(home: &Path, name: &str) -> String {
+    let logs = shards_in(home, &["logs", name]);
+    assert_eq!(logs.status, Some(0), "{logs}");
+    logs.stdout
+}
+
+/// The counts a counter's log holds, in order.
+fn counts(logs: &str) -> Vec<u64> {
+    logs.lines().filter_map(|l| l.parse().ok()).collect()
+}
+
+/// Waits until `done`, failing the test after TIMEOUT with what `said` says then.
+fn until(what: &str, done: &mut dyn FnMut() -> bool, said: &dyn Fn() -> String) {
+    let deadline = Instant::now() + TIMEOUT;
+    while !done() {
+        assert!(Instant::now() < deadline, "{what}: {}", said());
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// A microVM its save stopped resumes where it was saved, from its newest snapshot or the
+/// one named: its counter goes on from the count it had, its log holding each count once
+/// up to the save and then each after it once more for each restore, nothing of its output
+/// lost at the save or said twice there. A running one, or a snapshot it has not, is no
+/// restore's.
+#[test]
+fn a_saved_microvm_resumes_where_it_was_saved() {
+    let Some((home, image)) = home("resumed") else {
+        return;
+    };
+    if cannot_snapshot() {
+        return;
+    }
+    let shards = |args: &[&str]| shards_in(&home, args);
+    let run = shards(&[
+        "run", "-d", "--pull", "never", "--name", "counter", &image, "counter", "20",
+    ]);
+    assert_eq!(run.status, Some(0), "{run}");
+    let log = || logs(&home, "counter");
+    until("counting", &mut || counts(&log()).len() >= 10, &log);
+    let running = shards(&["restore", "vm", "counter"]);
+    assert_eq!(running.status, Some(1), "{running}");
+    assert!(running.stderr.contains("counter is running"), "{running}");
+    let saved = shards(&["save", "vm", "counter", "first"]);
+    assert_eq!(saved.status, Some(0), "{saved}");
+    let before = counts(&log());
+    let n = before.len() as u64;
+    assert_eq!(
+        before,
+        (1..=n).collect::<Vec<_>>(),
+        "each count once, up to the save"
+    );
+    let none = shards(&["restore", "vm", "counter", "second"]);
+    assert_eq!(none.status, Some(1), "{none}");
+    assert!(
+        none.stderr.contains("counter has no snapshot named second"),
+        "{none}"
+    );
+    // Its newest.
+    let restored = shards(&["restore", "vm", "counter"]);
+    assert_eq!(
+        (restored.status, restored.stdout.as_str()),
+        (Some(0), "counter\n"),
+        "{restored}"
+    );
+    until("counting on", &mut || counts(&log()).len() as u64 >= n + 10, &log);
+    let after = counts(&log());
+    assert_eq!(
+        after.get(..(n + 10) as usize),
+        Some(&(1..=n + 10).collect::<Vec<_>>()[..]),
+        "the count going on where it was saved"
+    );
+    let ps = shards(&["ps", "--filter", "name=counter", "--format", "{{.Status}}"]);
+    assert!(ps.stdout.starts_with("Up "), "{ps}");
+    // Stopped, and resumed again from the same snapshot, by name: from where it was saved.
+    assert_eq!(shards(&["kill", "counter"]).status, Some(0));
+    let ended = counts(&log()).len();
+    let again = shards(&["restore", "vm", "counter", "first"]);
+    assert_eq!(again.status, Some(0), "{again}");
+    until(
+        "counting from the save again",
+        &mut || counts(&log()).len() >= ended + 5,
+        &log,
+    );
+    let resumed = counts(&log());
+    assert_eq!(
+        resumed.get(ended..ended + 5),
+        Some(&(n + 1..=n + 5).collect::<Vec<_>>()[..]),
+        "{resumed:?}"
+    );
+    assert_eq!(shards(&["kill", "counter"]).status, Some(0));
+}
+
+/// A microVM saved and left running is restored from where it was saved, once stopped:
+/// its counter goes on from the count of the save, not of its stop.
+#[test]
+fn a_microvm_saved_and_left_running_is_restored_from_its_save() {
+    let Some((home, image)) = home("resumed-left") else {
+        return;
+    };
+    if cannot_snapshot() {
+        return;
+    }
+    let shards = |args: &[&str]| shards_in(&home, args);
+    let run = shards(&[
+        "run", "-d", "--pull", "never", "--name", "counter", &image, "counter", "20",
+    ]);
+    assert_eq!(run.status, Some(0), "{run}");
+    let log = || logs(&home, "counter");
+    until("counting", &mut || counts(&log()).len() >= 5, &log);
+    // The save's cut is between what its log held before it was asked for and what it
+    // holds once it is done: left running, the microVM counts on as it is committed.
+    let asked = counts(&log()).len() as u64;
+    let saved = shards(&["save", "vm", "counter", "early", "--leave-running"]);
+    assert_eq!(saved.status, Some(0), "{saved}");
+    let at = counts(&log()).len() as u64;
+    until(
+        "counting on",
+        &mut || counts(&log()).len() as u64 >= at + 10,
+        &log,
+    );
+    assert_eq!(shards(&["kill", "counter"]).status, Some(0));
+    let ended = counts(&log()).len();
+    let restored = shards(&["restore", "vm", "counter", "early"]);
+    assert_eq!(restored.status, Some(0), "{restored}");
+    until(
+        "counting from its save",
+        &mut || counts(&log()).len() >= ended + 3,
+        &log,
+    );
+    let resumed = counts(&log());
+    // From the count after the last its log held at the save's cut.
+    let first = resumed[ended];
+    assert!(
+        (asked + 1..=at + 1).contains(&first),
+        "{first} after a save between {asked} and {at}: {resumed:?}"
+    );
+    assert_eq!(resumed[ended + 1], first + 1, "{resumed:?}");
+    assert_eq!(shards(&["kill", "counter"]).status, Some(0));
+}
+
+/// What a microVM swapped out under its memory limit comes back with it: saved, its swap
+/// is kept beside its snapshot, and restored, a copy is mapped back before its guest runs.
+#[test]
+fn a_saved_microvm_keeps_what_it_swapped() {
+    let Some((home, image)) = home("resumed-swap") else {
+        return;
+    };
+    if cannot_snapshot() {
+        return;
+    }
+    let shards = |args: &[&str]| shards_in(&home, args);
+    let run = shards(&[
+        "run",
+        "-d",
+        "--pull",
+        "never",
+        "--name",
+        "swapped",
+        "-m",
+        "64m",
+        &image,
+        "swap-kept",
+        "96",
+    ]);
+    assert_eq!(run.status, Some(0), "{run}");
+    let log = || logs(&home, "swapped");
+    until("its pattern kept", &mut || log().contains("kept 2\n"), &log);
+    let saved = shards(&["save", "vm", "swapped", "full"]);
+    assert_eq!(saved.status, Some(0), "{saved}");
+    let snapshot = home
+        .join("containers")
+        .join(id_of(&home, "swapped"))
+        .join("snapshots")
+        .join("full");
+    let swap = common::snapshot_file(&snapshot, "swap");
+    let kept = std::fs::metadata(&swap).unwrap();
+    assert!(kept.len() > 0, "no swap kept");
+    let rounds = log().matches("kept ").count();
+    let restored = shards(&["restore", "vm", "swapped"]);
+    assert_eq!(restored.status, Some(0), "{restored}");
+    until(
+        "its pattern kept after the restore",
+        &mut || log().matches("kept ").count() >= rounds + 3,
+        &log,
+    );
+    assert!(!log().contains("lost"), "{}", log());
+    assert_eq!(shards(&["kill", "swapped"]).status, Some(0));
+}
+
+/// A microVM saved as it writes as fast as it can loses none of its output at the save's
+/// cut, nor says any twice: all it held went to its log before it was saved, and what it
+/// wrote after waits in it, for the copy restored, which says it from there.
+#[test]
+fn a_microvm_saved_as_it_writes_loses_none_of_its_output() {
+    let Some((home, image)) = home("resumed-firehose") else {
+        return;
+    };
+    if cannot_snapshot() {
+        return;
+    }
+    let shards = |args: &[&str]| shards_in(&home, args);
+    let run = shards(&[
+        "run", "-d", "--pull", "never", "--name", "counter", &image, "counter", "0",
+    ]);
+    assert_eq!(run.status, Some(0), "{run}");
+    let log = || logs(&home, "counter");
+    until("counting", &mut || counts(&log()).len() >= 2000, &|| {
+        String::new()
+    });
+    let saved = shards(&["save", "vm", "counter", "midstream"]);
+    assert_eq!(saved.status, Some(0), "{saved}");
+    let before = counts(&log());
+    let n = before.len() as u64;
+    assert!(
+        before == (1..=n).collect::<Vec<_>>(),
+        "each count once, up to the save: {n} counts"
+    );
+    let restored = shards(&["restore", "vm", "counter"]);
+    assert_eq!(restored.status, Some(0), "{restored}");
+    until(
+        "counting on",
+        &mut || counts(&log()).len() as u64 >= n + 2000,
+        &|| String::new(),
+    );
+    let after = counts(&log());
+    assert!(
+        after.get(..(n + 2000) as usize) == Some(&(1..=n + 2000).collect::<Vec<_>>()[..]),
+        "the count going on where it was saved, at {n}: {:?}",
+        after.get(n.saturating_sub(3) as usize..(n + 3) as usize)
+    );
+    assert_eq!(shards(&["kill", "counter"]).status, Some(0));
+}
+
+/// A microVM on a network of its own is restored at its address there (D46, D176): its
+/// guest holds it as it was saved, and its peers reach it at its name and that address,
+/// its listening socket as it left it. Another member that took the address meanwhile
+/// keeps it, and the restore says so.
+#[test]
+fn a_saved_microvm_on_a_network_is_restored_at_its_address() {
+    let Some((home, image)) = home("resumed-net") else {
+        return;
+    };
+    if cannot_snapshot() {
+        return;
+    }
+    let shards = |args: &[&str]| shards_in(&home, args);
+    let made = shards(&["network", "create", "--subnet", "10.79.3.0/24", "savedlan"]);
+    assert_eq!(made.status, Some(0), "{made}");
+    // A member below it, gone by its restore: the lowest address free then is not its own.
+    let below = shards(&[
+        "run",
+        "-d",
+        "--pull",
+        "never",
+        "--name",
+        "below",
+        "--network",
+        "savedlan",
+        &image,
+        "sleep",
+    ]);
+    assert_eq!(below.status, Some(0), "{below}");
+    let run = shards(&[
+        "run",
+        "-d",
+        "--pull",
+        "never",
+        "--name",
+        "srv",
+        "--network",
+        "savedlan",
+        &image,
+        "serve",
+        "7000",
+        "5",
+    ]);
+    assert_eq!(run.status, Some(0), "{run}");
+    until("serving", &mut || logs(&home, "srv").contains("ready\n"), &|| {
+        logs(&home, "srv")
+    });
+    let address = |name: &str| {
+        let r = shards(&[
+            "inspect",
+            "-f",
+            "{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}",
+            name,
+        ]);
+        r.stdout.trim().to_string()
+    };
+    let ask = |at: &str| {
+        let mut args: Vec<String> = ["run", "--rm", "--pull", "never", "--network", "savedlan"]
+            .map(String::from)
+            .to_vec();
+        args.extend([image.clone(), "ask".into(), format!("{at}:7000")]);
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        shards(&args)
+    };
+    let saved_at = address("srv");
+    assert!(saved_at.starts_with("10.79.3."), "{saved_at}");
+    let asked = ask("srv");
+    assert!(asked.stdout.starts_with("ask from "), "{asked}");
+    let saved = shards(&["save", "vm", "srv", "serving"]);
+    assert_eq!(saved.status, Some(0), "{saved}");
+    assert_eq!(shards(&["rm", "-f", "below"]).status, Some(0));
+    let restored = shards(&["restore", "vm", "srv"]);
+    assert_eq!(restored.status, Some(0), "{restored}");
+    assert_eq!(address("srv"), saved_at);
+    for at in ["srv", saved_at.as_str()] {
+        let asked = ask(at);
+        assert!(asked.stdout.starts_with("ask from "), "{at}: {asked}");
+    }
+    // Stopped, its address is another's to take: then its restore fails, and says why.
+    assert_eq!(shards(&["kill", "srv"]).status, Some(0));
+    let taker = shards(&[
+        "run",
+        "-d",
+        "--pull",
+        "never",
+        "--name",
+        "taker",
+        "--network",
+        "savedlan",
+        "--ip",
+        &saved_at,
+        &image,
+        "sleep",
+    ]);
+    assert_eq!(taker.status, Some(0), "{taker}");
+    let refused = shards(&["restore", "vm", "srv"]);
+    assert_eq!(refused.status, Some(1), "{refused}");
+    assert!(refused.stderr.contains(&saved_at), "{refused}");
+    assert_eq!(shards(&["rm", "-f", "taker"]).status, Some(0));
 }

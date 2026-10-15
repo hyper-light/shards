@@ -267,8 +267,13 @@ impl SwapWindow {
         // block only as it writes it back would count none, and the copy would lose it.
         // SAFETY: the mapping `mapped` holds, which stays while its lock is held.
         unsafe { platform::flush_shared(mapped.host, mapped.len) }.map_err(at)?;
-        copy_used(&mapped.file, to, mapped.len as u64).map_err(at)?;
+        platform::copy_used(&mapped.file, to, mapped.len as u64).map_err(at)?;
         Ok(mapped.len as u64)
+    }
+
+    /// Whether its snapshot kept a run's swap that is not mapped back yet (D176).
+    pub fn wants_run(&self) -> bool {
+        self.kept.load(Ordering::Acquire) > 0 && !self.attached()
     }
 
     /// The length of the run's file mapped, which a snapshot keeps; 0 for none.
@@ -322,47 +327,6 @@ impl SwapWindow {
 /// The most of a run's swap file written before it is mapped: the largest page a guest
 /// kernel has (arm64's 64 KiB), which holds its swap area's header.
 const FIRST_PAGE: usize = 64 << 10;
-
-/// Copies `from`'s first `len` bytes into `to`, which is `len` bytes long after: the ranges
-/// its OS says hold data, and of them only the blocks not all zeros, so that `to` takes no
-/// more of a disk than `from` does.
-fn copy_used(from: &File, to: &File, len: u64) -> std::io::Result<()> {
-    const CHUNK: usize = 1 << 20;
-    const BLOCK: usize = 4 << 10;
-    to.set_len(0)?;
-    let mut buf = vec![0u8; CHUNK];
-    for (start, n) in platform::data_ranges(from, len)? {
-        let end = start.saturating_add(n).min(len);
-        let mut at = start;
-        while at < end {
-            let want = usize::try_from(end - at).map_or(CHUNK, |rest| rest.min(CHUNK));
-            let chunk = buf.get_mut(..want).ok_or(std::io::ErrorKind::InvalidInput)?;
-            platform::read_exact_at(from, chunk, at)?;
-            // Each run of blocks not all zeros, in one write.
-            let mut run = None;
-            for (i, block) in chunk.chunks(BLOCK).enumerate() {
-                let used = block.iter().any(|&b| b != 0);
-                match (run, used) {
-                    (None, true) => run = Some(i * BLOCK),
-                    (Some(first), false) => {
-                        platform::write_all_at(
-                            to,
-                            chunk.get(first..i * BLOCK).unwrap_or_default(),
-                            at + first as u64,
-                        )?;
-                        run = None;
-                    }
-                    _ => {}
-                }
-            }
-            if let Some(first) = run {
-                platform::write_all_at(to, chunk.get(first..).unwrap_or_default(), at + first as u64)?;
-            }
-            at += want as u64;
-        }
-    }
-    to.set_len(len)
-}
 
 /// Read-only zeros for a window's head: an anonymous reservation never written.
 struct Zeros {

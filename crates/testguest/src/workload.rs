@@ -343,6 +343,11 @@ pub fn main() -> ! {
             }
             await_process(arg(2), arg(3).parse().unwrap_or(1), "")
         }
+        // MIB MiB of a pattern of its own, more than a memory limit lets it hold, so that
+        // some is swapped out: then each round reads all of it back, every 200 ms, and says
+        // `kept ROUND`, or `lost AT` and ends 1 at the first byte not as written: what a
+        // saved microVM keeps of its swap, and a restore of it maps back (D176).
+        "swap-kept" => swap_kept(arg(1).parse().unwrap_or(0)),
         // A counter in memory, printed as it grows, every `arg(1)` ms (100 if none): what a
         // saved microVM keeps, and a restore of it goes on from (D176).
         "counter" => {
@@ -4703,6 +4708,31 @@ fn walk(mib: usize, steps: u64) -> i32 {
     }
     let ns = start.elapsed().as_nanos() as f64 / steps.max(1) as f64;
     let _ = writeln!(io::stdout(), "walk {ns:.2} ns ended at {at}");
+    0
+}
+
+/// `swap-kept MIB`: MIB MiB of a pattern of its own, then each round reads all of it back
+/// (`main`).
+fn swap_kept(mib: usize) -> i32 {
+    let byte = |i: usize| (i.wrapping_mul(2_654_435_761) >> 13) as u8;
+    let held: Vec<Vec<u8>> = (0..mib)
+        .map(|m| (0..1 << 20).map(|i| byte((m << 20) | i)).collect())
+        .collect();
+    let _ = writeln!(io::stdout(), "ready");
+    for round in 1u64.. {
+        for (m, chunk) in held.iter().enumerate() {
+            if let Some(at) = chunk
+                .iter()
+                .enumerate()
+                .position(|(i, &b)| b != byte((m << 20) | i))
+            {
+                let _ = writeln!(io::stdout(), "lost {}", (m << 20) + at);
+                return 1;
+            }
+        }
+        let _ = writeln!(io::stdout(), "kept {round}");
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
     0
 }
 

@@ -36,6 +36,8 @@ pub enum Thing {
     Agentfile,
     /// A registry images are pulled from and pushed to, which `login` and `logout` reach.
     Registry,
+    /// A microVM's snapshots, what `save vm` saves it as (D176).
+    Snapshot,
 }
 
 impl Thing {
@@ -54,6 +56,7 @@ impl Thing {
             "mcp" => Some(Thing::Mcp),
             "agentfile" | "agentfiles" => Some(Thing::Agentfile),
             "registry" | "registries" => Some(Thing::Registry),
+            "snapshot" | "snapshots" => Some(Thing::Snapshot),
             _ => None,
         }
     }
@@ -79,7 +82,8 @@ pub fn rewrite(args: &[String]) -> Option<Vec<String>> {
                 | Thing::Harness
                 | Thing::Mcp
                 | Thing::Agentfile
-                | Thing::Registry,
+                | Thing::Registry
+                | Thing::Snapshot,
             ),
             _,
         ) => {
@@ -103,6 +107,8 @@ pub fn rewrite(args: &[String]) -> Option<Vec<String>> {
         ("prune", Thing::Image) => &["image", "prune"],
         ("prune", Thing::System) => &["system", "prune"],
         ("list" | "ls", Thing::Volume) => &["volume", "ls"],
+        ("list" | "ls", Thing::Snapshot) => &["snapshot", "ls"],
+        ("remove" | "rm" | "delete", Thing::Snapshot) => &["snapshot", "rm"],
         ("create" | "make", Thing::Volume) => &["volume", "create"],
         ("create" | "make", Thing::Agentfile) => &["agentfile"],
         ("remove" | "rm" | "delete", Thing::Volume) => &["volume", "rm"],
@@ -240,8 +246,8 @@ pub static ACTIONS: &[(&str, &str, &str, &str)] = &[
     (
         "inspect",
         "list",
-        "vm | image | volume",
-        "List microVMs, images, or volumes",
+        "vm | image | volume | snapshot",
+        "List microVMs, images, volumes, or a microVM's snapshots",
     ),
     ("inspect", "logs", "vm", "Show what a microVM's command printed"),
     (
@@ -269,8 +275,8 @@ pub static ACTIONS: &[(&str, &str, &str, &str)] = &[
     (
         "manage",
         "remove",
-        "vm | image | volume",
-        "Remove microVMs, images with their stopped microVMs, or volumes",
+        "vm | image | volume | snapshot",
+        "Remove microVMs, images with their stopped microVMs, volumes, or snapshots",
     ),
     ("manage", "rename", "vm", "Name a microVM again"),
     (
@@ -350,6 +356,12 @@ pub static USES: &[(&str, &str, &str, &str)] = &[
         "Make a volume microVMs can mount, named or not",
     ),
     ("run", "restore", "vm DIR", "Resume a microVM from a snapshot"),
+    (
+        "run",
+        "restore",
+        "vm NAME [SNAPSHOT]",
+        "Resume a stopped microVM where it was saved, from its newest snapshot unless SNAPSHOT names one",
+    ),
     (
         "run",
         "save",
@@ -436,6 +448,12 @@ pub static USES: &[(&str, &str, &str, &str)] = &[
     ),
     (
         "inspect",
+        "list",
+        "snapshots NAME",
+        "List a microVM's snapshots, newest first: when each was saved, and what it takes on disk",
+    ),
+    (
+        "inspect",
         "logs",
         "vm NAME",
         "Show what a microVM's command printed",
@@ -494,6 +512,12 @@ pub static USES: &[(&str, &str, &str, &str)] = &[
         "remove",
         "volume NAME",
         "Remove volumes no microVM mounts",
+    ),
+    (
+        "manage",
+        "remove",
+        "snapshot NAME SNAPSHOT...",
+        "Remove snapshots of a microVM",
     ),
     ("manage", "rename", "vm NAME NEW_NAME", "Name a microVM again"),
     (
@@ -619,6 +643,13 @@ mod tests {
         );
         assert_eq!(said("push image mine").as_deref(), Some("push --convert mine"));
         assert_eq!(said("save image a b").as_deref(), Some("save --convert a b"));
+        // A microVM's snapshots (D176).
+        assert_eq!(said("list snapshots web").as_deref(), Some("snapshot ls web"));
+        assert_eq!(
+            said("remove snapshot web first second").as_deref(),
+            Some("snapshot rm web first second")
+        );
+        assert_eq!(said("snapshot ls web"), None);
         // A running microVM saved whole (D176), however it is named.
         assert_eq!(said("save vm web").as_deref(), Some("save vm web"));
         assert_eq!(
@@ -632,6 +663,9 @@ mod tests {
             Some("run --kernel k --cpus 2")
         );
         assert_eq!(said("restore vm dir").as_deref(), Some("restore dir"));
+        // A saved microVM, by its name and its snapshot's (D176): the daemon's to tell it
+        // from a directory holding a snapshot.
+        assert_eq!(said("restore vm web first").as_deref(), Some("restore web first"));
         // Docker's management form, turned round.
         assert_eq!(said("image rm alpine").as_deref(), Some("rmi --vms alpine"));
         assert_eq!(said("container ls").as_deref(), Some("ps"));

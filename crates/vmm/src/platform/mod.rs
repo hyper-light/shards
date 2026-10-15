@@ -173,6 +173,47 @@ pub fn write_all_at(file: &File, buf: &[u8], offset: u64) -> io::Result<()> {
     Ok(())
 }
 
+/// Copies `from`'s first `len` bytes into `to`, which is `len` bytes long after: the ranges
+/// its OS says hold data, and of them only the blocks not all zeros, so that `to` takes no
+/// more of a disk than `from` does.
+pub fn copy_used(from: &File, to: &File, len: u64) -> io::Result<()> {
+    const CHUNK: usize = 1 << 20;
+    const BLOCK: usize = 4 << 10;
+    to.set_len(0)?;
+    let mut buf = vec![0u8; CHUNK];
+    for (start, n) in data_ranges(from, len)? {
+        let end = start.saturating_add(n).min(len);
+        let mut at = start;
+        while at < end {
+            let want = usize::try_from(end - at).map_or(CHUNK, |rest| rest.min(CHUNK));
+            let chunk = buf.get_mut(..want).ok_or(io::ErrorKind::InvalidInput)?;
+            read_exact_at(from, chunk, at)?;
+            // Each run of blocks not all zeros, in one write.
+            let mut run = None;
+            for (i, block) in chunk.chunks(BLOCK).enumerate() {
+                let used = block.iter().any(|&b| b != 0);
+                match (run, used) {
+                    (None, true) => run = Some(i * BLOCK),
+                    (Some(first), false) => {
+                        write_all_at(
+                            to,
+                            chunk.get(first..i * BLOCK).unwrap_or_default(),
+                            at + first as u64,
+                        )?;
+                        run = None;
+                    }
+                    _ => {}
+                }
+            }
+            if let Some(first) = run {
+                write_all_at(to, chunk.get(first..).unwrap_or_default(), at + first as u64)?;
+            }
+            at += want as u64;
+        }
+    }
+    to.set_len(len)
+}
+
 /// An unbuffered handle to this process's standard output, independent of `std::io::stdout`'s
 /// lock and line buffering.
 pub fn stdout_file() -> io::Result<File> {

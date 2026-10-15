@@ -2060,6 +2060,44 @@ pub static SAVE_VM: Command = Command {
     error_prefix: "",
 };
 
+/// `shards restore vm` (D176): a stopped microVM resumed from a snapshot of its own, where
+/// it was saved. `shards restore DIR`, a directory holding a snapshot, is the VM process's
+/// (`shards run vm --kernel`'s, D25).
+pub static RESTORE_VM: Command = Command {
+    usage: "MICROVM [SNAPSHOT]",
+    about: "Resume a stopped microVM from a snapshot of its own, its newest unless named",
+    aliases: "shards restore vm",
+    args: Args::Range(1, 2),
+    flags: &[HELP],
+    unserved: "",
+    interspersed: true,
+    error_prefix: "",
+};
+
+/// `shards list snapshots` (D176): a microVM's snapshots.
+pub static SNAPSHOT_LS: Command = Command {
+    usage: "MICROVM",
+    about: "List a microVM's snapshots, newest first",
+    aliases: "shards list snapshots",
+    args: Args::Exactly(1),
+    flags: &[HELP],
+    unserved: "",
+    interspersed: true,
+    error_prefix: "",
+};
+
+/// `shards remove snapshot` (D176): snapshots of a microVM, removed.
+pub static SNAPSHOT_RM: Command = Command {
+    usage: "MICROVM SNAPSHOT [SNAPSHOT...]",
+    about: "Remove snapshots of a microVM",
+    aliases: "shards remove snapshot",
+    args: Args::AtLeast(2),
+    flags: &[HELP],
+    unserved: "",
+    interspersed: true,
+    error_prefix: "",
+};
+
 /// `shards watch processes` (D123): [`READ_PROCESSES`], then each as it comes.
 pub static WATCH_PROCESSES: Command = Command {
     usage: "MICROVM",
@@ -2721,6 +2759,8 @@ pub fn find(words: &[&str]) -> Option<(&'static Command, &'static str, usize)> {
         ["images", ..] => (&IMAGES, "shards images", 1),
         ["tag", ..] => (&TAG, "shards tag", 1),
         ["save", "vm", ..] => (&SAVE_VM, "shards save vm", 2),
+        ["snapshot", "ls" | "list", ..] => (&SNAPSHOT_LS, "shards list snapshots", 2),
+        ["snapshot", "rm" | "remove", ..] => (&SNAPSHOT_RM, "shards remove snapshot", 2),
         ["save", ..] => (&SAVE, "shards save", 1),
         ["load", ..] => (&LOAD, "shards load", 1),
         ["pull", ..] => (&PULL, "shards pull", 1),
