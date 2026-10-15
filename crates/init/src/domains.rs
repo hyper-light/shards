@@ -972,9 +972,17 @@ impl Memory {
             .max_by_key(|&(_, held)| held);
         let Some((i, held)) = most else { return };
         let Some(d) = domains.get(i) else { return };
+        // What it held, as its `memory.stat` counts it, read before it is ended.
+        let stat = std::fs::read_to_string(format!("{}/memory.stat", d.cgroup)).unwrap_or_default();
+        let of = |key: &str| {
+            stat.lines()
+                .find_map(|l| l.split_once(' ').filter(|(k, _)| *k == key))
+                .map_or("?", |(_, v)| v.trim())
+        };
+        let (anon, file, shmem, kernel) = (of("anon"), of("file"), of("shmem"), of("kernel"));
         if std::fs::write(format!("{}/cgroup.kill", d.cgroup), "1").is_ok() {
             say(format!(
-                "[{}] shards-init: ended: the agents' memory, {current} bytes, was past their share, {high}, and its {held} the most\n",
+                "[{}] shards-init: ended: the agents' memory, {current} bytes, was past their share, {high}, and its {held} the most: anon {anon}, file {file}, shmem {shmem}, kernel {kernel}\n",
                 d.label
             )
             .as_bytes());

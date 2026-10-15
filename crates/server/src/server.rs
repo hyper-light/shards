@@ -602,14 +602,14 @@ pub fn serve(p: &Prepared, peers: &mut [Peer], mut programs: Programs) {
             events: libc::POLLIN,
             revents: 0,
         });
+        // A peer's channel only while what it sends is wanted: one gone, or whose message
+        // is held, left in the set says POLLHUP to every poll once its end has closed,
+        // which poll(2) reports whatever it was asked, and the loop would spin.
         for peer in peers.iter() {
+            let wanted = peer.held.is_none() && !peer.gone;
             set.push(libc::pollfd {
-                fd: peer.fd.as_raw_fd(),
-                events: if peer.held.is_none() && !peer.gone {
-                    libc::POLLIN
-                } else {
-                    0
-                },
+                fd: if wanted { peer.fd.as_raw_fd() } else { -1 },
+                events: libc::POLLIN,
                 revents: 0,
             });
         }
@@ -656,7 +656,13 @@ pub fn serve(p: &Prepared, peers: &mut [Peer], mut programs: Programs) {
         {
             return;
         }
-        while let Ok((stream, _)) = p.listener.accept() {
+        // Only what poll said is ready: an accept(2) with no connection waiting makes a
+        // socket, a file and a dentry and frees them after an RCU grace period
+        // (net/socket.c, `do_accept`), charged to this domain's memory meanwhile, so that
+        // a loop of them took it past the agents' share.
+        let ready = |i: usize| set.get(i).is_some_and(|s| s.revents != 0);
+        let listening = ready(0);
+        while listening && let Ok((stream, _)) = p.listener.accept() {
             if conns.len() >= room || stream.set_nonblocking(true).is_err() {
                 continue;
             }
@@ -673,8 +679,11 @@ pub fn serve(p: &Prepared, peers: &mut [Peer], mut programs: Programs) {
                 });
             }
         }
-        for peer in peers.iter_mut() {
-            take(peer);
+        // The listener's pollfd, then each peer's, in order.
+        for (i, peer) in peers.iter_mut().enumerate() {
+            if ready(i + 1) {
+                take(peer);
+            }
         }
         let mut answers: Vec<(u64, Vec<u8>)> = Vec::new();
         run_programs(p, peers, &mut programs, &mut answers);

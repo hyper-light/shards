@@ -3587,7 +3587,14 @@ it sent, are dropped. It holds one unread message a peer; what a peer sends past
 waits in the kernel's socket buffer, whose bound is the kernel's, and a full buffer is
 said to the sender (`has not taken what was sent it`). An instance joins its domain's
 cgroup before its exec, so that what an agent makes its instance hold counts against the
-agent's own memory and ends with it (part nine).
+agent's own memory and ends with it (part nine). Its loop polls a peer only while it
+wants what the peer sends (nothing of its held, and it not gone), and accepts and reads
+only where poll says so. A gone peer's channel left in the set said POLLHUP to every
+poll, so the loop spun, and its accept(2) of nothing each turn took the survivor's kernel
+memory past the agents' share, which ended the survivor too (PM M237). Held by
+`agents_out_of_memory_end_whole_and_spare_the_run`: the survivor's server spends under a
+second of CPU in the 3 s after its peer's end. Mutation-checked: with the gone peer
+polled, it spent 3 s of 3.
 
 Tested: `a_peer_is_heard_only_as_granted` (in a microVM, forged frames dropped, granted
 ones held) and, on real microVMs, `agents_message_one_another_as_granted`: with `CONNECT

@@ -8499,3 +8499,44 @@ revision before comparing a changed API/implementation.
   Linux's reads, which missed no end, and TCP's, stay as they are, and so cost nothing
   more. A stream, Unix or TCP, is ended one way at a time, SHUT_WR then SHUT_RD, so that
   its peer reads the end whichever side half-closed first.
+
+### M237. What an agent holds as its peer is ended: its server spun, in the kernel (D60)
+
+- **Question.** In gpu's gate for D174 and D175, `agents_out_of_memory_end_whole_and_spare_the_run`
+  failed once in some thirty gates that had passed. After ending y, the filler, init also
+  ended z, the agent the test must spare: "the agents' memory, 66117632 bytes, was past
+  their share, 65912832, and its 64397312 the most". z holds 16 MiB and had held about
+  18 MB as y was ended. What did z come to hold?
+- **Method.** At c7330e7b, on the M5 Max (macOS 26.4.1), the guest Linux 6.18.48 aarch64.
+  - The test run in a loop until it failed, init's message saying what the domain it ends
+    held (`memory.stat`'s anon, file, shmem and kernel), and the test printing what init
+    said in every run: 24 runs, then 80 more.
+  - `docs/research/measurements/agents-oom/`: `sampler.patch` gives init a 250 ms timer
+    that says each domain's `memory.stat` and each of its processes: state, CPU ticks from
+    `/proc/PID/stat`, and `/proc/PID/syscall`. The test watches 8 s past y's end. Two runs.
+- **Results.**
+  - The loops: 1 failure in 104 runs. The share ranged from 62,554,112 to 67,600,384
+    bytes, median 65,925,120. In the failure, z held anon 17,104,896 and **kernel
+    47,230,976** bytes, with file and shmem 16,384 each. Each y ended held about 47 MB:
+    anon 5.6 MB, shmem 38 to 42 MB (its filled scratch), kernel 0.57 MB.
+  - The sampler, run 1: z's kernel memory went 14.2, 13.0, 10.7, 14.6, 22.3 and 42.3 MB
+    in the 1.5 s after y's end, and init then ended z at 48.2 MB.
+  - Run 2: z's kernel memory rose, unevenly, from 10.2 to 42.2 MB over 6.75 s, and init
+    ended z. `slab_reclaimable` cycled between 1.6 and 13.3 MB within it, and the rest
+    of `kernel` was outside every kind `memory.stat` names (slab, stacks, page tables,
+    percpu, vmalloc, sock). z's `shards-server` was running (R) in every sample, 100 ticks
+    a second (one CPU whole), 79% of them in the kernel. Its sandbox and the innocent
+    process slept in ppoll.
+- **Source.** The server's loop (crates/server/src/server.rs, `serve`) kept a peer's
+  channel in its poll set once the peer was gone, with no events asked. poll(2) reports
+  POLLHUP whatever is asked (fs/select.c, `do_pollfd`), and a SOCK_SEQPACKET socket
+  whose peer has closed says it (net/unix/af_unix.c, `unix_dgram_poll`), so each poll
+  returned at once. Each turn then called accept(2) on the listener, which makes a socket,
+  a file and its dentry before it finds no connection waiting, and frees them after an RCU
+  grace period (net/socket.c, `do_accept`). With one CPU turning that loop, what waited to
+  be freed was charged to z's domain, and grew past the agents' share.
+- **Consequence.** The server polls a peer only while it wants what the peer sends, and
+  accepts and reads only where poll said so. The test watches 3 s past y's end and fails
+  where z's server spent a second of CPU in them. Over three runs it spent 0 s; with the
+  peer put back in the poll set it spent 3 s of 3, and the test failed. Init's word as it
+  ends a domain for the agents' memory says what the domain held.
