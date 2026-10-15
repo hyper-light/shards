@@ -5,7 +5,8 @@
 //! - `g-<id>/state`: a versioned header, the generation's name, the machine configuration
 //!   restore rebuilds and the identity of each file backing it, the architecture's CPU and
 //!   interrupt-controller state, and the devices' state
-//! - `g-<id>/memory`: guest RAM, one region after another, with all-zero pages as holes
+//! - `g-<id>/memory`: guest RAM, one region after another, then the memory a virtio-mem
+//!   device had plugged, one run of its blocks after another, with all-zero pages as holes
 //!
 //! and, once a VM resumed from the generation has recorded one, a third:
 //!
@@ -61,13 +62,18 @@ const MAGIC: [u8; 8] = *b"SHRDSNAP";
 ///     (D151).
 /// 15: and the machine's GPU, by its window's length, if it has one (D150).
 /// 16: and its swap window's length in MiB, none of it a run's (D159).
-const VERSION: u32 = 16;
+/// 17: the memory plugged, run by run, its bytes after the RAM's in the memory file; and
+///     virtio-mem's sizes, what it asks for and what is plugged (D176).
+const VERSION: u32 = 17;
 /// The snapshot format this build writes and reads: what a snapshot kept for reuse is
 /// keyed by.
 pub const FORMAT: u32 = VERSION;
 /// A state file is kilobytes; anything past this is not one of ours.
 const MAX_STATE: u64 = 64 << 20;
 const MAX_DISKS: usize = 64;
+/// The most runs of plugged memory a state holds: one for every other 2 MiB block of 1
+/// TiB to plug.
+const MAX_PLUGGED_RUNS: usize = 1 << 18;
 const MAX_PATH: usize = 4096;
 const MAX_NAME: usize = 64;
 /// How often a reader looks again at `current` for a generation a newer write removed
@@ -104,7 +110,8 @@ pub struct MachineConfig {
     /// snapshot: its state at EL2 is not saved, so a snapshot of it is refused.
     pub nested: bool,
     /// Memory the guest may have plugged, in MiB, through a virtio-mem device (D133).
-    /// A snapshot keeps it, none of it plugged (D148).
+    /// What was plugged is the snapshot's [`plugged`](Snapshot::plugged): a template's
+    /// none (D148), a running machine's its own (D176).
     pub hotplug_mib: u64,
     /// Whether a virtio-balloon device gives back the memory the guest reports free
     /// (D151), last of its devices.
@@ -121,6 +128,9 @@ pub struct MachineConfig {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Snapshot {
     pub config: MachineConfig,
+    /// The memory a virtio-mem device had plugged, `(gpa, len)` run by run in the order of
+    /// their addresses, whose bytes follow the RAM's in the memory file (D176).
+    pub plugged: Vec<(u64, u64)>,
     /// The architecture's machine state, as its machine module encodes it.
     pub arch: Vec<u8>,
     /// The device bus's state.
@@ -323,6 +333,10 @@ fn encode(s: &Snapshot, generation: &str, identities: &[Identity]) -> Result<Vec
     w.bool(s.config.gpu.is_some());
     w.u64(s.config.gpu.unwrap_or(0));
     w.u64(s.config.swap_mib);
+    w.seq(&s.plugged, |w, (gpa, len)| {
+        w.u64(*gpa);
+        w.u64(*len);
+    });
     w.bytes(&s.arch);
     w.bytes(&s.devices);
     Ok(w.into_bytes())
@@ -401,6 +415,8 @@ fn decode(bytes: &[u8]) -> codec::Result<Decoded> {
     let has_gpu = r.bool()?;
     let gpu_window = r.u64()?;
     let swap_mib = r.u64()?;
+    // At most a run for every other block of the most a guest may plug.
+    let plugged = r.seq(MAX_PLUGGED_RUNS, 16, |r| Ok((r.u64()?, r.u64()?)))?;
     let arch_state = r.bytes(usize::MAX)?.to_vec();
     let devices = r.bytes(usize::MAX)?.to_vec();
     r.finish()?;
@@ -422,6 +438,7 @@ fn decode(bytes: &[u8]) -> codec::Result<Decoded> {
                 gpu: has_gpu.then_some(gpu_window),
                 swap_mib,
             },
+            plugged,
             arch: arch_state,
             devices,
         },
@@ -731,7 +748,15 @@ fn open(dir: &Path, name: &str) -> Result<Pinned, Open> {
         }
     }
     let memory = platform::open_beneath_input(dir, &[name, MEMORY]).map_err(|e| lost(MEMORY, e))?;
-    let expected = snapshot.config.memory_mib.saturating_mul(1 << 20);
+    // The RAM, then each run of the memory plugged (D176).
+    let expected = snapshot
+        .plugged
+        .iter()
+        .try_fold(
+            snapshot.config.memory_mib.saturating_mul(1 << 20),
+            |sum, (_, len)| sum.checked_add(*len),
+        )
+        .ok_or_else(|| Open::Bad(at(STATE, &"memory plugged past what a file can hold")))?;
     let actual = memory.metadata().map_err(|e| Open::Bad(at(MEMORY, &e)))?.len();
     if actual != expected {
         return Err(Open::Bad(at(
@@ -899,6 +924,7 @@ mod tests {
                 gpu: None,
                 swap_mib: 0,
             },
+            plugged: Vec::new(),
             arch: vec![marker, 2, 3],
             devices: vec![9; 100],
         }
@@ -919,8 +945,8 @@ mod tests {
     }
 
     /// What a snapshot cannot hold is refused as it is written, not lost: a guest's EL2
-    /// state. Memory to plug it holds, as a size: none of it is plugged (D148), which its
-    /// memory and its device refuse otherwise.
+    /// state. Memory to plug it holds: its size, and what was plugged (`sample`'s runs,
+    /// D176), which the round trip below keeps.
     #[test]
     fn a_machine_with_state_a_snapshot_cannot_hold_is_refused() {
         let ids = vec![Identity::default(); 3];
@@ -936,7 +962,9 @@ mod tests {
 
     #[test]
     fn rejects_foreign_or_damaged_state() {
-        let snap = sample(&nowhere(), 1);
+        // With runs of memory plugged, which the state keeps (D176).
+        let mut snap = sample(&nowhere(), 1);
+        snap.plugged = vec![(1 << 32, 2 << 20), (0x1_0040_0000, 4 << 20)];
         let ids = vec![Identity::default(); 3];
         let good = encode(&snap, "g-1", &ids).unwrap();
         let decoded = decode(&good).unwrap();
@@ -1093,6 +1121,19 @@ mod tests {
                 .collect();
             names.sort();
             names
+        }
+
+        /// A memory file holds the RAM and then each run of the memory plugged (D176): one
+        /// shorter than both is no generation's.
+        #[test]
+        fn a_memory_file_short_of_its_plugged_runs_is_refused() {
+            let s = Scratch::new("plug-short");
+            let dir = s.0.join("snap");
+            let mut snap = sample(&s.0, 1);
+            snap.plugged = vec![(1 << 32, 2 << 20)];
+            write(&dir, &snap, &ram(1)).unwrap();
+            let e = read(&dir).unwrap_err();
+            assert!(e.contains("bytes; the snapshot's guest has"), "{e}");
         }
 
         #[test]

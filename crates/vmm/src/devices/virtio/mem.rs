@@ -17,6 +17,7 @@ use super::queue::{Chain, Queue};
 use super::worker::Worker;
 use super::{Activation, DeviceInterrupt, QueueState, VirtioDevice, feature};
 use crate::memory::{Access, GuestMemory};
+use crate::snapshot::codec::{self, Reader, Writer};
 use crate::sync::lock;
 
 pub const DEVICE_ID: u32 = 24;
@@ -353,16 +354,29 @@ impl<M: Mapper + Clone + 'static> VirtioDevice for Mem<M> {
         DEVICE_ID
     }
 
-    /// A snapshot keeps the size of the memory to plug and none of it (D148): one taken
-    /// while memory is asked for or plugged would lose it.
-    fn unsaved(&self) -> Option<String> {
+    /// What it asks for, what is plugged, and its configuration's generation: a restored
+    /// machine's memory has the same blocks plugged again (`vm::replug`, D176), and its
+    /// driver reads the sizes it left.
+    fn save(&self, w: &mut Writer) {
         let s = lock(&self.sizes.state);
-        (s.requested > 0 || s.plugged > 0).then(|| {
-            format!(
-                "memory asked for or plugged is not saved ({} bytes asked for, {} plugged)",
-                s.requested, s.plugged
-            )
-        })
+        w.u64(s.requested);
+        w.u64(s.plugged);
+        w.u32(s.generation);
+    }
+
+    fn restore(&mut self, r: &mut Reader<'_>) -> codec::Result<()> {
+        let (requested, plugged, generation) = (r.u64()?, r.u64()?, r.u32()?);
+        if requested > self.sizes.region || plugged > self.sizes.region {
+            return Err(codec::DecodeError(format!(
+                "virtio-mem: {requested} bytes asked for and {plugged} plugged of a region of {}",
+                self.sizes.region
+            )));
+        }
+        let mut s = lock(&self.sizes.state);
+        s.requested = requested;
+        s.plugged = plugged;
+        s.generation = generation;
+        Ok(())
     }
 
     fn features(&self) -> u64 {
@@ -634,21 +648,32 @@ mod tests {
         assert_eq!(s.requested(), 3 * BLOCK, "a higher bound asks for nothing more");
     }
 
-    /// A snapshot keeps none of the memory to plug (D148): a device with memory asked for
-    /// says its state cannot be saved, and one with none, that it can.
+    /// What a device asks for and has plugged is saved, and a restored device says it as
+    /// it was (D176): its driver reads the sizes it left. Sizes past its region are no
+    /// snapshot of it.
     #[test]
-    fn memory_asked_for_is_not_saved() {
+    fn its_sizes_come_back_with_a_snapshot() {
         let sizes = Arc::new(Sizes::new(HOTPLUG, REGION, REGION));
         let device = Mem::new(sizes.clone(), Fake::default());
-        assert_eq!(device.unsaved(), None);
-        sizes.request(BLOCK);
+        sizes.request(3 * BLOCK);
+        sizes.count(2 * BLOCK, true);
+        assert_eq!(device.unsaved(), None, "plugged memory is saved");
+        let mut w = Writer::default();
+        device.save(&mut w);
+        let bytes = w.into_bytes();
+        let back = Arc::new(Sizes::new(HOTPLUG, REGION, REGION));
+        let mut restored = Mem::new(back.clone(), Fake::default());
+        let mut r = Reader::new(&bytes);
+        restored.restore(&mut r).unwrap();
+        r.finish().unwrap();
+        assert_eq!(back.config(), sizes.config());
+        assert_eq!(back.generation(), sizes.generation());
+        let small = Arc::new(Sizes::new(HOTPLUG, BLOCK, BLOCK));
         assert!(
-            device.unsaved().is_some_and(|why| why.contains("asked for")),
-            "{:?}",
-            device.unsaved()
+            Mem::new(small, Fake::default())
+                .restore(&mut Reader::new(&bytes))
+                .is_err()
         );
-        sizes.request(0);
-        assert_eq!(device.unsaved(), None);
     }
 
     /// A plug within the size asked for is the guest's: the host's devices reach it, and

@@ -688,6 +688,7 @@ pub fn restore(
         snap.config.gpu,
         super::Pci::default(),
     )?;
+    super::replug(&memory, snap, memory_file, &a.vm)?;
     let guest: Vec<(u64, u64)> = memory
         .regions()
         .map(|(gpa, _, len)| (gpa, len as u64))

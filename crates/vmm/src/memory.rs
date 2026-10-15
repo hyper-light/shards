@@ -482,17 +482,10 @@ impl GuestMemory {
     /// sets the order of the page-cache folios it fills (Linux 6.17, ext4
     /// `write_begin_get_folio`), and a restore maps those folios. It holds an [`Access`]
     /// throughout, so no host thread writes meanwhile; a snapshot's is the memory of a
-    /// machine whose vCPUs and devices are paused. Memory a virtio-mem device plugs is not
-    /// saved: a machine with it is not snapshotted (`snapshot::encode`).
+    /// machine whose vCPUs and devices are paused. After the RAM, the memory a virtio-mem
+    /// device has plugged, run by run in the order of their addresses (D176): a restore
+    /// plugs the same runs and reads them back ([`restore_plugged`](Self::restore_plugged)).
     pub fn save(&self, file: &File) -> io::Result<()> {
-        // Memory to plug is saved where none of it is plugged: a restore remakes its
-        // region as boot made it (D148). What is plugged is not saved.
-        if !self.plugged_runs().is_empty() {
-            return Err(io::Error::new(
-                io::ErrorKind::Unsupported,
-                "the memory a virtio-mem device plugged is not saved",
-            ));
-        }
         let page = platform::page_size()?;
         let _held = self.access().map_err(io::Error::other)?;
         file.set_len(0)?;
@@ -507,29 +500,46 @@ impl GuestMemory {
                 // SAFETY: the whole region, which this value owns.
                 unsafe { platform::untouched(r.host.as_ptr(), r.len, page) }?
             };
-            // Where the run of used pages being gathered starts.
-            let mut run = None;
-            for (i, start) in (0..r.len).step_by(page).enumerate() {
-                let skipped = untouched
-                    .as_ref()
-                    .is_some_and(|u| u.get(i).copied().unwrap_or(false));
-                // SAFETY: the page at `start` lies in this region, which is page-aligned.
-                let used = !skipped && unsafe { !is_zero(r.host.as_ptr().add(start), page) };
-                match (run, used) {
-                    (None, true) => run = Some(start),
-                    (Some(first), false) => {
-                        write_run(file, r, first..start, offset)?;
-                        run = None;
-                    }
-                    _ => {}
-                }
-            }
-            if let Some(first) = run {
-                write_run(file, r, first..r.len, offset)?;
-            }
+            write_used(file, r, untouched.as_deref(), offset, page)?;
             offset += r.len as u64;
         }
+        if let Some(h) = &self.hotplug {
+            for (gpa, len) in h.runs(&h.plugged) {
+                let len = usize::try_from(len).map_err(|_| io::Error::from(io::ErrorKind::InvalidData))?;
+                let host = NonNull::new(h.host(gpa)).ok_or(io::ErrorKind::InvalidData)?;
+                // A view of the run, which owns nothing: the reservation is the region's.
+                let run = Region { gpa, len, host };
+                // SAFETY: whole plugged blocks of the reservation, which the host was granted.
+                let untouched = unsafe { platform::untouched(host.as_ptr(), len, page) }?;
+                write_used(file, &run, untouched.as_deref(), offset, page)?;
+                offset += len as u64;
+            }
+        }
         file.set_len(offset)
+    }
+
+    /// Plugs `runs` again, the memory a snapshot's machine had plugged, and reads each back
+    /// from `file`, which holds them in turn after the RAM ([`save`](Self::save)); `map`
+    /// gives each to the guest, as a plug does ([`Access::plug`]). Before any vCPU runs:
+    /// a guest resumed without what it held there would find zeros in its place.
+    pub fn restore_plugged(
+        &self,
+        runs: &[(u64, u64)],
+        file: &File,
+        mut map: impl FnMut(*mut u8, u64, usize) -> Result<(), String>,
+    ) -> Result<(), String> {
+        let mut offset: u64 = self.regions.iter().map(|r| r.len as u64).sum();
+        let access = self.access().map_err(|e| e.to_string())?;
+        for &(gpa, len) in runs {
+            access.plug(gpa, len, &mut map)?;
+            let size = usize::try_from(len).map_err(|e| e.to_string())?;
+            self.read_file(gpa, size, file, offset)
+                .map_err(|e| format!("the memory plugged at {gpa:#x}+{len:#x}: {e}"))?;
+            offset = offset
+                .checked_add(len)
+                .ok_or("memory plugged past what a file can hold")?;
+        }
+        Ok(())
     }
 
     /// `(gpa, host pointer, len)` for each region of RAM, for stage-2 mapping: not the
@@ -871,6 +881,36 @@ unsafe fn is_zero(p: *const u8, len: usize) -> bool {
 
 /// Writes `run` of region `r` to `file`, which holds the region from `offset` on, by
 /// system calls given the guest address.
+/// Writes the pages of `r` the guest used to `file` at `offset`, one write for each run of
+/// them, all-zero pages and those `untouched` marks left as holes.
+fn write_used(
+    file: &File,
+    r: &Region,
+    untouched: Option<&[bool]>,
+    offset: u64,
+    page: usize,
+) -> io::Result<()> {
+    // Where the run of used pages being gathered starts.
+    let mut run = None;
+    for (i, start) in (0..r.len).step_by(page).enumerate() {
+        let skipped = untouched.is_some_and(|u| u.get(i).copied().unwrap_or(false));
+        // SAFETY: the page at `start` lies in `r`, which is page-aligned.
+        let used = !skipped && unsafe { !is_zero(r.host.as_ptr().add(start), page) };
+        match (run, used) {
+            (None, true) => run = Some(start),
+            (Some(first), false) => {
+                write_run(file, r, first..start, offset)?;
+                run = None;
+            }
+            _ => {}
+        }
+    }
+    if let Some(first) = run {
+        write_run(file, r, first..r.len, offset)?;
+    }
+    Ok(())
+}
+
 fn write_run(file: &File, r: &Region, run: Range<usize>, offset: u64) -> io::Result<()> {
     if run.start > run.end || run.end > r.len {
         return Err(io::ErrorKind::InvalidInput.into());
@@ -977,7 +1017,7 @@ mod tests {
     }
 
     /// Memory to plug is whole blocks, of whole host pages, apart from RAM; none of it is
-    /// the host's devices' until plugged, nor once unplugged, and it is not saved.
+    /// the host's devices' until plugged, nor once unplugged.
     #[test]
     fn memory_to_plug_is_whole_blocks_and_withheld_until_plugged() {
         let p = page_size().unwrap();
@@ -1024,9 +1064,10 @@ mod tests {
         a.unplug(hot + 2 * block, block, |_, _| Ok(())).unwrap();
         assert!(a.read_obj::<u64>(hot + 3 * block - 8).is_err());
         drop(a);
+        // What is plugged is saved with the RAM (`memory_plugged_is_saved_and_plugged_back`).
         let dir = shards_testdir::TempDir::new("plug-save").unwrap();
         let file = std::fs::File::create(dir.join("mem")).unwrap();
-        assert!(m.save(&file).is_err(), "memory plugged is not saved");
+        m.save(&file).unwrap();
     }
 
     /// A range a device's DMA holds pinned is kept: a report of it free gives nothing back
@@ -1104,6 +1145,72 @@ mod tests {
             back.with_plug_region(hot, block as usize, block).is_err(),
             "one region"
         );
+    }
+
+    /// Memory plugged is saved after the RAM, run by run (D176): a restore that plugs the
+    /// same runs again reads back what each held, its zero pages holes in the file, and the
+    /// rest stays withheld. A run the file does not hold is refused, not read as zeros.
+    #[test]
+    fn memory_plugged_is_saved_and_plugged_back() {
+        let p = page_size().unwrap();
+        let block = (2 << 20).max(p as u64);
+        let ram = [(0x8000_0000u64, 4 * p)];
+        let hot = 0x1_0000_0000u64;
+        let m = GuestMemory::with_hotplug(&ram, hot, 4 * block as usize, block).unwrap();
+        let a = m.access().unwrap();
+        a.write_obj(0x8000_0000u64, 0x77u64).unwrap();
+        // Two runs: block 0, and blocks 2 and 3.
+        a.plug(hot, block, |_, _, _| Ok(())).unwrap();
+        a.plug(hot + 2 * block, 2 * block, |_, _, _| Ok(())).unwrap();
+        a.write_obj(hot + 8, 0x1111u64).unwrap();
+        a.write_obj(hot + 3 * block + 16, 0x3333u64).unwrap();
+        drop(a);
+        let runs = m.plugged_runs();
+        assert_eq!(runs, [(hot, block), (hot + 2 * block, 2 * block)]);
+        let dir = shards_testdir::TempDir::new("plug-some").unwrap();
+        let file = std::fs::File::create(dir.join("mem")).unwrap();
+        m.save(&file).unwrap();
+        assert_eq!(
+            file.metadata().unwrap().len(),
+            4 * p as u64 + 3 * block,
+            "the RAM, then each run"
+        );
+        let file = std::fs::File::open(dir.join("mem")).unwrap();
+        let back = GuestMemory::from_file(&ram, &file)
+            .unwrap()
+            .with_plug_region(hot, 4 * block as usize, block)
+            .unwrap();
+        let mut mapped = Vec::new();
+        back.restore_plugged(&runs, &file, |_, gpa, len| {
+            mapped.push((gpa, len));
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(
+            mapped,
+            [(hot, block as usize), (hot + 2 * block, 2 * block as usize)]
+        );
+        assert_eq!(back.plugged_runs(), runs);
+        let a = back.access().unwrap();
+        assert_eq!(a.read_obj::<u64>(0x8000_0000).unwrap(), 0x77);
+        assert_eq!(a.read_obj::<u64>(hot + 8).unwrap(), 0x1111);
+        assert_eq!(a.read_obj::<u64>(hot + 3 * block + 16).unwrap(), 0x3333);
+        assert_eq!(
+            a.read_obj::<u64>(hot + 2 * block).unwrap(),
+            0,
+            "a hole, read as zeros"
+        );
+        assert!(
+            a.read_obj::<u64>(hot + block).is_err(),
+            "block 1 was never plugged"
+        );
+        drop(a);
+        let other = GuestMemory::from_file(&ram, &file)
+            .unwrap()
+            .with_plug_region(hot, 4 * block as usize, block)
+            .unwrap();
+        let past = [(hot, block), (hot + 2 * block, 2 * block), (hot + block, block)];
+        assert!(other.restore_plugged(&past, &file, |_, _, _| Ok(())).is_err());
     }
 
     #[test]
