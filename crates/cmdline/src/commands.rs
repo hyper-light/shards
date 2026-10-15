@@ -2649,6 +2649,30 @@ pub static LOGOUT: Command = Command {
     error_prefix: "",
 };
 
+/// `shards search` (docker/cli cli/command/registry/search.go): images found in a
+/// registry, Docker Hub's unless the term names another (D172).
+pub static SEARCH: Command = Command {
+    usage: "[OPTIONS] TERM",
+    about: "Search Docker Hub for images",
+    aliases: "",
+    args: Args::Exactly(1),
+    flags: &[
+        Flag::many(
+            "filter",
+            Some(b'f'),
+            "filter",
+            "Filter output based on conditions provided",
+        ),
+        Flag::string("format", None, "", "Pretty-print search using a Go template"),
+        HELP,
+        Flag::int("limit", None, "0", "Max number of search results"),
+        Flag::bool("no-trunc", None, "Don't truncate output"),
+    ],
+    unserved: "",
+    interspersed: true,
+    error_prefix: "",
+};
+
 /// The container command the start of `words` names, its path (`shards ps`, `shards
 /// container ls`) and how many words named it: `ps` or `container ls` (or `container ps`,
 /// `container list`), `rm` or `container rm` (or `container remove`), and the others by

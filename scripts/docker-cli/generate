@@ -17,6 +17,8 @@
 #   the CLI's `run` makes of command lines (engine_test.go: its own addFlags and parse),
 #   which crates/shards/src/daemon/engine's tests expect to become the runs shards' CLI makes of
 #   the same command lines (D170);
+# - crates/cmdline/tests/docker-search.json, the CLI's `search` output of the results in
+#   search_test.go, which crates/cmdline/tests/search.rs expects shards to print;
 # - crates/cmdline/tests/docker-time.json, what the client sends dockerd for `logs
 #   --since` and `--until` and what dockerd makes of it (time/main.go), for
 #   crates/cmdline/src/gotime.rs's tests. dockerd's side is moby's, fetched at the tag the
@@ -61,12 +63,14 @@ cp "$here/ps_test.go" "$cli/cli/command/formatter/zz_shards_ps_test.go"
 cp "$here/network_test.go" "$cli/cli/command/container/zz_shards_network_test.go"
 cp "$here/engine_test.go" "$cli/cli/command/container/zz_shards_engine_test.go"
 cp "$here/images_test.go" "$cli/cli/command/image/zz_shards_images_test.go"
+cp "$here/search_test.go" "$cli/cli/command/registry/zz_shards_search_test.go"
 cleanup() {
 	rm -rf "$cli/shards-tables" "$cli/shards-time" "$cli/cmd/docker/zz_shards_oracle_test.go" \
 		"$cli/cli/command/formatter/zz_shards_ps_test.go" \
 		"$cli/cli/command/container/zz_shards_network_test.go" \
 		"$cli/cli/command/container/zz_shards_engine_test.go" \
-		"$cli/cli/command/image/zz_shards_images_test.go"
+		"$cli/cli/command/image/zz_shards_images_test.go" \
+		"$cli/cli/command/registry/zz_shards_search_test.go"
 }
 trap 'cleanup; [ -z "${1:-}" ] && rm -rf "$cli"' EXIT
 cd "$cli"
@@ -85,3 +89,5 @@ SHARDS_ENGINE_OUT="$root/crates/shards/src/daemon/engine/testdata/create-bodies.
 	./scripts/with-go-mod.sh go test -mod=vendor -count=1 -run '^TestShardsEngineBodies$' ./cli/command/container/
 SHARDS_IMAGES_OUT="$root/crates/shards/src/daemon/docker-images.json" \
 	./scripts/with-go-mod.sh go test -mod=vendor -count=1 -run '^TestShardsImages$' ./cli/command/image/
+SHARDS_SEARCH_OUT="$root/crates/cmdline/tests/docker-search.json" \
+	./scripts/with-go-mod.sh go test -mod=vendor -count=1 -run '^TestShardsSearch$' ./cli/command/registry/

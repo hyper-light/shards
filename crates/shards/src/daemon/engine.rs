@@ -487,6 +487,7 @@ impl<D: Disk> Daemon<D> {
             ("POST", ["exec", id, "start"]) => return self.engine_exec_start(threads, conn, id, call),
             ("GET", ["exec", id, "json"]) => self.engine_exec_inspect(id),
             ("GET", ["images", "json"]) => self.engine_images(call),
+            ("GET", ["images", "search"]) => self.engine_search(call),
             ("POST", ["images", "create"]) => return self.engine_pull(threads, conn, call),
             ("POST", ["images", "prune"]) => self.engine_image_prune(call),
             ("GET", ["images", "get"]) => {

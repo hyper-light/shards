@@ -1607,6 +1607,46 @@ fn images_are_pushed_saved_loaded_and_imported() {
         pushed.text()
     );
     assert_eq!(repos.lock().unwrap().manifests["team/app"]["1"].1, *manifest);
+    // Found by a search of the registry's catalog, with the client's credentials; and
+    // refused without them, or for what dockerd refuses.
+    api.send(
+        "GET",
+        &format!("/images/search?term=127.0.0.1:{port}/team&limit=5"),
+        None,
+        &[("X-Registry-Auth", &auth)],
+    );
+    let found = api.answer("GET");
+    assert_eq!(
+        (found.status, found.json()),
+        (
+            200,
+            json!([{"description": "", "is_automated": false, "is_official": false, "name": repo, "star_count": 0}])
+        ),
+        "{}",
+        found.text()
+    );
+    let unauthorized = api.call("GET", &format!("/images/search?term=127.0.0.1:{port}/team"), None);
+    assert_eq!(unauthorized.status, 500, "{}", unauthorized.text());
+    assert!(
+        unauthorized.text().contains("authorization failed"),
+        "{}",
+        unauthorized.text()
+    );
+    for (query, said) in [
+        ("term=x&limit=-1", "invalid limit specified"),
+        ("term=x&limit=101", "limit 101 is outside the range of [1, 100]"),
+        (
+            "term=x&filters=%7B%22nope%22%3A%5B%221%22%5D%7D",
+            "invalid filter 'nope'",
+        ),
+    ] {
+        let refused = api.call("GET", &format!("/images/search?{query}"), None);
+        assert_eq!(
+            (refused.status, refused.json()),
+            (400, json!({"message": said})),
+            "{query}"
+        );
+    }
     // A tag not here: said after the repository, as dockerd says it.
     let missing = api.call("POST", &format!("/images/{repo}/push?tag=nope"), None);
     assert_eq!(missing.status, 200, "{}", missing.text());
@@ -2092,6 +2132,13 @@ fn the_docker_cli_runs_microvms_through_the_engine() {
     assert_eq!(status, Some(0), "{out}{err}");
     assert!(out.contains("1: digest: sha256:"), "{out}");
     assert!(repos.lock().unwrap().manifests["team/cli"].contains_key("1"));
+    // Searched through the engine, the CLI's credentials for the registry with it.
+    let (status, out, err) = docker(&["search", "--format", "{{.Name}}", &format!("{registry}/team")]);
+    assert_eq!(
+        (status, out.as_str()),
+        (Some(0), format!("{registry}/team/cli\n").as_str()),
+        "{err}"
+    );
     // Built by the CLI's builder of the API's first version, which sends its context in
     // the call's body (DOCKER_BUILDKIT=0; its config has no buildx).
     let context = home.join("cli-context");

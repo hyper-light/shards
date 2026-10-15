@@ -247,13 +247,21 @@ impl Registry {
     /// The manifest or index `tag` names: its type and bytes, at most a manifest's size;
     /// none where the repository has no such tag (a 404).
     pub fn manifest_at(&self, tag: &str) -> Result<Option<(String, Vec<u8>)>, Error> {
-        let url = self.base.join(&format!("manifests/{tag}"))?;
         let accept = format!("{}, {}", media::OCI_INDEX, media::OCI_MANIFEST);
-        let (mut response, _) = self.request(
-            "GET",
-            &url,
-            &[("Accept", &accept), ("Accept-Encoding", ENCODINGS)],
-        )?;
+        self.manifest_accepting(tag, &accept)
+    }
+
+    /// [`manifest_at`](Self::manifest_at), any kind a pull resolves (containerd's list):
+    /// an image stored as a Docker manifest list is given as one, never the registry's
+    /// choice of a single platform's manifest.
+    pub(crate) fn document_at(&self, reference: &str) -> Result<Option<(String, Vec<u8>)>, Error> {
+        self.manifest_accepting(reference, RESOLVE_ACCEPT)
+    }
+
+    fn manifest_accepting(&self, tag: &str, accept: &str) -> Result<Option<(String, Vec<u8>)>, Error> {
+        let url = self.base.join(&format!("manifests/{tag}"))?;
+        let (mut response, _) =
+            self.request("GET", &url, &[("Accept", accept), ("Accept-Encoding", ENCODINGS)])?;
         match response.status {
             200..=299 => {
                 let kind = response.header("content-type").unwrap_or_default().to_string();
@@ -756,6 +764,59 @@ impl Registry {
     /// Where the blob `digest` is at this registry.
     pub(crate) fn blob_url(&self, digest: &Digest) -> Result<Url, Error> {
         self.base.join(&format!("blobs/{digest}"))
+    }
+
+    /// The blob `desc` names, whole, checked against its digest and size, refused past
+    /// `most` bytes: a small document's (an image's config), never stored.
+    pub(crate) fn small_blob(&self, desc: &Descriptor, most: u64) -> Result<Vec<u8>, Error> {
+        let digest = desc.digest().map_err(|e| Error::new(e.to_string()))?;
+        let size = desc.size().map_err(|e| Error::new(e.to_string()))?;
+        if size > most {
+            return Err(Error::new(format!("{digest}: rejecting a {size}-byte document")));
+        }
+        let url = self.blob_url(&digest)?;
+        let (mut response, _) = self.request("GET", &url, &[("Accept", &accept(&desc.media_type))])?;
+        if !(200..300).contains(&response.status) {
+            return Err(not_fetched(response, &url));
+        }
+        let mut bytes = Vec::new();
+        (&mut response)
+            .take(size.saturating_add(1))
+            .read_to_end(&mut bytes)?;
+        let got = format!(
+            "sha256:{}",
+            Sha256::digest(&bytes)
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect::<String>()
+        );
+        if bytes.len() as u64 != size || got != digest.to_string() {
+            return Err(Error::new(format!(
+                "{digest}: the registry sent {} bytes of digest {got}",
+                bytes.len()
+            )));
+        }
+        Ok(bytes)
+    }
+
+    /// A registry asked of its host itself, at `base` (`scheme://host/v2/`), for `scopes`:
+    /// its catalog, or a search its host serves beside it.
+    pub(crate) fn of_host(
+        http: Client,
+        base: Url,
+        credentials: Credentials,
+        scopes: Vec<String>,
+    ) -> Result<Registry, Error> {
+        Registry::at(http, base, Authorizer::new_for(credentials), scopes)
+    }
+
+    /// What a request to `url` is authorized by, as this registry's requests are.
+    pub(crate) fn authorization(&self, url: &Url) -> Result<Option<String>, Error> {
+        self.auth.authorization(&self.http, url, &self.scopes)
+    }
+
+    pub(crate) fn client(&self) -> &Client {
+        &self.http
     }
 
     /// A GET of the bytes `lo..hi` of the blob at `url`, as it is stored: no encoding for

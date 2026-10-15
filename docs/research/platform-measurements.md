@@ -8362,3 +8362,29 @@ revision before comparing a changed API/implementation.
 
   Over a unix stream socket nothing can be counted. Its bytes are in the receiver's
   buffer once written, and no close resets them, so they are delivered as written.
+
+### M234. What a search's "runs here" lookups cost against Docker Hub (D172)
+
+- **Question.** A search's results are names. Whether each has an image for this
+  machine's platform, and what it pulls, is a lookup of its own in the Hub API
+  (`/v2/namespaces/NS/repositories/REPO/tags/latest`, documented in Docker Hub's API
+  description). How long do a search's 25 lookups take, at how many at once, before Hub
+  throttles them? Docker documents an "abuse rate limit" (a 429) without a number. And
+  how many results have a `latest` to look up?
+- **Method.** `docs/research/measurements/hub-lookups/measure.py`, 2026-10-14, at
+  ceb0f651, on the M5 Max (macOS 26.4.1, Python 3.9.6), the host busy with other
+  projects' builds. One index search for `python` (25 results), then each result's
+  `tags/latest` fetched in 3 rounds at each of 1, 4 and 25 at once, 5 s between rounds:
+  75 requests a level.
+- **Results.**
+  - A request took p50 196, p90 223, p99 266, max 266 ms one at a time; 200, 223, 370
+    and 370 ms at 4; 212, 252, 404 and 404 ms at 25.
+  - The 25 lookups took p50 5,029 ms (max 5,059) one at a time, 1,409 ms (max 1,424) at
+    4, and 506 ms (max 525) at 25.
+  - At 25 at once, one request of 75 was throttled (429); none at 1 or 4.
+  - 11 of the 25 repositories have no `latest`: 404 in every round.
+- **Conclusion.** Lookups go four at once, the most measured with nothing throttled: a
+  quarter of the wall time of one at a time. 25 at once was faster still, and was
+  throttled. A throttled lookup is its own result's alone. A repository without
+  `latest` is said to have none: `shards run REPO` asks for `latest`, so that is the
+  answer to whether it runs here.

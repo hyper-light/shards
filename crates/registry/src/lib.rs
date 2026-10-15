@@ -16,6 +16,7 @@ pub mod pull;
 pub mod push;
 pub mod referrers;
 pub mod registry;
+pub mod search;
 #[cfg(test)]
 mod testing;
 pub mod tls;

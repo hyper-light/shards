@@ -5,7 +5,7 @@
 
 #![allow(clippy::unwrap_used, clippy::panic)]
 
-use shards_cmdline::commands::{self, LOGIN, LOGOUT, RUN};
+use shards_cmdline::commands::{self, LOGIN, LOGOUT, RUN, SEARCH};
 use shards_cmdline::flags::{self, Flag, Outcome};
 
 /// The CLI's `opts.ValidateEnv` in the oracle's environment, where only B is set, and
@@ -39,6 +39,7 @@ fn answer(argv: &[String]) -> (String, String, u8, bool) {
         // Run where the client is, as `run` is read there: no command the daemon serves.
         ["login", ..] => (&LOGIN, "shards login", argv.get(1..).unwrap_or_default()),
         ["logout", ..] => (&LOGOUT, "shards logout", argv.get(1..).unwrap_or_default()),
+        ["search", ..] => (&SEARCH, "shards search", argv.get(1..).unwrap_or_default()),
         _ => {
             let (command, path, named) = commands::find(&words).unwrap();
             (command, path, argv.get(named..).unwrap_or_default())

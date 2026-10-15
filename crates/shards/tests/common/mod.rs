@@ -419,8 +419,28 @@ pub fn shards() -> &'static Path {
 /// host it runs on; a test of publishing names an engine of its own.
 pub fn command() -> Command {
     let mut cmd = Command::new(shards());
-    cmd.env("SHARDS_LOCAL_STORE", "none");
+    cmd.env("SHARDS_LOCAL_STORE", "none")
+        .env("DOCKER_CONFIG", docker_config())
+        .env_remove("DOCKER_AUTH_CONFIG");
     cmd
+}
+
+/// The tests' own docker config, which every command is given unless a test gives its
+/// own: no test, nor any daemon one starts, reads this host's docker config or its
+/// credential helpers. Its `auths` name a host no test reaches, so that, as docker/cli has
+/// it, no platform helper is looked for either (DetectDefaultStore: a config that holds
+/// credentials keeps them itself).
+fn docker_config() -> &'static Path {
+    static CONFIG: OnceLock<TempDir> = OnceLock::new();
+    CONFIG.get_or_init(|| {
+        let dir = TempDir::new("docker-config");
+        std::fs::write(
+            dir.join("config.json"),
+            r#"{"auths":{"shards-tests.invalid":{}}}"#,
+        )
+        .unwrap();
+        dir
+    })
 }
 
 /// The VM process, for what runs microVMs without the command in front.
@@ -2538,6 +2558,34 @@ pub fn writable_registry_requiring(authorization: Option<String>) -> (u16, Arc<s
                     let rest = path.strip_prefix("/v2/").unwrap_or("");
                     let (status, headers, reply): (&str, Vec<String>, Vec<u8>) = if path == "/v2/" {
                         ("200 OK", vec![], vec![])
+                    } else if path == "/v2/_catalog" {
+                        // As distribution lists it: its repositories sorted, `n` a page
+                        // after `last`, a `Link` to the next where more remain.
+                        let mut names: Vec<String> = repos
+                            .manifests
+                            .keys()
+                            .chain(repos.blobs.keys())
+                            .cloned()
+                            .collect();
+                        names.sort();
+                        names.dedup();
+                        let last = param("last").map(|l| l.replace("%2F", "/")).unwrap_or_default();
+                        let n: usize = param("n").and_then(|n| n.parse().ok()).unwrap_or(100);
+                        let page: Vec<String> = names.into_iter().filter(|r| *r > last).collect();
+                        let more = page.len() > n;
+                        let page: Vec<String> = page.into_iter().take(n).collect();
+                        let mut headers = vec!["Content-Type: application/json".to_string()];
+                        if more && let Some(end) = page.last() {
+                            headers.push(format!(
+                                "Link: </v2/_catalog?last={}&n={n}>; rel=\"next\"",
+                                end.replace('/', "%2F")
+                            ));
+                        }
+                        (
+                            "200 OK",
+                            headers,
+                            serde_json::to_vec(&serde_json::json!({ "repositories": page })).unwrap(),
+                        )
                     } else if let Some((repo, upload)) = rest.split_once("/blobs/uploads/") {
                         let repo = repo.to_string();
                         if method == "POST" {

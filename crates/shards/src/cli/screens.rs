@@ -52,6 +52,11 @@ pub fn show(sheet: &Sheet, live: &mut shards_tui::frame::Frame) {
             page.draw(&p, live, &mut std::io::stdout().lock());
             return;
         }
+        "search" => {
+            search(&mut page, &p, sheet);
+            page.draw(&p, live, &mut std::io::stdout().lock());
+            return;
+        }
         "json" => {
             json(&p, sheet.get(0, "text").unwrap_or(""));
             return;
@@ -1232,6 +1237,128 @@ fn stats(page: &mut Page, p: &Paint, sheet: &Sheet) {
         })
         .collect();
     table(page, p, cols, &columns, &rows);
+}
+
+/// `shards search image`: what a registry found of a term, each result a row: its name,
+/// what it says of itself, its stars, and whether it runs on this machine (the platform
+/// a pull would choose, and what the pull takes) or only elsewhere, filled in as each
+/// lookup answers. The first record says what was searched, and how many lookups are
+/// still out.
+fn search(page: &mut Page, p: &Paint, sheet: &Sheet) {
+    let cols = look::width();
+    let n = sheet.records.len().saturating_sub(1);
+    let term = sheet.get(0, "term").unwrap_or("");
+    let registry = sheet.get(0, "registry").unwrap_or("");
+    let pending: usize = sheet.get(0, "pending").and_then(|v| v.parse().ok()).unwrap_or(0);
+    let here = |i: usize| sheet.get(i, "here").unwrap_or("");
+    let runs = (1..=n).filter(|&i| here(i) == "runs").count();
+    let mut summary = format!("{n} found for “{term}” on {registry}",);
+    if n > 0 {
+        summary.push_str(&format!(
+            " · {runs} {} here",
+            if runs == 1 { "runs" } else { "run" }
+        ));
+    }
+    if pending > 0 {
+        summary.push_str(&format!(" · looking up {pending}…"));
+    }
+    look::head(page, p, cols, "search", &[(tokens::MUTED, false, summary)]);
+    page.blank();
+    if n == 0 {
+        let l = page.line();
+        l.pad(4).put(p, tokens::MUTED, "Nothing found. ");
+        l.put(p, tokens::TEAL, "shards search image quay.io/TERM");
+        l.put(
+            p,
+            tokens::MUTED,
+            " searches quay.io, and HOST/TERM a registry's catalog.",
+        );
+        return;
+    }
+    let columns = [
+        Column {
+            heading: "IMAGE",
+            right: false,
+            keep: 9,
+        },
+        Column {
+            heading: "DESCRIPTION",
+            right: false,
+            keep: 2,
+        },
+        Column {
+            heading: "STARS",
+            right: true,
+            keep: 4,
+        },
+        Column {
+            heading: "RUNS HERE",
+            right: false,
+            keep: 8,
+        },
+        Column {
+            heading: "PULL",
+            right: true,
+            keep: 6,
+        },
+    ];
+    let rows: Vec<(Cell, Vec<Cell>)> = (1..=n)
+        .map(|i| {
+            let get = |k: &str| sheet.get(i, k).unwrap_or("");
+            let (marker, said) = match here(i) {
+                "runs" => (
+                    Cell::new("●", tokens::SAGE),
+                    Cell::new(get("platform"), tokens::SAGE),
+                ),
+                "elsewhere" => (
+                    Cell::new("×", tokens::ROSE),
+                    Cell::new(format!("only {}", get("platform")), tokens::ROSE),
+                ),
+                "untagged" => (
+                    Cell::new("○", tokens::FAINT),
+                    Cell::new("no latest tag", tokens::FAINT),
+                ),
+                "unknown" => (
+                    Cell::new("?", tokens::AMBER),
+                    Cell::new(format!("unknown: {}", get("why")), tokens::AMBER),
+                ),
+                _ => (
+                    Cell::new("·", tokens::MUTED),
+                    Cell::new("looking…", tokens::MUTED),
+                ),
+            };
+            let size: u64 = get("size").parse().unwrap_or(0);
+            let mut name = Cell::new(get("name"), tokens::BRIGHT).bold();
+            if get("official") == "true" {
+                name.text.push_str(" ✓");
+            }
+            (
+                marker,
+                vec![
+                    name,
+                    Cell::new(get("description").replace(['\n', '\r'], " "), tokens::BODY),
+                    Cell::new(get("stars"), tokens::LAVENDER),
+                    said,
+                    Cell::new(
+                        if here(i) == "runs" {
+                            text::bytes(size)
+                        } else {
+                            String::new()
+                        },
+                        tokens::TEAL,
+                    ),
+                ],
+            )
+        })
+        .collect();
+    table(page, p, cols, &columns, &rows);
+    if pending == 0 && runs > 0 {
+        page.blank();
+        let l = page.line();
+        l.pad(4).put(p, tokens::MUTED, "● runs here · ");
+        l.put(p, tokens::TEAL, "shards run vm IMAGE");
+        l.put(p, tokens::MUTED, " runs one in a microVM.");
+    }
 }
 
 /// `shards prune ...`: the microVMs and images removed, and what that freed.

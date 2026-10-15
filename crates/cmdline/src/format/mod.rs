@@ -37,6 +37,7 @@ pub mod history;
 pub mod image;
 pub mod network;
 mod reference;
+pub mod search;
 pub mod stats;
 mod tabwriter;
 pub(crate) mod units;
@@ -240,12 +241,19 @@ trait Methods: std::fmt::Debug {
     /// Its exported methods of no arguments but FullHeader, sorted: what MarshalJSON
     /// makes fields of (reflect.go, marshalForMethod).
     const METHODS: &'static [&'static str];
+    /// Methods of shards' own, which a template may call and MarshalJSON leaves out, so
+    /// that `{{json .}}` says what the Docker CLI's says.
+    const EXTRA: &'static [&'static str] = &[];
     const HEADER: &'static Header;
     /// Whether it has `Label(name string) string`.
     const LABEL: bool = false;
 
     /// The value of a method in METHODS.
     fn get(&self, name: &str) -> Option<Value>;
+
+    /// What its own MarshalJSON does before formatter.MarshalJSON reads its methods: the
+    /// search row's sets its `json` field (formatter_search.go).
+    fn marshaling(&self) {}
 
     fn label(&self, name: &str) -> String {
         let _ = name;
@@ -289,7 +297,7 @@ impl<M: Methods + 'static> Object for Ctx<M> {
         if name == "Label" && M::LABEL {
             return Some(&[Kind::String]);
         }
-        (name == "FullHeader" || M::METHODS.contains(&name)).then_some(&[])
+        (name == "FullHeader" || M::METHODS.contains(&name) || M::EXTRA.contains(&name)).then_some(&[])
     }
 
     fn call(&self, name: &str, args: &[Value]) -> Result<Value, String> {
@@ -308,6 +316,7 @@ impl<M: Methods + 'static> Object for Ctx<M> {
     /// formatter.MarshalJSON: an object of the methods' values, by json.Marshal, which
     /// escapes `<`, `>` and `&`.
     fn json(&self, out: &mut String) -> Result<(), String> {
+        self.m.marshaling();
         out.push('{');
         for (i, name) in M::METHODS.iter().enumerate() {
             if i > 0 {

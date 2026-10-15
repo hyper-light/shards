@@ -4,12 +4,12 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub(super) struct Filters(BTreeMap<String, BTreeSet<String>>);
+pub(crate) struct Filters(BTreeMap<String, BTreeSet<String>>);
 
 impl Filters {
     /// The filters given as `name=value` (flags::value made them so; an empty one is
     /// none).
-    pub(super) fn from_flags(given: &[String]) -> Filters {
+    pub(crate) fn from_flags(given: &[String]) -> Filters {
         let mut filters = Filters::default();
         for f in given {
             if let Some((name, value)) = f.split_once('=') {
@@ -24,36 +24,36 @@ impl Filters {
     }
 
     /// These filters but `name`'s (each of its values Del'd).
-    pub(super) fn without(&self, name: &str) -> Filters {
+    pub(crate) fn without(&self, name: &str) -> Filters {
         let mut rest = self.clone();
         rest.0.remove(name);
         rest
     }
 
     /// Whether `name` is filtered on at all (Contains).
-    pub(super) fn contains(&self, name: &str) -> bool {
+    pub(crate) fn contains(&self, name: &str) -> bool {
         self.0.contains_key(name)
     }
 
     /// The values `name` has (Get).
-    pub(super) fn get(&self, name: &str) -> impl Iterator<Item = &str> {
+    pub(crate) fn get(&self, name: &str) -> impl Iterator<Item = &str> {
         self.0.get(name).into_iter().flatten().map(String::as_str)
     }
 
     /// No values for `name`, or `source` among them (ExactMatch).
-    pub(super) fn exact(&self, name: &str, source: &str) -> bool {
+    pub(crate) fn exact(&self, name: &str, source: &str) -> bool {
         self.0
             .get(name)
             .is_none_or(|v| v.is_empty() || v.contains(source))
     }
 
     /// [`exact`](Self::exact), or a value `source` starts with (FuzzyMatch).
-    pub(super) fn fuzzy(&self, name: &str, source: &str) -> bool {
+    pub(crate) fn fuzzy(&self, name: &str, source: &str) -> bool {
         self.exact(name, source) || self.get(name).any(|prefix| source.starts_with(prefix))
     }
 
     /// Refuses a filter not among `accepted` (Validate), in dockerd's words.
-    pub(super) fn validate(&self, accepted: &[&str]) -> Result<(), String> {
+    pub(crate) fn validate(&self, accepted: &[&str]) -> Result<(), String> {
         match self.0.keys().find(|name| !accepted.contains(&name.as_str())) {
             Some(name) => Err(invalid(name, None)),
             None => Ok(()),
@@ -62,7 +62,7 @@ impl Filters {
 
     /// `key`'s value as a bool, `default` where it is not filtered on, and an error
     /// where its values say neither or both (GetBoolOrDefault).
-    pub(super) fn bool_or(&self, key: &str, default: bool) -> Result<bool, String> {
+    pub(crate) fn bool_or(&self, key: &str, default: bool) -> Result<bool, String> {
         let Some(values) = self.0.get(key) else {
             return Ok(default);
         };
@@ -81,7 +81,7 @@ impl Filters {
     /// What `name`'s values match (Match): each exactly, or as a regular expression
     /// anywhere in the source, one that does not compile matching nothing. Compiled
     /// once for every source, where dockerd compiles each value again for each.
-    pub(super) fn matcher(&self, name: &str) -> Matcher<'_> {
+    pub(crate) fn matcher(&self, name: &str) -> Matcher<'_> {
         let values = self.0.get(name);
         Matcher {
             values,
@@ -94,7 +94,7 @@ impl Filters {
     }
 
     /// No values for `name`, or each, `key` or `key=value`, in `sources` (MatchKVList).
-    pub(super) fn kv(&self, name: &str, sources: &BTreeMap<String, String>) -> bool {
+    pub(crate) fn kv(&self, name: &str, sources: &BTreeMap<String, String>) -> bool {
         let Some(values) = self.0.get(name).filter(|v| !v.is_empty()) else {
             return true;
         };
@@ -109,13 +109,13 @@ impl Filters {
 }
 
 /// A filter's values, ready to match sources ([`Filters::matcher`]).
-pub(super) struct Matcher<'a> {
+pub(crate) struct Matcher<'a> {
     values: Option<&'a BTreeSet<String>>,
     patterns: Vec<regex::Regex>,
 }
 
 impl Matcher<'_> {
-    pub(super) fn matches(&self, source: &str) -> bool {
+    pub(crate) fn matches(&self, source: &str) -> bool {
         match self.values {
             None => true,
             Some(v) if v.is_empty() || v.contains(source) => true,
@@ -126,7 +126,7 @@ impl Matcher<'_> {
 
 /// invalidFilter's words (moby daemon/internal/filters/errors.go): the filter, and the
 /// values as Go prints a slice.
-pub(super) fn invalid(name: &str, values: Option<&[&str]>) -> String {
+pub(crate) fn invalid(name: &str, values: Option<&[&str]>) -> String {
     match values {
         Some(v) => format!("invalid filter '{name}=[{}]'", v.join(" ")),
         None => format!("invalid filter '{name}'"),

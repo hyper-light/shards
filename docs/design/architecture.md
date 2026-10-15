@@ -3614,6 +3614,67 @@ No run-time labels, relays or declassifiers (§12 answer 14, decided by the user
 an internal-only domain to the world (D58), so there is no data to label. Code mode is
 D136.
 
+### D172. Images found in registries: `shards search image`, and `GET /images/search`
+
+An agent's sandbox starts from an image that someone, or the agent itself, chose. A
+microVM boots this machine's architecture, so an image with no build for it does not run
+here, and its size is what its first pull downloads before the first start. docker
+search says neither, and searches Docker Hub alone: a term that names another registry
+asks it for an index's search, which no registry serves now (a 404). `shards search image
+TERM` (`shards search TERM`, as Docker says it) finds images through what each registry
+documents, and says of each whether it runs here and what its pull takes. `GET
+/images/search` answers SDKs and the docker CLI as dockerd does.
+
+- **Whether it runs here, and what it pulls** (the microVM's need). Each result's
+  `latest` is looked up, as a run that names no tag pulls it, and chosen as a pull
+  chooses (`shards_image::platform`: arm64 alone; amd64, then 386).
+  - Docker Hub's comes from its API's tag (`/v2/namespaces/NS/repositories/REPO/tags/TAG`,
+    in Docker Hub's API description): every platform's image and compressed size in one
+    answer. Attestations (`unknown/unknown`) name no platform.
+  - Any other registry's comes from the tag's index or manifest, and a lone manifest's from
+    its config.
+  - A repository without `latest` says so. 11 of the 25 results of a search for `python`
+    had none (PM M234), and a `shards run` of one would fail.
+  - Lookups go four at once, the most measured with none throttled by Docker Hub; 25 at
+    once was throttled (PM M234). Each is its own, so a slow one holds up no other.
+- **Across registries, through what each documents.**
+  - Docker Hub: its index's search (`/v1/search`), as dockerd asks it. A password login
+    goes as Basic credentials, an identity token as the bearer token for
+    `registry:catalog:search`, which distribution's authorizer takes from the challenges
+    of the index's `/v2/` (registry/client/auth/session.go).
+  - quay.io: its own search (`/api/v1/find/repositories`, in its API description), each
+    result described by its README's first paragraph.
+  - Any other registry: its catalog (`/v2/_catalog`, followed by its `Link`), the
+    repositories whose names hold the term, with the credentials a pull finds for it. A
+    registry that serves no catalog says so; one that refuses is named.
+  - ECR Public and Artifact Registry document no search: none of ECR Public's 23 API
+    actions searches (its gallery's search is its website's own), and Artifact Registry
+    implements OCI distribution alone. They are searched as any registry with a catalog
+    is. Their listing APIs (ECR's DescribeRepositories, Artifact Registry's
+    dockerImages.list) list the repositories a user owns: a later slice.
+- **On a terminal, at once** (UX). The page is drawn with every result found, and each
+  lookup's answer is filled in as it comes. Piped, it is Docker's exact table, held to
+  docker/cli v29.8.1's formatter by 44 recorded cases. A template may name shards' fields
+  (`{{.RunsHere}}`, `{{.Platform}}`, `{{.Platforms}}`, `{{.Size}}`, `{{.PullCount}}`),
+  which are looked up only when it does; `{{json .}}` says what docker's says. Docker
+  Hub's pull counts, which its index gives and the Engine API's result has no field for,
+  are kept for `{{.PullCount}}`.
+- **The CLI's own** (efficiency): a search starts no daemon. Its credentials,
+  certificates and proxies are those a pull finds.
+- **dockerd's terms, without two of its flaws.** Its limit (25 when none, 1 to 100), its
+  filters (`is-official`, `stars`, `is-automated`, true of which finds nothing) and its
+  refusals are in its words. A negative limit is refused, where dockerd answers 200 with
+  no body (an `errors.Wrap` of no error). A registry's refusal carries what the registry
+  said, which dockerd leaves out ("unexpected status code N", its own TODO).
+
+Held by crates/registry's unit tests (each source, its pages and credentials; what runs
+here from Docker Hub's tags and from manifests), crates/cmdline/tests/search.rs (docker/cli's
+formatter, 44 cases), tests/search.rs (a catalog searched; what runs here; limits, filters
+and refusals; credentials), tests/engine.rs (`GET /images/search` with and without the
+client's credentials; `docker search` through the engine) and the docker CLI oracle. Every
+command a test starts is given the tests' own docker config, so that no test, nor a daemon
+one starts, reads this host's docker config or its credential helpers.
+
 ### D171. Registry logins: `shards login registry`, and `POST /auth`
 
 A microVM's image often comes from a private registry: a team's agents on GHCR, ECR,
@@ -3844,7 +3905,7 @@ Served now: `_ping`, `version`, `info`, events; microVMs' create, list, inspect,
 attach, wait, logs, resize, stop, kill, removal, copy in and out, export, changes,
 processes, stats, pause and unpause, restart, rename, update and prune; exec's create,
 start, inspect and resize; images' pull, list, inspect, tag, history, removal, prune,
-push, save, load and import; commit; build; logins (`/auth`, D171);
+push, save, load, import and search (D172); commit; build; logins (`/auth`, D171);
 volumes' create, list, inspect, removal and prune; networks' create, list, inspect,
 removal, join, leave and prune; what is on disk. Held on real microVMs by
 tests/engine.rs, raw and through the docker CLI, copies into tmpfs mounts over a
