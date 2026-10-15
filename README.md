@@ -112,7 +112,9 @@ still applies. The program each microVM runs first, `shards-init`, is part of sh
 
 Programs that make containers through Docker's Engine API (Docker's SDKs, Testcontainers,
 agent frameworks, the `docker` CLI and `docker compose` themselves) make microVMs with
-shards, unchanged: each Compose service is a microVM of its own. Point them
+shards, unchanged: each Compose service is a microVM of its own. `docker buildx build`
+builds in a microVM with a builder of buildx's own on your host's network (`docker buildx
+create --driver docker-container --driver-opt network=host`). Point them
 at shards' socket, a file in shards' home that only your user can reach (no network port):
 
 ```console

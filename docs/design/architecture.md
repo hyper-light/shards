@@ -3614,6 +3614,59 @@ No run-time labels, relays or declassifiers (§12 answer 14, decided by the user
 an internal-only domain to the world (D58), so there is no data to label. Code mode is
 D136.
 
+### D174. Overlays on volumes: runtimes nested in a microVM
+
+A runtime nested in a microVM keeps its images' layers as overlays on a volume: buildx's
+own builder (BuildKit, its docker-container driver), Docker in Docker, Podman. shards'
+volumes reach a microVM as virtiofs from its run's share process (D38), unprivileged on
+the host, and overlayfs refused them as an upper layer. Measured in buildx's builder and
+in tests/containers.rs, by the guest kernel's log:
+
+1. Its work directory, made with mode 0 (fs/overlayfs/super.c, ovl_workdir_create), was
+   the guest root's to write in and not the share process's (EACCES), so the overlay
+   mounted read-only.
+2. Past that, an upper filesystem it takes for a remote one must give it RENAME_WHITEOUT,
+   xattrs and `d_type` ("upper fs missing required features", EINVAL). Neither host gives
+   an unprivileged process RENAME_WHITEOUT: macOS has none, and Linux's asks CAP_MKNOD.
+
+Now, each held by the server's unit tests and by an overlay on a volume in a microVM:
+
+- **What the host cannot hold is kept beside it**, in the owner's attribute Docker
+  Desktop's file sharing writes (D38).
+  - A mode that would lock the share process out of its own file keeps the host file's
+    owner access (`rwx` for a directory, `rw` for the rest). The guest's exact mode is
+    kept in the attribute where the two differ, and the guest's kernel checks it
+    (`default_permissions`).
+  - A device node the host makes only for a privileged process (overlayfs's whiteout is
+    one, of 0:0) is an empty regular file whose kind and number the attribute holds. The
+    guest sees, lists and looks it up as the node it made; its kernel opens a device
+    itself, never through the share.
+  - The attribute gains `kind` and `rdev`; its `mode` stays Docker Desktop's.
+- **RENAME_WHITEOUT**, as Linux makes it: the rename, then a whiteout in its place, the
+  rename undone where the whiteout cannot be made.
+- **`trusted.` and `security.` attributes on a Linux host**, which only a privileged
+  process sets there (xattr(7)), are kept under `user.shards.` and read and listed back
+  under their own names; a guest's own `user.shards.` names are refused. macOS keeps no
+  namespaces, so names stay as they are.
+- **A file is reached by any name the guest knows it by.** The server knew a file by the
+  name the guest last looked it up by. overlayfs links its one shared whiteout for each
+  removal and unlinks the links as it cleans a directory, so the file went stale (ENOENT
+  for GETATTR and LINK) until the guest looked another of its names up. Each node keeps
+  the names it was looked up by, and is reached by one that still leads to it.
+- **O_CREAT never changes what it finds.** A CREATE that finds its file opens it as it
+  is, where its owner was rewritten before.
+
+So `docker buildx build`, with buildx's own builder on the host's network (`docker buildx
+create --driver docker-container --driver-opt network=host`, D124), builds in a microVM:
+its daemon nests its cgroups (D173), keeps its snapshots on its state volume, runs each
+RUN step in a container of its own runc, and its image is loaded into shards and runs as
+a microVM (tests/buildx.rs, BuildKit v0.33.0). On the default bridge, default deny gives
+the builder no way out: the host's network, asked for and warned of, is what gives it
+its registries. Not yet: O_TMPFILE (FUSE_TMPFILE), which overlayfs does without.
+
+Held by the virtiofs server's unit tests (`what_the_host_cannot_hold_is_kept_beside_it`),
+tests/containers.rs (an overlay on a volume, its kernel's log clean) and tests/buildx.rs.
+
 ### D173. Compose projects through the Engine API
 
 Agent stacks are written as Compose files: an agent, its MCP servers, a database, a
@@ -3650,18 +3703,13 @@ given by D170's calls. What a project gains, each for the microVM:
   workload's process is in, as runc's exec joins container init's
   (libcontainer/process_linux.go, addIntoCgroupV2; runc#2356), within the workload's own
   alone.
-- **Not yet: builds through buildx.** Where buildx is installed, Compose builds with
-  `buildx bake`, and buildx gives a non-dockerd engine a BuildKit of its own: moby/buildkit
-  as a privileged container (its docker-container driver), which in shards is a
-  microVM. It boots now; on the default bridge, default deny gives it no way out, and
-  with `--driver-opt network=host` it is on the host's network (D124), resolves and pulls
-  its bases, and fails its first `RUN`. Its snapshots are overlays on its state volume,
-  which is shards' virtiofs from the run's share process (D38). overlayfs makes its
-  `work/work` directory with mode 0, which the guest's root may write in and the share
-  process, unprivileged on the host, may not (EACCES), so the overlay mounts read-only
-  (the guest kernel's log, measured in the builder). A runtime nested in a microVM
-  (buildkitd, Docker in Docker) needs overlays on its volumes: a slice of its own, as is
-  the engine's own BuildKit API (buildx's docker driver: `/session` and `/grpc`).
+- **Builds through buildx.** Where buildx is installed, Compose builds with `buildx
+  bake`, and buildx gives a non-dockerd engine a BuildKit of its own: moby/buildkit as a
+  privileged container (its docker-container driver), which in shards is a microVM. On
+  the default bridge, default deny gives it no way out. With `--driver-opt network=host`
+  (D124) it builds, since D174 gave its snapshots overlays on its state volume. The
+  engine's own BuildKit API (buildx's docker driver: `/session` and `/grpc`), which
+  would need no builder of buildx's, is a slice of its own.
 
 Held by tests/compose.rs (three projects), tests/engine.rs (a container's events by its
 label) and tests/containers.rs (an exec into a workload that nests its cgroups).

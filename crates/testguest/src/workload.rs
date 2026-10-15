@@ -90,6 +90,28 @@ pub fn main() -> ! {
             0
         }
         "stat" => stat(args.get(1..).unwrap_or_default()),
+        // Each path's device: `PATH char MAJOR:MINOR`, `PATH block MAJOR:MINOR`, or
+        // `PATH none` (an overlay's whiteout is a character device of 0:0).
+        "devnode" => {
+            use std::os::unix::fs::{FileTypeExt as _, MetadataExt as _};
+            for p in args.get(1..).unwrap_or_default() {
+                let said = match std::fs::symlink_metadata(p) {
+                    Ok(m) if m.file_type().is_char_device() || m.file_type().is_block_device() => {
+                        let kind = if m.file_type().is_char_device() {
+                            "char"
+                        } else {
+                            "block"
+                        };
+                        let rdev = m.rdev();
+                        format!("{kind} {}:{}", libc::major(rdev), libc::minor(rdev))
+                    }
+                    Ok(_) => "none".into(),
+                    Err(e) => format!("missing {e}"),
+                };
+                let _ = writeln!(io::stdout(), "{p} {said}");
+            }
+            0
+        }
         "tree" => tree(arg(1)),
         "ps" => ps(),
         "mtime" => {
@@ -362,6 +384,9 @@ pub fn main() -> ! {
             },
             code => code,
         },
+        // The kernel's log records holding any of WORDS, as /dev/kmsg has them now (read
+        // without waiting for more): what a kernel said of a mount it refused.
+        "kernlog" => kernlog(args.get(1..).unwrap_or_default()),
         // The lines of file PATH holding any of WORDS (/proc/vmstat, /dev/kmsg's, ...).
         "lines" => {
             let text = std::fs::read(arg(1)).map(|b| String::from_utf8_lossy(&b).into_owned());
@@ -691,6 +716,40 @@ fn clean_cache(path: &str) -> i32 {
 
 /// Prints who and where the workload is, one `key value` per line, and proves the root
 /// filesystem is writable.
+/// Prints each record of the kernel's log whose text holds any of `words`, read from
+/// /dev/kmsg to its end without waiting (a record a read missed, overwritten, is
+/// skipped: EPIPE).
+fn kernlog(words: &[String]) -> i32 {
+    use std::os::unix::fs::OpenOptionsExt as _;
+    let Ok(log) = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK)
+        .open("/dev/kmsg")
+    else {
+        let _ = writeln!(io::stdout(), "kernlog error: /dev/kmsg");
+        return 1;
+    };
+    let mut log = log;
+    let mut buf = vec![0u8; 8192];
+    loop {
+        match io::Read::read(&mut log, &mut buf) {
+            Ok(0) => return 0,
+            Ok(n) => {
+                let record = String::from_utf8_lossy(buf.get(..n).unwrap_or_default());
+                let text = record
+                    .split_once(';')
+                    .map_or(record.as_ref(), |(_, t)| t)
+                    .trim_end();
+                if words.iter().any(|w| text.contains(w.as_str())) {
+                    let _ = writeln!(io::stdout(), "{text}");
+                }
+            }
+            Err(e) if e.raw_os_error() == Some(libc::EPIPE) => {}
+            Err(_) => return 0,
+        }
+    }
+}
+
 fn report() -> i32 {
     let mut out = String::new();
     // SAFETY: plain getters.
@@ -2074,7 +2133,7 @@ fn fs(ops: &[String]) -> i32 {
                     _ => Err(io::Error::other("a NUL in an xattr")),
                 }
             }
-            "mount" | "umount" | "remount-rw" | "fsopen" | "open-tree" => mounts(kind, rest),
+            "mount" | "umount" | "remount-rw" | "fsopen" | "open-tree" | "overlay" => mounts(kind, rest),
             "chown" => {
                 let mut parts = rest.splitn(3, ':');
                 let id = |p: Option<&str>| p.and_then(|n| n.parse::<u32>().ok());
@@ -2171,6 +2230,36 @@ fn mounts(kind: &str, spec: &str) -> io::Result<()> {
             let target = c(spec)?;
             // SAFETY: umount2(2) of a NUL-terminated path.
             said(unsafe { libc::umount2(target.as_ptr(), 0) }.into())
+        }
+        // `LOWER:UPPER:WORK:TARGET`: an overlay, as a nested runtime's snapshotter mounts
+        // one, refused where the kernel mounted it read-only (its upper layer's filesystem
+        // lacking what overlayfs needs of it).
+        "overlay" => {
+            let parts: Vec<&str> = spec.splitn(4, ':').collect();
+            let [lower, upper, work, target] = parts.as_slice() else {
+                return Err(io::Error::other("a malformed overlay"));
+            };
+            let data = c(&format!("lowerdir={lower},upperdir={upper},workdir={work}"))?;
+            let (fstype, target) = (c("overlay")?, c(target)?);
+            // SAFETY: mount(2) of NUL-terminated strings that outlive the call.
+            let r = unsafe {
+                libc::mount(
+                    fstype.as_ptr(),
+                    target.as_ptr(),
+                    fstype.as_ptr(),
+                    0,
+                    data.as_ptr().cast(),
+                )
+            };
+            said(r.into())?;
+            // SAFETY: an all-zero statvfs is a valid out-parameter.
+            let mut st: libc::statvfs = unsafe { std::mem::zeroed() };
+            // SAFETY: statvfs(2) of a NUL-terminated path into our struct.
+            said(unsafe { libc::statvfs(target.as_ptr(), &mut st) }.into())?;
+            if st.f_flag & libc::ST_RDONLY != 0 {
+                return Err(io::Error::other("the overlay mounted read-only"));
+            }
+            Ok(())
         }
         "remount-rw" => {
             let target = c(spec)?;

@@ -4355,6 +4355,93 @@ fn an_exec_joins_a_workload_that_nests_its_cgroups() {
     assert_eq!(removed.status, Some(0), "{removed}");
 }
 
+/// A runtime nested in a microVM keeps overlays on its volumes (D174), as BuildKit's
+/// snapshots and Docker in Docker's layers are kept: an overlay whose upper and work
+/// directories are on a volume mounts read-write; what it writes is its upper layer's;
+/// what it removes of the lower is a whiteout on the volume; and a directory removed and
+/// made again hides the lower's (an opaque directory, by its upper layer's attribute).
+#[test]
+fn an_overlay_on_a_volume_is_written_as_on_a_kernels_own_filesystem() {
+    let Some((home, image)) = home("containers-overlay") else {
+        return;
+    };
+    let run = run_in(
+        &home,
+        &image,
+        &[
+            "-d",
+            "--name",
+            "layered",
+            "--privileged",
+            "-u",
+            "0",
+            "-v",
+            "layers:/data",
+        ],
+        &["sleep"],
+    );
+    assert_eq!(run.status, Some(0), "{run}");
+    let exec = |args: &[&str]| {
+        let mut all = vec!["exec", "layered", "/bin/testguest"];
+        all.extend_from_slice(args);
+        shards_in(&home, &all)
+    };
+    let made = exec(&[
+        "fs",
+        "mkdir:/data/lower",
+        "mkdir:/data/lower/dir",
+        "write:/data/lower/gone=1",
+        "write:/data/lower/kept=1",
+        "write:/data/lower/dir/old=1",
+        "mkdir:/data/upper",
+        "mkdir:/data/work",
+        "mkdir:/merged",
+        "overlay:/data/lower:/data/upper:/data/work:/merged",
+        "write:/merged/made=1",
+        "rm:/merged/gone",
+        "rmdir:/merged/dir",
+        "mkdir:/merged/dir",
+        "write:/merged/dir/new=1",
+    ]);
+    assert_eq!(
+        made.status,
+        Some(0),
+        "{made}\nthe kernel: {}",
+        exec(&["kernlog", "overlay"]).stdout
+    );
+    let seen = exec(&[
+        "slurp",
+        "/merged/made",
+        "/merged/kept",
+        "/merged/gone",
+        "/merged/dir/old",
+        "/merged/dir/new",
+        "/data/upper/made",
+    ]);
+    assert_eq!(
+        seen.stdout,
+        "slurp /merged/made: 1\nslurp /merged/kept: 1\nslurp /merged/gone: errno 2\nslurp /merged/dir/old: errno 2\nslurp /merged/dir/new: 1\nslurp /data/upper/made: 1\n",
+        "{seen}"
+    );
+    let whiteout = exec(&["devnode", "/data/upper/gone"]);
+    assert_eq!(
+        whiteout.stdout,
+        "/data/upper/gone char 0:0\n",
+        "{whiteout}\nthe volume: {}\nthe kernel: {}",
+        exec(&["tree", "/data"]).stdout,
+        exec(&["kernlog", "overlay"]).stdout
+    );
+    // Nothing overlayfs had to do without: no read-only mount, no whiteout of its own for
+    // each removal (its shared one's links reached).
+    let said = exec(&["kernlog", "overlay"]).stdout;
+    assert!(
+        !said.contains("read-only") && !said.contains("missing") && !said.contains("Failed"),
+        "{said}"
+    );
+    let removed = shards_in(&home, &["rm", "-f", "layered"]);
+    assert_eq!(removed.status, Some(0), "{removed}");
+}
+
 #[test]
 fn detached_runs_print_their_id_and_go_on() {
     let Some((home, image)) = home("containers-detached") else {
