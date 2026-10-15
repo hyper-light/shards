@@ -179,7 +179,8 @@ fn guest_memory(
 }
 
 /// Guest RAM of `ranges` from a snapshot's memory `file`, and, as boot made it, the memory
-/// `config` may have plugged at `at`, none of it plugged: a snapshot keeps none (D148).
+/// `config` may have plugged at `at`, none of it plugged yet: what the snapshot's machine
+/// had plugged is plugged again once the VM exists ([`replug`]).
 #[cfg(hv)]
 fn restored_memory(
     ranges: &[(u64, usize)],
@@ -198,6 +199,29 @@ fn restored_memory(
                 .map_err(|e| format!("snapshot memory: {e}"))
         }
     }
+}
+
+/// The memory `snap`'s machine had plugged, plugged again in `memory` and read back from
+/// the snapshot's memory `file` (D176), given to the guest through `vm`'s stage 2 as a plug
+/// gives it: once the VM exists, and before any vCPU runs.
+#[cfg(hv)]
+fn replug(
+    memory: &crate::memory::GuestMemory,
+    snap: &crate::snapshot::Snapshot,
+    file: &std::fs::File,
+    vm: &crate::hv::Vm,
+) -> Result<(), String> {
+    if snap.plugged.is_empty() {
+        return Ok(());
+    }
+    let stage2 = vm.stage2();
+    memory
+        .restore_plugged(&snap.plugged, file, |host, gpa, len| {
+            // SAFETY: the memory to plug stays mapped in this process as long as the guest
+            // memory does, which outlives the VM.
+            unsafe { mem::Mapper::map(&stage2, host, gpa, len) }
+        })
+        .map_err(|e| format!("snapshot memory: {e}"))
 }
 
 #[cfg(hv)]
@@ -1660,6 +1684,7 @@ mod tests {
         let (net, _ends) = net_host();
         let snap = |vsock, net| Snapshot {
             config: machine(vsock, net),
+            plugged: Vec::new(),
             arch: Vec::new(),
             devices: Vec::new(),
         };

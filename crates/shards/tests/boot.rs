@@ -823,15 +823,54 @@ fn a_snapshot_keeps_memory_to_plug() {
     }
 }
 
+/// A snapshot of a guest with memory plugged keeps it (D176): the guest plugs 512 MiB,
+/// writes 448 MiB, more than it booted with, and only then asks for a snapshot; the VM that
+/// booted and each VM restored from it find all it wrote.
+#[test]
+fn a_snapshot_keeps_the_memory_its_guest_plugged() {
+    if cannot_run_vms() || cannot_snapshot() {
+        return;
+    }
+    let dir = common::TempDir::new("plug-snap");
+    let snapshot = dir.join("s");
+    let cmdline = "console=ttyS0 quiet panic=-1 shards_test=plug-snapshot shards_plug_mib=512 memhp_default_state=online_movable";
+    let booted = run_shards(
+        &["run"],
+        &[
+            "--kernel",
+            kernel().to_str().unwrap(),
+            "--init",
+            test_guest().to_str().unwrap(),
+            "--memory",
+            "256",
+            "--memory-max",
+            "1024",
+            "--cmdline",
+            cmdline,
+            "--snapshot-dir",
+            snapshot.to_str().unwrap(),
+            "--snapshot-then",
+            "resume",
+        ],
+        TIMEOUT,
+    );
+    for run in [booted]
+        .into_iter()
+        .chain((0..2).map(|_| run_shards(&["restore"], &[snapshot.to_str().unwrap()], TIMEOUT)))
+    {
+        assert!(run.stdout.contains("SHARDS-TEST KEPT 448"), "{run}");
+        assert!(run.stdout.contains("SHARDS-TEST PASS"), "{run}");
+    }
+}
+
 /// Memory plugged as the guest asks for it (`--memory-max`, D133). A guest booted with 256
 /// MiB asks for 1 GiB more, its kernel brings it all online, and the guest fills seven
 /// eighths of it, which the VM process then holds; it frees it and asks for none, its kernel
 /// gives it all back, the VM process's own memory falls by it, and the VM process holds
 /// none of the pages the guest wrote as it ends (`hotplug_held_kib`: on macOS a page out of
 /// the hypervisor's mappings is out of the footprint, held or not, PM M193). Asked for more
-/// than it may have, it is given what it may. A snapshot of such a guest is refused up
-/// front. On the hosts whose VMs it measures the memory of (`process_usage`): Windows runs
-/// none yet.
+/// than it may have, it is given what it may. On the hosts whose VMs it measures the
+/// memory of (`process_usage`): Windows runs none yet.
 #[cfg(unix)]
 #[test]
 fn a_guest_grows_and_gives_back_its_memory() {

@@ -31,6 +31,7 @@ pub fn main() {
             "erofs" => erofs(),
             "hotplug" => hotplug(),
             "snapshot-plug" => snapshot_plug(),
+            "plug-snapshot" => plug_snapshot(),
             "limits" => limits(),
             "pci" => pci(),
             "pci-irq" => pci_irq(),
@@ -1935,6 +1936,46 @@ fn snapshot_plug() -> Result<(), String> {
         return Err(format!("page {i} of the plugged memory lost what was written"));
     }
     let _ = writeln!(io::stdout(), "SHARDS-TEST PLUGGED {}", plugged.as_millis());
+    Ok(())
+}
+
+/// Memory plugged before a snapshot (D176): asks for `shards_plug_mib` MiB, waits until the
+/// kernel has it all, writes seven eighths of it, more than the guest booted with, and only
+/// then asks for a snapshot. In the VM that booted and in every VM restored from it, it
+/// checks what it wrote, and says `SHARDS-TEST KEPT <MiB>`.
+fn plug_snapshot() -> Result<(), String> {
+    use shards_abi::control::{HOTPLUG_REQUEST, HOTPLUG_SIZE};
+    let control = ControlPage::map()?;
+    let most = control.read64(HOTPLUG_SIZE);
+    let want = env_u64("shards_plug_mib")? << 20;
+    if most < want {
+        return Err(format!("{want} bytes asked for; the guest may plug {most}"));
+    }
+    let before = mem_total()?;
+    control.write64(HOTPLUG_REQUEST, want);
+    waiting("the memory asked for", || match mem_total()? {
+        now if now >= before + want => Ok(()),
+        now => Err(format!("MemTotal {now}, {before} before")),
+    });
+    let used = usize::try_from(want - want / 8).map_err(|e| e.to_string())?;
+    let mut buf = Aligned::new(used)?;
+    for (i, page) in buf.slice(used).chunks_mut(4096).enumerate() {
+        page.fill(i as u8);
+    }
+    control.write(shards_abi::control::SNAPSHOT, shards_abi::control::SNAPSHOT_NOW);
+    // A restored guest continues here, with what it wrote.
+    control.write(shards_abi::control::MARKER, shards_abi::marker::RESUMED);
+    if let Some(i) = buf
+        .slice(used)
+        .chunks(4096)
+        .enumerate()
+        .find_map(|(i, page)| page.iter().any(|&b| b != i as u8).then_some(i))
+    {
+        return Err(format!(
+            "page {i} of what was written lost it across the snapshot"
+        ));
+    }
+    let _ = writeln!(io::stdout(), "SHARDS-TEST KEPT {}", used >> 20);
     Ok(())
 }
 

@@ -773,6 +773,7 @@ impl Coordinator {
         self.bus.save(&mut w);
         let snap = Snapshot {
             config: self.config.clone(),
+            plugged: self.memory.plugged_runs(),
             arch,
             devices: w.into_bytes(),
         };
@@ -812,6 +813,7 @@ mod tests {
                 gpu: None,
                 swap_mib: 0,
             },
+            plugged: Vec::new(),
             arch: Vec::new(),
             devices: Vec::new(),
         };

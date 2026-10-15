@@ -3621,6 +3621,35 @@ No run-time labels, relays or declassifiers (§12 answer 14, decided by the user
 an internal-only domain to the world (D58), so there is no data to label. Code mode is
 D136.
 
+### D176. A running microVM saved whole, and resumed (in progress)
+
+`shards save vm NAME`, and Docker's `checkpoint`, save a running microVM whole: its
+memory, vCPUs and devices as they are, every process, pty, pipe, socket within it and file
+in its writable layer with them; `shards restore vm NAME` resumes it from there. Docker's
+checkpoint is experimental and Linux's alone (docker/cli: `experimental`, `ostype`
+`linux`), and needs CRIU 2.0 or later (docs.docker.com, `docker checkpoint`), which dumps a
+container's processes one by one and refuses what it cannot: a `docker run -t` terminal,
+device files, files sent over Unix sockets, locks held unless told to, processes joined
+to anything outside the set it dumps (criu.org, "What cannot be checkpointed"). A
+microVM's state is its memory and its devices', which shards' VMM already saves and
+restores for templates (D25): HVF and x86_64 KVM, arm64 KVM and WHP not yet (D140). What
+lies outside the microVM goes as with CRIU by default, and is said: connections to the
+world beyond it, exec sessions and attached clients.
+
+Templates are saved before their guest has plugged any memory or swapped (D148, D159). A
+running microVM has done both, so a save keeps them:
+
+- **Memory plugged** (part 1). The memory file holds the RAM, then each run of the blocks
+  a virtio-mem device plugged, in the order of their addresses, all-zero pages as holes;
+  the state lists the runs (snapshot format 17), and virtio-mem keeps what it asks for and
+  what is plugged. A restore remakes the region as boot made it, plugs the same runs
+  again through the hypervisor's stage 2, as a plug does, and reads them back before any
+  vCPU runs. Held by `memory_plugged_is_saved_and_plugged_back` and, on real microVMs,
+  `a_snapshot_keeps_the_memory_its_guest_plugged`: a guest plugs 512 MiB, writes 448 MiB,
+  more than it booted with, and only then asks for a snapshot; the VM that booted and two
+  restores find all it wrote. Mutation-checked: without the plug again, the restored guest
+  faults at the first address of the region it reads.
+
 ### D175. Sockets read in poll(2) on macOS, and streams ended one way at a time
 
 On macOS a read waiting on a Unix stream socket can sleep through its peer's half-close,
