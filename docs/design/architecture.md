@@ -3659,6 +3659,12 @@ unchanged (`DOCKER_HOST=unix://HOME/engine.sock`). What they gain, each for the 
   connection closes at its end); an upload is taken as it comes, never staged. A stopped
   microVM's files are read by a VM visiting them; a paused one's are in its frozen guest,
   and that is said.
+- **A visit's namespaces whole before anything enters them.** A stopped microVM's visit
+  gives its standby orders without a command: it sets up the copy's view in its own
+  namespaces, as a run's standby does, says it is done by its error channel, and holds.
+  Before, nothing waited for a standby that had just isolated itself, and a copy could
+  enter its mount namespace half made (`umount2` EINVAL on x86_64 CI). A visit that
+  fails now says why, as its microVM told its client.
 - **A copy lands where the command will find it.** A running microVM's copies are made in
   its command's mount namespace, its volumes and tmpfs mounts in it: a file copied into
   a volume is in the volume, and one copied into a tmpfs is what its command reads. A
@@ -3719,6 +3725,25 @@ unchanged (`DOCKER_HOST=unix://HOME/engine.sock`). What they gain, each for the 
   names no repository is refused, where dockerd answers 200 and tags nothing
   (httputils.RepoTagReference's nil). An image that goes takes the microVM templates made
   of it, and their warm microVMs, with the store's next collection (`collect_garbage`).
+- **Images pushed, saved, loaded and imported, and microVMs committed**, as `push image`,
+  `save image`, `load image`, import and `commit vm` do them. A push's credentials
+  (X-Registry-Auth) stay in memory, as a pull's; each layer is said by its ID, its digest
+  and size an `aux` message, and our platform's manifest pushed alone, where an index was
+  not all here, the `aux` (manifestPushedInsteadOfIndex) the docker CLI tells of it by,
+  as dockerd's are (daemon/containerd/image_push.go). An archive saved is written onto
+  the connection as it is made, each image found before its head so that one not here
+  is 404; one loaded, and a root filesystem imported, are read as they come, never
+  staged. An import reads the call's body or an http or https URL, `http://` where none
+  is named, as moby does; any other scheme is refused, and the daemon opens no path it
+  is given. A commit's config is the microVM's, changed by its Dockerfile `changes`: a
+  body that gives another is refused (changes say each field a config has), and an
+  empty one, `{}`, which docker-py sends when given none, is none, where dockerd's merge
+  of it drops the microVM's Shell and OnBuild (daemon/commit.go, merge).
+- **A pull or push refused before it says anything is answered by its status**, as
+  dockerd answers one whose stream it has not flushed; SDKs read that as the call's error
+  (a 404 as not found). `pull -a`'s trailing `:` is taken as moby takes it, and `scratch`
+  is refused before any registry is asked (403), the empty base a Dockerfile builds
+  FROM, which no registry holds; shards' CLI refuses it so too now.
 - **What shards takes on disk** (`inspect disk`): each kind's usage as API 1.52 gives it
   (ImageUsage, ContainerUsage, VolumeUsage, BuildCacheUsage), the fields of clients
   before it unless `verbose`, as dockerd answers both; and `TemplateUsage`, the microVMs'
@@ -3748,7 +3773,8 @@ unchanged (`DOCKER_HOST=unix://HOME/engine.sock`). What they gain, each for the 
 Served now: `_ping`, `version`, `info`, events; microVMs' create, list, inspect, start,
 attach, wait, logs, resize, stop, kill, removal, copy in and out, export, changes,
 processes, stats, pause and unpause, restart, rename, update and prune; exec's create,
-start, inspect and resize; images' pull, list, inspect, tag, history, removal and prune;
+start, inspect and resize; images' pull, list, inspect, tag, history, removal, prune,
+push, save, load and import; commit;
 volumes' create, list, inspect, removal and prune; networks' create, list, inspect,
 removal, join, leave and prune; what is on disk. Held on real microVMs by
 tests/engine.rs, raw and through the docker CLI, copies into tmpfs mounts over a

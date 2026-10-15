@@ -1267,8 +1267,8 @@ fn a_command_runs_in_a_running_container_by_exec() {
     assert_eq!(removed.status, 204, "{}", removed.text());
 }
 
-/// Images as the API lists, inspects and pulls them: the pull a stream of JSON messages,
-/// its failure the last of them.
+/// Images as the API lists, inspects and pulls them: the pull a stream of JSON messages; a
+/// pull that fails before it says anything answered by its status.
 #[test]
 fn images_are_listed_inspected_and_pulled() {
     let Some((home, image)) = home("eng-images") else {
@@ -1313,9 +1313,25 @@ fn images_are_listed_inspected_and_pulled() {
         !messages.is_empty() && messages.iter().all(|m| m.get("error").is_none()),
         "{messages:?}"
     );
+    // One that fails before it says anything is answered by its status, as dockerd answers
+    // one whose stream it has not flushed, which clients read as an error of the call.
     let failed = api.call("POST", "/images/create?fromImage=127.0.0.1:1/none&tag=x", None);
-    let last: Value = serde_json::from_str(failed.text().lines().last().unwrap()).unwrap();
-    assert!(last["error"].is_string(), "{}", failed.text());
+    assert_eq!(failed.status, 500, "{}", failed.text());
+    // A tag the registry has not: not found, as clients read a pull of nothing.
+    let missing = api.call(
+        "POST",
+        &format!("/images/create?fromImage={name}&tag=nothere"),
+        None,
+    );
+    assert_eq!(missing.status, 404, "{}", missing.text());
+    assert!(
+        failed.json()["message"]
+            .as_str()
+            .unwrap()
+            .contains("failed to resolve reference"),
+        "{}",
+        failed.text()
+    );
 }
 
 /// Images named, traced and removed as the API asks: a tag made by its repo and tag, one
@@ -1494,6 +1510,207 @@ fn images_are_tagged_traced_removed_and_pruned() {
         }
     });
     assert!(gone, "{}", api.call("GET", "/system/df", None).text());
+}
+
+/// Images pushed, saved, loaded and imported as the API asks. A push goes with its
+/// client's credentials alone, each layer said by its ID, its digest an `aux` message,
+/// and our platform's manifest pushed alone, where the index was not all here, the `aux`
+/// the docker CLI tells of it by; a tag not here said in its stream. An image saved
+/// is an archive written as it is made, loaded back as it comes; one not here is 404. A
+/// root filesystem is imported from the body, named, with its message and changes; a
+/// source that is neither http nor the body is refused, and `scratch` is no image to pull.
+#[test]
+fn images_are_pushed_saved_loaded_and_imported() {
+    if cannot_run_vms() {
+        return;
+    }
+    let (index, blobs) = common::test_index();
+    let (from, _) = common::registry(index.clone(), blobs.clone());
+    let source = format!("127.0.0.1:{from}/test/image:v1");
+    let home = TempDir::new("eng-push");
+    let pulled = shards_in(&home, &["pull", "-q", &source]);
+    assert_eq!(pulled.status, Some(0), "{pulled}");
+    let basic = format!(
+        "Basic {}",
+        base64::engine::general_purpose::STANDARD.encode("pusher:secret")
+    );
+    let (port, repos) = common::writable_registry_requiring(Some(basic));
+    let repo = format!("127.0.0.1:{port}/team/app");
+    let mut api = Api::new(&home);
+    let tagged = api.call("POST", &format!("/images/{source}/tag?repo={repo}&tag=1"), None);
+    assert_eq!(tagged.status, 201, "{}", tagged.text());
+    let lines = |a: &Answered| -> Vec<Value> {
+        a.text()
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect()
+    };
+    // Without its client's credentials, the registry refuses it.
+    let refused = api.call("POST", &format!("/images/{repo}/push?tag=1"), None);
+    assert_eq!(refused.status, 200, "{}", refused.text());
+    assert!(
+        lines(&refused).last().unwrap()["error"].is_string(),
+        "{}",
+        refused.text()
+    );
+    // With them, it goes.
+    let auth = base64::engine::general_purpose::URL_SAFE.encode(
+        json!({"username": "pusher", "password": "secret", "serveraddress": format!("127.0.0.1:{port}")})
+            .to_string(),
+    );
+    api.send(
+        "POST",
+        &format!("/images/{repo}/push?tag=1"),
+        None,
+        &[("X-Registry-Auth", &auth)],
+    );
+    let pushed = api.answer("POST");
+    assert_eq!(pushed.status, 200, "{}", pushed.text());
+    let (manifest, layer) = (&blobs[2], &blobs[1]);
+    let short = common::sha256_digest(layer);
+    let short = short.trim_start_matches("sha256:").get(..12).unwrap().to_string();
+    let digest = common::sha256_digest(manifest);
+    assert_eq!(
+        lines(&pushed),
+        [
+            json!({"status": format!("The push refers to repository [{repo}]")}),
+            json!({"status": "Pushed", "progressDetail": {}, "id": short}),
+            json!({"status": format!("1: digest: {digest} size: {}", manifest.len())}),
+            json!({"progressDetail": {}, "aux": {"Tag": "1", "Digest": digest, "Size": manifest.len()}}),
+            json!({"progressDetail": {}, "aux": {
+                "manifestPushedInsteadOfIndex": true,
+                "originalIndex": {"mediaType": "application/vnd.oci.image.index.v1+json", "digest": common::sha256_digest(&index), "size": 0},
+                "selectedManifest": {"mediaType": "application/vnd.oci.image.manifest.v1+json", "digest": digest, "size": 0},
+            }}),
+        ],
+        "{}",
+        pushed.text()
+    );
+    assert_eq!(repos.lock().unwrap().manifests["team/app"]["1"].1, *manifest);
+    // A tag not here: said after the repository, as dockerd says it.
+    let missing = api.call("POST", &format!("/images/{repo}/push?tag=nope"), None);
+    assert_eq!(missing.status, 200, "{}", missing.text());
+    assert!(
+        lines(&missing).last().unwrap()["error"]
+            .as_str()
+            .unwrap()
+            .starts_with("tag does not exist"),
+        "{}",
+        missing.text()
+    );
+    // Saved as it is made, removed, and loaded back as it comes.
+    let saved = Api::new(&home).downloaded(&format!("/images/{repo}:1/get"));
+    assert_eq!(
+        (saved.status, saved.field("content-type")),
+        (200, Some("application/x-tar")),
+        "{saved:?}"
+    );
+    let names: Vec<String> = untar(&saved.body).into_iter().map(|(n, _)| n).collect();
+    assert!(
+        names.iter().any(|n| n == "index.json") && names.iter().any(|n| n == "manifest.json"),
+        "{names:?}"
+    );
+    assert_eq!(api.call("GET", "/images/nothing:here/get", None).status, 404);
+    assert_eq!(api.call("DELETE", &format!("/images/{repo}:1"), None).status, 200);
+    let loaded = api.upload("POST", "/images/load", "application/x-tar", &saved.body);
+    assert_eq!(loaded.status, 200, "{}", loaded.text());
+    assert_eq!(
+        lines(&loaded),
+        [json!({"stream": format!("Loaded image: {repo}:1\n")})],
+        "{}",
+        loaded.text()
+    );
+    assert_eq!(
+        api.call("GET", &format!("/images/{repo}:1/json"), None).status,
+        200
+    );
+    // A root filesystem imported from the body: named, its message and change kept.
+    let imported = api.upload(
+        "POST",
+        "/images/create?fromSrc=-&repo=shp/imported&tag=1&message=from%20the%20api&changes=CMD%20%5B%22sleep%22%5D",
+        "application/x-tar",
+        layer,
+    );
+    assert_eq!(imported.status, 200, "{}", imported.text());
+    let id = lines(&imported).last().unwrap()["status"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(id.starts_with("sha256:"), "{}", imported.text());
+    let doc = api.call("GET", "/images/shp/imported:1/json", None).json();
+    assert_eq!(
+        (&doc["Id"], &doc["Config"]["Cmd"]),
+        (&json!(id), &json!(["sleep"])),
+        "{doc}"
+    );
+    let history = api.call("GET", "/images/shp/imported:1/history", None).json();
+    assert_eq!(history[0]["Comment"], json!("from the api"), "{history}");
+    let elsewhere = api.call("POST", "/images/create?fromSrc=ftp://example.com/root.tar", None);
+    assert_eq!(elsewhere.status, 400, "{}", elsewhere.text());
+    let scratch = api.call("POST", "/images/create?fromImage=scratch&tag=latest", None);
+    assert_eq!(scratch.status, 403, "{}", scratch.text());
+}
+
+/// A microVM committed as the API asks: named, its author, comment and Dockerfile changes
+/// kept, its files as it left them; an empty config is none, another refused.
+#[test]
+fn a_microvm_is_committed_as_an_image() {
+    let Some((home, image)) = home("eng-commit") else {
+        return;
+    };
+    let mut api = Api::new(&home);
+    let made = api.call(
+        "POST",
+        "/containers/create?name=worked",
+        Some(json!({"Image": image, "Cmd": ["fs", "write:/tmp/made=1"]})),
+    );
+    assert_eq!(made.status, 201, "{}", made.text());
+    assert_eq!(api.call("POST", "/containers/worked/start", None).status, 204);
+    assert_eq!(
+        api.call("POST", "/containers/worked/wait", None).json()["StatusCode"],
+        json!(0)
+    );
+    let committed = api.call(
+        "POST",
+        "/commit?container=worked&repo=shp/worked&tag=1&author=api&comment=its%20work&changes=ENV%20K%3Dv",
+        Some(json!({})),
+    );
+    assert_eq!(committed.status, 201, "{}", committed.text());
+    let id = committed.json()["Id"].as_str().unwrap().to_string();
+    let doc = api.call("GET", "/images/shp/worked:1/json", None).json();
+    assert_eq!((&doc["Id"], &doc["Author"]), (&json!(id), &json!("api")), "{doc}");
+    assert!(
+        doc["Config"]["Env"].as_array().unwrap().contains(&json!("K=v")),
+        "{doc}"
+    );
+    let history = api.call("GET", "/images/shp/worked:1/history", None).json();
+    assert_eq!(history[0]["Comment"], json!("its work"), "{history}");
+    // Its files as it left them, in a microVM of the new image.
+    let read = api.call(
+        "POST",
+        "/containers/create?name=reread",
+        Some(json!({"Image": "shp/worked:1", "Cmd": ["stat", "/tmp/made"]})),
+    );
+    assert_eq!(read.status, 201, "{}", read.text());
+    assert_eq!(api.call("POST", "/containers/reread/start", None).status, 204);
+    assert_eq!(
+        api.call("POST", "/containers/reread/wait", None).json()["StatusCode"],
+        json!(0)
+    );
+    assert!(
+        output_of(&mut api, "reread").contains("= 1"),
+        "{}",
+        output_of(&mut api, "reread")
+    );
+    let configured = api.call(
+        "POST",
+        "/commit?container=worked&repo=shp/worked&tag=2",
+        Some(json!({"Cmd": ["other"]})),
+    );
+    assert_eq!(configured.status, 400, "{}", configured.text());
+    assert!(configured.text().contains("changes"), "{}", configured.text());
+    let nothing = api.call("POST", "/commit?container=nothing", None);
+    assert_eq!(nothing.status, 404, "{}", nothing.text());
 }
 
 /// The docker CLI runs microVMs through the engine, as it runs Docker's containers: `run`
@@ -1686,6 +1903,39 @@ fn the_docker_cli_runs_microvms_through_the_engine() {
         (Some(0), "Total reclaimed space: 0B\n"),
         "{err}"
     );
+    // A microVM committed; images saved, loaded, imported and pushed.
+    let (status, _, err) = docker(&["run", "--name", "cli-work", &image, "fs", "write:/tmp/w=1"]);
+    assert_eq!(status, Some(0), "{err}");
+    let (status, out, err) = docker(&["commit", "cli-work", "shp/cli-work:1"]);
+    assert_eq!(status, Some(0), "{err}");
+    assert!(out.trim().starts_with("sha256:"), "{out}");
+    let (status, _, err) = docker(&["rm", "cli-work"]);
+    assert_eq!(status, Some(0), "{err}");
+    let saved = home.join("cli-saved.tar");
+    let (status, _, err) = docker(&["save", "-o", saved.to_str().unwrap(), "shp/cli-work:1"]);
+    assert_eq!(status, Some(0), "{err}");
+    let (status, _, err) = docker(&["rmi", "shp/cli-work:1"]);
+    assert_eq!(status, Some(0), "{err}");
+    let (status, out, err) = docker(&["load", "-i", saved.to_str().unwrap()]);
+    assert_eq!(
+        (status, out.as_str()),
+        (Some(0), "Loaded image: shp/cli-work:1\n"),
+        "{err}"
+    );
+    let (_, blobs) = common::test_image_with(None);
+    let root = home.join("cli-root.tar");
+    std::fs::write(&root, &blobs[1]).unwrap();
+    let (status, out, err) = docker(&["import", root.to_str().unwrap(), "shp/cli-root:1"]);
+    assert_eq!(status, Some(0), "{err}");
+    assert!(out.trim().starts_with("sha256:"), "{out}");
+    let (port, repos) = common::writable_registry();
+    let pushed = format!("127.0.0.1:{port}/team/cli:1");
+    let (status, _, err) = docker(&["tag", "shp/cli-work:1", &pushed]);
+    assert_eq!(status, Some(0), "{err}");
+    let (status, out, err) = docker(&["push", &pushed]);
+    assert_eq!(status, Some(0), "{out}{err}");
+    assert!(out.contains("1: digest: sha256:"), "{out}");
+    assert!(repos.lock().unwrap().manifests["team/cli"].contains_key("1"));
 }
 
 /// `name` on PATH.

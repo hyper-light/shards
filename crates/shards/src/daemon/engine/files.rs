@@ -6,13 +6,12 @@
 //! microVM's guest packs goes from it straight onto the client's connection, never
 //! through the daemon; what a client uploads is taken as it comes, never staged.
 
-use std::io::{self, BufRead};
+use std::io::BufRead;
 use std::os::fd::AsFd as _;
 use std::os::unix::net::UnixStream;
 
 use base64::Engine as _;
 use serde_json::{Value, json};
-use shards_ipc::kind;
 
 use super::http::{self, Answer};
 use super::{Call, Done, refused};
@@ -83,55 +82,14 @@ impl<D: Disk> Daemon<D> {
         } else {
             "1"
         };
-        let (from, mut into) = match io::pipe() {
-            Ok(pipe) => pipe,
-            Err(e) => return Done::Answer(Answer::error(500, format!("a pipe: {e}"))),
-        };
-        let ipc = match self.command_conn_with(
+        let answered = self.ask_with_body(
             threads,
             &[COPY_STEP, "extract", given, path, owners, overwrite],
-            shards_ipc::registry_env(),
-            &[from.as_fd()],
-        ) {
-            Ok(ipc) => ipc,
-            Err(e) => return Done::Answer(Answer::error(500, e)),
-        };
-        drop(from);
-        // The body into the guest as it comes, and the daemon's answer meanwhile: a guest
-        // that refuses stops reading, and its answer still comes.
-        let answered = std::thread::scope(|s| {
-            let answer = std::thread::Builder::new()
-                .name("engine-extract".into())
-                .spawn_scoped(s, || {
-                    let mut said = Vec::new();
-                    loop {
-                        match shards_ipc::recv(&ipc) {
-                            Ok(Some(m)) if m.kind == kind::ERR => said.extend(m.payload),
-                            Ok(Some(m)) if m.kind == kind::END => {
-                                return Ok((m.payload.first().copied().unwrap_or(1), said));
-                            }
-                            Ok(Some(m)) if m.kind == kind::RESTART => {
-                                return Err("the daemon is shutting down".to_string());
-                            }
-                            Ok(Some(_)) => {}
-                            Ok(None) | Err(_) => {
-                                return Err("the daemon ended before it answered".to_string());
-                            }
-                        }
-                    }
-                });
-            let _ = io::copy(body, &mut into);
-            drop(into);
-            match answer {
-                Ok(answer) => answer
-                    .join()
-                    .unwrap_or_else(|_| Err("its answer was lost".to_string())),
-                Err(e) => Err(format!("its answer's thread: {e}")),
-            }
-        });
+            body,
+        );
         Done::Answer(match answered {
-            Ok((0, _)) => Answer::text(200, ""),
-            Ok((_, said)) => refused(&String::from_utf8_lossy(&said), 500),
+            Ok((0, _, _)) => Answer::text(200, ""),
+            Ok((_, _, said)) => refused(&String::from_utf8_lossy(&said), 500),
             Err(e) => Answer::error(500, e),
         })
     }

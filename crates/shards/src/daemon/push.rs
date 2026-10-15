@@ -11,9 +11,15 @@
 use shards_image::reference::{Digest, Reference};
 use shards_registry::push::Layer;
 
+/// The note a push of our platform's manifest alone says, where an index was not all here
+/// (docker/cli push.go, handleAux): its first line; its second, the index's digest, then
+/// `->` and the manifest's.
+pub(super) const SINGLE_PLATFORM: &str =
+    "Not all multiplatform-content is present and only the available single-platform image was pushed";
+
 /// tui's InfoHeader, and PrintNote's layout: a blank line, the header, each further line
 /// indented by its width, colours only on a terminal.
-fn note(text: &str, color: bool) -> String {
+pub(super) fn note(text: &str, color: bool) -> String {
     let header = if color {
         "\x1b[1m\x1b[106m\x1b[30mi\x1b[0m\x1b[0m \x1b[96mInfo → \x1b[0m\x1b[0m"
     } else {
@@ -112,7 +118,8 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
             let mut registries = std::collections::HashMap::new();
             for name in &wanted {
                 let Some(named) = images.iter().find(|i| i.references.contains(name)) else {
-                    let shown = Reference::parse_normalized(name).map_or_else(|_| name.clone(), |r| r.familiar());
+                    let shown =
+                        Reference::parse_normalized(name).map_or_else(|_| name.clone(), |r| r.familiar());
                     return refuse(&format!("tag does not exist: {shown}"));
                 };
                 // Only what is pushed is read.
@@ -130,9 +137,12 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
                 let registry = match registries.entry(from.clone()) {
                     std::collections::hash_map::Entry::Occupied(held) => held.into_mut(),
                     std::collections::hash_map::Entry::Vacant(slot) => {
-                        match crate::pull::registry_for_push(&reference, from.as_deref(), Some(cancel), &|k| {
-                            shards_ipc::env_value(&asker.registry_env, k)
-                        }) {
+                        match crate::pull::registry_for_push(
+                            &reference,
+                            from.as_deref(),
+                            Some(cancel),
+                            &|k| shards_ipc::env_value(&asker.registry_env, k),
+                        ) {
                             Ok(r) => slot.insert(r),
                             Err(e) => return refuse(&e),
                         }
@@ -226,7 +236,7 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
                             ("", "", "")
                         };
                         notes.push(format!(
-                            "Not all multiplatform-content is present and only the available single-platform image was pushed\n{red}{}{reset} -> {green}{}{reset}",
+                            "{SINGLE_PLATFORM}\n{red}{}{reset} -> {green}{}{reset}",
                             target.digest, manifest.digest
                         ));
                         pushed = manifest;

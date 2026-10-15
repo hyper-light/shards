@@ -1,13 +1,16 @@
 //! Images' calls (D170): pulled, inspected and listed as shards' CLI asks for each.
 
+use std::io::BufRead;
+use std::os::fd::AsFd as _;
 use std::os::unix::net::UnixStream;
 
 use base64::Engine as _;
 use serde_json::{Value, json};
 use shards_ipc::kind;
 
-use super::http::{Answer, Stream};
+use super::http::{self, Answer, Stream};
 use super::{Call, Done, plain, refused};
+use crate::build::proxy::head::Body;
 use crate::containers::Disk;
 use crate::daemon::inspect::Missing;
 use crate::daemon::{Daemon, Threads};
@@ -65,6 +68,153 @@ fn auth_env(header: Option<&str>, reference: &str) -> Result<Option<String>, Str
     Ok(Some(json!({ "auths": { server: entry } }).to_string()))
 }
 
+/// The client's registry environment, with the credentials a call's client gives
+/// (X-Registry-Auth) for `reference`'s registry as its `DOCKER_AUTH_CONFIG`: in memory
+/// alone, never written.
+fn with_auth(call: &Call<'_>, reference: &str) -> Result<Vec<String>, String> {
+    let mut env = shards_ipc::registry_env();
+    if let Some(config) = auth_env(call.head.get("X-Registry-Auth"), reference)? {
+        env.retain(|e| !e.starts_with("DOCKER_AUTH_CONFIG="));
+        env.push(format!("DOCKER_AUTH_CONFIG={config}"));
+    }
+    Ok(env)
+}
+
+/// The image a call's `repo` and `tag` name (httputils.RepoTagReference): none without a
+/// repository; its tag `latest` where neither names one.
+fn repo_tag(call: &Call<'_>) -> Result<Option<String>, String> {
+    let repo = call.query("repo").unwrap_or_default();
+    if repo.is_empty() {
+        return Ok(None);
+    }
+    let mut named = shards_image::reference::Reference::parse_normalized(repo)
+        .map_err(|e| format!("repo {repo}: {e}"))?;
+    if named.digest.is_some() {
+        return Err(format!(
+            "repo {repo}: an image is named by its repository and tag, not by a digest"
+        ));
+    }
+    if let Some(tag) = call.query("tag").filter(|t| !t.is_empty()) {
+        named.tag = Some(tag.to_string());
+    }
+    Ok(Some(named.tag_name_only().to_string()))
+}
+
+/// A line a pull or push says, as dockerd's JSON message of it (streamformatter): a
+/// layer's `ID: STATUS` by its ID, with its progress; a tag's `TAG: Pulling from
+/// REPOSITORY` by the tag; the rest a status alone. None for an empty line.
+fn message(line: &str) -> Option<Value> {
+    if line.trim().is_empty() {
+        return None;
+    }
+    if let Some((id, status)) = line.split_once(": ") {
+        if id.len() == 12
+            && id
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        {
+            return Some(json!({ "status": status, "progressDetail": {}, "id": id }));
+        }
+        if status.starts_with("Pulling from ") {
+            return Some(json!({ "status": status, "id": id }));
+        }
+    }
+    Some(json!({ "status": line }))
+}
+
+/// What a push says, as dockerd's JSON messages of it: each line a [`message`]; a tag's
+/// `TAG: digest: DIGEST size: SIZE` an `aux` too (PushResult); and its note of our
+/// platform's manifest pushed alone the `aux` the docker CLI tells of it by
+/// (auxprogress.ManifestPushedInsteadOfIndex).
+fn push_messages(text: &str) -> Vec<Value> {
+    if let Some(at) = text.find(crate::daemon::push::SINGLE_PLATFORM) {
+        let digests = text
+            .get(at..)
+            .and_then(|rest| rest.lines().nth(1))
+            .and_then(|line| line.trim().split_once(" -> "));
+        if let Some((index, manifest)) = digests {
+            return vec![json!({
+                "progressDetail": {},
+                "aux": {
+                    "manifestPushedInsteadOfIndex": true,
+                    "originalIndex": { "mediaType": "application/vnd.oci.image.index.v1+json", "digest": index.trim(), "size": 0 },
+                    "selectedManifest": { "mediaType": "application/vnd.oci.image.manifest.v1+json", "digest": manifest.trim(), "size": 0 },
+                },
+            })];
+        }
+    }
+    let mut out = Vec::new();
+    for line in text.lines() {
+        let Some(m) = message(line) else {
+            continue;
+        };
+        out.push(m);
+        let pushed = line.split_once(": digest: ").and_then(|(tag, rest)| {
+            rest.split_once(" size: ")
+                .map(|(digest, size)| (tag, digest, size))
+        });
+        if let Some((tag, digest, size)) = pushed
+            && let Ok(size) = size.trim().parse::<i64>()
+        {
+            out.push(json!({ "progressDetail": {}, "aux": { "Tag": tag, "Digest": digest, "Size": size } }));
+        }
+    }
+    out
+}
+
+/// The answer of command `ipc`, a pull's or push's, as a stream of JSON messages, each
+/// line it says made messages by `made`: its head written with its first, so that one
+/// refused before it says anything is answered by its status, as dockerd answers one
+/// whose stream it has not flushed; a failure after that is the stream's last message.
+fn messages(conn: &UnixStream, call: &Call<'_>, ipc: &UnixStream, made: &dyn Fn(&str) -> Vec<Value>) -> Done {
+    let mut stream: Option<Stream<'_>> = None;
+    let mut said = Vec::new();
+    let status = loop {
+        match shards_ipc::recv(ipc) {
+            Ok(Some(m)) if m.kind == kind::OUT => {
+                let made = made(&String::from_utf8_lossy(&m.payload));
+                if made.is_empty() {
+                    continue;
+                }
+                if stream.is_none() {
+                    match Stream::start(conn, call.head, 200, "application/json") {
+                        Ok(s) => stream = Some(s),
+                        Err(_) => return Done::Close,
+                    }
+                }
+                let Some(out) = stream.as_mut() else {
+                    return Done::Close;
+                };
+                if made.iter().try_for_each(|m| out.json(m)).is_err() {
+                    return Done::Close;
+                }
+            }
+            Ok(Some(m)) if m.kind == kind::ERR => said.extend(m.payload),
+            Ok(Some(m)) if m.kind == kind::END => break m.payload.first().copied().unwrap_or(1),
+            Ok(Some(_)) => {}
+            Ok(None) | Err(_) => return Done::Close,
+        }
+    };
+    let said = plain(&String::from_utf8_lossy(&said));
+    let mut out = match stream {
+        Some(out) => out,
+        None if status != 0 => return Done::Answer(refused(&said, 500)),
+        None => match Stream::start(conn, call.head, 200, "application/json") {
+            Ok(s) => s,
+            Err(_) => return Done::Close,
+        },
+    };
+    let sent = if status == 0 {
+        said.lines().filter_map(message).try_for_each(|m| out.json(&m))
+    } else {
+        out.json(&json!({ "errorDetail": { "message": said }, "error": said }))
+    };
+    match sent.and_then(|()| out.end()) {
+        Ok(()) => Done::Keep,
+        Err(_) => Done::Close,
+    }
+}
+
 /// An OCI platform as the API gives one (JSON: `os`, `architecture`, `variant`), as the
 /// CLI's `--platform` takes it (`os/arch[/variant]`); one that is not JSON as given.
 fn platform_arg(given: &str) -> String {
@@ -81,7 +231,7 @@ fn platform_arg(given: &str) -> String {
 
 impl<D: Disk> Daemon<D> {
     /// `POST /images/create`: `fromImage` pulled as `shards pull` pulls it, each line it
-    /// says a JSON message of the stream, as dockerd's are, its failure the last.
+    /// says a JSON message of the stream, as dockerd's are; with `fromSrc`, an import.
     pub(super) fn engine_pull<'s, 'e>(
         &'s self,
         threads: &'s Threads<'s, 'e>,
@@ -89,12 +239,10 @@ impl<D: Disk> Daemon<D> {
         call: &Call<'_>,
     ) -> Done {
         if call.query("fromSrc").is_some_and(|s| !s.is_empty()) {
-            return Done::Answer(Answer::error(
-                501,
-                "fromSrc: an image is imported with `shards import`; the API's import is not served yet",
-            ));
+            return self.engine_import::<std::io::Empty>(threads, conn, call, None);
         }
-        let image = call.query("fromImage").unwrap_or_default();
+        // `pull -a`'s name may end in `:` (moby postImagesCreate's special case).
+        let image = call.query("fromImage").unwrap_or_default().trim_end_matches(':');
         if image.is_empty() {
             return Done::Answer(Answer::error(400, "a pull names its image (fromImage)"));
         }
@@ -108,15 +256,10 @@ impl<D: Disk> Daemon<D> {
         let named_only = tag.is_empty()
             && shards_image::reference::Reference::parse_normalized(image)
                 .is_ok_and(|r| r.familiar() == r.familiar_name());
-        let mut env = shards_ipc::registry_env();
-        match auth_env(call.head.get("X-Registry-Auth"), &reference) {
-            Ok(Some(config)) => {
-                env.retain(|e| !e.starts_with("DOCKER_AUTH_CONFIG="));
-                env.push(format!("DOCKER_AUTH_CONFIG={config}"));
-            }
-            Ok(None) => {}
+        let env = match with_auth(call, &reference) {
+            Ok(env) => env,
             Err(e) => return Done::Answer(Answer::error(400, e)),
-        }
+        };
         let mut argv = vec!["pull"];
         if let Some(p) = call.query("platform").filter(|p| !p.is_empty()) {
             argv.extend(["--platform", p]);
@@ -129,39 +272,268 @@ impl<D: Disk> Daemon<D> {
             Ok(ipc) => ipc,
             Err(e) => return Done::Answer(Answer::error(500, e)),
         };
+        messages(conn, call, &ipc, &|text| {
+            text.lines().filter_map(message).collect()
+        })
+    }
+
+    /// `POST /images/{name}/push`: `shards push image`, its `tag` of `name`'s repository,
+    /// or `name` as given, every tag of its repository where it names none; its client's
+    /// credentials (X-Registry-Auth) in memory alone. Each layer said by its ID, the tag's
+    /// digest and size an `aux` message too, and a push of our platform's manifest alone,
+    /// where the index was not all here, the `aux` the docker CLI tells of it by, as
+    /// dockerd's are (daemon/containerd/image_push.go; api/types/auxprogress).
+    pub(super) fn engine_push<'s, 'e>(
+        &'s self,
+        threads: &'s Threads<'s, 'e>,
+        conn: &UnixStream,
+        name: &str,
+        call: &Call<'_>,
+    ) -> Done {
+        use shards_image::reference::Reference;
+        let reference = match call.query("tag").filter(|t| !t.is_empty()) {
+            None => name.to_string(),
+            Some(tag) => match Reference::parse_normalized(name) {
+                Ok(mut r) => {
+                    r.tag = Some(tag.to_string());
+                    r.digest = None;
+                    r.to_string()
+                }
+                Err(e) => return Done::Answer(Answer::error(400, format!("{name}: {e}"))),
+            },
+        };
+        let name_only =
+            Reference::parse_normalized(&reference).is_ok_and(|r| r.tag.is_none() && r.digest.is_none());
+        let env = match with_auth(call, &reference) {
+            Ok(env) => env,
+            Err(e) => return Done::Answer(Answer::error(400, e)),
+        };
+        let platform = call.query("platform").filter(|p| !p.is_empty()).map(platform_arg);
+        let mut argv = vec!["push"];
+        if let Some(p) = &platform {
+            argv.extend(["--platform", p]);
+        }
+        if name_only {
+            argv.push("--all-tags");
+        }
+        argv.push(&reference);
+        let ipc = match self.command_conn_with(threads, &argv, env, &[]) {
+            Ok(ipc) => ipc,
+            Err(e) => return Done::Answer(Answer::error(500, e)),
+        };
+        messages(conn, call, &ipc, &push_messages)
+    }
+
+    /// `GET /images/{name}/get`, `GET /images/get`: `shards save image`, the images as one
+    /// archive, written onto the connection as it is made, never staged; each found
+    /// before the head, as dockerd finds them all before it streams, so that one not here
+    /// is answered 404.
+    pub(super) fn engine_save<'s, 'e>(
+        &'s self,
+        threads: &'s Threads<'s, 'e>,
+        conn: &UnixStream,
+        names: &[String],
+        call: &Call<'_>,
+    ) -> Done {
+        if names.is_empty() {
+            return Done::Answer(Answer::error(400, "a save names its images (names)"));
+        }
+        let platforms: Vec<String> = call
+            .all("platform")
+            .filter(|p| !p.is_empty())
+            .map(platform_arg)
+            .collect();
+        let mut argv = vec!["save"];
+        for p in &platforms {
+            argv.extend(["--platform", p]);
+        }
+        argv.extend(names.iter().map(String::as_str));
+        // One the CLI does not serve, refused in its words before anything is written.
+        if !platforms.is_empty() {
+            return Done::Answer(match self.ask_command(threads, &argv) {
+                Ok((_, _, err)) => refused(&String::from_utf8_lossy(&err), 400),
+                Err(e) => Answer::error(500, e),
+            });
+        }
+        let found = self.store().and_then(|store| {
+            let Some(store) = store else {
+                return Err(crate::daemon::images::not_found(
+                    names.first().map_or("", String::as_str),
+                ));
+            };
+            let named = store.named().map_err(|e| e.to_string())?;
+            names
+                .iter()
+                .try_for_each(|n| crate::daemon::images::resolve(&named, n).map(drop))
+        });
+        if let Err(e) = found {
+            return Done::Answer(refused(&e, 500));
+        }
+        if http::head_to_close(conn, 200, "application/x-tar", &[]).is_err() {
+            return Done::Close;
+        }
+        let _ = self.ask_command_with(threads, &argv, &[conn.as_fd()]);
+        let _ = conn.shutdown(std::net::Shutdown::Both);
+        Done::Close
+    }
+
+    /// `POST /images/load`: `shards load image`, the archive the body holds read as it
+    /// comes, never staged; each image it held said (`stream`), as dockerd's containerd
+    /// store says them, `quiet` or not, its failure the last message.
+    pub(super) fn engine_load<'s, 'e, R: BufRead>(
+        &'s self,
+        threads: &'s Threads<'s, 'e>,
+        conn: &UnixStream,
+        call: &Call<'_>,
+        body: &mut Body<'_, R>,
+    ) -> Done {
+        let platforms: Vec<String> = call
+            .all("platform")
+            .filter(|p| !p.is_empty())
+            .map(platform_arg)
+            .collect();
+        let mut argv = vec!["load"];
+        for p in &platforms {
+            argv.extend(["--platform", p]);
+        }
+        let (status, out, err) = match self.ask_with_body(threads, &argv, body) {
+            Ok(said) => said,
+            Err(e) => return Done::Answer(Answer::error(500, e)),
+        };
         let Ok(mut stream) = Stream::start(conn, call.head, 200, "application/json") else {
             return Done::Close;
         };
-        let mut said = Vec::new();
-        let status = loop {
-            match shards_ipc::recv(&ipc) {
-                Ok(Some(m)) if m.kind == kind::OUT => {
-                    for line in String::from_utf8_lossy(&m.payload)
-                        .lines()
-                        .filter(|l| !l.is_empty())
-                    {
-                        if stream.json(&json!({ "status": line })).is_err() {
-                            return Done::Close;
-                        }
-                    }
-                }
-                Ok(Some(m)) if m.kind == kind::ERR => said.extend(m.payload),
-                Ok(Some(m)) if m.kind == kind::END => break m.payload.first().copied().unwrap_or(1),
-                Ok(Some(_)) => {}
-                Ok(None) | Err(_) => return Done::Close,
-            }
-        };
-        let said = plain(&String::from_utf8_lossy(&said));
-        let sent = if status == 0 {
-            said.lines()
-                .filter(|l| !l.is_empty())
-                .try_for_each(|l| stream.json(&json!({ "status": l })))
-        } else {
-            stream.json(&json!({ "errorDetail": { "message": said }, "error": said }))
-        };
+        let mut sent = String::from_utf8_lossy(&out)
+            .lines()
+            .filter(|l| !l.is_empty())
+            .try_for_each(|l| stream.json(&json!({ "stream": format!("{l}\n") })));
+        if status != 0 {
+            let said = plain(&String::from_utf8_lossy(&err));
+            sent = sent
+                .and_then(|()| stream.json(&json!({ "errorDetail": { "message": said }, "error": said })));
+        }
         match sent.and_then(|()| stream.end()) {
             Ok(()) => Done::Keep,
             Err(_) => Done::Close,
+        }
+    }
+
+    /// `POST /images/create` with `fromSrc`: `shards import`, the root filesystem the body
+    /// holds (`-`), read as it comes, or one an http or https URL serves (moby: `http://`
+    /// where it names no scheme); named by `repo` and `tag`, its `message` and Dockerfile
+    /// `changes` its `-m` and `-c`, `platform` its own. What it says, then the image's ID,
+    /// each a JSON message; refused before it says anything, answered by its status.
+    pub(super) fn engine_import<'s, 'e, R: BufRead>(
+        &'s self,
+        threads: &'s Threads<'s, 'e>,
+        conn: &UnixStream,
+        call: &Call<'_>,
+        body: Option<&mut Body<'_, R>>,
+    ) -> Done {
+        let source = call.query("fromSrc").unwrap_or_default();
+        let source = if source == "-" || source.contains("://") {
+            source.to_string()
+        } else {
+            format!("http://{source}")
+        };
+        if source != "-" && !source.starts_with("http://") && !source.starts_with("https://") {
+            return Done::Answer(Answer::error(
+                400,
+                format!("fromSrc {source}: an import reads an http or https URL, or the call's body (-)"),
+            ));
+        }
+        let target = match repo_tag(call) {
+            Ok(t) => t,
+            Err(e) => return Done::Answer(Answer::error(400, e)),
+        };
+        let mut argv: Vec<String> = vec!["import".into()];
+        if let Some(m) = call.query("message").filter(|m| !m.is_empty()) {
+            argv.extend(["--message".into(), m.to_string()]);
+        }
+        for change in call.all("changes") {
+            argv.extend(["--change".into(), change.to_string()]);
+        }
+        if let Some(p) = call.query("platform").filter(|p| !p.is_empty()) {
+            argv.extend(["--platform".into(), p.to_string()]);
+        }
+        argv.push(source);
+        argv.extend(target);
+        let argv: Vec<&str> = argv.iter().map(String::as_str).collect();
+        let said = match body {
+            Some(body) => self.ask_with_body(threads, &argv, body),
+            None => self.ask_command(threads, &argv),
+        };
+        let (status, out, err) = match said {
+            Ok(said) => said,
+            Err(e) => return Done::Answer(Answer::error(500, e)),
+        };
+        let out = String::from_utf8_lossy(&out).into_owned();
+        let err = plain(&String::from_utf8_lossy(&err));
+        if status != 0 && out.trim().is_empty() {
+            return Done::Answer(refused(&err, 500));
+        }
+        let Ok(mut stream) = Stream::start(conn, call.head, 200, "application/json") else {
+            return Done::Close;
+        };
+        let mut sent = out
+            .lines()
+            .filter(|l| !l.is_empty())
+            .try_for_each(|l| stream.json(&json!({ "status": l })));
+        if status != 0 {
+            sent =
+                sent.and_then(|()| stream.json(&json!({ "errorDetail": { "message": err }, "error": err })));
+        }
+        match sent.and_then(|()| stream.end()) {
+            Ok(()) => Done::Keep,
+            Err(_) => Done::Close,
+        }
+    }
+
+    /// `POST /commit`: `shards commit vm`, microVM `container` named by `repo` and `tag`,
+    /// its `author`, `comment` and Dockerfile `changes` its `-a`, `-m` and `-c`, paused
+    /// unless `pause` says not: the new image's ID. Its config is the microVM's, as the
+    /// changes change it: a body that gives another is refused, as Dockerfile changes say
+    /// each field a config has; an empty one, `{}`, which docker-py sends when given none,
+    /// is none, where dockerd's merge of it drops the microVM's Shell and OnBuild.
+    pub(super) fn engine_commit<'s, 'e>(&'s self, threads: &'s Threads<'s, 'e>, call: &Call<'_>) -> Answer {
+        let config: Value = if call.body.iter().all(u8::is_ascii_whitespace) {
+            Value::Null
+        } else {
+            match serde_json::from_slice(&call.body) {
+                Ok(v) => v,
+                Err(e) => return Answer::error(400, format!("a commit's body: {e}")),
+            }
+        };
+        if !(config.is_null() || config.as_object().is_some_and(serde_json::Map::is_empty)) {
+            return Answer::error(
+                400,
+                "a commit's config is the microVM's, as its Dockerfile changes (changes) change it, as `shards commit vm --change` does: give each field as a change",
+            );
+        }
+        let container = call.query("container").unwrap_or_default();
+        let target = match repo_tag(call) {
+            Ok(t) => t,
+            Err(e) => return Answer::error(400, e),
+        };
+        let mut argv: Vec<String> = vec!["commit".into()];
+        for (key, flag) in [("author", "--author"), ("comment", "--message")] {
+            if let Some(v) = call.query(key).filter(|v| !v.is_empty()) {
+                argv.extend([flag.into(), v.to_string()]);
+            }
+        }
+        for change in call.all("changes") {
+            argv.extend(["--change".into(), change.to_string()]);
+        }
+        if call.query("pause").is_some() && !call.flag("pause") {
+            argv.push("--no-pause".into());
+        }
+        argv.push(container.to_string());
+        argv.extend(target);
+        let argv: Vec<&str> = argv.iter().map(String::as_str).collect();
+        match self.ask_command(threads, &argv) {
+            Ok((0, out, _)) => Answer::json(201, &json!({ "Id": String::from_utf8_lossy(&out).trim() })),
+            Ok((_, _, err)) => refused(&String::from_utf8_lossy(&err), 500),
+            Err(e) => Answer::error(500, e),
         }
     }
 

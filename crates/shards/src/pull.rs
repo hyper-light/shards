@@ -105,6 +105,13 @@ pub fn command(
         Ok(r) => r,
         Err(e) => return refuse(&e.to_string()),
     };
+    // The empty base a Dockerfile builds FROM, which no registry holds: refused before
+    // any is asked (moby postImagesCreate, validateRepoName).
+    if named.familiar_name() == "scratch" {
+        return refuse(
+            "shards: scratch names no image to pull: it is the empty base a Dockerfile builds FROM",
+        );
+    }
     let name_only = named.tag.is_none() && named.digest.is_none();
     if all && !name_only {
         return refuse("tag can't be used with --all-tags/-a");
