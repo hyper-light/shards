@@ -171,6 +171,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
                 health: None,
                 published: Vec::new(),
                 named: None,
+                restarted: false,
                 layer_pending: true,
                 log_files: self.logs.files,
                 log_compress: false,

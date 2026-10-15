@@ -125,9 +125,11 @@ hello
 The socket is there while shards' background service runs, which any `shards` command
 starts. It stays while a program keeps a connection open or asks something, and stops after
 `SHARDS_DAEMON_IDLE` seconds without either (default 900). Served today: containers (create,
-start, attach, wait, logs, exec, stop, kill, remove, list, inspect), images (pull, list,
-inspect), `version` and `info`. A setting a microVM can't take is refused with the reason,
-never dropped.
+start, attach, wait, logs, exec, copying files in and out, export, changes, processes, stats,
+pause, restart, rename, update, stop, kill, remove, prune, list, inspect), events, images
+(pull, list, inspect), `version` and `info`. Copies are packed and unpacked inside the
+microVM. Stats add what the microVM itself costs your machine (`microvm`: its memory and CPU
+time). A setting a microVM can't take is refused with the reason, never dropped.
 
 ### Boot a kernel yourself
 

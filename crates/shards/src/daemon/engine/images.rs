@@ -111,7 +111,7 @@ impl<D: Disk> Daemon<D> {
             argv.push("--all-tags");
         }
         argv.push(&reference);
-        let ipc = match self.command_conn_with(threads, &argv, env) {
+        let ipc = match self.command_conn_with(threads, &argv, env, &[]) {
             Ok(ipc) => ipc,
             Err(e) => return Done::Answer(Answer::error(500, e)),
         };

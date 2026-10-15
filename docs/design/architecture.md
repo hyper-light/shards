@@ -3651,6 +3651,27 @@ unchanged (`DOCKER_HOST=unix://HOME/engine.sock`). What they gain, each for the 
   registered before their heads are written, as clients start once they have them, so
   no first byte and no end goes unseen. A wait is for a microVM not running, its next
   end though it has yet to start, or its removal.
+- **Files, packed and unpacked in the microVM.** `shards copy vm` (the archive calls),
+  `export vm` and `diff vm`: archives are packed and unpacked by the microVM's own init,
+  so a hostile archive, or a path swapped as it is copied (the class of CVE-2018-15664,
+  a race in a host-side copy), stays behind the hypervisor. What a guest packs it writes
+  onto the client's connection itself, never through the daemon (no length; the
+  connection closes at its end); an upload is taken as it comes, never staged. A stopped
+  microVM's files are read by a VM visiting them; a paused one's are in its frozen guest,
+  and that is said.
+- **What a microVM costs.** `shards stats vm`: its workload's use from its guest's
+  cgroup, its system time the host's clock times its vCPUs, so that a client's share of
+  two samples is its share of its vCPUs (the guest's own `/proc/stat` is not kept on a
+  loaded host: measured 329% and 2503% for one spinning vCPU). Beside it, `microvm`:
+  its VM process's own footprint (as PM M30 counts memory per VM), its resident memory
+  and its CPU time, what it costs the host, which no guest's cgroup holds.
+- **Its processes as its guest has them.** `shards top vm`: its own PIDs, its users named
+  by its own `/etc/passwd`, no `ps` in its image.
+- **Managed whole.** `pause vm` freezes the whole microVM, its kernel with it. `restart
+  vm` is now said as a `restart` event too once it has started, for what follows
+  microVMs by their events (it was kill, die, stop and start alone). `update vm` changes
+  what a running microVM's guest cgroup can take, and refuses the rest by name. `prune
+  vm` answers the bytes it reclaimed, counted, not rounded for a reader.
 - **Terminals and execs.** A terminal's output is raw, its detach keys found as the
   escape proxy finds them, and a client that detaches leaves the command's stdin open;
   a terminal is resized through its attached client's connection. An exec's status is
@@ -3665,10 +3686,12 @@ unchanged (`DOCKER_HOST=unix://HOME/engine.sock`). What they gain, each for the 
   theirs), is its work, as a run is; `shards stop daemon` ends API connections too.
 - **Out of scope**, as decided (2026-10-13): swarm, plugins and trust.
 
-Served now: `_ping`, `version`, `info`; microVMs' create, list, inspect, start, attach,
-wait, logs, resize, stop, kill and removal; exec's create, start, inspect and resize;
-images' pull, list and inspect. Held on real microVMs by tests/engine.rs, raw and
-through the docker CLI. Any other call answers 404, naming itself.
+Served now: `_ping`, `version`, `info`, events; microVMs' create, list, inspect, start,
+attach, wait, logs, resize, stop, kill, removal, copy in and out, export, changes,
+processes, stats, pause and unpause, restart, rename, update and prune; exec's create,
+start, inspect and resize; images' pull, list and inspect. Held on real microVMs by
+tests/engine.rs, raw and through the docker CLI. Any other call answers 404, naming
+itself.
 
 ### D169. A run's log sent to Cloud Logging
 

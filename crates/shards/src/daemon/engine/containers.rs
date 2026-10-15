@@ -869,6 +869,186 @@ impl<D: Disk> Daemon<D> {
         lock(&self.engine.terminals).remove(id);
     }
 
+    /// `POST /containers/{id}/pause` and `unpause`: `shards pause vm` and `unpause vm`.
+    /// The whole microVM frozen where it is, its kernel with it, until it is let run on.
+    pub(super) fn engine_pause<'s, 'e>(
+        &'s self,
+        threads: &'s Threads<'s, 'e>,
+        given: &str,
+        freeze: bool,
+    ) -> Answer {
+        match self.ask_command(threads, &[if freeze { "pause" } else { "unpause" }, given]) {
+            Ok((0, _, _)) => Answer::text(204, ""),
+            Ok((_, _, err)) => refused(&String::from_utf8_lossy(&err), 500),
+            Err(e) => Answer::error(500, e),
+        }
+    }
+
+    /// `POST /containers/{id}/restart`: `shards restart vm`. Stopped, by `signal` and `t`
+    /// where given, then started again, its files as it left them.
+    pub(super) fn engine_restart<'s, 'e>(
+        &'s self,
+        threads: &'s Threads<'s, 'e>,
+        given: &str,
+        call: &Call<'_>,
+    ) -> Answer {
+        let timeout = match call.query("t").filter(|t| !t.is_empty()).map(str::parse::<i64>) {
+            None => None,
+            Some(Ok(t)) => Some(t),
+            Some(Err(_)) => return Answer::error(400, "t: a restart's grace is a whole number of seconds"),
+        };
+        let mut run = Run {
+            again: Some(given.to_string()),
+            restart: true,
+            detach: true,
+            stop_signal: call.query("signal").filter(|s| !s.is_empty()).map(str::to_string),
+            stop_timeout: timeout,
+            ..Run::default()
+        };
+        if let Err(e) = self.as_client(&mut run) {
+            return Answer::error(500, e);
+        }
+        match self.run_detached(threads, &run) {
+            Ok(RunAnswer { status: 0, .. }) => Answer::text(204, ""),
+            Ok(answer) => refused(&answer.said, 500),
+            Err(e) => Answer::error(500, e),
+        }
+    }
+
+    /// `POST /containers/{id}/rename?name=`: `shards rename vm`.
+    pub(super) fn engine_rename<'s, 'e>(
+        &'s self,
+        threads: &'s Threads<'s, 'e>,
+        given: &str,
+        call: &Call<'_>,
+    ) -> Answer {
+        let Some(name) = call.query("name").filter(|n| !n.is_empty()) else {
+            return Answer::error(400, "a rename gives the microVM's new name (name)");
+        };
+        match self.ask_command(threads, &["rename", given, name]) {
+            Ok((0, _, _)) => Answer::text(204, ""),
+            Ok((_, _, err)) => refused(&String::from_utf8_lossy(&err), 500),
+            Err(e) => Answer::error(500, e),
+        }
+    }
+
+    /// `POST /containers/{id}/update`: `shards update vm`. Its limits and restart policy
+    /// changed, checked as at its making, and written into its guest's cgroup at once.
+    /// What a running microVM's update cannot change, asked, is refused, each named.
+    pub(super) fn engine_update<'s, 'e>(
+        &'s self,
+        threads: &'s Threads<'s, 'e>,
+        given: &str,
+        call: &Call<'_>,
+    ) -> Answer {
+        let body: Value = match serde_json::from_slice(&call.body) {
+            Ok(body) => body,
+            Err(e) => return Answer::error(400, format!("an update's body: {e}")),
+        };
+        let asked = |v: &Value| match v {
+            Value::Null => false,
+            Value::Number(n) => n.as_f64() != Some(0.0),
+            Value::String(s) => !s.is_empty(),
+            Value::Array(a) => !a.is_empty(),
+            Value::Object(o) => !o.is_empty(),
+            Value::Bool(b) => *b,
+        };
+        const NUMBERS: [(&str, &str); 8] = [
+            ("Memory", "--memory"),
+            ("MemoryReservation", "--memory-reservation"),
+            ("MemorySwap", "--memory-swap"),
+            ("CpuShares", "--cpu-shares"),
+            ("CpuPeriod", "--cpu-period"),
+            ("CpuQuota", "--cpu-quota"),
+            ("PidsLimit", "--pids-limit"),
+            ("BlkioWeight", "--blkio-weight"),
+        ];
+        const TEXTS: [(&str, &str); 2] = [("CpusetCpus", "--cpuset-cpus"), ("CpusetMems", "--cpuset-mems")];
+        let mut argv: Vec<String> = vec!["update".into()];
+        let mut unheld = Vec::new();
+        for (key, value) in body.as_object().into_iter().flatten() {
+            if !asked(value) {
+                continue;
+            }
+            if let Some((_, flag)) = NUMBERS.iter().find(|(k, _)| k == key) {
+                match value.as_i64() {
+                    Some(n) => argv.extend([(*flag).to_string(), n.to_string()]),
+                    None => return Answer::error(400, format!("{key}: a whole number")),
+                }
+            } else if let Some((_, flag)) = TEXTS.iter().find(|(k, _)| k == key) {
+                argv.extend([
+                    (*flag).to_string(),
+                    value.as_str().unwrap_or_default().to_string(),
+                ]);
+            } else if key == "NanoCpus" {
+                let Some(n) = value.as_i64().filter(|n| *n > 0) else {
+                    return Answer::error(400, "NanoCpus: a positive number of billionths of a CPU");
+                };
+                argv.extend([
+                    "--cpus".into(),
+                    format!("{}.{:09}", n / 1_000_000_000, n % 1_000_000_000),
+                ]);
+            } else if key == "RestartPolicy" {
+                let name = value.get("Name").and_then(Value::as_str).unwrap_or_default();
+                if !name.is_empty() {
+                    let count = value
+                        .get("MaximumRetryCount")
+                        .and_then(Value::as_i64)
+                        .unwrap_or(0);
+                    let policy = if count > 0 {
+                        format!("{name}:{count}")
+                    } else {
+                        name.to_string()
+                    };
+                    argv.extend(["--restart".into(), policy]);
+                }
+            } else {
+                unheld.push(key.clone());
+            }
+        }
+        if !unheld.is_empty() {
+            return Answer::error(
+                400,
+                format!(
+                    "{}: a running microVM's update changes its memory, CPUs, PIDs, block I/O weight and restart policy; these are fixed as it is made",
+                    unheld.join(", ")
+                ),
+            );
+        }
+        argv.push(given.to_string());
+        let argv: Vec<&str> = argv.iter().map(String::as_str).collect();
+        match self.ask_command(threads, &argv) {
+            Ok((0, out, _)) => {
+                let warnings: Vec<String> = String::from_utf8_lossy(&out)
+                    .lines()
+                    .skip(1)
+                    .filter(|l| !l.is_empty())
+                    .map(str::to_string)
+                    .collect();
+                Answer::json(200, &json!({ "Warnings": warnings }))
+            }
+            Ok((_, _, err)) => refused(&String::from_utf8_lossy(&err), 400),
+            Err(e) => Answer::error(500, e),
+        }
+    }
+
+    /// `POST /containers/prune`: `shards prune vm`. The stopped microVMs the filters keep
+    /// removed: their IDs, and the bytes reclaimed, counted, not rounded for a reader.
+    pub(super) fn engine_prune(&self, call: &Call<'_>) -> Answer {
+        let given = match filters(call.query("filters")) {
+            Ok(f) => f.into_iter().map(|(k, v)| format!("{k}={v}")).collect::<Vec<_>>(),
+            Err(e) => return Answer::error(400, e),
+        };
+        let now = i128::try_from(crate::containers::now()).unwrap_or(i128::MAX);
+        match self.prune_microvms(&given, now, i64::from(crate::cli::utc_offset())) {
+            Ok((removed, bytes)) => {
+                let ids: Vec<&str> = removed.iter().map(|(id, _)| id.as_str()).collect();
+                Answer::json(200, &json!({ "ContainersDeleted": ids, "SpaceReclaimed": bytes }))
+            }
+            Err(e) => Answer::error(400, plain(&e)),
+        }
+    }
+
     /// `GET /containers/{id}/logs`: its log as `shards logs` reads it, by the query's
     /// flags, each piece a frame of its stream, or raw for a terminal's.
     pub(super) fn engine_logs<'s, 'e>(

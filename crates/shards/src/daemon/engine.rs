@@ -11,11 +11,13 @@
 mod containers;
 mod create;
 mod exec;
+mod files;
 mod http;
 mod images;
+mod watch;
 
 use std::collections::HashMap;
-use std::io::{BufReader, PipeReader, Read as _, Write as _};
+use std::io::{self, BufReader, PipeReader, Read as _, Write as _};
 use std::os::fd::BorrowedFd;
 use std::os::unix::net::UnixStream;
 use std::sync::Mutex;
@@ -143,13 +145,16 @@ fn parse_query(query: &str) -> Vec<(String, String)> {
 /// The status the API answers an error with, by what it says: a thing that is not there
 /// 404, a conflict with what is 409, a daemon going 503; `otherwise` else.
 fn status_of(said: &str, otherwise: u16) -> u16 {
-    if said.contains("No such ") {
+    if said.contains("No such ") || said.contains("Could not find the file") {
         404
+    } else if said.contains("marked read-only") {
+        403
     } else if [
         "is in use",
         "already in use",
         "is not running",
         "is paused",
+        "is not paused",
         "is restarting",
     ]
     .iter()
@@ -299,47 +304,70 @@ impl<D: Disk> Daemon<D> {
             }
             _ => (VERSION.to_string(), target.to_string()),
         };
-        // Its body, read whole: every call the engine serves takes JSON, or nothing.
         let framing = match head.framing() {
             Ok(f) => f,
             Err(_) => return false,
         };
-        let mut body = Vec::new();
-        let read = Body::new(reader, framing)
-            .take(BODY_MOST + 1)
-            .read_to_end(&mut body);
-        if read.is_err() {
-            return false;
-        }
-        if body.len() as u64 > BODY_MOST {
-            let answer = Answer::error(
-                413,
-                format!("a call's body is at most {BODY_MOST} bytes, which hold the largest run"),
-            );
-            let _ = answer.write(conn, head, false);
-            return false;
-        }
-        let Some(decoded) = unescape(&path, false) else {
-            let _ = Answer::error(400, format!("{path}: a malformed path")).write(conn, head, true);
-            return true;
+        // A call refused before its body is read: the rest of its body read and dropped,
+        // as much as Go's server drops to keep a connection, past which it closes.
+        let refuse = |reader: &mut BufReader<UnixStream>, answer: Answer| {
+            let mut body = Body::new(reader, framing);
+            let dropped = io::copy(&mut (&mut body).take(head::DISCARD), &mut io::sink());
+            let whole = dropped.is_ok() && body.ended();
+            answer.write(conn, head, whole).is_ok() && whole
         };
-        let call = Call {
+        let Some(decoded) = unescape(&path, false) else {
+            return refuse(reader, Answer::error(400, format!("{path}: a malformed path")));
+        };
+        if !at_least(&version, MIN_VERSION) || !at_least(VERSION, &version) {
+            return refuse(
+                reader,
+                Answer::error(
+                    400,
+                    format!("API version {version}: shards serves {MIN_VERSION} to {VERSION}"),
+                ),
+            );
+        }
+        let mut call = Call {
             head,
-            version: version.clone(),
+            version,
             path: decoded
                 .split('/')
                 .filter(|s| !s.is_empty())
                 .map(str::to_string)
                 .collect(),
             query: parse_query(query),
-            body,
+            body: Vec::new(),
         };
-        if !at_least(&version, MIN_VERSION) || !at_least(VERSION, &version) {
+        // An upload is taken as it comes, never whole: `shards copy vm` into a microVM.
+        if let ("PUT", [containers, id, archive]) = (head.method.as_str(), call.path.as_slice())
+            && containers == "containers"
+            && archive == "archive"
+        {
+            let id = id.clone();
+            let mut body = Body::new(reader, framing);
+            let done = self.engine_extract(threads, &id, &call, &mut body);
+            let whole = body.ended();
+            return match done {
+                Done::Answer(answer) => answer.write(conn, head, whole).is_ok() && whole,
+                Done::Keep => whole,
+                Done::Close => false,
+            };
+        }
+        // Every other call's body is JSON, or nothing: read whole, as much as a run holds.
+        let read = Body::new(reader, framing)
+            .take(BODY_MOST + 1)
+            .read_to_end(&mut call.body);
+        if read.is_err() {
+            return false;
+        }
+        if call.body.len() as u64 > BODY_MOST {
             let answer = Answer::error(
-                400,
-                format!("API version {version}: shards serves {MIN_VERSION} to {VERSION}"),
+                413,
+                format!("a call's body is at most {BODY_MOST} bytes, which hold the largest run"),
             );
-            return answer.write(conn, head, true).is_ok();
+            let _ = answer.write(conn, head, false);
+            return false;
         }
         match self.route(threads, conn, &call) {
             Done::Answer(answer) => answer.write(conn, head, true).is_ok(),
@@ -361,6 +389,7 @@ impl<D: Disk> Daemon<D> {
             }
             ("POST", ["containers", "create"]) => self.engine_create(threads, call),
             ("GET", ["containers", "json"]) => self.engine_list(call),
+            ("POST", ["containers", "prune"]) => self.engine_prune(call),
             ("GET", ["containers", id, "json"]) => self.engine_inspect(id, call),
             ("POST", ["containers", id, "start"]) => self.engine_start(threads, id),
             ("POST", ["containers", id, "stop"]) => self.engine_stop(threads, id, call, false),
@@ -370,6 +399,19 @@ impl<D: Disk> Daemon<D> {
             ("POST", ["containers", id, "attach"]) => return self.engine_attach(threads, conn, id, call),
             ("GET", ["containers", id, "logs"]) => return self.engine_logs(threads, conn, id, call),
             ("POST", ["containers", id, "resize"]) => self.engine_resize(id, call),
+            ("GET" | "HEAD", ["containers", id, "archive"]) => {
+                return self.engine_archive(threads, conn, id, call);
+            }
+            ("GET", ["containers", id, "export"]) => return self.engine_export(threads, conn, id),
+            ("GET", ["containers", id, "changes"]) => self.engine_changes(threads, id),
+            ("GET", ["containers", id, "top"]) => self.engine_top(id, call),
+            ("GET", ["containers", id, "stats"]) => return self.engine_stats(conn, id, call),
+            ("POST", ["containers", id, "pause"]) => self.engine_pause(threads, id, true),
+            ("POST", ["containers", id, "unpause"]) => self.engine_pause(threads, id, false),
+            ("POST", ["containers", id, "restart"]) => self.engine_restart(threads, id, call),
+            ("POST", ["containers", id, "rename"]) => self.engine_rename(threads, id, call),
+            ("POST", ["containers", id, "update"]) => self.engine_update(threads, id, call),
+            ("GET", ["events"]) => return self.engine_events(threads, conn, call),
             ("POST", ["exec", id, "resize"]) => self.engine_resize(id, call),
             ("POST", ["containers", id, "exec"]) => self.engine_exec_create(id, call),
             ("POST", ["exec", id, "start"]) => return self.engine_exec_start(threads, conn, id, call),
@@ -439,7 +481,18 @@ impl<D: Disk> Daemon<D> {
         threads: &'s Threads<'s, 'e>,
         argv: &[&str],
     ) -> Result<(u8, Vec<u8>, Vec<u8>), String> {
-        let conn = self.command_conn_with(threads, argv, shards_ipc::registry_env())?;
+        self.ask_command_with(threads, argv, &[])
+    }
+
+    /// [`ask_command`](Self::ask_command), the command given `files` as the CLI gives
+    /// its own (what it reads or writes, as `-o` and `-i` give them).
+    fn ask_command_with<'s, 'e>(
+        &'s self,
+        threads: &'s Threads<'s, 'e>,
+        argv: &[&str],
+        files: &[BorrowedFd<'_>],
+    ) -> Result<(u8, Vec<u8>, Vec<u8>), String> {
+        let conn = self.command_conn_with(threads, argv, shards_ipc::registry_env(), files)?;
         let (mut out, mut err) = (Vec::new(), Vec::new());
         loop {
             match shards_ipc::recv(&conn) {
@@ -464,15 +517,17 @@ impl<D: Disk> Daemon<D> {
         threads: &'s Threads<'s, 'e>,
         argv: &[&str],
     ) -> Result<UnixStream, String> {
-        self.command_conn_with(threads, argv, shards_ipc::registry_env())
+        self.command_conn_with(threads, argv, shards_ipc::registry_env(), &[])
     }
 
-    /// [`command_conn`](Self::command_conn), its registries reached with `registry_env`.
+    /// [`command_conn`](Self::command_conn), its registries reached with `registry_env`,
+    /// and given `files`.
     fn command_conn_with<'s, 'e>(
         &'s self,
         threads: &'s Threads<'s, 'e>,
         argv: &[&str],
         registry_env: Vec<String>,
+        files: &[BorrowedFd<'_>],
     ) -> Result<UnixStream, String> {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -482,12 +537,14 @@ impl<D: Disk> Daemon<D> {
             argv: argv.iter().map(|a| (*a).to_string()).collect(),
             registry_env,
             now,
+            // The daemon's own zone, which it has from the client that started it.
+            utc_offset: crate::cli::utc_offset(),
             daemon: self.identity,
             ..shards_ipc::Command::default()
         };
         let (ours, theirs) = UnixStream::pair().map_err(|e| format!("a socket pair: {e}"))?;
         self.take(threads, theirs);
-        shards_ipc::send(&ours, kind::CONTAINER, &command.encode(), &[])
+        shards_ipc::send(&ours, kind::CONTAINER, &command.encode(), files)
             .map_err(|e| format!("asking the daemon: {e}"))?;
         Ok(ours)
     }

@@ -164,6 +164,23 @@ impl<'c> Stream<'c> {
     }
 }
 
+/// The head of content that runs until the connection closes, written onto it by what
+/// makes it (a microVM's archive, from its guest) and never through here: no length, no
+/// chunks, the connection closed at its end (RFC 9112 §6.3).
+pub(super) fn head_to_close(
+    mut conn: &UnixStream,
+    status: u16,
+    kind: &str,
+    fields: &[(&str, String)],
+) -> io::Result<()> {
+    let mut out = format!("HTTP/1.1 {status} {}\r\n{}", head::status_text(status), common());
+    for (k, v) in fields {
+        out.push_str(&format!("{k}: {v}\r\n"));
+    }
+    out.push_str(&format!("Content-Type: {kind}\r\nConnection: close\r\n\r\n"));
+    conn.write_all(out.as_bytes())
+}
+
 /// The media types of a stream of a container's output: raw, a terminal's, or Docker's
 /// multiplexed one (stdcopy), each write a frame of its stream.
 pub(super) const RAW: &str = "application/vnd.docker.raw-stream";

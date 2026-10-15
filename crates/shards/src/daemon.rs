@@ -410,6 +410,9 @@ struct Keep<'a> {
     /// The name a detached client gave the container it started again, said once its
     /// command starts, as `docker start` says it.
     named: Option<String>,
+    /// Its start is a restart's (`shards restart vm`): said as an event of its own once it
+    /// has started, for what follows microVMs by their events.
+    restarted: bool,
     /// Its VM saves its writable layer as it stops (`RUN_LAYER_OUT`).
     layer_pending: bool,
     /// How many segments its log keeps (D161): its own, else the daemon's.
@@ -515,6 +518,8 @@ struct Inbox {
     layer_pending: bool,
     /// [`Keep::named`].
     named: Option<String>,
+    /// [`Keep::restarted`].
+    restarted: bool,
     /// What has come of the VM's next message: a VM that stops partway through one holds
     /// up no reader (`take_messages`).
     incoming: shards_ipc::Incoming,
@@ -2680,6 +2685,7 @@ impl<D: Disk> Daemon<D> {
                 health: prepared.health.clone().map(|h| (h, prepared.shell.clone())),
                 published,
                 named: again.clone().filter(|_| run.detach),
+                restarted: restarting,
                 layer_pending: layer_out.is_some(),
                 log_files: kept.map_or(self.logs.files, |k| k.files),
                 log_compress: kept.is_some_and(|k| k.compress),
@@ -3648,6 +3654,7 @@ impl<D: Disk> Daemon<D> {
             health,
             published,
             named,
+            restarted,
             layer_pending,
             log_files,
             log_compress,
@@ -3710,6 +3717,7 @@ impl<D: Disk> Daemon<D> {
             exec_ids: Vec::new(),
             layer_pending,
             named,
+            restarted,
             incoming: shards_ipc::Incoming::default(),
             visit,
             guest: None,
@@ -4026,6 +4034,9 @@ impl<D: Disk> Daemon<D> {
         let told: Vec<UnixStream> = inbox.detached.take().into_iter().collect();
         if changed.is_ok() {
             self.container_event(id, "start", &[]);
+            if inbox.restarted {
+                self.container_event(id, "restart", &[]);
+            }
         }
         if let Some(name) = inbox.named.take() {
             for client in &told {
@@ -6390,6 +6401,7 @@ mod tests {
                         health: None,
                         published: Vec::new(),
                         named: None,
+                        restarted: false,
                         layer_pending: false,
                         log_files: DEFAULT_LOGS.files,
                         log_compress: false,
@@ -6685,6 +6697,7 @@ mod tests {
                             health: None,
                             published: Vec::new(),
                             named: None,
+                            restarted: false,
                             layer_pending: false,
                             log_files: DEFAULT_LOGS.files,
                             log_compress: false,
@@ -8346,6 +8359,7 @@ mod tests {
                 health: None,
                 published: Vec::new(),
                 named: None,
+                restarted: false,
                 layer_pending: false,
                 log_files: DEFAULT_LOGS.files,
                 log_compress: false,
@@ -8393,6 +8407,7 @@ mod tests {
                 health: None,
                 published: Vec::new(),
                 named: None,
+                restarted: false,
                 layer_pending: false,
                 log_files: DEFAULT_LOGS.files,
                 log_compress: false,
