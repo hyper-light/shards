@@ -514,6 +514,25 @@ pub fn registry(
     Registry::new(http, reference, credentials).map_err(|e| e.to_string())
 }
 
+/// Checks `credentials` with the registry at `host` (`registry-1.docker.io` for Docker
+/// Hub), as `docker login` has dockerd check them, its certificates and proxies those
+/// `env` finds, as a pull's are: the identity token its token server gave in place of the
+/// password, where it gave one. A refusal of the credentials is unauthorized.
+pub fn check_login(
+    host: &str,
+    credentials: shards_registry::auth::Credentials,
+    env: &dyn Fn(&str) -> Option<String>,
+) -> Result<Option<String>, shards_registry::Error> {
+    let material = certs::load(host, env)?;
+    let config = tls::client_config(material.roots, material.client)?;
+    let http = Client::new(
+        Box::new(move |_| Ok(config.clone())),
+        &format!("shards/{}", env!("CARGO_PKG_VERSION")),
+    )
+    .with_proxies(Proxies::from_env(env));
+    Registry::login(http, host, credentials)
+}
+
 /// Docker's short layer ID: the digest's first 12 hex digits.
 pub(crate) fn short(digest: &str) -> &str {
     let hex = digest.split_once(':').map_or(digest, |(_, h)| h);

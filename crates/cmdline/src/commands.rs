@@ -2609,6 +2609,46 @@ pub static BUILDER_PRUNE: Command = Command {
     error_prefix: "ERROR: ",
 };
 
+/// `shards login` (docker/cli cli/command/registry/login.go): a registry's credentials,
+/// checked with it and kept as the Docker CLI keeps them.
+pub static LOGIN: Command = Command {
+    usage: "[OPTIONS] [SERVER]",
+    about: "Authenticate to a registry.\nDefaults to Docker Hub if no server is specified.",
+    aliases: "",
+    args: Args::AtMost(1),
+    flags: &[
+        HELP,
+        Flag::string(
+            "password",
+            Some(b'p'),
+            "",
+            "Password or Personal Access Token (PAT), or \"-\" to read from stdin",
+        ),
+        Flag::bool(
+            "password-stdin",
+            None,
+            "Take the Password or Personal Access Token (PAT) from stdin",
+        ),
+        Flag::string("username", Some(b'u'), "", "Username"),
+    ],
+    unserved: "",
+    interspersed: true,
+    error_prefix: "",
+};
+
+/// `shards logout` (docker/cli cli/command/registry/logout.go): a registry's credentials
+/// forgotten.
+pub static LOGOUT: Command = Command {
+    usage: "[SERVER]",
+    about: "Log out from a registry.\nIf no server is specified, the default is defined by the daemon.",
+    aliases: "",
+    args: Args::AtMost(1),
+    flags: &[HELP],
+    unserved: "",
+    interspersed: true,
+    error_prefix: "",
+};
+
 /// The container command the start of `words` names, its path (`shards ps`, `shards
 /// container ls`) and how many words named it: `ps` or `container ls` (or `container ps`,
 /// `container list`), `rm` or `container rm` (or `container remove`), and the others by

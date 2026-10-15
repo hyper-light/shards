@@ -9,7 +9,8 @@
 //! - dockerd's precedence: a registry token, then an identity token, then a password
 //!   (`daemon/containerd/resolver.go`).
 //!
-//! Nothing is written: `shards login` comes later.
+//! A login is kept as `docker login` keeps one ([`store`]), and forgotten as `docker
+//! logout` forgets it ([`erase`]).
 
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
@@ -301,7 +302,7 @@ fn on_path(program: &str, env: Env<'_>) -> bool {
 /// stderr, as Docker's do. A helper that has nothing for `key` gives `None`.
 fn ask_helper(helper: &str, key: &str, env: Env<'_>) -> Result<Option<HelperAnswer>, Error> {
     let program = format!("docker-credential-{helper}");
-    let (failed, out) = run_helper(&program, key, env)?;
+    let (failed, out) = run_helper(&program, "get", key.as_bytes(), env)?;
     let text = String::from_utf8_lossy(&out);
     if let Some(status) = failed {
         if text.trim() == NOT_FOUND {
@@ -333,7 +334,12 @@ fn ask_helper(helper: &str, key: &str, env: Env<'_>) -> Result<Option<HelperAnsw
 /// (PM M158). How it failed is said as Go's os.ProcessState says it, as Docker does: an
 /// exit status (128 and its number, for a signal that ended it).
 #[cfg(unix)]
-fn run_helper(program: &str, key: &str, env: Env<'_>) -> Result<(Option<String>, Vec<u8>), Error> {
+fn run_helper(
+    program: &str,
+    action: &str,
+    input: &[u8],
+    env: Env<'_>,
+) -> Result<(Option<String>, Vec<u8>), Error> {
     use std::os::fd::AsFd as _;
     let fail = |e: std::io::Error| Error::new(format!("running {program}: {e}"));
     let path = env("PATH");
@@ -350,7 +356,7 @@ fn run_helper(program: &str, key: &str, env: Env<'_>) -> Result<(Option<String>,
     let set: Vec<(&str, &std::ffi::OsStr)> = path.iter().map(|p| ("PATH", p.as_ref())).collect();
     let child = shards_ipc::spawn_with(
         &found,
-        &["get".as_ref()],
+        &[action.as_ref()],
         &[
             (stdin.as_fd(), 0),
             (stdout.as_fd(), 1),
@@ -362,7 +368,7 @@ fn run_helper(program: &str, key: &str, env: Env<'_>) -> Result<(Option<String>,
     .map_err(fail)?;
     drop((stdin, stdout));
     let talked = (|| {
-        match to_stdin.write_all(key.as_bytes()) {
+        match to_stdin.write_all(input) {
             Ok(()) => {}
             Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => {}
             Err(e) => return Err(Error::new(format!("{program}: {e}"))),
@@ -384,11 +390,16 @@ fn run_helper(program: &str, key: &str, env: Env<'_>) -> Result<(Option<String>,
 
 /// [`run_helper`] where shards has no daemon: by std's Command.
 #[cfg(not(unix))]
-fn run_helper(program: &str, key: &str, env: Env<'_>) -> Result<(Option<String>, Vec<u8>), Error> {
+fn run_helper(
+    program: &str,
+    action: &str,
+    input: &[u8],
+    env: Env<'_>,
+) -> Result<(Option<String>, Vec<u8>), Error> {
     use std::process::{Command, Stdio};
     let mut command = Command::new(program);
     command
-        .arg("get")
+        .arg(action)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit());
@@ -400,7 +411,7 @@ fn run_helper(program: &str, key: &str, env: Env<'_>) -> Result<(Option<String>,
         .map_err(|e| Error::new(format!("running {program}: {e}")))?;
     let talked = (|| {
         if let Some(mut stdin) = child.stdin.take() {
-            match stdin.write_all(key.as_bytes()) {
+            match stdin.write_all(input) {
                 Ok(()) => {}
                 Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => {}
                 Err(e) => return Err(Error::new(format!("{program}: {e}"))),
@@ -420,6 +431,262 @@ fn run_helper(program: &str, key: &str, env: Env<'_>) -> Result<(Option<String>,
     }
     let status = child.wait().map_err(|e| Error::new(format!("{program}: {e}")))?;
     Ok(((!status.success()).then(|| status.to_string()), talked?))
+}
+
+/// A registry's credentials to keep, as `docker login` keeps them: its key (as given, or
+/// Docker Hub's `https://index.docker.io/v1/`), its user, and the password, or the
+/// identity token its token server gave in place of one.
+pub struct Login {
+    pub server: String,
+    pub username: String,
+    pub password: String,
+    pub identity_token: String,
+}
+
+/// Names the login, never its secrets.
+impl std::fmt::Debug for Login {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Login")
+            .field("server", &self.server)
+            .field("username", &self.username)
+            .field("identity_token", &!self.identity_token.is_empty())
+            .finish_non_exhaustive()
+    }
+}
+
+/// Where a login was kept.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Kept {
+    /// By `docker-credential-<helper>`.
+    Helper(String),
+    /// In the config file, unencrypted.
+    File(PathBuf),
+}
+
+/// The helper that keeps `key`'s credentials (configfile.GetCredentialsStore): the
+/// registry's own, else the config's `credsStore`, else the platform's where the config
+/// holds no credentials at all, as [`lookup`] finds them.
+fn helper_for(config: &ConfigFile, key: &str, env: Env<'_>) -> Option<String> {
+    let holds_auth =
+        !config.creds_store.is_empty() || !config.cred_helpers.is_empty() || !config.auths.is_empty();
+    match config.cred_helpers.get(key) {
+        Some(helper) => Some(helper.clone()),
+        None if !config.creds_store.is_empty() => Some(config.creds_store.clone()),
+        None if !holds_auth => default_helper(env),
+        None => None,
+    }
+}
+
+/// Keeps `login` as `docker login` does (cli/command/registry/login.go,
+/// storeCredentials; credentials/native_store.go and file_store.go): by its credential
+/// helper's `store` (an identity token as the user `<token>`), its entry in the config's
+/// `auths` then holding nothing secret; without one, in that entry, `auth` the base64 of
+/// `username:password`, with `identitytoken` beside it. The config's other keys stay as
+/// they were, where docker/cli writes back only those it knows. Where it was kept.
+pub fn store(login: &Login, env: Env<'_>) -> Result<Kept, Error> {
+    let dir = config_dir(env)
+        .ok_or_else(|| Error::new("no config directory: neither DOCKER_CONFIG nor a home is set"))?;
+    let path = dir.join("config.json");
+    let config = load(&path)?;
+    let mut entry = serde_json::Map::new();
+    let kept = match helper_for(&config, &login.server, env) {
+        Some(helper) => {
+            let (username, secret) = if login.identity_token.is_empty() {
+                (login.username.as_str(), login.password.as_str())
+            } else {
+                (TOKEN_USERNAME, login.identity_token.as_str())
+            };
+            let input =
+                serde_json::json!({ "ServerURL": login.server, "Username": username, "Secret": secret })
+                    .to_string();
+            let program = format!("docker-credential-{helper}");
+            let (failed, out) = run_helper(&program, "store", input.as_bytes(), env)?;
+            if let Some(status) = failed {
+                return Err(Error::new(format!(
+                    "error storing credentials - err: {status}, out: `{}`",
+                    String::from_utf8_lossy(&out).trim()
+                )));
+            }
+            Kept::Helper(helper)
+        }
+        None => {
+            // An identity token in place of the password, never beside it (login.go).
+            let password = if login.identity_token.is_empty() {
+                login.password.as_str()
+            } else {
+                ""
+            };
+            entry.insert(
+                "auth".into(),
+                serde_json::Value::String(BASE64.encode(format!("{}:{password}", login.username))),
+            );
+            if !login.identity_token.is_empty() {
+                entry.insert(
+                    "identitytoken".into(),
+                    serde_json::Value::String(login.identity_token.clone()),
+                );
+            }
+            Kept::File(path.clone())
+        }
+    };
+    rewrite(&path, |auths| {
+        auths.insert(login.server.clone(), serde_json::Value::Object(entry));
+    })?;
+    Ok(kept)
+}
+
+/// Forgets the credentials kept for `server` as `docker logout` does (logout.go): the key
+/// as given, and for any but Docker Hub's its host, `http://` and `https://` it too, each
+/// from its helper and the config's `auths`. Whether any was there to forget, and why
+/// each that was could not be.
+pub fn erase(server: &str, env: Env<'_>) -> Result<(bool, Vec<String>), Error> {
+    let dir = config_dir(env)
+        .ok_or_else(|| Error::new("no config directory: neither DOCKER_CONFIG nor a home is set"))?;
+    let path = dir.join("config.json");
+    let config = load(&path)?;
+    let mut keys = vec![server.to_string()];
+    if server != HUB_KEY {
+        let host = to_hostname(server);
+        keys.extend([host.clone(), format!("http://{host}"), format!("https://{host}")]);
+        keys.dedup();
+    }
+    let mut failed = Vec::new();
+    let mut forgot = false;
+    for key in &keys {
+        if let Some(helper) = helper_for(&config, key, env) {
+            let program = format!("docker-credential-{helper}");
+            match run_helper(&program, "erase", key.as_bytes(), env) {
+                Ok((None, _)) => forgot = true,
+                Ok((Some(_), out)) if String::from_utf8_lossy(&out).trim() == NOT_FOUND => {}
+                Ok((Some(status), out)) => failed.push(format!(
+                    "{key}: error erasing credentials - err: {status}, out: `{}`",
+                    String::from_utf8_lossy(&out).trim()
+                )),
+                Err(e) => failed.push(format!("{key}: {e}")),
+            }
+        }
+        forgot |= config.auths.contains_key(key);
+    }
+    rewrite(&path, |auths| {
+        for key in &keys {
+            auths.remove(key);
+        }
+    })?;
+    Ok((forgot, failed))
+}
+
+/// Rewrites the config at `path` with `change` made to its `auths`, every other key as it
+/// was: written whole beside it and renamed over it, so that a reader never finds half of
+/// one; a new one, and its directory, the user's alone. A config that is a link (a
+/// dotfiles manager's) is written where it leads, the link kept, as docker/cli's Save
+/// writes it (EvalSymlinks); staged beside its target, so that the rename stays on one
+/// file system, where docker/cli stages it beside the link.
+fn rewrite(
+    path: &Path,
+    change: impl FnOnce(&mut serde_json::Map<String, serde_json::Value>),
+) -> Result<(), Error> {
+    let fail = |e: std::io::Error| Error::from(e).context(format!("saving {}", path.display()));
+    let mut doc = match std::fs::read(path) {
+        Ok(bytes) if !bytes.iter().all(u8::is_ascii_whitespace) => {
+            serde_json::Deserializer::from_slice(&bytes)
+                .into_iter::<serde_json::Value>()
+                .next()
+                .transpose()
+                .map_err(|e| Error::new(format!("parsing config file ({}): {e}", path.display())))?
+                .unwrap_or_else(|| serde_json::json!({}))
+        }
+        Ok(_) => serde_json::json!({}),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => serde_json::json!({}),
+        Err(e) => return Err(fail(e)),
+    };
+    let Some(object) = doc.as_object_mut() else {
+        return Err(Error::new(format!("{}: not a JSON object", path.display())));
+    };
+    let auths = object.entry("auths").or_insert_with(|| serde_json::json!({}));
+    let Some(auths) = auths.as_object_mut() else {
+        return Err(Error::new(format!(
+            "{}: its auths are not an object",
+            path.display()
+        )));
+    };
+    change(auths);
+    // As docker/cli writes it: tab-indented.
+    let mut text = Vec::new();
+    let formatter = serde_json::ser::PrettyFormatter::with_indent(b"\t");
+    let mut writer = serde_json::Serializer::with_formatter(&mut text, formatter);
+    serde::Serialize::serialize(&doc, &mut writer).map_err(|e| Error::new(e.to_string()))?;
+    let target = written_at(path).map_err(fail)?;
+    let dir = target.parent().unwrap_or_else(|| Path::new("."));
+    create_private_dir(dir).map_err(fail)?;
+    let staged = dir.join(format!(".config.json.{}", std::process::id()));
+    let written = (|| {
+        // One a process of this ID left: ours to replace, a new file in its place.
+        let mut file = match private_file(&staged) {
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                std::fs::remove_file(&staged)?;
+                private_file(&staged)?
+            }
+            opened => opened?,
+        };
+        if let Ok(meta) = std::fs::metadata(&target) {
+            file.set_permissions(meta.permissions())?;
+        }
+        file.write_all(&text)?;
+        file.sync_all()?;
+        std::fs::rename(&staged, &target)
+    })();
+    if written.is_err() {
+        let _ = std::fs::remove_file(&staged);
+    }
+    written.map_err(fail)
+}
+
+/// Where the config at `path` is written: where its links lead, or a dangling one's last
+/// link points; `path` where it is no link.
+fn written_at(path: &Path) -> std::io::Result<PathBuf> {
+    match std::fs::canonicalize(path) {
+        Ok(target) => return Ok(target),
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e),
+        Err(_) => {}
+    }
+    let mut at = path.to_path_buf();
+    let mut seen = Vec::new();
+    while let Ok(to) = std::fs::read_link(&at) {
+        if seen.contains(&at) {
+            return Err(std::io::Error::other(format!(
+                "{}: its links make a loop",
+                path.display()
+            )));
+        }
+        let next = at.parent().map_or_else(|| to.clone(), |dir| dir.join(&to));
+        seen.push(std::mem::replace(&mut at, next));
+    }
+    Ok(at)
+}
+
+/// `dir` and its parents, made the user's alone where they are made.
+fn create_private_dir(dir: &Path) -> std::io::Result<()> {
+    let mut builder = std::fs::DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt as _;
+        builder.mode(0o700);
+    }
+    builder.create(dir)
+}
+
+/// A new file at `path`, the user's alone to read and write: never one already there, nor
+/// where a link there leads (`O_EXCL`).
+fn private_file(path: &Path) -> std::io::Result<std::fs::File> {
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        options.mode(0o600);
+    }
+    options.open(path)
 }
 
 #[cfg(test)]
@@ -659,5 +926,193 @@ esac
             Credentials::Anonymous
         );
         let _ = std::fs::remove_dir_all(&bin);
+    }
+
+    /// A login kept as `docker login` keeps one: in the config's `auths` without a helper,
+    /// every other key of the file kept, a new file the user's alone, found again as a
+    /// pull finds it; an identity token in place of the password; and forgotten again,
+    /// under the key's other forms too.
+    #[test]
+    fn logins_are_kept_in_the_config_and_forgotten() {
+        let dir = temp("store-file");
+        std::fs::write(
+            dir.join("config.json"),
+            format!(
+                r#"{{"psFormat":"table {{{{.ID}}}}","auths":{{"other.example":{{"auth":"{}"}}}}}}"#,
+                auth("o:op")
+            ),
+        )
+        .unwrap();
+        let mut vars: HashMap<String, String> = HashMap::new();
+        vars.insert("DOCKER_CONFIG".into(), dir.to_string_lossy().into_owned());
+        vars.insert("PATH".into(), String::new());
+        let env = |k: &str| vars.get(k).cloned();
+        let login = |server: &str, token: &str| Login {
+            server: server.into(),
+            username: "u".into(),
+            password: if token.is_empty() {
+                "p".into()
+            } else {
+                String::new()
+            },
+            identity_token: token.into(),
+        };
+        let kept = store(&login("r.example", ""), &env).unwrap();
+        assert_eq!(kept, Kept::File(dir.join("config.json")));
+        let doc: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(dir.join("config.json")).unwrap()).unwrap();
+        assert_eq!(doc["psFormat"], serde_json::json!("table {{.ID}}"), "{doc}");
+        assert_eq!(
+            doc["auths"]["r.example"],
+            serde_json::json!({ "auth": auth("u:p") }),
+            "{doc}"
+        );
+        assert!(doc["auths"]["other.example"].is_object(), "{doc}");
+        assert_eq!(lookup("r.example", &env).unwrap().0, password("u", "p"));
+        // An identity token in place of the password.
+        store(&login("t.example", "idt"), &env).unwrap();
+        assert_eq!(
+            lookup("t.example", &env).unwrap().0,
+            Credentials::IdentityToken("idt".into())
+        );
+        // Forgotten, under the forms docker logout tries.
+        std::fs::write(
+            dir.join("config.json"),
+            format!(
+                r#"{{"auths":{{"https://r.example":{{"auth":"{}"}}}}}}"#,
+                auth("u:p")
+            ),
+        )
+        .unwrap();
+        let (forgot, failed) = erase("r.example", &env).unwrap();
+        assert!(forgot && failed.is_empty(), "{failed:?}");
+        assert_eq!(lookup("r.example", &env).unwrap().0, Credentials::Anonymous);
+        let (forgot, _) = erase("r.example", &env).unwrap();
+        assert!(!forgot);
+        // A new config, the user's alone.
+        let fresh = temp("store-new");
+        let fresh_dir = fresh.join("docker");
+        let mut vars: HashMap<String, String> = HashMap::new();
+        vars.insert("DOCKER_CONFIG".into(), fresh_dir.to_string_lossy().into_owned());
+        vars.insert("PATH".into(), String::new());
+        store(&login("r.example", ""), &|k: &str| vars.get(k).cloned()).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            let mode = std::fs::metadata(fresh_dir.join("config.json"))
+                .unwrap()
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o777, 0o600, "{mode:o}");
+        }
+    }
+
+    /// A config that is a link stays one, what it leads to rewritten; a dangling one is
+    /// made where it points; a loop of links is refused, nothing written.
+    #[cfg(unix)]
+    #[test]
+    fn a_linked_config_stays_a_link() {
+        let dir = temp("store-link");
+        let (home, dotfiles) = (dir.join("home"), dir.join("dotfiles"));
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::create_dir_all(&dotfiles).unwrap();
+        std::fs::write(dotfiles.join("docker.json"), r#"{"psFormat":"x"}"#).unwrap();
+        std::os::unix::fs::symlink("../dotfiles/docker.json", home.join("config.json")).unwrap();
+        let mut vars: HashMap<String, String> = HashMap::new();
+        vars.insert("DOCKER_CONFIG".into(), home.to_string_lossy().into_owned());
+        vars.insert("PATH".into(), String::new());
+        let env = |k: &str| vars.get(k).cloned();
+        let login = Login {
+            server: "r.example".into(),
+            username: "u".into(),
+            password: "p".into(),
+            identity_token: String::new(),
+        };
+        store(&login, &env).unwrap();
+        let link = std::fs::symlink_metadata(home.join("config.json")).unwrap();
+        assert!(link.file_type().is_symlink());
+        let doc: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(dotfiles.join("docker.json")).unwrap()).unwrap();
+        assert_eq!(
+            doc,
+            serde_json::json!({"psFormat": "x", "auths": {"r.example": {"auth": auth("u:p")}}})
+        );
+        let names = |d: &Path| -> Vec<String> {
+            let mut n: Vec<String> = std::fs::read_dir(d)
+                .unwrap()
+                .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+                .collect();
+            n.sort();
+            n
+        };
+        assert_eq!(names(&home), ["config.json"]);
+        assert_eq!(names(&dotfiles), ["docker.json"]);
+        // Dangling: made where it points.
+        std::fs::remove_file(dotfiles.join("docker.json")).unwrap();
+        store(&login, &env).unwrap();
+        assert!(
+            std::fs::symlink_metadata(home.join("config.json"))
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert_eq!(lookup("r.example", &env).unwrap().0, password("u", "p"));
+        // A loop: refused.
+        std::fs::remove_file(home.join("config.json")).unwrap();
+        std::os::unix::fs::symlink("config.json", home.join("config.json")).unwrap();
+        assert!(store(&login, &env).is_err());
+        assert_eq!(names(&home), ["config.json"]);
+    }
+
+    /// A login kept by the config's credential helper, as docker/cli's native store keeps
+    /// one: its `store` given the server, user and secret (an identity token as `<token>`),
+    /// the config's entry for it holding nothing secret; and `erase` given the key.
+    #[cfg(unix)]
+    #[test]
+    fn logins_go_to_the_credential_helper() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = temp("store-helper");
+        let log = dir.join("helper.log");
+        let helper = dir.join("docker-credential-shardstest");
+        std::fs::write(
+            &helper,
+            format!(
+                "#!/bin/sh\nIFS= read -r line || true\nprintf '%s %s\\n' \"$1\" \"$line\" >> '{}'\n",
+                log.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&helper, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::write(dir.join("config.json"), r#"{"credsStore":"shardstest"}"#).unwrap();
+        let mut vars: HashMap<String, String> = HashMap::new();
+        vars.insert("DOCKER_CONFIG".into(), dir.to_string_lossy().into_owned());
+        vars.insert("PATH".into(), dir.to_string_lossy().into_owned());
+        let env = |k: &str| vars.get(k).cloned();
+        let kept = store(
+            &Login {
+                server: "r.example".into(),
+                username: "u".into(),
+                password: String::new(),
+                identity_token: "idt".into(),
+            },
+            &env,
+        )
+        .unwrap();
+        assert_eq!(kept, Kept::Helper("shardstest".into()));
+        let doc: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(dir.join("config.json")).unwrap()).unwrap();
+        assert_eq!(doc["auths"]["r.example"], serde_json::json!({}), "{doc}");
+        erase("r.example", &env).unwrap();
+        let said = std::fs::read_to_string(&log).unwrap();
+        let lines: Vec<&str> = said.lines().collect();
+        assert_eq!(
+            lines.first().copied(),
+            Some(r#"store {"Secret":"idt","ServerURL":"r.example","Username":"<token>"}"#),
+            "{said}"
+        );
+        assert!(
+            lines.contains(&"erase r.example") && lines.contains(&"erase https://r.example"),
+            "{said}"
+        );
     }
 }

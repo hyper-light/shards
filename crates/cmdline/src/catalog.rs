@@ -70,6 +70,8 @@ pub static TOP: &[Group] = &[
             of("pull", &commands::PULL),
             of("push", &commands::PUSH),
             of("images", &commands::IMAGES),
+            short("login", "Authenticate to a registry", &commands::LOGIN),
+            short("logout", "Log out from a registry", &commands::LOGOUT),
             own("version", "Show the shards version information"),
         ],
     },

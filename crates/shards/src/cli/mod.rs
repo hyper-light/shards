@@ -738,7 +738,7 @@ fn confirmed(question: &str) -> bool {
 
 /// Reads `argv` for `command`, which `path` names; or answers its `--help` or its
 /// mistakes as the Docker CLI does, with the status to exit with.
-fn read(
+pub(crate) fn read(
     command: &'static Command,
     path: &str,
     argv: &[String],

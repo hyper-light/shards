@@ -294,13 +294,27 @@ impl Registry {
     }
 
     pub fn new(http: Client, reference: &Reference, credentials: Credentials) -> Result<Registry, Error> {
-        let host = host(reference);
-        let mut base = Url::parse(&format!("https://{host}/v2/{}/", reference.path))?;
-        // containerd v2.4.1's defaults for a loopback host (core/remotes/docker/config/
-        // hosts.go): HTTPS alone on 443 or no port, plain HTTP on 80, and on any other
-        // port HTTPS first, then plain HTTP once the server answers it so (NewHTTPFallback).
-        // containerd skips verifying a loopback host's certificate; shards verifies it,
-        // against certs.d and the system's roots.
+        let base = Url::parse(&format!("https://{}/v2/{}/", host(reference), reference.path))?;
+        Registry::at(
+            http,
+            base,
+            Authorizer::new_for(credentials),
+            vec![format!("repository:{}:pull", reference.path)],
+        )
+    }
+
+    /// A registry asked at `base`, answered by `auth` (its URL to come), for `scopes`:
+    /// containerd v2.4.1's defaults for a loopback host (core/remotes/docker/config/
+    /// hosts.go), HTTPS alone on 443 or no port, plain HTTP on 80, and on any other port
+    /// HTTPS first, then plain HTTP once the server answers it so (NewHTTPFallback).
+    /// containerd skips verifying a loopback host's certificate; shards verifies it,
+    /// against certs.d and the system's roots.
+    fn at(
+        http: Client,
+        mut base: Url,
+        auth: impl FnOnce(&Url) -> Authorizer,
+        scopes: Vec<String>,
+    ) -> Result<Registry, Error> {
         let mut plain = None;
         if loopback(&base) && base.authority() != base.host() {
             match base.port() {
@@ -308,14 +322,46 @@ impl Registry {
                 _ => plain = Some(AtomicBool::new(false)),
             }
         }
-        let auth = Authorizer::new(&base, credentials);
+        let auth = auth(&base);
         Ok(Registry {
             auth: if plain.is_some() { auth.plain_too() } else { auth },
             http,
             base,
             plain,
-            scopes: vec![format!("repository:{}:pull", reference.path)],
+            scopes,
         })
+    }
+
+    /// Logs in to the registry at `host` (Docker Hub's at `registry-1.docker.io`), as
+    /// dockerd does (moby daemon/pkg/registry/auth.go, loginV2): its `/v2/` asked with
+    /// `credentials`, a bearer challenge answered asking for a refresh token as well. The
+    /// refresh token, where its token server gave one: the identity token `docker login`
+    /// keeps in place of a password. A refusal of the credentials is unauthorized.
+    pub fn login(http: Client, host: &str, credentials: Credentials) -> Result<Option<String>, Error> {
+        let base = Url::parse(&format!("https://{host}/v2/"))?;
+        let registry = Registry::at(
+            http,
+            base,
+            |base| Authorizer::new(base, credentials).offline(),
+            Vec::new(),
+        )?;
+        let (response, _) = registry
+            .request("GET", &registry.base, &[])
+            .map_err(|e| match e.kind() {
+                ErrorKind::Refused => Error::of(ErrorKind::Unauthorized, e.to_string()),
+                _ => e,
+            })?;
+        match response.status {
+            200..=299 => Ok(registry.auth.refresh_token()),
+            401 | 403 => Err(Error::of(
+                ErrorKind::Unauthorized,
+                format!(
+                    "{}: unauthorized: the registry refused the credentials",
+                    response.url()
+                ),
+            )),
+            _ => Err(unexpected("GET", response)),
+        }
     }
 
     /// Sends a request as containerd's `doWithRetries` does, up to 5 attempts:
@@ -1903,5 +1949,112 @@ mod tests {
                 "{said}"
             );
         }
+    }
+
+    /// A login as dockerd's: `/v2/` asked, its bearer challenge answered with the password
+    /// grant asking offline access (then a GET with Basic, the token server having no
+    /// OAuth2), and the refresh token given back as the identity token; a token server's
+    /// refusal unauthorized, in its own words; Basic taken and refused; a registry that
+    /// asks for nothing logged in to as it is.
+    #[test]
+    fn logins_answer_the_registrys_challenge_and_keep_its_refresh_token() {
+        use base64::Engine as _;
+        let client = || {
+            Client::new(
+                Box::new(|_| crate::tls::client_config(Vec::new(), None)),
+                "shards-test",
+            )
+        };
+        let password = |p: &str| Credentials::Password {
+            username: "u".into(),
+            password: p.into(),
+        };
+        let basic = format!(
+            "Basic {}",
+            base64::engine::general_purpose::STANDARD.encode("u:p")
+        );
+        let answer = |status: &str, body: &str| {
+            format!(
+                "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+                body.len()
+            )
+            .into_bytes()
+        };
+        let good = basic.clone();
+        let tokens = route(None, move |seen: &Seen| {
+            let said = match (seen.method.as_str(), seen.header("authorization")) {
+                ("POST", _) => answer("404 Not Found", ""),
+                ("GET", Some(given)) if given == good => {
+                    answer("200 OK", r#"{"token":"t","refresh_token":"r"}"#)
+                }
+                _ => answer(
+                    "401 Unauthorized",
+                    r#"{"details":"incorrect username or password"}"#,
+                ),
+            };
+            Some((said, After::Keep))
+        });
+        let realm = format!(
+            r#"Bearer realm="http://127.0.0.1:{}/token",service="reg""#,
+            tokens.port
+        );
+        let bearer = route(None, move |seen: &Seen| {
+            Some((
+                match seen.header("authorization") {
+                    Some("Bearer t") => http("200 OK", &[]),
+                    _ => http("401 Unauthorized", &[("WWW-Authenticate", &realm)]),
+                },
+                After::Keep,
+            ))
+        });
+        let host = format!("127.0.0.1:{}", bearer.port);
+        assert_eq!(
+            Registry::login(client(), &host, password("p")).unwrap(),
+            Some("r".into())
+        );
+        let asked = tokens.requests();
+        assert!(
+            asked
+                .iter()
+                .any(|r| r.starts_with("POST") && r.contains("access_type=offline")),
+            "{asked:?}"
+        );
+        assert!(
+            asked
+                .iter()
+                .any(|r| r.starts_with("GET") && r.contains("offline_token=true")),
+            "{asked:?}"
+        );
+        let refused = Registry::login(client(), &host, password("wrong")).unwrap_err();
+        assert_eq!(refused.kind(), ErrorKind::Unauthorized, "{refused}");
+        assert!(
+            refused.to_string().contains("incorrect username or password"),
+            "{refused}"
+        );
+        // Basic, taken and refused.
+        let good = basic;
+        let plain = route(None, move |seen: &Seen| {
+            Some((
+                match seen.header("authorization") {
+                    Some(given) if given == good => http("200 OK", &[]),
+                    _ => http(
+                        "401 Unauthorized",
+                        &[("WWW-Authenticate", r#"Basic realm="reg""#)],
+                    ),
+                },
+                After::Keep,
+            ))
+        });
+        let host = format!("127.0.0.1:{}", plain.port);
+        assert_eq!(Registry::login(client(), &host, password("p")).unwrap(), None);
+        let refused = Registry::login(client(), &host, password("wrong")).unwrap_err();
+        assert_eq!(refused.kind(), ErrorKind::Unauthorized, "{refused}");
+        // One that asks for nothing.
+        let open = route(None, |_: &Seen| Some((http("200 OK", &[]), After::Keep)));
+        let host = format!("127.0.0.1:{}", open.port);
+        assert_eq!(
+            Registry::login(client(), &host, Credentials::Anonymous).unwrap(),
+            None
+        );
     }
 }

@@ -3064,6 +3064,56 @@
   },
   {
     "argv": [
+      "login",
+      "--help"
+    ],
+    "stdout": "Usage:  shards login [OPTIONS] [SERVER]\n\nAuthenticate to a registry.\nDefaults to Docker Hub if no server is specified.\n\nOptions:\n  -p, --password string   Password or Personal Access Token (PAT), or \"-\"\n                          to read from stdin\n      --password-stdin    Take the Password or Personal Access Token\n                          (PAT) from stdin\n  -u, --username string   Username\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "login",
+      "a",
+      "b"
+    ],
+    "stdout": "",
+    "stderr": "shards: 'shards login' requires at most 1 argument\n\nUsage:  shards login [OPTIONS] [SERVER]\n\nRun 'shards login --help' for more information\n",
+    "status": 1
+  },
+  {
+    "argv": [
+      "login",
+      "-u",
+      "u",
+      "--password-stdin",
+      "r.example"
+    ],
+    "stdout": "RUN --password-stdin=true --username=u \"r.example\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "logout",
+      "--help"
+    ],
+    "stdout": "Usage:  shards logout [SERVER]\n\nLog out from a registry.\nIf no server is specified, the default is defined by the daemon.\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "logout",
+      "a",
+      "b"
+    ],
+    "stdout": "",
+    "stderr": "shards: 'shards logout' requires at most 1 argument\n\nUsage:  shards logout [SERVER]\n\nRun 'shards logout --help' for more information\n",
+    "status": 1
+  },
+  {
+    "argv": [
       "pull",
       "--help"
     ],

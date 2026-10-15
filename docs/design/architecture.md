@@ -743,7 +743,7 @@ A pull resolves, fetches and checks as containerd v2.4.1 does
   - the platform's default helper when the config holds no credentials at all;
   - helpers spoken to over their protocol, with `<token>` marking an identity token.
   - dockerd's precedence: a registry token, then an identity token, then a password.
-  - Nothing is written: `shards login` comes later.
+  - Written by `shards login registry` alone (D171), where docker writes them.
 - **`certs.d`** is read as dockerd reads it:
   - `*.crt` files hold CAs, beside the platform's roots;
   - a `*.cert` with its `*.key` is a client certificate. dockerd offers all of them;
@@ -3614,6 +3614,63 @@ No run-time labels, relays or declassifiers (§12 answer 14, decided by the user
 an internal-only domain to the world (D58), so there is no data to label. Code mode is
 D136.
 
+### D171. Registry logins: `shards login registry`, and `POST /auth`
+
+A microVM's image often comes from a private registry: a team's agents on GHCR, ECR,
+Artifact Registry or private Docker Hub repositories, pulled for a run or a build's
+`FROM`, pushed once committed. Pulls and pushes find the credentials `docker login`
+keeps (D23). `shards login registry` and `shards logout registry` (`shards login` and
+`logout`, as Docker says them) keep and forget them, and `POST /auth` checks them for
+the programs that make sandboxes through the Engine API (docker-py's `login`, the docker
+CLI's `docker login` with `DOCKER_HOST` at engine.sock). Mostly a control surface. What
+it holds, and where it differs:
+
+- **One store, docker's** (control surface). Kept as docker/cli v29.8.1 keeps them
+  (login.go, storeCredentials): by the registry's credential helper, the config's
+  `credsStore`, or the platform's helper where the config holds no credentials
+  (DetectDefaultStore), else in the config's `auths`, an identity token in the
+  password's place. A login made by either works for both: no second login, and no
+  second copy of a secret.
+- **No microVM and no daemon holds a credential.** `shards login` checks them from its
+  own process, with the certificates (`certs.d`) and proxies a pull uses, and starts no
+  daemon. `POST /auth` checks them in the daemon's memory and keeps them nowhere, as
+  dockerd keeps none: its client keeps them. A microVM is given layers, never the
+  credentials that fetched them. Docker's is the same; it is said because the agent in
+  the microVM is the party least trusted with them.
+- **Checked as dockerd checks them** (daemon/pkg/registry/auth.go, loginV2): the
+  registry's `/v2/` asked with them, a bearer challenge answered asking for a refresh
+  token as well (containerd's FetchRefreshToken: `access_type=offline` posted,
+  `offline_token=true` got). A refresh token given is the identity token kept in the
+  password's place. With nothing given, what a login kept for the server is tried
+  first, as docker/cli tries it.
+- **A refusal is 401, with the registry's word** (correctness). dockerd answers a
+  registry's own refusal of Basic credentials 500: loginV2's untyped "login attempt to …
+  failed with status: 401 Unauthorized" (its TODO says so); only a token server's
+  refusal is typed Unauthorized. A client cannot tell wrong credentials from a failing
+  server by it. shards answers both 401, the status the API's description gives an auth
+  error (docker-py's `APIError.is_client_error`), its text naming the URL that answered
+  (`http://` once a loopback registry's fallback took it). The answer is otherwise
+  moby's `AuthResponse`, `IdentityToken` left out where there is none.
+- **A config that is a link stays one, and is never found half written** (robustness).
+  The config is written whole beside where it leads, synced, and renamed over it, its
+  other keys as they were; a new one is the user's alone (0600, in a 0700 directory),
+  and the staged file is opened `O_EXCL`, never through a link at its name. docker/cli's
+  Save follows the link too (EvalSymlinks), but stages its file beside the link, so its
+  rename fails where the link leads to another file system (`EXDEV`), and renames a file
+  it never synced.
+- **Passwords taken as docker/cli v29.8.1 takes them:** `--password-stdin` and `-p -`
+  read stdin, one line end cut; `-p` is warned of as insecure; at a terminal, asked
+  without echo; without one, refused. `shards logout registry` forgets every key a login
+  may have used (the server as given, its host, its `http://` and `https://` forms;
+  Docker Hub's key alone), from its helper and the file.
+
+Held by crates/registry's unit tests (a challenge answered and its refresh token kept;
+the file, a helper and a linked config), tests/login.rs (refused, kept, tried first, used
+by a push, forgotten, the grammar's form, no terminal), tests/engine.rs (`/auth` raw, and
+the docker CLI's login then push through the engine) and the docker CLI oracle. Tests
+that log in give their commands a `PATH` of an empty directory: found on `PATH`, the
+platform's helper kept a test's credentials in this host's keychain once.
+
 ### D170. The Engine API, on a socket file in the home
 
 The programs that make agents' sandboxes speak the Engine API: Docker's SDKs,
@@ -3787,7 +3844,7 @@ Served now: `_ping`, `version`, `info`, events; microVMs' create, list, inspect,
 attach, wait, logs, resize, stop, kill, removal, copy in and out, export, changes,
 processes, stats, pause and unpause, restart, rename, update and prune; exec's create,
 start, inspect and resize; images' pull, list, inspect, tag, history, removal, prune,
-push, save, load and import; commit; build;
+push, save, load and import; commit; build; logins (`/auth`, D171);
 volumes' create, list, inspect, removal and prune; networks' create, list, inspect,
 removal, join, leave and prune; what is on disk. Held on real microVMs by
 tests/engine.rs, raw and through the docker CLI, copies into tmpfs mounts over a

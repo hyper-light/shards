@@ -9,6 +9,53 @@ use std::io;
 #[cfg(unix)]
 use std::sync::{Mutex, PoisonError};
 
+/// A line of stdin, its echo off while it is read, as moby/term's DisableEcho turns it
+/// off for a password (prompt.DisableInputEcho), and on again however the read went; its
+/// line end left off.
+#[cfg(unix)]
+pub(crate) fn read_without_echo() -> std::io::Result<String> {
+    // SAFETY: an all-zero termios is a valid out-parameter.
+    let mut t: libc::termios = unsafe { std::mem::zeroed() };
+    // SAFETY: tcgetattr(3) fills `t` for stdin.
+    if unsafe { libc::tcgetattr(0, &mut t) } != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    let saved = t;
+    t.c_lflag &= !libc::ECHO;
+    // SAFETY: tcsetattr(3) reads `t`.
+    if unsafe { libc::tcsetattr(0, libc::TCSANOW, &t) } != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    let mut line = String::new();
+    let read = std::io::stdin().read_line(&mut line);
+    // SAFETY: tcsetattr(3) reads `saved`, the settings found.
+    unsafe { libc::tcsetattr(0, libc::TCSANOW, &saved) };
+    read?;
+    Ok(line.trim_end_matches(['\n', '\r']).to_string())
+}
+
+/// [`read_without_echo`] on Windows: the console's input echo off while it is read.
+#[cfg(windows)]
+pub(crate) fn read_without_echo() -> std::io::Result<String> {
+    use windows_sys::Win32::System::Console::{
+        ENABLE_ECHO_INPUT, GetConsoleMode, GetStdHandle, STD_INPUT_HANDLE, SetConsoleMode,
+    };
+    // SAFETY: GetStdHandle reads this process's state.
+    let h = unsafe { GetStdHandle(STD_INPUT_HANDLE) };
+    let mut mode = 0;
+    // SAFETY: the console's own handle, its mode read, then set with one flag less.
+    let echoing =
+        unsafe { GetConsoleMode(h, &mut mode) != 0 && SetConsoleMode(h, mode & !ENABLE_ECHO_INPUT) != 0 };
+    let mut line = String::new();
+    let read = std::io::stdin().read_line(&mut line);
+    if echoing {
+        // SAFETY: the mode read before, set again.
+        unsafe { SetConsoleMode(h, mode) };
+    }
+    read?;
+    Ok(line.trim_end_matches(['\n', '\r']).to_string())
+}
+
 /// The terminal's settings before raw mode, to restore.
 #[cfg(unix)]
 static SAVED: Mutex<Option<libc::termios>> = Mutex::new(None);
