@@ -40,7 +40,7 @@ mod demand;
 mod engine;
 mod events;
 mod files;
-mod filters;
+use crate::filters;
 mod follow;
 mod health;
 mod hostnet;

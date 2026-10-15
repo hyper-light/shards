@@ -3095,6 +3095,60 @@
   },
   {
     "argv": [
+      "search",
+      "--help"
+    ],
+    "stdout": "Usage:  shards search [OPTIONS] TERM\n\nSearch Docker Hub for images\n\nOptions:\n  -f, --filter filter   Filter output based on conditions provided\n      --format string   Pretty-print search using a Go template\n      --limit int       Max number of search results\n      --no-trunc        Don't truncate output\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "search"
+    ],
+    "stdout": "",
+    "stderr": "shards: 'shards search' requires 1 argument\n\nUsage:  shards search [OPTIONS] TERM\n\nRun 'shards search --help' for more information\n",
+    "status": 1
+  },
+  {
+    "argv": [
+      "search",
+      "a",
+      "b"
+    ],
+    "stdout": "",
+    "stderr": "shards: 'shards search' requires 1 argument\n\nUsage:  shards search [OPTIONS] TERM\n\nRun 'shards search --help' for more information\n",
+    "status": 1
+  },
+  {
+    "argv": [
+      "search",
+      "--limit",
+      "5",
+      "-f",
+      "is-official=true",
+      "--no-trunc",
+      "--format",
+      "{{.Name}}",
+      "python"
+    ],
+    "stdout": "RUN --filter={\"is-official\":{\"true\":true}} --format={{.Name}} --limit=5 --no-trunc=true \"python\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "search",
+      "--limit",
+      "x",
+      "python"
+    ],
+    "stdout": "",
+    "stderr": "invalid argument \"x\" for \"--limit\" flag: strconv.ParseInt: parsing \"x\": invalid syntax\n\nUsage:  shards search [OPTIONS] TERM\n\nRun 'shards search --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
       "logout",
       "--help"
     ],

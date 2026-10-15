@@ -130,8 +130,8 @@ stats, pause, restart, rename, update, stop, kill, remove, prune, list, inspect)
 images (pull, push, list, inspect, tag, history, remove, prune, save, load, import),
 committing a container as an image, building images from a context sent with the call (each
 RUN step in a microVM), volumes (create, list, inspect, remove, prune), networks (create,
-list, inspect, connect, disconnect, remove, prune), registry logins (`docker login`), disk
-use, `version` and `info`. Disk use
+list, inspect, connect, disconnect, remove, prune), registry logins (`docker login`),
+searches (Docker Hub, quay.io and any registry's catalog), disk use, `version` and `info`. Disk use
 counts the saved microVM snapshots that make starts fast, too. Copies are packed and
 unpacked inside the microVM, and land where its program will find them: in its volumes,
 running or stopped, and its tmpfs mounts while it runs. A network's microVMs reach each
@@ -244,6 +244,7 @@ Firecracker. The plan and its evidence are in
 | `shards pull [-q] IMAGE` | Pull `IMAGE` as `docker pull` does, for this machine's architecture. Every layer is checked against its digests before it is kept |
 | `shards login registry [-u USER] [--password-stdin] [SERVER]` | Log in to a registry (Docker Hub unless you name `SERVER`): the registry checks your password or token, and shards keeps it where `docker login` would, in your credential helper or `config.json`, so both find it. `shards login SERVER` works too |
 | `shards logout registry [SERVER]` | Forget what a login kept for `SERVER` (Docker Hub unless you name one) |
+| `shards search image [--limit N] [-f FILTER] TERM` | Find images on Docker Hub, on quay.io (`quay.io/TERM`), or in any registry's catalog (`HOST/TERM`). On a terminal, each result says whether it runs on this machine, and how much its first pull downloads; piped, it prints `docker search`'s table. `shards search TERM` works too |
 | `shards run [OPTIONS] IMAGE [COMMAND] [ARG...]` | Run a command in a new microVM booted into `IMAGE`, as `docker run` runs it in a new container, with `-d`, `-e`, `-h`, `-i`, `-t`, `-u`, `-w`, `--detach-keys`, `--entrypoint`, `--name`, `--pull` and `--rm`. `IMAGE` is pulled first if it isn't here. With `-it`, your terminal is the command's: ctrl-p ctrl-q leaves it running. It boots shards' own kernel and `shards-init`, or the ones `shards configure guest` chose, or `SHARDS_KERNEL` and `SHARDS_INIT` |
 | `shards ps [-a] [-q] [-n N] [-l] [--no-trunc]` | List containers, as `docker ps` does: each run is one, until `shards rm` or `--rm` removes it |
 | `shards wait CONTAINER...` | Wait for containers to stop, and print their exit codes |

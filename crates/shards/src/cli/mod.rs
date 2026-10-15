@@ -736,6 +736,13 @@ fn confirmed(question: &str) -> bool {
     answer.trim().eq_ignore_ascii_case("y")
 }
 
+/// Draws a page that changes as it is watched over the last one drawn into `live`: a
+/// search's (D172), its results filled in as their lookups answer.
+#[cfg(unix)]
+pub(crate) fn show_live(sheet: &shards_ipc::Sheet, live: &mut shards_tui::frame::Frame) {
+    screens::show(sheet, live);
+}
+
 /// Reads `argv` for `command`, which `path` names; or answers its `--help` or its
 /// mistakes as the Docker CLI does, with the status to exit with.
 pub(crate) fn read(

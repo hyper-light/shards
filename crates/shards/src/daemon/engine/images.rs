@@ -325,6 +325,63 @@ impl<D: Disk> Daemon<D> {
         }
     }
 
+    /// `GET /images/search`: `shards search image`'s search (D172), as dockerd answers
+    /// it: its `term`, `limit` and `filters`, its client's credentials (X-Registry-Auth)
+    /// in memory alone. Docker Hub's results as its index gives them, and any other
+    /// registry's through what it documents, where dockerd asks every registry for an
+    /// index's search, which none serves now. A negative limit is refused, where dockerd
+    /// answers 200 with no body (an errors.Wrap of no error).
+    pub(super) fn engine_search(&self, call: &Call<'_>) -> Answer {
+        let term = call.query("term").unwrap_or_default();
+        let limit = match call.query("limit").filter(|l| !l.is_empty()) {
+            None => 0,
+            Some(given) => match given.parse::<i64>() {
+                Ok(n) if n >= 0 => n,
+                Ok(_) => return Answer::error(400, "invalid limit specified"),
+                Err(_) => {
+                    return Answer::error(
+                        400,
+                        format!(
+                            "invalid limit specified: strconv.Atoi: parsing {}: invalid syntax",
+                            shards_cmdline::go::quote(given)
+                        ),
+                    );
+                }
+            },
+        };
+        let filters = match super::containers::filters(call.query("filters")) {
+            Ok(pairs) => {
+                let given: Vec<String> = pairs.into_iter().map(|(k, v)| format!("{k}={v}")).collect();
+                crate::filters::Filters::from_flags(&given)
+            }
+            Err(e) => return Answer::error(400, e),
+        };
+        // Credentials a client gives that cannot be read are none, as dockerd ignores
+        // them for a search.
+        let env = with_auth(call, term).unwrap_or_else(|_| shards_ipc::registry_env());
+        let lookup = |k: &str| shards_ipc::env_value(&env, k);
+        match crate::search::find(term, limit, &filters, &lookup) {
+            Ok(found) => Answer::json(
+                200,
+                &Value::Array(
+                    found
+                        .into_iter()
+                        .map(|f| {
+                            json!({
+                                "star_count": f.stars,
+                                "is_official": f.official,
+                                "name": f.name,
+                                "is_automated": false,
+                                "description": f.description,
+                            })
+                        })
+                        .collect(),
+                ),
+            ),
+            Err(refusal) => Answer::error(if refusal.asked { 400 } else { 500 }, refusal.text),
+        }
+    }
+
     /// `POST /images/{name}/push`: `shards push image`, its `tag` of `name`'s repository,
     /// or `name` as given, every tag of its repository where it names none; its client's
     /// credentials (X-Registry-Auth) in memory alone. Each layer said by its ID, the tag's

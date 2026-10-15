@@ -428,17 +428,11 @@ fn client_for(
     for warning in warnings {
         let _ = writeln!(std::io::stderr(), "WARNING: {warning}");
     }
-    let material = certs::load(registry::host(reference), env).map_err(|e| e.to_string())?;
-    let config = tls::client_config(material.roots, material.client).map_err(|e| e.to_string())?;
-    let http = Client::new(
-        Box::new(move |_| Ok(config.clone())),
-        &format!("shards/{}", env!("CARGO_PKG_VERSION")),
-    );
+    let http = host_client(registry::host(reference), env).map_err(|e| e.to_string())?;
     let http = match cancel {
         Some(cancel) => http.cancelled_by(cancel.clone()),
         None => http,
-    }
-    .with_proxies(Proxies::from_env(env));
+    };
     Ok((http, credentials))
 }
 
@@ -523,14 +517,22 @@ pub fn check_login(
     credentials: shards_registry::auth::Credentials,
     env: &dyn Fn(&str) -> Option<String>,
 ) -> Result<Option<String>, shards_registry::Error> {
+    Registry::login(host_client(host, env)?, host, credentials)
+}
+
+/// A client for the registry at `host`, with the certificates (`certs.d`) and proxies
+/// `env` finds for it, as a pull's.
+pub(crate) fn host_client(
+    host: &str,
+    env: &dyn Fn(&str) -> Option<String>,
+) -> Result<Client, shards_registry::Error> {
     let material = certs::load(host, env)?;
     let config = tls::client_config(material.roots, material.client)?;
-    let http = Client::new(
+    Ok(Client::new(
         Box::new(move |_| Ok(config.clone())),
         &format!("shards/{}", env!("CARGO_PKG_VERSION")),
     )
-    .with_proxies(Proxies::from_env(env));
-    Registry::login(http, host, credentials)
+    .with_proxies(Proxies::from_env(env)))
 }
 
 /// Docker's short layer ID: the digest's first 12 hex digits.

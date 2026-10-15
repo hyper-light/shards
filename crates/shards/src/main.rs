@@ -18,6 +18,9 @@ mod cli;
 mod containers;
 #[cfg(unix)]
 mod daemon;
+// The daemon's (Unix's alone as yet) and a search's.
+#[cfg_attr(not(unix), allow(dead_code))]
+mod filters;
 mod from_image;
 mod frontend;
 mod google;
@@ -46,6 +49,7 @@ mod oidc;
 mod pull;
 mod resources;
 mod run;
+mod search;
 #[cfg(unix)]
 mod segments;
 mod setup;
@@ -103,6 +107,7 @@ pub(crate) fn shardsd(args: Vec<std::ffi::OsString>) -> ExitCode {
         Some("build") => build::build(args),
         Some("login") => login::login(args),
         Some("logout") => login::logout(args),
+        Some("search") => search::search(args),
         // BuildKit's frontend, which BuildKit runs from shards' image (D113): not for people
         // to run.
         Some("frontend") => frontend::frontend(args),

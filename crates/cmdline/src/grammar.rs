@@ -131,6 +131,7 @@ pub fn rewrite(args: &[String]) -> Option<Vec<String>> {
         ("inspect" | "show", Thing::Guest) => &["guest"],
         ("login", Thing::Registry) => &["login"],
         ("logout", Thing::Registry) => &["logout"],
+        ("search", Thing::Image) => &["search"],
         (action @ ("stop" | "kill" | "logs" | "wait" | "port" | "exec"), Thing::Vm | Thing::Container) => {
             return Some(once(action, rest));
         }
@@ -305,6 +306,12 @@ pub static ACTIONS: &[(&str, &str, &str, &str)] = &[
     ),
     ("images", "push", "image", "Upload an image to a registry"),
     ("images", "save", "image", "Save images to a tar archive"),
+    (
+        "images",
+        "search",
+        "image",
+        "Find images in registries, and whether each runs here",
+    ),
 ];
 
 /// Each way an action is said, for its own page (`shards run`): its section, the action,
@@ -538,6 +545,12 @@ pub static USES: &[(&str, &str, &str, &str)] = &[
     ),
     ("images", "push", "image NAME", "Upload an image to a registry"),
     ("images", "save", "image NAME", "Save images to a tar archive"),
+    (
+        "images",
+        "search",
+        "image TERM",
+        "Find images on Docker Hub, or in the registry TERM names: whether each runs on this machine, and what its pull takes",
+    ),
 ];
 
 /// Whether `word` is an action of shards' grammar.
@@ -632,6 +645,15 @@ mod tests {
             Some("login -u u r.example")
         );
         assert_eq!(said("logout registry").as_deref(), Some("logout"));
+        // Images found in registries (D172).
+        assert_eq!(
+            said("search image -f is-official=true python").as_deref(),
+            Some("search -f is-official=true python")
+        );
+        assert_eq!(
+            said("search images quay.io/prometheus").as_deref(),
+            Some("search quay.io/prometheus")
+        );
         // OSI artifacts are shards' own groups (D54), signed as cosign signs (D116).
         assert_eq!(said("push agent r/a:1").as_deref(), Some("agent push r/a:1"));
         assert_eq!(
@@ -653,6 +675,7 @@ mod tests {
             "pull alpine",
             "login r.example",
             "logout",
+            "search alpine",
         ] {
             assert_eq!(said(words), None, "{words}");
         }
