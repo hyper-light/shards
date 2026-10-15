@@ -964,10 +964,14 @@ impl Cut<'_> {
         // Every vCPU is out of the guest: the devices go quiet, and only then does each
         // vCPU capture its state.
         self.bus.pause();
-        // A snapshot keeps no range of a join disk: a container's image is the joining
-        // run's, and every restore of a snapshot is a microVM no container has joined.
-        if self.join.is_some_and(|j| !j.is_empty()) {
-            return Err("a container has joined this microVM, whose image a snapshot cannot keep".into());
+        // A snapshot keeps no image of a join disk's: a container's image is the joining
+        // run's, and every restore of a snapshot is a microVM no container has joined. It
+        // keeps the ranges once let go, as the joiners ended (D176).
+        if self.join.is_some_and(Join::attached) {
+            return Err(
+                "a container joined to this microVM still has its image attached, which a snapshot cannot keep"
+                    .into(),
+            );
         }
         if !run && self.swap.is_some_and(pmem::SwapWindow::attached) {
             return Err(

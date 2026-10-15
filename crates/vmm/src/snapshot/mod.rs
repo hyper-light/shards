@@ -69,7 +69,9 @@ const MAGIC: [u8; 8] = *b"SHRDSNAP";
 ///     virtio-mem's sizes, what it asks for and what is plugged (D176).
 /// 18: a swap window's state keeps the length of the run's swap mapped, whose bytes a
 ///     snapshot of a run keeps beside it (D176).
-const VERSION: u32 = 18;
+/// 19: a join disk's state keeps its ranges, each let go, so that a microVM containers
+///     joined is saved once they end (D176).
+const VERSION: u32 = 19;
 /// The snapshot format this build writes and reads: what a snapshot kept for reuse is
 /// keyed by.
 pub const FORMAT: u32 = VERSION;

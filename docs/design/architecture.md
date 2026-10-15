@@ -3721,6 +3721,20 @@ it was, with nothing of the save left: a host's devices (VFIO), a GPU's contexts
 container joined to it (D119), and, until part 5, a mounted volume, whose open files are
 its server's by node IDs no snapshot holds.
 
+Containers joined to a microVM run in it, each its own container's run: a snapshot would
+keep their processes, and a restore bring them back, without their containers. So a
+microVM is saved while none runs in it, which its VM process, which takes the daemon's
+messages in order, knows as no other can: a JOIN before a SAVE counts its joiner as it is
+taken, and the save refuses while one counts; a JOIN after it is refused until the save is
+done, its joiner's start failing with why. Once they end it is saved, its join disk with
+the ranges their images had, each let go (snapshot format 19): its restored guest knows the
+disk's capacity, and a container that joins the restored microVM takes the next range, no
+place given twice (D119). Before this, a microVM saved with joiners running kept them, and
+one any container had ever joined was never saved again. Held by
+`a_save_refused_leaves_the_microvm_running_and_nothing_behind` (refused while a joiner runs,
+saved once it ends, restored and joined again) and `a_join_disk_reads_each_image_at_its_range`
+(the ranges kept, mutation-checked).
+
 Saved with `--leave-running`, the microVM goes on. Otherwise its save stops it, as `docker
 checkpoint create` stops a container, and it is told as stopped, not ended: its attached
 client says it was saved and as which snapshot, and exits 148, the status a shell gives a

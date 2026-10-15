@@ -526,15 +526,20 @@ fn relay_signals(conn: &UnixStream, to: &'static ToGuest, from: From<'_>) {
             // heard (`Saved`).
             kind::SAVE if matches!(from, From::Daemon(_)) => {
                 let answer = conn.try_clone();
+                // Before any message after this one: a JOIN behind it is refused, so that
+                // no joiner starts in the guest as it goes quiet.
+                SAVING.store(true, std::sync::atomic::Ordering::SeqCst);
                 let saving = std::thread::Builder::new().name("save".into()).spawn(move || {
                     let saved = save_request(message);
                     let said = saved.as_ref().err().map(String::as_bytes).unwrap_or_default();
                     if let Ok(answer) = &answer {
                         let _ = shards_ipc::send(answer, kind::SAVED, said, &[]);
                     }
+                    SAVING.store(false, std::sync::atomic::Ordering::SeqCst);
                     drop(saved);
                 });
                 if let Err(e) = saving {
+                    SAVING.store(false, std::sync::atomic::Ordering::SeqCst);
                     let _ = shards_ipc::send(
                         conn,
                         kind::SAVED,
@@ -624,6 +629,14 @@ static SAVED: std::sync::OnceLock<(String, String)> = std::sync::OnceLock::new()
 /// Saves this microVM as the daemon's `SAVE` asks (D176): into the generation's files it
 /// brings, its memory, its state and the run's swap where it has one, then on or stopped.
 fn save_request(message: shards_ipc::Message) -> Result<shards_vmm::vm::Saved, String> {
+    // A joiner's processes are in its guest, its run its own container's (D119): a snapshot
+    // would keep them, and a restore bring them back, without their containers.
+    if *JOINERS.lock().unwrap_or_else(std::sync::PoisonError::into_inner) > 0 {
+        return Err(
+            "containers joined to it run in its microVM, which a snapshot would keep without their containers: save it once they end"
+                .into(),
+        );
+    }
     let (flags, rest) = message.payload.split_first().ok_or("a save without its flags")?;
     let (tokens, names) = rest
         .split_at_checked(2 * shards_abi::run::TOKEN)
@@ -731,6 +744,8 @@ fn exec_request(
 /// The joiners this VM serves (D119), which it waits for before it ends: each tells the
 /// daemon how it ended.
 static JOINERS: std::sync::Mutex<usize> = std::sync::Mutex::new(0);
+/// Whether this VM is being saved (D176), from its `SAVE` on: no container joins it then.
+static SAVING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 static JOINER_ENDED: std::sync::Condvar = std::sync::Condvar::new();
 
 /// Whether a container joined to this VM's network runs (D119).
@@ -766,6 +781,11 @@ fn join_request(message: shards_ipc::Message, to: &'static ToGuest) -> Result<()
     let link = UnixStream::from(link);
     // What fails here, the run says as its own start failing, once it has the run.
     let range = match crate::vm_run::join_disk() {
+        // A joiner starting in a guest going quiet for its save would be in its snapshot
+        // without its container (D176).
+        _ if SAVING.load(std::sync::atomic::Ordering::SeqCst) => {
+            Err("the microVM it joins is being saved: join it once it is saved".into())
+        }
         Some(disk) => disk
             .attach(File::from(image))
             .map_err(|e| format!("its image: {e}")),

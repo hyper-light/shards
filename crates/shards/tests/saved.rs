@@ -254,6 +254,67 @@ fn a_save_refused_leaves_the_microvm_running_and_nothing_behind() {
     assert_eq!(refused.status, Some(1), "{refused}");
     assert!(refused.stderr.contains("on the host's network"), "{refused}");
     assert_eq!(shards(&["rm", "-f", "hosted"]).status, Some(0));
+    // Containers joined to it run in its microVM (D119), which a snapshot would keep
+    // without their containers; once they end, it is saved.
+    let run = |args: &[&str]| {
+        let mut all = vec!["run", "-d", "--pull", "never"];
+        all.extend_from_slice(args);
+        let r = shards(&all);
+        assert_eq!(r.status, Some(0), "{r}");
+    };
+    run(&["--name", "provider", &image, "sleep"]);
+    run(&[
+        "--name",
+        "joiner",
+        "--network",
+        "container:provider",
+        &image,
+        "sleep",
+    ]);
+    let refused = shards(&["save", "vm", "--leave-running", "provider"]);
+    assert_eq!(refused.status, Some(1), "{refused}");
+    assert!(
+        refused
+            .stderr
+            .contains("containers joined to it run in its microVM"),
+        "{refused}"
+    );
+    let snapshots = home
+        .join("containers")
+        .join(id_of(&home, "provider"))
+        .join("snapshots");
+    let left: Vec<_> = std::fs::read_dir(&snapshots).unwrap().collect();
+    assert!(left.is_empty(), "{left:?}");
+    assert_eq!(shards(&["rm", "-f", "joiner"]).status, Some(0));
+    // Once they end, it is saved, and restored with its join disk as its guest knew it: a
+    // container joins the restored microVM, its image given the disk's next range.
+    let mut saved = shards(&["save", "vm", "provider", "joined"]);
+    let deadline = Instant::now() + TIMEOUT;
+    while saved.status != Some(0) && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(50));
+        saved = shards(&["save", "vm", "provider", "joined"]);
+    }
+    assert_eq!(saved.stdout, "joined\n", "{saved}");
+    let restored = shards(&["restore", "vm", "provider", "joined"]);
+    assert_eq!(restored.status, Some(0), "{restored}");
+    let joined = shards(&[
+        "run",
+        "--rm",
+        "--pull",
+        "never",
+        "--network",
+        "container:provider",
+        &image,
+        "fs",
+        "write:/tmp/j=again",
+        "print:/tmp/j",
+    ]);
+    assert_eq!(
+        (joined.status, joined.stdout.as_str()),
+        (Some(0), "again"),
+        "{joined}"
+    );
+    assert_eq!(shards(&["rm", "-f", "provider"]).status, Some(0));
 }
 
 /// `shards logs NAME`'s stdout.

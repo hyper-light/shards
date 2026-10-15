@@ -15,6 +15,7 @@ use super::queue::{Chain, Descriptor, Queue};
 use super::worker::Worker;
 use super::{Activation, DeviceInterrupt, VirtioDevice, feature};
 use crate::memory::{Access, GuestMemory};
+use crate::snapshot::codec::{self, Reader, Writer};
 use crate::{debug, platform};
 
 pub const DEVICE_ID: u32 = 2;
@@ -186,8 +187,65 @@ impl Join {
         Ok(())
     }
 
-    /// Whether no container's image was ever given a range: a disk a snapshot may keep,
-    /// as it keeps nothing of a range.
+    /// Whether a range still has its file: a joined container's image the guest may still
+    /// read, which a snapshot keeps nothing of (D176).
+    pub fn attached(&self) -> bool {
+        self.ranges
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .iter()
+            .any(|r| r.file.is_some())
+    }
+
+    /// Its ranges as a snapshot keeps them, each let go (D176): where each starts, its
+    /// length, and whether the guest could write it. Asked once none has its file.
+    fn save(&self, w: &mut Writer) {
+        let ranges = self.ranges.read().unwrap_or_else(PoisonError::into_inner);
+        w.seq(&ranges, |w, r| {
+            w.u64(r.start);
+            w.u64(r.len);
+            w.bool(r.writable);
+        });
+    }
+
+    /// The ranges a snapshot kept, each let go: a restored disk has the capacity its guest
+    /// knows, and gives none of their places again.
+    fn restore(&self, r: &mut Reader<'_>) -> codec::Result<()> {
+        let kept = r.seq(u32::MAX as usize, 17, |r| {
+            Ok(Range {
+                start: r.u64()?,
+                len: r.u64()?,
+                file: None,
+                writable: r.bool()?,
+            })
+        })?;
+        let mut end = 0u64;
+        for k in &kept {
+            if k.start < end
+                || !k.start.is_multiple_of(RANGE_ALIGN)
+                || k.len == 0
+                || !k.len.is_multiple_of(SECTOR)
+            {
+                return Err(codec::DecodeError(format!(
+                    "a join disk's range of {} bytes at {}, after one that ends at {end}",
+                    k.len, k.start
+                )));
+            }
+            end = k.start.checked_add(k.len).ok_or_else(|| {
+                codec::DecodeError(format!("a join disk's range at {} past the disk's end", k.start))
+            })?;
+        }
+        let mut ranges = self.ranges.write().unwrap_or_else(PoisonError::into_inner);
+        if !ranges.is_empty() {
+            return Err(codec::DecodeError(
+                "a join disk restored with ranges of its own".into(),
+            ));
+        }
+        *ranges = kept;
+        Ok(())
+    }
+
+    /// Whether no container's image was ever given a range.
     pub fn is_empty(&self) -> bool {
         self.ranges
             .read()
@@ -449,6 +507,20 @@ impl VirtioDevice for Block {
         match self.paused.take() {
             Some(queue) => self.start(queue),
             None => Ok(()),
+        }
+    }
+
+    /// A join disk's ranges, each let go (D176); nothing of any other disk's.
+    fn save(&self, w: &mut Writer) {
+        if let Store::Join(join) = &self.backend.store {
+            join.save(w);
+        }
+    }
+
+    fn restore(&mut self, r: &mut Reader<'_>) -> codec::Result<()> {
+        match &self.backend.store {
+            Store::Join(join) => join.restore(r),
+            _ => Ok(()),
         }
     }
 }
@@ -746,6 +818,39 @@ mod tests {
         irq.ack(super::super::INT_CONFIG_CHANGE);
         disk.attach(image("d", 512, 0xdd)).unwrap();
         assert_eq!(irq.status() & super::super::INT_CONFIG_CHANGE, 0);
+        // A snapshot keeps its ranges once each is let go (D176), and a restored disk has the
+        // capacity its guest knew, reads none of them, and gives none of their places again.
+        assert!(disk.attached());
+        for start in [1 << 20, 2 << 20, 3 << 20] {
+            disk.detach(start).unwrap();
+        }
+        assert!(!disk.attached());
+        let mut w = Writer::default();
+        b.save(&mut w);
+        let saved = w.into_bytes();
+        static RESTORED: Join = Join::new();
+        let mut again = Block::join(&RESTORED, "shards-join");
+        let mut r = Reader::new(&saved);
+        again.restore(&mut r).unwrap();
+        r.finish().unwrap();
+        assert_eq!(capacity(&again), capacity(&b));
+        let mut buf = vec![0u8; 512];
+        // SAFETY: `buf` holds 512 bytes.
+        let read = unsafe { RESTORED.read_at(buf.as_mut_ptr(), 512, 0) };
+        assert_eq!(read, Err(S_IOERR));
+        assert_eq!(RESTORED.attach(image("e", 512, 0xee)).unwrap(), (4 << 20, 512));
+        // Only into an empty disk, and only of ranges in order.
+        let mut r = Reader::new(&saved);
+        assert!(again.restore(&mut r).is_err());
+        let mut w = Writer::default();
+        w.seq(&[(2u64 << 20, 512u64), (1 << 20, 512)], |w, (start, len)| {
+            w.u64(*start);
+            w.u64(*len);
+            w.bool(false);
+        });
+        static DISORDERED: Join = Join::new();
+        let mut bad = Block::join(&DISORDERED, "shards-join");
+        assert!(bad.restore(&mut Reader::new(&w.into_bytes())).is_err());
     }
 
     /// A builder's join disk (D134): writes land in a range given as writable alone, and
