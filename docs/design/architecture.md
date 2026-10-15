@@ -3724,7 +3724,10 @@ log, ports, events and end are a start's. Three things a start does not have mak
   back whole after the restore.
 
 A microVM restored resumes where it was saved, as often as its snapshot is restored: its
-log goes on from the save, once for each restore. `shards list snapshots NAME` lists a
+log goes on from the save, once for each restore. Measured (PM M239, a 256 MiB microVM on
+the M5 Max): a save left running parks the guest's vCPUs for 17 ms at p50 and 46 ms at
+most on a loaded host, its going quiet first under 0.2 ms at p90; its caller waits 92 ms
+at p50 quiet, the commit's sync among it, and a restore 18 ms at p50. `shards list snapshots NAME` lists a
 microVM's snapshots, newest first, when each was saved and the disk it takes; `shards
 remove snapshot NAME SNAPSHOT...` removes them, and `shards rm` with the microVM. A run on
 the host's network (D124) is not saved: its guest's sockets are the host's, which no
