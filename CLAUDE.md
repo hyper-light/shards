@@ -48,6 +48,7 @@ Targets: request → usable in **under 5 ms, boot included**, and less memory pe
   - The first Windows lint downloads Microsoft's CRT and SDK.
 - A process passing a socket by `SCM_RIGHTS` keeps its own descriptor until the receiver says it has it: XNU's collector flushes a socket in flight that no process holds (M24; the daemon's `TAKEN`).
 - Compare two builds' run latency with `docs/research/measurements/build-ab/ab.py`, both restoring one template: restore costs differ from template to template by tens of µs (PM M29).
+- Tests that log in to a registry, or run the docker CLI, give it a `PATH` of an empty directory and `DOCKER_CONFIG` of their own: a credential helper found on `PATH` (osxkeychain) keeps a test's login in the host's keychain.
 - VM tests print `SKIP:` and return where the host cannot run VMs (`vm::check_host`). `this_host_has_its_hypervisor_backend` pins which hosts must have a backend.
 - A test's directories are `shards_testdir::TempDir`'s (`crates/testdir`): under `$TMPDIR/shards-tests/<pid>/`, removed as they drop, a failing test's too, and a killed test process's as the next one starts. Clippy refuses `std::env::temp_dir` elsewhere (`clippy.toml`). Keep names short where sockets live in them (sockaddr_un: 104 bytes on macOS).
 - When tests invoke cargo, call the rustup proxy on `PATH` with `DYLD_*` removed. Otherwise `rust-lld` cannot load `libLLVM`.

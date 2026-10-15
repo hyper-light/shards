@@ -277,6 +277,54 @@ impl<D: Disk> Daemon<D> {
         })
     }
 
+    /// `POST /auth`: the credentials a client gives, checked with their registry as
+    /// `shards login registry` checks them (dockerd's RegistryLogin, loginV2), and kept by
+    /// no one, as dockerd keeps none: the client keeps them. `Login Succeeded`, and the
+    /// identity token its token server gave in place of the password, where it gave one
+    /// (none said where none was, as `AuthResponse` omits it); credentials refused, 401,
+    /// which the API's description gives them, by a token server or the registry itself,
+    /// where dockerd answers the registry's own refusal 500.
+    pub(super) fn engine_auth(&self, call: &Call<'_>) -> Answer {
+        let body: Value = match serde_json::from_slice(&call.body) {
+            Ok(body) => body,
+            Err(e) => return Answer::error(400, format!("a login's body: {e}")),
+        };
+        let text = |k: &str| {
+            body.get(k)
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string()
+        };
+        let server = match text("serveraddress").as_str() {
+            "" | "docker.io" => crate::login::HUB.to_string(),
+            s => s.to_string(),
+        };
+        let credentials = if !text("identitytoken").is_empty() {
+            shards_registry::auth::Credentials::IdentityToken(text("identitytoken"))
+        } else if !text("registrytoken").is_empty() {
+            shards_registry::auth::Credentials::RegistryToken(text("registrytoken"))
+        } else {
+            shards_registry::auth::Credentials::Password {
+                username: text("username"),
+                password: text("password"),
+            }
+        };
+        // Its certificates and proxies, as a pull's: the daemon's, which it has from the
+        // client that started it.
+        let env = |k: &str| std::env::var(k).ok();
+        match crate::pull::check_login(crate::login::registry_host(&server), credentials, &env) {
+            Ok(Some(token)) if !token.is_empty() => Answer::json(
+                200,
+                &json!({ "Status": "Login Succeeded", "IdentityToken": token }),
+            ),
+            Ok(_) => Answer::json(200, &json!({ "Status": "Login Succeeded" })),
+            Err(e) if e.kind() == shards_registry::ErrorKind::Unauthorized => {
+                Answer::error(401, e.to_string())
+            }
+            Err(e) => Answer::error(500, e.to_string()),
+        }
+    }
+
     /// `POST /images/{name}/push`: `shards push image`, its `tag` of `name`'s repository,
     /// or `name` as given, every tag of its repository where it names none; its client's
     /// credentials (X-Registry-Auth) in memory alone. Each layer said by its ID, the tag's

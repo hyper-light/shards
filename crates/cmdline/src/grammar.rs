@@ -34,6 +34,8 @@ pub enum Thing {
     Mcp,
     /// An Agentfile made from an image (§10).
     Agentfile,
+    /// A registry images are pulled from and pushed to, which `login` and `logout` reach.
+    Registry,
 }
 
 impl Thing {
@@ -51,6 +53,7 @@ impl Thing {
             "harness" | "harnesses" => Some(Thing::Harness),
             "mcp" => Some(Thing::Mcp),
             "agentfile" | "agentfiles" => Some(Thing::Agentfile),
+            "registry" | "registries" => Some(Thing::Registry),
             _ => None,
         }
     }
@@ -75,7 +78,8 @@ pub fn rewrite(args: &[String]) -> Option<Vec<String>> {
                 | Thing::Agent
                 | Thing::Harness
                 | Thing::Mcp
-                | Thing::Agentfile,
+                | Thing::Agentfile
+                | Thing::Registry,
             ),
             _,
         ) => {
@@ -125,6 +129,8 @@ pub fn rewrite(args: &[String]) -> Option<Vec<String>> {
         ("stop", Thing::Daemon) => &["daemon", "stop"],
         ("configure" | "use" | "set", Thing::Guest) => &["guest", "use"],
         ("inspect" | "show", Thing::Guest) => &["guest"],
+        ("login", Thing::Registry) => &["login"],
+        ("logout", Thing::Registry) => &["logout"],
         (action @ ("stop" | "kill" | "logs" | "wait" | "port" | "exec"), Thing::Vm | Thing::Container) => {
             return Some(once(action, rest));
         }
@@ -289,6 +295,8 @@ pub static ACTIONS: &[(&str, &str, &str, &str)] = &[
         "image",
         "Load images from a tar archive or stdin",
     ),
+    ("images", "login", "registry", "Log in to a registry"),
+    ("images", "logout", "registry", "Forget a registry's credentials"),
     (
         "images",
         "pull",
@@ -512,6 +520,18 @@ pub static USES: &[(&str, &str, &str, &str)] = &[
     ),
     (
         "images",
+        "login",
+        "registry [SERVER]",
+        "Log in to a registry, Docker Hub's unless SERVER names another",
+    ),
+    (
+        "images",
+        "logout",
+        "registry [SERVER]",
+        "Forget the credentials kept for a registry",
+    ),
+    (
+        "images",
         "pull",
         "image NAME",
         "Download an image, and make it a microVM",
@@ -606,6 +626,12 @@ mod tests {
         assert_eq!(said("prune volumes -a").as_deref(), Some("volume prune -a"));
         // Docker's own `volume` commands are left as they are.
         assert_eq!(said("volume ls"), None);
+        // A registry, logged in to and out of (D171).
+        assert_eq!(
+            said("login registry -u u r.example").as_deref(),
+            Some("login -u u r.example")
+        );
+        assert_eq!(said("logout registry").as_deref(), Some("logout"));
         // OSI artifacts are shards' own groups (D54), signed as cosign signs (D116).
         assert_eq!(said("push agent r/a:1").as_deref(), Some("agent push r/a:1"));
         assert_eq!(
@@ -625,6 +651,8 @@ mod tests {
             "run alpine",
             "restore dir",
             "pull alpine",
+            "login r.example",
+            "logout",
         ] {
             assert_eq!(said(words), None, "{words}");
         }

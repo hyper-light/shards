@@ -500,6 +500,7 @@ impl<D: Disk> Daemon<D> {
                 return self.engine_push(threads, conn, &name.join("/"), call);
             }
             ("POST", ["commit"]) => self.engine_commit(threads, call),
+            ("POST", ["auth"]) => self.engine_auth(call),
             ("POST", ["images", name @ .., "tag"]) if !name.is_empty() => {
                 self.engine_image_tag(threads, &name.join("/"), call)
             }

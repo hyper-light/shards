@@ -1537,6 +1537,26 @@ fn images_are_pushed_saved_loaded_and_imported() {
     let (port, repos) = common::writable_registry_requiring(Some(basic));
     let repo = format!("127.0.0.1:{port}/team/app");
     let mut api = Api::new(&home);
+    // A login checked with the registry: taken, no identity token where its registry gave
+    // none; refused, 401, with the registry's word, from where it answered.
+    let login = |password: &str| json!({"username": "pusher", "password": password, "serveraddress": format!("127.0.0.1:{port}")});
+    let taken = api.call("POST", "/auth", Some(login("secret")));
+    assert_eq!(
+        (taken.status, taken.json()),
+        (200, json!({"Status": "Login Succeeded"})),
+        "{}",
+        taken.text()
+    );
+    let refused = api.call("POST", "/auth", Some(login("wrong")));
+    assert_eq!(
+        (refused.status, refused.json()),
+        (
+            401,
+            json!({"message": format!("http://127.0.0.1:{port}/v2/: unauthorized: the registry refused the credentials")})
+        ),
+        "{}",
+        refused.text()
+    );
     let tagged = api.call("POST", &format!("/images/{source}/tag?repo={repo}&tag=1"), None);
     assert_eq!(tagged.status, 201, "{}", tagged.text());
     let lines = |a: &Answered| -> Vec<Value> {
@@ -1844,12 +1864,17 @@ fn the_docker_cli_runs_microvms_through_the_engine() {
     };
     let config = home.join("docker-config");
     std::fs::create_dir_all(&config).unwrap();
+    // An empty directory for PATH, where the CLI finds no credential helper: what its
+    // login keeps goes in the test's config, never in this host's keychain.
+    let no_helpers = home.join("path");
+    std::fs::create_dir_all(&no_helpers).unwrap();
     let host = format!("unix://{}", home.join("engine.sock").display());
     let docker_with = |args: &[&str], set: &[(&str, &str)]| {
         let out = std::process::Command::new(&docker)
             .args(args)
             .env("DOCKER_HOST", &host)
             .env("DOCKER_CONFIG", &config)
+            .env("PATH", &no_helpers)
             .env_remove("DOCKER_CONTEXT")
             .env("DOCKER_CLI_HINTS", "false")
             .envs(set.iter().copied())
@@ -2047,10 +2072,22 @@ fn the_docker_cli_runs_microvms_through_the_engine() {
     let (status, out, err) = docker(&["import", root.to_str().unwrap(), "shp/cli-root:1"]);
     assert_eq!(status, Some(0), "{err}");
     assert!(out.trim().starts_with("sha256:"), "{out}");
-    let (port, repos) = common::writable_registry();
+    let basic = format!(
+        "Basic {}",
+        base64::engine::general_purpose::STANDARD.encode("pusher:secret")
+    );
+    let (port, repos) = common::writable_registry_requiring(Some(basic));
     let pushed = format!("127.0.0.1:{port}/team/cli:1");
     let (status, _, err) = docker(&["tag", "shp/cli-work:1", &pushed]);
     assert_eq!(status, Some(0), "{err}");
+    // Logged in through the engine, which checks the credentials with the registry; the
+    // CLI keeps them, and its push sends them.
+    let registry = format!("127.0.0.1:{port}");
+    let (status, _, err) = docker(&["login", "-u", "pusher", "-p", "wrong", &registry]);
+    assert_eq!(status, Some(1), "{err}");
+    assert!(err.contains("the registry refused the credentials"), "{err}");
+    let (status, out, err) = docker(&["login", "-u", "pusher", "-p", "secret", &registry]);
+    assert_eq!((status, out.as_str()), (Some(0), "Login Succeeded\n"), "{err}");
     let (status, out, err) = docker(&["push", &pushed]);
     assert_eq!(status, Some(0), "{out}{err}");
     assert!(out.contains("1: digest: sha256:"), "{out}");

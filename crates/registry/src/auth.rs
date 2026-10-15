@@ -195,6 +195,10 @@ pub struct Authorizer {
     /// Signalled when a token fetch ends, or a host's way of answering changes, for
     /// requests waiting on a fetch in progress.
     fetched: Condvar,
+    /// Whether a token is asked for with a refresh token as well (containerd's
+    /// FetchRefreshToken), as `docker login` asks; and the last one given.
+    offline: bool,
+    refresh: Mutex<Option<String>>,
 }
 
 #[derive(Default)]
@@ -239,12 +243,16 @@ struct Bearer {
     scopes: Vec<String>,
     username: String,
     secret: String,
+    /// Whether a refresh token is asked for too.
+    offline: bool,
 }
 
 #[derive(Clone)]
 struct Token {
     value: String,
     expires: Instant,
+    /// The refresh token the server gave with it, where it gave one.
+    refresh: Option<String>,
 }
 
 impl Hosts {
@@ -264,7 +272,36 @@ impl Authorizer {
             credentials,
             hosts: Mutex::default(),
             fetched: Condvar::new(),
+            offline: false,
+            refresh: Mutex::default(),
         }
+    }
+
+    /// An authorizer for `credentials`, its registry to come: what [`Registry`]'s
+    /// constructors take, which find the registry's URL.
+    ///
+    /// [`Registry`]: crate::registry::Registry
+    pub(crate) fn new_for(credentials: Credentials) -> impl FnOnce(&Url) -> Authorizer {
+        move |registry| Authorizer::new(registry, credentials)
+    }
+
+    /// The same, asking each token server for a refresh token too (containerd's
+    /// FetchRefreshToken: OAuth2's `access_type=offline`, a GET's `offline_token=true`), as
+    /// dockerd's login asks (daemon/pkg/registry/auth.go, loginV2).
+    pub(crate) fn offline(self) -> Authorizer {
+        Authorizer {
+            offline: true,
+            ..self
+        }
+    }
+
+    /// The refresh token a token server last gave, where one did: the identity token
+    /// `docker login` keeps in place of a password.
+    pub(crate) fn refresh_token(&self) -> Option<String> {
+        self.refresh
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
     }
 
     fn hosts(&self) -> MutexGuard<'_, Hosts> {
@@ -360,6 +397,13 @@ impl Authorizer {
         }
         drop(hosts);
         self.fetched.notify_all();
+        if let Ok(Token {
+            refresh: Some(refresh),
+            ..
+        }) = &fetched
+        {
+            *self.refresh.lock().unwrap_or_else(PoisonError::into_inner) = Some(refresh.clone());
+        }
         fetched.map(|token| Some(format!("Bearer {}", token.value)))
     }
 
@@ -405,7 +449,7 @@ impl Authorizer {
                     } else {
                         ("", "")
                     };
-                    let bearer = Bearer::new(url, &c, username, secret)?;
+                    let bearer = Bearer::new(url, &c, username, secret, self.offline)?;
                     hosts.add(host, Handler::Bearer(Box::new(bearer), HashMap::new()));
                     return Ok(true);
                 }
@@ -438,7 +482,13 @@ impl Authorizer {
 impl Bearer {
     /// containerd's `GenerateTokenOptions`, refusing a realm that would take the token
     /// exchange off TLS.
-    fn new(registry: &Url, c: &Challenge, username: &str, secret: &str) -> Result<Bearer, Error> {
+    fn new(
+        registry: &Url,
+        c: &Challenge,
+        username: &str,
+        secret: &str,
+        offline: bool,
+    ) -> Result<Bearer, Error> {
         let realm = c
             .params
             .get("realm")
@@ -461,6 +511,7 @@ impl Bearer {
                 .unwrap_or_default(),
             username: username.to_string(),
             secret: secret.to_string(),
+            offline,
         })
     }
 
@@ -494,10 +545,16 @@ impl Bearer {
                     Some(_) => false,
                 };
             if !again {
-                return Err(Error::new(format!(
-                    "fetching a token from {}: {}",
-                    self.realm, failed.error
-                )));
+                // The credentials' refusal stays one, for a login to say so; anything else
+                // is tried no more, as before.
+                let kind = match failed.error.kind() {
+                    ErrorKind::Refused => ErrorKind::Refused,
+                    _ => ErrorKind::Other,
+                };
+                return Err(Error::of(
+                    kind,
+                    format!("fetching a token from {}: {}", self.realm, failed.error),
+                ));
             }
             last = failed.status;
             std::thread::sleep(crate::registry::PAUSE);
@@ -533,6 +590,9 @@ impl Bearer {
         if !scopes.is_empty() {
             form.push(("scope", scopes.join(" ")));
         }
+        if self.offline {
+            form.push(("access_type", "offline".into()));
+        }
         form.push(("service", self.service.clone()));
         form.sort_by(|a, b| a.0.cmp(b.0));
         let body = form_urlencoded::Serializer::new(String::new())
@@ -565,6 +625,9 @@ impl Bearer {
             pairs.push(("service".into(), self.service.clone()));
         }
         pairs.extend(scopes.iter().map(|s| ("scope".to_string(), s.clone())));
+        if self.offline {
+            pairs.push(("offline_token".into(), "true".into()));
+        }
         // Go's url.Values.Encode: sorted by key, values in order.
         pairs.sort_by(|a, b| a.0.cmp(&b.0));
         let query = form_urlencoded::Serializer::new(String::new())
@@ -621,6 +684,7 @@ fn answer(response: &mut Response, oauth: bool) -> Result<Token, Failed> {
 struct TokenResponse {
     token: Option<String>,
     access_token: Option<String>,
+    refresh_token: Option<String>,
     expires_in: Option<i64>,
     issued_at: Option<String>,
 }
@@ -629,7 +693,7 @@ struct TokenResponse {
 /// carries `token` or `access_token`, and `access_token` wins, as containerd has it.
 fn read_token(response: &mut Response, oauth: bool) -> Result<Token, Error> {
     if !(200..400).contains(&response.status) {
-        return Err(Error::new(format!("unexpected status {}", response.status)));
+        return Err(refused(response));
     }
     let received = Instant::now();
     // The server's clock as it answered (RFC 9110 §6.6.1): IMF-fixdate, which RFC 2822's
@@ -681,7 +745,48 @@ fn read_token(response: &mut Response, oauth: bool) -> Result<Token, Error> {
     Ok(Token {
         value,
         expires: received.checked_add(left).unwrap_or(received),
+        refresh: parsed.refresh_token.filter(|t| !t.is_empty()),
     })
+}
+
+/// A token server's refusal, in its own words where it gives some (the first 4 KiB of its
+/// answer): OAuth2's `error_description` or `error` (RFC 6749 §5.2), Docker Hub's
+/// `details`, or distribution's `errors` (spec.md, Error Codes). A 401 or 403 is the
+/// credentials' refusal ([`ErrorKind::Refused`]).
+fn refused(response: &mut Response) -> Error {
+    let status = response.status;
+    let mut body = Vec::new();
+    let _ = response.take(4 << 10).read_to_end(&mut body);
+    let said = serde_json::from_slice::<serde_json::Value>(&body)
+        .ok()
+        .and_then(|v| {
+            let text = |k: &str| {
+                v.get(k)
+                    .and_then(serde_json::Value::as_str)
+                    .filter(|t| !t.is_empty())
+            };
+            text("error_description")
+                .or_else(|| text("details"))
+                .or_else(|| text("error"))
+                .or_else(|| text("message"))
+                .map(str::to_string)
+                .or_else(|| {
+                    v.get("errors")?
+                        .as_array()?
+                        .first()?
+                        .get("message")?
+                        .as_str()
+                        .map(str::to_string)
+                })
+        });
+    let words = match said {
+        Some(said) => format!("unexpected status {status}: {}", printable(&said)),
+        None => format!("unexpected status {status}"),
+    };
+    match status {
+        401 | 403 => Error::of(ErrorKind::Refused, words),
+        _ => Error::new(words),
+    }
 }
 
 /// Hosts containerd serves over plain HTTP by default: `localhost`, 127.0.0.0/8 and ::1
@@ -1190,7 +1295,7 @@ mod tests {
                 scheme: Scheme::Bearer,
                 params: params(&[("realm", realm)]),
             };
-            Bearer::new(&Url::parse(registry).unwrap(), &c, "u", "p").map(|_| ())
+            Bearer::new(&Url::parse(registry).unwrap(), &c, "u", "p", false).map(|_| ())
         };
         assert!(bearer("https://registry.example/v2/", "https://auth.example/token").is_ok());
         assert!(bearer("https://registry.example/v2/", "http://auth.example/token").is_err());

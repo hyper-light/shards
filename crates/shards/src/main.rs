@@ -36,6 +36,7 @@ mod keyless;
 mod local_store;
 #[cfg(unix)]
 mod logging;
+mod login;
 #[cfg(unix)]
 mod names;
 mod netproc;
@@ -100,6 +101,8 @@ pub(crate) fn shardsd(args: Vec<std::ffi::OsString>) -> ExitCode {
             }
         },
         Some("build") => build::build(args),
+        Some("login") => login::login(args),
+        Some("logout") => login::logout(args),
         // BuildKit's frontend, which BuildKit runs from shards' image (D113): not for people
         // to run.
         Some("frontend") => frontend::frontend(args),

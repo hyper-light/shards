@@ -61,6 +61,9 @@ pub enum ErrorKind {
     Cancelled,
     /// A stored copy is not what its digest names any more: a pull fetches it again.
     Changed,
+    /// A token server refused the credentials (401 or 403): what a login is refused by.
+    /// Every other caller takes it as [`Other`](ErrorKind::Other).
+    Refused,
     Other,
 }
 
