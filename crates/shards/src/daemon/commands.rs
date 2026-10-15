@@ -676,15 +676,8 @@ impl<D: crate::containers::Disk> Daemon<D> {
             _ => return 1,
         };
         if kind == builtin::EXTRACT {
-            // checkWritablePath (daemon/archive_unix.go): a read-only root takes nothing.
-            let dir = lock(&self.containers).dir(&id);
-            let read_only = std::fs::read(dir.join(super::REQUEST))
-                .ok()
-                .and_then(|b| shards_ipc::Run::decode(&b))
-                .is_some_and(|r| r.read_only);
-            if read_only {
-                return refuse("container rootfs is marked read-only".into());
-            }
+            // A read-only root, or volume, takes nothing: refused by init where the path
+            // resolves, on the mounts its command sees (copy.rs, `writable`).
             // `-a`: everything the container's user's (archive_tarcopyoptions_unix.go).
             let user = if args.get(3).is_some_and(|a| a == "1") {
                 self.container_user(&id)

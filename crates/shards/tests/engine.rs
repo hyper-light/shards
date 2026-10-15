@@ -494,6 +494,258 @@ fn microvms_are_watched_and_managed() {
     assert!(pruned["SpaceReclaimed"].as_u64().is_some(), "{pruned}");
 }
 
+/// A volume's data outlives the microVM that wrote it: made, listed, inspected; files
+/// copied into it through a microVM that mounts it, a running one whose root takes no
+/// writes, and a stopped one, whose copy reaches the volume as its command will see it,
+/// not its root; read by another after; its removal refused while mounted, done after;
+/// and an unused one pruned, its bytes counted.
+#[test]
+fn a_volumes_data_outlives_the_microvm_that_wrote_it() {
+    let Some((home, image)) = home("eng-volume") else {
+        return;
+    };
+    let mut api = Api::new(&home);
+    let made = api.call(
+        "POST",
+        "/volumes/create",
+        Some(json!({"Name": "work", "Labels": {"k": "v"}})),
+    );
+    assert_eq!(made.status, 201, "{}", made.text());
+    let doc = made.json();
+    assert_eq!(
+        (&doc["Name"], &doc["Driver"], &doc["Labels"]["k"]),
+        (&json!("work"), &json!("local"), &json!("v")),
+        "{doc}"
+    );
+    let listed = api.call("GET", "/volumes", None).json();
+    assert!(
+        listed["Volumes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|v| v["Name"] == "work"),
+        "{listed}"
+    );
+    assert_eq!(api.call("GET", "/volumes/work", None).status, 200);
+    assert_eq!(api.call("GET", "/volumes/nothing", None).status, 404);
+    let mounting = |api: &mut Api, name: &str, host: Value| {
+        let made = api.call(
+            "POST",
+            &format!("/containers/create?name={name}"),
+            Some(json!({"Image": image, "Cmd": ["sleep"], "HostConfig": host})),
+        );
+        assert_eq!(made.status, 201, "{}", made.text());
+    };
+    let put = |api: &mut Api, name: &str, path: &str, file: &str| {
+        let archive = tar(&[(file, 0o644, 0, Some(b"kept\n"))]);
+        api.upload(
+            "PUT",
+            &format!("/containers/{name}/archive?path={path}"),
+            "application/x-tar",
+            &archive,
+        )
+    };
+    // A running microVM whose root takes no writes: its writable volume takes files.
+    mounting(
+        &mut api,
+        "writer",
+        json!({"Binds": ["work:/data"], "ReadonlyRootfs": true}),
+    );
+    assert_eq!(api.call("POST", "/containers/writer/start", None).status, 204);
+    let into_volume = put(&mut api, "writer", "/data", "running.txt");
+    assert_eq!(into_volume.status, 200, "{}", into_volume.text());
+    let into_root = put(&mut api, "writer", "/", "root.txt");
+    assert_eq!(into_root.status, 403, "{}", into_root.text());
+    assert!(
+        into_root.text().contains("container rootfs is marked read-only"),
+        "{}",
+        into_root.text()
+    );
+    assert_eq!(api.call("DELETE", "/containers/writer?force=1", None).status, 204);
+    // A stopped one: what is copied in is in the volume, read out of it, and not in its
+    // root's changes.
+    mounting(&mut api, "reader", json!({"Binds": ["work:/data"]}));
+    let stopped = put(&mut api, "reader", "/data", "stopped.txt");
+    assert_eq!(stopped.status, 200, "{}", stopped.text());
+    for file in ["running.txt", "stopped.txt"] {
+        let read = Api::new(&home).downloaded(&format!("/containers/reader/archive?path=/data/{file}"));
+        assert_eq!(read.status, 200, "{file}: {read:?}");
+        assert_eq!(untar(&read.body), [(file.to_string(), Some(b"kept\n".to_vec()))]);
+    }
+    let changes = api.call("GET", "/containers/reader/changes", None).text();
+    assert!(!changes.contains(".txt"), "{changes}");
+    // Started, its command finds both where it mounts the volume.
+    assert_eq!(api.call("POST", "/containers/reader/start", None).status, 204);
+    let found = api.call(
+        "POST",
+        "/containers/reader/exec",
+        Some(json!({"Cmd": ["/bin/testguest", "stat", "/data/running.txt", "/data/stopped.txt"], "AttachStdout": true})),
+    );
+    assert_eq!(found.status, 201, "{}", found.text());
+    let exec = found.json()["Id"].as_str().unwrap().to_string();
+    let (status, _, streamed) = Api::new(&home).upgraded(
+        &format!("/exec/{exec}/start"),
+        Some(json!({"Detach": false, "Tty": false})),
+    );
+    assert_eq!(status, 101);
+    let (out, _) = demux(&streamed);
+    assert_eq!(out.matches("= kept\\n").count(), 2, "{out}");
+    let in_use = api.call("DELETE", "/volumes/work", None);
+    assert_eq!(in_use.status, 409, "{}", in_use.text());
+    assert_eq!(api.call("DELETE", "/containers/reader?force=1", None).status, 204);
+    assert_eq!(api.call("DELETE", "/volumes/work", None).status, 204);
+    // Unused, pruned with `all`.
+    assert_eq!(
+        api.call("POST", "/volumes/create", Some(json!({"Name": "spare"})))
+            .status,
+        201
+    );
+    let pruned = api.call(
+        "POST",
+        "/volumes/prune?filters=%7B%22all%22%3A%5B%22true%22%5D%7D",
+        None,
+    );
+    assert_eq!(pruned.status, 200, "{}", pruned.text());
+    let pruned = pruned.json();
+    assert_eq!(pruned["VolumesDeleted"], json!(["spare"]), "{pruned}");
+    assert!(pruned["SpaceReclaimed"].as_u64().is_some(), "{pruned}");
+}
+
+/// The output of microVM `name`'s command so far, both streams, as its log has it.
+fn output_of(api: &mut Api, name: &str) -> String {
+    let logs = api.call("GET", &format!("/containers/{name}/logs?stdout=1&stderr=1"), None);
+    let (out, err) = demux(&logs.body);
+    out + &err
+}
+
+/// MicroVMs on one network reach each other by name and nothing else: made through the
+/// API, its members told how it is closed; a microVM off it reaches none of them; one
+/// not yet started joins and leaves it, a running one keeps the network it started on;
+/// a network with members stays, one without goes, and an unused one is pruned.
+#[test]
+fn microvms_on_a_network_reach_each_other_and_nothing_else() {
+    let Some((home, image)) = home("eng-net") else {
+        return;
+    };
+    let mut api = Api::new(&home);
+    let made = api.call("POST", "/networks/create", Some(json!({"Name": "team"})));
+    assert_eq!(made.status, 201, "{}", made.text());
+    assert!(
+        made.json()["Warning"]
+            .as_str()
+            .unwrap()
+            .contains("closed to all but its members"),
+        "{}",
+        made.text()
+    );
+    let internal = api.call(
+        "POST",
+        "/networks/create",
+        Some(json!({"Name": "inner", "Internal": true})),
+    );
+    assert_eq!(internal.json()["Warning"], json!(""), "{}", internal.text());
+    let listed = api.call("GET", "/networks", None).json();
+    let team = listed
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|n| n["Name"] == "team")
+        .unwrap_or_else(|| panic!("{listed}"));
+    assert!(team.get("Containers").is_none(), "{team}");
+    let inspected = api.call("GET", "/networks/team", None);
+    assert_eq!(inspected.status, 200, "{}", inspected.text());
+    assert_eq!(api.call("GET", "/networks/nowhere", None).status, 404);
+    let on = |api: &mut Api, name: &str, network: &str, cmd: Value| {
+        let made = api.call(
+            "POST",
+            &format!("/containers/create?name={name}"),
+            Some(json!({"Image": image, "Cmd": cmd, "HostConfig": {"NetworkMode": network}})),
+        );
+        assert_eq!(made.status, 201, "{}", made.text());
+        assert_eq!(
+            api.call("POST", &format!("/containers/{name}/start"), None)
+                .status,
+            204
+        );
+    };
+    // Two connections: the asker's, and none of the outsider's, so it runs on.
+    on(&mut api, "srv", "team", json!(["serve", "7000", "2"]));
+    let ready = (0..400).any(|_| {
+        output_of(&mut api, "srv").contains("ready") || {
+            std::thread::sleep(Duration::from_millis(25));
+            false
+        }
+    });
+    assert!(ready, "{}", output_of(&mut api, "srv"));
+    // A member, by name; one off it, not at all.
+    on(&mut api, "asker", "team", json!(["ask", "srv:7000"]));
+    assert_eq!(
+        api.call("POST", "/containers/asker/wait", None).json()["StatusCode"],
+        json!(0)
+    );
+    assert!(
+        output_of(&mut api, "asker").starts_with("ask from "),
+        "{}",
+        output_of(&mut api, "asker")
+    );
+    on(&mut api, "outsider", "bridge", json!(["ask", "srv:7000"]));
+    assert_eq!(
+        api.call("POST", "/containers/outsider/wait", None).json()["StatusCode"],
+        json!(1)
+    );
+    assert!(
+        output_of(&mut api, "outsider").starts_with("ask error"),
+        "{}",
+        output_of(&mut api, "outsider")
+    );
+    // One not yet started joins it, and leaves it; a running one keeps the one it has.
+    let late = api.call(
+        "POST",
+        "/containers/create?name=late",
+        Some(json!({"Image": image, "Cmd": ["sleep"]})),
+    );
+    assert_eq!(late.status, 201, "{}", late.text());
+    let joined = api.call(
+        "POST",
+        "/networks/team/connect",
+        Some(json!({"Container": "late", "EndpointConfig": {"Aliases": ["tardy"]}})),
+    );
+    assert_eq!(joined.status, 200, "{}", joined.text());
+    let doc = api.call("GET", "/containers/late/json", None).json();
+    assert!(doc["NetworkSettings"]["Networks"].get("team").is_some(), "{doc}");
+    let left = api.call(
+        "POST",
+        "/networks/team/disconnect",
+        Some(json!({"Container": "late"})),
+    );
+    assert_eq!(left.status, 200, "{}", left.text());
+    let running = api.call(
+        "POST",
+        "/networks/inner/connect",
+        Some(json!({"Container": "srv"})),
+    );
+    assert_eq!(running.status, 400, "{}", running.text());
+    // A network with members stays; without, it goes; an unused one is pruned.
+    let kept = api.call("DELETE", "/networks/team", None);
+    assert!(kept.status >= 400, "{}", kept.text());
+    for name in ["srv", "asker", "outsider", "late"] {
+        assert_eq!(
+            api.call("DELETE", &format!("/containers/{name}?force=1"), None)
+                .status,
+            204
+        );
+    }
+    assert_eq!(api.call("DELETE", "/networks/team", None).status, 204);
+    let pruned = api.call("POST", "/networks/prune", None);
+    assert_eq!(pruned.status, 200, "{}", pruned.text());
+    assert_eq!(
+        pruned.json()["NetworksDeleted"],
+        json!(["inner"]),
+        "{}",
+        pruned.text()
+    );
+}
+
 /// The engine answers on its socket file in the home: `_ping`, and `version` with the
 /// API's versions, which paths name or leave to the latest; one too old or too new, and a
 /// call it does not serve, are refused in shards' words.

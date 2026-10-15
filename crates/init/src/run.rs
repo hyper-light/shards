@@ -2363,8 +2363,14 @@ impl Standby {
             write_file("/etc/resolv.conf", r)?;
         }
         // A visit to a stopped container's files (`shards cp`, `diff`, `export`): the
-        // standby is the workload, run nothing of the image's, and holds until killed.
+        // standby is the workload, run nothing of the image's, and holds until killed; a
+        // copy's sees its shared directories as its runs do, and what it copies in is held
+        // to its writable layer's size as theirs is (D156).
         if spec.builtin == run::builtin::HOLD {
+            if let Some(size) = spec.setup.iter().find_map(|e| e.strip_prefix(b"rw-size=")) {
+                crate::setup::rw_size(size).map_err(setup_failed)?;
+            }
+            hold_mounts(standby.pid, &spec.setup)?;
             let Standby {
                 pid,
                 orders,
@@ -2806,9 +2812,15 @@ enum Save {
 /// One of init's own for an exec ([`Spec::builtin`]), done in a child of init's, so that
 /// the relay goes on, its output on a pipe as a command's: what is asked for on stdout,
 /// status 0; why it could not be had on stderr, status 1.
-/// Init's built-in `kind`, for the workload, or for joiner `joiner` (D119): in its mount
-/// namespace, whose root and `/proc` are its own, and with its cgroup.
-fn builtin(kind: u8, args: &[Vec<u8>], joiner: Option<(libc::pid_t, u32)>) -> Result<Started, Failure> {
+/// Init's built-in `kind`, for the workload, process `workload`, or for joiner `joiner`
+/// (D119): in its mount namespace, whose root and `/proc` are its own, and with its
+/// cgroup.
+fn builtin(
+    kind: u8,
+    args: &[Vec<u8>],
+    joiner: Option<(libc::pid_t, u32)>,
+    workload: libc::pid_t,
+) -> Result<Started, Failure> {
     // A joiner's layers, kept as its root was built (D119): their descriptors, which its
     // diff, size and commit read here as the workload's are read.
     let layers = match joiner {
@@ -2870,18 +2882,29 @@ fn builtin(kind: u8, args: &[Vec<u8>], joiner: Option<(libc::pid_t, u32)>) -> Re
                 .open("/proc")
         });
         // A joiner's files and processes: its mount namespace, its root and its `/proc`
-        // with it. Its cgroup's, and its layers', are read where init sees them.
-        if let Some(joined) = joiner.filter(|_| {
-            matches!(
-                kind,
-                run::builtin::STAT
-                    | run::builtin::ARCHIVE
-                    | run::builtin::EXTRACT
-                    | run::builtin::EXPORT
-                    | run::builtin::PROCESSES
-                    | run::builtin::CHANGES
-            )
-        }) {
+        // with it. Its cgroup's, and its layers', are read where init sees them. A copy into
+        // or out of the workload is in the workload's mount namespace too: its volumes and
+        // tmpfs mounts (D38) are there alone, so a file copied in reaches what it reads, and
+        // one in a volume is read out of the volume. Its export and changes stay init's
+        // view: its own files, without what is mounted over them.
+        let copies = matches!(
+            kind,
+            run::builtin::STAT | run::builtin::ARCHIVE | run::builtin::EXTRACT
+        );
+        let into = match joiner {
+            Some(pid)
+                if copies
+                    || matches!(
+                        kind,
+                        run::builtin::EXPORT | run::builtin::PROCESSES | run::builtin::CHANGES
+                    ) =>
+            {
+                Some((pid, "the joiner's files"))
+            }
+            None if copies => Some((workload, "the workload's files")),
+            _ => None,
+        };
+        if let Some((joined, whose)) = into {
             let entered = File::open(format!("/proc/{joined}/ns/mnt")).and_then(|ns| {
                 // SAFETY: setns(2) on a descriptor this process holds, a single-threaded
                 // fork of init.
@@ -2892,7 +2915,7 @@ fn builtin(kind: u8, args: &[Vec<u8>], joiner: Option<(libc::pid_t, u32)>) -> Re
                 }
             });
             if let Err(e) = entered {
-                let _ = writeln!(File::from(stderr_w), "the joiner's files: {e}");
+                let _ = writeln!(File::from(stderr_w), "{whose}: {e}");
                 // SAFETY: _exit(2) ends the child without running init's exit paths.
                 unsafe { libc::_exit(1) }
             }
@@ -3046,6 +3069,74 @@ fn files_alone() -> io::Result<()> {
         }
     }
     Ok(())
+}
+
+/// A copy's visit to a stopped container (D37): its shared directories (D38), and its root
+/// read-only where its runs' is, as `setup` gives them, mounted in held standby
+/// `standby`'s mount namespace, which the copy built-ins enter, so that a file copied in
+/// is where its command will find it, and none goes where its runs could not write. By a
+/// child of init's in that namespace, ended once they are mounted.
+fn hold_mounts(standby: libc::pid_t, setup: &[Vec<u8>]) -> Result<(), Failure> {
+    let entries: Vec<&[u8]> = setup
+        .iter()
+        .map(Vec::as_slice)
+        .filter(|e| e.starts_with(b"volume=") || *e == b"readonly")
+        .collect();
+    if entries.is_empty() {
+        return Ok(());
+    }
+    let failed = |e: io::Error| setup_failed(format!("the container's files: {e}"));
+    let ns = File::open(format!("/proc/{standby}/ns/mnt")).map_err(failed)?;
+    let (said_r, said_w) = pipe()?;
+    // SAFETY: init is single-threaded, so its child may run anything.
+    let pid = unsafe { libc::fork() };
+    if pid < 0 {
+        return Err(failed(io::Error::last_os_error()));
+    }
+    if pid == 0 {
+        drop(said_r);
+        let mut said = File::from(said_w);
+        // SAFETY: setns(2) on a descriptor this process holds, a single-threaded fork of
+        // init.
+        if unsafe { libc::setns(ns.as_raw_fd(), libc::CLONE_NEWNS) } != 0 {
+            let _ = write!(said, "the container's files: {}", io::Error::last_os_error());
+            // SAFETY: _exit(2) ends the child without running init's exit paths.
+            unsafe { libc::_exit(1) }
+        }
+        for entry in &entries {
+            if let Err(errno) = crate::setup::apply(entry) {
+                let _ = write!(said, "{}", crate::setup::failed(entry, errno));
+                // SAFETY: as above.
+                unsafe { libc::_exit(1) }
+            }
+        }
+        // SAFETY: as above.
+        unsafe { libc::_exit(0) }
+    }
+    drop((ns, said_w));
+    let mut why = String::new();
+    let _ = File::from(said_r).read_to_string(&mut why);
+    let mut status = 0;
+    let waited = loop {
+        // SAFETY: waitpid(2) of init's own child, with a valid status pointer; init's
+        // loop, which reaps the others, is not running while this waits.
+        let got = unsafe { libc::waitpid(pid, &mut status, 0) };
+        if got == pid {
+            break Ok(());
+        }
+        let e = io::Error::last_os_error();
+        if e.kind() != io::ErrorKind::Interrupted {
+            break Err(e);
+        }
+    };
+    waited.map_err(failed)?;
+    if libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0 {
+        Ok(())
+    } else if why.is_empty() {
+        Err(setup_failed("the container's files were not mounted"))
+    } else {
+        Err(setup_failed(why))
+    }
 }
 
 /// File `name` of directory `dir`, read whole.
@@ -3445,7 +3536,7 @@ impl Exec {
                 // Init's own work, in the joiner's namespaces and cgroup.
                 Some(&(id, pid)) if spec.builtin != 0 => {
                     exec.into_joiner = true;
-                    builtin(spec.builtin, &spec.argv, Some((pid, id)))
+                    builtin(spec.builtin, &spec.argv, Some((pid, id)), workload)
                 }
                 Some(&(joiner, pid)) => {
                     // The joiner's process, but for what the exec says (`--privileged`).
@@ -3474,7 +3565,7 @@ impl Exec {
                 }),
             }
         } else if spec.builtin != 0 && running {
-            builtin(spec.builtin, &spec.argv, None)
+            builtin(spec.builtin, &spec.argv, None, workload)
         } else if running {
             // The workload's process, but for what the exec says (`--privileged`), which
             // the run refuses beside its domains as it refused the workload's (D115).

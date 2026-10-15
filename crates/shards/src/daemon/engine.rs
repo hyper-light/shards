@@ -14,6 +14,8 @@ mod exec;
 mod files;
 mod http;
 mod images;
+mod networks;
+mod volumes;
 mod watch;
 
 use std::collections::HashMap;
@@ -150,8 +152,7 @@ fn status_of(said: &str, otherwise: u16) -> u16 {
     } else if said.contains("marked read-only") {
         403
     } else if [
-        "is in use",
-        "already in use",
+        "in use",
         "is not running",
         "is paused",
         "is not paused",
@@ -412,6 +413,20 @@ impl<D: Disk> Daemon<D> {
             ("POST", ["containers", id, "rename"]) => self.engine_rename(threads, id, call),
             ("POST", ["containers", id, "update"]) => self.engine_update(threads, id, call),
             ("GET", ["events"]) => return self.engine_events(threads, conn, call),
+            ("GET", ["volumes"]) => self.engine_volumes(call),
+            ("POST", ["volumes", "create"]) => self.engine_volume_create(threads, call),
+            ("POST", ["volumes", "prune"]) => self.engine_volume_prune(call),
+            ("GET", ["volumes", name]) => self.engine_volume(name),
+            ("DELETE", ["volumes", name]) => self.engine_volume_remove(threads, name, call),
+            ("GET", ["networks"]) => self.engine_networks(call),
+            ("POST", ["networks", "create"]) => self.engine_network_create(threads, call),
+            ("POST", ["networks", "prune"]) => self.engine_network_prune(call),
+            ("GET", ["networks", term]) => self.engine_network(term),
+            ("DELETE", ["networks", term]) => self.engine_network_remove(threads, term),
+            ("POST", ["networks", term, "connect"]) => self.engine_network_join(threads, term, call, true),
+            ("POST", ["networks", term, "disconnect"]) => {
+                self.engine_network_join(threads, term, call, false)
+            }
             ("POST", ["exec", id, "resize"]) => self.engine_resize(id, call),
             ("POST", ["containers", id, "exec"]) => self.engine_exec_create(id, call),
             ("POST", ["exec", id, "start"]) => return self.engine_exec_start(threads, conn, id, call),

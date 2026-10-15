@@ -3659,6 +3659,43 @@ unchanged (`DOCKER_HOST=unix://HOME/engine.sock`). What they gain, each for the 
   connection closes at its end); an upload is taken as it comes, never staged. A stopped
   microVM's files are read by a VM visiting them; a paused one's are in its frozen guest,
   and that is said.
+- **A copy lands where the command will find it.** A running microVM's copies are made in
+  its command's mount namespace, its volumes and tmpfs mounts in it: a file copied into
+  a volume is in the volume, and one copied into a tmpfs is what its command reads. A
+  stopped microVM's visit, for a copy, serves and mounts its volumes and binds where its
+  runs mount them (a tmpfs is a run's own, a directory only its agents mount none of its
+  root's), makes its root read-only where theirs is, and holds what is copied in to its
+  writable layer's size (`--storage-opt size`, D156). This slice's volume test found
+  that copies were made in init's own namespace, under the volumes' mount points, into
+  the root; fixed in init (`builtin`, `hold_mounts`). dockerd's copies write a tmpfs of
+  their own, which the container never sees, and read none of its (moby
+  daemon/containerfs_linux.go, containerFSView).
+- **A read-only refusal as the command's mounts have it.** Whether a copy may write is
+  decided in the guest, on its destination with its links followed, by the mount it is
+  on: a writable volume or tmpfs over a read-only root takes files; a link from a volume
+  back into the root does not. dockerd decides by its records of mount points
+  (checkWritablePath), in which a `--tmpfs` is none, so it refuses a copy into one over a
+  read-only root as the root's. The refusal is the 403 the API's own description gives
+  it (PutContainerArchive, v1.56); dockerd answers 400 (checkWritablePath's
+  InvalidParameter, v28.5.2 to v29.4.0).
+- **Volumes: data that outlives a sandbox.** Created, listed, inspected, removed and
+  pruned as `shards create volume`, `list volumes`, `inspect volume`, `remove volume`
+  and `prune volumes` do them. Each microVM that mounts one is served it by a share
+  process of its own run, which takes every request of its guest as one the guest could
+  forge, and its VM process reaches no host directory (D38), where a container's volume
+  is a mount in the host's own kernel. One a microVM mounts is not removed (409). A
+  cluster volume is a swarm's, refused.
+- **Networks: sandboxes that work together.** MicroVMs on one network reach each other by
+  name, answered at 127.0.0.11, where programs written for Docker ask, and reach nothing
+  else through it: every network is closed to all but its members, who reach one
+  another past default deny (D46), where Docker's reach the internet unless `Internal`.
+  A create that does not ask `Internal` is answered with a warning that says so, so a
+  program that expected more learns why. A created or stopped microVM joins and leaves
+  one for its next start; legacy links are refused (default deny names each grant).
+  Not yet: a running microVM joining another network, as a running microVM keeps the one
+  network device it started with; and a MAC given on a join, which the CLI's join has no
+  way to say, and the API reaches nothing the CLI does not. Both are refused with that
+  reason.
 - **What a microVM costs.** `shards stats vm`: its workload's use from its guest's
   cgroup, its system time the host's clock times its vCPUs, so that a client's share of
   two samples is its share of its vCPUs (the guest's own `/proc/stat` is not kept on a
@@ -3678,7 +3715,8 @@ unchanged (`DOCKER_HOST=unix://HOME/engine.sock`). What they gain, each for the 
   kept before its stream ends; a detached exec's VM now tells its client its end after
   its start (workload.rs).
 - **Errors in shards' words**, their status from them: 404 for what is not there, 409
-  for a conflict, 503 for a daemon stopping.
+  for a conflict (anything in use), 403 for a read-only refusal, 503 for a daemon
+  stopping.
 - **Version and platform.** 1.56, docker/cli v29.8.1's (its moby/moby/api v1.56.0), from
   1.40, paths with or without `/v1.NN`; the platform said is the sandboxes': linux and
   the guests' kernel, which clients choose by. `shards version` says the API it serves.
@@ -3689,9 +3727,11 @@ unchanged (`DOCKER_HOST=unix://HOME/engine.sock`). What they gain, each for the 
 Served now: `_ping`, `version`, `info`, events; microVMs' create, list, inspect, start,
 attach, wait, logs, resize, stop, kill, removal, copy in and out, export, changes,
 processes, stats, pause and unpause, restart, rename, update and prune; exec's create,
-start, inspect and resize; images' pull, list and inspect. Held on real microVMs by
-tests/engine.rs, raw and through the docker CLI. Any other call answers 404, naming
-itself.
+start, inspect and resize; images' pull, list and inspect; volumes' create, list,
+inspect, removal and prune; networks' create, list, inspect, removal, join, leave and
+prune. Held on real microVMs by tests/engine.rs, raw and through the docker CLI, and
+copies into tmpfs mounts over a read-only root by tests/containers.rs. Any other call
+answers 404, naming itself.
 
 ### D169. A run's log sent to Cloud Logging
 

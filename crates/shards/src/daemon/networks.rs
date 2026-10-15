@@ -1581,6 +1581,32 @@ impl<D: Disk> Daemon<D> {
         0
     }
 
+    /// The networks the filters `given` keep (`KEY=VALUE`, `network ls`'s), each as its
+    /// inspect document gives it.
+    pub(super) fn networks_listed(&self, given: &[String]) -> Result<Vec<Value>, String> {
+        let filters = Filters::from_flags(given);
+        filters.validate(&LIST_FILTERS)?;
+        Ok(self
+            .networks_by(&filters)?
+            .iter()
+            .map(|n| self.network_value(n))
+            .collect())
+    }
+
+    /// Network `term`'s inspect document, found by name or ID as `network inspect` finds
+    /// it; or why not.
+    pub(super) fn network_doc(&self, term: &str) -> Result<Value, String> {
+        let networks = self.all_networks();
+        match nets::find(&networks, term) {
+            Found::One(n) => Ok(self.network_value(n)),
+            Found::Ambiguous(count, by_name) => Err(format!(
+                "{term} names {count} networks by {}: give more of its ID",
+                if by_name { "name" } else { "their IDs' beginning" }
+            )),
+            Found::None => Err(format!("No such network: {term}")),
+        }
+    }
+
     /// The networks `filters` keep, in dockerd's terms and words.
     fn networks_by(&self, filters: &Filters) -> Result<Vec<Network>, String> {
         let kind = match filters.get("type").next() {
@@ -1685,7 +1711,11 @@ impl<D: Disk> Daemon<D> {
         asker: &Asker,
         reply: &Reply<'_>,
     ) -> u8 {
-        match self.prune_networks(parsed.many("filter"), asker) {
+        match self.prune_networks(
+            parsed.many("filter"),
+            i128::from(asker.now),
+            i64::from(asker.utc_offset),
+        ) {
             Ok(names) => {
                 if !names.is_empty() {
                     reply.out(&format!("Deleted Networks:\n{}\n", names.join("\n")));
@@ -1701,7 +1731,12 @@ impl<D: Disk> Daemon<D> {
 
     /// The user networks prune takes (`filters`: label, label!, until), removed; their
     /// names.
-    pub(super) fn prune_networks(&self, given: &[String], asker: &Asker) -> Result<Vec<String>, String> {
+    pub(super) fn prune_networks(
+        &self,
+        given: &[String],
+        now: i128,
+        offset: i64,
+    ) -> Result<Vec<String>, String> {
         let filters = Filters::from_flags(given);
         filters.validate(&PRUNE_FILTERS)?;
         let untils: Vec<&str> = filters.get("until").collect();
@@ -1709,11 +1744,7 @@ impl<D: Disk> Daemon<D> {
             return Err("more than one until filter specified".into());
         }
         let until = match untils.first() {
-            Some(v) => Some(shards_cmdline::gotime::parse_timestamp(
-                v,
-                i128::from(asker.now),
-                i64::from(asker.utc_offset),
-            )?),
+            Some(v) => Some(shards_cmdline::gotime::parse_timestamp(v, now, offset)?),
             None => None,
         };
         let _held = nets::lock();

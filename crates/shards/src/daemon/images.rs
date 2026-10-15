@@ -1402,7 +1402,7 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
         // (pruner.pruneOrder: containers, networks, volumes, images).
         let mut removed_networks: Vec<String> = Vec::new();
         if images && containers {
-            match self.prune_networks(given, asker) {
+            match self.prune_networks(given, now, offset) {
                 Ok(names) => removed_networks = names,
                 Err(e) => return refuse(e),
             }
