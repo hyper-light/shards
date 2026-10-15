@@ -3587,7 +3587,14 @@ it sent, are dropped. It holds one unread message a peer; what a peer sends past
 waits in the kernel's socket buffer, whose bound is the kernel's, and a full buffer is
 said to the sender (`has not taken what was sent it`). An instance joins its domain's
 cgroup before its exec, so that what an agent makes its instance hold counts against the
-agent's own memory and ends with it (part nine).
+agent's own memory and ends with it (part nine). Its loop polls a peer only while it
+wants what the peer sends (nothing of its held, and it not gone), and accepts and reads
+only where poll says so. A gone peer's channel left in the set said POLLHUP to every
+poll, so the loop spun, and its accept(2) of nothing each turn took the survivor's kernel
+memory past the agents' share, which ended the survivor too (PM M237). Held by
+`agents_out_of_memory_end_whole_and_spare_the_run`: the survivor's server spends under a
+second of CPU in the 3 s after its peer's end. Mutation-checked: with the gone peer
+polled, it spent 3 s of 3.
 
 Tested: `a_peer_is_heard_only_as_granted` (in a microVM, forged frames dropped, granted
 ones held) and, on real microVMs, `agents_message_one_another_as_granted`: with `CONNECT
@@ -3613,6 +3620,151 @@ No run-time labels, relays or declassifiers (§12 answer 14, decided by the user
 2026-10-07): every path between domains is a grant, and the build refuses any that joins
 an internal-only domain to the world (D58), so there is no data to label. Code mode is
 D136.
+
+### D175. Sockets read in poll(2) on macOS, and streams ended one way at a time
+
+On macOS a read waiting on a Unix stream socket can sleep through its peer's half-close,
+and SHUT_RDWR after one shuts nothing (PM M236). Together they hung `docker compose exec`
+long after its command had ended:
+
+1. Compose shut its writing once its stdin ended, as a Docker client does on every
+   attached stream (docker/cli hijack.go, `CloseWrite`).
+2. The daemon's copy of that stdin slept on in recv(2).
+3. The shutdown(SHUT_RDWR) that was to end the client's stream said ENOTCONN, and the
+   stream stayed open.
+
+Others half-close as well: the guest's init as a run ends, and the VMM, passing on a
+guest's half-close (vsock `Shutdown::Write`).
+
+- **On macOS a socket's read waits in poll(2), never in the read** (`shards_ipc::read`,
+  and `Polled` for what takes a reader).
+  - It reads with MSG_DONTWAIT, and waits in poll(2) where nothing has come, as a read
+    would wait: not at all where the descriptor is set not to block, and no longer than
+    its receive timeout. Messages (`shards_ipc::recv`) wait the same way.
+  - A read that finds data is the one recv(2) it was. One that waits makes a failed
+    recv(2), an fcntl(2) and a getsockopt(2) first: over three runs a round trip whose
+    two ends both waited took 2.0 to 5.8 µs more at p50 than with recv(2), and 3.3 to
+    3.9 µs more where each reply came 50 µs on (M236).
+  - Linux's read looks for the end under the lock its waker takes and missed none, and
+    a pipe or a terminal is no socket: those are read as they were.
+  - Read through it: the Engine API's connections and the stdin they attach; the VM
+    process's guest streams and the stdins it copies to them; the CLI's stdin; the
+    builder's connection, its ssh agent's and its proxy's; the local image store's
+    answers; a log shipper's Unix endpoint.
+- **A stream ends one way at a time** (`shards_ipc::end`): SHUT_WR, so that its peer
+  reads the end, then SHUT_RD, so that readers here read theirs. On Windows the build's
+  connections end as they did.
+- **TCP** lost no end in M236 and keeps its reads. Its SHUT_RDWR is XNU's too, so the
+  registry client and the tests' registry end a connection one way at a time.
+
+Held by shards_ipc's tests, each mutation-checked on macOS:
+- `a_read_sees_its_peers_end_that_lands_as_it_starts`: 20,000 races, reads and messages.
+  A recv(2) that may sleep, in either, missed an end by round 1,722.
+- `a_read_waits_as_a_read_would`.
+- `ending_a_stream_reaches_a_peer_that_ended_its_side_first`: with SHUT_RDWR, the peer
+  read no end.
+
+### D174. Overlays on volumes: runtimes nested in a microVM
+
+A runtime nested in a microVM keeps its images' layers as overlays on a volume: buildx's
+own builder (BuildKit, its docker-container driver), Docker in Docker, Podman. shards'
+volumes reach a microVM as virtiofs from its run's share process (D38), unprivileged on
+the host, and overlayfs refused them as an upper layer. Measured in buildx's builder and
+in tests/containers.rs, by the guest kernel's log:
+
+1. Its work directory, made with mode 0 (fs/overlayfs/super.c, ovl_workdir_create), was
+   the guest root's to write in and not the share process's (EACCES), so the overlay
+   mounted read-only.
+2. Past that, an upper filesystem it takes for a remote one must give it RENAME_WHITEOUT,
+   xattrs and `d_type` ("upper fs missing required features", EINVAL). Neither host gives
+   an unprivileged process RENAME_WHITEOUT: macOS has none, and Linux's asks CAP_MKNOD.
+
+Now, each held by the server's unit tests and by an overlay on a volume in a microVM:
+
+- **What the host cannot hold is kept beside it**, in the owner's attribute Docker
+  Desktop's file sharing writes (D38).
+  - A mode that would lock the share process out of its own file keeps the host file's
+    owner access (`rwx` for a directory, `rw` for a file, a FIFO or a socket). The guest's
+    exact mode is kept in the attribute where the two differ, and the guest's kernel
+    checks it (`default_permissions`). A device node takes the guest's mode as it is: the
+    share process never opens one, and none can hold the attribute (on Linux, which makes
+    an unprivileged process the whiteout, the owner's access showed as the guest's).
+  - A device node the host makes only for a privileged process (overlayfs's whiteout is
+    one, of 0:0) is an empty regular file whose kind and number the attribute holds. The
+    guest sees, lists and looks it up as the node it made; its kernel opens a device
+    itself, never through the share.
+  - The attribute gains `kind` and `rdev`; its `mode` stays Docker Desktop's.
+- **RENAME_WHITEOUT**, as Linux makes it: the rename, then a whiteout in its place, the
+  rename undone where the whiteout cannot be made.
+- **`trusted.` and `security.` attributes on a Linux host**, which only a privileged
+  process sets there (xattr(7)), are kept under `user.shards.` and read and listed back
+  under their own names; a guest's own `user.shards.` names are refused. macOS keeps no
+  namespaces, so names stay as they are.
+- **A file is reached by any name the guest knows it by.** The server knew a file by the
+  name the guest last looked it up by. overlayfs links its one shared whiteout for each
+  removal and unlinks the links as it cleans a directory, so the file went stale (ENOENT
+  for GETATTR and LINK) until the guest looked another of its names up. Each node keeps
+  the names it was looked up by, and is reached by one that still leads to it.
+- **O_CREAT never changes what it finds.** A CREATE that finds its file opens it as it
+  is, where its owner was rewritten before.
+
+So `docker buildx build`, with buildx's own builder on the host's network (`docker buildx
+create --driver docker-container --driver-opt network=host`, D124), builds in a microVM:
+its daemon nests its cgroups (D173), keeps its snapshots on its state volume, runs each
+RUN step in a container of its own runc, and its image is loaded into shards and runs as
+a microVM (tests/buildx.rs, BuildKit v0.33.0). On the default bridge, default deny gives
+the builder no way out: the host's network, asked for and warned of, is what gives it
+its registries. Not yet: O_TMPFILE (FUSE_TMPFILE), which overlayfs does without.
+
+Held by the virtiofs server's unit tests (`what_the_host_cannot_hold_is_kept_beside_it`),
+tests/containers.rs (an overlay on a volume, its kernel's log clean) and tests/buildx.rs.
+
+### D173. Compose projects through the Engine API
+
+Agent stacks are written as Compose files: an agent, its MCP servers, a database, a
+store. With `DOCKER_HOST` at shards' socket, `docker compose` (Docker's own client,
+unchanged; v5.1.0 tested) makes each service a microVM. Most of it is a control surface,
+given by D170's calls. What a project gains, each for the microVM:
+
+- **Each service its own kernel.** A service is a microVM, never a process on a kernel it
+  shares with the rest of the project and the host. Its project's networks are closed to
+  all but their members, who reach each other by service name (D46), where Docker's
+  reach the internet unless `internal`. Its volumes are served by its run's share process
+  (D38). Its secrets and configs are written as Compose writes them, packed into the
+  microVM by its init (D170).
+- **What Compose asks, kept.** Held by tests/compose.rs with Compose's own client:
+  - `up -d --wait` with `service_healthy` and `service_completed_successfully`;
+    `up --exit-code-from`, attached;
+  - `ps`, `exec` by service name, `logs`, `cp` in and out of a named volume, `port` (the
+    host reaches it there), `run --rm` and its status, `stop`, `start`, `restart`,
+    `pause`, `unpause`, `top`;
+  - profiles, replicas, `network_mode: service:`, `environment` and `env_file`, secrets
+    from a file and from the environment, configs of their own content, `read_only` with
+    a `tmpfs`, `init`, `hostname`;
+  - `build` with the API's first builder (where buildx is absent, or with
+    `DOCKER_BUILDKIT=0`), and `down -v --rmi local`.
+- **A container's events carry its labels**, as dockerd's do (daemon/events.go,
+  LogContainerEventWithAttributes: copyAttributes, then image and name). They carried
+  none, so `docker compose up`, attached, never heard its services end (its monitor
+  follows its project's label: `label=com.docker.compose.project=P`) and waited for
+  ever, and `docker events --filter label=…` matched nothing.
+- **An exec joins a workload that nests its own cgroups.** A nested runtime (BuildKit's
+  buildkitd, Docker in Docker) moves itself into a cgroup below its own and enables
+  controllers for that one's children. cgroup v2 then keeps every process out of its own
+  (no internal processes), and an exec failed with EBUSY. It now joins the cgroup the
+  workload's process is in, as runc's exec joins container init's
+  (libcontainer/process_linux.go, addIntoCgroupV2; runc#2356), within the workload's own
+  alone.
+- **Builds through buildx.** Where buildx is installed, Compose builds with `buildx
+  bake`, and buildx gives a non-dockerd engine a BuildKit of its own: moby/buildkit as a
+  privileged container (its docker-container driver), which in shards is a microVM. On
+  the default bridge, default deny gives it no way out. With `--driver-opt network=host`
+  (D124) it builds, since D174 gave its snapshots overlays on its state volume. The
+  engine's own BuildKit API (buildx's docker driver: `/session` and `/grpc`), which
+  would need no builder of buildx's, is a slice of its own.
+
+Held by tests/compose.rs (three projects), tests/engine.rs (a container's events by its
+label) and tests/containers.rs (an exec into a workload that nests its cgroups).
 
 ### D172. Images found in registries: `shards search image`, and `GET /images/search`
 

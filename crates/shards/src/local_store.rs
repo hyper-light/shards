@@ -162,7 +162,8 @@ fn engine_id(socket: &Path, named: &str) -> Result<Option<String>, String> {
         )
         .map_err(|e| e.to_string())?;
     let mut answer = Vec::new();
-    Read::read_to_end(&mut (&stream).take(1 << 20), &mut answer).map_err(|e| e.to_string())?;
+    Read::read_to_end(&mut shards_ipc::Polled(&stream).take(1 << 20), &mut answer)
+        .map_err(|e| e.to_string())?;
     let text = String::from_utf8_lossy(&answer);
     let (head, body) = text.split_once("\r\n\r\n").unwrap_or((&text, ""));
     match head.split(' ').nth(1).unwrap_or_default() {
@@ -243,7 +244,7 @@ pub fn publish(
         .and_then(|()| out.flush())
         .map_err(|e| e.to_string())?;
     drop(out);
-    let mut reader = BufReader::new(&stream);
+    let mut reader = BufReader::new(shards_ipc::Polled(&stream));
     let mut status = String::new();
     reader.read_line(&mut status).map_err(|e| e.to_string())?;
     let code = status.split(' ').nth(1).unwrap_or_default();
@@ -275,7 +276,7 @@ pub fn unpublish(socket: &Path, reference: &str) -> Result<(), String> {
         .write_all(format!("DELETE /images/{path} HTTP/1.1\r\nHost: docker\r\nUser-Agent: shards\r\nConnection: close\r\n\r\n").as_bytes())
         .map_err(|e| e.to_string())?;
     let mut status = String::new();
-    BufReader::new(&stream)
+    BufReader::new(shards_ipc::Polled(&stream))
         .read_line(&mut status)
         .map_err(|e| e.to_string())?;
     match status.split(' ').nth(1).unwrap_or_default() {

@@ -42,6 +42,10 @@ const S_IFCHR: u32 = libc::S_IFCHR as u32;
 #[allow(clippy::unnecessary_cast)]
 const S_IFBLK: u32 = libc::S_IFBLK as u32;
 #[allow(clippy::unnecessary_cast)]
+const S_IFIFO: u32 = libc::S_IFIFO as u32;
+#[allow(clippy::unnecessary_cast)]
+const S_IFSOCK: u32 = libc::S_IFSOCK as u32;
+#[allow(clippy::unnecessary_cast)]
 const S_ISUID: u32 = libc::S_ISUID as u32;
 #[allow(clippy::unnecessary_cast)]
 const S_ISGID: u32 = libc::S_ISGID as u32;
@@ -130,6 +134,11 @@ struct Node {
     dir: bool,
     parent: u64,
     name: CString,
+    /// The other names the guest has looked a file up by (its hard links), each its
+    /// directory and name: where the guest unlinks or renames away the one it was last
+    /// looked up by, as overlayfs does with the links of its shared whiteout, another of
+    /// them still reaches it ([`reach`]). None for a directory.
+    links: Vec<(u64, CString)>,
     lookups: u64,
     key: (u64, u64),
     /// The node of the volume it is in, in a join share ([`Server::joined`]); none
@@ -300,6 +309,7 @@ fn last() -> Errno {
 
 const EPERM: Errno = 1;
 const EIO: Errno = 5;
+const EEXIST: Errno = 17;
 const EXDEV: Errno = 18;
 const EMFILE: Errno = 24;
 #[cfg(target_os = "linux")]
@@ -356,17 +366,44 @@ impl<'a> Args<'a> {
     }
 }
 
-/// A guest's file owner, as kept on the host (Docker Desktop's attribute).
+/// A guest's file owner, as kept on the host (Docker Desktop's attribute), and what else
+/// of it the host cannot hold.
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 struct Owner {
     uid: u32,
     gid: u32,
-    /// The permission bits it was given, where the attribute holds them.
+    /// The permission bits it was given, where the attribute holds them: where they differ
+    /// from the host file's, which always lets its owner, the share process, reach it.
     mode: Option<u32>,
+    /// The kind of node it is, where the host made an empty regular file in its place (a
+    /// device node, which the host makes only for a privileged process): `S_IFCHR`,
+    /// `S_IFBLK`, `S_IFIFO` or `S_IFSOCK`, kept as `"kind"`.
+    kind: Option<u32>,
+    /// Its device number as the guest gave it (Linux's encoding), kept as `"rdev"`.
+    rdev: Option<u32>,
+}
+
+/// What a node is given as it is made: its permission bits, and, where the host makes
+/// another kind of file in its place, its kind and device number.
+#[derive(Clone, Copy, Default)]
+struct Kept {
+    mode: Option<u32>,
+    kind: Option<u32>,
+    rdev: Option<u32>,
+}
+
+impl Kept {
+    fn mode(mode: u32) -> Kept {
+        Kept {
+            mode: Some(mode & 0o7777),
+            ..Kept::default()
+        }
+    }
 }
 
 impl Owner {
-    /// `{"UID":U,"GID":G,"mode":M}`, M the mode's octal digits read as decimal.
+    /// `{"UID":U,"GID":G,"mode":M}`, M the mode's octal digits read as decimal; with
+    /// `"kind":K` (octal, as M) and `"rdev":R` where the node is not the host's kind.
     fn parse(bytes: &[u8]) -> Option<Owner> {
         let text = std::str::from_utf8(bytes).ok()?;
         let field = |key: &str| -> Option<u64> {
@@ -375,24 +412,38 @@ impl Owner {
             let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
             digits.parse().ok()
         };
+        let octal = |key: &str| field(key).and_then(|m| u32::from_str_radix(&m.to_string(), 8).ok());
         Some(Owner {
             uid: u32::try_from(field("UID")?).ok()?,
             gid: u32::try_from(field("GID")?).ok()?,
-            mode: field("mode").and_then(|m| u32::from_str_radix(&m.to_string(), 8).ok()),
+            mode: octal("mode"),
+            kind: octal("kind").filter(|k| matches!(*k, S_IFCHR | S_IFBLK | S_IFIFO | S_IFSOCK)),
+            rdev: field("rdev").and_then(|r| u32::try_from(r).ok()),
         })
     }
 
     fn encode(&self) -> String {
-        match self.mode {
-            Some(m) => format!(
-                "{{\"UID\":{},\"GID\":{},\"mode\":{:o}}}",
-                self.uid,
-                self.gid,
-                m & 0o7777
-            ),
-            None => format!("{{\"UID\":{},\"GID\":{}}}", self.uid, self.gid),
+        let mut out = format!("{{\"UID\":{},\"GID\":{}", self.uid, self.gid);
+        if let Some(m) = self.mode {
+            out.push_str(&format!(",\"mode\":{:o}", m & 0o7777));
         }
+        if let Some(k) = self.kind {
+            out.push_str(&format!(",\"kind\":{k:o},\"rdev\":{}", self.rdev.unwrap_or(0)));
+        }
+        out.push('}');
+        out
     }
+}
+
+/// The permission bits the host file is given for `perm`, which the guest asked for: the
+/// guest's, with its owner's access added (`rwx` for a directory, `rw` for anything else),
+/// so that the share process, which is the host file's owner and has no privilege over
+/// it, may always reach it. The guest's own are kept where they differ ([`Owner::mode`]),
+/// and the guest's kernel checks them (`default_permissions`). A directory overlayfs
+/// makes its work directory in with mode 0 (fs/overlayfs/super.c, ovl_workdir_create)
+/// is the guest root's to write in, and was not the host's.
+fn host_perm(perm: u32, dir: bool) -> u32 {
+    (perm & 0o7777) | if dir { 0o700 } else { 0o600 }
 }
 
 fn cstring(s: &str) -> Result<CString, Errno> {
@@ -623,9 +674,15 @@ impl Reply {
         );
         let host_mode = mode_of(st);
         let perm = owner.mode.unwrap_or(host_mode & 0o7777);
-        let mode = (host_mode & S_IFMT) | (perm & 0o7777);
+        // A node the host keeps as an empty regular file, as the guest made it.
+        let emulated = owner.kind.filter(|_| host_mode & S_IFMT == S_IFREG);
+        let mode = emulated.unwrap_or(host_mode & S_IFMT) | (perm & 0o7777);
         #[allow(clippy::useless_conversion, clippy::unnecessary_cast)]
-        let (nlink, rdev, blksize) = (st.st_nlink as u32, st.st_rdev as u64, st.st_blksize as u32);
+        let (nlink, host_rdev, blksize) = (st.st_nlink as u32, st.st_rdev as u64, st.st_blksize as u32);
+        let rdev = match emulated {
+            Some(_) => owner.rdev.unwrap_or(0),
+            None => host::encode_dev(host_rdev),
+        };
         let (dev, ino) = key(st);
         let _ = dev;
         self.u64(ino)
@@ -641,7 +698,7 @@ impl Reply {
             .u32(nlink)
             .u32(owner.uid)
             .u32(owner.gid)
-            .u32(host::encode_dev(rdev))
+            .u32(rdev)
             .u32(blksize)
             .u32(0)
     }
@@ -740,6 +797,7 @@ impl Server {
                 dir: true,
                 parent: ROOT,
                 name: CString::default(),
+                links: Vec::new(),
                 lookups: 1,
                 key: key(&st),
                 volume: NO_VOLUME,
@@ -811,6 +869,7 @@ impl Server {
                 dir: true,
                 parent: ROOT,
                 name: name.clone(),
+                links: Vec::new(),
                 lookups: 0,
                 key: (dev, ino),
                 volume: id,
@@ -1031,7 +1090,7 @@ impl Server {
                 if unsafe { libc::symlinkat(target.as_ptr(), dir, name.as_ptr()) } != 0 {
                     return Err(last());
                 }
-                self.made(s, nodeid, &name, caller, &mut r)?;
+                self.made(s, nodeid, &name, caller, Kept::default(), &mut r)?;
             }
             op::MKNOD => {
                 self.writable(s, nodeid)?;
@@ -1042,23 +1101,57 @@ impl Server {
                 let name = a.name()?;
                 let dir = dir_fd(s, nodeid)?;
                 let kind = mode & S_IFMT;
-                if kind == S_IFREG || kind == 0 {
-                    drop(open_at(
+                let perm = mode & 0o7777;
+                let empty = |perm: u32| {
+                    open_at(
                         dir,
                         &name,
                         libc::O_CREAT | libc::O_EXCL | libc::O_WRONLY,
-                        mode & 0o7777,
-                    )?);
+                        host_perm(perm, false),
+                    )
+                    .map(drop)
+                };
+                let kept = if kind == S_IFREG || kind == 0 {
+                    empty(perm)?;
+                    Kept::mode(perm)
                 } else {
+                    // A device node takes the guest's mode as it is: this process never
+                    // opens one (the guest's kernel opens a device itself), and none can hold
+                    // the owner's attribute (`open_meta`), so the owner's access a FIFO or a
+                    // socket keeps would only misstate its mode.
+                    let on_host = if matches!(kind, S_IFCHR | S_IFBLK) {
+                        perm
+                    } else {
+                        host_perm(perm, false)
+                    };
                     // SAFETY: mknodat(2) of a NUL-terminated name in a directory we hold.
-                    if unsafe {
-                        libc::mknodat(dir, name.as_ptr(), mode as libc::mode_t, host::decode_dev(rdev))
-                    } != 0
-                    {
-                        return Err(last());
+                    let made = unsafe {
+                        libc::mknodat(
+                            dir,
+                            name.as_ptr(),
+                            (kind | on_host) as libc::mode_t,
+                            host::decode_dev(rdev),
+                        )
+                    } == 0;
+                    match (made, last()) {
+                        (true, _) => Kept::mode(perm),
+                        // A node the host makes only for a privileged process (a device,
+                        // the whiteout overlayfs marks a removal with: one of 0/0): an
+                        // empty regular file, the guest's kind and number kept beside it,
+                        // as the guest sees it. The guest's kernel opens a device node
+                        // itself, never through the share.
+                        (false, EPERM) => {
+                            empty(0o600)?;
+                            Kept {
+                                mode: Some(perm),
+                                kind: Some(kind),
+                                rdev: Some(rdev),
+                            }
+                        }
+                        (false, e) => return Err(e),
                     }
-                }
-                self.made(s, nodeid, &name, caller, &mut r)?;
+                };
+                self.made(s, nodeid, &name, caller, kept, &mut r)?;
             }
             op::MKDIR => {
                 self.writable(s, nodeid)?;
@@ -1067,10 +1160,10 @@ impl Server {
                 let name = a.name()?;
                 let dir = dir_fd(s, nodeid)?;
                 // SAFETY: mkdirat(2) of a NUL-terminated name in a directory we hold.
-                if unsafe { libc::mkdirat(dir, name.as_ptr(), (mode & 0o7777) as libc::mode_t) } != 0 {
+                if unsafe { libc::mkdirat(dir, name.as_ptr(), host_perm(mode, true) as libc::mode_t) } != 0 {
                     return Err(last());
                 }
-                self.made(s, nodeid, &name, caller, &mut r)?;
+                self.made(s, nodeid, &name, caller, Kept::mode(mode), &mut r)?;
             }
             op::UNLINK | op::RMDIR => {
                 self.writable(s, nodeid)?;
@@ -1107,7 +1200,11 @@ impl Server {
                 };
                 let old = a.name()?;
                 let new = a.name()?;
-                rename(s, nodeid, &old, newdir, &new, flags)?;
+                if flags & linux::RENAME_WHITEOUT == 0 {
+                    rename(s, nodeid, &old, newdir, &new, flags)?;
+                } else {
+                    self.rename_whiteout(s, nodeid, &old, newdir, &new, flags, caller)?;
+                }
             }
             op::LINK => {
                 self.writable(s, nodeid)?;
@@ -1166,8 +1263,23 @@ impl Server {
                 room_for_handle(s)?;
                 let dir = dir_fd(s, nodeid)?;
                 let flags = host::open_flags(flags) | libc::O_CREAT;
-                let (fd, st) = open_regular(dir, &name, flags, mode & 0o7777)?;
-                let made = self.made(s, nodeid, &name, caller, &mut r)?;
+                // Made here, or found there: a file O_CREAT finds keeps its owner and mode.
+                let (fd, st, created) =
+                    match open_regular(dir, &name, flags | libc::O_EXCL, host_perm(mode, false)) {
+                        Ok((fd, st)) => (fd, st, true),
+                        Err(EEXIST) if flags & libc::O_EXCL == 0 => {
+                            let (fd, st) = open_regular(dir, &name, flags & !libc::O_CREAT, 0)?;
+                            (fd, st, false)
+                        }
+                        Err(e) => return Err(e),
+                    };
+                let made = if created {
+                    self.made(s, nodeid, &name, caller, Kept::mode(mode), &mut r)?
+                } else {
+                    let (id, found, owner) = lookup(s, nodeid, &name)?;
+                    r.entry(id, &found, owner);
+                    id
+                };
                 // Made with a mode that refuses its own handle (a read-only file opened to be
                 // filled, as tar, cp and git make one): none could be opened for it again, so
                 // this descriptor is its pin.
@@ -1300,12 +1412,16 @@ impl Server {
                 })?;
                 for (entry, next) in fits {
                     let bytes = entry.name.to_bytes();
+                    let mut kind = entry.kind;
                     if plus {
                         if bytes == b"." || bytes == b".." {
                             r.bytes(&[0u8; 128]);
                         } else {
                             match lookup(s, nodeid, &entry.name) {
                                 Ok((id, st, owner)) => {
+                                    if let Some(k) = owner.kind.filter(|_| mode_of(&st) & S_IFMT == S_IFREG) {
+                                        kind = dirent_kind(k);
+                                    }
                                     r.entry(id, &st, owner);
                                 }
                                 // Gone since the directory was read: an entry the guest
@@ -1315,11 +1431,16 @@ impl Server {
                                 }
                             }
                         }
+                    } else if kind == u32::from(libc::DT_REG)
+                        && let Some(k) = emulated_at(dir_fd(s, nodeid)?, &entry.name)
+                    {
+                        // Its kind, as overlayfs reads a whiteout's from a listing.
+                        kind = dirent_kind(k);
                     }
                     r.u64(entry.ino)
                         .u64(next)
                         .u32(u32::try_from(bytes.len()).unwrap_or(0))
-                        .u32(entry.kind)
+                        .u32(kind)
                         .bytes(bytes);
                     let pad = ((base + bytes.len() + 7) & !7) - base - bytes.len();
                     r.bytes([0u8; 8].get(..pad).unwrap_or_default());
@@ -1333,8 +1454,9 @@ impl Server {
                 if hidden(&name) {
                     return Err(ENODATA);
                 }
+                let host_name = host_xattr(&name).map_err(|_| ENODATA)?;
                 let fd = node_fd(s, nodeid)?;
-                let value = fget_xattr(fd.raw(), &name)?.ok_or(ENODATA)?;
+                let value = fget_xattr(fd.raw(), &host_name)?.ok_or(ENODATA)?;
                 if size == 0 {
                     r.u32(u32::try_from(value.len()).unwrap_or(u32::MAX)).u32(0);
                 } else if value.len() > size as usize {
@@ -1369,8 +1491,9 @@ impl Server {
                 if hidden(&name) {
                     return Err(EOPNOTSUPP);
                 }
+                let host_name = host_xattr(&name)?;
                 let fd = node_fd_to_change(s, nodeid)?;
-                fset_xattr(fd.raw(), &name, value, flags)?;
+                fset_xattr(fd.raw(), &host_name, value, flags)?;
             }
             op::REMOVEXATTR => {
                 self.writable(s, nodeid)?;
@@ -1378,13 +1501,14 @@ impl Server {
                 if hidden(&name) {
                     return Err(ENODATA);
                 }
+                let host_name = host_xattr(&name).map_err(|_| ENODATA)?;
                 let fd = node_fd_to_change(s, nodeid)?;
                 // SAFETY: fremovexattr(2) of a NUL-terminated name.
                 #[cfg(target_os = "macos")]
-                let rc = unsafe { libc::fremovexattr(fd.raw(), name.as_ptr(), 0) };
+                let rc = unsafe { libc::fremovexattr(fd.raw(), host_name.as_ptr(), 0) };
                 // SAFETY: as above.
                 #[cfg(target_os = "linux")]
-                let rc = unsafe { libc::fremovexattr(fd.raw(), name.as_ptr()) };
+                let rc = unsafe { libc::fremovexattr(fd.raw(), host_name.as_ptr()) };
                 if rc != 0 {
                     return Err(last());
                 }
@@ -1417,14 +1541,34 @@ impl Server {
 
     /// The node made as `name` in `parent` by `caller`: its owner kept where it is not
     /// root, or where `parent` passes its group on (setgid); then looked up.
+    /// Says of node `name`, just made in `parent` by `caller`, what the guest sees of it:
+    /// its owner, kept where it is not root's; and what `kept` says of it that the host
+    /// file does not, its mode where the host's differs, its kind where the host made a
+    /// regular file in its place.
     fn made(
         &self,
         s: &mut State,
         parent: u64,
         name: &CStr,
         caller: (u32, u32),
+        kept: Kept,
         r: &mut Reply,
     ) -> Result<u64, Errno> {
+        self.record(s, parent, name, caller, kept)?;
+        let (id, st, owner) = lookup(s, parent, name)?;
+        r.entry(id, &st, owner);
+        Ok(id)
+    }
+
+    /// [`made`](Self::made)'s record of node `name`, unanswered.
+    fn record(
+        &self,
+        s: &mut State,
+        parent: u64,
+        name: &CStr,
+        caller: (u32, u32),
+        kept: Kept,
+    ) -> Result<(), Errno> {
         let parent_st = node_stat(s, parent)?;
         let parent_owner = node_owner(s, parent, None)?;
         let gid = if mode_of(&parent_st) & S_ISGID != 0 {
@@ -1432,20 +1576,34 @@ impl Server {
         } else {
             caller.1
         };
-        if caller.0 != 0 || gid != 0 {
-            let dir = dir_fd(s, parent)?;
-            if let Ok(fd) = open_meta(dir, name, None) {
-                let owner = Owner {
-                    uid: caller.0,
-                    gid,
-                    mode: None,
-                };
-                let _ = fset_xattr(fd.raw(), &owner_xattr()?, owner.encode().as_bytes(), 0);
-            }
+        let dir = dir_fd(s, parent)?;
+        let mode = match stat_at(dir, name) {
+            Ok(host) => kept
+                .mode
+                .filter(|m| *m != mode_of(&host) & 0o7777 || kept.kind.is_some()),
+            Err(_) => kept.mode,
+        };
+        let owner = Owner {
+            uid: caller.0,
+            gid,
+            mode,
+            kind: kept.kind,
+            rdev: kept.rdev,
+        };
+        let recorded = if owner == Owner::default() {
+            Ok(())
+        } else {
+            open_meta(dir, name, None)
+                .and_then(|fd| fset_xattr(fd.raw(), &owner_xattr()?, owner.encode().as_bytes(), 0))
+        };
+        // A node made in another's place is the guest's kind only as recorded: unrecorded,
+        // it is no node of the guest's.
+        if let (Err(e), Some(_)) = (recorded, kept.kind) {
+            // SAFETY: unlinkat(2) of the NUL-terminated name just made in a directory we hold.
+            let _ = unsafe { libc::unlinkat(dir, name.as_ptr(), 0) };
+            return Err(e);
         }
-        let (id, st, owner) = lookup(s, parent, name)?;
-        r.entry(id, &st, owner);
-        Ok(id)
+        Ok(())
     }
 
     fn setattr(&self, s: &mut State, nodeid: u64, a: &mut Args<'_>) -> Result<(), Errno> {
@@ -1552,6 +1710,45 @@ impl Server {
         Ok(())
     }
 
+    /// renameat2(2)'s RENAME_WHITEOUT, which overlayfs requires of an upper layer it takes
+    /// for a remote one (fs/overlayfs/super.c, ovl_make_workdir: "upper fs missing required
+    /// features"), and which neither host gives an unprivileged process (macOS has none;
+    /// Linux's asks CAP_MKNOD): `old` renamed to `new`, then a whiteout made in its place,
+    /// as the guest's kernel makes one (a character device of 0:0, mode 0, the caller's),
+    /// kept as any device node the host cannot make is ([`Owner::kind`]). Where the
+    /// whiteout cannot be made, the rename is undone, so that the two happen together or
+    /// not at all, as on Linux.
+    #[allow(clippy::too_many_arguments)]
+    fn rename_whiteout(
+        &self,
+        s: &mut State,
+        olddir: u64,
+        old: &CStr,
+        newdir: u64,
+        new: &CStr,
+        flags: u32,
+        caller: (u32, u32),
+    ) -> Result<(), Errno> {
+        if flags & linux::RENAME_EXCHANGE != 0 {
+            return Err(EINVAL);
+        }
+        rename(s, olddir, old, newdir, new, flags & !linux::RENAME_WHITEOUT)?;
+        let dir = dir_fd(s, olddir)?;
+        let whiteout = Kept {
+            mode: Some(0),
+            kind: Some(S_IFCHR),
+            rdev: Some(0),
+        };
+        let made = open_at(dir, old, libc::O_CREAT | libc::O_EXCL | libc::O_WRONLY, 0o600)
+            .map(drop)
+            .and_then(|()| self.record(s, olddir, old, caller, whiteout));
+        if let Err(e) = made {
+            let _ = rename(s, newdir, new, olddir, old, linux::RENAME_NOREPLACE);
+            return Err(e);
+        }
+        Ok(())
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn chmod(
         &self,
@@ -1564,20 +1761,21 @@ impl Server {
         owner: &mut Owner,
         had: bool,
     ) -> Result<(), Errno> {
+        let host = host_perm(mode, own.is_some());
         // Its open handles a mode refuses keep a descriptor taken before it does (audit V09).
-        pin_before_chmod(s, nodeid, dir, name, mode);
+        pin_before_chmod(s, nodeid, dir, name, host);
         match own {
             Some(fd) => {
                 // SAFETY: fchmod(2) of a descriptor we hold.
-                if unsafe { libc::fchmod(fd, mode as libc::mode_t) } != 0 {
+                if unsafe { libc::fchmod(fd, host as libc::mode_t) } != 0 {
                     return Err(last());
                 }
             }
-            None => chmod_at(dir, name, mode)?,
+            None => chmod_at(dir, name, host)?,
         }
-        // The kept mode follows, where the attribute is kept.
-        if had {
-            owner.mode = Some(mode);
+        // The guest's mode is kept where the host's differs, or the attribute is kept.
+        if had || host != mode & 0o7777 {
+            owner.mode = Some(mode & 0o7777);
             let fd = node_fd_to_change(s, nodeid)?;
             fset_xattr(fd.raw(), &owner_xattr()?, owner.encode().as_bytes(), 0)?;
         }
@@ -1662,10 +1860,8 @@ fn node_fd_known(s: &mut State, nodeid: u64, known: Option<u32>) -> Result<NodeF
     if node.dir {
         return Ok(NodeFd::Borrowed(dir_fd(s, nodeid)?));
     }
-    let parent = node.parent;
-    let dir = dir_fd(s, parent)?;
-    let node = s.nodes.get(&nodeid).ok_or(ENOENT)?;
-    open_meta(dir, &node.name, known)
+    let (dir, name) = reach(s, nodeid)?;
+    open_meta(dir, &name, known)
 }
 
 /// A node's descriptor to change its attributes: a device node, which has none here, is
@@ -1825,8 +2021,36 @@ fn at(s: &mut State, nodeid: u64) -> Result<(RawFd, CString), Errno> {
     if node.dir {
         return Ok((dir_fd(s, nodeid)?, cstring(".")?));
     }
-    let (parent, name) = (node.parent, node.name.clone());
-    Ok((dir_fd(s, parent)?, name))
+    reach(s, nodeid)
+}
+
+/// File node `nodeid`'s directory and name: the name the guest last looked it up by; or,
+/// where that name no longer leads to it (unlinked or renamed away, as overlayfs unlinks
+/// the links of its shared whiteout), another of the names the guest knows it by that
+/// does, which becomes its own. Only a file the guest knows by several names is looked at
+/// here; a name that leads to no file of its number is left for the caller's call to say
+/// so (ENOENT).
+fn reach(s: &mut State, nodeid: u64) -> Result<(RawFd, CString), Errno> {
+    let node = s.nodes.get(&nodeid).ok_or(ENOENT)?;
+    let (parent, name, own) = (node.parent, node.name.clone(), node.key);
+    let links = node.links.clone();
+    let dir = dir_fd(s, parent)?;
+    if links.is_empty() || stat_at(dir, &name).is_ok_and(|st| key(&st) == own) {
+        return Ok((dir, name));
+    }
+    for (i, (p, n)) in links.iter().enumerate() {
+        let Ok(d) = dir_fd(s, *p) else {
+            continue;
+        };
+        if stat_at(d, n).is_ok_and(|st| key(&st) == own) {
+            if let Some(node) = s.nodes.get_mut(&nodeid) {
+                node.links.remove(i);
+                (node.parent, node.name) = (*p, n.clone());
+            }
+            return Ok((d, n.clone()));
+        }
+    }
+    Ok((dir, name))
 }
 
 fn node_stat(s: &mut State, nodeid: u64) -> Result<libc::stat, Errno> {
@@ -1834,10 +2058,8 @@ fn node_stat(s: &mut State, nodeid: u64) -> Result<libc::stat, Errno> {
     if node.dir {
         return stat_fd(dir_fd(s, nodeid)?);
     }
-    let parent = node.parent;
-    let dir = dir_fd(s, parent)?;
-    let node = s.nodes.get(&nodeid).ok_or(ENOENT)?;
-    stat_at(dir, &node.name)
+    let (dir, name) = reach(s, nodeid)?;
+    stat_at(dir, &name)
 }
 
 /// `name` in directory node `parent`: its node, counted once more and known by this name
@@ -1866,7 +2088,15 @@ fn lookup(s: &mut State, parent: u64, name: &CStr) -> Result<(u64, libc::stat, O
             if let Some(n) = s.nodes.get_mut(&id) {
                 n.lookups = n.lookups.saturating_add(1);
                 if !fixed {
-                    (n.parent, n.name, n.dir) = (parent, name.to_owned(), is_dir(&st));
+                    let was = (n.parent, std::mem::replace(&mut n.name, name.to_owned()));
+                    (n.parent, n.dir) = (parent, is_dir(&st));
+                    // The name it was known by is one of its links now, a file's.
+                    if n.dir {
+                        n.links.clear();
+                    } else if (was.0, was.1.as_c_str()) != (parent, name) && !n.links.contains(&was) {
+                        n.links.push(was);
+                    }
+                    n.links.retain(|(p, l)| (*p, l.as_c_str()) != (parent, name));
                 }
                 // Its inode a directory's no longer, deleted and its number taken again: the
                 // descriptor held is that directory's.
@@ -1884,6 +2114,7 @@ fn lookup(s: &mut State, parent: u64, name: &CStr) -> Result<(u64, libc::stat, O
                     dir: is_dir(&st),
                     parent,
                     name: name.to_owned(),
+                    links: Vec::new(),
                     lookups: 1,
                     key: k,
                     volume,
@@ -2477,6 +2708,13 @@ fn rename(s: &mut State, olddir: u64, old: &CStr, newdir: u64, new: &CStr, flags
         } else if exchange && node.parent == newdir && node.name.as_c_str() == new {
             (node.parent, node.name) = (olddir, old.to_owned());
         }
+        for link in &mut node.links {
+            if link.0 == olddir && link.1.as_c_str() == old {
+                *link = (newdir, new.to_owned());
+            } else if exchange && link.0 == newdir && link.1.as_c_str() == new {
+                *link = (olddir, old.to_owned());
+            }
+        }
     }
     Ok(())
 }
@@ -2524,6 +2762,65 @@ fn hidden(name: &CStr) -> bool {
     n == OWNER_XATTR.as_bytes() || n.strip_prefix(b"user.") == Some(OWNER_XATTR.as_bytes())
 }
 
+/// A listing's `d_type` of a node of kind `kind` (`S_IFCHR` and the rest).
+fn dirent_kind(kind: u32) -> u32 {
+    u32::from(match kind {
+        S_IFCHR => libc::DT_CHR,
+        S_IFBLK => libc::DT_BLK,
+        S_IFIFO => libc::DT_FIFO,
+        S_IFSOCK => libc::DT_SOCK,
+        _ => libc::DT_REG,
+    })
+}
+
+/// The kind of node `name` in `dir` is to the guest where the host keeps an empty
+/// regular file in its place ([`Owner::kind`]): none for any other. Only an empty file
+/// the share made so (`0600`) is asked of its attribute, so that a listing reads no
+/// attribute of the rest.
+fn emulated_at(dir: RawFd, name: &CStr) -> Option<u32> {
+    let st = stat_at(dir, name).ok()?;
+    if mode_of(&st) & S_IFMT != S_IFREG || st.st_size != 0 || mode_of(&st) & 0o7777 != 0o600 {
+        return None;
+    }
+    let fd = open_meta(dir, name, Some(S_IFREG)).ok()?;
+    let owner = fget_xattr(fd.raw(), &owner_xattr().ok()?).ok().flatten()?;
+    Owner::parse(&owner)?.kind
+}
+
+/// Where the host keeps a guest's extended attribute `name`: under its own name on macOS,
+/// which keeps no namespaces; and on Linux, where only a privileged process sets one in
+/// `trusted.` or `security.` (xattr(7)), those under `user.shards.` (overlayfs keeps its
+/// `trusted.overlay.` ones on its upper directory). The guest's names in `user.` are its
+/// own; `user.shards.` is the server's, as the owner's attribute is.
+fn host_xattr(name: &CStr) -> Result<CString, Errno> {
+    let n = name.to_bytes();
+    if n.starts_with(PRIVATE_XATTR) {
+        return Err(EOPNOTSUPP);
+    }
+    #[cfg(target_os = "linux")]
+    if n.starts_with(b"trusted.") || n.starts_with(b"security.") {
+        let mut host = PRIVATE_XATTR.to_vec();
+        host.extend_from_slice(n);
+        return CString::new(host).map_err(|_| EINVAL);
+    }
+    Ok(name.to_owned())
+}
+
+/// The prefix the host keeps the guest's `trusted.` and `security.` attributes under on
+/// Linux ([`host_xattr`]), which a guest's own names may not take.
+const PRIVATE_XATTR: &[u8] = b"user.shards.";
+
+/// The guest's name for a host attribute `host`: [`host_xattr`]'s, turned back; none for
+/// one the guest does not see (the server's own, and another of `user.shards.`'s).
+fn guest_xattr(host: &[u8]) -> Option<&[u8]> {
+    match host.strip_prefix(PRIVATE_XATTR) {
+        #[cfg(target_os = "linux")]
+        Some(rest) if rest.starts_with(b"trusted.") || rest.starts_with(b"security.") => Some(rest),
+        Some(_) => None,
+        None => Some(host),
+    }
+}
+
 /// The names of `fd`'s attributes the guest may see: those in a Linux namespace, but for
 /// the server's own.
 fn list_xattr(fd: RawFd) -> Result<Vec<u8>, Errno> {
@@ -2550,12 +2847,15 @@ fn list_xattr(fd: RawFd) -> Result<Vec<u8>, Errno> {
         .split(|&b| b == 0)
         .filter(|n| !n.is_empty())
     {
+        let ours =
+            name == OWNER_XATTR.as_bytes() || name.strip_prefix(b"user.") == Some(OWNER_XATTR.as_bytes());
+        let Some(name) = guest_xattr(name).filter(|_| !ours) else {
+            continue;
+        };
         let linux = [&b"user."[..], b"trusted.", b"security.", b"system."]
             .iter()
             .any(|p| name.starts_with(p));
-        let ours =
-            name == OWNER_XATTR.as_bytes() || name.strip_prefix(b"user.") == Some(OWNER_XATTR.as_bytes());
-        if linux && !ours {
+        if linux {
             out.extend_from_slice(name);
             out.push(0);
         }
@@ -3625,9 +3925,154 @@ mod tests {
         assert_eq!(write(&s, node, fh, 6, b" twice"), 0);
         release(&s, node, fh);
         assert_eq!(std::fs::read(path.join("ro")).unwrap(), b"filled twice");
+        // The host's file lets its owner, the share process, write it; the guest sees the
+        // mode it made it with (D174).
         let mode = std::fs::metadata(path.join("ro")).unwrap().permissions().mode();
-        assert_eq!(mode & 0o777, 0o444);
+        assert_eq!(mode & 0o777, 0o644);
+        let (_, entry) = answer(&s, &req(op::LOOKUP, ROOT, 0, &name("ro")));
+        assert_eq!(
+            u32::from_le_bytes(entry[40 + 60..40 + 64].try_into().unwrap()) & 0o7777,
+            0o444
+        );
         assert!(s.state.lock().unwrap().pins.is_empty(), "let go with its handle");
+        let _ = std::fs::remove_dir_all(&path);
+    }
+
+    /// What the guest makes that the host cannot hold is kept beside it (D174), as a
+    /// runtime nested in the guest (overlayfs, on a share as its upper layer) needs it:
+    /// - a directory of mode 0, as overlayfs makes its work directory, is the guest's mode
+    ///   0 and the host's 0700, its owner's to reach, and the guest root makes one in it;
+    /// - a device node the host makes only for a privileged process, overlayfs's whiteout
+    ///   of 0/0 among them, is to the guest the node it made, looked up and listed so; the
+    ///   host keeps an empty regular file in its place where it could make no device;
+    /// - a mode taken away leaves the host's owner its access, and the guest the mode;
+    /// - an attribute of `trusted.`, which only a privileged process sets on Linux, is
+    ///   kept, read and listed back under its own name.
+    #[test]
+    fn what_the_host_cannot_hold_is_kept_beside_it() {
+        use std::os::unix::fs::{FileTypeExt as _, PermissionsExt as _};
+        let (path, s) = dir();
+        let mode_in = |entry: &[u8]| u32::from_le_bytes(entry[40 + 60..40 + 64].try_into().unwrap());
+        let rdev_in = |entry: &[u8]| u32::from_le_bytes(entry[40 + 76..40 + 80].try_into().unwrap());
+        let node_in = |entry: &[u8]| u64::from_le_bytes(entry[0..8].try_into().unwrap());
+        let fields = |v: &[u32]| v.iter().flat_map(|v| v.to_le_bytes()).collect::<Vec<u8>>();
+        let host_mode = |name: &str| {
+            std::fs::symlink_metadata(path.join(name))
+                .unwrap()
+                .permissions()
+                .mode()
+        };
+        // A directory of mode 0, and one made in it by the guest's root.
+        let mut mkdir = fields(&[0, 0]);
+        mkdir.extend(name("work"));
+        let (e, entry) = answer(&s, &req(op::MKDIR, ROOT, 0, &mkdir));
+        assert_eq!(e, 0);
+        assert_eq!(mode_in(&entry), S_IFDIR, "mode 0 to the guest");
+        assert_eq!(host_mode("work") & 0o777, 0o700);
+        let mut inner = fields(&[0, 0]);
+        inner.extend(name("work"));
+        assert_eq!(answer(&s, &req(op::MKDIR, node_in(&entry), 0, &inner)).0, 0);
+        // A whiteout, and a device with a number (Linux's encoding of 1:3).
+        for (file, rdev) in [("gone", 0u32), ("null", 0x103)] {
+            let mut mknod = fields(&[S_IFCHR | 0o644, rdev, 0, 0]);
+            mknod.extend(name(file));
+            let (e, entry) = answer(&s, &req(op::MKNOD, ROOT, 0, &mknod));
+            assert_eq!(e, 0, "{file}");
+            assert_eq!(
+                (mode_in(&entry), rdev_in(&entry)),
+                (S_IFCHR | 0o644, rdev),
+                "{file}"
+            );
+            let (_, looked) = answer(&s, &req(op::LOOKUP, ROOT, 0, &name(file)));
+            assert_eq!((mode_in(&looked), rdev_in(&looked)), (S_IFCHR | 0o644, rdev));
+            // An unprivileged host keeps an empty regular file; a privileged one, the device.
+            let kept = std::fs::symlink_metadata(path.join(file)).unwrap().file_type();
+            assert!(kept.is_file() || kept.is_char_device(), "{file}: {kept:?}");
+        }
+        // Listed as the device it is, as overlayfs finds whiteouts in a listing.
+        let (_, open) = answer(&s, &req(op::OPENDIR, ROOT, 0, &[0u8; 8]));
+        let fh = u64::from_le_bytes(open[0..8].try_into().unwrap());
+        let (e, listed) = answer(&s, &req(op::READDIR, ROOT, 0, &readdir(fh, 0, 4096)));
+        assert_eq!(e, 0);
+        let mut kinds = Vec::new();
+        let mut rest = &listed[..];
+        while !rest.is_empty() {
+            let len = u32::from_le_bytes(rest[16..20].try_into().unwrap()) as usize;
+            let kind = u32::from_le_bytes(rest[20..24].try_into().unwrap());
+            kinds.push((String::from_utf8(rest[24..24 + len].to_vec()).unwrap(), kind));
+            rest = &rest[(24 + len + 7) & !7..];
+        }
+        assert!(
+            kinds.contains(&("gone".into(), u32::from(libc::DT_CHR))),
+            "{kinds:?}"
+        );
+        // A mode taken away: the host's owner keeps its access, the guest has the mode.
+        std::fs::write(path.join("file"), "f").unwrap();
+        let (_, entry) = answer(&s, &req(op::LOOKUP, ROOT, 0, &name("file")));
+        let file = node_in(&entry);
+        let (e, changed) = answer(&s, &req(op::SETATTR, file, 0, &setattr(fattr::MODE, 0)));
+        assert_eq!(e, 0);
+        // fuse_attr_out: 16 bytes before its attribute, where an entry has 40.
+        let changed_mode = u32::from_le_bytes(changed[16 + 60..16 + 64].try_into().unwrap());
+        assert_eq!(changed_mode & 0o7777, 0, "the guest's mode");
+        assert_eq!(host_mode("file") & 0o777, 0o600, "the host's");
+        // An attribute of trusted., set, read and listed back.
+        let mut set = fields(&[1, 0]);
+        set.extend(name("trusted.overlay.opaque"));
+        set.push(b'y');
+        assert_eq!(answer(&s, &req(op::SETXATTR, file, 0, &set)).0, 0);
+        let mut get = fields(&[64, 0]);
+        get.extend(name("trusted.overlay.opaque"));
+        assert_eq!(answer(&s, &req(op::GETXATTR, file, 0, &get)), (0, b"y".to_vec()));
+        let (e, names) = answer(&s, &req(op::LISTXATTR, file, 0, &fields(&[4096, 0])));
+        assert_eq!((e, names.as_slice()), (0, &b"trusted.overlay.opaque\0"[..]));
+        // The server's own names are none of the guest's to set.
+        let mut ours = fields(&[1, 0]);
+        ours.extend(name("user.shards.trusted.x"));
+        ours.push(b'y');
+        assert_eq!(answer(&s, &req(op::SETXATTR, file, 0, &ours)).0, -EOPNOTSUPP);
+        // overlayfs's shared whiteout: one made in its work directory, linked under another
+        // name there, the link renamed into the upper directory, and looked up there.
+        let mut wdir = fields(&[0o755, 0]);
+        wdir.extend(name("wd"));
+        let (_, wd) = answer(&s, &req(op::MKDIR, ROOT, 0, &wdir));
+        let wd = node_in(&wd);
+        let mut shared = fields(&[S_IFCHR, 0, 0, 0]);
+        shared.extend(name("#1"));
+        let (e, made) = answer(&s, &req(op::MKNOD, wd, 0, &shared));
+        assert_eq!(e, 0);
+        let mut link = node_in(&made).to_le_bytes().to_vec();
+        link.extend(name("#2"));
+        let (e, linked) = answer(&s, &req(op::LINK, wd, 0, &link));
+        assert_eq!(e, 0, "a link of a whiteout");
+        assert_eq!((mode_in(&linked), rdev_in(&linked)), (S_IFCHR, 0));
+        let mut into = ROOT.to_le_bytes().to_vec();
+        into.extend(fields(&[0, 0]));
+        into.extend(name("#2"));
+        into.extend(name("hidden"));
+        assert_eq!(answer(&s, &req(op::RENAME2, wd, 0, &into)).0, 0);
+        let (e, found) = answer(&s, &req(op::LOOKUP, ROOT, 0, &name("hidden")));
+        assert_eq!((e, mode_in(&found), rdev_in(&found)), (0, S_IFCHR, 0));
+        // The name the guest last knew it by unlinked, it is reached by another of its
+        // names: looked at, and linked again, as overlayfs links its shared whiteout for
+        // each removal and unlinks the links as it cleans a directory.
+        let shared_node = node_in(&made);
+        assert_eq!(answer(&s, &req(op::UNLINK, ROOT, 0, &name("hidden"))).0, 0);
+        let (e, attr) = answer(&s, &req(op::GETATTR, shared_node, 0, &[0u8; 16]));
+        let attr_mode = u32::from_le_bytes(attr[16 + 60..16 + 64].try_into().unwrap());
+        assert_eq!((e, attr_mode), (0, S_IFCHR), "reached by another name");
+        let mut again = shared_node.to_le_bytes().to_vec();
+        again.extend(name("#3"));
+        assert_eq!(answer(&s, &req(op::LINK, wd, 0, &again)).0, 0, "linked again");
+        // RENAME_WHITEOUT: the file renamed, a whiteout of mode 0 in its place.
+        let mut whiteout = ROOT.to_le_bytes().to_vec();
+        whiteout.extend(fields(&[linux::RENAME_WHITEOUT, 0]));
+        whiteout.extend(name("file"));
+        whiteout.extend(name("moved"));
+        assert_eq!(answer(&s, &req(op::RENAME2, ROOT, 0, &whiteout)).0, 0);
+        assert_eq!(std::fs::read(path.join("moved")).unwrap(), b"f");
+        let (_, left) = answer(&s, &req(op::LOOKUP, ROOT, 0, &name("file")));
+        assert_eq!((mode_in(&left), rdev_in(&left)), (S_IFCHR, 0));
         let _ = std::fs::remove_dir_all(&path);
     }
 

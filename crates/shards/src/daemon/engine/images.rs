@@ -478,7 +478,7 @@ impl<D: Disk> Daemon<D> {
             return Done::Close;
         }
         let _ = self.ask_command_with(threads, &argv, &[conn.as_fd()]);
-        let _ = conn.shutdown(std::net::Shutdown::Both);
+        shards_ipc::end(conn);
         Done::Close
     }
 

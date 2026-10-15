@@ -10215,13 +10215,35 @@ fn agents_out_of_memory_end_whole_and_spare_the_run() {
     // that snapshot, and signals the command; its survival proves it was spared.
     // `innocent` (the holding agent z) still there means z was spared. The command's
     // survival and the agents' own output are the rest of the proof.
-    let run = |name: &str, tag: &str, agents: &str, said: &str| -> (Vec<String>, String) {
+    //
+    // An agent whose peer is ended goes on unbusied: its server, which polled the peer's
+    // closed channel and saw POLLHUP at once each time, spun, and its accept(2) of nothing
+    // each turn took z's kernel memory past the agents' share within seconds, which ended z
+    // in about one run in a hundred. Where a server outlives the filler, the host looks 3 s
+    // longer, and the server's CPU time over them must stay under a second (`spun`).
+    let run = |name: &str, tag: &str, agents: &str, said: &str| -> (Vec<String>, String, Option<u64>) {
         let ctx = context(&format!("oom-ctx-{tag}"), &format!("FROM {image}\n"));
         std::fs::write(ctx.join("Agentfile"), format!("FROM {image}\n{agents}")).unwrap();
         let built = shards(&["build", "-t", tag, ctx.to_str().unwrap()]);
         assert_eq!(built.status, Some(0), "{}", built.stderr);
         let mut told = false;
         let mut ended: Vec<String> = Vec::new();
+        // ps's TIME, [DD-]HH:MM:SS, in seconds.
+        let seconds = |t: &str| -> Option<u64> {
+            let (days, clock) = t.split_once('-').map_or(("0", t), |(d, c)| (d, c));
+            let mut parts = clock.split(':').map(|p| p.parse::<u64>().ok());
+            let (h, m, s) = (parts.next()??, parts.next()??, parts.next()??);
+            Some(days.parse::<u64>().ok()? * 86_400 + h * 3_600 + m * 60 + s)
+        };
+        // The surviving server's CPU time as the filler was found gone, and the look 3 s on.
+        let mut gone: Option<(std::time::Instant, Option<u64>)> = None;
+        let mut spun: Option<u64> = None;
+        let server_time = |rows: &[Vec<String>]| {
+            rows.iter()
+                .find(|r| r.last().is_some_and(|c| c == "shards-server"))
+                .and_then(|r| r.first())
+                .and_then(|t| seconds(t))
+        };
         let mut ready = |rows: &[Vec<String>]| {
             let comms: Vec<&str> = rows.iter().filter_map(|r| r.last().map(String::as_str)).collect();
             // Each call's rows are a look taken after the call before it returned: once the
@@ -10229,7 +10251,18 @@ fn agents_out_of_memory_end_whole_and_spare_the_run() {
             // A look before the filler forked lists neither either, nor z as `innocent`
             // where z had yet to name itself (CI run 38264181419).
             if told && !(comms.contains(&"filling") || comms.contains(&"held")) {
-                ended = comms.iter().map(|c| (*c).to_string()).collect();
+                let (at, before) = *gone.get_or_insert_with(|| {
+                    ended = comms.iter().map(|c| (*c).to_string()).collect();
+                    (std::time::Instant::now(), server_time(rows))
+                });
+                let Some(before) = before else {
+                    return true;
+                };
+                if at.elapsed() < std::time::Duration::from_secs(3) {
+                    return false;
+                }
+                // Gone since, with z, its server is past saying: z was ended.
+                spun = server_time(rows).map(|after| after.saturating_sub(before));
                 return true;
             }
             if !told {
@@ -10244,7 +10277,7 @@ fn agents_out_of_memory_end_whole_and_spare_the_run() {
             &env,
             &["run", "--rm", "--name", name, "-m", "128m", tag, "outlive", "64"],
             name,
-            "comm",
+            "time,comm",
             &mut ready,
             TIMEOUT,
         );
@@ -10266,17 +10299,21 @@ fn agents_out_of_memory_end_whole_and_spare_the_run() {
                 .max()
                 .unwrap_or(0)
         };
+        // And what init said as it ended each, what each held among it: kept in the test's
+        // output whether it passes or not, for the share and the holdings of the runs that
+        // pass to be weighed against those of one that does not.
+        let ends: Vec<&str> = all.lines().filter(|l| l.contains("shards-init: ended")).collect();
         eprintln!(
-            "{tag}: x {} y {} z {}; ended-with {ended:?}",
+            "{tag}: x {} y {} z {}; ended-with {ended:?}; its server spun {spun:?} s; {ends:?}",
             filled("x"),
             filled("y"),
             filled("z")
         );
-        (ended, all)
+        (ended, all, spun)
     };
     // x ends at its own limit, where its memory is its resident 9 MiB and its scratch, and
     // init says so.
-    let (_, all) = run(
+    let (_, all, _) = run(
         "aw-oom-x",
         "oom-x:1",
         &x,
@@ -10289,7 +10326,7 @@ fn agents_out_of_memory_end_whole_and_spare_the_run() {
         .max()
         .unwrap_or(0);
     assert!(x_filled > 16 && x_filled < 32, "x filled {x_filled} MiB:\n{all}");
-    let (ended, all) = run(
+    let (ended, all, spun) = run(
         "aw-oom-yz",
         "oom-yz:1",
         &yz,
@@ -10312,6 +10349,11 @@ fn agents_out_of_memory_end_whole_and_spare_the_run() {
     assert!(
         !all.lines().any(|l| l.starts_with("[agent z] shards-init: ended")),
         "z was ended:\n{all}"
+    );
+    // z's server, y's channel closed, waited rather than spun: under a second of CPU in 3.
+    assert!(
+        spun.is_some_and(|s| s < 1),
+        "z's server spun {spun:?} s of 3 once y was ended:\n{all}"
     );
 }
 

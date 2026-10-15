@@ -192,7 +192,7 @@ impl Read for Conn {
         match self {
             Conn::Tcp(c) => c.read(buf),
             Conn::Tls(s) => s.read(buf),
-            Conn::Unix(s) => s.read(buf),
+            Conn::Unix(s) => shards_ipc::read(&*s, buf),
         }
     }
 }

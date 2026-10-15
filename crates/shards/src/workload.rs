@@ -11,7 +11,7 @@ use std::fs;
 #[cfg(unix)]
 use std::io::{self, Read, Write};
 #[cfg(unix)]
-use std::os::fd::AsRawFd;
+use std::os::fd::{AsFd, AsRawFd};
 #[cfg(unix)]
 use std::os::unix::net::UnixStream;
 #[cfg(unix)]
@@ -522,7 +522,7 @@ pub fn serve(
     let mut log = log;
     // One reader for all the guest says on the run's connection, so that what it read
     // past one part is the next part's (review 8.20's reads, which take what has come).
-    let mut reader = io::BufReader::with_capacity(run::BUFFERED, &conn);
+    let mut reader = io::BufReader::with_capacity(run::BUFFERED, shards_ipc::Polled(&conn));
     let status = relay(&mut reader, timing, log.as_mut(), started, processes, host_net);
     if let Some(told) = told {
         told(&status);
@@ -580,7 +580,7 @@ pub fn serve(
     }
     // The guest powers off once the host closes the run connection: shutting it down
     // closes every copy.
-    let _ = conn.shutdown(std::net::Shutdown::Both);
+    shards_ipc::end(&conn);
     status
 }
 
@@ -589,7 +589,7 @@ pub fn serve(
 /// and stays out of the log, as dockerd keeps a failed start out of `docker logs`.
 #[cfg(unix)]
 fn relay(
-    conn: &mut io::BufReader<&UnixStream>,
+    conn: &mut io::BufReader<shards_ipc::Polled<&UnixStream>>,
     timing: &Timing,
     log: Option<&mut Logger>,
     started: Option<&(dyn Fn() + Sync)>,
@@ -606,7 +606,7 @@ fn relay(
 /// [`with_sink`].
 #[cfg(unix)]
 fn relay_frames(
-    conn: &mut io::BufReader<&UnixStream>,
+    conn: &mut io::BufReader<shards_ipc::Polled<&UnixStream>>,
     timing: &Timing,
     mut log: Option<&mut Sink<'_>>,
     started: Option<&(dyn Fn() + Sync)>,
@@ -759,7 +759,12 @@ fn send_layer(conn: &mut UnixStream, mut layer: fs::File) -> io::Result<()> {
 #[cfg(unix)]
 pub(crate) fn receive_layer(conn: &mut UnixStream, out: fs::File) -> io::Result<Option<u64>> {
     let reading = conn.try_clone()?;
-    receive_layer_from(conn, &mut io::BufReader::new(&reading), out, &mut |_, _| false)
+    receive_layer_from(
+        conn,
+        &mut io::BufReader::new(shards_ipc::Polled(&reading)),
+        out,
+        &mut |_, _| false,
+    )
 }
 
 /// [`receive_layer`], its frames read from `reader`, `conn`'s; each other frame the guest
@@ -1100,12 +1105,12 @@ fn exec_session(to: &'static ToGuest, req: &mut ExecRequest) -> Result<u8, Strin
     // A detached exec attaches nothing, `-i` or not (docker/cli exec.go, parseExec).
     if req.interactive && !req.detached {
         let mut input = conn.try_clone().map_err(|e| e.to_string())?;
-        let mut stdin = req.stdin.try_clone().map_err(|e| e.to_string())?;
+        let stdin = req.stdin.try_clone().map_err(|e| e.to_string())?;
         std::thread::Builder::new()
             .name("exec-stdin".into())
             .spawn(move || {
                 let mut buf = vec![0u8; 64 * 1024];
-                while let Ok(n @ 1..) = stdin.read(&mut buf) {
+                while let Ok(n @ 1..) = shards_ipc::read(&stdin, &mut buf) {
                     if send(&mut input, kind::STDIN, buf.get(..n).unwrap_or_default()).is_err() {
                         return;
                     }
@@ -1143,7 +1148,7 @@ fn exec_session(to: &'static ToGuest, req: &mut ExecRequest) -> Result<u8, Strin
     }
     let mut frame = Vec::new();
     let mut not_started: Option<(u8, String)> = None;
-    let mut conn = io::BufReader::with_capacity(run::BUFFERED, &conn);
+    let mut conn = io::BufReader::with_capacity(run::BUFFERED, shards_ipc::Polled(&conn));
     loop {
         let mut h = [0u8; run::HEADER];
         conn.read_exact(&mut h)
@@ -1369,7 +1374,7 @@ pub fn end_joiner(id: u32, status: u8) {
     };
     for a in attached {
         let _ = shards_ipc::send(&a.client, shards_ipc::kind::EXIT, &[status], &[]);
-        let _ = a.client.shutdown(std::net::Shutdown::Both);
+        shards_ipc::end(&a.client);
     }
 }
 
@@ -1428,12 +1433,11 @@ pub fn join(
     // without `-i`.
     let once = spec.tty.is_none();
     if interactive && !detached {
-        let mut stdin = stdin;
         std::thread::Builder::new()
             .name("join-stdin".into())
             .spawn(move || {
                 let mut buf = vec![0u8; 64 * 1024];
-                while let Ok(n @ 1..) = stdin.read(&mut buf) {
+                while let Ok(n @ 1..) = shards_ipc::read(&stdin, &mut buf) {
                     if send(&mut input, kind::STDIN, buf.get(..n).unwrap_or_default()).is_err() {
                         return;
                     }
@@ -1470,7 +1474,7 @@ pub fn join(
     }
     let mut frame = Vec::new();
     let mut not_run: Option<String> = None;
-    let mut conn = io::BufReader::with_capacity(run::BUFFERED, &stream);
+    let mut conn = io::BufReader::with_capacity(run::BUFFERED, shards_ipc::Polled(&stream));
     let (ended, lost, dropped) = with_sink(log.as_mut(), |mut log| {
         loop {
             let mut h = [0u8; run::HEADER];
@@ -1537,7 +1541,7 @@ pub fn join(
 /// workload's ([`STDIN_ONCE`]).
 #[cfg(unix)]
 fn forward_stdin() {
-    copy_stdin(&mut io::stdin().lock());
+    copy_stdin(io::stdin());
     if STDIN_ONCE.load(Ordering::Relaxed) {
         close_stdin();
     }
@@ -1545,10 +1549,10 @@ fn forward_stdin() {
 
 /// Copies `from` to the workload's stdin until its end.
 #[cfg(unix)]
-fn copy_stdin(from: &mut impl Read) {
+fn copy_stdin(from: impl AsFd) {
     let mut buf = vec![0u8; 64 * 1024];
     loop {
-        match from.read(&mut buf) {
+        match shards_ipc::read(&from, &mut buf) {
             Ok(0) | Err(_) => return,
             Ok(n) => {
                 let data = buf.get(..n).unwrap_or_default();
@@ -1642,7 +1646,7 @@ pub fn attach(to: &'static ToGuest, req: AttachRequest) -> Result<(), String> {
     let id = NEXT.fetch_add(1, Ordering::Relaxed);
     let AttachRequest {
         client,
-        mut stdin,
+        stdin,
         stdout,
         stderr,
         reads_stdin,
@@ -1681,7 +1685,7 @@ pub fn attach(to: &'static ToGuest, req: AttachRequest) -> Result<(), String> {
         std::thread::Builder::new()
             .name("attached-stdin".into())
             .spawn(move || {
-                copy_stdin(&mut stdin);
+                copy_stdin(&stdin);
                 if STDIN_ONCE.load(Ordering::Relaxed) {
                     close_stdin();
                 }

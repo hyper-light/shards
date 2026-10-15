@@ -26,6 +26,9 @@ use common::{Run, TempDir, cannot_run_vms, guest_init, kernel, run_shards_env, s
 use serde_json::{Value, json};
 
 const TIMEOUT: Duration = Duration::from_secs(60);
+/// A client's call past this is taken for hung, and fails its test with what it said
+/// (`common::output_within`).
+const CLIENT: Duration = Duration::from_secs(600);
 
 /// `shards ARGS` in `home`, whose runs boot the test kernel and init.
 fn shards_in(home: &Path, args: &[&str]) -> Run {
@@ -841,6 +844,10 @@ fn a_container_is_made_started_waited_for_logged_and_removed() {
     let Some((home, image)) = home("eng-life") else {
         return;
     };
+    let since = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
     let mut api = Api::new(&home);
     let made = api.call(
         "POST",
@@ -918,6 +925,45 @@ fn a_container_is_made_started_waited_for_logged_and_removed() {
     assert_eq!(removed.status, 204, "{}", removed.text());
     let gone = api.call("GET", &format!("/containers/{id}/json"), None);
     assert_eq!(gone.status, 404, "{}", gone.text());
+    // Its events carry its labels, as dockerd's do: what a client that follows its own
+    // filters them by (Compose follows its project's).
+    let until = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+        + 1;
+    let events = api.call(
+        "GET",
+        &format!("/events?since={since}&until={until}&filters=%7B%22label%22%3A%5B%22k%3Dv%22%5D%7D"),
+        None,
+    );
+    assert_eq!(events.status, 200, "{}", events.text());
+    let said: Vec<(String, Value)> = events
+        .text()
+        .lines()
+        .map(|l| serde_json::from_str::<Value>(l).unwrap())
+        .map(|e| {
+            (
+                e["Action"].as_str().unwrap().to_string(),
+                e["Actor"]["Attributes"].clone(),
+            )
+        })
+        .collect();
+    let actions: Vec<&str> = said.iter().map(|(a, _)| a.as_str()).collect();
+    assert_eq!(
+        actions,
+        ["create", "start", "die", "destroy"],
+        "{}",
+        events.text()
+    );
+    for (action, attributes) in &said {
+        assert_eq!(
+            (&attributes["k"], &attributes["name"]),
+            (&json!("v"), &json!("life")),
+            "{action}: {attributes}"
+        );
+    }
+    assert_eq!(said[2].1["exitCode"], json!("0"));
 }
 
 /// `docker run`'s calls: a create, an attach to it before it starts, a wait for its next
@@ -1910,17 +1956,18 @@ fn the_docker_cli_runs_microvms_through_the_engine() {
     std::fs::create_dir_all(&no_helpers).unwrap();
     let host = format!("unix://{}", home.join("engine.sock").display());
     let docker_with = |args: &[&str], set: &[(&str, &str)]| {
-        let out = std::process::Command::new(&docker)
-            .args(args)
-            .env("DOCKER_HOST", &host)
-            .env("DOCKER_CONFIG", &config)
-            .env("PATH", &no_helpers)
-            .env_remove("DOCKER_CONTEXT")
-            .env("DOCKER_CLI_HINTS", "false")
-            .envs(set.iter().copied())
-            .stdin(std::process::Stdio::null())
-            .output()
-            .unwrap();
+        let out = common::output_within(
+            std::process::Command::new(&docker)
+                .args(args)
+                .env("DOCKER_HOST", &host)
+                .env("DOCKER_CONFIG", &config)
+                .env("PATH", &no_helpers)
+                .env_remove("DOCKER_CONTEXT")
+                .env("DOCKER_CLI_HINTS", "false")
+                .envs(set.iter().copied())
+                .stdin(std::process::Stdio::null()),
+            CLIENT,
+        );
         (
             out.status.code(),
             String::from_utf8_lossy(&out.stdout).into_owned(),

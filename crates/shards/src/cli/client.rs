@@ -707,9 +707,9 @@ fn fill_stdin(
         .name("stdin".into())
         .spawn(move || {
             let mut buf = vec![0u8; 64 * 1024];
-            let mut stdin = io::stdin().lock();
+            let stdin = io::stdin().lock();
             loop {
-                let read = match stdin.read(&mut buf) {
+                let read = match shards_ipc::read(&stdin, &mut buf) {
                     Ok(0) => return,
                     Ok(n) => buf.get(..n).unwrap_or_default(),
                     Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,

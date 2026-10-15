@@ -907,11 +907,19 @@ fn isolate(join: Option<libc::pid_t>, joiner: bool) -> Result<(), i32> {
         Some(pid) => joiner_cgroup(pid)?,
         None => WORKLOAD_CGROUP.to_string(),
     };
-    std::fs::OpenOptions::new()
-        .write(true)
-        .open(format!("{cgroup}/cgroup.procs"))
-        .and_then(|mut f| f.write_all(b"0"))
-        .map_err(errno)?;
+    let enter = |cgroup: &str| {
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(format!("{cgroup}/cgroup.procs"))
+            .and_then(|mut f| f.write_all(b"0"))
+    };
+    match (enter(&cgroup), join.filter(|_| !joiner)) {
+        (Ok(()), _) => {}
+        // An exec's, where the workload's cgroup takes no process: the cgroup its process
+        // is in now, as runc's exec joins container init's (workload_cgroup_of).
+        (Err(_), Some(pid)) => enter(&workload_cgroup_of(pid)?).map_err(errno)?,
+        (Err(e), None) => return Err(errno(e)),
+    }
     let last = || io::Error::last_os_error().raw_os_error().unwrap_or(libc::EIO);
     if let Some(pid) = join {
         // A joiner's UTS, IPC and network namespaces too, which it has of its own (D119).
@@ -986,6 +994,26 @@ fn isolate(join: Option<libc::pid_t>, joiner: bool) -> Result<(), i32> {
 
 /// The cgroup joiner `pid`'s process is in (D119), as `/proc/PID/cgroup` names it from
 /// init's cgroup namespace, the root: `0::/join-N`. Returns the errno of what failed.
+/// The cgroup the workload's process `pid` is in now, within the workload's own: where an
+/// exec joins when the workload's own takes no process, as runc's exec falls back to
+/// container init's (libcontainer/process_linux.go, addIntoCgroupV2; runc#2356). A nested
+/// runtime (BuildKit's buildkitd, Docker in Docker) moves its own processes into a cgroup
+/// below its own and enables controllers for that one's children, and cgroup v2 then
+/// keeps processes out of its own (EBUSY: no internal processes). Never one outside the
+/// workload's: its cgroup namespace bounds where it may move itself (`nsdelegate`).
+fn workload_cgroup_of(pid: libc::pid_t) -> Result<String, i32> {
+    let text = std::fs::read_to_string(format!("/proc/{pid}/cgroup"))
+        .map_err(|e| e.raw_os_error().unwrap_or(libc::EIO))?;
+    let workload = WORKLOAD_CGROUP
+        .strip_prefix("/sys/fs/cgroup")
+        .unwrap_or(WORKLOAD_CGROUP);
+    text.lines()
+        .find_map(|l| l.strip_prefix("0::"))
+        .filter(|p| (*p == workload || p.starts_with(&format!("{workload}/"))) && !p.contains(".."))
+        .map(|p| format!("/sys/fs/cgroup{p}"))
+        .ok_or(libc::ENOENT)
+}
+
 fn joiner_cgroup(pid: libc::pid_t) -> Result<String, i32> {
     let text = std::fs::read_to_string(format!("/proc/{pid}/cgroup"))
         .map_err(|e| e.raw_os_error().unwrap_or(libc::EIO))?;

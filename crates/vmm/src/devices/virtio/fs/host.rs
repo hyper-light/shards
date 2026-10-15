@@ -113,6 +113,7 @@ pub mod linux {
     /// renameat2(2)'s flags.
     pub const RENAME_NOREPLACE: u32 = 1;
     pub const RENAME_EXCHANGE: u32 = 2;
+    pub const RENAME_WHITEOUT: u32 = 4;
     /// fallocate(2)'s KEEP_SIZE.
     pub const FALLOC_FL_KEEP_SIZE: u32 = 1;
     /// setxattr(2)'s flags.

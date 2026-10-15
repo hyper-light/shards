@@ -51,7 +51,7 @@ fn close_gracefully(sock: &UnixStream) {
         if left.is_zero() || sock.set_read_timeout(Some(left)).is_err() {
             return;
         }
-        if !matches!((&*sock).read(&mut dropped), Ok(n) if n > 0) {
+        if !matches!(crate::build::reading(sock).read(&mut dropped), Ok(n) if n > 0) {
             return;
         }
     }
@@ -855,7 +855,7 @@ impl<'p> Session<'p> {
     fn hold(&self, conn: &UnixStream) -> Option<u64> {
         let mut live = self.live.lock().unwrap_or_else(PoisonError::into_inner);
         if self.ended.load(Ordering::SeqCst) {
-            let _ = conn.shutdown(std::net::Shutdown::Both);
+            crate::build::end(conn);
             return None;
         }
         let copy = conn.try_clone().ok()?;
@@ -879,7 +879,7 @@ impl<'p> Session<'p> {
         let live = self.live.lock().unwrap_or_else(PoisonError::into_inner);
         self.ended.store(true, Ordering::SeqCst);
         for c in live.1.values() {
-            let _ = c.shutdown(std::net::Shutdown::Both);
+            crate::build::end(c);
         }
         drop(live);
         self.cancel.cancel();
@@ -1196,7 +1196,7 @@ impl<'p> Session<'p> {
         let _ = sock.shutdown(std::net::Shutdown::Write);
         if sock.set_read_timeout(Some(self.proxy.head_time)).is_ok() {
             let mut sink = [0u8; 4096];
-            while matches!((&*sock).read(&mut sink), Ok(n) if n > 0) {}
+            while matches!(crate::build::reading(sock).read(&mut sink), Ok(n) if n > 0) {}
         }
     }
 
@@ -1311,7 +1311,7 @@ impl Read for Timed<'_> {
             None => None,
         };
         self.sock.set_read_timeout(left)?;
-        (&*self.sock).read(buf)
+        crate::build::reading(self.sock).read(buf)
     }
 }
 
@@ -1333,7 +1333,7 @@ impl Read for Prefixed<'_> {
             return Ok(n);
         }
         let _ = self.sock.set_read_timeout(None);
-        (&*self.sock).read(buf)
+        crate::build::reading(self.sock).read(buf)
     }
 }
 

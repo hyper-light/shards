@@ -260,10 +260,12 @@ jobs:
   # executable must be static, and the tests measured on release. One after the other
   # they took 43 of the step's 45 minutes on x86_64 (M156). With the lints and the release
   # tests beside the tests instead, the x86_64 tests took 30 to 45 minutes, slower runners
-  # 1.7 times as long as the fastest, and one ran out of time (M187).
+  # 1.7 times as long as the fastest, and one ran out of time (M187). Two weeks on, slow
+  # runners' jobs took 37 to 45 minutes and one ran out of the step's 45, so the step has
+  # 60 and the job 70: a third above the slowest (M235).
   musl:
     name: ${{ matrix.target }}${{ matrix.part == 'release' && ' release' || '' }}
-    timeout-minutes: 60
+    timeout-minutes: 70
     strategy:
       fail-fast: false
       matrix:
@@ -281,7 +283,7 @@ jobs:
       - name: Host virtualization (what this runner offers each backend)
         run: ls -l /dev/kvm 2>&1 || true
       - name: On the native architecture, in Alpine
-        timeout-minutes: 45
+        timeout-minutes: 60
         run: |
           # VM tests need the host's /dev/kvm inside the container, which runs them as the
           # runner's user (scripts/musl-ci): the node there takes this one's mode.
