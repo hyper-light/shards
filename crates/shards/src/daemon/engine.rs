@@ -752,6 +752,9 @@ fn version() -> Answer {
             "Os": server.os,
             "Arch": server.arch,
             "KernelVersion": detail("KernelVersion"),
+            // Where clients before docker/cli 29 read it, the Engine's details being where
+            // later ones do; dockerd says it in both (daemon/info.go, SystemVersion).
+            "Experimental": detail("Experimental") == "true",
             "BuildTime": detail("BuildTime"),
         }),
     )

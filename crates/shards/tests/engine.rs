@@ -827,6 +827,12 @@ fn the_engine_answers_on_a_socket_file_in_the_home() {
             "{v}"
         );
         assert_eq!(v["Components"][0]["Name"], "Engine", "{v}");
+        // Experimental, for its checkpoints (D176), as each docker/cli reads it.
+        assert_eq!(
+            (&v["Experimental"], &v["Components"][0]["Details"]["Experimental"]),
+            (&json!(true), &json!("true")),
+            "{v}"
+        );
     }
     for path in ["/v1.39/version", "/v1.57/version"] {
         let refused = api.call("GET", path, None);
