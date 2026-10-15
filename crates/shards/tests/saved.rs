@@ -591,3 +591,115 @@ fn a_saved_microvm_on_a_network_is_restored_at_its_address() {
     assert!(refused.stderr.contains(&saved_at), "{refused}");
     assert_eq!(shards(&["rm", "-f", "taker"]).status, Some(0));
 }
+
+/// Docker's words for it, as an experimental dockerd serves them: `checkpoint create`,
+/// `ls` and `rm`, and `start --checkpoint`, a microVM's snapshots by another name, each
+/// answered as docker/cli and dockerd answer.
+#[test]
+fn checkpoints_are_a_microvms_snapshots_in_dockers_words() {
+    let Some((home, image)) = home("checkpoints") else {
+        return;
+    };
+    if cannot_snapshot() {
+        return;
+    }
+    let shards = |args: &[&str]| shards_in(&home, args);
+    let run = shards(&[
+        "run", "-d", "--pull", "never", "--name", "cp", &image, "counter", "20",
+    ]);
+    assert_eq!(run.status, Some(0), "{run}");
+    let log = || logs(&home, "cp");
+    until("counting", &mut || counts(&log()).len() >= 10, &log);
+    let made = shards(&["checkpoint", "create", "cp", "first"]);
+    assert_eq!(
+        (made.status, made.stdout.as_str()),
+        (Some(0), "first\n"),
+        "{made}"
+    );
+    let n = counts(&log()).len() as u64;
+    let listed = shards(&["checkpoint", "ls", "cp"]);
+    assert_eq!(listed.stdout, "CHECKPOINT NAME\nfirst\n", "{listed}");
+    // Restored by name, saying nothing, as docker/cli says nothing of it.
+    let started = shards(&["start", "--checkpoint", "first", "cp"]);
+    assert_eq!(
+        (started.status, started.stdout.as_str()),
+        (Some(0), ""),
+        "{started}"
+    );
+    until("counting on", &mut || counts(&log()).len() as u64 >= n + 5, &log);
+    assert_eq!(counts(&log())[n as usize], n + 1);
+    let left = shards(&["checkpoint", "create", "--leave-running", "cp", "second"]);
+    assert_eq!(left.stdout, "second\n", "{left}");
+    let again = shards(&["checkpoint", "create", "--leave-running", "cp", "second"]);
+    assert_eq!(again.status, Some(1), "{again}");
+    assert_eq!(
+        again.stderr,
+        "shards: cannot checkpoint container cp: checkpoint with name second already exists for container cp\n"
+    );
+    // A name that would leave its microVM's snapshots is no name, refused before anything
+    // is looked up, as dockerd refuses it.
+    let bad = shards(&["checkpoint", "create", "cp", "../x"]);
+    assert_eq!(bad.status, Some(1), "{bad}");
+    assert_eq!(
+        bad.stderr,
+        "shards: invalid checkpoint ID \"../x\", only [a-zA-Z0-9][a-zA-Z0-9_.-] are allowed\n"
+    );
+    let nowhere = shards(&["checkpoint", "rm", "nothing", "../x"]);
+    assert!(
+        nowhere.stderr.contains("invalid checkpoint ID \"../x\""),
+        "{nowhere}"
+    );
+    let removed = shards(&["checkpoint", "rm", "cp", "first"]);
+    assert_eq!(
+        (removed.status, removed.stdout.as_str()),
+        (Some(0), ""),
+        "{removed}"
+    );
+    let gone = shards(&["checkpoint", "rm", "cp", "first"]);
+    assert_eq!(
+        gone.stderr, "shards: checkpoint first does not exist for container cp\n",
+        "{gone}"
+    );
+    assert_eq!(
+        shards(&["checkpoint", "ls", "cp"]).stdout,
+        "CHECKPOINT NAME\nsecond\n"
+    );
+    // A directory of its own is no microVM's: shards keeps its snapshots with it, and
+    // dockerd restores from no other.
+    let elsewhere = shards(&[
+        "checkpoint",
+        "create",
+        "--checkpoint-dir",
+        "/tmp/cps",
+        "cp",
+        "third",
+    ]);
+    assert_ne!(elsewhere.status, Some(0), "{elsewhere}");
+    assert!(
+        elsewhere
+            .stderr
+            .contains("\"--checkpoint-dir\": shards keeps a microVM's checkpoints with it"),
+        "{elsewhere}"
+    );
+    let many = shards(&["start", "--checkpoint", "second", "cp", "other"]);
+    assert_eq!(
+        many.stderr, "you cannot restore multiple containers at once\n",
+        "{many}"
+    );
+    // What a daemon's end cut short of a save, a snapshot with no generation in place, the
+    // next daemon removes as it starts, its name free again; the saved ones stay.
+    let id = shards(&["inspect", "-f", "{{.Id}}", "cp"])
+        .stdout
+        .trim()
+        .to_string();
+    let cut = home.join("containers").join(&id).join("snapshots").join("cut");
+    std::fs::create_dir_all(cut.join(".g-1-1-1.tmp")).unwrap();
+    std::fs::write(cut.join(".g-1-1-1.tmp").join("memory"), b"half").unwrap();
+    assert_eq!(shards(&["stop", "daemon"]).status, Some(0));
+    assert_eq!(
+        shards(&["checkpoint", "ls", "cp"]).stdout,
+        "CHECKPOINT NAME\nsecond\n"
+    );
+    assert!(!cut.exists(), "{} was left", cut.display());
+    assert_eq!(shards(&["rm", "-f", "cp"]).status, Some(0));
+}

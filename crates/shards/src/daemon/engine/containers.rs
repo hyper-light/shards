@@ -19,6 +19,12 @@ use super::{Call, Done, RunAnswer, create, plain, refused, status_of};
 use crate::containers::{Container, Disk, State as Life};
 use crate::daemon::{Daemon, REQUEST, Threads, lock, log};
 
+/// A checkpoint directory of a client's own: shards keeps a microVM's snapshots with it,
+/// and dockerd restores from none other (moby daemon/start.go, "custom checkpointdir is
+/// not supported").
+const CHECKPOINT_DIR: &str =
+    "a checkpoint directory of your own is not supported: shards keeps a microVM's checkpoints with it";
+
 /// An attach waiting for its container's start, which `docker run` asks for before it
 /// starts the container: the start's output goes to it.
 pub(in crate::daemon) struct Waiting {
@@ -365,19 +371,43 @@ impl<D: Disk> Daemon<D> {
     /// `POST /containers/{id}/start`: started as `shards start` starts it; attached where
     /// attaches wait for its start, its output theirs. One running already is not
     /// modified (304).
-    pub(super) fn engine_start<'s, 'e>(&'s self, threads: &'s Threads<'s, 'e>, given: &str) -> Answer {
+    pub(super) fn engine_start<'s, 'e>(
+        &'s self,
+        threads: &'s Threads<'s, 'e>,
+        given: &str,
+        call: &Call<'_>,
+    ) -> Answer {
+        // A checkpoint, a microVM's snapshot (D176), checked as dockerd checks it, in its
+        // order (moby daemon/start.go): its name, the container, its state, and only then
+        // a directory of the client's, which dockerd refuses too.
+        let checkpoint = call
+            .query("checkpoint")
+            .filter(|c| !c.is_empty())
+            .map(str::to_string);
+        if let Some(asked) = &checkpoint
+            && !super::super::snapshots::valid_checkpoint(asked)
+        {
+            return Answer::error(400, super::super::snapshots::invalid_checkpoint(asked));
+        }
         let id = match self.resolve(given) {
             Ok(id) => id,
             Err(e) => return refused(&e, 500),
         };
+        if lock(&self.paused).contains(&id) {
+            return Answer::error(409, "cannot start a paused container, try unpause instead");
+        }
         if self.running(&id) {
             return Answer::text(304, "");
+        }
+        if call.query("checkpoint-dir").is_some_and(|d| !d.is_empty()) {
+            return Answer::error(403, "custom checkpointdir is not supported");
         }
         let waiting = lock(&self.engine.waiting).remove(&id).unwrap_or_default();
         let result = if waiting.is_empty() {
             let mut run = Run {
                 again: Some(id),
                 detach: true,
+                resume: checkpoint,
                 ..Run::default()
             };
             match self.as_client(&mut run) {
@@ -385,12 +415,63 @@ impl<D: Disk> Daemon<D> {
                 Err(e) => Err(e),
             }
         } else {
-            self.start_attached(threads, &id, waiting)
+            self.start_attached(threads, &id, waiting, checkpoint)
         };
         match result {
             Ok(RunAnswer { status: 0, .. }) => Answer::text(204, ""),
             Ok(answer) => refused(&answer.said, 500),
             Err(e) => Answer::error(500, e),
+        }
+    }
+
+    /// `POST /containers/{id}/checkpoints`: `save vm` (D176), its body moby's
+    /// checkpoint.CreateRequest; its errors dockerd's (CheckpointCreate).
+    pub(super) fn engine_checkpoint_create(&self, given: &str, call: &Call<'_>) -> Answer {
+        let body: Value = match serde_json::from_slice(&call.body) {
+            Ok(body) => body,
+            Err(e) => return Answer::error(400, format!("a checkpoint's body: {e}")),
+        };
+        let field = |name: &str| body.get(name);
+        if field("CheckpointDir")
+            .and_then(Value::as_str)
+            .is_some_and(|d| !d.is_empty())
+        {
+            return Answer::error(400, CHECKPOINT_DIR);
+        }
+        let asked = field("CheckpointID").and_then(Value::as_str).unwrap_or_default();
+        let leave_running = !field("Exit").and_then(Value::as_bool).unwrap_or(false);
+        match self.save_snapshot(given, Some(asked), leave_running) {
+            Ok(_) => Answer::text(201, ""),
+            Err(e) => Answer::error(e.status(), e.dockers(given, asked)),
+        }
+    }
+
+    /// `GET /containers/{id}/checkpoints`: its snapshots' names, as moby's
+    /// checkpoint.Summary list.
+    pub(super) fn engine_checkpoints(&self, given: &str, call: &Call<'_>) -> Answer {
+        if call.query("dir").is_some_and(|d| !d.is_empty()) {
+            return Answer::error(400, CHECKPOINT_DIR);
+        }
+        let id = match self.resolve(given) {
+            Ok(id) => id,
+            Err(e) => return refused(&e, 500),
+        };
+        let names: Vec<Value> = self
+            .snapshot_names(&id)
+            .into_iter()
+            .map(|name| json!({ "Name": name }))
+            .collect();
+        Answer::json(200, &Value::Array(names))
+    }
+
+    /// `DELETE /containers/{id}/checkpoints/{checkpoint}`: `remove snapshot` (D176).
+    pub(super) fn engine_checkpoint_remove(&self, given: &str, checkpoint: &str, call: &Call<'_>) -> Answer {
+        if call.query("dir").is_some_and(|d| !d.is_empty()) {
+            return Answer::error(400, CHECKPOINT_DIR);
+        }
+        match self.remove_checkpoint(given, checkpoint) {
+            Ok(()) => Answer::text(204, ""),
+            Err((status, e)) => Answer::error(status, e),
         }
     }
 
@@ -403,6 +484,7 @@ impl<D: Disk> Daemon<D> {
         threads: &'s Threads<'s, 'e>,
         id: &str,
         waiting: Vec<Waiting>,
+        resume: Option<String>,
     ) -> Result<RunAnswer, String> {
         let made = self.made_by(id).unwrap_or_default();
         let reads = made.interactive && waiting.iter().any(|w| w.streams[0]);
@@ -412,6 +494,7 @@ impl<D: Disk> Daemon<D> {
         let null = File::open("/dev/null").map_err(|e| format!("/dev/null: {e}"))?;
         let mut run = Run {
             again: Some(id.to_string()),
+            resume,
             interactive: reads,
             tty: made.tty,
             ..Run::default()

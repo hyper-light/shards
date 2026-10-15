@@ -124,11 +124,14 @@ fn dispatch(args: Vec<OsString>) -> ExitCode {
             rest.push("--help".into());
             return dispatch(rest);
         }
-        [name @ ("image" | "container" | "volume")]
-        | [name @ ("image" | "container" | "volume"), "-h" | "--help"] => {
+        [name @ ("image" | "container" | "volume" | "checkpoint")]
+        | [
+            name @ ("image" | "container" | "volume" | "checkpoint"),
+            "-h" | "--help",
+        ] => {
             return management_help(name);
         }
-        [name @ ("image" | "container" | "volume"), word, ..]
+        [name @ ("image" | "container" | "volume" | "checkpoint"), word, ..]
             if shards_cmdline::commands::find(&words).is_none()
                 && shards_cmdline::commands::build(&words).is_none()
                 && !matches!(*word, "run" | "exec") =>

@@ -908,6 +908,8 @@ pub static START: Command = Command {
     args: Args::AtLeast(1),
     flags: &[
         Flag::bool("attach", Some(b'a'), "Attach STDOUT/STDERR and forward signals"),
+        // A microVM's snapshot (D176), which docker/cli shows of an experimental daemon.
+        Flag::string("checkpoint", None, "", "Restore from this checkpoint"),
         Flag::string(
             "detach-keys",
             None,
@@ -917,9 +919,53 @@ pub static START: Command = Command {
         HELP,
         Flag::bool("interactive", Some(b'i'), "Attach container's STDIN"),
     ],
-    unserved: "\
-checkpoint - s - -\n\
-checkpoint-dir - s - -",
+    unserved: "checkpoint-dir - s - - shards keeps a microVM's checkpoints with it, and restores from no other directory",
+    interspersed: true,
+    error_prefix: "",
+};
+
+/// `shards checkpoint create` (docker/cli cli/command/checkpoint/create.go): `save vm`
+/// (D176).
+pub static CHECKPOINT_CREATE: Command = Command {
+    usage: "[OPTIONS] CONTAINER CHECKPOINT",
+    about: "Create a checkpoint from a running container",
+    aliases: "",
+    args: Args::Exactly(2),
+    flags: &[
+        HELP,
+        Flag::bool(
+            "leave-running",
+            None,
+            "Leave the container running after checkpoint",
+        ),
+    ],
+    unserved: "checkpoint-dir - s - - shards keeps a microVM's checkpoints with it, and restores from no other directory",
+    interspersed: true,
+    error_prefix: "",
+};
+
+/// `shards checkpoint ls` (docker/cli cli/command/checkpoint/list.go): `list snapshots`
+/// (D176).
+pub static CHECKPOINT_LS: Command = Command {
+    usage: "[OPTIONS] CONTAINER",
+    about: "List checkpoints for a container",
+    aliases: "shards checkpoint ls, shards checkpoint list",
+    args: Args::Exactly(1),
+    flags: &[HELP],
+    unserved: "checkpoint-dir - s - - shards keeps a microVM's checkpoints with it, and restores from no other directory",
+    interspersed: true,
+    error_prefix: "",
+};
+
+/// `shards checkpoint rm` (docker/cli cli/command/checkpoint/remove.go): `remove
+/// snapshot` (D176).
+pub static CHECKPOINT_RM: Command = Command {
+    usage: "[OPTIONS] CONTAINER CHECKPOINT",
+    about: "Remove a checkpoint",
+    aliases: "shards checkpoint rm, shards checkpoint remove",
+    args: Args::Exactly(2),
+    flags: &[HELP],
+    unserved: "checkpoint-dir - s - - shards keeps a microVM's checkpoints with it, and restores from no other directory",
     interspersed: true,
     error_prefix: "",
 };
@@ -2759,6 +2805,9 @@ pub fn find(words: &[&str]) -> Option<(&'static Command, &'static str, usize)> {
         ["images", ..] => (&IMAGES, "shards images", 1),
         ["tag", ..] => (&TAG, "shards tag", 1),
         ["save", "vm", ..] => (&SAVE_VM, "shards save vm", 2),
+        ["checkpoint", "create", ..] => (&CHECKPOINT_CREATE, "shards checkpoint create", 2),
+        ["checkpoint", "ls" | "list", ..] => (&CHECKPOINT_LS, "shards checkpoint ls", 2),
+        ["checkpoint", "rm" | "remove", ..] => (&CHECKPOINT_RM, "shards checkpoint rm", 2),
         ["snapshot", "ls" | "list", ..] => (&SNAPSHOT_LS, "shards list snapshots", 2),
         ["snapshot", "rm" | "remove", ..] => (&SNAPSHOT_RM, "shards remove snapshot", 2),
         ["save", ..] => (&SAVE, "shards save", 1),

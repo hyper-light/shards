@@ -447,7 +447,14 @@ impl<D: Disk> Daemon<D> {
             ("GET", ["containers", "json"]) => self.engine_list(call),
             ("POST", ["containers", "prune"]) => self.engine_prune(call),
             ("GET", ["containers", id, "json"]) => self.engine_inspect(id, call),
-            ("POST", ["containers", id, "start"]) => self.engine_start(threads, id),
+            ("POST", ["containers", id, "start"]) => self.engine_start(threads, id, call),
+            // A microVM's snapshots, Docker's checkpoints (D176), served as an experimental
+            // daemon serves them (moby router/checkpoint).
+            ("POST", ["containers", id, "checkpoints"]) => self.engine_checkpoint_create(id, call),
+            ("GET", ["containers", id, "checkpoints"]) => self.engine_checkpoints(id, call),
+            ("DELETE", ["containers", id, "checkpoints", checkpoint]) => {
+                self.engine_checkpoint_remove(id, checkpoint, call)
+            }
             ("POST", ["containers", id, "stop"]) => self.engine_stop(threads, id, call, false),
             ("POST", ["containers", id, "kill"]) => self.engine_stop(threads, id, call, true),
             ("DELETE", ["containers", id]) => self.engine_remove(threads, id, call),
@@ -688,11 +695,14 @@ impl<D: Disk> Daemon<D> {
     }
 }
 
-/// `_ping`: that the engine serves, and its API's version, which clients negotiate by.
+/// `_ping`: that the engine serves, and its API's version, which clients negotiate by; and
+/// that it has experimental features, as docker/cli asks before it offers checkpoints,
+/// which shards' are a microVM's snapshots (D176).
 fn ping(method: &str) -> Answer {
     let mut answer = Answer::text(200, if method == "HEAD" { "" } else { "OK" });
     answer.fields = vec![
         ("Cache-Control", "no-cache, no-store, must-revalidate".into()),
+        ("Docker-Experimental", "true".into()),
         ("Pragma", "no-cache".into()),
     ];
     if method == "HEAD" {

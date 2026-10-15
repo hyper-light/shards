@@ -79,6 +79,7 @@ pub static TOP: &[Group] = &[
     Group {
         heading: "Management Commands",
         entries: &[
+            own("checkpoint", "Manage checkpoints"),
             own("container", "Manage containers"),
             own("image", "Manage images"),
             own("network", "Manage networks"),
@@ -123,6 +124,15 @@ pub static TOP: &[Group] = &[
 
 /// The management commands: their name, what they do, and their commands.
 pub static MANAGEMENT: &[(&str, &str, &[Entry])] = &[
+    (
+        "checkpoint",
+        "Manage checkpoints",
+        &[
+            of("create", &commands::CHECKPOINT_CREATE),
+            of("ls", &commands::CHECKPOINT_LS),
+            of("rm", &commands::CHECKPOINT_RM),
+        ],
+    ),
     (
         "container",
         "Manage containers",

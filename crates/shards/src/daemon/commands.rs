@@ -492,6 +492,12 @@ impl<D: crate::containers::Disk> Daemon<D> {
             self.read_ports(&parsed.args, reply)
         } else if std::ptr::eq(command, &shards_cmdline::commands::SAVE_VM) {
             self.save_vm(&parsed, reply)
+        } else if std::ptr::eq(command, &shards_cmdline::commands::CHECKPOINT_CREATE) {
+            self.checkpoint_create(&parsed, reply)
+        } else if std::ptr::eq(command, &shards_cmdline::commands::CHECKPOINT_LS) {
+            self.checkpoint_ls(&parsed, reply)
+        } else if std::ptr::eq(command, &shards_cmdline::commands::CHECKPOINT_RM) {
+            self.checkpoint_rm(&parsed, reply)
         } else if std::ptr::eq(command, &shards_cmdline::commands::SNAPSHOT_LS) {
             self.list_snapshots(&parsed, reply)
         } else if std::ptr::eq(command, &shards_cmdline::commands::SNAPSHOT_RM) {

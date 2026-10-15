@@ -526,6 +526,9 @@ pub struct Run {
     /// `shards restore vm` (D176): with `again`, the container resumed from a snapshot of
     /// its own, by name; empty for its newest.
     pub resume: Option<String>,
+    /// With `again`, the client says nothing of the start but what fails, as docker/cli's
+    /// `start --checkpoint` says nothing (container/start.go).
+    pub silent: bool,
     /// `shards create`: the container is made, and not started.
     pub create: bool,
     /// `shards restart`: with `again`, the container is stopped first if it runs, by
@@ -1204,6 +1207,14 @@ impl Run {
             ("log-opts", self.log_opts.clone()),
             ("cloud-env", self.cloud_env.clone()),
             ("resume", self.resume.iter().cloned().collect()),
+            (
+                "silent",
+                if self.silent {
+                    vec!["true".to_string()]
+                } else {
+                    Vec::new()
+                },
+            ),
             ("streams", self.streams.map(|s| s.values()).unwrap_or_default()),
             ("device-requests", {
                 let mut values = Vec::new();
@@ -1376,6 +1387,7 @@ impl Run {
                     "log-opts" => run.log_opts = values,
                     "cloud-env" => run.cloud_env = values,
                     "resume" => run.resume = values.into_iter().next(),
+                    "silent" => run.silent = values.first().is_some_and(|v| v == "true"),
                     "streams" => run.streams = Some(Streams::of(&values)?),
                     "device-requests" => {
                         let mut rest = values.iter();
@@ -1966,6 +1978,7 @@ mod tests {
             again: Some("web".into()),
             // Its newest snapshot (D176): asked for by no name, which still reads.
             resume: Some(String::new()),
+            silent: true,
             create: true,
             restart: true,
             health: Some(Health {
@@ -2137,6 +2150,7 @@ mod tests {
             log_opts: Vec::new(),
             cloud_env: Vec::new(),
             resume: None,
+            silent: false,
             streams: None,
             device_requests: Vec::new(),
             ..run.clone()

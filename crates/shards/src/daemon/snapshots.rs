@@ -90,27 +90,156 @@ pub(super) fn answered(inbox: &mut Inbox, payload: &[u8]) {
     let _ = saving.told.send(answer);
 }
 
+/// Why a microVM was not saved (D176), said in the words of the command that asked:
+/// shards' own `save vm`, or Docker's `checkpoint create` and the Engine API's, dockerd's.
+pub(super) enum Unsaved {
+    /// No container its reference names, as the resolve says it.
+    Unknown(String),
+    /// By its ID.
+    NotRunning(String),
+    /// A container joined to another's microVM (D119).
+    Joined,
+    /// On the host's network (D124).
+    HostNetwork,
+    /// A name no snapshot may have.
+    Invalid(String),
+    /// A name one of its snapshots has.
+    Exists(String),
+    /// Why its save failed.
+    Failed(String),
+}
+
+impl Unsaved {
+    /// In shards' words, of the microVM `reference` names.
+    pub(super) fn ours(&self, reference: &str) -> String {
+        match self {
+            Unsaved::Unknown(e) => e.clone(),
+            Unsaved::NotRunning(_) => format!("shards: {reference} is not running"),
+            Unsaved::Joined => {
+                format!("shards: {reference} runs in another container's microVM: save that microVM")
+            }
+            Unsaved::HostNetwork => format!(
+                "shards: {reference} is on the host's network, whose sockets of the host's no snapshot keeps"
+            ),
+            Unsaved::Invalid(name) => format!(
+                "shards: {name:?} cannot name a snapshot: a letter or digit, then letters, digits, '_', '.' or '-', and no '.' last"
+            ),
+            Unsaved::Exists(name) => format!("shards: {reference} has a snapshot named {name} already"),
+            Unsaved::Failed(e) => format!("shards: cannot save {reference}: {e}"),
+        }
+    }
+
+    /// In dockerd's words (moby daemon/checkpoint.go, CheckpointCreate), of container
+    /// `reference` and checkpoint `asked`, without the prefix each surface gives them.
+    pub(super) fn dockers(&self, reference: &str, asked: &str) -> String {
+        match self {
+            Unsaved::Unknown(e) => e.strip_prefix("shards: ").unwrap_or(e).to_string(),
+            // container.GetRunningTask's errNotRunning.
+            Unsaved::NotRunning(id) => format!("container {id} is not running"),
+            Unsaved::Invalid(_) => invalid_checkpoint(asked),
+            Unsaved::Exists(name) => format!(
+                "cannot checkpoint container {reference}: checkpoint with name {name} already exists for container {reference}"
+            ),
+            // Its task's CreateCheckpoint failing, as dockerd says it.
+            Unsaved::Joined => format!(
+                "Cannot checkpoint container {reference}: it runs in another container's microVM: checkpoint that one"
+            ),
+            Unsaved::HostNetwork => format!(
+                "Cannot checkpoint container {reference}: it is on the host's network, whose sockets of the host's no checkpoint keeps"
+            ),
+            Unsaved::Failed(e) => format!("Cannot checkpoint container {reference}: {e}"),
+        }
+    }
+
+    /// The Engine API's status for it, as dockerd's errdefs give it.
+    pub(super) fn status(&self) -> u16 {
+        match self {
+            Unsaved::Unknown(_) => 404,
+            Unsaved::NotRunning(_) => 409,
+            Unsaved::Invalid(_) => 400,
+            _ => 500,
+        }
+    }
+}
+
+/// Snapshot `at` removed, its pointer first: one cut short is then no snapshot a restore
+/// takes, but a directory the next daemon's start removes ([`remove_unsaved`]).
+fn remove(at: &std::path::Path) -> std::io::Result<()> {
+    std::fs::remove_file(shards_vmm::snapshot::pointer(at))?;
+    std::fs::remove_dir_all(at)
+}
+
+/// Removes the snapshots in container directory `dir` with no generation in place (D176),
+/// as a daemon starts, before it serves: what a save its daemon's end cut short left, its
+/// name free again, and what a removal cut short left, which takes the pointer first. What
+/// cannot be removed is noted.
+pub(super) fn remove_unsaved(dir: &std::path::Path, note: &mut dyn FnMut(String)) {
+    let snapshots = dir.join(SNAPSHOTS);
+    let entries = match std::fs::read_dir(&snapshots) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return,
+        Err(e) => {
+            note(format!("{}: {e}", snapshots.display()));
+            return;
+        }
+    };
+    for entry in entries {
+        let at = match entry {
+            Ok(entry) => entry.path(),
+            Err(e) => {
+                note(format!("{}: {e}", snapshots.display()));
+                continue;
+            }
+        };
+        match std::fs::symlink_metadata(shards_vmm::snapshot::pointer(&at)) {
+            Ok(_) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                if let Err(e) = std::fs::remove_dir_all(&at) {
+                    note(format!("{}: {e}", at.display()));
+                }
+            }
+            Err(e) => note(format!("{}: {e}", at.display())),
+        }
+    }
+}
+
+/// Whether `asked` may name a checkpoint (moby validateCheckpointID).
+pub(super) fn valid_checkpoint(asked: &str) -> bool {
+    valid(asked)
+}
+
+/// moby's validateCheckpointID's refusal of `asked`.
+pub(super) fn invalid_checkpoint(asked: &str) -> String {
+    format!(
+        "invalid checkpoint ID {}, only [a-zA-Z0-9][a-zA-Z0-9_.-] are allowed",
+        shards_cmdline::go::quote(asked)
+    )
+}
+
 /// Whether `name` may name a snapshot, as a checkpoint's name may (moby daemon/checkpoint.go,
 /// validateCheckpointID): `[a-zA-Z0-9][a-zA-Z0-9_.-]+`, and no `.` last.
 fn valid(name: &str) -> bool {
     !name.starts_with('/') && crate::containers::valid_name(name) && !name.ends_with('.')
 }
 
-/// A name for a snapshot saved without one: the time in UTC, to the second, as RFC 3339
-/// writes it with its colons made dashes, `-N` after it where one has it already.
-fn fresh(taken: &dyn Fn(&str) -> bool) -> String {
+/// A name for a snapshot saved without one, which `claim` takes: the time in UTC, to the
+/// second, as RFC 3339 writes it with its colons made dashes, `-N` after it where one has
+/// it already (`claim` failing with AlreadyExists). Any other failure is the save's.
+fn fresh(claim: &mut dyn FnMut(&str) -> std::io::Result<()>) -> std::io::Result<String> {
     let now = i64::try_from(crate::containers::now() / 1_000_000_000).unwrap_or(i64::MAX);
     let stamp = shards_cmdline::format::rfc3339_at(now, 0).replace(':', "-");
-    (1..)
-        .map(|n| {
-            if n == 1 {
-                stamp.clone()
-            } else {
-                format!("{stamp}-{n}")
-            }
-        })
-        .find(|name| !taken(name))
-        .unwrap_or(stamp)
+    for n in 1..=u64::MAX {
+        let name = if n == 1 {
+            stamp.clone()
+        } else {
+            format!("{stamp}-{n}")
+        };
+        match claim(&name) {
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+            claimed => return claimed.map(|()| name),
+        }
+    }
+    Err(std::io::Error::other("every name of the time is taken"))
 }
 
 /// `run`, a container's request, as its microVM resumed from a snapshot has its interface
@@ -341,7 +470,7 @@ impl<D: Disk> Daemon<D> {
                 errors.push(format!("shards: {reference} has no snapshot named {name}"));
                 continue;
             }
-            match std::fs::remove_dir_all(&at) {
+            match remove(&at) {
                 Ok(()) => reply.out(name),
                 Err(e) => errors.push(format!("shards: removing {reference}'s snapshot {name}: {e}")),
             }
@@ -357,64 +486,141 @@ impl<D: Disk> Daemon<D> {
     /// they are, its vCPUs parked for the save; then stopped, as `docker checkpoint
     /// create` stops a container, or left running. Prints the snapshot's name.
     pub(super) fn save_vm(&self, parsed: &Parsed, reply: &Reply<'_>) -> u8 {
-        match self.save_microvm(parsed) {
-            Ok(name) => {
+        let reference = parsed.args.first().map(|r| r.trim()).unwrap_or_default();
+        let asked = parsed.args.get(1).map(String::as_str);
+        match self.save_snapshot(reference, asked, parsed.bool("leave-running")) {
+            Ok((_, name)) => {
                 reply.out(&name);
                 0
             }
             Err(e) => {
-                reply.err(&e);
+                reply.err(&e.ours(reference));
                 1
             }
         }
     }
 
-    fn save_microvm(&self, parsed: &Parsed) -> Result<String, String> {
+    /// `shards checkpoint ls CONTAINER`, Docker's word for `list snapshots` (D176): its
+    /// checkpoints' names in their names' order, as dockerd reads them (os.ReadDir) and
+    /// docker/cli's table writes them (checkpoint/formatter.go).
+    pub(super) fn checkpoint_ls(&self, parsed: &Parsed, reply: &Reply<'_>) -> u8 {
         let reference = parsed.args.first().map(|r| r.trim()).unwrap_or_default();
-        let leave_running = parsed.bool("leave-running");
-        let id = self.resolve(reference)?;
+        let id = match self.resolve(reference) {
+            Ok(id) => id,
+            Err(e) => {
+                reply.err(&e);
+                return 1;
+            }
+        };
+        reply.out("CHECKPOINT NAME");
+        for name in self.snapshot_names(&id) {
+            reply.out(&name);
+        }
+        0
+    }
+
+    /// `shards checkpoint rm CONTAINER CHECKPOINT`, Docker's word for `remove snapshot`
+    /// (D176), its errors dockerd's (CheckpointDelete): nothing once removed.
+    pub(super) fn checkpoint_rm(&self, parsed: &Parsed, reply: &Reply<'_>) -> u8 {
+        let reference = parsed.args.first().map(|r| r.trim()).unwrap_or_default();
+        let asked = parsed.args.get(1).map(String::as_str).unwrap_or_default();
+        match self.remove_checkpoint(reference, asked) {
+            Ok(()) => 0,
+            Err((_, e)) => {
+                reply.err(&format!("shards: {e}"));
+                1
+            }
+        }
+    }
+
+    /// Container `reference`'s snapshot `asked` removed, as dockerd's CheckpointDelete
+    /// removes a checkpoint: why not, in its words, with the Engine API's status.
+    pub(super) fn remove_checkpoint(&self, reference: &str, asked: &str) -> Result<(), (u16, String)> {
+        if !valid(asked) {
+            return Err((400, invalid_checkpoint(asked)));
+        }
+        let id = self
+            .resolve(reference)
+            .map_err(|e| (404, e.strip_prefix("shards: ").unwrap_or(&e).to_string()))?;
+        let at = lock(&self.containers).dir(&id).join(SNAPSHOTS).join(asked);
+        if shards_vmm::snapshot::generation(&at).is_err() {
+            return Err((
+                500,
+                format!("checkpoint {asked} does not exist for container {reference}"),
+            ));
+        }
+        remove(&at).map_err(|e| (500, e.to_string()))
+    }
+
+    /// The names of container `id`'s snapshots, in their order.
+    pub(super) fn snapshot_names(&self, id: &str) -> Vec<String> {
+        let dir = lock(&self.containers).dir(id).join(SNAPSHOTS);
+        let mut names: Vec<String> = std::fs::read_dir(&dir)
+            .map(|entries| {
+                entries
+                    .flatten()
+                    .filter(|e| shards_vmm::snapshot::generation(&e.path()).is_ok())
+                    .filter_map(|e| e.file_name().into_string().ok())
+                    .collect()
+            })
+            .unwrap_or_default();
+        names.sort();
+        names
+    }
+
+    /// `shards checkpoint create [--leave-running] CONTAINER CHECKPOINT`, Docker's word for
+    /// `save vm` (D176), its errors dockerd's (moby daemon/checkpoint.go): the checkpoint's
+    /// name once saved, as docker/cli prints it.
+    pub(super) fn checkpoint_create(&self, parsed: &Parsed, reply: &Reply<'_>) -> u8 {
+        let reference = parsed.args.first().map(|r| r.trim()).unwrap_or_default();
+        let asked = parsed.args.get(1).map(String::as_str).unwrap_or_default();
+        match self.save_snapshot(reference, Some(asked), parsed.bool("leave-running")) {
+            Ok((_, name)) => {
+                reply.out(&name);
+                0
+            }
+            Err(e) => {
+                reply.err(&format!("shards: {}", e.dockers(reference, asked)));
+                1
+            }
+        }
+    }
+
+    /// The running microVM `reference` names saved as snapshot `asked`, or as the time's
+    /// where no name is asked for (D176): its ID and the snapshot's name, or why not.
+    pub(super) fn save_snapshot(
+        &self,
+        reference: &str,
+        asked: Option<&str>,
+        leave_running: bool,
+    ) -> Result<(String, String), Unsaved> {
+        // A name no snapshot may have is refused before anything is looked up, as dockerd
+        // refuses a checkpoint's (moby daemon/checkpoint.go, CheckpointCreate).
+        if let Some(name) = asked
+            && !valid(name)
+        {
+            return Err(Unsaved::Invalid(name.to_string()));
+        }
+        let id = self.resolve(reference).map_err(Unsaved::Unknown)?;
         self.await_start(&id);
         if !self.running(&id) {
-            return Err(format!("shards: {reference} is not running"));
+            return Err(Unsaved::NotRunning(id));
         }
         // A joiner's processes are its provider's microVM's, which a save of that one
         // keeps (D119).
         if self.joined_run(&id) {
-            return Err(format!(
-                "shards: {reference} runs in another container's microVM: save that microVM"
-            ));
+            return Err(Unsaved::Joined);
         }
         // On the host's network its guest's sockets are the host's, the daemon's to bind
         // (D124): a restored copy would hold sockets no host socket answers.
         let (inbox, mac) = match lock(&self.runs).get(&id) {
             Some(RunState::Tracked(t)) => (t.inbox.clone(), t.mac),
-            _ => return Err(format!("shards: {reference} is not running")),
+            _ => return Err(Unsaved::NotRunning(id)),
         };
         if lock(&inbox).host_net.is_some() {
-            return Err(format!(
-                "shards: {reference} is on the host's network, whose sockets of the host's no snapshot keeps"
-            ));
+            return Err(Unsaved::HostNetwork);
         }
-        let dir = lock(&self.containers).dir(&id).join(SNAPSHOTS);
-        let name = match parsed.args.get(1) {
-            Some(name) if valid(name) => name.clone(),
-            Some(name) => {
-                return Err(format!(
-                    "shards: {name:?} cannot name a snapshot: a letter or digit, then letters, digits, '_', '.' or '-', and no '.' last"
-                ));
-            }
-            None => fresh(&|name| dir.join(name).exists()),
-        };
-        let at = dir.join(&name);
-        if at.exists() {
-            return Err(format!("shards: {reference} has a snapshot named {name} already"));
-        }
-        let failed = |e: &dyn std::fmt::Display| format!("shards: cannot save {reference}: {e}");
-        if let Err(e) = shards_vmm::platform::create_private_dir(&dir)
-            && e.kind() != std::io::ErrorKind::AlreadyExists
-        {
-            return Err(failed(&e));
-        }
+        let failed = |e: &dyn std::fmt::Display| Unsaved::Failed(e.to_string());
         // Its tokens, which its guest is given, and its interface's identity, kept beside
         // it for its restore.
         let mut tokens = [0u8; 2 * shards_abi::run::TOKEN];
@@ -429,14 +635,34 @@ impl<D: Disk> Daemon<D> {
             }),
         };
         let record = serde_json::to_vec(&resume).map_err(|e| failed(&e))?;
+        let dir = lock(&self.containers).dir(&id).join(SNAPSHOTS);
+        if let Err(e) = shards_vmm::platform::create_private_dir(&dir)
+            && e.kind() != std::io::ErrorKind::AlreadyExists
+        {
+            return Err(failed(&e));
+        }
+        // Its name is taken as its directory is made: two saves never share one, where
+        // dockerd's look and then make, and one that fails removes only what it made.
+        let mut claim = |name: &str| std::fs::create_dir(dir.join(name));
+        let name = match asked {
+            Some(name) => match claim(name) {
+                Ok(()) => name.to_string(),
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                    return Err(Unsaved::Exists(name.to_string()));
+                }
+                Err(e) => return Err(failed(&e)),
+            },
+            None => fresh(&mut claim).map_err(|e| failed(&e))?,
+        };
+        let at = dir.join(&name);
         // With room for the run's swap, which a run without one leaves empty.
-        let mut staged = shards_vmm::snapshot::prepare(&at, true).map_err(|e| failed(&e))?;
-        let asked = self.ask_save(&id, &staged, &name, &tokens, leave_running);
-        let saved = asked
-            .and_then(|()| staged.add(RESUME, &record))
-            .and_then(|()| staged.commit());
+        let saved = shards_vmm::snapshot::prepare(&at, true).and_then(|mut staged| {
+            self.ask_save(&id, &staged, &name, &tokens, leave_running)?;
+            staged.add(RESUME, &record)?;
+            staged.commit()
+        });
         if let Err(e) = saved {
-            // Nothing of it stays: a name it took is free again.
+            // Nothing of it stays: the name it took is free again.
             let _ = std::fs::remove_dir_all(&at);
             // One its save stopped keeps no snapshot it could resume.
             if !leave_running {
@@ -450,7 +676,7 @@ impl<D: Disk> Daemon<D> {
         }
         // moby's event for a checkpoint (daemon/checkpoint.go).
         self.container_event(&id, "checkpoint", &[]);
-        Ok(name)
+        Ok((id, name))
     }
 
     /// Asks container `id`'s VM to fill `staged`, its snapshot `snapshot`, and waits for its
@@ -535,14 +761,64 @@ mod tests {
         for bad in ["", "a", "-a", ".a", "a.", "a/b", "/ab", "a b", "a:b"] {
             assert!(!valid(bad), "{bad}");
         }
-        let stamp = fresh(&|_| false);
+        let stamp = fresh(&mut |_| Ok(())).unwrap();
         assert!(valid(&stamp), "{stamp}");
         assert!(stamp.ends_with('Z') && !stamp.contains(':'), "{stamp}");
-        let next = fresh(&|name| name == stamp);
+        let mut taken = |name: &str| {
+            if name == stamp {
+                Err(std::io::ErrorKind::AlreadyExists.into())
+            } else {
+                Ok(())
+            }
+        };
+        let next = fresh(&mut taken).unwrap();
         assert_ne!(next, stamp);
         // Unless the second turned between the two.
         if next.starts_with(&stamp) {
             assert_eq!(next, format!("{stamp}-2"));
         }
+        // A name that cannot be made for another reason fails the save, which takes no
+        // other.
+        let mut tried = 0;
+        let failing = fresh(&mut |_| {
+            tried += 1;
+            Err(std::io::ErrorKind::PermissionDenied.into())
+        });
+        assert_eq!(
+            (failing.map_err(|e| e.kind()), tried),
+            (Err(std::io::ErrorKind::PermissionDenied), 1)
+        );
+        // A name refused is quoted as Go quotes it, as dockerd's refusal does.
+        assert_eq!(
+            invalid_checkpoint("a\x1bb"),
+            "invalid checkpoint ID \"a\\x1bb\", only [a-zA-Z0-9][a-zA-Z0-9_.-] are allowed"
+        );
+    }
+
+    /// A daemon's start removes what its end cut short of a snapshot's save or removal: a
+    /// snapshot with no generation in place, never one with its pointer.
+    #[test]
+    fn a_start_removes_snapshots_cut_short() {
+        let dir = shards_testdir::TempDir::new("cut").unwrap();
+        let snapshots = dir.path().join(SNAPSHOTS);
+        for (name, file) in [
+            ("kept", "g-1/memory"),
+            ("kept", shards_vmm::snapshot::CURRENT),
+            ("cut", ".g-2.tmp/memory"),
+            ("half", "g-3/memory"),
+        ] {
+            let at = snapshots.join(name).join(file);
+            std::fs::create_dir_all(at.parent().unwrap()).unwrap();
+            std::fs::write(at, b"g-1\n").unwrap();
+        }
+        let mut notes = Vec::new();
+        remove_unsaved(dir.path(), &mut |n| notes.push(n));
+        assert!(notes.is_empty(), "{notes:?}");
+        assert!(snapshots.join("kept/g-1/memory").exists());
+        assert!(!snapshots.join("cut").exists() && !snapshots.join("half").exists());
+        // A container with none has nothing to remove, and nothing to say.
+        let none = shards_testdir::TempDir::new("none").unwrap();
+        remove_unsaved(none.path(), &mut |n| notes.push(n));
+        assert!(notes.is_empty(), "{notes:?}");
     }
 }

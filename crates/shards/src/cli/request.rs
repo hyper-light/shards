@@ -147,6 +147,8 @@ pub fn start(path: &str, args: &[OsString]) -> ExitCode {
         }
     };
     let (attach, interactive) = (parsed.bool("attach"), parsed.bool("interactive"));
+    // A container resumed from a checkpoint of its own, a microVM's snapshot (D176).
+    let checkpoint = Some(parsed.string("checkpoint").to_string()).filter(|c| !c.is_empty());
     if attach || interactive {
         if parsed.args.len() > 1 {
             return refuse("you cannot start and attach multiple containers at once");
@@ -169,9 +171,24 @@ pub fn start(path: &str, args: &[OsString]) -> ExitCode {
             again: Some(container),
             interactive: interactive && open_stdin,
             tty: tty.then(stdout_size),
+            resume: checkpoint,
             ..Run::default()
         };
         return send(&mut request, &detach_keys, &mut None, !tty);
+    }
+    // One, which says nothing once it runs (docker/cli container/start.go).
+    if let Some(checkpoint) = checkpoint {
+        let [container] = parsed.args.as_slice() else {
+            return refuse("you cannot restore multiple containers at once");
+        };
+        let mut request = Run {
+            again: Some(container.clone()),
+            resume: Some(checkpoint),
+            detach: true,
+            silent: true,
+            ..Run::default()
+        };
+        return send(&mut request, &detach_keys, &mut None, false);
     }
     // startContainersWithoutAttachments: each named as it starts, the others' errors
     // said, and their names after.

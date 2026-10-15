@@ -12,7 +12,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"os"
 	"strings"
 	"testing"
@@ -173,9 +172,21 @@ func tree(t *testing.T, images []shardsImage, expanded bool, width uint, noColor
 			t.Fatal(err)
 		}
 		cli.SetOut(out)
+		// What the CLI writes is read whole before the tty closes: a last close of a tty
+		// flushes what its master has yet to read (XNU tty.c, ttyclose's ttyflush), which
+		// cut a tree short once. A mark written after it, once read back, says the master
+		// has all that came before.
+		const mark = "\x00shards-end\x00"
 		done := make(chan struct{})
 		go func() {
-			_, _ = io.Copy(&got, ptmx)
+			buf := make([]byte, 4096)
+			for !bytes.Contains(got.Bytes(), []byte(mark)) {
+				n, err := ptmx.Read(buf)
+				got.Write(buf[:n])
+				if err != nil {
+					break
+				}
+			}
 			close(done)
 		}()
 		if _, err := runTree(context.Background(), cli, treeOptions{
@@ -184,11 +195,18 @@ func tree(t *testing.T, images []shardsImage, expanded bool, width uint, noColor
 		}); err != nil {
 			t.Fatal(err)
 		}
+		if _, err := tty.Write([]byte(mark)); err != nil {
+			t.Fatal(err)
+		}
+		ptmx.SetReadDeadline(time.Now().Add(10 * time.Second))
+		<-done
 		out.RestoreTerminal()
 		tty.Close()
-		ptmx.SetReadDeadline(time.Now().Add(2 * time.Second))
-		<-done
-		return strings.ReplaceAll(got.String(), "\r\n", "\n")
+		text, found := strings.CutSuffix(got.String(), mark)
+		if !found {
+			t.Fatalf("the tree's output ended without its mark: %q", got.String())
+		}
+		return strings.ReplaceAll(text, "\r\n", "\n")
 	}
 	if _, err := runTree(context.Background(), cli, treeOptions{
 		images:   summaries(images, time.Now().Unix()),

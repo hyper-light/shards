@@ -1079,6 +1079,11 @@ fn serve(ready: Option<File>) -> Result<(), String> {
     let vm = crate::helpers::vm()?;
     let containers = Registry::open(&home, &mut |note| log(note))
         .map_err(|e| format!("{}: {e}", home.join("containers").display()))?;
+    // What a daemon's end cut short of a snapshot's save or removal (D176), before any
+    // save of this one's.
+    for c in containers.all() {
+        snapshots::remove_unsaved(&containers.dir(&c.id), &mut |note| log(note));
+    }
     let daemon = Daemon::new(home, vm, identity, settings, containers, Real, home_lock)
         .map_err(|e| format!("following runs: {e}"))?;
     daemon.make_spare();
@@ -2734,7 +2739,7 @@ impl<D: Disk> Daemon<D> {
                 options: prepared.options.clone(),
                 health: prepared.health.clone().map(|h| (h, prepared.shell.clone())),
                 published,
-                named: again.clone().filter(|_| run.detach),
+                named: again.clone().filter(|_| run.detach && !run.silent),
                 restarted: restarting,
                 layer_pending: layer_out.is_some(),
                 log_files: kept.map_or(self.logs.files, |k| k.files),
@@ -3038,6 +3043,12 @@ impl<D: Disk> Daemon<D> {
                 continue;
             }
             if runs.contains_key(&id) {
+                drop(runs);
+                // A frozen one is neither started nor left so, as dockerd's is not
+                // (daemon/start.go, validateState).
+                if lock(&self.paused).contains(&id) {
+                    return Err("shards: cannot start a paused container, try unpause instead".into());
+                }
                 return Ok(None);
             }
             runs.insert(id.clone(), RunState::Pending { cancelled: false });
@@ -5817,6 +5828,7 @@ fn again_as(stored: Run, client: &Run, id: &str) -> Run {
         daemon: client.daemon,
         again: Some(id.to_string()),
         resume: client.resume.clone(),
+        silent: client.silent,
         create: false,
         restart: false,
         ..stored

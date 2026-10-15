@@ -3672,7 +3672,7 @@ coordinator would take the request for its own. The machine is taken apart only 
 save has let go of it: the save holds the VM and its devices by weak references, which
 `Running` alone owns. What a save cannot keep whole refuses it, and the microVM goes on as
 it was, with nothing of the save left: a host's devices (VFIO), a GPU's contexts, a
-container joined to it (D119), and, until part 7, a mounted volume, whose open files are
+container joined to it (D119), and, until part 5, a mounted volume, whose open files are
 its server's by node IDs no snapshot holds.
 
 Saved with `--leave-running`, the microVM goes on. Otherwise its save stops it, as `docker
@@ -3732,6 +3732,51 @@ microVM's snapshots, newest first, when each was saved and the disk it takes; `s
 remove snapshot NAME SNAPSHOT...` removes them, and `shards rm` with the microVM. A run on
 the host's network (D124) is not saved: its guest's sockets are the host's, which no
 snapshot keeps.
+
+**Docker's words** (part 4). `checkpoint create [--leave-running] CONTAINER CHECKPOINT`,
+`checkpoint ls`, `checkpoint rm` and `start --checkpoint CHECKPOINT` are `save vm`, `list
+snapshots`, `remove snapshot` and `restore vm` as Docker says them, on shards' command line
+and through the Engine API (`POST` and `GET /containers/{id}/checkpoints`, `DELETE
+/containers/{id}/checkpoints/{name}`, `POST /containers/{id}/start?checkpoint=`). docker/cli
+shows them only to a daemon that says it is experimental (docker/cli v29.8.1
+`checkpoint/cmd.go`, `container/start.go`: the `experimental` annotation, read from
+`/_ping`'s `Docker-Experimental`), so the engine says so, as `info` and `version` do. What
+it means for Docker, a daemon started with `--experimental`, CRIU installed and Linux, a
+microVM needs none of. Their answers are dockerd's (moby 464cd50c `daemon/checkpoint.go`,
+`daemon/start.go`), in its order: a name that is not `[a-zA-Z0-9][a-zA-Z0-9_.-]+`, or ends
+in `.`, refused before anything is looked up (`invalid checkpoint ID "../x", only … are
+allowed`, quoted as Go's `%q` quotes it), then the container, its state, a name taken.
+`start --checkpoint` prints nothing, as docker/cli's does, and restores one container at a
+time. A paused container is not started, by `start` with a checkpoint or without, where
+shards had answered it as one running already: dockerd refuses it (409, `cannot start a
+paused container, try unpause instead`, validateState), before the 304 for one running.
+
+Better than dockerd, a checkpoint's name is taken as its directory is made (mkdir(2)'s
+EEXIST), where dockerd looks for it and then makes it (getCheckpointDir: os.Stat, then
+os.MkdirAll): two creates of one name at once both go on, into one directory, and one that
+fails removes it (os.RemoveAll), the other's dump with it. In shards the second is refused,
+and a save that fails removes only the directory it made. Before this, shards looked and
+then made it too: a second save of the name passed, waited for the first's lock, and then
+saved over it, or, finding the microVM stopped by the first, failed and removed the
+snapshot the first had saved, the stopped microVM's only copy. What a daemon's end cuts
+short, a save or a removal, leaves a snapshot with no generation in place, whose name the
+claim would hold, and whose files `list snapshots` would not show: the next daemon's start
+removes it before it serves (`a_start_removes_snapshots_cut_short`, and on a real daemon
+restarted, `checkpoints_are_a_microvms_snapshots_in_dockers_words`, mutation-checked), and
+a removal takes the pointer first, so that one cut short is never a snapshot a restore
+would take.
+
+A checkpoint directory of the client's (`--checkpoint-dir`, the API's `CheckpointDir`) is
+refused, saying why: dockerd writes and lists checkpoints wherever its caller names, but
+restores from none of them (`custom checkpointdir is not supported`, 403, which shards'
+start answers too), so that its checkpoints move between containers and hosts only by
+being copied into the one's own directory by hand. A microVM's snapshot is its devices as
+they were, its disks and its interface's identity among them, which another microVM can
+resume only with the same devices: a snapshot restored in another microVM, or on another
+host, is part 6, which checks them. Held, on real microVMs, by
+`checkpoints_are_a_microvms_snapshots_in_dockers_words` (tests/saved.rs) and
+`the_docker_cli_checkpoints_and_restores_microvms` (tests/engine.rs, the docker CLI
+itself), and by docker/cli's own answers to the command lines (oracle_test.go).
 
 ### D175. Sockets read in poll(2) on macOS, and streams ended one way at a time
 
