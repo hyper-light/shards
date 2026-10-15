@@ -1043,17 +1043,17 @@ pub fn exec(to: &'static ToGuest, req: ExecRequest) -> Result<(), String> {
         .name("exec".into())
         .spawn(move || {
             let mut req = req;
-            let (status, answered) = match exec_session(to, &mut req) {
-                Ok(ended) => ended,
+            let status = match exec_session(to, &mut req) {
+                Ok(status) => status,
                 Err(e) => {
                     let _ = writeln!(req.stderr, "shards: {e}");
-                    (Some(1), false)
+                    1
                 }
             };
-            if let (Some(status), false) = (status, answered) {
-                let _ = shards_ipc::send(&req.client, shards_ipc::kind::EXIT, &[status], &[]);
-            }
-            if let (Some(status), Some(daemon)) = (status, &req.daemon) {
+            // Its end, to its client: a detached exec's, which heard its start, too, for a
+            // client that stays to keep it (the Engine API's, D170); shards' CLI has left.
+            let _ = shards_ipc::send(&req.client, shards_ipc::kind::EXIT, &[status], &[]);
+            if let Some(daemon) = &req.daemon {
                 let ended = [&req.number.to_be_bytes()[..], &[status]].concat();
                 let _ = shards_ipc::send(daemon, shards_ipc::kind::EXEC_ENDED, &ended, &[]);
             }
@@ -1079,12 +1079,11 @@ fn exec_frame(token: &[u8; run::TOKEN], id: u32, spec: &Spec) -> Result<Vec<u8>,
     Ok(payload)
 }
 
-/// One exec, from asking the guest for it to its status. `None` once a detached exec's
-/// client has been told it started; what never started is said on `req.stderr`.
+/// One exec, from asking the guest for it to its status: a detached one's client is told
+/// once it starts, and it is followed to its end, its output going nowhere. What never
+/// started is said on `req.stderr`.
 #[cfg(unix)]
-/// Its status, if it ended, and whether its client was answered already: a detached one is
-/// once it starts, then followed to its end, its output going nowhere.
-fn exec_session(to: &'static ToGuest, req: &mut ExecRequest) -> Result<(Option<u8>, bool), String> {
+fn exec_session(to: &'static ToGuest, req: &mut ExecRequest) -> Result<u8, String> {
     let mut token = [0u8; run::TOKEN];
     shards_vmm::platform::fill_random(&mut token).map_err(|e| format!("an exec's token: {e}"))?;
     let id = NEXT_EXEC.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -1144,7 +1143,6 @@ fn exec_session(to: &'static ToGuest, req: &mut ExecRequest) -> Result<(Option<u
     }
     let mut frame = Vec::new();
     let mut not_started: Option<(u8, String)> = None;
-    let mut answered = false;
     let mut conn = io::BufReader::with_capacity(run::BUFFERED, &conn);
     loop {
         let mut h = [0u8; run::HEADER];
@@ -1162,7 +1160,6 @@ fn exec_session(to: &'static ToGuest, req: &mut ExecRequest) -> Result<(Option<u
         match which {
             kind::STARTED if req.detached => {
                 let _ = shards_ipc::send(&req.client, shards_ipc::kind::EXIT, &[0], &[]);
-                answered = true;
                 // Its client's stdio is let go of, as `docker exec -d` holds none of it once
                 // the command has started: what reads the client's output to its end is not
                 // held until the command ends.
@@ -1190,23 +1187,20 @@ fn exec_session(to: &'static ToGuest, req: &mut ExecRequest) -> Result<(Option<u
             kind::EXIT => {
                 let status: [u8; 4] = payload.try_into().map_err(|_| "malformed exit status")?;
                 let status = u8::try_from(u32::from_be_bytes(status)).unwrap_or(u8::MAX);
-                return Ok((
-                    Some(match not_started {
-                        None => status,
-                        Some((run::exec_failed::DAEMON, why)) => {
-                            let _ = writeln!(req.stderr, "shards: {why}");
-                            1
-                        }
-                        Some((_, why)) => {
-                            // The status of what init could not start (126 or 127, as moby
-                            // daemon/errors.go sets them), and why.
-                            let (_, code) = shards_cmdline::commands::start_failed(&why);
-                            let _ = writeln!(req.stderr, "shards: cannot start the command: {why}");
-                            code
-                        }
-                    }),
-                    answered,
-                ));
+                return Ok(match not_started {
+                    None => status,
+                    Some((run::exec_failed::DAEMON, why)) => {
+                        let _ = writeln!(req.stderr, "shards: {why}");
+                        1
+                    }
+                    Some((_, why)) => {
+                        // The status of what init could not start (126 or 127, as moby
+                        // daemon/errors.go sets them), and why.
+                        let (_, code) = shards_cmdline::commands::start_failed(&why);
+                        let _ = writeln!(req.stderr, "shards: cannot start the command: {why}");
+                        code
+                    }
+                });
             }
             _ => return Err(format!("the guest sent an unknown frame kind {which}")),
         }

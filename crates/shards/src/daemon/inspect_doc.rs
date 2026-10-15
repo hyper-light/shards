@@ -163,13 +163,12 @@ fn devices(run: &Run) -> Value {
 }
 
 /// HostConfig.DeviceRequests, as the CLI makes them, or nil: each `--gpus` request
-/// (opts/gpus.go), then the CDI devices' one.
+/// (opts/gpus.go) and each an Engine API create gave, then the CDI devices' one.
 fn device_requests(run: &Run) -> Value {
-    let mut list: Vec<Value> = run
-        .gpus
-        .iter()
-        .filter_map(|v| shards_cmdline::gpus::gpu_request(v).ok())
-        .map(|r| {
+    let mut list: Vec<Value> = crate::run::gpu_requests(run)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(_, r)| {
             let options = r.options.iter().map(|(k, v)| (k.clone(), s(v))).collect();
             Struct::new("container.DeviceRequest")
                 .field("Driver", s(&r.driver))
@@ -655,6 +654,13 @@ fn config(f: &Facts<'_>) -> (Option<Vec<String>>, Option<Vec<String>>, Value) {
     let detached = run.detach && !run.create;
     let attach =
         |stream: &str| !detached && (run.attach.is_empty() || run.attach.iter().any(|a| a == stream));
+    // An Engine API create's as it gave them (D170).
+    let streams = run.streams.unwrap_or(shards_ipc::Streams {
+        stdin: !detached && (run.interactive || run.attach.iter().any(|a| a == "stdin")),
+        stdout: attach("stdout"),
+        stderr: attach("stderr"),
+        stdin_once: !detached && run.interactive,
+    });
     let hostname = run
         .hostname
         .clone()
@@ -663,16 +669,13 @@ fn config(f: &Facts<'_>) -> (Option<Vec<String>>, Option<Vec<String>>, Value) {
         .field("Hostname", s(&hostname))
         .field("Domainname", s(&run.domainname))
         .field("User", s(&user_or(&run.user, "User")))
-        .field(
-            "AttachStdin",
-            Value::Bool(!detached && (run.interactive || run.attach.iter().any(|a| a == "stdin"))),
-        )
-        .field("AttachStdout", Value::Bool(attach("stdout")))
-        .field("AttachStderr", Value::Bool(attach("stderr")))
+        .field("AttachStdin", Value::Bool(streams.stdin))
+        .field("AttachStdout", Value::Bool(streams.stdout))
+        .field("AttachStderr", Value::Bool(streams.stderr))
         .tagged("ExposedPorts", Some("ExposedPorts"), true, set(exposed))
         .field("Tty", Value::Bool(run.tty.is_some()))
         .field("OpenStdin", Value::Bool(run.interactive))
-        .field("StdinOnce", Value::Bool(!detached && run.interactive))
+        .field("StdinOnce", Value::Bool(streams.stdin_once))
         .field("Env", strs(&env, false))
         .field(
             "Cmd",

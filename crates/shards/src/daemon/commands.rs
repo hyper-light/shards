@@ -2916,7 +2916,7 @@ pub(super) fn displayable_ports(mut ports: Vec<PortSummary>) -> String {
 
 /// A container's command as the API shows it: the path, then the arguments, each in single
 /// quotes if it holds a space (moby daemon/container/view.go).
-fn command_line(argv: &[String]) -> String {
+pub(super) fn command_line(argv: &[String]) -> String {
     let Some((path, args)) = argv.split_first() else {
         return String::new();
     };
@@ -3141,7 +3141,7 @@ pub(super) fn human_duration(ns: u128) -> String {
 /// A container's status as dockerd words it (moby daemon/container/state.go): up for how
 /// long, with its health if it has a check; else being removed, if it is; or exited with
 /// what status how long ago, or created and never started.
-fn status(
+pub(super) fn status(
     c: &Container,
     at: u128,
     health: Option<super::health::Status>,

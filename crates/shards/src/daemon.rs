@@ -37,6 +37,7 @@ pub(crate) use commands::COPY_STEP;
 mod builder_prune;
 mod commit;
 mod demand;
+mod engine;
 mod events;
 mod files;
 mod filters;
@@ -792,6 +793,8 @@ struct Daemon<D: Disk = Real> {
     packing: packed::Packing,
     /// The logs being sent where their drivers say, a thread each (ship.rs, D163).
     shipping: ship::Shipping,
+    /// The Engine API's calls in hand, and what it keeps between them (engine.rs, D170).
+    engine: engine::Engine,
     /// The pools to refill and the spare to make, on the refiller's thread (refill.rs).
     refills: refill::Refills,
     /// When each running container's health check is next due (health.rs).
@@ -1049,6 +1052,19 @@ fn serve(ready: Option<File>) -> Result<(), String> {
     listener
         .set_nonblocking(true)
         .map_err(|e| format!("{}: {e}", home.join(socket).display()))?;
+    // The Engine API's (D170), beside it: one that cannot be made is said, and the daemon
+    // serves its CLI without it.
+    let _ = std::fs::remove_file(engine::SOCKET);
+    let api = match UnixListener::bind(engine::SOCKET).and_then(|l| l.set_nonblocking(true).map(|()| l)) {
+        Ok(api) => Some(api),
+        Err(e) => {
+            log(format!(
+                "{}: {e}; the Engine API is not served",
+                home.join(engine::SOCKET).display()
+            ));
+            None
+        }
+    };
     let identity = Identity::of_build(&exe).map_err(|e| format!("{}: {e}", exe.display()))?;
     let vm = crate::helpers::vm()?;
     let containers = Registry::open(&home, &mut |note| log(note))
@@ -1076,7 +1092,7 @@ fn serve(ready: Option<File>) -> Result<(), String> {
         daemon.ship_left(threads);
         daemon.start_collector(threads);
         daemon.restart_at_start(threads);
-        daemon.listen(threads, listener);
+        daemon.listen(threads, listener, api);
     });
     Ok(())
 }
@@ -1280,6 +1296,7 @@ impl<D: Disk> Daemon<D> {
             files: files::Files::default(),
             packing: packed::Packing::default(),
             shipping: ship::Shipping::default(),
+            engine: engine::Engine::default(),
             refills: refill::Refills::default(),
             checks: health::Checks::default(),
             booting: Mutex::default(),
@@ -1294,6 +1311,7 @@ impl<D: Disk> Daemon<D> {
         let _at = lock(&self.socket_at);
         if !self.closed.swap(true, Ordering::SeqCst) {
             let _ = std::fs::remove_file(self.socket);
+            let _ = std::fs::remove_file(engine::SOCKET);
         }
     }
 
@@ -1325,10 +1343,38 @@ impl<D: Disk> Daemon<D> {
         }
     }
 
+    /// Binds the Engine API's socket again where someone removed it while the daemon
+    /// serves, as [`relisten`](Self::relisten) binds the daemon's.
+    fn relisten_api(&self, closing: bool, api: &mut Option<UnixListener>) {
+        let path = Path::new(engine::SOCKET);
+        if closing || api.is_none() || std::fs::symlink_metadata(path).is_ok() {
+            return;
+        }
+        let _at = lock(&self.socket_at);
+        if self.closed.load(Ordering::SeqCst) || std::fs::symlink_metadata(path).is_ok() {
+            return;
+        }
+        match UnixListener::bind(path).and_then(|l| l.set_nonblocking(true).map(|()| l)) {
+            Ok(l) => {
+                log(format!(
+                    "{} was removed; listening there again",
+                    self.home.join(path).display()
+                ));
+                *api = Some(l);
+            }
+            Err(e) => log(format!("{}: {e}", self.home.join(path).display())),
+        }
+    }
+
     /// Accepts clients until it is time to exit: when stopped, or idle for `idle`. Then it
     /// removes the socket, so no client arrives after, serves any that already did, and
     /// exits.
-    fn listen<'s, 'e>(&'s self, threads: &'s Threads<'s, 'e>, mut listener: UnixListener) {
+    fn listen<'s, 'e>(
+        &'s self,
+        threads: &'s Threads<'s, 'e>,
+        mut listener: UnixListener,
+        mut api: Option<UnixListener>,
+    ) {
         // Out of descriptors, since when: said once, not every retry.
         let mut starved_since: Option<Instant> = None;
         // The home, whose removal and its socket's the listener must see, and its images,
@@ -1359,6 +1405,26 @@ impl<D: Disk> Daemon<D> {
             // Someone may remove the socket while the daemon runs; a removal of the home,
             // which takes the lock too, is seen above once it has.
             self.relisten(closing, &mut listener);
+            self.relisten_api(closing, &mut api);
+            // The Engine API's clients, each served on a thread of its own as long as it
+            // keeps its connection: not counted among the clients in hand, whose cap is
+            // for requests, as each of its calls is counted as it is put to the daemon.
+            // One that cannot be accepted now (out of descriptors) waits for the retry.
+            let mut api_ready = true;
+            if let Some(api) = &api {
+                loop {
+                    match api.accept() {
+                        Ok((conn, _)) => self.take_engine(threads, conn),
+                        Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+                        Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
+                        Err(e) => {
+                            log(format!("accepting an API client: {e}"));
+                            api_ready = false;
+                            break;
+                        }
+                    }
+                }
+            }
             let mut starved = false;
             while self.busy.load(Ordering::SeqCst) < self.max_clients {
                 // An accept that fails for want of a descriptor drops its client on macOS
@@ -1411,7 +1477,9 @@ impl<D: Disk> Daemon<D> {
             }
             self.age_pools();
             self.mark_collection();
-            let quiet = self.busy.load(Ordering::SeqCst) == 0 && lock(&self.runs).is_empty();
+            let quiet = self.busy.load(Ordering::SeqCst) == 0
+                && lock(&self.runs).is_empty()
+                && self.engine.open.load(Ordering::SeqCst) == 0;
             let idle = quiet && lock(&self.last).elapsed() >= self.idle;
             if !self.closed.load(Ordering::SeqCst) && (self.stopping.load(Ordering::SeqCst) || idle) {
                 self.close();
@@ -1424,13 +1492,18 @@ impl<D: Disk> Daemon<D> {
             // At the cap, or starved, the listener would be readable at once: it waits for
             // a client to leave instead.
             let accepting = !starved && self.busy.load(Ordering::SeqCst) < self.max_clients;
-            let looking = starved || watches.iter().any(Option::is_none);
+            let looking = starved || !api_ready || watches.iter().any(Option::is_none);
             let timeout = if looking {
                 Some(RETRY.min(self.next_duty(quiet).unwrap_or(RETRY)))
             } else {
                 self.next_duty(quiet)
             };
-            self.wait_for_work(accepting.then_some(&listener), &watches, timeout);
+            self.wait_for_work(
+                accepting.then_some(&listener),
+                api.as_ref().filter(|_| api_ready),
+                &watches,
+                timeout,
+            );
         }
     }
 
@@ -1490,6 +1563,7 @@ impl<D: Disk> Daemon<D> {
     fn wait_for_work(
         &self,
         listener: Option<&UnixListener>,
+        api: Option<&UnixListener>,
         watches: &[Option<FileWatch>; 2],
         timeout: Option<Duration>,
     ) {
@@ -1504,6 +1578,7 @@ impl<D: Disk> Daemon<D> {
             pollfd(watched(&watches[0])),
             pollfd(watched(&watches[1])),
             pollfd(listener.map_or(-1, AsRawFd::as_raw_fd)),
+            pollfd(api.map_or(-1, AsRawFd::as_raw_fd)),
         ];
         // Rounded up: a wait of 0 ms would return at once, and spin.
         let ms = timeout.map_or(-1, |t| {
@@ -1512,7 +1587,7 @@ impl<D: Disk> Daemon<D> {
         // SAFETY: poll(2) on pollfds of descriptors this daemon holds open (negative ones
         // are ignored).
         unsafe { libc::poll(polled.as_mut_ptr(), polled.len() as libc::nfds_t, ms) };
-        let [wake, home, images, _] = polled;
+        let [wake, home, images, _, _] = polled;
         if wake.revents != 0 {
             let mut drained = [0u8; 64];
             while matches!((&self.listener_wake.1).read(&mut drained), Ok(n) if n > 0) {}
@@ -1598,6 +1673,7 @@ impl<D: Disk> Daemon<D> {
     /// Ends the clients in hand that a shutdown would otherwise wait for: shut down, their
     /// connections fail every read and write, and their threads return (audit A07).
     fn end_clients(&self) {
+        self.end_engine();
         for (number, conn) in lock(&self.clients).iter() {
             // One whose request no thread has taken asks again, of the daemon that comes
             // next, as it would have had its request been the first read: shut out, it
@@ -4115,30 +4191,57 @@ impl<D: Disk> Daemon<D> {
         limit: Option<Duration>,
         client: Option<&UnixStream>,
     ) -> Option<u8> {
-        let (number, told) = {
-            // A run `rm` cancelled will never run.
-            if matches!(
+        match self.register_waiter(registry, id, false)? {
+            Err(code) => Some(code),
+            Ok(waiter) => self.await_waiter(id, waiter, limit, client),
+        }
+    }
+
+    /// A waiter for the end of the container with `id`, found in `registry`, held since,
+    /// registered under its lock, under which ends are told, so that none goes unheard:
+    /// its number and the socket its code comes on; or its code at once (`Err`) where it
+    /// does not run, unless `next` asks for its next run's, though it has yet to start (the
+    /// Engine API's `next-exit`, D170). `None` where no waiter could be made.
+    pub(super) fn register_waiter(
+        &self,
+        registry: MutexGuard<'_, Registry>,
+        id: &str,
+        next: bool,
+    ) -> Option<Result<(u64, UnixStream), u8>> {
+        // A run `rm` cancelled will never run.
+        if !next
+            && matches!(
                 lock(&self.runs).get(id),
                 None | Some(RunState::Pending { cancelled: true })
-            ) {
-                return Some(registry.get(id).and_then(|c| c.exit_code).unwrap_or(0));
+            )
+        {
+            return Some(Err(registry.get(id).and_then(|c| c.exit_code).unwrap_or(0)));
+        }
+        let (told, wake) = match UnixStream::pair() {
+            Ok(pair) => pair,
+            Err(e) => {
+                log(format!("container {id}: waiting for its end: {e}"));
+                return None;
             }
-            let (told, wake) = match UnixStream::pair() {
-                Ok(pair) => pair,
-                Err(e) => {
-                    log(format!("container {id}: waiting for its end: {e}"));
-                    return None;
-                }
-            };
-            let number = self.next_waiter.fetch_add(1, Ordering::Relaxed);
-            lock(&self.waiters)
-                .entry(id.to_string())
-                .or_default()
-                .push(Waiter { number, wake });
-            (number, told)
         };
-        // Registered: an end is heard from here, which needs the records' lock to be told.
-        drop(registry);
+        let number = self.next_waiter.fetch_add(1, Ordering::Relaxed);
+        lock(&self.waiters)
+            .entry(id.to_string())
+            .or_default()
+            .push(Waiter { number, wake });
+        Some(Ok((number, told)))
+    }
+
+    /// Waits up to `limit` (for ever if `None`) for the end the waiter `register_waiter`
+    /// made for container `id` hears: its code, or `None` once `client` hangs up first.
+    /// A waiter that stops waiting is forgotten (audit A07).
+    pub(super) fn await_waiter(
+        &self,
+        id: &str,
+        (number, told): (u64, UnixStream),
+        limit: Option<Duration>,
+        client: Option<&UnixStream>,
+    ) -> Option<u8> {
         let deadline = limit.and_then(|l| Instant::now().checked_add(l));
         // Its code, its client's end (a command's client sends nothing after its request:
         // anything to read is its end), or the limit: nothing else wakes it.

@@ -108,6 +108,27 @@ against the SHA-256 built into shards, and keeps it. Later runs don't need the n
 To download it from somewhere else, such as a mirror, set `SHARDS_KERNEL_URL`; the checksum
 still applies. The program each microVM runs first, `shards-init`, is part of shards.
 
+### Programs that speak Docker's API
+
+Programs that make containers through Docker's Engine API (Docker's SDKs, Testcontainers,
+agent frameworks, the `docker` CLI itself) make microVMs with shards, unchanged. Point them
+at shards' socket, a file in shards' home that only your user can reach (no network port):
+
+```console
+$ shards daemon --detached
+$ export DOCKER_HOST="unix://$HOME/Library/Application Support/shards/engine.sock"   # macOS
+$ export DOCKER_HOST="unix://${XDG_DATA_HOME:-$HOME/.local/share}/shards/engine.sock" # Linux
+$ docker run --rm alpine echo hello
+hello
+```
+
+The socket is there while shards' background service runs, which any `shards` command
+starts. It stays while a program keeps a connection open or asks something, and stops after
+`SHARDS_DAEMON_IDLE` seconds without either (default 900). Served today: containers (create,
+start, attach, wait, logs, exec, stop, kill, remove, list, inspect), images (pull, list,
+inspect), `version` and `info`. A setting a microVM can't take is refused with the reason,
+never dropped.
+
 ### Boot a kernel yourself
 
 You need a kernel and a program to run as PID 1. Download shards' kernel, built
@@ -200,6 +221,7 @@ SHARDS-TEST PASS
 | Confining shards itself | Planned. A microVM's guest runs behind the hypervisor, but the shards process that runs it has your user's permissions, as Firecracker's does without its seccomp filters and jailer: a flaw in shards' own device code could reach what you can. Syscall filters on Linux and a sandbox on macOS will narrow that |
 | Docker's commands and Compose files | In progress: `run`, `ps`, `wait`, `logs`, `stop`, `kill` and `rm` take `docker`'s flags and answer with its words, its `--help` included. A flag shards can't serve yet says so. `build`, `exec`, the rest and Compose are planned |
 | GPUs | Planned |
+| Programs that use Docker's Engine API (SDKs, Testcontainers, the `docker` CLI) | Works for containers, exec, logs and images: point `DOCKER_HOST` at shards' `engine.sock` |
 
 The target is a usable machine within 5 ms of the request, using less memory than
 Firecracker. The plan and its evidence are in

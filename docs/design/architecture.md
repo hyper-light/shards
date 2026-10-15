@@ -3614,6 +3614,62 @@ No run-time labels, relays or declassifiers (§12 answer 14, decided by the user
 an internal-only domain to the world (D58), so there is no data to label. Code mode is
 D136.
 
+### D170. The Engine API, on a socket file in the home
+
+The programs that make agents' sandboxes speak the Engine API: Docker's SDKs,
+Testcontainers, the agent frameworks built on them, the docker CLI. Served by shards,
+every sandbox they make is a microVM, made as `shards create vm` makes one, their code
+unchanged (`DOCKER_HOST=unix://HOME/engine.sock`). What they gain, each for the microVM:
+
+- **Reach: a file in the home, its user's alone.** `engine.sock` sits beside
+  `daemon.sock`, a Unix socket file whose peer's user is checked: no root daemon's
+  socket, whose group Docker's own post-install guide calls root-level, and no TCP
+  listener. Remote use is shards' own, over QUIC (hyper-raft's `hyper-quic` and
+  `hyper-tls`).
+- **Isolation as shards' runs have it.** Each call is put to the daemon as shards' CLI
+  puts the same thing (a run, an attach, an exec, a command), on a socket pair of the
+  engine's, taken as any client's request is: each sandbox a microVM of its own, its
+  network default deny (its grants the ports it publishes and the networks it joins),
+  its log and drivers shards'. No path exists through the API that the CLI does not
+  have. A pull's credentials (X-Registry-Auth) stay in memory, never written.
+- **What is asked is kept, or refused with why.** A create's body becomes the run
+  `shards create vm` makes of the command line that made it (daemon/engine/create.rs),
+  held to docker/cli v29.8.1's own `parse` by 71 recorded command lines of every flag:
+  70 make the same run, and both refuse the I/O maxima. Two things a command line cannot
+  say are kept as given, and inspect gives them back: the streams a client attaches
+  (none for a detached run) and GPU requests whole (Compose's `capabilities: [gpu,
+  utility]`, which `--gpus` would reorder). `Entrypoint: []` takes the image's command,
+  `[""]` none (moby's merge, daemon/commit.go). What a microVM cannot hold is refused,
+  the field named, never dropped: OnBuild, Shell, legacy Links (default deny names each
+  grant), Cgroup, CgroupParent, the I/O maxima, custom masked and read-only paths, tmpfs
+  mount flags (HostConfig.Tmpfs takes them), one mount type's options on another, a `=`
+  in a map's key, a `:` in a tmpfs path. `NetworkDisabled` is network none.
+- **Output from its first byte.** A client that attaches before it starts a sandbox (the
+  SDKs and the docker CLI do) has its output from the start: the attach is held, and
+  the start is an attached one (`shards start vm -a`'s), its stdio pipes to the
+  attaches, the first that asked for it the command's stdin. An attach and a wait are
+  registered before their heads are written, as clients start once they have them, so
+  no first byte and no end goes unseen. A wait is for a microVM not running, its next
+  end though it has yet to start, or its removal.
+- **Terminals and execs.** A terminal's output is raw, its detach keys found as the
+  escape proxy finds them, and a client that detaches leaves the command's stdin open;
+  a terminal is resized through its attached client's connection. An exec's status is
+  kept before its stream ends; a detached exec's VM now tells its client its end after
+  its start (workload.rs).
+- **Errors in shards' words**, their status from them: 404 for what is not there, 409
+  for a conflict, 503 for a daemon stopping.
+- **Version and platform.** 1.56, docker/cli v29.8.1's (its moby/moby/api v1.56.0), from
+  1.40, paths with or without `/v1.NN`; the platform said is the sandboxes': linux and
+  the guests' kernel, which clients choose by. `shards version` says the API it serves.
+- **The daemon stays while it is asked:** a call, or an open connection (SDKs pool
+  theirs), is its work, as a run is; `shards stop daemon` ends API connections too.
+- **Out of scope**, as decided (2026-10-13): swarm, plugins and trust.
+
+Served now: `_ping`, `version`, `info`; microVMs' create, list, inspect, start, attach,
+wait, logs, resize, stop, kill and removal; exec's create, start, inspect and resize;
+images' pull, list and inspect. Held on real microVMs by tests/engine.rs, raw and
+through the docker CLI. Any other call answers 404, naming itself.
+
 ### D169. A run's log sent to Cloud Logging
 
 `--log-driver gcplogs` is served, sent as syslog's is (D163): from shards' store, by the

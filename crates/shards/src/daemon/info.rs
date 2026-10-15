@@ -13,7 +13,7 @@ use crate::containers::State as Life;
 use crate::spec::LOG_STDOUT;
 
 /// What `info` tells.
-struct Facts {
+pub(super) struct Facts {
     containers: usize,
     running: usize,
     paused: usize,
@@ -35,6 +35,21 @@ impl<D: crate::containers::Disk> Daemon<D> {
         asker: &Asker,
         reply: &Reply<'_>,
     ) -> u8 {
+        let facts = self.facts();
+        let format = parsed.string("format");
+        if !format.is_empty() {
+            return formatted(format, &facts, reply);
+        }
+        if asker.styled() {
+            reply.sheet(&sheet(&facts));
+            return 0;
+        }
+        let _ = reply.bytes(LOG_STDOUT, pretty(&facts).as_bytes());
+        0
+    }
+
+    /// What `info` tells, as it is now.
+    pub(super) fn facts(&self) -> Facts {
         let (containers, running, paused) = {
             let paused = lock(&self.paused).len();
             let registry = lock(&self.containers);
@@ -52,7 +67,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
             .ok()
             .flatten()
             .and_then(|g| kernel_version(&g.kernel));
-        let facts = Facts {
+        Facts {
             containers,
             // A paused microVM runs, as a paused container does (dockerd counts it once).
             running: running.saturating_sub(paused),
@@ -65,17 +80,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
             memory: crate::build::host_memory(),
             name: host_name(),
             root: self.home.display().to_string(),
-        };
-        let format = parsed.string("format");
-        if !format.is_empty() {
-            return formatted(format, &facts, reply);
         }
-        if asker.styled() {
-            reply.sheet(&sheet(&facts));
-            return 0;
-        }
-        let _ = reply.bytes(LOG_STDOUT, pretty(&facts).as_bytes());
-        0
     }
 }
 
@@ -103,19 +108,11 @@ fn formatted(format: &str, f: &Facts, reply: &Reply<'_>) -> u8 {
     }
 }
 
-/// The info as docker/cli's dockerInfo holds it (system.Info, embedded, then the
-/// client's): shards' values, and Go's zero values for what shards has nothing of the
-/// kind of (cgroups, containerd, runc, swarm).
+/// The info as docker/cli's dockerInfo holds it: the server's (system.Info), then the
+/// client's.
 fn value(f: &Facts) -> shards_template::Value {
-    use shards_template::{Kind, Struct, Value};
+    use shards_template::{Kind, Value};
     let s = |v: &str| Value::String(v.to_owned());
-    let int = |n: usize| Value::Int(i64::try_from(n).unwrap_or(i64::MAX));
-    let strs = |l: &[&str]| Value::strings(l.iter().copied());
-    let env = |name: &str| {
-        std::env::var(name)
-            .or_else(|_| std::env::var(name.to_lowercase()))
-            .unwrap_or_default()
-    };
     let os = match std::env::consts::OS {
         "macos" => "darwin",
         other => other,
@@ -124,6 +121,71 @@ fn value(f: &Facts) -> shards_template::Value {
         "aarch64" => "arm64",
         "x86_64" => "amd64",
         other => other,
+    };
+    let client = shards_template::Struct::pointer("system.clientInfo")
+        .field("Debug", Value::Bool(false))
+        .tagged(
+            "Platform",
+            Some("Platform"),
+            true,
+            shards_template::Struct::nil("system.platformInfo"),
+        )
+        .tagged("Version", Some("Version"), true, s(env!("CARGO_PKG_VERSION")))
+        .tagged("APIVersion", Some("ApiVersion"), true, s("none"))
+        .tagged("DefaultAPIVersion", Some("DefaultAPIVersion"), true, s("none"))
+        .tagged(
+            "GitCommit",
+            Some("GitCommit"),
+            true,
+            s(option_env!("SHARDS_GIT_COMMIT").unwrap_or("unknown-commit")),
+        )
+        .tagged(
+            "GoVersion",
+            Some("GoVersion"),
+            true,
+            s(option_env!("SHARDS_RUSTC").unwrap_or_default()),
+        )
+        .tagged("Os", Some("Os"), true, s(os))
+        .tagged("Arch", Some("Arch"), true, s(arch))
+        .tagged(
+            "BuildTime",
+            Some("BuildTime"),
+            true,
+            s(option_env!("SHARDS_BUILD_TIME").unwrap_or("unknown-buildtime")),
+        )
+        .field("Context", s("default"))
+        .field("Plugins", Value::list(Vec::new()))
+        .field("Warnings", Value::NilList(Kind::String))
+        .value();
+    server(f, "system.dockerInfo")
+        .tagged(
+            "ServerErrors",
+            Some("ServerErrors"),
+            true,
+            Value::NilList(Kind::String),
+        )
+        .tagged("UserName", None, false, s(""))
+        .tagged("ClientInfo", Some("ClientInfo"), true, client)
+        .tagged(
+            "ClientErrors",
+            Some("ClientErrors"),
+            true,
+            Value::NilList(Kind::String),
+        )
+        .value()
+}
+
+/// The server's info (moby's system.Info, as type `name`): shards' values, and Go's zero
+/// values for what shards has nothing of the kind of (cgroups, containerd, runc, swarm).
+pub(super) fn server(f: &Facts, name: &'static str) -> shards_template::Struct {
+    use shards_template::{Kind, Struct, Value};
+    let s = |v: &str| Value::String(v.to_owned());
+    let int = |n: usize| Value::Int(i64::try_from(n).unwrap_or(i64::MAX));
+    let strs = |l: &[&str]| Value::strings(l.iter().copied());
+    let env = |name: &str| {
+        std::env::var(name)
+            .or_else(|_| std::env::var(name.to_lowercase()))
+            .unwrap_or_default()
     };
     let commit = || Struct::new("system.Commit").field("ID", s("")).value();
     let index = Struct::pointer("registry.IndexInfo")
@@ -162,42 +224,7 @@ fn value(f: &Facts) -> shards_template::Value {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_nanos());
-    let client = Struct::pointer("system.clientInfo")
-        .field("Debug", Value::Bool(false))
-        .tagged(
-            "Platform",
-            Some("Platform"),
-            true,
-            Struct::nil("system.platformInfo"),
-        )
-        .tagged("Version", Some("Version"), true, s(env!("CARGO_PKG_VERSION")))
-        .tagged("APIVersion", Some("ApiVersion"), true, s("none"))
-        .tagged("DefaultAPIVersion", Some("DefaultAPIVersion"), true, s("none"))
-        .tagged(
-            "GitCommit",
-            Some("GitCommit"),
-            true,
-            s(option_env!("SHARDS_GIT_COMMIT").unwrap_or("unknown-commit")),
-        )
-        .tagged(
-            "GoVersion",
-            Some("GoVersion"),
-            true,
-            s(option_env!("SHARDS_RUSTC").unwrap_or_default()),
-        )
-        .tagged("Os", Some("Os"), true, s(os))
-        .tagged("Arch", Some("Arch"), true, s(arch))
-        .tagged(
-            "BuildTime",
-            Some("BuildTime"),
-            true,
-            s(option_env!("SHARDS_BUILD_TIME").unwrap_or("unknown-buildtime")),
-        )
-        .field("Context", s("default"))
-        .field("Plugins", Value::list(Vec::new()))
-        .field("Warnings", Value::NilList(Kind::String))
-        .value();
-    Struct::new("system.dockerInfo")
+    Struct::new(name)
         .field("ID", s(""))
         .field("Containers", int(f.containers))
         .field("ContainersRunning", int(f.running))
@@ -309,21 +336,6 @@ fn value(f: &Facts) -> shards_template::Value {
             Struct::nil("system.ContainerdInfo"),
         )
         .field("Warnings", Value::NilList(Kind::String))
-        .tagged(
-            "ServerErrors",
-            Some("ServerErrors"),
-            true,
-            Value::NilList(Kind::String),
-        )
-        .tagged("UserName", None, false, s(""))
-        .tagged("ClientInfo", Some("ClientInfo"), true, client)
-        .tagged(
-            "ClientErrors",
-            Some("ClientErrors"),
-            true,
-            Value::NilList(Kind::String),
-        )
-        .value()
 }
 
 /// The descriptors this process has open, as dockerd counts its own (NFd).

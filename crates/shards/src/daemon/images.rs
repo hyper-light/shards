@@ -289,7 +289,13 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
     /// an image listed by the names kept, and a dangling one by none; with `all`, the
     /// dangling images another was made from as well. `now` and `offset` read a time in
     /// `until` as the asker's clock and zone.
-    fn listed(&self, filters: &Filters, all: bool, now: i128, offset: i64) -> Result<Vec<Summary>, String> {
+    pub(super) fn listed(
+        &self,
+        filters: &Filters,
+        all: bool,
+        now: i128,
+        offset: i64,
+    ) -> Result<Vec<Summary>, String> {
         use shards_image::reference::Reference;
         filters.validate(&IMAGE_FILTERS)?;
         let Some(store) = self.store()? else {

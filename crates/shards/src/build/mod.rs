@@ -53,7 +53,7 @@ mod policy;
 pub(crate) use policy::gitobject;
 pub(crate) mod policy_command;
 mod provenance;
-mod proxy;
+pub(crate) mod proxy;
 mod remote;
 mod s3;
 pub(crate) mod sbom;
