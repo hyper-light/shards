@@ -5182,6 +5182,19 @@ fn builds_reuse_the_steps_they_have_run() {
         .and_then(|n| n.parse().ok())
         .unwrap_or(0);
     assert!(records >= 3, "{}", df.stdout);
+    // Pruning microVMs or images leaves the cache, as docker's container and image
+    // prunes do; `system prune` alone clears it.
+    for kind in ["container", "image"] {
+        let kept = shards(&[kind, "prune", "-f"]);
+        assert_eq!(kept.status, Some(0), "{}", kept.stderr);
+        assert!(!kept.stdout.contains("build cache"), "{kind}: {}", kept.stdout);
+        let df = shards(&["system", "df", "--format", "{{.Type}} {{.TotalCount}}"]);
+        assert!(
+            df.stdout.contains(&format!("Build Cache {records}\n")),
+            "{kind}: {}",
+            df.stdout
+        );
+    }
     let pruned = shards(&["system", "prune", "-f"]);
     assert_eq!(pruned.status, Some(0), "{}", pruned.stderr);
     assert!(

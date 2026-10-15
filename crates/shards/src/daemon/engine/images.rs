@@ -7,7 +7,7 @@ use serde_json::{Value, json};
 use shards_ipc::kind;
 
 use super::http::{Answer, Stream};
-use super::{Call, Done, plain};
+use super::{Call, Done, plain, refused};
 use crate::containers::Disk;
 use crate::daemon::inspect::Missing;
 use crate::daemon::{Daemon, Threads};
@@ -63,6 +63,20 @@ fn auth_env(header: Option<&str>, reference: &str) -> Result<Option<String>, Str
         },
     };
     Ok(Some(json!({ "auths": { server: entry } }).to_string()))
+}
+
+/// An OCI platform as the API gives one (JSON: `os`, `architecture`, `variant`), as the
+/// CLI's `--platform` takes it (`os/arch[/variant]`); one that is not JSON as given.
+fn platform_arg(given: &str) -> String {
+    let Ok(p) = serde_json::from_str::<Value>(given) else {
+        return given.to_string();
+    };
+    let part = |k: &str| p.get(k).and_then(Value::as_str).unwrap_or_default();
+    [part("os"), part("architecture"), part("variant")]
+        .into_iter()
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join("/")
 }
 
 impl<D: Disk> Daemon<D> {
@@ -151,6 +165,148 @@ impl<D: Disk> Daemon<D> {
         }
     }
 
+    /// `POST /images/{name}/tag`: `shards tag image`, the query's `repo` named by its
+    /// `tag`, `latest` where it gives none. One that names no repository is refused,
+    /// where dockerd answers 200 and tags nothing (httputils.RepoTagReference's nil).
+    pub(super) fn engine_image_tag<'s, 'e>(
+        &'s self,
+        threads: &'s Threads<'s, 'e>,
+        name: &str,
+        call: &Call<'_>,
+    ) -> Answer {
+        let repo = call.query("repo").unwrap_or_default();
+        if repo.is_empty() {
+            return Answer::error(400, "a tag names its repository (repo)");
+        }
+        let mut target = match shards_image::reference::Reference::parse_normalized(repo) {
+            Ok(r) => r,
+            Err(e) => return Answer::error(400, format!("repo {repo}: {e}")),
+        };
+        if target.digest.is_some() {
+            return Answer::error(400, "a tag names an image by name and tag, not by digest");
+        }
+        if let Some(tag) = call.query("tag").filter(|t| !t.is_empty()) {
+            target.tag = Some(tag.to_string());
+        }
+        let target = target.to_string();
+        match self.ask_command(threads, &["tag", name, &target]) {
+            Ok((0, _, _)) => Answer::text(201, ""),
+            Ok((_, _, err)) => refused(&String::from_utf8_lossy(&err), 400),
+            Err(e) => Answer::error(500, e),
+        }
+    }
+
+    /// `DELETE /images/{name}`: `shards remove image`, `force` its `-f` and `noprune` its
+    /// `--no-prune`: each name untagged and each image deleted, as `rmi` says them. The
+    /// microVM templates made of what goes, and their warm microVMs, go with the store's
+    /// next collection, which only shards has.
+    pub(super) fn engine_image_remove<'s, 'e>(
+        &'s self,
+        threads: &'s Threads<'s, 'e>,
+        name: &str,
+        call: &Call<'_>,
+    ) -> Answer {
+        let platforms: Vec<String> = call
+            .all("platforms")
+            .filter(|p| !p.is_empty())
+            .map(platform_arg)
+            .collect();
+        let mut argv = vec!["rmi"];
+        if call.flag("force") {
+            argv.push("--force");
+        }
+        if call.flag("noprune") {
+            argv.push("--no-prune");
+        }
+        for p in &platforms {
+            argv.extend(["--platform", p]);
+        }
+        argv.push(name);
+        match self.ask_command(threads, &argv) {
+            Ok((0, out, _)) => {
+                let removed: Vec<Value> = String::from_utf8_lossy(&out)
+                    .lines()
+                    .filter_map(|l| {
+                        l.strip_prefix("Untagged: ")
+                            .map(|n| json!({ "Untagged": n }))
+                            .or_else(|| l.strip_prefix("Deleted: ").map(|d| json!({ "Deleted": d })))
+                    })
+                    .collect();
+                Answer::json(200, &Value::Array(removed))
+            }
+            Ok((_, _, err)) => refused(&String::from_utf8_lossy(&err), 500),
+            Err(e) => Answer::error(500, e),
+        }
+    }
+
+    /// `GET /images/{name}/history`: `shards history image`, each step the newest first,
+    /// the image's ID and names on the newest, as dockerd's containerd store gives them; a
+    /// layer's size its compressed size, where dockerd's is unpacked.
+    pub(super) fn engine_image_history<'s, 'e>(
+        &'s self,
+        threads: &'s Threads<'s, 'e>,
+        name: &str,
+        call: &Call<'_>,
+    ) -> Answer {
+        // One the CLI does not serve, refused in its words.
+        if let Some(p) = call.query("platform").filter(|p| !p.is_empty()) {
+            let p = platform_arg(p);
+            return match self.ask_command(threads, &["history", "--platform", &p, name]) {
+                Ok((_, _, err)) => refused(&String::from_utf8_lossy(&err), 400),
+                Err(e) => Answer::error(500, e),
+            };
+        }
+        let history = match self.history_of(name) {
+            Ok(h) => h,
+            Err(e) => return refused(&e, 500),
+        };
+        let tags = if history.tags.is_empty() {
+            Value::Null
+        } else {
+            json!(history.tags)
+        };
+        let steps: Vec<Value> = history
+            .steps
+            .iter()
+            .enumerate()
+            .map(|(i, step)| {
+                json!({
+                    "Id": if i == 0 { history.id.as_str() } else { "<missing>" },
+                    "Created": step.created,
+                    "CreatedBy": step.by,
+                    "Tags": if i == 0 { tags.clone() } else { Value::Null },
+                    "Size": step.size,
+                    "Comment": step.comment,
+                })
+            })
+            .collect();
+        Answer::json(200, &Value::Array(steps))
+    }
+
+    /// `POST /images/prune`: `shards prune image`. The names the filters keep, dangling
+    /// ones alone unless `dangling=false`: what was untagged and deleted, and the bytes
+    /// reclaimed, counted.
+    pub(super) fn engine_image_prune(&self, call: &Call<'_>) -> Answer {
+        let given = match super::containers::filters(call.query("filters")) {
+            Ok(f) => f.into_iter().map(|(k, v)| format!("{k}={v}")).collect::<Vec<_>>(),
+            Err(e) => return Answer::error(400, e),
+        };
+        let now = i128::try_from(crate::containers::now()).unwrap_or(i128::MAX);
+        match self.prune_images(&given, now, i64::from(crate::cli::utc_offset())) {
+            Ok((removed, bytes)) => {
+                let removed: Vec<Value> = removed
+                    .into_iter()
+                    .map(|r| match r {
+                        crate::daemon::rmi::Removed::Untagged(n) => json!({ "Untagged": n }),
+                        crate::daemon::rmi::Removed::Deleted(d) => json!({ "Deleted": d }),
+                    })
+                    .collect();
+                Answer::json(200, &json!({ "ImagesDeleted": removed, "SpaceReclaimed": bytes }))
+            }
+            Err(e) => refused(&e, 400),
+        }
+    }
+
     /// `GET /images/{name}/json`: its InspectResponse, as `image inspect` gives it.
     pub(super) fn engine_image_inspect(&self, name: &str) -> Answer {
         match self.image_doc(name) {
@@ -176,31 +332,30 @@ impl<D: Disk> Daemon<D> {
             Ok(images) => images,
             Err(e) => return Answer::error(400, plain(&e)),
         };
-        let summaries: Vec<Value> = images
-            .iter()
-            .map(|i| {
-                let labels = self
-                    .image_doc(&i.id)
-                    .ok()
-                    .and_then(|doc| {
-                        serde_json::from_str::<Value>(&crate::daemon::inspect_doc::json(&doc)).ok()
-                    })
-                    .and_then(|doc| doc.pointer("/Config/Labels").cloned())
-                    .unwrap_or_else(|| json!({}));
-                json!({
-                    "Id": i.id,
-                    "ParentId": "",
-                    "RepoTags": i.tags,
-                    "RepoDigests": i.digests,
-                    "Created": i.created,
-                    "Size": i.size,
-                    "SharedSize": -1,
-                    "Labels": if labels.is_null() { json!({}) } else { labels },
-                    "Containers": i.containers,
-                })
-            })
-            .collect();
+        let summaries: Vec<Value> = images.iter().map(|i| self.image_summary(i, -1)).collect();
         Answer::json(200, &Value::Array(summaries))
+    }
+
+    /// Image `i` as the API sums one up (image.Summary), its size shared with others
+    /// `shared` (-1 where not counted).
+    pub(super) fn image_summary(&self, i: &crate::daemon::images::Summary, shared: i64) -> Value {
+        let labels = self
+            .image_doc(&i.id)
+            .ok()
+            .and_then(|doc| serde_json::from_str::<Value>(&crate::daemon::inspect_doc::json(&doc)).ok())
+            .and_then(|doc| doc.pointer("/Config/Labels").cloned())
+            .unwrap_or_else(|| json!({}));
+        json!({
+            "Id": i.id,
+            "ParentId": "",
+            "RepoTags": i.tags,
+            "RepoDigests": i.digests,
+            "Created": i.created,
+            "Size": i.size,
+            "SharedSize": shared,
+            "Labels": if labels.is_null() { json!({}) } else { labels },
+            "Containers": i.containers,
+        })
     }
 }
 

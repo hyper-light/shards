@@ -10,6 +10,7 @@
 
 mod containers;
 mod create;
+mod disk;
 mod exec;
 mod files;
 mod http;
@@ -82,6 +83,14 @@ impl Call<'_> {
         self.query.iter().find(|(k, _)| k == key).map(|(_, v)| v.as_str())
     }
 
+    /// Query parameter `key`'s values, each as given, in order.
+    fn all<'a>(&'a self, key: &'a str) -> impl Iterator<Item = &'a str> + 'a {
+        self.query
+            .iter()
+            .filter(move |(k, _)| k == key)
+            .map(|(_, v)| v.as_str())
+    }
+
     /// Query parameter `key` as a flag, as dockerd reads one (httputils.BoolValue):
     /// anything but empty, `0`, `no`, `false` and `none`.
     fn flag(&self, key: &str) -> bool {
@@ -144,30 +153,47 @@ fn parse_query(query: &str) -> Vec<(String, String)> {
         .collect()
 }
 
-/// The status the API answers an error with, by what it says: a thing that is not there
-/// 404, a conflict with what is 409, a daemon going 503; `otherwise` else.
+/// The status the API answers an error with, by what it says, as dockerd's error kinds
+/// give each (errdefs; api/server/httpstatus): the first of [`STATUSES`] it says, else
+/// `otherwise`.
 fn status_of(said: &str, otherwise: u16) -> u16 {
-    if said.contains("No such ") || said.contains("Could not find the file") {
-        404
-    } else if said.contains("marked read-only") {
-        403
-    } else if [
-        "in use",
-        "is not running",
-        "is paused",
-        "is not paused",
-        "is restarting",
-    ]
-    .iter()
-    .any(|s| said.contains(s))
-    {
-        409
-    } else if said.contains("shutting down") {
-        503
-    } else {
-        otherwise
-    }
+    STATUSES
+        .iter()
+        .find(|(words, _)| said.contains(words))
+        .map_or(otherwise, |&(_, status)| status)
 }
+
+/// Words of shards' refusals, and the status of the error kind dockerd gives the same
+/// refusal (moby docker-v29.4.0).
+const STATUSES: &[(&str, u16)] = &[
+    // NotFound.
+    ("No such ", 404),
+    ("Could not find the file", 404),
+    ("no network is named", 404),
+    // Forbidden: PutContainerArchive's own description (dockerd's checkWritablePath says
+    // InvalidParameter); a predefined network, one with members, one others take their
+    // settings from (daemon/network.go deleteNetwork; libnetwork's ActiveEndpointsError,
+    // "configuration network is in use").
+    ("marked read-only", 403),
+    ("is one of shards' own networks", 403),
+    ("runs are on it", 403),
+    ("networks take their settings from it", 403),
+    // InvalidParameter: a term more than one network answers to (daemon/network.go).
+    ("networks by name", 400),
+    ("networks by their IDs' beginning", 400),
+    // Conflict: a name or volume in use, a run's state, a running microVM removed
+    // without force (daemon/delete.go), an image a microVM was made of or that more
+    // names refer to (daemon/containerd/image_delete.go).
+    ("in use", 409),
+    ("is not running", 409),
+    ("is paused", 409),
+    ("is not paused", 409),
+    ("is restarting", 409),
+    ("it is running", 409),
+    ("cannot remove image", 409),
+    // Unavailable.
+    ("shutting down", 503),
+];
 
 /// What the daemon said, as the API says it: its text without the CLI's prefixes and its
 /// last newline.
@@ -433,6 +459,17 @@ impl<D: Disk> Daemon<D> {
             ("GET", ["exec", id, "json"]) => self.engine_exec_inspect(id),
             ("GET", ["images", "json"]) => self.engine_images(call),
             ("POST", ["images", "create"]) => return self.engine_pull(threads, conn, call),
+            ("POST", ["images", "prune"]) => self.engine_image_prune(call),
+            ("POST", ["images", name @ .., "tag"]) if !name.is_empty() => {
+                self.engine_image_tag(threads, &name.join("/"), call)
+            }
+            ("GET", ["images", name @ .., "history"]) if !name.is_empty() => {
+                self.engine_image_history(threads, &name.join("/"), call)
+            }
+            ("DELETE", ["images", name @ ..]) if !name.is_empty() => {
+                self.engine_image_remove(threads, &name.join("/"), call)
+            }
+            ("GET", ["system", "df"]) => self.engine_df(call),
             ("GET", ["images", name @ .., "json"]) if !name.is_empty() => {
                 self.engine_image_inspect(&name.join("/"))
             }

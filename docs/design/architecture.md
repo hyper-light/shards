@@ -3714,9 +3714,30 @@ unchanged (`DOCKER_HOST=unix://HOME/engine.sock`). What they gain, each for the 
   a terminal is resized through its attached client's connection. An exec's status is
   kept before its stream ends; a detached exec's VM now tells its client its end after
   its start (workload.rs).
-- **Errors in shards' words**, their status from them: 404 for what is not there, 409
-  for a conflict (anything in use), 403 for a read-only refusal, 503 for a daemon
-  stopping.
+- **Images named, traced, removed and pruned** as `tag image`, `history image`,
+  `remove image` and `prune image` do them: control surfaces tools call. A tag that
+  names no repository is refused, where dockerd answers 200 and tags nothing
+  (httputils.RepoTagReference's nil). An image that goes takes the microVM templates made
+  of it, and their warm microVMs, with the store's next collection (`collect_garbage`).
+- **What shards takes on disk** (`inspect disk`): each kind's usage as API 1.52 gives it
+  (ImageUsage, ContainerUsage, VolumeUsage, BuildCacheUsage), the fields of clients
+  before it unless `verbose`, as dockerd answers both; and `TemplateUsage`, the microVMs'
+  templates, the snapshots each image's runs restore: what the cache behind a start in
+  milliseconds costs the disk, which no Docker client is told otherwise.
+- **Prunes said as events.** Pruning microVMs, volumes or networks is said as a `prune`
+  event with what it reclaimed, as dockerd says each (daemon/prune.go; the volume
+  service's Prune); none was before. Its containerd store says none for images, and
+  neither does shards.
+- **The build cache stays** through `prune vm` and `prune image`: every prune cleared it
+  before, a shards bug this slice found; `prune system` clears it, as docker's system
+  prune does, and `builder prune`.
+- **Errors in shards' words**, their status the one dockerd's error kind for the same
+  refusal gives (engine.rs, `STATUSES`, each with its source): 404 for what is not there,
+  a network removed among them (it was 500); 409 for a conflict (anything in use, a
+  running microVM removed, an image a microVM was made of or more names refer to); 403
+  for a read-only refusal, a predefined network removed, one with members, or one others
+  take their settings from (500 before; libnetwork's ActiveEndpointsError is Forbidden);
+  400 for a network more than one answers to; 503 for a daemon stopping.
 - **Version and platform.** 1.56, docker/cli v29.8.1's (its moby/moby/api v1.56.0), from
   1.40, paths with or without `/v1.NN`; the platform said is the sandboxes': linux and
   the guests' kernel, which clients choose by. `shards version` says the API it serves.
@@ -3727,11 +3748,12 @@ unchanged (`DOCKER_HOST=unix://HOME/engine.sock`). What they gain, each for the 
 Served now: `_ping`, `version`, `info`, events; microVMs' create, list, inspect, start,
 attach, wait, logs, resize, stop, kill, removal, copy in and out, export, changes,
 processes, stats, pause and unpause, restart, rename, update and prune; exec's create,
-start, inspect and resize; images' pull, list and inspect; volumes' create, list,
-inspect, removal and prune; networks' create, list, inspect, removal, join, leave and
-prune. Held on real microVMs by tests/engine.rs, raw and through the docker CLI, and
-copies into tmpfs mounts over a read-only root by tests/containers.rs. Any other call
-answers 404, naming itself.
+start, inspect and resize; images' pull, list, inspect, tag, history, removal and prune;
+volumes' create, list, inspect, removal and prune; networks' create, list, inspect,
+removal, join, leave and prune; what is on disk. Held on real microVMs by
+tests/engine.rs, raw and through the docker CLI, copies into tmpfs mounts over a
+read-only root by tests/containers.rs, and the build cache kept through other prunes by
+tests/build.rs. Any other call answers 404, naming itself.
 
 ### D169. A run's log sent to Cloud Logging
 

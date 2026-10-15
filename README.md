@@ -127,13 +127,14 @@ starts. It stays while a program keeps a connection open or asks something, and 
 `SHARDS_DAEMON_IDLE` seconds without either (default 900). Served today: containers (create,
 start, attach, wait, logs, exec, copying files in and out, export, changes, processes,
 stats, pause, restart, rename, update, stop, kill, remove, prune, list, inspect), events,
-images (pull, list, inspect), volumes (create, list, inspect, remove, prune), networks
-(create, list, inspect, connect, disconnect, remove, prune), `version` and `info`. Copies
-are packed and unpacked inside the microVM, and land where its program will find them: in
-its volumes, running or stopped, and its tmpfs mounts while it runs. A network's microVMs
-reach each other by name and nothing else through it. Stats add what the microVM itself
-costs your machine (`microvm`: its memory and CPU time). A setting a microVM can't take is
-refused with the reason, never dropped.
+images (pull, list, inspect, tag, history, remove, prune), volumes (create, list, inspect,
+remove, prune), networks (create, list, inspect, connect, disconnect, remove, prune), disk
+use, `version` and `info`. Disk use counts the saved microVM snapshots that make starts
+fast, too. Copies are packed and unpacked inside the microVM, and land where its program
+will find them: in its volumes, running or stopped, and its tmpfs mounts while it runs. A
+network's microVMs reach each other by name and nothing else through it. Stats add what the
+microVM itself costs your machine (`microvm`: its memory and CPU time). A setting a microVM
+can't take is refused with the reason, never dropped.
 
 ### Boot a kernel yourself
 

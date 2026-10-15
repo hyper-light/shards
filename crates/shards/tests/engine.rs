@@ -51,6 +51,30 @@ fn home(name: &str) -> Option<(TempDir, String)> {
     Some((home, image))
 }
 
+/// A home whose daemon boots the guest it records (`shards guest use`), as a user's does,
+/// so that runs save and restore their images' templates; with the test image pulled.
+fn home_with_guest(name: &str) -> Option<(TempDir, String)> {
+    if cannot_run_vms() {
+        return None;
+    }
+    let (image, _) = served();
+    let home = TempDir::new(name);
+    let env = [("SHARDS_HOME", home.as_os_str())];
+    let (kernel, init) = (kernel(), guest_init());
+    let args = [
+        "use".as_ref(),
+        "--kernel".as_ref(),
+        kernel.as_os_str(),
+        "--init".as_ref(),
+        init.as_os_str(),
+    ];
+    let recorded = run_shards_env(&["guest"], &args, &env, TIMEOUT);
+    assert_eq!(recorded.status, Some(0), "{}", recorded.stderr);
+    let pulled = run_shards_env(&["pull"], &["-q", image.as_str()], &env, TIMEOUT);
+    assert_eq!(pulled.status, Some(0), "{}", pulled.stderr);
+    Some((home, image))
+}
+
 /// An answer: its status, its fields (names in lower case), its content.
 #[derive(Debug)]
 struct Answered {
@@ -492,6 +516,29 @@ fn microvms_are_watched_and_managed() {
     let pruned = pruned.json();
     assert_eq!(pruned["ContainersDeleted"], json!([id]), "{pruned}");
     assert!(pruned["SpaceReclaimed"].as_u64().is_some(), "{pruned}");
+    // The prune said as an event too, with what it reclaimed, as dockerd says it.
+    let until = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+        + 1;
+    let events = api.call(
+        "GET",
+        &format!("/events?since={since}&until={until}&filters=%7B%22event%22%3A%5B%22prune%22%5D%7D"),
+        None,
+    );
+    let prunes: Vec<Value> = events
+        .text()
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    assert_eq!(prunes.len(), 1, "{}", events.text());
+    assert_eq!(
+        (&prunes[0]["Type"], &prunes[0]["Actor"]["Attributes"]["reclaimed"]),
+        (&json!("container"), &json!(pruned["SpaceReclaimed"].to_string())),
+        "{}",
+        events.text()
+    );
 }
 
 /// A volume's data outlives the microVM that wrote it: made, listed, inspected; files
@@ -1271,6 +1318,184 @@ fn images_are_listed_inspected_and_pulled() {
     assert!(last["error"].is_string(), "{}", failed.text());
 }
 
+/// Images named, traced and removed as the API asks: a tag made by its repo and tag, one
+/// that names no repository refused; its history newest first, the image's ID and names
+/// on the newest; a name removed, the image itself refused while a microVM was made of
+/// it; what shards takes on disk, each kind's usage, the fields of clients before 1.52
+/// but with `verbose`, and its microVMs' templates, which go with the image they were
+/// made of; and unused images pruned, their bytes counted.
+#[test]
+fn images_are_tagged_traced_removed_and_pruned() {
+    let Some((home, image)) = home_with_guest("eng-imgs") else {
+        return;
+    };
+    let mut api = Api::new(&home);
+    let id = api.call("GET", &format!("/images/{image}/json"), None).json()["Id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let tagged = api.call(
+        "POST",
+        &format!("/images/{image}/tag?repo=shp/named&tag=v1"),
+        None,
+    );
+    assert_eq!(tagged.status, 201, "{}", tagged.text());
+    let named = api.call("GET", "/images/shp/named:v1/json", None).json();
+    assert_eq!(named["Id"], json!(id), "{named}");
+    let unnamed = api.call("POST", &format!("/images/{image}/tag"), None);
+    assert_eq!(unnamed.status, 400, "{}", unnamed.text());
+    let missing = api.call("POST", "/images/nothing:here/tag?repo=x", None);
+    assert_eq!(missing.status, 404, "{}", missing.text());
+    // A history: the newest step the image's, with its names; the one before `<missing>`,
+    // its layer's size.
+    let (_, blobs) = common::test_image_with(Some(b"history"));
+    let config = String::from_utf8(blobs[0].clone()).unwrap().replacen(
+        '{',
+        r#"{"history":[{"created":"2026-01-02T03:04:05Z","created_by":"ADD layer","comment":"first"},{"created":"2026-01-02T03:04:06Z","created_by":"ENV x=1","empty_layer":true}],"#,
+        1,
+    );
+    let archive = tar(&[
+        ("cfg.json", 0o644, 0, Some(config.as_bytes())),
+        ("abc", 0o755, 0, None),
+        ("abc/layer.tar", 0o644, 0, Some(blobs[1].as_slice())),
+        (
+            "manifest.json",
+            0o644,
+            0,
+            Some(br#"[{"Config":"cfg.json","RepoTags":["shp/hist:1"],"Layers":["abc/layer.tar"]}]"#),
+        ),
+    ]);
+    let at = home.join("hist.tar");
+    std::fs::write(&at, archive).unwrap();
+    let loaded = shards_in(&home, &["load", "-i", at.to_str().unwrap()]);
+    assert_eq!(loaded.status, Some(0), "{loaded}");
+    let hist = api.call("GET", "/images/shp/hist:1/json", None).json()["Id"].clone();
+    let history = api.call("GET", "/images/shp/hist:1/history", None);
+    assert_eq!(history.status, 200, "{}", history.text());
+    let steps = history.json();
+    assert_eq!(
+        (
+            &steps[0]["Id"],
+            &steps[0]["Tags"],
+            &steps[0]["CreatedBy"],
+            &steps[0]["Created"],
+            &steps[0]["Size"]
+        ),
+        (
+            &hist,
+            &json!(["shp/hist:1"]),
+            &json!("ENV x=1"),
+            &json!(1_767_323_046),
+            &json!(0)
+        ),
+        "{steps}"
+    );
+    assert_eq!(
+        (
+            &steps[1]["Id"],
+            &steps[1]["Tags"],
+            &steps[1]["Comment"],
+            &steps[1]["Created"]
+        ),
+        (
+            &json!("<missing>"),
+            &Value::Null,
+            &json!("first"),
+            &json!(1_767_323_045)
+        ),
+        "{steps}"
+    );
+    assert!(steps[1]["Size"].as_i64().unwrap() > 0, "{steps}");
+    assert_eq!(steps.as_array().unwrap().len(), 2, "{steps}");
+    let platform = api.call(
+        "GET",
+        "/images/shp/hist:1/history?platform=%7B%22os%22%3A%22linux%22%7D",
+        None,
+    );
+    assert_eq!(platform.status, 400, "{}", platform.text());
+    assert!(platform.text().contains("--platform"), "{}", platform.text());
+    // A run of it, which a template is made of where this host saves them.
+    let made = api.call(
+        "POST",
+        "/containers/create?name=user",
+        Some(json!({"Image": "shp/named:v1", "Cmd": ["exit", "0"]})),
+    );
+    assert_eq!(made.status, 201, "{}", made.text());
+    assert_eq!(api.call("POST", "/containers/user/start", None).status, 204);
+    assert_eq!(
+        api.call("POST", "/containers/user/wait", None).json()["StatusCode"],
+        json!(0)
+    );
+    let saved = std::fs::read_dir(home.join("templates"))
+        .map(|d| d.flatten().filter(|e| e.path().is_dir()).count())
+        .unwrap_or(0);
+    // The image is refused while a microVM was made of it; a name of it goes.
+    let refused = api.call("DELETE", &format!("/images/{id}"), None);
+    assert_eq!(refused.status, 409, "{}", refused.text());
+    let untagged = api.call("DELETE", "/images/shp/named:v1", None);
+    assert_eq!(untagged.status, 200, "{}", untagged.text());
+    assert_eq!(untagged.json(), json!([{"Untagged": "shp/named:v1"}]));
+    // What shards takes on disk.
+    let df = api.call("GET", "/system/df", None);
+    assert_eq!(df.status, 200, "{}", df.text());
+    let df = df.json();
+    assert_eq!(df["ImageUsage"]["TotalCount"], json!(2), "{df}");
+    assert_eq!(df["ContainerUsage"]["TotalCount"], json!(1), "{df}");
+    assert!(
+        df["Images"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|i| i["Id"] == json!(id)),
+        "{df}"
+    );
+    assert_eq!(df["Containers"][0]["Names"], json!(["/user"]), "{df}");
+    assert!(df["LayersSize"].as_i64().unwrap() > 0, "{df}");
+    // Where this build has snapshots, the run saved its image's template.
+    assert_eq!(saved > 0, shards_vmm::vm::SNAPSHOTS, "{saved} templates");
+    match saved {
+        0 => assert_eq!(df["TemplateUsage"], json!({}), "{df}"),
+        n => assert_eq!(df["TemplateUsage"]["TotalCount"], json!(n), "{df}"),
+    }
+    let verbose = api.call("GET", "/system/df?verbose=1", None).json();
+    assert!(
+        verbose.get("Images").is_none() && verbose.get("LayersSize").is_none(),
+        "{verbose}"
+    );
+    assert_eq!(
+        verbose["ImageUsage"]["Items"].as_array().unwrap().len(),
+        2,
+        "{verbose}"
+    );
+    let typed = api.call("GET", "/system/df?type=volume", None).json();
+    let mut kinds: Vec<&String> = typed.as_object().unwrap().keys().collect();
+    kinds.sort();
+    assert_eq!(kinds, ["VolumeUsage", "Volumes"], "{typed}");
+    assert_eq!(api.call("GET", "/system/df?type=disks", None).status, 400);
+    // Pruned: nothing dangling, then every image no microVM was made of, its bytes
+    // counted; the templates made of it go after.
+    let none = api.call("POST", "/images/prune", None).json();
+    assert_eq!(none, json!({"ImagesDeleted": [], "SpaceReclaimed": 0}), "{none}");
+    assert_eq!(api.call("DELETE", "/containers/user", None).status, 204);
+    let pruned = api.call(
+        "POST",
+        "/images/prune?filters=%7B%22dangling%22%3A%5B%22false%22%5D%7D",
+        None,
+    );
+    assert_eq!(pruned.status, 200, "{}", pruned.text());
+    let pruned = pruned.json();
+    let deleted = pruned["ImagesDeleted"].as_array().unwrap();
+    assert!(deleted.contains(&json!({"Deleted": id})), "{pruned}");
+    assert!(pruned["SpaceReclaimed"].as_i64().unwrap() > 0, "{pruned}");
+    let gone = (0..200).any(|_| {
+        api.call("GET", "/system/df", None).json()["TemplateUsage"] == json!({}) || {
+            std::thread::sleep(Duration::from_millis(50));
+            false
+        }
+    });
+    assert!(gone, "{}", api.call("GET", "/system/df", None).text());
+}
+
 /// The docker CLI runs microVMs through the engine, as it runs Docker's containers: `run`
 /// attached with its streams and status, `--rm`, `-d`, `exec`, `logs`, `ps`, `inspect`
 /// and `rm -f`.
@@ -1428,6 +1653,39 @@ fn the_docker_cli_runs_microvms_through_the_engine() {
     assert!(out.starts_with("Deleted Containers:\n"), "{out}");
     let (_, out, _) = docker(&["ps", "-aq"]);
     assert_eq!(out.trim(), "");
+    // Images named, traced, removed and pruned; what shards takes on disk.
+    let (status, _, err) = docker(&["tag", &image, "shp/cli:1"]);
+    assert_eq!(status, Some(0), "{err}");
+    let (status, out, err) = docker(&["history", "-q", "shp/cli:1"]);
+    assert_eq!(status, Some(0), "{err}");
+    let (_, id, _) = docker(&["image", "inspect", "--format", "{{.Id}}", "shp/cli:1"]);
+    let short = id
+        .trim()
+        .trim_start_matches("sha256:")
+        .get(..12)
+        .unwrap_or_default()
+        .to_string();
+    assert!(out.lines().all(|l| l == short || l == "<missing>"), "{out}");
+    let (status, out, err) = docker(&["rmi", "shp/cli:1"]);
+    assert_eq!(
+        (status, out.as_str()),
+        (Some(0), "Untagged: shp/cli:1\n"),
+        "{err}"
+    );
+    let (status, out, err) = docker(&["system", "df", "--format", "{{.Type}} {{.TotalCount}}"]);
+    assert_eq!(status, Some(0), "{err}");
+    let images: usize = out
+        .lines()
+        .find_map(|l| l.strip_prefix("Images "))
+        .and_then(|n| n.parse().ok())
+        .unwrap_or(0);
+    assert!(images >= 1, "{out}");
+    let (status, out, err) = docker(&["image", "prune", "-f"]);
+    assert_eq!(
+        (status, out.as_str()),
+        (Some(0), "Total reclaimed space: 0B\n"),
+        "{err}"
+    );
 }
 
 /// `name` on PATH.

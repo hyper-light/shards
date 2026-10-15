@@ -285,7 +285,7 @@ impl<D: Disk> Daemon<D> {
 
     /// Container `c` as a list sums it up (moby container.Summary): its ports while it
     /// runs, its networks and mounts as inspect gives them.
-    fn summary(&self, c: &Container, sized: bool) -> Value {
+    pub(super) fn summary(&self, c: &Container, sized: bool) -> Value {
         let doc: Value =
             serde_json::from_str(&crate::daemon::inspect_doc::json(&self.container_value(c, sized)))
                 .unwrap_or_default();

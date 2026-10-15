@@ -430,6 +430,13 @@ impl<D: Disk> Daemon<D> {
                 removed.push(v.name);
             }
         }
+        // Said as dockerd says each prune (daemon/volume/service, Prune): what it reclaimed.
+        self.events.log(
+            "volume",
+            "prune",
+            "",
+            std::collections::BTreeMap::from([("reclaimed".to_string(), reclaimed.to_string())]),
+        );
         Ok((removed, reclaimed))
     }
 

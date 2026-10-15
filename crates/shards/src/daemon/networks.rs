@@ -1763,6 +1763,13 @@ impl<D: Disk> Daemon<D> {
                 names.push(n.name);
             }
         }
+        // Said as dockerd says each prune (daemon/prune.go): a network's reclaims nothing.
+        self.events.log(
+            "network",
+            "prune",
+            "",
+            std::collections::BTreeMap::from([("reclaimed".to_string(), "0".to_string())]),
+        );
         Ok(names)
     }
 }
