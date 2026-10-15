@@ -3621,6 +3621,52 @@ No run-time labels, relays or declassifiers (§12 answer 14, decided by the user
 an internal-only domain to the world (D58), so there is no data to label. Code mode is
 D136.
 
+### D177. `build --squash`: a build's layers as one
+
+`shards build --squash`, and the Engine API's `POST /build?squash=1` (docker-py's
+`build(squash=True)`, the docker CLI's legacy builder's `--squash`), make the layers a
+build adds past its base's one layer: the base's layers as they were, then one that makes
+the build's tree of the base's. What a later step removed is in no layer, so it is neither
+pushed, pulled nor kept; a file of the base's that the build removed is a whiteout. Its
+history is moby's squash's (moby 464cd50c `daemon/images/image_squash.go`): the entries as
+the unsquashed image has them, times and all, each past those of the base's layers an
+empty layer's, then the merge's, `merge sha256:<unsquashed> to sha256:<base>`, at the
+image's creation (SOURCE_DATE_EPOCH where given, which moby's does not take); built FROM
+scratch, every layer is the one, `create new from sha256:<unsquashed>`. moby keeps the
+base's entries by index, which leaves the merge's layer without an entry of its own
+wherever the base's history names fewer layers than it has (the test image's names none):
+`docker history`, which pairs entries with layers in order (`daemon/images/image_history.go`),
+then gives the merge's entry a layer of the base's. shards keeps, for
+each of the base's layers, the entry the image pairs with it, so every layer has one and
+the merge's is the merge's (`squash_makes_a_builds_layers_one`, mutation-checked against
+moby's rule).
+
+What it does not change is a microVM: shards flattens every image's layers into one EROFS
+filesystem (crates/image), so a squashed image runs as the unsquashed one does. It changes
+what a registry and the store hold.
+
+Docker's own: BuildKit has no squash, and buildx warns it removed (`experimental flag
+squash is removed with BuildKit`) and builds unsquashed. dockerd squashes an experimental
+daemon's builds once they are done (`daemon/builder/backend/backend.go`), and only in its
+graph-driver image store: the containerd image store, "now the default for fresh installs"
+(Docker Engine 29 release notes), answers `error squashing image: not implemented` after
+the whole build has run (`daemon/containerd/image_squash.go`). shards squashes in its one
+store, and leaves no unsquashed image behind, where moby's squash leaves it untagged.
+Before this, shards took the flag as buildx does: a client of the API that asked for a
+squashed image got an unsquashed one, which only a warning said.
+
+A step's layer is what its own step stamped in the tree (`diff::write_layer`, BuildKit's
+overlay differ); a squash spans every step, so its layer is continuity's doubleWalkDiff of
+the two trees from the root (`diff::write_squash`), which reads a file's bytes only where
+its metadata matches and its data is not the same node's: a file no step touched is the
+base's own. The steps run and are cached as ever, a build without `--squash` reusing them;
+`mode=max` provenance names the layers the image holds, which the steps' of a squashed
+image are not. Held by `a_squash_writes_every_step_between_two_trees` (diff.rs), and on
+real microVMs by `squash_makes_a_builds_layers_one` (tests/build.rs) and
+`images_are_built_from_a_context_in_the_body` and
+`the_docker_cli_runs_microvms_through_the_engine` (tests/engine.rs: the API's `squash=1`,
+and the docker CLI's own legacy `build --squash`, which it offers an experimental engine).
+
 ### D176. A running microVM saved whole, and resumed (in progress)
 
 `shards save vm NAME`, and Docker's `checkpoint`, save a running microVM whole: its

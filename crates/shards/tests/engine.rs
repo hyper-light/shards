@@ -1873,6 +1873,33 @@ fn images_are_built_from_a_context_in_the_body() {
             built.text()
         );
     }
+    // Squashed, as dockerd's experimental build squashes (D177): the build's layers past
+    // its base's as one, named by the merge's history.
+    let squashed = api.upload(
+        "POST",
+        "/build?t=shp/squashed:1&squash=1&buildargs=%7B%22GREETING%22%3A%22hi%22%7D",
+        "application/x-tar",
+        &context,
+    );
+    assert_eq!(squashed.status, 200, "{}", squashed.text());
+    assert!(
+        lines(&squashed).iter().all(|m| m.get("error").is_none()),
+        "{}",
+        squashed.text()
+    );
+    let mut layers = |name: &str| -> usize {
+        let doc = api.call("GET", &format!("/images/{name}/json"), None).json();
+        doc["RootFS"]["Layers"].as_array().map_or(0, Vec::len)
+    };
+    let (base, plain, one) = (layers(&image), layers("shp/built:1"), layers("shp/squashed:1"));
+    assert_eq!((plain, one), (base + 2, base + 1));
+    let history = api.call("GET", "/images/shp/squashed:1/history", None).json();
+    assert!(
+        history[0]["Comment"]
+            .as_str()
+            .is_some_and(|c| c.starts_with("merge sha256:")),
+        "{history}"
+    );
     let doc = api.call("GET", "/images/shp/built:1/json", None).json();
     assert_eq!(
         (
@@ -2290,6 +2317,44 @@ fn the_docker_cli_runs_microvms_through_the_engine() {
     assert!(out.contains("Successfully tagged shp/cli-built:1"), "{out}");
     let (status, _, err) = docker(&["image", "inspect", "shp/cli-built:1"]);
     assert_eq!(status, Some(0), "{err}");
+    // Squashed by the CLI's own --squash, which it offers an experimental engine (D177):
+    // two steps' layers as one.
+    std::fs::write(
+        context.join("Dockerfile.two"),
+        format!(
+            "FROM {image}\nRUN [\"/bin/testguest\", \"fs\", \"write:/tmp/c=1\"]\nRUN [\"/bin/testguest\", \"fs\", \"write:/tmp/d=2\"]\n"
+        ),
+    )
+    .unwrap();
+    let two = context.join("Dockerfile.two");
+    let (status, out, err) = docker_with(
+        &[
+            "build",
+            "--squash",
+            "-f",
+            two.to_str().unwrap(),
+            "-t",
+            "shp/cli-squashed:1",
+            context.to_str().unwrap(),
+        ],
+        &[("DOCKER_BUILDKIT", "0")],
+    );
+    assert_eq!(status, Some(0), "{out}{err}");
+    let layers = |name: &str| -> usize {
+        let (status, out, err) = docker(&["image", "inspect", "-f", "{{len .RootFS.Layers}}", name]);
+        assert_eq!(status, Some(0), "{err}");
+        out.trim().parse().unwrap()
+    };
+    assert_eq!(layers("shp/cli-squashed:1"), layers(&image) + 1);
+    let (status, out, err) = docker(&[
+        "history",
+        "--no-trunc",
+        "--format",
+        "{{.Comment}}",
+        "shp/cli-squashed:1",
+    ]);
+    assert_eq!(status, Some(0), "{err}");
+    assert!(out.starts_with("merge sha256:"), "{out}");
 }
 
 /// `name` on PATH.

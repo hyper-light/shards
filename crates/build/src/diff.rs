@@ -120,6 +120,33 @@ pub fn write_layer(
     data: &mut dyn Source,
     out: &mut dyn Write,
 ) -> Result<Record, Error> {
+    write_with(upper, data, out, |cw| {
+        Walk { lower, upper }.dir(b"/", Tree::ROOT, cw)
+    })
+}
+
+/// Writes the layer that makes `upper` of `lower` to `out`, however many steps apart the
+/// two are, and says what it holds: every difference continuity's doubleWalkDiff finds
+/// between them from the root, where [`write_layer`] follows what `upper`'s own step
+/// stamped. A squash's one layer (D177).
+pub fn write_squash(
+    lower: &Fs,
+    upper: &Fs,
+    data: &mut dyn Source,
+    out: &mut dyn Write,
+) -> Result<Record, Error> {
+    write_with(upper, data, out, |cw| {
+        double_walk(lower, Tree::ROOT, upper, Tree::ROOT, b"/", cw)
+    })
+}
+
+/// The layer `walk` writes the changes of, to `upper`, into `out`.
+fn write_with(
+    upper: &Fs,
+    data: &mut dyn Source,
+    out: &mut dyn Write,
+    walk: impl FnOnce(&mut ChangeWriter<'_>) -> Result<(), Error>,
+) -> Result<Record, Error> {
     let mut cw = ChangeWriter {
         tw: Writer::new(Tee {
             out,
@@ -136,8 +163,7 @@ pub fn write_layer(
         data,
         rec: Record::default(),
     };
-    let walk = Walk { lower, upper };
-    walk.dir(b"/", Tree::ROOT, &mut cw)?;
+    walk(&mut cw)?;
     cw.tw.finish().map_err(|e| Error(e.to_string()))?;
     let mut rec = cw.rec;
     rec.links = cw.links;
@@ -659,7 +685,18 @@ mod tests {
     fn names(lower: &Fs, upper: &Fs) -> Vec<String> {
         let mut out = Vec::new();
         write_layer(lower, upper, &mut Sources::default(), &mut out).unwrap();
-        let mut r = tar::Reader::raw(&out[..]);
+        entries(&out)
+    }
+
+    /// The names in the layer a squash writes between `lower` and `upper`.
+    fn squashed(lower: &Fs, upper: &Fs) -> Vec<String> {
+        let mut out = Vec::new();
+        write_squash(lower, upper, &mut Sources::default(), &mut out).unwrap();
+        entries(&out)
+    }
+
+    fn entries(out: &[u8]) -> Vec<String> {
+        let mut r = tar::Reader::raw(out);
         let mut names = Vec::new();
         while let Some(e) = r.next_entry().unwrap() {
             names.push(String::from_utf8(e.path).unwrap());
@@ -686,6 +723,31 @@ mod tests {
         assert_eq!(upper.node(a).unwrap().meta.mode, 0o600);
         assert_eq!(upper.node(b).unwrap().meta.mode, 0o644);
         assert_eq!(names(&lower, &upper), ["a"]);
+    }
+
+    /// A squash's layer holds every difference between two trees however many steps apart
+    /// (D177): what a later step removed is in neither tree, and so not in it; a file of
+    /// the lower tree removed is a whiteout; the steps before the last are in it too.
+    #[test]
+    fn a_squash_writes_every_step_between_two_trees() {
+        let mut lower = empty();
+        lower.create(b"/base", 0o644).unwrap();
+        lower.create(b"/kept", 0o644).unwrap();
+        lower.begin();
+        let mut first = lower.clone();
+        first.begin();
+        first.create(b"/big", 0o644).unwrap();
+        first.mkdir(b"/d", 0o755).unwrap();
+        first.create(b"/d/f", 0o644).unwrap();
+        let mut last = first.clone();
+        last.begin();
+        last.unlink(b"/big").unwrap();
+        last.unlink(b"/base").unwrap();
+        last.create(b"/g", 0o644).unwrap();
+        assert_eq!(names(&first, &last), [".wh.base", ".wh.big", "g"]);
+        assert_eq!(squashed(&lower, &last), [".wh.base", "d/", "d/f", "g"]);
+        // Nothing between a tree and itself.
+        assert!(squashed(&last, &last).is_empty());
     }
 
     /// A snapshot records what changes from the moment it is made, with no step begun,
