@@ -25,6 +25,14 @@ pub fn first_mismatch(salt: u64, offset: u64, buf: &[u8]) -> Option<usize> {
         .position(|(i, &b)| b != pattern_byte(salt, offset.wrapping_add(i as u64)))
 }
 
+/// FNV-1a over `bytes`: what a test's guest says of what it was given (`digest`) where
+/// saying the bytes would put them where they must not be, such as a secret in a log.
+pub fn fnv1a(bytes: &[u8]) -> u64 {
+    bytes.iter().fold(0xcbf2_9ce4_8422_2325, |hash, &b| {
+        (hash ^ u64::from(b)).wrapping_mul(0x0000_0100_0000_01b3)
+    })
+}
+
 /// FNV-1a over `len` bytes of pattern `salt` from offset 0: CPU work whose answer the
 /// host can check (benches/workloads.rs).
 pub fn pattern_hash(salt: u64, len: u64) -> u64 {

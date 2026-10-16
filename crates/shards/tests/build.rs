@@ -853,7 +853,7 @@ fn run_steps_reach_the_network_unless_it_is_none() {
         eprintln!("SKIP: this host has no route to give a guest an address of it");
         return;
     };
-    let server = std::net::TcpListener::bind("0.0.0.0:0").unwrap();
+    let server = listening_anywhere();
     let port = server.local_addr().unwrap().port();
     // Serves one connection if one comes before the build is done; a build that never
     // connects leaves it to give up, so that the test fails rather than hangs.
@@ -913,7 +913,7 @@ fn proxied_server(
     answer: fn(&str) -> Vec<u8>,
 ) -> (u16, std::sync::mpsc::Receiver<String>) {
     use std::io::{BufRead as _, Write as _};
-    let listener = std::net::TcpListener::bind("0.0.0.0:0").unwrap();
+    let listener = listening_anywhere();
     let port = listener.local_addr().unwrap().port();
     let (said, asked) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
@@ -2004,9 +2004,20 @@ fn an_images_healthcheck_probes_its_microvm() {
         assert_eq!(h["Status"], status, "{name}: {h}");
         let log = h["Log"].as_array().unwrap();
         assert_eq!(log.len(), 5, "{name}: {h}");
+        // A probe past its timeout says what it printed by then: one the host started late,
+        // under load, past the timeout itself, had printed nothing, and says so (CI saw one
+        // of five); what a probe did print is kept, by one of the five at least.
+        let unsaid = output.strip_suffix(": ready\n");
+        if unsaid.is_some() {
+            assert!(
+                log.iter().any(|p| p["Output"] == output),
+                "{name}: no probe's output kept: {h}"
+            );
+        }
         for probe in log {
             assert_eq!(probe["ExitCode"], code, "{name}: {h}");
-            assert_eq!(probe["Output"], output, "{name}: {h}");
+            let said = probe["Output"].as_str().unwrap_or_default();
+            assert!(said == output || Some(said) == unsaid, "{name}: {h}");
             for at in ["Start", "End"] {
                 let t = probe[at].as_str().unwrap();
                 assert!(t.len() >= 20 && t.as_bytes()[10] == b'T', "{name}: {h}");
@@ -9410,7 +9421,7 @@ fn agents_reach_past_the_microvm_what_their_networks_grant() {
     // Two servers on the host: one port granted, one not. Each answers every connection
     // until the test ends.
     let serve = || {
-        let server = std::net::TcpListener::bind("0.0.0.0:0").unwrap();
+        let server = listening_anywhere();
         let port = server.local_addr().unwrap().port();
         std::thread::spawn(move || for _ in server.incoming() {});
         port
@@ -9854,6 +9865,20 @@ fn each_agent_answers_the_port_its_expose_names() {
     let _ = shards(&["rm", "-f", "pair"]);
 }
 
+/// A TCP listener on a port of its own at every IPv4 address; where the host has none to
+/// give, what its ports are held by: CI saw AddrInUse once, which bind(2) of port 0 says
+/// when the ephemeral range is spent, TIME_WAIT's sockets among what holds it.
+fn listening_anywhere() -> std::net::TcpListener {
+    std::net::TcpListener::bind("0.0.0.0:0").unwrap_or_else(|e| {
+        let read = |p: &str| std::fs::read_to_string(p).unwrap_or_default();
+        panic!(
+            "a port: {e}\n/proc/net/sockstat:\n{}ip_local_port_range: {}",
+            read("/proc/net/sockstat"),
+            read("/proc/sys/net/ipv4/ip_local_port_range")
+        )
+    })
+}
+
 /// A remote MCP server is a grant of that server alone (D59, AGENTFILE_ARCH.md §4.4, §9.6;
 /// networks are default deny): the agent its `FOR` names reaches the server's port, at the
 /// addresses its host resolves to and no other, may ask for that host's name and no other,
@@ -9876,7 +9901,7 @@ fn a_remote_mcp_server_is_a_grant_of_that_server_alone() {
         return;
     };
     let serve = || {
-        let server = std::net::TcpListener::bind("0.0.0.0:0").unwrap();
+        let server = listening_anywhere();
         let port = server.local_addr().unwrap().port();
         std::thread::spawn(move || for _ in server.incoming() {});
         port

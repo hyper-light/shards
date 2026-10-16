@@ -102,6 +102,11 @@ impl Host for Machine {
             super::log(format!("client {client}: context step {}", shown.join(" ")));
             return self.sync_step(client, args, request.env);
         }
+        if args.first().map(String::as_str) == Some(crate::agent::SIGN_STEP) {
+            let shown: Vec<&str> = args.iter().skip(1).map(String::as_str).collect();
+            super::log(format!("client {client}: signature step {}", shown.join(" ")));
+            return self.sign_step(args);
+        }
         super::log(format!("client {client}: shards {}", args.join(" ")));
         let pipe = || std::io::pipe().map_err(|e| Error::new(format!("a pipe for the command: {e}")));
         let tty = |e: std::io::Error| Error::new(format!("the command's terminal: {e}"));
@@ -247,12 +252,53 @@ impl Machine {
                 OsString::from(crate::context::DEFAULT),
             ),
         ]);
+        // The daemon's cache, where a build's microVMs find the VM process it writes out:
+        // named outright, as no `HOME` of the owner's is given (XDG's falls back to it).
+        if let Ok(cache) = crate::helpers::cache() {
+            env.push(("SHARDS_CACHE".to_string(), cache.into_os_string()));
+        }
+        // The client's own paths are its step's to say (`sync_step`), no command's.
         env.extend(
             given
                 .into_iter()
+                .filter(|(k, _)| k != crate::synced::SHOWN_AS)
                 .filter_map(|(k, v)| String::from_utf8(v).ok().map(|v| (k, OsString::from(v)))),
         );
         env
+    }
+
+    /// A step of a signature a client makes of an artifact here (agent.rs, `sign_step`), on a
+    /// thread of its own: the client's bundle its stdin, what it says its stdout.
+    fn sign_step(&self, args: Vec<String>) -> Result<Running, Error> {
+        let pipe = || std::io::pipe().map_err(|e| Error::new(format!("a pipe for the signature: {e}")));
+        let (mut in_r, in_w) = pipe()?;
+        let (out_r, mut out_w) = pipe()?;
+        let (err_r, mut err_w) = pipe()?;
+        let (done, status) = std::sync::mpsc::channel();
+        let home = self.home.clone();
+        std::thread::Builder::new()
+            .name("context-sign".into())
+            .spawn(move || {
+                let status = match crate::agent::sign_step(&home, &args, &mut in_r, &mut out_w) {
+                    Ok(()) => 0,
+                    Err(e) => {
+                        let _ = writeln!(err_w, "ERROR: {e}");
+                        1
+                    }
+                };
+                drop((in_r, out_w, err_w));
+                let _ = done.send(status);
+            })
+            .map_err(|e| Error::new(format!("a thread for the signature: {e}")))?;
+        Ok(Running {
+            stdin: Box::new(in_w),
+            stdout: Box::new(out_r),
+            stderr: Box::new(err_r),
+            wait: Box::new(move || status.recv().unwrap_or(1)),
+            hangup: Box::new(|| {}),
+            resize: None,
+            signal: Box::new(|_| {}),
+        })
     }
 
     /// A step of a client's build context (crate::synced, D180 part 3c), kept in a copy of
@@ -269,6 +315,20 @@ impl Machine {
         let step = args.get(1).cloned().unwrap_or_default();
         let key = args.get(2).cloned().unwrap_or_default();
         let copy = crate::synced::copy_of(&self.home, client, &key).map_err(Error::new)?;
+        // The client's own paths, which what the command prints says in place of its copy's.
+        let (shown, env): (Vec<_>, Vec<_>) = env.into_iter().partition(|(k, _)| k == crate::synced::SHOWN_AS);
+        let mut pairs = Vec::new();
+        if let Some((_, shown)) = shown.first() {
+            let mut theirs = shown.splitn(2, |b| *b == 0);
+            for (ours, theirs) in [
+                (copy.join("context"), theirs.next()),
+                (copy.join("dockerfile"), theirs.next()),
+            ] {
+                if let Some(theirs) = theirs.filter(|t| !t.is_empty()) {
+                    pairs.push((ours.into_os_string().into_encoded_bytes(), theirs.to_vec()));
+                }
+            }
+        }
         let pipe = || std::io::pipe().map_err(|e| Error::new(format!("a pipe for the build: {e}")));
         let (mut in_r, in_w) = pipe()?;
         let (out_r, mut out_w) = pipe()?;
@@ -296,17 +356,74 @@ impl Machine {
                             0
                         }
                         "build" => {
-                            let sent = crate::synced::receive(&mut in_r, &dockerfile, &context)?;
+                            let words = args.get(3..).unwrap_or_default();
+                            // As many secrets as the build's words name, and no more.
+                            let named = words.iter().filter(|a| a.contains(crate::synced::SECRET)).count();
+                            let (sent, secrets) =
+                                crate::synced::receive(&mut in_r, &dockerfile, &context, named)?;
                             super::log(format!(
                                 "client {whose}: context {key}: {sent} bytes of files came"
                             ));
-                            let argv: Vec<OsString> = args
-                                .get(3..)
-                                .unwrap_or_default()
+                            // The build's outputs of the client's, in a directory of their own,
+                            // which goes once they are sent.
+                            let outputs = copy.join("out");
+                            let _ = std::fs::remove_dir_all(&outputs);
+                            std::fs::create_dir_all(&outputs)
+                                .map_err(|e| format!("{}: {e}", outputs.display()))?;
+                            let argv: Vec<OsString> = words
                                 .iter()
-                                .map(|a| crate::synced::placed(a, &context, &dockerfile))
+                                .map(|a| crate::synced::placed(a, &context, &dockerfile, &outputs))
                                 .collect();
-                            ours.run(&exe, &argv, &env, &out_w, &err_w)?
+                            // Each secret on a pipe of its own, which the build reads once, as
+                            // its file: written in the order the build reads them, by one
+                            // thread, each pipe closed once its secret is in it.
+                            let mut readers = Vec::new();
+                            let mut writers = Vec::new();
+                            for (_, secret) in secrets {
+                                let (r, w) =
+                                    std::io::pipe().map_err(|e| format!("a pipe for a secret: {e}"))?;
+                                readers.push(r);
+                                writers.push((w, secret));
+                            }
+                            if !writers.is_empty() {
+                                std::thread::Builder::new()
+                                    .name("context-secrets".into())
+                                    .spawn(move || {
+                                        for (mut w, secret) in writers {
+                                            let _ = w.write_all(secret.bytes());
+                                        }
+                                    })
+                                    .map_err(|e| format!("a thread for the build's secrets: {e}"))?;
+                            }
+                            let fds: Vec<_> = readers
+                                .iter()
+                                .zip(crate::synced::SECRET_FD..)
+                                .map(|(r, fd)| (r.as_fd(), fd))
+                                .collect();
+                            // Its stdout framed as it comes (synced::SAID); then, once it is
+                            // through, its outputs.
+                            let (said_r, said_w) =
+                                std::io::pipe().map_err(|e| format!("a pipe for the build's output: {e}"))?;
+                            let status = std::thread::scope(|scope| -> Result<i32, String> {
+                                let out = &mut out_w;
+                                let saying = std::thread::Builder::new()
+                                    .name("context-said".into())
+                                    .spawn_scoped(scope, move || crate::synced::say(said_r, out))
+                                    .map_err(|e| format!("a thread for the build's output: {e}"))?;
+                                let ran = ours.run(&exe, &argv, &env, &said_w, &err_w, &fds);
+                                drop(said_w);
+                                let said = saying
+                                    .join()
+                                    .map_err(|_| "the build's output's thread ended".to_string())?;
+                                let status = ran?;
+                                said.map_err(|e| format!("the build's output: {e}"))?;
+                                Ok(status)
+                            })?;
+                            if status == 0 {
+                                crate::synced::send_outputs(&outputs, &mut out_w)?;
+                            }
+                            let _ = std::fs::remove_dir_all(&outputs);
+                            status
                         }
                         other => return Err(format!("{other:?}: no such step of a context")),
                     };
@@ -325,7 +442,7 @@ impl Machine {
         Ok(Running {
             stdin: Box::new(in_w),
             stdout: Box::new(out_r),
-            stderr: Box::new(err_r),
+            stderr: Box::new(crate::synced::Shown::new(err_r, pairs)),
             wait: Box::new(move || status.recv().unwrap_or(1)),
             hangup: Box::new(move || hung.end(libc::SIGHUP)),
             resize: None,
@@ -419,11 +536,13 @@ impl Building {
         env: &[(String, OsString)],
         out: &impl AsFd,
         err: &impl AsFd,
+        more: &[(std::os::fd::BorrowedFd<'_>, i32)],
     ) -> Result<i32, String> {
         let (input, _end) = std::io::pipe().map_err(|e| format!("a pipe for the build: {e}"))?;
         let args: Vec<&OsStr> = argv.iter().map(OsString::as_os_str).collect();
         let set: Vec<(&str, &OsStr)> = env.iter().map(|(k, v)| (k.as_str(), v.as_os_str())).collect();
-        let fds = [(input.as_fd(), 0), (out.as_fd(), 1), (err.as_fd(), 2)];
+        let mut fds = vec![(input.as_fd(), 0), (out.as_fd(), 1), (err.as_fd(), 2)];
+        fds.extend_from_slice(more);
         if self.hung.load(std::sync::atomic::Ordering::SeqCst) {
             return Ok(129);
         }

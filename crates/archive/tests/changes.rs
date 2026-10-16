@@ -57,7 +57,7 @@ fn a_layer_of_what_changed_brings_a_copy_in_step() {
         .map(|p| p.as_bytes().to_vec())
         .collect();
     let removed = vec![b"dir/gone".to_vec(), b"dir/removed".to_vec()];
-    let layer = pack_changes(here, &changed, &removed, Vec::new()).unwrap();
+    let layer = pack_changes(here, &changed, &[], &removed, Vec::new()).unwrap();
     let opts = UnpackOptions {
         no_lchown: true,
         ..UnpackOptions::default()
@@ -86,4 +86,40 @@ fn a_layer_of_what_changed_brings_a_copy_in_step() {
     // What did not change is as it was.
     assert_eq!(std::fs::read_to_string(there.join("kept")).unwrap(), "kept");
     assert_eq!(mtime(&there.join("kept")), kept_before);
+}
+
+/// A new name of a file the copy holds already, unchanged, goes as a link to it there: the
+/// layer carries none of its bytes, and the copy's two names are one file, as here.
+#[test]
+fn a_new_name_of_a_file_the_copy_holds_is_linked_to_it_there() {
+    let (here_dir, there_dir) = (
+        TempDir::new("changes-link-here").unwrap(),
+        TempDir::new("changes-link-there").unwrap(),
+    );
+    let (here, there): (&Path, &Path) = (here_dir.as_ref(), there_dir.as_ref());
+    let held = vec![7u8; 64 << 10];
+    for root in [here, there] {
+        std::fs::write(root.join("held"), &held).unwrap();
+    }
+    std::fs::hard_link(here.join("held"), here.join("named")).unwrap();
+    let layer = pack_changes(here, &[b"named".to_vec()], &[b"held".to_vec()], &[], Vec::new()).unwrap();
+    assert!(
+        layer.len() < 16 << 10,
+        "{} bytes: its bytes went again",
+        layer.len()
+    );
+    let opts = UnpackOptions {
+        no_lchown: true,
+        ..UnpackOptions::default()
+    };
+    apply_layer(&layer[..], there, &opts).unwrap();
+    let (a, b) = (
+        std::fs::metadata(there.join("held")).unwrap(),
+        std::fs::metadata(there.join("named")).unwrap(),
+    );
+    assert_eq!((a.dev(), a.ino()), (b.dev(), b.ino()), "not linked there");
+    assert_eq!(std::fs::read(there.join("named")).unwrap(), held);
+    // Alone, without the copy's file named, it goes whole, as before.
+    let whole = pack_changes(here, &[b"named".to_vec()], &[], &[], Vec::new()).unwrap();
+    assert!(whole.len() > 64 << 10, "{} bytes", whole.len());
 }

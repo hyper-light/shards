@@ -1325,12 +1325,12 @@ fn a_context_runs_commands_on_its_machine_whole() {
             .contains("-it: stdin is not a terminal, so it cannot be the command's"),
         "{terminal}"
     );
-    let build = run_shards_env(&["build"], &["--iidfile", "id", "."], &on_laptop, TIMEOUT);
+    let build = run_shards_env(&["build"], &["--ssh", "default", "."], &on_laptop, TIMEOUT);
     assert_eq!(build.status, Some(125), "{build}");
     assert!(
         build
             .stderr
-            .contains("build --iidfile over a context names this machine's files"),
+            .contains("build --ssh over a context names this machine's files"),
         "{build}"
     );
     // A build of a context with no build file is the build's to refuse, in its words.
@@ -1380,4 +1380,322 @@ fn a_context_runs_commands_on_its_machine_whole() {
     );
     let stopped = run_shards_env(&["daemon"], &["stop"], &on_machine, TIMEOUT);
     assert_eq!(stopped.status, Some(0), "{stopped}");
+}
+
+/// A key cosign v3.1.3 encrypted, its password, and its PKCS #8 (crates/sigstore's oracle).
+fn cosign_key() -> (String, String, Vec<u8>) {
+    let oracle: serde_json::Value =
+        serde_json::from_str(include_str!("../../sigstore/testdata/cosign/oracle.json")).unwrap();
+    let k = oracle["keys"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|k| k["name"] == "ecdsa p256 standard")
+        .unwrap();
+    let hex = k["pkcs8"].as_str().unwrap();
+    let pkcs8 = (0..hex.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(hex.get(i..i + 2).unwrap(), 16).unwrap())
+        .collect();
+    (
+        k["pem"].as_str().unwrap().to_string(),
+        k["password"].as_str().unwrap().to_string(),
+        pkcs8,
+    )
+}
+
+/// Shards' own artifacts through a context (D180): an agent made of a directory here is made
+/// there of the machine's copy of it, byte for byte the agent made here, a hard link and a
+/// symlink in it; made again after a change, only what changed goes, a new name of a file
+/// the copy holds as no bytes of its own; what the build says names this client's paths;
+/// and signed by this client's key, the signature kept there, which a push carries to a
+/// registry, of the agent, and verified by the key's public half.
+#[test]
+fn an_artifact_through_a_context_is_made_of_the_clients_files_and_signed_by_its_key() {
+    let Some((machine, _listening, laptop, _image)) = joined("ctx-art") else {
+        return;
+    };
+    let (port, repos) = common::writable_registry();
+    let name = format!("127.0.0.1:{port}/team/agent:1");
+    let dir = laptop.join("agent");
+    std::fs::create_dir_all(dir.join("bin")).unwrap();
+    std::fs::write(dir.join("agent.json"), r#"{"name":"main","version":"1.0.0"}"#).unwrap();
+    std::fs::write(dir.join("bin/run.sh"), "#!/bin/sh\necho agent\n").unwrap();
+    std::fs::write(dir.join("data"), vec![7u8; 64 << 10]).unwrap();
+    std::fs::hard_link(dir.join("data"), dir.join("data-too")).unwrap();
+    std::os::unix::fs::symlink("bin/run.sh", dir.join("run")).unwrap();
+    let (pem, password, pkcs8) = cosign_key();
+    let key = laptop.join("cosign.key");
+    std::fs::write(&key, &pem).unwrap();
+    let on_laptop = [
+        ("SHARDS_HOME", laptop.as_os_str()),
+        ("COSIGN_PASSWORD", std::ffi::OsStr::new(&password)),
+    ];
+    let here = |args: &[&str]| run_shards_env(&[], args, &on_laptop, TIMEOUT);
+    let there = |args: &[&str]| run_shards_env(&["--context", "gpu"], args, &on_laptop, TIMEOUT);
+    let made = |run: common::Run| {
+        assert_eq!(run.status, Some(0), "{run}");
+        run.stdout.trim().to_string()
+    };
+    let build = ["build", "agent", dir.to_str().unwrap(), "-t", name.as_str()];
+    let made_here = made(here(&build));
+    let made_there = made(there(&build));
+    assert_eq!(
+        made_there, made_here,
+        "the agent made there is not the one made here"
+    );
+    // Made again after a change: a file rewritten, and a new name of a file the copy holds.
+    std::fs::write(dir.join("bin/run.sh"), "#!/bin/sh\necho agent, again\n").unwrap();
+    std::fs::hard_link(dir.join("data"), dir.join("data-three")).unwrap();
+    let made_here = made(here(&build));
+    let made_there = made(there(&build));
+    assert_eq!(
+        made_there, made_here,
+        "made again, the agent there is not the one here"
+    );
+    let log = std::fs::read_to_string(machine.join("daemon.log")).unwrap();
+    let came: Vec<u64> = log
+        .lines()
+        .filter_map(|l| {
+            l.strip_suffix(" bytes of files came")?
+                .rsplit(' ')
+                .next()?
+                .parse()
+                .ok()
+        })
+        .collect();
+    assert_eq!(came.len(), 2, "{log}");
+    // Each file's bytes once: the config, the script and the data, whose second name goes
+    // as a link; then the script rewritten alone, the data's third name none of its own.
+    let script = "#!/bin/sh\necho agent, again\n".len() as u64;
+    assert_eq!(
+        came,
+        [33 + 21 + (64 << 10), script],
+        "the bytes of files that came"
+    );
+    // What the build says names this client's paths, not the machine's copy's.
+    std::fs::write(dir.join("agent.json"), "{").unwrap();
+    let refused = there(&build);
+    assert_eq!(refused.status, Some(1), "{refused}");
+    assert!(
+        refused
+            .stderr
+            .contains(&format!("{}: ", dir.join("agent.json").display())),
+        "{refused}"
+    );
+    assert!(!refused.stderr.contains("synced"), "{refused}");
+    std::fs::write(dir.join("agent.json"), r#"{"name":"main","version":"1.0.0"}"#).unwrap();
+    let made_there = made(there(&build));
+    // Signed by this client's key, kept there: pushed with the agent, of it.
+    let signed = there(&["sign", "agent", &name, "--key", key.to_str().unwrap()]);
+    assert_eq!(signed.status, Some(0), "{signed}");
+    assert!(
+        signed
+            .stdout
+            .contains(&format!("{made_there} signed by the key ")),
+        "{signed}"
+    );
+    let pushed = there(&["push", "agent", &name]);
+    assert_eq!(pushed.status, Some(0), "{pushed}");
+    let repos = repos.lock().unwrap();
+    let manifests = &repos.manifests["team/agent"];
+    let (_, list) = &manifests[&made_there.replacen(':', "-", 1)];
+    let list: serde_json::Value = serde_json::from_slice(list).unwrap();
+    let signature = list["manifests"][0]["digest"].as_str().unwrap();
+    let m: serde_json::Value = serde_json::from_slice(&manifests[signature].1).unwrap();
+    assert_eq!(m["subject"]["digest"], made_there.as_str());
+    let bundle = &repos.blobs["team/agent"][m["layers"][0]["digest"].as_str().unwrap()];
+    let bundle = shards_sigstore::bundle::parse(bundle).unwrap();
+    let shards_sigstore::bundle::SignatureContent::Envelope(envelope) = bundle.signature_content().unwrap()
+    else {
+        panic!("not an envelope");
+    };
+    let signer = shards_sigstore::sign::Signer::from_pkcs8(&pkcs8).unwrap();
+    let public = shards_sigstore::x509::parse_pkix_public_key(signer.public_key_der()).unwrap();
+    let verifier = shards_sigstore::signature::compat_verifier(&public, false, true).unwrap();
+    shards_sigstore::signature::verify_envelope(&verifier, &envelope).unwrap();
+    let statement = shards_sigstore::sign::statement(&made_there).unwrap();
+    assert!(matches!(
+        &bundle.content,
+        shards_sigstore::bundle::Content::Envelope { payload: Some(p), .. } if *p == statement
+    ));
+}
+
+/// The regular files under `dir` that hold `bytes`, by path.
+fn files_holding(dir: &Path, bytes: &[u8]) -> Vec<PathBuf> {
+    let mut found = Vec::new();
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(at) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&at) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            match entry.file_type() {
+                Ok(t) if t.is_dir() => stack.push(path),
+                Ok(t)
+                    if t.is_file()
+                        && std::fs::read(&path)
+                            .is_ok_and(|held| held.windows(bytes.len()).any(|w| w == bytes)) =>
+                {
+                    found.push(path)
+                }
+                _ => {}
+            }
+        }
+    }
+    found
+}
+
+/// A build's secrets through a context are the client's (D180): a file of the client's and
+/// a variable of its environment, each read by a step there as a build here gives it, the
+/// step saying only what they hash to; no file of the machine's holds either, as they
+/// crossed in memory and were read from pipes; and one not here is said as a build here
+/// says it.
+#[test]
+fn a_builds_secrets_through_a_context_are_the_clients_held_in_memory_alone() {
+    let Some((machine, _listening, laptop, image)) = joined("ctx-sec") else {
+        return;
+    };
+    let (file_secret, env_secret) = ("s3cret-of-the-clients-file", "s3cret-of-the-clients-environment");
+    let app = laptop.join("app");
+    std::fs::create_dir_all(&app).unwrap();
+    std::fs::write(
+        app.join("Dockerfile"),
+        format!(
+            "FROM {image}\nUSER root\nRUN --mount=type=secret,id=tok --mount=type=secret,id=var,env=TOKEN [\"/bin/testguest\", \"digest\", \"/run/secrets/tok\", \"env:TOKEN\"]\n"
+        ),
+    )
+    .unwrap();
+    let token = laptop.join("token");
+    std::fs::write(&token, file_secret).unwrap();
+    let on_laptop = [
+        ("SHARDS_HOME", laptop.as_os_str()),
+        ("SHARDS_TEST_TOKEN", env_secret.as_ref()),
+    ];
+    let secret = format!("id=tok,src={}", token.display());
+    let built = run_shards_env(
+        &["--context", "gpu", "build"],
+        &[
+            "--progress=plain",
+            "--secret",
+            &secret,
+            "--secret",
+            "id=var,env=SHARDS_TEST_TOKEN",
+            "-t",
+            "secrets:1",
+            app.to_str().unwrap(),
+        ],
+        &on_laptop,
+        TIMEOUT,
+    );
+    assert_eq!(built.status, Some(0), "{built}");
+    let digest = |b: &str| format!("{:016x}", shards_testguest::fnv1a(b.as_bytes()));
+    for said in [
+        format!(" digest /run/secrets/tok {}\n", digest(file_secret)),
+        format!(" digest env:TOKEN {}\n", digest(env_secret)),
+    ] {
+        assert!(built.stderr.contains(&said), "{said:?}\n{built}");
+    }
+    for secret in [file_secret, env_secret] {
+        let found = files_holding(&machine, secret.as_bytes());
+        assert!(found.is_empty(), "{secret} held by {found:?}");
+    }
+    // Nor did the client's own words of them cross: its file's path, its variable's name.
+    let log = std::fs::read_to_string(machine.join("daemon.log")).unwrap();
+    for here in [token.to_str().unwrap(), "SHARDS_TEST_TOKEN"] {
+        assert!(
+            !log.contains(here),
+            "{here} in what the machine was asked:\n{log}"
+        );
+    }
+    // One not here: said as a build here says it, the build never sent.
+    let missing = run_shards_env(
+        &["--context", "gpu", "build"],
+        &["--secret", "id=tok,src=/nowhere/token", app.to_str().unwrap()],
+        &on_laptop,
+        TIMEOUT,
+    );
+    assert_eq!(missing.status, Some(1), "{missing}");
+    assert!(
+        missing.stderr.starts_with("ERROR: failed to stat /nowhere/token"),
+        "{missing}"
+    );
+}
+
+/// A build's outputs through a context are the client's own files (D180): a directory of
+/// its result (`-o type=local,dest=DIR`), a tar of it to a file (`-o type=tar,dest=FILE`),
+/// its image's ID (`--iidfile`) and its metadata (`--metadata-file`), each written here as
+/// the build ends, a file only once whole; a result to stdout (`-o -`) the build's stdout
+/// still; and nothing of them left on the machine.
+#[test]
+fn a_builds_outputs_through_a_context_are_the_clients_files() {
+    let Some((machine, _listening, laptop, _image)) = joined("ctx-out") else {
+        return;
+    };
+    let app = laptop.join("app");
+    std::fs::create_dir_all(app.join("sub")).unwrap();
+    std::fs::write(app.join("Dockerfile"), "FROM scratch\nCOPY a.txt sub /\n").unwrap();
+    std::fs::write(app.join("a.txt"), "one").unwrap();
+    std::fs::write(app.join("sub/b.txt"), "two").unwrap();
+    let on_laptop = [("SHARDS_HOME", laptop.as_os_str())];
+    let build = |args: &[&str]| {
+        let mut all = args.to_vec();
+        all.push(app.to_str().unwrap());
+        let built = run_shards_env(&["--context", "gpu", "build"], &all, &on_laptop, TIMEOUT);
+        assert_eq!(built.status, Some(0), "{built}");
+        built
+    };
+    let dir = laptop.join("out");
+    build(&["-o", &format!("type=local,dest={}", dir.display())]);
+    assert_eq!(std::fs::read_to_string(dir.join("a.txt")).unwrap(), "one");
+    assert_eq!(std::fs::read_to_string(dir.join("b.txt")).unwrap(), "two");
+    let tar = laptop.join("result.tar");
+    build(&["-o", &format!("type=tar,dest={}", tar.display())]);
+    let held = std::fs::read(&tar).unwrap();
+    for (name, bytes) in [(&b"a.txt"[..], &b"one"[..]), (b"b.txt", b"two")] {
+        assert!(
+            held.windows(name.len()).any(|w| w == name),
+            "{name:?} not in the tar"
+        );
+        assert!(
+            held.windows(bytes.len()).any(|w| w == bytes),
+            "{bytes:?} not in the tar"
+        );
+    }
+    let (iid, meta_file) = (laptop.join("iid"), laptop.join("meta.json"));
+    build(&[
+        "-t",
+        "outputs:1",
+        "--iidfile",
+        iid.to_str().unwrap(),
+        "--metadata-file",
+        meta_file.to_str().unwrap(),
+    ]);
+    let id = std::fs::read_to_string(&iid).unwrap();
+    assert!(id.starts_with("sha256:") && id.len() == 71, "{id:?}");
+    let meta: serde_json::Value = serde_json::from_slice(&std::fs::read(&meta_file).unwrap()).unwrap();
+    assert!(meta.as_object().is_some_and(|m| !m.is_empty()), "{meta}");
+    let to_stdout = build(&["-o", "-"]);
+    assert!(to_stdout.stdout.contains("a.txt"), "no tar on stdout");
+    // None of this client's paths crossed: each output was the machine's to write, there.
+    let log = std::fs::read_to_string(machine.join("daemon.log")).unwrap();
+    for here in [&dir, &tar, &iid] {
+        assert!(
+            !log.contains(here.to_str().unwrap()),
+            "{} in what the machine was asked",
+            here.display()
+        );
+    }
+    // Nothing of them left there: each build's outputs went once sent.
+    let synced = machine.join("synced");
+    let mut stack = vec![synced];
+    while let Some(at) = stack.pop() {
+        for entry in std::fs::read_dir(&at).into_iter().flatten().flatten() {
+            assert_ne!(entry.file_name(), "out", "{} kept", entry.path().display());
+            if entry.file_type().is_ok_and(|t| t.is_dir()) && entry.file_name() != "context" {
+                stack.push(entry.path());
+            }
+        }
+    }
 }

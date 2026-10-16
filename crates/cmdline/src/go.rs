@@ -394,6 +394,21 @@ pub fn parse_bool(s: &str) -> Result<bool, NumError> {
     }
 }
 
+/// `field` as Go's csv.Writer writes it with a comma between fields (encoding/csv
+/// writer.go, `fieldNeedsQuotes`): quoted, its quotes doubled, where it holds a comma, a
+/// quote or a line's end, begins with a space, or is `\.`; as it is otherwise, empty too.
+pub fn csv_field(field: &str) -> String {
+    let quoted = !field.is_empty()
+        && (field == "\\."
+            || field.contains([',', '"', '\r', '\n'])
+            || field.chars().next().is_some_and(char::is_whitespace));
+    if quoted {
+        format!("\"{}\"", field.replace('"', "\"\""))
+    } else {
+        field.to_string()
+    }
+}
+
 /// One CSV record's fields, as tonistiigi/go-csvvalue reads them (Go's `encoding/csv`
 /// rules for one line), with `csv.ParseError`'s text on error.
 pub fn csv_fields(line: &[u8]) -> Result<Vec<Vec<u8>>, Vec<u8>> {
@@ -485,6 +500,19 @@ fn tail(b: &[u8], n: usize) -> &[u8] {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A field written as Go's csv.Writer writes it reads back as itself.
+    #[test]
+    fn a_csv_field_written_reads_back_whole() {
+        for field in ["id=tok", "id=a,b", "id=say \"hi\"", " id=lead", "", "\\."] {
+            let line = format!("{},src=x", csv_field(field));
+            let fields = csv_fields(line.as_bytes()).unwrap();
+            assert_eq!(fields[0], field.as_bytes(), "{line}");
+            assert_eq!(fields[1], b"src=x", "{line}");
+        }
+        assert_eq!(csv_field("id=tok"), "id=tok");
+        assert_eq!(csv_field("id=a,b"), "\"id=a,b\"");
+    }
 
     #[test]
     fn quotes_escape_what_go_escapes() {

@@ -195,14 +195,19 @@ pub fn containers() -> Result<PathBuf, String> {
     Ok(dir)
 }
 
-/// This user's cache: `~/Library/Caches/shards` on macOS, `$XDG_CACHE_HOME/shards` or
-/// `~/.cache/shards` elsewhere on Unix, `%LOCALAPPDATA%\shards` on Windows.
-fn cache() -> Result<PathBuf, String> {
+/// This user's cache: `SHARDS_CACHE` where it names a directory, else `~/Library/Caches/shards`
+/// on macOS, `$XDG_CACHE_HOME/shards` or `~/.cache/shards` elsewhere on Unix,
+/// `%LOCALAPPDATA%\shards` on Windows. A command a client of another machine runs there is
+/// given that machine's daemon's (D180), as it is given no `HOME` of the owner's.
+pub(crate) fn cache() -> Result<PathBuf, String> {
     let var = |name: &str| {
         std::env::var_os(name)
             .filter(|v| !v.is_empty())
             .map(PathBuf::from)
     };
+    if let Some(given) = var("SHARDS_CACHE").filter(|p| p.is_absolute()) {
+        return Ok(given);
+    }
     let base = if cfg!(target_os = "macos") {
         var("HOME").map(|h| h.join("Library").join("Caches"))
     } else if cfg!(windows) {

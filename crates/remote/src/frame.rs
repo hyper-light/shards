@@ -146,7 +146,9 @@ pub fn read_size(payload: &[u8]) -> Option<(u16, u16)> {
 /// The variables a request may carry: those of a client's environment that Docker's CLI
 /// reads for itself, not its daemon (D180): what shapes how a command prints, the platform
 /// it asks for when none is named, and the credentials it sends a registry, which a client
-/// gives as `SHARDS_AUTH_CONFIG` for the registries its command reaches alone.
+/// gives as `SHARDS_AUTH_CONFIG` for the registries its command reaches alone; and the paths
+/// a build of a client's files is of there, which what the machine's build of its copy says
+/// names in place of the copy's (`SHARDS_SYNCED_AS`, which no command is given).
 pub const ENV: &[&str] = &[
     "TERM",
     "COLORTERM",
@@ -158,6 +160,7 @@ pub const ENV: &[&str] = &[
     "SHARDS_DEFAULT_PLATFORM",
     "DOCKER_DEFAULT_PLATFORM",
     "SHARDS_AUTH_CONFIG",
+    "SHARDS_SYNCED_AS",
 ];
 
 fn put_bytes(out: &mut Vec<u8>, bytes: &[u8]) -> Result<(), Error> {
