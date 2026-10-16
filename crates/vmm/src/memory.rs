@@ -351,21 +351,30 @@ impl GuestMemory {
         self.hotplug.as_ref().map(|h| (h.gpa, h.host.as_ptr(), h.len))
     }
 
-    /// The bytes of the memory to plug whose pages the host holds: touched, by the guest
-    /// or a device, and not given back since ([`platform::untouched`]). Unplugging gives
-    /// them back (`platform::withhold`), where a hypervisor's unmapping of them took them out
-    /// of the process's footprint and resident set but left them its own (PM M193). None
-    /// where the guest has no memory to plug, or the host cannot say.
+    /// Of the memory the guest gave back, the bytes whose pages the host holds still: of
+    /// each block plugged once and unplugged since, its pages touched, by the guest or a
+    /// device, and not given back ([`platform::untouched`]). Unplugging gives them back
+    /// (`platform::withhold`), where a hypervisor's unmapping of them took them out of the
+    /// process's footprint and resident set but left them its own (PM M193). A block plugged
+    /// now is the guest's, its pages held as they should be, and none of what it gave back:
+    /// a guest that ends asking for memory has its driver plugging as it ends. None where
+    /// the guest has no memory to plug, or the host cannot say.
     pub fn hotplug_held(&self) -> io::Result<Option<u64>> {
         let Some(h) = &self.hotplug else {
             return Ok(None);
         };
         let page = platform::page_size()?;
-        // The blocks ever plugged alone are asked about, where the pages a block given back
-        // still held would show: asking of all of a region the size of the host's memory, a
-        // run's (D148), took 7.7 ms a run where none of it was ever plugged.
+        // The blocks plugged once and not now alone are asked about, where the pages a block
+        // given back still held would show: asking of all of a region the size of the
+        // host's memory, a run's (D148), took 7.7 ms a run where none of it was ever plugged.
+        let given_back: Vec<AtomicU64> = h
+            .ever
+            .iter()
+            .zip(h.plugged.iter())
+            .map(|(ever, now)| AtomicU64::new(ever.load(Ordering::Acquire) & !now.load(Ordering::Acquire)))
+            .collect();
         let mut held = 0u64;
-        for (gpa, len) in h.runs(&h.ever) {
+        for (gpa, len) in h.runs(&given_back) {
             let (Some(offset), Ok(len)) = (
                 gpa.checked_sub(h.gpa).and_then(|o| usize::try_from(o).ok()),
                 usize::try_from(len),
@@ -1068,6 +1077,30 @@ mod tests {
         let dir = shards_testdir::TempDir::new("plug-save").unwrap();
         let file = std::fs::File::create(dir.join("mem")).unwrap();
         m.save(&file).unwrap();
+    }
+
+    /// What the host holds of the memory the guest gave back: none of a block unplugged,
+    /// whose pages its unplugging gave back; and a block plugged still, its pages the
+    /// guest's, is none of what it gave back, where a guest that ends asking for memory has
+    /// one being plugged as it ends.
+    #[test]
+    fn the_memory_given_back_holds_nothing() {
+        let p = page_size().unwrap();
+        let block = (2 << 20).max(p as u64);
+        let ram = [(0x8000_0000u64, 4 * p)];
+        let hot = 0x1_0000_0000u64;
+        let m = GuestMemory::with_hotplug(&ram, hot, 4 * block as usize, block).unwrap();
+        let a = m.access().unwrap();
+        a.plug(hot, 2 * block, |_, _, _| Ok(())).unwrap();
+        for at in (0..2 * block).step_by(p) {
+            a.write_obj(hot + at, 1u8).unwrap();
+        }
+        a.unplug(hot, block, |_, _| Ok(())).unwrap();
+        drop(a);
+        // Where the host can say which pages it holds.
+        if let Some(held) = m.hotplug_held().unwrap() {
+            assert_eq!(held, 0, "of the block given back, or counting the one plugged");
+        }
     }
 
     /// A range a device's DMA holds pinned is kept: a report of it free gives nothing back
