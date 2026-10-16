@@ -3822,6 +3822,26 @@ STOP_SENDING at the last frame; the client's end ending no stdin; room again res
 stream; strangers taken past the invitations; no time to join, or one bounding enrolled
 clients too; and a refusal at the handshake's end said in other words.
 
+**A client's environment, and its owner's (part 1).** Docker's CLI takes a bare `-e NAME`
+from its own environment (docker/cli opts/env.go, ValidateEnv), and a command shards runs
+there is a CLI of that machine's: a client's `-e AWS_SECRET_ACCESS_KEY` took the value the
+daemon's owner had there, the daemon having given its command its whole environment. A
+client's command now has of the daemon's environment only shards' own settings (`SHARDS_*`,
+but its tests' credentials) and what it needs to act as that machine's shards: `PATH`,
+`HOME`, `USER`, `LOGNAME`, `TMPDIR`, the XDG cache and data homes, and the registries'
+credentials (`DOCKER_CONFIG`, `DOCKER_AUTH_CONFIG`), which a context reaches as its owner
+does (`shards_ipc::spawn_in`, which gives a child nothing else). And the client resolves
+what it names of its own as Docker's CLI does, by where shards' parser finds each flag's
+value (`flags::Parsed::positions`): a bare `-e NAME` takes its value here, and
+`--env-file` and `--label-file` cross as the `--env` and `--label` values their files here
+hold, ahead of the rest, as docker/cli reads files' first. A cloud credential a build there
+would want is the client's to send, not the owner's to lend (part 3). Tested in
+`tests/context.rs` (`a_clients_command_has_the_clients_environment_not_the_owners`: the
+owner's secret absent where `-e` named it, the client's own variables and an env file's
+present), `a_clients_variables_and_files_are_its_own`, `a_flags_values_are_found_where_they_sit`
+and `a_clients_command_takes_shards_settings_alone`; mutation-checked: the daemon's whole
+environment given, a bare `-e` unresolved here, an env file read there.
+
 **Part 2, built: the client's terminal, and its signals.** A context carries them as
 `ssh -t` does (OpenSSH session.c, do_exec_pty; clientloop.c, enter_raw_mode):
 - **The command's stdio is the client's.** The request says which of the client's stdin,

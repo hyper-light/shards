@@ -358,6 +358,10 @@ pub struct Parsed {
     /// What pflag said of the deprecated flags used. Cobra prints it on the command's
     /// output, which the CLI makes stdout (spf13/cobra command.go ParseFlags and Print).
     pub notices: String,
+    /// Where each value given a flag that takes one sits in the command line: the flag's
+    /// name, the word it is in, and the byte it begins at there (after `--name=` or `-n`;
+    /// 0 for a word of its own). A context's client rewrites them in place (D180).
+    pub positions: Vec<(&'static str, usize, usize)>,
 }
 
 impl Parsed {
@@ -590,6 +594,7 @@ pub fn parse(
         set: vec![false; command.flags.len()],
         args: Vec::new(),
         notices: String::new(),
+        positions: Vec::new(),
     };
     if let Err(e) = read(&mut parsed, argv, validate) {
         return Outcome::Fail {
@@ -709,14 +714,19 @@ fn read(
             }
             continue;
         }
+        // This word's place in the command line.
+        let at = argv
+            .len()
+            .saturating_sub(words.as_slice().len())
+            .saturating_sub(1);
         if bytes.get(1) == Some(&b'-') {
             if bytes.len() == 2 {
                 parsed.args.extend(words.cloned());
                 return Ok(());
             }
-            read_long(parsed, word, &mut words, validate)?;
+            read_long(parsed, word, at, &mut words, validate)?;
         } else {
-            read_short(parsed, word, &mut words, validate)?;
+            read_short(parsed, word, at, &mut words, validate)?;
         }
     }
     Ok(())
@@ -1058,10 +1068,12 @@ fn validate_sysctl(value: &str) -> Result<String, String> {
     }
 }
 
-/// pflag's parseLongArg: `--name`, `--name=value`, or `--name value`.
+/// pflag's parseLongArg: `--name`, `--name=value`, or `--name value`; `word` is the
+/// command line's `at`.
 fn read_long(
     parsed: &mut Parsed,
     word: &str,
+    at: usize,
     words: &mut std::slice::Iter<'_, String>,
     validate: &dyn Fn(&Flag, &str) -> Result<String, String>,
 ) -> Result<(), String> {
@@ -1078,21 +1090,31 @@ fn read_long(
     };
     let flag = parsed.flags.get(index).copied().ok_or("no flag")?;
     let value = match inline {
-        Some(v) => v,
+        Some(v) => {
+            parsed
+                .positions
+                .push((flag.name, at, word.len().saturating_sub(v.len())));
+            v
+        }
         None if flag.kind == Kind::Bool => "true".to_string(),
-        None => words
-            .next()
-            .cloned()
-            .ok_or_else(|| format!("flag needs an argument: --{name}"))?,
+        None => {
+            let v = words
+                .next()
+                .cloned()
+                .ok_or_else(|| format!("flag needs an argument: --{name}"))?;
+            parsed.positions.push((flag.name, at.saturating_add(1), 0));
+            v
+        }
     };
     set(parsed, index, &value, validate)
 }
 
 /// pflag's parseShortArg: shorthands run together (`-aq`), the last of them perhaps
-/// taking a value (`-n3`, `-n=3`, `-n 3`).
+/// taking a value (`-n3`, `-n=3`, `-n 3`); `word` is the command line's `at`.
 fn read_short(
     parsed: &mut Parsed,
     word: &str,
+    at: usize,
     words: &mut std::slice::Iter<'_, String>,
     validate: &dyn Fn(&Flag, &str) -> Result<String, String>,
 ) -> Result<(), String> {
@@ -1113,15 +1135,22 @@ fn read_short(
         let value;
         if let Some(inline) = rest.strip_prefix('=').filter(|_| shorts.len() > 2) {
             value = inline.to_string();
+            parsed
+                .positions
+                .push((flag.name, at, word.len().saturating_sub(inline.len())));
             shorts = "";
         } else if flag.kind == Kind::Bool {
             value = "true".to_string();
             shorts = rest;
         } else if !rest.is_empty() {
             value = rest.to_string();
+            parsed
+                .positions
+                .push((flag.name, at, word.len().saturating_sub(rest.len())));
             shorts = "";
         } else if let Some(next) = words.next() {
             value = next.clone();
+            parsed.positions.push((flag.name, at.saturating_add(1), 0));
             shorts = "";
         } else if c == b'h'
             && let Some(help) = parsed.find(|f| f.name == "help")

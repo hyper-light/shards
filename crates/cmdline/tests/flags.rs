@@ -125,3 +125,42 @@ fn shards_takes_every_flag_of_its_commands() {
     }
     assert!(wrong.is_empty(), "{}", wrong.join("\n"));
 }
+
+/// Where each value of a flag sits in a command line: a word of its own, after `--name=`,
+/// after `-n`, and after shorthands run together; none for a bool's, and none past `run`'s
+/// image, whose words are its command's (D180's client rewrites them in place).
+#[test]
+fn a_flags_values_are_found_where_they_sit() {
+    let argv: Vec<String> = [
+        "-e",
+        "A",
+        "--env=B",
+        "-eC",
+        "-ie",
+        "D",
+        "--env-file",
+        "f",
+        "--rm",
+        "img",
+        "-e",
+        "X",
+    ]
+    .iter()
+    .map(|w| w.to_string())
+    .collect();
+    let shards_cmdline::flags::Outcome::Run(parsed) =
+        shards_cmdline::flags::parse(&RUN, "shards run", &argv, &|_, v| Ok(v.to_string()))
+    else {
+        panic!("not parsed");
+    };
+    assert_eq!(
+        parsed.positions,
+        [
+            ("env", 1, 0),
+            ("env", 2, 6),
+            ("env", 3, 2),
+            ("env", 5, 0),
+            ("env-file", 7, 0),
+        ]
+    );
+}

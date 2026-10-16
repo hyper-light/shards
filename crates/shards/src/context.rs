@@ -482,11 +482,81 @@ fn not_carried(args: &[OsString]) -> Option<String> {
     else {
         return None;
     };
-    let files = !parsed.many("env-file").is_empty()
-        || !parsed.many("label-file").is_empty()
-        || !parsed.string("cidfile").is_empty()
-        || !parsed.string("output").is_empty();
+    // `--env-file` and `--label-file` cross as what they hold ([`here_values`]).
+    let files = !parsed.string("cidfile").is_empty() || !parsed.string("output").is_empty();
     files.then(|| format!("{path}: a file of this machine's, which a context does not carry yet"))
+}
+
+/// A reader of a file of `KEY=VALUE` lines, a key alone its value here where the bool says
+/// so (the CLI's kv_file, pkg/kvfile's Parse).
+type KvFile = dyn Fn(&str, bool) -> Result<Vec<String>, String>;
+
+/// What a command line names of this client's, resolved here as Docker's CLI resolves it,
+/// where the command there would read its own machine's (D180): a variable `-e NAME` takes
+/// the value `lookup` gives it here, if any (docker/cli opts/env.go, ValidateEnv); and
+/// `--env-file` and `--label-file`, files of this machine's, become the `--env` and
+/// `--label` values that `read` finds in them, ahead of the rest, as docker/cli reads files'
+/// first (ReadKVEnvStrings, ReadKVStrings). A command shards' parser refuses goes as it is:
+/// its refusal is the command's own there.
+fn here_values(
+    words: Vec<String>,
+    lookup: &dyn Fn(&str) -> Option<String>,
+    read: &KvFile,
+) -> Result<Vec<String>, String> {
+    use shards_cmdline::commands::{CREATE, EXEC, RUN};
+    let said = shards_cmdline::grammar::rewrite(&words).unwrap_or_else(|| words.clone());
+    let refs: Vec<&str> = said.iter().map(String::as_str).collect();
+    let (command, path, n) = match refs.as_slice() {
+        ["run", ..] => (&RUN, "shards run", 1),
+        ["container", "run", ..] => (&RUN, "shards container run", 2),
+        ["create", ..] => (&CREATE, "shards create", 1),
+        ["container", "create", ..] => (&CREATE, "shards container create", 2),
+        ["exec", ..] => (&EXEC, "shards exec", 1),
+        ["container", "exec", ..] => (&EXEC, "shards container exec", 2),
+        _ => return Ok(words),
+    };
+    let head = said.get(..n).map(<[String]>::to_vec).unwrap_or_default();
+    let mut rest = said.get(n..).map(<[String]>::to_vec).unwrap_or_default();
+    let shards_cmdline::flags::Outcome::Run(parsed) =
+        shards_cmdline::flags::parse(command, path, &rest, &|_, value| Ok(value.to_string()))
+    else {
+        return Ok(words);
+    };
+    let mut from_files = Vec::new();
+    let mut gone = Vec::new();
+    for &(name, at, offset) in &parsed.positions {
+        let Some(word) = rest.get_mut(at) else {
+            continue;
+        };
+        let value = word.get(offset..).unwrap_or_default().to_string();
+        match name {
+            "env" if !value.is_empty() && !value.contains('=') => {
+                if let Some(here) = lookup(&value) {
+                    *word = format!("{}{value}={here}", word.get(..offset).unwrap_or_default());
+                }
+            }
+            "env-file" | "label-file" => {
+                let flag = if name == "env-file" { "--env" } else { "--label" };
+                for entry in read(&value, name == "env-file")? {
+                    from_files.push(format!("{flag}={entry}"));
+                }
+                gone.push(at);
+                // The flag's own word, before a value of a word of its own.
+                if offset == 0 {
+                    gone.extend(at.checked_sub(1));
+                }
+            }
+            _ => {}
+        }
+    }
+    gone.sort_unstable();
+    gone.dedup();
+    for at in gone.into_iter().rev() {
+        if at < rest.len() {
+            rest.remove(at);
+        }
+    }
+    Ok(head.into_iter().chain(from_files).chain(rest).collect())
 }
 
 /// Whether `args`, the command after shards', is a context's own, which runs on this machine
@@ -545,10 +615,10 @@ pub(crate) fn forward(home: &Path, context: &Context, args: Vec<OsString>) -> Ex
         Ok(identity) => identity,
         Err(e) => return fail(e),
     };
-    let mut bytes = Vec::with_capacity(args.len());
+    let mut words = Vec::with_capacity(args.len());
     for arg in &args {
         match arg.to_str() {
-            Some(text) => bytes.push(text.as_bytes().to_vec()),
+            Some(text) => words.push(text.to_string()),
             None => {
                 return fail(format!(
                     "{arg:?}: an argument that is not UTF-8 does not cross to another machine"
@@ -556,6 +626,15 @@ pub(crate) fn forward(home: &Path, context: &Context, args: Vec<OsString>) -> Ex
             }
         }
     }
+    let words = match here_values(
+        words,
+        &|name| std::env::var(name).ok(),
+        &crate::cli::request::kv_file,
+    ) {
+        Ok(words) => words,
+        Err(e) => return fail(e),
+    };
+    let bytes: Vec<Vec<u8>> = words.into_iter().map(String::into_bytes).collect();
     let env = frame::ENV
         .iter()
         .filter_map(|name| {
@@ -1044,6 +1123,39 @@ mod tests {
         assert_eq!(console_signal(3), None);
     }
 
+    /// What a command line names of the client's is the client's: a variable `-e NAME` its
+    /// value here, and `--env-file` and `--label-file` what they hold, ahead of the rest; the
+    /// command's own words untouched.
+    #[test]
+    fn a_clients_variables_and_files_are_its_own() {
+        let words = |s: &str| s.split(' ').map(str::to_string).collect::<Vec<_>>();
+        let lookup = |name: &str| (name == "SET").then(|| "here".to_string());
+        let read = |path: &str, env: bool| -> Result<Vec<String>, String> {
+            match (path, env) {
+                ("f.env", true) => Ok(vec!["A=1".into(), "B=2".into()]),
+                ("l.txt", false) => Ok(vec!["L=x".into()]),
+                _ => Err(format!("{path}: not here")),
+            }
+        };
+        let rewritten = here_values(
+            words("run -e SET --env=UNSET -eGIVEN=1 --env-file f.env --label-file=l.txt -it alpine -e SET"),
+            &lookup,
+            &read,
+        )
+        .unwrap();
+        assert_eq!(
+            rewritten,
+            words("run --env=A=1 --env=B=2 --label=L=x -e SET=here --env=UNSET -eGIVEN=1 -it alpine -e SET")
+        );
+        let exec = here_values(words("exec -ite SET box sh"), &lookup, &read).unwrap();
+        assert_eq!(exec, words("exec -ite SET=here box sh"));
+        assert_eq!(
+            here_values(words("ps -a"), &lookup, &read).unwrap(),
+            words("ps -a")
+        );
+        assert!(here_values(words("run --env-file gone.env alpine"), &lookup, &read).is_err());
+    }
+
     /// What a context carries, and what it refuses until it carries it.
     #[test]
     fn a_context_refuses_what_it_does_not_carry() {
@@ -1056,19 +1168,21 @@ mod tests {
         assert!(not_carried(&args("attach web")).is_none());
         assert!(not_carried(&args("build .")).is_some());
         assert!(not_carried(&args("save -o x.tar alpine")).is_some());
-        assert!(not_carried(&args("run --env-file e alpine")).is_some());
+        assert!(not_carried(&args("run --cidfile c alpine")).is_some());
         assert!(
-            not_carried(&args("run --rm alpine cat --env-file e")).is_none(),
-            "the command's own --env-file"
+            not_carried(&args("run --rm alpine cat --cidfile c")).is_none(),
+            "the command's own --cidfile"
         );
         assert!(
-            not_carried(&args("run --name web --env-file e alpine sh")).is_some(),
+            not_carried(&args("run --name web --cidfile c alpine sh")).is_some(),
             "past a flag's value"
         );
         assert!(
-            not_carried(&args("run vm --env-file e alpine sh")).is_some(),
+            not_carried(&args("run vm --cidfile c alpine sh")).is_some(),
             "shards' own words"
         );
+        // What the client's files hold crosses ([`here_values`]).
+        assert!(not_carried(&args("run --env-file e alpine")).is_none());
         assert!(kept_here(&args("context ls")));
         assert!(kept_here(&args("list contexts")));
         assert!(!kept_here(&args("ps")));

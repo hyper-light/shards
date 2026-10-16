@@ -133,11 +133,17 @@ impl Host for Machine {
             .into_iter()
             .filter_map(|(k, v)| String::from_utf8(v).ok().map(|v| (k, OsString::from(v))))
             .collect();
-        // This machine's own shards, whatever context its owner's commands use.
-        let mut set: Vec<(&str, &OsStr)> = vec![
+        // This machine's own shards, whatever context its owner's commands use, and of the
+        // daemon's environment only what shards is set by ([`kept`]).
+        let daemons: Vec<(String, OsString)> = std::env::vars_os()
+            .filter_map(|(k, v)| Some((k.into_string().ok()?, v)))
+            .filter(|(k, _)| kept(k))
+            .collect();
+        let mut set: Vec<(&str, &OsStr)> = daemons.iter().map(|(k, v)| (k.as_str(), v.as_os_str())).collect();
+        set.extend([
             ("SHARDS_HOME", self.home.as_os_str()),
             ("SHARDS_CONTEXT", OsStr::new(crate::context::DEFAULT)),
-        ];
+        ]);
         set.extend(env.iter().map(|(k, v)| (k.as_str(), v.as_os_str())));
         if pty.is_some() {
             set.push((crate::context::TAKE_TERMINAL, OsStr::new("1")));
@@ -150,7 +156,7 @@ impl Host for Machine {
         ];
         // A session of its own, out of reach of what a terminal of the daemon's sends its
         // group, whose controlling terminal is its own where it has one.
-        let child = shards_ipc::spawn_with(&self.exe, &argv, &fds, true, &set)
+        let child = shards_ipc::spawn_in(&self.exe, &argv, &fds, true, &set)
             .map_err(|e| Error::new(format!("starting the command: {e}")))?;
         // The child holds its ends, and the terminal's peer: once it has gone, reading the
         // controller ends.
@@ -196,6 +202,27 @@ impl Host for Machine {
     fn invited(&self) -> usize {
         crate::context::open_invitations(&self.home)
     }
+}
+
+/// Whether the daemon's variable `name` goes to a client's command: shards' own settings
+/// (`SHARDS_*`, but its tests' credentials), and what a process needs to act as this
+/// machine's shards: where its programs, home, user and temporary files are, and its
+/// registries' credentials, which a context reaches as its daemon's owner does (D180). No
+/// other: the owner's environment is no client's, though Docker's CLI takes a bare `-e
+/// NAME` from its own (docker/cli opts/env.go, ValidateEnv), as a command here would.
+fn kept(name: &str) -> bool {
+    matches!(
+        name,
+        "PATH"
+            | "HOME"
+            | "USER"
+            | "LOGNAME"
+            | "TMPDIR"
+            | "XDG_CACHE_HOME"
+            | "XDG_DATA_HOME"
+            | "DOCKER_CONFIG"
+            | "DOCKER_AUTH_CONFIG"
+    ) || (name.starts_with("SHARDS_") && !name.starts_with("SHARDS_TEST_"))
 }
 
 /// A pseudo-terminal of `rows` by `cols`: its controller, and the peer a command's stdio is,
@@ -280,6 +307,33 @@ pub(super) fn listen(
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    /// A client's command takes shards' settings of the daemon's environment, and what it
+    /// needs to act as this machine's shards; none of the owner's other variables, nor its
+    /// tests' credentials.
+    #[test]
+    fn a_clients_command_takes_shards_settings_alone() {
+        for name in [
+            "PATH",
+            "HOME",
+            "TMPDIR",
+            "DOCKER_CONFIG",
+            "SHARDS_KERNEL",
+            "SHARDS_LOG",
+        ] {
+            assert!(kept(name), "{name}");
+        }
+        for name in [
+            "AWS_SECRET_ACCESS_KEY",
+            "COSIGN_PASSWORD",
+            "SSH_AUTH_SOCK",
+            "GITHUB_TOKEN",
+            "SHARDS_TEST_S3_SECRET",
+            "LD_PRELOAD",
+        ] {
+            assert!(!kept(name), "{name}");
+        }
+    }
 
     /// A client runs shards' commands, not the machine's owner's.
     #[test]

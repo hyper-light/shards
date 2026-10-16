@@ -52,10 +52,13 @@ fn joined(name: &str) -> Option<(TempDir, Listening, TempDir, String)> {
         ("SHARDS_KERNEL", kernel().as_os_str()),
         ("SHARDS_INIT", guest_init().as_os_str()),
     ];
+    // The machine's owner keeps a secret in the daemon's environment.
+    let mut daemons = on_machine.to_vec();
+    daemons.push(("OWNERS_SECRET", "the owner's own".as_ref()));
     let started = run_shards_env(
         &["daemon"],
         &["--detached", "--listen", "127.0.0.1:0"],
-        &on_machine,
+        &daemons,
         TIMEOUT,
     );
     assert_eq!(started.status, Some(0), "{started}");
@@ -220,6 +223,47 @@ fn exec_and_attach_take_the_terminal_through_a_context() {
         TIMEOUT,
     );
     assert_eq!(removed.status, Some(0), "{removed}");
+}
+
+/// A client's command has the client's environment, as a command run here has this
+/// machine's: a bare `-e NAME` its value here, and `--env-file` what the file here holds;
+/// and nothing of the machine owner's, which a bare `-e NAME` there would have taken.
+#[test]
+fn a_clients_command_has_the_clients_environment_not_the_owners() {
+    let Some((_machine, _listening, laptop, image)) = joined("ctx-env") else {
+        return;
+    };
+    let file = laptop.join("vars.env");
+    std::fs::write(&file, "FROM_FILE=here\nCLIENTS_TOO\n").unwrap();
+    let ran = run_shards_env(
+        &["--context", "gpu", "run"],
+        &[
+            "--pull",
+            "never",
+            "--rm",
+            "-e",
+            "OWNERS_SECRET",
+            "-e",
+            "CLIENTS_OWN",
+            "--env-file",
+            file.to_str().unwrap(),
+            &image,
+            "fs",
+            "print:/proc/self/environ",
+        ],
+        &[
+            ("SHARDS_HOME", laptop.as_os_str()),
+            ("CLIENTS_OWN", "mine".as_ref()),
+            ("CLIENTS_TOO", "also mine".as_ref()),
+        ],
+        TIMEOUT,
+    );
+    assert_eq!(ran.status, Some(0), "{ran}");
+    let vars: Vec<&str> = ran.stdout.split('\0').collect();
+    for wanted in ["CLIENTS_OWN=mine", "FROM_FILE=here", "CLIENTS_TOO=also mine"] {
+        assert!(vars.contains(&wanted), "{wanted}: {vars:?}");
+    }
+    assert!(!ran.stdout.contains("the owner's own"), "{vars:?}");
 }
 
 /// With no terminal, a signal the client receives reaches the command there, by the number
