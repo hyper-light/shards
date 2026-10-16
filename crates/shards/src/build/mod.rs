@@ -2297,7 +2297,7 @@ fn default_spec() -> Platform {
 /// `KEY=VALUE` arguments as buildx reads them: a `KEY` alone takes its value from the
 /// environment, and is left out when unset (`listToMap`); a `KEY=VALUE` label alone is
 /// `KEY` with an empty value.
-fn build_args(list: &[String], from_env: bool) -> BTreeMap<Vec<u8>, Vec<u8>> {
+pub(crate) fn build_args(list: &[String], from_env: bool) -> BTreeMap<Vec<u8>, Vec<u8>> {
     let mut out = BTreeMap::new();
     for item in list {
         match item.split_once('=') {
@@ -2349,7 +2349,7 @@ const IGNORE_KINDS: [&str; 2] = ["agentignore", "dockerignore"];
 
 /// The ignore file at `dir`, `PREFIX.agentignore`, else `PREFIX.dockerignore` (`prefix`
 /// empty for a context's own), by its name, or none.
-fn ignore_file(dir: &Path, prefix: &str) -> Result<Option<(String, Vec<u8>)>, String> {
+pub(crate) fn ignore_file(dir: &Path, prefix: &str) -> Result<Option<(String, Vec<u8>)>, String> {
     for kind in IGNORE_KINDS {
         let name = format!("{prefix}.{kind}");
         if let Some(text) = read_if_present(&dir.join(&name), &name)? {
@@ -2361,7 +2361,7 @@ fn ignore_file(dir: &Path, prefix: &str) -> Result<Option<(String, Vec<u8>)>, St
 
 /// What a file named `name` is read as: an Agentfile where it is named as one, as Docker's
 /// names a Dockerfile (`Agentfile`, `*.Agentfile`, `Agentfile.*`), else a Dockerfile (D35).
-fn dialect_of(name: &str) -> Dialect {
+pub(crate) fn dialect_of(name: &str) -> Dialect {
     let lower = name.to_ascii_lowercase();
     if lower == "agentfile" || lower.ends_with(".agentfile") || lower.starts_with("agentfile.") {
         Dialect::Agentfile
@@ -2373,7 +2373,7 @@ fn dialect_of(name: &str) -> Dialect {
 /// The file a build reads: `-f`'s path, or none for stdin's; without `-f`, the context's
 /// `Agentfile` where there is one, else its `Dockerfile` (D35). Its name as the build's
 /// progress shows it.
-fn definition(parsed: &Parsed, context: &Path) -> (Option<PathBuf>, String) {
+pub(crate) fn definition(parsed: &Parsed, context: &Path) -> (Option<PathBuf>, String) {
     let file = parsed.string("file");
     // stdin's, as `-f -` or as the context `-` that is no archive (its context empty).
     if file == "-" || parsed.args.first().is_some_and(|a| a == "-") {

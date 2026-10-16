@@ -13957,17 +13957,21 @@ fn policies_verify_artifact_attestations() {
     let refused = build("gh_2.102.0_checksums.txt");
     assert_ne!(refused.status, Some(0), "{}", refused.stderr);
     let log = policy_log(&refused.stderr);
+    // The build's whole output with the log: what ended it, where the policy's second
+    // look at the source, once its checksum is known, never came (CI saw one so).
     if !limited(&log, SUMS) {
         assert!(
             log.iter()
                 .any(|l| l == &format!("github_attestation: no bundle found for \"cli/cli\"@{SUMS}")),
-            "{log:#?}"
+            "{log:#?}\n{}",
+            refused.stderr
         );
     }
     assert!(
         log.iter()
             .any(|l| l == &format!("policy decision for source {src}: DENY")),
-        "{log:#?}"
+        "{log:#?}\n{}",
+        refused.stderr
     );
 }
 

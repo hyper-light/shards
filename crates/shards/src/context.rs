@@ -21,6 +21,27 @@ use shards_remote::invite::{self, Invitation};
 /// before its command runs.
 const NOT_RUN: u8 = 125;
 
+/// What names a connection to the machine's Engine API (D180 part 4) to its daemon: no
+/// command line's word, as no command line can hold NUL.
+#[cfg(unix)]
+pub(crate) const ENGINE_STEP: &str = "\u{0}engine";
+
+/// Where this home's daemon serves context `name`'s engine, relative to the home: in `e`, by
+/// its name hashed, as Docker's context store names a context's directory (docker/cli
+/// context/store, `contextdirOf`), so that the path of any name fits a socket's address
+/// (sun_path, 104 bytes on macOS): 71 in a macOS home of a user of nine letters.
+pub(crate) fn engine_socket(name: &str) -> PathBuf {
+    use sha2::Digest as _;
+    let digest = sha2::Sha256::digest(name.as_bytes());
+    let short: String = digest.iter().take(6).map(|b| format!("{b:02x}")).collect();
+    Path::new("e").join(format!("{short}.sock"))
+}
+
+/// Context `name`'s engine as `DOCKER_HOST` names one.
+fn engine_endpoint(home: &Path, name: &str) -> String {
+    format!("unix://{}", home.join(engine_socket(name)).display())
+}
+
 /// The variable a daemon sets for a client's command on a terminal of its own: the command
 /// takes the terminal as its session's controlling terminal, first thing, as a login's
 /// command has its own (D180), which no action of posix_spawn(3) makes on every system.
@@ -409,7 +430,7 @@ pub(crate) fn load(home: &Path, name: &str) -> Result<Option<Context>, String> {
 }
 
 /// Every context this home joined, by name.
-fn list(home: &Path) -> Result<Vec<Context>, String> {
+pub(crate) fn list(home: &Path) -> Result<Vec<Context>, String> {
     let dir = home.join("contexts");
     let entries = match fs::read_dir(&dir) {
         Ok(entries) => entries,
@@ -502,9 +523,25 @@ fn not_carried(args: &[OsString]) -> Option<String> {
         ["agent" | "harness" | "mcp", "build"] => Some("build"),
         _ => None,
     });
-    // `cp` is driven here, step by step, where this client's CLI drives one (cli/cp.rs, Unix).
-    let refused =
-        |w: &str| matches!(w, "build" | "buildx" | "builder" | "compose") || (w == "cp" && !cfg!(unix));
+    // `cp` is driven here, step by step, where this client's CLI drives one (cli/cp.rs, Unix);
+    // a build's context is kept in step on the machine ([`building`]), what else a build
+    // names of this client's refused until it is carried ([`build_not_carried`]).
+    if let Some(n) = shards_cmdline::commands::build(&refs) {
+        let rest = said.get(n..).map(<[String]>::to_vec).unwrap_or_default();
+        if let shards_cmdline::flags::Outcome::Run(parsed) = shards_cmdline::flags::parse(
+            &shards_cmdline::commands::BUILD,
+            "shards buildx build",
+            &rest,
+            &|_, value| Ok(value.to_string()),
+        ) && let Some(flag) = build_not_carried(&parsed)
+        {
+            return Some(format!(
+                "build {flag} over a context names this machine's files, which shards does not carry yet: run it on the machine itself"
+            ));
+        }
+        return None;
+    }
+    let refused = |w: &str| matches!(w, "buildx" | "builder" | "compose") || (w == "cp" && !cfg!(unix));
     if let Some(named) = named.or_else(|| refused(first).then_some(first)) {
         return Some(format!(
             "{named} over a context sends this machine's files, which shards does not carry yet: run it on the machine itself"
@@ -535,6 +572,447 @@ fn not_carried(args: &[OsString]) -> Option<String> {
     // and `-i`'s files as the command's output and input ([`here_files`]).
     let files = !parsed.string("cidfile").is_empty();
     files.then(|| format!("{path}: a file of this machine's, which a context does not carry yet"))
+}
+
+/// What a build over a context names of this client's that a context does not carry yet
+/// (part 3c): a secret, which buildx reads here, from a file or a variable; an SSH agent or
+/// key; an output, cache or named context of a file or directory here; the files
+/// `--iidfile` and `--metadata-file` name; and a policy's file.
+fn build_not_carried(parsed: &shards_cmdline::flags::Parsed) -> Option<&'static str> {
+    let named_here = |v: &str| {
+        let fields: Vec<&str> = v.split(',').collect();
+        let local = fields.contains(&"type=local");
+        let dest = fields
+            .iter()
+            .find_map(|f| f.strip_prefix("dest=").or_else(|| f.strip_prefix("src=")));
+        local || dest.is_some_and(|d| d != "-") || (!v.contains('=') && v != "-")
+    };
+    let remote_context = |v: &str| {
+        let value = v.split_once('=').map_or(v, |(_, value)| value);
+        value.starts_with("docker-image://")
+            || value.starts_with("target:")
+            || value.starts_with("http://")
+            || value.starts_with("https://")
+            || !matches!(
+                shards_agentfile::git::parse_git_ref(value.as_bytes()),
+                shards_agentfile::git::Parsed::NotGit
+            )
+    };
+    if !parsed.many("secret").is_empty() {
+        Some("--secret")
+    } else if !parsed.many("ssh").is_empty() {
+        Some("--ssh")
+    } else if parsed.many("output").iter().any(|v| named_here(v)) {
+        Some("--output")
+    } else if parsed
+        .many("cache-from")
+        .iter()
+        .any(|v| named_here(v) && v.contains('='))
+    {
+        Some("--cache-from")
+    } else if parsed
+        .many("cache-to")
+        .iter()
+        .any(|v| named_here(v) && v.contains('='))
+    {
+        Some("--cache-to")
+    } else if parsed.many("build-context").iter().any(|v| !remote_context(v)) {
+        Some("--build-context")
+    } else if !parsed.string("iidfile").is_empty() {
+        Some("--iidfile")
+    } else if !parsed.string("metadata-file").is_empty() {
+        Some("--metadata-file")
+    } else if parsed.many("policy").iter().any(|v| v.contains("filename=")) {
+        Some("--policy")
+    } else {
+        None
+    }
+}
+
+/// A build of a context of this client's (D180 part 3c): what the machine builds, of its copy
+/// of the context, and what keeps the copy in step.
+struct Built {
+    /// The words the machine runs, its copies named by `synced::CONTEXT` and
+    /// `synced::DOCKERFILE`.
+    words: Vec<String>,
+    /// The context here, and what a build of it excludes.
+    context: PathBuf,
+    filters: shards_build::context::Filters,
+    /// The build file's directory's files, which go whole.
+    carried: Vec<crate::synced::Carried>,
+    /// The copy's name: the context's path, hashed; the build file's directory goes whole
+    /// each time, whichever it is.
+    key: String,
+    /// The registries its bases are in, whose logins go with it.
+    domains: std::collections::BTreeSet<String>,
+}
+
+/// A file's permissions and time, for its copy there; a file not there none of its own.
+fn stamped(path: &Path) -> (u32, (i64, u32)) {
+    std::fs::metadata(path)
+        .ok()
+        .map(|m| {
+            let at = m
+                .modified()
+                .ok()
+                .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+                .map_or((0, 0), |d| {
+                    (i64::try_from(d.as_secs()).unwrap_or(0), d.subsec_nanos())
+                });
+            #[cfg(unix)]
+            let mode = std::os::unix::fs::PermissionsExt::mode(&m.permissions());
+            #[cfg(not(unix))]
+            let mode = 0o644;
+            (mode, at)
+        })
+        .unwrap_or((0o644, (0, 0)))
+}
+
+/// `words`' build of a context of this client's, where the command is one, read as `build`
+/// reads it, its build file and ignore file found as the build finds them (build/mod.rs,
+/// `definition`, `ignore_file`); a command shards' parser refuses, `-h`, and a context of
+/// stdin's, Git's or a URL's go as they are. `stdin` gives `-f -`'s file.
+fn building(words: &[String], stdin: &dyn Fn() -> Result<Vec<u8>, String>) -> Result<Option<Built>, String> {
+    let said = shards_cmdline::grammar::rewrite(words).unwrap_or_else(|| words.to_vec());
+    let refs: Vec<&str> = said.iter().map(String::as_str).collect();
+    let Some(n) = shards_cmdline::commands::build(&refs) else {
+        return Ok(None);
+    };
+    let head = said.get(..n).map(<[String]>::to_vec).unwrap_or_default();
+    let mut rest = said.get(n..).map(<[String]>::to_vec).unwrap_or_default();
+    let shards_cmdline::flags::Outcome::Run(parsed) = shards_cmdline::flags::parse(
+        &shards_cmdline::commands::BUILD,
+        "shards buildx build",
+        &rest,
+        &|_, value| Ok(value.to_string()),
+    ) else {
+        return Ok(None);
+    };
+    let (Some(arg), Some(&at)) = (parsed.args.first(), parsed.arg_words.first()) else {
+        return Ok(None);
+    };
+    let remote = arg == "-"
+        || arg.starts_with("http://")
+        || arg.starts_with("https://")
+        || !matches!(
+            shards_agentfile::git::parse_git_ref(arg.as_bytes()),
+            shards_agentfile::git::Parsed::NotGit
+        );
+    if remote {
+        return Ok(None);
+    }
+    let context = std::path::absolute(arg).map_err(|e| format!("{arg}: {e}"))?;
+    // One not there is the build's own to say so, there.
+    if !context.is_dir() {
+        return Ok(None);
+    }
+    // The build file, and the ignore file beside it, which overrides the context's own.
+    let (name, text, beside, dir) = if parsed.string("file") == "-" {
+        ("Dockerfile".to_string(), Some(stdin()?), None, None)
+    } else {
+        let (path, name) = crate::build::definition(&parsed, &context);
+        let path = path.unwrap_or_else(|| context.join(&name));
+        // `dockerfile` where `Dockerfile` is not there and it is, as the build looks for it;
+        // neither there, the build says so of `Dockerfile`.
+        let lower = path.with_file_name("dockerfile");
+        let (path, name) = if name == "Dockerfile" && !path.exists() && lower.exists() {
+            (lower, "dockerfile".to_string())
+        } else {
+            (path, name)
+        };
+        let dir = path
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| context.clone());
+        // A build file not there is the build's to say so, by its name.
+        let text = std::fs::read(&path).ok();
+        let beside = crate::build::ignore_file(&dir, &name)?;
+        (name, text, beside, Some(dir))
+    };
+    let mut carried = Vec::new();
+    if let Some(text) = &text {
+        let (mode, mtime) = dir.as_ref().map_or((0o644, (0, 0)), |d| stamped(&d.join(&name)));
+        carried.push(crate::synced::Carried {
+            name: name.clone(),
+            mode,
+            mtime,
+            bytes: text.clone(),
+        });
+    }
+    if let (Some((ignore_name, ignore_text)), Some(dir)) = (&beside, &dir) {
+        let (mode, mtime) = stamped(&dir.join(ignore_name));
+        carried.push(crate::synced::Carried {
+            name: ignore_name.clone(),
+            mode,
+            mtime,
+            bytes: ignore_text.clone(),
+        });
+    }
+    let ignore = match beside {
+        Some(beside) => Some(beside),
+        None => crate::build::ignore_file(&context, "")?,
+    };
+    let filters = shards_build::context::Filters {
+        exclude: ignore
+            .map(|(_, t)| shards_agentfile::ignore::read_all(&t))
+            .unwrap_or_default(),
+        ..shards_build::context::Filters::default()
+    };
+    // The machine's words: the context and the build file its copies', a bare build arg
+    // this client's value, or none, as buildx reads one where it is run.
+    let mut gone: Vec<(usize, usize)> = Vec::new();
+    for &(flag, word, offset) in &parsed.positions {
+        match flag {
+            "file" => gone.push((word, offset)),
+            "build-arg" => {
+                let value = rest
+                    .get(word)
+                    .and_then(|w| w.get(offset..))
+                    .unwrap_or_default()
+                    .to_string();
+                if value.contains('=') {
+                    continue;
+                }
+                match std::env::var(&value) {
+                    Ok(here) => {
+                        if let Some(w) = rest.get_mut(word) {
+                            *w = format!("{}{value}={here}", w.get(..offset).unwrap_or_default());
+                        }
+                    }
+                    Err(_) => gone.push((word, offset)),
+                }
+            }
+            _ => {}
+        }
+    }
+    if let Some(word) = rest.get_mut(at) {
+        *word = crate::synced::CONTEXT.to_string();
+    }
+    gone.sort_unstable();
+    for (word, offset) in gone.into_iter().rev() {
+        without_value(&mut rest, word, offset);
+    }
+    let words: Vec<String> = head
+        .into_iter()
+        .chain(std::iter::once(format!(
+            "--file={}{name}",
+            crate::synced::DOCKERFILE
+        )))
+        .chain(rest)
+        .collect();
+    let key = {
+        use sha2::Digest as _;
+        let digest = sha2::Sha256::digest(context.as_os_str().as_encoded_bytes());
+        digest.iter().map(|b| format!("{b:02x}")).collect()
+    };
+    let domains = text
+        .as_ref()
+        .map(|text| bases_of(text, &name, &parsed))
+        .unwrap_or_default();
+    Ok(Some(Built {
+        words,
+        context,
+        filters,
+        carried,
+        key,
+        domains,
+    }))
+}
+
+/// What a plan of a build file asks of its bases, recorded: each image answered empty.
+struct Asked(std::cell::RefCell<std::collections::BTreeSet<Vec<u8>>>);
+
+impl shards_agentfile::plan::Resolver for Asked {
+    fn resolve(
+        &self,
+        name: &[u8],
+        _platform: Option<&shards_agentfile::platform::Platform>,
+        _log: &[u8],
+    ) -> Result<shards_agentfile::plan::Resolved, Vec<u8>> {
+        self.0.borrow_mut().insert(name.to_vec());
+        Ok(shards_agentfile::plan::Resolved {
+            reference: name.to_vec(),
+            digest: None,
+            config: b"{}".to_vec(),
+        })
+    }
+
+    fn epoch(
+        &self,
+        _: &shards_agentfile::plan::EpochSource,
+    ) -> Result<Option<shards_agentfile::plan::Epoch>, Vec<u8>> {
+        Ok(None)
+    }
+}
+
+/// The registries the build of `text` reaches for its bases and the images it copies from,
+/// as its plan asks for them, named with its build args, target and platform: what a plan
+/// whose images are answered empty asks of them. What the plan fails of, the build there
+/// says.
+fn bases_of(
+    text: &[u8],
+    name: &str,
+    parsed: &shards_cmdline::flags::Parsed,
+) -> std::collections::BTreeSet<String> {
+    use shards_agentfile::plan;
+    let host = crate::build::host_platform();
+    let given = if parsed.changed("platform") {
+        parsed.many("platform").to_vec()
+    } else {
+        crate::cli::env_ours_first("SHARDS_DEFAULT_PLATFORM", "DOCKER_DEFAULT_PLATFORM")
+            .into_iter()
+            .collect()
+    };
+    let target = crate::build::target_platforms(&given, &host)
+        .ok()
+        .and_then(|p| p.into_iter().next())
+        .unwrap_or_else(|| host.clone());
+    let opts = plan::Options {
+        target_platform: target,
+        build_platforms: vec![host],
+        build_args: crate::build::build_args(parsed.many("build-arg"), true),
+        target: parsed.string("target").as_bytes().to_vec(),
+        dialect: crate::build::dialect_of(name),
+        ..plan::Options::default()
+    };
+    let asked = Asked(std::cell::RefCell::new(std::collections::BTreeSet::new()));
+    let _ = plan::plan(text, &opts, &asked);
+    asked
+        .0
+        .into_inner()
+        .into_iter()
+        .filter_map(|n| shards_image::reference::Reference::parse(&String::from_utf8_lossy(&n)).ok())
+        .map(|r| r.domain)
+        .collect()
+}
+
+/// Builds `built` on `context`'s machine (D180 part 3c): what its copy of the context holds
+/// asked, what changed here since sent as the build's stdin, with the build file's
+/// directory, and the build run there of the copy, its output and status this process's.
+fn build_there(
+    identity: &Identity,
+    context: &Context,
+    built: Built,
+    mut env: Vec<(String, Vec<u8>)>,
+) -> ExitCode {
+    let fail = |why: String| {
+        let _ = writeln!(io::stderr(), "shards: {why}");
+        ExitCode::from(NOT_RUN)
+    };
+    // The bases' registries' logins of this client's, as a pull's go with it.
+    let mut found = Vec::new();
+    for domain in &built.domains {
+        match shards_registry::credentials::lookup(domain, &|name| std::env::var(name).ok()) {
+            Ok((credentials, warnings)) => {
+                for warning in warnings {
+                    let _ = writeln!(io::stderr(), "{warning}");
+                }
+                if credentials != shards_registry::auth::Credentials::Anonymous {
+                    found.push((domain.clone(), credentials));
+                }
+            }
+            Err(e) => {
+                let _ = writeln!(io::stderr(), "{e}");
+                return ExitCode::FAILURE;
+            }
+        }
+    }
+    if !found.is_empty() {
+        env.retain(|(k, _)| k != "SHARDS_AUTH_CONFIG");
+        env.push((
+            "SHARDS_AUTH_CONFIG".to_string(),
+            shards_registry::credentials::env_config_of(&found).into_bytes(),
+        ));
+    }
+    let step = |words: &[&str]| -> Vec<Vec<u8>> {
+        let (first, rest) = words.split_first().map_or(("", &[][..]), |(f, r)| (*f, r));
+        [crate::synced::SYNC_STEP, first, built.key.as_str()]
+            .into_iter()
+            .chain(rest.iter().copied())
+            .map(|w| w.as_bytes().to_vec())
+            .collect()
+    };
+    let (out_tx, out_rx) = std::sync::mpsc::channel();
+    let request = Request {
+        args: step(&["manifest"]),
+        env: Vec::new(),
+        terminal: None,
+    };
+    let asked = client::exec(
+        identity,
+        context.remote(),
+        request,
+        Some(Box::new(io::empty())),
+        Taken(out_tx),
+        io::stderr(),
+        |_| {},
+    );
+    match asked {
+        Ok(Ok(0)) => {}
+        Ok(Ok(status)) => return ExitCode::from(u8::try_from(status).unwrap_or(1)),
+        Ok(Err(refused)) => return fail(format!("{}: {refused}", context.name)),
+        Err(e) => return fail(format!("{}: {e}", context.name)),
+    }
+    let there = match crate::synced::decode(&out_rx.try_iter().flatten().collect::<Vec<u8>>()) {
+        Ok(there) => there,
+        Err(e) => return fail(e),
+    };
+    let walked = match shards_build::context::walk(&built.context, &built.filters) {
+        Ok(walked) => walked,
+        Err(e) => return fail(format!("{}: {e}", built.context.display())),
+    };
+    let (changed, removed) = crate::synced::plan(&walked, &there);
+    let (reader, mut writer) = match io::pipe() {
+        Ok(pipe) => pipe,
+        Err(e) => return fail(format!("a pipe for the context: {e}")),
+    };
+    let (root, carried) = (built.context.clone(), built.carried);
+    let sending = std::thread::Builder::new()
+        .name("context-send".into())
+        .spawn(move || {
+            crate::synced::send(&mut writer, &carried, |out| {
+                shards_archive::pack_changes(&root, &changed, &removed, out)
+                    .map(drop)
+                    .map_err(|e| e.to_string())
+            })
+        });
+    let sending = match sending {
+        Ok(sending) => sending,
+        Err(e) => return fail(format!("a thread for the context: {e}")),
+    };
+    let words: Vec<&str> = std::iter::once("build")
+        .chain(built.words.iter().map(String::as_str))
+        .collect();
+    let request = Request {
+        args: step(&words),
+        env,
+        terminal: None,
+    };
+    let steered = |controls| {
+        *STEERED.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(controls);
+    };
+    let ran = client::exec(
+        identity,
+        context.remote(),
+        request,
+        Some(Box::new(reader)),
+        io::stdout(),
+        io::stderr(),
+        steered,
+    );
+    let sent = sending.join();
+    match ran {
+        Ok(Ok(status)) => {
+            if status == 0
+                && let Ok(Err(e)) = sent
+            {
+                return fail(e);
+            }
+            ExitCode::from(u8::try_from(status).unwrap_or(1))
+        }
+        Ok(Err(refused)) => fail(format!("{}: {refused}", context.name)),
+        Err(e) => fail(format!("{}: {e}", context.name)),
+    }
 }
 
 /// A reader of a file of `KEY=VALUE` lines, a key alone its value here where the bool says
@@ -1063,6 +1541,21 @@ pub(crate) fn forward(home: &Path, context: &Context, args: Vec<OsString>) -> Ex
             return fail(e);
         }
     }
+    // A build of a context here is the machine's of its copy of it, kept in step.
+    let stdin_file = || {
+        use io::Read as _;
+        let mut text = Vec::new();
+        io::stdin()
+            .take(64 << 20)
+            .read_to_end(&mut text)
+            .map_err(|e| format!("reading stdin: {e}"))?;
+        Ok(text)
+    };
+    match building(&words_sent, &stdin_file) {
+        Ok(Some(built)) => return build_there(&identity, context, built, env),
+        Ok(None) => {}
+        Err(e) => return fail(e),
+    }
     // A copy is driven here, as this machine's CLI drives one, each of its steps asked of the
     // machine's daemon: its files here are this client's. What steers a command steers no
     // step, so a signal ends the client, and the step there with its stream.
@@ -1286,10 +1779,8 @@ fn step_there(
 }
 
 /// What a step writes, sent to its taker as it comes, taken whole once the step is through.
-#[cfg(unix)]
 struct Taken(std::sync::mpsc::Sender<Vec<u8>>);
 
-#[cfg(unix)]
 impl io::Write for Taken {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
         let _ = self.0.send(bytes.to_vec());
@@ -1388,6 +1879,10 @@ fn create(home: &Path, name: &str, rest: &[&str]) -> Result<(), String> {
         daemon: invitation.daemon,
     };
     write_new(&dir(home, "contexts")?.join(name), context.text().as_bytes())?;
+    // This home's daemon, where it runs, serves the context's engine as it is woken: a
+    // connection that asks nothing wakes it (D180 part 4).
+    #[cfg(unix)]
+    let _ = std::os::unix::net::UnixStream::connect(home.join(shards_ipc::SOCKET));
     let _ = writeln!(io::stdout(), "{name}");
     let _ = writeln!(io::stderr(), "Successfully created context {name:?}");
     Ok(())
@@ -1440,6 +1935,8 @@ fn inspect(home: &Path, names: &[&str]) -> Result<(), String> {
             "Description": c.description,
             "Endpoint": format!("quic://{}", c.address),
             "Daemon": identity::hex(&c.daemon),
+            // Where Docker's tools reach its machine's engine, while this home's daemon runs.
+            "Engine": engine_endpoint(home, &c.name),
         }));
     }
     let text = serde_json::to_string_pretty(&docs).map_err(|e| e.to_string())?;
@@ -1457,6 +1954,12 @@ fn remove(home: &Path, names: &[&str]) -> Result<(), String> {
         if current(home) == *name {
             let _ = fs::remove_file(home.join("context"));
         }
+        // Its engine's socket goes with it: the daemon that serves it, woken by a connection,
+        // finds the context gone and lets go of it.
+        let engine = home.join(engine_socket(name));
+        #[cfg(unix)]
+        let _ = std::os::unix::net::UnixStream::connect(&engine);
+        let _ = fs::remove_file(&engine);
         let _ = writeln!(io::stdout(), "{name}");
     }
     Ok(())
@@ -1594,6 +2097,11 @@ pub(crate) fn admin(thing: &str, args: &[OsString]) -> ExitCode {
                 return Err(format!("no client {name:?}"));
             }
             fs::remove_file(&path).map_err(at(&path))?;
+            // The copies of its build contexts this machine kept go with it (crate::synced).
+            let copies = home.join("synced").join(name);
+            if copies.exists() {
+                fs::remove_dir_all(&copies).map_err(at(&copies))?;
+            }
             let _ = writeln!(io::stdout(), "{name}");
             Ok(())
         }),
@@ -1818,16 +2326,39 @@ mod tests {
         assert!(not_carried(&args("run -it alpine sh")).is_none());
         assert!(not_carried(&args("exec -it web sh")).is_none());
         assert!(not_carried(&args("attach web")).is_none());
-        for files in [
+        for files in ["build agent dir -t a", "agent build dir -t a", "compose up"] {
+            assert!(not_carried(&args(files)).is_some(), "{files}");
+        }
+        // A build's context is kept in step there ([`building`]); what else it names here,
+        // not yet.
+        for carried in [
             "build .",
             "image build .",
             "builder build .",
             "build image .",
-            "build agent dir -t a",
-            "agent build dir -t a",
-            "compose up",
+            "build -t a -f d/Dockerfile .",
+        ] {
+            assert!(not_carried(&args(carried)).is_none(), "{carried}");
+        }
+        for files in [
+            "build --secret id=a,src=f .",
+            "build --ssh default .",
+            "build -o out .",
+            "build -o type=local,dest=out .",
+            "build --iidfile i .",
+            "build --metadata-file m .",
+            "build --cache-to type=local,dest=c .",
+            "build --build-context base=../dir .",
+            "build --policy filename=p.rego .",
         ] {
             assert!(not_carried(&args(files)).is_some(), "{files}");
+        }
+        for remote in [
+            "build -o type=registry .",
+            "build -o - .",
+            "build --build-context base=docker-image://alpine .",
+        ] {
+            assert!(not_carried(&args(remote)).is_none(), "{remote}");
         }
         // A copy is driven here, where cp.rs runs.
         for copy in ["cp web:/x .", "container cp web:/x .", "copy vm web:/x ."] {

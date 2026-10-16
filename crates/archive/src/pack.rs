@@ -63,6 +63,7 @@ pub fn pack<W: Write>(src: &Path, opts: &PackOptions, out: W) -> Result<W, Error
         seen_inodes: HashMap::new(),
         chown: opts.chown,
         whiteout: whiteout::converter(opts.whiteout),
+        nanos: false,
     };
     let mut seen: HashSet<Vec<u8>> = HashSet::new();
     let sep = NATIVE.sep();
@@ -125,6 +126,42 @@ pub fn pack<W: Write>(src: &Path, opts: &PackOptions, out: W) -> Result<W, Error
             packer.add(file_path, &rel)?;
             Ok(Flow::Continue)
         })?;
+    }
+    packer.tw.finish()
+}
+
+/// A layer of what changed under `root` since a copy of it was made, for [`apply_layer`] to
+/// bring that copy in step (shards' contexts, D180): each of `changed`, a path relative to
+/// `root` with `/` between its names, archived as itself alone, a directory's entry without
+/// what it holds, its time to the nanosecond, which go-archive's headers drop and a copy
+/// told apart by its times needs; hard links among them linked again; then a whiteout, as
+/// go-archive's ExportChanges writes one, for each of `removed`.
+pub fn pack_changes<W: Write>(
+    root: &Path,
+    changed: &[Vec<u8>],
+    removed: &[Vec<u8>],
+    out: W,
+) -> Result<W, Error> {
+    let root = sys::path_bytes(root);
+    let mut packer = Packer {
+        tw: Writer::new(out),
+        seen_inodes: HashMap::new(),
+        chown: None,
+        whiteout: None,
+        nanos: true,
+    };
+    for rel in changed {
+        let src = gopath::join(NATIVE, &[&root, &gopath::from_slash(NATIVE, rel)]);
+        packer.add(&src, rel)?;
+    }
+    for rel in removed {
+        let (dir, base) = gopath::posix::split(rel);
+        let hdr = Header {
+            name: [dir, crate::whiteout::WHITEOUT_PREFIX, base].concat(),
+            typeflag: TYPE_REG,
+            ..Header::default()
+        };
+        packer.tw.write_header(&hdr)?;
     }
     packer.tw.finish()
 }
@@ -212,6 +249,8 @@ struct Packer<W: Write> {
     seen_inodes: HashMap<(u64, u64), Vec<u8>>,
     chown: Option<(i64, i64)>,
     whiteout: Option<Overlay>,
+    /// Times kept to the nanosecond, where go-archive keeps seconds ([`pack_changes`]).
+    nanos: bool,
 }
 
 impl<W: Write> Packer<W> {
@@ -232,6 +271,9 @@ impl<W: Write> Packer<W> {
         let Some(mut hdr) = file_info_header(&name, &st, &link) else {
             return Ok(());
         };
+        if self.nanos {
+            hdr.mtime = st.mtime;
+        }
         if let Some(mut cap) = sys::capability(src) {
             // VFS_CAP_REVISION_3 becomes revision 2, its root id dropped: it means nothing
             // outside the user namespace the archive was made in.

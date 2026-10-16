@@ -3634,7 +3634,7 @@ No run-time labels, relays or declassifiers (§12 answer 14, decided by the user
 an internal-only domain to the world (D58), so there is no data to label. Code mode is
 D136.
 
-### D180. Contexts: shards on another machine, over QUIC (parts 1, 2, 3a and 3b built)
+### D180. Contexts: shards on another machine, over QUIC (parts 1 to 4 built)
 
 **The microVM need.** A user's microVMs run where the work needs them: a Mac for
 development, a Linux machine with a GPU (`--gpus`) or KVM, an x86_64 machine that builds and
@@ -3707,9 +3707,11 @@ local administration is (../focal docs/cluster-admin.md).
    size follows the client's), attach, exec; and the signals a client receives (built; a
    Windows client's console, part 2b, built too).
 3. Builds (the context sent as BuildKit's session sends it), `cp`, `save`, `load`,
-   `import`, `export` (the archives, part 3a, built; `cp`, part 3b, built).
+   `import`, `export` (the archives, part 3a, built; `cp`, part 3b, built; builds, part
+   3c, built).
 4. Docker's CLI through a context: a socket file in the home for each context, which the
-   local daemon relays to the machine's Engine API.
+   local daemon relays to the machine's Engine API (built; `docker context`'s words held to
+   the docker-cli oracle, not yet).
 5. Measured against Docker's `ssh://` and `tcp://` contexts, on the GPU desktop: a run's
    start, a stream's bytes, and a network change.
 
@@ -4035,6 +4037,104 @@ there said with its sizes; an archive to stdout; a file not there, in Docker's w
 nothing written where the command runs. Mutation-checked: a step spawned as a command,
 a copy sent whole, an archive's output not into its pipe, an extract's input not from
 its pipe, an archive's pipe not given the daemon.
+
+**Part 3c, built: a build of the client's context, kept in step on the machine.** A
+laptop's source tree is built where the builder microVMs run: an x86_64 or a GPU machine.
+buildx sends a context over its session, fsutil's walk of it, into the copy BuildKit kept
+of the last transfer of the same directory, by its shared key (the source's name, hint and
+session's key), the receiver asking for what changed alone (BuildKit v0.33.0, which buildx
+v0.37.1 pins: source/local/source.go, `searchSharedKey` then `filesync.FSSync`); Docker's
+classic builder sends the whole context, a tar in `POST /build`'s body, each build. A context refused builds: the command there
+would have read the machine's directory. Now (crate::synced):
+- **The machine keeps a copy of each context a client builds** (`synced/CLIENT/KEY`, KEY
+  the context's path hashed, the client's name its directory, so a client reaches its own
+  alone). The client walks its context as the build walks one (fsutil's walk,
+  shards_build::context, with the excludes of the ignore file the build reads: beside the
+  build file, else the context's, `.agentignore` before `.dockerignore`), asks the copy's
+  manifest (its own walk of the copy), and sends what changed as a layer the copy is
+  brought in step by: each entry new or changed whole, the directories each change is in
+  again for their times, and a whiteout for the topmost of what went
+  (shards_archive::pack_changes, go-archive's addTarFile with times to the nanosecond, which
+  go-archive's headers drop and a copy compared by its times needs; `apply_layer`,
+  confined to the copy by its root, as it confines an image's layer). An entry is changed
+  where its mode, size, time or link is: a directory's size and a symlink's mode are its
+  filesystem's, and are not compared.
+- **The build file and the ignore file beside it go whole each time**, ahead of the
+  layer, a few kilobytes, so a build file outside the context, or another one, costs no
+  copy of its own; `-f -`'s, read from the client's stdin. The build runs there of the copy,
+  under its lock, so two builds of one context take turns, as a client's command runs:
+  its output and status the client's; its build file not there said in the build's own
+  words, by its name.
+- **What it names of the client's is the client's:** a build arg named alone takes the
+  client's value, or none, as buildx takes one where it runs; and the logins of the
+  registries the build's plan asks for, planned here with a resolver that answers every
+  image empty (its bases and the images it copies from, by their names after its args),
+  go with it, those alone.
+- A client removed takes the copies of its contexts with it.
+
+What a build names of the client's otherwise is refused until it is carried: `--secret`,
+`--ssh`, an output, cache or named context of a file or directory here, `--iidfile`,
+`--metadata-file` and a policy's file. Not yet: the client's terminal for the build's live
+display (a build over a context prints its plain progress); extended attributes (go-archive's
+archives carry `security.capability` alone); a new hard link to a file that did not change
+goes as a file of its own.
+
+Measured by the test, to the byte: the first build sends the context's files whole as the
+ignore file leaves them; the next, nothing; one after two files changed, their bytes
+alone; one after a file went, nothing, the file gone there. Tested in `tests/context.rs`
+(`a_build_through_a_context_is_of_the_clients_context_kept_in_step`: also each image the
+context as it was, an ignored file never sent, a changed directory's time the client's, a
+build file outside the context sending no context bytes, a build arg named alone taking
+the client's value, a client removed taking its copies; and in
+`a_clients_logins_are_its_own`, a build of a base that wants a login, built with the
+client's), `crates/archive/tests/changes.rs` (a copy brought in step: times to the
+nanosecond, hard links, symlinks, a file's and a directory's removal, what did not change
+untouched), and unit tests of the plan and of a copy's key. Mutation-checked: the layer not
+applied, everything sent each time, the ignore file not applied here, what went not
+removed, a change's directories not set again, the build file not the copy's, a base's
+login not sent, a build arg named alone the machine's.
+
+**Part 4, built: Docker's tools through a context.** What speaks Docker's API (its CLI,
+Compose, the SDKs, Testcontainers) reaches the machine's microVMs as it reaches another
+machine's dockerd:
+- **An engine socket for each context.** The client's daemon, while it runs, serves the
+  engine of each context its home joined at a socket of its own (`e/KEY.sock` in the home,
+  KEY the first six bytes of the name's SHA-256, as Docker's context store names a context's
+  directory by its name's digest, so that the path fits a socket's address whatever the
+  name: 71 bytes in a macOS home of a nine-letter user, of sun_path's 104). `shards inspect
+  context NAME` names it (`Engine`), for `DOCKER_HOST`. A context joined while the daemon
+  runs is served as its joining wakes the daemon (a connection that asks nothing); its
+  removal takes the socket.
+- **A QUIC stream each connection.** Each connection there is relayed whole to the
+  machine's Engine API (D170): its bytes as a command's stdin, the API's as its stdout, the
+  end of each side's writing the other's end of reading, so that an attach's half-close
+  (`docker run -i`'s end of stdin) reaches the command, and a hijacked stream's end reaches
+  the client. The machine's daemon takes such a stream as a connection of its own user's to
+  its own `engine.sock`; the client's daemon relays only its own user's connections, by
+  their peer's credentials, as its own Engine API serves only them.
+- **A context made again joins again.** A machine refused a join by a key it had enrolled,
+  saying the invitation was not one it held, so a client that removed its context could not
+  make it again, the record's address and key being the invitation's to give. A key
+  enrolled already that brings a valid invitation now joins as it was enrolled, under the
+  name it has; the invitation is redeemed, so that no other key takes it, and no second name
+  is made.
+- **What crosses of the client's is what Docker's CLI sends:** its own registry logins with
+  each request (`X-Registry-Auth`), a build's context in its request's body; the paths a
+  request names are the machine's, as a remote dockerd's are.
+
+Where Docker's `ssh://` context starts `docker system dial-stdio` through a shell account
+for each connection, this needs neither; how they compare is part 5's to measure. Not yet:
+each relayed connection opens a QUIC connection of its own, a handshake each, where one
+connection kept for the context, a stream each, would not (part 5 measures both); a Windows
+client, with no daemon of shards' to relay, has no engine socket (Docker's `npipe://`).
+Tested in `tests/context.rs` (`a_contexts_engine_is_its_machines`): `_ping` through the
+socket; a microVM made through the context, listed there and not by the client's own engine;
+Docker's CLI where the host has one, its `ps`, a `run`, whose attach takes the connection
+over, and a `run -i` of `cat`, its stdin to its end; a client that reads its answer to the
+end; the context's removal taking its socket; and the context made again while the daemon
+runs, served with no other command, one client of its key, the invitation redeemed.
+Mutation-checked: the engine's stream run as a command, a removed context's socket kept,
+either end's half-close not passed on, no context's engine served.
 
 ### D179. Other CPUs' images, emulated in their microVM (parts 1 to 3 built)
 
@@ -7034,6 +7134,19 @@ cause of that build's stall left no evidence, so what the next one leaves is fix
     6.18.48) and `a_builders_memory_is_plugged_as_its_build_needs_it` (the step past all
     its builder's memory says the kernel's "Out of memory: Killed process"); the relay off
     fails the latter.
+  - **Said by the step's runner, before its end (2026-10-16).** The grower said it as it
+    woke, after the kernel ended the step's process, and init relayed the grower's notes
+    only while the step's stdout or stderr was open: a step ended for want of memory
+    closes both as it dies, so its note came after the relay had stopped, and the step's
+    error went without it. CI's x86_64 Linux jobs saw so in 6 of 175 failed jobs
+    (`a_builders_memory_is_plugged_as_its_build_needs_it`, the error and its 137 there,
+    the kernel's words not). The step's runner says it now (crates/init build.rs), once
+    the step is reaped and before its end is reported: where the step's cgroup counted
+    an OOM kill (`memory.events` `oom_kill`, which the kernel counts before it sends the
+    SIGKILL: mm/oom_kill.c `__oom_kill_process`, "Raise event before sending signal"),
+    the kernel's report, read until it says what it ended (`oom_said`); the
+    grower says no kill. Mutation-checked: the runner saying none fails the test every
+    time.
 - **A killed build left its builder running.** A builder's VM ended as its build dropped
   it, or as its guest powered off on its connection closing: a killed `shards build` drops
   nothing, and a guest held at its memory hears nothing. The VM now ends as its `--attach`

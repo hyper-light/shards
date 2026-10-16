@@ -54,8 +54,13 @@ impl Host for Machine {
         if crate::context::lapsed(created) || !invite::verify(&invitation.secret, exported, proof) {
             return Err(refused());
         }
-        if self.enrolled(spki).is_some() {
-            return Err(refused());
+        // A client this machine enrolled already, whose context was made again: the
+        // invitation is redeemed, that no other key takes it, and the client joins as it was
+        // enrolled, under the name it has, its key's one.
+        if let Some(enrolled) = self.enrolled(spki) {
+            crate::context::redeem(&self.home, name).map_err(|_| refused())?;
+            super::log(format!("client {enrolled} joined again, by invitation {name}"));
+            return Ok(());
         }
         // Redeemed first: of two joins at once, one enrolls.
         crate::context::redeem(&self.home, name).map_err(|_| refused())?;
@@ -88,6 +93,14 @@ impl Host for Machine {
             let shown: Vec<&str> = args.iter().skip(1).map(String::as_str).collect();
             super::log(format!("client {client}: copy step {}", shown.join(" ")));
             return self.copy_step(args);
+        }
+        if args.first().map(String::as_str) == Some(crate::context::ENGINE_STEP) {
+            return self.engine_step();
+        }
+        if args.first().map(String::as_str) == Some(crate::synced::SYNC_STEP) {
+            let shown: Vec<String> = args.iter().skip(1).map(|a| a.replace('\0', "")).collect();
+            super::log(format!("client {client}: context step {}", shown.join(" ")));
+            return self.sync_step(client, args, request.env);
         }
         super::log(format!("client {client}: shards {}", args.join(" ")));
         let pipe = || std::io::pipe().map_err(|e| Error::new(format!("a pipe for the command: {e}")));
@@ -133,23 +146,8 @@ impl Host for Machine {
                 (w.into(), Box::new(r))
             }
         };
-        let env: Vec<(String, OsString)> = request
-            .env
-            .into_iter()
-            .filter_map(|(k, v)| String::from_utf8(v).ok().map(|v| (k, OsString::from(v))))
-            .collect();
-        // This machine's own shards, whatever context its owner's commands use, and of the
-        // daemon's environment only what shards is set by ([`kept`]).
-        let daemons: Vec<(String, OsString)> = std::env::vars_os()
-            .filter_map(|(k, v)| Some((k.into_string().ok()?, v)))
-            .filter(|(k, _)| kept(k))
-            .collect();
-        let mut set: Vec<(&str, &OsStr)> = daemons.iter().map(|(k, v)| (k.as_str(), v.as_os_str())).collect();
-        set.extend([
-            ("SHARDS_HOME", self.home.as_os_str()),
-            ("SHARDS_CONTEXT", OsStr::new(crate::context::DEFAULT)),
-        ]);
-        set.extend(env.iter().map(|(k, v)| (k.as_str(), v.as_os_str())));
+        let env = self.command_env(request.env);
+        let mut set: Vec<(&str, &OsStr)> = env.iter().map(|(k, v)| (k.as_str(), v.as_os_str())).collect();
         if pty.is_some() {
             set.push((crate::context::TAKE_TERMINAL, OsStr::new("1")));
         }
@@ -210,6 +208,135 @@ impl Host for Machine {
 }
 
 impl Machine {
+    /// A connection to this machine's Engine API (D170), a client's Docker tools' through its
+    /// context (D180 part 4): what the stream brings, to the API's socket, and the API's
+    /// answers back, as a client of it on this machine; the stream's end of input the
+    /// connection's, so that a client's half-close (an attach's end of stdin) reaches it.
+    fn engine_step(&self) -> Result<Running, Error> {
+        let reached = |e: std::io::Error| Error::new(format!("this machine's Engine API: {e}"));
+        let conn = std::os::unix::net::UnixStream::connect(super::engine::SOCKET).map_err(reached)?;
+        let (asking, hung) = (
+            conn.try_clone().map_err(reached)?,
+            conn.try_clone().map_err(reached)?,
+        );
+        Ok(Running {
+            stdin: Box::new(HalfClosed(asking)),
+            stdout: Box::new(conn),
+            stderr: Box::new(std::io::empty()),
+            wait: Box::new(|| 0),
+            hangup: Box::new(move || {
+                let _ = hung.shutdown(std::net::Shutdown::Both);
+            }),
+            resize: None,
+            signal: Box::new(|_| {}),
+        })
+    }
+
+    /// A client's command's environment: this machine's own shards, whatever context its
+    /// owner's commands use, of the daemon's environment only what shards is set by
+    /// ([`kept`]), and the client's own, which its request carries.
+    fn command_env(&self, given: Vec<(String, Vec<u8>)>) -> Vec<(String, OsString)> {
+        let mut env: Vec<(String, OsString)> = std::env::vars_os()
+            .filter_map(|(k, v)| Some((k.into_string().ok()?, v)))
+            .filter(|(k, _)| kept(k))
+            .collect();
+        env.extend([
+            ("SHARDS_HOME".to_string(), self.home.clone().into_os_string()),
+            (
+                "SHARDS_CONTEXT".to_string(),
+                OsString::from(crate::context::DEFAULT),
+            ),
+        ]);
+        env.extend(
+            given
+                .into_iter()
+                .filter_map(|(k, v)| String::from_utf8(v).ok().map(|v| (k, OsString::from(v)))),
+        );
+        env
+    }
+
+    /// A step of a client's build context (crate::synced, D180 part 3c), kept in a copy of
+    /// the client's own under this home, one step at a time under the copy's lock:
+    /// `manifest`, what the copy holds; `build`, the build file's directory and the layer of
+    /// what changed taken from the stream, then the build, of the copy, run as a client's
+    /// command runs, its output and status the step's.
+    fn sync_step(
+        &self,
+        client: &str,
+        args: Vec<String>,
+        env: Vec<(String, Vec<u8>)>,
+    ) -> Result<Running, Error> {
+        let step = args.get(1).cloned().unwrap_or_default();
+        let key = args.get(2).cloned().unwrap_or_default();
+        let copy = crate::synced::copy_of(&self.home, client, &key).map_err(Error::new)?;
+        let pipe = || std::io::pipe().map_err(|e| Error::new(format!("a pipe for the build: {e}")));
+        let (mut in_r, in_w) = pipe()?;
+        let (out_r, mut out_w) = pipe()?;
+        let (err_r, mut err_w) = pipe()?;
+        let (done, status) = std::sync::mpsc::channel();
+        let building = Arc::new(Building::default());
+        let (exe, env) = (self.exe.clone(), self.command_env(env));
+        let ours = Arc::clone(&building);
+        let whose = client.to_string();
+        std::thread::Builder::new()
+            .name("context-step".into())
+            .spawn(move || {
+                let ran = (|| -> Result<i32, String> {
+                    std::fs::create_dir_all(&copy).map_err(|e| format!("{}: {e}", copy.display()))?;
+                    let lock = std::fs::File::create(copy.join(".lock"))
+                        .and_then(|f| f.lock().map(|()| f))
+                        .map_err(|e| format!("{}: {e}", copy.display()))?;
+                    let (context, dockerfile) = (copy.join("context"), copy.join("dockerfile"));
+                    let status = match step.as_str() {
+                        "manifest" => {
+                            let manifest = crate::synced::manifest_of(&context)?;
+                            out_w
+                                .write_all(&crate::synced::encode(&manifest))
+                                .map_err(|e| e.to_string())?;
+                            0
+                        }
+                        "build" => {
+                            let sent = crate::synced::receive(&mut in_r, &dockerfile, &context)?;
+                            super::log(format!(
+                                "client {whose}: context {key}: {sent} bytes of files came"
+                            ));
+                            let argv: Vec<OsString> = args
+                                .get(3..)
+                                .unwrap_or_default()
+                                .iter()
+                                .map(|a| crate::synced::placed(a, &context, &dockerfile))
+                                .collect();
+                            ours.run(&exe, &argv, &env, &out_w, &err_w)?
+                        }
+                        other => return Err(format!("{other:?}: no such step of a context")),
+                    };
+                    drop(lock);
+                    Ok(status)
+                })();
+                let status = ran.unwrap_or_else(|e| {
+                    let _ = writeln!(err_w, "shards: {e}");
+                    1
+                });
+                drop((in_r, out_w, err_w));
+                let _ = done.send(status);
+            })
+            .map_err(|e| Error::new(format!("a thread for the build: {e}")))?;
+        let (hung, signalled) = (Arc::clone(&building), building);
+        Ok(Running {
+            stdin: Box::new(in_w),
+            stdout: Box::new(out_r),
+            stderr: Box::new(err_r),
+            wait: Box::new(move || status.recv().unwrap_or(1)),
+            hangup: Box::new(move || hung.end(libc::SIGHUP)),
+            resize: None,
+            signal: Box::new(move |linux| {
+                if let Some(sig) = shards_ipc::local_signal(linux) {
+                    signalled.end(sig);
+                }
+            }),
+        })
+    }
+
     /// A step of a client's copy (`shards cp`, cli/cp.rs), which the client drives as this
     /// machine's own CLI drives one (D180): this daemon's to take, asked as the CLI asks it,
     /// the stream's pipes the descriptors the CLI would give, an archive's to write and an
@@ -252,6 +379,73 @@ impl Machine {
             resize: None,
             signal: Box::new(|_| {}),
         })
+    }
+}
+
+/// A connection's writing half, closed as it drops: what its reader then reads is the end.
+struct HalfClosed(std::os::unix::net::UnixStream);
+
+impl Write for HalfClosed {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.0.write(bytes)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.0.flush()
+    }
+}
+
+impl Drop for HalfClosed {
+    fn drop(&mut self) {
+        let _ = self.0.shutdown(std::net::Shutdown::Write);
+    }
+}
+
+/// A build a context step runs: its command once it has started, and whether its client
+/// left before then, which ends it as it starts.
+#[derive(Default)]
+struct Building {
+    child: std::sync::OnceLock<shards_ipc::Child>,
+    hung: std::sync::atomic::AtomicBool,
+}
+
+impl Building {
+    /// `argv` run as a client's command runs, in a session of its own, writing to `out` and
+    /// `err`; its status.
+    fn run(
+        &self,
+        exe: &std::path::Path,
+        argv: &[OsString],
+        env: &[(String, OsString)],
+        out: &impl AsFd,
+        err: &impl AsFd,
+    ) -> Result<i32, String> {
+        let (input, _end) = std::io::pipe().map_err(|e| format!("a pipe for the build: {e}"))?;
+        let args: Vec<&OsStr> = argv.iter().map(OsString::as_os_str).collect();
+        let set: Vec<(&str, &OsStr)> = env.iter().map(|(k, v)| (k.as_str(), v.as_os_str())).collect();
+        let fds = [(input.as_fd(), 0), (out.as_fd(), 1), (err.as_fd(), 2)];
+        if self.hung.load(std::sync::atomic::Ordering::SeqCst) {
+            return Ok(129);
+        }
+        let child = shards_ipc::spawn_in(exe, &args, &fds, true, &set)
+            .map_err(|e| format!("starting the build: {e}"))?;
+        drop(input);
+        let child = self.child.get_or_init(|| child);
+        // A hang-up between the start and the line above found no command to end.
+        if self.hung.load(std::sync::atomic::Ordering::SeqCst) {
+            let _ = child.kill(libc::SIGHUP);
+        }
+        child.wait().map_err(|e| format!("the build: {e}"))
+    }
+
+    /// Ends the build with `sig`, or, not started yet, as it starts.
+    fn end(&self, sig: libc::c_int) {
+        if sig == libc::SIGHUP {
+            self.hung.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+        if let Some(child) = self.child.get() {
+            let _ = child.kill(sig);
+        }
     }
 }
 

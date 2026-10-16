@@ -61,6 +61,7 @@ mod pull;
 mod push;
 mod record;
 mod refill;
+mod relay;
 mod remote;
 mod restart;
 mod rmi;
@@ -837,6 +838,8 @@ struct Daemon<D: Disk = Real> {
     shipping: ship::Shipping,
     /// The Engine API's calls in hand, and what it keeps between them (engine.rs, D170).
     engine: engine::Engine,
+    /// The contexts whose engines it relays (relay.rs, D180).
+    relays: relay::Relays,
     /// The pools to refill and the spare to make, on the refiller's thread (refill.rs).
     refills: refill::Refills,
     /// When each running container's health check is next due (health.rs).
@@ -1361,6 +1364,7 @@ impl<D: Disk> Daemon<D> {
             packing: packed::Packing::default(),
             shipping: ship::Shipping::default(),
             engine: engine::Engine::default(),
+            relays: relay::Relays::default(),
             refills: refill::Refills::default(),
             checks: health::Checks::default(),
             booting: Mutex::default(),
@@ -1470,6 +1474,10 @@ impl<D: Disk> Daemon<D> {
             // which takes the lock too, is seen above once it has.
             self.relisten(closing, &mut listener);
             self.relisten_api(closing, &mut api);
+            // The engines of the contexts this home joined, as each comes (relay.rs).
+            if !closing {
+                self.relay_contexts(threads);
+            }
             // The Engine API's clients, each served on a thread of its own as long as it
             // keeps its connection: not counted among the clients in hand, whose cap is
             // for requests, as each of its calls is counted as it is put to the daemon.

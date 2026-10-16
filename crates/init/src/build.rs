@@ -663,6 +663,20 @@ impl Builder {
         if waited < 0 {
             return Err(os_err("waiting for the step"));
         }
+        // A process of the step's the kernel ended for want of memory, which it counts before
+        // it sends the SIGKILL (mm/oom_kill.c, __oom_kill_process): why, in its words, said
+        // in the step's output before its end, as a builder's kernel's log is kept nowhere a
+        // build shows. The step's runner says it, not the memory's grower, which
+        // wakes on its own: its note could come after the step's outputs closed, and with
+        // them its relay (6 of 175 failed CI jobs, a_builders_memory_is_plugged_as_its_build_needs_it).
+        if let Some((_, dir)) = &cgroup
+            && crate::plug::oom_kills(&dir.to_string_lossy()) > 0
+        {
+            for line in crate::plug::oom_said() {
+                let said = crate::plug::note("the builder's", &format!("the kernel ended a process: {line}"));
+                send(&self.conn, run::kind::STDERR, said.as_bytes())?;
+            }
+        }
         // Its cgroup, empty once it is reaped.
         if let Some((fd, dir)) = cgroup {
             drop(fd);

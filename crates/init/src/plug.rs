@@ -406,7 +406,7 @@ impl Plug {
         }
         if pid == 0 {
             drop(notes);
-            grow(*self, &events, &said, Kills::Said);
+            grow(*self, &events, &said);
         }
         drop((events, said));
         std::fs::write(format!("{BUILD}/init/cgroup.procs"), "1")
@@ -434,7 +434,7 @@ impl Plug {
             )));
         }
         if pid == 0 {
-            grow(*self, &events, &notes, Kills::Logged);
+            grow(*self, &events, &notes);
         }
         let _ = GROWER.set(pid);
         Ok(())
@@ -581,8 +581,13 @@ fn watch_events(cgroup: &str) -> io::Result<OwnedFd> {
 /// Says `what` of the builder's memory, a line into `notes`, which init sends as the
 /// output of the step that runs (D137); a line the pipe has no room for is said on the
 /// builder's console instead, as nothing may block the grower.
+/// A note of `whose` memory, as the grower and a step's runner say one.
+pub(crate) fn note(whose: &str, what: &str) -> String {
+    format!("shards-init: {whose} memory: {what}\n")
+}
+
 fn say(notes: &OwnedFd, whose: &str, what: &str) {
-    let line = format!("shards-init: {whose} memory: {what}\n");
+    let line = note(whose, what);
     // SAFETY: write(2) of a buffer of the length given, to a descriptor this process owns,
     // made non-blocking as the grower starts.
     let n = unsafe { libc::write(notes.as_raw_fd(), line.as_ptr().cast(), line.len()) };
@@ -740,19 +745,9 @@ fn come(plug: Plug, asked: u64, g: &mut impl Grows) -> Came {
     Came::Stalled(last.saturating_sub(plug.boot))
 }
 
-/// What a grower does with the kernel's words as it ends a process of its cgroup for want
-/// of memory.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Kills {
-    /// Says them in its notes: a builder's, whose kernel's log goes nowhere a build shows.
-    Said,
-    /// Leaves them in the kernel's log, which its notes are.
-    Logged,
-}
-
 /// How many of `cgroup`'s processes the kernel has ended for want of memory, by any of its
-/// OOM killers (`memory.events` `oom_kill`, cgroup-v2.rst).
-fn oom_kills(cgroup: &str) -> u64 {
+/// OOM killers (`memory.events` `oom_kill`, cgroup-v2.rst), its descendants' with them.
+pub(crate) fn oom_kills(cgroup: &str) -> u64 {
     std::fs::read_to_string(format!("{cgroup}/memory.events"))
         .ok()
         .and_then(|e| {
@@ -767,7 +762,7 @@ fn oom_kills(cgroup: &str) -> u64 {
 /// watermarks, and what it ended (mm/oom_kill.c `dump_header`, `__oom_kill_process`;
 /// mm/show_mem.c `show_free_areas`). It counts the kill before it says what it ended, so
 /// where that is not said yet, it is read again, for as long as [`STALLED`].
-fn oom_said() -> Vec<String> {
+pub(crate) fn oom_said() -> Vec<String> {
     let began = Instant::now();
     loop {
         let said = oom_report();
@@ -850,11 +845,14 @@ fn oom_lines(records: &[String]) -> Vec<String> {
 /// memory asked for stops coming (`come`), the build's `memory.high` goes too, and says
 /// so: the build runs on what the builder has, as one of that size would, and is ended
 /// by the kernel where it needs more, never held at a `memory.high` nothing raises (D137).
-fn grow(plug: Plug, events: &OwnedFd, notes: &OwnedFd, kills: Kills) -> ! {
+///
+/// What the kernel says as it ends a process for want of memory is not the grower's to say:
+/// a step's runner says it, once the step has ended (build.rs), a run's kernel keeps it in its
+/// log, which a run's notes are.
+fn grow(plug: Plug, events: &OwnedFd, notes: &OwnedFd) -> ! {
     // SAFETY: fcntl(2) of a descriptor this process owns.
     unsafe { libc::fcntl(notes.as_raw_fd(), libc::F_SETFL, libc::O_NONBLOCK) };
     let cgroup = plug.cgroup;
-    let mut killed = oom_kills(cgroup);
     let lift = || {
         if let Err(e) = std::fs::write(format!("{cgroup}/memory.high"), "max") {
             say(notes, plug.whose, &format!("{cgroup}/memory.high: {e}"));
@@ -877,17 +875,6 @@ fn grow(plug: Plug, events: &OwnedFd, notes: &OwnedFd, kills: Kills) -> ! {
             lift();
             // SAFETY: _exit(2) of this child alone.
             unsafe { libc::_exit(1) };
-        }
-        // A process the kernel ended for want of memory: why, in its words, said where the
-        // build shows it, as the kernel's log of a builder is not kept.
-        let now_killed = oom_kills(cgroup);
-        if now_killed > killed {
-            killed = now_killed;
-            if kills == Kills::Said {
-                for line in oom_said() {
-                    say(notes, plug.whose, &format!("the kernel ended a process: {line}"));
-                }
-            }
         }
         let (Some(current), Some(high_now)) = (
             number(&format!("{cgroup}/memory.current")),
