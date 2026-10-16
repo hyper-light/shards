@@ -433,7 +433,7 @@ pub fn command() -> Command {
 /// credential helpers. Its `auths` name a host no test reaches, so that, as docker/cli has
 /// it, no platform helper is looked for either (DetectDefaultStore: a config that holds
 /// credentials keeps them itself).
-fn docker_config() -> &'static Path {
+pub fn docker_config() -> &'static Path {
     static CONFIG: OnceLock<TempDir> = OnceLock::new();
     CONFIG.get_or_init(|| {
         let dir = TempDir::new("docker-config");

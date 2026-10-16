@@ -1,12 +1,10 @@
 //! The client's terminal under `run -t`, kept as the Docker CLI keeps it
 //! (docs/research/tty-and-interactive-runs.md §2.1): stdin in raw mode with moby/term's
 //! flags, until the client exits by any path but SIGKILL, and the size of its stdout. On
-//! Windows (whose client has no `run -t` yet) its console: its size, and whether it takes
-//! escape sequences, for shards' own look.
+//! Windows its console, a context's command's terminal (D180): raw as moby/term makes one,
+//! its size, and whether it takes escape sequences, for shards' own look too.
 
-#[cfg(unix)]
 use std::io;
-#[cfg(unix)]
 use std::sync::{Mutex, PoisonError};
 
 /// A line of stdin, its echo off while it is read, as moby/term's DisableEcho turns it
@@ -221,6 +219,105 @@ pub fn styles(fd: libc::c_int) -> bool {
     unsafe { libc::isatty(fd) == 1 }
 }
 
+/// This process's stdin, where it is a console: its handle.
+#[cfg(windows)]
+fn console_in() -> Option<windows_sys::Win32::Foundation::HANDLE> {
+    use windows_sys::Win32::System::Console::{GetConsoleMode, GetStdHandle, STD_INPUT_HANDLE};
+    // SAFETY: GetStdHandle and GetConsoleMode read this process's state; a handle that is
+    // no console fails GetConsoleMode.
+    unsafe {
+        let h = GetStdHandle(STD_INPUT_HANDLE);
+        let mut mode = 0;
+        (!h.is_null()
+            && h != windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE
+            && GetConsoleMode(h, &mut mode) != 0)
+            .then_some(h)
+    }
+}
+
+/// Whether this process's stdin (`fd` 0), stdout (1) or stderr (2) is a console.
+#[cfg(windows)]
+pub fn is_console(fd: i32) -> bool {
+    match fd {
+        0 => console_in().is_some(),
+        _ => console(fd).is_some(),
+    }
+}
+
+/// The console modes raw mode took, to give back: stdin's, and stdout's where it is one.
+#[cfg(windows)]
+static SAVED: Mutex<Option<(u32, Option<u32>)>> = Mutex::new(None);
+
+/// stdin's console mode raw, from `was`, as moby/term v0.5.2 makes one (termios_windows.go,
+/// makeRaw): no echo, no line editing, and ^C a key like any (no ENABLE_PROCESSED_INPUT),
+/// nor mouse or window events; insert and quick-edit mode, which it sets with the extended
+/// flags.
+#[cfg(windows)]
+fn raw_mode(was: u32) -> u32 {
+    use windows_sys::Win32::System::Console::{
+        ENABLE_ECHO_INPUT, ENABLE_EXTENDED_FLAGS, ENABLE_INSERT_MODE, ENABLE_LINE_INPUT, ENABLE_MOUSE_INPUT,
+        ENABLE_PROCESSED_INPUT, ENABLE_QUICK_EDIT_MODE, ENABLE_WINDOW_INPUT,
+    };
+    (was & !(ENABLE_ECHO_INPUT
+        | ENABLE_LINE_INPUT
+        | ENABLE_MOUSE_INPUT
+        | ENABLE_WINDOW_INPUT
+        | ENABLE_PROCESSED_INPUT))
+        | ENABLE_EXTENDED_FLAGS
+        | ENABLE_INSERT_MODE
+        | ENABLE_QUICK_EDIT_MODE
+}
+
+/// Puts stdin's console in raw mode ([`raw_mode`]), its keys the escape sequences a
+/// terminal sends where the console gives them (ENABLE_VIRTUAL_TERMINAL_INPUT, as moby/term
+/// asks for it where it is taken), and has stdout take escape sequences, which a terminal's
+/// command writes.
+#[cfg(windows)]
+pub fn make_raw() -> io::Result<()> {
+    use windows_sys::Win32::System::Console::{
+        ENABLE_VIRTUAL_TERMINAL_INPUT, GetConsoleMode, SetConsoleMode,
+    };
+    let input = console_in().ok_or_else(|| io::Error::other("stdin is not a console"))?;
+    let mut was = 0;
+    // SAFETY: the console's own handle, its mode read into a local.
+    if unsafe { GetConsoleMode(input, &mut was) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let raw = raw_mode(was);
+    // SAFETY: the console's own handle, its mode set.
+    let set = unsafe {
+        SetConsoleMode(input, raw | ENABLE_VIRTUAL_TERMINAL_INPUT) != 0 || SetConsoleMode(input, raw) != 0
+    };
+    if !set {
+        return Err(io::Error::last_os_error());
+    }
+    let out = console(1).and_then(|h| {
+        let mut mode = 0;
+        // SAFETY: the console's own handle, its mode read into a local.
+        (unsafe { GetConsoleMode(h, &mut mode) } != 0).then_some(mode)
+    });
+    let _ = styles(1);
+    *SAVED.lock().unwrap_or_else(PoisonError::into_inner) = Some((was, out));
+    Ok(())
+}
+
+/// Gives the console back the modes raw mode took, if it took any. Again, it does nothing.
+#[cfg(windows)]
+pub fn restore() {
+    use windows_sys::Win32::System::Console::SetConsoleMode;
+    let Some((input, output)) = SAVED.lock().unwrap_or_else(PoisonError::into_inner).take() else {
+        return;
+    };
+    if let Some(h) = console_in() {
+        // SAFETY: the console's own handle, its mode set back.
+        unsafe { SetConsoleMode(h, input) };
+    }
+    if let (Some(h), Some(mode)) = (console(1), output) {
+        // SAFETY: as above.
+        unsafe { SetConsoleMode(h, mode) };
+    }
+}
+
 /// This process's stdout (`fd` 1) or stderr (2), where it is a console: its handle.
 #[cfg(windows)]
 fn console(fd: i32) -> Option<windows_sys::Win32::Foundation::HANDLE> {
@@ -342,5 +439,42 @@ mod tests {
         assert_eq!(parse_background(b"\x1b]11;rgb:f/0/8\x07"), Some((255, 0, 136)));
         // DA1 alone: the terminal does not say.
         assert_eq!(parse_background(b"\x1b[?1;2c"), None);
+    }
+}
+
+#[cfg(all(test, windows))]
+mod windows_tests {
+    use super::*;
+
+    /// A console goes raw as moby/term's does: no echo, line editing, processed input, mouse
+    /// or window events; insert and quick-edit mode, with the extended flags; and the rest of
+    /// its mode as it was.
+    #[test]
+    fn a_console_goes_raw_as_moby_terms_does() {
+        use windows_sys::Win32::System::Console::{
+            ENABLE_ECHO_INPUT, ENABLE_EXTENDED_FLAGS, ENABLE_INSERT_MODE, ENABLE_LINE_INPUT,
+            ENABLE_MOUSE_INPUT, ENABLE_PROCESSED_INPUT, ENABLE_QUICK_EDIT_MODE,
+            ENABLE_VIRTUAL_TERMINAL_INPUT, ENABLE_WINDOW_INPUT,
+        };
+        let cooked = ENABLE_PROCESSED_INPUT
+            | ENABLE_LINE_INPUT
+            | ENABLE_ECHO_INPUT
+            | ENABLE_MOUSE_INPUT
+            | ENABLE_WINDOW_INPUT
+            | ENABLE_VIRTUAL_TERMINAL_INPUT;
+        let raw = raw_mode(cooked);
+        let gone = ENABLE_ECHO_INPUT
+            | ENABLE_LINE_INPUT
+            | ENABLE_PROCESSED_INPUT
+            | ENABLE_MOUSE_INPUT
+            | ENABLE_WINDOW_INPUT;
+        let set = ENABLE_EXTENDED_FLAGS | ENABLE_INSERT_MODE | ENABLE_QUICK_EDIT_MODE;
+        assert_eq!(raw & gone, 0);
+        assert_eq!(raw & set, set);
+        assert_eq!(
+            raw & ENABLE_VIRTUAL_TERMINAL_INPUT,
+            ENABLE_VIRTUAL_TERMINAL_INPUT,
+            "the rest kept"
+        );
     }
 }

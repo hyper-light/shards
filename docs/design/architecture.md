@@ -3704,8 +3704,8 @@ local administration is (../focal docs/cluster-admin.md).
    command that reads none of the client's files and needs no terminal: `ps`, `images`,
    `inspect`, `pull`, `rm`, `stop`, `logs`, `run` and its output.
 2. Commands with a terminal: `-i`, `-t` (the remote command on a pseudo-terminal whose
-   size follows the client's), attach, exec; and the signals a client receives (built,
-   but for a client on Windows, whose console is part 2b's).
+   size follows the client's), attach, exec; and the signals a client receives (built; a
+   Windows client's console, part 2b, built too).
 3. Builds (the context sent as BuildKit's session sends it), `cp`, `save`, `load`,
    `import`, `export`.
 4. Docker's CLI through a context: a socket file in the home for each context, which the
@@ -3858,6 +3858,33 @@ command of its connection's refused, and a stranger's refused by its header. And
 the command given no terminal of its own, the terminal not taken as its controlling one,
 the client not raw, signals steering nothing, SIGWINCH sent as a signal with no resize, and
 a signal's Linux number taken for the daemon's system's.
+
+**Part 2b, built: a Windows client's console.** No daemon of shards' runs on Windows yet, so
+a context is how a Windows machine runs microVMs at all, and its console is its terminal as
+a Unix client's is:
+- **Raw as moby/term makes a console raw** (v0.5.2 termios_windows.go, makeRaw): no echo,
+  line editing or processed input, so ^C is a key the command's terminal there makes
+  SIGINT of; no mouse or window events; insert and quick-edit mode, and keys as the escape
+  sequences a terminal sends (ENABLE_VIRTUAL_TERMINAL_INPUT) where the console gives them,
+  as moby/term asks for them. stdout takes escape sequences, which the command there
+  writes, and both modes are given back after.
+- **Its size looked at every 250 ms**, as docker/cli's MonitorTtySize looks at a Windows
+  console's (cli/command/container/tty.go): a console has no SIGWINCH.
+- **Its events are signals as Go's runtime makes them** for a Windows process (go1.25.0
+  runtime/os_windows.go, ctrlHandler), and so for docker/cli's signal proxy: ^C and ^Break,
+  where the console's input is not raw, SIGINT; its closing, a logoff and a shutdown
+  SIGTERM, whose handler waits, as Go's does, so that the command's end ends the client
+  before Windows does.
+
+Tested in `tests/context_client.rs`, the client against a daemon of the test's own, which
+runs on every system: with no terminal, the client sends its command, its stdin and the
+variables that shape what it prints, and exits as the command does with what it wrote (on
+Unix also SIGUSR1, as 10); and on Windows, the client on a pseudoconsole the test holds
+(ConPTY, made as Microsoft's "Creating a Pseudoconsole session" makes one): its terminal
+the console's stdin, stdout and stderr at the console's size, keys reaching the command as
+typed (`ab` and Enter as `ab\r`, ^C as byte 3), and a resize of the console sizing the
+command's terminal. Unit tests hold raw mode's flags to moby/term's and the events' signals
+to Go's. The Windows tests run on CI's Windows jobs; this host runs none.
 
 ### D179. Other CPUs' images, emulated in their microVM (parts 1 to 3 built)
 

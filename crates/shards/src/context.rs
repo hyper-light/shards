@@ -63,8 +63,115 @@ fn here_terminal() -> Option<frame::Terminal> {
 
 /// What steers the command a context runs, while it runs: where this client's terminal's
 /// size and signals go.
-#[cfg(unix)]
 static STEERED: std::sync::Mutex<Option<client::Controls>> = std::sync::Mutex::new(None);
+
+/// This client's terminal, where it has one: which of its stdin, stdout and stderr its
+/// console is, and its size, its window's, which only an output reports.
+#[cfg(windows)]
+fn here_terminal() -> Option<frame::Terminal> {
+    use crate::cli::terminal::{is_console, size};
+    let (stdin, stdout, stderr) = (is_console(0), is_console(1), is_console(2));
+    if !(stdin || stdout || stderr) {
+        return None;
+    }
+    let (rows, cols) = if stdout {
+        size(1)
+    } else if stderr {
+        size(2)
+    } else {
+        (0, 0)
+    };
+    Some(frame::Terminal {
+        stdin,
+        stdout,
+        stderr,
+        rows,
+        cols,
+    })
+}
+
+/// A console has no SIGWINCH: its size is looked at every 250 ms, as docker/cli's
+/// MonitorTtySize looks at a Windows console's (cli/command/container/tty.go), and a change
+/// sizes the command's terminal. Its events, ^C and ^Break where its input is not raw, and
+/// its closing, go to the command as Go's runtime gives them to a Windows process
+/// ([`console_signal`]).
+#[cfg(windows)]
+fn steer_console(terminal: Option<frame::Terminal>) -> Result<(), String> {
+    use windows_sys::Win32::System::Console::SetConsoleCtrlHandler;
+    // SAFETY: a handler of this process's console's events, which it never removes. A
+    // process with no console has no events to take: a handler it could not have is none.
+    let _ = unsafe { SetConsoleCtrlHandler(Some(on_console_event), 1) };
+    let Some(terminal) = terminal else {
+        return Ok(());
+    };
+    let fd = match (terminal.stdout, terminal.stderr) {
+        (true, _) => 1,
+        (false, true) => 2,
+        (false, false) => return Ok(()),
+    };
+    let mut last = (terminal.rows, terminal.cols);
+    std::thread::Builder::new()
+        .name("resizes".into())
+        .spawn(move || {
+            loop {
+                std::thread::sleep(std::time::Duration::from_millis(250));
+                let now = crate::cli::terminal::size(fd);
+                if now == last {
+                    continue;
+                }
+                last = now;
+                let steered = STEERED.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                if let Some(controls) = steered.as_ref()
+                    && controls.resize(now.0, now.1).is_err()
+                {
+                    return;
+                }
+            }
+        })
+        .map_err(|e| format!("resize thread: {e}"))?;
+    Ok(())
+}
+
+/// The console's event `kind`: sent to the command as its signal, or, with no command to
+/// take it, left to end the client as it would have. Windows ends the process once its
+/// closing's handler returns, so that handler waits, as Go's does, for the command's end to
+/// end the client first.
+#[cfg(windows)]
+extern "system" fn on_console_event(kind: u32) -> windows_sys::core::BOOL {
+    let Some(linux) = console_signal(kind) else {
+        return 0;
+    };
+    let sent = STEERED
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .as_ref()
+        .is_some_and(|controls| controls.signal(linux).is_ok());
+    if !sent {
+        return 0;
+    }
+    if linux == 15 {
+        loop {
+            std::thread::park();
+        }
+    }
+    1
+}
+
+/// The Linux number of the signal a console's event `kind` is, as Go's runtime gives it to
+/// a Windows process (go1.25.0 runtime/os_windows.go, ctrlHandler), and so docker/cli's
+/// signal proxy to a container: ^C and ^Break SIGINT; the console's closing, a logoff and a
+/// shutdown SIGTERM.
+#[cfg(windows)]
+fn console_signal(kind: u32) -> Option<u32> {
+    use windows_sys::Win32::System::Console::{
+        CTRL_BREAK_EVENT, CTRL_C_EVENT, CTRL_CLOSE_EVENT, CTRL_LOGOFF_EVENT, CTRL_SHUTDOWN_EVENT,
+    };
+    match kind {
+        CTRL_C_EVENT | CTRL_BREAK_EVENT => Some(2),
+        CTRL_CLOSE_EVENT | CTRL_LOGOFF_EVENT | CTRL_SHUTDOWN_EVENT => Some(15),
+        _ => None,
+    }
+}
 
 /// Takes the signals this process would act on, which go to the command it forwards
 /// instead, as the Docker CLI's go to its container (`--sig-proxy`). With `terminal`, the
@@ -461,10 +568,18 @@ pub(crate) fn forward(home: &Path, context: &Context, args: Vec<OsString>) -> Ex
     // while the command reads it, as `ssh -t` leaves the remote terminal to do what a
     // terminal does (OpenSSH clientloop.c, enter_raw_mode). Its size and the signals this
     // process receives go to the command as they come.
-    #[cfg(unix)]
     let terminal = here_terminal();
-    #[cfg(not(unix))]
-    let terminal = None;
+    #[cfg(windows)]
+    {
+        if let Err(e) = steer_console(terminal) {
+            return fail(e);
+        }
+        if terminal.is_some_and(|t| t.stdin)
+            && let Err(e) = crate::cli::terminal::make_raw()
+        {
+            return fail(format!("the console: {e}"));
+        }
+    }
     #[cfg(unix)]
     {
         let reads = terminal.is_some_and(|t| t.stdin);
@@ -491,12 +606,7 @@ pub(crate) fn forward(home: &Path, context: &Context, args: Vec<OsString>) -> Ex
     };
     let stdin: Box<dyn io::Read + Send> = Box::new(io::stdin());
     let steered = |controls| {
-        #[cfg(unix)]
-        {
-            *STEERED.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(controls);
-        }
-        #[cfg(not(unix))]
-        drop(controls);
+        *STEERED.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(controls);
     };
     let ran = client::exec(
         &identity,
@@ -507,7 +617,6 @@ pub(crate) fn forward(home: &Path, context: &Context, args: Vec<OsString>) -> Ex
         io::stderr(),
         steered,
     );
-    #[cfg(unix)]
     crate::cli::terminal::restore();
     match ran {
         Ok(Ok(status)) => ExitCode::from(u8::try_from(status).unwrap_or(1)),
@@ -917,6 +1026,22 @@ mod tests {
         assert!(!valid_name("g"));
         assert!(!valid_name("-gpu"));
         assert!(!valid_name("gpu desktop"));
+    }
+
+    /// A console's events are the signals Go's runtime makes of them for a Windows process:
+    /// ^C and ^Break SIGINT; its closing, a logoff and a shutdown SIGTERM; no other.
+    #[cfg(windows)]
+    #[test]
+    fn a_consoles_events_are_the_signals_go_makes_of_them() {
+        use windows_sys::Win32::System::Console::{
+            CTRL_BREAK_EVENT, CTRL_C_EVENT, CTRL_CLOSE_EVENT, CTRL_LOGOFF_EVENT, CTRL_SHUTDOWN_EVENT,
+        };
+        assert_eq!(console_signal(CTRL_C_EVENT), Some(2));
+        assert_eq!(console_signal(CTRL_BREAK_EVENT), Some(2));
+        for ends in [CTRL_CLOSE_EVENT, CTRL_LOGOFF_EVENT, CTRL_SHUTDOWN_EVENT] {
+            assert_eq!(console_signal(ends), Some(15));
+        }
+        assert_eq!(console_signal(3), None);
     }
 
     /// What a context carries, and what it refuses until it carries it.
