@@ -12128,9 +12128,16 @@ fn a_step_for_another_cpu_runs_under_its_emulator() {
         built.stderr
     );
     assert_eq!(std::fs::read_to_string(one.join("built")).unwrap(), "built\n");
-    // 32-bit CPUs: linux/386 natively on an x86_64 host (IA32_EMULATION), under its
-    // emulator on an arm64 one; linux/arm/v7 under its emulator on both.
-    for (p, machine) in [("linux/386", "i686"), ("linux/arm/v7", "armv7l")] {
+    // 32-bit CPUs: linux/386 natively on an x86_64 host (IA32_EMULATION), where uname says
+    // the kernel's machine, as a BuildKit step's does (no PER_LINUX32 personality: Linux
+    // kernel/sys.c override_architecture; BuildKit v0.28.1's executor sets none); under its
+    // emulator on an arm64 one, which says i686; linux/arm/v7 under its emulator on both.
+    let i386 = if cfg!(target_arch = "x86_64") {
+        "x86_64"
+    } else {
+        "i686"
+    };
+    for (p, machine) in [("linux/386", i386), ("linux/arm/v7", "armv7l")] {
         let dest = out.join(p.replace('/', "_"));
         let built = shards(&[
             "build",
