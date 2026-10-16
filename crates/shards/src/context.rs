@@ -641,9 +641,7 @@ fn build_not_carried(parsed: &shards_cmdline::flags::Parsed) -> Option<&'static 
                 shards_agentfile::git::Parsed::NotGit
             )
     };
-    if !parsed.many("secret").is_empty() {
-        Some("--secret")
-    } else if !parsed.many("ssh").is_empty() {
+    if !parsed.many("ssh").is_empty() {
         Some("--ssh")
     } else if parsed.many("output").iter().any(|v| named_here(v)) {
         Some("--output")
@@ -690,6 +688,8 @@ struct Built {
     domains: std::collections::BTreeSet<String>,
     /// Its build file's directory here, which the machine's copy of it is said as.
     dockerfile_dir: Option<PathBuf>,
+    /// Its `--secret`s as given, read here as the build is sent ([`build_there`]).
+    secrets: Vec<String>,
 }
 
 /// A file's permissions and time, for its copy there; a file not there none of its own.
@@ -808,7 +808,7 @@ fn building(words: &[String], stdin: &dyn Fn() -> Result<Vec<u8>, String>) -> Re
     let mut gone: Vec<(usize, usize)> = Vec::new();
     for &(flag, word, offset) in &parsed.positions {
         match flag {
-            "file" => gone.push((word, offset)),
+            "file" | "secret" => gone.push((word, offset)),
             "build-arg" => {
                 let value = rest
                     .get(word)
@@ -862,6 +862,7 @@ fn building(words: &[String], stdin: &dyn Fn() -> Result<Vec<u8>, String>) -> Re
         key,
         domains,
         dockerfile_dir: dir,
+        secrets: parsed.many("secret").to_vec(),
     }))
 }
 
@@ -921,6 +922,7 @@ fn artifact_building(words: &[String]) -> Option<Built> {
         key,
         domains,
         dockerfile_dir: None,
+        secrets: Vec::new(),
     })
 }
 
@@ -1160,6 +1162,28 @@ fn build_there(
         removed,
         linked,
     } = crate::synced::plan(&walked, &there);
+    // Its secrets, read here as a build here reads them, the last of an id counting: each
+    // sent with it, and read there from a pipe of its own, which no file of the machine's
+    // holds; said by its id and its pipe, before the context.
+    let here = |name: &str| std::env::var_os(name).map(crate::build::os_bytes);
+    let secrets = match shards_cmdline::buildflags::parse_secrets(&built.secrets)
+        .and_then(|s| shards_cmdline::buildflags::store(s, &here, u64::from(shards_abi::run::MAX_PAYLOAD)))
+    {
+        Ok(store) => store.into_iter().collect::<Vec<_>>(),
+        Err(e) => {
+            let _ = writeln!(io::stderr(), "ERROR: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let mut words = built.words.clone();
+    let at = words
+        .iter()
+        .position(|w| w == crate::synced::CONTEXT)
+        .unwrap_or(words.len());
+    for (i, (id, _)) in secrets.iter().enumerate().rev() {
+        let id = shards_cmdline::go::csv_field(&format!("id={id}"));
+        words.insert(at, format!("--secret={id},src={}{i}", crate::synced::SECRET));
+    }
     // This client's own paths, which what the build prints there says in place of its copy's.
     let mut shown = built.context.as_os_str().as_encoded_bytes().to_vec();
     shown.push(0);
@@ -1175,7 +1199,7 @@ fn build_there(
     let sending = std::thread::Builder::new()
         .name("context-send".into())
         .spawn(move || {
-            crate::synced::send(&mut writer, &carried, |out| {
+            crate::synced::send(&mut writer, &carried, &secrets, |out| {
                 shards_archive::pack_changes(&root, &changed, &linked, &removed, out)
                     .map(drop)
                     .map_err(|e| e.to_string())
@@ -1186,7 +1210,7 @@ fn build_there(
         Err(e) => return fail(format!("a thread for the context: {e}")),
     };
     let words: Vec<&str> = std::iter::once("build")
-        .chain(built.words.iter().map(String::as_str))
+        .chain(words.iter().map(String::as_str))
         .collect();
     let request = Request {
         args: step(&words),
@@ -2600,8 +2624,9 @@ mod tests {
         ] {
             assert!(not_carried(&args(carried)).is_none(), "{carried}");
         }
+        // Its secrets cross in memory, read here.
+        assert!(not_carried(&args("build --secret id=a,src=f .")).is_none());
         for files in [
-            "build --secret id=a,src=f .",
             "build --ssh default .",
             "build -o out .",
             "build -o type=local,dest=out .",

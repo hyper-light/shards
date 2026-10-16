@@ -6342,7 +6342,7 @@ fn warnings_text(
 }
 
 /// An environment variable's value, its bytes as they are.
-fn os_bytes(v: std::ffi::OsString) -> Vec<u8> {
+pub(crate) fn os_bytes(v: std::ffi::OsString) -> Vec<u8> {
     #[cfg(unix)]
     {
         std::os::unix::ffi::OsStringExt::into_vec(v)

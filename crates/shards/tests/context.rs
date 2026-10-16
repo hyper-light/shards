@@ -1520,3 +1520,105 @@ fn an_artifact_through_a_context_is_made_of_the_clients_files_and_signed_by_its_
         shards_sigstore::bundle::Content::Envelope { payload: Some(p), .. } if *p == statement
     ));
 }
+
+/// The regular files under `dir` that hold `bytes`, by path.
+fn files_holding(dir: &Path, bytes: &[u8]) -> Vec<PathBuf> {
+    let mut found = Vec::new();
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(at) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&at) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            match entry.file_type() {
+                Ok(t) if t.is_dir() => stack.push(path),
+                Ok(t)
+                    if t.is_file()
+                        && std::fs::read(&path)
+                            .is_ok_and(|held| held.windows(bytes.len()).any(|w| w == bytes)) =>
+                {
+                    found.push(path)
+                }
+                _ => {}
+            }
+        }
+    }
+    found
+}
+
+/// A build's secrets through a context are the client's (D180): a file of the client's and
+/// a variable of its environment, each read by a step there as a build here gives it, the
+/// step saying only what they hash to; no file of the machine's holds either, as they
+/// crossed in memory and were read from pipes; and one not here is said as a build here
+/// says it.
+#[test]
+fn a_builds_secrets_through_a_context_are_the_clients_held_in_memory_alone() {
+    let Some((machine, _listening, laptop, image)) = joined("ctx-sec") else {
+        return;
+    };
+    let (file_secret, env_secret) = ("s3cret-of-the-clients-file", "s3cret-of-the-clients-environment");
+    let app = laptop.join("app");
+    std::fs::create_dir_all(&app).unwrap();
+    std::fs::write(
+        app.join("Dockerfile"),
+        format!(
+            "FROM {image}\nUSER root\nRUN --mount=type=secret,id=tok --mount=type=secret,id=var,env=TOKEN [\"/bin/testguest\", \"digest\", \"/run/secrets/tok\", \"env:TOKEN\"]\n"
+        ),
+    )
+    .unwrap();
+    let token = laptop.join("token");
+    std::fs::write(&token, file_secret).unwrap();
+    let on_laptop = [
+        ("SHARDS_HOME", laptop.as_os_str()),
+        ("SHARDS_TEST_TOKEN", env_secret.as_ref()),
+    ];
+    let secret = format!("id=tok,src={}", token.display());
+    let built = run_shards_env(
+        &["--context", "gpu", "build"],
+        &[
+            "--progress=plain",
+            "--secret",
+            &secret,
+            "--secret",
+            "id=var,env=SHARDS_TEST_TOKEN",
+            "-t",
+            "secrets:1",
+            app.to_str().unwrap(),
+        ],
+        &on_laptop,
+        TIMEOUT,
+    );
+    assert_eq!(built.status, Some(0), "{built}");
+    let digest = |b: &str| format!("{:016x}", shards_testguest::fnv1a(b.as_bytes()));
+    for said in [
+        format!(" digest /run/secrets/tok {}\n", digest(file_secret)),
+        format!(" digest env:TOKEN {}\n", digest(env_secret)),
+    ] {
+        assert!(built.stderr.contains(&said), "{said:?}\n{built}");
+    }
+    for secret in [file_secret, env_secret] {
+        let found = files_holding(&machine, secret.as_bytes());
+        assert!(found.is_empty(), "{secret} held by {found:?}");
+    }
+    // Nor did the client's own words of them cross: its file's path, its variable's name.
+    let log = std::fs::read_to_string(machine.join("daemon.log")).unwrap();
+    for here in [token.to_str().unwrap(), "SHARDS_TEST_TOKEN"] {
+        assert!(
+            !log.contains(here),
+            "{here} in what the machine was asked:\n{log}"
+        );
+    }
+    // One not here: said as a build here says it, the build never sent.
+    let missing = run_shards_env(
+        &["--context", "gpu", "build"],
+        &["--secret", "id=tok,src=/nowhere/token", app.to_str().unwrap()],
+        &on_laptop,
+        TIMEOUT,
+    );
+    assert_eq!(missing.status, Some(1), "{missing}");
+    assert!(
+        missing.stderr.starts_with("ERROR: failed to stat /nowhere/token"),
+        "{missing}"
+    );
+}

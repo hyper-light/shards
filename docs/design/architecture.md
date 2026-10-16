@@ -4072,8 +4072,8 @@ would have read the machine's directory. Now (crate::synced):
   go with it, those alone.
 - A client removed takes the copies of its contexts with it.
 
-What a build names of the client's otherwise is refused until it is carried: `--secret`,
-`--ssh`, an output, cache or named context of a file or directory here, `--iidfile`,
+What a build names of the client's otherwise is refused until it is carried (its secrets are,
+part 3e): `--ssh`, an output, cache or named context of a file or directory here, `--iidfile`,
 `--metadata-file` and a policy's file. Not yet: the client's terminal for the build's live
 display (a build over a context prints its plain progress); extended attributes (go-archive's
 archives carry `security.capability` alone). A new name of a file the copy holds, unchanged,
@@ -4094,6 +4094,37 @@ untouched), and unit tests of the plan and of a copy's key. Mutation-checked: th
 applied, everything sent each time, the ignore file not applied here, what went not
 removed, a change's directories not set again, the build file not the copy's, a base's
 login not sent, a build arg named alone the machine's.
+
+**Part 3e, built: a build's secrets through a context, and its `RUN` steps.** A build on
+the GPU machine reaches private packages as a build on the laptop does, its tokens the
+laptop's:
+- **Read here, held there in memory alone.** Each `--secret` is read by the client as a
+  build here reads it (`buildflags::store`: its file, else its variable, else its id's,
+  the last of an id counting, each within a step's frame), and crosses with the build's
+  stream (`synced::send`, the format's version 2), the client's words of it (its file's
+  path, its variable's name) left behind. The machine takes as many as the build's words
+  name and no more, each into a buffer of its own length held as a secret
+  (`SecretBytes`, overwritten when dropped), and gives the build each on a pipe of its
+  own, which the build reads once as its file (`src=/dev/fd/N`): no file of the machine's
+  ever holds one. Where a build here would read a file Docker's daemon is sent over its
+  session, a context needs no SSH account to carry it.
+- **`RUN` steps run there, which they did not.** A command a client runs is given none of
+  the owner's variables, `HOME` among them, which keeps the owner's logins in reach of no
+  client; but a `RUN` step's microVM needs the VM process shards writes out to its cache,
+  which was found by `HOME` ("no cache directory: HOME is not set": part 3c's builds copied
+  files alone). The cache is named outright now: `SHARDS_CACHE`, a user's to set too, and
+  the daemon's for its clients' commands.
+
+Tested in `tests/context.rs`
+(`a_builds_secrets_through_a_context_are_the_clients_held_in_memory_alone`: a `RUN` step
+there reading a secret file and a secret variable of the client's, saying only what each
+hashes to (`testguest digest`); no file of the machine's home holding either; neither the
+file's path nor the variable's name in what the machine was asked; and a secret not here
+said in the build's words, `ERROR: failed to stat ...`), and unit tests of the stream (more
+secrets than the build names refused), the placeholders and Go's CSV field.
+Mutation-checked: the secrets not sent, no pipe given the build, a secret's placeholder left
+as it is, no cache named, the client's own words of its secrets sent too, more secrets than
+named taken.
 
 **Part 3d, built: shards' own artifacts through a context.** An agent, a harness or an MCP
 server is made where it is to run: on the GPU machine, of the agent's directory on the

@@ -226,6 +226,18 @@ pub fn main() -> ! {
             1
         }
         "bulk" => bulk(arg(1).parse().unwrap_or(0), arg(2).parse().unwrap_or(0)),
+        // Each file's bytes, or variable's (`env:NAME`), as their FNV-1a, never the bytes.
+        "digest" => {
+            for named in args.iter().skip(1) {
+                let bytes = match named.strip_prefix("env:") {
+                    Some(name) => std::env::var_os(name).map(|v| v.into_encoded_bytes()),
+                    None => std::fs::read(named).ok(),
+                };
+                let said = bytes.map_or("none".into(), |b| format!("{:016x}", shards_testguest::fnv1a(&b)));
+                let _ = writeln!(io::stdout(), "digest {named} {said}");
+            }
+            0
+        }
         "hash" => {
             let hash =
                 shards_testguest::pattern_hash(arg(2).parse().unwrap_or(0), arg(1).parse().unwrap_or(0));

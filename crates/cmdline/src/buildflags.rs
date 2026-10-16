@@ -860,8 +860,19 @@ fn parse_secret(value: &str) -> Result<Secret, String> {
 pub struct SecretBytes(Vec<u8>);
 
 impl SecretBytes {
+    /// `bytes`, held from now on as a secret's: a build's of another machine's client
+    /// (D180), read into a buffer of their length alone, which no growth left a copy of.
+    pub fn new(bytes: Vec<u8>) -> SecretBytes {
+        SecretBytes(bytes)
+    }
+
     pub fn bytes(&self) -> &[u8] {
         &self.0
+    }
+
+    /// Its bytes to fill in place, as one read into a buffer already held as a secret.
+    pub fn bytes_mut(&mut self) -> &mut [u8] {
+        &mut self.0
     }
 }
 

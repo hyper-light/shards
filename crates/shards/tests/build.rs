@@ -2004,9 +2004,20 @@ fn an_images_healthcheck_probes_its_microvm() {
         assert_eq!(h["Status"], status, "{name}: {h}");
         let log = h["Log"].as_array().unwrap();
         assert_eq!(log.len(), 5, "{name}: {h}");
+        // A probe past its timeout says what it printed by then: one the host started late,
+        // under load, past the timeout itself, had printed nothing, and says so (CI saw one
+        // of five); what a probe did print is kept, by one of the five at least.
+        let unsaid = output.strip_suffix(": ready\n");
+        if unsaid.is_some() {
+            assert!(
+                log.iter().any(|p| p["Output"] == output),
+                "{name}: no probe's output kept: {h}"
+            );
+        }
         for probe in log {
             assert_eq!(probe["ExitCode"], code, "{name}: {h}");
-            assert_eq!(probe["Output"], output, "{name}: {h}");
+            let said = probe["Output"].as_str().unwrap_or_default();
+            assert!(said == output || Some(said) == unsaid, "{name}: {h}");
             for at in ["Start", "End"] {
                 let t = probe[at].as_str().unwrap();
                 assert!(t.len() >= 20 && t.as_bytes()[10] == b'T', "{name}: {h}");

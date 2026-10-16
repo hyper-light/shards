@@ -252,6 +252,11 @@ impl Machine {
                 OsString::from(crate::context::DEFAULT),
             ),
         ]);
+        // The daemon's cache, where a build's microVMs find the VM process it writes out:
+        // named outright, as no `HOME` of the owner's is given (XDG's falls back to it).
+        if let Ok(cache) = crate::helpers::cache() {
+            env.push(("SHARDS_CACHE".to_string(), cache.into_os_string()));
+        }
         // The client's own paths are its step's to say (`sync_step`), no command's.
         env.extend(
             given
@@ -351,17 +356,45 @@ impl Machine {
                             0
                         }
                         "build" => {
-                            let sent = crate::synced::receive(&mut in_r, &dockerfile, &context)?;
+                            let words = args.get(3..).unwrap_or_default();
+                            // As many secrets as the build's words name, and no more.
+                            let named = words.iter().filter(|a| a.contains(crate::synced::SECRET)).count();
+                            let (sent, secrets) =
+                                crate::synced::receive(&mut in_r, &dockerfile, &context, named)?;
                             super::log(format!(
                                 "client {whose}: context {key}: {sent} bytes of files came"
                             ));
-                            let argv: Vec<OsString> = args
-                                .get(3..)
-                                .unwrap_or_default()
+                            let argv: Vec<OsString> = words
                                 .iter()
                                 .map(|a| crate::synced::placed(a, &context, &dockerfile))
                                 .collect();
-                            ours.run(&exe, &argv, &env, &out_w, &err_w)?
+                            // Each secret on a pipe of its own, which the build reads once, as
+                            // its file: written in the order the build reads them, by one
+                            // thread, each pipe closed once its secret is in it.
+                            let mut readers = Vec::new();
+                            let mut writers = Vec::new();
+                            for (_, secret) in secrets {
+                                let (r, w) =
+                                    std::io::pipe().map_err(|e| format!("a pipe for a secret: {e}"))?;
+                                readers.push(r);
+                                writers.push((w, secret));
+                            }
+                            if !writers.is_empty() {
+                                std::thread::Builder::new()
+                                    .name("context-secrets".into())
+                                    .spawn(move || {
+                                        for (mut w, secret) in writers {
+                                            let _ = w.write_all(secret.bytes());
+                                        }
+                                    })
+                                    .map_err(|e| format!("a thread for the build's secrets: {e}"))?;
+                            }
+                            let fds: Vec<_> = readers
+                                .iter()
+                                .zip(crate::synced::SECRET_FD..)
+                                .map(|(r, fd)| (r.as_fd(), fd))
+                                .collect();
+                            ours.run(&exe, &argv, &env, &out_w, &err_w, &fds)?
                         }
                         other => return Err(format!("{other:?}: no such step of a context")),
                     };
@@ -474,11 +507,13 @@ impl Building {
         env: &[(String, OsString)],
         out: &impl AsFd,
         err: &impl AsFd,
+        more: &[(std::os::fd::BorrowedFd<'_>, i32)],
     ) -> Result<i32, String> {
         let (input, _end) = std::io::pipe().map_err(|e| format!("a pipe for the build: {e}"))?;
         let args: Vec<&OsStr> = argv.iter().map(OsString::as_os_str).collect();
         let set: Vec<(&str, &OsStr)> = env.iter().map(|(k, v)| (k.as_str(), v.as_os_str())).collect();
-        let fds = [(input.as_fd(), 0), (out.as_fd(), 1), (err.as_fd(), 2)];
+        let mut fds = vec![(input.as_fd(), 0), (out.as_fd(), 1), (err.as_fd(), 2)];
+        fds.extend_from_slice(more);
         if self.hung.load(std::sync::atomic::Ordering::SeqCst) {
             return Ok(129);
         }

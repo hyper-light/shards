@@ -23,13 +23,26 @@ pub(crate) const SYNC_STEP: &str = "\u{0}sync";
 /// context, and of its build file's directory, which the machine names.
 pub(crate) const CONTEXT: &str = "\u{0}context";
 pub(crate) const DOCKERFILE: &str = "\u{0}dockerfile/";
+/// What stands for the `N`th secret a client sends with its build (`\0secret/N`), which the
+/// machine's build reads from a pipe, the descriptor [`SECRET_FD`] + N.
+pub(crate) const SECRET: &str = "\u{0}secret/";
+#[cfg(unix)]
+pub(crate) const SECRET_FD: i32 = 3;
 
 #[cfg(unix)]
 /// A word of a build's command line on the machine: [`CONTEXT`] its copy of the context,
-/// [`DOCKERFILE`]'s files its copy of the build file's directory's, after any flag's `=`.
+/// [`DOCKERFILE`]'s files its copy of the build file's directory's, after any flag's `=`,
+/// and each [`SECRET`] the pipe its secret is read from.
 pub(crate) fn placed(word: &str, context: &Path, dockerfile: &Path) -> std::ffi::OsString {
     if word == CONTEXT {
         return context.as_os_str().to_os_string();
+    }
+    if let Some((before, n)) = word.split_once(SECRET) {
+        let fd = n.parse::<i32>().ok().and_then(|n| n.checked_add(SECRET_FD));
+        return std::ffi::OsString::from(match fd {
+            Some(fd) => format!("{before}/dev/fd/{fd}"),
+            None => word.to_string(),
+        });
     }
     let (flag, value) = match word.split_once('=') {
         Some((flag, value)) if flag.starts_with("--") => (format!("{flag}="), value),
@@ -45,8 +58,13 @@ pub(crate) fn placed(word: &str, context: &Path, dockerfile: &Path) -> std::ffi:
     }
 }
 
-/// What starts what a client sends of a build: the build file's directory, then the layer.
-const MAGIC: &[u8] = b"shards context 1\n";
+/// What starts what a client sends of a build: the build file's directory, its secrets,
+/// then the layer.
+const MAGIC: &[u8] = b"shards context 2\n";
+
+#[cfg(unix)]
+/// The most of a secret a build takes: what a step's frame carries, as a build here takes.
+const SECRET_MAX: u64 = shards_abi::run::MAX_PAYLOAD as u64;
 
 #[cfg(unix)]
 /// The most a build file's directory sends: as much as a build reads of a Dockerfile.
@@ -262,11 +280,13 @@ pub(crate) struct Carried {
     pub bytes: Vec<u8>,
 }
 
-/// Writes what a client sends of a build: the build file's directory's files, then the
-/// layer `pack` writes.
+/// Writes what a client sends of a build: the build file's directory's files, its secrets
+/// by id, each written as it is held, in no buffer of this function's, then the layer
+/// `pack` writes.
 pub(crate) fn send(
     out: &mut dyn Write,
     files: &[Carried],
+    secrets: &[(String, shards_cmdline::buildflags::SecretBytes)],
     pack: impl FnOnce(&mut dyn Write) -> Result<(), String>,
 ) -> Result<(), String> {
     let mut head = MAGIC.to_vec();
@@ -279,8 +299,21 @@ pub(crate) fn send(
         head.extend_from_slice(&u64::try_from(f.bytes.len()).unwrap_or(u64::MAX).to_be_bytes());
         head.extend_from_slice(&f.bytes);
     }
+    head.extend_from_slice(&u32::try_from(secrets.len()).unwrap_or(u32::MAX).to_be_bytes());
     out.write_all(&head)
         .map_err(|e| format!("sending the build file: {e}"))?;
+    for (id, secret) in secrets {
+        let mut named = Vec::new();
+        put(&mut named, id.as_bytes());
+        named.extend_from_slice(
+            &u64::try_from(secret.bytes().len())
+                .unwrap_or(u64::MAX)
+                .to_be_bytes(),
+        );
+        out.write_all(&named)
+            .and_then(|()| out.write_all(secret.bytes()))
+            .map_err(|e| format!("sending the build's secrets: {e}"))?;
+    }
     pack(out)
 }
 
@@ -313,7 +346,12 @@ fn read_vec(input: &mut dyn Read, n: u64) -> Result<Vec<u8>, String> {
 /// Reads what [`send`] wrote, on the machine: the build file's directory written whole into
 /// `dockerfile`, made afresh, then the layer applied over `context`. Names are a file's
 /// alone, no path. Returns the bytes the layer's files held.
-pub(crate) fn receive(input: &mut dyn Read, dockerfile: &Path, context: &Path) -> Result<i64, String> {
+pub(crate) fn receive(
+    input: &mut dyn Read,
+    dockerfile: &Path,
+    context: &Path,
+    named: usize,
+) -> Result<(i64, Vec<(String, shards_cmdline::buildflags::SecretBytes)>), String> {
     let mut magic = vec![0u8; MAGIC.len()];
     input
         .read_exact(&mut magic)
@@ -347,13 +385,46 @@ pub(crate) fn receive(input: &mut dyn Read, dockerfile: &Path, context: &Path) -
         let bytes = read_vec(input, size)?;
         write_file(&dockerfile.join(&name), mode, mtime, &bytes)?;
     }
+    // The secrets, in memory alone: no file of the machine's holds one.
+    let count = u32::from_be_bytes(read_array(input)?);
+    if usize::try_from(count).map_or(true, |count| count > named) {
+        return Err(format!("{count} secrets, where the build names {named}"));
+    }
+    let mut secrets = Vec::new();
+    for _ in 0..count {
+        let len = u32::from_be_bytes(read_array(input)?);
+        let id = String::from_utf8(read_vec(input, u64::from(len))?)
+            .map_err(|_| "a secret's id that is not UTF-8".to_string())?;
+        let size = u64::from_be_bytes(read_array(input)?);
+        total = total.saturating_add(size);
+        if size > SECRET_MAX || total > DOCKERFILE_MAX {
+            return Err(format!(
+                "{id}: a secret past {SECRET_MAX} bytes, or secrets past {DOCKERFILE_MAX}"
+            ));
+        }
+        secrets.push((id, read_secret(input, size)?));
+    }
     std::fs::create_dir_all(context).map_err(|e| format!("{}: {e}", context.display()))?;
     let opts = shards_archive::UnpackOptions {
         no_lchown: true,
         best_effort_xattrs: true,
         ..shards_archive::UnpackOptions::default()
     };
-    shards_archive::apply_layer(input, context, &opts).map_err(|e| format!("applying the context: {e}"))
+    let sent = shards_archive::apply_layer(input, context, &opts)
+        .map_err(|e| format!("applying the context: {e}"))?;
+    Ok((sent, secrets))
+}
+
+#[cfg(unix)]
+/// A secret of `n` bytes from `input`, read into a buffer of that length, held as a secret
+/// before it is filled: no growth leaves a copy, and one cut short is overwritten too.
+fn read_secret(input: &mut dyn Read, n: u64) -> Result<shards_cmdline::buildflags::SecretBytes, String> {
+    let n = usize::try_from(n).map_err(|_| "a secret too long".to_string())?;
+    let mut held = shards_cmdline::buildflags::SecretBytes::new(vec![0u8; n]);
+    input
+        .read_exact(held.bytes_mut())
+        .map_err(|e| format!("reading the build's secrets: {e}"))?;
+    Ok(held)
 }
 
 #[cfg(unix)]
@@ -575,6 +646,43 @@ mod tests {
                 "{step}"
             );
         }
+    }
+
+    /// A build's secrets cross with its context, each named in its words by the pipe it is
+    /// read from there; more than its words name are refused before any is read.
+    #[cfg(unix)]
+    #[test]
+    fn a_builds_secrets_cross_as_pipes_it_names() {
+        assert_eq!(
+            placed(
+                "--secret=id=tok,src=\u{0}secret/1",
+                Path::new("/c"),
+                Path::new("/d")
+            ),
+            std::ffi::OsString::from("--secret=id=tok,src=/dev/fd/4")
+        );
+        let held = |b: &[u8]| shards_cmdline::buildflags::SecretBytes::new(b.to_vec());
+        let secrets = vec![
+            ("tok".to_string(), held(b"one")),
+            ("var".to_string(), held(b"two")),
+        ];
+        let mut sent = Vec::new();
+        send(&mut sent, &[], &secrets, |out| {
+            shards_archive::pack_changes(Path::new("/nowhere"), &[], &[], &[], out)
+                .map(drop)
+                .map_err(|e| e.to_string())
+        })
+        .unwrap();
+        let dir = shards_testdir::TempDir::new("synced-secrets").unwrap();
+        let (dockerfile, context) = (dir.join("dockerfile"), dir.join("context"));
+        let (_, got) = receive(&mut &sent[..], &dockerfile, &context, 2).unwrap();
+        let got: Vec<(&str, &[u8])> = got.iter().map(|(id, s)| (id.as_str(), s.bytes())).collect();
+        assert_eq!(got, [("tok", &b"one"[..]), ("var", &b"two"[..])]);
+        let refused = receive(&mut &sent[..], &dockerfile, &context, 1).unwrap_err();
+        assert!(
+            refused.contains("2 secrets, where the build names 1"),
+            "{refused}"
+        );
     }
 
     /// A new name of a file the copy holds, unchanged, is linked to it there: its partner
