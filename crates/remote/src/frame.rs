@@ -65,9 +65,9 @@ pub fn put(out: &mut Vec<u8>, tag: Tag, payload: &[u8]) -> Result<(), Error> {
     Ok(())
 }
 
-/// The first whole frame at the front of `buffer`, taken from it; none until one has come
-/// whole.
-pub fn take(buffer: &mut Vec<u8>) -> Result<Option<(Tag, Vec<u8>)>, Error> {
+/// What the frame at the front of `buffer` is, and how many bytes it carries, once its header
+/// has come: what a frame may be is judged before its bytes are waited for.
+pub fn peek(buffer: &[u8]) -> Result<Option<(Tag, usize)>, Error> {
     let Some(&[tag, a, b, c, d]) = buffer.get(..5).and_then(|h| <&[u8; 5]>::try_from(h).ok()) else {
         return Ok(None);
     };
@@ -77,6 +77,15 @@ pub fn take(buffer: &mut Vec<u8>) -> Result<Option<(Tag, Vec<u8>)>, Error> {
     if len > MAX_FRAME {
         return Err(Error::new(format!("a {len}-byte frame, over {MAX_FRAME}")));
     }
+    Ok(Some((tag, len)))
+}
+
+/// The first whole frame at the front of `buffer`, taken from it; none until one has come
+/// whole.
+pub fn take(buffer: &mut Vec<u8>) -> Result<Option<(Tag, Vec<u8>)>, Error> {
+    let Some((tag, len)) = peek(buffer)? else {
+        return Ok(None);
+    };
     let end = len.checked_add(5).ok_or_else(|| Error::new("a frame too long"))?;
     let Some(payload) = buffer.get(5..end) else {
         return Ok(None);

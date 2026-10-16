@@ -27,8 +27,16 @@ pub struct Remote {
 }
 
 enum Ask {
-    Exec(Request),
-    Join { name: String, secret: [u8; 32] },
+    /// A command; `input`, whether its stdin is sent: a command given none reads the end of
+    /// its input at once.
+    Exec {
+        request: Request,
+        input: bool,
+    },
+    Join {
+        name: String,
+        secret: [u8; 32],
+    },
 }
 
 enum Event {
@@ -59,6 +67,11 @@ struct Client {
     held: Option<(Tag, Vec<u8>)>,
     credit: Option<mpsc::SyncSender<()>>,
     starved: bool,
+    /// The daemon reads no more of what is sent (STOP_SENDING): the rest of stdin goes
+    /// unsent, as the command it was for has ended.
+    unread: bool,
+    /// The daemon finished its side: all it sent is read.
+    ended: bool,
     answer: Option<Answer>,
     failed: Option<String>,
     done: bool,
@@ -75,8 +88,9 @@ impl Client {
                 Ok(n) => {
                     self.pending.drain(..n.min(self.pending.len()));
                 }
-                Err(e) => {
-                    self.fail(io, e.to_string());
+                // The daemon reads no more of it: its answer is still to come.
+                Err(_) => {
+                    self.stop_input();
                     return;
                 }
             }
@@ -87,6 +101,14 @@ impl Client {
                 let _ = credit.try_send(());
             }
         }
+    }
+
+    /// What is left of stdin goes unsent: the daemon reads no more of it.
+    fn stop_input(&mut self) {
+        self.unread = true;
+        self.pending.clear();
+        // The reader of stdin waits for credit no more, and ends.
+        self.credit = None;
     }
 
     fn fail(&mut self, io: &mut Io<'_>, why: String) {
@@ -107,7 +129,8 @@ impl Client {
         self.done = true;
     }
 
-    /// Takes what the stream has, until a writer has no room.
+    /// Takes what the stream has, until a writer has no room: each whole frame before reading
+    /// more, so that the stream's end is judged after all it carried.
     fn take(&mut self, io: &mut Io<'_>) {
         let (Some(conn), Some(stream)) = (self.conn, self.stream) else {
             return;
@@ -118,7 +141,10 @@ impl Client {
             }
             match frame::take(&mut self.inbound) {
                 Ok(Some((tag, payload))) => match tag {
-                    Tag::Stdout | Tag::Stderr => self.held = Some((tag, payload)),
+                    Tag::Stdout | Tag::Stderr => {
+                        self.held = Some((tag, payload));
+                        continue;
+                    }
                     Tag::Exit => {
                         let status = payload
                             .get(..4)
@@ -149,13 +175,19 @@ impl Client {
                     return;
                 }
             }
+            if self.ended {
+                self.fail(io, "the daemon ended the command's stream without its end".into());
+                return;
+            }
             match io.read(conn, stream) {
                 StreamRead::Bytes(bytes) => self.inbound.extend_from_slice(&bytes),
+                StreamRead::End(bytes) => {
+                    self.inbound.extend_from_slice(&bytes);
+                    self.ended = true;
+                }
                 StreamRead::Blocked => return,
-                StreamRead::End | StreamRead::Reset => {
-                    if self.answer.is_none() {
-                        self.fail(io, "the daemon ended the command's stream without its end".into());
-                    }
+                StreamRead::Reset => {
+                    self.fail(io, "the daemon reset the command's stream".into());
                     return;
                 }
             }
@@ -201,9 +233,13 @@ impl Handler for Client {
         };
         self.stream = Some(stream);
         let framed = match self.ask.take() {
-            Some(Ask::Exec(request)) => request.encode().and_then(|p| {
+            Some(Ask::Exec { request, input }) => request.encode().and_then(|p| {
                 let mut out = Vec::new();
-                frame::put(&mut out, Tag::Exec, &p).map(|()| out)
+                frame::put(&mut out, Tag::Exec, &p)?;
+                if !input {
+                    frame::put(&mut out, Tag::StdinEnd, &[])?;
+                }
+                Ok(out)
             }),
             Some(Ask::Join { name, secret }) => {
                 io.export(conn, invite::EXPORTER_LABEL).and_then(|exported| {
@@ -230,12 +266,19 @@ impl Handler for Client {
         }
     }
 
+    /// None comes: its transport gives the daemon no stream to open (`tls`).
+    fn opened(&mut self, _io: &mut Io<'_>, _conn: ConnKey, _stream: StreamId) {}
+
     fn readable(&mut self, io: &mut Io<'_>, _conn: ConnKey, _stream: StreamId) {
         self.take(io);
     }
 
     fn writable(&mut self, io: &mut Io<'_>, _conn: ConnKey, _stream: StreamId) {
         self.flush(io);
+    }
+
+    fn stopped(&mut self, _io: &mut Io<'_>, _conn: ConnKey, _stream: StreamId) {
+        self.stop_input();
     }
 
     fn lost(&mut self, _io: &mut Io<'_>, _conn: ConnKey, why: &str) {
@@ -264,6 +307,7 @@ impl Handler for Client {
                     Err(e) => self.fail(io, e.to_string()),
                 }
             }
+            Event::Stdin(_) | Event::StdinEnd if self.unread => {}
             Event::Stdin(bytes) => {
                 if frame::put(&mut self.pending, Tag::Stdin, &bytes).is_ok() {
                     self.starved = true;
@@ -318,10 +362,11 @@ pub fn exec(
     stdout: impl Write + Send + 'static,
     stderr: impl Write + Send + 'static,
 ) -> Result<Result<i32, String>, Error> {
+    let input = stdin.is_some();
     let answer = run(
         identity,
         remote,
-        Ask::Exec(request),
+        Ask::Exec { request, input },
         stdin,
         Some((Box::new(stdout), Box::new(stderr))),
     )?;
@@ -379,6 +424,8 @@ fn run(
             held: None,
             credit: None,
             starved: false,
+            unread: false,
+            ended: false,
             answer: None,
             failed: None,
             done: false,

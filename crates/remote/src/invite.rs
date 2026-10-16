@@ -23,10 +23,17 @@ pub const LIFETIME_SECS: u64 = 3600;
 /// The exporter's label: RFC 5705 §4 keeps those beginning `EXPERIMENTAL` for private use.
 pub const EXPORTER_LABEL: &[u8] = b"EXPERIMENTAL-shards-join";
 
+/// The longest an invitation's name is.
+pub const NAME_MAX: usize = 63;
+
+/// The most a join carries: its invitation's name, the NUL after it, and its proof
+/// (HMAC-SHA-256's 32 bytes). The daemon waits for no more of a client it has not enrolled.
+pub const JOIN_MAX: usize = NAME_MAX + 1 + 32;
+
 /// An invitation's name: 1 to 63 ASCII letters, digits, dots, underscores or hyphens, as
 /// focal's are, and what the enrolled client is known by.
 pub fn valid_name(name: &str) -> bool {
-    (1..=63).contains(&name.len())
+    (1..=NAME_MAX).contains(&name.len())
         && name
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))

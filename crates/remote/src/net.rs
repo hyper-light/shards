@@ -4,7 +4,7 @@
 //! from its waker, which wakes it from the socket's read: what std gives every target,
 //! Windows' consoles and pipes among the descriptors no poll(2) of a socket reaches.
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::net::{SocketAddr, UdpSocket};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
@@ -21,8 +21,9 @@ use crate::Error;
 /// (RFC 9000 §18.2, max_udp_payload_size), and an IPv6 jumbogram is no UDP datagram std reads.
 const DATAGRAM: usize = 65_527;
 
-/// A connection, by its place among the driver's.
-pub type ConnKey = usize;
+/// A connection, by the number the driver gave it, which it gives no other: what a thread
+/// sends for a connection that has ended reaches none that came after it.
+pub type ConnKey = u64;
 
 /// What another thread asks of the driver, which runs it on its own thread.
 #[derive(Debug)]
@@ -81,10 +82,15 @@ pub trait Handler {
     /// A connection's handshake is done; `peer` is the key it presented. Returns whether to
     /// keep it.
     fn connected(&mut self, io: &mut Io<'_>, conn: ConnKey, peer: &[u8]) -> bool;
-    /// `stream`, which the peer opened or this side did, has bytes to read, or ended.
+    /// The peer opened `stream`. QUIC tells of a stream it opened before anything else of it.
+    fn opened(&mut self, io: &mut Io<'_>, conn: ConnKey, stream: StreamId);
+    /// `stream` has bytes to read, or ended.
     fn readable(&mut self, io: &mut Io<'_>, conn: ConnKey, stream: StreamId);
     /// `stream` may take bytes again.
     fn writable(&mut self, io: &mut Io<'_>, conn: ConnKey, stream: StreamId);
+    /// The peer reads no more of `stream` (STOP_SENDING), whose side here is reset already,
+    /// as RFC 9000 §3.5 asks.
+    fn stopped(&mut self, io: &mut Io<'_>, conn: ConnKey, stream: StreamId);
     /// A connection ended: closed, timed out, or refused at its handshake.
     fn lost(&mut self, io: &mut Io<'_>, conn: ConnKey, why: &str);
     /// Another thread's command.
@@ -98,7 +104,8 @@ pub trait Handler {
 /// The driver's connections, as its handler acts on them.
 pub struct Io<'a> {
     endpoint: &'a mut Endpoint,
-    conns: &'a mut Vec<Option<Conn>>,
+    conns: &'a mut HashMap<ConnKey, Conn>,
+    next: &'a mut ConnKey,
     client: Option<ClientConfigHandle>,
     now: Instant,
 }
@@ -124,8 +131,10 @@ pub enum Read {
     Bytes(Vec<u8>),
     /// Nothing now.
     Blocked,
-    /// The peer finished the stream: all of it has been read.
-    End,
+    /// The peer finished the stream, these bytes its last (none, maybe): all of it is read.
+    /// The end comes with the bytes it follows, as QUIC lets a stream go once it has given
+    /// its end: a read after it finds no stream.
+    End(Vec<u8>),
     /// The peer reset the stream, or the connection is gone.
     Reset,
 }
@@ -133,8 +142,7 @@ pub enum Read {
 impl Io<'_> {
     fn conn(&mut self, key: ConnKey) -> Result<&mut Conn, Error> {
         self.conns
-            .get_mut(key)
-            .and_then(Option::as_mut)
+            .get_mut(&key)
             .ok_or_else(|| Error::new("no such connection"))
     }
 
@@ -157,6 +165,7 @@ impl Io<'_> {
             .map_err(|e| Error::new(format!("connecting to {to}: {e}")))?;
         Ok(place(
             self.conns,
+            self.next,
             Conn {
                 handle,
                 quic,
@@ -220,9 +229,25 @@ impl Io<'_> {
         }
         let _ = chunks.finalize();
         match (got.is_empty(), ended) {
-            (false, _) => Read::Bytes(got),
-            (true, true) => Read::End,
+            (_, true) => Read::End(got),
+            (false, false) => Read::Bytes(got),
             (true, false) => Read::Blocked,
+        }
+    }
+
+    /// Reads no more of `stream`: its peer is asked to stop sending it (STOP_SENDING), and
+    /// what still comes of it is let go. Nothing, for a stream the peer finished or reset.
+    pub fn stop(&mut self, conn: ConnKey, stream: StreamId) {
+        if let Ok(conn) = self.conn(conn) {
+            let _ = conn.quic.recv_stream(stream).stop(VarInt::from_u32(0));
+        }
+    }
+
+    /// Abandons this side of `stream` (RESET_STREAM): what was written to it and not yet
+    /// sent is let go. Nothing, for a side reset already.
+    pub fn reset(&mut self, conn: ConnKey, stream: StreamId) {
+        if let Ok(conn) = self.conn(conn) {
+            let _ = conn.quic.send_stream(stream).reset(VarInt::from_u32(0));
         }
     }
 
@@ -255,20 +280,13 @@ impl Io<'_> {
     }
 }
 
-/// `conn` put in the first free place of `conns`; its place.
-fn place(conns: &mut Vec<Option<Conn>>, conn: Conn) -> ConnKey {
-    match conns.iter().position(Option::is_none) {
-        Some(free) => {
-            if let Some(slot) = conns.get_mut(free) {
-                *slot = Some(conn);
-            }
-            free
-        }
-        None => {
-            conns.push(Some(conn));
-            conns.len() - 1
-        }
-    }
+/// `conn` among `conns`, under the number after the last one given; that number.
+fn place(conns: &mut HashMap<ConnKey, Conn>, next: &mut ConnKey, conn: Conn) -> ConnKey {
+    let key = *next;
+    // 2^64 connections: more than a driver lives to see.
+    *next = next.wrapping_add(1);
+    conns.insert(key, conn);
+    key
 }
 
 /// A QUIC endpoint on its own socket, its handler `H`.
@@ -277,7 +295,10 @@ pub struct Driver<H: Handler> {
     socket: UdpSocket,
     waker: SocketAddr,
     endpoint: Endpoint,
-    conns: Vec<Option<Conn>>,
+    conns: HashMap<ConnKey, Conn>,
+    next: ConnKey,
+    /// The connections' numbers, as a turn goes through them.
+    keys: Vec<ConnKey>,
     client: Option<ClientConfigHandle>,
     commands: mpsc::Receiver<Command<H::Command>>,
     handler: H,
@@ -315,7 +336,9 @@ impl<H: Handler> Driver<H> {
                 socket,
                 waker: waker_at,
                 endpoint,
-                conns: Vec::new(),
+                conns: HashMap::new(),
+                next: 0,
+                keys: Vec::new(),
                 client: None,
                 commands,
                 handler,
@@ -407,6 +430,7 @@ impl<H: Handler> Driver<H> {
             Io {
                 endpoint: &mut self.endpoint,
                 conns: &mut self.conns,
+                next: &mut self.next,
                 client: self.client,
                 now,
             },
@@ -420,7 +444,7 @@ impl<H: Handler> Driver<H> {
                 Command::Stop => {
                     self.stopping = true;
                     // Each peer is told, by the close the next turn sends.
-                    for conn in self.conns.iter_mut().flatten() {
+                    for conn in self.conns.values_mut() {
                         conn.quic.close(
                             now,
                             VarInt::from_u32(0),
@@ -454,6 +478,7 @@ impl<H: Handler> Driver<H> {
                     Ok((handle, quic)) => {
                         let key = place(
                             &mut self.conns,
+                            &mut self.next,
                             Conn {
                                 handle,
                                 quic,
@@ -474,7 +499,7 @@ impl<H: Handler> Driver<H> {
             }
             Some(DatagramEvent::ConnectionEvent(handle, event)) => {
                 if let Some(key) = self.key_of(handle) {
-                    if let Some(Some(conn)) = self.conns.get_mut(key) {
+                    if let Some(conn) = self.conns.get_mut(&key) {
                         conn.quic.handle_event(event, self.endpoint.configs_mut());
                     }
                     self.pump(now, key);
@@ -493,13 +518,13 @@ impl<H: Handler> Driver<H> {
     fn key_of(&self, handle: ConnectionHandle) -> Option<ConnKey> {
         self.conns
             .iter()
-            .position(|c| c.as_ref().is_some_and(|c| c.handle == handle))
+            .find_map(|(key, c)| (c.handle == handle).then_some(*key))
     }
 
     /// Runs `key`'s endpoint events and tells the handler what changed.
     fn pump(&mut self, now: Instant, key: ConnKey) {
         loop {
-            let Some(Some(conn)) = self.conns.get_mut(key) else {
+            let Some(conn) = self.conns.get_mut(&key) else {
                 return;
             };
             let mut events = Vec::new();
@@ -519,13 +544,8 @@ impl<H: Handler> Driver<H> {
             }
         }
         // A connection drained of its last packets is let go.
-        if self
-            .conns
-            .get(key)
-            .is_some_and(|c| c.as_ref().is_some_and(|c| c.quic.is_drained()))
-            && let Some(slot) = self.conns.get_mut(key)
-        {
-            *slot = None;
+        if self.conns.get(&key).is_some_and(|c| c.quic.is_drained()) {
+            self.conns.remove(&key);
         }
     }
 
@@ -534,8 +554,7 @@ impl<H: Handler> Driver<H> {
             Event::Connected => {
                 let peer = self
                     .conns
-                    .get(key)
-                    .and_then(Option::as_ref)
+                    .get(&key)
                     .and_then(|c| c.quic.crypto_session().peer_identity())
                     .and_then(|any| {
                         any.downcast::<Vec<hyper_quic::rustls::pki_types::CertificateDer<'static>>>()
@@ -543,7 +562,7 @@ impl<H: Handler> Driver<H> {
                     })
                     .and_then(|certs| certs.first().map(|c| c.as_ref().to_vec()))
                     .unwrap_or_default();
-                if let Some(Some(conn)) = self.conns.get_mut(key) {
+                if let Some(conn) = self.conns.get_mut(&key) {
                     conn.connected = true;
                 }
                 let (mut io, handler) = self.io(now);
@@ -559,15 +578,23 @@ impl<H: Handler> Driver<H> {
                 self.client = io.client;
             }
             Event::Stream(StreamEvent::Opened { dir: Dir::Bi }) => {
-                // Streams the peer opened are taken as they come, and read once readable.
-                while let Some(Some(conn)) = self.conns.get_mut(key) {
+                // Streams the peer opened are taken as they come. QUIC gives this event
+                // before any queued for them (quinn-proto's StreamsState::poll).
+                while let Some(conn) = self.conns.get_mut(&key) {
                     let Some(stream) = conn.quic.streams().accept(Dir::Bi) else {
                         break;
                     };
                     let (mut io, handler) = self.io(now);
-                    handler.readable(&mut io, key, stream);
+                    handler.opened(&mut io, key, stream);
                     self.client = io.client;
                 }
+            }
+            Event::Stream(StreamEvent::Stopped { id, .. }) => {
+                // RFC 9000 §3.5: a side whose peer reads no more of it is reset.
+                let (mut io, handler) = self.io(now);
+                io.reset(key, id);
+                handler.stopped(&mut io, key, id);
+                self.client = io.client;
             }
             Event::Stream(StreamEvent::Readable { id }) => {
                 let (mut io, handler) = self.io(now);
@@ -584,16 +611,15 @@ impl<H: Handler> Driver<H> {
     }
 
     fn timers(&mut self, now: Instant) {
-        for key in 0..self.conns.len() {
-            let due = self
-                .conns
-                .get_mut(key)
-                .and_then(Option::as_mut)
-                .is_some_and(|c| c.quic.poll_timeout().is_some_and(|at| at <= now));
-            if due {
-                if let Some(Some(conn)) = self.conns.get_mut(key) {
-                    conn.quic.handle_timeout(now);
-                }
+        self.keys.clear();
+        for (key, conn) in &mut self.conns {
+            if conn.quic.poll_timeout().is_some_and(|at| at <= now) {
+                conn.quic.handle_timeout(now);
+                self.keys.push(*key);
+            }
+        }
+        for at in 0..self.keys.len() {
+            if let Some(&key) = self.keys.get(at) {
                 self.pump(now, key);
             }
         }
@@ -601,17 +627,22 @@ impl<H: Handler> Driver<H> {
 
     fn next_timer(&mut self) -> Option<Instant> {
         self.conns
-            .iter_mut()
-            .filter_map(|c| c.as_mut().and_then(|c| c.quic.poll_timeout()))
+            .values_mut()
+            .filter_map(|c| c.quic.poll_timeout())
             .min()
     }
 
     fn transmit(&mut self, now: Instant) -> Result<(), Error> {
         let mut buffer = Vec::new();
-        for key in 0..self.conns.len() {
+        self.keys.clear();
+        self.keys.extend(self.conns.keys());
+        for at in 0..self.keys.len() {
+            let Some(&key) = self.keys.get(at) else {
+                break;
+            };
             loop {
                 buffer.clear();
-                let Some(Some(conn)) = self.conns.get_mut(key) else {
+                let Some(conn) = self.conns.get_mut(&key) else {
                     break;
                 };
                 let Some(transmit) = conn

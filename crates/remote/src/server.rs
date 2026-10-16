@@ -65,13 +65,21 @@ enum Event {
         stream: StreamId,
         status: i32,
     },
+    /// The command's stdin took what it was given, or takes no more: the stream is read on.
+    InputTaken { conn: ConnKey, stream: StreamId },
 }
 
 #[derive(Default)]
 struct Stream {
     inbound: Vec<u8>,
     pending: Vec<u8>,
-    stdin: Option<mpsc::SyncSender<Option<Vec<u8>>>>,
+    /// The command's stdin, until its end, which this sender's drop is.
+    stdin: Option<mpsc::SyncSender<Vec<u8>>>,
+    /// Bytes for stdin it had no room for yet: the stream is read no more until it has, and
+    /// its flow control holds the client back meanwhile.
+    held: Option<Vec<u8>>,
+    /// The client sent the end of stdin: it follows what is held.
+    stdin_ends: bool,
     credits: Vec<mpsc::SyncSender<()>>,
     starved: bool,
     stdout_done: bool,
@@ -80,18 +88,34 @@ struct Stream {
     hangup: Option<Box<dyn Fn() + Send>>,
     /// The request frame came.
     asked: bool,
+    /// The client finished its side: all it sent is read.
+    ended: bool,
     /// The stream's last frame is queued: its exit, refusal or join.
     last: bool,
+    /// The last frame is written, and this side finished.
     finished: bool,
+    /// The client left the stream, resetting it or reading no more of it: nothing more goes
+    /// either way.
+    gone: bool,
 }
 
 impl Stream {
+    /// Whether its command started and has not ended.
+    fn running(&self) -> bool {
+        self.hangup.is_some() && self.status.is_none()
+    }
+
     fn flush(&mut self, io: &mut Io<'_>, conn: ConnKey, id: StreamId) {
         while !self.pending.is_empty() {
             match io.write(conn, id, &self.pending) {
-                Ok(0) | Err(_) => break,
+                Ok(0) => break,
                 Ok(n) => {
                     self.pending.drain(..n.min(self.pending.len()));
+                }
+                // The client reads no more of it.
+                Err(_) => {
+                    self.gone = true;
+                    return;
                 }
             }
         }
@@ -107,7 +131,10 @@ impl Stream {
         }
     }
 
-    /// Queues `tag`'s frame as the stream's last.
+    /// Queues `tag`'s frame as the stream's last. A command still running is hung up, as its
+    /// client hears no more of it, and what the client still sends goes unread: it is asked
+    /// to stop (STOP_SENDING), as an HTTP/3 server that needs no more of a request's body
+    /// does (RFC 9114 §4.1.2).
     fn end(&mut self, io: &mut Io<'_>, conn: ConnKey, id: StreamId, tag: Tag, payload: &[u8]) {
         if self.last {
             return;
@@ -116,6 +143,16 @@ impl Stream {
             let _ = frame::put(&mut self.pending, Tag::Refused, b"an answer too long");
         }
         self.last = true;
+        if self.running()
+            && let Some(hangup) = &self.hangup
+        {
+            hangup();
+        }
+        self.stdin = None;
+        self.held = None;
+        if !self.ended {
+            io.stop(conn, id);
+        }
         self.flush(io, conn, id);
     }
 
@@ -129,6 +166,22 @@ impl Stream {
         } else {
             self.flush(io, conn, id);
         }
+    }
+
+    /// Gives stdin what is held for it, and then its end, once the client sent it; whether
+    /// stdin had room.
+    fn deliver(&mut self) -> bool {
+        if let Some(bytes) = self.held.take()
+            && let Some(stdin) = &self.stdin
+            && let Err(mpsc::TrySendError::Full(bytes)) = stdin.try_send(bytes)
+        {
+            self.held = Some(bytes);
+            return false;
+        }
+        if self.stdin_ends {
+            self.stdin = None;
+        }
+        true
     }
 }
 
@@ -144,91 +197,171 @@ struct Server<H: Host> {
     sender: Option<Sender<Event>>,
 }
 
+/// What [`Server::frame`] found.
+enum Taken {
+    /// A frame, acted on.
+    Frame,
+    /// No whole frame yet.
+    Waiting,
+}
+
 impl<H: Host> Server<H> {
-    fn frames(&mut self, io: &mut Io<'_>, conn: ConnKey, id: StreamId) {
+    fn stream(&mut self, conn: ConnKey, id: StreamId) -> Option<&mut Stream> {
+        self.peers.get_mut(&conn).and_then(|p| p.streams.get_mut(&id))
+    }
+
+    /// Reads `id` and acts on its frames: each whole one before reading more, and none while
+    /// its command's stdin has no room for what came before.
+    fn serve(&mut self, io: &mut Io<'_>, conn: ConnKey, id: StreamId) {
         loop {
-            let Some(peer) = self.peers.get_mut(&conn) else {
+            let Some(stream) = self.stream(conn, id) else {
                 return;
             };
-            let Some(stream) = peer.streams.get_mut(&id) else {
+            if stream.last || stream.gone || !stream.deliver() {
+                break;
+            }
+            if let Taken::Frame = self.frame(io, conn, id) {
+                continue;
+            }
+            let Some(stream) = self.stream(conn, id) else {
                 return;
             };
-            let (tag, payload) = match frame::take(&mut stream.inbound) {
-                Ok(Some(frame)) => frame,
-                Ok(None) => return,
-                Err(e) => return stream.end(io, conn, id, Tag::Refused, e.to_string().as_bytes()),
-            };
-            match tag {
-                Tag::Exec if !stream.asked => {
-                    stream.asked = true;
-                    let Some(client) = peer.client.clone() else {
-                        return stream.end(io, conn, id, Tag::Refused, NOT_ENROLLED.as_bytes());
-                    };
-                    let started =
-                        Request::decode(&payload).and_then(|request| self.host.start(&client, request));
-                    let relayed = match (started, &self.sender) {
-                        (Ok(running), Some(sender)) => relay(running, conn, id, sender),
-                        (Ok(_), None) => Err(Error::new("the daemon's listener is not running")),
-                        (Err(e), _) => Err(e),
-                    };
-                    let Some(stream) = self.peers.get_mut(&conn).and_then(|p| p.streams.get_mut(&id)) else {
-                        return;
-                    };
-                    match relayed {
-                        Ok((stdin, credits, hangup)) => {
-                            stream.stdin = Some(stdin);
-                            stream.credits = credits;
-                            stream.hangup = Some(hangup);
-                        }
-                        Err(e) => return stream.end(io, conn, id, Tag::Refused, e.to_string().as_bytes()),
-                    }
+            if stream.ended {
+                // All the client sent is read: its stdin ends, or a frame was cut short.
+                if stream.inbound.is_empty() {
+                    stream.stdin_ends = true;
+                    stream.deliver();
+                } else {
+                    stream.end(io, conn, id, Tag::Refused, b"a frame cut short");
                 }
-                Tag::Join if !stream.asked => {
-                    stream.asked = true;
-                    let mut parts = payload.splitn(2, |b| *b == 0);
-                    let name = String::from_utf8_lossy(parts.next().unwrap_or_default()).into_owned();
-                    let proof = parts.next().unwrap_or_default().to_vec();
-                    let spki = peer.spki.clone();
-                    let joined = io
-                        .export(conn, invite::EXPORTER_LABEL)
-                        .and_then(|exported| self.host.join(&name, &proof, &exported, &spki));
-                    let Some(peer) = self.peers.get_mut(&conn) else {
-                        return;
-                    };
-                    let Some(stream) = peer.streams.get_mut(&id) else {
-                        return;
-                    };
-                    match joined {
-                        Ok(()) => {
-                            peer.client = Some(name);
-                            return stream.end(io, conn, id, Tag::Joined, &[]);
-                        }
-                        Err(_) => return stream.end(io, conn, id, Tag::Refused, NOT_INVITED.as_bytes()),
-                    }
+                break;
+            }
+            match io.read(conn, id) {
+                StreamRead::Bytes(bytes) => stream.inbound.extend_from_slice(&bytes),
+                StreamRead::End(bytes) => {
+                    stream.inbound.extend_from_slice(&bytes);
+                    stream.ended = true;
                 }
-                Tag::Stdin if stream.asked => {
-                    if let Some(stdin) = &stream.stdin {
-                        // Bounded: a command that stops reading its stdin holds its client
-                        // back, by the stream's flow control.
-                        let _ = stdin.send(Some(payload));
-                    }
-                }
-                Tag::StdinEnd if stream.asked => {
-                    if let Some(stdin) = stream.stdin.take() {
-                        let _ = stdin.send(None);
-                    }
-                }
-                other => {
-                    let why = format!("a frame out of place ({other:?})");
-                    return stream.end(io, conn, id, Tag::Refused, why.as_bytes());
+                StreamRead::Blocked => break,
+                StreamRead::Reset => {
+                    stream.gone = true;
+                    break;
                 }
             }
         }
+        self.settle(io, conn, id);
+    }
+
+    /// Acts on the frame at the front of `id`'s bytes, once it has come whole. The request is
+    /// judged by its header, before its bytes are waited for: a client this machine has not
+    /// enrolled may only join, and is waited for no longer than a join takes.
+    fn frame(&mut self, io: &mut Io<'_>, conn: ConnKey, id: StreamId) -> Taken {
+        let Some(peer) = self.peers.get_mut(&conn) else {
+            return Taken::Waiting;
+        };
+        let Some(stream) = peer.streams.get_mut(&id) else {
+            return Taken::Waiting;
+        };
+        if !stream.asked {
+            let refusal = match frame::peek(&stream.inbound) {
+                Ok(None) => return Taken::Waiting,
+                Ok(Some((Tag::Exec, _))) if peer.client.is_none() => NOT_ENROLLED.to_string(),
+                Ok(Some((Tag::Join, len))) if len > invite::JOIN_MAX => NOT_INVITED.to_string(),
+                Ok(Some((Tag::Exec | Tag::Join, _))) => String::new(),
+                Ok(Some((other, _))) => format!("a frame out of place ({other:?})"),
+                Err(e) => e.to_string(),
+            };
+            if !refusal.is_empty() {
+                stream.end(io, conn, id, Tag::Refused, refusal.as_bytes());
+                return Taken::Frame;
+            }
+        }
+        let (tag, payload) = match frame::take(&mut stream.inbound) {
+            Ok(Some(frame)) => frame,
+            Ok(None) => return Taken::Waiting,
+            Err(e) => {
+                stream.end(io, conn, id, Tag::Refused, e.to_string().as_bytes());
+                return Taken::Frame;
+            }
+        };
+        match tag {
+            Tag::Exec if !stream.asked => {
+                stream.asked = true;
+                let Some(client) = peer.client.as_deref() else {
+                    stream.end(io, conn, id, Tag::Refused, NOT_ENROLLED.as_bytes());
+                    return Taken::Frame;
+                };
+                let started = Request::decode(&payload).and_then(|request| self.host.start(client, request));
+                let relayed = match (started, &self.sender) {
+                    (Ok(running), Some(sender)) => relay(running, conn, id, sender),
+                    (Ok(_), None) => Err(Error::new("the daemon's listener is not running")),
+                    (Err(e), _) => Err(e),
+                };
+                match relayed {
+                    Ok((stdin, credits, hangup)) => {
+                        stream.stdin = Some(stdin);
+                        stream.credits = credits;
+                        stream.hangup = Some(hangup);
+                    }
+                    Err(e) => stream.end(io, conn, id, Tag::Refused, e.to_string().as_bytes()),
+                }
+            }
+            Tag::Join if !stream.asked => {
+                stream.asked = true;
+                let mut parts = payload.splitn(2, |b| *b == 0);
+                let name = String::from_utf8_lossy(parts.next().unwrap_or_default()).into_owned();
+                let proof = parts.next().unwrap_or_default();
+                let joined = io
+                    .export(conn, invite::EXPORTER_LABEL)
+                    .and_then(|exported| self.host.join(&name, proof, &exported, &peer.spki));
+                match joined {
+                    Ok(()) => {
+                        peer.client = Some(name);
+                        stream.end(io, conn, id, Tag::Joined, &[]);
+                    }
+                    Err(_) => stream.end(io, conn, id, Tag::Refused, NOT_INVITED.as_bytes()),
+                }
+            }
+            Tag::Stdin if stream.asked => {
+                if stream.stdin.is_some() {
+                    stream.held = Some(payload);
+                }
+            }
+            Tag::StdinEnd if stream.asked => stream.stdin_ends = true,
+            other => {
+                let why = format!("a frame out of place ({other:?})");
+                stream.end(io, conn, id, Tag::Refused, why.as_bytes());
+            }
+        }
+        Taken::Frame
+    }
+
+    /// Lets go of `id` once nothing more goes on it either way: its last frame written whole,
+    /// or its client gone from it, whose command, still running, is hung up.
+    fn settle(&mut self, io: &mut Io<'_>, conn: ConnKey, id: StreamId) {
+        let Some(peer) = self.peers.get_mut(&conn) else {
+            return;
+        };
+        let Some(stream) = peer.streams.get(&id) else {
+            return;
+        };
+        if stream.gone {
+            if stream.running()
+                && let Some(hangup) = &stream.hangup
+            {
+                hangup();
+            }
+            io.reset(conn, id);
+            io.stop(conn, id);
+        } else if !stream.finished {
+            return;
+        }
+        peer.streams.remove(&id);
     }
 }
 
 type Relayed = (
-    mpsc::SyncSender<Option<Vec<u8>>>,
+    mpsc::SyncSender<Vec<u8>>,
     Vec<mpsc::SyncSender<()>>,
     Box<dyn Fn() + Send>,
 );
@@ -256,16 +389,22 @@ fn relay(
             .map(drop)
             .map_err(|e| Error::new(format!("a thread for a client's command: {e}")))
     };
-    let (stdin_tx, stdin_rx) = mpsc::sync_channel::<Option<Vec<u8>>>(4);
+    let (stdin_tx, stdin_rx) = mpsc::sync_channel::<Vec<u8>>(4);
+    let to = sender.try_clone()?;
     spawn(
         "remote-stdin",
         Box::new(move || {
-            while let Ok(Some(bytes)) = stdin_rx.recv() {
+            // The sender dropped: the command reads the end of its input, this one's drop.
+            while let Ok(bytes) = stdin_rx.recv() {
                 if stdin.write_all(&bytes).and_then(|()| stdin.flush()).is_err() {
-                    break;
+                    // The command reads no more of it: what the client sends goes nowhere,
+                    // and the driver, which may wait for room, reads the stream on.
+                    drop(stdin_rx);
+                    let _ = to.send(Command::Handler(Event::InputTaken { conn, stream }));
+                    return;
                 }
+                let _ = to.send(Command::Handler(Event::InputTaken { conn, stream }));
             }
-            // Dropped: the command reads the end of its input.
         }),
     )?;
     let mut credits = Vec::new();
@@ -328,46 +467,37 @@ impl<H: Host> Handler for Server<H> {
         true
     }
 
-    fn readable(&mut self, io: &mut Io<'_>, conn: ConnKey, id: StreamId) {
-        loop {
-            let read = io.read(conn, id);
-            let Some(peer) = self.peers.get_mut(&conn) else {
-                return;
-            };
-            let stream = peer.streams.entry(id).or_default();
-            match read {
-                StreamRead::Bytes(bytes) => stream.inbound.extend_from_slice(&bytes),
-                StreamRead::Blocked => break,
-                StreamRead::End => {
-                    // The client sent all it will: a command that has not had its stdin's
-                    // end reads it now.
-                    if let Some(stdin) = stream.stdin.take() {
-                        let _ = stdin.send(None);
-                    }
-                    break;
-                }
-                StreamRead::Reset => {
-                    if let Some(hangup) = &stream.hangup {
-                        hangup();
-                    }
-                    break;
-                }
-            }
+    fn opened(&mut self, io: &mut Io<'_>, conn: ConnKey, id: StreamId) {
+        if let Some(peer) = self.peers.get_mut(&conn) {
+            peer.streams.insert(id, Stream::default());
+            self.serve(io, conn, id);
         }
-        self.frames(io, conn, id);
+    }
+
+    /// A stream let go is read no more: what its client still sends goes unread.
+    fn readable(&mut self, io: &mut Io<'_>, conn: ConnKey, id: StreamId) {
+        self.serve(io, conn, id);
     }
 
     fn writable(&mut self, io: &mut Io<'_>, conn: ConnKey, id: StreamId) {
-        if let Some(stream) = self.peers.get_mut(&conn).and_then(|p| p.streams.get_mut(&id)) {
+        if let Some(stream) = self.stream(conn, id) {
             stream.flush(io, conn, id);
         }
+        self.settle(io, conn, id);
+    }
+
+    fn stopped(&mut self, io: &mut Io<'_>, conn: ConnKey, id: StreamId) {
+        if let Some(stream) = self.stream(conn, id) {
+            stream.gone = true;
+        }
+        self.settle(io, conn, id);
     }
 
     fn lost(&mut self, _io: &mut Io<'_>, conn: ConnKey, _why: &str) {
         // Its commands lose their terminal.
         if let Some(peer) = self.peers.remove(&conn) {
             for stream in peer.streams.values() {
-                if stream.status.is_none()
+                if stream.running()
                     && let Some(hangup) = &stream.hangup
                 {
                     hangup();
@@ -379,9 +509,13 @@ impl<H: Host> Handler for Server<H> {
     fn command(&mut self, io: &mut Io<'_>, event: Event) {
         let (Event::Output { conn, stream: id, .. }
         | Event::OutputEnd { conn, stream: id, .. }
-        | Event::Exited { conn, stream: id, .. }) = &event;
+        | Event::Exited { conn, stream: id, .. }
+        | Event::InputTaken { conn, stream: id }) = &event;
         let (conn, id) = (*conn, *id);
-        let Some(stream) = self.peers.get_mut(&conn).and_then(|p| p.streams.get_mut(&id)) else {
+        if let Event::InputTaken { .. } = event {
+            return self.serve(io, conn, id);
+        }
+        let Some(stream) = self.stream(conn, id) else {
             return;
         };
         match event {
@@ -393,8 +527,10 @@ impl<H: Host> Handler for Server<H> {
             Event::OutputEnd { tag: Tag::Stdout, .. } => stream.stdout_done = true,
             Event::OutputEnd { .. } => stream.stderr_done = true,
             Event::Exited { status, .. } => stream.status = Some(status),
+            Event::InputTaken { .. } => {}
         }
         stream.exit_when_done(io, conn, id);
+        self.settle(io, conn, id);
     }
 
     fn done(&self) -> bool {

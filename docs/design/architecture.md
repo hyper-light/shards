@@ -3657,10 +3657,12 @@ where a lost packet stalls every byte behind it. shards speaks QUIC (RFC 9000, 9
   pinned by the other: nothing to issue, renew or revoke but a key. A daemon listens only
   when its owner asks (`--listen`), on the address asked, and serves only the clients it
   has enrolled: default deny, as its networks are.
-- **A stream each.** Each request is a QUIC stream, and a run's stdin, stdout and stderr
-  are streams of their own, so a stall in one holds up no other (RFC 9000 §2).
-- **A connection that survives a move.** QUIC connection IDs let a laptop change networks
-  without dropping its attached runs (RFC 9000 §9).
+- **A stream each.** Each command is a QUIC stream of its own, so that a stall in one holds
+  up no other command (RFC 9000 §2): its stdin goes one way, and its stdout and stderr the
+  other, interleaved as it wrote them, each way under flow control of its own.
+- **A connection that may survive a move.** QUIC's connection IDs let a connection outlive
+  a change of network (RFC 9000 §9), which a TCP connection cannot; whether shards' does, a
+  laptop's attached runs with it, is part 5's to measure.
 - **Joining by invitation, as focal's nodes and clients join** (the user's other QUIC
   service, ../focal docs/network-startup.md). On the machine that runs the microVMs,
   `shards invite client --name NAME --output FILE` writes an invitation to a private file,
@@ -3677,7 +3679,7 @@ where a lost packet stalls every byte behind it. shards speaks QUIC (RFC 9000, 9
 **Its surface** (`shards ACTION THING`): `shards create context NAME --invite-file FILE
 [--description TEXT]`, `shards use context NAME`, `shards list contexts`, `shards inspect
 context NAME`, `shards remove context NAME`; on the machine that runs the microVMs, `shards
-start daemon --listen ADDR:PORT`, `shards invite client --name NAME --output FILE`, `shards
+run daemon --listen ADDR:PORT`, `shards invite client --name NAME --output FILE`, `shards
 list invitations`, `shards remove invitation NAME`, `shards list clients`, `shards remove
 client NAME`. `--context`/`-c`, `SHARDS_CONTEXT` and then `DOCKER_CONTEXT` choose a
 context as docker/cli chooses one; Docker's `docker context create|use|ls|inspect|rm|show`
@@ -3748,6 +3750,60 @@ here; `--context`, `SHARDS_CONTEXT` and `use context`; `-it`, `build` and the ow
 `stop daemon` refused; a client removed refused; and the daemon's log. Mutation-checked: the
 child's `SHARDS_CONTEXT` left out (the client's command sent on), invitations that never
 lapse, a join's proof unchecked, and `run`'s flags read by no parser (an `-it` sent on).
+
+**Streams' ends, as CI found them (part 1).** The aarch64 Linux job hung in
+`tests/loopback.rs`, which hung here in 4 runs of 120 at a load average near 39: a client
+read its command's last frames and the stream's end in one read, and lost the end.
+quinn-proto lets a stream go as it gives its end (`Chunks::next` frees it with its last
+`Ok(None)`, hyper-quic `connection/streams/recv.rs`), so that a read after it finds no
+stream (`ClosedStream`), which the driver took for a reset; and the client read again after
+each frame it took, so that the reset was judged before the exit frame it had already read,
+and a command that had exited failed. The end now comes with the bytes it follows
+(`net::Read::End`), and each side takes every whole frame it holds before it reads more.
+Reading the daemon's side for the same fault found four more, each fixed:
+- **A connection's number given again.** The driver put a new connection in the place of
+  one drained, and every connection's first stream is stream 0, so that what a command whose
+  client had gone still wrote, and its exit status, went to the command of the client that
+  connected after it. A connection's number is never given twice (`net::ConnKey`).
+- **A command that read no stdin held up every client.** The daemon gave a command's stdin
+  what its client sent by a blocking send on the driver's one thread, so that a command that
+  read none of it (`yes | shards --context gpu logs -f NAME`) stopped every connection once
+  its pipe and the channel had filled. What stdin has no room for is now held, and that one
+  stream read no further until it has, its flow control holding that client alone back.
+- **A stream's state kept.** A command's stream, and the thread that wrote its stdin, were
+  let go only with their connection, and a stream its client reset or stopped reading
+  (STOP_SENDING) was kept, its command running. A stream is now let go once its last frame
+  is written, or its client leaves it, whose command, still running, is hung up. Once its
+  answer is queued, what its client still sends goes unread, the client asked to stop, as
+  an HTTP/3 server that needs no more of a request's body asks (RFC 9114 §4.1.2), and a side
+  whose peer reads no more of it is reset (RFC 9000 §3.5); a client so asked sends the rest
+  of its stdin nowhere and waits for its answer.
+- **What a stranger sent, held.** quinn-proto's defaults let a peer open 100 streams one way,
+  which the protocol never reads, and a daemon open streams to its client; and the daemon
+  waited for the whole of a frame of up to 4 MiB from a client it had not enrolled, whom TLS
+  lets in to join. Neither side may now open a stream the other would not read (RFC 9000
+  §4.6), and a request is judged by its header: a client not enrolled may only join, and is
+  waited for no longer than a join's 96 bytes (a name's 63, its NUL, HMAC-SHA-256's 32).
+
+And a client that sends a command no stdin sends its end at once, as a command that reads
+it would otherwise wait for good. Tested in `tests/loopback.rs`, each test a daemon of its
+own that stops when the test ends, so that a test that fails fails rather than waits: a
+daemon that writes a command's every frame and its stream's end at once, 20 times; a client
+that finishes its stream with the last of its stdin, the command reading it all and then its
+end; 8 MiB of stdin through `cat`; a command given no stdin, and one that ends without
+reading an endless stdin; a command that reads none of an endless stdin while another
+client's command runs; a daemon that stops a client's stdin at once and answers 200 ms
+later; a connection kept open over two commands, the first's stdin and state let go once
+its exit is sent and its client asked to send no more; a client not enrolled refused by its
+frame's header; a command whose client resets its stream, and one whose client stops
+reading it, hung up and let go; and a command whose client went writing on after the next
+client connected, which hears none of it; and `only_a_clients_two_way_streams_open`. Each
+fix was mutation-checked against its test: the end dropped from the last bytes; a read
+after each frame; a finished stream, a stopped one and a reset one kept; stdin given by a
+blocking send; no judging by the header; a connection's number given again; streams one
+way, or a daemon's, allowed; a stopped stdin failing the command; no end for no stdin; no
+STOP_SENDING at the last frame; the client's end ending no stdin; and room again resuming
+no stream.
 
 ### D179. Other CPUs' images, emulated in their microVM (parts 1 to 3 built)
 

@@ -17,7 +17,7 @@ use hyper_quic::rustls::server::AlwaysResolvesServerRawPublicKeys;
 use hyper_quic::rustls::server::danger::{ClientCertVerified, ClientCertVerifier};
 use hyper_quic::rustls::sign::CertifiedKey;
 use hyper_quic::rustls::{self, CertificateError, DigitallySignedStruct, DistinguishedName, SignatureScheme};
-use hyper_quic::{ClientConfig, IdleTimeout, ServerConfig, TransportConfig};
+use hyper_quic::{ClientConfig, IdleTimeout, ServerConfig, TransportConfig, VarInt};
 
 use crate::Error;
 use crate::identity::{self, Fingerprint, Identity};
@@ -49,11 +49,20 @@ fn certified(identity: &Identity) -> Result<CertifiedKey, Error> {
     ))
 }
 
-fn transport() -> Result<TransportConfig, Error> {
+/// The transport both sides run: idle after [`IDLE`], kept alive four times within it, and only
+/// the streams the protocol has, bidirectional ones a client opens, a command or a join each.
+/// A peer may open no stream the other would not read (RFC 9000 §4.6), whose bytes its side
+/// would hold: none one way, and none of a client's. A daemon's clients may have quinn-proto's
+/// 100 open at once.
+fn transport(serves: bool) -> Result<TransportConfig, Error> {
     let mut transport = TransportConfig::default();
     let idle = IdleTimeout::try_from(IDLE).map_err(|_| Error::new("an idle bound QUIC cannot carry"))?;
     transport.max_idle_timeout(Some(idle));
     transport.keep_alive_interval(Some(IDLE / 4));
+    transport.max_concurrent_uni_streams(VarInt::from_u32(0));
+    if !serves {
+        transport.max_concurrent_bidi_streams(VarInt::from_u32(0));
+    }
     Ok(transport)
 }
 
@@ -83,7 +92,7 @@ pub fn server(identity: &Identity) -> Result<ServerConfig, Error> {
     tls.max_early_data_size = 0;
     let crypto = QuicServerConfig::try_from(tls).map_err(|e| Error::new(format!("QUIC's TLS: {e}")))?;
     let mut config = ServerConfig::with_crypto(Box::new(crypto));
-    config.transport_config(transport()?);
+    config.transport_config(transport(true)?);
     Ok(config)
 }
 
@@ -100,7 +109,7 @@ pub fn client(identity: &Identity, daemon: Fingerprint) -> Result<ClientConfig, 
     tls.enable_early_data = false;
     let crypto = QuicClientConfig::try_from(tls).map_err(|e| Error::new(format!("QUIC's TLS: {e}")))?;
     let mut config = ClientConfig::new(Box::new(crypto));
-    config.transport_config(transport()?);
+    config.transport_config(transport(false)?);
     Ok(config)
 }
 

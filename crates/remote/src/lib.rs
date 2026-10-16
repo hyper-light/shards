@@ -196,6 +196,20 @@ mod handshake {
         let _ = StreamEvent::Opened { dir: Dir::Bi };
     }
 
+    /// Only the streams the protocol has open: a client's, both ways. Neither side may open
+    /// a stream one way, nor the daemon a stream to its client, whose bytes would go unread.
+    #[test]
+    fn only_a_clients_two_way_streams_open() {
+        let (mut server, mut client, _, _) = pair(true);
+        assert!(client.connected && server.connected);
+        let (_, sconn) = server.connection.as_mut().unwrap();
+        assert!(sconn.streams().open(Dir::Uni).is_none());
+        assert!(sconn.streams().open(Dir::Bi).is_none());
+        let (_, cconn) = client.connection.as_mut().unwrap();
+        assert!(cconn.streams().open(Dir::Uni).is_none());
+        assert!(cconn.streams().open(Dir::Bi).is_some());
+    }
+
     /// A daemon whose key is not the one pinned is refused at the handshake.
     #[test]
     fn a_daemon_not_pinned_is_refused() {
