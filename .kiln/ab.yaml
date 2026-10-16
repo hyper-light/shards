@@ -1,0 +1,61 @@
+# Diagnostic (branch kvm-ws-ab, temporary), from .github/workflows/ab.yml: pooled runs with and
+# without the template's working set, paired on one host (docs/research/measurements/build-ab/
+# ab.py). GHA's five legs sampled five hosted runners; here they are five repetitions on the one
+# bench host, each exclusive.
+name: ab
+on:
+  push: { branches: [kvm-ws-ab] }
+  manual: true
+env:
+  CARGO_TERM_COLOR: always
+  TOOLCHAIN: "1.98.0"
+jobs:
+  ab:
+    runs-on: [baremetal, bench]
+    exclusive: true
+    matrix: { runner: [1, 2, 3, 4, 5] }
+    timeout-minutes: 60
+    steps:
+      - name: Install pinned Rust
+        run: rustup toolchain install "$TOOLCHAIN" --profile minimal --target x86_64-unknown-linux-musl
+      # GHA runs `sudo chmod 666 /dev/kvm`; this host's /dev/kvm is already open to the agent.
+      - name: KVM access
+        run: ls -l /dev/kvm && test -r /dev/kvm && test -w /dev/kvm
+      - name: Host
+        run: |
+          nproc && free -m && lscpu | grep -E 'Model name|Virtualization|Hypervisor'
+          uname -r
+      - name: The build, and the kernel and guest init the tests use
+        run: |
+          cargo build --locked --release -p shards
+          cargo bench --locked -p shards --bench image -- --runs 1 --templates 1
+      # GHA's $RUNNER_TEMP is the job's TMPDIR here.
+      - name: With and without the working set, paired
+        run: |
+          set -eu
+          kernel=$(ls target/artifacts/vmlinux-6.18.48-x86_64* | head -1)
+          init=target/guest/x86_64-unknown-linux-musl/guest/shards-init
+          ab=$TMPDIR/ab
+          for arm in old new; do
+            mkdir -p $ab/$arm
+            cp target/release/shards target/release/shardsd $ab/$arm/
+          done
+          home=$ab/new/home
+          SHARDS_HOME=$home $ab/new/shards pull -q alpine
+          SHARDS_HOME=$home $ab/new/shards guest use --kernel $kernel --init $init
+          # The first run saves the template; the second, the first warm restore, records
+          # its working set once it has answered.
+          SHARDS_HOME=$home $ab/new/shards run --pull never alpine true
+          SHARDS_HOME=$home $ab/new/shards run --pull never alpine true
+          for i in $(seq 100); do ls $home/templates/*/working-set >/dev/null 2>&1 && break; sleep 0.1; done
+          SHARDS_HOME=$home $ab/new/shards daemon stop
+          ls -l $home/templates/*/
+          # The same template and working set in both homes; the arms differ by what a
+          # restore does with it.
+          cp -a $home $ab/old/home
+          for pause in 0.01 0.5; do
+            for old in none copy; do
+              echo "=== pause $pause; old: SHARDS_KVM_PREFETCH=$old, new: full"
+              AB_PAUSE=$pause ENV_OLD="SHARDS_KVM_PREFETCH=$old" python3 docs/research/measurements/build-ab/ab.py $ab/old $ab/new alpine 100 true
+            done
+          done
