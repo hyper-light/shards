@@ -360,6 +360,29 @@ pub fn main() -> ! {
                 std::thread::sleep(every);
             }
         }
+        // A counter written to file `arg(1)` as it grows, a line every `arg(2)` ms, each line
+        // synced, through one descriptor opened once in the file's directory, which it works
+        // in, and printed: a volume's file and directory a saved microVM holds, which a
+        // restore of it goes on writing through (D176).
+        "appender" => appender(arg(1), arg(2).parse().unwrap_or(100)),
+        // File `arg(1)` made, held open, and its name removed, then a sleep: a file a guest
+        // holds that no path reaches (D176).
+        "unlinked-held" => {
+            let held = std::fs::File::create(arg(1)).and_then(|f| std::fs::remove_file(arg(1)).map(|()| f));
+            match held {
+                Ok(_held) => {
+                    let _ = writeln!(io::stdout(), "ready");
+                    loop {
+                        // SAFETY: blocks until a signal arrives.
+                        unsafe { libc::pause() };
+                    }
+                }
+                Err(e) => {
+                    let _ = writeln!(io::stderr(), "{}: {e}", arg(1));
+                    1
+                }
+            }
+        }
         "sleep" => {
             let _ = writeln!(io::stdout(), "ready");
             loop {
@@ -4713,6 +4736,38 @@ fn walk(mib: usize, steps: u64) -> i32 {
 
 /// `swap-kept MIB`: MIB MiB of a pattern of its own, then each round reads all of it back
 /// (`main`).
+/// `appender`'s: see its words.
+fn appender(path: &str, ms: u64) -> i32 {
+    let path = std::path::Path::new(path);
+    let opened = path
+        .parent()
+        .map_or(Ok(()), std::env::set_current_dir)
+        .and_then(|()| {
+            std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path.file_name().unwrap_or_default())
+        });
+    let mut file = match opened {
+        Ok(file) => file,
+        Err(e) => {
+            let _ = writeln!(io::stderr(), "{}: {e}", path.display());
+            return 1;
+        }
+    };
+    let _ = writeln!(io::stdout(), "ready");
+    let mut n = 0u64;
+    loop {
+        n += 1;
+        if let Err(e) = writeln!(file, "{n}").and_then(|()| file.sync_data()) {
+            let _ = writeln!(io::stderr(), "{n}: {e}");
+            return 1;
+        }
+        let _ = writeln!(io::stdout(), "{n}");
+        std::thread::sleep(std::time::Duration::from_millis(ms));
+    }
+}
+
 fn swap_kept(mib: usize) -> i32 {
     let byte = |i: usize| (i.wrapping_mul(2_654_435_761) >> 13) as u8;
     let held: Vec<Vec<u8>> = (0..mib)

@@ -214,27 +214,31 @@ fn a_save_refused_leaves_the_microvm_running_and_nothing_behind() {
         return;
     }
     let shards = |args: &[&str]| shards_in(&home, args);
+    // A file it holds open in its volume, whose last name it removed, no path reaches, and
+    // no restore could open (D176).
     let (mut client, mut counts, _) = start(
         &home,
         &image,
-        &["--name", "mounted", "-v", "kept:/kept"],
-        &["counter", "20"],
+        &["--name", "mounted", "-u", "0", "-v", "kept:/kept"],
+        &["unlinked-held", "/kept/held"],
     );
     let refused = shards(&["save", "vm", "mounted", "first"]);
     assert_eq!(refused.status, Some(1), "{refused}");
     assert!(
-        refused.stderr.contains("a volume is mounted in the microVM"),
+        refused
+            .stderr
+            .contains("a file the microVM has open was removed from its volume"),
         "{refused}"
     );
-    let before = next_count(&mut counts);
-    assert_eq!(next_count(&mut counts), before + 1);
     let snapshots = home
         .join("containers")
         .join(id_of(&home, "mounted"))
         .join("snapshots");
     let left: Vec<_> = std::fs::read_dir(&snapshots).unwrap().collect();
     assert!(left.is_empty(), "{left:?}");
-    let _ = shards(&["kill", "mounted"]);
+    // It goes on, and is stopped as ever.
+    let _ = &mut counts;
+    assert_eq!(shards(&["kill", "mounted"]).status, Some(0));
     let _ = exit(&mut client);
     // On the host's network its guest's sockets are the host's, which no snapshot keeps.
     let run = shards(&[
@@ -315,6 +319,58 @@ fn a_save_refused_leaves_the_microvm_running_and_nothing_behind() {
         "{joined}"
     );
     assert_eq!(shards(&["rm", "-f", "provider"]).status, Some(0));
+}
+
+/// A microVM with a volume mounted is saved and restored with it (D176 part 5): the file
+/// it holds open in the volume, in the volume's directory it works in, it writes on
+/// through, its share's server given the tables of the one that served it; the volume holds
+/// every count once, up to the save and on from it.
+#[test]
+fn a_saved_microvm_writes_on_through_its_volume() {
+    let Some((home, image)) = home("saved-volume") else {
+        return;
+    };
+    if cannot_snapshot() {
+        return;
+    }
+    let shards = |args: &[&str]| shards_in(&home, args);
+    let run = shards(&[
+        "run",
+        "-d",
+        "--pull",
+        "never",
+        "--name",
+        "vol",
+        "-u",
+        "0",
+        "-v",
+        "kept:/kept",
+        &image,
+        "appender",
+        "/kept/counts",
+        "20",
+    ]);
+    assert_eq!(run.status, Some(0), "{run}");
+    let file = home.join("volumes/kept/_data/counts");
+    let written = || -> Vec<u64> {
+        std::fs::read_to_string(&file)
+            .unwrap_or_default()
+            .lines()
+            .map(|l| l.parse().unwrap())
+            .collect()
+    };
+    let log = || logs(&home, "vol");
+    until("appending", &mut || written().len() >= 10, &log);
+    let saved = shards(&["save", "vm", "vol", "first"]);
+    assert_eq!(saved.stdout, "first\n", "{saved}");
+    let at_save = written().len();
+    let restored = shards(&["restore", "vm", "vol", "first"]);
+    assert_eq!(restored.status, Some(0), "{restored}");
+    until("appending on", &mut || written().len() >= at_save + 10, &log);
+    let counts = written();
+    let wanted: Vec<u64> = (1..=counts.len() as u64).collect();
+    assert_eq!(counts, wanted, "each count once, in order: {}", log());
+    assert_eq!(shards(&["rm", "-f", "vol"]).status, Some(0));
 }
 
 /// `shards logs NAME`'s stdout.

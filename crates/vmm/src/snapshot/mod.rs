@@ -71,12 +71,14 @@ const MAGIC: [u8; 8] = *b"SHRDSNAP";
 ///     snapshot of a run keeps beside it (D176).
 /// 19: a join disk's state keeps its ranges, each let go, so that a microVM containers
 ///     joined is saved once they end (D176).
-const VERSION: u32 = 19;
+/// 20: a share's state keeps its server's tables, so that a microVM with a volume mounted
+///     is saved (D176).
+const VERSION: u32 = 20;
 /// The snapshot format this build writes and reads: what a snapshot kept for reuse is
 /// keyed by.
 pub const FORMAT: u32 = VERSION;
 /// A state file is kilobytes; anything past this is not one of ours.
-const MAX_STATE: u64 = 64 << 20;
+pub(crate) const MAX_STATE: u64 = 64 << 20;
 const MAX_DISKS: usize = 64;
 /// The most runs of plugged memory a state holds: one for every other 2 MiB block of 1
 /// TiB to plug.
