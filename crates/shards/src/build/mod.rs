@@ -35,7 +35,7 @@ use shards_registry::pull::{self as registry_pull, Event};
 
 mod attest;
 mod azblob;
-mod builder;
+pub(crate) mod builder;
 mod cache;
 pub(crate) mod cdi;
 mod compress;
@@ -58,8 +58,8 @@ mod remote;
 mod s3;
 pub(crate) mod sbom;
 pub(crate) mod skills;
-mod ssh;
-mod sshkey;
+pub(crate) mod ssh;
+pub(crate) mod sshkey;
 
 /// The SSH agents `--ssh` gives a build's steps, by id: sockets forwarded, or keys served.
 pub(crate) type Agents = BTreeMap<String, buildflags::Agent<sshkey::Key>>;

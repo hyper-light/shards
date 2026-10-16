@@ -1103,12 +1103,12 @@ impl Builder {
 }
 
 /// The longest message an SSH agent takes or sends (OpenSSH's AGENT_MAX_MSGLEN).
-const AGENT_MAX: usize = 256 * 1024;
+pub(crate) const AGENT_MAX: usize = 256 * 1024;
 
 /// What a step may ask of an agent, as BuildKit's read-only agent lets it
 /// (sshprovider readOnlyAgent): its keys, signatures, and unlocking; adding, removing or
 /// locking keys and extensions are refused.
-const AGENT_ALLOWED: [u8; 3] = [11, 13, 23];
+pub(crate) const AGENT_ALLOWED: [u8; 3] = [11, 13, 23];
 
 /// Takes a step's relayed agent connections until `woken` says the step has ended (its
 /// other end closed), each on a thread of `scope`.

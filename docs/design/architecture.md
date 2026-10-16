@@ -4072,9 +4072,9 @@ would have read the machine's directory. Now (crate::synced):
   go with it, those alone.
 - A client removed takes the copies of its contexts with it.
 
-What a build names of the client's otherwise is refused until it is carried (its secrets
-are, part 3e; its outputs, `--iidfile` and `--metadata-file`, part 3f; its named contexts,
-local caches and policies' files, part 3g): `--ssh`. Not yet: the client's terminal for the build's live
+What a build names of the client's otherwise crosses too: its secrets (part 3e); its
+outputs, `--iidfile` and `--metadata-file` (part 3f); its named contexts, local caches and
+policies' files (part 3g); its SSH agents (part 3h). Not yet: the client's terminal for the build's live
 display (a build over a context prints its plain progress); extended attributes (go-archive's
 archives carry `security.capability` alone). A new name of a file the copy holds, unchanged,
 goes as a link to the copy's file (part 3d's), no byte of it again, where it went as a file
@@ -4094,6 +4094,35 @@ untouched), and unit tests of the plan and of a copy's key. Mutation-checked: th
 applied, everything sent each time, the ignore file not applied here, what went not
 removed, a change's directories not set again, the build file not the copy's, a base's
 login not sent, a build arg named alone the machine's.
+
+**Part 3h, built: a build's SSH agents through a context, the client's.** A step there that
+clones a private repository over SSH (`RUN --mount=type=ssh`) signs with the laptop's keys,
+which never leave it.
+- **A socket there for each agent the build names, its connections relayed here.** The
+  client resolves `--ssh` as a build here does (`buildflags::ssh_agents`: an agent's socket,
+  `SSH_AUTH_SOCK`'s by default, or the keys of files, as BuildKit's keyring holds them); the
+  machine gives the build a socket of its own for each id, in the home, its own user's
+  alone; and each connection a step's builder makes to it is held, told to the client on
+  the build's stdout with a token (the frame `AGENT`), and relayed once the client claims
+  it by that token (the step `agent`), to the client's agent, or answered from its keys as
+  the keyring answers. A connection no client claimed goes with the build, as do the
+  sockets.
+- **Read-only, there and here.** The builder relays only what BuildKit's read-only agent
+  answers (keys, signatures, unlocking; D51); the client refuses anything else itself,
+  whatever a machine lets by, so that no machine, its builds' steps or itself, has the
+  client's agent forget, add or lock a key. What it can ask is what agent forwarding asks:
+  signatures, for as long as the build runs.
+- A connection a relay each, its own QUIC connection, a handshake each: a step's agent
+  connections are a few, where its signatures are what take the time.
+
+Tested in `tests/context.rs` (`a_builds_ssh_agents_through_a_context_are_the_clients`,
+against a real `ssh-agent` holding a key `ssh-keygen` made: the step there lists the key and
+has it sign, and is refused its removal; the agent keeps its key; a key file answered here,
+its comment dropped as x/crypto drops it; none of the client's paths in what the machine was
+asked), and in context.rs's unit tests (`a_relayed_agent_answers_only_what_a_read_only_agent_does`:
+a request to forget every key refused here, never reaching an agent that would do it).
+Mutation-checked: the client's agent unfiltered, its own `--ssh` words sent too, a step's
+agent connection not told, not relayed.
 
 **Part 3g, built: the rest of what a build names of the client's.** A build reads more of the
 client's than its context: a named context's directory (`--build-context NAME=DIR`) or an

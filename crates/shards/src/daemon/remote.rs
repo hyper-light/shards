@@ -18,6 +18,17 @@ use shards_remote::{Error, identity, invite};
 pub(super) struct Machine {
     pub home: PathBuf,
     pub exe: PathBuf,
+    /// The connections builds' steps made to the SSH agents their clients name, by client and
+    /// token, until the client claims each (`agent_step`).
+    pub agents:
+        Arc<std::sync::Mutex<std::collections::HashMap<(String, String), std::os::unix::net::UnixStream>>>,
+}
+
+/// `n` random bytes, as hex.
+fn token(n: usize) -> Result<String, String> {
+    let mut bytes = vec![0u8; n];
+    shards_net::entropy(&mut bytes).map_err(|e| format!("a token: {e}"))?;
+    Ok(bytes.iter().map(|b| format!("{b:02x}")).collect())
 }
 
 /// Why a client may not run `args` here: a context's own commands, the daemon's, and what the
@@ -301,6 +312,34 @@ impl Machine {
         })
     }
 
+    /// A step's connection to an SSH agent its client's build names, which the client claims
+    /// by its token: what the step asks the client's to answer, there, the end of each's
+    /// writing the other's end of reading.
+    fn agent_step(&self, client: &str, token: &str) -> Result<Running, Error> {
+        let taken = self
+            .agents
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&(client.to_string(), token.to_string()));
+        let conn = taken.ok_or_else(|| Error::new(format!("{token}: no step's connection to an agent")))?;
+        let reached = |e: std::io::Error| Error::new(format!("a step's connection to an agent: {e}"));
+        let (asking, hung) = (
+            conn.try_clone().map_err(reached)?,
+            conn.try_clone().map_err(reached)?,
+        );
+        Ok(Running {
+            stdin: Box::new(HalfClosed(asking)),
+            stdout: Box::new(conn),
+            stderr: Box::new(std::io::empty()),
+            wait: Box::new(|| 0),
+            hangup: Box::new(move || {
+                let _ = hung.shutdown(std::net::Shutdown::Both);
+            }),
+            resize: None,
+            signal: Box::new(|_| {}),
+        })
+    }
+
     /// A step of a client's build context (crate::synced, D180 part 3c), kept in a copy of
     /// the client's own under this home, one step at a time under the copy's lock:
     /// `manifest`, what the copy holds; `build`, the build file's directory and the layer of
@@ -314,6 +353,9 @@ impl Machine {
     ) -> Result<Running, Error> {
         let step = args.get(1).cloned().unwrap_or_default();
         let key = args.get(2).cloned().unwrap_or_default();
+        if step == "agent" {
+            return self.agent_step(client, args.get(3).map(String::as_str).unwrap_or_default());
+        }
         let copy = crate::synced::copy_of(&self.home, client, &key).map_err(Error::new)?;
         let copies = self.home.join("synced").join(client);
         // The client's own paths, which what the command prints says in place of its copy's.
@@ -337,6 +379,7 @@ impl Machine {
         let (done, status) = std::sync::mpsc::channel();
         let building = Arc::new(Building::default());
         let (exe, env) = (self.exe.clone(), self.command_env(env));
+        let registry = Arc::clone(&self.agents);
         let ours = Arc::clone(&building);
         let whose = client.to_string();
         std::thread::Builder::new()
@@ -377,6 +420,25 @@ impl Machine {
                             let _ = std::fs::remove_dir_all(&outputs);
                             std::fs::create_dir_all(&outputs)
                                 .map_err(|e| format!("{}: {e}", outputs.display()))?;
+                            // The SSH agents the build names: a socket here for each, which its
+                            // steps reach, each connection one the client claims and relays to
+                            // its own agent of that id.
+                            let mut agent_sockets = std::collections::BTreeMap::new();
+                            let mut listening = Vec::new();
+                            for word in words {
+                                let Some((_, id)) = word.split_once(crate::synced::AGENT_SOCKET) else {
+                                    continue;
+                                };
+                                let dir = std::path::Path::new("a");
+                                shards_vmm::platform::create_private_dir(dir)
+                                    .map_err(|e| format!("{}: {e}", dir.display()))?;
+                                let path = dir.join(format!("{}.sock", token(8)?));
+                                let listener = std::os::unix::net::UnixListener::bind(&path)
+                                    .and_then(|l| l.set_nonblocking(true).map(|()| l))
+                                    .map_err(|e| format!("{}: {e}", path.display()))?;
+                                agent_sockets.insert(id.to_string(), path.clone());
+                                listening.push((id.to_string(), listener, path));
+                            }
                             let argv: Vec<OsString> = words
                                 .iter()
                                 .map(|a| {
@@ -385,6 +447,7 @@ impl Machine {
                                         dockerfile: &dockerfile,
                                         out: &outputs,
                                         copies: &copies,
+                                        agents: &agent_sockets,
                                     };
                                     crate::synced::placed(a, &places)
                                 })
@@ -419,14 +482,29 @@ impl Machine {
                             // through, its outputs.
                             let (said_r, said_w) =
                                 std::io::pipe().map_err(|e| format!("a pipe for the build's output: {e}"))?;
+                            let (stop_r, stop_w) =
+                                std::io::pipe().map_err(|e| format!("a pipe for the build's agents: {e}"))?;
+                            let mut claimable = Vec::new();
+                            let framed = crate::synced::Framed::new(&mut out_w);
                             let status = std::thread::scope(|scope| -> Result<i32, String> {
-                                let out = &mut out_w;
+                                let framed = &framed;
                                 let saying = std::thread::Builder::new()
                                     .name("context-said".into())
-                                    .spawn_scoped(scope, move || crate::synced::say(said_r, out))
+                                    .spawn_scoped(scope, move || crate::synced::say(said_r, framed))
                                     .map_err(|e| format!("a thread for the build's output: {e}"))?;
+                                let (listening, stop_r, registry, whose) =
+                                    (&listening, &stop_r, &registry, &whose);
+                                let serving = std::thread::Builder::new()
+                                    .name("context-agents".into())
+                                    .spawn_scoped(scope, move || {
+                                        serve_agents(listening, stop_r, framed, whose, registry)
+                                    })
+                                    .map_err(|e| format!("a thread for the build's agents: {e}"))?;
                                 let ran = ours.run(&exe, &argv, &env, &said_w, &err_w, &fds);
-                                drop(said_w);
+                                drop((said_w, stop_w));
+                                claimable = serving
+                                    .join()
+                                    .map_err(|_| "the build's agents' thread ended".to_string())?;
                                 let said = saying
                                     .join()
                                     .map_err(|_| "the build's output's thread ended".to_string())?;
@@ -434,8 +512,21 @@ impl Machine {
                                 said.map_err(|e| format!("the build's output: {e}"))?;
                                 Ok(status)
                             })?;
+                            let out = framed.into_inner();
+                            // The connections no client claimed, and the sockets, go with the
+                            // build.
+                            {
+                                let mut held =
+                                    registry.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                                for t in claimable {
+                                    held.remove(&(whose.clone(), t));
+                                }
+                            }
+                            for (_, _, path) in &listening {
+                                let _ = std::fs::remove_file(path);
+                            }
                             if status == 0 {
-                                crate::synced::send_outputs(&outputs, &mut out_w)?;
+                                crate::synced::send_outputs(&outputs, out)?;
                             }
                             let _ = std::fs::remove_dir_all(&outputs);
                             status
@@ -583,6 +674,58 @@ impl Building {
     }
 }
 
+/// Takes the connections a build's steps make to the agents' sockets `listening`, until
+/// `stop` ends: each held for `client` to claim by a token, which `framed` tells it, with the
+/// agent's id. The tokens told.
+fn serve_agents<W: Write>(
+    listening: &[(String, std::os::unix::net::UnixListener, PathBuf)],
+    stop: &std::io::PipeReader,
+    framed: &crate::synced::Framed<W>,
+    client: &str,
+    registry: &std::sync::Mutex<std::collections::HashMap<(String, String), std::os::unix::net::UnixStream>>,
+) -> Vec<String> {
+    let mut told = Vec::new();
+    loop {
+        let mut polled: Vec<libc::pollfd> = std::iter::once(stop.as_raw_fd())
+            .chain(listening.iter().map(|(_, l, _)| l.as_raw_fd()))
+            .map(|fd| libc::pollfd {
+                fd,
+                events: libc::POLLIN,
+                revents: 0,
+            })
+            .collect();
+        let n = libc::nfds_t::try_from(polled.len()).unwrap_or(libc::nfds_t::MAX);
+        // SAFETY: poll(2) on pollfds of descriptors the caller holds open, `n` of them.
+        if unsafe { libc::poll(polled.as_mut_ptr(), n, -1) } < 0 {
+            if std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted {
+                continue;
+            }
+            return told;
+        }
+        if polled.first().is_some_and(|p| p.revents != 0) {
+            return told;
+        }
+        for ((id, listener, _), p) in listening.iter().zip(polled.iter().skip(1)) {
+            if p.revents == 0 {
+                continue;
+            }
+            while let Ok((conn, _)) = listener.accept() {
+                let Ok(t) = token(16)
+                    .and_then(|t| conn.set_nonblocking(false).map(|()| t).map_err(|e| e.to_string()))
+                else {
+                    continue;
+                };
+                registry
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .insert((client.to_string(), t.clone()), conn);
+                let _ = framed.frame(crate::synced::AGENT, format!("{id}\0{t}").as_bytes());
+                told.push(t);
+            }
+        }
+    }
+}
+
 /// `argv` asked of this daemon as its CLI asks it (cli/client.rs `ask`), with `fds`: over its
 /// socket, which the daemon's working directory, its home, holds; its status, and what it
 /// said on stdout and stderr.
@@ -700,6 +843,7 @@ pub(super) fn listen(
     let machine = Machine {
         home: home.clone(),
         exe,
+        agents: Arc::default(),
     };
     std::thread::Builder::new()
         .name("remote".into())

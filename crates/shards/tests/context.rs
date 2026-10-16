@@ -1325,13 +1325,18 @@ fn a_context_runs_commands_on_its_machine_whole() {
             .contains("-it: stdin is not a terminal, so it cannot be the command's"),
         "{terminal}"
     );
-    let build = run_shards_env(&["build"], &["--ssh", "default", "."], &on_laptop, TIMEOUT);
-    assert_eq!(build.status, Some(125), "{build}");
+    let cidfile = run_shards_env(
+        &["run"],
+        &["--cidfile", "id", image.as_str()],
+        &on_laptop,
+        TIMEOUT,
+    );
+    assert_eq!(cidfile.status, Some(125), "{cidfile}");
     assert!(
-        build
+        cidfile
             .stderr
-            .contains("build --ssh over a context names this machine's files"),
-        "{build}"
+            .contains("a file of this machine's, which a context does not carry yet"),
+        "{cidfile}"
     );
     // A build of a context with no build file is the build's to refuse, in its words.
     let empty = laptop.join("empty");
@@ -1812,6 +1817,117 @@ fn what_a_build_names_of_the_clients_is_carried_through_a_context() {
     // None of this client's paths crossed.
     let log = std::fs::read_to_string(machine.join("daemon.log")).unwrap();
     for here in [&other, &cache, &layout, &policy] {
+        assert!(
+            !log.contains(here.to_str().unwrap()),
+            "{} in what the machine was asked",
+            here.display()
+        );
+    }
+}
+
+/// A build's SSH agents through a context are the client's (D180): a step there lists the
+/// key of the client's agent and has it sign, and is refused its removal, read-only there
+/// and here; the agent keeps its key; a key file of the client's is answered here, as
+/// BuildKit's keyring answers; and no path of the client's agent crosses.
+#[test]
+fn a_builds_ssh_agents_through_a_context_are_the_clients() {
+    let Some((machine, _listening, laptop, image)) = joined("ctx-ssh") else {
+        return;
+    };
+    let tools = ["ssh-agent", "ssh-keygen", "ssh-add"];
+    if tools
+        .iter()
+        .any(|t| std::process::Command::new(t).arg("-h").output().is_err())
+    {
+        eprintln!("SKIP: no OpenSSH tools on this host");
+        return;
+    }
+    let sock = laptop.join("agent.sock");
+    let mut agent = std::process::Command::new("ssh-agent")
+        .args(["-D", "-a"])
+        .arg(&sock)
+        .stdout(Stdio::null())
+        .spawn()
+        .unwrap();
+    struct Ended<'a>(&'a mut std::process::Child);
+    impl Drop for Ended<'_> {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+    let _agent = Ended(&mut agent);
+    for _ in 0..100 {
+        if sock.exists() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let key = laptop.join("id");
+    let made = std::process::Command::new("ssh-keygen")
+        .args(["-q", "-t", "ed25519", "-N", "", "-C", "shards-test-key", "-f"])
+        .arg(&key)
+        .output()
+        .unwrap();
+    assert!(made.status.success(), "{}", String::from_utf8_lossy(&made.stderr));
+    let added = std::process::Command::new("ssh-add")
+        .arg(&key)
+        .env("SSH_AUTH_SOCK", &sock)
+        .output()
+        .unwrap();
+    assert!(
+        added.status.success(),
+        "{}",
+        String::from_utf8_lossy(&added.stderr)
+    );
+    let app = laptop.join("app");
+    std::fs::create_dir_all(&app).unwrap();
+    std::fs::write(
+        app.join("Dockerfile"),
+        format!("FROM {image}\nUSER root\nRUN --mount=type=ssh [\"/bin/testguest\", \"agent\"]\n"),
+    )
+    .unwrap();
+    let on_laptop = [
+        ("SHARDS_HOME", laptop.as_os_str()),
+        ("SSH_AUTH_SOCK", sock.as_os_str()),
+    ];
+    let build = |ssh: &str| {
+        run_shards_env(
+            &["--context", "gpu", "build"],
+            &[
+                "--progress=plain",
+                "--no-cache",
+                "--ssh",
+                ssh,
+                app.to_str().unwrap(),
+            ],
+            &on_laptop,
+            TIMEOUT,
+        )
+    };
+    let built = build("default");
+    assert_eq!(built.status, Some(0), "{built}");
+    for line in [
+        " agent keys 1 shards-test-key\n",
+        " agent signed\n",
+        " agent remove refused\n",
+    ] {
+        assert!(built.stderr.contains(line), "{line:?}\n{built}");
+    }
+    let listed = std::process::Command::new("ssh-add")
+        .arg("-l")
+        .env("SSH_AUTH_SOCK", &sock)
+        .output()
+        .unwrap();
+    assert!(String::from_utf8_lossy(&listed.stdout).contains("shards-test-key"));
+    // The key file itself, answered here: the key without its comment, as x/crypto drops it.
+    let from_file = build(&format!("default={}", key.display()));
+    assert_eq!(from_file.status, Some(0), "{from_file}");
+    for line in [" agent keys 1 \n", " agent signed\n", " agent remove refused\n"] {
+        assert!(from_file.stderr.contains(line), "{line:?}\n{from_file}");
+    }
+    let log = std::fs::read_to_string(machine.join("daemon.log")).unwrap();
+    for here in [&sock, &key] {
         assert!(
             !log.contains(here.to_str().unwrap()),
             "{} in what the machine was asked",
