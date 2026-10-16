@@ -617,51 +617,10 @@ fn not_carried(args: &[OsString]) -> Option<String> {
     files.then(|| format!("{path}: a file of this machine's, which a context does not carry yet"))
 }
 
-/// What a build over a context names of this client's that a context does not carry yet
-/// (part 3c): a secret, which buildx reads here, from a file or a variable; an SSH agent or
-/// key; an output, cache or named context of a file or directory here; the files
-/// `--iidfile` and `--metadata-file` name; and a policy's file.
+/// What a build over a context names of this client's that a context does not carry yet:
+/// an SSH agent or key, which a step there would reach here.
 fn build_not_carried(parsed: &shards_cmdline::flags::Parsed) -> Option<&'static str> {
-    let named_here = |v: &str| {
-        let fields: Vec<&str> = v.split(',').collect();
-        let local = fields.contains(&"type=local");
-        let dest = fields
-            .iter()
-            .find_map(|f| f.strip_prefix("dest=").or_else(|| f.strip_prefix("src=")));
-        local || dest.is_some_and(|d| d != "-") || (!v.contains('=') && v != "-")
-    };
-    let remote_context = |v: &str| {
-        let value = v.split_once('=').map_or(v, |(_, value)| value);
-        value.starts_with("docker-image://")
-            || value.starts_with("target:")
-            || value.starts_with("http://")
-            || value.starts_with("https://")
-            || !matches!(
-                shards_agentfile::git::parse_git_ref(value.as_bytes()),
-                shards_agentfile::git::Parsed::NotGit
-            )
-    };
-    if !parsed.many("ssh").is_empty() {
-        Some("--ssh")
-    } else if parsed
-        .many("cache-from")
-        .iter()
-        .any(|v| named_here(v) && v.contains('='))
-    {
-        Some("--cache-from")
-    } else if parsed
-        .many("cache-to")
-        .iter()
-        .any(|v| named_here(v) && v.contains('='))
-    {
-        Some("--cache-to")
-    } else if parsed.many("build-context").iter().any(|v| !remote_context(v)) {
-        Some("--build-context")
-    } else if parsed.many("policy").iter().any(|v| v.contains("filename=")) {
-        Some("--policy")
-    } else {
-        None
-    }
+    (!parsed.many("ssh").is_empty()).then_some("--ssh")
 }
 
 /// A build of a context of this client's (D180 part 3c): what the machine builds, of its copy
@@ -687,6 +646,127 @@ struct Built {
     /// Its outputs to files or directories here: each one's name there, its path here, and
     /// whether it is a directory.
     outputs: Vec<(String, PathBuf, bool)>,
+    /// The trees beside its context it names, each kept in step before it.
+    trees: Vec<Tree>,
+}
+
+/// A tree of this client's that a build names beside its context: a named context's
+/// directory, an OCI layout's, a local cache to import. Kept in step in a copy of its own
+/// there before the build ([`put_tree`]), each build after sending what changed alone, and
+/// said in the build's words as that copy (`synced::TREE`).
+struct Tree {
+    key: String,
+    root: PathBuf,
+    filters: shards_build::context::Filters,
+}
+
+/// The tree at `path` here, named `what` (its copy apart from any other's of the same
+/// directory), its ignore file applied where `ignored`, as a build reads a named context.
+fn tree_of(path: &str, what: &str, ignored: bool) -> Result<Tree, String> {
+    use sha2::Digest as _;
+    let root = std::path::absolute(path).map_err(|e| format!("{path}: {e}"))?;
+    let exclude = if ignored {
+        crate::build::ignore_file(&root, "")?
+            .map(|(_, t)| shards_agentfile::ignore::read_all(&t))
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+    let mut named = format!("{what}\0").into_bytes();
+    named.extend_from_slice(root.as_os_str().as_encoded_bytes());
+    let key = sha2::Sha256::digest(&named)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    Ok(Tree {
+        key,
+        root,
+        filters: shards_build::context::Filters {
+            exclude,
+            ..shards_build::context::Filters::default()
+        },
+    })
+}
+
+/// A `--build-context NAME=VALUE` of a directory here, or an OCI layout's: said as its copy
+/// there. None for an image's, a target's, a remote one's, or a path that is no directory
+/// here, which the build says so of.
+fn named_here(value: &str, trees: &mut Vec<Tree>) -> Result<Option<String>, String> {
+    let Some((name, v)) = value.split_once('=') else {
+        return Ok(None);
+    };
+    let remote = [
+        "http://",
+        "https://",
+        "git://",
+        "github.com/",
+        "git@",
+        "docker-image://",
+        "target:",
+    ]
+    .iter()
+    .any(|p| v.starts_with(p));
+    if remote {
+        return Ok(None);
+    }
+    if let Some(layout) = crate::build::parse_oci_layout(v)? {
+        let tree = tree_of(&layout.path, "layout", false)?;
+        let mut said = format!("{name}=oci-layout://{}{}", crate::synced::TREE, tree.key);
+        if !layout.tag.is_empty() {
+            said.push_str(&format!(":{}", layout.tag));
+        }
+        if let Some(digest) = &layout.digest {
+            said.push_str(&format!("@{digest}"));
+        }
+        trees.push(tree);
+        return Ok(Some(said));
+    }
+    if !Path::new(v).is_dir() {
+        return Ok(None);
+    }
+    let tree = tree_of(v, "named", true)?;
+    let said = format!("{name}={}{}", crate::synced::TREE, tree.key);
+    trees.push(tree);
+    Ok(Some(said))
+}
+
+/// A CSV `value` (a cache's, a policy's) whose `field` names a path here, of the `kind` it
+/// says where one is wanted (`type=local`): the path given to `place`, which says what it
+/// is there. None for another kind, or one that names no path.
+fn csv_path_here(
+    value: &str,
+    field: &str,
+    kind: Option<&str>,
+    place: &mut dyn FnMut(&str) -> Result<String, String>,
+) -> Result<Option<String>, String> {
+    let Ok(fields) = shards_cmdline::go::csv_fields(value.as_bytes()) else {
+        return Ok(None);
+    };
+    let fields: Vec<String> = fields
+        .iter()
+        .map(|f| String::from_utf8_lossy(f).into_owned())
+        .collect();
+    if kind.is_some_and(|kind| !fields.iter().any(|f| *f == format!("type={kind}"))) {
+        return Ok(None);
+    }
+    let prefix = format!("{field}=");
+    let mut placed = false;
+    let mut said = Vec::new();
+    for f in &fields {
+        match f.strip_prefix(&prefix) {
+            Some(here) if !placed => {
+                placed = true;
+                said.push(format!("{prefix}{}", place(here)?));
+            }
+            _ => said.push(f.clone()),
+        }
+    }
+    Ok(placed.then(|| {
+        said.iter()
+            .map(|f| shards_cmdline::go::csv_field(f))
+            .collect::<Vec<_>>()
+            .join(",")
+    }))
 }
 
 /// An `--output` of `value` to a file or directory here: said as the same output to the
@@ -823,7 +903,7 @@ fn building(words: &[String], stdin: &dyn Fn() -> Result<Vec<u8>, String>) -> Re
         Some(beside) => Some(beside),
         None => crate::build::ignore_file(&context, "")?,
     };
-    let filters = shards_build::context::Filters {
+    let mut filters = shards_build::context::Filters {
         exclude: ignore
             .map(|(_, t)| shards_agentfile::ignore::read_all(&t))
             .unwrap_or_default(),
@@ -833,6 +913,8 @@ fn building(words: &[String], stdin: &dyn Fn() -> Result<Vec<u8>, String>) -> Re
     // this client's value, or none, as buildx reads one where it is run.
     let mut gone: Vec<(usize, usize)> = Vec::new();
     let mut outputs = Vec::new();
+    let mut trees = Vec::new();
+    let mut policies = Vec::new();
     for &(flag, word, offset) in &parsed.positions {
         let value = rest
             .get(word)
@@ -847,6 +929,45 @@ fn building(words: &[String], stdin: &dyn Fn() -> Result<Vec<u8>, String>) -> Re
                 outputs.push((name.to_string(), here, false));
                 Some(format!("{}{name}", crate::synced::OUT))
             }
+            "build-context" => named_here(&value, &mut trees)?,
+            "cache-from" => csv_path_here(&value, "src", Some("local"), &mut |here| {
+                // One not here is the build's to say so, by the path it was given.
+                if !Path::new(here).is_dir() {
+                    return Ok(here.to_string());
+                }
+                let tree = tree_of(here, "cache", false)?;
+                let said = format!("{}{}", crate::synced::TREE, tree.key);
+                trees.push(tree);
+                Ok(said)
+            })?,
+            "cache-to" => csv_path_here(&value, "dest", Some("local"), &mut |here| {
+                let name = format!("cache-{}", outputs.len());
+                let here = std::path::absolute(here).map_err(|e| format!("{here}: {e}"))?;
+                outputs.push((name.clone(), here, true));
+                Ok(format!("{}{name}", crate::synced::OUT))
+            })?,
+            // A policy's file, carried with the build file's directory, as a name of its own.
+            // A policy's file, read as the build reads one, within its context (buildx's
+            // os.Root of it): a name inside it said as it is there, of the copy, which holds
+            // it whatever the ignore file leaves out, as the build reads the directory; one
+            // outside it as it was given, which the build refuses as it would here.
+            "policy" => csv_path_here(&value, "filename", None, &mut |here| {
+                let path = Path::new(here);
+                let inside = if path.is_absolute() {
+                    path.strip_prefix(&context)
+                        .ok()
+                        .map(|r| r.to_string_lossy().replace('\\', "/"))
+                } else {
+                    Some(here.to_string())
+                };
+                Ok(match inside {
+                    Some(inside) => {
+                        policies.push(format!("!{inside}"));
+                        inside
+                    }
+                    None => here.to_string(),
+                })
+            })?,
             _ => None,
         };
         if let (Some(said), Some(w)) = (said, rest.get_mut(word)) {
@@ -876,6 +997,9 @@ fn building(words: &[String], stdin: &dyn Fn() -> Result<Vec<u8>, String>) -> Re
             _ => {}
         }
     }
+    filters
+        .exclude
+        .extend(policies.into_iter().map(String::into_bytes));
     if let Some(word) = rest.get_mut(at) {
         *word = crate::synced::CONTEXT.to_string();
     }
@@ -910,6 +1034,7 @@ fn building(words: &[String], stdin: &dyn Fn() -> Result<Vec<u8>, String>) -> Re
         dockerfile_dir: dir,
         secrets: parsed.many("secret").to_vec(),
         outputs,
+        trees,
     }))
 }
 
@@ -971,6 +1096,7 @@ fn artifact_building(words: &[String]) -> Option<Built> {
         dockerfile_dir: None,
         secrets: Vec::new(),
         outputs: Vec::new(),
+        trees: Vec::new(),
     })
 }
 
@@ -1168,6 +1294,12 @@ fn build_there(
             shards_registry::credentials::env_config_of(&found).into_bytes(),
         ));
     }
+    // The other trees it names, each brought in step there first.
+    for tree in &built.trees {
+        if let Err(code) = put_tree(identity, context, tree) {
+            return code;
+        }
+    }
     let step = |words: &[&str]| -> Vec<Vec<u8>> {
         let (first, rest) = words.split_first().map_or(("", &[][..]), |(f, r)| (*f, r));
         [crate::synced::SYNC_STEP, first, built.key.as_str()]
@@ -1302,6 +1434,62 @@ fn build_there(
         }
         Ok(Err(refused)) => fail(format!("{}: {refused}", context.name)),
         Err(e) => fail(format!("{}: {e}", context.name)),
+    }
+}
+
+/// Brings `tree`'s copy there in step with it here, before the build that names it: what its
+/// copy holds asked, and what changed since sent alone, as a build's context is (part 3c).
+fn put_tree(identity: &Identity, context: &Context, tree: &Tree) -> Result<(), ExitCode> {
+    let fail = |why: String| {
+        let _ = writeln!(io::stderr(), "shards: {why}");
+        ExitCode::from(NOT_RUN)
+    };
+    let step = crate::synced::SYNC_STEP;
+    let said = asked_there(identity, context, &[step, "manifest", &tree.key], &[])?;
+    let there = crate::synced::decode(&said).map_err(fail)?;
+    let walked = shards_build::context::walk(&tree.root, &tree.filters)
+        .map_err(|e| fail(format!("{}: {e}", tree.root.display())))?;
+    let plan = crate::synced::plan(&walked, &there);
+    let (reader, mut writer) = io::pipe().map_err(|e| fail(format!("a pipe for a tree: {e}")))?;
+    let root = tree.root.clone();
+    let sending = std::thread::Builder::new()
+        .name("tree-send".into())
+        .spawn(move || {
+            crate::synced::send_tree(&mut writer, |out| {
+                shards_archive::pack_changes(&root, &plan.changed, &plan.linked, &plan.removed, out)
+                    .map(drop)
+                    .map_err(|e| e.to_string())
+            })
+        })
+        .map_err(|e| fail(format!("a thread for a tree: {e}")))?;
+    let request = Request {
+        args: [step, "put", tree.key.as_str()]
+            .iter()
+            .map(|w| w.as_bytes().to_vec())
+            .collect(),
+        env: Vec::new(),
+        terminal: None,
+    };
+    let ran = client::exec(
+        identity,
+        context.remote(),
+        request,
+        Some(Box::new(reader)),
+        io::sink(),
+        io::stderr(),
+        |_| {},
+    );
+    let sent = sending.join();
+    match ran {
+        Ok(Ok(0)) => {}
+        Ok(Ok(status)) => return Err(ExitCode::from(u8::try_from(status).unwrap_or(1))),
+        Ok(Err(why)) => return Err(fail(format!("{}: {why}", context.name))),
+        Err(e) => return Err(fail(format!("{}: {e}", context.name))),
+    }
+    match sent {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(e)) => Err(fail(e)),
+        Err(_) => Err(fail("sending a tree ended".into())),
     }
 }
 
@@ -2824,14 +3012,15 @@ mod tests {
         ] {
             assert!(not_carried(&args(carried)).is_none(), "{carried}");
         }
-        for files in [
-            "build --ssh default .",
+        // Its named contexts, local caches and policies' files, kept in step or carried.
+        for carried in [
             "build --cache-to type=local,dest=c .",
             "build --build-context base=../dir .",
             "build --policy filename=p.rego .",
         ] {
-            assert!(not_carried(&args(files)).is_some(), "{files}");
+            assert!(not_carried(&args(carried)).is_none(), "{carried}");
         }
+        assert!(not_carried(&args("build --ssh default .")).is_some());
         for remote in [
             "build -o type=registry .",
             "build -o - .",

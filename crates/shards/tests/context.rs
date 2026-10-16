@@ -1699,3 +1699,123 @@ fn a_builds_outputs_through_a_context_are_the_clients_files() {
         }
     }
 }
+
+/// What else a build names of the client's, through a context (D180): a named context's
+/// directory, its ignore file applied; an OCI layout a build made here, named as a base; a
+/// local cache, exported to a directory here and imported from it; and a policy's file,
+/// which refuses the build in its words. Each kept in step or carried there, none of the
+/// client's paths crossing.
+#[test]
+fn what_a_build_names_of_the_clients_is_carried_through_a_context() {
+    let Some((machine, _listening, laptop, _image)) = joined("ctx-names") else {
+        return;
+    };
+    let on_laptop = [("SHARDS_HOME", laptop.as_os_str())];
+    let build = |dir: &Path, args: &[&str]| {
+        let mut all = args.to_vec();
+        all.push(dir.to_str().unwrap());
+        run_shards_env(&["--context", "gpu", "build"], &all, &on_laptop, TIMEOUT)
+    };
+    let app = laptop.join("app");
+    std::fs::create_dir_all(&app).unwrap();
+    std::fs::write(
+        app.join("Dockerfile"),
+        "FROM scratch\nCOPY --from=other . /other/\nCOPY a.txt /\n",
+    )
+    .unwrap();
+    std::fs::write(app.join("a.txt"), "one").unwrap();
+    let other = laptop.join("other");
+    std::fs::create_dir_all(&other).unwrap();
+    std::fs::write(other.join("x.txt"), "named").unwrap();
+    std::fs::write(other.join("ignored.txt"), "never").unwrap();
+    std::fs::write(other.join(".dockerignore"), "ignored.txt\n").unwrap();
+    let (out, cache, layout) = (laptop.join("out"), laptop.join("cache"), laptop.join("layout"));
+    let named = format!("other={}", other.display());
+    let built = build(
+        &app,
+        &[
+            "--build-context",
+            &named,
+            "-o",
+            &format!("type=local,dest={}", out.display()),
+            "--cache-to",
+            &format!("type=local,dest={}", cache.display()),
+        ],
+    );
+    assert_eq!(built.status, Some(0), "{built}");
+    assert_eq!(std::fs::read_to_string(out.join("other/x.txt")).unwrap(), "named");
+    assert!(
+        !out.join("other/ignored.txt").exists(),
+        "the named context's ignore file not applied"
+    );
+    assert!(cache.join("index.json").is_file(), "no cache exported here");
+    let from = format!("type=local,src={}", cache.display());
+    let again = build(&app, &["--build-context", &named, "--cache-from", &from]);
+    assert_eq!(again.status, Some(0), "{again}");
+    // A layout made here, by a build there, named as the base of the next.
+    let made = build(
+        &app,
+        &[
+            "--build-context",
+            &named,
+            "-o",
+            &format!("type=oci,dest={},tar=false", layout.display()),
+        ],
+    );
+    assert_eq!(made.status, Some(0), "{made}");
+    assert!(layout.join("index.json").is_file(), "no layout here");
+    let on_it = laptop.join("on-it");
+    std::fs::create_dir_all(&on_it).unwrap();
+    std::fs::write(on_it.join("Dockerfile"), "FROM base\nCOPY b.txt /\n").unwrap();
+    std::fs::write(on_it.join("b.txt"), "two").unwrap();
+    let (base, out2) = (
+        format!("base=oci-layout://{}", layout.display()),
+        laptop.join("out2"),
+    );
+    let stacked = build(
+        &on_it,
+        &[
+            "--build-context",
+            &base,
+            "-o",
+            &format!("type=local,dest={}", out2.display()),
+        ],
+    );
+    assert_eq!(stacked.status, Some(0), "{stacked}");
+    assert_eq!(std::fs::read_to_string(out2.join("a.txt")).unwrap(), "one");
+    assert_eq!(std::fs::read_to_string(out2.join("b.txt")).unwrap(), "two");
+    // A policy of this client's, in its context and left out of it by its ignore file, as
+    // the build reads it: it refuses the build, in its words.
+    let policy = app.join("deny.rego");
+    std::fs::write(
+        &policy,
+        "package docker\n\ndefault allow := false\n\ndeny_msg contains msg if {\n  not allow\n  msg := \"denied by the client's policy\"\n}\n\ndecision := {\"allow\": allow, \"deny_msg\": deny_msg}\n",
+    )
+    .unwrap();
+    std::fs::write(app.join(".dockerignore"), "*.rego\n").unwrap();
+    for named_as in ["deny.rego".to_string(), policy.display().to_string()] {
+        let refused = build(
+            &app,
+            &[
+                "--build-context",
+                &named,
+                "--policy",
+                &format!("filename={named_as}"),
+            ],
+        );
+        assert_eq!(refused.status, Some(1), "{refused}");
+        assert!(
+            refused.stderr.contains("denied by the client's policy"),
+            "{refused}"
+        );
+    }
+    // None of this client's paths crossed.
+    let log = std::fs::read_to_string(machine.join("daemon.log")).unwrap();
+    for here in [&other, &cache, &layout, &policy] {
+        assert!(
+            !log.contains(here.to_str().unwrap()),
+            "{} in what the machine was asked",
+            here.display()
+        );
+    }
+}
