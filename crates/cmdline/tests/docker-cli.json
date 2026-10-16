@@ -1185,6 +1185,111 @@
   },
   {
     "argv": [
+      "checkpoint",
+      "create",
+      "--help"
+    ],
+    "stdout": "Usage:  shards checkpoint create [OPTIONS] CONTAINER CHECKPOINT\n\nCreate a checkpoint from a running container\n\nOptions:\n      --leave-running   Leave the container running after checkpoint\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "checkpoint",
+      "create",
+      "c"
+    ],
+    "stdout": "",
+    "stderr": "shards: 'shards checkpoint create' requires 2 arguments\n\nUsage:  shards checkpoint create [OPTIONS] CONTAINER CHECKPOINT\n\nRun 'shards checkpoint create --help' for more information\n",
+    "status": 1
+  },
+  {
+    "argv": [
+      "checkpoint",
+      "create",
+      "--leave-running",
+      "c",
+      "cp"
+    ],
+    "stdout": "RUN --leave-running=true \"c\" \"cp\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "checkpoint",
+      "ls",
+      "--help"
+    ],
+    "stdout": "Usage:  shards checkpoint ls [OPTIONS] CONTAINER\n\nList checkpoints for a container\n\nAliases:\n  shards checkpoint ls, shards checkpoint list\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "checkpoint",
+      "list",
+      "c"
+    ],
+    "stdout": "RUN \"c\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "checkpoint",
+      "ls",
+      "c",
+      "d"
+    ],
+    "stdout": "",
+    "stderr": "shards: 'shards checkpoint ls' requires 1 argument\n\nUsage:  shards checkpoint ls [OPTIONS] CONTAINER\n\nRun 'shards checkpoint ls --help' for more information\n",
+    "status": 1
+  },
+  {
+    "argv": [
+      "checkpoint",
+      "rm",
+      "--help"
+    ],
+    "stdout": "Usage:  shards checkpoint rm [OPTIONS] CONTAINER CHECKPOINT\n\nRemove a checkpoint\n\nAliases:\n  shards checkpoint rm, shards checkpoint remove\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "checkpoint",
+      "remove",
+      "c",
+      "cp"
+    ],
+    "stdout": "RUN \"c\" \"cp\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "checkpoint",
+      "rm",
+      "c"
+    ],
+    "stdout": "",
+    "stderr": "shards: 'shards checkpoint rm' requires 2 arguments\n\nUsage:  shards checkpoint rm [OPTIONS] CONTAINER CHECKPOINT\n\nRun 'shards checkpoint rm --help' for more information\n",
+    "status": 1
+  },
+  {
+    "argv": [
+      "start",
+      "--checkpoint",
+      "cp",
+      "c"
+    ],
+    "stdout": "RUN --checkpoint=cp \"c\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
       "volume",
       "create",
       "--help"
@@ -1431,7 +1536,7 @@
       "start",
       "--help"
     ],
-    "stdout": "Usage:  shards start [OPTIONS] CONTAINER [CONTAINER...]\n\nStart one or more stopped containers\n\nAliases:\n  shards container start, shards start\n\nOptions:\n  -a, --attach               Attach STDOUT/STDERR and forward signals\n      --detach-keys string   Override the key sequence for detaching a\n                             container\n  -i, --interactive          Attach container's STDIN\n",
+    "stdout": "Usage:  shards start [OPTIONS] CONTAINER [CONTAINER...]\n\nStart one or more stopped containers\n\nAliases:\n  shards container start, shards start\n\nOptions:\n  -a, --attach               Attach STDOUT/STDERR and forward signals\n      --checkpoint string    Restore from this checkpoint\n      --detach-keys string   Override the key sequence for detaching a\n                             container\n  -i, --interactive          Attach container's STDIN\n",
     "stderr": "",
     "status": 0
   },
@@ -1452,7 +1557,7 @@
       "start",
       "-h"
     ],
-    "stdout": "Flag shorthand -h has been deprecated, use --help\nUsage:  shards container start [OPTIONS] CONTAINER [CONTAINER...]\n\nStart one or more stopped containers\n\nAliases:\n  shards container start, shards start\n\nOptions:\n  -a, --attach               Attach STDOUT/STDERR and forward signals\n      --detach-keys string   Override the key sequence for detaching a\n                             container\n  -i, --interactive          Attach container's STDIN\n",
+    "stdout": "Flag shorthand -h has been deprecated, use --help\nUsage:  shards container start [OPTIONS] CONTAINER [CONTAINER...]\n\nStart one or more stopped containers\n\nAliases:\n  shards container start, shards start\n\nOptions:\n  -a, --attach               Attach STDOUT/STDERR and forward signals\n      --checkpoint string    Restore from this checkpoint\n      --detach-keys string   Override the key sequence for detaching a\n                             container\n  -i, --interactive          Attach container's STDIN\n",
     "stderr": "",
     "status": 0
   },

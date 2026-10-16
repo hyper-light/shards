@@ -147,6 +147,8 @@ pub fn start(path: &str, args: &[OsString]) -> ExitCode {
         }
     };
     let (attach, interactive) = (parsed.bool("attach"), parsed.bool("interactive"));
+    // A container resumed from a checkpoint of its own, a microVM's snapshot (D176).
+    let checkpoint = Some(parsed.string("checkpoint").to_string()).filter(|c| !c.is_empty());
     if attach || interactive {
         if parsed.args.len() > 1 {
             return refuse("you cannot start and attach multiple containers at once");
@@ -169,9 +171,24 @@ pub fn start(path: &str, args: &[OsString]) -> ExitCode {
             again: Some(container),
             interactive: interactive && open_stdin,
             tty: tty.then(stdout_size),
+            resume: checkpoint,
             ..Run::default()
         };
         return send(&mut request, &detach_keys, &mut None, !tty);
+    }
+    // One, which says nothing once it runs (docker/cli container/start.go).
+    if let Some(checkpoint) = checkpoint {
+        let [container] = parsed.args.as_slice() else {
+            return refuse("you cannot restore multiple containers at once");
+        };
+        let mut request = Run {
+            again: Some(container.clone()),
+            resume: Some(checkpoint),
+            detach: true,
+            silent: true,
+            ..Run::default()
+        };
+        return send(&mut request, &detach_keys, &mut None, false);
     }
     // startContainersWithoutAttachments: each named as it starts, the others' errors
     // said, and their names after.
@@ -417,6 +434,30 @@ pub fn attach(path: &str, args: &[OsString]) -> ExitCode {
 }
 
 /// Says `why` as the CLI says a plain error, and exits 1 (docker/cli cmd/docker/docker.go).
+/// `shards restore vm MICROVM [SNAPSHOT]` (D176): a stopped microVM resumed by its daemon
+/// from a snapshot of its own, its newest unless named, as `shards start` starts one:
+/// named once it runs.
+pub fn restore(path: &str, args: &[OsString]) -> ExitCode {
+    let argv = match crate::cli::utf8(args) {
+        Ok(argv) => argv,
+        Err(e) => return crate::cli::failed(&e),
+    };
+    let parsed = match crate::cli::read(&shards_cmdline::commands::RESTORE_VM, path, &argv, &validate) {
+        Ok(parsed) => parsed,
+        Err(answered) => return answered,
+    };
+    let Some(microvm) = parsed.args.first().cloned() else {
+        return crate::cli::failed("a microVM is required");
+    };
+    let mut request = Run {
+        again: Some(microvm),
+        resume: Some(parsed.args.get(1).cloned().unwrap_or_default()),
+        detach: true,
+        ..Run::default()
+    };
+    send(&mut request, term::DETACH_KEYS, &mut None, false)
+}
+
 fn refuse(why: &str) -> ExitCode {
     let _ = writeln!(std::io::stderr(), "{why}");
     ExitCode::FAILURE

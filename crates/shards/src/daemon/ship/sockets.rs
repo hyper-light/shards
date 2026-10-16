@@ -108,11 +108,11 @@ pub(super) fn unacknowledged(socket: &TcpStream) -> io::Result<(u64, Duration)> 
     let fd = socket.as_raw_fd();
     #[cfg(target_os = "linux")]
     {
-        let mut queued: libc::c_int = 0;
-        // SAFETY: ioctl(2) SIOCOUTQ, whose number is TIOCOUTQ's, of an int into `queued`.
-        if unsafe { libc::ioctl(fd, libc::TIOCOUTQ, &raw mut queued) } != 0 {
-            return Err(io::Error::last_os_error());
-        }
+        // Its state first, then what it holds: a connection read as closed holds no more
+        // that is ever acknowledged, and its count then is its last. Read the other way, an
+        // acknowledgement and the receiver's FIN coming between the two made a connection
+        // whose every byte had come seem ended without them: its count from before, its
+        // state from after (PM M238).
         // SAFETY: tcp_info is integers, of which all zeros are a value.
         let mut info: libc::tcp_info = unsafe { std::mem::zeroed() };
         let mut len = std::mem::size_of::<libc::tcp_info>() as libc::socklen_t;
@@ -127,6 +127,11 @@ pub(super) fn unacknowledged(socket: &TcpStream) -> io::Result<(u64, Duration)> 
             )
         };
         if read != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let mut queued: libc::c_int = 0;
+        // SAFETY: ioctl(2) SIOCOUTQ, whose number is TIOCOUTQ's, of an int into `queued`.
+        if unsafe { libc::ioctl(fd, libc::TIOCOUTQ, &raw mut queued) } != 0 {
             return Err(io::Error::last_os_error());
         }
         // TCP_CLOSE (include/net/tcp_states.h): both sides' FINs acknowledged, the

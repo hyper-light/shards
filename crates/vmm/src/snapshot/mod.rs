@@ -69,7 +69,9 @@ const MAGIC: [u8; 8] = *b"SHRDSNAP";
 ///     virtio-mem's sizes, what it asks for and what is plugged (D176).
 /// 18: a swap window's state keeps the length of the run's swap mapped, whose bytes a
 ///     snapshot of a run keeps beside it (D176).
-const VERSION: u32 = 18;
+/// 19: a join disk's state keeps its ranges, each let go, so that a microVM containers
+///     joined is saved once they end (D176).
+const VERSION: u32 = 19;
 /// The snapshot format this build writes and reads: what a snapshot kept for reuse is
 /// keyed by.
 pub const FORMAT: u32 = VERSION;
@@ -244,6 +246,21 @@ pub fn generation_files(dir: &Path) -> Result<([PathBuf; 2], PathBuf), String> {
         [generation.join(STATE), generation.join(MEMORY)],
         generation.join(WORKING_SET),
     ))
+}
+
+/// The directory of the generation the snapshot in `dir` is at, whose files a VM may not
+/// read but its spawner may: a run's swap and what the spawner added (D176).
+pub fn generation(dir: &Path) -> Result<PathBuf, String> {
+    let name = current(dir).map_err(|e| match e.kind() {
+        io::ErrorKind::NotFound => format!("{}: no snapshot here", dir.display()),
+        _ => format!("{}: {CURRENT}: {e}", dir.display()),
+    })?;
+    Ok(dir.join(name))
+}
+
+/// The swap a snapshot of a run kept, in generation `generation` (D176).
+pub fn swap_of(generation: &Path) -> PathBuf {
+    generation.join(SWAP)
 }
 
 /// A snapshot's pointer, for [`generation_files`].
@@ -493,13 +510,14 @@ fn create(path: &Path, fill: impl FnOnce(&File) -> io::Result<()>) -> io::Result
     platform::sync_durable(&create_unsynced(path, fill)?)
 }
 
-/// [`create`], but for its durable flush: its caller makes it durable later.
+/// [`create`], but for its durable flush: its caller makes it durable later. Only its
+/// user's: a generation holds a guest's memory.
 fn create_unsynced(path: &Path, fill: impl FnOnce(&File) -> io::Result<()>) -> io::Result<File> {
-    let file = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create_new(true)
-        .open(path)?;
+    let mut options = OpenOptions::new();
+    options.read(true).write(true).create_new(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    let file = options.open(path)?;
     fill(&file)?;
     Ok(file)
 }
@@ -722,6 +740,20 @@ impl Staged {
             .map(File::try_clone)
             .collect::<io::Result<Vec<File>>>()
             .map_err(|e| format!("{}: {e}", self.staging.display()))
+    }
+
+    /// Adds a file of its spawner's own to the generation, `name` holding `bytes`: what
+    /// no VM writes, made durable with the rest by the commit (D176). A name of the
+    /// generation's own files is refused.
+    pub fn add(&mut self, name: &str, bytes: &[u8]) -> Result<(), String> {
+        if [STATE, MEMORY, SWAP, WORKING_SET].contains(&name) || name.contains(['/', '\\']) {
+            return Err(format!("{name:?} names no file a generation's spawner adds"));
+        }
+        let at = self.staging.join(name);
+        let file =
+            create_unsynced(&at, |mut f| f.write_all(bytes)).map_err(|e| format!("{}: {e}", at.display()))?;
+        self.files.push(file);
+        Ok(())
     }
 
     /// Makes the snapshot durable and the one in use.
@@ -1220,18 +1252,31 @@ mod tests {
             let s = Scratch::new("prepared");
             let dir = s.0.join("snap");
             write(&dir, &sample(&s.0, 1), &ram(1)).unwrap();
-            let staged = prepare(&dir, true).unwrap();
+            let mut staged = prepare(&dir, true).unwrap();
             let handed = staged.handed().unwrap();
             assert_eq!(handed.len(), 3);
             let name = staged.name().to_string();
             fill(&name, &sample(&s.0, 2), &ram(2), &handed[0], &handed[1]).unwrap();
             platform::write_all_at(&handed[2], b"swap", 0).unwrap();
+            // And a file of the spawner's own, beside the VM's; none of theirs.
+            staged.add("resume", b"tokens").unwrap();
+            assert!(staged.add(STATE, b"x").unwrap_err().contains("names no file"));
             assert_eq!(markers(&read(&dir).unwrap()), (1, 1));
             staged.commit().unwrap();
             let p = read(&dir).unwrap();
             assert_eq!(markers(&p), (2, 2));
             assert_eq!(p.name, name);
-            assert_eq!(fs::read(p.path.join(SWAP)).unwrap(), b"swap");
+            assert_eq!(generation(&dir).unwrap(), p.path);
+            assert_eq!(fs::read(swap_of(&p.path)).unwrap(), b"swap");
+            assert_eq!(fs::read(p.path.join("resume")).unwrap(), b"tokens");
+            // Only its user's: a generation holds a guest's memory.
+            {
+                use std::os::unix::fs::PermissionsExt as _;
+                for file in [MEMORY, STATE, SWAP, "resume"] {
+                    let mode = fs::metadata(p.path.join(file)).unwrap().permissions().mode();
+                    assert_eq!(mode & 0o777, 0o600, "{file}");
+                }
+            }
             assert_eq!(generations(&dir).len(), 2, "{:?}", generations(&dir));
         }
 

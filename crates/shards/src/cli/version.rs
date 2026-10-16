@@ -109,7 +109,8 @@ pub(crate) fn info() -> (Client, Server) {
                 ("ApiVersion", ENGINE_API.0.to_owned()),
                 ("Arch", arch.clone()),
                 ("BuildTime", build_time()),
-                ("Experimental", "false".to_owned()),
+                // Its checkpoints, Docker's experimental feature, a microVM's snapshots (D176).
+                ("Experimental", "true".to_owned()),
                 ("GitCommit", commit()),
                 ("GoVersion", compiler()),
                 ("KernelVersion", host_kernel()),

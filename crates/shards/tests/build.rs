@@ -6809,14 +6809,211 @@ fn run_steps_take_the_builds_hosts_shm_and_limits() {
         "{}",
         refused.stderr
     );
-    let warned = shards(&["build", "--squash", "-q", ctx.to_str().unwrap()]);
+    // Served (D177), where buildx warns it gone.
+    let squashed = shards(&["build", "--squash", "-q", ctx.to_str().unwrap()]);
+    assert_eq!(squashed.status, Some(0), "{}", squashed.stderr);
     assert!(
-        warned
-            .stderr
-            .contains("WARNING: experimental flag squash is removed with BuildKit."),
+        !squashed.stderr.contains("experimental flag squash"),
         "{}",
-        warned.stderr
+        squashed.stderr
     );
+}
+
+/// `--squash` (D177): the build's layers past its base's as one, which holds what the
+/// build left: a file a later step removed is in no layer, one of the base's it removed is
+/// a whiteout. Its history is moby's squash's: each entry past the base's an empty
+/// layer's, then the merge's, naming the image it would have been and its base. Built
+/// FROM scratch, every layer is the one. A microVM runs it as it runs the unsquashed.
+#[test]
+fn squash_makes_a_builds_layers_one() {
+    if cannot_run_vms() {
+        return;
+    }
+    let (image, _) = served();
+    let home = TempDir::new("build-squash-home");
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", kernel().as_os_str()),
+        ("SHARDS_INIT", guest_init().as_os_str()),
+    ];
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let blob = |d: &str| -> Vec<u8> {
+        std::fs::read(
+            home.join("images/blobs/sha256")
+                .join(d.trim_start_matches("sha256:")),
+        )
+        .unwrap()
+    };
+    let json = |d: &str| -> serde_json::Value { serde_json::from_slice(&blob(d)).unwrap() };
+    // An image's manifest, as its build's metadata names it, and its config.
+    let built =
+        |name: &str, args: &[&str], ctx: &std::path::Path| -> (serde_json::Value, serde_json::Value) {
+            let meta = home.join(format!("{name}.json"));
+            let mut all = vec!["build", "--provenance=false", "-t", name, "--metadata-file"];
+            all.push(meta.to_str().unwrap());
+            all.extend_from_slice(args);
+            all.push(ctx.to_str().unwrap());
+            let b = shards(&all);
+            assert_eq!(b.status, Some(0), "{}", b.stderr);
+            assert!(!b.stderr.contains("experimental flag squash"), "{}", b.stderr);
+            let md: serde_json::Value = serde_json::from_slice(&std::fs::read(&meta).unwrap()).unwrap();
+            let manifest = json(md["containerimage.digest"].as_str().unwrap());
+            let config = json(manifest["config"]["digest"].as_str().unwrap());
+            (manifest, config)
+        };
+    let names_in = |layer: &serde_json::Value| -> Vec<(String, Vec<u8>)> {
+        let bytes = blob(layer["digest"].as_str().unwrap());
+        let tar = if bytes.starts_with(&[0x1f, 0x8b]) {
+            let mut out = Vec::new();
+            std::io::Read::read_to_end(&mut flate2::read::GzDecoder::new(&bytes[..]), &mut out).unwrap();
+            out
+        } else {
+            bytes
+        };
+        tar_entries(&tar)
+            .into_iter()
+            .map(|(h, data)| (String::from_utf8(h.name).unwrap(), data))
+            .collect()
+    };
+    // A base of its own, with a file the build removes.
+    let base_ctx = context("build-squash-base", &format!("FROM {image}\nCOPY gone /gone\n"));
+    std::fs::write(base_ctx.join("gone"), "base\n").unwrap();
+    let (base_manifest, base_config) = built("sq-base", &[], &base_ctx);
+    let base_layers = base_manifest["layers"].as_array().unwrap().len();
+    let base_history = base_config["history"].as_array().unwrap().len();
+    let base_id = base_manifest["config"]["digest"].as_str().unwrap().to_string();
+    let big = "x".repeat(16 * 1024);
+    let ctx = context(
+        "build-squash-ctx",
+        &format!(
+            "FROM sq-base\nUSER root\n\
+             RUN [\"/bin/testguest\", \"fs\", \"write:/big={big}\", \"write:/kept=one\"]\n\
+             RUN [\"/bin/testguest\", \"fs\", \"rm:/big\", \"rm:/gone\", \"write:/kept=two\"]\n\
+             COPY a /a\n"
+        ),
+    );
+    std::fs::write(ctx.join("a"), "a\n").unwrap();
+    let (plain, plain_config) = built("unsquashed", &[], &ctx);
+    assert_eq!(plain["layers"].as_array().unwrap().len(), base_layers + 3);
+    let (manifest, config) = built("squashed", &["--squash"], &ctx);
+    let layers = manifest["layers"].as_array().unwrap();
+    assert_eq!(layers.len(), base_layers + 1, "{manifest}");
+    assert_eq!(
+        layers[..base_layers],
+        base_manifest["layers"].as_array().unwrap()[..],
+        "the base's layers as they were"
+    );
+    let entries = names_in(&layers[base_layers]);
+    let names: Vec<&str> = entries.iter().map(|(n, _)| n.as_str()).collect();
+    for wanted in [".wh.gone", "a", "kept"] {
+        assert!(names.contains(&wanted), "{wanted}: {names:?}");
+    }
+    for unwanted in ["big", ".wh.big"] {
+        assert!(!names.contains(&unwanted), "{unwanted}: {names:?}");
+    }
+    let kept = entries
+        .iter()
+        .find(|(n, _)| n == "kept")
+        .map(|(_, d)| d.as_slice());
+    assert_eq!(kept, Some(&b"two"[..]));
+    // Its history: the unsquashed one's, each entry past the base's empty, then the merge.
+    let history = config["history"].as_array().unwrap();
+    let unsquashed_history = plain_config["history"].as_array().unwrap();
+    assert_eq!(history.len(), unsquashed_history.len() + 1, "{config}");
+    for (i, h) in history.iter().enumerate().take(history.len() - 1) {
+        let mut was = unsquashed_history[i].clone();
+        if i >= base_history {
+            was["empty_layer"] = serde_json::json!(true);
+        }
+        assert_eq!(h, &was, "entry {i}");
+    }
+    let merge = history.last().unwrap();
+    let plain_id = plain["config"]["digest"].as_str().unwrap();
+    assert_eq!(
+        merge["comment"],
+        serde_json::json!(format!("merge {plain_id} to {base_id}")),
+        "{merge}"
+    );
+    assert!(
+        merge.get("empty_layer").is_none() && merge.get("created_by").is_none(),
+        "{merge}"
+    );
+    assert_eq!(config["created"], merge["created"]);
+    // Every layer has its entry, the merge's newest.
+    let with_layer = |config: &serde_json::Value| {
+        config["history"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|h| h["empty_layer"] != serde_json::json!(true))
+            .count()
+    };
+    assert_eq!(with_layer(&config), layers.len(), "{config}");
+    // A base whose history names none of its layers, as the served image's names none:
+    // its layers keep the entries the image pairs with them, and the merge has its own.
+    let bare = context(
+        "build-squash-bare",
+        &format!("FROM {image}\nCOPY a /a\nCOPY a /b\n"),
+    );
+    std::fs::write(bare.join("a"), "a\n").unwrap();
+    let (bare_manifest, bare_config) = built("bare-squashed", &["--squash"], &bare);
+    let bare_layers = bare_manifest["layers"].as_array().unwrap().len();
+    assert_eq!(with_layer(&bare_config), bare_layers, "{bare_config}");
+    let newest = bare_config["history"].as_array().unwrap().last().unwrap();
+    assert!(
+        newest["comment"]
+            .as_str()
+            .is_some_and(|c| c.starts_with("merge sha256:")),
+        "{bare_config}"
+    );
+    // Run in a microVM as the unsquashed is.
+    for name in ["squashed", "unsquashed"] {
+        let ran = shards(&[
+            "run",
+            "--rm",
+            "--pull",
+            "never",
+            name,
+            "fs",
+            "print:/kept",
+            "print:/a",
+        ]);
+        assert_eq!(ran.status, Some(0), "{name}: {}", ran.stderr);
+        assert!(
+            ran.stdout.contains("two") && ran.stdout.contains("a\n"),
+            "{name}: {}",
+            ran.stdout
+        );
+        for gone in ["print:/big", "print:/gone"] {
+            let ran = shards(&["run", "--rm", "--pull", "never", name, "fs", gone]);
+            assert_ne!(ran.status, Some(0), "{name} {gone}: {}", ran.stdout);
+        }
+    }
+    // FROM scratch: every layer the one, created new from the image it would have been.
+    let scratch = context("build-squash-scratch", "FROM scratch\nCOPY a /a\nCOPY b /b\n");
+    std::fs::write(scratch.join("a"), "a\n").unwrap();
+    std::fs::write(scratch.join("b"), "b\n").unwrap();
+    let (plain, _) = built("scratch-plain", &[], &scratch);
+    let (manifest, config) = built("scratch-squashed", &["--squash"], &scratch);
+    let layers = manifest["layers"].as_array().unwrap();
+    assert_eq!(layers.len(), 1, "{manifest}");
+    let names: Vec<String> = names_in(&layers[0]).into_iter().map(|(n, _)| n).collect();
+    assert_eq!(names, ["a", "b"]);
+    let history = config["history"].as_array().unwrap();
+    assert!(
+        history[..history.len() - 1]
+            .iter()
+            .all(|h| h["empty_layer"] == serde_json::json!(true)),
+        "{config}"
+    );
+    assert_eq!(
+        history.last().unwrap()["comment"],
+        serde_json::json!(format!(
+            "create new from {}",
+            plain["config"]["digest"].as_str().unwrap()
+        ))
+    );
+    assert_eq!(with_layer(&config), 1, "{config}");
 }
 
 /// `shards builder prune` (D65), as buildx's prune: a record no filter keeps goes, said in

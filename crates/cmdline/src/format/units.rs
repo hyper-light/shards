@@ -4,7 +4,7 @@
 
 /// go-units' HumanDuration (duration.go), of `d` nanoseconds: Go's float division and
 /// truncation included.
-pub(super) fn human_duration(d: i64) -> String {
+pub fn human_duration(d: i64) -> String {
     const SECOND: i64 = 1_000_000_000;
     const MINUTE: i64 = 60 * SECOND;
     const HOUR: i64 = 60 * MINUTE;
@@ -65,7 +65,7 @@ pub(super) fn human_size_precision(size: f64, precision: usize) -> String {
 }
 
 /// go-units' HumanSize: decimal units, four significant digits.
-pub(super) fn human_size(size: f64) -> String {
+pub fn human_size(size: f64) -> String {
     human_size_precision(size, 4)
 }
 

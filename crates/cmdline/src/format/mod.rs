@@ -49,6 +49,7 @@ use std::rc::Rc;
 use shards_template::{Kind, Object, Template, Value};
 
 pub use clock::{Clock, Zone, rfc3339_at, rfc3339_nano, utc};
+pub use units::{human_duration, human_size};
 
 /// go-units' BytesSize, as `stats` shows memory.
 pub fn units_bytes_size(size: f64) -> String {

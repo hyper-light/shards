@@ -293,7 +293,8 @@ pub(super) fn server(f: &Facts, name: &'static str) -> shards_template::Struct {
         .field("NoProxy", s(&env("NO_PROXY")))
         .field("Name", s(f.name.as_deref().unwrap_or_default()))
         .field("Labels", strs(&[]))
-        .field("ExperimentalBuild", Value::Bool(false))
+        // Its checkpoints, Docker's experimental feature, a microVM's snapshots (D176).
+        .field("ExperimentalBuild", Value::Bool(true))
         .field("ServerVersion", s(env!("CARGO_PKG_VERSION")))
         .field(
             "Runtimes",
@@ -401,7 +402,7 @@ fn pretty(f: &Facts) -> String {
     };
     put("Name", f.name.as_deref());
     let _ = writeln!(out, " Docker Root Dir: {}", f.root);
-    out.push_str(" Debug Mode: false\n Experimental: false\n Live Restore Enabled: false\n\n");
+    out.push_str(" Debug Mode: false\n Experimental: true\n Live Restore Enabled: false\n\n");
     out
 }
 

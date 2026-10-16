@@ -3621,6 +3621,52 @@ No run-time labels, relays or declassifiers (§12 answer 14, decided by the user
 an internal-only domain to the world (D58), so there is no data to label. Code mode is
 D136.
 
+### D177. `build --squash`: a build's layers as one
+
+`shards build --squash`, and the Engine API's `POST /build?squash=1` (docker-py's
+`build(squash=True)`, the docker CLI's legacy builder's `--squash`), make the layers a
+build adds past its base's one layer: the base's layers as they were, then one that makes
+the build's tree of the base's. What a later step removed is in no layer, so it is neither
+pushed, pulled nor kept; a file of the base's that the build removed is a whiteout. Its
+history is moby's squash's (moby 464cd50c `daemon/images/image_squash.go`): the entries as
+the unsquashed image has them, times and all, each past those of the base's layers an
+empty layer's, then the merge's, `merge sha256:<unsquashed> to sha256:<base>`, at the
+image's creation (SOURCE_DATE_EPOCH where given, which moby's does not take); built FROM
+scratch, every layer is the one, `create new from sha256:<unsquashed>`. moby keeps the
+base's entries by index, which leaves the merge's layer without an entry of its own
+wherever the base's history names fewer layers than it has (the test image's names none):
+`docker history`, which pairs entries with layers in order (`daemon/images/image_history.go`),
+then gives the merge's entry a layer of the base's. shards keeps, for
+each of the base's layers, the entry the image pairs with it, so every layer has one and
+the merge's is the merge's (`squash_makes_a_builds_layers_one`, mutation-checked against
+moby's rule).
+
+What it does not change is a microVM: shards flattens every image's layers into one EROFS
+filesystem (crates/image), so a squashed image runs as the unsquashed one does. It changes
+what a registry and the store hold.
+
+Docker's own: BuildKit has no squash, and buildx warns it removed (`experimental flag
+squash is removed with BuildKit`) and builds unsquashed. dockerd squashes an experimental
+daemon's builds once they are done (`daemon/builder/backend/backend.go`), and only in its
+graph-driver image store: the containerd image store, "now the default for fresh installs"
+(Docker Engine 29 release notes), answers `error squashing image: not implemented` after
+the whole build has run (`daemon/containerd/image_squash.go`). shards squashes in its one
+store, and leaves no unsquashed image behind, where moby's squash leaves it untagged.
+Before this, shards took the flag as buildx does: a client of the API that asked for a
+squashed image got an unsquashed one, which only a warning said.
+
+A step's layer is what its own step stamped in the tree (`diff::write_layer`, BuildKit's
+overlay differ); a squash spans every step, so its layer is continuity's doubleWalkDiff of
+the two trees from the root (`diff::write_squash`), which reads a file's bytes only where
+its metadata matches and its data is not the same node's: a file no step touched is the
+base's own. The steps run and are cached as ever, a build without `--squash` reusing them;
+`mode=max` provenance names the layers the image holds, which the steps' of a squashed
+image are not. Held by `a_squash_writes_every_step_between_two_trees` (diff.rs), and on
+real microVMs by `squash_makes_a_builds_layers_one` (tests/build.rs) and
+`images_are_built_from_a_context_in_the_body` and
+`the_docker_cli_runs_microvms_through_the_engine` (tests/engine.rs: the API's `squash=1`,
+and the docker CLI's own legacy `build --squash`, which it offers an experimental engine).
+
 ### D176. A running microVM saved whole, and resumed (in progress)
 
 `shards save vm NAME`, and Docker's `checkpoint`, save a running microVM whole: its
@@ -3672,8 +3718,22 @@ coordinator would take the request for its own. The machine is taken apart only 
 save has let go of it: the save holds the VM and its devices by weak references, which
 `Running` alone owns. What a save cannot keep whole refuses it, and the microVM goes on as
 it was, with nothing of the save left: a host's devices (VFIO), a GPU's contexts, a
-container joined to it (D119), and, until part 7, a mounted volume, whose open files are
+container joined to it (D119), and, until part 5, a mounted volume, whose open files are
 its server's by node IDs no snapshot holds.
+
+Containers joined to a microVM run in it, each its own container's run: a snapshot would
+keep their processes, and a restore bring them back, without their containers. So a
+microVM is saved while none runs in it, which its VM process, which takes the daemon's
+messages in order, knows as no other can: a JOIN before a SAVE counts its joiner as it is
+taken, and the save refuses while one counts; a JOIN after it is refused until the save is
+done, its joiner's start failing with why. Once they end it is saved, its join disk with
+the ranges their images had, each let go (snapshot format 19): its restored guest knows the
+disk's capacity, and a container that joins the restored microVM takes the next range, no
+place given twice (D119). Before this, a microVM saved with joiners running kept them, and
+one any container had ever joined was never saved again. Held by
+`a_save_refused_leaves_the_microvm_running_and_nothing_behind` (refused while a joiner runs,
+saved once it ends, restored and joined again) and `a_join_disk_reads_each_image_at_its_range`
+(the ranges kept, mutation-checked).
 
 Saved with `--leave-running`, the microVM goes on. Otherwise its save stops it, as `docker
 checkpoint create` stops a container, and it is told as stopped, not ended: its attached
@@ -3685,6 +3745,98 @@ neither restarted nor removed: what it is saved as is there to resume. Held, on 
 microVMs, by `a_running_microvm_is_saved_whole_left_running_or_stopped` and
 `a_save_refused_leaves_the_microvm_running_and_nothing_behind` (tests/saved.rs).
 Mutation-checked: removed with `--rm`, and saved with its volume mounted.
+
+`shards restore vm NAME [SNAPSHOT]` resumes a stopped microVM from a snapshot of its own,
+its newest unless named (part 3). It is a start of the container again, as `docker start
+--checkpoint` is one, whose VM restores the snapshot rather than a template: its run's
+log, ports, events and end are a start's. Three things a start does not have make it whole:
+
+- **A cut with nothing in flight.** What the guest's init wrote to the host and the host
+  had not yet read when the vCPUs parked is in neither the host's log nor the guest's
+  memory: lost from every copy restored, and, for a microVM its save stops, from the
+  microVM. So the VM process first asks init to QUIESCE, on the run's connection: init
+  sends all it holds, then QUIESCED, then nothing until RESUME, and the VM process saves
+  once it has read QUIESCED, all before it in the log. What the host sends meanwhile, its
+  stdin and signals, comes after the cut in a restored copy, where it is not, as anything
+  sent after the cut is. Held by `a_microvm_saved_as_it_writes_loses_none_of_its_output`,
+  a guest writing as fast as it can through its save: every count once, up to the save
+  and on from it. Mutation-checked: saved without waiting for QUIESCED, a restored copy's
+  log went from 56,812 to 57,686, the 873 counts between them lost.
+- **Its connections, dialed again, and only by init.** A restore resets the streams the
+  snapshot held (D12). The VM process's run and signal ports take one connection each, so
+  that a workload dialing one finds it taken (AGENTFILE_ARCH.md §9.7); in a restored copy
+  the workload runs already, and would find a fresh port first. So a restored VM process
+  has no run or signal port: the daemon gives each save two tokens, which init holds from
+  QUIESCE on and the generation keeps (`resume`), and a restored init, finding its
+  connection reset and its lineage's generation past the relay's (control::GENERATION),
+  dials the exec port twice, each HELLO one token, as an exec's connection is checked:
+  compared whole, in constant time, by the exec port's one reader. The VM process waits
+  for them before its vCPUs run, and only where the restored init speaks this build's
+  protocol (control::ABI).
+- **Its interface, as its guest holds it.** Its MAC, and its address on a network of its
+  own (D46), are kept with the snapshot, and asked for again as `--mac-address` and `--ip`
+  ask: a member that took the address meanwhile keeps it, and the restore fails with
+  dockerd's words and the snapshot's address. Its swap, a copy of the one the save kept,
+  as sparse, is mapped back before its vCPUs run. Held by
+  `a_saved_microvm_on_a_network_is_restored_at_its_address`, its peers reaching it at its
+  name and that address, mutation-checked (restored at the lowest address free), and by
+  `a_saved_microvm_keeps_what_it_swapped`: 96 MiB of a pattern under a 64 MiB limit, read
+  back whole after the restore.
+
+A microVM restored resumes where it was saved, as often as its snapshot is restored: its
+log goes on from the save, once for each restore. Measured (PM M239, a 256 MiB microVM on
+the M5 Max): a save left running parks the guest's vCPUs for 17 ms at p50 and 46 ms at
+most on a loaded host, its going quiet first under 0.2 ms at p90; its caller waits 92 ms
+at p50 quiet, the commit's sync among it, and a restore 18 ms at p50. `shards list snapshots NAME` lists a
+microVM's snapshots, newest first, when each was saved and the disk it takes; `shards
+remove snapshot NAME SNAPSHOT...` removes them, and `shards rm` with the microVM. A run on
+the host's network (D124) is not saved: its guest's sockets are the host's, which no
+snapshot keeps.
+
+**Docker's words** (part 4). `checkpoint create [--leave-running] CONTAINER CHECKPOINT`,
+`checkpoint ls`, `checkpoint rm` and `start --checkpoint CHECKPOINT` are `save vm`, `list
+snapshots`, `remove snapshot` and `restore vm` as Docker says them, on shards' command line
+and through the Engine API (`POST` and `GET /containers/{id}/checkpoints`, `DELETE
+/containers/{id}/checkpoints/{name}`, `POST /containers/{id}/start?checkpoint=`). docker/cli
+shows them only to a daemon that says it is experimental (docker/cli v29.8.1
+`checkpoint/cmd.go`, `container/start.go`: the `experimental` annotation, read from
+`/_ping`'s `Docker-Experimental`), so the engine says so, as `info` and `version` do. What
+it means for Docker, a daemon started with `--experimental`, CRIU installed and Linux, a
+microVM needs none of. Their answers are dockerd's (moby 464cd50c `daemon/checkpoint.go`,
+`daemon/start.go`), in its order: a name that is not `[a-zA-Z0-9][a-zA-Z0-9_.-]+`, or ends
+in `.`, refused before anything is looked up (`invalid checkpoint ID "../x", only … are
+allowed`, quoted as Go's `%q` quotes it), then the container, its state, a name taken.
+`start --checkpoint` prints nothing, as docker/cli's does, and restores one container at a
+time. A paused container is not started, by `start` with a checkpoint or without, where
+shards had answered it as one running already: dockerd refuses it (409, `cannot start a
+paused container, try unpause instead`, validateState), before the 304 for one running.
+
+Better than dockerd, a checkpoint's name is taken as its directory is made (mkdir(2)'s
+EEXIST), where dockerd looks for it and then makes it (getCheckpointDir: os.Stat, then
+os.MkdirAll): two creates of one name at once both go on, into one directory, and one that
+fails removes it (os.RemoveAll), the other's dump with it. In shards the second is refused,
+and a save that fails removes only the directory it made. Before this, shards looked and
+then made it too: a second save of the name passed, waited for the first's lock, and then
+saved over it, or, finding the microVM stopped by the first, failed and removed the
+snapshot the first had saved, the stopped microVM's only copy. What a daemon's end cuts
+short, a save or a removal, leaves a snapshot with no generation in place, whose name the
+claim would hold, and whose files `list snapshots` would not show: the next daemon's start
+removes it before it serves (`a_start_removes_snapshots_cut_short`, and on a real daemon
+restarted, `checkpoints_are_a_microvms_snapshots_in_dockers_words`, mutation-checked), and
+a removal takes the pointer first, so that one cut short is never a snapshot a restore
+would take.
+
+A checkpoint directory of the client's (`--checkpoint-dir`, the API's `CheckpointDir`) is
+refused, saying why: dockerd writes and lists checkpoints wherever its caller names, but
+restores from none of them (`custom checkpointdir is not supported`, 403, which shards'
+start answers too), so that its checkpoints move between containers and hosts only by
+being copied into the one's own directory by hand. A microVM's snapshot is its devices as
+they were, its disks and its interface's identity among them, which another microVM can
+resume only with the same devices: a snapshot restored in another microVM, or on another
+host, is part 6, which checks them. Held, on real microVMs, by
+`checkpoints_are_a_microvms_snapshots_in_dockers_words` (tests/saved.rs) and
+`the_docker_cli_checkpoints_and_restores_microvms` (tests/engine.rs, the docker CLI
+itself), and by docker/cli's own answers to the command lines (oracle_test.go).
 
 ### D175. Sockets read in poll(2) on macOS, and streams ended one way at a time
 

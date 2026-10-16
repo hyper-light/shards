@@ -17,6 +17,32 @@
     }
   ],
   "bake": [],
+  "checkpoint create": [
+    {
+      "name": "checkpoint-dir",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "leave-running",
+      "type": "bool",
+      "default": "false"
+    }
+  ],
+  "checkpoint ls": [
+    {
+      "name": "checkpoint-dir",
+      "type": "string",
+      "default": ""
+    }
+  ],
+  "checkpoint rm": [
+    {
+      "name": "checkpoint-dir",
+      "type": "string",
+      "default": ""
+    }
+  ],
   "commit": [
     {
       "name": "author",

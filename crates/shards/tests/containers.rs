@@ -1503,6 +1503,17 @@ fn pause_freezes_a_microvm_until_unpause_or_stop() {
     assert!(inspected.stdout.contains(r#""Status": "paused""#), "{inspected}");
     let rm = shards(&["rm", "frozen"]);
     assert!(rm.stderr.ends_with("it is paused: unpause it first\n"), "{rm}");
+    // Not started, nor said to be, as dockerd starts no paused container.
+    let start = shards(&["start", "frozen"]);
+    assert_eq!(
+        (start.status, start.stdout.as_str(), start.stderr.as_str()),
+        (
+            Some(1),
+            "",
+            "shards: cannot start a paused container, try unpause instead\nfailed to start containers: frozen\n"
+        ),
+        "{start}"
+    );
     let unpaused = shards(&["unpause", "frozen"]);
     assert_eq!(
         (unpaused.status, unpaused.stdout.as_str()),

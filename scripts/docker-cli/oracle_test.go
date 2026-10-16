@@ -103,8 +103,11 @@ var served = map[string][]string{
 	},
 	"attach":            {"detach-keys", "help", "no-stdin", "sig-proxy"},
 	"container attach":  {"detach-keys", "help", "no-stdin", "sig-proxy"},
-	"start":             {"attach", "detach-keys", "help", "interactive"},
-	"container start":   {"attach", "detach-keys", "help", "interactive"},
+	"start":             {"attach", "checkpoint", "detach-keys", "help", "interactive"},
+	"container start":   {"attach", "checkpoint", "detach-keys", "help", "interactive"},
+	"checkpoint create": {"help", "leave-running"},
+	"checkpoint ls":     {"help"},
+	"checkpoint rm":     {"help"},
 	"restart":           {"help", "signal", "time", "timeout"},
 	"container restart": {"help", "signal", "time", "timeout"},
 	"commit":            {"author", "change", "help", "message", "no-pause", "pause"},
@@ -224,6 +227,16 @@ var cases = [][]string{
 	{"network", "prune", "--help"},
 	{"network", "prune", "-f", "--filter", "until=1h"},
 	{"network", "prune", "x"},
+	{"checkpoint", "create", "--help"},
+	{"checkpoint", "create", "c"},
+	{"checkpoint", "create", "--leave-running", "c", "cp"},
+	{"checkpoint", "ls", "--help"},
+	{"checkpoint", "list", "c"},
+	{"checkpoint", "ls", "c", "d"},
+	{"checkpoint", "rm", "--help"},
+	{"checkpoint", "remove", "c", "cp"},
+	{"checkpoint", "rm", "c"},
+	{"start", "--checkpoint", "cp", "c"},
 	{"volume", "create", "--help"},
 	{"volume", "create", "-d", "local", "--label", "a=b", "-o", "type=tmpfs", "-o", "device=tmpfs", "v1"},
 	{"volume", "create", "--name", "n", "v"},
@@ -648,7 +661,8 @@ func root(t *testing.T, stdout, stderr *bytes.Buffer) *cobra.Command {
 	commands.AddCommands(cmd, dockerCli)
 	// As the CLI checks and hides what its daemon does not support (docker.go, isSupported
 	// in PersistentPreRunE and hideUnsupportedFeatures in setHelpFunc), against shards'
-	// daemon: Linux, of the CLI's own API version, without experimental features.
+	// daemon: Linux, of the CLI's own API version, with experimental features, as shards
+	// serves the CLI's checkpoints (D176).
 	cmd.PersistentPreRunE = func(c *cobra.Command, _ []string) error {
 		return isSupported(c, linuxDaemon{})
 	}
@@ -674,7 +688,7 @@ func root(t *testing.T, stdout, stderr *bytes.Buffer) *cobra.Command {
 		}
 		// `image ls` and `image rm` share their names with container commands.
 		key := c.Name()
-		if p := c.Parent().Name(); p == "image" || p == "volume" || p == "network" {
+		if p := c.Parent().Name(); p == "image" || p == "volume" || p == "network" || p == "checkpoint" {
 			key = p + " " + key
 		}
 		keep, ok := served[key]
@@ -708,12 +722,15 @@ func root(t *testing.T, stdout, stderr *bytes.Buffer) *cobra.Command {
 
 // linuxDaemon is shards' daemon as the CLI's support checks see it (versionDetails): a
 // Docker Engine on Linux, of the CLI's own API version (client.MaxAPIVersion, which a CLI
-// with no connection reports too), its experimental features off.
+// with no connection reports too), its experimental features on: its checkpoints are a
+// microVM's snapshots (D176).
 type linuxDaemon struct{}
 
 func (linuxDaemon) CurrentVersion() string { return client.MaxAPIVersion }
 
-func (linuxDaemon) ServerInfo() command.ServerInfo { return command.ServerInfo{OSType: "linux"} }
+func (linuxDaemon) ServerInfo() command.ServerInfo {
+	return command.ServerInfo{OSType: "linux", HasExperimental: true}
+}
 
 func contains(list []string, s string) bool {
 	i := sort.SearchStrings(list, s)
@@ -787,7 +804,7 @@ func TestShardsFlags(t *testing.T) {
 			return
 		case len(words) == 1 && c.HasSubCommands():
 			return
-		case len(words) == 2 && !contains([]string{"container", "image", "network", "system", "volume"}, words[0]):
+		case len(words) == 2 && !contains([]string{"checkpoint", "container", "image", "network", "system", "volume"}, words[0]):
 			return
 		case len(words) > 2:
 			return

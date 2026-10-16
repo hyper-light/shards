@@ -797,6 +797,8 @@ pub(crate) fn host_memory() -> Option<u64> {
 struct Base {
     image: Image,
     layers: Vec<Layer>,
+    /// Its image's ID, its config's digest: what a squash's history names (D177).
+    id: String,
 }
 
 /// Resolves base images from this user's store, pulling those it lacks (or every one,
@@ -1487,7 +1489,11 @@ impl Bases<'_> {
             config,
         };
         let bare = name.rsplit_once('@').map_or(name, |(bare, _)| bare);
-        let base = Base { image, layers };
+        let base = Base {
+            image,
+            layers,
+            id: manifest.config.digest.clone(),
+        };
         // A named context's image is its source by the reference alone, as BuildKit's
         // NamedContext names it (no digest).
         if !name.contains('@') {
@@ -2392,10 +2398,6 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
         (
             "security-opt",
             "security-opt flag is deprecated. \"RUN --security=insecure\" should be used with BuildKit.",
-        ),
-        (
-            "squash",
-            "experimental flag squash is removed with BuildKit. You should squash inside build using a multi-stage Dockerfile for efficiency.",
         ),
     ] {
         if parsed.changed(flag) {
@@ -3932,6 +3934,8 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
     let mut layers: Vec<Layer> = Vec::new();
     let mut base_image: Option<Image> = None;
     let mut target: Option<exec::Ref> = None;
+    // The stage's FROM, an image: its op, and the name the bases know it by.
+    let mut from: Option<(usize, String)> = None;
     if let Some(root) = def.root {
         target = results
             .get(root.op)
@@ -3951,6 +3955,10 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
                             .get(&op_base(op, &reference))
                             .map(|b| b.image.clone());
                     }
+                    from = identifier
+                        .strip_prefix(b"docker-image://")
+                        .or_else(|| identifier.strip_prefix(b"oci-layout://"))
+                        .map(|r| (at, op_base(op, &show(r))));
                     break;
                 }
                 _ => match op.inputs.first() {
@@ -3959,6 +3967,51 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
                 },
             }
         }
+    }
+    // --squash (D177): the build's layers past its base's as one, where an output is an
+    // image; the merge's history names the image it would have been.
+    let mut exported = plan.image.clone();
+    let to_image = outputs.is_empty()
+        || outputs
+            .iter()
+            .any(|o| matches!(o.kind.as_str(), "image" | "moby" | "oci" | "docker"));
+    if parsed.bool("squash")
+        && to_image
+        && let Some(t) = &target
+    {
+        let unsquashed = export::config(
+            &plan.image,
+            &layers,
+            plan.epoch.map(Time::from_unix),
+            base_image.as_ref(),
+        )
+        .map_err(|e| show(&e))?;
+        // Its history as the image it would have been has it, each entry's time its own,
+        // as moby's squash keeps them.
+        exported.history = Image::from_json(&unsquashed).map_err(|e| show(&e))?.history;
+        let resolved = bases.resolved.borrow();
+        let base = from.as_ref().and_then(|(at, name)| {
+            let r = results.get(*at).and_then(|outs| outs.first())?;
+            Some((r, resolved.get(name)?))
+        });
+        let at = plan.epoch.map_or_else(
+            || {
+                let (s, ns) = exec::now();
+                let mut at = Time::from_unix(s);
+                at.nanosecond = ns;
+                at
+            },
+            Time::from_unix,
+        );
+        layers = squash(
+            &store,
+            &mut exec.sources,
+            base,
+            t,
+            &mut exported,
+            &sha256(&unsquashed).to_string(),
+            at,
+        )?;
     }
     // The SBOMs the scan wrote (D81), each a statement, the core target's first.
     let sboms: Vec<sbom::Scanned> = match scan_at {
@@ -4215,7 +4268,7 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
         (everywhere || !capture.sboms.is_empty()).then_some((&capture, &everywhere_facts));
     let epoch = plan.epoch.map(Time::from_unix);
     // From the layers as written: a rewrite changes their DiffIDs.
-    let config = export::config(&plan.image, &held, epoch, base_image.as_ref()).map_err(|e| show(&e))?;
+    let config = export::config(&exported, &held, epoch, base_image.as_ref()).map_err(|e| show(&e))?;
     // The build's records, for --cache-to, and the image's layers, which `min` and an
     // inline cache keep to.
     let used: Vec<String> = keys.iter().flatten().cloned().collect();
@@ -4319,7 +4372,7 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
             base: &base_diff_ids,
         });
         let held = compress::layers(&store, &raw_layers, &existing, c, rewrite, &limits)?;
-        let config = export::config(&plan.image, &held, epoch, base_image.as_ref()).map_err(|e| show(&e))?;
+        let config = export::config(&exported, &held, epoch, base_image.as_ref()).map_err(|e| show(&e))?;
         let config_digest = sha256(&config);
         let manifest =
             export::manifest_annotated(&config, config_digest.to_string().as_bytes(), &held, &annotations);
@@ -4638,6 +4691,64 @@ fn base_layers(bases: &Bases) -> BTreeMap<Vec<u8>, Layer> {
 /// is a blob the build has (`known`), as BuildKit's cache exporter finds them
 /// (CacheExportModeRemoteOnly); a step whose layers were never written, as a stage only
 /// copied from, has none. Keys in order, as Go writes a map.
+/// `--squash` (D177): `target`'s layers past its base's as one, the layer that makes its
+/// tree of its base's (diff::write_squash), and `image`'s history as moby's squash leaves
+/// it (daemon/images/image_squash.go): each entry past those of the base's layers an empty
+/// layer's, then the merge's at `at`, its comment naming `unsquashed`, the image it would
+/// have been, and the base's; with no base, every layer is the one. The image's layers:
+/// the base's, then the merge.
+fn squash(
+    store: &Store,
+    sources: &mut dyn shards_image::erofs::Source,
+    base: Option<(&exec::Ref, &Base)>,
+    target: &exec::Ref,
+    image: &mut Image,
+    unsquashed: &str,
+    at: Time,
+) -> Result<Vec<Layer>, String> {
+    let empty = shards_build::vfs::Fs::new(shards_image::layer::root(), exec::now());
+    let lower = base.map_or(&empty, |(r, _)| &*r.fs);
+    let mut w = store.writer().map_err(|e| e.to_string())?;
+    shards_build::diff::write_squash(lower, &target.fs, sources, &mut w).map_err(|e| e.0)?;
+    let (digest, size) = w.commit().map_err(|e| e.to_string())?;
+    let comment = match base {
+        Some((_, b)) => format!("merge {unsquashed} to {}", b.id),
+        None => format!("create new from {unsquashed}"),
+    };
+    let mut layers = base.map(|(r, _)| r.layers.clone()).unwrap_or_default();
+    layers.push(Layer {
+        media_type: exec::LAYER_TAR.as_bytes().to_vec(),
+        digest: digest.to_string().into_bytes(),
+        size,
+        diff_id: digest.to_string().into_bytes(),
+        annotations: BTreeMap::new(),
+        created: Some(at),
+        description: comment.clone().into_bytes(),
+    });
+    // Each of the base's layers keeps the entry the image pairs with it, the first that
+    // many entries with a layer, and every later one is an empty layer's: where the base's
+    // history names its layers, those are its own entries, as moby's squash keeps them by
+    // index; where it names fewer, BuildKit's export paired later entries with them
+    // (export::normalize), and moby's would leave the merge's layer without one.
+    let mut left = base.map_or(0, |(r, _)| r.layers.len());
+    for h in image.history.iter_mut().filter(|h| !h.empty_layer) {
+        if left > 0 {
+            left -= 1;
+        } else {
+            h.empty_layer = true;
+        }
+    }
+    image.history.push(shards_agentfile::image::History {
+        created: Some(at),
+        created_by: Vec::new(),
+        author: Vec::new(),
+        comment: comment.into_bytes(),
+        empty_layer: false,
+    });
+    image.created = Some(at);
+    Ok(layers)
+}
+
 fn step_layers(
     chains: &[(usize, usize, Vec<Vec<u8>>)],
     steps: &provenance::Steps,

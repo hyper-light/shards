@@ -848,25 +848,7 @@ fn daemon_said(e: &str) -> String {
 
 /// `s` as Go's %q writes it.
 fn go_quote(s: &str) -> String {
-    let mut out = String::new();
-    json_string_into(s, &mut out);
-    out
-}
-
-fn json_string_into(s: &str, out: &mut String) {
-    out.push('"');
-    for c in s.chars() {
-        match c {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\t' => out.push_str("\\t"),
-            '\r' => out.push_str("\\r"),
-            c if c.is_control() => out.push_str(&format!("\\x{:02x}", c as u32)),
-            c => out.push(c),
-        }
-    }
-    out.push('"');
+    shards_cmdline::go::quote(s)
 }
 
 /// What docker/cli's inspect.Inspect writes of `documents`, then `errors`, `format`

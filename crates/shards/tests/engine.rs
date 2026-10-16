@@ -458,6 +458,12 @@ fn microvms_are_watched_and_managed() {
     let paused = api.call("GET", "/containers/live/json", None).json();
     assert_eq!(paused["State"]["Paused"], json!(true), "{paused}");
     assert_eq!(api.call("POST", "/containers/live/pause", None).status, 409);
+    // Not started, nor answered as started already, as dockerd answers it.
+    let start = api.call("POST", "/containers/live/start", None);
+    assert_eq!(
+        (start.status, start.json()["message"].clone()),
+        (409, json!("cannot start a paused container, try unpause instead"))
+    );
     assert_eq!(api.call("POST", "/containers/live/unpause", None).status, 204);
     assert_eq!(api.call("POST", "/containers/live/unpause", None).status, 409);
     // Started again, and named again.
@@ -821,6 +827,12 @@ fn the_engine_answers_on_a_socket_file_in_the_home() {
             "{v}"
         );
         assert_eq!(v["Components"][0]["Name"], "Engine", "{v}");
+        // Experimental, for its checkpoints (D176), as each docker/cli reads it.
+        assert_eq!(
+            (&v["Experimental"], &v["Components"][0]["Details"]["Experimental"]),
+            (&json!(true), &json!("true")),
+            "{v}"
+        );
     }
     for path in ["/v1.39/version", "/v1.57/version"] {
         let refused = api.call("GET", path, None);
@@ -1867,6 +1879,33 @@ fn images_are_built_from_a_context_in_the_body() {
             built.text()
         );
     }
+    // Squashed, as dockerd's experimental build squashes (D177): the build's layers past
+    // its base's as one, named by the merge's history.
+    let squashed = api.upload(
+        "POST",
+        "/build?t=shp/squashed:1&squash=1&buildargs=%7B%22GREETING%22%3A%22hi%22%7D",
+        "application/x-tar",
+        &context,
+    );
+    assert_eq!(squashed.status, 200, "{}", squashed.text());
+    assert!(
+        lines(&squashed).iter().all(|m| m.get("error").is_none()),
+        "{}",
+        squashed.text()
+    );
+    let mut layers = |name: &str| -> usize {
+        let doc = api.call("GET", &format!("/images/{name}/json"), None).json();
+        doc["RootFS"]["Layers"].as_array().map_or(0, Vec::len)
+    };
+    let (base, plain, one) = (layers(&image), layers("shp/built:1"), layers("shp/squashed:1"));
+    assert_eq!((plain, one), (base + 2, base + 1));
+    let history = api.call("GET", "/images/shp/squashed:1/history", None).json();
+    assert!(
+        history[0]["Comment"]
+            .as_str()
+            .is_some_and(|c| c.starts_with("merge sha256:")),
+        "{history}"
+    );
     let doc = api.call("GET", "/images/shp/built:1/json", None).json();
     assert_eq!(
         (
@@ -1934,6 +1973,87 @@ fn images_are_built_from_a_context_in_the_body() {
     );
     assert_eq!(session.status, 400, "{}", session.text());
     assert!(session.text().contains("session"), "{}", session.text());
+}
+
+/// The docker CLI checkpoints a microVM through the engine and restores it, as it does an
+/// experimental dockerd's container (D176): `checkpoint create`, `ls`, `rm` and `start
+/// --checkpoint`, the engine saying it is experimental as its ping does.
+#[test]
+fn the_docker_cli_checkpoints_and_restores_microvms() {
+    let Ok(docker) = which("docker") else {
+        eprintln!("SKIP: no docker CLI on this host");
+        return;
+    };
+    let Some((home, image)) = home("eng-cp") else {
+        return;
+    };
+    if !shards_vmm::vm::SNAPSHOTS {
+        return;
+    }
+    let config = home.join("docker-config");
+    std::fs::create_dir_all(&config).unwrap();
+    // No credential helper on PATH: what the CLI keeps stays in the test's config.
+    let no_helpers = home.join("path");
+    std::fs::create_dir_all(&no_helpers).unwrap();
+    let host = format!("unix://{}", home.join("engine.sock").display());
+    let docker = |args: &[&str]| {
+        let out = common::output_within(
+            std::process::Command::new(&docker)
+                .args(args)
+                .env("DOCKER_HOST", &host)
+                .env("DOCKER_CONFIG", &config)
+                .env("PATH", &no_helpers)
+                .env_remove("DOCKER_CONTEXT")
+                .env("DOCKER_CLI_HINTS", "false")
+                .stdin(std::process::Stdio::null()),
+            CLIENT,
+        );
+        (
+            out.status.code(),
+            String::from_utf8_lossy(&out.stdout).into_owned(),
+            String::from_utf8_lossy(&out.stderr).into_owned(),
+        )
+    };
+    let (status, out, err) = docker(&["version", "--format", "{{.Server.Experimental}}"]);
+    assert_eq!((status, out.as_str()), (Some(0), "true\n"), "{err}");
+    let (status, _, err) = docker(&["run", "-d", "--name", "cp", &image, "counter", "20"]);
+    assert_eq!(status, Some(0), "{err}");
+    let counts = || -> Vec<u64> {
+        let (_, out, _) = docker(&["logs", "cp"]);
+        out.lines().filter_map(|l| l.parse().ok()).collect()
+    };
+    let deadline = std::time::Instant::now() + CLIENT;
+    while counts().len() < 10 {
+        assert!(std::time::Instant::now() < deadline, "no counts");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let (status, out, err) = docker(&["checkpoint", "create", "cp", "first"]);
+    assert_eq!((status, out.as_str()), (Some(0), "first\n"), "{err}");
+    let n = counts().len();
+    let (_, out, _) = docker(&["checkpoint", "ls", "cp"]);
+    assert_eq!(out, "CHECKPOINT NAME\nfirst\n");
+    let (status, out, err) = docker(&["start", "--checkpoint", "first", "cp"]);
+    assert_eq!((status, out.as_str()), (Some(0), ""), "{err}");
+    while counts().len() < n + 5 {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "no counts after the restore"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert_eq!(counts()[n], n as u64 + 1);
+    let (status, _, err) = docker(&["checkpoint", "create", "cp", "first"]);
+    assert_eq!(status, Some(1));
+    assert!(
+        err.contains("checkpoint with name first already exists for container cp"),
+        "{err}"
+    );
+    let (status, out, err) = docker(&["checkpoint", "rm", "cp", "first"]);
+    assert_eq!((status, out.as_str()), (Some(0), ""), "{err}");
+    let (_, out, _) = docker(&["checkpoint", "ls", "cp"]);
+    assert_eq!(out, "CHECKPOINT NAME\n");
+    let (status, _, _) = docker(&["rm", "-f", "cp"]);
+    assert_eq!(status, Some(0));
 }
 
 /// The docker CLI runs microVMs through the engine, as it runs Docker's containers: `run`
@@ -2203,6 +2323,44 @@ fn the_docker_cli_runs_microvms_through_the_engine() {
     assert!(out.contains("Successfully tagged shp/cli-built:1"), "{out}");
     let (status, _, err) = docker(&["image", "inspect", "shp/cli-built:1"]);
     assert_eq!(status, Some(0), "{err}");
+    // Squashed by the CLI's own --squash, which it offers an experimental engine (D177):
+    // two steps' layers as one.
+    std::fs::write(
+        context.join("Dockerfile.two"),
+        format!(
+            "FROM {image}\nRUN [\"/bin/testguest\", \"fs\", \"write:/tmp/c=1\"]\nRUN [\"/bin/testguest\", \"fs\", \"write:/tmp/d=2\"]\n"
+        ),
+    )
+    .unwrap();
+    let two = context.join("Dockerfile.two");
+    let (status, out, err) = docker_with(
+        &[
+            "build",
+            "--squash",
+            "-f",
+            two.to_str().unwrap(),
+            "-t",
+            "shp/cli-squashed:1",
+            context.to_str().unwrap(),
+        ],
+        &[("DOCKER_BUILDKIT", "0")],
+    );
+    assert_eq!(status, Some(0), "{out}{err}");
+    let layers = |name: &str| -> usize {
+        let (status, out, err) = docker(&["image", "inspect", "-f", "{{len .RootFS.Layers}}", name]);
+        assert_eq!(status, Some(0), "{err}");
+        out.trim().parse().unwrap()
+    };
+    assert_eq!(layers("shp/cli-squashed:1"), layers(&image) + 1);
+    let (status, out, err) = docker(&[
+        "history",
+        "--no-trunc",
+        "--format",
+        "{{.Comment}}",
+        "shp/cli-squashed:1",
+    ]);
+    assert_eq!(status, Some(0), "{err}");
+    assert!(out.starts_with("merge sha256:"), "{out}");
 }
 
 /// `name` on PATH.

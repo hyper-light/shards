@@ -294,6 +294,15 @@ fn csv_record(v: &[String]) -> String {
     fields.join(",")
 }
 
+/// Why `command` does not serve its flag `name`, where its `unserved` line says: the words
+/// after its five fields, of a flag shards does not serve by design.
+fn refusal(command: &Command, name: &str) -> Option<&'static str> {
+    command.unserved.lines().find_map(|line| {
+        let mut fields = line.splitn(6, ' ');
+        (fields.next()? == name).then(|| fields.nth(4)).flatten()
+    })
+}
+
 /// The flag an `unserved` line describes.
 fn unserved_flag(line: &'static str) -> Option<Flag> {
     let mut fields = line.split(' ');
@@ -650,11 +659,13 @@ pub fn parse(
     if !unserved.is_empty() {
         let text: Vec<String> = unserved
             .iter()
-            .map(|f| {
-                format!(
+            .map(|f| match refusal(command, f.name) {
+                // One shards does not serve by design says why.
+                Some(why) => format!("{}\"--{}\": {why}", command.error_prefix, f.name),
+                None => format!(
                     "{}\"--{}\" is not supported by shards yet",
                     command.error_prefix, f.name
-                )
+                ),
             })
             .collect();
         return Outcome::Fail {

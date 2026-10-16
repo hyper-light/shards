@@ -63,6 +63,8 @@ pub fn confine() -> Result<(), String> {
         libc::SYS_munmap,
         libc::SYS_mremap,
         libc::SYS_madvise,
+        // A run's swap, flushed to its file as a save copies it (D176).
+        libc::SYS_msync,
         libc::SYS_brk,
         libc::SYS_futex,
         libc::SYS_clock_nanosleep,

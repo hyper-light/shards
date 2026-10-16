@@ -8540,3 +8540,78 @@ revision before comparing a changed API/implementation.
   where z's server spent a second of CPU in them. Over three runs it spent 0 s; with the
   peer put back in the poll set it spent 3 s of 3, and the test failed. Init's word as it
   ends a domain for the agents' memory says what the domain held.
+
+### M238. A log stream's close read as cut short on Linux: its send queue before its state
+
+- **Question.** dev's CI at db1562db failed one test on x86_64 musl:
+  `a_stream_closed_delivers_all_it_wrote` (D163, PM M233), "the connection ended before its
+  receiver had all written on it", from a close of a TLS stream to a local server. It had
+  passed in every gate and CI run since D175 (c7330e7b) changed the stream last. Was
+  anything lost, and why did the close say so?
+- **Method.** At 78811e3b, on the M5 Max (macOS 26.4.1), the guest Linux 6.18.48 aarch64,
+  `docs/research/measurements/stream-close/`: `run.sh` builds shards' unit tests for the
+  host's Linux and runs the test in a microVM of 2 vCPUs, eight loops at once of 25 runs
+  each (`load.sh`); each run closes 20 streams, 4,000 a round. Then the guest kernel's
+  TCP resets and aborts (`/proc/net/netstat`, `/proc/net/snmp`). `probe.patch` has a close
+  that fails say its socket's TCP_INFO and what the server got.
+  - Alone on a microVM of every host CPU, one loop of 50 runs: 1,000 closes.
+  - Under load: rounds of 4,000 closes, before the change below, and after.
+- **Results.**
+  - Alone: 1,000 closes, no failure.
+  - Under load, before: 4 failures in 6 rounds, 24,000 closes. In each, the server had
+    got every byte, `first\nout\nerr\n`, and TLS's close_notify after them. The
+    client's socket was closed (TCP_CLOSE) with no error pending, SIOCOUTQ 77 (the last
+    two lines' TLS records, the close_notify's and the FIN), and TCP_INFO's unacknowledged
+    packets 0. The guest sent and took no reset: TcpExt's aborts were all 0, and Tcp's
+    EstabResets 0. (Its OutRsts and AttemptFails, one per stream, are `localhost`'s ::1,
+    tried first and refused by the IPv4 listener.)
+  - Under load, after: 0 failures in 6 rounds, 24,000 closes.
+- **Source.** The close read SIOCOUTQ, `write_seq - snd_una` (net/ipv4/tcp.c, `tcp_ioctl`),
+  then TCP_INFO's state, in two calls. The server's acknowledgement of the last records,
+  and its FIN, came between them: the socket went to TIME_WAIT, its own state TCP_CLOSE
+  (net/ipv4/tcp_minisocks.c, `tcp_time_wait`), and the close read the count from before
+  and the state from after. A connection read as closed takes no more acknowledgements,
+  so a count read after the state is its last.
+- **Consequence.** `ship::sockets::unacknowledged` reads TCP_INFO first, then SIOCOUTQ.
+  macOS reads both in TCP_CONNECTION_INFO, one call, and never had it.
+
+### M239. A running microVM's save and restore, from the caller's view (D176)
+
+- **Question.** How long do `shards save vm` and `shards restore vm` take for their caller,
+  how long is the guest paused by a save it is left running after, and where does the
+  time go, on a quiet host and on a loaded one?
+- **Method.** At 9c7100f1, with the save's phases logged (`warm.rs`, at info), on the M5
+  Max (18 CPUs, 128 GiB, macOS 26.4.1), release build, the guest Linux 6.18.48 aarch64 of
+  `alpine:3.22` (256 MiB, 18 vCPUs) counting each millisecond.
+  `docs/research/measurements/save-restore/`: `bench.py` runs ROUNDS microVMs, and of each
+  times `save vm --leave-running`, the longest gap in its log's timestamps around it (what
+  a reader of its output waits), `save vm`, and `restore vm` until it runs again; `run.sh`
+  runs it in a home of its own and reads each save's phases from the daemon's log: its
+  guest going quiet (QUIESCE to QUIESCED), then the microVM saved (vCPUs parked, memory
+  and state written, vCPUs released). With `load`, 12 busy loops run beside it. Four runs
+  of 100 rounds: two quiet without the phases, one quiet and one loaded with them.
+- **Results.** In ms, n = 100 each (200 for the phases, two saves a round).
+
+  | | quiet p50 | p90 | p99 | max | loaded p50 | p90 | p99 | max |
+  |---|---|---|---|---|---|---|---|---|
+  | `save --leave-running`, client | 91.8 | 101.1 | 120.2 | 120.2 | 141.4 | 272.8 | 327.7 | 327.7 |
+  | its log's stall | 19.1 | 21.7 | 23.8 | 23.8 | 24.6 | 93.2 | 152.5 | 152.5 |
+  | `save`, stopped, client | 79.4 | 92.0 | 145.7 | 145.7 | 106.1 | 155.3 | 217.0 | 217.0 |
+  | `restore`, client | 18.4 | 22.1 | 67.2 | 67.2 | 24.8 | 29.6 | 45.2 | 45.2 |
+  | guest quiet | 0.084 | 0.126 | 5.58 | 7.90 | 0.096 | 0.160 | 2.77 | 4.76 |
+  | microVM saved | 17.2 | 20.1 | 33.9 | 41.5 | 20.4 | 25.5 | 38.5 | 46.2 |
+
+  The two quiet runs without the phases, in ms: one's saves left running p50 92.9, p99
+  244.3, its log's stall p50 21.0, p99 148.2, saves stopping p50 86.8, p99 169.6, and
+  restores p50 20.0, p99 36.2; the other's saves left running p50 167.0, p99 241.6, its
+  stall p50 80.4, p99 131.5, saves stopping p50 75.7, p99 130.0, restores p50 19.1, p99
+  34.0, where the VMM's own save (its "saved for the host" lines) stayed p50 16.6, max
+  22.6. Each snapshot took 74 to 82 MB of disk, of the guest's 256 MiB and the memory it
+  plugged.
+- **Consequence.** The guest is paused for the microVM's save, its vCPUs parked while
+  memory and state are written: 17 ms at p50 quiet, 46 ms at most loaded. Its going quiet
+  costs under 0.2 ms at p90. What a log reader waits beyond that is the held output's
+  delivery once the guest runs again, which a loaded host's scheduler stretches, as it
+  varied between quiet runs (p50 19 to 80 ms) while the save itself did not. A caller's
+  save is that and the commit, the generation's files made durable (F_FULLFSYNC); a
+  restore, the VM process's start, the snapshot restored, and the guest dialing back in.

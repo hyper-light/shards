@@ -908,6 +908,8 @@ pub static START: Command = Command {
     args: Args::AtLeast(1),
     flags: &[
         Flag::bool("attach", Some(b'a'), "Attach STDOUT/STDERR and forward signals"),
+        // A microVM's snapshot (D176), which docker/cli shows of an experimental daemon.
+        Flag::string("checkpoint", None, "", "Restore from this checkpoint"),
         Flag::string(
             "detach-keys",
             None,
@@ -917,9 +919,53 @@ pub static START: Command = Command {
         HELP,
         Flag::bool("interactive", Some(b'i'), "Attach container's STDIN"),
     ],
-    unserved: "\
-checkpoint - s - -\n\
-checkpoint-dir - s - -",
+    unserved: "checkpoint-dir - s - - shards keeps a microVM's checkpoints with it, and restores from no other directory",
+    interspersed: true,
+    error_prefix: "",
+};
+
+/// `shards checkpoint create` (docker/cli cli/command/checkpoint/create.go): `save vm`
+/// (D176).
+pub static CHECKPOINT_CREATE: Command = Command {
+    usage: "[OPTIONS] CONTAINER CHECKPOINT",
+    about: "Create a checkpoint from a running container",
+    aliases: "",
+    args: Args::Exactly(2),
+    flags: &[
+        HELP,
+        Flag::bool(
+            "leave-running",
+            None,
+            "Leave the container running after checkpoint",
+        ),
+    ],
+    unserved: "checkpoint-dir - s - - shards keeps a microVM's checkpoints with it, and restores from no other directory",
+    interspersed: true,
+    error_prefix: "",
+};
+
+/// `shards checkpoint ls` (docker/cli cli/command/checkpoint/list.go): `list snapshots`
+/// (D176).
+pub static CHECKPOINT_LS: Command = Command {
+    usage: "[OPTIONS] CONTAINER",
+    about: "List checkpoints for a container",
+    aliases: "shards checkpoint ls, shards checkpoint list",
+    args: Args::Exactly(1),
+    flags: &[HELP],
+    unserved: "checkpoint-dir - s - - shards keeps a microVM's checkpoints with it, and restores from no other directory",
+    interspersed: true,
+    error_prefix: "",
+};
+
+/// `shards checkpoint rm` (docker/cli cli/command/checkpoint/remove.go): `remove
+/// snapshot` (D176).
+pub static CHECKPOINT_RM: Command = Command {
+    usage: "[OPTIONS] CONTAINER CHECKPOINT",
+    about: "Remove a checkpoint",
+    aliases: "shards checkpoint rm, shards checkpoint remove",
+    args: Args::Exactly(2),
+    flags: &[HELP],
+    unserved: "checkpoint-dir - s - - shards keeps a microVM's checkpoints with it, and restores from no other directory",
     interspersed: true,
     error_prefix: "",
 };
@@ -2060,6 +2106,44 @@ pub static SAVE_VM: Command = Command {
     error_prefix: "",
 };
 
+/// `shards restore vm` (D176): a stopped microVM resumed from a snapshot of its own, where
+/// it was saved. `shards restore DIR`, a directory holding a snapshot, is the VM process's
+/// (`shards run vm --kernel`'s, D25).
+pub static RESTORE_VM: Command = Command {
+    usage: "MICROVM [SNAPSHOT]",
+    about: "Resume a stopped microVM from a snapshot of its own, its newest unless named",
+    aliases: "shards restore vm",
+    args: Args::Range(1, 2),
+    flags: &[HELP],
+    unserved: "",
+    interspersed: true,
+    error_prefix: "",
+};
+
+/// `shards list snapshots` (D176): a microVM's snapshots.
+pub static SNAPSHOT_LS: Command = Command {
+    usage: "MICROVM",
+    about: "List a microVM's snapshots, newest first",
+    aliases: "shards list snapshots",
+    args: Args::Exactly(1),
+    flags: &[HELP],
+    unserved: "",
+    interspersed: true,
+    error_prefix: "",
+};
+
+/// `shards remove snapshot` (D176): snapshots of a microVM, removed.
+pub static SNAPSHOT_RM: Command = Command {
+    usage: "MICROVM SNAPSHOT [SNAPSHOT...]",
+    about: "Remove snapshots of a microVM",
+    aliases: "shards remove snapshot",
+    args: Args::AtLeast(2),
+    flags: &[HELP],
+    unserved: "",
+    interspersed: true,
+    error_prefix: "",
+};
+
 /// `shards watch processes` (D123): [`READ_PROCESSES`], then each as it comes.
 pub static WATCH_PROCESSES: Command = Command {
     usage: "MICROVM",
@@ -2721,6 +2805,11 @@ pub fn find(words: &[&str]) -> Option<(&'static Command, &'static str, usize)> {
         ["images", ..] => (&IMAGES, "shards images", 1),
         ["tag", ..] => (&TAG, "shards tag", 1),
         ["save", "vm", ..] => (&SAVE_VM, "shards save vm", 2),
+        ["checkpoint", "create", ..] => (&CHECKPOINT_CREATE, "shards checkpoint create", 2),
+        ["checkpoint", "ls" | "list", ..] => (&CHECKPOINT_LS, "shards checkpoint ls", 2),
+        ["checkpoint", "rm" | "remove", ..] => (&CHECKPOINT_RM, "shards checkpoint rm", 2),
+        ["snapshot", "ls" | "list", ..] => (&SNAPSHOT_LS, "shards list snapshots", 2),
+        ["snapshot", "rm" | "remove", ..] => (&SNAPSHOT_RM, "shards remove snapshot", 2),
         ["save", ..] => (&SAVE, "shards save", 1),
         ["load", ..] => (&LOAD, "shards load", 1),
         ["pull", ..] => (&PULL, "shards pull", 1),
