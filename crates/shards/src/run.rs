@@ -476,9 +476,10 @@ pub fn find_image(
 }
 
 /// The image here `given` names by its ID (`sha256:` and 64 hex digits, or 4 to 64 of
-/// them) where no image is tagged by that name, as dockerd's containerd store resolves one
-/// (moby daemon/containerd/image.go, resolveImage). None where it names none: the name is
-/// a reference, to find or pull.
+/// them) where no image is tagged by that name, or by a name and the digest it resolved
+/// to (`name@sha256:…`) where it was pulled by a tag, as dockerd's containerd store
+/// resolves one (moby daemon/containerd/image.go, resolveImage). None where it names none:
+/// the name is a reference, to find or pull.
 #[cfg(unix)]
 fn by_id(
     store: &shards_image::store::Store,
@@ -486,7 +487,11 @@ fn by_id(
     targets: &[shards_image::platform::Target],
 ) -> Result<Option<shards_registry::pull::Pulled>, String> {
     use shards_image::reference::AnyReference;
-    let digest = matches!(AnyReference::parse(given), Ok(AnyReference::Digest(_)));
+    let digest = match AnyReference::parse(given) {
+        Ok(AnyReference::Digest(_)) => true,
+        Ok(AnyReference::Named(r)) => r.digest.is_some(),
+        Err(_) => false,
+    };
     if !digest && crate::daemon::images::truncated_id(given).is_none() {
         return Ok(None);
     }

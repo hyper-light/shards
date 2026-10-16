@@ -90,6 +90,36 @@ fn images_run_from_a_registry() {
         "the stored image served the second run"
     );
 
+    // Named by the digest its tag resolved to, as dockerd's store finds one pulled by its
+    // tag: the stored image, whether the run may pull or not, nothing fetched.
+    let digests = run_shards_env(
+        &["image"],
+        &["inspect", "--format", "{{index .RepoDigests 0}}", image.as_str()],
+        &env,
+        TIMEOUT,
+    );
+    assert_eq!(digests.status, Some(0), "{}", digests.stderr);
+    let pinned = digests.stdout.trim().to_string();
+    assert!(pinned.contains("@sha256:"), "{pinned}");
+    for pull in ["never", "missing"] {
+        let run = run_shards_env(&["run"], &["--pull", pull, pinned.as_str()], &env, TIMEOUT);
+        let shown = format!("--- stdout\n{}\n--- stderr\n{}", run.stdout, run.stderr);
+        assert_eq!(run.status, Some(0), "--pull {pull}\n{shown}");
+        assert!(
+            run.stdout.lines().any(|l| l == "uid 1000"),
+            "--pull {pull}\n{shown}"
+        );
+        assert!(
+            !run.stderr.contains("Unable to find image"),
+            "--pull {pull}\n{shown}"
+        );
+    }
+    assert_eq!(
+        served.load(Ordering::SeqCst),
+        asked,
+        "runs by the digest fetched nothing"
+    );
+
     // The stored config changed under its digest, to run `exit 9`: a run that may not
     // pull refuses it rather than run a spec nobody pulled; one that may pulls it again,
     // and runs what was pulled (audit A11).
