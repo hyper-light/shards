@@ -147,6 +147,9 @@ impl<D: Disk> Daemon<D> {
             return Done::Close;
         };
         loop {
+            if super::gone_first(&ipc, conn) {
+                return Done::Close;
+            }
             let m = match shards_ipc::recv(&ipc) {
                 Ok(Some(m)) => m,
                 Ok(None) | Err(_) => return Done::Close,

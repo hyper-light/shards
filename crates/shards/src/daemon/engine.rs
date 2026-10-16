@@ -25,7 +25,7 @@ use std::io::{self, BufReader, PipeReader, Read as _, Write as _};
 use std::os::fd::{AsFd as _, BorrowedFd};
 use std::os::unix::net::UnixStream;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::time::Instant;
 
 use serde_json::json;
@@ -53,6 +53,10 @@ pub(super) struct Engine {
     pub(super) open: AtomicUsize,
     /// Each open connection, by number, which a daemon that stops ends.
     conns: Mutex<HashMap<u64, UnixStream>>,
+    /// What hangs up each connection relayed to a context's machine (relay.rs), by its
+    /// number, which a daemon that stops hangs up: ending its client's connection here
+    /// half-closes it there, and a stream there may outlast that.
+    relayed: Mutex<HashMap<u64, shards_remote::client::Controls>>,
     next: AtomicU64,
     /// Attaches waiting for their container's start, by its ID: its start's output goes
     /// to them (`docker run` attaches before it starts).
@@ -65,6 +69,42 @@ pub(super) struct Engine {
     /// Runs' stdins their attached client detached from, kept open until the run ends: a
     /// detach leaves a command's stdin as it was.
     stdins: Mutex<HashMap<String, std::io::PipeWriter>>,
+}
+
+impl Engine {
+    /// Holds `conn`, an API client's, which a daemon that stops ends (`end_engine`), and
+    /// counts it open: the number it is let go of by.
+    pub(super) fn hold(&self, conn: UnixStream) -> u64 {
+        let number = self.next.fetch_add(1, Ordering::Relaxed);
+        lock(&self.conns).insert(number, conn);
+        self.open.fetch_add(1, Ordering::SeqCst);
+        number
+    }
+
+    /// Lets go of connection `number`, which has ended.
+    pub(super) fn let_go(&self, number: u64) {
+        lock(&self.conns).remove(&number);
+        lock(&self.relayed).remove(&number);
+        self.open.fetch_sub(1, Ordering::SeqCst);
+    }
+
+    /// Holds what hangs up relayed connection `number`, for a daemon that stops to end it;
+    /// hung up now where it is stopping already. `stopping` is read under the lock
+    /// [`end_engine`](Daemon::end_engine) hangs them up under, and stored before it: each
+    /// connection is hung up by one or the other.
+    pub(super) fn hold_relayed(
+        &self,
+        number: u64,
+        controls: shards_remote::client::Controls,
+        stopping: &AtomicBool,
+    ) {
+        let mut relayed = lock(&self.relayed);
+        if stopping.load(Ordering::SeqCst) {
+            let _ = controls.hang_up();
+        } else {
+            relayed.insert(number, controls);
+        }
+    }
 }
 
 /// A call as the engine reads it.
@@ -271,20 +311,15 @@ impl<D: Disk> Daemon<D> {
             log(format!("an API client's connection: {e}"));
             return;
         }
-        let number = self.engine.next.fetch_add(1, Ordering::Relaxed);
-        match conn.try_clone() {
-            Ok(held) => {
-                lock(&self.engine.conns).insert(number, held);
-            }
+        let number = match conn.try_clone() {
+            Ok(held) => self.engine.hold(held),
             Err(e) => {
                 log(format!("an API client's connection: {e}"));
                 return;
             }
-        }
-        self.engine.open.fetch_add(1, Ordering::SeqCst);
+        };
         let done = move || {
-            lock(&self.engine.conns).remove(&number);
-            self.engine.open.fetch_sub(1, Ordering::SeqCst);
+            self.engine.let_go(number);
             *lock(&self.last) = Instant::now();
             self.wake_listener();
         };
@@ -300,10 +335,14 @@ impl<D: Disk> Daemon<D> {
         }
     }
 
-    /// Ends every API connection: the daemon stops.
+    /// Ends every API connection, those it relays to a context's machine too (relay.rs): the
+    /// daemon stops.
     pub(super) fn end_engine(&self) {
         for conn in lock(&self.engine.conns).values() {
             shards_ipc::end(conn);
+        }
+        for controls in lock(&self.engine.relayed).values() {
+            let _ = controls.hang_up();
         }
     }
 
@@ -693,6 +732,45 @@ impl<D: Disk> Daemon<D> {
             .map_err(|e| format!("asking the daemon: {e}"))?;
         Ok(ours)
     }
+}
+
+/// Waits until the daemon has a message on `ipc` for a stream it answers, or `client` goes
+/// first, or sends something, which a client that waits for a stream sends none of: whether
+/// it went. A stream ends with its client, as moby's ends with its request (net/http cancels
+/// a request's context as its connection's read ends, server.go `backgroundRead`), and not
+/// at its next message, which a quiet microVM's log, or a host where nothing happens, may
+/// never send.
+fn gone_first(ipc: &UnixStream, client: &UnixStream) -> bool {
+    use std::os::fd::AsRawFd as _;
+    let pollfd = |fd: &UnixStream| libc::pollfd {
+        fd: fd.as_raw_fd(),
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    let mut polled = [pollfd(ipc), pollfd(client)];
+    // SAFETY: poll(2) on two pollfds of descriptors the caller holds open.
+    while unsafe { libc::poll(polled.as_mut_ptr(), 2, -1) } < 0 {
+        if io::Error::last_os_error().kind() != io::ErrorKind::Interrupted {
+            return false;
+        }
+    }
+    let [_, client] = polled;
+    client.revents != 0
+}
+
+/// Answers a client whose call a context's machine did not answer (relay.rs) with `why`, as
+/// the API says an error, its connection closed after: a gateway's 502 (RFC 9110 §15.6.3),
+/// which Docker's clients say as `Error response from daemon: WHY`.
+pub(super) fn unanswered(conn: &UnixStream, why: &str) -> io::Result<()> {
+    // Its call is not read: answered as one that has content would be.
+    let head = Head {
+        method: "GET".into(),
+        target: String::new(),
+        major: 1,
+        minor: 1,
+        fields: Vec::new(),
+    };
+    Answer::error(502, why).write(conn, &head, false)
 }
 
 /// `_ping`: that the engine serves, and its API's version, which clients negotiate by; and

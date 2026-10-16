@@ -122,6 +122,40 @@ impl io::Write for Recorded {
     }
 }
 
+/// This client's stdout, which says when its reader has gone: the command, ended there, ends
+/// here with status 1, unsaid, as one does here whose reader hung up (daemon/commands.rs,
+/// `undelivered`).
+struct Printed {
+    out: io::Stdout,
+    gone: std::sync::mpsc::Sender<()>,
+}
+
+impl Printed {
+    fn seen<T>(&self, done: io::Result<T>) -> io::Result<T> {
+        if let Err(e) = &done
+            && matches!(
+                e.kind(),
+                io::ErrorKind::BrokenPipe | io::ErrorKind::ConnectionReset | io::ErrorKind::NotConnected
+            )
+        {
+            let _ = self.gone.send(());
+        }
+        done
+    }
+}
+
+impl io::Write for Printed {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        let written = self.out.write(bytes);
+        self.seen(written)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        let flushed = self.out.flush();
+        self.seen(flushed)
+    }
+}
+
 /// This client's terminal, where it has one: which of its stdin, stdout and stderr its
 /// console is, and its size, its window's, which only an output reports.
 #[cfg(windows)]
@@ -323,23 +357,45 @@ fn at(path: &Path) -> impl Fn(io::Error) -> String + '_ {
 
 /// `bytes` written to `path`, a new file readable by this user alone; an error where a file
 /// is there already.
+/// `bytes` at `path`, which must not exist yet: written whole under a name no record has,
+/// then linked there, so that a reader (this home's daemon, woken as a name comes) finds
+/// the record whole or not at all, and of two made at once, one is made and the other
+/// refused.
 fn write_new(path: &Path, bytes: &[u8]) -> Result<(), String> {
-    let mut options = fs::OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
-    let mut file = options.open(path).map_err(at(path))?;
-    file.write_all(bytes)
-        .and_then(|()| file.sync_all())
-        .map_err(at(path))
+    let unnamed = unnamed(path);
+    let _ = fs::remove_file(&unnamed);
+    let made = write_file(&unnamed, bytes).and_then(|()| fs::hard_link(&unnamed, path));
+    let _ = fs::remove_file(&unnamed);
+    made.map_err(at(path))
 }
 
 /// `bytes` in place of what `path` holds, whole: written beside it, then renamed over it.
 fn replace(path: &Path, bytes: &[u8]) -> Result<(), String> {
-    let new = path.with_extension(format!("new-{}", std::process::id()));
-    let _ = fs::remove_file(&new);
-    write_new(&new, bytes)?;
-    fs::rename(&new, path).map_err(at(path))
+    let unnamed = unnamed(path);
+    let _ = fs::remove_file(&unnamed);
+    let replaced = write_file(&unnamed, bytes).and_then(|()| fs::rename(&unnamed, path));
+    if replaced.is_err() {
+        let _ = fs::remove_file(&unnamed);
+    }
+    replaced.map_err(at(path))
+}
+
+/// Where `path`'s record is written before it takes its name: beside it, this process's,
+/// under a name no record has, as no record's name holds `~`.
+fn unnamed(path: &Path) -> PathBuf {
+    let name = path.file_name().unwrap_or_default().to_string_lossy();
+    path.with_file_name(format!("~{name}.{}", std::process::id()))
+}
+
+/// A new file at `path`, only its owner's, holding `bytes` on disk.
+fn write_file(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    let mut file = options.open(path)?;
+    file.write_all(bytes)?;
+    file.sync_all()
 }
 
 fn dir(home: &Path, name: &str) -> Result<PathBuf, String> {
@@ -1567,7 +1623,11 @@ pub(crate) fn forward(home: &Path, context: &Context, args: Vec<OsString>) -> Ex
     // while it is made, so that one that ends the client removes it.
     let mut written = None;
     let mut stdin: Box<dyn io::Read + Send> = Box::new(io::stdin());
-    let mut stdout: Box<dyn io::Write + Send> = Box::new(io::stdout());
+    let (gone_tx, gone_rx) = std::sync::mpsc::channel();
+    let mut stdout: Box<dyn io::Write + Send> = Box::new(Printed {
+        out: io::stdout(),
+        gone: gone_tx,
+    });
     let mut then = None;
     let (failed_tx, failed_rx) = std::sync::mpsc::channel();
     match &named {
@@ -1693,8 +1753,9 @@ pub(crate) fn forward(home: &Path, context: &Context, args: Vec<OsString>) -> Ex
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let temp = output.temp().map(|t| t.display().to_string()).unwrap_or_default();
+        // A write that failed here ended the command there: said in the save's words.
         let kept = match (&ran, failed_rx.try_recv()) {
-            (Ok(Ok(_)), Ok(e)) => Err(format!("{failed}: write {temp}: {e}")),
+            (_, Ok(e)) => Err(format!("{failed}: write {temp}: {e}")),
             (Ok(Ok(status)), Err(_)) => output.finish(u8::try_from(*status).unwrap_or(1)),
             _ => Ok(()),
         };
@@ -1702,12 +1763,13 @@ pub(crate) fn forward(home: &Path, context: &Context, args: Vec<OsString>) -> Ex
         kept
     });
     match (ran, kept) {
-        (Ok(Ok(_)), Some(Err(e))) => {
+        (_, Some(Err(e))) => {
             let _ = writeln!(io::stderr(), "{e}");
             ExitCode::FAILURE
         }
         (Ok(Ok(status)), _) => ExitCode::from(u8::try_from(status).unwrap_or(1)),
         (Ok(Err(refused)), _) => fail(format!("{}: {refused}", context.name)),
+        (Err(_), _) if gone_rx.try_recv().is_ok() => ExitCode::FAILURE,
         (Err(e), _) => fail(format!("{}: {e}", context.name)),
     }
 }
@@ -1879,10 +1941,6 @@ fn create(home: &Path, name: &str, rest: &[&str]) -> Result<(), String> {
         daemon: invitation.daemon,
     };
     write_new(&dir(home, "contexts")?.join(name), context.text().as_bytes())?;
-    // This home's daemon, where it runs, serves the context's engine as it is woken: a
-    // connection that asks nothing wakes it (D180 part 4).
-    #[cfg(unix)]
-    let _ = std::os::unix::net::UnixStream::connect(home.join(shards_ipc::SOCKET));
     let _ = writeln!(io::stdout(), "{name}");
     let _ = writeln!(io::stderr(), "Successfully created context {name:?}");
     Ok(())
@@ -1954,12 +2012,9 @@ fn remove(home: &Path, names: &[&str]) -> Result<(), String> {
         if current(home) == *name {
             let _ = fs::remove_file(home.join("context"));
         }
-        // Its engine's socket goes with it: the daemon that serves it, woken by a connection,
-        // finds the context gone and lets go of it.
-        let engine = home.join(engine_socket(name));
-        #[cfg(unix)]
-        let _ = std::os::unix::net::UnixStream::connect(&engine);
-        let _ = fs::remove_file(&engine);
+        // Its engine's socket goes with it, which the daemon that serves it, watching the
+        // contexts, lets go of; one no daemon serves is removed here.
+        let _ = fs::remove_file(home.join(engine_socket(name)));
         let _ = writeln!(io::stdout(), "{name}");
     }
     Ok(())
