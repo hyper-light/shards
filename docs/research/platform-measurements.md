@@ -8871,3 +8871,36 @@ revision before comparing a changed API/implementation.
   already unlocks its home's. `a_record_let_go_is_free_while_a_copy_of_its_lock_lives` and
   `a_hold_let_go_goes_while_a_copy_of_its_lock_lives` keep a copy of the lock's descriptor
   open, as a starting program does, and fail without the unlock.
+
+### M245. CI's native test steps at their limit: the tests' step against 30 minutes
+
+- **Question.** Gpu b628fc28's x86_64 Linux job ran out of its tests' step's 30 minutes in
+  `shards-sigstore`'s tests, near the workspace's end, a test failing nowhere; 9ce239a6's,
+  the commit before, took 23.2. How long do the native jobs' tests take, runner to runner,
+  and what limit do they need (M235 asked it of musl's)?
+- **Method.** GitHub's records of the last 60 CI runs (2026-10-14 14:59 to 2026-10-16 12:29
+  UTC, runs 38585471626 to 38900835657): the start and end of each native job and of its
+  `Tests` step; and the per-binary times b628fc28's and 9ce239a6's x86_64 Linux logs give
+  (`test result: ... finished in`).
+- **Results.**
+
+  | job | n | tests' step p50 | p90 | max | ran out | other steps' max |
+  |---|---|---|---|---|---|---|
+  | x86_64-unknown-linux-gnu | 60 | 26.9 min | 29.1 | 30.2 | 2 | 6.3 |
+  | x86_64-pc-windows-msvc | 59 | 26.4 | 27.4 | 29.2 | 0 | 15.8 |
+  | aarch64-apple-darwin | 59 | 20.6 | 24.3 | 26.1 | 0 | 12.3 |
+  | aarch64-unknown-linux-gnu | 60 | 12.4 | 12.9 | 30.2 | 1 | 5.9 |
+
+  - x86_64 Linux's p90 is within a minute of the limit, and two of its 60 ran out of it
+    (b628fc28's, and run 38851340643's), the slowest that ran through taking 29.6: the two
+    that ran out took 30.2 and more, how much more unmeasured. aarch64 Linux's one that ran
+    out was a hang, since fixed (D180's streams' ends), not a slow runner.
+  - b628fc28's runner was slower throughout, not in one place: its tests' binaries took 969
+    s against 9ce239a6's 799, `tests/containers.rs` 350 against 241, `block` 53 against 39,
+    `build` 191 against 180, `guest` 37 against 28; `tests/loopback.rs`'s 10 more are its
+    own new test that waits out the idle bound.
+- **Consequence.** The tests' step's limit becomes 41 minutes, a third above the slowest
+  measured (30.2, which the two that ran out at least took), as M235 set musl's; and the
+  job's 63, those 41 and a third above its other steps' slowest, 15.8 on Windows. A limit
+  this far out ends a hang, and paces nothing; the runs it lets through say how long the
+  slowest take, which these two could not.
