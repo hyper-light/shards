@@ -731,6 +731,7 @@ pub fn build(cfg: &Config) -> Result<Machine, String> {
             join: cfg.join,
             #[cfg(unix)]
             join_share: cfg.join_share,
+            io: cfg.io_limit,
         };
         let a = assemble(
             &memory,

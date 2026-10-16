@@ -1009,8 +1009,9 @@ fn host_config(f: &Facts<'_>) -> Value {
         )
         .tagged("CPUCount", Some("CpuCount"), false, int(res.cpu_count))
         .tagged("CPUPercent", Some("CpuPercent"), false, int(res.cpu_percent))
-        .field("IOMaximumIOps", Value::Uint(0))
-        .field("IOMaximumBandwidth", Value::Uint(0))
+        // Its microVM's I/O limits, its VMM's to keep (D178).
+        .field("IOMaximumIOps", Value::Uint(res.io_maximum_iops))
+        .field("IOMaximumBandwidth", Value::Uint(res.io_maximum_bandwidth))
         .tagged("Mounts", Some("Mounts"), true, api_mounts(&run.mounts))
         // A privileged container's are none (daemon/oci_linux.go); the CLI sends empty
         // ones for `--security-opt systempaths=unconfined`.

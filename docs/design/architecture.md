@@ -3621,6 +3621,59 @@ No run-time labels, relays or declassifiers (§12 answer 14, decided by the user
 an internal-only domain to the world (D58), so there is no data to label. Code mode is
 D136.
 
+### D178. A microVM's I/O limits, kept outside it
+
+`--io-maxbandwidth BYTES` and `--io-maxiops N`, on `shards run` and `create` and in the
+Engine API's `HostConfig.IOMaximumBandwidth` and `IOMaximumIOps`, are the most bytes and
+requests a second of a microVM's I/O to the host's storage: its volumes (virtio-fs) and its
+disks (virtio-blk). Docker takes them for its Windows containers' system drive alone:
+dockerd on Linux refuses them (`Invalid QoS settings: linux does not support Maximum IO
+Bandwidth or Maximum IO IOps`, moby 464cd50c daemon/daemon_unix.go), and docker/cli hides
+them from a Linux daemon (their `ostype` annotation, cli/command/container/opts.go). A
+container's limits per device (`--device-read-bps` and the rest, D44) are written in its
+guest's cgroup, which the guest keeps; these the VMM keeps, outside the guest, where no
+process in the microVM, its root among them, can lift them. A microVM's image (read through
+memory, DAX) and its swap window (D159) are memory to it, not device I/O, and are not
+limited.
+
+Every request its devices serve is charged before it is served (devices/virtio/limit.rs):
+a volume's READ by the bytes it asks for and its WRITE by those it gives, every request as
+one request (the high-priority queue's FORGETs and INTERRUPTs, no I/O, not at all), a
+disk's read or write by its data. Each measure keeps its theoretical arrival time (ITU-T
+I.371's generic cell rate algorithm): when what it charged so far would have been done at
+its rate. A request waits for that, then moves it on by its own cost: a microVM left idle
+is served at once, a busy one is paced at the limit, and no window of time holds more than
+its rate's worth and one request; one larger than a second's worth is served whole, and
+the next waits it out. Two things a busy host does would cost the rate, and do not (PM
+M240, where each was found by counting the device's requests and the limiter's waits): a
+request that costs a measure nothing neither waits on it nor moves it, so that the zero-
+byte GETXATTR the kernel asks with each write takes its time within the write's wait; and
+a wait that runs past its deadline, as a loaded host's timers leave it, lets the next
+request that measure charges keep its place in the schedule, which it would otherwise start
+over, never going before it.
+
+One budget a microVM, its VM process's, which each of its devices charges, one VM a
+process; its rates come with its run's request, so that a warm VM restored ahead of its run
+takes the run's. A wait is on a device's worker thread, never a vCPU's. While a snapshot
+pauses the devices (D176), none waits: the request a worker has in hand is served at once,
+its cost kept, so that a save waits for no limit. A container joining a microVM (D119)
+does its I/O through that microVM's devices and takes no limits of its own: refused,
+saying so. `inspect` says them as dockerd's HostConfig does.
+
+Measured (PM M240, M5 Max, release build): the limit is a ceiling, kept: 16 MiB under 4
+MiB a second achieved 0.844 of it at p50 and 0.894 at most quiet, 0.841 and 0.931 loaded,
+never over it; where the host's storage answers within a write's place in the schedule
+the rate is the limit's to 0.4% (4.001 s where its time is 3.98), and where it stalls past
+that the writer gets the less it can take, catching nothing up, which would take a burst
+past the limit. A limit that holds nothing back costs nothing measurable: 64 MiB with none
+and with one of 1 GiB a second agree at p50 within 4%, either faster. Held by
+`requests_are_paced_at_their_rates`, `a_late_request_keeps_its_place` and
+`a_pause_lets_a_waiting_request_go` (limit.rs), and on real microVMs by
+`a_microvms_io_is_paced_at_its_limits` (tests/containers.rs: 3 MiB under 1 MiB a second
+takes two seconds and more, thirty synced writes under 20 requests a second three; the
+limits in `inspect`; a joiner's refused; mutation-checked); the CLI's flags by docker/cli's
+oracle (`MICROVM_FLAGS`), the API's by its create bodies.
+
 ### D177. `build --squash`: a build's layers as one
 
 `shards build --squash`, and the Engine API's `POST /build?squash=1` (docker-py's
@@ -5225,10 +5278,10 @@ Docker on Linux does, which refuses several of them for want of a VM.
   shards' words. `inspect` names it `shards`.
 - **`--annotation`**: kept, shown as `HostConfig.Annotations` and matched by `ps --filter
   annotation`, each with a key.
-- **`--io-maxbandwidth` and `--io-maxiops`: not yet.** A run's root is its image read
-  through memory (DAX) and its writes in its memory: no drive of its own to cap. Its I/O
-  to the host's storage goes through its virtio-fs shares and virtio-blk disks, which the
-  VMM is to rate-limit, measured, next.
+- **`--io-maxbandwidth` and `--io-maxiops`: its microVM's (D178).** A run's root is its
+  image read through memory (DAX) and its writes in its memory: no drive of its own to
+  cap. Its I/O to the host's storage goes through its virtio-fs shares and virtio-blk
+  disks, which the VMM paces at them, outside the guest.
 - `--help` lists `--cpu-count` and `--cpu-percent` as the microVM's; the CLI's oracle
   (scripts/docker-cli, against a CLI that knows its daemon is Linux's) holds every other
   answer byte for byte, and its test names each difference (MICROVM_FLAGS).

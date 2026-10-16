@@ -1468,6 +1468,80 @@ fn an_s6_overlay_image_runs_as_pid_1() {
     }
 }
 
+/// A microVM's I/O limits (D178): its VMM paces what its guest writes to a volume at
+/// `--io-maxbandwidth`'s bytes and `--io-maxiops`'s requests a second, which no guest lifts,
+/// and nothing without them; `inspect` says them as dockerd's HostConfig does; a container
+/// joining it, whose I/O is the microVM's, takes none of its own.
+#[test]
+fn a_microvms_io_is_paced_at_its_limits() {
+    let Some((home, image)) = home("containers-io") else {
+        return;
+    };
+    let shards = |args: &[&str]| shards_in(&home, args);
+    // The guest's own count of how long its writes took, all synced.
+    let poured = |limits: &[&str], bytes: &str, chunk: &str| -> u128 {
+        let mut options = vec!["--rm", "-u", "0", "-v", "io:/v"];
+        options.extend_from_slice(limits);
+        let r = run_in(&home, &image, &options, &["pour", "/v/p", bytes, chunk]);
+        assert_eq!(r.status, Some(0), "{limits:?}: {r}");
+        let ms = r
+            .stdout
+            .strip_prefix(&format!("poured {bytes} in "))
+            .and_then(|t| t.trim_end().strip_suffix(" ms"))
+            .unwrap_or_else(|| panic!("{limits:?}: {}", r.stdout));
+        ms.parse().unwrap()
+    };
+    let free = poured(&[], "3145728", "65536");
+    // 3 MiB at 1 MiB a second: at least the two seconds after its first request.
+    let paced = poured(&["--io-maxbandwidth", "1m"], "3145728", "65536");
+    assert!(paced >= 1900 && paced > free, "free {free} ms, paced {paced} ms");
+    // Thirty synced writes, each a WRITE and an FSYNC at least, at 20 requests a second.
+    let counted = poured(&["--io-maxiops", "20"], "122880", "4096");
+    assert!(counted >= 2900, "{counted} ms");
+    let run = shards(&[
+        "run",
+        "-d",
+        "--pull",
+        "never",
+        "--name",
+        "limited",
+        "--io-maxbandwidth",
+        "1m",
+        "--io-maxiops",
+        "20",
+        &image,
+        "sleep",
+    ]);
+    assert_eq!(run.status, Some(0), "{run}");
+    let inspected = shards(&[
+        "inspect",
+        "-f",
+        "{{.HostConfig.IOMaximumBandwidth}} {{.HostConfig.IOMaximumIOps}}",
+        "limited",
+    ]);
+    assert_eq!(inspected.stdout, "1048576 20\n", "{inspected}");
+    let joined = shards(&[
+        "run",
+        "--rm",
+        "--pull",
+        "never",
+        "--network",
+        "container:limited",
+        "--io-maxiops",
+        "5",
+        &image,
+        "sleep",
+    ]);
+    assert_ne!(joined.status, Some(0), "{joined}");
+    assert!(
+        joined
+            .stderr
+            .contains("a joining container's I/O is that microVM's"),
+        "{joined}"
+    );
+    assert_eq!(shards(&["rm", "-f", "limited"]).status, Some(0));
+}
+
 #[test]
 fn pause_freezes_a_microvm_until_unpause_or_stop() {
     let Some((home, image)) = home("containers-pause") else {

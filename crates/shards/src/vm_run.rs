@@ -279,6 +279,9 @@ fn parse_run(args: impl Iterator<Item = OsString>) -> Result<Run, String> {
     let mut args = args;
     let mut rootfs = None;
     let mut cfg = Config::new(PathBuf::new(), None);
+    // Its disks and shared directories charge its I/O limits, whose rates its run brings
+    // (D178).
+    cfg.io_limit = Some(&IO);
     let (mut kernel, mut common, mut warm) = (None, Common::new(), None);
     let mut memory_max = None;
     let mut attach = None;
@@ -525,6 +528,7 @@ fn parse_restore(args: impl Iterator<Item = OsString>) -> Result<Restore, String
         join: None,
         #[cfg(unix)]
         join_share: None,
+        io_limit: Some(&IO),
         // Restored ahead of its request: the prefetch costs the request nothing.
         prefetch: hold || warm.is_some(),
         // A warm VM's request ends the recording as it ends a template's (RECORD_FOR); a
@@ -548,6 +552,9 @@ pub static SHARES: std::sync::OnceLock<Vec<shards_vmm::devices::virtio::fs::Shar
 /// This VM's join disk, which containers joining its network are given ranges of (D119):
 /// one VM a process, so one disk, a `static` its device and its join requests both reach.
 static JOIN: shards_vmm::devices::virtio::block::Join = shards_vmm::devices::virtio::block::Join::new();
+/// This VM's I/O limits (D178), which its disks and shared directories charge: one VM a
+/// process, so one set, given their rates as its run arrives.
+static IO: shards_vmm::devices::virtio::limit::Limiter = shards_vmm::devices::virtio::limit::Limiter::new();
 /// Whether this VM has [`JOIN`]: its device given it.
 static HAS_JOIN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
@@ -1166,6 +1173,8 @@ fn serve_workload(
                             if let Err(e) = stopper.set_plug_most(request.plug) {
                                 shards_vmm::debug!("{e}");
                             }
+                            // Its I/O limits, before its guest hears of the run (D178).
+                            IO.set(request.io.0, request.io.1);
                             // Its swap (D159), mapped into the guest's swap window before
                             // its guest hears of the run, which init swaps to before the
                             // command starts.

@@ -148,6 +148,12 @@ pub fn run_of(
             cpu_realtime_runtime: number(host, "CpuRealtimeRuntime"),
             cpu_count: number(host, "CpuCount"),
             cpu_percent: number(host, "CpuPercent"),
+            // Its microVM's I/O to the host's storage, its VMM's to keep (D178).
+            io_maximum_bandwidth: host
+                .get("IOMaximumBandwidth")
+                .and_then(Value::as_u64)
+                .unwrap_or(0),
+            io_maximum_iops: host.get("IOMaximumIOps").and_then(Value::as_u64).unwrap_or(0),
         },
         read_only: flag(host, "ReadonlyRootfs"),
         tmpfs: tmpfs(host)?,
@@ -218,7 +224,7 @@ fn unheld(body: &Value, host: &Value) -> Result<(), String> {
             Value::Bool(b) => *b,
         })
     };
-    let refusals: [(&Value, &str, &str); 7] = [
+    let refusals: [(&Value, &str, &str); 5] = [
         (
             body,
             "OnBuild",
@@ -243,16 +249,6 @@ fn unheld(body: &Value, host: &Value) -> Result<(), String> {
             host,
             "CgroupParent",
             "HostConfig.CgroupParent: a run's cgroups are its microVM's own, and shards places no microVM under a host cgroup of a run's choosing",
-        ),
-        (
-            host,
-            "IOMaximumBandwidth",
-            "HostConfig.IOMaximumBandwidth: a microVM's disks take no bandwidth limit of a run's",
-        ),
-        (
-            host,
-            "IOMaximumIOps",
-            "HostConfig.IOMaximumIOps: a microVM's disks take no IOPS limit of a run's",
         ),
     ];
     for (v, k, why) in refusals {
@@ -876,6 +872,12 @@ mod tests {
             (r.entrypoint, r.cmd),
             (Some(vec!["/bin/sh -c".into()]), vec!["echo hi".to_string()])
         );
+        // Its microVM's I/O limits, its VMM's to keep (D178).
+        let r = made(json!({"HostConfig": {"IOMaximumBandwidth": 1_048_576, "IOMaximumIOps": 100}})).unwrap();
+        assert_eq!(
+            (r.resources.io_maximum_bandwidth, r.resources.io_maximum_iops),
+            (1_048_576, 100)
+        );
         // The streams as given: none attached, as `run -d` creates it, its stdin open.
         let r = made(json!({"OpenStdin": true, "AttachStdout": false, "AttachStderr": false})).unwrap();
         assert!(r.interactive);
@@ -964,14 +966,6 @@ mod tests {
             (
                 json!({"HostConfig": {"CgroupParent": "/agents"}}),
                 "HostConfig.CgroupParent",
-            ),
-            (
-                json!({"HostConfig": {"IOMaximumIOps": 100}}),
-                "HostConfig.IOMaximumIOps",
-            ),
-            (
-                json!({"HostConfig": {"IOMaximumBandwidth": 1}}),
-                "HostConfig.IOMaximumBandwidth",
             ),
             (
                 json!({"HostConfig": {"MaskedPaths": ["/proc/kcore"]}}),
@@ -1074,8 +1068,8 @@ mod tests {
             cases.len(),
             wrong.join("\n")
         );
-        // Each a run cannot hold is refused by both: limits on a microVM's disks.
-        assert_eq!(refused.len(), 1, "{}", refused.join("\n"));
-        assert!(refused[0].contains("--io-maxbandwidth"), "{}", refused[0]);
+        // None refused: its microVM's I/O limits are its VMM's to keep (D178), as the
+        // rest are a run's.
+        assert!(refused.is_empty(), "{}", refused.join("\n"));
     }
 }

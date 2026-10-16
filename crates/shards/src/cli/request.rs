@@ -593,6 +593,8 @@ fn request(parsed: &Parsed) -> Result<Run, String> {
         cpu_realtime_runtime: parsed.int("cpu-rt-runtime"),
         cpu_count: parsed.int("cpu-count"),
         cpu_percent: parsed.int("cpu-percent"),
+        io_maximum_bandwidth: parsed.string("io-maxbandwidth").parse().unwrap_or(0),
+        io_maximum_iops: parsed.string("io-maxiops").parse().unwrap_or(0),
     };
     let (cap_add, cap_drop) = effective_caps(parsed.many("cap-add"), parsed.many("cap-drop"));
     let (security_opt, system_paths) = security_opts(parsed.many("security-opt"))?;

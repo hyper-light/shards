@@ -71,6 +71,8 @@ pub(crate) struct Hosts<'a> {
     /// The join share's slot (D119), which a server of its VM's joiners' volumes fills.
     #[cfg(unix)]
     pub join_share: Option<&'static crate::devices::virtio::fs::Slot>,
+    /// The microVM's I/O limits (D178), which its disks and shared directories charge.
+    pub io: Option<&'static crate::devices::virtio::limit::Limiter>,
 }
 
 /// A snapshot's vsock and network devices, and the restore's host sides for them, come
@@ -366,11 +368,10 @@ fn virtio_devices(
     }
     let mut devices: Vec<Box<dyn crate::devices::virtio::VirtioDevice>> = Vec::with_capacity(slots);
     for (i, (path, read_only)) in config.disks.iter().enumerate() {
-        devices.push(Box::new(crate::devices::virtio::block::Block::open(
-            path,
-            *read_only,
-            &format!("shards-disk{i}"),
-        )?));
+        devices.push(Box::new(
+            crate::devices::virtio::block::Block::open(path, *read_only, &format!("shards-disk{i}"))?
+                .with_limit(hosts.io),
+        ));
     }
     // Its join disk, the virtio-blk device after its disks, which init finds by its
     // serial (D119).
@@ -378,10 +379,10 @@ fn virtio_devices(
         let disk = hosts
             .join
             .ok_or("the machine has a join disk but no host side for it")?;
-        devices.push(Box::new(crate::devices::virtio::block::Block::join(
-            disk,
-            shards_abi::JOIN_DISK_SERIAL,
-        )));
+        devices.push(Box::new(
+            crate::devices::virtio::block::Block::join(disk, shards_abi::JOIN_DISK_SERIAL)
+                .with_limit(hosts.io),
+        ));
     }
     for (region, gpa) in regions {
         devices.push(Box::new(pmem::Pmem::new(region.clone(), *gpa)));
@@ -409,10 +410,9 @@ fn virtio_devices(
             .get(i)
             .ok_or("the machine has a shared directory but no slot for it")?
             .clone();
-        devices.push(Box::new(crate::devices::virtio::fs::Fs::new(
-            &format!("shards{i}"),
-            slot,
-        )?));
+        devices.push(Box::new(
+            crate::devices::virtio::fs::Fs::new(&format!("shards{i}"), slot)?.with_limit(hosts.io),
+        ));
     }
     // Its join share, after them, which init mounts by its tag once a joiner brings
     // volumes (D119).
@@ -421,10 +421,9 @@ fn virtio_devices(
         let slot = hosts
             .join_share
             .ok_or("the machine has a join share but no slot for it")?;
-        devices.push(Box::new(crate::devices::virtio::fs::Fs::join(
-            shards_abi::JOIN_SHARE_TAG,
-            slot,
-        )?));
+        devices.push(Box::new(
+            crate::devices::virtio::fs::Fs::join(shards_abi::JOIN_SHARE_TAG, slot)?.with_limit(hosts.io),
+        ));
     }
     devices.extend(last);
     Ok(devices)
@@ -577,6 +576,9 @@ pub struct Config {
     /// The join share's slot (D119), which a server of its VM's joiners' volumes fills.
     #[cfg(unix)]
     pub join_share: Option<&'static crate::devices::virtio::fs::Slot>,
+    /// Its I/O limits (D178), which its disks and shared directories charge: its process's,
+    /// given their rates with its run.
+    pub io_limit: Option<&'static crate::devices::virtio::limit::Limiter>,
     /// A virtio-gpu device, Vulkan through Venus (D144), rendered in this process: a VM
     /// process built with the renderer (`shards-vm-gpu`) has one. Its snapshot is refused
     /// once the guest has made a context or a resource, which are its host driver's and no
@@ -1311,6 +1313,7 @@ impl Config {
             join: None,
             #[cfg(unix)]
             join_share: None,
+            io_limit: None,
             nested: false,
             hotplug_mib: 0,
             reporting: false,
@@ -1348,6 +1351,8 @@ pub struct RestoreConfig {
     /// The join share's slot (D119), which a server of its VM's joiners' volumes fills.
     #[cfg(unix)]
     pub join_share: Option<&'static crate::devices::virtio::fs::Slot>,
+    /// Its I/O limits (D178), as [`Config::io_limit`].
+    pub io_limit: Option<&'static crate::devices::virtio::limit::Limiter>,
     /// Prefetch the snapshot's working set, if it has one, before the guest runs: for a
     /// restore ahead of its request, which it moves off the request's path (PM M30).
     pub prefetch: bool,
@@ -1711,6 +1716,7 @@ mod tests {
             join: None,
             #[cfg(unix)]
             join_share: None,
+            io: None,
         };
         let mac = Some([2, 0, 0, 0, 0, 1]);
         for (has_vsock, has_net) in [(false, false), (true, false), (false, true), (true, true)] {
@@ -1798,6 +1804,7 @@ mod tests {
             join: None,
             #[cfg(unix)]
             join_share: None,
+            io: None,
         };
         let e = virtio_devices(&config, &regions, hosts, Vec::new(), 4)
             .err()
@@ -1835,6 +1842,7 @@ mod tests {
             join: None,
             #[cfg(unix)]
             join_share: None,
+            io: None,
         };
         let e = virtio_devices(&config, &regions, missing, Vec::new(), 5)
             .err()
@@ -1847,6 +1855,7 @@ mod tests {
             join: None,
             #[cfg(unix)]
             join_share: None,
+            io: None,
         };
         let e = virtio_devices(&config, &regions, missing, Vec::new(), 5)
             .err()

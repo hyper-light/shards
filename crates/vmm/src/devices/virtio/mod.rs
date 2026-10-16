@@ -10,6 +10,7 @@ pub mod block;
 pub mod fs;
 pub mod gpu;
 pub mod iommu;
+pub mod limit;
 pub mod mem;
 pub mod mmio;
 pub mod net;

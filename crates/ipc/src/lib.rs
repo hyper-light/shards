@@ -804,6 +804,11 @@ pub struct Resources {
     /// `--cpu-percent`: the most of its host's CPU time its microVM may use, 1 to 100, 0
     /// for no such cap (D155).
     pub cpu_percent: i64,
+    /// `--io-maxbandwidth` and `--io-maxiops`: the most bytes and requests a second of its
+    /// microVM's I/O to the host's storage, its volumes' and disks', which its VMM keeps
+    /// (D178); 0 for no limit.
+    pub io_maximum_bandwidth: u64,
+    pub io_maximum_iops: u64,
 }
 
 impl Resources {
@@ -828,6 +833,14 @@ impl Resources {
         int("cpu-rt-runtime", self.cpu_realtime_runtime);
         int("cpu-count", self.cpu_count);
         int("cpu-percent", self.cpu_percent);
+        for (name, v) in [
+            ("io-maxbandwidth", self.io_maximum_bandwidth),
+            ("io-maxiops", self.io_maximum_iops),
+        ] {
+            if v != 0 {
+                out.push(format!("{name}={v}"));
+            }
+        }
         if let Some(s) = self.memory_swappiness {
             out.push(format!("memory-swappiness={s}"));
         }
@@ -866,6 +879,8 @@ impl Resources {
                 "cpu-rt-runtime" => r.cpu_realtime_runtime = int()?,
                 "cpu-count" => r.cpu_count = int()?,
                 "cpu-percent" => r.cpu_percent = int()?,
+                "io-maxbandwidth" => r.io_maximum_bandwidth = value.parse().ok()?,
+                "io-maxiops" => r.io_maximum_iops = value.parse().ok()?,
                 "memory-swappiness" => r.memory_swappiness = Some(int()?),
                 "oom-kill-disable" => r.oom_kill_disable = value == "true",
                 "cpuset-cpus" => r.cpuset_cpus = value.to_string(),
@@ -1568,6 +1583,10 @@ pub struct RunHead {
     pub first: u64,
     pub plug: u64,
     pub queue: Option<u64>,
+    /// Its microVM's I/O limits (D178): the most bytes and requests a second of its I/O to
+    /// the host's storage, 0 for none.
+    pub io_bytes: u64,
+    pub io_requests: u64,
 }
 
 /// The big-endian u64 `rest` begins with, `rest` then past it.
@@ -1579,8 +1598,8 @@ fn take_u64(rest: &mut &[u8]) -> Option<u64> {
 
 impl RunHead {
     /// Its length: the flags, four big-endian u64s, the queue's mode (0 blocking, 1
-    /// non-blocking), then the queue's.
-    pub const LEN: usize = 1 + 4 * 8 + 1 + 8;
+    /// non-blocking), the queue's, then the I/O limits' two.
+    pub const LEN: usize = 1 + 4 * 8 + 1 + 8 + 2 * 8;
 
     pub fn encode_into(&self, out: &mut Vec<u8>) {
         out.push(self.flags);
@@ -1589,6 +1608,8 @@ impl RunHead {
         }
         out.push(u8::from(self.queue.is_some()));
         out.extend(self.queue.unwrap_or(0).to_be_bytes());
+        out.extend(self.io_bytes.to_be_bytes());
+        out.extend(self.io_requests.to_be_bytes());
     }
 
     /// The head `payload` begins with, and what follows it; why not, where it holds none.
@@ -1606,6 +1627,8 @@ impl RunHead {
             1 => Some(queued),
             m => return Err(format!("a request whose log's mode is {m}")),
         };
+        let io_bytes = take_u64(&mut rest).ok_or(SHORT)?;
+        let io_requests = take_u64(&mut rest).ok_or(SHORT)?;
         let head = RunHead {
             flags,
             log_size,
@@ -1613,6 +1636,8 @@ impl RunHead {
             first,
             plug,
             queue,
+            io_bytes,
+            io_requests,
         };
         Ok((head, rest))
     }
@@ -1780,6 +1805,8 @@ mod tests {
                 first: 3,
                 plug: 1 << 30,
                 queue,
+                io_bytes: 10 << 20,
+                io_requests: 100,
             };
             let mut bytes = Vec::new();
             head.encode_into(&mut bytes);
@@ -2024,6 +2051,8 @@ mod tests {
                 cpu_realtime_runtime: 950,
                 cpu_count: 2,
                 cpu_percent: 50,
+                io_maximum_bandwidth: 10 << 20,
+                io_maximum_iops: 100,
             },
             read_only: true,
             tmpfs: vec!["/run:size=1m".into(), "/tmp".into()],

@@ -105,10 +105,19 @@ const EXTENDED: &[(&str, &str)] = &[
 /// The flags whose `--help` is shards' own, each a deliberate difference: Docker's for its
 /// VM-isolated containers, which its CLI hides and refuses against a Linux daemon and
 /// shards serves, as every run is a microVM (`--cpu-count` its vCPUs, `--cpu-percent` a
-/// share of the host's CPU time, D155); and those whose meaning is the microVM's
+/// share of the host's CPU time, D155; `--io-maxbandwidth` and `--io-maxiops` its I/O to the
+/// host's storage, D178); and those whose meaning is the microVM's
 /// (`--uts host` the host's hostname, `--cgroupns host` the microVM's cgroups,
 /// `--storage-opt` the writable layer's size, D156).
-const MICROVM_FLAGS: [&str; 5] = ["cpu-count", "cpu-percent", "cgroupns", "uts", "storage-opt"];
+const MICROVM_FLAGS: [&str; 7] = [
+    "cpu-count",
+    "cpu-percent",
+    "io-maxbandwidth",
+    "io-maxiops",
+    "cgroupns",
+    "uts",
+    "storage-opt",
+];
 
 /// What the CLI says of a flag of Windows' daemons against a Linux one.
 const WINDOWS_ONLY: &str = "is only supported on a Docker daemon running on windows";

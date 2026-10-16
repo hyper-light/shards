@@ -365,6 +365,13 @@ pub fn main() -> ! {
         // in, and printed: a volume's file and directory a saved microVM holds, which a
         // restore of it goes on writing through (D176).
         "appender" => appender(arg(1), arg(2).parse().unwrap_or(100)),
+        // `arg(2)` bytes written to file `arg(1)` in writes of `arg(3)`, each synced, then
+        // `poured N in MS ms`: what a microVM's I/O limits let through, and how fast (D178).
+        "pour" => pour(
+            arg(1),
+            arg(2).parse().unwrap_or(0),
+            arg(3).parse().unwrap_or(4096),
+        ),
         // File `arg(1)` made holding `held`, of `arg(2)` bytes where given (the rest a
         // hole), held open, and its name removed; then, every 100 ms, a count written after
         // its first line through that descriptor and synced, which its server must take, and
@@ -4768,6 +4775,37 @@ fn unlinked_held(path: &str, size: Option<u64>) -> i32 {
             }
         }
         std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+}
+
+/// `pour`'s: see its words.
+fn pour(path: &str, bytes: u64, chunk: usize) -> i32 {
+    use std::io::Write as _;
+    let started = std::time::Instant::now();
+    let poured = std::fs::File::create(path).and_then(|mut f| {
+        let block = vec![0x5au8; chunk.max(1)];
+        let mut left = bytes;
+        while left > 0 {
+            let n = usize::try_from(left).unwrap_or(usize::MAX).min(block.len());
+            f.write_all(block.get(..n).unwrap_or_default())?;
+            f.sync_data()?;
+            left -= n as u64;
+        }
+        Ok(())
+    });
+    match poured {
+        Ok(()) => {
+            let _ = writeln!(
+                io::stdout(),
+                "poured {bytes} in {} ms",
+                started.elapsed().as_millis()
+            );
+            0
+        }
+        Err(e) => {
+            let _ = writeln!(io::stderr(), "{path}: {e}");
+            1
+        }
     }
 }
 

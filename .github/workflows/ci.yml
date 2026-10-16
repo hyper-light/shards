@@ -19,7 +19,7 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7.0.1
-      - run: rustup toolchain install "$TOOLCHAIN" --profile minimal --component rustfmt
+      - run: scripts/retry 5 30 rustup toolchain install "$TOOLCHAIN" --profile minimal --component rustfmt
       - run: cargo fmt --all --check
 
   # The vendored crates are what crates.io publishes, file for file (vendor/README.md).
@@ -35,7 +35,7 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7.0.1
-      - run: rustup toolchain install "$TOOLCHAIN" --profile minimal
+      - run: scripts/retry 5 30 rustup toolchain install "$TOOLCHAIN" --profile minimal
       - name: cargo-deny 0.20.2, the published build, pinned
         run: |
           curl -fsSL --retry 5 --retry-all-errors --retry-delay 10 -o "$RUNNER_TEMP/deny.tgz" https://github.com/EmbarkStudios/cargo-deny/releases/download/0.20.2/cargo-deny-0.20.2-x86_64-unknown-linux-musl.tar.gz
@@ -52,10 +52,10 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7.0.1
-      - run: rustup toolchain install nightly-2026-09-05 --profile minimal
+      - run: scripts/retry 5 30 rustup toolchain install nightly-2026-09-05 --profile minimal
       # Built with the pinned stable toolchain: on nightly its locked rustix takes
       # compiler-internal attributes this nightly no longer has.
-      - run: rustup toolchain install "$TOOLCHAIN" --profile minimal
+      - run: scripts/retry 5 30 rustup toolchain install "$TOOLCHAIN" --profile minimal
       - run: cargo +"$TOOLCHAIN" install --locked cargo-fuzz --version 0.13.1
       - run: cargo +nightly-2026-09-05 fuzz build
       - name: Fuzz, 60 s a target
@@ -74,7 +74,7 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7.0.1
-      - run: rustup toolchain install nightly-2026-09-05 --profile minimal --component rust-src,miri
+      - run: scripts/retry 5 30 rustup toolchain install nightly-2026-09-05 --profile minimal --component rust-src,miri
       - run: docs/research/measurements/access-guard/check.sh nightly-2026-09-05
 
   # The platform matrix (docs/design/architecture.md D13) on native runners. Every target is
@@ -102,7 +102,7 @@ jobs:
         # rust-toolchain.toml names, here: a cargo proxy that installs one as a later step
         # starts failed once on a file already there ('bin/cargo-fmt').
         run: |
-          rustup toolchain install "$TOOLCHAIN" --profile minimal --component clippy --component rustfmt \
+          scripts/retry 5 30 rustup toolchain install "$TOOLCHAIN" --profile minimal --component clippy --component rustfmt \
             --target ${{ matrix.target }} --target x86_64-unknown-linux-musl --target aarch64-unknown-linux-musl
       # shards-init's C (AWS-LC, for the in-VM server's TLS) is compiled by zig on every host
       # (crates/shards/build.rs): 0.16.0, pinned by digest.
@@ -199,7 +199,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7.0.1
       - name: Install pinned Rust
-        run: rustup toolchain install "$TOOLCHAIN" --profile minimal --target x86_64-unknown-linux-musl
+        run: scripts/retry 5 30 rustup toolchain install "$TOOLCHAIN" --profile minimal --target x86_64-unknown-linux-musl
       - name: zig
         run: scripts/install-zig
       - name: KVM access

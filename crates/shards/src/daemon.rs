@@ -2690,6 +2690,9 @@ impl<D: Disk> Daemon<D> {
                 .saturating_mul(1 << 20),
             // Non-blocking, its queue (D162).
             queue: kept.and_then(|k| k.queue),
+            // Its microVM's I/O limits, its VMM's to keep (D178).
+            io_bytes: run.resources.io_maximum_bandwidth,
+            io_requests: run.resources.io_maximum_iops,
         }
         .encode_into(&mut payload);
         // A resumed run's command runs already: its request brings its save's tokens instead,
@@ -2756,6 +2759,16 @@ impl<D: Disk> Daemon<D> {
                 link_local: link_local.clone(),
             },
             || match &start {
+                // A joiner's I/O is the microVM's it joins (D119), whose run's limits it takes
+                // (D178).
+                network::Start::Join(name)
+                    if run.resources.io_maximum_bandwidth != 0 || run.resources.io_maximum_iops != 0 =>
+                {
+                    Err(format!(
+                        "--network container:{name}: a joining container's I/O is that microVM's, \
+                         and takes its limits: set --io-maxbandwidth and --io-maxiops on {name}"
+                    ))
+                }
                 network::Start::Join(name) => self.join_vm(threads, &id, name, &prepared, &join_volumes),
                 // A resumed run's VM restores its snapshot (D176), on the network its start
                 // set up, or not, for why it failed, as `warm_for` says it.

@@ -12,6 +12,7 @@ use std::io::{self, Read as _, Write as _};
 use std::os::unix::net::UnixStream;
 use std::sync::Arc;
 
+use super::limit::Limiter;
 use super::queue::{Chain, Queue};
 use super::worker::Worker;
 use super::{Activation, DeviceInterrupt, VirtioDevice, feature};
@@ -153,6 +154,25 @@ pub fn read_frame(from: &mut UnixStream) -> io::Result<Option<Vec<u8>>> {
     Ok(Some(bytes))
 }
 
+/// The bytes of the host's storage a request reads or writes, which its microVM's I/O
+/// limits charge (D178): a READ's asked for, a WRITE's given; none of anything else it asks.
+fn io_bytes(req: &[u8]) -> u64 {
+    let word = |at: usize| {
+        req.get(at..at.saturating_add(4))
+            .and_then(|b| <[u8; 4]>::try_from(b).ok())
+            .map(u32::from_le_bytes)
+    };
+    match word(4) {
+        // fuse_read_in: fh, offset, then size.
+        Some(server::op::READ) => word(server::HEADER_BYTES + 16).map_or(0, u64::from),
+        // fuse_write_in's 40 bytes, then the data.
+        Some(server::op::WRITE) => {
+            u64::try_from(req.len().saturating_sub(server::HEADER_BYTES + 40)).unwrap_or(u64::MAX)
+        }
+        _ => 0,
+    }
+}
+
 /// Sends `ask` and `bytes` as a control frame, and reads its answer: what it brings, or the
 /// server's why not.
 fn control(conn: &mut UnixStream, ask: u8, bytes: &[u8]) -> Result<Vec<u8>, String> {
@@ -259,6 +279,9 @@ pub struct Fs {
     /// Its server's tables as its last [`unsaved`](VirtioDevice::unsaved) found them, for
     /// the save that follows it (D176).
     tables: std::sync::Mutex<Option<Vec<u8>>>,
+    /// Its microVM's I/O limits (D178), and whether this device holds them paused.
+    limit: Option<&'static Limiter>,
+    holds_limit: bool,
 }
 
 impl std::fmt::Debug for Fs {
@@ -294,7 +317,16 @@ impl Fs {
             workers: Vec::new(),
             paused: Vec::new(),
             tables: std::sync::Mutex::new(None),
+            limit: None,
+            holds_limit: false,
         })
+    }
+
+    /// Its requests charged to its microVM's I/O limits (D178): its request queue's, the
+    /// high priority queue's FORGETs and INTERRUPTs none.
+    pub fn with_limit(mut self, limit: Option<&'static Limiter>) -> Fs {
+        self.limit = limit;
+        self
     }
 
     fn start(&mut self, queues: Vec<Queue>) -> Result<(), String> {
@@ -305,7 +337,9 @@ impl Fs {
         let mut queues = queues.into_iter();
         while let Some(queue) = queues.next() {
             let (server, mem) = (self.server.clone(), memory.clone());
-            let answer = move |chain: &Chain| serve(chain, &mem, &server);
+            // The first queue is the high priority one (FORGET, INTERRUPT): no I/O.
+            let limit = self.limit.filter(|_| !self.workers.is_empty());
+            let answer = move |chain: &Chain| serve(chain, &mem, &server, limit);
             match Worker::start("virtio-fs", queue, memory.clone(), interrupt.clone(), answer) {
                 Ok(w) => self.workers.push(w),
                 Err((e, queue)) => {
@@ -323,6 +357,14 @@ impl Fs {
     fn stop(&mut self) -> Vec<Queue> {
         self.workers.drain(..).filter_map(Worker::stop).collect()
     }
+
+    /// Lets go of its microVM's limits, where its pause holds them.
+    fn release_limit(&mut self) {
+        if let Some(limit) = self.limit.filter(|_| self.holds_limit) {
+            limit.resume();
+            self.holds_limit = false;
+        }
+    }
 }
 
 /// Answers one request: its readable bytes to the server, its reply into the writable
@@ -330,7 +372,7 @@ impl Fs {
 /// the reply, never while the share answers (D29): a share slow to answer, or never
 /// answering, held every other device's queue work, and a snapshot, off guest memory for
 /// as long (audit V04).
-fn serve(chain: &Chain, mem: &GuestMemory, slot: &Slot) -> u32 {
+fn serve(chain: &Chain, mem: &GuestMemory, slot: &Slot, limit: Option<&Limiter>) -> u32 {
     // Every FUSE request fits a frame, the largest write with its headers: a chain that
     // claims more, up to 256 descriptors of 4 GiB, is answered EINVAL from its header,
     // with nothing allocated for the rest (audit V03).
@@ -342,6 +384,10 @@ fn serve(chain: &Chain, mem: &GuestMemory, slot: &Slot) -> u32 {
     if !mem.access().is_ok_and(|a| gather(chain, &a, &mut req)) {
         debug!("virtio-fs: a request outside guest memory");
         return 0;
+    }
+    // Charged to its microVM's I/O limits before it is asked (D178).
+    if let (Some(limit), Some(_)) = (limit, total) {
+        limit.take(io_bytes(&req));
     }
     let reply = match total {
         // No directory, or its server gone: the guest is told so (ENODEV), as for a share
@@ -440,9 +486,16 @@ impl VirtioDevice for Fs {
         self.stop();
         self.paused.clear();
         self.context = None;
+        self.release_limit();
     }
 
+    /// Its limits paused first (D178): a worker waiting on them answers the request in hand
+    /// at once, and stops after it.
     fn pause(&mut self) -> Vec<super::QueueState> {
+        if let Some(limit) = self.limit.filter(|_| !self.holds_limit) {
+            limit.pause();
+            self.holds_limit = true;
+        }
         let stopped = self.stop();
         if !stopped.is_empty() {
             self.paused = stopped;
@@ -451,6 +504,7 @@ impl VirtioDevice for Fs {
     }
 
     fn resume(&mut self) -> Result<(), String> {
+        self.release_limit();
         let queues = std::mem::take(&mut self.paused);
         if queues.is_empty() {
             Ok(())
@@ -657,12 +711,12 @@ mod tests {
             claims,
             vec![readable(REQUEST, 56), readable(BASE + 0x2000, just_over)],
         ] {
-            assert_eq!(serve(&chain(readables), &mem, &slot), 16);
+            assert_eq!(serve(&chain(readables), &mem, &slot, None), 16);
             assert_eq!(reply(&mem), (16, -22, 0x1234));
             assert!(requests.try_recv().is_err(), "the share was asked");
         }
         go.send(()).unwrap();
-        assert_eq!(serve(&chain(vec![readable(REQUEST, 56)]), &mem, &slot), 16);
+        assert_eq!(serve(&chain(vec![readable(REQUEST, 56)]), &mem, &slot, None), 16);
         assert_eq!(reply(&mem), (16, 0, 0x1234));
         assert_eq!(requests.recv().unwrap().len(), 56);
         drop((slot, go));
@@ -679,7 +733,7 @@ mod tests {
         let (asked, requests) = mpsc::channel();
         let (slot, server) = share(hold, asked);
         let free = std::thread::scope(|scope| {
-            let serving = scope.spawn(|| serve(&chain(vec![readable(REQUEST, 56)]), &mem, &slot));
+            let serving = scope.spawn(|| serve(&chain(vec![readable(REQUEST, 56)]), &mem, &slot, None));
             requests.recv().unwrap();
             let (took, taken) = mpsc::channel();
             let mem = &mem;

@@ -297,6 +297,21 @@ pub static RUN: Command = Command {
         ),
         // Docker's flags for its VM-isolated containers, as every run is a microVM.
         Flag::int("cpu-count", None, "0", "vCPUs of the microVM"),
+        // Its microVM's I/O to the host's storage, which its VMM keeps (D178).
+        Flag::value(
+            "io-maxbandwidth",
+            None,
+            "bytes",
+            "Most bytes a second of the microVM's I/O to its volumes and disks",
+        )
+        .defaulting("0"),
+        Flag::value(
+            "io-maxiops",
+            None,
+            "uint64",
+            "Most requests a second of the microVM's I/O to its volumes and disks",
+        )
+        .defaulting("0"),
         Flag::int(
             "cpu-percent",
             None,
@@ -404,8 +419,6 @@ pub static RUN: Command = Command {
     ],
     unserved: "\
 cgroup-parent - s - -\n\
-io-maxbandwidth - bytes 0 -\n\
-io-maxiops - uint64 0 -\n\
 link - m - -\n\
 use-api-socket - b false -",
     interspersed: false,
@@ -690,6 +703,21 @@ pub static CREATE: Command = Command {
         ),
         // Docker's flags for its VM-isolated containers, as every run is a microVM.
         Flag::int("cpu-count", None, "0", "vCPUs of the microVM"),
+        // Its microVM's I/O to the host's storage, which its VMM keeps (D178).
+        Flag::value(
+            "io-maxbandwidth",
+            None,
+            "bytes",
+            "Most bytes a second of the microVM's I/O to its volumes and disks",
+        )
+        .defaulting("0"),
+        Flag::value(
+            "io-maxiops",
+            None,
+            "uint64",
+            "Most requests a second of the microVM's I/O to its volumes and disks",
+        )
+        .defaulting("0"),
         Flag::int(
             "cpu-percent",
             None,
@@ -796,8 +824,6 @@ pub static CREATE: Command = Command {
     ],
     unserved: "\
 cgroup-parent - s - -\n\
-io-maxbandwidth - bytes 0 -\n\
-io-maxiops - uint64 0 -\n\
 link - m - -\n\
 use-api-socket - b false -",
     interspersed: false,

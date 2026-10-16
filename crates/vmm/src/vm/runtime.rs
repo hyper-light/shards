@@ -588,6 +588,7 @@ pub fn restore_from(cfg: &RestoreConfig, pinned: snapshot::Pinned) -> Result<(Ha
             join: cfg.join,
             #[cfg(unix)]
             join_share: cfg.join_share,
+            io: cfg.io_limit,
         },
         working_set.unwrap_or_default(),
     )?;
