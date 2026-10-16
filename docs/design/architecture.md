@@ -4097,14 +4097,27 @@ login not sent, a build arg named alone the machine's.
 **Part 4, built: Docker's tools through a context.** What speaks Docker's API (its CLI,
 Compose, the SDKs, Testcontainers) reaches the machine's microVMs as it reaches another
 machine's dockerd:
-- **An engine socket for each context.** The client's daemon, while it runs, serves the
-  engine of each context its home joined at a socket of its own (`e/KEY.sock` in the home,
-  KEY the first six bytes of the name's SHA-256, as Docker's context store names a context's
-  directory by its name's digest, so that the path fits a socket's address whatever the
-  name: 71 bytes in a macOS home of a nine-letter user, of sun_path's 104). `shards inspect
-  context NAME` names it (`Engine`), for `DOCKER_HOST`. A context joined while the daemon
-  runs is served as its joining wakes the daemon (a connection that asks nothing); its
-  removal takes the socket.
+- **An engine socket for each context, served with the daemon's own.** The client's daemon,
+  while it runs, serves the engine of each context its home joined at a socket of its own
+  (`e/KEY.sock` in the home, KEY the first six bytes of the name's SHA-256, as Docker's
+  context store names a context's directory by its name's digest, so that the path fits a
+  socket's address whatever the name: 71 bytes in a macOS home of a nine-letter user, of
+  sun_path's 104). `shards inspect context NAME` names it (`Engine`), for `DOCKER_HOST`.
+  Its listener is polled with the daemon's own sockets, not a thread of its own, so it
+  lives and ends as they do:
+  - the daemon watches the home's contexts (as it watches its images): a context joined
+    while it runs is served as its record comes, one removed let go of as it goes;
+  - a socket someone removed is bound again as the daemon next looks, as its own are, and
+    so is one a context's removal took before the context was made again, which a socket
+    kept by name alone would have left unserved;
+  - as the daemon closes, the sockets go first and the clients that reached one by then are
+    relayed, as those at its own sockets are served: no client is cut off as it exits;
+  - a socket is bound beside its name and renamed to it once it listens, as `engine.sock`
+    is now too: a client that found the name between bind(2) and listen(2) was refused,
+    and Docker's clients do not ask again (the full suite found it, under load).
+  A record is written whole under a name no record has and then linked to its own, so that
+  a reader (this daemon, woken as the name comes, or `list contexts`) finds it whole or not
+  at all: written in place, a record read as it was made failed the whole list.
 - **A QUIC stream each connection.** Each connection there is relayed whole to the
   machine's Engine API (D170): its bytes as a command's stdin, the API's as its stdout, the
   end of each side's writing the other's end of reading, so that an attach's half-close
@@ -4112,6 +4125,17 @@ machine's dockerd:
   the client. The machine's daemon takes such a stream as a connection of its own user's to
   its own `engine.sock`; the client's daemon relays only its own user's connections, by
   their peer's credentials, as its own Engine API serves only them.
+- **Ended at either end.** A client gone ends its stream there: its end of writing is the
+  stream's end there, and a write that finds it gone hangs the stream up, where the relay
+  would have read on and thrown away all a followed log or an attach said for as long as
+  it ran. A daemon that stops hangs its relays up itself (`Controls::hang_up`, beside its
+  API's connections, which it ends): ending its client's connection only half-closes the
+  stream there, and an attach outlasts that, so the stop would have waited on the machine.
+- **A machine that does not answer is said to be so.** Where the machine refuses the client,
+  or cannot be reached, before any of its answer has come, the client's call is answered
+  with why, as the API says an error (502, a gateway's): Docker's CLI prints `Error response
+  from daemon: context gpu: this machine has not enrolled you: join it by an invitation
+  first`, where a connection closed unanswered would have it print an EOF.
 - **A context made again joins again.** A machine refused a join by a key it had enrolled,
   saying the invitation was not one it held, so a client that removed its context could not
   make it again, the record's address and key being the invitation's to give. A key
@@ -4122,6 +4146,13 @@ machine's dockerd:
   each request (`X-Registry-Auth`), a build's context in its request's body; the paths a
   request names are the machine's, as a remote dockerd's are.
 
+The same end for shards' own commands through a context: a command whose output nobody
+reads here any more (`shards --context gpu logs -f web | head -1`) is hung up there, and
+the client ends with status 1, saying nothing, as such a command ends here; its client read
+and threw away the rest for as long as the command ran, for ever for a followed log. A save
+to a file whose write fails here ends the save there too, at once, said in the save's words,
+where the machine sent the rest of the archive first.
+
 Where Docker's `ssh://` context starts `docker system dial-stdio` through a shell account
 for each connection, this needs neither; how they compare is part 5's to measure. Not yet:
 each relayed connection opens a QUIC connection of its own, a handshake each, where one
@@ -4131,10 +4162,18 @@ Tested in `tests/context.rs` (`a_contexts_engine_is_its_machines`): `_ping` thro
 socket; a microVM made through the context, listed there and not by the client's own engine;
 Docker's CLI where the host has one, its `ps`, a `run`, whose attach takes the connection
 over, and a `run -i` of `cat`, its stdin to its end; a client that reads its answer to the
-end; the context's removal taking its socket; and the context made again while the daemon
-runs, served with no other command, one client of its key, the invitation redeemed.
-Mutation-checked: the engine's stream run as a command, a removed context's socket kept,
-either end's half-close not passed on, no context's engine served.
+end; the context's removal taking its socket; the context made again while the daemon runs,
+served with no other command, one client of its key, the invitation redeemed; a socket
+removed served again; an attach through the socket ended as the daemon stops, in 5 ms, its
+socket gone with it; served again by the next daemon; and a machine that refuses the client,
+its words in the answer and in Docker's CLI's error. In `tests/context_client.rs`
+(`a_command_whose_output_nobody_reads_is_hung_up_there`), on every system: the command hung
+up there once its reader here has gone, the client ending with status 1 and nothing said.
+Mutation-checked: the engine's stream run as a command; either end's half-close not passed
+on, the machine's or the client's; an enrolled key's join refused; the contexts unwatched; a
+removed socket not bound again; the sockets kept as the daemon closes; the relays not hung
+up as it stops; a machine's refusal unsaid; the client's writer failing and its command run
+on; a reader gone said as an error.
 
 ### D179. Other CPUs' images, emulated in their microVM (parts 1 to 3 built)
 
@@ -4960,6 +4999,14 @@ unchanged (`DOCKER_HOST=unix://HOME/engine.sock`). What they gain, each for the 
   loaded host: measured 329% and 2503% for one spinning vCPU). Beside it, `microvm`:
   its VM process's own footprint (as PM M30 counts memory per VM), its resident memory
   and its CPU time, what it costs the host, which no guest's cgroup holds.
+- **A stream ends with its client.** An events stream and a followed log end as their
+  client goes, or sends anything more, which a client that waits for a stream sends none
+  of, as moby's end with their request (Go's server cancels a request's context as its
+  connection's read ends, net/http `backgroundRead`): they waited for their next message
+  first, which a quiet microVM's log, or a host where nothing happens, may never send, and
+  the daemon, kept by each such stream, never went idle (`tests/daemon.rs`,
+  `an_engine_stream_ends_with_its_client`, mutation-checked; a stats stream and a wait
+  looked already).
 - **Its processes as its guest has them.** `shards top vm`: its own PIDs, its users named
   by its own `/etc/passwd`, no `ps` in its image.
 - **Managed whole.** `pause vm` freezes the whole microVM, its kernel with it. `restart

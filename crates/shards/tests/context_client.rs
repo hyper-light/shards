@@ -38,6 +38,8 @@ enum Seen {
     // from that console (GenerateConsoleCtrlEvent).
     #[cfg_attr(windows, allow(dead_code))]
     Signalled(u32),
+    /// The command was hung up: its client went before it ended.
+    HungUp,
 }
 
 /// A machine that has enrolled one client, `laptop`, and runs no command of its own: each is
@@ -91,13 +93,15 @@ impl Host for Machine {
         let (output, given) = mpsc::channel();
         let (exit, status) = mpsc::channel();
         let _ = self.seen.send(Seen::Started(request, output, exit));
-        let (resized, signalled) = (self.seen.clone(), self.seen.clone());
+        let (resized, signalled, hung) = (self.seen.clone(), self.seen.clone(), self.seen.clone());
         Ok(Running {
             stdin: Box::new(Told(self.seen.clone())),
             stdout: Box::new(Given(given, Vec::new())),
             stderr: Box::new(std::io::empty()),
             wait: Box::new(move || status.recv().unwrap_or(1)),
-            hangup: Box::new(|| {}),
+            hangup: Box::new(move || {
+                let _ = hung.send(Seen::HungUp);
+            }),
             resize: Some(Box::new(move |rows, cols| {
                 let _ = resized.send(Seen::Resized(rows, cols));
             })),
@@ -271,6 +275,50 @@ fn ended(child: std::process::Child) -> (Option<i32>, String) {
         done.status.code(),
         String::from_utf8_lossy(&done.stderr).into_owned(),
     )
+}
+
+/// A command whose output nobody reads here any more ends there: the client, its stdout's
+/// reader gone as `head -1`'s goes, hangs the command up, where it would read the rest and
+/// throw it away for as long as the command ran (`logs -f`, for ever), and ends with status 1,
+/// saying nothing, as a command here does whose reader hung up.
+#[test]
+fn a_command_whose_output_nobody_reads_is_hung_up_there() {
+    let laptop = TempDir::new("cc-gone");
+    let d = daemon(&laptop);
+    let mut child = common::command()
+        .args(["--context", "gpu", "logs", "-f", "web"])
+        .env("SHARDS_HOME", laptop.as_os_str())
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let Seen::Started(request, output, _exit) = d.next() else {
+        panic!("no start");
+    };
+    assert_eq!(args(&request), ["logs", "-f", "web"]);
+    output.send(b"first\n".to_vec()).unwrap();
+    let mut stdout = child.stdout.take().unwrap();
+    let mut first = [0u8; 6];
+    stdout.read_exact(&mut first).unwrap();
+    assert_eq!(&first, b"first\n");
+    drop(stdout);
+    // It goes on printing, as a followed log does: a write may still find a reader a while
+    // (a child another test forks holds the pipe until its exec), the next finds none.
+    let deadline = std::time::Instant::now() + TIMEOUT;
+    loop {
+        assert!(std::time::Instant::now() < deadline, "never hung up");
+        let _ = output.send(b"more\n".to_vec());
+        match d.seen.recv_timeout(Duration::from_millis(20)) {
+            Ok(Seen::HungUp) => break,
+            Ok(Seen::Stdin(bytes)) if bytes.is_empty() => {}
+            Ok(other) => panic!("{other:?}, waiting for the hangup"),
+            Err(_) => {}
+        }
+    }
+    let (status, said) = ended(child);
+    assert_eq!(status, Some(1), "{said}");
+    assert_eq!(said, "", "nothing said of a reader gone");
 }
 
 /// `save -o`'s file is the client's, as Docker's CLI writes its own: the command there

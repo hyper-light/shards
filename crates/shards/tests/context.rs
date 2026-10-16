@@ -676,73 +676,66 @@ fn a_contexts_engine_is_its_machines() {
         .flat_map(|p| std::env::split_paths(&p).collect::<Vec<_>>())
         .map(|d| d.join("docker"))
         .find(|p| p.is_file());
-    match docker {
-        Some(docker) => {
-            let docker_path = docker.clone();
-            let (config, no_helpers) = (laptop.join("docker-config"), laptop.join("no-helpers"));
-            std::fs::create_dir_all(&config).unwrap();
-            std::fs::create_dir_all(&no_helpers).unwrap();
-            let host = format!("unix://{}", engine.display());
-            let docker = |args: &[&str]| {
-                let out = common::output_within(
-                    std::process::Command::new(&docker)
-                        .args(args)
-                        .env("DOCKER_HOST", &host)
-                        .env("DOCKER_CONFIG", &config)
-                        .env("PATH", &no_helpers)
-                        .env_remove("DOCKER_CONTEXT")
-                        .env("DOCKER_CLI_HINTS", "false")
-                        .stdin(Stdio::null()),
-                    TIMEOUT,
-                );
-                (
-                    out.status.code(),
-                    String::from_utf8_lossy(&out.stdout).into_owned(),
-                    String::from_utf8_lossy(&out.stderr).into_owned(),
-                )
-            };
-            let (status, out, err) = docker(&["ps", "-a", "--format", "{{.Names}}"]);
-            assert_eq!(status, Some(0), "{err}");
-            assert!(out.lines().any(|l| l == "relayed"), "{out}");
-            let (status, out, err) = docker(&["run", "--rm", image.as_str(), "fs", "print:/etc/hostname"]);
-            assert_eq!(status, Some(0), "{err}");
-            assert!(!out.trim().is_empty(), "{out}");
-            // Its stdin, to its end: the end crosses as the attach's half-close.
-            let input = laptop.join("input");
-            std::fs::write(&input, "relayed through\n").unwrap();
-            let catted = common::output_within(
-                std::process::Command::new(&docker_path)
-                    .args(["run", "-i", "--rm", image.as_str(), "cat"])
+    if docker.is_none() {
+        eprintln!("no docker CLI on this host: its part not run");
+    }
+    let (config, no_helpers) = (laptop.join("docker-config"), laptop.join("no-helpers"));
+    std::fs::create_dir_all(&config).unwrap();
+    std::fs::create_dir_all(&no_helpers).unwrap();
+    let host = format!("unix://{}", engine.display());
+    let docker = |args: &[&str], stdin: Stdio| {
+        docker.as_ref().map(|docker| {
+            let out = common::output_within(
+                std::process::Command::new(docker)
+                    .args(args)
                     .env("DOCKER_HOST", &host)
                     .env("DOCKER_CONFIG", &config)
                     .env("PATH", &no_helpers)
                     .env_remove("DOCKER_CONTEXT")
                     .env("DOCKER_CLI_HINTS", "false")
-                    .stdin(std::fs::File::open(&input).unwrap()),
+                    .stdin(stdin),
                 TIMEOUT,
             );
-            assert_eq!(
-                (
-                    catted.status.code(),
-                    String::from_utf8_lossy(&catted.stdout).into_owned()
-                ),
-                (Some(0), "relayed through\n".to_string()),
-                "{}",
-                String::from_utf8_lossy(&catted.stderr)
-            );
-        }
-        None => eprintln!("no docker CLI on this host: its part not run"),
+            (
+                out.status.code(),
+                String::from_utf8_lossy(&out.stdout).into_owned(),
+                String::from_utf8_lossy(&out.stderr).into_owned(),
+            )
+        })
+    };
+    if let Some((status, out, err)) = docker(&["ps", "-a", "--format", "{{.Names}}"], Stdio::null()) {
+        assert_eq!(status, Some(0), "{err}");
+        assert!(out.lines().any(|l| l == "relayed"), "{out}");
+    }
+    let ran = docker(
+        &["run", "--rm", image.as_str(), "fs", "print:/etc/hostname"],
+        Stdio::null(),
+    );
+    if let Some((status, out, err)) = ran {
+        assert_eq!(status, Some(0), "{err}");
+        assert!(!out.trim().is_empty(), "{out}");
+    }
+    // Its stdin, to its end: the end crosses as the attach's half-close.
+    let input = laptop.join("input");
+    std::fs::write(&input, "relayed through\n").unwrap();
+    let catted = docker(
+        &["run", "-i", "--rm", image.as_str(), "cat"],
+        Stdio::from(std::fs::File::open(&input).unwrap()),
+    );
+    if let Some((status, out, err)) = catted {
+        assert_eq!((status, out.as_str()), (Some(0), "relayed through\n"), "{err}");
     }
     let removed = run_shards_env(&["remove", "context"], &["gpu"], &on_laptop, TIMEOUT);
     assert_eq!(removed.status, Some(0), "{removed}");
     assert!(!engine.exists(), "its engine's socket kept");
-    // Joined while the daemon runs: served as its joining wakes the daemon, no other
-    // command asked of it.
+    // Joined while the daemon runs: served as the daemon sees it come, no command asked of
+    // it.
+    let on_machine = [("SHARDS_HOME", machine.as_os_str())];
     let invite = machine.join("again.invite");
     let invited = run_shards_env(
         &["invite", "client"],
         &["--name", "again", "--output", invite.to_str().unwrap()],
-        &[("SHARDS_HOME", machine.as_os_str())],
+        &on_machine,
         TIMEOUT,
     );
     assert_eq!(invited.status, Some(0), "{invited}");
@@ -756,12 +749,7 @@ fn a_contexts_engine_is_its_machines() {
     served(&engine);
     assert_eq!(engine_get(&engine, "/_ping"), (200, "OK".into()));
     // Joined again as it was enrolled: one client of its key, the invitation redeemed.
-    let clients = run_shards_env(
-        &["list", "clients"],
-        &[] as &[&str],
-        &[("SHARDS_HOME", machine.as_os_str())],
-        TIMEOUT,
-    );
+    let clients = run_shards_env(&["list", "clients"], &[] as &[&str], &on_machine, TIMEOUT);
     let named: Vec<&str> = clients
         .stdout
         .lines()
@@ -770,6 +758,65 @@ fn a_contexts_engine_is_its_machines() {
         .collect();
     assert_eq!(named, ["laptop"], "{clients}");
     assert!(!machine.join("invitations/again").exists(), "the invitation kept");
+    // A socket someone removed is served again as the daemon next looks.
+    std::fs::remove_file(&engine).unwrap();
+    let listed = run_shards_env(&["ps"], &["-a"], &on_laptop, TIMEOUT);
+    assert_eq!(listed.status, Some(0), "{listed}");
+    served(&engine);
+    assert_eq!(engine_get(&engine, "/_ping"), (200, "OK".into()));
+    // A stream held open through it ends as the daemon stops, which takes the contexts'
+    // sockets with it as it closes: an attach to a microVM there, which the end of its
+    // client's writing would not end.
+    let held = run_shards_env(
+        &["--context", "gpu", "run"],
+        &["-d", "--name", "held", image.as_str(), "sleep"],
+        &on_laptop,
+        TIMEOUT,
+    );
+    assert_eq!(held.status, Some(0), "{held}");
+    {
+        use std::io::{BufRead as _, Read as _, Write as _};
+        let attach = std::os::unix::net::UnixStream::connect(&engine).unwrap();
+        attach.set_read_timeout(Some(TIMEOUT)).unwrap();
+        (&attach)
+            .write_all(
+                b"POST /containers/held/attach?stream=1&stdout=1&stderr=1 HTTP/1.1\r\nHost: api\r\nConnection: Upgrade\r\nUpgrade: tcp\r\n\r\n",
+            )
+            .unwrap();
+        let mut reader = std::io::BufReader::new(&attach);
+        let mut status = String::new();
+        reader.read_line(&mut status).unwrap();
+        assert!(status.starts_with("HTTP/1.1 101 "), "{status:?}");
+        let stopped = run_shards_env(&["stop", "daemon"], &[] as &[&str], &on_laptop, TIMEOUT);
+        assert_eq!(stopped.status, Some(0), "{stopped}");
+        let mut rest = Vec::new();
+        reader.read_to_end(&mut rest).unwrap();
+        assert!(!engine.exists(), "its engine's socket kept by a daemon gone");
+    }
+    let removed = run_shards_env(&["--context", "gpu", "rm"], &["-f", "held"], &on_laptop, TIMEOUT);
+    assert_eq!(removed.status, Some(0), "{removed}");
+    // Served again by the next daemon; and a machine that refuses the client is said so
+    // there, as the API says an error, which Docker's clients print.
+    let started = run_shards_env(&["daemon"], &["--detached"], &on_laptop, TIMEOUT);
+    assert_eq!(started.status, Some(0), "{started}");
+    served(&engine);
+    let gone = run_shards_env(&["remove", "client"], &["laptop"], &on_machine, TIMEOUT);
+    assert_eq!(gone.status, Some(0), "{gone}");
+    let (status, said) = engine_get(&engine, "/_ping");
+    assert_eq!(status, 502, "{said}");
+    let said: serde_json::Value = serde_json::from_str(&said).unwrap();
+    assert_eq!(
+        said["message"].as_str(),
+        Some("context gpu: this machine has not enrolled you: join it by an invitation first"),
+        "{said}"
+    );
+    if let Some((status, _, err)) = docker(&["ps"], Stdio::null()) {
+        assert_eq!(status, Some(1), "{err}");
+        assert!(
+            err.contains("Error response from daemon: context gpu: this machine has not enrolled you"),
+            "{err}"
+        );
+    }
 }
 
 /// A copy through a context is the client's, as Docker's CLI copies its own files (D180

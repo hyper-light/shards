@@ -108,12 +108,68 @@ fn evidence(home: &Path, name: &str) -> String {
     let log = std::fs::read_to_string(home.join("daemon.log")).unwrap_or_default();
     let lines: Vec<&str> = log.lines().collect();
     let tail = lines.get(lines.len().saturating_sub(60)..).unwrap_or_default();
+    // What its guest does: its processes, their states and where they wait; and whether it
+    // uses any CPU, sampled twice a second apart.
+    let top = shards_in(home, &["top", name, "-o", "pid,stat,wchan:32,time,args"]);
+    let stats = || {
+        let s = shards_in(
+            home,
+            &[
+                "stats",
+                "--no-stream",
+                "--format",
+                "{{.CPUPerc}} {{.MemUsage}}",
+                name,
+            ],
+        );
+        format!("{}{}", s.stdout.trim(), s.stderr.trim())
+    };
+    let first = stats();
+    std::thread::sleep(Duration::from_secs(1));
+    let second = stats();
     format!(
-        "its state: {}{}\nthe daemon's log's end:\n{}",
+        "its state: {}{}\nits processes:\n{}{}\nits use, a second apart: {first} | {second}\nits VM process's threads:\n{}\nthe daemon's log's end:\n{}",
         state.stdout,
         state.stderr,
+        top.stdout,
+        top.stderr,
+        vm_threads(&state.stdout),
         tail.join("\n")
     )
+}
+
+/// The VM process's threads as the host has them, on Linux: each one's name, state and the
+/// kernel function it waits in (proc(5)), which say whether its vCPUs run or wait.
+fn vm_threads(state: &str) -> String {
+    let pid = serde_json::from_str::<serde_json::Value>(state)
+        .ok()
+        .and_then(|s| s["Pid"].as_u64())
+        .filter(|&p| p > 0);
+    let Some(pid) = pid else {
+        return "(none running)".into();
+    };
+    let Ok(tasks) = std::fs::read_dir(format!("/proc/{pid}/task")) else {
+        return format!("(no /proc/{pid}/task on this host)");
+    };
+    let mut out = Vec::new();
+    for task in tasks.flatten() {
+        let dir = task.path();
+        let read = |f: &str| std::fs::read_to_string(dir.join(f)).unwrap_or_default();
+        let stat = read("stat");
+        // The state is the field after the name, which is in parentheses.
+        let state = stat
+            .rsplit_once(") ")
+            .map(|(_, r)| r.chars().next().unwrap_or('?'));
+        out.push(format!(
+            "{} {} {} {}",
+            task.file_name().to_string_lossy(),
+            read("comm").trim(),
+            state.unwrap_or('?'),
+            read("wchan").trim()
+        ));
+    }
+    out.sort();
+    out.join("\n")
 }
 
 fn id_of(home: &Path, name: &str) -> String {

@@ -535,6 +535,37 @@ fn idle_daemons_exit() {
     assert!(daemon_pid(&home).is_none(), "the daemon left its pid file");
 }
 
+/// A stream the Engine API answers ends with its client: an events stream whose client
+/// leaves while nothing happens ends then, not at the next event, which may never come, and
+/// the daemon, kept while the stream was open, goes idle after it.
+#[test]
+fn an_engine_stream_ends_with_its_client() {
+    let home = TempDir::new("engine-gone");
+    let env: [(&str, &OsStr); 2] = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_DAEMON_IDLE", "1".as_ref()),
+    ];
+    let started = run_shards_env(&["daemon"], &["--detached"], &env, TIMEOUT);
+    assert_eq!(started.status, Some(0), "{}", started.stderr);
+    let daemon = daemon_pid(&home).expect("a daemon pid");
+    {
+        let mut events = UnixStream::connect(home.join("engine.sock")).unwrap();
+        events.set_read_timeout(Some(TIMEOUT)).unwrap();
+        events
+            .write_all(b"GET /events HTTP/1.1\r\nHost: api\r\n\r\n")
+            .unwrap();
+        let mut head = [0u8; 15];
+        events.read_exact(&mut head).unwrap();
+        assert_eq!(&head, b"HTTP/1.1 200 OK");
+        // Past its idle time, with the stream open: it stays.
+        std::thread::sleep(Duration::from_millis(1500));
+        assert!(alive(daemon), "the daemon exited while a stream was open");
+    }
+    eventually("the daemon kept a stream whose client had gone", || {
+        !alive(daemon)
+    });
+}
+
 /// A daemon's idle time runs from its last run's end, which nothing else need follow: the
 /// run's own end starts the clock, long after its client left the daemon. Its home holds
 /// the image's template already, so the run changes nothing there the daemon watches.

@@ -49,6 +49,11 @@ enum Event {
     Resize(u16, u16),
     /// The client received the signal of this Linux number.
     Signal(u32),
+    /// What the command printed could not be written here, for this reason: it ends, its
+    /// output having nowhere to go.
+    Unwritten(String),
+    /// Its client ends it ([`Controls::hang_up`]).
+    HangUp,
 }
 
 /// What steers a command [`exec`] runs, from another thread while it runs: its terminal's
@@ -65,6 +70,12 @@ impl Controls {
     /// The client received the signal Linux numbers `linux`.
     pub fn signal(&self, linux: u32) -> Result<(), Error> {
         self.0.send(Command::Handler(Event::Signal(linux)))
+    }
+
+    /// Ends the command's connection, as a client gone ends it: the command there is hung
+    /// up, and [`exec`] returns.
+    pub fn hang_up(&self) -> Result<(), Error> {
+        self.0.send(Command::Handler(Event::HangUp))
     }
 }
 
@@ -434,6 +445,10 @@ impl Handler for Client<'_> {
             Event::Drained => self.take(io),
             Event::Resize(rows, cols) => self.steer(io, Tag::Resize, &frame::size(rows, cols)),
             Event::Signal(linux) => self.steer(io, Tag::Signal, &linux.to_be_bytes()),
+            // Closed, the connection hangs the command up there, as a client gone would.
+            Event::Unwritten(why) => self.fail(io, format!("writing the command's output: {why}")),
+            Event::HangUp if !self.done => self.fail(io, "hung up by its client".into()),
+            Event::HangUp => {}
         }
     }
 
@@ -454,7 +469,8 @@ fn writer<'scope>(
         .name("remote-out".into())
         .spawn_scoped(scope, move || {
             while let Ok(bytes) = rx.recv() {
-                if out.write_all(&bytes).and_then(|()| out.flush()).is_err() {
+                if let Err(e) = out.write_all(&bytes).and_then(|()| out.flush()) {
+                    let _ = sender.send(Command::Handler(Event::Unwritten(e.to_string())));
                     break;
                 }
                 let _ = sender.send(Command::Handler(Event::Drained));

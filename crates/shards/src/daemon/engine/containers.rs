@@ -1183,6 +1183,9 @@ impl<D: Disk> Daemon<D> {
             return Done::Close;
         };
         loop {
+            if super::gone_first(&ipc, conn) {
+                return Done::Close;
+            }
             let sent = match shards_ipc::recv(&ipc) {
                 Ok(Some(m)) if m.kind == kind::OUT && stdout => {
                     stream.send(&if tty { m.payload } else { frame(1, &m.payload) })

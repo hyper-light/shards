@@ -290,6 +290,26 @@ fn joined(list: &[Vec<u8>]) -> String {
     String::from_utf8_lossy(&list.join(&b","[..])).into_owned()
 }
 
+/// A listener at `path` that a client finds listening once it finds the name, not blocking:
+/// bound beside it and renamed there once it listens, where a client that found the name
+/// between bind(2) and listen(2) was refused (ECONNREFUSED), as Docker's clients, which do
+/// not ask again, would be as the daemon starts. The rename replaces what was there, in one
+/// step.
+fn listening_at(path: &Path) -> std::io::Result<UnixListener> {
+    let name = path.file_name().unwrap_or_default().to_string_lossy();
+    let unnamed = path.with_file_name(format!("~{name}"));
+    let _ = std::fs::remove_file(&unnamed);
+    let listener = UnixListener::bind(&unnamed)?;
+    if let Err(e) = listener
+        .set_nonblocking(true)
+        .and_then(|()| std::fs::rename(&unnamed, path))
+    {
+        let _ = std::fs::remove_file(&unnamed);
+        return Err(e);
+    }
+    Ok(listener)
+}
+
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(PoisonError::into_inner)
 }
@@ -838,8 +858,6 @@ struct Daemon<D: Disk = Real> {
     shipping: ship::Shipping,
     /// The Engine API's calls in hand, and what it keeps between them (engine.rs, D170).
     engine: engine::Engine,
-    /// The contexts whose engines it relays (relay.rs, D180).
-    relays: relay::Relays,
     /// The pools to refill and the spare to make, on the refiller's thread (refill.rs).
     refills: refill::Refills,
     /// When each running container's health check is next due (health.rs).
@@ -1110,7 +1128,7 @@ fn serve(ready: Option<File>, listen: Option<std::net::SocketAddr>) -> Result<()
     // The Engine API's (D170), beside it: one that cannot be made is said, and the daemon
     // serves its CLI without it.
     let _ = std::fs::remove_file(engine::SOCKET);
-    let api = match UnixListener::bind(engine::SOCKET).and_then(|l| l.set_nonblocking(true).map(|()| l)) {
+    let api = match listening_at(Path::new(engine::SOCKET)) {
         Ok(api) => Some(api),
         Err(e) => {
             log(format!(
@@ -1364,7 +1382,6 @@ impl<D: Disk> Daemon<D> {
             packing: packed::Packing::default(),
             shipping: ship::Shipping::default(),
             engine: engine::Engine::default(),
-            relays: relay::Relays::default(),
             refills: refill::Refills::default(),
             checks: health::Checks::default(),
             booting: Mutex::default(),
@@ -1422,7 +1439,7 @@ impl<D: Disk> Daemon<D> {
         if self.closed.load(Ordering::SeqCst) || std::fs::symlink_metadata(path).is_ok() {
             return;
         }
-        match UnixListener::bind(path).and_then(|l| l.set_nonblocking(true).map(|()| l)) {
+        match listening_at(path) {
             Ok(l) => {
                 log(format!(
                     "{} was removed; listening there again",
@@ -1456,10 +1473,17 @@ impl<D: Disk> Daemon<D> {
             }
         };
         let images = self.home.join("images");
-        if let Err(e) = shards_vmm::platform::create_private_dir(&images) {
-            log(format!("{}: {e}", images.display()));
+        // The contexts this home joined, whose engines it serves (relay.rs) as each comes
+        // and goes.
+        let contexts = self.home.join("contexts");
+        for dir in [&images, &contexts] {
+            if let Err(e) = shards_vmm::platform::create_private_dir(dir) {
+                log(format!("{}: {e}", dir.display()));
+            }
         }
-        let watches = [watch(&self.home), watch(&images)];
+        let watches = [watch(&self.home), watch(&images), watch(&contexts)];
+        let mut relays = relay::Relays::default();
+        let mut contexts_changed = true;
         loop {
             let closing = self.closed.load(Ordering::SeqCst);
             // A daemon whose home is gone has nothing left to serve, and its runs' containers
@@ -1474,10 +1498,16 @@ impl<D: Disk> Daemon<D> {
             // which takes the lock too, is seen above once it has.
             self.relisten(closing, &mut listener);
             self.relisten_api(closing, &mut api);
-            // The engines of the contexts this home joined, as each comes (relay.rs).
-            if !closing {
-                self.relay_contexts(threads);
-            }
+            // The engines of the contexts this home joined (relay.rs): served while the
+            // daemon is open, and their sockets removed as it closes, the clients that
+            // reached one by then relayed.
+            let relays_ready = if closing {
+                self.close_relays(threads, &mut relays);
+                true
+            } else {
+                self.relay_contexts(&mut relays, contexts_changed || watches[2].is_none());
+                self.relay_waiting(threads, &relays)
+            };
             // The Engine API's clients, each served on a thread of its own as long as it
             // keeps its connection: not counted among the clients in hand, whose cap is
             // for requests, as each of its calls is counted as it is put to the daemon.
@@ -1559,20 +1589,26 @@ impl<D: Disk> Daemon<D> {
                 continue;
             }
             if self.closed.load(Ordering::SeqCst) && quiet {
+                // Closed by another thread since this pass began: the contexts' sockets go
+                // first, on the next.
+                if !relays.is_empty() {
+                    continue;
+                }
                 self.exit();
             }
             // At the cap, or starved, the listener would be readable at once: it waits for
             // a client to leave instead.
             let accepting = !starved && self.busy.load(Ordering::SeqCst) < self.max_clients;
-            let looking = starved || !api_ready || watches.iter().any(Option::is_none);
+            let looking = starved || !api_ready || !relays_ready || watches.iter().any(Option::is_none);
             let timeout = if looking {
                 Some(RETRY.min(self.next_duty(quiet).unwrap_or(RETRY)))
             } else {
                 self.next_duty(quiet)
             };
-            self.wait_for_work(
+            contexts_changed = self.wait_for_work(
                 accepting.then_some(&listener),
                 api.as_ref().filter(|_| api_ready),
+                relays_ready.then_some(&relays),
                 &watches,
                 timeout,
             );
@@ -1632,45 +1668,56 @@ impl<D: Disk> Daemon<D> {
 
     /// Waits until a client arrives (`listener`, when given), the listener is woken, a
     /// watch sees a change, or `timeout` passes (for ever if `None`).
+    /// Waits for a client at one of the daemon's sockets, or a context's (`relays`), a wake,
+    /// a change a watch sees, or `timeout`: whether the contexts the home joined may have
+    /// changed.
     fn wait_for_work(
         &self,
         listener: Option<&UnixListener>,
         api: Option<&UnixListener>,
-        watches: &[Option<FileWatch>; 2],
+        relays: Option<&relay::Relays>,
+        watches: &[Option<FileWatch>; 3],
         timeout: Option<Duration>,
-    ) {
+    ) -> bool {
         let pollfd = |fd: RawFd| libc::pollfd {
             fd,
             events: libc::POLLIN,
             revents: 0,
         };
         let watched = |w: &Option<FileWatch>| w.as_ref().map_or(-1, |w| w.fd().as_raw_fd());
-        let mut polled = [
-            pollfd(self.listener_wake.1.as_raw_fd()),
-            pollfd(watched(&watches[0])),
-            pollfd(watched(&watches[1])),
-            pollfd(listener.map_or(-1, AsRawFd::as_raw_fd)),
-            pollfd(api.map_or(-1, AsRawFd::as_raw_fd)),
-        ];
+        let mut polled: Vec<libc::pollfd> = [
+            self.listener_wake.1.as_raw_fd(),
+            watched(&watches[0]),
+            watched(&watches[1]),
+            watched(&watches[2]),
+            listener.map_or(-1, AsRawFd::as_raw_fd),
+            api.map_or(-1, AsRawFd::as_raw_fd),
+        ]
+        .into_iter()
+        .chain(relays.into_iter().flat_map(relay::Relays::fds))
+        .map(pollfd)
+        .collect();
         // Rounded up: a wait of 0 ms would return at once, and spin.
         let ms = timeout.map_or(-1, |t| {
             libc::c_int::try_from(t.as_micros().div_ceil(1000)).unwrap_or(libc::c_int::MAX)
         });
+        let n = libc::nfds_t::try_from(polled.len()).unwrap_or(libc::nfds_t::MAX);
         // SAFETY: poll(2) on pollfds of descriptors this daemon holds open (negative ones
-        // are ignored).
-        unsafe { libc::poll(polled.as_mut_ptr(), polled.len() as libc::nfds_t, ms) };
-        let [wake, home, images, _, _] = polled;
-        if wake.revents != 0 {
+        // are ignored), `n` of them.
+        unsafe { libc::poll(polled.as_mut_ptr(), n, ms) };
+        let ready = |i: usize| polled.get(i).is_some_and(|p| p.revents != 0);
+        if ready(0) {
             let mut drained = [0u8; 64];
             while matches!((&self.listener_wake.1).read(&mut drained), Ok(n) if n > 0) {}
         }
-        for (ready, watch) in [(home, &watches[0]), (images, &watches[1])] {
-            if ready.revents != 0
+        for (i, watch) in watches.iter().enumerate() {
+            if ready(i + 1)
                 && let Some(watch) = watch
             {
                 watch.clear();
             }
         }
+        ready(3)
     }
 
     pub(super) fn take<'s, 'e>(&'s self, threads: &'s Threads<'s, 'e>, conn: UnixStream) {
