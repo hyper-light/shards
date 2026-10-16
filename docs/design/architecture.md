@@ -3634,6 +3634,121 @@ No run-time labels, relays or declassifiers (§12 answer 14, decided by the user
 an internal-only domain to the world (D58), so there is no data to label. Code mode is
 D136.
 
+### D180. Contexts: shards on another machine, over QUIC (part 1 built)
+
+**The microVM need.** A user's microVMs run where the work needs them: a Mac for
+development, a Linux machine with a GPU (`--gpus`) or KVM, an x86_64 machine that builds and
+runs amd64 images natively, where a Mac runs them under qemu at 4.6 to 15.5 times the
+cycles (D179, PM M241). Docker reaches another machine's daemon through a context
+(`docker context create NAME --docker host=ssh://…` or `tcp://…`), and `--context`,
+`DOCKER_CONTEXT` and `-H` choose it (docker/cli v29.8.1 cli/command/cli.go,
+`resolveContextName`: `--context`, then `-H` or `DOCKER_HOST`, then `DOCKER_CONTEXT`, then
+the config's `currentContext`).
+
+**What Docker's transports cost, and what shards does instead.** `ssh://` needs a shell
+account on the machine and starts `docker system dial-stdio` there for each connection;
+`tcp://` with TLS needs a CA and certificates made and copied by hand (dockerd
+`--tlsverify`), and a TCP listener. Both carry a run's input and output on one TCP stream,
+where a lost packet stalls every byte behind it. shards speaks QUIC (RFC 9000, 9001, 9002:
+`hyper-quic`, quinn-proto 0.11.18 conformed, over `hyper-tls`, rustls 0.23.45 conformed, both
+../hyper-raft's, the user's choice of transport):
+- **No TCP listener, no shell account, no CA.** Each shards home has an identity key
+  (Ed25519, RFC 8032), and TLS 1.3 carries the two sides' raw public keys (RFC 7250), each
+  pinned by the other: nothing to issue, renew or revoke but a key. A daemon listens only
+  when its owner asks (`--listen`), on the address asked, and serves only the clients it
+  has enrolled: default deny, as its networks are.
+- **A stream each.** Each request is a QUIC stream, and a run's stdin, stdout and stderr
+  are streams of their own, so a stall in one holds up no other (RFC 9000 §2).
+- **A connection that survives a move.** QUIC connection IDs let a laptop change networks
+  without dropping its attached runs (RFC 9000 §9).
+- **Joining by invitation, as focal's nodes and clients join** (the user's other QUIC
+  service, ../focal docs/network-startup.md). On the machine that runs the microVMs,
+  `shards invite client --name NAME --output FILE` writes an invitation to a private file,
+  never to the screen or a log: the daemon's address, its key's SHA-256 and a 256-bit
+  secret. It enrolls one client, and an unused one expires an hour after it was made, as
+  focal's do; `shards list invitations` and `shards remove invitation NAME` show and revoke
+  them. `shards create context NAME --invite-file FILE` connects, checks the daemon's key
+  against the invitation, and proves the secret bound to that TLS session (HMAC-SHA-256 of
+  an RFC 8446 §7.5 exporter), so that it is neither replayed nor relayed; the daemon then
+  enrolls the client's key under the invitation's name.
+  What shards claims against Docker's transports beyond this is measured before it is said
+  (part 5).
+
+**Its surface** (`shards ACTION THING`): `shards create context NAME --invite-file FILE
+[--description TEXT]`, `shards use context NAME`, `shards list contexts`, `shards inspect
+context NAME`, `shards remove context NAME`; on the machine that runs the microVMs, `shards
+start daemon --listen ADDR:PORT`, `shards invite client --name NAME --output FILE`, `shards
+list invitations`, `shards remove invitation NAME`, `shards list clients`, `shards remove
+client NAME`. `--context`/`-c`, `SHARDS_CONTEXT` and then `DOCKER_CONTEXT` choose a
+context as docker/cli chooses one; Docker's `docker context create|use|ls|inspect|rm|show`
+are read as shards' words. What a context reaches is that machine's shards: its images,
+microVMs, volumes and paths, as a Docker context reaches that machine's dockerd.
+
+**How a command crosses.** Whole: the client sends its arguments, and of its environment
+the few variables that shape what a command prints (`TERM`, `COLUMNS`, `NO_COLOR` and the
+like), on one bidirectional QUIC stream (ALPN `shards/1`, RFC 9001 §8.1); the daemon runs
+that shards command in its own home, through its spawner as every child of a daemon is
+started, its stdin, stdout and stderr the connection's streams, and the client prints what
+it prints and exits as it exits. What a command prints is that machine's shards' own, byte
+for byte, and a run's microVM takes its stdio there as a local run does, the VM process
+writing to its descriptors directly. An enrolled client holds what its daemon's owner holds
+of shards, microVMs, images, volumes and that machine's paths, as a Docker context holds
+its dockerd, and nothing more: no other variable crosses, and a context's own commands
+(contexts, invitations, clients, `--listen`) are the machine's owner's alone, as focal's
+local administration is (../focal docs/cluster-admin.md).
+
+**Parts.**
+1. Identity, invitations and joins, the listener and the client's connection, and every
+   command that reads none of the client's files and needs no terminal: `ps`, `images`,
+   `inspect`, `pull`, `rm`, `stop`, `logs`, `run` and its output.
+2. Commands with a terminal: `-i`, `-t` (the remote command on a pseudo-terminal whose
+   size follows the client's), attach, exec.
+3. Builds (the context sent as BuildKit's session sends it), `cp`, `save`, `load`,
+   `import`, `export`.
+4. Docker's CLI through a context: a socket file in the home for each context, which the
+   local daemon relays to the machine's Engine API.
+5. Measured against Docker's `ssh://` and `tcp://` contexts, on the GPU desktop: a run's
+   start, a stream's bytes, and a network change.
+
+**Dependencies.** `hyper-quic` and `hyper-tls` as git dependencies of hyper-light/hyper-raft
+(public) pinned to a revision, so CI builds them; their AWS-LC is shards' own (vendor/).
+Their configurations take a `Box` and a `&'static` provider where upstream's took `Arc`s, so
+shards' QUIC needs none. hyper-quic is taken without its qlog traces (`default-features =
+false`): the `qlog` crate turns on serde_json's `preserve_order` for the whole build, and
+shards' JSON is Docker's, its maps sorted (the full suite found it: an Engine API create's
+`ExposedPorts` came back in insertion order; hyper-quic's VENDORED.md §20 says as much). They refuse Rust 1.98.0, which miscompiles trait-object vtables, so
+shards moved to 1.98.1 with them (rust-toolchain.toml, tests/toolchain.rs). The binary then
+carries two TLS implementations, rustls for registries and hyper-tls for QUIC: what that
+costs the binary and its launch (M113's 2.5 ms) is part 5's to measure.
+
+**Part 1, built.** `crates/remote`: the identity (`identity.rs`), the TLS of raw keys
+(`tls.rs`), the stream's frames (`frame.rs`: the request, stdin, stdout and stderr as they
+come, the exit status or the refusal last), invitations and their proof (`invite.rs`), and a
+driver of hyper-quic on a std UDP socket (`net.rs`): one thread holds the socket and the
+connections, local stdio is read and written by threads of their own whose bounded
+channels hold the connection's flow control back, so that a reader that stops holds up no
+packet the connection's liveness needs, and other threads wake it with a datagram to its
+own socket, which every target has (Windows' consoles and pipes are no descriptor a poll of
+a socket reaches). The daemon's side (`server.rs`, `daemon/remote.rs`) starts each command
+by its spawner as this machine's own shards (`SHARDS_CONTEXT=default`, so that a machine
+whose owner uses a context of their own never sends a client's command on), says each in
+its log (`client NAME: shards ARGS`), hangs a command up whose connection went (SIGHUP, as a
+terminal that went away), and checks a client's enrollment again for each command, so that
+`shards remove client` ends its access at once. A join's refusal is the same whatever made
+it fail. The client's side (`client.rs`, `context.rs`) refuses here what a context does not
+carry yet, the client's terminal and files, read by shards' own parser of each command (a
+flag past another's value included); and where no daemon answers, it says so once QUIC's
+handshake gives up, the idle bound. Tested: `crates/remote` (raw keys pinned and refused, the
+frames, an invitation's file and proof, and `tests/loopback.rs`: a join, its refusals, and
+commands' output, stdin and 8 MiB crossing whole over loopback); `tests/context.rs`, two
+homes on this machine: no invitation without a listening daemon; an invitation private and
+not shown; a join, and the invitation then spent; an hour-old invitation and one of another
+secret refused; a microVM run there, its output and exit status here; the image there and not
+here; `--context`, `SHARDS_CONTEXT` and `use context`; `-it`, `build` and the owner's
+`stop daemon` refused; a client removed refused; and the daemon's log. Mutation-checked: the
+child's `SHARDS_CONTEXT` left out (the client's command sent on), invitations that never
+lapse, a join's proof unchecked, and `run`'s flags read by no parser (an `-it` sent on).
+
 ### D179. Other CPUs' images, emulated in their microVM (parts 1 to 3 built)
 
 Images built on an arm64 Mac usually ship to x86_64 hosts, and the other way round, and a

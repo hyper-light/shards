@@ -38,6 +38,12 @@ pub enum Thing {
     Registry,
     /// A microVM's snapshots, what `save vm` saves it as (D176).
     Snapshot,
+    /// Another machine's shards, which this one's commands run on whole (D180).
+    Context,
+    /// A machine this one's daemon enrolled, which runs shards here (D180).
+    Client,
+    /// What enrolls a client, once (D180).
+    Invitation,
 }
 
 impl Thing {
@@ -57,6 +63,9 @@ impl Thing {
             "agentfile" | "agentfiles" => Some(Thing::Agentfile),
             "registry" | "registries" => Some(Thing::Registry),
             "snapshot" | "snapshots" => Some(Thing::Snapshot),
+            "context" | "contexts" => Some(Thing::Context),
+            "client" | "clients" => Some(Thing::Client),
+            "invitation" | "invitations" => Some(Thing::Invitation),
             _ => None,
         }
     }
@@ -83,7 +92,10 @@ pub fn rewrite(args: &[String]) -> Option<Vec<String>> {
                 | Thing::Mcp
                 | Thing::Agentfile
                 | Thing::Registry
-                | Thing::Snapshot,
+                | Thing::Snapshot
+                | Thing::Context
+                | Thing::Client
+                | Thing::Invitation,
             ),
             _,
         ) => {
@@ -109,6 +121,16 @@ pub fn rewrite(args: &[String]) -> Option<Vec<String>> {
         ("list" | "ls", Thing::Volume) => &["volume", "ls"],
         ("list" | "ls", Thing::Snapshot) => &["snapshot", "ls"],
         ("remove" | "rm" | "delete", Thing::Snapshot) => &["snapshot", "rm"],
+        ("create" | "make", Thing::Context) => &["context", "create"],
+        ("use" | "set", Thing::Context) => &["context", "use"],
+        ("list" | "ls", Thing::Context) => &["context", "ls"],
+        ("inspect" | "show", Thing::Context) => &["context", "inspect"],
+        ("remove" | "rm" | "delete", Thing::Context) => &["context", "rm"],
+        ("invite", Thing::Client) => &["client", "invite"],
+        ("list" | "ls", Thing::Client) => &["client", "ls"],
+        ("remove" | "rm" | "delete", Thing::Client) => &["client", "rm"],
+        ("list" | "ls", Thing::Invitation) => &["invitation", "ls"],
+        ("remove" | "rm" | "delete", Thing::Invitation) => &["invitation", "rm"],
         ("create" | "make", Thing::Volume) => &["volume", "create"],
         ("create" | "make", Thing::Agentfile) => &["agentfile"],
         ("remove" | "rm" | "delete", Thing::Volume) => &["volume", "rm"],
@@ -195,8 +217,8 @@ pub static ACTIONS: &[(&str, &str, &str, &str)] = &[
     (
         "run",
         "create",
-        "vm | volume | agentfile",
-        "Make a microVM without starting it, a volume, or an Agentfile of an image",
+        "vm | volume | agentfile | context",
+        "Make a microVM without starting it, a volume, an Agentfile of an image, or a context",
     ),
     ("run", "exec", "vm", "Run a command in a running microVM"),
     ("run", "restart", "vm", "Stop microVMs, and start them again"),
@@ -240,14 +262,14 @@ pub static ACTIONS: &[(&str, &str, &str, &str)] = &[
     (
         "inspect",
         "inspect",
-        "vm | image | volume | disk | guest | system",
-        "Show a microVM, an image, a volume, disk use, the guest, or shards itself",
+        "vm | image | volume | disk | guest | system | context",
+        "Show a microVM, an image, a volume, disk use, the guest, shards itself, or a context",
     ),
     (
         "inspect",
         "list",
-        "vm | image | volume | snapshot",
-        "List microVMs, images, volumes, or a microVM's snapshots",
+        "vm | image | volume | snapshot | context | client | invitation",
+        "List microVMs, images, volumes, a microVM's snapshots, contexts, or this machine's clients and invitations",
     ),
     ("inspect", "logs", "vm", "Show what a microVM's command printed"),
     (
@@ -264,6 +286,12 @@ pub static ACTIONS: &[(&str, &str, &str, &str)] = &[
         "Choose the kernel and shards-init runs boot",
     ),
     ("manage", "copy", "vm", "Copy files into or out of a microVM"),
+    (
+        "manage",
+        "invite",
+        "client",
+        "Let another machine run shards here, by an invitation it joins with",
+    ),
     ("manage", "kill", "vm", "Kill microVMs"),
     ("manage", "pause", "vm", "Freeze microVMs where they are"),
     (
@@ -275,8 +303,8 @@ pub static ACTIONS: &[(&str, &str, &str, &str)] = &[
     (
         "manage",
         "remove",
-        "vm | image | volume | snapshot",
-        "Remove microVMs, images with their stopped microVMs, volumes, or snapshots",
+        "vm | image | volume | snapshot | context | client | invitation",
+        "Remove microVMs, images with their stopped microVMs, volumes, snapshots, contexts, clients, or invitations",
     ),
     ("manage", "rename", "vm", "Name a microVM again"),
     (
@@ -287,6 +315,12 @@ pub static ACTIONS: &[(&str, &str, &str, &str)] = &[
     ),
     ("manage", "tag", "image", "Name an image again"),
     ("manage", "unpause", "vm", "Let frozen microVMs run on"),
+    (
+        "manage",
+        "use",
+        "context",
+        "Choose the machine shards' commands run on",
+    ),
     (
         "images",
         "build",
@@ -354,6 +388,12 @@ pub static USES: &[(&str, &str, &str, &str)] = &[
         "create",
         "volume [NAME]",
         "Make a volume microVMs can mount, named or not",
+    ),
+    (
+        "run",
+        "create",
+        "context NAME --invite-file FILE",
+        "Join another machine's shards by its owner's invitation, as context NAME",
     ),
     ("run", "restore", "vm DIR", "Resume a microVM from a snapshot"),
     (
@@ -442,6 +482,12 @@ pub static USES: &[(&str, &str, &str, &str)] = &[
     ),
     (
         "inspect",
+        "inspect",
+        "context NAME",
+        "Show a context: its machine's address, and the key its daemon presents",
+    ),
+    (
+        "inspect",
         "list",
         "vm | image | volume",
         "List microVMs, images, or volumes",
@@ -451,6 +497,18 @@ pub static USES: &[(&str, &str, &str, &str)] = &[
         "list",
         "snapshots NAME",
         "List a microVM's snapshots, newest first: when each was saved, and what it takes on disk",
+    ),
+    (
+        "inspect",
+        "list",
+        "contexts",
+        "List the machines this one's commands may run on, the one they use marked",
+    ),
+    (
+        "inspect",
+        "list",
+        "clients | invitations",
+        "List the machines enrolled to run shards here, or the invitations still open",
     ),
     (
         "inspect",
@@ -519,6 +577,18 @@ pub static USES: &[(&str, &str, &str, &str)] = &[
         "snapshot NAME SNAPSHOT...",
         "Remove snapshots of a microVM",
     ),
+    (
+        "manage",
+        "remove",
+        "context | client | invitation NAME",
+        "Forget a context, or end a client's enrollment here, or an invitation's",
+    ),
+    (
+        "manage",
+        "invite",
+        "client --name NAME --output FILE",
+        "Let another machine run shards here: an invitation, a private file that enrolls it once",
+    ),
     ("manage", "rename", "vm NAME NEW_NAME", "Name a microVM again"),
     (
         "manage",
@@ -538,6 +608,12 @@ pub static USES: &[(&str, &str, &str, &str)] = &[
         "unpause",
         "vm NAME",
         "Let frozen microVMs run on from where they were",
+    ),
+    (
+        "manage",
+        "use",
+        "context NAME",
+        "Run shards' commands on context NAME's machine from now on; `default` is this one",
     ),
     (
         "images",

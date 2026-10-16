@@ -1,0 +1,24 @@
+[package]
+name = "shards-remote"
+version = "0.1.0"
+description = "shards on another machine (D180): a home's identity, invitations and joins, and requests over QUIC"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+aws-lc-rs = { version = "1.18.1", default-features = false, features = ["aws-lc-sys"] }
+bytes = "1"
+# QUIC (RFC 9000, 9001, 9002) and TLS 1.3 over it, as the user's ../hyper-raft conforms them:
+# quinn-proto 0.11.18 and rustls 0.23.45 (D180). Without its qlog traces, whose crate turns on
+# serde_json's `preserve_order` for the whole build: shards' JSON is Docker's, its maps sorted
+# (hyper-quic's VENDORED.md §20).
+hyper-quic = { git = "https://github.com/hyper-light/hyper-raft", rev = "f116ac276d2d53296de24c2a43837baf66ed1cbd", default-features = false }
+sha2 = "0.11"
+
+[dev-dependencies]
+shards-testdir = { path = "../testdir" }
+
+[lints]
+workspace = true
