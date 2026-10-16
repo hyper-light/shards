@@ -1381,7 +1381,25 @@ impl Bases<'_> {
         self.base_of(name, &reference, record, pulled.resolved.clone(), wanted)
     }
 
-    /// A base for a platform this host's microVMs do not run: its manifest for that
+    /// The root filesystem of the emulator image (D179), this host's platform's of it:
+    /// fetched as a foreign base is, untagged, the first time a build needs it, and kept as
+    /// the build cache keeps what it made.
+    fn emulators(&self, limits: &store::Limits) -> Result<PathBuf, String> {
+        let host = host_platform();
+        let reference = Reference::parse(EMULATOR_IMAGE).map_err(|e| e.to_string())?;
+        self.foreign(EMULATOR_IMAGE, &reference, &host)
+            .map_err(|e| show(&e))?;
+        let layers = self
+            .resolved
+            .borrow()
+            .get(&base_key(EMULATOR_IMAGE, &host))
+            .map(|b| b.layers.clone())
+            .ok_or_else(|| format!("{EMULATOR_IMAGE}: not resolved"))?;
+        rootfs_of(self.store, &layers, limits)
+    }
+
+    /// A base for a platform this host's microVMs do not run, or the emulator image: its
+    /// manifest for that
     /// platform, config and layers fetched into the store with no name recorded, so that
     /// the image a name holds stays the guests' (BuildKit's pull leaves an image store's
     /// names be), and kept as the build cache keeps what it made, until `builder prune`.
@@ -2075,6 +2093,45 @@ struct ForeignBase {
 fn ours(p: &Platform) -> bool {
     let host = host_platform();
     p.os == host.os && p.architecture == host.architecture
+}
+
+/// Whether a builder runs `p`'s programs itself: its own platform's, and on an x86_64 host
+/// linux/386's, which its guest kernel runs (`IA32_EMULATION`), as BuildKit finds a host
+/// kernel runs them (util/archutil).
+fn native(p: &Platform) -> bool {
+    ours(p) || (p.os == b"linux" && p.architecture == b"386" && host_platform().architecture == b"amd64")
+}
+
+/// The emulator a step for `p` runs under in its builder (D179), where the builder does
+/// not run it itself and one runs it.
+fn emulated(p: &Platform) -> Option<&'static shards_abi::emulate::Emulator> {
+    if native(p) || p.os != b"linux" {
+        return None;
+    }
+    std::str::from_utf8(&p.architecture)
+        .ok()
+        .and_then(shards_abi::emulate::of)
+}
+
+/// The emulators a build's steps for other CPUs run under (D179): Docker's builds of
+/// QEMU's user-mode emulators for BuildKit (tonistiigi/binfmt e29e7d7, QEMU 10.2.3),
+/// pinned, and never in the shards binary (QEMU is GPL-2.0).
+pub(crate) const EMULATOR_IMAGE: &str =
+    "docker.io/tonistiigi/binfmt@sha256:400a4873b838d1b89194d982c45e5fb3cda4593fbfd7e08a02e76b03b21166f0";
+
+/// The root filesystem `layers` make, as the store keeps it.
+fn rootfs_of(store: &Store, layers: &[Layer], limits: &store::Limits) -> Result<PathBuf, String> {
+    let layers = layers
+        .iter()
+        .map(|l| {
+            Ok(store::Layer {
+                blob: Digest::parse(&show(&l.digest)).map_err(|e| e.to_string())?,
+                media_type: show(&l.media_type),
+                diff_id: Digest::parse(&show(&l.diff_id)).map_err(|e| e.to_string())?,
+            })
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    store.rootfs(&layers, limits).map_err(|e| e.to_string())
 }
 
 /// A platform as a base's key names it: in full, variant and all.
@@ -3182,7 +3239,13 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
             .ops
             .iter()
             .enumerate()
-            .filter(|(_, op)| matches!(op.kind, OpKind::Exec { .. }) && op.platform.as_ref().is_none_or(ours))
+            .filter(|(_, op)| {
+                matches!(op.kind, OpKind::Exec { .. })
+                    && op
+                        .platform
+                        .as_ref()
+                        .is_none_or(|p| native(p) || emulated(p).is_some())
+            })
             .map(|(i, _)| i)
             .collect();
         let mut seen = std::collections::HashSet::new();
@@ -3201,17 +3264,7 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
                         .map(|b| b.layers.clone())
                         .ok_or_else(|| format!("{reference}: not resolved"))?;
                     if !layers.is_empty() {
-                        let store_layers = layers
-                            .iter()
-                            .map(|l| {
-                                Ok(store::Layer {
-                                    blob: Digest::parse(&show(&l.digest)).map_err(|e| e.to_string())?,
-                                    media_type: show(&l.media_type),
-                                    diff_id: Digest::parse(&show(&l.diff_id)).map_err(|e| e.to_string())?,
-                                })
-                            })
-                            .collect::<Result<Vec<_>, String>>()?;
-                        let rootfs = store.rootfs(&store_layers, &limits).map_err(|e| e.to_string())?;
+                        let rootfs = rootfs_of(&store, &layers, &limits)?;
                         let n = u32::try_from(run_bases.len()).map_err(|_| "too many base images")?;
                         run_bases.push(rootfs);
                         run_images.insert(i, n);
@@ -3749,15 +3802,25 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
                 ..
             } => {
                 let v = progress.borrow_mut().start(&name);
-                // A step for a platform this host's microVMs do not run is refused here, at
-                // its turn and before a builder boots: shards emulates no other CPU, where
-                // BuildKit runs it under an emulator if one is installed, or fails with
-                // the kernel's "exec format error" once it has started.
-                if let Some(p) = op.platform.as_ref().filter(|p| !ours(p)) {
+                // A step for a platform its builder neither runs nor emulates is refused
+                // here, at its turn and before a builder boots, where BuildKit starts it and
+                // fails with the kernel's "exec format error".
+                if let Some(p) = op
+                    .platform
+                    .as_ref()
+                    .filter(|p| !native(p) && emulated(p).is_none())
+                {
+                    let others: Vec<String> = shards_abi::emulate::EMULATORS
+                        .iter()
+                        .map(|e| Platform::new("linux", e.architecture))
+                        .filter(|e| emulated(e).is_some())
+                        .map(|e| show(&platform::format(&e)))
+                        .collect();
                     let why = format!(
-                        "shards runs steps for {} only, the platform its microVMs run, not {}: build what runs on the build platform (FROM --platform=$BUILDPLATFORM) and copy it into the {} stage",
-                        show(&platform::format(&host_platform())),
+                        "shards runs no steps for {}: its microVMs run {}'s, and {} under emulation; build what runs on the build platform (FROM --platform=$BUILDPLATFORM) and copy it into the {} stage",
                         show(&platform::format(p)),
+                        show(&platform::format(&host_platform())),
+                        others.join(", "),
                         show(&platform::format(p)),
                     );
                     return Err(fail(&v, &why));
@@ -3794,6 +3857,21 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
                     if proxy_cap {
                         build_proxy = Some(builder::proxy(&limits).map_err(|e| fail(&v, &e))?);
                     }
+                    // The emulators the build's steps for other CPUs run under (D179), the
+                    // emulator image's root one more of the builder's devices.
+                    let mut emulating: Vec<&'static str> = def
+                        .ops
+                        .iter()
+                        .filter(|op| matches!(op.kind, OpKind::Exec { .. }))
+                        .filter_map(|op| op.platform.as_ref().and_then(emulated))
+                        .map(|e| e.architecture)
+                        .collect();
+                    emulating.sort_unstable();
+                    emulating.dedup();
+                    let emulators = match emulating.is_empty() {
+                        true => None,
+                        false => Some(bases.emulators(&limits).map_err(|e| fail(&v, &e))?),
+                    };
                     let boot = builder::Boot {
                         kernel: &guest.0,
                         init: &guest.1,
@@ -3802,6 +3880,7 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
                         bases: &run_bases,
                         proxy: build_proxy.as_ref(),
                         gpu,
+                        emulators: emulators.as_deref().map(|root| (root, emulating.as_slice())),
                     };
                     let kernel = crate::guest::version_of(&guest.0).map_err(|e| fail(&v, &e))?;
                     step_filter = crate::setup::step_seccomp(kernel).map_err(|e| fail(&v, &e))?;

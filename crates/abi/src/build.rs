@@ -41,6 +41,12 @@ pub mod kind {
     /// status, one for each cache it writes (`Step::caches`, in order), once its changes are
     /// written to its `out` range: what they came to, a [`Kept`](super::Kept).
     pub const MOUNT_END: u8 = 37;
+    /// Host to guest, before any step: the emulators its steps' platforms need (D179), a
+    /// big-endian u32 pmem device that holds the emulator image's root, then each OCI
+    /// architecture to emulate, NUL-terminated ([`crate::emulate`]).
+    pub const EMULATE: u8 = 38;
+    /// Guest to host: the emulators are registered, or, as its payload, why not.
+    pub const EMULATED: u8 = 39;
 }
 
 /// A cache's root directory: what overlayfs shows of the directory its upper layer is,

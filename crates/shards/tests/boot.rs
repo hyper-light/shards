@@ -867,8 +867,10 @@ fn a_snapshot_keeps_the_memory_its_guest_plugged() {
 /// MiB asks for 1 GiB more, its kernel brings it all online, and the guest fills seven
 /// eighths of it, which the VM process then holds; it frees it and asks for none, its kernel
 /// gives it all back, the VM process's own memory falls by it, and the VM process holds
-/// none of the pages the guest wrote as it ends (`hotplug_held_kib`: on macOS a page out of
-/// the hypervisor's mappings is out of the footprint, held or not, PM M193). Asked for more
+/// none of the pages of the memory it gave back as it ends (`hotplug_held_kib`: on macOS a
+/// page out of the hypervisor's mappings is out of the footprint, held or not, PM M193; a
+/// block the guest's driver is plugging as it ends, asked for everything and then nothing,
+/// is the guest's, and none of what it gave back). Asked for more
 /// than it may have, it is given what it may. On the hosts whose VMs it measures the
 /// memory of (`process_usage`): Windows runs none yet.
 #[cfg(unix)]

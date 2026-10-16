@@ -8,7 +8,7 @@ use std::path::Path;
 
 use shards_agentfile::glob::{self, MatchInfo, PatternMatcher};
 use shards_agentfile::go;
-use shards_image::erofs::{Kind, Meta, Tree};
+use shards_image::erofs::{Kind, Meta, NodeId, Tree};
 
 use crate::Error;
 use crate::copy::{fm, syscall_mode};
@@ -45,14 +45,70 @@ pub fn load(
     stage: &Path,
 ) -> Result<Fs, Error> {
     let root = host::eval_symlinks(dir).map_err(|e| Error(format!("resolve {}: {e}", dir.display())))?;
-    let mut sent = walk(&root, filters)?;
+    let mut walker = Walker::new(&root, filters)?;
+    let mut sent = Vec::new();
+    walker.entries(b"", &mut Vec::new(), &mut sent)?;
     reset_hardlinks(&mut sent);
     let mut taker = host::Stage::new(stage).map_err(|e| Error(format!("{}: {e}", stage.display())))?;
+    let whole = match host::CLONES_DIRS {
+        true => whole_dirs(&sent, &walker.partial),
+        false => std::collections::HashSet::new(),
+    };
     let pack = std::fs::File::open(taker.pack_path()).map_err(|e| Error(e.to_string()))?;
     let pack = sources.archive(pack).map_err(|e| Error(e.to_string()))?;
-    let fs = receive(&root, sent, sources, now, &mut taker, pack)?;
+    let fs = receive(&root, sent, sources, now, &mut taker, pack, &whole)?;
     taker.finish().map_err(|e| Error(e.to_string()))?;
     Ok(fs)
+}
+
+/// The directories sent that the walk kept whole, each cloned at once once its files are
+/// read, where the stage clones one ([`host::Stage::clone_dir`]): the root if it is
+/// whole, else each whole directory whose parent is not.
+fn whole_dirs(
+    sent: &[(Vec<u8>, Stat)],
+    partial: &std::collections::HashSet<Vec<u8>>,
+) -> std::collections::HashSet<Vec<u8>> {
+    if !partial.contains(b"".as_slice()) {
+        return std::collections::HashSet::from([Vec::new()]);
+    }
+    sent.iter()
+        .filter(|(rel, st)| st.mode & fm::DIR != 0 && !partial.contains(rel) && partial.contains(parent(rel)))
+        .map(|(rel, _)| rel.clone())
+        .collect()
+}
+
+/// The directory `rel` is in: the root's, empty, for one at the top.
+fn parent(rel: &[u8]) -> &[u8] {
+    rel.iter()
+        .rposition(|&c| c == b'/')
+        .and_then(|i| rel.get(..i))
+        .unwrap_or_default()
+}
+
+/// The one of the directories `whole` that `rel` is in, the root's included.
+fn whole_of<'a>(whole: &std::collections::HashSet<Vec<u8>>, rel: &'a [u8]) -> Option<&'a [u8]> {
+    let mut dir = rel;
+    while !dir.is_empty() {
+        dir = parent(dir);
+        if whole.contains(dir) {
+            return Some(dir);
+        }
+    }
+    None
+}
+
+/// A file [`host::Stage::read`] read in place, one version once its directory's clone
+/// has waited out a write under way and its times say no write came: its node, its path
+/// and stat in the snapshot, its snapshot, what the read saw and the whole directory it is
+/// in.
+struct Read {
+    rel: Vec<u8>,
+    id: NodeId,
+    p: Vec<u8>,
+    st: Stat,
+    got: host::Snapshot,
+    seen: host::Seen,
+    dir: Vec<u8>,
 }
 
 /// hardlinks.go WithHardlinkReset, which the sender walks through: a file whose link
@@ -102,6 +158,10 @@ struct Walker<'a> {
     only_prefix_exceptions: bool,
     /// Files with several links, by inode, and the first path sent of each (seenFiles).
     seen: std::collections::HashMap<u64, Vec<u8>>,
+    /// The directories it did not walk all of, by path: one holding a directory it left
+    /// out without walking in or could not read, a device, a FIFO or a socket, or such a
+    /// directory itself. The rest are whole, cloned at once where the stage can.
+    partial: std::collections::HashSet<Vec<u8>>,
 }
 
 /// filter.go patternWithoutTrailingGlob.
@@ -127,6 +187,7 @@ impl<'a> Walker<'a> {
             only_prefix_includes: true,
             only_prefix_exceptions: true,
             seen: std::collections::HashMap::new(),
+            partial: std::collections::HashSet::new(),
         };
         if !includes.is_empty() {
             let m = PatternMatcher::new(&includes).map_err(|e| {
@@ -165,24 +226,26 @@ impl<'a> Walker<'a> {
 
     fn walk(mut self, sent: &mut Vec<(Vec<u8>, Stat)>) -> Result<(), Error> {
         let mut parents = Vec::new();
-        self.entries(b"", &mut parents, sent)
+        self.entries(b"", &mut parents, sent).map(|_| ())
     }
 
-    /// The entries of the directory `rel` (the root when empty), in name order.
+    /// The entries of the directory `rel` (the root when empty), in name order: whether
+    /// it walked all of it.
     fn entries(
         &mut self,
         rel: &[u8],
         parents: &mut Vec<Visited>,
         sent: &mut Vec<(Vec<u8>, Stat)>,
-    ) -> Result<(), Error> {
+    ) -> Result<bool, Error> {
         let names = match host::read_dir(&host::path(self.root, rel)) {
             Ok(n) => n,
             // A directory gone is skipped; one unreadable is skipped only if filtered out.
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(true),
             Err(e) => {
                 let skipped = !rel.is_empty() && parents.last().is_some_and(|p| p.rel == rel && !p.called);
                 if skipped && e.kind() == std::io::ErrorKind::PermissionDenied {
-                    return Ok(());
+                    self.partial.insert(rel.to_vec());
+                    return Ok(false);
                 }
                 return Err(Error(format!(
                     "open {}: {e}",
@@ -190,15 +253,19 @@ impl<'a> Walker<'a> {
                 )));
             }
         };
+        let mut whole = true;
         for name in names {
             let child = if rel.is_empty() {
                 name
             } else {
                 [rel, b"/", &name].concat()
             };
-            self.entry(&child, parents, sent)?;
+            whole &= self.entry(&child, parents, sent)?;
         }
-        Ok(())
+        if !whole {
+            self.partial.insert(rel.to_vec());
+        }
+        Ok(whole)
     }
 
     fn matches(
@@ -225,16 +292,16 @@ impl<'a> Walker<'a> {
             })
     }
 
-    /// One path of filterFS.Walk.
+    /// One path of filterFS.Walk: whether it walked all of it.
     fn entry(
         &mut self,
         rel: &[u8],
         parents: &mut Vec<Visited>,
         sent: &mut Vec<(Vec<u8>, Stat)>,
-    ) -> Result<(), Error> {
+    ) -> Result<bool, Error> {
         let stat = match host::lstat(&host::path(self.root, rel)) {
             Ok(s) => s,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(true),
             Err(e) => {
                 return Err(Error(format!(
                     "lstat {}: {e}",
@@ -271,7 +338,7 @@ impl<'a> Walker<'a> {
                         .as_ref()
                         .is_some_and(|i| self.prefixes(i, false, rel));
                     if !walk_in {
-                        return Ok(());
+                        return Ok(false);
                     }
                 }
                 skip = true;
@@ -282,10 +349,10 @@ impl<'a> Walker<'a> {
             if m {
                 if is_dir && self.only_prefix_exceptions {
                     let Some(ex) = self.exclude.as_ref() else {
-                        return Ok(());
+                        return Ok(false);
                     };
                     if !ex.exclusions() || !self.prefixes(ex, true, rel) {
-                        return Ok(());
+                        return Ok(false);
                     }
                 }
                 skip = true;
@@ -298,6 +365,8 @@ impl<'a> Walker<'a> {
             }
             sent.push((rel.to_vec(), stat.clone()));
         }
+        // A device, FIFO or socket: none is cloned with its directory.
+        let special = stat.socket || stat.mode & (fm::DEVICE | fm::NAMED_PIPE) != 0;
         if is_dir {
             parents.push(Visited {
                 rel: rel.to_vec(),
@@ -308,9 +377,9 @@ impl<'a> Walker<'a> {
             });
             let r = self.entries(rel, parents, sent);
             parents.pop();
-            r?;
+            return r;
         }
-        Ok(())
+        Ok(!special)
     }
 }
 
@@ -436,7 +505,13 @@ fn receive(
     now: (i64, u32),
     stage: &mut host::Stage,
     pack: u32,
+    whole: &std::collections::HashSet<Vec<u8>>,
 ) -> Result<Fs, Error> {
+    let data_of = |sources: &mut Sources, taken: host::Taken, size: u64| match taken {
+        host::Taken::Pack(offset) => Ok(shards_image::erofs::DataRef { source: pack, offset }),
+        host::Taken::File(path) => sources.host(path, size).map_err(|e| Error(e.to_string())),
+    };
+    let mut read: Vec<Read> = Vec::new();
     let mut fs = Fs::new(
         Tree::new(Meta {
             mode: 0o755,
@@ -476,22 +551,72 @@ fn receive(
         } else if st.socket {
             fs.create(&p, syscall_mode(mode)).map_err(os)?;
         } else {
-            // The bytes and the stat they go with, as one version of the file.
+            // The bytes and the stat they go with, as one version of the file: a small
+            // one of a whole directory read in place, the directory's clone to say so.
             let src = host::path(root, &rel);
-            let (got, taken) = stage
-                .take(&src)
-                .map_err(|e| Error(format!("{}: {e}", src.display())))?;
+            let dir = whole_of(whole, &rel).filter(|_| st.size < host::CLONE_MIN);
+            let (got, taken, seen) = match dir {
+                Some(_) => stage.read(&src).map(|(g, t, s)| (g, t, Some(s))),
+                None => stage.take(&src).map(|(g, t)| (g, t, None)),
+            }
+            .map_err(|e| Error(format!("{}: {e}", src.display())))?;
             st.mode = (st.mode & !(fm::PERM | fm::SETUID | fm::SETGID | fm::STICKY)) | got.mode;
             st.size = got.size;
             st.mtime = got.mtime;
             let id = fs.create(&p, syscall_mode(st.mode)).map_err(os)?;
-            let data = match taken {
-                host::Taken::Pack(offset) => shards_image::erofs::DataRef { source: pack, offset },
-                host::Taken::File(path) => sources.host(path, st.size).map_err(|e| Error(e.to_string()))?,
-            };
+            let data = data_of(sources, taken, st.size)?;
             fs.set_data(id, st.size, data);
+            if let (Some(dir), Some(seen)) = (dir, seen) {
+                read.push(Read {
+                    dir: dir.to_vec(),
+                    rel,
+                    id,
+                    p: p.clone(),
+                    st: st.clone(),
+                    got,
+                    seen,
+                });
+            }
         }
         rewrite(&mut fs, &p, &st).map_err(os)?;
+    }
+    // Each whole directory a file was read in place in, cloned at once: the clone waits
+    // out a write under way in any of them, whose end its times then show. Where it is not
+    // cloned, each of its files is taken again on its own, and is what it was or refused.
+    let mut cloned = std::collections::HashMap::new();
+    for r in read {
+        let src = host::path(root, &r.rel);
+        let changed = || Error(format!("{}: file changed as the build read it", src.display()));
+        let dir = match cloned.get(&r.dir) {
+            Some(&done) => done,
+            None => {
+                let at = host::path(root, &r.dir);
+                let done = stage
+                    .clone_dir(&at, &r.dir)
+                    .map_err(|e| Error(format!("{}: {e}", at.display())))?;
+                cloned.insert(r.dir.clone(), done);
+                done
+            }
+        };
+        if dir {
+            if !stage
+                .still(&src, &r.seen)
+                .map_err(|e| Error(format!("{}: {e}", src.display())))?
+            {
+                return Err(changed());
+            }
+            continue;
+        }
+        let (again, taken) = stage
+            .take(&src)
+            .map_err(|e| Error(format!("{}: {e}", src.display())))?;
+        if again != r.got {
+            return Err(changed());
+        }
+        let data = data_of(sources, taken, again.size)?;
+        fs.set_data(r.id, again.size, data);
+        // Its data set stamps it with the snapshot's time: its own again, as received.
+        rewrite(&mut fs, &r.p, &r.st).map_err(os)?;
     }
     // The disk writer stamps directories once everything below them is written.
     for (p, t) in dirs.iter().rev() {

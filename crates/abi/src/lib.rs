@@ -35,6 +35,7 @@ pub const fn gateway_mac(gateway: [u8; 4]) -> [u8; 6] {
 
 pub mod build;
 pub mod changes;
+pub mod emulate;
 pub mod run;
 
 include!(concat!(env!("OUT_DIR"), "/identity.rs"));

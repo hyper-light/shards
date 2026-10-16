@@ -185,6 +185,19 @@ impl<D: Disk> Daemon<D> {
                 Err(e) => log(format!("{}: the in-VM server's device: {e}", dir.display())),
             }
         }
+        // Another CPU's image's template restores against the emulator image's root too
+        // (D179), last, as its cold boot was given it.
+        if let Some(root) = pool
+            .emulator
+            .get_or_insert_with(|| {
+                crate::run::Origin::read(dir).and_then(|o| o.emulator().map(Path::to_path_buf))
+            })
+            .as_ref()
+        {
+            let mut backing = resolved(root).into_os_string();
+            backing.push(":ro");
+            args.extend(["--backing".into(), backing]);
+        }
         // A GPU's template restores in the GPU's VM process (D150).
         if *pool
             .gpu

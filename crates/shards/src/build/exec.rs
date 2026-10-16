@@ -129,6 +129,9 @@ pub struct Exec<'a> {
     pub sources: Sources,
     /// Layers unpacked for snapshots, their files read until the build ends.
     unpacked: Vec<Unpacked>,
+    /// The removal of the clones a context's load waited on (macOS, PM M242), which go
+    /// as the build goes on: done before `stages`, which they are in, are dropped.
+    removing: Vec<Removing>,
     /// Where the context's files are snapshotted; dropped after `sources`, which reads them.
     stages: Vec<store::Stage>,
     /// Where ADD's archives are decompressed, dropped after `sources` too.
@@ -141,6 +144,18 @@ pub struct Exec<'a> {
     /// The build context's snapshots: what BuildKit takes content checksums of before an
     /// operation reads them.
     contexts: Vec<Rc<Fs>>,
+}
+
+/// A thread removing what a stage holds that nothing reads: waited for as it drops.
+#[derive(Debug)]
+struct Removing(Option<std::thread::JoinHandle<()>>);
+
+impl Drop for Removing {
+    fn drop(&mut self) {
+        if let Some(t) = self.0.take() {
+            let _ = t.join();
+        }
+    }
 }
 
 /// One slot of a file operation: an input, an action's mount, or its committed result.
@@ -161,6 +176,7 @@ impl<'a> Exec<'a> {
             limits,
             sources: Sources::default(),
             unpacked: Vec::new(),
+            removing: Vec::new(),
             stages: Vec::new(),
             unpack: None,
             budget: shards_build::archive::Budget::new(*limits),
@@ -367,6 +383,17 @@ impl<'a> Exec<'a> {
         let stage = self.store.stage().map_err(err)?;
         let fs = shards_build::context::load(dir, filters, &mut self.sources, now(), stage.path())
             .map_err(|e| e.0)?;
+        // The clones its load waited on, which nothing reads: removed beside the build.
+        let tree = shards_build::host::Stage::tree_in(stage.path());
+        if tree.exists() {
+            let removing = std::thread::Builder::new()
+                .name("shards-clones".into())
+                .spawn(move || {
+                    store::remove_tree(&tree);
+                })
+                .map_err(err)?;
+            self.removing.push(Removing(Some(removing)));
+        }
         self.stages.push(stage);
         let fs = Rc::new(fs);
         self.contexts.push(fs.clone());

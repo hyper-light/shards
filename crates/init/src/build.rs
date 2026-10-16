@@ -36,6 +36,9 @@ const B: &str = "/b";
 const LAYERS: &str = "/l";
 const ROOT: &str = "/root";
 const EMPTY: &str = "/empty";
+/// This kernel's binfmt_misc, where the emulators of other CPUs' programs are registered
+/// (D179).
+const BINFMT: &str = "/proc/sys/fs/binfmt_misc";
 
 fn err(what: impl std::fmt::Display) -> io::Error {
     io::Error::other(what.to_string())
@@ -252,6 +255,14 @@ fn serve() -> io::Result<()> {
                 let step = Step::decode(&payload).ok_or_else(|| err("a malformed step"))?;
                 b.step(&step)?;
             }
+            kind::EMULATE => {
+                let why = b
+                    .emulate(&payload)
+                    .err()
+                    .map(|e| e.to_string())
+                    .unwrap_or_default();
+                send(&b.conn, kind::EMULATED, why.as_bytes())?;
+            }
             other => return Err(err(format!("an unknown frame kind {other}"))),
         }
     }
@@ -314,6 +325,23 @@ impl Builder {
             }
         }
         Ok(())
+    }
+
+    /// Registers the emulators `payload` names with this kernel's binfmt_misc (D179), as
+    /// Docker's binfmt tool registers them with a host's: the emulator image on the pmem
+    /// device it names mounted as a base is, where no step reaches it, and each emulator
+    /// opened as it is registered (flag F), which every step's root then reaches.
+    fn emulate(&mut self, payload: &[u8]) -> io::Result<()> {
+        let (device, names) = payload
+            .split_first_chunk::<4>()
+            .ok_or_else(|| err("an emulate frame without its device"))?;
+        let image = self.base(u32::from_be_bytes(*device))?;
+        let architectures = names
+            .split(|&c| c == 0)
+            .filter(|n| !n.is_empty())
+            .map(|n| std::str::from_utf8(n).map_err(|_| err("an architecture that is not UTF-8")))
+            .collect::<io::Result<Vec<&str>>>()?;
+        crate::emulate::register(&image, Path::new(BINFMT), &architectures)
     }
 
     /// The base image on pmem device `n`, mounted once.

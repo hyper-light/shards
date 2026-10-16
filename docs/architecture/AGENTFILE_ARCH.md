@@ -965,7 +965,7 @@ of 2026-10-02:
 | Item | Build | Run |
 |---|---|---|
 | Parser directives `syntax`, `escape`, `check` | done (oracle) | n/a |
-| `FROM` (image, scratch, stage, `--platform`, `AS`) | done for the host's platform; another platform's `RUN` needs an emulator in the guest | n/a |
+| `FROM` (image, scratch, stage, `--platform`, `AS`) | done; another platform's `RUN` runs under its CPU's emulator in the builder, registered by the builder's own kernel (D179, `a_step_for_another_cpu_runs_under_its_emulator`), linux/386 natively on x86_64 | n/a |
 | `ARG` (scopes, predefined proxy args, platform args, `BUILDKIT_*`, `SOURCE_DATE_EPOCH`) | done, held to BuildKit by the plan oracle (global and per-stage scope, defaults, `--build-arg`, the platform and proxy args, `SOURCE_DATE_EPOCH` (D76; named from the context, a named context or a stage's remote source, D127), `BUILDKIT_SYNTAX`, `BUILDKIT_INLINE_CACHE`, `BUILDKIT_MULTI_PLATFORM`, `BUILDKIT_SANDBOX_HOSTNAME`, `BUILDKIT_CACHE_MOUNT_NS`, `BUILDKIT_DOCKERFILE_CHECK`, `BUILDKIT_SBOM_SCAN_*` (D81), `BUILDKIT_ATTEST_*` (`provenance_max_records_a_builds_steps_and_layers`), `BUILDKIT_CONTEXT_KEEP_GIT_DIR` (D91), `BUILDKIT_DISABLE_FILEOP` and `BUILDKIT_GIT_ADVICE` (D92)); git's advice under `BUILDKIT_GIT_ADVICE` done (D135: what git says of a repository a build keeps, its advice when asked, and none of what BuildKit's git says of its own store; `add_fetches_git_repositories`, PM M195) | n/a |
 | `ENV`, `LABEL`, `MAINTAINER`, `WORKDIR`, `USER`, `SHELL` | done (oracle, config) | `ENV`, `WORKDIR`, `USER` done; labels shown by `inspect` and filtered by `images --filter label=` (`images_and_prunes_filter`, `a_layerless_image_inspects_whole`, D93) |
 | `CMD`, `ENTRYPOINT` (both forms) | done | done |

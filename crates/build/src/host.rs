@@ -273,6 +273,11 @@ pub struct Snapshot {
 /// times faster.
 pub const CLONE_MIN: u64 = 1 << 20;
 
+/// Whether a stage clones a directory at once ([`Stage::clone_dir`]): APFS's clonefile, on
+/// macOS. Elsewhere each file is taken on its own, its system keeping writers off or
+/// seeing them ([`settle`]).
+pub const CLONES_DIRS: bool = cfg!(target_os = "macos");
+
 /// Where a stage put a file's bytes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Taken {
@@ -297,9 +302,17 @@ pub enum Taken {
 /// - Linux keeps them off with a read lease. Without one, the file's ctime shows any
 ///   write begun since it was looked at, once its tick has passed and a write under way
 ///   has finished.
-/// - macOS lets no process but Apple's take a lease. APFS stamps a write's times as it
-///   ends, which misses only a write that spans the whole read, one far longer than the
-///   files read here (PM M100), and its clones of larger files take one version.
+/// - macOS lets no process but Apple's take a lease, and APFS stamps a write's times as
+///   it ends: a write under way across the whole read leaves them as they were, which a
+///   busy host's scheduler makes as likely for a small file as a large one. No read,
+///   fsync, barrier or seek there waits out a write under way; a clone does, and is one
+///   version of the file (PM M242). So a file is cloned into the stage first and taken
+///   from its clone; or, in a directory the walk kept whole, read in place
+///   ([`Stage::read`]) and the directory then cloned at once ([`Stage::clone_dir`]),
+///   which waits out every write under way in it, whose end each file's times then show
+///   ([`Stage::still`]): a clone's own pages are read from the disk, its source's from
+///   memory. Where the file system makes no clone (another volume than the stage's, or
+///   not APFS), the times decide, missing a write under way across the whole read.
 /// - Windows: the source is opened sharing reads only, so no one writes it meanwhile.
 #[derive(Debug)]
 pub struct Stage {
@@ -340,13 +353,32 @@ impl Stage {
         io::Error::other(format!("{}: file changed as the build read it", src.display()))
     }
 
+    fn not_regular(src: &Path) -> io::Error {
+        io::Error::other(format!("{}: not a regular file", src.display()))
+    }
+
+    /// Where the directories [`Stage::clone_dir`] clones go, each at its path in the
+    /// context.
+    pub fn tree(&self) -> PathBuf {
+        Self::tree_in(&self.dir)
+    }
+
+    /// [`Stage::tree`] of a stage in `dir`, which nothing reads once its load is done.
+    pub fn tree_in(dir: &Path) -> PathBuf {
+        dir.join("tree")
+    }
+
     /// Takes one version of the regular file `src`.
     pub fn take(&mut self, src: &Path) -> io::Result<(Snapshot, Taken)> {
         let f = open(src)?;
+        #[cfg(target_os = "macos")]
+        if let Some(taken) = self.cloned(&f, src)? {
+            return Ok(taken);
+        }
         let before = settle(&f, src)?;
         let meta = &before.meta;
         if !meta.is_file() {
-            return Err(io::Error::other(format!("{}: not a regular file", src.display())));
+            return Err(Self::not_regular(src));
         }
         let size = meta.len();
         let taken = if size >= CLONE_MIN {
@@ -361,25 +393,149 @@ impl Stage {
             }
             Taken::File(dst)
         } else {
-            self.buf.clear();
-            io::Read::read_to_end(&mut io::Read::take(&f, size + 1), &mut self.buf)?;
-            if self.buf.len() as u64 != size || !unchanged(&f, &before)? {
+            if !self.read_in(&f, size)? || !unchanged(&f, &before)? {
                 return Err(Self::changed(src));
             }
-            io::Write::write_all(&mut self.pack, &self.buf)?;
-            let at = self.len;
-            self.len += size;
-            Taken::Pack(at)
+            Taken::Pack(self.pack_read()?)
         };
-        Ok((
-            Snapshot {
-                mode: mode_of(meta),
-                size,
-                mtime: since_epoch(meta),
-            },
-            taken,
-        ))
+        Ok((snapshot(meta), taken))
     }
+
+    /// Reads the regular file `src` in place into the pack: one version only if
+    /// [`Stage::still`] says so of it once a write under way has ended, which the clone of
+    /// its directory waits for ([`Stage::clone_dir`]).
+    pub fn read(&mut self, src: &Path) -> io::Result<(Snapshot, Taken, Seen)> {
+        let f = open(src)?;
+        let meta = f.metadata()?;
+        if !meta.is_file() {
+            return Err(Self::not_regular(src));
+        }
+        if !self.read_in(&f, meta.len())? {
+            return Err(Self::changed(src));
+        }
+        let taken = Taken::Pack(self.pack_read()?);
+        Ok((snapshot(&meta), taken, Seen(Before { meta })))
+    }
+
+    /// Whether `src` is still what [`Stage::read`] saw: the same file, of its size, mtime
+    /// and ctime.
+    #[cfg(unix)]
+    pub fn still(&self, src: &Path, seen: &Seen) -> io::Result<bool> {
+        match fs::symlink_metadata(src) {
+            Ok(now) => Ok(identity(&now) == identity(&seen.0.meta)),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(false),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// On Windows no one wrote it while it was read (`open`): of its size and mtime still.
+    #[cfg(windows)]
+    pub fn still(&self, src: &Path, seen: &Seen) -> io::Result<bool> {
+        let was = &seen.0.meta;
+        match fs::symlink_metadata(src) {
+            Ok(now) => Ok(now.len() == was.len() && now.modified()? == was.modified()?),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(false),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Reads `size` bytes of `f` into the buffer: false if it held more or fewer.
+    fn read_in(&mut self, f: &fs::File, size: u64) -> io::Result<bool> {
+        self.buf.clear();
+        io::Read::read_to_end(&mut io::Read::take(f, size + 1), &mut self.buf)?;
+        Ok(self.buf.len() as u64 == size)
+    }
+
+    /// Appends what the buffer holds to the pack: where it begins.
+    fn pack_read(&mut self) -> io::Result<u64> {
+        io::Write::write_all(&mut self.pack, &self.buf)?;
+        let at = self.len;
+        self.len += self.buf.len() as u64;
+        Ok(at)
+    }
+
+    /// macOS: `f` cloned into the stage and taken from its clone, one version of it; none
+    /// where the file system makes no clone of it. A packed file's clone is done with.
+    #[cfg(target_os = "macos")]
+    fn cloned(&mut self, f: &fs::File, src: &Path) -> io::Result<Option<(Snapshot, Taken)>> {
+        if !f.metadata()?.is_file() {
+            return Err(Self::not_regular(src));
+        }
+        let dst = self.dir.join(self.next.to_string());
+        self.next += 1;
+        if !clone(f, &dst)? {
+            return Ok(None);
+        }
+        // What it holds, its mode and its mtime are its source's as it was cloned, and no
+        // one writes it.
+        let taken = (|| {
+            let c = open(&dst)?;
+            let meta = c.metadata()?;
+            let taken = match meta.len() >= CLONE_MIN {
+                true => Taken::File(dst.clone()),
+                false if self.read_in(&c, meta.len())? => Taken::Pack(self.pack_read()?),
+                false => return Err(Self::changed(src)),
+            };
+            Ok((snapshot(&meta), taken))
+        })();
+        if !matches!(taken, Ok((_, Taken::File(_)))) {
+            remove_clone(&dst)?;
+        }
+        taken.map(Some)
+    }
+
+    /// Clones the directory `src`, all it holds, to `rel` in the stage's [`tree`](Self::tree)
+    /// at once, as the barrier [`Stage::read`]'s files wait on: the clone of each file in
+    /// it waits out a write under way, whose end its times then show (PM M242). False
+    /// where no clone of it is made: on macOS's file systems but APFS or from another
+    /// volume than the stage's (clonefile(2), ENOTSUP and EXDEV), with a file or directory
+    /// in it this process may not read (EACCES, PM M242); what was made of it goes with
+    /// the stage.
+    #[cfg(target_os = "macos")]
+    pub fn clone_dir(&mut self, src: &Path, rel: &[u8]) -> io::Result<bool> {
+        use std::ffi::CString;
+        use std::os::unix::ffi::OsStrExt;
+        // <sys/clonefile.h>: links cloned as links; the caller's ownership, as a user's
+        // clone is given anyway.
+        const CLONE_NOFOLLOW: u32 = 0x0001;
+        const CLONE_NOOWNERCOPY: u32 = 0x0002;
+        // The root's is the tree itself: a path ending in `/`, which a join of nothing
+        // makes, names no file clonefile makes.
+        let dst = match rel.is_empty() {
+            true => self.tree(),
+            false => path(&self.tree(), rel),
+        };
+        if let Some(parent) = dst.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let c =
+            |p: &Path| CString::new(p.as_os_str().as_bytes()).map_err(|_| io::Error::other("NUL in path"));
+        let (s, d) = (c(src)?, c(&dst)?);
+        // SAFETY: both paths are NUL-terminated.
+        Ok(unsafe { libc::clonefile(s.as_ptr(), d.as_ptr(), CLONE_NOFOLLOW | CLONE_NOOWNERCOPY) } == 0)
+    }
+
+    /// Elsewhere no directory is cloned at once: its files are taken one at a time.
+    #[cfg(not(target_os = "macos"))]
+    pub fn clone_dir(&mut self, _: &Path, _: &[u8]) -> io::Result<bool> {
+        Ok(false)
+    }
+}
+
+/// Removes a clone the stage is done with: one of a file with flags that forbid it, an
+/// immutable file's (`uchg`), which a clone keeps, cleared first.
+#[cfg(target_os = "macos")]
+fn remove_clone(p: &Path) -> io::Result<()> {
+    use std::os::fd::AsRawFd;
+    use std::os::macos::fs::MetadataExt;
+    if fs::symlink_metadata(p)?.st_flags() & libc::UF_SETTABLE != 0 {
+        let f = open(p)?;
+        // SAFETY: the descriptor is open for the call.
+        if unsafe { libc::fchflags(f.as_raw_fd(), 0) } != 0 {
+            return Err(io::Error::last_os_error());
+        }
+    }
+    fs::remove_file(p)
 }
 
 #[cfg(unix)]
@@ -399,8 +555,22 @@ fn open(src: &Path) -> io::Result<fs::File> {
 }
 
 /// What a source was as its taking began, which it must still be once taken.
+#[derive(Debug)]
 struct Before {
     meta: fs::Metadata,
+}
+
+/// What [`Stage::read`] saw of a file, for [`Stage::still`].
+#[derive(Debug)]
+pub struct Seen(Before);
+
+/// The snapshot of a regular file `meta` describes.
+fn snapshot(meta: &fs::Metadata) -> Snapshot {
+    Snapshot {
+        mode: mode_of(meta),
+        size: meta.len(),
+        mtime: since_epoch(meta),
+    }
 }
 
 /// Readies `f` to be taken, and says what it was. A read lease, which Linux grants while
@@ -537,19 +707,22 @@ fn settle(f: &fs::File, _: &Path) -> io::Result<Before> {
 /// Whether `f` is as `before` was: its identity, size, mtime and ctime.
 #[cfg(unix)]
 fn unchanged(f: &fs::File, before: &Before) -> io::Result<bool> {
+    Ok(identity(&before.meta) == identity(&f.metadata()?))
+}
+
+/// A file's identity, size, mtime and ctime.
+#[cfg(unix)]
+fn identity(m: &fs::Metadata) -> (u64, u64, u64, i64, i64, i64, i64) {
     use std::os::unix::fs::MetadataExt;
-    let v = |m: &fs::Metadata| {
-        (
-            m.dev(),
-            m.ino(),
-            m.size(),
-            m.mtime(),
-            m.mtime_nsec(),
-            m.ctime(),
-            m.ctime_nsec(),
-        )
-    };
-    Ok(v(&before.meta) == v(&f.metadata()?))
+    (
+        m.dev(),
+        m.ino(),
+        m.size(),
+        m.mtime(),
+        m.mtime_nsec(),
+        m.ctime(),
+        m.ctime_nsec(),
+    )
 }
 
 /// On Windows no one could write it meanwhile.

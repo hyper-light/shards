@@ -3414,7 +3414,9 @@ revision before comparing a changed API/implementation.
   files under 1 MiB are read, where the times saw every torn read, and larger ones cloned,
   which takes one version; the write count is not kept, as it saw nothing the times did
   not on the stage's paths. Writes through a shared mapping are not seen where no lease is
-  granted.
+  granted. (Corrected 2026-10-16, M242: on a busy host a write under way across the
+  whole read slips past the times at any size, as dev's CI showed at 64 KiB; macOS now
+  waits each one out with a clone.)
 
 ### M101. Electing the default bridge's subnet
 
@@ -8660,3 +8662,145 @@ revision before comparing a changed API/implementation.
   hold a write back costs it nothing measurable: the 64 MiB writes with none and with one of
   1 GiB a second agree at p50 within 4%, either faster, where the runs vary by more than
   half.
+
+### M241. Another CPU's programs in a microVM, under qemu-user, against Docker Desktop's (D179)
+
+- **Question.** Does a microVM run another CPU's programs through its own kernel's
+  binfmt_misc and Docker's builds of qemu-user, and at what cost to what a build step does,
+  compute and starting programs, beside what Docker Desktop costs on the same Mac?
+- **Method.** `docs/research/measurements/emulation/`: `run.sh` takes `qemu-x86_64` from
+  `tonistiigi/binfmt@sha256:400a4873...` (binfmt e29e7d7, QEMU 10.2.3: Docker's builds for
+  BuildKit; an x86_64 host takes `qemu-aarch64`) and Alpine 3.22.6's minirootfs of the
+  other CPU (pinned by its sha256), and starts a privileged `alpine:3.22` microVM of 2 GiB,
+  where `setup.sh` copies the root and a 32 MiB input into the guest's memory and registers
+  the emulator as Docker's tool does (flags CFP). `host.py` runs ten rounds, each a pair of
+  each workload, natively then emulated in the root (busybox `sha256sum` and `gzip -c` of
+  the input, a shell starting `/bin/true` a hundred times), through one exec session
+  (`serve.sh`), and samples the VM process's `proc_pid_rusage(RUSAGE_INFO_V6)` as each
+  starts and ends: its CPU time, the time its threads waited for a CPU, and the
+  instructions and cycles they retired. With `shards-dind`, a Docker-in-Docker container of
+  Docker Desktop 4.66.1 (engine 29.3.1, its VM Linux 6.12.76-linuxkit), the same workloads
+  run in a container there under the emulators Docker Desktop registered, each round's runs
+  interleaved with shards'. 6a9ba6e4, release build, on the M5 Max of M240 (6 Super and 12
+  Performance cores, macOS 26.4.1), 2026-10-15, the host loaded by other work (load
+  averages 35.7 as it began, 38.7 as it ended).
+- **Results.** Emulated over native, n = 10 each, p50 (p90):
+
+  | | sha256 | gzip | 100 starts |
+  |---|---|---|---|
+  | shards, the VM process's cycles | 4.6 (4.7) | 5.5 (11.7) | 15.5 (16.6) |
+  | shards, its instructions | 4.1 (4.1) | 11.7 (11.9) | 29.7 (30.6) |
+  | shards, wall time in the guest | 4.8 (4.9) | 9.9 (35.3) | 28.5 (29.0) |
+  | Docker Desktop, wall time in the container | 1.4 (1.6) | 1.3 (1.7) | 13.0 (15.7) |
+  | Docker Desktop, CPU time in the container | 1.4 (1.6) | 1.3 (1.7) | 12.0 (14.0) |
+
+  shards' wall p50, native then emulated: sha256 0.13 and 0.62 s, gzip 0.81 and 8.01 s, a
+  hundred starts 0.02 and 0.57 s; the emulated gzip's threads waited 4.14 s (25.04) for a
+  CPU. Docker Desktop's: 0.15 and 0.21 s, 0.84 and 1.13 s, 0.05 and 0.59 s. Docker
+  Desktop's VM process alone, idle between runs, used 7.67 CPUs a second, its other work,
+  so its counters say nothing of these runs; shards' used 0.004.
+
+  Rosetta ran Docker Desktop's: its VM registers Rosetta (`/run/rosetta/rosetta`, POCF), a
+  wrapper of it and QEMU's emulator with one magic and mask for x86_64, and an emulated program's
+  `/proc/PID/exe` there is Rosetta. Rosetta's own binary, shared into a shards microVM read
+  only (`/Library/Apple/usr/libexec/oah/RosettaLinux`) and registered as Apple's
+  documentation registers it (CF), refuses: "Rosetta is only intended to run on Apple
+  Silicon with a macOS host using Virtualization.framework with Rosetta mode enabled".
+
+  An emulated run does the same work each time, its instructions within 2%, where its
+  cycles and wall time spread: the spread is the host's. In a microVM held for the
+  purpose, 61.8 to 63.3 billion instructions every gzip, at 1.8 to 4.2 GHz as the host ran
+  its vCPU, which waited for a CPU 18.7 s of the 22.1 s the slowest took; and the guest's
+  own CPU time is the wall time, as the VMM gives it no steal clock (it answers SMCCC
+  ARCH_FEATURES for PV_TIME_FEATURES, ARM DEN 0057, with not supported). Not the guest's
+  memory: with transparent huge pages always, without direct compaction, and never, 8
+  rounds interleaved, gzip took 3.0 to 6.9 s each way, with no compaction stall, no
+  direct reclaim and the same 2,600 to 2,760 faults a run.
+- **What it found besides.** Written through busybox printf's format, a register line's
+  `\x` escapes are printf's to read: the mask comes out matching every ELF, the emulator's
+  own included, and every program fails with ELOOP ("Symbolic link loop"); the kernel
+  reads the escapes itself, so the line goes as it is (`printf '%s'`). Docker's builds of
+  qemu take argv[0] preserved (flag P, as the image's `QEMU_PRESERVE_ARGV0=1` has its tool
+  register them): without it, `sh -c` ran the applet `c`. Rosetta reads the program's
+  `/proc/self/exe`, which a root without /proc lacks.
+- **Consequence.** Another CPU's programs run in a microVM through its own kernel, nothing
+  installed on the host. Under qemu, compute costs 4.6 times the cycles of the native
+  program for sha256 and 5.5 for gzip at p50 (4.1 and 11.7 times the instructions), and
+  starting a program 15.5 times, about 5.5 ms each at the guest's wall time; on a host as
+  loaded as this, the longer emulated runs wait for a CPU and take ten to thirty times as
+  long. Docker Desktop's Rosetta takes 1.3 to 1.4 times for compute and 12 to 13 for
+  starts: on a Mac it runs x86_64 compute faster than qemu in a microVM, 3.3 and 4.2 times
+  by shards' cycles against its times in the container, 3.4 and 7.6 times by both sides'
+  wall times, starts at much the same cost; a speed shards cannot take, Rosetta running
+  only where Virtualization.framework gives it.
+
+### M242. A context file taken whole on APFS, whatever its size, on a busy host (D33)
+
+- **Question.** M100 found APFS's times saw every torn read of a file under 1 MiB, so the
+  stage read those in place. dev's CI then took a packed snapshot of 64 KiB that mixed two
+  versions on its macOS runner (run 38842127598, aarch64-apple-darwin,
+  `a_file_written_while_it_is_taken_is_one_version_or_refused`): APFS stamps a write's
+  times as it ends, so a write under way across the whole read leaves them as they were,
+  at any size once the host's scheduler stops the writer midway. What waits out a write
+  under way on APFS, and what does taking every file through it cost?
+- **Method.** `context-snapshots/barriers.py`: a writer rewrites a file of 256 MiB, each
+  version one pwrite(2) of one byte value; while one is under way, each candidate call is
+  made on a second descriptor, and has waited it out if it returned after the write
+  ended; then clones of the file's directory made during writes, each file of them checked
+  whole. `context-snapshots/costs.py`: a tree of 2,000 files of 1 KiB in directories of
+  100, taken each way, n = 10 rounds interleaved, each phase timed. Then the stage itself,
+  `crates/build/tests/context.rs`: `a_context_load_costs`, n = 40 loads of a context of
+  2,000 files whole and of one where a directory of 1,000 of them is left out, and the
+  removal of its stage after; `a_take_costs`, n = 5,000 takes of a file of 1 KiB; fcc6b409
+  against the change, five rounds of each, interleaved, which goes first alternating
+  (`context-snapshots/ab.sh`). The M5 Max of M240 (macOS 26.4.1), its data volume (99%
+  full), 2026-10-15, the host loaded by other work (load averages 13 to 33).
+- **Results.** Waited out the write: fclonefileat 18 of 18; clonefile of the file's
+  directory 19 of 20 (the 20th began as the write ended), no file of them torn;
+  F_BARRIERFSYNC 1 of 20 (a call of up to 7 ms, which outlasted that write); fstat, pread,
+  lseek `SEEK_DATA` and `SEEK_HOLE`, fsync, F_LOG2PHYS_EXT, F_GETPATH, fgetattrlist,
+  fgetxattr, flock, and fclonefileat that fails (EEXIST, EACCES), 0 of 20. A clone leaves
+  its source's mtime, ctime and inode as they were; it keeps the source's mode, mtime and
+  flags (an immutable file's `uchg`); clonefile of a directory holding a file or directory
+  this process may not read fails (EACCES).
+
+  2,000 files of 1 KiB, p50 (p90), n = 10:
+
+  | Way | Phase | ms |
+  |---|---|---|
+  | a clone a file | each cloned and read | 837 (1,217) |
+  | | the clones removed | 84.1 (126.7) |
+  | the tree cloned at once | the clone | 14.7 (16.9) |
+  | | its files read | 372 (592) |
+  | | the clones removed | 82.7 (105.3) |
+  | read in place, the tree then cloned | each read | 50.8 (63.0) |
+  | | the tree cloned, the barrier | 13.8 (15.8) |
+  | | each lstat again | 6.3 (7.5) |
+  | | the clones removed, 1, 2, 4, 8 threads | 83.5, 67.4, 69.5, 81.1 |
+
+  A clone's pages are its own, read from the disk where its source's were in memory, so
+  reading clones costs seven times reading in place; APFS removes them at much the same
+  rate however many threads remove them.
+
+  The stage, the p50s of the five rounds, before and after:
+
+  | | fcc6b409 | the change |
+  |---|---|---|
+  | a load of 2,000 files, whole | 59.5 to 69.4 ms | 83.2 to 92.8 ms |
+  | its stage's removal | 0.19 to 0.29 ms | 71.4 to 75.5 ms |
+  | a load of 1,000, 1,000 left out | 29.9 to 32.1 ms | 42.8 to 50.8 ms |
+  | its stage's removal | 0.16 to 0.18 ms | 36.2 to 44.9 ms |
+  | a take of 1 KiB | 11.3 to 12.5 µs | 215 to 234 µs |
+
+- **Consequence.** On macOS no call short of a clone waits out a write under way, so a
+  take that is one version takes a clone. Each directory the walk kept whole (none of its
+  directories left out unwalked or unreadable, no device, FIFO or socket in it) is read in
+  place and then cloned at once, the barrier its files' times are compared after: a load
+  of 2,000 files whole costs 37% more (84.6 ms against 61.7, the middle of the rounds'
+  p50s), of 1,000 beside one left out 45% more (43.7 against 30.0), and the barrier's
+  clones are removed beside the rest of the build, before its stage goes. A file in a
+  directory the walk did not keep whole is cloned alone and taken from its clone, 215 to
+  234 µs a file against 11 to 12; where a directory's clone fails,
+  its files are taken so too, each refused unless it is what was read. Where no clone is
+  made, another volume than the stage's or no APFS, the times decide, as before. Linux and
+  Windows take as they did.

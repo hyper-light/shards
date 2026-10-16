@@ -312,6 +312,16 @@ impl<D: crate::containers::Disk> Daemon<D> {
             other => other,
         };
         image.insert("architecture".into(), text("architecture", arch).into());
+        // Its base's variant, as dockerd's child image keeps it (moby docker-v29.3.1
+        // daemon/internal/image NewChildImage, BaseImgVariant): another CPU's image's
+        // commit is that CPU's whole (D179).
+        if let Some(v) = base_config
+            .get("variant")
+            .and_then(serde_json::Value::as_str)
+            .filter(|v| !v.is_empty())
+        {
+            image.insert("variant".into(), v.into());
+        }
         image.insert("os".into(), text("os", "linux").into());
         image.insert("config".into(), config);
         image.insert(

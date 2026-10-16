@@ -11945,8 +11945,10 @@ fn two_platform_image() -> (Vec<u8>, Vec<Vec<u8>>, String) {
 /// `--platform` for a platform this host's microVMs do not run (D74): its bases are that
 /// platform's, fetched without changing what a name in the store holds; steps for the
 /// build platform run (`FROM --platform=$BUILDPLATFORM`), and what they made is copied into
-/// the image, which is that platform's; a step for that platform is refused at its turn,
-/// before anything boots, in words that say what to do; `local` is this host's platform.
+/// the image, which is that platform's; a step for a platform no emulator runs is refused
+/// at its turn, before anything boots, in words that say what to do (one for that platform
+/// runs under its emulator: `a_step_for_another_cpu_runs_under_its_emulator`); `local` is
+/// this host's platform.
 #[test]
 fn builds_for_another_platform_run_only_the_build_platforms_steps() {
     if cannot_run_vms() {
@@ -12042,16 +12044,12 @@ fn builds_for_another_platform_run_only_the_build_platforms_steps() {
         "foreign-step",
         &format!("FROM {image}\nRUN [\"/bin/testguest\", \"exit\", \"0\"]\n"),
     );
-    let refused = shards(&[
-        "build",
-        "--platform",
-        &format!("linux/{other}"),
-        stepped.to_str().unwrap(),
-    ]);
+    let unrun = context("foreign-unrun", "FROM scratch\nRUN [\"/x\"]\n");
+    let refused = shards(&["build", "--platform", "linux/sparc64", unrun.to_str().unwrap()]);
     assert_eq!(refused.status, Some(1), "{}", refused.stderr);
     assert!(
         refused.stderr.contains(&format!(
-            "shards runs steps for linux/{arch} only, the platform its microVMs run, not linux/{other}"
+            "shards runs no steps for linux/sparc64: its microVMs run linux/{arch}'s, and "
         )),
         "{}",
         refused.stderr
@@ -12072,6 +12070,110 @@ fn builds_for_another_platform_run_only_the_build_platforms_steps() {
     ]);
     assert_eq!(local.status, Some(0), "{}", local.stderr);
     assert_eq!(inspect("local:1"), arch);
+}
+
+/// A RUN step for another CPU's platform runs in its builder under that CPU's emulator
+/// (D179), which the builder's own kernel registers from the emulator image: the step sees
+/// the CPU it is built for, and a build for both platforms runs each's steps, one natively
+/// and one emulated, into one image. The host's own binfmt_misc, where it has one, is as
+/// it was: nothing is installed on it.
+#[test]
+fn a_step_for_another_cpu_runs_under_its_emulator() {
+    if cannot_run_vms() {
+        return;
+    }
+    let home = TempDir::new("emulated-home");
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", kernel().as_os_str()),
+        ("SHARDS_INIT", guest_init().as_os_str()),
+    ];
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let (ours, theirs) = if cfg!(target_arch = "aarch64") {
+        (("arm64", "aarch64"), ("amd64", "x86_64"))
+    } else {
+        (("amd64", "x86_64"), ("arm64", "aarch64"))
+    };
+    let host_binfmt = || {
+        let mut names: Vec<String> = std::fs::read_dir("/proc/sys/fs/binfmt_misc")
+            .map(|d| {
+                d.flatten()
+                    .map(|e| e.file_name().to_string_lossy().into_owned())
+                    .collect()
+            })
+            .unwrap_or_default();
+        names.sort();
+        names
+    };
+    let before = host_binfmt();
+    let ctx = context(
+        "emulated-ctx",
+        "FROM alpine:3.22\nRUN uname -m > /machine && echo built > /built\n",
+    );
+    let out = TempDir::new("emulated-out");
+    let one = out.join("one");
+    let built = shards(&[
+        "build",
+        "--platform",
+        &format!("linux/{}", theirs.0),
+        "-o",
+        &format!("type=local,dest={}", one.display()),
+        ctx.to_str().unwrap(),
+    ]);
+    assert_eq!(built.status, Some(0), "{}", built.stderr);
+    assert_eq!(
+        std::fs::read_to_string(one.join("machine")).unwrap(),
+        format!("{}\n", theirs.1),
+        "{}",
+        built.stderr
+    );
+    assert_eq!(std::fs::read_to_string(one.join("built")).unwrap(), "built\n");
+    // 32-bit CPUs: linux/386 natively on an x86_64 host (IA32_EMULATION), where uname says
+    // the kernel's machine, as a BuildKit step's does (no PER_LINUX32 personality: Linux
+    // kernel/sys.c override_architecture; BuildKit v0.28.1's executor sets none); under its
+    // emulator on an arm64 one, which says i686; linux/arm/v7 under its emulator on both.
+    let i386 = if cfg!(target_arch = "x86_64") {
+        "x86_64"
+    } else {
+        "i686"
+    };
+    for (p, machine) in [("linux/386", i386), ("linux/arm/v7", "armv7l")] {
+        let dest = out.join(p.replace('/', "_"));
+        let built = shards(&[
+            "build",
+            "--platform",
+            p,
+            "-o",
+            &format!("type=local,dest={}", dest.display()),
+            ctx.to_str().unwrap(),
+        ]);
+        assert_eq!(built.status, Some(0), "{p}: {}", built.stderr);
+        assert_eq!(
+            std::fs::read_to_string(dest.join("machine")).unwrap(),
+            format!("{machine}\n"),
+            "{p}: {}",
+            built.stderr
+        );
+    }
+    let both = out.join("both");
+    let built = shards(&[
+        "build",
+        "--platform",
+        "linux/amd64,linux/arm64",
+        "-o",
+        &format!("type=local,dest={}", both.display()),
+        ctx.to_str().unwrap(),
+    ]);
+    assert_eq!(built.status, Some(0), "{}", built.stderr);
+    for (arch, machine) in [ours, theirs] {
+        assert_eq!(
+            std::fs::read_to_string(both.join(format!("linux_{arch}/machine"))).unwrap(),
+            format!("{machine}\n"),
+            "{}",
+            built.stderr
+        );
+    }
+    assert_eq!(host_binfmt(), before, "the host's binfmt_misc as it was");
 }
 
 /// Layers compressed as BuildKit's exporters compress them (D75): those a build makes
