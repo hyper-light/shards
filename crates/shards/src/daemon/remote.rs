@@ -117,6 +117,10 @@ impl Host for Machine {
             }),
         })
     }
+
+    fn invited(&self) -> usize {
+        crate::context::open_invitations(&self.home)
+    }
 }
 
 /// Serves other machines' clients on `at`, on a thread of its own for the daemon's life: once

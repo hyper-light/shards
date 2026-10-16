@@ -613,6 +613,27 @@ pub(crate) fn lapsed(created: u64) -> bool {
     now().saturating_sub(created) >= invite::LIFETIME_SECS
 }
 
+/// The invitations this machine holds, each with when it was made, by name.
+fn invitations(home: &Path) -> Vec<(Invitation, u64)> {
+    let mut names: Vec<String> = fs::read_dir(home.join("invitations"))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|e| e.file_name().into_string().ok())
+        .collect();
+    names.sort();
+    names.iter().filter_map(|name| invitation(home, name)).collect()
+}
+
+/// How many of this machine's invitations are open: unspent, and not lapsed.
+#[cfg(unix)]
+pub(crate) fn open_invitations(home: &Path) -> usize {
+    invitations(home)
+        .iter()
+        .filter(|(_, created)| !lapsed(*created))
+        .count()
+}
+
 /// Redeems invitation `name`: removed, so that it enrolls one client alone.
 pub(crate) fn redeem(home: &Path, name: &str) -> Result<(), String> {
     let path = home.join("invitations").join(name);
@@ -658,17 +679,8 @@ pub(crate) fn admin(thing: &str, args: &[OsString]) -> ExitCode {
         ("invitation", ["ls" | "list"]) => {
             let mut out = io::stdout().lock();
             let _ = writeln!(out, "NAME\tADDRESS\tMADE\tLAPSED");
-            let mut names: Vec<String> = fs::read_dir(home.join("invitations"))
-                .into_iter()
-                .flatten()
-                .flatten()
-                .filter_map(|e| e.file_name().into_string().ok())
-                .collect();
-            names.sort();
-            for name in names {
-                if let Some((i, created)) = invitation(&home, &name) {
-                    let _ = writeln!(out, "{}\t{}\t{created}\t{}", i.name, i.address, lapsed(created));
-                }
+            for (i, created) in invitations(&home) {
+                let _ = writeln!(out, "{}\t{}\t{created}\t{}", i.name, i.address, lapsed(created));
             }
             Ok(())
         }

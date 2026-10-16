@@ -3784,6 +3784,18 @@ Reading the daemon's side for the same fault found four more, each fixed:
   lets in to join. Neither side may now open a stream the other would not read (RFC 9000
   §4.6), and a request is judged by its header: a client not enrolled may only join, and is
   waited for no longer than a join's 96 bytes (a name's 63, its NUL, HMAC-SHA-256's 32).
+- **A stranger's connection held.** TLS lets any key in, so that a client the machine has
+  not enrolled can join, and such a peer could hold its connection for good, its
+  keep-alives keeping it, and open as many as it liked. A machine now takes as many such
+  connections at once as it holds open invitations, as each invitation enrolls one client,
+  and none while it holds none: the rest are refused as their handshake ends. And it lets
+  each go that has not joined within the idle bound, as long as a client waits for its
+  daemon. Its client says such a refusal in the words its stream would have said (the
+  join's refusal for a join, `this machine has not enrolled you` for a command), so that
+  what a stranger learns is whether an invitation is free, nothing of which or whose.
+  focal has no such peers: its invitations issue a credential its TLS checks (../focal
+  docs/network-startup.md), where shards' prove their secret over the session, after its
+  handshake.
 
 And a client that sends a command no stdin sends its end at once, as a command that reads
 it would otherwise wait for good. Tested in `tests/loopback.rs`, each test a daemon of its
@@ -3796,14 +3808,18 @@ client's command runs; a daemon that stops a client's stdin at once and answers 
 later; a connection kept open over two commands, the first's stdin and state let go once
 its exit is sent and its client asked to send no more; a client not enrolled refused by its
 frame's header; a command whose client resets its stream, and one whose client stops
-reading it, hung up and let go; and a command whose client went writing on after the next
-client connected, which hears none of it; and `only_a_clients_two_way_streams_open`. Each
+reading it, hung up and let go; a command whose client went writing on after the next
+client connected, which hears none of it; a machine with one invitation taking one stranger
+at a time, and with none, none, each refused as its handshake ends; a stranger let go at
+the idle bound, and an enrolled client's command running past it; and
+`only_a_clients_two_way_streams_open`. Each
 fix was mutation-checked against its test: the end dropped from the last bytes; a read
 after each frame; a finished stream, a stopped one and a reset one kept; stdin given by a
 blocking send; no judging by the header; a connection's number given again; streams one
 way, or a daemon's, allowed; a stopped stdin failing the command; no end for no stdin; no
-STOP_SENDING at the last frame; the client's end ending no stdin; and room again resuming
-no stream.
+STOP_SENDING at the last frame; the client's end ending no stdin; room again resuming no
+stream; strangers taken past the invitations; no time to join, or one bounding enrolled
+clients too; and a refusal at the handshake's end said in other words.
 
 ### D179. Other CPUs' images, emulated in their microVM (parts 1 to 3 built)
 

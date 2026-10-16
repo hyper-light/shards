@@ -12,8 +12,8 @@ use hyper_quic::StreamId;
 use crate::frame::{self, Request, Tag};
 use crate::identity::{Fingerprint, Identity};
 use crate::invite::{self, Invitation};
-use crate::net::{Command, ConnKey, Driver, Handler, Io, Read as StreamRead, Sender};
-use crate::{Error, tls};
+use crate::net::{Close, Command, ConnKey, Driver, Handler, Io, Read as StreamRead, Sender};
+use crate::{Error, server, tls};
 
 /// How many bytes of a stream's frames wait unsent before its reader waits too: a QUIC
 /// stream's own receive window upstream, which the connection's flow control then keeps.
@@ -57,6 +57,8 @@ struct Client {
     remote: Remote,
     identity: Option<hyper_quic::ClientConfig>,
     ask: Option<Ask>,
+    /// What it asks is a join.
+    joining: bool,
     conn: Option<ConnKey>,
     stream: Option<StreamId>,
     pending: Vec<u8>,
@@ -222,13 +224,14 @@ impl Client {
 impl Handler for Client {
     type Command = Event;
 
-    fn connected(&mut self, io: &mut Io<'_>, conn: ConnKey, _peer: &[u8]) -> bool {
-        // The daemon's key is the one pinned: TLS refused any other.
+    /// The daemon's key is the one pinned: TLS refused any other. A connection it fails on,
+    /// it closes itself.
+    fn connected(&mut self, io: &mut Io<'_>, conn: ConnKey, _peer: &[u8]) -> Result<(), Close> {
         let stream = match io.open(conn) {
             Ok(stream) => stream,
             Err(e) => {
                 self.fail(io, e.to_string());
-                return false;
+                return Ok(());
             }
         };
         self.stream = Some(stream);
@@ -257,13 +260,10 @@ impl Handler for Client {
             Ok(framed) => {
                 self.pending.splice(0..0, framed);
                 self.flush(io);
-                true
             }
-            Err(e) => {
-                self.fail(io, e.to_string());
-                false
-            }
+            Err(e) => self.fail(io, e.to_string()),
         }
+        Ok(())
     }
 
     /// None comes: its transport gives the daemon no stream to open (`tls`).
@@ -281,7 +281,17 @@ impl Handler for Client {
         self.stop_input();
     }
 
-    fn lost(&mut self, _io: &mut Io<'_>, _conn: ConnKey, why: &str) {
+    fn lost(&mut self, _io: &mut Io<'_>, _conn: ConnKey, why: &str, code: Option<u64>) {
+        if self.answer.is_none() && self.failed.is_none() && code == Some(u64::from(server::UNENROLLED)) {
+            // The daemon serves no client it has not enrolled now: refused before a stream
+            // could say so, in the words the stream would have said.
+            let words = if self.joining {
+                server::NOT_INVITED
+            } else {
+                server::NOT_ENROLLED
+            };
+            self.answer = Some(Answer::Refused(words.to_string()));
+        }
         if self.answer.is_none() && self.failed.is_none() {
             self.failed = Some(match self.stream {
                 // Its handshake never ended: no daemon answered there.
@@ -410,11 +420,13 @@ fn run(
     } else {
         SocketAddr::from(([0u16; 8], 0))
     };
+    let joining = matches!(ask, Ask::Join { .. });
     std::thread::scope(|scope| {
         let client = Client {
             remote,
             identity: Some(config),
             ask: Some(ask),
+            joining,
             conn: None,
             stream: None,
             pending: Vec::new(),

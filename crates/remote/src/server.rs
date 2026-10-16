@@ -6,13 +6,14 @@ use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::net::SocketAddr;
 use std::sync::mpsc;
+use std::time::Instant;
 
 use hyper_quic::StreamId;
 
 use crate::frame::{self, Request, Tag};
 use crate::identity::Identity;
 use crate::invite;
-use crate::net::{Command, ConnKey, Driver, Handler, Io, Read as StreamRead, Sender};
+use crate::net::{Close, Command, ConnKey, Driver, Handler, Io, Read as StreamRead, Sender};
 use crate::{Error, tls};
 
 /// How many bytes of a command's output wait unsent before its readers wait too.
@@ -39,6 +40,9 @@ pub trait Host: Send {
     fn join(&self, name: &str, proof: &[u8], exported: &[u8; 32], spki: &[u8]) -> Result<(), Error>;
     /// Starts `request`'s command for the enrolled client `client`.
     fn start(&self, client: &str, request: Request) -> Result<Running, Error>;
+    /// How many invitations the machine holds open: as many clients it has not enrolled may
+    /// be connected at once, to join, as an invitation enrolls one client.
+    fn invited(&self) -> usize;
 }
 
 /// The daemon's answer to any join that failed, whatever made it fail: a refusal tells
@@ -47,6 +51,11 @@ pub const NOT_INVITED: &str = "this invitation is not one this machine holds";
 
 /// The daemon's answer to a command from a client it has not enrolled.
 pub const NOT_ENROLLED: &str = "this machine has not enrolled you: join it by an invitation first";
+
+/// The code a daemon closes a connection with whose peer it has not enrolled and does not
+/// serve: no invitation of its is free for one, or the peer's time to join is up. Its client
+/// says what the refusal on a stream would have said.
+pub const UNENROLLED: u32 = 2;
 
 enum Event {
     Output {
@@ -189,6 +198,8 @@ struct Peer {
     spki: Vec<u8>,
     client: Option<String>,
     streams: HashMap<StreamId, Stream>,
+    /// When its handshake was done.
+    since: Instant,
 }
 
 struct Server<H: Host> {
@@ -208,6 +219,15 @@ enum Taken {
 impl<H: Host> Server<H> {
     fn stream(&mut self, conn: ConnKey, id: StreamId) -> Option<&mut Stream> {
         self.peers.get_mut(&conn).and_then(|p| p.streams.get_mut(&id))
+    }
+
+    /// The connections of peers the machine has not enrolled, and when each is due to have
+    /// joined: as long after its handshake as a client waits for its daemon, the idle bound.
+    fn strangers(&self) -> impl Iterator<Item = (ConnKey, Option<Instant>)> + '_ {
+        self.peers
+            .iter()
+            .filter(|(_, p)| p.client.is_none())
+            .map(|(conn, p)| (*conn, p.since.checked_add(tls::IDLE)))
     }
 
     /// Reads `id` and acts on its frames: each whole one before reading more, and none while
@@ -454,17 +474,26 @@ fn relay(
 impl<H: Host> Handler for Server<H> {
     type Command = Event;
 
-    fn connected(&mut self, _io: &mut Io<'_>, conn: ConnKey, peer: &[u8]) -> bool {
+    fn connected(&mut self, io: &mut Io<'_>, conn: ConnKey, peer: &[u8]) -> Result<(), Close> {
         let client = self.host.enrolled(peer);
+        // A peer the machine has not enrolled connects to join alone, while an invitation is
+        // free for it.
+        if client.is_none() && self.strangers().count() >= self.host.invited() {
+            return Err(Close {
+                code: UNENROLLED,
+                why: "not enrolled",
+            });
+        }
         self.peers.insert(
             conn,
             Peer {
                 spki: peer.to_vec(),
                 client,
                 streams: HashMap::new(),
+                since: io.now(),
             },
         );
-        true
+        Ok(())
     }
 
     fn opened(&mut self, io: &mut Io<'_>, conn: ConnKey, id: StreamId) {
@@ -493,7 +522,7 @@ impl<H: Host> Handler for Server<H> {
         self.settle(io, conn, id);
     }
 
-    fn lost(&mut self, _io: &mut Io<'_>, conn: ConnKey, _why: &str) {
+    fn lost(&mut self, _io: &mut Io<'_>, conn: ConnKey, _why: &str, _code: Option<u64>) {
         // Its commands lose their terminal.
         if let Some(peer) = self.peers.remove(&conn) {
             for stream in peer.streams.values() {
@@ -535,6 +564,23 @@ impl<H: Host> Handler for Server<H> {
 
     fn done(&self) -> bool {
         false
+    }
+
+    fn due(&self) -> Option<Instant> {
+        self.strangers().filter_map(|(_, due)| due).min()
+    }
+
+    /// A peer the machine has not enrolled that has not joined in its time is let go.
+    fn timeout(&mut self, io: &mut Io<'_>, now: Instant) {
+        let late: Vec<ConnKey> = self
+            .strangers()
+            .filter(|(_, due)| due.is_some_and(|at| at <= now))
+            .map(|(conn, _)| conn)
+            .collect();
+        for conn in late {
+            io.close(conn, UNENROLLED, "not enrolled in time");
+            self.peers.remove(&conn);
+        }
     }
 }
 

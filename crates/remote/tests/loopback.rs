@@ -20,7 +20,7 @@ use shards_remote::client::{self, Remote};
 use shards_remote::frame::{self, Request, Tag};
 use shards_remote::identity::Identity;
 use shards_remote::invite::{self, Invitation};
-use shards_remote::net::{self, ConnKey, Driver, Handler, Io, Read as StreamRead};
+use shards_remote::net::{self, Close, ConnKey, Driver, Handler, Io, Read as StreamRead};
 use shards_remote::server::{self, Host, Running, Stopper};
 use shards_remote::tls;
 use shards_testdir::TempDir;
@@ -143,6 +143,10 @@ impl Host for Machine {
                 let _ = Command::new("kill").args(["-HUP", &pid.to_string()]).status();
             }),
         })
+    }
+
+    fn invited(&self) -> usize {
+        self.invitations.lock().unwrap().len()
     }
 }
 
@@ -354,8 +358,8 @@ struct Answers {
 impl Handler for Answers {
     type Command = ();
 
-    fn connected(&mut self, _io: &mut Io<'_>, _conn: ConnKey, _peer: &[u8]) -> bool {
-        true
+    fn connected(&mut self, _io: &mut Io<'_>, _conn: ConnKey, _peer: &[u8]) -> Result<(), Close> {
+        Ok(())
     }
 
     fn opened(&mut self, io: &mut Io<'_>, conn: ConnKey, stream: StreamId) {
@@ -382,7 +386,7 @@ impl Handler for Answers {
 
     fn writable(&mut self, _io: &mut Io<'_>, _conn: ConnKey, _stream: StreamId) {}
     fn stopped(&mut self, _io: &mut Io<'_>, _conn: ConnKey, _stream: StreamId) {}
-    fn lost(&mut self, _io: &mut Io<'_>, _conn: ConnKey, _why: &str) {}
+    fn lost(&mut self, _io: &mut Io<'_>, _conn: ConnKey, _why: &str, _code: Option<u64>) {}
     fn command(&mut self, _io: &mut Io<'_>, _command: ()) {}
 
     fn done(&self) -> bool {
@@ -445,8 +449,8 @@ struct Unread {
 impl Handler for Unread {
     type Command = (ConnKey, StreamId);
 
-    fn connected(&mut self, _io: &mut Io<'_>, _conn: ConnKey, _peer: &[u8]) -> bool {
-        true
+    fn connected(&mut self, _io: &mut Io<'_>, _conn: ConnKey, _peer: &[u8]) -> Result<(), Close> {
+        Ok(())
     }
 
     fn opened(&mut self, io: &mut Io<'_>, conn: ConnKey, stream: StreamId) {
@@ -466,7 +470,7 @@ impl Handler for Unread {
 
     fn writable(&mut self, _io: &mut Io<'_>, _conn: ConnKey, _stream: StreamId) {}
     fn stopped(&mut self, _io: &mut Io<'_>, _conn: ConnKey, _stream: StreamId) {}
-    fn lost(&mut self, _io: &mut Io<'_>, _conn: ConnKey, _why: &str) {}
+    fn lost(&mut self, _io: &mut Io<'_>, _conn: ConnKey, _why: &str, _code: Option<u64>) {}
 
     fn command(&mut self, io: &mut Io<'_>, (conn, stream): (ConnKey, StreamId)) {
         let mut answer = Vec::new();
@@ -566,6 +570,8 @@ fn a_command_that_reads_no_stdin_holds_up_no_other() {
 enum Heard {
     Connected,
     Frame(StreamId, Tag, Vec<u8>),
+    /// Its connection ended, its peer's error code with it where its peer closed it.
+    Lost(Option<u64>),
 }
 
 /// What a test asks of a raw client.
@@ -593,9 +599,9 @@ struct Raw {
 impl Handler for Raw {
     type Command = Ask;
 
-    fn connected(&mut self, _io: &mut Io<'_>, _conn: ConnKey, _peer: &[u8]) -> bool {
+    fn connected(&mut self, _io: &mut Io<'_>, _conn: ConnKey, _peer: &[u8]) -> Result<(), Close> {
         let _ = self.heard.send(Heard::Connected);
-        true
+        Ok(())
     }
 
     fn opened(&mut self, _io: &mut Io<'_>, _conn: ConnKey, _stream: StreamId) {}
@@ -623,7 +629,8 @@ impl Handler for Raw {
         let _ = self.stops.send(stream);
     }
 
-    fn lost(&mut self, _io: &mut Io<'_>, _conn: ConnKey, _why: &str) {
+    fn lost(&mut self, _io: &mut Io<'_>, _conn: ConnKey, _why: &str, code: Option<u64>) {
+        let _ = self.heard.send(Heard::Lost(code));
         self.done = true;
     }
 
@@ -661,6 +668,7 @@ struct RawClient {
     ask: net::Sender<Ask>,
     heard: mpsc::Receiver<Heard>,
     stops: mpsc::Receiver<StreamId>,
+    driver: Option<std::thread::JoinHandle<()>>,
 }
 
 impl RawClient {
@@ -668,7 +676,7 @@ impl RawClient {
         let (heard_tx, heard) = mpsc::channel();
         let (stops_tx, stops) = mpsc::channel();
         let (tx, made) = mpsc::channel();
-        std::thread::spawn(move || {
+        let driver = std::thread::spawn(move || {
             let raw = Raw {
                 config: Some(tls::client(identity, remote.daemon).unwrap()),
                 heard: heard_tx,
@@ -684,7 +692,12 @@ impl RawClient {
         let ask = made.recv_timeout(DEADLINE).unwrap();
         ask.send(net::Command::Handler(Ask::Connect(remote.address)))
             .unwrap();
-        let client = RawClient { ask, heard, stops };
+        let client = RawClient {
+            ask,
+            heard,
+            stops,
+            driver: Some(driver),
+        };
         assert_eq!(client.next(), Heard::Connected);
         client
     }
@@ -711,6 +724,14 @@ impl RawClient {
 
     fn ask(&self, ask: Ask) {
         self.ask.send(net::Command::Handler(ask)).unwrap();
+    }
+
+    /// Closes its connection, and waits for its driver to have sent the close.
+    fn close(mut self) {
+        self.ask(Ask::Close);
+        if let Some(driver) = self.driver.take() {
+            driver.join().unwrap();
+        }
     }
 
     /// Waits until the daemon has asked it to send no more of `stream`.
@@ -820,7 +841,7 @@ fn a_client_that_finishes_its_stream_ends_its_commands_input() {
 fn a_client_not_enrolled_is_refused_by_its_frames_header() {
     let daemon_id = leak(Identity::generate().unwrap());
     let stranger = leak(Identity::generate().unwrap());
-    let d = daemon(daemon_id, Vec::new(), Vec::new());
+    let d = daemon(daemon_id, Vec::new(), vec![invitation(daemon_id)]);
     let raw = RawClient::new(stranger, d.remote);
     let header = |tag: Tag, len: usize| {
         let mut out = vec![tag as u8];
@@ -837,6 +858,83 @@ fn a_client_not_enrolled_is_refused_by_its_frames_header() {
         raw.next(),
         Heard::Frame(join, Tag::Refused, server::NOT_INVITED.as_bytes().to_vec())
     );
+}
+
+/// An invitation of the daemon `of`, for no one in particular.
+fn invitation(of: &Identity) -> Invitation {
+    Invitation::new("someone", "127.0.0.1:1".parse().unwrap(), of.fingerprint()).unwrap()
+}
+
+/// A client's refusal at its handshake's end, the daemon's code.
+fn unenrolled() -> Heard {
+    Heard::Lost(Some(u64::from(server::UNENROLLED)))
+}
+
+/// The machine takes as many clients it has not enrolled at once as it holds invitations,
+/// each of which enrolls one: none, while it holds none.
+#[test]
+fn a_machine_takes_as_many_strangers_as_it_holds_invitations() {
+    let daemon_id = leak(Identity::generate().unwrap());
+    let strangers: Vec<&'static Identity> = (0..4).map(|_| leak(Identity::generate().unwrap())).collect();
+    let d = daemon(daemon_id, Vec::new(), vec![invitation(daemon_id)]);
+    let first = RawClient::new(strangers[0], d.remote);
+    // Refused at its handshake's end, not let go at its time's.
+    let start = Instant::now();
+    let second = RawClient::new(strangers[1], d.remote);
+    assert_eq!(second.next(), unenrolled());
+    assert!(start.elapsed() < tls::IDLE, "{:?}", start.elapsed());
+    // The first is served: a join too long, refused by its header.
+    let mut join = vec![Tag::Join as u8];
+    join.extend_from_slice(&u32::try_from(invite::JOIN_MAX + 1).unwrap().to_be_bytes());
+    let stream = first.open(join.clone());
+    assert_eq!(
+        first.next(),
+        Heard::Frame(stream, Tag::Refused, server::NOT_INVITED.as_bytes().to_vec())
+    );
+    // Gone, its place is another's.
+    first.close();
+    let third = RawClient::new(strangers[2], d.remote);
+    let stream = third.open(join);
+    assert_eq!(
+        third.next(),
+        Heard::Frame(stream, Tag::Refused, server::NOT_INVITED.as_bytes().to_vec())
+    );
+    // A machine that holds no invitation takes none.
+    let none = daemon(daemon_id, Vec::new(), Vec::new());
+    let start = Instant::now();
+    let fourth = RawClient::new(strangers[3], none.remote);
+    assert_eq!(fourth.next(), unenrolled());
+    assert!(start.elapsed() < tls::IDLE, "{:?}", start.elapsed());
+}
+
+/// A client the machine has not enrolled has as long to join as a client waits for its
+/// daemon, the idle bound: its connection kept alive, the daemon closes it then.
+#[test]
+fn a_stranger_has_the_idle_bound_to_join() {
+    let daemon_id = leak(Identity::generate().unwrap());
+    let stranger = leak(Identity::generate().unwrap());
+    let d = daemon(daemon_id, Vec::new(), vec![invitation(daemon_id)]);
+    let start = Instant::now();
+    let raw = RawClient::new(stranger, d.remote);
+    assert_eq!(raw.next(), unenrolled());
+    let took = start.elapsed();
+    assert!(took >= tls::IDLE, "closed after {took:?}, before {:?}", tls::IDLE);
+}
+
+/// A client the machine enrolled keeps its connection past the idle bound, as long as its
+/// command runs.
+#[test]
+fn an_enrolled_clients_command_runs_past_the_idle_bound() {
+    let daemon_id = leak(Identity::generate().unwrap());
+    let laptop = leak(Identity::generate().unwrap());
+    let d = daemon(
+        daemon_id,
+        vec![("laptop".into(), laptop.spki().to_vec())],
+        Vec::new(),
+    );
+    let past = (tls::IDLE.as_secs() + 1).to_string();
+    let (status, _, _) = run(laptop, d.remote, &["sleep", &past], None).get();
+    assert_eq!(status, Ok(0));
 }
 
 /// A command whose client leaves its stream, resetting it or reading no more of it, is hung
