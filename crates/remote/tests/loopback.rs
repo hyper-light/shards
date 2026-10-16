@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 
 use hyper_quic::StreamId;
 use shards_remote::Error;
-use shards_remote::client::{self, Remote};
+use shards_remote::client::{self, Controls, Remote};
 use shards_remote::frame::{self, Request, Tag};
 use shards_remote::identity::Identity;
 use shards_remote::invite::{self, Invitation};
@@ -36,6 +36,8 @@ enum Seen {
     InputClosed(String),
     HungUp(String),
     Exited(String, i32),
+    Resized(String, u16, u16),
+    Signalled(String, u32),
     /// The daemon let go of its stream's state, the means to hang it up with it.
     Released(String),
 }
@@ -128,6 +130,8 @@ impl Host for Machine {
         let (exited, hung) = (self.seen.clone(), self.seen.clone());
         let hung_what = what.clone();
         let held = Held(self.seen.clone(), what.clone());
+        let (resized, signalled) = (self.seen.clone(), self.seen.clone());
+        let (resized_what, signalled_what) = (what.clone(), what.clone());
         Ok(Running {
             stdin: Box::new(stdin),
             stdout: Box::new(stdout),
@@ -141,6 +145,12 @@ impl Host for Machine {
                 let _ = &held;
                 let _ = hung.send(Seen::HungUp(hung_what.clone()));
                 let _ = Command::new("kill").args(["-HUP", &pid.to_string()]).status();
+            }),
+            resize: Some(Box::new(move |rows, cols| {
+                let _ = resized.send(Seen::Resized(resized_what.clone(), rows, cols));
+            })),
+            signal: Box::new(move |linux| {
+                let _ = signalled.send(Seen::Signalled(signalled_what.clone(), linux));
             }),
         })
     }
@@ -259,6 +269,17 @@ fn run(
     args: &[&str],
     stdin: Option<Box<dyn Read + Send>>,
 ) -> Pending<Ran> {
+    run_steered(identity, remote, args, stdin, None)
+}
+
+/// [`run`], what steers the command given to `steered`.
+fn run_steered(
+    identity: &'static Identity,
+    remote: Remote,
+    args: &[&str],
+    stdin: Option<Box<dyn Read + Send>>,
+    steered: Option<mpsc::Sender<Controls>>,
+) -> Pending<Ran> {
     let args: Vec<Vec<u8>> = args.iter().map(|a| a.as_bytes().to_vec()).collect();
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
@@ -266,8 +287,14 @@ fn run(
         let request = Request {
             args,
             env: Vec::new(),
+            terminal: None,
         };
-        let status = client::exec(identity, remote, request, stdin, out.clone(), err.clone()).unwrap();
+        let steer = |controls| {
+            if let Some(steered) = steered {
+                let _ = steered.send(controls);
+            }
+        };
+        let status = client::exec(identity, remote, request, stdin, out.clone(), err.clone(), steer).unwrap();
         let _ = tx.send((status, out.bytes(), err.bytes()));
     });
     Pending(rx)
@@ -517,6 +544,37 @@ fn a_client_asked_to_send_no_more_stdin_waits_for_its_answer() {
     let (status, _, _) = later.get();
     assert_eq!(status, Ok(5));
     let _ = sender.send(net::Command::Stop);
+}
+
+/// What steers a command reaches it on a stream of its own, though its stdin waits for room
+/// it does not get: its terminal's size, and the signals its client receives.
+#[test]
+fn what_steers_a_command_passes_its_stdin_waiting_for_room() {
+    let daemon_id = leak(Identity::generate().unwrap());
+    let laptop = leak(Identity::generate().unwrap());
+    let mut d = daemon(
+        daemon_id,
+        vec![("laptop".into(), laptop.spki().to_vec())],
+        Vec::new(),
+    );
+    let dir = TempDir::new("remote-steer").unwrap();
+    let go = dir.path().join("go");
+    let waits = format!("while [ ! -e '{}' ]; do sleep 0.01; done", go.display());
+    let what = format!("sh -c {waits}");
+    let endless: Option<Box<dyn Read + Send>> = Some(Box::new(std::io::repeat(b'y')));
+    let (steered, controls) = mpsc::channel();
+    let later = run_steered(laptop, d.remote, &["sh", "-c", &waits], endless, Some(steered));
+    let controls = controls.recv_timeout(DEADLINE).unwrap();
+    d.seen.saw(&Seen::Started(what.clone()));
+    // Long enough for its pipe, and the daemon's room for its stdin, to fill.
+    std::thread::sleep(Duration::from_millis(300));
+    controls.resize(40, 120).unwrap();
+    controls.signal(10).unwrap();
+    d.seen.saw(&Seen::Resized(what.clone(), 40, 120));
+    d.seen.saw(&Seen::Signalled(what, 10));
+    std::fs::write(&go, b"").unwrap();
+    let (status, _, _) = later.get();
+    assert_eq!(status, Ok(0));
 }
 
 /// A command's stdin ends as its client says: at once, for a client that sends none; and a
@@ -772,6 +830,7 @@ fn exec(args: &[&str]) -> Vec<u8> {
     let request = Request {
         args: args.iter().map(|a| a.as_bytes().to_vec()).collect(),
         env: Vec::new(),
+        terminal: None,
     };
     let mut out = Vec::new();
     frame::put(&mut out, Tag::Exec, &request.encode().unwrap()).unwrap();
@@ -857,6 +916,40 @@ fn a_client_not_enrolled_is_refused_by_its_frames_header() {
     assert_eq!(
         raw.next(),
         Heard::Frame(join, Tag::Refused, server::NOT_INVITED.as_bytes().to_vec())
+    );
+    let controls = raw.open(header(Tag::Controls, 8));
+    assert_eq!(
+        raw.next(),
+        Heard::Frame(
+            controls,
+            Tag::Refused,
+            b"a frame out of place (Controls)".to_vec()
+        )
+    );
+}
+
+/// A control stream steers a command of its own connection's, or none: one that names none
+/// is refused.
+#[test]
+fn a_control_stream_for_no_command_is_refused() {
+    let daemon_id = leak(Identity::generate().unwrap());
+    let laptop = leak(Identity::generate().unwrap());
+    let d = daemon(
+        daemon_id,
+        vec![("laptop".into(), laptop.spki().to_vec())],
+        Vec::new(),
+    );
+    let raw = RawClient::new(laptop, d.remote);
+    let mut named = Vec::new();
+    frame::put(&mut named, Tag::Controls, &96u64.to_be_bytes()).unwrap();
+    let stream = raw.open(named);
+    assert_eq!(
+        raw.next(),
+        Heard::Frame(
+            stream,
+            Tag::Refused,
+            b"no command of this connection's to steer".to_vec()
+        )
     );
 }
 

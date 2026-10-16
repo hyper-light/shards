@@ -4,7 +4,9 @@
 //! enrolled may only join, by an invitation this home made.
 
 use std::ffi::{OsStr, OsString};
-use std::os::fd::AsFd;
+use std::fs::File;
+use std::io::{Read, Write};
+use std::os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -84,9 +86,48 @@ impl Host for Machine {
         }
         super::log(format!("client {client}: shards {}", args.join(" ")));
         let pipe = || std::io::pipe().map_err(|e| Error::new(format!("a pipe for the command: {e}")));
-        let (stdin_r, stdin_w) = pipe()?;
-        let (stdout_r, stdout_w) = pipe()?;
-        let (stderr_r, stderr_w) = pipe()?;
+        let tty = |e: std::io::Error| Error::new(format!("the command's terminal: {e}"));
+        // The client's terminal: the command's stdin, stdout and stderr that the client's
+        // terminal is are a terminal of its own here, as sshd gives a session's command one
+        // (OpenSSH session.c, do_exec_pty); the rest are pipes.
+        let terminal = request.terminal;
+        let pty = match terminal {
+            Some(t) => Some(open_pty(t.rows, t.cols).map_err(tty)?),
+            None => None,
+        };
+        let on = |fd: usize| terminal.is_some_and(|t| [t.stdin, t.stdout, t.stderr].get(fd) == Some(&true));
+        let (child_in, stdin): (OwnedFd, Box<dyn Write + Send>) = match &pty {
+            Some((controller, peer)) if on(0) => (
+                peer.try_clone().map_err(tty)?,
+                Box::new(File::from(controller.try_clone().map_err(tty)?)),
+            ),
+            _ => {
+                let (r, w) = pipe()?;
+                (r.into(), Box::new(w))
+            }
+        };
+        let (child_out, stdout): (OwnedFd, Box<dyn Read + Send>) = match &pty {
+            Some((controller, peer)) if on(1) => (
+                peer.try_clone().map_err(tty)?,
+                Box::new(File::from(controller.try_clone().map_err(tty)?)),
+            ),
+            _ => {
+                let (r, w) = pipe()?;
+                (w.into(), Box::new(r))
+            }
+        };
+        let (child_err, stderr): (OwnedFd, Box<dyn Read + Send>) = match &pty {
+            // What the terminal shows is read once: as stdout's, where stdout is on it too.
+            Some((_, peer)) if on(2) && on(1) => (peer.try_clone().map_err(tty)?, Box::new(std::io::empty())),
+            Some((controller, peer)) if on(2) => (
+                peer.try_clone().map_err(tty)?,
+                Box::new(File::from(controller.try_clone().map_err(tty)?)),
+            ),
+            _ => {
+                let (r, w) = pipe()?;
+                (w.into(), Box::new(r))
+            }
+        };
         let env: Vec<(String, OsString)> = request
             .env
             .into_iter()
@@ -98,22 +139,56 @@ impl Host for Machine {
             ("SHARDS_CONTEXT", OsStr::new(crate::context::DEFAULT)),
         ];
         set.extend(env.iter().map(|(k, v)| (k.as_str(), v.as_os_str())));
+        if pty.is_some() {
+            set.push((crate::context::TAKE_TERMINAL, OsStr::new("1")));
+        }
         let argv: Vec<&OsStr> = args.iter().map(OsStr::new).collect();
-        let fds = [(stdin_r.as_fd(), 0), (stdout_w.as_fd(), 1), (stderr_w.as_fd(), 2)];
-        let child = shards_ipc::spawn_with(&self.exe, &argv, &fds, false, &set)
+        let fds = [
+            (child_in.as_fd(), 0),
+            (child_out.as_fd(), 1),
+            (child_err.as_fd(), 2),
+        ];
+        // A session of its own, out of reach of what a terminal of the daemon's sends its
+        // group, whose controlling terminal is its own where it has one.
+        let child = shards_ipc::spawn_with(&self.exe, &argv, &fds, true, &set)
             .map_err(|e| Error::new(format!("starting the command: {e}")))?;
-        // The child holds its ends.
-        drop((stdin_r, stdout_w, stderr_w));
-        // Waited for on one thread, hung up from another: kill refuses a child reaped.
+        // The child holds its ends, and the terminal's peer: once it has gone, reading the
+        // controller ends.
+        drop((child_in, child_out, child_err));
+        let controller = pty.map(|(controller, _peer)| controller);
+        // Waited for on one thread, hung up and signalled from others: kill refuses a child
+        // reaped.
         let child = Arc::new(child);
-        let hung = Arc::clone(&child);
+        let (hung, signalled) = (Arc::clone(&child), Arc::clone(&child));
+        let resize = controller.map(|controller| -> Box<dyn Fn(u16, u16) + Send> {
+            Box::new(move |rows, cols| {
+                let ws = libc::winsize {
+                    ws_row: rows,
+                    ws_col: cols,
+                    ws_xpixel: 0,
+                    ws_ypixel: 0,
+                };
+                // SAFETY: TIOCSWINSZ reads one winsize, on the terminal's controller, ours.
+                // The kernel signals the terminal's foreground, the command's group
+                // (SIGWINCH).
+                unsafe { libc::ioctl(controller.as_raw_fd(), libc::TIOCSWINSZ, &ws) };
+            })
+        });
         Ok(Running {
-            stdin: Box::new(stdin_w),
-            stdout: Box::new(stdout_r),
-            stderr: Box::new(stderr_r),
+            stdin,
+            stdout,
+            stderr,
             wait: Box::new(move || child.wait().unwrap_or(1)),
             hangup: Box::new(move || {
                 let _ = hung.kill(libc::SIGHUP);
+            }),
+            resize,
+            // What the client received, as this system numbers it; one it has not goes
+            // nowhere.
+            signal: Box::new(move |linux| {
+                if let Some(sig) = shards_ipc::local_signal(linux) {
+                    let _ = signalled.kill(sig);
+                }
             }),
         })
     }
@@ -121,6 +196,41 @@ impl Host for Machine {
     fn invited(&self) -> usize {
         crate::context::open_invitations(&self.home)
     }
+}
+
+/// A pseudo-terminal of `rows` by `cols`: its controller, and the peer a command's stdio is,
+/// both close-on-exec. openpty(3) opens them without; no child takes them meanwhile, as a
+/// daemon's children are its spawner's (PM M158), which holds only what it is sent.
+fn open_pty(rows: u16, cols: u16) -> std::io::Result<(OwnedFd, OwnedFd)> {
+    let (mut controller, mut peer) = (-1, -1);
+    let ws = libc::winsize {
+        ws_row: rows,
+        ws_col: cols,
+        ws_xpixel: 0,
+        ws_ypixel: 0,
+    };
+    // SAFETY: openpty(3) fills both descriptors and reads `ws`.
+    let opened = unsafe {
+        libc::openpty(
+            &mut controller,
+            &mut peer,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            (&raw const ws).cast_mut(),
+        )
+    };
+    if opened != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    // SAFETY: the two descriptors openpty(3) just made, which nothing else owns.
+    let (controller, peer) = unsafe { (OwnedFd::from_raw_fd(controller), OwnedFd::from_raw_fd(peer)) };
+    for fd in [&controller, &peer] {
+        // SAFETY: fcntl(2) on our own descriptor.
+        if unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_SETFD, libc::FD_CLOEXEC) } != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+    }
+    Ok((controller, peer))
 }
 
 /// Serves other machines' clients on `at`, on a thread of its own for the daemon's life: once

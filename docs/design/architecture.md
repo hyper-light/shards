@@ -3634,7 +3634,7 @@ No run-time labels, relays or declassifiers (§12 answer 14, decided by the user
 an internal-only domain to the world (D58), so there is no data to label. Code mode is
 D136.
 
-### D180. Contexts: shards on another machine, over QUIC (part 1 built)
+### D180. Contexts: shards on another machine, over QUIC (parts 1 and 2 built)
 
 **The microVM need.** A user's microVMs run where the work needs them: a Mac for
 development, a Linux machine with a GPU (`--gpus`) or KVM, an x86_64 machine that builds and
@@ -3704,7 +3704,8 @@ local administration is (../focal docs/cluster-admin.md).
    command that reads none of the client's files and needs no terminal: `ps`, `images`,
    `inspect`, `pull`, `rm`, `stop`, `logs`, `run` and its output.
 2. Commands with a terminal: `-i`, `-t` (the remote command on a pseudo-terminal whose
-   size follows the client's), attach, exec.
+   size follows the client's), attach, exec; and the signals a client receives (built,
+   but for a client on Windows, whose console is part 2b's).
 3. Builds (the context sent as BuildKit's session sends it), `cp`, `save`, `load`,
    `import`, `export`.
 4. Docker's CLI through a context: a socket file in the home for each context, which the
@@ -3820,6 +3821,43 @@ way, or a daemon's, allowed; a stopped stdin failing the command; no end for no 
 STOP_SENDING at the last frame; the client's end ending no stdin; room again resuming no
 stream; strangers taken past the invitations; no time to join, or one bounding enrolled
 clients too; and a refusal at the handshake's end said in other words.
+
+**Part 2, built: the client's terminal, and its signals.** A context carries them as
+`ssh -t` does (OpenSSH session.c, do_exec_pty; clientloop.c, enter_raw_mode):
+- **The command's stdio is the client's.** The request says which of the client's stdin,
+  stdout and stderr its terminal is, and its size; the daemon gives the command a
+  pseudo-terminal of that size for those, and pipes for the rest, so that the command sees
+  the stdio it would here and prints as it would: shards' terminal UI on a terminal,
+  Docker's words in a pipe, where part 1's commands saw pipes alone.
+- **A terminal of its own, as a login's.** The command leads a session whose controlling
+  terminal that is, which it takes itself first thing (`SHARDS_TAKE_TERMINAL`), as
+  posix_spawn(3) has no action that makes one on macOS; so the terminal there does what a
+  terminal does: echo, line editing, ^C as SIGINT, SIGWINCH on a resize. The client's
+  terminal goes raw while the command reads it, and back as it was after.
+- **What steers it crosses beside its data.** A resize, and each signal the client
+  receives, cross on a control stream of the command's, a second QUIC stream, as SSH's
+  window-change and signal requests cross beside a channel's data (RFC 4254 §6.7, §6.9): on
+  the command's own stream they would wait behind stdin that a command does not read. A
+  signal crosses by its Linux number, the guest's numbering, which the daemon's system
+  numbers its own (SIGUSR1 is 30 on macOS, 10 on Linux); the command, a client of its
+  daemon as any run's CLI is, does with it what it would here (`--sig-proxy`).
+- So `run -it`, `exec -it` and `attach` need nothing of their own over a context, and `-it`
+  with no terminal here is refused there, in a run's own words. Every
+  command a client runs leads a session of its own, out of reach of the signals a terminal
+  of the daemon's sends its group.
+
+Tested in `tests/context.rs` on tests/tty.rs's terminal, a pty the test holds: the client's
+terminal the command's own there, raw here while it runs, its size, what is typed echoed and
+read, and given back as it was; a resize reaching the command; ^C interrupting it, and the
+detach keys leaving it running on its machine; `exec -it` in a running microVM, and
+`attach` to a command's terminal, through the context; and with no terminal, SIGINT and
+SIGUSR1 to the client reaching the command as 2 and 10. In `tests/loopback.rs`: a resize and a signal
+reaching a command whose stdin waits for room it does not get; a control stream naming no
+command of its connection's refused, and a stranger's refused by its header. And
+`a_signals_linux_number_names_it_on_every_system` (`shards_ipc`). Each mutation-checked:
+the command given no terminal of its own, the terminal not taken as its controlling one,
+the client not raw, signals steering nothing, SIGWINCH sent as a signal with no resize, and
+a signal's Linux number taken for the daemon's system's.
 
 ### D179. Other CPUs' images, emulated in their microVM (parts 1 to 3 built)
 

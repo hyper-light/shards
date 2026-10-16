@@ -21,6 +21,107 @@ use shards_remote::invite::{self, Invitation};
 /// before its command runs.
 const NOT_RUN: u8 = 125;
 
+/// The variable a daemon sets for a client's command on a terminal of its own: the command
+/// takes the terminal as its session's controlling terminal, first thing, as a login's
+/// command has its own (D180), which no action of posix_spawn(3) makes on every system.
+#[cfg(unix)]
+pub(crate) const TAKE_TERMINAL: &str = "SHARDS_TAKE_TERMINAL";
+
+/// Does what [`TAKE_TERMINAL`] asks, and lets the variable go, so that nothing this process
+/// starts takes the terminal too.
+#[cfg(unix)]
+pub(crate) fn take_terminal() {
+    if std::env::var_os(TAKE_TERMINAL).is_none() {
+        return;
+    }
+    // SAFETY: first thing in main, before any thread: the environment is this one's alone.
+    unsafe { std::env::remove_var(TAKE_TERMINAL) };
+    // SAFETY: isatty(3) on this process's stdio.
+    if let Some(fd) = (0..3).find(|&fd| unsafe { libc::isatty(fd) } == 1) {
+        // SAFETY: TIOCSCTTY on our own descriptor: a session's leader with no controlling
+        // terminal takes it.
+        unsafe { libc::ioctl(fd, libc::TIOCSCTTY as _, 0) };
+    }
+}
+
+/// This client's terminal, where it has one: which of its stdin, stdout and stderr it is,
+/// and its size.
+#[cfg(unix)]
+fn here_terminal() -> Option<frame::Terminal> {
+    // SAFETY: isatty(3) on this process's stdio.
+    let on = |fd| unsafe { libc::isatty(fd) } == 1;
+    let first = (0..3).find(|&fd| on(fd))?;
+    let (rows, cols) = crate::cli::terminal::size(first);
+    Some(frame::Terminal {
+        stdin: on(0),
+        stdout: on(1),
+        stderr: on(2),
+        rows,
+        cols,
+    })
+}
+
+/// What steers the command a context runs, while it runs: where this client's terminal's
+/// size and signals go.
+#[cfg(unix)]
+static STEERED: std::sync::Mutex<Option<client::Controls>> = std::sync::Mutex::new(None);
+
+/// Takes the signals this process would act on, which go to the command it forwards
+/// instead, as the Docker CLI's go to its container (`--sig-proxy`). With `terminal`, the
+/// descriptor of its terminal, the command's own terminal, SIGWINCH sizes it, as the
+/// kernel then signals the command; without, SIGWINCH goes as the rest do. One that comes
+/// with no command to take it ends the client as it would have, its terminal restored
+/// first (cli/client.rs).
+#[cfg(unix)]
+fn steer_signals(reads_terminal: bool, terminal: Option<i32>) -> Result<(), String> {
+    use std::sync::PoisonError;
+    let (mut set, ignored) =
+        shards_ipc::take_forwarded(reads_terminal).map_err(|e| format!("taking signals: {e}"))?;
+    shards_ipc::take_rest(&mut set).map_err(|e| format!("taking signals: {e}"))?;
+    std::thread::Builder::new()
+        .name("signals".into())
+        .spawn(move || {
+            shards_ipc::wait_here();
+            loop {
+                let mut sig = 0;
+                // SAFETY: sigwait(3) on a valid set.
+                if unsafe { libc::sigwait(&set, &mut sig) } != 0 {
+                    return;
+                }
+                let steered = STEERED.lock().unwrap_or_else(PoisonError::into_inner);
+                let sent = steered.as_ref().is_some_and(|controls| match terminal {
+                    Some(fd) if sig == libc::SIGWINCH => {
+                        let (rows, cols) = crate::cli::terminal::size(fd);
+                        controls.resize(rows, cols).is_ok()
+                    }
+                    _ if sig == shards_ipc::CARRIER => {
+                        shards_ipc::sent_faults().all(|linux| controls.signal(linux).is_ok())
+                    }
+                    _ => shards_ipc::linux_signal(sig).is_some_and(|linux| controls.signal(linux).is_ok()),
+                });
+                drop(steered);
+                let ends = [libc::SIGHUP, libc::SIGINT, libc::SIGQUIT, libc::SIGTERM].contains(&sig);
+                if !sent && ends && !ignored.contains(&sig) {
+                    crate::cli::terminal::restore();
+                    if sig == libc::SIGINT || sig == libc::SIGTERM {
+                        std::process::exit(128 + sig);
+                    }
+                    // SAFETY: the default action of a terminating signal, on this process.
+                    unsafe {
+                        libc::signal(sig, libc::SIG_DFL);
+                        let mut only: libc::sigset_t = std::mem::zeroed();
+                        libc::sigemptyset(&mut only);
+                        libc::sigaddset(&mut only, sig);
+                        libc::pthread_sigmask(libc::SIG_UNBLOCK, &only, std::ptr::null_mut());
+                        libc::raise(sig);
+                    }
+                }
+            }
+        })
+        .map_err(|e| format!("signal thread: {e}"))?;
+    Ok(())
+}
+
 /// A context's name, as docker/cli names one (v29.8.1 cli/context/store, ValidateContextName):
 /// a letter or digit, then letters, digits, `_`, `.`, `+` or `-`; and not `default`, this
 /// machine's.
@@ -239,10 +340,10 @@ pub(crate) fn chosen(home: &Path, args: &mut Vec<OsString>) -> Result<Chosen, St
     }
 }
 
-/// What a command needs that a context does not carry yet: the client's terminal, or files
-/// of the client's that Docker's CLI sends where shards would read the other machine's. The
-/// command is read as shards reads it, its own grammar said as the command it runs, and its
-/// flags by its parser.
+/// What a command needs that a context does not carry yet: files of the client's that
+/// Docker's CLI sends where shards would read the other machine's. The command is read as
+/// shards reads it, its own grammar said as the command it runs, and its flags by its
+/// parser.
 fn not_carried(args: &[OsString]) -> Option<String> {
     let words: Vec<String> = args
         .iter()
@@ -262,9 +363,6 @@ fn not_carried(args: &[OsString]) -> Option<String> {
             "{first} over a context sends this machine's files, which shards does not carry yet: run it on the machine itself"
         ));
     }
-    if matches!(refs.as_slice(), ["attach", ..] | ["container", "attach", ..]) {
-        return Some("attach: a terminal on another machine is not carried by a context yet".into());
-    }
     // `run` is the CLI's own to read (request.rs), as Docker's flags are its.
     let (command, path, n) = match refs.as_slice() {
         ["run", ..] => (&shards_cmdline::commands::RUN, "shards run", 1),
@@ -277,11 +375,6 @@ fn not_carried(args: &[OsString]) -> Option<String> {
     else {
         return None;
     };
-    if parsed.bool("interactive") || parsed.bool("tty") {
-        return Some(format!(
-            "{path}: a terminal on another machine is not carried by a context yet"
-        ));
-    }
     let files = !parsed.many("env-file").is_empty()
         || !parsed.many("label-file").is_empty()
         || !parsed.string("cidfile").is_empty()
@@ -364,16 +457,59 @@ pub(crate) fn forward(home: &Path, context: &Context, args: Vec<OsString>) -> Ex
                 .map(|v| (name.to_string(), v.into_bytes()))
         })
         .collect();
-    let request = Request { args: bytes, env };
+    // This client's terminal is the command's, its own there for what it is here: raw here
+    // while the command reads it, as `ssh -t` leaves the remote terminal to do what a
+    // terminal does (OpenSSH clientloop.c, enter_raw_mode). Its size and the signals this
+    // process receives go to the command as they come.
+    #[cfg(unix)]
+    let terminal = here_terminal();
+    #[cfg(not(unix))]
+    let terminal = None;
+    #[cfg(unix)]
+    {
+        let reads = terminal.is_some_and(|t| t.stdin);
+        let fd = terminal.map(|t| {
+            if t.stdin {
+                0
+            } else if t.stdout {
+                1
+            } else {
+                2
+            }
+        });
+        if let Err(e) = steer_signals(reads, fd) {
+            return fail(e);
+        }
+        if reads && let Err(e) = crate::cli::terminal::make_raw() {
+            return fail(format!("the terminal: {e}"));
+        }
+    }
+    let request = Request {
+        args: bytes,
+        env,
+        terminal,
+    };
     let stdin: Box<dyn io::Read + Send> = Box::new(io::stdin());
-    match client::exec(
+    let steered = |controls| {
+        #[cfg(unix)]
+        {
+            *STEERED.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(controls);
+        }
+        #[cfg(not(unix))]
+        drop(controls);
+    };
+    let ran = client::exec(
         &identity,
         context.remote(),
         request,
         Some(stdin),
         io::stdout(),
         io::stderr(),
-    ) {
+        steered,
+    );
+    #[cfg(unix)]
+    crate::cli::terminal::restore();
+    match ran {
         Ok(Ok(status)) => ExitCode::from(u8::try_from(status).unwrap_or(1)),
         Ok(Err(refused)) => fail(format!("{}: {refused}", context.name)),
         Err(e) => fail(format!("{}: {e}", context.name)),
@@ -789,21 +925,23 @@ mod tests {
         let args = |s: &str| s.split(' ').map(OsString::from).collect::<Vec<_>>();
         assert!(not_carried(&args("ps -a")).is_none());
         assert!(not_carried(&args("run --rm alpine echo hi")).is_none());
-        assert!(
-            not_carried(&args("run --rm alpine ls -t")).is_none(),
-            "the command's own -t"
-        );
-        assert!(not_carried(&args("run -it alpine sh")).is_some());
-        assert!(not_carried(&args("run --interactive alpine sh")).is_some());
+        // The client's terminal crosses (part 2).
+        assert!(not_carried(&args("run -it alpine sh")).is_none());
+        assert!(not_carried(&args("exec -it web sh")).is_none());
+        assert!(not_carried(&args("attach web")).is_none());
         assert!(not_carried(&args("build .")).is_some());
         assert!(not_carried(&args("save -o x.tar alpine")).is_some());
         assert!(not_carried(&args("run --env-file e alpine")).is_some());
         assert!(
-            not_carried(&args("run --name web -it alpine sh")).is_some(),
+            not_carried(&args("run --rm alpine cat --env-file e")).is_none(),
+            "the command's own --env-file"
+        );
+        assert!(
+            not_carried(&args("run --name web --env-file e alpine sh")).is_some(),
             "past a flag's value"
         );
         assert!(
-            not_carried(&args("run vm -it alpine sh")).is_some(),
+            not_carried(&args("run vm --env-file e alpine sh")).is_some(),
             "shards' own words"
         );
         assert!(kept_here(&args("context ls")));

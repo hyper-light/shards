@@ -120,6 +120,9 @@ pub fn cannot_snapshot() -> bool {
 #[path = "../../src/kernel.rs"]
 pub mod pinned;
 
+#[cfg(unix)]
+pub mod terminal;
+
 /// The file `name` of the snapshot generation `dir` points at (vmm snapshot/mod.rs).
 pub fn snapshot_file(dir: &Path, name: &str) -> PathBuf {
     let current = std::fs::read_to_string(dir.join("current")).unwrap();

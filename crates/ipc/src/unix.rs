@@ -221,12 +221,21 @@ pub fn sent_faults() -> impl Iterator<Item = u32> {
 
 /// The Linux number of `sig`, which a process forwards.
 pub fn linux_signal(sig: libc::c_int) -> Option<u32> {
+    numbered().find(|&(s, _)| s == sig).map(|(_, linux)| linux)
+}
+
+/// The signal this system numbers what Linux numbers `linux`, as [`linux_signal`] gives it:
+/// none, for one this system has not.
+pub fn local_signal(linux: u32) -> Option<libc::c_int> {
+    numbered().find(|&(_, l)| l == linux).map(|(sig, _)| sig)
+}
+
+/// The signals a process forwards, each with its Linux number.
+fn numbered() -> impl Iterator<Item = (libc::c_int, u32)> {
     let faults = cfg!(any(target_os = "linux", target_os = "android")).then_some(FAULTS);
     forwarded(false)
         .chain(realtime())
         .chain(faults.into_iter().flatten())
-        .find(|&(s, _)| s == sig)
-        .map(|(_, linux)| linux)
 }
 
 /// The handler that keeps a blocked signal pending for sigwait(3) on XNU; it never runs.
@@ -1451,6 +1460,19 @@ pub(crate) mod tests {
         assert_eq!(before, after);
         assert_eq!(linux_signal(libc::SIGSEGV), None);
         assert_eq!(linux_signal(libc::SIGTERM), Some(15));
+    }
+
+    /// A signal forwarded by its Linux number is this system's own again at the other end:
+    /// macOS's SIGUSR1 is 30, Linux's 10.
+    #[test]
+    fn a_signals_linux_number_names_it_on_every_system() {
+        for (sig, linux) in forwarded(false) {
+            assert_eq!(local_signal(linux), Some(sig), "{sig} as {linux}");
+        }
+        assert_eq!(local_signal(10), Some(libc::SIGUSR1));
+        assert_eq!(local_signal(15), Some(libc::SIGTERM));
+        assert_eq!(local_signal(0), None);
+        assert_eq!(local_signal(9), None, "SIGKILL is no client's to send");
     }
 
     /// Linux's real-time signals Docker names are forwarded as their own numbers, and none
