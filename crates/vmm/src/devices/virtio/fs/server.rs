@@ -147,6 +147,40 @@ struct Node {
     volume: u64,
 }
 
+/// The most a share's tables hold, the bytes of its guest's removed files among them: what
+/// a snapshot's state holds (D176).
+pub const MAX_TABLES: usize = crate::snapshot::MAX_STATE as usize;
+
+/// The prefix of a file [`ghost`] makes, which a daemon's start removes where a crash left
+/// one before its removal.
+pub const GHOST_PREFIX: &str = "ghost-";
+
+/// A file holding `bytes`, made in directory `dir` and removed from it at once: the
+/// descriptor of a file no path reaches, as its guest held one before its save (D176).
+fn ghost(dir: RawFd, bytes: &[u8]) -> Result<OwnedFd, String> {
+    let mut random = [0u8; 16];
+    crate::platform::fill_random(&mut random).map_err(|e| format!("a removed file's name: {e}"))?;
+    let name: String = random.iter().map(|b| format!("{b:02x}")).collect();
+    let name = CString::new(format!("{GHOST_PREFIX}{name}")).map_err(|_| "a removed file's name")?;
+    let fd = open_at(
+        dir,
+        &name,
+        libc::O_RDWR | libc::O_CREAT | libc::O_EXCL | libc::O_CLOEXEC,
+        0o600,
+    )
+    .map_err(|e| format!("a removed file, made again: errno {e}"))?;
+    // SAFETY: unlinkat(2) of the name just made in a directory we hold.
+    if unsafe { libc::unlinkat(dir, name.as_ptr(), 0) } != 0 {
+        return Err(format!(
+            "a removed file, made again: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    let file = std::fs::File::from(fd);
+    crate::platform::write_all_at(&file, bytes, 0).map_err(|e| format!("a removed file's bytes: {e}"))?;
+    Ok(file.into())
+}
+
 /// No volume's: a node of a share of one directory, or a join share's root. Node IDs start
 /// at [`ROOT`], so none is 0.
 const NO_VOLUME: u64 = 0;
@@ -233,6 +267,10 @@ struct State {
     /// The descriptors the server may hold between requests ([`Limits::budget`]): its pins,
     /// and in the room they leave, its directories' and handles' descriptors.
     budget: u64,
+    /// Where a restored server makes the files its guest held open that no path reaches,
+    /// each removed as it is made, for its pins (D176): the share process's private
+    /// directory, none for a server that keeps none.
+    ghosts: Option<OwnedFd>,
 }
 
 /// The descriptors of the directories the guest named and of the files and directories it
@@ -826,6 +864,7 @@ impl Server {
                 pins: HashMap::new(),
                 unreached: HashMap::new(),
                 budget,
+                ghosts: None,
             }),
         })
     }
@@ -907,12 +946,45 @@ impl Server {
     /// path reaches: one the guest removed the last name of, which no restore could open.
     pub fn save(&self) -> Result<Vec<u8>, String> {
         let s = self.state.lock().unwrap_or_else(PoisonError::into_inner);
-        if !s.pins.is_empty() || !s.unreached.is_empty() {
+        if !s.unreached.is_empty() {
             return Err(
-                "a file the microVM has open was removed from its volume, which no restore could open again"
+                "a file the microVM has open was removed from its volume with no descriptor left to keep it by"
                     .into(),
             );
         }
+        // The files the guest holds open that no path reaches, each by its pin: their bytes,
+        // which a restored server holds anew, as CRIU's images carry a removed file's
+        // ("ghost files"), within what a snapshot's state holds.
+        let mut ghosts = Vec::with_capacity(s.pins.len());
+        let mut carried = 0u64;
+        for (node, (fd, access)) in &s.pins {
+            let st = stat_fd(fd.as_raw_fd())
+                .map_err(|e| format!("a removed file the microVM has open: errno {e}"))?;
+            if mode_of(&st) & S_IFMT != S_IFREG {
+                return Err(
+                    "a directory or special file the microVM has open was removed from its volume".into(),
+                );
+            }
+            #[allow(clippy::cast_sign_loss)]
+            let size = st.st_size as u64;
+            carried = carried.saturating_add(size);
+            if carried > MAX_TABLES as u64 {
+                return Err(format!(
+                    "files the microVM has open after removing them from its volume hold {carried} bytes or more, \
+                     more than a snapshot keeps ({MAX_TABLES})"
+                ));
+            }
+            let mut bytes = Vec::new();
+            bytes
+                .try_reserve_exact(usize::try_from(size).map_err(|_| "a removed file too large to keep")?)
+                .map_err(|e| format!("a removed file's {size} bytes: {e}"))?;
+            bytes.resize(bytes.capacity(), 0);
+            let file = std::fs::File::from(fd.try_clone().map_err(|e| format!("a removed file: {e}"))?);
+            crate::platform::read_exact_at(&file, &mut bytes, 0)
+                .map_err(|e| format!("a removed file's bytes: {e}"))?;
+            ghosts.push((*node, *access, bytes));
+        }
+        ghosts.sort_unstable_by_key(|(node, _, _)| *node);
         if !s.volumes.is_empty() {
             return Err("a joined container's volume is shared with the microVM".into());
         }
@@ -955,7 +1027,19 @@ impl Server {
             w.u64(o.reading);
             w.u64(o.writing);
         });
+        w.seq(&ghosts, |w, (node, access, bytes)| {
+            w.u64(*node);
+            #[allow(clippy::cast_sign_loss)]
+            w.u32(*access as u32);
+            w.bytes(bytes);
+        });
         Ok(w.into_bytes())
+    }
+
+    /// Makes the files its guest held open that no path reaches in `dir`, as it is restored
+    /// from a save (D176), each removed as soon as it is made.
+    pub fn keep_ghosts_in(&self, dir: OwnedFd) {
+        self.state.lock().unwrap_or_else(PoisonError::into_inner).ghosts = Some(dir);
     }
 
     /// Takes the share as a snapshot kept it ([`save`](Self::save)), into a server no guest
@@ -1025,6 +1109,14 @@ impl Server {
                 ))
             })
             .map_err(bad)?;
+        let ghosts = r
+            .seq(u32::MAX as usize, 8 + 4 + 4, |r| {
+                let node = r.u64()?;
+                #[allow(clippy::cast_possible_wrap)]
+                let access = r.u32()? as libc::c_int;
+                Ok((node, access, r.bytes(MAX_TABLES)?))
+            })
+            .map_err(bad)?;
         r.finish().map_err(bad)?;
         let mut s = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         if s.joined != joined {
@@ -1056,8 +1148,18 @@ impl Server {
                 || n.links.iter().any(|(dir, _)| !known(dir))
         }) || handles.iter().any(|(_, h)| !known(&h.node))
             || opened.iter().any(|(id, _)| !known(id))
+            || ghosts.iter().any(|(id, _, _)| !known(id))
         {
             return Err("a share's saved tables name a node they do not hold".into());
+        }
+        let mut pins = HashMap::with_capacity(ghosts.len());
+        if !ghosts.is_empty() {
+            let dir = s.ghosts.as_ref().ok_or(
+                "the files its guest holds that no path reaches, for a share with nowhere to keep them",
+            )?;
+            for (node, access, bytes) in ghosts {
+                pins.insert(node, (ghost(dir.as_raw_fd(), bytes)?, access));
+            }
         }
         let mut by_key = HashMap::with_capacity(nodes.len());
         for (id, n) in &nodes {
@@ -1070,6 +1172,7 @@ impl Server {
         s.next_handle = next_handle;
         s.opened = opened.into_iter().collect();
         s.fds = Fds::default();
+        s.pins = pins;
         Ok(())
     }
 
@@ -3304,11 +3407,51 @@ mod tests {
             "another directory's"
         );
         assert!(elsewhere.restore(&tables[..tables.len() - 1]).is_err());
-        std::fs::write(root.join("h"), "h").unwrap();
+        // A file the guest holds open after removing its last name no path reaches: its
+        // bytes go with the tables, and a restored server holds them in a file of its own,
+        // made in its private directory and removed there at once.
+        std::fs::write(root.join("h"), "held after its removal").unwrap();
         let h = id(answer(&s, &req(op::LOOKUP, ROOT, 0, &name("h"))));
-        assert_eq!(answer(&s, &req(op::OPEN, h, 0, &[0; 8])).0, 0);
+        let hh = id(answer(&s, &req(op::OPEN, h, 0, &[0; 8])));
         assert_eq!(answer(&s, &req(op::UNLINK, ROOT, 0, &name("h"))).0, 0);
-        assert!(s.save().unwrap_err().contains("removed from its volume"));
+        let read_h = |s: &Server| {
+            let mut body = hh.to_le_bytes().to_vec();
+            body.extend(0u64.to_le_bytes());
+            body.extend(64u32.to_le_bytes());
+            body.extend([0u8; 4 + 8 + 4 + 4]);
+            answer(s, &req(op::READ, h, 0, &body))
+        };
+        assert_eq!(read_h(&s), (0, b"held after its removal".to_vec()));
+        let tables = s.save().unwrap();
+        let private = shards_testdir::TempDir::new("fs-ghosts").unwrap();
+        let held = Server::new(std::fs::File::open(&root).unwrap().into(), false, None).unwrap();
+        held.keep_ghosts_in(std::fs::File::open(&private).unwrap().into());
+        held.restore(&tables).unwrap();
+        assert_eq!(read_h(&held), (0, b"held after its removal".to_vec()));
+        assert!(
+            std::fs::read_dir(&private).unwrap().next().is_none(),
+            "no name left"
+        );
+        assert_eq!(read(&held), (0, b"kept bytes".to_vec()));
+        let nowhere = Server::new(std::fs::File::open(&root).unwrap().into(), false, None).unwrap();
+        assert!(
+            nowhere
+                .restore(&tables)
+                .unwrap_err()
+                .contains("nowhere to keep them")
+        );
+        // More than a snapshot's state holds refuses the save, before a byte is read.
+        std::fs::write(root.join("big"), "").unwrap();
+        let big = id(answer(&s, &req(op::LOOKUP, ROOT, 0, &name("big"))));
+        assert_eq!(answer(&s, &req(op::OPEN, big, 0, &[0; 8])).0, 0);
+        std::fs::File::options()
+            .write(true)
+            .open(root.join("big"))
+            .unwrap()
+            .set_len(MAX_TABLES as u64 + 1)
+            .unwrap();
+        assert_eq!(answer(&s, &req(op::UNLINK, ROOT, 0, &name("big"))).0, 0);
+        assert!(s.save().unwrap_err().contains("more than a snapshot keeps"));
     }
 
     /// Node IDs are not guessed from one another: one file's next to the last's is no

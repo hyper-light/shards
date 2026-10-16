@@ -149,6 +149,9 @@ const TAKE_TIMEOUT: Duration = Duration::from_secs(10);
 /// The home's empty directory, every join share's root (D119): its server makes nothing in
 /// it, and shows nothing of it.
 const JOIN_ROOT: &str = "join-root";
+/// The home's private directory, 0700: a build's ID file, and what a share process keeps of
+/// a restored guest's files that no path reaches (D176).
+const PRIVATE: &str = "tmp";
 /// How long a daemon waits for the lock of one that neither listens nor ends its runs
 /// (shards_ipc::exiting): one started at the same moment, which listens as soon as it
 /// has the lock. One ending its runs is waited for as long as it takes.
@@ -1080,10 +1083,12 @@ fn serve(ready: Option<File>) -> Result<(), String> {
     let containers = Registry::open(&home, &mut |note| log(note))
         .map_err(|e| format!("{}: {e}", home.join("containers").display()))?;
     // What a daemon's end cut short of a snapshot's save or removal (D176), before any
-    // save of this one's.
+    // save of this one's; and the files a share process made for a restored guest, which
+    // a crash left before it removed them.
     for c in containers.all() {
         snapshots::remove_unsaved(&containers.dir(&c.id), &mut |note| log(note));
     }
+    snapshots::remove_ghosts(&home.join(PRIVATE), &mut |note| log(note));
     let daemon = Daemon::new(home, vm, identity, settings, containers, Real, home_lock)
         .map_err(|e| format!("following runs: {e}"))?;
     daemon.make_spare();
@@ -3133,6 +3138,20 @@ impl<D: Disk> Daemon<D> {
         Ok(points)
     }
 
+    /// The home's private directory (`tmp`, 0700), made if it is not there: where a share
+    /// process keeps the files a restored guest holds that no path reaches (D176).
+    fn private_dir(&self) -> Result<File, String> {
+        use std::os::unix::fs::DirBuilderExt as _;
+        let at = self.home.join(PRIVATE);
+        match std::fs::DirBuilder::new().mode(0o700).create(&at) {
+            Err(e) if e.kind() != io::ErrorKind::AlreadyExists => {
+                return Err(format!("{}: {e}", at.display()));
+            }
+            _ => {}
+        }
+        File::open(&at).map_err(|e| format!("{}: {e}", at.display()))
+    }
+
     /// Starts the share process (share.rs) serving `dirs`: the VM's connection to it, none
     /// for none. It is reaped on the followers' loop, and ends as its VM's connections
     /// close.
@@ -3155,6 +3174,11 @@ impl<D: Disk> Daemon<D> {
         for (i, (dir, _, _)) in dirs.iter().enumerate() {
             fds.push((dir.as_fd(), 4 + i32::try_from(i).map_err(|_| "too many shares")?));
         }
+        let ghosts = self.private_dir()?;
+        fds.push((
+            ghosts.as_fd(),
+            4 + i32::try_from(dirs.len()).map_err(|_| "too many shares")?,
+        ));
         let child = shards_ipc::spawn_in(&exe, &args, &fds, false, &[])
             .map_err(|e| format!("starting the share process: {e}"))?;
         self.follow_share(threads, child);
@@ -4931,10 +4955,16 @@ impl<D: Disk> Daemon<D> {
             _ => {}
         }
         let root = File::open(&at).map_err(failed)?;
+        let ghosts = self.private_dir()?;
         let child = shards_ipc::spawn_in(
             &exe,
             &[OsStr::new("share"), OsStr::new("--join")],
-            &[(served.as_fd(), 3), (theirs.as_fd(), 4), (root.as_fd(), 5)],
+            &[
+                (served.as_fd(), 3),
+                (theirs.as_fd(), 4),
+                (root.as_fd(), 5),
+                (ghosts.as_fd(), 6),
+            ],
             false,
             &[],
         )

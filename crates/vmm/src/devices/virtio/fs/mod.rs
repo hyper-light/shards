@@ -67,7 +67,7 @@ const CONTROL: u32 = 1 << 31;
 const SAVE: u8 = 1;
 const RESTORE: u8 = 2;
 /// The most a control frame holds: a share's tables, which a snapshot's state holds.
-const MAX_CONTROL: usize = crate::snapshot::MAX_STATE as usize;
+const MAX_CONTROL: usize = server::MAX_TABLES;
 
 impl Slot {
     /// A slot no server is in yet.

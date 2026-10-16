@@ -214,22 +214,18 @@ fn a_save_refused_leaves_the_microvm_running_and_nothing_behind() {
         return;
     }
     let shards = |args: &[&str]| shards_in(&home, args);
-    // A file it holds open in its volume, whose last name it removed, no path reaches, and
-    // no restore could open (D176).
+    // Files it holds open in its volume after removing them, whose bytes go with its
+    // snapshot, past what a snapshot keeps (D176).
+    let past = ((64u64 << 20) + 1).to_string();
     let (mut client, mut counts, _) = start(
         &home,
         &image,
         &["--name", "mounted", "-u", "0", "-v", "kept:/kept"],
-        &["unlinked-held", "/kept/held"],
+        &["unlinked-held", "/kept/held", &past],
     );
     let refused = shards(&["save", "vm", "mounted", "first"]);
     assert_eq!(refused.status, Some(1), "{refused}");
-    assert!(
-        refused
-            .stderr
-            .contains("a file the microVM has open was removed from its volume"),
-        "{refused}"
-    );
+    assert!(refused.stderr.contains("more than a snapshot keeps"), "{refused}");
     let snapshots = home
         .join("containers")
         .join(id_of(&home, "mounted"))
@@ -371,6 +367,41 @@ fn a_saved_microvm_writes_on_through_its_volume() {
     let wanted: Vec<u64> = (1..=counts.len() as u64).collect();
     assert_eq!(counts, wanted, "each count once, in order: {}", log());
     assert_eq!(shards(&["rm", "-f", "vol"]).status, Some(0));
+    // A file it holds open after removing it from the volume: its bytes go with the
+    // snapshot, and the restored microVM reads them on through the same descriptor.
+    let run = shards(&[
+        "run",
+        "-d",
+        "--pull",
+        "never",
+        "--name",
+        "ghost",
+        "-u",
+        "0",
+        "-v",
+        "kept:/kept",
+        &image,
+        "unlinked-held",
+        "/kept/held",
+    ]);
+    assert_eq!(run.status, Some(0), "{run}");
+    let read = || logs(&home, "ghost").matches("held").count();
+    let said = || logs(&home, "ghost");
+    until("reading", &mut || read() >= 3, &said);
+    let saved = shards(&["save", "vm", "ghost", "held"]);
+    assert_eq!(saved.stdout, "held\n", "{saved}");
+    assert!(!home.join("volumes/kept/_data/held").exists());
+    let at_save = read();
+    let restored = shards(&["restore", "vm", "ghost", "held"]);
+    assert_eq!(restored.status, Some(0), "{restored}");
+    until("reading on", &mut || read() >= at_save + 5, &said);
+    let named: Vec<String> = std::fs::read_dir(home.join("tmp"))
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|n| n.starts_with("ghost-"))
+        .collect();
+    assert!(named.is_empty(), "no name left of it: {named:?}");
+    assert_eq!(shards(&["rm", "-f", "ghost"]).status, Some(0));
 }
 
 /// `shards logs NAME`'s stdout.

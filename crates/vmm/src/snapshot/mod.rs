@@ -73,7 +73,9 @@ const MAGIC: [u8; 8] = *b"SHRDSNAP";
 ///     joined is saved once they end (D176).
 /// 20: a share's state keeps its server's tables, so that a microVM with a volume mounted
 ///     is saved (D176).
-const VERSION: u32 = 20;
+/// 21: a share's tables keep the bytes of the files its guest holds open that no path
+///     reaches, which a restored server holds anew (D176).
+const VERSION: u32 = 21;
 /// The snapshot format this build writes and reads: what a snapshot kept for reuse is
 /// keyed by.
 pub const FORMAT: u32 = VERSION;
@@ -686,7 +688,16 @@ fn state_of(snap: &Snapshot, name: &str) -> Result<Vec<u8>, String> {
             Identity::of(path).map_err(|e| format!("{}: {e}", path.display()))
         })
         .collect::<Result<Vec<_>, String>>()?;
-    encode(snap, name, &identities)
+    let state = encode(snap, name, &identities)?;
+    // No more than a restore reads (D176): a share's tables, with the bytes of the files its
+    // guest holds that no path reaches, are what grows it.
+    if state.len() as u64 > MAX_STATE {
+        return Err(format!(
+            "the machine's state is {} bytes, more than a snapshot keeps ({MAX_STATE})",
+            state.len()
+        ));
+    }
+    Ok(state)
 }
 
 /// `bytes`, all of `file`, whatever its offset: one its spawner also holds shares it.
