@@ -3414,7 +3414,9 @@ revision before comparing a changed API/implementation.
   files under 1 MiB are read, where the times saw every torn read, and larger ones cloned,
   which takes one version; the write count is not kept, as it saw nothing the times did
   not on the stage's paths. Writes through a shared mapping are not seen where no lease is
-  granted.
+  granted. (Corrected 2026-10-16, M242: on a busy host a write under way across the
+  whole read slips past the times at any size, as dev's CI showed at 64 KiB; macOS now
+  waits each one out with a clone.)
 
 ### M101. Electing the default bridge's subnet
 
@@ -8660,3 +8662,74 @@ revision before comparing a changed API/implementation.
   hold a write back costs it nothing measurable: the 64 MiB writes with none and with one of
   1 GiB a second agree at p50 within 4%, either faster, where the runs vary by more than
   half.
+
+### M242. A context file taken whole on APFS, whatever its size, on a busy host (D33)
+
+- **Question.** M100 found APFS's times saw every torn read of a file under 1 MiB, so the
+  stage read those in place. dev's CI then took a packed snapshot of 64 KiB that mixed two
+  versions on its macOS runner (run 38842127598, aarch64-apple-darwin,
+  `a_file_written_while_it_is_taken_is_one_version_or_refused`): APFS stamps a write's
+  times as it ends, so a write under way across the whole read leaves them as they were,
+  at any size once the host's scheduler stops the writer midway. What waits out a write
+  under way on APFS, and what does taking every file through it cost?
+- **Method.** `context-snapshots/barriers.py`: a writer rewrites a file of 256 MiB, each
+  version one pwrite(2) of one byte value; while one is under way, each candidate call is
+  made on a second descriptor, and has waited it out if it returned after the write
+  ended; then clones of the file's directory made during writes, each file of them checked
+  whole. `context-snapshots/costs.py`: a tree of 2,000 files of 1 KiB in directories of
+  100, taken each way, n = 10 rounds interleaved, each phase timed. Then the stage itself,
+  `crates/build/tests/context.rs`: `a_context_load_costs`, n = 40 loads of a context of
+  2,000 files whole and of one where a directory of 1,000 of them is left out, and the
+  removal of its stage after; `a_take_costs`, n = 5,000 takes of a file of 1 KiB; fcc6b409
+  against the change, five rounds of each, interleaved, which goes first alternating
+  (`context-snapshots/ab.sh`). The M5 Max of M240 (macOS 26.4.1), its data volume (99%
+  full), 2026-10-15, the host loaded by other work (load averages 13 to 33).
+- **Results.** Waited out the write: fclonefileat 18 of 18; clonefile of the file's
+  directory 19 of 20 (the 20th began as the write ended), no file of them torn;
+  F_BARRIERFSYNC 1 of 20 (a call of up to 7 ms, which outlasted that write); fstat, pread,
+  lseek `SEEK_DATA` and `SEEK_HOLE`, fsync, F_LOG2PHYS_EXT, F_GETPATH, fgetattrlist,
+  fgetxattr, flock, and fclonefileat that fails (EEXIST, EACCES), 0 of 20. A clone leaves
+  its source's mtime, ctime and inode as they were; it keeps the source's mode, mtime and
+  flags (an immutable file's `uchg`); clonefile of a directory holding a file or directory
+  this process may not read fails (EACCES).
+
+  2,000 files of 1 KiB, p50 (p90), n = 10:
+
+  | Way | Phase | ms |
+  |---|---|---|
+  | a clone a file | each cloned and read | 837 (1,217) |
+  | | the clones removed | 84.1 (126.7) |
+  | the tree cloned at once | the clone | 14.7 (16.9) |
+  | | its files read | 372 (592) |
+  | | the clones removed | 82.7 (105.3) |
+  | read in place, the tree then cloned | each read | 50.8 (63.0) |
+  | | the tree cloned, the barrier | 13.8 (15.8) |
+  | | each lstat again | 6.3 (7.5) |
+  | | the clones removed, 1, 2, 4, 8 threads | 83.5, 67.4, 69.5, 81.1 |
+
+  A clone's pages are its own, read from the disk where its source's were in memory, so
+  reading clones costs seven times reading in place; APFS removes them at much the same
+  rate however many threads remove them.
+
+  The stage, the p50s of the five rounds, before and after:
+
+  | | fcc6b409 | the change |
+  |---|---|---|
+  | a load of 2,000 files, whole | 59.5 to 69.4 ms | 83.2 to 92.8 ms |
+  | its stage's removal | 0.19 to 0.29 ms | 71.4 to 75.5 ms |
+  | a load of 1,000, 1,000 left out | 29.9 to 32.1 ms | 42.8 to 50.8 ms |
+  | its stage's removal | 0.16 to 0.18 ms | 36.2 to 44.9 ms |
+  | a take of 1 KiB | 11.3 to 12.5 µs | 215 to 234 µs |
+
+- **Consequence.** On macOS no call short of a clone waits out a write under way, so a
+  take that is one version takes a clone. Each directory the walk kept whole (none of its
+  directories left out unwalked or unreadable, no device, FIFO or socket in it) is read in
+  place and then cloned at once, the barrier its files' times are compared after: a load
+  of 2,000 files whole costs 37% more (84.6 ms against 61.7, the middle of the rounds'
+  p50s), of 1,000 beside one left out 45% more (43.7 against 30.0), and the barrier's
+  clones are removed beside the rest of the build, before its stage goes. A file in a
+  directory the walk did not keep whole is cloned alone and taken from its clone, 215 to
+  234 µs a file against 11 to 12; where a directory's clone fails,
+  its files are taken so too, each refused unless it is what was read. Where no clone is
+  made, another volume than the stage's or no APFS, the times decide, as before. Linux and
+  Windows take as they did.

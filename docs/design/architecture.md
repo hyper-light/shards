@@ -2174,13 +2174,21 @@ containers. Evidence: docs/research/image-build.md (§3 ranks the choices below)
          ("read 5 files, 166B"), not a transfer's byte count. What the transfer gives
          BuildKit, one version of each file that no edit during the build can change,
          shards keeps another way: each file is taken into a stage private to the build,
-         by a copy-on-write clone where the file system makes one (APFS, Btrfs, XFS) and
-         by a copy elsewhere, from a descriptor opened without following symlinks. A file
-         whose identity, size, mtime or ctime moved while it was taken is refused, as GNU
-         tar reports "file changed as we read it". `tests/context.rs` holds this under a
-         writer that never pauses: 1,000 snapshots on APFS, none torn; copies taken
-         without the check tear on the first. A stage a crashed build leaves is
-         collected with the store's other leftovers.
+         from a descriptor opened without following symlinks, and refused if a write came
+         while it was taken, as GNU tar reports "file changed as we read it" (PM M100,
+         M242). A file under 1 MiB is packed into one file of the stage, a larger one
+         cloned where the file system clones (APFS, Btrfs, XFS) and copied elsewhere.
+         Linux keeps writers off with a read lease, or sees a write in the file's ctime,
+         once a write under way is waited out with lseek's `SEEK_DATA`. APFS stamps a
+         write's times as it ends, and only a clone waits out a write under way: on
+         macOS each directory the walk kept whole is cloned at once after its files are
+         read in place, and each file's times then compared; a file elsewhere is cloned
+         before it is taken (corrected 2026-10-16: small files were read with the times
+         alone, which a write under way across the whole read slips past; dev's CI took
+         one torn on its macOS runner). `tests/context.rs` holds this under a writer that
+         never pauses, a file's takes and a context's loads both; copies taken without
+         the check tear on the first. A stage a crashed build leaves is collected with
+         the store's other leftovers, its clones and their flags too.
        - Layers are stored uncompressed (`application/vnd.oci.image.layer.v1.tar`), so
          no build or run spends time compressing or decompressing them; the diff ID is the
          digest. A push and an archive send them as stored, uncompressed (corrected

@@ -752,9 +752,68 @@ impl Stage {
 
 impl Drop for Stage {
     fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
+        remove_tree(&self.0);
     }
 }
+
+/// Removes the stage `dir` and all it holds, never following a link out of it: how many
+/// files went, and their bytes. A build's clones keep their files' flags (macOS), an
+/// immutable file's `uchg` among them, which would keep a clone and its directory from
+/// going: the user's own are cleared first.
+pub fn remove_tree(dir: &Path) -> (u64, u64) {
+    let (mut files, mut bytes) = (0u64, 0u64);
+    let mut dirs = vec![dir.to_path_buf()];
+    let mut walked = Vec::new();
+    while let Some(d) = dirs.pop() {
+        unflag(&d);
+        if let Ok(entries) = fs::read_dir(&d) {
+            for e in entries.flatten() {
+                let path = e.path();
+                match e.file_type() {
+                    Ok(t) if t.is_dir() => dirs.push(path),
+                    _ => {
+                        unflag(&path);
+                        let len = fs::symlink_metadata(&path).map_or(0, |m| m.len());
+                        if fs::remove_file(&path).is_ok() {
+                            files += 1;
+                            bytes = bytes.saturating_add(len);
+                        }
+                    }
+                }
+            }
+        }
+        walked.push(d);
+    }
+    // Deepest first: each is empty by its turn.
+    for d in walked.iter().rev() {
+        let _ = fs::remove_dir(d);
+    }
+    (files, bytes)
+}
+
+/// Clears the user's flags of `path` (macOS, BSD's chflags) where it has any: of the
+/// entry itself, a link's own (O_SYMLINK), never of what a link names.
+#[cfg(target_os = "macos")]
+fn unflag(path: &Path) {
+    use std::os::fd::AsRawFd;
+    use std::os::macos::fs::MetadataExt;
+    use std::os::unix::fs::OpenOptionsExt;
+    if !fs::symlink_metadata(path).is_ok_and(|m| m.st_flags() & libc::UF_SETTABLE != 0) {
+        return;
+    }
+    let opened = fs::File::options()
+        .read(true)
+        .custom_flags(libc::O_SYMLINK | libc::O_NONBLOCK)
+        .open(path);
+    if let Ok(f) = opened {
+        // SAFETY: the descriptor is open for the call.
+        unsafe { libc::fchflags(f.as_raw_fd(), 0) };
+    }
+}
+
+/// Elsewhere a clone keeps no flags that forbid its removal.
+#[cfg(not(target_os = "macos"))]
+fn unflag(_: &Path) {}
 
 /// A blob being written, hashed as it goes; [`BlobWriter::commit`] stores it under its
 /// SHA-256 digest. Dropped uncommitted, it is removed.
@@ -1824,17 +1883,10 @@ impl Store {
         let mut remove = |path: &Path, count: &mut u64| {
             let meta = fs::symlink_metadata(path);
             if meta.as_ref().is_ok_and(fs::Metadata::is_dir) {
-                // A build's stage (`Store::stage`) its process left: its files, then it.
-                if let Ok(entries) = fs::read_dir(path) {
-                    for e in entries.flatten() {
-                        let len = e.metadata().map_or(0, |m| m.len());
-                        if fs::remove_file(e.path()).is_ok() {
-                            *count += 1;
-                            collected.bytes = collected.bytes.saturating_add(len);
-                        }
-                    }
-                }
-                let _ = fs::remove_dir(path);
+                // A build's stage (`Store::stage`) its process left, its clones' tree too.
+                let (files, bytes) = remove_tree(path);
+                *count += files;
+                collected.bytes = collected.bytes.saturating_add(bytes);
                 return;
             }
             let len = meta.map_or(0, |m| m.len());
@@ -2696,6 +2748,65 @@ mod tests {
         let held = shards_testdir::TempDir::new("sync").unwrap();
         let dir = std::fs::File::open(&held).unwrap();
         sync_durable(&dir).unwrap();
+    }
+
+    /// A stage goes whole, a tree of clones in it too, its files counted; on macOS an
+    /// immutable clone and directory with it, never what a link in it names, which keeps
+    /// its own flag.
+    #[test]
+    fn a_stage_goes_whole_and_follows_no_link() {
+        let held = temp("stage-whole");
+        let stage = held.join("stage");
+        fs::create_dir_all(stage.join("tree/a/b")).unwrap();
+        fs::write(stage.join("pack"), b"12345").unwrap();
+        fs::write(stage.join("tree/a/b/f"), b"abc").unwrap();
+        let outside = held.join("outside");
+        fs::write(&outside, b"mine").unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&outside, stage.join("tree/a/link")).unwrap();
+        #[cfg(target_os = "macos")]
+        let flag = |p: &Path, on: bool| {
+            let what = if on { "uchg" } else { "nouchg" };
+            assert!(
+                std::process::Command::new("chflags")
+                    .args(["-h", what])
+                    .arg(p)
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+        };
+        #[cfg(target_os = "macos")]
+        {
+            flag(&stage.join("tree/a/b/f"), true);
+            flag(&stage.join("tree/a/b"), true);
+            flag(&outside, true);
+        }
+        let (files, bytes) = remove_tree(&stage);
+        assert!(!stage.exists(), "the stage is gone");
+        assert_eq!(fs::read(&outside).unwrap(), b"mine", "what the link names stays");
+        #[cfg(target_os = "macos")]
+        {
+            use std::os::macos::fs::MetadataExt;
+            assert_ne!(
+                fs::metadata(&outside).unwrap().st_flags() & libc::UF_IMMUTABLE,
+                0,
+                "with its flag"
+            );
+            flag(&outside, false);
+        }
+        assert_eq!(
+            (files, bytes),
+            (
+                2 + u64::from(cfg!(unix)),
+                8 + if cfg!(unix) { link_len(&outside) } else { 0 }
+            )
+        );
+    }
+
+    /// A link's own length, as lstat gives it: its target's path.
+    fn link_len(target: &Path) -> u64 {
+        target.as_os_str().len() as u64
     }
 
     fn sha256(bytes: &[u8]) -> Digest {

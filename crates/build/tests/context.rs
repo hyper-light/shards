@@ -195,6 +195,57 @@ fn a_take_costs() {
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
+/// What a load of a context of `CONTEXT_FILES` files of 1 KiB, in directories of 100,
+/// costs, n = `SNAPSHOT_TAKES` loads (PM M242): whole, and with a directory of as many
+/// files left out, which the walk does not walk into; and the removal of its stage, as a
+/// build's end removes it. p50, p90, p99 and max, in ms.
+#[test]
+#[ignore = "a measurement: SNAPSHOT_TAKES=… CONTEXT_FILES=… cargo test --release -p shards-build --test context -- --ignored --nocapture"]
+fn a_context_load_costs() {
+    use shards_build::data::Sources;
+    let env = |k: &str, d: usize| std::env::var(k).ok().and_then(|n| n.parse().ok()).unwrap_or(d);
+    let (loads, files) = (env("SNAPSHOT_TAKES", 100), env("CONTEXT_FILES", 1000));
+    let ctx = tmp("load-cost");
+    for dir in ["", "left-out/"] {
+        for i in 0..files {
+            let d = ctx.join(format!("{dir}d{}", i / 100));
+            std::fs::create_dir_all(&d).unwrap();
+            std::fs::write(d.join(format!("f{i}")), vec![b'a'; 1024]).unwrap();
+        }
+    }
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    for (what, exclude) in [("whole", Vec::new()), ("in part", vec![b"left-out".to_vec()])] {
+        let filters = Filters {
+            exclude,
+            ..Filters::default()
+        };
+        let (mut took, mut removed): (Vec<u128>, Vec<u128>) = (0..loads)
+            .map(|i| {
+                let stage = tmp(&format!("load-cost-stage-{i}"));
+                let mut sources = Sources::default();
+                let start = std::time::Instant::now();
+                context::load(&ctx, &filters, &mut sources, (0, 0), &stage).unwrap();
+                let t = start.elapsed().as_nanos();
+                drop(sources);
+                let start = std::time::Instant::now();
+                drop(stage);
+                (t, start.elapsed().as_nanos())
+            })
+            .unzip();
+        for (part, took) in [("load", &mut took), ("its stage's removal", &mut removed)] {
+            took.sort_unstable();
+            let at = |q: f64| took[((took.len() - 1) as f64 * q) as usize] as f64 / 1e6;
+            println!(
+                "{part} of {files} files of 1 KiB, {what}, n {loads}: p50 {:.2} p90 {:.2} p99 {:.2} max {:.2} ms",
+                at(0.5),
+                at(0.9),
+                at(0.99),
+                at(1.0)
+            );
+        }
+    }
+}
+
 /// Takes the file `takes` times as a writer rewrites it, each version one write: `held`,
 /// through one descriptor; else opening it for each. How many were taken and refused.
 fn race(size: usize, held: bool, takes: usize) -> (usize, usize) {
@@ -273,6 +324,144 @@ fn race(size: usize, held: bool, takes: usize) -> (usize, usize) {
     assert_eq!(files, 1, "the pack alone: no refused take left a file");
     std::fs::remove_dir_all(&dir).unwrap();
     (packed.len() + cloned, refused)
+}
+
+/// A context loaded while one of its files is rewritten without pause: each load takes a
+/// version the file had, or is refused as the file changing. On macOS the whole tree is
+/// cloned at once and its files taken from the clone; elsewhere each is taken on its own.
+#[test]
+fn a_context_written_while_it_is_loaded_is_one_version_or_refused() {
+    use shards_build::data::Sources;
+    use shards_image::erofs::Source as _;
+    use std::io::{Seek, SeekFrom, Write};
+    for (size, held) in [(64 << 10, true), (64 << 10, false), (4 << 20, true)] {
+        let ctx = tmp(&format!("loaded-{size}-{held}"));
+        std::fs::create_dir(ctx.join("sub")).unwrap();
+        std::fs::write(ctx.join("top"), b"top").unwrap();
+        std::fs::write(ctx.join("sub/f"), vec![b'a'; size]).unwrap();
+        let stop = std::sync::atomic::AtomicBool::new(false);
+        struct Stop<'a>(&'a std::sync::atomic::AtomicBool);
+        impl Drop for Stop<'_> {
+            fn drop(&mut self) {
+                self.0.store(true, std::sync::atomic::Ordering::Relaxed);
+            }
+        }
+        let (mut taken, mut refused) = (0, 0);
+        let path = ctx.join("sub/f");
+        std::thread::scope(|s| {
+            let _stop = Stop(&stop);
+            s.spawn(|| {
+                let open = || std::fs::File::options().write(true).open(&path).unwrap();
+                let mut f = open();
+                let mut n = 0u8;
+                while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                    n = n.wrapping_add(1);
+                    if !held {
+                        f = open();
+                    }
+                    f.seek(SeekFrom::Start(0)).unwrap();
+                    assert_eq!(
+                        f.write(&vec![b'a' + n % 26; size]).unwrap(),
+                        size,
+                        "one write, one version"
+                    );
+                }
+            });
+            for i in 0..50 {
+                let stage = tmp(&format!("loaded-stage-{size}-{held}-{i}"));
+                let mut sources = Sources::default();
+                match context::load(&ctx, &Filters::default(), &mut sources, (0, 0), &stage) {
+                    Ok(fs) => {
+                        let id = fs.lstat(b"/sub/f").unwrap();
+                        let shards_image::erofs::Kind::File { size: got, data } = fs.node(id).unwrap().kind
+                        else {
+                            panic!("not a file")
+                        };
+                        assert_eq!(got, size as u64);
+                        let mut b = vec![0u8; size];
+                        sources.read_at(data, 0, &mut b).unwrap();
+                        assert!(b.iter().all(|&c| c == b[0]), "a loaded context mixes versions");
+                        taken += 1;
+                    }
+                    Err(e) => {
+                        assert!(e.0.contains("file changed as the build read it"), "{}", e.0);
+                        refused += 1;
+                    }
+                }
+                drop(sources);
+                drop(stage);
+            }
+        });
+        assert_eq!(taken + refused, 50);
+        std::fs::remove_dir_all(&ctx).unwrap();
+    }
+}
+
+/// macOS: a context the filters leave part of is cloned by its whole directories, each
+/// at once, and its files taken from their clones; a directory left out without being
+/// walked is not cloned, and a file beside it is taken on its own.
+#[test]
+#[cfg(target_os = "macos")]
+fn a_context_is_cloned_by_its_whole_directories() {
+    use shards_build::data::Sources;
+    use shards_image::erofs::Source as _;
+    let ctx = tmp("cloned-ctx");
+    for d in ["keep/sub", "skip/deep"] {
+        std::fs::create_dir_all(ctx.join(d)).unwrap();
+    }
+    std::fs::write(ctx.join("top"), b"top").unwrap();
+    std::fs::write(ctx.join("keep/a"), b"a").unwrap();
+    std::fs::write(ctx.join("keep/sub/b"), b"b").unwrap();
+    std::fs::write(ctx.join("skip/deep/c"), b"c").unwrap();
+    let stage = tmp("cloned-stage");
+    let filters = Filters {
+        exclude: vec![b"skip".to_vec()],
+        ..Filters::default()
+    };
+    let mut sources = Sources::default();
+    let fs = context::load(&ctx, &filters, &mut sources, (0, 0), &stage).unwrap();
+    for (path, want) in [
+        (b"/top".as_slice(), b"top".as_slice()),
+        (b"/keep/a", b"a"),
+        (b"/keep/sub/b", b"b"),
+    ] {
+        let id = fs.lstat(path).unwrap();
+        let shards_image::erofs::Kind::File { size, data } = fs.node(id).unwrap().kind else {
+            panic!("not a file")
+        };
+        let mut got = vec![0u8; size as usize];
+        sources.read_at(data, 0, &mut got).unwrap();
+        assert_eq!(got, want);
+    }
+    assert!(fs.lstat(b"/skip").is_err(), "left out");
+    assert!(
+        stage.join("tree/keep/sub/b").is_file(),
+        "a whole directory cloned at once"
+    );
+    assert!(
+        !stage.join("tree/skip").exists(),
+        "a directory left out is not cloned"
+    );
+    assert!(!stage.join("tree/top").exists(), "nor the root, which holds it");
+    let files = std::fs::read_dir(&stage).unwrap().count();
+    assert_eq!(
+        files, 2,
+        "the pack and the tree: the file taken on its own left no clone"
+    );
+    drop(sources);
+    // All of it sent: the root cloned at once.
+    let stage = tmp("cloned-stage-whole");
+    let mut sources = Sources::default();
+    let fs = context::load(&ctx, &Filters::default(), &mut sources, (0, 0), &stage).unwrap();
+    assert!(fs.lstat(b"/skip/deep/c").is_ok());
+    for f in ["top", "keep/sub/b", "skip/deep/c"] {
+        assert!(
+            stage.join("tree").join(f).is_file(),
+            "{f}: the root cloned at once"
+        );
+    }
+    drop(sources);
+    std::fs::remove_dir_all(&ctx).unwrap();
 }
 
 /// A file a symlink replaced since the walk is not followed out of the context.
