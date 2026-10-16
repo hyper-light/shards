@@ -419,6 +419,74 @@ fn a_clients_archives_are_its_own_files() {
     assert!(!machine.join("pulled").exists());
 }
 
+/// A copy through a context is the client's, as Docker's CLI copies its own files (D180
+/// part 3b): driven here, as this machine's CLI drives one (cli/cp.rs), each step asked of
+/// the machine's daemon. A directory here goes into a microVM there and comes back as it was,
+/// relative paths the client's; a file into a directory there is said with its sizes; an
+/// archive goes to stdout; a file not there is said in Docker's words; and nothing is
+/// written where the command runs.
+#[test]
+fn a_microvms_files_are_copied_to_and_from_the_client() {
+    let Some((machine, _listening, laptop, image)) = joined("ctx-copy") else {
+        return;
+    };
+    let here = laptop.join("files");
+    std::fs::create_dir_all(here.join("src/sub")).unwrap();
+    std::fs::write(here.join("src/a.txt"), "one").unwrap();
+    std::fs::write(here.join("src/sub/b.txt"), "two").unwrap();
+    let on_laptop = [("SHARDS_HOME", laptop.as_os_str())];
+    let there = |command: &[&str], args: &[&str]| {
+        let mut words = vec!["--context", "gpu"];
+        words.extend_from_slice(command);
+        run_shards_env_in(&here, &words, args, &on_laptop, TIMEOUT)
+    };
+    let started = there(
+        &["run"],
+        &["-d", "--name", "copier", "-u", "0", image.as_str(), "sleep"],
+    );
+    assert_eq!(started.status, Some(0), "{started}");
+    let into = there(&["copy", "vm"], &["src", "copier:/in"]);
+    assert_eq!(
+        (into.status, into.stdout.as_str(), into.stderr.as_str()),
+        (Some(0), "", ""),
+        "{into}"
+    );
+    let out = there(&["cp"], &["copier:/in", "back"]);
+    assert_eq!(out.status, Some(0), "{out}");
+    assert_eq!(std::fs::read_to_string(here.join("back/a.txt")).unwrap(), "one");
+    assert_eq!(
+        std::fs::read_to_string(here.join("back/sub/b.txt")).unwrap(),
+        "two"
+    );
+    let said = there(&["cp"], &["-q=false", "src/a.txt", "copier:/in/sub"]);
+    assert_eq!(
+        (said.status, said.stderr.as_str()),
+        (
+            Some(0),
+            "Successfully copied 3B (transferred 2.05kB) to copier:/in/sub\n"
+        ),
+        "{said}"
+    );
+    let streamed = there(&["cp"], &["copier:/in/sub/a.txt", "-"]);
+    assert_eq!(streamed.status, Some(0), "{streamed}");
+    assert!(
+        streamed.stdout.contains("a.txt\0") && streamed.stdout.contains("one"),
+        "{streamed}"
+    );
+    let missing = there(&["cp"], &["copier:/nope", "x"]);
+    assert_eq!(
+        (missing.status, missing.stderr.as_str()),
+        (
+            Some(1),
+            "shards: Could not find the file /nope in container copier\n"
+        ),
+        "{missing}"
+    );
+    assert!(!machine.join("back").exists(), "copied where the command runs");
+    let removed = there(&["rm"], &["-f", "copier"]);
+    assert_eq!(removed.status, Some(0), "{removed}");
+}
+
 /// A client's logins are its own, as Docker's CLI keeps its own: a registry the client logged
 /// in to is reached there with the client's credentials, sent with the command; the machine
 /// owner's reach nothing for a client, logged in there as they are; and a login and a

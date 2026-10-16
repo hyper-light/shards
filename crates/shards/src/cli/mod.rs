@@ -15,7 +15,7 @@ use shards_cmdline::flags::{self, Command, Outcome, Parsed};
 #[cfg(unix)]
 mod client;
 #[cfg(unix)]
-mod cp;
+pub(crate) mod cp;
 #[cfg(unix)]
 pub(crate) mod listing;
 #[cfg(unix)]

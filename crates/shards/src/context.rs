@@ -499,13 +499,13 @@ fn not_carried(args: &[OsString]) -> Option<String> {
     let refs: Vec<&str> = said.iter().map(String::as_str).collect();
     let first = refs.first().copied().unwrap_or_default();
     let named = refs.get(..2).and_then(|w| match w {
-        ["container", "cp"] => Some("cp"),
         ["agent" | "harness" | "mcp", "build"] => Some("build"),
         _ => None,
     });
-    if let Some(named) =
-        named.or_else(|| matches!(first, "build" | "buildx" | "builder" | "cp" | "compose").then_some(first))
-    {
+    // `cp` is driven here, step by step, where this client's CLI drives one (cli/cp.rs, Unix).
+    let refused =
+        |w: &str| matches!(w, "build" | "buildx" | "builder" | "compose") || (w == "cp" && !cfg!(unix));
+    if let Some(named) = named.or_else(|| refused(first).then_some(first)) {
         return Some(format!(
             "{named} over a context sends this machine's files, which shards does not carry yet: run it on the machine itself"
         ));
@@ -1063,6 +1063,13 @@ pub(crate) fn forward(home: &Path, context: &Context, args: Vec<OsString>) -> Ex
             return fail(e);
         }
     }
+    // A copy is driven here, as this machine's CLI drives one, each of its steps asked of the
+    // machine's daemon: its files here are this client's. What steers a command steers no
+    // step, so a signal ends the client, and the step there with its stream.
+    #[cfg(unix)]
+    if let Some(parsed) = copying(&words_sent) {
+        return crate::cli::cp::copy(&parsed, &|argv, fds| step_there(&identity, context, argv, fds));
+    }
     // The file is made once the signals that would end the client are taken, and named
     // while it is made, so that one that ends the client removes it.
     let mut written = None;
@@ -1209,6 +1216,88 @@ pub(crate) fn forward(home: &Path, context: &Context, args: Vec<OsString>) -> Ex
         (Ok(Ok(status)), _) => ExitCode::from(u8::try_from(status).unwrap_or(1)),
         (Ok(Err(refused)), _) => fail(format!("{}: {refused}", context.name)),
         (Err(e), _) => fail(format!("{}: {e}", context.name)),
+    }
+}
+
+/// `words`' copy, read as `cp` reads it (cli/cp.rs), where the command is one; a command
+/// shards' parser refuses, or `-h`, goes as it is.
+#[cfg(unix)]
+fn copying(words: &[String]) -> Option<shards_cmdline::flags::Parsed> {
+    let said = shards_cmdline::grammar::rewrite(words).unwrap_or_else(|| words.to_vec());
+    let refs: Vec<&str> = said.iter().map(String::as_str).collect();
+    let (command, path, n) = shards_cmdline::commands::find(&refs)?;
+    if !std::ptr::eq(command, &shards_cmdline::commands::COPY) {
+        return None;
+    }
+    let rest = said.get(n..).map(<[String]>::to_vec).unwrap_or_default();
+    match shards_cmdline::flags::parse(command, path, &rest, &shards_cmdline::flags::value) {
+        shards_cmdline::flags::Outcome::Run(parsed) => Some(parsed),
+        _ => None,
+    }
+}
+
+/// A step of a copy (cli/cp.rs) asked of `context`'s machine (D180 part 3b): `argv` what the
+/// CLI there would ask its daemon, the step's stream its descriptors, an archive's written
+/// into the one in `fds` and an extract's read from it; else what it said on stdout, and on
+/// stderr, taken whole, with its status.
+#[cfg(unix)]
+fn step_there(
+    identity: &Identity,
+    context: &Context,
+    argv: Vec<String>,
+    fds: &[std::os::fd::BorrowedFd<'_>],
+) -> Result<(u8, Vec<u8>, Vec<u8>), String> {
+    let what = argv.get(1).cloned().unwrap_or_default();
+    let owned = |fd: &std::os::fd::BorrowedFd<'_>| {
+        fd.try_clone_to_owned()
+            .map(fs::File::from)
+            .map_err(|e| format!("the copy's pipe: {e}"))
+    };
+    let (out_tx, out_rx) = std::sync::mpsc::channel();
+    let (err_tx, err_rx) = std::sync::mpsc::channel();
+    let stdin: Box<dyn io::Read + Send> = match (what.as_str(), fds.first()) {
+        ("extract", Some(fd)) => Box::new(owned(fd)?),
+        _ => Box::new(io::empty()),
+    };
+    let stdout: Box<dyn io::Write + Send> = match (what.as_str(), fds.first()) {
+        ("archive", Some(fd)) => Box::new(owned(fd)?),
+        _ => Box::new(Taken(out_tx)),
+    };
+    let request = Request {
+        args: argv.into_iter().map(String::into_bytes).collect(),
+        env: Vec::new(),
+        terminal: None,
+    };
+    let ran = client::exec(
+        identity,
+        context.remote(),
+        request,
+        Some(stdin),
+        stdout,
+        Taken(err_tx),
+        |_| {},
+    );
+    let taken = |rx: std::sync::mpsc::Receiver<Vec<u8>>| rx.try_iter().flatten().collect::<Vec<u8>>();
+    match ran {
+        Ok(Ok(status)) => Ok((u8::try_from(status).unwrap_or(1), taken(out_rx), taken(err_rx))),
+        Ok(Err(refused)) => Err(format!("{}: {refused}", context.name)),
+        Err(e) => Err(format!("{}: {e}", context.name)),
+    }
+}
+
+/// What a step writes, sent to its taker as it comes, taken whole once the step is through.
+#[cfg(unix)]
+struct Taken(std::sync::mpsc::Sender<Vec<u8>>);
+
+#[cfg(unix)]
+impl io::Write for Taken {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        let _ = self.0.send(bytes.to_vec());
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
     }
 }
 
@@ -1736,12 +1825,13 @@ mod tests {
             "build image .",
             "build agent dir -t a",
             "agent build dir -t a",
-            "cp web:/x .",
-            "container cp web:/x .",
-            "copy vm web:/x .",
             "compose up",
         ] {
             assert!(not_carried(&args(files)).is_some(), "{files}");
+        }
+        // A copy is driven here, where cp.rs runs.
+        for copy in ["cp web:/x .", "container cp web:/x .", "copy vm web:/x ."] {
+            assert_eq!(not_carried(&args(copy)).is_none(), cfg!(unix), "{copy}");
         }
         assert!(not_carried(&args("sign agent a")).is_some());
         assert!(not_carried(&args("harness sign h --key k")).is_some());

@@ -3634,7 +3634,7 @@ No run-time labels, relays or declassifiers (§12 answer 14, decided by the user
 an internal-only domain to the world (D58), so there is no data to label. Code mode is
 D136.
 
-### D180. Contexts: shards on another machine, over QUIC (parts 1, 2 and 3a built)
+### D180. Contexts: shards on another machine, over QUIC (parts 1, 2, 3a and 3b built)
 
 **The microVM need.** A user's microVMs run where the work needs them: a Mac for
 development, a Linux machine with a GPU (`--gpus`) or KVM, an x86_64 machine that builds and
@@ -3707,7 +3707,7 @@ local administration is (../focal docs/cluster-admin.md).
    size follows the client's), attach, exec; and the signals a client receives (built; a
    Windows client's console, part 2b, built too).
 3. Builds (the context sent as BuildKit's session sends it), `cp`, `save`, `load`,
-   `import`, `export` (the archives, part 3a, built).
+   `import`, `export` (the archives, part 3a, built; `cp`, part 3b, built).
 4. Docker's CLI through a context: a socket file in the home for each context, which the
    local daemon relays to the machine's Engine API.
 5. Measured against Docker's `ssh://` and `tcp://` contexts, on the GPU desktop: a run's
@@ -4012,6 +4012,29 @@ without (`a_clients_logins_are_its_own`). Unit tests: the rewrites, and what sha
 commands name. Mutation-checked: the profile read there, its JSON not taken there, the
 pull's Agentfile not asked for, shards' own commands' logins not sent, `make agentfile`'s
 not sent.
+
+**Part 3b, built: a copy is the client's.** `shards copy vm` (`cp`) moves files between a
+microVM and the machine its client is on: a dataset into a job's microVM on the GPU
+machine, its results back. Docker's CLI does its half of a copy itself (docker/cli v29.8.1
+cli/command/container/cp.go: a path's stat, then an archive of it fetched, or one put into
+it, laid out by go-archive's copy rules), and shards' CLI does too, against its daemon
+(cli/cp.rs). Over a context the client drives the copy here, as its CLI drives one, and
+each step is asked of the machine's daemon: the request names the step as the CLI asks it
+(the copy step's IPC name, which no command line can carry), and the machine's daemon
+takes it as its own CLI would, over its socket, the stream's pipes the step's descriptors
+(remote.rs, `copy_step`: an archive's written into the stream, an extract's read from
+it). So the paths here are the client's, relative ones from its own directory, the
+archive passes through the stream once, staged nowhere, and what the copy says is what it
+says here (its sizes, Docker's errors). What steers a command steers no step: a signal
+ends the client, and a step there ends with its stream. A Windows client refuses `cp`
+until cli/cp.rs serves Windows' files.
+
+Tested in `tests/context.rs` (`a_microvms_files_are_copied_to_and_from_the_client`): a
+directory here into a running microVM there and back, as it was; a file into a directory
+there said with its sizes; an archive to stdout; a file not there, in Docker's words;
+nothing written where the command runs. Mutation-checked: a step spawned as a command,
+a copy sent whole, an archive's output not into its pipe, an extract's input not from
+its pipe, an archive's pipe not given the daemon.
 
 ### D179. Other CPUs' images, emulated in their microVM (parts 1 to 3 built)
 

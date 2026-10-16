@@ -84,6 +84,11 @@ impl Host for Machine {
         if let Some(why) = owners(&args) {
             return Err(Error::new(why));
         }
+        if args.first().map(String::as_str) == Some(super::COPY_STEP) {
+            let shown: Vec<&str> = args.iter().skip(1).map(String::as_str).collect();
+            super::log(format!("client {client}: copy step {}", shown.join(" ")));
+            return self.copy_step(args);
+        }
         super::log(format!("client {client}: shards {}", args.join(" ")));
         let pipe = || std::io::pipe().map_err(|e| Error::new(format!("a pipe for the command: {e}")));
         let tty = |e: std::io::Error| Error::new(format!("the command's terminal: {e}"));
@@ -201,6 +206,91 @@ impl Host for Machine {
 
     fn invited(&self) -> usize {
         crate::context::open_invitations(&self.home)
+    }
+}
+
+impl Machine {
+    /// A step of a client's copy (`shards cp`, cli/cp.rs), which the client drives as this
+    /// machine's own CLI drives one (D180): this daemon's to take, asked as the CLI asks it,
+    /// the stream's pipes the descriptors the CLI would give, an archive's to write and an
+    /// extract's to read; what it says, and its status, the command's.
+    fn copy_step(&self, args: Vec<String>) -> Result<Running, Error> {
+        let identity = shards_ipc::Identity::of_build(&self.exe)
+            .map_err(|e| Error::new(format!("{}: {e}", self.exe.display())))?;
+        let pipe = || std::io::pipe().map_err(|e| Error::new(format!("a pipe for the copy: {e}")));
+        let (in_r, in_w) = pipe()?;
+        let (out_r, out_w) = pipe()?;
+        let (err_r, err_w) = pipe()?;
+        let (done, status) = std::sync::mpsc::channel();
+        std::thread::Builder::new()
+            .name("copy-step".into())
+            .spawn(move || {
+                let (code, out, err) = {
+                    let fds: Vec<std::os::fd::BorrowedFd<'_>> = match args.get(1).map(String::as_str) {
+                        Some("archive") => vec![out_w.as_fd()],
+                        Some("extract") => vec![in_r.as_fd()],
+                        _ => Vec::new(),
+                    };
+                    ask_self(args, identity, &fds).unwrap_or_else(|e| (1, Vec::new(), e.into_bytes()))
+                };
+                drop(in_r);
+                let (mut out_w, mut err_w) = (out_w, err_w);
+                let _ = out_w.write_all(&out);
+                let _ = err_w.write_all(&err);
+                drop((out_w, err_w));
+                let _ = done.send(i32::from(code));
+            })
+            .map_err(|e| Error::new(format!("a thread for the copy: {e}")))?;
+        Ok(Running {
+            stdin: Box::new(in_w),
+            stdout: Box::new(out_r),
+            stderr: Box::new(err_r),
+            wait: Box::new(move || status.recv().unwrap_or(1)),
+            // The step ends with its pipes: an archive read no more, an extract's input
+            // ended.
+            hangup: Box::new(|| {}),
+            resize: None,
+            signal: Box::new(|_| {}),
+        })
+    }
+}
+
+/// `argv` asked of this daemon as its CLI asks it (cli/client.rs `ask`), with `fds`: over its
+/// socket, which the daemon's working directory, its home, holds; its status, and what it
+/// said on stdout and stderr.
+fn ask_self(
+    argv: Vec<String>,
+    daemon: shards_ipc::Identity,
+    fds: &[std::os::fd::BorrowedFd<'_>],
+) -> Result<(u8, Vec<u8>, Vec<u8>), String> {
+    use shards_ipc::kind;
+    let conn = std::os::unix::net::UnixStream::connect(shards_ipc::SOCKET)
+        .map_err(|e| format!("this daemon's socket: {e}"))?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| i64::try_from(d.as_nanos()).unwrap_or(i64::MAX))
+        .unwrap_or(0);
+    let command = shards_ipc::Command {
+        argv,
+        now,
+        utc_offset: crate::cli::utc_offset(),
+        daemon,
+        ..shards_ipc::Command::default()
+    };
+    shards_ipc::send(&conn, kind::CONTAINER, &command.encode(), fds)
+        .map_err(|e| format!("asking the daemon: {e}"))?;
+    let (mut out, mut err) = (Vec::new(), Vec::new());
+    loop {
+        match shards_ipc::recv(&conn) {
+            Ok(Some(m)) if m.kind == kind::OUT => out.extend(m.payload),
+            Ok(Some(m)) if m.kind == kind::ERR => err.extend(m.payload),
+            Ok(Some(m)) if m.kind == kind::END => {
+                return Ok((m.payload.first().copied().unwrap_or(1), out, err));
+            }
+            Ok(Some(m)) if m.kind == kind::RESTART => return Err("the daemon is shutting down".into()),
+            Ok(Some(_)) => {}
+            Ok(None) | Err(_) => return Err("the daemon ended before it answered".into()),
+        }
     }
 }
 
