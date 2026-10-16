@@ -267,6 +267,47 @@ fn a_clients_command_has_the_clients_environment_not_the_owners() {
         assert!(vars.contains(&wanted), "{wanted}: {vars:?}");
     }
     assert!(!ran.stdout.contains("the owner's own"), "{vars:?}");
+    // A seccomp profile's file here confines the command there: mkdir refused. Named from
+    // the client's directory, which the command there does not run in.
+    std::fs::write(
+        laptop.join("deny-mkdir.json"),
+        r#"{ "defaultAction": "SCMP_ACT_ALLOW",
+             "syscalls": [ { "names": ["mkdir", "mkdirat"], "action": "SCMP_ACT_ERRNO" } ] }"#,
+    )
+    .unwrap();
+    let confined = common::run_shards_env_in(
+        &laptop,
+        &["--context", "gpu", "run"],
+        &[
+            "--pull",
+            "never",
+            "--rm",
+            "--security-opt",
+            "seccomp=deny-mkdir.json",
+            &image,
+            "fs",
+            "mkdir:/made",
+        ],
+        &[("SHARDS_HOME", laptop.as_os_str())],
+        TIMEOUT,
+    );
+    assert_ne!(confined.status, Some(0), "{confined}");
+    assert!(confined.stderr.contains("Operation not permitted"), "{confined}");
+    // A profile not here is refused here, as a run here refuses it.
+    let missing = common::run_shards_env_in(
+        &laptop,
+        &["--context", "gpu", "run"],
+        &["--rm", "--security-opt", "seccomp=gone.json", &image, "true"],
+        &[("SHARDS_HOME", laptop.as_os_str())],
+        TIMEOUT,
+    );
+    assert_eq!(missing.status, Some(125), "{missing}");
+    assert!(
+        missing
+            .stderr
+            .starts_with("shards: opening seccomp profile (gone.json) failed: open gone.json: no such file or directory\n\nRun 'shards run --help'"),
+        "{missing}"
+    );
 }
 
 /// The archives a client saves, exports, loads and imports through a context are its own
@@ -367,6 +408,83 @@ fn a_clients_archives_are_its_own_files() {
     assert!(shown.contains("Loaded image"), "{shown}");
     assert!(restored);
     there(&["image", "inspect"], &[image.as_str()]);
+    // A pull's Agentfile, asked of the machine once the pull is through, into a directory
+    // here as its `Agentfile`.
+    std::fs::create_dir(here.join("pulled")).unwrap();
+    there(&["pull"], &["-q", "--output-agentfile", "pulled", image.as_str()]);
+    assert_eq!(
+        std::fs::read_to_string(here.join("pulled/Agentfile")).unwrap(),
+        agentfile
+    );
+    assert!(!machine.join("pulled").exists());
+}
+
+/// A copy through a context is the client's, as Docker's CLI copies its own files (D180
+/// part 3b): driven here, as this machine's CLI drives one (cli/cp.rs), each step asked of
+/// the machine's daemon. A directory here goes into a microVM there and comes back as it was,
+/// relative paths the client's; a file into a directory there is said with its sizes; an
+/// archive goes to stdout; a file not there is said in Docker's words; and nothing is
+/// written where the command runs.
+#[test]
+fn a_microvms_files_are_copied_to_and_from_the_client() {
+    let Some((machine, _listening, laptop, image)) = joined("ctx-copy") else {
+        return;
+    };
+    let here = laptop.join("files");
+    std::fs::create_dir_all(here.join("src/sub")).unwrap();
+    std::fs::write(here.join("src/a.txt"), "one").unwrap();
+    std::fs::write(here.join("src/sub/b.txt"), "two").unwrap();
+    let on_laptop = [("SHARDS_HOME", laptop.as_os_str())];
+    let there = |command: &[&str], args: &[&str]| {
+        let mut words = vec!["--context", "gpu"];
+        words.extend_from_slice(command);
+        run_shards_env_in(&here, &words, args, &on_laptop, TIMEOUT)
+    };
+    let started = there(
+        &["run"],
+        &["-d", "--name", "copier", "-u", "0", image.as_str(), "sleep"],
+    );
+    assert_eq!(started.status, Some(0), "{started}");
+    let into = there(&["copy", "vm"], &["src", "copier:/in"]);
+    assert_eq!(
+        (into.status, into.stdout.as_str(), into.stderr.as_str()),
+        (Some(0), "", ""),
+        "{into}"
+    );
+    let out = there(&["cp"], &["copier:/in", "back"]);
+    assert_eq!(out.status, Some(0), "{out}");
+    assert_eq!(std::fs::read_to_string(here.join("back/a.txt")).unwrap(), "one");
+    assert_eq!(
+        std::fs::read_to_string(here.join("back/sub/b.txt")).unwrap(),
+        "two"
+    );
+    let said = there(&["cp"], &["-q=false", "src/a.txt", "copier:/in/sub"]);
+    assert_eq!(
+        (said.status, said.stderr.as_str()),
+        (
+            Some(0),
+            "Successfully copied 3B (transferred 2.05kB) to copier:/in/sub\n"
+        ),
+        "{said}"
+    );
+    let streamed = there(&["cp"], &["copier:/in/sub/a.txt", "-"]);
+    assert_eq!(streamed.status, Some(0), "{streamed}");
+    assert!(
+        streamed.stdout.contains("a.txt\0") && streamed.stdout.contains("one"),
+        "{streamed}"
+    );
+    let missing = there(&["cp"], &["copier:/nope", "x"]);
+    assert_eq!(
+        (missing.status, missing.stderr.as_str()),
+        (
+            Some(1),
+            "shards: Could not find the file /nope in container copier\n"
+        ),
+        "{missing}"
+    );
+    assert!(!machine.join("back").exists(), "copied where the command runs");
+    let removed = there(&["rm"], &["-f", "copier"]);
+    assert_eq!(removed.status, Some(0), "{removed}");
 }
 
 /// A client's logins are its own, as Docker's CLI keeps its own: a registry the client logged
@@ -413,6 +531,23 @@ fn a_clients_logins_are_its_own() {
     assert_eq!(tagged.status, Some(0), "{tagged}");
     let pushed = run_shards_env(&["push"], &[target.as_str()], &on_machine, TIMEOUT);
     assert_eq!(pushed.status, Some(0), "{pushed}");
+    // And builds an agent there, to push.
+    let agent_dir = machine.join("agent");
+    std::fs::create_dir_all(&agent_dir).unwrap();
+    std::fs::write(agent_dir.join("run.sh"), "#!/bin/sh\necho agent\n").unwrap();
+    std::fs::write(
+        agent_dir.join("agent.json"),
+        r#"{"name":"main","version":"1.0.0"}"#,
+    )
+    .unwrap();
+    let agent = format!("{registry}/team/agent:1");
+    let built = run_shards_env(
+        &["build", "agent"],
+        &[agent_dir.to_str().unwrap(), "-t", agent.as_str()],
+        &on_machine,
+        TIMEOUT,
+    );
+    assert_eq!(built.status, Some(0), "{built}");
     let owners_kept = std::fs::read(owners.join("config.json")).unwrap();
     // The client, logged in nowhere: refused, though the owner is logged in there.
     let refused = run_shards_env(
@@ -422,6 +557,13 @@ fn a_clients_logins_are_its_own() {
         TIMEOUT,
     );
     assert_ne!(refused.status, Some(0), "{refused}");
+    let agent_refused = run_shards_env(
+        &["--context", "gpu", "push", "agent"],
+        &[agent.as_str()],
+        &on_laptop,
+        TIMEOUT,
+    );
+    assert_ne!(agent_refused.status, Some(0), "{agent_refused}");
     // Logged in through the context: kept here, the owner's store as it was.
     let client_in = run_shards_env(&["--context", "gpu", "login"], &login, &on_laptop, TIMEOUT);
     assert_eq!(client_in.status, Some(0), "{client_in}");
@@ -437,6 +579,33 @@ fn a_clients_logins_are_its_own() {
         TIMEOUT,
     );
     assert_eq!(pulled.status, Some(0), "{pulled}");
+    // As shards' own commands reach it: an agent pushed, and an image's Agentfile made of
+    // a pull, the image gone there first.
+    let agent_pushed = run_shards_env(
+        &["--context", "gpu", "push", "agent"],
+        &[agent.as_str()],
+        &on_laptop,
+        TIMEOUT,
+    );
+    assert_eq!(agent_pushed.status, Some(0), "{agent_pushed}");
+    let removed = run_shards_env(
+        &["--context", "gpu", "rmi"],
+        &[target.as_str()],
+        &on_laptop,
+        TIMEOUT,
+    );
+    assert_eq!(removed.status, Some(0), "{removed}");
+    let made = run_shards_env(
+        &["--context", "gpu", "make", "agentfile"],
+        &[target.as_str()],
+        &on_laptop,
+        TIMEOUT,
+    );
+    assert_eq!(made.status, Some(0), "{made}");
+    assert!(
+        made.stdout.contains(&format!("\nFROM {target}@sha256:")),
+        "{made}"
+    );
     // Logged out here: the next pull there is refused again.
     let client_out = run_shards_env(
         &["--context", "gpu", "logout"],

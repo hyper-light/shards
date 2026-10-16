@@ -1092,11 +1092,7 @@ fn security_opts(opts: &[String]) -> Result<(Vec<String>, bool), String> {
             ));
         }
         if k == "seccomp" && v != "builtin" && v != "unconfined" {
-            let text = std::fs::read(v)
-                .map_err(|e| format!("opening seccomp profile ({v}) failed: open {v}: {}", go_errno(&e)))?;
-            let compacted = shards_agentfile::json_compact(&text)
-                .map_err(|e| format!("compacting json for seccomp profile ({v}) failed: {e}"))?;
-            out.push(format!("seccomp={}", String::from_utf8_lossy(&compacted)));
+            out.push(format!("seccomp={}", seccomp_profile(v)?));
             continue;
         }
         out.push(opt.clone());
@@ -1104,6 +1100,31 @@ fn security_opts(opts: &[String]) -> Result<(Vec<String>, bool), String> {
     let system_paths = out.iter().any(|o| o == "systempaths=unconfined");
     out.retain(|o| o != "systempaths=unconfined");
     Ok((out, system_paths))
+}
+
+/// The seccomp profile `--security-opt seccomp=V` names, its JSON compacted, as docker/cli
+/// reads it (parseSecurityOpts): the file `V`, read here; or, where no file is read by that
+/// name, `V` itself where it is a profile's JSON, as a context's client sends the profile
+/// its own file holds (D180), and as the Engine API takes one. Docker's CLI refuses that,
+/// with the file it could not open; shards refuses what is neither a file nor JSON so.
+pub(crate) fn seccomp_profile(v: &str) -> Result<String, String> {
+    let text = match std::fs::read(v) {
+        Ok(text) => text,
+        Err(e) => match shards_agentfile::json_compact(v.as_bytes()) {
+            Ok(compacted) if v.starts_with('{') => {
+                return Ok(String::from_utf8_lossy(&compacted).into_owned());
+            }
+            _ => {
+                return Err(format!(
+                    "opening seccomp profile ({v}) failed: open {v}: {}",
+                    go_errno(&e)
+                ));
+            }
+        },
+    };
+    let compacted = shards_agentfile::json_compact(&text)
+        .map_err(|e| format!("compacting json for seccomp profile ({v}) failed: {e}"))?;
+    Ok(String::from_utf8_lossy(&compacted).into_owned())
 }
 
 /// `--device`, as docker/cli reads it for a Linux daemon (cli/command/container/opts.go):

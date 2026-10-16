@@ -202,8 +202,10 @@ Write an Agentfile of an image: the image by its digest, its settings written ou
 history as comments. The image is pulled if it is not here.
 
 Options:
-  -h, --help          Print usage
-  -o, --output FILE   Write the Agentfile to FILE, not to standard output
+  -h, --help              Print usage
+  -o, --output FILE       Write the Agentfile to FILE, not to standard output
+      --platform PLATFORM The image of this platform, as a pull takes it (default this
+                          host's, or SHARDS_DEFAULT_PLATFORM's, else DOCKER_DEFAULT_PLATFORM's)
 ";
 
 /// `shards agentfile IMAGE [-o FILE]`.
@@ -211,6 +213,7 @@ pub fn command(args: impl Iterator<Item = std::ffi::OsString>) -> ExitCode {
     let args: Vec<String> = args.map(|a| a.to_string_lossy().into_owned()).collect();
     let mut output = None;
     let mut image = None;
+    let mut platform = crate::cli::env_ours_first("SHARDS_DEFAULT_PLATFORM", "DOCKER_DEFAULT_PLATFORM");
     let mut it = args.iter();
     while let Some(a) = it.next() {
         match a.as_str() {
@@ -220,6 +223,13 @@ pub fn command(args: impl Iterator<Item = std::ffi::OsString>) -> ExitCode {
             }
             "-o" | "--output" => output = it.next().cloned(),
             o if o.starts_with("--output=") => output = Some(o.trim_start_matches("--output=").to_string()),
+            "--platform" => match it.next() {
+                Some(p) => platform = Some(p.clone()),
+                None => return fail(&format!("flag needs an argument: --platform\n\n{USAGE}")),
+            },
+            o if o.starts_with("--platform=") => {
+                platform = Some(o.trim_start_matches("--platform=").to_string())
+            }
             o if o.starts_with('-') => return fail(&format!("unknown flag: {o}\n\n{USAGE}")),
             name if image.is_none() => image = Some(name.to_string()),
             _ => return fail(&format!("one image at a time\n\n{USAGE}")),
@@ -228,7 +238,7 @@ pub fn command(args: impl Iterator<Item = std::ffi::OsString>) -> ExitCode {
     let Some(image) = image else {
         return fail(&format!("an image is needed\n\n{USAGE}"));
     };
-    match made(&image) {
+    match made(&image, platform.as_deref().unwrap_or_default()) {
         Ok(text) => {
             let written = match &output {
                 Some(path) => whole(path, &text),
@@ -245,14 +255,37 @@ pub fn command(args: impl Iterator<Item = std::ffi::OsString>) -> ExitCode {
     }
 }
 
+/// What a failure to write an Agentfile begins with.
+pub const FAILED: &str = "failed to write the Agentfile";
+
 /// `text` written to the file `path`, whole or not at all, as `save -o` writes an archive
 /// (cli/save.rs): an interrupted write leaves nothing, and a file there keeps what it held.
 fn whole(path: &str, text: &str) -> Result<(), String> {
-    const FAILED: &str = "failed to write the Agentfile";
+    write_into(output(path)?, text)
+}
+
+/// The file an Agentfile written to `path` goes to: `path`, or, for a directory,
+/// `Agentfile` in it, where `shards build DIR` finds one.
+pub fn output_path(path: &str) -> String {
+    let dir = std::path::Path::new(path);
+    if dir.is_dir() {
+        dir.join("Agentfile").to_string_lossy().into_owned()
+    } else {
+        path.to_string()
+    }
+}
+
+/// The file [`output_path`] names, made ready to take an Agentfile whole ([`write_into`]).
+pub fn output(path: &str) -> Result<crate::cli::save::Output, String> {
+    let path = output_path(path);
     #[cfg(unix)]
-    let output = crate::cli::save::output(path, FAILED)?;
+    return crate::cli::save::output(&path, FAILED);
     #[cfg(not(unix))]
-    let output = crate::cli::save::to_file(path, FAILED)?;
+    return crate::cli::save::to_file(&path, FAILED);
+}
+
+/// `text` written into `output`, which is kept once it is all there.
+pub fn write_into(output: crate::cli::save::Output, text: &str) -> Result<(), String> {
     let mut file = output.handle().ok_or(FAILED)?;
     if let Err(e) = file.write_all(text.as_bytes()) {
         let at = output.temp().map(|t| t.display().to_string()).unwrap_or_default();
@@ -266,14 +299,21 @@ fn fail(why: &str) -> ExitCode {
     ExitCode::FAILURE
 }
 
-/// The Agentfile of the image `given` names, here or pulled.
-fn made(given: &str) -> Result<String, String> {
+/// The Agentfile of the image `given` names, of `platform` (as a pull reads it; this host's
+/// where empty), here or pulled.
+fn made(given: &str, platform: &str) -> Result<String, String> {
     let reference = Reference::parse(given).map_err(|e| format!("{given}: {e}"))?;
     let home = shards_ipc::home()?;
     let store = crate::pull::store(&home)?;
     let limits = crate::pull::limits()?;
-    let targets = shards_image::platform::guest();
-    let here = match shards_registry::pull::local(&store, &reference, &targets, &limits) {
+    let targets = crate::pull::targets(platform)?;
+    let here = match shards_registry::pull::local_base(
+        &store,
+        &reference.to_string(),
+        &reference.familiar(),
+        &targets,
+        &limits,
+    ) {
         // Here for another platform alone: pulled for ours.
         Err(e) if e.kind() == shards_registry::ErrorKind::NotFound => None,
         here => here.map_err(|e| e.to_string())?,
@@ -294,9 +334,39 @@ fn made(given: &str) -> Result<String, String> {
             .0
         }
     };
-    let desc = pulled.descriptor;
+    written(&store, &reference, &pulled.descriptor, given)
+}
+
+/// The Agentfile of the image `reference` names, as a pull stored it for `targets`: what
+/// `pull --output-agentfile` writes once the image is here.
+pub fn stored(
+    home: &std::path::Path,
+    reference: &Reference,
+    targets: &[shards_image::platform::Target],
+) -> Result<String, String> {
+    let store = crate::pull::store(home)?;
+    let limits = crate::pull::limits()?;
+    let pulled = shards_registry::pull::local_base(
+        &store,
+        &reference.to_string(),
+        &reference.familiar(),
+        targets,
+        &limits,
+    )
+    .map_err(|e| e.to_string())?
+    .ok_or_else(|| format!("{}: not here for its platform", reference.familiar()))?;
+    written(&store, reference, &pulled.descriptor, &reference.familiar())
+}
+
+/// The Agentfile of the image whose manifest `desc` is, which `reference` named.
+fn written(
+    store: &shards_image::store::Store,
+    reference: &Reference,
+    desc: &oci::Descriptor,
+    given: &str,
+) -> Result<String, String> {
     let bytes = store
-        .content(&desc, oci::MAX_MANIFEST)
+        .content(desc, oci::MAX_MANIFEST)
         .map_err(|e| e.to_string())?
         .ok_or_else(|| format!("{given}: its manifest is missing"))?;
     let Document::Manifest(m) = oci::parse_document(&bytes, &desc.media_type).map_err(|e| e.to_string())?
@@ -314,7 +384,7 @@ fn made(given: &str) -> Result<String, String> {
             "{given} is for {os}: shards makes Agentfiles of Linux images alone"
         ));
     }
-    Ok(agentfile(&reference, &desc.digest, &image))
+    Ok(agentfile(reference, &desc.digest, &image))
 }
 
 #[cfg(test)]

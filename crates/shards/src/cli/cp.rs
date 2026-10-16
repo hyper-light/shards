@@ -13,7 +13,7 @@ use shards_archive::copy::{self, CopyInfo};
 use shards_cmdline::flags::Parsed;
 
 /// What the daemon is asked, and with which descriptors; its status, stdout and stderr.
-type Ask<'a> =
+pub(crate) type Ask<'a> =
     dyn Fn(Vec<String>, &[std::os::fd::BorrowedFd<'_>]) -> Result<(u8, Vec<u8>, Vec<u8>), String> + 'a;
 
 /// Copies as `parsed` says, asking the daemon through `ask`.

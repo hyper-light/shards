@@ -419,12 +419,16 @@ pub fn shards() -> &'static Path {
 
 /// A `shards` command as tests run it: publishing the microVMs it makes to no local
 /// image store (pull.rs `publish`), so that no test writes to the Docker engine of the
-/// host it runs on; a test of publishing names an engine of its own.
+/// host it runs on; a test of publishing names an engine of its own. No default platform
+/// of the host's user's reaches it.
 pub fn command() -> Command {
     let mut cmd = Command::new(shards());
     cmd.env("SHARDS_LOCAL_STORE", "none")
         .env("DOCKER_CONFIG", docker_config())
-        .env_remove("DOCKER_AUTH_CONFIG");
+        .env_remove("DOCKER_AUTH_CONFIG")
+        // A platform this host's user prefers is no test's: a test names its own.
+        .env_remove("SHARDS_DEFAULT_PLATFORM")
+        .env_remove("DOCKER_DEFAULT_PLATFORM");
     cmd
 }
 
@@ -2787,4 +2791,42 @@ pub fn writable_registry_requiring(authorization: Option<String>) -> (u16, Arc<s
         }
     });
     (port, repos)
+}
+
+/// The test image behind an index of two platforms: this host's, and another
+/// architecture's whose one layer holds `/arch`, its name. The index, its blobs, and that
+/// layer's digest.
+pub fn two_platform_image() -> (Vec<u8>, Vec<Vec<u8>>, String) {
+    let (ours, mut blobs) = test_image();
+    let (arch, other) = if cfg!(target_arch = "aarch64") {
+        ("arm64", "amd64")
+    } else {
+        ("amd64", "arm64")
+    };
+    let layer = tar(&[("arch", 0o644, 0, Some(other.as_bytes()))]);
+    let config = format!(
+        r#"{{"architecture":"{other}","os":"linux","config":{{"Env":["PATH=/bin"]}},"rootfs":{{"type":"layers","diff_ids":["{}"]}}}}"#,
+        sha256_digest(&layer)
+    )
+    .into_bytes();
+    let theirs = format!(
+        r#"{{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json","config":{{"mediaType":"application/vnd.oci.image.config.v1+json","digest":"{}","size":{}}},"layers":[{{"mediaType":"application/vnd.oci.image.layer.v1.tar","digest":"{}","size":{}}}]}}"#,
+        sha256_digest(&config),
+        config.len(),
+        sha256_digest(&layer),
+        layer.len()
+    )
+    .into_bytes();
+    let index = format!(
+        r#"{{"schemaVersion":2,"mediaType":"application/vnd.oci.image.index.v1+json","manifests":[{{"mediaType":"application/vnd.oci.image.manifest.v1+json","digest":"{}","size":{},"platform":{{"architecture":"{arch}","os":"linux"}}}},{{"mediaType":"application/vnd.oci.image.manifest.v1+json","digest":"{}","size":{},"platform":{{"architecture":"{other}","os":"linux"}}}}]}}"#,
+        sha256_digest(&ours),
+        ours.len(),
+        sha256_digest(&theirs),
+        theirs.len(),
+    )
+    .into_bytes();
+    let layer_digest = sha256_digest(&layer);
+    blobs.push(ours);
+    blobs.extend([config, layer, theirs]);
+    (index, blobs, layer_digest)
 }

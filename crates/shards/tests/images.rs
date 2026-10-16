@@ -195,6 +195,150 @@ fn an_image_past_its_limits_is_refused() {
     assert_eq!(stopped.status, Some(0));
 }
 
+/// A pull's platform is `--platform`'s, else SHARDS_DEFAULT_PLATFORM's, else
+/// DOCKER_DEFAULT_PLATFORM's, as docker/cli defaults the flag (v29.8.1
+/// cli/command/image/pull.go): an index of two platforms, pulled into a home of its own
+/// each time, is stored for the one the defaults say, and for the one a pull names whatever
+/// they say.
+#[test]
+fn a_pulls_platform_defaults_to_the_default_platforms() {
+    let (index, blobs, _) = common::two_platform_image();
+    let (port, _) = common::registry(index, blobs);
+    let image = format!("127.0.0.1:{port}/test/image:v1");
+    let (arch, other) = if cfg!(target_arch = "aarch64") {
+        ("arm64", "amd64")
+    } else {
+        ("amd64", "arm64")
+    };
+    let (ours, theirs) = (format!("linux/{arch}"), format!("linux/{other}"));
+    for (defaults, named, want) in [
+        (vec![("DOCKER_DEFAULT_PLATFORM", theirs.as_str())], None, other),
+        (
+            vec![
+                ("SHARDS_DEFAULT_PLATFORM", theirs.as_str()),
+                ("DOCKER_DEFAULT_PLATFORM", ours.as_str()),
+            ],
+            None,
+            other,
+        ),
+        (
+            vec![("DOCKER_DEFAULT_PLATFORM", theirs.as_str())],
+            Some(ours.as_str()),
+            arch,
+        ),
+        (vec![], None, arch),
+    ] {
+        let home = TempDir::new("pull-platform");
+        let mut env = vec![("SHARDS_HOME", home.as_os_str())];
+        env.extend(defaults.iter().map(|(k, v)| (*k, std::ffi::OsStr::new(*v))));
+        let mut args = Vec::new();
+        if let Some(p) = named {
+            args.extend(["--platform", p]);
+        }
+        args.extend(["-q", image.as_str()]);
+        let pulled = run_shards_env(&["pull"], &args, &env, TIMEOUT);
+        assert_eq!(pulled.status, Some(0), "{defaults:?} {named:?}: {pulled}");
+        let inspected = run_shards_env(
+            &["image", "inspect"],
+            &["--format", "{{.Architecture}}", image.as_str()],
+            &env,
+            TIMEOUT,
+        );
+        assert_eq!(inspected.status, Some(0), "{inspected}");
+        assert_eq!(inspected.stdout.trim(), want, "{defaults:?} {named:?}");
+    }
+}
+
+/// `pull --output-agentfile` writes the Agentfile of the image it pulled once it is
+/// through, as `make agentfile` writes one: into a directory as its `Agentfile`, where
+/// `shards build DIR` finds one, or to the file named; of the platform pulled. A pull that
+/// fails writes nothing, and `-a`, which names no one image, is refused before it pulls.
+#[test]
+fn a_pull_writes_its_images_agentfile_where_asked() {
+    let (index, blobs, _) = common::two_platform_image();
+    let (port, _) = common::registry(index, blobs);
+    let image = format!("127.0.0.1:{port}/test/image:v1");
+    let theirs = if cfg!(target_arch = "aarch64") {
+        "linux/amd64"
+    } else {
+        "linux/arm64"
+    };
+    let home = TempDir::new("pull-agentfile");
+    let out = home.join("out");
+    std::fs::create_dir_all(&out).unwrap();
+    let env = [("SHARDS_HOME", home.as_os_str())];
+    let shards = |command: &[&str], args: &[&str]| run_shards_env(command, args, &env, TIMEOUT);
+    let names = || {
+        let mut names: Vec<String> = std::fs::read_dir(&out)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        names
+    };
+    let made = |platform: &[&str]| {
+        let mut args = platform.to_vec();
+        args.push(image.as_str());
+        let made = shards(&["make", "agentfile"], &args);
+        assert_eq!(made.status, Some(0), "{made}");
+        made.stdout
+    };
+    let dir = out.to_str().unwrap();
+    let pulled = shards(
+        &["pull"],
+        &[
+            "-q",
+            "--platform",
+            theirs,
+            "--output-agentfile",
+            dir,
+            image.as_str(),
+        ],
+    );
+    assert_eq!(pulled.status, Some(0), "{pulled}");
+    let their_agentfile = std::fs::read_to_string(out.join("Agentfile")).unwrap();
+    assert!(
+        their_agentfile.contains(&format!("\nFROM {image}@sha256:")),
+        "{their_agentfile}"
+    );
+    assert_eq!(their_agentfile, made(&["--platform", theirs]));
+    let ours = out.join("ours");
+    let pulled = shards(
+        &["pull"],
+        &["-q", "--output-agentfile", ours.to_str().unwrap(), image.as_str()],
+    );
+    assert_eq!(pulled.status, Some(0), "{pulled}");
+    let our_agentfile = std::fs::read_to_string(&ours).unwrap();
+    assert_eq!(our_agentfile, made(&[]));
+    assert_ne!(our_agentfile, their_agentfile, "each platform's own");
+    assert_eq!(names(), ["Agentfile", "ours"]);
+    let missing = format!("127.0.0.1:{port}/test/missing:1");
+    let none = out.join("none");
+    let failed = shards(
+        &["pull"],
+        &[
+            "-q",
+            "--output-agentfile",
+            none.to_str().unwrap(),
+            missing.as_str(),
+        ],
+    );
+    assert_ne!(failed.status, Some(0), "{failed}");
+    let repository = format!("127.0.0.1:{port}/test/image");
+    let all = shards(
+        &["pull"],
+        &[
+            "-a",
+            "--output-agentfile",
+            none.to_str().unwrap(),
+            repository.as_str(),
+        ],
+    );
+    assert_eq!(all.status, Some(1), "{all}");
+    assert!(all.stderr.contains("--all-tags does not name"), "{all}");
+    assert_eq!(names(), ["Agentfile", "ours"]);
+}
+
 /// A run of another CPU's image runs under its CPU's emulator (D179), which its microVM's
 /// own kernel registers as it boots: from a cold boot, which saves its template, then from a
 /// copy of the template, which keeps it registered. Asked for by `--platform`, it is not
