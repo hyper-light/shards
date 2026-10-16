@@ -8663,6 +8663,77 @@ revision before comparing a changed API/implementation.
   1 GiB a second agree at p50 within 4%, either faster, where the runs vary by more than
   half.
 
+### M241. Another CPU's programs in a microVM, under qemu-user, against Docker Desktop's (D179)
+
+- **Question.** Does a microVM run another CPU's programs through its own kernel's
+  binfmt_misc and Docker's builds of qemu-user, and at what cost to what a build step does,
+  compute and starting programs, beside what Docker Desktop costs on the same Mac?
+- **Method.** `docs/research/measurements/emulation/`: `run.sh` takes `qemu-x86_64` from
+  `tonistiigi/binfmt@sha256:400a4873...` (binfmt e29e7d7, QEMU 10.2.3: Docker's builds for
+  BuildKit; an x86_64 host takes `qemu-aarch64`) and Alpine 3.22.6's minirootfs of the
+  other CPU (pinned by its sha256), and starts a privileged `alpine:3.22` microVM of 2 GiB,
+  where `setup.sh` copies the root and a 32 MiB input into the guest's memory and registers
+  the emulator as Docker's tool does (flags CFP). `host.py` runs ten rounds, each a pair of
+  each workload, natively then emulated in the root (busybox `sha256sum` and `gzip -c` of
+  the input, a shell starting `/bin/true` a hundred times), through one exec session
+  (`serve.sh`), and samples the VM process's `proc_pid_rusage(RUSAGE_INFO_V6)` as each
+  starts and ends: its CPU time, the time its threads waited for a CPU, and the
+  instructions and cycles they retired. With `shards-dind`, a Docker-in-Docker container of
+  Docker Desktop 4.66.1 (engine 29.3.1, its VM Linux 6.12.76-linuxkit), the same workloads
+  run in a container there under the emulators Docker Desktop registered, each round's runs
+  interleaved with shards'. 6a9ba6e4, release build, on the M5 Max of M240 (6 Super and 12
+  Performance cores, macOS 26.4.1), 2026-10-15, the host loaded by other work (load
+  averages 35.7 as it began, 38.7 as it ended).
+- **Results.** Emulated over native, n = 10 each, p50 (p90):
+
+  | | sha256 | gzip | 100 starts |
+  |---|---|---|---|
+  | shards, the VM process's cycles | 4.6 (4.7) | 5.5 (11.7) | 15.5 (16.6) |
+  | shards, its instructions | 4.1 (4.1) | 11.7 (11.9) | 29.7 (30.6) |
+  | shards, wall time in the guest | 4.8 (4.9) | 9.9 (35.3) | 28.5 (29.0) |
+  | Docker Desktop, wall time in the container | 1.4 (1.6) | 1.3 (1.7) | 13.0 (15.7) |
+  | Docker Desktop, CPU time in the container | 1.4 (1.6) | 1.3 (1.7) | 12.0 (14.0) |
+
+  shards' wall p50, native then emulated: sha256 0.13 and 0.62 s, gzip 0.81 and 8.01 s, a
+  hundred starts 0.02 and 0.57 s; the emulated gzip's threads waited 4.14 s (25.04) for a
+  CPU. Docker Desktop's: 0.15 and 0.21 s, 0.84 and 1.13 s, 0.05 and 0.59 s. Docker
+  Desktop's VM process alone, idle between runs, used 7.67 CPUs a second, its other work,
+  so its counters say nothing of these runs; shards' used 0.004.
+
+  Rosetta ran Docker Desktop's: its VM registers Rosetta (`/run/rosetta/rosetta`, POCF), a
+  wrapper of it and QEMU's emulator with one magic and mask for x86_64, and an emulated program's
+  `/proc/PID/exe` there is Rosetta. Rosetta's own binary, shared into a shards microVM read
+  only (`/Library/Apple/usr/libexec/oah/RosettaLinux`) and registered as Apple's
+  documentation registers it (CF), refuses: "Rosetta is only intended to run on Apple
+  Silicon with a macOS host using Virtualization.framework with Rosetta mode enabled".
+
+  An emulated run does the same work each time, its instructions within 2%, where its
+  cycles and wall time spread: the spread is the host's. In a microVM held for the
+  purpose, 61.8 to 63.3 billion instructions every gzip, at 1.8 to 4.2 GHz as the host ran
+  its vCPU, which waited for a CPU 18.7 s of the 22.1 s the slowest took; and the guest's
+  own CPU time is the wall time, as the VMM gives it no steal clock (it answers SMCCC
+  ARCH_FEATURES for PV_TIME_FEATURES, ARM DEN 0057, with not supported). Not the guest's
+  memory: with transparent huge pages always, without direct compaction, and never, 8
+  rounds interleaved, gzip took 3.0 to 6.9 s each way, with no compaction stall, no
+  direct reclaim and the same 2,600 to 2,760 faults a run.
+- **What it found besides.** Written through busybox printf's format, a register line's
+  `\x` escapes are printf's to read: the mask comes out matching every ELF, the emulator's
+  own included, and every program fails with ELOOP ("Symbolic link loop"); the kernel
+  reads the escapes itself, so the line goes as it is (`printf '%s'`). Docker's builds of
+  qemu take argv[0] preserved (flag P, as the image's `QEMU_PRESERVE_ARGV0=1` has its tool
+  register them): without it, `sh -c` ran the applet `c`. Rosetta reads the program's
+  `/proc/self/exe`, which a root without /proc lacks.
+- **Consequence.** Another CPU's programs run in a microVM through its own kernel, nothing
+  installed on the host. Under qemu, compute costs 4.6 times the cycles of the native
+  program for sha256 and 5.5 for gzip at p50 (4.1 and 11.7 times the instructions), and
+  starting a program 15.5 times, about 5.5 ms each at the guest's wall time; on a host as
+  loaded as this, the longer emulated runs wait for a CPU and take ten to thirty times as
+  long. Docker Desktop's Rosetta takes 1.3 to 1.4 times for compute and 12 to 13 for
+  starts: on a Mac it runs x86_64 compute faster than qemu in a microVM, 3.3 and 4.2 times
+  by shards' cycles against its times in the container, 3.4 and 7.6 times by both sides'
+  wall times, starts at much the same cost; a speed shards cannot take, Rosetta running
+  only where Virtualization.framework gives it.
+
 ### M242. A context file taken whole on APFS, whatever its size, on a busy host (D33)
 
 - **Question.** M100 found APFS's times saw every torn read of a file under 1 MiB, so the

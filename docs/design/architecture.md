@@ -3629,6 +3629,70 @@ No run-time labels, relays or declassifiers (§12 answer 14, decided by the user
 an internal-only domain to the world (D58), so there is no data to label. Code mode is
 D136.
 
+### D179. Other CPUs' images, emulated in their microVM (in progress)
+
+Images built on an arm64 Mac usually ship to x86_64 hosts, and the other way round, and a
+build for both (`--platform linux/amd64,linux/arm64`, D87) runs each platform's RUN steps.
+shards refused a step for a platform its microVMs do not run: "shards runs steps for
+linux/arm64 only, the platform its microVMs run, not linux/amd64". Docker runs one under
+qemu-user, which its binfmt tool registers with the host kernel's binfmt_misc
+(`docker run --privileged tonistiigi/binfmt --install all`: every architecture the host
+does not run, for every process on the host, until it reboots), and BuildKit runs the
+step under whatever the kernel finds for its programs; Docker Desktop's VM registers its
+own, Rosetta's for x86_64 on a Mac where it is on (M241: 4.66.1's VM has both, and
+Rosetta runs x86_64).
+
+A microVM has a kernel of its own, so the emulator is its kernel's to register: a builder
+registers the emulators of the platforms its build's steps run, and nothing outside it
+changes. That beats Docker in isolation and in what a build depends on: no privileged
+container, no host-wide state that every process inherits and a reboot loses, no step of
+one build reaching another's emulators (binfmt_misc is the kernel's: a privileged step
+there changes the host's); the emulator is one pinned by digest, the same on every host,
+where Docker's is whatever the host has installed, or Docker Desktop's own. It does not
+beat Docker Desktop's speed on a Mac:
+
+- **Measured (PM M241).** Docker's builds of qemu-user (`tonistiigi/binfmt`, BuildKit's,
+  pinned) registered in a microVM as its tool registers them run another CPU's programs.
+  From the host's side, an emulated run costs 4.6 and 5.5 times the cycles of a native one
+  for sha256 and gzip at p50, and each program started about 5.5 ms more (15.5 times the
+  cycles); a guest has no steal clock (the VMM answers SMCCC's PV_TIME_FEATURES with not
+  supported), so its own CPU times count the time its vCPU waited for the host, and the
+  host's figures are what a run cost. Docker Desktop on the same Mac runs x86_64 through
+  Rosetta at 1.3 to 1.4 times native for compute and 12 to 13 for starts: compute 3.3 to
+  7.6 times faster than qemu in a microVM, starts at much the same cost.
+- **Rosetta is not shards' to use.** Apple gives Rosetta to a Linux VM through
+  Virtualization.framework's `VZLinuxRosettaDirectoryShare`; shared into a shards microVM
+  and registered as Apple documents it, its binary refuses to run: "Rosetta is only
+  intended to run on Apple Silicon with a macOS host using Virtualization.framework with
+  Rosetta mode enabled" (M241). shards drives Hypervisor.framework itself (D1), and does
+  not get round Apple's check. Rosetta would mean a second kind of microVM on Macs,
+  Virtualization.framework's, for other CPUs' work: the user's decision, open.
+
+So emulation is for steps that cannot be cross-compiled, at qemu's cost; a native host of
+the platform builds faster, reached as a context (the next item).
+
+- **The emulators.** `tonistiigi/binfmt@sha256:400a4873…` (binfmt e29e7d7, QEMU 10.2.3),
+  this host's platform's image of it, fetched as a base the first time a build needs it
+  and kept as the build cache keeps what it made, until `builder prune`; never in the
+  shards binary (QEMU is GPL-2.0). Its root is one more of the builder's pmem devices,
+  which init mounts where no step reaches it, and registers each emulator the build needs
+  as Docker's tool does (`shards_abi::emulate`: its table, QEMU's magic and masks, flags
+  CFP: the program's credentials, the emulator opened as it is registered so that every
+  root and mount namespace reaches it, argv[0] kept, which the image's builds expect).
+  Measured: written through printf's format, a register line's `\x` escapes are printf's
+  to read, its mask comes out matching every ELF, the emulator's own included, and every
+  program fails with ELOOP; init writes the line as it is.
+- **What runs natively.** A platform a builder runs itself needs no emulator: its own, and
+  linux/386 on an x86_64 host (the guest kernel's `IA32_EMULATION`, as BuildKit finds a
+  host kernel runs it, util/archutil). Apple's CPUs run no 32-bit Arm, so linux/arm is
+  emulated on arm64 hosts. A platform without an emulator is refused at its step's turn.
+- **A build's steps** (part 1): each RUN step for another platform runs in the builder as
+  any step does, its programs under their CPU's emulator.
+- **A run of another platform's image** (part 2): `run --platform` and an image of no
+  other platform have their microVM register the emulator before the workload starts, said
+  as Docker says it (the platform's mismatch); its template, booted with the emulator's
+  device, keeps it registered in every restore.
+
 ### D178. A microVM's I/O limits, kept outside it
 
 `--io-maxbandwidth BYTES` and `--io-maxiops N`, on `shards run` and `create` and in the
