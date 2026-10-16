@@ -257,24 +257,28 @@ fn made(given: &str) -> Result<String, String> {
     let store = crate::pull::store(&home)?;
     let limits = crate::pull::limits()?;
     let targets = shards_image::platform::guest();
-    let here =
-        shards_registry::pull::local(&store, &reference, &targets, &limits).map_err(|e| e.to_string())?;
-    if here.is_none() {
-        crate::pull::fetch(
-            &home,
-            &reference,
-            &targets,
-            &|_| {},
-            &|_| {},
-            None,
-            &|k| std::env::var(k).ok(),
-            false,
-        )?;
-    }
-    let desc = store
-        .tagged(&reference.to_string())
-        .map_err(|e| e.to_string())?
-        .ok_or_else(|| format!("{given}: not in the store after its pull"))?;
+    let here = match shards_registry::pull::local(&store, &reference, &targets, &limits) {
+        // Here for another platform alone: pulled for ours.
+        Err(e) if e.kind() == shards_registry::ErrorKind::NotFound => None,
+        here => here.map_err(|e| e.to_string())?,
+    };
+    let pulled = match here {
+        Some(pulled) => pulled,
+        None => {
+            crate::pull::fetch(
+                &home,
+                &reference,
+                &targets,
+                &|_| {},
+                &|_| {},
+                None,
+                &|k| std::env::var(k).ok(),
+                false,
+            )?
+            .0
+        }
+    };
+    let desc = pulled.descriptor;
     let bytes = store
         .content(&desc, oci::MAX_MANIFEST)
         .map_err(|e| e.to_string())?

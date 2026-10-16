@@ -1335,24 +1335,33 @@ impl Bases<'_> {
             Some(d) if !self.pull => self.store.holding(d).map_err(|e| fail(e.to_string()))?,
             _ => None,
         };
+        let guest = image_platform::guest();
+        // Here for another platform alone, as a lookup for ours finds none: pulled for ours.
+        let here = |found: Result<Option<registry_pull::Pulled>, shards_registry::Error>| match found {
+            Err(e) if e.kind() == shards_registry::ErrorKind::NotFound => Ok(None),
+            found => found.map_err(|e| fail(e.to_string())),
+        };
         if let (Some(held), Some(d)) = (&held, &reference.digest)
-            && let Some(record) = self.store.tagged(held).map_err(|e| fail(e.to_string()))?
-        {
-            registry_pull::local_tagged(
+            && let Some(found) = here(registry_pull::local_base(
                 self.store,
                 held,
                 &reference.familiar(),
-                &image_platform::guest(),
+                &guest,
                 &limits,
-            )
-            .map_err(|e| fail(e.to_string()))?;
-            return self.base_of(name, &reference, record, d.clone(), wanted);
+            ))?
+        {
+            return self.base_of(name, &reference, found.descriptor, d.clone(), wanted);
         }
         let local = if self.pull {
             None
         } else {
-            registry_pull::local(self.store, &reference, &image_platform::guest(), &limits)
-                .map_err(|e| fail(e.to_string()))?
+            here(registry_pull::local_base(
+                self.store,
+                &reference.to_string(),
+                &reference.familiar(),
+                &guest,
+                &limits,
+            ))?
         };
         let pulled = match local {
             Some(p) => p,
@@ -1360,7 +1369,7 @@ impl Bases<'_> {
                 crate::pull::fetch(
                     self.home,
                     &reference,
-                    &image_platform::guest(),
+                    &guest,
                     &|_: Event<'_>| {},
                     &|_| {},
                     None,
@@ -1373,12 +1382,13 @@ impl Bases<'_> {
         };
         // The manifest and config as stored, for the layers' descriptors and the config's
         // bytes.
-        let record = self
-            .store
-            .tagged(&reference.to_string())
-            .map_err(|e| fail(e.to_string()))?
-            .ok_or_else(|| fail(format!("{name}: not in the store after its pull")))?;
-        self.base_of(name, &reference, record, pulled.resolved.clone(), wanted)
+        self.base_of(
+            name,
+            &reference,
+            pulled.descriptor,
+            pulled.resolved.clone(),
+            wanted,
+        )
     }
 
     /// The root filesystem of the emulator image (D179), this host's platform's of it:
@@ -1565,13 +1575,19 @@ impl Bases<'_> {
                     Some(d) => self.store.holding(d).map_err(|e| e.to_string())?,
                     None => None,
                 };
+                let guest = image_platform::guest();
+                let shown = reference.familiar();
+                let found = |tagged: &str| {
+                    registry_pull::base_manifest(self.store, tagged, &shown, &guest)
+                        .map_err(|e| e.to_string())
+                };
                 if let (Some(held), Some(d)) = (&held, &reference.digest)
-                    && let Some(record) = self.store.tagged(held).map_err(|e| e.to_string())?
+                    && let Some(record) = found(held)?
                 {
                     return Ok((d.to_string(), config_of(&record)?));
                 }
                 let tagged = reference.to_string();
-                if let Some(record) = self.store.tagged(&tagged).map_err(|e| e.to_string())? {
+                if let Some(record) = found(&tagged)? {
                     let resolved = match self.store.resolved(&tagged).map_err(|e| e.to_string())? {
                         Some(d) => d.to_string(),
                         None => record.digest.clone(),
@@ -2111,6 +2127,32 @@ fn emulated(p: &Platform) -> Option<&'static shards_abi::emulate::Emulator> {
     std::str::from_utf8(&p.architecture)
         .ok()
         .and_then(shards_abi::emulate::of)
+}
+
+/// The platform of the image whose programs a step runs: its root's, down the first
+/// inputs to the stage's FROM, as `--squash` finds its base, the base `key` names as it was
+/// resolved; none where the root comes from no image.
+fn root_platform(
+    def: &shards_agentfile::llb::Definition,
+    op: &shards_agentfile::llb::Op,
+    bases: &Bases<'_>,
+    key: &dyn Fn(&shards_agentfile::llb::Op, &str) -> String,
+) -> Option<Platform> {
+    let mut at = op.inputs.first()?.op;
+    loop {
+        let o = def.ops.get(at)?;
+        match &o.kind {
+            OpKind::Source { identifier, .. } => {
+                let reference = identifier.strip_prefix(b"docker-image://")?;
+                return bases
+                    .resolved
+                    .borrow()
+                    .get(&key(o, &show(reference)))
+                    .map(|b| b.image.platform.clone());
+            }
+            _ => at = o.inputs.first()?.op,
+        }
+    }
 }
 
 /// The emulators a build's steps for other CPUs run under (D179): Docker's builds of
@@ -3858,12 +3900,17 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
                         build_proxy = Some(builder::proxy(&limits).map_err(|e| fail(&v, &e))?);
                     }
                     // The emulators the build's steps for other CPUs run under (D179), the
-                    // emulator image's root one more of the builder's devices.
+                    // emulator image's root one more of the builder's devices: each step's
+                    // platform's, and its base's CPU's, whose programs it runs, where the
+                    // two differ (a base of another CPU's lone manifest, which BuildKit's
+                    // steps run under whatever emulators the host has).
                     let mut emulating: Vec<&'static str> = def
                         .ops
                         .iter()
                         .filter(|op| matches!(op.kind, OpKind::Exec { .. }))
-                        .filter_map(|op| op.platform.as_ref().and_then(emulated))
+                        .flat_map(|op| [op.platform.clone(), root_platform(&def, op, &bases, &op_base)])
+                        .flatten()
+                        .filter_map(|p| emulated(&p))
                         .map(|e| e.architecture)
                         .collect();
                     emulating.sort_unstable();

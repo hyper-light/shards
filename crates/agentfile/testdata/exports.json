@@ -576,6 +576,198 @@
   "manifest": "{\n  \"schemaVersion\": 2,\n  \"mediaType\": \"application/vnd.oci.image.manifest.v1+json\",\n  \"config\": {\n    \"mediaType\": \"application/vnd.oci.image.config.v1+json\",\n    \"digest\": \"sha256:802e0ab9b3e4fc98d67c964a0239d84eb446e0e98581e5a12e1251ec9058e637\",\n    \"size\": 751\n  },\n  \"layers\": [\n    {\n      \"mediaType\": \"application/vnd.oci.image.layer.v1.tar+gzip\",\n      \"digest\": \"sha256:a32b217ef17069c89f5f22c5a0b1b0f1292375d7304acc3f5d8a6ecc7e0c7208\",\n      \"size\": 100,\n      \"annotations\": {\n        \"org.example.kept\": \"v0 \\u003c\\u0026\\u003e\"\n      }\n    }\n  ]\n}"
  },
  {
+  "file": "corpus/plan/base-platform-implicit.Dockerfile",
+  "layers": 2,
+  "epoch": false,
+  "base": false,
+  "config": "{\"architecture\":\"arm64\",\"config\":{\"Env\":[\"PATH=/usr/bin\"]},\"created\":null,\"history\":[{\"created_by\":\"base\"},{\"created_by\":\"RUN /bin/sh -c uname -m # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"}],\"os\":\"linux\",\"rootfs\":{\"type\":\"layers\",\"diff_ids\":[\"sha256:10c4e94434092ec0e99162a4eccb58e012eb2a0d9d6db38372d58a84cc659612\",\"sha256:64e71580c2ea7aa628b77c9e993096065cf51c3e5a1dbbb112e138d5b9cc4398\"]}}",
+  "manifest": "{\n  \"schemaVersion\": 2,\n  \"mediaType\": \"application/vnd.oci.image.manifest.v1+json\",\n  \"config\": {\n    \"mediaType\": \"application/vnd.oci.image.config.v1+json\",\n    \"digest\": \"sha256:1be6968b665aa9b5d8d4de0e1fee41f052bd21353d05359517b9b1fe60e155a1\",\n    \"size\": 396\n  },\n  \"layers\": [\n    {\n      \"mediaType\": \"application/vnd.oci.image.layer.v1.tar+gzip\",\n      \"digest\": \"sha256:a32b217ef17069c89f5f22c5a0b1b0f1292375d7304acc3f5d8a6ecc7e0c7208\",\n      \"size\": 100,\n      \"annotations\": {\n        \"org.example.kept\": \"v0 \\u003c\\u0026\\u003e\"\n      }\n    },\n    {\n      \"mediaType\": \"application/vnd.oci.image.layer.v1.tar+gzip\",\n      \"digest\": \"sha256:8ea720af7d06fc784e8a1e71cf77659b56e75cbed34969abb290689af960c86d\",\n      \"size\": 101,\n      \"annotations\": {\n        \"org.example.kept\": \"v1 \\u003c\\u0026\\u003e\"\n      }\n    }\n  ]\n}"
+ },
+ {
+  "file": "corpus/plan/base-platform-implicit.Dockerfile",
+  "layers": 2,
+  "epoch": false,
+  "base": true,
+  "config": "{\"architecture\":\"arm64\",\"config\":{\"Env\":[\"PATH=/usr/bin\"]},\"created\":null,\"history\":[{\"created_by\":\"base\"},{\"created_by\":\"RUN /bin/sh -c uname -m # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"}],\"os\":\"linux\",\"rootfs\":{\"type\":\"layers\",\"diff_ids\":[\"sha256:10c4e94434092ec0e99162a4eccb58e012eb2a0d9d6db38372d58a84cc659612\",\"sha256:64e71580c2ea7aa628b77c9e993096065cf51c3e5a1dbbb112e138d5b9cc4398\"]}}",
+  "manifest": "{\n  \"schemaVersion\": 2,\n  \"mediaType\": \"application/vnd.oci.image.manifest.v1+json\",\n  \"config\": {\n    \"mediaType\": \"application/vnd.oci.image.config.v1+json\",\n    \"digest\": \"sha256:1be6968b665aa9b5d8d4de0e1fee41f052bd21353d05359517b9b1fe60e155a1\",\n    \"size\": 396\n  },\n  \"layers\": [\n    {\n      \"mediaType\": \"application/vnd.oci.image.layer.v1.tar+gzip\",\n      \"digest\": \"sha256:a32b217ef17069c89f5f22c5a0b1b0f1292375d7304acc3f5d8a6ecc7e0c7208\",\n      \"size\": 100,\n      \"annotations\": {\n        \"org.example.kept\": \"v0 \\u003c\\u0026\\u003e\"\n      }\n    },\n    {\n      \"mediaType\": \"application/vnd.oci.image.layer.v1.tar+gzip\",\n      \"digest\": \"sha256:8ea720af7d06fc784e8a1e71cf77659b56e75cbed34969abb290689af960c86d\",\n      \"size\": 101,\n      \"annotations\": {\n        \"org.example.kept\": \"v1 \\u003c\\u0026\\u003e\"\n      }\n    }\n  ]\n}"
+ },
+ {
+  "file": "corpus/plan/base-platform-implicit.Dockerfile",
+  "layers": 2,
+  "epoch": true,
+  "base": false,
+  "config": "{\"architecture\":\"arm64\",\"config\":{\"Env\":[\"PATH=/usr/bin\"]},\"created\":\"2023-11-14T22:13:20Z\",\"history\":[{\"created\":\"2023-11-14T22:13:20Z\",\"created_by\":\"base\"},{\"created\":\"2023-11-14T22:13:20Z\",\"created_by\":\"RUN /bin/sh -c uname -m # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"}],\"os\":\"linux\",\"rootfs\":{\"type\":\"layers\",\"diff_ids\":[\"sha256:10c4e94434092ec0e99162a4eccb58e012eb2a0d9d6db38372d58a84cc659612\",\"sha256:64e71580c2ea7aa628b77c9e993096065cf51c3e5a1dbbb112e138d5b9cc4398\"]}}",
+  "manifest": "{\n  \"schemaVersion\": 2,\n  \"mediaType\": \"application/vnd.oci.image.manifest.v1+json\",\n  \"config\": {\n    \"mediaType\": \"application/vnd.oci.image.config.v1+json\",\n    \"digest\": \"sha256:2c63e44fa703dcc211cc4755a44a82f5e557a4c71fc276b0a1b4660ced46df1d\",\n    \"size\": 480\n  },\n  \"layers\": [\n    {\n      \"mediaType\": \"application/vnd.oci.image.layer.v1.tar+gzip\",\n      \"digest\": \"sha256:a32b217ef17069c89f5f22c5a0b1b0f1292375d7304acc3f5d8a6ecc7e0c7208\",\n      \"size\": 100,\n      \"annotations\": {\n        \"org.example.kept\": \"v0 \\u003c\\u0026\\u003e\"\n      }\n    },\n    {\n      \"mediaType\": \"application/vnd.oci.image.layer.v1.tar+gzip\",\n      \"digest\": \"sha256:8ea720af7d06fc784e8a1e71cf77659b56e75cbed34969abb290689af960c86d\",\n      \"size\": 101,\n      \"annotations\": {\n        \"org.example.kept\": \"v1 \\u003c\\u0026\\u003e\"\n      }\n    }\n  ]\n}"
+ },
+ {
+  "file": "corpus/plan/base-platform-implicit.Dockerfile",
+  "layers": 2,
+  "epoch": true,
+  "base": true,
+  "config": "{\"architecture\":\"arm64\",\"config\":{\"Env\":[\"PATH=/usr/bin\"]},\"created\":null,\"history\":[{\"created_by\":\"base\"},{\"created_by\":\"RUN /bin/sh -c uname -m # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"}],\"os\":\"linux\",\"rootfs\":{\"type\":\"layers\",\"diff_ids\":[\"sha256:10c4e94434092ec0e99162a4eccb58e012eb2a0d9d6db38372d58a84cc659612\",\"sha256:64e71580c2ea7aa628b77c9e993096065cf51c3e5a1dbbb112e138d5b9cc4398\"]}}",
+  "manifest": "{\n  \"schemaVersion\": 2,\n  \"mediaType\": \"application/vnd.oci.image.manifest.v1+json\",\n  \"config\": {\n    \"mediaType\": \"application/vnd.oci.image.config.v1+json\",\n    \"digest\": \"sha256:1be6968b665aa9b5d8d4de0e1fee41f052bd21353d05359517b9b1fe60e155a1\",\n    \"size\": 396\n  },\n  \"layers\": [\n    {\n      \"mediaType\": \"application/vnd.oci.image.layer.v1.tar+gzip\",\n      \"digest\": \"sha256:a32b217ef17069c89f5f22c5a0b1b0f1292375d7304acc3f5d8a6ecc7e0c7208\",\n      \"size\": 100,\n      \"annotations\": {\n        \"org.example.kept\": \"v0 \\u003c\\u0026\\u003e\"\n      }\n    },\n    {\n      \"mediaType\": \"application/vnd.oci.image.layer.v1.tar+gzip\",\n      \"digest\": \"sha256:8ea720af7d06fc784e8a1e71cf77659b56e75cbed34969abb290689af960c86d\",\n      \"size\": 101,\n      \"annotations\": {\n        \"org.example.kept\": \"v1 \\u003c\\u0026\\u003e\"\n      }\n    }\n  ]\n}"
+ },
+ {
+  "file": "corpus/plan/base-platform-implicit.Dockerfile",
+  "layers": 3,
+  "epoch": false,
+  "base": false,
+  "config": "{\"architecture\":\"arm64\",\"config\":{\"Env\":[\"PATH=/usr/bin\"]},\"created\":null,\"history\":[{\"created_by\":\"base\"},{\"created_by\":\"RUN /bin/sh -c uname -m # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"},{\"comment\":\"buildkit.exporter.image.v0\"}],\"os\":\"linux\",\"rootfs\":{\"type\":\"layers\",\"diff_ids\":[\"sha256:10c4e94434092ec0e99162a4eccb58e012eb2a0d9d6db38372d58a84cc659612\",\"sha256:64e71580c2ea7aa628b77c9e993096065cf51c3e5a1dbbb112e138d5b9cc4398\",\"sha256:7ff25f8956fcdb19b2b1b2e476773fae965ab4546912bf9a6c1c3a2bd42859d9\"]}}",
+  "manifest": "{\n  \"schemaVersion\": 2,\n  \"mediaType\": \"application/vnd.oci.image.manifest.v1+json\",\n  \"config\": {\n    \"mediaType\": \"application/vnd.oci.image.config.v1+json\",\n    \"digest\": \"sha256:60525f04adb9e020a089e1d25eecff85001f4b55011c96413b49048169c0807a\",\n    \"size\": 511\n  },\n  \"layers\": [\n    {\n      \"mediaType\": \"application/vnd.oci.image.layer.v1.tar+gzip\",\n      \"digest\": \"sha256:a32b217ef17069c89f5f22c5a0b1b0f1292375d7304acc3f5d8a6ecc7e0c7208\",\n      \"size\": 100,\n      \"annotations\": {\n        \"org.example.kept\": \"v0 \\u003c\\u0026\\u003e\"\n      }\n    },\n    {\n      \"mediaType\": \"application/vnd.oci.image.layer.v1.tar+gzip\",\n      \"digest\": \"sha256:8ea720af7d06fc784e8a1e71cf77659b56e75cbed34969abb290689af960c86d\",\n      \"size\": 101,\n      \"annotations\": {\n        \"org.example.kept\": \"v1 \\u003c\\u0026\\u003e\"\n      }\n    },\n    {\n      \"mediaType\": \"application/vnd.oci.image.layer.v1.tar+gzip\",\n      \"digest\": \"sha256:974b8f4f45ebf7114bdbcb2e9132662134d46b6fe433660b7b2e93ce096b269a\",\n      \"size\": 102,\n      \"annotations\": {\n        \"org.example.kept\": \"v2 \\u003c\\u0026\\u003e\"\n      }\n    }\n  ]\n}"
+ },
+ {
+  "file": "corpus/plan/base-platform-implicit.Dockerfile",
+  "layers": 3,
+  "epoch": false,
+  "base": true,
+  "config": "{\"architecture\":\"arm64\",\"config\":{\"Env\":[\"PATH=/usr/bin\"]},\"created\":null,\"history\":[{\"created_by\":\"base\"},{\"created_by\":\"RUN /bin/sh -c uname -m # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"},{\"comment\":\"buildkit.exporter.image.v0\"}],\"os\":\"linux\",\"rootfs\":{\"type\":\"layers\",\"diff_ids\":[\"sha256:10c4e94434092ec0e99162a4eccb58e012eb2a0d9d6db38372d58a84cc659612\",\"sha256:64e71580c2ea7aa628b77c9e993096065cf51c3e5a1dbbb112e138d5b9cc4398\",\"sha256:7ff25f8956fcdb19b2b1b2e476773fae965ab4546912bf9a6c1c3a2bd42859d9\"]}}",
+  "manifest": "{\n  \"schemaVersion\": 2,\n  \"mediaType\": \"application/vnd.oci.image.manifest.v1+json\",\n  \"config\": {\n    \"mediaType\": \"application/vnd.oci.image.config.v1+json\",\n    \"digest\": \"sha256:60525f04adb9e020a089e1d25eecff85001f4b55011c96413b49048169c0807a\",\n    \"size\": 511\n  },\n  \"layers\": [\n    {\n      \"mediaType\": \"application/vnd.oci.image.layer.v1.tar+gzip\",\n      \"digest\": \"sha256:a32b217ef17069c89f5f22c5a0b1b0f1292375d7304acc3f5d8a6ecc7e0c7208\",\n      \"size\": 100,\n      \"annotations\": {\n        \"org.example.kept\": \"v0 \\u003c\\u0026\\u003e\"\n      }\n    },\n    {\n      \"mediaType\": \"application/vnd.oci.image.layer.v1.tar+gzip\",\n      \"digest\": \"sha256:8ea720af7d06fc784e8a1e71cf77659b56e75cbed34969abb290689af960c86d\",\n      \"size\": 101,\n      \"annotations\": {\n        \"org.example.kept\": \"v1 \\u003c\\u0026\\u003e\"\n      }\n    },\n    {\n      \"mediaType\": \"application/vnd.oci.image.layer.v1.tar+gzip\",\n      \"digest\": \"sha256:974b8f4f45ebf7114bdbcb2e9132662134d46b6fe433660b7b2e93ce096b269a\",\n      \"size\": 102,\n      \"annotations\": {\n        \"org.example.kept\": \"v2 \\u003c\\u0026\\u003e\"\n      }\n    }\n  ]\n}"
+ },
+ {
+  "file": "corpus/plan/base-platform-implicit.Dockerfile",
+  "layers": 3,
+  "epoch": true,
+  "base": false,
+  "config": "{\"architecture\":\"arm64\",\"config\":{\"Env\":[\"PATH=/usr/bin\"]},\"created\":\"2023-11-14T22:13:20Z\",\"history\":[{\"created\":\"2023-11-14T22:13:20Z\",\"created_by\":\"base\"},{\"created\":\"2023-11-14T22:13:20Z\",\"created_by\":\"RUN /bin/sh -c uname -m # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"},{\"created\":\"2023-11-14T22:13:20Z\",\"comment\":\"buildkit.exporter.image.v0\"}],\"os\":\"linux\",\"rootfs\":{\"type\":\"layers\",\"diff_ids\":[\"sha256:10c4e94434092ec0e99162a4eccb58e012eb2a0d9d6db38372d58a84cc659612\",\"sha256:64e71580c2ea7aa628b77c9e993096065cf51c3e5a1dbbb112e138d5b9cc4398\",\"sha256:7ff25f8956fcdb19b2b1b2e476773fae965ab4546912bf9a6c1c3a2bd42859d9\"]}}",
+  "manifest": "{\n  \"schemaVersion\": 2,\n  \"mediaType\": \"application/vnd.oci.image.manifest.v1+json\",\n  \"config\": {\n    \"mediaType\": \"application/vnd.oci.image.config.v1+json\",\n    \"digest\": \"sha256:9de634c60083fda06def10fe19b579f0de690fc19aa417d4a0cc257d16bc2fc7\",\n    \"size\": 628\n  },\n  \"layers\": [\n    {\n      \"mediaType\": \"application/vnd.oci.image.layer.v1.tar+gzip\",\n      \"digest\": \"sha256:a32b217ef17069c89f5f22c5a0b1b0f1292375d7304acc3f5d8a6ecc7e0c7208\",\n      \"size\": 100,\n      \"annotations\": {\n        \"org.example.kept\": \"v0 \\u003c\\u0026\\u003e\"\n      }\n    },\n    {\n      \"mediaType\": \"application/vnd.oci.image.layer.v1.tar+gzip\",\n      \"digest\": \"sha256:8ea720af7d06fc784e8a1e71cf77659b56e75cbed34969abb290689af960c86d\",\n      \"size\": 101,\n      \"annotations\": {\n        \"org.example.kept\": \"v1 \\u003c\\u0026\\u003e\"\n      }\n    },\n    {\n      \"mediaType\": \"application/vnd.oci.image.layer.v1.tar+gzip\",\n      \"digest\": \"sha256:974b8f4f45ebf7114bdbcb2e9132662134d46b6fe433660b7b2e93ce096b269a\",\n      \"size\": 102,\n      \"annotations\": {\n        \"org.example.kept\": \"v2 \\u003c\\u0026\\u003e\"\n      }\n    }\n  ]\n}"
+ },
+ {
+  "file": "corpus/plan/base-platform-implicit.Dockerfile",
+  "layers": 3,
+  "epoch": true,
+  "base": true,
+  "config": "{\"architecture\":\"arm64\",\"config\":{\"Env\":[\"PATH=/usr/bin\"]},\"created\":\"2023-11-14T22:13:20Z\",\"history\":[{\"created_by\":\"base\"},{\"created_by\":\"RUN /bin/sh -c uname -m # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"},{\"created\":\"2023-11-14T22:13:20Z\",\"comment\":\"buildkit.exporter.image.v0\"}],\"os\":\"linux\",\"rootfs\":{\"type\":\"layers\",\"diff_ids\":[\"sha256:10c4e94434092ec0e99162a4eccb58e012eb2a0d9d6db38372d58a84cc659612\",\"sha256:64e71580c2ea7aa628b77c9e993096065cf51c3e5a1dbbb112e138d5b9cc4398\",\"sha256:7ff25f8956fcdb19b2b1b2e476773fae965ab4546912bf9a6c1c3a2bd42859d9\"]}}",
+  "manifest": "{\n  \"schemaVersion\": 2,\n  \"mediaType\": \"application/vnd.oci.image.manifest.v1+json\",\n  \"config\": {\n    \"mediaType\": \"application/vnd.oci.image.config.v1+json\",\n    \"digest\": \"sha256:ed2ef1738f8d9e746f5f201b8ed521c4094c20fb61e70e2b6a0841d8827feaf9\",\n    \"size\": 562\n  },\n  \"layers\": [\n    {\n      \"mediaType\": \"application/vnd.oci.image.layer.v1.tar+gzip\",\n      \"digest\": \"sha256:a32b217ef17069c89f5f22c5a0b1b0f1292375d7304acc3f5d8a6ecc7e0c7208\",\n      \"size\": 100,\n      \"annotations\": {\n        \"org.example.kept\": \"v0 \\u003c\\u0026\\u003e\"\n      }\n    },\n    {\n      \"mediaType\": \"application/vnd.oci.image.layer.v1.tar+gzip\",\n      \"digest\": \"sha256:8ea720af7d06fc784e8a1e71cf77659b56e75cbed34969abb290689af960c86d\",\n      \"size\": 101,\n      \"annotations\": {\n        \"org.example.kept\": \"v1 \\u003c\\u0026\\u003e\"\n      }\n    },\n    {\n      \"mediaType\": \"application/vnd.oci.image.layer.v1.tar+gzip\",\n      \"digest\": \"sha256:974b8f4f45ebf7114bdbcb2e9132662134d46b6fe433660b7b2e93ce096b269a\",\n      \"size\": 102,\n      \"annotations\": {\n        \"org.example.kept\": \"v2 \\u003c\\u0026\\u003e\"\n      }\n    }\n  ]\n}"
+ },
+ {
+  "file": "corpus/plan/base-platform-implicit.Dockerfile",
+  "layers": 1,
+  "epoch": false,
+  "base": false,
+  "config": "{\"architecture\":\"arm64\",\"config\":{\"Env\":[\"PATH=/usr/bin\"]},\"created\":null,\"history\":[{\"created_by\":\"base\"},{\"created_by\":\"RUN /bin/sh -c uname -m # buildkit\",\"comment\":\"buildkit.dockerfile.v0\",\"empty_layer\":true}],\"os\":\"linux\",\"rootfs\":{\"type\":\"layers\",\"diff_ids\":[\"sha256:10c4e94434092ec0e99162a4eccb58e012eb2a0d9d6db38372d58a84cc659612\"]}}",
+  "manifest": "{\n  \"schemaVersion\": 2,\n  \"mediaType\": \"application/vnd.oci.image.manifest.v1+json\",\n  \"config\": {\n    \"mediaType\": \"application/vnd.oci.image.config.v1+json\",\n    \"digest\": \"sha256:dd9b49a1eaa672755bc32865c3091e77bd0a570511516073b70c18747b2684e6\",\n    \"size\": 341\n  },\n  \"layers\": [\n    {\n      \"mediaType\": \"application/vnd.oci.image.layer.v1.tar+gzip\",\n      \"digest\": \"sha256:a32b217ef17069c89f5f22c5a0b1b0f1292375d7304acc3f5d8a6ecc7e0c7208\",\n      \"size\": 100,\n      \"annotations\": {\n        \"org.example.kept\": \"v0 \\u003c\\u0026\\u003e\"\n      }\n    }\n  ]\n}"
+ },
+ {
+  "file": "corpus/plan/base-platform-implicit.Dockerfile",
+  "layers": 1,
+  "epoch": false,
+  "base": true,
+  "config": "{\"architecture\":\"arm64\",\"config\":{\"Env\":[\"PATH=/usr/bin\"]},\"created\":null,\"history\":[{\"created_by\":\"base\"},{\"created_by\":\"RUN /bin/sh -c uname -m # buildkit\",\"comment\":\"buildkit.dockerfile.v0\",\"empty_layer\":true}],\"os\":\"linux\",\"rootfs\":{\"type\":\"layers\",\"diff_ids\":[\"sha256:10c4e94434092ec0e99162a4eccb58e012eb2a0d9d6db38372d58a84cc659612\"]}}",
+  "manifest": "{\n  \"schemaVersion\": 2,\n  \"mediaType\": \"application/vnd.oci.image.manifest.v1+json\",\n  \"config\": {\n    \"mediaType\": \"application/vnd.oci.image.config.v1+json\",\n    \"digest\": \"sha256:dd9b49a1eaa672755bc32865c3091e77bd0a570511516073b70c18747b2684e6\",\n    \"size\": 341\n  },\n  \"layers\": [\n    {\n      \"mediaType\": \"application/vnd.oci.image.layer.v1.tar+gzip\",\n      \"digest\": \"sha256:a32b217ef17069c89f5f22c5a0b1b0f1292375d7304acc3f5d8a6ecc7e0c7208\",\n      \"size\": 100,\n      \"annotations\": {\n        \"org.example.kept\": \"v0 \\u003c\\u0026\\u003e\"\n      }\n    }\n  ]\n}"
+ },
+ {
+  "file": "corpus/plan/base-platform-implicit.Dockerfile",
+  "layers": 1,
+  "epoch": true,
+  "base": false,
+  "config": "{\"architecture\":\"arm64\",\"config\":{\"Env\":[\"PATH=/usr/bin\"]},\"created\":\"2023-11-14T22:13:20Z\",\"history\":[{\"created\":\"2023-11-14T22:13:20Z\",\"created_by\":\"base\"},{\"created\":\"2023-11-14T22:13:20Z\",\"created_by\":\"RUN /bin/sh -c uname -m # buildkit\",\"comment\":\"buildkit.dockerfile.v0\",\"empty_layer\":true}],\"os\":\"linux\",\"rootfs\":{\"type\":\"layers\",\"diff_ids\":[\"sha256:10c4e94434092ec0e99162a4eccb58e012eb2a0d9d6db38372d58a84cc659612\"]}}",
+  "manifest": "{\n  \"schemaVersion\": 2,\n  \"mediaType\": \"application/vnd.oci.image.manifest.v1+json\",\n  \"config\": {\n    \"mediaType\": \"application/vnd.oci.image.config.v1+json\",\n    \"digest\": \"sha256:1b279a6d89b1c6beafd8c603f790e19944fad9603ed6fe4077766b69f62f295d\",\n    \"size\": 425\n  },\n  \"layers\": [\n    {\n      \"mediaType\": \"application/vnd.oci.image.layer.v1.tar+gzip\",\n      \"digest\": \"sha256:a32b217ef17069c89f5f22c5a0b1b0f1292375d7304acc3f5d8a6ecc7e0c7208\",\n      \"size\": 100,\n      \"annotations\": {\n        \"org.example.kept\": \"v0 \\u003c\\u0026\\u003e\"\n      }\n    }\n  ]\n}"
+ },
+ {
+  "file": "corpus/plan/base-platform-implicit.Dockerfile",
+  "layers": 1,
+  "epoch": true,
+  "base": true,
+  "config": "{\"architecture\":\"arm64\",\"config\":{\"Env\":[\"PATH=/usr/bin\"]},\"created\":\"2023-11-14T22:13:20Z\",\"history\":[{\"created_by\":\"base\"},{\"created\":\"2023-11-14T22:13:20Z\",\"created_by\":\"RUN /bin/sh -c uname -m # buildkit\",\"comment\":\"buildkit.dockerfile.v0\",\"empty_layer\":true}],\"os\":\"linux\",\"rootfs\":{\"type\":\"layers\",\"diff_ids\":[\"sha256:10c4e94434092ec0e99162a4eccb58e012eb2a0d9d6db38372d58a84cc659612\"]}}",
+  "manifest": "{\n  \"schemaVersion\": 2,\n  \"mediaType\": \"application/vnd.oci.image.manifest.v1+json\",\n  \"config\": {\n    \"mediaType\": \"application/vnd.oci.image.config.v1+json\",\n    \"digest\": \"sha256:7d0386ed1dddaee31c469951b9aa68d9d46b771c491737d45b3c4022af613a98\",\n    \"size\": 392\n  },\n  \"layers\": [\n    {\n      \"mediaType\": \"application/vnd.oci.image.layer.v1.tar+gzip\",\n      \"digest\": \"sha256:a32b217ef17069c89f5f22c5a0b1b0f1292375d7304acc3f5d8a6ecc7e0c7208\",\n      \"size\": 100,\n      \"annotations\": {\n        \"org.example.kept\": \"v0 \\u003c\\u0026\\u003e\"\n      }\n    }\n  ]\n}"
+ },
+ {
+  "file": "corpus/plan/base-platform.Dockerfile",
+  "layers": 2,
+  "epoch": false,
+  "base": false,
+  "config": "{\"architecture\":\"amd64\",\"config\":{\"Env\":[\"PATH=/usr/bin\"]},\"created\":null,\"history\":[{\"created_by\":\"base\"},{\"created_by\":\"RUN /bin/sh -c uname -m # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"}],\"os\":\"linux\",\"rootfs\":{\"type\":\"layers\",\"diff_ids\":[\"sha256:10c4e94434092ec0e99162a4eccb58e012eb2a0d9d6db38372d58a84cc659612\",\"sha256:64e71580c2ea7aa628b77c9e993096065cf51c3e5a1dbbb112e138d5b9cc4398\"]}}",
+  "manifest": "{\n  \"schemaVersion\": 2,\n  \"mediaType\": \"application/vnd.oci.image.manifest.v1+json\",\n  \"config\": {\n    \"mediaType\": \"application/vnd.oci.image.config.v1+json\",\n    \"digest\": \"sha256:a1bd88f1927af7a1a137c9c0f9b57cb0897ffcee6335c3e38d5ee128596f98da\",\n    \"size\": 396\n  },\n  \"layers\": [\n    {\n      \"mediaType\": \"application/vnd.oci.image.layer.v1.tar+gzip\",\n      \"digest\": \"sha256:a32b217ef17069c89f5f22c5a0b1b0f1292375d7304acc3f5d8a6ecc7e0c7208\",\n      \"size\": 100,\n      \"annotations\": {\n        \"org.example.kept\": \"v0 \\u003c\\u0026\\u003e\"\n      }\n    },\n    {\n      \"mediaType\": \"application/vnd.oci.image.layer.v1.tar+gzip\",\n      \"digest\": \"sha256:8ea720af7d06fc784e8a1e71cf77659b56e75cbed34969abb290689af960c86d\",\n      \"size\": 101,\n      \"annotations\": {\n        \"org.example.kept\": \"v1 \\u003c\\u0026\\u003e\"\n      }\n    }\n  ]\n}"
+ },
+ {
+  "file": "corpus/plan/base-platform.Dockerfile",
+  "layers": 2,
+  "epoch": false,
+  "base": true,
+  "config": "{\"architecture\":\"amd64\",\"config\":{\"Env\":[\"PATH=/usr/bin\"]},\"created\":null,\"history\":[{\"created_by\":\"base\"},{\"created_by\":\"RUN /bin/sh -c uname -m # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"}],\"os\":\"linux\",\"rootfs\":{\"type\":\"layers\",\"diff_ids\":[\"sha256:10c4e94434092ec0e99162a4eccb58e012eb2a0d9d6db38372d58a84cc659612\",\"sha256:64e71580c2ea7aa628b77c9e993096065cf51c3e5a1dbbb112e138d5b9cc4398\"]}}",
+  "manifest": "{\n  \"schemaVersion\": 2,\n  \"mediaType\": \"application/vnd.oci.image.manifest.v1+json\",\n  \"config\": {\n    \"mediaType\": \"application/vnd.oci.image.config.v1+json\",\n    \"digest\": \"sha256:a1bd88f1927af7a1a137c9c0f9b57cb0897ffcee6335c3e38d5ee128596f98da\",\n    \"size\": 396\n  },\n  \"layers\": [\n    {\n      \"mediaType\": \"application/vnd.oci.image.layer.v1.tar+gzip\",\n      \"digest\": \"sha256:a32b217ef17069c89f5f22c5a0b1b0f1292375d7304acc3f5d8a6ecc7e0c7208\",\n      \"size\": 100,\n      \"annotations\": {\n        \"org.example.kept\": \"v0 \\u003c\\u0026\\u003e\"\n      }\n    },\n    {\n      \"mediaType\": \"application/vnd.oci.image.layer.v1.tar+gzip\",\n      \"digest\": \"sha256:8ea720af7d06fc784e8a1e71cf77659b56e75cbed34969abb290689af960c86d\",\n      \"size\": 101,\n      \"annotations\": {\n        \"org.example.kept\": \"v1 \\u003c\\u0026\\u003e\"\n      }\n    }\n  ]\n}"
+ },
+ {
+  "file": "corpus/plan/base-platform.Dockerfile",
+  "layers": 2,
+  "epoch": true,
+  "base": false,
+  "config": "{\"architecture\":\"amd64\",\"config\":{\"Env\":[\"PATH=/usr/bin\"]},\"created\":\"2023-11-14T22:13:20Z\",\"history\":[{\"created\":\"2023-11-14T22:13:20Z\",\"created_by\":\"base\"},{\"created\":\"2023-11-14T22:13:20Z\",\"created_by\":\"RUN /bin/sh -c uname -m # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"}],\"os\":\"linux\",\"rootfs\":{\"type\":\"layers\",\"diff_ids\":[\"sha256:10c4e94434092ec0e99162a4eccb58e012eb2a0d9d6db38372d58a84cc659612\",\"sha256:64e71580c2ea7aa628b77c9e993096065cf51c3e5a1dbbb112e138d5b9cc4398\"]}}",
+  "manifest": "{\n  \"schemaVersion\": 2,\n  \"mediaType\": \"application/vnd.oci.image.manifest.v1+json\",\n  \"config\": {\n    \"mediaType\": \"application/vnd.oci.image.config.v1+json\",\n    \"digest\": \"sha256:665189e7f3c12775c125bd941e85ab761a7ac428d3271108c3a8ccc8e8d92cf4\",\n    \"size\": 480\n  },\n  \"layers\": [\n    {\n      \"mediaType\": \"application/vnd.oci.image.layer.v1.tar+gzip\",\n      \"digest\": \"sha256:a32b217ef17069c89f5f22c5a0b1b0f1292375d7304acc3f5d8a6ecc7e0c7208\",\n      \"size\": 100,\n      \"annotations\": {\n        \"org.example.kept\": \"v0 \\u003c\\u0026\\u003e\"\n      }\n    },\n    {\n      \"mediaType\": \"application/vnd.oci.image.layer.v1.tar+gzip\",\n      \"digest\": \"sha256:8ea720af7d06fc784e8a1e71cf77659b56e75cbed34969abb290689af960c86d\",\n      \"size\": 101,\n      \"annotations\": {\n        \"org.example.kept\": \"v1 \\u003c\\u0026\\u003e\"\n      }\n    }\n  ]\n}"
+ },
+ {
+  "file": "corpus/plan/base-platform.Dockerfile",
+  "layers": 2,
+  "epoch": true,
+  "base": true,
+  "config": "{\"architecture\":\"amd64\",\"config\":{\"Env\":[\"PATH=/usr/bin\"]},\"created\":null,\"history\":[{\"created_by\":\"base\"},{\"created_by\":\"RUN /bin/sh -c uname -m # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"}],\"os\":\"linux\",\"rootfs\":{\"type\":\"layers\",\"diff_ids\":[\"sha256:10c4e94434092ec0e99162a4eccb58e012eb2a0d9d6db38372d58a84cc659612\",\"sha256:64e71580c2ea7aa628b77c9e993096065cf51c3e5a1dbbb112e138d5b9cc4398\"]}}",
+  "manifest": "{\n  \"schemaVersion\": 2,\n  \"mediaType\": \"application/vnd.oci.image.manifest.v1+json\",\n  \"config\": {\n    \"mediaType\": \"application/vnd.oci.image.config.v1+json\",\n    \"digest\": \"sha256:a1bd88f1927af7a1a137c9c0f9b57cb0897ffcee6335c3e38d5ee128596f98da\",\n    \"size\": 396\n  },\n  \"layers\": [\n    {\n      \"mediaType\": \"application/vnd.oci.image.layer.v1.tar+gzip\",\n      \"digest\": \"sha256:a32b217ef17069c89f5f22c5a0b1b0f1292375d7304acc3f5d8a6ecc7e0c7208\",\n      \"size\": 100,\n      \"annotations\": {\n        \"org.example.kept\": \"v0 \\u003c\\u0026\\u003e\"\n      }\n    },\n    {\n      \"mediaType\": \"application/vnd.oci.image.layer.v1.tar+gzip\",\n      \"digest\": \"sha256:8ea720af7d06fc784e8a1e71cf77659b56e75cbed34969abb290689af960c86d\",\n      \"size\": 101,\n      \"annotations\": {\n        \"org.example.kept\": \"v1 \\u003c\\u0026\\u003e\"\n      }\n    }\n  ]\n}"
+ },
+ {
+  "file": "corpus/plan/base-platform.Dockerfile",
+  "layers": 3,
+  "epoch": false,
+  "base": false,
+  "config": "{\"architecture\":\"amd64\",\"config\":{\"Env\":[\"PATH=/usr/bin\"]},\"created\":null,\"history\":[{\"created_by\":\"base\"},{\"created_by\":\"RUN /bin/sh -c uname -m # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"},{\"comment\":\"buildkit.exporter.image.v0\"}],\"os\":\"linux\",\"rootfs\":{\"type\":\"layers\",\"diff_ids\":[\"sha256:10c4e94434092ec0e99162a4eccb58e012eb2a0d9d6db38372d58a84cc659612\",\"sha256:64e71580c2ea7aa628b77c9e993096065cf51c3e5a1dbbb112e138d5b9cc4398\",\"sha256:7ff25f8956fcdb19b2b1b2e476773fae965ab4546912bf9a6c1c3a2bd42859d9\"]}}",
+  "manifest": "{\n  \"schemaVersion\": 2,\n  \"mediaType\": \"application/vnd.oci.image.manifest.v1+json\",\n  \"config\": {\n    \"mediaType\": \"application/vnd.oci.image.config.v1+json\",\n    \"digest\": \"sha256:63a50f24bcba78044ed3bd738b6b4c62c906a41c30a93edef5f3d9d090129192\",\n    \"size\": 511\n  },\n  \"layers\": [\n    {\n      \"mediaType\": \"application/vnd.oci.image.layer.v1.tar+gzip\",\n      \"digest\": \"sha256:a32b217ef17069c89f5f22c5a0b1b0f1292375d7304acc3f5d8a6ecc7e0c7208\",\n      \"size\": 100,\n      \"annotations\": {\n        \"org.example.kept\": \"v0 \\u003c\\u0026\\u003e\"\n      }\n    },\n    {\n      \"mediaType\": \"application/vnd.oci.image.layer.v1.tar+gzip\",\n      \"digest\": \"sha256:8ea720af7d06fc784e8a1e71cf77659b56e75cbed34969abb290689af960c86d\",\n      \"size\": 101,\n      \"annotations\": {\n        \"org.example.kept\": \"v1 \\u003c\\u0026\\u003e\"\n      }\n    },\n    {\n      \"mediaType\": \"application/vnd.oci.image.layer.v1.tar+gzip\",\n      \"digest\": \"sha256:974b8f4f45ebf7114bdbcb2e9132662134d46b6fe433660b7b2e93ce096b269a\",\n      \"size\": 102,\n      \"annotations\": {\n        \"org.example.kept\": \"v2 \\u003c\\u0026\\u003e\"\n      }\n    }\n  ]\n}"
+ },
+ {
+  "file": "corpus/plan/base-platform.Dockerfile",
+  "layers": 3,
+  "epoch": false,
+  "base": true,
+  "config": "{\"architecture\":\"amd64\",\"config\":{\"Env\":[\"PATH=/usr/bin\"]},\"created\":null,\"history\":[{\"created_by\":\"base\"},{\"created_by\":\"RUN /bin/sh -c uname -m # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"},{\"comment\":\"buildkit.exporter.image.v0\"}],\"os\":\"linux\",\"rootfs\":{\"type\":\"layers\",\"diff_ids\":[\"sha256:10c4e94434092ec0e99162a4eccb58e012eb2a0d9d6db38372d58a84cc659612\",\"sha256:64e71580c2ea7aa628b77c9e993096065cf51c3e5a1dbbb112e138d5b9cc4398\",\"sha256:7ff25f8956fcdb19b2b1b2e476773fae965ab4546912bf9a6c1c3a2bd42859d9\"]}}",
+  "manifest": "{\n  \"schemaVersion\": 2,\n  \"mediaType\": \"application/vnd.oci.image.manifest.v1+json\",\n  \"config\": {\n    \"mediaType\": \"application/vnd.oci.image.config.v1+json\",\n    \"digest\": \"sha256:63a50f24bcba78044ed3bd738b6b4c62c906a41c30a93edef5f3d9d090129192\",\n    \"size\": 511\n  },\n  \"layers\": [\n    {\n      \"mediaType\": \"application/vnd.oci.image.layer.v1.tar+gzip\",\n      \"digest\": \"sha256:a32b217ef17069c89f5f22c5a0b1b0f1292375d7304acc3f5d8a6ecc7e0c7208\",\n      \"size\": 100,\n      \"annotations\": {\n        \"org.example.kept\": \"v0 \\u003c\\u0026\\u003e\"\n      }\n    },\n    {\n      \"mediaType\": \"application/vnd.oci.image.layer.v1.tar+gzip\",\n      \"digest\": \"sha256:8ea720af7d06fc784e8a1e71cf77659b56e75cbed34969abb290689af960c86d\",\n      \"size\": 101,\n      \"annotations\": {\n        \"org.example.kept\": \"v1 \\u003c\\u0026\\u003e\"\n      }\n    },\n    {\n      \"mediaType\": \"application/vnd.oci.image.layer.v1.tar+gzip\",\n      \"digest\": \"sha256:974b8f4f45ebf7114bdbcb2e9132662134d46b6fe433660b7b2e93ce096b269a\",\n      \"size\": 102,\n      \"annotations\": {\n        \"org.example.kept\": \"v2 \\u003c\\u0026\\u003e\"\n      }\n    }\n  ]\n}"
+ },
+ {
+  "file": "corpus/plan/base-platform.Dockerfile",
+  "layers": 3,
+  "epoch": true,
+  "base": false,
+  "config": "{\"architecture\":\"amd64\",\"config\":{\"Env\":[\"PATH=/usr/bin\"]},\"created\":\"2023-11-14T22:13:20Z\",\"history\":[{\"created\":\"2023-11-14T22:13:20Z\",\"created_by\":\"base\"},{\"created\":\"2023-11-14T22:13:20Z\",\"created_by\":\"RUN /bin/sh -c uname -m # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"},{\"created\":\"2023-11-14T22:13:20Z\",\"comment\":\"buildkit.exporter.image.v0\"}],\"os\":\"linux\",\"rootfs\":{\"type\":\"layers\",\"diff_ids\":[\"sha256:10c4e94434092ec0e99162a4eccb58e012eb2a0d9d6db38372d58a84cc659612\",\"sha256:64e71580c2ea7aa628b77c9e993096065cf51c3e5a1dbbb112e138d5b9cc4398\",\"sha256:7ff25f8956fcdb19b2b1b2e476773fae965ab4546912bf9a6c1c3a2bd42859d9\"]}}",
+  "manifest": "{\n  \"schemaVersion\": 2,\n  \"mediaType\": \"application/vnd.oci.image.manifest.v1+json\",\n  \"config\": {\n    \"mediaType\": \"application/vnd.oci.image.config.v1+json\",\n    \"digest\": \"sha256:bfcee52825b0d1e7a2791e10cd46edc677037d5433e344ffec08d11624dc7c7b\",\n    \"size\": 628\n  },\n  \"layers\": [\n    {\n      \"mediaType\": \"application/vnd.oci.image.layer.v1.tar+gzip\",\n      \"digest\": \"sha256:a32b217ef17069c89f5f22c5a0b1b0f1292375d7304acc3f5d8a6ecc7e0c7208\",\n      \"size\": 100,\n      \"annotations\": {\n        \"org.example.kept\": \"v0 \\u003c\\u0026\\u003e\"\n      }\n    },\n    {\n      \"mediaType\": \"application/vnd.oci.image.layer.v1.tar+gzip\",\n      \"digest\": \"sha256:8ea720af7d06fc784e8a1e71cf77659b56e75cbed34969abb290689af960c86d\",\n      \"size\": 101,\n      \"annotations\": {\n        \"org.example.kept\": \"v1 \\u003c\\u0026\\u003e\"\n      }\n    },\n    {\n      \"mediaType\": \"application/vnd.oci.image.layer.v1.tar+gzip\",\n      \"digest\": \"sha256:974b8f4f45ebf7114bdbcb2e9132662134d46b6fe433660b7b2e93ce096b269a\",\n      \"size\": 102,\n      \"annotations\": {\n        \"org.example.kept\": \"v2 \\u003c\\u0026\\u003e\"\n      }\n    }\n  ]\n}"
+ },
+ {
+  "file": "corpus/plan/base-platform.Dockerfile",
+  "layers": 3,
+  "epoch": true,
+  "base": true,
+  "config": "{\"architecture\":\"amd64\",\"config\":{\"Env\":[\"PATH=/usr/bin\"]},\"created\":\"2023-11-14T22:13:20Z\",\"history\":[{\"created_by\":\"base\"},{\"created_by\":\"RUN /bin/sh -c uname -m # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"},{\"created\":\"2023-11-14T22:13:20Z\",\"comment\":\"buildkit.exporter.image.v0\"}],\"os\":\"linux\",\"rootfs\":{\"type\":\"layers\",\"diff_ids\":[\"sha256:10c4e94434092ec0e99162a4eccb58e012eb2a0d9d6db38372d58a84cc659612\",\"sha256:64e71580c2ea7aa628b77c9e993096065cf51c3e5a1dbbb112e138d5b9cc4398\",\"sha256:7ff25f8956fcdb19b2b1b2e476773fae965ab4546912bf9a6c1c3a2bd42859d9\"]}}",
+  "manifest": "{\n  \"schemaVersion\": 2,\n  \"mediaType\": \"application/vnd.oci.image.manifest.v1+json\",\n  \"config\": {\n    \"mediaType\": \"application/vnd.oci.image.config.v1+json\",\n    \"digest\": \"sha256:3cc49c51fd81cb793bc9e3415ceba0030b24a2ac99671ebf8dcbf5d7fd143cec\",\n    \"size\": 562\n  },\n  \"layers\": [\n    {\n      \"mediaType\": \"application/vnd.oci.image.layer.v1.tar+gzip\",\n      \"digest\": \"sha256:a32b217ef17069c89f5f22c5a0b1b0f1292375d7304acc3f5d8a6ecc7e0c7208\",\n      \"size\": 100,\n      \"annotations\": {\n        \"org.example.kept\": \"v0 \\u003c\\u0026\\u003e\"\n      }\n    },\n    {\n      \"mediaType\": \"application/vnd.oci.image.layer.v1.tar+gzip\",\n      \"digest\": \"sha256:8ea720af7d06fc784e8a1e71cf77659b56e75cbed34969abb290689af960c86d\",\n      \"size\": 101,\n      \"annotations\": {\n        \"org.example.kept\": \"v1 \\u003c\\u0026\\u003e\"\n      }\n    },\n    {\n      \"mediaType\": \"application/vnd.oci.image.layer.v1.tar+gzip\",\n      \"digest\": \"sha256:974b8f4f45ebf7114bdbcb2e9132662134d46b6fe433660b7b2e93ce096b269a\",\n      \"size\": 102,\n      \"annotations\": {\n        \"org.example.kept\": \"v2 \\u003c\\u0026\\u003e\"\n      }\n    }\n  ]\n}"
+ },
+ {
+  "file": "corpus/plan/base-platform.Dockerfile",
+  "layers": 1,
+  "epoch": false,
+  "base": false,
+  "config": "{\"architecture\":\"amd64\",\"config\":{\"Env\":[\"PATH=/usr/bin\"]},\"created\":null,\"history\":[{\"created_by\":\"base\"},{\"created_by\":\"RUN /bin/sh -c uname -m # buildkit\",\"comment\":\"buildkit.dockerfile.v0\",\"empty_layer\":true}],\"os\":\"linux\",\"rootfs\":{\"type\":\"layers\",\"diff_ids\":[\"sha256:10c4e94434092ec0e99162a4eccb58e012eb2a0d9d6db38372d58a84cc659612\"]}}",
+  "manifest": "{\n  \"schemaVersion\": 2,\n  \"mediaType\": \"application/vnd.oci.image.manifest.v1+json\",\n  \"config\": {\n    \"mediaType\": \"application/vnd.oci.image.config.v1+json\",\n    \"digest\": \"sha256:d6dbc05526c0d0e67b3a700f2df28ba56674aa96c42588286ff07736e1f2ff2d\",\n    \"size\": 341\n  },\n  \"layers\": [\n    {\n      \"mediaType\": \"application/vnd.oci.image.layer.v1.tar+gzip\",\n      \"digest\": \"sha256:a32b217ef17069c89f5f22c5a0b1b0f1292375d7304acc3f5d8a6ecc7e0c7208\",\n      \"size\": 100,\n      \"annotations\": {\n        \"org.example.kept\": \"v0 \\u003c\\u0026\\u003e\"\n      }\n    }\n  ]\n}"
+ },
+ {
+  "file": "corpus/plan/base-platform.Dockerfile",
+  "layers": 1,
+  "epoch": false,
+  "base": true,
+  "config": "{\"architecture\":\"amd64\",\"config\":{\"Env\":[\"PATH=/usr/bin\"]},\"created\":null,\"history\":[{\"created_by\":\"base\"},{\"created_by\":\"RUN /bin/sh -c uname -m # buildkit\",\"comment\":\"buildkit.dockerfile.v0\",\"empty_layer\":true}],\"os\":\"linux\",\"rootfs\":{\"type\":\"layers\",\"diff_ids\":[\"sha256:10c4e94434092ec0e99162a4eccb58e012eb2a0d9d6db38372d58a84cc659612\"]}}",
+  "manifest": "{\n  \"schemaVersion\": 2,\n  \"mediaType\": \"application/vnd.oci.image.manifest.v1+json\",\n  \"config\": {\n    \"mediaType\": \"application/vnd.oci.image.config.v1+json\",\n    \"digest\": \"sha256:d6dbc05526c0d0e67b3a700f2df28ba56674aa96c42588286ff07736e1f2ff2d\",\n    \"size\": 341\n  },\n  \"layers\": [\n    {\n      \"mediaType\": \"application/vnd.oci.image.layer.v1.tar+gzip\",\n      \"digest\": \"sha256:a32b217ef17069c89f5f22c5a0b1b0f1292375d7304acc3f5d8a6ecc7e0c7208\",\n      \"size\": 100,\n      \"annotations\": {\n        \"org.example.kept\": \"v0 \\u003c\\u0026\\u003e\"\n      }\n    }\n  ]\n}"
+ },
+ {
+  "file": "corpus/plan/base-platform.Dockerfile",
+  "layers": 1,
+  "epoch": true,
+  "base": false,
+  "config": "{\"architecture\":\"amd64\",\"config\":{\"Env\":[\"PATH=/usr/bin\"]},\"created\":\"2023-11-14T22:13:20Z\",\"history\":[{\"created\":\"2023-11-14T22:13:20Z\",\"created_by\":\"base\"},{\"created\":\"2023-11-14T22:13:20Z\",\"created_by\":\"RUN /bin/sh -c uname -m # buildkit\",\"comment\":\"buildkit.dockerfile.v0\",\"empty_layer\":true}],\"os\":\"linux\",\"rootfs\":{\"type\":\"layers\",\"diff_ids\":[\"sha256:10c4e94434092ec0e99162a4eccb58e012eb2a0d9d6db38372d58a84cc659612\"]}}",
+  "manifest": "{\n  \"schemaVersion\": 2,\n  \"mediaType\": \"application/vnd.oci.image.manifest.v1+json\",\n  \"config\": {\n    \"mediaType\": \"application/vnd.oci.image.config.v1+json\",\n    \"digest\": \"sha256:dd70911352bdb6aca4e92f382a07c1109e0f317510f83d690c32fbab2a536ce7\",\n    \"size\": 425\n  },\n  \"layers\": [\n    {\n      \"mediaType\": \"application/vnd.oci.image.layer.v1.tar+gzip\",\n      \"digest\": \"sha256:a32b217ef17069c89f5f22c5a0b1b0f1292375d7304acc3f5d8a6ecc7e0c7208\",\n      \"size\": 100,\n      \"annotations\": {\n        \"org.example.kept\": \"v0 \\u003c\\u0026\\u003e\"\n      }\n    }\n  ]\n}"
+ },
+ {
+  "file": "corpus/plan/base-platform.Dockerfile",
+  "layers": 1,
+  "epoch": true,
+  "base": true,
+  "config": "{\"architecture\":\"amd64\",\"config\":{\"Env\":[\"PATH=/usr/bin\"]},\"created\":\"2023-11-14T22:13:20Z\",\"history\":[{\"created_by\":\"base\"},{\"created\":\"2023-11-14T22:13:20Z\",\"created_by\":\"RUN /bin/sh -c uname -m # buildkit\",\"comment\":\"buildkit.dockerfile.v0\",\"empty_layer\":true}],\"os\":\"linux\",\"rootfs\":{\"type\":\"layers\",\"diff_ids\":[\"sha256:10c4e94434092ec0e99162a4eccb58e012eb2a0d9d6db38372d58a84cc659612\"]}}",
+  "manifest": "{\n  \"schemaVersion\": 2,\n  \"mediaType\": \"application/vnd.oci.image.manifest.v1+json\",\n  \"config\": {\n    \"mediaType\": \"application/vnd.oci.image.config.v1+json\",\n    \"digest\": \"sha256:ca4e9c4fca5c33d6d46510d9d00a8285f8f0858d275626afabe5a2727f9c203a\",\n    \"size\": 392\n  },\n  \"layers\": [\n    {\n      \"mediaType\": \"application/vnd.oci.image.layer.v1.tar+gzip\",\n      \"digest\": \"sha256:a32b217ef17069c89f5f22c5a0b1b0f1292375d7304acc3f5d8a6ecc7e0c7208\",\n      \"size\": 100,\n      \"annotations\": {\n        \"org.example.kept\": \"v0 \\u003c\\u0026\\u003e\"\n      }\n    }\n  ]\n}"
+ },
+ {
   "file": "corpus/plan/config-shell-form.Dockerfile",
   "layers": 1,
   "epoch": false,

@@ -66,6 +66,16 @@ pub fn guest() -> Vec<Target> {
     }
 }
 
+/// containerd's `platforms.FormatAll` (v1.0.0-rc.2) of a Linux platform: `os/arch`, then
+/// `/variant` where it has one; `unknown` where it names no OS.
+pub fn format_all(t: &Target) -> String {
+    match (t.os.as_str(), t.variant.as_str()) {
+        ("", _) => "unknown".into(),
+        (_, "") => format!("{}/{}", t.os, t.architecture),
+        _ => format!("{}/{}/{}", t.os, t.architecture, t.variant),
+    }
+}
+
 /// What a pull that names no platform takes of an index, best first, as dockerd takes it
 /// (containerd/platforms v1.0.0-rc.2 compare.go, platformVector): our guests' platforms,
 /// then on arm64 32-bit Arm's v8 to v5, which a guest runs under their emulator (D179).

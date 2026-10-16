@@ -47,6 +47,7 @@ Targets: request → usable in **under 5 ms, boot included**, and less memory pe
   - aws-lc-sys compiles C for each target, so this needs zig, LLVM (clang-cl, llvm-lib), NASM and cargo-xwin: `brew install zig llvm nasm` and `cargo install cargo-xwin`.
   - The first Windows lint downloads Microsoft's CRT and SDK.
 - A process passing a socket by `SCM_RIGHTS` keeps its own descriptor until the receiver says it has it: XNU's collector flushes a socket in flight that no process holds (M24; the daemon's `TAKEN`).
+- A flock(2) lock is its open file's: unlock it before its file closes, or a program another thread is starting keeps it held until its exec (M244; the store's `Locked`).
 - On macOS a read waiting on a Unix stream socket can sleep through its peer's half-close, and `shutdown(SHUT_RDWR)` after one shuts nothing (M236, D175). Read sockets through `shards_ipc::read` or `Polled` (messages through `shards_ipc::recv`), and end a stream with `shards_ipc::end`, never `Shutdown::Both`.
 - Compare two builds' run latency with `docs/research/measurements/build-ab/ab.py`, both restoring one template: restore costs differ from template to template by tens of µs (PM M29).
 - Every command `common::command()` starts gets the tests' own `DOCKER_CONFIG`, so no test reads the host's docker config or credential helpers. Tests that log in, or run the docker CLI, also give it a `PATH` of an empty directory and a `DOCKER_CONFIG` of their own: a credential helper found on `PATH` (osxkeychain) keeps a test's login in the host's keychain.

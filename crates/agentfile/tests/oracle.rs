@@ -1174,9 +1174,9 @@ fn options_of(file: &str) -> shards_agentfile::plan::Options {
                 v.split(',').map(|n| n.as_bytes().to_vec()).collect()
             }
         }),
-        // The oracle's fake gateway: an explicit platform, no session, every capability
-        // (`pb.Caps.All()`).
-        implicit_target: false,
+        // The oracle's fake gateway: an explicit platform unless the file asks none, no
+        // session, every capability (`pb.Caps.All()`).
+        implicit_target: opts_v["implicit_target"].as_bool().unwrap_or(false),
         session: Vec::new(),
         local_sessions: Default::default(),
         llb_caps: None,

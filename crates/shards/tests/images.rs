@@ -199,7 +199,12 @@ fn an_image_past_its_limits_is_refused() {
 /// own kernel registers as it boots: from a cold boot, which saves its template, then from a
 /// copy of the template, which keeps it registered. Asked for by `--platform`, it is not
 /// warned of; named by its lone manifest and no platform, it runs too, warned of as dockerd
-/// warns of it (moby docker-v29.3.1 daemon/create.go).
+/// warns of it (moby docker-v29.3.1 daemon/create.go). An image keeps each platform pulled,
+/// as dockerd's does (M243): pulled for another platform where this host's is here, it is
+/// up to date, and a run that asks no platform runs this host's still. A platform not here
+/// is refused where the run may not pull; a lone manifest of another platform than the one
+/// asked, once pulled; an ID's, as dockerd refuses it, where Docker's CLI would pull the ID
+/// as a repository's name.
 #[test]
 fn a_run_of_another_cpus_image_runs_under_its_emulator() {
     if cannot_run_vms() {
@@ -236,15 +241,41 @@ fn a_run_of_another_cpus_image_runs_under_its_emulator() {
         )
     };
     let platform = format!("linux/{other}");
+    let ours = if cfg!(target_arch = "aarch64") {
+        "arm64"
+    } else {
+        "amd64"
+    };
     let run = |args: &[&str]| run_shards_env(&["run"], args, &env, TIMEOUT);
+    let shown = |r: &common::Run| format!("--- stdout\n{}\n--- stderr\n{}", r.stdout, r.stderr);
+    let pulled = run_shards_env(&["pull"], &[INDEX], &env, TIMEOUT);
+    assert_eq!(pulled.status, Some(0), "{}", shown(&pulled));
+    // By its digest alone: here by another name of its repository, so up to date.
+    let digest_only = INDEX.replace(":3.22@", "@");
+    let again = run_shards_env(&["pull"], &[&digest_only], &env, TIMEOUT);
+    let shown_again = shown(&again);
+    assert_eq!(again.status, Some(0), "{shown_again}");
+    assert!(
+        shown_again.contains(&format!("Status: Image is up to date for {digest_only}")),
+        "{shown_again}"
+    );
     let first = run(&["--rm", "--platform", &platform, INDEX, "uname", "-m"]);
-    let shown = format!("--- stdout\n{}\n--- stderr\n{}", first.stdout, first.stderr);
-    assert_eq!(first.status, Some(0), "{shown}");
-    assert_eq!(first.stdout.trim(), machine, "{shown}");
-    assert!(booted(&first), "{shown}");
+    let shown_first = shown(&first);
+    assert_eq!(first.status, Some(0), "{shown_first}");
+    assert_eq!(first.stdout.trim(), machine, "{shown_first}");
+    assert!(booted(&first), "{shown_first}");
     assert!(
         !first.stderr.contains("WARNING"),
-        "asked for, not warned of: {shown}"
+        "asked for, not warned of: {shown_first}"
+    );
+    assert!(
+        first
+            .stderr
+            .contains(&format!("Unable to find image '{INDEX}' locally"))
+            && first
+                .stderr
+                .contains(&format!("Status: Image is up to date for {INDEX}")),
+        "another platform of an image here: {shown_first}"
     );
     if shards_vmm::vm::SNAPSHOTS {
         let second = run(&[
@@ -266,18 +297,78 @@ fn a_run_of_another_cpus_image_runs_under_its_emulator() {
         );
         assert!(!booted(&second), "restored, not booted: {shown}");
     }
+    // This host's still, where no platform is asked.
+    let native = run(&["--rm", INDEX, "uname", "-m"]);
+    let shown_native = shown(&native);
+    assert_eq!(native.status, Some(0), "{shown_native}");
+    assert_eq!(native.stdout.trim(), std::env::consts::ARCH, "{shown_native}");
+    assert!(
+        !native.stderr.contains("WARNING") && !native.stderr.contains("Unable to find"),
+        "{shown_native}"
+    );
+    let never = run(&[
+        "--rm",
+        "--pull",
+        "never",
+        "--platform",
+        "linux/s390x",
+        INDEX,
+        "true",
+    ]);
+    let shown_never = shown(&never);
+    assert_eq!(never.status, Some(125), "{shown_never}");
+    assert!(
+        never.stderr.contains(&format!(
+            "image with reference {INDEX} was found but does not provide the specified platform (linux/s390x)"
+        )),
+        "{shown_never}"
+    );
+    // By an ID: refused, no repository of its name pulled.
+    let id = INDEX.rsplit(':').next().and_then(|hex| hex.get(..12)).unwrap();
+    let by_id = run(&["--rm", "--platform", "linux/s390x", id, "true"]);
+    let shown_id = shown(&by_id);
+    assert_eq!(by_id.status, Some(125), "{shown_id}");
+    assert!(
+        by_id.stderr.contains(&format!(
+            "image with reference {INDEX} was found but does not provide the specified platform (linux/s390x)"
+        )) && !by_id.stderr.contains("Unable to find"),
+        "{shown_id}"
+    );
     let warned = run(&["--rm", lone, "uname", "-m"]);
-    let shown = format!("--- stdout\n{}\n--- stderr\n{}", warned.stdout, warned.stderr);
-    assert_eq!(warned.status, Some(0), "{shown}");
-    assert_eq!(warned.stdout.trim(), machine, "{shown}");
+    let shown_warned = shown(&warned);
+    assert_eq!(warned.status, Some(0), "{shown_warned}");
+    assert_eq!(warned.stdout.trim(), machine, "{shown_warned}");
     assert!(
         warned.stderr.contains(&format!(
             "WARNING: The requested image's platform ({lone_platform}) does not match the detected host platform (linux/"
         )) && warned
             .stderr
             .contains(") and no specific platform was requested"),
-        "{shown}"
+        "{shown_warned}"
     );
+    // Its content here as the index's, but no name of its repository resolved to it.
+    assert!(
+        warned
+            .stderr
+            .contains(&format!("Status: Downloaded newer image for {lone}")),
+        "{shown_warned}"
+    );
+    // A lone manifest is pulled whatever its platform, and run for its own alone.
+    let asked = format!("linux/{ours}");
+    let strict = run(&["--rm", "--platform", &asked, lone, "true"]);
+    let shown_strict = shown(&strict);
+    assert_eq!(strict.status, Some(125), "{shown_strict}");
+    assert!(
+        strict
+            .stderr
+            .contains(&format!("Unable to find image '{lone}' locally"))
+            && strict.stderr.contains(&format!(
+                "image with reference {lone} was found but does not provide the specified platform ({asked})"
+            )),
+        "{shown_strict}"
+    );
+    let lenient = run_shards_env(&["pull"], &["--platform", &asked, lone], &env, TIMEOUT);
+    assert_eq!(lenient.status, Some(0), "{}", shown(&lenient));
     let stopped = run_shards_env(&["daemon"], &["stop"], &env, TIMEOUT);
     assert_eq!(stopped.status, Some(0), "{}", stopped.stderr);
 }

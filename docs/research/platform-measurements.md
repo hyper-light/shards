@@ -8804,3 +8804,70 @@ revision before comparing a changed API/implementation.
   its files are taken so too, each refused unless it is what was read. Where no clone is
   made, another volume than the stage's or no APFS, the times decide, as before. Linux and
   Windows take as they did.
+
+### M243. The platforms of one image, as Docker 29.3.1 keeps and runs them (D179)
+
+- **Question.** Where an image's index offers several platforms, which does Docker keep
+  under its name, which does a run take, and what does it say of a platform that is not
+  here?
+- **Method.** `docs/research/measurements/emulation/platforms.sh`, in `shards-dind`
+  (Docker Desktop 4.66.1's engine 29.3.1, the containerd image store, linux/arm64),
+  2026-10-16: `hello-world` pulled by its index's digest (`sha256:11a3eb15…`, a name
+  nothing else there used) for the host's platform; then run with `--platform
+  linux/amd64`, inspected, run with no platform, run for linux/s390x with `--pull never`,
+  pulled for amd64 again, run with `--pull always`, listed with `image ls --tree`, and run
+  for linux/s390x by its short ID, with `--pull never` and without; then removed.
+- **Results.**
+  - The run for amd64, arm64's here: "Unable to find image '…' locally", amd64's layers
+    pulled, "Digest:" the index's, "Status: Image is up to date for …", and the run, with
+    no warning (asked for).
+  - The image then: `inspect` says arm64; the run that asks no platform runs arm64's, with
+    no warning; `image ls --tree` lists linux/amd64 and linux/arm64/v8 with their content,
+    the index's six other platforms at 0 B.
+  - The pull for amd64 again, and the run with `--pull always`: "Image is up to date".
+  - For linux/s390x with `--pull never`, by its name and by its short ID alike: exit 125,
+    "docker: Error response from daemon: image with reference
+    hello-world@sha256:11a3eb15… was found but does not provide the specified platform
+    (linux/s390x)".
+  - By its short ID with the default pull: "Unable to find image '11a3eb1597e8:latest'
+    locally", then "pull access denied for 11a3eb1597e8, repository does not exist or may
+    require 'docker login'": docker/cli v29.8.1 reads a short ID as a repository's name
+    (`reference.ParseAnyReference`) and pulls that.
+- **Consequence.** An image keeps each platform pulled under its name, its host's
+  preferred, as moby docker-v29.3.1 reads them (daemon/containerd/image.go:
+  `getBestPresentImageManifest` over `walkPresentChildren`, `matchAllWithPreference` of the
+  host's platforms; image_pull.go: up to date where the name resolved to that index
+  before). shards keeps an image's platforms so (D179), and refuses a platform not here of
+  an image named by its ID, naming the image, where Docker's CLI pulls the ID as a
+  repository.
+
+### M244. A flock(2) lock outlives its close while a program starts (D114)
+
+- **Question.** The store's cache-mount tests failed now and then on a loaded host, and
+  only beside the store's test that starts `chflags`: a record its step had let go of was
+  still held. A flock(2) lock is its open file's; does a program another thread is
+  starting share that file until its exec closes it, so that the lock outlives its close?
+- **Method.** `docs/research/measurements/flock-spawn/main.rs`: one thread starts `true`
+  over and over through std's `Command`; the main thread, 20,000 times each way in turn,
+  opens a file (close-on-exec, as std opens every file), locks it, lets it go by closing it
+  or by unlocking it and then closing it, and at once asks for the lock through a
+  descriptor of its own without waiting, counting the times it was still held. Three runs
+  each on the M5 Max of M240 (macOS 26.4.1, load averages near 39), and in `shards-dind`
+  (Linux 6.12.76-linuxkit, a static aarch64 musl build), rustc 1.98.0, 2026-10-16. The
+  store's tests, `store::` of shards-image: 12 runs with the `chflags` test, interleaved
+  with 12 without it, then 16 with it and the change, at load averages of 36 to 44.
+- **Results.**
+
+  | | programs started a run | still held after the close | after unlock, then close |
+  |---|---|---|---|
+  | macOS 26.4.1 | 41 to 49 | 13, 14, 5 | 0, 0, 0 |
+  | Linux 6.12 | 273 to 478 | 3, 4, 8 | 0, 0, 0 |
+
+  The store's tests: 2 of 12 runs failed with the `chflags` test, a different cache-mount
+  test each time, 0 of 12 without it, and 0 of 16 with it once each lock was unlocked as it
+  went.
+- **Consequence.** Every lock the store holds, a cache mount's record and key, a lease and
+  a collection's hold, is unlocked before its file closes (`store::Locked`), as the daemon
+  already unlocks its home's. `a_record_let_go_is_free_while_a_copy_of_its_lock_lives` and
+  `a_hold_let_go_goes_while_a_copy_of_its_lock_lives` keep a copy of the lock's descriptor
+  open, as a starting program does, and fail without the unlock.

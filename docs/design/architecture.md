@@ -984,15 +984,20 @@ for the exit status.
       pull`, has moved a reference (it leaves `images/collect-due`, whose coming the
       daemon's watch of `images` sees).
       - The roots are the references: each one's manifest, config and layers, and the
-        root filesystem of its layers' ChainID. Every other blob and root filesystem
-        goes, with older versions' records and root filesystems and what `ingest/`
-        holds.
+        root filesystem of its layers' ChainID, and so each platform of its index that is
+        here, which a run of that platform unpacked (D179). Every other blob and root
+        filesystem goes, with older versions' records and root filesystems and what
+        `ingest/` holds.
       - Content in flight is under the store's lease, a shared `flock` of
         `images/.lease` (flock(2)): a pull holds it until it has recorded its
         reference, `local` while it may build a root filesystem, and a run's
         preparation until its VM has its root filesystem. A collection takes it
         exclusively or not at all, and stays due; it holds the store until it has
-        collected the templates too, so no run begins meanwhile.
+        collected the templates too, so no run begins meanwhile. Each of the store's
+        locks is unlocked before its file closes: a lock is its open file's, which a
+        program another thread is starting shares until its exec, so that closed alone
+        it stays held that long (PM M244: 5 to 14 times in 20,000 on macOS, 3 to 8 on
+        Linux, with a program starting beside them; never once unlocked first).
       - A template records its origin, its root filesystem and guest (`origin.json`).
         One whose root filesystem has gone, that another guest saved, that records no
         origin, or that a daemon before this one left half saved is removed, and its
@@ -3629,7 +3634,7 @@ No run-time labels, relays or declassifiers (§12 answer 14, decided by the user
 an internal-only domain to the world (D58), so there is no data to label. Code mode is
 D136.
 
-### D179. Other CPUs' images, emulated in their microVM (parts 1 and 2 built)
+### D179. Other CPUs' images, emulated in their microVM (parts 1 to 3 built)
 
 Images built on an arm64 Mac usually ship to x86_64 hosts, and the other way round, and a
 build for both (`--platform linux/amd64,linux/arm64`, D87) runs each platform's RUN steps.
@@ -3716,6 +3721,63 @@ the platform builds faster, reached as a context (the next item).
   `tests/images.rs` `a_run_of_another_cpus_image_runs_under_its_emulator` boots one,
   restores its template (without the emulator's device in the restore, it boots instead),
   and runs a lone manifest with no platform, warned of.
+- **An image's platforms** (part 2, built): an image keeps each platform pulled of its
+  index, as dockerd's does (PM M243), where shards' kept one, the last pulled: a run of
+  another platform made a plain run of the image take that one, emulated and warned of.
+  Its name names this host's best of its platforms here, which a run that asks no
+  platform takes, and a pull of another platform leaves it so; the collector keeps each
+  platform here unpacked. A name a load gives an index none of whose platforms is this
+  host's names the index itself; a run of it takes its platforms here, as dockerd's does,
+  where shards refused it ("its record names an index"), and one with none of them here is
+  refused in dockerd's words ("… does not provide any platform"). A run of a platform not
+  here pulls it ("Unable to find image", then "Image is up to date", its name resolving to
+  the index it did), and pull and run
+  say they are up to date as dockerd says it: the name resolved here to what it resolves
+  to now, a digest's by a name of its repository (moby image_pull.go, resolveImage). A run
+  that may not pull refuses it in dockerd's words ("image with reference … was found but
+  does not provide the specified platform (…)"), as does a run for another platform of a
+  lone manifest, which a pull takes whatever its platform. Deliberately unlike Docker:
+  - a platform is here when all of it is, its config and layers with its manifest, where
+    dockerd takes one whose manifest alone is, which a pull cut short leaves: shards pulls
+    it whole again rather than fail the run;
+  - an image named by its ID, for a platform not here, is refused, naming the image, where
+    Docker's CLI reads a short ID as a repository's name and pulls that ("pull access
+    denied for 11a3eb1597e8", M243).
+
+  A build's base, for its guests' platform, is pulled for it where another platform's alone
+  is here. `crates/registry`
+  `an_image_keeps_each_platform_pulled_and_names_this_hosts` (mutation-checked: the name
+  naming what was pulled last, a lookup taking its name's platform alone, a platform taken
+  without its layers, a collection keeping its name's platform's root filesystem alone) and `a_lone_manifest_is_pulled_for_any_platform_and_found_for_its_own`;
+  `tests/images.rs` as above, with this host's pulled first, then each refusal and status
+  (mutation-checked: a lone manifest run for another platform than its own, an ID pulled
+  as a repository's name, a digest's status by its own name's record alone).
+- **A build on another CPU's base** (part 3, built): a build takes a base's lone manifest
+  whatever its platform, as BuildKit's resolver takes one (containerd v2.2.1
+  core/images/image.go, `Manifest`: a platform is checked of an index's manifests alone),
+  where shards refused it, and warns of it in BuildKit's words (InvalidBaseImagePlatform:
+  "Base image … was pulled with platform "linux/amd64", expected "linux/arm64" for current
+  build"). Asked for no platform, the image is its base's platform, as Dockerfile2LLB
+  leaves an implicit target's; its stage keeps the build's platform, as dockerui gives
+  the frontend the worker's first platform alone to detect a stage's by (v0.28.1
+  dockerui/config.go), so no emulated platform is ever detected (measured: Docker
+  29.3.1's BuildKit v0.28.1 on linux/arm64, its worker listing seven platforms, warned,
+  ran the step emulated and made an amd64 image). BuildKit's step runs the base's programs
+  under whatever emulators the host's kernel has, whatever the step's platform says: a
+  builder registers, beside each step's platform's emulator, the one of the CPU of the
+  base its root comes from, down the step's first inputs to its stage's FROM, so that a
+  base of another CPU only copied from fetches no emulator. What a policy reads of a base
+  (D101) is the manifest the build takes, its root filesystem left unbuilt. The planner's
+  oracle gains a build that asks no platform (`scripts/agentfile/generate`,
+  `implicit_target`), and `corpus/plan/base-platform.Dockerfile` and
+  `base-platform-implicit.Dockerfile` hold the warning, the stage's platform and the
+  image's to BuildKit's, asked for and not; `tests/build.rs`
+  `a_step_for_another_cpu_runs_under_its_emulator` builds on the other CPU's lone alpine
+  manifest asking no platform: the step runs emulated, the warning is BuildKit's, the
+  image the other CPU's (mutation-checked: without the base's CPU's emulator the step
+  fails with the kernel's "exec format error", as BuildKit's does without one; a lone
+  manifest refused by a build's lookup, or by a policy's; the oracle planning every build
+  with a platform asked).
 
 ### D178. A microVM's I/O limits, kept outside it
 
@@ -8188,8 +8250,8 @@ it never reads ran it again; and nothing bounded what the cache kept.
   the first free, else a new one; `private` the first free, else a new one; `locked` the
   first free, waited for every 100 ms while each is held. First is by ID, the order
   BuildKit's metadata index looks them up in (cache/metadata `Search`). A lock file per
-  record (flock(2)) holds it for its step, shared or alone; a key's records are looked
-  through and made under the key's lock. A new record's first content is what it is from,
+  record (flock(2)) holds it for its step, shared or alone, unlocked as the step lets it go
+  (PM M244); a key's records are looked through and made under the key's lock. A new record's first content is what it is from,
   whole (`from=`'s state, `source=` the directory shown), its root's owner its source's,
   mode 0755, as containerd's snapshotter makes a child's.
 - **Where it lives** (PM M140, measured before choosing): under load virtio-fs took 0.64
