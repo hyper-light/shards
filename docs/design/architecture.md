@@ -3634,6 +3634,177 @@ No run-time labels, relays or declassifiers (§12 answer 14, decided by the user
 an internal-only domain to the world (D58), so there is no data to label. Code mode is
 D136.
 
+### D180. Contexts: shards on another machine, over QUIC (part 1 built)
+
+**The microVM need.** A user's microVMs run where the work needs them: a Mac for
+development, a Linux machine with a GPU (`--gpus`) or KVM, an x86_64 machine that builds and
+runs amd64 images natively, where a Mac runs them under qemu at 4.6 to 15.5 times the
+cycles (D179, PM M241). Docker reaches another machine's daemon through a context
+(`docker context create NAME --docker host=ssh://…` or `tcp://…`), and `--context`,
+`DOCKER_CONTEXT` and `-H` choose it (docker/cli v29.8.1 cli/command/cli.go,
+`resolveContextName`: `--context`, then `-H` or `DOCKER_HOST`, then `DOCKER_CONTEXT`, then
+the config's `currentContext`).
+
+**What Docker's transports cost, and what shards does instead.** `ssh://` needs a shell
+account on the machine and starts `docker system dial-stdio` there for each connection;
+`tcp://` with TLS needs a CA and certificates made and copied by hand (dockerd
+`--tlsverify`), and a TCP listener. Both carry a run's input and output on one TCP stream,
+where a lost packet stalls every byte behind it. shards speaks QUIC (RFC 9000, 9001, 9002:
+`hyper-quic`, quinn-proto 0.11.18 conformed, over `hyper-tls`, rustls 0.23.45 conformed, both
+../hyper-raft's, the user's choice of transport):
+- **No TCP listener, no shell account, no CA.** Each shards home has an identity key
+  (Ed25519, RFC 8032), and TLS 1.3 carries the two sides' raw public keys (RFC 7250), each
+  pinned by the other: nothing to issue, renew or revoke but a key. A daemon listens only
+  when its owner asks (`--listen`), on the address asked, and serves only the clients it
+  has enrolled: default deny, as its networks are.
+- **A stream each.** Each command is a QUIC stream of its own, so that a stall in one holds
+  up no other command (RFC 9000 §2): its stdin goes one way, and its stdout and stderr the
+  other, interleaved as it wrote them, each way under flow control of its own.
+- **A connection that may survive a move.** QUIC's connection IDs let a connection outlive
+  a change of network (RFC 9000 §9), which a TCP connection cannot; whether shards' does, a
+  laptop's attached runs with it, is part 5's to measure.
+- **Joining by invitation, as focal's nodes and clients join** (the user's other QUIC
+  service, ../focal docs/network-startup.md). On the machine that runs the microVMs,
+  `shards invite client --name NAME --output FILE` writes an invitation to a private file,
+  never to the screen or a log: the daemon's address, its key's SHA-256 and a 256-bit
+  secret. It enrolls one client, and an unused one expires an hour after it was made, as
+  focal's do; `shards list invitations` and `shards remove invitation NAME` show and revoke
+  them. `shards create context NAME --invite-file FILE` connects, checks the daemon's key
+  against the invitation, and proves the secret bound to that TLS session (HMAC-SHA-256 of
+  an RFC 8446 §7.5 exporter), so that it is neither replayed nor relayed; the daemon then
+  enrolls the client's key under the invitation's name.
+  What shards claims against Docker's transports beyond this is measured before it is said
+  (part 5).
+
+**Its surface** (`shards ACTION THING`): `shards create context NAME --invite-file FILE
+[--description TEXT]`, `shards use context NAME`, `shards list contexts`, `shards inspect
+context NAME`, `shards remove context NAME`; on the machine that runs the microVMs, `shards
+run daemon --listen ADDR:PORT`, `shards invite client --name NAME --output FILE`, `shards
+list invitations`, `shards remove invitation NAME`, `shards list clients`, `shards remove
+client NAME`. `--context`/`-c`, `SHARDS_CONTEXT` and then `DOCKER_CONTEXT` choose a
+context as docker/cli chooses one; Docker's `docker context create|use|ls|inspect|rm|show`
+are read as shards' words. What a context reaches is that machine's shards: its images,
+microVMs, volumes and paths, as a Docker context reaches that machine's dockerd.
+
+**How a command crosses.** Whole: the client sends its arguments, and of its environment
+the few variables that shape what a command prints (`TERM`, `COLUMNS`, `NO_COLOR` and the
+like), on one bidirectional QUIC stream (ALPN `shards/1`, RFC 9001 §8.1); the daemon runs
+that shards command in its own home, through its spawner as every child of a daemon is
+started, its stdin, stdout and stderr the connection's streams, and the client prints what
+it prints and exits as it exits. What a command prints is that machine's shards' own, byte
+for byte, and a run's microVM takes its stdio there as a local run does, the VM process
+writing to its descriptors directly. An enrolled client holds what its daemon's owner holds
+of shards, microVMs, images, volumes and that machine's paths, as a Docker context holds
+its dockerd, and nothing more: no other variable crosses, and a context's own commands
+(contexts, invitations, clients, `--listen`) are the machine's owner's alone, as focal's
+local administration is (../focal docs/cluster-admin.md).
+
+**Parts.**
+1. Identity, invitations and joins, the listener and the client's connection, and every
+   command that reads none of the client's files and needs no terminal: `ps`, `images`,
+   `inspect`, `pull`, `rm`, `stop`, `logs`, `run` and its output.
+2. Commands with a terminal: `-i`, `-t` (the remote command on a pseudo-terminal whose
+   size follows the client's), attach, exec.
+3. Builds (the context sent as BuildKit's session sends it), `cp`, `save`, `load`,
+   `import`, `export`.
+4. Docker's CLI through a context: a socket file in the home for each context, which the
+   local daemon relays to the machine's Engine API.
+5. Measured against Docker's `ssh://` and `tcp://` contexts, on the GPU desktop: a run's
+   start, a stream's bytes, and a network change.
+
+**Dependencies.** `hyper-quic` and `hyper-tls` as git dependencies of hyper-light/hyper-raft
+(public) pinned to a revision, so CI builds them; their AWS-LC is shards' own (vendor/).
+Their configurations take a `Box` and a `&'static` provider where upstream's took `Arc`s, so
+shards' QUIC needs none. hyper-quic is taken without its qlog traces (`default-features =
+false`): the `qlog` crate turns on serde_json's `preserve_order` for the whole build, and
+shards' JSON is Docker's, its maps sorted (the full suite found it: an Engine API create's
+`ExposedPorts` came back in insertion order; hyper-quic's VENDORED.md §20 says as much). They refuse Rust 1.98.0, which miscompiles trait-object vtables, so
+shards moved to 1.98.1 with them (rust-toolchain.toml, tests/toolchain.rs). The binary then
+carries two TLS implementations, rustls for registries and hyper-tls for QUIC: what that
+costs the binary and its launch (M113's 2.5 ms) is part 5's to measure.
+
+**Part 1, built.** `crates/remote`: the identity (`identity.rs`), the TLS of raw keys
+(`tls.rs`), the stream's frames (`frame.rs`: the request, stdin, stdout and stderr as they
+come, the exit status or the refusal last), invitations and their proof (`invite.rs`), and a
+driver of hyper-quic on a std UDP socket (`net.rs`): one thread holds the socket and the
+connections, local stdio is read and written by threads of their own whose bounded
+channels hold the connection's flow control back, so that a reader that stops holds up no
+packet the connection's liveness needs, and other threads wake it with a datagram to its
+own socket, which every target has (Windows' consoles and pipes are no descriptor a poll of
+a socket reaches). The daemon's side (`server.rs`, `daemon/remote.rs`) starts each command
+by its spawner as this machine's own shards (`SHARDS_CONTEXT=default`, so that a machine
+whose owner uses a context of their own never sends a client's command on), says each in
+its log (`client NAME: shards ARGS`), hangs a command up whose connection went (SIGHUP, as a
+terminal that went away), and checks a client's enrollment again for each command, so that
+`shards remove client` ends its access at once. A join's refusal is the same whatever made
+it fail. The client's side (`client.rs`, `context.rs`) refuses here what a context does not
+carry yet, the client's terminal and files, read by shards' own parser of each command (a
+flag past another's value included); and where no daemon answers, it says so once QUIC's
+handshake gives up, the idle bound. Tested: `crates/remote` (raw keys pinned and refused, the
+frames, an invitation's file and proof, and `tests/loopback.rs`: a join, its refusals, and
+commands' output, stdin and 8 MiB crossing whole over loopback); `tests/context.rs`, two
+homes on this machine: no invitation without a listening daemon; an invitation private and
+not shown; a join, and the invitation then spent; an hour-old invitation and one of another
+secret refused; a microVM run there, its output and exit status here; the image there and not
+here; `--context`, `SHARDS_CONTEXT` and `use context`; `-it`, `build` and the owner's
+`stop daemon` refused; a client removed refused; and the daemon's log. Mutation-checked: the
+child's `SHARDS_CONTEXT` left out (the client's command sent on), invitations that never
+lapse, a join's proof unchecked, and `run`'s flags read by no parser (an `-it` sent on).
+
+**Streams' ends, as CI found them (part 1).** The aarch64 Linux job hung in
+`tests/loopback.rs`, which hung here in 4 runs of 120 at a load average near 39: a client
+read its command's last frames and the stream's end in one read, and lost the end.
+quinn-proto lets a stream go as it gives its end (`Chunks::next` frees it with its last
+`Ok(None)`, hyper-quic `connection/streams/recv.rs`), so that a read after it finds no
+stream (`ClosedStream`), which the driver took for a reset; and the client read again after
+each frame it took, so that the reset was judged before the exit frame it had already read,
+and a command that had exited failed. The end now comes with the bytes it follows
+(`net::Read::End`), and each side takes every whole frame it holds before it reads more.
+Reading the daemon's side for the same fault found four more, each fixed:
+- **A connection's number given again.** The driver put a new connection in the place of
+  one drained, and every connection's first stream is stream 0, so that what a command whose
+  client had gone still wrote, and its exit status, went to the command of the client that
+  connected after it. A connection's number is never given twice (`net::ConnKey`).
+- **A command that read no stdin held up every client.** The daemon gave a command's stdin
+  what its client sent by a blocking send on the driver's one thread, so that a command that
+  read none of it (`yes | shards --context gpu logs -f NAME`) stopped every connection once
+  its pipe and the channel had filled. What stdin has no room for is now held, and that one
+  stream read no further until it has, its flow control holding that client alone back.
+- **A stream's state kept.** A command's stream, and the thread that wrote its stdin, were
+  let go only with their connection, and a stream its client reset or stopped reading
+  (STOP_SENDING) was kept, its command running. A stream is now let go once its last frame
+  is written, or its client leaves it, whose command, still running, is hung up. Once its
+  answer is queued, what its client still sends goes unread, the client asked to stop, as
+  an HTTP/3 server that needs no more of a request's body asks (RFC 9114 §4.1.2), and a side
+  whose peer reads no more of it is reset (RFC 9000 §3.5); a client so asked sends the rest
+  of its stdin nowhere and waits for its answer.
+- **What a stranger sent, held.** quinn-proto's defaults let a peer open 100 streams one way,
+  which the protocol never reads, and a daemon open streams to its client; and the daemon
+  waited for the whole of a frame of up to 4 MiB from a client it had not enrolled, whom TLS
+  lets in to join. Neither side may now open a stream the other would not read (RFC 9000
+  §4.6), and a request is judged by its header: a client not enrolled may only join, and is
+  waited for no longer than a join's 96 bytes (a name's 63, its NUL, HMAC-SHA-256's 32).
+
+And a client that sends a command no stdin sends its end at once, as a command that reads
+it would otherwise wait for good. Tested in `tests/loopback.rs`, each test a daemon of its
+own that stops when the test ends, so that a test that fails fails rather than waits: a
+daemon that writes a command's every frame and its stream's end at once, 20 times; a client
+that finishes its stream with the last of its stdin, the command reading it all and then its
+end; 8 MiB of stdin through `cat`; a command given no stdin, and one that ends without
+reading an endless stdin; a command that reads none of an endless stdin while another
+client's command runs; a daemon that stops a client's stdin at once and answers 200 ms
+later; a connection kept open over two commands, the first's stdin and state let go once
+its exit is sent and its client asked to send no more; a client not enrolled refused by its
+frame's header; a command whose client resets its stream, and one whose client stops
+reading it, hung up and let go; and a command whose client went writing on after the next
+client connected, which hears none of it; and `only_a_clients_two_way_streams_open`. Each
+fix was mutation-checked against its test: the end dropped from the last bytes; a read
+after each frame; a finished stream, a stopped one and a reset one kept; stdin given by a
+blocking send; no judging by the header; a connection's number given again; streams one
+way, or a daemon's, allowed; a stopped stdin failing the command; no end for no stdin; no
+STOP_SENDING at the last frame; the client's end ending no stdin; and room again resuming
+no stream.
+
 ### D179. Other CPUs' images, emulated in their microVM (parts 1 to 3 built)
 
 Images built on an arm64 Mac usually ship to x86_64 hosts, and the other way round, and a

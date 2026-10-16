@@ -41,6 +41,7 @@ regex = "1"
 shards-ipc = { path = "../ipc" }
 shards-tui = { path = "../tui" }
 shards-registry = { path = "../registry" }
+shards-remote = { path = "../remote" }
 shards-vmm = { path = "../vmm" }
 sha2 = "0.11"
 serde = { version = "1", features = ["derive"] }

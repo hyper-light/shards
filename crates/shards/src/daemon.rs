@@ -61,6 +61,7 @@ mod pull;
 mod push;
 mod record;
 mod refill;
+mod remote;
 mod restart;
 mod rmi;
 mod ship;
@@ -73,11 +74,14 @@ use crate::run::{Boot, Prepared};
 use crate::segments::log_segment;
 use crate::spec::{LogRetention, NOT_RUN};
 
-const USAGE: &str = "usage: shards daemon [--detached | stop]
+const USAGE: &str = "usage: shards daemon [--detached] [--listen ADDR:PORT] | stop
   Serves `shards run` from warm microVMs; `shards run` starts one when none is running.
   It exits after SHARDS_DAEMON_IDLE seconds (default 900) without a run.
   --detached: run it in the background, writing messages to daemon.log in SHARDS_HOME, as
     `shards run` starts it.
+  --listen ADDR:PORT: also serve the machines this one enrolled (shards invite client),
+    over QUIC on UDP ADDR:PORT; then it does not exit for being idle, as its clients find
+    it there.
   stop: have the running daemon end its runs, as dockerd ends containers, and exit.
   SHARDS_POOL: the most warm microVMs kept for each image (default 2): as many as its
     runs have come at once, while it is used.
@@ -202,14 +206,36 @@ fn clients_for(threads: u64) -> usize {
 }
 
 pub fn daemon(args: impl Iterator<Item = OsString>) -> ExitCode {
-    let args: Vec<OsString> = args.collect();
+    let all: Vec<OsString> = args.collect();
+    // `--listen ADDR:PORT` (D180), wherever it is among the daemon's options.
+    let mut listen = None;
+    let mut args = Vec::with_capacity(all.len());
+    let mut given = all.iter();
+    while let Some(arg) = given.next() {
+        let value = match arg.to_str() {
+            Some("--listen") => given.next().and_then(|v| v.to_str()),
+            Some(flag) if flag.starts_with("--listen=") => flag.strip_prefix("--listen="),
+            _ => {
+                args.push(arg.clone());
+                continue;
+            }
+        };
+        match value.and_then(|v| v.parse::<std::net::SocketAddr>().ok()) {
+            Some(at) => listen = Some(at),
+            None => {
+                return fail(&format!(
+                    "--listen: {value:?} is not an address and port (ADDR:PORT)\n{USAGE}"
+                ));
+            }
+        }
+    }
     let arg = |i: usize| args.get(i).and_then(|a| a.to_str());
     let result = match (args.len(), arg(0)) {
-        (0, _) => serve(None),
-        (1, Some("--detached")) => detach(),
+        (0, _) => serve(None, listen),
+        (1, Some("--detached")) => detach(listen),
         // Its starter's (`detach`): the descriptor on which it says it serves.
         (2, Some("--ready")) => match arg(1).and_then(|fd| fd.parse::<i32>().ok()) {
-            Some(fd) => ready_link(fd).and_then(|link| serve(Some(link))),
+            Some(fd) => ready_link(fd).and_then(|link| serve(Some(link), listen)),
             None => Err(format!("--ready: {:?} is not a descriptor", args.get(1))),
         },
         (1, Some("-h" | "--help")) => {
@@ -869,7 +895,7 @@ fn ready_link(fd: i32) -> Result<File, String> {
 /// that ends before it serves has found another daemon serving its home, or failed,
 /// which this says with its log's path, rather than leave its client to wait for it
 /// (review 8.14).
-fn detach() -> Result<(), String> {
+fn detach(listen: Option<std::net::SocketAddr>) -> Result<(), String> {
     use std::os::fd::AsFd;
     use std::os::unix::fs::OpenOptionsExt;
     // Settings it cannot keep are its starter's to hear, at once.
@@ -886,9 +912,14 @@ fn detach() -> Result<(), String> {
     let null = File::open("/dev/null").map_err(|e| format!("/dev/null: {e}"))?;
     let exe = std::env::current_exe().map_err(|e| format!("this binary: {e}"))?;
     let (mut ready, says) = io::pipe().map_err(|e| format!("a pipe for the daemon's start: {e}"))?;
+    let listening = listen.map(|at| at.to_string());
+    let mut argv: Vec<&OsStr> = vec!["daemon".as_ref(), "--ready".as_ref(), "3".as_ref()];
+    if let Some(at) = &listening {
+        argv.extend(["--listen".as_ref(), OsStr::new(at)]);
+    }
     let daemon = shards_ipc::spawn(
         &exe,
-        &["daemon".as_ref(), "--ready".as_ref(), "3".as_ref()],
+        &argv,
         &[
             (null.as_fd(), 0),
             (log.as_fd(), 1),
@@ -1038,8 +1069,12 @@ fn elect_bridge() -> Option<shards_net::bridge::Bridge> {
     bridge
 }
 
-fn serve(ready: Option<File>) -> Result<(), String> {
-    let settings = settings()?;
+fn serve(ready: Option<File>, listen: Option<std::net::SocketAddr>) -> Result<(), String> {
+    let mut settings = settings()?;
+    // A daemon its clients reach does not end for having had nothing to do (D180).
+    if listen.is_some() {
+        settings.idle = Duration::MAX;
+    }
     let descriptors = raise_descriptor_limit();
     let home = shards_ipc::home()?;
     shards_vmm::platform::create_private_dir(&home).map_err(|e| format!("{}: {e}", home.display()))?;
@@ -1063,6 +1098,7 @@ fn serve(ready: Option<File>) -> Result<(), String> {
         .map_err(|e| format!("the daemon's spawner: {e}"))?;
     // Its daemon is gone, since this one holds the lock.
     let _ = std::fs::remove_file(socket);
+    let _ = std::fs::remove_file(crate::context::LISTENING);
     let _ = std::fs::remove_file(home.join(shards_ipc::STOPPING));
     let listener = UnixListener::bind(socket).map_err(|e| format!("{}: {e}", home.join(socket).display()))?;
     listener
@@ -1101,6 +1137,11 @@ fn serve(ready: Option<File>) -> Result<(), String> {
         daemon.home.join(daemon.socket).display(),
         descriptors.map_or_else(|| "an unknown number of".to_string(), |n| n.to_string())
     ));
+    // Other machines' clients (D180), before it says it serves: an address it cannot bind
+    // is its starter's to hear.
+    if let Some(at) = listen {
+        remote::listen(daemon.home.clone(), exe.clone(), at)?;
+    }
     // Its starter returns once it hears this: clients connect now.
     if let Some(mut ready) = ready {
         let _ = ready.write_all(&[1]);

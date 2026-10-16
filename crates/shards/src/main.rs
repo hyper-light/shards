@@ -16,6 +16,7 @@ mod build;
 mod cli;
 #[cfg(unix)]
 mod containers;
+mod context;
 #[cfg(unix)]
 mod daemon;
 // The daemon's (Unix's alone as yet) and a search's.

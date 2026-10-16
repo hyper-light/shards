@@ -42,15 +42,30 @@ pub(crate) fn env_ours_first(ours: &str, theirs: &str) -> Option<String> {
 }
 
 pub fn main() -> ExitCode {
-    let args: Vec<OsString> = std::env::args_os().skip(1).collect();
+    let mut args: Vec<OsString> = std::env::args_os().skip(1).collect();
+    // A context (D180): the command runs whole on its machine. A context's own commands
+    // run here, whichever is chosen.
+    if let Ok(home) = shards_ipc::home() {
+        match crate::context::chosen(&home, &mut args) {
+            Ok(crate::context::Chosen::There(context)) if !crate::context::kept_here(&args) => {
+                return crate::context::forward(&home, &context, args);
+            }
+            Err(e) if !crate::context::kept_here(&args) => return failed(&e),
+            _ => {}
+        }
+    }
     dispatch(args)
 }
 
 /// The commands shards has besides the catalog's: the daemon side's own words.
 /// `daemon` and `guest` are what `run daemon`, `stop daemon` and `configure guest` are
 /// said as, and how the client starts the daemon.
-const OWN: [&str; 21] = [
+const OWN: [&str; 24] = [
     "system",
+    // Contexts, and the clients and invitations of this machine's (D180).
+    "context",
+    "client",
+    "invitation",
     // A microVM's snapshots (`list snapshots`, `remove snapshot`, D176).
     "snapshot",
     // shards' grammar's views of a microVM (`read ports`, D122; `read` and `watch
@@ -157,6 +172,10 @@ fn dispatch(args: Vec<OsString>) -> ExitCode {
             vm(&boot)
         }
         ["run", ..] => request::run("shards run", args.get(1..).unwrap_or_default()),
+        ["context", ..] => crate::context::command(args.get(1..).unwrap_or_default()),
+        [thing @ ("client" | "invitation"), ..] => {
+            crate::context::admin(thing, args.get(1..).unwrap_or_default())
+        }
         ["container", "run", ..] => request::run("shards container run", args.get(2..).unwrap_or_default()),
         ["exec", ..] => request::exec("shards exec", args.get(1..).unwrap_or_default()),
         ["attach", ..] => request::attach("shards attach", args.get(1..).unwrap_or_default()),
