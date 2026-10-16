@@ -1335,24 +1335,27 @@ impl Bases<'_> {
             Some(d) if !self.pull => self.store.holding(d).map_err(|e| fail(e.to_string()))?,
             _ => None,
         };
+        let guest = image_platform::guest();
+        // Here for another platform alone, as a lookup for ours finds none: pulled for ours.
+        let here = |found: Result<Option<registry_pull::Pulled>, shards_registry::Error>| match found {
+            Err(e) if e.kind() == shards_registry::ErrorKind::NotFound => Ok(None),
+            found => found.map_err(|e| fail(e.to_string())),
+        };
         if let (Some(held), Some(d)) = (&held, &reference.digest)
-            && let Some(record) = self.store.tagged(held).map_err(|e| fail(e.to_string()))?
-        {
-            registry_pull::local_tagged(
+            && let Some(found) = here(registry_pull::local_tagged(
                 self.store,
                 held,
                 &reference.familiar(),
-                &image_platform::guest(),
+                &guest,
                 &limits,
-            )
-            .map_err(|e| fail(e.to_string()))?;
-            return self.base_of(name, &reference, record, d.clone(), wanted);
+            ))?
+        {
+            return self.base_of(name, &reference, found.descriptor, d.clone(), wanted);
         }
         let local = if self.pull {
             None
         } else {
-            registry_pull::local(self.store, &reference, &image_platform::guest(), &limits)
-                .map_err(|e| fail(e.to_string()))?
+            here(registry_pull::local(self.store, &reference, &guest, &limits))?
         };
         let pulled = match local {
             Some(p) => p,
@@ -1360,7 +1363,7 @@ impl Bases<'_> {
                 crate::pull::fetch(
                     self.home,
                     &reference,
-                    &image_platform::guest(),
+                    &guest,
                     &|_: Event<'_>| {},
                     &|_| {},
                     None,
@@ -1371,14 +1374,29 @@ impl Bases<'_> {
                 .0
             }
         };
+        // A lone manifest is pulled whatever its platform; a base of ours is ours.
+        if !image_platform::runs(&pulled.platform, &guest) {
+            return Err(fail(format!(
+                "{} is for {}/{}, not {}",
+                reference.familiar(),
+                pulled.platform.os,
+                pulled.platform.architecture,
+                guest
+                    .iter()
+                    .map(image_platform::format_all)
+                    .collect::<Vec<_>>()
+                    .join(" or ")
+            )));
+        }
         // The manifest and config as stored, for the layers' descriptors and the config's
         // bytes.
-        let record = self
-            .store
-            .tagged(&reference.to_string())
-            .map_err(|e| fail(e.to_string()))?
-            .ok_or_else(|| fail(format!("{name}: not in the store after its pull")))?;
-        self.base_of(name, &reference, record, pulled.resolved.clone(), wanted)
+        self.base_of(
+            name,
+            &reference,
+            pulled.descriptor,
+            pulled.resolved.clone(),
+            wanted,
+        )
     }
 
     /// The root filesystem of the emulator image (D179), this host's platform's of it:

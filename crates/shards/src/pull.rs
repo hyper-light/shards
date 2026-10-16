@@ -6,7 +6,6 @@ use std::io::Write;
 use std::path::Path;
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
@@ -146,13 +145,9 @@ pub fn command(
             vec![named.clone()]
         };
         for reference in &wanted {
-            let downloaded = AtomicBool::new(false);
             // Each layer's bytes so far, and when the client last heard of them.
             let arrived: Mutex<HashMap<String, (u64, Option<Instant>)>> = Mutex::new(HashMap::new());
             let report = |event: Event<'_>| {
-                if let Event::Layer(_) = event {
-                    downloaded.store(true, Ordering::Relaxed);
-                }
                 if let Some(progress) = show {
                     if let Some(p) = shown(&event, &arrived) {
                         progress(&p);
@@ -189,18 +184,13 @@ pub fn command(
                 env,
                 parsed.bool("no-cache"),
             );
-            let (pulled, same) = match pulled {
+            let (pulled, up_to_date) = match pulled {
                 Ok(p) => p,
                 Err(e) if all => {
                     return refuse(&format!("shards: pulling {reference}: {e}"));
                 }
                 Err(e) => return refuse(&format!("shards: {e}")),
             };
-            // Docker's: up to date when the tag already named this image, or when a
-            // digest's content was all here.
-            // Fetched again with --no-cache, it is new however it compares.
-            let up_to_date = !parsed.bool("no-cache")
-                && (same || (reference.digest.is_some() && !downloaded.load(Ordering::Relaxed)));
             #[cfg(unix)]
             if let Some(disk) = &pulled.rootfs {
                 publish(home, reference, &pulled.id, &pulled.config, disk, env);
@@ -443,8 +433,10 @@ fn client_for(
 
 /// Pulls `reference` into the store, until `cancel`, if given, is cancelled, with the
 /// credentials and certificates `env` finds; `fresh`, every layer fetched again and the
-/// root filesystem built again (`--no-cache`). Returns the pull, and whether the
-/// reference already named the same manifest.
+/// root filesystem built again (`--no-cache`). Returns the pull, and whether it is up to
+/// date in dockerd's words (docker-v29.3.1 daemon/containerd/image_pull.go, writeStatus):
+/// the reference resolved here to what it resolves to now, another platform of the same
+/// index pulled included; never when fetched again.
 #[allow(clippy::too_many_arguments)]
 pub fn fetch(
     home: &Path,
@@ -468,22 +460,35 @@ pub fn fetch(
         Event::Pulling => say(&format!("{object}: Pulling from {}", reference.path)),
         event => report(event),
     };
-    let before = store
-        .tagged(&reference.to_string())
-        .and_then(|d| d.map(|d| d.digest()).transpose())
-        .map_err(|e| e.to_string())?;
+    // What the reference resolved to here, as dockerd's resolveImage finds it
+    // (docker-v29.3.1 daemon/containerd/image.go): a digest by a name of its repository
+    // that resolved to it, a tag by its record.
+    let before = match &reference.digest {
+        Some(d) => {
+            let repository = reference.name();
+            store
+                .references()
+                .map_err(|e| e.to_string())?
+                .into_iter()
+                .any(|(name, id)| id == *d && Reference::parse(&name).is_ok_and(|r| r.name() == repository))
+                .then(|| d.clone())
+        }
+        None => store
+            .resolved(&reference.to_string())
+            .map_err(|e| e.to_string())?,
+    };
     // Layers unpack without a cap, as Docker's do; each is checked against its DiffID.
     let limits = limits()?;
     let pull = if fresh { pull::pull_again } else { pull::pull };
     let pulled = pull(&registry, &store, reference, targets, &limits, &report).map_err(|e| e.to_string())?;
-    let same = before.as_ref() == Some(&pulled.manifest);
+    let same = before.as_ref() == Some(&pulled.resolved);
     // What the reference named before may be needed by nothing now: the daemon collects
     // it (daemon.rs, `collect_garbage`).
     if !same {
         let due = collect_due(home);
         std::fs::write(&due, b"").map_err(|e| format!("{}: {e}", due.display()))?;
     }
-    Ok((pulled, same))
+    Ok((pulled, same && !fresh))
 }
 
 /// A registry to pull `reference`'s repository from, until `cancel`, if given, is

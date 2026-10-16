@@ -88,16 +88,37 @@ impl Hasher {
     }
 }
 
+/// A file whose lock (flock(2), LockFileEx on Windows) goes as it drops: unlocked, then
+/// closed. A lock is its open file's, which a program another thread starts meanwhile
+/// shares until its exec closes it: closed alone, the lock outlasts its drop that long
+/// (PM M244).
+#[derive(Debug)]
+pub(crate) struct Locked(pub(crate) File);
+
+impl Drop for Locked {
+    fn drop(&mut self) {
+        let _ = self.0.unlock();
+    }
+}
+
+impl std::ops::Deref for Locked {
+    type Target = File;
+
+    fn deref(&self) -> &File {
+        &self.0
+    }
+}
+
 /// A hold on a store's content ([`Store::lease`]), let go when dropped.
 #[derive(Debug)]
 pub struct Lease {
-    _file: File,
+    _file: Locked,
 }
 
 /// A store held whole by a collection ([`Store::collect`]): no lease is given meanwhile.
 #[derive(Debug)]
 pub struct Whole {
-    _file: File,
+    _file: Locked,
 }
 
 /// What a collection removed ([`Store::collect`]).
@@ -1723,24 +1744,10 @@ impl Store {
         };
         let mut image_config = None;
         if id.to_string() != ours.digest
-            && let Ok(meta) = fs::metadata(self.blob_path(&id))
+            && let Some((desc, index)) = self.index(&id)
         {
-            let desc = Descriptor {
-                media_type: String::new(),
-                digest: id.to_string(),
-                size: i64::try_from(meta.len()).unwrap_or(i64::MAX),
-                platform: None,
-                annotations: Default::default(),
-            };
-            if let Ok(Held::Whole(bytes)) = self.held(&desc, oci::MAX_MANIFEST)
-                && let Ok(index) = serde_json::from_slice::<oci::Index>(&bytes)
-            {
-                target = Descriptor {
-                    media_type: index.media_type.unwrap_or_else(|| oci::media::OCI_INDEX.into()),
-                    ..desc
-                };
-                descriptors = index.manifests;
-            }
+            target = desc;
+            descriptors = index.manifests;
         }
         let mut manifests = Vec::with_capacity(descriptors.len());
         let mut created = None;
@@ -1819,6 +1826,36 @@ impl Store {
         })
     }
 
+    /// The index stored as `digest`, and its descriptor, where it is here whole and is an
+    /// index.
+    pub fn index(&self, digest: &Digest) -> Option<(Descriptor, oci::Index)> {
+        let meta = fs::metadata(self.blob_path(digest)).ok()?;
+        let desc = Descriptor {
+            media_type: String::new(),
+            digest: digest.to_string(),
+            size: i64::try_from(meta.len()).ok()?,
+            platform: None,
+            annotations: Default::default(),
+        };
+        let Ok(Held::Whole(bytes)) = self.held(&desc, oci::MAX_MANIFEST) else {
+            return None;
+        };
+        // An index lists manifests and has no config, as `oci::parse_document` tells one.
+        let value: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+        if value.get("manifests").is_none() || value.get("config").is_some() {
+            return None;
+        }
+        let index = serde_json::from_value::<oci::Index>(value).ok()?;
+        let desc = Descriptor {
+            media_type: index
+                .media_type
+                .clone()
+                .unwrap_or_else(|| oci::media::OCI_INDEX.into()),
+            ..desc
+        };
+        Some((desc, index))
+    }
+
     fn tag_record(&self, reference: &str) -> Result<Option<Tag>, Error> {
         let bytes = match fs::read(self.tag_path(reference)) {
             Ok(bytes) => bytes,
@@ -1852,7 +1889,7 @@ impl Store {
     /// not yet recorded by a reference, or reads what a run is about to use: a collection
     /// ([`collect`](Self::collect)) never runs while one is held, in any process.
     pub fn lease(&self) -> Result<Lease, Error> {
-        let file = self.lease_file()?;
+        let file = Locked(self.lease_file()?);
         file.lock_shared()?;
         Ok(Lease { _file: file })
     }
@@ -1875,7 +1912,7 @@ impl Store {
     /// until the [`Whole`] returned is dropped, for its caller to collect what depends on
     /// it: a lease asked for meanwhile waits.
     pub fn collect(&self) -> Result<(Collected, Whole), Error> {
-        let whole = self.lease_file()?;
+        let whole = Locked(self.lease_file()?);
         whole.lock()?;
         self.sweep_mounts()?;
         let (blobs, rootfs) = self.roots(true)?;
@@ -1976,28 +2013,15 @@ impl Store {
                 continue;
             };
             // What it resolved to, an index, is kept as containerd keeps it, with what it
-            // names that is here: the image's platforms (`images --tree`), and the
-            // attestations a pull kept.
+            // names that is here: the image's platforms (`images --tree`), each unpacked as
+            // a run of it unpacked it (D179), and the attestations a pull kept.
             if let Some(resolved) = tag.resolved.as_deref().and_then(|d| Digest::parse(d).ok()) {
                 blobs.insert(self.blob_path(&resolved));
                 if let Ok(index) = fs::read(self.blob_path(&resolved))
                     && let Ok(index) = serde_json::from_slice::<oci::Index>(&index)
                 {
                     for desc in &index.manifests {
-                        let Ok(Held::Whole(bytes)) = self.held(desc, oci::MAX_MANIFEST) else {
-                            continue;
-                        };
-                        if let Ok(digest) = desc.digest() {
-                            blobs.insert(self.blob_path(&digest));
-                        }
-                        if let Ok(oci::Document::Manifest(m)) = oci::parse_document(&bytes, &desc.media_type)
-                        {
-                            for part in std::iter::once(&m.config).chain(&m.layers) {
-                                if let Ok(d) = part.digest() {
-                                    blobs.insert(self.blob_path(&d));
-                                }
-                            }
-                        }
+                        self.keep_manifest(desc, &mut blobs, &mut rootfs)?;
                     }
                 }
             }
@@ -2015,47 +2039,57 @@ impl Store {
                     }
                 }
             }
-            let Ok(digest) = tag.manifest.digest() else {
-                continue;
-            };
-            blobs.insert(self.blob_path(&digest));
-            let Held::Whole(bytes) = self.held(&tag.manifest, oci::MAX_MANIFEST)? else {
-                continue;
-            };
-            let Ok(oci::Document::Manifest(manifest)) = oci::parse_document(&bytes, &tag.manifest.media_type)
-            else {
-                continue;
-            };
-            for desc in std::iter::once(&manifest.config).chain(&manifest.layers) {
-                if let Ok(digest) = desc.digest() {
-                    blobs.insert(self.blob_path(&digest));
-                }
-            }
-            let Held::Whole(config) = self.held(manifest.image_config(), oci::MAX_CONFIG)? else {
-                continue;
-            };
-            let Ok(config) = oci::parse_config(&config) else {
-                continue;
-            };
-            let diff_ids: Result<Vec<Digest>, _> =
-                config.rootfs.diff_ids.iter().map(|d| Digest::parse(d)).collect();
-            // A layer's uncompressed blob, its digest its DiffID, where the store has one
-            // (a layer a build made and then compressed, D75), as Docker keeps a layer's
-            // blob and its snapshot both.
-            for d in diff_ids.iter().flatten() {
-                let path = self.blob_path(d);
-                if path.exists() {
-                    blobs.insert(path);
-                }
-            }
-            if let Ok(path) = diff_ids
-                .map_err(|e| Error(e.to_string()))
-                .and_then(|d| self.rootfs_path(&d))
-            {
-                rootfs.insert(path);
-            }
+            self.keep_manifest(&tag.manifest, &mut blobs, &mut rootfs)?;
         }
         Ok((blobs, rootfs))
+    }
+
+    /// Adds to `blobs` and `rootfs` what the manifest `desc` describes holds, where it is
+    /// here: itself, its config and layers, each layer's uncompressed blob where the store
+    /// has one (a layer a build made and then compressed, D75), as Docker keeps a layer's
+    /// blob and its snapshot both, and its root filesystem.
+    fn keep_manifest(
+        &self,
+        desc: &Descriptor,
+        blobs: &mut HashSet<PathBuf>,
+        rootfs: &mut HashSet<PathBuf>,
+    ) -> Result<(), Error> {
+        let Ok(digest) = desc.digest() else {
+            return Ok(());
+        };
+        blobs.insert(self.blob_path(&digest));
+        let Held::Whole(bytes) = self.held(desc, oci::MAX_MANIFEST)? else {
+            return Ok(());
+        };
+        let Ok(oci::Document::Manifest(manifest)) = oci::parse_document(&bytes, &desc.media_type) else {
+            return Ok(());
+        };
+        for part in std::iter::once(&manifest.config).chain(&manifest.layers) {
+            if let Ok(digest) = part.digest() {
+                blobs.insert(self.blob_path(&digest));
+            }
+        }
+        let Held::Whole(config) = self.held(manifest.image_config(), oci::MAX_CONFIG)? else {
+            return Ok(());
+        };
+        let Ok(config) = oci::parse_config(&config) else {
+            return Ok(());
+        };
+        let diff_ids: Result<Vec<Digest>, _> =
+            config.rootfs.diff_ids.iter().map(|d| Digest::parse(d)).collect();
+        for d in diff_ids.iter().flatten() {
+            let path = self.blob_path(d);
+            if path.exists() {
+                blobs.insert(path);
+            }
+        }
+        if let Ok(path) = diff_ids
+            .map_err(|e| Error(e.to_string()))
+            .and_then(|d| self.rootfs_path(&d))
+        {
+            rootfs.insert(path);
+        }
+        Ok(())
     }
 
     /// References can be long and hold `/` and `:`, so records are named by their hash.
@@ -2753,6 +2787,30 @@ mod tests {
     /// A stage goes whole, a tree of clones in it too, its files counted; on macOS an
     /// immutable clone and directory with it, never what a link in it names, which keeps
     /// its own flag.
+    /// A lease let go of lets a collection in at once, though a copy of its lock's
+    /// descriptor lives on, as a program another thread is starting holds one until its
+    /// exec (PM M244); and a collection's hold, so too a lease.
+    #[test]
+    fn a_hold_let_go_goes_while_a_copy_of_its_lock_lives() {
+        let dir = temp("hold-copy");
+        let store = Store::open(&dir).unwrap();
+        let lease = store.lease().unwrap();
+        let copy = lease._file.0.try_clone().unwrap();
+        drop(lease);
+        let file = store.lease_file().unwrap();
+        assert!(file.try_lock().is_ok(), "the lease outlasted its drop");
+        file.unlock().unwrap();
+        drop(copy);
+        let (_, whole) = store.collect().unwrap();
+        let copy = whole._file.0.try_clone().unwrap();
+        drop(whole);
+        assert!(
+            file.try_lock_shared().is_ok(),
+            "the collection outlasted its drop"
+        );
+        drop(copy);
+    }
+
     #[test]
     fn a_stage_goes_whole_and_follows_no_link() {
         let held = temp("stage-whole");

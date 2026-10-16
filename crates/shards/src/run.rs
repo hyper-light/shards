@@ -364,14 +364,13 @@ pub struct Emulated {
     pub architecture: &'static str,
 }
 
-/// containerd's `platforms.FormatAll` (v1.0.0-rc.2) of a Linux platform: `os/arch`, then
-/// `/variant` where it has one; `unknown` where it names no OS.
+/// containerd's `platforms.FormatAll` of an image's platform as its config names it.
 fn format_all(os: &str, architecture: &str, variant: &str) -> String {
-    match (os, variant) {
-        ("", _) => "unknown".into(),
-        (_, "") => format!("{os}/{architecture}"),
-        _ => format!("{os}/{architecture}/{variant}"),
-    }
+    shards_image::platform::format_all(&shards_image::platform::Target {
+        os: os.into(),
+        architecture: architecture.into(),
+        variant: variant.into(),
+    })
 }
 
 /// The emulator a run of an image for `platform` runs under (D179), its CPU's, of the
@@ -500,6 +499,9 @@ pub fn find_image(
                 Err(e) if e.kind() == ErrorKind::Changed => {
                     return Err(format!("{e}; pull '{}' again to mend it", reference.familiar()));
                 }
+                // Here, but not for the platform asked for, as dockerd's lookup finds none
+                // (errPlatformNotFound, a NotFound): pulled for it, where the run may pull.
+                Err(e) if e.kind() == ErrorKind::NotFound && pull == Pull::Missing => None,
                 found => found.map_err(|e| e.to_string())?,
             }
         }
@@ -526,7 +528,7 @@ pub fn find_image(
                 | Event::Unpacking(_)
                 | Event::Pulling => {}
             };
-            let (pulled, _) = crate::pull::fetch(
+            let (pulled, up_to_date) = crate::pull::fetch(
                 home,
                 &reference,
                 targets,
@@ -537,10 +539,24 @@ pub fn find_image(
                 false,
             )?;
             say(&format!("Digest: {}", pulled.resolved));
-            say(&format!(
-                "Status: Downloaded newer image for {}",
-                reference.familiar()
-            ));
+            // Up to date where the name already resolved to what it pulled: another
+            // platform of an image here, or `--pull always` of one unchanged.
+            let status = if up_to_date {
+                "Image is up to date for"
+            } else {
+                "Downloaded newer image for"
+            };
+            say(&format!("Status: {status} {}", reference.familiar()));
+            // A lone manifest is pulled whatever its platform, as dockerd pulls one; its run
+            // for another platform is refused, as dockerd's lookup of that platform refuses
+            // it.
+            if let Some(asked) = targets.first()
+                && !shards_image::platform::runs(&pulled.platform, targets)
+            {
+                return Err(
+                    shards_registry::pull::not_for_platform(&reference.familiar(), asked).to_string(),
+                );
+            }
             pulled
         }
     };
@@ -559,11 +575,10 @@ fn by_id(
     targets: &[shards_image::platform::Target],
 ) -> Result<Option<shards_registry::pull::Pulled>, String> {
     use shards_image::reference::AnyReference;
-    let digest = match AnyReference::parse(given) {
-        Ok(AnyReference::Digest(_)) => true,
-        Ok(AnyReference::Named(r)) => r.digest.is_some(),
-        Err(_) => false,
-    };
+    let parsed = AnyReference::parse(given);
+    // A name with the digest it resolved to: a name to pull, as the CLI pulls one.
+    let pullable = matches!(&parsed, Ok(AnyReference::Named(r)) if r.digest.is_some());
+    let digest = pullable || matches!(parsed, Ok(AnyReference::Digest(_)));
     if !digest && crate::daemon::images::truncated_id(given).is_none() {
         return Ok(None);
     }
@@ -581,7 +596,24 @@ fn by_id(
         return Ok(None);
     };
     let limits = crate::pull::limits()?;
-    shards_registry::pull::local_tagged(store, tagged, given, targets, &limits).map_err(|e| e.to_string())
+    match shards_registry::pull::local_tagged(store, tagged, given, targets, &limits) {
+        // Here, but not for the platform asked for: a name is pulled for it. An ID names
+        // nothing to pull, and is refused in dockerd's words, which name the image found
+        // (daemon/containerd/image.go, imageFamiliarName), where Docker's CLI would read a
+        // short ID as a repository's name and pull that.
+        Err(e) if e.kind() == ErrorKind::NotFound && pullable => Ok(None),
+        Err(e) if e.kind() == ErrorKind::NotFound => match targets.first() {
+            Some(asked) => {
+                let name = match tagged.strip_prefix(shards_image::store::DANGLING) {
+                    Some(digest) => digest.to_string(),
+                    None => Reference::parse(tagged).map_or_else(|_| tagged.to_string(), |r| r.familiar()),
+                };
+                Err(shards_registry::pull::not_for_platform(&name, asked).to_string())
+            }
+            None => Err(e.to_string()),
+        },
+        found => found.map_err(|e| e.to_string()),
+    }
 }
 
 /// Where no daemon serves, none: an image is found by its reference.

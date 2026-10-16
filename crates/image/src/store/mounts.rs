@@ -28,7 +28,7 @@ use std::time::Duration;
 
 use sha2::{Digest as _, Sha256};
 
-use super::{Partial, Store, sync_dir, sync_durable, unix_now};
+use super::{Locked, Partial, Store, sync_dir, sync_durable, unix_now};
 use crate::{Error, bad};
 
 pub(super) const VERSION: u32 = 2;
@@ -102,7 +102,7 @@ pub struct HeldMount {
     pub root: MountRoot,
     /// Whether it was made for this step: none of the key's was free.
     pub fresh: bool,
-    _lock: File,
+    _lock: Locked,
 }
 
 impl HeldMount {
@@ -191,19 +191,21 @@ fn try_lock(file: &File, shared: bool) -> Result<bool, Error> {
     }
 }
 
-fn open_lock(path: &Path) -> Result<File, Error> {
-    Ok(File::options()
-        .create(true)
-        .truncate(false)
-        .write(true)
-        .open(path)?)
+fn open_lock(path: &Path) -> Result<Locked, Error> {
+    Ok(Locked(
+        File::options()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(path)?,
+    ))
 }
 
 /// A listed record's lock, opened; none where the record has gone since its listing
 /// ([`Store::remove_mount`]).
-fn listed_lock(path: &Path) -> Result<Option<File>, Error> {
+fn listed_lock(path: &Path) -> Result<Option<Locked>, Error> {
     match File::options().write(true).open(path) {
-        Ok(lock) => Ok(Some(lock)),
+        Ok(lock) => Ok(Some(Locked(lock))),
         Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
         Err(e) => Err(e.into()),
     }
@@ -237,7 +239,7 @@ impl Store {
     }
 
     /// The lock of `key`'s records, held while they are looked through, made or written.
-    fn key_lock(&self, key: &str) -> Result<File, Error> {
+    fn key_lock(&self, key: &str) -> Result<Locked, Error> {
         let hash: String = Sha256::digest(key.as_bytes())
             .iter()
             .map(|b| format!("{b:02x}"))
@@ -253,7 +255,7 @@ impl Store {
     /// records and takes one under the key's lock ([`Store::take_mount`]), and lets go of
     /// none under it: so the look's own hold on the record, a moment's, passes for a step
     /// neither to a step looking for one nor to another look.
-    fn looked_at(&self, id: &str) -> Result<Option<(MountRecord, File, File)>, Error> {
+    fn looked_at(&self, id: &str) -> Result<Option<(MountRecord, Locked, Locked)>, Error> {
         let Some(record) = self.read_mount(id)? else {
             return Ok(None);
         };
@@ -321,7 +323,7 @@ impl Store {
         let mut keys = self.key_lock(key)?;
         loop {
             let mut held_any = false;
-            let mut free: Vec<(String, File)> = Vec::new();
+            let mut free: Vec<(String, Locked)> = Vec::new();
             for id in self.mount_ids()? {
                 if self.read_mount(&id)?.is_none_or(|r| r.key != key || r.pruned) {
                     continue;
@@ -404,7 +406,7 @@ impl Store {
     /// `lock`, held, as record `id`'s, with what it holds now, each layer's file opened;
     /// none where it went between its listing and its lock ([`Store::remove_mount`]), or
     /// where a layer's file is gone, which leaves it let go of.
-    fn held_mount(&self, id: &str, lock: File) -> Result<Option<HeldMount>, Error> {
+    fn held_mount(&self, id: &str, lock: Locked) -> Result<Option<HeldMount>, Error> {
         let Some(mut record) = self.read_mount(id)? else {
             return Ok(None);
         };
@@ -1073,6 +1075,21 @@ mod tests {
             let got = waiter.join().unwrap();
             assert_eq!((got.id.as_str(), got.fresh), ("a", false));
         });
+    }
+
+    /// A record a step lets go of is free at once, though a copy of its lock's descriptor
+    /// lives on, as a program another thread is starting holds one until its exec (PM M244):
+    /// closed alone, the lock would outlast the step, and the next taker would make a new
+    /// record.
+    #[test]
+    fn a_record_let_go_is_free_while_a_copy_of_its_lock_lives() {
+        let (_d, s) = store();
+        let held = s.take_mount("/k", Sharing::Private, "c", "a").unwrap();
+        let copy = held._lock.0.try_clone().unwrap();
+        drop(held);
+        let again = s.take_mount("/k", Sharing::Private, "c", "b").unwrap();
+        assert_eq!((again.id.as_str(), again.fresh), ("a", false));
+        drop(copy);
     }
 
     #[test]

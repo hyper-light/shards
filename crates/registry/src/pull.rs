@@ -12,7 +12,7 @@ use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 use std::sync::{Condvar, Mutex, PoisonError};
 
-use shards_image::oci::{self, Descriptor, Document, ImageConfig, Manifest, Platform};
+use shards_image::oci::{self, Descriptor, Document, ImageConfig, Index, Manifest, Platform};
 use shards_image::platform::{self, Target};
 use shards_image::reference::{Digest, Reference};
 use shards_image::store::{Held, Layer, Limits, Store};
@@ -33,6 +33,8 @@ pub struct Pulled {
     pub resolved: Digest,
     /// The manifest for our guests' platform.
     pub manifest: Digest,
+    /// Its descriptor, as its index or its record describes it.
+    pub descriptor: Descriptor,
     /// Its config's digest: the image's ID.
     pub id: Digest,
     pub config: ImageConfig,
@@ -45,6 +47,8 @@ pub struct Pulled {
     pub compressed: u64,
     /// The platforms its index offers, `os/arch[/variant]`; none for a lone manifest.
     pub platforms: Vec<String>,
+    /// The platform a lookup finds it for: its index's label, else its config's.
+    pub platform: Platform,
     /// The attestations kept with it: provenance and SBOMs.
     pub attestations: usize,
 }
@@ -159,6 +163,7 @@ fn pulled(
     // The attestations of the manifest chosen, as dockerd keeps them: provenance and SBOMs.
     let mut attestations: Vec<Descriptor> = Vec::new();
     let mut platforms: Vec<String> = Vec::new();
+    let mut listed: Option<Index> = None;
     let pulling = std::sync::atomic::AtomicBool::new(false);
     let say_pulling = || {
         if !pulling.swap(true, Ordering::Relaxed) {
@@ -207,12 +212,15 @@ fn pulled(
                 .cloned()
                 .collect();
             say_pulling();
-            match document(registry, store, chosen)? {
-                Document::Manifest(m) => (chosen.clone(), m),
+            let chosen = chosen.clone();
+            let m = match document(registry, store, &chosen)? {
+                Document::Manifest(m) => m,
                 Document::Index(_) => {
                     return Err(Error::new(format!("{name}: an index inside an index")));
                 }
-            }
+            };
+            listed = Some(index);
+            (chosen, m)
         }
     };
     let manifest_digest = manifest_desc.digest()?;
@@ -244,7 +252,7 @@ fn pulled(
         }
         read => read?,
     };
-    let (config, layers) = checked(&name, &manifest_desc, &manifest, &config, targets)?;
+    let (config, layers, found_for) = checked(&name, &manifest_desc, &manifest, &config, targets, true)?;
 
     // The attestations come as the layers download and the image is built, each a few
     // small documents a round trip apart: not after it all.
@@ -262,15 +270,9 @@ fn pulled(
         // Built where a guest runs it, or where the pull asked for its platform: a guest
         // runs another CPU's image under its emulator (D179), as Docker unpacks what a
         // pull of a platform asks for.
-        let image = oci::Platform {
-            os: config.os.clone(),
-            architecture: config.architecture.clone(),
-            variant: config.variant.clone(),
-            ..oci::Platform::default()
-        };
-        let ours = platform::runs(&image, &guest)
-            || platform::runs(&image, targets)
-            || (targets.is_empty() && image.os == "linux");
+        let ours = platform::runs(&found_for, &guest)
+            || platform::runs(&found_for, targets)
+            || (targets.is_empty() && found_for.os == "linux");
         let built = if ours {
             build(registry, store, &manifest, &layers, limits, report, fresh).map(Some)
         } else {
@@ -290,9 +292,16 @@ fn pulled(
     let mut contents = vec![manifest_digest.clone(), id.clone()];
     contents.extend(layers.iter().map(|l| l.blob.clone()));
     contents.extend(attested?);
+    // The record names what a lookup that asks no platform takes of what is here of the
+    // index, the manifest pulled among it: a pull of another platform leaves this host's
+    // in its place, as dockerd's image keeps every platform pulled and prefers its host's.
+    let recorded = match &listed {
+        Some(index) => preferred(store, index, &manifest_desc),
+        None => manifest_desc.clone(),
+    };
     store.tag_from(
         &reference.to_string(),
-        &manifest_desc,
+        &recorded,
         &target,
         &contents,
         Some(&reference.name()),
@@ -300,12 +309,14 @@ fn pulled(
     Ok(Pulled {
         resolved,
         manifest: manifest_digest,
+        descriptor: manifest_desc,
         id,
         config,
         rootfs,
         layers: manifest.layers.len(),
         compressed,
         platforms,
+        platform: found_for,
         attestations: attestations.len(),
     })
 }
@@ -396,7 +407,7 @@ fn config_for(
         }
         read => read?,
     };
-    checked(&name, &manifest_desc, &manifest, &config, targets)?;
+    checked(&name, &manifest_desc, &manifest, &config, targets, true)?;
     Ok((resolved, manifest_desc, manifest, config))
 }
 
@@ -577,11 +588,84 @@ pub fn local_tagged(
 ) -> Result<Option<Pulled>, Error> {
     // A root filesystem it builds again is its reference's: no collection runs meanwhile.
     let _lease = store.lease()?;
-    let Some(manifest_desc) = store.tagged(tagged)? else {
+    let Some(recorded) = store.tagged(tagged)? else {
         return Ok(None);
     };
-    let resolved = store.resolved(tagged)?.unwrap_or(manifest_desc.digest()?);
+    let resolved = store.resolved(tagged)?.unwrap_or(recorded.digest()?);
+    let manifest_desc = present_for(store, recorded, &resolved, targets);
     unpack(store, shown, &manifest_desc, resolved, targets, limits).map(Some)
+}
+
+/// Whether the manifest `desc` describes is here whole: itself, its config and each of its
+/// layers. A pull cut short leaves a manifest without its layers, which a lookup passes
+/// over and a pull completes.
+fn whole(store: &Store, desc: &Descriptor) -> bool {
+    let Ok(Held::Whole(bytes)) = store.held(desc, oci::MAX_MANIFEST) else {
+        return false;
+    };
+    let Ok(Document::Manifest(m)) = oci::parse_document(&bytes, &desc.media_type) else {
+        return false;
+    };
+    std::iter::once(&m.config)
+        .chain(&m.layers)
+        .all(|part| part.digest().is_ok_and(|d| store.has(&d)))
+}
+
+/// Whether an index's entry is an attestation's manifest, which no lookup runs.
+fn attestation(desc: &Descriptor) -> bool {
+    desc.annotations.get(ATTESTATION_TYPE).map(String::as_str) == Some(ATTESTATION)
+}
+
+/// Of the manifests `index` lists, in its order and no attestation's, those here whole, and
+/// `pulled`, just stored: an image's platforms here, as dockerd's lookup walks them
+/// (docker-v29.3.1 daemon/containerd/handlers.go, walkPresentChildren), but whole, where
+/// dockerd takes a manifest without its layers.
+fn here(store: &Store, index: &Index, pulled: Option<&Descriptor>) -> Index {
+    Index {
+        manifests: index
+            .manifests
+            .iter()
+            .filter(|d| !attestation(d) && (pulled.is_some_and(|p| p.digest == d.digest) || whole(store, d)))
+            .cloned()
+            .collect(),
+        ..index.clone()
+    }
+}
+
+/// What a record names of `index` after a pull of `pulled`: of the platforms here, the
+/// first that ranks best for this host, else the first, as dockerd's lookup that asks no
+/// platform takes one (docker-v29.3.1 daemon/containerd/image.go,
+/// matchAllWithPreference of its host's platforms).
+fn preferred(store: &Store, index: &Index, pulled: &Descriptor) -> Descriptor {
+    let here = here(store, index, Some(pulled));
+    platform::select(&here, &platform::pullable())
+        .or(here.manifests.first())
+        .cloned()
+        .unwrap_or_else(|| pulled.clone())
+}
+
+/// The manifest a lookup for `targets` takes of the image recorded as `recorded`, which
+/// resolved to `resolved`: the recorded one where it is for the first of them, as a record
+/// names its host's best; else, of its index's platforms here, the first that ranks best,
+/// as dockerd's lookup takes one (docker-v29.3.1 daemon/containerd/image.go,
+/// getBestPresentImageManifest); else the recorded one, which the lookup then refuses.
+fn present_for(store: &Store, recorded: Descriptor, resolved: &Digest, targets: &[Target]) -> Descriptor {
+    let Some(first) = targets.first() else {
+        return recorded;
+    };
+    let labelled_first = recorded
+        .platform
+        .as_ref()
+        .is_some_and(|p| platform::runs(p, std::slice::from_ref(first)));
+    if labelled_first || recorded.digest == resolved.to_string() {
+        return recorded;
+    }
+    let Some((_, index)) = store.index(resolved) else {
+        return recorded;
+    };
+    platform::select(&here(store, &index, None), targets)
+        .cloned()
+        .unwrap_or(recorded)
 }
 
 /// The image whose manifest for one of `targets` `manifest_desc` describes, here in the
@@ -608,7 +692,7 @@ pub fn unpack(
     }
     contents(name, &manifest)?;
     let config = stored(store, name, &manifest.config, oci::MAX_CONFIG)?;
-    let (config, layers) = checked(name, manifest_desc, &manifest, &config, targets)?;
+    let (config, layers, platform) = checked(name, manifest_desc, &manifest, &config, targets, false)?;
     let rootfs = store.rootfs(&layers, limits)?;
     let compressed = manifest
         .layers
@@ -617,12 +701,14 @@ pub fn unpack(
     Ok(Pulled {
         resolved,
         manifest: manifest_digest,
+        descriptor: manifest_desc.clone(),
         id: manifest.config.digest()?,
         config,
         rootfs: Some(rootfs),
         layers: manifest.layers.len(),
         compressed,
         platforms: Vec::new(),
+        platform,
         attestations: 0,
     })
 }
@@ -648,12 +734,7 @@ fn microvm(
     let (disk, config_desc) = (layer(MICROVM_DISK)?, layer(MICROVM_CONFIG)?);
     let bytes = stored(store, name, config_desc, oci::MAX_CONFIG)?;
     let config = oci::parse_config(&bytes)?;
-    let platform = manifest_desc.platform.clone().unwrap_or_else(|| Platform {
-        architecture: config.architecture.clone(),
-        os: config.os.clone(),
-        variant: config.variant.clone(),
-        os_features: Vec::new(),
-    });
+    let platform = platform_of(manifest_desc, &config);
     // A microVM's whole guest is its CPU's, which no emulator runs: our guests' where no
     // platform is asked.
     let guest = platform::guest();
@@ -686,12 +767,14 @@ fn microvm(
     Ok(Pulled {
         resolved,
         manifest: manifest_desc.digest()?,
+        descriptor: manifest_desc.clone(),
         id: config_desc.digest()?,
         config,
         rootfs: Some(path),
         layers: 1,
         compressed: size,
         platforms: Vec::new(),
+        platform,
         attestations: 0,
     })
 }
@@ -718,10 +801,34 @@ fn contents(name: &str, manifest: &Manifest) -> Result<(), Error> {
     Ok(())
 }
 
-/// The config and layers of the image `manifest` describes, checked, where `chosen` is
-/// the descriptor the manifest was chosen by and `config` its config's checked bytes. The
-/// image must be for one of `targets`: by the platform an index labelled it with, or by
-/// its config's own when nothing labelled it, as containerd checks it. Its config must
+/// The platform an image is found for: the label of the index entry `chosen` where it has
+/// one, else its config's, as dockerd's lookup reads it (docker-v29.3.1
+/// daemon/containerd/image_manifest.go, ImagePlatform).
+fn platform_of(chosen: &Descriptor, config: &ImageConfig) -> Platform {
+    chosen.platform.clone().unwrap_or_else(|| Platform {
+        architecture: config.architecture.clone(),
+        os: config.os.clone(),
+        variant: config.variant.clone(),
+        os_features: Vec::new(),
+    })
+}
+
+/// dockerd's words where an image `name` is here but not for the platform `asked`
+/// (docker-v29.3.1 daemon/containerd/image.go, errPlatformNotFound): not found, as a run
+/// whose lookup finds it so may pull that platform.
+pub fn not_for_platform(name: &str, asked: &Target) -> Error {
+    Error::of(
+        ErrorKind::NotFound,
+        format!(
+            "image with reference {name} was found but does not provide the specified platform ({})",
+            platform::format_all(asked)
+        ),
+    )
+}
+
+/// The config, layers and platform of the image `manifest` describes, checked, where
+/// `chosen` is the descriptor the manifest was chosen by and `config` its config's checked
+/// bytes. The image must be for one of `targets` ([`platform_of`]). Its config must
 /// describe layers, one DiffID for each of the manifest's (image-spec config.md).
 fn checked(
     name: &str,
@@ -729,22 +836,20 @@ fn checked(
     manifest: &Manifest,
     config: &[u8],
     targets: &[Target],
-) -> Result<(ImageConfig, Vec<Layer>), Error> {
+    lone_any: bool,
+) -> Result<(ImageConfig, Vec<Layer>, Platform), Error> {
     let config = oci::parse_config(config)?;
-    let platform = chosen.platform.clone().unwrap_or_else(|| Platform {
-        architecture: config.architecture.clone(),
-        os: config.os.clone(),
-        variant: config.variant.clone(),
-        os_features: Vec::new(),
-    });
-    // Any, where no platform is asked: an image taken by its name, as dockerd takes one.
-    if !targets.is_empty() && !platform::runs(&platform, targets) {
-        return Err(Error::new(format!(
-            "{name} is for {}/{}, not {}",
-            platform.os,
-            platform.architecture,
-            wanted(targets)
-        )));
+    let platform = platform_of(chosen, &config);
+    // Any, where no platform is asked: an image taken by its name, as dockerd takes one;
+    // and, where `lone_any`, a lone manifest whatever its platform, as dockerd pulls one
+    // (Docker 29.3.1 pulled amd64's alpine manifest by its digest with `--platform
+    // linux/arm64`). Else not found, as dockerd's lookup of the platform asked finds none.
+    let lone = chosen.platform.is_none();
+    if let Some(asked) = targets.first()
+        && !(lone && lone_any)
+        && !platform::runs(&platform, targets)
+    {
+        return Err(not_for_platform(name, asked));
     }
     if config.rootfs.diff_ids.len() != manifest.layers.len() {
         return Err(Error::new(format!(
@@ -765,7 +870,7 @@ fn checked(
             })
         })
         .collect::<Result<Vec<_>, Error>>()?;
-    Ok((config, layers))
+    Ok((config, layers, platform))
 }
 
 /// The bytes of the small blob `desc` describes, from the store alone, checked again
@@ -923,6 +1028,55 @@ mod tests {
                 manifests.insert("v1".into(), (doc, media_type.to_string()));
             }
         }
+        Image {
+            manifests,
+            blobs,
+            layers,
+        }
+    }
+
+    /// An image whose index lists a manifest for each of `arches`, each with a layer of
+    /// its own.
+    fn platforms(arches: &[&str]) -> Image {
+        let mut blobs = HashMap::new();
+        let mut manifests = HashMap::new();
+        let mut entries = Vec::new();
+        let mut layers = Vec::new();
+        for arch in arches {
+            let t = tar(arch, arch.as_bytes());
+            let gz = gzip(&t);
+            let config = format!(
+                r#"{{"architecture":"{arch}","os":"linux","config":{{"Cmd":["/bin/sh"]}},"rootfs":{{"type":"layers","diff_ids":["{}"]}}}}"#,
+                sha256(&t)
+            )
+            .into_bytes();
+            let manifest = format!(
+                r#"{{"schemaVersion":2,"mediaType":"{}","config":{},"layers":[{}]}}"#,
+                oci::media::OCI_MANIFEST,
+                descriptor(CONFIGS[0], &config),
+                descriptor(&format!("{}+gzip", oci::media::OCI_LAYER), &gz)
+            )
+            .into_bytes();
+            entries.push(descriptor(oci::media::OCI_MANIFEST, &manifest).replace(
+                '}',
+                &format!(r#","platform":{{"architecture":"{arch}","os":"linux"}}}}"#),
+            ));
+            layers.push(sha256(&gz));
+            blobs.insert(sha256(&gz), gz);
+            blobs.insert(sha256(&config), config);
+            manifests.insert(
+                sha256(&manifest),
+                (manifest, oci::media::OCI_MANIFEST.to_string()),
+            );
+        }
+        let index = format!(
+            r#"{{"schemaVersion":2,"mediaType":"{}","manifests":[{}]}}"#,
+            oci::media::OCI_INDEX,
+            entries.join(",")
+        )
+        .into_bytes();
+        manifests.insert(sha256(&index), (index.clone(), oci::media::OCI_INDEX.to_string()));
+        manifests.insert("v1".into(), (index, oci::media::OCI_INDEX.to_string()));
         Image {
             manifests,
             blobs,
@@ -1112,9 +1266,14 @@ mod tests {
     }
 
     fn riscv64() -> Vec<Target> {
+        linux("riscv64")
+    }
+
+    /// Linux on `architecture`, no variant.
+    fn linux(architecture: &str) -> Vec<Target> {
         vec![Target {
             os: "linux".into(),
-            architecture: "riscv64".into(),
+            architecture: architecture.into(),
             variant: String::new(),
         }]
     }
@@ -1582,13 +1741,16 @@ mod tests {
             (&found.manifest, &found.config, &found.rootfs),
             (&pulled.manifest, &pulled.config, &pulled.rootfs)
         );
-        // Its index labelled it for this host's platform, and guests of another do not
-        // run it.
+        // Its index labelled it for this host's platform: a lookup for another finds none,
+        // in dockerd's words.
         let e = local(&store, &reference, &riscv64(), &Limits::none()).unwrap_err();
-        assert!(
-            e.to_string()
-                .contains(&format!("is for linux/{NATIVE}, not linux/riscv64")),
-            "{e}"
+        assert_eq!(e.kind(), ErrorKind::NotFound, "{e}");
+        assert_eq!(
+            e.to_string(),
+            format!(
+                "image with reference {} was found but does not provide the specified platform (linux/riscv64)",
+                reference.familiar()
+            )
         );
 
         let recorded = store.tagged(&reference.to_string()).unwrap().unwrap();
@@ -1670,7 +1832,15 @@ mod tests {
                 .is_some()
         );
         let e = local(&store, &reference, &riscv64(), &Limits::none()).unwrap_err();
-        assert!(e.to_string().contains("is for linux/arm64, not"), "{e}");
+        assert_eq!(e.kind(), ErrorKind::NotFound, "{e}");
+        assert!(
+            e.to_string()
+                .ends_with("does not provide the specified platform (linux/riscv64)"),
+            "{e}"
+        );
+        // Its label says arm64, its config amd64: the label decides.
+        let e = local(&store, &reference, &linux("amd64"), &Limits::none()).unwrap_err();
+        assert_eq!(e.kind(), ErrorKind::NotFound, "{e}");
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -1913,16 +2083,6 @@ mod tests {
                 found: "is not \"layers\"",
             },
             Case {
-                why: "an image for another platform",
-                config: config("s390x", "layers", &[&diff_id]),
-                manifest: manifest(
-                    &descriptor(CONFIGS[0], &config("s390x", "layers", &[&diff_id])),
-                    &one,
-                ),
-                pulled: "is for linux/s390x, not linux/arm64",
-                found: "is for linux/s390x, not linux/arm64",
-            },
-            Case {
                 why: "a config that is not an image's",
                 config: right.clone(),
                 manifest: manifest(&descriptor("application/vnd.example+json", &right), &one),
@@ -1981,6 +2141,124 @@ mod tests {
             assert!(e.contains(found), "{why}, found: {e}");
             let _ = std::fs::remove_dir_all(&root);
         }
+    }
+
+    /// A lone manifest, which no index labels, is pulled whatever its platform, as dockerd
+    /// pulls one (Docker 29.3.1 pulled amd64's alpine manifest by its digest with
+    /// `--platform linux/arm64`). A lookup for another platform finds none, in dockerd's
+    /// words (daemon/containerd/image.go, errPlatformNotFound), and one that asks for none
+    /// finds it.
+    #[test]
+    fn a_lone_manifest_is_pulled_for_any_platform_and_found_for_its_own() {
+        let layer = gzip(&tar("a", b"a"));
+        let config = format!(
+            r#"{{"architecture":"s390x","os":"linux","rootfs":{{"type":"layers","diff_ids":["{}"]}}}}"#,
+            sha256(&tar("a", b"a"))
+        )
+        .into_bytes();
+        let manifest = format!(
+            r#"{{"schemaVersion":2,"mediaType":"{}","config":{},"layers":[{}]}}"#,
+            oci::media::OCI_MANIFEST,
+            descriptor(CONFIGS[0], &config),
+            descriptor(&format!("{}+gzip", oci::media::OCI_LAYER), &layer)
+        )
+        .into_bytes();
+        let fake = fake(unindexed(manifest, &[&config, &layer]), None);
+        let reference = Reference::parse(&format!("127.0.0.1:{}/test/image:v1", fake.registry.port)).unwrap();
+        let root = temp("lone");
+        let store = Store::open(&root).unwrap();
+        let registry = Registry::new(client(), &reference, Credentials::Anonymous).unwrap();
+        let pulled = pull(&registry, &store, &reference, &arm64(), &Limits::none(), &|_| {}).unwrap();
+        assert_eq!(pulled.config.architecture, "s390x");
+        let e = local(&store, &reference, &arm64(), &Limits::none()).unwrap_err();
+        assert_eq!(e.kind(), ErrorKind::NotFound, "{e}");
+        assert_eq!(
+            e.to_string(),
+            format!(
+                "image with reference {} was found but does not provide the specified platform (linux/arm64)",
+                reference.familiar()
+            )
+        );
+        let s390x = linux("s390x");
+        for targets in [&s390x[..], &[]] {
+            let found = local(&store, &reference, targets, &Limits::none())
+                .unwrap()
+                .unwrap();
+            assert_eq!(found.config, pulled.config, "{targets:?}");
+            assert!(found.rootfs.is_some(), "{targets:?}");
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// An image keeps each platform of its index pulled, as dockerd's does (Docker 29.3.1,
+    /// measured: M243): its name names this host's where it is here, which a lookup that
+    /// asks no platform takes, after a pull of another platform too; a lookup of either
+    /// finds it; and one whose layers are not all here is not found, until a pull makes it
+    /// whole again.
+    #[test]
+    fn an_image_keeps_each_platform_pulled_and_names_this_hosts() {
+        let fake = fake(platforms(&["s390x", NATIVE]), None);
+        let reference = Reference::parse(&format!("127.0.0.1:{}/test/image:v1", fake.registry.port)).unwrap();
+        let root = temp("platforms");
+        let store = Store::open(&root).unwrap();
+        let registry = Registry::new(client(), &reference, Credentials::Anonymous).unwrap();
+        let s390x = linux("s390x");
+        let named = || store.tagged(&reference.to_string()).unwrap().unwrap().digest;
+        // Another platform's alone: what the name names.
+        let other = pull(&registry, &store, &reference, &s390x, &Limits::none(), &|_| {}).unwrap();
+        assert_eq!(other.config.architecture, "s390x");
+        assert_eq!(named(), other.manifest.to_string());
+        // This host's, then: named in its place, and kept named as the other's is pulled
+        // again.
+        let ours = pull(&registry, &store, &reference, &native(), &Limits::none(), &|_| {}).unwrap();
+        assert_eq!(ours.config.architecture, NATIVE);
+        assert_eq!(named(), ours.manifest.to_string());
+        let again = pull(&registry, &store, &reference, &s390x, &Limits::none(), &|_| {}).unwrap();
+        assert_eq!(again.manifest, other.manifest);
+        assert_eq!(named(), ours.manifest.to_string());
+        for (targets, wanted) in [(&native()[..], &ours), (&s390x[..], &other), (&[][..], &ours)] {
+            let found = local(&store, &reference, targets, &Limits::none())
+                .unwrap()
+                .unwrap();
+            assert_eq!(found.manifest, wanted.manifest, "{targets:?}");
+            assert_eq!(
+                found.descriptor.digest,
+                wanted.manifest.to_string(),
+                "{targets:?}"
+            );
+            assert_eq!(found.config, wanted.config, "{targets:?}");
+        }
+        // A collection keeps each platform's root filesystem, each unpacked to run.
+        store.collect().unwrap();
+        for pulled in [&ours, &other] {
+            let rootfs = pulled.rootfs.as_ref().unwrap();
+            assert!(rootfs.exists(), "{}", rootfs.display());
+        }
+        // The other's layer gone: not here for its platform, until pulled whole again.
+        let layer = Digest::parse(&first_layer(&store, &other)).unwrap();
+        std::fs::remove_file(store.blob_path(&layer)).unwrap();
+        let e = local(&store, &reference, &s390x, &Limits::none()).unwrap_err();
+        assert_eq!(e.kind(), ErrorKind::NotFound, "{e}");
+        pull(&registry, &store, &reference, &s390x, &Limits::none(), &|_| {}).unwrap();
+        let found = local(&store, &reference, &s390x, &Limits::none())
+            .unwrap()
+            .unwrap();
+        assert_eq!(found.manifest, other.manifest);
+        assert_eq!(named(), ours.manifest.to_string());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The digest of the first layer of the image `pulled` names, read from the store.
+    fn first_layer(store: &Store, pulled: &Pulled) -> String {
+        let bytes = store
+            .content(&pulled.descriptor, oci::MAX_MANIFEST)
+            .unwrap()
+            .unwrap();
+        let Document::Manifest(m) = oci::parse_document(&bytes, &pulled.descriptor.media_type).unwrap()
+        else {
+            panic!("an index");
+        };
+        m.layers[0].digest.clone()
     }
 
     /// An image whose layers are larger than it may decompress to is refused before any
