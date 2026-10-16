@@ -857,7 +857,6 @@ mod tests {
     /// A credential helper that knows `found.example` and `token.example`.
     #[cfg(unix)]
     fn helper(dir: &Path, name: &str) {
-        use std::os::unix::fs::PermissionsExt;
         let script = r#"#!/bin/sh
 read -r key || true
 case "$key" in
@@ -867,9 +866,25 @@ broken.example) echo 'the keychain is locked'; exit 1 ;;
 *) echo 'credentials not found in native keychain'; exit 1 ;;
 esac
 "#;
-        let path = dir.join(format!("docker-credential-{name}"));
-        std::fs::write(&path, script).unwrap();
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        program(&dir.join(format!("docker-credential-{name}")), script);
+    }
+
+    /// The program `text` at `path`, written by a process of its own: a file this one held
+    /// open to write, a child another test's thread forked meanwhile holds until it execs,
+    /// and an exec of the file fails with ETXTBSY until then (Linux; CI's run 38905368380,
+    /// "Text file busy").
+    #[cfg(unix)]
+    fn program(path: &Path, text: &str) {
+        use std::io::Write as _;
+        let mut writer = std::process::Command::new("/bin/sh")
+            .arg("-c")
+            .arg(r#"cat > "$0" && chmod 755 "$0""#)
+            .arg(path)
+            .stdin(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        writer.stdin.take().unwrap().write_all(text.as_bytes()).unwrap();
+        assert!(writer.wait().unwrap().success(), "{} not written", path.display());
     }
 
     #[cfg(unix)]
@@ -913,8 +928,7 @@ esac
         helper(&bin, name);
         if !cfg!(target_os = "macos") {
             // `pass` itself must be installed for Docker to choose its helper.
-            helper(&bin, "unused");
-            std::fs::copy(bin.join("docker-credential-unused"), bin.join("pass")).unwrap();
+            program(&bin.join("pass"), "#!/bin/sh\nexit 0\n");
         }
         let path = format!("{}:/bin:/usr/bin", bin.display());
         let env = [("PATH", path.as_str())];
