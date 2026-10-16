@@ -4072,9 +4072,9 @@ would have read the machine's directory. Now (crate::synced):
   go with it, those alone.
 - A client removed takes the copies of its contexts with it.
 
-What a build names of the client's otherwise is refused until it is carried (its secrets are,
-part 3e): `--ssh`, an output, cache or named context of a file or directory here, `--iidfile`,
-`--metadata-file` and a policy's file. Not yet: the client's terminal for the build's live
+What a build names of the client's otherwise is refused until it is carried (its secrets
+are, part 3e, and its outputs, `--iidfile` and `--metadata-file`, part 3f): `--ssh`, a cache
+or named context of a file or directory here, and a policy's file. Not yet: the client's terminal for the build's live
 display (a build over a context prints its plain progress); extended attributes (go-archive's
 archives carry `security.capability` alone). A new name of a file the copy holds, unchanged,
 goes as a link to the copy's file (part 3d's), no byte of it again, where it went as a file
@@ -4094,6 +4094,34 @@ untouched), and unit tests of the plan and of a copy's key. Mutation-checked: th
 applied, everything sent each time, the ignore file not applied here, what went not
 removed, a change's directories not set again, the build file not the copy's, a base's
 login not sent, a build arg named alone the machine's.
+
+**Part 3f, built: a build's outputs through a context, the client's own files.** What a build
+on the GPU machine makes comes back to the laptop: its result as a directory (`-o
+type=local,dest=DIR`, an OCI layout's with `tar=false`) or a tar (`-o type=tar,dest=FILE`,
+`oci`'s, `docker`'s), its image's ID (`--iidfile`), its metadata (`--metadata-file`).
+- **Written there to a directory of the build's own, sent back as it ends.** The client
+  names each as a place of the machine's (`\0out/NAME`, the output's own fields kept, its
+  `dest` the machine's); the machine's step writes them under its copy, frames its stdout
+  (the stream's version 3): the build's own stdout as it comes, then, once the build is
+  through, each output, its name, its bytes, a directory's as its archive, and its end
+  (`synced::send_outputs`); and it removes them once sent, all under the copy's lock, so
+  that no build's outputs outlive it there or meet another's. A step that sent them apart,
+  after, would have left a client's outputs on the machine where the client ended between.
+- **Kept here as a build here writes them, and better.** A directory's archive is unpacked
+  into it as the local exporter writes one; a file is written beside its path and renamed
+  to it at its end, its mode a new file's, so that a file is whole or not at all, where a
+  build here writes its ID in place; one a signal ends goes. An output not kept fails the
+  build, in the build's words. `-o -` is the build's stdout, as it was.
+- **None of the client's paths cross**: where they would be read on the machine, each was
+  the machine's own to misread.
+
+Tested in `tests/context.rs` (`a_builds_outputs_through_a_context_are_the_clients_files`: a
+directory's files, a tar's entries, an image's ID, its metadata, a tar on stdout, none of the
+client's paths in what the machine was asked, and nothing left under its copies), and unit
+tests of the framing (a step's frames, cut anywhere, coming apart as they were said) and the
+placeholders.
+Mutation-checked: the outputs not sent, the outputs kept there, an output's path sent as it
+is, the step's stdout not taken apart.
 
 **Part 3e, built: a build's secrets through a context, and its `RUN` steps.** A build on
 the GPU machine reaches private packages as a build on the laptop does, its tokens the

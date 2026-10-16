@@ -1325,12 +1325,12 @@ fn a_context_runs_commands_on_its_machine_whole() {
             .contains("-it: stdin is not a terminal, so it cannot be the command's"),
         "{terminal}"
     );
-    let build = run_shards_env(&["build"], &["--iidfile", "id", "."], &on_laptop, TIMEOUT);
+    let build = run_shards_env(&["build"], &["--ssh", "default", "."], &on_laptop, TIMEOUT);
     assert_eq!(build.status, Some(125), "{build}");
     assert!(
         build
             .stderr
-            .contains("build --iidfile over a context names this machine's files"),
+            .contains("build --ssh over a context names this machine's files"),
         "{build}"
     );
     // A build of a context with no build file is the build's to refuse, in its words.
@@ -1621,4 +1621,81 @@ fn a_builds_secrets_through_a_context_are_the_clients_held_in_memory_alone() {
         missing.stderr.starts_with("ERROR: failed to stat /nowhere/token"),
         "{missing}"
     );
+}
+
+/// A build's outputs through a context are the client's own files (D180): a directory of
+/// its result (`-o type=local,dest=DIR`), a tar of it to a file (`-o type=tar,dest=FILE`),
+/// its image's ID (`--iidfile`) and its metadata (`--metadata-file`), each written here as
+/// the build ends, a file only once whole; a result to stdout (`-o -`) the build's stdout
+/// still; and nothing of them left on the machine.
+#[test]
+fn a_builds_outputs_through_a_context_are_the_clients_files() {
+    let Some((machine, _listening, laptop, _image)) = joined("ctx-out") else {
+        return;
+    };
+    let app = laptop.join("app");
+    std::fs::create_dir_all(app.join("sub")).unwrap();
+    std::fs::write(app.join("Dockerfile"), "FROM scratch\nCOPY a.txt sub /\n").unwrap();
+    std::fs::write(app.join("a.txt"), "one").unwrap();
+    std::fs::write(app.join("sub/b.txt"), "two").unwrap();
+    let on_laptop = [("SHARDS_HOME", laptop.as_os_str())];
+    let build = |args: &[&str]| {
+        let mut all = args.to_vec();
+        all.push(app.to_str().unwrap());
+        let built = run_shards_env(&["--context", "gpu", "build"], &all, &on_laptop, TIMEOUT);
+        assert_eq!(built.status, Some(0), "{built}");
+        built
+    };
+    let dir = laptop.join("out");
+    build(&["-o", &format!("type=local,dest={}", dir.display())]);
+    assert_eq!(std::fs::read_to_string(dir.join("a.txt")).unwrap(), "one");
+    assert_eq!(std::fs::read_to_string(dir.join("b.txt")).unwrap(), "two");
+    let tar = laptop.join("result.tar");
+    build(&["-o", &format!("type=tar,dest={}", tar.display())]);
+    let held = std::fs::read(&tar).unwrap();
+    for (name, bytes) in [(&b"a.txt"[..], &b"one"[..]), (b"b.txt", b"two")] {
+        assert!(
+            held.windows(name.len()).any(|w| w == name),
+            "{name:?} not in the tar"
+        );
+        assert!(
+            held.windows(bytes.len()).any(|w| w == bytes),
+            "{bytes:?} not in the tar"
+        );
+    }
+    let (iid, meta_file) = (laptop.join("iid"), laptop.join("meta.json"));
+    build(&[
+        "-t",
+        "outputs:1",
+        "--iidfile",
+        iid.to_str().unwrap(),
+        "--metadata-file",
+        meta_file.to_str().unwrap(),
+    ]);
+    let id = std::fs::read_to_string(&iid).unwrap();
+    assert!(id.starts_with("sha256:") && id.len() == 71, "{id:?}");
+    let meta: serde_json::Value = serde_json::from_slice(&std::fs::read(&meta_file).unwrap()).unwrap();
+    assert!(meta.as_object().is_some_and(|m| !m.is_empty()), "{meta}");
+    let to_stdout = build(&["-o", "-"]);
+    assert!(to_stdout.stdout.contains("a.txt"), "no tar on stdout");
+    // None of this client's paths crossed: each output was the machine's to write, there.
+    let log = std::fs::read_to_string(machine.join("daemon.log")).unwrap();
+    for here in [&dir, &tar, &iid] {
+        assert!(
+            !log.contains(here.to_str().unwrap()),
+            "{} in what the machine was asked",
+            here.display()
+        );
+    }
+    // Nothing of them left there: each build's outputs went once sent.
+    let synced = machine.join("synced");
+    let mut stack = vec![synced];
+    while let Some(at) = stack.pop() {
+        for entry in std::fs::read_dir(&at).into_iter().flatten().flatten() {
+            assert_ne!(entry.file_name(), "out", "{} kept", entry.path().display());
+            if entry.file_type().is_ok_and(|t| t.is_dir()) && entry.file_name() != "context" {
+                stack.push(entry.path());
+            }
+        }
+    }
 }

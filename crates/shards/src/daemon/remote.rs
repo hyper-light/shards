@@ -364,9 +364,15 @@ impl Machine {
                             super::log(format!(
                                 "client {whose}: context {key}: {sent} bytes of files came"
                             ));
+                            // The build's outputs of the client's, in a directory of their own,
+                            // which goes once they are sent.
+                            let outputs = copy.join("out");
+                            let _ = std::fs::remove_dir_all(&outputs);
+                            std::fs::create_dir_all(&outputs)
+                                .map_err(|e| format!("{}: {e}", outputs.display()))?;
                             let argv: Vec<OsString> = words
                                 .iter()
-                                .map(|a| crate::synced::placed(a, &context, &dockerfile))
+                                .map(|a| crate::synced::placed(a, &context, &dockerfile, &outputs))
                                 .collect();
                             // Each secret on a pipe of its own, which the build reads once, as
                             // its file: written in the order the build reads them, by one
@@ -394,7 +400,30 @@ impl Machine {
                                 .zip(crate::synced::SECRET_FD..)
                                 .map(|(r, fd)| (r.as_fd(), fd))
                                 .collect();
-                            ours.run(&exe, &argv, &env, &out_w, &err_w, &fds)?
+                            // Its stdout framed as it comes (synced::SAID); then, once it is
+                            // through, its outputs.
+                            let (said_r, said_w) =
+                                std::io::pipe().map_err(|e| format!("a pipe for the build's output: {e}"))?;
+                            let status = std::thread::scope(|scope| -> Result<i32, String> {
+                                let out = &mut out_w;
+                                let saying = std::thread::Builder::new()
+                                    .name("context-said".into())
+                                    .spawn_scoped(scope, move || crate::synced::say(said_r, out))
+                                    .map_err(|e| format!("a thread for the build's output: {e}"))?;
+                                let ran = ours.run(&exe, &argv, &env, &said_w, &err_w, &fds);
+                                drop(said_w);
+                                let said = saying
+                                    .join()
+                                    .map_err(|_| "the build's output's thread ended".to_string())?;
+                                let status = ran?;
+                                said.map_err(|e| format!("the build's output: {e}"))?;
+                                Ok(status)
+                            })?;
+                            if status == 0 {
+                                crate::synced::send_outputs(&outputs, &mut out_w)?;
+                            }
+                            let _ = std::fs::remove_dir_all(&outputs);
+                            status
                         }
                         other => return Err(format!("{other:?}: no such step of a context")),
                     };

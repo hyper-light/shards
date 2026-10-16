@@ -7,9 +7,9 @@
 //! ignore file beside it, a few kilobytes, go whole each time, ahead of the layer.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::io::Write;
 #[cfg(unix)]
-use std::io::{self, Read};
+use std::io::Read;
+use std::io::{self, Write};
 #[cfg(unix)]
 use std::path::{Path, PathBuf};
 
@@ -23,6 +23,9 @@ pub(crate) const SYNC_STEP: &str = "\u{0}sync";
 /// context, and of its build file's directory, which the machine names.
 pub(crate) const CONTEXT: &str = "\u{0}context";
 pub(crate) const DOCKERFILE: &str = "\u{0}dockerfile/";
+/// What stands for where the build writes an output of the client's (`\0out/NAME`): the
+/// directory of this build's outputs there, which its step sends back as the build ends.
+pub(crate) const OUT: &str = "\u{0}out/";
 /// What stands for the `N`th secret a client sends with its build (`\0secret/N`), which the
 /// machine's build reads from a pipe, the descriptor [`SECRET_FD`] + N.
 pub(crate) const SECRET: &str = "\u{0}secret/";
@@ -32,10 +35,14 @@ pub(crate) const SECRET_FD: i32 = 3;
 #[cfg(unix)]
 /// A word of a build's command line on the machine: [`CONTEXT`] its copy of the context,
 /// [`DOCKERFILE`]'s files its copy of the build file's directory's, after any flag's `=`,
-/// and each [`SECRET`] the pipe its secret is read from.
-pub(crate) fn placed(word: &str, context: &Path, dockerfile: &Path) -> std::ffi::OsString {
+/// each [`SECRET`] the pipe its secret is read from, and each [`OUT`] the directory of its
+/// outputs, `out`.
+pub(crate) fn placed(word: &str, context: &Path, dockerfile: &Path, out: &Path) -> std::ffi::OsString {
     if word == CONTEXT {
         return context.as_os_str().to_os_string();
+    }
+    if word.contains(OUT) {
+        return std::ffi::OsString::from(word.replace(OUT, &format!("{}/", out.display())));
     }
     if let Some((before, n)) = word.split_once(SECRET) {
         let fd = n.parse::<i32>().ok().and_then(|n| n.checked_add(SECRET_FD));
@@ -59,8 +66,149 @@ pub(crate) fn placed(word: &str, context: &Path, dockerfile: &Path) -> std::ffi:
 }
 
 /// What starts what a client sends of a build: the build file's directory, its secrets,
-/// then the layer.
-const MAGIC: &[u8] = b"shards context 2\n";
+/// then the layer; and says the build's step frames its stdout ([`SAID`]).
+const MAGIC: &[u8] = b"shards context 3\n";
+
+/// What a build's step says on its stdout, each a frame of a tag, a length and bytes: the
+/// build's own stdout as it comes ([`SAID`]); then, once the build is through, each output
+/// of the client's it wrote, its name ([`FILE`] or [`DIR`]), its bytes ([`CHUNK`], a
+/// directory's as its archive) and its end ([`DONE`]).
+pub(crate) const SAID: u8 = 0;
+pub(crate) const FILE: u8 = 1;
+pub(crate) const DIR: u8 = 2;
+pub(crate) const CHUNK: u8 = 3;
+pub(crate) const DONE: u8 = 4;
+
+/// A frame's most bytes: what a read of the build's stdout takes at once.
+#[cfg(unix)]
+const FRAME_MOST: usize = 64 << 10;
+
+#[cfg(unix)]
+fn frame(out: &mut dyn Write, tag: u8, bytes: &[u8]) -> io::Result<()> {
+    out.write_all(&[tag])?;
+    out.write_all(&u32::try_from(bytes.len()).unwrap_or(u32::MAX).to_be_bytes())?;
+    out.write_all(bytes)
+}
+
+#[cfg(unix)]
+/// What writes [`CHUNK`] frames, a frame a write.
+struct Chunks<'a>(&'a mut dyn Write);
+
+#[cfg(unix)]
+impl Write for Chunks<'_> {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        let n = bytes.len().min(FRAME_MOST);
+        frame(self.0, CHUNK, bytes.get(..n).unwrap_or_default())?;
+        Ok(n)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.0.flush()
+    }
+}
+
+#[cfg(unix)]
+/// The build's stdout as [`SAID`] frames, as it comes, to its end.
+pub(crate) fn say(mut build: impl Read, out: &mut dyn Write) -> io::Result<()> {
+    let mut buf = vec![0u8; FRAME_MOST];
+    loop {
+        let n = build.read(&mut buf)?;
+        if n == 0 {
+            return Ok(());
+        }
+        frame(out, SAID, buf.get(..n).unwrap_or_default())?;
+    }
+}
+
+#[cfg(unix)]
+/// Each output the build wrote in `dir`, by its name, in its order: a file's bytes, a
+/// directory's archive.
+pub(crate) fn send_outputs(dir: &Path, out: &mut dyn Write) -> Result<(), String> {
+    let at = |e: io::Error| format!("{}: {e}", dir.display());
+    let mut names: Vec<std::ffi::OsString> = match std::fs::read_dir(dir) {
+        Ok(entries) => entries
+            .map(|e| e.map(|e| e.file_name()))
+            .collect::<io::Result<_>>()
+            .map_err(at)?,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Vec::new(),
+        Err(e) => return Err(at(e)),
+    };
+    names.sort();
+    for name in names {
+        let path = dir.join(&name);
+        let shown = name.to_string_lossy().into_owned();
+        let sent = std::fs::symlink_metadata(&path).and_then(|meta| {
+            if meta.is_dir() {
+                frame(out, DIR, shown.as_bytes())?;
+                shards_archive::pack(&path, &shards_archive::PackOptions::default(), Chunks(out))
+                    .map(drop)
+                    .map_err(io::Error::other)?;
+            } else {
+                frame(out, FILE, shown.as_bytes())?;
+                io::copy(&mut std::fs::File::open(&path)?, &mut Chunks(out))?;
+            }
+            frame(out, DONE, &[])
+        });
+        sent.map_err(|e| format!("sending the build's output {shown}: {e}"))?;
+    }
+    Ok(())
+}
+
+/// Where a build's outputs go here, as they come back: a file's whole or not at all, a
+/// directory's archive unpacked.
+pub(crate) trait Outputs: Send {
+    fn begin(&mut self, name: &str, dir: bool) -> io::Result<()>;
+    fn chunk(&mut self, bytes: &[u8]) -> io::Result<()>;
+    fn end(&mut self) -> io::Result<()>;
+}
+
+/// What a build's step says, taken apart as it comes: the build's own stdout written to
+/// `said`, its outputs given to `outputs`.
+pub(crate) struct Demux<S, O> {
+    said: S,
+    outputs: O,
+    held: Vec<u8>,
+}
+
+impl<S: Write, O: Outputs> Demux<S, O> {
+    pub(crate) fn new(said: S, outputs: O) -> Demux<S, O> {
+        Demux {
+            said,
+            outputs,
+            held: Vec::new(),
+        }
+    }
+}
+
+impl<S: Write, O: Outputs> Write for Demux<S, O> {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        self.held.extend_from_slice(bytes);
+        let mut at = 0;
+        while let Some((&tag, rest)) = self.held.get(at..).and_then(<[u8]>::split_first) {
+            let Some((len, rest)) = rest.split_first_chunk::<4>() else {
+                break;
+            };
+            let len = usize::try_from(u32::from_be_bytes(*len)).unwrap_or(usize::MAX);
+            let Some(body) = rest.get(..len) else {
+                break;
+            };
+            match tag {
+                SAID => self.said.write_all(body)?,
+                FILE | DIR => self.outputs.begin(&String::from_utf8_lossy(body), tag == DIR)?,
+                CHUNK => self.outputs.chunk(body)?,
+                DONE => self.outputs.end()?,
+                other => return Err(io::Error::other(format!("a build's step said {other}"))),
+            }
+            at += 5 + len;
+        }
+        self.held.drain(..at.min(self.held.len()));
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.said.flush()
+    }
+}
 
 #[cfg(unix)]
 /// The most of a secret a build takes: what a step's frame carries, as a build here takes.
@@ -653,13 +801,18 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn a_builds_secrets_cross_as_pipes_it_names() {
+        let place = |w: &str| placed(w, Path::new("/c"), Path::new("/d"), Path::new("/o"));
         assert_eq!(
-            placed(
-                "--secret=id=tok,src=\u{0}secret/1",
-                Path::new("/c"),
-                Path::new("/d")
-            ),
+            place("--secret=id=tok,src=\u{0}secret/1"),
             std::ffi::OsString::from("--secret=id=tok,src=/dev/fd/4")
+        );
+        assert_eq!(
+            place("--output=type=local,dest=\u{0}out/0"),
+            std::ffi::OsString::from("--output=type=local,dest=/o/0")
+        );
+        assert_eq!(
+            place("--iidfile=\u{0}out/iidfile"),
+            std::ffi::OsString::from("--iidfile=/o/iidfile")
         );
         let held = |b: &[u8]| shards_cmdline::buildflags::SecretBytes::new(b.to_vec());
         let secrets = vec![
@@ -683,6 +836,45 @@ mod tests {
             refused.contains("2 secrets, where the build names 1"),
             "{refused}"
         );
+    }
+
+    /// What a build's step says comes apart as it said it, however its frames are cut: the
+    /// build's own stdout, then each output's name, bytes and end.
+    #[cfg(unix)]
+    #[test]
+    fn a_builds_step_comes_apart_as_it_was_said() {
+        #[derive(Default)]
+        struct Got(Vec<String>);
+        impl Outputs for Got {
+            fn begin(&mut self, name: &str, dir: bool) -> io::Result<()> {
+                self.0.push(format!("begin {name} {dir}"));
+                Ok(())
+            }
+            fn chunk(&mut self, bytes: &[u8]) -> io::Result<()> {
+                self.0.push(format!("chunk {}", String::from_utf8_lossy(bytes)));
+                Ok(())
+            }
+            fn end(&mut self) -> io::Result<()> {
+                self.0.push("end".into());
+                Ok(())
+            }
+        }
+        let mut said = Vec::new();
+        say(&b"the build's own"[..], &mut said).unwrap();
+        let dir = shards_testdir::TempDir::new("synced-out").unwrap();
+        std::fs::write(dir.join("iidfile"), "sha256:x").unwrap();
+        send_outputs(dir.as_ref(), &mut said).unwrap();
+        for cut in [1, 5, said.len()] {
+            let mut stdout = Vec::new();
+            let mut demux = Demux::new(&mut stdout, Got::default());
+            for piece in said.chunks(cut) {
+                demux.write_all(piece).unwrap();
+            }
+            let got = std::mem::take(&mut demux.outputs.0);
+            drop(demux);
+            assert_eq!(stdout, b"the build's own", "{cut}");
+            assert_eq!(got, ["begin iidfile false", "chunk sha256:x", "end"], "{cut}");
+        }
     }
 
     /// A new name of a file the copy holds, unchanged, is linked to it there: its partner

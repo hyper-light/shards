@@ -643,8 +643,6 @@ fn build_not_carried(parsed: &shards_cmdline::flags::Parsed) -> Option<&'static 
     };
     if !parsed.many("ssh").is_empty() {
         Some("--ssh")
-    } else if parsed.many("output").iter().any(|v| named_here(v)) {
-        Some("--output")
     } else if parsed
         .many("cache-from")
         .iter()
@@ -659,10 +657,6 @@ fn build_not_carried(parsed: &shards_cmdline::flags::Parsed) -> Option<&'static 
         Some("--cache-to")
     } else if parsed.many("build-context").iter().any(|v| !remote_context(v)) {
         Some("--build-context")
-    } else if !parsed.string("iidfile").is_empty() {
-        Some("--iidfile")
-    } else if !parsed.string("metadata-file").is_empty() {
-        Some("--metadata-file")
     } else if parsed.many("policy").iter().any(|v| v.contains("filename=")) {
         Some("--policy")
     } else {
@@ -690,6 +684,38 @@ struct Built {
     dockerfile_dir: Option<PathBuf>,
     /// Its `--secret`s as given, read here as the build is sent ([`build_there`]).
     secrets: Vec<String>,
+    /// Its outputs to files or directories here: each one's name there, its path here, and
+    /// whether it is a directory.
+    outputs: Vec<(String, PathBuf, bool)>,
+}
+
+/// An `--output` of `value` to a file or directory here: said as the same output to the
+/// machine's directory of this build's outputs, under its own name, recorded in `outputs`.
+/// None for one of the machine's own, a registry's, or stdout's, and for one the build
+/// refuses, which it says there.
+fn output_here(value: &str, outputs: &mut Vec<(String, PathBuf, bool)>) -> Option<String> {
+    let mut exports = shards_cmdline::buildflags::parse_exports(&[value.to_string()]).ok()?;
+    let e = exports.pop().filter(|_| exports.is_empty())?;
+    let file_or_dir = matches!(e.kind.as_str(), "local" | "tar" | "oci" | "docker");
+    if !file_or_dir || e.dest.is_empty() || e.dest == "-" {
+        return None;
+    }
+    let dir = e.kind == "local" || (e.kind != "tar" && e.attrs.get("tar").is_some_and(|t| t == "false"));
+    let here = std::path::absolute(&e.dest).ok()?;
+    let name = outputs.len().to_string();
+    outputs.push((name.clone(), here, dir));
+    let fields = [
+        format!("type={}", e.kind),
+        format!("dest={}{name}", crate::synced::OUT),
+    ]
+    .into_iter()
+    .chain(e.attrs.iter().map(|(k, v)| format!("{k}={v}")));
+    Some(
+        fields
+            .map(|f| shards_cmdline::go::csv_field(&f))
+            .collect::<Vec<_>>()
+            .join(","),
+    )
 }
 
 /// A file's permissions and time, for its copy there; a file not there none of its own.
@@ -806,7 +832,27 @@ fn building(words: &[String], stdin: &dyn Fn() -> Result<Vec<u8>, String>) -> Re
     // The machine's words: the context and the build file its copies', a bare build arg
     // this client's value, or none, as buildx reads one where it is run.
     let mut gone: Vec<(usize, usize)> = Vec::new();
+    let mut outputs = Vec::new();
     for &(flag, word, offset) in &parsed.positions {
+        let value = rest
+            .get(word)
+            .and_then(|w| w.get(offset..))
+            .unwrap_or_default()
+            .to_string();
+        let said = match flag {
+            "output" => output_here(&value, &mut outputs),
+            "iidfile" | "metadata-file" if !value.is_empty() => {
+                let name = if flag == "iidfile" { "iidfile" } else { "metadata" };
+                let here = std::path::absolute(&value).map_err(|e| format!("{value}: {e}"))?;
+                outputs.push((name.to_string(), here, false));
+                Some(format!("{}{name}", crate::synced::OUT))
+            }
+            _ => None,
+        };
+        if let (Some(said), Some(w)) = (said, rest.get_mut(word)) {
+            *w = format!("{}{said}", w.get(..offset).unwrap_or_default());
+            continue;
+        }
         match flag {
             "file" | "secret" => gone.push((word, offset)),
             "build-arg" => {
@@ -863,6 +909,7 @@ fn building(words: &[String], stdin: &dyn Fn() -> Result<Vec<u8>, String>) -> Re
         domains,
         dockerfile_dir: dir,
         secrets: parsed.many("secret").to_vec(),
+        outputs,
     }))
 }
 
@@ -923,6 +970,7 @@ fn artifact_building(words: &[String]) -> Option<Built> {
         domains,
         dockerfile_dir: None,
         secrets: Vec::new(),
+        outputs: Vec::new(),
     })
 }
 
@@ -1220,16 +1268,29 @@ fn build_there(
     let steered = |controls| {
         *STEERED.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(controls);
     };
+    // What the build says on stdout, its own and then its outputs of this client's, taken
+    // apart as it comes, each output kept here as it is said.
+    let (failed_tx, failed_rx) = std::sync::mpsc::channel();
+    let fetched = Fetched {
+        wanted: built.outputs,
+        current: None,
+        failed: failed_tx,
+    };
     let ran = client::exec(
         identity,
         context.remote(),
         request,
         Some(Box::new(reader)),
-        io::stdout(),
+        crate::synced::Demux::new(io::stdout(), fetched),
         io::stderr(),
         steered,
     );
     let sent = sending.join();
+    // An output not kept is the build's failure, as one the build here could not write is.
+    if let Ok(why) = failed_rx.try_recv() {
+        let _ = writeln!(io::stderr(), "ERROR: {why}");
+        return ExitCode::FAILURE;
+    }
     match ran {
         Ok(Ok(status)) => {
             if status == 0
@@ -1241,6 +1302,135 @@ fn build_there(
         }
         Ok(Err(refused)) => fail(format!("{}: {refused}", context.name)),
         Err(e) => fail(format!("{}: {e}", context.name)),
+    }
+}
+
+/// Where a build's outputs of this client's go as they come back (`synced::Outputs`): a
+/// file whole, beside its path and renamed to it at its end, its mode a new file's as a
+/// build here writes one; a directory's archive unpacked into it, as the local exporter
+/// writes one. What fails is said on `failed`.
+struct Fetched {
+    wanted: Vec<(String, PathBuf, bool)>,
+    current: Option<Fetching>,
+    failed: std::sync::mpsc::Sender<String>,
+}
+
+enum Fetching {
+    File {
+        file: fs::File,
+        temp: PathBuf,
+        dest: PathBuf,
+    },
+    Dir {
+        input: io::PipeWriter,
+        unpacking: std::thread::JoinHandle<Result<(), String>>,
+        dest: PathBuf,
+    },
+}
+
+impl Fetched {
+    /// `e` said on `failed`, at `dest`, and as the error the step's writer ends with.
+    fn failed(&self, dest: &Path, e: impl std::fmt::Display) -> io::Error {
+        let why = format!("{}: {e}", dest.display());
+        let _ = self.failed.send(why.clone());
+        io::Error::other(why)
+    }
+}
+
+impl crate::synced::Outputs for Fetched {
+    fn begin(&mut self, name: &str, dir: bool) -> io::Result<()> {
+        let Some((_, dest, _)) = self.wanted.iter().find(|(n, ..)| n == name) else {
+            return Err(io::Error::other(format!("an output {name:?} not asked for")));
+        };
+        let dest = dest.clone();
+        if dir {
+            fs::create_dir_all(&dest).map_err(|e| self.failed(&dest, e))?;
+            let (output, input) = io::pipe().map_err(|e| self.failed(&dest, e))?;
+            let to = dest.clone();
+            let unpacking = std::thread::Builder::new()
+                .name("build-output".into())
+                .spawn(move || {
+                    let opts = shards_archive::UnpackOptions {
+                        no_lchown: true,
+                        ..shards_archive::UnpackOptions::default()
+                    };
+                    shards_archive::untar(output, &to, &opts).map_err(|e| e.to_string())
+                })
+                .map_err(|e| self.failed(&dest, e))?;
+            self.current = Some(Fetching::Dir {
+                input,
+                unpacking,
+                dest,
+            });
+            return Ok(());
+        }
+        let base = dest
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .into_owned();
+        let temp = dest.with_file_name(format!(".{base}.shards-{}", std::process::id()));
+        let _ = fs::remove_file(&temp);
+        let file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temp)
+            .map_err(|e| self.failed(&dest, e))?;
+        *UNFINISHED
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(temp.clone());
+        self.current = Some(Fetching::File { file, temp, dest });
+        Ok(())
+    }
+
+    fn chunk(&mut self, bytes: &[u8]) -> io::Result<()> {
+        let written = match &mut self.current {
+            Some(Fetching::File { file, dest, .. }) => file.write_all(bytes).map_err(|e| (dest.clone(), e)),
+            Some(Fetching::Dir { input, dest, .. }) => input.write_all(bytes).map_err(|e| (dest.clone(), e)),
+            None => Ok(()),
+        };
+        written.map_err(|(dest, e)| self.failed(&dest, e))
+    }
+
+    fn end(&mut self) -> io::Result<()> {
+        match self.current.take() {
+            Some(Fetching::File { file, temp, dest }) => {
+                let kept = file.sync_all().and_then(|()| fs::rename(&temp, &dest));
+                *UNFINISHED
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+                if let Err(e) = kept {
+                    let _ = fs::remove_file(&temp);
+                    return Err(self.failed(&dest, e));
+                }
+                Ok(())
+            }
+            Some(Fetching::Dir {
+                input,
+                unpacking,
+                dest,
+            }) => {
+                drop(input);
+                match unpacking.join() {
+                    Ok(Ok(())) => Ok(()),
+                    Ok(Err(e)) => Err(self.failed(&dest, e)),
+                    Err(_) => Err(self.failed(&dest, "unpacking it ended")),
+                }
+            }
+            None => Ok(()),
+        }
+    }
+}
+
+impl Drop for Fetched {
+    /// A file not whole goes: none is left of a build that ended before its output did.
+    fn drop(&mut self) {
+        if let Some(Fetching::File { temp, .. }) = self.current.take() {
+            let _ = fs::remove_file(&temp);
+            *UNFINISHED
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+        }
     }
 }
 
@@ -2624,14 +2814,18 @@ mod tests {
         ] {
             assert!(not_carried(&args(carried)).is_none(), "{carried}");
         }
-        // Its secrets cross in memory, read here.
-        assert!(not_carried(&args("build --secret id=a,src=f .")).is_none());
-        for files in [
-            "build --ssh default .",
+        // Its secrets cross in memory, read here; its outputs come back as it ends.
+        for carried in [
+            "build --secret id=a,src=f .",
             "build -o out .",
             "build -o type=local,dest=out .",
             "build --iidfile i .",
             "build --metadata-file m .",
+        ] {
+            assert!(not_carried(&args(carried)).is_none(), "{carried}");
+        }
+        for files in [
+            "build --ssh default .",
             "build --cache-to type=local,dest=c .",
             "build --build-context base=../dir .",
             "build --policy filename=p.rego .",
