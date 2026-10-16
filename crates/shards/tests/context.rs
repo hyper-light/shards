@@ -419,6 +419,154 @@ fn a_clients_archives_are_its_own_files() {
     assert!(!machine.join("pulled").exists());
 }
 
+/// A build through a context is of the client's context, kept in step on the machine (D180
+/// part 3c): the first build sends the context whole, as its ignore file leaves it; the next,
+/// none of its files; one after a change, that change alone; a file removed here is gone
+/// there. Each image is the context's as it was. What came is the machine's daemon's log's.
+#[test]
+fn a_build_through_a_context_is_of_the_clients_context_kept_in_step() {
+    let Some((machine, _listening, laptop, image)) = joined("ctx-build") else {
+        return;
+    };
+    let app = laptop.join("app");
+    std::fs::create_dir_all(app.join("sub")).unwrap();
+    std::fs::write(app.join("Dockerfile"), format!("FROM {image}\nCOPY . /app\n")).unwrap();
+    std::fs::write(app.join(".dockerignore"), "ignored\n").unwrap();
+    std::fs::write(app.join("a.txt"), "one").unwrap();
+    std::fs::write(app.join("sub/b.txt"), "two").unwrap();
+    std::fs::write(app.join("ignored"), "never sent").unwrap();
+    let on_laptop = [("SHARDS_HOME", laptop.as_os_str())];
+    let shards = |command: &[&str], args: &[&str]| {
+        let mut words = vec!["--context", "gpu"];
+        words.extend_from_slice(command);
+        run_shards_env_in(&laptop, &words, args, &on_laptop, TIMEOUT)
+    };
+    // What the machine's daemon last said came of a context's files.
+    let came = || -> u64 {
+        let log = std::fs::read_to_string(machine.join("daemon.log")).unwrap_or_default();
+        let line = log
+            .lines()
+            .rev()
+            .find(|l| l.contains(" bytes of files came"))
+            .unwrap_or_else(|| panic!("no context came: {log}"))
+            .to_string();
+        line.rsplit_once(": ")
+            .and_then(|(_, n)| n.split(' ').next())
+            .and_then(|n| n.parse().ok())
+            .unwrap_or_else(|| panic!("{line}"))
+    };
+    let built = |tag: &str| {
+        let built = shards(&["build"], &["--progress=plain", "-t", tag, "app"]);
+        assert_eq!(built.status, Some(0), "{built}");
+    };
+    let read = |tag: &str, path: &str| {
+        let ran = shards(&["run"], &["--rm", tag, "fs", &format!("print:{path}")]);
+        (ran.status, ran.stdout)
+    };
+    built("app:1");
+    // Each file the build takes: Dockerfile, .dockerignore, a.txt and sub/b.txt.
+    let whole = (format!("FROM {image}\nCOPY . /app\n").len() + "ignored\n".len() + 3 + 3) as u64;
+    assert_eq!(came(), whole);
+    assert_eq!(read("app:1", "/app/a.txt"), (Some(0), "one".into()));
+    assert_ne!(read("app:1", "/app/ignored").0, Some(0), "an ignored file went");
+    // Nothing changed: none of its files.
+    built("app:2");
+    assert_eq!(came(), 0);
+    // A change: those files alone. Rewritten in place, `sub` is as it was here, and is so
+    // there, though its file was replaced there.
+    std::fs::write(app.join("a.txt"), "uno!").unwrap();
+    std::fs::write(app.join("sub/b.txt"), "dos").unwrap();
+    built("app:3");
+    assert_eq!(came(), 7);
+    assert_eq!(read("app:3", "/app/a.txt"), (Some(0), "uno!".into()));
+    assert_eq!(read("app:3", "/app/sub/b.txt"), (Some(0), "dos".into()));
+    let copy_of = || {
+        let copies: Vec<PathBuf> = std::fs::read_dir(machine.join("synced/laptop"))
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .collect();
+        let [copy] = copies.as_slice() else {
+            panic!("one copy of one context: {copies:?}");
+        };
+        copy.clone()
+    };
+    let mtime = |p: &Path| std::fs::metadata(p).unwrap().modified().unwrap();
+    assert_eq!(mtime(&copy_of().join("context/sub")), mtime(&app.join("sub")));
+    // A build file outside the context goes with it.
+    std::fs::create_dir_all(laptop.join("elsewhere")).unwrap();
+    std::fs::write(
+        laptop.join("elsewhere/Containerfile"),
+        format!("FROM {image}\nLABEL from=elsewhere\n"),
+    )
+    .unwrap();
+    let outside = shards(
+        &["build"],
+        &[
+            "--progress=plain",
+            "-f",
+            "elsewhere/Containerfile",
+            "-t",
+            "app:outside",
+            "app",
+        ],
+    );
+    assert_eq!(outside.status, Some(0), "{outside}");
+    // Its context is the same one, kept in step: none of its files came.
+    assert_eq!(came(), 0);
+    let label = shards(
+        &["image", "inspect"],
+        &["--format", "{{index .Config.Labels \"from\"}}", "app:outside"],
+    );
+    assert_eq!(label.stdout.trim(), "elsewhere", "{label}");
+    // A file removed here is gone there, and its directory's time is the client's.
+    std::fs::remove_file(app.join("sub/b.txt")).unwrap();
+    built("app:4");
+    assert_eq!(came(), 0);
+    assert_ne!(
+        read("app:4", "/app/sub/b.txt").0,
+        Some(0),
+        "a removed file stayed"
+    );
+    assert_eq!(read("app:2", "/app/sub/b.txt"), (Some(0), "two".into()));
+    let copy = copy_of();
+    assert_eq!(mtime(&copy.join("context/sub")), mtime(&app.join("sub")));
+    assert!(
+        !copy.join("context/ignored").exists(),
+        "an ignored file kept there"
+    );
+    // A build arg named alone takes this client's value, as buildx takes it where it runs.
+    std::fs::write(
+        app.join("Dockerfile"),
+        format!("FROM {image}\nARG MSG\nLABEL msg=$MSG\n"),
+    )
+    .unwrap();
+    let labelled = run_shards_env_in(
+        &laptop,
+        &["--context", "gpu", "build"],
+        &["--progress=plain", "--build-arg", "MSG", "-t", "app:5", "app"],
+        &[
+            ("SHARDS_HOME", laptop.as_os_str()),
+            ("MSG", "from the client".as_ref()),
+        ],
+        TIMEOUT,
+    );
+    assert_eq!(labelled.status, Some(0), "{labelled}");
+    let label = shards(
+        &["image", "inspect"],
+        &["--format", "{{index .Config.Labels \"msg\"}}", "app:5"],
+    );
+    assert_eq!(label.stdout.trim(), "from the client", "{label}");
+    // A client removed takes the copies of its contexts with it.
+    let removed = run_shards_env(
+        &["remove", "client"],
+        &["laptop"],
+        &[("SHARDS_HOME", machine.as_os_str())],
+        TIMEOUT,
+    );
+    assert_eq!(removed.status, Some(0), "{removed}");
+    assert!(!machine.join("synced/laptop").exists(), "its copies kept");
+}
+
 /// A copy through a context is the client's, as Docker's CLI copies its own files (D180
 /// part 3b): driven here, as this machine's CLI drives one (cli/cp.rs), each step asked of
 /// the machine's daemon. A directory here goes into a microVM there and comes back as it was,
@@ -606,6 +754,24 @@ fn a_clients_logins_are_its_own() {
         made.stdout.contains(&format!("\nFROM {target}@sha256:")),
         "{made}"
     );
+    // And a build of a base there, its plan's registries' logins sent with it.
+    let app = laptop.join("app");
+    std::fs::create_dir_all(&app).unwrap();
+    std::fs::write(app.join("Dockerfile"), format!("FROM {target}\n")).unwrap();
+    let removed = run_shards_env(
+        &["--context", "gpu", "rmi"],
+        &[target.as_str()],
+        &on_laptop,
+        TIMEOUT,
+    );
+    assert_eq!(removed.status, Some(0), "{removed}");
+    let built = run_shards_env(
+        &["--context", "gpu", "build"],
+        &["--progress=plain", "-t", "on-a-login:1", app.to_str().unwrap()],
+        &on_laptop,
+        TIMEOUT,
+    );
+    assert_eq!(built.status, Some(0), "{built}");
     // Logged out here: the next pull there is refused again.
     let client_out = run_shards_env(
         &["--context", "gpu", "logout"],
@@ -907,8 +1073,25 @@ fn a_context_runs_commands_on_its_machine_whole() {
             .contains("-it: stdin is not a terminal, so it cannot be the command's"),
         "{terminal}"
     );
-    let build = run_shards_env(&["build"], &["."], &on_laptop, TIMEOUT);
+    let build = run_shards_env(&["build"], &["--iidfile", "id", "."], &on_laptop, TIMEOUT);
     assert_eq!(build.status, Some(125), "{build}");
+    assert!(
+        build
+            .stderr
+            .contains("build --iidfile over a context names this machine's files"),
+        "{build}"
+    );
+    // A build of a context with no build file is the build's to refuse, in its words.
+    let empty = laptop.join("empty");
+    std::fs::create_dir_all(&empty).unwrap();
+    let unfiled = run_shards_env(&["build"], &[empty.to_str().unwrap()], &on_laptop, TIMEOUT);
+    assert_eq!(unfiled.status, Some(1), "{unfiled}");
+    assert!(
+        unfiled
+            .stderr
+            .contains("failed to read dockerfile: open Dockerfile: no such file or directory"),
+        "{unfiled}"
+    );
     // The machine's own: not a client's.
     let owners = run_shards_env(&["stop", "daemon"], &[] as &[&str], &on_laptop, TIMEOUT);
     assert_ne!(owners.status, Some(0), "{owners}");

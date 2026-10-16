@@ -58,6 +58,7 @@ mod setup;
 mod share;
 mod spec;
 mod spiffe;
+mod synced;
 #[cfg(unix)]
 mod volumes;
 

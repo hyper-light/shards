@@ -3634,7 +3634,7 @@ No run-time labels, relays or declassifiers (§12 answer 14, decided by the user
 an internal-only domain to the world (D58), so there is no data to label. Code mode is
 D136.
 
-### D180. Contexts: shards on another machine, over QUIC (parts 1, 2, 3a and 3b built)
+### D180. Contexts: shards on another machine, over QUIC (parts 1, 2 and 3a to 3c built)
 
 **The microVM need.** A user's microVMs run where the work needs them: a Mac for
 development, a Linux machine with a GPU (`--gpus`) or KVM, an x86_64 machine that builds and
@@ -3707,7 +3707,8 @@ local administration is (../focal docs/cluster-admin.md).
    size follows the client's), attach, exec; and the signals a client receives (built; a
    Windows client's console, part 2b, built too).
 3. Builds (the context sent as BuildKit's session sends it), `cp`, `save`, `load`,
-   `import`, `export` (the archives, part 3a, built; `cp`, part 3b, built).
+   `import`, `export` (the archives, part 3a, built; `cp`, part 3b, built; builds, part
+   3c, built).
 4. Docker's CLI through a context: a socket file in the home for each context, which the
    local daemon relays to the machine's Engine API.
 5. Measured against Docker's `ssh://` and `tcp://` contexts, on the GPU desktop: a run's
@@ -4035,6 +4036,62 @@ there said with its sizes; an archive to stdout; a file not there, in Docker's w
 nothing written where the command runs. Mutation-checked: a step spawned as a command,
 a copy sent whole, an archive's output not into its pipe, an extract's input not from
 its pipe, an archive's pipe not given the daemon.
+
+**Part 3c, built: a build of the client's context, kept in step on the machine.** A
+laptop's source tree is built where the builder microVMs run: an x86_64 or a GPU machine.
+buildx sends a context over its session, fsutil's walk of it, into the copy BuildKit kept
+of the last transfer of the same directory, by its shared key (the source's name, hint and
+session's key), the receiver asking for what changed alone (BuildKit v0.33.0, which buildx
+v0.37.1 pins: source/local/source.go, `searchSharedKey` then `filesync.FSSync`); Docker's
+classic builder sends the whole context, a tar in `POST /build`'s body, each build. A context refused builds: the command there
+would have read the machine's directory. Now (crate::synced):
+- **The machine keeps a copy of each context a client builds** (`synced/CLIENT/KEY`, KEY
+  the context's path hashed, the client's name its directory, so a client reaches its own
+  alone). The client walks its context as the build walks one (fsutil's walk,
+  shards_build::context, with the excludes of the ignore file the build reads: beside the
+  build file, else the context's, `.agentignore` before `.dockerignore`), asks the copy's
+  manifest (its own walk of the copy), and sends what changed as a layer the copy is
+  brought in step by: each entry new or changed whole, the directories each change is in
+  again for their times, and a whiteout for the topmost of what went
+  (shards_archive::pack_changes, go-archive's addTarFile with times to the nanosecond, which
+  go-archive's headers drop and a copy compared by its times needs; `apply_layer`,
+  confined to the copy by its root, as it confines an image's layer). An entry is changed
+  where its mode, size, time or link is: a directory's size and a symlink's mode are its
+  filesystem's, and are not compared.
+- **The build file and the ignore file beside it go whole each time**, ahead of the
+  layer, a few kilobytes, so a build file outside the context, or another one, costs no
+  copy of its own; `-f -`'s, read from the client's stdin. The build runs there of the copy,
+  under its lock, so two builds of one context take turns, as a client's command runs:
+  its output and status the client's; its build file not there said in the build's own
+  words, by its name.
+- **What it names of the client's is the client's:** a build arg named alone takes the
+  client's value, or none, as buildx takes one where it runs; and the logins of the
+  registries the build's plan asks for, planned here with a resolver that answers every
+  image empty (its bases and the images it copies from, by their names after its args),
+  go with it, those alone.
+- A client removed takes the copies of its contexts with it.
+
+What a build names of the client's otherwise is refused until it is carried: `--secret`,
+`--ssh`, an output, cache or named context of a file or directory here, `--iidfile`,
+`--metadata-file` and a policy's file. Not yet: the client's terminal for the build's live
+display (a build over a context prints its plain progress); extended attributes (go-archive's
+archives carry `security.capability` alone); a new hard link to a file that did not change
+goes as a file of its own.
+
+Measured by the test, to the byte: the first build sends the context's files whole as the
+ignore file leaves them; the next, nothing; one after two files changed, their bytes
+alone; one after a file went, nothing, the file gone there. Tested in `tests/context.rs`
+(`a_build_through_a_context_is_of_the_clients_context_kept_in_step`: also each image the
+context as it was, an ignored file never sent, a changed directory's time the client's, a
+build file outside the context sending no context bytes, a build arg named alone taking
+the client's value, a client removed taking its copies; and in
+`a_clients_logins_are_its_own`, a build of a base that wants a login, built with the
+client's), `crates/archive/tests/changes.rs` (a copy brought in step: times to the
+nanosecond, hard links, symlinks, a file's and a directory's removal, what did not change
+untouched), and unit tests of the plan and of a copy's key. Mutation-checked: the layer not
+applied, everything sent each time, the ignore file not applied here, what went not
+removed, a change's directories not set again, the build file not the copy's, a base's
+login not sent, a build arg named alone the machine's.
 
 ### D179. Other CPUs' images, emulated in their microVM (parts 1 to 3 built)
 
