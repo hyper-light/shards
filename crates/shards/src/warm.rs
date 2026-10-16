@@ -177,6 +177,8 @@ pub struct Request {
     pub layer_out: Option<File>,
     /// The most memory its guest may plug, in bytes: the run's own (D148).
     pub plug: u64,
+    /// Its microVM's I/O limits (D178): bytes and requests a second, 0 for none.
+    pub io: (u64, u64),
     /// Its swap (D159), a sparse file of what its limits allow, which the VM maps into its
     /// guest's swap window; or, for a run its microVM was restored from a save of, a copy of
     /// the swap the save kept (D176).
@@ -228,6 +230,8 @@ struct Head<'a> {
     plug: u64,
     /// Non-blocking: the most bytes of output queued for its log.
     queue: Option<u64>,
+    /// Its microVM's I/O limits (D178): bytes and requests a second, 0 for none.
+    io: (u64, u64),
     spec: &'a [u8],
 }
 
@@ -256,6 +260,7 @@ fn head(payload: &[u8]) -> Result<Head<'_>, String> {
         first: head.first,
         plug: head.plug,
         queue: head.queue,
+        io: (head.io_bytes, head.io_requests),
         spec,
     })
 }
@@ -286,6 +291,7 @@ pub fn receive(
         first,
         plug,
         queue,
+        io,
         spec,
     } = head(&request.payload)?;
     let (spec, tokens) = if resumed {
@@ -417,6 +423,7 @@ pub fn receive(
     Ok(Request {
         client,
         plug,
+        io,
         swap,
         spec,
         interactive: flags & shards_ipc::RUN_INTERACTIVE != 0,

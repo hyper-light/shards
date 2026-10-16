@@ -59,7 +59,7 @@ fn mode_of(st: &libc::stat) -> u32 {
 
 const OWNER_XATTR: &str = "com.docker.grpcfuse.ownership";
 
-mod op {
+pub(super) mod op {
     pub const LOOKUP: u32 = 1;
     pub const FORGET: u32 = 2;
     pub const GETATTR: u32 = 3;

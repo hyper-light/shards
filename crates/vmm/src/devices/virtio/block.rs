@@ -11,6 +11,7 @@ use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, RwLock};
 
+use super::limit::Limiter;
 use super::queue::{Chain, Descriptor, Queue};
 use super::worker::Worker;
 use super::{Activation, DeviceInterrupt, VirtioDevice, feature};
@@ -329,6 +330,9 @@ pub struct Block {
     worker: Option<Worker>,
     /// The queue while paused.
     paused: Option<Queue>,
+    /// Its microVM's I/O limits (D178), and whether this device holds them paused.
+    limit: Option<&'static Limiter>,
+    holds_limit: bool,
 }
 
 impl std::fmt::Debug for Block {
@@ -374,12 +378,28 @@ impl Block {
         })
     }
 
+    /// Its reads and writes charged to its microVM's I/O limits (D178).
+    pub fn with_limit(mut self, limit: Option<&'static Limiter>) -> Block {
+        self.limit = limit;
+        self
+    }
+
+    /// Lets go of its microVM's limits, where its pause holds them.
+    fn release_limit(&mut self) {
+        if let Some(limit) = self.limit.filter(|_| self.holds_limit) {
+            limit.resume();
+            self.holds_limit = false;
+        }
+    }
+
     fn of(backend: Backend) -> Block {
         Block {
             backend: Arc::new(backend),
             context: None,
             worker: None,
             paused: None,
+            limit: None,
+            holds_limit: false,
         }
     }
 
@@ -390,8 +410,8 @@ impl Block {
             self.paused = Some(queue);
             return Err("virtio-blk started before activation".into());
         };
-        let (backend, mem) = (self.backend.clone(), memory.clone());
-        let answer = move |chain: &Chain| handle(chain, &mem, &backend);
+        let (backend, mem, limit) = (self.backend.clone(), memory.clone(), self.limit);
+        let answer = move |chain: &Chain| handle(chain, &mem, &backend, limit);
         match Worker::start("virtio-blk", queue, memory, interrupt, answer) {
             Ok(worker) => {
                 self.worker = Some(worker);
@@ -491,11 +511,18 @@ impl VirtioDevice for Block {
         self.paused = None;
         self.context = None;
         self.join_interrupt(None);
+        self.release_limit();
     }
 
     /// The worker stops after the request it is answering. Whatever the driver published
     /// and it did not answer stays in the ring, for the worker that resumes.
     fn pause(&mut self) -> Vec<super::QueueState> {
+        // Its limits paused first (D178): a worker waiting on them answers the request in
+        // hand at once, and stops after it.
+        if let Some(limit) = self.limit.filter(|_| !self.holds_limit) {
+            limit.pause();
+            self.holds_limit = true;
+        }
         if let Some(queue) = self.stop() {
             self.paused = Some(queue);
         }
@@ -504,6 +531,7 @@ impl VirtioDevice for Block {
 
     /// The new worker drains first, so requests published meanwhile are served.
     fn resume(&mut self) -> Result<(), String> {
+        self.release_limit();
         match self.paused.take() {
             Some(queue) => self.start(queue),
             None => Ok(()),
@@ -532,7 +560,7 @@ impl Drop for Block {
 }
 
 /// Executes one request; returns the bytes written into the driver's buffers.
-fn handle(chain: &Chain, mem: &GuestMemory, backend: &Backend) -> u32 {
+fn handle(chain: &Chain, mem: &GuestMemory, backend: &Backend, limit: Option<&Limiter>) -> u32 {
     // The status byte is the last byte of the last writable descriptor.
     let Some(last) = chain.writable().last().copied() else {
         debug!("virtio-blk: request without a status byte");
@@ -544,7 +572,7 @@ fn handle(chain: &Chain, mem: &GuestMemory, backend: &Backend) -> u32 {
     let Some(status_at) = last.addr.checked_add(u64::from(last.len) - 1) else {
         return 0;
     };
-    let (status, data_written) = match execute(chain, last, mem, backend) {
+    let (status, data_written) = match execute(chain, last, mem, backend, limit) {
         Ok(n) => (S_OK, n),
         Err(status) => (status, 0),
     };
@@ -556,7 +584,13 @@ fn handle(chain: &Chain, mem: &GuestMemory, backend: &Backend) -> u32 {
 }
 
 /// Returns bytes of data written into guest buffers, or a status code on failure.
-fn execute(chain: &Chain, status: Descriptor, mem: &GuestMemory, backend: &Backend) -> Result<u32, u8> {
+fn execute(
+    chain: &Chain,
+    status: Descriptor,
+    mem: &GuestMemory,
+    backend: &Backend,
+    limit: Option<&Limiter>,
+) -> Result<u32, u8> {
     let mut header = [0u8; 16];
     let body = gather_header(chain, &mem.access().map_err(|_| S_IOERR)?, &mut header)?;
     let kind = u32::from_le_bytes([header[0], header[1], header[2], header[3]]);
@@ -565,6 +599,13 @@ fn execute(chain: &Chain, status: Descriptor, mem: &GuestMemory, backend: &Backe
     ]);
     // Writable buffers except the trailing status byte.
     let out: Vec<Descriptor> = writable_data(chain, status);
+    // A read's or a write's bytes, charged to its microVM's I/O limits first (D178).
+    if let Some(limit) = limit
+        && matches!(kind, T_IN | T_OUT)
+    {
+        let data = if kind == T_IN { &out } else { &body };
+        limit.take(data.iter().map(|d| u64::from(d.len)).sum());
+    }
     match kind {
         T_IN => transfer(&out, sector, mem, backend, Direction::Read),
         T_OUT if backend.read_only => Err(S_IOERR),

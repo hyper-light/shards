@@ -8615,3 +8615,48 @@ revision before comparing a changed API/implementation.
   varied between quiet runs (p50 19 to 80 ms) while the save itself did not. A caller's
   save is that and the commit, the generation's files made durable (F_FULLFSYNC); a
   restore, the VM process's start, the snapshot restored, and the guest dialing back in.
+
+### M240. A microVM's I/O limits, from its guest's writes (D178)
+
+- **Question.** Does a microVM whose VMM paces its volume's writes at `--io-maxbandwidth`
+  write at that rate, never above it, on a quiet host and on a loaded one; and what does
+  the limiter cost a write it does not hold back?
+- **Method.** On the tree of D178's commit (on 4614b300), on the M5 Max (18 CPUs, 128 GiB,
+  macOS 26.4.1), release build, the guest Linux 6.18.48 aarch64 of `alpine:3.22`.
+  `docs/research/measurements/io-limit/`: `bench.py` runs ROUNDS rounds of three microVMs,
+  each writing to a volume with busybox `dd` (64 KiB writes, synced at the end) between two
+  lines its log times (`logs -t`): 16 MiB under `--io-maxbandwidth 4m`, its achieved rate
+  over the limit; and, interleaved, 64 MiB with no limit and under 1 GiB a second, which no
+  write comes near. `run.sh` runs it in a home of its own; with `load`, 12 busy loops run
+  beside it. The host's own load from other work ran 20 to 50 (load averages) throughout.
+- **What it found first.** Three things cost a paced writer its rate, each found by
+  counting the device's requests and the limiter's waits, and each fixed (limit.rs):
+  - Waits overran their deadlines on the loaded host, a wait asked for 9.0 ms taking 13.9,
+    3.7 taking 5.1, 11.3 taking 17.1, and each overrun was lost to the rate: 16 MiB at 4
+    MiB a second took 7.0 to 7.5 s, half the rate. Giving the overrun back by moving the
+    schedule earlier overshot instead: 1.19 of the limit at p50, 1.27 at most. A late
+    request now keeps its place in the schedule, never going before it.
+  - Each 64 KiB WRITE came with a GETXATTR of no bytes (the kernel's capability check on
+    each write), which waited out the WRITE's time, so that the next WRITE came late by the
+    GETXATTR's answer and the guest's turning round: 5.5 to 6.0 s. A request that costs a
+    measure nothing now neither waits on it nor moves it: 3.913 to 4.456 s.
+  - A request of no bytes took the late request's place in the schedule for the bytes it
+    did not charge: 0.84 of the limit at p50. Each measure now keeps its own.
+- **Results.** Achieved over the limit, n = 10 each: quiet, p50 0.844, p90 0.894, max
+  0.894; loaded, p50 0.841, p90 0.931, max 0.931. Never above it. Seconds for 64 MiB,
+  quiet: no limit p50 4.618, p90 7.617, max 7.617; under 1 GiB a second p50 4.565, p90
+  11.448, max 11.448; loaded: no limit p50 1.510, p90 2.105, max 2.105; under 1 GiB a
+  second p50 1.464, p90 2.223, max 2.223. Probes of three rounds each, 16 MiB at 4 MiB a
+  second interleaved with 16 MiB unlimited, at a moment the host's storage was fast (its
+  unlimited 16 MiB in 0.07 s), of the test-release build (release's optimizations without
+  its fat LTO): 4.001, 4.001, 3.997 s, where the limit's time is 3.98 s (its first write
+  going at once); and of the release build at one it was slow (its unlimited 16 MiB in 1.4
+  to 3.5 s): 5.69 to 6.22 s.
+- **Consequence.** The limit is a ceiling, kept: no run went over it. Where the host's
+  storage answers within a write's place in the schedule (64 KiB in 15.6 ms at 4 MiB a
+  second), the rate is the limit's, to 0.4%; where it stalls past that, as it did beside
+  the bench's 64 MiB writes and the host's own load, the writer gets the less it can take,
+  and catches up nothing, which would take a burst past the limit. A limit that does not
+  hold a write back costs it nothing measurable: the 64 MiB writes with none and with one of
+  1 GiB a second agree at p50 within 4%, either faster, where the runs vary by more than
+  half.

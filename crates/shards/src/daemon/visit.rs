@@ -183,6 +183,9 @@ impl<D: crate::containers::Disk> Daemon<D> {
                 .saturating_mul(1 << 20),
             // No log, so none queued.
             queue: None,
+            // Its own built-ins' reads: no run's I/O to limit.
+            io_bytes: 0,
+            io_requests: 0,
         }
         .encode_into(&mut payload);
         prepared.spec.encode_into(&mut payload);
