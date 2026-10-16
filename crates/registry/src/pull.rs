@@ -36,8 +36,9 @@ pub struct Pulled {
     /// Its config's digest: the image's ID.
     pub id: Digest,
     pub config: ImageConfig,
-    /// The image's EROFS root filesystem, built when our guests run its platform: an
-    /// image of another is stored for `push` and `save` alone.
+    /// The image's EROFS root filesystem, built when our guests run its platform or the
+    /// pull asked for it, which a guest runs under its emulator (D179): an image of another
+    /// is stored for `push` and `save` alone.
     pub rootfs: Option<PathBuf>,
     /// Its layers' count and compressed bytes.
     pub layers: usize,
@@ -69,7 +70,9 @@ pub enum Event<'a> {
 }
 
 /// Pulls `reference` for the platforms `targets` into `store`, its root filesystem built
-/// within `limits`. Fails as dockerd reports a pull's failure.
+/// within `limits`. None, where no platform is asked: an index's manifest for our guests,
+/// and a lone manifest whatever its platform, as dockerd takes one, which a guest runs
+/// under its emulator (D179). Fails as dockerd reports a pull's failure.
 pub fn pull(
     registry: &Registry,
     store: &Store,
@@ -132,6 +135,15 @@ fn pulled(
     fresh: bool,
 ) -> Result<Pulled, Error> {
     let name = reference.familiar();
+    // No platform asked (`targets` empty): an index's manifest as dockerd takes one, ours or
+    // another our guests run under its emulator, and a lone manifest whatever its platform.
+    let guest = platform::guest();
+    let pullable = platform::pullable();
+    let choose = if targets.is_empty() {
+        pullable.as_slice()
+    } else {
+        targets
+    };
     // What it writes is recorded only at its end: no collection runs meanwhile.
     let _lease = store.lease()?;
     let top = registry
@@ -166,12 +178,12 @@ fn pulled(
         }
         Document::Index(index) => {
             // containerd's words (LimitManifests), after dockerd's.
-            let chosen = platform::select(&index, targets).ok_or_else(|| {
+            let chosen = platform::select(&index, choose).ok_or_else(|| {
                 Error::of(
                     ErrorKind::NotFound,
                     format!(
                         "no matching manifest for {} in the manifest list entries: no match for platform in manifest: not found",
-                        pulling_for(targets)
+                        pulling_for(choose)
                     ),
                 )
             })?;
@@ -247,15 +259,18 @@ fn pulled(
         let attesting = std::thread::Builder::new()
             .name("shards-attest".into())
             .spawn_scoped(scope, attest);
-        let ours = platform::runs(
-            &oci::Platform {
-                os: config.os.clone(),
-                architecture: config.architecture.clone(),
-                variant: config.variant.clone(),
-                ..oci::Platform::default()
-            },
-            &platform::guest(),
-        );
+        // Built where a guest runs it, or where the pull asked for its platform: a guest
+        // runs another CPU's image under its emulator (D179), as Docker unpacks what a
+        // pull of a platform asks for.
+        let image = oci::Platform {
+            os: config.os.clone(),
+            architecture: config.architecture.clone(),
+            variant: config.variant.clone(),
+            ..oci::Platform::default()
+        };
+        let ours = platform::runs(&image, &guest)
+            || platform::runs(&image, targets)
+            || (targets.is_empty() && image.os == "linux");
         let built = if ours {
             build(registry, store, &manifest, &layers, limits, report, fresh).map(Some)
         } else {
@@ -639,6 +654,14 @@ fn microvm(
         variant: config.variant.clone(),
         os_features: Vec::new(),
     });
+    // A microVM's whole guest is its CPU's, which no emulator runs: our guests' where no
+    // platform is asked.
+    let guest = platform::guest();
+    let targets = if targets.is_empty() {
+        guest.as_slice()
+    } else {
+        targets
+    };
     if !platform::runs(&platform, targets) {
         return Err(Error::new(format!(
             "{name} is for {}/{}, not {}",
@@ -714,7 +737,8 @@ fn checked(
         variant: config.variant.clone(),
         os_features: Vec::new(),
     });
-    if !platform::runs(&platform, targets) {
+    // Any, where no platform is asked: an image taken by its name, as dockerd takes one.
+    if !targets.is_empty() && !platform::runs(&platform, targets) {
         return Err(Error::new(format!(
             "{name} is for {}/{}, not {}",
             platform.os,

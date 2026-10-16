@@ -336,28 +336,12 @@ impl Builder {
             .split_first_chunk::<4>()
             .ok_or_else(|| err("an emulate frame without its device"))?;
         let image = self.base(u32::from_be_bytes(*device))?;
-        let register = Path::new(BINFMT).join("register");
-        if !register.exists() {
-            mount("binfmt_misc", Path::new(BINFMT), "binfmt_misc", 0, "")?;
-        }
-        for name in names.split(|&c| c == 0).filter(|n| !n.is_empty()) {
-            let arch = std::str::from_utf8(name).map_err(|_| err("an architecture that is not UTF-8"))?;
-            let e = shards_abi::emulate::of(arch).ok_or_else(|| err(format!("no emulator runs {arch}")))?;
-            let path = image.join("usr/bin").join(e.binary);
-            let path = path
-                .to_str()
-                .ok_or_else(|| err(format!("{}: its path is not UTF-8", e.binary)))?;
-            let line = shards_abi::emulate::register_line(e, path);
-            // The line in one write, as binfmt_misc reads one (fs/binfmt_misc.c,
-            // bm_register_write).
-            let mut f = std::fs::OpenOptions::new().write(true).open(&register)?;
-            match f.write(line.as_bytes()) {
-                Ok(n) if n == line.len() => {}
-                Ok(_) => return Err(err(format!("registering {}: a short write", e.binary))),
-                Err(x) => return Err(io::Error::new(x.kind(), format!("registering {}: {x}", e.binary))),
-            }
-        }
-        Ok(())
+        let architectures = names
+            .split(|&c| c == 0)
+            .filter(|n| !n.is_empty())
+            .map(|n| std::str::from_utf8(n).map_err(|_| err("an architecture that is not UTF-8")))
+            .collect::<io::Result<Vec<&str>>>()?;
+        crate::emulate::register(&image, Path::new(BINFMT), &architectures)
     }
 
     /// The base image on pmem device `n`, mounted once.

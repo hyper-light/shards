@@ -107,8 +107,13 @@ pub fn main(device: &str, template: bool) -> ! {
     if template {
         open_flush();
     }
-    // Before any snapshot, so that every copy of a template has one.
-    let standby = mount_root(device).and_then(|()| Standby::fork(Born::Own));
+    // Another CPU's emulators (D179), registered before the root moves over the initramfs,
+    // which keeps their mounts out of every process's reach; and, with the standby, before
+    // any snapshot, so that every copy of a template has them.
+    let standby = crate::emulate::for_run()
+        .map_err(|e| setup_failed(format!("its emulators: {e}")))
+        .and_then(|()| mount_root(device))
+        .and_then(|()| Standby::fork(Born::Own));
     if template && standby.is_ok() {
         await_crypto_selftests();
         flush_page_reports();

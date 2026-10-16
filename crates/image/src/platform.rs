@@ -49,9 +49,9 @@ pub fn normalize(p: &Platform) -> Target {
     Target::new(&os, architecture, variant)
 }
 
-/// What a guest on this host runs, best first:
-/// - arm64: `arm64` alone. Our guests have no AArch32 EL0 (platform-measurements.md), so
-///   containerd's `arm/v*` fallbacks would pick images they cannot run.
+/// What a guest on this host runs itself, best first:
+/// - arm64: `arm64` alone. Our guests have no AArch32 EL0 (platform-measurements.md): 32-bit
+///   Arm's images run under their emulator ([`pullable`], D179).
 /// - amd64: `amd64`, then `386`, as containerd orders them. Our x86_64 kernel runs 32-bit
 ///   code. Newer `amd64/vN` levels wait on a guest CPUID policy.
 pub fn guest() -> Vec<Target> {
@@ -64,6 +64,118 @@ pub fn guest() -> Vec<Target> {
             ..Platform::default()
         })],
     }
+}
+
+/// What a pull that names no platform takes of an index, best first, as dockerd takes it
+/// (containerd/platforms v1.0.0-rc.2 compare.go, platformVector): our guests' platforms,
+/// then on arm64 32-bit Arm's v8 to v5, which a guest runs under their emulator (D179).
+pub fn pullable() -> Vec<Target> {
+    let mut out = guest();
+    if std::env::consts::ARCH == "aarch64" {
+        out.extend(["v8", "v7", "v6", "v5"].map(|v| Target::new("linux", "arm", v)));
+    }
+    out
+}
+
+/// The platform this host's microVMs run, as dockerd names its own where a run's image is
+/// another's (moby docker-v29.3.1 daemon/create.go, maximumSpec): containerd's
+/// `DefaultSpec`, arm64's variant `v8`, and on amd64 the CPU's x86-64 level
+/// (tonistiigi/go-archvariant v1.0.0, AMD64Variant).
+pub fn maximum() -> Target {
+    match std::env::consts::ARCH {
+        "aarch64" => Target::new("linux", "arm64", "v8"),
+        "x86_64" => Target::new("linux", "amd64", &format!("v{}", amd64_level())),
+        _ => guest()
+            .into_iter()
+            .next()
+            .unwrap_or_else(|| Target::new("linux", "", "")),
+    }
+}
+
+/// Whether this host runs an image for `p` as dockerd finds one it runs, saying nothing of
+/// another's (moby docker-v29.3.1 daemon/images OnlyPlatformWithFallback over
+/// [`maximum`]; containerd/platforms v1.0.0-rc.2 compare.go, platformVector): its own
+/// architecture's variants no later than its own, 32-bit Arm's v5 to v8 beside arm64,
+/// 386 beside amd64, and its own architecture of no variant.
+pub fn host_runs(p: &Platform) -> bool {
+    let host = maximum();
+    if !p.os_features.is_empty() {
+        return false;
+    }
+    let image = normalize(p);
+    if image.os != host.os {
+        return false;
+    }
+    let level = |v: &str| v.strip_prefix('v').and_then(|n| n.parse::<u32>().ok());
+    match (host.architecture.as_str(), image.architecture.as_str()) {
+        // Normalized, arm64/v8 has no variant.
+        ("arm64", "arm64") => image.variant.is_empty(),
+        ("arm64", "arm") => matches!(image.variant.as_str(), "v5" | "v6" | "v7" | "v8"),
+        ("amd64", "amd64") => {
+            image.variant.is_empty() || level(&image.variant).is_some_and(|l| Some(l) <= level(&host.variant))
+        }
+        ("amd64", "386") => true,
+        (h, i) => h == i && (image.variant.is_empty() || image.variant == host.variant),
+    }
+}
+
+/// go-archvariant v1.0.0's detectVersion: the x86-64 microarchitecture level, 1 to 4, of
+/// this CPU's features and those its OS keeps the state of (XCR0).
+#[cfg(target_arch = "x86_64")]
+fn amd64_level() -> u32 {
+    use std::arch::x86_64::{__cpuid_count, _xgetbv};
+    // CPUID.1:ECX, CPUID.7.0:EBX and CPUID.80000001h:ECX bits, and XCR0's.
+    const V2: u32 = 1 << 0 | 1 << 9 | 1 << 13 | 1 << 19 | 1 << 20 | 1 << 23;
+    const V3: u32 = V2 | 1 << 12 | 1 << 22 | 1 << 26 | 1 << 27 | 1 << 28 | 1 << 29;
+    const V3_BX: u32 = 1 << 3 | 1 << 5 | 1 << 8;
+    const V4_BX: u32 = V3_BX | 1 << 16 | 1 << 17 | 1 << 28 | 1 << 30 | 1 << 31;
+    const V2_CX: u32 = 1 << 0;
+    const V3_CX: u32 = V2_CX | 1 << 5;
+    const V3_OS: u64 = 1 << 1 | 1 << 2;
+    const V4_OS: u64 = V3_OS | 1 << 5 | 1 << 6 | 1 << 7;
+    let cpuid = |leaf: u32| __cpuid_count(leaf, 0);
+    if cpuid(0).eax < 7 || cpuid(0x8000_0000).eax < 0x8000_0001 {
+        return 1;
+    }
+    let mut level = 4;
+    let cx = cpuid(1).ecx;
+    if cx & V3 != V3 {
+        level = 2;
+        if cx & V2 != V2 {
+            return 1;
+        }
+    }
+    let bx = cpuid(7).ebx;
+    if level == 4 && bx & V4_BX != V4_BX {
+        level = 3;
+    }
+    if level == 3 && bx & V3_BX != V3_BX {
+        level = 2;
+    }
+    let cx = cpuid(0x8000_0001).ecx;
+    if level >= 3 && cx & V3_CX != V3_CX {
+        level = 2;
+    }
+    if level == 2 && cx & V2_CX != V2_CX {
+        return 1;
+    }
+    if level >= 3 {
+        // SAFETY: XGETBV is there where CPUID says OSXSAVE, which level 3 holds.
+        let os = unsafe { _xgetbv(0) };
+        if level == 4 && os & V4_OS != V4_OS {
+            level = 3;
+        }
+        if os & V3_OS != V3_OS {
+            level = 2;
+        }
+    }
+    level
+}
+
+/// Elsewhere none: go-archvariant's `v1`.
+#[cfg(not(target_arch = "x86_64"))]
+fn amd64_level() -> u32 {
+    1
 }
 
 /// The manifest to use from `index`: the first entry whose platform ranks best in
@@ -99,6 +211,68 @@ fn rank(p: &Platform, wanted: &[Target]) -> Option<usize> {
 #[allow(clippy::unwrap_used, clippy::indexing_slicing)]
 mod tests {
     use super::*;
+
+    /// A pull that names no platform takes what dockerd takes of an index: on arm64, after
+    /// its own, 32-bit Arm's best variant, where the index has no arm64 one.
+    #[test]
+    fn a_pull_of_no_platform_takes_what_dockerd_takes() {
+        let index = Index {
+            schema_version: 2,
+            media_type: None,
+            manifests: vec![
+                desc("amd64", None, 1),
+                desc("arm", Some("v6"), 2),
+                desc("arm", Some("v7"), 3),
+            ],
+        };
+        let chosen = select(&index, &pullable()).unwrap();
+        if cfg!(target_arch = "aarch64") {
+            assert_eq!(chosen.platform.as_ref().unwrap().variant.as_deref(), Some("v7"));
+        } else {
+            assert_eq!(chosen.platform.as_ref().unwrap().architecture, "amd64");
+        }
+    }
+
+    /// dockerd's match of an image's platform with its host's (OnlyPlatformWithFallback):
+    /// on arm64 its own and 32-bit Arm's v5 to v8, on amd64 its levels up to the CPU's and
+    /// 386, and no other CPU's or OS's.
+    #[test]
+    fn the_host_runs_what_dockerd_finds_it_runs() {
+        let p = |a: &str, v: Option<&str>| Platform {
+            os: "linux".into(),
+            architecture: a.into(),
+            variant: v.map(String::from),
+            ..Platform::default()
+        };
+        if cfg!(target_arch = "aarch64") {
+            assert_eq!(maximum(), Target::new("linux", "arm64", "v8"));
+            for (a, v) in [
+                ("arm64", None),
+                ("arm64", Some("v8")),
+                ("arm", Some("v7")),
+                ("arm", None),
+            ] {
+                assert!(host_runs(&p(a, v)), "{a} {v:?}");
+            }
+            for (a, v) in [("amd64", None), ("arm64", Some("v9")), ("s390x", None)] {
+                assert!(!host_runs(&p(a, v)), "{a} {v:?}");
+            }
+        }
+        if cfg!(target_arch = "x86_64") {
+            assert!(maximum().variant.starts_with('v'), "{:?}", maximum());
+            for (a, v) in [("amd64", None), ("amd64", Some("v1")), ("386", None)] {
+                assert!(host_runs(&p(a, v)), "{a} {v:?}");
+            }
+            for (a, v) in [("arm64", None), ("amd64", Some("v5")), ("arm", Some("v7"))] {
+                assert!(!host_runs(&p(a, v)), "{a} {v:?}");
+            }
+        }
+        let windows = Platform {
+            os: "windows".into(),
+            ..p(std::env::consts::ARCH, None)
+        };
+        assert!(!host_runs(&windows));
+    }
 
     fn desc(arch: &str, variant: Option<&str>, n: u8) -> Descriptor {
         Descriptor {

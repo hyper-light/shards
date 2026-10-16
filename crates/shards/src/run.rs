@@ -351,6 +351,78 @@ pub struct Prepared {
     pub agentfile: Option<crate::agentfile::Agentfile>,
     /// How many directories it shares with its guest (D38): set once its mount points are.
     pub shares: u32,
+    /// The emulator its image's programs run under, where it is another CPU's (D179).
+    pub emulator: Option<Emulated>,
+}
+
+/// The emulator a run of another CPU's image runs under (D179): the emulator image's root
+/// filesystem, one more of its microVM's devices, and the architecture its init registers
+/// of it.
+#[derive(Debug, Clone)]
+pub struct Emulated {
+    pub root: PathBuf,
+    pub architecture: &'static str,
+}
+
+/// containerd's `platforms.FormatAll` (v1.0.0-rc.2) of a Linux platform: `os/arch`, then
+/// `/variant` where it has one; `unknown` where it names no OS.
+fn format_all(os: &str, architecture: &str, variant: &str) -> String {
+    match (os, variant) {
+        ("", _) => "unknown".into(),
+        (_, "") => format!("{os}/{architecture}"),
+        _ => format!("{os}/{architecture}/{variant}"),
+    }
+}
+
+/// The emulator a run of an image for `platform` runs under (D179), its CPU's, of the
+/// emulator image, which is pulled as an image is the first time a run needs it, its pull
+/// said in a line of its own: or why there is none.
+fn emulator_for(
+    platform: &shards_image::oci::Platform,
+    request: &Run,
+    home: &Path,
+    say: &(dyn Fn(&str) + Sync),
+    cancel: &Cancel,
+) -> Result<Emulated, String> {
+    let target = shards_image::platform::normalize(platform);
+    let shown = format_all(&target.os, &target.architecture, &target.variant);
+    let emulator = (target.os == "linux")
+        .then(|| shards_abi::emulate::of(&target.architecture))
+        .flatten()
+        .ok_or_else(|| {
+            format!(
+                "{}: an image of {shown}, which this host's microVMs neither run nor emulate",
+                Reference::parse(&request.image).map_or_else(|_| request.image.clone(), |r| r.familiar())
+            )
+        })?;
+    let store = crate::pull::store(home)?;
+    let limits = crate::pull::limits()?;
+    let reference = Reference::parse(crate::build::EMULATOR_IMAGE).map_err(|e| e.to_string())?;
+    let guest = shards_image::platform::guest();
+    let here = matches!(local(&store, &reference, &guest, &limits), Ok(Some(_)));
+    if !here {
+        say(&format!(
+            "Downloading the emulator of {shown}'s programs, Docker's QEMU (tonistiigi/binfmt)"
+        ));
+    }
+    // The run's own lease holds the store until its microVM has its devices: this one's
+    // goes now.
+    let (pulled, _lease) = find_image(
+        crate::build::EMULATOR_IMAGE,
+        Pull::Missing,
+        &guest,
+        &request.registry_env,
+        home,
+        &|_| {},
+        cancel,
+    )?;
+    let root = pulled
+        .rootfs
+        .ok_or_else(|| format!("{}: no root filesystem of it here", crate::build::EMULATOR_IMAGE))?;
+    Ok(Emulated {
+        root,
+        architecture: emulator.architecture,
+    })
 }
 
 /// The health check a run's container has, as dockerd merges the run's with its image's
@@ -553,6 +625,8 @@ pub fn prepare(
     say: &(dyn Fn(&str) + Sync),
     cancel: &Cancel,
 ) -> Result<Prepared, String> {
+    // What dockerd warns of at a create, whatever `-q` says.
+    let warn = say;
     // `-q`: what a pull says goes unsaid (docker/cli create.go pullImage); errors do not.
     let quiet = |line: &str| {
         if !request.quiet {
@@ -560,8 +634,13 @@ pub fn prepare(
         }
     };
     let say: &(dyn Fn(&str) + Sync) = &quiet;
-    // `--platform`'s image, else the best this host's microVMs run.
-    let targets = crate::pull::targets(&request.platform)?;
+    // `--platform`'s image; else, as dockerd takes one where a run names none, an index's
+    // best for this host's microVMs, and a lone manifest or an image here whatever its
+    // platform, another CPU's run under its emulator (D179).
+    let targets = match request.platform.is_empty() {
+        true => Vec::new(),
+        false => crate::pull::targets(&request.platform)?,
+    };
     let boot = match (&request.kernel, &request.init) {
         (Some(kernel), Some(init)) => Boot::Given(Box::new(Config::new(
             PathBuf::from(kernel),
@@ -651,6 +730,31 @@ pub fn prepare(
             Reference::parse(&request.image).map_or_else(|_| request.image.clone(), |r| r.familiar())
         )
     })?;
+    // Another CPU's image (D179): one no guest runs runs under its CPU's emulator, which
+    // its microVM registers as it boots; and a run that named no platform is told, as
+    // dockerd tells it (moby docker-v29.3.1 daemon/create.go).
+    let platform = shards_image::oci::Platform {
+        os: image.config.os.clone(),
+        architecture: image.config.architecture.clone(),
+        variant: image.config.variant.clone(),
+        ..shards_image::oci::Platform::default()
+    };
+    if request.platform.is_empty() && !shards_image::platform::host_runs(&platform) {
+        let host = shards_image::platform::maximum();
+        warn(&format!(
+            "WARNING: The requested image's platform ({}) does not match the detected host platform ({}) and no specific platform was requested",
+            format_all(
+                &platform.os,
+                &platform.architecture,
+                platform.variant.as_deref().unwrap_or_default()
+            ),
+            format_all(&host.os, &host.architecture, &host.variant),
+        ));
+    }
+    let emulator = match shards_image::platform::runs(&platform, &shards_image::platform::guest()) {
+        true => None,
+        false => Some(emulator_for(&platform, request, home, say, cancel)?),
+    };
     // An Agentfile's image: its Agentfile, as its root holds it and its digest names it
     // (D109). One whose Agentfile does not hold is not run.
     let agentfile = match image
@@ -672,6 +776,7 @@ pub fn prepare(
     let labels = merge_labels(image_labels, &request.labels)?;
     Ok(Prepared {
         agentfile,
+        emulator,
         boot,
         gpu,
         vfio,
@@ -818,8 +923,8 @@ fn shares(cfg: &Config) -> String {
 }
 
 /// What a template was saved from: its root filesystem and its guest. It is live while
-/// that root filesystem is there and that guest is the current one (daemon.rs,
-/// `collect_garbage`). It is the daemon's record, kept beside the template rather than in
+/// that root filesystem is there, and its emulator's where it has one (D179), and that
+/// guest is the current one (daemon.rs, `collect_garbage`). It is the daemon's record, kept beside the template rather than in
 /// it: a template's directory is a VM process's to write while it saves, and a VM taken
 /// over then could leave there a record naming any file, or a link the daemon would write
 /// through (PM M165).
@@ -838,6 +943,11 @@ pub struct Origin {
     /// kernel, its restores the GPU's VM process's too.
     #[serde(default)]
     gpu: bool,
+    /// The emulator image's root filesystem it was saved with after its other devices, where
+    /// its image is another CPU's (D179), which a restore of it is then given too: the
+    /// daemon's own record, as `rootfs` is.
+    #[serde(default)]
+    emulator: Option<PathBuf>,
 }
 
 impl Origin {
@@ -857,14 +967,20 @@ impl Origin {
         Self::place(dir).map(|(parent, name)| parent.join(name))
     }
 
-    pub fn of(guest: &Guest, rootfs: &Path, server: bool, gpu: bool) -> Origin {
+    pub fn of(guest: &Guest, rootfs: &Path, server: bool, gpu: bool, emulator: Option<&Path>) -> Origin {
         Origin {
             rootfs: rootfs.to_path_buf(),
             kernel_digest: guest.kernel_digest.clone(),
             init_digest: guest.init_digest.clone(),
             server,
             gpu,
+            emulator: emulator.map(Path::to_path_buf),
         }
+    }
+
+    /// The emulator image's root filesystem it was saved with (D179).
+    pub fn emulator(&self) -> Option<&Path> {
+        self.emulator.as_deref()
     }
 
     /// Whether it was saved with the in-VM server's device.
@@ -905,6 +1021,7 @@ impl Origin {
     pub fn live(&self, guest: Option<&Guest>) -> bool {
         let gpu = || crate::kernel::KERNEL_GPU.map(|k| format!("sha256:{}", k.sha256));
         self.rootfs.is_file()
+            && self.emulator.as_deref().is_none_or(Path::is_file)
             && guest.is_some_and(|g| {
                 let kernel = if self.gpu {
                     gpu()
@@ -1124,7 +1241,9 @@ mod tests {
         std::fs::write(&victim, b"the user's").unwrap();
         std::os::unix::fs::symlink(&victim, &place).unwrap();
         assert!(Origin::read(&dir).is_none(), "a link is read through");
-        Origin::of(&guest, &rootfs, true, false).write(&dir).unwrap();
+        Origin::of(&guest, &rootfs, true, false, None)
+            .write(&dir)
+            .unwrap();
         assert_eq!(
             std::fs::read(&victim).unwrap(),
             b"the user's",

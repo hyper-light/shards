@@ -120,9 +120,14 @@ pub fn command(
         named.tag = Some("latest".into());
         say("Using default tag: latest");
     }
-    let targets = match targets(parsed.string("platform")) {
-        Ok(t) => t,
-        Err(e) => return refuse(&e),
+    // None asked: an index's manifest for our guests, and a lone manifest whatever its
+    // platform, as dockerd pulls one, which a guest runs under its emulator (D179).
+    let targets = match parsed.string("platform") {
+        "" => Vec::new(),
+        given => match targets(given) {
+            Ok(t) => t,
+            Err(e) => return refuse(&e),
+        },
     };
     let status = (|| {
         let wanted = if all {

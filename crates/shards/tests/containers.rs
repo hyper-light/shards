@@ -3150,6 +3150,54 @@ fn commit_makes_an_image_of_what_a_microvm_changed() {
     assert!(read.stderr.contains("rm:/etc/group: No such file"), "{read}");
     let history = shards(&["history", "--format", "{{.Comment}}", "test/committed:v1"]);
     assert_eq!(history.stdout.lines().next(), Some("a step"), "{history}");
+    // Its base's variant kept, as dockerd's child image keeps it (moby docker-v29.3.1
+    // daemon/internal/image NewChildImage): of this host's own platform, here.
+    let (_, blobs) = common::test_image_with(Some(b"variant"));
+    let (arch, variant) = if cfg!(target_arch = "aarch64") {
+        ("arm64", "v8")
+    } else {
+        ("amd64", "v1")
+    };
+    let varied = String::from_utf8(blobs[0].clone())
+        .unwrap()
+        .replace(
+            &format!(r#""architecture":"{arch}""#),
+            &format!(r#""architecture":"{arch}","variant":"{variant}""#),
+        )
+        .into_bytes();
+    assert_ne!(varied, blobs[0], "the config named the host's architecture");
+    let archive = common::tar(&[
+        ("cfg.json", 0o644, 0, Some(varied.as_slice())),
+        ("vvv", 0o755, 0, None),
+        ("vvv/layer.tar", 0o644, 0, Some(blobs[1].as_slice())),
+        (
+            "manifest.json",
+            0o644,
+            0,
+            Some(br#"[{"Config":"cfg.json","RepoTags":["varied:1"],"Layers":["vvv/layer.tar"]}]"#),
+        ),
+    ]);
+    let archive_path = home.join("varied.tar");
+    std::fs::write(&archive_path, archive).unwrap();
+    assert_eq!(
+        shards(&["load", "-i", archive_path.to_str().unwrap()]).status,
+        Some(0)
+    );
+    let ran = run_in(&home, "varied:1", &["--name", "varied"], &["exit", "0"]);
+    assert_eq!(ran.status, Some(0), "{ran}");
+    assert_eq!(
+        shards(&["commit", "varied", "test/committed:variant"]).status,
+        Some(0)
+    );
+    let kept = shards(&[
+        "image",
+        "inspect",
+        "--format",
+        "{{.Variant}}",
+        "test/committed:variant",
+    ]);
+    assert_eq!(kept.stdout.trim(), variant, "{kept}");
+    assert_eq!(shards(&["rm", "varied"]).status, Some(0));
     // Running: paused for it, then going on.
     let mut sleeper = start(&home, &image, &["--name", "live", "-u", "0"], &["sleep"]);
     let wrote = shards(&["exec", "-u", "0", "live", "/bin/testguest", "fs", "write:/live=1"]);
@@ -3667,12 +3715,14 @@ fn run_writes_cidfiles_pulls_quietly_and_keeps_signals() {
         ),
         "{refused}"
     );
-    // This host's platform, however it is spelled, runs; another is refused, and a
-    // specifier containerd cannot read is said as it says it.
+    // This host's platform, however it is spelled, runs; one no emulator runs either is
+    // refused (another CPU's runs under its emulator: images.rs,
+    // a_run_of_another_cpus_image_runs_under_its_emulator), and a specifier containerd
+    // cannot read is said as it says it.
     let (ours, other) = if std::env::consts::ARCH == "aarch64" {
-        ("linux/arm64/v8", "linux/amd64")
+        ("linux/arm64/v8", "linux/sparc64")
     } else {
-        ("linux/amd64", "linux/arm64")
+        ("linux/amd64", "linux/sparc64")
     };
     let native = run_in(&home, &image, &["--platform", ours], &["exit", "0"]);
     assert_eq!(native.status, Some(0), "{native}");
@@ -7722,7 +7772,8 @@ fn load_reads_archives() {
     );
     // An image for another platform is loaded and not unpacked, and nothing more is said
     // of it, as dockerd says nothing (measured, Docker 29.3.1, an amd64 archive on arm64);
-    // a run of it is refused, as no guest here runs it.
+    // a run of it runs, under its CPU's emulator (D179; its program here this host's
+    // own), warned of as dockerd warns of it.
     let (_, foreign) = common::test_image_with(Some(b"foreign"));
     let host_arch = format!(
         r#""architecture":"{}""#,
@@ -7760,7 +7811,13 @@ fn load_reads_archives() {
         "{loaded}"
     );
     let ran = run_in(&home, "foreign:1", &["--rm"], &["exit", "0"]);
-    assert_ne!(ran.status, Some(0), "{ran}");
+    assert_eq!(ran.status, Some(0), "{ran}");
+    assert!(
+        ran.stderr.contains(
+            "WARNING: The requested image's platform (linux/s390x) does not match the detected host platform"
+        ),
+        "{ran}"
+    );
     // Its manifest as containerd writes one for it, byte for byte: its ID is that.
     let manifest = format!(
         r#"{{"schemaVersion":2,"mediaType":"application/vnd.docker.distribution.manifest.v2+json","config":{{"mediaType":"application/vnd.docker.container.image.v1+json","digest":"{}","size":{}}},"layers":[{{"mediaType":"application/vnd.docker.image.rootfs.diff.tar","digest":"{}","size":{}}}]}}"#,

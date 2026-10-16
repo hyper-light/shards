@@ -195,6 +195,93 @@ fn an_image_past_its_limits_is_refused() {
     assert_eq!(stopped.status, Some(0));
 }
 
+/// A run of another CPU's image runs under its CPU's emulator (D179), which its microVM's
+/// own kernel registers as it boots: from a cold boot, which saves its template, then from a
+/// copy of the template, which keeps it registered. Asked for by `--platform`, it is not
+/// warned of; named by its lone manifest and no platform, it runs too, warned of as dockerd
+/// warns of it (moby docker-v29.3.1 daemon/create.go).
+#[test]
+fn a_run_of_another_cpus_image_runs_under_its_emulator() {
+    if cannot_run_vms() {
+        eprintln!("SKIP: this host cannot run VMs");
+        return;
+    }
+    let home = TempDir::new("emulated-runs");
+    let env = [("SHARDS_HOME", home.as_os_str())];
+    let args = [
+        "use".as_ref(),
+        "--kernel".as_ref(),
+        kernel().as_os_str(),
+        "--init".as_ref(),
+        guest_init().as_os_str(),
+    ];
+    let recorded = run_shards_env(&["guest"], &args, &env, TIMEOUT);
+    assert_eq!(recorded.status, Some(0), "{}", recorded.stderr);
+    let booted = |run: &common::Run| run.marker_us(shards_abi::marker::INIT_STARTED).is_some();
+    // alpine:3.22's index and its 64-bit manifests (Docker Hub, 2026-10-15).
+    const INDEX: &str = "alpine:3.22@sha256:5291449c3df73caf6ed85e649dec1b9e818b39a5d8c871e97afc13e9cd5e8fa8";
+    let (other, machine, lone, lone_platform) = if cfg!(target_arch = "aarch64") {
+        (
+            "amd64",
+            "x86_64",
+            "alpine@sha256:3e9b4b680bfc9fb5269227cffbd6d42be39fbf7c0b908123913864aa4447e764",
+            "linux/amd64",
+        )
+    } else {
+        (
+            "arm64",
+            "aarch64",
+            "alpine@sha256:2e1a7aa4cbc4e9e5222bb4c24a839aa1a6170ea5492d644777ce7b178824e44f",
+            "linux/arm64/v8",
+        )
+    };
+    let platform = format!("linux/{other}");
+    let run = |args: &[&str]| run_shards_env(&["run"], args, &env, TIMEOUT);
+    let first = run(&["--rm", "--platform", &platform, INDEX, "uname", "-m"]);
+    let shown = format!("--- stdout\n{}\n--- stderr\n{}", first.stdout, first.stderr);
+    assert_eq!(first.status, Some(0), "{shown}");
+    assert_eq!(first.stdout.trim(), machine, "{shown}");
+    assert!(booted(&first), "{shown}");
+    assert!(
+        !first.stderr.contains("WARNING"),
+        "asked for, not warned of: {shown}"
+    );
+    if shards_vmm::vm::SNAPSHOTS {
+        let second = run(&[
+            "--rm",
+            "--pull",
+            "never",
+            "--platform",
+            &platform,
+            INDEX,
+            "uname",
+            "-m",
+        ]);
+        let shown = format!("--- stdout\n{}\n--- stderr\n{}", second.stdout, second.stderr);
+        assert_eq!(second.status, Some(0), "{shown}");
+        assert_eq!(
+            second.stdout.trim(),
+            machine,
+            "its emulator kept in the template: {shown}"
+        );
+        assert!(!booted(&second), "restored, not booted: {shown}");
+    }
+    let warned = run(&["--rm", lone, "uname", "-m"]);
+    let shown = format!("--- stdout\n{}\n--- stderr\n{}", warned.stdout, warned.stderr);
+    assert_eq!(warned.status, Some(0), "{shown}");
+    assert_eq!(warned.stdout.trim(), machine, "{shown}");
+    assert!(
+        warned.stderr.contains(&format!(
+            "WARNING: The requested image's platform ({lone_platform}) does not match the detected host platform (linux/"
+        )) && warned
+            .stderr
+            .contains(") and no specific platform was requested"),
+        "{shown}"
+    );
+    let stopped = run_shards_env(&["daemon"], &["stop"], &env, TIMEOUT);
+    assert_eq!(stopped.status, Some(0), "{}", stopped.stderr);
+}
+
 /// With the recorded guest, the first run of an image boots and saves a template, and the
 /// next restores it: no `INIT_STARTED` marker, since init started in the template. The
 /// restored run has the image's settings and the host's clock.

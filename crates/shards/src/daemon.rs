@@ -325,6 +325,9 @@ struct Pool {
     /// Whether its template is a GPU's (D150), once read: its restores are the GPU's VM
     /// process's.
     gpu: Option<bool>,
+    /// The emulator image's root its template was saved with (D179), once read: its
+    /// restores are given it too, after the server's device.
+    emulator: Option<Option<PathBuf>>,
     ready: VecDeque<Ready>,
     starting: usize,
     /// Warm VMs in a row that never became ready.
@@ -5049,6 +5052,16 @@ impl<D: Disk> Daemon<D> {
             // that limit gives by default.
             cfg.swap_mib = crate::build::host_memory().map_or(0, |bytes| (bytes >> 20) & !1);
             cfg.pmem.extend(server.iter().cloned());
+            // Another CPU's image (D179): the emulator image's root after them, and its init
+            // told the device and the architecture to register, before its root is mounted.
+            if let Some(e) = &prepared.emulator {
+                cfg.pmem.push(e.root.clone());
+                cfg.cmdline.push_str(&format!(
+                    " shards_emulate=/dev/pmem{}:{}",
+                    cfg.pmem.len(),
+                    e.architecture
+                ));
+            }
             // A slot for each directory it shares (D38), which its run fills.
             cfg.shares = (0..prepared.shares).map(|_| Arc::default()).collect();
             if let Some(bridge) = &bridge {
@@ -5127,8 +5140,14 @@ impl<D: Disk> Daemon<D> {
         let fresh = dir.with_extension(format!("new-{}-{n}", std::process::id()));
         let mut ready = self.cold(threads, &cfg, &prepared.rootfs, Some(&fresh));
         if ready.is_ok()
-            && let Err(e) =
-                crate::run::Origin::of(guest, &prepared.rootfs, server.is_some(), cfg.gpu).write(&dir)
+            && let Err(e) = crate::run::Origin::of(
+                guest,
+                &prepared.rootfs,
+                server.is_some(),
+                cfg.gpu,
+                prepared.emulator.as_ref().map(|e| e.root.as_path()),
+            )
+            .write(&dir)
         {
             log(format!("{}: its origin: {e}", dir.display()));
         }
@@ -6522,6 +6541,7 @@ mod tests {
                 image_volumes: Vec::new(),
                 agentfile: None,
                 shares: 0,
+                emulator: None,
             };
             self.t.daemon.create(&run, &prepared, &id, Vec::new()).unwrap();
             self.t.daemon.record_arrival(self.threads, &id);

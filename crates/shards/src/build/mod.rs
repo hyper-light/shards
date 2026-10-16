@@ -2116,7 +2116,7 @@ fn emulated(p: &Platform) -> Option<&'static shards_abi::emulate::Emulator> {
 /// The emulators a build's steps for other CPUs run under (D179): Docker's builds of
 /// QEMU's user-mode emulators for BuildKit (tonistiigi/binfmt e29e7d7, QEMU 10.2.3),
 /// pinned, and never in the shards binary (QEMU is GPL-2.0).
-const EMULATOR_IMAGE: &str =
+pub(crate) const EMULATOR_IMAGE: &str =
     "docker.io/tonistiigi/binfmt@sha256:400a4873b838d1b89194d982c45e5fb3cda4593fbfd7e08a02e76b03b21166f0";
 
 /// The root filesystem `layers` make, as the store keeps it.

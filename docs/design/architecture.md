@@ -3629,7 +3629,7 @@ No run-time labels, relays or declassifiers (§12 answer 14, decided by the user
 an internal-only domain to the world (D58), so there is no data to label. Code mode is
 D136.
 
-### D179. Other CPUs' images, emulated in their microVM (part 1 built)
+### D179. Other CPUs' images, emulated in their microVM (parts 1 and 2 built)
 
 Images built on an arm64 Mac usually ship to x86_64 hosts, and the other way round, and a
 build for both (`--platform linux/amd64,linux/arm64`, D87) runs each platform's RUN steps.
@@ -3695,10 +3695,27 @@ the platform builds faster, reached as a context (the next item).
   64-bit CPU, for linux/386 and linux/arm/v7, and for both 64-bit platforms at once, each
   step seeing its own CPU; with the registration left out, the step fails with the
   kernel's "exec format error", as BuildKit's does without one.
-- **A run of another platform's image** (part 2): `run --platform` and an image of no
-  other platform have their microVM register the emulator before the workload starts, said
-  as Docker says it (the platform's mismatch); its template, booted with the emulator's
-  device, keeps it registered in every restore.
+- **A run of another platform's image** (part 2, built): a run of an image no guest runs,
+  asked for by `--platform` or named by its lone manifest or by an image here, runs under
+  its CPU's emulator. The daemon gives its microVM the emulator image's root after its
+  other devices, and names it on the kernel's command line (`shards_emulate=DEVICE:ARCH`);
+  init registers it in the initramfs before the image's root moves over it, which then
+  keeps the emulator's mounts out of every process's reach (the workload's mount table
+  starts at its own root). Its template, saved with the device, keeps it registered in
+  every restore, the daemon's record of it naming the device it gives a restore. A run
+  that names no platform, of an image this host would not run itself, is warned of as
+  dockerd warns of it (moby docker-v29.3.1 daemon/create.go: matched as
+  `OnlyPlatformWithFallback`, the host's platform its `maximumSpec`, an amd64 host's level
+  as go-archvariant v1.0.0 reads the CPU); and a pull or a run that names no platform takes
+  a lone manifest whatever its platform, as dockerd takes one, where shards refused it
+  (measured: Docker 29.3.1 pulled `alpine@sha256:3e9b4b68…`, amd64's, on arm64, warned of
+  it, and ran it). Of an index, a pull or run that names no platform takes what dockerd
+  takes (containerd/platforms v1.0.0-rc.2 platformVector): on arm64, after arm64's, 32-bit
+  Arm's v8 to v5, which shards' guests, with no AArch32, run under qemu-arm. A commit of
+  another CPU's image is that CPU's, its base's variant kept (moby NewChildImage).
+  `tests/images.rs` `a_run_of_another_cpus_image_runs_under_its_emulator` boots one,
+  restores its template (without the emulator's device in the restore, it boots instead),
+  and runs a lone manifest with no platform, warned of.
 
 ### D178. A microVM's I/O limits, kept outside it
 

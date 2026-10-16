@@ -760,15 +760,18 @@ fn before_create(request: &Run) -> Result<Option<CidFile>, String> {
     CidFile::new(&request.cidfile).map(Some)
 }
 
-/// A platform a run asks for, read as containerd reads it, that this host's microVMs run;
-/// none asked for is theirs.
+/// A platform a run asks for, read as containerd reads it, that this host's microVMs run,
+/// themselves or under its CPU's emulator (D179); none asked for is theirs.
 pub(crate) fn check_platform(platform: &str) -> Result<(), String> {
     if platform.is_empty() {
         return Ok(());
     }
     let wanted = crate::pull::targets(platform)?;
     let runs = shards_image::platform::guest();
-    if let Some(other) = wanted.iter().find(|t| !runs.contains(t)) {
+    let emulated = |t: &shards_image::platform::Target| {
+        t.os == "linux" && shards_abi::emulate::of(&t.architecture).is_some()
+    };
+    if let Some(other) = wanted.iter().find(|t| !runs.contains(t) && !emulated(t)) {
         let name = |t: &shards_image::platform::Target| {
             [t.os.as_str(), t.architecture.as_str(), t.variant.as_str()]
                 .iter()
@@ -778,9 +781,15 @@ pub(crate) fn check_platform(platform: &str) -> Result<(), String> {
                 .join("/")
         };
         let ours: Vec<String> = runs.iter().map(name).collect();
+        let others: Vec<String> = shards_abi::emulate::EMULATORS
+            .iter()
+            .map(|e| format!("linux/{}", e.architecture))
+            .filter(|p| !ours.contains(p))
+            .collect();
         return Err(format!(
-            "this host's microVMs run {}, not {}",
+            "this host's microVMs run {}, and {} under emulation, not {}",
             ours.join(" and "),
+            others.join(", "),
             name(other)
         ));
     }

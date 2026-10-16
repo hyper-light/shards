@@ -18,6 +18,8 @@ mod devices;
 mod dnsrelay;
 #[cfg(target_os = "linux")]
 mod domains;
+#[cfg(target_os = "linux")]
+mod emulate;
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 mod frames;
 #[cfg(target_os = "linux")]
