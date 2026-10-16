@@ -75,7 +75,11 @@ enum Answer {
     Joined,
 }
 
-struct Client {
+/// What is given what steers a command once it is asked for, and the driver's sender it
+/// steers through.
+type Steering<'a> = (Box<dyn FnOnce(Controls) + 'a>, Sender<Event>);
+
+struct Client<'a> {
     remote: Remote,
     identity: Option<hyper_quic::ClientConfig>,
     ask: Option<Ask>,
@@ -103,12 +107,15 @@ struct Client {
     /// The daemon reads no more of the control stream: what would steer the command goes
     /// nowhere.
     uncontrolled: bool,
+    /// Given what steers the command once it is asked for: before then, there is no command
+    /// for a signal to reach, which its caller acts on itself.
+    steering: Option<Steering<'a>>,
     answer: Option<Answer>,
     failed: Option<String>,
     done: bool,
 }
 
-impl Client {
+impl Client<'_> {
     fn flush(&mut self, io: &mut Io<'_>) {
         let (Some(conn), Some(stream)) = (self.conn, self.stream) else {
             return;
@@ -297,7 +304,7 @@ impl Client {
     }
 }
 
-impl Handler for Client {
+impl Handler for Client<'_> {
     type Command = Event;
 
     /// The daemon's key is the one pinned: TLS refused any other. A connection it fails on,
@@ -336,7 +343,10 @@ impl Handler for Client {
             Ok(framed) => {
                 self.pending.splice(0..0, framed);
                 self.flush(io);
-                // What steered the command before it was sent goes after it.
+                // The command is asked for: what steers it reaches it from now on.
+                if let Some((steered, sender)) = self.steering.take() {
+                    steered(Controls(sender));
+                }
                 self.flush_controls(io);
             }
             Err(e) => self.fail(io, e.to_string()),
@@ -456,8 +466,9 @@ fn writer<'scope>(
 
 /// Runs `request` on the daemon `remote`, as the home whose identity is `identity`: `stdin`,
 /// where given, sent as it comes, and what the command writes to its stdout and stderr
-/// written to `stdout` and `stderr`; `steered` is given what steers it while it runs. Its
-/// exit status, or, for a request the daemon refused, the daemon's reason.
+/// written to `stdout` and `stderr`; `steered` is given what steers it once it is asked for,
+/// and not before: a signal before then has no command to reach. Its exit status, or, for a
+/// request the daemon refused, the daemon's reason.
 pub fn exec(
     identity: &Identity,
     remote: Remote,
@@ -538,6 +549,7 @@ fn run(
             control: None,
             controls: Vec::new(),
             uncontrolled: false,
+            steering: None,
             answer: None,
             failed: None,
             done: false,
@@ -576,7 +588,7 @@ fn run(
                 .map_err(|e| Error::new(format!("a thread for the command's input: {e}")))?;
         }
         if let Some(steered) = steered {
-            steered(Controls(sender.try_clone()?));
+            driver_handler(&mut driver).steering = Some((steered, sender.try_clone()?));
         }
         sender.send(Command::Handler(Event::Connect))?;
         driver.run()?;
@@ -593,6 +605,6 @@ fn run(
     })
 }
 
-fn driver_handler(driver: &mut Driver<Client>) -> &mut Client {
+fn driver_handler<'d, 'a>(driver: &'d mut Driver<Client<'a>>) -> &'d mut Client<'a> {
     driver.handler_mut()
 }

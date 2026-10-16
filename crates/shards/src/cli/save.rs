@@ -5,15 +5,23 @@
 //! renamed over it once the archive is whole. What is not whole goes, an interrupted save's
 //! too, where atomicwriter renames what an interrupted copy wrote into place (measured:
 //! Docker 29.3.1, SIGINT 1.5 s into saving rust:1.98.0, leaves 60,300,800 bytes of it).
+//! The file is a context's client's too, on every system (D180): what a command there
+//! writes, written here.
 
 use std::fs::{File, OpenOptions};
+#[cfg(unix)]
 use std::os::unix::fs::{FileTypeExt as _, OpenOptionsExt as _, PermissionsExt as _};
 use std::path::{Path, PathBuf};
 
 /// Where the archive goes.
 pub enum Output {
+    #[cfg(unix)]
     Stdout(std::io::Stdout),
-    File { file: File, temp: Temp, dest: PathBuf },
+    File {
+        file: File,
+        temp: Temp,
+        dest: PathBuf,
+    },
 }
 
 /// The temporary file the archive is written to, removed when this is dropped: once it is
@@ -27,9 +35,11 @@ impl Drop for Temp {
 }
 
 /// The signals that end the client by default, after which a save leaves nothing behind.
+#[cfg(unix)]
 const ENDS: [libc::c_int; 4] = [libc::SIGHUP, libc::SIGINT, libc::SIGQUIT, libc::SIGTERM];
 
-/// An OS error in Go's words: its strerror, lower-cased, as Go's tables copy it.
+/// An OS error in Go's words: its strerror, lower-cased, as Go's tables copy it; on
+/// Windows, the system's message as it is, as Go's Errno.Error gives it (FormatMessage).
 pub(crate) fn go(e: &std::io::Error) -> String {
     let text = e.to_string();
     let text = e
@@ -37,6 +47,9 @@ pub(crate) fn go(e: &std::io::Error) -> String {
         .and_then(|n| text.strip_suffix(&format!(" (os error {n})")))
         .unwrap_or(&text)
         .to_string();
+    if cfg!(windows) {
+        return text;
+    }
     let mut chars = text.chars();
     chars
         .next()
@@ -44,6 +57,7 @@ pub(crate) fn go(e: &std::io::Error) -> String {
 }
 
 /// The output `-o` names, or stdout; or what the CLI says instead.
+#[cfg(unix)]
 pub fn output(path: &str, failed: &str) -> Result<Output, String> {
     if path.is_empty() {
         // SAFETY: isatty(3) on this process's stdout.
@@ -52,13 +66,7 @@ pub fn output(path: &str, failed: &str) -> Result<Output, String> {
         }
         return Ok(Output::Stdout(std::io::stdout()));
     }
-    validate(path).map_err(|e| format!("{failed}: {e}"))?;
-    let dest = std::path::absolute(path).map_err(|e| format!("{failed}: {}", go(&e)))?;
-    let dir = dest.parent().unwrap_or(Path::new("/")).to_path_buf();
-    let base = dest
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_default();
+    let (dir, base, dest) = destination(path, failed)?;
     // The signals that end the client are blocked before the file is made, for a thread
     // to take once it is: one sent in between stays pending, so nothing is left behind.
     let ends = block_ends().map_err(|e| format!("{failed}: {e}"))?;
@@ -77,17 +85,38 @@ pub fn output(path: &str, failed: &str) -> Result<Output, String> {
     Ok(Output::File { file, temp, dest })
 }
 
-/// os.CreateTemp: the pattern and a random number, made exclusively, mode 0600; a name
-/// taken is tried again with another.
+/// The file `-o` names, written as [`output`] writes it, the signals that end this process
+/// its caller's: a context's client sends them on to the command, whose end, whole or not,
+/// is then [`Output::finish`]'s to keep or let go.
+pub fn to_file(path: &str, failed: &str) -> Result<Output, String> {
+    let (dir, base, dest) = destination(path, failed)?;
+    let (file, temp) = create_temp(&dir, &base).map_err(|e| format!("{failed}: {e}"))?;
+    Ok(Output::File { file, temp, dest })
+}
+
+/// The file `path` names, checked as atomicwriter checks it: its directory, its name and
+/// where it is.
+fn destination(path: &str, failed: &str) -> Result<(PathBuf, String, PathBuf), String> {
+    validate(path).map_err(|e| format!("{failed}: {e}"))?;
+    let dest = std::path::absolute(path).map_err(|e| format!("{failed}: {}", go(&e)))?;
+    let dir = dest.parent().unwrap_or(Path::new("/")).to_path_buf();
+    let base = dest
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    Ok((dir, base, dest))
+}
+
+/// os.CreateTemp: the pattern and a random number, made exclusively, mode 0600 where a file
+/// has one; a name taken is tried again with another.
 fn create_temp(dir: &Path, base: &str) -> Result<(File, Temp), String> {
     for _ in 0..10_000 {
         let temp = dir.join(format!(".tmp-{base}{}", random()?));
-        match OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(&temp)
-        {
+        let mut options = OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        options.mode(0o600);
+        match options.open(&temp) {
             Ok(file) => return Ok((file, Temp(temp))),
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
             Err(e) => {
@@ -100,6 +129,7 @@ fn create_temp(dir: &Path, base: &str) -> Result<(File, Temp), String> {
 
 /// Blocks the signals of `ENDS` this process was not started ignoring, in this thread,
 /// which threads started later inherit. Returns them.
+#[cfg(unix)]
 fn block_ends() -> Result<libc::sigset_t, String> {
     // SAFETY: sigaction(2) reads of dispositions and sigset operations on local
     // structures, then pthread_sigmask(3) on this thread.
@@ -120,6 +150,7 @@ fn block_ends() -> Result<libc::sigset_t, String> {
 }
 
 /// Unblocks `set` in this thread, where nothing will wait for it.
+#[cfg(unix)]
 fn unblock(set: &libc::sigset_t) {
     // SAFETY: pthread_sigmask(3) on this thread, with a valid set.
     unsafe { libc::pthread_sigmask(libc::SIG_UNBLOCK, set, std::ptr::null_mut()) };
@@ -127,6 +158,7 @@ fn unblock(set: &libc::sigset_t) {
 
 /// A thread of its own takes the first of `set` sent, removes `temp`, and ends the process
 /// by the signal's default action, as it would have ended.
+#[cfg(unix)]
 fn remove_when_ended(set: libc::sigset_t, temp: PathBuf) -> std::io::Result<()> {
     std::thread::Builder::new()
         .name("save-signals".into())
@@ -150,18 +182,10 @@ fn remove_when_ended(set: libc::sigset_t, temp: PathBuf) -> std::io::Result<()> 
         .map(drop)
 }
 
-/// A random u32, from the kernel.
+/// A random u32, from the system's source.
 fn random() -> Result<u32, String> {
     let mut b = [0u8; 4];
-    #[cfg(target_os = "linux")]
-    // SAFETY: getrandom(2) fills the 4 bytes given.
-    let filled = unsafe { libc::getrandom(b.as_mut_ptr().cast(), b.len(), 0) } == 4;
-    #[cfg(not(target_os = "linux"))]
-    // SAFETY: getentropy(2) fills the 4 bytes given.
-    let filled = unsafe { libc::getentropy(b.as_mut_ptr().cast(), b.len()) } == 0;
-    if !filled {
-        return Err(go(&std::io::Error::last_os_error()));
-    }
+    shards_net::entropy(&mut b).map_err(|e| go(&e))?;
     Ok(u32::from_le_bytes(b))
 }
 
@@ -192,33 +216,72 @@ fn validate(name: &str) -> Result<(), String> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
         Err(e) => return Err(format!("failed to stat output path: lstat {name}: {}", go(&e))),
     };
+    unwritable(&meta).map_or(Ok(()), |why| Err(why.to_string()))
+}
+
+/// What atomicwriter refuses of an existing destination, by its type and mode.
+#[cfg(unix)]
+fn unwritable(meta: &std::fs::Metadata) -> Option<&'static str> {
     let t = meta.file_type();
     let mode = meta.permissions().mode();
-    Err(if t.is_file() && mode & 0o7000 == 0 {
-        return Ok(());
+    Some(if t.is_file() && mode & 0o7000 == 0 {
+        return None;
     } else if t.is_dir() {
-        "cannot write to a directory".into()
+        "cannot write to a directory"
     } else if t.is_symlink() {
-        "cannot write to a symbolic link directly".into()
+        "cannot write to a symbolic link directly"
     } else if t.is_fifo() {
-        "cannot write to a named pipe (FIFO)".into()
+        "cannot write to a named pipe (FIFO)"
     } else if t.is_socket() {
-        "cannot write to a socket".into()
+        "cannot write to a socket"
     } else if t.is_char_device() {
-        "cannot write to a character device file".into()
+        "cannot write to a character device file"
     } else if t.is_block_device() {
-        "cannot write to a block device file".into()
+        "cannot write to a block device file"
     } else if mode & 0o4000 != 0 {
-        "cannot write to a setuid file".into()
+        "cannot write to a setuid file"
     } else if mode & 0o2000 != 0 {
-        "cannot write to a setgid file".into()
+        "cannot write to a setgid file"
     } else {
-        "cannot write to a sticky bit file".into()
+        "cannot write to a sticky bit file"
     })
 }
 
+/// What atomicwriter refuses of an existing destination: of Windows', a directory and a
+/// symbolic link, which Go's os.FileMode alone tells apart there.
+#[cfg(windows)]
+fn unwritable(meta: &std::fs::Metadata) -> Option<&'static str> {
+    let t = meta.file_type();
+    if t.is_dir() {
+        Some("cannot write to a directory")
+    } else if t.is_symlink() {
+        Some("cannot write to a symbolic link directly")
+    } else {
+        None
+    }
+}
+
 impl Output {
+    /// The file the archive is written to, until it is whole; none for stdout.
+    pub fn handle(&self) -> Option<&File> {
+        match self {
+            Output::File { file, .. } => Some(file),
+            #[cfg(unix)]
+            Output::Stdout(_) => None,
+        }
+    }
+
+    /// Where the file is until it is whole, which a client that ends before then removes.
+    pub fn temp(&self) -> Option<&Path> {
+        match self {
+            Output::File { temp, .. } => Some(&temp.0),
+            #[cfg(unix)]
+            Output::Stdout(_) => None,
+        }
+    }
+
     /// The descriptor the daemon writes the archive to.
+    #[cfg(unix)]
     pub fn fd(&self) -> std::os::fd::BorrowedFd<'_> {
         use std::os::fd::AsFd as _;
         match self {
@@ -231,13 +294,20 @@ impl Output {
     /// destination once `status` says the archive is whole and some of it was written;
     /// else it goes. What failed, in Go's words.
     pub fn finish(self, status: u8) -> Result<(), String> {
-        let Output::File { file, temp, dest } = self else {
-            return Ok(());
+        let (file, temp, dest) = match self {
+            Output::File { file, temp, dest } => (file, temp, dest),
+            #[cfg(unix)]
+            Output::Stdout(_) => return Ok(()),
         };
         let written = file.metadata().map(|m| m.len() > 0).unwrap_or(false);
         let done = (|| -> std::io::Result<()> {
-            shards_ipc::sync_durable(&file)?;
-            file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+            #[cfg(unix)]
+            {
+                shards_ipc::sync_durable(&file)?;
+                file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+            }
+            #[cfg(windows)]
+            file.sync_all()?;
             drop(file);
             if status == 0 && written {
                 std::fs::rename(&temp.0, &dest)?;
@@ -251,6 +321,7 @@ impl Output {
 
 /// Where `shards load` reads, as docker/cli's runLoad opens it: `-i`'s file, or stdin,
 /// unless it is a terminal. What the CLI says instead, in Go's words.
+#[cfg(unix)]
 pub fn input(path: &str) -> Result<Option<File>, String> {
     if path.is_empty() {
         // SAFETY: isatty(3) on this process's stdin.
@@ -259,7 +330,11 @@ pub fn input(path: &str) -> Result<Option<File>, String> {
         }
         return Ok(None);
     }
-    File::open(path)
-        .map(Some)
-        .map_err(|e| format!("open {path}: {}", go(&e)))
+    open(path).map(Some)
+}
+
+/// The file `path`, opened to read, as docker/cli opens `load -i`'s and `import`'s; what
+/// failed, in Go's words.
+pub fn open(path: &str) -> Result<File, String> {
+    File::open(path).map_err(|e| format!("open {path}: {}", go(&e)))
 }

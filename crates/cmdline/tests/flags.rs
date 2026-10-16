@@ -7,7 +7,7 @@
 
 use std::collections::BTreeMap;
 
-use shards_cmdline::commands::{self, RUN};
+use shards_cmdline::commands::{self, IMPORT, RUN};
 use shards_cmdline::flags::{Flag, Kind};
 
 /// The kind of value a flag of pflag type `go` takes, as an `unserved` line writes it:
@@ -163,4 +163,24 @@ fn a_flags_values_are_found_where_they_sit() {
             ("env-file", 7, 0),
         ]
     );
+    // After the image, every word is the command's.
+    assert_eq!(parsed.arg_words, [9, 10, 11]);
+    // Arguments among flags, and after `--`, by their words.
+    let words = |w: &[&str]| -> Vec<String> { w.iter().map(|w| w.to_string()).collect() };
+    for (argv, args, at) in [
+        (words(&["f", "-m", "x", "repo"]), vec!["f", "repo"], vec![0, 3]),
+        (
+            words(&["-m", "x", "--", "-f", "repo"]),
+            vec!["-f", "repo"],
+            vec![3, 4],
+        ),
+    ] {
+        let shards_cmdline::flags::Outcome::Run(parsed) =
+            shards_cmdline::flags::parse(&IMPORT, "shards import", &argv, &|_, v| Ok(v.to_string()))
+        else {
+            panic!("not parsed: {argv:?}");
+        };
+        assert_eq!(parsed.args, args);
+        assert_eq!(parsed.arg_words, at);
+    }
 }

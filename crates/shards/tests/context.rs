@@ -18,7 +18,7 @@ use std::process::Stdio;
 use std::time::Duration;
 
 use common::terminal::{Terminal, cooked};
-use common::{TempDir, cannot_run_vms, guest_init, kernel, run_shards_env, served};
+use common::{TempDir, cannot_run_vms, guest_init, kernel, run_shards_env, run_shards_env_in, served};
 
 const TIMEOUT: Duration = Duration::from_secs(120);
 
@@ -267,6 +267,106 @@ fn a_clients_command_has_the_clients_environment_not_the_owners() {
         assert!(vars.contains(&wanted), "{wanted}: {vars:?}");
     }
     assert!(!ran.stdout.contains("the owner's own"), "{vars:?}");
+}
+
+/// The archives a client saves, exports, loads and imports through a context are its own
+/// files, as Docker's CLI writes and reads its own: an image saved there is written here,
+/// in the client's directory, and loads there from here again; a microVM's files exported
+/// there are written here, and import there from here as an image; an image's Agentfile is
+/// written here. A save that fails leaves nothing here.
+#[test]
+fn a_clients_archives_are_its_own_files() {
+    let Some((machine, _listening, laptop, image)) = joined("ctx-files") else {
+        return;
+    };
+    let here = laptop.join("files");
+    std::fs::create_dir_all(&here).unwrap();
+    let on_laptop = [("SHARDS_HOME", laptop.as_os_str())];
+    let there = |command: &[&str], args: &[&str]| {
+        let mut words = vec!["--context", "gpu"];
+        words.extend_from_slice(command);
+        let ran = run_shards_env_in(&here, &words, args, &on_laptop, TIMEOUT);
+        assert_eq!(ran.status, Some(0), "{command:?} {args:?}: {ran}");
+        ran
+    };
+    let names = || {
+        let mut names: Vec<String> = std::fs::read_dir(&here)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        names
+    };
+    // A tar's first header holds `ustar` at 257 (POSIX.1-2017, pax, ustar Interchange Format).
+    let is_tar = |name: &str| {
+        let bytes = std::fs::read(here.join(name)).unwrap();
+        bytes.get(257..262) == Some(b"ustar".as_slice())
+    };
+    there(&["save", "image"], &[image.as_str(), "-o", "image.tar"]);
+    assert!(is_tar("image.tar"));
+    there(&["rmi"], &[image.as_str()]);
+    let loaded = there(&["load"], &["-i", "image.tar"]);
+    assert!(loaded.stdout.contains("Loaded image"), "{loaded}");
+    there(&["image", "inspect"], &[image.as_str()]);
+    there(&["create"], &["--name", "files", image.as_str()]);
+    there(&["export", "vm"], &["files", "-o", "files.tar"]);
+    assert!(is_tar("files.tar"));
+    there(&["import"], &["files.tar", "imported:1"]);
+    there(&["image", "inspect"], &["imported:1"]);
+    there(&["make", "agentfile"], &[image.as_str(), "-o", "Agentfile"]);
+    let agentfile = std::fs::read_to_string(here.join("Agentfile")).unwrap();
+    assert!(agentfile.contains("\nFROM "), "{agentfile}");
+    assert_eq!(names(), ["Agentfile", "files.tar", "image.tar"]);
+    // Nothing of them there, where the command ran.
+    for name in names() {
+        assert!(!machine.join(&name).exists(), "{name} written there");
+    }
+    let failed = run_shards_env_in(
+        &here,
+        &["--context", "gpu", "save"],
+        &["-o", "none.tar", "no-such-image:1"],
+        &on_laptop,
+        TIMEOUT,
+    );
+    assert_ne!(failed.status, Some(0), "{failed}");
+    assert_eq!(names(), ["Agentfile", "files.tar", "image.tar"]);
+    // From a terminal: the archive is the file's, not the command's terminal's there, which
+    // a save refuses to write to, as Docker's does.
+    let tty = here.join("tty.tar");
+    let mut term = Terminal::run(
+        &laptop,
+        &[
+            "--context",
+            "gpu",
+            "save",
+            "-o",
+            tty.to_str().unwrap(),
+            image.as_str(),
+        ],
+        24,
+        80,
+    );
+    let (shown, status, restored) = term.exit();
+    assert_eq!(status, 0, "{shown}");
+    assert!(restored);
+    assert_eq!(
+        std::fs::read(&tty).unwrap(),
+        std::fs::read(here.join("image.tar")).unwrap()
+    );
+    // And loaded from one: the file is what the command reads, not the keyboard.
+    there(&["rm"], &["files"]);
+    there(&["rmi"], &[image.as_str()]);
+    let mut term = Terminal::run(
+        &laptop,
+        &["--context", "gpu", "load", "-i", tty.to_str().unwrap()],
+        24,
+        80,
+    );
+    let (shown, status, restored) = term.exit();
+    assert_eq!(status, 0, "{shown}");
+    assert!(shown.contains("Loaded image"), "{shown}");
+    assert!(restored);
+    there(&["image", "inspect"], &[image.as_str()]);
 }
 
 /// A client's logins are its own, as Docker's CLI keeps its own: a registry the client logged

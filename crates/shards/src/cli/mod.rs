@@ -21,8 +21,7 @@ pub(crate) mod listing;
 #[cfg(unix)]
 pub(crate) mod look;
 pub(crate) mod request;
-#[cfg(unix)]
-mod save;
+pub(crate) mod save;
 #[cfg(unix)]
 mod screens;
 #[cfg(unix)]

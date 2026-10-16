@@ -236,6 +236,245 @@ fn a_contexts_client_sends_its_command_and_takes_what_comes_back() {
     assert_eq!(child.wait().unwrap().code(), Some(3));
 }
 
+/// The names in `dir`, sorted.
+fn names(dir: &Path) -> Vec<String> {
+    let mut names: Vec<String> = std::fs::read_dir(dir)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    names.sort();
+    names
+}
+
+/// `save -o FILE` over a context, in `dir`.
+fn saving(laptop: &Path, dir: &Path, file: &str) -> std::process::Child {
+    common::command()
+        .current_dir(dir)
+        .args(["--context", "gpu", "save", "-o", file, "image"])
+        .env("SHARDS_HOME", laptop.as_os_str())
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap()
+}
+
+/// What `child` ended with: its status, and what it said on stderr.
+fn ended(child: std::process::Child) -> (Option<i32>, String) {
+    let done = child.wait_with_output().unwrap();
+    assert!(
+        done.stdout.is_empty(),
+        "{:?}",
+        String::from_utf8_lossy(&done.stdout)
+    );
+    (
+        done.status.code(),
+        String::from_utf8_lossy(&done.stderr).into_owned(),
+    )
+}
+
+/// `save -o`'s file is the client's, as Docker's CLI writes its own: the command there
+/// writes the archive to its stdout, and the client keeps it in its file once the command's
+/// exit says it is whole. A command that fails, a signal that ends it and a connection lost
+/// leave the file as it was, and nothing beside it, where Docker's atomic writer renames
+/// what it has into place unless a write failed (moby/sys atomicwriter, Close).
+#[test]
+fn a_file_the_command_writes_is_the_clients_whole_or_not_at_all() {
+    let laptop = TempDir::new("cc-save");
+    let files = laptop.join("files");
+    std::fs::create_dir_all(&files).unwrap();
+    let d = daemon(&laptop);
+    // Whole: kept, the command there told to write its stdout.
+    let child = saving(&laptop, &files, "whole.tar");
+    let Seen::Started(request, output, exit) = d.next() else {
+        panic!("no start");
+    };
+    assert_eq!(args(&request), ["save", "image"]);
+    assert_eq!(request.terminal, None);
+    output.send(b"an archive".to_vec()).unwrap();
+    drop(output);
+    exit.send(0).unwrap();
+    let (status, said) = ended(child);
+    assert_eq!(status, Some(0), "{said}");
+    assert_eq!(std::fs::read(files.join("whole.tar")).unwrap(), b"an archive");
+    assert_eq!(names(&files), ["whole.tar"]);
+    // A command that fails: the file there before keeps what it held.
+    std::fs::write(files.join("kept.tar"), b"before").unwrap();
+    let child = saving(&laptop, &files, "kept.tar");
+    let Seen::Started(_, output, exit) = d.next() else {
+        panic!("no start");
+    };
+    output.send(b"half".to_vec()).unwrap();
+    drop(output);
+    exit.send(1).unwrap();
+    assert_eq!(ended(child).0, Some(1));
+    assert_eq!(std::fs::read(files.join("kept.tar")).unwrap(), b"before");
+    assert_eq!(names(&files), ["kept.tar", "whole.tar"]);
+    // A signal that ends the command, sent on as it comes.
+    #[cfg(unix)]
+    {
+        let child = saving(&laptop, &files, "signalled.tar");
+        let Seen::Started(_, output, exit) = d.next() else {
+            panic!("no start");
+        };
+        output.send(b"half".to_vec()).unwrap();
+        // SAFETY: kill(2) of our own child, which is only reaped below.
+        unsafe { libc::kill(child.id() as libc::pid_t, libc::SIGTERM) };
+        match d.next() {
+            Seen::Signalled(linux) => assert_eq!(linux, 15),
+            other => panic!("{other:?}, waiting for the signal"),
+        }
+        drop(output);
+        exit.send(143).unwrap();
+        assert_eq!(ended(child).0, Some(143));
+        assert_eq!(names(&files), ["kept.tar", "whole.tar"]);
+    }
+    // The connection lost, half the archive written here.
+    let child = saving(&laptop, &files, "lost.tar");
+    let Seen::Started(_, output, _exit) = d.next() else {
+        panic!("no start");
+    };
+    output.send(b"half".to_vec()).unwrap();
+    let start = std::time::Instant::now();
+    while !names(&files).iter().any(|n| {
+        n.starts_with(".tmp-lost.tar") && std::fs::metadata(files.join(n)).is_ok_and(|m| m.len() == 4)
+    }) {
+        assert!(start.elapsed() < TIMEOUT, "no half written: {:?}", names(&files));
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    drop(d);
+    let (status, said) = ended(child);
+    assert_eq!(status, Some(125), "{said}");
+    assert_eq!(names(&files), ["kept.tar", "whole.tar"]);
+}
+
+/// A write here that fails keeps nothing, though the command there ends as a whole
+/// archive's does: the client says what failed and exits 1. A file size limit of 4 bytes
+/// (setrlimit(2), RLIMIT_FSIZE) fails the write with EFBIG; the SIGXFSZ it raises is sent on
+/// to the command, as every signal the client takes is.
+#[cfg(unix)]
+#[test]
+fn a_file_not_written_whole_here_is_kept_by_no_exit() {
+    use std::os::unix::process::CommandExt as _;
+    let laptop = TempDir::new("cc-short");
+    let files = laptop.join("files");
+    std::fs::create_dir_all(&files).unwrap();
+    let d = daemon(&laptop);
+    let mut command = common::command();
+    command
+        .current_dir(&files)
+        .args(["--context", "gpu", "save", "-o", "short.tar", "image"])
+        .env("SHARDS_HOME", laptop.as_os_str())
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    // SAFETY: setrlimit(2), async-signal-safe, between fork and exec.
+    unsafe {
+        command.pre_exec(|| {
+            let limit = libc::rlimit {
+                rlim_cur: 4,
+                rlim_max: 4,
+            };
+            if libc::setrlimit(libc::RLIMIT_FSIZE, &limit) != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    let child = command.spawn().unwrap();
+    let Seen::Started(_, output, exit) = d.next() else {
+        panic!("no start");
+    };
+    output.send(b"an archive".to_vec()).unwrap();
+    drop(output);
+    exit.send(0).unwrap();
+    let (status, said) = ended(child);
+    assert_eq!(status, Some(1), "{said}");
+    assert!(said.starts_with("failed to save image: write "), "{said}");
+    assert!(said.contains(".tmp-short.tar"), "{said}");
+    assert!(names(&files).is_empty(), "{:?}", names(&files));
+}
+
+/// A signal that ends the client before the machine answers, with nothing yet to send it
+/// to, leaves no file: the context names a port that never answers, and the client is
+/// signalled once its file is made.
+#[cfg(unix)]
+#[test]
+fn a_client_ended_before_its_machine_answers_leaves_no_file() {
+    let laptop = TempDir::new("cc-unans");
+    let files = laptop.join("files");
+    std::fs::create_dir_all(&files).unwrap();
+    Identity::load_or_create(&laptop.join("identity")).unwrap();
+    // Held, never read: the client's handshake goes unanswered.
+    let silent = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+    std::fs::create_dir_all(laptop.join("contexts")).unwrap();
+    std::fs::write(
+        laptop.join("contexts/gpu"),
+        format!(
+            "shards context 1\nname gpu\naddress {}\ndaemon {}\ndescription \n",
+            silent.local_addr().unwrap(),
+            "ab".repeat(32)
+        ),
+    )
+    .unwrap();
+    let child = saving(&laptop, &files, "unanswered.tar");
+    let start = std::time::Instant::now();
+    while !names(&files).iter().any(|n| n.starts_with(".tmp-unanswered.tar")) {
+        assert!(start.elapsed() < TIMEOUT, "no file made");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    // Well into its handshake, which gives up after 10 s.
+    std::thread::sleep(Duration::from_millis(500));
+    // SAFETY: kill(2) of our own child, which is only reaped below.
+    unsafe { libc::kill(child.id() as libc::pid_t, libc::SIGTERM) };
+    let (status, said) = ended(child);
+    assert_eq!(status, Some(143), "{said}");
+    assert!(names(&files).is_empty(), "{:?}", names(&files));
+}
+
+/// `load -i FILE` and `import FILE` read the client's file, as Docker's CLI reads its own:
+/// the command there reads its stdin, which is the file, and a file not here is refused
+/// here, nothing sent.
+#[test]
+fn a_file_the_command_reads_is_the_clients() {
+    let laptop = TempDir::new("cc-load");
+    let files = laptop.join("files");
+    std::fs::create_dir_all(&files).unwrap();
+    std::fs::write(files.join("in.tar"), b"an archive here").unwrap();
+    let d = daemon(&laptop);
+    let run = |words: &[&str]| {
+        common::command()
+            .current_dir(&files)
+            .args(["--context", "gpu"])
+            .args(words)
+            .env("SHARDS_HOME", laptop.as_os_str())
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap()
+    };
+    for (given, sent) in [
+        (&["load", "-qi", "in.tar"][..], &["load", "-q"][..]),
+        (&["import", "in.tar", "app:1"][..], &["import", "-", "app:1"][..]),
+    ] {
+        let child = run(given);
+        let Seen::Started(request, output, exit) = d.next() else {
+            panic!("no start");
+        };
+        assert_eq!(args(&request), sent);
+        d.stdin(b"an archive here");
+        drop(output);
+        exit.send(0).unwrap();
+        let (status, said) = ended(child);
+        assert_eq!(status, Some(0), "{said}");
+    }
+    let (status, said) = ended(run(&["load", "-i", "missing.tar"]));
+    assert_eq!(status, Some(1), "{said}");
+    assert!(said.starts_with("open missing.tar: "), "{said}");
+    assert!(d.seen.try_recv().is_err(), "nothing sent");
+}
+
 /// On Windows, a client on a console sends its terminal as a terminal's: the console its
 /// stdin, stdout and stderr, and its size; raw while the command runs, keys reach it as they
 /// were typed, ^C a key like any, and a resize of the console sizes the command's terminal.
