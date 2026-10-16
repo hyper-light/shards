@@ -54,8 +54,13 @@ impl Host for Machine {
         if crate::context::lapsed(created) || !invite::verify(&invitation.secret, exported, proof) {
             return Err(refused());
         }
-        if self.enrolled(spki).is_some() {
-            return Err(refused());
+        // A client this machine enrolled already, whose context was made again: the
+        // invitation is redeemed, that no other key takes it, and the client joins as it was
+        // enrolled, under the name it has, its key's one.
+        if let Some(enrolled) = self.enrolled(spki) {
+            crate::context::redeem(&self.home, name).map_err(|_| refused())?;
+            super::log(format!("client {enrolled} joined again, by invitation {name}"));
+            return Ok(());
         }
         // Redeemed first: of two joins at once, one enrolls.
         crate::context::redeem(&self.home, name).map_err(|_| refused())?;
@@ -88,6 +93,9 @@ impl Host for Machine {
             let shown: Vec<&str> = args.iter().skip(1).map(String::as_str).collect();
             super::log(format!("client {client}: copy step {}", shown.join(" ")));
             return self.copy_step(args);
+        }
+        if args.first().map(String::as_str) == Some(crate::context::ENGINE_STEP) {
+            return self.engine_step();
         }
         if args.first().map(String::as_str) == Some(crate::synced::SYNC_STEP) {
             let shown: Vec<String> = args.iter().skip(1).map(|a| a.replace('\0', "")).collect();
@@ -200,6 +208,30 @@ impl Host for Machine {
 }
 
 impl Machine {
+    /// A connection to this machine's Engine API (D170), a client's Docker tools' through its
+    /// context (D180 part 4): what the stream brings, to the API's socket, and the API's
+    /// answers back, as a client of it on this machine; the stream's end of input the
+    /// connection's, so that a client's half-close (an attach's end of stdin) reaches it.
+    fn engine_step(&self) -> Result<Running, Error> {
+        let reached = |e: std::io::Error| Error::new(format!("this machine's Engine API: {e}"));
+        let conn = std::os::unix::net::UnixStream::connect(super::engine::SOCKET).map_err(reached)?;
+        let (asking, hung) = (
+            conn.try_clone().map_err(reached)?,
+            conn.try_clone().map_err(reached)?,
+        );
+        Ok(Running {
+            stdin: Box::new(HalfClosed(asking)),
+            stdout: Box::new(conn),
+            stderr: Box::new(std::io::empty()),
+            wait: Box::new(|| 0),
+            hangup: Box::new(move || {
+                let _ = hung.shutdown(std::net::Shutdown::Both);
+            }),
+            resize: None,
+            signal: Box::new(|_| {}),
+        })
+    }
+
     /// A client's command's environment: this machine's own shards, whatever context its
     /// owner's commands use, of the daemon's environment only what shards is set by
     /// ([`kept`]), and the client's own, which its request carries.
@@ -347,6 +379,25 @@ impl Machine {
             resize: None,
             signal: Box::new(|_| {}),
         })
+    }
+}
+
+/// A connection's writing half, closed as it drops: what its reader then reads is the end.
+struct HalfClosed(std::os::unix::net::UnixStream);
+
+impl Write for HalfClosed {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.0.write(bytes)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.0.flush()
+    }
+}
+
+impl Drop for HalfClosed {
+    fn drop(&mut self) {
+        let _ = self.0.shutdown(std::net::Shutdown::Write);
     }
 }
 

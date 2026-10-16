@@ -3634,7 +3634,7 @@ No run-time labels, relays or declassifiers (§12 answer 14, decided by the user
 an internal-only domain to the world (D58), so there is no data to label. Code mode is
 D136.
 
-### D180. Contexts: shards on another machine, over QUIC (parts 1, 2 and 3a to 3c built)
+### D180. Contexts: shards on another machine, over QUIC (parts 1 to 4 built)
 
 **The microVM need.** A user's microVMs run where the work needs them: a Mac for
 development, a Linux machine with a GPU (`--gpus`) or KVM, an x86_64 machine that builds and
@@ -3710,7 +3710,8 @@ local administration is (../focal docs/cluster-admin.md).
    `import`, `export` (the archives, part 3a, built; `cp`, part 3b, built; builds, part
    3c, built).
 4. Docker's CLI through a context: a socket file in the home for each context, which the
-   local daemon relays to the machine's Engine API.
+   local daemon relays to the machine's Engine API (built; `docker context`'s words held to
+   the docker-cli oracle, not yet).
 5. Measured against Docker's `ssh://` and `tcp://` contexts, on the GPU desktop: a run's
    start, a stream's bytes, and a network change.
 
@@ -4092,6 +4093,48 @@ untouched), and unit tests of the plan and of a copy's key. Mutation-checked: th
 applied, everything sent each time, the ignore file not applied here, what went not
 removed, a change's directories not set again, the build file not the copy's, a base's
 login not sent, a build arg named alone the machine's.
+
+**Part 4, built: Docker's tools through a context.** What speaks Docker's API (its CLI,
+Compose, the SDKs, Testcontainers) reaches the machine's microVMs as it reaches another
+machine's dockerd:
+- **An engine socket for each context.** The client's daemon, while it runs, serves the
+  engine of each context its home joined at a socket of its own (`e/KEY.sock` in the home,
+  KEY the first six bytes of the name's SHA-256, as Docker's context store names a context's
+  directory by its name's digest, so that the path fits a socket's address whatever the
+  name: 71 bytes in a macOS home of a nine-letter user, of sun_path's 104). `shards inspect
+  context NAME` names it (`Engine`), for `DOCKER_HOST`. A context joined while the daemon
+  runs is served as its joining wakes the daemon (a connection that asks nothing); its
+  removal takes the socket.
+- **A QUIC stream each connection.** Each connection there is relayed whole to the
+  machine's Engine API (D170): its bytes as a command's stdin, the API's as its stdout, the
+  end of each side's writing the other's end of reading, so that an attach's half-close
+  (`docker run -i`'s end of stdin) reaches the command, and a hijacked stream's end reaches
+  the client. The machine's daemon takes such a stream as a connection of its own user's to
+  its own `engine.sock`; the client's daemon relays only its own user's connections, by
+  their peer's credentials, as its own Engine API serves only them.
+- **A context made again joins again.** A machine refused a join by a key it had enrolled,
+  saying the invitation was not one it held, so a client that removed its context could not
+  make it again, the record's address and key being the invitation's to give. A key
+  enrolled already that brings a valid invitation now joins as it was enrolled, under the
+  name it has; the invitation is redeemed, so that no other key takes it, and no second name
+  is made.
+- **What crosses of the client's is what Docker's CLI sends:** its own registry logins with
+  each request (`X-Registry-Auth`), a build's context in its request's body; the paths a
+  request names are the machine's, as a remote dockerd's are.
+
+Where Docker's `ssh://` context starts `docker system dial-stdio` through a shell account
+for each connection, this needs neither; how they compare is part 5's to measure. Not yet:
+each relayed connection opens a QUIC connection of its own, a handshake each, where one
+connection kept for the context, a stream each, would not (part 5 measures both); a Windows
+client, with no daemon of shards' to relay, has no engine socket (Docker's `npipe://`).
+Tested in `tests/context.rs` (`a_contexts_engine_is_its_machines`): `_ping` through the
+socket; a microVM made through the context, listed there and not by the client's own engine;
+Docker's CLI where the host has one, its `ps`, a `run`, whose attach takes the connection
+over, and a `run -i` of `cat`, its stdin to its end; a client that reads its answer to the
+end; the context's removal taking its socket; and the context made again while the daemon
+runs, served with no other command, one client of its key, the invitation redeemed.
+Mutation-checked: the engine's stream run as a command, a removed context's socket kept,
+either end's half-close not passed on, no context's engine served.
 
 ### D179. Other CPUs' images, emulated in their microVM (parts 1 to 3 built)
 

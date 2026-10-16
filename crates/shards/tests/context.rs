@@ -567,6 +567,211 @@ fn a_build_through_a_context_is_of_the_clients_context_kept_in_step() {
     assert!(!machine.join("synced/laptop").exists(), "its copies kept");
 }
 
+/// What a client of Docker's API reads of `path` on the engine socket `socket`, on a
+/// connection of its own: the answer's status, and its body, a length's or a chunked one's.
+fn engine_get(socket: &Path, path: &str) -> (u16, String) {
+    use std::io::{BufRead as _, Write as _};
+    let mut conn = std::os::unix::net::UnixStream::connect(socket).unwrap();
+    conn.set_read_timeout(Some(TIMEOUT)).unwrap();
+    write!(conn, "GET {path} HTTP/1.1\r\nHost: api\r\n\r\n").unwrap();
+    let mut reader = std::io::BufReader::new(conn);
+    let mut line = String::new();
+    reader.read_line(&mut line).unwrap();
+    let status = line.split(' ').nth(1).and_then(|s| s.parse().ok()).unwrap_or(0);
+    let mut fields = Vec::new();
+    loop {
+        let mut line = String::new();
+        reader.read_line(&mut line).unwrap();
+        let line = line.trim_end().to_string();
+        if line.is_empty() {
+            break;
+        }
+        fields.push(line.to_ascii_lowercase());
+    }
+    let mut body = Vec::new();
+    if fields.iter().any(|f| f == "transfer-encoding: chunked") {
+        loop {
+            let mut size = String::new();
+            reader.read_line(&mut size).unwrap();
+            let n = usize::from_str_radix(size.trim(), 16).unwrap();
+            let mut chunk = vec![0u8; n + 2];
+            reader.read_exact(&mut chunk).unwrap();
+            if n == 0 {
+                break;
+            }
+            body.extend_from_slice(&chunk[..n]);
+        }
+    } else if let Some(n) = fields.iter().find_map(|f| f.strip_prefix("content-length: ")) {
+        body = vec![0u8; n.trim().parse().unwrap()];
+        reader.read_exact(&mut body).unwrap();
+    }
+    (status, String::from_utf8_lossy(&body).into_owned())
+}
+
+/// Docker's tools through a context (D180 part 4): the client's daemon serves the context's
+/// engine at the socket `inspect context` names, and what is asked there is the machine's
+/// Engine API's: a microVM made there through the context is listed there, and not by the
+/// client's own engine; and the context's removal takes its socket with it.
+#[test]
+fn a_contexts_engine_is_its_machines() {
+    let Some((machine, _listening, laptop, image)) = joined("ce") else {
+        return;
+    };
+    let on_laptop = [("SHARDS_HOME", laptop.as_os_str())];
+    let started = run_shards_env(&["daemon"], &["--detached"], &on_laptop, TIMEOUT);
+    assert_eq!(started.status, Some(0), "{started}");
+    let _laptops = Listening(laptop.to_path_buf());
+    let inspected = run_shards_env(&["inspect", "context"], &["gpu"], &on_laptop, TIMEOUT);
+    assert_eq!(inspected.status, Some(0), "{inspected}");
+    let doc: serde_json::Value = serde_json::from_str(&inspected.stdout).unwrap();
+    let engine = PathBuf::from(
+        doc[0]["Engine"]
+            .as_str()
+            .and_then(|e| e.strip_prefix("unix://"))
+            .unwrap_or_else(|| panic!("{doc}")),
+    );
+    // Served as the daemon starts, for the contexts its home joined.
+    let served = |engine: &Path| {
+        let start = std::time::Instant::now();
+        while !engine.exists() {
+            assert!(start.elapsed() < TIMEOUT, "{} never served", engine.display());
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    };
+    served(&engine);
+    assert_eq!(engine_get(&engine, "/_ping"), (200, "OK".into()));
+    // A client that reads to the end, as one asking to close does: the API's end of its
+    // answer is the client's end of reading, through the relay.
+    {
+        use std::io::{Read as _, Write as _};
+        let mut conn = std::os::unix::net::UnixStream::connect(&engine).unwrap();
+        conn.set_read_timeout(Some(TIMEOUT)).unwrap();
+        conn.write_all(b"GET /_ping HTTP/1.1\r\nHost: api\r\nConnection: close\r\n\r\n")
+            .unwrap();
+        let mut answer = String::new();
+        conn.read_to_string(&mut answer).unwrap();
+        assert!(
+            answer.starts_with("HTTP/1.1 200 OK\r\n") && answer.ends_with("OK"),
+            "{answer:?}"
+        );
+    }
+    let made = run_shards_env(
+        &["--context", "gpu", "create"],
+        &["--name", "relayed", image.as_str()],
+        &on_laptop,
+        TIMEOUT,
+    );
+    assert_eq!(made.status, Some(0), "{made}");
+    let (status, there) = engine_get(&engine, "/containers/json?all=1");
+    assert_eq!(status, 200, "{there}");
+    assert!(there.contains("\"/relayed\""), "{there}");
+    let (status, here) = engine_get(&laptop.join("engine.sock"), "/containers/json?all=1");
+    assert_eq!(status, 200, "{here}");
+    assert!(!here.contains("relayed"), "{here}");
+    // Docker's own CLI, where this host has one: its listing, and a run, whose attach takes
+    // the connection over for the microVM's streams. Its config its own, no credential
+    // helper on its PATH.
+    let docker = std::env::var_os("PATH")
+        .into_iter()
+        .flat_map(|p| std::env::split_paths(&p).collect::<Vec<_>>())
+        .map(|d| d.join("docker"))
+        .find(|p| p.is_file());
+    match docker {
+        Some(docker) => {
+            let docker_path = docker.clone();
+            let (config, no_helpers) = (laptop.join("docker-config"), laptop.join("no-helpers"));
+            std::fs::create_dir_all(&config).unwrap();
+            std::fs::create_dir_all(&no_helpers).unwrap();
+            let host = format!("unix://{}", engine.display());
+            let docker = |args: &[&str]| {
+                let out = common::output_within(
+                    std::process::Command::new(&docker)
+                        .args(args)
+                        .env("DOCKER_HOST", &host)
+                        .env("DOCKER_CONFIG", &config)
+                        .env("PATH", &no_helpers)
+                        .env_remove("DOCKER_CONTEXT")
+                        .env("DOCKER_CLI_HINTS", "false")
+                        .stdin(Stdio::null()),
+                    TIMEOUT,
+                );
+                (
+                    out.status.code(),
+                    String::from_utf8_lossy(&out.stdout).into_owned(),
+                    String::from_utf8_lossy(&out.stderr).into_owned(),
+                )
+            };
+            let (status, out, err) = docker(&["ps", "-a", "--format", "{{.Names}}"]);
+            assert_eq!(status, Some(0), "{err}");
+            assert!(out.lines().any(|l| l == "relayed"), "{out}");
+            let (status, out, err) = docker(&["run", "--rm", image.as_str(), "fs", "print:/etc/hostname"]);
+            assert_eq!(status, Some(0), "{err}");
+            assert!(!out.trim().is_empty(), "{out}");
+            // Its stdin, to its end: the end crosses as the attach's half-close.
+            let input = laptop.join("input");
+            std::fs::write(&input, "relayed through\n").unwrap();
+            let catted = common::output_within(
+                std::process::Command::new(&docker_path)
+                    .args(["run", "-i", "--rm", image.as_str(), "cat"])
+                    .env("DOCKER_HOST", &host)
+                    .env("DOCKER_CONFIG", &config)
+                    .env("PATH", &no_helpers)
+                    .env_remove("DOCKER_CONTEXT")
+                    .env("DOCKER_CLI_HINTS", "false")
+                    .stdin(std::fs::File::open(&input).unwrap()),
+                TIMEOUT,
+            );
+            assert_eq!(
+                (
+                    catted.status.code(),
+                    String::from_utf8_lossy(&catted.stdout).into_owned()
+                ),
+                (Some(0), "relayed through\n".to_string()),
+                "{}",
+                String::from_utf8_lossy(&catted.stderr)
+            );
+        }
+        None => eprintln!("no docker CLI on this host: its part not run"),
+    }
+    let removed = run_shards_env(&["remove", "context"], &["gpu"], &on_laptop, TIMEOUT);
+    assert_eq!(removed.status, Some(0), "{removed}");
+    assert!(!engine.exists(), "its engine's socket kept");
+    // Joined while the daemon runs: served as its joining wakes the daemon, no other
+    // command asked of it.
+    let invite = machine.join("again.invite");
+    let invited = run_shards_env(
+        &["invite", "client"],
+        &["--name", "again", "--output", invite.to_str().unwrap()],
+        &[("SHARDS_HOME", machine.as_os_str())],
+        TIMEOUT,
+    );
+    assert_eq!(invited.status, Some(0), "{invited}");
+    let rejoined = run_shards_env(
+        &["create", "context"],
+        &["gpu", "--invite-file", invite.to_str().unwrap()],
+        &on_laptop,
+        TIMEOUT,
+    );
+    assert_eq!(rejoined.status, Some(0), "{rejoined}");
+    served(&engine);
+    assert_eq!(engine_get(&engine, "/_ping"), (200, "OK".into()));
+    // Joined again as it was enrolled: one client of its key, the invitation redeemed.
+    let clients = run_shards_env(
+        &["list", "clients"],
+        &[] as &[&str],
+        &[("SHARDS_HOME", machine.as_os_str())],
+        TIMEOUT,
+    );
+    let named: Vec<&str> = clients
+        .stdout
+        .lines()
+        .skip(1)
+        .filter_map(|l| l.split_whitespace().next())
+        .collect();
+    assert_eq!(named, ["laptop"], "{clients}");
+    assert!(!machine.join("invitations/again").exists(), "the invitation kept");
+}
+
 /// A copy through a context is the client's, as Docker's CLI copies its own files (D180
 /// part 3b): driven here, as this machine's CLI drives one (cli/cp.rs), each step asked of
 /// the machine's daemon. A directory here goes into a microVM there and comes back as it was,

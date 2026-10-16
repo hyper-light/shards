@@ -21,6 +21,27 @@ use shards_remote::invite::{self, Invitation};
 /// before its command runs.
 const NOT_RUN: u8 = 125;
 
+/// What names a connection to the machine's Engine API (D180 part 4) to its daemon: no
+/// command line's word, as no command line can hold NUL.
+#[cfg(unix)]
+pub(crate) const ENGINE_STEP: &str = "\u{0}engine";
+
+/// Where this home's daemon serves context `name`'s engine, relative to the home: in `e`, by
+/// its name hashed, as Docker's context store names a context's directory (docker/cli
+/// context/store, `contextdirOf`), so that the path of any name fits a socket's address
+/// (sun_path, 104 bytes on macOS): 71 in a macOS home of a user of nine letters.
+pub(crate) fn engine_socket(name: &str) -> PathBuf {
+    use sha2::Digest as _;
+    let digest = sha2::Sha256::digest(name.as_bytes());
+    let short: String = digest.iter().take(6).map(|b| format!("{b:02x}")).collect();
+    Path::new("e").join(format!("{short}.sock"))
+}
+
+/// Context `name`'s engine as `DOCKER_HOST` names one.
+fn engine_endpoint(home: &Path, name: &str) -> String {
+    format!("unix://{}", home.join(engine_socket(name)).display())
+}
+
 /// The variable a daemon sets for a client's command on a terminal of its own: the command
 /// takes the terminal as its session's controlling terminal, first thing, as a login's
 /// command has its own (D180), which no action of posix_spawn(3) makes on every system.
@@ -409,7 +430,7 @@ pub(crate) fn load(home: &Path, name: &str) -> Result<Option<Context>, String> {
 }
 
 /// Every context this home joined, by name.
-fn list(home: &Path) -> Result<Vec<Context>, String> {
+pub(crate) fn list(home: &Path) -> Result<Vec<Context>, String> {
     let dir = home.join("contexts");
     let entries = match fs::read_dir(&dir) {
         Ok(entries) => entries,
@@ -1858,6 +1879,10 @@ fn create(home: &Path, name: &str, rest: &[&str]) -> Result<(), String> {
         daemon: invitation.daemon,
     };
     write_new(&dir(home, "contexts")?.join(name), context.text().as_bytes())?;
+    // This home's daemon, where it runs, serves the context's engine as it is woken: a
+    // connection that asks nothing wakes it (D180 part 4).
+    #[cfg(unix)]
+    let _ = std::os::unix::net::UnixStream::connect(home.join(shards_ipc::SOCKET));
     let _ = writeln!(io::stdout(), "{name}");
     let _ = writeln!(io::stderr(), "Successfully created context {name:?}");
     Ok(())
@@ -1910,6 +1935,8 @@ fn inspect(home: &Path, names: &[&str]) -> Result<(), String> {
             "Description": c.description,
             "Endpoint": format!("quic://{}", c.address),
             "Daemon": identity::hex(&c.daemon),
+            // Where Docker's tools reach its machine's engine, while this home's daemon runs.
+            "Engine": engine_endpoint(home, &c.name),
         }));
     }
     let text = serde_json::to_string_pretty(&docs).map_err(|e| e.to_string())?;
@@ -1927,6 +1954,12 @@ fn remove(home: &Path, names: &[&str]) -> Result<(), String> {
         if current(home) == *name {
             let _ = fs::remove_file(home.join("context"));
         }
+        // Its engine's socket goes with it: the daemon that serves it, woken by a connection,
+        // finds the context gone and lets go of it.
+        let engine = home.join(engine_socket(name));
+        #[cfg(unix)]
+        let _ = std::os::unix::net::UnixStream::connect(&engine);
+        let _ = fs::remove_file(&engine);
         let _ = writeln!(io::stdout(), "{name}");
     }
     Ok(())
