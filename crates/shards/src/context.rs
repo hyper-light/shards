@@ -575,10 +575,6 @@ fn not_carried(args: &[OsString]) -> Option<String> {
     let said = shards_cmdline::grammar::rewrite(&words).unwrap_or_else(|| words.clone());
     let refs: Vec<&str> = said.iter().map(String::as_str).collect();
     let first = refs.first().copied().unwrap_or_default();
-    let named = refs.get(..2).and_then(|w| match w {
-        ["agent" | "harness" | "mcp", "build"] => Some("build"),
-        _ => None,
-    });
     // `cp` is driven here, step by step, where this client's CLI drives one (cli/cp.rs, Unix);
     // a build's context is kept in step on the machine ([`building`]), what else a build
     // names of this client's refused until it is carried ([`build_not_carried`]).
@@ -597,20 +593,11 @@ fn not_carried(args: &[OsString]) -> Option<String> {
         }
         return None;
     }
-    let refused = |w: &str| matches!(w, "buildx" | "builder" | "compose") || (w == "cp" && !cfg!(unix));
-    if let Some(named) = named.or_else(|| refused(first).then_some(first)) {
+    let refused = matches!(first, "buildx" | "builder" | "compose") || (first == "cp" && !cfg!(unix));
+    if refused {
         return Some(format!(
-            "{named} over a context sends this machine's files, which shards does not carry yet: run it on the machine itself"
+            "{first} over a context sends this machine's files, which shards does not carry yet: run it on the machine itself"
         ));
-    }
-    // A signature is made with this machine's key, or its owner's identity (agent.rs, sign).
-    if refs
-        .get(..2)
-        .is_some_and(|w| matches!(w, ["agent" | "harness" | "mcp", "sign"]))
-    {
-        return Some(
-            "sign over a context signs with this machine's key or identity, which shards does not carry yet: run it on the machine itself".into(),
-        );
     }
     // `run` is the CLI's own to read (request.rs), as Docker's flags are its.
     let (command, path, n) = match refs.as_slice() {
@@ -701,6 +688,8 @@ struct Built {
     key: String,
     /// The registries its bases are in, whose logins go with it.
     domains: std::collections::BTreeSet<String>,
+    /// Its build file's directory here, which the machine's copy of it is said as.
+    dockerfile_dir: Option<PathBuf>,
 }
 
 /// A file's permissions and time, for its copy there; a file not there none of its own.
@@ -872,7 +861,156 @@ fn building(words: &[String], stdin: &dyn Fn() -> Result<Vec<u8>, String>) -> Re
         carried,
         key,
         domains,
+        dockerfile_dir: dir,
     }))
+}
+
+/// An artifact's build of a directory here (`build agent DIR`, and a harness's or an MCP
+/// server's): the machine's of its copy of the directory, kept in step as a build's context
+/// is, all of it, as the artifact takes all it holds. A command the build refuses is its own
+/// to say so, there.
+fn artifact_building(words: &[String]) -> Option<Built> {
+    let said = shards_cmdline::grammar::rewrite(words).unwrap_or_else(|| words.to_vec());
+    let [kind_word, action, rest @ ..] = said.as_slice() else {
+        return None;
+    };
+    let kind = crate::agent::kind_of(kind_word).filter(|_| action == "build")?;
+    let args = crate::agent::build_args(kind, rest).ok()?;
+    let dir = std::path::absolute(&args.dir).ok().filter(|d| d.is_dir())?;
+    let mut rest = rest.to_vec();
+    if let Some(word) = rest.get_mut(args.dir_at) {
+        *word = crate::synced::CONTEXT.to_string();
+    }
+    let words = [kind_word.clone(), action.clone()]
+        .into_iter()
+        .chain(rest)
+        .collect();
+    // A copy of its own, apart from an image build's of the same directory, whose copy
+    // holds what that build's ignore file leaves.
+    let key = {
+        use sha2::Digest as _;
+        let mut named = format!("{kind_word}\0").into_bytes();
+        named.extend_from_slice(dir.as_os_str().as_encoded_bytes());
+        let digest = sha2::Sha256::digest(&named);
+        digest.iter().map(|b| format!("{b:02x}")).collect()
+    };
+    // The SBOM's scanner, which the machine pulls with this client's login, as a base.
+    let domains = args
+        .sbom
+        .iter()
+        .filter_map(|sbom| {
+            let fields = shards_cmdline::go::csv_fields(sbom.as_bytes()).ok()?;
+            let generator = fields
+                .iter()
+                .find_map(|f| {
+                    String::from_utf8_lossy(f)
+                        .strip_prefix("generator=")
+                        .map(str::to_string)
+                })
+                .unwrap_or_else(|| crate::build::sbom::DEFAULT_GENERATOR.to_string());
+            shards_image::reference::Reference::parse(&generator)
+                .ok()
+                .map(|r| r.domain)
+        })
+        .collect();
+    Some(Built {
+        words,
+        context: dir,
+        filters: shards_build::context::Filters::default(),
+        carried: Vec::new(),
+        key,
+        domains,
+        dockerfile_dir: None,
+    })
+}
+
+/// An artifact's signature through a context (`sign agent NAME`): what it is of asked of
+/// the machine, whose store holds it; signed here, by this client's key or identity; and
+/// kept there as its referrer, once the machine finds that it signs what the name names
+/// still. `None` where the command is no artifact's signature, or asks for its help, which
+/// the machine says.
+fn artifact_sign_there(identity: &Identity, context: &Context, words: &[String]) -> Option<ExitCode> {
+    let said = shards_cmdline::grammar::rewrite(words).unwrap_or_else(|| words.to_vec());
+    let [kind_word, action, rest @ ..] = said.as_slice() else {
+        return None;
+    };
+    let kind = crate::agent::kind_of(kind_word).filter(|_| action == "sign")?;
+    if rest.iter().any(|a| a == "-h" || a == "--help") {
+        return None;
+    }
+    let fail = |e: String| {
+        let _ = writeln!(io::stderr(), "ERROR: {e}");
+        Some(ExitCode::FAILURE)
+    };
+    let args = match crate::agent::sign_args(kind, rest) {
+        Ok(args) => args,
+        Err(e) => return fail(e),
+    };
+    let name = args.name.to_string();
+    let step = crate::agent::SIGN_STEP;
+    let subject = match asked_there(identity, context, &[step, "subject", kind_word, &name], &[]) {
+        Ok(said) => match serde_json::from_slice::<shards_image::oci::Descriptor>(&said) {
+            Ok(subject) => subject,
+            Err(e) => return fail(format!("{}: what {name} is: {e}", context.name)),
+        },
+        Err(code) => return Some(code),
+    };
+    let (bundle, who) = match crate::agent::signed(&subject, &args) {
+        Ok(signed) => signed,
+        Err(e) => return fail(e),
+    };
+    let keep = [
+        step,
+        "keep",
+        kind_word.as_str(),
+        name.as_str(),
+        subject.digest.as_str(),
+    ];
+    let referrer = match asked_there(identity, context, &keep, &bundle) {
+        Ok(said) => String::from_utf8_lossy(&said).trim().to_string(),
+        Err(code) => return Some(code),
+    };
+    let _ = writeln!(
+        io::stdout(),
+        "{name}: {} signed by {who}: signature {referrer}",
+        subject.digest
+    );
+    Some(ExitCode::SUCCESS)
+}
+
+/// What a step there says on its stdout, given `input`, its stderr said here as it comes:
+/// the status this client ends with where it fails, or the machine refuses it, said so.
+fn asked_there(
+    identity: &Identity,
+    context: &Context,
+    args: &[&str],
+    input: &[u8],
+) -> Result<Vec<u8>, ExitCode> {
+    let (out_tx, out_rx) = std::sync::mpsc::channel();
+    let request = Request {
+        args: args.iter().map(|a| a.as_bytes().to_vec()).collect(),
+        env: Vec::new(),
+        terminal: None,
+    };
+    let ran = client::exec(
+        identity,
+        context.remote(),
+        request,
+        Some(Box::new(io::Cursor::new(input.to_vec()))),
+        Taken(out_tx),
+        io::stderr(),
+        |_| {},
+    );
+    let refused = |why: String| {
+        let _ = writeln!(io::stderr(), "shards: {}: {why}", context.name);
+        ExitCode::from(NOT_RUN)
+    };
+    match ran {
+        Ok(Ok(0)) => Ok(out_rx.try_iter().flatten().collect()),
+        Ok(Ok(status)) => Err(ExitCode::from(u8::try_from(status).unwrap_or(1))),
+        Ok(Err(why)) => Err(refused(why)),
+        Err(e) => Err(refused(e.to_string())),
+    }
 }
 
 /// What a plan of a build file asks of its bases, recorded: each image answered empty.
@@ -1017,7 +1155,18 @@ fn build_there(
         Ok(walked) => walked,
         Err(e) => return fail(format!("{}: {e}", built.context.display())),
     };
-    let (changed, removed) = crate::synced::plan(&walked, &there);
+    let crate::synced::Plan {
+        changed,
+        removed,
+        linked,
+    } = crate::synced::plan(&walked, &there);
+    // This client's own paths, which what the build prints there says in place of its copy's.
+    let mut shown = built.context.as_os_str().as_encoded_bytes().to_vec();
+    shown.push(0);
+    if let Some(dir) = &built.dockerfile_dir {
+        shown.extend_from_slice(dir.as_os_str().as_encoded_bytes());
+    }
+    env.push((crate::synced::SHOWN_AS.to_string(), shown));
     let (reader, mut writer) = match io::pipe() {
         Ok(pipe) => pipe,
         Err(e) => return fail(format!("a pipe for the context: {e}")),
@@ -1027,7 +1176,7 @@ fn build_there(
         .name("context-send".into())
         .spawn(move || {
             crate::synced::send(&mut writer, &carried, |out| {
-                shards_archive::pack_changes(&root, &changed, &removed, out)
+                shards_archive::pack_changes(&root, &changed, &linked, &removed, out)
                     .map(drop)
                     .map_err(|e| e.to_string())
             })
@@ -1611,6 +1760,13 @@ pub(crate) fn forward(home: &Path, context: &Context, args: Vec<OsString>) -> Ex
         Ok(Some(built)) => return build_there(&identity, context, built, env),
         Ok(None) => {}
         Err(e) => return fail(e),
+    }
+    // An artifact made of a directory here, and signed by this client's key or identity.
+    if let Some(built) = artifact_building(&words_sent) {
+        return build_there(&identity, context, built, env);
+    }
+    if let Some(code) = artifact_sign_there(&identity, context, &words_sent) {
+        return code;
     }
     // A copy is driven here, as this machine's CLI drives one, each of its steps asked of the
     // machine's daemon: its files here are this client's. What steers a command steers no
@@ -2373,6 +2529,47 @@ mod tests {
 
     /// What a context carries, and what it refuses until it carries it.
     #[test]
+    fn an_artifacts_build_is_of_the_machines_copy_of_its_directory() {
+        let dir = shards_testdir::TempDir::new("ctx-artifact").unwrap();
+        let path = AsRef::<Path>::as_ref(&dir).to_str().unwrap().to_string();
+        let words = |s: &str| {
+            s.replace("DIR", &path)
+                .split(' ')
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        };
+        let built = artifact_building(&words("build agent DIR -t a --platform linux/amd64")).unwrap();
+        assert_eq!(
+            built.words,
+            [
+                "agent",
+                "build",
+                crate::synced::CONTEXT,
+                "-t",
+                "a",
+                "--platform",
+                "linux/amd64"
+            ]
+        );
+        assert!(built.carried.is_empty());
+        // A copy of its own: an image build of the same directory keeps another, of what
+        // that build's ignore file leaves; and an MCP server's another again.
+        let image = building(&words("build DIR"), &|| Ok(Vec::new()))
+            .unwrap()
+            .unwrap();
+        let mcp = artifact_building(&words("mcp build DIR -t m")).unwrap();
+        assert_ne!(built.key, image.key);
+        assert_ne!(built.key, mcp.key);
+        // Its SBOM's scanner's registry, whose login goes with it.
+        let scanned =
+            artifact_building(&words("build agent DIR -t a --sbom=generator=ghcr.io/me/scan:1")).unwrap();
+        assert_eq!(scanned.domains.into_iter().collect::<Vec<_>>(), ["ghcr.io"]);
+        // No directory here, no build of it there: the command says so itself.
+        assert!(artifact_building(&words("build agent DIR/none -t a")).is_none());
+        assert!(artifact_building(&words("agent ls")).is_none());
+    }
+
+    #[test]
     fn a_context_refuses_what_it_does_not_carry() {
         let args = |s: &str| s.split(' ').map(OsString::from).collect::<Vec<_>>();
         assert!(not_carried(&args("ps -a")).is_none());
@@ -2381,8 +2578,16 @@ mod tests {
         assert!(not_carried(&args("run -it alpine sh")).is_none());
         assert!(not_carried(&args("exec -it web sh")).is_none());
         assert!(not_carried(&args("attach web")).is_none());
-        for files in ["build agent dir -t a", "agent build dir -t a", "compose up"] {
-            assert!(not_carried(&args(files)).is_some(), "{files}");
+        assert!(not_carried(&args("compose up")).is_some());
+        // An artifact's directory is kept in step there ([`artifact_building`]), and its
+        // signature made here ([`artifact_sign_there`]).
+        for carried in [
+            "build agent dir -t a",
+            "agent build dir -t a",
+            "sign agent a",
+            "harness sign h --key k",
+        ] {
+            assert!(not_carried(&args(carried)).is_none(), "{carried}");
         }
         // A build's context is kept in step there ([`building`]); what else it names here,
         // not yet.
@@ -2419,8 +2624,6 @@ mod tests {
         for copy in ["cp web:/x .", "container cp web:/x .", "copy vm web:/x ."] {
             assert_eq!(not_carried(&args(copy)).is_none(), cfg!(unix), "{copy}");
         }
-        assert!(not_carried(&args("sign agent a")).is_some());
-        assert!(not_carried(&args("harness sign h --key k")).is_some());
         assert!(not_carried(&args("agent ls")).is_none());
         // A file a command writes or reads whole crosses as its output or input ([`here_files`]).
         for whole in [

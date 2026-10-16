@@ -32,7 +32,7 @@ fn config_file(kind: Kind) -> &'static str {
     }
 }
 
-fn kind_of(word: &str) -> Option<Kind> {
+pub(crate) fn kind_of(word: &str) -> Option<Kind> {
     match word {
         "agent" | "agents" => Some(Kind::Agent),
         "harness" | "harnesses" => Some(Kind::Harness),
@@ -126,29 +126,56 @@ fn reference(name: &str) -> Result<Reference, String> {
     Reference::parse(name).map_err(|e| format!("invalid reference {name:?}: {e}"))
 }
 
-/// `shards build agent DIR -t NAME`.
-fn build(kind: Kind, args: &[String]) -> Result<(), String> {
+/// What `shards build agent` is given: its directory, and which of its words that is, the
+/// name, the platforms and the SBOM's scanner.
+pub(crate) struct BuildArgs {
+    pub dir: PathBuf,
+    pub dir_at: usize,
+    pub name: Option<String>,
+    pub platforms: Vec<String>,
+    pub sbom: Option<String>,
+}
+
+/// `args` as `shards build agent` reads them, here and through a context alike.
+pub(crate) fn build_args(kind: Kind, args: &[String]) -> Result<BuildArgs, String> {
     let (mut dir, mut name, mut sbom) = (None, None, None);
     let mut platforms: Vec<String> = Vec::new();
-    let mut it = args.iter();
-    while let Some(a) = it.next() {
+    let mut it = args.iter().enumerate();
+    while let Some((at, a)) = it.next() {
         match a.as_str() {
-            "-t" | "--tag" => name = Some(it.next().ok_or("-t needs a name")?.clone()),
+            "-t" | "--tag" => name = Some(it.next().ok_or("-t needs a name")?.1.clone()),
             s if s.starts_with("--tag=") => name = Some(s.trim_start_matches("--tag=").to_string()),
-            "--platform" => platforms.push(it.next().ok_or("--platform needs platforms")?.clone()),
+            "--platform" => platforms.push(it.next().ok_or("--platform needs platforms")?.1.clone()),
             s if s.starts_with("--platform=") => {
                 platforms.push(s.trim_start_matches("--platform=").to_string())
             }
             "--sbom" => sbom = Some("true".to_string()),
             s if s.starts_with("--sbom=") => sbom = Some(s.trim_start_matches("--sbom=").to_string()),
             s if s.starts_with('-') => return Err(format!("unknown flag {s}\n{}", usage(kind))),
-            s if dir.is_none() => dir = Some(PathBuf::from(s)),
+            s if dir.is_none() => dir = Some((PathBuf::from(s), at)),
             s => return Err(format!("one directory only, not {s:?} too")),
         }
     }
-    let dir = dir.ok_or_else(|| usage(kind))?;
+    let (dir, dir_at) = dir.ok_or_else(|| usage(kind))?;
+    Ok(BuildArgs {
+        dir,
+        dir_at,
+        name,
+        platforms,
+        sbom: sbom.filter(|s| s != "false"),
+    })
+}
+
+/// `shards build agent DIR -t NAME`.
+fn build(kind: Kind, args: &[String]) -> Result<(), String> {
+    let BuildArgs {
+        dir,
+        name,
+        platforms,
+        sbom,
+        ..
+    } = build_args(kind, args)?;
     let name = reference(&name.ok_or("-t names what it is called")?)?;
-    let sbom = sbom.filter(|s| s != "false");
     let store = store()?;
     let _lease = store.lease().map_err(|e| e.to_string())?;
     if !platforms.is_empty() {
@@ -1258,7 +1285,16 @@ Options:
 /// Without `--key`, keylessly, as cosign signs without one (D126, crate::keyless): an
 /// identity token's certificate from Fulcio, the signature timestamped and logged as the
 /// signing config asks.
-fn sign(kind: Kind, args: &[String]) -> Result<(), String> {
+/// What `shards sign agent` is given: the name, and the cosign key's file, or how to sign
+/// keylessly.
+pub(crate) struct SignArgs {
+    pub name: Reference,
+    key: Option<String>,
+    keyless: crate::keyless::Options,
+}
+
+/// `args` as `shards sign agent` reads them, here and through a context alike.
+pub(crate) fn sign_args(kind: Kind, args: &[String]) -> Result<SignArgs, String> {
     let (mut name, mut key) = (None, None);
     let mut keyless = crate::keyless::Options::default();
     let mut it = args.iter();
@@ -1276,24 +1312,31 @@ fn sign(kind: Kind, args: &[String]) -> Result<(), String> {
     if key.is_some() && keyless.any() {
         return Err("--key signs with that key alone; --identity-token, --signing-config and the other flags of keyless signing are for signing without one".into());
     }
-    let store = store()?;
-    let _lease = store.lease().map_err(|e| e.to_string())?;
+    Ok(SignArgs { name, key, keyless })
+}
+
+/// What a signature of `name`, an artifact of `kind` in `store`, is of: its manifest, or the
+/// index its name resolves to, as cosign signs the digest a name resolves to.
+pub(crate) fn subject(store: &Store, kind: Kind, name: &Reference) -> Result<Descriptor, String> {
     let desc = store
         .tagged(&name.to_string())
         .map_err(|e| e.to_string())?
         .ok_or_else(|| format!("no {} {name} here", kind.word()))?;
-    let (_, found) = manifest_of(&store, &desc)?;
+    let (_, found) = manifest_of(store, &desc)?;
     if found != kind {
         return Err(format!("{name} is {}, not {}", a(found), a(kind)));
     }
-    let subject = subject_of(&store, &name, &desc)?;
+    subject_of(store, name, &desc)
+}
+
+/// The signature of `subject` that `args` ask for: by the cosign key in its file, its
+/// password COSIGN_PASSWORD's or asked, or keylessly, by the identity OIDC gives the signer.
+/// Its bundle, and who it says signed. Made where the signer is: through a context, the
+/// client's key, password and identity, never the machine's.
+pub(crate) fn signed(subject: &Descriptor, args: &SignArgs) -> Result<(Vec<u8>, String), String> {
     let payload = shards_sigstore::sign::statement(&subject.digest)?;
-    let Some(key) = key else {
-        let signed = crate::keyless::sign(&payload, &keyless)?;
-        let referrer = signature_of(&store, &signed.bundle, &subject)?;
-        store
-            .keep_referrer(&name.to_string(), &referrer)
-            .map_err(|e| e.to_string())?;
+    let Some(key) = &args.key else {
+        let signed = crate::keyless::sign(&payload, &args.keyless)?;
         let who = shards_sigstore::x509::Certificate::parse(&signed.certificate)
             .ok()
             .and_then(|c| shards_sigstore::summary::summarize(&c).ok())
@@ -1304,44 +1347,116 @@ fn sign(kind: Kind, args: &[String]) -> Result<(), String> {
             .iter()
             .map(|(url, e)| format!(", logged in {url} at {}", e.log_index))
             .collect();
-        let _ = writeln!(
-            io::stdout(),
-            "{name}: {} signed by {who}{}: signature {}",
-            subject.digest,
-            logged.concat(),
-            referrer.digest
-        );
-        return Ok(());
+        return Ok((signed.bundle, format!("{who}{}", logged.concat())));
     };
-    let pem = fs::read(&key).map_err(|e| format!("{key}: {e}"))?;
+    let pem = fs::read(key).map_err(|e| format!("{key}: {e}"))?;
     let mut password = password()?;
     let signer = shards_sigstore::cosignkey::load(&pem, &password);
     password.fill(0);
     let signer = signer.map_err(|e| format!("{key}: {e}"))?;
-    let referrer = signature(&store, &signer, &subject)?;
+    let bundle = shards_sigstore::sign::bundle(&signer, &payload)?;
+    Ok((bundle, format!("the key {}", signer.hint())))
+}
+
+/// Keeps `bundle` as a signature of `name`, an artifact of `kind` in `store`, whose name
+/// resolves to `digest` still, and whose statement the bundle's envelope holds: a bundle of
+/// anything else, or of what the name named before, is no signature of it. The referrer it
+/// is kept as.
+pub(crate) fn keep_signature(
+    store: &Store,
+    kind: Kind,
+    name: &Reference,
+    digest: &str,
+    bundle: &[u8],
+) -> Result<Descriptor, String> {
+    let subject = subject(store, kind, name)?;
+    if subject.digest != digest {
+        return Err(format!(
+            "{name} is {} now, not {digest}, which was signed",
+            subject.digest
+        ));
+    }
+    let statement = shards_sigstore::sign::statement(digest)?;
+    let holds = shards_sigstore::bundle::parse(bundle).is_ok_and(|b| {
+        matches!(
+            &b.content,
+            shards_sigstore::bundle::Content::Envelope { payload: Some(p), payload_type, .. }
+                if *p == statement && payload_type == shards_sigstore::image::ARTIFACT_IN_TOTO
+        )
+    });
+    if !holds {
+        return Err(format!("that signature is not of {name}'s {digest}"));
+    }
+    let referrer = signature_of(store, bundle, &subject)?;
     store
         .keep_referrer(&name.to_string(), &referrer)
         .map_err(|e| e.to_string())?;
+    Ok(referrer)
+}
+
+/// What marks a step of a signature made through a context (D180) to the machine's daemon:
+/// no command line's word, as no command line can hold NUL.
+pub(crate) const SIGN_STEP: &str = "\u{0}sign";
+
+/// The most of a bundle a client may send: a keyless one's certificates, its logs' entries
+/// and their proofs come to a few KiB.
+#[cfg(unix)]
+const BUNDLE_MOST: u64 = 1 << 20;
+
+/// A step of a signature made through a context, on the machine whose store holds the
+/// artifact: `subject KIND NAME` says what a signature of it is of, as its descriptor;
+/// `keep KIND NAME DIGEST` keeps the bundle `input` holds as one, and says the referrer's
+/// digest. Signing is the client's, between the two. The machine's half, which listens on
+/// Unix alone.
+#[cfg(unix)]
+pub(crate) fn sign_step(
+    home: &Path,
+    args: &[String],
+    input: &mut dyn io::Read,
+    output: &mut dyn Write,
+) -> Result<(), String> {
+    let word = |i: usize| args.get(i).map(String::as_str).unwrap_or_default();
+    let kind = kind_of(word(2)).ok_or_else(|| format!("{:?}: no kind of artifact", word(2)))?;
+    let name = reference(word(3))?;
+    let store = crate::pull::store(home)?;
+    let _lease = store.lease().map_err(|e| e.to_string())?;
+    match word(1) {
+        "subject" => {
+            let subject = subject(&store, kind, &name)?;
+            let said = serde_json::to_vec(&subject).map_err(|e| e.to_string())?;
+            output.write_all(&said).map_err(|e| e.to_string())
+        }
+        "keep" => {
+            let mut bundle = Vec::new();
+            input
+                .take(BUNDLE_MOST + 1)
+                .read_to_end(&mut bundle)
+                .map_err(|e| format!("reading the signature: {e}"))?;
+            if u64::try_from(bundle.len()).unwrap_or(u64::MAX) > BUNDLE_MOST {
+                return Err(format!("a signature past {BUNDLE_MOST} bytes"));
+            }
+            let referrer = keep_signature(&store, kind, &name, word(4), &bundle)?;
+            writeln!(output, "{}", referrer.digest).map_err(|e| e.to_string())
+        }
+        other => Err(format!("{other:?}: no such step of a signature")),
+    }
+}
+
+fn sign(kind: Kind, args: &[String]) -> Result<(), String> {
+    let args = sign_args(kind, args)?;
+    let store = store()?;
+    let _lease = store.lease().map_err(|e| e.to_string())?;
+    let subject = subject(&store, kind, &args.name)?;
+    let (bundle, who) = signed(&subject, &args)?;
+    let referrer = keep_signature(&store, kind, &args.name, &subject.digest, &bundle)?;
     let _ = writeln!(
         io::stdout(),
-        "{name}: {} signed by the key {}: signature {}",
+        "{}: {} signed by {who}: signature {}",
+        args.name,
         subject.digest,
-        signer.hint(),
         referrer.digest
     );
     Ok(())
-}
-
-/// The referrer a signature of `subject` by `signer` is, its blobs stored: cosign's
-/// bundle, the empty config, and the manifest cosign's WriteReferrer writes, made now.
-pub fn signature(
-    store: &Store,
-    signer: &shards_sigstore::sign::Signer,
-    subject: &Descriptor,
-) -> Result<Descriptor, String> {
-    let payload = shards_sigstore::sign::statement(&subject.digest)?;
-    let bundle = shards_sigstore::sign::bundle(signer, &payload)?;
-    signature_of(store, &bundle, subject)
 }
 
 /// The referrer `bundle`, a signature of `subject`, is: the bundle, the empty config and
@@ -1466,4 +1581,75 @@ pub fn diff_ids(store: &Store, kind: Kind, m: &oci::Manifest) -> Result<Vec<Dige
         out.push(Digest::parse(&format!("sha256:{hex}")).map_err(|e| e.to_string())?);
     }
     Ok(out)
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::indexing_slicing)]
+mod tests {
+    use super::*;
+
+    /// The PKCS #8 of a key cosign v3.1.3 made (crates/sigstore's oracle).
+    fn pkcs8() -> Vec<u8> {
+        let oracle: serde_json::Value =
+            serde_json::from_str(include_str!("../../sigstore/testdata/cosign/oracle.json")).unwrap();
+        let k = oracle["keys"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|k| k["name"] == "ecdsa p256 standard")
+            .unwrap();
+        let hex = k["pkcs8"].as_str().unwrap();
+        (0..hex.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(hex.get(i..i + 2).unwrap(), 16).unwrap())
+            .collect()
+    }
+
+    /// A signature is kept only of what its name names, and only one whose statement is
+    /// that: a bundle of another digest, or of what the name named before it moved, is
+    /// refused, as is what is no bundle; one of what it names now is kept.
+    #[test]
+    fn a_signature_is_kept_only_of_what_its_name_names() {
+        let home = shards_testdir::TempDir::new("agent-keep").unwrap();
+        let store = crate::pull::store(home.as_ref()).unwrap();
+        let dir = shards_testdir::TempDir::new("agent-keep-dir").unwrap();
+        let dir: &Path = dir.as_ref();
+        fs::write(dir.join("agent.json"), r#"{"name":"main","version":"1.0.0"}"#).unwrap();
+        fs::write(dir.join("run.sh"), "one").unwrap();
+        let name = reference("team/agent:1").unwrap();
+        let tagged = || {
+            let (desc, _) = make(Kind::Agent, dir, &store).unwrap();
+            let digest = desc.digest().unwrap();
+            store
+                .tag(
+                    &name.to_string(),
+                    &desc,
+                    &digest,
+                    &contents(&store, &desc).unwrap(),
+                )
+                .unwrap();
+            desc.digest
+        };
+        let signer = shards_sigstore::sign::Signer::from_pkcs8(&pkcs8()).unwrap();
+        let bundle_of = |digest: &str| {
+            shards_sigstore::sign::bundle(&signer, &shards_sigstore::sign::statement(digest).unwrap())
+                .unwrap()
+        };
+        let keep = |digest: &str, bundle: &[u8]| keep_signature(&store, Kind::Agent, &name, digest, bundle);
+        let first = tagged();
+        let other = format!("sha256:{}", "0".repeat(64));
+        let refused = keep(&first, &bundle_of(&other)).unwrap_err();
+        assert!(refused.contains("is not of"), "{refused}");
+        let refused = keep(&other, &bundle_of(&other)).unwrap_err();
+        assert!(refused.contains("which was signed"), "{refused}");
+        assert!(keep(&first, b"{}").is_err());
+        // Moved since: what it named is no longer what a signature of it is of.
+        fs::write(dir.join("run.sh"), "two").unwrap();
+        let second = tagged();
+        assert_ne!(first, second);
+        let refused = keep(&first, &bundle_of(&first)).unwrap_err();
+        assert!(refused.contains("which was signed"), "{refused}");
+        let kept = keep(&second, &bundle_of(&second)).unwrap();
+        assert_eq!(kept.media_type, oci::media::OCI_MANIFEST);
+    }
 }

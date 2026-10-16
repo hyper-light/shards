@@ -1381,3 +1381,142 @@ fn a_context_runs_commands_on_its_machine_whole() {
     let stopped = run_shards_env(&["daemon"], &["stop"], &on_machine, TIMEOUT);
     assert_eq!(stopped.status, Some(0), "{stopped}");
 }
+
+/// A key cosign v3.1.3 encrypted, its password, and its PKCS #8 (crates/sigstore's oracle).
+fn cosign_key() -> (String, String, Vec<u8>) {
+    let oracle: serde_json::Value =
+        serde_json::from_str(include_str!("../../sigstore/testdata/cosign/oracle.json")).unwrap();
+    let k = oracle["keys"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|k| k["name"] == "ecdsa p256 standard")
+        .unwrap();
+    let hex = k["pkcs8"].as_str().unwrap();
+    let pkcs8 = (0..hex.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(hex.get(i..i + 2).unwrap(), 16).unwrap())
+        .collect();
+    (
+        k["pem"].as_str().unwrap().to_string(),
+        k["password"].as_str().unwrap().to_string(),
+        pkcs8,
+    )
+}
+
+/// Shards' own artifacts through a context (D180): an agent made of a directory here is made
+/// there of the machine's copy of it, byte for byte the agent made here, a hard link and a
+/// symlink in it; made again after a change, only what changed goes, a new name of a file
+/// the copy holds as no bytes of its own; what the build says names this client's paths;
+/// and signed by this client's key, the signature kept there, which a push carries to a
+/// registry, of the agent, and verified by the key's public half.
+#[test]
+fn an_artifact_through_a_context_is_made_of_the_clients_files_and_signed_by_its_key() {
+    let Some((machine, _listening, laptop, _image)) = joined("ctx-art") else {
+        return;
+    };
+    let (port, repos) = common::writable_registry();
+    let name = format!("127.0.0.1:{port}/team/agent:1");
+    let dir = laptop.join("agent");
+    std::fs::create_dir_all(dir.join("bin")).unwrap();
+    std::fs::write(dir.join("agent.json"), r#"{"name":"main","version":"1.0.0"}"#).unwrap();
+    std::fs::write(dir.join("bin/run.sh"), "#!/bin/sh\necho agent\n").unwrap();
+    std::fs::write(dir.join("data"), vec![7u8; 64 << 10]).unwrap();
+    std::fs::hard_link(dir.join("data"), dir.join("data-too")).unwrap();
+    std::os::unix::fs::symlink("bin/run.sh", dir.join("run")).unwrap();
+    let (pem, password, pkcs8) = cosign_key();
+    let key = laptop.join("cosign.key");
+    std::fs::write(&key, &pem).unwrap();
+    let on_laptop = [
+        ("SHARDS_HOME", laptop.as_os_str()),
+        ("COSIGN_PASSWORD", std::ffi::OsStr::new(&password)),
+    ];
+    let here = |args: &[&str]| run_shards_env(&[], args, &on_laptop, TIMEOUT);
+    let there = |args: &[&str]| run_shards_env(&["--context", "gpu"], args, &on_laptop, TIMEOUT);
+    let made = |run: common::Run| {
+        assert_eq!(run.status, Some(0), "{run}");
+        run.stdout.trim().to_string()
+    };
+    let build = ["build", "agent", dir.to_str().unwrap(), "-t", name.as_str()];
+    let made_here = made(here(&build));
+    let made_there = made(there(&build));
+    assert_eq!(
+        made_there, made_here,
+        "the agent made there is not the one made here"
+    );
+    // Made again after a change: a file rewritten, and a new name of a file the copy holds.
+    std::fs::write(dir.join("bin/run.sh"), "#!/bin/sh\necho agent, again\n").unwrap();
+    std::fs::hard_link(dir.join("data"), dir.join("data-three")).unwrap();
+    let made_here = made(here(&build));
+    let made_there = made(there(&build));
+    assert_eq!(
+        made_there, made_here,
+        "made again, the agent there is not the one here"
+    );
+    let log = std::fs::read_to_string(machine.join("daemon.log")).unwrap();
+    let came: Vec<u64> = log
+        .lines()
+        .filter_map(|l| {
+            l.strip_suffix(" bytes of files came")?
+                .rsplit(' ')
+                .next()?
+                .parse()
+                .ok()
+        })
+        .collect();
+    assert_eq!(came.len(), 2, "{log}");
+    // Each file's bytes once: the config, the script and the data, whose second name goes
+    // as a link; then the script rewritten alone, the data's third name none of its own.
+    let script = "#!/bin/sh\necho agent, again\n".len() as u64;
+    assert_eq!(
+        came,
+        [33 + 21 + (64 << 10), script],
+        "the bytes of files that came"
+    );
+    // What the build says names this client's paths, not the machine's copy's.
+    std::fs::write(dir.join("agent.json"), "{").unwrap();
+    let refused = there(&build);
+    assert_eq!(refused.status, Some(1), "{refused}");
+    assert!(
+        refused
+            .stderr
+            .contains(&format!("{}: ", dir.join("agent.json").display())),
+        "{refused}"
+    );
+    assert!(!refused.stderr.contains("synced"), "{refused}");
+    std::fs::write(dir.join("agent.json"), r#"{"name":"main","version":"1.0.0"}"#).unwrap();
+    let made_there = made(there(&build));
+    // Signed by this client's key, kept there: pushed with the agent, of it.
+    let signed = there(&["sign", "agent", &name, "--key", key.to_str().unwrap()]);
+    assert_eq!(signed.status, Some(0), "{signed}");
+    assert!(
+        signed
+            .stdout
+            .contains(&format!("{made_there} signed by the key ")),
+        "{signed}"
+    );
+    let pushed = there(&["push", "agent", &name]);
+    assert_eq!(pushed.status, Some(0), "{pushed}");
+    let repos = repos.lock().unwrap();
+    let manifests = &repos.manifests["team/agent"];
+    let (_, list) = &manifests[&made_there.replacen(':', "-", 1)];
+    let list: serde_json::Value = serde_json::from_slice(list).unwrap();
+    let signature = list["manifests"][0]["digest"].as_str().unwrap();
+    let m: serde_json::Value = serde_json::from_slice(&manifests[signature].1).unwrap();
+    assert_eq!(m["subject"]["digest"], made_there.as_str());
+    let bundle = &repos.blobs["team/agent"][m["layers"][0]["digest"].as_str().unwrap()];
+    let bundle = shards_sigstore::bundle::parse(bundle).unwrap();
+    let shards_sigstore::bundle::SignatureContent::Envelope(envelope) = bundle.signature_content().unwrap()
+    else {
+        panic!("not an envelope");
+    };
+    let signer = shards_sigstore::sign::Signer::from_pkcs8(&pkcs8).unwrap();
+    let public = shards_sigstore::x509::parse_pkix_public_key(signer.public_key_der()).unwrap();
+    let verifier = shards_sigstore::signature::compat_verifier(&public, false, true).unwrap();
+    shards_sigstore::signature::verify_envelope(&verifier, &envelope).unwrap();
+    let statement = shards_sigstore::sign::statement(&made_there).unwrap();
+    assert!(matches!(
+        &bundle.content,
+        shards_sigstore::bundle::Content::Envelope { payload: Some(p), .. } if *p == statement
+    ));
+}

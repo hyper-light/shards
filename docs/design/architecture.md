@@ -3706,7 +3706,8 @@ local administration is (../focal docs/cluster-admin.md).
 2. Commands with a terminal: `-i`, `-t` (the remote command on a pseudo-terminal whose
    size follows the client's), attach, exec; and the signals a client receives (built; a
    Windows client's console, part 2b, built too).
-3. Builds (the context sent as BuildKit's session sends it), `cp`, `save`, `load`,
+3. Builds (the context sent as BuildKit's session sends it), shards' own artifacts' builds
+   and signatures (part 3d, built), `cp`, `save`, `load`,
    `import`, `export` (the archives, part 3a, built; `cp`, part 3b, built; builds, part
    3c, built).
 4. Docker's CLI through a context: a socket file in the home for each context, which the
@@ -3967,10 +3968,9 @@ so a context refused them. Now:
   then ends the client with status 128 and the signal's number, its file removed first, as
   docker/cli v29.8.1 ends on its first one (cmd/docker/docker.go, notifyContext and
   getExitCode); a resize meanwhile is sent once the command is asked for.
-- **What a context does not carry yet is refused, the artifacts' builds and signatures
-  among it.** `build agent DIR` (and `harness`'s, `mcp`'s) reached the machine's directory,
-  and `sign agent` signs with the machine's key or its owner's identity. Each is refused,
-  as `build` and `cp` are, until it is carried.
+- **Shards' own artifacts are carried (part 3d, below)**: `build agent DIR` (and a
+  harness's, an MCP server's) is the machine's build of its copy of the client's directory,
+  and `sign agent` signs with the client's key or identity.
 
 Tested in `tests/context.rs`, on a machine that runs microVMs: an image saved here from
 there, removed there and loaded from here; a microVM's files exported here and imported
@@ -4076,8 +4076,9 @@ What a build names of the client's otherwise is refused until it is carried: `--
 `--ssh`, an output, cache or named context of a file or directory here, `--iidfile`,
 `--metadata-file` and a policy's file. Not yet: the client's terminal for the build's live
 display (a build over a context prints its plain progress); extended attributes (go-archive's
-archives carry `security.capability` alone); a new hard link to a file that did not change
-goes as a file of its own.
+archives carry `security.capability` alone). A new name of a file the copy holds, unchanged,
+goes as a link to the copy's file (part 3d's), no byte of it again, where it went as a file
+of its own, and the copy's tree was not the client's.
 
 Measured by the test, to the byte: the first build sends the context's files whole as the
 ignore file leaves them; the next, nothing; one after two files changed, their bytes
@@ -4093,6 +4094,50 @@ untouched), and unit tests of the plan and of a copy's key. Mutation-checked: th
 applied, everything sent each time, the ignore file not applied here, what went not
 removed, a change's directories not set again, the build file not the copy's, a base's
 login not sent, a build arg named alone the machine's.
+
+**Part 3d, built: shards' own artifacts through a context.** An agent, a harness or an MCP
+server is made where it is to run: on the GPU machine, of the agent's directory on the
+laptop, its signature by the laptop's own key or identity.
+- **Built there, of the machine's copy of the directory**, kept in step as a build's
+  context is (part 3c): the first build sends its files' bytes, each once; each after,
+  what changed alone. A copy of its own, apart from an image build's of the same
+  directory, which holds what that build's ignore file leaves, where an artifact takes all
+  its directory holds. Its words are the build's own (`agent.rs`, `build_args`, read here
+  and there alike), the directory the copy's; `--platform` and `--sbom` run there, the
+  SBOM's scanner pulled with the client's login for its registry, as a base is.
+- **Byte for byte the artifact made here.** Its layer records each file's name, mode, time
+  and hard links: the copy keeps the times to the nanosecond, the modes, and now the
+  links, a new name of a file the copy holds going as a link to it
+  (`shards_archive::pack_changes`, seeded with the copy's names `synced::plan` finds by
+  their inodes), so that the copy's tree is the client's and its digest the one a build
+  here makes.
+- **What the build says names the client's paths.** A command of a copy prints the
+  copy's path (`.../synced/CLIENT/KEY/context/agent.json`), a path on another machine; the
+  machine's step says it as the client's own (`SHARDS_SYNCED_AS`, the only variable a
+  client sends that no command is given), as it comes, holding back only a tail that may
+  yet begin one: `ERROR: /Users/me/agent/agent.json: ...`. An image build's too.
+- **Signed by the client, kept by the machine.** A signature is made where its signer
+  is: the machine says what a signature of the name is of (its manifest, or its index,
+  `sign_step subject`); the client signs that statement with its own cosign key and
+  password, or keylessly with its own OIDC identity, neither of which crosses; and the
+  machine keeps the bundle as the name's referrer (`sign_step keep`), only where the name
+  resolves to what was signed still and the bundle's envelope holds that digest's
+  statement: a bundle of anything else, or of what the name named before it moved, is
+  refused. A push carries it with the artifact, as one made there.
+
+Measured by the test, to the byte: the first build sends 65,590 bytes of files, its
+config's 33, its script's 21 and its 64 KiB of data once, the data's second name a link; the
+next, after the script was rewritten and the data given a third name, 28, the script's
+alone. Tested in `tests/context.rs`
+(`an_artifact_through_a_context_is_made_of_the_clients_files_and_signed_by_its_key`: the
+digest there the digest here, twice; the bytes; a malformed config said at the client's
+path, no copy's path said; signed by the client's key, pushed there to a registry, its
+referrer's subject the agent and its envelope verified by the key's public half), the
+archive's (`a_new_name_of_a_file_the_copy_holds_is_linked_to_it_there`), the plan's and the
+shown paths' unit tests, and agent.rs's (`a_signature_is_kept_only_of_what_its_name_names`).
+Mutation-checked: the copy's names not seeded, no partner named, the copy's paths shown as
+they are, an artifact's build not of a copy, a signature not made here, a signature kept of
+what its name named before, a bundle kept whatever it signs.
 
 **Part 4, built: Docker's tools through a context.** What speaks Docker's API (its CLI,
 Compose, the SDKs, Testcontainers) reaches the machine's microVMs as it reaches another

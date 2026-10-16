@@ -176,10 +176,22 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<Manifest, String> {
     Ok(manifest)
 }
 
-/// What brings the copy `there` in step with the walk `here`: each entry new or changed,
-/// with the directories it is in, so that their times are set again once it is in place;
-/// and the topmost of what went, a directory's removal taking all it held.
-pub(crate) fn plan(here: &[(Vec<u8>, Stat)], there: &Manifest) -> (Vec<Vec<u8>>, Vec<Vec<u8>>) {
+/// What brings a copy in step with the client's walk of it.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub(crate) struct Plan {
+    /// Each entry new or changed, with the directories it is in, so that their times are
+    /// set again once it is in place, in the walk's order.
+    pub changed: Vec<Vec<u8>>,
+    /// The topmost of what went, a directory's removal taking all it held.
+    pub removed: Vec<Vec<u8>>,
+    /// Entries the copy holds already, unchanged, that a changed one is a hard link of:
+    /// linked to there (`shards_archive::pack_changes`), where alone the change went as a
+    /// file of its own, its bytes sent again, and the copy's tree no longer the client's.
+    pub linked: Vec<Vec<u8>>,
+}
+
+/// What brings the copy `there` in step with the walk `here`.
+pub(crate) fn plan(here: &[(Vec<u8>, Stat)], there: &Manifest) -> Plan {
     let kept: BTreeSet<&[u8]> = here.iter().map(|(p, _)| p.as_slice()).collect();
     let mut changed: BTreeSet<Vec<u8>> = BTreeSet::new();
     for (path, stat) in here {
@@ -205,6 +217,22 @@ pub(crate) fn plan(here: &[(Vec<u8>, Stat)], there: &Manifest) -> (Vec<Vec<u8>>,
             }
         }
     }
+    // The inodes of what changed that more than one name holds, and the unchanged names
+    // that hold them too (a walk sees no directory's).
+    let inodes: BTreeSet<u64> = here
+        .iter()
+        .filter(|(p, _)| changed.contains(p))
+        .filter_map(|(_, s)| s.inode.filter(|&(_, links)| links > 1).map(|(ino, _)| ino))
+        .collect();
+    let linked: Vec<Vec<u8>> = here
+        .iter()
+        .filter(|(p, s)| {
+            !changed.contains(p)
+                && s.inode
+                    .is_some_and(|(ino, links)| links > 1 && inodes.contains(&ino))
+        })
+        .map(|(p, _)| p.clone())
+        .collect();
     // In the walk's order, parents before what they hold.
     let order: BTreeMap<&[u8], usize> = here
         .iter()
@@ -213,7 +241,11 @@ pub(crate) fn plan(here: &[(Vec<u8>, Stat)], there: &Manifest) -> (Vec<Vec<u8>>,
         .collect();
     let mut changed: Vec<Vec<u8>> = changed.into_iter().collect();
     changed.sort_by_key(|p| order.get(p.as_slice()).copied().unwrap_or(usize::MAX));
-    (changed, removed)
+    Plan {
+        changed,
+        removed,
+        linked,
+    }
 }
 
 /// Whether `path` is `dir` or within it.
@@ -343,6 +375,105 @@ fn write_file(path: &Path, mode: u32, mtime: (i64, u32), bytes: &[u8]) -> Result
         .map_err(at)
 }
 
+/// The variable a client names its own paths in, for what a command of its copy prints:
+/// its context's, then a NUL, then its build file's directory's, which may be none.
+pub(crate) const SHOWN_AS: &str = "SHARDS_SYNCED_AS";
+
+#[cfg(unix)]
+/// What a command run of a client's copy prints, its copy's paths said as the client's own
+/// (each pair the copy's path, then the client's), as it comes: all but a tail that may yet
+/// begin one, held until what follows says.
+pub(crate) struct Shown<R> {
+    inner: R,
+    pairs: Vec<(Vec<u8>, Vec<u8>)>,
+    held: Vec<u8>,
+    ready: Vec<u8>,
+    at: usize,
+    ended: bool,
+}
+
+#[cfg(unix)]
+impl<R: Read> Shown<R> {
+    pub(crate) fn new(inner: R, pairs: Vec<(Vec<u8>, Vec<u8>)>) -> Shown<R> {
+        let mut pairs: Vec<(Vec<u8>, Vec<u8>)> =
+            pairs.into_iter().filter(|(from, _)| !from.is_empty()).collect();
+        // The longest first, which a shorter one it begins with would otherwise take.
+        pairs.sort_by_key(|(from, _)| std::cmp::Reverse(from.len()));
+        Shown {
+            inner,
+            pairs,
+            held: Vec::new(),
+            ready: Vec::new(),
+            at: 0,
+            ended: false,
+        }
+    }
+}
+
+#[cfg(unix)]
+impl<R: Read> Read for Shown<R> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        while self.at >= self.ready.len() {
+            if self.ended && self.held.is_empty() {
+                return Ok(0);
+            }
+            let mut chunk = [0u8; 8192];
+            let n = if self.ended {
+                0
+            } else {
+                self.inner.read(&mut chunk)?
+            };
+            self.ended |= n == 0;
+            self.held.extend_from_slice(chunk.get(..n).unwrap_or_default());
+            let (shown, used) = replaced(&self.held, &self.pairs, self.ended);
+            self.held.drain(..used.min(self.held.len()));
+            self.ready = shown;
+            self.at = 0;
+        }
+        let rest = self.ready.get(self.at..).unwrap_or_default();
+        let n = rest.len().min(buf.len());
+        if let (Some(to), Some(from)) = (buf.get_mut(..n), rest.get(..n)) {
+            to.copy_from_slice(from);
+        }
+        self.at += n;
+        Ok(n)
+    }
+}
+
+#[cfg(unix)]
+/// `text` with each pair's path said as the other, as far as it can be said: all of it
+/// where nothing follows (`ended`), else up to a tail that may yet begin a path. What it
+/// says, and how much of `text` that was.
+fn replaced(text: &[u8], pairs: &[(Vec<u8>, Vec<u8>)], ended: bool) -> (Vec<u8>, usize) {
+    let mut out = Vec::with_capacity(text.len());
+    let mut i = 0;
+    'scan: while let Some(rest) = text.get(i..).filter(|r| !r.is_empty()) {
+        for (from, to) in pairs {
+            if rest.starts_with(from) {
+                out.extend_from_slice(to);
+                i += from.len();
+                continue 'scan;
+            }
+        }
+        if !ended
+            && pairs
+                .iter()
+                .any(|(from, _)| from.len() > rest.len() && from.starts_with(rest))
+        {
+            break;
+        }
+        // As it is, up to where a path could begin next.
+        let next = rest
+            .iter()
+            .skip(1)
+            .position(|b| pairs.iter().any(|(from, _)| from.first() == Some(b)))
+            .map_or(rest.len(), |at| at + 1);
+        out.extend_from_slice(rest.get(..next).unwrap_or_default());
+        i += next;
+    }
+    (out, i)
+}
+
 #[cfg(unix)]
 /// The copy a client's build keeps on the machine of `home`: `synced/CLIENT/KEY`, KEY the
 /// hex the client names it by, of 64 hex digits.
@@ -392,14 +523,82 @@ mod tests {
         there.insert(b"gone".to_vec(), Seen::of(&stat(dir, 64, (1, 0))));
         there.insert(b"gone/inner".to_vec(), Seen::of(&stat(0o644, 1, (1, 0))));
         there.insert(b"a/went".to_vec(), Seen::of(&stat(0o644, 1, (1, 0))));
-        let (changed, removed) = plan(&here, &there);
+        let Plan {
+            changed,
+            removed,
+            linked,
+        } = plan(&here, &there);
         // The changed file's directory goes again, for its time; in the walk's order.
         assert_eq!(changed, [b"a".to_vec(), b"a/changed".to_vec(), b"new".to_vec()]);
         // The topmost of what went.
         assert_eq!(removed, [b"a/went".to_vec(), b"gone".to_vec()]);
+        assert!(linked.is_empty(), "{linked:?}");
         // Nothing changed, nothing sent.
         let same: Manifest = here.iter().map(|(p, s)| (p.clone(), Seen::of(s))).collect();
-        assert_eq!(plan(&here, &same), (Vec::new(), Vec::new()));
+        assert_eq!(plan(&here, &same), Plan::default());
+        #[cfg(unix)]
+        assert_eq!(decode(&encode(&there)).unwrap(), there);
+    }
+
+    /// The copy's paths in what a command prints are the client's, however its output
+    /// comes apart: a byte at a time, a path cut across reads, a tail that only began one.
+    #[cfg(unix)]
+    #[test]
+    fn what_a_copy_prints_names_the_clients_paths() {
+        let pairs = vec![
+            (b"/h/synced/l/k/context".to_vec(), b"/Users/me/ctx".to_vec()),
+            (
+                b"/h/synced/l/k/dockerfile".to_vec(),
+                b"/Users/me/ctx/build".to_vec(),
+            ),
+        ];
+        let text = b"ERROR: /h/synced/l/k/context/agent.json: invalid\n/h/synced/l/k/dockerfile/Dockerfile:3\nends /h/synced/l/k/con";
+        let want = b"ERROR: /Users/me/ctx/agent.json: invalid\n/Users/me/ctx/build/Dockerfile:3\nends /h/synced/l/k/con";
+        struct Dribble<'a>(&'a [u8], usize);
+        impl Read for Dribble<'_> {
+            fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+                let n = self.1.min(buf.len()).min(self.0.len());
+                let (now, rest) = self.0.split_at(n);
+                buf.get_mut(..n).unwrap().copy_from_slice(now);
+                self.0 = rest;
+                Ok(n)
+            }
+        }
+        for step in [1, 3, 7, 4096] {
+            let mut shown = Vec::new();
+            Shown::new(Dribble(text, step), pairs.clone())
+                .read_to_end(&mut shown)
+                .unwrap();
+            assert_eq!(
+                String::from_utf8_lossy(&shown),
+                String::from_utf8_lossy(want),
+                "{step}"
+            );
+        }
+    }
+
+    /// A new name of a file the copy holds, unchanged, is linked to it there: its partner
+    /// is named, and no other file that has more than one name.
+    #[test]
+    fn a_new_link_to_a_file_the_copy_holds_names_it() {
+        let linked = |ino: u64, links: u64, mtime: i64| Stat {
+            inode: Some((ino, links)),
+            ..stat(0o644, 4, (mtime, 0))
+        };
+        let here = vec![
+            (b"kept".to_vec(), linked(7, 2, 1)),
+            (b"other".to_vec(), linked(8, 2, 1)),
+            (b"other-too".to_vec(), linked(8, 2, 1)),
+            (b"new".to_vec(), linked(7, 2, 1)),
+        ];
+        let there: Manifest = here
+            .iter()
+            .filter(|(p, _)| p != b"new")
+            .map(|(p, s)| (p.clone(), Seen::of(s)))
+            .collect();
+        let planned = plan(&here, &there);
+        assert_eq!(planned.changed, [b"new".to_vec()]);
+        assert_eq!(planned.linked, [b"kept".to_vec()]);
         #[cfg(unix)]
         assert_eq!(decode(&encode(&there)).unwrap(), there);
     }

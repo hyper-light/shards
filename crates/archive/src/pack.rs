@@ -134,11 +134,14 @@ pub fn pack<W: Write>(src: &Path, opts: &PackOptions, out: W) -> Result<W, Error
 /// bring that copy in step (shards' contexts, D180): each of `changed`, a path relative to
 /// `root` with `/` between its names, archived as itself alone, a directory's entry without
 /// what it holds, its time to the nanosecond, which go-archive's headers drop and a copy
-/// told apart by its times needs; hard links among them linked again; then a whiteout, as
-/// go-archive's ExportChanges writes one, for each of `removed`.
+/// told apart by its times needs; hard links among them linked again, and to `linked`,
+/// files the copy holds already that one of them is a hard link of, as no byte of those
+/// need go again; then a whiteout, as go-archive's ExportChanges writes one, for each of
+/// `removed`.
 pub fn pack_changes<W: Write>(
     root: &Path,
     changed: &[Vec<u8>],
+    linked: &[Vec<u8>],
     removed: &[Vec<u8>],
     out: W,
 ) -> Result<W, Error> {
@@ -150,6 +153,18 @@ pub fn pack_changes<W: Write>(
         whiteout: None,
         nanos: true,
     };
+    for rel in linked {
+        let src = gopath::join(NATIVE, &[&root, &gopath::from_slash(NATIVE, rel)]);
+        if let Ok(st) = sys::lstat(&src)
+            && st.kind != FileKind::Dir
+            && has_hardlinks(&st)
+        {
+            packer
+                .seen_inodes
+                .entry((st.dev, st.ino))
+                .or_insert_with(|| rel.clone());
+        }
+    }
     for rel in changed {
         let src = gopath::join(NATIVE, &[&root, &gopath::from_slash(NATIVE, rel)]);
         packer.add(&src, rel)?;
