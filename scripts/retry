@@ -1,0 +1,21 @@
+#!/bin/sh
+# retry ATTEMPTS DELAY COMMAND [ARG...]: runs COMMAND until it succeeds, at most ATTEMPTS
+# times, DELAY seconds apart, and exits with its last status: CI's downloads from services
+# that fail for a while. static.rust-lang.org cut two runners' toolchain downloads off
+# mid-transfer for two minutes on 2026-10-16 (dev CI run 38835058242), past rustup's own
+# retries; rustup rolls a failed install back, so each attempt starts clean.
+set -u
+attempts=$1
+delay=$2
+shift 2
+n=1
+while :; do
+	"$@" && exit 0
+	status=$?
+	if [ "$n" -ge "$attempts" ]; then
+		exit "$status"
+	fi
+	echo "retry: attempt $n of $attempts failed with $status; again in ${delay}s" >&2
+	sleep "$delay"
+	n=$((n + 1))
+done
