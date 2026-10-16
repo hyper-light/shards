@@ -3634,7 +3634,7 @@ No run-time labels, relays or declassifiers (§12 answer 14, decided by the user
 an internal-only domain to the world (D58), so there is no data to label. Code mode is
 D136.
 
-### D180. Contexts: shards on another machine, over QUIC (parts 1 and 2 built)
+### D180. Contexts: shards on another machine, over QUIC (parts 1, 2 and 3a built)
 
 **The microVM need.** A user's microVMs run where the work needs them: a Mac for
 development, a Linux machine with a GPU (`--gpus`) or KVM, an x86_64 machine that builds and
@@ -3707,7 +3707,7 @@ local administration is (../focal docs/cluster-admin.md).
    size follows the client's), attach, exec; and the signals a client receives (built; a
    Windows client's console, part 2b, built too).
 3. Builds (the context sent as BuildKit's session sends it), `cp`, `save`, `load`,
-   `import`, `export`.
+   `import`, `export` (the archives, part 3a, built).
 4. Docker's CLI through a context: a socket file in the home for each context, which the
    local daemon relays to the machine's Engine API.
 5. Measured against Docker's `ssh://` and `tcp://` contexts, on the GPU desktop: a run's
@@ -3927,6 +3927,65 @@ the console's stdin, stdout and stderr at the console's size, keys reaching the 
 typed (`ab` and Enter as `ab\r`, ^C as byte 3), and a resize of the console sizing the
 command's terminal. Unit tests hold raw mode's flags to moby/term's and the events' signals
 to Go's. The Windows tests run on CI's Windows jobs; this host runs none.
+
+**Part 3a, built: the archives a client writes and reads.** Images and a microVM's files
+move between a laptop and the machine that runs its microVMs as archives: an image saved
+here loads there (`shards save image app -o app.tar`, then `shards --context gpu load image
+-i app.tar`), and what a job there wrote comes back (`shards --context gpu export vm job -o
+job.tar`). Docker's CLI writes `save -o` and `export -o`, and reads `load -i` and
+`import FILE`, itself (docker/cli v29.8.1 cli/command/image/save.go runSave, load.go
+runLoad, import.go runImport, container/export.go runExport); a command shards runs over a
+context is a CLI of the machine's, which would have written and read the machine's files,
+so a context refused them. Now:
+- **The file is the client's, the command there writes its stdout or reads its stdin.**
+  The client reads the command line as shards' parser does, where each flag's value and
+  each argument sits (`flags::Parsed::positions`, and `arg_words`, new), and takes the file
+  out of it: `-o` and `-i` however they are given, the last one named, as pflag keeps it,
+  and the flags a short one ran together with kept (`-qi FILE` is `-q`); `import`'s file
+  sent as `-`, a URL still the machine's to fetch, as the CLI leaves one to its daemon; and
+  `make agentfile -o`, shards' own. Neither is a terminal there, the client's though it be:
+  a save refuses to write to one, as Docker's does.
+- **Whole or not at all.** docker/cli writes `-o` through moby/sys atomicwriter v0.1.0,
+  whose Close renames its temporary file into place whenever no write to it failed
+  (`writeErr == nil && written`), and runSave and runExport defer it and drop its error:
+  an archive cut short by a lost connection, a daemon that fails part-way or a cancelled
+  request is renamed into place under the name asked for, as a save here was measured to
+  leave one (cli/save.rs: Docker 29.3.1, 60,300,800 bytes of an interrupted save), and a
+  rename that fails goes unsaid, the save exiting 0. shards keeps the file once the
+  command's exit says it is whole and every byte of it was written here: a command that
+  fails, a signal that ends it, a lost connection, a write here that fails (said, exit 1),
+  and a signal that ends the client before the command runs each leave the file as it was
+  and nothing beside it, and a rename that fails is said. `make agentfile -o` writes so too,
+  on one machine as over a context, where it wrote in place before.
+- **A signal before the command is asked for ends the client.** The client gave what steers
+  the command (resizes, signals) to its signal handling before it connected, so a signal
+  then waited for a command that did not exist yet: ^C without a terminal, or SIGTERM,
+  waited out the 10 s handshake of a machine that does not answer. What steers it now comes
+  once the command is asked for (`client.rs`, `steering`), and a SIGINT or SIGTERM before
+  then ends the client with status 128 and the signal's number, its file removed first, as
+  docker/cli v29.8.1 ends on its first one (cmd/docker/docker.go, notifyContext and
+  getExitCode); a resize meanwhile is sent once the command is asked for.
+- **What a context does not carry yet is refused, the artifacts' builds and signatures
+  among it.** `build agent DIR` (and `harness`'s, `mcp`'s) reached the machine's directory,
+  and `sign agent` signs with the machine's key or its owner's identity. Each is refused,
+  as `build` and `cp` are, until it is carried.
+
+Tested in `tests/context.rs`, on a machine that runs microVMs: an image saved here from
+there, removed there and loaded from here; a microVM's files exported here and imported
+there; an image's Agentfile written here; nothing of them written where the command ran; a
+failed save leaving nothing; and from a terminal, a save to a file and a load from one
+(`a_clients_archives_are_its_own_files`). In `tests/context_client.rs`, against the test's
+own daemon, on every system: a file kept whole, and kept as it was when the command fails,
+a signal ends it or the connection is lost
+(`a_file_the_command_writes_is_the_clients_whole_or_not_at_all`); a write that fails here,
+under a 4-byte RLIMIT_FSIZE (`a_file_not_written_whole_here_is_kept_by_no_exit`); a client
+signalled while its machine never answers (`a_client_ended_before_its_machine_answers_leaves_no_file`);
+and `load -qi` and `import` sending their files (`a_file_the_command_reads_is_the_clients`).
+Unit tests: every form of the rewrite, and what a context refuses. Mutation-checked: the
+client's files not taken out, a file kept whatever the exit, a lost connection keeping
+what it has, a failed write unrecorded, an ending signal leaving the file, controls given
+before the command is asked for, the client's terminal left the command's stdout or stdin,
+a short group keeping the flag's letter, an artifact's build carried.
 
 ### D179. Other CPUs' images, emulated in their microVM (parts 1 to 3 built)
 

@@ -362,6 +362,9 @@ pub struct Parsed {
     /// name, the word it is in, and the byte it begins at there (after `--name=` or `-n`;
     /// 0 for a word of its own). A context's client rewrites them in place (D180).
     pub positions: Vec<(&'static str, usize, usize)>,
+    /// The word of the command line each of `args` is, as `positions` says where flags'
+    /// values sit.
+    pub arg_words: Vec<usize>,
 }
 
 impl Parsed {
@@ -595,6 +598,7 @@ pub fn parse(
         args: Vec::new(),
         notices: String::new(),
         positions: Vec::new(),
+        arg_words: Vec::new(),
     };
     if let Err(e) = read(&mut parsed, argv, validate) {
         return Outcome::Fail {
@@ -705,23 +709,26 @@ fn read(
 ) -> Result<(), String> {
     let mut words = argv.iter();
     while let Some(word) = words.next() {
-        let bytes = word.as_bytes();
-        if bytes.len() < 2 || bytes.first() != Some(&b'-') {
-            parsed.args.push(word.clone());
-            if !parsed.command.interspersed {
-                parsed.args.extend(words.cloned());
-                return Ok(());
-            }
-            continue;
-        }
         // This word's place in the command line.
         let at = argv
             .len()
             .saturating_sub(words.as_slice().len())
             .saturating_sub(1);
+        let bytes = word.as_bytes();
+        if bytes.len() < 2 || bytes.first() != Some(&b'-') {
+            parsed.args.push(word.clone());
+            parsed.arg_words.push(at);
+            if !parsed.command.interspersed {
+                parsed.args.extend(words.cloned());
+                parsed.arg_words.extend(at.saturating_add(1)..argv.len());
+                return Ok(());
+            }
+            continue;
+        }
         if bytes.get(1) == Some(&b'-') {
             if bytes.len() == 2 {
                 parsed.args.extend(words.cloned());
+                parsed.arg_words.extend(at.saturating_add(1)..argv.len());
                 return Ok(());
             }
             read_long(parsed, word, at, &mut words, validate)?;

@@ -65,6 +65,42 @@ fn here_terminal() -> Option<frame::Terminal> {
 /// size and signals go.
 static STEERED: std::sync::Mutex<Option<client::Controls>> = std::sync::Mutex::new(None);
 
+/// The file this client writes for the command there until it is whole ([`Named`]), which
+/// a signal that ends the client removes first: none is left behind.
+static UNFINISHED: std::sync::Mutex<Option<PathBuf>> = std::sync::Mutex::new(None);
+
+/// Removes the file [`UNFINISHED`] names, for a client that ends.
+fn remove_unfinished() {
+    let unfinished = UNFINISHED
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .take();
+    if let Some(path) = unfinished {
+        let _ = fs::remove_file(path);
+    }
+}
+
+/// The file here a command's output is written to, which sends `failed` what a write that
+/// failed said: a file that is not whole is kept by no exit status.
+struct Recorded {
+    file: fs::File,
+    failed: std::sync::mpsc::Sender<String>,
+}
+
+impl io::Write for Recorded {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        self.file.write(bytes).inspect_err(|e| {
+            if e.kind() != io::ErrorKind::Interrupted {
+                let _ = self.failed.send(crate::cli::save::go(e));
+            }
+        })
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.file.flush()
+    }
+}
+
 /// This client's terminal, where it has one: which of its stdin, stdout and stderr its
 /// console is, and its size, its window's, which only an output reports.
 #[cfg(windows)]
@@ -119,12 +155,13 @@ fn steer_console(terminal: Option<frame::Terminal>) -> Result<(), String> {
                 if now == last {
                     continue;
                 }
-                last = now;
+                // A size with no command yet to take it is sent once there is one.
                 let steered = STEERED.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-                if let Some(controls) = steered.as_ref()
-                    && controls.resize(now.0, now.1).is_err()
-                {
-                    return;
+                if let Some(controls) = steered.as_ref() {
+                    if controls.resize(now.0, now.1).is_err() {
+                        return;
+                    }
+                    last = now;
                 }
             }
         })
@@ -147,6 +184,7 @@ extern "system" fn on_console_event(kind: u32) -> windows_sys::core::BOOL {
         .as_ref()
         .is_some_and(|controls| controls.signal(linux).is_ok());
     if !sent {
+        remove_unfinished();
         return 0;
     }
     if linux == 15 {
@@ -209,6 +247,7 @@ fn steer_signals(reads_terminal: bool, terminal: Option<i32>) -> Result<(), Stri
                 drop(steered);
                 let ends = [libc::SIGHUP, libc::SIGINT, libc::SIGQUIT, libc::SIGTERM].contains(&sig);
                 if !sent && ends && !ignored.contains(&sig) {
+                    remove_unfinished();
                     crate::cli::terminal::restore();
                     if sig == libc::SIGINT || sig == libc::SIGTERM {
                         std::process::exit(128 + sig);
@@ -459,16 +498,26 @@ fn not_carried(args: &[OsString]) -> Option<String> {
     let said = shards_cmdline::grammar::rewrite(&words).unwrap_or_else(|| words.clone());
     let refs: Vec<&str> = said.iter().map(String::as_str).collect();
     let first = refs.first().copied().unwrap_or_default();
-    if matches!(
-        first,
-        "build" | "buildx" | "builder" | "load" | "import" | "cp" | "compose"
-    ) || refs
-        .get(..2)
-        .is_some_and(|w| matches!(w, ["container" | "image", "cp" | "load" | "import"]))
+    let named = refs.get(..2).and_then(|w| match w {
+        ["container", "cp"] => Some("cp"),
+        ["agent" | "harness" | "mcp", "build"] => Some("build"),
+        _ => None,
+    });
+    if let Some(named) =
+        named.or_else(|| matches!(first, "build" | "buildx" | "builder" | "cp" | "compose").then_some(first))
     {
         return Some(format!(
-            "{first} over a context sends this machine's files, which shards does not carry yet: run it on the machine itself"
+            "{named} over a context sends this machine's files, which shards does not carry yet: run it on the machine itself"
         ));
+    }
+    // A signature is made with this machine's key, or its owner's identity (agent.rs, sign).
+    if refs
+        .get(..2)
+        .is_some_and(|w| matches!(w, ["agent" | "harness" | "mcp", "sign"]))
+    {
+        return Some(
+            "sign over a context signs with this machine's key or identity, which shards does not carry yet: run it on the machine itself".into(),
+        );
     }
     // `run` is the CLI's own to read (request.rs), as Docker's flags are its.
     let (command, path, n) = match refs.as_slice() {
@@ -482,8 +531,9 @@ fn not_carried(args: &[OsString]) -> Option<String> {
     else {
         return None;
     };
-    // `--env-file` and `--label-file` cross as what they hold ([`here_values`]).
-    let files = !parsed.string("cidfile").is_empty() || !parsed.string("output").is_empty();
+    // `--env-file` and `--label-file` cross as what they hold ([`here_values`]), and `-o`'s
+    // and `-i`'s files as the command's output and input ([`here_files`]).
+    let files = !parsed.string("cidfile").is_empty();
     files.then(|| format!("{path}: a file of this machine's, which a context does not carry yet"))
 }
 
@@ -557,6 +607,159 @@ fn here_values(
         }
     }
     Ok(head.into_iter().chain(from_files).chain(rest).collect())
+}
+
+/// A file of this client's that Docker's CLI writes or reads whole for its command (D180):
+/// the command there writes it as its stdout, or reads it as its stdin, and this client
+/// writes the file, or reads it.
+#[derive(Debug, PartialEq)]
+enum Named {
+    /// What the command writes goes to the file here, kept whole or not at all, as a save
+    /// here keeps it (cli/save.rs); `failed` begins what a failure says.
+    Written { path: String, failed: &'static str },
+    /// The command reads the file here.
+    Read(String),
+}
+
+/// The file of this client's that the command `words` writes or reads whole, if any, and
+/// the command that writes its stdout or reads its stdin there instead (D180): `save -o`,
+/// `export -o` and `make agentfile -o` write theirs here, `load -i` reads its file here,
+/// and `import` a file it names, as docker/cli's runSave, runExport, runLoad and runImport
+/// write and read theirs (cli/command/image/save.go, load.go, import.go,
+/// container/export.go). A command shards' parser refuses, or `-h`, goes as it is.
+fn here_files(words: Vec<String>) -> (Vec<String>, Option<Named>) {
+    use shards_cmdline::commands::{EXPORT, IMPORT, LOAD, SAVE};
+    let said = shards_cmdline::grammar::rewrite(&words).unwrap_or_else(|| words.clone());
+    let refs: Vec<&str> = said.iter().map(String::as_str).collect();
+    if refs.first() == Some(&"agentfile") {
+        return agentfile_output(words, &said);
+    }
+    let Some((command, path, n)) = shards_cmdline::commands::find(&refs) else {
+        return (words, None);
+    };
+    let (flag, failed) = if std::ptr::eq(command, &SAVE) {
+        ("output", "failed to save image")
+    } else if std::ptr::eq(command, &EXPORT) {
+        ("output", "failed to export container")
+    } else if std::ptr::eq(command, &LOAD) {
+        ("input", "")
+    } else if std::ptr::eq(command, &IMPORT) {
+        ("", "")
+    } else {
+        return (words, None);
+    };
+    let head = said.get(..n).map(<[String]>::to_vec).unwrap_or_default();
+    let mut rest = said.get(n..).map(<[String]>::to_vec).unwrap_or_default();
+    let shards_cmdline::flags::Outcome::Run(parsed) =
+        shards_cmdline::flags::parse(command, path, &rest, &|_, value| Ok(value.to_string()))
+    else {
+        return (words, None);
+    };
+    let named = if flag.is_empty() {
+        // `-` is stdin, and a URL the daemon's to fetch.
+        match (parsed.args.first(), parsed.arg_words.first()) {
+            (Some(source), Some(&at))
+                if source != "-" && !source.starts_with("http://") && !source.starts_with("https://") =>
+            {
+                let named = Named::Read(source.clone());
+                if let Some(word) = rest.get_mut(at) {
+                    *word = "-".into();
+                }
+                named
+            }
+            _ => return (words, None),
+        }
+    } else {
+        let file = parsed.string(flag).to_string();
+        if file.is_empty() {
+            return (words, None);
+        }
+        let mut given: Vec<(usize, usize)> = parsed
+            .positions
+            .iter()
+            .filter(|(name, ..)| *name == flag)
+            .map(|&(_, at, offset)| (at, offset))
+            .collect();
+        given.sort_unstable();
+        for (at, offset) in given.into_iter().rev() {
+            without_value(&mut rest, at, offset);
+        }
+        if flag == "input" {
+            Named::Read(file)
+        } else {
+            Named::Written { path: file, failed }
+        }
+    };
+    (head.into_iter().chain(rest).collect(), Some(named))
+}
+
+/// `words` without the value a flag took at word `at`, from byte `offset`, nor the flag:
+/// a word of its own goes with the flag's before it, and a value in the flag's word with
+/// it, but the flags it ran together with stay (`-qi FILE` is `-q`), as pflag reads them.
+fn without_value(words: &mut Vec<String>, at: usize, offset: usize) {
+    let (flag, alone) = if offset == 0 {
+        if at < words.len() {
+            words.remove(at);
+        }
+        (at.checked_sub(1), true)
+    } else {
+        (Some(at), false)
+    };
+    let Some(flag) = flag else {
+        return;
+    };
+    let Some(word) = words.get_mut(flag) else {
+        return;
+    };
+    if word.starts_with("--") {
+        words.remove(flag);
+        return;
+    }
+    // A short group: `-`, the flags before, the flag's letter, and `=` before a value in
+    // the word (`-i=FILE`).
+    let mut group = if alone {
+        word.clone()
+    } else {
+        word.get(..offset).unwrap_or_default().to_string()
+    };
+    if !alone && group.len() > 2 && group.ends_with('=') {
+        group.pop();
+    }
+    group.pop();
+    if group.len() > 1 {
+        *word = group;
+    } else {
+        words.remove(flag);
+    }
+}
+
+/// `make agentfile -o FILE` (or `--output FILE`, `--output=FILE`), as from_image.rs reads
+/// it, the last one named its file: the Agentfile written to the command's stdout there.
+fn agentfile_output(words: Vec<String>, said: &[String]) -> (Vec<String>, Option<Named>) {
+    let mut kept = Vec::with_capacity(said.len());
+    let mut file = None;
+    let mut it = said.iter();
+    while let Some(word) = it.next() {
+        match word.as_str() {
+            "-h" | "--help" => return (words, None),
+            "-o" | "--output" => match it.next() {
+                Some(path) => file = Some(path.clone()),
+                None => return (words, None),
+            },
+            w if w.starts_with("--output=") => file = Some(w.trim_start_matches("--output=").to_string()),
+            _ => kept.push(word.clone()),
+        }
+    }
+    match file {
+        Some(path) if !path.is_empty() => (
+            kept,
+            Some(Named::Written {
+                path,
+                failed: "failed to write the Agentfile",
+            }),
+        ),
+        _ => (words, None),
+    }
 }
 
 /// Whether `args`, the command after shards', is a context's own, which runs on this machine
@@ -686,6 +889,7 @@ pub(crate) fn forward(home: &Path, context: &Context, args: Vec<OsString>) -> Ex
         Ok(words) => words,
         Err(e) => return fail(e),
     };
+    let (words, named) = here_files(words);
     let words_sent = words.clone();
     let bytes: Vec<Vec<u8>> = words.into_iter().map(String::into_bytes).collect();
     // Of this client's own variables, what shapes the command; and of its credentials, those
@@ -716,17 +920,20 @@ pub(crate) fn forward(home: &Path, context: &Context, args: Vec<OsString>) -> Ex
     // This client's terminal is the command's, its own there for what it is here: raw here
     // while the command reads it, as `ssh -t` leaves the remote terminal to do what a
     // terminal does (OpenSSH clientloop.c, enter_raw_mode). Its size and the signals this
-    // process receives go to the command as they come.
-    let terminal = here_terminal();
+    // process receives go to the command as they come. A file here the command writes or
+    // reads is its stdout or stdin instead.
+    let terminal = here_terminal().and_then(|mut t| {
+        match &named {
+            Some(Named::Written { .. }) => t.stdout = false,
+            Some(Named::Read(_)) => t.stdin = false,
+            None => {}
+        }
+        (t.stdin || t.stdout || t.stderr).then_some(t)
+    });
     #[cfg(windows)]
     {
         if let Err(e) = steer_console(terminal) {
             return fail(e);
-        }
-        if terminal.is_some_and(|t| t.stdin)
-            && let Err(e) = crate::cli::terminal::make_raw()
-        {
-            return fail(format!("the console: {e}"));
         }
     }
     #[cfg(unix)]
@@ -744,33 +951,126 @@ pub(crate) fn forward(home: &Path, context: &Context, args: Vec<OsString>) -> Ex
         if let Err(e) = steer_signals(reads, fd) {
             return fail(e);
         }
-        if reads && let Err(e) = crate::cli::terminal::make_raw() {
-            return fail(format!("the terminal: {e}"));
+    }
+    // The file is made once the signals that would end the client are taken, and named
+    // while it is made, so that one that ends the client removes it.
+    let mut written = None;
+    let mut stdin: Box<dyn io::Read + Send> = Box::new(io::stdin());
+    let mut stdout: Box<dyn io::Write + Send> = Box::new(io::stdout());
+    let (failed_tx, failed_rx) = std::sync::mpsc::channel();
+    match &named {
+        Some(Named::Written { path, failed }) => {
+            let mut unfinished = UNFINISHED
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let made = crate::cli::save::to_file(path, failed).and_then(|output| {
+                let file = output
+                    .handle()
+                    .ok_or_else(|| failed.to_string())?
+                    .try_clone()
+                    .map_err(|e| format!("{failed}: {}", crate::cli::save::go(&e)))?;
+                *unfinished = output.temp().map(Path::to_path_buf);
+                Ok((output, file))
+            });
+            drop(unfinished);
+            match made {
+                Ok((output, file)) => {
+                    stdout = Box::new(Recorded {
+                        file,
+                        failed: failed_tx,
+                    });
+                    written = Some((output, *failed));
+                }
+                Err(e) => {
+                    let _ = writeln!(io::stderr(), "{e}");
+                    return ExitCode::FAILURE;
+                }
+            }
         }
+        Some(Named::Read(path)) => match crate::cli::save::open(path) {
+            Ok(file) => stdin = Box::new(file),
+            Err(e) => {
+                let _ = writeln!(io::stderr(), "{e}");
+                return ExitCode::FAILURE;
+            }
+        },
+        None => {}
+    }
+    if terminal.is_some_and(|t| t.stdin)
+        && let Err(e) = crate::cli::terminal::make_raw()
+    {
+        let terminal = if cfg!(windows) {
+            "the console"
+        } else {
+            "the terminal"
+        };
+        return fail(format!("{terminal}: {e}"));
     }
     let request = Request {
         args: bytes,
         env,
         terminal,
     };
-    let stdin: Box<dyn io::Read + Send> = Box::new(io::stdin());
-    let steered = |controls| {
-        *STEERED.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(controls);
+    // Given once the command is asked for: a signal before then ends the client, as it
+    // would have, and a resize meanwhile is sent now, as no signal could send it then.
+    #[cfg(unix)]
+    let sized = terminal.map(|t| {
+        (
+            if t.stdin {
+                0
+            } else if t.stdout {
+                1
+            } else {
+                2
+            },
+            t.rows,
+            t.cols,
+        )
+    });
+    let steered = move |controls: client::Controls| {
+        let mut steered = STEERED.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        #[cfg(unix)]
+        if let Some((fd, rows, cols)) = sized {
+            let now = crate::cli::terminal::size(fd);
+            if now != (rows, cols) {
+                let _ = controls.resize(now.0, now.1);
+            }
+        }
+        *steered = Some(controls);
     };
     let ran = client::exec(
         &identity,
         context.remote(),
         request,
         Some(stdin),
-        io::stdout(),
+        stdout,
         io::stderr(),
         steered,
     );
     crate::cli::terminal::restore();
-    match ran {
-        Ok(Ok(status)) => ExitCode::from(u8::try_from(status).unwrap_or(1)),
-        Ok(Err(refused)) => fail(format!("{}: {refused}", context.name)),
-        Err(e) => fail(format!("{}: {e}", context.name)),
+    // The file is kept once the command's exit says it is whole and every byte of it was
+    // written here; else it goes, as a save here leaves nothing that is not whole.
+    let kept = written.map(|(output, failed)| {
+        let mut unfinished = UNFINISHED
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let temp = output.temp().map(|t| t.display().to_string()).unwrap_or_default();
+        let kept = match (&ran, failed_rx.try_recv()) {
+            (Ok(Ok(_)), Ok(e)) => Err(format!("{failed}: write {temp}: {e}")),
+            (Ok(Ok(status)), Err(_)) => output.finish(u8::try_from(*status).unwrap_or(1)),
+            _ => Ok(()),
+        };
+        *unfinished = None;
+        kept
+    });
+    match (ran, kept) {
+        (Ok(Ok(_)), Some(Err(e))) => {
+            let _ = writeln!(io::stderr(), "{e}");
+            ExitCode::FAILURE
+        }
+        (Ok(Ok(status)), _) => ExitCode::from(u8::try_from(status).unwrap_or(1)),
+        (Ok(Err(refused)), _) => fail(format!("{}: {refused}", context.name)),
+        (Err(e), _) => fail(format!("{}: {e}", context.name)),
     }
 }
 
@@ -1236,8 +1536,35 @@ mod tests {
         assert!(not_carried(&args("run -it alpine sh")).is_none());
         assert!(not_carried(&args("exec -it web sh")).is_none());
         assert!(not_carried(&args("attach web")).is_none());
-        assert!(not_carried(&args("build .")).is_some());
-        assert!(not_carried(&args("save -o x.tar alpine")).is_some());
+        for files in [
+            "build .",
+            "image build .",
+            "builder build .",
+            "build image .",
+            "build agent dir -t a",
+            "agent build dir -t a",
+            "cp web:/x .",
+            "container cp web:/x .",
+            "copy vm web:/x .",
+            "compose up",
+        ] {
+            assert!(not_carried(&args(files)).is_some(), "{files}");
+        }
+        assert!(not_carried(&args("sign agent a")).is_some());
+        assert!(not_carried(&args("harness sign h --key k")).is_some());
+        assert!(not_carried(&args("agent ls")).is_none());
+        // A file a command writes or reads whole crosses as its output or input ([`here_files`]).
+        for whole in [
+            "save -o x.tar alpine",
+            "save image alpine -o x.tar",
+            "export -o x.tar web",
+            "load -i x.tar",
+            "load image -i x.tar",
+            "import x.tar",
+            "image import x.tar",
+        ] {
+            assert!(not_carried(&args(whole)).is_none(), "{whole}");
+        }
         assert!(not_carried(&args("run --cidfile c alpine")).is_some());
         assert!(
             not_carried(&args("run --rm alpine cat --cidfile c")).is_none(),
@@ -1256,5 +1583,96 @@ mod tests {
         assert!(kept_here(&args("context ls")));
         assert!(kept_here(&args("list contexts")));
         assert!(!kept_here(&args("ps")));
+    }
+
+    #[test]
+    fn a_file_a_command_writes_or_reads_whole_is_the_clients() {
+        let words = |s: &str| s.split(' ').map(str::to_string).collect::<Vec<_>>();
+        let written = |path: &str, failed| {
+            Some(Named::Written {
+                path: path.into(),
+                failed,
+            })
+        };
+        let read = |path: &str| Some(Named::Read(path.into()));
+        let save = "failed to save image";
+        let export = "failed to export container";
+        for (given, sent, named) in [
+            // `-o` however it is given, the command writing its stdout instead.
+            ("save -o x.tar alpine", "save alpine", written("x.tar", save)),
+            ("save -ox.tar alpine", "save alpine", written("x.tar", save)),
+            ("save -o=x.tar alpine", "save alpine", written("x.tar", save)),
+            (
+                "save --output x.tar alpine",
+                "save alpine",
+                written("x.tar", save),
+            ),
+            ("save --output=x.tar a b", "save a b", written("x.tar", save)),
+            ("image save a -o x.tar", "image save a", written("x.tar", save)),
+            // The last one named, as pflag keeps it.
+            (
+                "save -o a.tar -o b.tar alpine",
+                "save alpine",
+                written("b.tar", save),
+            ),
+            // shards' own words, said as the command they run.
+            (
+                "save image alpine -o x.tar",
+                "save --convert alpine",
+                written("x.tar", save),
+            ),
+            ("export -o x.tar web", "export web", written("x.tar", export)),
+            ("export vm web -o x.tar", "export web", written("x.tar", export)),
+            (
+                "container export web --output x.tar",
+                "export web",
+                written("x.tar", export),
+            ),
+            (
+                "agentfile alpine -o A",
+                "agentfile alpine",
+                written("A", "failed to write the Agentfile"),
+            ),
+            (
+                "make agentfile alpine --output=A",
+                "agentfile alpine",
+                written("A", "failed to write the Agentfile"),
+            ),
+            // `-i`, the flags it ran together with kept.
+            ("load -i x.tar", "load", read("x.tar")),
+            ("load -qi x.tar", "load -q", read("x.tar")),
+            ("load -qix.tar", "load -q", read("x.tar")),
+            ("load -qi=x.tar", "load -q", read("x.tar")),
+            ("load --input=x.tar -q", "load -q", read("x.tar")),
+            ("load image -i x.tar", "load", read("x.tar")),
+            ("image load -q --input x.tar", "load -q", read("x.tar")),
+            // `import`'s file, read as `-`; past `--` too.
+            ("import x.tar app:1", "import - app:1", read("x.tar")),
+            ("import -m hi x.tar", "import -m hi -", read("x.tar")),
+            ("image import -- -x.tar", "image import -- -", read("-x.tar")),
+        ] {
+            assert_eq!(here_files(words(given)), (words(sent), named), "{given}");
+        }
+        // Nothing of the client's: stdin, stdout, a URL the daemon fetches, help, a refusal.
+        for same in [
+            "save alpine",
+            "save -o  alpine",
+            "load",
+            "load -q",
+            "import - app",
+            "import https://example.com/x.tar",
+            "import http://example.com/x.tar",
+            "save -h -o x.tar alpine",
+            "load -i",
+            "save --nope -o x.tar alpine",
+            "agentfile alpine",
+            "agentfile alpine -o",
+            "agentfile -h -o A alpine",
+            "save vm web",
+            "ps -a",
+            "run --rm alpine save -o x.tar a",
+        ] {
+            assert_eq!(here_files(words(same)), (words(same), None), "{same}");
+        }
     }
 }

@@ -231,7 +231,7 @@ pub fn command(args: impl Iterator<Item = std::ffi::OsString>) -> ExitCode {
     match made(&image) {
         Ok(text) => {
             let written = match &output {
-                Some(path) => std::fs::write(path, &text).map_err(|e| format!("{path}: {e}")),
+                Some(path) => whole(path, &text),
                 None => std::io::stdout()
                     .write_all(text.as_bytes())
                     .map_err(|e| e.to_string()),
@@ -243,6 +243,22 @@ pub fn command(args: impl Iterator<Item = std::ffi::OsString>) -> ExitCode {
         }
         Err(e) => fail(&e),
     }
+}
+
+/// `text` written to the file `path`, whole or not at all, as `save -o` writes an archive
+/// (cli/save.rs): an interrupted write leaves nothing, and a file there keeps what it held.
+fn whole(path: &str, text: &str) -> Result<(), String> {
+    const FAILED: &str = "failed to write the Agentfile";
+    #[cfg(unix)]
+    let output = crate::cli::save::output(path, FAILED)?;
+    #[cfg(not(unix))]
+    let output = crate::cli::save::to_file(path, FAILED)?;
+    let mut file = output.handle().ok_or(FAILED)?;
+    if let Err(e) = file.write_all(text.as_bytes()) {
+        let at = output.temp().map(|t| t.display().to_string()).unwrap_or_default();
+        return Err(format!("{FAILED}: write {at}: {}", crate::cli::save::go(&e)));
+    }
+    output.finish(0).map_err(|e| format!("{FAILED}: {e}"))
 }
 
 fn fail(why: &str) -> ExitCode {
