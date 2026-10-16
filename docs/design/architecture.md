@@ -3987,6 +3987,32 @@ what it has, a failed write unrecorded, an ending signal leaving the file, contr
 before the command is asked for, the client's terminal left the command's stdout or stdin,
 a short group keeping the flag's letter, an artifact's build carried.
 
+**What else a command names of the client's (part 3a).**
+- **A seccomp profile's file.** Docker's CLI reads `--security-opt seccomp=FILE` and sends
+  the profile's JSON (docker/cli v29.8.1 cli/command/container/opts.go, parseSecurityOpts);
+  a command over a context read the machine's file of that name, a profile not the
+  client's, silently, where one was there. The client reads it, and sends
+  `seccomp=JSON`, which the command there takes as the profile where no file is named so,
+  as the Engine API takes one (cli/request.rs, `seccomp_profile`); a file not here is
+  refused here, in the words and with the status the command would refuse it with (run's
+  and create's `shards: …` and their help's line, 125; exec's plain, 1), as an
+  `--env-file` not here is now too.
+- **A pull's Agentfile** (D78): the pull there, then its Agentfile asked of the machine
+  once it is through, written in the client's file whole.
+- **The client's logins for shards' own commands**, as for Docker's (part 1): the image
+  `make agentfile` names, which it pulls where it is not there, and the artifact an
+  agent's, harness's or MCP server's push, pull or referrer's removal names.
+
+Tested in `tests/context.rs`: a profile in the client's directory, which the command
+there does not run in, refusing mkdir there, and one not here refused here
+(`a_clients_command_has_the_clients_environment_not_the_owners`); a pull's Agentfile in a
+directory here, as `make agentfile` writes it (`a_clients_archives_are_its_own_files`);
+an agent pushed and an image's Agentfile made of a pull with the client's logins, refused
+without (`a_clients_logins_are_its_own`). Unit tests: the rewrites, and what shards' own
+commands name. Mutation-checked: the profile read there, its JSON not taken there, the
+pull's Agentfile not asked for, shards' own commands' logins not sent, `make agentfile`'s
+not sent.
+
 ### D179. Other CPUs' images, emulated in their microVM (parts 1 to 3 built)
 
 Images built on an arm64 Mac usually ship to x86_64 hosts, and the other way round, and a
@@ -4131,6 +4157,23 @@ the platform builds faster, reached as a context (the next item).
   fails with the kernel's "exec format error", as BuildKit's does without one; a lone
   manifest refused by a build's lookup, or by a policy's; the oracle planning every build
   with a platform asked).
+
+**The platform a user prefers (2026-10-16).** Docker's CLI takes `--platform`'s default
+from `DOCKER_DEFAULT_PLATFORM` for `pull`, `import`, `run`, `create` and the classic
+builder (docker/cli v29.8.1 cli/command/image/pull.go:61, import.go:53, build.go:159,
+container/create.go:84, run.go:73), and buildx for `build` (v0.37.1 commands/build.go,
+platformsDefault); shards took it, `SHARDS_DEFAULT_PLATFORM` first (D157), for `run`,
+`create` and `import`, and not for `pull` or `build`, so `DOCKER_DEFAULT_PLATFORM=linux/amd64
+shards pull alpine` stored this host's where Docker stores amd64's. Both take it now: a
+pull as the flag said first, so that one named after it is the one kept, as pflag keeps
+the last given; a build where the flag is not given, as pflag's first value given
+replaces a string array's default whole (a build that names `--platform` builds that alone,
+not an index of it and the default). Tests no longer inherit a default the host's user
+prefers (`common::command`). Tested: `a_pulls_platform_defaults_to_the_default_platforms`
+and `a_builds_platform_defaults_to_the_default_platforms` (an index of two platforms: the
+default's stored and built, shards' variable before Docker's, a named platform over both).
+Mutation-checked: pull's default not taken, Docker's variable read first, build's default
+not taken, build's default kept with a platform named.
 
 ### D178. A microVM's I/O limits, kept outside it
 
@@ -11154,6 +11197,24 @@ a value that would expand, the Agentfile made of it, built: the config the origi
 mutation-checked (`$` unescaped, no lookup by digest);
 `values_are_written_so_that_nothing_in_them_expands`,
 `an_images_config_is_written_as_its_instructions`.
+
+**A pull's Agentfile, and the platform's (2026-10-16).** §10 has a pull make an image a
+microVM, an Agentfile, or both; `pull --output-agentfile` was in pull's help from its first
+commit (f0c0ec2e, 2026-10-04), and nothing read it: a pull that named it wrote nothing,
+and said nothing of it. It is served: once the pull is through, the Agentfile of the image
+it pulled, of the platform it pulled (a lone manifest whatever its platform, as the pull
+takes one: `local_base`), is written to the file named, or as `Agentfile` in a directory
+named, where `shards build DIR` finds one; its file is made before the pull, so that a path
+it cannot write fails first, and is written whole or not at all, as `save -o` writes an
+archive (D180 part 3a): a pull that fails leaves nothing. `-a`, which names no one image,
+is refused with it before anything is pulled. `make agentfile` takes `--platform`, read as
+a pull reads it, its default as pull's (D179), and its `-o` writes whole too, where it
+wrote in place. Over a context the pull runs there and its Agentfile is asked of the
+machine once it is through (`make agentfile --platform P IMAGE`), written in the client's
+file (D180). Tested: `a_pull_writes_its_images_agentfile_where_asked` (an index of two
+platforms: each platform's own, equal to `make agentfile`'s for it, into a directory and
+to a file; a failed pull and `-a` writing nothing). Mutation-checked: the Agentfile not
+written, `-a` not refused, a directory not its `Agentfile`'s.
 
 ### D77. `--platform` of several: one image of each platform's build
 

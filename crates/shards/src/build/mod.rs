@@ -2237,6 +2237,19 @@ fn show(b: &[u8]) -> String {
 /// `Dedupe` keeps it, where BuildKit would build and export it twice. `local` is the
 /// platform this host's microVMs run, where buildx takes its client's own, which on a
 /// Mac is no platform a Linux build makes.
+/// The platforms a build is for, as given: `--platform`'s, else SHARDS_DEFAULT_PLATFORM's or
+/// DOCKER_DEFAULT_PLATFORM's, as buildx takes the flag's default from the latter (v0.37.1
+/// commands/build.go, platformsDefault). A flag given replaces the default whole, as pflag's
+/// first value given replaces a string array's.
+fn platforms(parsed: &flags::Parsed) -> Vec<String> {
+    if parsed.changed("platform") {
+        return parsed.many("platform").to_vec();
+    }
+    crate::cli::env_ours_first("SHARDS_DEFAULT_PLATFORM", "DOCKER_DEFAULT_PLATFORM")
+        .into_iter()
+        .collect()
+}
+
 pub(crate) fn target_platforms(given: &[String], host: &Platform) -> Result<Vec<Platform>, String> {
     let mut out: Vec<Platform> = Vec::new();
     for value in given {
@@ -2544,7 +2557,7 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
     resources.extend(parsed.many("resource").iter().cloned());
     let resource_attrs = buildflags::resource_attrs(&resources)?;
     // The platforms, read as buildx reads them after the resource limits.
-    let target_platforms = target_platforms(parsed.many("platform"), &host_platform())?;
+    let target_platforms = target_platforms(&platforms(parsed), &host_platform())?;
     let target_platform = target_platforms.first().cloned().unwrap_or_else(host_platform);
     let mut agents: Agents = buildflags::ssh_agents(
         &buildflags::parse_ssh(parsed.many("ssh")),
@@ -5895,7 +5908,7 @@ fn frontend_attrs(
     } else if !filters.is_empty() {
         a.insert("no-cache".into(), filters.join(","));
     }
-    let platforms = parsed.many("platform");
+    let platforms = platforms(parsed);
     if !platforms.is_empty() {
         a.insert("platform".into(), platforms.join(","));
     }

@@ -546,13 +546,16 @@ type KvFile = dyn Fn(&str, bool) -> Result<Vec<String>, String>;
 /// the value `lookup` gives it here, if any (docker/cli opts/env.go, ValidateEnv); and
 /// `--env-file` and `--label-file`, files of this machine's, become the `--env` and
 /// `--label` values that `read` finds in them, ahead of the rest, as docker/cli reads files'
-/// first (ReadKVEnvStrings, ReadKVStrings). A command shards' parser refuses goes as it is:
-/// its refusal is the command's own there.
+/// first (ReadKVEnvStrings, ReadKVStrings); and a seccomp profile's file, read here and sent
+/// as its JSON, as docker/cli sends it (parseSecurityOpts), which the command there takes as
+/// the profile. A command shards' parser refuses goes as it is: its refusal is the command's
+/// own there. What a file here fails of is said as the command says it there, with its exit
+/// status.
 fn here_values(
     words: Vec<String>,
     lookup: &dyn Fn(&str) -> Option<String>,
     read: &KvFile,
-) -> Result<Vec<String>, String> {
+) -> Result<Vec<String>, (String, u8)> {
     use shards_cmdline::commands::{CREATE, EXEC, RUN};
     let said = shards_cmdline::grammar::rewrite(&words).unwrap_or_else(|| words.clone());
     let refs: Vec<&str> = said.iter().map(String::as_str).collect();
@@ -572,6 +575,18 @@ fn here_values(
     else {
         return Ok(words);
     };
+    // As run and create word their objections (request.rs, docker/cli run.go withHelp), and
+    // exec its own, plain.
+    let refused = |e: String| {
+        if std::ptr::eq(command, &EXEC) {
+            (e, 1)
+        } else {
+            (
+                format!("shards: {e}\n\nRun '{path} --help' for more information"),
+                NOT_RUN,
+            )
+        }
+    };
     let mut from_files = Vec::new();
     let mut gone = Vec::new();
     for &(name, at, offset) in &parsed.positions {
@@ -587,13 +602,22 @@ fn here_values(
             }
             "env-file" | "label-file" => {
                 let flag = if name == "env-file" { "--env" } else { "--label" };
-                for entry in read(&value, name == "env-file")? {
+                for entry in read(&value, name == "env-file").map_err(refused)? {
                     from_files.push(format!("{flag}={entry}"));
                 }
                 gone.push(at);
                 // The flag's own word, before a value of a word of its own.
                 if offset == 0 {
                     gone.extend(at.checked_sub(1));
+                }
+            }
+            "security-opt" => {
+                let kv = value.split_once('=').or_else(|| value.split_once(':'));
+                if let Some(("seccomp", v)) = kv
+                    && !matches!(v, "" | "builtin" | "unconfined")
+                {
+                    let profile = crate::cli::request::seccomp_profile(v).map_err(refused)?;
+                    *word = format!("{}seccomp={profile}", word.get(..offset).unwrap_or_default());
                 }
             }
             _ => {}
@@ -617,6 +641,13 @@ enum Named {
     /// What the command writes goes to the file here, kept whole or not at all, as a save
     /// here keeps it (cli/save.rs); `failed` begins what a failure says.
     Written { path: String, failed: &'static str },
+    /// The file here that `then`, a command run there once the command is through, writes
+    /// as [`Named::Written`]'s: the Agentfile of the image a pull pulled.
+    WrittenAfter {
+        path: String,
+        failed: &'static str,
+        then: Vec<String>,
+    },
     /// The command reads the file here.
     Read(String),
 }
@@ -626,9 +657,11 @@ enum Named {
 /// `export -o` and `make agentfile -o` write theirs here, `load -i` reads its file here,
 /// and `import` a file it names, as docker/cli's runSave, runExport, runLoad and runImport
 /// write and read theirs (cli/command/image/save.go, load.go, import.go,
-/// container/export.go). A command shards' parser refuses, or `-h`, goes as it is.
+/// container/export.go); and `pull --output-agentfile` writes the image's Agentfile here,
+/// asked of the machine once its pull is through. A command shards' parser refuses, or
+/// `-h`, goes as it is.
 fn here_files(words: Vec<String>) -> (Vec<String>, Option<Named>) {
-    use shards_cmdline::commands::{EXPORT, IMPORT, LOAD, SAVE};
+    use shards_cmdline::commands::{EXPORT, IMPORT, LOAD, PULL, SAVE};
     let said = shards_cmdline::grammar::rewrite(&words).unwrap_or_else(|| words.clone());
     let refs: Vec<&str> = said.iter().map(String::as_str).collect();
     if refs.first() == Some(&"agentfile") {
@@ -645,6 +678,8 @@ fn here_files(words: Vec<String>) -> (Vec<String>, Option<Named>) {
         ("input", "")
     } else if std::ptr::eq(command, &IMPORT) {
         ("", "")
+    } else if std::ptr::eq(command, &PULL) {
+        ("output-agentfile", crate::from_image::FAILED)
     } else {
         return (words, None);
     };
@@ -686,6 +721,21 @@ fn here_files(words: Vec<String>) -> (Vec<String>, Option<Named>) {
         }
         if flag == "input" {
             Named::Read(file)
+        } else if flag == "output-agentfile" {
+            // `-a`, which names no one image, is refused there as here.
+            if parsed.bool("all-tags") {
+                return (words, None);
+            }
+            let mut then = vec!["agentfile".to_string()];
+            if parsed.changed("platform") {
+                then.extend(["--platform".to_string(), parsed.string("platform").to_string()]);
+            }
+            then.extend(parsed.args.first().cloned());
+            Named::WrittenAfter {
+                path: crate::from_image::output_path(&file),
+                failed,
+                then,
+            }
         } else {
             Named::Written { path: file, failed }
         }
@@ -784,9 +834,11 @@ pub(crate) fn kept_here(args: &[OsString]) -> bool {
 
 /// This client's credentials for the registry the command `words` reaches there, as Docker's
 /// CLI sends its own with each pull, push and search it asks its daemon for (D180): those
-/// for the image a pull, push, run or create names, or the index a search asks; as
-/// `SHARDS_AUTH_CONFIG`'s value, none for none; and what finding them warned of. What a
-/// local pull fails of, the command fails of here, before it runs.
+/// for the image a pull, push, run or create names, or the index a search asks, and of
+/// shards' own, the image `make agentfile` names, which it pulls where it is not there, and
+/// the artifact an agent's, harness's or MCP server's push, pull or referrer's removal
+/// names; as `SHARDS_AUTH_CONFIG`'s value, none for none; and what finding them warned of.
+/// What a local pull fails of, the command fails of here, before it runs.
 fn own_credentials(
     words: &[String],
     env: &dyn Fn(&str) -> Option<String>,
@@ -795,6 +847,20 @@ fn own_credentials(
     use shards_registry::auth::Credentials;
     let said = shards_cmdline::grammar::rewrite(words).unwrap_or_else(|| words.to_vec());
     let refs: Vec<&str> = said.iter().map(String::as_str).collect();
+    let lookup = |domain: String| -> Result<(Option<String>, Vec<String>), String> {
+        let (found, warnings) =
+            shards_registry::credentials::lookup(&domain, env).map_err(|e| e.to_string())?;
+        let sent = (found != Credentials::Anonymous)
+            .then(|| shards_registry::credentials::env_config_of(&[(domain, found)]));
+        Ok((sent, warnings))
+    };
+    // shards' own, which read their words themselves (from_image.rs, agent.rs).
+    if let Some(named) = own_named(&refs) {
+        return match shards_image::reference::Reference::parse(named) {
+            Ok(reference) => lookup(reference.domain),
+            Err(_) => Ok((None, Vec::new())),
+        };
+    }
     let (command, path, n) = match refs.as_slice() {
         ["pull", ..] => (&PULL, "shards pull", 1),
         ["image", "pull", ..] => (&PULL, "shards image pull", 2),
@@ -825,10 +891,52 @@ fn own_credentials(
             Err(_) => return Ok((None, Vec::new())),
         }
     };
-    let (found, warnings) = shards_registry::credentials::lookup(&domain, env).map_err(|e| e.to_string())?;
-    let sent = (found != Credentials::Anonymous)
-        .then(|| shards_registry::credentials::env_config_of(&[(domain, found)]));
-    Ok((sent, warnings))
+    lookup(domain)
+}
+
+/// The image or artifact one of shards' own commands names, where it reaches a registry
+/// (`refs`, said as the command it runs): `make agentfile`'s image, the word that is no
+/// flag nor `-o`'s or `--platform`'s value; an artifact's push and pull, the one name; and a
+/// referrer's removal, the one name besides `--referrer`'s value.
+fn own_named<'a>(refs: &[&'a str]) -> Option<&'a str> {
+    match refs {
+        ["agentfile", rest @ ..] => {
+            let mut it = rest.iter();
+            while let Some(word) = it.next() {
+                match *word {
+                    "-o" | "--output" | "--platform" => {
+                        it.next();
+                    }
+                    w if w.starts_with('-') => {}
+                    w => return Some(w),
+                }
+            }
+            None
+        }
+        ["agent" | "harness" | "mcp", "push" | "pull", name] => Some(name),
+        ["agent" | "harness" | "mcp", "rm" | "remove" | "delete", rest @ ..]
+            if rest
+                .iter()
+                .any(|w| *w == "--referrer" || w.starts_with("--referrer=")) =>
+        {
+            let mut it = rest.iter();
+            let mut names = Vec::new();
+            while let Some(word) = it.next() {
+                match *word {
+                    "--referrer" => {
+                        it.next();
+                    }
+                    w if w.starts_with('-') => {}
+                    w => names.push(w),
+                }
+            }
+            match names.as_slice() {
+                [one] => Some(one),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
 }
 
 /// Whether this home's daemon serves now.
@@ -887,7 +995,10 @@ pub(crate) fn forward(home: &Path, context: &Context, args: Vec<OsString>) -> Ex
         &crate::cli::request::kv_file,
     ) {
         Ok(words) => words,
-        Err(e) => return fail(e),
+        Err((said, status)) => {
+            let _ = writeln!(io::stderr(), "{said}");
+            return ExitCode::from(status);
+        }
     };
     let (words, named) = here_files(words);
     let words_sent = words.clone();
@@ -926,7 +1037,7 @@ pub(crate) fn forward(home: &Path, context: &Context, args: Vec<OsString>) -> Ex
         match &named {
             Some(Named::Written { .. }) => t.stdout = false,
             Some(Named::Read(_)) => t.stdin = false,
-            None => {}
+            Some(Named::WrittenAfter { .. }) | None => {}
         }
         (t.stdin || t.stdout || t.stderr).then_some(t)
     });
@@ -957,9 +1068,10 @@ pub(crate) fn forward(home: &Path, context: &Context, args: Vec<OsString>) -> Ex
     let mut written = None;
     let mut stdin: Box<dyn io::Read + Send> = Box::new(io::stdin());
     let mut stdout: Box<dyn io::Write + Send> = Box::new(io::stdout());
+    let mut then = None;
     let (failed_tx, failed_rx) = std::sync::mpsc::channel();
     match &named {
-        Some(Named::Written { path, failed }) => {
+        Some(Named::Written { path, failed } | Named::WrittenAfter { path, failed, .. }) => {
             let mut unfinished = UNFINISHED
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -975,10 +1087,16 @@ pub(crate) fn forward(home: &Path, context: &Context, args: Vec<OsString>) -> Ex
             drop(unfinished);
             match made {
                 Ok((output, file)) => {
-                    stdout = Box::new(Recorded {
+                    let recorded = Box::new(Recorded {
                         file,
                         failed: failed_tx,
                     });
+                    match &named {
+                        Some(Named::WrittenAfter { then: words, .. }) => {
+                            then = Some((words.clone(), recorded))
+                        }
+                        _ => stdout = recorded,
+                    }
                     written = Some((output, *failed));
                 }
                 Err(e) => {
@@ -1008,7 +1126,7 @@ pub(crate) fn forward(home: &Path, context: &Context, args: Vec<OsString>) -> Ex
     }
     let request = Request {
         args: bytes,
-        env,
+        env: env.clone(),
         terminal,
     };
     // Given once the command is asked for: a signal before then ends the client, as it
@@ -1038,7 +1156,7 @@ pub(crate) fn forward(home: &Path, context: &Context, args: Vec<OsString>) -> Ex
         }
         *steered = Some(controls);
     };
-    let ran = client::exec(
+    let mut ran = client::exec(
         &identity,
         context.remote(),
         request,
@@ -1048,6 +1166,26 @@ pub(crate) fn forward(home: &Path, context: &Context, args: Vec<OsString>) -> Ex
         steered,
     );
     crate::cli::terminal::restore();
+    // What writes the file once the command is through, which was asked for it alone.
+    if let (Some((words, recorded)), Ok(Ok(0))) = (then, &ran) {
+        let request = Request {
+            args: words.into_iter().map(String::into_bytes).collect(),
+            env,
+            terminal: None,
+        };
+        let steered = |controls| {
+            *STEERED.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(controls);
+        };
+        ran = client::exec(
+            &identity,
+            context.remote(),
+            request,
+            Some(Box::new(io::empty())),
+            recorded,
+            io::stderr(),
+            steered,
+        );
+    }
     // The file is kept once the command's exit says it is whole and every byte of it was
     // written here; else it goes, as a save here leaves nothing that is not whole.
     let kept = written.map(|(output, failed)| {
@@ -1523,7 +1661,62 @@ mod tests {
             here_values(words("ps -a"), &lookup, &read).unwrap(),
             words("ps -a")
         );
-        assert!(here_values(words("run --env-file gone.env alpine"), &lookup, &read).is_err());
+        // What a file here fails of is said as the command says it.
+        assert_eq!(
+            here_values(words("run --env-file gone.env alpine"), &lookup, &read),
+            Err((
+                "shards: gone.env: not here\n\nRun 'shards run --help' for more information".into(),
+                125
+            ))
+        );
+        assert_eq!(
+            here_values(words("exec --env-file gone.env box sh"), &lookup, &read),
+            Err(("gone.env: not here".into(), 1))
+        );
+        // A seccomp profile's file, read here and sent as its JSON.
+        let dir = shards_testdir::TempDir::new("ctx-seccomp").unwrap();
+        let profile = dir.join("p.json");
+        std::fs::write(&profile, "{ \"defaultAction\": \"SCMP_ACT_ALLOW\" }").unwrap();
+        let profile = profile.to_str().unwrap();
+        let json = r#"{"defaultAction":"SCMP_ACT_ALLOW"}"#;
+        for (given, sent) in [
+            (
+                format!("run --security-opt seccomp={profile} alpine"),
+                format!("run --security-opt seccomp={json} alpine"),
+            ),
+            (
+                format!("create --security-opt=seccomp:{profile} alpine"),
+                format!("create --security-opt=seccomp={json} alpine"),
+            ),
+            (
+                "run --security-opt seccomp=unconfined alpine".into(),
+                "run --security-opt seccomp=unconfined alpine".into(),
+            ),
+            (
+                "run --security-opt no-new-privileges alpine".into(),
+                "run --security-opt no-new-privileges alpine".into(),
+            ),
+        ] {
+            assert_eq!(
+                here_values(words(&given), &lookup, &read),
+                Ok(words(&sent)),
+                "{given}"
+            );
+        }
+        let Err((gone, 125)) = here_values(
+            words("run --security-opt seccomp=gone.json alpine"),
+            &lookup,
+            &read,
+        ) else {
+            panic!("a profile not here is refused");
+        };
+        assert!(
+            gone.starts_with("shards: opening seccomp profile (gone.json) failed: open gone.json: ")
+                && gone.ends_with("\n\nRun 'shards run --help' for more information"),
+            "{gone}"
+        );
+        // And the command there takes the JSON as the profile.
+        assert_eq!(crate::cli::request::seccomp_profile(json), Ok(json.to_string()));
     }
 
     /// What a context carries, and what it refuses until it carries it.
@@ -1583,6 +1776,29 @@ mod tests {
         assert!(kept_here(&args("context ls")));
         assert!(kept_here(&args("list contexts")));
         assert!(!kept_here(&args("ps")));
+    }
+
+    #[test]
+    fn shards_own_commands_name_the_registry_they_reach() {
+        let named = |s: &str| {
+            let refs: Vec<&str> = s.split(' ').collect();
+            own_named(&refs).map(str::to_string)
+        };
+        let some = |s: &str| Some(s.to_string());
+        assert_eq!(
+            named("agentfile -o A --platform linux/amd64 r/i:1"),
+            some("r/i:1")
+        );
+        assert_eq!(named("agentfile r/i:1 --output A"), some("r/i:1"));
+        assert_eq!(named("agent push r/a:1"), some("r/a:1"));
+        assert_eq!(named("mcp pull r/m:1"), some("r/m:1"));
+        assert_eq!(named("harness rm r/h:1 --referrer sha256:ab"), some("r/h:1"));
+        assert_eq!(named("agent remove --referrer=sha256:ab r/a:1"), some("r/a:1"));
+        // A removal here, and a listing, reach no registry.
+        assert_eq!(named("agent rm r/a:1"), None);
+        assert_eq!(named("agent ls"), None);
+        assert_eq!(named("agentfile -o A"), None);
+        assert_eq!(named("agent push"), None);
     }
 
     #[test]
@@ -1653,6 +1869,34 @@ mod tests {
         ] {
             assert_eq!(here_files(words(given)), (words(sent), named), "{given}");
         }
+        // A pull's Agentfile, asked of the machine once the pull is through, of the
+        // platform it named.
+        let then = |path: &str, then: &str| {
+            Some(Named::WrittenAfter {
+                path: path.into(),
+                failed: "failed to write the Agentfile",
+                then: words(then),
+            })
+        };
+        for (given, sent, named) in [
+            (
+                "pull --output-agentfile A alpine",
+                "pull alpine",
+                then("A", "agentfile alpine"),
+            ),
+            (
+                "pull -q --platform linux/amd64 --output-agentfile=A alpine",
+                "pull -q --platform linux/amd64 alpine",
+                then("A", "agentfile --platform linux/amd64 alpine"),
+            ),
+            (
+                "image pull alpine --output-agentfile A",
+                "pull alpine",
+                then("A", "agentfile alpine"),
+            ),
+        ] {
+            assert_eq!(here_files(words(given)), (words(sent), named), "{given}");
+        }
         // Nothing of the client's: stdin, stdout, a URL the daemon fetches, help, a refusal.
         for same in [
             "save alpine",
@@ -1669,6 +1913,8 @@ mod tests {
             "agentfile alpine -o",
             "agentfile -h -o A alpine",
             "save vm web",
+            "pull alpine",
+            "pull -a --output-agentfile A alpine",
             "ps -a",
             "run --rm alpine save -o x.tar a",
         ] {

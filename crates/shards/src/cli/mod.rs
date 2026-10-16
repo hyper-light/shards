@@ -254,15 +254,32 @@ fn container(
     named: usize,
     args: &[OsString],
 ) -> ExitCode {
-    let argv = match utf8(args.get(named..).unwrap_or_default()) {
+    let mut argv = match utf8(args.get(named..).unwrap_or_default()) {
         Ok(argv) => argv,
         Err(e) => return failed(&e),
     };
+    // `pull`'s platform is SHARDS_DEFAULT_PLATFORM's, else DOCKER_DEFAULT_PLATFORM's, where
+    // the command line names none (docker/cli v29.8.1 cli/command/image/pull.go): said
+    // first, so that one named after it is the one kept, as pflag keeps the last given.
+    if std::ptr::eq(command, &shards_cmdline::commands::PULL)
+        && let Some(p) = env_ours_first("SHARDS_DEFAULT_PLATFORM", "DOCKER_DEFAULT_PLATFORM")
+    {
+        argv.splice(0..0, ["--platform".to_string(), p]);
+    }
     let parsed = match read(command, path, &argv, &flags::value) {
         Ok(parsed) => parsed,
         Err(answered) => return answered,
     };
     let _ = std::io::stdout().write_all(parsed.notices.as_bytes());
+    // `pull --output-agentfile`: the image's Agentfile as well as its microVM (AGENTFILE_ARCH.md
+    // §10), its file made before the pull, which fills it once it is through.
+    let agentfile = match pulls_agentfile(command, &parsed) {
+        Ok(agentfile) => agentfile,
+        Err(e) => {
+            let _ = writeln!(std::io::stderr(), "{e}");
+            return ExitCode::FAILURE;
+        }
+    };
     // A listing's `--format` is the client's to apply, and to check first, as the CLI
     // checks it before it asks (container/list.go, buildContainerListOptions).
     #[cfg(unix)]
@@ -518,6 +535,9 @@ fn container(
                 }
                 let status = client::container(&home, &daemon, &command_of(argv), &fds);
                 drop(fds);
+                if let Some(agentfile) = agentfile {
+                    return pulled_agentfile(agentfile, status, &home, &parsed);
+                }
                 match output.map(|o| o.finish(status)) {
                     Some(Err(e)) => {
                         let _ = writeln!(std::io::stderr(), "{e}");
@@ -548,11 +568,62 @@ fn container(
                 progress: None,
             };
             let env = |k: &str| std::env::var(k).ok();
-            return ExitCode::from(crate::pull::command(&parsed, &home, &env, &out, None));
+            let status = crate::pull::command(&parsed, &home, &env, &out, None);
+            if let Some(agentfile) = agentfile {
+                return pulled_agentfile(agentfile, status, &home, &parsed);
+            }
+            return ExitCode::from(status);
         }
         failed(
             "container commands need the daemon, which needs Unix sockets, which shards does not support on this platform yet",
         )
+    }
+}
+
+/// The file `pull --output-agentfile` names, ready before the pull ([`crate::from_image::output`]);
+/// none for another command, or none named. An Agentfile is one image's, which `-a` does
+/// not name.
+fn pulls_agentfile(
+    command: &'static Command,
+    parsed: &flags::Parsed,
+) -> Result<Option<save::Output>, String> {
+    let named = parsed.string("output-agentfile");
+    if !std::ptr::eq(command, &shards_cmdline::commands::PULL) || named.is_empty() {
+        return Ok(None);
+    }
+    if parsed.bool("all-tags") {
+        return Err(
+            "shards: --output-agentfile writes one image's Agentfile, which --all-tags does not name".into(),
+        );
+    }
+    crate::from_image::output(named).map(Some)
+}
+
+/// What a pull that wrote `agentfile` ends with: the Agentfile of the image it pulled, as
+/// stored, once it exited `status` 0; else nothing written, and the pull's status.
+fn pulled_agentfile(
+    agentfile: save::Output,
+    status: u8,
+    home: &std::path::Path,
+    parsed: &flags::Parsed,
+) -> ExitCode {
+    if status != 0 {
+        return ExitCode::from(status);
+    }
+    let written = (|| {
+        let given = parsed.args.first().map(String::as_str).unwrap_or_default();
+        let reference =
+            shards_image::reference::Reference::parse(given).map_err(|e| format!("{given}: {e}"))?;
+        let targets = crate::pull::targets(parsed.string("platform"))?;
+        let text = crate::from_image::stored(home, &reference, &targets)?;
+        crate::from_image::write_into(agentfile, &text)
+    })();
+    match written {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            let _ = writeln!(std::io::stderr(), "{e}");
+            ExitCode::FAILURE
+        }
     }
 }
 

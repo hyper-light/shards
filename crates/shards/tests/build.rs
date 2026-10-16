@@ -11904,42 +11904,56 @@ fn mcp_servers_are_offered_to_those_in_scope() {
     }
 }
 
-/// The test image behind an index of two platforms: this host's, and another
-/// architecture's whose one layer holds `/arch`, its name. The index, its blobs, and that
-/// layer's digest.
-fn two_platform_image() -> (Vec<u8>, Vec<Vec<u8>>, String) {
-    let (ours, mut blobs) = common::test_image();
+/// A build's platforms are `--platform`'s, else SHARDS_DEFAULT_PLATFORM's, else
+/// DOCKER_DEFAULT_PLATFORM's, as buildx takes the flag's default from the latter (v0.37.1
+/// commands/build.go, platformsDefault); a `--platform` given replaces the default whole,
+/// as pflag's first value replaces a string array's default, so that the image is the one
+/// platform named, not an index of two.
+#[test]
+fn a_builds_platform_defaults_to_the_default_platforms() {
+    if cannot_run_vms() {
+        return;
+    }
+    let (index, blobs, _) = common::two_platform_image();
+    let (port, _) = common::registry(index, blobs);
+    let image = format!("127.0.0.1:{port}/test/image:v1");
+    let home = TempDir::new("build-platform");
     let (arch, other) = if cfg!(target_arch = "aarch64") {
         ("arm64", "amd64")
     } else {
         ("amd64", "arm64")
     };
-    let layer = common::tar(&[("arch", 0o644, 0, Some(other.as_bytes()))]);
-    let config = format!(
-        r#"{{"architecture":"{other}","os":"linux","config":{{"Env":["PATH=/bin"]}},"rootfs":{{"type":"layers","diff_ids":["{}"]}}}}"#,
-        common::sha256_digest(&layer)
-    )
-    .into_bytes();
-    let theirs = format!(
-        r#"{{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json","config":{{"mediaType":"application/vnd.oci.image.config.v1+json","digest":"{}","size":{}}},"layers":[{{"mediaType":"application/vnd.oci.image.layer.v1.tar","digest":"{}","size":{}}}]}}"#,
-        common::sha256_digest(&config),
-        config.len(),
-        common::sha256_digest(&layer),
-        layer.len()
-    )
-    .into_bytes();
-    let index = format!(
-        r#"{{"schemaVersion":2,"mediaType":"application/vnd.oci.image.index.v1+json","manifests":[{{"mediaType":"application/vnd.oci.image.manifest.v1+json","digest":"{}","size":{},"platform":{{"architecture":"{arch}","os":"linux"}}}},{{"mediaType":"application/vnd.oci.image.manifest.v1+json","digest":"{}","size":{},"platform":{{"architecture":"{other}","os":"linux"}}}}]}}"#,
-        common::sha256_digest(&ours),
-        ours.len(),
-        common::sha256_digest(&theirs),
-        theirs.len(),
-    )
-    .into_bytes();
-    let layer_digest = common::sha256_digest(&layer);
-    blobs.push(ours);
-    blobs.extend([config, layer, theirs]);
-    (index, blobs, layer_digest)
+    let (ours, theirs) = (format!("linux/{arch}"), format!("linux/{other}"));
+    let ctx = context("build-platform-ctx", &format!("FROM {image}\n"));
+    let shards = |defaults: &[(&str, &str)], args: &[&str]| {
+        let mut env = vec![
+            ("SHARDS_HOME", home.as_os_str()),
+            ("SHARDS_KERNEL", kernel().as_os_str()),
+            ("SHARDS_INIT", guest_init().as_os_str()),
+        ];
+        env.extend(defaults.iter().map(|(k, v)| (*k, std::ffi::OsStr::new(*v))));
+        let ran = run_shards_env(&[], args, &env, TIMEOUT);
+        assert_eq!(ran.status, Some(0), "{defaults:?} {args:?}: {}", ran.stderr);
+        ran.stdout.trim().to_string()
+    };
+    let ctx = ctx.to_str().unwrap();
+    let inspect = |name: &str| shards(&[], &["image", "inspect", "--format", "{{.Architecture}}", name]);
+    shards(
+        &[("DOCKER_DEFAULT_PLATFORM", &theirs)],
+        &["build", "-t", "docker:1", ctx],
+    );
+    assert_eq!(inspect("docker:1"), other);
+    let both = [
+        ("SHARDS_DEFAULT_PLATFORM", theirs.as_str()),
+        ("DOCKER_DEFAULT_PLATFORM", ours.as_str()),
+    ];
+    shards(&both, &["build", "-t", "shards:1", ctx]);
+    assert_eq!(inspect("shards:1"), other);
+    shards(
+        &[("DOCKER_DEFAULT_PLATFORM", &theirs)],
+        &["build", "--platform", &ours, "-t", "named:1", ctx],
+    );
+    assert_eq!(inspect("named:1"), arch);
 }
 
 /// `--platform` for a platform this host's microVMs do not run (D74): its bases are that
@@ -11954,7 +11968,7 @@ fn builds_for_another_platform_run_only_the_build_platforms_steps() {
     if cannot_run_vms() {
         return;
     }
-    let (index, blobs, their_layer) = two_platform_image();
+    let (index, blobs, their_layer) = common::two_platform_image();
     let (port, _) = common::registry(index, blobs);
     let image = format!("127.0.0.1:{port}/test/image:v1");
     let home = TempDir::new("foreign-home");
@@ -12579,7 +12593,7 @@ fn several_platforms_make_one_image_of_their_manifests() {
     if cannot_run_vms() {
         return;
     }
-    let (index, blobs, their_layer) = two_platform_image();
+    let (index, blobs, their_layer) = common::two_platform_image();
     let (port, _) = common::registry(index, blobs);
     let image = format!("127.0.0.1:{port}/test/image:v1");
     let (push_port, repos) = common::writable_registry();
