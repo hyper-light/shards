@@ -7091,6 +7091,19 @@ cause of that build's stall left no evidence, so what the next one leaves is fix
     6.18.48) and `a_builders_memory_is_plugged_as_its_build_needs_it` (the step past all
     its builder's memory says the kernel's "Out of memory: Killed process"); the relay off
     fails the latter.
+  - **Said by the step's runner, before its end (2026-10-16).** The grower said it as it
+    woke, after the kernel ended the step's process, and init relayed the grower's notes
+    only while the step's stdout or stderr was open: a step ended for want of memory
+    closes both as it dies, so its note came after the relay had stopped, and the step's
+    error went without it. CI's x86_64 Linux jobs saw so in 6 of 175 failed jobs
+    (`a_builders_memory_is_plugged_as_its_build_needs_it`, the error and its 137 there,
+    the kernel's words not). The step's runner says it now (crates/init build.rs), once
+    the step is reaped and before its end is reported: where the step's cgroup counted
+    an OOM kill (`memory.events` `oom_kill`, which the kernel counts before it sends the
+    SIGKILL: mm/oom_kill.c `__oom_kill_process`, "Raise event before sending signal"),
+    the kernel's report, read until it says what it ended (`oom_said`); the
+    grower says no kill. Mutation-checked: the runner saying none fails the test every
+    time.
 - **A killed build left its builder running.** A builder's VM ended as its build dropped
   it, or as its guest powered off on its connection closing: a killed `shards build` drops
   nothing, and a guest held at its memory hears nothing. The VM now ends as its `--attach`
