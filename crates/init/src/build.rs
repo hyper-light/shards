@@ -36,6 +36,9 @@ const B: &str = "/b";
 const LAYERS: &str = "/l";
 const ROOT: &str = "/root";
 const EMPTY: &str = "/empty";
+/// This kernel's binfmt_misc, where the emulators of other CPUs' programs are registered
+/// (D179).
+const BINFMT: &str = "/proc/sys/fs/binfmt_misc";
 
 fn err(what: impl std::fmt::Display) -> io::Error {
     io::Error::other(what.to_string())
@@ -252,6 +255,14 @@ fn serve() -> io::Result<()> {
                 let step = Step::decode(&payload).ok_or_else(|| err("a malformed step"))?;
                 b.step(&step)?;
             }
+            kind::EMULATE => {
+                let why = b
+                    .emulate(&payload)
+                    .err()
+                    .map(|e| e.to_string())
+                    .unwrap_or_default();
+                send(&b.conn, kind::EMULATED, why.as_bytes())?;
+            }
             other => return Err(err(format!("an unknown frame kind {other}"))),
         }
     }
@@ -311,6 +322,39 @@ impl Builder {
                 w.finish()?;
                 std::fs::rename(&dir, Path::new(LAYERS).join(layer_name(id)))?;
                 send(&self.conn, kind::LAYERED, &[])?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Registers the emulators `payload` names with this kernel's binfmt_misc (D179), as
+    /// Docker's binfmt tool registers them with a host's: the emulator image on the pmem
+    /// device it names mounted as a base is, where no step reaches it, and each emulator
+    /// opened as it is registered (flag F), which every step's root then reaches.
+    fn emulate(&mut self, payload: &[u8]) -> io::Result<()> {
+        let (device, names) = payload
+            .split_first_chunk::<4>()
+            .ok_or_else(|| err("an emulate frame without its device"))?;
+        let image = self.base(u32::from_be_bytes(*device))?;
+        let register = Path::new(BINFMT).join("register");
+        if !register.exists() {
+            mount("binfmt_misc", Path::new(BINFMT), "binfmt_misc", 0, "")?;
+        }
+        for name in names.split(|&c| c == 0).filter(|n| !n.is_empty()) {
+            let arch = std::str::from_utf8(name).map_err(|_| err("an architecture that is not UTF-8"))?;
+            let e = shards_abi::emulate::of(arch).ok_or_else(|| err(format!("no emulator runs {arch}")))?;
+            let path = image.join("usr/bin").join(e.binary);
+            let path = path
+                .to_str()
+                .ok_or_else(|| err(format!("{}: its path is not UTF-8", e.binary)))?;
+            let line = shards_abi::emulate::register_line(e, path);
+            // The line in one write, as binfmt_misc reads one (fs/binfmt_misc.c,
+            // bm_register_write).
+            let mut f = std::fs::OpenOptions::new().write(true).open(&register)?;
+            match f.write(line.as_bytes()) {
+                Ok(n) if n == line.len() => {}
+                Ok(_) => return Err(err(format!("registering {}: a short write", e.binary))),
+                Err(x) => return Err(io::Error::new(x.kind(), format!("registering {}: {x}", e.binary))),
             }
         }
         Ok(())

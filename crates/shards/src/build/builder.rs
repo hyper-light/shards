@@ -154,6 +154,10 @@ pub struct Boot<'a> {
     pub proxy: Option<&'a super::proxy::Proxy>,
     /// Whether it has this Mac's GPU, for steps given its render node (D145).
     pub gpu: bool,
+    /// The emulators its steps' platforms need (D179): the emulator image's root
+    /// filesystem, one more pmem device after the bases, and the OCI architectures it
+    /// registers of it.
+    pub emulators: Option<(&'a Path, &'a [&'static str])>,
 }
 
 /// A directory of a builder's or a build proxy's own for its sockets ([`socket_dir`]),
@@ -626,6 +630,9 @@ impl Builder {
         for base in boot.bases {
             args.extend(["--pmem".into(), base.into()]);
         }
+        if let Some((image, _)) = boot.emulators {
+            args.extend(["--pmem".into(), image.into()]);
+        }
         if boot.gpu {
             args.push("--gpu".into());
         }
@@ -673,7 +680,7 @@ impl Builder {
         };
         conn.set_nonblocking(false)
             .map_err(|e| format!("the builder's connection: {e}"))?;
-        Ok(Builder {
+        let mut builder = Builder {
             vm,
             net: launched.net,
             #[cfg(windows)]
@@ -686,7 +693,32 @@ impl Builder {
             proxy_url,
             attach,
             attached: HashMap::new(),
-        })
+        };
+        if let Some((_, architectures)) = boot.emulators {
+            let device = u32::try_from(boot.bases.len()).map_err(|_| "too many base images")?;
+            builder.emulate(device, architectures)?;
+        }
+        Ok(builder)
+    }
+
+    /// Has the guest register the emulators of `architectures` (D179), from the emulator
+    /// image on its pmem device `device`, before any step.
+    fn emulate(&mut self, device: u32, architectures: &[&str]) -> Result<(), String> {
+        let mut payload = device.to_be_bytes().to_vec();
+        for a in architectures {
+            payload.extend_from_slice(a.as_bytes());
+            payload.push(0);
+        }
+        self.frame(kind::EMULATE, &payload)?;
+        let mut buf = Vec::new();
+        match self.read_frame(&mut buf)? {
+            kind::EMULATED if buf.is_empty() => Ok(()),
+            kind::EMULATED => Err(format!(
+                "the builder could not register its emulators: {}",
+                String::from_utf8_lossy(&buf)
+            )),
+            other => Err(format!("the builder answered its emulators with frame {other}")),
+        }
     }
 
     /// Attaches `file` to the builder's join disk, read-only or for the guest to write too:

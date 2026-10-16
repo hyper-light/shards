@@ -3629,7 +3629,7 @@ No run-time labels, relays or declassifiers (§12 answer 14, decided by the user
 an internal-only domain to the world (D58), so there is no data to label. Code mode is
 D136.
 
-### D179. Other CPUs' images, emulated in their microVM (in progress)
+### D179. Other CPUs' images, emulated in their microVM (part 1 built)
 
 Images built on an arm64 Mac usually ship to x86_64 hosts, and the other way round, and a
 build for both (`--platform linux/amd64,linux/arm64`, D87) runs each platform's RUN steps.
@@ -3686,8 +3686,15 @@ the platform builds faster, reached as a context (the next item).
   linux/386 on an x86_64 host (the guest kernel's `IA32_EMULATION`, as BuildKit finds a
   host kernel runs it, util/archutil). Apple's CPUs run no 32-bit Arm, so linux/arm is
   emulated on arm64 hosts. A platform without an emulator is refused at its step's turn.
-- **A build's steps** (part 1): each RUN step for another platform runs in the builder as
-  any step does, its programs under their CPU's emulator.
+- **A build's steps** (part 1, built): each RUN step for another platform runs in the
+  builder as any step does, its programs under their CPU's emulator: the builder boots with
+  the emulator image's root as one more pmem device, and before any step is asked
+  (`EMULATE`) for the architectures the build's steps need, which init registers, or
+  says why not (`EMULATED`). `tests/build.rs`
+  `a_step_for_another_cpu_runs_under_its_emulator` builds `uname -m` for the other
+  64-bit CPU, for linux/386 and linux/arm/v7, and for both 64-bit platforms at once, each
+  step seeing its own CPU; with the registration left out, the step fails with the
+  kernel's "exec format error", as BuildKit's does without one.
 - **A run of another platform's image** (part 2): `run --platform` and an image of no
   other platform have their microVM register the emulator before the workload starts, said
   as Docker says it (the platform's mismatch); its template, booted with the emulator's
