@@ -2,14 +2,15 @@
 //! shares with its guest. The VM process cannot: it is confined to its own files (D30) from
 //! before it is given a run, and Landlock (Linux) and App Sandbox (macOS) let it reach no
 //! directory given later. The daemon starts one for each run that shares any, with its
-//! connection to the run's VM as descriptor 3 and each share's directory as 4 + i, and each
-//! share's mode (`ro` or `rw`) and the one name of it shared (empty for all of it) as
-//! arguments. It sends the VM a connection for each share (`kind::SHARE_ENDS`), answers
+//! connection to the run's VM as descriptor 3, each share's directory as 4 + i, and after
+//! them the home's private directory, where a run restored from a save keeps the files its
+//! guest held that no path reaches (D176); and each share's mode (`ro` or `rw`) and the one
+//! name of it shared (empty for all of it) as arguments. It sends the VM a connection for each share (`kind::SHARE_ENDS`), answers
 //! each on a thread of its own, and exits once they have all closed, as its VM ends.
 //!
 //! `shards share --join` serves a microVM's join share instead (D119): the connection its
-//! VM asks it on as descriptor 3, the daemon's as descriptor 4, and an empty directory, the
-//! share's root, as descriptor 5. Its volumes are the directories of the containers joining
+//! VM asks it on as descriptor 3, the daemon's as descriptor 4, an empty directory, the
+//! share's root, as descriptor 5, and the home's private directory as 6. Its volumes are the directories of the containers joining
 //! the microVM's network: the daemon gives it a link for each joiner (`kind::JOIN_LINK`),
 //! on which its volumes come (`kind::JOIN_VOLUME`), served until the link closes as the
 //! joiner ends. It exits as its VM's connection closes.
@@ -103,6 +104,14 @@ pub fn share(args: impl Iterator<Item = OsString>) -> ExitCode {
             "shards: share: raising the descriptor limit: {e}"
         );
     }
+    let ghosts = 4 + i32::try_from(given.len()).unwrap_or(i32::MAX);
+    if !is(ghosts, libc::S_IFDIR) {
+        return failed(&format!(
+            "share: descriptor {ghosts} is not the home's private directory"
+        ));
+    }
+    // SAFETY: the directory the daemon left for this process alone, checked above.
+    let ghosts = unsafe { OwnedFd::from_raw_fd(ghosts) };
     let (mut dirs, mut conns, mut theirs) = (Vec::new(), Vec::new(), Vec::new());
     for (i, g) in given.into_iter().enumerate() {
         let fd = 4 + i as i32;
@@ -124,8 +133,15 @@ pub fn share(args: impl Iterator<Item = OsString>) -> ExitCode {
     let budget = limits.budget(u64::try_from(dirs.len()).unwrap_or(u64::MAX));
     let mut servers = Vec::with_capacity(dirs.len());
     for (i, (dir, g)) in dirs.into_iter().enumerate() {
+        let kept = match ghosts.try_clone() {
+            Ok(kept) => kept,
+            Err(e) => return failed(&format!("share {i}: the home's private directory: {e}")),
+        };
         match Server::with_budget(dir, g.read_only, g.only, budget) {
-            Ok(server) => servers.push(server),
+            Ok(server) => {
+                server.keep_ghosts_in(kept);
+                servers.push(server);
+            }
             Err(e) => return failed(&format!("share {i}: {e}")),
         }
     }
@@ -172,15 +188,18 @@ fn join() -> ExitCode {
         let _ = writeln!(std::io::stderr(), "shards: share --join: {e}");
         ExitCode::FAILURE
     };
-    if !is(3, libc::S_IFSOCK) || !is(4, libc::S_IFSOCK) || !is(5, libc::S_IFDIR) {
-        return failed("descriptors 3, 4 and 5 are not its VM's connection, the daemon's and its root");
+    if !is(3, libc::S_IFSOCK) || !is(4, libc::S_IFSOCK) || !is(5, libc::S_IFDIR) || !is(6, libc::S_IFDIR) {
+        return failed(
+            "descriptors 3 to 6 are not its VM's connection, the daemon's, its root and the home's private directory",
+        );
     }
     // SAFETY: the descriptors the daemon left for this process alone, checked above.
-    let (conn, daemon, root) = unsafe {
+    let (conn, daemon, root, ghosts) = unsafe {
         (
             UnixStream::from_raw_fd(3),
             UnixStream::from_raw_fd(4),
             OwnedFd::from_raw_fd(5),
+            OwnedFd::from_raw_fd(6),
         )
     };
     if let Err(e) = shards_vmm::platform::raise_descriptor_limit() {
@@ -196,6 +215,7 @@ fn join() -> ExitCode {
         Ok(server) => server,
         Err(e) => return failed(&e),
     };
+    server.keep_ghosts_in(ghosts);
     // Each joiner's link while it is served, by number: shut as the VM goes.
     let links: Mutex<HashMap<u64, UnixStream>> = Mutex::new(HashMap::new());
     std::thread::scope(|scope| {

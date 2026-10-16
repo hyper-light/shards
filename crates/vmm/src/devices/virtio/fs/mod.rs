@@ -17,6 +17,7 @@ use super::worker::Worker;
 use super::{Activation, DeviceInterrupt, VirtioDevice, feature};
 use crate::debug;
 use crate::memory::{Access, GuestMemory};
+use crate::snapshot::codec::{self, Reader, Writer};
 
 pub const DEVICE_ID: u32 = 26;
 const QUEUE_SIZE: u16 = 256;
@@ -26,7 +27,12 @@ pub const TAG_BYTES: usize = 36;
 /// Where a share's server is reached once its directory is known: a VM restored ahead of
 /// its run has its devices, and learns its directories with the run (D38).
 #[derive(Debug, Default)]
-pub struct Slot(std::sync::Mutex<Option<UnixStream>>);
+pub struct Slot {
+    conn: std::sync::Mutex<Option<UnixStream>>,
+    /// The tables of the server a restored device's guest was served by (D176), for the
+    /// server it is given next.
+    pending: std::sync::Mutex<Option<Vec<u8>>>,
+}
 
 /// A share's slot, which the VM's owner fills.
 pub type Share = Arc<Slot>;
@@ -53,29 +59,64 @@ impl std::ops::Deref for SlotOf {
 /// The most a request or reply frame holds: a write's data and its headers.
 pub const MAX_FRAME: usize = server::MAX_WRITE as usize + 4096;
 
+/// A frame of the VM process's own, never of a guest's (D176): its length word's top bit,
+/// which no guest's request (at most [`MAX_FRAME`]) sets, as the device sends what the
+/// guest asks. Its first byte names what it asks, and its answer is one too.
+const CONTROL: u32 = 1 << 31;
+/// A control frame's ask: the server's tables, or that it take them.
+const SAVE: u8 = 1;
+const RESTORE: u8 = 2;
+/// The most a control frame holds: a share's tables, which a snapshot's state holds.
+const MAX_CONTROL: usize = server::MAX_TABLES;
+
 impl Slot {
     /// A slot no server is in yet.
     pub const fn new() -> Slot {
-        Slot(std::sync::Mutex::new(None))
+        Slot {
+            conn: std::sync::Mutex::new(None),
+            pending: std::sync::Mutex::new(None),
+        }
     }
 
-    /// Asks the server at the other end of `conn` from here on.
-    pub fn attach(&self, conn: UnixStream) {
-        *self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(conn);
-    }
-
-    /// Whether a server is in it.
-    fn attached(&self) -> bool {
-        self.0
+    /// Asks the server at the other end of `conn` from here on, which first takes the tables
+    /// a restored device brought (D176): Err where it does not, its guest's every file of
+    /// the share then unknown to it.
+    pub fn attach(&self, mut conn: UnixStream) -> Result<(), String> {
+        let pending = self
+            .pending
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .is_some()
+            .take();
+        if let Some(tables) = pending {
+            control(&mut conn, RESTORE, &tables).map_err(|e| format!("its share's server: {e}"))?;
+        }
+        *self
+            .conn
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(conn);
+        Ok(())
+    }
+
+    /// Its server's tables (D176), none with no server: asked while its device is paused,
+    /// so between requests.
+    fn tables(&self) -> Result<Option<Vec<u8>>, String> {
+        let mut conn = self
+            .conn
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        match conn.as_mut() {
+            Some(conn) => control(conn, SAVE, &[]).map(Some),
+            None => Ok(None),
+        }
     }
 
     /// The server's reply to `req`, none for one that takes none; Err with no server, or
     /// with one that has gone. One request at a time: each queue's worker asks in turn.
     fn ask(&self, req: &[u8]) -> io::Result<Option<Vec<u8>>> {
-        let mut conn = self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut conn = self
+            .conn
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let conn = conn.as_mut().ok_or(io::ErrorKind::NotConnected)?;
         write_frame(conn, req)?;
         let reply = read_frame(conn)?.ok_or(io::ErrorKind::UnexpectedEof)?;
@@ -112,12 +153,98 @@ pub fn read_frame(from: &mut UnixStream) -> io::Result<Option<Vec<u8>>> {
     Ok(Some(bytes))
 }
 
+/// Sends `ask` and `bytes` as a control frame, and reads its answer: what it brings, or the
+/// server's why not.
+fn control(conn: &mut UnixStream, ask: u8, bytes: &[u8]) -> Result<Vec<u8>, String> {
+    let mut frame = Vec::with_capacity(1 + bytes.len());
+    frame.push(ask);
+    frame.extend_from_slice(bytes);
+    write_control(conn, &frame).map_err(|e| e.to_string())?;
+    match read_any(conn).map_err(|e| e.to_string())? {
+        Some(Frame::Control(answer)) => match answer.split_first() {
+            Some((0, brought)) => Ok(brought.to_vec()),
+            Some((_, why)) => Err(String::from_utf8_lossy(why).into_owned()),
+            None => Err("an empty answer".into()),
+        },
+        Some(Frame::Request(_)) => Err("an answer that is no control frame's".into()),
+        None => Err("it closed first".into()),
+    }
+}
+
+fn write_control(to: &mut UnixStream, bytes: &[u8]) -> io::Result<()> {
+    if bytes.len() > MAX_CONTROL {
+        return Err(io::ErrorKind::InvalidInput.into());
+    }
+    let len = u32::try_from(bytes.len()).map_err(|_| io::ErrorKind::InvalidInput)? | CONTROL;
+    let mut frame = Vec::with_capacity(4 + bytes.len());
+    frame.extend_from_slice(&len.to_le_bytes());
+    frame.extend_from_slice(bytes);
+    to.write_all(&frame)
+}
+
+/// A frame as the share process reads it: a guest's request, or the VM process's own.
+enum Frame {
+    Request(Vec<u8>),
+    Control(Vec<u8>),
+}
+
+/// The next frame, none at the end; Err for one past its kind's most.
+fn read_any(from: &mut UnixStream) -> io::Result<Option<Frame>> {
+    let mut len = [0u8; 4];
+    match from.read_exact(&mut len) {
+        Ok(()) => {}
+        Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => return Ok(None),
+        Err(e) => return Err(e),
+    }
+    let word = u32::from_le_bytes(len);
+    let (control, len, most) = if word & CONTROL != 0 {
+        (true, (word & !CONTROL) as usize, MAX_CONTROL)
+    } else {
+        (false, word as usize, MAX_FRAME)
+    };
+    if len > most {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("a {len}-byte frame"),
+        ));
+    }
+    let mut bytes = Vec::new();
+    bytes
+        .try_reserve_exact(len)
+        .map_err(|e| io::Error::other(format!("a {len}-byte frame: {e}")))?;
+    bytes.resize(len, 0);
+    from.read_exact(&mut bytes)?;
+    Ok(Some(if control {
+        Frame::Control(bytes)
+    } else {
+        Frame::Request(bytes)
+    }))
+}
+
 /// Answers `conn`'s requests with `server` until it closes: the share process's side.
-/// A request that takes no reply gets an empty frame, so that the asker waits on none.
+/// A request that takes no reply gets an empty frame, so that the asker waits on none. A
+/// control frame, the VM process's own, asks for the server's tables, or gives them
+/// (D176), and is answered with one: 0 then what it asked for, or 1 then why not.
 pub fn answer(server: &server::Server, mut conn: UnixStream) -> io::Result<()> {
-    while let Some(req) = read_frame(&mut conn)? {
-        let reply = server.handle(&req).unwrap_or_default();
-        write_frame(&mut conn, &reply)?;
+    while let Some(frame) = read_any(&mut conn)? {
+        match frame {
+            Frame::Request(req) => {
+                let reply = server.handle(&req).unwrap_or_default();
+                write_frame(&mut conn, &reply)?;
+            }
+            Frame::Control(asked) => {
+                let done = match asked.split_first() {
+                    Some((&SAVE, [])) => server.save(),
+                    Some((&RESTORE, tables)) => server.restore(tables).map(|()| Vec::new()),
+                    _ => Err("a control frame of no known ask".into()),
+                };
+                let answer = match done {
+                    Ok(brought) => [&[0u8][..], &brought].concat(),
+                    Err(why) => [&[1u8][..], why.as_bytes()].concat(),
+                };
+                write_control(&mut conn, &answer)?;
+            }
+        }
     }
     Ok(())
 }
@@ -129,6 +256,9 @@ pub struct Fs {
     context: Option<(Arc<GuestMemory>, Arc<DeviceInterrupt>)>,
     workers: Vec<Worker>,
     paused: Vec<Queue>,
+    /// Its server's tables as its last [`unsaved`](VirtioDevice::unsaved) found them, for
+    /// the save that follows it (D176).
+    tables: std::sync::Mutex<Option<Vec<u8>>>,
 }
 
 impl std::fmt::Debug for Fs {
@@ -163,6 +293,7 @@ impl Fs {
             context: None,
             workers: Vec::new(),
             paused: Vec::new(),
+            tables: std::sync::Mutex::new(None),
         })
     }
 
@@ -329,12 +460,43 @@ impl VirtioDevice for Fs {
     }
 
     /// A served share's files are its server's, which the guest holds by node IDs that
-    /// live in the server alone: a snapshot would resume a guest whose every open file of
-    /// it the restore's server knows nothing of (D176).
+    /// live in the server alone (D176): its server's tables are asked for here, as the
+    /// snapshot's devices are paused, for the save that follows to keep, and what it
+    /// cannot keep refuses the snapshot.
     fn unsaved(&self) -> Option<String> {
-        self.server.attached().then(|| {
-            "a volume is mounted in the microVM, whose open files a snapshot does not keep yet".into()
-        })
+        match self.server.tables() {
+            Ok(tables) => {
+                *self
+                    .tables
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = tables;
+                None
+            }
+            Err(e) => Some(format!("a volume's server: {e}")),
+        }
+    }
+
+    /// Its server's tables, which a restore gives the server its run is given: none where
+    /// it had none, a template's.
+    fn save(&self, w: &mut Writer) {
+        let tables = self
+            .tables
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        w.bytes(tables.as_deref().unwrap_or_default());
+    }
+
+    fn restore(&mut self, r: &mut Reader<'_>) -> codec::Result<()> {
+        let tables = r.bytes(MAX_CONTROL)?;
+        if !tables.is_empty() {
+            *self
+                .server
+                .pending
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(tables.to_vec());
+        }
+        Ok(())
     }
 }
 
@@ -404,10 +566,61 @@ mod tests {
     }
 
     /// A share that answers each request with an empty success, after `hold` lets it.
+    /// A share's tables go by control frames, the VM process's own, between a slot and its
+    /// share process's [`answer`] (D176): a restored device's slot gives its new server what
+    /// its old one said, before it asks it anything, and a guest's request, however it is
+    /// made, is never one. A server that refuses them leaves the slot with no server.
+    #[test]
+    fn a_shares_tables_go_to_the_server_its_restored_slot_is_given() {
+        let dir = shards_testdir::TempDir::new("fs-tables").unwrap();
+        std::fs::write(dir.join("f"), "f").unwrap();
+        let serve = || {
+            let server = server::Server::new(std::fs::File::open(&dir).unwrap().into(), false, None).unwrap();
+            let (ours, theirs) = UnixStream::pair().unwrap();
+            let t = std::thread::spawn(move || answer(&server, theirs).unwrap());
+            (ours, t)
+        };
+        let (conn, first) = serve();
+        let slot = Slot::new();
+        slot.attach(conn).unwrap();
+        // A LOOKUP, as a guest's request goes, then the server's tables.
+        let mut lookup = Vec::new();
+        lookup.extend((40u32 + 2).to_le_bytes());
+        lookup.extend(1u32.to_le_bytes());
+        lookup.extend(7u64.to_le_bytes());
+        lookup.extend(1u64.to_le_bytes());
+        lookup.extend([0u8; 16]);
+        lookup.extend(b"f\0");
+        let reply = slot.ask(&lookup).unwrap().unwrap();
+        assert_eq!(i32::from_le_bytes(reply[4..8].try_into().unwrap()), 0);
+        let tables = slot.tables().unwrap().unwrap();
+        assert!(!tables.is_empty());
+        drop(slot);
+        first.join().unwrap();
+        // Restored: its next server takes them as it is given.
+        let restored = Slot::new();
+        *restored.pending.lock().unwrap() = Some(tables.clone());
+        let (conn, second) = serve();
+        restored.attach(conn).unwrap();
+        let reply = restored.ask(&lookup).unwrap().unwrap();
+        assert_eq!(i32::from_le_bytes(reply[4..8].try_into().unwrap()), 0);
+        drop(restored);
+        second.join().unwrap();
+        // Tables a server cannot take: the slot is given no server.
+        let refused = Slot::new();
+        *refused.pending.lock().unwrap() = Some(tables[..tables.len() - 1].to_vec());
+        let (conn, third) = serve();
+        assert!(refused.attach(conn).unwrap_err().contains("its share's server"));
+        assert!(refused.ask(&lookup).is_err());
+        third.join().unwrap();
+        // A guest's request is a frame of at most MAX_FRAME, its length word's top bit clear.
+        assert!(MAX_FRAME < CONTROL as usize);
+    }
+
     fn share(hold: mpsc::Receiver<()>, asked: mpsc::Sender<Vec<u8>>) -> (Share, std::thread::JoinHandle<()>) {
         let (ours, theirs) = UnixStream::pair().unwrap();
         let slot = Share::default();
-        slot.attach(ours);
+        slot.attach(ours).unwrap();
         let server = std::thread::spawn(move || {
             let mut conn = theirs;
             while let Ok(Some(req)) = read_frame(&mut conn) {

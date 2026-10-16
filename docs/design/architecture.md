@@ -3718,8 +3718,8 @@ coordinator would take the request for its own. The machine is taken apart only 
 save has let go of it: the save holds the VM and its devices by weak references, which
 `Running` alone owns. What a save cannot keep whole refuses it, and the microVM goes on as
 it was, with nothing of the save left: a host's devices (VFIO), a GPU's contexts, a
-container joined to it (D119), and, until part 5, a mounted volume, whose open files are
-its server's by node IDs no snapshot holds.
+container joined to it (D119), and files it holds open in its volumes after removing them
+that hold more than a snapshot's state keeps (part 5).
 
 Containers joined to a microVM run in it, each its own container's run: a snapshot would
 keep their processes, and a restore bring them back, without their containers. So a
@@ -3791,6 +3791,41 @@ at p50 quiet, the commit's sync among it, and a restore 18 ms at p50. `shards li
 microVM's snapshots, newest first, when each was saved and the disk it takes; `shards
 remove snapshot NAME SNAPSHOT...` removes them, and `shards rm` with the microVM. A run on
 the host's network (D124) is not saved: its guest's sockets are the host's, which no
+snapshot keeps.
+
+**Volumes** (part 5). A volume is served to the guest by its run's share process (D38),
+whose FUSE server holds what the guest's kernel holds of it: each node by an ID the server
+drew, with its parent, its name and its count of lookups, and each open handle. A snapshot
+keeps those tables. As the devices are paused, each share's device asks its server for
+them by a control frame of the VM process's own, marked by its length word's top bit,
+which no guest's request sets (a guest's frame is at most a write's data and headers), and
+the save keeps them in the device's state (snapshot format 20). A restored run has a share
+process of its own, as every run has, and the restored device gives its new server the
+tables before it asks anything, before the guest's vCPUs run. The server opens each node
+and handle along its path as the guest uses it, checked to be the same file by its device
+and inode, as it opens one it let go of; the guest's open files, its working directory in
+the volume and its cached names go on as they were. A directory whose device numbers
+changed, as a host's boot may change them, is taken as of the new ones; one that is
+another directory, its root not the saved root's inode, refuses the restore, as every file
+the guest held of it would be stale. A file the guest holds open after removing its last
+name no path reaches, and its server holds it by a descriptor alone: its bytes go with
+the tables, as CRIU's images carry such a "ghost" file's (Documentation/criu.txt, up to
+`--ghost-limit`, 1 MiB unless told otherwise), within what a snapshot's state holds, 64
+MiB, which a save now checks it is under as a restore does. A restored server holds each
+in a file of its own, made in the home's private directory (`tmp`, 0700), which the
+daemon hands each share process, and removed from it at once; one a crash left there
+before its removal, the next daemon's start removes. A directory or special file removed
+while open, and a removed file the server had no descriptor left to keep (past its
+budget), still refuse the save. Held by
+`a_saved_share_is_served_again_by_a_restored_server` (fs/server.rs: an open handle read on,
+a directory's node, another directory refused, the device renumbered, mutation-checked),
+`a_shares_tables_go_to_the_server_its_restored_slot_is_given` (fs/mod.rs), and on real
+microVMs by `a_saved_microvm_writes_on_through_its_volume`, a guest appending to a file it
+holds open, from the volume's directory, through a save and a restore: each count once, in
+order (mutation-checked: without the tables, the restored guest writes nothing more), and
+its guest writing and reading on through a file it removed (mutation-checked: restored
+without its bytes, the file's next write fails); and by
+`a_save_refused_leaves_the_microvm_running_and_nothing_behind` for removed files past what a
 snapshot keeps.
 
 **Docker's words** (part 4). `checkpoint create [--leave-running] CONTAINER CHECKPOINT`,

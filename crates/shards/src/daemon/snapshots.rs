@@ -203,6 +203,25 @@ pub(super) fn remove_unsaved(dir: &std::path::Path, note: &mut dyn FnMut(String)
     }
 }
 
+/// Removes from the home's private directory `dir` the files share processes made for
+/// restored guests (D176) that a crash left before removing them, as a daemon starts, no
+/// share process of its own running yet.
+pub(super) fn remove_ghosts(dir: &std::path::Path, note: &mut dyn FnMut(String)) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        if name
+            .to_str()
+            .is_some_and(|n| n.starts_with(shards_vmm::devices::virtio::fs::server::GHOST_PREFIX))
+            && let Err(e) = std::fs::remove_file(entry.path())
+        {
+            note(format!("{}: {e}", entry.path().display()));
+        }
+    }
+}
+
 /// Whether `asked` may name a checkpoint (moby validateCheckpointID).
 pub(super) fn valid_checkpoint(asked: &str) -> bool {
     valid(asked)

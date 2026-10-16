@@ -207,8 +207,10 @@ fn shared(link: &UnixStream, slots: &[shards_vmm::devices::virtio::fs::Share]) -
         ));
     }
     shards_ipc::send(link, kind::TAKEN, &[], &[]).map_err(|e| format!("the share process: {e}"))?;
+    // Each takes the tables of the server its guest was served by, where it was restored
+    // from a save of its run (D176), before the run's guest runs.
     for (slot, end) in slots.iter().zip(ends) {
-        slot.attach(end);
+        slot.attach(end)?;
     }
     Ok(())
 }
@@ -590,7 +592,11 @@ fn relay_signals(conn: &UnixStream, to: &'static ToGuest, from: From<'_>) {
                     let _ = shards_ipc::send(conn, kind::EXEC_TAKEN, number, &[]);
                 }
                 match (message.fds.into_iter().next(), crate::vm_run::join_share()) {
-                    (Some(server), Some(slot)) => slot.attach(UnixStream::from(server)),
+                    (Some(server), Some(slot)) => {
+                        if let Err(e) = slot.attach(UnixStream::from(server)) {
+                            let _ = writeln!(io::stderr(), "shards: a join share: {e}");
+                        }
+                    }
                     (None, _) => {
                         let _ = writeln!(io::stderr(), "shards: a join share without its server");
                     }

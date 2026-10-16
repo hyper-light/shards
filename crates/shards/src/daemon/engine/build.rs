@@ -243,7 +243,7 @@ impl<D: Disk> Daemon<D> {
                 "session: a context sent through a BuildKit session (buildx's) is not served yet: send it as the call's body",
             ));
         }
-        let iid = self.home.join("tmp").join(format!(
+        let iid = self.home.join(crate::daemon::PRIVATE).join(format!(
             "build-{}.iid",
             crate::containers::new_id().unwrap_or_default()
         ));

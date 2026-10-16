@@ -360,6 +360,17 @@ pub fn main() -> ! {
                 std::thread::sleep(every);
             }
         }
+        // A counter written to file `arg(1)` as it grows, a line every `arg(2)` ms, each line
+        // synced, through one descriptor opened once in the file's directory, which it works
+        // in, and printed: a volume's file and directory a saved microVM holds, which a
+        // restore of it goes on writing through (D176).
+        "appender" => appender(arg(1), arg(2).parse().unwrap_or(100)),
+        // File `arg(1)` made holding `held`, of `arg(2)` bytes where given (the rest a
+        // hole), held open, and its name removed; then, every 100 ms, a count written after
+        // its first line through that descriptor and synced, which its server must take, and
+        // the line read back and printed: a file a guest holds that no path reaches, whose
+        // bytes a save keeps and a restore of it holds again (D176).
+        "unlinked-held" => unlinked_held(arg(1), arg(2).parse().ok()),
         "sleep" => {
             let _ = writeln!(io::stdout(), "ready");
             loop {
@@ -4713,6 +4724,85 @@ fn walk(mib: usize, steps: u64) -> i32 {
 
 /// `swap-kept MIB`: MIB MiB of a pattern of its own, then each round reads all of it back
 /// (`main`).
+/// `unlinked-held`'s: see its words.
+fn unlinked_held(path: &str, size: Option<u64>) -> i32 {
+    use std::io::Write as _;
+    use std::os::unix::fs::FileExt as _;
+    let held = std::fs::File::options()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(path)
+        .and_then(|mut f| {
+            f.write_all(b"held\n")?;
+            if let Some(size) = size {
+                f.set_len(size)?;
+            }
+            f.sync_data()?;
+            std::fs::remove_file(path).map(|()| f)
+        });
+    let held = match held {
+        Ok(held) => held,
+        Err(e) => {
+            let _ = writeln!(io::stderr(), "{path}: {e}");
+            return 1;
+        }
+    };
+    let _ = writeln!(io::stdout(), "ready");
+    let mut n = 0u64;
+    loop {
+        n += 1;
+        let mut line = [0u8; 5];
+        let done = held
+            .write_all_at(format!("{n:016}").as_bytes(), 5)
+            .and_then(|()| held.sync_data())
+            .and_then(|()| held.read_exact_at(&mut line, 0));
+        match done {
+            Ok(()) => {
+                let _ = io::stdout().write_all(&line);
+            }
+            Err(e) => {
+                let _ = writeln!(io::stderr(), "{path}: {e}");
+                return 1;
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+}
+
+/// `appender`'s: see its words.
+fn appender(path: &str, ms: u64) -> i32 {
+    let path = std::path::Path::new(path);
+    let opened = path
+        .parent()
+        .map_or(Ok(()), std::env::set_current_dir)
+        .and_then(|()| {
+            std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path.file_name().unwrap_or_default())
+        });
+    let mut file = match opened {
+        Ok(file) => file,
+        Err(e) => {
+            let _ = writeln!(io::stderr(), "{}: {e}", path.display());
+            return 1;
+        }
+    };
+    let _ = writeln!(io::stdout(), "ready");
+    let mut n = 0u64;
+    loop {
+        n += 1;
+        if let Err(e) = writeln!(file, "{n}").and_then(|()| file.sync_data()) {
+            let _ = writeln!(io::stderr(), "{n}: {e}");
+            return 1;
+        }
+        let _ = writeln!(io::stdout(), "{n}");
+        std::thread::sleep(std::time::Duration::from_millis(ms));
+    }
+}
+
 fn swap_kept(mib: usize) -> i32 {
     let byte = |i: usize| (i.wrapping_mul(2_654_435_761) >> 13) as u8;
     let held: Vec<Vec<u8>> = (0..mib)
