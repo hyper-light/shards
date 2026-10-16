@@ -79,10 +79,12 @@ jobs:
 
   # The platform matrix (docs/design/architecture.md D13) on native runners. Every target is
   # linted; the ones a runner can execute are tested. VM tests print SKIP where the host has
-  # no backend yet or no hardware virtualization.
+  # no backend yet or no hardware virtualization. The tests' step has 41 minutes, a third
+  # above the slowest measured, 30.2 on x86_64 Linux, and the job 63, with a third above
+  # its other steps' slowest, 15.8 on Windows (M245).
   native:
     name: ${{ matrix.target }}
-    timeout-minutes: 60
+    timeout-minutes: 63
     strategy:
       fail-fast: false
       matrix:
@@ -161,7 +163,7 @@ jobs:
       # runs, whatever fails before it: a failing one hides none after it.
       - name: Tests
         if: matrix.test
-        timeout-minutes: 30
+        timeout-minutes: 41
         shell: bash
         run: |
           case "${{ matrix.target }}" in

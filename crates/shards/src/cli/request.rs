@@ -888,7 +888,7 @@ pub(crate) fn for_test(args: &[String]) -> Result<Run, String> {
 /// skipped, leading space trimmed, a byte-order mark dropped; a line of a key alone is
 /// the environment's value of it with `lookup` (`--env-file`), and dropped without it
 /// (`--label-file`), or where it is not set.
-fn kv_file(path: &str, lookup: bool) -> Result<Vec<String>, String> {
+pub(crate) fn kv_file(path: &str, lookup: bool) -> Result<Vec<String>, String> {
     let bytes = std::fs::read(path).map_err(|e| format!("open {path}: {}", go_errno(&e)))?;
     let invalid = |why: String| format!("invalid env file ({path}): {why}");
     let mut out = Vec::new();

@@ -47,7 +47,7 @@ pub(crate) struct Refusal {
 }
 
 /// The host whose credentials and certificates a search of `searched` uses.
-fn host(searched: &Searched) -> &str {
+pub(crate) fn host(searched: &Searched) -> &str {
     match searched {
         Searched::Hub => "docker.io",
         Searched::Quay => "quay.io",

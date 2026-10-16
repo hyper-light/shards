@@ -11,8 +11,8 @@ use std::time::{Duration, Instant};
 
 use bytes::BytesMut;
 use hyper_quic::{
-    ClientConfig, ClientConfigHandle, Connection, ConnectionHandle, DatagramEvent, Dir, Endpoint,
-    EndpointConfig, Event, ServerConfig, StreamEvent, StreamId, VarInt,
+    ClientConfig, ClientConfigHandle, Connection, ConnectionError, ConnectionHandle, DatagramEvent, Dir,
+    Endpoint, EndpointConfig, Event, ServerConfig, StreamEvent, StreamId, VarInt,
 };
 
 use crate::Error;
@@ -76,12 +76,20 @@ impl<C> Sender<C> {
     }
 }
 
+/// How this side closes a connection: an application's error code (RFC 9000 §20.2), and the
+/// words its peer is given.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Close {
+    pub code: u32,
+    pub why: &'static str,
+}
+
 /// What the driver tells its handler of, and the means to act on it.
 pub trait Handler {
     type Command;
-    /// A connection's handshake is done; `peer` is the key it presented. Returns whether to
-    /// keep it.
-    fn connected(&mut self, io: &mut Io<'_>, conn: ConnKey, peer: &[u8]) -> bool;
+    /// A connection's handshake is done; `peer` is the key it presented. It is kept, or closed
+    /// as the handler says.
+    fn connected(&mut self, io: &mut Io<'_>, conn: ConnKey, peer: &[u8]) -> Result<(), Close>;
     /// The peer opened `stream`. QUIC tells of a stream it opened before anything else of it.
     fn opened(&mut self, io: &mut Io<'_>, conn: ConnKey, stream: StreamId);
     /// `stream` has bytes to read, or ended.
@@ -91,14 +99,22 @@ pub trait Handler {
     /// The peer reads no more of `stream` (STOP_SENDING), whose side here is reset already,
     /// as RFC 9000 §3.5 asks.
     fn stopped(&mut self, io: &mut Io<'_>, conn: ConnKey, stream: StreamId);
-    /// A connection ended: closed, timed out, or refused at its handshake.
-    fn lost(&mut self, io: &mut Io<'_>, conn: ConnKey, why: &str);
+    /// A connection ended: closed, timed out, or refused at its handshake; `code`, the error
+    /// code its peer closed it with, where its peer did (RFC 9000 §20.2). One this side closed
+    /// is not told of: its handler knows.
+    fn lost(&mut self, io: &mut Io<'_>, conn: ConnKey, why: &str, code: Option<u64>);
     /// Another thread's command.
     fn command(&mut self, io: &mut Io<'_>, command: Self::Command);
     /// Whether the driver may end, once it has sent what it holds: a client's, once its
     /// command has ended and it has closed its connection, whose peer is then told so (a
     /// closing endpoint need only have sent its CONNECTION_CLOSE, RFC 9000 §10.2).
     fn done(&self) -> bool;
+    /// When the handler is next to act of its own accord: never, unless it keeps time.
+    fn due(&self) -> Option<Instant> {
+        None
+    }
+    /// That time has come ([`Handler::due`]).
+    fn timeout(&mut self, _io: &mut Io<'_>, _now: Instant) {}
 }
 
 /// The driver's connections, as its handler acts on them.
@@ -274,6 +290,11 @@ impl Io<'_> {
         Ok(out)
     }
 
+    /// When the driver's turn began.
+    pub fn now(&self) -> Instant {
+        self.now
+    }
+
     /// Whether `conn` is open and its handshake done.
     pub fn is_connected(&mut self, conn: ConnKey) -> bool {
         self.conn(conn).is_ok_and(|c| c.connected && !c.quic.is_closed())
@@ -377,13 +398,21 @@ impl<H: Handler> Driver<H> {
         loop {
             let now = Instant::now();
             self.commands_now(now);
+            if self.handler.due().is_some_and(|at| at <= now) {
+                let (mut io, handler) = self.io(now);
+                handler.timeout(&mut io, now);
+                self.client = io.client;
+            }
             self.timers(now);
             self.transmit(now)?;
             if (self.stopping || self.handler.done()) && self.out.is_empty() {
                 return Ok(());
             }
-            let wait = self
-                .next_timer()
+            let next = match (self.next_timer(), self.handler.due()) {
+                (Some(a), Some(b)) => Some(a.min(b)),
+                (a, b) => a.or(b),
+            };
+            let wait = next
                 .map(|at| at.saturating_duration_since(Instant::now()))
                 .unwrap_or(crate::tls::IDLE)
                 .max(Duration::from_micros(100));
@@ -566,15 +595,19 @@ impl<H: Handler> Driver<H> {
                     conn.connected = true;
                 }
                 let (mut io, handler) = self.io(now);
-                if !handler.connected(&mut io, key, &peer) {
-                    io.close(key, 1, "not enrolled");
+                if let Err(close) = handler.connected(&mut io, key, &peer) {
+                    io.close(key, close.code, close.why);
                 }
                 self.client = io.client;
             }
             Event::ConnectionLost { reason } => {
+                let code = match &reason {
+                    ConnectionError::ApplicationClosed(close) => Some(close.error_code.into_inner()),
+                    _ => None,
+                };
                 let why = reason.to_string();
                 let (mut io, handler) = self.io(now);
-                handler.lost(&mut io, key, &why);
+                handler.lost(&mut io, key, &why, code);
                 self.client = io.client;
             }
             Event::Stream(StreamEvent::Opened { dir: Dir::Bi }) => {

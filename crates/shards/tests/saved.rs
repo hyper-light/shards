@@ -99,6 +99,23 @@ fn exit(child: &mut Child) -> Option<i32> {
 }
 
 /// The ID of the container `name`.
+/// What a failing test says of microVM `name`: its state, as inspect gives it (its exit,
+/// and whether the kernel killed its command for memory), and the end of its daemon's log,
+/// where a microVM's end is said (CI's x86_64 runs 38808371825, 38812393591 and
+/// 38907736104 lost this one's, a save finding it stopped, and a restore it went quiet in).
+fn evidence(home: &Path, name: &str) -> String {
+    let state = shards_in(home, &["inspect", "-f", "{{json .State}}", name]);
+    let log = std::fs::read_to_string(home.join("daemon.log")).unwrap_or_default();
+    let lines: Vec<&str> = log.lines().collect();
+    let tail = lines.get(lines.len().saturating_sub(60)..).unwrap_or_default();
+    format!(
+        "its state: {}{}\nthe daemon's log's end:\n{}",
+        state.stdout,
+        state.stderr,
+        tail.join("\n")
+    )
+}
+
 fn id_of(home: &Path, name: &str) -> String {
     let inspected = shards_in(home, &["inspect", "-f", "{{.Id}}", name]);
     assert_eq!(inspected.status, Some(0), "{inspected}");
@@ -572,9 +589,10 @@ fn a_saved_microvm_keeps_what_it_swapped() {
     ]);
     assert_eq!(run.status, Some(0), "{run}");
     let log = || logs(&home, "swapped");
-    until("its pattern kept", &mut || log().contains("kept 2\n"), &log);
+    let said = || format!("{}\n{}", log(), evidence(&home, "swapped"));
+    until("its pattern kept", &mut || log().contains("kept 2\n"), &said);
     let saved = shards(&["save", "vm", "swapped", "full"]);
-    assert_eq!(saved.status, Some(0), "{saved}");
+    assert_eq!(saved.status, Some(0), "{saved}\n{}", evidence(&home, "swapped"));
     let snapshot = home
         .join("containers")
         .join(id_of(&home, "swapped"))
@@ -585,11 +603,16 @@ fn a_saved_microvm_keeps_what_it_swapped() {
     assert!(kept.len() > 0, "no swap kept");
     let rounds = log().matches("kept ").count();
     let restored = shards(&["restore", "vm", "swapped"]);
-    assert_eq!(restored.status, Some(0), "{restored}");
+    assert_eq!(
+        restored.status,
+        Some(0),
+        "{restored}\n{}",
+        evidence(&home, "swapped")
+    );
     until(
         "its pattern kept after the restore",
         &mut || log().matches("kept ").count() >= rounds + 3,
-        &log,
+        &said,
     );
     assert!(!log().contains("lost"), "{}", log());
     assert_eq!(shards(&["kill", "swapped"]).status, Some(0));

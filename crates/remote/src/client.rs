@@ -1,7 +1,8 @@
 //! The client's half (D180): a command sent whole to another machine's daemon, its stdin sent
 //! as it comes, and what the command prints written here as it comes, by threads of their
 //! own, so that a reader of its output that stops a while holds up no packet the connection's
-//! liveness needs.
+//! liveness needs. What steers the command, its terminal's size and the signals its client
+//! receives, goes on a control stream of its own (`frame`), once there is any.
 
 use std::io::{Read, Write};
 use std::net::SocketAddr;
@@ -12,8 +13,8 @@ use hyper_quic::StreamId;
 use crate::frame::{self, Request, Tag};
 use crate::identity::{Fingerprint, Identity};
 use crate::invite::{self, Invitation};
-use crate::net::{Command, ConnKey, Driver, Handler, Io, Read as StreamRead, Sender};
-use crate::{Error, tls};
+use crate::net::{Close, Command, ConnKey, Driver, Handler, Io, Read as StreamRead, Sender};
+use crate::{Error, server, tls};
 
 /// How many bytes of a stream's frames wait unsent before its reader waits too: a QUIC
 /// stream's own receive window upstream, which the connection's flow control then keeps.
@@ -44,6 +45,27 @@ enum Event {
     Stdin(Vec<u8>),
     StdinEnd,
     Drained,
+    /// The client's terminal is this size now, rows then columns.
+    Resize(u16, u16),
+    /// The client received the signal of this Linux number.
+    Signal(u32),
+}
+
+/// What steers a command [`exec`] runs, from another thread while it runs: its terminal's
+/// size, and the signals its client receives.
+#[derive(Debug)]
+pub struct Controls(Sender<Event>);
+
+impl Controls {
+    /// The client's terminal is `rows` by `cols` now.
+    pub fn resize(&self, rows: u16, cols: u16) -> Result<(), Error> {
+        self.0.send(Command::Handler(Event::Resize(rows, cols)))
+    }
+
+    /// The client received the signal Linux numbers `linux`.
+    pub fn signal(&self, linux: u32) -> Result<(), Error> {
+        self.0.send(Command::Handler(Event::Signal(linux)))
+    }
 }
 
 /// What the daemon answered.
@@ -57,6 +79,8 @@ struct Client {
     remote: Remote,
     identity: Option<hyper_quic::ClientConfig>,
     ask: Option<Ask>,
+    /// What it asks is a join.
+    joining: bool,
     conn: Option<ConnKey>,
     stream: Option<StreamId>,
     pending: Vec<u8>,
@@ -72,6 +96,13 @@ struct Client {
     unread: bool,
     /// The daemon finished its side: all it sent is read.
     ended: bool,
+    /// The command's control stream, once something has steered it.
+    control: Option<StreamId>,
+    /// Frames for the control stream not yet written.
+    controls: Vec<u8>,
+    /// The daemon reads no more of the control stream: what would steer the command goes
+    /// nowhere.
+    uncontrolled: bool,
     answer: Option<Answer>,
     failed: Option<String>,
     done: bool,
@@ -101,6 +132,53 @@ impl Client {
                 let _ = credit.try_send(());
             }
         }
+    }
+
+    /// Writes what steers the command to its control stream, opened once the command's own is.
+    fn flush_controls(&mut self, io: &mut Io<'_>) {
+        let (Some(conn), Some(stream)) = (self.conn, self.stream) else {
+            return;
+        };
+        if self.controls.is_empty() || self.uncontrolled {
+            return;
+        }
+        let control = match self.control {
+            Some(control) => control,
+            None => {
+                let Ok(control) = io.open(conn) else {
+                    self.uncontrolled = true;
+                    self.controls.clear();
+                    return;
+                };
+                let mut header = Vec::new();
+                if frame::put(&mut header, Tag::Controls, &u64::from(stream).to_be_bytes()).is_err() {
+                    return;
+                }
+                self.controls.splice(0..0, header);
+                self.control = Some(control);
+                control
+            }
+        };
+        while !self.controls.is_empty() {
+            match io.write(conn, control, &self.controls) {
+                Ok(0) => break,
+                Ok(n) => {
+                    self.controls.drain(..n.min(self.controls.len()));
+                }
+                Err(_) => {
+                    self.uncontrolled = true;
+                    self.controls.clear();
+                }
+            }
+        }
+    }
+
+    /// Queues `tag`'s frame to steer the command, unless it is past steering.
+    fn steer(&mut self, io: &mut Io<'_>, tag: Tag, payload: &[u8]) {
+        if self.uncontrolled || self.done || frame::put(&mut self.controls, tag, payload).is_err() {
+            return;
+        }
+        self.flush_controls(io);
     }
 
     /// What is left of stdin goes unsent: the daemon reads no more of it.
@@ -222,13 +300,14 @@ impl Client {
 impl Handler for Client {
     type Command = Event;
 
-    fn connected(&mut self, io: &mut Io<'_>, conn: ConnKey, _peer: &[u8]) -> bool {
-        // The daemon's key is the one pinned: TLS refused any other.
+    /// The daemon's key is the one pinned: TLS refused any other. A connection it fails on,
+    /// it closes itself.
+    fn connected(&mut self, io: &mut Io<'_>, conn: ConnKey, _peer: &[u8]) -> Result<(), Close> {
         let stream = match io.open(conn) {
             Ok(stream) => stream,
             Err(e) => {
                 self.fail(io, e.to_string());
-                return false;
+                return Ok(());
             }
         };
         self.stream = Some(stream);
@@ -257,31 +336,54 @@ impl Handler for Client {
             Ok(framed) => {
                 self.pending.splice(0..0, framed);
                 self.flush(io);
-                true
+                // What steered the command before it was sent goes after it.
+                self.flush_controls(io);
             }
-            Err(e) => {
-                self.fail(io, e.to_string());
-                false
-            }
+            Err(e) => self.fail(io, e.to_string()),
         }
+        Ok(())
     }
 
     /// None comes: its transport gives the daemon no stream to open (`tls`).
     fn opened(&mut self, _io: &mut Io<'_>, _conn: ConnKey, _stream: StreamId) {}
 
-    fn readable(&mut self, io: &mut Io<'_>, _conn: ConnKey, _stream: StreamId) {
+    fn readable(&mut self, io: &mut Io<'_>, conn: ConnKey, stream: StreamId) {
+        if self.control == Some(stream) {
+            // The daemon answers nothing on it: its end, read to let it go.
+            while let StreamRead::Bytes(_) = io.read(conn, stream) {}
+            return;
+        }
         self.take(io);
     }
 
-    fn writable(&mut self, io: &mut Io<'_>, _conn: ConnKey, _stream: StreamId) {
-        self.flush(io);
+    fn writable(&mut self, io: &mut Io<'_>, _conn: ConnKey, stream: StreamId) {
+        if self.control == Some(stream) {
+            self.flush_controls(io);
+        } else {
+            self.flush(io);
+        }
     }
 
-    fn stopped(&mut self, _io: &mut Io<'_>, _conn: ConnKey, _stream: StreamId) {
-        self.stop_input();
+    fn stopped(&mut self, _io: &mut Io<'_>, _conn: ConnKey, stream: StreamId) {
+        if self.control == Some(stream) {
+            self.uncontrolled = true;
+            self.controls.clear();
+        } else {
+            self.stop_input();
+        }
     }
 
-    fn lost(&mut self, _io: &mut Io<'_>, _conn: ConnKey, why: &str) {
+    fn lost(&mut self, _io: &mut Io<'_>, _conn: ConnKey, why: &str, code: Option<u64>) {
+        if self.answer.is_none() && self.failed.is_none() && code == Some(u64::from(server::UNENROLLED)) {
+            // The daemon serves no client it has not enrolled now: refused before a stream
+            // could say so, in the words the stream would have said.
+            let words = if self.joining {
+                server::NOT_INVITED
+            } else {
+                server::NOT_ENROLLED
+            };
+            self.answer = Some(Answer::Refused(words.to_string()));
+        }
         if self.answer.is_none() && self.failed.is_none() {
             self.failed = Some(match self.stream {
                 // Its handshake never ended: no daemon answered there.
@@ -320,6 +422,8 @@ impl Handler for Client {
                 }
             }
             Event::Drained => self.take(io),
+            Event::Resize(rows, cols) => self.steer(io, Tag::Resize, &frame::size(rows, cols)),
+            Event::Signal(linux) => self.steer(io, Tag::Signal, &linux.to_be_bytes()),
         }
     }
 
@@ -352,8 +456,8 @@ fn writer<'scope>(
 
 /// Runs `request` on the daemon `remote`, as the home whose identity is `identity`: `stdin`,
 /// where given, sent as it comes, and what the command writes to its stdout and stderr
-/// written to `stdout` and `stderr`. Its exit status, or, for a request the daemon refused,
-/// the daemon's reason.
+/// written to `stdout` and `stderr`; `steered` is given what steers it while it runs. Its
+/// exit status, or, for a request the daemon refused, the daemon's reason.
 pub fn exec(
     identity: &Identity,
     remote: Remote,
@@ -361,6 +465,7 @@ pub fn exec(
     stdin: Option<Box<dyn Read + Send>>,
     stdout: impl Write + Send + 'static,
     stderr: impl Write + Send + 'static,
+    steered: impl FnOnce(Controls),
 ) -> Result<Result<i32, String>, Error> {
     let input = stdin.is_some();
     let answer = run(
@@ -369,6 +474,7 @@ pub fn exec(
         Ask::Exec { request, input },
         stdin,
         Some((Box::new(stdout), Box::new(stderr))),
+        Some(Box::new(steered)),
     )?;
     match answer {
         Answer::Exit(status) => Ok(Ok(status)),
@@ -388,7 +494,7 @@ pub fn join(identity: &Identity, invitation: &Invitation) -> Result<Result<(), S
         name: invitation.name.clone(),
         secret: invitation.secret,
     };
-    match run(identity, remote, ask, None, None)? {
+    match run(identity, remote, ask, None, None, None)? {
         Answer::Joined => Ok(Ok(())),
         Answer::Refused(why) => Ok(Err(why)),
         Answer::Exit(_) => Err(Error::new("the daemon answered a join as a command")),
@@ -403,6 +509,7 @@ fn run(
     ask: Ask,
     stdin: Option<Box<dyn Read + Send>>,
     outputs: Option<Outputs>,
+    steered: Option<Box<dyn FnOnce(Controls) + '_>>,
 ) -> Result<Answer, Error> {
     let config = tls::client(identity, remote.daemon)?;
     let any: SocketAddr = if remote.address.is_ipv4() {
@@ -410,11 +517,13 @@ fn run(
     } else {
         SocketAddr::from(([0u16; 8], 0))
     };
+    let joining = matches!(ask, Ask::Join { .. });
     std::thread::scope(|scope| {
         let client = Client {
             remote,
             identity: Some(config),
             ask: Some(ask),
+            joining,
             conn: None,
             stream: None,
             pending: Vec::new(),
@@ -426,6 +535,9 @@ fn run(
             starved: false,
             unread: false,
             ended: false,
+            control: None,
+            controls: Vec::new(),
+            uncontrolled: false,
             answer: None,
             failed: None,
             done: false,
@@ -462,6 +574,9 @@ fn run(
                     }
                 })
                 .map_err(|e| Error::new(format!("a thread for the command's input: {e}")))?;
+        }
+        if let Some(steered) = steered {
+            steered(Controls(sender.try_clone()?));
         }
         sender.send(Command::Handler(Event::Connect))?;
         driver.run()?;

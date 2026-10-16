@@ -120,6 +120,9 @@ pub fn cannot_snapshot() -> bool {
 #[path = "../../src/kernel.rs"]
 pub mod pinned;
 
+#[cfg(unix)]
+pub mod terminal;
+
 /// The file `name` of the snapshot generation `dir` points at (vmm snapshot/mod.rs).
 pub fn snapshot_file(dir: &Path, name: &str) -> PathBuf {
     let current = std::fs::read_to_string(dir.join("current")).unwrap();
@@ -430,7 +433,7 @@ pub fn command() -> Command {
 /// credential helpers. Its `auths` name a host no test reaches, so that, as docker/cli has
 /// it, no platform helper is looked for either (DetectDefaultStore: a config that holds
 /// credentials keeps them itself).
-fn docker_config() -> &'static Path {
+pub fn docker_config() -> &'static Path {
     static CONFIG: OnceLock<TempDir> = OnceLock::new();
     CONFIG.get_or_init(|| {
         let dir = TempDir::new("docker-config");

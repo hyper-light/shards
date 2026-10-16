@@ -6,13 +6,14 @@ use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::net::SocketAddr;
 use std::sync::mpsc;
+use std::time::Instant;
 
-use hyper_quic::StreamId;
+use hyper_quic::{StreamId, VarInt};
 
 use crate::frame::{self, Request, Tag};
 use crate::identity::Identity;
 use crate::invite;
-use crate::net::{Command, ConnKey, Driver, Handler, Io, Read as StreamRead, Sender};
+use crate::net::{Close, Command, ConnKey, Driver, Handler, Io, Read as StreamRead, Sender};
 use crate::{Error, tls};
 
 /// How many bytes of a command's output wait unsent before its readers wait too.
@@ -28,6 +29,10 @@ pub struct Running {
     pub wait: Box<dyn FnOnce() -> i32 + Send>,
     /// Hangs the command up, as a terminal that went away would (SIGHUP).
     pub hangup: Box<dyn Fn() + Send>,
+    /// Sizes the command's terminal, rows then columns: none, for a command on no terminal.
+    pub resize: Option<Box<dyn Fn(u16, u16) + Send>>,
+    /// Signals the command as its client was, by the signal's Linux number.
+    pub signal: Box<dyn Fn(u32) + Send>,
 }
 
 /// The machine a daemon serves its clients on.
@@ -39,6 +44,9 @@ pub trait Host: Send {
     fn join(&self, name: &str, proof: &[u8], exported: &[u8; 32], spki: &[u8]) -> Result<(), Error>;
     /// Starts `request`'s command for the enrolled client `client`.
     fn start(&self, client: &str, request: Request) -> Result<Running, Error>;
+    /// How many invitations the machine holds open: as many clients it has not enrolled may
+    /// be connected at once, to join, as an invitation enrolls one client.
+    fn invited(&self) -> usize;
 }
 
 /// The daemon's answer to any join that failed, whatever made it fail: a refusal tells
@@ -47,6 +55,11 @@ pub const NOT_INVITED: &str = "this invitation is not one this machine holds";
 
 /// The daemon's answer to a command from a client it has not enrolled.
 pub const NOT_ENROLLED: &str = "this machine has not enrolled you: join it by an invitation first";
+
+/// The code a daemon closes a connection with whose peer it has not enrolled and does not
+/// serve: no invitation of its is free for one, or the peer's time to join is up. Its client
+/// says what the refusal on a stream would have said.
+pub const UNENROLLED: u32 = 2;
 
 enum Event {
     Output {
@@ -97,6 +110,12 @@ struct Stream {
     /// The client left the stream, resetting it or reading no more of it: nothing more goes
     /// either way.
     gone: bool,
+    /// The command stream this one steers, for a control stream.
+    steers: Option<StreamId>,
+    /// The command's terminal's size, as its client's changes.
+    resize: Option<Box<dyn Fn(u16, u16) + Send>>,
+    /// The command's signals, as its client's.
+    signal: Option<Box<dyn Fn(u32) + Send>>,
 }
 
 impl Stream {
@@ -189,6 +208,8 @@ struct Peer {
     spki: Vec<u8>,
     client: Option<String>,
     streams: HashMap<StreamId, Stream>,
+    /// When its handshake was done.
+    since: Instant,
 }
 
 struct Server<H: Host> {
@@ -201,6 +222,9 @@ struct Server<H: Host> {
 enum Taken {
     /// A frame, acted on.
     Frame,
+    /// A frame that steers the command on the stream named: its control stream's first, or a
+    /// resize or a signal.
+    Steer(StreamId, Tag, Vec<u8>),
     /// No whole frame yet.
     Waiting,
 }
@@ -208,6 +232,15 @@ enum Taken {
 impl<H: Host> Server<H> {
     fn stream(&mut self, conn: ConnKey, id: StreamId) -> Option<&mut Stream> {
         self.peers.get_mut(&conn).and_then(|p| p.streams.get_mut(&id))
+    }
+
+    /// The connections of peers the machine has not enrolled, and when each is due to have
+    /// joined: as long after its handshake as a client waits for its daemon, the idle bound.
+    fn strangers(&self) -> impl Iterator<Item = (ConnKey, Option<Instant>)> + '_ {
+        self.peers
+            .iter()
+            .filter(|(_, p)| p.client.is_none())
+            .map(|(conn, p)| (*conn, p.since.checked_add(tls::IDLE)))
     }
 
     /// Reads `id` and acts on its frames: each whole one before reading more, and none while
@@ -220,8 +253,13 @@ impl<H: Host> Server<H> {
             if stream.last || stream.gone || !stream.deliver() {
                 break;
             }
-            if let Taken::Frame = self.frame(io, conn, id) {
-                continue;
+            match self.frame(io, conn, id) {
+                Taken::Frame => continue,
+                Taken::Steer(target, tag, payload) => {
+                    self.steer(io, conn, id, target, tag, &payload);
+                    continue;
+                }
+                Taken::Waiting => {}
             }
             let Some(stream) = self.stream(conn, id) else {
                 return;
@@ -268,6 +306,7 @@ impl<H: Host> Server<H> {
                 Ok(Some((Tag::Exec, _))) if peer.client.is_none() => NOT_ENROLLED.to_string(),
                 Ok(Some((Tag::Join, len))) if len > invite::JOIN_MAX => NOT_INVITED.to_string(),
                 Ok(Some((Tag::Exec | Tag::Join, _))) => String::new(),
+                Ok(Some((Tag::Controls, 8))) if peer.client.is_some() => String::new(),
                 Ok(Some((other, _))) => format!("a frame out of place ({other:?})"),
                 Err(e) => e.to_string(),
             };
@@ -284,7 +323,25 @@ impl<H: Host> Server<H> {
                 return Taken::Frame;
             }
         };
+        if let Some(target) = stream.steers {
+            if let Tag::Resize | Tag::Signal = tag {
+                return Taken::Steer(target, tag, payload);
+            }
+            let why = format!("a frame out of place ({tag:?})");
+            stream.end(io, conn, id, Tag::Refused, why.as_bytes());
+            return Taken::Frame;
+        }
         match tag {
+            Tag::Controls if !stream.asked => {
+                stream.asked = true;
+                let target = <[u8; 8]>::try_from(payload.as_slice())
+                    .ok()
+                    .and_then(|named| VarInt::from_u64(u64::from_be_bytes(named)).ok());
+                match target {
+                    Some(target) => return Taken::Steer(StreamId::from(target), Tag::Controls, Vec::new()),
+                    None => stream.end(io, conn, id, Tag::Refused, b"a control stream for no stream"),
+                }
+            }
             Tag::Exec if !stream.asked => {
                 stream.asked = true;
                 let Some(client) = peer.client.as_deref() else {
@@ -298,10 +355,12 @@ impl<H: Host> Server<H> {
                     (Err(e), _) => Err(e),
                 };
                 match relayed {
-                    Ok((stdin, credits, hangup)) => {
-                        stream.stdin = Some(stdin);
-                        stream.credits = credits;
-                        stream.hangup = Some(hangup);
+                    Ok(relayed) => {
+                        stream.stdin = Some(relayed.stdin);
+                        stream.credits = relayed.credits;
+                        stream.hangup = Some(relayed.hangup);
+                        stream.resize = relayed.resize;
+                        stream.signal = Some(relayed.signal);
                     }
                     Err(e) => stream.end(io, conn, id, Tag::Refused, e.to_string().as_bytes()),
                 }
@@ -336,8 +395,65 @@ impl<H: Host> Server<H> {
         Taken::Frame
     }
 
+    /// Acts on a frame of control stream `id` that steers the command on stream `target`:
+    /// the first, which makes it the command's, or a resize or a signal. A control stream for
+    /// none of this connection's commands is refused.
+    fn steer(
+        &mut self,
+        io: &mut Io<'_>,
+        conn: ConnKey,
+        id: StreamId,
+        target: StreamId,
+        tag: Tag,
+        payload: &[u8],
+    ) {
+        let Some(peer) = self.peers.get_mut(&conn) else {
+            return;
+        };
+        let command = peer
+            .streams
+            .get(&target)
+            .filter(|t| t.steers.is_none() && t.running());
+        match tag {
+            Tag::Controls => match (command.is_some(), peer.streams.get_mut(&id)) {
+                (true, Some(stream)) => {
+                    stream.steers = Some(target);
+                    // Nothing is answered on it.
+                    let _ = io.finish(conn, id);
+                }
+                (false, Some(stream)) => {
+                    stream.end(
+                        io,
+                        conn,
+                        id,
+                        Tag::Refused,
+                        b"no command of this connection's to steer",
+                    );
+                }
+                (_, None) => {}
+            },
+            Tag::Resize => {
+                if let (Some(resize), Some((rows, cols))) =
+                    (command.and_then(|c| c.resize.as_ref()), frame::read_size(payload))
+                {
+                    resize(rows, cols);
+                }
+            }
+            Tag::Signal => {
+                if let (Some(signal), Ok(linux)) = (
+                    command.and_then(|c| c.signal.as_ref()),
+                    <[u8; 4]>::try_from(payload),
+                ) {
+                    signal(u32::from_be_bytes(linux));
+                }
+            }
+            _ => {}
+        }
+    }
+
     /// Lets go of `id` once nothing more goes on it either way: its last frame written whole,
-    /// or its client gone from it, whose command, still running, is hung up.
+    /// or its client gone from it, whose command, still running, is hung up; a control
+    /// stream's once its client ends it. A command's control streams go with it.
     fn settle(&mut self, io: &mut Io<'_>, conn: ConnKey, id: StreamId) {
         let Some(peer) = self.peers.get_mut(&conn) else {
             return;
@@ -345,6 +461,7 @@ impl<H: Host> Server<H> {
         let Some(stream) = peer.streams.get(&id) else {
             return;
         };
+        let steering = stream.steers.is_some();
         if stream.gone {
             if stream.running()
                 && let Some(hangup) = &stream.hangup
@@ -353,18 +470,35 @@ impl<H: Host> Server<H> {
             }
             io.reset(conn, id);
             io.stop(conn, id);
-        } else if !stream.finished {
+        } else if !stream.finished && !(steering && stream.ended) {
             return;
         }
         peer.streams.remove(&id);
+        if !steering {
+            let controls: Vec<StreamId> = peer
+                .streams
+                .iter()
+                .filter(|(_, s)| s.steers == Some(id))
+                .map(|(control, _)| *control)
+                .collect();
+            for control in controls {
+                io.stop(conn, control);
+                io.reset(conn, control);
+                peer.streams.remove(&control);
+            }
+        }
     }
 }
 
-type Relayed = (
-    mpsc::SyncSender<Vec<u8>>,
-    Vec<mpsc::SyncSender<()>>,
-    Box<dyn Fn() + Send>,
-);
+/// What [`relay`] keeps of a command for its stream: where its stdin goes, its output's
+/// credits, and what hangs it up, sizes its terminal and signals it.
+struct Relayed {
+    stdin: mpsc::SyncSender<Vec<u8>>,
+    credits: Vec<mpsc::SyncSender<()>>,
+    hangup: Box<dyn Fn() + Send>,
+    resize: Option<Box<dyn Fn(u16, u16) + Send>>,
+    signal: Box<dyn Fn(u32) + Send>,
+}
 
 /// Relays `running`'s stdio: a thread that writes to its stdin what the client sends, one
 /// for each of its stdout and stderr that sends the driver what it writes as credit allows,
@@ -381,6 +515,8 @@ fn relay(
         stderr,
         wait,
         hangup,
+        resize,
+        signal,
     } = running;
     let spawn = |name: &str, f: Box<dyn FnOnce() + Send>| {
         std::thread::Builder::new()
@@ -448,23 +584,38 @@ fn relay(
             let _ = to.send(Command::Handler(Event::Exited { conn, stream, status }));
         }),
     )?;
-    Ok((stdin_tx, credits, hangup))
+    Ok(Relayed {
+        stdin: stdin_tx,
+        credits,
+        hangup,
+        resize,
+        signal,
+    })
 }
 
 impl<H: Host> Handler for Server<H> {
     type Command = Event;
 
-    fn connected(&mut self, _io: &mut Io<'_>, conn: ConnKey, peer: &[u8]) -> bool {
+    fn connected(&mut self, io: &mut Io<'_>, conn: ConnKey, peer: &[u8]) -> Result<(), Close> {
         let client = self.host.enrolled(peer);
+        // A peer the machine has not enrolled connects to join alone, while an invitation is
+        // free for it.
+        if client.is_none() && self.strangers().count() >= self.host.invited() {
+            return Err(Close {
+                code: UNENROLLED,
+                why: "not enrolled",
+            });
+        }
         self.peers.insert(
             conn,
             Peer {
                 spki: peer.to_vec(),
                 client,
                 streams: HashMap::new(),
+                since: io.now(),
             },
         );
-        true
+        Ok(())
     }
 
     fn opened(&mut self, io: &mut Io<'_>, conn: ConnKey, id: StreamId) {
@@ -493,7 +644,7 @@ impl<H: Host> Handler for Server<H> {
         self.settle(io, conn, id);
     }
 
-    fn lost(&mut self, _io: &mut Io<'_>, conn: ConnKey, _why: &str) {
+    fn lost(&mut self, _io: &mut Io<'_>, conn: ConnKey, _why: &str, _code: Option<u64>) {
         // Its commands lose their terminal.
         if let Some(peer) = self.peers.remove(&conn) {
             for stream in peer.streams.values() {
@@ -535,6 +686,23 @@ impl<H: Host> Handler for Server<H> {
 
     fn done(&self) -> bool {
         false
+    }
+
+    fn due(&self) -> Option<Instant> {
+        self.strangers().filter_map(|(_, due)| due).min()
+    }
+
+    /// A peer the machine has not enrolled that has not joined in its time is let go.
+    fn timeout(&mut self, io: &mut Io<'_>, now: Instant) {
+        let late: Vec<ConnKey> = self
+            .strangers()
+            .filter(|(_, due)| due.is_some_and(|at| at <= now))
+            .map(|(conn, _)| conn)
+            .collect();
+        for conn in late {
+            io.close(conn, UNENROLLED, "not enrolled in time");
+            self.peers.remove(&conn);
+        }
     }
 }
 

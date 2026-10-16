@@ -3634,7 +3634,7 @@ No run-time labels, relays or declassifiers (§12 answer 14, decided by the user
 an internal-only domain to the world (D58), so there is no data to label. Code mode is
 D136.
 
-### D180. Contexts: shards on another machine, over QUIC (part 1 built)
+### D180. Contexts: shards on another machine, over QUIC (parts 1 and 2 built)
 
 **The microVM need.** A user's microVMs run where the work needs them: a Mac for
 development, a Linux machine with a GPU (`--gpus`) or KVM, an x86_64 machine that builds and
@@ -3704,7 +3704,8 @@ local administration is (../focal docs/cluster-admin.md).
    command that reads none of the client's files and needs no terminal: `ps`, `images`,
    `inspect`, `pull`, `rm`, `stop`, `logs`, `run` and its output.
 2. Commands with a terminal: `-i`, `-t` (the remote command on a pseudo-terminal whose
-   size follows the client's), attach, exec.
+   size follows the client's), attach, exec; and the signals a client receives (built; a
+   Windows client's console, part 2b, built too).
 3. Builds (the context sent as BuildKit's session sends it), `cp`, `save`, `load`,
    `import`, `export`.
 4. Docker's CLI through a context: a socket file in the home for each context, which the
@@ -3784,6 +3785,18 @@ Reading the daemon's side for the same fault found four more, each fixed:
   lets in to join. Neither side may now open a stream the other would not read (RFC 9000
   §4.6), and a request is judged by its header: a client not enrolled may only join, and is
   waited for no longer than a join's 96 bytes (a name's 63, its NUL, HMAC-SHA-256's 32).
+- **A stranger's connection held.** TLS lets any key in, so that a client the machine has
+  not enrolled can join, and such a peer could hold its connection for good, its
+  keep-alives keeping it, and open as many as it liked. A machine now takes as many such
+  connections at once as it holds open invitations, as each invitation enrolls one client,
+  and none while it holds none: the rest are refused as their handshake ends. And it lets
+  each go that has not joined within the idle bound, as long as a client waits for its
+  daemon. Its client says such a refusal in the words its stream would have said (the
+  join's refusal for a join, `this machine has not enrolled you` for a command), so that
+  what a stranger learns is whether an invitation is free, nothing of which or whose.
+  focal has no such peers: its invitations issue a credential its TLS checks (../focal
+  docs/network-startup.md), where shards' prove their secret over the session, after its
+  handshake.
 
 And a client that sends a command no stdin sends its end at once, as a command that reads
 it would otherwise wait for good. Tested in `tests/loopback.rs`, each test a daemon of its
@@ -3796,14 +3809,124 @@ client's command runs; a daemon that stops a client's stdin at once and answers 
 later; a connection kept open over two commands, the first's stdin and state let go once
 its exit is sent and its client asked to send no more; a client not enrolled refused by its
 frame's header; a command whose client resets its stream, and one whose client stops
-reading it, hung up and let go; and a command whose client went writing on after the next
-client connected, which hears none of it; and `only_a_clients_two_way_streams_open`. Each
+reading it, hung up and let go; a command whose client went writing on after the next
+client connected, which hears none of it; a machine with one invitation taking one stranger
+at a time, and with none, none, each refused as its handshake ends; a stranger let go at
+the idle bound, and an enrolled client's command running past it; and
+`only_a_clients_two_way_streams_open`. Each
 fix was mutation-checked against its test: the end dropped from the last bytes; a read
 after each frame; a finished stream, a stopped one and a reset one kept; stdin given by a
 blocking send; no judging by the header; a connection's number given again; streams one
 way, or a daemon's, allowed; a stopped stdin failing the command; no end for no stdin; no
-STOP_SENDING at the last frame; the client's end ending no stdin; and room again resuming
-no stream.
+STOP_SENDING at the last frame; the client's end ending no stdin; room again resuming no
+stream; strangers taken past the invitations; no time to join, or one bounding enrolled
+clients too; and a refusal at the handshake's end said in other words.
+
+**A client's environment, and its owner's (part 1).** Docker's CLI takes a bare `-e NAME`
+from its own environment (docker/cli opts/env.go, ValidateEnv), and its own credentials to
+each registry a request reaches, which it sends with the request (cli/command/registry.go,
+RetrieveAuthTokenFromImage); `docker --context NAME login` keeps a login with the CLI. A
+command shards runs over a context is a CLI of that machine's, which the daemon gave its
+whole environment: a client's `-e AWS_SECRET_ACCESS_KEY` took the value the daemon's owner
+had there, a client's pull went with the owner's logins, and `--context NAME login` wrote
+the owner's store, their keychain among it. Now, as Docker's CLI and daemon divide them:
+- **A client's command has of the daemon's environment shards' settings of the machine
+  alone** (`SHARDS_*`, but its tests' credentials and the client's own settings below), and
+  where its programs, user and temporary files are, and its network's proxies, as dockerd
+  has its own (`shards_ipc::spawn_in`, which gives a child nothing else). None of `HOME`,
+  `DOCKER_CONFIG`, `XDG_CONFIG_HOME` or the auth variables, under which a registry's logins,
+  a cloud's credentials and SSH keys are kept: with no config, a registry is asked with
+  what the client sent alone, no credential helper asked (shards_registry::credentials,
+  lookup). A build there will want the machine's cache, which macOS finds under `HOME`:
+  part 3's.
+- **What is the client's crosses from the client.** A bare `-e NAME` takes its value here,
+  `--env-file` and `--label-file` cross as the `--env` and `--label` values their files here
+  hold, ahead of the rest, as docker/cli reads files' first, by where shards' parser finds
+  each flag's value (`flags::Parsed::positions`); the variables Docker's CLI reads for
+  itself cross with the request (`frame::ENV`: how it prints, `SHARDS_DEFAULT_PLATFORM` and
+  `DOCKER_DEFAULT_PLATFORM`); and the client's credentials for the registry a pull, push,
+  run, create or search reaches, found here as a pull here finds them, cross as
+  `SHARDS_AUTH_CONFIG` for that registry alone, a token as `config.json` keeps one. `login`
+  and `logout` run here.
+- `SHARDS_AUTH_CONFIG` itself reached no daemon until now: `REGISTRY_ENV`, what a client
+  sends its daemon of the variables a pull reads, named `DOCKER_AUTH_CONFIG` alone, though
+  D157 put shards' own first. It now names both.
+
+Tested in `tests/context.rs`: the owner's secret absent where `-e` named it and the client's
+own variables and an env file's present
+(`a_clients_command_has_the_clients_environment_not_the_owners`); and a registry that
+wants a login, the owner logged in to it there (`a_clients_logins_are_its_own`): a client
+logged in nowhere refused, a client's login and logout through the context kept here, the
+owner's store unchanged, and the client's pull there taking its credentials. And
+`a_clients_variables_and_files_are_its_own`, `a_flags_values_are_found_where_they_sit`,
+`a_clients_command_takes_shards_settings_alone` and `a_clients_credentials_cross_as_they_were`.
+Mutation-checked: the daemon's whole environment given, or its `DOCKER_CONFIG`; a bare `-e`
+unresolved here; an env file read there; the client's credentials not sent; a login sent
+there; `SHARDS_AUTH_CONFIG` not carried to the daemon.
+
+**Part 2, built: the client's terminal, and its signals.** A context carries them as
+`ssh -t` does (OpenSSH session.c, do_exec_pty; clientloop.c, enter_raw_mode):
+- **The command's stdio is the client's.** The request says which of the client's stdin,
+  stdout and stderr its terminal is, and its size; the daemon gives the command a
+  pseudo-terminal of that size for those, and pipes for the rest, so that the command sees
+  the stdio it would here and prints as it would: shards' terminal UI on a terminal,
+  Docker's words in a pipe, where part 1's commands saw pipes alone.
+- **A terminal of its own, as a login's.** The command leads a session whose controlling
+  terminal that is, which it takes itself first thing (`SHARDS_TAKE_TERMINAL`), as
+  posix_spawn(3) has no action that makes one on macOS; so the terminal there does what a
+  terminal does: echo, line editing, ^C as SIGINT, SIGWINCH on a resize. The client's
+  terminal goes raw while the command reads it, and back as it was after.
+- **What steers it crosses beside its data.** A resize, and each signal the client
+  receives, cross on a control stream of the command's, a second QUIC stream, as SSH's
+  window-change and signal requests cross beside a channel's data (RFC 4254 §6.7, §6.9): on
+  the command's own stream they would wait behind stdin that a command does not read. A
+  signal crosses by its Linux number, the guest's numbering, which the daemon's system
+  numbers its own (SIGUSR1 is 30 on macOS, 10 on Linux); the command, a client of its
+  daemon as any run's CLI is, does with it what it would here (`--sig-proxy`).
+- So `run -it`, `exec -it` and `attach` need nothing of their own over a context, and `-it`
+  with no terminal here is refused there, in a run's own words. Every
+  command a client runs leads a session of its own, out of reach of the signals a terminal
+  of the daemon's sends its group.
+
+Tested in `tests/context.rs` on tests/tty.rs's terminal, a pty the test holds: the client's
+terminal the command's own there, raw here while it runs, its size, what is typed echoed and
+read, and given back as it was; a resize reaching the command; ^C interrupting it, and the
+detach keys leaving it running on its machine; `exec -it` in a running microVM, and
+`attach` to a command's terminal, through the context; and with no terminal, SIGINT and
+SIGUSR1 to the client reaching the command as 2 and 10. In `tests/loopback.rs`: a resize and a signal
+reaching a command whose stdin waits for room it does not get; a control stream naming no
+command of its connection's refused, and a stranger's refused by its header. And
+`a_signals_linux_number_names_it_on_every_system` (`shards_ipc`). Each mutation-checked:
+the command given no terminal of its own, the terminal not taken as its controlling one,
+the client not raw, signals steering nothing, SIGWINCH sent as a signal with no resize, and
+a signal's Linux number taken for the daemon's system's.
+
+**Part 2b, built: a Windows client's console.** No daemon of shards' runs on Windows yet, so
+a context is how a Windows machine runs microVMs at all, and its console is its terminal as
+a Unix client's is:
+- **Raw as moby/term makes a console raw** (v0.5.2 termios_windows.go, makeRaw): no echo,
+  line editing or processed input, so ^C is a key the command's terminal there makes
+  SIGINT of; no mouse or window events; insert and quick-edit mode, and keys as the escape
+  sequences a terminal sends (ENABLE_VIRTUAL_TERMINAL_INPUT) where the console gives them,
+  as moby/term asks for them. stdout takes escape sequences, which the command there
+  writes, and both modes are given back after.
+- **Its size looked at every 250 ms**, as docker/cli's MonitorTtySize looks at a Windows
+  console's (cli/command/container/tty.go): a console has no SIGWINCH.
+- **Its events are signals as Go's runtime makes them** for a Windows process (go1.25.0
+  runtime/os_windows.go, ctrlHandler), and so for docker/cli's signal proxy: ^C and ^Break,
+  where the console's input is not raw, SIGINT; its closing, a logoff and a shutdown
+  SIGTERM, whose handler waits, as Go's does, so that the command's end ends the client
+  before Windows does.
+
+Tested in `tests/context_client.rs`, the client against a daemon of the test's own, which
+runs on every system: with no terminal, the client sends its command, its stdin and the
+variables that shape what it prints, and exits as the command does with what it wrote (on
+Unix also SIGUSR1, as 10); and on Windows, the client on a pseudoconsole the test holds
+(ConPTY, made as Microsoft's "Creating a Pseudoconsole session" makes one): its terminal
+the console's stdin, stdout and stderr at the console's size, keys reaching the command as
+typed (`ab` and Enter as `ab\r`, ^C as byte 3), and a resize of the console sizing the
+command's terminal. Unit tests hold raw mode's flags to moby/term's and the events' signals
+to Go's. The Windows tests run on CI's Windows jobs; this host runs none.
 
 ### D179. Other CPUs' images, emulated in their microVM (parts 1 to 3 built)
 

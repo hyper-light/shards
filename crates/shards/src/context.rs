@@ -21,6 +21,214 @@ use shards_remote::invite::{self, Invitation};
 /// before its command runs.
 const NOT_RUN: u8 = 125;
 
+/// The variable a daemon sets for a client's command on a terminal of its own: the command
+/// takes the terminal as its session's controlling terminal, first thing, as a login's
+/// command has its own (D180), which no action of posix_spawn(3) makes on every system.
+#[cfg(unix)]
+pub(crate) const TAKE_TERMINAL: &str = "SHARDS_TAKE_TERMINAL";
+
+/// Does what [`TAKE_TERMINAL`] asks, and lets the variable go, so that nothing this process
+/// starts takes the terminal too.
+#[cfg(unix)]
+pub(crate) fn take_terminal() {
+    if std::env::var_os(TAKE_TERMINAL).is_none() {
+        return;
+    }
+    // SAFETY: first thing in main, before any thread: the environment is this one's alone.
+    unsafe { std::env::remove_var(TAKE_TERMINAL) };
+    // SAFETY: isatty(3) on this process's stdio.
+    if let Some(fd) = (0..3).find(|&fd| unsafe { libc::isatty(fd) } == 1) {
+        // SAFETY: TIOCSCTTY on our own descriptor: a session's leader with no controlling
+        // terminal takes it.
+        unsafe { libc::ioctl(fd, libc::TIOCSCTTY as _, 0) };
+    }
+}
+
+/// This client's terminal, where it has one: which of its stdin, stdout and stderr it is,
+/// and its size.
+#[cfg(unix)]
+fn here_terminal() -> Option<frame::Terminal> {
+    // SAFETY: isatty(3) on this process's stdio.
+    let on = |fd| unsafe { libc::isatty(fd) } == 1;
+    let first = (0..3).find(|&fd| on(fd))?;
+    let (rows, cols) = crate::cli::terminal::size(first);
+    Some(frame::Terminal {
+        stdin: on(0),
+        stdout: on(1),
+        stderr: on(2),
+        rows,
+        cols,
+    })
+}
+
+/// What steers the command a context runs, while it runs: where this client's terminal's
+/// size and signals go.
+static STEERED: std::sync::Mutex<Option<client::Controls>> = std::sync::Mutex::new(None);
+
+/// This client's terminal, where it has one: which of its stdin, stdout and stderr its
+/// console is, and its size, its window's, which only an output reports.
+#[cfg(windows)]
+fn here_terminal() -> Option<frame::Terminal> {
+    use crate::cli::terminal::{is_console, size};
+    let (stdin, stdout, stderr) = (is_console(0), is_console(1), is_console(2));
+    if !(stdin || stdout || stderr) {
+        return None;
+    }
+    let (rows, cols) = if stdout {
+        size(1)
+    } else if stderr {
+        size(2)
+    } else {
+        (0, 0)
+    };
+    Some(frame::Terminal {
+        stdin,
+        stdout,
+        stderr,
+        rows,
+        cols,
+    })
+}
+
+/// A console has no SIGWINCH: its size is looked at every 250 ms, as docker/cli's
+/// MonitorTtySize looks at a Windows console's (cli/command/container/tty.go), and a change
+/// sizes the command's terminal. Its events, ^C and ^Break where its input is not raw, and
+/// its closing, go to the command as Go's runtime gives them to a Windows process
+/// ([`console_signal`]).
+#[cfg(windows)]
+fn steer_console(terminal: Option<frame::Terminal>) -> Result<(), String> {
+    use windows_sys::Win32::System::Console::SetConsoleCtrlHandler;
+    // SAFETY: a handler of this process's console's events, which it never removes. A
+    // process with no console has no events to take: a handler it could not have is none.
+    let _ = unsafe { SetConsoleCtrlHandler(Some(on_console_event), 1) };
+    let Some(terminal) = terminal else {
+        return Ok(());
+    };
+    let fd = match (terminal.stdout, terminal.stderr) {
+        (true, _) => 1,
+        (false, true) => 2,
+        (false, false) => return Ok(()),
+    };
+    let mut last = (terminal.rows, terminal.cols);
+    std::thread::Builder::new()
+        .name("resizes".into())
+        .spawn(move || {
+            loop {
+                std::thread::sleep(std::time::Duration::from_millis(250));
+                let now = crate::cli::terminal::size(fd);
+                if now == last {
+                    continue;
+                }
+                last = now;
+                let steered = STEERED.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                if let Some(controls) = steered.as_ref()
+                    && controls.resize(now.0, now.1).is_err()
+                {
+                    return;
+                }
+            }
+        })
+        .map_err(|e| format!("resize thread: {e}"))?;
+    Ok(())
+}
+
+/// The console's event `kind`: sent to the command as its signal, or, with no command to
+/// take it, left to end the client as it would have. Windows ends the process once its
+/// closing's handler returns, so that handler waits, as Go's does, for the command's end to
+/// end the client first.
+#[cfg(windows)]
+extern "system" fn on_console_event(kind: u32) -> windows_sys::core::BOOL {
+    let Some(linux) = console_signal(kind) else {
+        return 0;
+    };
+    let sent = STEERED
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .as_ref()
+        .is_some_and(|controls| controls.signal(linux).is_ok());
+    if !sent {
+        return 0;
+    }
+    if linux == 15 {
+        loop {
+            std::thread::park();
+        }
+    }
+    1
+}
+
+/// The Linux number of the signal a console's event `kind` is, as Go's runtime gives it to
+/// a Windows process (go1.25.0 runtime/os_windows.go, ctrlHandler), and so docker/cli's
+/// signal proxy to a container: ^C and ^Break SIGINT; the console's closing, a logoff and a
+/// shutdown SIGTERM.
+#[cfg(windows)]
+fn console_signal(kind: u32) -> Option<u32> {
+    use windows_sys::Win32::System::Console::{
+        CTRL_BREAK_EVENT, CTRL_C_EVENT, CTRL_CLOSE_EVENT, CTRL_LOGOFF_EVENT, CTRL_SHUTDOWN_EVENT,
+    };
+    match kind {
+        CTRL_C_EVENT | CTRL_BREAK_EVENT => Some(2),
+        CTRL_CLOSE_EVENT | CTRL_LOGOFF_EVENT | CTRL_SHUTDOWN_EVENT => Some(15),
+        _ => None,
+    }
+}
+
+/// Takes the signals this process would act on, which go to the command it forwards
+/// instead, as the Docker CLI's go to its container (`--sig-proxy`). With `terminal`, the
+/// descriptor of its terminal, the command's own terminal, SIGWINCH sizes it, as the
+/// kernel then signals the command; without, SIGWINCH goes as the rest do. One that comes
+/// with no command to take it ends the client as it would have, its terminal restored
+/// first (cli/client.rs).
+#[cfg(unix)]
+fn steer_signals(reads_terminal: bool, terminal: Option<i32>) -> Result<(), String> {
+    use std::sync::PoisonError;
+    let (mut set, ignored) =
+        shards_ipc::take_forwarded(reads_terminal).map_err(|e| format!("taking signals: {e}"))?;
+    shards_ipc::take_rest(&mut set).map_err(|e| format!("taking signals: {e}"))?;
+    std::thread::Builder::new()
+        .name("signals".into())
+        .spawn(move || {
+            shards_ipc::wait_here();
+            loop {
+                let mut sig = 0;
+                // SAFETY: sigwait(3) on a valid set.
+                if unsafe { libc::sigwait(&set, &mut sig) } != 0 {
+                    return;
+                }
+                let steered = STEERED.lock().unwrap_or_else(PoisonError::into_inner);
+                let sent = steered.as_ref().is_some_and(|controls| match terminal {
+                    Some(fd) if sig == libc::SIGWINCH => {
+                        let (rows, cols) = crate::cli::terminal::size(fd);
+                        controls.resize(rows, cols).is_ok()
+                    }
+                    _ if sig == shards_ipc::CARRIER => {
+                        shards_ipc::sent_faults().all(|linux| controls.signal(linux).is_ok())
+                    }
+                    _ => shards_ipc::linux_signal(sig).is_some_and(|linux| controls.signal(linux).is_ok()),
+                });
+                drop(steered);
+                let ends = [libc::SIGHUP, libc::SIGINT, libc::SIGQUIT, libc::SIGTERM].contains(&sig);
+                if !sent && ends && !ignored.contains(&sig) {
+                    crate::cli::terminal::restore();
+                    if sig == libc::SIGINT || sig == libc::SIGTERM {
+                        std::process::exit(128 + sig);
+                    }
+                    // SAFETY: the default action of a terminating signal, on this process.
+                    unsafe {
+                        libc::signal(sig, libc::SIG_DFL);
+                        let mut only: libc::sigset_t = std::mem::zeroed();
+                        libc::sigemptyset(&mut only);
+                        libc::sigaddset(&mut only, sig);
+                        libc::pthread_sigmask(libc::SIG_UNBLOCK, &only, std::ptr::null_mut());
+                        libc::raise(sig);
+                    }
+                }
+            }
+        })
+        .map_err(|e| format!("signal thread: {e}"))?;
+    Ok(())
+}
+
 /// A context's name, as docker/cli names one (v29.8.1 cli/context/store, ValidateContextName):
 /// a letter or digit, then letters, digits, `_`, `.`, `+` or `-`; and not `default`, this
 /// machine's.
@@ -239,10 +447,10 @@ pub(crate) fn chosen(home: &Path, args: &mut Vec<OsString>) -> Result<Chosen, St
     }
 }
 
-/// What a command needs that a context does not carry yet: the client's terminal, or files
-/// of the client's that Docker's CLI sends where shards would read the other machine's. The
-/// command is read as shards reads it, its own grammar said as the command it runs, and its
-/// flags by its parser.
+/// What a command needs that a context does not carry yet: files of the client's that
+/// Docker's CLI sends where shards would read the other machine's. The command is read as
+/// shards reads it, its own grammar said as the command it runs, and its flags by its
+/// parser.
 fn not_carried(args: &[OsString]) -> Option<String> {
     let words: Vec<String> = args
         .iter()
@@ -262,9 +470,6 @@ fn not_carried(args: &[OsString]) -> Option<String> {
             "{first} over a context sends this machine's files, which shards does not carry yet: run it on the machine itself"
         ));
     }
-    if matches!(refs.as_slice(), ["attach", ..] | ["container", "attach", ..]) {
-        return Some("attach: a terminal on another machine is not carried by a context yet".into());
-    }
     // `run` is the CLI's own to read (request.rs), as Docker's flags are its.
     let (command, path, n) = match refs.as_slice() {
         ["run", ..] => (&shards_cmdline::commands::RUN, "shards run", 1),
@@ -277,16 +482,81 @@ fn not_carried(args: &[OsString]) -> Option<String> {
     else {
         return None;
     };
-    if parsed.bool("interactive") || parsed.bool("tty") {
-        return Some(format!(
-            "{path}: a terminal on another machine is not carried by a context yet"
-        ));
-    }
-    let files = !parsed.many("env-file").is_empty()
-        || !parsed.many("label-file").is_empty()
-        || !parsed.string("cidfile").is_empty()
-        || !parsed.string("output").is_empty();
+    // `--env-file` and `--label-file` cross as what they hold ([`here_values`]).
+    let files = !parsed.string("cidfile").is_empty() || !parsed.string("output").is_empty();
     files.then(|| format!("{path}: a file of this machine's, which a context does not carry yet"))
+}
+
+/// A reader of a file of `KEY=VALUE` lines, a key alone its value here where the bool says
+/// so (the CLI's kv_file, pkg/kvfile's Parse).
+type KvFile = dyn Fn(&str, bool) -> Result<Vec<String>, String>;
+
+/// What a command line names of this client's, resolved here as Docker's CLI resolves it,
+/// where the command there would read its own machine's (D180): a variable `-e NAME` takes
+/// the value `lookup` gives it here, if any (docker/cli opts/env.go, ValidateEnv); and
+/// `--env-file` and `--label-file`, files of this machine's, become the `--env` and
+/// `--label` values that `read` finds in them, ahead of the rest, as docker/cli reads files'
+/// first (ReadKVEnvStrings, ReadKVStrings). A command shards' parser refuses goes as it is:
+/// its refusal is the command's own there.
+fn here_values(
+    words: Vec<String>,
+    lookup: &dyn Fn(&str) -> Option<String>,
+    read: &KvFile,
+) -> Result<Vec<String>, String> {
+    use shards_cmdline::commands::{CREATE, EXEC, RUN};
+    let said = shards_cmdline::grammar::rewrite(&words).unwrap_or_else(|| words.clone());
+    let refs: Vec<&str> = said.iter().map(String::as_str).collect();
+    let (command, path, n) = match refs.as_slice() {
+        ["run", ..] => (&RUN, "shards run", 1),
+        ["container", "run", ..] => (&RUN, "shards container run", 2),
+        ["create", ..] => (&CREATE, "shards create", 1),
+        ["container", "create", ..] => (&CREATE, "shards container create", 2),
+        ["exec", ..] => (&EXEC, "shards exec", 1),
+        ["container", "exec", ..] => (&EXEC, "shards container exec", 2),
+        _ => return Ok(words),
+    };
+    let head = said.get(..n).map(<[String]>::to_vec).unwrap_or_default();
+    let mut rest = said.get(n..).map(<[String]>::to_vec).unwrap_or_default();
+    let shards_cmdline::flags::Outcome::Run(parsed) =
+        shards_cmdline::flags::parse(command, path, &rest, &|_, value| Ok(value.to_string()))
+    else {
+        return Ok(words);
+    };
+    let mut from_files = Vec::new();
+    let mut gone = Vec::new();
+    for &(name, at, offset) in &parsed.positions {
+        let Some(word) = rest.get_mut(at) else {
+            continue;
+        };
+        let value = word.get(offset..).unwrap_or_default().to_string();
+        match name {
+            "env" if !value.is_empty() && !value.contains('=') => {
+                if let Some(here) = lookup(&value) {
+                    *word = format!("{}{value}={here}", word.get(..offset).unwrap_or_default());
+                }
+            }
+            "env-file" | "label-file" => {
+                let flag = if name == "env-file" { "--env" } else { "--label" };
+                for entry in read(&value, name == "env-file")? {
+                    from_files.push(format!("{flag}={entry}"));
+                }
+                gone.push(at);
+                // The flag's own word, before a value of a word of its own.
+                if offset == 0 {
+                    gone.extend(at.checked_sub(1));
+                }
+            }
+            _ => {}
+        }
+    }
+    gone.sort_unstable();
+    gone.dedup();
+    for at in gone.into_iter().rev() {
+        if at < rest.len() {
+            rest.remove(at);
+        }
+    }
+    Ok(head.into_iter().chain(from_files).chain(rest).collect())
 }
 
 /// Whether `args`, the command after shards', is a context's own, which runs on this machine
@@ -299,11 +569,63 @@ pub(crate) fn kept_here(args: &[OsString]) -> bool {
             "context" | "contexts" | "client" | "clients" | "invitation" | "invitations"
         )
     };
+    // A login is the client's, as `docker --context NAME login` keeps it (docker/cli
+    // cli/command/registry/login.go): checked with the registry and kept where this
+    // client's commands find it, never in the machine's store.
     words.is_empty()
         || words
             .first()
-            .is_some_and(|w| own(w) || matches!(*w, "help" | "-h" | "--help"))
+            .is_some_and(|w| own(w) || matches!(*w, "help" | "-h" | "--help" | "login" | "logout"))
         || words.get(1).is_some_and(|w| own(w))
+}
+
+/// This client's credentials for the registry the command `words` reaches there, as Docker's
+/// CLI sends its own with each pull, push and search it asks its daemon for (D180): those
+/// for the image a pull, push, run or create names, or the index a search asks; as
+/// `SHARDS_AUTH_CONFIG`'s value, none for none; and what finding them warned of. What a
+/// local pull fails of, the command fails of here, before it runs.
+fn own_credentials(
+    words: &[String],
+    env: &dyn Fn(&str) -> Option<String>,
+) -> Result<(Option<String>, Vec<String>), String> {
+    use shards_cmdline::commands::{CREATE, PULL, PUSH, RUN, SEARCH};
+    use shards_registry::auth::Credentials;
+    let said = shards_cmdline::grammar::rewrite(words).unwrap_or_else(|| words.to_vec());
+    let refs: Vec<&str> = said.iter().map(String::as_str).collect();
+    let (command, path, n) = match refs.as_slice() {
+        ["pull", ..] => (&PULL, "shards pull", 1),
+        ["image", "pull", ..] => (&PULL, "shards image pull", 2),
+        ["push", ..] => (&PUSH, "shards push", 1),
+        ["image", "push", ..] => (&PUSH, "shards image push", 2),
+        ["run", ..] => (&RUN, "shards run", 1),
+        ["container", "run", ..] => (&RUN, "shards container run", 2),
+        ["create", ..] => (&CREATE, "shards create", 1),
+        ["container", "create", ..] => (&CREATE, "shards container create", 2),
+        ["search", ..] => (&SEARCH, "shards search", 1),
+        _ => return Ok((None, Vec::new())),
+    };
+    let rest = said.get(n..).map(<[String]>::to_vec).unwrap_or_default();
+    let shards_cmdline::flags::Outcome::Run(parsed) =
+        shards_cmdline::flags::parse(command, path, &rest, &|_, value| Ok(value.to_string()))
+    else {
+        return Ok((None, Vec::new()));
+    };
+    let Some(named) = parsed.args.first() else {
+        return Ok((None, Vec::new()));
+    };
+    let domain = if std::ptr::eq(command, &SEARCH) {
+        crate::search::host(&shards_registry::search::searched(named).0).to_string()
+    } else {
+        // A name the command refuses there is its own to refuse.
+        match shards_image::reference::Reference::parse(named) {
+            Ok(reference) => reference.domain,
+            Err(_) => return Ok((None, Vec::new())),
+        }
+    };
+    let (found, warnings) = shards_registry::credentials::lookup(&domain, env).map_err(|e| e.to_string())?;
+    let sent = (found != Credentials::Anonymous)
+        .then(|| shards_registry::credentials::env_config_of(&[(domain, found)]));
+    Ok((sent, warnings))
 }
 
 /// Whether this home's daemon serves now.
@@ -345,10 +667,10 @@ pub(crate) fn forward(home: &Path, context: &Context, args: Vec<OsString>) -> Ex
         Ok(identity) => identity,
         Err(e) => return fail(e),
     };
-    let mut bytes = Vec::with_capacity(args.len());
+    let mut words = Vec::with_capacity(args.len());
     for arg in &args {
         match arg.to_str() {
-            Some(text) => bytes.push(text.as_bytes().to_vec()),
+            Some(text) => words.push(text.to_string()),
             None => {
                 return fail(format!(
                     "{arg:?}: an argument that is not UTF-8 does not cross to another machine"
@@ -356,24 +678,96 @@ pub(crate) fn forward(home: &Path, context: &Context, args: Vec<OsString>) -> Ex
             }
         }
     }
-    let env = frame::ENV
+    let words = match here_values(
+        words,
+        &|name| std::env::var(name).ok(),
+        &crate::cli::request::kv_file,
+    ) {
+        Ok(words) => words,
+        Err(e) => return fail(e),
+    };
+    let words_sent = words.clone();
+    let bytes: Vec<Vec<u8>> = words.into_iter().map(String::into_bytes).collect();
+    // Of this client's own variables, what shapes the command; and of its credentials, those
+    // for the registry the command reaches, never all it holds.
+    let mut env: Vec<(String, Vec<u8>)> = frame::ENV
         .iter()
+        .filter(|name| **name != "SHARDS_AUTH_CONFIG")
         .filter_map(|name| {
             std::env::var(name)
                 .ok()
                 .map(|v| (name.to_string(), v.into_bytes()))
         })
         .collect();
-    let request = Request { args: bytes, env };
+    match own_credentials(&words_sent, &|name| std::env::var(name).ok()) {
+        Ok((sent, warnings)) => {
+            for warning in warnings {
+                let _ = writeln!(io::stderr(), "{warning}");
+            }
+            if let Some(sent) = sent {
+                env.push(("SHARDS_AUTH_CONFIG".to_string(), sent.into_bytes()));
+            }
+        }
+        Err(e) => {
+            let _ = writeln!(io::stderr(), "{e}");
+            return ExitCode::FAILURE;
+        }
+    }
+    // This client's terminal is the command's, its own there for what it is here: raw here
+    // while the command reads it, as `ssh -t` leaves the remote terminal to do what a
+    // terminal does (OpenSSH clientloop.c, enter_raw_mode). Its size and the signals this
+    // process receives go to the command as they come.
+    let terminal = here_terminal();
+    #[cfg(windows)]
+    {
+        if let Err(e) = steer_console(terminal) {
+            return fail(e);
+        }
+        if terminal.is_some_and(|t| t.stdin)
+            && let Err(e) = crate::cli::terminal::make_raw()
+        {
+            return fail(format!("the console: {e}"));
+        }
+    }
+    #[cfg(unix)]
+    {
+        let reads = terminal.is_some_and(|t| t.stdin);
+        let fd = terminal.map(|t| {
+            if t.stdin {
+                0
+            } else if t.stdout {
+                1
+            } else {
+                2
+            }
+        });
+        if let Err(e) = steer_signals(reads, fd) {
+            return fail(e);
+        }
+        if reads && let Err(e) = crate::cli::terminal::make_raw() {
+            return fail(format!("the terminal: {e}"));
+        }
+    }
+    let request = Request {
+        args: bytes,
+        env,
+        terminal,
+    };
     let stdin: Box<dyn io::Read + Send> = Box::new(io::stdin());
-    match client::exec(
+    let steered = |controls| {
+        *STEERED.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(controls);
+    };
+    let ran = client::exec(
         &identity,
         context.remote(),
         request,
         Some(stdin),
         io::stdout(),
         io::stderr(),
-    ) {
+        steered,
+    );
+    crate::cli::terminal::restore();
+    match ran {
         Ok(Ok(status)) => ExitCode::from(u8::try_from(status).unwrap_or(1)),
         Ok(Err(refused)) => fail(format!("{}: {refused}", context.name)),
         Err(e) => fail(format!("{}: {e}", context.name)),
@@ -613,6 +1007,27 @@ pub(crate) fn lapsed(created: u64) -> bool {
     now().saturating_sub(created) >= invite::LIFETIME_SECS
 }
 
+/// The invitations this machine holds, each with when it was made, by name.
+fn invitations(home: &Path) -> Vec<(Invitation, u64)> {
+    let mut names: Vec<String> = fs::read_dir(home.join("invitations"))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|e| e.file_name().into_string().ok())
+        .collect();
+    names.sort();
+    names.iter().filter_map(|name| invitation(home, name)).collect()
+}
+
+/// How many of this machine's invitations are open: unspent, and not lapsed.
+#[cfg(unix)]
+pub(crate) fn open_invitations(home: &Path) -> usize {
+    invitations(home)
+        .iter()
+        .filter(|(_, created)| !lapsed(*created))
+        .count()
+}
+
 /// Redeems invitation `name`: removed, so that it enrolls one client alone.
 pub(crate) fn redeem(home: &Path, name: &str) -> Result<(), String> {
     let path = home.join("invitations").join(name);
@@ -658,17 +1073,8 @@ pub(crate) fn admin(thing: &str, args: &[OsString]) -> ExitCode {
         ("invitation", ["ls" | "list"]) => {
             let mut out = io::stdout().lock();
             let _ = writeln!(out, "NAME\tADDRESS\tMADE\tLAPSED");
-            let mut names: Vec<String> = fs::read_dir(home.join("invitations"))
-                .into_iter()
-                .flatten()
-                .flatten()
-                .filter_map(|e| e.file_name().into_string().ok())
-                .collect();
-            names.sort();
-            for name in names {
-                if let Some((i, created)) = invitation(&home, &name) {
-                    let _ = writeln!(out, "{}\t{}\t{created}\t{}", i.name, i.address, lapsed(created));
-                }
+            for (i, created) in invitations(&home) {
+                let _ = writeln!(out, "{}\t{}\t{created}\t{}", i.name, i.address, lapsed(created));
             }
             Ok(())
         }
@@ -771,29 +1177,82 @@ mod tests {
         assert!(!valid_name("gpu desktop"));
     }
 
+    /// A console's events are the signals Go's runtime makes of them for a Windows process:
+    /// ^C and ^Break SIGINT; its closing, a logoff and a shutdown SIGTERM; no other.
+    #[cfg(windows)]
+    #[test]
+    fn a_consoles_events_are_the_signals_go_makes_of_them() {
+        use windows_sys::Win32::System::Console::{
+            CTRL_BREAK_EVENT, CTRL_C_EVENT, CTRL_CLOSE_EVENT, CTRL_LOGOFF_EVENT, CTRL_SHUTDOWN_EVENT,
+        };
+        assert_eq!(console_signal(CTRL_C_EVENT), Some(2));
+        assert_eq!(console_signal(CTRL_BREAK_EVENT), Some(2));
+        for ends in [CTRL_CLOSE_EVENT, CTRL_LOGOFF_EVENT, CTRL_SHUTDOWN_EVENT] {
+            assert_eq!(console_signal(ends), Some(15));
+        }
+        assert_eq!(console_signal(3), None);
+    }
+
+    /// What a command line names of the client's is the client's: a variable `-e NAME` its
+    /// value here, and `--env-file` and `--label-file` what they hold, ahead of the rest; the
+    /// command's own words untouched.
+    #[test]
+    fn a_clients_variables_and_files_are_its_own() {
+        let words = |s: &str| s.split(' ').map(str::to_string).collect::<Vec<_>>();
+        let lookup = |name: &str| (name == "SET").then(|| "here".to_string());
+        let read = |path: &str, env: bool| -> Result<Vec<String>, String> {
+            match (path, env) {
+                ("f.env", true) => Ok(vec!["A=1".into(), "B=2".into()]),
+                ("l.txt", false) => Ok(vec!["L=x".into()]),
+                _ => Err(format!("{path}: not here")),
+            }
+        };
+        let rewritten = here_values(
+            words("run -e SET --env=UNSET -eGIVEN=1 --env-file f.env --label-file=l.txt -it alpine -e SET"),
+            &lookup,
+            &read,
+        )
+        .unwrap();
+        assert_eq!(
+            rewritten,
+            words("run --env=A=1 --env=B=2 --label=L=x -e SET=here --env=UNSET -eGIVEN=1 -it alpine -e SET")
+        );
+        let exec = here_values(words("exec -ite SET box sh"), &lookup, &read).unwrap();
+        assert_eq!(exec, words("exec -ite SET=here box sh"));
+        assert_eq!(
+            here_values(words("ps -a"), &lookup, &read).unwrap(),
+            words("ps -a")
+        );
+        assert!(here_values(words("run --env-file gone.env alpine"), &lookup, &read).is_err());
+    }
+
     /// What a context carries, and what it refuses until it carries it.
     #[test]
     fn a_context_refuses_what_it_does_not_carry() {
         let args = |s: &str| s.split(' ').map(OsString::from).collect::<Vec<_>>();
         assert!(not_carried(&args("ps -a")).is_none());
         assert!(not_carried(&args("run --rm alpine echo hi")).is_none());
-        assert!(
-            not_carried(&args("run --rm alpine ls -t")).is_none(),
-            "the command's own -t"
-        );
-        assert!(not_carried(&args("run -it alpine sh")).is_some());
-        assert!(not_carried(&args("run --interactive alpine sh")).is_some());
+        // The client's terminal crosses (part 2).
+        assert!(not_carried(&args("run -it alpine sh")).is_none());
+        assert!(not_carried(&args("exec -it web sh")).is_none());
+        assert!(not_carried(&args("attach web")).is_none());
         assert!(not_carried(&args("build .")).is_some());
         assert!(not_carried(&args("save -o x.tar alpine")).is_some());
-        assert!(not_carried(&args("run --env-file e alpine")).is_some());
+        assert!(not_carried(&args("run --cidfile c alpine")).is_some());
         assert!(
-            not_carried(&args("run --name web -it alpine sh")).is_some(),
+            not_carried(&args("run --rm alpine cat --cidfile c")).is_none(),
+            "the command's own --cidfile"
+        );
+        assert!(
+            not_carried(&args("run --name web --cidfile c alpine sh")).is_some(),
             "past a flag's value"
         );
         assert!(
-            not_carried(&args("run vm -it alpine sh")).is_some(),
+            not_carried(&args("run vm --cidfile c alpine sh")).is_some(),
             "shards' own words"
         );
+        // What the client's files hold crosses ([`here_values`]).
+        assert!(not_carried(&args("run --env-file e alpine")).is_none());
         assert!(kept_here(&args("context ls")));
         assert!(kept_here(&args("list contexts")));
         assert!(!kept_here(&args("ps")));
