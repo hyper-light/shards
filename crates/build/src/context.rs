@@ -50,7 +50,10 @@ pub fn load(
     walker.entries(b"", &mut Vec::new(), &mut sent)?;
     reset_hardlinks(&mut sent);
     let mut taker = host::Stage::new(stage).map_err(|e| Error(format!("{}: {e}", stage.display())))?;
-    let whole = whole_dirs(&sent, &walker.partial);
+    let whole = match host::CLONES_DIRS {
+        true => whole_dirs(&sent, &walker.partial),
+        false => std::collections::HashSet::new(),
+    };
     let pack = std::fs::File::open(taker.pack_path()).map_err(|e| Error(e.to_string()))?;
     let pack = sources.archive(pack).map_err(|e| Error(e.to_string()))?;
     let fs = receive(&root, sent, sources, now, &mut taker, pack, &whole)?;
@@ -95,11 +98,14 @@ fn whole_of<'a>(whole: &std::collections::HashSet<Vec<u8>>, rel: &'a [u8]) -> Op
 }
 
 /// A file [`host::Stage::read`] read in place, one version once its directory's clone
-/// has waited out a write under way and its times say no write came: its node, its
-/// snapshot, what the read saw and the whole directory it is in.
+/// has waited out a write under way and its times say no write came: its node, its path
+/// and stat in the snapshot, its snapshot, what the read saw and the whole directory it is
+/// in.
 struct Read {
     rel: Vec<u8>,
     id: NodeId,
+    p: Vec<u8>,
+    st: Stat,
     got: host::Snapshot,
     seen: host::Seen,
     dir: Vec<u8>,
@@ -565,6 +571,8 @@ fn receive(
                     dir: dir.to_vec(),
                     rel,
                     id,
+                    p: p.clone(),
+                    st: st.clone(),
                     got,
                     seen,
                 });
@@ -607,6 +615,8 @@ fn receive(
         }
         let data = data_of(sources, taken, again.size)?;
         fs.set_data(r.id, again.size, data);
+        // Its data set stamps it with the snapshot's time: its own again, as received.
+        rewrite(&mut fs, &r.p, &r.st).map_err(os)?;
     }
     // The disk writer stamps directories once everything below them is written.
     for (p, t) in dirs.iter().rev() {

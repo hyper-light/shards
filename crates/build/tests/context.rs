@@ -464,6 +464,51 @@ fn a_context_is_cloned_by_its_whole_directories() {
     std::fs::remove_dir_all(&ctx).unwrap();
 }
 
+/// macOS: a whole directory whose clone fails (here its clone's place is taken already) has
+/// its files taken one at a time, each with its own data, mode and time, as received, not
+/// the snapshot's.
+#[test]
+#[cfg(target_os = "macos")]
+fn a_directory_that_does_not_clone_is_taken_a_file_at_a_time() {
+    use shards_build::data::Sources;
+    use shards_image::erofs::Source as _;
+    let ctx = tmp("unclonable-ctx");
+    std::fs::create_dir(ctx.join("keep")).unwrap();
+    std::fs::write(ctx.join("keep/a"), b"a").unwrap();
+    let when = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_600_000_000);
+    std::fs::File::options()
+        .write(true)
+        .open(ctx.join("keep/a"))
+        .unwrap()
+        .set_modified(when)
+        .unwrap();
+    let stage = tmp("unclonable-stage");
+    std::fs::create_dir(stage.join("tree")).unwrap();
+    let mut sources = Sources::default();
+    let fs = context::load(
+        &ctx,
+        &Filters::default(),
+        &mut sources,
+        (2_000_000_000, 0),
+        &stage,
+    )
+    .unwrap();
+    assert_eq!(
+        std::fs::read_dir(stage.join("tree")).unwrap().count(),
+        0,
+        "no clone made"
+    );
+    let node = fs.node(fs.lstat(b"/keep/a").unwrap()).unwrap();
+    assert_eq!(node.meta.mtime, 1_600_000_000, "its own time, not the snapshot's");
+    let shards_image::erofs::Kind::File { size, data } = node.kind else {
+        panic!("not a file")
+    };
+    let mut got = vec![0u8; size as usize];
+    sources.read_at(data, 0, &mut got).unwrap();
+    assert_eq!(got, b"a");
+    drop(sources);
+}
+
 /// A file a symlink replaced since the walk is not followed out of the context.
 #[test]
 fn a_symlink_put_in_a_files_place_is_not_followed() {

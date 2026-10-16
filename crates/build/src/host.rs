@@ -273,6 +273,11 @@ pub struct Snapshot {
 /// times faster.
 pub const CLONE_MIN: u64 = 1 << 20;
 
+/// Whether a stage clones a directory at once ([`Stage::clone_dir`]): APFS's clonefile, on
+/// macOS. Elsewhere each file is taken on its own, its system keeping writers off or
+/// seeing them ([`settle`]).
+pub const CLONES_DIRS: bool = cfg!(target_os = "macos");
+
 /// Where a stage put a file's bytes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Taken {
