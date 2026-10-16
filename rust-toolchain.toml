@@ -1,5 +1,11 @@
 [toolchain]
-channel = "1.98.0"
+# 1.98.1, not 1.98.0: 1.98.0 miscompiles some trait-object vtables, leaving a slot that must
+# hold a function pointer null, so that a call through it jumps to address 0 in safe code
+# (Rust 1.98.1 release notes). focal's reduction (crates/shards/tests/toolchain.rs) dies of
+# SIGSEGV built by 1.98.0 at opt-level 0 and 3 here, and runs built by 1.98.1
+# (aarch64-apple-darwin, 2026-10-16). Bump this file with the TOOLCHAIN and MUSL_IMAGE pins of
+# .github/workflows/ in one commit.
+channel = "1.98.1"
 components = ["rustfmt", "clippy"]
 # Guest binaries: static musl for every guest architecture.
 targets = ["aarch64-unknown-linux-musl", "x86_64-unknown-linux-musl"]

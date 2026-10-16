@@ -47,7 +47,7 @@ exclude = ["vendor"]
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/hyper-light/shards"
-rust-version = "1.98"
+rust-version = "1.98.1"
 
 # Versions are pinned once here.
 [workspace.dependencies]

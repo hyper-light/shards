@@ -25,7 +25,7 @@ permissions:
   id-token: write
 
 env:
-  TOOLCHAIN: 1.98.0 # keep in sync with rust-toolchain.toml
+  TOOLCHAIN: 1.98.1 # keep in sync with rust-toolchain.toml
   COSIGN: https://github.com/sigstore/cosign/releases/download/v3.1.3
 
 jobs:
