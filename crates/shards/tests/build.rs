@@ -12173,6 +12173,44 @@ fn a_step_for_another_cpu_runs_under_its_emulator() {
             built.stderr
         );
     }
+    // A base of another CPU's lone manifest, with no platform asked: taken, as BuildKit
+    // takes one, warned of in its words, its step under its CPU's emulator, and the image
+    // its base's CPU's (measured: Docker 29.3.1's BuildKit v0.28.1 on linux/arm64).
+    let lone = if cfg!(target_arch = "aarch64") {
+        "alpine@sha256:3e9b4b680bfc9fb5269227cffbd6d42be39fbf7c0b908123913864aa4447e764"
+    } else {
+        "alpine@sha256:2e1a7aa4cbc4e9e5222bb4c24a839aa1a6170ea5492d644777ce7b178824e44f"
+    };
+    let lone_ctx = context(
+        "emulated-lone-ctx",
+        &format!("FROM {lone}\nRUN uname -m > /machine\n"),
+    );
+    let dest = out.join("lone");
+    let built = shards(&[
+        "build",
+        "-o",
+        &format!("type=local,dest={}", dest.display()),
+        lone_ctx.to_str().unwrap(),
+    ]);
+    assert_eq!(built.status, Some(0), "{}", built.stderr);
+    assert_eq!(
+        std::fs::read_to_string(dest.join("machine")).unwrap(),
+        format!("{}\n", theirs.1),
+        "{}",
+        built.stderr
+    );
+    assert!(
+        built.stderr.contains(&format!(
+            "InvalidBaseImagePlatform: Base image {lone} was pulled with platform \"linux/{}\", expected \"linux/{}\" for current build (line 1)",
+            theirs.0, ours.0
+        )),
+        "{}",
+        built.stderr
+    );
+    let tagged = shards(&["build", "-t", "lone:1", lone_ctx.to_str().unwrap()]);
+    assert_eq!(tagged.status, Some(0), "{}", tagged.stderr);
+    let arch = shards(&["image", "inspect", "--format", "{{.Architecture}}", "lone:1"]);
+    assert_eq!(arch.stdout.trim(), theirs.0, "{}", arch.stderr);
     assert_eq!(host_binfmt(), before, "the host's binfmt_misc as it was");
 }
 

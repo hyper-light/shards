@@ -8133,6 +8133,60 @@
   ]
  },
  {
+  "file": "corpus/plan/base-platform-implicit.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"armimg\\\")\\n(run \\\"uname -m\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"armimg\\\"\"",
+    "original": "\"FROM armimg\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"uname -m\\\"\"",
+    "original": "\"RUN uname -m\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
+  "file": "corpus/plan/base-platform.Dockerfile",
+  "escape": "\"\\\\\"",
+  "dump": "\"(from \\\"armimg\\\")\\n(run \\\"uname -m\\\")\"",
+  "children": [
+   {
+    "dump": "\"from \\\"armimg\\\"\"",
+    "original": "\"FROM armimg\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 1,
+    "end_line": 1,
+    "prev_comment": [],
+    "heredocs": null
+   },
+   {
+    "dump": "\"run \\\"uname -m\\\"\"",
+    "original": "\"RUN uname -m\"",
+    "flags": [],
+    "attributes": null,
+    "start_line": 2,
+    "end_line": 2,
+    "prev_comment": [],
+    "heredocs": null
+   }
+  ]
+ },
+ {
   "file": "corpus/plan/config-shell-form.Dockerfile",
   "escape": "\"\\\\\"",
   "dump": "\"(from \\\"alpine\\\")\\n(cmd \\\"echo first\\\")\\n(cmd \\\"echo second\\\")\\n(entrypoint \\\"run me\\\")\\n(healthcheck \\\"NONE\\\")\\n(stopsignal \\\"9\\\")\"",

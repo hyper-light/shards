@@ -3634,7 +3634,7 @@ No run-time labels, relays or declassifiers (§12 answer 14, decided by the user
 an internal-only domain to the world (D58), so there is no data to label. Code mode is
 D136.
 
-### D179. Other CPUs' images, emulated in their microVM (parts 1 and 2 built)
+### D179. Other CPUs' images, emulated in their microVM (parts 1 to 3 built)
 
 Images built on an arm64 Mac usually ship to x86_64 hosts, and the other way round, and a
 build for both (`--platform linux/amd64,linux/arm64`, D87) runs each platform's RUN steps.
@@ -3726,8 +3726,12 @@ the platform builds faster, reached as a context (the next item).
   another platform made a plain run of the image take that one, emulated and warned of.
   Its name names this host's best of its platforms here, which a run that asks no
   platform takes, and a pull of another platform leaves it so; the collector keeps each
-  platform here unpacked. A run of a platform not here pulls it ("Unable to find image",
-  then "Image is up to date", its name resolving to the index it did), and pull and run
+  platform here unpacked. A name a load gives an index none of whose platforms is this
+  host's names the index itself; a run of it takes its platforms here, as dockerd's does,
+  where shards refused it ("its record names an index"), and one with none of them here is
+  refused in dockerd's words ("… does not provide any platform"). A run of a platform not
+  here pulls it ("Unable to find image", then "Image is up to date", its name resolving to
+  the index it did), and pull and run
   say they are up to date as dockerd says it: the name resolved here to what it resolves
   to now, a digest's by a name of its repository (moby image_pull.go, resolveImage). A run
   that may not pull refuses it in dockerd's words ("image with reference … was found but
@@ -3741,14 +3745,39 @@ the platform builds faster, reached as a context (the next item).
     denied for 11a3eb1597e8", M243).
 
   A build's base, for its guests' platform, is pulled for it where another platform's alone
-  is here; a lone manifest of another CPU as a build's base is refused still, where
-  BuildKit builds on it under emulation (next). `crates/registry`
+  is here. `crates/registry`
   `an_image_keeps_each_platform_pulled_and_names_this_hosts` (mutation-checked: the name
   naming what was pulled last, a lookup taking its name's platform alone, a platform taken
   without its layers, a collection keeping its name's platform's root filesystem alone) and `a_lone_manifest_is_pulled_for_any_platform_and_found_for_its_own`;
   `tests/images.rs` as above, with this host's pulled first, then each refusal and status
   (mutation-checked: a lone manifest run for another platform than its own, an ID pulled
   as a repository's name, a digest's status by its own name's record alone).
+- **A build on another CPU's base** (part 3, built): a build takes a base's lone manifest
+  whatever its platform, as BuildKit's resolver takes one (containerd v2.2.1
+  core/images/image.go, `Manifest`: a platform is checked of an index's manifests alone),
+  where shards refused it, and warns of it in BuildKit's words (InvalidBaseImagePlatform:
+  "Base image … was pulled with platform "linux/amd64", expected "linux/arm64" for current
+  build"). Asked for no platform, the image is its base's platform, as Dockerfile2LLB
+  leaves an implicit target's; its stage keeps the build's platform, as dockerui gives
+  the frontend the worker's first platform alone to detect a stage's by (v0.28.1
+  dockerui/config.go), so no emulated platform is ever detected (measured: Docker
+  29.3.1's BuildKit v0.28.1 on linux/arm64, its worker listing seven platforms, warned,
+  ran the step emulated and made an amd64 image). BuildKit's step runs the base's programs
+  under whatever emulators the host's kernel has, whatever the step's platform says: a
+  builder registers, beside each step's platform's emulator, the one of the CPU of the
+  base its root comes from, down the step's first inputs to its stage's FROM, so that a
+  base of another CPU only copied from fetches no emulator. What a policy reads of a base
+  (D101) is the manifest the build takes, its root filesystem left unbuilt. The planner's
+  oracle gains a build that asks no platform (`scripts/agentfile/generate`,
+  `implicit_target`), and `corpus/plan/base-platform.Dockerfile` and
+  `base-platform-implicit.Dockerfile` hold the warning, the stage's platform and the
+  image's to BuildKit's, asked for and not; `tests/build.rs`
+  `a_step_for_another_cpu_runs_under_its_emulator` builds on the other CPU's lone alpine
+  manifest asking no platform: the step runs emulated, the warning is BuildKit's, the
+  image the other CPU's (mutation-checked: without the base's CPU's emulator the step
+  fails with the kernel's "exec format error", as BuildKit's does without one; a lone
+  manifest refused by a build's lookup, or by a policy's; the oracle planning every build
+  with a platform asked).
 
 ### D178. A microVM's I/O limits, kept outside it
 

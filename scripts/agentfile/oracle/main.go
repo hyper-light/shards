@@ -390,6 +390,10 @@ type planOpts struct {
 	// What an HTTP context's download begins with (base64), which dockerui reads to
 	// tell an archive from a Dockerfile.
 	HTTPContext string `json:"http_context"`
+	// No platform asked, as a build with no --platform plans: the frontend's
+	// TargetPlatform nil (dockerfile's Build, one nil for no platforms), its target the
+	// build platform, implicitly.
+	ImplicitTarget bool `json:"implicit_target"`
 }
 
 // A gateway as the frontend sees one, of a build given only named contexts: its options,
@@ -537,10 +541,14 @@ func convertOpt(root, rel string, images resolver, warn func(string)) ([]byte, d
 		cfg.ImageResolveMode = named.Config.ImageResolveMode
 		cfg.GitAdvice = named.Config.GitAdvice
 	}
+	target := &platform
+	if opts.ImplicitTarget {
+		target = nil
+	}
 	return data, dockerfile2llb.ConvertOpt{
 		Client:         named,
 		Config:         cfg,
-		TargetPlatform: &platform,
+		TargetPlatform: target,
 		MetaResolver:   images,
 		LLBCaps:        &caps,
 		Warn: func(rule, desc, url, msg string, loc []parser.Range) {
@@ -1227,7 +1235,8 @@ func main() {
 	}
 	upper.WriteString("];\n")
 	tables += upper.String()
-	if err := os.WriteFile(filepath.Join(testdata, "../src/tables.rs"), []byte(tables), 0o644); err != nil {
+	// The image crate's: what reads image configs as Go does reads them too.
+	if err := os.WriteFile(filepath.Join(testdata, "../../image/src/tables.rs"), []byte(tables), 0o644); err != nil {
 		panic(err)
 	}
 }

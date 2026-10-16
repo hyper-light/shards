@@ -19,7 +19,8 @@
 #   net/url and BuildKit's git URL parsing make of sizes.json and urls.json;
 # - crates/agentfile/testdata/exports.json, what BuildKit's image exporter writes for each
 #   planned image, its config and manifest, over layers made up for it (export_test.go);
-# - crates/agentfile/src/tables.rs, Go's character classes the parser and lexer use.
+# - crates/image/src/tables.rs, Go's character classes the parser and lexer use, and the
+#   image crate's reading of image configs.
 #
 #   scripts/agentfile/generate [BUILDKIT_CHECKOUT]
 set -eu

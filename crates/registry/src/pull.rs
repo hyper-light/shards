@@ -586,6 +586,57 @@ pub fn local_tagged(
     targets: &[Target],
     limits: &Limits,
 ) -> Result<Option<Pulled>, Error> {
+    lookup(store, tagged, shown, targets, limits, false)
+}
+
+/// [`local_tagged`] as a build takes its base: a lone manifest whatever its platform, as
+/// BuildKit's resolver takes one (containerd v2.2.1 core/images/image.go, Manifest: a
+/// platform checked of an index's manifests alone), which the build warns of
+/// (InvalidBaseImagePlatform).
+pub fn local_base(
+    store: &Store,
+    tagged: &str,
+    shown: &str,
+    targets: &[Target],
+    limits: &Limits,
+) -> Result<Option<Pulled>, Error> {
+    lookup(store, tagged, shown, targets, limits, true)
+}
+
+/// The manifest a build's base lookup ([`local_base`]) takes of the image stored as
+/// `tagged`, checked as it checks it, but its root filesystem left as it is: what a policy
+/// reads of a base (D101). None where it is not here, or not here for `targets`.
+pub fn base_manifest(
+    store: &Store,
+    tagged: &str,
+    shown: &str,
+    targets: &[Target],
+) -> Result<Option<Descriptor>, Error> {
+    let _lease = store.lease()?;
+    let Some(recorded) = store.tagged(tagged)? else {
+        return Ok(None);
+    };
+    let resolved = store.resolved(tagged)?.unwrap_or(recorded.digest()?);
+    let desc = present_for(store, recorded, &resolved, targets);
+    if names_index(&desc) {
+        return Ok(None);
+    }
+    match verified(store, shown, &desc, targets, true) {
+        Ok(_) => Ok(Some(desc)),
+        Err(e) if e.kind() == ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e),
+    }
+}
+
+/// [`local_tagged`], a lone manifest taken whatever its platform where `lone_any`.
+fn lookup(
+    store: &Store,
+    tagged: &str,
+    shown: &str,
+    targets: &[Target],
+    limits: &Limits,
+    lone_any: bool,
+) -> Result<Option<Pulled>, Error> {
     // A root filesystem it builds again is its reference's: no collection runs meanwhile.
     let _lease = store.lease()?;
     let Some(recorded) = store.tagged(tagged)? else {
@@ -593,7 +644,31 @@ pub fn local_tagged(
     };
     let resolved = store.resolved(tagged)?.unwrap_or(recorded.digest()?);
     let manifest_desc = present_for(store, recorded, &resolved, targets);
-    unpack(store, shown, &manifest_desc, resolved, targets, limits).map(Some)
+    if names_index(&manifest_desc) {
+        return Err(not_here(shown, targets.first()));
+    }
+    unpack_as(store, shown, &manifest_desc, resolved, targets, limits, lone_any).map(Some)
+}
+
+/// Whether a record names an index itself, as a load names one none of whose platforms is
+/// this host's.
+fn names_index(desc: &Descriptor) -> bool {
+    matches!(
+        desc.media_type.as_str(),
+        oci::media::OCI_INDEX | oci::media::DOCKER_LIST
+    )
+}
+
+/// dockerd's words where an image here has no platform `asked` for, or none here at all
+/// where none is asked (docker-v29.3.1 daemon/containerd/image.go, errPlatformNotFound).
+fn not_here(name: &str, asked: Option<&Target>) -> Error {
+    match asked {
+        Some(asked) => not_for_platform(name, asked),
+        None => Error::of(
+            ErrorKind::NotFound,
+            format!("image with reference {name} was found but does not provide any platform"),
+        ),
+    }
 }
 
 /// Whether the manifest `desc` describes is here whole: itself, its config and each of its
@@ -645,27 +720,34 @@ fn preferred(store: &Store, index: &Index, pulled: &Descriptor) -> Descriptor {
 }
 
 /// The manifest a lookup for `targets` takes of the image recorded as `recorded`, which
-/// resolved to `resolved`: the recorded one where it is for the first of them, as a record
-/// names its host's best; else, of its index's platforms here, the first that ranks best,
-/// as dockerd's lookup takes one (docker-v29.3.1 daemon/containerd/image.go,
-/// getBestPresentImageManifest); else the recorded one, which the lookup then refuses.
+/// resolved to `resolved`: the recorded one where it is for the first of them, or where no
+/// platform is asked, as a record names its host's best; else, of its index's platforms
+/// here, the first that ranks best, as dockerd's lookup takes one (docker-v29.3.1
+/// daemon/containerd/image.go, getBestPresentImageManifest), or where none is asked, its
+/// host's best, else the first; else the recorded one, which the lookup then refuses. A
+/// load records an index none of whose platforms is this host's as itself.
 fn present_for(store: &Store, recorded: Descriptor, resolved: &Digest, targets: &[Target]) -> Descriptor {
-    let Some(first) = targets.first() else {
-        return recorded;
-    };
-    let labelled_first = recorded
-        .platform
-        .as_ref()
-        .is_some_and(|p| platform::runs(p, std::slice::from_ref(first)));
-    if labelled_first || recorded.digest == resolved.to_string() {
-        return recorded;
+    if !names_index(&recorded) {
+        let Some(first) = targets.first() else {
+            return recorded;
+        };
+        let labelled_first = recorded
+            .platform
+            .as_ref()
+            .is_some_and(|p| platform::runs(p, std::slice::from_ref(first)));
+        if labelled_first || recorded.digest == resolved.to_string() {
+            return recorded;
+        }
     }
     let Some((_, index)) = store.index(resolved) else {
         return recorded;
     };
-    platform::select(&here(store, &index, None), targets)
-        .cloned()
-        .unwrap_or(recorded)
+    let here = here(store, &index, None);
+    let best = match targets.is_empty() {
+        true => platform::select(&here, &platform::pullable()).or(here.manifests.first()),
+        false => platform::select(&here, targets),
+    };
+    best.cloned().unwrap_or(recorded)
 }
 
 /// The image whose manifest for one of `targets` `manifest_desc` describes, here in the
@@ -680,7 +762,19 @@ pub fn unpack(
     targets: &[Target],
     limits: &Limits,
 ) -> Result<Pulled, Error> {
-    let manifest_digest = manifest_desc.digest()?;
+    unpack_as(store, name, manifest_desc, resolved, targets, limits, false)
+}
+
+/// The manifest `manifest_desc` describes, its config and layers, checked as a pull checks
+/// them, a lone manifest whatever its platform where `lone_any`; or, for a shards microVM,
+/// its manifest alone.
+fn verified(
+    store: &Store,
+    name: &str,
+    manifest_desc: &Descriptor,
+    targets: &[Target],
+    lone_any: bool,
+) -> Result<(Manifest, Option<Checked>), Error> {
     let bytes = stored(store, name, manifest_desc, oci::MAX_MANIFEST)?;
     let Document::Manifest(manifest) = oci::parse_document(&bytes, &manifest_desc.media_type)? else {
         return Err(Error::new(format!("{name}: its record names an index")));
@@ -688,11 +782,29 @@ pub fn unpack(
     // A shards microVM (save::microvm): its disk is its root filesystem, nothing to
     // unpack; what runs is in the image config it carries.
     if manifest.artifact_type.as_deref() == Some(shards_image::save::MICROVM) {
-        return microvm(store, name, manifest_desc, &manifest, resolved, targets);
+        return Ok((manifest, None));
     }
     contents(name, &manifest)?;
     let config = stored(store, name, &manifest.config, oci::MAX_CONFIG)?;
-    let (config, layers, platform) = checked(name, manifest_desc, &manifest, &config, targets, false)?;
+    let checked = checked(name, manifest_desc, &manifest, &config, targets, lone_any)?;
+    Ok((manifest, Some(checked)))
+}
+
+/// [`unpack`], a lone manifest taken whatever its platform where `lone_any`.
+fn unpack_as(
+    store: &Store,
+    name: &str,
+    manifest_desc: &Descriptor,
+    resolved: Digest,
+    targets: &[Target],
+    limits: &Limits,
+    lone_any: bool,
+) -> Result<Pulled, Error> {
+    let manifest_digest = manifest_desc.digest()?;
+    let (manifest, checked) = verified(store, name, manifest_desc, targets, lone_any)?;
+    let Some((config, layers, platform)) = checked else {
+        return microvm(store, name, manifest_desc, &manifest, resolved, targets);
+    };
     let rootfs = store.rootfs(&layers, limits)?;
     let compressed = manifest
         .layers
@@ -826,6 +938,9 @@ pub fn not_for_platform(name: &str, asked: &Target) -> Error {
     )
 }
 
+/// An image's config, layers and platform, checked ([`checked`]).
+type Checked = (ImageConfig, Vec<Layer>, Platform);
+
 /// The config, layers and platform of the image `manifest` describes, checked, where
 /// `chosen` is the descriptor the manifest was chosen by and `config` its config's checked
 /// bytes. The image must be for one of `targets` ([`platform_of`]). Its config must
@@ -837,7 +952,7 @@ fn checked(
     config: &[u8],
     targets: &[Target],
     lone_any: bool,
-) -> Result<(ImageConfig, Vec<Layer>, Platform), Error> {
+) -> Result<Checked, Error> {
     let config = oci::parse_config(config)?;
     let platform = platform_of(chosen, &config);
     // Any, where no platform is asked: an image taken by its name, as dockerd takes one;
@@ -2187,6 +2302,64 @@ mod tests {
             assert_eq!(found.config, pulled.config, "{targets:?}");
             assert!(found.rootfs.is_some(), "{targets:?}");
         }
+        // A build's base lookup takes it for arm64 too, as BuildKit's resolver does.
+        let (tagged, shown) = (reference.to_string(), reference.familiar());
+        let base = local_base(&store, &tagged, &shown, &arm64(), &Limits::none())
+            .unwrap()
+            .unwrap();
+        assert_eq!(base.config.architecture, "s390x");
+        let desc = base_manifest(&store, &tagged, &shown, &arm64()).unwrap().unwrap();
+        assert_eq!(desc.digest, pulled.manifest.to_string());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A load names an index none of whose platforms is this host's as itself (its
+    /// manifests' platforms as an index lists them): a lookup takes the platforms of it
+    /// here, the first where none is asked, and refuses one not here.
+    #[test]
+    fn an_index_a_name_names_itself_gives_its_platforms_here() {
+        let fake = fake(platforms(&["s390x", "riscv64"]), None);
+        let reference = Reference::parse(&format!("127.0.0.1:{}/test/image:v1", fake.registry.port)).unwrap();
+        let root = temp("index-named");
+        let store = Store::open(&root).unwrap();
+        let registry = Registry::new(client(), &reference, Credentials::Anonymous).unwrap();
+        let pulled = pull(
+            &registry,
+            &store,
+            &reference,
+            &linux("s390x"),
+            &Limits::none(),
+            &|_| {},
+        )
+        .unwrap();
+        let (index, _) = store.index(&pulled.resolved).unwrap();
+        let named = "127.0.0.1:1/test/loaded:v1";
+        store
+            .tag_from(
+                named,
+                &index,
+                &index,
+                std::slice::from_ref(&pulled.resolved),
+                None,
+            )
+            .unwrap();
+        for targets in [&linux("s390x")[..], &[]] {
+            let found = local_tagged(&store, named, named, targets, &Limits::none())
+                .unwrap()
+                .unwrap();
+            assert_eq!(found.manifest, pulled.manifest, "{targets:?}");
+            assert_eq!(found.config.architecture, "s390x", "{targets:?}");
+        }
+        let e = local_tagged(&store, named, named, &linux("riscv64"), &Limits::none()).unwrap_err();
+        assert_eq!(e.kind(), ErrorKind::NotFound, "{e}");
+        // None of its platforms here: none, in dockerd's words.
+        std::fs::remove_file(store.blob_path(&pulled.manifest)).unwrap();
+        let e = local_tagged(&store, named, named, &[], &Limits::none()).unwrap_err();
+        assert_eq!(e.kind(), ErrorKind::NotFound, "{e}");
+        assert_eq!(
+            e.to_string(),
+            format!("image with reference {named} was found but does not provide any platform")
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -2234,11 +2407,20 @@ mod tests {
             let rootfs = pulled.rootfs.as_ref().unwrap();
             assert!(rootfs.exists(), "{}", rootfs.display());
         }
+        // What a policy reads of a base: the platform's manifest, its root filesystem left
+        // as it is.
+        let other_root = other.rootfs.as_ref().unwrap();
+        std::fs::remove_file(other_root).unwrap();
+        let tagged = reference.to_string();
+        let desc = base_manifest(&store, &tagged, &tagged, &s390x).unwrap().unwrap();
+        assert_eq!(desc.digest, other.manifest.to_string());
+        assert!(!other_root.exists(), "its root filesystem left as it is");
         // The other's layer gone: not here for its platform, until pulled whole again.
         let layer = Digest::parse(&first_layer(&store, &other)).unwrap();
         std::fs::remove_file(store.blob_path(&layer)).unwrap();
         let e = local(&store, &reference, &s390x, &Limits::none()).unwrap_err();
         assert_eq!(e.kind(), ErrorKind::NotFound, "{e}");
+        assert_eq!(base_manifest(&store, &tagged, &tagged, &s390x).unwrap(), None);
         pull(&registry, &store, &reference, &s390x, &Limits::none(), &|_| {}).unwrap();
         let found = local(&store, &reference, &s390x, &Limits::none())
             .unwrap()

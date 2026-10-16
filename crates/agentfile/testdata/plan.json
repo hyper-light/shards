@@ -1426,6 +1426,210 @@
   "warnings": null
  },
  {
+  "file": "corpus/plan/base-platform-implicit.Dockerfile",
+  "image": "{\"architecture\":\"arm64\",\"os\":\"linux\",\"rootfs\":{\"type\":\"layers\",\"diff_ids\":[\"sha256:0000000000000000000000000000000000000000000000000000000000000001\"]},\"history\":[{\"created_by\":\"base\"},{\"created_by\":\"RUN /bin/sh -c uname -m # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"}],\"config\":{\"Env\":[\"PATH=/usr/bin\"]}}",
+  "ops": [
+   {
+    "constraints": {},
+    "inputs": [],
+    "locations": [
+     {
+      "ranges": [
+       [
+        1,
+        0,
+        1,
+        0
+       ]
+      ],
+      "source": 0
+     }
+    ],
+    "metadata": {
+     "description": {
+      "com.docker.dockerfile.v1.command": "FROM armimg",
+      "llb.customname": "[1/2] FROM docker.io/library/armimg:latest@sha256:f55566cbd1e615d795f43656876f0b6ba6cc1e5064ef3edb34cc63873fe554a2"
+     }
+    },
+    "pb": "Ug4KBWFtZDY0EgVsaW51eFoAGngKdmRvY2tlci1pbWFnZTovL2RvY2tlci5pby9saWJyYXJ5L2FybWltZzpsYXRlc3RAc2hhMjU2OmY1NTU2NmNiZDFlNjE1ZDc5NWY0MzY1Njg3NmYwYjZiYTZjYzFlNTA2NGVmM2VkYjM0Y2M2Mzg3M2ZlNTU0YTI=",
+    "platform": {
+     "Architecture": "amd64",
+     "OS": "linux"
+    },
+    "source": {
+     "identifier": "docker-image://docker.io/library/armimg:latest@sha256:f55566cbd1e615d795f43656876f0b6ba6cc1e5064ef3edb34cc63873fe554a2"
+    }
+   },
+   {
+    "constraints": {},
+    "exec": {
+     "meta": {
+      "args": [
+       "/bin/sh",
+       "-c",
+       "uname -m"
+      ],
+      "cwd": "/",
+      "env": [
+       "PATH=/usr/bin"
+      ],
+      "removeMountStubsRecursive": true
+     },
+     "mounts": [
+      {
+       "dest": "/"
+      }
+     ]
+    },
+    "inputs": [
+     [
+      0,
+      0
+     ]
+    ],
+    "locations": [
+     {
+      "ranges": [
+       [
+        2,
+        0,
+        2,
+        0
+       ]
+      ],
+      "source": 0
+     }
+    ],
+    "metadata": {
+     "description": {
+      "com.docker.dockerfile.v1.command": "RUN uname -m",
+      "llb.customname": "[2/2] RUN uname -m"
+     }
+    },
+    "pb": "CkkKR3NoYTI1Njo1NzUwMmM5OTE1Y2YyZDQ1MDlkMTYxM2VkZmVkM2E3NGE1YzdkOTI3MGYxZTlmZjk4MDAyNGQwYWMyYmY4ODdjUg4KBWFtZDY0EgVsaW51eFoAEjIKKwoHL2Jpbi9zaAoCLWMKCHVuYW1lIC1tEg1QQVRIPS91c3IvYmluGgEvWAESAxoBLw==",
+    "platform": {
+     "Architecture": "amd64",
+     "OS": "linux"
+    }
+   },
+   {
+    "inputs": [
+     [
+      1,
+      0
+     ]
+    ],
+    "metadata": {},
+    "pb": "CkkKR3NoYTI1Njo4ZmJmZDI4MmZjNzQ1MTg5N2VlNTFlZGVkOTM2MmNhMzZiM2YwZmI4MDQyMzI4OWZlNDNjNmFmYzcxNjA4Zjc0"
+   }
+  ],
+  "warnings": [
+   "\"InvalidBaseImagePlatform|Base image armimg was pulled with platform \\\"linux/arm64\\\", expected \\\"linux/amd64\\\" for current build|1-1\""
+  ]
+ },
+ {
+  "file": "corpus/plan/base-platform.Dockerfile",
+  "image": "{\"architecture\":\"amd64\",\"os\":\"linux\",\"rootfs\":{\"type\":\"layers\",\"diff_ids\":[\"sha256:0000000000000000000000000000000000000000000000000000000000000001\"]},\"history\":[{\"created_by\":\"base\"},{\"created_by\":\"RUN /bin/sh -c uname -m # buildkit\",\"comment\":\"buildkit.dockerfile.v0\"}],\"config\":{\"Env\":[\"PATH=/usr/bin\"]}}",
+  "ops": [
+   {
+    "constraints": {},
+    "inputs": [],
+    "locations": [
+     {
+      "ranges": [
+       [
+        1,
+        0,
+        1,
+        0
+       ]
+      ],
+      "source": 0
+     }
+    ],
+    "metadata": {
+     "description": {
+      "com.docker.dockerfile.v1.command": "FROM armimg",
+      "llb.customname": "[1/2] FROM docker.io/library/armimg:latest@sha256:f55566cbd1e615d795f43656876f0b6ba6cc1e5064ef3edb34cc63873fe554a2"
+     }
+    },
+    "pb": "Ug4KBWFtZDY0EgVsaW51eFoAGngKdmRvY2tlci1pbWFnZTovL2RvY2tlci5pby9saWJyYXJ5L2FybWltZzpsYXRlc3RAc2hhMjU2OmY1NTU2NmNiZDFlNjE1ZDc5NWY0MzY1Njg3NmYwYjZiYTZjYzFlNTA2NGVmM2VkYjM0Y2M2Mzg3M2ZlNTU0YTI=",
+    "platform": {
+     "Architecture": "amd64",
+     "OS": "linux"
+    },
+    "source": {
+     "identifier": "docker-image://docker.io/library/armimg:latest@sha256:f55566cbd1e615d795f43656876f0b6ba6cc1e5064ef3edb34cc63873fe554a2"
+    }
+   },
+   {
+    "constraints": {},
+    "exec": {
+     "meta": {
+      "args": [
+       "/bin/sh",
+       "-c",
+       "uname -m"
+      ],
+      "cwd": "/",
+      "env": [
+       "PATH=/usr/bin"
+      ],
+      "removeMountStubsRecursive": true
+     },
+     "mounts": [
+      {
+       "dest": "/"
+      }
+     ]
+    },
+    "inputs": [
+     [
+      0,
+      0
+     ]
+    ],
+    "locations": [
+     {
+      "ranges": [
+       [
+        2,
+        0,
+        2,
+        0
+       ]
+      ],
+      "source": 0
+     }
+    ],
+    "metadata": {
+     "description": {
+      "com.docker.dockerfile.v1.command": "RUN uname -m",
+      "llb.customname": "[2/2] RUN uname -m"
+     }
+    },
+    "pb": "CkkKR3NoYTI1Njo1NzUwMmM5OTE1Y2YyZDQ1MDlkMTYxM2VkZmVkM2E3NGE1YzdkOTI3MGYxZTlmZjk4MDAyNGQwYWMyYmY4ODdjUg4KBWFtZDY0EgVsaW51eFoAEjIKKwoHL2Jpbi9zaAoCLWMKCHVuYW1lIC1tEg1QQVRIPS91c3IvYmluGgEvWAESAxoBLw==",
+    "platform": {
+     "Architecture": "amd64",
+     "OS": "linux"
+    }
+   },
+   {
+    "inputs": [
+     [
+      1,
+      0
+     ]
+    ],
+    "metadata": {},
+    "pb": "CkkKR3NoYTI1Njo4ZmJmZDI4MmZjNzQ1MTg5N2VlNTFlZGVkOTM2MmNhMzZiM2YwZmI4MDQyMzI4OWZlNDNjNmFmYzcxNjA4Zjc0"
+   }
+  ],
+  "warnings": [
+   "\"InvalidBaseImagePlatform|Base image armimg was pulled with platform \\\"linux/arm64\\\", expected \\\"linux/amd64\\\" for current build|1-1\""
+  ]
+ },
+ {
   "file": "corpus/plan/config-shell-form.Dockerfile",
   "image": "{\"architecture\":\"amd64\",\"os\":\"linux\",\"rootfs\":{\"type\":\"layers\",\"diff_ids\":[\"sha256:0000000000000000000000000000000000000000000000000000000000000001\"]},\"history\":[{\"created_by\":\"base\"},{\"created_by\":\"CMD [\\\"/bin/sh\\\" \\\"-c\\\" \\\"echo first\\\"]\",\"comment\":\"buildkit.dockerfile.v0\",\"empty_layer\":true},{\"created_by\":\"CMD [\\\"/bin/sh\\\" \\\"-c\\\" \\\"echo second\\\"]\",\"comment\":\"buildkit.dockerfile.v0\",\"empty_layer\":true},{\"created_by\":\"ENTRYPOINT [\\\"/bin/sh\\\" \\\"-c\\\" \\\"run me\\\"]\",\"comment\":\"buildkit.dockerfile.v0\",\"empty_layer\":true},{\"created_by\":\"HEALTHCHECK {Test:[NONE] Interval:0s Timeout:0s StartPeriod:0s StartInterval:0s Retries:0}\",\"comment\":\"buildkit.dockerfile.v0\",\"empty_layer\":true},{\"created_by\":\"STOPSIGNAL 9\",\"comment\":\"buildkit.dockerfile.v0\",\"empty_layer\":true}],\"config\":{\"Env\":[\"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\"],\"Entrypoint\":[\"/bin/sh\",\"-c\",\"run me\"],\"Cmd\":[\"/bin/sh\",\"-c\",\"echo second\"],\"StopSignal\":\"9\",\"ArgsEscaped\":true,\"Healthcheck\":{\"Test\":[\"NONE\"]}}}",
   "ops": [
