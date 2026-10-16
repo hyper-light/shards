@@ -15,7 +15,7 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
-  TOOLCHAIN: 1.98.0 # keep in sync with rust-toolchain.toml
+  TOOLCHAIN: 1.98.1 # keep in sync with rust-toolchain.toml
 
 jobs:
   compare:

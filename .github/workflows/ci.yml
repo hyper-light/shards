@@ -9,10 +9,10 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
-  TOOLCHAIN: 1.98.0 # keep in sync with rust-toolchain.toml
+  TOOLCHAIN: 1.98.1 # keep in sync with rust-toolchain.toml
   # Static musl builds run in this Alpine image on their native architecture. The digest pins
   # the multi-arch index, so each runner pulls its own architecture.
-  MUSL_IMAGE: rust:1.98.0-alpine@sha256:a10e64dd139b7387337c7fbe8aca31b959b57b2fd4c8ae20a02cf1d6ea424dce
+  MUSL_IMAGE: rust:1.98.1-alpine@sha256:7cc1c22d77d9432f7fe012a70e6d3e555af54c2a6832700ed7d553f1769ae89f
 
 jobs:
   format:
