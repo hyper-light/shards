@@ -298,7 +298,7 @@ mod console {
     use std::sync::{Arc, Mutex};
     use std::time::Instant;
 
-    use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, WAIT_OBJECT_0};
+    use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE, WAIT_OBJECT_0};
     use windows_sys::Win32::Storage::FileSystem::{ReadFile, WriteFile};
     use windows_sys::Win32::System::Console::{
         COORD, ClosePseudoConsole, CreatePseudoConsole, HPCON, ResizePseudoConsole,
@@ -308,7 +308,8 @@ mod console {
         CREATE_UNICODE_ENVIRONMENT, CreateProcessW, DeleteProcThreadAttributeList,
         EXTENDED_STARTUPINFO_PRESENT, GetExitCodeProcess, InitializeProcThreadAttributeList,
         LPPROC_THREAD_ATTRIBUTE_LIST, PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE, PROCESS_INFORMATION,
-        STARTUPINFOEXW, TerminateProcess, UpdateProcThreadAttribute, WaitForSingleObject,
+        STARTF_USESTDHANDLES, STARTUPINFOEXW, TerminateProcess, UpdateProcThreadAttribute,
+        WaitForSingleObject,
     };
 
     use super::TIMEOUT;
@@ -376,6 +377,14 @@ mod console {
             let mut info: STARTUPINFOEXW = unsafe { std::mem::zeroed() };
             info.StartupInfo.cb = u32::try_from(std::mem::size_of::<STARTUPINFOEXW>()).unwrap();
             info.lpAttributeList = list;
+            // Its stdio the console's, not this process's, which a test's harness pipes: a
+            // child given none of its own takes the pseudoconsole's, as wezterm's starts one
+            // ("otherwise ... the spawned process can inherit the explicitly redirected output
+            // handles from its parent": e2a98e1b, pty/src/win/pseudocon.rs).
+            info.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
+            info.StartupInfo.hStdInput = INVALID_HANDLE_VALUE;
+            info.StartupInfo.hStdOutput = INVALID_HANDLE_VALUE;
+            info.StartupInfo.hStdError = INVALID_HANDLE_VALUE;
             let mut line = OsString::from(format!("\"{}\"", program.display()));
             for arg in args {
                 line.push(" ");

@@ -569,11 +569,63 @@ pub(crate) fn kept_here(args: &[OsString]) -> bool {
             "context" | "contexts" | "client" | "clients" | "invitation" | "invitations"
         )
     };
+    // A login is the client's, as `docker --context NAME login` keeps it (docker/cli
+    // cli/command/registry/login.go): checked with the registry and kept where this
+    // client's commands find it, never in the machine's store.
     words.is_empty()
         || words
             .first()
-            .is_some_and(|w| own(w) || matches!(*w, "help" | "-h" | "--help"))
+            .is_some_and(|w| own(w) || matches!(*w, "help" | "-h" | "--help" | "login" | "logout"))
         || words.get(1).is_some_and(|w| own(w))
+}
+
+/// This client's credentials for the registry the command `words` reaches there, as Docker's
+/// CLI sends its own with each pull, push and search it asks its daemon for (D180): those
+/// for the image a pull, push, run or create names, or the index a search asks; as
+/// `SHARDS_AUTH_CONFIG`'s value, none for none; and what finding them warned of. What a
+/// local pull fails of, the command fails of here, before it runs.
+fn own_credentials(
+    words: &[String],
+    env: &dyn Fn(&str) -> Option<String>,
+) -> Result<(Option<String>, Vec<String>), String> {
+    use shards_cmdline::commands::{CREATE, PULL, PUSH, RUN, SEARCH};
+    use shards_registry::auth::Credentials;
+    let said = shards_cmdline::grammar::rewrite(words).unwrap_or_else(|| words.to_vec());
+    let refs: Vec<&str> = said.iter().map(String::as_str).collect();
+    let (command, path, n) = match refs.as_slice() {
+        ["pull", ..] => (&PULL, "shards pull", 1),
+        ["image", "pull", ..] => (&PULL, "shards image pull", 2),
+        ["push", ..] => (&PUSH, "shards push", 1),
+        ["image", "push", ..] => (&PUSH, "shards image push", 2),
+        ["run", ..] => (&RUN, "shards run", 1),
+        ["container", "run", ..] => (&RUN, "shards container run", 2),
+        ["create", ..] => (&CREATE, "shards create", 1),
+        ["container", "create", ..] => (&CREATE, "shards container create", 2),
+        ["search", ..] => (&SEARCH, "shards search", 1),
+        _ => return Ok((None, Vec::new())),
+    };
+    let rest = said.get(n..).map(<[String]>::to_vec).unwrap_or_default();
+    let shards_cmdline::flags::Outcome::Run(parsed) =
+        shards_cmdline::flags::parse(command, path, &rest, &|_, value| Ok(value.to_string()))
+    else {
+        return Ok((None, Vec::new()));
+    };
+    let Some(named) = parsed.args.first() else {
+        return Ok((None, Vec::new()));
+    };
+    let domain = if std::ptr::eq(command, &SEARCH) {
+        crate::search::host(&shards_registry::search::searched(named).0).to_string()
+    } else {
+        // A name the command refuses there is its own to refuse.
+        match shards_image::reference::Reference::parse(named) {
+            Ok(reference) => reference.domain,
+            Err(_) => return Ok((None, Vec::new())),
+        }
+    };
+    let (found, warnings) = shards_registry::credentials::lookup(&domain, env).map_err(|e| e.to_string())?;
+    let sent = (found != Credentials::Anonymous)
+        .then(|| shards_registry::credentials::env_config_of(&[(domain, found)]));
+    Ok((sent, warnings))
 }
 
 /// Whether this home's daemon serves now.
@@ -634,15 +686,33 @@ pub(crate) fn forward(home: &Path, context: &Context, args: Vec<OsString>) -> Ex
         Ok(words) => words,
         Err(e) => return fail(e),
     };
+    let words_sent = words.clone();
     let bytes: Vec<Vec<u8>> = words.into_iter().map(String::into_bytes).collect();
-    let env = frame::ENV
+    // Of this client's own variables, what shapes the command; and of its credentials, those
+    // for the registry the command reaches, never all it holds.
+    let mut env: Vec<(String, Vec<u8>)> = frame::ENV
         .iter()
+        .filter(|name| **name != "SHARDS_AUTH_CONFIG")
         .filter_map(|name| {
             std::env::var(name)
                 .ok()
                 .map(|v| (name.to_string(), v.into_bytes()))
         })
         .collect();
+    match own_credentials(&words_sent, &|name| std::env::var(name).ok()) {
+        Ok((sent, warnings)) => {
+            for warning in warnings {
+                let _ = writeln!(io::stderr(), "{warning}");
+            }
+            if let Some(sent) = sent {
+                env.push(("SHARDS_AUTH_CONFIG".to_string(), sent.into_bytes()));
+            }
+        }
+        Err(e) => {
+            let _ = writeln!(io::stderr(), "{e}");
+            return ExitCode::FAILURE;
+        }
+    }
     // This client's terminal is the command's, its own there for what it is here: raw here
     // while the command reads it, as `ssh -t` leaves the remote terminal to do what a
     // terminal does (OpenSSH clientloop.c, enter_raw_mode). Its size and the signals this

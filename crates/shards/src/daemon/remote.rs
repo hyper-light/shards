@@ -204,24 +204,31 @@ impl Host for Machine {
     }
 }
 
-/// Whether the daemon's variable `name` goes to a client's command: shards' own settings
-/// (`SHARDS_*`, but its tests' credentials), and what a process needs to act as this
-/// machine's shards: where its programs, home, user and temporary files are, and its
-/// registries' credentials, which a context reaches as its daemon's owner does (D180). No
-/// other: the owner's environment is no client's, though Docker's CLI takes a bare `-e
-/// NAME` from its own (docker/cli opts/env.go, ValidateEnv), as a command here would.
+/// Whether the daemon's variable `name` goes to a client's command: shards' own settings of
+/// this machine, and where its programs, user and temporary files are, and its network's
+/// proxies, as dockerd has its own (D180). No credential of its owner's: none of `HOME`,
+/// `DOCKER_CONFIG` or `XDG_CONFIG_HOME`, under which a registry's login, a cloud's
+/// credentials and SSH keys are kept, and with no config of its own a pull asks its
+/// registry with what its client sent alone (shards_registry::credentials, lookup); nor the
+/// settings that are the client's, which its request carries (frame::ENV), nor shards'
+/// tests' credentials.
 fn kept(name: &str) -> bool {
+    if shards_remote::frame::ENV.contains(&name) {
+        return false;
+    }
     matches!(
         name,
         "PATH"
-            | "HOME"
             | "USER"
             | "LOGNAME"
             | "TMPDIR"
             | "XDG_CACHE_HOME"
-            | "XDG_DATA_HOME"
-            | "DOCKER_CONFIG"
-            | "DOCKER_AUTH_CONFIG"
+            | "HTTP_PROXY"
+            | "http_proxy"
+            | "HTTPS_PROXY"
+            | "https_proxy"
+            | "NO_PROXY"
+            | "no_proxy"
     ) || (name.starts_with("SHARDS_") && !name.starts_with("SHARDS_TEST_"))
 }
 
@@ -313,22 +320,20 @@ mod tests {
     /// tests' credentials.
     #[test]
     fn a_clients_command_takes_shards_settings_alone() {
-        for name in [
-            "PATH",
-            "HOME",
-            "TMPDIR",
-            "DOCKER_CONFIG",
-            "SHARDS_KERNEL",
-            "SHARDS_LOG",
-        ] {
+        for name in ["PATH", "TMPDIR", "HTTPS_PROXY", "SHARDS_KERNEL", "SHARDS_LOG"] {
             assert!(kept(name), "{name}");
         }
         for name in [
+            "HOME",
+            "DOCKER_CONFIG",
+            "DOCKER_AUTH_CONFIG",
+            "SHARDS_AUTH_CONFIG",
+            "XDG_CONFIG_HOME",
             "AWS_SECRET_ACCESS_KEY",
             "COSIGN_PASSWORD",
             "SSH_AUTH_SOCK",
-            "GITHUB_TOKEN",
             "SHARDS_TEST_S3_SECRET",
+            "SHARDS_DEFAULT_PLATFORM",
             "LD_PRELOAD",
         ] {
             assert!(!kept(name), "{name}");

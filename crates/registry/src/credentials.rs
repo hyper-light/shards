@@ -60,7 +60,9 @@ struct Entry {
     registrytoken: String,
 }
 
-/// `SHARDS_AUTH_CONFIG` or `DOCKER_AUTH_CONFIG`: `auths` alone, each with `auth` alone.
+/// `SHARDS_AUTH_CONFIG` or `DOCKER_AUTH_CONFIG`: `auths` alone, each with `auth` alone; or
+/// in shards' own, a registry's token or an identity token in its place, as `config.json`
+/// keeps a login of one, which a context's client sends of its own (D180).
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct EnvConfig {
@@ -73,6 +75,10 @@ struct EnvConfig {
 struct EnvEntry {
     #[serde(default)]
     auth: String,
+    #[serde(default)]
+    identitytoken: String,
+    #[serde(default)]
+    registrytoken: String,
 }
 
 /// The helper protocol's answer (`credentials/credentials.go`).
@@ -87,11 +93,7 @@ struct HelperAnswer {
 /// The credentials `docker login` left for the registry `domain` (a reference's domain),
 /// and any warnings Docker would print on the way.
 pub fn lookup(domain: &str, env: Env<'_>) -> Result<(Credentials, Vec<String>), Error> {
-    let key = if domain == "docker.io" || domain == "index.docker.io" {
-        HUB_KEY
-    } else {
-        domain
-    };
+    let key = key_of(domain);
     let mut warnings = Vec::new();
     // Credentials in the environment: shards' own variable, else Docker's.
     let given = ["SHARDS_AUTH_CONFIG", "DOCKER_AUTH_CONFIG"]
@@ -100,8 +102,8 @@ pub fn lookup(domain: &str, env: Env<'_>) -> Result<(Credentials, Vec<String>), 
     if let Some((var, value)) = given {
         match env_config(var, &value) {
             Ok(entries) => {
-                if let Some((username, password)) = entries.get(key) {
-                    return Ok((password_credentials(username, password), warnings));
+                if let Some(found) = entries.get(key) {
+                    return Ok((found.clone(), warnings));
                 }
             }
             Err(e) => warnings.push(format!("Failed to create credential store from {var}: {e}")),
@@ -151,6 +153,34 @@ fn credentials(entry: Entry) -> Credentials {
     } else {
         password_credentials(&entry.username, &entry.password)
     }
+}
+
+/// The key a login of registry `domain` is kept under: its host, or Docker Hub's index.
+fn key_of(domain: &str) -> &str {
+    if domain == "docker.io" || domain == "index.docker.io" {
+        HUB_KEY
+    } else {
+        domain
+    }
+}
+
+/// `SHARDS_AUTH_CONFIG`'s value holding `found`, each registry's credentials by its domain,
+/// as a context's client sends those of its own a command there needs (D180), and as
+/// [`lookup`] reads them back: a password as `auth`, a token as `config.json` keeps one.
+pub fn env_config_of(found: &[(String, Credentials)]) -> String {
+    let mut auths = serde_json::Map::new();
+    for (domain, credentials) in found {
+        let entry = match credentials {
+            Credentials::Anonymous => continue,
+            Credentials::Password { username, password } => {
+                serde_json::json!({ "auth": BASE64.encode(format!("{username}:{password}")) })
+            }
+            Credentials::IdentityToken(token) => serde_json::json!({ "identitytoken": token }),
+            Credentials::RegistryToken(token) => serde_json::json!({ "registrytoken": token }),
+        };
+        auths.insert(key_of(domain).to_string(), entry);
+    }
+    serde_json::json!({ "auths": auths }).to_string()
 }
 
 fn password_credentials(username: &str, password: &str) -> Credentials {
@@ -246,7 +276,7 @@ fn decode_auth(auth: &str) -> Result<(String, String), Error> {
 }
 
 /// `parseEnvConfig` of variable `var`'s `value`.
-fn env_config(var: &str, value: &str) -> Result<BTreeMap<String, (String, String)>, Error> {
+fn env_config(var: &str, value: &str) -> Result<BTreeMap<String, Credentials>, Error> {
     let mut values = serde_json::Deserializer::from_str(value).into_iter::<EnvConfig>();
     let parsed = match values.next() {
         None => EnvConfig {
@@ -261,12 +291,27 @@ fn env_config(var: &str, value: &str) -> Result<BTreeMap<String, (String, String
     }
     let mut out = BTreeMap::new();
     for (addr, entry) in parsed.auths {
-        if entry.auth.is_empty() {
+        let tokens = !entry.registrytoken.is_empty() || !entry.identitytoken.is_empty();
+        // Docker's variable takes `auth` alone (cli/config/credentials, its env store).
+        if tokens && var != "SHARDS_AUTH_CONFIG" {
+            return Err(Error::new(format!(
+                "{var} takes `auth` alone, not a token, for {addr}"
+            )));
+        }
+        // dockerd's precedence: a registry token, then an identity token, then a password.
+        let credentials = if !entry.registrytoken.is_empty() {
+            Credentials::RegistryToken(entry.registrytoken)
+        } else if !entry.identitytoken.is_empty() {
+            Credentials::IdentityToken(entry.identitytoken)
+        } else if entry.auth.is_empty() {
             return Err(Error::new(format!(
                 "{var} environment variable is missing key `auth` for {addr}"
             )));
-        }
-        out.insert(addr, decode_auth(&entry.auth)?);
+        } else {
+            let (username, password) = decode_auth(&entry.auth)?;
+            password_credentials(&username, &password)
+        };
+        out.insert(addr, credentials);
     }
     Ok(out)
 }
@@ -885,6 +930,33 @@ esac
             .unwrap();
         writer.stdin.take().unwrap().write_all(text.as_bytes()).unwrap();
         assert!(writer.wait().unwrap().success(), "{} not written", path.display());
+    }
+
+    /// What a context's client sends of its own reads back as it was: a password, an
+    /// identity token and a registry's token, Docker Hub's under its index's key; none for a
+    /// registry it has none for; and Docker's own variable takes no token.
+    #[test]
+    fn a_clients_credentials_cross_as_they_were() {
+        let found = vec![
+            ("docker.io".to_string(), password("u", "p")),
+            ("a.example".to_string(), Credentials::IdentityToken("idt".into())),
+            ("b.example".to_string(), Credentials::RegistryToken("rt".into())),
+            ("c.example".to_string(), Credentials::Anonymous),
+        ];
+        let sent = env_config_of(&found);
+        assert!(sent.contains("https://index.docker.io/v1/"), "{sent}");
+        assert!(!sent.contains("c.example"), "{sent}");
+        let env = |name: &str| (name == "SHARDS_AUTH_CONFIG").then(|| sent.clone());
+        for (domain, credentials) in &found {
+            assert_eq!(&lookup(domain, &env).unwrap().0, credentials, "{domain}");
+        }
+        let docker = |name: &str| (name == "DOCKER_AUTH_CONFIG").then(|| sent.clone());
+        let (got, warnings) = lookup("a.example", &docker).unwrap();
+        assert_eq!(got, Credentials::Anonymous);
+        assert!(
+            warnings[0].starts_with("Failed to create credential store from DOCKER_AUTH_CONFIG"),
+            "{warnings:?}"
+        );
     }
 
     #[cfg(unix)]

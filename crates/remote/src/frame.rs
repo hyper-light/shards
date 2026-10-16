@@ -143,9 +143,22 @@ pub fn read_size(payload: &[u8]) -> Option<(u16, u16)> {
     Some((u16::from_be_bytes([a, b]), u16::from_be_bytes([c, d])))
 }
 
-/// The variables a request may carry: what shapes how a command prints, nothing that changes
-/// what it does (D180).
-pub const ENV: &[&str] = &["TERM", "COLORTERM", "NO_COLOR", "COLUMNS", "LINES"];
+/// The variables a request may carry: those of a client's environment that Docker's CLI
+/// reads for itself, not its daemon (D180): what shapes how a command prints, the platform
+/// it asks for when none is named, and the credentials it sends a registry, which a client
+/// gives as `SHARDS_AUTH_CONFIG` for the registries its command reaches alone.
+pub const ENV: &[&str] = &[
+    "TERM",
+    "COLORTERM",
+    "NO_COLOR",
+    "COLUMNS",
+    "LINES",
+    "SHARDS_MOTION",
+    "SHARDS_TIMING",
+    "SHARDS_DEFAULT_PLATFORM",
+    "DOCKER_DEFAULT_PLATFORM",
+    "SHARDS_AUTH_CONFIG",
+];
 
 fn put_bytes(out: &mut Vec<u8>, bytes: &[u8]) -> Result<(), Error> {
     let len = u32::try_from(bytes.len()).map_err(|_| Error::new("a field too long"))?;

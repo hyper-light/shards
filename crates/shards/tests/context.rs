@@ -52,9 +52,12 @@ fn joined(name: &str) -> Option<(TempDir, Listening, TempDir, String)> {
         ("SHARDS_KERNEL", kernel().as_os_str()),
         ("SHARDS_INIT", guest_init().as_os_str()),
     ];
-    // The machine's owner keeps a secret in the daemon's environment.
+    // The machine's owner keeps a secret in the daemon's environment, and their logins in
+    // its docker config, as an owner's daemon has them.
+    let owners = machine.join("docker");
     let mut daemons = on_machine.to_vec();
     daemons.push(("OWNERS_SECRET", "the owner's own".as_ref()));
+    daemons.push(("DOCKER_CONFIG", owners.as_os_str()));
     let started = run_shards_env(
         &["daemon"],
         &["--detached", "--listen", "127.0.0.1:0"],
@@ -264,6 +267,99 @@ fn a_clients_command_has_the_clients_environment_not_the_owners() {
         assert!(vars.contains(&wanted), "{wanted}: {vars:?}");
     }
     assert!(!ran.stdout.contains("the owner's own"), "{vars:?}");
+}
+
+/// A client's logins are its own, as Docker's CLI keeps its own: a registry the client logged
+/// in to is reached there with the client's credentials, sent with the command; the machine
+/// owner's reach nothing for a client, logged in there as they are; and a login and a
+/// logout through the context are kept here, the owner's store untouched. Each command's
+/// `PATH` is an empty directory and its docker config its own, so that no login reaches
+/// this host's keychain.
+#[test]
+fn a_clients_logins_are_its_own() {
+    use base64::Engine as _;
+    let Some((machine, _listening, laptop, image)) = joined("ctx-login") else {
+        return;
+    };
+    let basic = format!(
+        "Basic {}",
+        base64::engine::general_purpose::STANDARD.encode("pusher:secret")
+    );
+    let (port, _repos) = common::writable_registry_requiring(Some(basic));
+    let registry = format!("127.0.0.1:{port}");
+    let target = format!("{registry}/team/app:1");
+    let empty = |home: &Path| {
+        let dir = home.join("path");
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    };
+    let (owners, owners_path) = (machine.join("docker"), empty(&machine));
+    let on_machine = [
+        ("SHARDS_HOME", machine.as_os_str()),
+        ("DOCKER_CONFIG", owners.as_os_str()),
+        ("PATH", owners_path.as_os_str()),
+    ];
+    let (laptops, laptops_path) = (laptop.join("docker"), empty(&laptop));
+    let on_laptop = [
+        ("SHARDS_HOME", laptop.as_os_str()),
+        ("DOCKER_CONFIG", laptops.as_os_str()),
+        ("PATH", laptops_path.as_os_str()),
+    ];
+    // The owner logs in on the machine, and pushes the image there.
+    let login = ["-u", "pusher", "-p", "secret", registry.as_str()];
+    let owner_in = run_shards_env(&["login"], &login, &on_machine, TIMEOUT);
+    assert_eq!(owner_in.status, Some(0), "{owner_in}");
+    let tagged = run_shards_env(&["tag"], &[image.as_str(), target.as_str()], &on_machine, TIMEOUT);
+    assert_eq!(tagged.status, Some(0), "{tagged}");
+    let pushed = run_shards_env(&["push"], &[target.as_str()], &on_machine, TIMEOUT);
+    assert_eq!(pushed.status, Some(0), "{pushed}");
+    let owners_kept = std::fs::read(owners.join("config.json")).unwrap();
+    // The client, logged in nowhere: refused, though the owner is logged in there.
+    let refused = run_shards_env(
+        &["--context", "gpu", "pull"],
+        &["-q", target.as_str()],
+        &on_laptop,
+        TIMEOUT,
+    );
+    assert_ne!(refused.status, Some(0), "{refused}");
+    // Logged in through the context: kept here, the owner's store as it was.
+    let client_in = run_shards_env(&["--context", "gpu", "login"], &login, &on_laptop, TIMEOUT);
+    assert_eq!(client_in.status, Some(0), "{client_in}");
+    let kept: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(laptops.join("config.json")).unwrap()).unwrap();
+    assert!(kept["auths"].get(registry.as_str()).is_some(), "{kept}");
+    assert_eq!(std::fs::read(owners.join("config.json")).unwrap(), owners_kept);
+    // Pulled there with the client's own credentials.
+    let pulled = run_shards_env(
+        &["--context", "gpu", "pull"],
+        &["-q", target.as_str()],
+        &on_laptop,
+        TIMEOUT,
+    );
+    assert_eq!(pulled.status, Some(0), "{pulled}");
+    // Logged out here: the next pull there is refused again.
+    let client_out = run_shards_env(
+        &["--context", "gpu", "logout"],
+        &[registry.as_str()],
+        &on_laptop,
+        TIMEOUT,
+    );
+    assert_eq!(client_out.status, Some(0), "{client_out}");
+    assert_eq!(std::fs::read(owners.join("config.json")).unwrap(), owners_kept);
+    let gone = run_shards_env(
+        &["--context", "gpu", "rmi"],
+        &[target.as_str()],
+        &on_laptop,
+        TIMEOUT,
+    );
+    assert_eq!(gone.status, Some(0), "{gone}");
+    let again = run_shards_env(
+        &["--context", "gpu", "pull"],
+        &["-q", target.as_str()],
+        &on_laptop,
+        TIMEOUT,
+    );
+    assert_ne!(again.status, Some(0), "{again}");
 }
 
 /// With no terminal, a signal the client receives reaches the command there, by the number

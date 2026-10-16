@@ -3823,24 +3823,46 @@ stream; strangers taken past the invitations; no time to join, or one bounding e
 clients too; and a refusal at the handshake's end said in other words.
 
 **A client's environment, and its owner's (part 1).** Docker's CLI takes a bare `-e NAME`
-from its own environment (docker/cli opts/env.go, ValidateEnv), and a command shards runs
-there is a CLI of that machine's: a client's `-e AWS_SECRET_ACCESS_KEY` took the value the
-daemon's owner had there, the daemon having given its command its whole environment. A
-client's command now has of the daemon's environment only shards' own settings (`SHARDS_*`,
-but its tests' credentials) and what it needs to act as that machine's shards: `PATH`,
-`HOME`, `USER`, `LOGNAME`, `TMPDIR`, the XDG cache and data homes, and the registries'
-credentials (`DOCKER_CONFIG`, `DOCKER_AUTH_CONFIG`), which a context reaches as its owner
-does (`shards_ipc::spawn_in`, which gives a child nothing else). And the client resolves
-what it names of its own as Docker's CLI does, by where shards' parser finds each flag's
-value (`flags::Parsed::positions`): a bare `-e NAME` takes its value here, and
-`--env-file` and `--label-file` cross as the `--env` and `--label` values their files here
-hold, ahead of the rest, as docker/cli reads files' first. A cloud credential a build there
-would want is the client's to send, not the owner's to lend (part 3). Tested in
-`tests/context.rs` (`a_clients_command_has_the_clients_environment_not_the_owners`: the
-owner's secret absent where `-e` named it, the client's own variables and an env file's
-present), `a_clients_variables_and_files_are_its_own`, `a_flags_values_are_found_where_they_sit`
-and `a_clients_command_takes_shards_settings_alone`; mutation-checked: the daemon's whole
-environment given, a bare `-e` unresolved here, an env file read there.
+from its own environment (docker/cli opts/env.go, ValidateEnv), and its own credentials to
+each registry a request reaches, which it sends with the request (cli/command/registry.go,
+RetrieveAuthTokenFromImage); `docker --context NAME login` keeps a login with the CLI. A
+command shards runs over a context is a CLI of that machine's, which the daemon gave its
+whole environment: a client's `-e AWS_SECRET_ACCESS_KEY` took the value the daemon's owner
+had there, a client's pull went with the owner's logins, and `--context NAME login` wrote
+the owner's store, their keychain among it. Now, as Docker's CLI and daemon divide them:
+- **A client's command has of the daemon's environment shards' settings of the machine
+  alone** (`SHARDS_*`, but its tests' credentials and the client's own settings below), and
+  where its programs, user and temporary files are, and its network's proxies, as dockerd
+  has its own (`shards_ipc::spawn_in`, which gives a child nothing else). None of `HOME`,
+  `DOCKER_CONFIG`, `XDG_CONFIG_HOME` or the auth variables, under which a registry's logins,
+  a cloud's credentials and SSH keys are kept: with no config, a registry is asked with
+  what the client sent alone, no credential helper asked (shards_registry::credentials,
+  lookup). A build there will want the machine's cache, which macOS finds under `HOME`:
+  part 3's.
+- **What is the client's crosses from the client.** A bare `-e NAME` takes its value here,
+  `--env-file` and `--label-file` cross as the `--env` and `--label` values their files here
+  hold, ahead of the rest, as docker/cli reads files' first, by where shards' parser finds
+  each flag's value (`flags::Parsed::positions`); the variables Docker's CLI reads for
+  itself cross with the request (`frame::ENV`: how it prints, `SHARDS_DEFAULT_PLATFORM` and
+  `DOCKER_DEFAULT_PLATFORM`); and the client's credentials for the registry a pull, push,
+  run, create or search reaches, found here as a pull here finds them, cross as
+  `SHARDS_AUTH_CONFIG` for that registry alone, a token as `config.json` keeps one. `login`
+  and `logout` run here.
+- `SHARDS_AUTH_CONFIG` itself reached no daemon until now: `REGISTRY_ENV`, what a client
+  sends its daemon of the variables a pull reads, named `DOCKER_AUTH_CONFIG` alone, though
+  D157 put shards' own first. It now names both.
+
+Tested in `tests/context.rs`: the owner's secret absent where `-e` named it and the client's
+own variables and an env file's present
+(`a_clients_command_has_the_clients_environment_not_the_owners`); and a registry that
+wants a login, the owner logged in to it there (`a_clients_logins_are_its_own`): a client
+logged in nowhere refused, a client's login and logout through the context kept here, the
+owner's store unchanged, and the client's pull there taking its credentials. And
+`a_clients_variables_and_files_are_its_own`, `a_flags_values_are_found_where_they_sit`,
+`a_clients_command_takes_shards_settings_alone` and `a_clients_credentials_cross_as_they_were`.
+Mutation-checked: the daemon's whole environment given, or its `DOCKER_CONFIG`; a bare `-e`
+unresolved here; an env file read there; the client's credentials not sent; a login sent
+there; `SHARDS_AUTH_CONFIG` not carried to the daemon.
 
 **Part 2, built: the client's terminal, and its signals.** A context carries them as
 `ssh -t` does (OpenSSH session.c, do_exec_pty; clientloop.c, enter_raw_mode):

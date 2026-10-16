@@ -1424,7 +1424,8 @@ impl Run {
 /// proxies Go's net/http takes from the environment; and the local engine a made microVM
 /// is published to, as the Docker CLI finds it (`DOCKER_HOST`, `DOCKER_CONTEXT`), or none
 /// (`SHARDS_LOCAL_STORE=none`).
-pub const REGISTRY_ENV: [&str; 17] = [
+pub const REGISTRY_ENV: [&str; 18] = [
+    "SHARDS_AUTH_CONFIG",
     "DOCKER_AUTH_CONFIG",
     "DOCKER_CONFIG",
     "HOME",
