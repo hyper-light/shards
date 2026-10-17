@@ -585,6 +585,9 @@ pub mod builtin {
     /// `make NAME SUBNET GATEWAY RANGE FLAGS`, answered with the subnet and gateway made, or
     /// `remove NAME`.
     pub const NETWORK: u8 = 13;
+    /// What a container listens on (D181): each TCP port it listens on and each UDP port
+    /// it holds, at an address past its loopback, as `tcp PORT` and `udp PORT` lines.
+    pub const LISTENS: u8 = 14;
 }
 
 /// A terminal's size in character cells. Zero in either leaves the pty's size alone, as

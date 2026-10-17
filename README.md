@@ -276,7 +276,7 @@ Every command is an action and what it acts on: `shards ACTION THING [ARG...]`.
 | `shards inspect disk` · `shards inspect system` · `shards inspect guest` | What shards takes on disk; what it is, holds and runs on; the kernel and shards-init runs boot |
 | `shards read logs NAME` · `shards watch logs NAME` | What a microVM's command printed; what it prints, as it prints it |
 | `shards read processes NAME` · `shards watch processes NAME` | The processes a microVM's agents started and ended, each whole, as the kernel saw them; as they come |
-| `shards read ports NAME` | Which of a microVM's agents each published port reaches |
+| `shards read ports NAME` | Which of a microVM's agents each published port reaches; for a container its own engine made, who reaches each port it declares or listens on, and what would declare one it listens on that none reaches |
 | `shards read changes NAME` | What a microVM changed of its image's files |
 | `shards watch vms [NAME...]` · `shards watch system` | What microVMs take of your machine, live; what happens to microVMs and images, as it happens |
 | `shards copy vm NAME:PATH PATH` · `shards copy vm PATH NAME:PATH` | Copy files out of a microVM, or into one |

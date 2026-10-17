@@ -3028,6 +3028,11 @@ fn builtin(
     // What a microVM's engine asks of its networks is init's own state (D181): done here,
     // and said by the child as any built-in's answer is.
     let networked = (kind == run::builtin::NETWORK).then(|| crate::members::network(args));
+    // What a container listens on, read through init's `/proc` by its process, whose
+    // network namespace its socket tables are (D181).
+    let networked = networked.or_else(|| {
+        (kind == run::builtin::LISTENS).then(|| crate::members::listening(joiner.unwrap_or(workload)))
+    });
     // What reads the host's stdin: unpacking an archive.
     let input = if kind == run::builtin::EXTRACT {
         Some(pipe()?)

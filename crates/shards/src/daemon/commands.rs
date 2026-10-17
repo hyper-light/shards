@@ -1244,10 +1244,15 @@ impl<D: crate::containers::Disk> Daemon<D> {
                 return 1;
             }
         };
-        let ports = match lock(&self.containers).get(&id) {
-            Some(c) if c.state == Life::Running => c.ports.clone(),
-            _ => Vec::new(),
+        let (ports, made) = match lock(&self.containers).get(&id) {
+            Some(c) if c.state == Life::Running => (c.ports.clone(), c.engine_made.clone()),
+            _ => (Vec::new(), None),
         };
+        // A container its microVM's engine made, a member of that microVM's switch (D181):
+        // who reaches each port it declares or listens on.
+        if let Some(made) = made.filter(|m| !m.addresses.is_empty()) {
+            return self.member_ports(&id, &made, &ports, reply);
+        }
         let receivers = match lock(&self.runs).get(&id) {
             Some(RunState::Tracked(run)) => run
                 .base
@@ -1298,6 +1303,106 @@ impl<D: crate::containers::Disk> Daemon<D> {
         ));
         for [p, at, reaches] in rows {
             reply.out(&format!("{p:<port$}  {at:<published$}  {reaches}"));
+        }
+        0
+    }
+
+    /// `shards read ports` of member `id` of its microVM's switch (D181): each port it
+    /// declares or listens on, where it is published, and who reaches it there: the
+    /// command where it publishes it, its peers on each of its networks whose members are
+    /// peers where it declares it, and no one where it listens without declaring it, with
+    /// what would.
+    fn member_ports(
+        &self,
+        id: &str,
+        made: &crate::containers::EngineMade,
+        ports: &[crate::containers::PortRecord],
+        reply: &Reply<'_>,
+    ) -> u8 {
+        let spec = shards_abi::run::Spec {
+            builtin: shards_abi::run::builtin::LISTENS,
+            ..Default::default()
+        };
+        let listening: Vec<(u16, String)> =
+            match self.exec_quietly(id, &spec, None, 1 << 16, crate::daemon::TAKE_TIMEOUT) {
+                Ok(quiet) if quiet.status == Some(0) => String::from_utf8_lossy(&quiet.output)
+                    .lines()
+                    .filter_map(|l| {
+                        let (proto, port) = l.split_once(' ')?;
+                        Some((port.parse().ok()?, proto.to_string()))
+                    })
+                    .collect(),
+                Ok(quiet) => {
+                    reply.err(&format!(
+                        "shards: what {id} listens on: {}",
+                        String::from_utf8_lossy(&quiet.output).trim()
+                    ));
+                    return 1;
+                }
+                Err(e) => {
+                    reply.err(&format!("shards: what {id} listens on: {e}"));
+                    return 1;
+                }
+            };
+        // Its networks whose members are its peers.
+        let peered: Vec<String> = {
+            let registry = lock(&self.containers);
+            let networks = registry
+                .get(&made.of)
+                .map(|p| p.engine_networks.clone())
+                .unwrap_or_default();
+            made.addresses
+                .iter()
+                .filter(|a| networks.iter().any(|n| n.name == a.network && n.peers))
+                .map(|a| a.network.clone())
+                .collect()
+        };
+        let mut seen: Vec<(u16, String)> = ports.iter().map(|p| (p.private, p.proto.clone())).collect();
+        seen.extend(listening.iter().cloned());
+        seen.sort();
+        seen.dedup();
+        let rows: Vec<[String; 3]> = seen
+            .into_iter()
+            .map(|(port, proto)| {
+                let published: Vec<String> = ports
+                    .iter()
+                    .filter(|p| p.private == port && p.proto == proto)
+                    .filter_map(|p| Some(std::net::SocketAddr::new(p.ip?, p.public).to_string()))
+                    .collect();
+                let declared = ports.iter().any(|p| p.private == port && p.proto == proto);
+                let peers = (!peered.is_empty()).then(|| format!("its peers on {}", peered.join(", ")));
+                let by = match (published.is_empty(), declared, peers) {
+                    (false, _, Some(peers)) => format!("the command, and {peers}"),
+                    (false, _, None) => "the command".to_string(),
+                    (true, true, Some(peers)) => peers,
+                    (true, true, None) => "no one: its networks make no peers of their members".to_string(),
+                    (true, false, _) => {
+                        "no one: it listens, and declares it not (EXPOSE, expose: or --expose would)"
+                            .to_string()
+                    }
+                };
+                [
+                    format!("{port}/{proto}"),
+                    if published.is_empty() {
+                        "-".to_string()
+                    } else {
+                        published.join(", ")
+                    },
+                    by,
+                ]
+            })
+            .collect();
+        let (port_w, published_w) = rows
+            .iter()
+            .fold(("PORT".len(), "PUBLISHED".len()), |(p, a), [x, y, _]| {
+                (p.max(x.len()), a.max(y.len()))
+            });
+        reply.out(&format!(
+            "{:<port_w$}  {:<published_w$}  REACHED BY",
+            "PORT", "PUBLISHED"
+        ));
+        for [p, at, by] in rows {
+            reply.out(&format!("{p:<port_w$}  {at:<published_w$}  {by}"));
         }
         0
     }

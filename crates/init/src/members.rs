@@ -631,6 +631,84 @@ pub fn leave(id: u32) {
     }
 }
 
+/// What process `pid`'s network namespace listens on (D181): each TCP port in LISTEN and
+/// each UDP port bound unconnected (Linux's `/proc/net/tcp`, `tcp6`, `udp` and `udp6`:
+/// state 0A and 07), at an address past its loopback, which nothing but itself reaches; as
+/// `tcp PORT` and `udp PORT` lines, each once, in order.
+pub fn listening(pid: libc::pid_t) -> Result<String, String> {
+    let mut found: Vec<(&str, u16)> = Vec::new();
+    for (proto, file, state) in [
+        ("tcp", "tcp", "0A"),
+        ("tcp", "tcp6", "0A"),
+        ("udp", "udp", "07"),
+        ("udp", "udp6", "07"),
+    ] {
+        let path = format!("/proc/{pid}/net/{file}");
+        let table = match std::fs::read_to_string(&path) {
+            Ok(t) => t,
+            // A kernel without IPv6 has no tcp6 or udp6.
+            Err(e) if e.kind() == io::ErrorKind::NotFound && file.ends_with('6') => continue,
+            Err(e) => return Err(format!("{path}: {e}")),
+        };
+        for port in listens_in(&table, state) {
+            if !found.contains(&(proto, port)) {
+                found.push((proto, port));
+            }
+        }
+    }
+    found.sort_unstable();
+    Ok(found
+        .iter()
+        .map(|(proto, port)| format!("{proto} {port}"))
+        .collect::<Vec<_>>()
+        .join("\n"))
+}
+
+/// The ports of socket table `table`'s sockets in `state`, at an address past the
+/// loopback: its header line first, then a socket a line, `sl local_address rem_address
+/// st ...`, each address `HEX:PORT`.
+fn listens_in(table: &str, state: &str) -> Vec<u16> {
+    let mut ports = Vec::new();
+    for line in table.lines().skip(1) {
+        let mut fields = line.split_whitespace();
+        let (Some(local), Some(st)) = (fields.nth(1), fields.nth(1)) else {
+            continue;
+        };
+        let Some((addr, port)) = local.split_once(':') else {
+            continue;
+        };
+        if st == state
+            && let Ok(port) = u16::from_str_radix(port, 16)
+            && !loopback(addr)
+        {
+            ports.push(port);
+        }
+    }
+    ports
+}
+
+/// Whether a socket table's address (`/proc/net/tcp`'s hex, each 32-bit word in the
+/// host's order) is a loopback one: 127.0.0.0/8, ::1, or 127.0.0.0/8 mapped into IPv6.
+fn loopback(addr: &str) -> bool {
+    let words: Vec<u32> = addr
+        .as_bytes()
+        .chunks(8)
+        .filter_map(|w| {
+            std::str::from_utf8(w)
+                .ok()
+                .and_then(|w| u32::from_str_radix(w, 16).ok())
+        })
+        .collect();
+    // Each word as the kernel wrote it, the host's order: its bytes in memory order.
+    let bytes: Vec<u8> = words.iter().flat_map(|w| w.to_ne_bytes()).collect();
+    match bytes.as_slice() {
+        [127, ..] if bytes.len() == 4 => true,
+        [rest @ .., 0, 0, 0, 1] if bytes.len() == 16 => rest.iter().all(|b| *b == 0),
+        [z @ .., 0xff, 0xff, 127, _, _, _] if bytes.len() == 16 => z.iter().all(|b| *b == 0),
+        _ => false,
+    }
+}
+
 /// What the engine's `args` ask of its networks, done in init (D181): `make NAME SUBNET
 /// GATEWAY RANGE FLAGS`, each of the three addresses empty for one init picks, FLAGS a
 /// comma list of `internal` and `no-peers`, answered with the subnet and gateway made
@@ -1059,6 +1137,26 @@ fn relay_udp(sock: &UdpSocket, to: SocketAddr, idle: (Duration, Duration)) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A socket table's listeners past the loopback: the any address's and an address's
+    /// of its own, not 127.0.0.1's, ::1's or 127.0.0.1's mapped, nor a connected socket.
+    #[test]
+    fn what_listens_past_the_loopback_is_found() {
+        let v4 =
+            "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode
+   0: 00000000:1B58 00000000:0000 0A 00000000:00000000 00:00000000 00000000  1000        0 11 1 0 100 0 0 10 0
+   1: 0100007F:1B59 00000000:0000 0A 00000000:00000000 00:00000000 00000000  1000        0 12 1 0 100 0 0 10 0
+   2: 0200F40A:1B5A 00000000:0000 0A 00000000:00000000 00:00000000 00000000  1000        0 13 1 0 100 0 0 10 0
+   3: 0200F40A:1B5B 0300F40A:9C40 01 00000000:00000000 00:00000000 00000000  1000        0 14 1 0 100 0 0 10 0
+";
+        assert_eq!(listens_in(v4, "0A"), [7000, 7002]);
+        let v6 = "  sl  local_address                         remote_address                        st
+   0: 00000000000000000000000000000000:1F40 00000000000000000000000000000000:0000 0A
+   1: 00000000000000000000000001000000:1F41 00000000000000000000000000000000:0000 0A
+   2: 0000000000000000FFFF00000100007F:1F42 00000000000000000000000000000000:0000 0A
+";
+        assert_eq!(listens_in(v6, "0A"), [8000]);
+    }
 
     fn entry(parts: &[&str]) -> Vec<u8> {
         parts.join("\0").into_bytes()

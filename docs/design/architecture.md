@@ -4791,7 +4791,7 @@ and `none`, built; (3b) the networks its engine makes, their grants and names, a
 networks API, built, connect and disconnect for a container that does not run; (3c) its
 named volumes, one container in another's namespace (`container:X`, Compose's
 `service:`), and Compose end to end, built; (3d) the undeclared listeners `shards read
-ports` lists; (3e) connect and disconnect of a running member.
+ports` lists, built; (3e) connect and disconnect of a running member.
 
 - **How 3a is built.** The daemon asks for a membership by network and name (`member=`,
   with `own-publish=` for each port it publishes), and nothing of addresses. Init holds
@@ -4966,6 +4966,22 @@ ports` lists; (3e) connect and disconnect of a running member.
   the project's named volume is read back, the volume on the host as `PROV.shp_data`;
   and `down -v` takes the containers, network and volume. What it relies on is
   mutation-checked in the tests above.
+- **How 3d is built.** `shards read ports` of a container its microVM's engine made, a
+  member of the switch, says each port it declares or listens on, where it is
+  published, and who reaches it there (REACHED BY): the command where it publishes it;
+  its peers on each of its networks that make peers of their members where it declares
+  it; no one where its networks make no peers; and no one where it listens without
+  declaring it, with what would (`EXPOSE`, `expose:`, `--expose`), so that a connection
+  that would hang is seen at once instead. What it listens on init reads by a builtin
+  (`LISTENS`) through its own `/proc` by the container's process (`/proc/PID/net/tcp`,
+  `tcp6`, `udp`, `udp6`: TCP in LISTEN, UDP bound and unconnected), past the loopback,
+  which nothing but itself reaches. Tested in the 3b test (stray's declared 7000 reached
+  by its peers on app, its 7001 undeclared by no one, with what would declare it) and the
+  3a test (one's published 7000 by the command, quiet's declared 7002 by no one, the
+  default network making no peers); the socket tables' reading, IPv4 and IPv6, loopback
+  and states, in init's unit tests. Mutation-checked, each caught: what it listens on
+  ignored; what it declares ignored; a network of no peers taken for one; what it
+  publishes ignored.
 
 ### D179. Other CPUs' images, emulated in their microVM (parts 1 to 3 built)
 
