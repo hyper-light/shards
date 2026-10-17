@@ -282,6 +282,7 @@ pub fn main() -> ! {
         "ask" => ask(arg(1), arg(2).parse().ok()),
         "resolve" => resolve(arg(1)),
         "dnsttl" => dnsttl(arg(1)),
+        "dnsrtt" => dnsrtt(arg(1), arg(2).parse().unwrap_or(1000)),
         "udp" => udp(arg(1)),
         "serve" => serve(arg(1), arg(2).parse().unwrap_or(1)),
         "listen" => listen(arg(1), arg(2).parse().unwrap_or(1)),
@@ -1018,19 +1019,11 @@ fn resolve(name: &str) -> i32 {
 
 /// Asks the resolver `/etc/resolv.conf` names for `name`'s A records, by hand over UDP,
 /// and prints each answer's TTL, how long a cache may keep it, and its address (`dnsttl
-/// TTL ADDR`); or why none came.
+/// TTL ADDR`); the answer's code where it is not NOERROR (`dnsttl rcode N`); or why none
+/// came.
 fn dnsttl(name: &str) -> i32 {
-    let server = std::fs::read_to_string("/etc/resolv.conf")
-        .unwrap_or_default()
-        .lines()
-        .find_map(|l| l.strip_prefix("nameserver ").map(|a| a.trim().to_string()))
-        .unwrap_or_default();
-    let mut q = vec![0x53, 0x7c, 0x01, 0x00, 0, 1, 0, 0, 0, 0, 0, 0];
-    for label in name.split('.') {
-        q.push(u8::try_from(label.len()).unwrap_or(0));
-        q.extend_from_slice(label.as_bytes());
-    }
-    q.extend_from_slice(&[0, 0, 1, 0, 1]);
+    let server = resolver();
+    let q = a_query(name);
     let asked = std::net::UdpSocket::bind("0.0.0.0:0").and_then(|s| {
         s.set_read_timeout(Some(std::time::Duration::from_secs(3)))?;
         s.send_to(&q, (server.as_str(), 53))?;
@@ -1056,6 +1049,11 @@ fn dnsttl(name: &str) -> i32 {
             .and_then(|b| <[u8; 4]>::try_from(b).ok())
             .map(u32::from_be_bytes)
     };
+    let rcode = a.get(3).map_or(0, |b| b & 0x0f);
+    if rcode != 0 {
+        let _ = writeln!(io::stdout(), "dnsttl rcode {rcode}");
+        return 0;
+    }
     // Its answers, past the question it repeats (RFC 1035 §4.1.3): each named by a pointer
     // or by labels to their zero, then its type, class, TTL, data's length and data.
     let mut at = q.len();
@@ -1081,6 +1079,85 @@ fn dnsttl(name: &str) -> i32 {
         }
         at += 10 + usize::from(len);
     }
+    0
+}
+
+/// The resolver `/etc/resolv.conf` names first, or none.
+fn resolver() -> String {
+    std::fs::read_to_string("/etc/resolv.conf")
+        .unwrap_or_default()
+        .lines()
+        .find_map(|l| l.strip_prefix("nameserver ").map(|a| a.trim().to_string()))
+        .unwrap_or_default()
+}
+
+/// A query for `name`'s A records, recursion desired (RFC 1035 §4.1), its ID 0x537c.
+fn a_query(name: &str) -> Vec<u8> {
+    let mut q = vec![0x53, 0x7c, 0x01, 0x00, 0, 1, 0, 0, 0, 0, 0, 0];
+    for label in name.split('.') {
+        q.push(u8::try_from(label.len()).unwrap_or(0));
+        q.extend_from_slice(label.as_bytes());
+    }
+    q.extend_from_slice(&[0, 0, 1, 0, 1]);
+    q
+}
+
+/// Asks the resolver `/etc/resolv.conf` names for `name`'s A records `n` times over UDP,
+/// one at a time and a millisecond apart, as a program asking each time it connects does,
+/// and prints how long each took to be answered, in microseconds, from the asker's side:
+/// `dnsrtt n N p50 P p90 P p99 P max M`; or the first that went unanswered (3 s).
+fn dnsrtt(name: &str, n: usize) -> i32 {
+    let server = resolver();
+    let mut q = a_query(name);
+    let sock = match std::net::UdpSocket::bind("0.0.0.0:0").and_then(|s| {
+        s.set_read_timeout(Some(std::time::Duration::from_secs(3)))?;
+        s.connect((server.as_str(), 53))?;
+        Ok(s)
+    }) {
+        Ok(s) => s,
+        Err(e) => {
+            let _ = writeln!(io::stdout(), "dnsrtt error {e}");
+            return 1;
+        }
+    };
+    let mut took: Vec<u128> = Vec::with_capacity(n);
+    let mut buf = vec![0u8; 4096];
+    for i in 0..n {
+        let id = u16::try_from(i % 65536).unwrap_or(0).to_be_bytes();
+        if let Some(head) = q.get_mut(..2) {
+            head.copy_from_slice(&id);
+        }
+        let at = std::time::Instant::now();
+        let answered = sock.send(&q).and_then(|_| {
+            loop {
+                let got = sock.recv(&mut buf)?;
+                if buf.get(..2) == Some(&id[..]) && got > 2 {
+                    return Ok(());
+                }
+            }
+        });
+        if let Err(e) = answered {
+            let _ = writeln!(io::stdout(), "dnsrtt error at {i}: {e}");
+            return 1;
+        }
+        took.push(at.elapsed().as_micros());
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    took.sort_unstable();
+    let at = |p: usize| {
+        took.get(took.len().saturating_sub(1) * p / 100)
+            .copied()
+            .unwrap_or(0)
+    };
+    let _ = writeln!(
+        io::stdout(),
+        "dnsrtt n {} p50 {} p90 {} p99 {} max {}",
+        took.len(),
+        at(50),
+        at(90),
+        at(99),
+        at(100)
+    );
     0
 }
 

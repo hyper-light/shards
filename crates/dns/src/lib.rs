@@ -1,20 +1,20 @@
 //! The names a network of shards' answers its members (D46, D181), as RFC 1035 messages:
-//! each member's names (its name, its aliases, its host name) as A records, whatever their
-//! case, and as AAAA records where the network has IPv6, a name with no address of the
-//! version asked answered with none (NOERROR); each address back to its member's name and
-//! the network's (`name.network.`); and SERVFAIL for a name the table does not hold, whose
-//! fate is its asker's ([`Names::holds`]): the network process refuses what a microVM's
-//! grants do not reach (D31), and the agents' resolver in the guest passes on what a
-//! member may ask past its microVM (D181). A table the network process answers keeps
-//! [`NETWORK_TTL`]; one answered in the guest, where it is held, is kept by no one.
+//! each member's names (its name, its aliases, its host name) as A records, whatever
+//! their case, and as AAAA records where the network has IPv6, a name with no address of
+//! the version asked answered with none (NOERROR); each name also as `name.network`, the
+//! name an address's PTR answers, so that a reverse answer resolves forward and names
+//! the network the address is on; and SERVFAIL for a name the table does not hold, which
+//! its asker never sends ([`Names::holds`] first): it passes the question on where a grant
+//! reaches past the network, and refuses it where none does. Every answer's TTL is 0
+//! (RFC 1035 §3.2.1: used for the transaction in progress, not cached), since a network's
+//! names change as its members come and go, and one kept past its member could name the
+//! next member given its address.
 
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
-/// The TTL a network of microVMs answers with (D46): Docker's embedded DNS's
-/// (libnetwork resolver.go, respTTL), kept until it is measured against a microVM's own
-/// needs (the de-Dockerify audit's copied defaults).
-pub const NETWORK_TTL: u32 = 600;
+/// Every answer's TTL: kept by no cache (RFC 1035 §3.2.1).
+const TTL: u32 = 0;
 
 const TYPE_A: u16 = 1;
 const TYPE_PTR: u16 = 12;
@@ -26,13 +26,10 @@ const FORMERR: u8 = 1;
 const SERVFAIL: u8 = 2;
 const NOTIMP: u8 = 4;
 
-/// The names a network's members answer to, the network's name, and how long an answer
-/// may be kept: none at all (the default) for a table answered where it is held, in the
-/// guest, so that no member's address outlives its member (D181).
+/// The names a network's members answer to, and the network's name.
 #[derive(Debug, Default, Clone)]
 pub struct Names {
     network: String,
-    ttl: u32,
     /// Each name, lowered, to the addresses it has.
     by_name: HashMap<String, Vec<IpAddr>>,
     /// Each address to its member's first name, for PTR.
@@ -54,7 +51,6 @@ impl Names {
         let network = word(&mut rest)?;
         let mut names = Names {
             network,
-            ttl: NETWORK_TTL,
             ..Names::default()
         };
         while !rest.is_empty() {
@@ -112,19 +108,21 @@ impl Names {
         out
     }
 
-    /// The names of network `network`, none yet, answered for as long as `ttl` says.
-    pub fn new(network: &str, ttl: u32) -> Names {
+    /// The names of network `network`, none yet.
+    pub fn new(network: &str) -> Names {
         Names {
             network: network.to_string(),
-            ttl,
             ..Names::default()
         }
     }
 
-    /// This table, answered for as long as `ttl` says.
-    pub fn with_ttl(mut self, ttl: u32) -> Names {
-        self.ttl = ttl;
-        self
+    /// The addresses `name` has, lowered and without its last dot: a member's name as
+    /// given, or as `name.network`.
+    fn addresses(&self, name: &str) -> Option<&Vec<IpAddr>> {
+        self.by_name.get(name).or_else(|| {
+            let bare = name.strip_suffix(self.network.to_ascii_lowercase().as_str())?;
+            self.by_name.get(bare.strip_suffix('.')?)
+        })
     }
 
     /// Whether it holds no name.
@@ -152,7 +150,7 @@ impl Names {
         };
         match ptr_addr(&name) {
             Some(ip) => self.by_addr.contains_key(&ip),
-            None => self.by_name.contains_key(name.trim_end_matches('.')),
+            None => self.addresses(name.trim_end_matches('.')).is_some(),
         }
     }
 
@@ -199,7 +197,7 @@ impl Names {
             let mut r = vec![0xc0, 12];
             r.extend_from_slice(&kind.to_be_bytes());
             r.extend_from_slice(&CLASS_IN.to_be_bytes());
-            r.extend_from_slice(&self.ttl.to_be_bytes());
+            r.extend_from_slice(&TTL.to_be_bytes());
             r.extend_from_slice(&u16::try_from(data.len()).unwrap_or(0).to_be_bytes());
             r.extend_from_slice(data);
             r
@@ -225,7 +223,7 @@ impl Names {
                 None => reply(SERVFAIL, question, &[]),
             });
         }
-        let Some(ips) = self.by_name.get(&name) else {
+        let Some(ips) = self.addresses(name.trim_end_matches('.')) else {
             return Some(reply(SERVFAIL, question, &[]));
         };
         // A and AAAA from the addresses of their version; the rest: the name is there,
@@ -477,9 +475,6 @@ mod tests {
         Names::decode(&Names::encode("net1", &entries)).unwrap()
     }
 
-    /// As Docker's embedded DNS answered on Docker Engine 29.3.1: A records of TTL 600,
-    /// whatever the case; an alias's every member; no AAAA; PTR as name.network.; and
-    /// SERVFAIL for what it does not hold, upstream denied.
     /// A forwarded response's name and A records, whatever its owner names are written
     /// as (a pointer, labels) and whatever other records come between.
     #[test]
@@ -515,23 +510,33 @@ mod tests {
         assert_eq!(a_records(&m[..m.len() - 2]), None);
     }
 
+    /// A member's names, whatever their case and as `name.network`, kept by no cache; an
+    /// alias's every member; AAAA with none for a member without IPv6; an address back to
+    /// `name.network.`, which resolves forward to it; and a name the table does not hold
+    /// neither held nor answered but as SERVFAIL, its asker's to pass on or refuse.
     #[test]
-    fn names_are_answered_by_the_embedded_resolver() {
+    fn a_networks_names_are_answered_as_its_members_have_them() {
         let n = names();
         let a = n.answer(&query("WEB", TYPE_A)).unwrap();
         assert_eq!(&a[..2], &[0x12, 0x34]);
         assert_eq!(a[3] & 0x0f, NOERROR);
         assert_eq!(u16::from_be_bytes([a[6], a[7]]), 1);
-        assert_eq!(&a[a.len() - 10..a.len() - 6], &600u32.to_be_bytes());
+        assert_eq!(&a[a.len() - 10..a.len() - 6], &0u32.to_be_bytes());
         assert_eq!(&a[a.len() - 4..], &[172, 19, 0, 2]);
         let a = n.answer(&query("alias", TYPE_A)).unwrap();
         assert_eq!(u16::from_be_bytes([a[6], a[7]]), 2);
         let a = n.answer(&query("web", TYPE_AAAA)).unwrap();
         assert_eq!((a[3] & 0x0f, u16::from_be_bytes([a[6], a[7]])), (NOERROR, 0));
+        assert!(!n.holds(&query("example.com", TYPE_A)));
         let a = n.answer(&query("example.com", TYPE_A)).unwrap();
         assert_eq!(a[3] & 0x0f, SERVFAIL);
         let a = n.answer(&query("2.0.19.172.in-addr.arpa", TYPE_PTR)).unwrap();
         assert!(a.ends_with(b"\x03web\x04net1\x00"), "{a:?}");
+        // The name the address gives back resolves forward to it, on that network alone.
+        assert!(n.holds(&query("Web.Net1", TYPE_A)));
+        let a = n.answer(&query("web.net1", TYPE_A)).unwrap();
+        assert_eq!(&a[a.len() - 4..], &[172, 19, 0, 2]);
+        assert!(!n.holds(&query("web.net2", TYPE_A)));
         // A member with IPv6: its AAAA, and its address's ip6.arpa name back to it.
         let a = n.answer(&query("v6", TYPE_AAAA)).unwrap();
         assert_eq!((a[3] & 0x0f, u16::from_be_bytes([a[6], a[7]])), (NOERROR, 1));

@@ -3030,16 +3030,27 @@ the daemon elected (D31).
   and of a fast sender's bursts of 200 datagrams the link lost 35 to 54% (PM M182).
   Members reach each other past the
   default deny; nothing else is opened (D31): a network is what Docker's `--internal`
-  one is, and a name off it is SERVFAIL, as Docker's internal networks answer.
-- **Names, at Docker's address.** A microVM on a network has Docker's resolver address,
-  127.0.0.11 (resolv.conf `nameserver 127.0.0.11`, `options ndots:0` after its own, no
-  comments naming an engine); a process of shards-init, outside the workload's cgroup,
-  relays each query there, by UDP and TCP, to the network process at the gateway, which
-  answers what Docker's embedded DNS answers (measured): each member's name, aliases,
-  short ID and host name as A records with a TTL of 600, whatever the case; AAAA with
-  none; PTR as `name.network.`. The daemon sends each member the table as members come
-  and go (`NET_NAMES`). Programs written for Docker that ask 127.0.0.11 by address
-  (nginx's `resolver`) work unchanged.
+  one is, and a name off it is refused (below).
+- **Names, at 127.0.0.11.** A microVM on a network asks 127.0.0.11 (resolv.conf
+  `nameserver 127.0.0.11`, `options ndots:0` after its own, no comments naming an engine),
+  the address programs written for Docker ask by address (nginx's `resolver`), which so
+  work unchanged; a process of shards-init, outside the workload's cgroup, relays each
+  query there, by UDP and TCP, to the network process at the gateway. It answers the names
+  the network gives each member: its name, its aliases (Compose's service names), its
+  short ID and its host name (clustered software, Elasticsearch, RabbitMQ and Kafka
+  among it, gives its peers its host name to reach it by), whatever the case, and each as
+  `name.network`; as A records, and AAAA where the network has IPv6 (D99); and an address
+  back to `name.network.`, which resolves forward to it. Each answer's TTL is 0 (RFC 1035
+  §3.2.1: used for the transaction in progress, not cached): the table changes as
+  members come and go, a name is given again to the next run under it and an address to
+  the next member, so an answer kept past its member could name another microVM. A
+  resolver that caches asks again each time, a round trip to the network process of
+  184 µs at p50 and 407 µs at p99 on a quiet host (83 and 668 µs loaded, PM M247). A name
+  the network does not hold, where no grant reaches past it, is
+  refused at once (REFUSED, a refusal by policy, RFC 1035 §4.1.1): SERVFAIL, a server's
+  failure, which it answered until 2026-10-17 as Docker's embedded resolver does, is
+  taken for a passing one and asked again (musl reads it as `EAI_AGAIN`). The daemon
+  sends each member the table as members come and go (`NET_NAMES`).
 - **Members.** A microVM is a member while its run lasts: from its start, under the
   network's lock (no two take one address), to its end; one whose start fails is no
   member, however it failed. An address a run asked for is free once its end is told,
@@ -3049,10 +3060,14 @@ the daemon elected (D31).
   dockerd's, its network's ID and DNS names kept while it is stopped.
 - **Measured and tested** (containers.rs `microvms_on_a_network_reach_one_another_by_name`):
   reach by every name and by address, the server seeing each client's own address, no
-  reach from a microVM off the network, Docker's resolv.conf, inspect's endpoint, and
-  dockerd's refusals; the network process's resolver (net/src/dns.rs), the IPAM
-  (networks.rs) and the CLI's consolidation (daemon/networks.rs) held to Docker's answers
-  in unit tests.
+  reach from a microVM off the network, its resolv.conf, a member's name answered with a
+  TTL of 0 and as `name.network`, a name past the network refused at once, inspect's
+  endpoint, and dockerd's refusals; the network's names (`shards-dns`) in unit tests of
+  their own; the IPAM (networks.rs) and the CLI's consolidation (daemon/networks.rs) held
+  to Docker's answers in unit tests. Mutation-checked, each caught: answers kept for
+  600 s; `name.network` not answered; the network's table answering what it does not
+  hold; a name no grant reaches left unanswered (the asker waited 3 s). A lookup's cost,
+  PM M247.
 
 A network's options are what its microVMs do (moby docker-v29.3.1's bridge driver,
 drivers/bridge/bridge_linux.go, port_mapping_linux.go; netlabel). Before, they were
