@@ -4907,14 +4907,7 @@ fn add_fetches_git_over_ssh() {
     );
     // The same through an agent's socket the build forwards.
     let sock = dir.join("agent.sock");
-    let mut agent = Ended(
-        std::process::Command::new("ssh-agent")
-            .args(["-D", "-a"])
-            .arg(&sock)
-            .stdout(std::process::Stdio::null())
-            .spawn()
-            .unwrap(),
-    );
+    let mut agent = Ended(common::ssh_agent(&sock));
     // Ready once it takes connections: its socket's file is there from its bind(2), before
     // its listen(2), and a connection between the two is refused, as one was on a loaded
     // host ("Error connecting to agent: Connection refused").
@@ -7348,12 +7341,7 @@ fn run_steps_reach_the_clients_ssh_agent() {
     }
     let keys = TempDir::new("build-ssh-agent");
     let sock = keys.join("agent.sock");
-    let mut agent = std::process::Command::new("ssh-agent")
-        .args(["-D", "-a"])
-        .arg(&sock)
-        .stdout(std::process::Stdio::null())
-        .spawn()
-        .unwrap();
+    let mut agent = common::ssh_agent(&sock);
     struct Ended<'a>(&'a mut std::process::Child);
     impl Drop for Ended<'_> {
         fn drop(&mut self) {

@@ -3985,6 +3985,14 @@ impl<D: Disk> Daemon<D> {
             net: ready.net,
             joined: ready.joined,
         };
+        // Its VM is told how its run stops, so that it stops it so if this daemon dies.
+        if !tracked.visit && tracked.joined.is_none() {
+            let (signal, grace) = self.own_stop(id);
+            let grace = grace.map_or(u64::MAX, |g| u64::try_from(g.as_millis()).unwrap_or(u64::MAX - 1));
+            let mut order = signal.unwrap_or(0).to_be_bytes().to_vec();
+            order.extend_from_slice(&grace.to_be_bytes());
+            let _ = tracked.socket.send(kind::STOP_ORDER, &order, &[]);
+        }
         // As the daemon stops, the stop thread, which this wakes, stops it.
         lock(&self.runs).insert(id.to_string(), RunState::Tracked(tracked));
         self.resolved.notify_all();
@@ -6883,9 +6891,21 @@ mod tests {
     }
 
     /// The next message the daemon sends a warm VM: its kind and payload.
+    /// The next message a VM hears of the daemon, past its run's stop order, which a VM
+    /// keeps for its daemon's going (`STOP_ORDER`).
     fn heard(vm: &UnixStream) -> (u8, Vec<u8>) {
-        let m = shards_ipc::recv(vm).unwrap().expect("the daemon hung up");
+        let m = heard_whole(vm);
         (m.kind, m.payload)
+    }
+
+    /// [`heard`], the message whole, its descriptors with it.
+    fn heard_whole(vm: &UnixStream) -> shards_ipc::Message {
+        loop {
+            let m = shards_ipc::recv(vm).unwrap().expect("the daemon hung up");
+            if m.kind != kind::STOP_ORDER {
+                return m;
+            }
+        }
     }
 
     fn say(vm: &UnixStream, what: u8, payload: &[u8]) {
@@ -9149,7 +9169,18 @@ mod tests {
                 d.disk.writing.load(Ordering::SeqCst)
             });
             t.t.daemon.stop_runs(t.threads);
-            // Linux numbers SIGUSR1 10.
+            // Its VM was told its stop as its run was tracked, its own signal in it, so that
+            // it stops its run so should this daemon die (STOP_ORDER); then the stop's
+            // signal. Linux numbers SIGUSR1 10.
+            let order = shards_ipc::recv(&vm).unwrap().unwrap();
+            let grace = u64::try_from(STOP_GRACE.as_millis()).unwrap();
+            assert_eq!(
+                (order.kind, order.payload),
+                (
+                    kind::STOP_ORDER,
+                    [10u32.to_be_bytes().as_slice(), &grace.to_be_bytes()].concat()
+                )
+            );
             assert_eq!(heard(&vm), signal(10));
             held.let_through();
             say(&vm, kind::DONE, &[128 + 10]);
@@ -9591,7 +9622,7 @@ mod tests {
                 waited.recv_timeout(PATIENCE).unwrap();
             });
             assert!(dir.join(crate::segments::log_segment(1).0).is_file());
-            let m = shards_ipc::recv(&vm).unwrap().unwrap();
+            let m = heard_whole(&vm);
             assert_eq!((m.kind, m.fds.len()), (kind::SEGMENT, 2));
         });
     }
@@ -9633,7 +9664,7 @@ mod tests {
                     say(&vm, kind::WORKING_SET, &part);
                 }
             }
-            let refused = shards_ipc::recv(&vm).unwrap().unwrap();
+            let refused = heard_whole(&vm);
             say(&vm, kind::DONE, &[0]);
             let ended = finishes(&starting.run);
             let queued = t.daemon.files.queued();
@@ -9673,7 +9704,7 @@ mod tests {
             vm.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
             let ask = |seq: u64| {
                 say(&vm, kind::LOG_SEGMENT, &seq.to_be_bytes());
-                let m = shards_ipc::recv(&vm).unwrap().unwrap();
+                let m = heard_whole(&vm);
                 assert_eq!(m.kind, kind::SEGMENT);
                 assert_eq!(m.payload, seq.to_be_bytes(), "the answer names its segment");
                 m.fds

@@ -590,7 +590,13 @@ fn what_steers_a_command_passes_its_stdin_waiting_for_room() {
     );
     let dir = TempDir::new("remote-steer").unwrap();
     let go = dir.path().join("go");
-    let waits = format!("while [ ! -e '{}' ]; do sleep 0.01; done", go.display());
+    // Each command that waits on the test waits no longer than the test lives: one whose
+    // test failed, or was killed, before it wrote what it waits for is no command left
+    // behind (`kill -0 $PPID`, the test's process).
+    let waits = format!(
+        "while [ ! -e '{}' ] && kill -0 $PPID 2>/dev/null; do sleep 0.01; done",
+        go.display()
+    );
     let what = format!("sh -c {waits}");
     let endless: Option<Box<dyn Read + Send>> = Some(Box::new(std::io::repeat(b'y')));
     let (steered, controls) = mpsc::channel();
@@ -640,7 +646,10 @@ fn a_command_that_reads_no_stdin_holds_up_no_other() {
     );
     let dir = TempDir::new("remote-held").unwrap();
     let go = dir.path().join("go");
-    let waits = format!("while [ ! -e '{}' ]; do sleep 0.01; done", go.display());
+    let waits = format!(
+        "while [ ! -e '{}' ] && kill -0 $PPID 2>/dev/null; do sleep 0.01; done",
+        go.display()
+    );
     let endless: Option<Box<dyn Read + Send>> = Some(Box::new(std::io::repeat(b'y')));
     let held = run(laptop, d.remote, &["sh", "-c", &waits], endless);
     d.seen.saw(&Seen::Started(format!("sh -c {waits}")));
@@ -1106,7 +1115,7 @@ fn what_a_command_of_a_connection_gone_writes_reaches_no_other() {
     );
     // It goes on through the hangup its client's going brings, once it has said it will.
     let stale = format!(
-        "trap '' HUP; : > '{}'; while [ ! -e '{}' ]; do sleep 0.01; done; echo stale",
+        "trap '' HUP; : > '{}'; while [ ! -e '{}' ] && kill -0 $PPID 2>/dev/null; do sleep 0.01; done; echo stale",
         ready.display(),
         go.display()
     );
@@ -1120,7 +1129,7 @@ fn what_a_command_of_a_connection_gone_writes_reaches_no_other() {
     // The connection gone, and drained: three probe timeouts on loopback.
     std::thread::sleep(Duration::from_millis(500));
     let fresh = format!(
-        "while [ ! -e '{}' ]; do sleep 0.01; done; echo fresh; exit 7",
+        "while [ ! -e '{}' ] && kill -0 $PPID 2>/dev/null; do sleep 0.01; done; echo fresh; exit 7",
         done.display()
     );
     let later = run(laptop, d.remote, &["sh", "-c", &fresh], None);

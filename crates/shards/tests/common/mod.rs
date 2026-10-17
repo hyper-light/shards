@@ -2830,3 +2830,22 @@ pub fn two_platform_image() -> (Vec<u8>, Vec<Vec<u8>>, String) {
     blobs.extend([config, layer, theirs]);
     (index, blobs, layer_digest)
 }
+
+/// An SSH agent at `sock`, which goes as this test's process does, however it ends:
+/// ssh-agent given a command runs it as its parent and exits once that has gone
+/// (OpenSSH ssh-agent.c, check_parent_exists), the command a wait on this process. The
+/// child is that command; killing it ends the agent too.
+pub fn ssh_agent(sock: &Path) -> std::process::Child {
+    let me = std::process::id();
+    std::process::Command::new("ssh-agent")
+        .arg("-a")
+        .arg(sock)
+        .args([
+            "sh",
+            "-c",
+            &format!("while kill -0 {me} 2>/dev/null; do sleep 1; done"),
+        ])
+        .stdout(std::process::Stdio::null())
+        .spawn()
+        .unwrap()
+}

@@ -1682,6 +1682,69 @@ fn a_daemon_whose_home_is_removed_exits_without_making_it_again() {
     assert!(!path.exists(), "the home was made again: {made:?} {inner:?}");
 }
 
+/// A microVM restored from its snapshot (D176) ends with its home as a run does: before,
+/// a daemon whose home was removed ended its runs and exited, and a restored microVM's VM
+/// ran on, its home gone.
+#[test]
+fn a_restored_microvm_ends_with_its_home() {
+    if cannot_run_vms() || cannot_snapshot() {
+        return;
+    }
+    let (image, _) = served();
+    let home = home("daemon-home-restored", &image);
+    let env = [("SHARDS_HOME", home.as_os_str())];
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let up = shards(&[
+        "run", "-d", "--init", "--name", "up", "--pull", "never", &image, "sleep",
+    ]);
+    assert_eq!(up.status, Some(0), "{}", up.stderr);
+    let saved = shards(&["save", "vm", "up", "snap"]);
+    assert_eq!(saved.status, Some(0), "{}", saved.stderr);
+    let restored = shards(&["restore", "vm", "up"]);
+    assert_eq!(restored.status, Some(0), "{}", restored.stderr);
+    let path = home.to_path_buf();
+    let named = path.to_string_lossy().into_owned();
+    assert!(!processes_with(&named).is_empty(), "no VM of the restored run");
+    let daemon = daemon_pid(&home).expect("a daemon pid");
+    eventually("the home could not be removed", || {
+        matches!(std::fs::remove_dir_all(&path), Ok(())) || !path.exists()
+    });
+    eventually("the daemon outlived its home", || !alive(daemon));
+    eventually("a restored VM outlived its home", || {
+        processes_with(&named).is_empty()
+    });
+}
+
+/// A daemon killed outright takes its runs with it: each VM, told how its run stops
+/// (`STOP_ORDER`), stops it so once its daemon's connection closes, a run and a run
+/// restored from its snapshot alike. Before, they ran on with no daemon to reach them, a
+/// restored microVM of a failed test's for a day and a half.
+#[test]
+fn a_killed_daemons_runs_end_with_it() {
+    if cannot_run_vms() || cannot_snapshot() {
+        return;
+    }
+    let (image, _) = served();
+    let home = home("daemon-killed-runs", &image);
+    let env = [("SHARDS_HOME", home.as_os_str())];
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    for name in ["plain", "back"] {
+        let up = shards(&[
+            "run", "-d", "--init", "--name", name, "--pull", "never", &image, "sleep",
+        ]);
+        assert_eq!(up.status, Some(0), "{}", up.stderr);
+    }
+    assert_eq!(shards(&["save", "vm", "back", "snap"]).status, Some(0));
+    assert_eq!(shards(&["restore", "vm", "back"]).status, Some(0));
+    let named = home.to_string_lossy().into_owned();
+    let daemon = daemon_pid(&home).expect("a daemon pid");
+    // SAFETY: kill(2) of this test's daemon.
+    unsafe { libc::kill(daemon, libc::SIGKILL) };
+    eventually("runs outlived their killed daemon", || {
+        processes_with(&named).is_empty()
+    });
+}
+
 /// A home named relatively is one home, wherever it is named from, however long, with
 /// spaces, or on Linux in bytes that are not UTF-8: each process resolves it before it
 /// makes the home its working directory, and hands the daemon it starts the resolved
