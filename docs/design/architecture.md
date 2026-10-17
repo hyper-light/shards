@@ -4580,7 +4580,7 @@ removed socket not bound again; the sockets kept as the daemon closes; the relay
 up as it stops; a machine's refusal unsaid; the client's writer failing and its command run
 on; a reader gone said as an error.
 
-### D181. `--use-api-socket`: a run's command reaches its own microVM's engine (slices 1 and 2 built; 3 being built)
+### D181. `--use-api-socket`: a run's command reaches its own microVM's engine (slices 1 to 3 built)
 
 The need: a CI job, a test suite with testcontainers, or an agent's tool runs `docker run`
 from inside its workload, as on a host with Docker. The user's call (2026-10-16): what it
@@ -4700,7 +4700,7 @@ own after; its images listed, none of the host's it never pulled), and in the sc
 (`a_create_stays_in_its_microvm`).
 
 Slices: (1) and (2) built, as above; (3), the containers its engine makes on networks of
-their own and Compose through them, designed as follows and being built. A first cut of
+their own and Compose through them, designed as follows and built in five parts. A first cut of
 (3) (part 3a, b6083246) put each container on a bridge of its own in the command's
 namespace, with every port open between them and their flows translated to the command's:
 no part of the microVM's own network design (D59, D61), it is replaced.
@@ -4788,10 +4788,10 @@ container's address; and a container reaches past the microVM no more than the c
 
 Built in parts: (3a) members on the switch, the default network, published ports, `host`
 and `none`, built; (3b) the networks its engine makes, their grants and names, and the
-networks API, built, connect and disconnect for a container that does not run; (3c) its
+networks API, built; (3c) its
 named volumes, one container in another's namespace (`container:X`, Compose's
 `service:`), and Compose end to end, built; (3d) the undeclared listeners `shards read
-ports` lists, built; (3e) connect and disconnect of a running member.
+ports` lists, built; (3e) connect and disconnect of a running member, built.
 
 - **How 3a is built.** The daemon asks for a membership by network and name (`member=`,
   with `own-publish=` for each port it publishes), and nothing of addresses. Init holds
@@ -4982,6 +4982,28 @@ ports` lists, built; (3e) connect and disconnect of a running member.
   and states, in init's unit tests. Mutation-checked, each caught: what it listens on
   ignored; what it declares ignored; a network of no peers taken for one; what it
   publishes ignored.
+- **How 3e is built.** A container that runs is connected and disconnected at once, by
+  init (`NETWORK connect ID NETWORK ADDR NAME...` and `disconnect ID NETWORK`, ID its exec's
+  in the guest). Connect gives the member an address on the network, the one asked or the
+  lowest free, routed on its one link as a member's addresses are: the switch's route to
+  it through its gate, the gate's gateway on in0 and its route down to it, the member's
+  address and its subnet's route through that gateway; then its reach as its networks now
+  say, and every grant built again, its peers' names with them. Disconnect takes them
+  back the other way round, and makes its way out of its namespace again through its next
+  network where the one let go was its first (the kernel flushes an address's routes with
+  it). Its last network stays, refused with why: it would be left a link with no address.
+  The daemon records the address init gives, which inspect shows, and keeps the change for
+  its next start. Its own hosts file stays as it started; its peers resolve its new names
+  through the agents' resolver. A container that runs on `none`, or in another's
+  namespace, gains no link as it runs, and is refused with why.
+- **Tested on real microVMs.** `a_running_member_is_connected_and_disconnected_at_once`:
+  a member of a, connected to b as it runs, has its address there at once in its
+  namespace, is resolved by its alias and reached on its declared port by a member of b;
+  disconnected, it has none, is resolved and reached by none, and is still reached on a;
+  its last network is refused; off its first network, it resolves its peers through its
+  next. Mutation-checked, each caught: connected with no address of its own; connected,
+  or disconnected, with no grants built again; disconnected keeping its address; its last
+  network taken; no way out through its next network.
 
 ### D179. Other CPUs' images, emulated in their microVM (parts 1 to 3 built)
 

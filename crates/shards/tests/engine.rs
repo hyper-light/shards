@@ -3246,7 +3246,7 @@ fn a_microvms_own_engine_makes_networks_whose_members_reach_what_each_declares()
     let (status, said) = api("DELETE", "/networks/app", &Value::Null);
     assert!(status.starts_with("api HTTP/1.1 403"), "{status} {said}");
     // A container that does not run joins a network for its next start, and resolves db
-    // there; one that runs, not yet.
+    // there.
     let (status, said) = api(
         "POST",
         "/containers/create?name=late",
@@ -3259,8 +3259,6 @@ fn a_microvms_own_engine_makes_networks_whose_members_reach_what_each_declares()
         &json!({ "Container": "late", "EndpointConfig": { "Aliases": ["tardy"] } }),
     );
     assert!(status.starts_with("api HTTP/1.1 200"), "{status} {said}");
-    let (status, said) = api("POST", "/networks/other/connect", &json!({ "Container": "db" }));
-    assert!(status.starts_with("api HTTP/1.1 501"), "{status} {said}");
     let (status, said) = api("POST", "/containers/late/start", &Value::Null);
     assert!(status.starts_with("api HTTP/1.1 204"), "{status} {said}");
     let said = finished("late");
@@ -3785,6 +3783,137 @@ volumes:
         !volumes.stdout.lines().any(|n| n.starts_with("prov.")),
         "{volumes}"
     );
+    let removed = shards(&["rm", "-f", "prov"]);
+    assert_eq!(removed.status, Some(0), "{removed}");
+}
+
+/// A member of a microVM's switch that runs is connected to a network and disconnected
+/// from it at once (D181): reached there by its names on the port it declares as soon as
+/// it is on it, and not at all as soon as it is off it; still reached where it stays; its
+/// last network kept.
+#[test]
+fn a_running_member_is_connected_and_disconnected_at_once() {
+    let Some((home, image)) = home("eng-live") else {
+        return;
+    };
+    let shards = |args: &[&str]| shards_in(&home, args);
+    let ran = shards(&["run", "-d", "--name", "prov", "--use-api-socket", &image, "sleep"]);
+    assert_eq!(ran.status, Some(0), "{ran}");
+    let exec = |args: &[&str]| {
+        let mut all = vec!["exec", "prov", "/bin/testguest"];
+        all.extend_from_slice(args);
+        shards(&all)
+    };
+    let deadline = std::time::Instant::now() + TIMEOUT;
+    while exec(&["api", "GET", "/_ping", ""]).stdout != "api HTTP/1.1 200 OK\nOK" {
+        assert!(std::time::Instant::now() < deadline, "its engine never answered");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let api = |method: &str, path: &str, body: &Value| -> (String, Value) {
+        let body = if body.is_null() {
+            String::new()
+        } else {
+            body.to_string()
+        };
+        let out = exec(&["api", method, path, &body]);
+        let (status, rest) = out.stdout.split_once('\n').unwrap_or((&out.stdout, ""));
+        (
+            status.to_string(),
+            serde_json::from_str(rest).unwrap_or(Value::Null),
+        )
+    };
+    let create = |name: &str, body: Value| {
+        let (status, said) = api("POST", &format!("/containers/create?name={name}"), &body);
+        assert!(status.starts_with("api HTTP/1.1 201"), "{name}: {status} {said}");
+        let (status, said) = api("POST", &format!("/containers/{name}/start"), &Value::Null);
+        assert!(status.starts_with("api HTTP/1.1 204"), "{name}: {status} {said}");
+    };
+    let in_member = |name: &str, cmd: &[&str]| -> String {
+        let body = json!({ "Cmd": cmd, "AttachStdout": true }).to_string();
+        let made = exec(&["api", "POST", &format!("/containers/{name}/exec"), &body]);
+        let made: Value = serde_json::from_str(made.stdout.split_once('\n').unwrap().1).unwrap();
+        let id = made["Id"].as_str().unwrap().to_string();
+        let started = exec(&[
+            "api",
+            "POST",
+            &format!("/exec/{id}/start"),
+            r#"{"Detach":false}"#,
+            "upgrade",
+        ]);
+        started
+            .stdout
+            .split_once('\n')
+            .map(|(_, said)| said.to_string())
+            .unwrap_or_default()
+    };
+    let address = |name: &str, network: &str| -> Option<String> {
+        let (_, doc) = api("GET", &format!("/containers/{name}/json"), &Value::Null);
+        doc["NetworkSettings"]["Networks"][network]["IPAddress"]
+            .as_str()
+            .map(str::to_string)
+    };
+    for network in ["a", "b"] {
+        let (status, made) = api("POST", "/networks/create", &json!({ "Name": network }));
+        assert!(status.starts_with("api HTTP/1.1 201"), "{status} {made}");
+    }
+    create(
+        "srv",
+        json!({ "Image": image, "Cmd": ["serve", "7000", "4"], "ExposedPorts": { "7000/tcp": {} },
+                "HostConfig": { "NetworkMode": "a" } }),
+    );
+    create(
+        "near",
+        json!({ "Image": image, "Cmd": ["sleep"], "HostConfig": { "NetworkMode": "a" } }),
+    );
+    create(
+        "far",
+        json!({ "Image": image, "Cmd": ["sleep"], "ExposedPorts": { "7100/tcp": {} },
+                "HostConfig": { "NetworkMode": "b" } }),
+    );
+    let far_at = address("far", "b").unwrap();
+    // On a alone: far, on b, neither resolves it nor reaches it.
+    let said = in_member("far", &["/bin/testguest", "resolve", "srv"]);
+    assert!(said.starts_with("resolve error"), "{said}");
+    // Connected as it runs: on b at once, by its name and its alias there.
+    let (status, said) = api(
+        "POST",
+        "/networks/b/connect",
+        &json!({ "Container": "srv", "EndpointConfig": { "Aliases": ["s"] } }),
+    );
+    assert!(status.starts_with("api HTTP/1.1 200"), "{status} {said}");
+    let srv_b = address("srv", "b").expect("srv on b");
+    let said = in_member("srv", &["/bin/testguest", "addrs"]);
+    assert!(said.contains(&format!("eth0 {srv_b}/32")), "{said}");
+    let said = in_member("far", &["/bin/testguest", "resolve", "s"]);
+    assert_eq!(said, format!("resolve {srv_b}\n"));
+    let said = in_member("far", &["/bin/testguest", "ask", "srv:7000", "3000"]);
+    assert_eq!(said, format!("ask from {far_at}\n"));
+    // Disconnected as it runs: off b at once, by name and by address.
+    let (status, said) = api("POST", "/networks/b/disconnect", &json!({ "Container": "srv" }));
+    assert!(status.starts_with("api HTTP/1.1 200"), "{status} {said}");
+    assert_eq!(address("srv", "b"), None);
+    let said = in_member("srv", &["/bin/testguest", "addrs"]);
+    assert!(!said.contains(&srv_b), "{said}");
+    let said = in_member("far", &["/bin/testguest", "resolve", "s"]);
+    assert!(said.starts_with("resolve error"), "{said}");
+    let said = in_member(
+        "far",
+        &["/bin/testguest", "ask", &format!("{srv_b}:7000"), "3000"],
+    );
+    assert!(said.starts_with("ask error"), "{said}");
+    // Where it stays, it is reached as before; its last network stays.
+    let said = in_member("near", &["/bin/testguest", "ask", "srv:7000", "3000"]);
+    assert!(said.starts_with("ask from "), "{said}");
+    let (status, said) = api("POST", "/networks/a/disconnect", &json!({ "Container": "srv" }));
+    assert!(status.starts_with("api HTTP/1.1 400"), "{status} {said}");
+    // Off its first network, its way out goes through its next: on b, it still asks its
+    // resolver, and resolves far, a peer there.
+    let (status, said) = api("POST", "/networks/b/connect", &json!({ "Container": "srv" }));
+    assert!(status.starts_with("api HTTP/1.1 200"), "{status} {said}");
+    let (status, said) = api("POST", "/networks/a/disconnect", &json!({ "Container": "srv" }));
+    assert!(status.starts_with("api HTTP/1.1 200"), "{status} {said}");
+    let said = in_member("srv", &["/bin/testguest", "resolve", "far"]);
+    assert_eq!(said, format!("resolve {far_at}\n"));
     let removed = shards(&["rm", "-f", "prov"]);
     assert_eq!(removed.status, Some(0), "{removed}");
 }

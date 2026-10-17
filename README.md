@@ -149,14 +149,14 @@ when its program does, and is removed with it. `docker run --use-api-socket` thr
 shards' Engine API does the same, and the credentials the `docker` CLI would copy in are
 refused (it warns). Its program can run containers (`docker run`, attached or not), exec
 in them, stop, kill, wait for, read the logs of, list, inspect and remove them, make
-networks and volumes for them, and pull images: shards pulls with the registry logins of
-whoever ran the microVM, and the image is then that microVM's own; images of yours it
-never pulled aren't there for it. A bind (`-v /work:/src`) is of the microVM's own files,
-its volumes included, as a bind on any engine is of that engine's machine's. A volume it
-makes (`-v data:/var/lib/data`, Compose's `volumes:`) is the microVM's own: kept on your
-disk, where your machine lists it as `MICROVM.data`, reached by no name of yours or of
-another microVM's, and removed with the microVM. A call it can't serve yet is refused with
-what it serves.
+networks and volumes for them, connect and disconnect them as they run, and pull images:
+shards pulls with the registry logins of whoever ran the microVM, and the image is then
+that microVM's own; images of yours it never pulled aren't there for it. A bind (`-v
+/work:/src`) is of the microVM's own files, its volumes included, as a bind on any engine
+is of that engine's machine's. A volume it makes (`-v data:/var/lib/data`, Compose's
+`volumes:`) is the microVM's own: kept on your disk, where your machine lists it as
+`MICROVM.data`, reached by no name of yours or of another microVM's, and removed with the
+microVM. A call it can't serve yet is refused with what it serves.
 
 ### Boot a kernel yourself
 
