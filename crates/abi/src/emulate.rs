@@ -103,11 +103,11 @@ pub fn register_line(e: &Emulator, path: &str) -> String {
 mod tests {
     use super::*;
 
-    /// The line Docker's tool writes for x86_64 (cmd/binfmt/main.go `install`, with the
-    /// image's `QEMU_PRESERVE_ARGV0` set), byte for byte; no emulator for a CPU it has none
-    /// of.
+    /// The line registered for x86_64, byte for byte the binfmt tool's (cmd/binfmt/main.go
+    /// `install`, with the image's `QEMU_PRESERVE_ARGV0` set); no emulator for a CPU it has
+    /// none of.
     #[test]
-    fn a_register_line_is_dockers_tools() {
+    fn a_register_line_is_the_binfmt_tools_byte_for_byte() {
         let e = of("amd64").unwrap();
         assert_eq!(
             register_line(e, "/usr/bin/qemu-x86_64"),

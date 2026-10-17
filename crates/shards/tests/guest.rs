@@ -99,7 +99,8 @@ fn a_download_that_is_not_the_pinned_kernel_is_kept_nowhere() {
         assert_ne!(run.status, Some(0), "{shown}");
         assert!(run.stderr.contains(why), "{shown}");
         assert!(
-            run.stderr.contains("shards guest use --kernel FILE --init FILE"),
+            run.stderr
+                .contains("shards configure guest --kernel FILE --init FILE"),
             "{shown}"
         );
         // Refused before the image was pulled, let alone booted.

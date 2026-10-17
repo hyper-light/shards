@@ -446,11 +446,11 @@ mod tests {
 mod windows_tests {
     use super::*;
 
-    /// A console goes raw as moby/term's does: no echo, line editing, processed input, mouse
-    /// or window events; insert and quick-edit mode, with the extended flags; and the rest of
-    /// its mode as it was.
+    /// A console goes raw: no echo, line editing, processed input, mouse or window events;
+    /// insert and quick-edit mode, with the extended flags; and the rest of its mode as it
+    /// was.
     #[test]
-    fn a_console_goes_raw_as_moby_terms_does() {
+    fn a_console_goes_raw_and_keeps_the_rest_of_its_mode() {
         use windows_sys::Win32::System::Console::{
             ENABLE_ECHO_INPUT, ENABLE_EXTENDED_FLAGS, ENABLE_INSERT_MODE, ENABLE_LINE_INPUT,
             ENABLE_MOUSE_INPUT, ENABLE_PROCESSED_INPUT, ENABLE_QUICK_EDIT_MODE,

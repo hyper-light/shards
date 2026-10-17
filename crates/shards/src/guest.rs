@@ -19,10 +19,10 @@ use shards_registry::http::Cancel;
 
 use crate::kernel::{KERNEL, Pinned};
 
-const USAGE: &str = "usage: shards guest use --kernel FILE --init FILE
-       shards guest
-  use: keep FILE's kernel and shards-init as the guest `shards run` boots, by content.
-  With no command: show the guest in use.
+const USAGE: &str = "usage: shards configure guest --kernel FILE --init FILE
+       shards inspect guest
+  configure: keep FILE's kernel and shards-init as the guest runs boot, by content.
+  inspect: show the guest in use.
   SHARDS_KERNEL_URL: where to download the default kernel, whose SHA-256 is still checked.";
 
 /// The shards-init this build carries, built for this host's guests by build.rs.
@@ -281,7 +281,7 @@ pub fn gpu_kernel(
 }
 
 const NO_KERNEL: &str =
-    "shards pins no guest kernel for this architecture: shards guest use --kernel FILE --init FILE";
+    "shards pins no guest kernel for this architecture: shards configure guest --kernel FILE --init FILE";
 
 /// The default guest in `home`'s store: the pinned kernel, downloaded if it is not there
 /// yet, with what the download does said through `say`; and this build's init.
@@ -383,7 +383,7 @@ fn download(
     let failed = |e: &dyn std::fmt::Display| {
         format!(
             "downloading the guest kernel from {from}: {e}\n\
-             `shards guest use --kernel FILE --init FILE` boots a kernel of your own"
+             `shards configure guest --kernel FILE --init FILE` boots a kernel of your own"
         )
     };
     say(&format!(

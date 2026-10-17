@@ -75,15 +75,16 @@ use crate::run::{Boot, Prepared};
 use crate::segments::log_segment;
 use crate::spec::{LogRetention, NOT_RUN};
 
-const USAGE: &str = "usage: shards daemon [--detached] [--listen ADDR:PORT] | stop
-  Serves `shards run` from warm microVMs; `shards run` starts one when none is running.
+const USAGE: &str = "usage: shards run daemon [--detached] [--listen ADDR:PORT]
+       shards stop daemon
+  Serves runs from warm microVMs; the first `shards run vm` starts it when none is running.
   It exits after SHARDS_DAEMON_IDLE seconds (default 900) without a run.
   --detached: run it in the background, writing messages to daemon.log in SHARDS_HOME, as
-    `shards run` starts it.
+    a run starts it.
   --listen ADDR:PORT: also serve the machines this one enrolled (shards invite client),
     over QUIC on UDP ADDR:PORT; then it does not exit for being idle, as its clients find
     it there.
-  stop: have the running daemon end its runs, as dockerd ends containers, and exit.
+  stop daemon: end the daemon's runs, each microVM's stop signal first, then the daemon.
   SHARDS_POOL: the most warm microVMs kept for each image (default 2): as many as its
     runs have come at once, while it is used.
   SHARDS_POOL_KEEP: seconds an image's warm microVMs are kept after its last run (600).

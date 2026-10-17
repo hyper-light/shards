@@ -36,11 +36,13 @@ pub fn run(path: &str, args: &[OsString]) -> ExitCode {
     let mut request = match request(&parsed) {
         Ok(request) => request,
         Err(e) => {
-            // As the CLI words its own objections (docker/cli run.go withHelp).
-            let _ = writeln!(
-                std::io::stderr(),
-                "shards: {e}\n\nRun 'shards run --help' for more information"
-            );
+            // Piped, as a `docker` script reads it (docker/cli run.go withHelp).
+            if !refused_on_terminal("run", &e) {
+                let _ = writeln!(
+                    std::io::stderr(),
+                    "shards: {e}\n\nRun 'shards run --help' for more information"
+                );
+            }
             return ExitCode::from(NOT_RUN);
         }
     };
@@ -63,10 +65,12 @@ pub fn run(path: &str, args: &[OsString]) -> ExitCode {
     let mut cid = match before_create(&request) {
         Ok(cid) => cid,
         Err(e) => {
-            let _ = writeln!(
-                std::io::stderr(),
-                "shards: {e}\n\nRun 'shards run --help' for more information"
-            );
+            if !refused_on_terminal("run", &e) {
+                let _ = writeln!(
+                    std::io::stderr(),
+                    "shards: {e}\n\nRun 'shards run --help' for more information"
+                );
+            }
             return ExitCode::from(run_status(&e));
         }
     };
@@ -105,18 +109,21 @@ pub fn create(path: &str, args: &[OsString]) -> ExitCode {
     let mut request = match request(&parsed) {
         Ok(request) => request,
         Err(e) => {
-            let _ = writeln!(
-                std::io::stderr(),
-                "shards: {e}\n\nRun 'shards create --help' for more information"
-            );
+            if !refused_on_terminal("create", &e) {
+                let _ = writeln!(
+                    std::io::stderr(),
+                    "shards: {e}\n\nRun 'shards create --help' for more information"
+                );
+            }
             return ExitCode::from(NOT_RUN);
         }
     };
     request.create = true;
     request.detach = true;
-    // A plain error, as runCreate returns createContainer's (docker/cli create.go).
+    // A plain error, as a `docker` script reads it (docker/cli create.go runCreate).
     let mut cid = match before_create(&request) {
         Ok(cid) => cid,
+        Err(e) if refused_on_terminal("create", &e) => return ExitCode::FAILURE,
         Err(e) => return refuse(&e),
     };
     // docker/cli's create passes no signal on: SIGINT and SIGTERM end it.
@@ -456,6 +463,19 @@ pub fn restore(path: &str, args: &[OsString]) -> ExitCode {
         ..Run::default()
     };
     send(&mut request, term::DETACH_KEYS, &mut None, false)
+}
+
+/// `why`, a refusal of `action`'s, in a panel on a colour terminal, in shards' words;
+/// whether it was shown there.
+pub(crate) fn refused_on_terminal(action: &str, why: &str) -> bool {
+    #[cfg(unix)]
+    if let Some(p) = crate::cli::look::styled_err() {
+        let hint = format!("shards {action} --help shows its options");
+        crate::cli::look::error(&p, action, &crate::cli::look::ours(why), &[&hint]);
+        return true;
+    }
+    let _ = (action, why);
+    false
 }
 
 fn refuse(why: &str) -> ExitCode {
@@ -829,17 +849,27 @@ pub(crate) struct CidFile {
 
 impl CidFile {
     pub(crate) fn new(path: &str) -> Result<CidFile, String> {
-        if std::fs::metadata(path).is_ok() {
-            return Err(format!(
-                "container ID file found, make sure the other container isn't running or delete {path}"
-            ));
-        }
-        let file = std::fs::File::create(path).map_err(|e| {
-            format!(
-                "failed to create the container ID file: open {path}: {}",
-                go_errno(&e)
-            )
-        })?;
+        // Made only where nothing is, in one step: two runs naming one file cannot both take
+        // it, where a check and then a create (docker/cli newCIDFile) let both through, and
+        // a link there is not followed.
+        let made = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(path);
+        let file = match made {
+            Ok(file) => file,
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                return Err(format!(
+                    "container ID file found, make sure the other container isn't running or delete {path}"
+                ));
+            }
+            Err(e) => {
+                return Err(format!(
+                    "failed to create the container ID file: open {path}: {}",
+                    go_errno(&e)
+                ));
+            }
+        };
         Ok(CidFile {
             path: PathBuf::from(path),
             file: Some(file),

@@ -823,7 +823,7 @@ fn a_saved_microvm_on_a_network_is_restored_at_its_address() {
 /// `ls` and `rm`, and `start --checkpoint`, a microVM's snapshots by another name, each
 /// answered as docker/cli and dockerd answer.
 #[test]
-fn checkpoints_are_a_microvms_snapshots_in_dockers_words() {
+fn checkpoint_command_lines_save_list_and_restore_microvms() {
     let Some((home, image)) = home("checkpoints") else {
         return;
     };

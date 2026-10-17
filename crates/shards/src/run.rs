@@ -401,7 +401,7 @@ fn emulator_for(
     let here = matches!(local(&store, &reference, &guest, &limits), Ok(Some(_)));
     if !here {
         say(&format!(
-            "Downloading the emulator of {shown}'s programs, Docker's QEMU (tonistiigi/binfmt)"
+            "Downloading the emulator of {shown}'s programs, QEMU (tonistiigi/binfmt)"
         ));
     }
     // The run's own lease holds the store until its microVM has its devices: this one's

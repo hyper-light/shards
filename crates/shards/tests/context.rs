@@ -1936,6 +1936,36 @@ fn a_builds_ssh_agents_through_a_context_are_the_clients() {
             here.display()
         );
     }
+    // The build reached its agents by descriptors alone: no socket file the machine's other
+    // processes could dial.
+    let sockets: Vec<PathBuf> = every_path(&machine)
+        .into_iter()
+        .filter(|p| {
+            std::fs::symlink_metadata(p)
+                .is_ok_and(|m| std::os::unix::fs::FileTypeExt::is_socket(&m.file_type()))
+        })
+        .filter(|p| !p.ends_with("daemon.sock") && !p.ends_with("engine.sock"))
+        .collect();
+    assert!(sockets.is_empty(), "sockets in the machine's home: {sockets:?}");
+}
+
+/// Every path under `root`.
+fn every_path(root: &Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    let mut dirs = vec![root.to_path_buf()];
+    while let Some(dir) = dirs.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if entry.file_type().is_ok_and(|t| t.is_dir()) {
+                dirs.push(path.clone());
+            }
+            out.push(path);
+        }
+    }
+    out
 }
 
 /// A build through a context on a terminal is drawn as a build here is, shards' own

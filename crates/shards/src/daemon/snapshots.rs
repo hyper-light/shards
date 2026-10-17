@@ -129,9 +129,10 @@ impl Unsaved {
         }
     }
 
-    /// In dockerd's words (moby daemon/checkpoint.go, CheckpointCreate), of container
-    /// `reference` and checkpoint `asked`, without the prefix each surface gives them.
-    pub(super) fn dockers(&self, reference: &str, asked: &str) -> String {
+    /// What a `checkpoint create` command line, or the Engine API's, is refused with, of
+    /// microVM `reference` and checkpoint `asked`, without the prefix each surface gives it:
+    /// the words a `docker` script reads (moby daemon/checkpoint.go, CheckpointCreate).
+    pub(super) fn checkpoint_refusal(&self, reference: &str, asked: &str) -> String {
         match self {
             Unsaved::Unknown(e) => e.strip_prefix("shards: ").unwrap_or(e).to_string(),
             // container.GetRunningTask's errNotRunning.
@@ -599,7 +600,7 @@ impl<D: Disk> Daemon<D> {
                 0
             }
             Err(e) => {
-                reply.err(&format!("shards: {}", e.dockers(reference, asked)));
+                reply.err(&format!("shards: {}", e.checkpoint_refusal(reference, asked)));
                 1
             }
         }

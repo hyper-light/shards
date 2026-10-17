@@ -2,8 +2,8 @@
 //! machine keeps a copy of each context a client builds there; the client walks its context
 //! as a build walks one (fsutil's walk, the build's ignore file's excludes), compares what
 //! the copy holds, and sends what changed, as a layer the copy is brought in step by
-//! (shards_archive's `pack_changes` and `apply_layer`): a context unchanged sends nothing,
-//! as BuildKit's session sends a receiver only the files it asks for. The build file and the
+//! (shards_archive's `pack_changes` and `apply_layer`): a context unchanged sends nothing.
+//! The build file and the
 //! ignore file beside it, a few kilobytes, go whole each time, ahead of the layer.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -23,8 +23,9 @@ pub(crate) const SYNC_STEP: &str = "\u{0}sync";
 /// context, and of its build file's directory, which the machine names.
 pub(crate) const CONTEXT: &str = "\u{0}context";
 pub(crate) const DOCKERFILE: &str = "\u{0}dockerfile/";
-/// What stands for the SSH agent `ID` a build names (`\0agent/ID`): a socket there, each
-/// connection to which the client relays to its own agent of that id.
+/// What stands for the SSH agent `ID` a build names (`\0agent/ID`): there, a descriptor the
+/// build asks on for each connection to it (`/dev/fd/N`, build::ssh::asked_of), which no
+/// path names; the client relays each to its own agent of that id.
 pub(crate) const AGENT_SOCKET: &str = "\u{0}agent/";
 /// What stands for another tree of the client's that a build names (`\0tree/KEY`): its copy
 /// there, kept in step before the build ([`receive_tree`]).
@@ -898,12 +899,12 @@ mod tests {
             dockerfile: Path::new("/d"),
             out: Path::new("/o"),
             copies: Path::new("/s"),
-            agents: &BTreeMap::from([("default".to_string(), PathBuf::from("a/0123.sock"))]),
+            agents: &BTreeMap::from([("default".to_string(), PathBuf::from("/dev/fd/5"))]),
         };
         let place = |w: &str| placed(w, &places);
         assert_eq!(
             place(&format!("--ssh=default={AGENT_SOCKET}default")),
-            std::ffi::OsString::from("--ssh=default=a/0123.sock")
+            std::ffi::OsString::from("--ssh=default=/dev/fd/5")
         );
         let key = "ab".repeat(32);
         assert_eq!(

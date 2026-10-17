@@ -62,16 +62,8 @@ mod synced;
 #[cfg(unix)]
 mod volumes;
 
-const USAGE: &str = "usage: shards <command> [args...]
-
-Commands:
-  daemon      Serve `run` from warm microVMs (`run` starts it when needed)
-  guest       Choose the kernel and shards-init that `run` boots
-  build       Build an image from a Dockerfile
-  run         Run a command in a new microVM booted into an image
-  vm run      Boot a kernel directly in a microVM
-  vm restore  Resume a microVM from a snapshot
-  version     Print version information";
+const USAGE: &str = "usage: shards ACTION THING [ARG...]
+  `shards --help` lists every action, and `shards ACTION` each way it is said.";
 
 fn main() -> ExitCode {
     // A command a daemon started for another machine's client on a terminal (D180).
@@ -79,6 +71,7 @@ fn main() -> ExitCode {
     {
         context::take_terminal();
         context::take_cidfile();
+        build::ssh::take_agents();
     }
     cli::main()
 }

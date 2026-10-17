@@ -434,7 +434,6 @@ impl<D: Disk> Daemon<D> {
                             ("com.docker.network.bridge.enable_icc", "true"),
                             ("com.docker.network.bridge.enable_ip_masquerade", "true"),
                             ("com.docker.network.bridge.host_binding_ipv4", "0.0.0.0"),
-                            ("com.docker.network.bridge.name", "docker0"),
                             ("com.docker.network.driver.mtu", "1500"),
                         ]
                         .iter()
@@ -1298,28 +1297,9 @@ impl<D: Disk> Daemon<D> {
                     shards_cmdline::go::quote(icc)
                 ));
             }
-            let bridge_name = |n: &Network| {
-                n.options
-                    .get("com.docker.network.bridge.name")
-                    .cloned()
-                    .unwrap_or_else(|| format!("br-{}", n.id.get(..12).unwrap_or(&n.id)))
-            };
-            let mine = options
-                .get("com.docker.network.bridge.name")
-                .cloned()
-                .unwrap_or_else(|| format!("br-{}", id.get(..12).unwrap_or(&id)));
-            if mine.len() > 15 {
-                return daemon("numerical result out of range");
-            }
-            if let Some(other) = networks
-                .iter()
-                .find(|n| n.driver == "bridge" && !n.config_only && bridge_name(n) == mine)
-            {
-                return daemon(&format!(
-                    "cannot create network {id} ({mine}): conflicts with network {} ({mine}): networks have same bridge name",
-                    other.id
-                ));
-            }
+            // A network's bridge name is a Linux bridge's interface name, which shards makes
+            // none of: no length of an interface's, no two networks' bridge in common, to
+            // refuse.
         }
         if from.is_some() {
             options.clear();

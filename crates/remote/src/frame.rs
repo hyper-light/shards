@@ -43,7 +43,7 @@ pub enum Tag {
     /// Daemon: the join is done: the client is enrolled under the invitation's name.
     Joined = 36,
     /// Daemon: the ID of the microVM the command made, for its client's `--cidfile`, which
-    /// the client writes as Docker's CLI writes its own (D180).
+    /// the client writes (D180).
     Made = 37,
 }
 
