@@ -272,6 +272,12 @@ pub mod kind {
     /// A VM → its daemon: the save asked for is written, an empty payload, or why it is
     /// not. A microVM that stops after its save stops once this is sent.
     pub const SAVED: u8 = 57;
+    /// Daemon → a VM running a run: how its run stops where the daemon is gone, its stop
+    /// signal (a big-endian u32, 0 for SIGKILL at once) and its grace (a big-endian u64 of
+    /// milliseconds, `u64::MAX` for ever). A VM whose daemon's connection closes as its run
+    /// goes on stops it so, as `shards stop daemon` would have: no run outlives its daemon
+    /// unreachable.
+    pub const STOP_ORDER: u8 = 58;
 }
 
 /// A `SAVE` flag: the microVM goes on running once saved, rather than stopping.

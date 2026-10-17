@@ -1096,7 +1096,14 @@ for the exit status.
     the container was made with, read before its record is written if need be. A
     daemon that another build replaces does the same, as dockerd without live-restore
     stops its containers when it restarts: two daemons never keep one home's records.
-    Keeping runs through a restart (live-restore) is a later milestone. `stop` returns
+    Keeping runs through a restart (live-restore) is a later milestone. A daemon killed
+    outright takes its runs with it too: each VM is told its run's stop as the run is
+    tracked (`STOP_ORDER`: its stop signal and grace, as above), and once its daemon's
+    connection closes with the run going on, stops it so, its signal then SIGKILL. Before,
+    a killed daemon's waiting VMs ended and its running ones ran on, reached by nothing: a
+    failed test's restored microVM ran for a day and a half
+    (`a_killed_daemons_runs_end_with_it`, a run and a restored run; mutation-checked: the
+    order not sent, not taken). `stop` returns
     once the daemon has let go of its home: the daemon unlocks it and closes the stop
     connections itself, last, since the kernel closes an exiting process's descriptors
     in no order to rely on (XNU `fdt_invalidate` closes the highest first).

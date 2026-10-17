@@ -506,8 +506,22 @@ fn relay_signals(conn: &UnixStream, to: &'static ToGuest, from: From<'_>) {
         From::Joiner(_, id) => Some(*id),
         _ => None,
     };
+    // How the run stops if its daemon goes (`STOP_ORDER`).
+    let mut order: Option<(u32, Option<std::time::Duration>)> = None;
     while let Ok(Some(message)) = shards_ipc::recv(conn) {
         match message.kind {
+            kind::STOP_ORDER if matches!(from, From::Daemon(_)) => {
+                if let (Some(signal), Some(grace)) = (
+                    message.payload.first_chunk::<4>(),
+                    message.payload.get(4..).and_then(|g| g.first_chunk::<8>()),
+                ) {
+                    let grace = u64::from_be_bytes(*grace);
+                    order = Some((
+                        u32::from_be_bytes(*signal),
+                        (grace != u64::MAX).then(|| std::time::Duration::from_millis(grace)),
+                    ));
+                }
+            }
             kind::SEGMENT => {
                 if let (From::Daemon(segments) | From::Joiner(segments, ..), Ok(seq)) =
                     (&from, <[u8; 8]>::try_from(message.payload.as_slice()))
@@ -632,6 +646,20 @@ fn relay_signals(conn: &UnixStream, to: &'static ToGuest, from: From<'_>) {
     }
     if client && let Ok(null) = File::open("/dev/null") {
         let_go(&null);
+    }
+    // The daemon gone with the run going: its stop, its signal and then SIGKILL once its
+    // grace is up, so that no run outlives its daemon unreachable. A run already over
+    // takes no signal.
+    if let (From::Daemon(_), Some((signal, grace))) = (&from, order) {
+        let _ = writeln!(io::stderr(), "shards: the daemon is gone: the run stops");
+        if signal != 0 {
+            workload::signal_guest(to, signal);
+            match grace {
+                Some(grace) => std::thread::sleep(grace),
+                None => return,
+            }
+        }
+        workload::signal_guest(to, 9);
     }
 }
 

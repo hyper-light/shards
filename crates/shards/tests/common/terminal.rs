@@ -50,6 +50,14 @@ impl Terminal {
             )
         };
         assert_eq!(opened, 0);
+        // Neither end goes to the shell but as its stdio: openpty(3) makes them without
+        // close-on-exec, and a shell holding the master never sees its terminal hang up,
+        // so a test that failed or was killed before its client's exit left it, and its
+        // client, waiting for ever.
+        for fd in [master, peer] {
+            // SAFETY: fcntl(2) of a descriptor openpty just made.
+            assert_eq!(unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) }, 0);
+        }
         // SAFETY: fresh descriptors nothing else owns.
         let (master, peer) = unsafe { (File::from_raw_fd(master), OwnedFd::from_raw_fd(peer)) };
         let before = settings(&peer);
@@ -166,6 +174,20 @@ impl Terminal {
             std::thread::sleep(Duration::from_millis(5));
         }
         (shown, status.trim().parse().unwrap(), restored)
+    }
+}
+
+impl Drop for Terminal {
+    /// A test that ends before its client's exit, failing, ends the shell and its client:
+    /// the session the shell leads, whose group it is (setsid above), and the client in it.
+    fn drop(&mut self) {
+        if matches!(self.shell.try_wait(), Ok(None)) {
+            if let Ok(pid) = i32::try_from(self.shell.id()) {
+                // SAFETY: kill(2) of the process group of the shell this test started.
+                unsafe { libc::kill(-pid, libc::SIGKILL) };
+            }
+            let _ = self.shell.wait();
+        }
     }
 }
 

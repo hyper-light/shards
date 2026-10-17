@@ -1845,12 +1845,7 @@ fn a_builds_ssh_agents_through_a_context_are_the_clients() {
         return;
     }
     let sock = laptop.join("agent.sock");
-    let mut agent = std::process::Command::new("ssh-agent")
-        .args(["-D", "-a"])
-        .arg(&sock)
-        .stdout(Stdio::null())
-        .spawn()
-        .unwrap();
+    let mut agent = common::ssh_agent(&sock);
     struct Ended<'a>(&'a mut std::process::Child);
     impl Drop for Ended<'_> {
         fn drop(&mut self) {
