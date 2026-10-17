@@ -596,15 +596,7 @@ impl<D: Disk> Daemon<D> {
             return Answer::error(404, format!("No such container: {given}"));
         };
         let id = c.id.clone();
-        if self.running(&id) {
-            return Answer::error(
-                501,
-                format!(
-                    "network {name}: {} runs, and a running container's networks change as it is made or started again, not yet as it runs",
-                    c.name
-                ),
-            );
-        }
+        let scoped_name = c.name.clone();
         let endpoint = body.get("EndpointConfig").unwrap_or(&Value::Null);
         let aliases: Vec<String> = endpoint
             .get("Aliases")
@@ -625,6 +617,55 @@ impl<D: Disk> Daemon<D> {
                 400,
                 "network bridge: its engine's default network names no peers, so no alias of a member's is resolved there",
             );
+        }
+        // One that runs is connected or disconnected at once, by init, as its member's
+        // links are made; its next start keeps it (below).
+        if self.running(&id) {
+            let guest = self.inbox_of(&id).and_then(|inbox| lock(&inbox).guest);
+            let Some(guest) = guest else {
+                return Answer::error(409, format!("{scoped_name} is not running"));
+            };
+            let guest = guest.to_string();
+            let mut argv: Vec<&str> = vec![if join { "connect" } else { "disconnect" }, &guest, &name];
+            if join {
+                argv.push(&addr);
+                argv.push(&scoped_name);
+                argv.extend(aliases.iter().map(String::as_str));
+            }
+            let said = match self.ask_switch(scope, &argv) {
+                Ok(said) => said,
+                Err(why) => return Answer::error(400, format!("network {name}: {scoped_name}: {why}")),
+            };
+            let mac = lock(&self.containers)
+                .get(&id)
+                .and_then(|c| c.engine_made.as_ref())
+                .and_then(|m| m.addresses.first().map(|a| a.mac));
+            let address = if join {
+                let mac = mac
+                    .map(|m| shards_cmdline::network::mac_string(&m))
+                    .unwrap_or_default();
+                match crate::daemon::engine_address_of(format!("{name} {said} {mac}").as_bytes()) {
+                    Some(a) => Some(a),
+                    None => {
+                        return Answer::error(
+                            500,
+                            format!("network {name}: {scoped_name}: its microVM's switch said {said:?}"),
+                        );
+                    }
+                }
+            } else {
+                None
+            };
+            let changed = lock(&self.containers).change(&id, |c| {
+                if let Some(made) = c.engine_made.as_mut() {
+                    made.addresses.retain(|a| a.network != name);
+                    made.addresses.extend(address.clone());
+                }
+            });
+            if let Err(e) = changed {
+                return Answer::error(500, format!("network {name}: {scoped_name}: {e}"));
+            }
+            self.record_soon(&id, Vec::new());
         }
         let changed = self.change_request(&id, |run| {
             let at = run

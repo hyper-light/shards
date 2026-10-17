@@ -21,6 +21,9 @@ use crate::netplan::Link;
 
 pub(crate) const RTM_NEWLINK: u16 = 16;
 pub(crate) const RTM_NEWADDR: u16 = 20;
+/// rtnetlink's address removal (linux/rtnetlink.h), a running member's network let go
+/// (D181).
+const RTM_DELADDR: u16 = 21;
 pub(crate) const RTM_NEWROUTE: u16 = 24;
 /// rtnetlink's route removal (linux/rtnetlink.h), a network's subnet let go (D181).
 const RTM_DELROUTE: u16 = 25;
@@ -28,6 +31,8 @@ pub(crate) const NLM_F_REQUEST: u16 = 1;
 pub(crate) const NLM_F_ACK: u16 = 4;
 pub(crate) const NLM_F_EXCL: u16 = 0x200;
 pub(crate) const NLM_F_CREATE: u16 = 0x400;
+/// A route made in place of the one there (linux/netlink.h).
+const NLM_F_REPLACE: u16 = 0x100;
 const NLM_F_APPEND: u16 = 0x800;
 const NLMSG_ERROR: u16 = 2;
 const NLA_F_NESTED: u16 = 0x8000;
@@ -816,6 +821,94 @@ impl Switch {
                 ns: self.ns.try_clone()?,
             })
         })
+    }
+
+    /// Gives member `n`, which runs in namespace `member_ns`, its address `a` on one more
+    /// network, or takes it back (`add` false), as its engine connects or disconnects it
+    /// (D181): the switch's route to it through the member's gate, the gate's gateway on
+    /// in0 and its route down to it, and the member's address and its subnet's route
+    /// through that gateway; in that order, and the other way round to take it back.
+    pub fn member_address(
+        &self,
+        n: usize,
+        member_ns: RawFd,
+        a: &crate::netplan::Address,
+        add: bool,
+    ) -> io::Result<()> {
+        let index =
+            link_index(n).and_then(|i| i32::try_from(i).map_err(|_| io::Error::other("too many domains")))?;
+        let transit = transit_gate(n)?;
+        let (addr_kind, route_kind, flags) = if add {
+            (
+                RTM_NEWADDR,
+                RTM_NEWROUTE,
+                NLM_F_REQUEST | NLM_F_ACK | NLM_F_CREATE | NLM_F_EXCL,
+            )
+        } else {
+            (RTM_DELADDR, RTM_DELROUTE, NLM_F_REQUEST | NLM_F_ACK)
+        };
+        let theirs = [(
+            route_kind,
+            flags,
+            route_msg(index, a.addr, 32, Some(transit), None),
+        )];
+        let gates = [
+            (addr_kind, flags, addr_msg(GATE_IN, a.gateway)),
+            (route_kind, flags, route_msg(GATE_IN, a.addr, 32, None, None)),
+        ];
+        let ours = [
+            (addr_kind, flags, addr_msg(DOMAIN_IFINDEX, a.addr)),
+            (
+                route_kind,
+                flags,
+                route_msg(DOMAIN_IFINDEX, a.subnet, a.prefix, Some(a.gateway), Some(a.addr)),
+            ),
+        ];
+        let gate_ns = {
+            let gates = self
+                .gates
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let (_, ns) = gates
+                .iter()
+                .find(|(i, _)| *i == n)
+                .ok_or_else(|| io::Error::other("no such member's gate"))?;
+            ns.try_clone()?
+        };
+        let gate_route = in_netns(Some(gate_ns.as_raw_fd()), || netlink_socket(libc::NETLINK_ROUTE))?;
+        let member_route = in_netns(Some(member_ns), || netlink_socket(libc::NETLINK_ROUTE))?;
+        if add {
+            exchange(&self.route, &theirs)?;
+            exchange(&gate_route, &gates)?;
+            exchange(&member_route, &ours)
+        } else {
+            // A route through its address goes with it: the kernel flushes them.
+            exchange(&member_route, &ours[..1])?;
+            exchange(&gate_route, &gates)?;
+            exchange(&self.route, &theirs)
+        }
+    }
+
+    /// Member `n`'s way out of its namespace, made again through its first network's
+    /// gateway `a` (D181): past the microVM where the switch has a way, or to the agents'
+    /// resolver where it asks names; as a network it ran on first is let go.
+    pub fn member_way_out(&self, member_ns: RawFd, a: &crate::netplan::Address, dns: bool) -> io::Result<()> {
+        let (dst, prefix) = if self.has_uplink() {
+            (Ipv4Addr::UNSPECIFIED, 0)
+        } else if dns {
+            (TRANSIT_SWITCH, 32)
+        } else {
+            return Ok(());
+        };
+        let member_route = in_netns(Some(member_ns), || netlink_socket(libc::NETLINK_ROUTE))?;
+        exchange(
+            &member_route,
+            &[(
+                RTM_NEWROUTE,
+                NLM_F_REQUEST | NLM_F_ACK | NLM_F_CREATE | NLM_F_REPLACE,
+                route_msg(DOMAIN_IFINDEX, dst, prefix, Some(a.gateway), Some(a.addr)),
+            )],
+        )
     }
 
     /// Programs member `n`'s gate again with what `gate` lets through, in one transaction,

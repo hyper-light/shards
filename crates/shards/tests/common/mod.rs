@@ -1130,6 +1130,12 @@ fn run_shards_with<S: AsRef<std::ffi::OsStr>>(
     timeout: Duration,
 ) -> Run {
     let start = Instant::now();
+    // What it was asked, for the failure that names it.
+    let asked: Vec<String> = command
+        .iter()
+        .map(|c| (*c).to_string())
+        .chain(args.iter().map(|a| a.as_ref().to_string_lossy().into_owned()))
+        .collect();
     let mut cmd = self::command();
     if let Some(dir) = dir {
         cmd.current_dir(dir);
@@ -1193,7 +1199,8 @@ fn run_shards_with<S: AsRef<std::ffi::OsStr>>(
             let _ = child.kill();
             let _ = child.wait();
             panic!(
-                "shards did not exit within {timeout:?}\n--- stdout\n{}\n--- stderr\n{}",
+                "shards {} did not exit within {timeout:?}\n--- stdout\n{}\n--- stderr\n{}",
+                asked.join(" "),
                 took(&out),
                 took(&err)
             );

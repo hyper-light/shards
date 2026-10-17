@@ -522,14 +522,7 @@ pub fn join(id: u32, asked: &Asked, published: &[Egress]) -> Result<Joined, Stri
         Ok(ns)
     })
     .map_err(|e| failed("its network namespace", e))?;
-    // Past the microVM where one of its networks is not internal, as far as the command.
-    let reach = if nets.iter().all(|n| n.internal) {
-        Reach::Nowhere
-    } else if CONFINED.load(std::sync::atomic::Ordering::Relaxed) {
-        eth0_subnet().map_or(Reach::Nowhere, Reach::Within)
-    } else {
-        Reach::AsTheCommand
-    };
+    let reach = reach_of(&nets);
     let dns = reach != Reach::Nowhere;
     let member = crate::links::Member {
         index,
@@ -709,6 +702,178 @@ fn loopback(addr: &str) -> bool {
     }
 }
 
+/// How far past the microVM a member on `nets` reaches: where one of them is not internal,
+/// as far as the command (beside agents whose grants reach past it, eth0's own subnet
+/// alone); else nowhere.
+fn reach_of(nets: &[Net]) -> Reach {
+    if nets.iter().all(|n| n.internal) {
+        Reach::Nowhere
+    } else if CONFINED.load(std::sync::atomic::Ordering::Relaxed) {
+        eth0_subnet().map_or(Reach::Nowhere, Reach::Within)
+    } else {
+        Reach::AsTheCommand
+    }
+}
+
+/// Puts member `id`, which runs, on network `network` too, at `given` or the lowest free
+/// address there, named there `names` (D181): its address and route on its link, its
+/// reach as its networks now say, and every grant built again. Its address there, as
+/// `ADDR/PREFIX GATEWAY`.
+fn connect(
+    e: &mut Engine,
+    id: u32,
+    network: &str,
+    given: Option<Ipv4Addr>,
+    names: Vec<String>,
+) -> Result<String, String> {
+    let sw = switch().map_err(|e| format!("the microVM's switch: {e}"))?;
+    let net = match e.networks.iter().find(|n| n.name == network) {
+        Some(n) => n.clone(),
+        None if network == DEFAULT => default_network(e, sw)?,
+        None => {
+            return Err(format!(
+                "network {network}: no network of its engine's is named so"
+            ));
+        }
+    };
+    let Some(at) = e.members.iter().position(|m| m.id == id) else {
+        return Err(
+            "it has no link on the microVM's switch to connect: one on none or in another's namespace gains none as it runs; start it again on the network"
+                .into(),
+        );
+    };
+    let me = e.members.get(at).ok_or("its membership is gone")?;
+    if me.on.iter().any(|(n, _, _)| *n == net.name) {
+        return Err(format!("it is on network {network} already"));
+    }
+    let held: Vec<Ipv4Addr> = e
+        .members
+        .iter()
+        .flat_map(|m| m.on.iter())
+        .filter(|(n, _, _)| *n == net.name)
+        .map(|(_, a, _)| *a)
+        .collect();
+    let addr = match given {
+        Some(a) if free_address(net.subnet, (a, 32), net.gateway, &held) == Some(a) => a,
+        Some(a) => {
+            return Err(format!(
+                "address {a} on network {network}: not one of {}/{} that is free",
+                net.subnet.0, net.subnet.1
+            ));
+        }
+        None => free_address(net.subnet, net.range.unwrap_or(net.subnet), net.gateway, &held).ok_or_else(
+            || {
+                format!(
+                    "network {network}: every address of {}/{} is held",
+                    net.subnet.0, net.subnet.1
+                )
+            },
+        )?,
+    };
+    let a = crate::netplan::Address {
+        network: net.name.clone(),
+        addr,
+        subnet: net.subnet.0,
+        prefix: net.subnet.1,
+        gateway: net.gateway,
+    };
+    let (index, ns) = (me.index, me._ns.as_raw_fd());
+    sw.member_address(index, ns, &a, true)
+        .map_err(|e| format!("its address on network {network}: {e}"))?;
+    sw.routes(&[net.subnet])
+        .map_err(|e| format!("network {network}: {e}"))?;
+    let networks = e.networks.clone();
+    if let Some(m) = e.members.get_mut(at) {
+        m.on.push((net.name.clone(), addr, names));
+        m.member.addrs.push(addr);
+        let nets: Vec<Net> = networks
+            .iter()
+            .filter(|n| m.on.iter().any(|(o, _, _)| *o == n.name))
+            .cloned()
+            .collect();
+        m.member.reach = reach_of(&nets);
+        m.member.dns = m.member.reach != Reach::Nowhere;
+    }
+    regrant(e, sw, None).map_err(|e| format!("its grants on the microVM's switch: {e}"))?;
+    Ok(format!("{addr}/{} {}", net.subnet.1, net.gateway))
+}
+
+/// Takes member `id`, which runs, off network `network` (D181): its address and route
+/// there, its way out of its namespace through its next network where that one was its
+/// first, its reach as its networks now say, and every grant built again. Its last
+/// network stays: it would be left with a link and no address.
+fn disconnect(e: &mut Engine, id: u32, network: &str) -> Result<String, String> {
+    let sw = switch().map_err(|e| format!("the microVM's switch: {e}"))?;
+    let Some(at) = e.members.iter().position(|m| m.id == id) else {
+        return Err(format!("it is on no network {network}"));
+    };
+    let me = e.members.get(at).ok_or("its membership is gone")?;
+    let Some(place) = me.on.iter().position(|(n, _, _)| n == network) else {
+        return Err(format!("it is on no network {network}"));
+    };
+    if me.on.len() == 1 {
+        return Err(format!(
+            "network {network} is the last it runs on: connect it to another first, or stop it"
+        ));
+    }
+    let net = e
+        .networks
+        .iter()
+        .find(|n| n.name == network)
+        .cloned()
+        .ok_or_else(|| format!("network {network}: no network of its engine's is named so"))?;
+    let addr = me
+        .on
+        .get(place)
+        .map(|(_, a, _)| *a)
+        .ok_or("its address is gone")?;
+    let a = crate::netplan::Address {
+        network: net.name.clone(),
+        addr,
+        subnet: net.subnet.0,
+        prefix: net.subnet.1,
+        gateway: net.gateway,
+    };
+    let (index, ns) = (me.index, me._ns.as_raw_fd());
+    sw.member_address(index, ns, &a, false)
+        .map_err(|e| format!("its address on network {network}: {e}"))?;
+    let networks = e.networks.clone();
+    let mut first: Option<(crate::netplan::Address, bool)> = None;
+    if let Some(m) = e.members.get_mut(at) {
+        m.on.remove(place);
+        m.member.addrs.retain(|x| *x != addr);
+        let nets: Vec<Net> = networks
+            .iter()
+            .filter(|n| m.on.iter().any(|(o, _, _)| *o == n.name))
+            .cloned()
+            .collect();
+        m.member.reach = reach_of(&nets);
+        m.member.dns = m.member.reach != Reach::Nowhere;
+        // Its way out went with its first network's address: through its next one now.
+        if place == 0
+            && let Some((name, next, _)) = m.on.first()
+            && let Some(n) = nets.iter().find(|n| n.name == *name)
+        {
+            first = Some((
+                crate::netplan::Address {
+                    network: n.name.clone(),
+                    addr: *next,
+                    subnet: n.subnet.0,
+                    prefix: n.subnet.1,
+                    gateway: n.gateway,
+                },
+                m.member.dns,
+            ));
+        }
+    }
+    if let Some((next, dns)) = first {
+        sw.member_way_out(ns, &next, dns)
+            .map_err(|e| format!("its way out through network {}: {e}", next.network))?;
+    }
+    regrant(e, sw, None).map_err(|e| format!("its grants on the microVM's switch: {e}"))?;
+    Ok(String::new())
+}
+
 /// What the engine's `args` ask of its networks, done in init (D181): `make NAME SUBNET
 /// GATEWAY RANGE FLAGS`, each of the three addresses empty for one init picks, FLAGS a
 /// comma list of `internal` and `no-peers`, answered with the subnet and gateway made
@@ -843,6 +1008,24 @@ pub fn network(args: &[Vec<u8>]) -> Result<String, String> {
                     .map_err(|e| format!("network {name}: {e}"))?;
             }
             Ok(String::new())
+        }
+        // A running member connected or disconnected (D181): `connect ID NETWORK ADDR
+        // NAME...`, ADDR empty for one init gives, and `disconnect ID NETWORK`, ID its
+        // exec's in this guest.
+        "connect" | "disconnect" => {
+            let id: u32 = arg(1)
+                .parse()
+                .map_err(|_| format!("{:?}: no member's ID", arg(1)))?;
+            let network = arg(2);
+            if arg(0) == "disconnect" {
+                return disconnect(&mut e, id, network);
+            }
+            let given = match arg(3) {
+                "" => None,
+                a => Some(a.parse().map_err(|_| format!("{a}: no IPv4 address"))?),
+            };
+            let names = text.get(4..).unwrap_or_default().to_vec();
+            connect(&mut e, id, network, given, names)
         }
         other => Err(format!("{other:?}: nothing the engine's networks are asked")),
     }
