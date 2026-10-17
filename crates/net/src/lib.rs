@@ -262,8 +262,7 @@ pub struct Config {
     pub policy: Policy,
     /// The resolvers a guest's names past the microVM are asked of, the host's own
     /// (`/etc/resolv.conf`, or `SHARDS_DNS`): asked only under [`Policy::Ports`], for a
-    /// name the network's members do not hold, as Docker's embedded DNS asks the host's
-    /// for a name its network does not hold.
+    /// name the network's members do not hold, and only as a grant names it (D59).
     pub resolvers: Vec<(Ipv4Addr, u16)>,
     /// Destinations granted by name, each a host and a TCP port (an Agentfile's remote MCP
     /// servers, D59): reached at the address a host is, or at those the host's resolver
@@ -1792,10 +1791,14 @@ impl<'r> Stack<'r> {
         let gateway = self.cfg.gateway_of(ip.src);
         // An answer to a published port's peer, through the gateway port it was given.
         if ip.dst == gateway {
-            // The network's resolver, as Docker's embedded DNS (the guest's 127.0.0.11
-            // relays to it).
+            // The names of the network it is on (D46), which its guest's 127.0.0.11 relays
+            // here: those the network holds, answered here.
             if u.dst_port == 53
-                && let Some(answer) = self.names.as_ref().and_then(|n| n.answer(u.payload))
+                && let Some(answer) = self
+                    .names
+                    .as_ref()
+                    .filter(|n| n.holds(u.payload))
+                    .and_then(|n| n.answer(u.payload))
             {
                 self.out().datagram((gateway, 53), u.src_port, &answer);
                 return;
@@ -1819,6 +1822,16 @@ impl<'r> Stack<'r> {
                 } else if let Some(no) = dns::refused(u.payload) {
                     self.out().datagram((gateway, 53), u.src_port, &no);
                 }
+                return;
+            }
+            // Any other question of a network's member names nothing a grant reaches:
+            // refused at once, by policy (RFC 1035 §4.1.1), which a resolver takes as final,
+            // where a server's failure would be asked again.
+            if u.dst_port == 53
+                && self.names.is_some()
+                && let Some(no) = dns::refused(u.payload)
+            {
+                self.out().datagram((gateway, 53), u.src_port, &no);
                 return;
             }
             if let Some(f) = self.inbound.get_mut(&u.dst_port)

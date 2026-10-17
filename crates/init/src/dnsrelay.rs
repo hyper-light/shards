@@ -1,16 +1,14 @@
-//! Docker's embedded DNS address in the guest (D46): a microVM on a user-defined network
-//! asks 127.0.0.11:53, as its /etc/resolv.conf says and as programs written for Docker ask
-//! it by address (nginx's `resolver 127.0.0.11`). Docker reaches its resolver there through
-//! a NAT rule in the container's namespace (moby libnetwork resolver_unix.go); shards'
-//! answers at the network's gateway, in the VM's network process, and a process of init's,
-//! outside the workload's cgroup, relays each query there, by UDP and by TCP, and its
-//! answer back.
+//! A network's names in the guest (D46): a microVM on a shards network asks 127.0.0.11:53,
+//! as its /etc/resolv.conf says and as programs written for Docker ask it by address
+//! (nginx's `resolver 127.0.0.11`). The network's names are answered at its gateway, in
+//! the VM's network process; a process of init's, outside the workload's cgroup, relays
+//! each query there, by UDP and by TCP, and its answer back.
 
 use std::io::{self, Read, Write};
 use std::net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream, UdpSocket};
 use std::time::Duration;
 
-/// Docker's embedded DNS address (libnetwork resolver.go).
+/// The address programs written for Docker ask names of by address.
 const ADDRESS: Ipv4Addr = Ipv4Addr::new(127, 0, 0, 11);
 
 /// How long a query waits on the gateway's answer: the network process answers its own

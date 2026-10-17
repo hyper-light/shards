@@ -220,7 +220,7 @@ fn apply(m: &[u8], askers: &RwLock<Vec<Asker>>) -> bool {
                 let Some(names) = shards_dns::Names::decode(table) else {
                     return false;
                 };
-                local.push(names.with_ttl(0));
+                local.push(names);
                 rest = tail;
             }
             if !rest.is_empty() {

@@ -566,6 +566,19 @@ fn pin(cpu: usize) -> Result<(), String> {
 /// whichever CPU, is the clock going backwards between CPUs. How many reads there were,
 /// and how far back the worst went, in nanoseconds.
 fn clock_warps(cpus: usize, window: Duration) -> Result<(u64, u64), String> {
+    warps(cpus, window, monotonic_ns)
+}
+
+/// The time-stamp counter of the CPU it runs on.
+#[cfg(target_arch = "x86_64")]
+fn tsc() -> u128 {
+    // SAFETY: RDTSC reads the time-stamp counter, which the guest's user mode may read.
+    u128::from(unsafe { core::arch::x86_64::_rdtsc() })
+}
+
+/// [`clock_warps`] of any counter `read` gives: how many reads, and the worst step back in
+/// its own units.
+fn warps(cpus: usize, window: Duration, read: fn() -> u128) -> Result<(u64, u64), String> {
     use std::sync::{Arc, Mutex, PoisonError};
     // The last read, how many there were, and the worst step back.
     let last = Arc::new(Mutex::new((0u128, 0u64, 0u64)));
@@ -582,7 +595,7 @@ fn clock_warps(cpus: usize, window: Duration) -> Result<(u64, u64), String> {
                 let until = Instant::now() + window;
                 while Instant::now() < until {
                     let mut l = last.lock().unwrap_or_else(PoisonError::into_inner);
-                    let now = monotonic_ns();
+                    let now = read();
                     if now < l.0 {
                         l.2 = l.2.max(u64::try_from(l.0 - now).unwrap_or(u64::MAX));
                     }
@@ -608,6 +621,18 @@ fn clock_in_step(cpus: usize, when: &str) -> Result<(), String> {
         "SHARDS-TEST INFO clock {when}: {reads} reads in turn on {cpus} CPUs, worst step back {worst} ns"
     );
     if worst > 0 {
+        // What keeps the guest's time, and whether the CPUs' own counters disagree: a TSC
+        // restored out of step with the others, or a clock's parameters out of step.
+        let source = sysfs("/sys/devices/system/clocksource/clocksource0/current_clocksource")
+            .unwrap_or_else(|e| format!("unread: {e}"));
+        let _ = writeln!(io::stdout(), "SHARDS-TEST INFO clocksource {when}: {source}");
+        #[cfg(target_arch = "x86_64")]
+        if let Ok((reads, back)) = warps(cpus, Duration::from_millis(100), tsc) {
+            let _ = writeln!(
+                io::stdout(),
+                "SHARDS-TEST INFO tsc {when}: {reads} reads in turn on {cpus} CPUs, worst step back {back} cycles"
+            );
+        }
         return Err(format!(
             "CLOCK_MONOTONIC went back {worst} ns from one CPU to another {when}"
         ));

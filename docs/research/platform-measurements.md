@@ -8971,3 +8971,29 @@ revision before comparing a changed API/implementation.
   reads it before it says EIO (drivers/tty/n_tty.c, n_tty_read), so there the kept
   writer's close is safe whenever it comes, as soon as the command ends or once TIOCOUTQ
   counts nothing; which of the two, unmeasured.
+
+### M247. A name a shards network holds, asked from a member: what a lookup costs (D46)
+
+- **Question.** A network's answers are kept by no cache now (D46: TTL 0, as its names
+  change as members come and go): a resolver in a guest that would have cached an answer
+  asks again each time. What does each ask cost, from the asker's side?
+- **Method.** `docs/research/measurements/dns-lookup/run.sh` runs the ignored test
+  `a_names_lookup_round_trip` (crates/shards/tests/containers.rs): a network, a member
+  `srv`, and a second member whose testguest `dnsrtt` asks 127.0.0.11 for `srv`'s A
+  record 2000 times over UDP, one at a time and a millisecond apart, timing each from its
+  send to its answer (init's relay to the network process, which answers from the
+  network's table). On an Apple M5 Max (128 GiB), macOS 26.4.1, gpu 7b71c933 with the
+  change that made the answers TTL 0; the host quiet (load 2.69), then with 16 busy loops
+  (as many as its CPUs but two; load 2.75 when they started, 3.81 after).
+- **Results** (microseconds, n = 2000 each):
+
+  | host | p50 | p90 | p99 | max |
+  |---|---|---|---|---|
+  | quiet | 184 | 217 | 407 | 8412 |
+  | loaded | 83 | 114 | 668 | 5913 |
+
+  - A lookup a cache would have saved costs a fifth of a millisecond at the median, under
+    half a millisecond at p99 on a quiet host; loaded, its tail is longer (p99 668 µs)
+    while its median is shorter. Why the quiet median is the slower, unmeasured: a likely
+    cause is the host's cores waking from idle for each paced ask, which busy cores do
+    not, and it was not isolated here.

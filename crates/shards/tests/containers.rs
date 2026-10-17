@@ -5945,6 +5945,37 @@ fn a_runs_gateway_is_its_neighbor_from_its_start() {
     );
 }
 
+/// PM M247: how long a member's lookup of a name its network holds takes to be answered,
+/// which a resolver that caches pays each time now that the network's answers are kept by
+/// no cache (D46): `dnsrtt` asks 127.0.0.11, which init relays to the network process,
+/// `M247_N` times a millisecond apart, from inside the microVM.
+#[test]
+#[ignore = "a measurement: docs/research/measurements/dns-lookup/run.sh"]
+fn a_names_lookup_round_trip() {
+    let Some((home, image)) = home("containers-m247") else {
+        return;
+    };
+    let n: usize = std::env::var("M247_N")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(1000);
+    let shards = |args: &[&str]| shards_in(&home, args);
+    let made = shards(&["network", "create", "look"]);
+    assert_eq!(made.status, Some(0), "{made}");
+    let mut srv = start(&home, &image, &["--name", "srv", "--network", "look"], &["sleep"]);
+    let r = run_in(
+        &home,
+        &image,
+        &["--rm", "--network", "look"],
+        &["dnsrtt", "srv", &n.to_string()],
+    );
+    assert!(r.stdout.starts_with("dnsrtt n "), "{r}");
+    println!("{}", r.stdout.trim());
+    assert_eq!(shards(&["rm", "-f", "srv"]).status, Some(0));
+    let _ = srv.kill();
+    let _ = srv.wait();
+}
+
 /// PM M180: a UDP server on the host's network answers one datagram from this host and
 /// exits, at the loopback's address (its answer relayed by init's supervisor) and at
 /// every address (its own); each run interleaved with one whose guest first deleted its
@@ -10060,11 +10091,13 @@ fn a_networks_options_are_what_its_microvms_do() {
     assert!(r.stderr.contains("its gateway mode is routed"), "{r}");
 }
 
-/// D46: microVMs on a user network reach one another, by address and by every name
-/// Docker's embedded DNS answers (name, alias, short ID, host name, any case), at
-/// Docker's 127.0.0.11; the server sees each by its own address; a microVM off the network
-/// reaches none of them; and `shards network` creates, lists, inspects, refuses and
-/// removes networks in Docker's words (probed on Docker Engine 29.3.1).
+/// D46: microVMs on a user network reach one another, by address and by each name the
+/// network gives a member (its name, aliases, short ID and host name, any case, and each
+/// as `name.network`), answered at 127.0.0.11 with a TTL of 0, a name past the network
+/// that no grant reaches refused at once; the server sees each by its own address; a
+/// microVM off the network reaches none of them; and `shards network` creates, lists,
+/// inspects, refuses and removes networks in Docker's words (probed on Docker Engine
+/// 29.3.1).
 #[test]
 fn microvms_on_a_network_reach_one_another_by_name() {
     let Some((home, image)) = home("containers-networks") else {
@@ -10117,6 +10150,16 @@ fn microvms_on_a_network_reach_one_another_by_name() {
         assert_eq!(r.status, Some(0), "{to}: {r}");
         assert!(r.stdout.starts_with("ask from 10.77.0."), "{to}: {r}");
         assert!(!r.stdout.contains("10.77.0.50\n"), "{to}: {r}");
+    }
+    // Kept by no cache; the name an address gives back resolving forward; and a name past
+    // the network, which no grant reaches, refused at once.
+    for (name, said) in [
+        ("web", "dnsttl 0 10.77.0.50\n"),
+        ("srv.lan", "dnsttl 0 10.77.0.50\n"),
+        ("example.com", "dnsttl rcode 5\n"),
+    ] {
+        let r = run_in(&home, &image, &["--rm", "--network", "lan"], &["dnsttl", name]);
+        assert_eq!(r.stdout, said, "{name}: {r}");
     }
     // Its own name too, and Docker's resolver address in its resolv.conf.
     let r = run_in(

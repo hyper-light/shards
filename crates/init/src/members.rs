@@ -400,7 +400,7 @@ fn asker_of(m: &Kept, g: &Grants) -> io::Result<crate::agentdns::Asker> {
         .map(|(_, nets)| {
             nets.iter()
                 .map(|(network, entries)| {
-                    let mut names = shards_dns::Names::new(network, 0);
+                    let mut names = shards_dns::Names::new(network);
                     for (name, addr) in entries {
                         names.add(name, IpAddr::V4(*addr));
                     }
