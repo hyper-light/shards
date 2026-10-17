@@ -1971,8 +1971,13 @@ stack inside the VMM, is superseded by it.
   rtnetlink on Linux as vishvananda/netlink lists them, and by XNU's route dump on
   macOS, its routes without a gateway that were not cloned). A host on 172.17.0.0/16, as
   a CI job in a container on Docker's own bridge is, gets 172.18.0.0/16, as dockerd in
-  it does; with every pool in use, runs on the bridge are refused in dockerd's words,
-  which would not start, and runs on `none` go on. The daemon elects it as it starts and
+  it does. With every pool in use (a VPN that routes every private range), where dockerd
+  makes no bridge, the guest takes a /24 of a range no network routes on the internet and
+  hosts seldom use (RFC 6890): benchmarking's 198.18.0.0/15 (RFC 2544), then shared
+  address space, 100.64.0.0/10 (RFC 6598, carriers' NAT, Tailscale's), each checked
+  against the host's own as the pools are; a guest needs only its gateway and itself
+  (`the_first_free_subnet_of_the_pools_in_order_is_elected`). Past those too, runs on the
+  bridge are refused in dockerd's words, and runs on `none` go on. The daemon elects it as it starts and
   keeps it for its life, as dockerd keeps its bridge; a build elects it as it starts its
   builder (PM M101 for its cost). The guest is the subnet's second address behind its
   first, with a random, locally administered MAC as Docker gives a container, which each
@@ -10768,7 +10773,10 @@ The guest kernel now has nf_tables' ip6 family and its fib expression
     keeps clear of the microVM's own network's IPv6 subnet, as IPv4's 10.244.0.0/16
     pool keeps clear of its IPv4 one.
   - The gateway is the declared one, or the subnet's first host. Members take ::2 up.
-  - Without `--ipv6`, a network's IPv6 subnets are ignored, as dockerd ignores them.
+  - Without `--ipv6`, an IPv6 subnet, range or gateway is refused as the Agentfile is read,
+    at build and at run (D109): it would give no member an IPv6 address, where dockerd
+    drops a network's IPv6 configs without a word. Tested
+    (`networks_carry_only_their_protocols`), mutation-checked (the check gone).
   - Each domain's `/etc/hosts` names its granted peers at both addresses.
 - **Links.** A domain's address and its gateway are on its gate's link. The gate and
   the switch meet over link-local addresses (`fe80::2` and `fe80::1`, each link its

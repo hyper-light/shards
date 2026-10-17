@@ -92,6 +92,13 @@ Reviewed feature by feature, each D-entry's design against what it took from Doc
   measured. Open: a CPU-bound workload (the same program built for both) run under each
   emulator in microVMs on an arm64 host, n of each, p50 to max, in
   platform-measurements.md; then the faster first.
+- With every pool of dockerd's in use (a VPN that routes every private range), runs on the
+  default network were refused, as dockerd makes no bridge (D31). Now a /24 of
+  benchmarking's or shared address space the host does not use. Fixed.
+- An Agentfile's `NETWORK` given an IPv6 subnet, range or gateway without `--ipv6` had it
+  dropped without a word, as dockerd drops a network's IPv6 configs; the Agentfile is
+  shards' own language, which no script of Docker's speaks. Now refused, at build and at
+  run (D99, D109). Fixed.
 - The rest: open, D-entry by D-entry.
 
 ## Fixing order

@@ -549,6 +549,24 @@ fn network(req: &mut Req<'_>) -> Result<Network, Vec<u8>> {
             protocols |= 1 << i;
         }
     }
+    // An IPv6 address is the network's IPv6: one on a network that does not say `--ipv6`
+    // would give no member an IPv6 address, and is refused, where dockerd drops it
+    // without a word.
+    let ipv6 = bool_used("ipv6");
+    if ipv6 != Some(true)
+        && let Some((flag, v6)) = ["subnet", "ip-range", "gateway"]
+            .iter()
+            .flat_map(|flag| f.values(flag).into_iter().map(move |v| (*flag, v)))
+            .find(|(_, v)| v.contains(&b':'))
+    {
+        return Err(errf(&[
+            b"NETWORK --",
+            flag.as_bytes(),
+            b"=",
+            &v6,
+            b": an IPv6 address on a network without --ipv6, which gives its members none: add --ipv6, or leave it out",
+        ]));
+    }
     Ok(Network {
         name: name(n, "a network")?,
         driver: f.value("driver"),
@@ -557,7 +575,7 @@ fn network(req: &mut Req<'_>) -> Result<Network, Vec<u8>> {
         internal: f.is_true("internal"),
         external: f.is_true("external"),
         ipv4: bool_used("ipv4"),
-        ipv6: bool_used("ipv6"),
+        ipv6,
         labels: f.values("label"),
         ipam_driver: f.value("ipam-driver"),
         ipam_opts: f.values("ipam-opt"),
