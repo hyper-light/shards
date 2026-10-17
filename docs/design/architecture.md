@@ -3930,8 +3930,13 @@ the owner's store, their keychain among it. Now each side keeps its own:
   itself cross with the request (`frame::ENV`: how it prints, `SHARDS_DEFAULT_PLATFORM` and
   `DOCKER_DEFAULT_PLATFORM`); and the client's credentials for the registry a pull, push,
   run, create or search reaches, found here as a pull here finds them, cross as
-  `SHARDS_AUTH_CONFIG` for that registry alone, a token as `config.json` keeps one. `login`
-  and `logout` run here.
+  `SHARDS_AUTH_CONFIG` for that registry alone, a token as `config.json` keeps one. A run
+  or create with `--pull never` reaches no registry, so none are found for it: as docker/cli
+  asks a credential helper only to pull (cli/command/container/create.go, `pullImage`), no
+  helper is asked, and one that never answers holds up no such run (on 2026-10-17 this
+  host's `docker-credential-desktop` answered no caller for over half an hour, and each
+  such run over a context waited on it; `a_run_that_never_pulls_asks_no_credential_helper`).
+  `login` and `logout` run here.
 - `SHARDS_AUTH_CONFIG` itself reached no daemon until now: `REGISTRY_ENV`, what a client
   sends its daemon of the variables a pull reads, named `DOCKER_AUTH_CONFIG` alone, though
   D157 put shards' own first. It now names both.

@@ -4815,10 +4815,9 @@ impl Gated {
     fn start(&self, home: &Path, args: &[&str]) -> Going {
         // Its copy of shards was written a moment ago.
         let mut child = common::spawn(
-            Command::new(self.dir.join("shards"))
+            common::as_tests_run(&mut Command::new(self.dir.join("shards")))
                 .args(args)
                 .env("SHARDS_HOME", home)
-                .env("SHARDS_LOCAL_STORE", "none")
                 .env("SHARDS_KERNEL", kernel())
                 .env("SHARDS_INIT", guest_init())
                 .env("SHARDS_VM_BINARY", self.dir.join("shards-vm"))

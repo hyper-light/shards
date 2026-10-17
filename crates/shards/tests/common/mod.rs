@@ -417,19 +417,26 @@ pub fn shards() -> &'static Path {
     V.get_or_init(|| binaries().join(format!("shards{}", std::env::consts::EXE_SUFFIX)))
 }
 
-/// A `shards` command as tests run it: publishing the microVMs it makes to no local
-/// image store (pull.rs `publish`), so that no test writes to the Docker engine of the
-/// host it runs on; a test of publishing names an engine of its own. No default platform
-/// of the host's user's reaches it.
+/// A `shards` command as tests run it ([`as_tests_run`]).
 pub fn command() -> Command {
     let mut cmd = Command::new(shards());
+    as_tests_run(&mut cmd);
+    cmd
+}
+
+/// `cmd`, which runs `shards` itself or a program that runs it, as every test runs it:
+/// publishing the microVMs it makes to no local image store (pull.rs `publish`), so that no
+/// test writes to the Docker engine of the host it runs on (a test of publishing names an
+/// engine of its own), and given the tests' own docker config ([`docker_config`]), so that
+/// none reads this host's or runs its credential helpers. No default platform of the
+/// host's user's reaches it.
+pub fn as_tests_run(cmd: &mut Command) -> &mut Command {
     cmd.env("SHARDS_LOCAL_STORE", "none")
         .env("DOCKER_CONFIG", docker_config())
         .env_remove("DOCKER_AUTH_CONFIG")
         // A platform this host's user prefers is no test's: a test names its own.
         .env_remove("SHARDS_DEFAULT_PLATFORM")
-        .env_remove("DOCKER_DEFAULT_PLATFORM");
-    cmd
+        .env_remove("DOCKER_DEFAULT_PLATFORM")
 }
 
 /// The tests' own docker config, which every command is given unless a test gives its

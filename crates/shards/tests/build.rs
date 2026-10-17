@@ -4191,7 +4191,7 @@ fn builds_take_remote_contexts() {
     ];
     // `shards build ARGS`, `input` its stdin.
     let build = |args: &[&str], input: Option<&[u8]>| -> (Option<i32>, String) {
-        let mut cmd = std::process::Command::new(common::shards());
+        let mut cmd = common::command();
         cmd.arg("build").args(args);
         for (k, v) in &env {
             cmd.env(k, v);
