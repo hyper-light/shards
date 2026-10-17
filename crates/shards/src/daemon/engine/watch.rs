@@ -1,5 +1,5 @@
 //! Watching microVMs through the API (D170): `shards stats vm`, what each costs, and
-//! `shards events system`, what happens to them.
+//! `shards watch system`, what happens to them.
 
 use std::os::fd::AsRawFd as _;
 use std::os::unix::net::UnixStream;
@@ -106,7 +106,7 @@ impl<D: Disk> Daemon<D> {
         }
     }
 
-    /// `GET /events`: `shards events system`. What happens to microVMs and images, as it
+    /// `GET /events`: `shards watch system`. What happens to microVMs and images, as it
     /// happens, from `since` until `until` (or the client goes), by the query's filters,
     /// each an API message.
     pub(super) fn engine_events<'s, 'e>(

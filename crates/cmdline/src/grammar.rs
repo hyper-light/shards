@@ -75,6 +75,22 @@ impl Thing {
 /// are not, and are read as they are.
 pub fn rewrite(args: &[String]) -> Option<Vec<String>> {
     let (first, second) = (args.first()?.as_str(), args.get(1).map(String::as_str));
+    // What a microVM or an image holds, read once or watched as it comes (D123): what a
+    // microVM's command printed, what it changed of its image's files, how an image's
+    // layers were made. `read ports`, `read processes` and `watch processes` are commands
+    // of their own (commands.rs).
+    let view: Option<&[&str]> = match (first, second) {
+        ("read", Some("logs")) => Some(&["logs"]),
+        ("watch", Some("logs")) => Some(&["logs", "--follow"]),
+        ("read", Some("changes")) => Some(&["diff"]),
+        ("read", Some("history")) => Some(&["history", "--convert"]),
+        _ => None,
+    };
+    if let Some(said) = view {
+        let mut out: Vec<String> = said.iter().map(|w| (*w).to_string()).collect();
+        out.extend(args.get(2..)?.iter().cloned());
+        return Some(out);
+    }
     // `shards image ls` is `shards ls image`: the THING ACTION form, turned round.
     let thing_first = matches!(Thing::of(first), Some(Thing::Image | Thing::Container));
     let (action, thing, rest) = match (Thing::of(first), second) {
@@ -113,7 +129,6 @@ pub fn rewrite(args: &[String]) -> Option<Vec<String>> {
         // asked of it does (`--convert`); Docker's own order, `image inspect`, answers
         // as Docker's does.
         ("inspect", Thing::Image) => &["image", "inspect", "--convert"],
-        ("history", Thing::Image) => &["history", "--convert"],
         ("inspect", Thing::Disk) => &["system", "df"],
         ("prune", Thing::Vm | Thing::Container) => &["container", "prune"],
         ("prune", Thing::Image) => &["image", "prune"],
@@ -137,11 +152,9 @@ pub fn rewrite(args: &[String]) -> Option<Vec<String>> {
         ("inspect", Thing::Volume) => &["volume", "inspect"],
         ("prune", Thing::Volume) => &["volume", "prune"],
         ("rename", Thing::Vm | Thing::Container) => &["rename"],
-        ("stats" | "watch", Thing::Vm | Thing::Container) => &["stats"],
+        ("watch", Thing::Vm | Thing::Container) => &["stats"],
         ("pause" | "freeze", Thing::Vm | Thing::Container) => &["pause"],
-        ("top", Thing::Vm | Thing::Container) => &["top"],
-        ("diff" | "changes", Thing::Vm | Thing::Container) => &["diff"],
-        ("events" | "watch", Thing::System) => &["events"],
+        ("watch", Thing::System) => &["events"],
         ("inspect", Thing::System) => &["info"],
         ("export", Thing::Vm | Thing::Container) => &["export"],
         ("start", Thing::Vm | Thing::Container) => &["start"],
@@ -160,7 +173,7 @@ pub fn rewrite(args: &[String]) -> Option<Vec<String>> {
         ("login", Thing::Registry) => &["login"],
         ("logout", Thing::Registry) => &["logout"],
         ("search", Thing::Image) => &["search"],
-        (action @ ("stop" | "kill" | "logs" | "wait" | "port" | "exec"), Thing::Vm | Thing::Container) => {
+        (action @ ("stop" | "kill" | "wait" | "exec"), Thing::Vm | Thing::Container) => {
             return Some(once(action, rest));
         }
         // An agent, harness or MCP server: shards' own group, `shards agent build ...`.
@@ -243,24 +256,6 @@ pub static ACTIONS: &[(&str, &str, &str, &str)] = &[
     ),
     (
         "inspect",
-        "diff",
-        "vm",
-        "Show what a microVM changed of its image's files",
-    ),
-    (
-        "inspect",
-        "events",
-        "system",
-        "Watch what happens to microVMs and images, as it happens",
-    ),
-    (
-        "inspect",
-        "history",
-        "image",
-        "Show how an image's layers were made",
-    ),
-    (
-        "inspect",
         "inspect",
         "vm | image | volume | disk | guest | system | context",
         "Show a microVM, an image, a volume, disk use, the guest, shards itself, or a context",
@@ -271,14 +266,18 @@ pub static ACTIONS: &[(&str, &str, &str, &str)] = &[
         "vm | image | volume | snapshot | context | client | invitation",
         "List microVMs, images, volumes, a microVM's snapshots, contexts, or this machine's clients and invitations",
     ),
-    ("inspect", "logs", "vm", "Show what a microVM's command printed"),
     (
         "inspect",
-        "stats",
-        "vm",
-        "Watch what microVMs take of the host, live",
+        "read",
+        "processes | ports | logs | changes | history",
+        "Read what a microVM ran, where its ports go, what its command printed or changed, or how an image was made",
     ),
-    ("inspect", "top", "vm", "Show a microVM's processes"),
+    (
+        "inspect",
+        "watch",
+        "vms | processes | logs | system",
+        "Watch microVMs as they run: what they take of the host, their processes, what a command prints, what happens to them",
+    ),
     (
         "manage",
         "configure",
@@ -434,24 +433,6 @@ pub static USES: &[(&str, &str, &str, &str)] = &[
     ),
     (
         "inspect",
-        "diff",
-        "vm NAME",
-        "Show what a microVM changed of its image's files",
-    ),
-    (
-        "inspect",
-        "events",
-        "system",
-        "Watch what happens to microVMs and images, as it happens",
-    ),
-    (
-        "inspect",
-        "history",
-        "image NAME",
-        "Show how an image's layers were made",
-    ),
-    (
-        "inspect",
         "inspect",
         "disk",
         "Show what images, microVMs and templates take on disk",
@@ -512,21 +493,52 @@ pub static USES: &[(&str, &str, &str, &str)] = &[
     ),
     (
         "inspect",
-        "logs",
-        "vm NAME",
-        "Show what a microVM's command printed",
+        "read",
+        "processes NAME",
+        "The processes a microVM's members started and ended, each whole, as the kernel saw them",
     ),
     (
         "inspect",
-        "stats",
-        "vm [NAME]",
-        "Watch what microVMs take of the host, live",
+        "read",
+        "ports NAME",
+        "Which of a microVM's members each published port reaches",
+    ),
+    ("inspect", "read", "logs NAME", "What a microVM's command printed"),
+    (
+        "inspect",
+        "read",
+        "changes NAME",
+        "What a microVM changed of its image's files",
     ),
     (
         "inspect",
-        "top",
-        "vm NAME [ps OPTIONS]",
-        "Show a microVM's processes, as ps lays them out",
+        "read",
+        "history IMAGE",
+        "How an image's layers were made",
+    ),
+    (
+        "inspect",
+        "watch",
+        "vms [NAME...]",
+        "What microVMs take of the host, live",
+    ),
+    (
+        "inspect",
+        "watch",
+        "processes NAME",
+        "A microVM's processes as they start and end",
+    ),
+    (
+        "inspect",
+        "watch",
+        "logs NAME",
+        "What a microVM's command prints, as it prints it",
+    ),
+    (
+        "inspect",
+        "watch",
+        "system",
+        "What happens to microVMs and images, as it happens",
     ),
     (
         "manage",
@@ -667,6 +679,31 @@ pub static USES: &[(&str, &str, &str, &str)] = &[
     ),
 ];
 
+/// shards' page of its grammar, plain: its usage and `about`, then each section's actions,
+/// what each acts on and what it does, as its page on a colour terminal lists them.
+pub fn help(about: &str) -> String {
+    let width = ACTIONS.iter().map(|a| a.1.len()).max().unwrap_or(0);
+    let mut text = format!("Usage:  shards ACTION THING [ARG...]\n\n{about}\n");
+    for section in SECTIONS {
+        let mut heading = section.chars();
+        let heading: String = heading
+            .next()
+            .map(|c| c.to_ascii_uppercase())
+            .into_iter()
+            .chain(heading)
+            .collect();
+        text.push_str(&format!("\n{heading}:\n"));
+        for (_, action, things, about) in ACTIONS.iter().filter(|a| a.0 == *section) {
+            text.push_str(&format!(
+                "  {action:<width$}  {things}\n  {:width$}  {about}\n",
+                ""
+            ));
+        }
+    }
+    text.push_str("\nRun 'shards ACTION' for each way an action is said.\n");
+    text
+}
+
 /// Whether `word` is an action of shards' grammar.
 pub fn is_action(word: &str) -> bool {
     ACTIONS.iter().any(|(_, a, _, _)| *a == word)
@@ -709,10 +746,29 @@ mod tests {
             said("inspect vm ubuntu").as_deref(),
             Some("container inspect --convert ubuntu")
         );
+        // Read once, or watched as it comes (D123).
         assert_eq!(
-            said("history image ubuntu").as_deref(),
+            said("read history ubuntu").as_deref(),
             Some("history --convert ubuntu")
         );
+        assert_eq!(said("read logs web").as_deref(), Some("logs web"));
+        assert_eq!(said("watch logs -t web").as_deref(), Some("logs --follow -t web"));
+        assert_eq!(said("read changes web").as_deref(), Some("diff web"));
+        assert_eq!(said("watch vms").as_deref(), Some("stats"));
+        assert_eq!(said("watch vm web").as_deref(), Some("stats web"));
+        assert_eq!(said("watch system").as_deref(), Some("events"));
+        // Docker's verbs are no form of shards': Docker's own commands answer them.
+        for docker in [
+            "top vm web",
+            "stats vm",
+            "events system",
+            "diff vm web",
+            "history image ubuntu",
+            "logs vm web",
+            "port vm web",
+        ] {
+            assert_eq!(said(docker), None, "{docker}");
+        }
         assert_eq!(
             said("tag image ubuntu mine").as_deref(),
             Some("tag --convert ubuntu mine")

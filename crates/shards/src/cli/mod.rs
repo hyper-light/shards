@@ -96,9 +96,12 @@ fn dispatch(args: Vec<OsString>) -> ExitCode {
         .iter()
         .map_while(|a| a.to_str().map(str::to_string))
         .collect();
-    // An action of shards' own alone, or asked for its help: its page.
+    // An action of shards' own, alone or asked for its help: its page, wherever it is
+    // asked. One Docker has a command of the same name for is its page on a colour
+    // terminal alone (below).
     if let [action] | [action, _] = text.as_slice()
-        && matches!(action.as_str(), "list" | "remove" | "configure")
+        && shards_cmdline::grammar::is_action(action)
+        && shards_cmdline::commands::find(&[action.as_str()]).is_none()
         && text.get(1).is_none_or(|h| h == "-h" || h == "--help")
     {
         return action_help(action);
@@ -647,14 +650,15 @@ fn action_help(action: &str) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-/// `shards --help`: shards' own page on a colour terminal, docker/cli's text elsewhere.
+/// `shards --help`: shards' grammar, its own page on a colour terminal, plain elsewhere.
 fn top_help() -> ExitCode {
     #[cfg(unix)]
     if let Some(p) = look::styled() {
         look::top(&p, &mut std::io::stdout().lock());
         return ExitCode::SUCCESS;
     }
-    let _ = std::io::stdout().write_all(shards_cmdline::catalog::top().as_bytes());
+    let page = shards_cmdline::grammar::help(shards_cmdline::catalog::ABOUT);
+    let _ = std::io::stdout().write_all(page.as_bytes());
     ExitCode::SUCCESS
 }
 

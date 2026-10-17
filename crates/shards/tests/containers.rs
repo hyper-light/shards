@@ -265,6 +265,8 @@ fn a_joiner_is_a_container_of_its_own() {
     assert_eq!(exited.stdout, "exited 0\n", "{exited}");
     let logged = shards(&["logs", "joiner"]);
     assert_eq!(logged.stdout, "ready\ngot 15\n", "{logged}");
+    let read = shards(&["read", "logs", "joiner"]);
+    assert_eq!(read.stdout, logged.stdout, "shards' own words: {read}");
     // The provider's files, saved as it ended beside its joiner, read with their microVM
     // gone (D37).
     let kept = shards(&["diff", "prov"]);
@@ -273,6 +275,8 @@ fn a_joiner_is_a_container_of_its_own() {
         (Some(0), "A /served\n"),
         "{kept}"
     );
+    let read = shards(&["read", "changes", "prov"]);
+    assert_eq!(read.stdout, kept.stdout, "shards' own words: {read}");
     // dockerd's refusals, as the container is made and as it starts.
     let refused = |options: &[&str], said: &str| {
         let r = run_in(&home, &image, options, &["exit", "0"]);
@@ -1552,7 +1556,7 @@ fn pause_freezes_a_microvm_until_unpause_or_stop() {
     let shards = |args: &[&str]| shards_in(&home, args);
     // Its share of a CPU, as `stats` measures it over a second.
     let cpu = || -> f64 {
-        let stats = shards(&["stats", "--no-stream", "frozen"]);
+        let stats = shards(&["watch", "vms", "--no-stream", "frozen"]);
         let line = stats.stdout.lines().nth(1).unwrap().to_string();
         line.split_whitespace()
             .nth(2)

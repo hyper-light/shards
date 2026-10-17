@@ -8335,7 +8335,17 @@ host networking does for its VM's containers (M177).
 AGENTFILE_ARCH §9.9 makes each process a run's members start a record, and an audit trail:
 `shards read processes MICROVM` shows it, `shards watch processes MICROVM` follows it, in
 shards' grammar (`ACTION THING`, the user's, 2026-10-11). Docker has none; `docker top`
-is a moment's list, which `shards top` keeps. Each record is a fork and its parent, an
+is a moment's list, which `shards top` keeps for the scripts written for it.
+
+**`read` and `watch` are the grammar's views** (2026-10-16): what a microVM or an image
+holds, read once, or watched as it comes. `read processes`, `read ports` (D122), `read logs`,
+`read changes` (what a microVM changed of its image's files), `read history` (how an image's
+layers were made); `watch vms` (what microVMs take of the host), `watch processes`, `watch
+logs`, `watch system` (what happens to microVMs and images). Docker's verbs for these
+(`top`, `stats`, `events`, `logs`, `diff`, `history`, `port`) answer as Docker's own
+commands, for its scripts, and are no form of shards' grammar nor in its help, where they
+had been: `shards --help` is the grammar, piped as on a terminal, and an action of shards'
+own alone opens its page wherever it is asked. Each record is a fork and its parent, an
 exec and its command line, or an end and its code or signal, with the time, the member
 (`command`, `agent NAME`, `harness NAME`, `joiner ID`) and the process's PID in the
 microVM. Kept as the log is: segments of `--log-opt max-size`, as many as `max-file`, in
