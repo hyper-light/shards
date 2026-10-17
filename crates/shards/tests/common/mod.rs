@@ -182,6 +182,26 @@ pub fn fetch(a: &Artifact) -> PathBuf {
     path
 }
 
+/// docker compose's own client for Linux on this architecture, v5.6.0 of docker/compose's
+/// releases, pinned by content (the release's own SHA-256 of each asset): what a
+/// microVM's command runs against its own engine (D181).
+pub fn compose_linux() -> Option<PathBuf> {
+    let artifact = match ARCH {
+        "aarch64" => Artifact {
+            name: "docker-compose-5.6.0-linux-aarch64",
+            url: "https://github.com/docker/compose/releases/download/v5.6.0/docker-compose-linux-aarch64",
+            sha256: "733ec76717ceb59052a9609b9dadfb523b2df8eab57a54212872d10a58078ea2",
+        },
+        "x86_64" => Artifact {
+            name: "docker-compose-5.6.0-linux-x86_64",
+            url: "https://github.com/docker/compose/releases/download/v5.6.0/docker-compose-linux-x86_64",
+            sha256: "40343e21ca777173e69cff5dbafeb37c6f81f3b0d57d9e597f036e95eb63e76a",
+        },
+        _ => return None,
+    };
+    Some(fetch(&artifact))
+}
+
 /// The guest kernel: `SHARDS_TEST_KERNEL` if set (to try a kernel before pinning it),
 /// else the pinned one.
 pub fn kernel() -> &'static Path {

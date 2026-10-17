@@ -3644,6 +3644,120 @@ fn a_container_in_anothers_namespace_shares_that_ones_as_it_is() {
     assert_eq!(removed.status, Some(0), "{removed}");
 }
 
+/// A Compose project, run by docker compose's own client inside a microVM against that
+/// microVM's own engine (D181): its services made, each a member of the project's
+/// network, one reaching the other by its service's name on the port it declares; a named
+/// volume kept, the microVM's own; and all of it gone with `down -v`.
+#[test]
+fn a_compose_project_runs_in_its_microvms_own_engine() {
+    let Some(compose) = common::compose_linux() else {
+        eprintln!("SKIP: no pinned docker compose for {}", common::ARCH);
+        return;
+    };
+    let Some((home, image)) = home("eng-compose") else {
+        return;
+    };
+    let shards = |args: &[&str]| shards_in(&home, args);
+    // The project, and the client beside it, in a directory the microVM's command binds.
+    let project = home.join("project");
+    std::fs::create_dir_all(&project).unwrap();
+    let client = project.join("docker-compose");
+    std::fs::copy(compose, &client).unwrap();
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(&client, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    std::fs::write(
+        project.join("compose.yaml"),
+        format!(
+            r#"name: shp
+services:
+  db:
+    image: {image}
+    command: ["serve", "7000", "1000"]
+    expose: ["7000"]
+  app:
+    image: {image}
+    command: ["sleep"]
+    depends_on: [db]
+    volumes:
+      - data:/work
+volumes:
+  data: {{}}
+"#
+        ),
+    )
+    .unwrap();
+    let bind = format!("{}:/project", project.display());
+    let ran = shards(&[
+        "run",
+        "-d",
+        "--name",
+        "prov",
+        "--use-api-socket",
+        "-v",
+        &bind,
+        &image,
+        "sleep",
+    ]);
+    assert_eq!(ran.status, Some(0), "{ran}");
+    let compose_in = |args: &[&str]| {
+        let mut all = vec![
+            "exec",
+            "-w",
+            "/project",
+            "-e",
+            "DOCKER_HOST=unix:///run/shards/engine.sock",
+            "prov",
+            "/project/docker-compose",
+            "-p",
+            "shp",
+        ];
+        all.extend_from_slice(args);
+        shards(&all)
+    };
+    let deadline = std::time::Instant::now() + TIMEOUT;
+    let mut said = compose_in(&["up", "-d"]);
+    while said.status != Some(0) && std::time::Instant::now() < deadline {
+        // Its engine may not answer yet as the microVM's command starts.
+        std::thread::sleep(Duration::from_millis(200));
+        said = compose_in(&["up", "-d"]);
+    }
+    assert_eq!(said.status, Some(0), "{said}");
+    let ps = compose_in(&["ps", "--format", "{{.Service}} {{.State}}"]);
+    let mut listed: Vec<&str> = ps.stdout.lines().collect();
+    listed.sort_unstable();
+    assert_eq!(listed, ["app running", "db running"], "{ps}");
+    // app reaches db by its service's name, on the port db declares, once db listens.
+    let deadline = std::time::Instant::now() + TIMEOUT;
+    while !compose_in(&["logs", "db"]).stdout.contains("ready") {
+        assert!(std::time::Instant::now() < deadline, "db never said it was ready");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    let asked = compose_in(&["exec", "-T", "app", "/bin/testguest", "ask", "db:7000"]);
+    assert_eq!(asked.status, Some(0), "{asked}");
+    assert!(asked.stdout.starts_with("ask from 10.244."), "{asked}");
+    // Its volume keeps what app writes, the microVM's own on the host.
+    let wrote = compose_in(&["exec", "-T", "app", "/bin/testguest", "fs", "write:/work/x=kept"]);
+    assert_eq!(wrote.status, Some(0), "{wrote}");
+    let read = compose_in(&["exec", "-T", "app", "/bin/testguest", "fs", "print:/work/x"]);
+    assert_eq!(read.stdout, "kept", "{read}");
+    let volumes = shards(&["volume", "ls", "--format", "{{.Name}}"]);
+    assert!(volumes.stdout.lines().any(|n| n == "prov.shp_data"), "{volumes}");
+    // down -v takes its containers, network and volume.
+    let down = compose_in(&["down", "-v"]);
+    assert_eq!(down.status, Some(0), "{down}");
+    let ps = compose_in(&["ps", "-a", "-q"]);
+    assert_eq!(ps.stdout, "", "{ps}");
+    let volumes = shards(&["volume", "ls", "--format", "{{.Name}}"]);
+    assert!(
+        !volumes.stdout.lines().any(|n| n.starts_with("prov.")),
+        "{volumes}"
+    );
+    let removed = shards(&["rm", "-f", "prov"]);
+    assert_eq!(removed.status, Some(0), "{removed}");
+}
+
 /// A query's component, its reserved bytes percent-encoded (RFC 3986 §2.1).
 fn urlencode(text: &str) -> String {
     text.bytes()
