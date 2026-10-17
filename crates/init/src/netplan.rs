@@ -329,8 +329,8 @@ pub fn plan(
             ))
         })
         .collect();
-    // The networks with IPv6: those that say `--ipv6` (Compose's enable_ipv6), as dockerd
-    // gives a network IPv6 only when asked, its IPv6 configs ignored otherwise.
+    // The networks with IPv6: those that say `--ipv6` (Compose's enable_ipv6); an IPv6
+    // address on any other is refused as its Agentfile is read (shards_agentfile, NETWORK).
     let with_ipv6: Vec<String> = spec
         .get("networks")
         .map(Value::array)
@@ -929,7 +929,8 @@ mod tests {
     /// A network with IPv6 (D99): its members' IPv6 addresses from ::2 up, of the subnet
     /// declared or else the pool's first /64 clear of the microVM's own, its gateway the
     /// subnet's first host or the one declared; each names its granted peers at both
-    /// addresses; a network without `--ipv6` takes none, its IPv6 subnet ignored.
+    /// addresses; a network without `--ipv6` takes none, an IPv6 subnet given it (which
+    /// reading the Agentfile refuses first) left aside.
     #[test]
     fn networks_with_ipv6_give_their_members_ipv6_addresses() {
         let spec = crate::json::parse(

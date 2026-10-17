@@ -1074,6 +1074,17 @@ fn networks_carry_only_their_protocols() {
     assert!(e.contains("lets no such Unix socket in"), "{e}");
     let e = check(&format!("{base}NETWORK --protocol=unix --egress=unix:tools n\n")).unwrap_err();
     assert!(e.contains("a Unix socket never leaves the microVM"), "{e}");
+    // An IPv6 subnet, range or gateway on a network that gives its members no IPv6.
+    for flag in ["--subnet=fd00:1::/64", "--gateway=fd00:1::1"] {
+        let e = check(&format!("{base}NETWORK {flag} n\n")).unwrap_err();
+        assert!(
+            e.contains(&format!(
+                "NETWORK {flag}: an IPv6 address on a network without --ipv6"
+            )),
+            "{e}"
+        );
+        assert!(check(&format!("{base}NETWORK --ipv6 {flag} n\n")).is_ok());
+    }
     // What is no protocol, and what is no port.
     let e = check(&format!("{base}NETWORK --protocol=sctp n\n")).unwrap_err();
     assert!(

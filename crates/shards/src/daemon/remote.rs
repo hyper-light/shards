@@ -1223,10 +1223,9 @@ mod tests {
             let answer = shards_ipc::recv(&build).unwrap().unwrap();
             assert_eq!(answer.kind, kind::GRANTED);
             let mut step = UnixStream::from(answer.fds.into_iter().next().unwrap());
-            shards_ipc::send(&build, kind::TAKEN, &[], &[]).unwrap();
-            step.write_all(b"request").unwrap();
-            drop(step);
-            // The end held for the client, once the daemon has it.
+            // The end held for the client, once the daemon has it, and its timeout set
+            // while both ends are open: XNU refuses an option of a socket its peer has
+            // closed (EINVAL, bsd/kern/uipc_socket.c sosetoptlock).
             let started = std::time::Instant::now();
             let mut conn = loop {
                 let held = registry.lock().unwrap().drain().next();
@@ -1242,6 +1241,9 @@ mod tests {
             };
             conn.set_read_timeout(Some(std::time::Duration::from_secs(10)))
                 .unwrap();
+            shards_ipc::send(&build, kind::TAKEN, &[], &[]).unwrap();
+            step.write_all(b"request").unwrap();
+            drop(step);
             let mut got = Vec::new();
             conn.read_to_end(&mut got).unwrap();
             assert_eq!(got, b"request");

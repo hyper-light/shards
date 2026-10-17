@@ -28,8 +28,19 @@ const POOLS: [(Ipv4Addr, u8, u8); 7] = [
     (Ipv4Addr::new(192, 168, 0, 0), 16, 20),
 ];
 
+/// Past dockerd's pools, where every one overlaps the host's networks (a VPN that routes
+/// every private range, as many do, where dockerd makes no bridge), /24s of ranges no
+/// network routes on the internet and hosts seldom use (RFC 6890): benchmarking's
+/// (RFC 2544), then shared address space (RFC 6598, carriers' NAT, Tailscale's), each
+/// checked against the host's own as the pools are. A guest needs only its gateway and
+/// itself, every guest on the bridge the same two addresses.
+const BEYOND: [(Ipv4Addr, u8, u8); 2] = [
+    (Ipv4Addr::new(198, 18, 0, 0), 15, 24),
+    (Ipv4Addr::new(100, 64, 0, 0), 10, 24),
+];
+
 /// What dockerd says when every pool overlaps (ipamapi, ErrNoMoreSubnets), as it fails to
-/// make its default bridge (initBridgeDriver).
+/// make its default bridge (initBridgeDriver): said here only past [`BEYOND`] too.
 pub const NO_SUBNET: &str =
     "error creating default \"bridge\" network: all predefined address pools have been fully subnetted";
 
@@ -44,13 +55,16 @@ pub struct Bridge {
 impl Bridge {
     /// The first subnet of the default pools that overlaps none of `reserved`.
     pub fn elect(reserved: &[Prefix]) -> Option<Bridge> {
-        POOLS.iter().find_map(|&(base, base_bits, bits)| {
-            let count = 1u32 << (bits - base_bits);
-            (0..count)
-                .map(|i| Ipv4Addr::from(u32::from(base) + (i << (32 - u32::from(bits)))))
-                .find(|&subnet| !reserved.iter().any(|&r| overlaps((subnet, bits), r)))
-                .map(|subnet| Bridge { subnet, bits })
-        })
+        POOLS
+            .iter()
+            .chain(BEYOND.iter())
+            .find_map(|&(base, base_bits, bits)| {
+                let count = 1u32 << (bits - base_bits);
+                (0..count)
+                    .map(|i| Ipv4Addr::from(u32::from(base) + (i << (32 - u32::from(bits)))))
+                    .find(|&subnet| !reserved.iter().any(|&r| overlaps((subnet, bits), r)))
+                    .map(|subnet| Bridge { subnet, bits })
+            })
     }
 
     /// The subnet as `ADDR/BITS`.
@@ -717,8 +731,19 @@ mod tests {
             at(&[("172.16.0.0", 12), ("192.168.0.0", 24), ("192.168.17.4", 32)]).as_deref(),
             Some("192.168.32.0/20")
         );
+        // Every private range routed elsewhere: benchmarking's, then shared address space.
+        let private = [("10.0.0.0", 8), ("172.16.0.0", 12), ("192.168.0.0", 16)];
+        assert_eq!(at(&private).as_deref(), Some("198.18.0.0/24"));
+        assert_eq!(
+            at(&[private.as_slice(), &[("198.18.0.0", 24)]].concat()).as_deref(),
+            Some("198.18.1.0/24")
+        );
+        assert_eq!(
+            at(&[private.as_slice(), &[("198.18.0.0", 15)]].concat()).as_deref(),
+            Some("100.64.0.0/24")
+        );
+        assert_eq!(at(&[("128.0.0.0", 1)]).as_deref(), Some("100.64.0.0/24"));
         assert_eq!(at(&[("0.0.0.0", 0)]), None, "{NO_SUBNET}");
-        assert_eq!(at(&[("128.0.0.0", 1)]), None);
     }
 
     #[test]

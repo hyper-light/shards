@@ -701,8 +701,11 @@ A pull resolves, fetches and checks as containerd v2.4.1 does
     configs for Podman, CRI-O and skopeo (`MaxConfigBodySize` in
     `internal/iolimits/iolimits.go`, read in `ConfigBlob`, `internal/image/oci.go`);
   - requires one DiffID per layer.
-  - Layers download 3 at a time, dockerd's default. Every size, digest and DiffID is
-    checked before the EROFS image is built and the reference recorded.
+  - Layers download over connections that start at four and double while that brings a
+    tenth more, up to sixteen, a large layer split into ranges as it comes
+    (registry/src/fetch.rs, PM M114), where containerd fetches each whole, three at a
+    time. Every size, digest and DiffID is checked before the EROFS image is built and the
+    reference recorded.
 - **Found again** (`local`), an image is checked as its pull checked it (audit A11). Its
   recorded manifest and its config come through the store's checks (D18). One function
   checks both paths:
@@ -1201,8 +1204,9 @@ for the exit status.
 
 ### Containers (D27)
 
-A run is a container, as in Docker. The daemon names it, follows it to its end, and keeps
-its record after it, until `shards rm` removes it; `--rm` removes it once it ends.
+A run is a microVM, its record the one Docker's tools read as a container's. The daemon
+names it, follows it to its end, and keeps its record after it, until `shards remove vm`
+removes it; `--rm` removes it once it ends.
 
 - **Command lines** (`crates/cmdline`). `run` and the container commands (`ps`, `wait`,
   `logs`, `rm`, `stop`, `kill`, each also under `container`) are read as docker/cli
@@ -1214,14 +1218,15 @@ its record after it, until `shards rm` removes it; `--rm` removes it once it end
   - cobra's order and the CLI's words: a flag mistake exits 125 with the usage; then
     `--help`; then a wrong count of arguments, exit 1; then flags shards does not serve,
     exit 1. Deprecated flags print pflag's notice on stdout, where cobra prints it.
-  - `--help` is the CLI's template, its options wrapped to the width of the terminal on
-    stdin, or 80, as pflag wraps them.
+  - A command of Docker's answers `--help` with the CLI's template, its options wrapped to
+    the width of the terminal on stdin, or 80, as pflag wraps them; a form of shards'
+    grammar with its own page (D123).
   - Every flag `docker` takes parses. Those shards does not serve yet are left out of
     `--help`, as the CLI leaves out what its daemon cannot do, and refuse any value but
     their default: `"--publish" is not supported by shards yet`.
   - `-e NAME` takes the client's value, as the CLI's `ValidateEnv` does. `--init` is
     served as given: shards-init is every command's PID 1, forwarding signals and
-    reaping as docker-init does.
+    reaping, the work docker-init does beside a Docker container's command.
   - **Evidence:** a differential test. The real docker/cli command tree answers 110
     command lines (scripts/docker-cli/oracle_test.go), and shards gives the same stdout,
     stderr and status byte for byte (crates/cmdline/tests/command_lines.rs), except where it
@@ -1971,8 +1976,13 @@ stack inside the VMM, is superseded by it.
   rtnetlink on Linux as vishvananda/netlink lists them, and by XNU's route dump on
   macOS, its routes without a gateway that were not cloned). A host on 172.17.0.0/16, as
   a CI job in a container on Docker's own bridge is, gets 172.18.0.0/16, as dockerd in
-  it does; with every pool in use, runs on the bridge are refused in dockerd's words,
-  which would not start, and runs on `none` go on. The daemon elects it as it starts and
+  it does. With every pool in use (a VPN that routes every private range), where dockerd
+  makes no bridge, the guest takes a /24 of a range no network routes on the internet and
+  hosts seldom use (RFC 6890): benchmarking's 198.18.0.0/15 (RFC 2544), then shared
+  address space, 100.64.0.0/10 (RFC 6598, carriers' NAT, Tailscale's), each checked
+  against the host's own as the pools are; a guest needs only its gateway and itself
+  (`the_first_free_subnet_of_the_pools_in_order_is_elected`). Past those too, runs on the
+  bridge are refused in dockerd's words, and runs on `none` go on. The daemon elects it as it starts and
   keeps it for its life, as dockerd keeps its bridge; a build elects it as it starts its
   builder (PM M101 for its cost). The guest is the subnet's second address behind its
   first, with a random, locally administered MAC as Docker gives a container, which each
@@ -2284,8 +2294,9 @@ shards (host CLI, docker-compatible) ──unix socket──▶ shardsd (daemon)
                                                      │ virtio (blk/net/vsock/console/rng/pmem/fs/gpu)
                                                      ▼
                                        guest: Linux (tuned) · shards-init (PID 1)
-                                       shards-engine (containerd's place; Docker Engine API)
-                                       agents and compose services, many per microVM
+                                       the microVM's own engine, in shards-init: the
+                                       command, and agents and harnesses in domains
+                                       (D59, D115), an in-VM server each (D60)
 ```
 
 - **VMM** (the `shards-vmm` library, run by the `shards-vm` binary): one process per
@@ -2305,9 +2316,12 @@ shards (host CLI, docker-compatible) ──unix socket──▶ shardsd (daemon)
 - **Guest**:
   - a tuned Linux kernel built from source inside a shards builder VM
   - `shards-init`, a minimal static PID 1 that sets up and then drops privilege
-  - `shards-engine`, our own runtime, rootless. It walks and talks like containerd and
-    Docker (Engine API, Compose) but runs no containers underneath. **pending**: its
-    design, informed by the engine-internals and rootless research.
+  - the microVM's own engine, rootless, in shards-init: the run's command in a PID
+    namespace of its own (D115), and each of an Agentfile's agents and harnesses in a
+    domain of its own (D59: namespaces, IDs, cgroups and `pids.max`, Landlock, seccomp,
+    default-deny grants between them), each agent with an in-VM server instance of its
+    own (D60). Docker- and Compose-compatible at its interface (the Engine API, D170;
+    Compose, D173), with no containers, containerd or runc underneath.
 
 ### RUN steps: one builder microVM per build (D34)
 
@@ -2507,7 +2521,8 @@ dockerd reads and keeps them (moby docker-v29.8.1 daemon/volume/mounts linux_par
 and validate.go, daemon/volumes.go registerMountPoints; `volumes.rs`), and reach the
 microVM as virtio-fs shares (virtio 1.3 §5.11; Linux fs/fuse/virtio_fs.c):
 
-- **Kept as dockerd keeps them.** A container's mount points are registered as it is made,
+- **A run's volumes, made and removed as its scripts expect.** A microVM's mount points
+  are registered as it is made, as dockerd registers a container's:
   named volumes made as they are named, anonymous ones for the image's `VOLUME`s and
   `-v DEST`, binds checked; a later failure removes the anonymous volumes it made, as
   dockerd's cleanup does. Volumes live in the home (`volumes/NAME/_data`, `opts.json`)
@@ -2533,7 +2548,8 @@ microVM as virtio-fs shares (virtio 1.3 §5.11; Linux fs/fuse/virtio_fs.c):
   restored ahead of its run has its devices (`shards{i}`), empty slots its run fills:
   a template is made for each number of shares (`run::template`). A guest that mounts
   a share before its run has one is told ENODEV.
-- **Owned as Docker Desktop owns them.** A host file's owner is the user's; the guest sees
+- **Owned as the guest made them, the record where Docker Desktop keeps it.** A host
+  file's owner is the user's; the guest sees
   the owner, group and mode recorded in the xattr `com.docker.grpcfuse.ownership` that
   Docker Desktop's file sharing writes (`{"UID":…,"GID":…,"mode":…}`), root's where there
   is none, and a file the guest makes records its maker (a setgid directory's group).
@@ -10768,7 +10784,10 @@ The guest kernel now has nf_tables' ip6 family and its fib expression
     keeps clear of the microVM's own network's IPv6 subnet, as IPv4's 10.244.0.0/16
     pool keeps clear of its IPv4 one.
   - The gateway is the declared one, or the subnet's first host. Members take ::2 up.
-  - Without `--ipv6`, a network's IPv6 subnets are ignored, as dockerd ignores them.
+  - Without `--ipv6`, an IPv6 subnet, range or gateway is refused as the Agentfile is read,
+    at build and at run (D109): it would give no member an IPv6 address, where dockerd
+    drops a network's IPv6 configs without a word. Tested
+    (`networks_carry_only_their_protocols`), mutation-checked (the check gone).
   - Each domain's `/etc/hosts` names its granted peers at both addresses.
 - **Links.** A domain's address and its gateway are on its gate's link. The gate and
   the switch meet over link-local addresses (`fe80::2` and `fe80::1`, each link its
@@ -13126,7 +13145,9 @@ Each phase ends with committed E2E tests and benchmarks that run real VMs.
    - Scope: Docker Engine API subset → full; the rootless runtime (compatible, not
      containers underneath); networks, volumes, build; compose.
    - Proven by running the official Docker CLI/Compose conformance suites against
-     it. Pending: compat, engine, rootless research.
+     it. Built since: domains for agents and harnesses (D59), the in-VM server (D60), the
+     run's command apart from them (D115), the Engine API (D170) and Compose against it
+     (D173).
 5. **Host CLI/daemon parity and networking.**
    - Scope: userspace network stack, port publishing, per-VM and per-container
      isolation policy. Pending: networking research.
