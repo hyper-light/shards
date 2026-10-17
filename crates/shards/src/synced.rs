@@ -23,6 +23,9 @@ pub(crate) const SYNC_STEP: &str = "\u{0}sync";
 /// context, and of its build file's directory, which the machine names.
 pub(crate) const CONTEXT: &str = "\u{0}context";
 pub(crate) const DOCKERFILE: &str = "\u{0}dockerfile/";
+/// What stands for another tree of the client's that a build names (`\0tree/KEY`): its copy
+/// there, kept in step before the build ([`receive_tree`]).
+pub(crate) const TREE: &str = "\u{0}tree/";
 /// What stands for where the build writes an output of the client's (`\0out/NAME`): the
 /// directory of this build's outputs there, which its step sends back as the build ends.
 pub(crate) const OUT: &str = "\u{0}out/";
@@ -33,36 +36,41 @@ pub(crate) const SECRET: &str = "\u{0}secret/";
 pub(crate) const SECRET_FD: i32 = 3;
 
 #[cfg(unix)]
-/// A word of a build's command line on the machine: [`CONTEXT`] its copy of the context,
-/// [`DOCKERFILE`]'s files its copy of the build file's directory's, after any flag's `=`,
-/// each [`SECRET`] the pipe its secret is read from, and each [`OUT`] the directory of its
-/// outputs, `out`.
-pub(crate) fn placed(word: &str, context: &Path, dockerfile: &Path, out: &Path) -> std::ffi::OsString {
+/// Where a build's words are put on the machine: the copies of its context and its build
+/// file's directory, the directory of its outputs, and the client's copies.
+pub(crate) struct Places<'a> {
+    pub context: &'a Path,
+    pub dockerfile: &'a Path,
+    pub out: &'a Path,
+    pub copies: &'a Path,
+}
+
+#[cfg(unix)]
+/// A word of a build's command line on the machine: [`CONTEXT`] its copy of the context; and
+/// wherever they stand, [`DOCKERFILE`]'s files its copy of the build file's directory's,
+/// each [`OUT`] the directory of its outputs, each [`TREE`] the copy of that tree, and a
+/// [`SECRET`] the pipe its secret is read from.
+pub(crate) fn placed(word: &str, places: &Places<'_>) -> std::ffi::OsString {
     if word == CONTEXT {
-        return context.as_os_str().to_os_string();
+        return places.context.as_os_str().to_os_string();
     }
-    if word.contains(OUT) {
-        return std::ffi::OsString::from(word.replace(OUT, &format!("{}/", out.display())));
+    // Wherever it stands: a flag's value, a field of a CSV one.
+    let mut said = word
+        .replace(OUT, &format!("{}/", places.out.display()))
+        .replace(DOCKERFILE, &format!("{}/", places.dockerfile.display()));
+    while let Some((before, after)) = said.split_once(TREE) {
+        let (key, rest) = after.split_at_checked(64).unwrap_or((after, ""));
+        let Ok(copy) = copy_of_key(places.copies, key) else {
+            break;
+        };
+        said = format!("{before}{}{rest}", copy.join("context").display());
     }
-    if let Some((before, n)) = word.split_once(SECRET) {
-        let fd = n.parse::<i32>().ok().and_then(|n| n.checked_add(SECRET_FD));
-        return std::ffi::OsString::from(match fd {
-            Some(fd) => format!("{before}/dev/fd/{fd}"),
-            None => word.to_string(),
-        });
+    if let Some((before, n)) = said.split_once(SECRET)
+        && let Some(fd) = n.parse::<i32>().ok().and_then(|n| n.checked_add(SECRET_FD))
+    {
+        said = format!("{before}/dev/fd/{fd}");
     }
-    let (flag, value) = match word.split_once('=') {
-        Some((flag, value)) if flag.starts_with("--") => (format!("{flag}="), value),
-        _ => (String::new(), word),
-    };
-    match value.strip_prefix(DOCKERFILE) {
-        Some(name) => {
-            let mut placed = std::ffi::OsString::from(flag);
-            placed.push(dockerfile.join(name).as_os_str());
-            placed
-        }
-        None => std::ffi::OsString::from(word),
-    }
+    std::ffi::OsString::from(said)
 }
 
 /// What starts what a client sends of a build: the build file's directory, its secrets,
@@ -697,6 +705,12 @@ fn replaced(text: &[u8], pairs: &[(Vec<u8>, Vec<u8>)], ended: bool) -> (Vec<u8>,
 /// The copy a client's build keeps on the machine of `home`: `synced/CLIENT/KEY`, KEY the
 /// hex the client names it by, of 64 hex digits.
 pub(crate) fn copy_of(home: &Path, client: &str, key: &str) -> Result<PathBuf, String> {
+    copy_of_key(&home.join("synced").join(client), key)
+}
+
+#[cfg(unix)]
+/// The copy `key` names among a client's `copies`.
+fn copy_of_key(copies: &Path, key: &str) -> Result<PathBuf, String> {
     if key.len() != 64
         || !key
             .bytes()
@@ -704,7 +718,41 @@ pub(crate) fn copy_of(home: &Path, client: &str, key: &str) -> Result<PathBuf, S
     {
         return Err(format!("{key:?}: a context's key is 64 hex digits"));
     }
-    Ok(home.join("synced").join(client).join(key))
+    Ok(copies.join(key))
+}
+
+/// What starts what a client sends of another tree its build names: the layer of what
+/// changed.
+const TREE_MAGIC: &[u8] = b"shards tree 1\n";
+
+/// Writes what a client sends of another tree: the layer `pack` writes.
+pub(crate) fn send_tree(
+    out: &mut dyn Write,
+    pack: impl FnOnce(&mut dyn Write) -> Result<(), String>,
+) -> Result<(), String> {
+    out.write_all(TREE_MAGIC)
+        .map_err(|e| format!("sending a tree: {e}"))?;
+    pack(out)
+}
+
+#[cfg(unix)]
+/// What a client sends of another tree, brought into its copy, `context`: the bytes of files
+/// that came.
+pub(crate) fn receive_tree(input: &mut dyn Read, context: &Path) -> Result<i64, String> {
+    let mut magic = vec![0u8; TREE_MAGIC.len()];
+    input
+        .read_exact(&mut magic)
+        .map_err(|e| format!("reading a tree: {e}"))?;
+    if magic != TREE_MAGIC {
+        return Err("not a tree of a shards client's".into());
+    }
+    std::fs::create_dir_all(context).map_err(|e| format!("{}: {e}", context.display()))?;
+    let opts = shards_archive::UnpackOptions {
+        no_lchown: true,
+        best_effort_xattrs: true,
+        ..shards_archive::UnpackOptions::default()
+    };
+    shards_archive::apply_layer(input, context, &opts).map_err(|e| format!("applying a tree: {e}"))
 }
 
 #[cfg(test)]
@@ -801,7 +849,36 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn a_builds_secrets_cross_as_pipes_it_names() {
-        let place = |w: &str| placed(w, Path::new("/c"), Path::new("/d"), Path::new("/o"));
+        let places = Places {
+            context: Path::new("/c"),
+            dockerfile: Path::new("/d"),
+            out: Path::new("/o"),
+            copies: Path::new("/s"),
+        };
+        let place = |w: &str| placed(w, &places);
+        let key = "ab".repeat(32);
+        assert_eq!(
+            place(&format!("--build-context=other={TREE}{key}")),
+            std::ffi::OsString::from(format!("--build-context=other=/s/{key}/context"))
+        );
+        assert_eq!(
+            place(&format!("--build-context=l=oci-layout://{TREE}{key}:v1")),
+            std::ffi::OsString::from(format!("--build-context=l=oci-layout:///s/{key}/context:v1"))
+        );
+        // A key that is none is no copy's: the word goes as it is, for the build to refuse.
+        assert_eq!(
+            place(&format!("x={TREE}../etc")),
+            std::ffi::OsString::from(format!("x={TREE}../etc"))
+        );
+        // A field of a CSV value as a flag's whole value is.
+        assert_eq!(
+            place(&format!("type=oci,dest={OUT}0,tar=false")),
+            std::ffi::OsString::from("type=oci,dest=/o/0,tar=false")
+        );
+        assert_eq!(
+            place(&format!("--file={DOCKERFILE}Dockerfile")),
+            std::ffi::OsString::from("--file=/d/Dockerfile")
+        );
         assert_eq!(
             place("--secret=id=tok,src=\u{0}secret/1"),
             std::ffi::OsString::from("--secret=id=tok,src=/dev/fd/4")

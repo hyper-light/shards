@@ -5516,13 +5516,13 @@ fn go_quote(s: &str) -> String {
 
 /// An `oci-layout://` reference as buildx's ocilayout.Parse reads it: the directory, a
 /// tag and a digest, `latest` the tag when neither is given.
-struct LayoutRef {
-    path: String,
-    tag: String,
-    digest: Option<Digest>,
+pub(crate) struct LayoutRef {
+    pub(crate) path: String,
+    pub(crate) tag: String,
+    pub(crate) digest: Option<Digest>,
 }
 
-fn parse_oci_layout(s: &str) -> Result<Option<LayoutRef>, String> {
+pub(crate) fn parse_oci_layout(s: &str) -> Result<Option<LayoutRef>, String> {
     let Some(mut path) = s.strip_prefix("oci-layout://") else {
         return Ok(None);
     };

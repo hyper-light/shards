@@ -315,6 +315,7 @@ impl Machine {
         let step = args.get(1).cloned().unwrap_or_default();
         let key = args.get(2).cloned().unwrap_or_default();
         let copy = crate::synced::copy_of(&self.home, client, &key).map_err(Error::new)?;
+        let copies = self.home.join("synced").join(client);
         // The client's own paths, which what the command prints says in place of its copy's.
         let (shown, env): (Vec<_>, Vec<_>) = env.into_iter().partition(|(k, _)| k == crate::synced::SHOWN_AS);
         let mut pairs = Vec::new();
@@ -355,6 +356,12 @@ impl Machine {
                                 .map_err(|e| e.to_string())?;
                             0
                         }
+                        // Another tree the client's build names, brought in step before it.
+                        "put" => {
+                            let sent = crate::synced::receive_tree(&mut in_r, &context)?;
+                            super::log(format!("client {whose}: tree {key}: {sent} bytes of files came"));
+                            0
+                        }
                         "build" => {
                             let words = args.get(3..).unwrap_or_default();
                             // As many secrets as the build's words name, and no more.
@@ -372,7 +379,15 @@ impl Machine {
                                 .map_err(|e| format!("{}: {e}", outputs.display()))?;
                             let argv: Vec<OsString> = words
                                 .iter()
-                                .map(|a| crate::synced::placed(a, &context, &dockerfile, &outputs))
+                                .map(|a| {
+                                    let places = crate::synced::Places {
+                                        context: &context,
+                                        dockerfile: &dockerfile,
+                                        out: &outputs,
+                                        copies: &copies,
+                                    };
+                                    crate::synced::placed(a, &places)
+                                })
                                 .collect();
                             // Each secret on a pipe of its own, which the build reads once, as
                             // its file: written in the order the build reads them, by one

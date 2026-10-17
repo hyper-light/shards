@@ -4073,8 +4073,8 @@ would have read the machine's directory. Now (crate::synced):
 - A client removed takes the copies of its contexts with it.
 
 What a build names of the client's otherwise is refused until it is carried (its secrets
-are, part 3e, and its outputs, `--iidfile` and `--metadata-file`, part 3f): `--ssh`, a cache
-or named context of a file or directory here, and a policy's file. Not yet: the client's terminal for the build's live
+are, part 3e; its outputs, `--iidfile` and `--metadata-file`, part 3f; its named contexts,
+local caches and policies' files, part 3g): `--ssh`. Not yet: the client's terminal for the build's live
 display (a build over a context prints its plain progress); extended attributes (go-archive's
 archives carry `security.capability` alone). A new name of a file the copy holds, unchanged,
 goes as a link to the copy's file (part 3d's), no byte of it again, where it went as a file
@@ -4094,6 +4094,37 @@ untouched), and unit tests of the plan and of a copy's key. Mutation-checked: th
 applied, everything sent each time, the ignore file not applied here, what went not
 removed, a change's directories not set again, the build file not the copy's, a base's
 login not sent, a build arg named alone the machine's.
+
+**Part 3g, built: the rest of what a build names of the client's.** A build reads more of the
+client's than its context: a named context's directory (`--build-context NAME=DIR`) or an
+OCI layout's (`oci-layout://DIR`), a local cache to import (`--cache-from
+type=local,src=DIR`) or export (`--cache-to type=local,dest=DIR`), a policy's file
+(`--policy filename=FILE`).
+- **Each tree a copy of its own, kept in step before the build.** A named context's or a
+  layout's directory, or a cache to import, is a tree with a copy of its own there,
+  apart from any other's of the same directory: before the build, the client asks what the
+  copy holds and sends what changed alone (the `put` step, its own stream), as a build's
+  context is sent; the build's words name the copy (`\0tree/KEY`). A named context's
+  directory is walked with its own ignore file, as the build reads one. A cache to export
+  comes back as an output does (part 3f).
+- **A policy's file is found where the build finds it**: buildx reads it within the build's
+  context (an `os.Root` of it), so a name inside the context is said as it is there,
+  relative, of the copy, which holds it whatever the ignore file leaves out, as the build
+  reads the directory itself; one outside the context goes as it was given, which the
+  build refuses here as it does there. A word's placeholder is placed wherever it stands,
+  a field of a CSV value as a flag's whole value is.
+- **None of the client's paths cross.**
+
+A layout made here by one build there (`-o type=oci,dest=DIR,tar=false`) is the base of the
+next (`--build-context base=oci-layout://DIR`). Tested in `tests/context.rs`
+(`what_a_build_names_of_the_clients_is_carried_through_a_context`: a named context's files
+and not what its ignore file leaves out; a cache exported here and imported from here; a
+layout made here and built on; a policy inside the context, left out by its ignore file,
+named relative and absolute, refusing the build in its words; none of the client's paths
+in what the machine was asked), and unit tests of the placeholders.
+Mutation-checked: a named context's directory sent as its path, a tree not brought in step,
+a tree's placeholder left as it is, a local cache's export sent as its path, a policy the
+ignore file leaves out not kept, a policy's absolute name sent as it is.
 
 **Part 3f, built: a build's outputs through a context, the client's own files.** What a build
 on the GPU machine makes comes back to the laptop: its result as a directory (`-o
