@@ -4846,12 +4846,12 @@ ports` lists, built; (3e) connect and disconnect of a running member, built.
   member whenever one joins or leaves (`members::grants`): for each two members of a
   network whose members are peers, the ports the receiver declares, held at two points
   that each hold them alone: the switch passes those only between the two links, and the
-  receiver's gate accepts those only, from the opener's addresses. The opener's gate
-  opens those only to its peers too, but a member that reaches past the microVM has its
-  every port opened up its link, which the switch passes to the uplink alone, as an
-  agent's egress is (D61); a third point for it, its gate's egress kept off the switch's
-  own subnets, is open. Each gate is programmed again in one transaction, the switch in
-  one. A member's gate holds its declared ports from its start, before it has any peer,
+  receiver's gate accepts those only, from the opener's addresses. The opener's gate is a
+  third that holds them alone: it opens those only to its peers, and what it opens past
+  the microVM (every port, for a member that reaches past it) to none of the microVM's
+  own subnets, its agents' networks' and its engine's, each gate made again as its engine
+  makes or removes a network, as an agent's egress (D61). Each gate is programmed again
+  in one transaction, the switch in one. A member's gate holds its declared ports from its start, before it has any peer,
   so that its own connections' ports are chosen clear of them (`local_ports`, D61). Its
   peers' names init gives the agents' resolver with its asker, over init's control link;
   the resolver answers a question that comes up the member's link from them first, and
@@ -4887,9 +4887,9 @@ ports` lists, built; (3e) connect and disconnect of a running member, built.
   members have, by name and by a prune. `a_microvms_own_engine_makes_each_container_a_member_of_its_switch`
   now has a member of an internal network alone reach nothing past the microVM, which a
   member of the default network then reaches. Mutation-checked: with the switch alone,
-  or the receiver's gate alone, left holding a pair's ports, an undeclared port stays
-  shut, and with every point opened the test catches it; the opener's gate alone does
-  not hold them for a member that reaches past the microVM (above). Caught, each: grants
+  the receiver's gate alone, or the opener's gate alone left holding a pair's ports, an
+  undeclared port stays shut, and with every point opened (the opener's egress let onto
+  the microVM's own subnets as well) the test catches it. Caught, each: grants
   past the networks two members share; peers' gates not built again as a member joins;
   the switch carrying no member's pairs; the resolver answering one member's question
   from another's table; grants not built again as a member goes; peers' names answered
@@ -12936,6 +12936,13 @@ So one agent holding connections fills it, and every other agent's new flows fai
   (priority −300, before tracking) gives what others open to the domain, and the domain's
   answers to them, `notrack`. A peer opening many flows takes none of the receiver's
   table. Those flows are accepted by their ports, from the peers granted them.
+- **What a domain opens past the microVM goes to none of its networks.** Its gate accepts
+  its egress ports to any address but the microVM's own subnets, its agents' networks'
+  and its engine's (D181), each gate made again as its engine makes or removes a network.
+  So a flow to a peer is a pair's alone, held at three points that each hold it by
+  themselves: the switch, the receiver's gate and the opener's. Before, the opener's gate
+  passed its egress ports to a peer too, and the switch and the receiver's gate alone held
+  them.
 - **The switch keeps no state for agents.** Its rules are stateless, both ways of each
   grant; it has no conntrack expression, so the kernel tracks nothing it forwards.
 - **The stateful point for what leaves the microVM is init.** The gates and the switch let
@@ -12975,6 +12982,17 @@ Tested, each guard mutation-checked:
   not. With init's egress rules matching no source, a was answered.
 - `an_agents_own_flows_take_no_port_it_accepts`: c, which b may open 32768 to 60999
   to, reaches x. Without `local_ports`, c's connection timed out.
+- `agents_reach_only_what_connect_grants` and `agents_reach_by_ipv6_only_what_connect_grants`,
+  now with a's egress on 7001 (by IPv6 too, where the microVM's own network has it), a
+  port its peer b listens on that no `CONNECT` grants. With the switch and b's gate made
+  to pass every port of a's pair, a's gate alone kept b's 7001 shut, by IPv4 and by IPv6;
+  with a's egress let onto the microVM's own subnets as well, a reached it.
+- `an_engines_member_reaches_no_farther_than_the_command_beside_agents`, now with a
+  member of a network the microVM's engine makes after its agent started, serving the
+  agent's egress port (the agent waits on the host's word, testguest `hear`, until the
+  member serves). With the switch forwarding everything and the member's gate accepting
+  every port, the agent's gate alone kept it shut; with the domains' gates not made again
+  as the network came, the agent reached it.
 
 Open: packet-rate fairness. A flood's packets themselves can delay another agent's:
 `an_agents_flood_of_flows_takes_no_others` saw, on x86_64 CI, c make 199 of 200

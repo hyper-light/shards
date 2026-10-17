@@ -3267,7 +3267,7 @@ fn confined(args: &[String]) -> i32 {
             | "udpflood" | "tcpflood" | "udpaskfrom" | "reachmany" | "reachrounds" | "udpask"
             | "srv-send" | "srv-receive" | "srv-answer" | "owner" | "mcp-run" | "srv-run"
             | "srv-run-timeout" | "srv-run-cancel" | "srv-run-abandon" | "srv-bench" | "srv-modern"
-            | "hold-tell" | "make" | "srv-hand" | "follow" | "hardlink" | "exec" | "nosuid" => {
+            | "hold-tell" | "make" | "srv-hand" | "follow" | "hardlink" | "exec" | "nosuid" | "hear" => {
                 mode = a.as_str()
             }
             "srv-mcp" => {
@@ -3999,6 +3999,19 @@ fn confined(args: &[String]) -> i32 {
                     Err(e) => errno(&e),
                 };
                 out.push_str(&format!("confined listen {port}: {said}\n"));
+            }
+            // What ADDR says, read to its end: the host's word, which holds what follows
+            // until the host has made ready what it is for.
+            addr if mode == "hear" => {
+                let heard = std::net::TcpStream::connect(addr).and_then(|mut c| {
+                    let mut text = String::new();
+                    c.read_to_string(&mut text).map(|_| text)
+                });
+                let said = match heard {
+                    Ok(text) => text.trim_end().to_string(),
+                    Err(e) => errno(&e),
+                };
+                out.push_str(&format!("confined hear {addr}: {said}\n"));
             }
             addr if mode == "reach" || mode == "unreach" => {
                 use std::net::ToSocketAddrs as _;

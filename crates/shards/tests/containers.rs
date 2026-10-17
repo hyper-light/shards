@@ -11096,10 +11096,32 @@ fn a_microvm_swaps_and_throttles_as_its_limits_say() {
     assert_eq!(killed.status, Some(137), "{killed}");
     for _ in 0..2 {
         let joined = joiner(&[], &["alloc", "96"]);
+        // Killed within its swap, once on x86_64 CI (job 117491995198): what the microVM's
+        // swap was then, mapped or not yet, and how much of it was free.
+        let swap = |file: &str| {
+            shards(&[
+                "exec",
+                "provider",
+                "/bin/testguest",
+                "fs",
+                &format!("print:{file}"),
+            ])
+            .stdout
+        };
         assert_eq!(
             (joined.status, joined.stdout.as_str()),
             (Some(0), "allocated 96\n"),
-            "{joined}"
+            "{joined}\n--- the microVM's /proc/swaps\n{}\n--- its /proc/meminfo\n{}",
+            if joined.status == Some(0) {
+                String::new()
+            } else {
+                swap("/proc/swaps")
+            },
+            if joined.status == Some(0) {
+                String::new()
+            } else {
+                swap("/proc/meminfo")
+            }
         );
     }
     assert_eq!(shards(&["rm", "-f", "provider"]).status, Some(0));

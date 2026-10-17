@@ -8996,7 +8996,8 @@ fn agents_run_in_their_domains() {
 /// an address of its IPv6 subnet, and the grants hold by IPv6 as by IPv4: `CONNECT
 /// --port=7000 a TO b` lets `a` reach `b` at its IPv6 address on 7000 alone, `b` only
 /// answer it, and `d`, paired with `b` alone, reach `b` and not `a`; each names its granted
-/// peers at both addresses.
+/// peers at both addresses. `a`'s egress by IPv6, where the microVM's own network has
+/// IPv6, is 7001, which `b` listens on too: it opens `a` nothing within the microVM (D61).
 #[test]
 fn agents_reach_by_ipv6_only_what_connect_grants() {
     if cannot_run_vms() {
@@ -9045,12 +9046,16 @@ fn agents_reach_by_ipv6_only_what_connect_grants() {
         format!(
             "FROM {image}\nAGENT a FROM {a}\nAGENT b FROM {b}\nAGENT d FROM {d}\n\
              NETWORK --ipv6 --subnet=172.31.3.0/24 --subnet=fd31:3::/64 --ingress=7000-7001 back\n\
-             CONNECT --port=7000 a TO b ON back\nCONNECT --port=7000 d WITH b ON back\n"
+             CONNECT --port=7000 a TO b ON back\nCONNECT --port=7000 d WITH b ON back\n\
+             NETWORK --ipv6 --egress=7001 out\nEXPOSE 7001 AS egress FOR out\nCONNECT a WITH a ON out\n"
         ),
     )
     .unwrap();
     let built = shards(&["build", "-t", "links6:1", ctx.to_str().unwrap()]);
     assert_eq!(built.status, Some(0), "{}", built.stderr);
+    // The microVM's own network has IPv6, so a's egress is by IPv6 too.
+    let made = shards(&["network", "create", "--ipv6", "--subnet", "fd7b::/64", "six"]);
+    assert_eq!(made.status, Some(0), "{}", made.stderr);
     let ran = common::run_awaiting(
         &env,
         &[
@@ -9058,6 +9063,8 @@ fn agents_reach_by_ipv6_only_what_connect_grants() {
             "--rm",
             "--name",
             "aw-links6",
+            "--network",
+            "six",
             "links6:1",
             "await",
             "confined-ready",
@@ -9082,7 +9089,8 @@ fn agents_reach_by_ipv6_only_what_connect_grants() {
                 "confined cat /etc/hosts: fd31:3::2\ta",
                 "confined cat /etc/hosts: fd31:3::3\tb",
                 "confined reach [fd31:3::3]:7000: ok",
-                // b listens on 7001 too, which no CONNECT grants: dropped.
+                // b listens on 7001 too, which no CONNECT grants: dropped, a's egress on
+                // 7001 opening it nothing within the microVM.
                 "confined unreach [fd31:3::3]:7001: timeout",
             ][..],
         ),
@@ -9224,9 +9232,11 @@ fn agents_reach_past_the_microvm_by_ipv6_what_their_networks_grant() {
 /// Agents reach one another as the Agentfile's `CONNECT`s grant and nothing more (D59,
 /// AGENTFILE_ARCH.md §4.6, §4.7, §9.7; networks are default deny), each over one link to
 /// a switch that decides by link and port. On `back`, `CONNECT --port=7000 a TO b` lets
-/// `a` reach `b` on 7000 alone and `b` only answer it; `d`, paired with `b` alone, reaches
-/// `b` and not `a`, a member of the same network; `c`, alone on `side`, may neither bind
-/// nor connect. Each resolves itself and the peers it is granted, and no one else.
+/// `a` reach `b` on 7000 alone and `b` only answer it, though `a`'s egress, past the
+/// microVM, is 7001, which `b` listens on too: what an agent opens past the microVM goes
+/// to none of the microVM's own networks (D61); `d`, paired with `b` alone, reaches `b`
+/// and not `a`, a member of the same network; `c`, alone on `side`, may neither bind nor
+/// connect. Each resolves itself and the peers it is granted, and no one else.
 #[test]
 fn agents_reach_only_what_connect_grants() {
     if cannot_run_vms() {
@@ -9288,7 +9298,8 @@ fn agents_reach_only_what_connect_grants() {
         format!(
             "FROM {image}\nAGENT a FROM {a}\nAGENT b FROM {b}\nAGENT c FROM {c}\nAGENT d FROM {d}\n\
              NETWORK --subnet=172.31.1.0/24 --ingress=7000-7001 back\nNETWORK --subnet=172.31.2.0/24 side\n\
-             CONNECT --port=7000 a TO b ON back\nCONNECT --port=7000 d WITH b ON back\nCONNECT c WITH c ON side\n"
+             CONNECT --port=7000 a TO b ON back\nCONNECT --port=7000 d WITH b ON back\nCONNECT c WITH c ON side\n\
+             NETWORK --egress=7001 out\nEXPOSE 7001 AS egress FOR out\nCONNECT a WITH a ON out\n"
         ),
     )
     .unwrap();
@@ -9327,7 +9338,8 @@ fn agents_reach_only_what_connect_grants() {
                 // No grant lets anything reach a: Landlock refuses its bind.
                 "confined listen 7000: errno 13",
                 "confined reach b:7000: ok",
-                // b listens on 7001 too, which no CONNECT grants: dropped.
+                // b listens on 7001 too, which no CONNECT grants: dropped, a's egress on
+                // 7001 opening it nothing within the microVM.
                 "confined unreach b:7001: timeout",
             ][..],
         ),
@@ -9388,7 +9400,10 @@ fn agents_reach_only_what_connect_grants() {
 /// than eth0's own subnet (`confine_eth0`, D59), and nor does a container its microVM's own
 /// engine makes (D181): a member reaches past the microVM no farther than the command. The
 /// host's port an agent is granted is reached by neither the command nor a member of such
-/// a run; a member of a run with no agents reaches it as that run's command does.
+/// a run; a member of a run with no agents reaches it as that run's command does. Nor does
+/// the agent's egress reach a member, of a network its engine makes after the agent
+/// started, serving the agent's egress port: the agent's gate is made again as that network
+/// comes, its egress kept off it (D61).
 #[test]
 fn an_engines_member_reaches_no_farther_than_the_command_beside_agents() {
     if cannot_run_vms() {
@@ -9410,6 +9425,17 @@ fn an_engines_member_reaches_no_farther_than_the_command_beside_agents() {
             let _ = std::io::Write::write_all(&mut c, b"served\n");
         }
     });
+    // The host's word to the agent, said once its engine's member serves: what the agent
+    // tries of the member waits for it.
+    let word_server = listening_anywhere();
+    let word = word_server.local_addr().unwrap().port();
+    let (say, word_said) = std::sync::mpsc::channel::<()>();
+    std::thread::spawn(move || {
+        if let Ok((mut c, _)) = word_server.accept() {
+            let _ = word_said.recv();
+            let _ = std::io::Write::write_all(&mut c, b"go\n");
+        }
+    });
     let (image, _) = served();
     let (port, _repos) = common::writable_registry();
     let home = TempDir::new("eng-confined");
@@ -9420,6 +9446,9 @@ fn an_engines_member_reaches_no_farther_than_the_command_beside_agents() {
     ];
     let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
     let to = format!("{host}:{granted}");
+    let heard = format!("{host}:{word}");
+    // The member of the network its engine makes, at an address of that network's subnet.
+    let far = format!("10.244.200.9:{granted}");
     // An agent granted the host's port, by which the run's own processes are kept to eth0's
     // subnet.
     let dir = TempDir::new("eng-confined-agent");
@@ -9427,7 +9456,9 @@ fn an_engines_member_reaches_no_farther_than_the_command_beside_agents() {
     std::fs::copy(common::test_guest(), dir.join("bin/testguest")).unwrap();
     std::fs::write(
         dir.join("agent.json"),
-        format!(r#"{{"name":"a","run":{{"command":["bin/testguest","confined","reach","{to}"]}}}}"#),
+        format!(
+            r#"{{"name":"a","run":{{"command":["bin/testguest","confined","reach","{to}","hear","{heard}","unreach","{far}"]}}}}"#
+        ),
     )
     .unwrap();
     let tag = format!("127.0.0.1:{port}/team/eng-confined-a:1");
@@ -9439,8 +9470,8 @@ fn an_engines_member_reaches_no_farther_than_the_command_beside_agents() {
     std::fs::write(
         ctx.join("Agentfile"),
         format!(
-            "FROM {image}\nAGENT a FROM {tag}\nNETWORK --egress={granted} out\n\
-             EXPOSE {granted} AS egress FOR out\nCONNECT a WITH a ON out\n"
+            "FROM {image}\nAGENT a FROM {tag}\nNETWORK --egress={granted} --egress={word} out\n\
+             EXPOSE {granted} AS egress FOR out\nEXPOSE {word} AS egress FOR out\nCONNECT a WITH a ON out\n"
         ),
     )
     .unwrap();
@@ -9482,6 +9513,56 @@ fn an_engines_member_reaches_no_farther_than_the_command_beside_agents() {
     );
     let command = in_beside(&["ask", &to, "3000"]);
     assert!(command.stdout.starts_with("ask error"), "{command}");
+    // A network its engine makes now, the agent's gate long made, and a member of it serving
+    // the port the agent's egress is.
+    let made = in_beside(&[
+        "api",
+        "POST",
+        "/networks/create",
+        r#"{"Name":"lan","IPAM":{"Config":[{"Subnet":"10.244.200.0/24"}]}}"#,
+    ]);
+    assert!(made.stdout.starts_with("api HTTP/1.1 201"), "{made}");
+    let declared = format!("{granted}/tcp");
+    let body = serde_json::json!({
+        "Image": image, "Cmd": ["serve", granted.to_string(), "1"],
+        "ExposedPorts": { declared: {} },
+        "HostConfig": { "NetworkMode": "lan" },
+        "NetworkingConfig": { "EndpointsConfig": { "lan": { "IPAMConfig": { "IPv4Address": "10.244.200.9" } } } },
+    });
+    let made = in_beside(&["api", "POST", "/containers/create?name=far", &body.to_string()]);
+    assert!(made.stdout.starts_with("api HTTP/1.1 201"), "{made}");
+    let started = in_beside(&["api", "POST", "/containers/far/start", ""]);
+    assert!(started.stdout.starts_with("api HTTP/1.1 204"), "{started}");
+    let deadline = std::time::Instant::now() + TIMEOUT;
+    while !in_beside(&["api", "GET", "/containers/far/logs?stdout=1", ""])
+        .stdout
+        .contains("ready")
+    {
+        assert!(std::time::Instant::now() < deadline, "far never served");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let _ = say.send(());
+    // The agent's lines, its last once it has tried the member.
+    let deadline = std::time::Instant::now() + TIMEOUT;
+    let logged = loop {
+        let logged = shards(&["logs", "beside"]);
+        let logged = format!("{}{}", logged.stdout, logged.stderr);
+        if logged.contains("[agent a] confined net=") {
+            break logged;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the agent never said:\n{logged}"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    for want in [
+        format!("[agent a] confined reach {to}: ok"),
+        format!("[agent a] confined hear {heard}: go"),
+        format!("[agent a] confined unreach {far}: timeout"),
+    ] {
+        assert!(logged.lines().any(|l| l == want), "no {want:?} in:\n{logged}");
+    }
     let removed = shards(&["rm", "-f", "beside"]);
     assert_eq!(removed.status, Some(0), "{removed}");
     // A run with no agents: its member reaches the port as its command does, by the
