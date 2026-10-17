@@ -52,11 +52,21 @@ Reviewed feature by feature, each D-entry's design against what it took from Doc
   (`com.docker.network.bridge.name`, daemon/networks.rs), which shards has none of, and a
   network's bridge name was checked against Linux's 15-byte interface names and against
   other networks' as dockerd checks a bridge's: shards makes no Linux bridge. Fixed.
-- The default network reports Docker's default bridge's options: `enable_icc` and
-  `enable_ip_masquerade` true, `host_binding_ipv4` 0.0.0.0, MTU 1500. Under default deny
-  its microVMs have no way out, so masquerading is not what it does; whether its peers
-  reach each other, where a published port listens and the MTU its devices take, to be
-  read from the network process before the options say anything.
+- The default network reports Docker's default bridge's options, read against what shards
+  does: `enable_ip_masquerade` true holds (a run's flows leave from the network process's
+  host sockets, under the host's address; D31), and so does `host_binding_ipv4` 0.0.0.0
+  (a published port with no address is bound at every address, daemon/publish.rs `bind`).
+  `enable_icc` true does not: every microVM on the default network has the same address,
+  the subnet's second (net/src/bridge.rs), so that one template serves them all, and none
+  reaches another. Nor does MTU 1500: a guest's interface takes its device's, 65520
+  (init/src/net.rs, `MTU`).
+- A user network's options are checked as dockerd checks them and then ignored: none of
+  `enable_icc`, `host_binding_ipv4` or `driver.mtu` reaches what its microVMs do
+  (daemon/publish.rs binds a port with no address at every address whatever its
+  network's `host_binding_ipv4`). Two of them ask for less reach: a network made with
+  `enable_icc=false` so that its members do not reach each other, or with
+  `host_binding_ipv4=127.0.0.1` so that its published ports stay on the host, gets
+  neither, and is not told.
 - Every build step's hostname is `buildkitsandbox` (abi/src/build.rs), BuildKit's sandbox's
   name, where a step is a microVM's.
 - An anonymous volume is labelled `com.docker.volume.anonymous` (volumes.rs) and nothing of

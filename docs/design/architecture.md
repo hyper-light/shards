@@ -5226,6 +5226,21 @@ unchanged (`DOCKER_HOST=unix://HOME/engine.sock`). What they gain, each for the 
   registered before their heads are written, as clients start once they have them, so
   no first byte and no end goes unseen. A wait is for a microVM not running, its next
   end though it has yet to start, or its removal.
+- **An answer given before the body is read, never lost.** A call answered before its
+  body is read whole (an upload its handler refuses, a build's context sent through a
+  session; a call refused before it is routed, an API version not served; a body past
+  what a call may carry, 413) is answered as one whose connection is kept, and the rest
+  of its body is then read and dropped, however large, as a server that answers first may
+  (RFC 9110 §10.1.1; daemon/engine.rs `answered_first`). Before, a refused upload's
+  connection was closed with none of the rest read, and a client still sending got a
+  broken pipe, its answer unread (CI saw a refused build's context cut short once, on
+  x86_64 musl); a call refused before routing dropped 256 KiB first and closed past it,
+  as Go's server, dockerd's, does (net/http server.go, maxPostHandlerReadBytes), which
+  loses a larger body's answer the same way. Tested
+  (`a_call_answered_first_keeps_its_connection`: each refusal's answer read before any
+  of its 4 MiB is sent, then the body, the 413 once 9 MiB is sent, then another call on
+  the same connection), mutation-checked: an early answer closing; a drained body
+  closing; Go's 256 KiB; the 413's rest counted again.
 - **Files, packed and unpacked in the microVM.** `shards copy vm` (the archive calls),
   `export vm` and `diff vm`: archives are packed and unpacked by the microVM's own init,
   so a hostile archive, or a path swapped as it is copied (the class of CVE-2018-15664,

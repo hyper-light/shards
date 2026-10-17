@@ -1975,6 +1975,48 @@ fn images_are_built_from_a_context_in_the_body() {
     assert!(session.text().contains("session"), "{}", session.text());
 }
 
+/// A call answered before its body is read is answered as it comes, and the rest of its
+/// body read, so its client reads the answer at whatever pace it sends and keeps its
+/// connection; each body larger than Go's server would read (256 KiB). On one connection:
+/// a build's context sent through a session, refused by the build, and a call of a version
+/// not served, refused before it is routed, each answer read before any of the body is
+/// sent; a call's body past what a call may carry, answered once that much is read; and a
+/// call after them.
+#[test]
+fn a_call_answered_first_keeps_its_connection() {
+    let Some((home, _)) = home("eng-early") else {
+        return;
+    };
+    let mut api = Api::new(&home);
+    let head = |target: &str, kind: &str, len: usize| {
+        format!(
+            "POST {target} HTTP/1.1\r\nHost: api\r\nContent-Type: {kind}\r\nContent-Length: {len}\r\n\r\n"
+        )
+    };
+    let body = vec![0_u8; 4 << 20];
+    for (target, says) in [
+        ("/build?version=2&session=s1", "session"),
+        ("/v1.0/build", "API version 1.0"),
+    ] {
+        api.conn
+            .write_all(head(target, "application/x-tar", body.len()).as_bytes())
+            .unwrap();
+        let refused = api.answer("POST");
+        assert_eq!(refused.status, 400, "{target}: {}", refused.text());
+        assert!(refused.text().contains(says), "{target}: {}", refused.text());
+        assert_ne!(refused.field("connection"), Some("close"), "{target}");
+        api.conn.write_all(&body).unwrap();
+    }
+    let past = vec![b' '; 9 << 20];
+    api.conn
+        .write_all(head("/containers/create", "application/json", past.len()).as_bytes())
+        .unwrap();
+    api.conn.write_all(&past).unwrap();
+    let refused = api.answer("POST");
+    assert_eq!(refused.status, 413, "{}", refused.text());
+    assert_eq!(api.call("GET", "/_ping", None).status, 200);
+}
+
 /// The docker CLI checkpoints a microVM through the engine and restores it, as it does an
 /// experimental dockerd's container (D176): `checkpoint create`, `ls`, `rm` and `start
 /// --checkpoint`, the engine saying it is experimental as its ping does.

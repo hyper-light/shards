@@ -1141,7 +1141,11 @@ mod tests {
         kept.end();
         assert!(read_all(reader).is_empty());
 
-        // Its client gone, what it wrote goes unread, and the terminal ends.
+        // Its client gone, the terminal ends, and what it wrote is let go. XNU holds what a
+        // terminal's command wrote in the terminal's own queue until its controller reads
+        // it, which the abandon flushes (PM M246), so none of it is read; Linux hands it to
+        // the controller as it is written (drivers/tty/pty.c, pty_write), the flush reaching
+        // only what the line discipline has yet to take, so some or all may be read.
         let (controller, peer) = open_pty(24, 80).unwrap();
         let (reader, kept) = kept_terminal(&controller, &peer).unwrap();
         drop(controller);
@@ -1149,7 +1153,11 @@ mod tests {
         command.write_all(b"never read").unwrap();
         drop(command);
         kept.abandon();
-        assert!(read_all(reader).is_empty());
+        let read = read_all(reader);
+        #[cfg(target_os = "macos")]
+        assert!(read.is_empty(), "{read:?}");
+        #[cfg(not(target_os = "macos"))]
+        assert!(b"never read".starts_with(&read), "{read:?}");
     }
 
     /// A client's command takes shards' settings of the daemon's environment, and what it
