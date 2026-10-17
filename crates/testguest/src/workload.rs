@@ -146,6 +146,12 @@ pub fn main() -> ! {
             0
         }
         "exit" => arg(1).parse().unwrap_or(1),
+        // A step that lasts `arg(1)` ms, for what shows it to be seen as it runs (`sleep`
+        // prints `ready` and lasts until a signal ends it).
+        "sleep-for" => {
+            std::thread::sleep(std::time::Duration::from_millis(arg(1).parse().unwrap_or(0)));
+            0
+        }
         "limits" => match limits() {
             Ok(()) => 0,
             Err(e) => {

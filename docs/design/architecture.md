@@ -4074,9 +4074,9 @@ would have read the machine's directory. Now (crate::synced):
 
 What a build names of the client's otherwise crosses too: its secrets (part 3e); its
 outputs, `--iidfile` and `--metadata-file` (part 3f); its named contexts, local caches and
-policies' files (part 3g); its SSH agents (part 3h). Not yet: the client's terminal for the build's live
-display (a build over a context prints its plain progress); extended attributes (go-archive's
-archives carry `security.capability` alone). A new name of a file the copy holds, unchanged,
+policies' files (part 3g); its SSH agents (part 3h); and on a terminal, the build is drawn
+there as here (part 3i). Not yet: extended attributes (go-archive's archives carry
+`security.capability` alone). A new name of a file the copy holds, unchanged,
 goes as a link to the copy's file (part 3d's), no byte of it again, where it went as a file
 of its own, and the copy's tree was not the client's.
 
@@ -4094,6 +4094,47 @@ untouched), and unit tests of the plan and of a copy's key. Mutation-checked: th
 applied, everything sent each time, the ignore file not applied here, what went not
 removed, a change's directories not set again, the build file not the copy's, a base's
 login not sent, a build arg named alone the machine's.
+
+**Part 3i, built: a build through a context on a terminal is drawn as here, and a command's
+terminal there ends whole.**
+- **The build's display, shards' own.** Where the client's stderr is a terminal, the
+  machine's build has a terminal of its own for its stderr, of the client's size and
+  resized with it, as a command's is, its stdin and stdout the step's streams still; so it
+  draws the display a build draws on one (build/live.rs), where it printed BuildKit's
+  plain lines. Nothing the display draws names the copy: a step says a build file by its
+  base name and a layout by its store's, and a build file the client could not read is
+  not sent, the build naming it by its name; what the build prints after the display, which
+  may name it, passes through what says the client's paths, as a plain build's does.
+- **A command's terminal there ends whole.** At a terminal's last close XNU waits 60 ticks
+  for what is unread to be read, then discards it, and the controller reads nothing of a
+  replica no longer open (PM M246): a client reading slowly, its stream full as its command
+  ended, lost the last of the command's output, up to the terminal's queue (59 of 60
+  trials, a reader 600 ms late or more), and the command waited 0.6 s to end. Now the
+  machine keeps a writer of each terminal of a client's command (a build's, `run -t`'s,
+  `exec -t`'s) until the command has ended and nothing is unread (TIOCOUTQ): closed then by
+  the command's waiter, or by the reader once it has read the rest. The command's close is
+  never the last, and nothing waits on a timer: a build's close waits for nothing, and a
+  command's exit, which drains its controlling terminal (kern_exit.c), for its client to
+  read, as long as it reads. A client gone, its hang-up lets the writer go, its queue
+  flushed first, so that no command's exit waits on a reader that will not come.
+- **A tree's copy said as the client's.** The paths a client names for what its build
+  prints now include each tree's (part 3g), by its key: an error naming a layout's
+  directory names the client's, where it named the machine's copy of it.
+
+Tested in `tests/context.rs` (`a_build_through_a_context_on_a_terminal_is_drawn_as_here`:
+shards' display on the client's terminal, no plain lines; resized to 36 columns as its step
+runs, the build's end laid out to them; and in
+`what_a_build_names_of_the_clients_is_carried_through_a_context`, a directory that holds no
+layout refused, named as the client names it), and in remote.rs's unit tests
+(`what_a_command_writes_to_its_terminal_is_read_however_late`: a reader a second late reads
+all, through what says the client's paths; a terminal written nothing more ends with its
+command; one whose client is gone ends, what it held unread). The tests' guest gained
+`sleep-for MS`, a step that lasts. Mutation-checked: a build asking for no terminal, given
+none, its terminal never resized; the kept writer closed with output unread, never closed
+by the reader, kept for a client gone; a tree's copy shown as it is, a tree's path not
+said. A command's end not told its terminal survives on macOS, whose exit revokes the
+command's controlling terminal and the kept writer with it (kern_exit.c, VNOP_REVOKE): it
+is Linux's to catch, where the kept writer would hold the terminal open, in CI.
 
 **Part 3h, built: a build's SSH agents through a context, the client's.** A step there that
 clones a private repository over SSH (`RUN --mount=type=ssh`) signs with the laptop's keys,

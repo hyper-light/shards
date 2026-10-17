@@ -646,7 +646,8 @@ fn write_file(path: &Path, mode: u32, mtime: (i64, u32), bytes: &[u8]) -> Result
 }
 
 /// The variable a client names its own paths in, for what a command of its copy prints:
-/// its context's, then a NUL, then its build file's directory's, which may be none.
+/// its context's, then a NUL, then its build file's directory's, which may be none; then,
+/// a NUL before each, each tree's key and its path, a NUL between.
 pub(crate) const SHOWN_AS: &str = "SHARDS_SYNCED_AS";
 
 #[cfg(unix)]

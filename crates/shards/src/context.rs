@@ -1371,11 +1371,18 @@ fn build_there(
         let id = shards_cmdline::go::csv_field(&format!("id={id}"));
         words.insert(at, format!("--secret={id},src={}{i}", crate::synced::SECRET));
     }
-    // This client's own paths, which what the build prints there says in place of its copy's.
+    // This client's own paths, which what the build prints there says in place of its
+    // copies': its context's, its build file's directory's, and each tree's, by its key.
     let mut shown = built.context.as_os_str().as_encoded_bytes().to_vec();
     shown.push(0);
     if let Some(dir) = &built.dockerfile_dir {
         shown.extend_from_slice(dir.as_os_str().as_encoded_bytes());
+    }
+    for tree in &built.trees {
+        shown.push(0);
+        shown.extend_from_slice(tree.key.as_bytes());
+        shown.push(0);
+        shown.extend_from_slice(tree.root.as_os_str().as_encoded_bytes());
     }
     env.push((crate::synced::SHOWN_AS.to_string(), shown));
     let (reader, mut writer) = match io::pipe() {
@@ -1399,12 +1406,29 @@ fn build_there(
     let words: Vec<&str> = std::iter::once("build")
         .chain(words.iter().map(String::as_str))
         .collect();
+    // This client's terminal, where its stderr is one: the build there draws shards' own
+    // display on a terminal of this one's size, as a build here draws it (build/live.rs);
+    // its stdin and stdout are the step's streams.
+    let terminal = here_terminal().filter(|t| t.stderr).map(|t| frame::Terminal {
+        stdin: false,
+        stdout: false,
+        ..t
+    });
     let request = Request {
         args: step(&words),
         env,
-        terminal: None,
+        terminal,
     };
-    let steered = |controls| {
+    // A resize since the size was said is sent once the build is asked for, as no signal
+    // could send it before.
+    let steered = move |controls: client::Controls| {
+        #[cfg(unix)]
+        if let Some(t) = terminal {
+            let now = crate::cli::terminal::size(2);
+            if now != (t.rows, t.cols) {
+                let _ = controls.resize(now.0, now.1);
+            }
+        }
         *STEERED.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(controls);
     };
     // What the build says on stdout, its own and then its outputs of this client's, taken

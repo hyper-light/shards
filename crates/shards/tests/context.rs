@@ -1789,6 +1789,13 @@ fn what_a_build_names_of_the_clients_is_carried_through_a_context() {
     assert_eq!(stacked.status, Some(0), "{stacked}");
     assert_eq!(std::fs::read_to_string(out2.join("a.txt")).unwrap(), "one");
     assert_eq!(std::fs::read_to_string(out2.join("b.txt")).unwrap(), "two");
+    // A directory that holds no layout is refused in the build's words, named as this
+    // client names it, not as its copy there.
+    let not_a_layout = format!("base=oci-layout://{}", other.display());
+    let refused = build(&on_it, &["--build-context", &not_a_layout]);
+    assert_ne!(refused.status, Some(0), "{refused}");
+    assert!(refused.stderr.contains(other.to_str().unwrap()), "{refused}");
+    assert!(!refused.stderr.contains("/synced/"), "the copy's path: {refused}");
     // A policy of this client's, in its context and left out of it by its ignore file, as
     // the build reads it: it refuses the build, in its words.
     let policy = app.join("deny.rego");
@@ -1933,5 +1940,66 @@ fn a_builds_ssh_agents_through_a_context_are_the_clients() {
             "{} in what the machine was asked",
             here.display()
         );
+    }
+}
+
+/// A build through a context on a terminal is drawn as a build here is, shards' own
+/// display, not BuildKit's plain lines: on a terminal of the machine's of this one's size,
+/// resized with it, so that what it draws after a resize is laid out to the new width.
+#[test]
+fn a_build_through_a_context_on_a_terminal_is_drawn_as_here() {
+    let Some((_machine, _listening, laptop, image)) = joined("ctx-live") else {
+        return;
+    };
+    let app = laptop.join("app");
+    std::fs::create_dir_all(&app).unwrap();
+    std::fs::write(
+        app.join("Dockerfile"),
+        format!("FROM {image}\nRUN [\"/bin/testguest\", \"sleep-for\", \"3000\"]\n"),
+    )
+    .unwrap();
+    let mut term = Terminal::run(
+        &laptop,
+        &[
+            "--context",
+            "gpu",
+            "build",
+            "--no-cache",
+            "-t",
+            "drawn",
+            app.to_str().unwrap(),
+        ],
+        30,
+        100,
+    );
+    let head = term.wait_for("\"sleep-for\"");
+    assert!(head.contains("B U I L D"), "{head:?}");
+    assert!(!head.contains("#1 "), "plain lines: {head:?}");
+    // Narrower as the step runs: the build's end is laid out to it.
+    term.resize(30, 36);
+    let (shown, status, restored) = term.exit();
+    assert_eq!((status, restored), (0, true), "{shown:?}");
+    let end = shown.rsplit("Built.").next().unwrap_or_default();
+    let mut plain = String::new();
+    let mut chars = end.chars();
+    while let Some(c) = chars.next() {
+        if c == '\x1b' {
+            for c in chars.by_ref() {
+                if c.is_ascii_alphabetic() {
+                    break;
+                }
+            }
+        } else {
+            plain.push(c);
+        }
+    }
+    assert!(plain.contains("steps"), "{plain:?}");
+    assert!(
+        plain.contains('…'),
+        "clipped to the terminal as it is now: {plain:?}"
+    );
+    for line in plain.split('\n') {
+        let line = line.trim_end_matches('\r');
+        assert!(line.chars().count() <= 36, "{line:?} in {plain:?}");
     }
 }

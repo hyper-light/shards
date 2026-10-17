@@ -111,7 +111,7 @@ impl Host for Machine {
         if args.first().map(String::as_str) == Some(crate::synced::SYNC_STEP) {
             let shown: Vec<String> = args.iter().skip(1).map(|a| a.replace('\0', "")).collect();
             super::log(format!("client {client}: context step {}", shown.join(" ")));
-            return self.sync_step(client, args, request.env);
+            return self.sync_step(client, args, request.env, request.terminal);
         }
         if args.first().map(String::as_str) == Some(crate::agent::SIGN_STEP) {
             let shown: Vec<&str> = args.iter().skip(1).map(String::as_str).collect();
@@ -140,23 +140,28 @@ impl Host for Machine {
                 (r.into(), Box::new(w))
             }
         };
-        let (child_out, stdout): (OwnedFd, Box<dyn Read + Send>) = match &pty {
-            Some((controller, peer)) if on(1) => (
-                peer.try_clone().map_err(tty)?,
-                Box::new(File::from(controller.try_clone().map_err(tty)?)),
-            ),
+        // What the terminal shows is read once, whole ([`Kept`]): as stdout's, where stdout is
+        // on it, else as stderr's.
+        let (shown, kept) = match &pty {
+            Some((controller, peer)) if on(1) || on(2) => {
+                let (reader, kept) = kept_terminal(controller, peer).map_err(tty)?;
+                (Some(reader), Some(kept))
+            }
+            _ => (None, None),
+        };
+        let (out_shown, err_shown) = if on(1) { (shown, None) } else { (None, shown) };
+        let (child_out, stdout): (OwnedFd, Box<dyn Read + Send>) = match (&pty, out_shown) {
+            (Some((_, peer)), Some(reader)) => (peer.try_clone().map_err(tty)?, Box::new(reader)),
             _ => {
                 let (r, w) = pipe()?;
                 (w.into(), Box::new(r))
             }
         };
-        let (child_err, stderr): (OwnedFd, Box<dyn Read + Send>) = match &pty {
-            // What the terminal shows is read once: as stdout's, where stdout is on it too.
-            Some((_, peer)) if on(2) && on(1) => (peer.try_clone().map_err(tty)?, Box::new(std::io::empty())),
-            Some((controller, peer)) if on(2) => (
-                peer.try_clone().map_err(tty)?,
-                Box::new(File::from(controller.try_clone().map_err(tty)?)),
-            ),
+        let (child_err, stderr): (OwnedFd, Box<dyn Read + Send>) = match (&pty, err_shown) {
+            (Some((_, peer)), _) if on(2) && on(1) => {
+                (peer.try_clone().map_err(tty)?, Box::new(std::io::empty()))
+            }
+            (Some((_, peer)), Some(reader)) => (peer.try_clone().map_err(tty)?, Box::new(reader)),
             _ => {
                 let (r, w) = pipe()?;
                 (w.into(), Box::new(r))
@@ -185,27 +190,24 @@ impl Host for Machine {
         // reaped.
         let child = Arc::new(child);
         let (hung, signalled) = (Arc::clone(&child), Arc::clone(&child));
-        let resize = controller.map(|controller| -> Box<dyn Fn(u16, u16) + Send> {
-            Box::new(move |rows, cols| {
-                let ws = libc::winsize {
-                    ws_row: rows,
-                    ws_col: cols,
-                    ws_xpixel: 0,
-                    ws_ypixel: 0,
-                };
-                // SAFETY: TIOCSWINSZ reads one winsize, on the terminal's controller, ours.
-                // The kernel signals the terminal's foreground, the command's group
-                // (SIGWINCH).
-                unsafe { libc::ioctl(controller.as_raw_fd(), libc::TIOCSWINSZ, &ws) };
-            })
-        });
+        let abandoned = kept.clone();
+        let resize = controller.map(resizer);
         Ok(Running {
             stdin,
             stdout,
             stderr,
-            wait: Box::new(move || child.wait().unwrap_or(1)),
+            wait: Box::new(move || {
+                let status = child.wait().unwrap_or(1);
+                if let Some(kept) = &kept {
+                    kept.end();
+                }
+                status
+            }),
             hangup: Box::new(move || {
                 let _ = hung.kill(libc::SIGHUP);
+                if let Some(kept) = &abandoned {
+                    kept.abandon();
+                }
             }),
             resize,
             // What the client received, as this system numbers it; one it has not goes
@@ -350,6 +352,7 @@ impl Machine {
         client: &str,
         args: Vec<String>,
         env: Vec<(String, Vec<u8>)>,
+        terminal: Option<shards_remote::frame::Terminal>,
     ) -> Result<Running, Error> {
         let step = args.get(1).cloned().unwrap_or_default();
         let key = args.get(2).cloned().unwrap_or_default();
@@ -362,7 +365,7 @@ impl Machine {
         let (shown, env): (Vec<_>, Vec<_>) = env.into_iter().partition(|(k, _)| k == crate::synced::SHOWN_AS);
         let mut pairs = Vec::new();
         if let Some((_, shown)) = shown.first() {
-            let mut theirs = shown.splitn(2, |b| *b == 0);
+            let mut theirs = shown.split(|b| *b == 0);
             for (ours, theirs) in [
                 (copy.join("context"), theirs.next()),
                 (copy.join("dockerfile"), theirs.next()),
@@ -371,14 +374,50 @@ impl Machine {
                     pairs.push((ours.into_os_string().into_encoded_bytes(), theirs.to_vec()));
                 }
             }
+            // Each tree the build names, by its key: its copy here, and the client's path.
+            while let (Some(key), Some(theirs)) = (theirs.next(), theirs.next()) {
+                let tree = std::str::from_utf8(key)
+                    .ok()
+                    .and_then(|key| crate::synced::copy_of(&self.home, client, key).ok());
+                if let Some(tree) = tree.filter(|_| !theirs.is_empty()) {
+                    pairs.push((
+                        tree.join("context").into_os_string().into_encoded_bytes(),
+                        theirs.to_vec(),
+                    ));
+                }
+            }
         }
         let pipe = || std::io::pipe().map_err(|e| Error::new(format!("a pipe for the build: {e}")));
         let (mut in_r, in_w) = pipe()?;
         let (out_r, mut out_w) = pipe()?;
-        let (err_r, mut err_w) = pipe()?;
+        // The client's terminal, where its stderr is one: a build's stderr is a terminal of
+        // its own here, of the client's size and sized with it, as a command's is
+        // ([`Machine::start`]), on which the build draws the display it draws on one
+        // (build/live.rs). Its stdin and stdout are the step's streams, pipes.
+        let tty = |e: std::io::Error| Error::new(format!("the build's terminal: {e}"));
+        let pty = match terminal {
+            Some(t) if t.stderr && step == "build" => Some(open_pty(t.rows, t.cols).map_err(tty)?),
+            _ => None,
+        };
+        let (err_r, mut err_w, kept): (Box<dyn Read + Send>, File, _) = match &pty {
+            Some((controller, peer)) => {
+                let (reader, kept) = kept_terminal(controller, peer).map_err(tty)?;
+                (
+                    Box::new(reader),
+                    File::from(peer.try_clone().map_err(tty)?),
+                    Some(kept),
+                )
+            }
+            None => {
+                let (r, w) = pipe()?;
+                (Box::new(r), File::from(OwnedFd::from(w)), None)
+            }
+        };
+        let (exe, env) = (self.exe.clone(), self.command_env(env));
+        let resize = pty.map(|(controller, _peer)| resizer(controller));
         let (done, status) = std::sync::mpsc::channel();
         let building = Arc::new(Building::default());
-        let (exe, env) = (self.exe.clone(), self.command_env(env));
+        let ending = kept.clone();
         let registry = Arc::clone(&self.agents);
         let ours = Arc::clone(&building);
         let whose = client.to_string();
@@ -541,17 +580,26 @@ impl Machine {
                     1
                 });
                 drop((in_r, out_w, err_w));
+                if let Some(kept) = &ending {
+                    kept.end();
+                }
                 let _ = done.send(status);
             })
             .map_err(|e| Error::new(format!("a thread for the build: {e}")))?;
         let (hung, signalled) = (Arc::clone(&building), building);
+        let abandoned = kept.clone();
         Ok(Running {
             stdin: Box::new(in_w),
             stdout: Box::new(out_r),
             stderr: Box::new(crate::synced::Shown::new(err_r, pairs)),
             wait: Box::new(move || status.recv().unwrap_or(1)),
-            hangup: Box::new(move || hung.end(libc::SIGHUP)),
-            resize: None,
+            hangup: Box::new(move || {
+                hung.end(libc::SIGHUP);
+                if let Some(kept) = &abandoned {
+                    kept.abandon();
+                }
+            }),
+            resize,
             signal: Box::new(move |linux| {
                 if let Some(sig) = shards_ipc::local_signal(linux) {
                     signalled.end(sig);
@@ -793,6 +841,107 @@ fn kept(name: &str) -> bool {
     ) || (name.starts_with("SHARDS_") && !name.starts_with("SHARDS_TEST_"))
 }
 
+/// What sizes the terminal `controller` controls, as its client's is sized.
+fn resizer(controller: OwnedFd) -> Box<dyn Fn(u16, u16) + Send> {
+    Box::new(move |rows, cols| {
+        let ws = libc::winsize {
+            ws_row: rows,
+            ws_col: cols,
+            ws_xpixel: 0,
+            ws_ypixel: 0,
+        };
+        // SAFETY: TIOCSWINSZ reads one winsize, on the terminal's controller, ours. The
+        // kernel signals the terminal's foreground, the command's group (SIGWINCH).
+        unsafe { libc::ioctl(controller.as_raw_fd(), libc::TIOCSWINSZ, &ws) };
+    })
+}
+
+/// A writer of a terminal of a client's command's own, kept until the command has ended and
+/// nothing written to the terminal is unread, so that the command's close of it is never its
+/// last: at a terminal's last close XNU waits 60 ticks for what is unread to be read
+/// (bsd/kern/tty_dev.c, ptsclose's t_timeout; tty.c, ttylclose and ttywait), then
+/// discards it, and the controller reads nothing of a terminal no longer open (tty_dev.c,
+/// ptcread). A client that read slowly lost its command's last output, and the command
+/// waited 0.6 s to end (PM M246). Linux keeps what is unread for the controller
+/// (drivers/tty/n_tty.c, n_tty_read).
+struct Kept {
+    writer: std::sync::Mutex<Option<File>>,
+    ended: std::sync::atomic::AtomicBool,
+}
+
+impl Kept {
+    /// The command has ended: the writer goes now, where nothing is unread, else once its
+    /// reader ([`Controller`]) has read it.
+    fn end(&self) {
+        self.ended.store(true, std::sync::atomic::Ordering::SeqCst);
+        self.close_if_read();
+    }
+
+    fn close_if_read(&self) {
+        let mut writer = super::lock(&self.writer);
+        if writer.as_ref().is_some_and(|w| unread(w) == 0) {
+            *writer = None;
+        }
+    }
+
+    /// The command's client is gone: what it wrote goes unread, now, and so does the writer,
+    /// so that nothing waits for a reader that will not come. While a writer is kept, a
+    /// command's end waits for what its controlling terminal holds to be read
+    /// (bsd/kern/kern_exit.c, proc_exit's ttywait), which with no reader is never (PM M246).
+    fn abandon(&self) {
+        if let Some(writer) = super::lock(&self.writer).take() {
+            // SAFETY: tcflush(3) of the terminal `writer` writes to, ours.
+            unsafe { libc::tcflush(writer.as_raw_fd(), libc::TCOFLUSH) };
+        }
+    }
+}
+
+/// How many bytes written to the terminal `writer` writes to are unread (TIOCOUTQ); none
+/// where it cannot say.
+fn unread(writer: &File) -> usize {
+    let mut n: libc::c_int = 0;
+    // SAFETY: ioctl(2) TIOCOUTQ writes one int, into `n`.
+    if unsafe { libc::ioctl(writer.as_raw_fd(), libc::TIOCOUTQ, &raw mut n) } != 0 {
+        return 0;
+    }
+    usize::try_from(n).unwrap_or(0)
+}
+
+/// A terminal's controller, read to its end: once its command has ended and it has read
+/// all, its [`Kept`] writer goes; once the last writer has, Linux's read says EIO, after all
+/// that came before (drivers/tty/n_tty.c, n_tty_read, TTY_OTHER_CLOSED), which is the end.
+struct Controller {
+    file: File,
+    kept: Arc<Kept>,
+}
+
+impl Read for Controller {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let n = match self.file.read(buf) {
+            Err(e) if e.raw_os_error() == Some(libc::EIO) => return Ok(0),
+            read => read?,
+        };
+        if self.kept.ended.load(std::sync::atomic::Ordering::SeqCst) {
+            self.kept.close_if_read();
+        }
+        Ok(n)
+    }
+}
+
+/// The reader of the terminal `controller` controls, and the [`Kept`] writer of its `peer`
+/// it shares with its command's waiter.
+fn kept_terminal(controller: &OwnedFd, peer: &OwnedFd) -> std::io::Result<(Controller, Arc<Kept>)> {
+    let kept = Arc::new(Kept {
+        writer: std::sync::Mutex::new(Some(File::from(peer.try_clone()?))),
+        ended: std::sync::atomic::AtomicBool::new(false),
+    });
+    let reader = Controller {
+        file: File::from(controller.try_clone()?),
+        kept: Arc::clone(&kept),
+    };
+    Ok((reader, kept))
+}
+
 /// A pseudo-terminal of `rows` by `cols`: its controller, and the peer a command's stdio is,
 /// both close-on-exec. openpty(3) opens them without; no child takes them meanwhile, as a
 /// daemon's children are its spawner's (PM M158), which holds only what it is sent.
@@ -876,6 +1025,51 @@ pub(super) fn listen(
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    /// What a command writes to its terminal is read whole however late its reader comes,
+    /// later than XNU waits at a terminal's last close (PM M246), and through what shows a
+    /// client's paths, a tail that might have begun one among it; and a terminal its command
+    /// wrote nothing more to ends as the command does.
+    #[test]
+    fn what_a_command_writes_to_its_terminal_is_read_however_late() {
+        // All `reader` reads to its end, which must come.
+        fn read_all(mut reader: impl Read + Send + 'static) -> Vec<u8> {
+            let (tx, rx) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                let mut read = Vec::new();
+                let _ = tx.send(reader.read_to_end(&mut read).map(|_| read));
+            });
+            rx.recv_timeout(std::time::Duration::from_secs(30))
+                .expect("the terminal's end")
+                .unwrap()
+        }
+        let (controller, peer) = open_pty(24, 80).unwrap();
+        let (reader, kept) = kept_terminal(&controller, &peer).unwrap();
+        drop(controller);
+        let mut command = File::from(peer);
+        command.write_all(b"done /").unwrap();
+        drop(command);
+        kept.end();
+        std::thread::sleep(std::time::Duration::from_secs(1));
+        let shown = crate::synced::Shown::new(reader, vec![(b"/m/copy".to_vec(), b"/here".to_vec())]);
+        assert_eq!(read_all(shown), b"done /");
+
+        let (controller, peer) = open_pty(24, 80).unwrap();
+        let (reader, kept) = kept_terminal(&controller, &peer).unwrap();
+        drop((controller, peer));
+        kept.end();
+        assert!(read_all(reader).is_empty());
+
+        // Its client gone, what it wrote goes unread, and the terminal ends.
+        let (controller, peer) = open_pty(24, 80).unwrap();
+        let (reader, kept) = kept_terminal(&controller, &peer).unwrap();
+        drop(controller);
+        let mut command = File::from(peer);
+        command.write_all(b"never read").unwrap();
+        drop(command);
+        kept.abandon();
+        assert!(read_all(reader).is_empty());
+    }
 
     /// A client's command takes shards' settings of the daemon's environment, and what it
     /// needs to act as this machine's shards; none of the owner's other variables, nor its
