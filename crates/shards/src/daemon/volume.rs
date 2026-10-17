@@ -20,7 +20,7 @@ const PRUNE_FILTERS: [&str; 3] = ["label", "label!", "all"];
 impl<D: Disk> Daemon<D> {
     /// The containers that mount volume `name`, made or being made: its references, which
     /// keep it from removal (the volume store's reference counts).
-    fn volume_refs(&self, name: &str) -> Vec<String> {
+    pub(super) fn volume_refs(&self, name: &str) -> Vec<String> {
         lock(&self.containers)
             .every()
             .filter(|c| c.mounts.iter().any(|m| m.kind == "volume" && m.name == name))
@@ -72,7 +72,7 @@ impl<D: Disk> Daemon<D> {
         }
         let made = {
             let _held = crate::volumes::lock();
-            Store::new(&self.home).create(&name, &labels, &options)
+            Store::new(&self.home).create(&name, &labels, &options, "")
         };
         let volume = match made {
             Ok((v, _)) => v,
@@ -103,7 +103,7 @@ impl<D: Disk> Daemon<D> {
     /// Volume `v` as the API's volume.Volume holds it (volumeToAPIType): its time in the
     /// asker's zone, as dockerd's is in its own; labels and options null where it has
     /// none.
-    fn volume_value(&self, v: &Volume, offset: i64, usage: Option<(i64, i64)>) -> Value {
+    pub(super) fn volume_value(&self, v: &Volume, offset: i64, usage: Option<(i64, i64)>) -> Value {
         let map = |m: &BTreeMap<String, String>| {
             if m.is_empty() {
                 Value::NilMap(Kind::String)

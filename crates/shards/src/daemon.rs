@@ -3433,12 +3433,19 @@ impl<D: Disk> Daemon<D> {
             .chain(run.volumes.iter())
             .cloned()
             .collect();
+        // A microVM's own engine's run: its volumes are named after that microVM (D181).
+        let prefix = run
+            .engine_made
+            .as_ref()
+            .and_then(|(of, _)| lock(&self.containers).get(of).map(|c| c.name.clone()))
+            .unwrap_or_default();
         let points = crate::volumes::register(
             &store,
             run,
             &image_volumes,
             prepared.agentfile.as_ref().map(|a| a.volumes.as_slice()),
             &from,
+            &prefix,
         )?;
         Ok(points)
     }
@@ -3885,6 +3892,14 @@ impl<D: Disk> Daemon<D> {
             self.drop_anonymous(&removal.container);
         }
         self.remove_engine_made(id);
+        // Its own engine's volumes, as it goes, those nothing mounts; the rest as the last
+        // container that mounts them goes after it (D181).
+        self.remove_own_volumes(id);
+        if let Some(made) = &removal.container.engine_made
+            && lock(&self.containers).get(&made.of).is_none()
+        {
+            self.remove_own_volumes(&made.of);
+        }
         synced
     }
 

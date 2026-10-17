@@ -4789,9 +4789,9 @@ container's address; and a container reaches past the microVM no more than the c
 Built in parts: (3a) members on the switch, the default network, published ports, `host`
 and `none`, built; (3b) the networks its engine makes, their grants and names, and the
 networks API, built, connect and disconnect for a container that does not run; (3c) its
-named volumes, one member in another's namespace (`container:X`, Compose's `service:`),
-and Compose end to end; (3d) the undeclared listeners `shards read ports` lists; (3e)
-connect and disconnect of a running member.
+named volumes, built, then one member in another's namespace (`container:X`, Compose's
+`service:`) and Compose end to end; (3d) the undeclared listeners `shards read ports`
+lists; (3e) connect and disconnect of a running member.
 
 - **How 3a is built.** The daemon asks for a membership by network and name (`member=`,
   with `own-publish=` for each port it publishes), and nothing of addresses. Init holds
@@ -4905,6 +4905,38 @@ connect and disconnect of a running member.
   port left its member's own connections untracked too, which is what a declared port in
   the range its own connections take does. A gate now holds its member's declared ports
   from the start.
+- **How its volumes are built (3c).** A volume a microVM's engine makes, through its API
+  or as a container it makes names one (`-v NAME:DEST`, `--mount source=NAME`), is in the
+  host's store, on disk rather than in the microVM's memory, where its writable layer
+  is. The store's record says whose it is (`Of`, the microVM's ID) and what its engine
+  calls it (`There`); on the host it is named after the microVM, as its containers are
+  (`PROV.NAME`, or `PROV.NAME.N` where the host has a volume of that name: a host name is
+  only how it is shown). Its engine finds its own by that record alone, so a renamed
+  microVM keeps them, and no name of its reaches another microVM's or the host's own. A
+  container it makes mounts them through the microVM's join share (D119), a fresh one
+  taking the image's files at its mount point and their owner as it is first mounted,
+  and its anonymous ones are the microVM's too. Its engine lists, inspects, makes,
+  removes and prunes them by its own names, with no path of the host's in what it says
+  (`Mountpoint`, a mount's `Source`); a volume takes no driver and no driver options, the
+  local driver's binding a directory of the host's (`o=bind,device=...`). One a container
+  mounts stays; the rest go with their microVM, each as the last container that mounts it
+  goes.
+- **Tested on real microVMs.** `a_microvms_own_engine_makes_volumes_of_its_own`: a volume
+  made through the API by its name, at no host path, and none with driver options; a
+  container writes to it by `-v`, another reads it through `--mount`, a third's named
+  volume made as it is named; its engine lists its own alone, by their names, and a
+  container's mount by that name at no path; the host lists them after the microVM's
+  name; the host's own `prov.secret` neither taken nor seen by the microVM's `secret`,
+  which is named `prov.secret.2`; renamed, the microVM keeps them and reads what it
+  wrote; another microVM's engine finds none of them, its own `data` its own; one a
+  container mounts stays, and goes once none does; and the rest go with the microVM,
+  the host's and the other microVM's staying. Mutation-checked, each caught: its engine
+  listing every volume; one found by its host name alone, which a rename lost; no free
+  name taken, the host's `prov.secret` refusing its `secret`; no free name and another's
+  volume taken, which read the host's file; its volumes left as it went; a host path in
+  a volume's document, and in a container's mount; driver options taken. With a free
+  name taken, the store's refusal of another's volume is a second guard the test does
+  not reach.
 
 ### D179. Other CPUs' images, emulated in their microVM (parts 1 to 3 built)
 
