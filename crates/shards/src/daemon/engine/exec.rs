@@ -57,6 +57,11 @@ fn console(v: &Value) -> (u16, u16) {
 }
 
 impl<D: Disk> Daemon<D> {
+    /// The container exec `exec_id` runs in, where there is such an exec.
+    pub(super) fn exec_container(&self, exec_id: &str) -> Option<String> {
+        lock(&self.engine.execs).get(exec_id).map(|i| i.container.clone())
+    }
+
     /// `POST /containers/{id}/exec`: an exec made, in a container that runs, to start
     /// later.
     pub(super) fn engine_exec_create(&self, given: &str, call: &Call<'_>) -> Answer {

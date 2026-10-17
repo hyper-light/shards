@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 /// Where a joiner's image lies on the join disk, the workload whose network it joins,
 /// where its writable layer from before lies on the disk, if it has one to put back (D37),
 /// and whose PID namespace its processes are in.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Join {
     pub offset: u64,
     pub len: u64,
@@ -32,6 +32,49 @@ pub struct Join {
     pub cgroupns_host: bool,
     /// Its writable layer's size in bytes (`--storage-opt size=`), else the tmpfs default.
     pub rw_size: Option<u64>,
+    /// Its binds of its microVM's own files (D181), each a path of the workload's files and
+    /// where it goes in its own.
+    pub own_binds: Vec<OwnBind>,
+}
+
+/// A bind of a microVM's own files into a joiner its engine made (D181): `source`, a path
+/// in the workload's mount namespace, made there first where it is missing (`create`, as
+/// `-v` makes a host's), at `target` in the joiner's root, read-only unless `writable`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OwnBind {
+    pub source: String,
+    pub target: String,
+    pub writable: bool,
+    pub create: bool,
+}
+
+/// The binds of its microVM's own files `setup` gives a joiner (`own-bind=SRC\0DST\0FLAGS`).
+pub fn own_binds(setup: &[Vec<u8>]) -> Result<Vec<OwnBind>, String> {
+    setup
+        .iter()
+        .filter_map(|e| e.strip_prefix(b"own-bind="))
+        .map(|e| {
+            let text = std::str::from_utf8(e).map_err(|_| "a bind's paths are not UTF-8".to_string())?;
+            let mut parts = text.split('\0');
+            let (Some(source), Some(target), Some(flags), None) =
+                (parts.next(), parts.next(), parts.next(), parts.next())
+            else {
+                return Err(format!("a malformed bind of its microVM's files: {text:?}"));
+            };
+            if !source.starts_with('/') || !target.starts_with('/') {
+                return Err(format!(
+                    "a bind of its microVM's files names a relative path: {text:?}"
+                ));
+            }
+            let flags: Vec<&str> = flags.split(',').collect();
+            Ok(OwnBind {
+                source: source.to_string(),
+                target: target.to_string(),
+                writable: flags.contains(&"rw"),
+                create: flags.contains(&"create"),
+            })
+        })
+        .collect()
 }
 
 /// Whose IPC namespace and /dev/shm a joiner has (D156): its own (`private`, `shareable`);
@@ -79,6 +122,7 @@ pub fn built_by(entry: &[u8]) -> bool {
         || entry == b"uts=host"
         || entry == b"cgroupns=host"
         || entry.starts_with(b"rw-size=")
+        || entry.starts_with(b"own-bind=")
 }
 
 /// The writable layer's size `setup` asks for, in bytes.
@@ -377,6 +421,101 @@ fn clone_tree(from: Option<libc::pid_t>, path: &str) -> Result<OwnedFd, String> 
     cloned
 }
 
+/// A copy of what `bind.source` names in the mount namespace of `workload`'s process, its
+/// mounts under it with it, detached (open_tree(2), `OPEN_TREE_CLONE | AT_RECURSIVE`, as
+/// dockerd's binds are recursive), read-only with its mounts unless `bind.writable`
+/// (mount_setattr(2), `AT_RECURSIVE`); made there first where it is missing and asked to
+/// be. Its path is resolved from that namespace's root, the workload's files, past none of
+/// them: `..` stops at it, and so does a link, absolute or not.
+fn own_tree(workload: libc::pid_t, bind: &OwnBind) -> Result<OwnedFd, String> {
+    let own = File::open("/proc/self/ns/mnt").map_err(|e| format!("its mount namespace: {e}"))?;
+    enter(workload, "mnt", libc::CLONE_NEWNS)?;
+    let cloned = (|| {
+        if bind.create && std::fs::symlink_metadata(&bind.source).is_err() {
+            use std::os::unix::fs::DirBuilderExt as _;
+            std::fs::DirBuilder::new()
+                .recursive(true)
+                .mode(0o755)
+                .create(&bind.source)
+                .map_err(|e| format!("making {} in its microVM's files: {e}", bind.source))?;
+        }
+        let p = c(&bind.source)?;
+        // SAFETY: open_tree(2) of a NUL-terminated path, which returns a descriptor or -1.
+        let fd = unsafe {
+            libc::syscall(
+                libc::SYS_open_tree,
+                libc::AT_FDCWD,
+                p.as_ptr(),
+                libc::OPEN_TREE_CLONE | libc::OPEN_TREE_CLOEXEC | libc::AT_RECURSIVE as libc::c_uint,
+            )
+        };
+        if fd < 0 {
+            return Err(last(&format!("copying {} of its microVM's files", bind.source)));
+        }
+        // SAFETY: a fresh descriptor nothing else owns.
+        Ok(unsafe { OwnedFd::from_raw_fd(fd as libc::c_int) })
+    })();
+    // Back in its own namespace before anything else, whatever the copy did.
+    setns(&own, libc::CLONE_NEWNS, "its own mount")?;
+    let tree = cloned?;
+    if !bind.writable {
+        let attr = libc::mount_attr {
+            attr_set: libc::MOUNT_ATTR_RDONLY,
+            attr_clr: 0,
+            propagation: 0,
+            userns_fd: 0,
+        };
+        let empty = c("")?;
+        // SAFETY: mount_setattr(2) of our own descriptor, with an attribute of its size.
+        let rc = unsafe {
+            libc::syscall(
+                libc::SYS_mount_setattr,
+                tree.as_raw_fd(),
+                empty.as_ptr(),
+                libc::AT_EMPTY_PATH | libc::AT_RECURSIVE,
+                &raw const attr,
+                std::mem::size_of::<libc::mount_attr>(),
+            )
+        };
+        if rc != 0 {
+            return Err(last(&format!("making {} read-only", bind.source)));
+        }
+    }
+    Ok(tree)
+}
+
+/// Puts `tree`, from [`own_tree`], at `target` in the root this process has: a directory
+/// made there for a directory's, a file for a file's, each made in this root alone.
+fn put_own(tree: &OwnedFd, target: &str) -> Result<(), String> {
+    // SAFETY: an all-zero stat is a valid out-parameter.
+    let mut st: libc::stat = unsafe { std::mem::zeroed() };
+    // SAFETY: fstat(2) of our own descriptor into a stat of ours.
+    if unsafe { libc::fstat(tree.as_raw_fd(), &raw mut st) } != 0 {
+        return Err(last(&format!("what goes at {target}")));
+    }
+    let made = if st.st_mode & libc::S_IFMT == libc::S_IFDIR {
+        use std::os::unix::fs::DirBuilderExt as _;
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o755)
+            .create(target)
+    } else {
+        let parent = std::path::Path::new(target)
+            .parent()
+            .unwrap_or(std::path::Path::new("/"));
+        std::fs::create_dir_all(parent).and_then(|()| {
+            std::fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(false)
+                .open(target)
+                .map(drop)
+        })
+    };
+    made.map_err(|e| format!("{target}: {e}"))?;
+    attach(tree, target)
+}
+
 /// Puts `tree`, from [`clone_tree`], at `path` in this process's mount namespace.
 fn attach(tree: &OwnedFd, path: &str) -> Result<(), String> {
     let (empty, p) = (c("")?, c(path)?);
@@ -571,6 +710,13 @@ pub fn build(join: Join, cgroup: &str) -> Result<Built, String> {
             Some(clone_tree(Some(pid), "/dev/shm")?)
         }
     };
+    // Its binds of its microVM's own files (D181), copied while the workload's mount
+    // namespace is in reach, and put in its root once that is its own.
+    let owns = join
+        .own_binds
+        .iter()
+        .map(|b| own_tree(join.workload, b).map(|tree| (tree, b.target.clone())))
+        .collect::<Result<Vec<_>, String>>()?;
     let own = if join.uts_host { 0 } else { libc::CLONE_NEWUTS }
         | if shm.is_some() { 0 } else { libc::CLONE_NEWIPC };
     // SAFETY: unshare(2), in a single-threaded fork of init's.
@@ -670,6 +816,9 @@ pub fn build(join: Join, cgroup: &str) -> Result<Built, String> {
         }
         (None, Ipc::None) => detach("/dev/shm")?,
         (None, _) => {}
+    }
+    for (tree, target) in &owns {
+        put_own(tree, target)?;
     }
     // Its cgroup, read-only, as Docker's containers see theirs.
     mount(

@@ -98,6 +98,10 @@ pub struct Container {
     /// The microVM whose own engine made it (D181), by which that engine alone reaches it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub engine_made: Option<EngineMade>,
+    /// The images its own engine pulled (D181), by ID: with its own image, those its
+    /// engine's containers run and its clients see.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub engine_images: Vec<String>,
 }
 
 /// A container made through a microVM's own engine (D181): that microVM's container ID,
@@ -747,6 +751,7 @@ mod tests {
             size_rw: None,
             saved: None,
             engine_made: None,
+            engine_images: Vec::new(),
         }
     }
 

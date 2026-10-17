@@ -72,7 +72,11 @@ fn auth_env(header: Option<&str>, reference: &str) -> Result<Option<String>, Str
 /// (X-Registry-Auth) for `reference`'s registry as its `DOCKER_AUTH_CONFIG`: in memory
 /// alone, never written.
 fn with_auth(call: &Call<'_>, reference: &str) -> Result<Vec<String>, String> {
-    let mut env = shards_ipc::registry_env();
+    with_auth_over(shards_ipc::registry_env(), call, reference)
+}
+
+/// [`with_auth`], over `env`: a microVM's own engine's run's client's (D181).
+fn with_auth_over(mut env: Vec<String>, call: &Call<'_>, reference: &str) -> Result<Vec<String>, String> {
     if let Some(config) = auth_env(call.head.get("X-Registry-Auth"), reference)? {
         env.retain(|e| !e.starts_with("DOCKER_AUTH_CONFIG="));
         env.push(format!("DOCKER_AUTH_CONFIG={config}"));
@@ -167,6 +171,16 @@ fn push_messages(text: &str) -> Vec<Value> {
 /// refused before it says anything is answered by its status, as dockerd answers one
 /// whose stream it has not flushed; a failure after that is the stream's last message.
 fn messages(conn: &UnixStream, call: &Call<'_>, ipc: &UnixStream, made: &dyn Fn(&str) -> Vec<Value>) -> Done {
+    messages_told(conn, call, ipc, made).0
+}
+
+/// [`messages`], and whether what they said was done (its status 0).
+fn messages_told(
+    conn: &UnixStream,
+    call: &Call<'_>,
+    ipc: &UnixStream,
+    made: &dyn Fn(&str) -> Vec<Value>,
+) -> (Done, bool) {
     let mut stream: Option<Stream<'_>> = None;
     let mut said = Vec::new();
     let status = loop {
@@ -179,29 +193,29 @@ fn messages(conn: &UnixStream, call: &Call<'_>, ipc: &UnixStream, made: &dyn Fn(
                 if stream.is_none() {
                     match Stream::start(conn, call.head, 200, "application/json") {
                         Ok(s) => stream = Some(s),
-                        Err(_) => return Done::Close,
+                        Err(_) => return (Done::Close, false),
                     }
                 }
                 let Some(out) = stream.as_mut() else {
-                    return Done::Close;
+                    return (Done::Close, false);
                 };
                 if made.iter().try_for_each(|m| out.json(m)).is_err() {
-                    return Done::Close;
+                    return (Done::Close, false);
                 }
             }
             Ok(Some(m)) if m.kind == kind::ERR => said.extend(m.payload),
             Ok(Some(m)) if m.kind == kind::END => break m.payload.first().copied().unwrap_or(1),
             Ok(Some(_)) => {}
-            Ok(None) | Err(_) => return Done::Close,
+            Ok(None) | Err(_) => return (Done::Close, false),
         }
     };
     let said = plain(&String::from_utf8_lossy(&said));
     let mut out = match stream {
         Some(out) => out,
-        None if status != 0 => return Done::Answer(refused(&said, 500)),
+        None if status != 0 => return (Done::Answer(refused(&said, 500)), false),
         None => match Stream::start(conn, call.head, 200, "application/json") {
             Ok(s) => s,
-            Err(_) => return Done::Close,
+            Err(_) => return (Done::Close, status == 0),
         },
     };
     let sent = if status == 0 {
@@ -209,10 +223,11 @@ fn messages(conn: &UnixStream, call: &Call<'_>, ipc: &UnixStream, made: &dyn Fn(
     } else {
         out.json(&json!({ "errorDetail": { "message": said }, "error": said }))
     };
-    match sent.and_then(|()| out.end()) {
+    let done = match sent.and_then(|()| out.end()) {
         Ok(()) => Done::Keep,
         Err(_) => Done::Close,
-    }
+    };
+    (done, status == 0)
 }
 
 /// An OCI platform as the API gives one (JSON: `os`, `architecture`, `variant`), as the
@@ -241,10 +256,26 @@ impl<D: Disk> Daemon<D> {
         if call.query("fromSrc").is_some_and(|s| !s.is_empty()) {
             return self.engine_import::<std::io::Empty>(threads, conn, call, None);
         }
+        self.pull_with(threads, conn, call, shards_ipc::registry_env()).0
+    }
+
+    /// A pull of what `call` names, its registries reached with `env` and what its
+    /// `X-Registry-Auth` gives over it; and, where it was done, the reference pulled and
+    /// whether that was each of its repository's tags.
+    pub(super) fn pull_with<'s, 'e>(
+        &'s self,
+        threads: &'s Threads<'s, 'e>,
+        conn: &UnixStream,
+        call: &Call<'_>,
+        env: Vec<String>,
+    ) -> (Done, Option<(String, bool)>) {
         // `pull -a`'s name may end in `:` (moby postImagesCreate's special case).
         let image = call.query("fromImage").unwrap_or_default().trim_end_matches(':');
         if image.is_empty() {
-            return Done::Answer(Answer::error(400, "a pull names its image (fromImage)"));
+            return (
+                Done::Answer(Answer::error(400, "a pull names its image (fromImage)")),
+                None,
+            );
         }
         // A tag or a digest given apart; none at all is every tag (moby postImagesCreate).
         let tag = call.query("tag").unwrap_or_default();
@@ -256,9 +287,9 @@ impl<D: Disk> Daemon<D> {
         let named_only = tag.is_empty()
             && shards_image::reference::Reference::parse_normalized(image)
                 .is_ok_and(|r| r.familiar() == r.familiar_name());
-        let env = match with_auth(call, &reference) {
+        let env = match with_auth_over(env, call, &reference) {
             Ok(env) => env,
-            Err(e) => return Done::Answer(Answer::error(400, e)),
+            Err(e) => return (Done::Answer(Answer::error(400, e)), None),
         };
         let mut argv = vec!["pull"];
         if let Some(p) = call.query("platform").filter(|p| !p.is_empty()) {
@@ -270,11 +301,12 @@ impl<D: Disk> Daemon<D> {
         argv.push(&reference);
         let ipc = match self.command_conn_with(threads, &argv, env, &[]) {
             Ok(ipc) => ipc,
-            Err(e) => return Done::Answer(Answer::error(500, e)),
+            Err(e) => return (Done::Answer(Answer::error(500, e)), None),
         };
-        messages(conn, call, &ipc, &|text| {
+        let (done, pulled) = messages_told(conn, call, &ipc, &|text| {
             text.lines().filter_map(message).collect()
-        })
+        });
+        (done, pulled.then_some((reference, named_only)))
     }
 
     /// `POST /auth`: the credentials a client gives, checked with their registry as

@@ -659,7 +659,7 @@ impl<D: Disk> Daemon<D> {
         // it for its restore.
         let mut tokens = [0u8; 2 * shards_abi::run::TOKEN];
         shards_vmm::platform::fill_random(&mut tokens).map_err(|e| failed(&format!("its tokens: {e}")))?;
-        let engine = lock(&inbox).engine.as_ref().map(|t| hex(t));
+        let engine = lock(&inbox).engine.as_ref().map(|e| hex(&e.token));
         let resume = Resume {
             tokens: hex(&tokens),
             engine,

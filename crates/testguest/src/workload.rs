@@ -271,8 +271,14 @@ pub fn main() -> ! {
         "tcp" => tcp(arg(1)),
         "fetch" => fetch(args.get(1..).unwrap_or_default()),
         // One call of the Engine API at $DOCKER_HOST, as a program in a run reaches its
-        // microVM's own engine (D181): `api METHOD PATH [BODY]`.
-        "api" => api(arg(1), arg(2), arg(3)),
+        // microVM's own engine (D181): `api METHOD PATH [BODY [upgrade]]`, `upgrade` asking
+        // for the connection to be taken over for a stream, as attaches and execs ask.
+        "api" => api(arg(1), arg(2), arg(3), arg(4) == "upgrade"),
+        // `docker run`'s calls, as its CLI makes them, through $DOCKER_HOST: a create, an
+        // attach before the start, the start and a wait on one kept connection, the
+        // attach's own: `api-run IMAGE CMD...` says what the command wrote, then `status N`
+        // (D181).
+        "api-run" => api_run(arg(1), args.get(2..).unwrap_or_default()),
         "ask" => ask(arg(1)),
         "resolve" => resolve(arg(1)),
         "udp" => udp(arg(1)),
@@ -1031,7 +1037,7 @@ fn tcp(addr: &str) -> i32 {
 /// One call of the Engine API at `DOCKER_HOST`, a `unix://` socket, its body JSON where
 /// one is given: `api STATUS-LINE`, then its body, chunks put together and a stream's
 /// frames (stdcopy) taken apart, their bytes alone; `api error E` where it could not ask.
-fn api(method: &str, path: &str, body: &str) -> i32 {
+fn api(method: &str, path: &str, body: &str, upgrade: bool) -> i32 {
     use std::os::unix::net::UnixStream;
     let host = std::env::var("DOCKER_HOST").unwrap_or_default();
     let asked = host
@@ -1039,8 +1045,13 @@ fn api(method: &str, path: &str, body: &str) -> i32 {
         .ok_or_else(|| format!("DOCKER_HOST {host:?} names no socket"))
         .and_then(|socket| UnixStream::connect(socket).map_err(|e| format!("{socket}: {e}")))
         .and_then(|mut conn| {
+            let connection = if upgrade {
+                "Connection: Upgrade\r\nUpgrade: tcp"
+            } else {
+                "Connection: close"
+            };
             let request = format!(
-                "{method} {path} HTTP/1.1\r\nHost: api\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                "{method} {path} HTTP/1.1\r\nHost: api\r\nContent-Type: application/json\r\nContent-Length: {}\r\n{connection}\r\n\r\n{body}",
                 body.len()
             );
             conn.write_all(request.as_bytes()).map_err(|e| e.to_string())?;
@@ -1100,6 +1111,158 @@ fn api(method: &str, path: &str, body: &str) -> i32 {
     let _ = writeln!(io::stdout(), "api {}", head.lines().next().unwrap_or_default());
     let _ = io::stdout().write_all(&rest);
     let _ = io::stdout().flush();
+    0
+}
+
+/// An HTTP answer: its status line, its fields (names lower-cased) and its body.
+type HttpAnswer = (String, Vec<(String, String)>, Vec<u8>);
+
+/// An HTTP answer read whole from `conn`, its body by its length or its chunks; none where
+/// the connection ended first.
+fn read_answer(conn: &mut impl Read) -> Option<HttpAnswer> {
+    let mut head = Vec::new();
+    let mut byte = [0u8; 1];
+    while !head.ends_with(b"\r\n\r\n") {
+        if conn.read(&mut byte).ok()? == 0 {
+            return None;
+        }
+        head.push(byte[0]);
+    }
+    let head = String::from_utf8_lossy(&head).into_owned();
+    let mut lines = head.lines();
+    let status = lines.next()?.to_string();
+    let fields: Vec<(String, String)> = lines
+        .filter_map(|l| l.split_once(':'))
+        .map(|(k, v)| (k.trim().to_ascii_lowercase(), v.trim().to_string()))
+        .collect();
+    let field = |k: &str| fields.iter().find(|(f, _)| f == k).map(|(_, v)| v.clone());
+    let mut body = Vec::new();
+    if field("transfer-encoding").is_some_and(|v| v.contains("chunked")) {
+        loop {
+            let mut line = Vec::new();
+            while !line.ends_with(b"\r\n") {
+                if conn.read(&mut byte).ok()? == 0 {
+                    return None;
+                }
+                line.push(byte[0]);
+            }
+            let size =
+                usize::from_str_radix(String::from_utf8_lossy(&line).trim().split(';').next()?, 16).ok()?;
+            let mut chunk = vec![0u8; size + 2];
+            conn.read_exact(&mut chunk).ok()?;
+            if size == 0 {
+                break;
+            }
+            body.extend_from_slice(chunk.get(..size)?);
+        }
+    } else if let Some(n) = field("content-length").and_then(|n| n.parse::<usize>().ok()) {
+        body = vec![0u8; n];
+        conn.read_exact(&mut body).ok()?;
+    }
+    Some((status, fields, body))
+}
+
+/// `docker run IMAGE CMD...` as the docker CLI makes its calls (docker/cli run.go): the
+/// create, then the attach on a connection of its own, which the engine takes over for the
+/// streams, then the start and the wait on the first, kept open between them.
+fn api_run(image: &str, cmd: &[String]) -> i32 {
+    use std::os::unix::net::UnixStream;
+    let host = std::env::var("DOCKER_HOST").unwrap_or_default();
+    let Some(socket) = host.strip_prefix("unix://") else {
+        let _ = writeln!(io::stdout(), "api-run error DOCKER_HOST {host:?}");
+        return 1;
+    };
+    let fail = |what: &str| {
+        let _ = writeln!(io::stdout(), "api-run error {what}");
+        1
+    };
+    let ask = |conn: &mut UnixStream, method: &str, path: &str, body: &str, extra: &str| {
+        let request = format!(
+            "{method} {path} HTTP/1.1\r\nHost: api\r\nContent-Type: application/json\r\nContent-Length: {}\r\n{extra}\r\n{body}",
+            body.len()
+        );
+        conn.write_all(request.as_bytes()).is_ok()
+    };
+    let Ok(mut calls) = UnixStream::connect(socket) else {
+        return fail("connecting");
+    };
+    let cmd: Vec<String> = cmd.iter().map(|a| format!("{a:?}")).collect();
+    let body = format!(
+        r#"{{"Image":"{image}","Cmd":[{}],"AttachStdout":true,"AttachStderr":true}}"#,
+        cmd.join(",")
+    );
+    if !ask(&mut calls, "POST", "/containers/create", &body, "") {
+        return fail("asking for the create");
+    }
+    let Some((status, _, said)) = read_answer(&mut calls) else {
+        return fail("the create's answer");
+    };
+    let said = String::from_utf8_lossy(&said).into_owned();
+    let Some(id) = said
+        .split("\"Id\":\"")
+        .nth(1)
+        .and_then(|rest| rest.split('"').next())
+        .map(str::to_string)
+    else {
+        return fail(&format!("the create: {status} {said}"));
+    };
+    let Ok(mut attached) = UnixStream::connect(socket) else {
+        return fail("connecting for the attach");
+    };
+    let path = format!("/containers/{id}/attach?stream=1&stdout=1&stderr=1");
+    if !ask(
+        &mut attached,
+        "POST",
+        &path,
+        "",
+        "Connection: Upgrade\r\nUpgrade: tcp\r\n",
+    ) {
+        return fail("asking for the attach");
+    }
+    let mut head = Vec::new();
+    let mut byte = [0u8; 1];
+    while !head.ends_with(b"\r\n\r\n") {
+        match attached.read(&mut byte) {
+            Ok(1) => head.push(byte[0]),
+            _ => return fail("the attach's answer"),
+        }
+    }
+    let reader = std::thread::spawn(move || {
+        let mut streamed = Vec::new();
+        let _ = attached.read_to_end(&mut streamed);
+        let mut out = Vec::new();
+        let mut at = streamed.as_slice();
+        while let Some((frame, after)) = at.split_first_chunk::<8>() {
+            let [_, _, _, _, a, b, c, d] = *frame;
+            let len = u32::from_be_bytes([a, b, c, d]) as usize;
+            out.extend_from_slice(after.get(..len).unwrap_or(after));
+            at = after.get(len..).unwrap_or_default();
+        }
+        out
+    });
+    if !ask(&mut calls, "POST", &format!("/containers/{id}/start"), "", "") {
+        return fail("asking for the start");
+    }
+    match read_answer(&mut calls) {
+        Some((status, _, _)) if status.contains(" 204 ") => {}
+        other => return fail(&format!("the start: {other:?}")),
+    }
+    if !ask(&mut calls, "POST", &format!("/containers/{id}/wait"), "", "") {
+        return fail("asking for the wait");
+    }
+    let Some((_, _, waited)) = read_answer(&mut calls) else {
+        return fail("the wait's answer");
+    };
+    let waited = String::from_utf8_lossy(&waited).into_owned();
+    let code = waited
+        .split("\"StatusCode\":")
+        .nth(1)
+        .and_then(|rest| rest.split(|c: char| !c.is_ascii_digit()).next())
+        .unwrap_or("?")
+        .to_string();
+    let out = reader.join().unwrap_or_default();
+    let _ = io::stdout().write_all(&out);
+    let _ = writeln!(io::stdout(), "status {code}");
     0
 }
 

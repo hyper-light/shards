@@ -453,6 +453,15 @@ struct Base {
     agentfile: Option<crate::agentfile::Agentfile>,
 }
 
+/// A run's own engine (D181): the token its init says first on each connection its
+/// command makes to it, and its client's registries' environment, by which its engine
+/// pulls, kept in memory alone, as a log driver's credentials are (D168).
+#[derive(Clone)]
+struct OwnEngine {
+    token: [u8; shards_abi::run::TOKEN],
+    registry_env: Vec<String>,
+}
+
 /// What a run's registration keeps of its request: a detached client, until it is told
 /// whether its command started, and what each `exec` in its container starts from.
 struct Keep<'a> {
@@ -488,8 +497,8 @@ struct Keep<'a> {
     mac: Option<[u8; 6]>,
     /// Its link-local addresses (PM M175), for its network process and its peers'.
     link_local: Vec<std::net::IpAddr>,
-    /// Its microVM's own engine's token (D181), where its run has one.
-    engine: Option<[u8; shards_abi::run::TOKEN]>,
+    /// Its microVM's own engine (D181), where its run has one.
+    engine: Option<OwnEngine>,
 }
 
 /// A run in progress: its VM's socket, to signal the command, and the VM itself.
@@ -597,9 +606,10 @@ struct Inbox {
     saving: Option<snapshots::Saving>,
     /// The snapshot it was saved as, where the save stops it: its end is the save's.
     saved_as: Option<String>,
-    /// Its microVM's own engine's token (D181): the connections its VM hands over are its
-    /// command's, served scoped to its microVM; a save keeps it for its restore (D176).
-    engine: Option<[u8; shards_abi::run::TOKEN]>,
+    /// Its microVM's own engine (D181): the connections its VM hands over are its
+    /// command's, served scoped to its microVM; a save keeps its token for its restore
+    /// (D176), and its pulls are its client's.
+    engine: Option<OwnEngine>,
 }
 
 /// A part of the working set run `id`'s VM recorded (`kind::WORKING_SET`), which the
@@ -2653,10 +2663,19 @@ impl<D: Disk> Daemon<D> {
                     let hex: String = token.iter().map(|b| format!("{b:02x}")).collect();
                     prepared.spec.setup.push(format!("engine={hex}").into_bytes());
                 }
-                // Made through a microVM's own engine: it ends as that microVM's command does.
+                // Made through a microVM's own engine: it ends as that microVM's command does,
+                // and binds that command's files, which its init copies into its own (D181).
                 if run.engine_made.is_some() {
                     prepared.spec.setup.push(b"engine-made".to_vec());
                 }
+                if !run.own_binds.is_empty() && !joining {
+                    return Err("a bind of a microVM's own files is a container's that joins it".into());
+                }
+                prepared.spec.setup.extend(
+                    run.own_binds
+                        .iter()
+                        .map(|b| [b"own-bind=".as_slice(), b.as_bytes()].concat()),
+                );
                 // Its endpoint's sysctls, on its interface once it has its addresses (PM M171).
                 prepared.spec.setup.extend(
                     crate::setup::endpoint_sysctls(&run)
@@ -2923,7 +2942,10 @@ impl<D: Disk> Daemon<D> {
                 agentfile: prepared.agentfile.clone(),
                 mac: run_mac.as_deref().and_then(|m| m.first_chunk::<6>().copied()),
                 link_local: link_local.clone(),
-                engine,
+                engine: engine.map(|token| OwnEngine {
+                    token,
+                    registry_env: run.registry_env.clone(),
+                }),
             },
             || match &start {
                 // A joiner's I/O is the microVM's it joins (D119), whose run's limits it takes
@@ -3518,6 +3540,7 @@ impl<D: Disk> Daemon<D> {
             },
             size_rw: None,
             saved: None,
+            engine_images: Vec::new(),
             // Made through a microVM's own engine (D181): its name there, or the one it was
             // given here where that engine named none.
             engine_made: run
@@ -9283,7 +9306,11 @@ mod tests {
         use std::io::{Read as _, Write as _};
         let t = Test::new("engine-conn");
         t.run(|t| {
-            for (name, engine) in [("own", Some([7u8; shards_abi::run::TOKEN])), ("none", None)] {
+            let own = OwnEngine {
+                token: [7u8; shards_abi::run::TOKEN],
+                registry_env: Vec::new(),
+            };
+            for (name, engine) in [("own", Some(own)), ("none", None)] {
                 let id = t.create(name);
                 let (ready, vm) = t.warm_vm(None);
                 let keep = Keep {
@@ -9301,7 +9328,7 @@ mod tests {
                     agentfile: None,
                     mac: None,
                     link_local: Vec::new(),
-                    engine,
+                    engine: engine.clone(),
                 };
                 let _inbox = t.daemon.register(ready, &id, keep);
                 say(&vm, kind::STARTED, &[]);

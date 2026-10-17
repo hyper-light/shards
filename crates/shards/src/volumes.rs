@@ -347,8 +347,18 @@ pub fn parse_raw(raw: &str, driver: &str) -> Result<MountPoint, String> {
 
 /// ParseMountSpec: a `--mount`, as the client sent it.
 pub fn parse_spec(sent: &str) -> Result<MountPoint, String> {
+    parse_spec_checked(sent, true)
+}
+
+/// [`parse_spec`] of a `--mount` whose source is none of this host's, but a path of a
+/// microVM's own files (D181): every check but this host's having it.
+pub fn parse_spec_within(sent: &str) -> Result<MountPoint, String> {
+    parse_spec_checked(sent, false)
+}
+
+fn parse_spec_checked(sent: &str, check_source: bool) -> Result<MountPoint, String> {
     let m = mounts::parse_mount(sent, None)?;
-    let mut mp = mount_point(&m, true)?;
+    let mut mp = mount_point(&m, check_source)?;
     mp.spec = sent.to_string();
     mp.create_source = m.bind.as_ref().is_some_and(|b| b.create_mountpoint);
     Ok(mp)

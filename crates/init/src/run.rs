@@ -2042,7 +2042,7 @@ struct Standby {
 }
 
 /// Where a standby is born, and so its command (D115).
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 enum Born {
     /// The first process of a PID namespace of its own, its command that namespace's PID 1
     /// as a container's is: the kernel ends the namespace, and its execs, with it.
@@ -2161,10 +2161,10 @@ impl Standby {
         // SAFETY: a fresh descriptor nothing else owns.
         let sigchld = unsafe { OwnedFd::from_raw_fd(sigchld) };
         // A joiner's cgroup and its report, made before it is born (D119).
-        let joined = match born {
+        let joined = match &born {
             Born::Joined(join, id) => Some((
-                join,
-                crate::join::make_cgroup(id).map_err(setup_failed)?,
+                join.clone(),
+                crate::join::make_cgroup(*id).map_err(setup_failed)?,
                 crate::join::report_channel().map_err(setup_failed)?,
             )),
             _ => None,
@@ -2196,7 +2196,7 @@ impl Standby {
             Born::Joined(..) => {
                 let (join, cgroup, report) = match &joined {
                     Some((join, cgroup, (_, w))) => (
-                        *join,
+                        join.clone(),
                         cgroup.clone(),
                         w.try_clone()
                             .map_err(|e| setup_failed(format!("a pipe for joining: {e}")))?,
@@ -3323,6 +3323,7 @@ fn start_joiner(
         uts_host: spec.setup.iter().any(|e| e == b"uts=host"),
         cgroupns_host: spec.setup.iter().any(|e| e == b"cgroupns=host"),
         rw_size: crate::join::rw_size(&spec.setup).map_err(setup_failed)?,
+        own_binds: crate::join::own_binds(&spec.setup).map_err(setup_failed)?,
     };
     // Its devices, as the workload's are found and confined (D44): the VM's, their nodes
     // made in its own /dev once its root is built, its cgroup's filter theirs.
