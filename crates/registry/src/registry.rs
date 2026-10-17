@@ -617,7 +617,7 @@ impl Registry {
                     let media_type = manifest_type(&get);
                     if media_type == media::DOCKER_SCHEMA1_SIGNED || media_type == media::DOCKER_SCHEMA1 {
                         return Err(Error::new(format!(
-                            "{name}: schema 1 manifests are not supported, as Docker no longer supports them"
+                            "{name}: schema 1 manifests are not supported: push the image again, as schema 2 or OCI"
                         )));
                     }
                     let body = read_capped(&mut get, MAX_MANIFEST, &name)?;

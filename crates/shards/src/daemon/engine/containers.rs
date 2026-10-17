@@ -442,7 +442,7 @@ impl<D: Disk> Daemon<D> {
         let leave_running = !field("Exit").and_then(Value::as_bool).unwrap_or(false);
         match self.save_snapshot(given, Some(asked), leave_running) {
             Ok(_) => Answer::text(201, ""),
-            Err(e) => Answer::error(e.status(), e.dockers(given, asked)),
+            Err(e) => Answer::error(e.status(), e.checkpoint_refusal(given, asked)),
         }
     }
 

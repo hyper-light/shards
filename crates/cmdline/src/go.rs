@@ -197,6 +197,11 @@ pub fn parse_int10(s: &str) -> Result<i64, NumError> {
     })
 }
 
+/// `s` read as `strconv.Atoi` reads it: [`parse_int10`]'s reading, its errors Atoi's.
+pub fn atoi(s: &str) -> Result<i64, NumError> {
+    parse_int10(s).map_err(|e| NumError { func: "Atoi", ..e })
+}
+
 /// `s` read as `strconv.ParseUint(s, 0, bits)` reads it, as pflag reads a `uint16` flag.
 pub fn parse_uint_bits(s: &str, bits: u32) -> Result<u64, NumError> {
     let fail = |range| NumError {

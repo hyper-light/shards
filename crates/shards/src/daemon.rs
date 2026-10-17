@@ -75,15 +75,16 @@ use crate::run::{Boot, Prepared};
 use crate::segments::log_segment;
 use crate::spec::{LogRetention, NOT_RUN};
 
-const USAGE: &str = "usage: shards daemon [--detached] [--listen ADDR:PORT] | stop
-  Serves `shards run` from warm microVMs; `shards run` starts one when none is running.
+const USAGE: &str = "usage: shards run daemon [--detached] [--listen ADDR:PORT]
+       shards stop daemon
+  Serves runs from warm microVMs; the first `shards run vm` starts it when none is running.
   It exits after SHARDS_DAEMON_IDLE seconds (default 900) without a run.
   --detached: run it in the background, writing messages to daemon.log in SHARDS_HOME, as
-    `shards run` starts it.
+    a run starts it.
   --listen ADDR:PORT: also serve the machines this one enrolled (shards invite client),
     over QUIC on UDP ADDR:PORT; then it does not exit for being idle, as its clients find
     it there.
-  stop: have the running daemon end its runs, as dockerd ends containers, and exit.
+  stop daemon: end the daemon's runs, each microVM's stop signal first, then the daemon.
   SHARDS_POOL: the most warm microVMs kept for each image (default 2): as many as its
     runs have come at once, while it is used.
   SHARDS_POOL_KEEP: seconds an image's warm microVMs are kept after its last run (600).
@@ -239,11 +240,12 @@ pub fn daemon(args: impl Iterator<Item = OsString>) -> ExitCode {
             Some(fd) => ready_link(fd).and_then(|link| serve(Some(link), listen)),
             None => Err(format!("--ready: {:?} is not a descriptor", args.get(1))),
         },
-        (1, Some("-h" | "--help")) => {
-            if !crate::cli::look::usage_page("daemon", USAGE) {
-                let _ = writeln!(io::stdout(), "{USAGE}");
-            }
-            return ExitCode::SUCCESS;
+        _ if crate::context::asks_help(
+            &args.iter().map_while(|a| a.to_str()).collect::<Vec<_>>(),
+            &["--ready"],
+        ) =>
+        {
+            return crate::context::help_page("daemon", USAGE);
         }
         _ => Err(format!("unexpected arguments {args:?}\n{USAGE}")),
     };
@@ -2311,6 +2313,7 @@ impl<D: Disk> Daemon<D> {
         // A user network's endpoint (D46): its address, as the microVM starts, or why
         // the start fails, the microVM kept.
         let mut network_setup = Vec::new();
+        let mut user_net = None;
         if start == network::Start::Attach(network::Net::User) {
             let term = run.network.clone();
             let endpoint = run.endpoints.iter().find(|e| e.network == term);
@@ -2323,6 +2326,7 @@ impl<D: Disk> Daemon<D> {
                     let before = prepared.spec.setup.len();
                     self.network_guest(&network, &member, &run, &mut prepared.spec);
                     network_setup = prepared.spec.setup.split_off(before);
+                    user_net = Some(network);
                 }
                 Err(e) => start = network::Start::Fails(e),
             }
@@ -2364,9 +2368,27 @@ impl<D: Disk> Daemon<D> {
                     abandon(&id);
                     return None;
                 }
-                publish::bind(&bindings, &alone, publish::v6_listenable(), |at, proto| {
-                    self.in_use(at, proto)
-                })
+                // A routed network's members are reached at their own addresses, with no
+                // host port bound for what they publish (dockerd's `gateway_mode` routed);
+                // a microVM's address is reached through its network process alone, so
+                // its ports could only be published on the host's, which the mode keeps
+                // closed.
+                if let Some(n) = user_net.as_ref().filter(|n| n.routed() && !bindings.is_empty()) {
+                    refuse(&format!(
+                        "cannot publish ports on network {}: its gateway mode is routed, which reaches its members at their own addresses with no host port bound, and a microVM is reached through its network process alone; publish them on a network in nat mode",
+                        n.name
+                    ));
+                    abandon(&id);
+                    return None;
+                }
+                let default = user_net.as_ref().and_then(crate::networks::Network::host_binding);
+                publish::bind(
+                    &bindings,
+                    &alone,
+                    default,
+                    publish::v6_listenable(),
+                    |at, proto| self.in_use(at, proto),
+                )
             }
             _ => Ok(publish::Bound::default()),
         };

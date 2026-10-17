@@ -1373,15 +1373,105 @@ pub trait AgentStream: Read + Write + Send {}
 
 impl<T: Read + Write + Send> AgentStream for T {}
 
-/// A connection to the SSH agent at `path`: its AF_UNIX socket's; on Windows, a named
+/// A connection to the SSH agent at `path`: its AF_UNIX socket's; a connection asked of the
+/// descriptor `/dev/fd/N` names where that is a socket ([`asked_of`]); on Windows, a named
 /// pipe's where `path` names one (OpenSSH's agent's, as BuildKit dials it with
 /// winio.DialPipe), or an AF_UNIX socket's.
 pub fn agent_stream(path: &std::path::Path) -> std::io::Result<Box<dyn AgentStream>> {
+    #[cfg(unix)]
+    if let Some(asked) = asked_of(path)? {
+        return Ok(Box::new(asked));
+    }
     #[cfg(windows)]
     if shards_cmdline::buildflags::is_pipe_path(&path.to_string_lossy()) {
         return pipe(path).map(|p| Box::new(p) as Box<dyn AgentStream>);
     }
     shards_vmm::platform::UnixStream::connect(path).map(|s| Box::new(s) as Box<dyn AgentStream>)
+}
+
+/// The variable a daemon sets for a client's build whose SSH agents are the client's
+/// (synced::AGENT_SOCKET): the descriptors, comma-separated, it asks on for connections to
+/// them ([`take_agents`]).
+#[cfg(unix)]
+pub(crate) const AGENT_FDS: &str = "SHARDS_AGENT_FDS";
+
+/// The descriptors [`take_agents`] took, by number.
+#[cfg(unix)]
+static ASKED: std::sync::Mutex<std::collections::BTreeMap<i32, std::os::unix::net::UnixStream>> =
+    std::sync::Mutex::new(std::collections::BTreeMap::new());
+
+/// Takes the sockets [`AGENT_FDS`] names, close-on-exec, and lets the variable go, so that
+/// nothing this process starts takes them too.
+#[cfg(unix)]
+pub(crate) fn take_agents() {
+    use std::os::fd::FromRawFd as _;
+    let Ok(told) = std::env::var(AGENT_FDS) else {
+        return;
+    };
+    // SAFETY: first thing in main, before any thread: the environment is this one's alone.
+    unsafe { std::env::remove_var(AGENT_FDS) };
+    let mut asked = ASKED.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    for n in told
+        .split(',')
+        .filter_map(|n| n.parse::<i32>().ok())
+        .filter(|n| *n > 2)
+    {
+        let std::collections::btree_map::Entry::Vacant(place) = asked.entry(n) else {
+            continue;
+        };
+        // SAFETY: an all-zero stat is a valid out-parameter, which fstat(2) fills.
+        let mut st: libc::stat = unsafe { std::mem::zeroed() };
+        // SAFETY: fstat(2) and fcntl(2) of a descriptor past stdio's, into `st` on this stack.
+        let socket = unsafe { libc::fstat(n, &mut st) } == 0
+            && st.st_mode & libc::S_IFMT == libc::S_IFSOCK
+            && unsafe { libc::fcntl(n, libc::F_SETFD, libc::FD_CLOEXEC) } == 0;
+        if socket {
+            // SAFETY: a socket its daemon gave this process to ask agents' connections on,
+            // which nothing else here holds.
+            place.insert(unsafe { std::os::unix::net::UnixStream::from_raw_fd(n) });
+        }
+    }
+}
+
+/// A connection to an agent asked of the descriptor `/dev/fd/N` names, where it is one its
+/// daemon gave this build to ask on ([`take_agents`]): one end of a pair the daemon made for
+/// the agent, which answers each `DIAL` with a connection of its own, one end of a pair it
+/// made for it, held for the client to claim and relay to its agent of that id. So a
+/// build's agents are reached through what it was given, by no path any other process
+/// could dial (D180 part 3h). `None` where `path` names no such descriptor.
+#[cfg(unix)]
+fn asked_of(path: &std::path::Path) -> std::io::Result<Option<std::os::unix::net::UnixStream>> {
+    use shards_ipc::kind;
+    let Some(n) = path
+        .to_str()
+        .and_then(|p| p.strip_prefix("/dev/fd/"))
+        .and_then(|n| n.parse::<i32>().ok())
+    else {
+        return Ok(None);
+    };
+    // One ask at a time on each: each answer is the asker's.
+    let asked = ASKED.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let Some(socket) = asked.get(&n) else {
+        return Ok(None);
+    };
+    shards_ipc::send(socket, kind::DIAL, &[], &[])?;
+    let answer = shards_ipc::recv(socket)?.ok_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "the build's daemon has gone")
+    })?;
+    if answer.kind != kind::GRANTED {
+        let why = String::from_utf8_lossy(&answer.payload);
+        return Err(std::io::Error::other(format!(
+            "no connection to the agent: {why}"
+        )));
+    }
+    let conn = answer
+        .fds
+        .into_iter()
+        .next()
+        .ok_or_else(|| std::io::Error::other("no connection to the agent"))?;
+    // The daemon keeps its own until this one says it has it (M24).
+    shards_ipc::send(socket, kind::TAKEN, &[], &[])?;
+    Ok(Some(std::os::unix::net::UnixStream::from(conn)))
 }
 
 /// A client's end of the named pipe at `path`: opened, or opened once an instance is free
@@ -1786,5 +1876,63 @@ mod tests {
         assert!(port.check("[h.example]:2222", &c).is_ok());
         assert_eq!(port.algorithms().first(), Some(&"ecdsa-sha2-nistp256"));
         assert!(Known::of("h.example:2222", &texts).check("x", &c).is_err());
+    }
+
+    /// A build asks for each connection to an agent on the descriptor its daemon told it,
+    /// and says it has it; a descriptor it was not told is asked nothing.
+    #[cfg(unix)]
+    #[test]
+    fn a_build_asks_its_daemon_for_agent_connections_on_what_it_was_told() {
+        use shards_ipc::kind;
+        use std::os::fd::{AsFd as _, AsRawFd as _};
+        use std::os::unix::net::UnixStream;
+        use std::time::Duration;
+        let (daemon, build) = UnixStream::pair().unwrap();
+        daemon.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+        let n = build.as_raw_fd();
+        ASKED.lock().unwrap().insert(n, build);
+        let path = std::path::PathBuf::from(format!("/dev/fd/{n}"));
+        let ((mut agent, theirs), mut conn) = std::thread::scope(|scope| {
+            let answering = scope.spawn(|| {
+                let ask = shards_ipc::recv(&daemon).unwrap().unwrap();
+                assert_eq!(ask.kind, kind::DIAL);
+                let (agent, theirs) = UnixStream::pair().unwrap();
+                shards_ipc::send(&daemon, kind::GRANTED, &[], &[theirs.as_fd()]).unwrap();
+                (agent, theirs)
+            });
+            let conn = agent_stream(&path).unwrap();
+            (answering.join().unwrap(), conn)
+        });
+        let taken = shards_ipc::recv(&daemon).unwrap().unwrap();
+        assert_eq!(taken.kind, kind::TAKEN);
+        drop(theirs);
+        conn.write_all(b"request").unwrap();
+        let mut got = [0; 7];
+        agent.read_exact(&mut got).unwrap();
+        assert_eq!(&got, b"request");
+        ASKED.lock().unwrap().remove(&n);
+        // Not told: whatever connecting to its path does, nothing is asked of it.
+        let (other, peer) = UnixStream::pair().unwrap();
+        peer.set_nonblocking(true).unwrap();
+        let path = std::path::PathBuf::from(format!("/dev/fd/{}", other.as_raw_fd()));
+        let asking = std::thread::spawn(move || {
+            let _ = agent_stream(&path);
+            drop(other);
+        });
+        let started = std::time::Instant::now();
+        let mut byte = [0; 1];
+        while !asking.is_finished() {
+            let read = (&peer).read(&mut byte);
+            assert!(!matches!(read, Ok(1)), "asked of a descriptor it was not told");
+            assert!(started.elapsed() < Duration::from_secs(10), "still asking");
+            std::thread::yield_now();
+        }
+        asking.join().unwrap();
+        peer.set_nonblocking(false).unwrap();
+        assert_eq!(
+            (&peer).read(&mut byte).unwrap(),
+            0,
+            "asked of a descriptor it was not told"
+        );
     }
 }

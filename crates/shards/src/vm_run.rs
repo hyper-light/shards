@@ -18,18 +18,17 @@ use shards_vmm::vm::{
 use crate::spec::Options;
 use crate::terminal::RawTerminal;
 
-const RUN_USAGE: &str = "usage: shards run --kernel PATH [--initrd PATH | --init PATH] [--cmdline STR] [--cpus N] [--memory MIB] [--memory-max MIB] [--disk PATH[:ro]]... [--pmem PATH]... [--vsock PATH] [--nested] [--gpu] [--reporting] [--pci-test | --pci-tests SS.F,...] [--vfio NAME|NODE]... [--vfio-iommu NAME|NODE]... [--no-console] [--snapshot-dir DIR [--snapshot-then stop|resume]]
-       shards run --kernel PATH --init SHARDS-INIT --rootfs IMAGE [OPTIONS] [WORKLOAD OPTIONS] -- COMMAND [ARG...]
-       shards run --kernel PATH --init SHARDS-INIT --rootfs IMAGE --snapshot-dir DIR [OPTIONS]
+const RUN_USAGE: &str = "usage: shards run vm --kernel PATH [--initrd PATH | --init PATH] [--cmdline STR] [--cpus N] [--memory MIB] [--memory-max MIB] [--disk PATH[:ro]]... [--pmem PATH]... [--vsock PATH] [--nested] [--gpu] [--reporting] [--pci-test | --pci-tests SS.F,...] [--vfio NAME|NODE]... [--vfio-iommu NAME|NODE]... [--no-console] [--snapshot-dir DIR [--snapshot-then stop|resume]]
+       shards run vm --kernel PATH --init SHARDS-INIT --rootfs IMAGE [OPTIONS] [WORKLOAD OPTIONS] -- COMMAND [ARG...]
+       shards run vm --kernel PATH --init SHARDS-INIT --rootfs IMAGE --snapshot-dir DIR [OPTIONS]
   --pmem: a read-only virtio-pmem device backed by PATH: /dev/pmem0, pmem1, ... in order.
   --reporting: a virtio-balloon device that gives the host back the memory the guest
                reports free.
-  --rootfs: boot into the EROFS image IMAGE. With a COMMAND, run it there as `docker run`
-            would: its output is shards' output, and its exit status shards' exit status.
-            With --snapshot-dir instead, save the VM to DIR once the image is mounted: a
-            template for `shards restore DIR -- COMMAND`.
-  Workload options, as for `docker run`: -e NAME[=VALUE], -w DIR, -u USER[:GROUP],
-  --hostname NAME, -i.
+  --rootfs: boot into the EROFS image IMAGE. With a COMMAND, run it there: its output is
+            shards' output, and its exit status shards' exit status. With --snapshot-dir
+            instead, save the VM to DIR once the image is mounted: a template for
+            `shards restore vm DIR -- COMMAND`.
+  Workload options: -e NAME[=VALUE], -w DIR, -u USER[:GROUP], --hostname NAME, -i.
   --vsock: a vsock device. Host programs connect to the Unix socket PATH and send
            `CONNECT <port>`; the guest's connections to host port P reach PATH_P.
   --snapshot-dir: where to write a snapshot when the guest asks for one (then stop, by default)
@@ -64,17 +63,16 @@ const RUN_USAGE: &str = "usage: shards run --kernel PATH [--initrd PATH | --init
                 VIRTIO_IOMMU. Not with --snapshot-dir.
   Console escape: Ctrl-A x stops the VM.";
 
-const RESTORE_USAGE: &str = "usage: shards restore DIR [--hold] [--vsock PATH] [--no-console] [--gpu] [--backing PATH[:ro]]... [--snapshot-dir DIR [--snapshot-then stop|resume]]
-       shards restore DIR [--hold] [--backing PATH[:ro]]... [WORKLOAD OPTIONS] -- COMMAND [ARG...]
-       shards restore DIR --warm FD [--backing PATH[:ro]]...
-       shards restore DIR --resume FD [--backing PATH[:ro]]...
-       shards restore MICROVM [SNAPSHOT]
+const RESTORE_USAGE: &str = "usage: shards restore vm DIR [--hold] [--vsock PATH] [--no-console] [--gpu] [--backing PATH[:ro]]... [--snapshot-dir DIR [--snapshot-then stop|resume]]
+       shards restore vm DIR [--hold] [--backing PATH[:ro]]... [WORKLOAD OPTIONS] -- COMMAND [ARG...]
+       shards restore vm DIR --warm FD [--backing PATH[:ro]]...
+       shards restore vm DIR --resume FD [--backing PATH[:ro]]...
+       shards restore vm MICROVM [SNAPSHOT]
   Resumes the VM in snapshot directory DIR. Given a microVM's name rather than a directory
   holding a snapshot, resumes that stopped microVM from a snapshot of its own (`shards save
   vm`), its newest unless SNAPSHOT names one, where it was saved. With a COMMAND, DIR is a template saved by
-  `shards run --rootfs`, and the command runs there as `docker run` would.
-  Workload options, as for `docker run`: -e NAME[=VALUE], -w DIR, -u USER[:GROUP],
-  --hostname NAME, -i.
+  `shards run vm --rootfs`, and the command runs there.
+  Workload options: -e NAME[=VALUE], -w DIR, -u USER[:GROUP], --hostname NAME, -i.
   --vsock: this VM's vsock socket; without a COMMAND, required when the snapshot has a
            vsock device.
   --hold: prepare the VM, print `shards-ready` on stderr, and start it when a line arrives
@@ -1887,7 +1885,7 @@ fn ask(wanted: &[crate::grant::Wanted]) -> Result<(), String> {
     }
     let link = GRANTS
         .get()
-        .ok_or("nothing was granted to this VM: start it with `shards run --kernel` or `shards restore`, which grant it its files")?;
+        .ok_or("nothing was granted to this VM: start it with `shards run vm --kernel` or `shards restore vm`, which grant it its files")?;
     crate::grant_ask::obtain(link, wanted)
 }
 
@@ -1899,13 +1897,13 @@ fn ask(wanted: &[crate::grant::Wanted]) -> Result<(), String> {
     if !shards_ipc::in_app_container() {
         return Err(
             "shards-vm is not in an AppContainer, which confines every VM on Windows: start it with \
-             `shards run --kernel`, which confines it"
+             `shards run vm --kernel`, which confines it"
                 .into(),
         );
     }
     let grants = GRANTS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let link = grants.as_ref().ok_or(
-        "nothing was granted to this VM: start it with `shards run --kernel`, which grants it its files",
+        "nothing was granted to this VM: start it with `shards run vm --kernel`, which grants it its files",
     )?;
     crate::grant_ask::obtain(link, wanted)
 }

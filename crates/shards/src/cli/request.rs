@@ -36,11 +36,13 @@ pub fn run(path: &str, args: &[OsString]) -> ExitCode {
     let mut request = match request(&parsed) {
         Ok(request) => request,
         Err(e) => {
-            // As the CLI words its own objections (docker/cli run.go withHelp).
-            let _ = writeln!(
-                std::io::stderr(),
-                "shards: {e}\n\nRun 'shards run --help' for more information"
-            );
+            // Piped, as a `docker` script reads it (docker/cli run.go withHelp).
+            if !refused_on_terminal("run", &e) {
+                let _ = writeln!(
+                    std::io::stderr(),
+                    "shards: {e}\n\nRun 'shards run --help' for more information"
+                );
+            }
             return ExitCode::from(NOT_RUN);
         }
     };
@@ -63,10 +65,12 @@ pub fn run(path: &str, args: &[OsString]) -> ExitCode {
     let mut cid = match before_create(&request) {
         Ok(cid) => cid,
         Err(e) => {
-            let _ = writeln!(
-                std::io::stderr(),
-                "shards: {e}\n\nRun 'shards run --help' for more information"
-            );
+            if !refused_on_terminal("run", &e) {
+                let _ = writeln!(
+                    std::io::stderr(),
+                    "shards: {e}\n\nRun 'shards run --help' for more information"
+                );
+            }
             return ExitCode::from(run_status(&e));
         }
     };
@@ -105,18 +109,21 @@ pub fn create(path: &str, args: &[OsString]) -> ExitCode {
     let mut request = match request(&parsed) {
         Ok(request) => request,
         Err(e) => {
-            let _ = writeln!(
-                std::io::stderr(),
-                "shards: {e}\n\nRun 'shards create --help' for more information"
-            );
+            if !refused_on_terminal("create", &e) {
+                let _ = writeln!(
+                    std::io::stderr(),
+                    "shards: {e}\n\nRun 'shards create --help' for more information"
+                );
+            }
             return ExitCode::from(NOT_RUN);
         }
     };
     request.create = true;
     request.detach = true;
-    // A plain error, as runCreate returns createContainer's (docker/cli create.go).
+    // A plain error, as a `docker` script reads it (docker/cli create.go runCreate).
     let mut cid = match before_create(&request) {
         Ok(cid) => cid,
+        Err(e) if refused_on_terminal("create", &e) => return ExitCode::FAILURE,
         Err(e) => return refuse(&e),
     };
     // docker/cli's create passes no signal on: SIGINT and SIGTERM end it.
@@ -458,6 +465,19 @@ pub fn restore(path: &str, args: &[OsString]) -> ExitCode {
     send(&mut request, term::DETACH_KEYS, &mut None, false)
 }
 
+/// `why`, a refusal of `action`'s, in a panel on a colour terminal, in shards' words;
+/// whether it was shown there.
+pub(crate) fn refused_on_terminal(action: &str, why: &str) -> bool {
+    #[cfg(unix)]
+    if let Some(p) = crate::cli::look::styled_err() {
+        let hint = format!("shards {action} --help shows its options");
+        crate::cli::look::error(&p, action, &crate::cli::look::ours(why), &[&hint]);
+        return true;
+    }
+    let _ = (action, why);
+    false
+}
+
 fn refuse(why: &str) -> ExitCode {
     let _ = writeln!(std::io::stderr(), "{why}");
     ExitCode::FAILURE
@@ -676,6 +696,8 @@ fn request(parsed: &Parsed) -> Result<Run, String> {
         cloud_env: crate::cloud_environment(),
         cidfile: match parsed.string("cidfile") {
             "" => String::new(),
+            // A client's over a context, whose own path it is (`context::CIDFILE`).
+            path if told_cidfile() => path.to_string(),
             path => std::path::absolute(path)
                 .map_err(|e| format!("failed to create the container ID file: {e}"))?
                 .to_string_lossy()
@@ -757,7 +779,26 @@ fn before_create(request: &Run) -> Result<Option<CidFile>, String> {
     if request.cidfile.is_empty() {
         return Ok(None);
     }
+    #[cfg(unix)]
+    if let Some(file) = crate::context::told_cidfile() {
+        return Ok(Some(CidFile {
+            path: PathBuf::from(&request.cidfile),
+            file: Some(file),
+            written: false,
+            told: true,
+        }));
+    }
     CidFile::new(&request.cidfile).map(Some)
+}
+
+/// Whether this command's `--cidfile` is a client's over a context, whose ID goes to it
+/// (`context::take_cidfile`).
+fn told_cidfile() -> bool {
+    #[cfg(unix)]
+    let told = crate::context::tells_cidfile();
+    #[cfg(not(unix))]
+    let told = false;
+    told
 }
 
 /// A platform a run asks for, read as containerd reads it, that this host's microVMs run,
@@ -797,35 +838,49 @@ pub(crate) fn check_platform(platform: &str) -> Result<(), String> {
 }
 
 /// `--cidfile`'s file, as docker/cli's cidFile keeps it: made before the container, its ID
-/// written once there is one, and removed if none was.
+/// written once there is one, and removed if none was; or, a client's over a context, the
+/// descriptor its daemon tells the client the ID through, the file being the client's.
 pub(crate) struct CidFile {
     path: PathBuf,
     file: Option<std::fs::File>,
     written: bool,
+    told: bool,
 }
 
 impl CidFile {
-    fn new(path: &str) -> Result<CidFile, String> {
-        if std::fs::metadata(path).is_ok() {
-            return Err(format!(
-                "container ID file found, make sure the other container isn't running or delete {path}"
-            ));
-        }
-        let file = std::fs::File::create(path).map_err(|e| {
-            format!(
-                "failed to create the container ID file: open {path}: {}",
-                go_errno(&e)
-            )
-        })?;
+    pub(crate) fn new(path: &str) -> Result<CidFile, String> {
+        // Made only where nothing is, in one step: two runs naming one file cannot both take
+        // it, where a check and then a create (docker/cli newCIDFile) let both through, and
+        // a link there is not followed.
+        let made = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(path);
+        let file = match made {
+            Ok(file) => file,
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                return Err(format!(
+                    "container ID file found, make sure the other container isn't running or delete {path}"
+                ));
+            }
+            Err(e) => {
+                return Err(format!(
+                    "failed to create the container ID file: open {path}: {}",
+                    go_errno(&e)
+                ));
+            }
+        };
         Ok(CidFile {
             path: PathBuf::from(path),
             file: Some(file),
             written: false,
+            told: false,
         })
     }
 
-    /// Writes the container's ID, once.
-    #[cfg(unix)]
+    /// Writes the container's ID, once, and closes the file, as createContainer closes its
+    /// own once the container is made (docker/cli create.go): a client's over a context is
+    /// told the ID as it closes (`context::CIDFILE`), not as the run ends.
     pub(crate) fn write(&mut self, id: &str) -> Result<(), String> {
         let (Some(file), false) = (&mut self.file, self.written) else {
             return Ok(());
@@ -838,6 +893,7 @@ impl CidFile {
             )
         })?;
         self.written = true;
+        self.file = None;
         Ok(())
     }
 }
@@ -845,7 +901,7 @@ impl CidFile {
 impl Drop for CidFile {
     fn drop(&mut self) {
         drop(self.file.take());
-        if !self.written {
+        if !self.written && !self.told {
             let _ = std::fs::remove_file(&self.path);
         }
     }
@@ -854,7 +910,7 @@ impl Drop for CidFile {
 /// The status `docker run` exits with for an error before its container runs
 /// (docker/cli run.go toStatusError): 127 for what was not found, 126 for what may not be
 /// run, else 125.
-fn run_status(error: &str) -> u8 {
+pub(crate) fn run_status(error: &str) -> u8 {
     if [
         "executable file not found",
         "no such file or directory",

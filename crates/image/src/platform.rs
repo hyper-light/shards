@@ -222,10 +222,10 @@ fn rank(p: &Platform, wanted: &[Target]) -> Option<usize> {
 mod tests {
     use super::*;
 
-    /// A pull that names no platform takes what dockerd takes of an index: on arm64, after
-    /// its own, 32-bit Arm's best variant, where the index has no arm64 one.
+    /// A pull that names no platform takes, of an index with no arm64 manifest, 32-bit Arm's
+    /// best variant on arm64 (the order a `docker` script's pull takes).
     #[test]
-    fn a_pull_of_no_platform_takes_what_dockerd_takes() {
+    fn a_pull_of_no_platform_takes_the_best_32_bit_arm_where_no_arm64_is() {
         let index = Index {
             schema_version: 2,
             media_type: None,
@@ -243,11 +243,11 @@ mod tests {
         }
     }
 
-    /// dockerd's match of an image's platform with its host's (OnlyPlatformWithFallback):
-    /// on arm64 its own and 32-bit Arm's v5 to v8, on amd64 its levels up to the CPU's and
-    /// 386, and no other CPU's or OS's.
+    /// The platforms this host takes as its own: on arm64 its own and 32-bit Arm's v5 to v8,
+    /// on amd64 its levels up to the CPU's and 386, and no other CPU's or OS's (the match
+    /// moby's OnlyPlatformWithFallback makes, so a `docker` script's run warns as it did).
     #[test]
-    fn the_host_runs_what_dockerd_finds_it_runs() {
+    fn the_platforms_this_host_takes_as_its_own() {
         let p = |a: &str, v: Option<&str>| Platform {
             os: "linux".into(),
             architecture: a.into(),

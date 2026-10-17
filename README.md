@@ -16,25 +16,23 @@ later, break something. Shards runs your agents in microVMs: small virtual machi
 own Linux kernel, behind your processor's virtualization, so what runs inside one sees its
 own machine, not yours.
 
-You build a microVM like a Docker image, and it is the OS your agents run on. Many agents share
-one microVM, each isolated like a container, with its own networks, files, devices and
-permissions. Because they inherit the microVM's OS instead of bringing their own images,
-shards needs no container runtime. Its own runtime takes containerd's place and speaks Docker
-and Compose, and a whole microVM, agents and all, snapshots and restores in microseconds.
-Your agents can:
+A microVM is made from an image, a Dockerfile or an Agentfile, and it is the OS your agents
+run on. Many agents share one microVM, each in a domain of its own: its own processes, files,
+networks, devices and permissions, and nothing else unless you grant it. A whole microVM,
+agents and all, is saved and restored in microseconds. Your agents can:
 
-- Boot in under 200 µs
-- Share a microVM's OS, each isolated like a container
+- Start in under 200 µs
+- Share a microVM's OS, each in its own domain
 - Get a microVM to themselves when they shouldn't share one
 - Reach only the networks, files and devices you give them
-- Use the Docker commands and Compose files you already have
+- Use the images, Dockerfiles, Compose files and `docker` command lines you already have
 - Use GPUs
 - Break anything in their microVM without touching the rest of your computer
 
-Shards never needs root.
+Shards never needs root, and it is one file.
 
 ```console
-$ time shards run --kernel vmlinux --init shards-init --cmdline "console=ttyS0 quiet"
+$ time shards run vm --kernel vmlinux --init shards-init --cmdline "console=ttyS0 quiet"
 shards-init: pid 1 running at uptime 0.012768s
 [    0.015804] reboot: Power down
 
@@ -42,7 +40,7 @@ real	0m0.028s
 user	0m0.019s
 sys	0m0.007s
 
-$ time shards restore snap
+$ time shards restore vm snap
 SHARDS-TEST PASS
 [    0.016121] reboot: Power down
 
@@ -51,8 +49,8 @@ user	0m0.002s
 sys	0m0.003s
 ```
 
-Booting Linux, running a program and shutting down took 28 ms. Restoring a saved machine
-took 7 ms, most of it process start and exit. The saved machine runs the test program from
+Booting Linux, running a program and shutting down took 28 ms. Restoring a saved microVM
+took 7 ms, most of it process start and exit. The saved microVM runs the test program from
 [Snapshots](#snapshots).
 
 > [!NOTE]
@@ -60,10 +58,8 @@ took 7 ms, most of it process start and exit. The saved machine runs the test pr
 > with Firecracker's CI build of Linux 6.18 as `vmlinux`.
 
 > [!IMPORTANT]
-> Shards has no release yet. Today it boots, snapshots and restores Linux microVMs on Apple
-> silicon Macs and x86_64 Linux. Building microVMs like Docker images,
-> the runtime that runs agents inside them, per-agent isolation, the Docker-compatible commands
-> and GPU support are still being built. See [Where things stand](#where-things-stand).
+> Shards has no release yet. See [Where things stand](#where-things-stand) for what works on
+> which machines.
 
 ## Install
 
@@ -72,34 +68,24 @@ Build from source with Rust 1.98 (pinned by the toolchain file):
 ```sh
 git clone https://github.com/hyper-light/shards && cd shards
 cargo build --release -p shards
-codesign -s - -f --entitlements resources/hvf.entitlements target/release/shards-vm   # macOS only
-cp target/release/shards target/release/shardsd target/release/shards-vm ~/.local/bin/
+cp target/release/shards ~/.local/bin/
 ```
 
-shards is three programs: `shards`, the command you type; `shardsd`, which pulls your
-images and keeps machines ready in the background; and `shards-vm`, which runs each
-machine. Keep them in the same directory.
+`shards` is the only file there is. The programs it runs each microVM and its networks with
+are inside it; it writes them to your cache directory the first time it needs them.
 
-- **macOS**: 15 or later, on Apple silicon. The `codesign` line lets `shards-vm` use
-  Hypervisor.framework. It is an ad-hoc signature, so you need no developer account. Without
-  it, machines fail to start with `HV_DENIED`.
-- **Linux**: x86_64, with access to `/dev/kvm` (usually the `kvm` group). Add
-  `--target x86_64-unknown-linux-musl` for a static binary.
-- **Elsewhere** (arm64 Linux, Intel Macs, Windows): shards builds, but can't run machines yet.
+- **macOS**: 15 or later, on Apple silicon.
+- **Linux**: x86_64 or arm64, with access to `/dev/kvm` (usually the `kvm` group). Add
+  `--target x86_64-unknown-linux-musl` (or `aarch64-unknown-linux-musl`) for a static binary.
+- **Windows**: x86_64, with the Windows Hypervisor Platform, boots microVMs directly
+  (`shards run vm --kernel`); images and the daemon are not there yet.
 
 ## Quickstart
 
-Run a command in an image, as `docker run` does:
+Run a command in a new microVM made from an image:
 
 ```console
-$ shards run alpine echo hello
-Downloading the guest kernel Image-6.18.48-aarch64-9199fc6fad00 from https://github.com/hyper-light/shards/releases/download/kernel-6.18.48-9199fc6fad00/Image-6.18.48-aarch64
-Guest kernel: sha256:9193e849396621f788bb18f48ac6b581c2b5ef99b51bc6063c21e4f774b4fa27
-Unable to find image 'alpine:latest' locally
-latest: Pulling from library/alpine
-a9986cd6f37d: Download complete
-Digest: sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6
-Status: Downloaded newer image for alpine:latest
+$ shards run vm alpine echo hello
 hello
 ```
 
@@ -108,39 +94,40 @@ against the SHA-256 built into shards, and keeps it. Later runs don't need the n
 To download it from somewhere else, such as a mirror, set `SHARDS_KERNEL_URL`; the checksum
 still applies. The program each microVM runs first, `shards-init`, is part of shards.
 
-### Programs that speak Docker's API
+On a terminal, shards draws its own pages. Piped, a `docker` command line prints what
+`docker` prints, so scripts written for it keep working.
 
-Programs that make containers through Docker's Engine API (Docker's SDKs, Testcontainers,
-agent frameworks, the `docker` CLI and `docker compose` themselves) make microVMs with
-shards, unchanged: each Compose service is a microVM of its own. `docker buildx build`
-builds in a microVM with a builder of buildx's own on your host's network (`docker buildx
-create --driver docker-container --driver-opt network=host`). Point them
-at shards' socket, a file in shards' home that only your user can reach (no network port):
+### Tools that speak the Docker Engine API
+
+The `docker` CLI, `docker compose`, Docker's SDKs, Testcontainers and agent frameworks work
+with shards unchanged: what they ask for as a container is a microVM, and each Compose
+service is a microVM of its own. `docker buildx build` builds in a microVM, with a builder
+of buildx's own on your host's network (`docker buildx create --driver docker-container
+--driver-opt network=host`). Point them at shards' Engine API, a file in shards' home that
+only your user can reach (no network port):
 
 ```console
-$ shards daemon --detached
+$ shards run daemon --detached
 $ export DOCKER_HOST="unix://$HOME/Library/Application Support/shards/engine.sock"   # macOS
 $ export DOCKER_HOST="unix://${XDG_DATA_HOME:-$HOME/.local/share}/shards/engine.sock" # Linux
 $ docker run --rm alpine echo hello
 hello
 ```
 
-The socket is there while shards' background service runs, which any `shards` command
-starts. It stays while a program keeps a connection open or asks something, and stops after
-`SHARDS_DAEMON_IDLE` seconds without either (default 900). Served today: containers (create,
-start, attach, wait, logs, exec, copying files in and out, export, changes, processes,
-stats, pause, restart, rename, update, stop, kill, remove, prune, list, inspect), events,
-images (pull, push, list, inspect, tag, history, remove, prune, save, load, import),
-committing a container as an image, building images from a context sent with the call (each
-RUN step in a microVM), volumes (create, list, inspect, remove, prune), networks (create,
-list, inspect, connect, disconnect, remove, prune), registry logins (`docker login`),
-searches (Docker Hub, quay.io and any registry's catalog), disk use, `version` and `info`. Disk use
-counts the saved microVM snapshots that make starts fast, too. Copies are packed and
-unpacked inside the microVM, and land where its program will find them: in its volumes,
-running or stopped, and its tmpfs mounts while it runs. A network's microVMs reach each
-other by name and nothing else through it. Stats add what the microVM itself costs your
-machine (`microvm`: its memory and CPU time). A setting a microVM can't take is refused with
-the reason, never dropped.
+It is there while shards' daemon runs, which any `shards` command starts. The daemon stays
+while a program keeps a connection open or asks something, and stops after
+`SHARDS_DAEMON_IDLE` seconds without either (default 900). Served: microVMs (create, start,
+attach, wait, logs, exec, copying files in and out, export, changes, processes, stats,
+pause, restart, rename, update, stop, kill, remove, prune, list, inspect), events, images
+(pull, push, list, inspect, tag, history, remove, prune, save, load, import), an image of
+what a microVM changed, builds of a context sent with the call (each `RUN` step in a
+microVM), volumes, networks, registry logins, searches (Docker Hub, quay.io and any
+registry's catalog), disk use, version and system information. Disk use counts the saved
+microVMs that make starts fast, too. Copies are packed and unpacked inside the microVM, and
+land where its program will find them: in its volumes, running or stopped, and its tmpfs
+mounts while it runs. A network's microVMs reach each other by name and nothing else through
+it. Stats add what the microVM itself costs your machine (`microvm`: its memory and CPU
+time). A setting a microVM can't take is refused with the reason, never dropped.
 
 ### Boot a kernel yourself
 
@@ -169,18 +156,18 @@ cp target/$arch-unknown-linux-musl/guest/shards-init .
 Boot it:
 
 ```console
-$ shards run --kernel vmlinux --init shards-init --cpus 4 --memory 512 --cmdline "console=ttyS0 quiet"
+$ shards run vm --kernel vmlinux --init shards-init --cpus 4 --memory 512 --cmdline "console=ttyS0 quiet"
 shards-init: pid 1 running at uptime 0.014162s
 [    0.018563] reboot: Power down
 ```
 
-The console is your terminal, and `Ctrl-A x` stops the machine. Drop `quiet` to see the kernel
-log. `--init` takes any static Linux binary, `--initrd` a whole initramfs, and
+The console is your terminal, and `Ctrl-A x` stops the microVM. Drop `quiet` to see the
+kernel log. `--init` takes any static Linux binary, `--initrd` a whole initramfs, and
 `--disk FILE[:ro]` adds `/dev/vda`, `/dev/vdb` and so on. The defaults are 1 CPU and 256 MiB.
 
 ## Snapshots
 
-Set a machine up once, save it, and start copies. A program inside the machine decides when
+Set a microVM up once, save it, and start copies. A program inside the microVM decides when
 to save. The test program does it right away:
 
 ```sh
@@ -189,108 +176,127 @@ cp target/$arch-unknown-linux-musl/guest/shards-testguest .
 ```
 
 ```console
-$ shards run --kernel vmlinux --init shards-testguest --snapshot-dir snap \
+$ shards run vm --kernel vmlinux --init shards-testguest --snapshot-dir snap \
     --cmdline "console=ttyS0 quiet shards_test=resume"
 $ du -h snap/*
  43M	snap/memory
  20K	snap/state
 ```
 
-Empty memory isn't stored, so 256 MiB of RAM takes 43 MiB on disk. `shards restore snap`
+Empty memory isn't stored, so 256 MiB of RAM takes 43 MiB on disk. `shards restore vm snap`
 starts a copy exactly where the original asked to be saved, as in the example at the top.
 
 - **Copies are cheap.** They share the snapshot's memory until they write to it.
 - **Copies don't collide.** Linux reseeds its randomness in each copy as it wakes, so keys
   and IDs differ between copies. Values a program drew before the snapshot don't.
 - **Clocks keep running** from the moment of the snapshot. Wall-clock time lags until
-  something in the machine sets it.
+  something in the microVM sets it.
 
 `--hold` preloads a copy and waits. A line on stdin starts it in 150 µs:
 
 ```console
-$ (sleep 1; echo) | shards restore snap --hold
+$ (sleep 1; echo) | shards restore vm snap --hold
 shards-ready
 SHARDS-TEST PASS
 [    0.016274] reboot: Power down
 ```
+
+A running microVM made from an image is saved whole with `shards save vm NAME`: its memory,
+every process, terminal and open file in it, as they are. `shards restore vm NAME` resumes
+it where it was, at the same address on its network.
 
 > [!NOTE]
 > Snapshots work on macOS and on x86_64 Linux.
 
 ## Where things stand
 
-| Feature | Today (2026-09-29) |
+| | Today (2026-10-16) |
 |---|---|
-| Boot Linux on Apple silicon Macs | Works |
-| Boot Linux on x86_64 Linux | Works, tested in CI on every push |
-| Snapshot and restore | Works on macOS and x86_64 Linux |
-| arm64 Linux, Intel Macs, Windows | Builds, but can't run machines yet |
-| Connect host programs to programs in a running machine (vsock) | Works |
-| Pull images from Docker Hub and other registries, as `docker pull` does | Works: `shards pull`. Your `docker login` credentials and `certs.d` certificates work as they are, and `shards login` keeps credentials where `docker` finds them |
-| Run a command in an image, as `docker run` does | Works: `shards run IMAGE`, with the image's entrypoint, command, environment, directory, user and stdin (`-i`), on a terminal (`-t`), in the background (`-d`), named (`--name`) or removed when done (`--rm`). Repeated runs of an image are served from copies of its booted microVM that a background service restores ahead of time: about 3 ms from start to exit on the Mac |
-| Build microVMs like Docker images | In progress: image layers become bootable images |
-| Run many agents on a microVM's OS, each isolated like a container | Planned |
-| Networks, files, devices and permissions per agent and per microVM | Planned |
-| Confining shards itself | Planned. A microVM's guest runs behind the hypervisor, but the shards process that runs it has your user's permissions, as Firecracker's does without its seccomp filters and jailer: a flaw in shards' own device code could reach what you can. Syscall filters on Linux and a sandbox on macOS will narrow that |
-| Docker's commands and Compose files | In progress: `run`, `ps`, `wait`, `logs`, `stop`, `kill` and `rm` take `docker`'s flags and answer with its words, its `--help` included. A flag shards can't serve yet says so. `build`, `exec`, the rest and Compose are planned |
-| GPUs | Planned |
-| Programs that use Docker's Engine API (SDKs, Testcontainers, the `docker` CLI) | Works for containers, exec, logs and images: point `DOCKER_HOST` at shards' `engine.sock` |
+| MicroVMs on Apple silicon Macs, and on x86_64 and arm64 Linux | Work: booted directly and made from images; on macOS and x86_64 Linux, repeated runs are served from warm copies |
+| MicroVMs on x86_64 Windows | Booted directly (`shards run vm --kernel`); images and the daemon not yet |
+| Snapshots, and saving a running microVM whole | macOS and x86_64 Linux |
+| Images, Dockerfiles and Agentfiles | Pulled, pushed and built, every `RUN` step in a microVM of the build's own, for other CPUs too under emulation |
+| Many agents in one microVM, each in its own domain | Works, from an Agentfile: each agent's own processes, files, networks and devices, and nothing it isn't granted |
+| Networks, volumes and devices | Work: a microVM reaches only what you give it, networks deny by default |
+| GPUs | macOS: Vulkan compute in the guest. Linux: a host's PCI device passed through to a microVM (VFIO), tested with a test device; a GPU itself not yet |
+| `docker` command lines, Compose and the Docker Engine API | Work, through shards' Engine API file |
+| Running shards' commands on another machine | Works: `shards create context`, over QUIC |
 
-The target is a usable machine within 5 ms of the request, using less memory than
+The target is a usable microVM within 5 ms of the request, using less memory than
 Firecracker. The plan and its evidence are in
 [docs/design/architecture.md](docs/design/architecture.md).
 
 ## Commands
 
+Every command is an action and what it acts on: `shards ACTION THING [ARG...]`.
+`shards ACTION` alone lists the ways it is said, and `shards --help` lists every action.
+
 | Command | What it does |
 |---|---|
-| `shards pull [-q] [--platform P] [--output-agentfile PATH] IMAGE` | Pull `IMAGE` as `docker pull` does, for this machine's architecture, or `--platform`'s, or `SHARDS_DEFAULT_PLATFORM`'s, else `DOCKER_DEFAULT_PLATFORM`'s. Every layer is checked against its digests before it is kept. `--output-agentfile` also writes the image's Agentfile once the pull is through, to `PATH`, or as `Agentfile` in a directory `PATH`, ready for `shards build` |
-| `shards login registry [-u USER] [--password-stdin] [SERVER]` | Log in to a registry (Docker Hub unless you name `SERVER`): the registry checks your password or token, and shards keeps it where `docker login` would, in your credential helper or `config.json`, so both find it. `shards login SERVER` works too |
-| `shards logout registry [SERVER]` | Forget what a login kept for `SERVER` (Docker Hub unless you name one) |
-| `shards search image [--limit N] [-f FILTER] TERM` | Find images on Docker Hub, on quay.io (`quay.io/TERM`), or in any registry's catalog (`HOST/TERM`). On a terminal, each result says whether it runs on this machine, and how much its first pull downloads; piped, it prints `docker search`'s table. `shards search TERM` works too |
-| `shards run [OPTIONS] IMAGE [COMMAND] [ARG...]` | Run a command in a new microVM booted into `IMAGE`, as `docker run` runs it in a new container, with `-d`, `-e`, `-h`, `-i`, `-t`, `-u`, `-w`, `--detach-keys`, `--entrypoint`, `--name`, `--pull` and `--rm`. `IMAGE` is pulled first if it isn't here. With `-it`, your terminal is the command's: ctrl-p ctrl-q leaves it running. It boots shards' own kernel and `shards-init`, or the ones `shards configure guest` chose, or `SHARDS_KERNEL` and `SHARDS_INIT`. `--platform linux/amd64` runs another CPU's image under that CPU's emulator inside the microVM, nothing installed on your machine; an image of another CPU alone runs so too, with Docker's warning. `--io-maxbandwidth` and `--io-maxiops` cap the bytes and requests a second it reads and writes through its volumes and disks, kept by shards outside the microVM, where nothing inside it can lift them |
-| `shards build [OPTIONS] PATH` | Build an image from the Dockerfile in `PATH`, as `docker build` does, its `RUN` steps in a microVM of the build's own. `--platform linux/amd64,linux/arm64` builds one image for both: a step for another CPU runs under that CPU's emulator inside the build's microVM, and nothing is installed on your machine. Emulated steps are slower: about five times the CPU of native code, and about 5 ms more for each program they start; stages that cross-compile (`FROM --platform=$BUILDPLATFORM`) run at full speed |
-| `shards ps [-a] [-q] [-n N] [-l] [--no-trunc]` | List containers, as `docker ps` does: each run is one, until `shards rm` or `--rm` removes it |
-| `shards wait CONTAINER...` | Wait for containers to stop, and print their exit codes |
-| `shards logs [-f] [-t] [-n N] [--since T] [--until T] CONTAINER` | Print what a container wrote, stdout to stdout and stderr to stderr |
-| `shards stop [-t SECONDS] [-s SIGNAL] CONTAINER...` | Stop containers: the signal (SIGTERM), then SIGKILL after 10 s |
-| `shards kill [-s SIGNAL] CONTAINER...` | Send containers a signal (SIGKILL) |
-| `shards rm [-f] CONTAINER...` | Remove stopped containers; with `-f`, running ones too |
-| `shards save vm [--leave-running] NAME [SNAPSHOT]` | Save a running microVM whole: its memory, every process, terminal and open file in it, as they are. It stops once saved, unless you pass `--leave-running`. Prints the snapshot's name, the time if you gave none. Its volumes come with it: the files it has open in them stay open, deleted ones too, up to 64 MiB of those. A microVM other containers joined (`--network container:NAME`) is saved once they end |
-| `shards restore vm NAME [SNAPSHOT]` | Resume a stopped microVM exactly where it was saved, from its newest snapshot unless you name one, at the same address on its network. Its output goes on in `shards logs`. Restoring the same snapshot again starts from the same point |
-| `shards list snapshots NAME` · `shards remove snapshot NAME SNAPSHOT...` | List a microVM's snapshots, newest first, with when each was saved and the disk it takes; remove them. `shards rm` removes a microVM's snapshots with it |
-| `shards checkpoint create [--leave-running] NAME SNAPSHOT` · `shards checkpoint ls NAME` · `shards checkpoint rm NAME SNAPSHOT` · `shards start --checkpoint SNAPSHOT NAME` | The same, as `docker checkpoint` and `docker start --checkpoint` say it, with Docker's answers. The `docker` CLI's own work through `engine.sock`, with no experimental mode to turn on, no CRIU and no Linux host. A checkpoint directory of your own (`--checkpoint-dir`) isn't supported: shards keeps a microVM's snapshots with it |
-| `shards stop daemon` | Stop the background service (`shardsd daemon`) that `shards run` starts on its own. It keeps up to `SHARDS_POOL` microVMs ready for each image you run (default 2), as many as your runs of it have come at once, and none once it has gone unused for `SHARDS_POOL_KEEP` seconds (default 600); it removes what no image you have pulled still needs, such as what a tag named before a pull moved it, and exits after `SHARDS_DAEMON_IDLE` seconds without a run (default 900). Each container's log keeps its newest output, `SHARDS_LOG_MAX_FILE` files (default 5) of `SHARDS_LOG_MAX_SIZE` bytes (default 20 MiB), as Docker's `local` log driver does. Stopping it stops the containers running, as Docker's does |
-| `shards run daemon --listen ADDR:PORT` | Let other machines you invite run shards on this one, over QUIC on UDP `ADDR:PORT`: run it where the microVMs should run, such as a Linux machine with a GPU, or an x86_64 one for amd64 images. Nothing is reachable until you invite a machine, and it reaches only what you could do here with shards. While it listens, it does not exit when idle |
-| `shards invite client --name NAME --output FILE` | Write an invitation to `FILE`, a file only you can read, which lets one machine join this one as `NAME`. Carry the file to that machine yourself; an invitation not used within an hour lapses. `shards list invitations` and `shards remove invitation NAME` show and withdraw them, and `shards list clients` and `shards remove client NAME` show the machines that joined and end one's access |
-| `shards create context NAME --invite-file FILE` | Join the machine that invited you, as `NAME`. Then `shards --context NAME ps` (or `SHARDS_CONTEXT=NAME`) runs a command on that machine, its output and exit status yours, and `shards use context NAME` makes that machine the one every command runs on; `default` is this one. Paths, images and volumes are that machine's; your logins and environment stay yours: `login` keeps a login here, a pull there uses your credentials for its registry alone, and `-e NAME` takes your value. `shards list contexts` shows them, `shards remove context NAME` forgets one. Your terminal is the command's there as it is here: `run -it`, `exec -it` and `attach` work as they do on this machine, and resizes, Ctrl-C and the signals you send `shards` reach the command, from a Windows console too. Your files stay yours too: `save -o` and `export -o` write here, kept only once the archive is whole, `load -i` and `import FILE` read from here, and `--env-file` and `--security-opt seccomp=FILE` are read here. `shards copy vm` copies between your machine and a microVM there, from Linux and macOS (Windows refuses it for now). `shards build PATH` builds your `PATH` there: the machine keeps a copy of it, and each build sends only what changed since the last; your logins for its bases go with it. `shards build agent DIR` (and a harness's or MCP server's) makes the same agent there that it would make here, byte for byte, and `shards sign agent NAME` signs it there with your key or your identity, which never leave your machine. A build's `--secret`s are yours: read here, they cross in memory and never touch that machine's disk. What it makes comes back to your files: `-o type=local,dest=DIR`, `-o type=tar,dest=FILE`, `--iidfile` and `--metadata-file` are written here, a file only once whole. Named contexts (`--build-context NAME=DIR`, `oci-layout://DIR`), local caches and policy files work there as here, and `--ssh` reaches your SSH agent or key files here: a step there signs with your keys, read-only, and they never leave your machine. Programs that speak Docker's API (the `docker` CLI, Compose, SDKs, Testcontainers) reach that machine too: while your daemon runs (`shards run daemon`), point `DOCKER_HOST` at the `Engine` socket `shards inspect context NAME` shows |
-| `shards configure guest --kernel FILE --init FILE` | Choose the kernel and shards-init that `shards run` boots instead of shards' own. The first run of an image saves a copy of its booted microVM, and later runs start from that copy. `shards guest` shows the ones in use |
-| `shards run --kernel FILE [options]` | Boot a new machine |
-| `shards restore DIR [--hold]` | Start a copy of the machine saved in `DIR`. `--hold` preloads it and waits for a line on stdin |
-| `shards restore DIR [--hold] [-e …] [-w …] [-u …] -- COMMAND [ARG...]` | Run `COMMAND` in a copy of a template saved by `--rootfs` with `--snapshot-dir` |
-| `shards version` · `shards help` | |
+| `shards run vm IMAGE [COMMAND]` | Run a command in a new microVM made from `IMAGE`, pulled first if it isn't here. With `-it`, your terminal is the command's: ctrl-p ctrl-q leaves it running. Repeated runs of an image are served from copies of its booted microVM that the daemon restores ahead of time |
+| `shards create vm IMAGE [COMMAND]` | Make a microVM without starting it |
+| `shards start vm NAME` · `shards restart vm NAME` | Start a stopped microVM again, its files as it left them; stop one and start it again |
+| `shards exec vm NAME COMMAND` | Run a command in a running microVM |
+| `shards stop vm NAME` · `shards kill vm NAME` | Stop a microVM: its stop signal, then SIGKILL once its grace is up; or kill it |
+| `shards pause vm NAME` · `shards unpause vm NAME` | Freeze a microVM where it is, every vCPU and device, at no CPU; let it run on |
+| `shards save vm NAME [SNAPSHOT]` | Save a running microVM whole, its memory, processes and devices as they are, then stop it (or `--leave-running`). Its volumes come with it |
+| `shards restore vm NAME [SNAPSHOT]` | Resume a saved microVM exactly where it was, from its newest snapshot unless you name one |
+| `shards list vm` · `shards list image` · `shards list volume` | List microVMs, images or volumes |
+| `shards list snapshots NAME` · `shards remove snapshot NAME SNAPSHOT...` | List a microVM's snapshots, newest first, with when each was saved and the disk it takes; remove them |
+| `shards inspect vm NAME` · `shards inspect image NAME` | What a microVM runs, or an image's documents |
+| `shards inspect disk` · `shards inspect system` · `shards inspect guest` | What shards takes on disk; what it is, holds and runs on; the kernel and shards-init runs boot |
+| `shards read logs NAME` · `shards watch logs NAME` | What a microVM's command printed; what it prints, as it prints it |
+| `shards read processes NAME` · `shards watch processes NAME` | The processes a microVM's agents started and ended, each whole, as the kernel saw them; as they come |
+| `shards read ports NAME` | Which of a microVM's agents each published port reaches |
+| `shards read changes NAME` | What a microVM changed of its image's files |
+| `shards watch vms [NAME...]` · `shards watch system` | What microVMs take of your machine, live; what happens to microVMs and images, as it happens |
+| `shards copy vm NAME:PATH PATH` · `shards copy vm PATH NAME:PATH` | Copy files out of a microVM, or into one |
+| `shards rename vm NAME NEW_NAME` | Name a microVM again |
+| `shards remove vm NAME` · `shards prune vm` | Remove a microVM, and its snapshots with it; remove every stopped one |
+| `shards create volume [NAME]` · `shards remove volume NAME` · `shards prune volume` | Make a volume microVMs mount; remove one no microVM mounts; remove those no microVM mounts |
+| `shards pull image NAME` · `shards push image NAME` | Download an image and make it a microVM, for this machine's CPU or `--platform`'s; upload one. Every layer is checked against its digests before it is kept |
+| `shards build image PATH` | Build an image from the Dockerfile or Agentfile in `PATH`, its `RUN` steps in a microVM of the build's own. `--platform linux/amd64,linux/arm64` builds for both, a step for another CPU under that CPU's emulator inside the build's microVM |
+| `shards build agent DIR` · `shards push agent NAME` · `shards sign agent NAME` | Build an agent (or a harness or an MCP server) as an OCI artifact, push it, and sign it with your key or your identity |
+| `shards read history IMAGE` · `shards tag image SOURCE TARGET` | How an image's layers were made; name an image again |
+| `shards save image NAME` · `shards load image` · `shards export vm NAME` | Images to a tar archive and back; a microVM's files as a tar archive |
+| `shards commit vm NAME [IMAGE]` | Make an image of what a microVM changed |
+| `shards remove image NAME` · `shards prune image` | Remove an image with its stopped microVMs; remove unused images |
+| `shards login registry [SERVER]` · `shards logout registry [SERVER]` | Log in to a registry, or forget a login: kept where `docker login` keeps one, so both find it |
+| `shards search image TERM` | Find images on Docker Hub, on quay.io (`quay.io/TERM`), or in any registry's catalog (`HOST/TERM`); on a terminal, whether each runs on this machine, and what its first pull downloads |
+| `shards run daemon` · `shards stop daemon` | The daemon that serves runs from warm microVMs, which the first run starts; end it and its runs. It keeps up to `SHARDS_POOL` microVMs ready for each image you run (default 2), and none once the image has gone unused for `SHARDS_POOL_KEEP` seconds (default 600) |
+| `shards configure guest --kernel FILE --init FILE` | Choose the kernel and shards-init runs boot, in place of shards' own |
+| `shards run daemon --listen ADDR:PORT` | Let machines you invite run shards on this one, over QUIC on UDP `ADDR:PORT`: run it where the microVMs should run, such as a Linux machine with a GPU. Nothing is reachable until you invite a machine, and it reaches only what you could do here with shards |
+| `shards invite client --name NAME --output FILE` | An invitation, a file only you can read, which lets one machine join this one as `NAME`, within an hour. `shards list invitations`, `shards remove invitation NAME`, `shards list clients` and `shards remove client NAME` show and withdraw them |
+| `shards create context NAME --invite-file FILE` | Join the machine that invited you. Then `shards --context NAME ACTION THING` runs on that machine, its output and exit status yours, and `shards use context NAME` makes it the one every command runs on; `default` is this one. Its microVMs, images and volumes are that machine's; your logins, environment, terminal and files stay yours: builds send your context and only what changed since the last, your build's secrets cross in memory alone, its outputs come back to your files, `--ssh` reaches your agent here, `copy vm` copies to and from your machine (from Linux and macOS), and `--cidfile` is written here. Tools that speak the Engine API reach it too, through the `Engine` file `shards inspect context NAME` shows |
+| `shards run vm --kernel FILE [options]` | Boot a kernel directly in a microVM of its own |
+| `shards restore vm DIR [--hold]` | Start a copy of the microVM saved in `DIR`; `--hold` preloads it and waits for a line on stdin |
 
-| Option | What it does |
+`docker`'s command lines work too, as `docker` takes them (`shards ps`, `shards logs -f web`,
+`shards checkpoint create web first`), for the scripts written for it.
+
+| Option of `run vm --kernel` | What it does |
 |---|---|
 | `--init FILE` | The static Linux binary to run as PID 1 |
 | `--initrd FILE` | An initramfs, instead of `--init` |
 | `--cmdline TEXT` | The kernel command line (default: `console=ttyS0 earlycon panic=-1`) |
 | `--cpus N` · `--memory MIB` | Size (default: 1 CPU, 256 MiB) |
 | `--disk FILE[:ro]` | A disk. Repeat for more |
-| `--vsock PATH` | A vsock device. Host programs connect to the Unix socket `PATH` and send `CONNECT <port>`; the guest reaches host port P at `PATH_P`. A restored copy needs its own `PATH` |
-| `--rootfs FILE -- COMMAND [ARG...]` | Boot into the EROFS image `FILE` and run `COMMAND` there, as `docker run` would. Its output and exit status are shards'. `--init` must be shards-init |
-| `--rootfs FILE --snapshot-dir DIR` | Boot into `FILE` and save a template to `DIR` once the image is mounted, for `restore DIR -- COMMAND` |
-| `-e` · `-w` · `-u` · `--hostname` · `-i` | With `--rootfs`: as for `docker run` |
-| `--snapshot-dir DIR` | Save the machine to `DIR` when it asks, then exit. `--snapshot-then resume` keeps it running. Works with `restore` too |
+| `--vsock PATH` | A vsock device. Programs here connect to the Unix socket `PATH` and send `CONNECT <port>`; the guest reaches port P here at `PATH_P`. A restored copy needs its own `PATH` |
+| `--rootfs FILE -- COMMAND [ARG...]` | Boot into the EROFS image `FILE` and run `COMMAND` there; its output and exit status are the command's. `--init` must be shards-init |
+| `--rootfs FILE --snapshot-dir DIR` | Boot into `FILE` and save a template to `DIR` once the image is mounted, for `restore vm DIR -- COMMAND` |
+| `-e` · `-w` · `-u` · `--hostname` · `-i` | With `--rootfs`: the command's environment, directory, user, hostname and stdin |
+| `--snapshot-dir DIR` | Save the microVM to `DIR` when it asks, then exit. `--snapshot-then resume` keeps it running. Works with `restore` too |
 | `--no-console` | Hide the console |
 
 Exit codes: 0 for shutdown or snapshot, 1 for an error, 2 for bad usage, 3 when the guest
-reboots. With `--rootfs`, the command's own, or 125–127 as for `docker run`. `SHARDS_LOG=debug` shows what shards is doing.
+reboots. With `--rootfs`, the command's own, or 125 to 127 when it could not run.
+`SHARDS_LOG=debug` shows what shards is doing.
 
-Pulled images, the guest's kernel and shards-init, and saved microVMs are kept in `SHARDS_HOME`, if you set it;
-otherwise in `shards` in your data directory (`~/Library/Application Support` on macOS, `~/.local/share` on Linux,
-`%LOCALAPPDATA%` on Windows). The programs `shards` writes out for its microVMs are kept in `SHARDS_CACHE`, if you
-set it; otherwise in `shards` in your cache directory (`~/Library/Caches` on macOS, `$XDG_CACHE_HOME` or `~/.cache` on Linux,
+Images, the guest's kernel and shards-init, and saved microVMs are kept in `SHARDS_HOME`, if
+you set it; otherwise in `shards` in your data directory (`~/Library/Application Support` on
+macOS, `~/.local/share` on Linux, `%LOCALAPPDATA%` on Windows). The programs `shards` writes
+out for its microVMs are kept in `SHARDS_CACHE`, if you set it; otherwise in `shards` in your
+cache directory (`~/Library/Caches` on macOS, `$XDG_CACHE_HOME` or `~/.cache` on Linux,
 `%LOCALAPPDATA%` on Windows).
 
 ## Performance
@@ -309,18 +315,18 @@ that takes about 3.7 ms to set up): a restore in a new process and a cold boot t
 much longer. A preloaded restore, and a run served by a microVM made ready ahead, do not.
 
 Running a command in an image you have run before takes **3.0 ms** at p50 and 3.4 ms at
-p99, start to exit (`shards run IMAGE exit 0`), where a boot takes 34.8 ms. That is 300
+p99, start to exit (`shards run vm IMAGE exit 0`), where a boot takes 34.8 ms. That is 300
 runs over 10 saved copies, on a Mac running other VMs. Over a third of it is starting the
 `shards` process. The command itself takes 0.4 ms inside the microVM: the microVM
 waiting for your run has already touched the memory the first run of the image used.
 
-With `shards run -it`, a key you type is echoed in 0.27 ms at p50 and 0.39 ms at p99,
+With `shards run vm -it`, a key you type is echoed in 0.27 ms at p50 and 0.39 ms at p99,
 where Docker Desktop on the same Mac takes 0.45 and 1.2 ms.
 
 Linux itself takes 18.6 ms of a cold boot. That is why shards restores snapshots, and why a
 leaner kernel is coming.
 
-Peak memory is 12.5 MiB for a restored machine, 16.4 MiB once it has run a command, and
+Peak memory is 12.5 MiB for a restored microVM, 16.4 MiB once it has run a command, and
 59.8 MiB for a booted one, guest memory included.
 
 Against Firecracker v1.17.0 on one host (GitHub's x86_64 runner), with the same kernel and
@@ -337,15 +343,17 @@ next.
 
 ## How it works
 
-- **Two walls.** Agents in one microVM are kept apart like containers. The microVM keeps
-  all of them away from your computer and from other microVMs: it has its own kernel and runs
-  in its own process.
+- **Two walls.** The agents in one microVM are kept apart by its kernel: each in namespaces,
+  IDs and a view of the files of its own, confined by Landlock and seccomp, reaching only
+  what it is granted. The microVM keeps all of them away from your computer and from other
+  microVMs: it has its own kernel and runs in its own process.
 - **One OS per microVM.** Agents run on their microVM's OS instead of each bringing an image,
   so a snapshot holds one OS however many agents run on it.
 - **Speed.** Shards boots once, snapshots, and restores copies. A preloaded copy only has to
   start running.
 - **Density.** Copies share snapshot memory until they write to it.
-- **No root.** Shards uses `/dev/kvm` on Linux and Hypervisor.framework on macOS.
+- **No root.** Shards uses `/dev/kvm` on Linux, Hypervisor.framework on macOS and the
+  Windows Hypervisor Platform on Windows.
 - **No crashes.** Bad input gets an error message. Lints forbid code that can panic, and CI
   enforces them.
 - **Portability.** One codebase covers Linux, macOS and Windows on x86_64 and arm64, and CI

@@ -928,7 +928,7 @@ fn actions_on_an_image_not_here_convert_it_first() {
     );
     rmi();
 
-    let history = shards(&["history", "image", "-q", image.as_str()]);
+    let history = shards(&["read", "history", "-q", image.as_str()]);
     assert_eq!(history.status, Some(0), "{}", shown(&history));
     // The test image's config records no history, so none is listed; it is stored now.
     let stored = shards(&["images", "-q"]);

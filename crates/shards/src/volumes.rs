@@ -1102,7 +1102,7 @@ mod tests {
         assert_eq!(
             said(&at(&points, "/cache")),
             (true, false),
-            "a Docker VOLUME is every domain's"
+            "a Dockerfile's VOLUME is every domain's"
         );
         assert_eq!(
             said(&at(&points, "/dev/shm")),

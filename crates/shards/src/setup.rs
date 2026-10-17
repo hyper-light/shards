@@ -334,11 +334,11 @@ const DOMAIN_FAMILIES: [u64; 3] = [1, 2, 10];
 /// read the flags of, already fails with ENOSYS for no capability, and libc then clones.
 fn domain_profile(no_processes: bool) -> Result<Vec<u8>, String> {
     let mut p: serde_json::Value = serde_json::from_slice(shards_seccomp::DEFAULT)
-        .map_err(|e| format!("Docker's seccomp profile: {e}"))?;
+        .map_err(|e| format!("the default seccomp profile: {e}"))?;
     let rules = p
         .get_mut("syscalls")
         .and_then(serde_json::Value::as_array_mut)
-        .ok_or("Docker's seccomp profile has no syscalls")?;
+        .ok_or("the default seccomp profile has no syscalls")?;
     let refused: &[&str] = if no_processes {
         &["socket", "socketpair", "fork", "vfork", "clone"]
     } else {

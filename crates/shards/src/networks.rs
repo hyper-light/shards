@@ -7,7 +7,7 @@
 //! has one. dockerd's predefined `bridge`, `host` and `none` are listed beside them.
 
 use std::collections::BTreeMap;
-use std::net::{Ipv4Addr, Ipv6Addr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -75,10 +75,48 @@ pub struct Network {
     pub labels: BTreeMap<String, String>,
 }
 
+/// The bridge driver's options, as dockerd names them (moby docker-v29.3.1,
+/// daemon/libnetwork/drivers/bridge/labels.go, netlabel/labels.go).
+pub const ICC: &str = "com.docker.network.bridge.enable_icc";
+pub const HOST_BINDING: &str = "com.docker.network.bridge.host_binding_ipv4";
+pub const MTU: &str = "com.docker.network.driver.mtu";
+pub const MASQUERADE: &str = "com.docker.network.bridge.enable_ip_masquerade";
+pub const GATEWAY_MODE4: &str = "com.docker.network.bridge.gateway_mode_ipv4";
+pub const GATEWAY_MODE6: &str = "com.docker.network.bridge.gateway_mode_ipv6";
+pub const INHIBIT_IPV4: &str = "com.docker.network.bridge.inhibit_ipv4";
+pub const DEFAULT_BRIDGE: &str = "com.docker.network.bridge.default_bridge";
+pub const HOST_IPV4: &str = "com.docker.network.host_ipv4";
+pub const HOST_IPV6: &str = "com.docker.network.host_ipv6";
+
 impl Network {
     /// Whether it is one of dockerd's predefined ones.
     pub fn predefined(&self) -> bool {
         PREDEFINED.contains(&self.name.as_str())
+    }
+
+    /// Whether its members reach one another: unless it was made with `enable_icc` false,
+    /// as dockerd's bridge keeps a network's containers from one another.
+    pub fn icc(&self) -> bool {
+        self.options
+            .get(ICC)
+            .is_none_or(|v| shards_cmdline::go::parse_bool(v).unwrap_or(true))
+    }
+
+    /// The host address its members' ports are published at where a run names none
+    /// (`host_binding_ipv4`, an IPv4 address or an IPv6 one whatever its name says, as
+    /// dockerd reads it); none for every address, as unset or 0.0.0.0 is.
+    pub fn host_binding(&self) -> Option<IpAddr> {
+        let ip: IpAddr = self.options.get(HOST_BINDING)?.parse().ok()?;
+        Some(ip.to_canonical()).filter(|ip| *ip != IpAddr::V4(Ipv4Addr::UNSPECIFIED))
+    }
+
+    /// Whether a gateway mode of its says `routed`: its members' addresses reached from
+    /// the host's networks directly, with no NAT, and no host port bound for a published
+    /// one (drivers/bridge/port_mapping_linux.go, configurePortBindingIPv4).
+    pub fn routed(&self) -> bool {
+        [GATEWAY_MODE4, GATEWAY_MODE6]
+            .iter()
+            .any(|m| self.options.get(*m).is_some_and(|v| v == "routed"))
     }
 }
 

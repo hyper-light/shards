@@ -565,7 +565,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
         } else if std::ptr::eq(command, &shards_cmdline::commands::UPDATE) {
             self.update(&parsed, reply)
         } else if std::ptr::eq(command, &shards_cmdline::commands::NETWORK_CREATE) {
-            self.network_create(&parsed, reply)
+            self.network_create(&parsed, asker, reply)
         } else if std::ptr::eq(command, &shards_cmdline::commands::NETWORK_LS) {
             self.network_ls(&parsed, reply)
         } else if std::ptr::eq(command, &shards_cmdline::commands::NETWORK_INSPECT) {

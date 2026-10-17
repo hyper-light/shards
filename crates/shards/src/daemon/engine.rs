@@ -393,13 +393,10 @@ impl<D: Disk> Daemon<D> {
             Ok(f) => f,
             Err(_) => return false,
         };
-        // A call refused before its body is read: the rest of its body read and dropped,
-        // as much as Go's server drops to keep a connection, past which it closes.
+        // A call refused before its body is read: answered first, then the rest of its
+        // body read and dropped ([`answered_first`]).
         let refuse = |reader: &mut BufReader<shards_ipc::Polled<UnixStream>>, answer: Answer| {
-            let mut body = Body::new(reader, framing);
-            let dropped = io::copy(&mut (&mut body).take(head::DISCARD), &mut io::sink());
-            let whole = dropped.is_ok() && body.ended();
-            answer.write(conn, head, whole).is_ok() && whole
+            answered_first(conn, head, answer, &mut Body::new(reader, framing))
         };
         let Some(decoded) = unescape(&path, false) else {
             return refuse(reader, Answer::error(400, format!("{path}: a malformed path")));
@@ -442,17 +439,15 @@ impl<D: Disk> Daemon<D> {
                 Upload::Root => self.engine_import(threads, conn, &call, Some(&mut body)),
                 Upload::Build => self.engine_build(conn, &call, &mut body),
             };
-            let whole = body.ended();
             return match done {
-                Done::Answer(answer) => answer.write(conn, head, whole).is_ok() && whole,
-                Done::Keep => whole,
+                Done::Answer(answer) => answered_first(conn, head, answer, &mut body),
+                Done::Keep => body.ended() || drained(&mut body),
                 Done::Close => false,
             };
         }
         // Every other call's body is JSON, or nothing: read whole, as much as a run holds.
-        let read = Body::new(reader, framing)
-            .take(BODY_MOST + 1)
-            .read_to_end(&mut call.body);
+        let mut body = Body::new(reader, framing);
+        let read = (&mut body).take(BODY_MOST + 1).read_to_end(&mut call.body);
         if read.is_err() {
             return false;
         }
@@ -461,8 +456,7 @@ impl<D: Disk> Daemon<D> {
                 413,
                 format!("a call's body is at most {BODY_MOST} bytes, which hold the largest run"),
             );
-            let _ = answer.write(conn, head, false);
-            return false;
+            return answered_first(conn, head, answer, &mut body);
         }
         match self.route(threads, conn, &call) {
             Done::Answer(answer) => answer.write(conn, head, true).is_ok(),
@@ -881,6 +875,28 @@ fn run_answer(conn: &UnixStream, said: PipeReader) -> RunAnswer {
         }
         answer
     })
+}
+
+/// Whether `conn` may serve another call, once `answer`, given before the call's `body` was
+/// read whole, is written as one whose connection is kept and the rest of the body read and
+/// dropped ([`drained`]). So a client still sending a body never finds its connection gone,
+/// and reads its answer whenever it does: a server that answers before it has read a
+/// request may keep reading it (RFC 9110 §10.1.1). Go's server, dockerd's, drops 256 KiB of
+/// such a body and closes past that (net/http server.go, maxPostHandlerReadBytes), and a
+/// client still sending a larger one, a build's context refused, can lose its answer to a
+/// broken pipe.
+fn answered_first<R: io::BufRead>(
+    conn: &UnixStream,
+    head: &Head,
+    answer: Answer,
+    body: &mut Body<'_, R>,
+) -> bool {
+    answer.write(conn, head, true).is_ok() && drained(body)
+}
+
+/// Whether the rest of `body` was read to its end, and dropped.
+fn drained<R: io::BufRead>(body: &mut Body<'_, R>) -> bool {
+    io::copy(body, &mut io::sink()).is_ok() && body.ended()
 }
 
 #[cfg(test)]

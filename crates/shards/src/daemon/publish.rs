@@ -131,25 +131,35 @@ fn proto(name: &str) -> Option<u8> {
 }
 
 /// Binds `bindings`, and lists them with the ports exposed `alone`; a binding with no
-/// address at IPv4's every one, and IPv6's too where `v6`, IPv6 can listen
-/// ([`v6_listenable`]). Whose an address in use is, `in_use` says, waiting for one a run
-/// of this daemon has just let go of.
+/// address at its network's (`default`, `host_binding_ipv4`) alone, or with none, at
+/// IPv4's every one, and IPv6's too where `v6`, IPv6 can listen ([`v6_listenable`]). Whose
+/// an address in use is, `in_use` says, waiting for one a run of this daemon has just let
+/// go of.
 pub(super) fn bind(
     bindings: &[Publish],
     alone: &[(u16, String)],
+    default: Option<IpAddr>,
     v6: bool,
     in_use: impl Fn(SocketAddr, u8) -> InUse,
 ) -> Result<Bound, String> {
     let mut bound = Bound::default();
     for b in bindings {
         let p = proto(&b.proto).ok_or_else(|| format!("protocol {} not supported", b.proto))?;
-        // No address is every one: IPv4's, and IPv6's on one port where IPv6 can listen.
+        // No address is the network's, an IPv4 or an IPv6 one, that one alone, as dockerd
+        // binds it (moby docker-v29.3.1, drivers/bridge/port_mapping_linux.go,
+        // configurePortBindingIPv4 and IPv6); or every one: IPv4's, and IPv6's on one port
+        // where IPv6 can listen.
         let ips: Vec<IpAddr> = if b.host_ip.is_empty() {
-            let mut every = vec![IpAddr::V4(Ipv4Addr::UNSPECIFIED)];
-            if v6 {
-                every.push(IpAddr::V6(Ipv6Addr::UNSPECIFIED));
+            match default {
+                Some(ip) => vec![ip],
+                None => {
+                    let mut every = vec![IpAddr::V4(Ipv4Addr::UNSPECIFIED)];
+                    if v6 {
+                        every.push(IpAddr::V6(Ipv6Addr::UNSPECIFIED));
+                    }
+                    every
+                }
             }
-            every
         } else {
             // An IPv4 address mapped into IPv6's is IPv4's, as dockerd records and binds
             // it (Go's IP.To4).
@@ -587,6 +597,7 @@ mod tests {
                 host_port: String::new(),
             }],
             &[],
+            None,
             v6_listenable(),
             |_, _| InUse::Host,
         )
@@ -611,13 +622,13 @@ mod tests {
             host_ip: String::new(),
             host_port: String::new(),
         };
-        let v4 = bind(std::slice::from_ref(&any), &[], false, |_, _| InUse::Host).unwrap();
+        let v4 = bind(std::slice::from_ref(&any), &[], None, false, |_, _| InUse::Host).unwrap();
         let at: Vec<IpAddr> = v4.listeners.iter().map(|l| l.at.ip()).collect();
         assert_eq!(at, [IpAddr::V4(Ipv4Addr::UNSPECIFIED)]);
         let recorded: Vec<Option<IpAddr>> = v4.ports.iter().map(|p| p.ip).collect();
         assert_eq!(recorded, [Some(IpAddr::V4(Ipv4Addr::UNSPECIFIED))]);
         if v6_listenable() {
-            let both = bind(std::slice::from_ref(&any), &[], true, |_, _| InUse::Host).unwrap();
+            let both = bind(std::slice::from_ref(&any), &[], None, true, |_, _| InUse::Host).unwrap();
             let at: Vec<IpAddr> = both.listeners.iter().map(|l| l.at.ip()).collect();
             assert_eq!(
                 at,
@@ -702,5 +713,33 @@ mod tests {
             tcp_free_beside_udp,
             "a UDP port's bind held TCP's port of its number"
         );
+    }
+
+    /// A port published at no address on a network with a default one
+    /// (`host_binding_ipv4`) is bound there alone, IPv4's or IPv6's, as dockerd binds it;
+    /// one given an address keeps its own.
+    #[test]
+    fn a_port_at_no_address_takes_its_networks() {
+        let at = |host_ip: &str, default: Option<IpAddr>| -> Vec<IpAddr> {
+            let b = Publish {
+                port: 7000,
+                proto: "tcp".into(),
+                host_ip: host_ip.into(),
+                host_port: String::new(),
+            };
+            bind(std::slice::from_ref(&b), &[], default, true, |_, _| InUse::Host)
+                .unwrap()
+                .listeners
+                .iter()
+                .map(|l| l.at.ip())
+                .collect()
+        };
+        let loopback = IpAddr::V4(Ipv4Addr::LOCALHOST);
+        assert_eq!(at("", Some(loopback)), [loopback]);
+        if v6_listenable() {
+            let loopback6 = IpAddr::V6(Ipv6Addr::LOCALHOST);
+            assert_eq!(at("", Some(loopback6)), [loopback6]);
+        }
+        assert_eq!(at("0.0.0.0", Some(loopback)), [IpAddr::V4(Ipv4Addr::UNSPECIFIED)]);
     }
 }

@@ -1325,18 +1325,13 @@ fn a_context_runs_commands_on_its_machine_whole() {
             .contains("-it: stdin is not a terminal, so it cannot be the command's"),
         "{terminal}"
     );
-    let cidfile = run_shards_env(
-        &["run"],
-        &["--cidfile", "id", image.as_str()],
-        &on_laptop,
-        TIMEOUT,
-    );
-    assert_eq!(cidfile.status, Some(125), "{cidfile}");
+    let policy = run_shards_env(&["buildx", "policy", "eval"], &["alpine"], &on_laptop, TIMEOUT);
+    assert_eq!(policy.status, Some(125), "{policy}");
     assert!(
-        cidfile
+        policy
             .stderr
-            .contains("a file of this machine's, which a context does not carry yet"),
-        "{cidfile}"
+            .contains("buildx policy eval over a context reads this machine's files"),
+        "{policy}"
     );
     // A build of a context with no build file is the build's to refuse, in its words.
     let empty = laptop.join("empty");
@@ -1789,6 +1784,13 @@ fn what_a_build_names_of_the_clients_is_carried_through_a_context() {
     assert_eq!(stacked.status, Some(0), "{stacked}");
     assert_eq!(std::fs::read_to_string(out2.join("a.txt")).unwrap(), "one");
     assert_eq!(std::fs::read_to_string(out2.join("b.txt")).unwrap(), "two");
+    // A directory that holds no layout is refused in the build's words, named as this
+    // client names it, not as its copy there.
+    let not_a_layout = format!("base=oci-layout://{}", other.display());
+    let refused = build(&on_it, &["--build-context", &not_a_layout]);
+    assert_ne!(refused.status, Some(0), "{refused}");
+    assert!(refused.stderr.contains(other.to_str().unwrap()), "{refused}");
+    assert!(!refused.stderr.contains("/synced/"), "the copy's path: {refused}");
     // A policy of this client's, in its context and left out of it by its ignore file, as
     // the build reads it: it refuses the build, in its words.
     let policy = app.join("deny.rego");
@@ -1934,4 +1936,208 @@ fn a_builds_ssh_agents_through_a_context_are_the_clients() {
             here.display()
         );
     }
+    // The build reached its agents by descriptors alone: no socket file the machine's other
+    // processes could dial.
+    let sockets: Vec<PathBuf> = every_path(&machine)
+        .into_iter()
+        .filter(|p| {
+            std::fs::symlink_metadata(p)
+                .is_ok_and(|m| std::os::unix::fs::FileTypeExt::is_socket(&m.file_type()))
+        })
+        .filter(|p| !p.ends_with("daemon.sock") && !p.ends_with("engine.sock"))
+        .collect();
+    assert!(sockets.is_empty(), "sockets in the machine's home: {sockets:?}");
+}
+
+/// Every path under `root`.
+fn every_path(root: &Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    let mut dirs = vec![root.to_path_buf()];
+    while let Some(dir) = dirs.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if entry.file_type().is_ok_and(|t| t.is_dir()) {
+                dirs.push(path.clone());
+            }
+            out.push(path);
+        }
+    }
+    out
+}
+
+/// A build through a context on a terminal is drawn as a build here is, shards' own
+/// display, not BuildKit's plain lines: on a terminal of the machine's of this one's size,
+/// resized with it, so that what it draws after a resize is laid out to the new width.
+#[test]
+fn a_build_through_a_context_on_a_terminal_is_drawn_as_here() {
+    let Some((_machine, _listening, laptop, image)) = joined("ctx-live") else {
+        return;
+    };
+    let app = laptop.join("app");
+    std::fs::create_dir_all(&app).unwrap();
+    std::fs::write(
+        app.join("Dockerfile"),
+        format!("FROM {image}\nRUN [\"/bin/testguest\", \"sleep-for\", \"3000\"]\n"),
+    )
+    .unwrap();
+    let mut term = Terminal::run(
+        &laptop,
+        &[
+            "--context",
+            "gpu",
+            "build",
+            "--no-cache",
+            "-t",
+            "drawn",
+            app.to_str().unwrap(),
+        ],
+        30,
+        100,
+    );
+    let head = term.wait_for("\"sleep-for\"");
+    assert!(head.contains("B U I L D"), "{head:?}");
+    assert!(!head.contains("#1 "), "plain lines: {head:?}");
+    // Narrower as the step runs: the build's end is laid out to it.
+    term.resize(30, 36);
+    let (shown, status, restored) = term.exit();
+    assert_eq!((status, restored), (0, true), "{shown:?}");
+    let end = shown.rsplit("Built.").next().unwrap_or_default();
+    let mut plain = String::new();
+    let mut chars = end.chars();
+    while let Some(c) = chars.next() {
+        if c == '\x1b' {
+            for c in chars.by_ref() {
+                if c.is_ascii_alphabetic() {
+                    break;
+                }
+            }
+        } else {
+            plain.push(c);
+        }
+    }
+    assert!(plain.contains("steps"), "{plain:?}");
+    assert!(
+        plain.contains('…'),
+        "clipped to the terminal as it is now: {plain:?}"
+    );
+    for line in plain.split('\n') {
+        let line = line.trim_end_matches('\r');
+        assert!(line.chars().count() <= 36, "{line:?} in {plain:?}");
+    }
+}
+
+/// `--cidfile` through a context is the client's file, as Docker's CLI keeps its own: made
+/// here before the microVM is, named as here (a relative name of this client's working
+/// directory), the ID written as soon as the machine has made it, refused where a file is
+/// there already, and left by no run that was never made; the run records the client's
+/// path.
+#[test]
+fn a_cidfile_through_a_context_is_the_clients() {
+    let Some((_machine, _listening, laptop, image)) = joined("ctx-cid") else {
+        return;
+    };
+    let on_laptop = [("SHARDS_HOME", laptop.as_os_str())];
+    let there = |args: &[&str]| run_shards_env_in(&laptop, &["--context", "gpu"], args, &on_laptop, TIMEOUT);
+    let made = there(&[
+        "run",
+        "--pull",
+        "never",
+        "-d",
+        "--name",
+        "held",
+        "--cidfile",
+        "held.id",
+        &image,
+        "sleep",
+    ]);
+    assert_eq!(made.status, Some(0), "{made}");
+    let held = laptop.join("held.id");
+    let id = std::fs::read_to_string(&held).unwrap();
+    assert_eq!(id.len(), 64, "{id:?}");
+    assert_eq!(made.stdout.trim(), id, "{made}");
+    // Named as a run here names it: its path from the working directory, as getcwd(3) says
+    // it.
+    let named = laptop.canonicalize().unwrap().join("held.id");
+    let recorded = there(&["inspect", "-f", "{{.HostConfig.ContainerIDFile}}", "held"]);
+    assert_eq!(recorded.stdout.trim(), named.to_str().unwrap(), "{recorded}");
+    // The file there already: refused as a run here refuses it, nothing run there.
+    let again = there(&[
+        "run",
+        "--pull",
+        "never",
+        "-d",
+        "--cidfile",
+        "held.id",
+        &image,
+        "sleep",
+    ]);
+    assert_eq!(again.status, Some(125), "{again}");
+    assert!(
+        again.stderr.contains(&format!(
+            "shards: container ID file found, make sure the other container isn't running or delete {}\n",
+            named.display()
+        )),
+        "{again}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&held).unwrap(),
+        id,
+        "the file left as it was"
+    );
+    // A create's.
+    let created = there(&[
+        "create",
+        "--pull",
+        "never",
+        "--cidfile",
+        "created.id",
+        &image,
+        "sleep",
+    ]);
+    assert_eq!(created.status, Some(0), "{created}");
+    assert_eq!(
+        std::fs::read_to_string(laptop.join("created.id")).unwrap(),
+        created.stdout.trim()
+    );
+    // An attached run's, while it runs.
+    let mut attached = common::command()
+        .current_dir(&*laptop)
+        .env("SHARDS_HOME", laptop.as_os_str())
+        .args(["--context", "gpu", "run", "--pull", "never", "--name", "attached"])
+        .args(["--cidfile", "attached.id", &image, "sleep"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let attached_id = laptop.join("attached.id");
+    let deadline = std::time::Instant::now() + TIMEOUT;
+    while std::fs::read_to_string(&attached_id).map_or(0, |id| id.len()) != 64 {
+        assert!(attached.try_wait().unwrap().is_none(), "the run ended first");
+        assert!(std::time::Instant::now() < deadline, "no ID while the run runs");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let removed = there(&["rm", "-f", "held", "attached", created.stdout.trim()]);
+    assert_eq!(removed.status, Some(0), "{removed}");
+    let _ = attached.wait();
+    assert_eq!(
+        std::fs::read_to_string(&attached_id).unwrap().len(),
+        64,
+        "kept once the run ended"
+    );
+    // A run never made leaves no file.
+    let missing = there(&[
+        "run",
+        "--pull",
+        "never",
+        "--cidfile",
+        "never.id",
+        "shards-test/none:never",
+        "x",
+    ]);
+    assert_ne!(missing.status, Some(0), "{missing}");
+    assert!(!laptop.join("never.id").exists(), "{missing}");
 }

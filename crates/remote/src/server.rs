@@ -33,7 +33,13 @@ pub struct Running {
     pub resize: Option<Box<dyn Fn(u16, u16) + Send>>,
     /// Signals the command as its client was, by the signal's Linux number.
     pub signal: Box<dyn Fn(u32) + Send>,
+    /// What the command tells its client of the microVM it made, read to its end: its ID
+    /// ([`Tag::Made`]), where the client asked for it.
+    pub made: Option<Box<dyn Read + Send>>,
 }
+
+/// The most a command's [`Running::made`] says: an ID, 64 hex digits.
+const MADE_MOST: u64 = 4 << 10;
 
 /// The machine a daemon serves its clients on.
 pub trait Host: Send {
@@ -97,6 +103,8 @@ struct Stream {
     starved: bool,
     stdout_done: bool,
     stderr_done: bool,
+    /// What the command told of the microVM it made is queued, or it tells nothing.
+    made_done: bool,
     status: Option<i32>,
     hangup: Option<Box<dyn Fn() + Send>>,
     /// The request frame came.
@@ -180,6 +188,7 @@ impl Stream {
         if let Some(status) = self.status
             && self.stdout_done
             && self.stderr_done
+            && self.made_done
         {
             self.end(io, conn, id, Tag::Exit, &status.to_be_bytes());
         } else {
@@ -358,6 +367,7 @@ impl<H: Host> Server<H> {
                     Ok(relayed) => {
                         stream.stdin = Some(relayed.stdin);
                         stream.credits = relayed.credits;
+                        stream.made_done = !relayed.tells;
                         stream.hangup = Some(relayed.hangup);
                         stream.resize = relayed.resize;
                         stream.signal = Some(relayed.signal);
@@ -495,6 +505,8 @@ impl<H: Host> Server<H> {
 struct Relayed {
     stdin: mpsc::SyncSender<Vec<u8>>,
     credits: Vec<mpsc::SyncSender<()>>,
+    /// The command tells what it made ([`Running::made`]).
+    tells: bool,
     hangup: Box<dyn Fn() + Send>,
     resize: Option<Box<dyn Fn(u16, u16) + Send>>,
     signal: Box<dyn Fn(u32) + Send>,
@@ -517,6 +529,7 @@ fn relay(
         hangup,
         resize,
         signal,
+        made,
     } = running;
     let spawn = |name: &str, f: Box<dyn FnOnce() + Send>| {
         std::thread::Builder::new()
@@ -576,6 +589,30 @@ fn relay(
             }),
         )?;
     }
+    let tells = made.is_some();
+    if let Some(made) = made {
+        let to = sender.try_clone()?;
+        spawn(
+            "remote-made",
+            Box::new(move || {
+                let mut bytes = Vec::new();
+                let _ = made.take(MADE_MOST).read_to_end(&mut bytes);
+                if !bytes.is_empty() {
+                    let _ = to.send(Command::Handler(Event::Output {
+                        conn,
+                        stream,
+                        tag: Tag::Made,
+                        bytes,
+                    }));
+                }
+                let _ = to.send(Command::Handler(Event::OutputEnd {
+                    conn,
+                    stream,
+                    tag: Tag::Made,
+                }));
+            }),
+        )?;
+    }
     let to = sender.try_clone()?;
     spawn(
         "remote-wait",
@@ -587,6 +624,7 @@ fn relay(
     Ok(Relayed {
         stdin: stdin_tx,
         credits,
+        tells,
         hangup,
         resize,
         signal,
@@ -676,6 +714,7 @@ impl<H: Host> Handler for Server<H> {
                 }
             }
             Event::OutputEnd { tag: Tag::Stdout, .. } => stream.stdout_done = true,
+            Event::OutputEnd { tag: Tag::Made, .. } => stream.made_done = true,
             Event::OutputEnd { .. } => stream.stderr_done = true,
             Event::Exited { status, .. } => stream.status = Some(status),
             Event::InputTaken { .. } => {}

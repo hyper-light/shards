@@ -1,7 +1,7 @@
 //! Docker's tools through a context (D180 part 4): each context this home joined has an
-//! engine socket of its own in the home (`e/KEY.sock`, KEY its name hashed, as Docker's
-//! own context store names a context's directory, so that a path of any name fits a socket
-//! address), which this daemon serves while it runs, polled and drained with its own
+//! engine socket of its own in the home (`e/KEY.sock`, KEY its name hashed, so that a path
+//! of any name fits a socket address), which this daemon serves while it runs, polled and
+//! drained with its own
 //! sockets. A connection to it is relayed whole to the Engine API (D170) of the context's
 //! machine, a QUIC stream each, as `DOCKER_HOST` reaches a daemon: what a client of
 //! Docker's API asks there, it asks of that machine.

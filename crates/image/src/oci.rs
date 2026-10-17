@@ -263,7 +263,7 @@ pub fn parse_document(bytes: &[u8], content_type: &str) -> Result<Document, Erro
     if matches!(declared, media::DOCKER_SCHEMA1 | media::DOCKER_SCHEMA1_SIGNED)
         || shape.schema_version == Some(1)
     {
-        return bad("schema 1 manifests are not supported, as Docker no longer supports them");
+        return bad("schema 1 manifests are not supported: push the image again, as schema 2 or OCI");
     }
     let is_index = shape.manifests.is_some();
     let is_manifest = shape.config.is_some();

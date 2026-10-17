@@ -669,11 +669,11 @@ mod tests {
         );
     }
 
-    /// Docker Hub's index is asked as dockerd asks it: the term and limit escaped as Go
+    /// Docker Hub's index is asked with what it takes: the term and limit escaped as Go
     /// escapes them, `X-Docker-Token`, a password login as Basic credentials, an identity
     /// token as the bearer token its token server gives for `registry:catalog:search`.
     #[test]
-    fn docker_hubs_index_is_searched_as_dockerd_searches_it() {
+    fn docker_hubs_index_is_searched_with_its_tokens_and_credentials() {
         let tokens = route(None, |_: &Seen| {
             Some((
                 json("200 OK", &[], r#"{"token":"t","access_token":"t"}"#),

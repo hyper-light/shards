@@ -251,13 +251,16 @@ pub fn login(args: impl Iterator<Item = OsString>) -> ExitCode {
         )) = credentials::lookup(domain, &env)
     {
         stored_user.clone_from(&username);
+        // On a terminal in shards' own words; piped, what a `docker` script reads.
+        let other = if std::io::IsTerminal::is_terminal(&std::io::stderr()) {
+            "To log in as another account, run 'shards logout registry', then 'shards login registry'"
+        } else {
+            "To login with a different account, run 'shards logout' followed by 'shards login'"
+        };
         let _ = write!(
             std::io::stderr(),
             "Authenticating with existing credentials... [Username: {username}]\n{}\n\n",
-            note(
-                " Info -> ",
-                "To login with a different account, run 'shards logout' followed by 'shards login'"
-            )
+            note(" Info -> ", other)
         );
         match check_and_keep(&server, &username, &stored) {
             Ok(()) => {

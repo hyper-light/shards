@@ -370,6 +370,24 @@ fn ipam_errors(c: &Asked) -> Vec<String> {
     errs
 }
 
+/// What the default network does, said as its options (D31): its flows leave from its
+/// network process's host sockets, under the host's address, as masquerading makes them; a
+/// port published with no address is bound at every one (publish::bind); no member
+/// reaches another, as each has the same address, so that one template serves them all
+/// (shards_net::bridge); and its interface's MTU is its device's.
+fn bridge_options() -> BTreeMap<String, String> {
+    [
+        (nets::DEFAULT_BRIDGE, "true".to_string()),
+        (nets::ICC, "false".to_string()),
+        (nets::MASQUERADE, "true".to_string()),
+        (nets::HOST_BINDING, "0.0.0.0".to_string()),
+        (nets::MTU, shards_vmm::devices::virtio::net::MTU.to_string()),
+    ]
+    .into_iter()
+    .map(|(k, v)| (k.to_string(), v))
+    .collect()
+}
+
 impl<D: Disk> Daemon<D> {
     /// The ULA pool dockerd derives from its host's ID: fd00::/8 with the ID's hash's 40
     /// bits, a /48.
@@ -420,29 +438,22 @@ impl<D: Disk> Daemon<D> {
             } else {
                 Vec::new()
             };
+            let options = if name == "bridge" {
+                bridge_options()
+            } else {
+                BTreeMap::new()
+            };
             match all.iter_mut().find(|n| n.name == name) {
-                Some(n) if n.pools != pools => {
+                // A home's record of what the default network does, kept so as shards
+                // changes (the options a home of an older shards recorded).
+                Some(n) if n.pools != pools || n.options != options => {
                     n.pools = pools;
+                    n.options = options;
                     let _ = store.put(n);
                 }
                 Some(_) => {}
                 None => {
                     let Ok(id) = new_id() else { continue };
-                    let options = if name == "bridge" {
-                        [
-                            ("com.docker.network.bridge.default_bridge", "true"),
-                            ("com.docker.network.bridge.enable_icc", "true"),
-                            ("com.docker.network.bridge.enable_ip_masquerade", "true"),
-                            ("com.docker.network.bridge.host_binding_ipv4", "0.0.0.0"),
-                            ("com.docker.network.bridge.name", "docker0"),
-                            ("com.docker.network.driver.mtu", "1500"),
-                        ]
-                        .iter()
-                        .map(|(k, v)| (k.to_string(), v.to_string()))
-                        .collect()
-                    } else {
-                        BTreeMap::new()
-                    };
                     let n = Network {
                         name: name.into(),
                         id,
@@ -935,10 +946,12 @@ impl<D: Disk> Daemon<D> {
                 &[],
             )?;
         }
+        // A link to each other member, where its network lets them reach one another
+        // (`enable_icc`); none where it does not, as dockerd's bridge keeps them apart.
         for peer in self
             .members_of(&network.id)
             .into_iter()
-            .filter(|m| m.container != id)
+            .filter(|m| m.container != id && network.icc())
         {
             let Some(theirs) = self.net_control(&peer.container) else {
                 continue;
@@ -1050,7 +1063,12 @@ impl<D: Disk> Daemon<D> {
 
     /// `shards network create NAME` (NetworkCreate, Controller.NewNetwork): the CLI's
     /// checks, then dockerd's, each in its order and words; its ID once kept.
-    pub(super) fn network_create(&self, parsed: &shards_cmdline::flags::Parsed, reply: &Reply<'_>) -> u8 {
+    pub(super) fn network_create(
+        &self,
+        parsed: &shards_cmdline::flags::Parsed,
+        asker: &Asker,
+        reply: &Reply<'_>,
+    ) -> u8 {
         let Some(name) = parsed.args.first() else {
             return 1;
         };
@@ -1280,46 +1298,46 @@ impl<D: Disk> Daemon<D> {
                 });
             }
         }
-        // The bridge driver's own options.
+        // The bridge driver's own options, each read as dockerd reads it (moby
+        // docker-v29.3.1, drivers/bridge/bridge_linux.go fromLabels, in a Go map's order,
+        // here the options' own), then its checks of them (parseNetworkOptions, Validate).
         if driver == "bridge" && !config_only {
-            if let Some(mtu) = options.get("com.docker.network.driver.mtu")
-                && mtu.parse::<i64>().is_err()
-            {
-                return daemon(&format!(
-                    "failed to parse com.docker.network.driver.mtu value: {mtu} (strconv.Atoi: parsing {}: invalid syntax)",
-                    shards_cmdline::go::quote(mtu)
-                ));
+            for (label, value) in &options {
+                let why = match label.as_str() {
+                    nets::MTU => shards_cmdline::go::atoi(value).err().map(|e| e.to_string()),
+                    nets::MASQUERADE | nets::ICC | nets::INHIBIT_IPV4 | nets::DEFAULT_BRIDGE => {
+                        shards_cmdline::go::parse_bool(value).err().map(|e| e.to_string())
+                    }
+                    nets::GATEWAY_MODE4 | nets::GATEWAY_MODE6 => {
+                        (!matches!(value.as_str(), "nat" | "nat-unprotected" | "routed" | "isolated"))
+                            .then(|| format!("unknown gateway mode {value}"))
+                    }
+                    nets::HOST_BINDING | nets::HOST_IPV4 | nets::HOST_IPV6 => value
+                        .parse::<std::net::IpAddr>()
+                        .is_err()
+                        .then(|| "nil ip".to_string()),
+                    _ => None,
+                };
+                if let Some(why) = why {
+                    return daemon(&format!("failed to parse {label} value: {value} ({why})"));
+                }
             }
-            if let Some(icc) = options.get("com.docker.network.bridge.enable_icc")
-                && shards_cmdline::go::parse_bool(icc).is_err()
-            {
-                return daemon(&format!(
-                    "failed to parse com.docker.network.bridge.enable_icc value: {icc} (strconv.ParseBool: parsing {}: invalid syntax)",
-                    shards_cmdline::go::quote(icc)
-                ));
-            }
-            let bridge_name = |n: &Network| {
-                n.options
-                    .get("com.docker.network.bridge.name")
-                    .cloned()
-                    .unwrap_or_else(|| format!("br-{}", n.id.get(..12).unwrap_or(&n.id)))
-            };
-            let mine = options
-                .get("com.docker.network.bridge.name")
-                .cloned()
-                .unwrap_or_else(|| format!("br-{}", id.get(..12).unwrap_or(&id)));
-            if mine.len() > 15 {
-                return daemon("numerical result out of range");
-            }
-            if let Some(other) = networks
+            let isolated = [nets::GATEWAY_MODE4, nets::GATEWAY_MODE6]
                 .iter()
-                .find(|n| n.driver == "bridge" && !n.config_only && bridge_name(n) == mine)
-            {
-                return daemon(&format!(
-                    "cannot create network {id} ({mine}): conflicts with network {} ({mine}): networks have same bridge name",
-                    other.id
-                ));
+                .any(|m| options.get(*m).is_some_and(|v| v == "isolated"));
+            if isolated && !parsed.bool("internal") {
+                return daemon("gateway mode 'isolated' can only be used for an internal network");
             }
+            if let Some(mtu) = options
+                .get(nets::MTU)
+                .and_then(|v| shards_cmdline::go::atoi(v).ok())
+                && mtu < 0
+            {
+                return daemon(&format!("invalid MTU number: {mtu}"));
+            }
+            // A network's bridge name is a Linux bridge's interface name, which shards makes
+            // none of: no length of an interface's, no two networks' bridge in common, to
+            // refuse.
         }
         if from.is_some() {
             options.clear();
@@ -1349,6 +1367,24 @@ impl<D: Disk> Daemon<D> {
             return daemon(&e);
         }
         reply.out(&id);
+        // An MTU is kept as given, and its microVMs keep their device's: what they send
+        // leaves through the host's own sockets, which fit it to each path the host finds,
+        // where a container's packets cross the host's wire as they were made. A smaller
+        // MTU would only cut their throughput, and have the guest fragment datagrams its
+        // network process takes whole (net/src/wire.rs). Said on a terminal; a script
+        // reads the ID alone, as dockerd's client prints it.
+        if asker.terminal
+            && let Some(mtu) = n.options.get(nets::MTU).filter(|m| m.as_str() != "0")
+        {
+            let text = format!(
+                "MTU {mtu} is kept as given: this network's microVMs keep {}, their devices'.\nWhat they send leaves through the host's own sockets, which fit it to each path's MTU.",
+                shards_vmm::devices::virtio::net::MTU
+            );
+            let _ = reply.bytes(
+                crate::spec::LOG_STDERR,
+                super::push::note(&text, asker.color).as_bytes(),
+            );
+        }
         0
     }
 

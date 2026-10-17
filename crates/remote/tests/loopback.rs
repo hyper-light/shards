@@ -110,6 +110,10 @@ impl Host for Machine {
             .iter()
             .map(|a| String::from_utf8(a.clone()).unwrap())
             .collect();
+        // `made-late COMMAND...`: COMMAND, which tells what it made only once it has exited.
+        let late = args.first().is_some_and(|a| a == "made-late");
+        let args = if late { args[1..].to_vec() } else { args };
+        let (gone, gone_rx) = mpsc::channel::<()>();
         let what = args.join(" ");
         let mut child = Command::new(&args[0])
             .args(&args[1..])
@@ -139,6 +143,7 @@ impl Host for Machine {
             wait: Box::new(move || {
                 let status = child.wait().map(|s| s.code().unwrap_or(128)).unwrap_or(1);
                 let _ = exited.send(Seen::Exited(what, status));
+                let _ = gone.send(());
                 status
             }),
             hangup: Box::new(move || {
@@ -151,6 +156,12 @@ impl Host for Machine {
             })),
             signal: Box::new(move |linux| {
                 let _ = signalled.send(Seen::Signalled(signalled_what.clone(), linux));
+            }),
+            made: late.then(|| {
+                Box::new(Late {
+                    gone: gone_rx,
+                    id: Some(b"made-id".to_vec()),
+                }) as Box<dyn Read + Send>
             }),
         })
     }
@@ -256,6 +267,26 @@ impl std::io::Write for Captured {
 impl Captured {
     fn bytes(&self) -> Vec<u8> {
         self.0.lock().unwrap().clone()
+    }
+}
+
+/// What a command tells of what it made, only once it has exited, and later than its exit's
+/// own frame takes: the order a busy host may run them in.
+struct Late {
+    gone: mpsc::Receiver<()>,
+    id: Option<Vec<u8>>,
+}
+
+impl Read for Late {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let Some(id) = self.id.take() else {
+            return Ok(0);
+        };
+        let _ = self.gone.recv();
+        std::thread::sleep(Duration::from_millis(50));
+        let n = id.len().min(buf.len());
+        buf[..n].copy_from_slice(&id[..n]);
+        Ok(n)
     }
 }
 
@@ -1102,4 +1133,36 @@ fn what_a_command_of_a_connection_gone_writes_reaches_no_other() {
     let (status, out, _) = later.get();
     assert_eq!(status, Ok(7), "{:?}", d.seen.now());
     assert_eq!(String::from_utf8_lossy(&out), "fresh\n");
+}
+
+/// What a command tells of the microVM it made reaches its client before the command's
+/// exit status, however late it is told: here only once the command has exited.
+#[test]
+fn what_a_command_made_comes_before_its_exit() {
+    let daemon_id = leak(Identity::generate().unwrap());
+    let laptop = leak(Identity::generate().unwrap());
+    let d = daemon(
+        daemon_id,
+        vec![("laptop".into(), laptop.spki().to_vec())],
+        Vec::new(),
+    );
+    let request = Request {
+        args: vec![b"made-late".to_vec(), b"true".to_vec()],
+        env: Vec::new(),
+        terminal: None,
+    };
+    let mut told = Vec::new();
+    let status = client::exec_made(
+        laptop,
+        d.remote,
+        request,
+        None,
+        std::io::sink(),
+        std::io::sink(),
+        |_| {},
+        |id| told.extend_from_slice(id),
+    )
+    .unwrap();
+    assert_eq!(status, Ok(0));
+    assert_eq!(told, b"made-id");
 }

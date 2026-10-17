@@ -411,6 +411,66 @@ pub fn command(p: &Paint, command: &Command, path: &str, out: &mut impl std::io:
     page.write(p, out);
 }
 
+/// A form of shards' grammar's page (`list vms`): each way it is said, what it does, and
+/// the options of the command it runs, said in shards' words.
+pub fn form(
+    p: &Paint,
+    command: &Command,
+    form: &shards_cmdline::grammar::Form,
+    out: &mut impl std::io::Write,
+) {
+    let cols = width();
+    let mut page = Page::new();
+    let name = form
+        .usages
+        .first()
+        .map_or("", |(said, _)| said.strip_prefix("shards ").unwrap_or(said));
+    head(
+        &mut page,
+        p,
+        cols,
+        name,
+        &[(tokens::BRIGHT, true, form.about.to_string())],
+    );
+    let sections = [("options", false), ("shards options", true)].map(|(title, extension)| {
+        let mut shown = flags::shown(command.flags, extension);
+        for f in &mut shown {
+            f.usage = super::said_ours(&f.usage);
+        }
+        (title, shown)
+    });
+    let any = sections.iter().any(|(_, shown)| !shown.is_empty());
+    heading(&mut page, p, "usage");
+    for (said, rest) in &form.usages {
+        let mut line = said.clone();
+        if any {
+            line.push_str(" [OPTIONS]");
+        }
+        if let Some(rest) = rest {
+            line.push(' ');
+            line.push_str(rest);
+        }
+        usage(&mut page, p, cols, &line);
+    }
+    let names = |f: &flags::Shown| -> usize {
+        4 + 2 + f.name.len() + if f.value.is_empty() { 0 } else { 1 + f.value.len() }
+    };
+    let pad = sections
+        .iter()
+        .flat_map(|(_, shown)| shown.iter().map(names))
+        .max()
+        .unwrap_or(0)
+        + 3;
+    for (title, shown) in &sections {
+        if shown.is_empty() {
+            continue;
+        }
+        heading(&mut page, p, title);
+        options(&mut page, p, cols, shown, pad, *title == "shards options");
+    }
+    page.write(p, out);
+}
+
 /// Options in columns: the short form in lavender, the long in the foreground, its
 /// value's kind subtle; what it does wrapped beside them, or under them where narrow;
 /// its default after, faint.
@@ -675,10 +735,7 @@ pub(crate) fn usage_page(name: &str, text: &str) -> bool {
 
 /// `text` in shards' words: what Docker's text calls a container is a microVM here.
 pub(crate) fn ours(text: &str) -> String {
-    text.replace("containers", "microVMs")
-        .replace("Containers", "MicroVMs")
-        .replace("container", "microVM")
-        .replace("Container", "MicroVM")
+    shards_cmdline::grammar::ours(text)
 }
 
 /// What the daemon said went wrong, in a panel on stderr; under the head, unless a page

@@ -17,8 +17,8 @@ use shards_remote::frame::{self, Request};
 use shards_remote::identity::{self, Identity};
 use shards_remote::invite::{self, Invitation};
 
-/// The exit status of a command shards did not run, as Docker's CLI exits for an error
-/// before its command runs.
+/// The exit status of a command shards did not run: an error before its command ran, the
+/// status a `docker` script reads for one.
 const NOT_RUN: u8 = 125;
 
 /// What names a connection to the machine's Engine API (D180 part 4) to its daemon: no
@@ -27,9 +27,8 @@ const NOT_RUN: u8 = 125;
 pub(crate) const ENGINE_STEP: &str = "\u{0}engine";
 
 /// Where this home's daemon serves context `name`'s engine, relative to the home: in `e`, by
-/// its name hashed, as Docker's context store names a context's directory (docker/cli
-/// context/store, `contextdirOf`), so that the path of any name fits a socket's address
-/// (sun_path, 104 bytes on macOS): 71 in a macOS home of a user of nine letters.
+/// its name hashed, so that the path of any name fits a socket's address (sun_path, 104
+/// bytes on macOS): 71 in a macOS home of a user of nine letters.
 pub(crate) fn engine_socket(name: &str) -> PathBuf {
     use sha2::Digest as _;
     let digest = sha2::Sha256::digest(name.as_bytes());
@@ -47,6 +46,60 @@ fn engine_endpoint(home: &Path, name: &str) -> String {
 /// command has its own (D180), which no action of posix_spawn(3) makes on every system.
 #[cfg(unix)]
 pub(crate) const TAKE_TERMINAL: &str = "SHARDS_TAKE_TERMINAL";
+
+/// What a client says in place of a run's or create's `--cidfile` path, before it: the file is
+/// the client's, made and written there, the ID told it by its machine (`frame::Tag::Made`).
+pub(crate) const CIDFILE: &str = "\0cidfile/";
+
+/// The variable a daemon sets for a client's command whose `--cidfile` is the client's
+/// ([`CIDFILE`]): the descriptor the command writes its microVM's ID to, which the daemon
+/// tells the client.
+#[cfg(unix)]
+pub(crate) const CIDFILE_FD: &str = "SHARDS_CIDFILE_FD";
+
+/// The descriptor [`CIDFILE_FD`] names.
+#[cfg(unix)]
+pub(crate) const CIDFILE_DESCRIPTOR: i32 = 3;
+
+/// The descriptor [`take_cidfile`] took.
+#[cfg(unix)]
+static TOLD: std::sync::Mutex<Option<fs::File>> = std::sync::Mutex::new(None);
+
+/// Takes what [`CIDFILE_FD`] names, close-on-exec, and lets the variable go, so that nothing
+/// this process starts takes it too.
+#[cfg(unix)]
+pub(crate) fn take_cidfile() {
+    use std::os::fd::FromRawFd as _;
+    let Some(fd) = std::env::var(CIDFILE_FD).ok().and_then(|v| v.parse::<i32>().ok()) else {
+        return;
+    };
+    // SAFETY: first thing in main, before any thread: the environment is this one's alone.
+    unsafe { std::env::remove_var(CIDFILE_FD) };
+    // SAFETY: fcntl(2) of a descriptor past stdio's, which its daemon gave this process.
+    if fd <= 2 || unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) } != 0 {
+        return;
+    }
+    // SAFETY: the descriptor its daemon gave this process for the ID, which nothing else
+    // here holds.
+    let file = unsafe { fs::File::from_raw_fd(fd) };
+    *TOLD.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(file);
+}
+
+/// The descriptor a client's `--cidfile` is told through ([`take_cidfile`]), once.
+#[cfg(unix)]
+pub(crate) fn told_cidfile() -> Option<fs::File> {
+    TOLD.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .take()
+}
+
+/// Whether this process's `--cidfile` is a client's ([`take_cidfile`]).
+#[cfg(unix)]
+pub(crate) fn tells_cidfile() -> bool {
+    TOLD.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .is_some()
+}
 
 /// Does what [`TAKE_TERMINAL`] asks, and lets the variable go, so that nothing this process
 /// starts takes the terminal too.
@@ -181,9 +234,9 @@ fn here_terminal() -> Option<frame::Terminal> {
     })
 }
 
-/// A console has no SIGWINCH: its size is looked at every 250 ms, as docker/cli's
-/// MonitorTtySize looks at a Windows console's (cli/command/container/tty.go), and a change
-/// sizes the command's terminal. Its events, ^C and ^Break where its input is not raw, and
+/// A console has no SIGWINCH: its size is looked at every 250 ms (docker/cli's interval,
+/// MonitorTtySize, not measured; the console's own resize events would need none, open in
+/// docs/audit/2026-10-16_docker-framing.md), and a change sizes the command's terminal. Its events, ^C and ^Break where its input is not raw, and
 /// its closing, go to the command as Go's runtime gives them to a Windows process
 /// ([`console_signal`]).
 #[cfg(windows)]
@@ -267,7 +320,7 @@ fn console_signal(kind: u32) -> Option<u32> {
 }
 
 /// Takes the signals this process would act on, which go to the command it forwards
-/// instead, as the Docker CLI's go to its container (`--sig-proxy`). With `terminal`, the
+/// instead (`--sig-proxy`). With `terminal`, the
 /// descriptor of its terminal, the command's own terminal, SIGWINCH sizes it, as the
 /// kernel then signals the command; without, SIGWINCH goes as the rest do. One that comes
 /// with no command to take it ends the client as it would have, its terminal restored
@@ -323,9 +376,9 @@ fn steer_signals(reads_terminal: bool, terminal: Option<i32>) -> Result<(), Stri
     Ok(())
 }
 
-/// A context's name, as docker/cli names one (v29.8.1 cli/context/store, ValidateContextName):
-/// a letter or digit, then letters, digits, `_`, `.`, `+` or `-`; and not `default`, this
-/// machine's.
+/// A context's name: a letter or digit, then letters, digits, `_`, `.`, `+` or `-`; and not
+/// `default`, this machine's. The names a `docker context` takes (v29.8.1 cli/context/store,
+/// ValidateContextName), so that one named for it works here.
 fn valid_name(name: &str) -> bool {
     let mut bytes = name.bytes();
     bytes.next().is_some_and(|b| b.is_ascii_alphanumeric())
@@ -523,8 +576,9 @@ pub(crate) enum Chosen {
 
 /// The context `args`' command runs in, its own options taken from the front of `args`:
 /// `--context NAME` (`-c NAME`, `--context=NAME`), else `SHARDS_CONTEXT`, else
-/// `DOCKER_CONTEXT`, else the home's current one, as docker/cli chooses (v29.8.1
-/// cli/command/cli.go, resolveContextName); `default` is this machine.
+/// `DOCKER_CONTEXT`, else the home's current one, so that a script's choice holds (the
+/// order of docker/cli v29.8.1 cli/command/cli.go, resolveContextName); `default` is this
+/// machine.
 pub(crate) fn chosen(home: &Path, args: &mut Vec<OsString>) -> Result<Chosen, String> {
     let mut given = None;
     loop {
@@ -581,28 +635,22 @@ fn not_carried(args: &[OsString]) -> Option<String> {
     if shards_cmdline::commands::build(&refs).is_some() {
         return None;
     }
-    let refused = matches!(first, "buildx" | "builder" | "compose") || (first == "cp" && !cfg!(unix));
-    if refused {
+    // `buildx policy eval` and `test` read a policy of this client's files here, against
+    // the machine as its builder: not carried yet. Every other
+    // `buildx` and `builder` command asks the machine's builder alone, and `compose`,
+    // which is no command of shards', is the machine's to say so of, as this one's would.
+    let policy = matches!(refs.as_slice(), ["buildx", "policy", "eval" | "test", ..]);
+    if policy || (first == "cp" && !cfg!(unix)) {
+        let named = if policy {
+            refs.get(..3).unwrap_or_default().join(" ")
+        } else {
+            first.to_string()
+        };
         return Some(format!(
-            "{first} over a context sends this machine's files, which shards does not carry yet: run it on the machine itself"
+            "{named} over a context reads this machine's files, which shards does not carry yet: run it on the machine itself"
         ));
     }
-    // `run` is the CLI's own to read (request.rs), as Docker's flags are its.
-    let (command, path, n) = match refs.as_slice() {
-        ["run", ..] => (&shards_cmdline::commands::RUN, "shards run", 1),
-        ["container", "run", ..] => (&shards_cmdline::commands::RUN, "shards container run", 2),
-        _ => shards_cmdline::commands::find(&refs)?,
-    };
-    let rest = said.get(n..).map(<[String]>::to_vec).unwrap_or_default();
-    let shards_cmdline::flags::Outcome::Run(parsed) =
-        shards_cmdline::flags::parse(command, path, &rest, &|_, value| Ok(value.to_string()))
-    else {
-        return None;
-    };
-    // `--env-file` and `--label-file` cross as what they hold ([`here_values`]), and `-o`'s
-    // and `-i`'s files as the command's output and input ([`here_files`]).
-    let files = !parsed.string("cidfile").is_empty();
-    files.then(|| format!("{path}: a file of this machine's, which a context does not carry yet"))
+    None
 }
 
 /// A build of a context of this client's (D180 part 3c): what the machine builds, of its copy
@@ -894,7 +942,7 @@ fn building(words: &[String], stdin: &dyn Fn() -> Result<Vec<u8>, String>) -> Re
         ..shards_build::context::Filters::default()
     };
     // The machine's words: the context and the build file its copies', a bare build arg
-    // this client's value, or none, as buildx reads one where it is run.
+    // this client's value, or none: the value where the build was asked for.
     let mut gone: Vec<(usize, usize)> = Vec::new();
     let mut outputs = Vec::new();
     let mut trees = Vec::new();
@@ -1371,11 +1419,18 @@ fn build_there(
         let id = shards_cmdline::go::csv_field(&format!("id={id}"));
         words.insert(at, format!("--secret={id},src={}{i}", crate::synced::SECRET));
     }
-    // This client's own paths, which what the build prints there says in place of its copy's.
+    // This client's own paths, which what the build prints there says in place of its
+    // copies': its context's, its build file's directory's, and each tree's, by its key.
     let mut shown = built.context.as_os_str().as_encoded_bytes().to_vec();
     shown.push(0);
     if let Some(dir) = &built.dockerfile_dir {
         shown.extend_from_slice(dir.as_os_str().as_encoded_bytes());
+    }
+    for tree in &built.trees {
+        shown.push(0);
+        shown.extend_from_slice(tree.key.as_bytes());
+        shown.push(0);
+        shown.extend_from_slice(tree.root.as_os_str().as_encoded_bytes());
     }
     env.push((crate::synced::SHOWN_AS.to_string(), shown));
     let (reader, mut writer) = match io::pipe() {
@@ -1399,12 +1454,29 @@ fn build_there(
     let words: Vec<&str> = std::iter::once("build")
         .chain(words.iter().map(String::as_str))
         .collect();
+    // This client's terminal, where its stderr is one: the build there draws shards' own
+    // display on a terminal of this one's size, as a build here draws it (build/live.rs);
+    // its stdin and stdout are the step's streams.
+    let terminal = here_terminal().filter(|t| t.stderr).map(|t| frame::Terminal {
+        stdin: false,
+        stdout: false,
+        ..t
+    });
     let request = Request {
         args: step(&words),
         env,
-        terminal: None,
+        terminal,
     };
-    let steered = |controls| {
+    // A resize since the size was said is sent once the build is asked for, as no signal
+    // could send it before.
+    let steered = move |controls: client::Controls| {
+        #[cfg(unix)]
+        if let Some(t) = terminal {
+            let now = crate::cli::terminal::size(2);
+            if now != (t.rows, t.cols) {
+                let _ = controls.resize(now.0, now.1);
+            }
+        }
         *STEERED.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(controls);
     };
     // What the build says on stdout, its own and then its outputs of this client's, taken
@@ -1754,14 +1826,14 @@ impl Drop for Fetched {
 /// so (the CLI's kv_file, pkg/kvfile's Parse).
 type KvFile = dyn Fn(&str, bool) -> Result<Vec<String>, String>;
 
-/// What a command line names of this client's, resolved here as Docker's CLI resolves it,
-/// where the command there would read its own machine's (D180): a variable `-e NAME` takes
+/// What a command line names of this client's, resolved here, where the command there
+/// would read its own machine's (D180): a variable `-e NAME` takes
 /// the value `lookup` gives it here, if any (docker/cli opts/env.go, ValidateEnv); and
 /// `--env-file` and `--label-file`, files of this machine's, become the `--env` and
-/// `--label` values that `read` finds in them, ahead of the rest, as docker/cli reads files'
-/// first (ReadKVEnvStrings, ReadKVStrings); and a seccomp profile's file, read here and sent
-/// as its JSON, as docker/cli sends it (parseSecurityOpts), which the command there takes as
-/// the profile. A command shards' parser refuses goes as it is: its refusal is the command's
+/// `--label` values that `read` finds in them, ahead of the rest (the order a `docker`
+/// script's values take, docker/cli ReadKVEnvStrings, ReadKVStrings); and a seccomp
+/// profile's file, read here and sent as its JSON (docker/cli parseSecurityOpts sends it so
+/// too), which the command there takes as the profile. A command shards' parser refuses goes as it is: its refusal is the command's
 /// own there. What a file here fails of is said as the command says it there, with its exit
 /// status.
 fn here_values(
@@ -1846,6 +1918,86 @@ fn here_values(
     Ok(head.into_iter().chain(from_files).chain(rest).collect())
 }
 
+/// A run's or create's `--cidfile` here, and how its command words what it refuses.
+struct Cid {
+    file: crate::cli::request::CidFile,
+    run: bool,
+}
+
+impl Cid {
+    /// `why` as the command says it, and its status: a run's with its help line, as
+    /// docker/cli's runRun words what createContainer returns (cli/request.rs), and a
+    /// create's plain.
+    fn refused(&self, why: String) -> (String, u8) {
+        refused_cid(self.run, why)
+    }
+}
+
+fn refused_cid(run: bool, why: String) -> (String, u8) {
+    if run {
+        let status = crate::cli::request::run_status(&why);
+        (
+            format!("shards: {why}\n\nRun 'shards run --help' for more information"),
+            status,
+        )
+    } else {
+        (why, 1)
+    }
+}
+
+/// A run's or create's `--cidfile`, a file of this client's that Docker's CLI makes and
+/// writes (D180): made here, in one step that fails where one is there, before the command is asked
+/// for, and said there as [`CIDFILE`] before its path here, which the run records; the
+/// machine tells this client the ID once it has made the microVM, and this client writes it
+/// (`client::exec_made`). A platform that does not parse is the machine's to refuse first,
+/// the order a `docker` script sees (docker/cli parses one before it makes the file), and a
+/// command shards' parser refuses goes as it is.
+fn here_cidfile(words: Vec<String>) -> Result<(Vec<String>, Option<Cid>), (bool, String)> {
+    use shards_cmdline::commands::{CREATE, RUN};
+    let said = shards_cmdline::grammar::rewrite(&words).unwrap_or_else(|| words.clone());
+    let refs: Vec<&str> = said.iter().map(String::as_str).collect();
+    let (command, path, n) = match refs.as_slice() {
+        ["run", ..] => (&RUN, "shards run", 1),
+        ["container", "run", ..] => (&RUN, "shards container run", 2),
+        ["create", ..] => (&CREATE, "shards create", 1),
+        ["container", "create", ..] => (&CREATE, "shards container create", 2),
+        _ => return Ok((words, None)),
+    };
+    let head = said.get(..n).map(<[String]>::to_vec).unwrap_or_default();
+    let mut rest = said.get(n..).map(<[String]>::to_vec).unwrap_or_default();
+    let shards_cmdline::flags::Outcome::Run(parsed) =
+        shards_cmdline::flags::parse(command, path, &rest, &|_, value| Ok(value.to_string()))
+    else {
+        return Ok((words, None));
+    };
+    let file = parsed.string("cidfile").to_string();
+    let platform = if parsed.changed("platform") {
+        parsed.string("platform").to_string()
+    } else {
+        crate::cli::env_ours_first("SHARDS_DEFAULT_PLATFORM", "DOCKER_DEFAULT_PLATFORM").unwrap_or_default()
+    };
+    if file.is_empty() || (!platform.is_empty() && crate::pull::targets(&platform).is_err()) {
+        return Ok((words, None));
+    }
+    let run = std::ptr::eq(command, &RUN);
+    let here = std::path::absolute(&file)
+        .map_err(|e| (run, format!("failed to create the container ID file: {e}")))?;
+    let here = here.to_string_lossy().into_owned();
+    let made = crate::cli::request::CidFile::new(&here).map_err(|e| (run, e))?;
+    for &(name, at, offset) in &parsed.positions {
+        if name != "cidfile" {
+            continue;
+        }
+        if let Some(word) = rest.get_mut(at) {
+            *word = format!("{}{CIDFILE}{here}", word.get(..offset).unwrap_or_default());
+        }
+    }
+    Ok((
+        head.into_iter().chain(rest).collect(),
+        Some(Cid { file: made, run }),
+    ))
+}
+
 /// A file of this client's that Docker's CLI writes or reads whole for its command (D180):
 /// the command there writes it as its stdout, or reads it as its stdin, and this client
 /// writes the file, or reads it.
@@ -1868,9 +2020,10 @@ enum Named {
 /// The file of this client's that the command `words` writes or reads whole, if any, and
 /// the command that writes its stdout or reads its stdin there instead (D180): `save -o`,
 /// `export -o` and `make agentfile -o` write theirs here, `load -i` reads its file here,
-/// and `import` a file it names, as docker/cli's runSave, runExport, runLoad and runImport
-/// write and read theirs (cli/command/image/save.go, load.go, import.go,
-/// container/export.go); and `pull --output-agentfile` writes the image's Agentfile here,
+/// and `import` a file it names, the client's files (the files docker/cli's runSave,
+/// runExport, runLoad and runImport write and read too, cli/command/image/save.go, load.go,
+/// import.go, container/export.go); and `pull --output-agentfile` writes the image's
+/// Agentfile here,
 /// asked of the machine once its pull is through. A command shards' parser refuses, or
 /// `-h`, goes as it is.
 fn here_files(words: Vec<String>) -> (Vec<String>, Option<Named>) {
@@ -2045,8 +2198,8 @@ pub(crate) fn kept_here(args: &[OsString]) -> bool {
         || words.get(1).is_some_and(|w| own(w))
 }
 
-/// This client's credentials for the registry the command `words` reaches there, as Docker's
-/// CLI sends its own with each pull, push and search it asks its daemon for (D180): those
+/// This client's credentials for the registry the command `words` reaches there, sent with
+/// the command (D180): those
 /// for the image a pull, push, run or create names, or the index a search asks, and of
 /// shards' own, the image `make agentfile` names, which it pulls where it is not there, and
 /// the artifact an agent's, harness's or MCP server's push, pull or referrer's removal
@@ -2214,6 +2367,16 @@ pub(crate) fn forward(home: &Path, context: &Context, args: Vec<OsString>) -> Ex
         }
     };
     let (words, named) = here_files(words);
+    let (words, mut cid) = match here_cidfile(words) {
+        Ok(rewritten) => rewritten,
+        Err((run, why)) => {
+            let (said, status) = refused_cid(run, why.clone());
+            if !crate::cli::request::refused_on_terminal(if run { "run" } else { "create" }, &why) {
+                let _ = writeln!(io::stderr(), "{said}");
+            }
+            return ExitCode::from(status);
+        }
+    };
     let words_sent = words.clone();
     let bytes: Vec<Vec<u8>> = words.into_iter().map(String::into_bytes).collect();
     // Of this client's own variables, what shapes the command; and of its credentials, those
@@ -2402,7 +2565,24 @@ pub(crate) fn forward(home: &Path, context: &Context, args: Vec<OsString>) -> Ex
         }
         *steered = Some(controls);
     };
-    let mut ran = client::exec(
+    // The ID of what it made, written to this client's `--cidfile` as it comes; one the file
+    // cannot take fails the command as here, which there goes on no more.
+    let mut unwritten = None;
+    let made = |id: &[u8]| {
+        if let Some(cid) = &mut cid
+            && let Err(e) = cid.file.write(&String::from_utf8_lossy(id))
+        {
+            unwritten = Some(cid.refused(e));
+            if let Some(controls) = STEERED
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .as_ref()
+            {
+                let _ = controls.hang_up();
+            }
+        }
+    };
+    let mut ran = client::exec_made(
         &identity,
         context.remote(),
         request,
@@ -2410,8 +2590,13 @@ pub(crate) fn forward(home: &Path, context: &Context, args: Vec<OsString>) -> Ex
         stdout,
         io::stderr(),
         steered,
+        made,
     );
     crate::cli::terminal::restore();
+    if let Some((said, status)) = unwritten {
+        let _ = writeln!(io::stderr(), "{said}");
+        return ExitCode::from(status);
+    }
     // What writes the file once the command is through, which was asked for it alone.
     if let (Some((words, recorded)), Ok(Ok(0))) = (then, &ran) {
         let request = Request {
@@ -2540,6 +2725,35 @@ impl io::Write for Taken {
     }
 }
 
+/// Whether `words` ask for help: `-h` or `--help`, where it is no flag's value (a flag of
+/// `valued` takes the word after it) and before `--`.
+pub(crate) fn asks_help(words: &[&str], valued: &[&str]) -> bool {
+    let mut words = words.iter();
+    while let Some(word) = words.next() {
+        match *word {
+            "-h" | "--help" => return true,
+            "--" => return false,
+            w if valued.contains(&w) => {
+                words.next();
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
+/// `usage`, a command's page, as its help: on a colour terminal laid out as `name`'s.
+pub(crate) fn help_page(name: &str, usage: &str) -> ExitCode {
+    #[cfg(unix)]
+    if crate::cli::look::usage_page(name, usage) {
+        return ExitCode::SUCCESS;
+    }
+    #[cfg(not(unix))]
+    let _ = name;
+    let _ = writeln!(io::stdout(), "{usage}");
+    ExitCode::SUCCESS
+}
+
 /// `shards context ...`: the contexts this home joined.
 pub(crate) fn command(args: &[OsString]) -> ExitCode {
     let home = match shards_ipc::home() {
@@ -2547,6 +2761,9 @@ pub(crate) fn command(args: &[OsString]) -> ExitCode {
         Err(e) => return failed(&e),
     };
     let words: Vec<&str> = args.iter().map_while(|a| a.to_str()).collect();
+    if asks_help(&words, &["--invite-file", "--description"]) {
+        return help_page("context", CONTEXT_USAGE);
+    }
     let result = match words.as_slice() {
         ["create", name, rest @ ..] => create(&home, name, rest),
         ["use", name] => use_context(&home, name),
@@ -2602,7 +2819,7 @@ fn create(home: &Path, name: &str, rest: &[&str]) -> Result<(), String> {
             }
             "--docker" | "--from" => {
                 return Err(format!(
-                    "{word}: a shards context is another machine's shards, joined by its owner's invitation (--invite-file); Docker's endpoints are Docker's"
+                    "{word}: a shards context is another machine's shards, joined by its owner's invitation (--invite-file); it reaches no Docker daemon"
                 ));
             }
             other => return Err(format!("unknown flag: {other}")),
@@ -2815,6 +3032,9 @@ pub(crate) fn admin(thing: &str, args: &[OsString]) -> ExitCode {
         Err(e) => return failed(&e),
     };
     let words: Vec<&str> = args.iter().map_while(|a| a.to_str()).collect();
+    if asks_help(&words, &["--name", "--output"]) {
+        return help_page(thing, ADMIN_USAGE);
+    }
     let result = match (thing, words.as_slice()) {
         ("client", ["invite", rest @ ..]) => invite_client(&home, rest),
         ("client", ["ls" | "list"]) => {
@@ -3148,7 +3368,21 @@ mod tests {
         assert!(not_carried(&args("run -it alpine sh")).is_none());
         assert!(not_carried(&args("exec -it web sh")).is_none());
         assert!(not_carried(&args("attach web")).is_none());
-        assert!(not_carried(&args("compose up")).is_some());
+        // No command of shards', said so there as here.
+        assert!(not_carried(&args("compose up")).is_none());
+        // The builder's own, asked of the machine's; a policy's files here, not yet.
+        for builder in [
+            "buildx du",
+            "builder du",
+            "buildx prune -f",
+            "builder prune -a",
+            "buildx policy",
+        ] {
+            assert!(not_carried(&args(builder)).is_none(), "{builder}");
+        }
+        for policy in ["buildx policy eval alpine", "buildx policy test ."] {
+            assert!(not_carried(&args(policy)).is_some(), "{policy}");
+        }
         // An artifact's directory is kept in step there ([`artifact_building`]), and its
         // signature made here ([`artifact_sign_there`]).
         for carried in [
@@ -3213,19 +3447,14 @@ mod tests {
         ] {
             assert!(not_carried(&args(whole)).is_none(), "{whole}");
         }
-        assert!(not_carried(&args("run --cidfile c alpine")).is_some());
-        assert!(
-            not_carried(&args("run --rm alpine cat --cidfile c")).is_none(),
-            "the command's own --cidfile"
-        );
-        assert!(
-            not_carried(&args("run --name web --cidfile c alpine sh")).is_some(),
-            "past a flag's value"
-        );
-        assert!(
-            not_carried(&args("run vm --cidfile c alpine sh")).is_some(),
-            "shards' own words"
-        );
+        // A run's `--cidfile` is made here ([`here_cidfile`]).
+        for cid in [
+            "run --cidfile c alpine",
+            "create --cidfile c alpine",
+            "run vm --cidfile c alpine sh",
+        ] {
+            assert!(not_carried(&args(cid)).is_none(), "{cid}");
+        }
         // What the client's files hold crosses ([`here_values`]).
         assert!(not_carried(&args("run --env-file e alpine")).is_none());
         assert!(kept_here(&args("context ls")));
@@ -3375,5 +3604,21 @@ mod tests {
         ] {
             assert_eq!(here_files(words(same)), (words(same), None), "{same}");
         }
+    }
+
+    /// Help is `-h` or `--help` wherever it is said, but as a flag's value or after `--`.
+    #[test]
+    fn help_is_asked_for_anywhere_but_as_a_value() {
+        assert!(asks_help(&["remove", "-h"], &[]));
+        assert!(asks_help(
+            &["create", "x", "--invite-file", "f", "--help"],
+            &["--invite-file"]
+        ));
+        assert!(!asks_help(
+            &["create", "x", "--description", "-h"],
+            &["--description"]
+        ));
+        assert!(!asks_help(&["--", "-h"], &[]));
+        assert!(!asks_help(&["remove", "x"], &[]));
     }
 }

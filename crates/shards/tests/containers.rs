@@ -265,6 +265,8 @@ fn a_joiner_is_a_container_of_its_own() {
     assert_eq!(exited.stdout, "exited 0\n", "{exited}");
     let logged = shards(&["logs", "joiner"]);
     assert_eq!(logged.stdout, "ready\ngot 15\n", "{logged}");
+    let read = shards(&["read", "logs", "joiner"]);
+    assert_eq!(read.stdout, logged.stdout, "shards' own words: {read}");
     // The provider's files, saved as it ended beside its joiner, read with their microVM
     // gone (D37).
     let kept = shards(&["diff", "prov"]);
@@ -273,6 +275,8 @@ fn a_joiner_is_a_container_of_its_own() {
         (Some(0), "A /served\n"),
         "{kept}"
     );
+    let read = shards(&["read", "changes", "prov"]);
+    assert_eq!(read.stdout, kept.stdout, "shards' own words: {read}");
     // dockerd's refusals, as the container is made and as it starts.
     let refused = |options: &[&str], said: &str| {
         let r = run_in(&home, &image, options, &["exit", "0"]);
@@ -1552,7 +1556,7 @@ fn pause_freezes_a_microvm_until_unpause_or_stop() {
     let shards = |args: &[&str]| shards_in(&home, args);
     // Its share of a CPU, as `stats` measures it over a second.
     let cpu = || -> f64 {
-        let stats = shards(&["stats", "--no-stream", "frozen"]);
+        let stats = shards(&["watch", "vms", "--no-stream", "frozen"]);
         let line = stats.stdout.lines().nth(1).unwrap().to_string();
         line.split_whitespace()
             .nth(2)
@@ -4686,6 +4690,48 @@ fn a_command_that_cannot_start_says_why() {
 /// `shards ARGS` in `home`, where no run is meant to boot.
 fn without_vms(home: &Path, args: &[&str]) -> Run {
     run_shards_env(&[], args, &[("SHARDS_HOME", home.as_os_str())], TIMEOUT)
+}
+
+/// `-h` is help on every form of shards' grammar, and each form's page is its own: named
+/// as it is said (`shards list vm`), in shards' words, never a command of Docker's
+/// (`Usage:  shards ps`, `docker cp`).
+#[test]
+fn every_form_of_shards_grammar_answers_help_with_its_own_page() {
+    let home = TempDir::new("containers-forms");
+    for (_, action, takes, _) in shards_cmdline::grammar::USES {
+        for alternative in takes.split(" | ") {
+            let thing = alternative.split(' ').next().unwrap();
+            for help in ["-h", "--help"] {
+                let r = without_vms(&home, &[action, thing, help]);
+                let said = format!("shards {action} {thing}");
+                assert_eq!(r.status, Some(0), "{said} {help}: {r}");
+                assert!(r.stdout.contains(&said), "{said} {help}: {r}");
+                assert!(!r.stdout.contains("docker "), "{said} {help}: {r}");
+                assert!(!r.stdout.contains("container"), "{said} {help}: {r}");
+            }
+        }
+    }
+    // What an option does, as shards does it, where Docker's words would say otherwise;
+    // Docker's own command keeps Docker's words.
+    let page = without_vms(&home, &["create", "vm", "--help"]).stdout;
+    for said in [
+        "Give the command one of its microVM's devices, the VM's, never the host's",
+        "Add an annotation to the microVM, kept with it and shown by inspect",
+    ] {
+        assert!(
+            page.split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
+                .contains(said),
+            "{said}: {page}"
+        );
+    }
+    assert!(
+        !page.contains("OCI runtime") && !page.contains("host device"),
+        "{page}"
+    );
+    let docker = without_vms(&home, &["create", "--help"]).stdout;
+    assert!(docker.contains("Add a host device to the container"), "{docker}");
 }
 
 #[test]
@@ -9851,6 +9897,166 @@ fn microvms_on_an_ipv6_network_reach_one_another() {
     let _ = srv.kill();
     let _ = srv.wait();
     assert_eq!(shards(&["network", "rm", "lan6"]).stdout, "lan6\n");
+}
+
+/// A network's options are what its microVMs do: one made with `enable_icc` false keeps
+/// its members from one another, their names still answered, as dockerd's bridge keeps
+/// them; its ports published with no address are bound at its `host_binding_ipv4` alone,
+/// and reached there; an MTU is kept as given, its members keeping their devices'; a
+/// routed one publishes no port; and each option is read as dockerd reads it. The default
+/// network says what it does.
+#[test]
+fn a_networks_options_are_what_its_microvms_do() {
+    let Some((home, image)) = home("containers-netopts") else {
+        return;
+    };
+    let shards = |args: &[&str]| shards_in(&home, args);
+    let options = shards(&["network", "inspect", "-f", "{{json .Options}}", "bridge"]);
+    let options: serde_json::Value = serde_json::from_str(&options.stdout).unwrap();
+    assert_eq!(
+        options["com.docker.network.bridge.enable_icc"], "false",
+        "{options}"
+    );
+    assert_eq!(options["com.docker.network.driver.mtu"], "65520", "{options}");
+    assert_eq!(
+        options["com.docker.network.bridge.host_binding_ipv4"], "0.0.0.0",
+        "{options}"
+    );
+    assert!(
+        options.get("com.docker.network.bridge.name").is_none(),
+        "{options}"
+    );
+    // A home whose record says what an older shards said of it is told the truth too.
+    for entry in std::fs::read_dir(home.join("networks")).unwrap() {
+        let path = entry.unwrap().path();
+        let mut record: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        if record["name"] == "bridge" {
+            record["options"]["com.docker.network.bridge.enable_icc"] = "true".into();
+            record["options"]["com.docker.network.driver.mtu"] = "1500".into();
+            record["options"]["com.docker.network.bridge.name"] = "docker0".into();
+            std::fs::write(&path, serde_json::to_vec(&record).unwrap()).unwrap();
+        }
+    }
+    let again = shards(&["network", "inspect", "-f", "{{json .Options}}", "bridge"]);
+    let again: serde_json::Value = serde_json::from_str(&again.stdout).unwrap();
+    assert_eq!(again, options);
+    for (option, said) in [
+        (
+            "com.docker.network.driver.mtu=abc",
+            "failed to parse com.docker.network.driver.mtu value: abc (strconv.Atoi: parsing \"abc\": invalid syntax)",
+        ),
+        (
+            "com.docker.network.driver.mtu=99999999999999999999",
+            "(strconv.Atoi: parsing \"99999999999999999999\": value out of range)",
+        ),
+        ("com.docker.network.driver.mtu=-1", "invalid MTU number: -1"),
+        (
+            "com.docker.network.bridge.enable_ip_masquerade=yes",
+            "failed to parse com.docker.network.bridge.enable_ip_masquerade value: yes (strconv.ParseBool: parsing \"yes\": invalid syntax)",
+        ),
+        (
+            "com.docker.network.bridge.gateway_mode_ipv4=direct",
+            "failed to parse com.docker.network.bridge.gateway_mode_ipv4 value: direct (unknown gateway mode direct)",
+        ),
+        (
+            "com.docker.network.bridge.host_binding_ipv4=localhost",
+            "failed to parse com.docker.network.bridge.host_binding_ipv4 value: localhost (nil ip)",
+        ),
+        (
+            "com.docker.network.bridge.gateway_mode_ipv6=isolated",
+            "gateway mode 'isolated' can only be used for an internal network",
+        ),
+    ] {
+        let r = shards(&["network", "create", "-o", option, "refused"]);
+        assert_eq!(r.status, Some(1), "{option}: {r}");
+        assert!(r.stderr.contains(said), "{option}: {r}");
+    }
+    let made = shards(&[
+        "network",
+        "create",
+        "--subnet",
+        "10.78.0.0/24",
+        "-o",
+        "com.docker.network.bridge.enable_icc=false",
+        "-o",
+        "com.docker.network.bridge.host_binding_ipv4=127.0.0.1",
+        "-o",
+        "com.docker.network.driver.mtu=1400",
+        "apart",
+    ]);
+    assert_eq!(made.status, Some(0), "{made}");
+    let mut srv = start(
+        &home,
+        &image,
+        &["--name", "lone", "--network", "apart", "-p", "7000"],
+        &["serve", "7000", "1"],
+    );
+    // Its name answers, and nothing reaches it.
+    let r = run_in(
+        &home,
+        &image,
+        &["--rm", "--network", "apart"],
+        &["resolve", "lone"],
+    );
+    assert!(r.stdout.starts_with("resolve 10.78.0."), "{r}");
+    let r = run_in(
+        &home,
+        &image,
+        &["--rm", "--network", "apart"],
+        &["ask", "lone:7000"],
+    );
+    assert_ne!(r.status, Some(0), "{r}");
+    // Its port at the host's loopback alone, and reached there.
+    let ports = shards(&[
+        "inspect",
+        "-f",
+        "{{range $p, $b := .NetworkSettings.Ports}}{{range $b}}{{.HostIp}} {{.HostPort}}\n{{end}}{{end}}",
+        "lone",
+    ]);
+    let bound: Vec<&str> = ports.stdout.lines().filter(|l| !l.is_empty()).collect();
+    assert_eq!(bound.len(), 1, "{ports}");
+    let port: u16 = bound[0].strip_prefix("127.0.0.1 ").unwrap().parse().unwrap();
+    let mut reply = String::new();
+    let mut conn = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+    conn.shutdown(std::net::Shutdown::Write).unwrap();
+    std::io::Read::read_to_string(&mut conn, &mut reply).unwrap();
+    assert!(reply.starts_with("from "), "{reply:?}");
+    assert!(srv.wait().unwrap().success());
+    // The MTU kept as given, its members their devices'.
+    let mtu = shards(&[
+        "network",
+        "inspect",
+        "-f",
+        "{{index .Options \"com.docker.network.driver.mtu\"}}",
+        "apart",
+    ]);
+    assert_eq!(mtu.stdout, "1400\n", "{mtu}");
+    let r = run_in(
+        &home,
+        &image,
+        &["--rm", "--network", "apart"],
+        &["fs", "print:/sys/class/net/eth0/mtu"],
+    );
+    assert_eq!(r.stdout, "65520\n", "{r}");
+    // A routed network publishes nothing on the host.
+    let made = shards(&[
+        "network",
+        "create",
+        "--subnet",
+        "10.79.0.0/24",
+        "-o",
+        "com.docker.network.bridge.gateway_mode_ipv4=routed",
+        "direct",
+    ]);
+    assert_eq!(made.status, Some(0), "{made}");
+    let r = run_in(
+        &home,
+        &image,
+        &["--rm", "--network", "direct", "-p", "7000"],
+        &["exit", "0"],
+    );
+    assert_ne!(r.status, Some(0), "{r}");
+    assert!(r.stderr.contains("its gateway mode is routed"), "{r}");
 }
 
 /// D46: microVMs on a user network reach one another, by address and by every name

@@ -207,7 +207,7 @@ pub static MANAGEMENT: &[(&str, &str, &[Entry])] = &[
 
 /// What the root says of shards, where docker/cli says "A self-sufficient runtime for
 /// containers".
-pub const ABOUT: &str = "Rootless microVMs for agents, built and run like containers";
+pub const ABOUT: &str = "Rootless microVMs for agents";
 
 /// The management command `name`'s line and commands.
 pub fn management(name: &str) -> Option<(&'static str, &'static [Entry])> {

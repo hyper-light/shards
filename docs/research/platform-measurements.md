@@ -8904,3 +8904,70 @@ revision before comparing a changed API/implementation.
   job's 63, those 41 and a third above its other steps' slowest, 15.8 on Windows. A limit
   this far out ends a hang, and paces nothing; the runs it lets through say how long the
   slowest take, which these two could not.
+
+### M246. A pty's last output, read late: what XNU keeps of it once its writer ends
+
+- **Question.** A client's command on a terminal over a context (D180) writes to a pty's
+  replica on the machine, whose controller the daemon reads and sends on; while the client
+  reads slowly, the daemon's stream is full and the controller unread. What of the
+  command's last output reaches the controller's reader once the command has ended, and
+  how long does its end take? A unit test of a build's terminal read nothing of what was
+  written before the replica closed.
+- **Method.** `docs/research/measurements/pty-end/` (`probe.c`, `run.sh`): openpty(3), the
+  replica's output processing off; a reader of the controller started 0 to 2000 ms after
+  the writer's write of 64, 500 or 4000 bytes; then the writer's end. Two writers: `plain`
+  writes and closes the replica, as a build does, whose terminal is not its controlling
+  one; `leader`, a child leading a session whose controlling terminal the replica is, as
+  a client's command does, writes and exits. Two strategies: `last`, the writer's close
+  the replica's last, as the daemon had it; `kept`, a writer of the replica's own kept and
+  closed once the command has ended and TIOCOUTQ says nothing is unread, by the waiter
+  where nothing is, else by the reader once it has read it (daemon/remote.rs, `Kept`).
+  And with no reader at all, as for a client gone: the kept writer let go at 0 or 1000 ms,
+  closed (`gone`), or its output queue flushed (TCOFLUSH) and closed (`gone-flushed`).
+  n = 5 a cell, on an Apple M5 Max (128 GiB), macOS 26.4.1 (Darwin 25.4.0), gpu 4d0f890f.
+  Source: xnu-12377.101.15.
+- **Results.** Trials whose reader read all the writer wrote, and the writer's slowest end
+  (its close, or a leader's exit until reaped):
+
+  | reader late by | `plain last` 64 B | 500 B | 4000 B | `leader last` 64 B | 500 B | 4000 B |
+  |---|---|---|---|---|---|---|
+  | 0 ms | 5/5, 0.000 s | 5/5, 0.000 | 5/5, 0.000 | 5/5, 0.001 | 5/5, 0.001 | 5/5, 0.001 |
+  | 100 ms | 5/5, 0.103 | 5/5, 0.105 | 5/5, 0.000 | 5/5, 0.104 | 5/5, 0.105 | 5/5, 0.105 |
+  | 300 ms | 5/5, 0.305 | 5/5, 0.305 | 5/5, 0.000 | 5/5, 0.304 | 5/5, 0.305 | 5/5, 0.305 |
+  | 600 ms | 0/5, 0.601 | 0/5, 0.601 | 5/5, 0.000 | 0/5, 0.602 | 1/5, 0.602 | 5/5, 0.605 |
+  | 1000 ms | 0/5, 0.601 | 0/5, 0.601 | 5/5, 0.000 | 0/5, 0.602 | 0/5, 0.602 | 5/5, 1.005 |
+  | 2000 ms | 0/5, 0.601 | 0/5, 0.601 | 5/5, 0.000 | 0/5, 0.602 | 0/5, 0.602 | 5/5, 2.006 |
+
+  Kept, both writers read all in every cell (90 trials each): a plain writer's close
+  waited for nothing (0.000 s at most), and a leader's exit for its reader (0.001, 0.105,
+  0.305, 0.605, 1.005 and 2.005 s at most, by delay).
+
+  With no reader, 500 bytes: `gone` ended a leader 0.606 s and 1.606 s on (let go at 0 and
+  1000 ms), `gone-flushed` 0.602 s and 1.005 s on; a plain writer's close waited 0.601 s
+  at most in `gone` at 0 ms, and nothing in the other three.
+
+  - A replica's last close waits for what is unread to be read, 60 ticks at most:
+    ptsclose sets the tty's t_timeout to 60 (bsd/kern/tty_dev.c, `FIX_VSX_HANG`), which
+    ttylclose's ttywait sleeps for (bsd/kern/tty.c); when it runs out, ttylclose flushes
+    both queues. The controller then reads nothing, since ptcread takes from the output
+    queue only while the replica is open (tty_dev.c). A reader 600 ms late or more read
+    none of 64 or 500 bytes in 59 of 60 trials: a plain writer's 30 of 30, a leader's 29 of
+    30.
+  - A leader's exit closes its descriptors, then drains its controlling terminal
+    (ttywait, no time limit) and revokes it (bsd/kern/kern_exit.c, proc_exit, VNOP_REVOKE
+    REVOKEALL). With the leader's close the last, the drain finds nothing left; with a
+    writer kept, the exit waits for the reader, then the revoke ends the kept writer too.
+  - 4000 bytes came whole whatever the delay: the write itself waited for the reader, the
+    queue holding at most 928 bytes once it returned (TIOCOUTQ), and the reader then read
+    on as the end came. What is lost is the last queue's worth, where the reader stalls
+    after the last write: a stream gone full as the command ends.
+- **Consequence.** A daemon's terminal for a client's command, a build's or a command's,
+  keeps a writer of its own until the command has ended and nothing is unread (D180 part
+  3i): a client reading slowly no longer loses its command's last output on a macOS
+  machine, nor does a build's close wait 0.6 s. A command's exit then waits for its client
+  to read, as long as the client reads; once the client is gone, the writer is let go,
+  its queue flushed first, so the exit ends at once (`gone-flushed`) rather than waiting
+  on a reader that will not come. Linux keeps what is unread for the controller, which
+  reads it before it says EIO (drivers/tty/n_tty.c, n_tty_read), so there the kept
+  writer's close is safe whenever it comes, as soon as the command ends or once TIOCOUTQ
+  counts nothing; which of the two, unmeasured.
