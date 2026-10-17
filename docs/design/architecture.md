@@ -4520,7 +4520,7 @@ removed socket not bound again; the sockets kept as the daemon closes; the relay
 up as it stops; a machine's refusal unsaid; the client's writer failing and its command run
 on; a reader gone said as an error.
 
-### D181. `--use-api-socket`: a run's command reaches its own microVM's engine (slices 1 and 2 built)
+### D181. `--use-api-socket`: a run's command reaches its own microVM's engine (slices 1, 2 and 3a built)
 
 The need: a CI job, a test suite with testcontainers, or an agent's tool runs `docker run`
 from inside its workload, as on a host with Docker. The user's call (2026-10-16): what it
@@ -4639,7 +4639,70 @@ asks for credentials, which the run's client alone has, the image not its own be
 own after; its images listed, none of the host's it never pulled), and in the scope
 (`a_create_stays_in_its_microvm`).
 
-Slices: (1) and (2) built, as above; (3) Compose through it.
+Slices: (1) and (2) built, as above; (3) networks of the microVM's own, then Compose
+through it, designed as follows; its first part (3a), each container's own namespace on
+the engine's default network and its published ports, built.
+
+- **The need.** Testcontainers starts each service as `docker run -p 0:PORT` and reaches
+  it at the port the engine's host was given; Compose gives each project a network of its
+  own, on which each service listens on its own ports and reaches the others by name. A
+  joiner shares its microVM's network namespace (D119), so two containers listening on one
+  port collide, and `-p` is refused. So a container a microVM's engine makes has a
+  network namespace of its own, as on any engine's host, the microVM being that host.
+- **Its default network, the microVM's own.** A bridge in the command's network namespace,
+  the microVM's engine's host's, as dockerd's `docker0` is its host's: each container's
+  `eth0` a veth whose other end is the bridge's, an address of a subnet the daemon elects
+  past every one the microVM's own interfaces are on (their routes', D46's pools), its
+  gateway the bridge's. Its flows past the microVM leave by the command's own, translated
+  to its addresses (source NAT, `NFT_NAT`; the guest kernel has `CONFIG_BRIDGE`, `VETH`,
+  `NF_NAT` in Firecracker's base config), so the microVM's grants hold for them as for the
+  command's (default deny at the VM's boundary); the command reaches each container by its
+  address, as dockerd's host reaches its containers.
+- **Published ports, the microVM's.** `-p HOST:PORT`, and `-p PORT`, `-P`, which the daemon
+  gives a free port of, publish on the command's network namespace, its engine's host's:
+  init's proxy listens there and passes each connection or datagram on to the container's
+  address, so that the command reaches it at `localhost:HOST`, as a test reaches a
+  Testcontainers service. NetworkSettings.Ports says the port each was given; none is the
+  host's.
+- **`--network host` is the microVM's**, the command's namespace, as a joiner's is (D119),
+  `none` a namespace of its own with its loopback alone (nothing published, as dockerd
+  publishes nothing there), and `container:X` one of its own containers'.
+- **Networks it makes**, Compose's project networks among them: each a bridge of its own
+  in the command's namespace, its subnet elected so; a container on several has a link to
+  each. Its members reach each other by name and alias through a resolver of init's at
+  127.0.0.11 in each member's namespace, as dockerd's embedded DNS answers there, which
+  answers its network's names alone and passes the rest to the microVM's resolvers.
+- **Named volumes it makes** are its own: the host's volume store's, named after its
+  microVM's as its containers are (`PROV.NAME`), mounted through the join share (D119),
+  removed with its microVM.
+- **How 3a is built.** The daemon elects the default network's subnet as the engine first
+  uses it (`Bridge::elect` past the host's routes, the default bridge and every user
+  network's pools, each microVM's eth0 among them), keeps it in the microVM's record
+  (`engine_networks`), and gives each container the lowest address no other running
+  container of that engine has there (`engine_made.address`, its MAC `02:42` and the
+  address, as dockerd's), let go as it ends. It tells the joiner's init (`own-net=`,
+  `own-publish=`): the joiner's child makes the bridge `shards0` in the command's namespace
+  where none is (the gateway's address, `ip_forward`, a postrouting rule translating the
+  subnet's flows leaving eth0 to eth0's address; beside agents whose grants reach past the
+  microVM, a forward rule keeping them to eth0's own subnet, as `confine_eth0` keeps the
+  command), a namespace of its own, and a veth whose peer (`veADDR`) it puts on the bridge;
+  its own hostname and `/etc/hostname` and `/etc/hosts`, `--add-host`'s lines among them
+  (`host-gateway` the bridge's gateway, its engine's host's address), and the resolvers its
+  run was given. Init's proxy, forked before the joiner so that a port it cannot have
+  keeps it from starting (`Bind for ADDR failed: port is already allocated`, dockerd's),
+  binds each port in the command's namespace (a port of 0 the kernel's), says them
+  (`PORTS`, which the VM process passes on and the daemon keeps in the record's ports),
+  and relays each connection, and each UDP client's datagrams from a socket of its own
+  until idle 90 s (docker-proxy's `UDPConnTrackTimeout`), to the container's address; it
+  goes as the joiner does. Inspect gives the container's network as its engine has it
+  (`bridge`, or `host` for the microVM's own). Tested on real microVMs
+  (`a_microvms_own_engine_gives_each_container_a_network_of_its_own`: two serving one port,
+  each at the port it was given on the command's loopback and at its own address, by the
+  command and by another; its own hostname; `--network none`'s loopback alone; and its
+  flows to a microVM on the host's network the command is on, seen from the command's
+  address there).
+  Next in 3: `--network container:X` of one with its own namespace, networks it makes
+  and their names, its named volumes, Compose.
 
 ### D179. Other CPUs' images, emulated in their microVM (parts 1 to 3 built)
 

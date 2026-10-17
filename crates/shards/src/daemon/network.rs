@@ -119,7 +119,9 @@ pub fn check(
     if creating && (mode == "container" || container == Some("")) {
         return Err("--network container: name the run whose microVM to join, as container:NAME".into());
     }
-    if creating && container.is_some() {
+    // One its microVM's engine made on that engine's network (D181) has a network
+    // namespace of its own there, and with it its own names and ports.
+    if creating && container.is_some() && run.engine_net.is_empty() {
         let theirs = |flag: &str, what: &str| {
             format!("{flag}: a run joining another's microVM takes that run's {what}")
         };
@@ -138,14 +140,14 @@ pub fn check(
         if !run.expose.is_empty() {
             return Err(theirs("--expose", "ports: expose them on that run"));
         }
-        // Its microVM's engine is the command's of the run it joins, in that run's files
-        // (D181): a joiner has none of its own.
-        if run.use_api_socket {
-            return Err(
-                "--use-api-socket: a run joining another's microVM has no engine of its own: that microVM's is its own command's, which --use-api-socket on that run gives it"
-                    .into(),
-            );
-        }
+    }
+    // Its microVM's engine is the command's of the run it joins, in that run's files
+    // (D181): a joiner has none of its own.
+    if creating && container.is_some() && run.use_api_socket {
+        return Err(
+            "--use-api-socket: a run joining another's microVM has no engine of its own: that microVM's is its own command's, which --use-api-socket on that run gives it"
+                .into(),
+        );
     }
     let mut endpoints: Vec<Endpoint> = Vec::with_capacity(run.endpoints.len());
     for e in &run.endpoints {

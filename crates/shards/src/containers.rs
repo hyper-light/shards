@@ -102,14 +102,39 @@ pub struct Container {
     /// engine's containers run and its clients see.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub engine_images: Vec<String>,
+    /// Its own engine's networks (D181).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub engine_networks: Vec<EngineNetwork>,
 }
 
 /// A container made through a microVM's own engine (D181): that microVM's container ID,
-/// and the name the container has there, as that engine's clients name it.
+/// and the name the container has there, as that engine's clients name it; and, while it
+/// runs on a network of that engine's, its address there.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EngineMade {
     pub of: String,
     pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub address: Option<EngineAddress>,
+}
+
+/// A container's address on a network of its microVM's engine (D181).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EngineAddress {
+    pub network: String,
+    pub ip: std::net::Ipv4Addr,
+    pub prefix: u8,
+    pub gateway: std::net::Ipv4Addr,
+    pub mac: [u8; 6],
+}
+
+/// A network of a microVM's own engine (D181): its name there, its subnet, elected once,
+/// and its bridge in the microVM's command's network namespace.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EngineNetwork {
+    pub name: String,
+    pub subnet: (std::net::Ipv4Addr, u8),
+    pub bridge: String,
 }
 
 /// A container's restart policy (HostConfig.RestartPolicy) and what its restart manager
@@ -752,6 +777,7 @@ mod tests {
             saved: None,
             engine_made: None,
             engine_images: Vec::new(),
+            engine_networks: Vec::new(),
         }
     }
 

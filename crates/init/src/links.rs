@@ -19,22 +19,22 @@ use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 
 use crate::netplan::Link;
 
-const RTM_NEWLINK: u16 = 16;
-const RTM_NEWADDR: u16 = 20;
-const RTM_NEWROUTE: u16 = 24;
-const NLM_F_REQUEST: u16 = 1;
-const NLM_F_ACK: u16 = 4;
-const NLM_F_EXCL: u16 = 0x200;
-const NLM_F_CREATE: u16 = 0x400;
+pub(crate) const RTM_NEWLINK: u16 = 16;
+pub(crate) const RTM_NEWADDR: u16 = 20;
+pub(crate) const RTM_NEWROUTE: u16 = 24;
+pub(crate) const NLM_F_REQUEST: u16 = 1;
+pub(crate) const NLM_F_ACK: u16 = 4;
+pub(crate) const NLM_F_EXCL: u16 = 0x200;
+pub(crate) const NLM_F_CREATE: u16 = 0x400;
 const NLM_F_APPEND: u16 = 0x800;
 const NLMSG_ERROR: u16 = 2;
 const NLA_F_NESTED: u16 = 0x8000;
-const IFLA_IFNAME: u16 = 3;
-const IFLA_LINKINFO: u16 = 18;
-const IFLA_NET_NS_FD: u16 = 28;
-const IFLA_INFO_KIND: u16 = 1;
-const IFLA_INFO_DATA: u16 = 2;
-const VETH_INFO_PEER: u16 = 1;
+pub(crate) const IFLA_IFNAME: u16 = 3;
+pub(crate) const IFLA_LINKINFO: u16 = 18;
+pub(crate) const IFLA_NET_NS_FD: u16 = 28;
+pub(crate) const IFLA_INFO_KIND: u16 = 1;
+pub(crate) const IFLA_INFO_DATA: u16 = 2;
+pub(crate) const VETH_INFO_PEER: u16 = 1;
 const IFA_ADDRESS: u16 = 1;
 const IFA_LOCAL: u16 = 2;
 const RTA_DST: u16 = 1;
@@ -114,7 +114,7 @@ pub struct Uplink6 {
 }
 
 /// nfnetlink and nf_tables (include/uapi/linux/netfilter/nfnetlink.h, nf_tables.h).
-mod nft {
+pub(crate) mod nft {
     pub const NFNL_SUBSYS_NFTABLES: u16 = 10;
     pub const NFNL_MSG_BATCH_BEGIN: u16 = 0x10;
     pub const NFNL_MSG_BATCH_END: u16 = 0x11;
@@ -216,7 +216,7 @@ const TRANSIT6_GATE: Ipv6Addr = Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 2);
 const TABLE: &[u8] = b"shards\0";
 
 /// Appends a netlink attribute: length, type, value, padded to four bytes.
-fn attr(buf: &mut Vec<u8>, kind: u16, value: &[u8]) {
+pub(crate) fn attr(buf: &mut Vec<u8>, kind: u16, value: &[u8]) {
     let len = u16::try_from(4 + value.len()).unwrap_or(u16::MAX);
     buf.extend_from_slice(&len.to_ne_bytes());
     buf.extend_from_slice(&kind.to_ne_bytes());
@@ -227,18 +227,18 @@ fn attr(buf: &mut Vec<u8>, kind: u16, value: &[u8]) {
 }
 
 /// A nested attribute, its contents what `f` appends.
-fn nested(buf: &mut Vec<u8>, kind: u16, f: impl FnOnce(&mut Vec<u8>)) {
+pub(crate) fn nested(buf: &mut Vec<u8>, kind: u16, f: impl FnOnce(&mut Vec<u8>)) {
     let mut inner = Vec::new();
     f(&mut inner);
     attr(buf, kind | NLA_F_NESTED, &inner);
 }
 
 /// A u32 attribute in network order, as nf_tables reads its numbers.
-fn be32(buf: &mut Vec<u8>, kind: u16, v: u32) {
+pub(crate) fn be32(buf: &mut Vec<u8>, kind: u16, v: u32) {
     attr(buf, kind, &v.to_be_bytes());
 }
 
-fn ifinfomsg(index: i32, flags: u32, change: u32) -> Vec<u8> {
+pub(crate) fn ifinfomsg(index: i32, flags: u32, change: u32) -> Vec<u8> {
     let mut m = vec![0u8; 4];
     m.extend_from_slice(&index.to_ne_bytes());
     m.extend_from_slice(&flags.to_ne_bytes());
@@ -246,7 +246,7 @@ fn ifinfomsg(index: i32, flags: u32, change: u32) -> Vec<u8> {
     m
 }
 
-fn netlink_socket(protocol: libc::c_int) -> io::Result<OwnedFd> {
+pub(crate) fn netlink_socket(protocol: libc::c_int) -> io::Result<OwnedFd> {
     // SAFETY: socket(2) with constant arguments.
     let fd = unsafe { libc::socket(libc::AF_NETLINK, libc::SOCK_RAW | libc::SOCK_CLOEXEC, protocol) };
     if fd < 0 {
@@ -259,7 +259,7 @@ fn netlink_socket(protocol: libc::c_int) -> io::Result<OwnedFd> {
 /// Sends netlink messages, each `(type, flags, payload)`, as one write, and reads their
 /// acknowledgments: the kernel answers a request in the send itself, so every answer is
 /// there when it returns. The first error the kernel gave, if any.
-fn exchange(sock: &OwnedFd, msgs: &[(u16, u16, Vec<u8>)]) -> io::Result<()> {
+pub(crate) fn exchange(sock: &OwnedFd, msgs: &[(u16, u16, Vec<u8>)]) -> io::Result<()> {
     let mut out = Vec::new();
     let mut asked = 0usize;
     for (seq, (kind, flags, payload)) in msgs.iter().enumerate() {
@@ -335,7 +335,10 @@ fn exchange(sock: &OwnedFd, msgs: &[(u16, u16, Vec<u8>)]) -> io::Result<()> {
 /// Runs `f` on a thread of its own in the network namespace `ns`, or in a new one where
 /// none is given; what it opens there, sockets keep (net/socket.c: a socket's namespace is
 /// its creator's). Init's other threads stay where they are.
-fn in_netns<T: Send>(ns: Option<RawFd>, f: impl FnOnce() -> io::Result<T> + Send) -> io::Result<T> {
+pub(crate) fn in_netns<T: Send>(
+    ns: Option<RawFd>,
+    f: impl FnOnce() -> io::Result<T> + Send,
+) -> io::Result<T> {
     std::thread::scope(|s| {
         let handle = std::thread::Builder::new()
             .name("netns".into())
@@ -358,7 +361,7 @@ fn in_netns<T: Send>(ns: Option<RawFd>, f: impl FnOnce() -> io::Result<T> + Send
     })
 }
 
-fn open_ns(path: &str) -> io::Result<OwnedFd> {
+pub(crate) fn open_ns(path: &str) -> io::Result<OwnedFd> {
     use std::os::unix::fs::OpenOptionsExt;
     Ok(std::fs::OpenOptions::new()
         .read(true)
@@ -838,7 +841,7 @@ fn addr_msg(index: i32, addr: Ipv4Addr) -> Vec<u8> {
     addr_msg_prefix(index, addr, 32)
 }
 
-fn addr_msg_prefix(index: i32, addr: Ipv4Addr, prefix: u8) -> Vec<u8> {
+pub(crate) fn addr_msg_prefix(index: i32, addr: Ipv4Addr, prefix: u8) -> Vec<u8> {
     // struct ifaddrmsg: family, prefix length, flags, scope, index.
     let mut m = vec![libc::AF_INET as u8, prefix, 0, RT_SCOPE_UNIVERSE];
     m.extend_from_slice(&(index as u32).to_ne_bytes());
@@ -893,7 +896,7 @@ fn route6_msg(
 
 /// A route to `dst/prefix` on link `index`: through `gateway`, on the link though no
 /// subnet of it holds the gateway, or else the link's own.
-fn route_msg(
+pub(crate) fn route_msg(
     index: i32,
     dst: Ipv4Addr,
     prefix: u8,
@@ -928,14 +931,14 @@ fn route_msg(
 }
 
 /// One expression of a rule.
-fn expr(list: &mut Vec<u8>, name: &[u8], data: impl FnOnce(&mut Vec<u8>)) {
+pub(crate) fn expr(list: &mut Vec<u8>, name: &[u8], data: impl FnOnce(&mut Vec<u8>)) {
     nested(list, nft::NFTA_LIST_ELEM, |e| {
         attr(e, nft::NFTA_EXPR_NAME, name);
         nested(e, nft::NFTA_EXPR_DATA, data);
     });
 }
 
-fn accept(list: &mut Vec<u8>) {
+pub(crate) fn accept(list: &mut Vec<u8>) {
     expr(list, b"immediate\0", |d| {
         be32(d, nft::NFTA_IMMEDIATE_DREG, nft::NFT_REG_VERDICT);
         nested(d, nft::NFTA_IMMEDIATE_DATA, |v| {
@@ -946,7 +949,7 @@ fn accept(list: &mut Vec<u8>) {
     });
 }
 
-fn compare(list: &mut Vec<u8>, op: u32, value: &[u8]) {
+pub(crate) fn compare(list: &mut Vec<u8>, op: u32, value: &[u8]) {
     expr(list, b"cmp\0", |d| {
         be32(d, nft::NFTA_CMP_SREG, nft::NFT_REG_1);
         be32(d, nft::NFTA_CMP_OP, op);
@@ -954,7 +957,7 @@ fn compare(list: &mut Vec<u8>, op: u32, value: &[u8]) {
     });
 }
 
-fn meta(list: &mut Vec<u8>, key: u32) {
+pub(crate) fn meta(list: &mut Vec<u8>, key: u32) {
     expr(list, b"meta\0", |d| {
         be32(d, nft::NFTA_META_DREG, nft::NFT_REG_1);
         be32(d, nft::NFTA_META_KEY, key);
@@ -975,17 +978,17 @@ fn nft_msg(family: u8, kind: u16, flags: u16, attrs: Vec<u8>) -> (u16, u16, Vec<
 
 /// One nf_tables transaction for table `shards`, of family ip (or ip6, [`Batch::of`]):
 /// its chains, each with its rules (nf_tables_api.c commits a batch whole or not at all).
-struct Batch {
+pub(crate) struct Batch {
     msgs: Vec<(u16, u16, Vec<u8>)>,
     family: u8,
 }
 
 impl Batch {
-    fn new() -> Batch {
+    pub(crate) fn new() -> Batch {
         Batch::of(nft::NFPROTO_IPV4)
     }
 
-    fn of(family: u8) -> Batch {
+    pub(crate) fn of(family: u8) -> Batch {
         let mut b = Batch {
             msgs: vec![Batch::bound(nft::NFNL_MSG_BATCH_BEGIN)],
             family,
@@ -1005,7 +1008,7 @@ impl Batch {
     }
 
     /// A base chain on `hook`, of `kind` (`filter\0`, `nat\0`), its policy `policy`.
-    fn chain(&mut self, name: &[u8], kind: &[u8], hook: u32, priority: u32, policy: u32) {
+    pub(crate) fn chain(&mut self, name: &[u8], kind: &[u8], hook: u32, priority: u32, policy: u32) {
         let mut c = Vec::new();
         attr(&mut c, nft::NFTA_CHAIN_TABLE, TABLE);
         attr(&mut c, nft::NFTA_CHAIN_NAME, name);
@@ -1019,7 +1022,7 @@ impl Batch {
             .push(nft_msg(self.family, nft::NFT_MSG_NEWCHAIN, NLM_F_CREATE, c));
     }
 
-    fn rule(&mut self, chain: &[u8], exprs: Vec<u8>) {
+    pub(crate) fn rule(&mut self, chain: &[u8], exprs: Vec<u8>) {
         let mut r = Vec::new();
         attr(&mut r, nft::NFTA_RULE_TABLE, TABLE);
         attr(&mut r, nft::NFTA_RULE_CHAIN, chain);
@@ -1033,14 +1036,14 @@ impl Batch {
     }
 
     /// Every rule of `chain` gone (a DELRULE naming no rule, nft_delrule_by_chain).
-    fn flush(&mut self, chain: &[u8]) {
+    pub(crate) fn flush(&mut self, chain: &[u8]) {
         let mut r = Vec::new();
         attr(&mut r, nft::NFTA_RULE_TABLE, TABLE);
         attr(&mut r, nft::NFTA_RULE_CHAIN, chain);
         self.msgs.push(nft_msg(self.family, nft::NFT_MSG_DELRULE, 0, r));
     }
 
-    fn commit(mut self, sock: &OwnedFd) -> io::Result<()> {
+    pub(crate) fn commit(mut self, sock: &OwnedFd) -> io::Result<()> {
         self.msgs.push(Batch::bound(nft::NFNL_MSG_BATCH_END));
         exchange(sock, &self.msgs)
     }
@@ -1108,7 +1111,7 @@ pub fn host_loopback6(guest6: Ipv6Addr, gateway6: Ipv6Addr, held: &[(u8, u16)]) 
 }
 
 /// An interface's index, by its name.
-fn interface_index(name: &str) -> io::Result<u32> {
+pub(crate) fn interface_index(name: &str) -> io::Result<u32> {
     let name = std::ffi::CString::new(name).map_err(|_| io::Error::other("a name with a NUL"))?;
     // SAFETY: if_nametoindex(3) with a NUL-terminated name.
     match unsafe { libc::if_nametoindex(name.as_ptr()) } {
@@ -1119,7 +1122,7 @@ fn interface_index(name: &str) -> io::Result<u32> {
 
 /// `ct state established,related accept`.
 /// The verdict drop.
-fn drop_verdict(list: &mut Vec<u8>) {
+pub(crate) fn drop_verdict(list: &mut Vec<u8>) {
     expr(list, b"immediate\0", |d| {
         be32(d, nft::NFTA_IMMEDIATE_DREG, nft::NFT_REG_VERDICT);
         nested(d, nft::NFTA_IMMEDIATE_DATA, |v| {
@@ -1130,7 +1133,7 @@ fn drop_verdict(list: &mut Vec<u8>) {
     });
 }
 
-fn answers() -> Vec<u8> {
+pub(crate) fn answers() -> Vec<u8> {
     let mut e = Vec::new();
     expr(&mut e, b"ct\0", |d| {
         be32(d, nft::NFTA_CT_DREG, nft::NFT_REG_1);
@@ -1143,7 +1146,7 @@ fn answers() -> Vec<u8> {
 }
 
 /// Register 1, and-ed with `mask`.
-fn masked(list: &mut Vec<u8>, mask: &[u8]) {
+pub(crate) fn masked(list: &mut Vec<u8>, mask: &[u8]) {
     let len = u32::try_from(mask.len()).unwrap_or(0);
     expr(list, b"bitwise\0", |d| {
         be32(d, nft::NFTA_BITWISE_SREG, nft::NFT_REG_1);
@@ -1157,7 +1160,7 @@ fn masked(list: &mut Vec<u8>, mask: &[u8]) {
 }
 
 /// Register 1, `len` bytes of the packet at `offset` of header `base`.
-fn payload(list: &mut Vec<u8>, base: u32, offset: u32, len: u32) {
+pub(crate) fn payload(list: &mut Vec<u8>, base: u32, offset: u32, len: u32) {
     expr(list, b"payload\0", |d| {
         be32(d, nft::NFTA_PAYLOAD_DREG, nft::NFT_REG_1);
         be32(d, nft::NFTA_PAYLOAD_BASE, base);
@@ -1177,7 +1180,7 @@ fn ports(list: &mut Vec<u8>, (proto, lo, hi): crate::netplan::Egress) {
 }
 
 /// Register 1, `value`.
-fn load(list: &mut Vec<u8>, value: &[u8]) {
+pub(crate) fn load(list: &mut Vec<u8>, value: &[u8]) {
     load_into(list, nft::NFT_REG_1, value);
 }
 
@@ -1210,12 +1213,12 @@ fn source_ports(list: &mut Vec<u8>, (proto, lo, hi): crate::netplan::Egress) {
 }
 
 /// The packet's source (offset 12 of IPv4's header) or destination (16) address, `addr`.
-fn address(list: &mut Vec<u8>, offset: u32, addr: Ipv4Addr) {
+pub(crate) fn address(list: &mut Vec<u8>, offset: u32, addr: Ipv4Addr) {
     payload(list, nft::NFT_PAYLOAD_NETWORK_HEADER, offset, 4);
     compare(list, nft::NFT_CMP_EQ, &addr.octets());
 }
-const SOURCE: u32 = 12;
-const DESTINATION: u32 = 16;
+pub(crate) const SOURCE: u32 = 12;
+pub(crate) const DESTINATION: u32 = 16;
 
 /// The packet's IPv6 source (offset 8 of its header) or destination (24) address.
 fn address6(list: &mut Vec<u8>, offset: u32, addr: Ipv6Addr) {
@@ -1261,7 +1264,7 @@ fn reverse_path() -> Vec<u8> {
 }
 
 /// The arriving (`NFT_META_IIF`) or leaving (`NFT_META_OIF`) link, `index`.
-fn on(list: &mut Vec<u8>, key: u32, index: u32) {
+pub(crate) fn on(list: &mut Vec<u8>, key: u32, index: u32) {
     meta(list, key);
     compare(list, nft::NFT_CMP_EQ, &index.to_ne_bytes());
 }

@@ -2059,7 +2059,7 @@ enum Born {
     InJoiner(libc::pid_t),
     /// A joiner's (D119): the first process of a PID namespace of its own, which builds
     /// its root and namespaces before its orders; init's exec `u32`, its cgroup's name.
-    Joined(crate::join::Join, u32),
+    Joined(Box<crate::join::Join>, u32),
 }
 
 /// Where a standby is isolated before its orders.
@@ -2072,7 +2072,7 @@ enum Isolation {
     /// A joiner's (D119): its root and namespaces built (crate::join::build), and its
     /// image's users told to init on `report`.
     Joined {
-        join: crate::join::Join,
+        join: Box<crate::join::Join>,
         cgroup: String,
         report: OwnedFd,
     },
@@ -2420,6 +2420,8 @@ impl Standby {
         // from them before its command can start (D59, D99).
         if spec.setup.iter().any(|e| e == b"confine-eth0") {
             crate::links::confine_eth0().map_err(|e| setup_failed(format!("eth0's confinement: {e}")))?;
+            // And its engine's containers (D181), whose networks it makes.
+            crate::ownnet::CONFINED.store(true, std::sync::atomic::Ordering::Relaxed);
         }
         if !spec.hostname.is_empty() {
             // SAFETY: a buffer of the given length.
@@ -2797,7 +2799,7 @@ fn standby(ends: Ends, isolation: Isolation) -> ! {
         Isolation::Workload => isolate(None, false),
         Isolation::Beside(pid, joiner) => isolate(Some(pid), joiner),
         Isolation::Joined { join, cgroup, report } => {
-            let built = crate::join::build(join, &cgroup);
+            let built = crate::join::build(*join, &cgroup);
             let failed = built.is_err();
             crate::join::report(report, &built);
             if failed {
@@ -2950,6 +2952,8 @@ struct Exec {
     /// A joiner made through its microVM's own engine (D181), which ends as the workload
     /// does, as a nested engine's containers end with it.
     engine_made: bool,
+    /// The proxy of what it publishes (D181), which goes as it does.
+    proxy: Option<libc::pid_t>,
     /// A joiner's writable layer, as the host asks for it once it has the joiner's end.
     save: Save,
     /// Init's own work for a joiner (D119), its built-in in a child of init's: spared as
@@ -3207,6 +3211,7 @@ fn builtin(
         stdout: Some(stdout_r),
         stderr: Some(stderr_r),
         binds: None,
+        published: None,
     })
 }
 
@@ -3290,6 +3295,9 @@ struct Started {
     stderr: Option<OwnedFd>,
     /// Its filter's listener, on the host's network (D124).
     binds: Option<OwnedFd>,
+    /// What a container its microVM's engine made publishes (D181): its proxy's PID, and
+    /// the port each binding was given.
+    published: Option<(libc::pid_t, Vec<u16>)>,
 }
 
 /// Starts joiner `id` (D119): its image `range` of the join disk, joining `workload`'s
@@ -3324,6 +3332,31 @@ fn start_joiner(
         cgroupns_host: spec.setup.iter().any(|e| e == b"cgroupns=host"),
         rw_size: crate::join::rw_size(&spec.setup).map_err(setup_failed)?,
         own_binds: crate::join::own_binds(&spec.setup).map_err(setup_failed)?,
+        own_net: crate::ownnet::own_net(&spec.setup).map_err(setup_failed)?,
+        own_net_none: spec.setup.iter().any(|e| e == b"own-net-none"),
+        hostname: spec.hostname.clone(),
+        hosts: spec.hosts.clone(),
+        resolv: spec.resolv.clone(),
+    };
+    // What it publishes, from the command's network namespace, its engine's host's (D181):
+    // its proxy there before it is, so that a port it cannot have keeps it from starting.
+    let bindings = crate::ownnet::bindings(&spec.setup).map_err(setup_failed)?;
+    let published =
+        match (&join.own_net, bindings.is_empty()) {
+            (_, true) => None,
+            (Some(net), false) => Some(crate::ownnet::publish(workload, net.addr, &bindings).map_err(
+                |why| setup_failed(format!("driver failed programming external connectivity: {why}")),
+            )?),
+            (None, false) => return Err(setup_failed("ports of a container with no network of its own")),
+        };
+    let end_proxy = || {
+        if let Some((proxy, _)) = &published {
+            // SAFETY: kill(2) and waitpid(2) of init's own child, not yet waited for.
+            unsafe {
+                libc::kill(*proxy, libc::SIGKILL);
+                libc::waitpid(*proxy, std::ptr::null_mut(), 0);
+            }
+        }
     };
     // Its devices, as the workload's are found and confined (D44): the VM's, their nodes
     // made in its own /dev once its root is built, its cgroup's filter theirs.
@@ -3334,7 +3367,8 @@ fn start_joiner(
         .map(crate::devices::prepare_joiner)
         .transpose()
         .map_err(setup_failed)?;
-    let mut standby = Standby::forked(Born::Joined(join, id), (None, None))?;
+    let mut standby =
+        Standby::forked(Born::Joined(Box::new(join), id), (None, None)).inspect_err(|_| end_proxy())?;
     let (pid, reaper) = (standby.pid, standby.reaper);
     // Under `--init`, its reaper, which a start that fails ends with it.
     let end_reaper = || {
@@ -3386,6 +3420,7 @@ fn start_joiner(
             // SAFETY: waits for our own child, not yet waited for.
             unsafe { libc::waitpid(pid, std::ptr::null_mut(), 0) };
             end_reaper();
+            end_proxy();
             crate::join::remove_cgroup(id);
             return Err(f);
         }
@@ -3399,11 +3434,13 @@ fn start_joiner(
             stdout: w.stdout,
             stderr: w.stderr,
             binds: w.binds,
+            published,
         }),
         // Its standby waited for as it reported why (`launch`).
         Err(f) => {
             joined().retain(|(j, _)| *j != id);
             end_reaper();
+            end_proxy();
             crate::join::remove_cgroup(id);
             Err(f)
         }
@@ -3624,6 +3661,7 @@ impl Exec {
             ended: false,
             joined: false,
             engine_made: false,
+            proxy: None,
             save: Save::Unasked,
             into_joiner: false,
         };
@@ -3670,6 +3708,7 @@ impl Exec {
                     stdout: w.stdout,
                     stderr: w.stderr,
                     binds: w.binds,
+                    published: None,
                 }),
                 None => Err(Failure {
                     daemon: true,
@@ -3697,6 +3736,7 @@ impl Exec {
                     stdout: w.stdout,
                     stderr: w.stderr,
                     binds: w.binds,
+                    published: None,
                 })
         } else {
             Err(setup_failed("the container's main process has exited"))
@@ -3719,6 +3759,13 @@ impl Exec {
                     set_nonblocking(fd.as_raw_fd(), true);
                 }
                 (exec.stdin, exec.stdout, exec.stderr) = (w.stdin, w.stdout, w.stderr);
+                // The ports it was given, before its start (D181).
+                if let Some((proxy, ports)) = w.published {
+                    exec.proxy = Some(proxy);
+                    let said: Vec<u8> = ports.iter().flat_map(|p| p.to_be_bytes()).collect();
+                    let len = u32::try_from(said.len()).unwrap_or(u32::MAX);
+                    exec.to_conn.extend(&[&run::header(kind::PORTS, len), &said]);
+                }
                 exec.to_conn.extend(&[&run::header(kind::STARTED, 0)]);
             }
             Err(f) => {
@@ -4192,6 +4239,11 @@ impl Workload {
                                 }
                             } else if let Some(e) = execs.iter_mut().find(|e| e.pid == pid) {
                                 e.status = Some(code);
+                                // What it published goes with it (D181).
+                                if let Some(proxy) = e.proxy.take() {
+                                    // SAFETY: kill(2) of init's own child, reaped as it ends.
+                                    unsafe { libc::kill(proxy, libc::SIGKILL) };
+                                }
                                 // Its stdin goes with it.
                                 e.stdin = None;
                                 e.to_stdin.clear();

@@ -1549,6 +1549,7 @@ mod tests {
                 saved: None,
                 engine_made: None,
                 engine_images: Vec::new(),
+                engine_networks: Vec::new(),
             };
             let manifest = &want["ImageManifestDescriptor"];
             let facts = Facts {

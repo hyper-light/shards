@@ -94,6 +94,21 @@ fn own_bind(point: &crate::volumes::MountPoint) -> Option<Result<String, String>
     )))
 }
 
+/// The bridge of a microVM's own engine's network `name` in its command's network
+/// namespace (D181): its default network's `shards0`, as dockerd's is `docker0`.
+pub(in crate::daemon) fn bridge_of(name: &str) -> String {
+    match name {
+        "bridge" => "shards0".to_string(),
+        other => {
+            let mut digest = 0u64;
+            for b in other.bytes() {
+                digest = digest.wrapping_mul(1_099_511_628_211).wrapping_add(u64::from(b));
+            }
+            format!("br-{:012x}", digest & 0xffff_ffff_ffff)
+        }
+    }
+}
+
 /// The images microVM `provider`'s own engine reaches: its own, and those it pulled.
 fn images_of(provider: &Container) -> Vec<String> {
     provider
@@ -148,19 +163,32 @@ fn confine(run: &mut Run, provider: &str, scoped: &[Container]) -> Result<(), An
             ),
         ))
     };
-    // Its network is its microVM's: a joiner of it, as the microVM's own network, its
-    // host's, is.
-    let joined = match run.network.as_str() {
-        "" | "default" | "host" => provider.to_string(),
+    // It joins its microVM (D119), on its engine's network: a network namespace of its own
+    // on that engine's default network, as a container's is on any engine's host; the
+    // microVM's own, its engine's host's, for `host`; or that of one of its own containers
+    // that has none of its own.
+    let (joined, engine_net) = match run.network.as_str() {
+        "" | "default" | "bridge" => (provider.to_string(), "bridge"),
+        "none" => (provider.to_string(), "none"),
+        "host" => (provider.to_string(), ""),
         mode => match mode.strip_prefix("container:") {
             Some(other) => match resolve(scoped, other) {
-                Some(c) => c.id.clone(),
+                Some(c) if c.engine_made.as_ref().is_some_and(|m| m.address.is_some()) => {
+                    return Err(Answer::error(
+                        501,
+                        format!(
+                            "--network {mode}: the network namespace of a container on its microVM's engine's network is not served yet"
+                        ),
+                    ));
+                }
+                Some(c) => (c.id.clone(), ""),
                 None => return Err(no_such(other)),
             },
             None => return past(format!("--network {mode}")),
         },
     };
     run.network = format!("container:{joined}");
+    run.engine_net = engine_net.to_string();
     if let Some(e) = run.endpoints.first() {
         return past(format!("--network {}", e.network));
     }
@@ -242,6 +270,81 @@ fn confine(run: &mut Run, provider: &str, scoped: &[Container]) -> Result<(), An
 }
 
 impl<D: Disk> Daemon<D> {
+    /// The address container `id`, which microVM `provider`'s own engine made, has on that
+    /// engine's network `name` as it starts (D181), kept in its record while it runs. The
+    /// network's subnet is elected as it is first used, past every one the host's routes
+    /// and this daemon's own networks hold, each microVM's interfaces among them (D46's
+    /// pools); its gateway its first address, the bridge's; the container's the lowest no
+    /// other running container of that engine's has there.
+    pub(in crate::daemon) fn engine_address(
+        &self,
+        provider: &str,
+        id: &str,
+        name: &str,
+    ) -> Result<crate::containers::EngineAddress, String> {
+        let mut taken = shards_net::bridge::reserved(&shards_net::bridge::host_resolv()).unwrap_or_default();
+        taken.extend(self.bridge.as_ref().map(|b| b.subnet()));
+        for n in self.all_networks() {
+            taken.extend(n.pools.iter().map(|p| p.subnet));
+        }
+        let mut registry = lock(&self.containers);
+        let Some(p) = registry.get(provider).cloned() else {
+            return Err("its microVM is gone".into());
+        };
+        let net = match p.engine_networks.iter().find(|n| n.name == name) {
+            Some(n) => n.clone(),
+            None => {
+                taken.extend(p.engine_networks.iter().map(|n| n.subnet));
+                let elected = shards_net::bridge::Bridge::elect(&taken)
+                    .ok_or("no subnet is free for its microVM's engine's network")?;
+                let n = crate::containers::EngineNetwork {
+                    name: name.to_string(),
+                    subnet: elected.subnet(),
+                    bridge: bridge_of(name),
+                };
+                registry
+                    .change(provider, |c| c.engine_networks.push(n.clone()))
+                    .map_err(|e| format!("its microVM's engine's network: {e}"))?;
+                n
+            }
+        };
+        let used: Vec<std::net::Ipv4Addr> = registry
+            .all()
+            .filter(|c| c.id != id)
+            .filter_map(|c| c.engine_made.as_ref())
+            .filter(|m| m.of == provider)
+            .filter_map(|m| m.address.as_ref())
+            .filter(|a| a.network == name)
+            .map(|a| a.ip)
+            .collect();
+        let (subnet, bits) = net.subnet;
+        let base = u32::from(subnet);
+        let size = 1u32.checked_shl(32 - u32::from(bits)).unwrap_or(0);
+        let ip = (2..size.saturating_sub(1))
+            .map(|i| std::net::Ipv4Addr::from(base.saturating_add(i)))
+            .find(|a| !used.contains(a))
+            .ok_or_else(|| format!("its microVM's engine's network {name} has no address free"))?;
+        let [a, b, c, d] = ip.octets();
+        let address = crate::containers::EngineAddress {
+            network: name.to_string(),
+            ip,
+            prefix: bits,
+            gateway: std::net::Ipv4Addr::from(base.saturating_add(1)),
+            mac: [0x02, 0x42, a, b, c, d],
+        };
+        registry
+            .change(id, |c| {
+                if let Some(m) = c.engine_made.as_mut() {
+                    m.address = Some(address.clone());
+                }
+            })
+            .map_err(|e| format!("its address: {e}"))?;
+        drop(registry);
+        self.record_soon(provider, Vec::new());
+        self.record_soon(id, Vec::new());
+        Ok(address)
+    }
+
     /// The containers microVM `scope`'s engine made, each by the name it has there.
     fn scoped(&self, scope: &Scope) -> Vec<Container> {
         of_scope(lock(&self.containers).all(), &scope.provider)
@@ -602,8 +705,10 @@ mod tests {
             engine_made: of.map(|(of, name)| crate::containers::EngineMade {
                 of: of.into(),
                 name: name.into(),
+                address: None,
             }),
             engine_images: Vec::new(),
+            engine_networks: Vec::new(),
         }
     }
 
@@ -648,13 +753,22 @@ mod tests {
             [container("aaa111", "prov.db", Some(("prov-id", "db")))].iter(),
             "prov-id",
         );
-        for given in ["", "default", "host"] {
+        for (given, own) in [
+            ("", "bridge"),
+            ("default", "bridge"),
+            ("bridge", "bridge"),
+            ("none", "none"),
+            ("host", ""),
+        ] {
             let mut run = Run {
                 network: given.into(),
                 ..Run::default()
             };
             assert_eq!(refused_why(&mut run, &scoped), None, "{given:?}");
-            assert_eq!(run.network, "container:prov-id");
+            assert_eq!(
+                (run.network.as_str(), run.engine_net.as_str()),
+                ("container:prov-id", own)
+            );
         }
         let mut run = Run {
             network: "container:db".into(),
@@ -704,17 +818,10 @@ mod tests {
         let cases: Vec<(Run, Option<(u16, String)>)> = vec![
             (
                 Run {
-                    network: "bridge".into(),
+                    network: "elsewhere".into(),
                     ..Run::default()
                 },
-                past("--network bridge"),
-            ),
-            (
-                Run {
-                    network: "none".into(),
-                    ..Run::default()
-                },
-                past("--network none"),
+                past("--network elsewhere"),
             ),
             (
                 Run {

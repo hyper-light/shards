@@ -2755,6 +2755,213 @@ fn a_microvms_own_engine_runs_binds_execs_and_pulls() {
     assert_eq!(removed.status, Some(0), "{removed}");
 }
 
+/// A container a microVM's own engine makes has a network namespace of its own (D181), as
+/// on any engine's host: two serve one port, each published on a port of the microVM's the
+/// engine gave it, which the command reaches at `localhost`, as a test reaches a
+/// Testcontainers service; each has an address of its own on its engine's network, which
+/// the command and the other reach it at.
+#[test]
+fn a_microvms_own_engine_gives_each_container_a_network_of_its_own() {
+    let Some((home, image)) = home("eng-own3") else {
+        return;
+    };
+    let shards = |args: &[&str]| shards_in(&home, args);
+    let ran = shards(&["run", "-d", "--name", "prov", "--use-api-socket", &image, "sleep"]);
+    assert_eq!(ran.status, Some(0), "{ran}");
+    let exec = |args: &[&str]| {
+        let mut all = vec!["exec", "prov", "/bin/testguest"];
+        all.extend_from_slice(args);
+        shards(&all)
+    };
+    let deadline = std::time::Instant::now() + TIMEOUT;
+    while exec(&["api", "GET", "/_ping", ""]).stdout != "api HTTP/1.1 200 OK\nOK" {
+        assert!(std::time::Instant::now() < deadline, "its engine never answered");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let body = |cmd: &[&str]| {
+        json!({
+            "Image": image,
+            "Cmd": cmd,
+            "ExposedPorts": { "7000/tcp": {} },
+            "HostConfig": { "PortBindings": { "7000/tcp": [{ "HostPort": "" }] } },
+        })
+        .to_string()
+    };
+    let made = |name: &str, cmd: &[&str]| {
+        let out = exec(&[
+            "api",
+            "POST",
+            &format!("/containers/create?name={name}"),
+            &body(cmd),
+        ]);
+        assert!(out.stdout.starts_with("api HTTP/1.1 201"), "{out}");
+        let started = exec(&["api", "POST", &format!("/containers/{name}/start"), ""]);
+        assert_eq!(started.stdout, "api HTTP/1.1 204 No Content\n", "{started}");
+    };
+    let ready = |name: &str| {
+        let deadline = std::time::Instant::now() + TIMEOUT;
+        loop {
+            let logs = exec(&["api", "GET", &format!("/containers/{name}/logs?stdout=1"), ""]);
+            if logs.stdout.contains("ready") {
+                return;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "{name} never said it was ready: {logs}"
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    };
+    let inspected = |name: &str| -> Value {
+        let out = exec(&["api", "GET", &format!("/containers/{name}/json"), ""]);
+        serde_json::from_str(out.stdout.split_once('\n').unwrap().1).unwrap()
+    };
+    made("one", &["serve", "7000", "1"]);
+    made("two", &["serve", "7000", "2"]);
+    ready("one");
+    ready("two");
+    let (one, two) = (inspected("one"), inspected("two"));
+    let port = |d: &Value| -> String {
+        d["NetworkSettings"]["Ports"]["7000/tcp"][0]["HostPort"]
+            .as_str()
+            .unwrap_or_else(|| panic!("{d}"))
+            .to_string()
+    };
+    let address = |d: &Value| -> String {
+        d["NetworkSettings"]["Networks"]["bridge"]["IPAddress"]
+            .as_str()
+            .unwrap_or_else(|| panic!("{d}"))
+            .to_string()
+    };
+    let gateway = one["NetworkSettings"]["Networks"]["bridge"]["Gateway"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert_ne!(port(&one), "0", "{one}");
+    assert_ne!(port(&one), port(&two));
+    assert_ne!(address(&one), address(&two));
+    assert_eq!(one["HostConfig"]["NetworkMode"], json!("bridge"), "{one}");
+    // At the ports the engine gave them, on the microVM's loopback.
+    let asked = exec(&["ask", &format!("127.0.0.1:{}", port(&one))]);
+    assert_eq!(asked.stdout, format!("ask from {gateway}\n"), "{asked}");
+    // At its own address, by the command and by another container.
+    let asked = exec(&["ask", &format!("{}:7000", address(&two))]);
+    assert_eq!(asked.stdout, format!("ask from {gateway}\n"), "{asked}");
+    let out = exec(&[
+        "api",
+        "POST",
+        "/containers/create?name=three",
+        &json!({ "Image": image, "Cmd": ["ask", format!("{}:7000", address(&two))] }).to_string(),
+    ]);
+    assert!(out.stdout.starts_with("api HTTP/1.1 201"), "{out}");
+    assert_eq!(
+        exec(&["api", "POST", "/containers/three/start", ""]).stdout,
+        "api HTTP/1.1 204 No Content\n"
+    );
+    let _ = exec(&["api", "POST", "/containers/three/wait", ""]);
+    let three = inspected("three");
+    let logs = exec(&["api", "GET", "/containers/three/logs?stdout=1", ""]);
+    let three_address = three["NetworkSettings"]["Networks"]["bridge"]["IPAddress"].clone();
+    assert!(logs.stdout.contains("ask from "), "{logs} {three_address}");
+    // `--network none`: a namespace of its own, its loopback alone.
+    let out = exec(&[
+        "api",
+        "POST",
+        "/containers/create?name=alone",
+        &json!({ "Image": image, "Cmd": ["addrs"], "HostConfig": { "NetworkMode": "none" } }).to_string(),
+    ]);
+    assert!(out.stdout.starts_with("api HTTP/1.1 201"), "{out}");
+    assert_eq!(
+        exec(&["api", "POST", "/containers/alone/start", ""]).stdout,
+        "api HTTP/1.1 204 No Content\n"
+    );
+    let _ = exec(&["api", "POST", "/containers/alone/wait", ""]);
+    let logs = exec(&["api", "GET", "/containers/alone/logs?stdout=1", ""]);
+    let links: Vec<&str> = logs
+        .stdout
+        .lines()
+        .skip(1)
+        .filter_map(|l| l.split_whitespace().next())
+        .collect();
+    assert!(!links.is_empty() && links.iter().all(|l| *l == "lo"), "{logs}");
+    assert_eq!(inspected("alone")["HostConfig"]["NetworkMode"], json!("none"));
+    // Its own name, as any engine's host gives its containers theirs.
+    let out = exec(&[
+        "api",
+        "POST",
+        "/containers/create?name=named",
+        &json!({ "Image": image, "Cmd": ["report"] }).to_string(),
+    ]);
+    assert!(out.stdout.starts_with("api HTTP/1.1 201"), "{out}");
+    assert_eq!(
+        exec(&["api", "POST", "/containers/named/start", ""]).stdout,
+        "api HTTP/1.1 204 No Content\n"
+    );
+    let _ = exec(&["api", "POST", "/containers/named/wait", ""]);
+    let named = inspected("named");
+    let hostname = named["Config"]["Hostname"].as_str().unwrap().to_string();
+    let logs = exec(&["api", "GET", "/containers/named/logs?stdout=1", ""]);
+    assert!(
+        logs.stdout.contains(&format!("hostname {hostname}\n")),
+        "{logs} {hostname}"
+    );
+    // Past its microVM, as the command's own flows go: to a microVM on the host's network
+    // the command is on, from the command's address there.
+    let made = shards(&["network", "create", "past"]);
+    assert_eq!(made.status, Some(0), "{made}");
+    let ran = shards(&[
+        "run",
+        "-d",
+        "--name",
+        "peer",
+        "--network",
+        "past",
+        &image,
+        "serve",
+        "7100",
+        "1",
+    ]);
+    assert_eq!(ran.status, Some(0), "{ran}");
+    let ran = shards(&[
+        "run",
+        "-d",
+        "--name",
+        "onpast",
+        "--network",
+        "past",
+        "--use-api-socket",
+        &image,
+        "sleep",
+    ]);
+    assert_eq!(ran.status, Some(0), "{ran}");
+    let ip_on = |name: &str| {
+        shards(&[
+            "inspect",
+            "-f",
+            "{{.NetworkSettings.Networks.past.IPAddress}}",
+            name,
+        ])
+        .stdout
+        .trim()
+        .to_string()
+    };
+    let (peer, onpast) = (ip_on("peer"), ip_on("onpast"));
+    let in_onpast = |args: &[&str]| {
+        let mut all = vec!["exec", "onpast", "/bin/testguest"];
+        all.extend_from_slice(args);
+        shards(&all)
+    };
+    let deadline = std::time::Instant::now() + TIMEOUT;
+    while in_onpast(&["api", "GET", "/_ping", ""]).stdout != "api HTTP/1.1 200 OK\nOK" {
+        assert!(std::time::Instant::now() < deadline, "its engine never answered");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let ran = in_onpast(&["api-run", &image, "ask", &format!("{peer}:7100")]);
+    assert_eq!(ran.stdout, format!("ask from {onpast}\nstatus 0\n"), "{ran}");
+    let removed = shards(&["rm", "-f", "prov", "onpast", "peer"]);
+    assert_eq!(removed.status, Some(0), "{removed}");
+}
+
 /// The docker CLI's own `--use-api-socket`, asked of shards' engine: the microVM's own
 /// engine at `DOCKER_HOST` in place of the CLI's engine's socket, and the credentials the
 /// CLI copies in refused, which it warns of: they never reach the microVM.

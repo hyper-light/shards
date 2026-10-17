@@ -113,6 +113,48 @@ pub(super) fn wanted(run: &Run, image_exposed: &[String]) -> (Vec<Publish>, Vec<
     (bindings, alone)
 }
 
+/// The ports a container its microVM's engine made lists (D181), its bindings' published
+/// in its microVM's command's namespace by init, none of the host's: each at the address
+/// asked (every IPv4 one where none), its port the one asked or none until init says the
+/// one it was given (`kind::PORTS`); and those exposed `alone`.
+pub(super) fn engine_ports(bindings: &[Publish], alone: &[(u16, String)]) -> Result<Vec<PortRecord>, String> {
+    let mut ports = Vec::with_capacity(bindings.len() + alone.len());
+    for b in bindings {
+        let ip = match b.host_ip.as_str() {
+            "" => std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED),
+            given => given
+                .trim_matches(|c| c == '[' || c == ']')
+                .parse()
+                .map_err(|_| format!("-p {}:{}: an address of the microVM's", given, b.port))?,
+        };
+        let public = match b
+            .host_port
+            .split_once('-')
+            .map_or(b.host_port.as_str(), |(lo, _)| lo)
+        {
+            "" => 0,
+            port => port
+                .parse()
+                .map_err(|_| format!("-p {}: a port of the microVM's", b.host_port))?,
+        };
+        ports.push(PortRecord {
+            ip: Some(ip),
+            private: b.port,
+            public,
+            proto: b.proto.clone(),
+        });
+    }
+    for (port, proto) in alone {
+        ports.push(PortRecord {
+            ip: None,
+            private: *port,
+            public: 0,
+            proto: proto.clone(),
+        });
+    }
+    Ok(ports)
+}
+
 /// What shards cannot publish yet, refused before a container is made for it.
 pub(super) fn unsupported(bindings: &[Publish]) -> Option<String> {
     bindings

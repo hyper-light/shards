@@ -1554,6 +1554,7 @@ pub fn join(
     req: JoinRequest,
     on_id: &dyn Fn(u32),
     started: &dyn Fn(),
+    ports: &dyn Fn(&[u8]),
 ) -> Result<(Ended, UnixStream), String> {
     let JoinRequest {
         spec,
@@ -1646,6 +1647,8 @@ pub fn join(
             let payload = &*payload;
             match which {
                 kind::STARTED => started(),
+                // The ports its microVM's engine's container was given (D181).
+                kind::PORTS => ports(payload),
                 kind::STDOUT | kind::STDERR => {
                     let (out, stream) = if which == kind::STDOUT {
                         (&mut stdout, crate::spec::LOG_STDOUT)

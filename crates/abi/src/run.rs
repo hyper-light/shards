@@ -126,6 +126,10 @@ pub mod kind {
     pub const QUIESCED: u8 = 36;
     /// Host to guest: the microVM goes on as it was, saved or not: send again.
     pub const RESUME: u8 = 37;
+    /// Guest to host, on a container's connection its microVM's engine made (D181), before
+    /// [`STARTED`]: the port each of its bindings was given in its microVM's command's
+    /// network namespace, a big-endian u16 each, in their order.
+    pub const PORTS: u8 = 38;
 }
 
 /// A bind of the run's processes on the host's network (`--network host`, D124), as
