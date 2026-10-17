@@ -3835,6 +3835,12 @@ local administration is (../focal docs/cluster-admin.md).
 - Extended attributes in a build's copy beyond `security.capability`.
 - One connection for a context's commands, where each command, and each SSH agent
   connection a step makes, is a handshake of its own.
+- Credentials found only when the machine pulls. A run or create that may pull
+  (`--pull missing`, the default) finds the client's before it is sent, whether the machine
+  has the image or not: each such run pays for a credential helper, and one that never
+  answers holds it up, where docker/cli asks one only once its daemon has said it has no
+  such image (create.go). Needs the machine's command to ask the client mid-command for the
+  registry it is about to pull from, over the command's stream, as a build's SSH agents do.
 
 **Dependencies.** `hyper-quic` and `hyper-tls` as git dependencies of hyper-light/hyper-raft
 (public) pinned to a revision, so CI builds them; their AWS-LC is shards' own (vendor/).
