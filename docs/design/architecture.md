@@ -701,8 +701,11 @@ A pull resolves, fetches and checks as containerd v2.4.1 does
     configs for Podman, CRI-O and skopeo (`MaxConfigBodySize` in
     `internal/iolimits/iolimits.go`, read in `ConfigBlob`, `internal/image/oci.go`);
   - requires one DiffID per layer.
-  - Layers download 3 at a time, dockerd's default. Every size, digest and DiffID is
-    checked before the EROFS image is built and the reference recorded.
+  - Layers download over connections that start at four and double while that brings a
+    tenth more, up to sixteen, a large layer split into ranges as it comes
+    (registry/src/fetch.rs, PM M114), where containerd fetches each whole, three at a
+    time. Every size, digest and DiffID is checked before the EROFS image is built and the
+    reference recorded.
 - **Found again** (`local`), an image is checked as its pull checked it (audit A11). Its
   recorded manifest and its config come through the store's checks (D18). One function
   checks both paths:

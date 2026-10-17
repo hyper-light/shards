@@ -102,9 +102,9 @@ Reviewed feature by feature, each D-entry's design against what it took from Doc
 - Defaults taken from Docker, not derived from what a microVM's host measures (the
   defaults rule: from measured costs and the machine's resources, tests pinning the
   basis). Open, each a measurement first:
-  - Layers download 3 at a time, dockerd's `max-concurrent-downloads`: pulls of
-    many-layered images from Docker Hub and GHCR at 1 to 8 at a time, quiet and loaded,
-    n each, p50 to max; then the knee.
+  - (Not one: the design said layers download 3 at a time, dockerd's default; the
+    fetcher has been measured and adaptive since PM M114, four connections doubling to
+    sixteen while they gain, large layers split into ranges. The design is corrected.)
   - The build cache's collection policy is dockerd's default GC policy: what a cache of
     this host's disk and its builds' reuse keeps, measured as builds hit and miss.
   - A log keeps 5 segments of 20 MiB, Docker's `local` driver's: what a run's output
