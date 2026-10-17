@@ -2510,15 +2510,15 @@ fn a_runs_command_reaches_its_own_microvms_engine() {
         );
     }
     // What would reach past its microVM, what is not served, and a login from inside.
-    let body = json!({ "Image": image, "HostConfig": { "Binds": ["/etc:/x"] } }).to_string();
+    let body = json!({ "Image": image, "HostConfig": { "Binds": ["data:/x"] } }).to_string();
     assert_eq!(
         api("POST", "/containers/create", &body),
         (
             "api HTTP/1.1 403 Forbidden".into(),
-            "{\"message\":\"-v /etc:/x: a container made by a microVM's own engine is in that microVM, and reaches nothing past it\"}\n".into()
+            "{\"message\":\"-v data:/x: a container made by a microVM's own engine is in that microVM, and reaches nothing past it\"}\n".into()
         )
     );
-    let (status, _) = api("GET", "/images/json", "");
+    let (status, _) = api("GET", "/volumes", "");
     assert_eq!(status, "api HTTP/1.1 501 Not Implemented");
     let (status, _) = api("POST", "/auth", "{}");
     assert_eq!(status, "api HTTP/1.1 403 Forbidden");
@@ -2555,6 +2555,203 @@ fn a_runs_command_reaches_its_own_microvms_engine() {
     assert_eq!(removed.status, Some(0), "{removed}");
     assert_eq!(host_names(), "other\n");
     let removed = shards(&["rm", "-f", "other"]);
+    assert_eq!(removed.status, Some(0), "{removed}");
+}
+
+/// What a microVM's own engine does for a CI job's tools (D181): `docker run`'s calls, its
+/// attach taking the command's output from its start; binds of the microVM's own files,
+/// read-only or written through, a volume of the microVM's among them, never the host's;
+/// execs in its containers; and pulls, with its run's client's registries, after which an
+/// image is its own, where none of the host's store it did not pull is.
+#[test]
+fn a_microvms_own_engine_runs_binds_execs_and_pulls() {
+    let Some((home, image)) = home("eng-own2") else {
+        return;
+    };
+    let shards = |args: &[&str]| shards_in(&home, args);
+    let shared = home.join("shared");
+    std::fs::create_dir_all(&shared).unwrap();
+    std::fs::write(shared.join("from-host"), "the volume's\n").unwrap();
+    let volume = format!("{}:/data", shared.display());
+    // A registry that asks for credentials, which the run's client has (base64
+    // "shards:secret"), and nothing in its microVM.
+    let (port, _repos) = common::writable_registry_requiring(Some("Basic c2hhcmRzOnNlY3JldA==".into()));
+    let creds = TempDir::new("eng-own2-creds");
+    std::fs::write(
+        creds.join("config.json"),
+        format!(r#"{{"auths":{{"127.0.0.1:{port}":{{"auth":"c2hhcmRzOnNlY3JldA=="}}}}}}"#),
+    )
+    .unwrap();
+    let (kernel, init) = (kernel(), guest_init());
+    let with_creds = |args: &[&str]| {
+        let env: [(&str, &OsStr); 4] = [
+            ("SHARDS_HOME", home.as_os_str()),
+            ("DOCKER_CONFIG", creds.as_os_str()),
+            ("SHARDS_KERNEL", kernel.as_os_str()),
+            ("SHARDS_INIT", init.as_os_str()),
+        ];
+        run_shards_env(&[], args, &env, TIMEOUT)
+    };
+    let ran = with_creds(&[
+        "run",
+        "-d",
+        "--name",
+        "prov",
+        "--use-api-socket",
+        "-v",
+        &volume,
+        &image,
+        "sleep",
+    ]);
+    assert_eq!(ran.status, Some(0), "{ran}");
+    let exec = |args: &[&str]| {
+        let mut all = vec!["exec", "prov", "/bin/testguest"];
+        all.extend_from_slice(args);
+        shards(&all)
+    };
+    let deadline = std::time::Instant::now() + TIMEOUT;
+    while exec(&["api", "GET", "/_ping", ""]).stdout != "api HTTP/1.1 200 OK\nOK" {
+        assert!(std::time::Instant::now() < deadline, "its engine never answered");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    // `docker run`'s calls: its output from its first byte, its status.
+    let ran = exec(&["api-run", &image, "streams", "out", "err"]);
+    assert_eq!(
+        (ran.status, ran.stdout.as_str()),
+        (Some(0), "out\nerr\nstatus 0\n"),
+        "{ran}"
+    );
+    // Its own files, bound: one the command wrote, one of its volume's.
+    let source = home.join("data");
+    std::fs::write(&source, "the command's\n").unwrap();
+    let copied = shards(&["cp", source.to_str().unwrap(), "prov:/work/data"]);
+    assert_eq!(copied.status, Some(0), "{copied}");
+    let in_own = |binds: &[&str], cmd: &[&str]| -> (Value, String) {
+        let body = json!({ "Image": image, "Cmd": cmd, "HostConfig": { "Binds": binds } }).to_string();
+        let out = exec(&["api", "POST", "/containers/create", &body]);
+        let made: Value = serde_json::from_str(out.stdout.split_once('\n').unwrap().1).unwrap();
+        let id = made["Id"].as_str().unwrap_or_else(|| panic!("{out}")).to_string();
+        let started = exec(&["api", "POST", &format!("/containers/{id}/start"), ""]);
+        assert_eq!(started.stdout, "api HTTP/1.1 204 No Content\n", "{started}");
+        let waited = exec(&["api", "POST", &format!("/containers/{id}/wait"), ""]);
+        let waited: Value = serde_json::from_str(waited.stdout.split_once('\n').unwrap().1).unwrap();
+        let logs = exec(&[
+            "api",
+            "GET",
+            &format!("/containers/{id}/logs?stdout=1&stderr=1"),
+            "",
+        ]);
+        (
+            waited["StatusCode"].clone(),
+            logs.stdout.split_once('\n').unwrap().1.to_string(),
+        )
+    };
+    let (status, said) = in_own(
+        &["/work:/src:ro", "/data:/vol"],
+        &["stat", "/src/data", "/vol/from-host"],
+    );
+    assert_eq!(status, json!(0), "{said}");
+    assert!(
+        said.contains("= the command's\\n") && said.contains("= the volume's\\n"),
+        "{said}"
+    );
+    // Read-only where asked; written through where not, the command's own file after.
+    let (status, said) = in_own(&["/work:/src:ro"], &["pour", "/src/new", "5", "5"]);
+    assert_eq!(status, json!(1), "{said}");
+    let (status, said) = in_own(&["/work:/src"], &["pour", "/src/new", "5", "5"]);
+    assert_eq!(status, json!(0), "{said}");
+    let seen = exec(&["stat", "/work/new"]);
+    assert!(seen.stdout.contains("= ZZZZZ"), "{seen}");
+    // A link in its files resolves as the command's processes see it: to its volume, which
+    // its own mount namespace alone holds.
+    let linked = exec(&["fs", "symlink:/data:/work/tovol"]);
+    assert_eq!(linked.status, Some(0), "{linked}");
+    let (status, said) = in_own(&["/work/tovol:/v:ro"], &["stat", "/v/from-host"]);
+    assert_eq!(status, json!(0), "{said}");
+    assert!(said.contains("= the volume's\\n"), "{said}");
+    // An exec in one of its containers.
+    let body = json!({ "Image": image, "Cmd": ["sleep"] }).to_string();
+    let out = exec(&["api", "POST", "/containers/create?name=held", &body]);
+    assert!(out.stdout.starts_with("api HTTP/1.1 201"), "{out}");
+    assert_eq!(
+        exec(&["api", "POST", "/containers/held/start", ""]).stdout,
+        "api HTTP/1.1 204 No Content\n"
+    );
+    let body = json!({ "Cmd": ["/bin/testguest", "streams", "inside", "too"], "AttachStdout": true, "AttachStderr": true })
+        .to_string();
+    let made = exec(&["api", "POST", "/containers/held/exec", &body]);
+    let made: Value = serde_json::from_str(made.stdout.split_once('\n').unwrap().1).unwrap();
+    let exec_id = made["Id"].as_str().unwrap().to_string();
+    let started = exec(&[
+        "api",
+        "POST",
+        &format!("/exec/{exec_id}/start"),
+        r#"{"Detach":false}"#,
+        "upgrade",
+    ]);
+    assert_eq!(
+        started.stdout.split_once('\n').unwrap().1,
+        "inside\ntoo\n",
+        "{started}"
+    );
+    // Another microVM, and an exec of its, made through the host's engine, are not there
+    // for it.
+    let other = shards(&["run", "-d", "--name", "other", &image, "sleep"]);
+    assert_eq!(other.status, Some(0), "{other}");
+    let mut host_api = Api::new(&home);
+    let made = host_api.call(
+        "POST",
+        "/containers/other/exec",
+        Some(json!({ "Cmd": ["/bin/testguest", "report"] })),
+    );
+    assert_eq!(made.status, 201, "{}", made.text());
+    let theirs = made.json()["Id"].as_str().unwrap().to_string();
+    let seen = exec(&["api", "GET", &format!("/exec/{theirs}/json"), ""]);
+    assert_eq!(
+        seen.stdout,
+        format!("api HTTP/1.1 404 Not Found\n{{\"message\":\"No such exec instance: {theirs}\"}}\n"),
+        "{seen}"
+    );
+    let seen = exec(&[
+        "api",
+        "POST",
+        "/containers/other/exec",
+        r#"{"Cmd":["/bin/testguest","report"]}"#,
+    ]);
+    assert!(seen.stdout.starts_with("api HTTP/1.1 404 Not Found\n"), "{seen}");
+    // A pull, with its run's client's registries: an image the host's store holds that it
+    // never pulled is not its own until it does.
+    let pushed_ref = format!("127.0.0.1:{port}/scope/pulled:1");
+    let committed = shards(&["commit", "other", &pushed_ref]);
+    assert_eq!(committed.status, Some(0), "{committed}");
+    let pushed = with_creds(&["push", &pushed_ref]);
+    assert_eq!(pushed.status, Some(0), "{pushed}");
+    // One of the host's it never pulls, which it never sees.
+    let host_only = shards(&["commit", "other", "host/only:1"]);
+    assert_eq!(host_only.status, Some(0), "{host_only}");
+    let body = json!({ "Image": pushed_ref, "Cmd": ["exit", "3"] }).to_string();
+    let out = exec(&["api", "POST", "/containers/create", &body]);
+    assert!(out.stdout.starts_with("api HTTP/1.1 404 Not Found\n"), "{out}");
+    let pulled = exec(&[
+        "api",
+        "POST",
+        &format!("/images/create?fromImage=127.0.0.1:{port}/scope/pulled&tag=1"),
+        "",
+    ]);
+    assert!(
+        pulled.stdout.starts_with("api HTTP/1.1 200 OK\n") && !pulled.stdout.contains("\"error\""),
+        "{pulled}"
+    );
+    let ran = exec(&["api-run", &pushed_ref, "exit", "3"]);
+    assert_eq!(ran.stdout, "status 3\n", "{ran}");
+    let (_, images) = {
+        let out = exec(&["api", "GET", "/images/json", ""]);
+        let (s, b) = out.stdout.split_once('\n').unwrap();
+        (s.to_string(), b.to_string())
+    };
+    let images: Value = serde_json::from_str(&images).unwrap();
+    assert_eq!(images.as_array().map(Vec::len), Some(2), "{images}");
+    let removed = shards(&["rm", "-f", "prov", "other"]);
     assert_eq!(removed.status, Some(0), "{removed}");
 }
 

@@ -28,8 +28,19 @@ pub(super) fn serves(method: &str, path: &[&str]) -> bool {
             | ("POST", ["containers", "create"])
             | ("GET", ["containers", "json"])
             | ("GET", ["containers", _, "json" | "logs"])
-            | ("POST", ["containers", _, "start" | "stop" | "kill" | "wait"])
+            | (
+                "POST",
+                [
+                    "containers",
+                    _,
+                    "start" | "stop" | "kill" | "wait" | "attach" | "resize" | "exec"
+                ]
+            )
             | ("DELETE", ["containers", _])
+            | ("POST", ["exec", _, "start" | "resize"])
+            | ("GET", ["exec", _, "json"])
+            | ("POST", ["images", "create"])
+            | ("GET", ["images", .., "json"])
     )
 }
 
@@ -45,7 +56,8 @@ pub(super) fn unserved(method: &str, target: &str) -> Answer {
         501,
         format!(
             "{method} {target}: not served by a microVM's own engine, which serves its _ping, version and info, \
-             and its own containers' create, list, inspect, start, stop, kill, wait, logs and remove"
+             and its own containers' create, list, inspect, start, stop, kill, wait, logs, attach, exec \
+             and remove"
         ),
     )
 }
@@ -53,6 +65,43 @@ pub(super) fn unserved(method: &str, target: &str) -> Answer {
 /// A container a scope cannot see, said as dockerd says one that is not there.
 fn no_such(given: &str) -> Answer {
     Answer::error(404, format!("No such container: {given}"))
+}
+
+/// A bind of `point`'s, a path of its microVM's own command's files (D181), as init takes
+/// one (`SRC\0DST\0FLAGS`: `ro` or `rw`, `create` for a source `-v` makes where it is
+/// missing, as dockerd makes a host's): none for a mount that is no bind; why not for a
+/// propagation that would reach the command's own mounts, which a copy of them in the
+/// container's namespace shares nothing with.
+fn own_bind(point: &crate::volumes::MountPoint) -> Option<Result<String, String>> {
+    if point.kind != "bind" {
+        return None;
+    }
+    if !matches!(point.propagation.as_str(), "" | "private" | "rprivate") {
+        return Some(Err(format!(
+            "propagation {}: a container's copy of its microVM's own files shares no mount with the command's",
+            point.propagation
+        )));
+    }
+    let mut flags = vec![if point.rw { "rw" } else { "ro" }];
+    if point.create_source {
+        flags.push("create");
+    }
+    Some(Ok(format!(
+        "{}\0{}\0{}",
+        point.source,
+        point.destination,
+        flags.join(",")
+    )))
+}
+
+/// The images microVM `provider`'s own engine reaches: its own, and those it pulled.
+fn images_of(provider: &Container) -> Vec<String> {
+    provider
+        .image_id
+        .iter()
+        .chain(&provider.engine_images)
+        .cloned()
+        .collect()
 }
 
 /// The containers of `all` that the engine of microVM `provider` made, each by the name
@@ -115,22 +164,30 @@ fn confine(run: &mut Run, provider: &str, scoped: &[Container]) -> Result<(), An
     if let Some(e) = run.endpoints.first() {
         return past(format!("--network {}", e.network));
     }
-    // Binds name the host's files, and a named volume is another microVM's to share.
-    if let Some(b) = run.binds.first() {
-        return past(format!("-v {b}"));
-    }
-    for m in &run.mounts {
-        let fields: Vec<(&str, &str)> = m
-            .split(',')
-            .map(|f| f.split_once('=').unwrap_or((f, "")))
-            .collect();
-        let field = |k: &[&str]| fields.iter().find(|(f, _)| k.contains(f)).map(|(_, v)| *v);
-        let kind = field(&["type"]).unwrap_or("volume");
-        let named = field(&["source", "src"]).is_some_and(|s| !s.is_empty());
-        if !(kind == "tmpfs" || (kind == "volume" && !named)) {
-            return past(format!("--mount {m}"));
+    // A bind names a path of its microVM's own command's files, as a bind names one of its
+    // engine's host's: init copies it from the command's mount namespace into the
+    // container's (`own-bind`), and nothing of the host's. A named volume is another
+    // microVM's to share; a volume of its own, and a tmpfs, are its own.
+    for b in std::mem::take(&mut run.binds) {
+        let point = crate::volumes::parse_raw(&b, "").map_err(|e| Answer::error(400, e))?;
+        match own_bind(&point) {
+            Some(Ok(bind)) => run.own_binds.push(bind),
+            Some(Err(why)) => return Err(Answer::error(400, format!("-v {b}: {why}"))),
+            None => return past(format!("-v {b}")),
         }
     }
+    let mut kept = Vec::new();
+    for m in std::mem::take(&mut run.mounts) {
+        let point = crate::volumes::parse_spec_within(&m).map_err(|e| Answer::error(400, e))?;
+        match (point.kind.as_str(), own_bind(&point)) {
+            ("bind", Some(Ok(bind))) => run.own_binds.push(bind),
+            ("bind", Some(Err(why))) => return Err(Answer::error(400, format!("--mount {m}: {why}"))),
+            ("tmpfs", _) => kept.push(m),
+            ("volume", _) if point.name.is_empty() => kept.push(m),
+            _ => return past(format!("--mount {m}")),
+        }
+    }
+    run.mounts = kept;
     if !matches!(run.volume_driver.as_str(), "" | "local") {
         return past(format!("--volume-driver {}", run.volume_driver));
     }
@@ -207,6 +264,11 @@ impl<D: Disk> Daemon<D> {
             ("GET", ["info"]) => self.scoped_info(scope),
             ("POST", ["containers", "create"]) => self.scoped_create(threads, call, scope),
             ("GET", ["containers", "json"]) => self.scoped_list(call, scope),
+            ("POST", ["images", "create"]) => return self.scoped_pull(threads, conn, call, scope),
+            ("GET", ["images", "json"]) => self.scoped_images(call, scope),
+            ("GET", ["images", name @ .., "json"]) if !name.is_empty() => {
+                self.scoped_image(threads, &name.join("/"), scope)
+            }
             (_, ["containers", given, rest @ ..]) => {
                 self.settle();
                 let scoped = self.scoped(scope);
@@ -225,6 +287,26 @@ impl<D: Disk> Daemon<D> {
                     ("DELETE", []) => self.engine_remove(threads, &id, call),
                     ("POST", ["wait"]) => return self.engine_wait(conn, &id, call),
                     ("GET", ["logs"]) => return self.engine_logs(threads, conn, &id, call),
+                    ("POST", ["attach"]) => return self.engine_attach(threads, conn, &id, call),
+                    ("POST", ["resize"]) => self.engine_resize(&id, call),
+                    ("POST", ["exec"]) => self.engine_exec_create(&id, call),
+                    _ => unserved(method, &call.head.target),
+                }
+            }
+            // An exec of its own containers' alone, said as one that is not there.
+            (_, ["exec", exec_id, rest @ ..]) => {
+                self.settle();
+                let scoped = self.scoped(scope);
+                let ours = self
+                    .exec_container(exec_id)
+                    .is_some_and(|c| scoped.iter().any(|s| s.id == c));
+                if !ours {
+                    return Done::Answer(Answer::error(404, format!("No such exec instance: {exec_id}")));
+                }
+                match (method, rest) {
+                    ("POST", ["start"]) => return self.engine_exec_start(threads, conn, exec_id, call),
+                    ("POST", ["resize"]) => self.engine_resize(exec_id, call),
+                    ("GET", ["json"]) => self.engine_exec_inspect(exec_id),
                     _ => unserved(method, &call.head.target),
                 }
             }
@@ -248,8 +330,8 @@ impl<D: Disk> Daemon<D> {
             containers: scoped.len(),
             running: running.saturating_sub(paused),
             paused,
-            // Its own image: a create there runs it.
-            images: usize::from(provider.is_some()),
+            // Its own images: its microVM's, and those its engine pulled.
+            images: provider.as_ref().map_or(0, |p| images_of(p).len()),
             cpus: limits
                 .and_then(|l| u64::try_from(l.nano_cpus).ok())
                 .filter(|&n| n > 0)
@@ -296,13 +378,13 @@ impl<D: Disk> Daemon<D> {
         if let Err(answer) = confine(&mut run, &scope.provider, &scoped) {
             return answer;
         }
-        // Its microVM's own image alone, until it pulls with its run's credentials.
+        // Its own images alone: its microVM's, and those its engine pulled.
         let provider = lock(&self.containers).get(&scope.provider).cloned();
         let Some(provider) = provider else {
             return Answer::error(409, "its microVM is gone");
         };
         match self.image_id_of(threads, image) {
-            Some(id) if Some(&id) == provider.image_id.as_ref() => {}
+            Some(id) if images_of(&provider).contains(&id) => {}
             _ => return Answer::error(404, format!("No such image: {image}")),
         }
         // Its name in the scope, and on the host after its microVM's.
@@ -347,6 +429,92 @@ impl<D: Disk> Daemon<D> {
             ),
             Ok(answer) => refused(&answer.said, 400),
             Err(e) => Answer::error(500, e),
+        }
+    }
+
+    /// `POST /images/create` of a microVM's own engine: a pull, its registries reached as
+    /// its run's client reaches them (its credentials kept by the daemon, never in the
+    /// microVM), and those a client in it gives over them; what it pulled its own after.
+    fn scoped_pull<'s, 'e>(
+        &'s self,
+        threads: &'s Threads<'s, 'e>,
+        conn: &std::os::unix::net::UnixStream,
+        call: &Call<'_>,
+        scope: &Scope,
+    ) -> Done {
+        if call.query("fromSrc").is_some_and(|s| !s.is_empty()) {
+            return Done::Answer(unserved(&call.head.method, &call.head.target));
+        }
+        let env = self
+            .inbox_of(&scope.provider)
+            .and_then(|inbox| lock(&inbox).engine.as_ref().map(|e| e.registry_env.clone()));
+        let Some(env) = env else {
+            return Done::Answer(Answer::error(409, "its microVM is not running"));
+        };
+        let (done, pulled) = self.pull_with(threads, conn, call, env);
+        if let Some((reference, every_tag)) = pulled {
+            let ids: Vec<String> = if every_tag {
+                self.ask_command(
+                    threads,
+                    &["images", "--no-trunc", "--format", "{{.ID}}", &reference],
+                )
+                .ok()
+                .filter(|(status, _, _)| *status == 0)
+                .map(|(_, out, _)| {
+                    String::from_utf8_lossy(&out)
+                        .lines()
+                        .map(str::to_string)
+                        .collect()
+                })
+                .unwrap_or_default()
+            } else {
+                self.image_id_of(threads, &reference).into_iter().collect()
+            };
+            let kept = lock(&self.containers).change(&scope.provider, |c| {
+                for id in ids {
+                    if !c.engine_images.contains(&id) {
+                        c.engine_images.push(id);
+                    }
+                }
+            });
+            if kept.is_ok() {
+                self.record_soon(&scope.provider, Vec::new());
+            }
+        }
+        done
+    }
+
+    /// `GET /images/json` of a microVM's own engine: its own images, as the store sums
+    /// them up.
+    fn scoped_images(&self, call: &Call<'_>, scope: &Scope) -> Answer {
+        let ours = lock(&self.containers)
+            .get(&scope.provider)
+            .map(images_of)
+            .unwrap_or_default();
+        let listed = self.engine_images(call);
+        if listed.status != 200 {
+            return listed;
+        }
+        let all: Value = serde_json::from_slice(&listed.body).unwrap_or_default();
+        let kept: Vec<Value> = all
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|i| i["Id"].as_str().is_some_and(|id| ours.iter().any(|o| o == id)))
+            .cloned()
+            .collect();
+        Answer::json(200, &Value::Array(kept))
+    }
+
+    /// `GET /images/{name}/json` of a microVM's own engine: one of its own images.
+    fn scoped_image<'s, 'e>(&'s self, threads: &'s Threads<'s, 'e>, name: &str, scope: &Scope) -> Answer {
+        let ours = lock(&self.containers)
+            .get(&scope.provider)
+            .map(images_of)
+            .unwrap_or_default();
+        match self.image_id_of(threads, name) {
+            Some(id) if ours.contains(&id) => self.engine_image_inspect(name),
+            _ => Answer::error(404, format!("No such image: {name}")),
         }
     }
 
@@ -435,6 +603,7 @@ mod tests {
                 of: of.into(),
                 name: name.into(),
             }),
+            engine_images: Vec::new(),
         }
     }
 
@@ -496,6 +665,22 @@ mod tests {
             ..Run::default()
         };
         assert_eq!(refused_why(&mut run, &scoped), None);
+        // Binds name its microVM's own files: `-v`'s made where missing, as dockerd makes a
+        // host's, `--mount`'s not.
+        let mut bound = Run {
+            binds: vec!["/work:/src:ro".into()],
+            mounts: vec!["type=bind,source=/w,target=/x".into()],
+            ..Run::default()
+        };
+        assert_eq!(refused_why(&mut bound, &scoped), None);
+        assert_eq!(
+            (bound.binds.len(), bound.mounts.len(), bound.own_binds.as_slice()),
+            (
+                0,
+                0,
+                ["/work\0/src\0ro,create".to_string(), "/w\0/x\0rw".to_string()].as_slice()
+            )
+        );
         assert_eq!(
             (
                 run.network.as_str(),
@@ -533,13 +718,6 @@ mod tests {
             ),
             (
                 Run {
-                    binds: vec!["/etc:/x".into()],
-                    ..Run::default()
-                },
-                past("-v /etc:/x"),
-            ),
-            (
-                Run {
                     binds: vec!["vol:/x".into()],
                     ..Run::default()
                 },
@@ -547,10 +725,13 @@ mod tests {
             ),
             (
                 Run {
-                    mounts: vec!["type=bind,source=/etc,target=/x".into()],
+                    binds: vec!["/w:/x:rshared".into()],
                     ..Run::default()
                 },
-                past("--mount type=bind,source=/etc,target=/x"),
+                Some((
+                    400,
+                    "-v /w:/x:rshared: propagation rshared: a container's copy of its microVM's own files shares no mount with the command's".into(),
+                )),
             ),
             (
                 Run {

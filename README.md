@@ -139,9 +139,13 @@ other microVMs, and your registry logins stay outside it. Two microVMs' programs
 make a container called `db`; on your machine they're listed as `MICROVM.db`. What a
 microVM's engine made stops when its program does, and is removed with it. `docker run
 --use-api-socket` through shards' Engine API does the same, and the credentials the
-`docker` CLI would copy in are refused (it warns). So far its program can make, start,
-stop, kill, wait for, read the logs of, list, inspect and remove containers of its own
-microVM's image; a call it can't serve yet is refused with what it serves.
+`docker` CLI would copy in are refused (it warns). Its program can run containers
+(`docker run`, attached or not), exec in them, stop, kill, wait for, read the logs of,
+list, inspect and remove them, and pull images: shards pulls with the registry logins of
+whoever ran the microVM, and the image is then that microVM's own; images of yours it
+never pulled aren't there for it. A bind (`-v /work:/src`) is of the microVM's own files,
+its volumes included, as a bind on any engine is of that engine's machine's. A call it
+can't serve yet is refused with what it serves.
 
 ### Boot a kernel yourself
 

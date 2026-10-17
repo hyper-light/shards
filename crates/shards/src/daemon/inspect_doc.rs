@@ -1548,6 +1548,7 @@ mod tests {
                 size_rw: None,
                 saved: None,
                 engine_made: None,
+                engine_images: Vec::new(),
             };
             let manifest = &want["ImageManifestDescriptor"];
             let facts = Facts {

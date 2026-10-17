@@ -677,6 +677,10 @@ pub struct Run {
     /// Made through a microVM's own engine (D181): that microVM's container ID, and the
     /// name the container has there, none for one its engine names.
     pub engine_made: Option<(String, String)>,
+    /// Binds of its microVM's own files (D181), each `SRC\0DST\0ro|rw\0PROPAGATION`, SRC a
+    /// path in the files of the command whose engine made it, as a bind names a path of its
+    /// engine's host: none of the host's.
+    pub own_binds: Vec<String>,
 }
 
 /// The streams a create says its client attaches (Config.AttachStdin, AttachStdout and
@@ -1265,6 +1269,7 @@ impl Run {
                     .map(|(of, name)| vec![of.clone(), name.clone()])
                     .unwrap_or_default(),
             ),
+            ("own-binds", self.own_binds.clone()),
             ("device-requests", {
                 let mut values = Vec::new();
                 for r in &self.device_requests {
@@ -1443,6 +1448,7 @@ impl Run {
                         let mut v = values.into_iter();
                         run.engine_made = v.next().zip(v.next());
                     }
+                    "own-binds" => run.own_binds = values,
                     "device-requests" => {
                         let mut rest = values.iter();
                         while rest.len() > 0 {
@@ -2160,6 +2166,7 @@ mod tests {
             pid: "host".into(),
             use_api_socket: true,
             engine_made: Some(("prov".into(), String::new())),
+            own_binds: vec!["/work\0/src\0ro\0rprivate".into()],
         };
         let bytes = run.encode();
         let identity = run.daemon;
@@ -2226,6 +2233,7 @@ mod tests {
             device_requests: Vec::new(),
             use_api_socket: false,
             engine_made: None,
+            own_binds: Vec::new(),
             ..run.clone()
         };
         let boundary = earlier.encode().len() - 4;

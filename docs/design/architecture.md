@@ -4515,7 +4515,7 @@ removed socket not bound again; the sockets kept as the daemon closes; the relay
 up as it stops; a machine's refusal unsaid; the client's writer failing and its command run
 on; a reader gone said as an error.
 
-### D181. `--use-api-socket`: a run's command reaches its own microVM's engine (slice 1 built)
+### D181. `--use-api-socket`: a run's command reaches its own microVM's engine (slices 1 and 2 built)
 
 The need: a CI job, a test suite with testcontainers, or an agent's tool runs `docker run`
 from inside its workload, as on a host with Docker. The user's call (2026-10-16): what it
@@ -4550,19 +4550,38 @@ there where the container is not removed.
   it (D119); and it goes with its microVM, removed as that is.
 - **Scoped, whatever is asked.** Through it, a command sees and acts on what its own
   engine made alone, by the names it gave: list, inspect, start, stop, kill, wait, logs,
-  remove; `_ping`, `version`, and an `info` of its own (its containers, its image, its
-  microVM's CPUs and memory where its run limits them, its hostname; none of its host's
-  name, directories, proxies or descriptors). Another microVM, its own included, is not
-  there for it (404, as one that is not). What would reach past the microVM is refused
-  with what asked for it (403): a bind (the host's files), a named volume, another
-  network, the host's GPUs, CDI and VFIO devices, a log driver that sends logs from the
-  host past the microVM's grants, another runtime, an engine of its own for a joiner (the
-  docker CLI's `--use-api-socket` inside is a bind, refused so). An image other than its
-  microVM's own is not there for it until it pulls (slice 2). A call it does not serve is
-  answered 501 before its body is read, naming what it serves; a registry login, 403.
-- **No credential enters the microVM.** A pull through it will be the daemon's, with the
-  credentials the run's client sent with the run, never written into the microVM; a
-  registry login asked from inside is refused.
+  attach (`docker run`'s, before the start), resize, exec, remove; `_ping`, `version`, and
+  an `info` of its own (its containers, its images, its microVM's CPUs and memory where
+  its run limits them, its hostname; none of its host's name, directories, proxies or
+  descriptors). Another microVM, its own included, and an exec of another's, are not there
+  for it (404, as one that is not). What would reach past the microVM is refused with
+  what asked for it (403): a named volume, another network, the host's GPUs, CDI and VFIO
+  devices, a log driver that sends logs from the host past the microVM's grants, another
+  runtime, an engine of its own for a joiner. A call it does not serve is answered 501
+  before its body is read, naming what it serves; a registry login, 403.
+- **A bind is of its microVM's own files**, as a bind on any engine is of that engine's
+  host's, and the microVM is its host: `-v /work:/src` in the CI job binds the job's
+  `/work`, where Docker's flag binds the host's path, which the job's files are not. The
+  joiner's init copies the source from the workload's mount namespace while that is in
+  reach (setns(2), open_tree(2) `OPEN_TREE_CLONE | AT_RECURSIVE`, as dockerd's binds are
+  recursive), resolved from that namespace's root, the command's files, past none of them
+  (`..` and links, absolute or not, stop there): its volumes and tmpfs mounts are in it,
+  and a link to one resolves as the command's processes see it. Read-only binds are so
+  with their submounts (mount_setattr(2) `AT_RECURSIVE`, Linux 5.12). `-v` makes a missing
+  source, as dockerd makes a host's; `--mount` does not, and skips the host's check for
+  it, the source being none of the host's. A propagation that would share mounts with the
+  command's (`shared`, `slave`) is refused: a copy shares none.
+- **Its images are its own.** A create runs its microVM's image, and those its engine
+  pulled (`engine_images` in the microVM's record); another image the host's store holds
+  is not there for it (404), so the docker CLI pulls, as on an engine without it, and a
+  scope never reads an image it was not given. `images` and `image inspect` list its own
+  alone; `info` counts them.
+- **No credential enters the microVM.** A pull through it is the daemon's, with the
+  registries' environment the run's client sent with the run (its `DOCKER_CONFIG` and the
+  rest, `registry_env`), kept in the daemon's memory for the run's life alone, as a log
+  driver's credentials are (D168), never written into the microVM, nor into the run's
+  kept request; credentials a client in the microVM gives (`X-Registry-Auth`) go over
+  them. A registry login asked from inside is refused.
 - **The docker CLI's own flag, asked of shards' engine** (`docker run --use-api-socket`
   over `engine.sock`): its bind of its engine's socket (`/var/run/docker.sock`, bind
   options none set) is the microVM's own engine instead, and its `DOCKER_CONFIG` goes with
@@ -4597,7 +4616,7 @@ there where the container is not removed.
 
 Tested on real microVMs (`a_runs_command_reaches_its_own_microvms_engine`: made, started,
 waited for, logged, listed, inspected and removed through it, the host's other microVM and
-itself unseen, a bind and a login refused, a call not served answered 501, one left running
+itself unseen, a named volume and a login refused, a call not served answered 501, one left running
 ended with its command and removed with its microVM;
 `the_docker_clis_use_api_socket_is_the_microvms_own_engine`; isolation's
 `a_microvms_engine_port_answers_its_inits_token_alone`, a tmpfs over `/run` and a read-only
@@ -4606,11 +4625,16 @@ the daemon (`an_engine_connection_is_served_for_a_run_with_its_own_engine_alone`
 scope (`a_scope_sees_its_own_containers_by_their_names_there`,
 `a_create_stays_in_its_microvm`).
 
-Slices: (1) built, as above; (2) pulls with the run's credentials (an image the scope
-pulled its own), attach, exec, and binds of the microVM's own files (a bind's source a
-path in the command's own view of its files, the meaning a bind has on the engine's own
-host, where Docker's flag binds the host's path, which the command's files are not);
-(3) Compose through it.
+Slice 2 tested on real microVMs (`a_microvms_own_engine_runs_binds_execs_and_pulls`:
+`docker run`'s calls, a create, an attach before the start and the start and wait on one
+kept connection, its output from its first byte; binds of the command's file and of its
+volume, read-only and written through, a link to its volume resolved as the command sees
+it; an exec in its container, another microVM's exec unseen; a pull from a registry that
+asks for credentials, which the run's client alone has, the image not its own before, its
+own after; its images listed, none of the host's it never pulled), and in the scope
+(`a_create_stays_in_its_microvm`).
+
+Slices: (1) and (2) built, as above; (3) Compose through it.
 
 ### D179. Other CPUs' images, emulated in their microVM (parts 1 to 3 built)
 
