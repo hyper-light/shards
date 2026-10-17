@@ -9857,6 +9857,166 @@ fn microvms_on_an_ipv6_network_reach_one_another() {
     assert_eq!(shards(&["network", "rm", "lan6"]).stdout, "lan6\n");
 }
 
+/// A network's options are what its microVMs do: one made with `enable_icc` false keeps
+/// its members from one another, their names still answered, as dockerd's bridge keeps
+/// them; its ports published with no address are bound at its `host_binding_ipv4` alone,
+/// and reached there; an MTU is kept as given, its members keeping their devices'; a
+/// routed one publishes no port; and each option is read as dockerd reads it. The default
+/// network says what it does.
+#[test]
+fn a_networks_options_are_what_its_microvms_do() {
+    let Some((home, image)) = home("containers-netopts") else {
+        return;
+    };
+    let shards = |args: &[&str]| shards_in(&home, args);
+    let options = shards(&["network", "inspect", "-f", "{{json .Options}}", "bridge"]);
+    let options: serde_json::Value = serde_json::from_str(&options.stdout).unwrap();
+    assert_eq!(
+        options["com.docker.network.bridge.enable_icc"], "false",
+        "{options}"
+    );
+    assert_eq!(options["com.docker.network.driver.mtu"], "65520", "{options}");
+    assert_eq!(
+        options["com.docker.network.bridge.host_binding_ipv4"], "0.0.0.0",
+        "{options}"
+    );
+    assert!(
+        options.get("com.docker.network.bridge.name").is_none(),
+        "{options}"
+    );
+    // A home whose record says what an older shards said of it is told the truth too.
+    for entry in std::fs::read_dir(home.join("networks")).unwrap() {
+        let path = entry.unwrap().path();
+        let mut record: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        if record["name"] == "bridge" {
+            record["options"]["com.docker.network.bridge.enable_icc"] = "true".into();
+            record["options"]["com.docker.network.driver.mtu"] = "1500".into();
+            record["options"]["com.docker.network.bridge.name"] = "docker0".into();
+            std::fs::write(&path, serde_json::to_vec(&record).unwrap()).unwrap();
+        }
+    }
+    let again = shards(&["network", "inspect", "-f", "{{json .Options}}", "bridge"]);
+    let again: serde_json::Value = serde_json::from_str(&again.stdout).unwrap();
+    assert_eq!(again, options);
+    for (option, said) in [
+        (
+            "com.docker.network.driver.mtu=abc",
+            "failed to parse com.docker.network.driver.mtu value: abc (strconv.Atoi: parsing \"abc\": invalid syntax)",
+        ),
+        (
+            "com.docker.network.driver.mtu=99999999999999999999",
+            "(strconv.Atoi: parsing \"99999999999999999999\": value out of range)",
+        ),
+        ("com.docker.network.driver.mtu=-1", "invalid MTU number: -1"),
+        (
+            "com.docker.network.bridge.enable_ip_masquerade=yes",
+            "failed to parse com.docker.network.bridge.enable_ip_masquerade value: yes (strconv.ParseBool: parsing \"yes\": invalid syntax)",
+        ),
+        (
+            "com.docker.network.bridge.gateway_mode_ipv4=direct",
+            "failed to parse com.docker.network.bridge.gateway_mode_ipv4 value: direct (unknown gateway mode direct)",
+        ),
+        (
+            "com.docker.network.bridge.host_binding_ipv4=localhost",
+            "failed to parse com.docker.network.bridge.host_binding_ipv4 value: localhost (nil ip)",
+        ),
+        (
+            "com.docker.network.bridge.gateway_mode_ipv6=isolated",
+            "gateway mode 'isolated' can only be used for an internal network",
+        ),
+    ] {
+        let r = shards(&["network", "create", "-o", option, "refused"]);
+        assert_eq!(r.status, Some(1), "{option}: {r}");
+        assert!(r.stderr.contains(said), "{option}: {r}");
+    }
+    let made = shards(&[
+        "network",
+        "create",
+        "--subnet",
+        "10.78.0.0/24",
+        "-o",
+        "com.docker.network.bridge.enable_icc=false",
+        "-o",
+        "com.docker.network.bridge.host_binding_ipv4=127.0.0.1",
+        "-o",
+        "com.docker.network.driver.mtu=1400",
+        "apart",
+    ]);
+    assert_eq!(made.status, Some(0), "{made}");
+    let mut srv = start(
+        &home,
+        &image,
+        &["--name", "lone", "--network", "apart", "-p", "7000"],
+        &["serve", "7000", "1"],
+    );
+    // Its name answers, and nothing reaches it.
+    let r = run_in(
+        &home,
+        &image,
+        &["--rm", "--network", "apart"],
+        &["resolve", "lone"],
+    );
+    assert!(r.stdout.starts_with("resolve 10.78.0."), "{r}");
+    let r = run_in(
+        &home,
+        &image,
+        &["--rm", "--network", "apart"],
+        &["ask", "lone:7000"],
+    );
+    assert_ne!(r.status, Some(0), "{r}");
+    // Its port at the host's loopback alone, and reached there.
+    let ports = shards(&[
+        "inspect",
+        "-f",
+        "{{range $p, $b := .NetworkSettings.Ports}}{{range $b}}{{.HostIp}} {{.HostPort}}\n{{end}}{{end}}",
+        "lone",
+    ]);
+    let bound: Vec<&str> = ports.stdout.lines().filter(|l| !l.is_empty()).collect();
+    assert_eq!(bound.len(), 1, "{ports}");
+    let port: u16 = bound[0].strip_prefix("127.0.0.1 ").unwrap().parse().unwrap();
+    let mut reply = String::new();
+    let mut conn = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+    conn.shutdown(std::net::Shutdown::Write).unwrap();
+    std::io::Read::read_to_string(&mut conn, &mut reply).unwrap();
+    assert!(reply.starts_with("from "), "{reply:?}");
+    assert!(srv.wait().unwrap().success());
+    // The MTU kept as given, its members their devices'.
+    let mtu = shards(&[
+        "network",
+        "inspect",
+        "-f",
+        "{{index .Options \"com.docker.network.driver.mtu\"}}",
+        "apart",
+    ]);
+    assert_eq!(mtu.stdout, "1400\n", "{mtu}");
+    let r = run_in(
+        &home,
+        &image,
+        &["--rm", "--network", "apart"],
+        &["fs", "print:/sys/class/net/eth0/mtu"],
+    );
+    assert_eq!(r.stdout, "65520\n", "{r}");
+    // A routed network publishes nothing on the host.
+    let made = shards(&[
+        "network",
+        "create",
+        "--subnet",
+        "10.79.0.0/24",
+        "-o",
+        "com.docker.network.bridge.gateway_mode_ipv4=routed",
+        "direct",
+    ]);
+    assert_eq!(made.status, Some(0), "{made}");
+    let r = run_in(
+        &home,
+        &image,
+        &["--rm", "--network", "direct", "-p", "7000"],
+        &["exit", "0"],
+    );
+    assert_ne!(r.status, Some(0), "{r}");
+    assert!(r.stderr.contains("its gateway mode is routed"), "{r}");
+}
+
 /// D46: microVMs on a user network reach one another, by address and by every name
 /// Docker's embedded DNS answers (name, alias, short ID, host name, any case), at
 /// Docker's 127.0.0.11; the server sees each by its own address; a microVM off the network

@@ -2312,6 +2312,7 @@ impl<D: Disk> Daemon<D> {
         // A user network's endpoint (D46): its address, as the microVM starts, or why
         // the start fails, the microVM kept.
         let mut network_setup = Vec::new();
+        let mut user_net = None;
         if start == network::Start::Attach(network::Net::User) {
             let term = run.network.clone();
             let endpoint = run.endpoints.iter().find(|e| e.network == term);
@@ -2324,6 +2325,7 @@ impl<D: Disk> Daemon<D> {
                     let before = prepared.spec.setup.len();
                     self.network_guest(&network, &member, &run, &mut prepared.spec);
                     network_setup = prepared.spec.setup.split_off(before);
+                    user_net = Some(network);
                 }
                 Err(e) => start = network::Start::Fails(e),
             }
@@ -2365,9 +2367,27 @@ impl<D: Disk> Daemon<D> {
                     abandon(&id);
                     return None;
                 }
-                publish::bind(&bindings, &alone, publish::v6_listenable(), |at, proto| {
-                    self.in_use(at, proto)
-                })
+                // A routed network's members are reached at their own addresses, with no
+                // host port bound for what they publish (dockerd's `gateway_mode` routed);
+                // a microVM's address is reached through its network process alone, so
+                // its ports could only be published on the host's, which the mode keeps
+                // closed.
+                if let Some(n) = user_net.as_ref().filter(|n| n.routed() && !bindings.is_empty()) {
+                    refuse(&format!(
+                        "cannot publish ports on network {}: its gateway mode is routed, which reaches its members at their own addresses with no host port bound, and a microVM is reached through its network process alone; publish them on a network in nat mode",
+                        n.name
+                    ));
+                    abandon(&id);
+                    return None;
+                }
+                let default = user_net.as_ref().and_then(crate::networks::Network::host_binding);
+                publish::bind(
+                    &bindings,
+                    &alone,
+                    default,
+                    publish::v6_listenable(),
+                    |at, proto| self.in_use(at, proto),
+                )
             }
             _ => Ok(publish::Bound::default()),
         };

@@ -2992,6 +2992,46 @@ the daemon elected (D31).
   (networks.rs) and the CLI's consolidation (daemon/networks.rs) held to Docker's answers
   in unit tests.
 
+A network's options are what its microVMs do (moby docker-v29.3.1's bridge driver,
+drivers/bridge/bridge_linux.go, port_mapping_linux.go; netlabel). Before, they were
+checked (two of them) and ignored, and two of those asked for less reach: a network made
+with `enable_icc` false or `host_binding_ipv4` 127.0.0.1 got neither, and was not told.
+- **`enable_icc` false keeps its members from one another:** no link between their
+  network processes (`NET_PEER`), the only way one reaches another; their names still
+  answered, as dockerd's embedded resolver answers them.
+- **`host_binding_ipv4` is where a port published with no address is bound**, alone, as
+  dockerd binds it: an IPv4 address or an IPv6 one, whatever its name says; 0.0.0.0 or
+  unset, every address, IPv4's and IPv6's (`configurePortBindingIPv4`, `IPv6`).
+- **An MTU is kept as given, and its members keep their devices', 65520.** The option is
+  there so that a container's packets fit the host's wire, which they cross as they were
+  made. A microVM's flows end in its network process and leave through the host's own
+  sockets, which fit what they send to each path's MTU, so the wire's limit is met at the
+  device's full size. A smaller MTU would only cut throughput, and have the guest
+  fragment datagrams its network process takes whole (net/src/wire.rs, no reassembly).
+  `network create` says so on a terminal; a script reads the ID alone.
+- **A routed network publishes no port.** `gateway_mode` routed reaches a member at its
+  own address, no host port bound for what it publishes; a microVM is reached through its
+  network process alone, so its ports could only be bound on the host's, which the mode
+  keeps closed: a run publishing ports on one is refused, its reason said.
+- **Each option read as dockerd reads it**, in its words (`failed to parse LABEL value: V
+  (why)`: Go's strconv errors, `unknown gateway mode`, `nil ip`; `invalid MTU number`;
+  `isolated` only on an internal network), where only the MTU's and `enable_icc`'s were
+  read, and the MTU's range errors were called syntax errors.
+- **The default network says what it does:** `enable_icc` false (every member has the
+  same address, so that one template serves them all, and none reaches another), MTU
+  65520, masquerading and every host address true of it as before; no `docker0` bridge
+  name. A home whose record says what an older shards said is told the truth as it is
+  read.
+Tested (`a_networks_options_are_what_its_microvms_do`: the default network's options,
+an old record's made true; each refusal in dockerd's words; a member of an `enable_icc`
+false network resolved by name and not reached; its port bound at 127.0.0.1 alone and
+reached there; the MTU kept in inspect, 65520 in the guest; a routed network's port
+refused; publish.rs `a_port_at_no_address_takes_its_networks`), mutation-checked: members
+linked whatever icc says, the host binding ignored, the default network saying icc, an
+old record kept, a routed network publishing, isolated outside an internal network,
+gateway modes unread, a negative MTU taken, Atoi's errors ParseInt's, a binding address
+unread.
+
 An endpoint's sysctls (`--network NAME,driver-opt=com.docker.network.endpoint.sysctls=…`),
 as dockerd sets them (PM M171): written on eth0 by init, its name in place of `IFNAME`
 (or `ifname`, as the CLI lowercases it), after the container's own sysctls, as libnetwork

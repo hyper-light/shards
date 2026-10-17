@@ -60,13 +60,16 @@ Reviewed feature by feature, each D-entry's design against what it took from Doc
   the subnet's second (net/src/bridge.rs), so that one template serves them all, and none
   reaches another. Nor does MTU 1500: a guest's interface takes its device's, 65520
   (init/src/net.rs, `MTU`).
-- A user network's options are checked as dockerd checks them and then ignored: none of
-  `enable_icc`, `host_binding_ipv4` or `driver.mtu` reaches what its microVMs do
-  (daemon/publish.rs binds a port with no address at every address whatever its
+- A user network's options were checked (two of them) and then ignored: none of
+  `enable_icc`, `host_binding_ipv4` or `driver.mtu` reached what its microVMs do
+  (daemon/publish.rs bound a port with no address at every address whatever its
   network's `host_binding_ipv4`). Two of them ask for less reach: a network made with
   `enable_icc=false` so that its members do not reach each other, or with
-  `host_binding_ipv4=127.0.0.1` so that its published ports stay on the host, gets
-  neither, and is not told.
+  `host_binding_ipv4=127.0.0.1` so that its published ports stay on the host, got
+  neither, and was not told. Fixed (D46): both honoured; an MTU kept as given and said to
+  leave members at their devices' (their flows leave through the host's sockets); a
+  routed network's ports refused; every option read as dockerd reads it; the default
+  network's options true.
 - Every build step's hostname is `buildkitsandbox` (abi/src/build.rs), BuildKit's sandbox's
   name, where a step is a microVM's.
 - An anonymous volume is labelled `com.docker.volume.anonymous` (volumes.rs) and nothing of
