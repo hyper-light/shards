@@ -33,8 +33,8 @@ ff02::2\tip6-allrouters\n";
 
 /// The block subnets are taken from where a network names none: /24s of 10.244.0.0/16,
 /// the first that overlap neither the microVM's own network nor a declared one.
-const POOL: (Ipv4Addr, u8) = (Ipv4Addr::new(10, 244, 0, 0), 16);
-const POOL_PREFIX: u8 = 24;
+pub(crate) const POOL: (Ipv4Addr, u8) = (Ipv4Addr::new(10, 244, 0, 0), 16);
+pub(crate) const POOL_PREFIX: u8 = 24;
 
 /// The block a network with IPv6 (`NETWORK --ipv6`) takes its subnet from where it names
 /// none: /64s of a /48 of unique local addresses (RFC 4193), the first that overlaps
@@ -178,7 +178,7 @@ fn overlaps6(a: (Ipv6Addr, u8), b: (Ipv6Addr, u8)) -> bool {
     u128::from(a.0) & mask6(p) == u128::from(b.0) & mask6(p)
 }
 
-fn overlaps(a: (Ipv4Addr, u8), b: (Ipv4Addr, u8)) -> bool {
+pub(crate) fn overlaps(a: (Ipv4Addr, u8), b: (Ipv4Addr, u8)) -> bool {
     let p = a.1.min(b.1);
     u32::from(a.0) & mask(p) == u32::from(b.0) & mask(p)
 }

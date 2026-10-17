@@ -287,6 +287,10 @@ pub mod kind {
     /// before `STARTED`: the port each of its bindings was given in that microVM's
     /// command's network namespace, a big-endian u16 each, in their order.
     pub const PORTS: u8 = 60;
+    /// A VM → its daemon, on a container's own link its microVM's engine made (D181),
+    /// before `PORTS` and `STARTED`: its membership of that microVM's switch, as text, as
+    /// init said it (`shards_abi::run::kind::MEMBER`).
+    pub const MEMBER: u8 = 61;
 }
 
 /// A `SAVE` flag: the microVM goes on running once saved, rather than stopping.

@@ -2421,7 +2421,7 @@ impl Standby {
         if spec.setup.iter().any(|e| e == b"confine-eth0") {
             crate::links::confine_eth0().map_err(|e| setup_failed(format!("eth0's confinement: {e}")))?;
             // And its engine's containers (D181), whose networks it makes.
-            crate::ownnet::CONFINED.store(true, std::sync::atomic::Ordering::Relaxed);
+            crate::members::CONFINED.store(true, std::sync::atomic::Ordering::Relaxed);
         }
         if !spec.hostname.is_empty() {
             // SAFETY: a buffer of the given length.
@@ -3212,6 +3212,7 @@ fn builtin(
         stderr: Some(stderr_r),
         binds: None,
         published: None,
+        member: None,
     })
 }
 
@@ -3298,6 +3299,8 @@ struct Started {
     /// What a container its microVM's engine made publishes (D181): its proxy's PID, and
     /// the port each binding was given.
     published: Option<(libc::pid_t, Vec<u16>)>,
+    /// Its membership of the microVM's switch, made by its microVM's engine (D181).
+    member: Option<crate::members::Joined>,
 }
 
 /// Starts joiner `id` (D119): its image `range` of the join disk, joining `workload`'s
@@ -3332,23 +3335,45 @@ fn start_joiner(
         cgroupns_host: spec.setup.iter().any(|e| e == b"cgroupns=host"),
         rw_size: crate::join::rw_size(&spec.setup).map_err(setup_failed)?,
         own_binds: crate::join::own_binds(&spec.setup).map_err(setup_failed)?,
-        own_net: crate::ownnet::own_net(&spec.setup).map_err(setup_failed)?,
+        member: None,
         own_net_none: spec.setup.iter().any(|e| e == b"own-net-none"),
         hostname: spec.hostname.clone(),
         hosts: spec.hosts.clone(),
         resolv: spec.resolv.clone(),
     };
-    // What it publishes, from the command's network namespace, its engine's host's (D181):
-    // its proxy there before it is, so that a port it cannot have keeps it from starting.
-    let bindings = crate::ownnet::bindings(&spec.setup).map_err(setup_failed)?;
-    let published =
-        match (&join.own_net, bindings.is_empty()) {
-            (_, true) => None,
-            (Some(net), false) => Some(crate::ownnet::publish(workload, net.addr, &bindings).map_err(
-                |why| setup_failed(format!("driver failed programming external connectivity: {why}")),
-            )?),
-            (None, false) => return Err(setup_failed("ports of a container with no network of its own")),
-        };
+    // A member of the microVM's switch, made by its engine (D181): its namespace, address,
+    // gate and grants, each before any process of it runs; the ports it publishes are the
+    // only ones the command reaches it on.
+    let asked = crate::members::asked(&spec.setup).map_err(setup_failed)?;
+    let bindings = crate::members::bindings(&spec.setup).map_err(setup_failed)?;
+    if asked.is_none() && !bindings.is_empty() {
+        return Err(setup_failed("ports of a container with no network of its own"));
+    }
+    let published_ports: Vec<crate::netplan::Egress> =
+        bindings.iter().map(|b| (b.proto, b.port, b.port)).collect();
+    let member = match &asked {
+        Some(a) => Some(crate::members::join(id, a, &published_ports).map_err(setup_failed)?),
+        None => None,
+    };
+    let mut join = join;
+    join.member = member.as_ref().map(|m| crate::join::MemberNet {
+        ns: m.ns,
+        addr: m.addr,
+        names: asked.as_ref().map(|a| a.names.clone()).unwrap_or_default(),
+        dns: m.dns,
+    });
+    // What it publishes, from the command's network namespace, its engine's host's: its
+    // proxy there before it is, so that a port it cannot have keeps it from starting.
+    let published = match (&member, bindings.is_empty()) {
+        (Some(m), false) => match crate::members::publish(workload, m.addr, &bindings) {
+            Ok(p) => Some(p),
+            Err(why) => {
+                crate::members::leave(id);
+                return Err(setup_failed(format!("the ports it publishes: {why}")));
+            }
+        },
+        _ => None,
+    };
     let end_proxy = || {
         if let Some((proxy, _)) = &published {
             // SAFETY: kill(2) and waitpid(2) of init's own child, not yet waited for.
@@ -3357,6 +3382,7 @@ fn start_joiner(
                 libc::waitpid(*proxy, std::ptr::null_mut(), 0);
             }
         }
+        crate::members::leave(id);
     };
     // Its devices, as the workload's are found and confined (D44): the VM's, their nodes
     // made in its own /dev once its root is built, its cgroup's filter theirs.
@@ -3435,6 +3461,7 @@ fn start_joiner(
             stderr: w.stderr,
             binds: w.binds,
             published,
+            member,
         }),
         // Its standby waited for as it reported why (`launch`).
         Err(f) => {
@@ -3709,6 +3736,7 @@ impl Exec {
                     stderr: w.stderr,
                     binds: w.binds,
                     published: None,
+                    member: None,
                 }),
                 None => Err(Failure {
                     daemon: true,
@@ -3737,6 +3765,7 @@ impl Exec {
                     stderr: w.stderr,
                     binds: w.binds,
                     published: None,
+                    member: None,
                 })
         } else {
             Err(setup_failed("the container's main process has exited"))
@@ -3759,7 +3788,18 @@ impl Exec {
                     set_nonblocking(fd.as_raw_fd(), true);
                 }
                 (exec.stdin, exec.stdout, exec.stderr) = (w.stdin, w.stdout, w.stderr);
-                // The ports it was given, before its start (D181).
+                // Its address on the microVM's switch, and the ports it was given, before
+                // its start (D181).
+                if let Some(m) = &w.member {
+                    let [a, b, c, d, e, f] = m.mac;
+                    let said = format!(
+                        "{} {}/{} {} {a:02x}:{b:02x}:{c:02x}:{d:02x}:{e:02x}:{f:02x}",
+                        m.network, m.addr, m.prefix, m.gateway
+                    );
+                    let len = u32::try_from(said.len()).unwrap_or(u32::MAX);
+                    exec.to_conn
+                        .extend(&[&run::header(kind::MEMBER, len), said.as_bytes()]);
+                }
                 if let Some((proxy, ports)) = w.published {
                     exec.proxy = Some(proxy);
                     let said: Vec<u8> = ports.iter().flat_map(|p| p.to_be_bytes()).collect();
@@ -4256,6 +4296,8 @@ impl Workload {
                                     joined().retain(|(j, _)| *j != e.id);
                                     crate::join::kill_rest(e.id);
                                     crate::join::remove_cgroup(e.id);
+                                    // Its membership of the microVM's switch (D181).
+                                    crate::members::leave(e.id);
                                 }
                             } else if packing == Some(pid) {
                                 // The workload's layer sent, whole or not; the connection's

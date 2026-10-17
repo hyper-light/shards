@@ -19,8 +19,15 @@
 use std::collections::HashMap;
 use std::io;
 use std::net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream, UdpSocket};
-use std::os::fd::AsRawFd;
+use std::os::fd::{AsRawFd, OwnedFd};
+use std::sync::{OnceLock, RwLock};
 use std::time::{Duration, Instant};
+
+/// Init's end of the relay's control link, by which askers come and go as the members a
+/// microVM's engine makes join and leave (D181): each message an asker to keep (`A`, its
+/// link's index, whether it may ask any name, then each of its addresses, big-endian) or
+/// one to let go (`R`, its link's index).
+static CONTROL: OnceLock<OwnedFd> = OnceLock::new();
 
 /// How long a query waits on the microVM's resolver: an asker's resolver asks again after
 /// its own 5 s (RES_TIMEOUT, glibc's and musl's), so one unanswered by then is let go.
@@ -69,6 +76,8 @@ pub fn start(sockets: Sockets, askers: Vec<Asker>) -> Result<(), String> {
         upstream,
         ns,
     } = sockets;
+    let (ours, theirs) =
+        crate::hostbind::seqpacket().map_err(|e| format!("the agents' resolver's control link: {e}"))?;
     for s in [&listen, &upstream] {
         s.set_nonblocking(true)
             .map_err(|e| format!("the agents' resolver: {e}"))?;
@@ -104,24 +113,107 @@ pub fn start(sockets: Sockets, askers: Vec<Asker>) -> Result<(), String> {
                 upstream.as_raw_fd(),
                 tcp.as_raw_fd(),
                 ns.as_raw_fd(),
+                theirs.as_raw_fd(),
             ]);
             // SAFETY: setns(2) of the switch's namespace, a descriptor this process owns,
             // before it has another thread; closed after.
             let joined = unsafe { libc::setns(ns.as_raw_fd(), libc::CLONE_NEWNET) } == 0;
             drop(ns);
-            if joined && let Ok(to) = upstream.peer_addr() {
-                let askers = askers.clone();
-                // A thread of the relay's own: what it cannot start leaves TCP unanswered,
-                // and UDP as it was.
-                let _ = std::thread::Builder::new()
-                    .name("agentdns-tcp".into())
-                    .spawn(move || serve_tcp(&tcp, to, &askers));
-            }
-            relay(&listen, &upstream, &askers);
+            let askers = RwLock::new(askers);
+            std::thread::scope(|scope| {
+                if joined && let Ok(to) = upstream.peer_addr() {
+                    let (tcp, askers) = (&tcp, &askers);
+                    // A thread of the relay's own: what it cannot start leaves TCP
+                    // unanswered, and UDP as it was.
+                    let _ = std::thread::Builder::new()
+                        .name("agentdns-tcp".into())
+                        .spawn_scoped(scope, move || serve_tcp(tcp, to, askers));
+                }
+                relay(&listen, &upstream, &askers, &theirs);
+            });
             // SAFETY: _exit(2) of the child, which owns nothing to flush.
             unsafe { libc::_exit(0) }
         }
-        _ => Ok(()),
+        _ => {
+            let _ = CONTROL.set(ours);
+            Ok(())
+        }
+    }
+}
+
+/// Whether the relay runs: started for the domains, or for the first member a microVM's
+/// engine made that asks (D181).
+pub fn running() -> bool {
+    CONTROL.get().is_some()
+}
+
+/// Has the relay keep `asker`, in place of any of its link's (D181).
+pub fn admit(asker: &Asker) -> io::Result<()> {
+    let mut m = vec![b'A'];
+    m.extend_from_slice(&asker.link.to_be_bytes());
+    m.push(u8::from(asker.any));
+    for a in &asker.addrs {
+        m.extend_from_slice(&a.octets());
+    }
+    tell(&m)
+}
+
+/// Has the relay let the asker of link `link` go (D181).
+pub fn release(link: u32) -> io::Result<()> {
+    let mut m = vec![b'R'];
+    m.extend_from_slice(&link.to_be_bytes());
+    tell(&m)
+}
+
+fn tell(m: &[u8]) -> io::Result<()> {
+    let sock = CONTROL
+        .get()
+        .ok_or_else(|| io::Error::other("the agents' resolver is not running"))?;
+    // SAFETY: send(2) of our own bytes on our own descriptor.
+    let sent = unsafe { libc::send(sock.as_raw_fd(), m.as_ptr().cast(), m.len(), libc::MSG_NOSIGNAL) };
+    if usize::try_from(sent).ok() == Some(m.len()) {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
+}
+
+/// What a control message says of `askers`, done to them; false where it says nothing
+/// this relay knows.
+fn apply(m: &[u8], askers: &RwLock<Vec<Asker>>) -> bool {
+    let link = |m: &[u8]| {
+        m.get(1..5)
+            .and_then(|b| <[u8; 4]>::try_from(b).ok())
+            .map(u32::from_be_bytes)
+    };
+    match m.first() {
+        Some(b'A') => {
+            let (Some(link), Some(&any), Some(rest)) = (link(m), m.get(5), m.get(6..)) else {
+                return false;
+            };
+            let (chunks, []) = rest.as_chunks::<4>() else {
+                return false;
+            };
+            let addrs = chunks.iter().map(|c| Ipv4Addr::from(*c)).collect();
+            let mut a = askers.write().unwrap_or_else(std::sync::PoisonError::into_inner);
+            a.retain(|x| x.link != link);
+            a.push(Asker {
+                link,
+                any: any != 0,
+                names: Vec::new(),
+                addrs,
+            });
+            true
+        }
+        Some(b'R') => {
+            let Some(link) = link(m) else { return false };
+            askers
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .retain(|x| x.link != link);
+            true
+        }
+        _ => false,
     }
 }
 
@@ -326,38 +418,41 @@ fn tcp_share(askers: usize) -> usize {
 /// The TCP questions: each connection on a thread of its own, its asker known by its
 /// address, each question answered REFUSED or relayed to the microVM's resolver `to` over a
 /// connection of its own; idle for `WAIT`, it is closed.
-fn serve_tcp(listener: &TcpListener, to: SocketAddr, askers: &[Asker]) {
-    let share = tcp_share(askers.len());
-    let held: std::sync::Mutex<HashMap<usize, usize>> = std::sync::Mutex::new(HashMap::new());
+fn serve_tcp(listener: &TcpListener, to: SocketAddr, askers: &RwLock<Vec<Asker>>) {
+    // By each asker's link, which outlasts its place in the list as askers come and go.
+    let held: std::sync::Mutex<HashMap<u32, usize>> = std::sync::Mutex::new(HashMap::new());
     std::thread::scope(|scope| {
         for conn in listener.incoming() {
             let Ok(mut conn) = conn else { continue };
             let Ok(SocketAddr::V4(from)) = conn.peer_addr() else {
                 continue;
             };
-            let Some(at) = askers.iter().position(|a| a.addrs.contains(from.ip())) else {
-                continue;
+            let (asker, share) = {
+                let a = askers.read().unwrap_or_else(std::sync::PoisonError::into_inner);
+                (
+                    a.iter().find(|a| a.addrs.contains(from.ip())).cloned(),
+                    tcp_share(a.len()),
+                )
             };
+            let Some(asker) = asker else { continue };
+            let link = asker.link;
             {
                 let mut h = held.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-                let n = h.entry(at).or_insert(0);
+                let n = h.entry(link).or_insert(0);
                 if *n >= share {
                     continue;
                 }
                 *n += 1;
             }
             let held = &held;
-            let asker = askers.get(at);
             let served = std::thread::Builder::new()
                 .name("agentdns-conn".into())
                 .spawn_scoped(scope, move || {
-                    if let Some(asker) = asker {
-                        let _ = serve_connection(&mut conn, to, asker);
-                    }
+                    let _ = serve_connection(&mut conn, to, &asker);
                     if let Some(n) = held
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .get_mut(&at)
+                        .get_mut(&link)
                     {
                         *n = n.saturating_sub(1);
                     }
@@ -366,7 +461,7 @@ fn serve_tcp(listener: &TcpListener, to: SocketAddr, askers: &[Asker]) {
                 && let Some(n) = held
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .get_mut(&at)
+                    .get_mut(&link)
             {
                 *n = n.saturating_sub(1);
             }
@@ -401,10 +496,17 @@ fn serve_connection(conn: &mut TcpStream, to: SocketAddr, asker: &Asker) -> io::
     Ok(())
 }
 
-fn relay(listen: &UdpSocket, upstream: &UdpSocket, askers: &[Asker]) {
-    let mut flight: Flight<(Arrival, [u8; 2])> = Flight::new(askers.len());
+fn relay(listen: &UdpSocket, upstream: &UdpSocket, askers: &RwLock<Vec<Asker>>, control: &OwnedFd) {
+    let count = || {
+        askers
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .len()
+    };
+    let mut flight: Flight<(Arrival, [u8; 2])> = Flight::new(count());
     let mut next: u16 = 0;
     let mut buf = [0u8; 4096];
+    let mut said = true;
     loop {
         let mut set = [
             libc::pollfd {
@@ -417,19 +519,49 @@ fn relay(listen: &UdpSocket, upstream: &UdpSocket, askers: &[Asker]) {
                 events: libc::POLLIN,
                 revents: 0,
             },
+            libc::pollfd {
+                fd: if said { control.as_raw_fd() } else { -1 },
+                events: libc::POLLIN,
+                revents: 0,
+            },
         ];
-        // SAFETY: poll(2) of two pollfds of ours; a second at most, so that what waits is
+        // SAFETY: poll(2) of three pollfds of ours; a second at most, so that what waits is
         // let go in time.
-        if unsafe { libc::poll(set.as_mut_ptr(), 2, 1000) } < 0
+        if unsafe { libc::poll(set.as_mut_ptr(), 3, 1000) } < 0
             && io::Error::last_os_error().kind() != io::ErrorKind::Interrupted
         {
             return;
+        }
+        // Askers that came or went, each message whole (SOCK_SEQPACKET); init's end closed,
+        // the askers stay as they are.
+        if set[2].revents != 0 {
+            let mut m = [0u8; 512];
+            // SAFETY: recv(2) into our own buffer, without waiting.
+            let n = unsafe {
+                libc::recv(
+                    control.as_raw_fd(),
+                    m.as_mut_ptr().cast(),
+                    m.len(),
+                    libc::MSG_DONTWAIT,
+                )
+            };
+            match usize::try_from(n) {
+                Ok(0) => said = false,
+                Ok(n) => {
+                    if apply(m.get(..n).unwrap_or_default(), askers) {
+                        flight.share = usize::from(u16::MAX) / count().max(1);
+                    }
+                }
+                Err(_) => {}
+            }
         }
         let now = Instant::now();
         flight.expire(now);
         while let Ok((n, from)) = receive(listen, &mut buf) {
             let q = buf.get(..n).unwrap_or_default();
             let granted = askers
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .iter()
                 .find(|a| a.link == from.link)
                 .is_some_and(|a| a.may_ask(q));

@@ -9384,6 +9384,128 @@ fn agents_reach_only_what_connect_grants() {
     assert_eq!(hosts("c"), ["172.31.2.2\tc"]);
 }
 
+/// Beside agents whose grants reach past the microVM, the run's command reaches no farther
+/// than eth0's own subnet (`confine_eth0`, D59), and nor does a container its microVM's own
+/// engine makes (D181): a member reaches past the microVM no farther than the command. The
+/// host's port an agent is granted is reached by neither the command nor a member of such
+/// a run; a member of a run with no agents reaches it as that run's command does.
+#[test]
+fn an_engines_member_reaches_no_farther_than_the_command_beside_agents() {
+    if cannot_run_vms() {
+        return;
+    }
+    // This host's address on its default route: a UDP connect sends nothing.
+    let host = std::net::UdpSocket::bind("0.0.0.0:0")
+        .and_then(|s| s.connect("192.0.2.1:9").map(|()| s))
+        .and_then(|s| s.local_addr());
+    let Ok(host) = host else {
+        eprintln!("SKIP: this host has no route to give a guest an address of it");
+        return;
+    };
+    let host = host.ip();
+    let server = listening_anywhere();
+    let granted = server.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        for mut c in server.incoming().flatten() {
+            let _ = std::io::Write::write_all(&mut c, b"served\n");
+        }
+    });
+    let (image, _) = served();
+    let (port, _repos) = common::writable_registry();
+    let home = TempDir::new("eng-confined");
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", kernel().as_os_str()),
+        ("SHARDS_INIT", guest_init().as_os_str()),
+    ];
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let to = format!("{host}:{granted}");
+    // An agent granted the host's port, by which the run's own processes are kept to eth0's
+    // subnet.
+    let dir = TempDir::new("eng-confined-agent");
+    std::fs::create_dir_all(dir.join("bin")).unwrap();
+    std::fs::copy(common::test_guest(), dir.join("bin/testguest")).unwrap();
+    std::fs::write(
+        dir.join("agent.json"),
+        format!(r#"{{"name":"a","run":{{"command":["bin/testguest","confined","reach","{to}"]}}}}"#),
+    )
+    .unwrap();
+    let tag = format!("127.0.0.1:{port}/team/eng-confined-a:1");
+    let made = shards(&["build", "agent", dir.to_str().unwrap(), "-t", &tag]);
+    assert_eq!(made.status, Some(0), "{}", made.stderr);
+    let pushed = shards(&["push", "agent", &tag]);
+    assert_eq!(pushed.status, Some(0), "{}", pushed.stderr);
+    let ctx = context("eng-confined-ctx", &format!("FROM {image}\n"));
+    std::fs::write(
+        ctx.join("Agentfile"),
+        format!(
+            "FROM {image}\nAGENT a FROM {tag}\nNETWORK --egress={granted} out\n\
+             EXPOSE {granted} AS egress FOR out\nCONNECT a WITH a ON out\n"
+        ),
+    )
+    .unwrap();
+    let built = shards(&["build", "-t", "eng-confined:1", ctx.to_str().unwrap()]);
+    assert_eq!(built.status, Some(0), "{}", built.stderr);
+    let ran = shards(&[
+        "run",
+        "-d",
+        "--name",
+        "beside",
+        "--use-api-socket",
+        "eng-confined:1",
+        "sleep",
+    ]);
+    assert_eq!(ran.status, Some(0), "{ran}");
+    let in_beside = |args: &[&str]| {
+        let mut all = vec!["exec", "beside", "/bin/testguest"];
+        all.extend_from_slice(args);
+        shards(&all)
+    };
+    let deadline = std::time::Instant::now() + TIMEOUT;
+    while in_beside(&["api", "GET", "/_ping", ""]).stdout != "api HTTP/1.1 200 OK\nOK" {
+        assert!(std::time::Instant::now() < deadline, "its engine never answered");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    // The plain image, pulled through its engine: no joiner runs an Agentfile's.
+    let (repo, tag) = image.rsplit_once(':').unwrap();
+    let pulled = in_beside(&[
+        "api",
+        "POST",
+        &format!("/images/create?fromImage={repo}&tag={tag}"),
+        "",
+    ]);
+    assert!(pulled.stdout.starts_with("api HTTP/1.1 200"), "{pulled}");
+    let beside = in_beside(&["api-run", &image, "ask", &to, "3000"]);
+    assert!(
+        beside.stdout.starts_with("ask error") && beside.stdout.ends_with("status 1\n"),
+        "{beside}"
+    );
+    let command = in_beside(&["ask", &to, "3000"]);
+    assert!(command.stdout.starts_with("ask error"), "{command}");
+    let removed = shards(&["rm", "-f", "beside"]);
+    assert_eq!(removed.status, Some(0), "{removed}");
+    // A run with no agents: its member reaches the port as its command does, by the
+    // microVM's own grants.
+    let member = shards(&[
+        "run",
+        "--rm",
+        "--use-api-socket",
+        &image,
+        "api-run",
+        &image,
+        "ask",
+        &to,
+        "3000",
+    ]);
+    let command = shards(&["run", "--rm", &image, "ask", &to, "3000"]);
+    let reached = |said: &str| said.starts_with("ask served");
+    assert_eq!(
+        reached(&member.stdout),
+        reached(&command.stdout),
+        "{member}{command}"
+    );
+}
+
 /// Agents reach past their microVM the ports their networks grant (D59, AGENTFILE_ARCH.md
 /// §4.1, §4.6, §9.7, §12 answer 6): `NETWORK --egress` on a network that is not internal,
 /// with `EXPOSE ... FOR` it at the microVM's boundary, lets the agents a `CONNECT` joins to

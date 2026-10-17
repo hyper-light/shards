@@ -279,7 +279,7 @@ pub fn main() -> ! {
         // attach's own: `api-run IMAGE CMD...` says what the command wrote, then `status N`
         // (D181).
         "api-run" => api_run(arg(1), args.get(2..).unwrap_or_default()),
-        "ask" => ask(arg(1)),
+        "ask" => ask(arg(1), arg(2).parse().ok()),
         "resolve" => resolve(arg(1)),
         "udp" => udp(arg(1)),
         "serve" => serve(arg(1), arg(2).parse().unwrap_or(1)),
@@ -964,13 +964,23 @@ fn report() -> i32 {
     0
 }
 
-/// Connects to `addr` (HOST:PORT, a name resolved as the C library resolves it), says
-/// nothing, its side closed, and prints what comes back until the far end closes: `ask
-/// BYTES`, or `ask error E`.
-fn ask(addr: &str) -> i32 {
+/// Connects to `addr` (HOST:PORT, a name resolved as the C library resolves it), within
+/// `within` milliseconds where given, says nothing, its side closed, and prints what comes
+/// back until the far end closes: `ask BYTES`, or `ask error E`.
+fn ask(addr: &str, within: Option<u64>) -> i32 {
     use std::io::Read as _;
+    use std::net::ToSocketAddrs as _;
     let mut got = Vec::new();
-    let asked = std::net::TcpStream::connect(addr).and_then(|mut s| {
+    let connected = match within {
+        None => std::net::TcpStream::connect(addr),
+        Some(ms) => addr.to_socket_addrs().and_then(|mut all| {
+            let to = all
+                .next()
+                .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "no address"))?;
+            std::net::TcpStream::connect_timeout(&to, std::time::Duration::from_millis(ms))
+        }),
+    };
+    let asked = connected.and_then(|mut s| {
         s.shutdown(std::net::Shutdown::Write)?;
         s.read_to_end(&mut got)
     });

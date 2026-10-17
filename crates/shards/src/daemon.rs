@@ -255,6 +255,34 @@ pub fn daemon(args: impl Iterator<Item = OsString>) -> ExitCode {
     }
 }
 
+/// A container's membership of its microVM's switch as init says it (D181): its network,
+/// its address and prefix there, its gateway and its link's hardware address, each a word;
+/// none for what is not that.
+fn engine_address_of(said: &[u8]) -> Option<crate::containers::EngineAddress> {
+    let text = std::str::from_utf8(said).ok()?;
+    let mut words = text.split(' ');
+    let (network, cidr, gateway, mac) = (words.next()?, words.next()?, words.next()?, words.next()?);
+    if words.next().is_some() || network.is_empty() {
+        return None;
+    }
+    let (ip, prefix) = cidr.split_once('/')?;
+    let mut octets = [0u8; 6];
+    let mut parts = mac.split(':');
+    for o in &mut octets {
+        *o = u8::from_str_radix(parts.next()?, 16).ok()?;
+    }
+    if parts.next().is_some() {
+        return None;
+    }
+    Some(crate::containers::EngineAddress {
+        network: network.to_string(),
+        ip: ip.parse().ok()?,
+        prefix: prefix.parse().ok().filter(|p| *p <= 32)?,
+        gateway: gateway.parse().ok()?,
+        mac: octets,
+    })
+}
+
 fn fail(message: &str) -> ExitCode {
     let _ = writeln!(io::stderr(), "shards: {message}");
     ExitCode::FAILURE
@@ -2606,17 +2634,12 @@ impl<D: Disk> Daemon<D> {
         // join share, given to the share as it joins (`join_vm`).
         let mut join_volumes = Vec::new();
         let joining = matches!(start, network::Start::Join(_));
-        // A container its microVM's engine made, on that engine's network (D181): its
-        // address there, as it starts.
-        let own_net = match (&run.engine_made, run.engine_net.as_str(), joining) {
-            (Some((provider, _)), net, true) if !net.is_empty() && net != "none" => {
-                match self.engine_address(provider, &id, net) {
-                    Ok(a) => Some(a),
-                    Err(e) => {
-                        start = network::Start::Fails(e);
-                        None
-                    }
-                }
+        // A container its microVM's engine made, a member of that microVM's switch (D181):
+        // the network it joins there, and its name in its engine's scope. Init gives it its
+        // address as it starts, and says it (`MEMBER`).
+        let member = match (&run.engine_made, run.engine_net.as_str(), joining) {
+            (Some((_, name)), net, true) if !net.is_empty() && net != "none" => {
+                Some((net.to_string(), name.clone()))
             }
             _ => None,
         };
@@ -2694,26 +2717,20 @@ impl<D: Disk> Daemon<D> {
                 if !run.own_binds.is_empty() && !joining {
                     return Err("a bind of a microVM's own files is a container's that joins it".into());
                 }
-                // Its network namespace of its own on its engine's network, and what it
-                // publishes there, init's to make (D181). `host-gateway` is its microVM's
-                // command, its engine's host.
-                // `--network none`: a namespace of its own with its loopback alone, and
-                // nothing published, as dockerd publishes nothing there.
+                // Its membership of its microVM's switch, and what it publishes to the
+                // microVM's command, init's to make (D181). `--network none`: a namespace
+                // of its own with its loopback alone, with nothing to publish to.
                 if run.engine_made.is_some() && run.engine_net == "none" {
                     prepared.spec.setup.push(b"own-net-none".to_vec());
                 }
-                if let Some(a) = &own_net {
-                    let mac = shards_cmdline::network::mac_string(&a.mac);
-                    prepared.spec.setup.push(
-                        format!(
-                            "own-net={}/{}\0{}\0{mac}\0{}",
-                            a.ip,
-                            a.prefix,
-                            a.gateway,
-                            crate::daemon::engine::bridge_of(&a.network)
-                        )
-                        .into_bytes(),
-                    );
+                if let Some((network, name)) = &member {
+                    // Its names there: the one its engine's client gave it, where it gave one.
+                    let mut entry = format!("member={network}");
+                    if !name.is_empty() {
+                        entry.push('\0');
+                        entry.push_str(name);
+                    }
+                    prepared.spec.setup.push(entry.into_bytes());
                     for b in &bindings {
                         let port = b
                             .host_port
@@ -2724,13 +2741,6 @@ impl<D: Disk> Daemon<D> {
                         prepared.spec.setup.push(
                             format!("own-publish={}\0{host}\0{port}\0{}", b.proto, b.port).into_bytes(),
                         );
-                    }
-                    let gateway = a.gateway.to_string();
-                    for (h, given) in prepared.spec.hosts.iter_mut().zip(&run.add_hosts) {
-                        if given.ends_with(":host-gateway") {
-                            let name = given.split_once(':').map_or(given.as_str(), |(n, _)| n);
-                            *h = format!("{gateway}\t{name}").into_bytes();
-                        }
                     }
                 }
                 prepared.spec.setup.extend(
@@ -3603,7 +3613,6 @@ impl<D: Disk> Daemon<D> {
             size_rw: None,
             saved: None,
             engine_images: Vec::new(),
-            engine_networks: Vec::new(),
             // Made through a microVM's own engine (D181): its name there, or the one it was
             // given here where that engine named none.
             engine_made: run
@@ -4287,6 +4296,24 @@ impl<D: Disk> Daemon<D> {
                     }
                 }
                 kind::LOG_SEGMENT => self.ask_segment(id, inbox, &m.payload),
+                // A container its microVM's engine made, a member of that microVM's switch
+                // (D181): its address there as init gave it, kept while it runs.
+                kind::MEMBER => match engine_address_of(&m.payload) {
+                    Some(address) => {
+                        let changed = lock(&self.containers).change(id, |c| {
+                            if let Some(made) = c.engine_made.as_mut() {
+                                made.address = Some(address.clone());
+                            }
+                        });
+                        if changed.is_ok() {
+                            self.record_soon(id, Vec::new());
+                        }
+                    }
+                    None => log(format!(
+                        "container {id}: a membership its guest said malformed: {:?}",
+                        String::from_utf8_lossy(&m.payload)
+                    )),
+                },
                 // The ports init gave what a container its microVM's engine made publishes
                 // (D181), each binding's in its order.
                 kind::PORTS => {

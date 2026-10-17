@@ -36,7 +36,7 @@ use super::{Daemon, Threads, lock, log};
 use crate::build::proxy::head::{self, Body, Head};
 use crate::containers::Disk;
 use http::Answer;
-pub(super) use scope::{Scope, bridge_of};
+pub(super) use scope::Scope;
 
 /// The socket, relative to the home, the daemon's working directory, as `daemon.sock` is.
 pub(super) const SOCKET: &str = "engine.sock";

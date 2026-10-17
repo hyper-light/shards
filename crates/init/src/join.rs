@@ -35,9 +35,9 @@ pub struct Join {
     /// Its binds of its microVM's own files (D181), each a path of the workload's files and
     /// where it goes in its own.
     pub own_binds: Vec<OwnBind>,
-    /// A network namespace of its own on a network of its microVM's engine (D181), where
-    /// the workload's would be its own otherwise; with its own hostname.
-    pub own_net: Option<crate::ownnet::OwnNet>,
+    /// A member of its microVM's switch, made by its microVM's engine (D181), where the
+    /// workload's network would be its own otherwise; with its own hostname.
+    pub member: Option<MemberNet>,
     /// A network namespace of its own with its loopback alone (`--network none`).
     pub own_net_none: bool,
     pub hostname: Vec<u8>,
@@ -45,6 +45,18 @@ pub struct Join {
     /// where it has a network of its own.
     pub hosts: Vec<Vec<u8>>,
     pub resolv: Option<Vec<u8>>,
+}
+
+/// A joiner's membership of its microVM's switch (D181): init's descriptor of the network
+/// namespace made for it, linked to the switch through its gate, which it enters; its
+/// address there and its names, which its own `/etc/hosts` gives it; and whether it asks
+/// the agents' resolver for names past the microVM.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MemberNet {
+    pub ns: std::os::fd::RawFd,
+    pub addr: std::net::Ipv4Addr,
+    pub names: Vec<String>,
+    pub dns: bool,
 }
 
 /// A bind of a microVM's own files into a joiner its engine made (D181): `source`, a path
@@ -715,10 +727,16 @@ pub fn build(join: Join, cgroup: &str) -> Result<Built, String> {
     // The workload's hostname, in a namespace of its own unless it shares the microVM's
     // (`--uts host`, D156).
     enter(join.workload, "uts", libc::CLONE_NEWUTS)?;
-    // Its network: the workload's, or one of its own on its engine's network (D181).
-    match &join.own_net {
-        Some(net) => crate::ownnet::join(join.workload, net)?,
-        None if join.own_net_none => crate::ownnet::alone()?,
+    // Its network: the workload's; the namespace init made it on the microVM's switch,
+    // as a member its engine made (D181); or its loopback alone.
+    match &join.member {
+        Some(m) => {
+            // SAFETY: setns(2) of this single-threaded child into a namespace init holds.
+            if unsafe { libc::setns(m.ns, libc::CLONE_NEWNET) } != 0 {
+                return Err(last("its network namespace on the microVM's switch"));
+            }
+        }
+        None if join.own_net_none => crate::members::alone()?,
         None => enter(join.workload, "net", libc::CLONE_NEWNET)?,
     }
     // Its IPC namespace (D156): its own, the microVM's, or another run's of this microVM,
@@ -753,8 +771,8 @@ pub fn build(join: Join, cgroup: &str) -> Result<Built, String> {
     if own != 0 && unsafe { libc::unshare(own) } != 0 {
         return Err(last("its UTS and IPC namespaces"));
     }
-    // A container on a network of its own has its own name, as on any engine's host.
-    let own_net = join.own_net.is_some() || join.own_net_none;
+    // A container with a network of its own has its own name.
+    let own_net = join.member.is_some() || join.own_net_none;
     if own_net && !join.uts_host && !join.hostname.is_empty() {
         // SAFETY: a buffer of the given length.
         if unsafe { libc::sethostname(join.hostname.as_ptr().cast(), join.hostname.len()) } != 0 {
@@ -817,26 +835,42 @@ pub fn build(join: Join, cgroup: &str) -> Result<Built, String> {
         upper: open_path("/dev/join/rw/upper")?,
     };
     // The workload's files over its own, the same files: what the workload's run writes in
-    // them, it sees. One on a network of its own names itself in its own, and asks the
-    // workload's resolvers, whose flows leave as the workload's.
+    // them, it sees. One with a network of its own names itself in its own: a member its
+    // engine made by its address on the switch, under its host name and its names there
+    // (D181), asking the agents' resolver at the switch's end of its link (D59), or the
+    // resolvers its client named, or none where it reaches nothing past the microVM.
     etc_dir()?;
+    let resolv = match (&join.member, &join.resolv) {
+        (Some(_), Some(given)) => Some(given.clone()),
+        (Some(m), None) if m.dns => {
+            Some(format!("nameserver {}\noptions ndots:0\n", crate::links::TRANSIT_SWITCH).into_bytes())
+        }
+        (Some(_), None) => Some(Vec::new()),
+        (None, given) => given.clone(),
+    };
     if own_net {
         let name = String::from_utf8_lossy(&join.hostname).into_owned();
         own_file("hostname", format!("{name}\n").as_bytes())?;
-        let mut hosts = "127.0.0.1\tlocalhost\n::1\tlocalhost ip6-localhost ip6-loopback\nfe00::\tip6-localnet\nff00::\tip6-mcastprefix\nff02::1\tip6-allnodes\nff02::2\tip6-allrouters\n".as_bytes().to_vec();
+        let mut hosts = crate::netplan::HOSTS.to_vec();
         for line in &join.hosts {
             hosts.extend_from_slice(line);
             hosts.push(b'\n');
         }
-        if let Some(net) = &join.own_net {
-            hosts.extend_from_slice(format!("{}\t{name}\n", net.addr).as_bytes());
+        if let Some(m) = &join.member {
+            let mut names: Vec<&str> = vec![name.as_str()];
+            for n in &m.names {
+                if !names.contains(&n.as_str()) {
+                    names.push(n);
+                }
+            }
+            hosts.extend_from_slice(format!("{}\t{}\n", m.addr, names.join(" ")).as_bytes());
         }
         own_file("hosts", &hosts)?;
-        if let Some(resolv) = &join.resolv {
+        if let Some(resolv) = &resolv {
             own_file("resolv.conf", resolv)?;
         }
     }
-    let shared: &[&str] = match (own_net, &join.resolv) {
+    let shared: &[&str] = match (own_net, &resolv) {
         (true, Some(_)) => &[],
         (true, None) => &["resolv.conf"],
         (false, _) => &["hostname", "hosts", "resolv.conf"],

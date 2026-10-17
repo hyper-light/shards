@@ -4565,7 +4565,7 @@ removed socket not bound again; the sockets kept as the daemon closes; the relay
 up as it stops; a machine's refusal unsaid; the client's writer failing and its command run
 on; a reader gone said as an error.
 
-### D181. `--use-api-socket`: a run's command reaches its own microVM's engine (slices 1, 2 and 3a built)
+### D181. `--use-api-socket`: a run's command reaches its own microVM's engine (slices 1 and 2 built; 3 being built)
 
 The need: a CI job, a test suite with testcontainers, or an agent's tool runs `docker run`
 from inside its workload, as on a host with Docker. The user's call (2026-10-16): what it
@@ -4588,10 +4588,10 @@ there where the container is not removed.
   the run's own sees the path.
 - **What it makes: joiners of its own microVM.** A container it creates there is a joiner
   of its microVM (D119): its own image, its own mount, PID, IPC and UTS namespaces and
-  cgroup, its record, log and end, in the microVM's network namespace, as a pod's
-  containers share theirs. `--network` default or `host` is the microVM's, `container:X`
-  one of its own; the microVM's boundary holds the host from all of them, and default deny
-  holds as for the microVM. It is named in the scope as the command named it, and on the
+  cgroup, its record, log and end; its network a namespace of its own on the microVM's
+  switch, granted what it declares and nothing else (slice 3), `host` the command's own
+  namespace where its client asks for it, `container:X` one of its own containers'. The
+  microVM's boundary holds the host from all of them. It is named in the scope as the command named it, and on the
   host after its microVM's name (`PROV.NAME`), so that two microVMs' engines making the
   same name (two CI jobs of one project) never collide, where a shared dockerd's do. Its
   record keeps which microVM's engine made it (`engine_made`). It ends as its microVM's
@@ -4684,70 +4684,134 @@ asks for credentials, which the run's client alone has, the image not its own be
 own after; its images listed, none of the host's it never pulled), and in the scope
 (`a_create_stays_in_its_microvm`).
 
-Slices: (1) and (2) built, as above; (3) networks of the microVM's own, then Compose
-through it, designed as follows; its first part (3a), each container's own namespace on
-the engine's default network and its published ports, built.
+Slices: (1) and (2) built, as above; (3), the containers its engine makes on networks of
+their own and Compose through them, designed as follows and being built. A first cut of
+(3) (part 3a, b6083246) put each container on a bridge of its own in the command's
+namespace, with every port open between them and their flows translated to the command's:
+no part of the microVM's own network design (D59, D61), it is replaced.
 
-- **The need.** Testcontainers starts each service as `docker run -p 0:PORT` and reaches
-  it at the port the engine's host was given; Compose gives each project a network of its
-  own, on which each service listens on its own ports and reaches the others by name. A
-  joiner shares its microVM's network namespace (D119), so two containers listening on one
-  port collide, and `-p` is refused. So a container a microVM's engine makes has a
-  network namespace of its own, as on any engine's host, the microVM being that host.
-- **Its default network, the microVM's own.** A bridge in the command's network namespace,
-  the microVM's engine's host's, as dockerd's `docker0` is its host's: each container's
-  `eth0` a veth whose other end is the bridge's, an address of a subnet the daemon elects
-  past every one the microVM's own interfaces are on (their routes', D46's pools), its
-  gateway the bridge's. Its flows past the microVM leave by the command's own, translated
-  to its addresses (source NAT, `NFT_NAT`; the guest kernel has `CONFIG_BRIDGE`, `VETH`,
-  `NF_NAT` in Firecracker's base config), so the microVM's grants hold for them as for the
-  command's (default deny at the VM's boundary); the command reaches each container by its
-  address, as dockerd's host reaches its containers.
-- **Published ports, the microVM's.** `-p HOST:PORT`, and `-p PORT`, `-P`, which the daemon
-  gives a free port of, publish on the command's network namespace, its engine's host's:
-  init's proxy listens there and passes each connection or datagram on to the container's
-  address, so that the command reaches it at `localhost:HOST`, as a test reaches a
-  Testcontainers service. NetworkSettings.Ports says the port each was given; none is the
-  host's.
-- **`--network host` is the microVM's**, the command's namespace, as a joiner's is (D119),
-  `none` a namespace of its own with its loopback alone (nothing published, as dockerd
-  publishes nothing there), and `container:X` one of its own containers'.
-- **Networks it makes**, Compose's project networks among them: each a bridge of its own
-  in the command's namespace, its subnet elected so; a container on several has a link to
-  each. Its members reach each other by name and alias through a resolver of init's at
-  127.0.0.11 in each member's namespace, as dockerd's embedded DNS answers there, which
-  answers its network's names alone and passes the rest to the microVM's resolvers.
+- **The need.** A test suite, a CI job or an agent's tools in a microVM start services
+  through its engine (Testcontainers' `docker run -p 0:PORT`, Compose's project of
+  services), each listening on its own ports, two on one port among them, each reaching
+  the others it needs by name; and they run under the microVM's own rule, default deny,
+  beside its agents.
+- **Each is a member of the microVM's switch.** A container its engine makes gets a
+  network namespace of its own, linked to init's switch through a gate of its own (D59
+  part three, D61), as each of the image's agents is: known by its link, never by an
+  address it could claim; what it opens tracked in its gate's table alone; no state of it
+  kept by the switch. Init makes the namespace, its gate and its link before the
+  container starts, and its processes enter it (setns(2)); the switch and the gate are
+  outside every namespace they have.
+- **Its engine's networks are the switch's.** A network its engine makes (Compose's
+  project networks, a test's own) is a network of the switch: a /24 of the switch's block
+  (10.244.0.0/16) clear of eth0's subnet and of every network of the microVM's, the
+  agents' among them, or the subnet its client gives where that is clear of them too; its
+  gateway its first address, or the one given. Init holds them, and gives each member the
+  lowest free address as it joins: a /32 routed through the gateway on its link, as an
+  agent's is. The engine's default network, which its clients call `bridge`, is one; a
+  container named onto no other is on it.
+- **Joining grants nothing; what a container declares does.** Each flow is named
+  (AGENTFILE_ARCH.md §4.7): a container accepts, from each member of a network it shares,
+  on the ports it declares, and on no other: its image's `EXPOSE`, its create's
+  (`--expose`, Compose's `expose:`), and the container side of each port it publishes.
+  That is the receiver naming what it accepts, as `CONNECT --port` names it for an agent:
+  the network says who may ask, the receiver on what. The default network names no peers:
+  a container on it is alone, as an agent with no `CONNECT` is. Nothing else crosses: no
+  port a receiver did not declare, no member of a network the two do not share, no agent
+  of the image, not the command.
+- **Names, of granted peers alone.** A container resolves its own names and those of each
+  peer it is granted a flow to, and no other (§4.7). Its names on a network are its name
+  in its engine's scope and the aliases its client gives it there (Compose's service
+  names, `--network-alias`); nothing else names it. Its `/etc/hosts`, a file of its own
+  mounted read-only as an agent's is, lists them, and init rewrites it as peers join and
+  leave.
+- **Published ports, to the command alone.** A port it publishes (`-p HOST:PORT`, `-P`)
+  reaches it from the command, its engine's host, at `localhost:HOST` in the command's
+  namespace: init's proxy there passes each connection and datagram on to the container's
+  port, and the switch and its gate let that port alone in, up the switch's link from
+  init's namespace. Nothing past the microVM reaches it but through a port the run itself
+  publishes. The command reaches no container on any port it did not publish.
+- **Past the microVM, no more than the command.** A container acts for the command that
+  asked its engine for it: what it reaches past the microVM is what the command reaches
+  (the run's own grants, the network process holding the microVM to them; beside agents
+  whose grants reach past it, eth0's own subnet alone, as `confine_eth0` keeps the
+  command), its flows given eth0's address as the agents' egress is (D59 part four); on an
+  internal network, nothing. Names past the microVM likewise: it asks the agents'
+  resolver, which forwards what the command may resolve.
+- **What it tells where a flow is refused.** A peer's connection to a port its receiver
+  never declared ends at the receiver's gate, as any flow no grant names does.
+  `shards read ports` of a container lists each port it listens on that no grant lets its
+  peers reach, with what would declare it (`EXPOSE`, `expose:`, `--expose`), so the gap
+  is seen at once rather than as a connection that hangs.
+- **Its own values.** A container's link takes the hardware address its kernel gives it,
+  as an agent's does. The proxy keeps a UDP client's mapping as long as the microVM's own
+  connection tracking keeps a UDP flow (`nf_conntrack_udp_timeout`, and
+  `nf_conntrack_udp_timeout_stream` once answered, read from the running guest), so that
+  a published UDP port lasts as the microVM's translated flows do.
+- **`--network host` is the command's own namespace**, as the client asks: the engine's
+  host's network, the command's reach and no more. `none` is a namespace of its own with
+  its loopback alone; `container:X` the namespace of X, one of its own containers.
+- **The networks API** (create, list, inspect, remove, prune, connect, disconnect) takes
+  what Compose and the SDKs send, and answers in the shapes they read, with the switch's
+  values: its subnets, its members' addresses. A driver no microVM's switch can be
+  (`overlay`, `macvlan`, `ipvlan`) and a setting it cannot hold are refused with why.
 - **Named volumes it makes** are its own: the host's volume store's, named after its
   microVM's as its containers are (`PROV.NAME`), mounted through the join share (D119),
   removed with its microVM.
-- **How 3a is built.** The daemon elects the default network's subnet as the engine first
-  uses it (`Bridge::elect` past the host's routes, the default bridge and every user
-  network's pools, each microVM's eth0 among them), keeps it in the microVM's record
-  (`engine_networks`), and gives each container the lowest address no other running
-  container of that engine has there (`engine_made.address`, its MAC `02:42` and the
-  address, as dockerd's), let go as it ends. It tells the joiner's init (`own-net=`,
-  `own-publish=`): the joiner's child makes the bridge `shards0` in the command's namespace
-  where none is (the gateway's address, `ip_forward`, a postrouting rule translating the
-  subnet's flows leaving eth0 to eth0's address; beside agents whose grants reach past the
-  microVM, a forward rule keeping them to eth0's own subnet, as `confine_eth0` keeps the
-  command), a namespace of its own, and a veth whose peer (`veADDR`) it puts on the bridge;
-  its own hostname and `/etc/hostname` and `/etc/hosts`, `--add-host`'s lines among them
-  (`host-gateway` the bridge's gateway, its engine's host's address), and the resolvers its
-  run was given. Init's proxy, forked before the joiner so that a port it cannot have
-  keeps it from starting (`Bind for ADDR failed: port is already allocated`, dockerd's),
-  binds each port in the command's namespace (a port of 0 the kernel's), says them
-  (`PORTS`, which the VM process passes on and the daemon keeps in the record's ports),
-  and relays each connection, and each UDP client's datagrams from a socket of its own
-  until idle 90 s (docker-proxy's `UDPConnTrackTimeout`), to the container's address; it
-  goes as the joiner does. Inspect gives the container's network as its engine has it
-  (`bridge`, or `host` for the microVM's own). Tested on real microVMs
-  (`a_microvms_own_engine_gives_each_container_a_network_of_its_own`: two serving one port,
-  each at the port it was given on the command's loopback and at its own address, by the
-  command and by another; its own hostname; `--network none`'s loopback alone; and its
-  flows to a microVM on the host's network the command is on, seen from the command's
-  address there).
-  Next in 3: `--network container:X` of one with its own namespace, networks it makes
-  and their names, its named volumes, Compose.
+
+Each difference from Docker is deliberate: membership carries no flow, where Docker's
+network carries every port both ways; the default network names no peers, where Docker's
+carries every port between its containers; a container resolves its granted peers alone,
+where Docker resolves every member by name, alias, short ID and hostname; the command
+reaches a container through what it publishes alone, where Docker's host reaches every
+container's address; and a container reaches past the microVM no more than the command.
+
+Built in parts: (3a) members on the switch, the default network, published ports, `host`
+and `none`, built; (3b) the networks its engine makes, their grants and names, and the
+networks API; (3c) its named volumes, and Compose end to end; (3d) the undeclared
+listeners `shards read ports` lists.
+
+- **How 3a is built.** The daemon asks for a membership by network and name (`member=`,
+  with `own-publish=` for each port it publishes), and nothing of addresses. Init holds
+  the engine's networks (`members.rs`), each a /24 of the switch's block clear of eth0's
+  subnet and of every subnet the switch carries (the agents', which the switch now keeps
+  from its making); it gives each member the lowest free address, the lowest free link
+  index past the domains', a namespace of its own with its loopback, and links it through
+  a gate of its own (`Switch::attach_ns`, as `attach` links a domain by its process). The
+  switch keeps what it carries (the domains' grants, its uplink once there is one, its
+  subnets, each member's), and programs its rules and init's again from that, each chain
+  emptied first in the same transaction, as members come and go (`admit`, `release`): the
+  domains' rules come out as before, a member's are its own. A member's way up the
+  switch's link is every TCP and UDP port, as far as the command goes (init's `forward`,
+  marked and given eth0's address as the agents' egress is; to eth0's subnet alone beside
+  agents with egress); the command reaches it on its published ports alone (init's `own`
+  chain, before its drop, and the switch's and gate's rules for that port from the
+  uplink). It asks the agents' resolver, which now takes askers as members join and leave
+  over a control link of init's. The joiner's child enters the namespace (setns(2)) by
+  init's descriptor, which it inherits as init's fork, and its `/etc/hosts` names it, its
+  `/etc/resolv.conf` the switch's resolver. Init says the membership to the host before
+  the joiner starts (`MEMBER`: its network, address and prefix, gateway and the kernel's
+  hardware address), which the daemon keeps for inspect while it runs; its end lets the
+  membership go. The proxy relays what is published, its UDP mappings kept as the guest's
+  connection tracking keeps a UDP flow (read in a run of the pinned kernel, arm64,
+  2026-10-17: 30 s, and 120 s once answered), and says a
+  port it cannot bind in shards' words. `--add-host NAME:host-gateway` is refused: a
+  member reaches nothing of the command's.
+- **Tested on real microVMs.** `a_microvms_own_engine_makes_each_container_a_member_of_its_switch`:
+  two members serving one port, each at the port it was given on the command's loopback
+  and at its own address on that port, from init's end of the switch's link; a port one
+  declares but does not publish, dropped for the command; on the default network, a
+  member reaching neither another's published port nor its declared one, and the other
+  serving its next connection to the command; `--network none`'s loopback alone; its host
+  name, and its name in its hosts file at its address; `host-gateway` refused; and its
+  flows to a microVM on the host's network the command is on, from the command's address
+  there. `an_engines_member_reaches_no_farther_than_the_command_beside_agents`: beside an
+  agent granted a host's port, neither the command nor a member reaches it; with no
+  agents, a member reaches what its command reaches. Every agent network test of D59 and
+  D61 holds as before. Mutation-checked, each caught: a member beside agents reaching as
+  far as the command of a run without them; the command's published ports not let
+  through init's `own` chain; the default network carrying every port between members;
+  members reaching nothing past the microVM.
 
 ### D179. Other CPUs' images, emulated in their microVM (parts 1 to 3 built)
 
