@@ -99,6 +99,16 @@ Reviewed feature by feature, each D-entry's design against what it took from Doc
   dropped without a word, as dockerd drops a network's IPv6 configs; the Agentfile is
   shards' own language, which no script of Docker's speaks. Now refused, at build and at
   run (D99, D109). Fixed.
+- Defaults taken from Docker, not derived from what a microVM's host measures (the
+  defaults rule: from measured costs and the machine's resources, tests pinning the
+  basis). Open, each a measurement first:
+  - Layers download 3 at a time, dockerd's `max-concurrent-downloads`: pulls of
+    many-layered images from Docker Hub and GHCR at 1 to 8 at a time, quiet and loaded,
+    n each, p50 to max; then the knee.
+  - The build cache's collection policy is dockerd's default GC policy: what a cache of
+    this host's disk and its builds' reuse keeps, measured as builds hit and miss.
+  - A log keeps 5 segments of 20 MiB, Docker's `local` driver's: what a run's output
+    costs the host per byte kept, against the disk the home has.
 - The rest: open, D-entry by D-entry.
 
 ## Fixing order
@@ -123,6 +133,13 @@ Each step is gated and committed; this file's counts are re-run as they land.
 | 2026-10-16, first | 6 | 1,939 | 1,862 | 397 | 42 | 178 |
 | 2026-10-16, after steps 1 to 4 | 0 | 1,878 | 1,680 | 388 | 36 | 176 |
 | 2026-10-17, help, networks, engine | 0 | 1,898 (1,119) | 1,685 | 388 | 36 | 176 |
+
+Reviewed by hand (2026-10-17), the design's unbacked lines to line 5,800: nearly every one
+says what shards matches for compatibility, its evidence a few lines off (a log driver's
+wire format, a registry's answer, a tar header, an exit status), and stays. Reworded where
+shards' own design was said as Docker's: a run (D27), the volumes' and shares' headings,
+and the stale component box and phase 4 that called the microVM's own engine pending, the
+text that misled me into telling the user shards had none.
 
 `unbacked` (2026-10-17): framing with no evidence beside it. The rest of `framing` cites
 what an input or output is held to (a version, a source file, a measurement), as the
