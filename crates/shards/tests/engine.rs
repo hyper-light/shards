@@ -2764,6 +2764,18 @@ fn the_docker_clis_use_api_socket_is_the_microvms_own_engine() {
         eprintln!("SKIP: no docker CLI on this host");
         return;
     };
+    // A runner's docker CLI may be older than the flag (docker/cli
+    // cli/command/container/create.go): what it sends is what is tested, where it has it.
+    let help = common::output_within(
+        std::process::Command::new(&docker)
+            .args(["run", "--help"])
+            .stdin(std::process::Stdio::null()),
+        CLIENT,
+    );
+    if !String::from_utf8_lossy(&help.stdout).contains("--use-api-socket") {
+        eprintln!("SKIP: this docker CLI has no --use-api-socket");
+        return;
+    }
     let Some((home, image)) = home("eng-cli-own") else {
         return;
     };
