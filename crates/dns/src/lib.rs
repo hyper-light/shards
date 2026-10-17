@@ -1,17 +1,20 @@
-//! The resolver a guest on a network of its own asks (D46), as Docker's embedded DNS answers
-//! a container on a user-defined network, to a microVM on one (moby libnetwork resolver.go; measured on Docker
-//! Engine 29.3.1): each member's names (its microVM's name, its aliases, its host name)
-//! as A records with a TTL of 600, whatever their case, and as AAAA records on a network
-//! with IPv6 (resolver.go handleIPQuery), none for a name without one; its address, of
-//! either version, back to its name and the network's (`name.network.`); and,
-//! upstream being denied (D31's default deny, as on Docker's `--internal` networks),
-//! SERVFAIL for a name it does not hold. Queries are RFC 1035's.
+//! The names a network of shards' answers its members (D46, D181), as RFC 1035 messages:
+//! each member's names (its name, its aliases, its host name) as A records, whatever their
+//! case, and as AAAA records where the network has IPv6, a name with no address of the
+//! version asked answered with none (NOERROR); each address back to its member's name and
+//! the network's (`name.network.`); and SERVFAIL for a name the table does not hold, whose
+//! fate is its asker's ([`Names::holds`]): the network process refuses what a microVM's
+//! grants do not reach (D31), and the agents' resolver in the guest passes on what a
+//! member may ask past its microVM (D181). A table the network process answers keeps
+//! [`NETWORK_TTL`]; one answered in the guest, where it is held, is kept by no one.
 
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
-/// The TTL Docker's embedded DNS gives its answers (libnetwork resolver.go, respTTL).
-const TTL: u32 = 600;
+/// The TTL a network of microVMs answers with (D46): Docker's embedded DNS's
+/// (libnetwork resolver.go, respTTL), kept until it is measured against a microVM's own
+/// needs (the de-Dockerify audit's copied defaults).
+pub const NETWORK_TTL: u32 = 600;
 
 const TYPE_A: u16 = 1;
 const TYPE_PTR: u16 = 12;
@@ -23,10 +26,13 @@ const FORMERR: u8 = 1;
 const SERVFAIL: u8 = 2;
 const NOTIMP: u8 = 4;
 
-/// The names a network's members answer to, and the network's name.
+/// The names a network's members answer to, the network's name, and how long an answer
+/// may be kept: none at all (the default) for a table answered where it is held, in the
+/// guest, so that no member's address outlives its member (D181).
 #[derive(Debug, Default, Clone)]
 pub struct Names {
     network: String,
+    ttl: u32,
     /// Each name, lowered, to the addresses it has.
     by_name: HashMap<String, Vec<IpAddr>>,
     /// Each address to its member's first name, for PTR.
@@ -48,6 +54,7 @@ impl Names {
         let network = word(&mut rest)?;
         let mut names = Names {
             network,
+            ttl: NETWORK_TTL,
             ..Names::default()
         };
         while !rest.is_empty() {
@@ -105,6 +112,50 @@ impl Names {
         out
     }
 
+    /// The names of network `network`, none yet, answered for as long as `ttl` says.
+    pub fn new(network: &str, ttl: u32) -> Names {
+        Names {
+            network: network.to_string(),
+            ttl,
+            ..Names::default()
+        }
+    }
+
+    /// This table, answered for as long as `ttl` says.
+    pub fn with_ttl(mut self, ttl: u32) -> Names {
+        self.ttl = ttl;
+        self
+    }
+
+    /// Whether it holds no name.
+    pub fn is_empty(&self) -> bool {
+        self.by_name.is_empty()
+    }
+
+    /// The table as a `NET_NAMES` message carries it ([`Names::encode`]), its names in
+    /// order.
+    pub fn table(&self) -> Vec<u8> {
+        let mut entries: Vec<(String, IpAddr)> = self
+            .by_name
+            .iter()
+            .flat_map(|(name, ips)| ips.iter().map(move |ip| (name.clone(), *ip)))
+            .collect();
+        entries.sort();
+        Names::encode(&self.network, &entries)
+    }
+
+    /// Whether query `q` asks for what this table holds: one of its names, or one of its
+    /// addresses back to its name.
+    pub fn holds(&self, q: &[u8]) -> bool {
+        let Some(name) = query_name(q) else {
+            return false;
+        };
+        match ptr_addr(&name) {
+            Some(ip) => self.by_addr.contains_key(&ip),
+            None => self.by_name.contains_key(name.trim_end_matches('.')),
+        }
+    }
+
     /// The answer to the query `q`, or none for what is not a query to answer.
     pub fn answer(&self, q: &[u8]) -> Option<Vec<u8>> {
         let (&[id0, id1, f0, _f1], rest) = q.split_first_chunk::<4>()?;
@@ -148,7 +199,7 @@ impl Names {
             let mut r = vec![0xc0, 12];
             r.extend_from_slice(&kind.to_be_bytes());
             r.extend_from_slice(&CLASS_IN.to_be_bytes());
-            r.extend_from_slice(&TTL.to_be_bytes());
+            r.extend_from_slice(&self.ttl.to_be_bytes());
             r.extend_from_slice(&u16::try_from(data.len()).unwrap_or(0).to_be_bytes());
             r.extend_from_slice(data);
             r

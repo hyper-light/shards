@@ -1275,6 +1275,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "shards-dns"
+version = "0.1.0"
+
+[[package]]
 name = "shards-erofs"
 version = "0.1.0"
 
@@ -1338,6 +1342,7 @@ dependencies = [
  "shards-archive",
  "shards-cmdline",
  "shards-devcgroup",
+ "shards-dns",
  "shards-erofs",
  "shards-testdir",
  "shards-user",
@@ -1359,6 +1364,7 @@ dependencies = [
  "libc",
  "shards-abi",
  "shards-afunix",
+ "shards-dns",
  "shards-ipc",
  "shards-netring",
  "shards-syscall-filter",

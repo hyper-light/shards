@@ -115,13 +115,18 @@ pub(super) fn wanted(run: &Run, image_exposed: &[String]) -> (Vec<Publish>, Vec<
 
 /// The ports a container its microVM's engine made lists (D181), its bindings' published
 /// in its microVM's command's namespace by init, none of the host's: each at the address
-/// asked (every IPv4 one where none), its port the one asked or none until init says the
-/// one it was given (`kind::PORTS`); and those exposed `alone`.
-pub(super) fn engine_ports(bindings: &[Publish], alone: &[(u16, String)]) -> Result<Vec<PortRecord>, String> {
+/// asked, or where none at `default`, its network's for its members' ports, or every IPv4
+/// one; its port the one asked or none until init says the one it was given
+/// (`kind::PORTS`); and those exposed `alone`.
+pub(super) fn engine_ports(
+    bindings: &[Publish],
+    alone: &[(u16, String)],
+    default: Option<std::net::Ipv4Addr>,
+) -> Result<Vec<PortRecord>, String> {
     let mut ports = Vec::with_capacity(bindings.len() + alone.len());
     for b in bindings {
         let ip = match b.host_ip.as_str() {
-            "" => std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED),
+            "" => std::net::IpAddr::V4(default.unwrap_or(std::net::Ipv4Addr::UNSPECIFIED)),
             given => given
                 .trim_matches(|c| c == '[' || c == ']')
                 .parse()

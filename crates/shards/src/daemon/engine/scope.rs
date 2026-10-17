@@ -41,6 +41,10 @@ pub(super) fn serves(method: &str, path: &[&str]) -> bool {
             | ("GET", ["exec", _, "json"])
             | ("POST", ["images", "create"])
             | ("GET", ["images", .., "json"])
+            | ("GET", ["networks"] | ["networks", _])
+            | ("POST", ["networks", "create" | "prune"])
+            | ("DELETE", ["networks", _])
+            | ("POST", ["networks", _, "connect" | "disconnect"])
     )
 }
 
@@ -56,8 +60,9 @@ pub(super) fn unserved(method: &str, target: &str) -> Answer {
         501,
         format!(
             "{method} {target}: not served by a microVM's own engine, which serves its _ping, version and info, \
-             and its own containers' create, list, inspect, start, stop, kill, wait, logs, attach, exec \
-             and remove"
+             its own containers' create, list, inspect, start, stop, kill, wait, logs, attach, exec \
+             and remove, its images' pull, list and inspect, and its networks' create, list, inspect, \
+             remove, prune, connect and disconnect"
         ),
     )
 }
@@ -94,6 +99,24 @@ fn own_bind(point: &crate::volumes::MountPoint) -> Option<Result<String, String>
     )))
 }
 
+/// The network of `networks`, a microVM's own engine's (D181), that `term` names: by its
+/// name, its ID, or the start of one ID alone.
+pub(super) fn engine_network<'n>(
+    networks: &'n [crate::containers::EngineNetwork],
+    term: &str,
+) -> Option<&'n crate::containers::EngineNetwork> {
+    if let Some(n) = networks.iter().find(|n| n.name == term || n.id == term) {
+        return Some(n);
+    }
+    let mut prefixed = networks
+        .iter()
+        .filter(|n| !term.is_empty() && n.id.starts_with(term));
+    match (prefixed.next(), prefixed.next()) {
+        (Some(only), None) => Some(only),
+        _ => None,
+    }
+}
+
 /// The images microVM `provider`'s own engine reaches: its own, and those it pulled.
 fn images_of(provider: &Container) -> Vec<String> {
     provider
@@ -118,7 +141,7 @@ fn of_scope<'a>(all: impl Iterator<Item = &'a Container>, provider: &str) -> Vec
 
 /// `given`, as a scope's client names a container, among `scoped`, as dockerd resolves a
 /// reference: its whole ID, its name, then a prefix of its ID that no other has.
-fn resolve<'a>(scoped: &'a [Container], given: &str) -> Option<&'a Container> {
+pub(super) fn resolve<'a>(scoped: &'a [Container], given: &str) -> Option<&'a Container> {
     let given = given.trim();
     let name = given.strip_prefix('/').unwrap_or(given);
     if given.is_empty() {
@@ -137,9 +160,35 @@ fn resolve<'a>(scoped: &'a [Container], given: &str) -> Option<&'a Container> {
     }
 }
 
+/// A network of its engine's a create asks a container onto: the address its client asked
+/// for there (none for one init gives), its aliases there, and its priority for the
+/// default route.
+struct Membership {
+    network: String,
+    addr: String,
+    aliases: Vec<String>,
+    priority: i64,
+}
+
+impl Membership {
+    fn of(network: String) -> Membership {
+        Membership {
+            network,
+            addr: String::new(),
+            aliases: Vec::new(),
+            priority: 0,
+        }
+    }
+}
+
 /// What of a create's run would reach past its microVM, refused with why; what names a
 /// container is taken in the scope (`scoped`), as its engine's clients name them.
-fn confine(run: &mut Run, provider: &str, scoped: &[Container]) -> Result<(), Answer> {
+fn confine(
+    run: &mut Run,
+    provider: &str,
+    scoped: &[Container],
+    networks: &[crate::containers::EngineNetwork],
+) -> Result<(), Answer> {
     let past = |what: String| {
         Err(Answer::error(
             403,
@@ -149,37 +198,124 @@ fn confine(run: &mut Run, provider: &str, scoped: &[Container]) -> Result<(), An
         ))
     };
     // It joins its microVM (D119) as a member of that microVM's switch: a network
-    // namespace of its own there, on its engine's default network, granted what it
-    // declares; the command's own, its engine's host's, for `host`; its loopback alone for
-    // `none`; or that of one of its own containers that has none of its own.
-    let (joined, engine_net) = match run.network.as_str() {
-        "" | "default" | "bridge" => (provider.to_string(), "bridge"),
-        "none" => (provider.to_string(), "none"),
-        "host" => (provider.to_string(), ""),
+    // namespace of its own there, on each network of its engine's it names, granted what
+    // it declares; the command's own, its engine's host's, for `host`; its loopback alone
+    // for `none`; or that of one of its own containers that has none of its own.
+    let network_of = |given: &str| -> Result<String, Answer> {
+        match given {
+            "" | "default" | "bridge" => Ok("bridge".to_string()),
+            g => engine_network(networks, g)
+                .map(|n| n.name.clone())
+                .ok_or_else(|| Answer::error(404, format!("No such network: {g}"))),
+        }
+    };
+    let endpoints = std::mem::take(&mut run.endpoints);
+    let alone = |mode: &str| -> Result<(), Answer> {
+        match endpoints.first() {
+            Some(e) => Err(Answer::error(
+                400,
+                format!(
+                    "--network {mode} with network {}: a container on {mode} is on no network of its engine's",
+                    e.network
+                ),
+            )),
+            None => Ok(()),
+        }
+    };
+    let (joined, engine_net, nets): (String, String, Vec<Membership>) = match run.network.as_str() {
+        "none" => {
+            alone("none")?;
+            (provider.to_string(), "none".to_string(), Vec::new())
+        }
+        "host" => {
+            alone("host")?;
+            (provider.to_string(), String::new(), Vec::new())
+        }
         mode => match mode.strip_prefix("container:") {
-            Some(other) => match resolve(scoped, other) {
-                Some(c) if c.engine_made.as_ref().is_some_and(|m| m.address.is_some()) => {
-                    return Err(Answer::error(
-                        501,
-                        format!(
-                            "--network {mode}: sharing the namespace of a member of its microVM's switch is not served yet"
-                        ),
-                    ));
+            Some(other) => {
+                alone(mode)?;
+                match resolve(scoped, other) {
+                    Some(c) if c.engine_made.as_ref().is_some_and(|m| !m.addresses.is_empty()) => {
+                        return Err(Answer::error(
+                            501,
+                            format!(
+                                "--network {mode}: sharing the namespace of a member of its microVM's switch is not served yet"
+                            ),
+                        ));
+                    }
+                    Some(c) => (c.id.clone(), String::new(), Vec::new()),
+                    None => return Err(no_such(other)),
                 }
-                Some(c) => (c.id.clone(), ""),
-                None => return Err(no_such(other)),
-            },
-            None => return past(format!("--network {mode}")),
+            }
+            None => {
+                // The network its mode names, then each its endpoints name: the address
+                // its client asked for there, its aliases there, and its priority for
+                // the default route, the highest's first.
+                let mut nets = vec![Membership::of(network_of(mode)?)];
+                for e in endpoints {
+                    let refused =
+                        |what: &str| Err(Answer::error(400, format!("network {}: {what}", e.network)));
+                    if !e.mac.is_empty() {
+                        return refused(
+                            "a member of its microVM's switch takes the hardware address its kernel gives its link, and none other",
+                        );
+                    }
+                    if !e.link_local.is_empty() {
+                        return refused(
+                            "a member of its microVM's switch has no link-local addresses of its own",
+                        );
+                    }
+                    if !e.driver_opts.is_empty() {
+                        return refused("a network of a microVM's own engine takes no driver options");
+                    }
+                    if !e.ipv6.is_empty() {
+                        return refused("IPv6 between a microVM's engine's containers is not built yet");
+                    }
+                    let name = network_of(&e.network)?;
+                    if name == "bridge" && !e.aliases.is_empty() {
+                        return refused(
+                            "its engine's default network names no peers, so no alias of a member's is resolved there",
+                        );
+                    }
+                    let at = match nets.iter().position(|m| m.network == name) {
+                        Some(at) => at,
+                        None => {
+                            nets.push(Membership::of(name));
+                            nets.len() - 1
+                        }
+                    };
+                    if let Some(entry) = nets.get_mut(at) {
+                        entry.addr = e.ipv4.clone();
+                        for alias in e.aliases {
+                            if !entry.aliases.contains(&alias) {
+                                entry.aliases.push(alias);
+                            }
+                        }
+                        entry.priority = e.gw_priority;
+                    }
+                }
+                nets.sort_by_key(|m| std::cmp::Reverse(m.priority));
+                let first = nets.first().map(|m| m.network.clone()).unwrap_or_default();
+                (provider.to_string(), first, nets)
+            }
         },
     };
     run.network = format!("container:{joined}");
-    run.engine_net = engine_net.to_string();
-    if let Some(e) = run.endpoints.first() {
-        return past(format!("--network {}", e.network));
-    }
+    run.engine_net = engine_net;
+    run.engine_nets = nets
+        .iter()
+        .map(|m| {
+            let mut entry = format!("{}\0{}", m.network, m.addr);
+            for alias in &m.aliases {
+                entry.push('\0');
+                entry.push_str(alias);
+            }
+            entry
+        })
+        .collect();
     // A member reaches nothing of the command's, its engine's host, which reaches it on the
     // ports it publishes: the host's gateway is no address of its.
-    if engine_net == "bridge"
+    if !run.engine_nets.is_empty()
         && let Some(given) = run.add_hosts.iter().find(|h| h.ends_with(":host-gateway"))
     {
         return Err(Answer::error(
@@ -268,7 +404,7 @@ fn confine(run: &mut Run, provider: &str, scoped: &[Container]) -> Result<(), An
 
 impl<D: Disk> Daemon<D> {
     /// The containers microVM `scope`'s engine made, each by the name it has there.
-    fn scoped(&self, scope: &Scope) -> Vec<Container> {
+    pub(super) fn scoped(&self, scope: &Scope) -> Vec<Container> {
         of_scope(lock(&self.containers).all(), &scope.provider)
     }
 
@@ -290,6 +426,13 @@ impl<D: Disk> Daemon<D> {
             ("POST", ["containers", "create"]) => self.scoped_create(threads, call, scope),
             ("GET", ["containers", "json"]) => self.scoped_list(call, scope),
             ("POST", ["images", "create"]) => return self.scoped_pull(threads, conn, call, scope),
+            ("GET", ["networks"]) => self.scoped_networks(call, scope),
+            ("POST", ["networks", "create"]) => self.scoped_network_create(call, scope),
+            ("POST", ["networks", "prune"]) => self.scoped_network_prune(call, scope),
+            ("GET", ["networks", term]) => self.scoped_network(term, scope),
+            ("DELETE", ["networks", term]) => self.scoped_network_remove(term, scope),
+            ("POST", ["networks", term, "connect"]) => self.scoped_network_join(term, call, scope, true),
+            ("POST", ["networks", term, "disconnect"]) => self.scoped_network_join(term, call, scope, false),
             ("GET", ["images", "json"]) => self.scoped_images(call, scope),
             ("GET", ["images", name @ .., "json"]) if !name.is_empty() => {
                 self.scoped_image(threads, &name.join("/"), scope)
@@ -400,14 +543,14 @@ impl<D: Disk> Daemon<D> {
         };
         self.settle();
         let scoped = self.scoped(scope);
-        if let Err(answer) = confine(&mut run, &scope.provider, &scoped) {
-            return answer;
-        }
-        // Its own images alone: its microVM's, and those its engine pulled.
         let provider = lock(&self.containers).get(&scope.provider).cloned();
         let Some(provider) = provider else {
             return Answer::error(409, "its microVM is gone");
         };
+        if let Err(answer) = confine(&mut run, &scope.provider, &scoped, &provider.engine_networks) {
+            return answer;
+        }
+        // Its own images alone: its microVM's, and those its engine pulled.
         match self.image_id_of(threads, image) {
             Some(id) if images_of(&provider).contains(&id) => {}
             _ => return Answer::error(404, format!("No such image: {image}")),
@@ -627,9 +770,10 @@ mod tests {
             engine_made: of.map(|(of, name)| crate::containers::EngineMade {
                 of: of.into(),
                 name: name.into(),
-                address: None,
+                addresses: Vec::new(),
             }),
             engine_images: Vec::new(),
+            engine_networks: Vec::new(),
         }
     }
 
@@ -660,7 +804,7 @@ mod tests {
     }
 
     fn refused_why(run: &mut Run, scoped: &[Container]) -> Option<(u16, String)> {
-        confine(run, "prov-id", scoped).err().map(|a| {
+        confine(run, "prov-id", scoped, &[]).err().map(|a| {
             let said: Value = serde_json::from_slice(&a.body).unwrap_or_default();
             (a.status, said["message"].as_str().unwrap_or_default().to_string())
         })
@@ -738,11 +882,12 @@ mod tests {
         };
         let cases: Vec<(Run, Option<(u16, String)>)> = vec![
             (
+                // A network its engine has none of, by that name.
                 Run {
                     network: "elsewhere".into(),
                     ..Run::default()
                 },
-                past("--network elsewhere"),
+                Some((404, "No such network: elsewhere".into())),
             ),
             (
                 Run {

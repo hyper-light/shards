@@ -16,6 +16,7 @@ shards-abi = { path = "../abi" }
 shards-archive = { path = "../archive" }
 shards-cmdline = { path = "../cmdline" }
 shards-devcgroup = { path = "../devcgroup" }
+shards-dns = { path = "../dns" }
 shards-erofs = { path = "../erofs" }
 shards-user = { path = "../user" }
 

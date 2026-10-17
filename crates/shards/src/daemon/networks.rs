@@ -1390,7 +1390,12 @@ impl<D: Disk> Daemon<D> {
 
     /// Network `n` as dockerd's network.Inspect says it.
     pub(super) fn network_value(&self, n: &Network) -> Value {
-        let members = self.members_of(&n.id);
+        self.network_value_of(n, &self.members_of(&n.id))
+    }
+
+    /// Network `n` as its inspect document says it, with `members` on it: the members of a
+    /// network of a microVM's own engine are that engine's containers (D181).
+    pub(super) fn network_value_of(&self, n: &Network, members: &[Member]) -> Value {
         let map = |m: &BTreeMap<String, String>| Value::string_map(m.clone());
         let special = matches!(n.driver.as_str(), "host" | "null");
         let entry = |subnet: String, range: String, gateway: String, aux: BTreeMap<String, String>| {

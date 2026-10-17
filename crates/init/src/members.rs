@@ -4,11 +4,15 @@
 //! address it could claim, granted what it declares and nothing else.
 //!
 //! Init makes a member's namespace, its gate and its link before any process of it runs
-//! ([`join`]); the joiner's child enters it. Its engine's default network names no peers,
-//! so a member on it is alone, as an agent with no `CONNECT` is. It reaches past the
-//! microVM as far as the run's command does, and no farther; the command reaches it on
-//! the ports it publishes alone, through a proxy of init's in the command's namespace
-//! ([`publish`]).
+//! ([`join`]); the joiner's child enters it. A member is on one or more of its engine's
+//! networks, an address and names on each, as a domain is on its networks (D59 part
+//! three). Joining grants nothing: a member accepts, from each member of a network it
+//! shares, on the ports it declares, and on no other; its engine's default network, and
+//! one made with no peers, grant not even that. It resolves its own names and those of
+//! each peer it may reach, answered by the agents' resolver by its link. It reaches past
+//! the microVM as far as the run's command does, and no farther, and nowhere from an
+//! internal network alone; the command reaches it on the ports it publishes, through a
+//! proxy of init's in the command's namespace ([`publish`]).
 
 use std::io::{self, Read as _, Write as _};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener, TcpStream, UdpSocket};
@@ -17,6 +21,7 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use crate::links::{Reach, in_netns, open_ns};
+use crate::netplan::Egress;
 
 /// Whether the run's own processes are kept from what its agents' grants reach past the
 /// microVM (`confine-eth0`, D59): its engine's members reach no farther than they.
@@ -36,27 +41,63 @@ pub struct Binding {
     pub port: u16,
 }
 
-/// What a joiner's setup asks of its membership (`member=NETWORK\0NAME[\0ALIAS...]`): the
-/// network of its engine's it joins, and its names there.
+/// What a joiner's setup asks of its membership: each network of its engine's it joins,
+/// the address its client asked for there if it asked for one, and its names there
+/// (`member=NETWORK\0ADDR[\0NAME...]`, one entry a network, ADDR empty for one init
+/// picks), and the ports it declares (`member-accepts=PROTO/PORT[-PORT],...`), which its
+/// peers may reach.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Asked {
-    pub network: String,
-    pub names: Vec<String>,
+    pub networks: Vec<(String, Option<Ipv4Addr>, Vec<String>)>,
+    pub accepts: Vec<Egress>,
+}
+
+/// One port or range a member declares, `6/80` or `17/5000-5010`.
+fn declared(text: &str) -> Option<Egress> {
+    let (proto, ports) = text.split_once('/')?;
+    let proto: u8 = proto.parse().ok().filter(|p| matches!(p, 6 | 17))?;
+    let (lo, hi) = match ports.split_once('-') {
+        Some((lo, hi)) => (lo.parse().ok()?, hi.parse().ok()?),
+        None => {
+            let p = ports.parse().ok()?;
+            (p, p)
+        }
+    };
+    (lo > 0 && lo <= hi).then_some((proto, lo, hi))
 }
 
 /// The membership `setup` asks for, where it asks for one.
 pub fn asked(setup: &[Vec<u8>]) -> Result<Option<Asked>, String> {
-    let Some(entry) = setup.iter().find_map(|e| e.strip_prefix(b"member=")) else {
-        return Ok(None);
-    };
-    let text = std::str::from_utf8(entry).map_err(|_| "a membership that is not UTF-8".to_string())?;
-    let mut parts = text.split('\0');
-    let network = parts.next().unwrap_or_default().to_string();
-    let names: Vec<String> = parts.map(str::to_string).collect();
-    if network.is_empty() || names.iter().any(String::is_empty) {
-        return Err(format!("a malformed membership: {text:?}"));
+    let mut networks = Vec::new();
+    for entry in setup.iter().filter_map(|e| e.strip_prefix(b"member=")) {
+        let text = std::str::from_utf8(entry).map_err(|_| "a membership that is not UTF-8".to_string())?;
+        let bad = || format!("a malformed membership: {text:?}");
+        let mut parts = text.split('\0');
+        let network = parts.next().unwrap_or_default().to_string();
+        let addr = match parts.next().unwrap_or_default() {
+            "" => None,
+            a => Some(a.parse::<Ipv4Addr>().map_err(|_| bad())?),
+        };
+        let names: Vec<String> = parts.map(str::to_string).collect();
+        if network.is_empty()
+            || names.iter().any(String::is_empty)
+            || networks.iter().any(|(n, _, _)| *n == network)
+        {
+            return Err(bad());
+        }
+        networks.push((network, addr, names));
     }
-    Ok(Some(Asked { network, names }))
+    if networks.is_empty() {
+        return Ok(None);
+    }
+    let mut accepts = Vec::new();
+    if let Some(entry) = setup.iter().find_map(|e| e.strip_prefix(b"member-accepts=")) {
+        let text = std::str::from_utf8(entry).map_err(|_| "declared ports that are not UTF-8".to_string())?;
+        for one in text.split(',').filter(|t| !t.is_empty()) {
+            accepts.push(declared(one).ok_or_else(|| format!("a malformed declared port: {one:?}"))?);
+        }
+    }
+    Ok(Some(Asked { networks, accepts }))
 }
 
 /// What `setup` publishes (`own-publish=PROTO\0HOSTIP\0HOSTPORT\0PORT`).
@@ -95,38 +136,51 @@ pub fn bindings(setup: &[Vec<u8>]) -> Result<Vec<Binding>, String> {
         .collect()
 }
 
-/// A member, joined: init's descriptor of the namespace made for it, which its joiner's
-/// child enters and init holds while it is a member; its network, and its address, prefix
-/// and gateway there; its link's hardware address, the kernel's; and whether it asks the
-/// agents' resolver for names past the microVM.
+/// A member's place on one of its networks: the network, and its address, prefix and
+/// gateway there.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Joined {
-    pub ns: RawFd,
+pub struct On {
     pub network: String,
     pub addr: Ipv4Addr,
     pub prefix: u8,
     pub gateway: Ipv4Addr,
+}
+
+/// A member, joined: init's descriptor of the namespace made for it, which its joiner's
+/// child enters and init holds while it is a member; its place on each of its networks,
+/// the first its default route's; its link's hardware address, the kernel's; and whether
+/// it asks the agents' resolver for names past the microVM.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Joined {
+    pub ns: RawFd,
+    pub on: Vec<On>,
     pub mac: [u8; 6],
     pub dns: bool,
 }
 
-/// A network of the engine's: its name, its subnet and its gateway, the subnet's first
-/// address.
+/// A network of the engine's: its name, its subnet and gateway, the range its members'
+/// addresses come from where its client gave one, whether it reaches past the microVM
+/// (none from an internal one), and whether its members are one another's peers (not on
+/// the engine's default network, nor on one made without).
 #[derive(Debug, Clone)]
 struct Net {
     name: String,
     subnet: (Ipv4Addr, u8),
     gateway: Ipv4Addr,
+    range: Option<(Ipv4Addr, u8)>,
+    internal: bool,
+    peers: bool,
 }
 
-/// A member, as init keeps it: its joiner's id, its link's index, its network and address
-/// there, and its namespace.
+/// A member, as init keeps it: its joiner's id, its link's index, its address and names on
+/// each of its networks, the ports it declares, and its namespace.
 #[derive(Debug)]
 struct Kept {
     id: u32,
     index: usize,
-    network: String,
-    addr: Ipv4Addr,
+    on: Vec<(String, Ipv4Addr, Vec<String>)>,
+    accepts: Vec<Egress>,
+    member: crate::links::Member,
     _ns: OwnedFd,
 }
 
@@ -157,14 +211,22 @@ fn free_subnet(taken: &[(Ipv4Addr, u8)]) -> Option<(Ipv4Addr, u8)> {
         .find(|s| !taken.iter().any(|t| crate::netplan::overlaps(*s, *t)))
 }
 
-/// The lowest address of `subnet` past its gateway, `.1`, that `held` holds none of; none
-/// past its last host address.
-fn free_address(subnet: (Ipv4Addr, u8), held: &[Ipv4Addr]) -> Option<Ipv4Addr> {
-    let size = 1u32.checked_shl(32 - u32::from(subnet.1))?;
-    (2..size.saturating_sub(1))
-        .filter_map(|i| u32::from(subnet.0).checked_add(i))
+/// The lowest address of `within` (a network's range, or its subnet) that is neither the
+/// subnet's own nor its last, nor its gateway, nor one `held` holds; none past it.
+fn free_address(
+    subnet: (Ipv4Addr, u8),
+    within: (Ipv4Addr, u8),
+    gateway: Ipv4Addr,
+    held: &[Ipv4Addr],
+) -> Option<Ipv4Addr> {
+    let mask = |p: u8| u32::MAX.checked_shl(32 - u32::from(p)).unwrap_or(0);
+    let first = u32::from(subnet.0) & mask(subnet.1);
+    let last = first | !mask(subnet.1);
+    let from = u32::from(within.0) & mask(within.1);
+    let to = from | !mask(within.1);
+    (from.max(first.saturating_add(1))..=to.min(last.saturating_sub(1)))
         .map(Ipv4Addr::from)
-        .find(|a| !held.contains(a))
+        .find(|a| *a != gateway && !held.contains(a))
 }
 
 /// The switch, the domains' where they made one, else one made now with none of theirs.
@@ -176,60 +238,279 @@ fn switch() -> io::Result<&'static crate::links::Switch> {
     Ok(crate::domains::SWITCH.get_or_init(|| made))
 }
 
-/// Makes joiner `id` a member of its engine's network `asked` names, publishing
-/// `published` to the run's command: its namespace, its address there, its gate and link,
-/// and its grants, each before any process of it runs.
-pub fn join(id: u32, asked: &Asked, published: &[crate::netplan::Egress]) -> Result<Joined, String> {
-    if asked.network != DEFAULT {
-        return Err(format!(
-            "network {}: a microVM's engine makes no networks of its own yet, so its containers are on its default network, `{DEFAULT}`",
-            asked.network
-        ));
+/// eth0's subnet: the microVM's own network, which no network of its engine's overlaps.
+fn eth0_subnet() -> Option<(Ipv4Addr, u8)> {
+    let (eth0, prefix, _) = crate::net::current()?;
+    let mask = u32::MAX.checked_shl(32 - u32::from(prefix)).unwrap_or(0);
+    Some((Ipv4Addr::from(u32::from(eth0) & mask), prefix))
+}
+
+/// The engine's default network, made as it is first joined.
+fn default_network(e: &mut Engine, sw: &crate::links::Switch) -> Result<Net, String> {
+    if let Some(n) = e.networks.iter().find(|n| n.name == DEFAULT) {
+        return Ok(n.clone());
     }
+    let mut taken = sw.subnets();
+    taken.extend(eth0_subnet());
+    taken.extend(e.networks.iter().map(|n| n.subnet));
+    let subnet = free_subnet(&taken).ok_or_else(|| {
+        format!(
+            "network {DEFAULT}: no /24 of {}/{} is clear of the microVM's own networks",
+            crate::netplan::POOL.0,
+            crate::netplan::POOL.1
+        )
+    })?;
+    let n = Net {
+        name: DEFAULT.to_string(),
+        subnet,
+        gateway: Ipv4Addr::from(u32::from(subnet.0).saturating_add(1)),
+        range: None,
+        internal: false,
+        peers: false,
+    };
+    e.networks.push(n.clone());
+    Ok(n)
+}
+
+/// The peers a member may open flows to: each one's addresses, and the ports it declares.
+type Opens = Vec<(Vec<Ipv4Addr>, Vec<Egress>)>;
+
+/// The names a member resolves, a table a network: each peer's name there at its address.
+type Tables = Vec<(String, Vec<(String, Ipv4Addr)>)>;
+
+/// What each member's gate lets through, its pairs on the switch, and the names it asks
+/// for, from every member's networks and declared ports: who shares a network with peers,
+/// to whom, on the ports the receiver declares.
+struct Grants {
+    /// Each member's peers it may open flows to (their addresses and the ports each
+    /// declares), and those that may open flows to it (their addresses).
+    opens: Vec<(usize, Opens)>,
+    accepts: Vec<(usize, Vec<Ipv4Addr>)>,
+    pairs: Vec<(usize, usize, Vec<Egress>)>,
+    /// The names each member resolves of the peers it may reach: each shared network's,
+    /// each peer's names there at its address there.
+    names: Vec<(usize, Tables)>,
+}
+
+fn grants(e: &Engine) -> Grants {
+    let peered = |network: &str| e.networks.iter().any(|n| n.name == network && n.peers);
+    let mut g = Grants {
+        opens: Vec::new(),
+        accepts: Vec::new(),
+        pairs: Vec::new(),
+        names: Vec::new(),
+    };
+    for me in &e.members {
+        let mut opens: Opens = Vec::new();
+        let mut accepts: Vec<Ipv4Addr> = Vec::new();
+        let mut names: Tables = Vec::new();
+        for peer in e.members.iter().filter(|p| p.id != me.id) {
+            // Its addresses on the networks the two share that make peers of their members.
+            let shared: Vec<(&String, Ipv4Addr, &Vec<String>)> = peer
+                .on
+                .iter()
+                .filter(|(n, _, _)| peered(n) && me.on.iter().any(|(m, _, _)| m == n))
+                .map(|(n, a, names)| (n, *a, names))
+                .collect();
+            if shared.is_empty() {
+                continue;
+            }
+            let at: Vec<Ipv4Addr> = shared.iter().map(|(_, a, _)| *a).collect();
+            if !peer.accepts.is_empty() {
+                opens.push((at.clone(), peer.accepts.clone()));
+                g.pairs.push((me.index, peer.index, peer.accepts.clone()));
+                for (network, addr, peer_names) in &shared {
+                    let entries = match names.iter_mut().find(|(n, _)| n == *network) {
+                        Some((_, entries)) => entries,
+                        None => {
+                            names.push(((*network).clone(), Vec::new()));
+                            let Some((_, entries)) = names.last_mut() else {
+                                continue;
+                            };
+                            entries
+                        }
+                    };
+                    for name in peer_names.iter() {
+                        entries.push((name.clone(), *addr));
+                    }
+                }
+            }
+            if !me.accepts.is_empty() {
+                accepts.extend(at);
+            }
+        }
+        g.opens.push((me.index, opens));
+        g.accepts.push((me.index, accepts));
+        g.names.push((me.index, names));
+    }
+    g
+}
+
+/// The gate of member `m`, by `g`'s grants.
+fn gate_of(m: &Kept, g: &Grants) -> crate::links::Gate {
+    let opens = g
+        .opens
+        .iter()
+        .find(|(i, _)| *i == m.index)
+        .map(|(_, o)| o.clone())
+        .unwrap_or_default();
+    let accepts = g
+        .accepts
+        .iter()
+        .find(|(i, _)| *i == m.index)
+        .map(|(_, from)| from.clone())
+        .unwrap_or_default();
+    crate::links::Gate {
+        own: m.on.iter().map(|(_, a, _)| *a).collect(),
+        opens,
+        // Its declared ports whether or not it has peers yet: as it is linked, its own
+        // connections' ports are chosen clear of them (`local_ports`, D61), which the
+        // gate leaves untracked once a peer joins.
+        accepts: if m.accepts.is_empty() {
+            Vec::new()
+        } else {
+            vec![(accepts, m.accepts.clone())]
+        },
+        egress: match m.member.reach {
+            Reach::Nowhere => Vec::new(),
+            _ => crate::links::EVERY_PORT.to_vec(),
+        },
+        ingress: m.member.published.clone(),
+        dns: asks(m, g),
+        own6: Vec::new(),
+        opens6: Vec::new(),
+        accepts6: Vec::new(),
+        egress6: false,
+    }
+}
+
+/// Whether member `m` asks the agents' resolver: for names past the microVM, where it
+/// reaches past it, or for its peers' names, where it has peers it may reach.
+fn asks(m: &Kept, g: &Grants) -> bool {
+    m.member.reach != Reach::Nowhere || g.names.iter().any(|(i, n)| *i == m.index && !n.is_empty())
+}
+
+/// Member `m`'s asker at the agents' resolver, by `g`'s grants: its link, whether it may
+/// ask past the microVM, its addresses, and the names it resolves there.
+fn asker_of(m: &Kept, g: &Grants) -> io::Result<crate::agentdns::Asker> {
+    let local = g
+        .names
+        .iter()
+        .find(|(i, _)| *i == m.index)
+        .map(|(_, nets)| {
+            nets.iter()
+                .map(|(network, entries)| {
+                    let mut names = shards_dns::Names::new(network, 0);
+                    for (name, addr) in entries {
+                        names.add(name, IpAddr::V4(*addr));
+                    }
+                    names
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    Ok(crate::agentdns::Asker {
+        link: crate::links::link_index(m.index)?,
+        any: m.member.reach != Reach::Nowhere,
+        names: Vec::new(),
+        addrs: m.on.iter().map(|(_, a, _)| *a).collect(),
+        local,
+    })
+}
+
+/// Every member's grants programmed again, but `except`'s, whose gate was made with its
+/// own: the switch's pairs, each other member's gate and its asker.
+fn regrant(e: &Engine, sw: &crate::links::Switch, except: Option<usize>) -> io::Result<()> {
+    let g = grants(e);
+    let carried = e
+        .members
+        .iter()
+        .map(|m| crate::links::Member {
+            dns: asks(m, &g),
+            ..m.member.clone()
+        })
+        .collect();
+    sw.carry(carried, g.pairs.clone())?;
+    for m in &e.members {
+        if Some(m.index) != except {
+            sw.regate(m.index, &gate_of(m, &g))?;
+        }
+        let asker = asker_of(m, &g)?;
+        if asker.any || !asker.local.is_empty() {
+            ask_through(sw, &asker)?;
+        } else if crate::agentdns::running() {
+            crate::agentdns::release(asker.link)?;
+        }
+    }
+    Ok(())
+}
+
+/// Has the agents' resolver keep `asker`, starting it where it does not run.
+fn ask_through(sw: &crate::links::Switch, asker: &crate::agentdns::Asker) -> io::Result<()> {
+    if crate::agentdns::running() {
+        return crate::agentdns::admit(asker);
+    }
+    let (_, _, upstream) =
+        crate::net::current().ok_or_else(|| io::Error::other("the microVM has no resolver"))?;
+    let sockets = sw.resolver_sockets(SocketAddr::from((upstream, 53)))?;
+    crate::agentdns::start(sockets, vec![asker.clone()]).map_err(io::Error::other)
+}
+
+/// Makes joiner `id` a member of the networks of its engine's `asked` names, publishing
+/// `published` to the run's command: its namespace, its address on each, its gate and
+/// link, and its grants and every peer's, each before any process of it runs.
+pub fn join(id: u32, asked: &Asked, published: &[Egress]) -> Result<Joined, String> {
     let failed = |what: &str, e: io::Error| format!("{what}: {e}");
     let sw = switch().map_err(|e| failed("the microVM's switch", e))?;
     // Past the microVM by the switch's link up, and reached by the command down it.
     sw.uplink_once()
         .map_err(|e| failed("the switch's link past the microVM", e))?;
-    let (eth0, eth0_prefix, _) = crate::net::current()
-        .ok_or_else(|| "the microVM has no address for its engine's containers".to_string())?;
-    let mask = u32::MAX.checked_shl(32 - u32::from(eth0_prefix)).unwrap_or(0);
-    let eth0_subnet = (Ipv4Addr::from(u32::from(eth0) & mask), eth0_prefix);
     let mut e = engine();
-    let net = match e.networks.iter().find(|n| n.name == asked.network) {
-        Some(n) => n.clone(),
-        None => {
-            let mut taken = sw.subnets();
-            taken.push(eth0_subnet);
-            let subnet = free_subnet(&taken).ok_or_else(|| {
-                format!(
-                    "network {}: no /24 of {}/{} is clear of the microVM's own networks",
-                    asked.network,
-                    crate::netplan::POOL.0,
-                    crate::netplan::POOL.1
-                )
-            })?;
-            let n = Net {
-                name: asked.network.clone(),
-                subnet,
-                gateway: Ipv4Addr::from(u32::from(subnet.0).saturating_add(1)),
-            };
-            e.networks.push(n.clone());
-            n
-        }
-    };
-    let held: Vec<Ipv4Addr> = e
-        .members
-        .iter()
-        .filter(|m| m.network == net.name)
-        .map(|m| m.addr)
-        .collect();
-    let addr = free_address(net.subnet, &held).ok_or_else(|| {
-        format!(
-            "network {}: every address of {}/{} is held",
-            net.name, net.subnet.0, net.subnet.1
-        )
-    })?;
+    let mut nets = Vec::new();
+    for (network, _, _) in &asked.networks {
+        let net = match e.networks.iter().find(|n| n.name == *network) {
+            Some(n) => n.clone(),
+            None if network == DEFAULT => default_network(&mut e, sw)?,
+            None => {
+                return Err(format!(
+                    "network {network}: no network of its engine's is named so"
+                ));
+            }
+        };
+        nets.push(net);
+    }
+    let mut on: Vec<(String, Ipv4Addr, Vec<String>)> = Vec::new();
+    for (net, (_, given, names)) in nets.iter().zip(&asked.networks) {
+        let held: Vec<Ipv4Addr> = e
+            .members
+            .iter()
+            .flat_map(|m| m.on.iter())
+            .filter(|(n, _, _)| *n == net.name)
+            .map(|(_, a, _)| *a)
+            .collect();
+        let addr = match given {
+            // The one its client asked for: of its subnet, past the subnet's own and last,
+            // not its gateway, and held by no other member.
+            Some(a) => {
+                let within = (*a, 32);
+                if free_address(net.subnet, within, net.gateway, &held) != Some(*a) {
+                    return Err(format!(
+                        "address {a} on network {}: not one of {}/{} that is free",
+                        net.name, net.subnet.0, net.subnet.1
+                    ));
+                }
+                *a
+            }
+            None => free_address(net.subnet, net.range.unwrap_or(net.subnet), net.gateway, &held)
+                .ok_or_else(|| {
+                    format!(
+                        "network {}: every address of {}/{} is held",
+                        net.name, net.subnet.0, net.subnet.1
+                    )
+                })?,
+        };
+        on.push((net.name.clone(), addr, names.clone()));
+    }
     let index = (sw.domains()..)
         .find(|i| !e.members.iter().any(|m| m.index == *i))
         .ok_or_else(|| "no link left on the microVM's switch".to_string())?;
@@ -241,27 +522,48 @@ pub fn join(id: u32, asked: &Asked, published: &[crate::netplan::Egress]) -> Res
         Ok(ns)
     })
     .map_err(|e| failed("its network namespace", e))?;
-    let reach = if CONFINED.load(std::sync::atomic::Ordering::Relaxed) {
-        Reach::Within(eth0_subnet)
+    // Past the microVM where one of its networks is not internal, as far as the command.
+    let reach = if nets.iter().all(|n| n.internal) {
+        Reach::Nowhere
+    } else if CONFINED.load(std::sync::atomic::Ordering::Relaxed) {
+        eth0_subnet().map_or(Reach::Nowhere, Reach::Within)
     } else {
         Reach::AsTheCommand
     };
     let dns = reach != Reach::Nowhere;
-    let egress = match reach {
-        Reach::Nowhere => Vec::new(),
-        _ => crate::links::EVERY_PORT.to_vec(),
+    let member = crate::links::Member {
+        index,
+        addrs: on.iter().map(|(_, a, _)| *a).collect(),
+        reach,
+        published: published.to_vec(),
+        dns,
+    };
+    let kept = Kept {
+        id,
+        index,
+        on: on.clone(),
+        accepts: asked.accepts.clone(),
+        member: member.clone(),
+        _ns: ns,
     };
     let link = crate::netplan::Link {
-        addresses: vec![crate::netplan::Address {
-            network: net.name.clone(),
-            addr,
-            subnet: net.subnet.0,
-            prefix: net.subnet.1,
-            gateway: net.gateway,
-        }],
+        addresses: nets
+            .iter()
+            .zip(&on)
+            .map(|(net, (_, addr, _))| crate::netplan::Address {
+                network: net.name.clone(),
+                addr: *addr,
+                subnet: net.subnet.0,
+                prefix: net.subnet.1,
+                gateway: net.gateway,
+            })
+            .collect(),
         addresses6: Vec::new(),
         hosts: Vec::new(),
-        egress: egress.clone(),
+        egress: match reach {
+            Reach::Nowhere => Vec::new(),
+            _ => crate::links::EVERY_PORT.to_vec(),
+        },
         ingress: Vec::new(),
         dns,
         mcp: Vec::new(),
@@ -269,88 +571,202 @@ pub fn join(id: u32, asked: &Asked, published: &[crate::netplan::Egress]) -> Res
         accepts: false,
         unix: Vec::new(),
     };
-    let gate = crate::links::Gate {
-        own: vec![addr],
-        opens: Vec::new(),
-        accepts: Vec::new(),
-        egress,
-        ingress: published.to_vec(),
-        dns,
-        own6: Vec::new(),
-        opens6: Vec::new(),
-        accepts6: Vec::new(),
-        egress6: false,
-    };
-    sw.attach_ns(index, &ns, &link, &gate)
-        .map_err(|e| failed("its link to the microVM's switch", e))?;
-    let admitted = sw.admit(
-        crate::links::Member {
-            index,
-            addrs: vec![addr],
-            reach,
-            published: published.to_vec(),
-            dns,
-        },
-        net.subnet,
-    );
-    let asks = admitted.and_then(|()| {
-        if !dns {
-            return Ok(());
-        }
-        let asker = crate::agentdns::Asker {
-            link: crate::links::link_index(index)?,
-            any: true,
-            names: Vec::new(),
-            addrs: vec![addr],
+    e.members.push(kept);
+    let joined = (|| {
+        let Some(me) = e.members.last() else {
+            return Err(io::Error::other("its membership, just kept, is gone"));
         };
-        if crate::agentdns::running() {
-            return crate::agentdns::admit(&asker);
+        let g = grants(&e);
+        sw.attach_ns(index, &me._ns, &link, &gate_of(me, &g))?;
+        let subnets: Vec<(Ipv4Addr, u8)> = nets.iter().map(|n| n.subnet).collect();
+        sw.routes(&subnets)?;
+        regrant(&e, sw, Some(index))?;
+        hardware_address(&me._ns)
+    })();
+    match joined {
+        Ok(mac) => {
+            let raw = e.members.last().map_or(-1, |m| m._ns.as_raw_fd());
+            Ok(Joined {
+                ns: raw,
+                on: nets
+                    .iter()
+                    .zip(&on)
+                    .map(|(net, (_, addr, _))| On {
+                        network: net.name.clone(),
+                        addr: *addr,
+                        prefix: net.subnet.1,
+                        gateway: net.gateway,
+                    })
+                    .collect(),
+                mac,
+                dns,
+            })
         }
-        let (_, _, upstream) =
-            crate::net::current().ok_or_else(|| io::Error::other("the microVM has no resolver"))?;
-        let sockets = sw.resolver_sockets(SocketAddr::from((upstream, 53)))?;
-        crate::agentdns::start(sockets, vec![asker]).map_err(io::Error::other)
-    });
-    let mac = asks.and_then(|()| hardware_address(&ns));
-    let mac = match mac {
-        Ok(mac) => mac,
         Err(why) => {
-            let _ = sw.release(index);
-            return Err(failed("its grants on the microVM's switch", why));
+            e.members.retain(|m| m.id != id);
+            let _ = regrant(&e, sw, None);
+            sw.drop_gate(index);
+            if let Ok(link) = crate::links::link_index(index) {
+                let _ = crate::agentdns::release(link);
+            }
+            Err(failed("its grants on the microVM's switch", why))
         }
-    };
-    let raw = ns.as_raw_fd();
-    e.members.push(Kept {
-        id,
-        index,
-        network: net.name.clone(),
-        addr,
-        _ns: ns,
-    });
-    Ok(Joined {
-        ns: raw,
-        network: net.name.clone(),
-        addr,
-        prefix: net.subnet.1,
-        gateway: net.gateway,
-        mac,
-        dns,
-    })
+    }
 }
 
-/// Lets joiner `id` go, if it is a member: its grants, then its gate and namespace.
+/// Lets joiner `id` go, if it is a member: its grants and every peer's of it, then its
+/// gate and namespace.
 pub fn leave(id: u32) {
     let mut e = engine();
     let Some(at) = e.members.iter().position(|m| m.id == id) else {
         return;
     };
     let gone = e.members.remove(at);
-    drop(e);
     if let Some(sw) = crate::domains::SWITCH.get() {
         if let Ok(link) = crate::links::link_index(gone.index) {
             let _ = crate::agentdns::release(link);
         }
-        let _ = sw.release(gone.index);
+        let _ = regrant(&e, sw, None);
+        sw.drop_gate(gone.index);
+    }
+}
+
+/// What the engine's `args` ask of its networks, done in init (D181): `make NAME SUBNET
+/// GATEWAY RANGE FLAGS`, each of the three addresses empty for one init picks, FLAGS a
+/// comma list of `internal` and `no-peers`, answered with the subnet and gateway made
+/// (`10.244.3.0/24 10.244.3.1`); `default`, the engine's default network, made where it is
+/// not yet, answered so; or `remove NAME`, of a network no member is on. Why not,
+/// otherwise.
+pub fn network(args: &[Vec<u8>]) -> Result<String, String> {
+    let text: Vec<String> = args
+        .iter()
+        .map(|a| String::from_utf8_lossy(a).into_owned())
+        .collect();
+    let arg = |i: usize| text.get(i).map(String::as_str).unwrap_or_default();
+    let cidr = |s: &str| -> Result<Option<(Ipv4Addr, u8)>, String> {
+        if s.is_empty() {
+            return Ok(None);
+        }
+        let (a, p) = s.split_once('/').ok_or_else(|| format!("{s}: no IPv4 subnet"))?;
+        let addr: Ipv4Addr = a.parse().map_err(|_| format!("{s}: no IPv4 subnet"))?;
+        let prefix: u8 = p
+            .parse()
+            .ok()
+            .filter(|p| (8..=30).contains(p))
+            .ok_or_else(|| format!("{s}: a network of a microVM's engine is a /8 to a /30"))?;
+        let mask = u32::MAX.checked_shl(32 - u32::from(prefix)).unwrap_or(0);
+        Ok(Some((Ipv4Addr::from(u32::from(addr) & mask), prefix)))
+    };
+    let mut e = engine();
+    match arg(0) {
+        "default" => {
+            let sw = switch().map_err(|e| format!("the microVM's switch: {e}"))?;
+            let n = default_network(&mut e, sw)?;
+            Ok(format!("{}/{} {}", n.subnet.0, n.subnet.1, n.gateway))
+        }
+        "make" => {
+            let name = arg(1);
+            if name.is_empty() || name == DEFAULT {
+                return Err(format!("{name:?}: no name for a network of its own"));
+            }
+            if e.networks.iter().any(|n| n.name == name) {
+                return Err(format!("network {name} is made already"));
+            }
+            let sw = switch().map_err(|e| format!("the microVM's switch: {e}"))?;
+            let mut taken: Vec<(Ipv4Addr, u8, String)> = sw
+                .subnets()
+                .into_iter()
+                .map(|(a, p)| (a, p, "a network of the microVM's".to_string()))
+                .collect();
+            if let Some((a, p)) = eth0_subnet() {
+                taken.push((a, p, "the microVM's own network".to_string()));
+            }
+            for n in &e.networks {
+                taken.push((n.subnet.0, n.subnet.1, format!("network {}", n.name)));
+            }
+            let subnet = match cidr(arg(2))? {
+                Some(s) => {
+                    if let Some((_, _, whose)) = taken
+                        .iter()
+                        .find(|(a, p, _)| crate::netplan::overlaps(s, (*a, *p)))
+                    {
+                        return Err(format!("subnet {}/{}: {whose} holds part of it", s.0, s.1));
+                    }
+                    s
+                }
+                None => {
+                    let held: Vec<(Ipv4Addr, u8)> = taken.iter().map(|(a, p, _)| (*a, *p)).collect();
+                    free_subnet(&held).ok_or_else(|| {
+                        format!(
+                            "no /24 of {}/{} is clear of the microVM's own networks",
+                            crate::netplan::POOL.0,
+                            crate::netplan::POOL.1
+                        )
+                    })?
+                }
+            };
+            let inside = |a: Ipv4Addr| crate::netplan::overlaps((a, 32), subnet);
+            let gateway = match arg(3) {
+                "" => Ipv4Addr::from(u32::from(subnet.0).saturating_add(1)),
+                g => {
+                    let g: Ipv4Addr = g.parse().map_err(|_| format!("gateway {g}: no IPv4 address"))?;
+                    if !inside(g) {
+                        return Err(format!(
+                            "gateway {g}: outside its subnet {}/{}",
+                            subnet.0, subnet.1
+                        ));
+                    }
+                    g
+                }
+            };
+            let range = match cidr(arg(4))? {
+                Some(r) if !crate::netplan::overlaps(r, subnet) || r.1 < subnet.1 => {
+                    return Err(format!(
+                        "range {}/{}: outside its subnet {}/{}",
+                        r.0, r.1, subnet.0, subnet.1
+                    ));
+                }
+                r => r,
+            };
+            let flags: Vec<&str> = arg(5).split(',').filter(|f| !f.is_empty()).collect();
+            if let Some(f) = flags.iter().find(|f| !matches!(**f, "internal" | "no-peers")) {
+                return Err(format!("{f}: no setting of a network of a microVM's engine"));
+            }
+            e.networks.push(Net {
+                name: name.to_string(),
+                subnet,
+                gateway,
+                range,
+                internal: flags.contains(&"internal"),
+                peers: !flags.contains(&"no-peers"),
+            });
+            Ok(format!("{}/{} {gateway}", subnet.0, subnet.1))
+        }
+        "remove" => {
+            let name = arg(1);
+            let on: Vec<u32> = e
+                .members
+                .iter()
+                .filter(|m| m.on.iter().any(|(n, _, _)| n == name))
+                .map(|m| m.id)
+                .collect();
+            if !on.is_empty() {
+                return Err(format!(
+                    "network {name}: {} of its members still run on it",
+                    on.len()
+                ));
+            }
+            let Some(at) = e.networks.iter().position(|n| n.name == name) else {
+                return Err(format!("network {name}: no network of its engine's is named so"));
+            };
+            let gone = e.networks.remove(at);
+            if let Some(sw) = crate::domains::SWITCH.get() {
+                sw.forget(gone.subnet)
+                    .map_err(|e| format!("network {name}: {e}"))?;
+            }
+            Ok(String::new())
+        }
+        other => Err(format!("{other:?}: nothing the engine's networks are asked")),
     }
 }
 
@@ -649,17 +1065,26 @@ mod tests {
     }
 
     #[test]
-    fn a_members_network_and_ports_are_read_as_the_daemon_writes_them() {
+    fn a_members_networks_ports_and_publishes_are_read_as_the_daemon_writes_them() {
         let setup = vec![
-            entry(&["member=bridge", "db", "cache"]),
+            entry(&["member=bridge", "", "db"]),
+            entry(&["member=app", "10.244.1.9", "db", "postgres"]),
+            b"member-accepts=6/5432,17/5000-5010".to_vec(),
             entry(&["own-publish=tcp", "", "0", "80"]),
             entry(&["own-publish=udp", "127.0.0.1", "53", "53"]),
         ];
         assert_eq!(
             asked(&setup).unwrap(),
             Some(Asked {
-                network: "bridge".into(),
-                names: vec!["db".into(), "cache".into()],
+                networks: vec![
+                    ("bridge".into(), None, vec!["db".into()]),
+                    (
+                        "app".into(),
+                        Some(Ipv4Addr::new(10, 244, 1, 9)),
+                        vec!["db".into(), "postgres".into()]
+                    ),
+                ],
+                accepts: vec![(6, 5432, 5432), (17, 5000, 5010)],
             })
         );
         assert_eq!(
@@ -679,13 +1104,21 @@ mod tests {
                 },
             ]
         );
-        assert!(asked(&[entry(&["member=", "db"])]).is_err());
-        assert!(asked(&[entry(&["member=bridge", ""])]).is_err());
+        assert_eq!(
+            asked(&[entry(&["member=bridge"])]).unwrap().unwrap().networks,
+            [("bridge".into(), None, vec![])]
+        );
+        assert!(asked(&[entry(&["member=", "", "db"])]).is_err());
+        assert!(asked(&[entry(&["member=bridge", "", ""])]).is_err());
+        assert!(asked(&[entry(&["member=bridge", "10.244.1", "db"])]).is_err());
+        assert!(asked(&[entry(&["member=a"]), entry(&["member=a"])]).is_err());
+        assert!(asked(&[entry(&["member=a"]), b"member-accepts=1/80".to_vec()]).is_err());
+        assert!(asked(&[entry(&["member=a"]), b"member-accepts=6/90-80".to_vec()]).is_err());
         assert_eq!(asked(&[]).unwrap(), None);
     }
 
     /// A network's subnet is the first /24 of the switch's block clear of every one taken,
-    /// its members' addresses the lowest free past its gateway.
+    /// its members' addresses the lowest free in its range past its gateway.
     #[test]
     fn subnets_and_addresses_are_the_lowest_free() {
         let first = (Ipv4Addr::new(10, 244, 0, 0), 24);
@@ -700,15 +1133,140 @@ mod tests {
             Some((Ipv4Addr::new(10, 244, 2, 0), 24))
         );
         assert_eq!(free_subnet(&[(Ipv4Addr::new(10, 0, 0, 0), 8)]), None);
-        assert_eq!(free_address(first, &[]), Some(Ipv4Addr::new(10, 244, 0, 2)));
+        let gw = Ipv4Addr::new(10, 244, 0, 1);
+        assert_eq!(
+            free_address(first, first, gw, &[]),
+            Some(Ipv4Addr::new(10, 244, 0, 2))
+        );
         assert_eq!(
             free_address(
                 first,
+                first,
+                gw,
                 &[Ipv4Addr::new(10, 244, 0, 2), Ipv4Addr::new(10, 244, 0, 4)]
             ),
             Some(Ipv4Addr::new(10, 244, 0, 3))
         );
+        // A gateway given elsewhere frees .1; a range keeps to itself.
+        assert_eq!(
+            free_address(first, first, Ipv4Addr::new(10, 244, 0, 254), &[]),
+            Some(Ipv4Addr::new(10, 244, 0, 1))
+        );
+        let range = (Ipv4Addr::new(10, 244, 0, 128), 25);
+        assert_eq!(
+            free_address(first, range, gw, &[]),
+            Some(Ipv4Addr::new(10, 244, 0, 128))
+        );
         let tiny = (Ipv4Addr::new(10, 244, 9, 0), 30);
-        assert_eq!(free_address(tiny, &[Ipv4Addr::new(10, 244, 9, 2)]), None);
+        assert_eq!(
+            free_address(
+                tiny,
+                tiny,
+                Ipv4Addr::new(10, 244, 9, 1),
+                &[Ipv4Addr::new(10, 244, 9, 2)]
+            ),
+            None
+        );
+    }
+
+    /// Members of a network with peers grant one another the ports each declares, and
+    /// names; members of the default network, or of none in common, grant nothing.
+    #[test]
+    fn grants_are_what_each_member_declares_to_its_peers() {
+        let ns = || std::fs::File::open("/dev/null").unwrap().into();
+        let kept = |id: u32, index: usize, on: &[(&str, [u8; 4], &[&str])], accepts: &[Egress]| Kept {
+            id,
+            index,
+            on: on
+                .iter()
+                .map(|(n, a, names)| {
+                    (
+                        (*n).to_string(),
+                        Ipv4Addr::from(*a),
+                        names.iter().map(|s| (*s).to_string()).collect(),
+                    )
+                })
+                .collect(),
+            accepts: accepts.to_vec(),
+            member: crate::links::Member {
+                index,
+                addrs: Vec::new(),
+                reach: Reach::AsTheCommand,
+                published: Vec::new(),
+                dns: true,
+            },
+            _ns: ns(),
+        };
+        let net = |name: &str, peers: bool| Net {
+            name: name.into(),
+            subnet: (Ipv4Addr::new(10, 244, 1, 0), 24),
+            gateway: Ipv4Addr::new(10, 244, 1, 1),
+            range: None,
+            internal: false,
+            peers,
+        };
+        let e = Engine {
+            networks: vec![net("bridge", false), net("app", true), net("other", true)],
+            members: vec![
+                kept(1, 10, &[("app", [10, 244, 1, 2], &["web"])], &[(6, 80, 80)]),
+                kept(
+                    2,
+                    11,
+                    &[("app", [10, 244, 1, 3], &["db", "postgres"])],
+                    &[(6, 5432, 5432)],
+                ),
+                kept(3, 12, &[("other", [10, 244, 2, 2], &["far"])], &[(6, 9, 9)]),
+                kept(4, 13, &[("bridge", [10, 244, 0, 2], &["alone"])], &[(6, 7, 7)]),
+                kept(5, 14, &[("app", [10, 244, 1, 4], &["quiet"])], &[]),
+            ],
+        };
+        let g = grants(&e);
+        let mut pairs = g.pairs.clone();
+        pairs.sort();
+        // web and db, each to the other's port; quiet reaches both and is reached by none.
+        assert_eq!(
+            pairs,
+            [
+                (10, 11, vec![(6, 5432, 5432)]),
+                (11, 10, vec![(6, 80, 80)]),
+                (14, 10, vec![(6, 80, 80)]),
+                (14, 11, vec![(6, 5432, 5432)]),
+            ]
+        );
+        let names_of = |index: usize| -> Vec<(String, Ipv4Addr)> {
+            let mut all: Vec<(String, Ipv4Addr)> = g
+                .names
+                .iter()
+                .filter(|(i, _)| *i == index)
+                .flat_map(|(_, nets)| nets.iter().flat_map(|(_, entries)| entries.iter().cloned()))
+                .collect();
+            all.sort();
+            all
+        };
+        assert_eq!(
+            names_of(10),
+            [
+                ("db".into(), Ipv4Addr::new(10, 244, 1, 3)),
+                ("postgres".into(), Ipv4Addr::new(10, 244, 1, 3))
+            ]
+        );
+        assert_eq!(names_of(14).len(), 3);
+        // Nothing for the member alone on its network, nor for the default network's.
+        assert!(names_of(12).is_empty() && names_of(13).is_empty());
+        let gate = gate_of(e.members.get(1).unwrap(), &g);
+        assert_eq!(
+            gate.opens,
+            [(vec![Ipv4Addr::new(10, 244, 1, 2)], vec![(6, 80, 80)])]
+        );
+        let mut from = gate.accepts.first().unwrap().0.clone();
+        from.sort();
+        assert_eq!(from, [Ipv4Addr::new(10, 244, 1, 2), Ipv4Addr::new(10, 244, 1, 4)]);
+        assert_eq!(gate.accepts.first().unwrap().1, [(6, 5432, 5432)]);
+        assert!(gate_of(e.members.get(3).unwrap(), &g).opens.is_empty());
+        // Alone on its network, far's gate still holds its declared port, from no one.
+        assert_eq!(
+            gate_of(e.members.get(2).unwrap(), &g).accepts,
+            [(Vec::new(), vec![(6, 9, 9)])]
+        );
     }
 }

@@ -4723,8 +4723,13 @@ no part of the microVM's own network design (D59, D61), it is replaced.
   peer it is granted a flow to, and no other (§4.7). Its names on a network are its name
   in its engine's scope and the aliases its client gives it there (Compose's service
   names, `--network-alias`); nothing else names it. Its `/etc/hosts`, a file of its own
-  mounted read-only as an agent's is, lists them, and init rewrites it as peers join and
-  leave.
+  mounted read-only as an agent's is, names it alone: an agent's lists its granted peers
+  too (D59 part seven), which its build fixes, but a member's peers come and go as it
+  runs. The agents' resolver answers its peers' names, by the link the question comes up
+  (`IP_PKTINFO`, D59 part seven), from a table init keeps for each member as peers join
+  and leave; each answer's TTL is 0, which no cache keeps past the answer (RFC 1035
+  §3.2.1), so a name goes with its grant. A granted peer's name is answered in the
+  microVM, never asked past it.
 - **Published ports, to the command alone.** A port it publishes (`-p HOST:PORT`, `-P`)
   reaches it from the command, its engine's host, at `localhost:HOST` in the command's
   namespace: init's proxy there passes each connection and datagram on to the container's
@@ -4768,8 +4773,10 @@ container's address; and a container reaches past the microVM no more than the c
 
 Built in parts: (3a) members on the switch, the default network, published ports, `host`
 and `none`, built; (3b) the networks its engine makes, their grants and names, and the
-networks API; (3c) its named volumes, and Compose end to end; (3d) the undeclared
-listeners `shards read ports` lists.
+networks API, built, connect and disconnect for a container that does not run; (3c) its
+named volumes, one member in another's namespace (`container:X`, Compose's `service:`),
+and Compose end to end; (3d) the undeclared listeners `shards read ports` lists; (3e)
+connect and disconnect of a running member.
 
 - **How 3a is built.** The daemon asks for a membership by network and name (`member=`,
   with `own-publish=` for each port it publishes), and nothing of addresses. Init holds
@@ -4812,6 +4819,77 @@ listeners `shards read ports` lists.
   far as the command of a run without them; the command's published ports not let
   through init's `own` chain; the default network carrying every port between members;
   members reaching nothing past the microVM.
+- **How 3b is built.** Init makes and removes its engine's networks (`members::network`),
+  asked by the daemon through a builtin (`NETWORK make NAME SUBNET GATEWAY RANGE FLAGS`,
+  `remove NAME`, `default`) that init does itself before the builtin's fork, so that what
+  it holds stays its own; the daemon keeps what its clients read of each (its ID, name,
+  creation time, labels and options as given). A network's subnet is the lowest /24 of
+  the switch's block clear of eth0's subnet and of every subnet the switch carries, or the
+  one its client gives (a /8 to a /30, clear of the same), its gateway and range in it. A
+  member on several networks has an address on each, routed on its one link
+  (`Switch::routes`), and says each (`MEMBER`). Its grants are built again from every
+  member whenever one joins or leaves (`members::grants`): for each two members of a
+  network whose members are peers, the ports the receiver declares, held at two points
+  that each hold them alone: the switch passes those only between the two links, and the
+  receiver's gate accepts those only, from the opener's addresses. The opener's gate
+  opens those only to its peers too, but a member that reaches past the microVM has its
+  every port opened up its link, which the switch passes to the uplink alone, as an
+  agent's egress is (D61); a third point for it, its gate's egress kept off the switch's
+  own subnets, is open. Each gate is programmed again in one transaction, the switch in
+  one. A member's gate holds its declared ports from its start, before it has any peer,
+  so that its own connections' ports are chosen clear of them (`local_ports`, D61). Its
+  peers' names init gives the agents' resolver with its asker, over init's control link;
+  the resolver answers a question that comes up the member's link from them first, and
+  any other as that member's (forwarded where it reaches past the microVM, refused where
+  it does not). The answerer is `shards-dns` (once `shards_net::dns`), a crate init and
+  the network process share. Of the options its clients send, `enable_icc` false makes a
+  network of no peers, `gateway_mode_ipv4` isolated an internal one, and
+  `host_binding_ipv4` the address its members' published ports are bound at in the
+  command's namespace where a binding names none. Refused, each with why: drivers other
+  than bridge, IPv6, a network without IPv4, IPAM drivers, a second subnet, auxiliary
+  addresses, ingress, configuration-only and configuration-from networks, a scope but
+  `local`, gateway modes but `nat` and `isolated`, `enable_ip_masquerade`,
+  `inhibit_ipv4`, a bridge's name, an MTU, an interface prefix; an endpoint's hardware
+  address, link-local addresses and driver options; an alias on the default network,
+  which names no peers. Connect and disconnect change a container's
+  networks for its next start (the request it was made with), and refuse one that runs,
+  with why, until 3e. Inspect's `NetworkSettings.Networks` has an entry for each of its
+  networks (its address, prefix, gateway and hardware address as init said them, its
+  aliases, and `DNSNames`, the names its peers resolve it by, none on the default
+  network), and a network's inspect lists its running members.
+- **Tested on real microVMs.** `a_microvms_own_engine_makes_networks_whose_members_reach_what_each_declares`:
+  two networks made, a third by a name taken refused, a `macvlan` one refused; listed
+  with the engine's own, and by label; db, first on its network, declaring 7000 and
+  40000, takes its own connections' ports clear of both; it is reached by its alias and by
+  its name on 7000 from members of its network, its alias answered with a TTL of 0;
+  stray, declaring 7000 and listening on 7001, is not reached on 7001; neither a member
+  of the other network, by db's address or its name, nor the command reaches db, whose
+  second connection is web2's; a network with a running member stays; a container that
+  does not run joins one for its next start and resolves db there once started, and one
+  that runs is refused; stray resolves db's alias while db runs and not once it has ended;
+  a network naming 127.0.0.1 for its members' published ports binds one there, reached at
+  the command's loopback and not at eth0's address; and the networks go once their
+  members have, by name and by a prune. `a_microvms_own_engine_makes_each_container_a_member_of_its_switch`
+  now has a member of an internal network alone reach nothing past the microVM, which a
+  member of the default network then reaches. Mutation-checked: with the switch alone,
+  or the receiver's gate alone, left holding a pair's ports, an undeclared port stays
+  shut, and with every point opened the test catches it; the opener's gate alone does
+  not hold them for a member that reaches past the microVM (above). Caught, each: grants
+  past the networks two members share; peers' gates not built again as a member joins;
+  the switch carrying no member's pairs; the resolver answering one member's question
+  from another's table; grants not built again as a member goes; peers' names answered
+  with the TTL the network process gives; a network's address for its members'
+  published ports ignored; a member's own ports chosen before it has a peer; and, in the
+  other test, the default network making peers of its members, and an internal
+  network's member reaching past the microVM.
+- **Found on the way.** A member first on its network had no peer as it was linked, so
+  its gate then held none of the ports it declares, and its own connections took ports
+  from the kernel's whole default range; once a peer joined, the gate left a declared
+  port in that range untracked, and dropped the answers of the member's own connections
+  that took it. The three-point check led to it: a receiver's gate made to accept every
+  port left its member's own connections untracked too, which is what a declared port in
+  the range its own connections take does. A gate now holds its member's declared ports
+  from the start.
 
 ### D179. Other CPUs' images, emulated in their microVM (parts 1 to 3 built)
 

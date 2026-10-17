@@ -689,10 +689,15 @@ pub struct Run {
     /// path in the files of the command whose engine made it, as a bind names a path of its
     /// engine's host: none of the host's.
     pub own_binds: Vec<String>,
-    /// Made through a microVM's own engine (D181): the network of that engine's it is on,
-    /// a network namespace of its own there (`bridge`, its default); none for the
-    /// microVM's own namespace, its engine's host's (`--network host`).
+    /// Made through a microVM's own engine (D181): the first network of that engine's it is
+    /// on, a member of the microVM's switch (`bridge`, its default); `none` for its loopback
+    /// alone; none for the microVM's own namespace, its engine's host's (`--network host`).
     pub engine_net: String,
+    /// Made through a microVM's own engine (D181): each network of that engine's it is on,
+    /// the first [`engine_net`](Self::engine_net), the address its client asked for there
+    /// (empty for one its microVM gives it) and its aliases there, as
+    /// `NETWORK\0ADDR[\0ALIAS...]`.
+    pub engine_nets: Vec<String>,
 }
 
 /// The streams a create says its client attaches (Config.AttachStdin, AttachStdout and
@@ -1290,6 +1295,7 @@ impl Run {
                     vec![self.engine_net.clone()]
                 },
             ),
+            ("engine-nets", self.engine_nets.clone()),
             ("device-requests", {
                 let mut values = Vec::new();
                 for r in &self.device_requests {
@@ -1470,6 +1476,7 @@ impl Run {
                     }
                     "own-binds" => run.own_binds = values,
                     "engine-net" => run.engine_net = values.into_iter().next().unwrap_or_default(),
+                    "engine-nets" => run.engine_nets = values,
                     "device-requests" => {
                         let mut rest = values.iter();
                         while rest.len() > 0 {
@@ -2188,7 +2195,8 @@ mod tests {
             use_api_socket: true,
             engine_made: Some(("prov".into(), String::new())),
             own_binds: vec!["/work\0/src\0ro\0rprivate".into()],
-            engine_net: "bridge".into(),
+            engine_net: "app".into(),
+            engine_nets: vec!["app\0\0web\0www".into(), "back\x0010.244.2.9".into()],
         };
         let bytes = run.encode();
         let identity = run.daemon;
@@ -2257,6 +2265,7 @@ mod tests {
             engine_made: None,
             own_binds: Vec::new(),
             engine_net: String::new(),
+            engine_nets: Vec::new(),
             ..run.clone()
         };
         let boundary = earlier.encode().len() - 4;

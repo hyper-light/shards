@@ -573,7 +573,7 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
                 .map(|p| (p.start_ns, p.end_ns, p.exit_code, p.output.clone()))
                 .collect(),
         });
-        let net = match c.engine_made.as_ref().and_then(|m| m.address.as_ref()) {
+        let net = match c.engine_made.as_ref().and_then(|m| m.addresses.first()) {
             Some(a) => Some(Net {
                 ip: a.ip,
                 gateway: a.gateway,
@@ -609,6 +609,7 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
                     .map_or(0, |(_, bits)| bits),
                 mac: m.mac,
                 dns_names: m.dns_names,
+                engine: None,
             }),
             None if c.engine_made.is_some() => None,
             None => self
@@ -644,9 +645,56 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
                         prefix6: 0,
                         mac: String::new(),
                         dns_names,
+                        engine: None,
                     }
                 }),
         };
+        let mut user_nets: Vec<super::inspect_doc::UserNet> = user_net.into_iter().collect();
+        // One its microVM's engine made: each network of that engine's it is on (D181), its
+        // address there while it runs; no name on the default network, which names no peers.
+        if let Some(m) = &c.engine_made {
+            let networks = super::lock(&self.containers)
+                .get(&m.of)
+                .map(|p| p.engine_networks.clone())
+                .unwrap_or_default();
+            for entry in &request.engine_nets {
+                let mut parts = entry.split('\0');
+                let network = parts.next().unwrap_or_default().to_string();
+                let asked_ip = parts.next().unwrap_or_default().to_string();
+                let aliases: Vec<String> = parts.map(str::to_string).collect();
+                let at = m.addresses.iter().find(|a| a.network == network);
+                let network_id = networks
+                    .iter()
+                    .find(|n| n.name == network)
+                    .map_or_else(|| super::engine::own_id(&m.of, &network), |n| n.id.clone());
+                let mut dns_names = Vec::new();
+                if network != "bridge" {
+                    for name in std::iter::once(&m.name).chain(&aliases) {
+                        if !dns_names.contains(name) {
+                            dns_names.push(name.clone());
+                        }
+                    }
+                }
+                user_nets.push(super::inspect_doc::UserNet {
+                    name: network.clone(),
+                    network_id,
+                    endpoint: at
+                        .map(|_| super::engine::own_id(&c.id, &network))
+                        .unwrap_or_default(),
+                    ip: at.map(|a| a.ip),
+                    gateway: at.map(|a| a.gateway),
+                    prefix: at.map_or(0, |a| a.prefix),
+                    ip6: None,
+                    gateway6: String::new(),
+                    prefix6: 0,
+                    mac: at
+                        .map(|a| shards_cmdline::network::mac_string(&a.mac))
+                        .unwrap_or_default(),
+                    dns_names,
+                    engine: Some((aliases, asked_ip)),
+                });
+            }
+        }
         document(&Facts {
             container: c,
             request: &request,
@@ -660,7 +708,7 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
             // dockerd names none of its local driver's.
             log_path: String::new(),
             net,
-            user_net,
+            user_nets,
             size: sized.then(|| self.container_sizes(c)),
         })
     }

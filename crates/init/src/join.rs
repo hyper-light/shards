@@ -49,13 +49,12 @@ pub struct Join {
 
 /// A joiner's membership of its microVM's switch (D181): init's descriptor of the network
 /// namespace made for it, linked to the switch through its gate, which it enters; its
-/// address there and its names, which its own `/etc/hosts` gives it; and whether it asks
-/// the agents' resolver for names past the microVM.
+/// address on each of its networks and its names there, which its own `/etc/hosts` gives
+/// it; and whether it asks the agents' resolver.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MemberNet {
     pub ns: std::os::fd::RawFd,
-    pub addr: std::net::Ipv4Addr,
-    pub names: Vec<String>,
+    pub on: Vec<(std::net::Ipv4Addr, Vec<String>)>,
     pub dns: bool,
 }
 
@@ -857,13 +856,15 @@ pub fn build(join: Join, cgroup: &str) -> Result<Built, String> {
             hosts.push(b'\n');
         }
         if let Some(m) = &join.member {
-            let mut names: Vec<&str> = vec![name.as_str()];
-            for n in &m.names {
-                if !names.contains(&n.as_str()) {
-                    names.push(n);
+            for (addr, given) in &m.on {
+                let mut names: Vec<&str> = vec![name.as_str()];
+                for n in given {
+                    if !names.contains(&n.as_str()) {
+                        names.push(n);
+                    }
                 }
+                hosts.extend_from_slice(format!("{addr}\t{}\n", names.join(" ")).as_bytes());
             }
-            hosts.extend_from_slice(format!("{}\t{}\n", m.addr, names.join(" ")).as_bytes());
         }
         own_file("hosts", &hosts)?;
         if let Some(resolv) = &resolv {
