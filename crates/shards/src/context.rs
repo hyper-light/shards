@@ -576,21 +576,9 @@ fn not_carried(args: &[OsString]) -> Option<String> {
     let refs: Vec<&str> = said.iter().map(String::as_str).collect();
     let first = refs.first().copied().unwrap_or_default();
     // `cp` is driven here, step by step, where this client's CLI drives one (cli/cp.rs, Unix);
-    // a build's context is kept in step on the machine ([`building`]), what else a build
-    // names of this client's refused until it is carried ([`build_not_carried`]).
-    if let Some(n) = shards_cmdline::commands::build(&refs) {
-        let rest = said.get(n..).map(<[String]>::to_vec).unwrap_or_default();
-        if let shards_cmdline::flags::Outcome::Run(parsed) = shards_cmdline::flags::parse(
-            &shards_cmdline::commands::BUILD,
-            "shards buildx build",
-            &rest,
-            &|_, value| Ok(value.to_string()),
-        ) && let Some(flag) = build_not_carried(&parsed)
-        {
-            return Some(format!(
-                "build {flag} over a context names this machine's files, which shards does not carry yet: run it on the machine itself"
-            ));
-        }
+    // a build's context is kept in step on the machine ([`building`]), and all else a build
+    // names of this client's crosses with it ([`build_there`]).
+    if shards_cmdline::commands::build(&refs).is_some() {
         return None;
     }
     let refused = matches!(first, "buildx" | "builder" | "compose") || (first == "cp" && !cfg!(unix));
@@ -615,12 +603,6 @@ fn not_carried(args: &[OsString]) -> Option<String> {
     // and `-i`'s files as the command's output and input ([`here_files`]).
     let files = !parsed.string("cidfile").is_empty();
     files.then(|| format!("{path}: a file of this machine's, which a context does not carry yet"))
-}
-
-/// What a build over a context names of this client's that a context does not carry yet:
-/// an SSH agent or key, which a step there would reach here.
-fn build_not_carried(parsed: &shards_cmdline::flags::Parsed) -> Option<&'static str> {
-    (!parsed.many("ssh").is_empty()).then_some("--ssh")
 }
 
 /// A build of a context of this client's (D180 part 3c): what the machine builds, of its copy
@@ -648,6 +630,8 @@ struct Built {
     outputs: Vec<(String, PathBuf, bool)>,
     /// The trees beside its context it names, each kept in step before it.
     trees: Vec<Tree>,
+    /// Its `--ssh` specs as given, its agents this client's, reached from there.
+    ssh: Vec<String>,
 }
 
 /// A tree of this client's that a build names beside its context: a named context's
@@ -975,7 +959,7 @@ fn building(words: &[String], stdin: &dyn Fn() -> Result<Vec<u8>, String>) -> Re
             continue;
         }
         match flag {
-            "file" | "secret" => gone.push((word, offset)),
+            "file" | "secret" | "ssh" => gone.push((word, offset)),
             "build-arg" => {
                 let value = rest
                     .get(word)
@@ -1035,6 +1019,7 @@ fn building(words: &[String], stdin: &dyn Fn() -> Result<Vec<u8>, String>) -> Re
         secrets: parsed.many("secret").to_vec(),
         outputs,
         trees,
+        ssh: parsed.many("ssh").to_vec(),
     }))
 }
 
@@ -1097,6 +1082,7 @@ fn artifact_building(words: &[String]) -> Option<Built> {
         secrets: Vec::new(),
         outputs: Vec::new(),
         trees: Vec::new(),
+        ssh: Vec::new(),
     })
 }
 
@@ -1355,11 +1341,32 @@ fn build_there(
             return ExitCode::FAILURE;
         }
     };
+    // Its SSH agents, resolved here as a build here resolves them: each a socket there whose
+    // connections come back to this one, an agent's socket or the keys of files.
+    let mut agents: crate::build::Agents = match shards_cmdline::buildflags::ssh_agents(
+        &shards_cmdline::buildflags::parse_ssh(&built.ssh),
+        &|k| std::env::var(k).ok(),
+        &crate::build::sshkey::parse,
+    ) {
+        Ok(agents) => agents,
+        Err(e) => {
+            let _ = writeln!(io::stderr(), "ERROR: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    for agent in agents.values_mut() {
+        if let shards_cmdline::buildflags::Agent::Keys(keys) = agent {
+            *keys = crate::build::sshkey::keyring(std::mem::take(keys));
+        }
+    }
     let mut words = built.words.clone();
     let at = words
         .iter()
         .position(|w| w == crate::synced::CONTEXT)
         .unwrap_or(words.len());
+    for id in agents.keys().rev() {
+        words.insert(at, format!("--ssh={id}={}{id}", crate::synced::AGENT_SOCKET));
+    }
     for (i, (id, _)) in secrets.iter().enumerate().rev() {
         let id = shards_cmdline::go::csv_field(&format!("id={id}"));
         words.insert(at, format!("--secret={id},src={}{i}", crate::synced::SECRET));
@@ -1401,22 +1408,44 @@ fn build_there(
         *STEERED.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(controls);
     };
     // What the build says on stdout, its own and then its outputs of this client's, taken
-    // apart as it comes, each output kept here as it is said.
+    // apart as it comes, each output kept here as it is said; and each connection a step
+    // makes to an agent, relayed to this client's agent of its id, as it is made.
     let (failed_tx, failed_rx) = std::sync::mpsc::channel();
+    let (agent_tx, agent_rx) = std::sync::mpsc::channel::<(String, String)>();
     let fetched = Fetched {
         wanted: built.outputs,
         current: None,
         failed: failed_tx,
+        agents: agent_tx,
     };
-    let ran = client::exec(
-        identity,
-        context.remote(),
-        request,
-        Some(Box::new(reader)),
-        crate::synced::Demux::new(io::stdout(), fetched),
-        io::stderr(),
-        steered,
-    );
+    let ran = std::thread::scope(|scope| {
+        let (agents, key) = (&agents, built.key.as_str());
+        std::thread::Builder::new()
+            .name("build-agents".into())
+            .spawn_scoped(scope, move || {
+                for (id, token) in agent_rx {
+                    let Some(agent) = agents.get(&id) else {
+                        continue;
+                    };
+                    let relayed = std::thread::Builder::new()
+                        .name("build-agent".into())
+                        .spawn_scoped(scope, move || relay_agent(identity, context, key, &token, agent));
+                    if let Err(e) = relayed {
+                        let _ = writeln!(io::stderr(), "shards: a thread for an agent: {e}");
+                    }
+                }
+            })
+            .map_err(|e| shards_remote::Error::new(format!("a thread for the build's agents: {e}")))?;
+        client::exec(
+            identity,
+            context.remote(),
+            request,
+            Some(Box::new(reader)),
+            crate::synced::Demux::new(io::stdout(), fetched),
+            io::stderr(),
+            steered,
+        )
+    });
     let sent = sending.join();
     // An output not kept is the build's failure, as one the build here could not write is.
     if let Ok(why) = failed_rx.try_recv() {
@@ -1501,6 +1530,8 @@ struct Fetched {
     wanted: Vec<(String, PathBuf, bool)>,
     current: Option<Fetching>,
     failed: std::sync::mpsc::Sender<String>,
+    /// Each connection a step makes to an agent, its id and token, for [`relay_agent`].
+    agents: std::sync::mpsc::Sender<(String, String)>,
 }
 
 enum Fetching {
@@ -1608,6 +1639,103 @@ impl crate::synced::Outputs for Fetched {
             None => Ok(()),
         }
     }
+
+    fn agent(&mut self, id: &str, token: &str) -> io::Result<()> {
+        let _ = self.agents.send((id.to_string(), token.to_string()));
+        Ok(())
+    }
+}
+
+/// Relays a step's connection to an SSH agent, claimed by `token` from the machine, to this
+/// client's `agent`: each request the step makes answered by its socket, or by its keys as
+/// BuildKit's keyring answers; and only what a read-only agent answers (sshprovider
+/// readOnlyAgent), refused here too, whatever the machine let by, so that no machine has
+/// this client's agent forget or take a key.
+fn relay_agent(
+    identity: &Identity,
+    context: &Context,
+    key: &str,
+    token: &str,
+    agent: &shards_cmdline::buildflags::Agent<crate::build::sshkey::Key>,
+) {
+    let (Ok((asked, asking)), Ok((answers, answering))) = (io::pipe(), io::pipe()) else {
+        return;
+    };
+    let request = Request {
+        args: [crate::synced::SYNC_STEP, "agent", key, token]
+            .iter()
+            .map(|w| w.as_bytes().to_vec())
+            .collect(),
+        env: Vec::new(),
+        terminal: None,
+    };
+    std::thread::scope(|scope| {
+        let answered = std::thread::Builder::new()
+            .name("build-agent-answers".into())
+            .spawn_scoped(scope, move || answer_agent(asked, answering, agent));
+        let _ = client::exec(
+            identity,
+            context.remote(),
+            request,
+            Some(Box::new(answers)),
+            asking,
+            io::sink(),
+            |_| {},
+        );
+        if let Ok(answered) = answered {
+            let _ = answered.join();
+        }
+    });
+}
+
+/// Answers the agent requests `asked` holds, on `answering`, as [`relay_agent`] says.
+fn answer_agent(
+    mut asked: io::PipeReader,
+    mut answering: io::PipeWriter,
+    agent: &shards_cmdline::buildflags::Agent<crate::build::sshkey::Key>,
+) -> io::Result<()> {
+    let most = crate::build::builder::AGENT_MAX;
+    let read_msg = |from: &mut dyn io::Read| -> io::Result<Option<Vec<u8>>> {
+        let mut n = [0u8; 4];
+        match from.read_exact(&mut n) {
+            Ok(()) => {}
+            Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => return Ok(None),
+            Err(e) => return Err(e),
+        }
+        let n = usize::try_from(u32::from_be_bytes(n)).unwrap_or(usize::MAX);
+        if n == 0 || n > most {
+            return Err(io::Error::other("an agent message of a bad length"));
+        }
+        let mut body = vec![0u8; n];
+        from.read_exact(&mut body)?;
+        Ok(Some(body))
+    };
+    let write_msg = |to: &mut dyn io::Write, body: &[u8]| -> io::Result<()> {
+        to.write_all(&u32::try_from(body.len()).unwrap_or(0).to_be_bytes())?;
+        to.write_all(body)
+    };
+    // SSH_AGENT_FAILURE (draft-ietf-sshm-ssh-agent §5.1).
+    let refused = [5u8];
+    let mut socket = None;
+    while let Some(request) = read_msg(&mut asked)? {
+        let allowed = request
+            .first()
+            .is_some_and(|t| crate::build::builder::AGENT_ALLOWED.contains(t));
+        let answer = match agent {
+            _ if !allowed => refused.to_vec(),
+            shards_cmdline::buildflags::Agent::Keys(keys) => crate::build::sshkey::answer(keys, &request),
+            shards_cmdline::buildflags::Agent::Socket(path) => {
+                let stream = match &mut socket {
+                    Some(stream) => stream,
+                    None => socket.insert(crate::build::ssh::agent_stream(path)?),
+                };
+                write_msg(&mut **stream, &request)?;
+                read_msg(&mut **stream)?.unwrap_or_else(|| refused.to_vec())
+            }
+        };
+        write_msg(&mut answering, &answer)?;
+    }
+    Ok(())
 }
 
 impl Drop for Fetched {
@@ -2971,6 +3099,46 @@ mod tests {
         assert!(artifact_building(&words("agent ls")).is_none());
     }
 
+    /// A step's agent requests, relayed here, are answered only as a read-only agent answers
+    /// them, whatever the machine let by: a request to forget every key refused here, never
+    /// reaching an agent that would do it, and a listing relayed.
+    #[cfg(unix)]
+    #[test]
+    fn a_relayed_agent_answers_only_what_a_read_only_agent_does() {
+        use std::io::Read as _;
+        let dir = shards_testdir::TempDir::new("ctx-agent").unwrap();
+        let path = AsRef::<Path>::as_ref(&dir).join("a.sock");
+        let listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
+        // An agent that does whatever it is asked, and says so.
+        let yes = std::thread::spawn(move || {
+            let (mut conn, _) = listener.accept().unwrap();
+            let mut asked = Vec::new();
+            let mut message = [0u8; 5];
+            while conn.read_exact(&mut message).is_ok() {
+                asked.push(message[4]);
+                conn.write_all(&[0, 0, 0, 1, 6]).unwrap();
+            }
+            asked
+        });
+        let agent = shards_cmdline::buildflags::Agent::Socket(path);
+        let (asked, mut asking) = io::pipe().unwrap();
+        let (mut answers, answering) = io::pipe().unwrap();
+        std::thread::scope(|scope| {
+            let answered = scope.spawn(|| answer_agent(asked, answering, &agent));
+            // SSH_AGENTC_REMOVE_ALL_IDENTITIES, then SSH_AGENTC_REQUEST_IDENTITIES.
+            for request in [19u8, 11] {
+                asking.write_all(&[0, 0, 0, 1, request]).unwrap();
+            }
+            drop(asking);
+            let mut said = Vec::new();
+            answers.read_to_end(&mut said).unwrap();
+            answered.join().unwrap().unwrap();
+            assert_eq!(said, [0, 0, 0, 1, 5, 0, 0, 0, 1, 6]);
+        });
+        drop(agent);
+        assert_eq!(yes.join().unwrap(), [11], "what reached the agent");
+    }
+
     #[test]
     fn a_context_refuses_what_it_does_not_carry() {
         let args = |s: &str| s.split(' ').map(OsString::from).collect::<Vec<_>>();
@@ -3020,7 +3188,7 @@ mod tests {
         ] {
             assert!(not_carried(&args(carried)).is_none(), "{carried}");
         }
-        assert!(not_carried(&args("build --ssh default .")).is_some());
+        assert!(not_carried(&args("build --ssh default .")).is_none());
         for remote in [
             "build -o type=registry .",
             "build -o - .",

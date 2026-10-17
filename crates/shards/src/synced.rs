@@ -23,6 +23,9 @@ pub(crate) const SYNC_STEP: &str = "\u{0}sync";
 /// context, and of its build file's directory, which the machine names.
 pub(crate) const CONTEXT: &str = "\u{0}context";
 pub(crate) const DOCKERFILE: &str = "\u{0}dockerfile/";
+/// What stands for the SSH agent `ID` a build names (`\0agent/ID`): a socket there, each
+/// connection to which the client relays to its own agent of that id.
+pub(crate) const AGENT_SOCKET: &str = "\u{0}agent/";
 /// What stands for another tree of the client's that a build names (`\0tree/KEY`): its copy
 /// there, kept in step before the build ([`receive_tree`]).
 pub(crate) const TREE: &str = "\u{0}tree/";
@@ -43,6 +46,8 @@ pub(crate) struct Places<'a> {
     pub dockerfile: &'a Path,
     pub out: &'a Path,
     pub copies: &'a Path,
+    /// The socket of each SSH agent the build names, by its id.
+    pub agents: &'a BTreeMap<String, PathBuf>,
 }
 
 #[cfg(unix)]
@@ -70,6 +75,11 @@ pub(crate) fn placed(word: &str, places: &Places<'_>) -> std::ffi::OsString {
     {
         said = format!("{before}/dev/fd/{fd}");
     }
+    if let Some((before, id)) = said.split_once(AGENT_SOCKET)
+        && let Some(socket) = places.agents.get(id)
+    {
+        said = format!("{before}{}", socket.display());
+    }
     std::ffi::OsString::from(said)
 }
 
@@ -86,6 +96,32 @@ pub(crate) const FILE: u8 = 1;
 pub(crate) const DIR: u8 = 2;
 pub(crate) const CHUNK: u8 = 3;
 pub(crate) const DONE: u8 = 4;
+/// A connection a step made to an SSH agent the build names, as it is made: its agent's id
+/// and the token the client claims it by, which it then relays (the step `agent`).
+pub(crate) const AGENT: u8 = 5;
+
+#[cfg(unix)]
+/// A step's stdout, framed, a whole frame at a time from whichever thread says one: the
+/// build's own output, and its agents' connections as they come.
+pub(crate) struct Framed<W>(std::sync::Mutex<W>);
+
+#[cfg(unix)]
+impl<W: Write> Framed<W> {
+    pub(crate) fn new(out: W) -> Framed<W> {
+        Framed(std::sync::Mutex::new(out))
+    }
+
+    pub(crate) fn frame(&self, tag: u8, bytes: &[u8]) -> io::Result<()> {
+        let mut out = self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        frame(&mut *out, tag, bytes)
+    }
+
+    pub(crate) fn into_inner(self) -> W {
+        self.0
+            .into_inner()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+}
 
 /// A frame's most bytes: what a read of the build's stdout takes at once.
 #[cfg(unix)]
@@ -117,14 +153,14 @@ impl Write for Chunks<'_> {
 
 #[cfg(unix)]
 /// The build's stdout as [`SAID`] frames, as it comes, to its end.
-pub(crate) fn say(mut build: impl Read, out: &mut dyn Write) -> io::Result<()> {
+pub(crate) fn say<W: Write>(mut build: impl Read, out: &Framed<W>) -> io::Result<()> {
     let mut buf = vec![0u8; FRAME_MOST];
     loop {
         let n = build.read(&mut buf)?;
         if n == 0 {
             return Ok(());
         }
-        frame(out, SAID, buf.get(..n).unwrap_or_default())?;
+        out.frame(SAID, buf.get(..n).unwrap_or_default())?;
     }
 }
 
@@ -168,6 +204,8 @@ pub(crate) trait Outputs: Send {
     fn begin(&mut self, name: &str, dir: bool) -> io::Result<()>;
     fn chunk(&mut self, bytes: &[u8]) -> io::Result<()>;
     fn end(&mut self) -> io::Result<()>;
+    /// A step's connection to the agent `id`, to claim by `token` and relay.
+    fn agent(&mut self, id: &str, token: &str) -> io::Result<()>;
 }
 
 /// What a build's step says, taken apart as it comes: the build's own stdout written to
@@ -205,6 +243,11 @@ impl<S: Write, O: Outputs> Write for Demux<S, O> {
                 FILE | DIR => self.outputs.begin(&String::from_utf8_lossy(body), tag == DIR)?,
                 CHUNK => self.outputs.chunk(body)?,
                 DONE => self.outputs.end()?,
+                AGENT => {
+                    let said = String::from_utf8_lossy(body);
+                    let (id, token) = said.split_once('\0').unwrap_or((&said, ""));
+                    self.outputs.agent(id, token)?;
+                }
                 other => return Err(io::Error::other(format!("a build's step said {other}"))),
             }
             at += 5 + len;
@@ -854,8 +897,13 @@ mod tests {
             dockerfile: Path::new("/d"),
             out: Path::new("/o"),
             copies: Path::new("/s"),
+            agents: &BTreeMap::from([("default".to_string(), PathBuf::from("a/0123.sock"))]),
         };
         let place = |w: &str| placed(w, &places);
+        assert_eq!(
+            place(&format!("--ssh=default={AGENT_SOCKET}default")),
+            std::ffi::OsString::from("--ssh=default=a/0123.sock")
+        );
         let key = "ab".repeat(32);
         assert_eq!(
             place(&format!("--build-context=other={TREE}{key}")),
@@ -935,9 +983,15 @@ mod tests {
                 self.0.push("end".into());
                 Ok(())
             }
+            fn agent(&mut self, id: &str, token: &str) -> io::Result<()> {
+                self.0.push(format!("agent {id} {token}"));
+                Ok(())
+            }
         }
-        let mut said = Vec::new();
-        say(&b"the build's own"[..], &mut said).unwrap();
+        let framed = Framed::new(Vec::new());
+        say(&b"the build's own"[..], &framed).unwrap();
+        framed.frame(AGENT, b"default\0tok").unwrap();
+        let mut said = framed.into_inner();
         let dir = shards_testdir::TempDir::new("synced-out").unwrap();
         std::fs::write(dir.join("iidfile"), "sha256:x").unwrap();
         send_outputs(dir.as_ref(), &mut said).unwrap();
@@ -950,7 +1004,16 @@ mod tests {
             let got = std::mem::take(&mut demux.outputs.0);
             drop(demux);
             assert_eq!(stdout, b"the build's own", "{cut}");
-            assert_eq!(got, ["begin iidfile false", "chunk sha256:x", "end"], "{cut}");
+            assert_eq!(
+                got,
+                [
+                    "agent default tok",
+                    "begin iidfile false",
+                    "chunk sha256:x",
+                    "end"
+                ],
+                "{cut}"
+            );
         }
     }
 
