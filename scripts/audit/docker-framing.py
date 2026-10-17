@@ -8,6 +8,9 @@ kinds are what the microVM-first rule bans (the user, 2026-10-13 to 2026-10-16):
 
   names     code and test names after Docker, moby, BuildKit, buildx, runc or containerd
   framing   shards' own behaviour said as theirs: "as dockerd does", "in Docker's words"
+  unbacked  framing with no evidence beside it (a version, a source file, a measurement, an
+            RFC, a URL or a D-entry, on its line or the next or last): the lines to
+            reword first; the rest cite what an input or output is held to
   container "container" in shards' own voice, where it means a microVM
   grammar   commands said in Docker's form, not `shards ACTION THING`
   strings   text users see that names Docker in shards' own voice
@@ -42,6 +45,11 @@ KINDS = {
     "strings": re.compile(r'"[^"\n]*\b(Docker|dockerd)\b[^"\n]*"'),
     "sockets": re.compile(r"\b(UnixListener::bind|\.sock\b|listening_at|bind\(&path\))"),
 }
+KINDS["unbacked"] = KINDS["framing"]
+EVIDENCE = re.compile(
+    r"\bv\d+(\.\d+)+|\b\d+\.\d+\.\d+\b|\b[\w./-]+\.(go|c|h|rs|py|proto|json)\b|\bPM M\d+|"
+    r"\bmeasured\b|\bRFC \d+|https?://|\bD\d{2,3}\b|\b[0-9a-f]{8,40}\b"
+)
 
 
 def files():
@@ -66,6 +74,12 @@ def hits(kind):
             continue
         for n, line in enumerate(lines, 1):
             if not rx.search(line):
+                continue
+            # Framing that cites what it is held to is evidence: counted as framing, not as
+            # unbacked.
+            if kind == "unbacked" and any(
+                EVIDENCE.search(lines[i]) for i in range(max(0, n - 2), min(len(lines), n + 1))
+            ):
                 continue
             # "container" counts where shards speaks: comments and docs, not code's own words.
             if kind == "container" and not comment_or_doc(path, line):

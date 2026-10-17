@@ -45,9 +45,13 @@ Reviewed feature by feature, each D-entry's design against what it took from Doc
 - `--cidfile`'s refusal says "container ID file found, make sure the other container isn't
   running": Docker's words for a microVM's ID, and on a terminal too. Now a terminal shows
   shards' words in a panel; piped, a `docker` script's. Fixed.
-- A Windows client polls its console's size every 250 ms (D180 part 2b), docker/cli's
-  interval, never measured; a console reports its own resizes as input events
-  (WINDOW_BUFFER_SIZE_EVENT), which need no polling.
+- A Windows client polls its console's size every 250 ms (D180 part 2b, context.rs
+  `steer_console`), docker/cli's interval, never measured; a console reports its own
+  resizes as input events (WINDOW_BUFFER_SIZE_EVENT), which need no polling. Open: the
+  events come among its input records, which the stdin pump reads as bytes, so the pump
+  must read records (ReadConsoleInputW, keys as the VT input mode gives them, sizes as
+  they come); verifiable only on Windows, on a pseudo console resized by its test
+  (ResizePseudoConsole).
 - The default network said it has a bridge named `docker0`
   (`com.docker.network.bridge.name`, daemon/networks.rs), which shards has none of, and a
   network's bridge name was checked against Linux's 15-byte interface names and against
@@ -71,15 +75,23 @@ Reviewed feature by feature, each D-entry's design against what it took from Doc
   routed network's ports refused; every option read as dockerd reads it; the default
   network's options true.
 - Every build step's hostname is `buildkitsandbox` (abi/src/build.rs), BuildKit's sandbox's
-  name, where a step is a microVM's.
+  name, where a step is a microVM's. Kept, decided: it is what a step's commands see, and a
+  build's steps see what BuildKit's see so that a Dockerfile builds the same image; no
+  layer keeps it (a step's /etc/hostname is a mount), and nothing names a microVM by it.
 - An anonymous volume is labelled `com.docker.volume.anonymous` (volumes.rs) and nothing of
-  shards' own.
+  shards' own. Kept, decided: it is how the Engine API's clients tell an anonymous volume
+  (a volume prune with no `all` filter takes those alone, API 1.42 and on), and shards'
+  own prune reads it the same way; a label of shards' would say the same twice.
 - The Dockerfile checks send users to docs.docker.com (agentfile/src/lint.rs), for checks an
-  Agentfile's build runs too.
+  Agentfile's build runs too. Kept, decided: the checks are BuildKit's, held to it by the
+  oracle, and those pages are the checks' own documentation; shards has none of its own
+  to send users to.
 - Of an index with no manifest for this host's CPU, a pull or run naming no platform takes
   containerd's order (D179): on arm64, 32-bit Arm before amd64, an order for CPUs that run
   32-bit Arm themselves; a microVM's runs both emulated, and which runs better is not
-  measured.
+  measured. Open: a CPU-bound workload (the same program built for both) run under each
+  emulator in microVMs on an arm64 host, n of each, p50 to max, in
+  platform-measurements.md; then the faster first.
 - The rest: open, D-entry by D-entry.
 
 ## Fixing order
@@ -99,7 +111,17 @@ Reviewed feature by feature, each D-entry's design against what it took from Doc
 
 Each step is gated and committed; this file's counts are re-run as they land.
 
-| Re-run | names | framing | container | grammar | strings | sockets |
+| Re-run | names | framing (unbacked) | container | grammar | strings | sockets |
 |---|---:|---:|---:|---:|---:|---:|
 | 2026-10-16, first | 6 | 1,939 | 1,862 | 397 | 42 | 178 |
 | 2026-10-16, after steps 1 to 4 | 0 | 1,878 | 1,680 | 388 | 36 | 176 |
+| 2026-10-17, help, networks, engine | 0 | 1,898 (1,119) | 1,685 | 388 | 36 | 176 |
+
+`unbacked` (2026-10-17): framing with no evidence beside it. The rest of `framing` cites
+what an input or output is held to (a version, a source file, a measurement), as the
+evidence rule asks; those lines are reworded where they say shards' own behaviour is
+Docker's, kept where they say what shards matches for compatibility. Of the 36 strings,
+the rest name protocols (`Docker-Content-Digest`, `X-Docker-Token`,
+`X-Docker-Container-Path-Stat`), Docker Hub as a registry's name, Docker's own commands'
+pages (held to docker/cli), the build frontend's refusal naming the BuildKit that runs it
+(its `BUILDKIT_EXPORTEDPRODUCT`), and recordings.
