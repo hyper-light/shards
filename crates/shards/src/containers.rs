@@ -105,11 +105,26 @@ pub struct Container {
 }
 
 /// A container made through a microVM's own engine (D181): that microVM's container ID,
-/// and the name the container has there, as that engine's clients name it.
+/// and the name the container has there, as that engine's clients name it; and, while it
+/// runs as a member of that microVM's switch, its address there, as init gave it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EngineMade {
     pub of: String,
     pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub address: Option<EngineAddress>,
+}
+
+/// A container's address on a network of its microVM's engine (D181), its membership of
+/// the microVM's switch: the network, its address and prefix, its gateway, and its link's
+/// hardware address, the guest kernel's.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EngineAddress {
+    pub network: String,
+    pub ip: std::net::Ipv4Addr,
+    pub prefix: u8,
+    pub gateway: std::net::Ipv4Addr,
+    pub mac: [u8; 6],
 }
 
 /// A container's restart policy (HostConfig.RestartPolicy) and what its restart manager

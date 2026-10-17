@@ -2515,7 +2515,7 @@ fn a_runs_command_reaches_its_own_microvms_engine() {
         api("POST", "/containers/create", &body),
         (
             "api HTTP/1.1 403 Forbidden".into(),
-            "{\"message\":\"-v data:/x: a container made by a microVM's own engine is in that microVM, and reaches nothing past it\"}\n".into()
+            "{\"message\":\"-v data:/x: a container a microVM's own engine makes is that microVM's, and takes nothing of its host's\"}\n".into()
         )
     );
     let (status, _) = api("GET", "/volumes", "");
@@ -2752,6 +2752,243 @@ fn a_microvms_own_engine_runs_binds_execs_and_pulls() {
     let images: Value = serde_json::from_str(&images).unwrap();
     assert_eq!(images.as_array().map(Vec::len), Some(2), "{images}");
     let removed = shards(&["rm", "-f", "prov", "other"]);
+    assert_eq!(removed.status, Some(0), "{removed}");
+}
+
+/// A container a microVM's own engine makes is a member of that microVM's switch (D181,
+/// D59, D61): a namespace of its own, reached by the command, its engine's host, on the
+/// ports it publishes alone, at `localhost` as a test reaches a Testcontainers service;
+/// on its engine's default network, which names no peers, reaching no other container;
+/// named in its own hosts file; and past the microVM as far as the command reaches.
+#[test]
+fn a_microvms_own_engine_makes_each_container_a_member_of_its_switch() {
+    let Some((home, image)) = home("eng-own3") else {
+        return;
+    };
+    let shards = |args: &[&str]| shards_in(&home, args);
+    let ran = shards(&["run", "-d", "--name", "prov", "--use-api-socket", &image, "sleep"]);
+    assert_eq!(ran.status, Some(0), "{ran}");
+    let exec = |args: &[&str]| {
+        let mut all = vec!["exec", "prov", "/bin/testguest"];
+        all.extend_from_slice(args);
+        shards(&all)
+    };
+    let deadline = std::time::Instant::now() + TIMEOUT;
+    while exec(&["api", "GET", "/_ping", ""]).stdout != "api HTTP/1.1 200 OK\nOK" {
+        assert!(std::time::Instant::now() < deadline, "its engine never answered");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let create = |name: &str, body: Value| {
+        let out = exec(&[
+            "api",
+            "POST",
+            &format!("/containers/create?name={name}"),
+            &body.to_string(),
+        ]);
+        assert!(out.stdout.starts_with("api HTTP/1.1 201"), "{out}");
+        let started = exec(&["api", "POST", &format!("/containers/{name}/start"), ""]);
+        assert_eq!(started.stdout, "api HTTP/1.1 204 No Content\n", "{started}");
+    };
+    let published = |cmd: &[&str]| {
+        json!({
+            "Image": image,
+            "Cmd": cmd,
+            "ExposedPorts": { "7000/tcp": {} },
+            "HostConfig": { "PortBindings": { "7000/tcp": [{ "HostPort": "" }] } },
+        })
+    };
+    let logs_of = |name: &str| exec(&["api", "GET", &format!("/containers/{name}/logs?stdout=1"), ""]).stdout;
+    let ready = |name: &str| {
+        let deadline = std::time::Instant::now() + TIMEOUT;
+        while !logs_of(name).contains("ready") {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "{name} never said it was ready: {}",
+                logs_of(name)
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    };
+    let finished = |name: &str| {
+        let _ = exec(&["api", "POST", &format!("/containers/{name}/wait"), ""]);
+        logs_of(name)
+    };
+    let inspected = |name: &str| -> Value {
+        let out = exec(&["api", "GET", &format!("/containers/{name}/json"), ""]);
+        serde_json::from_str(out.stdout.split_once('\n').unwrap().1).unwrap()
+    };
+    create("one", published(&["serve", "7000", "2"]));
+    create("two", published(&["serve", "7000", "2"]));
+    // Listening on a port it declares but does not publish.
+    create(
+        "quiet",
+        json!({ "Image": image, "Cmd": ["serve", "7002", "1"], "ExposedPorts": { "7002/tcp": {} } }),
+    );
+    for name in ["one", "two", "quiet"] {
+        ready(name);
+    }
+    let (one, two, quiet) = (inspected("one"), inspected("two"), inspected("quiet"));
+    let port = |d: &Value| -> String {
+        d["NetworkSettings"]["Ports"]["7000/tcp"][0]["HostPort"]
+            .as_str()
+            .unwrap_or_else(|| panic!("{d}"))
+            .to_string()
+    };
+    let address = |d: &Value| -> String {
+        d["NetworkSettings"]["Networks"]["bridge"]["IPAddress"]
+            .as_str()
+            .unwrap_or_else(|| panic!("{d}"))
+            .to_string()
+    };
+    assert_ne!(port(&one), "0", "{one}");
+    assert_ne!(port(&one), port(&two));
+    assert_ne!(address(&one), address(&two));
+    assert_eq!(one["HostConfig"]["NetworkMode"], json!("bridge"), "{one}");
+    // Its address, a /24 of the switch's block, its gateway the subnet's first; its link's
+    // hardware address the guest kernel's, a unicast one.
+    assert!(address(&one).starts_with("10.244."), "{one}");
+    let gateway = one["NetworkSettings"]["Networks"]["bridge"]["Gateway"]
+        .as_str()
+        .unwrap();
+    assert!(gateway.ends_with(".1"), "{one}");
+    let mac = one["NetworkSettings"]["Networks"]["bridge"]["MacAddress"]
+        .as_str()
+        .unwrap();
+    let first = u8::from_str_radix(mac.get(..2).unwrap(), 16).unwrap();
+    assert_eq!(first & 1, 0, "{mac}");
+    // The command reaches each at the port it publishes, at its loopback: from init's end
+    // of the switch's link, its engine's host's.
+    let [a, b, c, d] = shards_abi::run::beside::UPLINK_NET.0;
+    let host_end = std::net::Ipv4Addr::new(a, b, c, d + 1);
+    let asked = exec(&["ask", &format!("127.0.0.1:{}", port(&one))]);
+    assert_eq!(asked.stdout, format!("ask from {host_end}\n"), "{asked}");
+    let asked = exec(&["ask", &format!("127.0.0.1:{}", port(&two))]);
+    assert_eq!(asked.stdout, format!("ask from {host_end}\n"), "{asked}");
+    // At its own address on the port it publishes, and on no other: quiet publishes none.
+    let asked = exec(&["ask", &format!("{}:7000", address(&one))]);
+    assert_eq!(asked.stdout, format!("ask from {host_end}\n"), "{asked}");
+    let asked = exec(&["ask", &format!("{}:7002", address(&quiet)), "3000"]);
+    assert!(asked.stdout.starts_with("ask error"), "{asked}");
+    // The default network names no peers: another member reaches neither one's port it
+    // publishes nor quiet's it declares.
+    create(
+        "three",
+        json!({ "Image": image, "Cmd": ["ask", format!("{}:7000", address(&two)), "3000"] }),
+    );
+    let said = finished("three");
+    assert!(said.contains("ask error"), "{said}");
+    create(
+        "four",
+        json!({ "Image": image, "Cmd": ["ask", format!("{}:7002", address(&quiet)), "3000"] }),
+    );
+    let said = finished("four");
+    assert!(said.contains("ask error"), "{said}");
+    // Two served no other member: its second connection is the command's.
+    let asked = exec(&["ask", &format!("127.0.0.1:{}", port(&two))]);
+    assert_eq!(asked.stdout, format!("ask from {host_end}\n"), "{asked}");
+    // `--network none`: a namespace of its own, its loopback alone.
+    create(
+        "alone",
+        json!({ "Image": image, "Cmd": ["addrs"], "HostConfig": { "NetworkMode": "none" } }),
+    );
+    let said = finished("alone");
+    let links: Vec<&str> = said
+        .lines()
+        .skip(1)
+        .filter_map(|l| l.split_whitespace().next())
+        .collect();
+    assert!(!links.is_empty() && links.iter().all(|l| *l == "lo"), "{said}");
+    assert_eq!(inspected("alone")["HostConfig"]["NetworkMode"], json!("none"));
+    // Its own host name, and its own names in its hosts file, at its address.
+    create("named", json!({ "Image": image, "Cmd": ["report"] }));
+    let named = inspected("named");
+    let hostname = named["Config"]["Hostname"].as_str().unwrap().to_string();
+    let said = finished("named");
+    assert!(
+        said.contains(&format!("hostname {hostname}\n")),
+        "{said} {hostname}"
+    );
+    // Asked in quiet, which still serves: its name is its own address.
+    let body = json!({ "Cmd": ["/bin/testguest", "resolve", "quiet"], "AttachStdout": true }).to_string();
+    let made = exec(&["api", "POST", "/containers/quiet/exec", &body]);
+    let made: Value = serde_json::from_str(made.stdout.split_once('\n').unwrap().1).unwrap();
+    let exec_id = made["Id"].as_str().unwrap().to_string();
+    let started = exec(&[
+        "api",
+        "POST",
+        &format!("/exec/{exec_id}/start"),
+        r#"{"Detach":false}"#,
+        "upgrade",
+    ]);
+    assert_eq!(
+        started.stdout.split_once('\n').unwrap().1,
+        format!("resolve {}\n", address(&quiet)),
+        "{started}"
+    );
+    // The command's own engine's host's gateway is no address a member reaches.
+    let out = exec(&[
+        "api",
+        "POST",
+        "/containers/create?name=gw",
+        &json!({ "Image": image, "Cmd": ["sleep"], "HostConfig": { "ExtraHosts": ["back:host-gateway"] } })
+            .to_string(),
+    ]);
+    assert!(out.stdout.starts_with("api HTTP/1.1 403"), "{out}");
+    assert!(out.stdout.contains("--add-host back:host-gateway"), "{out}");
+    // Past its microVM, as far as the command reaches: to a microVM on the host's network
+    // the command is on, from the command's address there.
+    let made = shards(&["network", "create", "past"]);
+    assert_eq!(made.status, Some(0), "{made}");
+    let ran = shards(&[
+        "run",
+        "-d",
+        "--name",
+        "peer",
+        "--network",
+        "past",
+        &image,
+        "serve",
+        "7100",
+        "1",
+    ]);
+    assert_eq!(ran.status, Some(0), "{ran}");
+    let ran = shards(&[
+        "run",
+        "-d",
+        "--name",
+        "onpast",
+        "--network",
+        "past",
+        "--use-api-socket",
+        &image,
+        "sleep",
+    ]);
+    assert_eq!(ran.status, Some(0), "{ran}");
+    let ip_on = |name: &str| {
+        shards(&[
+            "inspect",
+            "-f",
+            "{{.NetworkSettings.Networks.past.IPAddress}}",
+            name,
+        ])
+        .stdout
+        .trim()
+        .to_string()
+    };
+    let (peer, onpast) = (ip_on("peer"), ip_on("onpast"));
+    let in_onpast = |args: &[&str]| {
+        let mut all = vec!["exec", "onpast", "/bin/testguest"];
+        all.extend_from_slice(args);
+        shards(&all)
+    };
+    let deadline = std::time::Instant::now() + TIMEOUT;
+    while in_onpast(&["api", "GET", "/_ping", ""]).stdout != "api HTTP/1.1 200 OK\nOK" {
+        assert!(std::time::Instant::now() < deadline, "its engine never answered");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let ran = in_onpast(&["api-run", &image, "ask", &format!("{peer}:7100")]);
+    assert_eq!(ran.stdout, format!("ask from {onpast}\nstatus 0\n"), "{ran}");
+    let removed = shards(&["rm", "-f", "prov", "onpast", "peer"]);
     assert_eq!(removed.status, Some(0), "{removed}");
 }
 

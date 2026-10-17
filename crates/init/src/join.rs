@@ -35,6 +35,28 @@ pub struct Join {
     /// Its binds of its microVM's own files (D181), each a path of the workload's files and
     /// where it goes in its own.
     pub own_binds: Vec<OwnBind>,
+    /// A member of its microVM's switch, made by its microVM's engine (D181), where the
+    /// workload's network would be its own otherwise; with its own hostname.
+    pub member: Option<MemberNet>,
+    /// A network namespace of its own with its loopback alone (`--network none`).
+    pub own_net_none: bool,
+    pub hostname: Vec<u8>,
+    /// Its own `/etc/hosts` lines after its defaults (`--add-host`) and `/etc/resolv.conf`,
+    /// where it has a network of its own.
+    pub hosts: Vec<Vec<u8>>,
+    pub resolv: Option<Vec<u8>>,
+}
+
+/// A joiner's membership of its microVM's switch (D181): init's descriptor of the network
+/// namespace made for it, linked to the switch through its gate, which it enters; its
+/// address there and its names, which its own `/etc/hosts` gives it; and whether it asks
+/// the agents' resolver for names past the microVM.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MemberNet {
+    pub ns: std::os::fd::RawFd,
+    pub addr: std::net::Ipv4Addr,
+    pub names: Vec<String>,
+    pub dns: bool,
 }
 
 /// A bind of a microVM's own files into a joiner its engine made (D181): `source`, a path
@@ -123,6 +145,9 @@ pub fn built_by(entry: &[u8]) -> bool {
         || entry == b"cgroupns=host"
         || entry.starts_with(b"rw-size=")
         || entry.starts_with(b"own-bind=")
+        || entry.starts_with(b"own-net=")
+        || entry == b"own-net-none"
+        || entry.starts_with(b"own-publish=")
 }
 
 /// The writable layer's size `setup` asks for, in bytes.
@@ -421,6 +446,18 @@ fn clone_tree(from: Option<libc::pid_t>, path: &str) -> Result<OwnedFd, String> 
     cloned
 }
 
+/// The joiner's own `/etc/FILE`, holding `bytes`, in its root ([`ROOT`]) before it moves
+/// there: a file of its writable layer's, never a link it could have put there.
+fn own_file(file: &str, bytes: &[u8]) -> Result<(), String> {
+    let target = format!("{ROOT}/etc/{file}");
+    if let Ok(m) = std::fs::symlink_metadata(&target)
+        && !m.is_file()
+    {
+        let _ = std::fs::remove_dir_all(&target).or_else(|_| std::fs::remove_file(&target));
+    }
+    std::fs::write(&target, bytes).map_err(|e| format!("{target}: {e}"))
+}
+
 /// A copy of what `bind.source` names in the mount namespace of `workload`'s process, its
 /// mounts under it with it, detached (open_tree(2), `OPEN_TREE_CLONE | AT_RECURSIVE`, as
 /// dockerd's binds are recursive), read-only with its mounts unless `bind.writable`
@@ -690,7 +727,18 @@ pub fn build(join: Join, cgroup: &str) -> Result<Built, String> {
     // The workload's hostname, in a namespace of its own unless it shares the microVM's
     // (`--uts host`, D156).
     enter(join.workload, "uts", libc::CLONE_NEWUTS)?;
-    enter(join.workload, "net", libc::CLONE_NEWNET)?;
+    // Its network: the workload's; the namespace init made it on the microVM's switch,
+    // as a member its engine made (D181); or its loopback alone.
+    match &join.member {
+        Some(m) => {
+            // SAFETY: setns(2) of this single-threaded child into a namespace init holds.
+            if unsafe { libc::setns(m.ns, libc::CLONE_NEWNET) } != 0 {
+                return Err(last("its network namespace on the microVM's switch"));
+            }
+        }
+        None if join.own_net_none => crate::members::alone()?,
+        None => enter(join.workload, "net", libc::CLONE_NEWNET)?,
+    }
     // Its IPC namespace (D156): its own, the microVM's, or another run's of this microVM,
     // with the /dev/shm that goes with a shared one, copied while the mount it copies is
     // in reach, before /dev is its scratch, and put in its root once that has its own /dev.
@@ -722,6 +770,14 @@ pub fn build(join: Join, cgroup: &str) -> Result<Built, String> {
     // SAFETY: unshare(2), in a single-threaded fork of init's.
     if own != 0 && unsafe { libc::unshare(own) } != 0 {
         return Err(last("its UTS and IPC namespaces"));
+    }
+    // A container with a network of its own has its own name.
+    let own_net = join.member.is_some() || join.own_net_none;
+    if own_net && !join.uts_host && !join.hostname.is_empty() {
+        // SAFETY: a buffer of the given length.
+        if unsafe { libc::sethostname(join.hostname.as_ptr().cast(), join.hostname.len()) } != 0 {
+            return Err(last("its hostname"));
+        }
     }
     // What only it sees as it builds its root.
     mount("tmpfs", SCRATCH, "tmpfs", libc::MS_NOSUID, "mode=0700")?;
@@ -779,9 +835,47 @@ pub fn build(join: Join, cgroup: &str) -> Result<Built, String> {
         upper: open_path("/dev/join/rw/upper")?,
     };
     // The workload's files over its own, the same files: what the workload's run writes in
-    // them, it sees.
+    // them, it sees. One with a network of its own names itself in its own: a member its
+    // engine made by its address on the switch, under its host name and its names there
+    // (D181), asking the agents' resolver at the switch's end of its link (D59), or the
+    // resolvers its client named, or none where it reaches nothing past the microVM.
     etc_dir()?;
-    for file in ["hostname", "hosts", "resolv.conf"] {
+    let resolv = match (&join.member, &join.resolv) {
+        (Some(_), Some(given)) => Some(given.clone()),
+        (Some(m), None) if m.dns => {
+            Some(format!("nameserver {}\noptions ndots:0\n", crate::links::TRANSIT_SWITCH).into_bytes())
+        }
+        (Some(_), None) => Some(Vec::new()),
+        (None, given) => given.clone(),
+    };
+    if own_net {
+        let name = String::from_utf8_lossy(&join.hostname).into_owned();
+        own_file("hostname", format!("{name}\n").as_bytes())?;
+        let mut hosts = crate::netplan::HOSTS.to_vec();
+        for line in &join.hosts {
+            hosts.extend_from_slice(line);
+            hosts.push(b'\n');
+        }
+        if let Some(m) = &join.member {
+            let mut names: Vec<&str> = vec![name.as_str()];
+            for n in &m.names {
+                if !names.contains(&n.as_str()) {
+                    names.push(n);
+                }
+            }
+            hosts.extend_from_slice(format!("{}\t{}\n", m.addr, names.join(" ")).as_bytes());
+        }
+        own_file("hosts", &hosts)?;
+        if let Some(resolv) = &resolv {
+            own_file("resolv.conf", resolv)?;
+        }
+    }
+    let shared: &[&str] = match (own_net, &resolv) {
+        (true, Some(_)) => &[],
+        (true, None) => &["resolv.conf"],
+        (false, _) => &["hostname", "hosts", "resolv.conf"],
+    };
+    for &file in shared {
         let target = format!("{ROOT}/etc/{file}");
         match std::fs::symlink_metadata(&target) {
             Ok(m) if m.is_file() => {}

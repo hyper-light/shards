@@ -2407,13 +2407,52 @@ one CLI.
   entitlements on macOS, and embeds them with their digests; `src/helpers.rs` writes
   them out the first time a build needs them, into this user's cache under a directory
   named by their digests, whole (each synced, the directory renamed into place), and
-  every later process of the build finds them with a `stat` each. They are no
-  deliverables: nothing but `shards` is installed.
+  every later process of the build finds them with a `stat` each, and holds them while
+  it lives (D182). They are no deliverables: nothing but `shards` is installed.
 - A daemon's build is its binary's identity, which includes what it carries; one given
   another VM binary (`SHARDS_VM_BINARY`, for VMM work and tests) is another build.
 - **Tests:** `helpers::tests` (written whole once, found after, a cut copy replaced);
   E2E runs the one binary placed alone, its VMs from what it carries; `apple::tests`,
   the verifier against rustls-platform-verifier over eleven chains.
+
+### Other builds' helpers go once no process holds them (D182)
+
+Each build writes its helpers into a directory of its own (D36), and nothing removed
+one: on 2026-10-17 one host's cache held 425 of them, 1.6 GB, one a build, and a user's
+grows by one a release. Now each is removed once no process of its build lives.
+
+- **A process holds its build's directory while it lives**: a shared lock on the
+  directory's `lock` file (flock(2), LockFileEx on Windows: std's `File::lock_shared`),
+  taken the first time the process needs a helper and never let go. Each process that
+  starts helpers lives at least as long as they do: the daemon, whose runs end with it
+  (D26); a build; `run --kernel` and `restore`, which wait for their VM.
+- **The first process of a build to write its directory out removes every other
+  build's that none holds**, on a thread of its own, off its way. It takes the helpers'
+  own lock alone, which writing takes shared, so that it looks at no directory being
+  written and none placed but not yet held. A directory whose lock it takes alone is
+  moved aside while that is held, its lock marked, then removed: a process that waited
+  for that lock meanwhile finds the mark, and writes its build's out again. What a
+  writer or a collection that ended midway left (a copy not yet in place, a directory
+  moved aside) has a dot name, and goes with the next collection.
+- **Windows moves no directory with a file open in it** (the image store's `take_away`
+  meets the same): there the move is refused while the collection holds the lock, so it
+  lets the lock go and tries again, and that move fails while any process has the lock,
+  or any file of the directory (a running VM process), open. The protocol holds either
+  way: a platform that moves a directory with a file open in it has it moved while the
+  lock is held alone, and marked.
+- A directory of a build from before these locks has no lock to be held by: it goes as
+  no process's. A daemon of such a build is stopped by the first client of another
+  build that finds it (D26).
+- What stays (held, or a move Windows refused) waits for the next build's collection:
+  the directories of the builds alive at the last collection, at most.
+- **Tests:** `helpers::tests::other_builds_helpers_go_once_no_process_holds_them` (a held
+  build's kept; a free one's, one from before the locks and a dead writer's copy
+  removed, the last only once no copy is being written; a process that opened a lock
+  before the collection took it alone finds its lock marked on Unix, even once another
+  process has placed the directory again, and keeps the directory on Windows, which
+  refuses the move; let go, they go with the next collection), and
+  `helpers_are_written_whole_once_and_found_after`. Mutation-checked: a held directory
+  taken, no mark made, the mark unread, the collection not holding the helpers' lock.
 
 ### A container's files outlive its microVM (D37)
 
@@ -3796,6 +3835,12 @@ local administration is (../focal docs/cluster-admin.md).
 - Extended attributes in a build's copy beyond `security.capability`.
 - One connection for a context's commands, where each command, and each SSH agent
   connection a step makes, is a handshake of its own.
+- Credentials found only when the machine pulls. A run or create that may pull
+  (`--pull missing`, the default) finds the client's before it is sent, whether the machine
+  has the image or not: each such run pays for a credential helper, and one that never
+  answers holds it up, where docker/cli asks one only once its daemon has said it has no
+  such image (create.go). Needs the machine's command to ask the client mid-command for the
+  registry it is about to pull from, over the command's stream, as a build's SSH agents do.
 
 **Dependencies.** `hyper-quic` and `hyper-tls` as git dependencies of hyper-light/hyper-raft
 (public) pinned to a revision, so CI builds them; their AWS-LC is shards' own (vendor/).
@@ -3930,8 +3975,13 @@ the owner's store, their keychain among it. Now each side keeps its own:
   itself cross with the request (`frame::ENV`: how it prints, `SHARDS_DEFAULT_PLATFORM` and
   `DOCKER_DEFAULT_PLATFORM`); and the client's credentials for the registry a pull, push,
   run, create or search reaches, found here as a pull here finds them, cross as
-  `SHARDS_AUTH_CONFIG` for that registry alone, a token as `config.json` keeps one. `login`
-  and `logout` run here.
+  `SHARDS_AUTH_CONFIG` for that registry alone, a token as `config.json` keeps one. A run
+  or create with `--pull never` reaches no registry, so none are found for it: as docker/cli
+  asks a credential helper only to pull (cli/command/container/create.go, `pullImage`), no
+  helper is asked, and one that never answers holds up no such run (on 2026-10-17 this
+  host's `docker-credential-desktop` answered no caller for over half an hour, and each
+  such run over a context waited on it; `a_run_that_never_pulls_asks_no_credential_helper`).
+  `login` and `logout` run here.
 - `SHARDS_AUTH_CONFIG` itself reached no daemon until now: `REGISTRY_ENV`, what a client
   sends its daemon of the variables a pull reads, named `DOCKER_AUTH_CONFIG` alone, though
   D157 put shards' own first. It now names both.
@@ -4515,7 +4565,7 @@ removed socket not bound again; the sockets kept as the daemon closes; the relay
 up as it stops; a machine's refusal unsaid; the client's writer failing and its command run
 on; a reader gone said as an error.
 
-### D181. `--use-api-socket`: a run's command reaches its own microVM's engine (slices 1 and 2 built)
+### D181. `--use-api-socket`: a run's command reaches its own microVM's engine (slices 1 and 2 built; 3 being built)
 
 The need: a CI job, a test suite with testcontainers, or an agent's tool runs `docker run`
 from inside its workload, as on a host with Docker. The user's call (2026-10-16): what it
@@ -4538,10 +4588,10 @@ there where the container is not removed.
   the run's own sees the path.
 - **What it makes: joiners of its own microVM.** A container it creates there is a joiner
   of its microVM (D119): its own image, its own mount, PID, IPC and UTS namespaces and
-  cgroup, its record, log and end, in the microVM's network namespace, as a pod's
-  containers share theirs. `--network` default or `host` is the microVM's, `container:X`
-  one of its own; the microVM's boundary holds the host from all of them, and default deny
-  holds as for the microVM. It is named in the scope as the command named it, and on the
+  cgroup, its record, log and end; its network a namespace of its own on the microVM's
+  switch, granted what it declares and nothing else (slice 3), `host` the command's own
+  namespace where its client asks for it, `container:X` one of its own containers'. The
+  microVM's boundary holds the host from all of them. It is named in the scope as the command named it, and on the
   host after its microVM's name (`PROV.NAME`), so that two microVMs' engines making the
   same name (two CI jobs of one project) never collide, where a shared dockerd's do. Its
   record keeps which microVM's engine made it (`engine_made`). It ends as its microVM's
@@ -4634,7 +4684,134 @@ asks for credentials, which the run's client alone has, the image not its own be
 own after; its images listed, none of the host's it never pulled), and in the scope
 (`a_create_stays_in_its_microvm`).
 
-Slices: (1) and (2) built, as above; (3) Compose through it.
+Slices: (1) and (2) built, as above; (3), the containers its engine makes on networks of
+their own and Compose through them, designed as follows and being built. A first cut of
+(3) (part 3a, b6083246) put each container on a bridge of its own in the command's
+namespace, with every port open between them and their flows translated to the command's:
+no part of the microVM's own network design (D59, D61), it is replaced.
+
+- **The need.** A test suite, a CI job or an agent's tools in a microVM start services
+  through its engine (Testcontainers' `docker run -p 0:PORT`, Compose's project of
+  services), each listening on its own ports, two on one port among them, each reaching
+  the others it needs by name; and they run under the microVM's own rule, default deny,
+  beside its agents.
+- **Each is a member of the microVM's switch.** A container its engine makes gets a
+  network namespace of its own, linked to init's switch through a gate of its own (D59
+  part three, D61), as each of the image's agents is: known by its link, never by an
+  address it could claim; what it opens tracked in its gate's table alone; no state of it
+  kept by the switch. Init makes the namespace, its gate and its link before the
+  container starts, and its processes enter it (setns(2)); the switch and the gate are
+  outside every namespace they have.
+- **Its engine's networks are the switch's.** A network its engine makes (Compose's
+  project networks, a test's own) is a network of the switch: a /24 of the switch's block
+  (10.244.0.0/16) clear of eth0's subnet and of every network of the microVM's, the
+  agents' among them, or the subnet its client gives where that is clear of them too; its
+  gateway its first address, or the one given. Init holds them, and gives each member the
+  lowest free address as it joins: a /32 routed through the gateway on its link, as an
+  agent's is. The engine's default network, which its clients call `bridge`, is one; a
+  container named onto no other is on it.
+- **Joining grants nothing; what a container declares does.** Each flow is named
+  (AGENTFILE_ARCH.md §4.7): a container accepts, from each member of a network it shares,
+  on the ports it declares, and on no other: its image's `EXPOSE`, its create's
+  (`--expose`, Compose's `expose:`), and the container side of each port it publishes.
+  That is the receiver naming what it accepts, as `CONNECT --port` names it for an agent:
+  the network says who may ask, the receiver on what. The default network names no peers:
+  a container on it is alone, as an agent with no `CONNECT` is. Nothing else crosses: no
+  port a receiver did not declare, no member of a network the two do not share, no agent
+  of the image, not the command.
+- **Names, of granted peers alone.** A container resolves its own names and those of each
+  peer it is granted a flow to, and no other (§4.7). Its names on a network are its name
+  in its engine's scope and the aliases its client gives it there (Compose's service
+  names, `--network-alias`); nothing else names it. Its `/etc/hosts`, a file of its own
+  mounted read-only as an agent's is, lists them, and init rewrites it as peers join and
+  leave.
+- **Published ports, to the command alone.** A port it publishes (`-p HOST:PORT`, `-P`)
+  reaches it from the command, its engine's host, at `localhost:HOST` in the command's
+  namespace: init's proxy there passes each connection and datagram on to the container's
+  port, and the switch and its gate let that port alone in, up the switch's link from
+  init's namespace. Nothing past the microVM reaches it but through a port the run itself
+  publishes. The command reaches no container on any port it did not publish.
+- **Past the microVM, no more than the command.** A container acts for the command that
+  asked its engine for it: what it reaches past the microVM is what the command reaches
+  (the run's own grants, the network process holding the microVM to them; beside agents
+  whose grants reach past it, eth0's own subnet alone, as `confine_eth0` keeps the
+  command), its flows given eth0's address as the agents' egress is (D59 part four); on an
+  internal network, nothing. Names past the microVM likewise: it asks the agents'
+  resolver, which forwards what the command may resolve.
+- **What it tells where a flow is refused.** A peer's connection to a port its receiver
+  never declared ends at the receiver's gate, as any flow no grant names does.
+  `shards read ports` of a container lists each port it listens on that no grant lets its
+  peers reach, with what would declare it (`EXPOSE`, `expose:`, `--expose`), so the gap
+  is seen at once rather than as a connection that hangs.
+- **Its own values.** A container's link takes the hardware address its kernel gives it,
+  as an agent's does. The proxy keeps a UDP client's mapping as long as the microVM's own
+  connection tracking keeps a UDP flow (`nf_conntrack_udp_timeout`, and
+  `nf_conntrack_udp_timeout_stream` once answered, read from the running guest), so that
+  a published UDP port lasts as the microVM's translated flows do.
+- **`--network host` is the command's own namespace**, as the client asks: the engine's
+  host's network, the command's reach and no more. `none` is a namespace of its own with
+  its loopback alone; `container:X` the namespace of X, one of its own containers.
+- **The networks API** (create, list, inspect, remove, prune, connect, disconnect) takes
+  what Compose and the SDKs send, and answers in the shapes they read, with the switch's
+  values: its subnets, its members' addresses. A driver no microVM's switch can be
+  (`overlay`, `macvlan`, `ipvlan`) and a setting it cannot hold are refused with why.
+- **Named volumes it makes** are its own: the host's volume store's, named after its
+  microVM's as its containers are (`PROV.NAME`), mounted through the join share (D119),
+  removed with its microVM.
+
+Each difference from Docker is deliberate: membership carries no flow, where Docker's
+network carries every port both ways; the default network names no peers, where Docker's
+carries every port between its containers; a container resolves its granted peers alone,
+where Docker resolves every member by name, alias, short ID and hostname; the command
+reaches a container through what it publishes alone, where Docker's host reaches every
+container's address; and a container reaches past the microVM no more than the command.
+
+Built in parts: (3a) members on the switch, the default network, published ports, `host`
+and `none`, built; (3b) the networks its engine makes, their grants and names, and the
+networks API; (3c) its named volumes, and Compose end to end; (3d) the undeclared
+listeners `shards read ports` lists.
+
+- **How 3a is built.** The daemon asks for a membership by network and name (`member=`,
+  with `own-publish=` for each port it publishes), and nothing of addresses. Init holds
+  the engine's networks (`members.rs`), each a /24 of the switch's block clear of eth0's
+  subnet and of every subnet the switch carries (the agents', which the switch now keeps
+  from its making); it gives each member the lowest free address, the lowest free link
+  index past the domains', a namespace of its own with its loopback, and links it through
+  a gate of its own (`Switch::attach_ns`, as `attach` links a domain by its process). The
+  switch keeps what it carries (the domains' grants, its uplink once there is one, its
+  subnets, each member's), and programs its rules and init's again from that, each chain
+  emptied first in the same transaction, as members come and go (`admit`, `release`): the
+  domains' rules come out as before, a member's are its own. A member's way up the
+  switch's link is every TCP and UDP port, as far as the command goes (init's `forward`,
+  marked and given eth0's address as the agents' egress is; to eth0's subnet alone beside
+  agents with egress); the command reaches it on its published ports alone (init's `own`
+  chain, before its drop, and the switch's and gate's rules for that port from the
+  uplink). It asks the agents' resolver, which now takes askers as members join and leave
+  over a control link of init's. The joiner's child enters the namespace (setns(2)) by
+  init's descriptor, which it inherits as init's fork, and its `/etc/hosts` names it, its
+  `/etc/resolv.conf` the switch's resolver. Init says the membership to the host before
+  the joiner starts (`MEMBER`: its network, address and prefix, gateway and the kernel's
+  hardware address), which the daemon keeps for inspect while it runs; its end lets the
+  membership go. The proxy relays what is published, its UDP mappings kept as the guest's
+  connection tracking keeps a UDP flow (read in a run of the pinned kernel, arm64,
+  2026-10-17: 30 s, and 120 s once answered), and says a
+  port it cannot bind in shards' words. `--add-host NAME:host-gateway` is refused: a
+  member reaches nothing of the command's.
+- **Tested on real microVMs.** `a_microvms_own_engine_makes_each_container_a_member_of_its_switch`:
+  two members serving one port, each at the port it was given on the command's loopback
+  and at its own address on that port, from init's end of the switch's link; a port one
+  declares but does not publish, dropped for the command; on the default network, a
+  member reaching neither another's published port nor its declared one, and the other
+  serving its next connection to the command; `--network none`'s loopback alone; its host
+  name, and its name in its hosts file at its address; `host-gateway` refused; and its
+  flows to a microVM on the host's network the command is on, from the command's address
+  there. `an_engines_member_reaches_no_farther_than_the_command_beside_agents`: beside an
+  agent granted a host's port, neither the command nor a member reaches it; with no
+  agents, a member reaches what its command reaches. Every agent network test of D59 and
+  D61 holds as before. Mutation-checked, each caught: a member beside agents reaching as
+  far as the command of a run without them; the command's published ports not let
+  through init's `own` chain; the default network carrying every port between members;
+  members reaching nothing past the microVM.
 
 ### D179. Other CPUs' images, emulated in their microVM (parts 1 to 3 built)
 

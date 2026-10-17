@@ -1,0 +1,72 @@
+#!/bin/sh
+# The Linux machine the oracle and measurement scripts run dockerd, BuildKit and buildx in:
+# the `shards-dind` container, docker:29.3.1-dind (dockerd 29.3.1, BuildKit v0.28.1),
+# privileged as a daemon in a container needs, with buildx v0.37.1 at
+# /opt/shards-bx37/buildx (the release's binary, checked against its checksums).
+#
+#   scripts/dind       starts it where it is not running, and waits for its daemon
+#   scripts/dind rm    removes it, and all its daemon held
+#
+# It runs with --rm, so its daemon's data (/var/lib/docker, an anonymous volume of the
+# image's) goes with the container however the container goes. A container of that image
+# removed without -v leaves the volume behind, a whole daemon's images, builders and
+# caches: two such volumes, 29.8 GB, were left on one host (2026-10-17), each by a sandbox
+# made again by hand.
+set -eu
+
+name=shards-dind
+# docker:29.3.1-dind's index, as Docker Hub served it on 2026-10-17.
+image=docker:29.3.1-dind@sha256:686d2c5464787b0ca42420e0aa03a94fc9781ff9bf8b5ff947614b9fa4c3c3e0
+buildx=v0.37.1
+# The release's checksums.txt.
+buildx_arm64=e5cc9fe3bbff5cbc91230981f7860e06076110730a2db997082652199042a1f2
+buildx_amd64=9447199cdb435f25880548343c128a4b6650e8891ee598905d8d29d39a8e359b
+
+running() {
+	[ "$(docker inspect --format '{{.State.Running}}' "$name" 2>/dev/null)" = true ]
+}
+
+case "${1:-}" in
+"") ;;
+rm)
+	docker rm -f -v "$name" >/dev/null 2>&1 || true
+	exit 0
+	;;
+*)
+	echo "usage: scripts/dind [rm]" >&2
+	exit 2
+	;;
+esac
+
+if ! running; then
+	# One there but stopped was not started by this script, whose goes as it stops: its
+	# volumes go with it.
+	docker rm -f -v "$name" >/dev/null 2>&1 || true
+	docker run -d --rm --privileged --name "$name" "$image" >/dev/null
+fi
+until docker exec "$name" docker info >/dev/null 2>&1; do
+	if ! running; then
+		echo "scripts/dind: $name ended before its daemon answered" >&2
+		exit 1
+	fi
+	sleep 1
+done
+
+if ! docker exec "$name" test -x /opt/shards-bx37/buildx; then
+	case "$(docker exec "$name" uname -m)" in
+	aarch64) arch=arm64 sum=$buildx_arm64 ;;
+	x86_64) arch=amd64 sum=$buildx_amd64 ;;
+	*)
+		echo "scripts/dind: buildx $buildx has no release for $(docker exec "$name" uname -m)" >&2
+		exit 1
+		;;
+	esac
+	work=$(mktemp -d)
+	trap 'rm -rf "$work"' EXIT
+	curl -fsSL --retry 5 --retry-all-errors --retry-delay 10 -o "$work/buildx" \
+		"https://github.com/docker/buildx/releases/download/$buildx/buildx-$buildx.linux-$arch"
+	echo "$sum  $work/buildx" | shasum -a 256 -c --quiet -
+	chmod 755 "$work/buildx"
+	docker exec "$name" mkdir -p /opt/shards-bx37
+	docker cp "$work/buildx" "$name:/opt/shards-bx37/buildx"
+fi

@@ -526,13 +526,22 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
     ) -> shards_template::Value {
         use super::inspect_doc::{Facts, Health, Net, document};
         let dir = super::lock(&self.containers).dir(&c.id);
-        let request = std::fs::read(dir.join(super::REQUEST))
+        let mut request = std::fs::read(dir.join(super::REQUEST))
             .ok()
             .and_then(|b| shards_ipc::Run::decode(&b))
             .unwrap_or_else(|| shards_ipc::Run {
                 image: c.image.clone(),
                 ..shards_ipc::Run::default()
             });
+        // One its microVM's engine made is on that engine's network, or on the microVM's
+        // own, its engine's host's (D181), as its engine says it.
+        if let Some(m) = &c.engine_made {
+            if !request.engine_net.is_empty() {
+                request.network.clone_from(&request.engine_net);
+            } else if request.network == format!("container:{}", m.of) {
+                request.network = "host".into();
+            }
+        }
         let (config, manifest) = self.image_facts(c.image_id.as_deref());
         // The run's inbox is locked after `runs` is let go: a run's end holds its inbox
         // while it takes `runs` (take_messages, run_ended).
@@ -564,16 +573,26 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
                 .map(|p| (p.start_ns, p.end_ns, p.exit_code, p.output.clone()))
                 .collect(),
         });
-        let net = self.bridge.as_ref().map(|b| Net {
-            ip: b.guest(),
-            gateway: b.gateway(),
-            prefix: b.subnet().1,
-            mac,
-        });
+        let net = match c.engine_made.as_ref().and_then(|m| m.address.as_ref()) {
+            Some(a) => Some(Net {
+                ip: a.ip,
+                gateway: a.gateway,
+                prefix: a.prefix,
+                mac: Some(a.mac),
+            }),
+            None => self.bridge.as_ref().map(|b| Net {
+                ip: b.guest(),
+                gateway: b.gateway(),
+                prefix: b.subnet().1,
+                mac,
+            }),
+        };
         let paused = super::lock(&self.paused).contains(&c.id);
         // A user network's endpoint (D46): its own while it runs; its network's ID and
         // the names it would have, kept while it is stopped, as dockerd keeps them.
-        let user_net = match self.membership(&c.id) {
+        // None of the host's, for one its microVM's engine made, whose networks are that
+        // engine's (D181).
+        let user_net = match self.membership(&c.id).filter(|_| c.engine_made.is_none()) {
             Some((n, m)) => Some(super::inspect_doc::UserNet {
                 name: n.name.clone(),
                 network_id: n.id.clone(),
@@ -591,6 +610,7 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
                 mac: m.mac,
                 dns_names: m.dns_names,
             }),
+            None if c.engine_made.is_some() => None,
             None => self
                 .user_network(
                     &self

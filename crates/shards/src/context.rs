@@ -2248,6 +2248,12 @@ fn own_credentials(
     let Some(named) = parsed.args.first() else {
         return Ok((None, Vec::new()));
     };
+    // A run that never pulls reaches no registry: no helper is asked for what would not be
+    // sent, as docker/cli asks one only to pull (cli/command/container/create.go,
+    // pullImage), and one that never answers holds up no such run.
+    if (std::ptr::eq(command, &RUN) || std::ptr::eq(command, &CREATE)) && parsed.string("pull") == "never" {
+        return Ok((None, Vec::new()));
+    }
     let domain = if std::ptr::eq(command, &SEARCH) {
         crate::search::host(&shards_registry::search::searched(named).0).to_string()
     } else {
@@ -3156,6 +3162,34 @@ fn invite_client(home: &Path, rest: &[&str]) -> Result<(), String> {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    /// A run or create that never pulls asks no credential helper; one that may pull does.
+    #[test]
+    fn a_run_that_never_pulls_asks_no_credential_helper() {
+        let config = shards_testdir::TempDir::new("never-pulls").unwrap();
+        std::fs::write(
+            config.join("config.json"),
+            r#"{"credsStore":"shards-tests-absent"}"#,
+        )
+        .unwrap();
+        let dir = config.to_str().unwrap().to_string();
+        let env = |name: &str| (name == "DOCKER_CONFIG").then(|| dir.clone());
+        let words = |line: &str| line.split(' ').map(String::from).collect::<Vec<_>>();
+        for line in [
+            "run --pull never example.com/a:1",
+            "run --pull=never -it example.com/a:1 sh",
+            "container create --pull never example.com/a:1",
+        ] {
+            assert_eq!(
+                own_credentials(&words(line), &env),
+                Ok((None, Vec::new())),
+                "{line}"
+            );
+        }
+        for line in ["run example.com/a:1", "create --pull always example.com/a:1"] {
+            assert!(own_credentials(&words(line), &env).is_err(), "{line}");
+        }
+    }
 
     /// A context's record reads back as written; names are Docker's.
     #[test]

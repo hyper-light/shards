@@ -1036,7 +1036,7 @@ pub type Filter = (u32, Vec<libc::sock_filter>);
 
 /// The switch the domains' links meet in, kept while the microVM runs: a namespace no
 /// process holds lives while a descriptor of it does.
-static SWITCH: std::sync::OnceLock<crate::links::Switch> = std::sync::OnceLock::new();
+pub(crate) static SWITCH: std::sync::OnceLock<crate::links::Switch> = std::sync::OnceLock::new();
 
 /// What the `i`-th domain's gate lets through (D61): its addresses; to each peer a pair
 /// lets it open flows to, at the peer's addresses, the ports granted; from each that may
@@ -1229,7 +1229,28 @@ fn switch(
     let ipv6 = domains
         .iter()
         .any(|d| d.link.as_ref().is_some_and(|l| !l.addresses6.is_empty()));
-    let switch = crate::links::Switch::new(pairs, &egress, &ingress_at, &dns, uplink.as_ref(), ipv6)?;
+    // Every subnet the domains' networks hold, which the networks a microVM's engine
+    // makes keep clear of (D181).
+    let mut subnets: Vec<(std::net::Ipv4Addr, u8)> = Vec::new();
+    for a in domains
+        .iter()
+        .filter_map(|d| d.link.as_ref())
+        .flat_map(|l| &l.addresses)
+    {
+        if !subnets.contains(&(a.subnet, a.prefix)) {
+            subnets.push((a.subnet, a.prefix));
+        }
+    }
+    let switch = crate::links::Switch::new(
+        pairs,
+        &egress,
+        &ingress_at,
+        &dns,
+        uplink,
+        ipv6,
+        domains.len(),
+        &subnets,
+    )?;
     // The agents' resolver, for those granted names.
     let mut askers: Vec<crate::agentdns::Asker> = Vec::new();
     for &i in &dns {

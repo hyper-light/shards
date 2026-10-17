@@ -58,6 +58,7 @@ def dind(*argv, check=True, timeout=900, cwd=None, env=()):
 
 
 def setup(binary):
+    run([os.path.join(HERE, "..", "dind")])
     dind("mkdir", "-p", f"{ROOT}/frontend", f"{ROOT}/cases", f"{ROOT}/out")
     running = dind("docker", "inspect", "--format", "{{.State.Running}}", "shards-d113-registry", check=False)
     if running.returncode != 0:

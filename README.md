@@ -134,9 +134,12 @@ time). A setting a microVM can't take is refused with the reason, never dropped.
 `shards run --use-api-socket` gives the program it runs an engine of its own microVM's:
 `DOCKER_HOST` points at a socket in its own files (`/run/shards/engine.sock`), so the
 `docker` CLI, Testcontainers and CI tools inside it make their containers in that same
-microVM. They reach nothing past it: not your machine's engine, not its files, not your
-other microVMs, and your registry logins stay outside it. Two microVMs' programs can each
-make a container called `db`; on your machine they're listed as `MICROVM.db`. What a
+microVM. They take nothing of your machine's: not its engine, not its files, not your
+other microVMs, and your registry logins stay outside it. Each is on its own, like each
+agent in the microVM: the program reaches it on the ports it publishes (`-p 0:5432`, at
+`localhost`), it reaches no other container or agent, and it gets out of the microVM no
+farther than the program can. Two microVMs' programs can each make a container called
+`db`; on your machine they're listed as `MICROVM.db`. What a
 microVM's engine made stops when its program does, and is removed with it. `docker run
 --use-api-socket` through shards' Engine API does the same, and the credentials the
 `docker` CLI would copy in are refused (it warns). Its program can run containers

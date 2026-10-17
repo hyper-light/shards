@@ -989,6 +989,14 @@ fn joiner(link: &UnixStream, range: Result<(u64, u64), String>, to: &'static ToG
                     let guest = id.load(std::sync::atomic::Ordering::SeqCst);
                     let _ = shards_ipc::send(link, kind::STARTED, &guest.to_be_bytes(), &[]);
                 },
+                &|which, said| {
+                    let to = if which == shards_abi::run::kind::MEMBER {
+                        kind::MEMBER
+                    } else {
+                        kind::PORTS
+                    };
+                    let _ = shards_ipc::send(link, to, said, &[]);
+                },
             )
         });
         let (ended, conn) = match joined {

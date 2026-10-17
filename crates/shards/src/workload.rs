@@ -1547,13 +1547,16 @@ pub fn signal_exec(to: &ToGuest, id: u32, linux: u32) -> bool {
 /// Runs joiner `req` in the guest to its end, as a run's command is served: what kept it
 /// from starting, or its output to its client and its log, its client's stdin, terminal
 /// sizes and signals, and its status. Its id in the guest goes to `on_id` as soon as it
-/// has one, and `started` hears when its command runs.
+/// has one, and `started` hears when its command runs; `told` hears what init says of a
+/// container its microVM's engine made (D181), by its frame's kind: its membership of the
+/// microVM's switch (`MEMBER`) and the ports it was given (`PORTS`).
 #[cfg(unix)]
 pub fn join(
     to: &'static ToGuest,
     req: JoinRequest,
     on_id: &dyn Fn(u32),
     started: &dyn Fn(),
+    told: &dyn Fn(u8, &[u8]),
 ) -> Result<(Ended, UnixStream), String> {
     let JoinRequest {
         spec,
@@ -1646,6 +1649,9 @@ pub fn join(
             let payload = &*payload;
             match which {
                 kind::STARTED => started(),
+                // Its membership of its microVM's switch, and the ports it was given, as a
+                // container its microVM's engine made (D181).
+                kind::MEMBER | kind::PORTS => told(which, payload),
                 kind::STDOUT | kind::STDERR => {
                     let (out, stream) = if which == kind::STDOUT {
                         (&mut stdout, crate::spec::LOG_STDOUT)

@@ -279,7 +279,7 @@ pub fn main() -> ! {
         // attach's own: `api-run IMAGE CMD...` says what the command wrote, then `status N`
         // (D181).
         "api-run" => api_run(arg(1), args.get(2..).unwrap_or_default()),
-        "ask" => ask(arg(1)),
+        "ask" => ask(arg(1), arg(2).parse().ok()),
         "resolve" => resolve(arg(1)),
         "udp" => udp(arg(1)),
         "serve" => serve(arg(1), arg(2).parse().unwrap_or(1)),
@@ -964,13 +964,23 @@ fn report() -> i32 {
     0
 }
 
-/// Connects to `addr` (HOST:PORT, a name resolved as the C library resolves it), says
-/// nothing, its side closed, and prints what comes back until the far end closes: `ask
-/// BYTES`, or `ask error E`.
-fn ask(addr: &str) -> i32 {
+/// Connects to `addr` (HOST:PORT, a name resolved as the C library resolves it), within
+/// `within` milliseconds where given, says nothing, its side closed, and prints what comes
+/// back until the far end closes: `ask BYTES`, or `ask error E`.
+fn ask(addr: &str, within: Option<u64>) -> i32 {
     use std::io::Read as _;
+    use std::net::ToSocketAddrs as _;
     let mut got = Vec::new();
-    let asked = std::net::TcpStream::connect(addr).and_then(|mut s| {
+    let connected = match within {
+        None => std::net::TcpStream::connect(addr),
+        Some(ms) => addr.to_socket_addrs().and_then(|mut all| {
+            let to = all
+                .next()
+                .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "no address"))?;
+            std::net::TcpStream::connect_timeout(&to, std::time::Duration::from_millis(ms))
+        }),
+    };
+    let asked = connected.and_then(|mut s| {
         s.shutdown(std::net::Shutdown::Write)?;
         s.read_to_end(&mut got)
     });
@@ -1036,7 +1046,8 @@ fn tcp(addr: &str) -> i32 {
 /// took instead: `fetch-times n=N p50 P p90 P p99 P max M`, in microseconds.
 /// One call of the Engine API at `DOCKER_HOST`, a `unix://` socket, its body JSON where
 /// one is given: `api STATUS-LINE`, then its body, chunks put together and a stream's
-/// frames (stdcopy) taken apart, their bytes alone; `api error E` where it could not ask.
+/// frames (stdcopy) taken apart, stdout's bytes then stderr's ([`demuxed`]); `api error E`
+/// where it could not ask.
 fn api(method: &str, path: &str, body: &str, upgrade: bool) -> i32 {
     use std::os::unix::net::UnixStream;
     let host = std::env::var("DOCKER_HOST").unwrap_or_default();
@@ -1099,19 +1110,32 @@ fn api(method: &str, path: &str, body: &str, upgrade: bool) -> i32 {
         rest = whole;
     }
     if header("content-type").is_some_and(|v| v.contains("multiplexed-stream")) {
-        let mut bytes = Vec::new();
-        let mut at = rest.as_slice();
-        while let Some((frame, after)) = at.split_first_chunk::<8>() {
-            let len = u32::from_be_bytes([frame[4], frame[5], frame[6], frame[7]]) as usize;
-            bytes.extend_from_slice(after.get(..len).unwrap_or(after));
-            at = after.get(len..).unwrap_or_default();
-        }
-        rest = bytes;
+        rest = demuxed(&rest);
     }
     let _ = writeln!(io::stdout(), "api {}", head.lines().next().unwrap_or_default());
     let _ = io::stdout().write_all(&rest);
     let _ = io::stdout().flush();
     0
+}
+
+/// A multiplexed stream's bytes (stdcopy's frames), stdout's then stderr's: what a
+/// command writes to the two reaches its engine down two pipes, in no order between them.
+fn demuxed(streamed: &[u8]) -> Vec<u8> {
+    let (mut out, mut err) = (Vec::new(), Vec::new());
+    let mut at = streamed;
+    while let Some((frame, after)) = at.split_first_chunk::<8>() {
+        let [kind, _, _, _, a, b, c, d] = *frame;
+        let len = u32::from_be_bytes([a, b, c, d]) as usize;
+        let bytes = after.get(..len).unwrap_or(after);
+        if kind == 2 {
+            err.extend_from_slice(bytes)
+        } else {
+            out.extend_from_slice(bytes)
+        }
+        at = after.get(len..).unwrap_or_default();
+    }
+    out.extend_from_slice(&err);
+    out
 }
 
 /// An HTTP answer: its status line, its fields (names lower-cased) and its body.
@@ -1230,15 +1254,7 @@ fn api_run(image: &str, cmd: &[String]) -> i32 {
     let reader = std::thread::spawn(move || {
         let mut streamed = Vec::new();
         let _ = attached.read_to_end(&mut streamed);
-        let mut out = Vec::new();
-        let mut at = streamed.as_slice();
-        while let Some((frame, after)) = at.split_first_chunk::<8>() {
-            let [_, _, _, _, a, b, c, d] = *frame;
-            let len = u32::from_be_bytes([a, b, c, d]) as usize;
-            out.extend_from_slice(after.get(..len).unwrap_or(after));
-            at = after.get(len..).unwrap_or_default();
-        }
-        out
+        demuxed(&streamed)
     });
     if !ask(&mut calls, "POST", &format!("/containers/{id}/start"), "", "") {
         return fail("asking for the start");

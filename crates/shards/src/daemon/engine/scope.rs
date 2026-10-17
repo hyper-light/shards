@@ -144,25 +144,50 @@ fn confine(run: &mut Run, provider: &str, scoped: &[Container]) -> Result<(), An
         Err(Answer::error(
             403,
             format!(
-                "{what}: a container made by a microVM's own engine is in that microVM, and reaches nothing past it"
+                "{what}: a container a microVM's own engine makes is that microVM's, and takes nothing of its host's"
             ),
         ))
     };
-    // Its network is its microVM's: a joiner of it, as the microVM's own network, its
-    // host's, is.
-    let joined = match run.network.as_str() {
-        "" | "default" | "host" => provider.to_string(),
+    // It joins its microVM (D119) as a member of that microVM's switch: a network
+    // namespace of its own there, on its engine's default network, granted what it
+    // declares; the command's own, its engine's host's, for `host`; its loopback alone for
+    // `none`; or that of one of its own containers that has none of its own.
+    let (joined, engine_net) = match run.network.as_str() {
+        "" | "default" | "bridge" => (provider.to_string(), "bridge"),
+        "none" => (provider.to_string(), "none"),
+        "host" => (provider.to_string(), ""),
         mode => match mode.strip_prefix("container:") {
             Some(other) => match resolve(scoped, other) {
-                Some(c) => c.id.clone(),
+                Some(c) if c.engine_made.as_ref().is_some_and(|m| m.address.is_some()) => {
+                    return Err(Answer::error(
+                        501,
+                        format!(
+                            "--network {mode}: sharing the namespace of a member of its microVM's switch is not served yet"
+                        ),
+                    ));
+                }
+                Some(c) => (c.id.clone(), ""),
                 None => return Err(no_such(other)),
             },
             None => return past(format!("--network {mode}")),
         },
     };
     run.network = format!("container:{joined}");
+    run.engine_net = engine_net.to_string();
     if let Some(e) = run.endpoints.first() {
         return past(format!("--network {}", e.network));
+    }
+    // A member reaches nothing of the command's, its engine's host, which reaches it on the
+    // ports it publishes: the host's gateway is no address of its.
+    if engine_net == "bridge"
+        && let Some(given) = run.add_hosts.iter().find(|h| h.ends_with(":host-gateway"))
+    {
+        return Err(Answer::error(
+            403,
+            format!(
+                "--add-host {given}: a container its microVM's engine makes reaches nothing of that microVM's command, its engine's host, which reaches it on the ports it publishes"
+            ),
+        ));
     }
     // A bind names a path of its microVM's own command's files, as a bind names one of its
     // engine's host's: init copies it from the command's mount namespace into the
@@ -602,6 +627,7 @@ mod tests {
             engine_made: of.map(|(of, name)| crate::containers::EngineMade {
                 of: of.into(),
                 name: name.into(),
+                address: None,
             }),
             engine_images: Vec::new(),
         }
@@ -648,13 +674,22 @@ mod tests {
             [container("aaa111", "prov.db", Some(("prov-id", "db")))].iter(),
             "prov-id",
         );
-        for given in ["", "default", "host"] {
+        for (given, own) in [
+            ("", "bridge"),
+            ("default", "bridge"),
+            ("bridge", "bridge"),
+            ("none", "none"),
+            ("host", ""),
+        ] {
             let mut run = Run {
                 network: given.into(),
                 ..Run::default()
             };
             assert_eq!(refused_why(&mut run, &scoped), None, "{given:?}");
-            assert_eq!(run.network, "container:prov-id");
+            assert_eq!(
+                (run.network.as_str(), run.engine_net.as_str()),
+                ("container:prov-id", own)
+            );
         }
         let mut run = Run {
             network: "container:db".into(),
@@ -697,24 +732,17 @@ mod tests {
             Some((
                 403,
                 format!(
-                    "{what}: a container made by a microVM's own engine is in that microVM, and reaches nothing past it"
+                    "{what}: a container a microVM's own engine makes is that microVM's, and takes nothing of its host's"
                 ),
             ))
         };
         let cases: Vec<(Run, Option<(u16, String)>)> = vec![
             (
                 Run {
-                    network: "bridge".into(),
+                    network: "elsewhere".into(),
                     ..Run::default()
                 },
-                past("--network bridge"),
-            ),
-            (
-                Run {
-                    network: "none".into(),
-                    ..Run::default()
-                },
-                past("--network none"),
+                past("--network elsewhere"),
             ),
             (
                 Run {

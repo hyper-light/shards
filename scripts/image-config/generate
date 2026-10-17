@@ -7,7 +7,7 @@
 #
 # The test is built with the Go release moby's go.mod names, for Linux on this host's
 # architecture, as dockerd is, and run in a Linux container: CONTAINER, shards-dind by
-# default, in a directory of its own that is removed after.
+# default (which scripts/dind starts), in a directory of its own that is removed after.
 #
 #   scripts/image-config/generate [MOBY_CHECKOUT]
 set -eu
@@ -17,6 +17,7 @@ root=$(cd "$here/../.." && pwd)
 out="$root/crates/image/testdata/image-config.json"
 commit=464cd50c3d9e92877d56940ea160de6fca7bea23
 container=${CONTAINER:-shards-dind}
+[ -n "${CONTAINER:-}" ] || "$root/scripts/dind"
 moby=${1:-}
 work=$(mktemp -d)
 cleanup() {

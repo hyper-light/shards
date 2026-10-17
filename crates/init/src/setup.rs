@@ -156,7 +156,7 @@ pub fn write_sysctl(key: &str, value: &str) -> Result<(), String> {
 }
 
 /// The value of sysctl `key`, read beneath init's own `/proc/sys`.
-fn read_sysctl(key: &str) -> Result<String, String> {
+pub fn read_sysctl(key: &str) -> Result<String, String> {
     let path = key.replace('.', "/");
     let dir = PROC_SYS
         .get()

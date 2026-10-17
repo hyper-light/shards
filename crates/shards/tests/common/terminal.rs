@@ -9,7 +9,7 @@ use std::path::Path;
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
-use super::{guest_init, kernel, shards};
+use super::{as_tests_run, guest_init, kernel, shards};
 
 const TIMEOUT: Duration = Duration::from_secs(60);
 
@@ -63,13 +63,12 @@ impl Terminal {
         let before = settings(&peer);
         let stdio = || Stdio::from(peer.try_clone().unwrap());
         let mut command = Command::new("/bin/sh");
-        command
+        as_tests_run(&mut command)
             .arg("-c")
             .arg(r#""$0" "$@"; echo "exit $?"; read done"#)
             .arg(shards())
             .args(args)
             .env("SHARDS_HOME", home)
-            .env("SHARDS_LOCAL_STORE", "none")
             .env("SHARDS_KERNEL", kernel())
             .env("SHARDS_INIT", guest_init())
             .env_remove("NORAW")
