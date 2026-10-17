@@ -2405,6 +2405,237 @@ fn the_docker_cli_runs_microvms_through_the_engine() {
     assert!(out.starts_with("merge sha256:"), "{out}");
 }
 
+/// A run's command reaches its own microVM's engine (`--use-api-socket`, D181): at
+/// `DOCKER_HOST`, a socket in its own files, through which it makes, starts, waits for,
+/// reads, lists and removes containers in its own microVM, each a joiner of it, named
+/// there as the command named it and on the host after its microVM. It sees none of the
+/// host's other microVMs, itself among them; what would reach past its microVM, and what
+/// the engine does not serve, are refused with why. What its engine made ends as its
+/// command does, and goes with its microVM.
+#[test]
+fn a_runs_command_reaches_its_own_microvms_engine() {
+    let Some((home, image)) = home("eng-own") else {
+        return;
+    };
+    let shards = |args: &[&str]| shards_in(&home, args);
+    for (name, options) in [("other", &[][..]), ("prov", &["--use-api-socket"][..])] {
+        let mut args = vec!["run", "-d", "--name", name];
+        args.extend_from_slice(options);
+        args.extend([image.as_str(), "sleep"]);
+        let ran = shards(&args);
+        assert_eq!(ran.status, Some(0), "{ran}");
+    }
+    // One call, by the command's own client in its microVM: its status line and body.
+    let api = |method: &str, path: &str, body: &str| -> (String, String) {
+        let out = shards(&["exec", "prov", "/bin/testguest", "api", method, path, body]);
+        assert_eq!(out.status, Some(0), "{out}");
+        let (status, body) = out.stdout.split_once('\n').unwrap_or((&out.stdout, ""));
+        (status.to_string(), body.to_string())
+    };
+    let deadline = std::time::Instant::now() + TIMEOUT;
+    loop {
+        let out = shards(&["exec", "prov", "/bin/testguest", "api", "GET", "/_ping", ""]);
+        if out.status == Some(0) && out.stdout == "api HTTP/1.1 200 OK\nOK" {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "its engine never answered: {out}"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let (status, info) = api("GET", "/info", "");
+    assert_eq!(status, "api HTTP/1.1 200 OK");
+    let info: Value = serde_json::from_str(&info).unwrap();
+    let hostname = shards(&["inspect", "-f", "{{.Config.Hostname}}", "prov"]).stdout;
+    assert_eq!(
+        (
+            &info["Containers"],
+            &info["Images"],
+            &info["Name"],
+            &info["DockerRootDir"]
+        ),
+        (&json!(0), &json!(1), &json!(hostname.trim()), &json!("")),
+        "{info}"
+    );
+    let made = |name: &str, cmd: &[&str]| -> String {
+        let body = json!({ "Image": image, "Cmd": cmd }).to_string();
+        let (status, said) = api("POST", &format!("/containers/create?name={name}"), &body);
+        assert_eq!(status, "api HTTP/1.1 201 Created", "{said}");
+        serde_json::from_str::<Value>(&said).unwrap()["Id"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    };
+    let id = made("inner", &["streams", "out", "err"]);
+    assert_eq!(
+        api("POST", "/containers/inner/start", "").0,
+        "api HTTP/1.1 204 No Content"
+    );
+    let (status, waited) = api("POST", "/containers/inner/wait", "");
+    assert_eq!(status, "api HTTP/1.1 200 OK");
+    assert_eq!(
+        serde_json::from_str::<Value>(&waited).unwrap()["StatusCode"],
+        json!(0),
+        "{waited}"
+    );
+    assert_eq!(
+        api("GET", "/containers/inner/logs?stdout=1&stderr=1", ""),
+        ("api HTTP/1.1 200 OK".into(), "out\nerr\n".into())
+    );
+    // By the name it gave, alone among the host's microVMs; on the host, after its own.
+    let (_, listed) = api("GET", "/containers/json?all=1", "");
+    let listed: Value = serde_json::from_str(&listed).unwrap();
+    let names: Vec<&Value> = listed.as_array().unwrap().iter().map(|c| &c["Names"]).collect();
+    assert_eq!(names, [&json!(["/inner"])], "{listed}");
+    let short: String = id.chars().take(12).collect();
+    let (_, inspected) = api("GET", &format!("/containers/{short}/json"), "");
+    assert_eq!(
+        serde_json::from_str::<Value>(&inspected).unwrap()["Name"],
+        json!("/inner")
+    );
+    let host_names = || shards(&["ps", "-a", "--format", "{{.Names}}"]).stdout;
+    assert!(
+        host_names().lines().any(|n| n == "prov.inner"),
+        "{}",
+        host_names()
+    );
+    for other in ["other", "prov"] {
+        assert_eq!(
+            api("GET", &format!("/containers/{other}/json"), ""),
+            (
+                "api HTTP/1.1 404 Not Found".into(),
+                format!("{{\"message\":\"No such container: {other}\"}}\n")
+            )
+        );
+    }
+    // What would reach past its microVM, what is not served, and a login from inside.
+    let body = json!({ "Image": image, "HostConfig": { "Binds": ["/etc:/x"] } }).to_string();
+    assert_eq!(
+        api("POST", "/containers/create", &body),
+        (
+            "api HTTP/1.1 403 Forbidden".into(),
+            "{\"message\":\"-v /etc:/x: a container made by a microVM's own engine is in that microVM, and reaches nothing past it\"}\n".into()
+        )
+    );
+    let (status, _) = api("GET", "/images/json", "");
+    assert_eq!(status, "api HTTP/1.1 501 Not Implemented");
+    let (status, _) = api("POST", "/auth", "{}");
+    assert_eq!(status, "api HTTP/1.1 403 Forbidden");
+    assert_eq!(
+        api("DELETE", "/containers/inner", "").0,
+        "api HTTP/1.1 204 No Content"
+    );
+    assert!(
+        !host_names().lines().any(|n| n == "prov.inner"),
+        "{}",
+        host_names()
+    );
+    // One left running ends as its microVM's command does; it goes with its microVM.
+    made("held", &["sleep"]);
+    assert_eq!(
+        api("POST", "/containers/held/start", "").0,
+        "api HTTP/1.1 204 No Content"
+    );
+    let state = |name: &str| shards(&["inspect", "-f", "{{.State.Status}}", name]).stdout;
+    assert_eq!(state("prov.held"), "running\n");
+    let killed = shards(&["kill", "prov"]);
+    assert_eq!(killed.status, Some(0), "{killed}");
+    let deadline = std::time::Instant::now() + TIMEOUT;
+    while state("prov.held") != "exited\n" || state("prov") != "exited\n" {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "prov.held: {}; prov: {}",
+            state("prov.held"),
+            state("prov")
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let removed = shards(&["rm", "prov"]);
+    assert_eq!(removed.status, Some(0), "{removed}");
+    assert_eq!(host_names(), "other\n");
+    let removed = shards(&["rm", "-f", "other"]);
+    assert_eq!(removed.status, Some(0), "{removed}");
+}
+
+/// The docker CLI's own `--use-api-socket`, asked of shards' engine: the microVM's own
+/// engine at `DOCKER_HOST` in place of the CLI's engine's socket, and the credentials the
+/// CLI copies in refused, which it warns of: they never reach the microVM.
+#[test]
+fn the_docker_clis_use_api_socket_is_the_microvms_own_engine() {
+    let Ok(docker) = which("docker") else {
+        eprintln!("SKIP: no docker CLI on this host");
+        return;
+    };
+    let Some((home, image)) = home("eng-cli-own") else {
+        return;
+    };
+    // The test's own config, a registry's credentials in it that the CLI means to copy in,
+    // and no credential helper on PATH.
+    let config = home.join("docker-config");
+    std::fs::create_dir_all(&config).unwrap();
+    std::fs::write(
+        config.join("config.json"),
+        r#"{"auths":{"registry.invalid":{"auth":"dXNlcjpzZWNyZXQ="}}}"#,
+    )
+    .unwrap();
+    let no_helpers = home.join("path");
+    std::fs::create_dir_all(&no_helpers).unwrap();
+    let host = format!("unix://{}", home.join("engine.sock").display());
+    let docker = |args: &[&str]| {
+        let out = common::output_within(
+            std::process::Command::new(&docker)
+                .args(args)
+                .env("DOCKER_HOST", &host)
+                .env("DOCKER_CONFIG", &config)
+                .env("PATH", &no_helpers)
+                .env_remove("DOCKER_CONTEXT")
+                .env("DOCKER_CLI_HINTS", "false")
+                .env("DOCKER_CLI_EXPERIMENTAL", "enabled")
+                .stdin(std::process::Stdio::null()),
+            CLIENT,
+        );
+        (
+            out.status.code(),
+            String::from_utf8_lossy(&out.stdout).into_owned(),
+            String::from_utf8_lossy(&out.stderr).into_owned(),
+        )
+    };
+    let (status, out, err) = docker(&[
+        "run",
+        "--rm",
+        "--use-api-socket",
+        &image,
+        "api",
+        "GET",
+        "/_ping",
+        "",
+    ]);
+    assert_eq!(
+        (status, out.as_str()),
+        (Some(0), "api HTTP/1.1 200 OK\nOK"),
+        "{err}"
+    );
+    assert!(
+        err.contains("WARNING: injecting docker config.json into container failed: copying config.json into container failed: Error response from daemon: your registries' credentials stay outside the microVM"),
+        "{err}"
+    );
+    let (status, out, err) = docker(&[
+        "run",
+        "--rm",
+        "--use-api-socket",
+        &image,
+        "stat",
+        "/run/secrets/docker/config.json",
+        "/var/run/docker.sock",
+    ]);
+    assert_eq!(status, Some(1), "{err}");
+    assert!(
+        out.lines().all(|l| l.contains(" missing ")),
+        "nothing of the CLI's is in the microVM: {out}"
+    );
+}
+
 /// `name` on PATH.
 fn which(name: &str) -> Result<std::path::PathBuf, ()> {
     std::env::var_os("PATH")

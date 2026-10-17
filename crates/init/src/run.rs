@@ -649,12 +649,23 @@ fn default_caps() -> u64 {
     }
 }
 
+/// A spec's setup entries as init sorts them: the standby's own, and its microVM's
+/// engine's token (D181).
+struct Sorted {
+    standby: Vec<Vec<u8>>,
+    engine: Option<[u8; run::TOKEN]>,
+}
+
 /// [`Inherited`]'s, and the standby's own, of a spec's setup entries; sysctls are
-/// written here, by init.
-fn sort_setup(entries: &[Vec<u8>], into: &mut Inherited) -> Result<Vec<Vec<u8>>, Failure> {
+/// written here, by init. Its engine's token is init's, and its socket the standby's to
+/// make (`engine`), as the run's mounts are made, before its root is made read-only.
+fn sort_setup(entries: &[Vec<u8>], into: &mut Inherited) -> Result<Sorted, Failure> {
     let mut standby = Vec::new();
+    let mut engine = None;
     for entry in entries {
-        if let Some(kv) = entry.strip_prefix(b"sysctl=") {
+        if let Some(hex) = entry.strip_prefix(b"engine=") {
+            engine = Some(token_of(hex).ok_or_else(|| setup_failed("a malformed engine entry"))?);
+        } else if let Some(kv) = entry.strip_prefix(b"sysctl=") {
             let kv = String::from_utf8_lossy(kv);
             let (k, v) = kv.split_once('=').unwrap_or((&kv, ""));
             crate::setup::write_sysctl(k, v).map_err(setup_failed)?;
@@ -706,7 +717,30 @@ fn sort_setup(entries: &[Vec<u8>], into: &mut Inherited) -> Result<Vec<Vec<u8>>,
             standby.push(entry.clone());
         }
     }
-    Ok(standby)
+    if engine.is_some() {
+        let at = standby
+            .iter()
+            .position(|e| e == b"readonly")
+            .unwrap_or(standby.len());
+        standby.insert(at, b"engine".to_vec());
+    }
+    Ok(Sorted { standby, engine })
+}
+
+/// A token written as hex, two digits a byte.
+fn token_of(hex: &[u8]) -> Option<[u8; run::TOKEN]> {
+    let mut token = [0u8; run::TOKEN];
+    let (pairs, []) = hex.as_chunks::<2>() else {
+        return None;
+    };
+    if pairs.len() != run::TOKEN {
+        return None;
+    }
+    for (byte, pair) in token.iter_mut().zip(pairs) {
+        let digits = std::str::from_utf8(pair).ok()?;
+        *byte = u8::from_str_radix(digits, 16).ok()?;
+    }
+    Some(token)
 }
 
 /// The workload's use of its microVM, as dockerd's stats read a container's
@@ -1844,22 +1878,31 @@ fn pipe() -> Result<(OwnedFd, OwnedFd), Failure> {
     Ok(unsafe { (OwnedFd::from_raw_fd(r), OwnedFd::from_raw_fd(w)) })
 }
 
-/// What a standby says on its error channel until it execs and the channel closes: the
-/// listener of its filter for the host's network, where it has one (D124), and its report,
-/// where it could not exec.
-fn reports(err: &OwnedFd) -> (Option<OwnedFd>, Vec<u8>) {
-    let (mut listener, mut report) = (None, Vec::new());
+/// What a standby says on its error channel until it execs and the channel closes.
+#[derive(Default)]
+struct Said {
+    /// The listener of its filter for the host's network, where it has one (D124).
+    binds: Option<OwnedFd>,
+    /// Its microVM's engine's listener, where its run has one (D181).
+    engine: Option<OwnedFd>,
+    /// Its report, where it could not exec.
+    report: Vec<u8>,
+}
+
+fn reports(err: &OwnedFd) -> Said {
+    let mut said = Said::default();
     let mut buf = [0u8; 16];
     loop {
         match crate::hostbind::recv_fd(err.as_raw_fd(), &mut buf, 0) {
-            Ok((0, _)) => return (listener, report),
+            Ok((0, _)) => return said,
             Ok((n, fd)) => match (buf.get(..n), fd) {
-                (Some([crate::hostbind::LISTENER]), Some(fd)) => listener = Some(fd),
-                (Some(said), _) => report.extend_from_slice(said),
+                (Some([crate::hostbind::LISTENER]), Some(fd)) => said.binds = Some(fd),
+                (Some([crate::engine::LISTENER]), Some(fd)) => said.engine = Some(fd),
+                (Some(report), _) => said.report.extend_from_slice(report),
                 (None, _) => {}
             },
             Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
-            Err(_) => return (listener, report),
+            Err(_) => return said,
         }
     }
 }
@@ -1913,6 +1956,8 @@ struct Workload {
     /// that makes its binds the host's, which has it and its execs' listeners.
     binds: Option<OwnedFd>,
     hosts: Option<crate::hostbind::Supervisor>,
+    /// Its microVM's engine's listener (D181), as the standby made it, for init's relay.
+    engine: Option<OwnedFd>,
 }
 
 /// A pty's master, and the path of its peer, which the standby opens as the workload's
@@ -2428,7 +2473,10 @@ impl Standby {
         }
         // Sysctls, by init; the rest by the standby, in its namespaces.
         let mut inherited = Inherited::default();
-        let setup = sort_setup(&spec.setup, &mut inherited)?;
+        let Sorted {
+            standby: setup,
+            engine,
+        } = sort_setup(&spec.setup, &mut inherited)?;
         // Its endpoint's, after its own, as libnetwork sets them on the interface it
         // configures after runc's (PM M171).
         for kv in spec
@@ -2450,11 +2498,20 @@ impl Standby {
         } else {
             None
         };
+        // Its microVM's engine (D181): the relay of what its command asks of it, there
+        // before its command.
+        let relay = engine
+            .map(crate::engine::start)
+            .transpose()
+            .map_err(|e| setup_failed(format!("its microVM's engine: {e}")))?;
         let mut w = standby.launch(spec, false, setup, &inherited)?;
         if let (Some(hosts), Some(listener)) = (&hosts, w.binds.take()) {
             hosts.listener(&listener, 0);
         }
         w.hosts = hosts;
+        if let (Some(relay), Some(listener)) = (relay, w.engine.take()) {
+            relay.give(&listener);
+        }
         Ok((w, declared))
     }
 
@@ -2496,7 +2553,7 @@ impl Standby {
         File::from(to_standby)
             .write_all(&orders)
             .map_err(|e| setup_failed(format!("holding the container's files: {e}")))?;
-        let (_, report) = reports(&err);
+        let Said { report, .. } = reports(&err);
         drop(err);
         if let [which, e0, e1, e2, e3, c0, c1, c2, c3] = report[..] {
             // The standby exits right after reporting.
@@ -2529,6 +2586,7 @@ impl Standby {
             procs: None,
             binds: None,
             hosts: None,
+            engine: None,
         })
     }
 
@@ -2652,7 +2710,11 @@ impl Standby {
             .map_err(|e| setup_failed(format!("starting the workload: {e}")))?;
         // The error channel closes on exec: a report on it means the workload never
         // started.
-        let (binds, report) = reports(&err);
+        let Said {
+            binds,
+            engine,
+            report,
+        } = reports(&err);
         drop(err);
         if let [which, e0, e1, e2, e3, c0, c1, c2, c3] = report[..] {
             // The standby exits right after reporting.
@@ -2693,6 +2755,7 @@ impl Standby {
                 procs: None,
                 binds,
                 hosts: None,
+                engine,
             });
         };
         // The terminal carries everything; the pipes go unused.
@@ -2712,6 +2775,7 @@ impl Standby {
             procs: None,
             binds,
             hosts: None,
+            engine,
         })
     }
 }
@@ -2786,7 +2850,13 @@ fn standby(ends: Ends, isolation: Isolation) -> ! {
         fail(step::MKDIR, errno, 0);
     }
     for (i, entry) in o.setup.iter().enumerate() {
-        if let Err(errno) = crate::setup::apply(entry) {
+        // Its microVM's engine's socket (D181), whose listener init is given.
+        let applied = if entry == b"engine" {
+            crate::engine::listen(err.as_raw_fd())
+        } else {
+            crate::setup::apply(entry)
+        };
+        if let Err(errno) = applied {
             fail(step::SETUP, errno, i);
         }
     }
@@ -2877,6 +2947,9 @@ struct Exec {
     ended: bool,
     /// A container joining the workload's network (D119), rather than a command beside it.
     joined: bool,
+    /// A joiner made through its microVM's own engine (D181), which ends as the workload
+    /// does, as a nested engine's containers end with it.
+    engine_made: bool,
     /// A joiner's writable layer, as the host asks for it once it has the joiner's end.
     save: Save,
     /// Init's own work for a joiner (D119), its built-in in a child of init's: spared as
@@ -3297,6 +3370,11 @@ fn start_joiner(
         })
         .and_then(|()| limit_in(&crate::join::cgroup(id), &spec.cgroup, devices.as_ref(), Some(id)))
         .and_then(|()| sort_setup(&setup, &mut inherited))
+        .and_then(|sorted| match sorted.engine {
+            // A container made through its microVM's engine reaches none of its own (D181).
+            Some(_) => Err(setup_failed("a joining container's own engine")),
+            None => Ok(sorted.standby),
+        })
         .and_then(|setup| reaper_ready(&mut standby, spec).map(|()| setup));
     let setup = match ready {
         Ok(setup) => setup,
@@ -3544,6 +3622,7 @@ impl Exec {
             status: None,
             ended: false,
             joined: false,
+            engine_made: false,
             save: Save::Unasked,
             into_joiner: false,
         };
@@ -3557,6 +3636,7 @@ impl Exec {
             .map(|n| std::str::from_utf8(n).ok().and_then(|n| n.parse::<u32>().ok()));
         let started = if let Some(range) = crate::join::range(&spec.setup) {
             exec.joined = true;
+            exec.engine_made = spec.setup.iter().any(|e| e == b"engine-made");
             if running {
                 start_joiner(range, id, workload, joiners, &spec)
             } else {
@@ -4076,7 +4156,17 @@ impl Workload {
                                 let _ = crate::linux::control_write(control::MARKER, marker::WORKLOAD_EXITED);
                                 status = Some(code);
                                 // A container ends with its main process; containers joined
-                                // to its network outlive it, as Docker's do (D119).
+                                // to its network outlive it, as Docker's do (D119), but those
+                                // its own engine made, which end with it (D181): each the
+                                // first process of its PID namespace, whose end the kernel
+                                // ends the rest of it with.
+                                for e in execs
+                                    .iter()
+                                    .filter(|e| e.engine_made && e.pid > 0 && e.status.is_none())
+                                {
+                                    // SAFETY: kill(2) of a joiner's first process, init's child.
+                                    unsafe { libc::kill(e.pid, libc::SIGKILL) };
+                                }
                                 if execs.iter().any(|e| e.joined && e.pid > 0 && e.status.is_none()) {
                                     outlived = true;
                                     // And init's own work for them: their built-ins, and

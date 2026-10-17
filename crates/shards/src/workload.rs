@@ -1023,18 +1023,30 @@ fn exec_failed(payload: &[u8]) {
 
 /// Takes every guest connection to the exec port ([`run::EXEC_PORT`]): one whose
 /// [`kind::HELLO`] names a pending exec's token becomes that exec's; any other is closed.
-/// Connections not yet heard from are read by one thread, polling them all (review 8.8):
-/// one that says nothing costs a descriptor, not a thread, and holds up no other; the
-/// muxer bounds how many there are. They go when the workload's process does.
 #[cfg(unix)]
 pub fn accept_execs(port: Port) {
+    accept_hellos(port, "exec-hellos", heard);
+}
+
+/// Takes every guest connection to `port`, each of which says a [`kind::HELLO`] first:
+/// one whose hello has come whole goes to `heard` with its token, which keeps it or not;
+/// any other is closed. Connections not yet heard from are read by one thread, polling
+/// them all (review 8.8): one that says nothing costs a descriptor, not a thread, and
+/// holds up no other; the muxer bounds how many there are. They go when the workload's
+/// process does.
+#[cfg(unix)]
+pub fn accept_hellos(
+    port: Port,
+    name: &'static str,
+    heard: impl Fn(UnixStream, &[u8; run::TOKEN]) + Send + 'static,
+) {
     let Ok((wake, woken)) = UnixStream::pair() else {
         return;
     };
     let (arrived, arrivals) = std::sync::mpsc::channel::<UnixStream>();
     if std::thread::Builder::new()
-        .name("exec-hellos".into())
-        .spawn(move || hellos(&arrivals, &woken))
+        .name(name.into())
+        .spawn(move || hellos(&arrivals, &woken, &heard))
         .is_err()
     {
         return;
@@ -1056,9 +1068,13 @@ struct Unheard {
 }
 
 /// Reads the hellos of the connections that `arrivals` brings, each told of on `woken`,
-/// until the acceptor goes: whole, each goes to its exec, or is closed.
+/// until the acceptor goes: whole, each goes to `heard`, or is closed.
 #[cfg(unix)]
-fn hellos(arrivals: &std::sync::mpsc::Receiver<UnixStream>, woken: &UnixStream) {
+fn hellos(
+    arrivals: &std::sync::mpsc::Receiver<UnixStream>,
+    woken: &UnixStream,
+    heard: &dyn Fn(UnixStream, &[u8; run::TOKEN]),
+) {
     let mut unheard: Vec<Unheard> = Vec::new();
     let mut byte = [0u8; 64];
     loop {
@@ -1129,25 +1145,30 @@ fn hellos(arrivals: &std::sync::mpsc::Receiver<UnixStream>, woken: &UnixStream) 
                 unheard.swap_remove(i);
             } else if u.got == u.hello.len() {
                 let u = unheard.swap_remove(i);
-                heard(u.conn, &u.hello);
+                if let Some(token) = u.hello.last_chunk::<{ run::TOKEN }>() {
+                    heard(u.conn, token);
+                }
             }
         }
     }
 }
 
-/// A connection whose `hello`, its header checked, has come whole: to the exec its token
-/// names, or closed.
+/// Whether tokens `a` and `b` are the same, compared whole, in constant time: a workload
+/// that dials a port learns nothing of a token from how fast it is refused.
 #[cfg(unix)]
-fn heard(conn: UnixStream, hello: &[u8; run::HEADER + run::TOKEN]) {
-    let token = hello.get(run::HEADER..).unwrap_or_default();
-    // Compared whole, in constant time: a workload that dials the port learns nothing of
-    // a token from how fast it is refused.
-    let same = |t: &[u8; run::TOKEN]| t.iter().zip(token).fold(0u8, |d, (a, b)| d | (a ^ b)) == 0;
+pub fn same_token(a: &[u8; run::TOKEN], b: &[u8; run::TOKEN]) -> bool {
+    a.iter().zip(b).fold(0u8, |d, (x, y)| d | (x ^ y)) == 0
+}
+
+/// A connection whose hello, its header checked, has come whole, saying `token`: to the
+/// exec its token names, or closed.
+#[cfg(unix)]
+fn heard(conn: UnixStream, token: &[u8; run::TOKEN]) {
     let to = {
         let mut waiting = pending();
         waiting
             .iter()
-            .position(|w| same(&w.token))
+            .position(|w| same_token(&w.token, token))
             .map(|i| waiting.swap_remove(i).to)
     };
     if let Some(to) = to

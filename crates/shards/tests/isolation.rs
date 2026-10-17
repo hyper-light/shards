@@ -35,6 +35,8 @@ fn a_workload_reaches_no_host_port_over_vsock() {
         shards_abi::run::PORT,
         shards_abi::run::SIGNAL_PORT,
         1026,
+        // A run with no engine of its own has no engine port (D181).
+        shards_abi::run::ENGINE_PORT,
         2000,
         52_000,
     ]
@@ -61,6 +63,56 @@ fn a_workload_reaches_no_host_port_over_vsock() {
                 );
             }
         }
+    }
+    let _ = run_shards_env(&["daemon"], &["stop"], &env, TIMEOUT);
+}
+
+/// A run's own engine (D181) is its command's through the socket its init made alone: a
+/// process of the microVM's that dials the engine port itself, even with no seccomp
+/// filter to keep it from vsock, says no token its init was given, and is closed unheard;
+/// the command's own client, through its socket, is answered, the socket where the
+/// command finds it though a tmpfs covers /run or its root takes no writes.
+#[test]
+fn a_microvms_engine_port_answers_its_inits_token_alone() {
+    if cannot_run_vms() {
+        eprintln!("SKIP: this host cannot run VMs");
+        return;
+    }
+    let (image, _) = served();
+    let home = TempDir::new("isolation-engine-home");
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", kernel().as_os_str()),
+        ("SHARDS_INIT", guest_init().as_os_str()),
+    ];
+    let port = shards_abi::run::ENGINE_PORT.to_string();
+    let ping = ["api", "GET", "/_ping", ""];
+    let answered = "api HTTP/1.1 200 OK\nOK".to_string();
+    for (options, command, said) in [
+        (
+            &["--security-opt", "seccomp=unconfined"][..],
+            &["vsock-hello", port.as_str()][..],
+            format!("{port} closed\n"),
+        ),
+        (
+            &["--security-opt", "seccomp=unconfined"][..],
+            &ping[..],
+            answered.clone(),
+        ),
+        (&["--tmpfs", "/run"][..], &ping[..], answered.clone()),
+        (&["--read-only"][..], &ping[..], answered.clone()),
+    ] {
+        let mut args = vec!["--rm", "--use-api-socket"];
+        args.extend_from_slice(options);
+        args.push(image.as_str());
+        args.extend_from_slice(command);
+        let ran = run_shards_env(&["run"], &args, &env, TIMEOUT);
+        assert_eq!(
+            (ran.status, ran.stdout.as_str()),
+            (Some(0), said.as_str()),
+            "{options:?}: {}",
+            ran.stderr
+        );
     }
     let _ = run_shards_env(&["daemon"], &["stop"], &env, TIMEOUT);
 }

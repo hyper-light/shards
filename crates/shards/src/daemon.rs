@@ -488,6 +488,8 @@ struct Keep<'a> {
     mac: Option<[u8; 6]>,
     /// Its link-local addresses (PM M175), for its network process and its peers'.
     link_local: Vec<std::net::IpAddr>,
+    /// Its microVM's own engine's token (D181), where its run has one.
+    engine: Option<[u8; shards_abi::run::TOKEN]>,
 }
 
 /// A run in progress: its VM's socket, to signal the command, and the VM itself.
@@ -595,6 +597,9 @@ struct Inbox {
     saving: Option<snapshots::Saving>,
     /// The snapshot it was saved as, where the save stops it: its end is the save's.
     saved_as: Option<String>,
+    /// Its microVM's own engine's token (D181): the connections its VM hands over are its
+    /// command's, served scoped to its microVM; a save keeps it for its restore (D176).
+    engine: Option<[u8; shards_abi::run::TOKEN]>,
 }
 
 /// A part of the working set run `id`'s VM recorded (`kind::WORKING_SET`), which the
@@ -1518,7 +1523,7 @@ impl<D: Disk> Daemon<D> {
             if let Some(api) = &api {
                 loop {
                     match api.accept() {
-                        Ok((conn, _)) => self.take_engine(threads, conn),
+                        Ok((conn, _)) => self.take_engine(threads, conn, None),
                         Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
                         Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
                         Err(e) => {
@@ -1528,6 +1533,11 @@ impl<D: Disk> Daemon<D> {
                         }
                     }
                 }
+            }
+            // What runs' commands asked of their own microVMs' engines (D181), each served
+            // scoped to its microVM.
+            for (provider, conn) in self.engine.take_arrived() {
+                self.take_engine(threads, conn, Some(engine::Scope { provider }));
             }
             let mut starved = false;
             while self.busy.load(Ordering::SeqCst) < self.max_clients {
@@ -2103,6 +2113,26 @@ impl<D: Disk> Daemon<D> {
         if let Some(r) = &resuming {
             snapshots::resume_interface(&mut run, &r.resume);
         }
+        // Its microVM's own engine (D181), where its command finds it, as the docker CLI and
+        // Docker's SDKs look for one: over its image's, unless its options name another.
+        if run.use_api_socket && again.is_none() && !run.env.iter().any(|e| e.starts_with("DOCKER_HOST=")) {
+            run.env
+                .push(format!("DOCKER_HOST=unix://{}", shards_abi::run::ENGINE_SOCKET));
+        }
+        // And the token its init says first on each connection its command makes to it: a
+        // resumed run's, its save's, which its guest holds already (D176).
+        let engine = match &resuming {
+            Some(r) => r.engine,
+            None if run.use_api_socket => {
+                let mut token = [0u8; shards_abi::run::TOKEN];
+                if let Err(e) = shards_vmm::platform::fill_random(&mut token) {
+                    refused(&format!("--use-api-socket: its engine's token: {e}"));
+                    return None;
+                }
+                Some(token)
+            }
+            None => None,
+        };
         // dockerd's create route first, before its daemon checks anything (moby
         // handleSysctlBC): an interface's sysctl given as the container's own is refused.
         if again.is_none()
@@ -2618,6 +2648,15 @@ impl<D: Disk> Daemon<D> {
                         .setup
                         .push(format!("address6={guest6}/64,{gateway6}").into_bytes());
                 }
+                // Its microVM's own engine (D181), whose socket init makes for its command.
+                if let Some(token) = &engine {
+                    let hex: String = token.iter().map(|b| format!("{b:02x}")).collect();
+                    prepared.spec.setup.push(format!("engine={hex}").into_bytes());
+                }
+                // Made through a microVM's own engine: it ends as that microVM's command does.
+                if run.engine_made.is_some() {
+                    prepared.spec.setup.push(b"engine-made".to_vec());
+                }
                 // Its endpoint's sysctls, on its interface once it has its addresses (PM M171).
                 prepared.spec.setup.extend(
                     crate::setup::endpoint_sysctls(&run)
@@ -2819,7 +2858,13 @@ impl<D: Disk> Daemon<D> {
         // A resumed run's command runs already: its request brings its save's tokens instead,
         // with which its guest dials the host again (D176).
         match &resuming {
-            Some(r) => payload.extend_from_slice(&r.tokens),
+            Some(r) => {
+                payload.extend_from_slice(&r.tokens);
+                // Its engine's, which its guest's relay says (D181).
+                if let Some(token) = &r.engine {
+                    payload.extend_from_slice(token);
+                }
+            }
             None => prepared.spec.encode_into(&mut payload),
         }
         let detached = run.detach.then_some(conn);
@@ -2878,6 +2923,7 @@ impl<D: Disk> Daemon<D> {
                 agentfile: prepared.agentfile.clone(),
                 mac: run_mac.as_deref().and_then(|m| m.first_chunk::<6>().copied()),
                 link_local: link_local.clone(),
+                engine,
             },
             || match &start {
                 // A joiner's I/O is the microVM's it joins (D119), whose run's limits it takes
@@ -3472,6 +3518,19 @@ impl<D: Disk> Daemon<D> {
             },
             size_rw: None,
             saved: None,
+            // Made through a microVM's own engine (D181): its name there, or the one it was
+            // given here where that engine named none.
+            engine_made: run
+                .engine_made
+                .as_ref()
+                .map(|(of, there)| containers::EngineMade {
+                    of: of.clone(),
+                    name: if there.is_empty() {
+                        name.clone()
+                    } else {
+                        there.clone()
+                    },
+                }),
         });
         self.event_for(id, &name, &run.image, &prepared.labels, "create", &[]);
         // Its run is owned from the moment the container is visible.
@@ -3691,7 +3750,50 @@ impl<D: Disk> Daemon<D> {
         if removal.container.auto_remove {
             self.drop_anonymous(&removal.container);
         }
+        self.remove_engine_made(id);
         synced
+    }
+
+    /// Removes what microVM `provider`'s own engine made (D181) as `provider` goes, as a
+    /// nested engine's containers go with its files: each ended at once, and each still
+    /// running as it ends, which it does with its microVM. None is left behind.
+    fn remove_engine_made(&self, provider: &str) {
+        let made: Vec<String> = lock(&self.containers)
+            .all()
+            .filter(|c| c.engine_made.as_ref().is_some_and(|m| m.of == provider))
+            .map(|c| c.id.clone())
+            .collect();
+        for id in made {
+            if self.is_restarting(&id) {
+                self.exit_on_next(&id, 9);
+            }
+            let removal = match self.cancel_start(&id) {
+                Some(removal) => Some(removal),
+                // Its state as its end records it, under the same lock: one running is
+                // removed as that end comes (`end_container`).
+                None => {
+                    let mut registry = lock(&self.containers);
+                    match registry.made(&id).map(|c| c.state) {
+                        Some(Life::Running) => {
+                            if let Err(e) = registry.change(&id, |c| c.auto_remove = true) {
+                                log(format!("container {id}: to go with its microVM {provider}: {e}"));
+                            }
+                            None
+                        }
+                        Some(_) => registry.take_out(&id),
+                        None => None,
+                    }
+                }
+            };
+            match removal {
+                Some(removal) => {
+                    if self.set_aside(&removal).is_ok() {
+                        let _ = self.complete(&removal);
+                    }
+                }
+                None => self.record_soon(&id, Vec::new()),
+            }
+        }
     }
 
     /// Removes the anonymous volumes `removed` mounted that no other container mounts, as
@@ -3907,6 +4009,7 @@ impl<D: Disk> Daemon<D> {
             agentfile,
             mac: _,
             link_local: _,
+            engine,
         } = keep;
         if layer_pending {
             lock(&self.settling).insert(id.to_string());
@@ -3970,6 +4073,7 @@ impl<D: Disk> Daemon<D> {
             provider,
             saving: None,
             saved_as: None,
+            engine,
         }));
         let tracked = Tracked {
             base: Arc::new(Base {
@@ -4090,6 +4194,23 @@ impl<D: Disk> Daemon<D> {
                     }
                 }
                 kind::LOG_SEGMENT => self.ask_segment(id, inbox, &m.payload),
+                // A connection its command made to its own microVM's engine (D181): its VM's
+                // copy goes once the daemon has it (M24), and the listener serves it, scoped
+                // to this microVM. One from a run with no engine of its own is closed.
+                kind::ENGINE_CONN => {
+                    if let Err(e) = inbox.socket.send(kind::ENGINE_CONN, &m.payload, &[]) {
+                        log(format!("container {id}: answering its engine connection: {e}"));
+                    }
+                    match (inbox.engine.is_some(), m.fds.into_iter().next()) {
+                        (true, Some(fd)) => {
+                            self.engine.arrive(id, UnixStream::from(fd));
+                            self.wake_listener();
+                        }
+                        _ => log(format!(
+                            "container {id}: an engine connection from a run with no engine of its own"
+                        )),
+                    }
+                }
                 // Its VM's answer to a save (D176), before anything after it: a microVM the
                 // save stops ends as saved.
                 kind::SAVED => snapshots::answered(inbox, &m.payload),
@@ -6716,6 +6837,7 @@ mod tests {
                         agentfile: None,
                         mac: None,
                         link_local: Vec::new(),
+                        engine: None,
                     },
                     acquire,
                 )?;
@@ -7024,6 +7146,7 @@ mod tests {
                             agentfile: None,
                             mac: None,
                             link_local: Vec::new(),
+                            engine: None,
                         },
                         || {
                             offered
@@ -8686,6 +8809,7 @@ mod tests {
                 agentfile: None,
                 mac: None,
                 link_local: Vec::new(),
+                engine: None,
             };
             let _inbox = t.daemon.register(ready, &id, keep);
             say(&vm, kind::STARTED, &[]);
@@ -8734,6 +8858,7 @@ mod tests {
                 agentfile: None,
                 mac: None,
                 link_local: Vec::new(),
+                engine: None,
             };
             let _inbox = t.daemon.register(ready, &id, keep);
             say(&vm, kind::STARTED, &[]);
@@ -9147,6 +9272,73 @@ mod tests {
                 lock(&d.state).starting.len() == 1 && matches!(*lock(&d.spare), Spare::Made(..))
             });
             assert_eq!(lock(&t.daemon.state).pools[&dir].starting, 1);
+        });
+    }
+
+    /// A connection a run's command made to its own microVM's engine (D181), which its VM
+    /// hands over, is answered as taken (M24), and served scoped to that microVM; one from
+    /// a run with no engine of its own is answered too, and closed unserved.
+    #[test]
+    fn an_engine_connection_is_served_for_a_run_with_its_own_engine_alone() {
+        use std::io::{Read as _, Write as _};
+        let t = Test::new("engine-conn");
+        t.run(|t| {
+            for (name, engine) in [("own", Some([7u8; shards_abi::run::TOKEN])), ("none", None)] {
+                let id = t.create(name);
+                let (ready, vm) = t.warm_vm(None);
+                let keep = Keep {
+                    detached: None,
+                    options: crate::spec::Options::default(),
+                    health: None,
+                    published: Vec::new(),
+                    named: None,
+                    restarted: false,
+                    layer_pending: false,
+                    log_files: DEFAULT_LOGS.files,
+                    log_compress: false,
+                    visit: false,
+                    egress: None,
+                    agentfile: None,
+                    mac: None,
+                    link_local: Vec::new(),
+                    engine,
+                };
+                let _inbox = t.daemon.register(ready, &id, keep);
+                say(&vm, kind::STARTED, &[]);
+                let (ours, theirs) = UnixStream::pair().unwrap();
+                // Before its far end may close: XNU sets no option on a socket closed both
+                // ways (sosetoptlock).
+                ours.set_read_timeout(Some(PATIENCE)).unwrap();
+                shards_ipc::send(&vm, kind::ENGINE_CONN, &5u64.to_be_bytes(), &[theirs.as_fd()]).unwrap();
+                drop(theirs);
+                t.daemon.settle();
+                assert_eq!(heard(&vm), (kind::ENGINE_CONN, 5u64.to_be_bytes().to_vec()));
+                let arrived = t.daemon.engine.take_arrived();
+                match engine {
+                    Some(_) => {
+                        let [(provider, conn)] = <[(String, UnixStream); 1]>::try_from(arrived).unwrap();
+                        assert_eq!(provider, id);
+                        t.t.daemon
+                            .take_engine(t.threads, conn, Some(engine::Scope { provider }));
+                        (&ours)
+                            .write_all(b"GET /_ping HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")
+                            .unwrap();
+                        let mut answer = String::new();
+                        (&ours).read_to_string(&mut answer).unwrap();
+                        assert!(
+                            answer.starts_with("HTTP/1.1 200 OK\r\n") && answer.ends_with("\r\n\r\nOK"),
+                            "{answer}"
+                        );
+                    }
+                    None => {
+                        assert!(arrived.is_empty());
+                        let mut answer = Vec::new();
+                        (&ours).read_to_end(&mut answer).unwrap();
+                        assert_eq!(answer, b"");
+                    }
+                }
+                say(&vm, kind::DONE, &[0]);
+            }
         });
     }
 

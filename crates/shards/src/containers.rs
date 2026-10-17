@@ -95,6 +95,17 @@ pub struct Container {
     /// and what keeps `--rm` from removing it, snapshots and all, as it stops.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub saved: Option<String>,
+    /// The microVM whose own engine made it (D181), by which that engine alone reaches it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub engine_made: Option<EngineMade>,
+}
+
+/// A container made through a microVM's own engine (D181): that microVM's container ID,
+/// and the name the container has there, as that engine's clients name it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EngineMade {
+    pub of: String,
+    pub name: String,
 }
 
 /// A container's restart policy (HostConfig.RestartPolicy) and what its restart manager
@@ -735,6 +746,7 @@ mod tests {
             restart: Default::default(),
             size_rw: None,
             saved: None,
+            engine_made: None,
         }
     }
 

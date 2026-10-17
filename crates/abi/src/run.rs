@@ -18,6 +18,12 @@ pub const SIGNAL_PORT: u32 = 1025;
 /// exec`), after the host asks for one with [`kind::EXEC`]. The host takes every
 /// connection to it, and keeps those whose [`kind::HELLO`] names a token it sent.
 pub const EXEC_PORT: u32 = 1027;
+/// The host port the guest dials for each connection its command makes to its own
+/// microVM's engine (`--use-api-socket`, D181): the run's engine token first ([`TOKEN`]
+/// bytes), then the Engine API's bytes, relayed to the daemon.
+pub const ENGINE_PORT: u32 = 1029;
+/// Where the command finds its microVM's engine: a socket shards-init listens on.
+pub const ENGINE_SOCKET: &str = "/run/shards/engine.sock";
 /// The bytes of an exec's token.
 pub const TOKEN: usize = 16;
 pub const HEADER: usize = 8;

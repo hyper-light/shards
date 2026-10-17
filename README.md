@@ -129,6 +129,20 @@ mounts while it runs. A network's microVMs reach each other by name and nothing 
 it. Stats add what the microVM itself costs your machine (`microvm`: its memory and CPU
 time). A setting a microVM can't take is refused with the reason, never dropped.
 
+### A microVM's own engine
+
+`shards run --use-api-socket` gives the program it runs an engine of its own microVM's:
+`DOCKER_HOST` points at a socket in its own files (`/run/shards/engine.sock`), so the
+`docker` CLI, Testcontainers and CI tools inside it make their containers in that same
+microVM. They reach nothing past it: not your machine's engine, not its files, not your
+other microVMs, and your registry logins stay outside it. Two microVMs' programs can each
+make a container called `db`; on your machine they're listed as `MICROVM.db`. What a
+microVM's engine made stops when its program does, and is removed with it. `docker run
+--use-api-socket` through shards' Engine API does the same, and the credentials the
+`docker` CLI would copy in are refused (it warns). So far its program can make, start,
+stop, kill, wait for, read the logs of, list, inspect and remove containers of its own
+microVM's image; a call it can't serve yet is refused with what it serves.
+
 ### Boot a kernel yourself
 
 You need a kernel and a program to run as PID 1. Download shards' kernel, built

@@ -745,6 +745,9 @@ pub fn option_ours(docker: &str) -> Option<&'static str> {
         "Name of the Dockerfile (default: \"PATH/Dockerfile\")" => {
             "Name of the Agentfile or Dockerfile (default: \"PATH/Agentfile\", else \"PATH/Dockerfile\")"
         }
+        "Bind mount Docker API socket and required auth" => {
+            "Give the command its own microVM's engine at DOCKER_HOST, its credentials kept outside"
+        }
         _ => return None,
     })
 }
@@ -1001,6 +1004,10 @@ mod tests {
         assert!(
             option_ours("Give extended privileges to the command")
                 .is_some_and(|s| s.contains("none of the host's"))
+        );
+        assert_eq!(
+            option_ours("Bind mount Docker API socket and required auth"),
+            Some("Give the command its own microVM's engine at DOCKER_HOST, its credentials kept outside")
         );
         assert_eq!(
             option_ours("Show all containers (default shows just running)"),

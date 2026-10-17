@@ -148,7 +148,7 @@ fn hung_up(client: &UnixStream) -> bool {
 
 /// The warnings a create's daemon said, as the API gives them: each line, its `WARNING: `
 /// taken off.
-fn warnings(said: &str) -> Vec<String> {
+pub(super) fn warnings(said: &str) -> Vec<String> {
     said.lines()
         .map(str::trim)
         .filter(|l| !l.is_empty())
@@ -191,7 +191,7 @@ impl<D: Disk> Daemon<D> {
 
     /// The command of image `image` as the store keeps it, for a create's empty
     /// entrypoint (create.rs).
-    fn image_cmd<'s, 'e>(
+    pub(super) fn image_cmd<'s, 'e>(
         &'s self,
         threads: &'s Threads<'s, 'e>,
         image: &str,
@@ -240,7 +240,11 @@ impl<D: Disk> Daemon<D> {
 
     /// Puts `run` to the daemon with nothing to read and nothing to write to: a create,
     /// or a detached start. What it says on stderr is its answer's.
-    fn run_detached<'s, 'e>(&'s self, threads: &'s Threads<'s, 'e>, run: &Run) -> Result<RunAnswer, String> {
+    pub(super) fn run_detached<'s, 'e>(
+        &'s self,
+        threads: &'s Threads<'s, 'e>,
+        run: &Run,
+    ) -> Result<RunAnswer, String> {
         let null = File::open("/dev/null").map_err(|e| format!("/dev/null: {e}"))?;
         let (said, said_by) = io::pipe().map_err(|e| format!("a pipe: {e}"))?;
         let conn = self.put_run(threads, run, [null.as_fd(), null.as_fd(), said_by.as_fd()])?;

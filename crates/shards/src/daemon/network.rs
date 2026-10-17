@@ -138,6 +138,14 @@ pub fn check(
         if !run.expose.is_empty() {
             return Err(theirs("--expose", "ports: expose them on that run"));
         }
+        // Its microVM's engine is the command's of the run it joins, in that run's files
+        // (D181): a joiner has none of its own.
+        if run.use_api_socket {
+            return Err(
+                "--use-api-socket: a run joining another's microVM has no engine of its own: that microVM's is its own command's, which --use-api-socket on that run gives it"
+                    .into(),
+            );
+        }
     }
     let mut endpoints: Vec<Endpoint> = Vec::with_capacity(run.endpoints.len());
     for e in &run.endpoints {
@@ -554,6 +562,14 @@ mod tests {
         assert_eq!(
             check(&r),
             said("--expose: a run joining another's microVM takes that run's ports: expose them on that run")
+        );
+        let mut r = joined();
+        r.use_api_socket = true;
+        assert_eq!(
+            check(&r),
+            said(
+                "--use-api-socket: a run joining another's microVM has no engine of its own: that microVM's is its own command's, which --use-api-socket on that run gives it"
+            )
         );
         // dns before exposing, as dockerd checks them.
         let mut r = joined();

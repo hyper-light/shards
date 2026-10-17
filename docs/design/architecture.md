@@ -4515,6 +4515,103 @@ removed socket not bound again; the sockets kept as the daemon closes; the relay
 up as it stops; a machine's refusal unsaid; the client's writer failing and its command run
 on; a reader gone said as an error.
 
+### D181. `--use-api-socket`: a run's command reaches its own microVM's engine (slice 1 built)
+
+The need: a CI job, a test suite with testcontainers, or an agent's tool runs `docker run`
+from inside its workload, as on a host with Docker. The user's call (2026-10-16): what it
+reaches is the microVM's own engine. Docker's flag (docker/cli v29.8.1
+cli/command/container/create.go, marked experimental) does two things, both what shards
+does not: it binds the host engine's own socket into the container, so the workload
+controls the host's Docker, every container and image of it, as root does; and it writes
+every registry credential the CLI holds into the container's files
+(`/run/secrets/docker/config.json`, `DOCKER_CONFIG`), which its own comment says stay
+there where the container is not removed.
+
+- **What the command gets.** An Engine API endpoint of its own microVM's: a socket in its
+  own files, `/run/shards/engine.sock`, and `DOCKER_HOST=unix:///run/shards/engine.sock`
+  where its run's options name none (over its image's own, which names an engine the
+  flag replaces), so that the docker CLI, Docker's SDKs and testcontainers find it
+  unchanged. No socket of the host's, and nothing at Docker's own path. The socket is the
+  standby's to make, in the command's own view of its files, after the run's mounts (a
+  tmpfs over `/run` holds it) and before its root is made read-only (`--read-only` keeps
+  it), mode 0666: whoever the command runs as or becomes reaches it, and no process but
+  the run's own sees the path.
+- **What it makes: joiners of its own microVM.** A container it creates there is a joiner
+  of its microVM (D119): its own image, its own mount, PID, IPC and UTS namespaces and
+  cgroup, its record, log and end, in the microVM's network namespace, as a pod's
+  containers share theirs. `--network` default or `host` is the microVM's, `container:X`
+  one of its own; the microVM's boundary holds the host from all of them, and default deny
+  holds as for the microVM. It is named in the scope as the command named it, and on the
+  host after its microVM's name (`PROV.NAME`), so that two microVMs' engines making the
+  same name (two CI jobs of one project) never collide, where a shared dockerd's do. Its
+  record keeps which microVM's engine made it (`engine_made`). It ends as its microVM's
+  command does, as a nested engine's containers end with it: init kills each joiner its
+  engine made as the command ends (`engine-made`), where a joiner made otherwise outlives
+  it (D119); and it goes with its microVM, removed as that is.
+- **Scoped, whatever is asked.** Through it, a command sees and acts on what its own
+  engine made alone, by the names it gave: list, inspect, start, stop, kill, wait, logs,
+  remove; `_ping`, `version`, and an `info` of its own (its containers, its image, its
+  microVM's CPUs and memory where its run limits them, its hostname; none of its host's
+  name, directories, proxies or descriptors). Another microVM, its own included, is not
+  there for it (404, as one that is not). What would reach past the microVM is refused
+  with what asked for it (403): a bind (the host's files), a named volume, another
+  network, the host's GPUs, CDI and VFIO devices, a log driver that sends logs from the
+  host past the microVM's grants, another runtime, an engine of its own for a joiner (the
+  docker CLI's `--use-api-socket` inside is a bind, refused so). An image other than its
+  microVM's own is not there for it until it pulls (slice 2). A call it does not serve is
+  answered 501 before its body is read, naming what it serves; a registry login, 403.
+- **No credential enters the microVM.** A pull through it will be the daemon's, with the
+  credentials the run's client sent with the run, never written into the microVM; a
+  registry login asked from inside is refused.
+- **The docker CLI's own flag, asked of shards' engine** (`docker run --use-api-socket`
+  over `engine.sock`): its bind of its engine's socket (`/var/run/docker.sock`, bind
+  options none set) is the microVM's own engine instead, and its `DOCKER_CONFIG` goes with
+  it; the copy of its credentials it makes after the create (an archive whose first entry
+  is `/run/secrets/docker/config.json`) is refused, which the CLI warns of: they never
+  reach the microVM.
+- **How a request travels, by no socket of the host's.** The command's connection is
+  taken by a process of init's (outside the command's cgroup, as the DNS relay is, started
+  before the command so that what keeps it from starting keeps the command from starting),
+  which dials the host over vsock (`ENGINE_PORT`) for each, says a hello with its run's
+  token first, and relays the bytes each way; the host's end ends the client's both ways,
+  so that no relay outlives a connection the engine closed. The VM process registers the
+  port only for a warm VM's run, and serves it only where its run has a token: its hello
+  reader (exec's, review 8.8) checks each in constant time and hands the daemon those that
+  say it, over the run's own link (`ENGINE_CONN`), holding its copy until the daemon says
+  it has it (M24); any other is closed, and a run with no engine has no port (refused). A
+  process of the microVM's that dials the port itself, past its seccomp filter, says no
+  token its init was given. The daemon serves the connections of a run that has an engine
+  alone, on the listener's threads, scoped to that run's microVM. A save keeps the token,
+  which its restored guest's relay goes on saying (D176). No path on the host names the
+  endpoint.
+- **No microVM's engine takes the host's daemon.** Each of its connections holds a thread
+  of the daemon's, and is counted as a client in hand (`busy`), of the clients the
+  daemon's threads hold (`most_clients`: the process's thread limit past the daemon's own
+  threads, at a client's two each; macOS gives 16,384 threads a process). A microVM's
+  engine holds an equal share of them alone, among the host's own clients and each
+  microVM whose engine holds any: one alone holds half, two a third each. Past its share,
+  or where the daemon holds as many clients as its threads do, a connection is answered
+  503 with why and closed; one of its own going makes room. Without it, a workload's
+  1,023 idle connections (the vsock muxer's bound, Firecracker's) held as many of the
+  daemon's threads, and sixteen microVMs held them all.
+
+Tested on real microVMs (`a_runs_command_reaches_its_own_microvms_engine`: made, started,
+waited for, logged, listed, inspected and removed through it, the host's other microVM and
+itself unseen, a bind and a login refused, a call not served answered 501, one left running
+ended with its command and removed with its microVM;
+`the_docker_clis_use_api_socket_is_the_microvms_own_engine`; isolation's
+`a_microvms_engine_port_answers_its_inits_token_alone`, a tmpfs over `/run` and a read-only
+root among its cases, and the engine port among those a workload reaches none of), and in
+the daemon (`an_engine_connection_is_served_for_a_run_with_its_own_engine_alone`) and the
+scope (`a_scope_sees_its_own_containers_by_their_names_there`,
+`a_create_stays_in_its_microvm`).
+
+Slices: (1) built, as above; (2) pulls with the run's credentials (an image the scope
+pulled its own), attach, exec, and binds of the microVM's own files (a bind's source a
+path in the command's own view of its files, the meaning a bind has on the engine's own
+host, where Docker's flag binds the host's path, which the command's files are not);
+(3) Compose through it.
+
 ### D179. Other CPUs' images, emulated in their microVM (parts 1 to 3 built)
 
 Images built on an arm64 Mac usually ship to x86_64 hosts, and the other way round, and a
