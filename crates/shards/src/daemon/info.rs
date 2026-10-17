@@ -25,6 +25,40 @@ pub(super) struct Facts {
     memory: Option<u64>,
     name: Option<String>,
     root: String,
+    /// A microVM's own engine's (D181): nothing of its host's that the microVM has no
+    /// part of, its proxies (whose URLs may hold credentials) and descriptors among them.
+    scoped: bool,
+}
+
+/// What a microVM's own engine says of itself (D181): its own containers and images, and
+/// the microVM's CPUs, memory and name, where its run gives them.
+pub(super) struct Scoped {
+    pub(super) containers: usize,
+    pub(super) running: usize,
+    pub(super) paused: usize,
+    pub(super) images: usize,
+    pub(super) cpus: Option<usize>,
+    pub(super) memory: Option<u64>,
+    pub(super) name: Option<String>,
+}
+
+impl Facts {
+    /// These facts as a microVM's own engine gives them.
+    pub(super) fn scoped(self, s: Scoped) -> Facts {
+        Facts {
+            containers: s.containers,
+            running: s.running,
+            paused: s.paused,
+            stopped: s.containers.saturating_sub(s.running).saturating_sub(s.paused),
+            images: s.images,
+            cpus: s.cpus.unwrap_or(self.cpus),
+            memory: s.memory.or(self.memory),
+            name: s.name,
+            root: String::new(),
+            scoped: true,
+            ..self
+        }
+    }
 }
 
 impl<D: crate::containers::Disk> Daemon<D> {
@@ -80,6 +114,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
             memory: crate::build::host_memory(),
             name: host_name(),
             root: self.home.display().to_string(),
+            scoped: false,
         }
     }
 }
@@ -183,6 +218,9 @@ pub(super) fn server(f: &Facts, name: &'static str) -> shards_template::Struct {
     let int = |n: usize| Value::Int(i64::try_from(n).unwrap_or(i64::MAX));
     let strs = |l: &[&str]| Value::strings(l.iter().copied());
     let env = |name: &str| {
+        if f.scoped {
+            return String::new();
+        }
         std::env::var(name)
             .or_else(|_| std::env::var(name.to_lowercase()))
             .unwrap_or_default()
@@ -260,7 +298,7 @@ pub(super) fn server(f: &Facts, name: &'static str) -> shards_template::Struct {
         .field("PidsLimit", Value::Bool(false))
         .field("IPv4Forwarding", Value::Bool(true))
         .field("Debug", Value::Bool(false))
-        .field("NFd", int(open_descriptors()))
+        .field("NFd", int(if f.scoped { 0 } else { open_descriptors() }))
         .field("OomKillDisable", Value::Bool(false))
         .field("NGoroutines", int(0))
         .field("SystemTime", s(&super::inspect_doc::go_time(Some(now))))

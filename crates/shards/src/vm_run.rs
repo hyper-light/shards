@@ -1032,6 +1032,13 @@ fn serve_workload(
         }
         let (exec_port, execs) = std::sync::mpsc::channel();
         vsock.every.push((shards_abi::run::EXEC_PORT, exec_port));
+        // A warm VM's run may have its own engine (D181), its daemon's to serve: its port's
+        // connections wait for the run, which takes them or lets the port go.
+        let engines = matches!(command, Command::Warm(..)).then(|| {
+            let (engine_port, engines) = std::sync::mpsc::channel();
+            vsock.every.push((shards_abi::run::ENGINE_PORT, engine_port));
+            engines
+        });
         // A warm VM's signals come from its client. The command line's are this process's:
         // blocked before the VM's threads start, so that they inherit the mask.
         // One workload a process (M34): what its threads share lives as long as they do.
@@ -1114,6 +1121,7 @@ fn serve_workload(
                     Command::Warm(link, resumed) => {
                         let client: std::sync::OnceLock<Option<std::os::unix::net::UnixStream>> =
                             std::sync::OnceLock::new();
+                        let engines = std::cell::Cell::new(engines);
                         let started = || {
                             crate::warm::started(&link);
                             end_recording_in(&stopper, RECORD_FOR);
@@ -1165,6 +1173,20 @@ fn serve_workload(
                                 &|| moved().inspect_err(|e| report(e)),
                                 resumed,
                             )?;
+                            // Its own engine (D181), before its guest hears of the run, where
+                            // it has one; where not, its port is let go, and refuses. A resumed
+                            // run's token comes after its save's (D176): its guest's relay says
+                            // the one it said before.
+                            let (tokens, engine) = match &request.tokens {
+                                Some(t) => {
+                                    let (run, engine) = t.split_at_checked(2 * shards_abi::run::TOKEN).unwrap_or((t, &[]));
+                                    (Some(run.to_vec()), <[u8; shards_abi::run::TOKEN]>::try_from(engine).ok())
+                                }
+                                None => (None, crate::warm::engine_token(&request.spec)),
+                            };
+                            if let (Some(engines), Some(token)) = (engines.take(), engine) {
+                                crate::warm::serve_engine(&link, token, engines).inspect_err(|e| report(e))?;
+                            }
                             // The run's own most memory to plug, before its guest hears of
                             // it (D148), none included: the template's is the host's. A VM
                             // with none to plug has what it booted with.
@@ -1199,7 +1221,7 @@ fn serve_workload(
                             // them again as it resumes, by its save's tokens; in a guest whose
                             // init speaks this shards' protocol, as a run is handed only to
                             // such a guest.
-                            let conns = match &request.tokens {
+                            let conns = match &tokens {
                                 Some(tokens) => {
                                     let conns = workload::await_resumed(tokens).inspect_err(|e| report(e))?;
                                     let abi = stopper.guest_abi();

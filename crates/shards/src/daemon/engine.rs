@@ -17,6 +17,7 @@ mod files;
 mod http;
 mod images;
 mod networks;
+mod scope;
 mod volumes;
 mod watch;
 
@@ -35,6 +36,7 @@ use super::{Daemon, Threads, lock, log};
 use crate::build::proxy::head::{self, Body, Head};
 use crate::containers::Disk;
 use http::Answer;
+pub(super) use scope::Scope;
 
 /// The socket, relative to the home, the daemon's working directory, as `daemon.sock` is.
 pub(super) const SOCKET: &str = "engine.sock";
@@ -69,6 +71,11 @@ pub(super) struct Engine {
     /// Runs' stdins their attached client detached from, kept open until the run ends: a
     /// detach leaves a command's stdin as it was.
     stdins: Mutex<HashMap<String, std::io::PipeWriter>>,
+    /// Connections runs' commands made to their own microVMs' engines (D181), by the run's
+    /// ID, for the listener, which has the threads to serve them, to take.
+    arrived: Mutex<Vec<(String, UnixStream)>>,
+    /// How many connections each microVM's own engine holds open (D181), by its run's ID.
+    scoped: Mutex<HashMap<String, usize>>,
 }
 
 impl Engine {
@@ -79,6 +86,51 @@ impl Engine {
         lock(&self.conns).insert(number, conn);
         self.open.fetch_add(1, Ordering::SeqCst);
         number
+    }
+
+    /// Keeps `conn`, a connection run `provider`'s command made to its own microVM's engine
+    /// (D181), for the listener to take ([`Engine::take_arrived`]).
+    pub(super) fn arrive(&self, provider: &str, conn: UnixStream) {
+        lock(&self.arrived).push((provider.to_string(), conn));
+    }
+
+    /// The connections runs' commands made to their own microVMs' engines since the last
+    /// look.
+    pub(super) fn take_arrived(&self) -> Vec<(String, UnixStream)> {
+        std::mem::take(&mut *lock(&self.arrived))
+    }
+
+    /// Admits one more connection of microVM `provider`'s own engine (D181), or says why
+    /// not. Each holds a thread of the daemon's, as a client in hand does, and is one
+    /// (`busy`): of the `most` clients the daemon's threads hold, a microVM's engine holds
+    /// an equal share alone, among the host's own clients and each microVM whose engine
+    /// holds any, so that none takes the host's or another's.
+    fn admit(&self, provider: &str, most: usize, busy: &AtomicUsize) -> Result<(), String> {
+        let mut held = lock(&self.scoped);
+        let others = held.iter().filter(|(p, n)| *p != provider && **n > 0).count();
+        let share = share(most, others);
+        let mine = held.get(provider).copied().unwrap_or(0);
+        if mine >= share || busy.load(Ordering::SeqCst) >= most {
+            return Err(format!(
+                "this microVM's engine holds {mine} connections, its share of what the daemon's threads hold, which {} microVMs' engines and their host's own clients share: close one",
+                others + 1
+            ));
+        }
+        *held.entry(provider.to_string()).or_default() += 1;
+        busy.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }
+
+    /// Lets go of a connection [`admit`](Self::admit) took.
+    fn release(&self, provider: &str, busy: &AtomicUsize) {
+        let mut held = lock(&self.scoped);
+        if let Some(n) = held.get_mut(provider) {
+            *n = n.saturating_sub(1);
+            if *n == 0 {
+                held.remove(provider);
+            }
+        }
+        busy.fetch_sub(1, Ordering::SeqCst);
     }
 
     /// Lets go of connection `number`, which has ended.
@@ -292,11 +344,19 @@ struct RunAnswer {
 
 impl<D: Disk> Daemon<D> {
     /// Takes an API client's connection: this user's processes alone, as `take` takes the
-    /// CLI's, served on a thread of its own until it closes.
-    pub(super) fn take_engine<'s, 'e>(&'s self, threads: &'s Threads<'s, 'e>, conn: UnixStream) {
+    /// CLI's, served on a thread of its own until it closes; or, with `scope`, one a run's
+    /// command made to its own microVM's engine, which its VM handed over (D181), served
+    /// scoped to that microVM.
+    pub(super) fn take_engine<'s, 'e>(
+        &'s self,
+        threads: &'s Threads<'s, 'e>,
+        conn: UnixStream,
+        scope: Option<Scope>,
+    ) {
         // SAFETY: geteuid(2) cannot fail.
         let ours = unsafe { libc::geteuid() };
         match shards_ipc::peer_uid(&conn) {
+            _ if scope.is_some() => {}
             Ok(uid) if uid == ours => {}
             Ok(uid) => {
                 log(format!("refused an API client of user {uid}"));
@@ -311,26 +371,43 @@ impl<D: Disk> Daemon<D> {
             log(format!("an API client's connection: {e}"));
             return;
         }
+        let provider = scope.as_ref().map(|s| s.provider.clone());
+        if let Some(p) = &provider
+            && let Err(why) = self.engine.admit(p, self.max_clients, &self.busy)
+        {
+            if let Err(e) = answered_busy(&conn, &why) {
+                log(format!("container {p}: refusing an engine connection: {e}"));
+            }
+            return;
+        }
+        let release = |provider: &Option<String>| {
+            if let Some(p) = provider {
+                self.engine.release(p, &self.busy);
+            }
+        };
         let number = match conn.try_clone() {
             Ok(held) => self.engine.hold(held),
             Err(e) => {
+                release(&provider);
                 log(format!("an API client's connection: {e}"));
                 return;
             }
         };
-        let done = move || {
+        let done = move |provider: &Option<String>| {
             self.engine.let_go(number);
+            release(provider);
             *lock(&self.last) = Instant::now();
             self.wake_listener();
         };
+        let theirs = provider.clone();
         let spawned = std::thread::Builder::new()
             .name("engine".into())
             .spawn_scoped(threads, move || {
-                self.engine_connection(threads, &conn);
-                done();
+                self.engine_connection(threads, &conn, scope.as_ref());
+                done(&theirs);
             });
         if let Err(e) = spawned {
-            done();
+            done(&provider);
             log(format!("an API client's thread: {e}"));
         }
     }
@@ -347,7 +424,12 @@ impl<D: Disk> Daemon<D> {
     }
 
     /// Serves the calls on `conn` one after another, as long as it is kept open.
-    fn engine_connection<'s, 'e>(&'s self, threads: &'s Threads<'s, 'e>, conn: &UnixStream) {
+    fn engine_connection<'s, 'e>(
+        &'s self,
+        threads: &'s Threads<'s, 'e>,
+        conn: &UnixStream,
+        scope: Option<&Scope>,
+    ) {
         let Ok(reading) = conn.try_clone() else {
             return;
         };
@@ -367,7 +449,7 @@ impl<D: Disk> Daemon<D> {
             // A call is the daemon's work, as a run is.
             *lock(&self.last) = Instant::now();
             after_post = head.method == "POST";
-            if !self.engine_call(threads, conn, &head, &mut reader) || head.wants_close() {
+            if !self.engine_call(threads, conn, &head, &mut reader, scope) || head.wants_close() {
                 return;
             }
         }
@@ -380,6 +462,7 @@ impl<D: Disk> Daemon<D> {
         conn: &UnixStream,
         head: &Head,
         reader: &mut BufReader<shards_ipc::Polled<UnixStream>>,
+        scope: Option<&Scope>,
     ) -> bool {
         let (target, query) = head.target.split_once('?').unwrap_or((&head.target, ""));
         // Its version, where its path gives one (moby's router: `/v{version:[0-9.]+}`).
@@ -421,9 +504,13 @@ impl<D: Disk> Daemon<D> {
             query: parse_query(query),
             body: Vec::new(),
         };
+        let path: Vec<&str> = call.path.iter().map(String::as_str).collect();
+        // A microVM's own engine (D181) answers what it does not serve before reading on.
+        if scope.is_some() && !scope::serves(&head.method, &path) {
+            return refuse(reader, scope::unserved(&head.method, &head.target));
+        }
         // An upload is taken as it comes, never whole: files copied into a microVM, an
         // archive of images loaded, a root filesystem imported.
-        let path: Vec<&str> = call.path.iter().map(String::as_str).collect();
         let upload = match (head.method.as_str(), path.as_slice()) {
             ("PUT", ["containers", id, "archive"]) => Some(Upload::Files((*id).to_string())),
             ("POST", ["images", "load"]) => Some(Upload::Images),
@@ -458,7 +545,11 @@ impl<D: Disk> Daemon<D> {
             );
             return answered_first(conn, head, answer, &mut body);
         }
-        match self.route(threads, conn, &call) {
+        let done = match scope {
+            Some(scope) => self.route_scoped(threads, conn, &call, scope),
+            None => self.route(threads, conn, &call),
+        };
+        match done {
             Done::Answer(answer) => answer.write(conn, head, true).is_ok(),
             Done::Keep => true,
             Done::Close => false,
@@ -622,11 +713,11 @@ impl<D: Disk> Daemon<D> {
     /// as the CLI gives one (`-i`, a copy's archive, an import's `-`): the body into it as
     /// it comes, never staged, and the daemon's answer heard meanwhile, so that a command
     /// that refuses stops reading and its answer still comes.
-    fn ask_with_body<'s, 'e, R: io::BufRead>(
+    fn ask_with_body<'s, 'e>(
         &'s self,
         threads: &'s Threads<'s, 'e>,
         argv: &[&str],
-        body: &mut Body<'_, R>,
+        body: &mut dyn io::Read,
     ) -> Result<(u8, Vec<u8>, Vec<u8>), String> {
         let (from, mut into) = io::pipe().map_err(|e| format!("a pipe: {e}"))?;
         let ipc = self.command_conn_with(threads, argv, shards_ipc::registry_env(), &[from.as_fd()])?;
@@ -765,6 +856,27 @@ pub(super) fn unanswered(conn: &UnixStream, why: &str) -> io::Result<()> {
         fields: Vec::new(),
     };
     Answer::error(502, why).write(conn, &head, false)
+}
+
+/// A microVM's own engine's share of the `most` clients the daemon's threads hold (D181),
+/// where `others` other microVMs' engines hold connections: the host's own clients, each of
+/// theirs and its own, equally; one at the least.
+fn share(most: usize, others: usize) -> usize {
+    (most / others.saturating_add(2)).max(1)
+}
+
+/// Answers a connection the daemon has no thread for now with `why`, unread, closed after:
+/// a 503 (RFC 9110 §15.6.4), which Docker's clients say as `Error response from daemon:
+/// WHY`.
+fn answered_busy(conn: &UnixStream, why: &str) -> io::Result<()> {
+    let head = Head {
+        method: "GET".into(),
+        target: String::new(),
+        major: 1,
+        minor: 1,
+        fields: Vec::new(),
+    };
+    Answer::error(503, why).write(conn, &head, false)
 }
 
 /// `_ping`: that the engine serves, and its API's version, which clients negotiate by; and
@@ -923,6 +1035,38 @@ mod tests {
                 ("x".into(), "a b".into())
             ]
         );
+    }
+
+    /// A microVM's own engine holds its share of the daemon's clients alone (D181): the
+    /// host's own and each engine holding any, equally; a microVM over its share is refused
+    /// until one of its own goes, and none is refused where the daemon has none to give.
+    #[test]
+    fn a_microvms_engine_holds_its_share_of_the_daemons_clients() {
+        assert_eq!(
+            (share(12, 0), share(12, 1), share(12, 2), share(1, 5)),
+            (6, 4, 3, 1)
+        );
+        let engine = Engine::default();
+        let busy = AtomicUsize::new(0);
+        for _ in 0..6 {
+            engine.admit("a", 12, &busy).unwrap();
+        }
+        let refused = engine.admit("a", 12, &busy).unwrap_err();
+        assert!(
+            refused.starts_with("this microVM's engine holds 6 connections"),
+            "{refused}"
+        );
+        // Another's share, while the first holds its own: a third each.
+        for _ in 0..4 {
+            engine.admit("b", 12, &busy).unwrap();
+        }
+        assert!(engine.admit("b", 12, &busy).is_err());
+        assert!(engine.admit("a", 12, &busy).is_err());
+        engine.release("a", &busy);
+        assert_eq!(busy.load(Ordering::SeqCst), 9);
+        // Every client the daemon holds in hand: none for anyone.
+        busy.store(12, Ordering::SeqCst);
+        assert!(engine.admit("c", 12, &busy).is_err());
     }
 
     #[test]

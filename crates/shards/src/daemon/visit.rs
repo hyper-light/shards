@@ -211,6 +211,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
                 agentfile: None,
                 mac: None,
                 link_local: Vec::new(),
+                engine: None,
             },
             || self.warm_for(threads, &prepared, &start, &|_| {}),
         );

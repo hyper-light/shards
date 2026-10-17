@@ -6,7 +6,7 @@
 //! microVM's guest packs goes from it straight onto the client's connection, never
 //! through the daemon; what a client uploads is taken as it comes, never staged.
 
-use std::io::BufRead;
+use std::io::{self, BufRead, Read as _};
 use std::os::fd::AsFd as _;
 use std::os::unix::net::UnixStream;
 
@@ -82,10 +82,35 @@ impl<D: Disk> Daemon<D> {
         } else {
             "1"
         };
+        // Into a microVM with its own engine (D181), the copy the docker CLI's
+        // --use-api-socket makes of its credentials is refused: they stay outside, where its
+        // engine pulls with them. Its archive's first header names the file.
+        let mut first = Vec::with_capacity(512);
+        let engined = self
+            .resolve(given)
+            .ok()
+            .and_then(|id| self.made_by(&id))
+            .is_some_and(|r| r.use_api_socket);
+        if engined {
+            if io::Read::take(&mut *body, 512).read_to_end(&mut first).is_err() {
+                return Done::Close;
+            }
+            let name = first.get(..100).unwrap_or_default();
+            let name = name.split(|&b| b == 0).next().unwrap_or_default();
+            if name.strip_prefix(b"/").unwrap_or(name)
+                == super::create::CLI_CREDENTIALS.trim_start_matches('/').as_bytes()
+            {
+                return Done::Answer(Answer::error(
+                    403,
+                    "your registries' credentials stay outside the microVM: its own engine pulls with them, and nothing in it reads them",
+                ));
+            }
+        }
+        let mut whole = io::Cursor::new(first).chain(body);
         let answered = self.ask_with_body(
             threads,
             &[COPY_STEP, "extract", given, path, owners, overwrite],
-            body,
+            &mut whole,
         );
         Done::Answer(match answered {
             Ok((0, _, _)) => Answer::text(200, ""),

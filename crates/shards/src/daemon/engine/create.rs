@@ -95,11 +95,18 @@ pub fn run_of(
     };
     let log = host.get("LogConfig").unwrap_or(&Value::Null);
     let weight = number(host, "BlkioWeight");
+    // The docker CLI's --use-api-socket: its microVM's own engine (D181), for the bind of
+    // the CLI's engine's socket it sends, and none of the credentials it means to copy in.
+    let (mounts, use_api_socket) = mounts(host)?;
+    let mut env = strings(body, "Env");
+    if use_api_socket {
+        env.retain(|e| e != CLI_CREDENTIALS_ENV);
+    }
     Ok(Run {
         image,
         cmd,
         entrypoint,
-        env: strings(body, "Env"),
+        env,
         labels: pairs(body, "Labels", "Config.Labels")?,
         expose: exposed(body, &publish)?,
         publish,
@@ -177,7 +184,8 @@ pub fn run_of(
         system_paths: system_paths(host)?,
         binds: strings(host, "Binds"),
         volumes: keys(body, "Volumes"),
-        mounts: mounts(host)?,
+        mounts,
+        use_api_socket,
         volumes_from: strings(host, "VolumesFrom"),
         volume_driver: text(host, "VolumeDriver"),
         init_process: host.get("Init").and_then(Value::as_bool),
@@ -527,7 +535,31 @@ fn devices(host: &Value) -> Result<Devices, String> {
 
 /// Its mounts, as `--mount` keeps them (shards_cmdline::mounts::encode), each checked as
 /// `--mount` checks one.
-fn mounts(host: &Value) -> Result<Vec<String>, String> {
+/// The mount the docker CLI's `--use-api-socket` adds (docker/cli v29.8.1
+/// cli/command/container/create.go): a bind of its engine's socket where it found it, with
+/// bind options none of which is set.
+fn cli_engine_socket(m: &Value) -> bool {
+    const SOCKET: &str = "/var/run/docker.sock";
+    text(m, "Type") == "bind"
+        && text(m, "Source") == SOCKET
+        && text(m, "Target") == SOCKET
+        && !flag(m, "ReadOnly")
+        && m.get("BindOptions").and_then(Value::as_object).is_some_and(|o| {
+            o.values()
+                .all(|v| v.is_null() || v == &Value::Bool(false) || v == "")
+        })
+}
+
+/// The variable the docker CLI's `--use-api-socket` gives a container it copies its
+/// credentials into (create.go, dockerConfigPathInContainer's directory).
+pub(super) const CLI_CREDENTIALS_ENV: &str = "DOCKER_CONFIG=/run/secrets/docker";
+
+/// The file it copies them to.
+pub(super) const CLI_CREDENTIALS: &str = "/run/secrets/docker/config.json";
+
+/// A body's mounts as `--mount` gives them, and whether one was the docker CLI's
+/// `--use-api-socket`'s, which is its microVM's own engine instead (D181).
+fn mounts(host: &Value) -> Result<(Vec<String>, bool), String> {
     use shards_cmdline::mounts::{Bind, Image, Mount, Tmpfs, Volume, encode, parse_mount};
     let map = |v: &Value, k: &str| {
         v.get(k)
@@ -540,7 +572,12 @@ fn mounts(host: &Value) -> Result<Vec<String>, String> {
             .unwrap_or_default()
     };
     let mut out = Vec::new();
+    let mut engine = false;
     for m in host.get("Mounts").and_then(Value::as_array).into_iter().flatten() {
+        if cli_engine_socket(m) {
+            engine = true;
+            continue;
+        }
         let object = |k: &str| m.get(k).filter(|o| o.is_object());
         // Each type's options on its own type alone, as moby takes them, even empty.
         let kind = text(m, "Type");
@@ -609,7 +646,7 @@ fn mounts(host: &Value) -> Result<Vec<String>, String> {
         parse_mount(&encoded, None).map_err(|why| format!("HostConfig.Mounts: {why}"))?;
         out.push(encoded);
     }
-    Ok(out)
+    Ok((out, engine))
 }
 
 /// Its network mode and the endpoints it asks of the networks it joins, as the CLI makes

@@ -726,6 +726,7 @@ fn request(parsed: &Parsed) -> Result<Run, String> {
         group_add: parsed.many("group-add").to_vec(),
         oom_score_adj: parsed.int("oom-score-adj"),
         privileged: parsed.bool("privileged"),
+        use_api_socket: parsed.bool("use-api-socket"),
         binds,
         volumes,
         mounts,

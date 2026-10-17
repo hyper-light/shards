@@ -999,6 +999,12 @@ pub fn failed(entry: &[u8], errno: i32) -> String {
     if text == "cgroups-rw" {
         return format!("error remounting the cgroup hierarchy writable: {err}");
     }
+    if text == "engine" {
+        return format!(
+            "making its microVM's engine at {}: {err}",
+            shards_abi::run::ENGINE_SOCKET
+        );
+    }
     if let Some(rest) = text
         .strip_prefix("volume=")
         .or_else(|| text.strip_prefix("join-volume="))

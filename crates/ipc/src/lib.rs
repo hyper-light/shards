@@ -278,6 +278,11 @@ pub mod kind {
     /// goes on stops it so, as `shards stop daemon` would have: no run outlives its daemon
     /// unreachable.
     pub const STOP_ORDER: u8 = 58;
+    /// A VM → its daemon, on its run's link: one end of a connection its command made to
+    /// its own microVM's engine (`--use-api-socket`, D181), the run's engine token its first
+    /// bytes, for the daemon to check and serve with its Engine API, scoped to that run's
+    /// microVM.
+    pub const ENGINE_CONN: u8 = 59;
 }
 
 /// A `SAVE` flag: the microVM goes on running once saved, rather than stopping.
@@ -667,6 +672,11 @@ pub struct Run {
     /// The GPU requests an Engine API create gives (HostConfig.DeviceRequests but CDI's),
     /// as it gives them (D170); a command line's are `gpus`.
     pub device_requests: Vec<DeviceRequest>,
+    /// `--use-api-socket`: its command reaches its own microVM's engine (D181).
+    pub use_api_socket: bool,
+    /// Made through a microVM's own engine (D181): that microVM's container ID, and the
+    /// name the container has there, none for one its engine names.
+    pub engine_made: Option<(String, String)>,
 }
 
 /// The streams a create says its client attaches (Config.AttachStdin, AttachStdout and
@@ -1240,6 +1250,21 @@ impl Run {
                 },
             ),
             ("streams", self.streams.map(|s| s.values()).unwrap_or_default()),
+            (
+                "use-api-socket",
+                if self.use_api_socket {
+                    vec![String::new()]
+                } else {
+                    Vec::new()
+                },
+            ),
+            (
+                "engine-made",
+                self.engine_made
+                    .as_ref()
+                    .map(|(of, name)| vec![of.clone(), name.clone()])
+                    .unwrap_or_default(),
+            ),
             ("device-requests", {
                 let mut values = Vec::new();
                 for r in &self.device_requests {
@@ -1413,6 +1438,11 @@ impl Run {
                     "resume" => run.resume = values.into_iter().next(),
                     "silent" => run.silent = values.first().is_some_and(|v| v == "true"),
                     "streams" => run.streams = Some(Streams::of(&values)?),
+                    "use-api-socket" => run.use_api_socket = true,
+                    "engine-made" => {
+                        let mut v = values.into_iter();
+                        run.engine_made = v.next().zip(v.next());
+                    }
                     "device-requests" => {
                         let mut rest = values.iter();
                         while rest.len() > 0 {
@@ -2128,6 +2158,8 @@ mod tests {
             ],
             init_process: Some(false),
             pid: "host".into(),
+            use_api_socket: true,
+            engine_made: Some(("prov".into(), String::new())),
         };
         let bytes = run.encode();
         let identity = run.daemon;
@@ -2192,6 +2224,8 @@ mod tests {
             silent: false,
             streams: None,
             device_requests: Vec::new(),
+            use_api_socket: false,
+            engine_made: None,
             ..run.clone()
         };
         let boundary = earlier.encode().len() - 4;

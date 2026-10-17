@@ -351,6 +351,11 @@ pub static RUN: Command = Command {
             "Writable layer options (size: its most bytes)",
         ),
         Flag::value("umask", None, "umask", "Set umask for the container").defaulting("<nil>"),
+        Flag::bool(
+            "use-api-socket",
+            None,
+            "Bind mount Docker API socket and required auth",
+        ),
         Flag::value(
             "blkio-weight",
             None,
@@ -419,8 +424,7 @@ pub static RUN: Command = Command {
     ],
     unserved: "\
 cgroup-parent - s - -\n\
-link - m - -\n\
-use-api-socket - b false -",
+link - m - -",
     interspersed: false,
     error_prefix: "",
 };
@@ -757,6 +761,11 @@ pub static CREATE: Command = Command {
             "Writable layer options (size: its most bytes)",
         ),
         Flag::value("umask", None, "umask", "Set umask for the container").defaulting("<nil>"),
+        Flag::bool(
+            "use-api-socket",
+            None,
+            "Bind mount Docker API socket and required auth",
+        ),
         Flag::value(
             "blkio-weight",
             None,
@@ -824,8 +833,7 @@ pub static CREATE: Command = Command {
     ],
     unserved: "\
 cgroup-parent - s - -\n\
-link - m - -\n\
-use-api-socket - b false -",
+link - m - -",
     interspersed: false,
     error_prefix: "",
 };

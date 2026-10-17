@@ -257,6 +257,11 @@ pub fn main() -> ! {
         "ignore" => ignore(arg(1)),
         "tty" => tty(arg(1)),
         "vsock" => vsock(args.get(1..).unwrap_or_default()),
+        // Dials host port `arg(1)` itself, says a hello with a token none gave it, then asks
+        // an Engine API ping: what a process of a microVM's reaches of its engine (D181)
+        // past the socket its init made, `PORT closed`, `PORT answered N bytes`, `PORT
+        // nothing` or `PORT refused E`.
+        "vsock-hello" => vsock_hello(arg(1).parse().unwrap_or(0)),
         "loopback" => loopback(),
         "fs" => fs(args.get(1..).unwrap_or_default()),
         "addrs" => addrs(),
@@ -265,6 +270,9 @@ pub fn main() -> ! {
         "spawns" => spawns(arg(1).parse().unwrap_or(1), args.get(2..).unwrap_or_default()),
         "tcp" => tcp(arg(1)),
         "fetch" => fetch(args.get(1..).unwrap_or_default()),
+        // One call of the Engine API at $DOCKER_HOST, as a program in a run reaches its
+        // microVM's own engine (D181): `api METHOD PATH [BODY]`.
+        "api" => api(arg(1), arg(2), arg(3)),
         "ask" => ask(arg(1)),
         "resolve" => resolve(arg(1)),
         "udp" => udp(arg(1)),
@@ -1020,6 +1028,81 @@ fn tcp(addr: &str) -> i32 {
 /// request. Says `fetch STATUS BODY` of each, or `fetch error E`, and goes on. With
 /// `--repeat N`, makes it N times, each on a connection of its own, and says how long each
 /// took instead: `fetch-times n=N p50 P p90 P p99 P max M`, in microseconds.
+/// One call of the Engine API at `DOCKER_HOST`, a `unix://` socket, its body JSON where
+/// one is given: `api STATUS-LINE`, then its body, chunks put together and a stream's
+/// frames (stdcopy) taken apart, their bytes alone; `api error E` where it could not ask.
+fn api(method: &str, path: &str, body: &str) -> i32 {
+    use std::os::unix::net::UnixStream;
+    let host = std::env::var("DOCKER_HOST").unwrap_or_default();
+    let asked = host
+        .strip_prefix("unix://")
+        .ok_or_else(|| format!("DOCKER_HOST {host:?} names no socket"))
+        .and_then(|socket| UnixStream::connect(socket).map_err(|e| format!("{socket}: {e}")))
+        .and_then(|mut conn| {
+            let request = format!(
+                "{method} {path} HTTP/1.1\r\nHost: api\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            conn.write_all(request.as_bytes()).map_err(|e| e.to_string())?;
+            let mut answer = Vec::new();
+            conn.read_to_end(&mut answer).map_err(|e| e.to_string())?;
+            Ok(answer)
+        });
+    let answer = match asked {
+        Ok(a) => a,
+        Err(e) => {
+            let _ = writeln!(io::stdout(), "api error {e}");
+            return 1;
+        }
+    };
+    let split = answer.windows(4).position(|w| w == b"\r\n\r\n");
+    let (head, mut rest) = match split {
+        Some(at) => (
+            String::from_utf8_lossy(answer.get(..at).unwrap_or_default()).into_owned(),
+            answer.get(at + 4..).unwrap_or_default().to_vec(),
+        ),
+        None => (String::from_utf8_lossy(&answer).into_owned(), Vec::new()),
+    };
+    let header = |name: &str| {
+        head.lines().skip(1).find_map(|l| {
+            let (k, v) = l.split_once(':')?;
+            k.trim()
+                .eq_ignore_ascii_case(name)
+                .then(|| v.trim().to_ascii_lowercase())
+        })
+    };
+    if header("transfer-encoding").is_some_and(|v| v.contains("chunked")) {
+        let mut whole = Vec::new();
+        let mut at = rest.as_slice();
+        while let Some(end) = at.windows(2).position(|w| w == b"\r\n") {
+            let size = std::str::from_utf8(at.get(..end).unwrap_or_default())
+                .ok()
+                .and_then(|t| usize::from_str_radix(t.split(';').next().unwrap_or_default().trim(), 16).ok())
+                .unwrap_or(0);
+            if size == 0 {
+                break;
+            }
+            whole.extend_from_slice(at.get(end + 2..end + 2 + size).unwrap_or_default());
+            at = at.get(end + 2 + size + 2..).unwrap_or_default();
+        }
+        rest = whole;
+    }
+    if header("content-type").is_some_and(|v| v.contains("multiplexed-stream")) {
+        let mut bytes = Vec::new();
+        let mut at = rest.as_slice();
+        while let Some((frame, after)) = at.split_first_chunk::<8>() {
+            let len = u32::from_be_bytes([frame[4], frame[5], frame[6], frame[7]]) as usize;
+            bytes.extend_from_slice(after.get(..len).unwrap_or(after));
+            at = after.get(len..).unwrap_or_default();
+        }
+        rest = bytes;
+    }
+    let _ = writeln!(io::stdout(), "api {}", head.lines().next().unwrap_or_default());
+    let _ = io::stdout().write_all(&rest);
+    let _ = io::stdout().flush();
+    0
+}
+
 fn fetch(args: &[String]) -> i32 {
     let mut method = "GET".to_string();
     let mut body = String::new();
@@ -2519,6 +2602,59 @@ fn heavy(mib: usize) -> i32 {
 /// Dials each host vsock port (CID 2) and prints `PORT connected`, then what the host
 /// sends within a second (`read N bytes`, `closed` or `nothing`), or `PORT refused ERRNO`:
 /// what a workload reaches of the host when nothing confines it.
+fn vsock_hello(port: u32) -> i32 {
+    use std::os::fd::FromRawFd as _;
+    // SAFETY: socket(2) with constant arguments.
+    let fd = unsafe { libc::socket(libc::AF_VSOCK, libc::SOCK_STREAM | libc::SOCK_CLOEXEC, 0) };
+    if fd < 0 {
+        let _ = writeln!(io::stdout(), "{port} refused {}", io::Error::last_os_error());
+        return 0;
+    }
+    // SAFETY: a fresh descriptor nothing else owns.
+    let mut sock = unsafe { std::fs::File::from_raw_fd(fd) };
+    // SAFETY: an all-zero sockaddr_vm is a valid value.
+    let mut addr: libc::sockaddr_vm = unsafe { std::mem::zeroed() };
+    addr.svm_family = libc::AF_VSOCK as libc::sa_family_t;
+    addr.svm_cid = libc::VMADDR_CID_HOST;
+    addr.svm_port = port;
+    let len = std::mem::size_of::<libc::sockaddr_vm>() as libc::socklen_t;
+    // SAFETY: connect(2) with an address of its own type and size.
+    if unsafe { libc::connect(fd, (&raw const addr).cast(), len) } != 0 {
+        let _ = writeln!(io::stdout(), "{port} refused {}", io::Error::last_os_error());
+        return 0;
+    }
+    let mut asked =
+        shards_abi::run::header(shards_abi::run::kind::HELLO, shards_abi::run::TOKEN as u32).to_vec();
+    asked.extend_from_slice(&[0u8; shards_abi::run::TOKEN]);
+    asked.extend_from_slice(b"GET /_ping HTTP/1.1\r\nHost: x\r\n\r\n");
+    let wait = libc::timeval {
+        tv_sec: 2,
+        tv_usec: 0,
+    };
+    // SAFETY: setsockopt(2) of a timeval of ours, of its size.
+    unsafe {
+        libc::setsockopt(
+            fd,
+            libc::SOL_SOCKET,
+            libc::SO_RCVTIMEO,
+            (&raw const wait).cast(),
+            std::mem::size_of::<libc::timeval>() as libc::socklen_t,
+        )
+    };
+    let said = sock.write_all(&asked);
+    let mut buf = [0u8; 4096];
+    let line = match (said, sock.read(&mut buf)) {
+        (_, Ok(0)) | (Err(_), _) => format!("{port} closed"),
+        (_, Ok(n)) => format!("{port} answered {n} bytes"),
+        (_, Err(e)) if matches!(e.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut) => {
+            format!("{port} nothing")
+        }
+        (_, Err(_)) => format!("{port} closed"),
+    };
+    let _ = writeln!(io::stdout(), "{line}");
+    0
+}
+
 fn vsock(ports: &[String]) -> i32 {
     for port in ports {
         let Ok(n) = port.parse::<u32>() else {

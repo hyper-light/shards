@@ -37,6 +37,10 @@ pub(super) struct Resume {
     /// The user network it is on, by ID, and its addresses there.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) network: Option<Address>,
+    /// Its microVM's own engine's token (D181), in hex, which its guest's relay says on
+    /// each connection, as it did before the save.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) engine: Option<String>,
 }
 
 /// A microVM's addresses on a user network (D46).
@@ -341,6 +345,7 @@ pub(super) struct Resumable {
     pub(super) generation: PathBuf,
     pub(super) resume: Resume,
     pub(super) tokens: Vec<u8>,
+    pub(super) engine: Option<[u8; shards_abi::run::TOKEN]>,
 }
 
 /// The most a resume record holds: its tokens, a MAC, and a network's ID and addresses.
@@ -382,11 +387,20 @@ impl<D: Disk> Daemon<D> {
         let tokens = unhex(&resume.tokens)
             .filter(|t| t.len() == 2 * shards_abi::run::TOKEN)
             .ok_or_else(|| unusable(&"its tokens"))?;
+        let engine = match &resume.engine {
+            Some(hex) => Some(
+                unhex(hex)
+                    .and_then(|t| <[u8; shards_abi::run::TOKEN]>::try_from(t).ok())
+                    .ok_or_else(|| unusable(&"its engine's token"))?,
+            ),
+            None => None,
+        };
         Ok(Resumable {
             dir,
             generation,
             resume,
             tokens,
+            engine,
         })
     }
 
@@ -645,8 +659,10 @@ impl<D: Disk> Daemon<D> {
         // it for its restore.
         let mut tokens = [0u8; 2 * shards_abi::run::TOKEN];
         shards_vmm::platform::fill_random(&mut tokens).map_err(|e| failed(&format!("its tokens: {e}")))?;
+        let engine = lock(&inbox).engine.as_ref().map(|t| hex(t));
         let resume = Resume {
             tokens: hex(&tokens),
+            engine,
             mac: mac.map(|m| shards_net::Mac(m).to_string()),
             network: self.membership(&id).map(|(network, me)| Address {
                 network: network.id,

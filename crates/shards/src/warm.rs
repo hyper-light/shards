@@ -529,6 +529,12 @@ fn relay_signals(conn: &UnixStream, to: &'static ToGuest, from: From<'_>) {
                     let _ = segments.send((u64::from_be_bytes(seq), message.fds));
                 }
             }
+            // An engine connection the daemon has (D181): this VM's copy goes (M24).
+            kind::ENGINE_CONN if matches!(from, From::Daemon(_)) => {
+                if let Ok(n) = <[u8; 8]>::try_from(message.payload.as_slice()) {
+                    engine_held().remove(&u64::from_be_bytes(n));
+                }
+            }
             // The host's answer to the guest's ask on the host's network (D124).
             kind::HOST_BOUND if matches!(from, From::Daemon(_)) => {
                 workload::bound_guest(to, &message.payload);
@@ -1105,6 +1111,74 @@ fn attach_request(
         Some(id) => workload::attach_joiner(to, id, req),
         None => workload::attach(to, req),
     }
+}
+
+/// The engine connections handed to the daemon and not yet taken, by number: held
+/// meanwhile, as XNU collects a socket in flight that no process holds (M24).
+static ENGINE_HELD: std::sync::Mutex<std::collections::BTreeMap<u64, UnixStream>> =
+    std::sync::Mutex::new(std::collections::BTreeMap::new());
+
+fn engine_held() -> std::sync::MutexGuard<'static, std::collections::BTreeMap<u64, UnixStream>> {
+    ENGINE_HELD
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// The run's engine token (D181), its spec's `engine=` entry, where it has one.
+pub fn engine_token(spec: &Spec) -> Option<[u8; shards_abi::run::TOKEN]> {
+    let hex = spec.setup.iter().find_map(|e| e.strip_prefix(b"engine="))?;
+    let (pairs, []) = hex.as_chunks::<2>() else {
+        return None;
+    };
+    let mut token = [0u8; shards_abi::run::TOKEN];
+    if pairs.len() != token.len() {
+        return None;
+    }
+    for (byte, pair) in token.iter_mut().zip(pairs) {
+        *byte = u8::from_str_radix(std::str::from_utf8(pair).ok()?, 16).ok()?;
+    }
+    Some(token)
+}
+
+/// Serves the run's own engine port (D181) on a thread of its own: each guest connection
+/// whose hello says `token`, which only the guest's init was given, is the daemon's, on
+/// this VM's link (`ENGINE_CONN`), held here until the daemon says it has it; any other is
+/// closed. The daemon serves it with its Engine API, scoped to this microVM.
+pub fn serve_engine(
+    link: &Link,
+    token: [u8; shards_abi::run::TOKEN],
+    port: workload::Port,
+) -> Result<(), String> {
+    let daemon = link
+        .daemon
+        .try_clone()
+        .map_err(|e| format!("the daemon's connection: {e}"))?;
+    let next = std::sync::atomic::AtomicU64::new(0);
+    let heard = move |conn: UnixStream, said: &[u8; shards_abi::run::TOKEN]| {
+        if !workload::same_token(&token, said) || conn.set_nonblocking(false).is_err() {
+            return;
+        }
+        let number = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        // Held before it goes, as the daemon's answer may come before the send returns.
+        let Ok(held) = conn.try_clone() else {
+            return;
+        };
+        engine_held().insert(number, held);
+        let sent = shards_ipc::send(
+            &daemon,
+            kind::ENGINE_CONN,
+            &number.to_be_bytes(),
+            &[std::os::fd::AsFd::as_fd(&conn)],
+        );
+        if sent.is_err() {
+            engine_held().remove(&number);
+        }
+    };
+    std::thread::Builder::new()
+        .name("engine".into())
+        .spawn(move || workload::accept_hellos(port, "engine-hellos", heard))
+        .map(drop)
+        .map_err(|e| format!("its engine's thread: {e}"))
 }
 
 /// Tells the daemon the command runs, before the client has anything the command wrote.

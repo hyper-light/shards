@@ -1547,6 +1547,7 @@ mod tests {
                 },
                 size_rw: None,
                 saved: None,
+                engine_made: None,
             };
             let manifest = &want["ImageManifestDescriptor"];
             let facts = Facts {
