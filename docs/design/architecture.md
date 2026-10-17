@@ -4789,8 +4789,8 @@ container's address; and a container reaches past the microVM no more than the c
 Built in parts: (3a) members on the switch, the default network, published ports, `host`
 and `none`, built; (3b) the networks its engine makes, their grants and names, and the
 networks API, built, connect and disconnect for a container that does not run; (3c) its
-named volumes and one container in another's namespace (`container:X`, Compose's
-`service:`), built, then Compose end to end; (3d) the undeclared listeners `shards read
+named volumes, one container in another's namespace (`container:X`, Compose's
+`service:`), and Compose end to end, built; (3d) the undeclared listeners `shards read
 ports` lists; (3e) connect and disconnect of a running member.
 
 - **How 3a is built.** The daemon asks for a membership by network and name (`member=`,
@@ -4958,6 +4958,14 @@ ports` lists; (3e) connect and disconnect of a running member.
   caught: init entering its provider's namespace (it saw the command's eth0 beside one on
   `none`); the daemon naming no namespace of the one it joins; X's files not shared; its
   provider's UTS namespace.
+- **Compose end to end (3c).** `a_compose_project_runs_in_its_microvms_own_engine`: docker
+  compose's own client for Linux (v5.6.0, pinned by its release's SHA-256), unchanged,
+  run by a microVM's command against that microVM's own engine: `up -d` makes the
+  project's network, volume and services; `ps` lists them running; `exec` in one reaches
+  the other by its service's name on the port it declares (`expose:`); a file written to
+  the project's named volume is read back, the volume on the host as `PROV.shp_data`;
+  and `down -v` takes the containers, network and volume. What it relies on is
+  mutation-checked in the tests above.
 
 ### D179. Other CPUs' images, emulated in their microVM (parts 1 to 3 built)
 
