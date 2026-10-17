@@ -1262,6 +1262,7 @@ fn switch(
             any: l.dns,
             names: l.mcp.iter().map(|(h, _)| h.clone()).collect(),
             addrs: l.addresses.iter().map(|a| a.addr).collect(),
+            local: Vec::new(),
         });
     }
     if let (false, Some(up)) = (askers.is_empty(), resolver) {

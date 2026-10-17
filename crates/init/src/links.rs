@@ -22,6 +22,8 @@ use crate::netplan::Link;
 pub(crate) const RTM_NEWLINK: u16 = 16;
 pub(crate) const RTM_NEWADDR: u16 = 20;
 pub(crate) const RTM_NEWROUTE: u16 = 24;
+/// rtnetlink's route removal (linux/rtnetlink.h), a network's subnet let go (D181).
+const RTM_DELROUTE: u16 = 25;
 pub(crate) const NLM_F_REQUEST: u16 = 1;
 pub(crate) const NLM_F_ACK: u16 = 4;
 pub(crate) const NLM_F_EXCL: u16 = 0x200;
@@ -402,6 +404,9 @@ struct Carried {
     domains: usize,
     subnets: Vec<(Ipv4Addr, u8)>,
     members: Vec<Member>,
+    /// Each pair of members its engine's networks grant a flow (D181): from, to, and the
+    /// ports the receiver declares.
+    member_pairs: Vec<(usize, usize, Vec<crate::netplan::Egress>)>,
 }
 
 /// How far past the microVM a member its engine made reaches (D181): nowhere (on an
@@ -522,6 +527,7 @@ impl Switch {
                 domains,
                 subnets: subnets.to_vec(),
                 members: Vec::new(),
+                member_pairs: Vec::new(),
             }),
         };
         if let Some(u) = uplink {
@@ -577,11 +583,14 @@ impl Switch {
         })
     }
 
-    /// Carries `member` (D181): its subnets routed down from init's namespace where none
-    /// was, and the switch's and init's rules programmed again with it.
-    pub fn admit(&self, member: Member, subnet: (Ipv4Addr, u8)) -> io::Result<()> {
+    /// Routes each of `subnets` down from init's namespace where none is yet (D181): the
+    /// subnets of the networks its engine's members are on, which init reaches them by.
+    pub fn routes(&self, subnets: &[(Ipv4Addr, u8)]) -> io::Result<()> {
         let mut c = self.carried();
-        if !c.subnets.contains(&subnet) {
+        for &subnet in subnets {
+            if c.subnets.contains(&subnet) {
+                continue;
+            }
             let create = NLM_F_REQUEST | NLM_F_ACK | NLM_F_CREATE | NLM_F_EXCL;
             exchange(
                 &self.here,
@@ -596,28 +605,59 @@ impl Switch {
                 u.subnets.push(subnet);
             }
         }
-        c.members.retain(|m| m.index != member.index);
-        c.members.push(member);
+        Ok(())
+    }
+
+    /// Lets `subnet` go (D181), a network its engine removed: its route down from init's
+    /// namespace, where there was one, and its place among the subnets carried.
+    pub fn forget(&self, subnet: (Ipv4Addr, u8)) -> io::Result<()> {
+        let mut c = self.carried();
+        if !c.subnets.contains(&subnet) {
+            return Ok(());
+        }
+        exchange(
+            &self.here,
+            &[(
+                RTM_DELROUTE,
+                NLM_F_REQUEST | NLM_F_ACK,
+                route_msg(UPLINK_IFINDEX, subnet.0, subnet.1, Some(UPLINK_SWITCH), None),
+            )],
+        )?;
+        c.subnets.retain(|s| *s != subnet);
+        if let Some(u) = c.uplink.as_mut() {
+            u.subnets.retain(|s| *s != subnet);
+        }
+        Ok(())
+    }
+
+    /// Carries `members` and their `pairs` (D181), each pair a flow its engine's networks
+    /// grant from one to another on the ports the receiver declares, in place of those it
+    /// carried: the switch's rules and init's programmed again at once.
+    pub fn carry(
+        &self,
+        members: Vec<Member>,
+        pairs: Vec<(usize, usize, Vec<crate::netplan::Egress>)>,
+    ) -> io::Result<()> {
+        let mut c = self.carried();
+        c.members = members;
+        c.member_pairs = pairs;
         self.reprogram(&c)
     }
 
-    /// Lets member `index` go (D181): its rules first, then its gate, whose namespace goes
-    /// with the last descriptor of it, its links with it.
-    pub fn release(&self, index: usize) -> io::Result<()> {
-        let mut c = self.carried();
-        c.members.retain(|m| m.index != index);
-        let programmed = self.reprogram(&c);
-        drop(c);
+    /// Lets member `index`'s gate go, once nothing carried names it (D181): its namespace
+    /// goes with the last descriptor of it, its links with it.
+    pub fn drop_gate(&self, index: usize) {
         match self.gates.lock() {
             Ok(mut g) => g.retain(|(i, _)| *i != index),
             Err(poisoned) => poisoned.into_inner().retain(|(i, _)| *i != index),
         }
-        programmed
     }
 
     /// The switch's rules and init's, programmed again from what it carries, each in one
     /// transaction: what the domains were granted, and each member's (D181).
     fn reprogram(&self, c: &Carried) -> io::Result<()> {
+        let mut pairs = c.pairs.clone();
+        pairs.extend(c.member_pairs.iter().cloned());
         let mut egress = c.egress.clone();
         let mut ingress = c.ingress.clone();
         let mut dns = c.dns.clone();
@@ -632,7 +672,7 @@ impl Switch {
                 dns.push(m.index);
             }
         }
-        policy(&self.nft, &c.pairs, &egress, &ingress, &dns)?;
+        policy(&self.nft, &pairs, &egress, &ingress, &dns)?;
         let Some(u) = &c.uplink else {
             return Ok(());
         };
@@ -776,6 +816,21 @@ impl Switch {
                 ns: self.ns.try_clone()?,
             })
         })
+    }
+
+    /// Programs member `n`'s gate again with what `gate` lets through, in one transaction,
+    /// as its peers join and leave (D181).
+    pub fn regate(&self, n: usize, gate: &Gate) -> io::Result<()> {
+        let gates = self
+            .gates
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let (_, ns) = gates
+            .iter()
+            .find(|(i, _)| *i == n)
+            .ok_or_else(|| io::Error::other("no such member's gate"))?;
+        let nft = in_netns(Some(ns.as_raw_fd()), || netlink_socket(libc::NETLINK_NETFILTER))?;
+        gate_policy(&nft, gate)
     }
 
     /// Links the `n`-th domain, its first process `pid`, as `link` says, through a gate
@@ -1547,6 +1602,8 @@ fn gate_policy(sock: &OwnedFd, g: &Gate) -> io::Result<()> {
         nft::PRIORITY_RAW,
         nft::NF_ACCEPT,
     );
+    // Programmed again whole as a member's peers change (D181).
+    b.flush(b"raw\0");
     for range in g.accepted() {
         let mut e = Vec::new();
         on(&mut e, nft::NFT_META_IIF, outside);
@@ -1564,6 +1621,7 @@ fn gate_policy(sock: &OwnedFd, g: &Gate) -> io::Result<()> {
     b.chain(b"input\0", b"filter\0", nft::NF_INET_LOCAL_IN, 0, nft::NF_DROP);
     b.chain(b"output\0", b"filter\0", nft::NF_INET_LOCAL_OUT, 0, nft::NF_DROP);
     b.chain(b"forward\0", b"filter\0", nft::NF_INET_FORWARD, 0, nft::NF_DROP);
+    b.flush(b"forward\0");
     b.rule(b"forward\0", answers());
     for &own in &g.own {
         // What it opens: from its own address, in from its domain.

@@ -2759,7 +2759,8 @@ fn a_microvms_own_engine_runs_binds_execs_and_pulls() {
 /// D59, D61): a namespace of its own, reached by the command, its engine's host, on the
 /// ports it publishes alone, at `localhost` as a test reaches a Testcontainers service;
 /// on its engine's default network, which names no peers, reaching no other container;
-/// named in its own hosts file; and past the microVM as far as the command reaches.
+/// named in its own hosts file; and past the microVM as far as the command reaches, but
+/// from internal networks alone not at all.
 #[test]
 fn a_microvms_own_engine_makes_each_container_a_member_of_its_switch() {
     let Some((home, image)) = home("eng-own3") else {
@@ -2986,10 +2987,333 @@ fn a_microvms_own_engine_makes_each_container_a_member_of_its_switch() {
         assert!(std::time::Instant::now() < deadline, "its engine never answered");
         std::thread::sleep(Duration::from_millis(50));
     }
+    // Not from a member of internal networks alone, which reaches nothing past the
+    // microVM: peer, which serves one connection, has it still for the next.
+    let api_onpast = |method: &str, path: &str, body: &Value| {
+        let body = if body.is_null() {
+            String::new()
+        } else {
+            body.to_string()
+        };
+        in_onpast(&["api", method, path, &body]).stdout
+    };
+    let made = api_onpast(
+        "POST",
+        "/networks/create",
+        &json!({ "Name": "sealed", "Internal": true }),
+    );
+    assert!(made.starts_with("api HTTP/1.1 201"), "{made}");
+    let made = api_onpast(
+        "POST",
+        "/containers/create?name=sealed",
+        &json!({ "Image": image, "Cmd": ["ask", format!("{peer}:7100"), "3000"],
+                 "HostConfig": { "NetworkMode": "sealed" } }),
+    );
+    assert!(made.starts_with("api HTTP/1.1 201"), "{made}");
+    let started = api_onpast("POST", "/containers/sealed/start", &Value::Null);
+    assert_eq!(started, "api HTTP/1.1 204 No Content\n");
+    let _ = api_onpast("POST", "/containers/sealed/wait", &Value::Null);
+    let said = api_onpast("GET", "/containers/sealed/logs?stdout=1", &Value::Null);
+    assert!(said.contains("ask error"), "{said}");
     let ran = in_onpast(&["api-run", &image, "ask", &format!("{peer}:7100")]);
     assert_eq!(ran.stdout, format!("ask from {onpast}\nstatus 0\n"), "{ran}");
     let removed = shards(&["rm", "-f", "prov", "onpast", "peer"]);
     assert_eq!(removed.status, Some(0), "{removed}");
+}
+
+/// The networks a microVM's own engine makes are networks of that microVM's switch (D181):
+/// a member reaches another of one it shares by name, answered with a TTL of 0, on the port
+/// that one declares and on no other; its own connections take no port it declares; a
+/// member of another network reaches and resolves neither; a member that goes is no one's
+/// peer; a network some member runs on stays; a container that does not run joins one for
+/// its next start; a network's address for its members' published ports binds them; and a
+/// prune takes the networks no member runs on.
+#[test]
+fn a_microvms_own_engine_makes_networks_whose_members_reach_what_each_declares() {
+    let Some((home, image)) = home("eng-nets") else {
+        return;
+    };
+    let shards = |args: &[&str]| shards_in(&home, args);
+    let ran = shards(&["run", "-d", "--name", "prov", "--use-api-socket", &image, "sleep"]);
+    assert_eq!(ran.status, Some(0), "{ran}");
+    let exec = |args: &[&str]| {
+        let mut all = vec!["exec", "prov", "/bin/testguest"];
+        all.extend_from_slice(args);
+        shards(&all)
+    };
+    let deadline = std::time::Instant::now() + TIMEOUT;
+    while exec(&["api", "GET", "/_ping", ""]).stdout != "api HTTP/1.1 200 OK\nOK" {
+        assert!(std::time::Instant::now() < deadline, "its engine never answered");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let api = |method: &str, path: &str, body: &Value| -> (String, Value) {
+        let out = exec(&["api", method, path, &body.to_string()]);
+        let (status, rest) = out.stdout.split_once('\n').unwrap_or((&out.stdout, ""));
+        (
+            status.to_string(),
+            serde_json::from_str(rest).unwrap_or(Value::Null),
+        )
+    };
+    let (status, made) = api(
+        "POST",
+        "/networks/create",
+        &json!({ "Name": "app", "Labels": { "project": "eng" } }),
+    );
+    assert!(status.starts_with("api HTTP/1.1 201"), "{status} {made}");
+    let app_id = made["Id"].as_str().unwrap().to_string();
+    let (status, _) = api("POST", "/networks/create", &json!({ "Name": "other" }));
+    assert!(status.starts_with("api HTTP/1.1 201"), "{status}");
+    let (status, again) = api("POST", "/networks/create", &json!({ "Name": "app" }));
+    assert!(status.starts_with("api HTTP/1.1 409"), "{status} {again}");
+    let (status, refused) = api(
+        "POST",
+        "/networks/create",
+        &json!({ "Name": "lan", "Driver": "macvlan" }),
+    );
+    assert!(status.starts_with("api HTTP/1.1 400"), "{status} {refused}");
+    // Its own networks and those it made, by the filters its client gives.
+    let (_, listed) = api("GET", "/networks", &Value::Null);
+    let mut names: Vec<&str> = listed
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|n| n["Name"].as_str())
+        .collect();
+    names.sort_unstable();
+    assert_eq!(names, ["app", "bridge", "host", "none", "other"], "{listed}");
+    let (_, labelled) = api(
+        "GET",
+        &format!(
+            "/networks?filters={}",
+            urlencode(&json!({ "label": ["project=eng"] }).to_string())
+        ),
+        &Value::Null,
+    );
+    assert_eq!(labelled.as_array().map(Vec::len), Some(1), "{labelled}");
+    let (_, app) = api("GET", "/networks/app", &Value::Null);
+    assert_eq!(app["Id"].as_str(), Some(app_id.as_str()), "{app}");
+    let subnet = app["IPAM"]["Config"][0]["Subnet"].as_str().unwrap().to_string();
+    assert!(
+        subnet.starts_with("10.244.") && subnet.ends_with(".0/24"),
+        "{app}"
+    );
+    let create = |name: &str, body: Value| {
+        let (status, said) = api("POST", &format!("/containers/create?name={name}"), &body);
+        assert!(status.starts_with("api HTTP/1.1 201"), "{status} {said}");
+        let (status, said) = api("POST", &format!("/containers/{name}/start"), &Value::Null);
+        assert!(status.starts_with("api HTTP/1.1 204"), "{status} {said}");
+    };
+    let on =
+        |network: &str, aliases: &[&str]| json!({ "EndpointsConfig": { network: { "Aliases": aliases } } });
+    let logs_of = |name: &str| exec(&["api", "GET", &format!("/containers/{name}/logs?stdout=1"), ""]).stdout;
+    let ready = |name: &str| {
+        let deadline = std::time::Instant::now() + TIMEOUT;
+        while !logs_of(name).contains("ready") {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "{name} never said it was ready: {}",
+                logs_of(name)
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    };
+    let finished = |name: &str| {
+        let _ = exec(&["api", "POST", &format!("/containers/{name}/wait"), ""]);
+        logs_of(name)
+    };
+    let inspected = |name: &str| -> Value { api("GET", &format!("/containers/{name}/json"), &Value::Null).1 };
+    // What a command run in a member says.
+    let in_member = |name: &str, cmd: &[&str]| -> String {
+        let body = json!({ "Cmd": cmd, "AttachStdout": true }).to_string();
+        let made = exec(&["api", "POST", &format!("/containers/{name}/exec"), &body]);
+        let made: Value = serde_json::from_str(made.stdout.split_once('\n').unwrap().1).unwrap();
+        let id = made["Id"].as_str().unwrap().to_string();
+        let started = exec(&[
+            "api",
+            "POST",
+            &format!("/exec/{id}/start"),
+            r#"{"Detach":false}"#,
+            "upgrade",
+        ]);
+        started
+            .stdout
+            .split_once('\n')
+            .map(|(_, said)| said.to_string())
+            .unwrap_or_default()
+    };
+    // db declares 7000, which it serves, and 40000, one of the ports the kernel gives
+    // connections their own by default; stray declares 7000 and serves 7001.
+    create(
+        "db",
+        json!({ "Image": image, "Cmd": ["serve", "7000", "2"], "ExposedPorts": { "7000/tcp": {}, "40000/tcp": {} },
+                "HostConfig": { "NetworkMode": "app" }, "NetworkingConfig": on("app", &["postgres"]) }),
+    );
+    create(
+        "stray",
+        json!({ "Image": image, "Cmd": ["serve", "7001", "1"], "ExposedPorts": { "7000/tcp": {} },
+                "HostConfig": { "NetworkMode": "app" } }),
+    );
+    ready("db");
+    ready("stray");
+    // db, first on app, had no peer as it was linked; still its own connections take no
+    // port it declares, whose answers its gate would leave untracked once peers came.
+    let said = in_member(
+        "db",
+        &[
+            "/bin/testguest",
+            "slurp",
+            "/proc/sys/net/ipv4/ip_local_port_range",
+        ],
+    );
+    let range: Vec<u16> = said
+        .rsplit(':')
+        .next()
+        .unwrap_or_default()
+        .split_whitespace()
+        .filter_map(|p| p.parse().ok())
+        .collect();
+    let &[lo, hi] = range.as_slice() else {
+        panic!("{said}")
+    };
+    assert!(![7000, 40000].iter().any(|p| (lo..=hi).contains(p)), "{said}");
+    let db = inspected("db");
+    let at = &db["NetworkSettings"]["Networks"]["app"];
+    let db_addr = at["IPAddress"].as_str().unwrap().to_string();
+    assert_eq!(at["NetworkID"].as_str(), Some(app_id.as_str()), "{db}");
+    assert_eq!(at["Aliases"], json!(["postgres"]), "{db}");
+    assert_eq!(at["DNSNames"], json!(["db", "postgres"]), "{db}");
+    assert_eq!(db["HostConfig"]["NetworkMode"], json!("app"), "{db}");
+    // web, on app, reaches db by its alias on the port it declares.
+    create(
+        "web",
+        json!({ "Image": image, "Cmd": ["ask", "postgres:7000", "3000"], "HostConfig": { "NetworkMode": "app" } }),
+    );
+    let said = finished("web");
+    let web_addr = inspected("web")["NetworkSettings"]["Networks"]["app"]["IPAddress"].clone();
+    assert!(said.contains("ask from "), "{said} {web_addr}");
+    // Not on a port its receiver did not declare.
+    create(
+        "nosy",
+        json!({ "Image": image, "Cmd": ["ask", "stray:7001", "3000"], "HostConfig": { "NetworkMode": "app" } }),
+    );
+    let said = finished("nosy");
+    assert!(said.contains("ask error"), "{said}");
+    // Nor from another network: neither db's address nor its name.
+    create(
+        "far",
+        json!({ "Image": image, "Cmd": ["ask", format!("{db_addr}:7000"), "3000"], "HostConfig": { "NetworkMode": "other" } }),
+    );
+    let said = finished("far");
+    assert!(said.contains("ask error"), "{said}");
+    create(
+        "farname",
+        json!({ "Image": image, "Cmd": ["resolve", "postgres"], "HostConfig": { "NetworkMode": "other" } }),
+    );
+    let said = finished("farname");
+    assert!(said.contains("resolve error"), "{said}");
+    // A network a member runs on stays.
+    let (status, said) = api("DELETE", "/networks/app", &Value::Null);
+    assert!(status.starts_with("api HTTP/1.1 403"), "{status} {said}");
+    // A container that does not run joins a network for its next start, and resolves db
+    // there; one that runs, not yet.
+    let (status, said) = api(
+        "POST",
+        "/containers/create?name=late",
+        &json!({ "Image": image, "Cmd": ["resolve", "postgres"] }),
+    );
+    assert!(status.starts_with("api HTTP/1.1 201"), "{status} {said}");
+    let (status, said) = api(
+        "POST",
+        "/networks/app/connect",
+        &json!({ "Container": "late", "EndpointConfig": { "Aliases": ["tardy"] } }),
+    );
+    assert!(status.starts_with("api HTTP/1.1 200"), "{status} {said}");
+    let (status, said) = api("POST", "/networks/other/connect", &json!({ "Container": "db" }));
+    assert!(status.starts_with("api HTTP/1.1 501"), "{status} {said}");
+    let (status, said) = api("POST", "/containers/late/start", &Value::Null);
+    assert!(status.starts_with("api HTTP/1.1 204"), "{status} {said}");
+    let said = finished("late");
+    assert!(said.contains(&format!("resolve {db_addr}\n")), "{said}");
+    // The command, which db publishes nothing to, reaches it not at all.
+    let asked = exec(&["ask", &format!("{db_addr}:7000"), "3000"]);
+    assert!(asked.stdout.starts_with("ask error"), "{asked}");
+    // stray, which runs beside db, resolves db's alias while db runs.
+    let said = in_member("stray", &["/bin/testguest", "resolve", "postgres"]);
+    assert_eq!(said, format!("resolve {db_addr}\n"));
+    // Answered with a TTL of 0: no cache of stray's keeps the name past db's grant.
+    let said = in_member("stray", &["/bin/testguest", "dnsttl", "postgres"]);
+    assert_eq!(said, format!("dnsttl 0 {db_addr}\n"));
+    // db's second connection is web2's: none from another network or from the command
+    // took it. Served, db ends; and a member that goes is no one's peer: stray resolves
+    // its alias no longer.
+    create(
+        "web2",
+        json!({ "Image": image, "Cmd": ["ask", "db:7000", "3000"], "HostConfig": { "NetworkMode": "app" } }),
+    );
+    let said = finished("web2");
+    assert!(said.contains("ask from "), "{said}");
+    let said = finished("db");
+    assert!(said.contains("ready"), "{said}");
+    let said = in_member("stray", &["/bin/testguest", "resolve", "postgres"]);
+    assert!(said.starts_with("resolve error"), "{said}");
+    // A network's address for its members' published ports, the command's loopback here:
+    // a port published with none named is reached there, and not at eth0's.
+    let (status, made) = api(
+        "POST",
+        "/networks/create",
+        &json!({ "Name": "local", "Options": { "com.docker.network.bridge.host_binding_ipv4": "127.0.0.1" } }),
+    );
+    assert!(status.starts_with("api HTTP/1.1 201"), "{status} {made}");
+    create(
+        "pub",
+        json!({ "Image": image, "Cmd": ["serve", "7000", "1"], "ExposedPorts": { "7000/tcp": {} },
+                "HostConfig": { "NetworkMode": "local", "PortBindings": { "7000/tcp": [{ "HostPort": "" }] } } }),
+    );
+    ready("pub");
+    let published = inspected("pub");
+    let bound = &published["NetworkSettings"]["Ports"]["7000/tcp"][0];
+    assert_eq!(bound["HostIp"], json!("127.0.0.1"), "{published}");
+    let port = bound["HostPort"].as_str().unwrap().to_string();
+    let eth0 = shards(&[
+        "inspect",
+        "-f",
+        "{{.NetworkSettings.Networks.bridge.IPAddress}}",
+        "prov",
+    ]);
+    let eth0 = eth0.stdout.trim().to_string();
+    assert!(!eth0.is_empty());
+    let asked = exec(&["ask", &format!("{eth0}:{port}"), "3000"]);
+    assert!(asked.stdout.starts_with("ask error"), "{asked}");
+    let asked = exec(&["ask", &format!("127.0.0.1:{port}")]);
+    assert!(asked.stdout.starts_with("ask from "), "{asked}");
+    let said = finished("pub");
+    assert!(said.contains("ready"), "{said}");
+    // Its members gone, the network goes, and a prune takes those no member runs on.
+    for name in [
+        "db", "stray", "web", "web2", "nosy", "far", "farname", "late", "pub",
+    ] {
+        let (status, said) = api("DELETE", &format!("/containers/{name}?force=1"), &Value::Null);
+        assert!(status.starts_with("api HTTP/1.1 204"), "{name}: {status} {said}");
+    }
+    let (status, said) = api("DELETE", "/networks/app", &Value::Null);
+    assert!(status.starts_with("api HTTP/1.1 204"), "{status} {said}");
+    let (status, _) = api("GET", "/networks/app", &Value::Null);
+    assert!(status.starts_with("api HTTP/1.1 404"), "{status}");
+    let (status, pruned) = api("POST", "/networks/prune", &Value::Null);
+    assert!(status.starts_with("api HTTP/1.1 200"), "{status} {pruned}");
+    assert_eq!(pruned["NetworksDeleted"], json!(["other", "local"]), "{pruned}");
+    let removed = shards(&["rm", "-f", "prov"]);
+    assert_eq!(removed.status, Some(0), "{removed}");
+}
+
+/// A query's component, its reserved bytes percent-encoded (RFC 3986 §2.1).
+fn urlencode(text: &str) -> String {
+    text.bytes()
+        .map(|b| match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => (b as char).to_string(),
+            other => format!("%{other:02X}"),
+        })
+        .collect()
 }
 
 /// The docker CLI's own `--use-api-socket`, asked of shards' engine: the microVM's own

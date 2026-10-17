@@ -581,6 +581,10 @@ pub mod builtin {
     /// is, as runc's cgroup v2 freezer freezes it; with `0`, thawed: `pause` and `unpause`
     /// of a container that shares its microVM (D119).
     pub const FREEZE: u8 = 12;
+    /// What a microVM's own engine asks of its networks, done by init itself (D181):
+    /// `make NAME SUBNET GATEWAY RANGE FLAGS`, answered with the subnet and gateway made, or
+    /// `remove NAME`.
+    pub const NETWORK: u8 = 13;
 }
 
 /// A terminal's size in character cells. Zero in either leaves the pty's size alone, as

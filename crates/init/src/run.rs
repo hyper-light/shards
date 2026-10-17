@@ -3025,6 +3025,9 @@ fn builtin(
     };
     let (stdout_r, stdout_w) = pipe()?;
     let (stderr_r, stderr_w) = pipe()?;
+    // What a microVM's engine asks of its networks is init's own state (D181): done here,
+    // and said by the child as any built-in's answer is.
+    let networked = (kind == run::builtin::NETWORK).then(|| crate::members::network(args));
     // What reads the host's stdin: unpacking an archive.
     let input = if kind == run::builtin::EXTRACT {
         Some(pipe()?)
@@ -3038,6 +3041,15 @@ fn builtin(
     }
     if pid == 0 {
         drop((stdout_r, stderr_r));
+        if let Some(said) = networked {
+            let (mut to, text, code) = match said {
+                Ok(text) => (File::from(stdout_w), text, 0),
+                Err(why) => (File::from(stderr_w), why, 1),
+            };
+            let _ = writeln!(to, "{text}");
+            // SAFETY: _exit(2) ends the child without running init's exit paths.
+            unsafe { libc::_exit(code) }
+        }
         // Init's `/proc`, through which a joiner's mounts are read from within its mount
         // namespace, whose own `/proc` is its PID namespace's, with no `/proc/self` for
         // this process (proc_self_get_link).
@@ -3358,14 +3370,24 @@ fn start_joiner(
     let mut join = join;
     join.member = member.as_ref().map(|m| crate::join::MemberNet {
         ns: m.ns,
-        addr: m.addr,
-        names: asked.as_ref().map(|a| a.names.clone()).unwrap_or_default(),
+        on: m
+            .on
+            .iter()
+            .map(|o| {
+                let names = asked
+                    .as_ref()
+                    .and_then(|a| a.networks.iter().find(|(n, _, _)| *n == o.network))
+                    .map(|(_, _, names)| names.clone())
+                    .unwrap_or_default();
+                (o.addr, names)
+            })
+            .collect(),
         dns: m.dns,
     });
     // What it publishes, from the command's network namespace, its engine's host's: its
     // proxy there before it is, so that a port it cannot have keeps it from starting.
-    let published = match (&member, bindings.is_empty()) {
-        (Some(m), false) => match crate::members::publish(workload, m.addr, &bindings) {
+    let published = match (member.as_ref().and_then(|m| m.on.first()), bindings.is_empty()) {
+        (Some(first), false) => match crate::members::publish(workload, first.addr, &bindings) {
             Ok(p) => Some(p),
             Err(why) => {
                 crate::members::leave(id);
@@ -3792,13 +3814,15 @@ impl Exec {
                 // its start (D181).
                 if let Some(m) = &w.member {
                     let [a, b, c, d, e, f] = m.mac;
-                    let said = format!(
-                        "{} {}/{} {} {a:02x}:{b:02x}:{c:02x}:{d:02x}:{e:02x}:{f:02x}",
-                        m.network, m.addr, m.prefix, m.gateway
-                    );
-                    let len = u32::try_from(said.len()).unwrap_or(u32::MAX);
-                    exec.to_conn
-                        .extend(&[&run::header(kind::MEMBER, len), said.as_bytes()]);
+                    for o in &m.on {
+                        let said = format!(
+                            "{} {}/{} {} {a:02x}:{b:02x}:{c:02x}:{d:02x}:{e:02x}:{f:02x}",
+                            o.network, o.addr, o.prefix, o.gateway
+                        );
+                        let len = u32::try_from(said.len()).unwrap_or(u32::MAX);
+                        exec.to_conn
+                            .extend(&[&run::header(kind::MEMBER, len), said.as_bytes()]);
+                    }
                 }
                 if let Some((proxy, ports)) = w.published {
                     exec.proxy = Some(proxy);

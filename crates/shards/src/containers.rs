@@ -102,17 +102,42 @@ pub struct Container {
     /// engine's containers run and its clients see.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub engine_images: Vec<String>,
+    /// The networks its own engine made (D181).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub engine_networks: Vec<EngineNetwork>,
 }
 
 /// A container made through a microVM's own engine (D181): that microVM's container ID,
 /// and the name the container has there, as that engine's clients name it; and, while it
-/// runs as a member of that microVM's switch, its address there, as init gave it.
+/// runs as a member of that microVM's switch, its address on each of its networks there,
+/// as init gave it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EngineMade {
     pub of: String,
     pub name: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub address: Option<EngineAddress>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub addresses: Vec<EngineAddress>,
+}
+
+/// A network a microVM's own engine made (D181): its ID and name there, when it was made,
+/// the subnet and gateway init gave it, the range its members' addresses come from where
+/// its client gave one, whether it reaches past the microVM and whether its members are
+/// one another's peers, and its labels and options as its client gave them.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EngineNetwork {
+    pub id: String,
+    pub name: String,
+    pub created: u128,
+    pub subnet: (std::net::Ipv4Addr, u8),
+    pub gateway: std::net::Ipv4Addr,
+    #[serde(default)]
+    pub ip_range: Option<(std::net::Ipv4Addr, u8)>,
+    pub internal: bool,
+    pub peers: bool,
+    #[serde(default)]
+    pub labels: std::collections::BTreeMap<String, String>,
+    #[serde(default)]
+    pub options: std::collections::BTreeMap<String, String>,
 }
 
 /// A container's address on a network of its microVM's engine (D181), its membership of
@@ -767,6 +792,7 @@ mod tests {
             saved: None,
             engine_made: None,
             engine_images: Vec::new(),
+            engine_networks: Vec::new(),
         }
     }
 

@@ -25,8 +25,9 @@ use std::time::{Duration, Instant};
 
 /// Init's end of the relay's control link, by which askers come and go as the members a
 /// microVM's engine makes join and leave (D181): each message an asker to keep (`A`, its
-/// link's index, whether it may ask any name, then each of its addresses, big-endian) or
-/// one to let go (`R`, its link's index).
+/// link's index, whether it may ask any name, how many addresses it has and each,
+/// big-endian, then each table of names it is answered here, its length a big-endian u16
+/// first) or one to let go (`R`, its link's index).
 static CONTROL: OnceLock<OwnedFd> = OnceLock::new();
 
 /// How long a query waits on the microVM's resolver: an asker's resolver asks again after
@@ -45,6 +46,9 @@ pub struct Asker {
     pub names: Vec<String>,
     /// Its link's addresses, which a TCP question comes from.
     pub addrs: Vec<Ipv4Addr>,
+    /// The names answered it here, never asked upstream: a member's peers it may reach on
+    /// its engine's networks, a table a network (D181).
+    pub local: Vec<shards_dns::Names>,
 }
 
 impl Asker {
@@ -152,8 +156,18 @@ pub fn admit(asker: &Asker) -> io::Result<()> {
     let mut m = vec![b'A'];
     m.extend_from_slice(&asker.link.to_be_bytes());
     m.push(u8::from(asker.any));
+    m.push(
+        u8::try_from(asker.addrs.len()).map_err(|_| io::Error::other("an asker with too many addresses"))?,
+    );
     for a in &asker.addrs {
         m.extend_from_slice(&a.octets());
+    }
+    for table in &asker.local {
+        let bytes = table.table();
+        let len =
+            u16::try_from(bytes.len()).map_err(|_| io::Error::other("a table of names too long to say"))?;
+        m.extend_from_slice(&len.to_be_bytes());
+        m.extend_from_slice(&bytes);
     }
     tell(&m)
 }
@@ -188,13 +202,30 @@ fn apply(m: &[u8], askers: &RwLock<Vec<Asker>>) -> bool {
     };
     match m.first() {
         Some(b'A') => {
-            let (Some(link), Some(&any), Some(rest)) = (link(m), m.get(5), m.get(6..)) else {
+            let (Some(link), Some(&any), Some(&count)) = (link(m), m.get(5), m.get(6)) else {
                 return false;
             };
-            let (chunks, []) = rest.as_chunks::<4>() else {
+            let end = 7 + 4 * usize::from(count);
+            let Some((addrs, [])) = m.get(7..end).map(<[u8]>::as_chunks::<4>) else {
                 return false;
             };
-            let addrs = chunks.iter().map(|c| Ipv4Addr::from(*c)).collect();
+            let addrs = addrs.iter().map(|c| Ipv4Addr::from(*c)).collect();
+            let mut local = Vec::new();
+            let mut rest = m.get(end..).unwrap_or_default();
+            while let Some((&[a, b], tail)) = rest.split_first_chunk::<2>() {
+                let len = usize::from(u16::from_be_bytes([a, b]));
+                let Some((table, tail)) = tail.split_at_checked(len) else {
+                    return false;
+                };
+                let Some(names) = shards_dns::Names::decode(table) else {
+                    return false;
+                };
+                local.push(names.with_ttl(0));
+                rest = tail;
+            }
+            if !rest.is_empty() {
+                return false;
+            }
             let mut a = askers.write().unwrap_or_else(std::sync::PoisonError::into_inner);
             a.retain(|x| x.link != link);
             a.push(Asker {
@@ -202,6 +233,7 @@ fn apply(m: &[u8], askers: &RwLock<Vec<Asker>>) -> bool {
                 any: any != 0,
                 names: Vec::new(),
                 addrs,
+                local,
             });
             true
         }
@@ -474,6 +506,15 @@ fn serve_connection(conn: &mut TcpStream, to: SocketAddr, asker: &Asker) -> io::
     conn.set_write_timeout(Some(WAIT))?;
     let mut upstream: Option<TcpStream> = None;
     while let Some(q) = crate::dnsrelay::read_message(conn)? {
+        if let Some(answer) = asker
+            .local
+            .iter()
+            .find(|t| t.holds(&q))
+            .and_then(|t| t.answer(&q))
+        {
+            crate::dnsrelay::write_message(conn, &answer)?;
+            continue;
+        }
         if !asker.may_ask(&q) {
             if let Some(no) = refused(&q) {
                 crate::dnsrelay::write_message(conn, &no)?;
@@ -535,7 +576,9 @@ fn relay(listen: &UdpSocket, upstream: &UdpSocket, askers: &RwLock<Vec<Asker>>, 
         // Askers that came or went, each message whole (SOCK_SEQPACKET); init's end closed,
         // the askers stay as they are.
         if set[2].revents != 0 {
-            let mut m = [0u8; 512];
+            // A message whole, whatever its tables of names hold (SOCK_SEQPACKET's at most
+            // its socket's buffer).
+            let mut m = vec![0u8; 1 << 16];
             // SAFETY: recv(2) into our own buffer, without waiting.
             let n = unsafe {
                 libc::recv(
@@ -559,6 +602,17 @@ fn relay(listen: &UdpSocket, upstream: &UdpSocket, askers: &RwLock<Vec<Asker>>, 
         flight.expire(now);
         while let Ok((n, from)) = receive(listen, &mut buf) {
             let q = buf.get(..n).unwrap_or_default();
+            // Its peers' names, answered here and never asked past the microVM (D181).
+            let here = askers
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .iter()
+                .find(|a| a.link == from.link)
+                .and_then(|a| a.local.iter().find(|t| t.holds(q)).and_then(|t| t.answer(q)));
+            if let Some(answer) = here {
+                let _ = answer_to(listen, &answer, &from);
+                continue;
+            }
             let granted = askers
                 .read()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)

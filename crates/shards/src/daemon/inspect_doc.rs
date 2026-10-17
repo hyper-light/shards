@@ -80,6 +80,10 @@ pub(super) struct UserNet {
     pub prefix6: u8,
     pub mac: String,
     pub dns_names: Vec<String>,
+    /// Of a container a microVM's own engine made (D181): its aliases there, and the address
+    /// its client asked for there; none on a network of the host's, whose come from its
+    /// request's endpoints.
+    pub engine: Option<(Vec<String>, String)>,
 }
 
 /// What a microVM's document is made of.
@@ -100,8 +104,9 @@ pub(super) struct Facts<'a> {
     pub log_path: String,
     /// Its place on the bridge, while it runs there.
     pub net: Option<Net>,
-    /// Its endpoint on its user network, if it is on one.
-    pub user_net: Option<UserNet>,
+    /// Its endpoint on each user network it is on: one of the host's (D46), or each of its
+    /// engine's a container a microVM's own engine made is on (D181).
+    pub user_nets: Vec<UserNet>,
     /// With `--size`: SizeRw and SizeRootFs.
     pub size: Option<(i64, i64)>,
 }
@@ -1103,55 +1108,78 @@ fn network_settings(f: &Facts<'_>, run: &Run) -> Value {
             .unwrap_or_default(),
         Life::Running | Life::Exited => String::new(),
     };
-    if let Some(u) = &f.user_net {
-        let mode = u.name.as_str();
-        let asked = run.endpoints.iter().find(|e| e.network == mode);
-        let ipam =
-            match asked.filter(|e| !e.ipv4.is_empty() || !e.ipv6.is_empty() || !e.link_local.is_empty()) {
-                Some(e) => ipam_config(e),
-                None => Struct::nil("network.EndpointIPAMConfig"),
+    if !f.user_nets.is_empty() {
+        let mut networks: std::collections::BTreeMap<String, Value> = std::collections::BTreeMap::new();
+        for u in &f.user_nets {
+            let mode = u.name.as_str();
+            let asked = run.endpoints.iter().find(|e| e.network == mode);
+            let (ipam, aliases, priority) = match &u.engine {
+                Some((aliases, ip)) => (
+                    if ip.is_empty() {
+                        Struct::nil("network.EndpointIPAMConfig")
+                    } else {
+                        ipam_config(&shards_ipc::Endpoint {
+                            ipv4: ip.clone(),
+                            ..shards_ipc::Endpoint::default()
+                        })
+                    },
+                    if aliases.is_empty() {
+                        Value::NilList(Kind::String)
+                    } else {
+                        Value::strings(aliases.iter().cloned())
+                    },
+                    0,
+                ),
+                None => (
+                    match asked
+                        .filter(|e| !e.ipv4.is_empty() || !e.ipv6.is_empty() || !e.link_local.is_empty())
+                    {
+                        Some(e) => ipam_config(e),
+                        None => Struct::nil("network.EndpointIPAMConfig"),
+                    },
+                    match asked.map(|e| &e.aliases).filter(|a| !a.is_empty()) {
+                        Some(a) => Value::strings(a.iter().cloned()),
+                        None => Value::NilList(Kind::String),
+                    },
+                    asked.map_or(0, |e| e.gw_priority),
+                ),
             };
-        let aliases = match asked.map(|e| &e.aliases).filter(|a| !a.is_empty()) {
-            Some(a) => Value::strings(a.iter().cloned()),
-            None => Value::NilList(Kind::String),
-        };
-        let endpoint = Struct::pointer("network.EndpointSettings")
-            .field("IPAMConfig", ipam)
-            .field("Links", Value::NilList(Kind::String))
-            .field("Aliases", aliases)
-            .field("DriverOpts", Value::NilMap(Kind::String))
-            .field("GwPriority", int(asked.map_or(0, |e| e.gw_priority)))
-            .field("NetworkID", s(&u.network_id))
-            .field("EndpointID", s(&u.endpoint))
-            .field("Gateway", s(&addr(u.gateway)))
-            .field("IPAddress", s(&addr(u.ip)))
-            .field(
-                "MacAddress",
-                s(&if running { u.mac.clone() } else { given_mac() }),
-            )
-            .field(
-                "IPPrefixLen",
-                int(i64::from(if u.ip.is_some() { u.prefix } else { 0 })),
-            )
-            .field("IPv6Gateway", s(if u.ip6.is_some() { &u.gateway6 } else { "" }))
-            .field(
-                "GlobalIPv6Address",
-                s(&u.ip6.map(|a| a.to_string()).unwrap_or_default()),
-            )
-            .field(
-                "GlobalIPv6PrefixLen",
-                int(if u.ip6.is_some() { i64::from(u.prefix6) } else { 0 }),
-            )
-            .field("DNSNames", Value::strings(u.dns_names.iter().cloned()))
-            .value();
+            let endpoint = Struct::pointer("network.EndpointSettings")
+                .field("IPAMConfig", ipam)
+                .field("Links", Value::NilList(Kind::String))
+                .field("Aliases", aliases)
+                .field("DriverOpts", Value::NilMap(Kind::String))
+                .field("GwPriority", int(priority))
+                .field("NetworkID", s(&u.network_id))
+                .field("EndpointID", s(&u.endpoint))
+                .field("Gateway", s(&addr(u.gateway)))
+                .field("IPAddress", s(&addr(u.ip)))
+                .field(
+                    "MacAddress",
+                    s(&if running { u.mac.clone() } else { given_mac() }),
+                )
+                .field(
+                    "IPPrefixLen",
+                    int(i64::from(if u.ip.is_some() { u.prefix } else { 0 })),
+                )
+                .field("IPv6Gateway", s(if u.ip6.is_some() { &u.gateway6 } else { "" }))
+                .field(
+                    "GlobalIPv6Address",
+                    s(&u.ip6.map(|a| a.to_string()).unwrap_or_default()),
+                )
+                .field(
+                    "GlobalIPv6PrefixLen",
+                    int(if u.ip6.is_some() { i64::from(u.prefix6) } else { 0 }),
+                )
+                .field("DNSNames", Value::strings(u.dns_names.iter().cloned()))
+                .value();
+            networks.insert(mode.to_owned(), endpoint);
+        }
         return Struct::pointer("container.NetworkSettings")
             .field("SandboxID", s(""))
             .field("SandboxKey", s(""))
             .field("Ports", Value::Map(Kind::Any, ports))
-            .field(
-                "Networks",
-                Value::Map(Kind::Any, [(mode.to_owned(), endpoint)].into_iter().collect()),
-            )
+            .field("Networks", Value::Map(Kind::Any, networks))
             .value();
     }
     // Its link-local addresses (PM M175), its only IPAM config off a user network.
@@ -1549,6 +1577,7 @@ mod tests {
                 saved: None,
                 engine_made: None,
                 engine_images: Vec::new(),
+                engine_networks: Vec::new(),
             };
             let manifest = &want["ImageManifestDescriptor"];
             let facts = Facts {
@@ -1562,7 +1591,7 @@ mod tests {
                 exec_ids: Vec::new(),
                 log_path: String::new(),
                 net: None,
-                user_net: None,
+                user_nets: Vec::new(),
                 size: None,
             };
             let mut got: serde_json::Value = serde_json::from_str(&json(&document(&facts))).unwrap();

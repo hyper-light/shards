@@ -12,7 +12,9 @@ pub mod bridge;
 pub mod confine;
 #[cfg(windows)]
 mod dial;
-pub mod dns;
+/// The answers its resolver gives a network's members (D46): shards-dns, shared with the
+/// agents' resolver in the guest (D181).
+pub use shards_dns as dns;
 pub mod pktinfo;
 mod poll;
 mod ring;

@@ -9,6 +9,7 @@ members = [
   "crates/image",
   "crates/cmdline",
   "crates/devcgroup",
+  "crates/dns",
   "crates/agentfile",
   "crates/erofs",
   "crates/flate",

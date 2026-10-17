@@ -2460,13 +2460,16 @@ impl<D: Disk> Daemon<D> {
                     |at, proto| self.in_use(at, proto),
                 )
             }
-            // A container its microVM's engine made, on a network of that engine's (D181):
+            // A container its microVM's engine made, a member of that microVM's switch (D181):
             // its ports the microVM's, which init publishes, none of the host's.
-            network::Start::Join(_) if run.engine_net == "bridge" => publish::engine_ports(&bindings, &alone)
-                .map(|ports| publish::Bound {
-                    listeners: Vec::new(),
-                    ports,
-                }),
+            network::Start::Join(_) if !run.engine_nets.is_empty() => {
+                publish::engine_ports(&bindings, &alone, self.engine_host_binding(&run)).map(|ports| {
+                    publish::Bound {
+                        listeners: Vec::new(),
+                        ports,
+                    }
+                })
+            }
             _ => Ok(publish::Bound::default()),
         };
         let (ports, published, unbound) = match bound {
@@ -2637,10 +2640,8 @@ impl<D: Disk> Daemon<D> {
         // A container its microVM's engine made, a member of that microVM's switch (D181):
         // the network it joins there, and its name in its engine's scope. Init gives it its
         // address as it starts, and says it (`MEMBER`).
-        let member = match (&run.engine_made, run.engine_net.as_str(), joining) {
-            (Some((_, name)), net, true) if !net.is_empty() && net != "none" => {
-                Some((net.to_string(), name.clone()))
-            }
+        let member = match (&run.engine_made, joining) {
+            (Some((_, name)), true) if !run.engine_nets.is_empty() => Some(name.clone()),
             _ => None,
         };
         let shared = cdi_points
@@ -2723,21 +2724,51 @@ impl<D: Disk> Daemon<D> {
                 if run.engine_made.is_some() && run.engine_net == "none" {
                     prepared.spec.setup.push(b"own-net-none".to_vec());
                 }
-                if let Some((network, name)) = &member {
-                    // Its names there: the one its engine's client gave it, where it gave one.
-                    let mut entry = format!("member={network}");
-                    if !name.is_empty() {
-                        entry.push('\0');
-                        entry.push_str(name);
+                if let Some(name) = &member {
+                    // Each network of its engine's it is on: the address its client asked
+                    // for there, and its names there, the one its client gave it first.
+                    for net in &run.engine_nets {
+                        let mut parts = net.split('\0');
+                        let network = parts.next().unwrap_or_default();
+                        let addr = parts.next().unwrap_or_default();
+                        let mut entry = format!("member={network}\0{addr}");
+                        let mut names: Vec<&str> = Vec::new();
+                        for n in std::iter::once(name.as_str()).chain(parts) {
+                            if !n.is_empty() && !names.contains(&n) {
+                                names.push(n);
+                                entry.push('\0');
+                                entry.push_str(n);
+                            }
+                        }
+                        prepared.spec.setup.push(entry.into_bytes());
                     }
-                    prepared.spec.setup.push(entry.into_bytes());
+                    // The ports it declares, which its peers may reach: those it publishes,
+                    // and those it exposes alone.
+                    let declared: Vec<String> = bindings
+                        .iter()
+                        .map(|b| (b.port, b.proto.as_str()))
+                        .chain(alone.iter().map(|(port, proto)| (*port, proto.as_str())))
+                        .map(|(port, proto)| format!("{}/{port}", if proto == "udp" { 17 } else { 6 }))
+                        .collect();
+                    if !declared.is_empty() {
+                        prepared
+                            .spec
+                            .setup
+                            .push(format!("member-accepts={}", declared.join(",")).into_bytes());
+                    }
+                    // Each at the address its binding names, or its network's for its
+                    // members' ports where it names none.
+                    let default_host = self.engine_host_binding(&run).map(|a| a.to_string());
                     for b in &bindings {
                         let port = b
                             .host_port
                             .split_once('-')
                             .map_or(b.host_port.as_str(), |(lo, _)| lo);
                         let port = if port.is_empty() { "0" } else { port };
-                        let host = b.host_ip.trim_matches(|c| c == '[' || c == ']');
+                        let host = match b.host_ip.trim_matches(|c| c == '[' || c == ']') {
+                            "" => default_host.as_deref().unwrap_or_default(),
+                            given => given,
+                        };
                         prepared.spec.setup.push(
                             format!("own-publish={}\0{host}\0{port}\0{}", b.proto, b.port).into_bytes(),
                         );
@@ -3613,13 +3644,14 @@ impl<D: Disk> Daemon<D> {
             size_rw: None,
             saved: None,
             engine_images: Vec::new(),
+            engine_networks: Vec::new(),
             // Made through a microVM's own engine (D181): its name there, or the one it was
             // given here where that engine named none.
             engine_made: run
                 .engine_made
                 .as_ref()
                 .map(|(of, there)| containers::EngineMade {
-                    address: None,
+                    addresses: Vec::new(),
                     of: of.clone(),
                     name: if there.is_empty() {
                         name.clone()
@@ -3748,9 +3780,9 @@ impl<D: Disk> Daemon<D> {
     ) -> Option<Removal> {
         if let Err(e) = registry.change(id, |c| {
             end(c);
-            // Its address on its microVM's engine's network goes with its run (D181).
+            // Its addresses on its microVM's switch go with its run (D181).
             if let Some(m) = c.engine_made.as_mut() {
-                m.address = None;
+                m.addresses.clear();
             }
         }) {
             log(format!("container {id}: its end is lost: {e}"));
@@ -4302,7 +4334,8 @@ impl<D: Disk> Daemon<D> {
                     Some(address) => {
                         let changed = lock(&self.containers).change(id, |c| {
                             if let Some(made) = c.engine_made.as_mut() {
-                                made.address = Some(address.clone());
+                                made.addresses.retain(|a| a.network != address.network);
+                                made.addresses.push(address.clone());
                             }
                         });
                         if changed.is_ok() {

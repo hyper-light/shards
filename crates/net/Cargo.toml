@@ -12,6 +12,7 @@ workspace = true
 
 [dependencies]
 shards-abi = { path = "../abi" }
+shards-dns = { path = "../dns" }
 shards-netring = { path = "../netring" }
 shards-ipc = { path = "../ipc" }
 

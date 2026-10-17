@@ -17,6 +17,7 @@ mod files;
 mod http;
 mod images;
 mod networks;
+mod own_networks;
 mod scope;
 mod volumes;
 mod watch;
@@ -36,6 +37,7 @@ use super::{Daemon, Threads, lock, log};
 use crate::build::proxy::head::{self, Body, Head};
 use crate::containers::Disk;
 use http::Answer;
+pub(super) use own_networks::own_id;
 pub(super) use scope::Scope;
 
 /// The socket, relative to the home, the daemon's working directory, as `daemon.sock` is.

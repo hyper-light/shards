@@ -281,6 +281,7 @@ pub fn main() -> ! {
         "api-run" => api_run(arg(1), args.get(2..).unwrap_or_default()),
         "ask" => ask(arg(1), arg(2).parse().ok()),
         "resolve" => resolve(arg(1)),
+        "dnsttl" => dnsttl(arg(1)),
         "udp" => udp(arg(1)),
         "serve" => serve(arg(1), arg(2).parse().unwrap_or(1)),
         "listen" => listen(arg(1), arg(2).parse().unwrap_or(1)),
@@ -1013,6 +1014,74 @@ fn resolve(name: &str) -> i32 {
             1
         }
     }
+}
+
+/// Asks the resolver `/etc/resolv.conf` names for `name`'s A records, by hand over UDP,
+/// and prints each answer's TTL, how long a cache may keep it, and its address (`dnsttl
+/// TTL ADDR`); or why none came.
+fn dnsttl(name: &str) -> i32 {
+    let server = std::fs::read_to_string("/etc/resolv.conf")
+        .unwrap_or_default()
+        .lines()
+        .find_map(|l| l.strip_prefix("nameserver ").map(|a| a.trim().to_string()))
+        .unwrap_or_default();
+    let mut q = vec![0x53, 0x7c, 0x01, 0x00, 0, 1, 0, 0, 0, 0, 0, 0];
+    for label in name.split('.') {
+        q.push(u8::try_from(label.len()).unwrap_or(0));
+        q.extend_from_slice(label.as_bytes());
+    }
+    q.extend_from_slice(&[0, 0, 1, 0, 1]);
+    let asked = std::net::UdpSocket::bind("0.0.0.0:0").and_then(|s| {
+        s.set_read_timeout(Some(std::time::Duration::from_secs(3)))?;
+        s.send_to(&q, (server.as_str(), 53))?;
+        let mut buf = vec![0u8; 4096];
+        let n = s.recv(&mut buf)?;
+        buf.truncate(n);
+        Ok(buf)
+    });
+    let a = match asked {
+        Ok(a) => a,
+        Err(e) => {
+            let _ = writeln!(io::stdout(), "dnsttl error {e}");
+            return 1;
+        }
+    };
+    let be16 = |at: usize| {
+        a.get(at..at + 2)
+            .and_then(|b| <[u8; 2]>::try_from(b).ok())
+            .map(u16::from_be_bytes)
+    };
+    let be32 = |at: usize| {
+        a.get(at..at + 4)
+            .and_then(|b| <[u8; 4]>::try_from(b).ok())
+            .map(u32::from_be_bytes)
+    };
+    // Its answers, past the question it repeats (RFC 1035 §4.1.3): each named by a pointer
+    // or by labels to their zero, then its type, class, TTL, data's length and data.
+    let mut at = q.len();
+    for _ in 0..be16(6).unwrap_or(0) {
+        while let Some(&len) = a.get(at) {
+            if len & 0xc0 == 0xc0 {
+                at += 2;
+                break;
+            }
+            at += 1 + usize::from(len);
+            if len == 0 {
+                break;
+            }
+        }
+        let (Some(kind), Some(ttl), Some(len)) = (be16(at), be32(at + 4), be16(at + 8)) else {
+            break;
+        };
+        let data = a.get(at + 10..at + 10 + usize::from(len)).unwrap_or_default();
+        if kind == 1
+            && let Ok(ip) = <[u8; 4]>::try_from(data)
+        {
+            let _ = writeln!(io::stdout(), "dnsttl {ttl} {}", std::net::Ipv4Addr::from(ip));
+        }
+        at += 10 + usize::from(len);
+    }
+    0
 }
 
 /// Connects to `addr` (IP:PORT), reads until the far end closes, and prints what came:

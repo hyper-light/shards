@@ -137,18 +137,21 @@ time). A setting a microVM can't take is refused with the reason, never dropped.
 microVM. They take nothing of your machine's: not its engine, not its files, not your
 other microVMs, and your registry logins stay outside it. Each is on its own, like each
 agent in the microVM: the program reaches it on the ports it publishes (`-p 0:5432`, at
-`localhost`), it reaches no other container or agent, and it gets out of the microVM no
-farther than the program can. Two microVMs' programs can each make a container called
-`db`; on your machine they're listed as `MICROVM.db`. What a
-microVM's engine made stops when its program does, and is removed with it. `docker run
---use-api-socket` through shards' Engine API does the same, and the credentials the
-`docker` CLI would copy in are refused (it warns). Its program can run containers
-(`docker run`, attached or not), exec in them, stop, kill, wait for, read the logs of,
-list, inspect and remove them, and pull images: shards pulls with the registry logins of
-whoever ran the microVM, and the image is then that microVM's own; images of yours it
-never pulled aren't there for it. A bind (`-v /work:/src`) is of the microVM's own files,
-its volumes included, as a bind on any engine is of that engine's machine's. A call it
-can't serve yet is refused with what it serves.
+`localhost`), and on the default network it reaches no other container or agent. On a
+network made in the microVM (`docker network create`, a Compose project's networks),
+containers reach one another by name, each on the ports it declares (`EXPOSE`, `expose:`,
+`--expose` and the ports it publishes) and on no other. None gets out of the microVM
+farther than the program can, and none on an internal network gets out at all. Two
+microVMs' programs can each make a container called `db`; on your machine they're listed
+as `MICROVM.db`. What a microVM's engine made stops when its program does, and is removed
+with it. `docker run --use-api-socket` through shards' Engine API does the same, and the
+credentials the `docker` CLI would copy in are refused (it warns). Its program can run
+containers (`docker run`, attached or not), exec in them, stop, kill, wait for, read the
+logs of, list, inspect and remove them, make networks for them, and pull images: shards
+pulls with the registry logins of whoever ran the microVM, and the image is then that
+microVM's own; images of yours it never pulled aren't there for it. A bind (`-v
+/work:/src`) is of the microVM's own files, its volumes included, as a bind on any engine
+is of that engine's machine's. A call it can't serve yet is refused with what it serves.
 
 ### Boot a kernel yourself
 
