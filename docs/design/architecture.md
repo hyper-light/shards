@@ -3634,7 +3634,7 @@ No run-time labels, relays or declassifiers (§12 answer 14, decided by the user
 an internal-only domain to the world (D58), so there is no data to label. Code mode is
 D136.
 
-### D180. Contexts: shards on another machine, over QUIC (parts 1 to 4 built)
+### D180. Contexts: shards on another machine, over QUIC (parts 1 to 4 built, 3a to 3j)
 
 **The microVM need.** A user's microVMs run where the work needs them: a Mac for
 development, a Linux machine with a GPU (`--gpus`) or KVM, an x86_64 machine that builds and
@@ -3715,6 +3715,19 @@ local administration is (../focal docs/cluster-admin.md).
    the docker-cli oracle, not yet).
 5. Measured against Docker's `ssh://` and `tcp://` contexts, on the GPU desktop: a run's
    start, a stream's bytes, and a network change.
+
+**Not yet, and what each needs.**
+- `buildx policy eval` and `test` (refused): as buildx runs them against a remote builder,
+  evaluated here, of the client's files, the builder being the machine: its platform, and
+  each source's metadata resolved there as a build there resolves it, its store and its
+  network with the client's logins (`policy::Resolve`, whose requests and answers, image
+  configs and attestation chains among them, have no encoding to cross yet).
+- From a Windows client, `shards copy vm` (refused) and Docker's CLI through a context:
+  shards serves neither on Windows itself yet, cp.rs's daemon passing descriptors and
+  the relay being the daemon's, which Windows runs none of.
+- Extended attributes in a build's copy beyond `security.capability`.
+- One connection for a context's commands, where each command, and each SSH agent
+  connection a step makes, is a handshake of its own.
 
 **Dependencies.** `hyper-quic` and `hyper-tls` as git dependencies of hyper-light/hyper-raft
 (public) pinned to a revision, so CI builds them; their AWS-LC is shards' own (vendor/).
