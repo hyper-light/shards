@@ -48,6 +48,61 @@ fn engine_endpoint(home: &Path, name: &str) -> String {
 #[cfg(unix)]
 pub(crate) const TAKE_TERMINAL: &str = "SHARDS_TAKE_TERMINAL";
 
+/// What a client says in place of a run's or create's `--cidfile` path, before it: the file is
+/// the client's, made and written there as Docker's CLI makes its own, the ID told it by
+/// its machine (`frame::Tag::Made`).
+pub(crate) const CIDFILE: &str = "\0cidfile/";
+
+/// The variable a daemon sets for a client's command whose `--cidfile` is the client's
+/// ([`CIDFILE`]): the descriptor the command writes its microVM's ID to, which the daemon
+/// tells the client.
+#[cfg(unix)]
+pub(crate) const CIDFILE_FD: &str = "SHARDS_CIDFILE_FD";
+
+/// The descriptor [`CIDFILE_FD`] names.
+#[cfg(unix)]
+pub(crate) const CIDFILE_DESCRIPTOR: i32 = 3;
+
+/// The descriptor [`take_cidfile`] took.
+#[cfg(unix)]
+static TOLD: std::sync::Mutex<Option<fs::File>> = std::sync::Mutex::new(None);
+
+/// Takes what [`CIDFILE_FD`] names, close-on-exec, and lets the variable go, so that nothing
+/// this process starts takes it too.
+#[cfg(unix)]
+pub(crate) fn take_cidfile() {
+    use std::os::fd::FromRawFd as _;
+    let Some(fd) = std::env::var(CIDFILE_FD).ok().and_then(|v| v.parse::<i32>().ok()) else {
+        return;
+    };
+    // SAFETY: first thing in main, before any thread: the environment is this one's alone.
+    unsafe { std::env::remove_var(CIDFILE_FD) };
+    // SAFETY: fcntl(2) of a descriptor past stdio's, which its daemon gave this process.
+    if fd <= 2 || unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) } != 0 {
+        return;
+    }
+    // SAFETY: the descriptor its daemon gave this process for the ID, which nothing else
+    // here holds.
+    let file = unsafe { fs::File::from_raw_fd(fd) };
+    *TOLD.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(file);
+}
+
+/// The descriptor a client's `--cidfile` is told through ([`take_cidfile`]), once.
+#[cfg(unix)]
+pub(crate) fn told_cidfile() -> Option<fs::File> {
+    TOLD.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .take()
+}
+
+/// Whether this process's `--cidfile` is a client's ([`take_cidfile`]).
+#[cfg(unix)]
+pub(crate) fn tells_cidfile() -> bool {
+    TOLD.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .is_some()
+}
+
 /// Does what [`TAKE_TERMINAL`] asks, and lets the variable go, so that nothing this process
 /// starts takes the terminal too.
 #[cfg(unix)]
@@ -581,28 +636,22 @@ fn not_carried(args: &[OsString]) -> Option<String> {
     if shards_cmdline::commands::build(&refs).is_some() {
         return None;
     }
-    let refused = matches!(first, "buildx" | "builder" | "compose") || (first == "cp" && !cfg!(unix));
-    if refused {
+    // `buildx policy eval` and `test` read a policy of this client's files here, as buildx
+    // reads them in its own process, against its builder: not carried yet. Every other
+    // `buildx` and `builder` command asks the machine's builder alone, and `compose`,
+    // which is no command of shards', is the machine's to say so of, as this one's would.
+    let policy = matches!(refs.as_slice(), ["buildx", "policy", "eval" | "test", ..]);
+    if policy || (first == "cp" && !cfg!(unix)) {
+        let named = if policy {
+            refs.get(..3).unwrap_or_default().join(" ")
+        } else {
+            first.to_string()
+        };
         return Some(format!(
-            "{first} over a context sends this machine's files, which shards does not carry yet: run it on the machine itself"
+            "{named} over a context reads this machine's files, which shards does not carry yet: run it on the machine itself"
         ));
     }
-    // `run` is the CLI's own to read (request.rs), as Docker's flags are its.
-    let (command, path, n) = match refs.as_slice() {
-        ["run", ..] => (&shards_cmdline::commands::RUN, "shards run", 1),
-        ["container", "run", ..] => (&shards_cmdline::commands::RUN, "shards container run", 2),
-        _ => shards_cmdline::commands::find(&refs)?,
-    };
-    let rest = said.get(n..).map(<[String]>::to_vec).unwrap_or_default();
-    let shards_cmdline::flags::Outcome::Run(parsed) =
-        shards_cmdline::flags::parse(command, path, &rest, &|_, value| Ok(value.to_string()))
-    else {
-        return None;
-    };
-    // `--env-file` and `--label-file` cross as what they hold ([`here_values`]), and `-o`'s
-    // and `-i`'s files as the command's output and input ([`here_files`]).
-    let files = !parsed.string("cidfile").is_empty();
-    files.then(|| format!("{path}: a file of this machine's, which a context does not carry yet"))
+    None
 }
 
 /// A build of a context of this client's (D180 part 3c): what the machine builds, of its copy
@@ -1870,6 +1919,86 @@ fn here_values(
     Ok(head.into_iter().chain(from_files).chain(rest).collect())
 }
 
+/// A run's or create's `--cidfile` here, and how its command words what it refuses.
+struct Cid {
+    file: crate::cli::request::CidFile,
+    run: bool,
+}
+
+impl Cid {
+    /// `why` as the command says it, and its status: a run's with its help line, as
+    /// docker/cli's runRun words what createContainer returns (cli/request.rs), and a
+    /// create's plain.
+    fn refused(&self, why: String) -> (String, u8) {
+        refused_cid(self.run, why)
+    }
+}
+
+fn refused_cid(run: bool, why: String) -> (String, u8) {
+    if run {
+        let status = crate::cli::request::run_status(&why);
+        (
+            format!("shards: {why}\n\nRun 'shards run --help' for more information"),
+            status,
+        )
+    } else {
+        (why, 1)
+    }
+}
+
+/// A run's or create's `--cidfile`, a file of this client's that Docker's CLI makes and
+/// writes (D180): made here, as docker/cli's newCIDFile makes it, before the command is asked
+/// for, and said there as [`CIDFILE`] before its path here, which the run records; the
+/// machine tells this client the ID once it has made the microVM, and this client writes it
+/// (`client::exec_made`). A platform that does not parse is the machine's to refuse first,
+/// as docker/cli parses one before it makes the file, and a command shards' parser refuses
+/// goes as it is.
+fn here_cidfile(words: Vec<String>) -> Result<(Vec<String>, Option<Cid>), (String, u8)> {
+    use shards_cmdline::commands::{CREATE, RUN};
+    let said = shards_cmdline::grammar::rewrite(&words).unwrap_or_else(|| words.clone());
+    let refs: Vec<&str> = said.iter().map(String::as_str).collect();
+    let (command, path, n) = match refs.as_slice() {
+        ["run", ..] => (&RUN, "shards run", 1),
+        ["container", "run", ..] => (&RUN, "shards container run", 2),
+        ["create", ..] => (&CREATE, "shards create", 1),
+        ["container", "create", ..] => (&CREATE, "shards container create", 2),
+        _ => return Ok((words, None)),
+    };
+    let head = said.get(..n).map(<[String]>::to_vec).unwrap_or_default();
+    let mut rest = said.get(n..).map(<[String]>::to_vec).unwrap_or_default();
+    let shards_cmdline::flags::Outcome::Run(parsed) =
+        shards_cmdline::flags::parse(command, path, &rest, &|_, value| Ok(value.to_string()))
+    else {
+        return Ok((words, None));
+    };
+    let file = parsed.string("cidfile").to_string();
+    let platform = if parsed.changed("platform") {
+        parsed.string("platform").to_string()
+    } else {
+        crate::cli::env_ours_first("SHARDS_DEFAULT_PLATFORM", "DOCKER_DEFAULT_PLATFORM").unwrap_or_default()
+    };
+    if file.is_empty() || (!platform.is_empty() && crate::pull::targets(&platform).is_err()) {
+        return Ok((words, None));
+    }
+    let run = std::ptr::eq(command, &RUN);
+    let here = std::path::absolute(&file)
+        .map_err(|e| refused_cid(run, format!("failed to create the container ID file: {e}")))?;
+    let here = here.to_string_lossy().into_owned();
+    let made = crate::cli::request::CidFile::new(&here).map_err(|e| refused_cid(run, e))?;
+    for &(name, at, offset) in &parsed.positions {
+        if name != "cidfile" {
+            continue;
+        }
+        if let Some(word) = rest.get_mut(at) {
+            *word = format!("{}{CIDFILE}{here}", word.get(..offset).unwrap_or_default());
+        }
+    }
+    Ok((
+        head.into_iter().chain(rest).collect(),
+        Some(Cid { file: made, run }),
+    ))
+}
+
 /// A file of this client's that Docker's CLI writes or reads whole for its command (D180):
 /// the command there writes it as its stdout, or reads it as its stdin, and this client
 /// writes the file, or reads it.
@@ -2238,6 +2367,13 @@ pub(crate) fn forward(home: &Path, context: &Context, args: Vec<OsString>) -> Ex
         }
     };
     let (words, named) = here_files(words);
+    let (words, mut cid) = match here_cidfile(words) {
+        Ok(rewritten) => rewritten,
+        Err((said, status)) => {
+            let _ = writeln!(io::stderr(), "{said}");
+            return ExitCode::from(status);
+        }
+    };
     let words_sent = words.clone();
     let bytes: Vec<Vec<u8>> = words.into_iter().map(String::into_bytes).collect();
     // Of this client's own variables, what shapes the command; and of its credentials, those
@@ -2426,7 +2562,24 @@ pub(crate) fn forward(home: &Path, context: &Context, args: Vec<OsString>) -> Ex
         }
         *steered = Some(controls);
     };
-    let mut ran = client::exec(
+    // The ID of what it made, written to this client's `--cidfile` as it comes; one the file
+    // cannot take fails the command as here, which there goes on no more.
+    let mut unwritten = None;
+    let made = |id: &[u8]| {
+        if let Some(cid) = &mut cid
+            && let Err(e) = cid.file.write(&String::from_utf8_lossy(id))
+        {
+            unwritten = Some(cid.refused(e));
+            if let Some(controls) = STEERED
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .as_ref()
+            {
+                let _ = controls.hang_up();
+            }
+        }
+    };
+    let mut ran = client::exec_made(
         &identity,
         context.remote(),
         request,
@@ -2434,8 +2587,13 @@ pub(crate) fn forward(home: &Path, context: &Context, args: Vec<OsString>) -> Ex
         stdout,
         io::stderr(),
         steered,
+        made,
     );
     crate::cli::terminal::restore();
+    if let Some((said, status)) = unwritten {
+        let _ = writeln!(io::stderr(), "{said}");
+        return ExitCode::from(status);
+    }
     // What writes the file once the command is through, which was asked for it alone.
     if let (Some((words, recorded)), Ok(Ok(0))) = (then, &ran) {
         let request = Request {
@@ -3172,7 +3330,21 @@ mod tests {
         assert!(not_carried(&args("run -it alpine sh")).is_none());
         assert!(not_carried(&args("exec -it web sh")).is_none());
         assert!(not_carried(&args("attach web")).is_none());
-        assert!(not_carried(&args("compose up")).is_some());
+        // No command of shards', said so there as here.
+        assert!(not_carried(&args("compose up")).is_none());
+        // The builder's own, asked of the machine's; a policy's files here, not yet.
+        for builder in [
+            "buildx du",
+            "builder du",
+            "buildx prune -f",
+            "builder prune -a",
+            "buildx policy",
+        ] {
+            assert!(not_carried(&args(builder)).is_none(), "{builder}");
+        }
+        for policy in ["buildx policy eval alpine", "buildx policy test ."] {
+            assert!(not_carried(&args(policy)).is_some(), "{policy}");
+        }
         // An artifact's directory is kept in step there ([`artifact_building`]), and its
         // signature made here ([`artifact_sign_there`]).
         for carried in [
@@ -3237,19 +3409,14 @@ mod tests {
         ] {
             assert!(not_carried(&args(whole)).is_none(), "{whole}");
         }
-        assert!(not_carried(&args("run --cidfile c alpine")).is_some());
-        assert!(
-            not_carried(&args("run --rm alpine cat --cidfile c")).is_none(),
-            "the command's own --cidfile"
-        );
-        assert!(
-            not_carried(&args("run --name web --cidfile c alpine sh")).is_some(),
-            "past a flag's value"
-        );
-        assert!(
-            not_carried(&args("run vm --cidfile c alpine sh")).is_some(),
-            "shards' own words"
-        );
+        // A run's `--cidfile` is made here ([`here_cidfile`]).
+        for cid in [
+            "run --cidfile c alpine",
+            "create --cidfile c alpine",
+            "run vm --cidfile c alpine sh",
+        ] {
+            assert!(not_carried(&args(cid)).is_none(), "{cid}");
+        }
         // What the client's files hold crosses ([`here_values`]).
         assert!(not_carried(&args("run --env-file e alpine")).is_none());
         assert!(kept_here(&args("context ls")));

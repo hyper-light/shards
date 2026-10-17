@@ -118,8 +118,29 @@ impl Host for Machine {
             super::log(format!("client {client}: signature step {}", shown.join(" ")));
             return self.sign_step(args);
         }
+        // A run's or create's `--cidfile` of the client's (`context::CIDFILE`), the client's
+        // file, which the run records: the command writes the ID to a pipe instead
+        // (`cli::request::CidFile`), which goes to the client as the ID of what it made.
+        let mut tells = false;
+        let args: Vec<String> = args
+            .into_iter()
+            .map(|a| match a.split_once(crate::context::CIDFILE) {
+                Some((flag, path)) => {
+                    tells = true;
+                    format!("{flag}{path}")
+                }
+                None => a,
+            })
+            .collect();
         super::log(format!("client {client}: shards {}", args.join(" ")));
         let pipe = || std::io::pipe().map_err(|e| Error::new(format!("a pipe for the command: {e}")));
+        let (made, made_w) = match tells {
+            true => {
+                let (r, w) = pipe()?;
+                (Some(r), Some(w))
+            }
+            false => (None, None),
+        };
         let tty = |e: std::io::Error| Error::new(format!("the command's terminal: {e}"));
         // The client's terminal: the command's stdin, stdout and stderr that the client's
         // terminal is are a terminal of its own here, as sshd gives a session's command one
@@ -173,18 +194,23 @@ impl Host for Machine {
             set.push((crate::context::TAKE_TERMINAL, OsStr::new("1")));
         }
         let argv: Vec<&OsStr> = args.iter().map(OsStr::new).collect();
-        let fds = [
+        let mut fds = vec![
             (child_in.as_fd(), 0),
             (child_out.as_fd(), 1),
             (child_err.as_fd(), 2),
         ];
+        let descriptor = crate::context::CIDFILE_DESCRIPTOR.to_string();
+        if let Some(w) = &made_w {
+            fds.push((w.as_fd(), crate::context::CIDFILE_DESCRIPTOR));
+            set.push((crate::context::CIDFILE_FD, OsStr::new(&descriptor)));
+        }
         // A session of its own, out of reach of what a terminal of the daemon's sends its
         // group, whose controlling terminal is its own where it has one.
         let child = shards_ipc::spawn_in(&self.exe, &argv, &fds, true, &set)
             .map_err(|e| Error::new(format!("starting the command: {e}")))?;
         // The child holds its ends, and the terminal's peer: once it has gone, reading the
         // controller ends.
-        drop((child_in, child_out, child_err));
+        drop((child_in, child_out, child_err, made_w));
         let controller = pty.map(|(controller, _peer)| controller);
         // Waited for on one thread, hung up and signalled from others: kill refuses a child
         // reaped.
@@ -217,6 +243,7 @@ impl Host for Machine {
                     let _ = signalled.kill(sig);
                 }
             }),
+            made: made.map(|r| Box::new(r) as Box<dyn Read + Send>),
         })
     }
 
@@ -247,6 +274,7 @@ impl Machine {
             }),
             resize: None,
             signal: Box::new(|_| {}),
+            made: None,
         })
     }
 
@@ -311,6 +339,7 @@ impl Machine {
             hangup: Box::new(|| {}),
             resize: None,
             signal: Box::new(|_| {}),
+            made: None,
         })
     }
 
@@ -339,6 +368,7 @@ impl Machine {
             }),
             resize: None,
             signal: Box::new(|_| {}),
+            made: None,
         })
     }
 
@@ -605,6 +635,7 @@ impl Machine {
                     signalled.end(sig);
                 }
             }),
+            made: None,
         })
     }
 
@@ -649,6 +680,7 @@ impl Machine {
             hangup: Box::new(|| {}),
             resize: None,
             signal: Box::new(|_| {}),
+            made: None,
         })
     }
 }

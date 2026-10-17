@@ -4095,6 +4095,44 @@ applied, everything sent each time, the ignore file not applied here, what went 
 removed, a change's directories not set again, the build file not the copy's, a base's
 login not sent, a build arg named alone the machine's.
 
+**Part 3j, built: a run's `--cidfile` through a context is the client's, and a context refuses
+less.** A script on the laptop starts a job on the GPU machine and keeps its ID, to stop it
+later: `shards --context gpu run -d --cidfile job.id …`, then `shards --context gpu stop
+$(cat job.id)`. Docker's CLI makes and writes `--cidfile` itself (docker/cli v29.8.1
+create.go, newCIDFile; the platform parsed before it); a command over a context is the
+machine's CLI's, which would have made the machine's file, so a context refused it.
+- **Made here, as Docker's CLI makes it.** The client checks and makes the file before the
+  command is asked for (its path from the client's working directory, as a run here makes
+  it), refusing one that is there in the words and with the status a run or a create
+  refuses it with; a platform that does not parse goes to the machine, which refuses it
+  first, as docker/cli parses it before the file.
+- **The ID told as it is made.** The client names its path in the command after a marker
+  no command line can carry; the machine gives the command a pipe for it instead, told by a
+  variable no client can send (`SHARDS_CIDFILE_FD`, taken and let go first thing, as a
+  terminal is), so the command writes the ID there as the microVM is made and closes it, as
+  createContainer closes its file; the machine sends it on as the stream's `Made` frame, the
+  exit only after it; and the client writes its file, an attached run's while it runs. The
+  run records the client's path, as Docker's daemon records the CLI's. A run never made
+  leaves no file, a file that cannot take the ID fails the command as here, and the
+  command there is hung up.
+- **What a context refuses, now only what needs this machine's files**: `buildx policy eval`
+  and `test`, which read a policy of the client's in its own process, and `shards copy vm`
+  from Windows. `buildx du` and `prune`, and `builder`'s, ask the machine's builder alone,
+  and `compose`, no command of shards' (Compose reaches a context by its Engine socket,
+  part 4), is the machine's to say so of, as this machine's would.
+
+Tested in `tests/context.rs` (`a_cidfile_through_a_context_is_the_clients`: a relative
+name made here, the ID the one `run -d` printed, the client's path recorded; one there
+already refused with a run's words and status, left as it was; a create's; an attached
+run's while it runs, kept once it ends; a run never made leaving none; and
+`a_context_runs_commands_on_its_machine_whole`, `buildx policy eval` refused), and in
+context.rs's unit tests (what a context refuses), and in `crates/remote`'s
+(`what_a_command_made_comes_before_its_exit`: an ID told only once its command has exited,
+the order a busy host may run them in, still reaches the client before the exit status).
+Mutation-checked: the cidfile sent as it is, the ID not told (the command's own file), the
+told descriptor ignored, the ID dropped by the client, the exit sent before the ID, the
+told file held open as the run runs.
+
 **Part 3i, built: a build through a context on a terminal is drawn as here, and a command's
 terminal there ends whole.**
 - **The build's display, shards' own.** Where the client's stderr is a terminal, the

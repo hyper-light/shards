@@ -108,6 +108,7 @@ impl Host for Machine {
             signal: Box::new(move |linux| {
                 let _ = signalled.send(Seen::Signalled(linux));
             }),
+            made: None,
         })
     }
 

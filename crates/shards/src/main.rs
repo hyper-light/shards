@@ -76,7 +76,10 @@ Commands:
 fn main() -> ExitCode {
     // A command a daemon started for another machine's client on a terminal (D180).
     #[cfg(unix)]
-    context::take_terminal();
+    {
+        context::take_terminal();
+        context::take_cidfile();
+    }
     cli::main()
 }
 

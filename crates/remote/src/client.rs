@@ -121,6 +121,8 @@ struct Client<'a> {
     /// Given what steers the command once it is asked for: before then, there is no command
     /// for a signal to reach, which its caller acts on itself.
     steering: Option<Steering<'a>>,
+    /// Given what the command tells of the microVM it made ([`Tag::Made`]).
+    made: Option<Made<'a>>,
     answer: Option<Answer>,
     failed: Option<String>,
     done: bool,
@@ -259,6 +261,12 @@ impl Client<'_> {
                     Tag::Joined => {
                         self.answered(io, Answer::Joined);
                         return;
+                    }
+                    Tag::Made => {
+                        if let Some(made) = &mut self.made {
+                            made(&payload);
+                        }
+                        continue;
                     }
                     other => {
                         self.fail(io, format!("the daemon sent a client's frame ({other:?})"));
@@ -494,6 +502,22 @@ pub fn exec(
     stderr: impl Write + Send + 'static,
     steered: impl FnOnce(Controls),
 ) -> Result<Result<i32, String>, Error> {
+    exec_made(identity, remote, request, stdin, stdout, stderr, steered, |_| {})
+}
+
+/// [`exec`], and `made` given what the command tells of the microVM it made, its ID, as it
+/// comes ([`Tag::Made`]): on this thread, before the command's exit status.
+#[allow(clippy::too_many_arguments)]
+pub fn exec_made(
+    identity: &Identity,
+    remote: Remote,
+    request: Request,
+    stdin: Option<Box<dyn Read + Send>>,
+    stdout: impl Write + Send + 'static,
+    stderr: impl Write + Send + 'static,
+    steered: impl FnOnce(Controls),
+    made: impl FnMut(&[u8]),
+) -> Result<Result<i32, String>, Error> {
     let input = stdin.is_some();
     let answer = run(
         identity,
@@ -502,6 +526,7 @@ pub fn exec(
         stdin,
         Some((Box::new(stdout), Box::new(stderr))),
         Some(Box::new(steered)),
+        Some(Box::new(made)),
     )?;
     match answer {
         Answer::Exit(status) => Ok(Ok(status)),
@@ -521,7 +546,7 @@ pub fn join(identity: &Identity, invitation: &Invitation) -> Result<Result<(), S
         name: invitation.name.clone(),
         secret: invitation.secret,
     };
-    match run(identity, remote, ask, None, None, None)? {
+    match run(identity, remote, ask, None, None, None, None)? {
         Answer::Joined => Ok(Ok(())),
         Answer::Refused(why) => Ok(Err(why)),
         Answer::Exit(_) => Err(Error::new("the daemon answered a join as a command")),
@@ -530,6 +555,9 @@ pub fn join(identity: &Identity, invitation: &Invitation) -> Result<Result<(), S
 
 type Outputs = (Box<dyn Write + Send>, Box<dyn Write + Send>);
 
+/// What is given what a command tells of the microVM it made ([`exec_made`]).
+type Made<'a> = Box<dyn FnMut(&[u8]) + 'a>;
+
 fn run(
     identity: &Identity,
     remote: Remote,
@@ -537,6 +565,7 @@ fn run(
     stdin: Option<Box<dyn Read + Send>>,
     outputs: Option<Outputs>,
     steered: Option<Box<dyn FnOnce(Controls) + '_>>,
+    made: Option<Made<'_>>,
 ) -> Result<Answer, Error> {
     let config = tls::client(identity, remote.daemon)?;
     let any: SocketAddr = if remote.address.is_ipv4() {
@@ -566,6 +595,7 @@ fn run(
             controls: Vec::new(),
             uncontrolled: false,
             steering: None,
+            made,
             answer: None,
             failed: None,
             done: false,

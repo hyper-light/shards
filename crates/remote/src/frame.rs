@@ -42,6 +42,9 @@ pub enum Tag {
     Refused = 35,
     /// Daemon: the join is done: the client is enrolled under the invitation's name.
     Joined = 36,
+    /// Daemon: the ID of the microVM the command made, for its client's `--cidfile`, which
+    /// the client writes as Docker's CLI writes its own (D180).
+    Made = 37,
 }
 
 impl Tag {
@@ -59,6 +62,7 @@ impl Tag {
             34 => Tag::Exit,
             35 => Tag::Refused,
             36 => Tag::Joined,
+            37 => Tag::Made,
             _ => return None,
         })
     }
