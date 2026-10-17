@@ -709,6 +709,95 @@ pub fn is_action(word: &str) -> bool {
     ACTIONS.iter().any(|(_, a, _, _)| *a == word)
 }
 
+/// `text` in shards' words: what Docker's text calls a container is a microVM here.
+pub fn ours(text: &str) -> String {
+    text.replace("containers", "microVMs")
+        .replace("Containers", "MicroVMs")
+        .replace("container", "microVM")
+        .replace("Container", "MicroVM")
+}
+
+/// What an option does, said as shards does it, where Docker's words for it (`docker`'s),
+/// made shards' ([`ours`]), would still say what shards does otherwise: a device is its
+/// microVM's, not the host's (D152); an annotation is kept with its microVM, which no OCI
+/// runtime is given; isolation and the runtime are its VM's (D155); privileges and the OOM
+/// killer's preferences are within its microVM; a build reads an Agentfile first (D35).
+pub fn option_ours(docker: &str) -> Option<&'static str> {
+    Some(match docker {
+        "Add a host device to the container" => {
+            "Give the command one of its microVM's devices, the VM's, never the host's"
+        }
+        "Add an annotation to the container (passed through to the OCI runtime)" => {
+            "Add an annotation to the microVM, kept with it and shown by inspect"
+        }
+        "Container isolation technology" => {
+            "Isolation: a VM of its own (default, hyperv); process, sharing the host's kernel, is refused"
+        }
+        "Runtime to use for this container" => {
+            "Runtime: shards, or runc's or Kata Containers' names for it; any other is refused"
+        }
+        "Give extended privileges to this container" | "Give extended privileges to the command" => {
+            "Give the command every privilege within its microVM, none of the host's"
+        }
+        "Tune host's OOM preferences (-1000 to 1000)" => {
+            "Tune which of the microVM's processes its OOM killer picks (-1000 to 1000)"
+        }
+        "Name of the Dockerfile (default: \"PATH/Dockerfile\")" => {
+            "Name of the Agentfile or Dockerfile (default: \"PATH/Agentfile\", else \"PATH/Dockerfile\")"
+        }
+        _ => return None,
+    })
+}
+
+/// A form of shards' grammar as its page says it: each way it is said, its action and
+/// thing (`shards copy vm`) and what follows them (`NAME:PATH PATH`), and what it does.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Form {
+    pub usages: Vec<(String, Option<&'static str>)>,
+    pub about: &'static str,
+}
+
+/// The form `words` say, where they begin with an action of shards' and a thing it takes
+/// (`list vms`, `copy vm`): each alternative of its rows ([`USES`]) that takes that thing,
+/// and the first such row's about; none for words of no form, a command of Docker's.
+pub fn form(words: &[String]) -> Option<Form> {
+    let (action, thing) = (words.first()?.as_str(), words.get(1)?.as_str());
+    if !is_action(action) {
+        return None;
+    }
+    // `vm` and `container` name the same runs.
+    let kind = |w: &str| match Thing::of(w) {
+        Some(Thing::Container) => Some(Thing::Vm),
+        t => t,
+    };
+    let takes_it = |w: &str| w == thing || kind(w).is_some_and(|k| kind(thing) == Some(k));
+    let mut usages = Vec::new();
+    let mut about = None;
+    for (_, a, takes, said) in USES.iter().filter(|r| r.1 == action) {
+        let alternatives: Vec<&'static str> = takes.split(" | ").collect();
+        // What follows the last alternative's thing follows each bare one's too
+        // (`vm | image NAME`).
+        let shared = alternatives
+            .last()
+            .and_then(|l| l.split_once(' '))
+            .map(|(_, rest)| rest);
+        for alt in &alternatives {
+            let (first, rest) = match alt.split_once(' ') {
+                Some((first, rest)) => (first, Some(rest)),
+                None => (*alt, shared),
+            };
+            if takes_it(first) {
+                usages.push((format!("shards {a} {first}"), rest));
+                about.get_or_insert(*said);
+            }
+        }
+    }
+    Some(Form {
+        usages,
+        about: about?,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -866,6 +955,57 @@ mod tests {
         ] {
             assert_eq!(said(words), None, "{words}");
         }
+    }
+
+    /// A form's page takes each of its rows' alternatives that takes the thing asked for,
+    /// what follows the last one following a bare one; `container` is `vm`; Docker's own
+    /// commands are no form.
+    #[test]
+    fn a_forms_page_says_each_way_it_is_said() {
+        let form = |words: &str| {
+            let words: Vec<String> = words.split(' ').map(String::from).collect();
+            form(&words)
+        };
+        let usages = |words: &str| form(words).map(|f| f.usages);
+        assert_eq!(
+            usages("inspect vm"),
+            Some(vec![("shards inspect vm".to_string(), Some("NAME"))])
+        );
+        assert_eq!(
+            usages("copy vm"),
+            Some(vec![
+                ("shards copy vm".to_string(), Some("NAME:PATH PATH")),
+                ("shards copy vm".to_string(), Some("PATH NAME:PATH")),
+            ])
+        );
+        assert_eq!(
+            usages("list containers"),
+            Some(vec![("shards list vm".to_string(), None)])
+        );
+        assert_eq!(
+            form("stop vm").map(|f| f.about),
+            Some("Stop microVMs: their stop signal, then SIGKILL once their grace is up")
+        );
+        assert_eq!(form("ps -a"), None);
+        assert_eq!(form("list nothing"), None);
+    }
+
+    /// An option Docker's words would misstate for a microVM is said as shards does it;
+    /// others are left to [`ours`].
+    #[test]
+    fn options_are_said_as_microvms_do_them() {
+        assert_eq!(
+            option_ours("Add a host device to the container"),
+            Some("Give the command one of its microVM's devices, the VM's, never the host's")
+        );
+        assert!(
+            option_ours("Give extended privileges to the command")
+                .is_some_and(|s| s.contains("none of the host's"))
+        );
+        assert_eq!(
+            option_ours("Show all containers (default shows just running)"),
+            None
+        );
     }
 }
 

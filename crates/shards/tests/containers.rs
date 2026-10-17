@@ -4692,6 +4692,48 @@ fn without_vms(home: &Path, args: &[&str]) -> Run {
     run_shards_env(&[], args, &[("SHARDS_HOME", home.as_os_str())], TIMEOUT)
 }
 
+/// `-h` is help on every form of shards' grammar, and each form's page is its own: named
+/// as it is said (`shards list vm`), in shards' words, never a command of Docker's
+/// (`Usage:  shards ps`, `docker cp`).
+#[test]
+fn every_form_of_shards_grammar_answers_help_with_its_own_page() {
+    let home = TempDir::new("containers-forms");
+    for (_, action, takes, _) in shards_cmdline::grammar::USES {
+        for alternative in takes.split(" | ") {
+            let thing = alternative.split(' ').next().unwrap();
+            for help in ["-h", "--help"] {
+                let r = without_vms(&home, &[action, thing, help]);
+                let said = format!("shards {action} {thing}");
+                assert_eq!(r.status, Some(0), "{said} {help}: {r}");
+                assert!(r.stdout.contains(&said), "{said} {help}: {r}");
+                assert!(!r.stdout.contains("docker "), "{said} {help}: {r}");
+                assert!(!r.stdout.contains("container"), "{said} {help}: {r}");
+            }
+        }
+    }
+    // What an option does, as shards does it, where Docker's words would say otherwise;
+    // Docker's own command keeps Docker's words.
+    let page = without_vms(&home, &["create", "vm", "--help"]).stdout;
+    for said in [
+        "Give the command one of its microVM's devices, the VM's, never the host's",
+        "Add an annotation to the microVM, kept with it and shown by inspect",
+    ] {
+        assert!(
+            page.split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
+                .contains(said),
+            "{said}: {page}"
+        );
+    }
+    assert!(
+        !page.contains("OCI runtime") && !page.contains("host device"),
+        "{page}"
+    );
+    let docker = without_vms(&home, &["create", "--help"]).stdout;
+    assert!(docker.contains("Add a host device to the container"), "{docker}");
+}
+
 #[test]
 fn usage_mistakes_are_answered_without_a_daemon() {
     let home = TempDir::new("containers-usage");

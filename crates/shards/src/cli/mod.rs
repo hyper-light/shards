@@ -127,9 +127,13 @@ fn dispatch(args: Vec<OsString>) -> ExitCode {
         && let Some(said) = shards_cmdline::grammar::rewrite(&text)
         && said != text
     {
-        // The page is named as it was asked for: `list vms`, not `ps`.
+        // The page is named as it was asked for: `list vms`, not `ps`; and is that form's,
+        // in shards' words, where help is asked.
         #[cfg(unix)]
         look::name_as(&text.iter().take(2).cloned().collect::<Vec<_>>().join(" "));
+        if let Some(form) = shards_cmdline::grammar::form(&text) {
+            let _ = FORM.set(form);
+        }
         return dispatch(said.into_iter().map(OsString::from).collect());
     }
     let words: Vec<&str> = args.iter().map_while(|a| a.to_str()).take(2).collect();
@@ -862,6 +866,17 @@ pub(crate) fn show_live(sheet: &shards_ipc::Sheet, live: &mut shards_tui::frame:
     screens::show(sheet, live);
 }
 
+/// What an option does, as a form's page says it: shards' own words for it where Docker's
+/// say what shards does otherwise, Docker's made shards' elsewhere.
+pub(crate) fn said_ours(docker: &str) -> String {
+    shards_cmdline::grammar::option_ours(docker)
+        .map_or_else(|| shards_cmdline::grammar::ours(docker), str::to_string)
+}
+
+/// The form of shards' grammar this command line said, where it said one (`list vms`):
+/// its `--help` is that form's page.
+static FORM: std::sync::OnceLock<shards_cmdline::grammar::Form> = std::sync::OnceLock::new();
+
 /// Reads `argv` for `command`, which `path` names; or answers its `--help` or its
 /// mistakes as the Docker CLI does, with the status to exit with.
 pub(crate) fn read(
@@ -874,12 +889,19 @@ pub(crate) fn read(
         Outcome::Run(parsed) => Ok(parsed),
         Outcome::Help { notices } => {
             let _ = std::io::stdout().write_all(notices.as_bytes());
+            let form = FORM.get();
             #[cfg(unix)]
             if let Some(p) = look::styled() {
-                look::command(&p, command, path, &mut std::io::stdout().lock());
+                match form {
+                    Some(form) => look::form(&p, command, form, &mut std::io::stdout().lock()),
+                    None => look::command(&p, command, path, &mut std::io::stdout().lock()),
+                }
                 return Err(ExitCode::SUCCESS);
             }
-            let help = flags::help(command, path, columns());
+            let help = match form {
+                Some(form) => flags::form_help(command, form, columns(), &said_ours),
+                None => flags::help(command, path, columns()),
+            };
             let _ = write!(std::io::stdout(), "{help}");
             Err(ExitCode::SUCCESS)
         }

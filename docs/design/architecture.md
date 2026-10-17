@@ -8428,7 +8428,31 @@ logs`, `watch system` (what happens to microVMs and images). Docker's verbs for 
 (`top`, `stats`, `events`, `logs`, `diff`, `history`, `port`) answer as Docker's own
 commands, for its scripts, and are no form of shards' grammar nor in its help, where they
 had been: `shards --help` is the grammar, piped as on a terminal, and an action of shards'
-own alone opens its page wherever it is asked. Each record is a fork and its parent, an
+own alone opens its page wherever it is asked.
+
+**Each form's page is its own** (2026-10-16). A form that runs a command of Docker's
+(`list vm`, `watch vms`, `copy vm`) answered `-h` with docker/cli's page: `Usage:  shards
+stats [OPTIONS] [CONTAINER...]`, its aliases Docker's command names, `docker cp` in copy's
+usage. Its page is now the form's, on a terminal and piped: each way it is said (each of
+its rows' alternatives that takes the thing asked, `shards copy vm [OPTIONS] NAME:PATH
+PATH` and its other way round), what it does in the grammar's words, and the options of
+the command it runs, what each does said as shards says it (microVMs, not containers; and
+where Docker's words would still misstate it, shards' own: `--device` gives the command one
+of its microVM's devices, never the host's, D152; `--annotation` is kept with the microVM,
+no OCI runtime given it; `--isolation`, `--runtime`, `--privileged` and `--oom-score-adj`
+act within the microVM; grammar::option_ours); Docker's own commands keep docker/cli's pages, which `scripts/docker-cli/generate` holds
+byte for byte. And `-h` is help on every form, anywhere among its words but as a flag's
+value or after `--`, where the context, client, invitation, guest and daemon forms took
+it for a name (`context "--help" does not exist`) or refused it. Tested
+(`every_form_of_shards_grammar_answers_help_with_its_own_page`, every row of the grammar
+with `-h` and `--help`: its page, named as said, no `docker ` command and no `container`;
+`a_forms_page_says_each_way_it_is_said`; `help_is_asked_for_anywhere_but_as_a_value`),
+mutation-checked: the form not kept; its options in Docker's words; shards' own words for
+an option not taken; a device said as Docker says it; a context's, a
+client's, the guest's and the daemon's help not asked; a flag's value taken as help; a
+bare alternative given nothing after it; `container` no `vm`.
+
+Each record is a fork and its parent, an
 exec and its command line, or an end and its code or signal, with the time, the member
 (`command`, `agent NAME`, `harness NAME`, `joiner ID`) and the process's PID in the
 microVM. Kept as the log is: segments of `--log-opt max-size`, as many as `max-file`, in

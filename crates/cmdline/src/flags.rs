@@ -1340,9 +1340,49 @@ pub fn shown(flags: &[Flag], extension: bool) -> Vec<Shown> {
         .collect()
 }
 
+/// What `--help` prints for a form of shards' grammar ([`crate::grammar::form`]) that
+/// runs `command`, on a terminal `columns` wide: each way the form is said, `[OPTIONS]`
+/// after its thing where the command has any, what it does, and the command's options as
+/// [`help`] lays them out, what each does said through `words`.
+pub fn form_help(
+    command: &Command,
+    form: &crate::grammar::Form,
+    columns: u16,
+    words: &dyn Fn(&str) -> String,
+) -> String {
+    let any = !shown(command.flags, false).is_empty() || !shown(command.flags, true).is_empty();
+    let mut text = String::from("Usage:");
+    for (i, (said, rest)) in form.usages.iter().enumerate() {
+        text.push_str(if i == 0 { "  " } else { "\n        " });
+        text.push_str(said);
+        if any {
+            text.push_str(" [OPTIONS]");
+        }
+        if let Some(rest) = rest {
+            text.push(' ');
+            text.push_str(rest);
+        }
+    }
+    let _ = write!(text, "\n\n{}", form.about);
+    for (heading, extension) in [("Options", false), ("Shards options", true)] {
+        let options = options_said(command.flags, extension, i64::from(columns) - 1, words);
+        let options = options.trim_end();
+        if !options.is_empty() {
+            let _ = write!(text, "\n\n{heading}:\n{options}");
+        }
+    }
+    text.push('\n');
+    text
+}
+
 /// pflag's FlagUsagesWrapped: a line per flag `--help` shows, in the order of their
 /// names, the usages aligned and wrapped at `columns`: `docker`'s flags, or shards' own.
 fn options(flags: &[Flag], extension: bool, columns: i64) -> String {
+    options_said(flags, extension, columns, &|usage| usage.to_string())
+}
+
+/// [`options`], what each flag does said through `words`.
+fn options_said(flags: &[Flag], extension: bool, columns: i64, words: &dyn Fn(&str) -> String) -> String {
     let mut lines = Vec::new();
     let mut widest = 0;
     for f in shown(flags, extension) {
@@ -1355,7 +1395,7 @@ fn options(flags: &[Flag], extension: bool, columns: i64) -> String {
         }
         // pflag counts the separator it puts here.
         widest = widest.max(line.len() + 1);
-        let mut usage = f.usage;
+        let mut usage = words(&f.usage);
         if let Some(default) = f.default {
             let _ = write!(usage, " (default {default})");
         }

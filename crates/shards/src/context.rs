@@ -2725,6 +2725,35 @@ impl io::Write for Taken {
     }
 }
 
+/// Whether `words` ask for help: `-h` or `--help`, where it is no flag's value (a flag of
+/// `valued` takes the word after it) and before `--`.
+pub(crate) fn asks_help(words: &[&str], valued: &[&str]) -> bool {
+    let mut words = words.iter();
+    while let Some(word) = words.next() {
+        match *word {
+            "-h" | "--help" => return true,
+            "--" => return false,
+            w if valued.contains(&w) => {
+                words.next();
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
+/// `usage`, a command's page, as its help: on a colour terminal laid out as `name`'s.
+pub(crate) fn help_page(name: &str, usage: &str) -> ExitCode {
+    #[cfg(unix)]
+    if crate::cli::look::usage_page(name, usage) {
+        return ExitCode::SUCCESS;
+    }
+    #[cfg(not(unix))]
+    let _ = name;
+    let _ = writeln!(io::stdout(), "{usage}");
+    ExitCode::SUCCESS
+}
+
 /// `shards context ...`: the contexts this home joined.
 pub(crate) fn command(args: &[OsString]) -> ExitCode {
     let home = match shards_ipc::home() {
@@ -2732,6 +2761,9 @@ pub(crate) fn command(args: &[OsString]) -> ExitCode {
         Err(e) => return failed(&e),
     };
     let words: Vec<&str> = args.iter().map_while(|a| a.to_str()).collect();
+    if asks_help(&words, &["--invite-file", "--description"]) {
+        return help_page("context", CONTEXT_USAGE);
+    }
     let result = match words.as_slice() {
         ["create", name, rest @ ..] => create(&home, name, rest),
         ["use", name] => use_context(&home, name),
@@ -3000,6 +3032,9 @@ pub(crate) fn admin(thing: &str, args: &[OsString]) -> ExitCode {
         Err(e) => return failed(&e),
     };
     let words: Vec<&str> = args.iter().map_while(|a| a.to_str()).collect();
+    if asks_help(&words, &["--name", "--output"]) {
+        return help_page(thing, ADMIN_USAGE);
+    }
     let result = match (thing, words.as_slice()) {
         ("client", ["invite", rest @ ..]) => invite_client(&home, rest),
         ("client", ["ls" | "list"]) => {
@@ -3569,5 +3604,21 @@ mod tests {
         ] {
             assert_eq!(here_files(words(same)), (words(same), None), "{same}");
         }
+    }
+
+    /// Help is `-h` or `--help` wherever it is said, but as a flag's value or after `--`.
+    #[test]
+    fn help_is_asked_for_anywhere_but_as_a_value() {
+        assert!(asks_help(&["remove", "-h"], &[]));
+        assert!(asks_help(
+            &["create", "x", "--invite-file", "f", "--help"],
+            &["--invite-file"]
+        ));
+        assert!(!asks_help(
+            &["create", "x", "--description", "-h"],
+            &["--description"]
+        ));
+        assert!(!asks_help(&["--", "-h"], &[]));
+        assert!(!asks_help(&["remove", "x"], &[]));
     }
 }

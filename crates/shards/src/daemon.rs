@@ -240,11 +240,12 @@ pub fn daemon(args: impl Iterator<Item = OsString>) -> ExitCode {
             Some(fd) => ready_link(fd).and_then(|link| serve(Some(link), listen)),
             None => Err(format!("--ready: {:?} is not a descriptor", args.get(1))),
         },
-        (1, Some("-h" | "--help")) => {
-            if !crate::cli::look::usage_page("daemon", USAGE) {
-                let _ = writeln!(io::stdout(), "{USAGE}");
-            }
-            return ExitCode::SUCCESS;
+        _ if crate::context::asks_help(
+            &args.iter().map_while(|a| a.to_str()).collect::<Vec<_>>(),
+            &["--ready"],
+        ) =>
+        {
+            return crate::context::help_page("daemon", USAGE);
         }
         _ => Err(format!("unexpected arguments {args:?}\n{USAGE}")),
     };

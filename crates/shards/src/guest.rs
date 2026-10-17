@@ -160,7 +160,12 @@ pub fn kernel_version(release: &str) -> Option<shards_seccomp::Kernel> {
 }
 
 pub fn guest(args: impl Iterator<Item = OsString>) -> ExitCode {
-    let mut args = args.map(|a| {
+    let args: Vec<OsString> = args.collect();
+    let words: Vec<&str> = args.iter().map_while(|a| a.to_str()).collect();
+    if crate::context::asks_help(&words, &["--kernel", "--init"]) {
+        return crate::context::help_page("guest", USAGE);
+    }
+    let mut args = args.into_iter().map(|a| {
         a.into_string()
             .map_err(|a| format!("argument {a:?} is not valid UTF-8"))
     });
@@ -207,16 +212,6 @@ pub fn guest(args: impl Iterator<Item = OsString>) -> ExitCode {
                     g.kernel_digest,
                     g.init_digest
                 );
-                Ok(())
-            }
-            Some("-h" | "--help") => {
-                #[cfg(unix)]
-                let shown = crate::cli::look::usage_page("guest", USAGE);
-                #[cfg(not(unix))]
-                let shown = false;
-                if !shown {
-                    let _ = writeln!(io::stdout(), "{USAGE}");
-                }
                 Ok(())
             }
             Some(other) => Err(format!("unknown guest command {other:?}")),

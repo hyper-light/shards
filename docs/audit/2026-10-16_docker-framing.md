@@ -88,7 +88,10 @@ Reviewed feature by feature, each D-entry's design against what it took from Doc
 2. Names in code and tests (done: 6 to 0).
 3. Text users see; Docker's verbs and command forms in messages (usages, the VM process's
    messages, the login hint, refusals on a terminal, seven strings in shards' own voice:
-   done; per-command help pages, still docker/cli's prose, next).
+   done; each form of the grammar's help page its own, `-h` help on every form, and the
+   options Docker's words misstate for a microVM (`--device` a host's, `--annotation` an
+   OCI runtime's, `--isolation`, `--runtime`, `--privileged`, `--oom-score-adj`) said as
+   shards does them: done).
 4. Sockets: the build's agent sockets as descriptors (done).
 5. Docker's behaviour and bugs: each feature reviewed, fixed and tested.
 6. Comments and docs: framing and "container", file by file, keeping the evidence each
