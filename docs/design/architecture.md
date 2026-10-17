@@ -4789,9 +4789,9 @@ container's address; and a container reaches past the microVM no more than the c
 Built in parts: (3a) members on the switch, the default network, published ports, `host`
 and `none`, built; (3b) the networks its engine makes, their grants and names, and the
 networks API, built, connect and disconnect for a container that does not run; (3c) its
-named volumes, built, then one member in another's namespace (`container:X`, Compose's
-`service:`) and Compose end to end; (3d) the undeclared listeners `shards read ports`
-lists; (3e) connect and disconnect of a running member.
+named volumes and one container in another's namespace (`container:X`, Compose's
+`service:`), built, then Compose end to end; (3d) the undeclared listeners `shards read
+ports` lists; (3e) connect and disconnect of a running member.
 
 - **How 3a is built.** The daemon asks for a membership by network and name (`member=`,
   with `own-publish=` for each port it publishes), and nothing of addresses. Init holds
@@ -4937,6 +4937,27 @@ lists; (3e) connect and disconnect of a running member.
   a volume's document, and in a container's mount; driver options taken. With a free
   name taken, the store's refusal of another's volume is a second guard the test does
   not reach.
+- **One in another's namespace (3c).** `--network container:X` of a container its
+  microVM's engine made, and Compose's `network_mode: service:X`, shares X's network
+  namespace as it is: a member's (its link, address, gate, grants and names), one on
+  `none` (its loopback alone), or the command's where X is on `host`. The daemon names the
+  namespace to init by X's exec in its provider's guest (`net=joiner=ID`, as `pid=joiner=`
+  names a PID namespace), following X to the one it shares where it shares another's; init
+  enters it, and X's UTS namespace, before anything of the new container's runs. Its
+  `hostname`, `hosts` and `resolv.conf` are X's, the same files read-only, copied from X's
+  mount namespace (open_tree(2)), so that a link X put there resolves in X's files alone.
+  It publishes and declares no ports of its own, refused as any joiner's are at create
+  (D119), for it has no link to have them on. Found on the way: before, any such container
+  but a member's was given its provider's namespace, the command's, so one beside a
+  container on `none`, loopback alone, reached as far as the command; and one beside a
+  member was refused.
+- **Tested on real microVMs.**
+  `a_container_in_anothers_namespace_shares_that_ones_as_it_is`: beside one on `none`, its
+  loopback alone; beside a member, that member's server on their loopback, its host name
+  and its hosts file at its address; ports of its own refused. Mutation-checked, each
+  caught: init entering its provider's namespace (it saw the command's eth0 beside one on
+  `none`); the daemon naming no namespace of the one it joins; X's files not shared; its
+  provider's UTS namespace.
 
 ### D179. Other CPUs' images, emulated in their microVM (parts 1 to 3 built)
 

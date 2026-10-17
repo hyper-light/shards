@@ -2669,6 +2669,14 @@ impl<D: Disk> Daemon<D> {
                 if let Some(other) = run.ipc.strip_prefix("container:") {
                     prepared.spec.setup.push(self.shared_ipc_entry(other)?);
                 }
+                // `--network container:` of a container its microVM's engine gave a network
+                // namespace of its own (D181): that one's, not its provider's.
+                if run.engine_made.is_some()
+                    && let Some(other) = run.network.strip_prefix("container:")
+                    && let Some(entry) = self.joiners_net(other)?
+                {
+                    prepared.spec.setup.push(entry);
+                }
                 // Beside agents whose flows past the microVM cross the command's network
                 // namespace, Docker's default CAP_NET_RAW is not the command's (D115): its
                 // own microVM's, or the one it joins.
@@ -5063,6 +5071,38 @@ impl<D: Disk> Daemon<D> {
             }
         }
         Err(format!("container {id}: its PID namespace is too far removed"))
+    }
+
+    /// The network namespace of container `id` as another's `--network container:` takes it
+    /// (D181): its own, where its microVM's engine gave it one (a member of the switch, or
+    /// its loopback alone), as `net=joiner=ID` of its exec in its provider's guest; that of
+    /// the one it shares, followed; none where it is its provider's, the command's.
+    fn joiners_net(&self, id: &str) -> Result<Option<Vec<u8>>, String> {
+        let mut at = id.to_string();
+        // Each names one made before it, so no chain loops; bounded all the same.
+        for _ in 0..64 {
+            let dir = lock(&self.containers).dir(&at);
+            let run = std::fs::read(dir.join(REQUEST))
+                .ok()
+                .and_then(|b| Run::decode(&b))
+                .ok_or_else(|| format!("container {at}: its request is lost"))?;
+            if run.engine_made.is_none() {
+                return Ok(None);
+            }
+            if run.engine_net == "none" || !run.engine_nets.is_empty() {
+                let guest = self.inbox_of(&at).and_then(|inbox| lock(&inbox).guest);
+                return guest
+                    .map(|g| Some(format!("net=joiner={g}").into_bytes()))
+                    .ok_or_else(|| format!("container {at} is not running"));
+            }
+            match run.network.strip_prefix("container:") {
+                Some(other) => at = other.to_string(),
+                None => return Ok(None),
+            }
+        }
+        Err(format!(
+            "container {id}: its network namespace is too far removed"
+        ))
     }
 
     /// `--ipc container:NAME` (D156): a run shares another's IPC namespace and /dev/shm

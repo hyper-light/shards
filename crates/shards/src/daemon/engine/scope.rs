@@ -239,14 +239,6 @@ fn confine(
             Some(other) => {
                 alone(mode)?;
                 match resolve(scoped, other) {
-                    Some(c) if c.engine_made.as_ref().is_some_and(|m| !m.addresses.is_empty()) => {
-                        return Err(Answer::error(
-                            501,
-                            format!(
-                                "--network {mode}: sharing the namespace of a member of its microVM's switch is not served yet"
-                            ),
-                        ));
-                    }
                     Some(c) => (c.id.clone(), String::new(), Vec::new()),
                     None => return Err(no_such(other)),
                 }

@@ -3522,6 +3522,128 @@ fn a_microvms_own_engine_makes_volumes_of_its_own() {
     assert_eq!(removed.status, Some(0), "{removed}");
 }
 
+/// A container a microVM's own engine makes in another's network namespace (`--network
+/// container:X`, Compose's `network_mode: service:`) shares that one's, as it is (D181):
+/// one on `none`'s loopback alone, not the command's; a member's, its address, loopback
+/// and host name; and no ports of its own, which it has no link to publish or declare on.
+#[test]
+fn a_container_in_anothers_namespace_shares_that_ones_as_it_is() {
+    let Some((home, image)) = home("eng-netof") else {
+        return;
+    };
+    let shards = |args: &[&str]| shards_in(&home, args);
+    let ran = shards(&["run", "-d", "--name", "prov", "--use-api-socket", &image, "sleep"]);
+    assert_eq!(ran.status, Some(0), "{ran}");
+    let exec = |args: &[&str]| {
+        let mut all = vec!["exec", "prov", "/bin/testguest"];
+        all.extend_from_slice(args);
+        shards(&all)
+    };
+    let deadline = std::time::Instant::now() + TIMEOUT;
+    while exec(&["api", "GET", "/_ping", ""]).stdout != "api HTTP/1.1 200 OK\nOK" {
+        assert!(std::time::Instant::now() < deadline, "its engine never answered");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let api = |method: &str, path: &str, body: &Value| -> (String, String) {
+        let body = if body.is_null() {
+            String::new()
+        } else {
+            body.to_string()
+        };
+        let out = exec(&["api", method, path, &body]);
+        let (status, rest) = out.stdout.split_once('\n').unwrap_or((&out.stdout, ""));
+        (status.to_string(), rest.to_string())
+    };
+    let create = |name: &str, body: Value| {
+        let (status, said) = api("POST", &format!("/containers/create?name={name}"), &body);
+        assert!(status.starts_with("api HTTP/1.1 201"), "{name}: {status} {said}");
+        let (status, said) = api("POST", &format!("/containers/{name}/start"), &Value::Null);
+        assert!(status.starts_with("api HTTP/1.1 204"), "{name}: {status} {said}");
+    };
+    let logs_of = |name: &str| api("GET", &format!("/containers/{name}/logs?stdout=1"), &Value::Null).1;
+    let finished = |name: &str| {
+        let _ = api("POST", &format!("/containers/{name}/wait"), &Value::Null);
+        logs_of(name)
+    };
+    let ready = |name: &str| {
+        let deadline = std::time::Instant::now() + TIMEOUT;
+        while !logs_of(name).contains("ready") {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "{name} never said it was ready"
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    };
+    let links = |said: &str| -> Vec<String> {
+        said.lines()
+            .filter_map(|l| l.split_whitespace().next())
+            .filter(|l| !l.is_empty() && l.bytes().all(|b| b.is_ascii_alphanumeric()))
+            .map(str::to_string)
+            .collect()
+    };
+    // One on `none`: who shares its namespace has its loopback alone, as it has.
+    create(
+        "quiet",
+        json!({ "Image": image, "Cmd": ["sleep"], "HostConfig": { "NetworkMode": "none" } }),
+    );
+    ready("quiet");
+    create(
+        "beside",
+        json!({ "Image": image, "Cmd": ["addrs"], "HostConfig": { "NetworkMode": "container:quiet" } }),
+    );
+    let said = finished("beside");
+    let seen = links(&said);
+    assert!(!seen.is_empty() && seen.iter().all(|l| l == "lo"), "{said}");
+    // A member's: its loopback, where it serves, and its host name; db serves two
+    // connections, so it runs on past the first.
+    create(
+        "db",
+        json!({ "Image": image, "Cmd": ["serve", "7000", "2"], "ExposedPorts": { "7000/tcp": {} } }),
+    );
+    ready("db");
+    create(
+        "sidecar",
+        json!({ "Image": image, "Cmd": ["ask", "127.0.0.1:7000", "3000"], "HostConfig": { "NetworkMode": "container:db" } }),
+    );
+    let said = finished("sidecar");
+    assert!(said.contains("ask from 127.0.0.1"), "{said}");
+    let (_, db) = api("GET", "/containers/db/json", &Value::Null);
+    let db: Value = serde_json::from_str(&db).unwrap();
+    let hostname = db["Config"]["Hostname"].as_str().unwrap().to_string();
+    create(
+        "named",
+        json!({ "Image": image, "Cmd": ["report"], "HostConfig": { "NetworkMode": "container:db" } }),
+    );
+    let said = finished("named");
+    assert!(
+        said.contains(&format!("hostname {hostname}\n")),
+        "{said} {hostname}"
+    );
+    // Its hosts file, the same file, naming db at its address.
+    let db_addr = db["NetworkSettings"]["Networks"]["bridge"]["IPAddress"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    create(
+        "hostsfile",
+        json!({ "Image": image, "Cmd": ["fs", "print:/etc/hosts"], "HostConfig": { "NetworkMode": "container:db" } }),
+    );
+    let said = finished("hostsfile");
+    assert!(said.contains(&db_addr), "{said} {db_addr}");
+    // No ports of its own.
+    let (status, said) = api(
+        "POST",
+        "/containers/create?name=porty",
+        &json!({ "Image": image, "Cmd": ["sleep"], "ExposedPorts": { "7100/tcp": {} },
+                 "HostConfig": { "NetworkMode": "container:db",
+                                 "PortBindings": { "7100/tcp": [{ "HostPort": "" }] } } }),
+    );
+    assert!(status.starts_with("api HTTP/1.1 400"), "{status} {said}");
+    let removed = shards(&["rm", "-f", "prov"]);
+    assert_eq!(removed.status, Some(0), "{removed}");
+}
+
 /// A query's component, its reserved bytes percent-encoded (RFC 3986 §2.1).
 fn urlencode(text: &str) -> String {
     text.bytes()
