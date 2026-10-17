@@ -2407,13 +2407,52 @@ one CLI.
   entitlements on macOS, and embeds them with their digests; `src/helpers.rs` writes
   them out the first time a build needs them, into this user's cache under a directory
   named by their digests, whole (each synced, the directory renamed into place), and
-  every later process of the build finds them with a `stat` each. They are no
-  deliverables: nothing but `shards` is installed.
+  every later process of the build finds them with a `stat` each, and holds them while
+  it lives (D182). They are no deliverables: nothing but `shards` is installed.
 - A daemon's build is its binary's identity, which includes what it carries; one given
   another VM binary (`SHARDS_VM_BINARY`, for VMM work and tests) is another build.
 - **Tests:** `helpers::tests` (written whole once, found after, a cut copy replaced);
   E2E runs the one binary placed alone, its VMs from what it carries; `apple::tests`,
   the verifier against rustls-platform-verifier over eleven chains.
+
+### Other builds' helpers go once no process holds them (D182)
+
+Each build writes its helpers into a directory of its own (D36), and nothing removed
+one: on 2026-10-17 one host's cache held 425 of them, 1.6 GB, one a build, and a user's
+grows by one a release. Now each is removed once no process of its build lives.
+
+- **A process holds its build's directory while it lives**: a shared lock on the
+  directory's `lock` file (flock(2), LockFileEx on Windows: std's `File::lock_shared`),
+  taken the first time the process needs a helper and never let go. Each process that
+  starts helpers lives at least as long as they do: the daemon, whose runs end with it
+  (D26); a build; `run --kernel` and `restore`, which wait for their VM.
+- **The first process of a build to write its directory out removes every other
+  build's that none holds**, on a thread of its own, off its way. It takes the helpers'
+  own lock alone, which writing takes shared, so that it looks at no directory being
+  written and none placed but not yet held. A directory whose lock it takes alone is
+  moved aside while that is held, its lock marked, then removed: a process that waited
+  for that lock meanwhile finds the mark, and writes its build's out again. What a
+  writer or a collection that ended midway left (a copy not yet in place, a directory
+  moved aside) has a dot name, and goes with the next collection.
+- **Windows moves no directory with a file open in it** (the image store's `take_away`
+  meets the same): there the move is refused while the collection holds the lock, so it
+  lets the lock go and tries again, and that move fails while any process has the lock,
+  or any file of the directory (a running VM process), open. The protocol holds either
+  way: a platform that moves a directory with a file open in it has it moved while the
+  lock is held alone, and marked.
+- A directory of a build from before these locks has no lock to be held by: it goes as
+  no process's. A daemon of such a build is stopped by the first client of another
+  build that finds it (D26).
+- What stays (held, or a move Windows refused) waits for the next build's collection:
+  the directories of the builds alive at the last collection, at most.
+- **Tests:** `helpers::tests::other_builds_helpers_go_once_no_process_holds_them` (a held
+  build's kept; a free one's, one from before the locks and a dead writer's copy
+  removed, the last only once no copy is being written; a process that opened a lock
+  before the collection took it alone finds its lock marked on Unix, even once another
+  process has placed the directory again, and keeps the directory on Windows, which
+  refuses the move; let go, they go with the next collection), and
+  `helpers_are_written_whole_once_and_found_after`. Mutation-checked: a held directory
+  taken, no mark made, the mark unread, the collection not holding the helpers' lock.
 
 ### A container's files outlive its microVM (D37)
 

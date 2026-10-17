@@ -4,10 +4,11 @@
 # syslog.json, gelf.json, fluentd.json, journald.json, splunk.json and awslogs.json), which
 # crates/shards/src/logging and its tests hold shards to (D163 to D168).
 #
-# In shards-dind (CONTAINER), capture.go listens on UDP, TCP and TLS ports and on a unix
-# datagram and stream socket. Each case's container prints a line on stdout, one on
-# stderr, and one of 40,000 bytes, which moby's copier cuts into parts. Every message
-# Docker's driver sends is recorded, its time, host and process ID made placeholders.
+# In shards-dind (CONTAINER; scripts/dind starts it), capture.go listens on UDP, TCP and
+# TLS ports and on a unix datagram and stream socket. Each case's container prints a line
+# on stdout, one on stderr, and one of 40,000 bytes, which moby's copier cuts into parts.
+# Every message Docker's driver sends is recorded, its time, host and process ID made
+# placeholders.
 # Then `docker create` with each option case says which Docker takes. Everything is made
 # in a directory and under names of its own, removed after.
 #
@@ -23,6 +24,7 @@ splunk_out="$root/crates/shards/src/logging/testdata/splunk.json"
 awslogs_out="$root/crates/shards/src/logging/testdata/awslogs.json"
 fluentd_out="$root/crates/shards/src/logging/testdata/fluentd.json"
 container=${CONTAINER:-shards-dind}
+[ -n "${CONTAINER:-}" ] || "$root/scripts/dind"
 image=alpine:3.22
 work=$(mktemp -d)
 dir=/root/shards-syslog-oracle-$$
