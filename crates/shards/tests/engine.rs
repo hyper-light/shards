@@ -2510,15 +2510,15 @@ fn a_runs_command_reaches_its_own_microvms_engine() {
         );
     }
     // What would reach past its microVM, what is not served, and a login from inside.
-    let body = json!({ "Image": image, "HostConfig": { "Binds": ["data:/x"] } }).to_string();
+    let body = json!({ "Image": image, "HostConfig": { "LogConfig": { "Type": "syslog" } } }).to_string();
     assert_eq!(
         api("POST", "/containers/create", &body),
         (
             "api HTTP/1.1 403 Forbidden".into(),
-            "{\"message\":\"-v data:/x: a container a microVM's own engine makes is that microVM's, and takes nothing of its host's\"}\n".into()
+            "{\"message\":\"--log-driver syslog: a container a microVM's own engine makes is that microVM's, and takes nothing of its host's\"}\n".into()
         )
     );
-    let (status, _) = api("GET", "/volumes", "");
+    let (status, _) = api("GET", "/plugins", "");
     assert_eq!(status, "api HTTP/1.1 501 Not Implemented");
     let (status, _) = api("POST", "/auth", "{}");
     assert_eq!(status, "api HTTP/1.1 403 Forbidden");
@@ -3302,6 +3302,344 @@ fn a_microvms_own_engine_makes_networks_whose_members_reach_what_each_declares()
     let (status, pruned) = api("POST", "/networks/prune", &Value::Null);
     assert!(status.starts_with("api HTTP/1.1 200"), "{status} {pruned}");
     assert_eq!(pruned["NetworksDeleted"], json!(["other", "local"]), "{pruned}");
+    let removed = shards(&["rm", "-f", "prov"]);
+    assert_eq!(removed.status, Some(0), "{removed}");
+}
+
+/// The volumes a microVM's own engine makes are that microVM's own (D181): on the host's
+/// disk, named there after the microVM, and by the names its engine gave them in it; a
+/// container's named volume is one of them, made as it is named; another microVM's engine,
+/// and the host's own volumes, reach none of them by any name; they stay its own as it is
+/// renamed; no driver options, which would bind a directory of the host's; one a
+/// container mounts stays; and they go with their microVM.
+#[test]
+fn a_microvms_own_engine_makes_volumes_of_its_own() {
+    let Some((home, image)) = home("eng-vols") else {
+        return;
+    };
+    let shards = |args: &[&str]| shards_in(&home, args);
+    for name in ["prov", "other"] {
+        let ran = shards(&["run", "-d", "--name", name, "--use-api-socket", &image, "sleep"]);
+        assert_eq!(ran.status, Some(0), "{ran}");
+    }
+    let exec_in = |prov: &str, args: &[&str]| {
+        let mut all = vec!["exec", prov, "/bin/testguest"];
+        all.extend_from_slice(args);
+        shards(&all)
+    };
+    for prov in ["prov", "other"] {
+        let deadline = std::time::Instant::now() + TIMEOUT;
+        while exec_in(prov, &["api", "GET", "/_ping", ""]).stdout != "api HTTP/1.1 200 OK\nOK" {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "{prov}'s engine never answered"
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+    let api = |prov: &str, method: &str, path: &str, body: &Value| -> (String, Value) {
+        let body = if body.is_null() {
+            String::new()
+        } else {
+            body.to_string()
+        };
+        let out = exec_in(prov, &["api", method, path, &body]);
+        let (status, rest) = out.stdout.split_once('\n').unwrap_or((&out.stdout, ""));
+        (
+            status.to_string(),
+            serde_json::from_str(rest).unwrap_or(Value::Null),
+        )
+    };
+    // A container run to its end in `prov`'s microVM: its exit code and what it printed.
+    let ran_in = |prov: &str, name: &str, body: Value| -> (i64, String) {
+        let (status, said) = api(prov, "POST", &format!("/containers/create?name={name}"), &body);
+        assert!(status.starts_with("api HTTP/1.1 201"), "{name}: {status} {said}");
+        let (status, said) = api(prov, "POST", &format!("/containers/{name}/start"), &Value::Null);
+        assert!(status.starts_with("api HTTP/1.1 204"), "{name}: {status} {said}");
+        let (_, waited) = api(prov, "POST", &format!("/containers/{name}/wait"), &Value::Null);
+        let logs = exec_in(
+            prov,
+            &[
+                "api",
+                "GET",
+                &format!("/containers/{name}/logs?stdout=1&stderr=1"),
+                "",
+            ],
+        )
+        .stdout;
+        (waited["StatusCode"].as_i64().unwrap_or(-1), logs)
+    };
+    let named = |listed: &Value| -> Vec<String> {
+        let mut names: Vec<String> = listed["Volumes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|v| v["Name"].as_str())
+            .filter(|n| !(n.len() == 64 && n.bytes().all(|b| b.is_ascii_hexdigit())))
+            .map(str::to_string)
+            .collect();
+        names.sort_unstable();
+        names
+    };
+    // A volume of the host's own, of the name the first microVM's `secret` would have.
+    let made = shards(&["volume", "create", "prov.secret"]);
+    assert_eq!(made.status, Some(0), "{made}");
+    let wrote = shards(&[
+        "run",
+        "--rm",
+        "-v",
+        "prov.secret:/work",
+        &image,
+        "fs",
+        "write:/work/host-only=1",
+    ]);
+    assert_eq!(wrote.status, Some(0), "{wrote}");
+    // Made through its API by the name its client gives, at no path of the host's; none
+    // with driver options.
+    let (status, made) = api(
+        "prov",
+        "POST",
+        "/volumes/create",
+        &json!({ "Name": "data", "Labels": { "project": "eng" } }),
+    );
+    assert!(status.starts_with("api HTTP/1.1 201"), "{status} {made}");
+    assert_eq!(
+        (
+            made["Name"].as_str(),
+            made["Mountpoint"].as_str(),
+            made["Labels"]["project"].as_str()
+        ),
+        (Some("data"), Some(""), Some("eng")),
+        "{made}"
+    );
+    let (status, said) = api(
+        "prov",
+        "POST",
+        "/volumes/create",
+        &json!({ "Name": "etc", "DriverOpts": { "type": "none", "o": "bind", "device": "/etc" } }),
+    );
+    assert!(status.starts_with("api HTTP/1.1 400"), "{status} {said}");
+    // A container writes to it by name, another reads it through a mount; a third's named
+    // volume is made as it is named. Each at the image's /work, its user's, whose files and
+    // owner a volume takes as it is first mounted.
+    let (code, said) = ran_in(
+        "prov",
+        "writer",
+        json!({ "Image": image, "Cmd": ["fs", "write:/work/hello=hi"], "HostConfig": { "Binds": ["data:/work"] } }),
+    );
+    assert_eq!(code, 0, "{said}");
+    let (code, said) = ran_in(
+        "prov",
+        "reader",
+        json!({ "Image": image, "Cmd": ["fs", "print:/work/hello"],
+                "HostConfig": { "Mounts": [{ "Type": "volume", "Source": "data", "Target": "/work" }] } }),
+    );
+    assert_eq!(code, 0, "{said}");
+    assert!(said.contains("hi"), "{said}");
+    let (code, said) = ran_in(
+        "prov",
+        "cacher",
+        json!({ "Image": image, "Cmd": ["fs", "write:/work/x=1"], "HostConfig": { "Binds": ["cache:/work"] } }),
+    );
+    assert_eq!(code, 0, "{said}");
+    // Its `secret` is its own, named on the host where the host's is not.
+    let (status, made) = api("prov", "POST", "/volumes/create", &json!({ "Name": "secret" }));
+    assert!(status.starts_with("api HTTP/1.1 201"), "{status} {made}");
+    let (code, said) = ran_in(
+        "prov",
+        "snoop",
+        json!({ "Image": image, "Cmd": ["fs", "print:/work/host-only"], "HostConfig": { "Binds": ["secret:/work"] } }),
+    );
+    assert_eq!(code, 1, "{said}");
+    // Its own alone, by their names there; the reader's mount by that name, at no path.
+    let (_, listed) = api("prov", "GET", "/volumes", &Value::Null);
+    assert_eq!(named(&listed), ["cache", "data", "secret"], "{listed}");
+    let (_, reader) = api("prov", "GET", "/containers/reader/json", &Value::Null);
+    let mount = &reader["Mounts"][0];
+    assert_eq!(
+        (mount["Name"].as_str(), mount["Source"].as_str()),
+        (Some("data"), Some("")),
+        "{reader}"
+    );
+    // On the host, after its microVM's name.
+    let host = shards(&["volume", "ls", "--format", "{{.Name}}"]);
+    let mut on_host: Vec<&str> = host.stdout.lines().filter(|n| n.contains('.')).collect();
+    on_host.sort_unstable();
+    assert_eq!(
+        on_host,
+        ["prov.cache", "prov.data", "prov.secret", "prov.secret.2"],
+        "{host}"
+    );
+    // Renamed, its microVM keeps them.
+    let renamed = shards(&["rename", "prov", "p2"]);
+    assert_eq!(renamed.status, Some(0), "{renamed}");
+    let (_, listed) = api("p2", "GET", "/volumes", &Value::Null);
+    assert_eq!(named(&listed), ["cache", "data", "secret"], "{listed}");
+    let (code, said) = ran_in(
+        "p2",
+        "reread",
+        json!({ "Image": image, "Cmd": ["fs", "print:/work/hello"], "HostConfig": { "Binds": ["data:/work"] } }),
+    );
+    assert_eq!(code, 0, "{said}");
+    assert!(said.contains("hi"), "{said}");
+    // Another microVM's engine reaches none of them: its `data` is its own.
+    let (_, listed) = api("other", "GET", "/volumes", &Value::Null);
+    assert!(named(&listed).is_empty(), "{listed}");
+    let (status, _) = api("other", "GET", "/volumes/data", &Value::Null);
+    assert!(status.starts_with("api HTTP/1.1 404"), "{status}");
+    let (code, said) = ran_in(
+        "other",
+        "peek",
+        json!({ "Image": image, "Cmd": ["fs", "print:/work/hello"], "HostConfig": { "Binds": ["data:/work"] } }),
+    );
+    assert_eq!(code, 1, "{said}");
+    let (code, said) = ran_in(
+        "other",
+        "own",
+        json!({ "Image": image, "Cmd": ["fs", "write:/work/hello=there", "print:/work/hello"],
+                "HostConfig": { "Binds": ["data:/work"] } }),
+    );
+    assert_eq!(code, 0, "{said}");
+    assert!(said.contains("there"), "{said}");
+    // One a container mounts stays; once none does, it goes.
+    let (status, said) = api("p2", "DELETE", "/volumes/data", &Value::Null);
+    assert!(status.starts_with("api HTTP/1.1 409"), "{status} {said}");
+    for name in ["writer", "reader", "reread"] {
+        let (status, said) = api("p2", "DELETE", &format!("/containers/{name}"), &Value::Null);
+        assert!(status.starts_with("api HTTP/1.1 204"), "{name}: {status} {said}");
+    }
+    let (status, said) = api("p2", "DELETE", "/volumes/data", &Value::Null);
+    assert!(status.starts_with("api HTTP/1.1 204"), "{status} {said}");
+    // The rest go with their microVM, its containers that mount them with it; the other
+    // microVM's stay its own, and the host's its own.
+    let removed = shards(&["rm", "-f", "p2"]);
+    assert_eq!(removed.status, Some(0), "{removed}");
+    let host = shards(&["volume", "ls", "--format", "{{.Name}}"]);
+    let mut on_host: Vec<&str> = host.stdout.lines().filter(|n| n.contains('.')).collect();
+    on_host.sort_unstable();
+    assert_eq!(on_host, ["other.data", "prov.secret"], "{host}");
+    let removed = shards(&["rm", "-f", "other"]);
+    assert_eq!(removed.status, Some(0), "{removed}");
+}
+
+/// A container a microVM's own engine makes in another's network namespace (`--network
+/// container:X`, Compose's `network_mode: service:`) shares that one's, as it is (D181):
+/// one on `none`'s loopback alone, not the command's; a member's, its address, loopback
+/// and host name; and no ports of its own, which it has no link to publish or declare on.
+#[test]
+fn a_container_in_anothers_namespace_shares_that_ones_as_it_is() {
+    let Some((home, image)) = home("eng-netof") else {
+        return;
+    };
+    let shards = |args: &[&str]| shards_in(&home, args);
+    let ran = shards(&["run", "-d", "--name", "prov", "--use-api-socket", &image, "sleep"]);
+    assert_eq!(ran.status, Some(0), "{ran}");
+    let exec = |args: &[&str]| {
+        let mut all = vec!["exec", "prov", "/bin/testguest"];
+        all.extend_from_slice(args);
+        shards(&all)
+    };
+    let deadline = std::time::Instant::now() + TIMEOUT;
+    while exec(&["api", "GET", "/_ping", ""]).stdout != "api HTTP/1.1 200 OK\nOK" {
+        assert!(std::time::Instant::now() < deadline, "its engine never answered");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let api = |method: &str, path: &str, body: &Value| -> (String, String) {
+        let body = if body.is_null() {
+            String::new()
+        } else {
+            body.to_string()
+        };
+        let out = exec(&["api", method, path, &body]);
+        let (status, rest) = out.stdout.split_once('\n').unwrap_or((&out.stdout, ""));
+        (status.to_string(), rest.to_string())
+    };
+    let create = |name: &str, body: Value| {
+        let (status, said) = api("POST", &format!("/containers/create?name={name}"), &body);
+        assert!(status.starts_with("api HTTP/1.1 201"), "{name}: {status} {said}");
+        let (status, said) = api("POST", &format!("/containers/{name}/start"), &Value::Null);
+        assert!(status.starts_with("api HTTP/1.1 204"), "{name}: {status} {said}");
+    };
+    let logs_of = |name: &str| api("GET", &format!("/containers/{name}/logs?stdout=1"), &Value::Null).1;
+    let finished = |name: &str| {
+        let _ = api("POST", &format!("/containers/{name}/wait"), &Value::Null);
+        logs_of(name)
+    };
+    let ready = |name: &str| {
+        let deadline = std::time::Instant::now() + TIMEOUT;
+        while !logs_of(name).contains("ready") {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "{name} never said it was ready"
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    };
+    let links = |said: &str| -> Vec<String> {
+        said.lines()
+            .filter_map(|l| l.split_whitespace().next())
+            .filter(|l| !l.is_empty() && l.bytes().all(|b| b.is_ascii_alphanumeric()))
+            .map(str::to_string)
+            .collect()
+    };
+    // One on `none`: who shares its namespace has its loopback alone, as it has.
+    create(
+        "quiet",
+        json!({ "Image": image, "Cmd": ["sleep"], "HostConfig": { "NetworkMode": "none" } }),
+    );
+    ready("quiet");
+    create(
+        "beside",
+        json!({ "Image": image, "Cmd": ["addrs"], "HostConfig": { "NetworkMode": "container:quiet" } }),
+    );
+    let said = finished("beside");
+    let seen = links(&said);
+    assert!(!seen.is_empty() && seen.iter().all(|l| l == "lo"), "{said}");
+    // A member's: its loopback, where it serves, and its host name; db serves two
+    // connections, so it runs on past the first.
+    create(
+        "db",
+        json!({ "Image": image, "Cmd": ["serve", "7000", "2"], "ExposedPorts": { "7000/tcp": {} } }),
+    );
+    ready("db");
+    create(
+        "sidecar",
+        json!({ "Image": image, "Cmd": ["ask", "127.0.0.1:7000", "3000"], "HostConfig": { "NetworkMode": "container:db" } }),
+    );
+    let said = finished("sidecar");
+    assert!(said.contains("ask from 127.0.0.1"), "{said}");
+    let (_, db) = api("GET", "/containers/db/json", &Value::Null);
+    let db: Value = serde_json::from_str(&db).unwrap();
+    let hostname = db["Config"]["Hostname"].as_str().unwrap().to_string();
+    create(
+        "named",
+        json!({ "Image": image, "Cmd": ["report"], "HostConfig": { "NetworkMode": "container:db" } }),
+    );
+    let said = finished("named");
+    assert!(
+        said.contains(&format!("hostname {hostname}\n")),
+        "{said} {hostname}"
+    );
+    // Its hosts file, the same file, naming db at its address.
+    let db_addr = db["NetworkSettings"]["Networks"]["bridge"]["IPAddress"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    create(
+        "hostsfile",
+        json!({ "Image": image, "Cmd": ["fs", "print:/etc/hosts"], "HostConfig": { "NetworkMode": "container:db" } }),
+    );
+    let said = finished("hostsfile");
+    assert!(said.contains(&db_addr), "{said} {db_addr}");
+    // No ports of its own.
+    let (status, said) = api(
+        "POST",
+        "/containers/create?name=porty",
+        &json!({ "Image": image, "Cmd": ["sleep"], "ExposedPorts": { "7100/tcp": {} },
+                 "HostConfig": { "NetworkMode": "container:db",
+                                 "PortBindings": { "7100/tcp": [{ "HostPort": "" }] } } }),
+    );
+    assert!(status.starts_with("api HTTP/1.1 400"), "{status} {said}");
     let removed = shards(&["rm", "-f", "prov"]);
     assert_eq!(removed.status, Some(0), "{removed}");
 }

@@ -141,17 +141,22 @@ agent in the microVM: the program reaches it on the ports it publishes (`-p 0:54
 network made in the microVM (`docker network create`, a Compose project's networks),
 containers reach one another by name, each on the ports it declares (`EXPOSE`, `expose:`,
 `--expose` and the ports it publishes) and on no other. None gets out of the microVM
-farther than the program can, and none on an internal network gets out at all. Two
-microVMs' programs can each make a container called `db`; on your machine they're listed
-as `MICROVM.db`. What a microVM's engine made stops when its program does, and is removed
-with it. `docker run --use-api-socket` through shards' Engine API does the same, and the
-credentials the `docker` CLI would copy in are refused (it warns). Its program can run
-containers (`docker run`, attached or not), exec in them, stop, kill, wait for, read the
-logs of, list, inspect and remove them, make networks for them, and pull images: shards
-pulls with the registry logins of whoever ran the microVM, and the image is then that
-microVM's own; images of yours it never pulled aren't there for it. A bind (`-v
-/work:/src`) is of the microVM's own files, its volumes included, as a bind on any engine
-is of that engine's machine's. A call it can't serve yet is refused with what it serves.
+farther than the program can, and none on an internal network gets out at all. One can
+share another's network (`--network container:db`, Compose's `network_mode: service:db`)
+as that one has it, and no more. Two microVMs' programs can each make a container called
+`db`; on your machine they're listed as `MICROVM.db`. What a microVM's engine made stops
+when its program does, and is removed with it. `docker run --use-api-socket` through
+shards' Engine API does the same, and the credentials the `docker` CLI would copy in are
+refused (it warns). Its program can run containers (`docker run`, attached or not), exec
+in them, stop, kill, wait for, read the logs of, list, inspect and remove them, make
+networks and volumes for them, and pull images: shards pulls with the registry logins of
+whoever ran the microVM, and the image is then that microVM's own; images of yours it
+never pulled aren't there for it. A bind (`-v /work:/src`) is of the microVM's own files,
+its volumes included, as a bind on any engine is of that engine's machine's. A volume it
+makes (`-v data:/var/lib/data`, Compose's `volumes:`) is the microVM's own: kept on your
+disk, where your machine lists it as `MICROVM.data`, reached by no name of yours or of
+another microVM's, and removed with the microVM. A call it can't serve yet is refused with
+what it serves.
 
 ### Boot a kernel yourself
 

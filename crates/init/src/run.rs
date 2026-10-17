@@ -3349,6 +3349,7 @@ fn start_joiner(
         own_binds: crate::join::own_binds(&spec.setup).map_err(setup_failed)?,
         member: None,
         own_net_none: spec.setup.iter().any(|e| e == b"own-net-none"),
+        net_of: crate::join::net_of(&spec.setup, joiners).map_err(setup_failed)?,
         hostname: spec.hostname.clone(),
         hosts: spec.hosts.clone(),
         resolv: spec.resolv.clone(),

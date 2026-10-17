@@ -40,6 +40,10 @@ pub struct Join {
     pub member: Option<MemberNet>,
     /// A network namespace of its own with its loopback alone (`--network none`).
     pub own_net_none: bool,
+    /// The process of another joiner whose network namespace and names it shares
+    /// (`--network container:X` of one its microVM's engine gave a namespace of its own,
+    /// D181): its UTS namespace, and its hostname, hosts and resolv.conf, the same files.
+    pub net_of: Option<libc::pid_t>,
     pub hostname: Vec<u8>,
     /// Its own `/etc/hosts` lines after its defaults (`--add-host`) and `/etc/resolv.conf`,
     /// where it has a network of its own.
@@ -178,6 +182,23 @@ pub enum Pid {
 
 /// The PID namespace `setup` asks for: another joiner's found by its exec's id among
 /// `joiners`, each an id and its command's process.
+/// The process of the joiner whose network namespace `setup` says a joiner shares
+/// (`net=joiner=ID`, D181), one of `joiners`; none for the workload's.
+pub fn net_of(setup: &[Vec<u8>], joiners: &[(u32, libc::pid_t)]) -> Result<Option<libc::pid_t>, String> {
+    let Some(id) = setup.iter().find_map(|e| e.strip_prefix(b"net=joiner=")) else {
+        return Ok(None);
+    };
+    let id: u32 = std::str::from_utf8(id)
+        .ok()
+        .and_then(|id| id.parse().ok())
+        .ok_or("a malformed net=joiner entry")?;
+    joiners
+        .iter()
+        .find(|(j, _)| *j == id)
+        .map(|&(_, pid)| Some(pid))
+        .ok_or_else(|| "the container whose network it joins has ended".to_string())
+}
+
 pub fn pid(setup: &[Vec<u8>], joiners: &[(u32, libc::pid_t)]) -> Result<Pid, String> {
     if setup.iter().any(|e| e == b"pid=host") {
         return Ok(Pid::Host);
@@ -725,18 +746,19 @@ pub fn build(join: Join, cgroup: &str) -> Result<Built, String> {
     }
     // The workload's hostname, in a namespace of its own unless it shares the microVM's
     // (`--uts host`, D156).
-    enter(join.workload, "uts", libc::CLONE_NEWUTS)?;
+    enter(join.net_of.unwrap_or(join.workload), "uts", libc::CLONE_NEWUTS)?;
     // Its network: the workload's; the namespace init made it on the microVM's switch,
     // as a member its engine made (D181); or its loopback alone.
-    match &join.member {
-        Some(m) => {
+    match (&join.member, join.net_of) {
+        (Some(m), _) => {
             // SAFETY: setns(2) of this single-threaded child into a namespace init holds.
             if unsafe { libc::setns(m.ns, libc::CLONE_NEWNET) } != 0 {
                 return Err(last("its network namespace on the microVM's switch"));
             }
         }
-        None if join.own_net_none => crate::members::alone()?,
-        None => enter(join.workload, "net", libc::CLONE_NEWNET)?,
+        (None, Some(other)) => enter(other, "net", libc::CLONE_NEWNET)?,
+        (None, None) if join.own_net_none => crate::members::alone()?,
+        (None, None) => enter(join.workload, "net", libc::CLONE_NEWNET)?,
     }
     // Its IPC namespace (D156): its own, the microVM's, or another run's of this microVM,
     // with the /dev/shm that goes with a shared one, copied while the mount it copies is
@@ -759,13 +781,31 @@ pub fn build(join: Join, cgroup: &str) -> Result<Built, String> {
     };
     // Its binds of its microVM's own files (D181), copied while the workload's mount
     // namespace is in reach, and put in its root once that is its own.
-    let owns = join
+    let mut owns = join
         .own_binds
         .iter()
         .map(|b| own_tree(join.workload, b).map(|tree| (tree, b.target.clone())))
         .collect::<Result<Vec<_>, String>>()?;
-    let own = if join.uts_host { 0 } else { libc::CLONE_NEWUTS }
-        | if shm.is_some() { 0 } else { libc::CLONE_NEWIPC };
+    // In another's network namespace, that one's names, the same files read-only, copied
+    // from its mount namespace as a bind of the workload's files is, so that a link it put
+    // there resolves in its files alone.
+    if let Some(other) = join.net_of {
+        for file in ["hostname", "hosts", "resolv.conf"] {
+            let path = format!("/etc/{file}");
+            let bind = OwnBind {
+                source: path.clone(),
+                target: path,
+                writable: false,
+                create: false,
+            };
+            owns.push((own_tree(other, &bind)?, bind.target));
+        }
+    }
+    let own = if join.uts_host || join.net_of.is_some() {
+        0
+    } else {
+        libc::CLONE_NEWUTS
+    } | if shm.is_some() { 0 } else { libc::CLONE_NEWIPC };
     // SAFETY: unshare(2), in a single-threaded fork of init's.
     if own != 0 && unsafe { libc::unshare(own) } != 0 {
         return Err(last("its UTS and IPC namespaces"));
@@ -872,6 +912,7 @@ pub fn build(join: Join, cgroup: &str) -> Result<Built, String> {
         }
     }
     let shared: &[&str] = match (own_net, &resolv) {
+        _ if join.net_of.is_some() => &[],
         (true, Some(_)) => &[],
         (true, None) => &["resolv.conf"],
         (false, _) => &["hostname", "hosts", "resolv.conf"],

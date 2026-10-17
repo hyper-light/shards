@@ -400,6 +400,14 @@ pub struct Volume {
     /// Made for one container, by none's name.
     #[serde(rename = "Anonymous", default)]
     pub anonymous: bool,
+    /// The microVM whose own engine made it (D181), by its ID: that engine's alone to take
+    /// and to change, and gone with that microVM; none for the host's own.
+    #[serde(rename = "Of", default, skip_serializing_if = "String::is_empty")]
+    pub of: String,
+    /// Its name in that engine, by which that engine's clients find it whatever it is
+    /// named here; none for an anonymous one.
+    #[serde(rename = "There", default, skip_serializing_if = "String::is_empty")]
+    pub there: String,
 }
 
 const RESTRICTED: &str = "[a-zA-Z0-9][a-zA-Z0-9_.-]";
@@ -511,7 +519,7 @@ impl Store {
     }
 
     /// The local driver's validateName.
-    fn valid(name: &str) -> Result<(), String> {
+    pub(crate) fn valid(name: &str) -> Result<(), String> {
         if name.chars().count() == 1 {
             return Err(
                 "volume name is too short, names should be at least two alphanumeric characters".into(),
@@ -532,12 +540,55 @@ impl Store {
 
     /// Volume `name`, made if it is not there (as the local driver's Create): itself, and
     /// whether it was made now. An empty name is an anonymous volume's, named at random
-    /// and labelled so. Callers hold [`lock`].
+    /// and labelled so. One made for microVM `of`'s own engine is that microVM's (D181),
+    /// and that engine takes no other: a volume of the name that is not its own is
+    /// refused. Callers hold [`lock`].
     pub fn create(
         &self,
         name: &str,
         labels: &BTreeMap<String, String>,
         options: &BTreeMap<String, String>,
+        of: &str,
+    ) -> Result<(Volume, bool), String> {
+        self.make(name, labels, options, of, "")
+    }
+
+    /// The volume microVM `of`'s own engine calls `there` (D181): the one made for it
+    /// before, whatever it is named here, so that a renamed microVM keeps its volumes;
+    /// else made, named after the microVM, `prefix`, as its containers are
+    /// (`PREFIX.THERE`), or `PREFIX.THERE.N`, the first that is free, where another has
+    /// that name: what it is named here is only how it is shown. Itself, and whether it
+    /// was made now. Callers hold [`lock`].
+    pub fn own(
+        &self,
+        of: &str,
+        prefix: &str,
+        there: &str,
+        labels: &BTreeMap<String, String>,
+        options: &BTreeMap<String, String>,
+    ) -> Result<(Volume, bool), String> {
+        let named = format!("{prefix}.{there}");
+        let found = self
+            .get(&named)
+            .filter(|v| v.of == of && v.there == there)
+            .or_else(|| self.list().into_iter().find(|v| v.of == of && v.there == there));
+        if let Some(v) = found {
+            return Ok((v, false));
+        }
+        let free = std::iter::once(named.clone())
+            .chain((2u32..=u32::MAX).map(|n| format!("{named}.{n}")))
+            .find(|n| self.get(n).is_none() && !self.root.join(n).exists())
+            .unwrap_or(named);
+        self.make(&free, labels, options, of, there)
+    }
+
+    fn make(
+        &self,
+        name: &str,
+        labels: &BTreeMap<String, String>,
+        options: &BTreeMap<String, String>,
+        of: &str,
+        there: &str,
     ) -> Result<(Volume, bool), String> {
         let mut labels = labels.clone();
         let (name, anonymous) = if name.is_empty() {
@@ -551,6 +602,11 @@ impl Store {
         };
         validate_options(options).map_err(|e| format!("create {name}: {e}"))?;
         if let Some(v) = self.get(&name) {
+            if !of.is_empty() && v.of != of {
+                return Err(format!(
+                    "create {name}: a volume of this name is there already, and it is not this microVM's"
+                ));
+            }
             return Ok((v, false));
         }
         let dir = self.root.join(&name);
@@ -565,6 +621,8 @@ impl Store {
             options: options.clone(),
             created: crate::containers::now(),
             anonymous,
+            of: of.to_string(),
+            there: there.to_string(),
         };
         let text = serde_json::to_vec(&v).map_err(|e| e.to_string())?;
         durably(&dir, "opts.json", &text).map_err(|e| format!("volume {name}: {e}"))?;
@@ -687,16 +745,27 @@ fn getrandom(buf: &mut [u8]) -> Result<(), String> {
 /// What a container mounts: registerMountPoints' order, `--volumes-from`'s first, then
 /// `-v`'s, then `--mount`'s, then the image's `VOLUME`s and `-v DEST`'s not otherwise
 /// mounted, each as an anonymous volume; volumes made as they are named. `from` gives
-/// another container's mount points by name or ID.
+/// another container's mount points by name or ID. A run a microVM's own engine made
+/// (D181) has that microVM's volumes alone, found by the names its engine gave them, and
+/// made after `prefix`, the microVM's name, where they are not there.
 pub fn register(
     store: &Store,
     run: &shards_ipc::Run,
     image_volumes: &[String],
     agent_volumes: Option<&[crate::agentfile::AgentVolume]>,
     from: &dyn Fn(&str) -> Result<Vec<MountPoint>, String>,
+    prefix: &str,
 ) -> Result<Vec<(MountPoint, bool)>, String> {
     let mut points: Vec<(MountPoint, bool)> = Vec::new();
-    match register_into(&mut points, store, run, image_volumes, agent_volumes, from) {
+    match register_into(
+        &mut points,
+        store,
+        run,
+        image_volumes,
+        agent_volumes,
+        from,
+        prefix,
+    ) {
         Ok(()) => Ok(points),
         // The anonymous volumes it made go with the container it could not make.
         Err(e) => {
@@ -717,7 +786,21 @@ fn register_into(
     image_volumes: &[String],
     agent_volumes: Option<&[crate::agentfile::AgentVolume]>,
     from: &dyn Fn(&str) -> Result<Vec<MountPoint>, String>,
+    prefix: &str,
 ) -> Result<(), String> {
+    // The microVM whose own engine made the run, whose volumes these are (D181): a named
+    // one is its own of that name, made where it is not there.
+    let of = run
+        .engine_made
+        .as_ref()
+        .map_or("", |(provider, _)| provider.as_str());
+    let named = |name: &str, labels: &BTreeMap<String, String>, options: &BTreeMap<String, String>| {
+        if of.is_empty() || name.is_empty() {
+            store.create(name, labels, options, of)
+        } else {
+            store.own(of, prefix, name, labels, options)
+        }
+    };
     let (binds, specs, volumes_from, driver, tmpfs) = (
         &run.binds,
         &run.mounts,
@@ -764,7 +847,7 @@ fn register_into(
         }
         let mut made = false;
         if mp.kind == "volume" {
-            let (v, now) = store.create(&mp.name, &BTreeMap::new(), &BTreeMap::new())?;
+            let (v, now) = named(&mp.name, &BTreeMap::new(), &BTreeMap::new())?;
             scoped_to(&v, &mp.destination, agent_volumes)?;
             made = now;
             mp.name = v.name.clone();
@@ -802,7 +885,7 @@ fn register_into(
             {
                 return Err(reserved(k));
             }
-            let (v, now) = store.create(&mp.name, &labels, &options)?;
+            let (v, now) = named(&mp.name, &labels, &options)?;
             scoped_to(&v, &mp.destination, agent_volumes)?;
             made = now;
             mp.name = v.name.clone();
@@ -846,7 +929,7 @@ fn register_into(
             continue;
         }
         let name = agent.and_then(|a| a.name.as_deref()).unwrap_or("");
-        let (v, now) = store.create(name, &BTreeMap::new(), &BTreeMap::new())?;
+        let (v, now) = named(name, &BTreeMap::new(), &BTreeMap::new())?;
         if agent.is_some_and(|a| a.scoped) && !name.is_empty() {
             store.mark(&v.name, SCOPED)?;
         }
@@ -1084,7 +1167,7 @@ mod tests {
                 .map(String::from)
                 .to_vec();
             image.extend(run.volumes.iter().cloned());
-            register(&store, &run, &image, agent, from)
+            register(&store, &run, &image, agent, from, "")
                 .map(|p| p.into_iter().map(|(p, _)| p).collect::<Vec<_>>())
         };
         let registered = |args: &[&str], from: &dyn Fn(&str) -> Result<Vec<MountPoint>, String>| {

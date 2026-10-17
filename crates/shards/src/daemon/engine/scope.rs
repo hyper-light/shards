@@ -45,6 +45,9 @@ pub(super) fn serves(method: &str, path: &[&str]) -> bool {
             | ("POST", ["networks", "create" | "prune"])
             | ("DELETE", ["networks", _])
             | ("POST", ["networks", _, "connect" | "disconnect"])
+            | ("GET", ["volumes"] | ["volumes", _])
+            | ("POST", ["volumes", "create" | "prune"])
+            | ("DELETE", ["volumes", _])
     )
 }
 
@@ -61,8 +64,9 @@ pub(super) fn unserved(method: &str, target: &str) -> Answer {
         format!(
             "{method} {target}: not served by a microVM's own engine, which serves its _ping, version and info, \
              its own containers' create, list, inspect, start, stop, kill, wait, logs, attach, exec \
-             and remove, its images' pull, list and inspect, and its networks' create, list, inspect, \
-             remove, prune, connect and disconnect"
+             and remove, its images' pull, list and inspect, its networks' create, list, inspect, \
+             remove, prune, connect and disconnect, and its volumes' create, list, inspect, \
+             remove and prune"
         ),
     )
 }
@@ -235,14 +239,6 @@ fn confine(
             Some(other) => {
                 alone(mode)?;
                 match resolve(scoped, other) {
-                    Some(c) if c.engine_made.as_ref().is_some_and(|m| !m.addresses.is_empty()) => {
-                        return Err(Answer::error(
-                            501,
-                            format!(
-                                "--network {mode}: sharing the namespace of a member of its microVM's switch is not served yet"
-                            ),
-                        ));
-                    }
                     Some(c) => (c.id.clone(), String::new(), Vec::new()),
                     None => return Err(no_such(other)),
                 }
@@ -327,16 +323,20 @@ fn confine(
     }
     // A bind names a path of its microVM's own command's files, as a bind names one of its
     // engine's host's: init copies it from the command's mount namespace into the
-    // container's (`own-bind`), and nothing of the host's. A named volume is another
-    // microVM's to share; a volume of its own, and a tmpfs, are its own.
+    // container's (`own-bind`), and nothing of the host's. A volume, named or not, is the
+    // microVM's own (the store's, found by the name its engine gave it), and a tmpfs its
+    // own; a volume takes no driver options, the local driver's binding a host directory.
+    let mut binds = Vec::new();
     for b in std::mem::take(&mut run.binds) {
         let point = crate::volumes::parse_raw(&b, "").map_err(|e| Answer::error(400, e))?;
         match own_bind(&point) {
             Some(Ok(bind)) => run.own_binds.push(bind),
             Some(Err(why)) => return Err(Answer::error(400, format!("-v {b}: {why}"))),
+            None if point.kind == "volume" => binds.push(b),
             None => return past(format!("-v {b}")),
         }
     }
+    run.binds = binds;
     let mut kept = Vec::new();
     for m in std::mem::take(&mut run.mounts) {
         let point = crate::volumes::parse_spec_within(&m).map_err(|e| Answer::error(400, e))?;
@@ -344,7 +344,23 @@ fn confine(
             ("bind", Some(Ok(bind))) => run.own_binds.push(bind),
             ("bind", Some(Err(why))) => return Err(Answer::error(400, format!("--mount {m}: {why}"))),
             ("tmpfs", _) => kept.push(m),
-            ("volume", _) if point.name.is_empty() => kept.push(m),
+            ("volume", _) => {
+                let driver = shards_cmdline::mounts::parse_mount(&m, None)
+                    .ok()
+                    .and_then(|p| p.volume)
+                    .and_then(|v| v.driver);
+                if driver
+                    .is_some_and(|(name, opts)| !opts.is_empty() || !matches!(name.as_str(), "" | "local"))
+                {
+                    return Err(Answer::error(
+                        400,
+                        format!(
+                            "--mount {m}: a volume of a microVM's own engine takes no driver or driver options: the local driver's bind a directory of its engine's host"
+                        ),
+                    ));
+                }
+                kept.push(m);
+            }
             _ => return past(format!("--mount {m}")),
         }
     }
@@ -433,6 +449,11 @@ impl<D: Disk> Daemon<D> {
             ("DELETE", ["networks", term]) => self.scoped_network_remove(term, scope),
             ("POST", ["networks", term, "connect"]) => self.scoped_network_join(term, call, scope, true),
             ("POST", ["networks", term, "disconnect"]) => self.scoped_network_join(term, call, scope, false),
+            ("GET", ["volumes"]) => self.scoped_volumes(call, scope),
+            ("POST", ["volumes", "create"]) => self.scoped_volume_create(call, scope),
+            ("POST", ["volumes", "prune"]) => self.scoped_volume_prune(call, scope),
+            ("GET", ["volumes", name]) => self.scoped_volume(name, scope),
+            ("DELETE", ["volumes", name]) => self.scoped_volume_remove(name, call, scope),
             ("GET", ["images", "json"]) => self.scoped_images(call, scope),
             ("GET", ["images", name @ .., "json"]) if !name.is_empty() => {
                 self.scoped_image(threads, &name.join("/"), scope)
@@ -447,7 +468,9 @@ impl<D: Disk> Daemon<D> {
                 match (method, rest) {
                     ("GET", ["json"]) => Answer::document(
                         200,
-                        crate::daemon::inspect_doc::json(&self.container_value(c, call.flag("size"))),
+                        self.scoped_mounts(crate::daemon::inspect_doc::json(
+                            &self.container_value(c, call.flag("size")),
+                        )),
                     ),
                     ("POST", ["start"]) => self.engine_start(threads, &id, call),
                     ("POST", ["stop"]) => self.engine_stop(threads, &id, call, false),
@@ -860,6 +883,20 @@ mod tests {
                 ["/work\0/src\0ro,create".to_string(), "/w\0/x\0rw".to_string()].as_slice()
             )
         );
+        // A named volume is the microVM's own, kept by the name its client gave it.
+        let mut named = Run {
+            binds: vec!["data:/var/lib/data:ro".into()],
+            mounts: vec!["type=volume,source=cache,target=/cache".into()],
+            ..Run::default()
+        };
+        assert_eq!(refused_why(&mut named, &scoped), None);
+        assert_eq!(
+            (named.binds.as_slice(), named.mounts.as_slice()),
+            (
+                ["data:/var/lib/data:ro".to_string()].as_slice(),
+                ["type=volume,source=cache,target=/cache".to_string()].as_slice()
+            )
+        );
         assert_eq!(
             (
                 run.network.as_str(),
@@ -891,13 +928,6 @@ mod tests {
             ),
             (
                 Run {
-                    binds: vec!["vol:/x".into()],
-                    ..Run::default()
-                },
-                past("-v vol:/x"),
-            ),
-            (
-                Run {
                     binds: vec!["/w:/x:rshared".into()],
                     ..Run::default()
                 },
@@ -908,10 +938,13 @@ mod tests {
             ),
             (
                 Run {
-                    mounts: vec!["source=vol,target=/x".into()],
+                    mounts: vec!["source=vol,target=/x,volume-opt=type=none,volume-opt=o=bind,volume-opt=device=/etc".into()],
                     ..Run::default()
                 },
-                past("--mount source=vol,target=/x"),
+                Some((
+                    400,
+                    "--mount source=vol,target=/x,volume-opt=type=none,volume-opt=o=bind,volume-opt=device=/etc: a volume of a microVM's own engine takes no driver or driver options: the local driver's bind a directory of its engine's host".into(),
+                )),
             ),
             (
                 Run {

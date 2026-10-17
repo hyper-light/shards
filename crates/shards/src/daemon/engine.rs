@@ -18,6 +18,7 @@ mod http;
 mod images;
 mod networks;
 mod own_networks;
+mod own_volumes;
 mod scope;
 mod volumes;
 mod watch;
