@@ -2845,6 +2845,26 @@ fn a_microvms_own_engine_makes_each_container_a_member_of_its_switch() {
     assert_ne!(port(&one), port(&two));
     assert_ne!(address(&one), address(&two));
     assert_eq!(one["HostConfig"]["NetworkMode"], json!("bridge"), "{one}");
+    // Who reaches each port, as `read ports` says: the command where one publishes it; no
+    // one where quiet declares it alone, the default network making no peers.
+    let shown = shards(&["read", "ports", "prov.one"]);
+    let at = format!("0.0.0.0:{}", port(&one));
+    let w = at.len().max("PUBLISHED".len());
+    assert_eq!(
+        shown.stdout,
+        format!(
+            "PORT      {:<w$}  REACHED BY\n7000/tcp  {at:<w$}  the command\n",
+            "PUBLISHED"
+        ),
+        "{shown}"
+    );
+    let shown = shards(&["read", "ports", "prov.quiet"]);
+    assert_eq!(
+        shown.stdout,
+        "PORT      PUBLISHED  REACHED BY\n\
+         7002/tcp  -          no one: its networks make no peers of their members\n",
+        "{shown}"
+    );
     // Its address, a /24 of the switch's block, its gateway the subnet's first; its link's
     // hardware address the guest kernel's, a unicast one.
     assert!(address(&one).starts_with("10.244."), "{one}");
@@ -3176,6 +3196,17 @@ fn a_microvms_own_engine_makes_networks_whose_members_reach_what_each_declares()
         panic!("{said}")
     };
     assert!(![7000, 40000].iter().any(|p| (lo..=hi).contains(p)), "{said}");
+    // What reaches each port stray declares or listens on: its peers on app, and the one
+    // it listens on undeclared no one, which `read ports` says, with what would declare it.
+    let shown = shards(&["read", "ports", "prov.stray"]);
+    assert_eq!(shown.status, Some(0), "{shown}");
+    assert_eq!(
+        shown.stdout,
+        "PORT      PUBLISHED  REACHED BY\n\
+         7000/tcp  -          its peers on app\n\
+         7001/tcp  -          no one: it listens, and declares it not (EXPOSE, expose: or --expose would)\n",
+        "{shown}"
+    );
     let db = inspected("db");
     let at = &db["NetworkSettings"]["Networks"]["app"];
     let db_addr = at["IPAddress"].as_str().unwrap().to_string();
