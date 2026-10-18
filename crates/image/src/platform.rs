@@ -96,10 +96,9 @@ pub fn pullable() -> Vec<Target> {
     out
 }
 
-/// The platform this host's microVMs run, as dockerd names its own where a run's image is
-/// another's (moby docker-v29.3.1 daemon/create.go, maximumSpec): containerd's
-/// `DefaultSpec`, arm64's variant `v8`, and on amd64 the CPU's x86-64 level
-/// (tonistiigi/go-archvariant v1.0.0, AMD64Variant).
+/// The platform a run that names none is told is this host's, where its image runs
+/// emulated (run.rs), in the warning's own words: `linux/arm64/v8`, and on amd64 the CPU's
+/// x86-64 level as go-archvariant v1.0.0 names it (AMD64Variant).
 pub fn maximum() -> Target {
     match std::env::consts::ARCH {
         "aarch64" => Target::new("linux", "arm64", "v8"),
@@ -108,33 +107,6 @@ pub fn maximum() -> Target {
             .into_iter()
             .next()
             .unwrap_or_else(|| Target::new("linux", "", "")),
-    }
-}
-
-/// Whether this host runs an image for `p` as dockerd finds one it runs, saying nothing of
-/// another's (moby docker-v29.3.1 daemon/images OnlyPlatformWithFallback over
-/// [`maximum`]; containerd/platforms v1.0.0-rc.2 compare.go, platformVector): its own
-/// architecture's variants no later than its own, 32-bit Arm's v5 to v8 beside arm64,
-/// 386 beside amd64, and its own architecture of no variant.
-pub fn host_runs(p: &Platform) -> bool {
-    let host = maximum();
-    if !p.os_features.is_empty() {
-        return false;
-    }
-    let image = normalize(p);
-    if image.os != host.os {
-        return false;
-    }
-    let level = |v: &str| v.strip_prefix('v').and_then(|n| n.parse::<u32>().ok());
-    match (host.architecture.as_str(), image.architecture.as_str()) {
-        // Normalized, arm64/v8 has no variant.
-        ("arm64", "arm64") => image.variant.is_empty(),
-        ("arm64", "arm") => matches!(image.variant.as_str(), "v5" | "v6" | "v7" | "v8"),
-        ("amd64", "amd64") => {
-            image.variant.is_empty() || level(&image.variant).is_some_and(|l| Some(l) <= level(&host.variant))
-        }
-        ("amd64", "386") => true,
-        (h, i) => h == i && (image.variant.is_empty() || image.variant == host.variant),
     }
 }
 
@@ -269,45 +241,16 @@ mod tests {
         }
     }
 
-    /// The platforms this host takes as its own: on arm64 its own and 32-bit Arm's v5 to v8,
-    /// on amd64 its levels up to the CPU's and 386, and no other CPU's or OS's (the match
-    /// moby's OnlyPlatformWithFallback makes, so a `docker` script's run warns as it did).
+    /// The platform the warning names as this host's: arm64's `v8`, or amd64's x86-64 level.
     #[test]
-    fn the_platforms_this_host_takes_as_its_own() {
-        let p = |a: &str, v: Option<&str>| Platform {
-            os: "linux".into(),
-            architecture: a.into(),
-            variant: v.map(String::from),
-            ..Platform::default()
-        };
+    fn the_warning_names_this_hosts_platform() {
         if cfg!(target_arch = "aarch64") {
             assert_eq!(maximum(), Target::new("linux", "arm64", "v8"));
-            for (a, v) in [
-                ("arm64", None),
-                ("arm64", Some("v8")),
-                ("arm", Some("v7")),
-                ("arm", None),
-            ] {
-                assert!(host_runs(&p(a, v)), "{a} {v:?}");
-            }
-            for (a, v) in [("amd64", None), ("arm64", Some("v9")), ("s390x", None)] {
-                assert!(!host_runs(&p(a, v)), "{a} {v:?}");
-            }
         }
         if cfg!(target_arch = "x86_64") {
-            assert!(maximum().variant.starts_with('v'), "{:?}", maximum());
-            for (a, v) in [("amd64", None), ("amd64", Some("v1")), ("386", None)] {
-                assert!(host_runs(&p(a, v)), "{a} {v:?}");
-            }
-            for (a, v) in [("arm64", None), ("amd64", Some("v5")), ("arm", Some("v7"))] {
-                assert!(!host_runs(&p(a, v)), "{a} {v:?}");
-            }
+            let level = maximum().variant;
+            assert!(matches!(level.as_str(), "v1" | "v2" | "v3" | "v4"), "{level}");
         }
-        let windows = Platform {
-            os: "windows".into(),
-            ..p(std::env::consts::ARCH, None)
-        };
-        assert!(!host_runs(&windows));
     }
 
     fn desc(arch: &str, variant: Option<&str>, n: u8) -> Descriptor {

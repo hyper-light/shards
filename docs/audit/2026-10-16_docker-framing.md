@@ -92,7 +92,9 @@ Reviewed feature by feature, each D-entry's design against what it took from Doc
   microVM's runs both emulated, at much the same cost, so what a run can use orders them:
   the other 64-bit CPU's first, as a 32-bit process addresses 4 GiB at most, then 32-bit
   Arm's; and an index of another CPU's alone runs emulated, as its lone manifest did.
-  Fixed.
+  Fixed. Its warning was moby's matcher copied (`OnlyPlatformWithFallback`), which counts
+  32-bit Arm as an arm64 host's own: those runs, emulated here, went unwarned. Now a run
+  that names no platform is warned of exactly when it runs emulated. Fixed.
 - With every pool of dockerd's in use (a VPN that routes every private range), runs on the
   default network were refused, as dockerd makes no bridge (D31). Now a /24 of
   benchmarking's or shared address space the host does not use. Fixed.

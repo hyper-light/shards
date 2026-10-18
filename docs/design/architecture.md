@@ -5194,11 +5194,12 @@ the platform builds faster, reached as a context (the next item).
   keeps the emulator's mounts out of every process's reach (the workload's mount table
   starts at its own root). Its template, saved with the device, keeps it registered in
   every restore, the daemon's record of it naming the device it gives a restore. A run
-  that names no platform, of an image this host would not run itself, is warned of: it
-  runs emulated (the match moby docker-v29.3.1 daemon/create.go makes,
-  `OnlyPlatformWithFallback`, the host's platform its `maximumSpec`, an amd64 host's level
-  as go-archvariant v1.0.0 reads the CPU, so a `docker` script's image is the one it ran
-  there); and a pull or a run that names no platform takes a lone manifest whatever its
+  that names no platform is warned of, in dockerd's words, exactly when it runs emulated:
+  when no guest runs its image's platform itself (the host's platform, as the warning
+  names it, arm64's `v8` or an amd64 host's level as go-archvariant v1.0.0 reads the
+  CPU). dockerd's matcher counts 32-bit Arm as an arm64 host's own, for a CPU that runs
+  it; no guest of shards' does (PM M250), so its runs, emulated, were not warned of, and
+  now are. And a pull or a run that names no platform takes a lone manifest whatever its
   platform, and runs it under its CPU's emulator, where shards refused it (measured: Docker
   29.3.1 pulled `alpine@sha256:3e9b4b68…`, amd64's, on arm64, warned of it, and ran it). Of
   an index, a pull or run that names no platform takes, after the guests' own platforms,
@@ -5215,8 +5216,9 @@ the platform builds faster, reached as a context (the next item).
   another CPU's image is that CPU's, its base's variant kept (moby NewChildImage).
   `tests/images.rs` `a_run_of_another_cpus_image_runs_under_its_emulator` boots one,
   restores its template (without the emulator's device in the restore, it boots instead),
-  and runs with no platform a lone manifest and an index of the other CPU's alone
-  (`amd64/alpine:3.22`'s on arm64, `arm64v8/alpine:3.22`'s on x86_64), each warned of.
+  and runs with no platform a lone manifest, an index of the other CPU's alone
+  (`amd64/alpine:3.22`'s on arm64, `arm64v8/alpine:3.22`'s on x86_64) and one of 32-bit
+  Arm's (`arm32v7/alpine:3.22`), each emulated and warned of.
 - **An image's platforms** (part 2, built): an image keeps each platform pulled of its
   index (dockerd's keeps them too, PM M243), where shards' kept one, the last pulled: a run of
   another platform made a plain run of the image take that one, emulated and warned of.
