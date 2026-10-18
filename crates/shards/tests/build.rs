@@ -7088,6 +7088,53 @@ fn builder_prune_removes_the_build_cache() {
     assert!(ran(&build(Some("pruned:3"))), "--all kept the record");
 }
 
+/// The build cache is kept as its user set it (`shards configure disk`, D186): a settings
+/// file that does not read collects nothing, which each build says; a most of a byte, set,
+/// is the next build's collection's, however recent the last, which leaves no record, so
+/// the step runs again.
+#[test]
+fn a_builds_cache_is_kept_as_its_user_set() {
+    if cannot_run_vms() {
+        return;
+    }
+    let (image, _) = served();
+    let home = TempDir::new("disk-cache-home");
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", kernel().as_os_str()),
+        ("SHARDS_INIT", guest_init().as_os_str()),
+    ];
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let ctx = context(
+        "disk-cache-ctx",
+        &format!("FROM {image}\nUSER root\nRUN [\"/bin/testguest\", \"fs\", \"write:/one=1\"]\n"),
+    );
+    let out = TempDir::new("disk-cache-out");
+    let to_dir = format!("type=local,dest={}", out.display());
+    let build = || {
+        let built = shards(&["build", "--progress=plain", "-o", &to_dir, ctx.to_str().unwrap()]);
+        assert_eq!(built.status, Some(0), "{}", built.stderr);
+        built.stderr
+    };
+    let ran = |log: &str| !log.lines().any(|l| l.ends_with(" CACHED"));
+    assert!(ran(&build()));
+    std::fs::write(home.join("disk"), "build-cache-max lots\n").unwrap();
+    let said = build();
+    assert!(!ran(&said), "the step ran again under the default policy");
+    assert!(
+        said.contains("WARNING: the build cache was not collected: "),
+        "{said}"
+    );
+    assert!(said.contains("disk:1: "), "{said}");
+    let set = shards(&["configure", "disk", "--reset", "--build-cache-max", "1"]);
+    assert_eq!(set.status, Some(0), "{set}");
+    assert!(set.stdout.contains("build-cache-max     1\n"), "{set}");
+    // Its step cached, then collected: none is kept for the next.
+    let said = build();
+    assert!(!ran(&said) && !said.contains("WARNING"), "{said}");
+    assert!(ran(&build()), "the step was cached past a most of a byte");
+}
+
 /// `--annotation` (D66): the manifest's in the manifest, the descriptor's on the
 /// descriptor (an OCI layout's index, the metadata file), as BuildKit's image exporter puts
 /// them; an index's, and another platform's, refused in its words.

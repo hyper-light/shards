@@ -545,7 +545,7 @@ impl<D: Disk> Daemon<D> {
         else {
             return;
         };
-        let cached = crate::logging::kept(&run, self.logs)
+        let cached = crate::logging::kept(&run, super::DEFAULT_LOGS)
             .ok()
             .flatten()
             .is_none_or(|k| k.cached);

@@ -57,9 +57,9 @@ pub fn main() -> ExitCode {
 }
 
 /// The commands shards has besides the catalog's: the daemon side's own words.
-/// `daemon` and `guest` are what `run daemon`, `stop daemon` and `configure guest` are
-/// said as, and how the client starts the daemon.
-const OWN: [&str; 24] = [
+/// `daemon`, `guest` and `disk` are what `run daemon`, `stop daemon`, `configure guest` and
+/// `configure disk` are said as, and `daemon` how the client starts the daemon.
+const OWN: [&str; 25] = [
     "system",
     // Contexts, and the clients and invitations of this machine's (D180).
     "context",
@@ -77,6 +77,7 @@ const OWN: [&str; 24] = [
     "mcp",
     "daemon",
     "guest",
+    "disk",
     "grants",
     "share",
     "frontend",

@@ -1368,12 +1368,13 @@ removes it; `--rm` removes it once it ends.
     - `-f` waits on the log (kqueue on macOS, inotify on Linux), the run's end and
       the client, not a timer: a hundred idle followers cost the daemon nothing, where
       each looked 50 times a second.
-    - **A log keeps only its newest output**, as Docker's `local` driver keeps it:
-      segments of `SHARDS_LOG_MAX_SIZE` bytes (20 MiB), at most `SHARDS_LOG_MAX_FILE`
-      of them (5), the oldest removed as the next begins (docs.docker.com
-      engine/logging/drivers/local: `max-size` 20m, `max-file` 5). The daemon checks
-      them before it serves and sends them with each run; the run's VM writes the
-      segments in the container's directory, which it is given open.
+    - **A log keeps only its newest output**: at most its user's history (`shards
+      configure disk --log-history`, 1 GiB by default, D186), in equal segments of at
+      most 20 MiB, two at least, the oldest removed as the next begins; the daemon's
+      environment (`SHARDS_LOG_MAX_SIZE`, `SHARDS_LOG_MAX_FILE`) gives the segments' size
+      and count instead, where it is set. The daemon reads them as each run starts and
+      sends them with it; the run's VM writes the segments in the container's directory,
+      which it is given open. Until D186, Docker's `local` driver's 5 segments of 20 MiB.
       - Segments are numbered, `log`, `log.1`, …, and never renamed, so a reader never
         pairs one segment's log with another's index. A segment is there once its index
         is: made after its log, removed before it. A later segment there says one is
@@ -5191,6 +5192,70 @@ answer read as the helper is found; a helper dropped unread left running; a canc
 ends no helper; one that ends the helper alone and not its group (its script's child
 holds its output open); the answer waited for under the hosts' lock; a wait never said.
 
+### D186. How much of the disk shards keeps is its user's to set (`shards configure disk`, built)
+
+**Found.** The audit of defaults taken from Docker (docs/audit/2026-10-16_docker-framing.md):
+the build cache's collection kept dockerd's default policy, 10% of the disk reserved, 80%
+the most, 20% kept free (D114), and nothing changed it; a run's log kept Docker's `local`
+driver's 5 segments of 20 MiB (D27), which only the daemon's environment changed, read once
+as the daemon started.
+
+**The user's calls (2026-10-18).** The build cache: dockerd's 10% to 80% kept, "but this
+NEEDS to be user configurable". A log: 1 GiB, "but again, I expect this to be user
+configurable".
+
+**Decided.**
+- `shards configure disk`, beside `configure guest` in shards' grammar (`disk configure`
+  as the command it runs): `--build-cache-reserve`, `--build-cache-max` and
+  `--build-cache-free`, each `N%` of the disk the image store is on (0 to 100) or a size
+  (`50g`, `512m`: binary units, as `--memory` reads them); `--log-history SIZE`; `--reset`.
+  Alone, each setting and whether it is its default. Every flag is checked before any is
+  kept, so a command that fails changes nothing; a reset sets aside what was there,
+  whether it reads or not.
+- **Files, as shards' own interfaces are.** The settings are the home's `disk`, a line a
+  setting (`NAME VALUE`), written whole as a new file renamed over the last, so a reader
+  finds the one or the other. They are read where they are used: as each run starts, by
+  the daemon, and by each build's collection. A read where nothing is set costs what a
+  stat does, and one with settings 7 to 12 µs at p50 on a loaded host (PM M252), so there
+  is no cache, which a change could find stale; a change takes at the next run or build,
+  whether the daemon runs or not.
+- **A log's history** is the most of the disk a run's log takes, records' framing
+  included (13 bytes a record), as written: equal segments of at most 20 MiB, two at
+  least, so that it holds at most its history and, once its oldest segment has gone, its
+  history less a segment at least (half of it below 40 MiB; for the default 1 GiB, 52
+  segments of 20,648,881 bytes, 51/52 of it). Whole 20 MiB segments enough to hold it
+  would hold up to 1,040 MiB where 1 GiB was asked, and a history in one segment would
+  keep nothing just after each rotation. A run's own `--log-opt max-size` and
+  `max-file` still bound its log (D161), and the daemon's environment
+  (`SHARDS_LOG_MAX_SIZE`, `SHARDS_LOG_MAX_FILE`), where it is set, wins over the file.
+- **The build cache's bounds.** A share is that much of the disk's bytes, exactly, 0% none,
+  and a size is taken as it is; a reserve is at most the most. The defaults are the shares
+  the user chose, and are now what they say: dockerd counts a share's whole GiB and one
+  more in decimal gigabytes, which keeps 9.3%, 74.5% and 18.6% of a 2 TiB disk where it
+  says 10%, 80% and 20%; shards took that from it (D114), and reserved 188.1 GiB of a
+  2,014 GiB disk where its 10% is 201.4 GiB. Where the disk's
+  size cannot be read, the sizes set apply, and a share is nothing to reckon, so the
+  default holds: 2 GB reserved, no most. A changed cache setting is the next build's
+  collection's, however recent the last: `configure disk` removes the throttle's stamp.
+- **A file that does not read**, edited by hand: a run is refused, saying the file and its
+  line; a build's collection collects nothing and says so at every build (`WARNING: the
+  build cache was not collected: ...`), the build itself done; `--reset` mends it.
+- With a context (D180), `configure disk` runs on the context's machine, whose disk it is.
+
+**Tested.** On real microVMs: tests/containers.rs `a_logs_history_is_what_its_user_set`:
+the default said; at 64k, a run's log is two segments on disk, 32 KiB (less a record's
+head) to 64 KiB, the output's newest bytes; set to 128k as the daemon runs, the next run's is
+128k's; a flag that does not read, before a reset, keeps nothing; a broken file refuses a
+run, saying its file and line, and `--reset` mends it. tests/build.rs
+`a_builds_cache_is_kept_as_its_user_set`: a broken file is said and collects nothing;
+after `--reset --build-cache-max 1`, the next build's collection leaves no record, and the
+step runs again. Unit tests: the settings read back as written; a history's segments; the
+policy's bounds, set and unset. Mutation-checked, each caught: the daemon's logs ignoring
+the settings; a short history in one segment; a reset reading what it resets; flags before
+a reset unchecked; a run admitted past settings that do not read; a reserve past the most;
+settings that do not read collected by the default policy; a set policy waiting out the
+last collection; a failed collection unsaid; the collection ignoring the settings.
+
 ### D179. Other CPUs' images, emulated in their microVM (parts 1 to 3 built)
 
 Images built on an arm64 Mac usually ship to x86_64 hosts, and the other way round, and a
@@ -6794,8 +6859,9 @@ own where none was, and the options as a map (`HostConfig.LogConfig`).
   D163, a record that did not fit went whole into the next segment, which left segments
   of 64,000 bytes half full of a Linux guest's 32 KiB records. json-file
   keeps one file where only `max-size` is given, as Docker's does; where neither is, every
-  driver keeps the daemon's bound (`SHARDS_LOG_MAX_SIZE`, `SHARDS_LOG_MAX_FILE`), where
-  Docker's json-file keeps one file that grows without end.
+  driver keeps the home's bound, its user's (`shards configure disk --log-history`, 1 GiB
+  by default, D186), or the daemon's environment's (`SHARDS_LOG_MAX_SIZE`,
+  `SHARDS_LOG_MAX_FILE`), where Docker's json-file keeps one file that grows without end.
 - **None.** No `RUN_LOG`, no segments sent: a detached run's output goes nowhere, an
   attached one's to its client alone, and `logs` is refused (`NAME keeps no log: it was
   run with --log-driver none`).
@@ -10002,11 +10068,15 @@ it never reads ran it again; and nothing bounded what the cache kept.
   `DefaultGCPolicy`), derived from the disk as dockerd derives it: what is easiest to make
   again unused for two days past e·π·φ % of the reserve (512 MB at least); anything unused
   for 60 days; the unshared cache under the cap; then all of it under the cap; the
-  reserve, cap and free space 10, 80 and 20 % of the disk, its GiB counted and one more in
-  decimal gigabytes, or 2 GB reserved where the disk cannot be read. At most once a minute
+  reserve, cap and free space 10, 80 and 20 % of the disk's bytes, exactly since D186
+  (dockerd counts a share's whole GiB and one more in decimal gigabytes, which keeps 9.3%,
+  74.5% and 18.6% of a 2 TiB disk, as shards did before), or 2 GB reserved where the disk
+  cannot be read. At most once a minute
   in a home (its `buildcache-gc`), as BuildKit's controller throttles its GC to a minute
   after each build. Each rule prunes as `builder prune` does (one module, `build/gc.rs`,
-  for both).
+  for both). The reserve, cap and free space are the user's to set (`shards configure
+  disk`, D186), and a set policy is the next build's collection's, however recent the
+  last.
 - **Recorded differences.** Two builds sharing a cache `shared` at once each mount it as
   it was when taken and keep their own changes, both, in the order their steps end, where
   BuildKit's share one directory as they write it (M141: a build saw the file another

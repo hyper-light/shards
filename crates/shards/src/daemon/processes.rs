@@ -187,7 +187,13 @@ impl<D: Disk> Daemon<D> {
     /// Keeps `records` in container `id`'s record of processes, as its log is kept.
     pub(super) fn keep_processes(&self, id: &str, records: &[u8]) {
         let dir = lock(&self.containers).dir(id);
-        if let Err(e) = keep(&dir, records, self.logs.size, self.logs.files) {
+        let kept = self.log_retention().unwrap_or_else(|e| {
+            super::log(format!(
+                "container {id}: its record of processes, kept as by default: {e}"
+            ));
+            super::DEFAULT_LOGS
+        });
+        if let Err(e) = keep(&dir, records, kept.size, kept.files) {
             super::log(format!("container {id}: its record of processes: {e}"));
         }
     }

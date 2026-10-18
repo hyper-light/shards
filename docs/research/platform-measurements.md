@@ -9158,3 +9158,36 @@ revision before comparing a changed API/implementation.
     program's fault ends it (the kernel's own signal for a fault reaches init too). So every
     emulated run whose command dies by a signal, a segfault's or an abort's alike, hung;
     with another process as PID 1 it ends, 128 and the signal's number.
+
+### M252. What reading the disk settings costs at each use (D186)
+
+- **Question.** `shards configure disk`'s settings are a file in the home that the daemon
+  reads as each run starts, and each build's collection reads. Read every time, or cached
+  and checked by the file's modification time, which can miss a change? What does each
+  cost?
+- **Method.** `docs/research/measurements/settings-read/run.sh`, on an Apple M5 Max (18
+  cores: 6 performance, 12 efficiency), macOS 26.4.1, revision f1382d0b (the harness is
+  independent of shards' code), 2026-10-18. n = 20,000 each of a stat with the
+  modification time, a read of a three-line settings file, and a read where no file is
+  there, interleaved in one loop after 1,000 warm-up rounds. Two runs on a loaded host: the
+  first at a load average of 37 (other sessions' builds), the second at 35 while this
+  session's cargo built.
+- **Results.**
+
+  | run | operation | p50 | p90 | p99 | max |
+  |---|---|---|---|---|---|
+  | 1 | stat, modification time | 0.63 µs | 0.67 µs | 0.88 µs | 8.0 µs |
+  | 1 | read of the settings | 6.9 µs | 7.3 µs | 10.2 µs | 73.5 µs |
+  | 1 | read, no file | 0.63 µs | 0.71 µs | 0.88 µs | 19.4 µs |
+  | 2 | stat, modification time | 1.5 µs | 2.0 µs | 3.3 µs | 29.5 ms |
+  | 2 | read of the settings | 11.6 µs | 15.6 µs | 49.1 µs | 103.7 ms |
+  | 2 | read, no file | 1.6 µs | 2.2 µs | 4.0 µs | 4.8 ms |
+
+  - A read where nothing is set costs what the stat does: the home without settings pays
+    nothing for them.
+  - With settings, a read costs 6 to 10 µs more than the stat at p50, and 9 to 46 µs at
+    p99: against the 5 ms budget of a run's start (architecture.md §4), 0.2% at p50 and up
+    to 1% at p99, on this loaded host. So the settings are read at each use, with no cache
+    to go stale.
+  - Run 2's maxima are scheduling stalls of the loaded host, not the reads' own: in the
+    same loop the stat stalled 29.5 ms, and the read of no file 4.8 ms.

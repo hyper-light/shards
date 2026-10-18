@@ -800,8 +800,10 @@ struct Daemon<D: Disk = Real> {
     idle: Duration,
     /// How long a pool keeps warm VMs after its last claim ([`DEFAULT_KEEP`]).
     keep: Duration,
-    /// How much of each container's output its log keeps.
-    logs: LogRetention,
+    /// How much of each container's output its log keeps, where the daemon's environment
+    /// says (`SHARDS_LOG_MAX_SIZE`, `SHARDS_LOG_MAX_FILE`); else [`Daemon::log_retention`]
+    /// reads the home's disk settings.
+    logs: Option<LogRetention>,
     /// How long a client may take to send its request ([`REQUEST_TIMEOUT`]).
     request_timeout: Duration,
     state: Mutex<State>,
@@ -1064,13 +1066,9 @@ fn count(name: &str, default: u64) -> Result<u64, String> {
     }
 }
 
-/// How much of a container's output its log keeps unless the settings say otherwise: as
-/// Docker's `local` log driver keeps it, five files of 20 MiB (its `max-size` of 20m and
-/// `max-file` of 5, docs.docker.com engine/logging/drivers/local).
-const DEFAULT_LOGS: LogRetention = LogRetention {
-    size: 20 << 20,
-    files: 5,
-};
+/// How much of a container's output its log keeps unless a setting says otherwise: its
+/// newest 1 GiB (the user's call, 2026-10-18; `shards configure disk`, D186).
+const DEFAULT_LOGS: LogRetention = crate::disk::log_retention(crate::disk::LOG_HISTORY);
 
 /// A daemon's settings.
 #[derive(Debug, Clone, Copy)]
@@ -1085,9 +1083,9 @@ struct Settings {
     /// How long a template's pool keeps warm VMs after its last claim:
     /// `SHARDS_POOL_KEEP`, in seconds.
     keep: Duration,
-    /// How much of each container's output its log keeps: `SHARDS_LOG_MAX_SIZE` and
-    /// `SHARDS_LOG_MAX_FILE`.
-    logs: LogRetention,
+    /// How much of each container's output its log keeps, where `SHARDS_LOG_MAX_SIZE` or
+    /// `SHARDS_LOG_MAX_FILE` says.
+    logs: Option<LogRetention>,
     /// Clients in hand at once: `SHARDS_MAX_CLIENTS`, at most [`most_clients`].
     max_clients: usize,
     /// Docker's default bridge, as [`elect_bridge`] found it: none if no subnet is free.
@@ -1124,16 +1122,22 @@ fn settings() -> Result<Settings, String> {
     }
     let idle = Duration::from_secs(count("SHARDS_DAEMON_IDLE", DEFAULT_IDLE.as_secs())?);
     let keep = Duration::from_secs(count("SHARDS_POOL_KEEP", DEFAULT_KEEP.as_secs())?);
-    let logs = LogRetention {
-        size: count("SHARDS_LOG_MAX_SIZE", DEFAULT_LOGS.size)?,
-        files: count("SHARDS_LOG_MAX_FILE", DEFAULT_LOGS.files)?,
+    let given = |name: &str| std::env::var_os(name).is_some_and(|v| !v.is_empty());
+    let logs = if given("SHARDS_LOG_MAX_SIZE") || given("SHARDS_LOG_MAX_FILE") {
+        let logs = LogRetention {
+            size: count("SHARDS_LOG_MAX_SIZE", DEFAULT_LOGS.size)?,
+            files: count("SHARDS_LOG_MAX_FILE", DEFAULT_LOGS.files)?,
+        };
+        if logs.size == 0 {
+            return Err("SHARDS_LOG_MAX_SIZE: a log keeps at least a byte".into());
+        }
+        if logs.files == 0 {
+            return Err("SHARDS_LOG_MAX_FILE: a log keeps at least one file".into());
+        }
+        Some(logs)
+    } else {
+        None
     };
-    if logs.size == 0 {
-        return Err("SHARDS_LOG_MAX_SIZE: a log keeps at least a byte".into());
-    }
-    if logs.files == 0 {
-        return Err("SHARDS_LOG_MAX_FILE: a log keeps at least one file".into());
-    }
     Ok(Settings {
         pool,
         warm_max,
@@ -2266,7 +2270,10 @@ impl<D: Disk> Daemon<D> {
             return None;
         }
         // Its log (D161): shards' store, as its options keep it, or none.
-        let kept = match crate::logging::kept(&run, self.logs) {
+        let kept = match self
+            .log_retention()
+            .and_then(|bound| crate::logging::kept(&run, bound))
+        {
             Ok(kept) => kept,
             Err(e) => {
                 refused(&e);
@@ -3020,7 +3027,8 @@ impl<D: Disk> Daemon<D> {
         // Its head, then the spec, in one allocation (audit D10).
         let mut payload =
             Vec::with_capacity(shards_ipc::RunHead::LEN + prepared.spec.encoded_len().unwrap_or(0));
-        let retention = kept.map_or(self.logs, |k| LogRetention {
+        // `--log-driver none`'s, which writes no log.
+        let retention = kept.map_or(DEFAULT_LOGS, |k| LogRetention {
             size: k.size,
             files: k.files,
         });
@@ -3102,7 +3110,7 @@ impl<D: Disk> Daemon<D> {
                 named: again.clone().filter(|_| run.detach && !run.silent),
                 restarted: restarting,
                 layer_pending: layer_out.is_some(),
-                log_files: kept.map_or(self.logs.files, |k| k.files),
+                log_files: kept.map_or(DEFAULT_LOGS.files, |k| k.files),
                 log_compress: kept.is_some_and(|k| k.compress),
                 visit: false,
                 egress,
@@ -3582,8 +3590,9 @@ impl<D: Disk> Daemon<D> {
             .as_deref()
             .map(commands::parse_signal)
             .transpose()?;
-        // Its log as its options keep it, checked as its run was (D161).
-        let kept = crate::logging::kept(run, self.logs).ok().flatten();
+        // Its log as its options keep it, checked as its run was (D161): its flags alone,
+        // which no bound changes.
+        let kept = crate::logging::kept(run, DEFAULT_LOGS).ok().flatten();
         if let Some(h) = &prepared.health {
             // dockerd's floor for each duration set (daemon/container.go, translate:
             // containertypes.MinimumDuration), and no negative retries.
@@ -5931,6 +5940,17 @@ impl<D: Disk> Daemon<D> {
         Ok(())
     }
 
+    /// How much of a container's output its log keeps: the daemon's environment's, where it
+    /// says; else what `shards configure disk` set (D186), its file read at each ask, so
+    /// that a change takes at the next run, where a cache keyed by its file's times could
+    /// miss one made within its filesystem's tick; else [`DEFAULT_LOGS`].
+    fn log_retention(&self) -> Result<LogRetention, String> {
+        match self.logs {
+            Some(logs) => Ok(logs),
+            None => crate::disk::read(&self.home).map(|s| s.log_retention()),
+        }
+    }
+
     /// Ends the ready VMs of pools unclaimed past their keep-alive, and forgets the pools
     /// that hold nothing (audit A13).
     fn age_pools(&self) {
@@ -6975,7 +6995,7 @@ mod tests {
                     warm_max: DEFAULT_WARM_MAX,
                     idle: DEFAULT_IDLE,
                     keep: DEFAULT_KEEP,
-                    logs: DEFAULT_LOGS,
+                    logs: None,
                     max_clients: most_clients(),
                     bridge: shards_net::bridge::Bridge::elect(&[]),
                 },
@@ -10273,7 +10293,7 @@ mod tests {
                 m.fds
             };
             assert!(ask(2).is_empty(), "segment 2 before 1");
-            let files = t.daemon.logs.files;
+            let files = t.daemon.log_retention().unwrap().files;
             for seq in 1..=files + 1 {
                 let fds = ask(seq);
                 assert_eq!(fds.len(), 2, "segment {seq}");

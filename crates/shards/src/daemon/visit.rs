@@ -171,10 +171,11 @@ impl<D: crate::containers::Disk> Daemon<D> {
         }
         let mut payload =
             Vec::with_capacity(shards_ipc::RunHead::LEN + prepared.spec.encoded_len().unwrap_or(0));
+        let kept = self.log_retention()?;
         shards_ipc::RunHead {
             flags,
-            log_size: self.logs.size,
-            log_files: self.logs.files,
+            log_size: kept.size,
+            log_files: kept.files,
             first: 0,
             // The most memory its guest may plug (D148): a run's, for a visit's built-ins.
             plug: prepared
@@ -204,7 +205,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
                 named: None,
                 restarted: false,
                 layer_pending: true,
-                log_files: self.logs.files,
+                log_files: kept.files,
                 log_compress: false,
                 visit: true,
                 egress: None,

@@ -5267,6 +5267,115 @@ fn segment_log(dir: &Path, seq: u64) -> Vec<u8> {
     out
 }
 
+/// How much of a run's output its log keeps is its user's to set (`shards configure disk
+/// --log-history`, D186): a run made after the setting, the daemon running or not, keeps at
+/// most that much of its newest output, and at least that less a segment (half of it, below
+/// 40 MiB); with none set, 1 GiB, as `configure disk` says. A settings file that does not
+/// read refuses a run, saying where, and `--reset` takes every setting back to its default,
+/// read or not; every flag is checked before any is kept.
+#[test]
+fn a_logs_history_is_what_its_user_set() {
+    let Some((home, image)) = home("containers-disk-logs") else {
+        return;
+    };
+    let shards = |args: &[&str]| shards_in(&home, args);
+    let stopped = shards(&["stop", "daemon"]);
+    assert_eq!(stopped.status, Some(0), "{stopped}");
+    let shown = shards(&["configure", "disk"]);
+    assert_eq!(shown.status, Some(0), "{shown}");
+    assert!(
+        shown.stdout.contains("log-history         1073741824 (default)"),
+        "{shown}"
+    );
+    // Its output as bytes.
+    let output = |args: &[&str]| {
+        let out = common::command()
+            .env("SHARDS_HOME", &*home)
+            .env("SHARDS_KERNEL", kernel())
+            .env("SHARDS_INIT", guest_init())
+            .args(args)
+            .stdin(Stdio::null())
+            .output()
+            .unwrap();
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        out.stdout
+    };
+    // A run whose log holds `files` segments of `size` bytes at most on disk, framing and
+    // all: the newest, whole but for less than a record's 13-byte head, and the one being
+    // written; its newest output, as `logs` shows it.
+    let logged = |name: &str, size: u64, files: u64| {
+        let wrote = output(&[
+            "run", "--name", name, "--pull", "never", &image, "bulk", "1000000", "7",
+        ]);
+        assert_eq!(wrote.len(), 1_000_000);
+        let kept = output(&["logs", name]);
+        assert!(
+            wrote.ends_with(&kept),
+            "{name}: {} bytes kept, not the newest",
+            kept.len()
+        );
+        let dir = std::fs::read_dir(home.join("containers"))
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .find(|d| {
+                std::fs::read_to_string(d.join("config.json"))
+                    .is_ok_and(|c| c.contains(&format!("\"name\":\"{name}\"")))
+            })
+            .unwrap();
+        let seqs: Vec<u64> = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|e| {
+                let name = e.unwrap().file_name().into_string().unwrap();
+                name.strip_prefix("log.")?.strip_suffix(".idx")?.parse().ok()
+            })
+            .collect();
+        assert_eq!(seqs.len() as u64, files, "{name}: {seqs:?}");
+        let written: u64 = seqs.iter().map(|seq| segment_log(&dir, *seq).len() as u64).sum();
+        assert!(
+            ((files - 1) * size - 13..=files * size).contains(&written),
+            "{name}: {written} bytes on disk, {} of output",
+            kept.len()
+        );
+    };
+    let set = shards(&["configure", "disk", "--log-history", "64k"]);
+    assert_eq!(set.status, Some(0), "{set}");
+    assert!(set.stdout.contains("log-history         65536\n"), "{set}");
+    logged("before", 32 << 10, 2);
+    // Set again as the daemon runs: its next run keeps that.
+    let set = shards(&["configure", "disk", "--log-history=128k"]);
+    assert_eq!(set.status, Some(0), "{set}");
+    logged("after", 64 << 10, 2);
+    // A flag that does not read keeps nothing, a reset after it included.
+    let refused = shards(&["configure", "disk", "--log-history", "0", "--reset"]);
+    assert_ne!(refused.status, Some(0), "{refused}");
+    assert!(
+        refused.stderr.contains("a log keeps at least a byte"),
+        "{refused}"
+    );
+    let shown = shards(&["configure", "disk"]);
+    assert!(shown.stdout.contains("log-history         131072\n"), "{shown}");
+    // A file its user broke by hand: no run, until it is reset.
+    std::fs::write(home.join("disk"), "# by hand\nlog-history lots\n").unwrap();
+    let broken = shards(&["run", "--rm", "--pull", "never", &image, "exit", "0"]);
+    assert_ne!(broken.status, Some(0), "{broken}");
+    assert!(broken.stderr.contains("disk:2: "), "{broken}");
+    let reset = shards(&["configure", "disk", "--reset"]);
+    assert_eq!(reset.status, Some(0), "{reset}");
+    assert!(
+        reset.stdout.contains("log-history         1073741824 (default)"),
+        "{reset}"
+    );
+    let ran = shards(&["run", "--rm", "--pull", "never", &image, "exit", "0"]);
+    assert_eq!(ran.status, Some(0), "{ran}");
+    let stopped = shards(&["stop", "daemon"]);
+    assert_eq!(stopped.status, Some(0), "{stopped}");
+}
+
 /// A container's log keeps only its newest output: at most SHARDS_LOG_MAX_FILE segments of
 /// SHARDS_LOG_MAX_SIZE bytes, as Docker's `local` driver keeps `max-file` of `max-size`.
 /// `logs` shows what is kept, `--tail` its last lines, and a follower gets every byte once

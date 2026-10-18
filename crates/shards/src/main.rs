@@ -19,6 +19,7 @@ mod containers;
 mod context;
 #[cfg(unix)]
 mod daemon;
+mod disk;
 // The daemon's (Unix's alone as yet) and a search's.
 #[cfg_attr(not(unix), allow(dead_code))]
 mod filters;
@@ -89,6 +90,7 @@ pub(crate) fn shardsd(args: Vec<std::ffi::OsString>) -> ExitCode {
             usage_error("the daemon needs Unix sockets, which shards does not support on this platform yet")
         }
         Some("guest") => guest::guest(args),
+        Some("disk") => disk::command(args),
         Some(kind @ ("agent" | "harness" | "mcp")) => agent::command(kind, args),
         // the VM's broker (`shards run --kernel`, `shards restore`): not for people to run.
         #[cfg(target_os = "macos")]

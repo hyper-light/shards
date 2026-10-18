@@ -121,11 +121,15 @@ pub fn build(args: impl Iterator<Item = OsString>) -> ExitCode {
     let status = std::cell::Cell::new(0u8);
     let r = run(&parsed, &status);
     // The build cache collected once a build is done, as BuildKit's controller runs its
-    // GC after each (D114); its failure is no build's.
+    // GC after each (D114); its failure is no build's, and is said.
     if let Ok(home) = shards_ipc::home()
         && let Ok(store) = crate::pull::store(&home)
+        && let Err(e) = gc::after_build(&home, &store)
     {
-        let _ = gc::after_build(&home, &store);
+        let _ = writeln!(
+            std::io::stderr(),
+            "WARNING: the build cache was not collected: {e}"
+        );
     }
     if let Some(s) = stdin {
         let _ = std::fs::remove_file(&s.path);

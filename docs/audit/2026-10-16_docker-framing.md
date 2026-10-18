@@ -108,10 +108,18 @@ Reviewed feature by feature, each D-entry's design against what it took from Doc
   - (Not one: the design said layers download 3 at a time, dockerd's default; the
     fetcher has been measured and adaptive since PM M114, four connections doubling to
     sixteen while they gain, large layers split into ranges. The design is corrected.)
-  - The build cache's collection policy is dockerd's default GC policy: what a cache of
-    this host's disk and its builds' reuse keeps, measured as builds hit and miss.
-  - A log keeps 5 segments of 20 MiB, Docker's `local` driver's: what a run's output
-    costs the host per byte kept, against the disk the home has.
+  - (Decided by the user, 2026-10-18, and built, D186: the build cache's collection keeps
+    dockerd's 10% reserve, 80% most and 20% free as its defaults, each the user's to set
+    with `shards configure disk`; each now exactly that share of the disk, where dockerd's
+    arithmetic, which shards had taken, kept 9.3%, 74.5% and 18.6%.)
+  - The build cache's other rules are still dockerd's, open: the temporary share of the
+    reserve (e·π·φ %, 512 MB at least) that what is easiest to make again may take, the
+    ages at which records go (two days for those, 60 for any), and 2 GB reserved where the
+    disk cannot be read. Each to derive from what remaking a record of each kind costs a
+    microVM build, measured.
+  - (Decided by the user, 2026-10-18, and built, D186: a log keeps at most 1 GiB of its
+    run's newest output by default, where it kept Docker's `local` driver's 5 segments of
+    20 MiB, and the user sets it with `shards configure disk --log-history`.)
   - (Fixed: a fresh volume's top where its image has nothing at the mount point was
     root's, 0755, as Docker's local driver leaves one, which shut a run of any other user
     out of the volume it was given. Now the run's user's (D38), measured first: of the

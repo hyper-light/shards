@@ -2457,7 +2457,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
         }
         // One whose driver sends it elsewhere, its local copy kept from `logs` (D163).
         if let Some(r) = &request
-            && crate::logging::kept(r, self.logs)
+            && crate::logging::kept(r, super::DEFAULT_LOGS)
                 .ok()
                 .flatten()
                 .is_some_and(|k| !k.cached)

@@ -277,30 +277,58 @@ pub fn prune(
     Ok(freed)
 }
 
-/// `diskPercentage`: `percentage` of a disk of `total` bytes, its GiB counted and one more,
-/// in decimal gigabytes, as dockerd rounds it up.
+/// `percentage` of a disk of `total` bytes, exactly. dockerd counts a share's whole GiB and
+/// one more, in decimal gigabytes (`diskPercentage`), and so keeps 9.3%, 74.5% and 18.6% of
+/// a 2 TiB disk where it says 10%, 80% and 20% (D186).
 fn disk_percentage(total: u64, percentage: u64) -> i64 {
-    let gib = total.saturating_mul(percentage) / 100 / (1 << 30);
-    i64::try_from(gib.saturating_add(1).saturating_mul(1_000_000_000)).unwrap_or(i64::MAX)
+    let share = u128::from(total) * u128::from(percentage) / 100;
+    i64::try_from(share).unwrap_or(i64::MAX)
 }
 
 /// `tempCachePercent`, e·π·φ as Go's constant arithmetic rounds it to a float64: the share
 /// of the reserve the easiest to make again may take.
 const TEMP_CACHE_PERCENT: f64 = 13.817_580_227_176_494;
 
-/// dockerd's default GC policy for a disk of `total` bytes, where its size is known
-/// (`DefaultGCPolicy`, with no space configured): what is easiest to make again (context
-/// transfers, Git checkouts, cache mounts) unused for two days, past a temporary share of
-/// the reserve; anything unused for 60 days; the unshared cache under the cap; then all of
-/// it under the cap. Where the disk cannot be read, 2 GB reserved and no cap.
-pub fn default_policy(total: Option<u64>) -> Vec<Rule> {
+/// The collection policy for a disk of `total` bytes, its reserve, most and free space
+/// as its user set them (`shards configure disk`, D186), else 10%, 80% and 20% of the
+/// disk (the user's call, the shares dockerd's `DefaultGCPolicy` names): what is easiest
+/// to make again (context transfers, Git checkouts, cache mounts) unused for two days, past
+/// a temporary share of the reserve; anything unused for 60 days; the unshared cache under
+/// the cap; then all of it under the cap. A share is that much of the disk's bytes, 0% none;
+/// a size is taken as it is; a reserve is no more than a most. Where the disk cannot be
+/// read, the sizes set alone, else 2 GB reserved and no cap.
+pub fn default_policy(total: Option<u64>, settings: &crate::disk::Settings) -> Vec<Rule> {
+    use crate::disk::{Amount, CACHE_FREE, CACHE_MAX, CACHE_RESERVE};
+    let bytes = |b: u64| i64::try_from(b).unwrap_or(i64::MAX);
     let (reserved, max_used, min_free) = match total {
-        Some(t) => (
-            disk_percentage(t, 10),
-            disk_percentage(t, 80),
-            disk_percentage(t, 20),
-        ),
-        None => (2_000_000_000, 0, 0),
+        Some(t) => {
+            let on = |a: Amount| match a {
+                Amount::Percent(0) => 0,
+                Amount::Percent(p) => disk_percentage(t, p),
+                Amount::Bytes(b) => bytes(b),
+            };
+            (
+                on(settings.cache_reserve.unwrap_or(CACHE_RESERVE)),
+                on(settings.cache_max.unwrap_or(CACHE_MAX)),
+                on(settings.cache_free.unwrap_or(CACHE_FREE)),
+            )
+        }
+        None => {
+            let sized = |a: Option<Amount>, otherwise: i64| match a {
+                Some(Amount::Bytes(b)) => bytes(b),
+                _ => otherwise,
+            };
+            (
+                sized(settings.cache_reserve, 2_000_000_000),
+                sized(settings.cache_max, 0),
+                sized(settings.cache_free, 0),
+            )
+        }
+    };
+    let reserved = if max_used != 0 {
+        reserved.min(max_used)
+    } else {
+        reserved
     };
     // The temporary share, 512 MB at least.
     #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)]
@@ -335,11 +363,27 @@ pub fn default_policy(total: Option<u64>) -> Vec<Rule> {
 /// How long a collection waits after the last, as BuildKit's controller throttles its GC.
 const EVERY: Duration = Duration::from_secs(60);
 
+/// The home's stamp of its last collection.
+fn stamp(home: &Path) -> std::path::PathBuf {
+    home.join("buildcache-gc")
+}
+
+/// Has the next build collect, however recent the last collection: its policy has changed.
+pub fn collect_next(home: &Path) -> Result<(), String> {
+    let stamp = stamp(home);
+    match std::fs::remove_file(&stamp) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(format!("{}: {e}", stamp.display())),
+        _ => Ok(()),
+    }
+}
+
 /// Collects the build cache of `home`'s store as BuildKit's controller does after a build:
-/// its default policy, unless a collection ran less than a minute ago (the home's
-/// `buildcache-gc`, any process's). What it frees, the store's collector finds due.
+/// by its policy, as its user set it, unless a collection ran less than a minute ago (the
+/// home's `buildcache-gc`, any process's). Settings that do not read collect nothing, at
+/// every build. What it frees, the store's collector finds due.
 pub fn after_build(home: &Path, store: &Store) -> Result<(), String> {
-    let stamp = home.join("buildcache-gc");
+    let settings = crate::disk::read(home)?;
+    let stamp = stamp(home);
     let recent = std::fs::metadata(&stamp)
         .and_then(|m| m.modified())
         .ok()
@@ -354,7 +398,7 @@ pub fn after_build(home: &Path, store: &Store) -> Result<(), String> {
         .ok()
         .map(|(_, total)| total);
     let mut freed = 0i64;
-    for rule in default_policy(total) {
+    for rule in default_policy(total, &settings) {
         freed = freed.saturating_add(prune(store, &disk, &rule, &mut |_| Ok(()))?);
     }
     if freed > 0 {
@@ -511,12 +555,13 @@ mod tests {
         assert_eq!(order, ["old-idle", "mid", "new-busy"]);
     }
 
-    /// dockerd's default policy, derived from the disk as `DefaultGCPolicy` derives it: on
-    /// a disk of 2,014 GiB, `docker buildx inspect` in shards-dind (Docker 29.3.1, M141)
-    /// shows these rules, 25.99GiB, 188.1GiB, 1.466TiB and 375.3GiB as go-units says them.
+    /// The default policy, derived from the disk: on a disk of 2,014 GiB, its reserve, most
+    /// and free space exactly 10%, 80% and 20% of it, 201.4GiB, 1.573TiB and 402.8GiB as
+    /// go-units says them, where dockerd's rules say 188.1GiB, 1.466TiB and 375.3GiB
+    /// (`docker buildx inspect` in shards-dind, Docker 29.3.1, M141).
     #[test]
     fn the_default_policy_is_derived_from_the_disk() {
-        let rules = default_policy(Some(2014 * (1 << 30) + 1));
+        let rules = default_policy(Some(2014 * (1 << 30) + 1), &crate::disk::Settings::default());
         let shown: Vec<(usize, bool, Option<u64>, i64, i64, i64)> = rules
             .iter()
             .map(|r| {
@@ -530,11 +575,13 @@ mod tests {
                 )
             })
             .collect();
-        let (reserved, max, min_free) = (202_000_000_000, 1_612_000_000_000, 403_000_000_000);
+        let total: i64 = 2014 * (1 << 30) + 1;
+        let (reserved, max, min_free) = (216_251_603_353, 1_730_012_826_829, 432_503_206_707);
+        assert_eq!((reserved, max, min_free), (total / 10, total * 8 / 10, total / 5));
         assert_eq!(
             shown,
             [
-                (3, false, Some(48), 0, 27_911_512_059, 0),
+                (3, false, Some(48), 0, 29_880_738_786, 0),
                 (0, false, Some(1440), reserved, max, min_free),
                 (0, false, None, reserved, max, min_free),
                 (0, true, None, reserved, max, min_free),
@@ -543,21 +590,54 @@ mod tests {
         // As go-units' BytesSize says them, the way `buildx inspect` shows them.
         #[allow(clippy::cast_precision_loss)]
         let gib = |b: i64| b as f64 / f64::from(1u32 << 30);
-        assert_eq!(format!("{:.2}", gib(27_911_512_059)), "25.99");
-        assert_eq!(format!("{:.1}", gib(reserved)), "188.1");
-        assert_eq!(format!("{:.3}", gib(max) / 1024.0), "1.466");
-        assert_eq!(format!("{:.1}", gib(min_free)), "375.3");
+        assert_eq!(format!("{:.2}", gib(29_880_738_786)), "27.83");
+        assert_eq!(format!("{:.1}", gib(reserved)), "201.4");
+        assert_eq!(format!("{:.3}", gib(max) / 1024.0), "1.573");
+        assert_eq!(format!("{:.1}", gib(min_free)), "402.8");
         // A small disk: the temporary share at its floor, 512 MB.
+        let none = crate::disk::Settings::default();
         assert_eq!(
-            default_policy(Some(20 << 30)).first().map(|r| r.max_used),
+            default_policy(Some(20 << 30), &none).first().map(|r| r.max_used),
             Some(512_000_000)
         );
         // No disk read: 2 GB reserved, no cap.
-        let unread = default_policy(None);
+        let unread = default_policy(None, &none);
         assert_eq!(
             unread.get(1).map(|r| (r.reserved, r.max_used, r.min_free)),
             Some((2_000_000_000, 0, 0))
         );
         assert_eq!(unread.first().map(|r| r.max_used), Some(512_000_000));
+    }
+
+    /// What a user sets (`shards configure disk`, D186) replaces the default: a share of
+    /// the disk's bytes, 0% as none, a size as it is, a reserve no more than a most.
+    #[test]
+    fn the_policy_takes_what_its_user_set() {
+        use crate::disk::{Amount, Settings};
+        let total = 2014 * (1 << 30) + 1;
+        let caps = |s: &Settings| {
+            default_policy(Some(total), s)
+                .get(1)
+                .map(|r| (r.reserved, r.max_used, r.min_free))
+        };
+        let explicit = Settings {
+            cache_reserve: Some(Amount::Percent(10)),
+            cache_max: Some(Amount::Percent(80)),
+            cache_free: Some(Amount::Percent(20)),
+            log_history: None,
+        };
+        assert_eq!(caps(&explicit), caps(&Settings::default()));
+        let sized = Settings {
+            cache_reserve: Some(Amount::Bytes(80 << 30)),
+            cache_max: Some(Amount::Bytes(50 << 30)),
+            cache_free: Some(Amount::Percent(0)),
+            log_history: None,
+        };
+        assert_eq!(caps(&sized), Some((50 << 30, 50 << 30, 0)));
+        let unread = default_policy(None, &sized);
+        assert_eq!(
+            unread.get(1).map(|r| (r.reserved, r.max_used, r.min_free)),
+            Some((50 << 30, 50 << 30, 0))
+        );
     }
 }
