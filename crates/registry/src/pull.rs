@@ -75,8 +75,8 @@ pub enum Event<'a> {
 
 /// Pulls `reference` for the platforms `targets` into `store`, its root filesystem built
 /// within `limits`. None, where no platform is asked: an index's manifest for our guests,
-/// and a lone manifest whatever its platform, as dockerd takes one, which a guest runs
-/// under its emulator (D179). Fails as dockerd reports a pull's failure.
+/// else one a guest runs under its CPU's emulator (D179), and a lone manifest whatever its
+/// platform, which a guest runs so too. Fails as dockerd reports a pull's failure.
 pub fn pull(
     registry: &Registry,
     store: &Store,
@@ -139,8 +139,9 @@ fn pulled(
     fresh: bool,
 ) -> Result<Pulled, Error> {
     let name = reference.familiar();
-    // No platform asked (`targets` empty): an index's manifest as dockerd takes one, ours or
-    // another our guests run under its emulator, and a lone manifest whatever its platform.
+    // No platform asked (`targets` empty): of an index, our guests' own manifest first, then
+    // one they run under its CPU's emulator ([`platform::pullable`], D179); a lone manifest
+    // whatever its platform.
     let guest = platform::guest();
     let pullable = platform::pullable();
     let choose = if targets.is_empty() {

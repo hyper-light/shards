@@ -5201,16 +5201,22 @@ the platform builds faster, reached as a context (the next item).
   there); and a pull or a run that names no platform takes a lone manifest whatever its
   platform, and runs it under its CPU's emulator, where shards refused it (measured: Docker
   29.3.1 pulled `alpine@sha256:3e9b4b68…`, amd64's, on arm64, warned of it, and ran it). Of
-  an index, a pull or run that names no platform takes containerd's order
-  (containerd/platforms v1.0.0-rc.2 platformVector): on arm64, after arm64's, 32-bit Arm's
-  v8 to v5, which shards' guests, with no AArch32, run under qemu-arm. That order assumes a
-  CPU that runs 32-bit Arm itself, which a microVM's does not: both it and amd64 run
-  emulated here, and which runs better is unmeasured (open,
-  docs/audit/2026-10-16_docker-framing.md). A commit of
+  an index, a pull or run that names no platform takes, after the guests' own platforms,
+  those a guest runs emulated, as it runs a lone manifest of them: the other 64-bit CPU's,
+  then 32-bit Arm's v8 to v5 (on arm64: arm64, amd64, 32-bit Arm's; on x86_64: amd64 and
+  386, arm64, 32-bit Arm's). containerd's order put 32-bit Arm first on arm64, for a CPU
+  that runs it itself; a microVM's here does not (PM M250: its guest refuses an armv7
+  program's exec), and emulated the two cost alike (M250: 32-bit Arm 11% less for sha256,
+  amd64 6% less for gzip and starts). What decides is what a run can use: a 32-bit process
+  addresses 4 GiB at most, where a microVM's memory can be the host's (D148). An index of
+  the other CPU's alone, which shards refused, runs emulated and warned of, as its lone
+  manifest did. Tested: `crates/image`
+  `a_pull_of_no_platform_takes_the_other_64_bit_cpus_before_32_bit_arms`. A commit of
   another CPU's image is that CPU's, its base's variant kept (moby NewChildImage).
   `tests/images.rs` `a_run_of_another_cpus_image_runs_under_its_emulator` boots one,
   restores its template (without the emulator's device in the restore, it boots instead),
-  and runs a lone manifest with no platform, warned of.
+  and runs with no platform a lone manifest and an index of the other CPU's alone
+  (`amd64/alpine:3.22`'s on arm64, `arm64v8/alpine:3.22`'s on x86_64), each warned of.
 - **An image's platforms** (part 2, built): an image keeps each platform pulled of its
   index (dockerd's keeps them too, PM M243), where shards' kept one, the last pulled: a run of
   another platform made a plain run of the image take that one, emulated and warned of.

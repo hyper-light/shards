@@ -9091,3 +9091,38 @@ revision before comparing a changed API/implementation.
   - So the run's user as the top's owner where the image has nothing changes no official
     image's volume but percona's `/var/log/mysql`, which it opens to that image's own
     user (D38).
+
+### M250. 32-bit Arm or amd64, emulated in a microVM on an arm64 host: which runs better (D179)
+
+- **Question.** An image with no arm64 manifest that has 32-bit Arm's and amd64's runs
+  under one emulator or the other on an arm64 host: qemu-arm or qemu-x86_64, each in the
+  guest under binfmt_misc (D179). shards took containerd's order, 32-bit Arm first. Which
+  costs the host less for the same work?
+- **Method.** `docs/research/measurements/emulated-order/run.sh SHARDS 20`, a release build
+  of gpu caa1f362, on an Apple M5 Max (18 CPUs, 128 GiB), macOS 26.4.1, the host running
+  other work (load average 5.85 as it began, 38.44 as it ended). One microVM holds Alpine
+  3.22.6's minirootfs of each CPU (amd64's and armv7's, pinned by their releases' sha256)
+  and Docker's builds of qemu-user for BuildKit (`tonistiigi/binfmt`, M241's pin)
+  registered for both. M241's host side (host.py) runs 20 rounds, each a native and an
+  emulated run of each workload for each CPU in turn: busybox's `sha256sum` and `gzip` of
+  32 MiB, and 100 starts of `/bin/true`, the same programs as each CPU's build, measured
+  from the host as the VM process's cycles; the pairs' ratios, emulated over native.
+- **Results** (n = 20 each; the VM process's cycles, emulated over native):
+
+  | workload | amd64 (qemu-x86_64) p50 / p90 / p99 / max | 32-bit Arm (qemu-arm) p50 / p90 / p99 / max |
+  |---|---|---|
+  | sha256 | 3.8 / 4.7 / 4.8 / 4.8 | 3.4 / 3.5 / 3.5 / 3.5 |
+  | gzip | 4.9 / 6.2 / 6.5 / 6.5 | 5.2 / 6.8 / 7.2 / 7.2 |
+  | starts | 15.6 / 17.7 / 18.2 / 18.2 | 16.6 / 18.2 / 18.3 / 18.3 |
+
+  - Neither is the faster: 32-bit Arm costs 11% less at p50 for sha256, with a tail as
+    tight as its median; amd64 6% less for gzip and for starts. The CPU times say the
+    same (sha256 3.8 and 3.4, gzip 5.6 and 6.2, starts 15.1 and 15.7 at p50). Wall times,
+    under the host's load, waited for its CPUs (gzip's emulated runs up to 41.7 s).
+  - Neither runs natively here: a guest of this Mac runs no 32-bit Arm itself (its
+    `ID_AA64PFR0_EL1` has EL0 AArch64 only, above), and with no emulator registered the
+    guest kernel refused armv7 busybox's exec, which its shell then read as a script
+    ("syntax error: unexpected word"), 2026-10-17.
+  - So speed does not order them, and what a run can use does: a 32-bit process addresses
+    4 GiB at most, where a microVM's memory can be the host's (D148). amd64 goes first
+    (D179).

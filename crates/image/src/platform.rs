@@ -76,12 +76,21 @@ pub fn format_all(t: &Target) -> String {
     }
 }
 
-/// What a pull that names no platform takes of an index, best first, as dockerd takes it
-/// (containerd/platforms v1.0.0-rc.2 compare.go, platformVector): our guests' platforms,
-/// then on arm64 32-bit Arm's v8 to v5, which a guest runs under their emulator (D179).
+/// What a pull that names no platform takes of an index, best first: our guests' own
+/// platforms, then the other 64-bit CPU's and 32-bit Arm's, which a guest runs under their
+/// emulators (D179), as it runs a lone manifest of either. The 64-bit before the 32-bit: a
+/// 32-bit process addresses 4 GiB at most, where a microVM's memory can be the host's
+/// (D148), and on arm64 the two cost alike emulated (PM M250). So on arm64: arm64, amd64,
+/// then 32-bit Arm's v8 to v5; on x86_64: amd64 and 386, arm64, then 32-bit Arm's.
 pub fn pullable() -> Vec<Target> {
     let mut out = guest();
-    if std::env::consts::ARCH == "aarch64" {
+    let other = match std::env::consts::ARCH {
+        "aarch64" => Some("amd64"),
+        "x86_64" => Some("arm64"),
+        _ => None,
+    };
+    if let Some(other) = other {
+        out.push(Target::new("linux", other, ""));
         out.extend(["v8", "v7", "v6", "v5"].map(|v| Target::new("linux", "arm", v)));
     }
     out
@@ -222,24 +231,41 @@ fn rank(p: &Platform, wanted: &[Target]) -> Option<usize> {
 mod tests {
     use super::*;
 
-    /// A pull that names no platform takes, of an index with no arm64 manifest, 32-bit Arm's
-    /// best variant on arm64 (the order a `docker` script's pull takes).
+    /// A pull that names no platform takes, of an index with none of this host's own, the
+    /// other 64-bit CPU's before 32-bit Arm's (PM M250: on arm64 they cost alike emulated,
+    /// and a 32-bit process addresses 4 GiB at most), then 32-bit Arm's best variant; and
+    /// none of a CPU it has no reason to emulate unasked.
     #[test]
-    fn a_pull_of_no_platform_takes_the_best_32_bit_arm_where_no_arm64_is() {
-        let index = Index {
-            schema_version: 2,
-            media_type: None,
-            manifests: vec![
+    fn a_pull_of_no_platform_takes_the_other_64_bit_cpus_before_32_bit_arms() {
+        let chosen = |manifests: Vec<Descriptor>| {
+            select(&index(manifests), &pullable()).map(|d| {
+                let p = d.platform.clone().unwrap();
+                (p.architecture, p.variant)
+            })
+        };
+        let arch = |a: &str| (a.to_string(), None);
+        let arm = |v: &str| ("arm".to_string(), Some(v.to_string()));
+        let both = || {
+            vec![
                 desc("amd64", None, 1),
                 desc("arm", Some("v6"), 2),
                 desc("arm", Some("v7"), 3),
-            ],
+            ]
         };
-        let chosen = select(&index, &pullable()).unwrap();
+        assert_eq!(chosen(both()), Some(arch("amd64")));
+        assert_eq!(
+            chosen(vec![desc("arm", Some("v6"), 1), desc("arm", Some("v7"), 2)]),
+            Some(arm("v7"))
+        );
+        assert_eq!(chosen(vec![desc("s390x", None, 1)]), None);
         if cfg!(target_arch = "aarch64") {
-            assert_eq!(chosen.platform.as_ref().unwrap().variant.as_deref(), Some("v7"));
-        } else {
-            assert_eq!(chosen.platform.as_ref().unwrap().architecture, "amd64");
+            assert_eq!(chosen(vec![desc("amd64", None, 1)]), Some(arch("amd64")));
+        }
+        if cfg!(target_arch = "x86_64") {
+            assert_eq!(
+                chosen(vec![desc("arm", Some("v7"), 1), desc("arm64", None, 2)]),
+                Some(arch("arm64"))
+            );
         }
     }
 

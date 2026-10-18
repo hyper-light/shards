@@ -343,12 +343,12 @@ fn a_pull_writes_its_images_agentfile_where_asked() {
 /// own kernel registers as it boots: from a cold boot, which saves its template, then from a
 /// copy of the template, which keeps it registered. Asked for by `--platform`, it is not
 /// warned of; named by its lone manifest and no platform, it runs too, warned of as dockerd
-/// warns of it (moby docker-v29.3.1 daemon/create.go). An image keeps each platform pulled,
-/// as dockerd's does (M243): pulled for another platform where this host's is here, it is
-/// up to date, and a run that asks no platform runs this host's still. A platform not here
-/// is refused where the run may not pull; a lone manifest of another platform than the one
-/// asked, once pulled; an ID's, as dockerd refuses it, where Docker's CLI would pull the ID
-/// as a repository's name.
+/// warns of it (moby docker-v29.3.1 daemon/create.go), as does an index of its CPU's alone
+/// (PM M250). An image keeps each platform pulled, as dockerd's does (M243): pulled for
+/// another platform where this host's is here, it is up to date, and a run that asks no
+/// platform runs this host's still. A platform not here is refused where the run may not
+/// pull; a lone manifest of another platform than the one asked, once pulled; an ID's, as
+/// dockerd refuses it, where Docker's CLI would pull the ID as a repository's name.
 #[test]
 fn a_run_of_another_cpus_image_runs_under_its_emulator() {
     if cannot_run_vms() {
@@ -496,6 +496,25 @@ fn a_run_of_another_cpus_image_runs_under_its_emulator() {
             .stderr
             .contains(&format!("Status: Downloaded newer image for {lone}")),
         "{shown_warned}"
+    );
+    // An index of the other CPU's alone (Docker Hub's per-CPU alpine:3.22, 2026-10-17, whose
+    // one manifest is `lone`): its manifest runs, as `lone` does, where shards found none to
+    // pull (PM M250).
+    let alone = if cfg!(target_arch = "aarch64") {
+        "amd64/alpine:3.22@sha256:33e4ce3b40f4bd419050b3b78101fa58b44c20c5288c0a50ce400e99a3768fc7"
+    } else {
+        "arm64v8/alpine:3.22@sha256:9a5c524dcd9acdcdb0683f7706045be0a6c464cc40ebad5708a5912c6c17eeda"
+    };
+    let foreign = run(&["--rm", alone, "uname", "-m"]);
+    let shown_foreign = shown(&foreign);
+    assert_eq!(foreign.status, Some(0), "{shown_foreign}");
+    assert_eq!(foreign.stdout.trim(), machine, "{shown_foreign}");
+    assert!(
+        foreign.stderr.contains(&format!("Unable to find image '{alone}' locally"))
+            && foreign.stderr.contains(&format!(
+                "WARNING: The requested image's platform ({lone_platform}) does not match the detected host platform (linux/"
+            )),
+        "{shown_foreign}"
     );
     // A lone manifest is pulled whatever its platform, and run for its own alone.
     let asked = format!("linux/{ours}");
