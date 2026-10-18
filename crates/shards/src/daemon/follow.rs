@@ -10,7 +10,6 @@ use std::collections::{BinaryHeap, HashMap};
 use std::io::{self, Read as _, Write as _};
 use std::os::fd::AsFd as _;
 use std::os::unix::net::UnixStream;
-use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Instant;
@@ -33,7 +32,7 @@ enum Process {
     /// token, if it has one.
     Vm {
         vm: Arc<shards_ipc::Child>,
-        pool: Option<PathBuf>,
+        pool: Option<super::PoolKey>,
         net: Option<u64>,
         watch: Option<ExitWatch>,
     },
@@ -269,7 +268,7 @@ impl<D: Disk> Daemon<D> {
         &'s self,
         threads: &'s Threads<'s, 'e>,
         vm: Arc<shards_ipc::Child>,
-        pool: Option<PathBuf>,
+        pool: Option<super::PoolKey>,
         net: Option<shards_ipc::Child>,
     ) {
         let f = &self.followers;
@@ -356,9 +355,9 @@ impl<D: Disk> Daemon<D> {
                 let pid = vm.id();
                 // It has ended: no wait. Reaped once the ports held by its pid are freed.
                 let status = vm.ended_status();
-                let waited = pool.is_some_and(|dir| {
+                let waited = pool.is_some_and(|key| {
                     let mut state = lock(&self.state);
-                    let Some(pool) = state.pools.get_mut(&dir) else {
+                    let Some(pool) = state.pools.get_mut(&key) else {
                         return false;
                     };
                     let Some(i) = pool.ready.iter().position(|r| r.vm.id() == pid) else {
@@ -367,7 +366,7 @@ impl<D: Disk> Daemon<D> {
                     pool.ready.remove(i);
                     drop(state);
                     log(format!("warm VM {pid} ended while it waited ({status:?})"));
-                    self.refill_soon(threads, Some(&dir));
+                    self.refill_soon(threads, Some(&key));
                     true
                 });
                 // A VM that served exits 0, whatever its command's status: the client has that.

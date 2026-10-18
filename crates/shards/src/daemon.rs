@@ -54,6 +54,7 @@ mod logs;
 mod network;
 mod networks;
 mod packed;
+mod parents;
 mod processes;
 mod ps;
 mod publish;
@@ -353,8 +354,8 @@ struct Ready {
     net: Option<UnixStream>,
     /// The guest's MAC on its network, if it has one.
     mac: Option<[u8; 6]>,
-    /// The template whose pool it came from.
-    pool: Option<PathBuf>,
+    /// The pool it came from.
+    pool: Option<PoolKey>,
     /// The template the working set it records goes with: its pool's, or the one it saves.
     /// The daemon writes it there; no VM may write a template (D30).
     records: Option<Records>,
@@ -383,7 +384,25 @@ struct Records {
     limit: u64,
 }
 
-/// The warm VMs of one template.
+/// Which pool warm VMs are of (D26): the template in `dir`, which each restores, and the
+/// slice of the user's service manager they are made under (D183), empty for the
+/// daemon's own place.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct PoolKey {
+    dir: PathBuf,
+    parent: String,
+}
+
+impl PoolKey {
+    fn new(dir: &Path, parent: &str) -> PoolKey {
+        PoolKey {
+            dir: dir.to_path_buf(),
+            parent: parent.to_string(),
+        }
+    }
+}
+
+/// The warm VMs of one template, under one parent.
 #[derive(Default)]
 struct Pool {
     /// Its template's network device's MAC, if it has one, once read: each of its VMs
@@ -438,7 +457,7 @@ impl Collecting {
 
 #[derive(Default)]
 struct State {
-    pools: HashMap<PathBuf, Pool>,
+    pools: HashMap<PoolKey, Pool>,
     /// Pooled warm VMs still starting, by pid, for the daemon to end when it exits.
     starting: HashMap<u32, Arc<shards_ipc::Child>>,
 }
@@ -454,7 +473,7 @@ enum Spare {
 
 /// Who a starting VM is for.
 enum For {
-    Pool(PathBuf),
+    Pool(PoolKey),
     Run(mpsc::Sender<Result<Ready, String>>),
 }
 
@@ -719,10 +738,10 @@ impl Waiter {
     }
 }
 
-/// The pool of the template in `dir`, saved from `rootfs`, which it keeps as the VM
-/// saving the template recorded it: resolved, links and all (vmm platform::input_path).
-fn pool_of<'s>(state: &'s mut State, dir: &Path, rootfs: &Path) -> &'s mut Pool {
-    let pool = state.pools.entry(dir.to_path_buf()).or_default();
+/// The pool `key`, of a template saved from `rootfs`, which it keeps as the VM saving the
+/// template recorded it: resolved, links and all (vmm platform::input_path).
+fn pool_of<'s>(state: &'s mut State, key: &PoolKey, rootfs: &Path) -> &'s mut Pool {
+    let pool = state.pools.entry(key.clone()).or_default();
     pool.rootfs.get_or_insert_with(|| resolved(rootfs));
     pool
 }
@@ -905,6 +924,8 @@ struct Daemon<D: Disk = Real> {
     engine: engine::Engine,
     /// The pools to refill and the spare to make, on the refiller's thread (refill.rs).
     refills: refill::Refills,
+    /// Each `--cgroup-parent`'s spawner, placed once as its first run asks (D183).
+    parents: parents::Parents,
     /// When each running container's health check is next due (health.rs).
     checks: health::Checks,
     /// Runs waiting for a VM booted for them, by number: told as the daemon stops.
@@ -1428,6 +1449,7 @@ impl<D: Disk> Daemon<D> {
             shipping: ship::Shipping::default(),
             engine: engine::Engine::default(),
             refills: refill::Refills::default(),
+            parents: parents::Parents::default(),
             checks: health::Checks::default(),
             booting: Mutex::default(),
             next_cold: AtomicU64::new(0),
@@ -2270,6 +2292,32 @@ impl<D: Disk> Daemon<D> {
             refused(&e);
             return None;
         }
+        // Where its microVM's processes go on the host (D183).
+        if again.is_none()
+            && let Err(e) = parents::check(&run)
+        {
+            refused(&e);
+            return None;
+        }
+        // A joiner's processes are its provider's microVM's (D119), under that microVM's
+        // parent: it has none of its own to place.
+        if again.is_none()
+            && !run.cgroup_parent.is_empty()
+            && let network::Start::Join(name) = &start
+            && let Some(theirs) = self.parent_of(name)
+            && theirs != run.cgroup_parent
+        {
+            let where_ = if theirs.is_empty() {
+                "none".to_string()
+            } else {
+                theirs
+            };
+            refused(&format!(
+                "--cgroup-parent {}: a run joining {name}'s network runs in its microVM, whose processes are under its parent ({where_})",
+                run.cgroup_parent
+            ));
+            return None;
+        }
         // The container's ID first: it names the command's host unless the run does
         // (moby daemon/container.go).
         let (again, id, container_log) = match again {
@@ -2830,7 +2878,7 @@ impl<D: Disk> Daemon<D> {
                     return Ok(None);
                 }
                 crate::spec::fits(&prepared.spec)?;
-                let link = self.start_shares(threads, &opened.dirs)?;
+                let link = self.start_shares(threads, &opened.dirs, &prepared.parent)?;
                 prepared.shares = u32::try_from(opened.dirs.len()).map_err(|_| "too many shares")?;
                 Ok(link)
             });
@@ -3083,6 +3131,7 @@ impl<D: Disk> Daemon<D> {
                         threads,
                         r,
                         run_mac.as_deref().and_then(|m| m.first_chunk::<6>().copied()),
+                        &prepared.parent,
                     ),
                     None => self.warm_for(threads, &prepared, &start, &say),
                 },
@@ -3164,7 +3213,7 @@ impl<D: Disk> Daemon<D> {
             let handed = hand_over(&ready.socket, payload, fds);
             // Only now, so that starting its successor delays no run: on the refiller's
             // thread.
-            self.refill_soon(threads, ready.pool.as_deref());
+            self.refill_soon(threads, ready.pool.as_ref());
             match handed {
                 // The warm VM serves the client from here, and ours close. A detached
                 // client waits for the daemon to say whether its command started.
@@ -3479,6 +3528,7 @@ impl<D: Disk> Daemon<D> {
         &'s self,
         threads: &'s Threads<'s, 'e>,
         dirs: &[(OwnedFd, bool, OsString)],
+        parent: &str,
     ) -> Result<Option<UnixStream>, String> {
         if dirs.is_empty() {
             return Ok(None);
@@ -3499,7 +3549,8 @@ impl<D: Disk> Daemon<D> {
             ghosts.as_fd(),
             4 + i32::try_from(dirs.len()).map_err(|_| "too many shares")?,
         ));
-        let child = shards_ipc::spawn_in(&exe, &args, &fds, false, &[])
+        // Of its microVM's processes: under its parent (D183).
+        let child = shards_ipc::spawn_in_group(self.group_of(parent)?, &exe, &args, &fds, false, &[])
             .map_err(|e| format!("starting the share process: {e}"))?;
         self.follow_share(threads, child);
         Ok(Some(vm))
@@ -5376,7 +5427,9 @@ impl<D: Disk> Daemon<D> {
         {
             let mut shares = lock(&self.join_shares);
             if !shares.contains_key(provider) {
-                let door = self.start_join_share(threads, socket, inbox)?;
+                // Of the provider's microVM's processes: under its parent (D183).
+                let parent = self.parent_of(provider).unwrap_or_default();
+                let door = self.start_join_share(threads, socket, inbox, &parent)?;
                 shares.insert(provider.to_string(), door);
             }
             let sent = match shares.get(provider) {
@@ -5427,6 +5480,7 @@ impl<D: Disk> Daemon<D> {
         threads: &'s Threads<'s, 'e>,
         socket: &RunSocket,
         inbox: &Mutex<Inbox>,
+        parent: &str,
     ) -> Result<UnixStream, String> {
         use std::os::unix::fs::DirBuilderExt as _;
         let failed = |e: io::Error| format!("its microVM's join share: {e}");
@@ -5440,7 +5494,8 @@ impl<D: Disk> Daemon<D> {
         }
         let root = File::open(&at).map_err(failed)?;
         let ghosts = self.private_dir()?;
-        let child = shards_ipc::spawn_in(
+        let child = shards_ipc::spawn_in_group(
+            self.group_of(parent)?,
             &exe,
             &[OsStr::new("share"), OsStr::new("--join")],
             &[
@@ -5559,14 +5614,14 @@ impl<D: Disk> Daemon<D> {
             // And its init told to keep a sysfs of its own (`shards_vfio`), through which
             // it gives the functions to vfio-pci.
             cfg.cmdline.push_str(" shards_vfio=1");
-            return self.cold(threads, &cfg, &prepared.rootfs, None);
+            return self.cold(threads, &cfg, &prepared.rootfs, None, &prepared.parent);
         }
         let guest = match &prepared.boot {
             Boot::Given(cfg) => {
                 let mut cfg = (**cfg).clone();
                 on_network(&mut cfg);
                 cfg.gpu = prepared.gpu.is_some();
-                return self.cold(threads, &cfg, &prepared.rootfs, None);
+                return self.cold(threads, &cfg, &prepared.rootfs, None, &prepared.parent);
             }
             Boot::Stored(guest) => guest,
         };
@@ -5586,11 +5641,13 @@ impl<D: Disk> Daemon<D> {
         on_network(&mut cfg);
         cfg.gpu = prepared.gpu.is_some();
         if !shards_vmm::vm::SNAPSHOTS {
-            return self.cold(threads, &cfg, &prepared.rootfs, None);
+            return self.cold(threads, &cfg, &prepared.rootfs, None, &prepared.parent);
         }
         let dir = crate::run::template(&self.home, guest, &prepared.rootfs, &cfg);
+        // Its pool: the template's warm VMs under its parent (D183).
+        let key = PoolKey::new(&dir, &prepared.parent);
         if shards_vmm::snapshot::exists(&dir) {
-            match self.claim(threads, &dir, &prepared.rootfs) {
+            match self.claim(threads, &key, &prepared.rootfs) {
                 Ok(ready) => return Ok(ready),
                 Err(Claim::Failed(e)) => return Err(e),
                 Err(Claim::Broken) => {
@@ -5606,7 +5663,7 @@ impl<D: Disk> Daemon<D> {
         // first.
         let n = self.saved.fetch_add(1, Ordering::Relaxed);
         let fresh = dir.with_extension(format!("new-{}-{n}", std::process::id()));
-        let mut ready = self.cold(threads, &cfg, &prepared.rootfs, Some(&fresh));
+        let mut ready = self.cold(threads, &cfg, &prepared.rootfs, Some(&fresh), &prepared.parent);
         if ready.is_ok()
             && let Err(e) = crate::run::Origin::of(
                 guest,
@@ -5633,35 +5690,35 @@ impl<D: Disk> Daemon<D> {
                 dir: dir.clone(),
                 limit,
             });
-            pool_of(&mut lock(&self.state), &dir, &prepared.rootfs)
+            pool_of(&mut lock(&self.state), &key, &prepared.rootfs)
                 .working_set_limit
                 .get_or_insert(limit);
-            self.refill_soon(threads, Some(&dir));
+            self.refill_soon(threads, Some(&key));
         }
         ready
     }
 
-    /// A warm VM of the template in `dir`, once one is ready: one waiting, or one started
-    /// for this run where none is starting for it, so a run is served whatever its pool
-    /// keeps, and a burst waits for no refill (audit A13, A14).
+    /// A warm VM of pool `key`, once one is ready: one waiting, or one started for this run
+    /// where none is starting for it, so a run is served whatever its pool keeps, and a
+    /// burst waits for no refill (audit A13, A14).
     fn claim<'s, 'e>(
         &'s self,
         threads: &'s Threads<'s, 'e>,
-        dir: &Path,
+        key: &PoolKey,
         rootfs: &Path,
     ) -> Result<Ready, Claim> {
         let deadline = Instant::now() + READY_TIMEOUT;
         let mut state = lock(&self.state);
         let mut waiting = false;
         let leave = |state: &mut State, waiting: bool| {
-            if waiting && let Some(pool) = state.pools.get_mut(dir) {
+            if waiting && let Some(pool) = state.pools.get_mut(key) {
                 pool.waiting = pool.waiting.saturating_sub(1);
             }
         };
         loop {
-            let pool = pool_of(&mut state, dir, rootfs);
+            let pool = pool_of(&mut state, key, rootfs);
             if pool.failures >= MAX_FAILURES {
-                state.pools.remove(dir);
+                state.pools.remove(key);
                 return Err(Claim::Broken);
             }
             if !waiting {
@@ -5685,12 +5742,12 @@ impl<D: Disk> Daemon<D> {
             // which no other claim then waits on (review 7.8). One that cannot be started
             // is said at once, to this run and to those waiting with it, which try again:
             // no VM comes for them otherwise.
-            if let Some(planned) = self.plan_refill(&mut state, dir, false) {
+            if let Some(planned) = self.plan_refill(&mut state, key, false) {
                 drop(state);
                 let started = self.start_planned(threads, planned);
                 state = lock(&self.state);
                 if let Err(e) = started
-                    && state.pools.get(dir).is_none_or(|p| p.starting < p.waiting)
+                    && state.pools.get(key).is_none_or(|p| p.starting < p.waiting)
                 {
                     leave(&mut state, waiting);
                     drop(state);
@@ -5704,7 +5761,7 @@ impl<D: Disk> Daemon<D> {
                 leave(&mut state, waiting);
                 return Err(Claim::Failed(format!(
                     "no warm VM of {} was ready in {READY_TIMEOUT:?}",
-                    dir.display()
+                    key.dir.display()
                 )));
             }
             state = self
@@ -5842,7 +5899,13 @@ impl<D: Disk> Daemon<D> {
             if live {
                 continue;
             }
-            if let Some(mut pool) = lock(&self.state).pools.remove(&dir) {
+            // Its pools under every parent go with it.
+            let ended: Vec<Pool> = {
+                let mut state = lock(&self.state);
+                let of: Vec<PoolKey> = state.pools.keys().filter(|k| k.dir == dir).cloned().collect();
+                of.iter().filter_map(|k| state.pools.remove(k)).collect()
+            };
+            for mut pool in ended {
                 for ready in pool.ready.drain(..) {
                     let _ = ready.vm.kill(libc::SIGKILL);
                 }
@@ -5865,7 +5928,7 @@ impl<D: Disk> Daemon<D> {
     fn age_pools(&self) {
         let now = Instant::now();
         let mut state = lock(&self.state);
-        state.pools.retain(|dir, pool| {
+        state.pools.retain(|key, pool| {
             if pool.waiting > 0 || !pool.demand.expired(now, self.keep) {
                 return true;
             }
@@ -5873,7 +5936,7 @@ impl<D: Disk> Daemon<D> {
                 log(format!(
                     "ending warm VM {} of {}: unclaimed for {:?} (SHARDS_POOL_KEEP)",
                     aged.vm.id(),
-                    dir.display(),
+                    key.dir.display(),
                     self.keep
                 ));
                 let _ = aged.vm.kill(libc::SIGKILL);
@@ -5882,28 +5945,28 @@ impl<D: Disk> Daemon<D> {
         });
     }
 
-    /// Refills the pools claimed from more recently than `dir`'s, whose VM has just become
-    /// ready: one that found no room while `dir`'s was starting, when only ready VMs can
+    /// Refills the pools claimed from more recently than `key`, whose VM has just become
+    /// ready: one that found no room while `key`'s was starting, when only ready VMs can
     /// be ended, takes it now.
-    fn rebalance<'s, 'e>(&'s self, threads: &'s Threads<'s, 'e>, state: &State, dir: &Path) {
-        let Some(since) = state.pools.get(dir).map(|p| p.demand.last()) else {
+    fn rebalance<'s, 'e>(&'s self, threads: &'s Threads<'s, 'e>, state: &State, key: &PoolKey) {
+        let Some(since) = state.pools.get(key).map(|p| p.demand.last()) else {
             return;
         };
-        let hotter: Vec<PathBuf> = state
+        let hotter: Vec<PoolKey> = state
             .pools
             .iter()
-            .filter(|(d, p)| d.as_path() != dir && p.demand.last() > since)
-            .map(|(d, _)| d.clone())
+            .filter(|(k, p)| *k != key && p.demand.last() > since)
+            .map(|(k, _)| k.clone())
             .collect();
         for hot in hotter {
             self.refill_soon(threads, Some(&hot));
         }
     }
 
-    /// Room for up to `want` more warm VMs ahead of runs beside `dir`'s: within
+    /// Room for up to `want` more warm VMs ahead of runs beside pool `key`'s: within
     /// `warm_max`, all pools together, made by ending the ready VMs of other pools, least
     /// recently claimed from first.
-    fn room(&self, state: &mut State, dir: &Path, want: usize) -> usize {
+    fn room(&self, state: &mut State, key: &PoolKey, want: usize) -> usize {
         let held = |state: &State| {
             state
                 .pools
@@ -5915,7 +5978,7 @@ impl<D: Disk> Daemon<D> {
             let coldest = state
                 .pools
                 .iter_mut()
-                .filter(|(d, p)| d.as_path() != dir && !p.ready.is_empty())
+                .filter(|(k, p)| *k != key && !p.ready.is_empty())
                 .min_by_key(|(_, p)| p.demand.last());
             let Some((cold, pool)) = coldest else {
                 break;
@@ -5924,7 +5987,7 @@ impl<D: Disk> Daemon<D> {
                 log(format!(
                     "ending warm VM {} of {}: {} warm VMs are kept at most (SHARDS_WARM_MAX)",
                     evicted.vm.id(),
-                    cold.display(),
+                    cold.dir.display(),
                     self.warm_max
                 ));
                 let _ = evicted.vm.kill(libc::SIGKILL);
@@ -5934,7 +5997,7 @@ impl<D: Disk> Daemon<D> {
     }
 
     /// A VM booted for one run, from `cfg` into `rootfs`, saving a template to `save` on
-    /// the way.
+    /// the way, made under `parent` (D183).
     /// `save` is where it saves the template, and where the template goes once saved.
     fn cold<'s, 'e>(
         &'s self,
@@ -5942,6 +6005,7 @@ impl<D: Disk> Daemon<D> {
         cfg: &Config,
         rootfs: &Path,
         save: Option<&Path>,
+        parent: &str,
     ) -> Result<Ready, String> {
         let mut args: Vec<OsString> = vec![
             "run".into(),
@@ -6001,16 +6065,17 @@ impl<D: Disk> Daemon<D> {
         } else {
             None
         };
-        self.start_for_run(threads, &args, net)
+        self.start_for_run(threads, &args, net, parent)
     }
 
-    /// Starts shards-vm with `args` for one run, and waits until it is ready: a VM booted
-    /// for it, or restoring a snapshot of its own (D176).
+    /// Starts shards-vm with `args` for one run, under `parent` (D183), and waits until it is
+    /// ready: a VM booted for it, or restoring a snapshot of its own (D176).
     fn start_for_run<'s, 'e>(
         &'s self,
         threads: &'s Threads<'s, 'e>,
         args: &[OsString],
         net: Option<[u8; 6]>,
+        parent: &str,
     ) -> Result<Ready, String> {
         let (tx, rx) = mpsc::channel();
         // Told by a shutdown too: registered, then checked, so a shutdown either finds it
@@ -6021,7 +6086,7 @@ impl<D: Disk> Daemon<D> {
             lock(&self.booting).remove(&waiting);
             return Err("the daemon is shutting down".into());
         }
-        let started = self.start(threads, args, net, For::Run(tx));
+        let started = self.start(threads, args, net, For::Run(tx), parent);
         // A VM given up on ends as its socket closes, the daemon's end dropped with it.
         let ready = started.and_then(|_| {
             rx.recv()
@@ -6029,6 +6094,31 @@ impl<D: Disk> Daemon<D> {
         });
         lock(&self.booting).remove(&waiting);
         ready
+    }
+
+    /// The parent container `name`'s microVM's processes are under (D183), as its request
+    /// keeps it; none where it is no container whose request is kept.
+    fn parent_of(&self, name: &str) -> Option<String> {
+        let id = self.resolve(name).ok()?;
+        let dir = lock(&self.containers).dir(&id);
+        let kept = std::fs::read(dir.join(REQUEST)).ok()?;
+        Run::decode(&kept).map(|r| r.cgroup_parent)
+    }
+
+    /// The spawner a microVM's processes under `parent` are made by (D183): none for the
+    /// daemon's own place; the parent's, placed once, or again where the last has gone (its
+    /// slice stopped, say).
+    fn group_of(&self, parent: &str) -> Result<Option<shards_ipc::Group>, String> {
+        if parent.is_empty() {
+            return Ok(None);
+        }
+        let group = self.parents.group(parent, &self.home)?;
+        if !shards_ipc::group_ended(group) {
+            return Ok(Some(group));
+        }
+        log(format!("the spawner under {parent} has gone: placing another"));
+        self.parents.forget(parent, group);
+        self.parents.group(parent, &self.home).map(Some)
     }
 
     /// Starts shards-vm with `args` as a warm VM whose daemon socket is its descriptor 3,
@@ -6039,14 +6129,23 @@ impl<D: Disk> Daemon<D> {
         args: &[OsString],
         net: Option<[u8; 6]>,
         dest: For,
+        parent: &str,
     ) -> Result<(), String> {
+        // Under its parent (D183): it and its network process made by the parent's
+        // spawner, in its scope from their first instruction.
+        let group = self.group_of(parent)?;
         // A run's microVM is on Docker's default bridge, and reaches nothing through it
         // until a grant opens it (AGENTFILE_ARCH.md §3, default deny); its published
         // ports' connections come in all the same.
         let network = match &net {
             Some(mac) => {
                 let bridge = self.bridge.as_ref().ok_or(shards_net::bridge::NO_SUBNET)?;
-                Some(crate::netproc::start(shards_net::Policy::DenyAll, mac, bridge)?)
+                Some(crate::netproc::start(
+                    shards_net::Policy::DenyAll,
+                    mac,
+                    bridge,
+                    group,
+                )?)
             }
             None => None,
         };
@@ -6107,8 +6206,14 @@ impl<D: Disk> Daemon<D> {
         if gpu {
             env.push(("MVK_CONFIG_LOG_LEVEL", "1".into()));
         }
-        let child = match shards_ipc::spawn_in(&binary, &args, &fds, false, &crate::netproc::env_pairs(&env))
-        {
+        let child = match shards_ipc::spawn_in_group(
+            group,
+            &binary,
+            &args,
+            &fds,
+            false,
+            &crate::netproc::env_pairs(&env),
+        ) {
             Ok(child) => child,
             Err(e) => {
                 if let Some((net, side)) = network {
@@ -6179,7 +6284,7 @@ impl<D: Disk> Daemon<D> {
                 link,
                 pid,
                 match &dest {
-                    For::Pool(dir) => Some(dir.as_path()),
+                    For::Pool(key) => Some(key.dir.as_path()),
                     For::Run(_) => None,
                 },
             ),
@@ -6191,10 +6296,10 @@ impl<D: Disk> Daemon<D> {
         let unstarted = matches!(&granted, Err(e) if !e.started);
         let ready = granted.map_err(|e| e.why).and_then(|()| ready(&socket, pid));
         match &dest {
-            For::Pool(dir) => {
+            For::Pool(key) => {
                 let mut state = lock(&self.state);
                 state.starting.remove(&pid);
-                let pool = state.pools.entry(dir.clone()).or_default();
+                let pool = state.pools.entry(key.clone()).or_default();
                 pool.starting = pool.starting.saturating_sub(1);
                 let came = ready.is_ok();
                 match ready {
@@ -6204,7 +6309,7 @@ impl<D: Disk> Daemon<D> {
                         // Its working set, where it records one, goes with its template,
                         // within what the refiller read the template's guest can hold.
                         let records = pool.working_set_limit.flatten().map(|limit| Records {
-                            dir: dir.clone(),
+                            dir: key.dir.clone(),
                             limit,
                         });
                         pool.ready.push_back(Ready {
@@ -6212,11 +6317,11 @@ impl<D: Disk> Daemon<D> {
                             socket,
                             net,
                             mac,
-                            pool: Some(dir.clone()),
+                            pool: Some(key.clone()),
                             records,
                             joined: None,
                         });
-                        self.rebalance(threads, &state, dir);
+                        self.rebalance(threads, &state, key);
                     }
                     Err(e) => {
                         log(&e);
@@ -6253,7 +6358,7 @@ impl<D: Disk> Daemon<D> {
             },
         }
         let pool = match dest {
-            For::Pool(dir) => Some(dir),
+            For::Pool(key) => Some(key),
             For::Run(_) => None,
         };
         self.follow_vm(threads, child, pool, net_process);
@@ -6630,6 +6735,11 @@ mod tests {
 
     use super::*;
 
+    /// The pool of the template in `dir`, in the daemon's own place.
+    fn own(dir: impl AsRef<Path>) -> PoolKey {
+        PoolKey::new(dir.as_ref(), "")
+    }
+
     /// A client's end is seen; what it sent first is not taken, and is no end; and the
     /// watch ends when told to, though the client stays.
     #[test]
@@ -6903,7 +7013,7 @@ mod tests {
                 socket: ours,
                 net: None,
                 mac: None,
-                pool: pool.map(PathBuf::from),
+                pool: pool.map(own),
                 records: None,
                 joined: None,
             };
@@ -7002,6 +7112,7 @@ mod tests {
                 health: None,
                 shell: Vec::new(),
                 labels: Default::default(),
+                parent: String::new(),
                 exposed: Vec::new(),
                 image_id: String::new(),
                 size: (1, shards_vmm::vm::MEMORY_MIB),
@@ -7320,7 +7431,7 @@ mod tests {
             assert_eq!(joined(starting.run), Err(format!("No such container: {id}")));
             assert!(!readable(&vm), "the warm VM heard of the cancelled run");
             let state = lock(&t.daemon.state);
-            let pooled = &state.pools.get(Path::new("pool")).unwrap().ready;
+            let pooled = &state.pools.get(&own("pool")).unwrap().ready;
             assert_eq!(pooled.iter().map(|r| r.vm.id()).collect::<Vec<_>>(), [pid]);
             drop(state);
             assert!(lock(&t.daemon.runs).is_empty());
@@ -7746,20 +7857,21 @@ mod tests {
             let vm = ready.vm.clone();
             {
                 let mut state = lock(&t.daemon.state);
-                let pool = state.pools.entry(cold.clone()).or_default();
+                let pool = state.pools.entry(own(&cold)).or_default();
                 pool.demand.claimed(t0, 1);
                 pool.ready.push_back(ready);
                 state
                     .pools
-                    .entry(hot.clone())
+                    .entry(own(&hot))
                     .or_default()
                     .demand
                     .claimed(t0 + Duration::from_millis(1), 1);
             }
-            t.t.daemon.rebalance(t.threads, &lock(&t.daemon.state), &cold);
+            t.t.daemon
+                .rebalance(t.threads, &lock(&t.daemon.state), &own(&cold));
             // On the refiller's thread.
             t.until("the colder pool kept the room", |d| {
-                lock(&d.state).pools[&cold].ready.is_empty()
+                lock(&d.state).pools[&own(&cold)].ready.is_empty()
             });
             // Ended: its wait returns, as it would not for a sleep of 600 s.
             assert_eq!(vm.wait().unwrap(), 128 + libc::SIGKILL);
@@ -7886,7 +7998,8 @@ mod tests {
         t.daemon.socket = Box::leak(t.home.join("daemon.sock").into_boxed_path());
         t.run(|t| {
             t.daemon.close();
-            t.t.daemon.refill_soon(t.threads, Some(&t.home.join("template")));
+            t.t.daemon
+                .refill_soon(t.threads, Some(&own(t.home.join("template"))));
             assert!(!t.daemon.refills.started.load(Ordering::SeqCst));
         });
     }
@@ -7976,7 +8089,7 @@ mod tests {
             let claimed = PathBuf::from("claimed");
             lock(&t.daemon.state)
                 .pools
-                .entry(claimed.clone())
+                .entry(own(&claimed))
                 .or_default()
                 .demand
                 .begin(Instant::now());
@@ -7984,7 +8097,7 @@ mod tests {
             let (ready, _vm) = t.warm_vm(Some("claimed"));
             lock(&t.daemon.state)
                 .pools
-                .get_mut(&claimed)
+                .get_mut(&own(&claimed))
                 .unwrap()
                 .ready
                 .push_back(ready);
@@ -7993,12 +8106,16 @@ mod tests {
                 due > Duration::from_secs(59) && due <= Duration::from_secs(60),
                 "{due:?}"
             );
-            lock(&t.daemon.state).pools.get_mut(&claimed).unwrap().waiting = 1;
+            lock(&t.daemon.state)
+                .pools
+                .get_mut(&own(&claimed))
+                .unwrap()
+                .waiting = 1;
             assert_eq!(t.daemon.next_duty(false), None, "a run waits");
             let (ready, _never_vm) = t.warm_vm(Some("never"));
             lock(&t.daemon.state)
                 .pools
-                .entry(PathBuf::from("never"))
+                .entry(own("never"))
                 .or_default()
                 .ready
                 .push_back(ready);
@@ -8018,7 +8135,7 @@ mod tests {
             let dir = t.home.join("template");
             {
                 let mut state = lock(&t.daemon.state);
-                let pool = state.pools.entry(dir.clone()).or_default();
+                let pool = state.pools.entry(own(&dir)).or_default();
                 pool.demand.begin(Instant::now());
                 pool.working_set_limit = Some(Some(4096));
             }
@@ -8026,12 +8143,21 @@ mod tests {
             let watched = vm.clone();
             let (daemon, threads) = (&t.t.daemon, t.threads);
             let watching = dir.clone();
-            threads
-                .spawn(move || daemon.watch(threads, watched, socket, None, None, For::Pool(watching), None));
+            threads.spawn(move || {
+                daemon.watch(
+                    threads,
+                    watched,
+                    socket,
+                    None,
+                    None,
+                    For::Pool(own(&watching)),
+                    None,
+                )
+            });
             shards_ipc::send(&theirs, kind::READY, &[], &[]).unwrap();
             t.until("the listener woken", |d| readable(&d.listener_wake.1));
             assert!(t.daemon.next_duty(false).is_some());
-            let records = lock(&t.daemon.state).pools.get(&dir).and_then(|p| {
+            let records = lock(&t.daemon.state).pools.get(&own(&dir)).and_then(|p| {
                 p.ready
                     .front()
                     .and_then(|r| r.records.as_ref().map(|r| (r.dir.clone(), r.limit)))
@@ -8055,7 +8181,7 @@ mod tests {
                 for (dir, waiting) in [("cold", 0), ("warm", 0), ("waited", 1)] {
                     let (ready, theirs) = t.warm_vm(Some(dir));
                     vms.push((dir, ready.vm.clone(), theirs));
-                    let pool = state.pools.entry(PathBuf::from(dir)).or_default();
+                    let pool = state.pools.entry(own(dir)).or_default();
                     pool.demand.begin(t0);
                     pool.waiting = waiting;
                     pool.ready.push_back(ready);
@@ -8064,18 +8190,18 @@ mod tests {
             std::thread::sleep(Duration::from_millis(150));
             lock(&t.daemon.state)
                 .pools
-                .get_mut(Path::new("warm"))
+                .get_mut(&own("warm"))
                 .unwrap()
                 .demand
                 .claimed(Instant::now(), 2);
             t.daemon.age_pools();
             let state = lock(&t.daemon.state);
             assert!(
-                !state.pools.contains_key(Path::new("cold")),
+                !state.pools.contains_key(&own("cold")),
                 "an aged pool is forgotten"
             );
-            assert_eq!(state.pools[Path::new("warm")].ready.len(), 1);
-            assert_eq!(state.pools[Path::new("waited")].ready.len(), 1);
+            assert_eq!(state.pools[&own("warm")].ready.len(), 1);
+            assert_eq!(state.pools[&own("waited")].ready.len(), 1);
             drop(state);
             // Whether a VM has ended, without reaping it.
             let ended = |vm: &shards_ipc::Child| {
@@ -8943,7 +9069,7 @@ mod tests {
             std::fs::write(dir.join("current"), b"g-1\n").unwrap();
             std::fs::write(dir.join("g-1").join("state"), b"").unwrap();
             let t0 = Instant::now();
-            let claimed = t.t.daemon.claim(t.threads, &dir, Path::new("/rootfs"));
+            let claimed = t.t.daemon.claim(t.threads, &own(&dir), Path::new("/rootfs"));
             assert!(
                 matches!(&claimed, Err(Claim::Failed(why)) if why.starts_with("starting a warm VM of ")),
                 "not refused as unstartable"
@@ -8951,13 +9077,16 @@ mod tests {
             assert!(t0.elapsed() < Duration::from_secs(5), "{:?}", t0.elapsed());
             let state = lock(&t.daemon.state);
             assert_eq!(
-                state.pools.get(&dir).map(|p| (p.failures, p.waiting, p.starting)),
+                state
+                    .pools
+                    .get(&own(&dir))
+                    .map(|p| (p.failures, p.waiting, p.starting)),
                 Some((0, 0, 0))
             );
             // What its VMs' working sets may take was read before any started, once:
             // nothing, of a state that is no snapshot.
             assert_eq!(
-                state.pools.get(&dir).map(|p| p.working_set_limit),
+                state.pools.get(&own(&dir)).map(|p| p.working_set_limit),
                 Some(Some(None))
             );
         });
@@ -8983,15 +9112,17 @@ mod tests {
             let vm = ready.vm.clone();
             lock(&t.daemon.state)
                 .pools
-                .entry(dir.clone())
+                .entry(own(&dir))
                 .or_default()
                 .ready
                 .push_back(ready);
-            t.t.daemon
-                .follow_vm(t.threads, vm.clone(), Some(dir.clone()), None);
+            t.t.daemon.follow_vm(t.threads, vm.clone(), Some(own(&dir)), None);
             let _ = vm.kill(libc::SIGKILL);
             t.until("the VM did not leave its pool", |d| {
-                lock(&d.state).pools.get(&dir).is_some_and(|p| p.ready.is_empty())
+                lock(&d.state)
+                    .pools
+                    .get(&own(&dir))
+                    .is_some_and(|p| p.ready.is_empty())
             });
             t.until("the VM was not reaped", |_| reaped(vm.id()));
         });
@@ -9421,10 +9552,15 @@ mod tests {
             let dir = t.home.join("template");
             template(&dir);
             let rootfs = dir.with_extension("erofs");
-            pool_of(&mut lock(&t.daemon.state), &dir, &rootfs);
+            pool_of(&mut lock(&t.daemon.state), &own(&dir), &rootfs);
             t.daemon.age_pools();
-            assert!(!lock(&t.daemon.state).pools.contains_key(&dir), "the pool kept");
-            let planned = t.t.daemon.plan_refill(&mut lock(&t.daemon.state), &dir, true);
+            assert!(
+                !lock(&t.daemon.state).pools.contains_key(&own(&dir)),
+                "the pool kept"
+            );
+            let planned =
+                t.t.daemon
+                    .plan_refill(&mut lock(&t.daemon.state), &own(&dir), true);
             let args = planned.expect("VMs planned").args;
             let mut backing = std::fs::canonicalize(&rootfs).unwrap().into_os_string();
             backing.push(":ro");
@@ -9438,7 +9574,7 @@ mod tests {
             std::fs::remove_file(crate::run::Origin::path(&bare).unwrap()).unwrap();
             assert!(
                 t.daemon
-                    .plan_refill(&mut lock(&t.daemon.state), &bare, true)
+                    .plan_refill(&mut lock(&t.daemon.state), &own(&bare), true)
                     .is_none()
             );
         });
@@ -9456,18 +9592,20 @@ mod tests {
         t.run(|t| {
             let dir = t.home.join("template");
             template(&dir);
-            let planned = t.t.daemon.plan_refill(&mut lock(&t.daemon.state), &dir, true);
+            let planned =
+                t.t.daemon
+                    .plan_refill(&mut lock(&t.daemon.state), &own(&dir), true);
             let planned = planned.expect("VMs planned");
-            assert_eq!(lock(&t.daemon.state).pools[&dir].starting, 1);
+            assert_eq!(lock(&t.daemon.state).pools[&own(&dir)].starting, 1);
             assert!(
                 t.daemon
-                    .plan_refill(&mut lock(&t.daemon.state), &dir, true)
+                    .plan_refill(&mut lock(&t.daemon.state), &own(&dir), true)
                     .is_none(),
                 "planned again"
             );
             // The test's daemon names a VM binary that is not there.
             assert!(t.t.daemon.start_planned(t.threads, planned).is_err());
-            assert_eq!(lock(&t.daemon.state).pools[&dir].starting, 0);
+            assert_eq!(lock(&t.daemon.state).pools[&own(&dir)].starting, 0);
         });
     }
 
@@ -9487,12 +9625,12 @@ mod tests {
             let dir = t.home.join("template");
             template(&dir);
             for _ in 0..5 {
-                t.t.daemon.refill_soon(t.threads, Some(&dir));
+                t.t.daemon.refill_soon(t.threads, Some(&own(&dir)));
             }
             t.until("the pool's VM started and the spare made", |d| {
                 lock(&d.state).starting.len() == 1 && matches!(*lock(&d.spare), Spare::Made(..))
             });
-            assert_eq!(lock(&t.daemon.state).pools[&dir].starting, 1);
+            assert_eq!(lock(&t.daemon.state).pools[&own(&dir)].starting, 1);
         });
     }
 

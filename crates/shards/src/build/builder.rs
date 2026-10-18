@@ -409,7 +409,7 @@ fn launch(
     bridge: &shards_net::bridge::Bridge,
     attach: UnixStream,
 ) -> Result<Launched, String> {
-    let (net, side) = crate::netproc::start(policy, mac, bridge)?;
+    let (net, side) = crate::netproc::start(policy, mac, bridge, None)?;
     let grants = if cfg!(target_os = "macos") {
         Some(UnixStream::pair().map_err(|e| format!("the builder's grants: {e}"))?)
     } else {

@@ -1167,6 +1167,7 @@ dependencies = [
  "shards-apple",
  "shards-archive",
  "shards-build",
+ "shards-bus",
  "shards-cmdline",
  "shards-flate",
  "shards-gateway",

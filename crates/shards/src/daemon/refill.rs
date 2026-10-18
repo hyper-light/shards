@@ -8,18 +8,18 @@
 
 use std::collections::HashSet;
 use std::ffi::OsString;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Condvar, Mutex, PoisonError};
 use std::time::Instant;
 
-use super::{Daemon, For, MAX_FAILURES, State, Threads, lock, log, resolved};
+use super::{Daemon, For, MAX_FAILURES, PoolKey, State, Threads, lock, log, resolved};
 use crate::containers::Disk;
 
 /// Warm VMs of one pool to start, counted as starting already
 /// ([`Daemon::plan_refill`]), for [`Daemon::start_planned`] to start.
 pub(super) struct Planned {
-    dir: PathBuf,
+    key: PoolKey,
     pub(super) args: Vec<OsString>,
     /// Its template's network device's MAC, if read already.
     net: Option<Option<[u8; 6]>>,
@@ -40,7 +40,7 @@ pub(super) struct Refills {
 
 #[derive(Default)]
 struct Asked {
-    pools: HashSet<PathBuf>,
+    pools: HashSet<PoolKey>,
     /// A spare container, for the next run to take.
     spare: bool,
 }
@@ -60,15 +60,15 @@ impl<D: Disk> Daemon<D> {
     /// thread, which the first ask starts. Waits for nothing: its callers may hold the
     /// pools' lock. A daemon that has closed starts none: no run will claim it, and it
     /// would end with the daemon as the next one starts.
-    pub(super) fn refill_soon<'s, 'e>(&'s self, threads: &'s Threads<'s, 'e>, pool: Option<&Path>) {
+    pub(super) fn refill_soon<'s, 'e>(&'s self, threads: &'s Threads<'s, 'e>, pool: Option<&PoolKey>) {
         if self.closed.load(Ordering::SeqCst) {
             return;
         }
         let r = &self.refills;
         {
             let mut asked = lock(&r.asked);
-            if let Some(dir) = pool {
-                asked.pools.insert(dir.to_path_buf());
+            if let Some(key) = pool {
+                asked.pools.insert(key.clone());
             }
             asked.spare = true;
         }
@@ -100,8 +100,8 @@ impl<D: Disk> Daemon<D> {
                 }
                 std::mem::take(&mut *asked)
             };
-            for dir in &asked.pools {
-                let planned = self.plan_refill(&mut lock(&self.state), dir, true);
+            for key in &asked.pools {
+                let planned = self.plan_refill(&mut lock(&self.state), key, true);
                 if let Some(planned) = planned {
                     let _ = self.start_planned(threads, planned);
                 }
@@ -112,19 +112,19 @@ impl<D: Disk> Daemon<D> {
         }
     }
 
-    /// Plans the warm VMs of the template in `dir` to start: one for each run waiting
-    /// that none is starting for, and with `ahead`, more until its pool will hold its
-    /// target, as far as `warm_max` allows all pools together, after evicting the ready
-    /// VMs of the pools least recently claimed from. Those planned count as starting at
-    /// once.
-    pub(super) fn plan_refill(&self, state: &mut State, dir: &Path, ahead: bool) -> Option<Planned> {
+    /// Plans the warm VMs of pool `key` to start: one for each run waiting that none is
+    /// starting for, and with `ahead`, more until its pool will hold its target, as far as
+    /// `warm_max` allows all pools together, after evicting the ready VMs of the pools
+    /// least recently claimed from. Those planned count as starting at once.
+    pub(super) fn plan_refill(&self, state: &mut State, key: &PoolKey, ahead: bool) -> Option<Planned> {
+        let dir = key.dir.as_path();
         // A template collected is restored no more.
         if !shards_vmm::snapshot::exists(dir) {
-            state.pools.remove(dir);
+            state.pools.remove(key);
             return None;
         }
         let (for_runs, more) = {
-            let pool = state.pools.entry(dir.to_path_buf()).or_default();
+            let pool = state.pools.entry(key.clone()).or_default();
             if pool.failures >= MAX_FAILURES {
                 return None;
             }
@@ -153,9 +153,9 @@ impl<D: Disk> Daemon<D> {
             };
             (for_runs, more)
         };
-        let more = more.min(self.room(state, dir, more));
+        let more = more.min(self.room(state, key, more));
         let count = for_runs + more;
-        let pool = state.pools.get_mut(dir)?;
+        let pool = state.pools.get_mut(key)?;
         if count == 0 {
             return None;
         }
@@ -206,7 +206,7 @@ impl<D: Disk> Daemon<D> {
             args.push("--gpu".into());
         }
         Some(Planned {
-            dir: dir.to_path_buf(),
+            key: key.clone(),
             args,
             net: pool.net,
             limited: pool.working_set_limit.is_some(),
@@ -224,19 +224,20 @@ impl<D: Disk> Daemon<D> {
         planned: Planned,
     ) -> Result<(), String> {
         let Planned {
-            dir,
+            key,
             args,
             net,
             limited,
             count,
         } = planned;
+        let dir = key.dir.as_path();
         // A template that cannot be read gets no network process: its VM then fails to
         // restore it, as any broken template's does, and the claim finds it broken.
         let net = match net {
             Some(net) => net,
-            None => match shards_vmm::snapshot::net(&dir) {
+            None => match shards_vmm::snapshot::net(dir) {
                 Ok(net) => {
-                    if let Some(pool) = lock(&self.state).pools.get_mut(&dir) {
+                    if let Some(pool) = lock(&self.state).pools.get_mut(&key) {
                         pool.net = Some(net);
                     }
                     net
@@ -251,10 +252,10 @@ impl<D: Disk> Daemon<D> {
         // which gathers them (files.rs). A template that cannot be read has its VMs' sets
         // refused, as the VMs fail to restore it.
         if !limited {
-            let limit = shards_vmm::vm::working_set_limit(&dir)
+            let limit = shards_vmm::vm::working_set_limit(dir)
                 .map_err(|e| log(format!("reading the template {}: {e}", dir.display())))
                 .ok();
-            if let Some(pool) = lock(&self.state).pools.get_mut(&dir) {
+            if let Some(pool) = lock(&self.state).pools.get_mut(&key) {
                 pool.working_set_limit.get_or_insert(limit);
             }
         }
@@ -266,11 +267,11 @@ impl<D: Disk> Daemon<D> {
                 .map(|_| shards_net::random_mac())
                 .transpose()
                 .map_err(|e| format!("a warm VM's MAC: {e}"))
-                .and_then(|mac| self.start(threads, &args, mac, For::Pool(dir.clone())));
+                .and_then(|mac| self.start(threads, &args, mac, For::Pool(key.clone()), &key.parent));
             if let Err(e) = started_vm {
                 let e = format!("starting a warm VM of {}: {e}", dir.display());
                 log(&e);
-                if let Some(pool) = lock(&self.state).pools.get_mut(&dir) {
+                if let Some(pool) = lock(&self.state).pools.get_mut(&key) {
                     pool.starting = pool.starting.saturating_sub(count - started);
                 }
                 self.changed.notify_all();

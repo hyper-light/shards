@@ -110,7 +110,8 @@ fn policy_args(policy: shards_net::Policy) -> Result<(&'static str, ProxyArgs), 
 }
 
 /// Starts the network process of one VM whose guest has `mac` on `bridge`, its binary
-/// (helpers.rs), under `policy`.
+/// (helpers.rs), under `policy`, made by `group`'s spawner where given: under its VM's
+/// parent (D183).
 /// Its side of the ring goes to it; the VM's comes back. Once the VM process holds its
 /// side and the caller drops this one, the VM's end alone keeps the network process's
 /// doorbell open, so the network process goes with the VM.
@@ -119,6 +120,7 @@ pub fn start(
     policy: shards_net::Policy,
     mac: &[u8; 6],
     bridge: &shards_net::bridge::Bridge,
+    group: Option<shards_ipc::Group>,
 ) -> Result<(shards_ipc::Child, VmSide), String> {
     let at = |e: std::io::Error| format!("a VM's network: {e}");
     let region = shards_netring::memory().map_err(at)?;
@@ -190,7 +192,7 @@ pub fn start(
         args.extend::<[&std::ffi::OsStr; 2]>(["--dialer".as_ref(), "8".as_ref()]);
         fds.push((theirs.as_fd(), 8));
     }
-    let child = shards_ipc::spawn_in(&binary, &args, &fds, false, &env_pairs(&env))
+    let child = shards_ipc::spawn_in_group(group, &binary, &args, &fds, false, &env_pairs(&env))
         .map_err(|e| format!("starting {}: {e}", binary.display()))?;
     Ok((
         child,

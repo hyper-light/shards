@@ -158,6 +158,19 @@ is of that engine's machine's. A volume it makes (`-v data:/var/lib/data`, Compo
 `MICROVM.data`, reached by no name of yours or of another microVM's, and removed with the
 microVM. A call it can't serve yet is refused with what it serves.
 
+### MicroVMs under your own limits (Linux)
+
+`shards run vm --cgroup-parent agents.slice IMAGE` (and Compose's `cgroup_parent:`, through
+shards' Engine API file) puts a microVM under a slice of your own systemd manager, so
+whatever you give that slice covers every microVM in it: `systemctl --user set-property
+agents.slice MemoryMax=16G` caps them together, and `systemctl --user status agents.slice`
+shows what they use. Each microVM's memory, its network's process included, is counted
+there from its first page, warm starts too, and only the first run under a slice asks
+systemd for anything. It works from an ssh login as from a desktop session, with nothing to
+set up. A container that shares another's network runs in that one's microVM, so it names
+that one's slice or none. A path in place of a slice is refused; on macOS, which has no
+such group, the flag is refused with the reason.
+
 ### Boot a kernel yourself
 
 You need a kernel and a program to run as PID 1. Download shards' kernel, built
