@@ -86,12 +86,13 @@ Reviewed feature by feature, each D-entry's design against what it took from Doc
   Agentfile's build runs too. Kept, decided: the checks are BuildKit's, held to it by the
   oracle, and those pages are the checks' own documentation; shards has none of its own
   to send users to.
-- Of an index with no manifest for this host's CPU, a pull or run naming no platform takes
+- Of an index with no manifest for this host's CPU, a pull or run naming no platform took
   containerd's order (D179): on arm64, 32-bit Arm before amd64, an order for CPUs that run
-  32-bit Arm themselves; a microVM's runs both emulated, and which runs better is not
-  measured. Open: a CPU-bound workload (the same program built for both) run under each
-  emulator in microVMs on an arm64 host, n of each, p50 to max, in
-  platform-measurements.md; then the faster first.
+  32-bit Arm themselves, and an index of amd64's alone refused. Measured (PM M250): a
+  microVM's runs both emulated, at much the same cost, so what a run can use orders them:
+  the other 64-bit CPU's first, as a 32-bit process addresses 4 GiB at most, then 32-bit
+  Arm's; and an index of another CPU's alone runs emulated, as its lone manifest did.
+  Fixed.
 - With every pool of dockerd's in use (a VPN that routes every private range), runs on the
   default network were refused, as dockerd makes no bridge (D31). Now a /24 of
   benchmarking's or shared address space the host does not use. Fixed.
