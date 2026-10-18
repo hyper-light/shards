@@ -16,7 +16,7 @@ use std::sync::mpsc;
 use std::time::Duration;
 
 use shards_ipc::kind;
-use shards_ipc::slots::{self, Frame, Requests, Session, Slot, Stopper, Waited};
+use shards_ipc::slots::{self, Asked, Frame, Requests, Session, Slot, Stopper, Waited};
 
 use super::{Daemon, Threads, lock, log};
 use crate::containers::Disk;
@@ -26,16 +26,11 @@ use crate::containers::Disk;
 /// waits so long; a live one writes as it opens its slot.
 const SWEEP: Duration = Duration::from_secs(60);
 
-/// The slots kept offered: one for the next client, and one for a client that comes as the
-/// first one's replacement is made, which takes 291 µs at p50 and 569 at p99 on a loaded
-/// Mac (making and removing five FIFOs, 317 µs of CPU). Clients past them wait on `free`,
-/// in turn, a making each; none is made ahead that no client asked for.
-const SPARE: usize = 2;
-
 /// What the slots' maker hears.
 #[derive(Debug)]
 pub(super) enum Event {
-    /// Slot `n`'s client asked: its names go, and another is offered in its place.
+    /// Slot `n`'s client began its request: its names go, and another is offered in its
+    /// place at once, whether or not the rest of its request ever comes.
     Asked(u64),
     /// Slot `n`'s wait ended without a request.
     Ended(u64),
@@ -45,8 +40,10 @@ pub(super) enum Event {
     Close,
 }
 
-/// A slot offered: what ends its wait, and whether a sweep has found it taken.
+/// A slot offered: whether it has streams, what ends its wait, and whether a sweep has found
+/// it taken.
 struct Offered {
+    streams: bool,
     stopper: Stopper,
     taken: bool,
 }
@@ -72,9 +69,14 @@ impl<D: Disk> Daemon<D> {
         }
     }
 
-    /// The slots' maker: keeps [`SPARE`] slots offered, as long as the daemon has room for
-    /// another client (its most in hand, `max_clients`: past that, clients wait on `free`
-    /// for room); and looks them over every [`SWEEP`].
+    /// The slots' maker: keeps [`slots::OFFERED`] slots of each kind offered, without streams
+    /// and with: one for the next client, and one for a client that comes as the first's
+    /// replacement is made (making and removing a slot of five FIFOs is 317 µs of the
+    /// daemon's CPU on a loaded Mac, of two 125 µs, PM M255), so that none is made ahead
+    /// that no client asked for; clients past them wait on their list, in turn, a making
+    /// each. As long as the daemon has room for another client (its most in hand,
+    /// `max_clients`: past that, clients wait on their list for room); and looks them over
+    /// every [`SWEEP`].
     fn make_slots<'s, 'e>(
         &'s self,
         threads: &'s Threads<'s, 'e>,
@@ -84,17 +86,19 @@ impl<D: Disk> Daemon<D> {
     ) {
         let mut offered: HashMap<u64, Offered> = HashMap::new();
         loop {
-            while offered.len() < SPARE
-                && self.busy.load(Ordering::SeqCst) < self.max_clients
-                && !self.closed.load(Ordering::SeqCst)
-            {
-                match self.offer_slot(threads, &mut requests, tell) {
-                    Ok((n, made)) => {
-                        offered.insert(n, made);
-                    }
-                    Err(e) => {
-                        log(format!("offering a request's slot: {e}"));
-                        break;
+            for streams in [false, true] {
+                while offered.values().filter(|o| o.streams == streams).count() < slots::OFFERED
+                    && self.busy.load(Ordering::SeqCst) < self.max_clients
+                    && !self.closed.load(Ordering::SeqCst)
+                {
+                    match self.offer_slot(threads, &mut requests, tell, streams) {
+                        Ok((n, made)) => {
+                            offered.insert(n, made);
+                        }
+                        Err(e) => {
+                            log(format!("offering a request's slot: {e}"));
+                            break;
+                        }
                     }
                 }
             }
@@ -108,23 +112,25 @@ impl<D: Disk> Daemon<D> {
                 Err(mpsc::RecvTimeoutError::Timeout) => sweep(&requests, &mut offered),
             }
         }
-        // Closed: what is offered goes, and `free` with `requests`, so that a client
-        // waiting for a slot hears there is no daemon, and asks the next.
-        for (n, slot) in &offered {
+        // Closed: what is offered goes, its names and the lists with `requests`, so that a
+        // client waiting for a slot hears there is no daemon, and asks the next. A slot a
+        // client took meanwhile is still served: it hears RESTART (`serve_slot`).
+        for n in offered.keys() {
             requests.remove(*n);
-            let _ = slot.stopper.stop();
         }
         lock(&self.slot_events).take();
     }
 
-    /// Makes a slot, offers it, and serves it on a thread of its own.
+    /// Makes a slot, with `streams` or without, offers it, and serves it on a thread of its
+    /// own.
     fn offer_slot<'s, 'e>(
         &'s self,
         threads: &'s Threads<'s, 'e>,
         requests: &mut Requests,
         tell: &mpsc::Sender<Event>,
+        streams: bool,
     ) -> io::Result<(u64, Offered)> {
-        let slot = requests.make()?;
+        let slot = requests.make(streams)?;
         let n = slot.number();
         let stopper = slot.stopper();
         let stopper = match stopper {
@@ -142,7 +148,7 @@ impl<D: Disk> Daemon<D> {
             requests.remove(n);
             return Err(e);
         }
-        if let Err(e) = requests.offer(n) {
+        if let Err(e) = requests.offer(n, streams) {
             requests.remove(n);
             let _ = stopper.stop();
             return Err(e);
@@ -150,25 +156,21 @@ impl<D: Disk> Daemon<D> {
         Ok((
             n,
             Offered {
+                streams,
                 stopper,
                 taken: false,
             },
         ))
     }
 
-    /// Serves slot `slot`'s client: waits for its request, then bridges its session to a
-    /// connection the daemon takes as a client's.
+    /// Serves slot `slot`'s client: waits for it to begin its request, from which it counts
+    /// among the clients in hand (past the most, it waits its turn there, as a socket's
+    /// client waits in the listener's backlog); then takes the rest of its request, and
+    /// bridges its session to a connection the daemon takes as a client's.
     fn serve_slot<'s, 'e>(&'s self, threads: &'s Threads<'s, 'e>, slot: Slot, tell: &mpsc::Sender<Event>) {
         let n = slot.number();
-        let (session, request, named) = match slot.wait() {
-            Ok(Waited::Asked {
-                session,
-                request,
-                fds,
-            }) => {
-                let _ = tell.send(Event::Asked(n));
-                (session, request, fds)
-            }
+        let opened = match slot.wait() {
+            Ok(Waited::Opened(opened)) => opened,
             Ok(Waited::Stopped | Waited::Gone) => {
                 let _ = tell.send(Event::Ended(n));
                 return;
@@ -179,16 +181,27 @@ impl<D: Disk> Daemon<D> {
                 return;
             }
         };
-        // A client past the daemon's most in hand waits its turn, as a socket's waits in
-        // the listener's backlog.
-        self.await_room();
+        let _ = tell.send(Event::Asked(n));
         // A daemon that has closed takes no more: its client asks the next.
-        if self.closed.load(Ordering::SeqCst) {
-            let _ = session.send(kind::RESTART, &[]);
+        let Some(counted) = self.in_hand() else {
+            if let Ok(Some(Asked { session, .. })) = opened.request() {
+                let _ = session.send(kind::RESTART, &[]);
+            }
             return;
-        }
-        if let Err(e) = self.bridge(threads, session, &request, &named) {
-            log(format!("request slot {n}: {e}"));
+        };
+        match opened.request() {
+            Ok(Some(Asked {
+                session,
+                fds,
+                request,
+            })) => {
+                if let Err(e) = self.bridge(threads, session, &request, &fds, counted) {
+                    log(format!("request slot {n}: {e}"));
+                }
+            }
+            // Ended before its request was whole: it is gone, and its count with it.
+            Ok(None) => {}
+            Err(e) => log(format!("request slot {n}: {e}")),
         }
     }
 
@@ -202,6 +215,7 @@ impl<D: Disk> Daemon<D> {
         session: Session,
         request: &Frame,
         named: &[u8],
+        counted: InHand<'s, D>,
     ) -> io::Result<()> {
         let (ours, theirs) = UnixStream::pair()?;
         let null = File::open("/dev/null")?;
@@ -227,7 +241,7 @@ impl<D: Disk> Daemon<D> {
             errors,
             ..
         } = session;
-        self.take(threads, theirs);
+        counted.hand(threads, theirs);
         // The streams' ends here, held until the daemon has read the request they came
         // with, which its first message says: a descriptor in flight is the sender's to
         // keep until then (M24).
@@ -271,42 +285,81 @@ impl<D: Disk> Daemon<D> {
 }
 
 impl<D: Disk> Daemon<D> {
-    /// Waits until the daemon has fewer than its most clients in hand, or has closed.
-    fn await_room(&self) {
+    /// Counts a slot's client among those in hand once the daemon has room for it, its
+    /// fewer than its most, waiting until then; `None` where the daemon has closed.
+    fn in_hand(&self) -> Option<InHand<'_, D>> {
         let (held, room) = &self.room;
         let mut held = lock(held);
         while self.busy.load(Ordering::SeqCst) >= self.max_clients && !self.closed.load(Ordering::SeqCst) {
             held = room.wait(held).unwrap_or_else(std::sync::PoisonError::into_inner);
         }
+        if self.closed.load(Ordering::SeqCst) {
+            return None;
+        }
+        self.busy.fetch_add(1, Ordering::SeqCst);
+        Some(InHand {
+            daemon: self,
+            handed: false,
+        })
     }
 }
 
-/// Looks the slots offered over: those no client has taken are offered again; one a
-/// client took and has not written to since the last sweep is its dead client's, ended
-/// and removed (its maker offers another in its place).
-fn sweep(requests: &Requests, offered: &mut HashMap<u64, Offered>) {
-    let untaken = match requests.untaken() {
-        Ok(untaken) => untaken,
-        Err(e) => {
-            log(format!("reading back the slots no client has taken: {e}"));
-            return;
-        }
-    };
-    for n in &untaken {
-        if offered.contains_key(n)
-            && let Err(e) = requests.offer(*n)
-        {
-            log(format!("offering request slot {n} again: {e}"));
+/// A slot's client counted among those in hand: handed to the daemon's handling with its
+/// count ([`InHand::hand`]), or, dropped first, its count let go of.
+struct InHand<'a, D: Disk> {
+    daemon: &'a Daemon<D>,
+    handed: bool,
+}
+
+impl<'a, D: Disk> InHand<'a, D> {
+    /// Hands `conn` to the daemon's handling of a client, counted already.
+    fn hand<'s, 'e>(mut self, threads: &'s Threads<'s, 'e>, conn: UnixStream)
+    where
+        'a: 's,
+    {
+        self.handed = true;
+        self.daemon.take_counted(threads, conn);
+    }
+}
+
+impl<D: Disk> Drop for InHand<'_, D> {
+    fn drop(&mut self) {
+        if !self.handed {
+            self.daemon.busy.fetch_sub(1, Ordering::SeqCst);
+            self.daemon.wake_listener();
         }
     }
-    for (n, slot) in offered.iter_mut() {
-        if untaken.contains(n) {
-            slot.taken = false;
-        } else if slot.taken {
-            requests.remove(*n);
-            let _ = slot.stopper.stop();
-        } else {
-            slot.taken = true;
+}
+
+/// Looks the slots offered over, each list in turn: those no client has taken are offered
+/// again; one a client took and has not written to since the last sweep is its dead
+/// client's, removed and its wait ended through its own pipe (its maker offers another in
+/// its place).
+fn sweep(requests: &Requests, offered: &mut HashMap<u64, Offered>) {
+    for streams in [false, true] {
+        let untaken = match requests.untaken(streams) {
+            Ok(untaken) => untaken,
+            Err(e) => {
+                log(format!("reading back the slots no client has taken: {e}"));
+                continue;
+            }
+        };
+        for n in &untaken {
+            if offered.contains_key(n)
+                && let Err(e) = requests.offer(*n, streams)
+            {
+                log(format!("offering request slot {n} again: {e}"));
+            }
+        }
+        for (n, slot) in offered.iter_mut().filter(|(_, o)| o.streams == streams) {
+            if untaken.contains(n) {
+                slot.taken = false;
+            } else if slot.taken {
+                requests.remove(*n);
+                let _ = slot.stopper.stop();
+            } else {
+                slot.taken = true;
+            }
         }
     }
 }

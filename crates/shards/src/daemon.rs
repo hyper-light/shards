@@ -1491,6 +1491,8 @@ impl<D: Disk> Daemon<D> {
         if !self.closed.swap(true, Ordering::SeqCst) {
             let _ = std::fs::remove_file(self.socket);
             let _ = std::fs::remove_file(engine::SOCKET);
+            // Its slots' lists go at once: a client looking for one asks the next daemon.
+            shards_ipc::slots::unoffer(&self.home);
             self.tell_slots(slots::Event::Close);
             // A slot's client waiting for room asks the next daemon.
             let (held, room) = &self.room;
@@ -1829,24 +1831,29 @@ impl<D: Disk> Daemon<D> {
     }
 
     pub(super) fn take<'s, 'e>(&'s self, threads: &'s Threads<'s, 'e>, conn: UnixStream) {
+        self.busy.fetch_add(1, Ordering::SeqCst);
+        self.take_counted(threads, conn);
+    }
+
+    /// [`take`](Self::take), of a client counted among those in hand already (a request
+    /// slot's, D185): its count is let go of where it cannot be taken.
+    pub(super) fn take_counted<'s, 'e>(&'s self, threads: &'s Threads<'s, 'e>, conn: UnixStream) {
+        let refused = |why: String| {
+            log(why);
+            self.busy.fetch_sub(1, Ordering::SeqCst);
+            self.wake_listener();
+        };
         // Only this user's processes: a home in a shared directory would let others'
         // reach the socket, and a run acts as this user.
         // SAFETY: geteuid(2) cannot fail.
         let ours = unsafe { libc::geteuid() };
         match shards_ipc::peer_uid(&conn) {
             Ok(uid) if uid == ours => {}
-            Ok(uid) => {
-                log(format!("refused a client of user {uid}"));
-                return;
-            }
-            Err(e) => {
-                log(format!("a client's credentials: {e}"));
-                return;
-            }
+            Ok(uid) => return refused(format!("refused a client of user {uid}")),
+            Err(e) => return refused(format!("a client's credentials: {e}")),
         }
         if let Err(e) = conn.set_nonblocking(false) {
-            log(format!("a client's connection: {e}"));
-            return;
+            return refused(format!("a client's connection: {e}"));
         }
         let number = self.next_client.fetch_add(1, Ordering::Relaxed);
         // Shared rather than duplicated: a descriptor short, the daemon would drop
@@ -1854,7 +1861,6 @@ impl<D: Disk> Daemon<D> {
         let conn = Arc::new(conn);
         lock(&self.unread).insert(number);
         lock(&self.clients).insert(number, conn.clone());
-        self.busy.fetch_add(1, Ordering::SeqCst);
         let spawned = std::thread::Builder::new()
             .name("run".into())
             .spawn_scoped(threads, move || {

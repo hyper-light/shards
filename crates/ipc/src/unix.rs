@@ -707,6 +707,91 @@ pub fn await_fifo(fd: BorrowedFd<'_>) -> io::Result<()> {
     }
 }
 
+/// Waits until one of `fds`, FIFOs or pipes, has something to read or has ended, and says
+/// which, in their order: on macOS in select(2), as [`await_fifo`] waits, every descriptor
+/// however high; elsewhere in poll(2), which sees a FIFO's end there (PM M253).
+pub fn await_any(fds: &[BorrowedFd<'_>]) -> io::Result<Vec<bool>> {
+    #[cfg(target_os = "macos")]
+    {
+        // SAFETY: as `await_fifo`'s.
+        unsafe extern "C" {
+            #[link_name = "select$DARWIN_EXTSN"]
+            fn select_any(
+                nfds: libc::c_int,
+                read: *mut u32,
+                write: *mut u32,
+                error: *mut u32,
+                timeout: *mut libc::timeval,
+            ) -> libc::c_int;
+        }
+        let at: Vec<usize> = fds
+            .iter()
+            .map(|fd| {
+                usize::try_from(fd.as_raw_fd()).map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))
+            })
+            .collect::<io::Result<_>>()?;
+        let most = at
+            .iter()
+            .copied()
+            .max()
+            .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidInput))?;
+        let bound =
+            libc::c_int::try_from(most + 1).map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?;
+        let mut set = vec![0u32; most / 32 + 1];
+        loop {
+            set.iter_mut().for_each(|w| *w = 0);
+            for fd in &at {
+                if let Some(word) = set.get_mut(fd / 32) {
+                    *word |= 1 << (fd % 32);
+                }
+            }
+            // SAFETY: a set of `bound` descriptors' bits, as long as that, and no timeout.
+            let n = unsafe {
+                select_any(
+                    bound,
+                    set.as_mut_ptr(),
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                )
+            };
+            if n > 0 {
+                return Ok(at
+                    .iter()
+                    .map(|fd| set.get(fd / 32).is_some_and(|w| w & (1 << (fd % 32)) != 0))
+                    .collect());
+            }
+            let e = io::Error::last_os_error();
+            if n < 0 && e.kind() != io::ErrorKind::Interrupted {
+                return Err(e);
+            }
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let mut polled: Vec<libc::pollfd> = fds
+            .iter()
+            .map(|fd| libc::pollfd {
+                fd: fd.as_raw_fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            })
+            .collect();
+        let n =
+            libc::nfds_t::try_from(polled.len()).map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?;
+        loop {
+            // SAFETY: poll(2) on `n` valid pollfds, with no timeout.
+            if unsafe { libc::poll(polled.as_mut_ptr(), n, -1) } > 0 {
+                return Ok(polled.iter().map(|p| p.revents != 0).collect());
+            }
+            let e = io::Error::last_os_error();
+            if e.kind() != io::ErrorKind::Interrupted {
+                return Err(e);
+            }
+        }
+    }
+}
+
 /// A socket's receive timeout (SO_RCVTIMEO), the longest a read of it waits: none for
 /// anything else, or for a socket without one.
 fn receive_timeout(fd: BorrowedFd<'_>) -> Option<Duration> {

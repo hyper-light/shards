@@ -9290,3 +9290,30 @@ revision before comparing a changed API/implementation.
     costs 60 to 80 µs more than the socket at p50: its three opens by path, 10 to 28 µs
     each on APFS where Linux's take 1, and more as load grows. The FIFO round trip itself
     (`pair`) costs no more than the socket's on either.
+
+### M255. What making and removing a request slot costs its daemon (D185)
+
+- **Question.** A request slot is used once (D185): each request costs its daemon a slot
+  made, five FIFOs and both ends of each, and one removed. How much, and so how many are
+  worth making ahead of the clients that take them?
+- **Method.** `docs/research/measurements/request-files/slotcost.c`, through `run.sh`, on
+  an Apple M5 Max, macOS 26.4.1, APFS, load average 10 to 22, revision 38fb6124, 2026-10-18:
+  n = 2,000 slots each of five FIFOs and of two, each made (mkfifo, both ends opened) and
+  removed (ends closed, names unlinked); wall time each, and CPU time (getrusage) over all.
+- **Results.**
+
+  | slot | wall p50 | p90 | p99 | max | CPU a slot |
+  |---|---|---|---|---|---|
+  | 5 FIFOs | 291 µs | 449 µs | 569 µs | 11.9 ms | 317 µs |
+  | 2 FIFOs | 116 µs | 168 µs | 230 µs | 378 µs | 125 µs |
+
+  - A slot is a third of a millisecond of the daemon's CPU, made off the client's way.
+    Made ahead beyond what clients take, it is that much spent for nothing: a hundred
+    clients arriving at once, each adding a slot as D185's first cut did, left the daemon
+    making a hundred spare slots after they had gone, 160 ms of CPU in a quiet 3 s
+    (tests/daemon.rs `idle_followers_cost_nothing_and_end_with_their_container`). So two
+    are kept offered of each kind: the next client's, and one for a client that comes as
+    the first's replacement is made; clients past them wait a making each, in turn. And a
+    command with no streams (`ps`, `logs -f`, `inspect`) takes a slot of two FIFOs, 2.5
+    times cheaper: the hundred followers, slots of five each, still cost 110 ms of CPU in
+    that quiet 3 s on a loaded host, past the test's 100.

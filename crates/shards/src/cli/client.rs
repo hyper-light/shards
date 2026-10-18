@@ -29,6 +29,12 @@ use shards_ipc::{Command, Run, SOCKET, kind, log};
 
 use crate::cli::{NOT_RUN, terminal};
 
+/// How many times a client asks before it gives up on daemons asking it to ask again
+/// (RESTART): a daemon of another build answers so the request that makes it step aside,
+/// and then each it took meanwhile through a slot it had offered of the kind the client
+/// asks for (`slots::OFFERED`); one of a build from before slots, once, on its socket.
+const RESTARTS: usize = shards_ipc::slots::OFFERED + 2;
+
 /// How long a started daemon may take to listen, once the one it replaces has ended its
 /// runs (shards_ipc::exiting), which takes as long as their stop timeouts make it.
 const START_TIMEOUT: Duration = Duration::from_secs(30);
@@ -139,6 +145,7 @@ fn serve(
     detach_keys: &[u8],
     cid: &mut Option<crate::cli::request::CidFile>,
 ) -> ExitCode {
+    use shards_ipc::slots;
     // Before any thread starts, none of which may use a relative path meanwhile.
     let mut started = match enter(home, daemon) {
         Ok(started) => started,
@@ -151,9 +158,9 @@ fn serve(
     // A terminal's size follows the client's stdout's, when it is one (docker/cli
     // cli/command/container/run.go, MonitorTtySize).
     let resizes = request.tty && !request.detach && out_terminal;
-    // The connection the run is on, where signals go: one run a process, so the forwarder,
-    // which lives as long as the process, shares it as a `static`.
-    static CURRENT: Mutex<Option<UnixStream>> = Mutex::new(None);
+    // Where the run's signals go: its slot's `say`, or a socket's. One run a process, so the
+    // forwarder, which lives as long as the process, shares it as a `static`.
+    static CURRENT: Mutex<Option<Says>> = Mutex::new(None);
     let current = &CURRENT;
     // Signals are taken now, before any thread starts, as each inherits what this one
     // blocks; the threads that forward them and fill the command's stdin start once the
@@ -167,11 +174,6 @@ fn serve(
     let raw =
         request.tty && attached && in_terminal && std::env::var_os("NORAW").is_none_or(|v| v.is_empty());
     let proxy = (request.tty && attached).then(|| EscapeProxy::new(detach_keys));
-    // A detached run's command reads nothing: no client stays to give it input.
-    let (stdin, filler) = match command_stdin(attached) {
-        Ok(stdin) => stdin,
-        Err(e) => return failed(&e),
-    };
     if raw && let Err(e) = terminal::make_raw() {
         return failed(&format!("the terminal's raw mode: {e}"));
     }
@@ -183,120 +185,264 @@ fn serve(
         Some(taken) => forward(taken, current),
         None => Ok(()),
     };
-    let mut threads = Some((filler, proxy));
-    // What a stream not attached is written to (`run -a`).
-    let null = match request.streams {
-        (true, true) => None,
-        _ => match File::options().write(true).open("/dev/null") {
-            Ok(null) => Some(null),
-            Err(e) => return failed(&format!("/dev/null: {e}")),
-        },
-    };
+    // The command's stdin is filled once, from this client's; a detached run's command
+    // reads nothing: no client stays to give it input.
+    let mut filling = attached.then_some(proxy);
+    // Which of the command's stdio is this client's: its stdin where attached, its stdout
+    // and stderr where given. `run -a` may leave either out (`/dev/null`, its output kept
+    // in its log alone). A detached run's are the daemon's alone, to say why it refused
+    // the run: the daemon gives its VM none of them, so they end with the request.
+    let ways = [
+        (attached, slots::streams::IN, slots::fds::IN),
+        (request.streams.0, slots::streams::OUT, slots::fds::OUT),
+        (request.streams.1, slots::streams::ERR, slots::fds::ERR),
+    ];
+    let opened = ways.iter().filter(|w| w.0).fold(0, |all, w| all | w.1);
+    let named = ways.map(|(given, _, fd)| if given { fd } else { slots::fds::NULL });
     // A daemon from another build answers RESTART once it has stepped aside.
-    for _ in 0..2 {
-        let conn = match connect(home, daemon, &mut started, &mut || forwarding(&mut signals)) {
-            Ok(conn) => conn,
+    for _ in 0..RESTARTS {
+        let asked = match ask_slot(
+            home,
+            daemon,
+            &mut started,
+            request.kind,
+            &request.payload,
+            opened,
+            &named,
+            &mut || forwarding(&mut signals),
+        ) {
+            Ok(asked) => asked,
             Err(e) => return failed(&e),
         };
-        let [out, err] = [(1, request.streams.0), (2, request.streams.1)].map(|(fd, given)| match &null {
-            Some(null) if !given => null.as_fd(),
-            // SAFETY: this process's standard descriptors stay open while it runs.
-            _ => unsafe { BorrowedFd::borrow_raw(fd) },
-        });
-        let stdio = [stdin.as_fd(), out, err];
-        match shards_ipc::send(&conn, request.kind, &request.payload, &stdio) {
-            // Shut before it read the request, as a daemon of another build steps aside:
-            // the next one is asked.
-            Err(e) if unread(&e) => continue,
-            Err(e) => return failed(&format!("asking the daemon: {e}")),
-            Ok(()) => {}
-        }
-        if let Err(e) = forwarding(&mut signals) {
-            return failed(&e);
-        }
-        if let Some((Some(filler), proxy)) = threads.take()
-            && let Err(e) = fill_stdin(filler, proxy, request.detach_said)
-        {
-            return failed(&e);
-        }
-        // Signals go to the command, and its terminal follows ours, once it is there: a
-        // run's once the daemon has made its container, an exec's at once.
-        let attach = || -> Result<(), String> {
-            let signals = conn
-                .try_clone()
-                .map_err(|e| format!("the daemon's connection: {e}"))?;
-            *current.lock().unwrap_or_else(PoisonError::into_inner) = Some(signals);
-            // The size as the command starts, in case it changed since the request; an
-            // attach's one row and column larger first, so that the size changes and the
-            // command redraws what it shows (docker/cli attach.go resizeTTY).
-            if resizes {
-                if request.kind == kind::ATTACH {
-                    resize_by(&conn, 1);
+        let ran = match asked {
+            Asked::Slot(mut client) => {
+                if let Err(e) = forwarding(&mut signals) {
+                    return failed(&e);
                 }
-                resize(&conn);
-            }
-            Ok(())
-        };
-        if request.kind != kind::START
-            && let Err(e) = attach()
-        {
-            return failed(&e);
-        }
-        loop {
-            match shards_ipc::recv(&conn) {
-                // Made: its ID, for `--cidfile`.
-                Ok(Some(m)) if m.kind == kind::CREATED => {
-                    if let Some(cid) = cid
-                        && let Err(e) = cid.write(&String::from_utf8_lossy(&m.payload))
-                    {
-                        return failed(&e);
-                    }
-                    if let Err(e) = attach() {
-                        return failed(&e);
-                    }
+                if let Some(input) = client.input.take()
+                    && let Some(proxy) = filling.take()
+                    && let Err(e) = fill_stdin(input, proxy, request.detach_said)
+                {
+                    return failed(&e);
                 }
-                Ok(Some(m)) if m.kind == kind::EXIT => {
-                    let Some((&status, timing)) = m.payload.split_first() else {
-                        return failed("the command's microVM sent no status");
+                std::thread::scope(|scope| {
+                    // Its stdout and stderr, shown as they come: all of them before this
+                    // client ends.
+                    let mut shows = Vec::new();
+                    for (from, to) in [
+                        (client.output.take(), io::stdout().as_fd()),
+                        (client.errors.take(), io::stderr().as_fd()),
+                    ] {
+                        let Some(from) = from else {
+                            continue;
+                        };
+                        let to = match to.try_clone_to_owned() {
+                            Ok(to) => File::from(to),
+                            Err(e) => return Ran::Failed(format!("this client's stdio: {e}")),
+                        };
+                        match std::thread::Builder::new()
+                            .name("shards-show".into())
+                            .spawn_scoped(scope, move || show(&from, to))
+                        {
+                            Ok(shown) => shows.push(shown),
+                            Err(e) => return Ran::Failed(format!("a stream's thread: {e}")),
+                        }
+                    }
+                    let says = || {
+                        client
+                            .sender()
+                            .map(Says::Slot)
+                            .map_err(|e| format!("its slot: {e}"))
                     };
-                    if !timing.is_empty() {
-                        let line = with_client_rss(&String::from_utf8_lossy(timing));
-                        let _ = writeln!(io::stderr(), "shards-timing {line}");
+                    let ran = ran_on(request, home, cid, current, resizes, &says, &mut || {
+                        slot_message(&client)
+                    });
+                    for shown in shows {
+                        let _ = shown.join();
                     }
-                    // A microVM given a host's devices (D154) sends its process's pidfd:
-                    // the run is over once that has ended, and the devices are free.
-                    if let Some(pidfd) = m.fds.first() {
-                        ended(pidfd);
-                    }
-                    return ExitCode::from(status);
-                }
-                Ok(Some(m)) if m.kind == kind::RESTART => break,
-                // A detached run's answer: its container's ID, or why it did not start.
-                Ok(Some(m)) if m.kind == kind::OUT => {
-                    if let (Some((image, name)), Some(p)) = (&request.card, crate::cli::look::styled()) {
-                        let id = String::from_utf8_lossy(&m.payload).trim().to_string();
-                        crate::cli::look::started(&p, &id, image, name.as_deref(), &mut io::stdout().lock());
-                    } else {
-                        let _ = io::stdout().write_all(&m.payload);
-                    }
-                }
-                Ok(Some(m)) if m.kind == kind::ERR => {
-                    let _ = io::stderr().write_all(&m.payload);
-                }
-                Ok(Some(m)) if m.kind == kind::END => {
-                    return ExitCode::from(m.payload.first().copied().unwrap_or(NOT_RUN));
-                }
-                Ok(Some(_)) => continue,
-                Ok(None) | Err(_) => {
-                    return failed(&format!(
-                        "the command's microVM stopped before the command ended; see {}",
-                        log(home).display()
-                    ));
-                }
+                    ran
+                })
             }
+            Asked::Socket(conn) => {
+                let (stdin, filler) = match command_stdin(attached) {
+                    Ok(stdin) => stdin,
+                    Err(e) => return failed(&e),
+                };
+                // What a stream not attached is written to (`run -a`).
+                let null = match request.streams {
+                    (true, true) => None,
+                    _ => match File::options().write(true).open("/dev/null") {
+                        Ok(null) => Some(null),
+                        Err(e) => return failed(&format!("/dev/null: {e}")),
+                    },
+                };
+                let [out, err] =
+                    [(1, request.streams.0), (2, request.streams.1)].map(|(fd, given)| match &null {
+                        Some(null) if !given => null.as_fd(),
+                        // SAFETY: this process's standard descriptors stay open while it runs.
+                        _ => unsafe { BorrowedFd::borrow_raw(fd) },
+                    });
+                let stdio = [stdin.as_fd(), out, err];
+                match shards_ipc::send(&conn, request.kind, &request.payload, &stdio) {
+                    // Shut before it read the request, as a daemon of another build steps
+                    // aside: the next one is asked.
+                    Err(e) if unread(&e) => continue,
+                    Err(e) => return failed(&format!("asking the daemon: {e}")),
+                    Ok(()) => {}
+                }
+                if let Err(e) = forwarding(&mut signals) {
+                    return failed(&e);
+                }
+                if let Some(filler) = filler
+                    && let Some(proxy) = filling.take()
+                    && let Err(e) = fill_stdin(File::from(OwnedFd::from(filler)), proxy, request.detach_said)
+                {
+                    return failed(&e);
+                }
+                let says = || {
+                    conn.try_clone()
+                        .map(Says::Socket)
+                        .map_err(|e| format!("the daemon's connection: {e}"))
+                };
+                ran_on(request, home, cid, current, resizes, &says, &mut || {
+                    shards_ipc::recv(&conn)
+                })
+            }
+        };
+        match ran {
+            Ran::Ended(status, timing) => {
+                // Said once its output is all shown, as it was the last the command said.
+                if let Some(timing) = timing {
+                    let _ = writeln!(io::stderr(), "shards-timing {timing}");
+                }
+                return status;
+            }
+            Ran::Restart => {}
+            Ran::Failed(e) => return failed(&e),
         }
     }
     failed("the daemon kept asking for a restart")
+}
+
+/// Where a client's messages to its command go: its slot's `say` (D185), or the socket of
+/// a daemon of a build from before slots.
+#[derive(Debug)]
+enum Says {
+    Slot(shards_ipc::slots::Sender),
+    Socket(UnixStream),
+}
+
+impl Says {
+    fn send(&self, kind: u8, payload: &[u8]) -> io::Result<()> {
+        match self {
+            Says::Slot(say) => say.send(kind, payload),
+            Says::Socket(conn) => shards_ipc::send(conn, kind, payload, &[]),
+        }
+    }
+}
+
+/// How a run's, an exec's or an attach's client ends.
+enum Ran {
+    /// With the command's status, and its timing line where it asked for one.
+    Ended(ExitCode, Option<String>),
+    /// Asked to ask again: a daemon of another build stepped aside.
+    Restart,
+    Failed(String),
+}
+
+/// The command's messages, as `recv` takes them, until it ends: its ID once made, for
+/// `--cidfile`; then signals go to it, through what `says` makes, and its terminal follows
+/// this client's (a run's once the daemon has made its container, an exec's at once); a
+/// detached run's answer; its status.
+fn ran_on(
+    request: &Attached,
+    home: &Path,
+    cid: &mut Option<crate::cli::request::CidFile>,
+    current: &Mutex<Option<Says>>,
+    resizes: bool,
+    says: &dyn Fn() -> Result<Says, String>,
+    recv: &mut dyn FnMut() -> io::Result<Option<shards_ipc::Message>>,
+) -> Ran {
+    let attach = || -> Result<(), String> {
+        let to = says()?;
+        // The size as the command starts, in case it changed since the request; an
+        // attach's one row and column larger first, so that the size changes and the
+        // command redraws what it shows (docker/cli attach.go resizeTTY).
+        if resizes {
+            if request.kind == kind::ATTACH {
+                resize_by(&to, 1);
+            }
+            resize(&to);
+        }
+        *current.lock().unwrap_or_else(PoisonError::into_inner) = Some(to);
+        Ok(())
+    };
+    if request.kind != kind::START
+        && let Err(e) = attach()
+    {
+        return Ran::Failed(e);
+    }
+    loop {
+        match recv() {
+            // Made: its ID, for `--cidfile`.
+            Ok(Some(m)) if m.kind == kind::CREATED => {
+                if let Some(cid) = cid
+                    && let Err(e) = cid.write(&String::from_utf8_lossy(&m.payload))
+                {
+                    return Ran::Failed(e);
+                }
+                if let Err(e) = attach() {
+                    return Ran::Failed(e);
+                }
+            }
+            Ok(Some(m)) if m.kind == kind::EXIT => {
+                let Some((&status, timing)) = m.payload.split_first() else {
+                    return Ran::Failed("the command's microVM sent no status".into());
+                };
+                let timing = (!timing.is_empty()).then(|| with_client_rss(&String::from_utf8_lossy(timing)));
+                // A microVM given a host's devices (D154) sends its process's pidfd: the
+                // run is over once that has ended, and the devices are free. (Through a
+                // slot, its daemon waits for it before it says the run's end.)
+                if let Some(pidfd) = m.fds.first() {
+                    ended(pidfd);
+                }
+                return Ran::Ended(ExitCode::from(status), timing);
+            }
+            Ok(Some(m)) if m.kind == kind::RESTART => return Ran::Restart,
+            // A detached run's answer: its container's ID, or why it did not start.
+            Ok(Some(m)) if m.kind == kind::OUT => {
+                if let (Some((image, name)), Some(p)) = (&request.card, crate::cli::look::styled()) {
+                    let id = String::from_utf8_lossy(&m.payload).trim().to_string();
+                    crate::cli::look::started(&p, &id, image, name.as_deref(), &mut io::stdout().lock());
+                } else {
+                    let _ = io::stdout().write_all(&m.payload);
+                }
+            }
+            Ok(Some(m)) if m.kind == kind::ERR => {
+                let _ = io::stderr().write_all(&m.payload);
+            }
+            Ok(Some(m)) if m.kind == kind::END => {
+                return Ran::Ended(
+                    ExitCode::from(m.payload.first().copied().unwrap_or(NOT_RUN)),
+                    None,
+                );
+            }
+            Ok(Some(_)) => {}
+            Ok(None) | Err(_) => {
+                return Ran::Failed(format!(
+                    "the command's microVM stopped before the command ended; see {}",
+                    log(home).display()
+                ));
+            }
+        }
+    }
+}
+
+/// Shows what the command writes to its slot's `from`, its stdout's or stderr's, on `to`,
+/// this client's own, as it comes and unbuffered: a terminal shows a prompt with no newline
+/// at once.
+fn show(from: &File, mut to: File) -> io::Result<u64> {
+    io::copy(&mut shards_ipc::slots::Reader(from), &mut to)
 }
 
 /// Waits for the process whose pidfd `pidfd` is to end: it polls readable then
@@ -342,38 +488,28 @@ enum Asked {
 }
 
 /// Asks `home`'s daemon, whose binary is `daemon`, through a slot (D185): `kind` and
-/// `payload`, with `fds` as the slot's streams, `out` for what the daemon writes and `in`
-/// for what it reads. Starts the daemon where none offers slots, unless `started` says
-/// this process has, and waits for its first slot as long as a daemon takes to start.
+/// `payload`, the slot's `streams` opened, and the descriptors the request stands for
+/// named (`named`, of `slots::fds`). Starts the daemon where none offers slots, unless
+/// `started` says this process has, `waiting` first, and waits for its first slot as long
+/// as a daemon takes to start.
+#[allow(clippy::too_many_arguments)]
 fn ask_slot(
     home: &Path,
     daemon: &Path,
     started: &mut bool,
     kind: u8,
     payload: &[u8],
-    fds: &[Stream<'_>],
+    streams: u8,
+    named: &[u8],
+    waiting: &mut dyn FnMut() -> Result<(), String>,
 ) -> Result<Asked, String> {
     use shards_ipc::slots;
-    let streams = fds.iter().fold(0, |opened, s| {
-        opened
-            | match s {
-                Stream::To(_) => slots::streams::OUT,
-                Stream::From(_) => slots::streams::IN,
-            }
-    });
-    let named: Vec<u8> = fds
-        .iter()
-        .map(|s| match s {
-            Stream::To(_) => slots::fds::OUT,
-            Stream::From(_) => slots::fds::IN,
-        })
-        .collect();
     let mut deadline = Instant::now() + START_TIMEOUT;
     loop {
         // The home is this process's working directory (`enter`): its slots are named from
         // there, as its socket is.
         match slots::take(Path::new("."), streams) {
-            Ok(slots::Taken::Slot(client)) => match client.ask(kind, payload, &named) {
+            Ok(slots::Taken::Slot(client)) => match client.ask(kind, payload, named) {
                 Ok(()) => return Ok(Asked::Slot(client)),
                 // Removed as it was asked: the next.
                 Err(e) if e.kind() == io::ErrorKind::BrokenPipe => {}
@@ -383,6 +519,9 @@ fn ask_slot(
                 if let Ok(conn) = UnixStream::connect(SOCKET) {
                     return Ok(Asked::Socket(conn));
                 }
+                // What follows may wait as long as a daemon takes to start, or the one it
+                // replaces to end its runs: what must not wait with it goes first.
+                waiting()?;
                 if !*started {
                     start(daemon, home)?;
                     *started = true;
@@ -399,6 +538,20 @@ fn ask_slot(
             Err(e) => return Err(format!("{}: {e}", home.join(slots::DIR).display())),
         }
     }
+}
+
+/// The slot's streams `fds` stand for, and their order as the request names them: what the
+/// daemon writes its `out`, what it reads its `in`.
+fn streams_of(fds: &[Stream<'_>]) -> (u8, Vec<u8>) {
+    use shards_ipc::slots;
+    fds.iter().fold((0, Vec::new()), |(opened, mut named), s| {
+        let (bit, fd) = match s {
+            Stream::To(_) => (slots::streams::OUT, slots::fds::OUT),
+            Stream::From(_) => (slots::streams::IN, slots::fds::IN),
+        };
+        named.push(fd);
+        (opened | bit, named)
+    })
 }
 
 /// The daemon's next message on its slot, as its socket's would be, without descriptors.
@@ -469,14 +622,17 @@ pub fn container(home: &Path, daemon: &Path, command: &Command, fds: &[Stream<'_
         Err(e) => return failed(&e),
     };
     // A daemon from another build answers RESTART once it has stepped aside.
-    for _ in 0..2 {
+    for _ in 0..RESTARTS {
+        let (opened, named) = streams_of(fds);
         let asked = match ask_slot(
             home,
             daemon,
             &mut started,
             kind::CONTAINER,
             &command.encode(),
-            fds,
+            opened,
+            &named,
+            &mut || Ok(()),
         ) {
             Ok(asked) => asked,
             Err(e) => return failed(&e),
@@ -523,7 +679,7 @@ pub fn ask(
 ) -> Result<(u8, Vec<u8>, Vec<u8>), String> {
     let mut started = enter(home, daemon)?;
     // A daemon from another build answers RESTART once it has stepped aside.
-    for _ in 0..2 {
+    for _ in 0..RESTARTS {
         let collect = |recv: &mut dyn FnMut() -> io::Result<Option<shards_ipc::Message>>| {
             let (mut out, mut err) = (Vec::new(), Vec::new());
             loop {
@@ -539,13 +695,16 @@ pub fn ask(
                 }
             }
         };
+        let (opened, named) = streams_of(fds);
         let answered = match ask_slot(
             home,
             daemon,
             &mut started,
             kind::CONTAINER,
             &command.encode(),
-            fds,
+            opened,
+            &named,
+            &mut || Ok(()),
         )? {
             Asked::Slot(mut client) => std::thread::scope(|scope| {
                 let copies = copy_streams(scope, &mut client, fds)?;
@@ -783,48 +942,6 @@ fn enter(home: &Path, daemon: &Path) -> Result<bool, String> {
     }
 }
 
-/// The daemon's connection, starting the daemon if none listens and `started` says this
-/// process has not started one yet.
-fn connect(
-    home: &Path,
-    daemon: &Path,
-    started: &mut bool,
-    waiting: &mut dyn FnMut() -> Result<(), String>,
-) -> Result<UnixStream, String> {
-    match UnixStream::connect(SOCKET) {
-        Ok(conn) => return Ok(conn),
-        Err(e)
-            if matches!(
-                e.kind(),
-                io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused
-            ) => {}
-        Err(e) => return Err(format!("{}: {e}", home.join(SOCKET).display())),
-    }
-    // What follows may wait as long as a daemon takes to start, or the one it replaces to
-    // end its runs: what must not wait with it goes first.
-    waiting()?;
-    if !*started {
-        start(daemon, home)?;
-        *started = true;
-    }
-    let mut deadline = Instant::now() + START_TIMEOUT;
-    loop {
-        if shards_ipc::exiting(home) {
-            deadline = Instant::now() + START_TIMEOUT;
-        }
-        match UnixStream::connect(SOCKET) {
-            Ok(conn) => return Ok(conn),
-            Err(e) if Instant::now() >= deadline => {
-                return Err(format!(
-                    "the daemon did not start ({e}); see {}",
-                    log(home).display()
-                ));
-            }
-            Err(_) => std::thread::sleep(Duration::from_millis(1)),
-        }
-    }
-}
-
 /// Runs `daemon daemon --detached`, which starts the daemon in the background and exits;
 /// the daemon creates its home and writes its messages to the log there. Of daemons
 /// started at once, one takes the home's lock and the rest exit. What the starter says
@@ -890,7 +1007,7 @@ fn command_stdin(interactive: bool) -> Result<(OwnedFd, Option<io::PipeWriter>),
 /// the client instead, with status 0 and the terminal restored, and the command runs on,
 /// as a container outlives the `docker run` that detached from it.
 fn fill_stdin(
-    mut writer: io::PipeWriter,
+    mut writer: File,
     mut proxy: Option<EscapeProxy>,
     detach_said: Option<(&'static str, u8)>,
 ) -> Result<(), String> {
@@ -938,19 +1055,19 @@ fn fill_stdin(
 }
 
 /// Sends the size of this process's stdout as the command's terminal's.
-fn resize(conn: &UnixStream) {
+fn resize(conn: &Says) {
     resize_by(conn, 0);
 }
 
 /// Sends the size of this process's stdout, `more` rows and columns larger, as the
 /// command's terminal's.
-fn resize_by(conn: &UnixStream, more: u16) {
+fn resize_by(conn: &Says, more: u16) {
     let (rows, cols) = terminal::size(1);
     let (rows, cols) = (rows.saturating_add(more), cols.saturating_add(more));
     if rows != more && cols != more {
         let [a, b] = rows.to_be_bytes();
         let [c, d] = cols.to_be_bytes();
-        let _ = shards_ipc::send(conn, kind::RESIZE, &[a, b, c, d], &[]);
+        let _ = conn.send(kind::RESIZE, &[a, b, c, d]);
     }
 }
 
@@ -1012,7 +1129,7 @@ struct Signals {
 
 /// Starts the thread that receives `signals`, as [`take_signals`] says, on the run's
 /// connection in `current` once there is one.
-fn forward(signals: Option<Signals>, current: &'static Mutex<Option<UnixStream>>) -> Result<(), String> {
+fn forward(signals: Option<Signals>, current: &'static Mutex<Option<Says>>) -> Result<(), String> {
     let Some(Signals {
         set,
         ignored,
@@ -1050,7 +1167,7 @@ fn forward(signals: Option<Signals>, current: &'static Mutex<Option<UnixStream>>
                 if sig == shards_ipc::CARRIER {
                     if let Some(conn) = current.lock().unwrap_or_else(PoisonError::into_inner).as_ref() {
                         for linux in shards_ipc::sent_faults() {
-                            let _ = shards_ipc::send(conn, kind::SIGNAL, &linux.to_be_bytes(), &[]);
+                            let _ = conn.send(kind::SIGNAL, &linux.to_be_bytes());
                         }
                     }
                     continue;
@@ -1066,7 +1183,7 @@ fn forward(signals: Option<Signals>, current: &'static Mutex<Option<UnixStream>>
                         if resizes && sig == libc::SIGWINCH {
                             resize(conn);
                         }
-                        shards_ipc::send(conn, kind::SIGNAL, &linux.to_be_bytes(), &[]).is_ok()
+                        conn.send(kind::SIGNAL, &linux.to_be_bytes()).is_ok()
                     });
                 let ends = [libc::SIGHUP, libc::SIGINT, libc::SIGQUIT, libc::SIGTERM].contains(&sig);
                 if !sent && ends && !ignored.contains(&sig) {

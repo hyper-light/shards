@@ -1,7 +1,7 @@
 #!/bin/sh
-# M254 (docs/research/platform-measurements.md): what a client's request to its daemon costs
-# through files in the home, against a Unix socket (D185); each step of a made-ahead slot's;
-# and flock(2) on a FIFO. On this host, and with SHARDS KERNEL INIT given, on Linux in a
+# M254 and M255 (docs/research/platform-measurements.md): what a client's request to its
+# daemon costs through files in the home, against a Unix socket (D185); each step of a
+# made-ahead slot's; flock(2) on a FIFO; and what making and removing a slot costs. On this host, and with SHARDS KERNEL INIT given, on Linux in a
 # microVM of shards' too, of the host's architecture.
 #
 #   run.sh [SHARDS KERNEL INIT]
@@ -17,13 +17,15 @@ cleanup() {
 	rm -r -- "$work"
 }
 trap cleanup EXIT
-for p in requests steps fifolock; do
+for p in requests steps fifolock slotcost; do
 	cc -O1 -w -o "$work/$p" "$here/$p.c"
 done
-mkdir -p "$work/rq" "$work/st" "$work/fl"
+mkdir -p "$work/rq" "$work/st" "$work/fl" "$work/sc"
 "$work/requests" "$work/rq" 2000
 "$work/steps" "$work/st" 2000
 "$work/fifolock" "$work/fl"
+# M255: a slot's making and removal.
+"$work/slotcost" "$work/sc" 2000
 uname -sr
 uptime
 if [ -n "$shards" ]; then

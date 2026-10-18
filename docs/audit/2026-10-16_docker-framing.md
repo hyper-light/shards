@@ -112,6 +112,27 @@ Reviewed feature by feature, each D-entry's design against what it took from Doc
     dockerd's 10% reserve, 80% most and 20% free as its defaults, each the user's to set
     with `shards configure disk`; each now exactly that share of the disk, where dockerd's
     arithmetic, which shards had taken, kept 9.3%, 74.5% and 18.6%.)
+  - A terminal run's `TERM=xterm`, dockerd's value: open. The client's own terminal type,
+    where the image's terminfo has it, would serve its programs better (colours, keys);
+    xterm where it has not.
+  - A download that stops without progress fails after three (containerd's
+    `httpReadSeeker`'s count): open, to derive from what a stalling server costs.
+  - Splunk's batch of 1,000 events (moby's default): open, to derive from what a batch costs
+    the daemon and the collector.
+  - A log's non-blocking queue of 1,000,000 bytes where `max-buffer-size` gives none (moby's
+    ring logger's): open, to derive from what a run's output costs the host to hold.
+  - A long line cut into parts of 16 KiB for the drivers that send a log away (moby's copier's
+    size): open. It is what receivers that join Docker's parts expect, so it stays until a
+    receiver-led size is measured.
+  - A builder's ceiling of half the host's memory (Docker Desktop's VM's share, which
+    `builder_memory_mib` took): open. Its memory is plugged as its build needs it (D133),
+    so the ceiling can come from what the host can give as the build asks, measured.
+  - A restart's wait (100 ms doubling to a minute, from scratch after a run of 10 s), dockerd's
+    restart manager's figures: open, to derive from what a microVM's restart costs, so that
+    a crash loop's restarts take a bounded share of a core.
+  - A daemon's shutdown ends a VM whose command outlives its stop timeout by 5 s (dockerd's
+    `ShutdownTimeout` grace): open, to derive from how long a guest takes to say a killed
+    command's end, measured.
   - The build cache's other rules are still dockerd's, open: the temporary share of the
     reserve (e·π·φ %, 512 MB at least) that what is easiest to make again may take, the
     ages at which records go (two days for those, 60 for any), and 2 GB reserved where the
