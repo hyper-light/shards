@@ -765,16 +765,18 @@ pub fn prepare(
             Reference::parse(&request.image).map_or_else(|_| request.image.clone(), |r| r.familiar())
         )
     })?;
-    // Another CPU's image (D179): one no guest runs runs under its CPU's emulator, which
-    // its microVM registers as it boots; and a run that named no platform is told, as
-    // dockerd tells it (moby docker-v29.3.1 daemon/create.go).
+    // Another CPU's image (D179): one no guest runs itself runs under its CPU's emulator,
+    // which its microVM registers as it boots; and a run that named no platform is told so,
+    // in dockerd's words, whenever it is emulated. 32-bit Arm's among them on arm64, which
+    // dockerd counts as the host's own, where no guest of shards' runs it (PM M250).
     let platform = shards_image::oci::Platform {
         os: image.config.os.clone(),
         architecture: image.config.architecture.clone(),
         variant: image.config.variant.clone(),
         ..shards_image::oci::Platform::default()
     };
-    if request.platform.is_empty() && !shards_image::platform::host_runs(&platform) {
+    let native = shards_image::platform::runs(&platform, &shards_image::platform::guest());
+    if request.platform.is_empty() && !native {
         let host = shards_image::platform::maximum();
         warn(&format!(
             "WARNING: The requested image's platform ({}) does not match the detected host platform ({}) and no specific platform was requested",
@@ -786,7 +788,7 @@ pub fn prepare(
             format_all(&host.os, &host.architecture, &host.variant),
         ));
     }
-    let emulator = match shards_image::platform::runs(&platform, &shards_image::platform::guest()) {
+    let emulator = match native {
         true => None,
         false => Some(emulator_for(&platform, request, home, say, cancel)?),
     };

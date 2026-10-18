@@ -516,6 +516,21 @@ fn a_run_of_another_cpus_image_runs_under_its_emulator() {
             )),
         "{shown_foreign}"
     );
+    // 32-bit Arm's, which no guest runs itself (PM M250), on either host: emulated, and
+    // warned of where no platform was asked (Docker Hub's arm32v7/alpine:3.22, 2026-10-18,
+    // whose one manifest is arm/v7's).
+    const ARM32: &str =
+        "arm32v7/alpine:3.22@sha256:f7d3e5b6884ca6ad7154b91c3c9734db235bad4213092e7eba04dd96d4d61d3e";
+    let arm32 = run(&["--rm", ARM32, "uname", "-m"]);
+    let shown_arm32 = shown(&arm32);
+    assert_eq!(arm32.status, Some(0), "{shown_arm32}");
+    assert_eq!(arm32.stdout.trim(), "armv7l", "{shown_arm32}");
+    assert!(
+        arm32.stderr.contains(
+            "WARNING: The requested image's platform (linux/arm/v7) does not match the detected host platform (linux/"
+        ),
+        "{shown_arm32}"
+    );
     // A lone manifest is pulled whatever its platform, and run for its own alone.
     let asked = format!("linux/{ours}");
     let strict = run(&["--rm", "--platform", &asked, lone, "true"]);
