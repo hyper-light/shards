@@ -114,6 +114,7 @@ pub fn main() -> ! {
         }
         "tree" => tree(arg(1)),
         "ps" => ps(),
+        "stacks" => stacks(),
         "mtime" => {
             use std::os::unix::fs::MetadataExt as _;
             for p in args.get(1..).unwrap_or_default() {
@@ -540,6 +541,44 @@ fn ps() -> i32 {
             .map(|a| String::from_utf8_lossy(a).into_owned())
             .collect();
         out.push_str(&format!("{pid} {state} {}\n", args.join(" ")));
+    }
+    let _ = io::stdout().write_all(out.as_bytes());
+    0
+}
+
+/// What each process of the guest's is doing, for a test's hang to be read by (CI's
+/// scripts/ci/hang-watch.sh): `PID STATE WCHAN ARGS`, then its kernel stack, indented.
+fn stacks() -> i32 {
+    let mut pids: Vec<u32> = std::fs::read_dir("/proc")
+        .map(|d| {
+            d.filter_map(|e| e.ok()?.file_name().to_str()?.parse().ok())
+                .collect()
+        })
+        .unwrap_or_default();
+    pids.sort_unstable();
+    let mut out = String::new();
+    for pid in pids {
+        let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) else {
+            continue;
+        };
+        let state = stat
+            .rsplit_once(')')
+            .and_then(|(_, rest)| rest.split_whitespace().next())
+            .unwrap_or("?");
+        let wchan = std::fs::read_to_string(format!("/proc/{pid}/wchan")).unwrap_or_default();
+        let args = std::fs::read(format!("/proc/{pid}/cmdline")).unwrap_or_default();
+        let args: Vec<String> = args
+            .split(|&b| b == 0)
+            .filter(|a| !a.is_empty())
+            .map(|a| String::from_utf8_lossy(a).into_owned())
+            .collect();
+        out.push_str(&format!("{pid} {state} {} {}\n", wchan.trim(), args.join(" ")));
+        for line in std::fs::read_to_string(format!("/proc/{pid}/stack"))
+            .unwrap_or_default()
+            .lines()
+        {
+            out.push_str(&format!("    {line}\n"));
+        }
     }
     let _ = io::stdout().write_all(out.as_bytes());
     0

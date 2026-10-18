@@ -3556,7 +3556,9 @@ impl<D: Disk> Daemon<D> {
             args.push(OsStr::new(if *read_only { "ro" } else { "rw" }));
             args.push(only.as_os_str());
         }
-        let mut fds = vec![(share.as_fd(), 3)];
+        // What it says of its failures, the daemon's log.
+        let err = io::stderr();
+        let mut fds = vec![(err.as_fd(), 2), (share.as_fd(), 3)];
         for (i, (dir, _, _)) in dirs.iter().enumerate() {
             fds.push((dir.as_fd(), 4 + i32::try_from(i).map_err(|_| "too many shares")?));
         }
@@ -5511,11 +5513,13 @@ impl<D: Disk> Daemon<D> {
         }
         let root = File::open(&at).map_err(failed)?;
         let ghosts = self.private_dir()?;
+        let err = io::stderr();
         let child = shards_ipc::spawn_in_group(
             self.group_of(parent)?,
             &exe,
             &[OsStr::new("share"), OsStr::new("--join")],
             &[
+                (err.as_fd(), 2),
                 (served.as_fd(), 3),
                 (theirs.as_fd(), 4),
                 (root.as_fd(), 5),
