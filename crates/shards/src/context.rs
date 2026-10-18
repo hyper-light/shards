@@ -2677,11 +2677,13 @@ fn step_there(
     identity: &Identity,
     context: &Context,
     argv: Vec<String>,
-    fds: &[std::os::fd::BorrowedFd<'_>],
+    fds: &[crate::cli::Stream<'_>],
 ) -> Result<(u8, Vec<u8>, Vec<u8>), String> {
     let what = argv.get(1).cloned().unwrap_or_default();
-    let owned = |fd: &std::os::fd::BorrowedFd<'_>| {
-        fd.try_clone_to_owned()
+    let owned = |stream: &crate::cli::Stream<'_>| {
+        stream
+            .fd()
+            .try_clone_to_owned()
             .map(fs::File::from)
             .map_err(|e| format!("the copy's pipe: {e}"))
     };

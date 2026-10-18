@@ -67,6 +67,7 @@ mod remote;
 mod restart;
 mod rmi;
 mod ship;
+mod slots;
 mod snapshots;
 mod top;
 mod update;
@@ -832,6 +833,12 @@ struct Daemon<D: Disk = Real> {
     stopping: AtomicBool,
     /// The socket is gone: no client arrives from here on.
     closed: AtomicBool,
+    /// What tells the request slots' maker (D185) of a client's leaving and the daemon's
+    /// closing, while it offers slots.
+    slot_events: Mutex<Option<mpsc::Sender<slots::Event>>>,
+    /// Told as a client leaves, under its lock: a slot's client past the most in hand waits
+    /// on it for its turn.
+    room: (Mutex<()>, Condvar),
     /// Held as the socket is removed by [`close`](Self::close) and as the listener binds
     /// it again ([`relisten`](Self::relisten)): a daemon's own removal is never undone.
     socket_at: Mutex<()>,
@@ -1233,6 +1240,16 @@ fn serve(ready: Option<File>, listen: Option<std::net::SocketAddr>) -> Result<()
     if let Some(at) = listen {
         remote::listen(daemon.home.clone(), exe.clone(), at)?;
     }
+    // The request slots (D185), there before it says it serves, so that a client it
+    // started finds them: where they cannot be made it serves its socket alone.
+    let requests = shards_ipc::slots::Requests::open(&daemon.home)
+        .map_err(|e| {
+            log(format!(
+                "{}: {e}; no request's slot is offered",
+                daemon.home.join(shards_ipc::slots::DIR).display()
+            ))
+        })
+        .ok();
     // Its starter returns once it hears this: clients connect now.
     if let Some(mut ready) = ready {
         let _ = ready.write_all(&[1]);
@@ -1247,6 +1264,10 @@ fn serve(ready: Option<File>, listen: Option<std::net::SocketAddr>) -> Result<()
         daemon.ship_left(threads);
         daemon.start_collector(threads);
         daemon.restart_at_start(threads);
+        // The request slots beside the socket (D185).
+        if let Some(requests) = requests {
+            daemon.serve_slots(threads, requests);
+        }
         daemon.listen(threads, listener, api);
     });
     Ok(())
@@ -1411,6 +1432,8 @@ impl<D: Disk> Daemon<D> {
             last: Mutex::new(Instant::now()),
             stopping: AtomicBool::new(false),
             closed: AtomicBool::new(false),
+            slot_events: Mutex::new(None),
+            room: (Mutex::new(()), Condvar::new()),
             socket_at: Mutex::new(()),
             stoppers: Mutex::default(),
             runs: Mutex::default(),
@@ -1468,6 +1491,11 @@ impl<D: Disk> Daemon<D> {
         if !self.closed.swap(true, Ordering::SeqCst) {
             let _ = std::fs::remove_file(self.socket);
             let _ = std::fs::remove_file(engine::SOCKET);
+            self.tell_slots(slots::Event::Close);
+            // A slot's client waiting for room asks the next daemon.
+            let (held, room) = &self.room;
+            let _held = lock(held);
+            room.notify_all();
         }
     }
 
@@ -1717,6 +1745,10 @@ impl<D: Disk> Daemon<D> {
     fn wake_listener(&self) {
         // A full buffer is a wakeup already pending.
         let _ = (&self.listener_wake.0).write(&[0]);
+        self.tell_slots(slots::Event::Room);
+        let (held, room) = &self.room;
+        let _held = lock(held);
+        room.notify_all();
     }
 
     /// How long until the listener has something to do that no client asks for: the idle

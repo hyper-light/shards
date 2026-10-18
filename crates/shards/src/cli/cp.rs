@@ -14,7 +14,7 @@ use shards_cmdline::flags::Parsed;
 
 /// What the daemon is asked, and with which descriptors; its status, stdout and stderr.
 pub(crate) type Ask<'a> =
-    dyn Fn(Vec<String>, &[std::os::fd::BorrowedFd<'_>]) -> Result<(u8, Vec<u8>, Vec<u8>), String> + 'a;
+    dyn Fn(Vec<String>, &[crate::cli::Stream<'_>]) -> Result<(u8, Vec<u8>, Vec<u8>), String> + 'a;
 
 /// Copies as `parsed` says, asking the daemon through `ask`.
 pub fn copy(parsed: &Parsed, ask: &Ask<'_>) -> ExitCode {
@@ -239,7 +239,7 @@ fn from_container(ask: &Ask<'_>, o: &Options, container: &str, src: &str, dst: &
             });
             let asked = ask(
                 step("archive", container, &src),
-                &[std::os::fd::AsFd::as_fd(&writer)],
+                &[crate::cli::Stream::To(std::os::fd::AsFd::as_fd(&writer))],
             );
             drop(writer);
             let laid = unpacking.join().map_err(|_| "unpacking failed".to_string())?;
@@ -357,7 +357,7 @@ fn to_container(ask: &Ask<'_>, o: &Options, container: &str, src: &str, dst: &st
                     if o.uid_gid { "1" } else { "0" }.into(),
                     "0".into(),
                 ],
-                &[std::os::fd::AsFd::as_fd(&reader)],
+                &[crate::cli::Stream::From(std::os::fd::AsFd::as_fd(&reader))],
             );
             drop(reader);
             let packed = packing.join().map_err(|_| "packing failed".to_string())?;

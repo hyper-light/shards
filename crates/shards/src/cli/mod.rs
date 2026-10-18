@@ -15,6 +15,8 @@ use shards_cmdline::flags::{self, Command, Outcome, Parsed};
 #[cfg(unix)]
 mod client;
 #[cfg(unix)]
+pub(crate) use client::Stream;
+#[cfg(unix)]
 pub(crate) mod cp;
 #[cfg(unix)]
 pub(crate) mod listing;
@@ -511,10 +513,12 @@ fn container(
         match resolved {
             Ok((daemon, identity, home)) => {
                 use std::os::fd::AsFd as _;
-                let mut fds: Vec<std::os::fd::BorrowedFd<'_>> = output.iter().map(save::Output::fd).collect();
+                // What the daemon writes, the command's output; what it reads, its input.
+                let mut fds: Vec<client::Stream<'_>> =
+                    output.iter().map(|o| client::Stream::To(o.fd())).collect();
                 match &input {
-                    Some(Some(file)) => fds.push(file.as_fd()),
-                    Some(None) => fds.push(stdin.as_fd()),
+                    Some(Some(file)) => fds.push(client::Stream::From(file.as_fd())),
+                    Some(None) => fds.push(client::Stream::From(stdin.as_fd())),
                     None => {}
                 }
                 let command_of = |argv: Vec<String>| shards_ipc::Command {

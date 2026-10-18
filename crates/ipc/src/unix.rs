@@ -523,11 +523,17 @@ fn fill(
 ///
 /// On macOS a socket is read with `MSG_DONTWAIT`, and waited for only where nothing has
 /// come, as a read waits: not at all where `fd` is set not to block, and no longer than
-/// its receive timeout, `WouldBlock` either way. A read a signal cut short is made again.
+/// its receive timeout, `WouldBlock` either way. A FIFO or pipe that waits is waited for in
+/// [`await_fifo`], whose select(2) sees a writer's end that a read can sleep through (PM
+/// M253). A read a signal cut short is made again.
 pub fn read(fd: impl AsFd, buf: &mut [u8]) -> io::Result<usize> {
     let fd = fd.as_fd();
     let mut socket = cfg!(target_os = "macos");
+    let mut fifo = false;
     loop {
+        if fifo {
+            await_fifo(fd)?;
+        }
         let n = if socket {
             // SAFETY: recv(2) into `buf`, at most its length.
             unsafe {
@@ -548,11 +554,29 @@ pub fn read(fd: impl AsFd, buf: &mut [u8]) -> io::Result<usize> {
         let e = io::Error::last_os_error();
         match e.raw_os_error() {
             Some(libc::EINTR) => {}
-            Some(libc::ENOTSOCK) if socket => socket = false,
+            Some(libc::ENOTSOCK) if socket => {
+                socket = false;
+                fifo = waiting_fifo(fd);
+            }
             _ if socket && e.kind() == io::ErrorKind::WouldBlock => await_readable(fd, None)?,
             _ => return Err(e),
         }
     }
+}
+
+/// Whether `fd` is a FIFO or pipe whose reads wait: one that is set not to is never
+/// waited for.
+fn waiting_fifo(fd: BorrowedFd<'_>) -> bool {
+    // SAFETY: fstat(2) into a zeroed stat buffer, of a descriptor the caller holds open.
+    let mut st: libc::stat = unsafe { std::mem::zeroed() };
+    // SAFETY: as above; and fcntl(2) reading its flags.
+    let (stat, flags) = unsafe {
+        (
+            libc::fstat(fd.as_raw_fd(), &mut st),
+            libc::fcntl(fd.as_raw_fd(), libc::F_GETFL),
+        )
+    };
+    stat == 0 && st.st_mode & libc::S_IFMT == libc::S_IFIFO && flags >= 0 && flags & libc::O_NONBLOCK == 0
 }
 
 /// What reads through [`read`]: a socket, a pipe or a terminal read with

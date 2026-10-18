@@ -317,10 +317,149 @@ fn ended(pidfd: &std::os::fd::OwnedFd) {
     }
 }
 
+/// A descriptor a container command's request stands for, and which way it goes: what the
+/// daemon writes (`To`: save's and export's output, cp's archive) or reads (`From`:
+/// import's and load's input, cp's extract).
+#[derive(Debug, Clone, Copy)]
+pub enum Stream<'a> {
+    To(BorrowedFd<'a>),
+    From(BorrowedFd<'a>),
+}
+
+impl Stream<'_> {
+    pub fn fd(&self) -> BorrowedFd<'_> {
+        match self {
+            Stream::To(fd) | Stream::From(fd) => *fd,
+        }
+    }
+}
+
+/// Where a request went: a slot (D185), or the socket of a daemon of a build from before
+/// slots, which asked there steps aside for this client's.
+enum Asked {
+    Slot(shards_ipc::slots::Client),
+    Socket(UnixStream),
+}
+
+/// Asks `home`'s daemon, whose binary is `daemon`, through a slot (D185): `kind` and
+/// `payload`, with `fds` as the slot's streams, `out` for what the daemon writes and `in`
+/// for what it reads. Starts the daemon where none offers slots, unless `started` says
+/// this process has, and waits for its first slot as long as a daemon takes to start.
+fn ask_slot(
+    home: &Path,
+    daemon: &Path,
+    started: &mut bool,
+    kind: u8,
+    payload: &[u8],
+    fds: &[Stream<'_>],
+) -> Result<Asked, String> {
+    use shards_ipc::slots;
+    let streams = fds.iter().fold(0, |opened, s| {
+        opened
+            | match s {
+                Stream::To(_) => slots::streams::OUT,
+                Stream::From(_) => slots::streams::IN,
+            }
+    });
+    let named: Vec<u8> = fds
+        .iter()
+        .map(|s| match s {
+            Stream::To(_) => slots::fds::OUT,
+            Stream::From(_) => slots::fds::IN,
+        })
+        .collect();
+    let mut deadline = Instant::now() + START_TIMEOUT;
+    loop {
+        // The home is this process's working directory (`enter`): its slots are named from
+        // there, as its socket is.
+        match slots::take(Path::new("."), streams) {
+            Ok(slots::Taken::Slot(client)) => match client.ask(kind, payload, &named) {
+                Ok(()) => return Ok(Asked::Slot(client)),
+                // Removed as it was asked: the next.
+                Err(e) if e.kind() == io::ErrorKind::BrokenPipe => {}
+                Err(e) => return Err(format!("asking the daemon: {e}")),
+            },
+            Ok(slots::Taken::NoDaemon) => {
+                if let Ok(conn) = UnixStream::connect(SOCKET) {
+                    return Ok(Asked::Socket(conn));
+                }
+                if !*started {
+                    start(daemon, home)?;
+                    *started = true;
+                    deadline = Instant::now() + START_TIMEOUT;
+                }
+                if shards_ipc::exiting(home) {
+                    deadline = Instant::now() + START_TIMEOUT;
+                }
+                if Instant::now() >= deadline {
+                    return Err(format!("the daemon did not start; see {}", log(home).display()));
+                }
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            Err(e) => return Err(format!("{}: {e}", home.join(slots::DIR).display())),
+        }
+    }
+}
+
+/// The daemon's next message on its slot, as its socket's would be, without descriptors.
+fn slot_message(client: &shards_ipc::slots::Client) -> io::Result<Option<shards_ipc::Message>> {
+    Ok(client.recv()?.map(|f| shards_ipc::Message {
+        kind: f.kind,
+        payload: f.payload,
+        fds: Vec::new(),
+    }))
+}
+
+/// Copies `client`'s streams to and from `fds`, the descriptors its request stands for:
+/// what the daemon writes, from its slot's `out` to the descriptor, on a thread of
+/// `scope`'s, which its caller waits for; what it reads, from the descriptor to `in`, on a
+/// thread of its own, which ends as its input does, or with this process, where the
+/// daemon has done before that input ends (a terminal's).
+fn copy_streams<'s>(
+    scope: &'s std::thread::Scope<'s, '_>,
+    client: &mut shards_ipc::slots::Client,
+    fds: &[Stream<'_>],
+) -> Result<Vec<std::thread::ScopedJoinHandle<'s, io::Result<u64>>>, String> {
+    let mut waited = Vec::new();
+    for stream in fds {
+        let fd = File::from(
+            stream
+                .fd()
+                .try_clone_to_owned()
+                .map_err(|e| format!("a stream's descriptor: {e}"))?,
+        );
+        match stream {
+            Stream::To(_) => {
+                let Some(out) = client.output.take() else {
+                    continue;
+                };
+                let copied = std::thread::Builder::new()
+                    .name("shards-out".into())
+                    .spawn_scoped(scope, move || {
+                        let mut to = fd;
+                        io::copy(&mut shards_ipc::slots::Reader(&out), &mut to)
+                    })
+                    .map_err(|e| format!("a stream's thread: {e}"))?;
+                waited.push(copied);
+            }
+            Stream::From(_) => {
+                let Some(mut input) = client.input.take() else {
+                    continue;
+                };
+                std::thread::Builder::new()
+                    .name("shards-in".into())
+                    .spawn(move || io::copy(&mut shards_ipc::Polled(&fd), &mut input))
+                    .map_err(|e| format!("a stream's thread: {e}"))?;
+            }
+        }
+    }
+    Ok(waited)
+}
+
 /// Runs a container command (`ps`, `wait`, `rm`, ...) in the daemon of `home`, whose
 /// binary is `daemon`, printing what the daemon answers as it comes, and exits with the
 /// command's status.
-pub fn container(home: &Path, daemon: &Path, command: &Command, fds: &[std::os::fd::BorrowedFd<'_>]) -> u8 {
+pub fn container(home: &Path, daemon: &Path, command: &Command, fds: &[Stream<'_>]) -> u8 {
     let failed = |message: &str| {
         let _ = writeln!(io::stderr(), "shards: {message}");
         NOT_RUN
@@ -331,19 +470,44 @@ pub fn container(home: &Path, daemon: &Path, command: &Command, fds: &[std::os::
     };
     // A daemon from another build answers RESTART once it has stepped aside.
     for _ in 0..2 {
-        // Its signals act on it as they would, as it waits too.
-        let conn = match connect(home, daemon, &mut started, &mut || Ok(())) {
-            Ok(conn) => conn,
+        let asked = match ask_slot(
+            home,
+            daemon,
+            &mut started,
+            kind::CONTAINER,
+            &command.encode(),
+            fds,
+        ) {
+            Ok(asked) => asked,
             Err(e) => return failed(&e),
         };
-        match shards_ipc::send(&conn, kind::CONTAINER, &command.encode(), fds) {
-            Err(e) if unread(&e) => continue,
-            Err(e) => return failed(&format!("asking the daemon: {e}")),
-            Ok(()) => {}
-        }
-        let answered = std::thread::scope(|scope| answer(scope, &conn, home, command.east_asian));
-        if let Some(status) = answered {
-            return status;
+        let answered = match asked {
+            Asked::Slot(mut client) => std::thread::scope(|scope| {
+                let copies = copy_streams(scope, &mut client, fds)?;
+                let status = answer(scope, &mut || slot_message(&client), home, command.east_asian);
+                for copy in copies {
+                    if let Ok(Err(e)) = copy.join() {
+                        return Err(format!("a stream of the daemon's: {e}"));
+                    }
+                }
+                Ok(status)
+            }),
+            Asked::Socket(conn) => {
+                let raw: Vec<BorrowedFd<'_>> = fds.iter().map(Stream::fd).collect();
+                match shards_ipc::send(&conn, kind::CONTAINER, &command.encode(), &raw) {
+                    Err(e) if unread(&e) => continue,
+                    Err(e) => return failed(&format!("asking the daemon: {e}")),
+                    Ok(()) => {}
+                }
+                Ok(std::thread::scope(|scope| {
+                    answer(scope, &mut || shards_ipc::recv(&conn), home, command.east_asian)
+                }))
+            }
+        };
+        match answered {
+            Ok(Some(status)) => return status,
+            Ok(None) => {}
+            Err(e) => return failed(&e),
         }
     }
     failed("the daemon kept asking for a restart")
@@ -355,41 +519,68 @@ pub fn ask(
     home: &Path,
     daemon: &Path,
     command: &Command,
-    fds: &[std::os::fd::BorrowedFd<'_>],
+    fds: &[Stream<'_>],
 ) -> Result<(u8, Vec<u8>, Vec<u8>), String> {
     let mut started = enter(home, daemon)?;
     // A daemon from another build answers RESTART once it has stepped aside.
     for _ in 0..2 {
-        let conn = connect(home, daemon, &mut started, &mut || Ok(()))?;
-        match shards_ipc::send(&conn, kind::CONTAINER, &command.encode(), fds) {
-            Err(e) if unread(&e) => continue,
-            Err(e) => return Err(format!("asking the daemon: {e}")),
-            Ok(()) => {}
-        }
-        let (mut out, mut err) = (Vec::new(), Vec::new());
-        loop {
-            match shards_ipc::recv(&conn) {
-                Ok(Some(m)) if m.kind == kind::OUT => out.extend(m.payload),
-                Ok(Some(m)) if m.kind == kind::ERR => err.extend(m.payload),
-                Ok(Some(m)) if m.kind == kind::END => {
-                    return Ok((m.payload.first().copied().unwrap_or(1), out, err));
+        let collect = |recv: &mut dyn FnMut() -> io::Result<Option<shards_ipc::Message>>| {
+            let (mut out, mut err) = (Vec::new(), Vec::new());
+            loop {
+                match recv() {
+                    Ok(Some(m)) if m.kind == kind::OUT => out.extend(m.payload),
+                    Ok(Some(m)) if m.kind == kind::ERR => err.extend(m.payload),
+                    Ok(Some(m)) if m.kind == kind::END => {
+                        return Ok(Some((m.payload.first().copied().unwrap_or(1), out, err)));
+                    }
+                    Ok(Some(m)) if m.kind == kind::RESTART => return Ok(None),
+                    Ok(Some(_)) => {}
+                    Ok(None) | Err(_) => return Err("the daemon ended before it answered".to_string()),
                 }
-                Ok(Some(m)) if m.kind == kind::RESTART => break,
-                Ok(Some(_)) => {}
-                Ok(None) | Err(_) => return Err("the daemon ended before it answered".into()),
             }
+        };
+        let answered = match ask_slot(
+            home,
+            daemon,
+            &mut started,
+            kind::CONTAINER,
+            &command.encode(),
+            fds,
+        )? {
+            Asked::Slot(mut client) => std::thread::scope(|scope| {
+                let copies = copy_streams(scope, &mut client, fds)?;
+                let answered = collect(&mut || slot_message(&client));
+                for copy in copies {
+                    if let Ok(Err(e)) = copy.join() {
+                        return Err(format!("a stream of the daemon's: {e}"));
+                    }
+                }
+                answered
+            })?,
+            Asked::Socket(conn) => {
+                let raw: Vec<BorrowedFd<'_>> = fds.iter().map(Stream::fd).collect();
+                match shards_ipc::send(&conn, kind::CONTAINER, &command.encode(), &raw) {
+                    Err(e) if unread(&e) => continue,
+                    Err(e) => return Err(format!("asking the daemon: {e}")),
+                    Ok(()) => {}
+                }
+                collect(&mut || shards_ipc::recv(&conn))?
+            }
+        };
+        if let Some(answered) = answered {
+            return Ok(answered);
         }
     }
     Err("the daemon kept asking for a restart".into())
 }
 
-/// The daemon's answer on `conn`: its output, as it comes, and its status, or `None`
-/// when it asks for a restart. Steps of a pull, which the daemon sends a terminal, are
-/// shown by a display of their own (show.rs), on a thread of this `scope`; the daemon's
-/// text then goes through it, below its frame.
+/// The daemon's answer, its messages as `recv` takes them: its output, as it comes, and its
+/// status, or `None` when it asks for a restart. Steps of a pull, which the daemon sends a
+/// terminal, are shown by a display of their own (show.rs), on a thread of this `scope`;
+/// the daemon's text then goes through it, below its frame.
 fn answer<'s>(
     scope: &'s std::thread::Scope<'s, '_>,
-    conn: &UnixStream,
+    recv: &mut dyn FnMut() -> io::Result<Option<shards_ipc::Message>>,
     home: &Path,
     east_asian: bool,
 ) -> Option<u8> {
@@ -418,7 +609,7 @@ fn answer<'s>(
         (None, Shown::Progress(_)) => {}
     };
     loop {
-        match shards_ipc::recv(conn) {
+        match recv() {
             Ok(Some(m)) if m.kind == kind::PROGRESS => {
                 let Some(event) = shards_ipc::Progress::decode(&m.payload) else {
                     continue;
