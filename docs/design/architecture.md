@@ -2610,7 +2610,18 @@ microVM as virtio-fs shares (virtio 1.3 §5.11; Linux fs/fuse/virtio_fs.c):
   whose destination holds files in the image, first mounted empty, gets them copied in
   as continuity's CopyDir copies them (owners, modes, times, xattrs, hard links), then
   its root's owner and mode (copyExistingContents); dockerd copies at create, shards at
-  the first start, the only moment the image's files are in reach.
+  the first start, the only moment the image's files are in reach. One whose destination
+  the image has nothing at, first mounted empty, has its top owned by the run's user and
+  group (init tells each such volume's setup entry `owner=UID:GID`, as it resolved the
+  run's `--user`), where a root-owned top would shut a run of any other user out of the
+  volume it was given: of the official images that run as other than root, PM M249 found
+  one whose own user meets it, percona's declared `/var/log/mysql`, and no other image's
+  volume it changes. The first run's user keeps it, as any directory's owner does.
+  Tested: `a_fresh_volume_where_its_image_has_nothing_is_its_runs_users` (the image's own
+  non-root user writes its fresh `/data` and owns it; root's is root's; another user then
+  writes it not; an image's own directory still gives its owner), and init's unit test of
+  the entries told. Mutation-checked, each caught: the owner never told; told and not
+  used; given over the image's own directory.
 - **`shards volume`** (`daemon/volume.rs`): `create`, `ls`, `inspect`, `rm` and `prune`
   as `docker volume` (docker/cli v29.8.1 cli/command/volume; the help and parse held by
   the docker-cli oracle), dockerd's volume service behind them (filters `dangling`,

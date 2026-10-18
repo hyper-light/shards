@@ -8775,6 +8775,52 @@ fn run_mounts_binds_volumes_and_tmpfs() {
 /// volume made, mounted, refused removal while a microVM mounts it, listed, pruned; a
 /// local volume with `o=bind` mounts its host directory; `system df` counts them.
 #[cfg(unix)]
+/// A fresh volume where its image has nothing at the mount point is its run's user's (D38,
+/// PM M249): its top owned by the run's user and group, so that a run as other than root
+/// writes the volume it was given, as root's top would not let it; a root run's is root's;
+/// the first run's user keeps it for the runs after; and one where the image has a
+/// directory takes that directory's owner, as it did.
+#[test]
+fn a_fresh_volume_where_its_image_has_nothing_is_its_runs_users() {
+    let Some((home, image)) = home("containers-fresh") else {
+        return;
+    };
+    // The image runs as app, 1000:1000, and has no /data.
+    let wrote = run_in(
+        &home,
+        &image,
+        &["--rm", "-v", "fresh:/data"],
+        &["fs", "write:/data/x=1"],
+    );
+    assert_eq!(wrote.status, Some(0), "{wrote}");
+    let seen = run_in(&home, &image, &["--rm", "-v", "fresh:/data"], &["stat", "/data"]);
+    assert!(seen.stdout.starts_with("/data dir 755 1000:1000 "), "{seen}");
+    let rooted = run_in(
+        &home,
+        &image,
+        &["--rm", "-u", "0", "-v", "rooted:/data"],
+        &["stat", "/data"],
+    );
+    assert!(rooted.stdout.starts_with("/data dir 755 0:0 "), "{rooted}");
+    let other = run_in(
+        &home,
+        &image,
+        &["--rm", "-u", "2000:2000", "-v", "fresh:/data"],
+        &["fs", "write:/data/y=2"],
+    );
+    assert_ne!(other.status, Some(0), "{other}");
+    let imaged = run_in(
+        &home,
+        &image,
+        &["--rm", "-u", "0", "-v", "homes:/home/app"],
+        &["stat", "/home/app"],
+    );
+    assert!(
+        imaged.stdout.starts_with("/home/app dir 755 1000:1000 "),
+        "{imaged}"
+    );
+}
+
 #[test]
 fn volume_commands_keep_volumes() {
     let Some((home, image)) = home("containers-volume-commands") else {
