@@ -5192,6 +5192,72 @@ answer read as the helper is found; a helper dropped unread left running; a canc
 ends no helper; one that ends the helper alone and not its group (its script's child
 holds its output open); the answer waited for under the hosts' lock; a wait never said.
 
+### D185. The client and its daemon meet through files in the home (designed; slices 1 to 4 to build)
+
+**Why.** shards is filesystem based (the user, repeatedly; 2026-10-18: `daemon.sock` was an
+error). Its own interfaces are files in the home; a socket stays only where an outside
+client's protocol demands one: the Engine API's `engine.sock` (D170), a context's
+`e/ID.sock` (D180). The CLI's channel to its daemon, `daemon.sock`, is shards' own, and
+goes.
+
+**What crosses today.** A request (a run, an exec, an attach, a command of the catalog's:
+`ps`, `inspect`, `rm`...), the client's stdin, stdout and stderr as descriptors
+(`SCM_RIGHTS`), the streams of `save`, `export`, `import`, `load` and `cp`, answers (`OUT`,
+`ERR`, `END`, progress), and, for a run, the client's connection itself, which the daemon
+hands to the run's VM, which then sends `EXIT` and reads `RESIZE` and `SIGNAL`; a microVM
+given a host's devices sends its process's pidfd with `EXIT` (D154). Files carry no
+descriptors.
+
+**Measured.**
+- How each end of a FIFO learns the other has gone (PM M253): a blocking read(2) sees its
+  writer's end at once on macOS and Linux, in every one of 5,000 trials each; on macOS
+  poll(2) and kqueue(2) never do, and a writer learns of its reader's end only as it next
+  writes (`EPIPE`). So each side holds the read end of a FIFO the other writes, and waits on
+  it in a blocking read, never in poll or kqueue.
+- What a request costs (PM M254), against the socket's 23 to 30 µs at p50: a directory
+  made for each request, 413 to 562 µs on macOS (APFS's metadata operations, with tails to
+  21 ms under load) and 55 µs on Linux; a slot the daemon made ahead, which the client takes
+  and opens, 83 to 112 µs on macOS (each open by path 10 to 28 µs) and 34 µs on Linux. A
+  FIFO's round trip itself costs no more than the socket's. macOS refuses flock(2) on a
+  FIFO.
+
+**Decided.**
+- **Slots, made ahead.** The daemon keeps requests' slots in `$SHARDS_HOME/requests/`,
+  0700: each a few FIFOs named by its number (`N.say`, `N.answer`, and the streams `N.in`,
+  `N.out`, `N.err`), made before any client asks, the daemon holding its own ends of each:
+  `say`'s reader and a writer of its own until a client has written, `answer`'s writer. A
+  slot is used once, then removed, and its number never again: no client can meet another's
+  leavings in a FIFO.
+- **Handed out by a FIFO.** The daemon writes each free slot's number to
+  `requests/free`, a record of fixed length, far under `PIPE_BUF`, so written whole; a
+  client takes a slot by reading one record, which no other client can then read. No lock
+  file, and no search: the client opens `free`, reads, opens its slot's `answer` to read and
+  `say` to write, and writes its request. Where every slot is taken, the client's read
+  waits until the daemon has made more, in the order clients came. A slot whose client
+  never wrote to it is removed after a minute; a client that finds its slot gone reads
+  another.
+- **Liveness, each way.** The daemon reads `say` in a blocking read; once a client has
+  written, the daemon drops its own writer, so the client's end, its exit or its kill, ends
+  the read. The client reads `answer`; the daemon's end, or that of the VM it handed it to,
+  ends the client's read. No timer, no process ID.
+- **No daemon.** `free` with no writer reads its end at once: the client starts the daemon,
+  as it does today where nothing listens, and waits for its first slot. One daemon a home:
+  it takes `daemon.lock` with flock(2), exclusively, as it starts.
+- **Streams.** A run's, an exec's and an attach's stdio, and `save`'s, `export`'s,
+  `import`'s, `load`'s and `cp`'s streams go through the slot's `in`, `out` and `err`: the
+  daemon gives the VM its ends, as it gave the client's descriptors, and the client copies
+  between them and its own stdio. A microVM with a host's devices sends its process's ID
+  with `EXIT`, and the client waits for that process's end itself (pidfd_open(2), as the
+  same user).
+- **Messages** are today's frames without descriptors, each FIFO of one writer at a time:
+  the daemon's, until it hands `answer` to a run's VM.
+
+**Slices.** 1: the slots in `shards_ipc` (made, handed out, taken, read and written, and
+each end seen), unit-tested across processes on macOS and Linux. 2: the catalog's commands
+through them, their streams copied by the client. 3: runs, execs and attaches. 4:
+`daemon.sock` removed; a run's start and output measured before and after (build-ab, PM M29);
+the README.
+
 ### D186. How much of the disk shards keeps is its user's to set (`shards configure disk`, built)
 
 **Found.** The audit of defaults taken from Docker (docs/audit/2026-10-16_docker-framing.md):

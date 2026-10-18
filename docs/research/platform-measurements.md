@@ -9191,3 +9191,86 @@ revision before comparing a changed API/implementation.
     to go stale.
   - Run 2's maxima are scheduling stalls of the loaded host, not the reads' own: in the
     same loop the stat stalled 29.5 ms, and the read of no file 4.8 ms.
+
+### M253. How each end of a FIFO learns the other has closed, on macOS and Linux (D185)
+
+- **Question.** shards' client and daemon are to talk through files in the home (D185):
+  FIFOs, whose ends cannot be passed as a socket's are. Each side must learn when the
+  other has gone, its process ended or killed, as a socket's peer learns of a hangup. Which
+  waits see a FIFO's other end close?
+- **Method.** `docs/research/measurements/fifo-ends/run.sh SHARDS KERNEL INIT`, 2026-10-18,
+  on an Apple M5 Max, macOS 26.4.1 (Darwin 25.4.0), load average 23 to 31, and in a microVM
+  of shards' there (Linux 6.18.48, arm64, alpine:3.22), revision f1382d0b. `ends.c` part
+  1, 3 rounds of each: a child opens the FIFO's other end, writes or reads a byte, waits
+  200 ms and exits; the parent waits on its end with poll(2), select(2), and kqueue(2)
+  (macOS) or epoll(7) (Linux), for 3 s at most. Part 2: the writer closes at a random point
+  0 to 2 ms after the reader begins a blocking read(2), select(2) or poll(2); a wait still
+  there 1.1 s later is stuck. n = 5,000 trials each of read and select, 20 of poll.
+- **Results.**
+
+  | wait | macOS reader | macOS writer | Linux reader | Linux writer |
+  |---|---|---|---|---|
+  | poll | never woke (3 of 3) | never woke (3 of 3) | POLLHUP, ≤ 0.1 ms | POLLERR, ≤ 0.1 ms |
+  | select | readable, 0.1 to 0.5 ms | (no wake: a writer is always writable) | readable, ≤ 0.1 ms | (as macOS) |
+  | kqueue / epoll | never woke, no EV_EOF (3 of 3) | no EV_EOF (3 of 3) | EPOLLHUP, ≤ 0.1 ms | EPOLLERR, ≤ 0.1 ms |
+  | blocking read, 5,000 trials | close seen in all | | close seen in all | |
+  | select, 5,000 trials | close seen in all | | close seen in all | |
+  | poll, 20 trials | close seen in none | | close seen in all | |
+
+  - On macOS neither poll(2) nor kqueue(2) ever says a FIFO's writer has gone, though the
+    next read returns 0; nor its reader, though the next write fails `EPIPE`. A blocking
+    read(2) and select(2) do see the writer's end, in every trial.
+  - On Linux every wait sees either end close (fs/pipe.c `pipe_poll`).
+  - So on both, a FIFO's reader blocked in read(2) learns of its writer's end at once, and
+    that is how each side of a FIFO channel must watch the other: never by poll(2) or
+    kqueue(2), which on macOS would wait for ever. A writer learns of its reader's end only
+    as it writes, on macOS; so each side holds the read end of a FIFO the other writes.
+
+### M254. What a client's request to its daemon costs through files in the home (D185)
+
+- **Question.** The client and its daemon are to meet through files in the home, not a
+  socket (D185). How much does a request cost each way of doing it, as the client sees
+  it, from its first call to its reading the daemon's first answer?
+- **Method.** `docs/research/measurements/request-files/run.sh SHARDS KERNEL INIT`,
+  2026-10-18, revision d9c05874: on an Apple M5 Max, macOS 26.4.1, APFS, at load averages
+  of 14 to 31 (two runs of `requests`, one of `steps`, between this session's builds),
+  and in a microVM of shards' there (Linux 6.18.48, arm64, overlayfs root; two runs, one
+  on `/tmp`). `requests.c`: four daemon processes answer a 64-byte request with a byte, n
+  = 2,000 rounds of each way after 100 warm-up rounds, interleaved, their order rotating
+  each round. `socket`: connect(2), the request, the answer. `dir`: the client makes the
+  request's directory (mkdir, mkfifo `answer` and `say`, its ends opened, the request
+  written and renamed into place) and names it on the daemon's door FIFO; its removal at
+  the client's end measured apart. `slot`: the daemon made the directory ahead, holding
+  its ends (`say`'s reader and a writer of its own, `answer`'s writer); the client takes
+  its lock file (flock(2)), opens `answer` to read and `say` to write, writes and reads.
+  `pair`: one FIFO pair both hold open, the floor. `steps.c` times each of a slot's steps,
+  its files named flat in one directory; `fifolock.c` asks for flock(2) on a FIFO.
+- **Results** (µs).
+
+  | way | macOS run 1 p50 / p90 / p99 / max | macOS run 2 | Linux run 1 | Linux `/tmp` |
+  |---|---|---|---|---|
+  | socket | 23 / 33 / 70 / 461 | 30 / 67 / 380 / 6,997 | 30 / 39 / 59 / 157 | 30 / 38 / 53 / 170 |
+  | dir | 413 / 497 / 625 / 21,310 | 562 / 786 / 2,492 / 8,214 | 55 / 68 / 86 / 194 | 54 / 64 / 85 / 182 |
+  | dir, its removal | 125 / 169 / 209 / 26,280 | 168 / 231 / 385 / 2,425 | 9 / 15 / 21 / 44 | 9 / 14 / 15 / 35 |
+  | slot | 83 / 109 / 152 / 523 | 112 / 184 / 973 / 5,444 | 34 / 43 / 64 / 259 | 33 / 41 / 54 / 189 |
+  | pair | 13 / 23 / 57 / 821 | 17 / 53 / 510 / 3,790 | 27 / 34 / 47 / 134 | 26 / 34 / 44 / 144 |
+
+  | a slot's step, p50 / p99 | macOS (load 15) | macOS (load 20) | Linux |
+  |---|---|---|---|
+  | open the lock file | 14 / 41 | 28 / 78 | 1.4 / 5.0 |
+  | flock | 0 / 2 | 1 / 2 | 0.3 / 1.9 |
+  | open `answer` | 9 / 28 | 22 / 67 | 1.2 / 4.5 |
+  | open `say` | 10 / 26 | 24 / 52 | 1.1 / 4.0 |
+  | the request's write | 2 / 4 | 2 / 7 | 4.1 / 9.5 |
+  | the answer's read | 16 / 68 | 10 / 614 | 20 / 35 |
+  | all | 58 / 125 | 97 / 811 | 29 / 47 |
+
+  - flock(2) on a FIFO: refused on macOS (`EOPNOTSUPP`, and `O_EXLOCK` with it); taken,
+    exclusive and let go at close on Linux. So a slot's lock is a file of its own.
+  - A directory made for each request costs 10 to 20 times a socket's connect on macOS,
+    and its removal again a third of that: APFS's metadata operations, slower with load.
+    On Linux it costs under twice the socket.
+  - A slot made ahead costs on Linux what the socket does (34 µs against 30). On macOS it
+    costs 60 to 80 µs more than the socket at p50: its three opens by path, 10 to 28 µs
+    each on APFS where Linux's take 1, and more as load grows. The FIFO round trip itself
+    (`pair`) costs no more than the socket's on either.
