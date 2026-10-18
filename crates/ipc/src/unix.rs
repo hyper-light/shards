@@ -1051,6 +1051,36 @@ impl Child {
         }
         Ok(())
     }
+
+    /// Sends `signal` to the process group a detached child leads ([`spawn`]'s `detach`:
+    /// its group's ID is its pid), and so to every process of that group, unless the child
+    /// has been reaped. A group that has no process left is sent nothing.
+    pub fn kill_group(&self, signal: libc::c_int) -> io::Result<()> {
+        let reaped = self.reaped.lock().unwrap_or_else(PoisonError::into_inner);
+        if *reaped {
+            return Ok(());
+        }
+        if let Some(by) = self.by
+            && !crate::spawner::serving(by)
+        {
+            return Err(io::Error::other("the spawner that made it has gone"));
+        }
+        // SAFETY: kill(2) of the group our unreaped child leads: while it is not reaped, its
+        // pid, the group's ID, is no other process's or group's.
+        if unsafe { libc::kill(-self.pid, signal) } != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
+    }
+
+    /// Whether the child has ended, neither waiting for it nor reaping it.
+    pub fn has_ended(&self) -> bool {
+        let ended = match self.by {
+            Some(by) => crate::spawner::status(by, self.pid, false),
+            None => status_of(self.pid, false),
+        };
+        matches!(ended, Ok(Some(_)))
+    }
 }
 
 /// Whether this process's child `pid` has ended, waiting for it to if `wait`: its status

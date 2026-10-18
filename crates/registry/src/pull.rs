@@ -71,6 +71,9 @@ pub enum Event<'a> {
     /// The manifest for our platform is known, and about to be fetched: where dockerd
     /// says it is pulling (daemon/containerd/image_pull.go, on the first manifest).
     Pulling,
+    /// The pull waits for its registry's credential helper to answer: what it waits on
+    /// ([`Registry::saying_waits`], D184).
+    Waiting(&'a str),
 }
 
 /// Pulls `reference` for the platforms `targets` into `store`, its root filesystem built
@@ -110,23 +113,26 @@ fn pull_as(
     report: &(dyn Fn(Event<'_>) + Sync),
     fresh: bool,
 ) -> Result<Pulled, Error> {
-    pulled(registry, store, reference, targets, limits, report, fresh).map_err(|e| {
-        // daemon/containerd/image_pull.go: a refused authorization in dockerd's own
-        // words, but for want of basic credentials, which it leaves containerd's.
-        if e.kind() == ErrorKind::Unauthorized && !e.to_string().contains("no basic auth credentials") {
-            let mut bare = reference.clone();
-            bare.tag = None;
-            bare.digest = None;
-            return Error::of(
-                ErrorKind::Unauthorized,
-                format!(
-                    "pull access denied for {}, repository does not exist or may require 'docker login'",
-                    bare.familiar()
-                ),
-            );
-        }
-        e.into_reported()
-    })
+    let pull = || pulled(registry, store, reference, targets, limits, report, fresh);
+    registry
+        .saying_waits(&|notice| report(Event::Waiting(notice)), pull)
+        .map_err(|e| {
+            // daemon/containerd/image_pull.go: a refused authorization in dockerd's own
+            // words, but for want of basic credentials, which it leaves containerd's.
+            if e.kind() == ErrorKind::Unauthorized && !e.to_string().contains("no basic auth credentials") {
+                let mut bare = reference.clone();
+                bare.tag = None;
+                bare.digest = None;
+                return Error::of(
+                    ErrorKind::Unauthorized,
+                    format!(
+                        "pull access denied for {}, repository does not exist or may require 'docker login'",
+                        bare.familiar()
+                    ),
+                );
+            }
+            e.into_reported()
+        })
 }
 
 fn pulled(

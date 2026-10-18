@@ -161,3 +161,164 @@ fn logins_are_checked_kept_used_and_forgotten() {
         ),
     );
 }
+
+/// The program `text` at `path`, written by a process of its own: a file this one held open
+/// to write, a child another test's thread forked meanwhile would hold until it execs, and
+/// an exec of it would fail with ETXTBSY until then (Linux).
+fn program(path: &Path, text: &str) {
+    let mut writer = std::process::Command::new("/bin/sh")
+        .arg("-c")
+        .arg(r#"cat > "$0" && chmod 755 "$0""#)
+        .arg(path)
+        .stdin(Stdio::piped())
+        .spawn()
+        .unwrap();
+    writer.stdin.take().unwrap().write_all(text.as_bytes()).unwrap();
+    assert!(writer.wait().unwrap().success(), "{} not written", path.display());
+}
+
+/// Whether process `pid` has gone: reaped, as kill(2) of no signal finds none.
+fn gone(pid: i32) -> bool {
+    // SAFETY: kill(2) with no signal sends nothing; it asks whether the process is.
+    unsafe { libc::kill(pid, 0) != 0 && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH) }
+}
+
+/// The pids `file` records, a line each.
+fn pids(file: &Path) -> Vec<i32> {
+    std::fs::read_to_string(file)
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|l| l.trim().parse().ok())
+        .collect()
+}
+
+/// A credential helper that never answers (as Docker Desktop's did on 2026-10-17, its
+/// backend gone, for 12 minutes and more) holds no pull from a registry that asks for no
+/// credentials: it is asked, never waited for, and ended with the pull. A pull from one that
+/// asks says what it waits on, and its client's going ends the helper with it (D184).
+#[test]
+fn a_credential_helper_that_never_answers_holds_only_what_needs_its_answer() {
+    let home = TempDir::new("stuck-helper");
+    let config = home.join("config");
+    std::fs::create_dir_all(&config).unwrap();
+    std::fs::write(config.join("config.json"), r#"{"credsStore":"stuck"}"#).unwrap();
+    // Its pid recorded, then a wait for ever, its input never read.
+    let recorded = home.join("helper-pids");
+    program(
+        &no_helpers(&home).join("docker-credential-stuck"),
+        &format!(
+            "#!/bin/sh\necho $$ >> '{}'\nexec /bin/sleep 3613\n",
+            recorded.display()
+        ),
+    );
+    let deadline = std::time::Instant::now() + TIMEOUT;
+    let ends = |asked: &[i32], what: &str| {
+        while !asked.iter().all(|&p| gone(p)) {
+            assert!(std::time::Instant::now() < deadline, "{what}: {asked:?}");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    };
+    // A registry that asks for nothing: pulled, never waiting on the helper, and the helper
+    // ended with it (one killed so soon it recorded nothing is gone too).
+    let (image, _) = common::served();
+    let mut pull = common::command()
+        .args(["pull", &image])
+        .env("SHARDS_HOME", &*home)
+        .env("DOCKER_CONFIG", &config)
+        .env("PATH", no_helpers(&home))
+        .env("SHARDS_KERNEL", kernel())
+        .env("SHARDS_INIT", guest_init())
+        .env_remove("DOCKER_AUTH_CONFIG")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let pulled = loop {
+        if let Some(status) = pull.try_wait().unwrap() {
+            break status;
+        }
+        if std::time::Instant::now() > deadline {
+            let _ = pull.kill();
+            panic!("the pull waited on a helper whose answer its registry never asked for");
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    let out = pull.wait_with_output().unwrap();
+    let err = String::from_utf8_lossy(&out.stderr).into_owned();
+    assert!(pulled.success(), "{err}");
+    assert!(!err.contains("Waiting for"), "{err}");
+    let asked = pids(&recorded);
+    ends(&asked, "ended with the pull");
+    // One that asks for Basic credentials: the pull says what it waits on, and its
+    // client's going ends the helper.
+    let (port, repos) = common::writable_registry_requiring(Some(format!(
+        "Basic {}",
+        base64::engine::general_purpose::STANDARD.encode("u:p")
+    )));
+    let name = format!("127.0.0.1:{port}/team/app:1");
+    let mut client = common::command()
+        .args(["pull", &name])
+        .env("SHARDS_HOME", &*home)
+        .env("DOCKER_CONFIG", &config)
+        .env("PATH", no_helpers(&home))
+        .env("SHARDS_KERNEL", kernel())
+        .env("SHARDS_INIT", guest_init())
+        .env_remove("DOCKER_AUTH_CONFIG")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let notice = format!(
+        "Waiting for docker-credential-stuck to answer for 127.0.0.1:{port} (credsStore in {})",
+        config.join("config.json").display()
+    );
+    let (tx, rx) = std::sync::mpsc::channel();
+    let stderr = client.stderr.take().unwrap();
+    std::thread::spawn(move || {
+        use std::io::BufRead as _;
+        for line in std::io::BufReader::new(stderr).lines().map_while(Result::ok) {
+            if tx.send(line).is_err() {
+                return;
+            }
+        }
+    });
+    let mut said: Vec<String> = Vec::new();
+    while !said.contains(&notice) {
+        let left = deadline.saturating_duration_since(std::time::Instant::now());
+        match rx.recv_timeout(left) {
+            Ok(line) => said.push(line),
+            Err(_) => panic!("never said {notice:?}: {said:?}"),
+        }
+    }
+    // The registry asked, and the helper it waits on runs.
+    assert!(
+        repos.lock().unwrap().log.iter().any(|l| l.starts_with("401 ")),
+        "the registry challenged"
+    );
+    // Its pid, once its shell has come to record it.
+    let waiting = loop {
+        let waiting: Vec<i32> = pids(&recorded)
+            .into_iter()
+            .filter(|p| !asked.contains(p))
+            .collect();
+        if !waiting.is_empty() {
+            break waiting;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the helper it waits on never ran"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    assert!(
+        waiting.iter().all(|&p| !gone(p)),
+        "the helper it waits on runs: {waiting:?}"
+    );
+    client.kill().unwrap();
+    let _ = client.wait();
+    ends(&waiting, "ended with its client");
+    let (status, _, err) = shards(&home, &config, &["stop", "daemon"], "");
+    assert_eq!(status, Some(0), "{err}");
+}

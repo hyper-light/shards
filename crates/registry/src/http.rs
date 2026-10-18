@@ -106,6 +106,31 @@ struct Cancelling {
     cancelled: AtomicBool,
     /// The connections in use, by number, and the next number.
     live: Mutex<(u64, HashMap<u64, TcpStream>)>,
+    /// The credential helpers asked for this client's registry, by number, and the next
+    /// number: a cancel ends each, and so a wait for its answer (credentials.rs).
+    helpers: Mutex<(u64, HashMap<u64, Helper>)>,
+}
+
+/// A credential helper as a cancel ends it: the process group it leads.
+#[cfg(unix)]
+pub(crate) type Helper = Arc<shards_ipc::Child>;
+/// A credential helper as a cancel ends it: its process, by a handle of its own.
+#[cfg(windows)]
+pub(crate) type Helper = std::os::windows::io::OwnedHandle;
+
+/// Ends `helper` at once, whatever its threads wait in.
+fn end_helper(helper: &Helper) {
+    #[cfg(unix)]
+    let _ = helper.kill_group(libc::SIGKILL);
+    #[cfg(windows)]
+    {
+        use std::os::windows::io::AsRawHandle as _;
+        // SAFETY: TerminateProcess on the handle `helper` holds open: of a process that has
+        // ended, it fails and ends nothing.
+        unsafe {
+            windows_sys::Win32::System::Threading::TerminateProcess(helper.as_raw_handle(), 1);
+        }
+    }
 }
 
 impl Cancel {
@@ -119,6 +144,34 @@ impl Cancel {
         for tcp in live.1.values() {
             end(tcp);
         }
+        drop(live);
+        let helpers = self.0.helpers.lock().unwrap_or_else(PoisonError::into_inner);
+        for helper in helpers.1.values() {
+            end_helper(helper);
+        }
+    }
+
+    /// Ends `helper` at a cancel, as it does at once one already made, until
+    /// [`Cancel::forget_helper`] is told the number this gives it.
+    pub(crate) fn watch_helper(&self, helper: Helper) -> u64 {
+        let mut helpers = self.0.helpers.lock().unwrap_or_else(PoisonError::into_inner);
+        if self.is_cancelled() {
+            end_helper(&helper);
+        }
+        let n = helpers.0;
+        helpers.0 = n.wrapping_add(1);
+        helpers.1.insert(n, helper);
+        n
+    }
+
+    /// Ends helper `n` at a cancel no more: reaped, or about to be.
+    pub(crate) fn forget_helper(&self, n: u64) {
+        self.0
+            .helpers
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .1
+            .remove(&n);
     }
 
     pub fn is_cancelled(&self) -> bool {

@@ -16,6 +16,7 @@ use shards_image::reference::{Algorithm, DOCKER_HUB, Digest, Reference};
 use shards_image::store::{Download, Held, Limits, Store};
 
 use crate::auth::{Authorizer, Credentials, loopback};
+use crate::credentials::Found;
 use crate::http::{Client, Redirects, Request, Response};
 use crate::url::{Scheme, Url};
 use crate::{Error, ErrorKind, Said, printable};
@@ -96,7 +97,7 @@ impl Registry {
     pub fn for_push(
         http: Client,
         reference: &Reference,
-        credentials: Credentials,
+        credentials: impl Into<Found>,
         mounts: &[String],
     ) -> Result<Registry, Error> {
         let mut registry = Registry::new(http, reference, credentials)?;
@@ -112,13 +113,38 @@ impl Registry {
         &self.base
     }
 
+    /// Runs `work`, saying through `say`, once, that it waits for the registry's credential
+    /// helper where it does (D184): a helper may wait on its user, or never answer, and a
+    /// pull that waits on one says which, and where it was named.
+    pub fn saying_waits<T>(&self, say: &(dyn Fn(&str) + Sync), work: impl FnOnce() -> T) -> T {
+        if !self.auth.asks() {
+            return work();
+        }
+        self.auth.watch();
+        std::thread::scope(|scope| {
+            let watcher = std::thread::Builder::new()
+                .name("credential wait".into())
+                .spawn_scoped(scope, || {
+                    if let Some(notice) = self.auth.waits() {
+                        say(&notice);
+                    }
+                });
+            let out = work();
+            self.auth.done();
+            if let Ok(watcher) = watcher {
+                let _ = watcher.join();
+            }
+            out
+        })
+    }
+
     /// A registry to delete manifests of `reference`'s repository from, and to update the
     /// referrers it lists: pull, push and delete access to it, as distribution grants a
     /// DELETE only to a `delete` scope (registry/handlers/app.go, appendAccessRecords).
     pub fn for_delete(
         http: Client,
         reference: &Reference,
-        credentials: Credentials,
+        credentials: impl Into<Found>,
     ) -> Result<Registry, Error> {
         let mut registry = Registry::new(http, reference, credentials)?;
         registry.scopes = vec![format!("repository:{}:pull,push,delete", reference.path)];
@@ -301,7 +327,11 @@ impl Registry {
         }
     }
 
-    pub fn new(http: Client, reference: &Reference, credentials: Credentials) -> Result<Registry, Error> {
+    pub fn new(
+        http: Client,
+        reference: &Reference,
+        credentials: impl Into<Found>,
+    ) -> Result<Registry, Error> {
         let base = Url::parse(&format!("https://{}/v2/{}/", host(reference), reference.path))?;
         Registry::at(
             http,

@@ -1818,6 +1818,9 @@ mod tests {
                 unchanged: true,
                 bootable: false,
             },
+            Progress::Waiting(
+                "Waiting for docker-credential-desktop to answer for https://index.docker.io/v1/ (credsStore in /h/.docker/config.json)".into(),
+            ),
         ];
         for p in all {
             assert_eq!(Progress::decode(&p.encode()), Some(p));
@@ -1827,6 +1830,11 @@ mod tests {
         assert_eq!(
             Progress::decode(&said.encode()),
             Some(Progress::Facts(vec![("cmd".into(), "a b c".into())]))
+        );
+        let said = Progress::Waiting("in\ta\nb".into());
+        assert_eq!(
+            Progress::decode(&said.encode()),
+            Some(Progress::Waiting("in a b".into()))
         );
         // What a newer daemon may say, and what no daemon says, are left alone.
         for unknown in [&b"glimmer\tx"[..], b"bytes\tsha256:aa\tmany", b"\xff", b""] {
@@ -2415,6 +2423,9 @@ pub enum Progress {
         unchanged: bool,
         bootable: bool,
     },
+    /// The pull waits for its registry's credential helper: what it waits on, as a line
+    /// says it (D184).
+    Waiting(String),
 }
 
 impl Progress {
@@ -2470,6 +2481,8 @@ impl Progress {
                     u8::from(*bootable)
                 )
             }
+            // One field: a tab or a line end in it is a space.
+            Progress::Waiting(notice) => format!("waiting\t{}", notice.replace(['\t', '\n', '\r'], " ")),
         };
         text.into_bytes()
     }
@@ -2523,6 +2536,7 @@ impl Progress {
                 unchanged: next()? == "1",
                 bootable: next()? == "1",
             },
+            "waiting" => Progress::Waiting(next()?),
             _ => return None,
         })
     }
