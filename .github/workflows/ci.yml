@@ -168,6 +168,11 @@ jobs:
           for i in $(seq 300); do [ -S "$bus" ] && break; sleep 0.1; done
           ls -l "$bus"
           echo "XDG_RUNTIME_DIR=/run/user/$(id -u)" >> "$GITHUB_ENV"
+      # What a hung test's processes are doing, kept as it hangs (scripts/ci/hang-watch.sh):
+      # gdb for their backtraces, where the runner boots microVMs.
+      - name: Hang watcher's gdb (Linux x86_64)
+        if: matrix.test && matrix.target == 'x86_64-unknown-linux-gnu'
+        run: scripts/retry 5 30 sudo apt-get install -y gdb
       # Where the runner offers its backend's hypervisor, every VM test must run: one that
       # cannot fails rather than skips (tests/common, SHARDS_REQUIRE_VMS). Every test binary
       # runs, whatever fails before it: a failing one hides none after it.
@@ -182,7 +187,23 @@ jobs:
             x86_64-unknown-linux-gnu) export SHARDS_REQUIRE_VMS=1 SHARDS_REQUIRE_USER_MANAGER=1 ;;
             x86_64-pc-windows-msvc) export SHARDS_REQUIRE_VMS=1 ;;
           esac
-          cargo test --locked --workspace --profile test-release --no-fail-fast --target ${{ matrix.target }}
+          if [ "${{ matrix.target }}" = x86_64-unknown-linux-gnu ]; then
+            scripts/ci/hang-watch.sh "$RUNNER_TEMP/hangs" &
+            watcher=$!
+          fi
+          status=0
+          cargo test --locked --workspace --profile test-release --no-fail-fast --target ${{ matrix.target }} || status=$?
+          if [ -n "${watcher:-}" ]; then kill "$watcher" 2>/dev/null || true; fi
+          exit "$status"
+      - name: What hung tests' processes were doing
+        if: ${{ !cancelled() && matrix.test && matrix.target == 'x86_64-unknown-linux-gnu' }}
+        shell: bash
+        run: |
+          for f in $(find "$RUNNER_TEMP/hangs" -type f 2>/dev/null | sort); do
+            echo "::group::$f"
+            cat "$f"
+            echo "::endgroup::"
+          done
       - name: Tests of the GPU's renderer
         if: matrix.target == 'aarch64-apple-darwin'
         timeout-minutes: 15
