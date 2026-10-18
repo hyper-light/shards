@@ -191,7 +191,9 @@ impl Imported {
                     let got = (|| -> Result<(Vec<(String, String)>, Registry), String> {
                         let reference = Reference::parse(&name).map_err(|e| e.to_string())?;
                         let registry = crate::pull::registry(&reference, None, env)?;
-                        let desc = registry.resolve(store, &reference).map_err(|e| e.to_string())?;
+                        let desc =
+                            super::saying_waits(&registry, progress, || registry.resolve(store, &reference))
+                                .map_err(|e| e.to_string())?;
                         let doc =
                             |d: &Descriptor| registry.fetch_document(store, d).map_err(|e| e.to_string());
                         let blob = |d: &Descriptor| -> Result<Vec<u8>, String> {

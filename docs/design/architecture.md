@@ -744,7 +744,9 @@ A pull resolves, fetches and checks as containerd v2.4.1 does
   - `DOCKER_AUTH_CONFIG` first; then the host's `credHelpers` entry, `credsStore`, or
     `auths`;
   - the platform's default helper when the config holds no credentials at all;
-  - helpers spoken to over their protocol, with `<token>` marking an identity token.
+  - helpers spoken to over their protocol, with `<token>` marking an identity token: a
+    pull's helper started as its registry is made, its answer read only where the
+    registry's own host challenges, a wait for it said, and a cancel ending it (D184).
   - dockerd's precedence: a registry token, then an identity token, then a password.
   - Written by `shards login registry` alone (D171), where docker writes them.
 - **`certs.d`** is read as dockerd reads it:
@@ -5119,6 +5121,75 @@ Decided by the user on 2026-10-14 ("so long as they apply appropriately to micro
   is made in, once the daemon runs there (README: not yet). 4: the microVM's own
   engine's members (D181), a cgroup within the microVM, refused (501) until a need for it
   inside a microVM is shown.
+
+### D184. A credential helper is asked at once and waited for only where its registry asks (built)
+
+**Found.** `shards pull alpine:3.22` with a user's own Docker config (2026-10-17) waited
+12 minutes and more on `docker-credential-desktop get`, Docker Desktop's backend not
+answering: sampled, the daemon's thread read the helper's output (credentials.rs
+`run_helper`). The client's Ctrl-C ended the client alone: the lookup took no cancel, so
+the daemon's thread and the helper stayed. The lookup ran before the registry was asked
+anything, so the pull waited on the helper whether or not the registry wanted
+credentials, and said nothing of it. A docker client asks its helper before it sends a
+pull too: the Engine API takes a pull's credentials in its request (`X-Registry-Auth`).
+
+**The microVM need.** A pull is how a microVM gets its root, and a run that pulls is a
+start: what an external holds of it must be only what it has to hold, isolated, said,
+and ended with the pull.
+
+**Decided.**
+- A helper is started as the pull's registry is made (`credentials::find`): its key
+  written and its input closed at once (a registry's key is far under a pipe's buffer, so
+  the write never waits), and never waited for there. It runs while the registry's first
+  round trip does: a pull that needs its answer waits for the longer of the two, not for
+  both in turn.
+- Its answer is read the first time the registry's own host challenges (`auth.rs`
+  `Authorizer::credentials`, Basic or Bearer), never for another host's challenge, and
+  never where the registry asks nothing: a registry that takes anonymous pulls is not
+  held by a helper that never answers. It is read before the authorizer's lock of its
+  hosts, so that no request to another host waits behind it; requests challenged
+  meanwhile wait for the same answer (one read).
+- Where the pull waits on it, it says so, once, as the wait begins: on a terminal a line
+  of the pull's own, piped a line on stderr (`Waiting for docker-credential-desktop to
+  answer for https://index.docker.io/v1/ (credsStore in ~/.docker/config.json)`), the
+  helper, the key it was asked and where it was named, so that the user can answer it,
+  mend it, or end the pull.
+- No anonymous fallback and no deadline: a late answer is not a stuck one. osxkeychain
+  asks the user to allow it, pass's gpg-agent asks for a passphrase, secretservice for a
+  keyring's unlock, ecr-login goes to AWS. An anonymous pull in its place would race a
+  user typing a password, and spend Docker Hub's anonymous allowance where the user is
+  logged in: Docker Hub counts an unauthenticated pull against its IPv4 address or IPv6
+  /64, 100 in 6 hours, and an authenticated one against the account, 200 for a personal
+  one and no limit for a paid one (docs.docker.com/docker-hub/usage/pulls, read
+  2026-10-18). The
+  credentials the user configured are the ones used, whenever the registry asks.
+- A cancel of the pull (its client gone or interrupted, the daemon stopping) ends the
+  helper at once: started for a pull, it leads a process group of its own (a script's
+  children with it, which hold its output open), which the cancel kills (`http::Cancel`,
+  `watch_helper`); the read of its answer then ends, and the pull ends cancelled. A helper
+  whose answer is never read is ended and reaped as its pull ends. None is left, process
+  or thread.
+- A registry token in the file wins over a helper's answer (dockerd's precedence), so
+  with one the helper is not asked at all. A helper that cannot be started (not on
+  `PATH`) fails only the pulls that need its answer.
+- A build's base pulls, resolutions and cache imports say the wait among the build's
+  plain lines, on stderr as they come (build/mod.rs `saying_waits`); the live display keeps
+  its own frame, the step shown waiting.
+- The eager callers (`shards login`'s check, a context's client sending credentials,
+  `shards search`) read the answer at once, as before (`lookup` = `find` and `answer`),
+  their helper in their terminal's process group, where a Ctrl-C reaches it.
+
+**Tested.** `crates/registry`: a helper asked is ended and reaped as it drops unread; a
+cancel ends a wait for one, its script's own child too; one that answers is read as its
+registry challenges, a password and an identity token; another host's challenge waits on
+none; a registry token asks none. `tests/login.rs`
+`a_credential_helper_that_never_answers_holds_only_what_needs_its_answer`: with a helper
+that never answers configured, a pull from a registry that asks for nothing completes
+and leaves no helper; from one that asks for Basic credentials, the client says what it
+waits on, and killing the client ends the helper. Mutation-checked, each caught: the
+answer read as the helper is found; a helper dropped unread left running; a cancel that
+ends no helper; one that ends the helper alone and not its group (its script's child
+holds its output open); the answer waited for under the hosts' lock; a wait never said.
 
 ### D179. Other CPUs' images, emulated in their microVM (parts 1 to 3 built)
 

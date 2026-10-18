@@ -80,7 +80,7 @@ EXPOSE [--agents=<name>[,<name>...]] [--harnesses=<name>[,<name>...]] [--mcps=<n
   microVM's 8081 to `api`'s 80, so two members that both listen on 80 are each reached.
 - **Published, and shown.** `shards run -p HOST:PORT` publishes the microVM's `PORT`,
   which reaches its member; a published port no member claims reaches the run's own
-  command, as Docker's `-p` reaches a container's. `shards read ports <microvm>` lists
+  command. `shards read ports <microvm>` lists
   each published port with what it reaches (`agent web`, `harness console`, `agent api,
   at 80/tcp` where mapped, `the command`); `shards port` keeps Docker's output.
 
@@ -581,9 +581,9 @@ namespace and the separate IDs alone.
 
 **The run's own command is confined from the domains too** (D115). The workload a run's
 `docker run`-style request starts is not one of the domains, but it shares the microVM with
-them, so it is given no reach into them: a PID namespace of its own, whose PID 1 it is as
-a container's command is (so it sees none of their processes, as a container sees none of
-its host's; under `--init` a reaper is PID 1 there, in docker-init's place), and the
+them, so it is given no reach into them: a PID namespace of its own, whose PID 1 it is (so
+it sees none of their processes; under `--init` a reaper of shards' is PID 1 there, the
+command its child), and the
 daemon, init and the build refuse whatever the CLI asks that would cross into a domain —
 `--privileged`, the capabilities that reach across the PID namespace (`NET_RAW` and
 `NET_ADMIN` where the domains' flows cross the command's network namespace),

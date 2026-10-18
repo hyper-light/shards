@@ -157,6 +157,9 @@ pub fn command(
                 match event {
                     Event::Present(d) => say(&format!("{}: Already exists", short(&d.to_string()))),
                     Event::Layer(d) => say(&format!("{}: Download complete", short(&d.to_string()))),
+                    // What a pull that seems stuck waits on, said quiet or not, on stderr
+                    // where docker pull's lines go to stdout (D184).
+                    Event::Waiting(notice) => (out.err)(notice),
                     Event::Manifest(..)
                     | Event::Progress(..)
                     | Event::Building
@@ -346,6 +349,7 @@ fn shown(event: &Event<'_>, arrived: &Mutex<HashMap<String, (u64, Option<Instant
         Event::Building => Progress::Building,
         Event::Unpacking(i) => Progress::Unpacking(*i),
         Event::Pulling => return None,
+        Event::Waiting(notice) => Progress::Waiting((*notice).to_string()),
         Event::Progress(d, n) => {
             let key = d.to_string();
             let mut held = arrived.lock().unwrap_or_else(PoisonError::into_inner);
@@ -418,8 +422,9 @@ fn client_for(
     reference: &Reference,
     cancel: Option<&Cancel>,
     env: &dyn Fn(&str) -> Option<String>,
-) -> Result<(Client, shards_registry::auth::Credentials), String> {
-    let (credentials, warnings) = credentials::lookup(&reference.domain, env).map_err(|e| e.to_string())?;
+) -> Result<(Client, credentials::Found), String> {
+    let (credentials, warnings) =
+        credentials::find(&reference.domain, env, cancel).map_err(|e| e.to_string())?;
     for warning in warnings {
         let _ = writeln!(std::io::stderr(), "WARNING: {warning}");
     }
@@ -498,7 +503,9 @@ pub fn registry(
     cancel: Option<&Cancel>,
     env: &dyn Fn(&str) -> Option<String>,
 ) -> Result<Registry, String> {
-    let (credentials, warnings) = credentials::lookup(&reference.domain, env).map_err(|e| e.to_string())?;
+    // Its helper asked now, its answer read where the registry asks for it (D184).
+    let (credentials, warnings) =
+        credentials::find(&reference.domain, env, cancel).map_err(|e| e.to_string())?;
     for warning in warnings {
         let _ = writeln!(std::io::stderr(), "WARNING: {warning}");
     }

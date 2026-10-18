@@ -27,13 +27,14 @@
 use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 use std::io::Read;
-use std::sync::{Condvar, Mutex, MutexGuard, PoisonError};
+use std::sync::{Condvar, Mutex, MutexGuard, OnceLock, PoisonError};
 use std::time::{Duration, Instant, SystemTime};
 
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use serde::Deserialize;
 
+use crate::credentials::{Asked, Found};
 use crate::http::{Client, Redirects, Request, Response};
 use crate::url::{Scheme as UrlScheme, Url};
 use crate::{Error, ErrorKind, printable};
@@ -189,7 +190,8 @@ pub struct Authorizer {
     /// loopback registry that answered HTTPS so (registry.rs). Its credentials go there
     /// too, as containerd keys them by host alone (`dockerAuthorizer`).
     plain_too: bool,
-    credentials: Credentials,
+    /// The registry's credentials, or the helper asked for them.
+    credentials: Source,
     /// How each host asked to be answered, and the tokens fetched for it.
     hosts: Mutex<Hosts>,
     /// Signalled when a token fetch ends, or a host's way of answering changes, for
@@ -199,6 +201,64 @@ pub struct Authorizer {
     /// FetchRefreshToken), as `docker login` asks; and the last one given.
     offline: bool,
     refresh: Mutex<Option<String>>,
+}
+
+/// The credentials a registry's host is answered with: known as the pull begins, or a
+/// credential helper's answer, read the first time that host challenges and never where it
+/// does not, so that a helper that never answers holds nothing that needs no credentials
+/// (credentials.rs, [`Found`]; D184).
+enum Source {
+    Known(Credentials),
+    Asked(Box<Pending>),
+}
+
+struct Pending {
+    /// The helper, until a challenge takes it to read its answer.
+    helper: Mutex<Option<Asked>>,
+    /// Its answer, read once: every challenge that comes meanwhile waits for the same.
+    answer: OnceLock<Result<Credentials, (ErrorKind, String)>>,
+    /// Whether the pull waits on the helper, for what says so ([`Authorizer::waits`]).
+    wait: Mutex<Wait>,
+    told: Condvar,
+}
+
+#[derive(Clone)]
+enum Wait {
+    Not,
+    /// Waiting: the helper's notice.
+    On(String),
+    /// Its answer in, or the pull over.
+    Over,
+}
+
+impl Pending {
+    fn tell(&self, wait: Wait) {
+        *self.wait.lock().unwrap_or_else(PoisonError::into_inner) = wait;
+        self.told.notify_all();
+    }
+}
+
+impl fmt::Debug for Source {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Source::Known(credentials) => credentials.fmt(f),
+            Source::Asked(_) => f.write_str("Asked"),
+        }
+    }
+}
+
+impl From<Found> for Source {
+    fn from(found: Found) -> Source {
+        match found {
+            Found::Known(credentials) => Source::Known(credentials),
+            Found::Asked(asked) => Source::Asked(Box::new(Pending {
+                helper: Mutex::new(Some(asked)),
+                answer: OnceLock::new(),
+                wait: Mutex::new(Wait::Not),
+                told: Condvar::new(),
+            })),
+        }
+    }
 }
 
 #[derive(Default)]
@@ -265,11 +325,11 @@ impl Hosts {
 }
 
 impl Authorizer {
-    pub fn new(registry: &Url, credentials: Credentials) -> Authorizer {
+    pub fn new(registry: &Url, credentials: impl Into<Found>) -> Authorizer {
         Authorizer {
             registry: registry.clone(),
             plain_too: false,
-            credentials,
+            credentials: Source::from(credentials.into()),
             hosts: Mutex::default(),
             fetched: Condvar::new(),
             offline: false,
@@ -281,8 +341,76 @@ impl Authorizer {
     /// constructors take, which find the registry's URL.
     ///
     /// [`Registry`]: crate::registry::Registry
-    pub(crate) fn new_for(credentials: Credentials) -> impl FnOnce(&Url) -> Authorizer {
+    pub(crate) fn new_for(credentials: impl Into<Found>) -> impl FnOnce(&Url) -> Authorizer {
+        let credentials = credentials.into();
         move |registry| Authorizer::new(registry, credentials)
+    }
+
+    /// The registry's credentials: a helper's answer waited for, where one was asked, the
+    /// wait said where its answer is not in yet.
+    fn credentials(&self) -> Result<Credentials, Error> {
+        let pending = match &self.credentials {
+            Source::Known(credentials) => return Ok(credentials.clone()),
+            Source::Asked(pending) => pending,
+        };
+        let answer = pending.answer.get_or_init(|| {
+            let helper = pending
+                .helper
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .take();
+            let Some(helper) = helper else {
+                return Err((ErrorKind::Other, "the credential helper's answer was lost".into()));
+            };
+            if !helper.answered() {
+                pending.tell(Wait::On(helper.notice()));
+            }
+            let answer = helper.answer().map_err(|e| (e.kind(), e.to_string()));
+            pending.tell(Wait::Over);
+            answer
+        });
+        answer.clone().map_err(|(kind, why)| Error::of(kind, why))
+    }
+
+    /// Whether a credential helper's answer may yet be waited for.
+    pub(crate) fn asks(&self) -> bool {
+        matches!(&self.credentials, Source::Asked(p) if p.answer.get().is_none())
+    }
+
+    /// Blocks until the pull waits on its credential helper, then says what it waits on;
+    /// or until it no longer can, its answer in or [`Authorizer::done`] told (None).
+    pub(crate) fn waits(&self) -> Option<String> {
+        let Source::Asked(pending) = &self.credentials else {
+            return None;
+        };
+        let mut wait = pending.wait.lock().unwrap_or_else(PoisonError::into_inner);
+        loop {
+            match &*wait {
+                Wait::On(notice) => return Some(notice.clone()),
+                Wait::Over => return None,
+                Wait::Not => wait = pending.told.wait(wait).unwrap_or_else(PoisonError::into_inner),
+            }
+        }
+    }
+
+    /// What may wait from here on is watched anew: a wait over before a helper's answer
+    /// came is a wait no more.
+    pub(crate) fn watch(&self) {
+        if let Source::Asked(pending) = &self.credentials
+            && pending.answer.get().is_none()
+        {
+            let mut wait = pending.wait.lock().unwrap_or_else(PoisonError::into_inner);
+            if matches!(*wait, Wait::Over) {
+                *wait = Wait::Not;
+            }
+        }
+    }
+
+    /// What it did is over: what waits in [`Authorizer::waits`] returns.
+    pub(crate) fn done(&self) {
+        if let Source::Asked(pending) = &self.credentials {
+            pending.tell(Wait::Over);
+        }
     }
 
     /// The same, asking each token server for a refresh token too (containerd's
@@ -332,7 +460,7 @@ impl Authorizer {
         url: &Url,
         scopes: &[String],
     ) -> Result<Option<String>, Error> {
-        if let Credentials::RegistryToken(token) = &self.credentials {
+        if let Source::Known(Credentials::RegistryToken(token)) = &self.credentials {
             return Ok(self.is_registry(url).then(|| format!("Bearer {token}")));
         }
         /// What a request does, decided under the lock.
@@ -411,7 +539,7 @@ impl Authorizer {
     /// says whether the same request was just refused as well.
     pub fn challenged(&self, url: &Url, response: &Response, repeated: bool) -> Result<bool, Error> {
         // dockerd never retries a registry token (`bearerAuthorizer.AddResponses`).
-        if matches!(self.credentials, Credentials::RegistryToken(_)) {
+        if matches!(self.credentials, Source::Known(Credentials::RegistryToken(_))) {
             return Ok(false);
         }
         let challenges = challenges(response.headers("www-authenticate"));
@@ -431,6 +559,17 @@ impl Authorizer {
                 None => Ok(false),
             };
         }
+        // The registry's own host is answered with its credentials, a helper's answer waited
+        // for where one was asked: before the hosts' lock is taken, so that no request of
+        // another host waits behind it (D184).
+        let answers = challenges
+            .iter()
+            .any(|c| matches!(c.scheme, Scheme::Bearer | Scheme::Basic));
+        let credentials = match answers && self.is_registry(url) {
+            true => self.credentials()?,
+            false => Credentials::Anonymous,
+        };
+        let (username, secret) = credentials.pair();
         let host = url.origin();
         let mut hosts = self.hosts();
         for c in challenges {
@@ -444,21 +583,11 @@ impl Authorizer {
                     if hosts.by_origin.contains_key(&host) {
                         return Ok(true);
                     }
-                    let (username, secret) = if self.is_registry(url) {
-                        self.credentials.pair()
-                    } else {
-                        ("", "")
-                    };
                     let bearer = Bearer::new(url, &c, username, secret, self.offline)?;
                     hosts.add(host, Handler::Bearer(Box::new(bearer), HashMap::new()));
                     return Ok(true);
                 }
                 Scheme::Basic => {
-                    let (username, secret) = if self.is_registry(url) {
-                        self.credentials.pair()
-                    } else {
-                        ("", "")
-                    };
                     // containerd's words (core/remotes/docker/authorizer.go).
                     if username.is_empty() || secret.is_empty() {
                         return Err(Error::of(

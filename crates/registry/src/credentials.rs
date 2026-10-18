@@ -22,6 +22,7 @@ use serde::Deserialize;
 
 use crate::Error;
 use crate::auth::Credentials;
+use crate::http::Cancel;
 
 /// Where `docker login` keeps Docker Hub's credentials.
 const HUB_KEY: &str = "https://index.docker.io/v1/";
@@ -90,9 +91,43 @@ struct HelperAnswer {
     secret: String,
 }
 
+/// What a lookup found for a registry: its credentials, or the credential helper asked
+/// for them, whose answer is read only where it is needed ([`Asked`]).
+#[derive(Debug)]
+pub enum Found {
+    Known(Credentials),
+    Asked(Asked),
+}
+
+impl From<Credentials> for Found {
+    fn from(credentials: Credentials) -> Found {
+        Found::Known(credentials)
+    }
+}
+
+impl Found {
+    /// The credentials: a helper's answer, waited for, where one was asked.
+    pub fn answer(self) -> Result<Credentials, Error> {
+        match self {
+            Found::Known(credentials) => Ok(credentials),
+            Found::Asked(asked) => asked.answer(),
+        }
+    }
+}
+
 /// The credentials `docker login` left for the registry `domain` (a reference's domain),
-/// and any warnings Docker would print on the way.
+/// and any warnings Docker would print on the way: [`find`]'s, a helper's answer waited
+/// for.
 pub fn lookup(domain: &str, env: Env<'_>) -> Result<(Credentials, Vec<String>), Error> {
+    let (found, warnings) = find(domain, env, None)?;
+    Ok((found.answer()?, warnings))
+}
+
+/// What [`lookup`] finds for `domain`, a credential helper started rather than waited for:
+/// its answer is read where it is needed (D184), so that a helper that never answers holds
+/// nothing that needs no credentials, and it runs while the registry's first round trip
+/// does. Started for `cancel`, it leads a process group of its own, which the cancel ends.
+pub fn find(domain: &str, env: Env<'_>, cancel: Option<&Cancel>) -> Result<(Found, Vec<String>), Error> {
     let key = key_of(domain);
     let mut warnings = Vec::new();
     // Credentials in the environment: shards' own variable, else Docker's.
@@ -103,45 +138,121 @@ pub fn lookup(domain: &str, env: Env<'_>) -> Result<(Credentials, Vec<String>), 
         match env_config(var, &value) {
             Ok(entries) => {
                 if let Some(found) = entries.get(key) {
-                    return Ok((found.clone(), warnings));
+                    return Ok((Found::Known(found.clone()), warnings));
                 }
             }
             Err(e) => warnings.push(format!("Failed to create credential store from {var}: {e}")),
         }
     }
     let Some(dir) = config_dir(env) else {
-        return Ok((Credentials::Anonymous, warnings));
+        return Ok((Found::Known(Credentials::Anonymous), warnings));
     };
-    let config = load(&dir.join("config.json"))?;
+    let path = dir.join("config.json");
+    let config = load(&path)?;
     let entry = file_entry(&config, key)?;
     let holds_auth =
         !config.creds_store.is_empty() || !config.cred_helpers.is_empty() || !config.auths.is_empty();
     let helper = match config.cred_helpers.get(key) {
-        Some(helper) => Some(helper.clone()),
-        None if !config.creds_store.is_empty() => Some(config.creds_store.clone()),
-        None if !holds_auth => default_helper(env),
+        Some(helper) => Some((helper.clone(), format!("credHelpers in {}", path.display()))),
+        None if !config.creds_store.is_empty() => Some((
+            config.creds_store.clone(),
+            format!("credsStore in {}", path.display()),
+        )),
+        None if !holds_auth => default_helper(env).map(|helper| {
+            (
+                helper,
+                format!("this platform's own, as {} keeps no credentials", path.display()),
+            )
+        }),
         None => None,
     };
-    let entry = match helper {
-        None => entry,
-        // The helper's answer replaces the file's, even when it has none.
-        Some(helper) => {
-            let mut from_helper = Entry {
-                registrytoken: entry.registrytoken,
-                ..Entry::default()
-            };
-            if let Some(answer) = ask_helper(&helper, key, env)? {
-                if answer.username == TOKEN_USERNAME {
-                    from_helper.identitytoken = answer.secret;
-                } else {
-                    from_helper.username = answer.username;
-                    from_helper.password = answer.secret;
-                }
-            }
-            from_helper
+    let found = match helper {
+        None => Found::Known(credentials(entry)),
+        // A registry token wins over whatever the helper would answer: it is not asked.
+        Some(_) if !entry.registrytoken.is_empty() => {
+            Found::Known(Credentials::RegistryToken(entry.registrytoken))
         }
+        Some((helper, whence)) => Found::Asked(Asked::start(&helper, key, whence, env, cancel)),
     };
-    Ok((credentials(entry), warnings))
+    Ok((found, warnings))
+}
+
+/// A credential helper asked for a registry's credentials (`docker-credential-NAME get`):
+/// started by [`find`], its answer read where it is needed ([`Asked::answer`]), else
+/// never. Dropped unread, it is ended and reaped; a cancel of the pull it serves ends it
+/// at once. One that could not be started says why as its answer.
+pub struct Asked {
+    program: String,
+    key: String,
+    /// Where it was named, as its waiting notice says: `credsStore in PATH`.
+    whence: String,
+    talk: Result<Talk, Error>,
+}
+
+impl std::fmt::Debug for Asked {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Asked")
+            .field("program", &self.program)
+            .field("key", &self.key)
+            .finish_non_exhaustive()
+    }
+}
+
+impl Asked {
+    fn start(helper: &str, key: &str, whence: String, env: Env<'_>, cancel: Option<&Cancel>) -> Asked {
+        let program = format!("docker-credential-{helper}");
+        let talk = Talk::start(&program, "get", key.as_bytes(), env, cancel);
+        Asked {
+            program,
+            key: key.to_string(),
+            whence,
+            talk,
+        }
+    }
+
+    /// Whether its answer is all there: the helper has ended, or never started.
+    pub fn answered(&self) -> bool {
+        self.talk.as_ref().map_or(true, Talk::ended)
+    }
+
+    /// What a pull that waits for its answer says of it: the helper, the key it was asked
+    /// and where it was named.
+    pub fn notice(&self) -> String {
+        format!(
+            "Waiting for {} to answer for {} ({})",
+            self.program, self.key, self.whence
+        )
+    }
+
+    /// Its answer, waited for: the credentials it has for its key, none where it has none
+    /// (`docker login` asks for some then), or why it gave none. Its errors went to our
+    /// stderr, as Docker's do.
+    pub fn answer(self) -> Result<Credentials, Error> {
+        let (failed, out) = self.talk?.finish()?;
+        let text = String::from_utf8_lossy(&out);
+        if let Some(status) = failed {
+            if text.trim() == NOT_FOUND {
+                return Ok(Credentials::Anonymous);
+            }
+            return Err(Error::new(format!(
+                "error getting credentials - err: {status}, out: `{}`",
+                text.trim()
+            )));
+        }
+        let answer = serde_json::Deserializer::from_slice(&out)
+            .into_iter::<HelperAnswer>()
+            .next()
+            .ok_or_else(|| Error::new(format!("{} answered nothing", self.program)))?
+            .map_err(|e| Error::new(format!("{}: {e}", self.program)))?;
+        let mut entry = Entry::default();
+        if answer.username == TOKEN_USERNAME {
+            entry.identitytoken = answer.secret;
+        } else {
+            entry.username = answer.username;
+            entry.password = answer.secret;
+        }
+        Ok(credentials(entry))
+    }
 }
 
 /// dockerd's order: a registry token, then an identity token, then a password.
@@ -343,139 +454,259 @@ fn on_path(program: &str, env: Env<'_>) -> bool {
     std::env::split_paths(&path).any(|dir| dir.join(&file).is_file())
 }
 
-/// Runs `docker-credential-<helper> get` with `key` on its input. Its errors go to our
-/// stderr, as Docker's do. A helper that has nothing for `key` gives `None`.
-fn ask_helper(helper: &str, key: &str, env: Env<'_>) -> Result<Option<HelperAnswer>, Error> {
-    let program = format!("docker-credential-{helper}");
-    let (failed, out) = run_helper(&program, "get", key.as_bytes(), env)?;
-    let text = String::from_utf8_lossy(&out);
-    if let Some(status) = failed {
-        if text.trim() == NOT_FOUND {
-            return Ok(None);
-        }
-        return Err(Error::new(format!(
-            "error getting credentials - err: {status}, out: `{}`",
-            text.trim()
-        )));
-    }
-    let answer = serde_json::Deserializer::from_slice(&out)
-        .into_iter::<HelperAnswer>()
-        .next()
-        .ok_or_else(|| Error::new(format!("{program} answered nothing")))?
-        .map_err(|e| Error::new(format!("{program}: {e}")))?;
-    Ok(Some(answer))
+/// Runs `program ACTION` with `input` on its input and our stderr for its own, waited for:
+/// how it failed, if it did, and what it wrote ([`Talk`]).
+fn run_helper(
+    program: &str,
+    action: &str,
+    input: &[u8],
+    env: Env<'_>,
+) -> Result<(Option<String>, Vec<u8>), Error> {
+    Talk::start(program, action, input, env, None)?.finish()
 }
 
-/// Runs `program get`, found on `env`'s PATH (else ours) and given it, with `key` on its
-/// input and our stderr for its own: how it failed, if it did, and what it wrote,
-/// `MAX_HELPER_OUTPUT` at most. A helper may exit without reading its input: its status
-/// and output then say what it had to say, as Go's os/exec, which Docker's helper client
-/// uses, ignores the broken pipe (exec.go, skipStdinCopyError). However the talk goes, the
-/// helper is waited for, so it leaves no zombie; one still running after a failed talk is
-/// ended first.
+/// A helper's run: `program ACTION`, found on `env`'s PATH (else ours) and given it, its
+/// input written and closed at once (a registry's key, far under a pipe's buffer, never
+/// waits), its output read and its status taken at [`Talk::finish`]. A helper may exit
+/// without reading its input: its status and output then say what it had to say, as Go's
+/// os/exec, which Docker's helper client uses, ignores the broken pipe (exec.go,
+/// skipStdinCopyError). Dropped unfinished, it is ended and reaped.
 ///
 /// Made by shards_ipc, as the daemon's every child is: by its spawner, so that the helper
 /// holds nothing the daemon lets go of while it starts, a run's published port among them
-/// (PM M158). How it failed is said as Go's os.ProcessState says it, as Docker does: an
-/// exit status (128 and its number, for a signal that ended it).
+/// (PM M158). Started for a cancel, it leads a process group of its own, which the cancel
+/// ends whole, a script's children with it, which hold its output open (D184); otherwise
+/// it stays in its caller's, where a terminal's Ctrl-C reaches it and its prompts reach the
+/// terminal. How it failed is said as Go's os.ProcessState says it, as Docker does: an exit
+/// status (128 and its number, for a signal that ended it).
 #[cfg(unix)]
-fn run_helper(
-    program: &str,
-    action: &str,
-    input: &[u8],
-    env: Env<'_>,
-) -> Result<(Option<String>, Vec<u8>), Error> {
-    use std::os::fd::AsFd as _;
-    let fail = |e: std::io::Error| Error::new(format!("running {program}: {e}"));
-    let path = env("PATH");
-    let search = path
-        .clone()
-        .or_else(|| std::env::var("PATH").ok())
-        .unwrap_or_default();
-    let found = std::env::split_paths(&search)
-        .map(|dir| dir.join(program))
-        .find(|p| p.is_file())
-        .ok_or_else(|| fail(std::io::ErrorKind::NotFound.into()))?;
-    let (stdin, mut to_stdin) = std::io::pipe().map_err(fail)?;
-    let (mut from_stdout, stdout) = std::io::pipe().map_err(fail)?;
-    let set: Vec<(&str, &std::ffi::OsStr)> = path.iter().map(|p| ("PATH", p.as_ref())).collect();
-    let child = shards_ipc::spawn_with(
-        &found,
-        &[action.as_ref()],
-        &[
-            (stdin.as_fd(), 0),
-            (stdout.as_fd(), 1),
-            (std::io::stderr().as_fd(), 2),
-        ],
-        false,
-        &set,
-    )
-    .map_err(fail)?;
-    drop((stdin, stdout));
-    let talked = (|| {
+struct Talk {
+    program: String,
+    child: Option<std::sync::Arc<shards_ipc::Child>>,
+    stdout: std::io::PipeReader,
+    /// The cancel that ends it, and its number there.
+    cancel: Option<(Cancel, u64)>,
+    group: bool,
+}
+
+#[cfg(unix)]
+impl Talk {
+    fn start(
+        program: &str,
+        action: &str,
+        input: &[u8],
+        env: Env<'_>,
+        cancel: Option<&Cancel>,
+    ) -> Result<Talk, Error> {
+        use std::os::fd::AsFd as _;
+        let fail = |e: std::io::Error| Error::new(format!("running {program}: {e}"));
+        let path = env("PATH");
+        let search = path
+            .clone()
+            .or_else(|| std::env::var("PATH").ok())
+            .unwrap_or_default();
+        let found = std::env::split_paths(&search)
+            .map(|dir| dir.join(program))
+            .find(|p| p.is_file())
+            .ok_or_else(|| fail(std::io::ErrorKind::NotFound.into()))?;
+        let (stdin, mut to_stdin) = std::io::pipe().map_err(fail)?;
+        let (stdout, from_stdout) = std::io::pipe().map_err(fail)?;
+        let set: Vec<(&str, &std::ffi::OsStr)> = path.iter().map(|p| ("PATH", p.as_ref())).collect();
+        let group = cancel.is_some();
+        let child = shards_ipc::spawn_with(
+            &found,
+            &[action.as_ref()],
+            &[
+                (stdin.as_fd(), 0),
+                (from_stdout.as_fd(), 1),
+                (std::io::stderr().as_fd(), 2),
+            ],
+            group,
+            &set,
+        )
+        .map_err(fail)?;
+        drop((stdin, from_stdout));
+        let child = std::sync::Arc::new(child);
+        let mut talk = Talk {
+            program: program.to_string(),
+            child: Some(child.clone()),
+            stdout,
+            cancel: cancel.map(|c| (c.clone(), c.watch_helper(child))),
+            group,
+        };
         match to_stdin.write_all(input) {
             Ok(()) => {}
             Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => {}
-            Err(e) => return Err(Error::new(format!("{program}: {e}"))),
+            Err(e) => {
+                talk.end();
+                return Err(Error::new(format!("{program}: {e}")));
+            }
         }
-        drop(to_stdin);
-        let mut out = Vec::new();
-        (&mut from_stdout)
-            .take(MAX_HELPER_OUTPUT)
-            .read_to_end(&mut out)
-            .map_err(|e| Error::new(format!("{program}: {e}")))?;
-        Ok(out)
-    })();
-    if talked.is_err() {
-        let _ = child.kill(libc::SIGKILL);
+        Ok(talk)
     }
-    let status = child.wait().map_err(|e| Error::new(format!("{program}: {e}")))?;
-    Ok(((status != 0).then(|| format!("exit status {status}")), talked?))
+
+    /// Whether the helper has ended, its output then all written.
+    fn ended(&self) -> bool {
+        self.child.as_ref().is_some_and(|c| c.has_ended())
+    }
+
+    /// How it failed, if it did, and what it wrote, `MAX_HELPER_OUTPUT` at most: waited
+    /// for, unless its cancel ends it first.
+    fn finish(mut self) -> Result<(Option<String>, Vec<u8>), Error> {
+        let mut out = Vec::new();
+        let read = (&mut self.stdout).take(MAX_HELPER_OUTPUT).read_to_end(&mut out);
+        let Some(child) = self.child.take() else {
+            return Err(Error::new(format!("{}: already finished", self.program)));
+        };
+        if read.is_err() {
+            let _ = self.kill(&child);
+        }
+        let status = child.wait();
+        if let Some((cancel, n)) = self.cancel.take() {
+            cancel.forget_helper(n);
+            if cancel.is_cancelled() {
+                return Err(Error::of(crate::ErrorKind::Cancelled, "cancelled"));
+            }
+        }
+        let status = status.map_err(|e| Error::new(format!("{}: {e}", self.program)))?;
+        read.map_err(|e| Error::new(format!("{}: {e}", self.program)))?;
+        Ok(((status != 0).then(|| format!("exit status {status}")), out))
+    }
+
+    fn kill(&self, child: &shards_ipc::Child) -> std::io::Result<()> {
+        if self.group {
+            child.kill_group(libc::SIGKILL)
+        } else {
+            child.kill(libc::SIGKILL)
+        }
+    }
+
+    /// Ends and reaps the helper, unless it has finished.
+    fn end(&mut self) {
+        if let Some(child) = self.child.take() {
+            let _ = self.kill(&child);
+            let _ = child.wait();
+        }
+        if let Some((cancel, n)) = self.cancel.take() {
+            cancel.forget_helper(n);
+        }
+    }
 }
 
-/// [`run_helper`] where shards has no daemon: by std's Command.
-#[cfg(not(unix))]
-fn run_helper(
-    program: &str,
-    action: &str,
-    input: &[u8],
-    env: Env<'_>,
-) -> Result<(Option<String>, Vec<u8>), Error> {
-    use std::process::{Command, Stdio};
-    let mut command = Command::new(program);
-    command
-        .arg(action)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::inherit());
-    if let Some(path) = env("PATH") {
-        command.env("PATH", path);
-    }
-    let mut child = command
-        .spawn()
-        .map_err(|e| Error::new(format!("running {program}: {e}")))?;
-    let talked = (|| {
-        if let Some(mut stdin) = child.stdin.take() {
+/// [`Talk`] where shards has no daemon: by std's Command. A cancel ends it by a handle of
+/// its own.
+#[cfg(windows)]
+struct Talk {
+    program: String,
+    child: Option<std::process::Child>,
+    cancel: Option<(Cancel, u64)>,
+}
+
+#[cfg(windows)]
+impl Talk {
+    fn start(
+        program: &str,
+        action: &str,
+        input: &[u8],
+        env: Env<'_>,
+        cancel: Option<&Cancel>,
+    ) -> Result<Talk, Error> {
+        use std::process::{Command, Stdio};
+        let mut command = Command::new(program);
+        command
+            .arg(action)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit());
+        if let Some(path) = env("PATH") {
+            command.env("PATH", path);
+        }
+        let mut child = command
+            .spawn()
+            .map_err(|e| Error::new(format!("running {program}: {e}")))?;
+        let watched = match cancel {
+            Some(cancel) => {
+                use std::os::windows::io::AsHandle as _;
+                match child.as_handle().try_clone_to_owned() {
+                    Ok(handle) => Some((cancel.clone(), cancel.watch_helper(handle))),
+                    Err(e) => {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        return Err(Error::new(format!("{program}: {e}")));
+                    }
+                }
+            }
+            None => None,
+        };
+        let stdin = child.stdin.take();
+        let mut talk = Talk {
+            program: program.to_string(),
+            child: Some(child),
+            cancel: watched,
+        };
+        if let Some(mut stdin) = stdin {
             match stdin.write_all(input) {
                 Ok(()) => {}
                 Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => {}
-                Err(e) => return Err(Error::new(format!("{program}: {e}"))),
+                Err(e) => {
+                    talk.end();
+                    return Err(Error::new(format!("{program}: {e}")));
+                }
             }
         }
-        let mut out = Vec::new();
-        if let Some(stdout) = child.stdout.take() {
-            stdout
-                .take(MAX_HELPER_OUTPUT)
-                .read_to_end(&mut out)
-                .map_err(|e| Error::new(format!("{program}: {e}")))?;
-        }
-        Ok(out)
-    })();
-    if talked.is_err() {
-        let _ = child.kill();
+        Ok(talk)
     }
-    let status = child.wait().map_err(|e| Error::new(format!("{program}: {e}")))?;
-    Ok(((!status.success()).then(|| status.to_string()), talked?))
+
+    fn ended(&self) -> bool {
+        use std::os::windows::io::AsRawHandle as _;
+        self.child.as_ref().is_some_and(|c| {
+            // SAFETY: a wait of no time on the process handle the Child holds open.
+            unsafe {
+                windows_sys::Win32::System::Threading::WaitForSingleObject(c.as_raw_handle(), 0)
+                    == windows_sys::Win32::Foundation::WAIT_OBJECT_0
+            }
+        })
+    }
+
+    fn finish(mut self) -> Result<(Option<String>, Vec<u8>), Error> {
+        let Some(mut child) = self.child.take() else {
+            return Err(Error::new(format!("{}: already finished", self.program)));
+        };
+        let mut out = Vec::new();
+        let read = match child.stdout.take() {
+            Some(stdout) => stdout.take(MAX_HELPER_OUTPUT).read_to_end(&mut out).map(drop),
+            None => Ok(()),
+        };
+        if read.is_err() {
+            let _ = child.kill();
+        }
+        let status = child.wait();
+        if let Some((cancel, n)) = self.cancel.take() {
+            cancel.forget_helper(n);
+            if cancel.is_cancelled() {
+                return Err(Error::of(crate::ErrorKind::Cancelled, "cancelled"));
+            }
+        }
+        let status = status.map_err(|e| Error::new(format!("{}: {e}", self.program)))?;
+        read.map_err(|e| Error::new(format!("{}: {e}", self.program)))?;
+        Ok(((!status.success()).then(|| status.to_string()), out))
+    }
+
+    fn end(&mut self) {
+        if let Some(mut child) = self.child.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        if let Some((cancel, n)) = self.cancel.take() {
+            cancel.forget_helper(n);
+        }
+    }
+}
+
+impl Drop for Talk {
+    fn drop(&mut self) {
+        self.end();
+    }
 }
 
 /// A registry's credentials to keep, as `docker login` keeps them: its key (as given, or
@@ -890,12 +1121,13 @@ mod tests {
         let dirs = format!("{}:/bin:/usr/bin", bin.display());
         let env = [("PATH", dirs.as_str())];
         let long = "k".repeat(1 << 20);
-        let answer = ask_helper("deaf", &long, &|name| {
+        let env = |name: &str| {
             env.iter()
                 .find(|(n, _)| *n == name)
                 .map(|(_, v)| (*v).to_string())
-        });
-        assert!(matches!(answer, Ok(Some(_))), "{:?}", answer.err());
+        };
+        let answer = Asked::start("deaf", &long, String::new(), &env, None).answer();
+        assert_eq!(answer.ok(), Some(password("u", "s")));
         let _ = std::fs::remove_dir_all(&bin);
     }
 
@@ -1200,5 +1432,244 @@ esac
             lines.contains(&"erase r.example") && lines.contains(&"erase https://r.example"),
             "{said}"
         );
+    }
+    /// Whether process `pid` has gone: reaped, as kill(2) of no signal finds none.
+    #[cfg(unix)]
+    fn gone(pid: i32) -> bool {
+        // SAFETY: kill(2) with no signal sends nothing; it asks whether the process is.
+        unsafe {
+            libc::kill(pid, 0) != 0 && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
+        }
+    }
+
+    /// The `n`th pid `file` records, once it is there.
+    #[cfg(unix)]
+    fn recorded(file: &Path, n: usize) -> i32 {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        loop {
+            let pids: Vec<i32> = std::fs::read_to_string(file)
+                .unwrap_or_default()
+                .lines()
+                .filter_map(|l| l.trim().parse().ok())
+                .collect();
+            if let Some(&pid) = pids.get(n) {
+                return pid;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "{} never recorded pid {n}",
+                file.display()
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+
+    /// Waits for `pid` to go: a group's member that `init` reaps once its group is killed.
+    #[cfg(unix)]
+    fn goes(pid: i32) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while !gone(pid) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "{pid} outlived its group's end"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+
+    /// The environment of a config in `dir` naming `helper` as its store, found on `dir`.
+    #[cfg(unix)]
+    fn stored_by(dir: &Path, helper: &str) -> HashMap<String, String> {
+        std::fs::write(dir.join("config.json"), format!(r#"{{"credsStore":"{helper}"}}"#)).unwrap();
+        HashMap::from([
+            ("DOCKER_CONFIG".to_string(), dir.to_string_lossy().into_owned()),
+            ("PATH".to_string(), format!("{}:/bin:/usr/bin", dir.display())),
+        ])
+    }
+
+    /// Helpers that never answer, their pids recorded in `pids`: `stuck`, and `parent`,
+    /// whose own child holds its output open as it waits.
+    #[cfg(unix)]
+    fn stuck(dir: &Path, pids: &Path) {
+        program(
+            &dir.join("docker-credential-stuck"),
+            &format!(
+                "#!/bin/sh\necho $$ >> '{}'\nexec /bin/sleep 3613\n",
+                pids.display()
+            ),
+        );
+        program(
+            &dir.join("docker-credential-parent"),
+            &format!(
+                "#!/bin/sh\necho $$ >> '{0}'\n/bin/sleep 3613 &\necho $! >> '{0}'\nwait\n",
+                pids.display()
+            ),
+        );
+    }
+
+    /// A helper is started as it is found and never waited for unless its answer is read:
+    /// dropped unread, it is ended and reaped. Read, it is waited for, and a cancel ends the
+    /// wait at once, and the helper with it, its own child that holds its output open too.
+    #[cfg(unix)]
+    #[test]
+    fn a_helper_is_waited_for_only_where_its_answer_is_read() {
+        let dir = temp("stuck-helper");
+        let pids = dir.join("pids");
+        stuck(&dir, &pids);
+        let env = stored_by(&dir, "stuck");
+        let env = |k: &str| env.get(k).cloned();
+        let (found, _) = super::find("stuck.example", &env, None).unwrap();
+        let Found::Asked(asked) = found else {
+            panic!("asked: {found:?}");
+        };
+        let helper = recorded(&pids, 0);
+        assert!(!asked.answered() && !gone(helper));
+        drop(asked);
+        assert!(gone(helper), "ended and reaped as it dropped");
+        let parent = stored_by(&dir, "parent");
+        let parent = |k: &str| parent.get(k).cloned();
+        let cancel = Cancel::new();
+        let (found, _) = super::find("stuck.example", &parent, Some(&cancel)).unwrap();
+        let Found::Asked(asked) = found else {
+            panic!("asked: {found:?}");
+        };
+        assert_eq!(
+            asked.notice(),
+            format!(
+                "Waiting for docker-credential-parent to answer for stuck.example (credsStore in {})",
+                dir.join("config.json").display()
+            )
+        );
+        let (helper, child) = (recorded(&pids, 1), recorded(&pids, 2));
+        std::thread::scope(|s| {
+            let waiting = s.spawn(move || asked.answer());
+            cancel.cancel();
+            let e = waiting.join().unwrap().unwrap_err();
+            assert_eq!(e.kind(), crate::ErrorKind::Cancelled, "{e}");
+        });
+        assert!(gone(helper), "ended and reaped with its cancel");
+        goes(child);
+        // Cancelled first, one is ended as it is found: its answer, which the helper would
+        // hold for an hour, is refused at once.
+        let (found, _) = super::find("stuck.example", &env, Some(&cancel)).unwrap();
+        let e = found.answer().unwrap_err();
+        assert_eq!(e.kind(), crate::ErrorKind::Cancelled, "{e}");
+    }
+
+    /// A registry token in the file wins over a helper's answer: no helper is asked. One that
+    /// is not on PATH fails only the answer that needs it.
+    #[cfg(unix)]
+    #[test]
+    fn a_registry_token_asks_no_helper_and_a_missing_one_fails_only_its_answer() {
+        let dir = temp("token-helper");
+        let marks = dir.join("marks");
+        program(
+            &dir.join("docker-credential-marking"),
+            &format!("#!/bin/sh\necho asked >> '{}'\n", marks.display()),
+        );
+        std::fs::write(
+            dir.join("config.json"),
+            r#"{"credsStore":"marking","auths":{"t.example":{"registrytoken":"rt"}}}"#,
+        )
+        .unwrap();
+        let path = format!("{}:/bin:/usr/bin", dir.display());
+        let config = dir.to_string_lossy().into_owned();
+        let env = |k: &str| match k {
+            "DOCKER_CONFIG" => Some(config.clone()),
+            "PATH" => Some(path.clone()),
+            _ => None,
+        };
+        let (found, _) = super::find("t.example", &env, None).unwrap();
+        assert!(
+            matches!(&found, Found::Known(Credentials::RegistryToken(t)) if t == "rt"),
+            "{found:?}"
+        );
+        assert!(!marks.exists(), "no helper asked");
+        let missing = stored_by(&dir, "absent");
+        let missing = |k: &str| missing.get(k).cloned();
+        let (found, _) = super::find("a.example", &missing, None).unwrap();
+        let e = found.answer().unwrap_err();
+        assert!(e.to_string().contains("docker-credential-absent"), "{e}");
+    }
+
+    /// A 401 carrying `challenge`, as a registry's would, from `client`.
+    #[cfg(unix)]
+    fn refusal<'c>(client: &'c crate::http::Client, challenge: &str) -> crate::http::Response<'c> {
+        let server = crate::testing::serve(
+            None,
+            vec![(
+                format!(
+                    "HTTP/1.1 401 Unauthorized\r\nWWW-Authenticate: {challenge}\r\nContent-Length: 0\r\n\r\n"
+                )
+                .into_bytes(),
+                crate::testing::After::Keep,
+            )],
+        );
+        let url = crate::url::Url::parse(&format!("http://127.0.0.1:{}/v2/", server.port)).unwrap();
+        client
+            .send(&crate::http::Request {
+                method: "GET",
+                url: &url,
+                headers: &[],
+                body: &[],
+                file: None,
+            })
+            .unwrap()
+    }
+
+    /// A helper's answer is read as its registry's own host challenges, and answers it; a
+    /// challenge of another host reads none and waits on none, a stuck helper's included,
+    /// and what waits on one says so.
+    #[cfg(unix)]
+    #[test]
+    fn a_helpers_answer_is_read_where_its_registry_challenges() {
+        use crate::auth::Authorizer;
+        let dir = temp("challenged-helper");
+        helper(&dir, "fake");
+        let pids = dir.join("pids");
+        stuck(&dir, &pids);
+        let client = crate::http::Client::new(
+            Box::new(|_| crate::tls::client_config(Vec::new(), None)),
+            "shards-test",
+        );
+        let registry = crate::url::Url::parse("http://found.example/v2/").unwrap();
+        let other = crate::url::Url::parse("http://other.example/v2/").unwrap();
+        let fake = stored_by(&dir, "fake");
+        let fake = |k: &str| fake.get(k).cloned();
+        let (found, _) = super::find("found.example", &fake, None).unwrap();
+        let auth = Authorizer::new(&registry, found);
+        assert!(
+            auth.challenged(&registry, &refusal(&client, r#"Basic realm="r""#), false)
+                .unwrap()
+        );
+        assert_eq!(
+            auth.authorization(&client, &registry, &[]).unwrap().as_deref(),
+            Some("Basic dTpz")
+        );
+        let stuck_env = stored_by(&dir, "stuck");
+        let stuck_env = |k: &str| stuck_env.get(k).cloned();
+        let cancel = Cancel::new();
+        let (found, _) = super::find("found.example", &stuck_env, Some(&cancel)).unwrap();
+        let auth = Authorizer::new(&registry, found);
+        std::thread::scope(|s| {
+            let waiting =
+                s.spawn(|| auth.challenged(&registry, &refusal(&client, r#"Basic realm="r""#), false));
+            let notice = auth.waits().unwrap();
+            assert!(
+                notice.starts_with("Waiting for docker-credential-stuck to answer for found.example"),
+                "{notice}"
+            );
+            let helper = recorded(&pids, 0);
+            // Another host waits on none: refused for want of basic credentials, at once.
+            let e = auth
+                .challenged(&other, &refusal(&client, r#"Basic realm="o""#), false)
+                .unwrap_err();
+            assert!(e.to_string().contains("no basic auth credentials"), "{e}");
+            assert_eq!(auth.authorization(&client, &other, &[]).unwrap(), None);
+            cancel.cancel();
+            let e = waiting.join().unwrap().unwrap_err();
+            assert_eq!(e.kind(), crate::ErrorKind::Cancelled, "{e}");
+            goes(helper);
+        });
     }
 }

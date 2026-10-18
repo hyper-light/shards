@@ -113,6 +113,8 @@ pub struct Pull {
     verb: &'static str,
     layers: Vec<Layer>,
     building: bool,
+    /// What the pull waits on, a credential helper's answer (D184), until it goes on.
+    waiting: Option<String>,
     /// The pull's end: what the reference resolved to, whether nothing was new, whether
     /// it boots here; and when it ended.
     done: Option<(String, bool, bool)>,
@@ -139,6 +141,7 @@ impl Pull {
             repository: String::new(),
             layers: Vec::new(),
             building: false,
+            waiting: None,
             done: None,
             done_at: None,
             facts: Vec::new(),
@@ -170,6 +173,10 @@ impl Pull {
 
     pub fn apply(&mut self, event: Progress) {
         let t = self.clock.t();
+        // Whatever comes after a wait ends it.
+        if !matches!(event, Progress::Waiting(_)) {
+            self.waiting = None;
+        }
         let mut set = |d: &str, f: &dyn Fn(&mut Layer)| {
             if let Some(l) = self.layers.iter_mut().find(|l| l.digest == d) {
                 f(l);
@@ -244,6 +251,7 @@ impl Pull {
                 }
             }
             Progress::Facts(facts) => self.facts = facts,
+            Progress::Waiting(notice) => self.waiting = Some(notice),
             Progress::Done {
                 digest,
                 unchanged,
@@ -319,7 +327,12 @@ impl Pull {
         // Done, the facts are revealed, and then all holds still.
         match self.done_at {
             Some(at) => self.clock.t() - at < REVEAL + 0.5,
-            None => size.1 >= 40 || self.building || self.layers.iter().any(|l| l.state == State::Arriving),
+            None => {
+                size.1 >= 40
+                    || self.building
+                    || self.waiting.is_some()
+                    || self.layers.iter().any(|l| l.state == State::Arriving)
+            }
         }
     }
 
@@ -473,6 +486,21 @@ impl Pull {
                 l.pad(2);
                 self.rate.sparkline(&mut l.s, p, spark);
                 l.w += spark;
+            }
+            info.push(l.done());
+        } else if let Some(waiting) = self.waiting.as_deref().filter(|_| self.done.is_none()) {
+            // What it waits on, lit as it waits, in the room there is.
+            let mut l = Line::new();
+            let words = layout::clip(waiting, room);
+            let n = words.chars().count().max(1);
+            for (k, ch) in words.chars().enumerate() {
+                let at = k as f64 / n as f64;
+                let lit = motion::glint(at, motion::travel(t, 0.4, 0.6, 0.0), 0.1);
+                l.put(
+                    p,
+                    tokens::mix(tokens::MUTED, tokens::AMBER, lit * 0.8),
+                    &ch.to_string(),
+                );
             }
             info.push(l.done());
         } else if self.building {

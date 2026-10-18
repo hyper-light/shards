@@ -525,6 +525,8 @@ pub fn find_image(
             let report = |event: Event<'_>| match event {
                 Event::Layer(d) => say(&format!("{}: Download complete", short(&d.to_string()))),
                 Event::Present(d) => say(&format!("{}: Already exists", short(&d.to_string()))),
+                // What the pull waits on (D184).
+                Event::Waiting(notice) => say(notice),
                 Event::Manifest(..)
                 | Event::Progress(..)
                 | Event::Building

@@ -252,6 +252,26 @@ struct Vertex {
     started: Instant,
 }
 
+/// Runs `work` with `registry`, saying where the build's lines go, once, what it waits on
+/// where it waits for a credential helper's answer (D184): in the plain display, whose
+/// lines are written to stderr as they come; the live display keeps its own frame.
+fn saying_waits<T>(
+    registry: &shards_registry::registry::Registry,
+    progress: &RefCell<Progress>,
+    work: impl FnOnce() -> T,
+) -> T {
+    let plain = {
+        let p = progress.borrow();
+        p.live.is_none() && !p.quiet
+    };
+    let say = |notice: &str| {
+        if plain {
+            let _ = writeln!(std::io::stderr(), "{notice}");
+        }
+    };
+    registry.saying_waits(&say, work)
+}
+
 impl Progress {
     fn say(&self, text: &str) {
         self.say_bytes(text.as_bytes());
@@ -987,8 +1007,11 @@ impl Resolver for Bases<'_> {
                     .progress
                     .borrow_mut()
                     .start(&format!("resolve image config for docker-image://{name}"));
-                let top = crate::pull::registry(&reference, None, &|k| std::env::var(k).ok())
-                    .and_then(|r| r.resolve(self.store, &reference).map_err(|e| e.to_string()));
+                let top = crate::pull::registry(&reference, None, &|k| std::env::var(k).ok()).and_then(|r| {
+                    saying_waits(&r, self.progress, || {
+                        r.resolve(self.store, &reference).map_err(|e| e.to_string())
+                    })
+                });
                 let progress = self.progress.borrow();
                 match top {
                     Ok(top) => {
@@ -1366,11 +1389,21 @@ impl Bases<'_> {
         let pulled = match local {
             Some(p) => p,
             None => {
+                // What its pull waits on, said where the build's plain lines go (D184).
+                let plain = {
+                    let p = self.progress.borrow();
+                    p.live.is_none() && !p.quiet
+                };
+                let report = |event: Event<'_>| {
+                    if let (true, Event::Waiting(notice)) = (plain, event) {
+                        let _ = writeln!(std::io::stderr(), "{notice}");
+                    }
+                };
                 crate::pull::fetch(
                     self.home,
                     &reference,
                     &guest,
-                    &|_: Event<'_>| {},
+                    &report,
                     &|_| {},
                     None,
                     &|k| std::env::var(k).ok(),
@@ -1435,9 +1468,10 @@ impl Bases<'_> {
         }
         let limits = crate::pull::limits().map_err(fail)?;
         let registry = crate::pull::registry(reference, None, &|k| std::env::var(k).ok()).map_err(fail)?;
-        let (resolved, manifest) =
+        let (resolved, manifest) = saying_waits(&registry, self.progress, || {
             shards_registry::pull::fetch_untagged(&registry, self.store, reference, &[target], &limits)
-                .map_err(|e| fail(e.to_string()))?;
+        })
+        .map_err(|e| fail(e.to_string()))?;
         let out = self.base_of(name, reference, manifest.clone(), resolved.clone(), wanted)?;
         // Its blobs, kept while the record is: the manifest, the config, the layers.
         let bytes = self
@@ -1612,9 +1646,10 @@ impl Bases<'_> {
         } else {
             vec![target]
         };
-        let (resolved, config) =
+        let (resolved, config) = saying_waits(&registry, self.progress, || {
             shards_registry::pull::metadata(&registry, self.store, &reference, &targets, &limits)
-                .map_err(|e| e.to_string())?;
+        })
+        .map_err(|e| e.to_string())?;
         Ok((resolved.to_string(), config))
     }
 }
@@ -1636,9 +1671,10 @@ impl Bases<'_> {
         let reference = Reference::parse(name).map_err(|e| e.to_string())?;
         let limits = crate::pull::limits()?;
         let registry = crate::pull::registry(&reference, None, &|k| std::env::var(k).ok())?;
-        let top = registry
-            .resolve(self.store, &reference)
-            .map_err(|e| e.to_string())?;
+        let top = saying_waits(&registry, self.progress, || {
+            registry.resolve(self.store, &reference)
+        })
+        .map_err(|e| e.to_string())?;
         let platform = shards_sigstore::platforms::Platform {
             os: show(&wanted.os),
             architecture: show(&wanted.architecture),
