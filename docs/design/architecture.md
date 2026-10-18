@@ -11075,15 +11075,15 @@ required); undefined where it does not verify, unknown until the digest is known
 (`api.github.com/repos/REPO/attestations/DIGEST?predicate_type=` SLSA v1, with GitHub's
 `Accept`), each inline bundle and each `bundle_url` (snappy where its path ends
 `.json.sn`), the first that verifies its answer; each failure logged at info level in
-buildx's words (the repository quoted as `%s` prints an `ast.String`). Each fetch is a step
-of its own, named as buildx names it (`[policy] fetch GitHub attestation REPO@DIGEST`,
+buildx's words (D106) (the repository quoted as `%s` prints an `ast.String`). Each fetch is a step
+of its own, named as buildx names it (D106) (`[policy] fetch GitHub attestation REPO@DIGEST`,
 `[policy] fetch GitHub attestation bundle URL` without its query), not checked by the
 policies (measured: buildx does not check them), its failure the step's error and, to the
 policy, the cache key's that failed to load (`failed to load cache key: invalid response
 status 404`, measured).
 - The policy runs on its own thread (M126's stack); its log lines and fetches are answered
   by the build's thread as it runs (`with_stack_serving`), so `print` lines and the
-  functions' lines interleave as buildx's do and a fetch's step comes where it comes in Go.
+  functions' lines interleave as buildx's do (D106) and a fetch's step comes where it comes in Go.
 - The API's answer read as `json.Unmarshal` reads it into buildx's struct: names folded,
   repeated members merged into what earlier ones decoded (in-place slices, Go's growth),
   raw bundles as written (`json.RawMessage`, from the spans `gojson::unmarshal_raw`
@@ -11096,7 +11096,7 @@ status 404`, measured).
   `platforms.json` (110 platforms: Normalize, FormatAll, every Match, Less over every
   pair): VerifyImage and ResolveSignatureChain through policy-helpers' own code over
   replayed registries, and containerd's `platforms.Only` and `Less`
-  (`scripts/sigstore/generate-image`). An empty OS is the host's GOOS, as buildx checks
+  (`scripts/sigstore/generate-image`). An empty OS is the host's GOOS, as buildx checks (D106)
   in its client.
 - `testdata/policy/provenance.json`: 206 cases through buildx's own `SourceToInput` and
   `ResolveInputUnknowns`, the real moby/buildkit v0.28.1 provenance among them.
@@ -11127,7 +11127,7 @@ status 404`, measured).
 - Materials and blobs in index and digest order, where buildx iterates Go maps (random).
 
 **Audited** (2026-10-09, audit L): an image's attestation chain may come to 4 MiB,
-counted before each blob is fetched (`CHAIN_MAX`), as buildx's policy session takes the
+counted before each blob is fetched (`CHAIN_MAX`, D106), as buildx's policy session takes the
 chain in one gRPC message under grpc-go's default 4 MiB; before, a provenance of any
 size was held whole, at about 34 times its size (64 MiB: +2209 MiB peak, PM M127). A blob
 its descriptor carries (`data`) is read from it, as containerd reads one; a digest named
@@ -11339,7 +11339,7 @@ through `shards-gitsign`.
   primary key, identities and their certifications, subkeys and their bindings. Each
   self-signature is verified as it is read, a signing subkey's cross-signature included,
   and an entity that fails is skipped to the next public key. Several armored blocks are
-  read as BuildKit's ReadAllArmoredKeyRings reads them. A fresh 100-byte `bufio.Reader`
+  read as BuildKit's ReadAllArmoredKeyRings reads them (D103). A fresh 100-byte `bufio.Reader`
   for each block loses what it read past the block before, so the next block is found,
   or lost, where Go finds or loses it (`armor::Bufio`, measured: two blocks with no line
   between them lose the second).
@@ -11350,12 +11350,12 @@ through `shards-gitsign`.
   whose issuer has a signing key, binary or canonical text, each candidate key tried as
   go-crypto tries it (the same hash, its suffix written again for each). Then
   checkMessageSignatureDetails: unknown critical notations, revocations, key expiry and
-  signature expiry, at the signature's own creation time as BuildKit configures it.
+  signature expiry, at the signature's own creation time as BuildKit configures it (D103).
   Then BuildKit's rules: SHA-256, -384 or -512; RSA, ECDSA or EdDSA; any key revocation;
   RSA under 2048 bits; a creation time over five minutes ahead.
 - **Over a digest** (`verify_http_pgp_signature`): the source fetched again, and its
-  content and the signature's hash suffix hashed as BuildKit's ChecksumRequest asks. The
-  policy is asked again with that digest, as buildx's loop asks it
+  content and the signature's hash suffix hashed as BuildKit's ChecksumRequest asks (D103). The
+  policy is asked again with that digest, as buildx's loop asks it (D103)
   (checksumNeededForSignature).
 - **SSH** (`ssh::verify`): sshsig's checks (version 1, SHA-256 or SHA-512, namespace
   `git`, the signature's key that of the file), the first key of an authorized_keys file
@@ -11458,11 +11458,11 @@ A policy is asked of Git and HTTP sources too, with buildx v0.37.1's input
 
 **Measured** in `shards-dind` with buildx v0.37.1 against github.com: an annotated tag with a
 subdirectory, a commit's name, the default branch, an HTTP source with a query, and one
-with `--checksum`. shards gives every input byte for byte as buildx did for the same
+with `--checksum` (D102). shards gives every input byte for byte as buildx did for the same
 repositories and URLs:
 - **Git.** `schema`, `host` and `remote` come from the URL, `gitutil.ParseURL` (shards'
   port in `shards_agentfile::git`), and from the `git.fullurl` attribute where it is set.
-  The ref is resolved as BuildKit resolves it, and `checksum` is the object the ref names:
+  The ref is resolved as BuildKit resolves it (D102), and `checksum` is the object the ref names:
   an annotated tag's own object, with `commitChecksum`, `isAnnotatedTag` and `tagName`. A
   commit's name stays its `ref`, with `isCommitRef`.
 - **Git objects.** Asked for `commit` or `tag`, the commit and the tag are fetched one
@@ -11525,7 +11525,7 @@ v0.28.1 (Docker 29.3.1):
   which shards' builder has.
 - **Order of checks.** `local://dockerfile`, then each base at its metadata (`docker-image://`
   by name, with its platform), then `local://context` as its `.dockerignore` is read; a
-  refusal there stops nothing. Then every source of the definition is checked as BuildKit
+  refusal there stops nothing (D101). Then every source of the definition is checked as BuildKit
   loads it, before anything runs: images pinned to their digests.
 - **The step.** `#N loading policies FILES`, each line stamped.
 - **Refusals.** buildx's `Policy: MESSAGE` lines come before the Dockerfile excerpt. The
@@ -11547,7 +11547,7 @@ v0.28.1 (Docker 29.3.1):
 - A print prints as often as buildx's does: during both the partial and the full
   evaluation (measured).
 - `pin_image` converts a source to a digest; `load_json` reads the policy's FS; `data.`
-  imports are read as buildx's module loader reads them, which the compiler now calls where
+  imports are read as buildx's module loader reads them (D101), which the compiler now calls where
   OPA calls it (`Compiler::with_loader`).
 
 **What shards does better.**
@@ -11583,7 +11583,7 @@ random seed is read from the system as it is used (`Context::fill`, AWS-LC's DRB
 
 Tested:
 - **`builds_heed_their_policies`:** every check and its order; refusals at
-  the image, the pinned image, the Dockerfile and the context, in buildx's words; unknowns
+  the image, the pinned image, the Dockerfile and the context, in buildx's words (D101); unknowns
   resolved; `cwd://`, a missing file, `disabled`, `reset`, and policies OPA refuses;
   imports and `load_json`; and `--debug`'s input. Mutation-checked twice, without the
   metadata check and without the definition's.
@@ -11592,7 +11592,7 @@ Tested:
 - **The buildx oracle:** `--policy`'s grammar.
 
 **Audited** (2026-10-09, audit L): what a policy's functions fetch (the attestation
-builtins' GitHub API answers and bundles) is bounded at 16 MiB, as buildx reads it through
+builtins' GitHub API answers and bundles) is bounded at 16 MiB (D101), as buildx reads it through
 BuildKit's gateway, whose gRPC server takes messages of at most containerd's
 `DefaultMaxRecvMsgSize` (buildkit v0.28.1 frontend/gateway/gateway.go; before, unbounded).
 
@@ -11619,7 +11619,7 @@ archive:
   digest), having checked its layer against the config's `diff_ids`.
 
 **Media types.** The image's manifest is OCI's even where `oci-mediatypes=false` asks for
-Docker's, as BuildKit turns OCI's on for any attested image (ImageWriter.Commit,
+Docker's, as BuildKit turns OCI's on for any attested image (D100) (ImageWriter.Commit,
 `EnableOCITypes(ctx, "attestations")`). Before this, an `oci` output asking for Docker's
 types silently dropped its attestation.
 
@@ -11689,7 +11689,7 @@ Tested on real microVMs: `microvms_on_an_ipv6_network_reach_one_another`.
   the lowest free.
 - A name resolves to both versions' addresses, and is reached by name.
 - `/etc/hosts` names a microVM at both, and inspect says what dockerd says.
-- An address taken is refused in dockerd's words.
+- An address taken is refused in dockerd's words (D99).
 
 Mutation-checked, each failing the test: no neighbor advertisements, no AAAA answers, the
 subnet's first address not kept out. The headers, neighbor discovery, ICMPv6's quote and
@@ -11847,7 +11847,7 @@ Evidence:
 - BuildKit v0.28.1's local exporter: with several platforms it writes each one's files
   under `<os>_<arch>[_<variant>]`, so that is how a directory lays out per-platform content.
 - `--platform` is read as `shards build` reads it (`build::target_platforms`, which
-  normalizes names as containerd does).
+  normalizes names as containerd does (D97)).
 
 What it does:
 - Each platform's content is `DIR/<os>_<arch>[_<variant>]` where that directory exists.
@@ -11877,7 +11877,7 @@ Evidence:
 - `scripts/cdi/generate` runs CDI's own `ParseSpec` over eight specs
   (`testdata/cdi-specs.json`) and records what it makes of each, or its error.
 
-What it does, as BuildKit and CDI do:
+What it does, as BuildKit and CDI do (D96):
 - Specs are read from `/etc/cdi` then `/var/run/cdi` (`SHARDS_CDI_SPEC_DIRS` names
   others), each directory's `.json` and `.yaml` in name order.
   - A later directory's device wins over an earlier's. A device two specs of one
@@ -11889,7 +11889,7 @@ What it does, as BuildKit and CDI do:
     scalars (`0660` octal, `yes` and `on` true, `~` null), a duplicate key refused, and
     a number or bool turned to a string wherever a string is wanted (a device named `0`).
     The reader is yaml-rust2's event stream; the resolution is go-yaml v2's, ported.
-- Names resolve as BuildKit's manager resolves them:
+- Names resolve as BuildKit's manager resolves them (D96):
   - `VENDOR/CLASS=NAME` is that device;
   - `VENDOR/CLASS` is the first of its kind;
   - `VENDOR/CLASS=*` is every one;
@@ -12048,7 +12048,7 @@ The last two `BUILDKIT_*` build arguments, as frontend 1.27.1's dockerui reads t
 Tested:
 - The plan oracle: `add-git-advice` and `context-git-advice` (the scripts now pass
   dockerui's `GitAdvice` on).
-- `frontend_build_args_are_read` covers both refusals in Docker's
+- `frontend_build_args_are_read` (build.rs) covers both refusals in Docker's
   words, and builds with the arguments off and on.
 - Mutation-checked: planning no advice fails both oracle cases.
 
@@ -12075,7 +12075,7 @@ Evidence:
   - `contextsubdir`;
   - an HTTP tar, gzip and plain file.
 
-  shards plans each as BuildKit does. The SSH case differs only by
+  shards plans each as BuildKit does (D91). The SSH case differs only by
   `git.knownsshhosts`, the recorded deviation that planning does no network I/O.
 
 What it does:
@@ -12088,12 +12088,12 @@ What it does:
   and the context holds it alone, as `context`.
 - The Dockerfile is read from the context: `-f`'s path in it, `Dockerfile` (or
   `dockerfile`) by default. `-f -` reads stdin, and an absolute `-f` reads the host's
-  file, as buildx sends it (`dockerfilekey`). A remote context has no `.dockerignore`
+  file, as buildx sends it (D91) (`dockerfilekey`). A remote context has no `.dockerignore`
   applied, as dockerui applies none to it.
-- `-f` an HTTP(S) URL is fetched as buildx fetches it (`createTempDockerfileFromURL`):
+- `-f` an HTTP(S) URL is fetched as buildx fetches it (D91) (`createTempDockerfileFromURL`):
   `[internal] load URL`, at most 2 MiB ("Dockerfile URL bigger than allowed max size
   (2.097MB)"), whatever the context.
-- `-`: stdin's archive is the context, as buildx uploads it. Stdin's Dockerfile builds
+- `-`: stdin's archive is the context, as buildx uploads it (D91). Stdin's Dockerfile builds
   with an empty context. `-f -` with `-` is refused: "can't use stdin for both build
   context and dockerfile". A stdin Dockerfile with `-f` is refused: "ambiguous
   Dockerfile source".
@@ -12144,7 +12144,7 @@ What it takes:
 - BuildKit's attributes: `scope` (`buildkit`), `token`, `url` and `url_v2`, `version`
   (v2 when `url_v2` is given or the URL is GitHub's results service), and `timeout`
   (10m).
-- Without `token` and a URL the entry is dropped, as buildx drops it. buildx fills both
+- Without `token` and a URL the entry is dropped, as buildx drops it (D90). buildx fills both
   from the runner's environment (`ACTIONS_RUNTIME_TOKEN`, `ACTIONS_RESULTS_URL`,
   `ACTIONS_CACHE_URL`, `ACTIONS_CACHE_SERVICE_V2`), as D62 already does.
 - The token's scopes (`ac`) and its time in force (`nbf`, `exp`), read as
@@ -12206,7 +12206,7 @@ two-block upload, a key with a space and a non-ASCII character, and metadata hea
 whose order turns on the SDK's weighted sort. M125 runs every request against Azurite,
 Microsoft's Blob Storage emulator, which checks signatures.
 
-What it takes, read as BuildKit's `getConfig` reads it:
+What it takes, read as BuildKit's `getConfig` reads it (D89):
 - `account_url` (`$BUILDKIT_AZURE_STORAGE_ACCOUNT_URL`), refused without it.
 - `account_name` (`$BUILDKIT_AZURE_STORAGE_ACCOUNT_NAME`, else the host's first label).
 - `container` (`$BUILDKIT_AZURE_STORAGE_CONTAINER`, `buildkit-cache`) and `prefix`
@@ -12215,7 +12215,7 @@ What it takes, read as BuildKit's `getConfig` reads it:
   several `;` apart), joined as Go's `filepath.Join` joins them on Linux.
 - `secret_access_key`, the account's key.
 
-What it does, as BuildKit does it:
+What it does, as BuildKit does it (D89):
 - The container is made if it is not there; one made meanwhile by another build is
   taken, not failed.
 - A layer the container lacks is uploaded only where none is (`If-None-Match: *`): in one
@@ -12260,14 +12260,14 @@ S3 client signs with. `scripts/s3/generate` records that signer's own headers an
 signatures for seven requests (`testdata/sigv4.json`). M124 runs every request against a
 real S3 implementation that checks signatures.
 
-What it takes, read as BuildKit's `getConfig` reads it:
+What it takes, read as BuildKit's `getConfig` reads it (D88):
 - `bucket` (`$AWS_BUCKET`) and `region` (`$AWS_REGION`), refused without either, as
   BuildKit refuses them.
 - `prefix`, `manifests_prefix` (`manifests/`), `blobs_prefix` (`blobs/`) and `name`
   (`buildkit`, several `;` apart, each written and the first read).
 - `touch_refresh` (24h), `upload_parallelism` (4, refused unless positive),
   `endpoint_url` and `use_path_style`, and `ignore-error`.
-- Credentials: `access_key_id` and `secret_access_key` (with `session_token`), as buildx
+- Credentials (D88): `access_key_id` and `secret_access_key` (with `session_token`), as buildx
   passes them; else the SDK's environment (`$AWS_ACCESS_KEY_ID`…) and shared files
   (`$AWS_PROFILE` in `~/.aws/credentials`, then `~/.aws/config`).
 
@@ -12279,7 +12279,7 @@ The bucket holds what BuildKit's does:
   itself with its metadata replaced, so that a bucket's lifecycle rules count its age
   from now.
 - Objects past S3's 5 GiB limit for one request go in 5 GiB parts: uploaded, or copied
-  for a touch, as BuildKit's touch copies them.
+  for a touch, as BuildKit's touch copies them (D88).
 - A bucket without the cache is an empty cache; one that cannot be read is said and
   skipped.
 
@@ -12419,15 +12419,15 @@ A build's image is written in the media types Docker 29.3.1's BuildKit (v0.28.1)
 So:
 - **The stored and pushed image** uses OCI's types where the image output asks for them,
   or where it is attested (provenance, SBOMs) or annotated; Docker's otherwise. Its ID
-  is then that manifest's digest, as Docker's is. Before this, shards wrote OCI's always,
+  is then that manifest's digest, as Docker's is (D83). Before this, shards wrote OCI's always,
   so an unattested build's ID was not Docker's.
 - **Each `oci` or `docker` file output** uses its own `oci-mediatypes`, else its exporter's
   default: OCI's for `oci`, Docker's for `docker` unless it carries an attestation.
-- A non-bool value is refused in BuildKit's words, as is `compression=estargz` with
+- A non-bool value is refused in BuildKit's words (D83), as is `compression=estargz` with
   `oci-mediatypes=false` (`Validate`).
 
 Tested: `builds_attest_their_provenance` checks:
-- an unattested build is stored in Docker's types;
+- an unattested build is stored in Docker's types (D83);
 - `type=image,oci-mediatypes=true` stores OCI's;
 - the eStargz conflict is refused.
 
@@ -12510,7 +12510,7 @@ Each stage's own ARG overrides the global one, a boolean or a list of stage name
   target's, so the image and mode=max's steps are unchanged.
 - It runs the scanner's entrypoint and command, with its environment and working
   directory, in a builder microVM like any RUN. The scanner is resolved for the
-  builder's platform, as BuildKit resolves it with no platform.
+  builder's platform, as BuildKit resolves it with no platform (D81).
 - The result is mounted read-only at `/run/src/core/sbom` and each extra at
   `/run/src/extras/sbom-<name>`, with a tmpfs at `/tmp`.
 - What it writes in `/run/out` is the step's second output: the output of a writable

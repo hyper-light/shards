@@ -410,7 +410,9 @@ fn a_client_joins_then_runs_commands_whose_output_crosses_whole() {
 /// A daemon that answers each request with `answer`, written at once with its stream's end.
 struct Answers {
     answer: Vec<u8>,
-    inbound: HashMap<StreamId, Vec<u8>>,
+    /// What each stream has sent, by its connection too: every connection's first stream
+    /// has the same number, and a frame one left must never be read as the next one's.
+    inbound: HashMap<(ConnKey, StreamId), Vec<u8>>,
 }
 
 impl Handler for Answers {
@@ -425,7 +427,7 @@ impl Handler for Answers {
     }
 
     fn readable(&mut self, io: &mut Io<'_>, conn: ConnKey, stream: StreamId) {
-        let buffer = self.inbound.entry(stream).or_default();
+        let buffer = self.inbound.entry((conn, stream)).or_default();
         loop {
             match io.read(conn, stream) {
                 StreamRead::Bytes(bytes) => buffer.extend_from_slice(&bytes),
@@ -436,15 +438,20 @@ impl Handler for Answers {
                 StreamRead::Blocked | StreamRead::Reset => break,
             }
         }
-        if let Ok(Some((Tag::Exec, _))) = frame::take(buffer) {
-            assert_eq!(io.write(conn, stream, &self.answer).unwrap(), self.answer.len());
-            io.finish(conn, stream).unwrap();
+        // Every whole frame, the request's stdin's end among them, which comes with it.
+        while let Ok(Some((tag, _))) = frame::take(buffer) {
+            if tag == Tag::Exec {
+                assert_eq!(io.write(conn, stream, &self.answer).unwrap(), self.answer.len());
+                io.finish(conn, stream).unwrap();
+            }
         }
     }
 
     fn writable(&mut self, _io: &mut Io<'_>, _conn: ConnKey, _stream: StreamId) {}
     fn stopped(&mut self, _io: &mut Io<'_>, _conn: ConnKey, _stream: StreamId) {}
-    fn lost(&mut self, _io: &mut Io<'_>, _conn: ConnKey, _why: &str, _code: Option<u64>) {}
+    fn lost(&mut self, _io: &mut Io<'_>, conn: ConnKey, _why: &str, _code: Option<u64>) {
+        self.inbound.retain(|(c, _), _| *c != conn);
+    }
     fn command(&mut self, _io: &mut Io<'_>, _command: ()) {}
 
     fn done(&self) -> bool {
@@ -501,7 +508,8 @@ fn a_streams_last_frames_and_its_end_come_at_once_and_are_all_taken() {
 /// request when the test says.
 struct Unread {
     asked: mpsc::Sender<(ConnKey, StreamId)>,
-    inbound: HashMap<StreamId, Vec<u8>>,
+    /// What each stream has sent, by its connection too (`Answers`).
+    inbound: HashMap<(ConnKey, StreamId), Vec<u8>>,
 }
 
 impl Handler for Unread {
@@ -516,19 +524,23 @@ impl Handler for Unread {
     }
 
     fn readable(&mut self, io: &mut Io<'_>, conn: ConnKey, stream: StreamId) {
-        let buffer = self.inbound.entry(stream).or_default();
+        let buffer = self.inbound.entry((conn, stream)).or_default();
         while let StreamRead::Bytes(bytes) = io.read(conn, stream) {
             buffer.extend_from_slice(&bytes);
         }
-        if let Ok(Some((Tag::Exec, _))) = frame::take(buffer) {
-            io.stop(conn, stream);
-            let _ = self.asked.send((conn, stream));
+        while let Ok(Some((tag, _))) = frame::take(buffer) {
+            if tag == Tag::Exec {
+                io.stop(conn, stream);
+                let _ = self.asked.send((conn, stream));
+            }
         }
     }
 
     fn writable(&mut self, _io: &mut Io<'_>, _conn: ConnKey, _stream: StreamId) {}
     fn stopped(&mut self, _io: &mut Io<'_>, _conn: ConnKey, _stream: StreamId) {}
-    fn lost(&mut self, _io: &mut Io<'_>, _conn: ConnKey, _why: &str, _code: Option<u64>) {}
+    fn lost(&mut self, _io: &mut Io<'_>, conn: ConnKey, _why: &str, _code: Option<u64>) {
+        self.inbound.retain(|(c, _), _| *c != conn);
+    }
 
     fn command(&mut self, io: &mut Io<'_>, (conn, stream): (ConnKey, StreamId)) {
         let mut answer = Vec::new();

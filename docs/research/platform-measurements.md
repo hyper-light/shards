@@ -9317,3 +9317,49 @@ revision before comparing a changed API/implementation.
     command with no streams (`ps`, `logs -f`, `inspect`) takes a slot of two FIFOs, 2.5
     times cheaper: the hundred followers, slots of five each, still cost 110 ms of CPU in
     that quiet 3 s on a loaded host, past the test's 100.
+
+### M256. What gzipping a layer costs, and what the compressor's inner loops cost of it
+
+- **Question.** A build's export gzips each layer it made on one thread, with shards' port
+  of Go's compressor, which must make Go's bytes so that an image's digests are Docker's
+  (crates/flate). A build test whose step writes a 1 GiB file failed its 120 s deadline
+  under the suite's load, in that export (`a_builders_memory_is_plugged_as_its_build_needs_it`:
+  sampled at 51 s, the build was in `compress::layers`). What does the port spend its time
+  on, and how much of it can go with the bytes unchanged?
+- **Method.** Sampled (`sample`) gzipping the test's data, the compressor's helpers kept
+  out of line to split the time: hashing each of a match's strings into the hash chains
+  (Go's `insert`, one call per byte, its bounds checked at each access) took 72% of it,
+  the deflate loop itself 20%. Then the change:
+  a match's strings hashed in one pass over the window (`insert_run`), four bytes loaded
+  at once for each string's hash, and a candidate compared eight bytes at a time
+  (`match_len`); every match and every chain as before. Held to Go by `tests/oracle.rs`
+  (over 1,500 cases, every level, Go 1.25.8). Timed by
+  `docs/research/measurements/flate-speed/`: `inputs.sh` makes 256 MiB as the test's
+  `testguest big` writes a file (a 1 then zeros in each 4 KiB page), this repository's tar
+  at HEAD (157 MiB, text mostly) and a tar of release binaries (12 MiB); `ab.sh` runs the
+  `speed` example of two builds, 355ac6d0's compressor and the change, in alternating
+  order, one gzip of each file a run, at the default level, in pieces of 32 KiB as an
+  export writes; `summary.py` reads them. Apple M5 Max (18 cores), macOS 26.4.1, under
+  the other work of the host, 2026-10-18.
+- **Results.** The outputs are the same bytes, every run.
+  - Load average 20 to 26, 4 rounds of 3 gzips a side, p50 of the rounds' p50s: the
+    zeros 1.8 s before, 1.0 s after; the repository 3.2 s, 2.5 s; the binaries 0.34 s,
+    0.32 s.
+  - Load average 30 to 37, 12 rounds of one a side:
+
+    | file | before p50 | p90 | p99 | max | after p50 | p90 | p99 | max |
+    |---|---|---|---|---|---|---|---|---|
+    | zeros (256 MiB) | 3.85 s | 6.60 | 12.69 | 12.69 | 2.87 s | 5.82 | 7.28 | 7.28 |
+    | repository (157 MiB) | 10.52 s | 15.37 | 32.91 | 32.91 | 9.20 s | 18.42 | 21.63 | 21.63 |
+    | binaries (12 MiB) | 1.19 s | 2.49 | 5.09 | 5.09 | 0.90 s | 1.85 | 1.91 | 1.91 |
+
+    Each round's before over after, at p50 (min, max): 1.52 (0.64, 3.67) for the zeros,
+    1.38 (0.55, 2.10) for the repository, 1.34 (0.49, 7.08) for the binaries.
+- **Consequence.** A layer gzips 1.3 to 1.7 times as fast, the bytes Go's. What is left is
+  Go's own work at its default level: sampled after the change on the repository's tar,
+  half the time walks the hash chains (Go's `findMatch`: up to 128 earlier strings for
+  each string, each step a load of the last). A layer is still one thread's, so a
+  large one takes its size over one core's rate; splitting a layer's parse across cores
+  while keeping Go's bytes is possible (a parse resynchronized at each part's start, the
+  window's shifts and blocks replayed) and not built. Only the ratios hold on every host;
+  x86_64 and Linux are unmeasured.

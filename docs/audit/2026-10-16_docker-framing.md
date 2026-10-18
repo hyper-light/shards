@@ -124,6 +124,11 @@ Reviewed feature by feature, each D-entry's design against what it took from Doc
   - A long line cut into parts of 16 KiB for the drivers that send a log away (moby's copier's
     size): open. It is what receivers that join Docker's parts expect, so it stays until a
     receiver-led size is measured.
+  - A registry's request tried 5 times, 50 ms apart, and a 500, 502, 503 or 504 tried again
+    only once unless it changes (containerd's `maxAttempts` and pause, crates/registry
+    `ATTEMPTS`, `PAUSE`): open. Docker Hub's token server answered 502 twice within the
+    pause and a CI build failed (job 117733752147, 2026-10-18). To derive from how long a
+    registry's 5xx last, measured.
   - A builder's ceiling of half the host's memory (Docker Desktop's VM's share, which
     `builder_memory_mib` took): open. Its memory is plugged as its build needs it (D133),
     so the ceiling can come from what the host can give as the build asks, measured.

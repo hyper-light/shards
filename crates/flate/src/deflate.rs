@@ -78,7 +78,11 @@ pub struct Compressor<W: Write> {
 }
 
 fn hash4(b: &[u8]) -> u32 {
-    let v = b.iter().take(4).fold(0u32, |v, &x| (v << 8) | u32::from(x));
+    // The four bytes big-endian, as Go's `hash4` shifts them in; fewer near the window's end.
+    let v = match b.first_chunk::<4>() {
+        Some(four) => u32::from_be_bytes(*four),
+        None => b.iter().fold(0u32, |v, &x| (v << 8) | u32::from(x)),
+    };
     v.wrapping_mul(HASHMUL) >> (32 - HASH_BITS)
 }
 
@@ -111,10 +115,30 @@ fn set_u32(v: &mut [u32], i: i64, x: u32) {
     }
 }
 
-/// `matchLen`: how many of `a`'s first `max` bytes `b` matches.
+/// `matchLen`: how many of `a`'s first `max` bytes `b` matches. Eight bytes at a time: the
+/// first that differ are the lowest set bits of the two words' difference.
 fn match_len(a: &[u8], b: &[u8], max: i64) -> i64 {
-    let max = usize::try_from(max).unwrap_or(0);
-    a.iter().zip(b).take(max).take_while(|(x, y)| x == y).count() as i64
+    let max = usize::try_from(max).unwrap_or(0).min(a.len()).min(b.len());
+    let mut n = 0;
+    while let (Some(x), Some(y)) = (word(a, n, max), word(b, n, max)) {
+        let differ = x ^ y;
+        if differ != 0 {
+            return (n + (differ.trailing_zeros() / 8) as usize) as i64;
+        }
+        n += 8;
+    }
+    let tail = a
+        .get(n..max)
+        .unwrap_or_default()
+        .iter()
+        .zip(b.get(n..max).unwrap_or_default());
+    (n + tail.take_while(|(x, y)| x == y).count()) as i64
+}
+
+/// The eight bytes of `v` at `at`, little-endian, where all of them are before `max`.
+fn word(v: &[u8], at: usize, max: usize) -> Option<u64> {
+    let end = at.checked_add(8).filter(|end| *end <= max)?;
+    v.get(at..end)?.first_chunk::<8>().map(|w| u64::from_le_bytes(*w))
 }
 
 impl<W: Write> Compressor<W> {
@@ -336,12 +360,34 @@ impl<W: Write> Compressor<W> {
         self.failed()
     }
 
-    fn insert(&mut self, index: i64) {
-        let hash = hash4(span(&self.window, index, index + MIN_MATCH_LENGTH));
-        let head = (hash & HASH_MASK) as i64;
-        let prev = u32_at(&self.hash_head, head);
-        set_u32(&mut self.hash_prev, index & WINDOW_MASK, prev);
-        set_u32(&mut self.hash_head, head, (index + self.hash_offset) as u32);
+    /// Go's `insert` loop over a match: each string from `from` to before `to` put at the
+    /// head of its hash's chain, but those too near the window's end to have four bytes
+    /// (`max_insert_index`). In one pass over the window's bytes, as each string's chain is
+    /// the one Go's would be, and with it each match found later.
+    fn insert_run(&mut self, from: i64, to: i64) {
+        let to = to.min(self.max_insert_index);
+        let (Ok(from), Ok(to)) = (usize::try_from(from), usize::try_from(to)) else {
+            return;
+        };
+        // Each string's four bytes: below max_insert_index, all within the window's end.
+        let Some(strings) = to
+            .checked_add(MIN_MATCH_LENGTH as usize - 1)
+            .and_then(|end| self.window.get(from..end))
+        else {
+            return;
+        };
+        let offset = self.hash_offset;
+        for (index, four) in (from..).zip(strings.windows(MIN_MATCH_LENGTH as usize)) {
+            let head = (hash4(four) & HASH_MASK) as usize;
+            let (Some(head), Some(prev)) = (
+                self.hash_head.get_mut(head),
+                self.hash_prev.get_mut(index & WINDOW_MASK as usize),
+            ) else {
+                return;
+            };
+            *prev = *head;
+            *head = (index as i64 + offset) as u32;
+        }
     }
 
     /// `deflate`: tokens for what the window holds, blocks written as they fill.
@@ -420,14 +466,8 @@ impl<W: Write> Compressor<W> {
                     } else {
                         self.index + self.length
                     };
-                    let mut index = self.index + 1;
-                    while index < new_index {
-                        if index < self.max_insert_index {
-                            self.insert(index);
-                        }
-                        index += 1;
-                    }
-                    self.index = index;
+                    self.insert_run(self.index + 1, new_index);
+                    self.index = new_index.max(self.index + 1);
                     if skip_never {
                         self.byte_available = false;
                         self.length = MIN_MATCH_LENGTH - 1;

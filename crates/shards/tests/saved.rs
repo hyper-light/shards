@@ -124,16 +124,58 @@ fn evidence(home: &Path, name: &str) -> String {
         );
         format!("{}{}", s.stdout.trim(), s.stderr.trim())
     };
+    // What its kernel does with memory, a second apart: swapping, reclaiming or stalled
+    // (vmstat's pswpin, pswpout and pgscan, the pressure it is under, its cgroup's events),
+    // and the host's, whose faults a guest's swap and restored memory take.
+    let memory = || {
+        let guest = shards_in(
+            home,
+            &[
+                "exec",
+                name,
+                "/bin/testguest",
+                "files",
+                "/proc/vmstat",
+                "/proc/meminfo",
+                "/proc/pressure/memory",
+                "@cgroup/memory.stat",
+                "@cgroup/memory.events",
+                "@cgroup/memory.pressure",
+            ],
+        );
+        let host: String = ["/proc/pressure/memory", "/proc/pressure/io", "/proc/meminfo"]
+            .iter()
+            .map(|p| format!("== host {p}\n{}", std::fs::read_to_string(p).unwrap_or_default()))
+            .collect();
+        format!("{}{}{host}", guest.stdout, guest.stderr)
+    };
     let first = stats();
+    let first_memory = memory();
     std::thread::sleep(Duration::from_secs(1));
     let second = stats();
+    let second_memory = memory();
+    // Where each of its processes waits, in its kernel (proc(5)'s stack: privileged).
+    let stacks = shards_in(
+        home,
+        &[
+            "exec",
+            "--privileged",
+            "-u",
+            "0",
+            name,
+            "/bin/testguest",
+            "stacks",
+        ],
+    );
     format!(
-        "its state: {}{}\nits processes:\n{}{}\nits use, a second apart: {first} | {second}\nits VM process's threads:\n{}\nthe daemon's log's end:\n{}",
+        "its state: {}{}\nits processes:\n{}{}\nits use, a second apart: {first} | {second}\nits VM process's threads:\n{}\nits processes' stacks:\n{}{}\nits memory:\n{first_memory}\na second later:\n{second_memory}\nthe daemon's log's end:\n{}",
         state.stdout,
         state.stderr,
         top.stdout,
         top.stderr,
         vm_threads(&state.stdout),
+        stacks.stdout,
+        stacks.stderr,
         tail.join("\n")
     )
 }
@@ -645,7 +687,11 @@ fn a_saved_microvm_keeps_what_it_swapped() {
     ]);
     assert_eq!(run.status, Some(0), "{run}");
     let log = || logs(&home, "swapped");
-    let said = || format!("{}\n{}", log(), evidence(&home, "swapped"));
+    // Its rounds' times, which say whether they slowed and when.
+    let said = || {
+        let timed = shards(&["logs", "--timestamps", "swapped"]);
+        format!("{}{}\n{}", timed.stdout, timed.stderr, evidence(&home, "swapped"))
+    };
     until("its pattern kept", &mut || log().contains("kept 2\n"), &said);
     let saved = shards(&["save", "vm", "swapped", "full"]);
     assert_eq!(saved.status, Some(0), "{saved}\n{}", evidence(&home, "swapped"));

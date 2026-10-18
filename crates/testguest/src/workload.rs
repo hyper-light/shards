@@ -63,6 +63,23 @@ pub fn main() -> ! {
             }
             0
         }
+        // Each file whole, after a line naming it, or the errno that refused it: what a
+        // failing test keeps of the guest's state. `@cgroup/NAME` is NAME in this
+        // process's own cgroup, which an exec shares with its run's command.
+        "files" => {
+            let own = std::fs::read_to_string("/proc/self/cgroup").unwrap_or_default();
+            let own = own.lines().find_map(|l| l.strip_prefix("0::")).unwrap_or("/");
+            for p in args.get(1..).unwrap_or_default() {
+                let path = match p.strip_prefix("@cgroup/") {
+                    Some(name) => format!("/sys/fs/cgroup{}/{name}", own.trim_end_matches('/')),
+                    None => p.clone(),
+                };
+                let said = std::fs::read_to_string(&path)
+                    .unwrap_or_else(|e| format!("errno {}\n", e.raw_os_error().unwrap_or(0)));
+                let _ = write!(io::stdout(), "== {path}\n{said}");
+            }
+            0
+        }
         // Real-time scheduling asked for: SCHED_FIFO at priority 1, or the errno that
         // refused it.
         "fifo" => {
