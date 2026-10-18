@@ -5005,6 +5005,58 @@ ports` lists, built; (3e) connect and disconnect of a running member, built.
   or disconnected, with no grants built again; disconnected keeping its address; its last
   network taken; no way out through its next network.
 
+### D183. `--cgroup-parent`: a microVM's processes under a slice of the user's service manager (designed and measured; slice 1 in progress)
+
+Decided by the user on 2026-10-14 ("so long as they apply appropriately to microvms").
+
+- **The microVM need.** A host running many microVMs needs to cap and account groups of
+  them with its own resource manager: a project's agents under one memory and CPU
+  budget, a CI job's microVMs under its job's slice. A microVM's guest memory, vCPU
+  threads and I/O are its VM process's, and its network process's, so `--cgroup-parent`
+  (`run`, `create`, the Engine API's `HostConfig.CgroupParent`) names the group those
+  processes go in. Inside the microVM, its cgroups stay its own.
+- **On Linux, a slice of the user's own systemd manager.** `NAME.slice` (a `-` nesting
+  it, `a-b.slice` under `a.slice`, systemd.slice(5)) is a slice of the user's manager,
+  asked on the user's bus (`shards-bus`: the D-Bus Specification 0.43's EXTERNAL
+  authentication as the user, `StartTransientUnit`, waited for to its `JobRemoved`, which
+  systemd sends the client that started the job: src/core/dbus-job.c). Rootless, with
+  nothing to configure: the manager is delegated the user's cgroups (on the GPU desktop
+  `user@1000.service`, `Delegate=yes`, cpu cpuset io memory pids), and where the daemon
+  was started from an ssh login, in a session scope the manager may not move a process
+  out of, the manager has the system's manager move it (systemd's src/core/cgroup.c,
+  `unit_attach_pids_to_cgroup`), which moves only a process of the uid that asks
+  (src/core/dbus-unit.c). M248 placed 300 of 300 so, from a login and from inside the
+  manager's tree.
+- **Born there, charged there from its first page, never moved.** A process moved
+  between cgroups keeps its memory charged where it was (cgroup-v2.rst, "Memory
+  Ownership"; M248: a child that touched 64 MiB first left its scope 0 KiB), and each
+  move waits out an RCU grace period (kernel/cgroup/cgroup.c, `cgroup_attach_lock`; M248:
+  the manager's start of a scope 6.7 ms at p50 and 18.6 at p99 past its reply, a move by
+  hand 8.4 and 16.7), past the whole start budget (§4, 5 ms). So no microVM is moved: the
+  daemon keeps a spawner (D158's) for each parent, placed once by the user's manager as
+  the one process of a scope of its own in that slice, and every process of a microVM
+  under that parent, its VM process and its network process, is made by that spawner:
+  in the scope from its first instruction (a child is born in its parent's cgroup, which
+  takes no grace period), charged there from its first page. The first run under a
+  parent pays the one placement (M248: 10 ms at p50 from a login); every one after, none.
+- **Warm under its parent too.** A warm pool (D26) is kept per template and parent, its
+  microVMs made by that parent's spawner: a warm microVM taken for a run has been its
+  parent's from its first page, and none of another parent's is taken.
+- **Refused before anything starts, each with why**: on Linux, a value that is no slice
+  name (a path names a cgroup the user's manager owns, not the user), no user manager on
+  the user's bus, a slice the manager refuses (its own words); on macOS, which has no
+  host resource group a process can be placed in; on Windows, until slice 3.
+- **Shown as given**: inspect's `HostConfig.CgroupParent`.
+- **Past a container's cgroup parent.** Rootless with nothing to set up, from an ssh login
+  as from a desktop session; the microVM's whole host footprint, guest memory, vCPUs and
+  its network process, under the parent and charged there from its first page, warm
+  starts included; a run under a parent costs nothing past the first; and every refusal
+  before anything starts.
+- **Slices.** 1: Linux, a slice of the user's manager (this). 2: Linux hosts with no user
+  manager (OpenRC, runit), a cgroupfs path delegated to the user. 3: Windows, a job object
+  the VM process is made in. 4: the microVM's own engine's members (D181), a cgroup
+  within the microVM.
+
 ### D179. Other CPUs' images, emulated in their microVM (parts 1 to 3 built)
 
 Images built on an arm64 Mac usually ship to x86_64 hosts, and the other way round, and a

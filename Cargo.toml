@@ -6,6 +6,7 @@ members = [
   "crates/apple",
   "crates/archive",
   "crates/build",
+  "crates/bus",
   "crates/image",
   "crates/cmdline",
   "crates/devcgroup",

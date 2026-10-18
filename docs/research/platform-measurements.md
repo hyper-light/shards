@@ -8997,3 +8997,60 @@ revision before comparing a changed API/implementation.
     while its median is shorter. Why the quiet median is the slower, unmeasured: a likely
     cause is the host's cores waking from idle for each paced ask, which busy cores do
     not, and it was not isolated here.
+
+### M248. A process placed in a slice of the user's service manager: what it costs, and where its memory is charged (D183)
+
+- **Question.** `--cgroup-parent` puts a microVM's processes under a slice the user's own
+  systemd manages, so that the slice's limits and accounting cover them. What does asking
+  the user's manager for that cost the daemon, per microVM, from an ssh login (a session
+  scope the manager may not move a process out of itself) and from inside the manager's
+  own tree; which step costs it; and is a process's memory charged to the scope from its
+  first page?
+- **Method.** `docs/research/measurements/cgroup-parent/run.sh 300`, the harness built
+  with shards-bus as committed with this entry (the daemon's own D-Bus client), on an AMD
+  Ryzen 9 9950X3D2 (32 CPUs, 128 GiB), CachyOS, Linux 7.2.9-2-cachyos, systemd 262, its
+  cgroup2 mounted `nsdelegate,memory_recursiveprot,memory_hugetlb_accounting` (no
+  `favordynmods`; `CONFIG_CGROUP_FAVOR_DYNMODS` not set, `PREEMPT_RCU=y`, `HZ=1000`). The
+  host ran its own work throughout (load average 12.6 read after); "quiet" is no busy
+  loops of the harness's, "busy" 32. Each placement is of a fresh child, 20 ms apart:
+  `place` connects to the user's bus and calls `shards_bus::place` (AddMatch,
+  `StartTransientUnit` of a scope with the child as its one process, its `JobRemoved`);
+  `phases` times those steps apart; `delegated` places the harness itself once in a
+  delegated scope, then moves each child into a cgroup of its own beneath it (`mkdir`, a
+  write to its `cgroup.procs`); `moved` places children that touched their memory first.
+  For reference, systemd's own `systemd-run --user --scope true`, whole.
+- **Results** (microseconds, n = 300 each; the second run's, the first's within a few ms):
+
+  | from | load | step | p50 | p90 | p99 | max |
+  |---|---|---|---|---|---|---|
+  | the login | quiet | connect | 52 | 67 | 100 | 149 |
+  | the login | quiet | place | 10197 | 14702 | 18889 | 20660 |
+  | the login | busy | place | 11409 | 14550 | 21758 | 40314 |
+  | the manager's tree | quiet | place | 9590 | 13848 | 16733 | 17668 |
+  | the manager's tree | busy | place | 7214 | 9729 | 12436 | 15375 |
+  | the login | quiet | AddMatch | 15 | 27 | 53 | 230 |
+  | the login | quiet | the start's reply | 253 | 306 | 626 | 874 |
+  | the login | quiet | the start's end | 6741 | 13878 | 18564 | 20240 |
+  | the login | busy | the start's end | 10838 | 14088 | 23998 | 64591 |
+  | a delegated scope | quiet | `mkdir` + `cgroup.procs` | 8433 | 12795 | 16705 | 17623 |
+  | a delegated scope | busy | `mkdir` + `cgroup.procs` | 5901 | 8008 | 16286 | 56273 |
+  | a delegated scope | quiet | `rmdir` | 35 | 51 | 68 | 74 |
+  | the login | quiet | `systemd-run --user --scope true` | 5381 | 6648 | 8969 | 10823 |
+
+  - From the login, the manager moved each child through the system's manager, as
+    systemd's src/core/cgroup.c has it (`unit_attach_pids_to_cgroup`), every one placed.
+  - The start's reply comes in a quarter of a millisecond; no child had moved by it (0 of
+    300). The milliseconds are the move, not systemd: moving a process within a scope of
+    the harness's own, with no systemd at all, costs as much. Linux v6.17's
+    kernel/cgroup/cgroup.c has a write to `cgroup.procs` take `cgroup_threadgroup_rwsem`
+    for writing (`cgroup_attach_lock`, `percpu_down_write`), which waits out an RCU grace
+    period unless the hierarchy favors dynamic changes (`favordynmods`), while a process
+    made into a cgroup (`clone3`'s `CLONE_INTO_CGROUP`, `cgroup_css_set_fork`) or born in
+    its parent's takes its read side only (cgroup-v2.rst: that pattern "is not affected").
+  - Charged from the first page: each child's 64 MiB, touched once placed, was its scope's
+    (65,680 to 67,584 KiB, every run); each that touched it first and was placed after
+    left its scope 0 KiB (cgroup-v2.rst, "Memory Ownership").
+  - So a microVM is placed by no move of its own: a spawner of the daemon's, placed once
+    per parent (one move, the cost above), makes that parent's processes, each born in
+    its scope and charged there from its first page; a run pays the move once per
+    parent, not per microVM.
