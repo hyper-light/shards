@@ -12358,6 +12358,26 @@ fn a_step_for_another_cpu_runs_under_its_emulator() {
         built.stderr
     );
     assert_eq!(std::fs::read_to_string(one.join("built")).unwrap(), "built\n");
+    // A step whose program the emulator runs and that dies of a fault fails its step, where
+    // as PID 1 of its namespace it never ended (PM M251): exec form, so that the program is
+    // the step's process itself, not a shell's child.
+    let crashing = context(
+        "emulated-crash",
+        "FROM alpine:3.22\nCOPY crash /crash\nRUN [\"/crash\"]\n",
+    );
+    std::fs::write(crashing.join("crash"), common::crashing_program(theirs.0)).unwrap();
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(crashing.join("crash"), std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let failed = shards(&[
+        "build",
+        "--platform",
+        &format!("linux/{}", theirs.0),
+        crashing.to_str().unwrap(),
+    ]);
+    assert_ne!(failed.status, Some(0), "{}", failed.stderr);
+    assert!(failed.stderr.contains("exit code: 132"), "{}", failed.stderr);
     // 32-bit CPUs: linux/386 natively on an x86_64 host (IA32_EMULATION), where uname says
     // the kernel's machine, as a BuildKit step's does (no PER_LINUX32 personality: Linux
     // kernel/sys.c override_architecture; BuildKit v0.28.1's executor sets none); under its

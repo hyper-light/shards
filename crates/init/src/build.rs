@@ -626,7 +626,7 @@ impl Builder {
         }
         if pid == 0 {
             drop((out_r, err_r, fail_r));
-            let e = child(step, root, files, sources, work, &out_w, &err_w);
+            let e = child(step, root, files, sources, work, &out_w, &err_w, &fail_w);
             // Reached only if the command did not start.
             let class = if Executor::is(&e) {
                 EXECUTOR_FAILED
@@ -1027,7 +1027,9 @@ fn clean_stubs(root: &Path, stubs: &[Vec<u8>]) {
 }
 
 /// The step's process, PID 1 of its namespaces: sets up its root and becomes the
-/// command. Returns only why it could not.
+/// command; or, for a step its builder runs emulated, the command's reaper, the command its
+/// child ([`reap_command`]). Returns only why the command could not start.
+#[allow(clippy::too_many_arguments)]
 fn child(
     step: &Step,
     root: &Path,
@@ -1036,10 +1038,74 @@ fn child(
     work: &Path,
     out: &OwnedFd,
     err_fd: &OwnedFd,
+    fail: &OwnedFd,
 ) -> io::Error {
-    match setup(step, root, files, sources, work).and_then(|()| exec(step, out, err_fd)) {
+    let started = setup(step, root, files, sources, work).and_then(|()| {
+        if step.emulated {
+            reap_command(&[out, err_fd, fail])?;
+        }
+        exec(step, out, err_fd)
+    });
+    match started {
         Ok(never) => match never {},
         Err(e) => e,
+    }
+}
+
+/// Forks the step's command off its namespace's first process, which then waits for it,
+/// reaping whatever else the namespace leaves orphaned, and ends as it ended: its exit
+/// status, or 128 and the signal that ended it, as a step's end is told. Returns in the
+/// command's process alone. For a step its builder runs emulated (D179): the emulator ends
+/// a program that dies of a signal by sending itself that signal, which a namespace's init
+/// is never sent (pid_namespaces(7)), so as PID 1 the command never ended (PM M251).
+/// `held` are the command's descriptors, which the reaper lets go of: its output's pipes
+/// and its failure's then close with the command.
+fn reap_command(held: &[&OwnedFd]) -> io::Result<()> {
+    // clone(2), not clone3: the step's seccomp filter is in place by now, and Docker's
+    // default profile answers clone3 ENOSYS, so that a libc falls back to clone, which it
+    // lets through with no namespace flag.
+    // SAFETY: clone(2) as fork(2) (SIGCHLD, no flags, no new stack, no TIDs: every other
+    // argument 0, whatever order the architecture takes them in), from the step's first
+    // process, which has one thread.
+    let pid = unsafe {
+        libc::syscall(
+            libc::SYS_clone,
+            libc::SIGCHLD as libc::c_long,
+            0 as libc::c_long,
+            0 as libc::c_long,
+            0 as libc::c_long,
+            0 as libc::c_long,
+        )
+    };
+    if pid < 0 {
+        return Err(os_err("starting the step's command"));
+    }
+    if pid == 0 {
+        return Ok(());
+    }
+    let command = pid as libc::pid_t;
+    for fd in held {
+        // SAFETY: close(2) of descriptors this process uses no more: it never returns, so
+        // none is closed again.
+        unsafe { libc::close(fd.as_raw_fd()) };
+    }
+    loop {
+        let mut status = 0;
+        // SAFETY: waitpid(2) for any child, into a local.
+        let ended = unsafe { libc::waitpid(-1, &mut status, 0) };
+        if ended == command {
+            let code = if libc::WIFSIGNALED(status) {
+                128 + libc::WTERMSIG(status)
+            } else {
+                libc::WEXITSTATUS(status)
+            };
+            // SAFETY: _exit(2) of this process, the step's end.
+            unsafe { libc::_exit(code) };
+        }
+        if ended < 0 && io::Error::last_os_error().kind() != io::ErrorKind::Interrupted {
+            // SAFETY: as above: no child left, its command's end unseen.
+            unsafe { libc::_exit(127) };
+        }
     }
 }
 

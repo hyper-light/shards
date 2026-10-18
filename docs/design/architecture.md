@@ -5349,6 +5349,42 @@ the platform builds faster, reached as a context (the next item).
   manifest refused by a build's lookup, or by a policy's; the oracle planning every build
   with a platform asked).
 
+**An emulated command is never PID 1 (2026-10-18).** A run of another CPU's image runs
+its command under shards' reaper (`--init`'s), and a build step for another CPU runs its
+command as its namespace's first process's child (`shards_abi::build::Step::emulated`, set
+from the step's platform or its base's), where each was PID 1 of its PID namespace. The
+emulator ends a program that dies of a signal by sending that signal to itself, its
+default action restored, and waiting for it; a PID namespace's init is sent only the
+signals it has a handler for (pid_namespaces(7)), so the wait never ended: every emulated
+run or step whose program crashed, aborted or met an instruction the emulator lacks hung
+for ever (PM M251), where a native one's fault ends it, the kernel's own signal reaching
+init too. Now it ends as the native one does, 128 and the signal's number. What differs
+from a native PID 1: a signal the command sends itself takes its default action, where a
+native PID 1 is not sent it. Tested: `tests/images.rs`
+`a_run_of_another_cpus_image_runs_under_its_emulator` (a program meeting an undefined
+instruction, emulated: 132) and `tests/build.rs` `a_step_for_another_cpu_runs_under_its_emulator`
+(an emulated exec-form step's crash fails its step, `exit code: 132`). Mutation-checked,
+each caught: an emulated run's command left PID 1; no step marked emulated; the guest
+ignoring the mark; the reaper ending 0 for a signal's end.
+
+**amd64's levels (2026-10-18).** A guest runs its host's x86-64 level: KVM's supported
+CPUID and a WHP partition keep the host's feature bits (vmm `cpuid.rs` rewrites only
+topology), which `tests/images.rs` `a_guest_runs_its_hosts_x86_64_level` pins on every
+x86_64 host CI boots guests on (the guest kernel's own flags reach the host's level). So an
+x86_64 host's guests take amd64's levelled builds, `v2` up to the CPU's, as their own, the
+highest first, then the level-less amd64 and 386; where shards ran every levelled build
+emulated (no guest listed one), and an index of levelled builds alone not at all. The
+emulator runs amd64's v2 and v3 and none of v4's AVX-512 (PM M251): an arm64 host's pull
+takes amd64's v2 and v3 builds after its level-less one, and a run of a v4 image on a host
+whose CPU lacks it is refused, saying why, where it would end at its first such
+instruction. A pull that names no platform and finds none says the guest's level-less
+platform (`linux/amd64`), as a script reading the refusal expects. Tested: `crates/image`
+`a_guest_runs_its_cpus_x86_64_levels_best_first`,
+`a_pull_of_no_platform_takes_the_other_64_bit_cpus_before_32_bit_arms` (v3 before 32-bit
+Arm on arm64, the level-less first, v4 never) and
+`the_emulator_runs_amd64_up_to_its_own_level`. Mutation-checked, each caught: arm64's pull
+without amd64's levels; the emulator taken to run v4.
+
 **The platform a user prefers (2026-10-16).** Docker's CLI takes `--platform`'s default
 from `DOCKER_DEFAULT_PLATFORM` for `pull`, `import`, `run`, `create` and the classic
 builder (docker/cli v29.8.1 cli/command/image/pull.go:61, import.go:53, build.go:159,

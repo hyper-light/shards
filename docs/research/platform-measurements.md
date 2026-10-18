@@ -9126,3 +9126,35 @@ revision before comparing a changed API/implementation.
   - So speed does not order them, and what a run can use does: a 32-bit process addresses
     4 GiB at most, where a microVM's memory can be the host's (D148). amd64 goes first
     (D179).
+
+### M251. The x86-64 levels shards' emulator runs, and how an emulated program that dies by a signal ends its run (D179)
+
+- **Question.** An amd64 image built for an x86-64 level (`amd64/v2` to `v4`) runs on a
+  host whose CPU lacks the level only if the emulator runs that level's instructions: which
+  levels does the pinned qemu-x86_64 run? And does a run whose program dies by a signal
+  under it end as a native one does?
+- **Method.** `docs/research/measurements/emulated-levels/run.sh SHARDS KERNEL INIT`, on an
+  Apple M5 Max (arm64), macOS 26.4.1, 2026-10-18: `v3.c` runs x86-64-v3's own instructions
+  (AVX2's `vpaddd ymm`, FMA's `vfmadd231ps`, BMI2's `shlx`, `lzcnt`, `movbe`) and `v4.c`
+  AVX-512F's (`vpaddd zmm`, `kxorw`), each exiting 0 once they ran; each built static for
+  linux/amd64 by zig 0.16.0 and run in an amd64 Alpine microVM, emulated by D179's pinned
+  qemu-x86_64 (tonistiigi/binfmt e29e7d7, QEMU 10.2.3): as the run's command, PID 1 of its
+  PID namespace; under `--init`; and as a shell's child. n = 1 each: what runs, not how
+  fast.
+- **Results.**
+
+  | probe | as PID 1 | under `--init` | as a child |
+  |---|---|---|---|
+  | v3 | exit 0 | exit 0 | exit 0 |
+  | v4 | no end (10 min, then stopped) | exit 132, `qemu: uncaught target signal 4 (Illegal instruction)` | exit 132 |
+
+  - The emulator runs x86-64-v3's instructions and none of v4's own: an `amd64/v4` image
+    runs on no host whose CPU lacks AVX-512, emulated or not.
+  - As PID 1, the v4 probe's run never ended: inside the microVM its process, the
+    emulator, slept in `sigsuspend` with no CPU used. The emulator ends a program that dies
+    by a signal by sending that signal to itself, its default action restored, and waiting
+    for it; a PID namespace's init is sent only the signals it has a handler for
+    (pid_namespaces(7)), so the signal is dropped and the wait never ends. Natively the same
+    program's fault ends it (the kernel's own signal for a fault reaches init too). So every
+    emulated run whose command dies by a signal, a segfault's or an abort's alike, hung;
+    with another process as PID 1 it ends, 128 and the signal's number.

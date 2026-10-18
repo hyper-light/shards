@@ -1756,6 +1756,40 @@ pub fn served_variant(variant: &[u8]) -> String {
     format!("127.0.0.1:{port}/test/image:v1")
 }
 
+/// A static program for `arch` (`amd64` or `arm64`) that does nothing but meet an
+/// undefined instruction (x86-64's `ud2`, AArch64's `udf #0`): it dies of SIGILL, a fault,
+/// natively or emulated alike. One ELF64 program header loads the file whole.
+pub fn crashing_program(arch: &str) -> Vec<u8> {
+    let (machine, code): (u16, &[u8]) = match arch {
+        "amd64" => (0x3e, &[0x0f, 0x0b]),
+        "arm64" => (0xb7, &[0, 0, 0, 0]),
+        other => panic!("no crashing program for {other}"),
+    };
+    let base: u64 = 0x40_0000;
+    let entry: u64 = 0x78;
+    let total = entry + code.len() as u64;
+    let mut elf = b"\x7fELF\x02\x01\x01\x00".to_vec();
+    elf.extend_from_slice(&[0; 8]);
+    elf.extend_from_slice(&2u16.to_le_bytes());
+    elf.extend_from_slice(&machine.to_le_bytes());
+    elf.extend_from_slice(&1u32.to_le_bytes());
+    for word in [base + entry, 0x40, 0] {
+        elf.extend_from_slice(&word.to_le_bytes());
+    }
+    elf.extend_from_slice(&0u32.to_le_bytes());
+    for half in [0x40u16, 0x38, 1, 0, 0, 0] {
+        elf.extend_from_slice(&half.to_le_bytes());
+    }
+    // PT_LOAD, readable and executable: the file at `base`.
+    elf.extend_from_slice(&1u32.to_le_bytes());
+    elf.extend_from_slice(&5u32.to_le_bytes());
+    for word in [0, base, base, total, total, 0x1000] {
+        elf.extend_from_slice(&word.to_le_bytes());
+    }
+    elf.extend_from_slice(code);
+    elf
+}
+
 /// Serves the test image at `127.0.0.1:<port>/test/image:v1`.
 pub fn served() -> (String, Arc<AtomicUsize>) {
     let (manifest, blobs) = test_image();

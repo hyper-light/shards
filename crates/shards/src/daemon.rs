@@ -2700,6 +2700,14 @@ impl<D: Disk> Daemon<D> {
             .and_then(|opened| {
                 let cdi = prepared.cdi.as_ref().ok().and_then(Option::as_ref);
                 prepared.spec.setup = crate::setup::setup(&run, &opened.mounts, cdi)?;
+                // An emulated command is never PID 1 of its namespace, but under shards'
+                // reaper, as `--init` runs one (D179, PM M251): the emulator ends a program
+                // that dies of a signal by sending itself that signal, which a namespace's
+                // init is never sent, so as PID 1 its run never ended.
+                let reaped = |e: &Vec<u8>| e == b"init" || e.starts_with(b"pid=");
+                if prepared.emulator.is_some() && !prepared.spec.setup.iter().any(reaped) {
+                    prepared.spec.setup.push(b"init".to_vec());
+                }
                 // CDI's variables, over the workload's whole (AddMultipleProcessEnv, D146).
                 if let Some(e) = cdi {
                     crate::build::cdi::merge_env(&mut prepared.spec.env, &e.env);

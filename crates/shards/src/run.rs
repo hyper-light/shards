@@ -388,13 +388,22 @@ fn emulator_for(
 ) -> Result<Emulated, String> {
     let target = shards_image::platform::normalize(platform);
     let shown = format_all(&target.os, &target.architecture, &target.variant);
+    let name = || Reference::parse(&request.image).map_or_else(|_| request.image.clone(), |r| r.familiar());
+    // An amd64 level past the emulator's own runs nowhere here: its CPU lacks it, or the run
+    // would be native (PM M251: the emulator has none of v4's AVX-512).
+    if !shards_image::platform::emulator_runs(&target) {
+        return Err(format!(
+            "{}: an image of {shown}, built for CPUs with AVX-512, which neither this host's CPU nor its emulator has",
+            name()
+        ));
+    }
     let emulator = (target.os == "linux")
         .then(|| shards_abi::emulate::of(&target.architecture))
         .flatten()
         .ok_or_else(|| {
             format!(
                 "{}: an image of {shown}, which this host's microVMs neither run nor emulate",
-                Reference::parse(&request.image).map_or_else(|_| request.image.clone(), |r| r.familiar())
+                name()
             )
         })?;
     let store = crate::pull::store(home)?;

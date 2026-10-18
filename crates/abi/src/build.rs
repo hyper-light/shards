@@ -232,6 +232,9 @@ pub struct Step {
     /// and taken out after, as BuildKit's executor adds it (InjectProxyCA); empty where its
     /// network is not the proxy's.
     pub proxy_ca: Vec<u8>,
+    /// Its programs run under another CPU's emulator (D179): its command is then its
+    /// namespace's first process's child, never PID 1 itself (PM M251).
+    pub emulated: bool,
 }
 
 /// A device node a step is given: its path in the step, the guest's device it is (`from`,
@@ -398,6 +401,7 @@ impl Step {
             put_u32(&mut out, d.gid);
         }
         put_bytes(&mut out, &self.proxy_ca);
+        out.push(u8::from(self.emulated));
         out
     }
 
@@ -514,6 +518,7 @@ impl Step {
             });
         }
         let proxy_ca = r.bytes()?;
+        let emulated = r.flag()?;
         r.0.is_empty().then_some(Step {
             root,
             upper,
@@ -536,6 +541,7 @@ impl Step {
             caches,
             devices,
             proxy_ca,
+            emulated,
         })
     }
 }
@@ -735,6 +741,7 @@ mod tests {
                 },
             ],
             proxy_ca: b"-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n".to_vec(),
+            emulated: true,
         };
         let bytes = step.encode();
         assert_eq!(Step::decode(&bytes), Some(step));

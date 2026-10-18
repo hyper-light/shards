@@ -3990,6 +3990,12 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
                     .iter()
                     .map(|inp| keys.get(inp.op).cloned().flatten())
                     .collect();
+                // Its programs emulated (D179), its platform's or its base's: its command is
+                // then never PID 1 of its namespace (PM M251).
+                let emulated_step = [op.platform.clone(), root_platform(&def, op, &bases, &op_base)]
+                    .into_iter()
+                    .flatten()
+                    .any(|p| emulated(&p).is_some());
                 let op = exec::RunOp {
                     process,
                     mounts,
@@ -4008,6 +4014,7 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
                     cdi: cdi_edits.get(&i),
                     proxy: build_proxy.as_ref(),
                     input_keys: &input_keys,
+                    emulated: emulated_step,
                 };
                 let mut log = StepLog::new(log_limits);
                 let r = exec.run(

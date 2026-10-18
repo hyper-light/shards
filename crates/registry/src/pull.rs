@@ -155,6 +155,19 @@ fn pulled(
     } else {
         targets
     };
+    // What a refusal names: the platform asked, else the guest's own, level-less, as a
+    // script that reads it expects (`linux/amd64`, not the CPU's `linux/amd64/v3`).
+    let plain: Vec<Target> = guest
+        .iter()
+        .filter(|t| t.variant.is_empty())
+        .take(1)
+        .cloned()
+        .collect();
+    let named = if targets.is_empty() {
+        plain.as_slice()
+    } else {
+        targets
+    };
     // What it writes is recorded only at its end: no collection runs meanwhile.
     let _lease = store.lease()?;
     let top = registry
@@ -195,7 +208,7 @@ fn pulled(
                     ErrorKind::NotFound,
                     format!(
                         "no matching manifest for {} in the manifest list entries: no match for platform in manifest: not found",
-                        pulling_for(choose)
+                        pulling_for(named)
                     ),
                 )
             })?;
