@@ -97,6 +97,7 @@ pub fn read_frame(mut from: &File) -> io::Result<Option<Frame>> {
     if got == 0 {
         return Ok(None);
     }
+    let mut from = Reader(from);
     from.read_exact(header.get_mut(got..).unwrap_or_default())?;
     let [kind, l0, l1, l2, l3] = header;
     let len = u32::from_be_bytes([l0, l1, l2, l3]) as usize;
@@ -111,13 +112,36 @@ pub fn read_frame(mut from: &File) -> io::Result<Option<Frame>> {
     Ok(Some(Frame { kind, payload }))
 }
 
-/// Reads what comes into `buf`, again where a signal cut the read short.
+/// Reads what comes into `buf`, again where a signal cut the read short: waited for first
+/// in [`crate::await_fifo`], which on macOS sees a writer's end that a read sleeping in the
+/// kernel can miss (PM M253). One that must not wait is not waited for.
 fn read_some(from: &mut &File, buf: &mut [u8]) -> io::Result<usize> {
+    if !nonblocking(from) {
+        crate::await_fifo(std::os::fd::AsFd::as_fd(*from))?;
+    }
     loop {
         match from.read(buf) {
             Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
             got => return got,
         }
+    }
+}
+
+/// Whether `file`'s reads are set not to wait.
+fn nonblocking(file: &File) -> bool {
+    // SAFETY: fcntl(2) reading the flags of a descriptor `file` holds open.
+    let flags = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_GETFL) };
+    flags >= 0 && flags & libc::O_NONBLOCK != 0
+}
+
+/// What reads a slot's FIFO as [`read_some`] does, for `read_exact`, `read_to_end` and
+/// `io::copy`: what a client copies its streams with.
+#[derive(Debug)]
+pub struct Reader<'f>(pub &'f File);
+
+impl Read for Reader<'_> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        read_some(&mut self.0, buf)
     }
 }
 
@@ -374,7 +398,7 @@ impl Slot {
         };
         let named = (|| -> io::Result<Option<(Vec<u8>, Frame)>> {
             let mut count = [0u8; 1];
-            (&session.say).read_exact(&mut count)?;
+            Reader(&session.say).read_exact(&mut count)?;
             let [count] = count;
             if usize::from(count) > fds::MAX {
                 return Err(io::Error::new(
@@ -383,7 +407,7 @@ impl Slot {
                 ));
             }
             let mut named = vec![0u8; usize::from(count)];
-            (&session.say).read_exact(&mut named)?;
+            Reader(&session.say).read_exact(&mut named)?;
             if named.iter().any(|&f| f > fds::NULL) {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
@@ -665,7 +689,9 @@ mod tests {
                 };
                 assert_eq!(named, [fds::IN, fds::OUT, fds::NULL]);
                 let mut got = String::new();
-                session.input.as_ref().unwrap().read_to_string(&mut got).unwrap();
+                Reader(session.input.as_ref().unwrap())
+                    .read_to_string(&mut got)
+                    .unwrap();
                 assert_eq!(got, "typed");
                 session.output.as_ref().unwrap().write_all(b"shown").unwrap();
                 assert!(session.errors.is_none());
@@ -678,10 +704,7 @@ mod tests {
             input.write_all(b"typed").unwrap();
             drop(input);
             let mut shown = String::new();
-            client
-                .output
-                .as_ref()
-                .unwrap()
+            Reader(client.output.as_ref().unwrap())
                 .read_to_string(&mut shown)
                 .unwrap();
             assert_eq!(shown, "shown");

@@ -9221,10 +9221,26 @@ revision before comparing a changed API/implementation.
     next read returns 0; nor its reader, though the next write fails `EPIPE`. A blocking
     read(2) and select(2) do see the writer's end, in every trial.
   - On Linux every wait sees either end close (fs/pipe.c `pipe_poll`).
-  - So on both, a FIFO's reader blocked in read(2) learns of its writer's end at once, and
-    that is how each side of a FIFO channel must watch the other: never by poll(2) or
-    kqueue(2), which on macOS would wait for ever. A writer learns of its reader's end only
-    as it writes, on macOS; so each side holds the read end of a FIFO the other writes.
+  - So on both, a FIFO's reader blocked in read(2) learns of its writer's end at once,
+    when it waits with nothing yet read: never by poll(2) or kqueue(2), which on macOS
+    would wait for ever. A writer learns of its reader's end only as it writes, on macOS;
+    so each side holds the read end of a FIFO the other writes.
+- **Part 3: a write, then the end at once** (`race.c`, found as D185's slot tests hung once
+  in 50 rounds). The writer writes a byte and closes at once or 0 to 50 µs later; the
+  reader, waiting in its read, takes the byte and waits again; 8 races at once, load
+  averages 16 to 23.
+
+  | wait | trials | the end seen | stuck past 1.1 s |
+  |---|---|---|---|
+  | blocking read(2), macOS | 224,000 | 223,994 | 6 (1 in 37,000) |
+  | select(2) then read, macOS | 192,000 | 192,000 | 0 |
+
+  - On macOS a read sleeping in the kernel as its writer ends just after the data it
+    took can sleep through that end, as M236's reader of a Unix stream socket does: its
+    client or daemon would wait for ever. select(2) saw every end. So a reader of a FIFO
+    waits in select(2) on macOS, then reads (`shards_ipc::await_fifo`), its descriptor
+    however high (`_DARWIN_UNLIMITED_SELECT`, select(2): `select$DARWIN_EXTSN`, which saw
+    a FIFO's end at descriptor 3,000).
 
 ### M254. What a client's request to its daemon costs through files in the home (D185)
 

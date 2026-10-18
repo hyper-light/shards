@@ -18,7 +18,16 @@ cleanup() {
 trap cleanup EXIT
 cc -O1 -Wall -o "$work/ends" "$here/ends.c"
 "$work/ends" "$work" 3 5000
+# Part 3: 8 races at once, of each wait.
+cc -O1 -w -o "$work/race" "$here/race.c"
+for how in read select; do
+	for k in 1 2 3 4 5 6 7 8; do
+		"$work/race" "$work/race-$k" "$how" 20000 &
+	done
+	wait
+done
 uname -sr
+uptime
 if [ -n "$shards" ]; then
 	mkdir -p "$work/config" "$work/linux"
 	case $(uname -m) in

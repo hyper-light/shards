@@ -5212,8 +5212,10 @@ descriptors.
 - How each end of a FIFO learns the other has gone (PM M253): a blocking read(2) sees its
   writer's end at once on macOS and Linux, in every one of 5,000 trials each; on macOS
   poll(2) and kqueue(2) never do, and a writer learns of its reader's end only as it next
-  writes (`EPIPE`). So each side holds the read end of a FIFO the other writes, and waits on
-  it in a blocking read, never in poll or kqueue.
+  writes (`EPIPE`). But on macOS a read that has just taken its writer's last data can
+  sleep through the end that follows at once: 6 in 224,000, where select(2) saw all of
+  192,000. So each side holds the read end of a FIFO the other writes, and waits on it in
+  select(2) on macOS, in a read on Linux, never in poll or kqueue.
 - What a request costs (PM M254), against the socket's 23 to 30 µs at p50: a directory
   made for each request, 413 to 562 µs on macOS (APFS's metadata operations, with tails to
   21 ms under load) and 55 µs on Linux; a slot the daemon made ahead, which the client takes
@@ -5236,7 +5238,8 @@ descriptors.
   waits until the daemon has made more, in the order clients came. A slot whose client
   never wrote to it is removed after a minute; a client that finds its slot gone reads
   another.
-- **Liveness, each way.** The daemon reads `say` in a blocking read; once a client has
+- **Liveness, each way.** The daemon reads `say` (waiting in select(2) on macOS, then
+  reading); once a client has
   written, the daemon drops its own writer, so the client's end, its exit or its kill, ends
   the read. The client reads `answer`; the daemon's end, or that of the VM it handed it to,
   ends the client's read. No timer, no process ID.

@@ -623,6 +623,66 @@ fn await_readable(fd: BorrowedFd<'_>, deadline: Option<Instant>) -> io::Result<(
     }
 }
 
+/// Waits until the FIFO or pipe `fd` has something to read, or has ended. On macOS a read(2)
+/// of a FIFO sleeping as its writer ends, just after the data it took, can sleep through
+/// that end: 6 in 224,000 such ends, raced 8 at once (PM M253), as a read of a Unix stream
+/// socket can (M236); select(2) saw all of 192,000. So its reader waits here, then
+/// reads what is there. A descriptor past `FD_SETSIZE` is waited on as one below it is
+/// (`_DARWIN_UNLIMITED_SELECT`, select(2)). Elsewhere a read sees its writer's end, and
+/// this waits for nothing.
+pub fn await_fifo(fd: BorrowedFd<'_>) -> io::Result<()> {
+    #[cfg(target_os = "macos")]
+    {
+        // SAFETY: the libSystem select(2) that takes descriptor sets of any length, its
+        // first argument a bound on the descriptors they hold.
+        unsafe extern "C" {
+            #[link_name = "select$DARWIN_EXTSN"]
+            fn select_any(
+                nfds: libc::c_int,
+                read: *mut u32,
+                write: *mut u32,
+                error: *mut u32,
+                timeout: *mut libc::timeval,
+            ) -> libc::c_int;
+        }
+        let raw = fd.as_raw_fd();
+        let at = usize::try_from(raw).map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?;
+        let bound = raw
+            .checked_add(1)
+            .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidInput))?;
+        // An fd_set's bits, 32 to a word, as FD_SET sets them.
+        let mut set = vec![0u32; at / 32 + 1];
+        loop {
+            if let Some(word) = set.get_mut(at / 32) {
+                *word = 1 << (at % 32);
+            }
+            // SAFETY: a set of `bound` descriptors' bits, as long as that, and no timeout:
+            // select(2) waits until `fd` is readable, or a signal cuts it short.
+            let n = unsafe {
+                select_any(
+                    bound,
+                    set.as_mut_ptr(),
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                )
+            };
+            if n > 0 {
+                return Ok(());
+            }
+            let e = io::Error::last_os_error();
+            if n < 0 && e.kind() != io::ErrorKind::Interrupted {
+                return Err(e);
+            }
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = fd;
+        Ok(())
+    }
+}
+
 /// A socket's receive timeout (SO_RCVTIMEO), the longest a read of it waits: none for
 /// anything else, or for a socket without one.
 fn receive_timeout(fd: BorrowedFd<'_>) -> Option<Duration> {
