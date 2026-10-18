@@ -5100,10 +5100,24 @@ Decided by the user on 2026-10-14 ("so long as they apply appropriately to micro
   slice; the Engine API's `CgroupParent` dropped; a microVM engine's container given a
   parent; a group's children made by the process's own spawner; a killed group's spawner
   never found ended.
-- **Slices.** 1: Linux, a slice of the user's manager (this). 2: Linux hosts with no user
-  manager (OpenRC, runit), a cgroupfs path delegated to the user. 3: Windows, a job object
-  the VM process is made in. 4: the microVM's own engine's members (D181), a cgroup
-  within the microVM.
+- **Where no user's manager is.** A `--cgroup-parent` there is refused before anything is
+  made, naming the bus it looked for (its `XDG_RUNTIME_DIR`'s, or `/run/user/UID`'s): a
+  start would fail with it otherwise.
+- **Slice 2, designed: a cgroup delegated to the user, where no user's manager is.** The
+  kernel lets a process of the user place one in a cgroup only within a sub-hierarchy
+  delegated to it, both of them in it (cgroup-v2.rst, "Model of Delegation", "Delegation
+  Containment"): a cgroup namespace's root where the hierarchy is mounted `nsdelegate`
+  (a container's own, the hosts of OpenRC, runit and s6 having no per-user delegation),
+  or a directory an administrator gave the user, its `cgroup.procs`, `cgroup.threads` and
+  `cgroup.subtree_control` theirs. There `--cgroup-parent PATH` would name a cgroup of
+  that sub-hierarchy, the daemon's own cgroup in it, and the parent's spawner be moved
+  into a leaf of its own there once (a move, PM M248's cost, once per parent), its
+  children born there as slice 1's are. Built once a host needs it.
+- **Slices.** 1: Linux, a slice of the user's manager (built). 2: a delegated cgroup
+  where no user's manager is (designed, above). 3: Windows, a job object the VM process
+  is made in, once the daemon runs there (README: not yet). 4: the microVM's own
+  engine's members (D181), a cgroup within the microVM, refused (501) until a need for it
+  inside a microVM is shown.
 
 ### D179. Other CPUs' images, emulated in their microVM (parts 1 to 3 built)
 

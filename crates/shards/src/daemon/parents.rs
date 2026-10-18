@@ -30,6 +30,17 @@ pub(super) fn check(run: &Run) -> Result<(), String> {
             "--cgroup-parent {given}: your user's cgroups are its systemd manager's, which makes them for its slices: name the slice its microVM's processes go under, as NAME.slice (a '-' nests one within another: a-b.slice is within a.slice)"
         ));
     }
+    #[cfg(target_os = "linux")]
+    {
+        // SAFETY: getuid(2) takes nothing and cannot fail.
+        let bus = shards_bus::user_bus_path(unsafe { libc::getuid() });
+        if !bus.exists() {
+            return Err(format!(
+                "--cgroup-parent {given}: no systemd manager of your user's runs here to place its microVM under a slice of: its bus, {}, is not there",
+                bus.display()
+            ));
+        }
+    }
     Ok(())
 }
 
@@ -190,7 +201,11 @@ mod tests {
         let refused = check(&run("/x")).unwrap_err();
         if cfg!(target_os = "linux") {
             assert!(refused.contains("NAME.slice"), "{refused}");
-            assert_eq!(check(&run("agents.slice")), Ok(()));
+            // Where the user's manager has a bus, a slice; where it has none, refused for that.
+            match check(&run("agents.slice")) {
+                Ok(()) => {}
+                Err(why) => assert!(why.contains("no systemd manager of your user's"), "{why}"),
+            }
         } else {
             assert!(refused.contains("--memory"), "{refused}");
             assert!(check(&run("agents.slice")).is_err());
