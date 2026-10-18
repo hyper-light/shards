@@ -5068,7 +5068,8 @@ Decided by the user on 2026-10-14 ("so long as they apply appropriately to micro
   lets go of, which the user's manager places before it makes anything
   (`shards_bus::place`: a match rule for `JobRemoved`, then `StartTransientUnit` of a scope
   `shards-PID-N.scope` in the slice with it as its one process, gone once its processes
-  have, `CollectMode=inactive-or-failed`, waited for to its job's end); one parent's
+  have, `CollectMode=inactive-or-failed`, its memory counted, `MemoryAccounting=yes`, which
+  systemd turns on for its slices too, waited for to its job's end); one parent's
   placement keeps no run under another waiting (`daemon/parents.rs`). Every process of a
   microVM under that parent is made by it (`spawn_in_group`), in its scope from its first
   instruction: the VM process, its network process, its share process, a stopped

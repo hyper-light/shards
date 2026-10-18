@@ -655,7 +655,7 @@ pub fn watch_jobs<S: Read + Write>(bus: &mut Connection<S>) -> io::Result<()> {
 /// that starts it. Where the manager may not move `pid` itself, it asks the system's
 /// manager to (systemd's src/core/cgroup.c, `unit_attach_pids_to_cgroup`), which moves only
 /// a process of the uid that asks. The scope goes once its processes have, failed or not
-/// (`CollectMode`).
+/// (`CollectMode`); its memory is counted (`MemoryAccounting`).
 pub fn start_scope<S: Read + Write>(
     bus: &mut Connection<S>,
     unit: &str,
@@ -671,6 +671,9 @@ pub fn start_scope<S: Read + Write>(
         property("Slice", Value::Str(slice.to_string())),
         property("Description", Value::Str(description.to_string())),
         property("CollectMode", Value::Str("inactive-or-failed".to_string())),
+        // Its processes' memory counted where its parent can be told it: on for the scope,
+        // which the manager turns on for its slice and theirs (systemd.resource-control(5)).
+        property("MemoryAccounting", Value::Bool(true)),
     ];
     if delegate {
         properties.push(property("Delegate", Value::Bool(true)));
@@ -926,6 +929,10 @@ mod tests {
         assert_eq!(
             named("Slice"),
             Some(Value::Variant(Box::new(Value::Str("agents.slice".to_string()))))
+        );
+        assert_eq!(
+            named("MemoryAccounting"),
+            Some(Value::Variant(Box::new(Value::Bool(true))))
         );
         // The other job's end is still held; this one's was taken.
         assert_eq!(bus.held.len(), 1);

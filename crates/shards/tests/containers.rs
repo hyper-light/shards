@@ -1561,11 +1561,25 @@ fn a_microvm_is_made_under_the_slice_its_cgroup_parent_names() {
         return;
     };
     let shards = |args: &[&str]| shards_in(&home, args);
-    let path = run_in(&home, &image, &["--rm", "--cgroup-parent", "/agents"], &["true"]);
+    // The image's template, and a pool of it warm in the daemon's own place: a run under a
+    // slice takes none of its VMs.
+    let plain = run_in(&home, &image, &["--rm"], &["exit", "0"]);
+    assert_eq!(plain.status, Some(0), "{plain}");
+    let path = run_in(
+        &home,
+        &image,
+        &["--rm", "--cgroup-parent", "/agents"],
+        &["exit", "0"],
+    );
     assert_ne!(path.status, Some(0), "{path}");
     let slice = format!("shardstest{}.slice", std::process::id());
     if !cfg!(target_os = "linux") {
-        let refused = run_in(&home, &image, &["--rm", "--cgroup-parent", &slice], &["true"]);
+        let refused = run_in(
+            &home,
+            &image,
+            &["--rm", "--cgroup-parent", &slice],
+            &["exit", "0"],
+        );
         assert!(
             refused.status != Some(0) && refused.stderr.contains("--memory"),
             "{refused}"
@@ -1589,10 +1603,6 @@ fn a_microvm_is_made_under_the_slice_its_cgroup_parent_names() {
         eprintln!("SKIP: no user's systemd manager here: {} is not", bus.display());
         return;
     }
-    // The image's template, and a pool of it warm in the daemon's own place: a run under
-    // the slice takes none of its VMs.
-    let plain = run_in(&home, &image, &["--rm"], &["true"]);
-    assert_eq!(plain.status, Some(0), "{plain}");
     let started = run_in(
         &home,
         &image,
@@ -1674,7 +1684,7 @@ fn a_microvm_is_made_under_the_slice_its_cgroup_parent_names() {
         &home,
         &image,
         &["--rm", "--network", "container:placed", "--cgroup-parent", &other],
-        &["true"],
+        &["exit", "0"],
     );
     assert!(
         joined.status != Some(0) && joined.stderr.contains("runs in its microVM"),
@@ -1684,7 +1694,7 @@ fn a_microvm_is_made_under_the_slice_its_cgroup_parent_names() {
         &home,
         &image,
         &["--rm", "--network", "container:placed", "--cgroup-parent", &slice],
-        &["true"],
+        &["exit", "0"],
     );
     assert_eq!(joined.status, Some(0), "{joined}");
     // The scope goes with the daemon, each of its processes ended.
