@@ -1773,6 +1773,8 @@ pub fn working_set_part(payload: &[u8]) -> Option<(u8, &str, &[u8])> {
 pub const MAX_FDS: usize = 9;
 
 #[cfg(unix)]
+pub mod slots;
+#[cfg(unix)]
 mod spawner;
 #[cfg(unix)]
 mod unix;
