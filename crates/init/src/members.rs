@@ -346,8 +346,9 @@ fn grants(e: &Engine) -> Grants {
     g
 }
 
-/// The gate of member `m`, by `g`'s grants.
-fn gate_of(m: &Kept, g: &Grants) -> crate::links::Gate {
+/// The gate of member `m`, by `g`'s grants, its egress off `subnets`, those of the
+/// microVM's own networks.
+fn gate_of(m: &Kept, g: &Grants, subnets: &[(Ipv4Addr, u8)]) -> crate::links::Gate {
     let opens = g
         .opens
         .iter()
@@ -381,6 +382,8 @@ fn gate_of(m: &Kept, g: &Grants) -> crate::links::Gate {
         opens6: Vec::new(),
         accepts6: Vec::new(),
         egress6: false,
+        subnets: subnets.to_vec(),
+        subnets6: Vec::new(),
     }
 }
 
@@ -431,9 +434,10 @@ fn regrant(e: &Engine, sw: &crate::links::Switch, except: Option<usize>) -> io::
         })
         .collect();
     sw.carry(carried, g.pairs.clone())?;
+    let carried_subnets = sw.subnets();
     for m in &e.members {
         if Some(m.index) != except {
-            sw.regate(m.index, &gate_of(m, &g))?;
+            sw.regate(m.index, &gate_of(m, &g, &carried_subnets))?;
         }
         let asker = asker_of(m, &g)?;
         if asker.any || !asker.local.is_empty() {
@@ -570,7 +574,14 @@ pub fn join(id: u32, asked: &Asked, published: &[Egress]) -> Result<Joined, Stri
             return Err(io::Error::other("its membership, just kept, is gone"));
         };
         let g = grants(&e);
-        sw.attach_ns(index, &me._ns, &link, &gate_of(me, &g))?;
+        // The switch's subnets, and its own networks', which it carries from here.
+        let mut subnets = sw.subnets();
+        for n in &nets {
+            if !subnets.contains(&n.subnet) {
+                subnets.push(n.subnet);
+            }
+        }
+        sw.attach_ns(index, &me._ns, &link, &gate_of(me, &g, &subnets))?;
         let subnets: Vec<(Ipv4Addr, u8)> = nets.iter().map(|n| n.subnet).collect();
         sw.routes(&subnets)?;
         regrant(&e, sw, Some(index))?;
@@ -878,8 +889,8 @@ fn disconnect(e: &mut Engine, id: u32, network: &str) -> Result<String, String> 
 /// GATEWAY RANGE FLAGS`, each of the three addresses empty for one init picks, FLAGS a
 /// comma list of `internal` and `no-peers`, answered with the subnet and gateway made
 /// (`10.244.3.0/24 10.244.3.1`); `default`, the engine's default network, made where it is
-/// not yet, answered so; or `remove NAME`, of a network no member is on. Why not,
-/// otherwise.
+/// not yet, answered so; or `remove NAME`, of a network no member is on, done where none
+/// is named so. Why not, otherwise.
 pub fn network(args: &[Vec<u8>]) -> Result<String, String> {
     let text: Vec<String> = args
         .iter()
@@ -999,8 +1010,10 @@ pub fn network(args: &[Vec<u8>]) -> Result<String, String> {
                     on.len()
                 ));
             }
+            // Removed already: a removal that raced another (two of a client's at once, as
+            // Compose's `down` asks) finds it gone, which is what it asked for.
             let Some(at) = e.networks.iter().position(|n| n.name == name) else {
-                return Err(format!("network {name}: no network of its engine's is named so"));
+                return Ok(String::new());
             };
             let gone = e.networks.remove(at);
             if let Some(sw) = crate::domains::SWITCH.get() {
@@ -1321,6 +1334,22 @@ fn relay_udp(sock: &UdpSocket, to: SocketAddr, idle: (Duration, Duration)) {
 mod tests {
     use super::*;
 
+    /// A network removed twice, as two of a client's removals at once may ask (Compose's
+    /// `down`), is done each time: the second finds it gone.
+    #[test]
+    fn a_network_removed_again_is_done() {
+        let name = "removed-twice";
+        assert!(!engine().networks.iter().any(|n| n.name == name));
+        assert_eq!(
+            network(&[b"remove".to_vec(), name.as_bytes().to_vec()]),
+            Ok(String::new())
+        );
+        assert_eq!(
+            network(&[b"remove".to_vec(), name.as_bytes().to_vec()]),
+            Ok(String::new())
+        );
+    }
+
     /// A socket table's listeners past the loopback: the any address's and an address's
     /// of its own, not 127.0.0.1's, ::1's or 127.0.0.1's mapped, nor a connected socket.
     #[test]
@@ -1534,7 +1563,7 @@ mod tests {
         assert_eq!(names_of(14).len(), 3);
         // Nothing for the member alone on its network, nor for the default network's.
         assert!(names_of(12).is_empty() && names_of(13).is_empty());
-        let gate = gate_of(e.members.get(1).unwrap(), &g);
+        let gate = gate_of(e.members.get(1).unwrap(), &g, &[]);
         assert_eq!(
             gate.opens,
             [(vec![Ipv4Addr::new(10, 244, 1, 2)], vec![(6, 80, 80)])]
@@ -1543,10 +1572,10 @@ mod tests {
         from.sort();
         assert_eq!(from, [Ipv4Addr::new(10, 244, 1, 2), Ipv4Addr::new(10, 244, 1, 4)]);
         assert_eq!(gate.accepts.first().unwrap().1, [(6, 5432, 5432)]);
-        assert!(gate_of(e.members.get(3).unwrap(), &g).opens.is_empty());
+        assert!(gate_of(e.members.get(3).unwrap(), &g, &[]).opens.is_empty());
         // Alone on its network, far's gate still holds its declared port, from no one.
         assert_eq!(
-            gate_of(e.members.get(2).unwrap(), &g).accepts,
+            gate_of(e.members.get(2).unwrap(), &g, &[]).accepts,
             [(Vec::new(), vec![(6, 9, 9)])]
         );
     }

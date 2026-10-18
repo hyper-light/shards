@@ -4846,12 +4846,12 @@ ports` lists, built; (3e) connect and disconnect of a running member, built.
   member whenever one joins or leaves (`members::grants`): for each two members of a
   network whose members are peers, the ports the receiver declares, held at two points
   that each hold them alone: the switch passes those only between the two links, and the
-  receiver's gate accepts those only, from the opener's addresses. The opener's gate
-  opens those only to its peers too, but a member that reaches past the microVM has its
-  every port opened up its link, which the switch passes to the uplink alone, as an
-  agent's egress is (D61); a third point for it, its gate's egress kept off the switch's
-  own subnets, is open. Each gate is programmed again in one transaction, the switch in
-  one. A member's gate holds its declared ports from its start, before it has any peer,
+  receiver's gate accepts those only, from the opener's addresses. The opener's gate is a
+  third that holds them alone: it opens those only to its peers, and what it opens past
+  the microVM (every port, for a member that reaches past it) to none of the microVM's
+  own subnets, its agents' networks' and its engine's, each gate made again as its engine
+  makes or removes a network, as an agent's egress (D61). Each gate is programmed again
+  in one transaction, the switch in one. A member's gate holds its declared ports from its start, before it has any peer,
   so that its own connections' ports are chosen clear of them (`local_ports`, D61). Its
   peers' names init gives the agents' resolver with its asker, over init's control link;
   the resolver answers a question that comes up the member's link from them first, and
@@ -4887,9 +4887,9 @@ ports` lists, built; (3e) connect and disconnect of a running member, built.
   members have, by name and by a prune. `a_microvms_own_engine_makes_each_container_a_member_of_its_switch`
   now has a member of an internal network alone reach nothing past the microVM, which a
   member of the default network then reaches. Mutation-checked: with the switch alone,
-  or the receiver's gate alone, left holding a pair's ports, an undeclared port stays
-  shut, and with every point opened the test catches it; the opener's gate alone does
-  not hold them for a member that reaches past the microVM (above). Caught, each: grants
+  the receiver's gate alone, or the opener's gate alone left holding a pair's ports, an
+  undeclared port stays shut, and with every point opened (the opener's egress let onto
+  the microVM's own subnets as well) the test catches it. Caught, each: grants
   past the networks two members share; peers' gates not built again as a member joins;
   the switch carrying no member's pairs; the resolver answering one member's question
   from another's table; grants not built again as a member goes; peers' names answered
@@ -5004,6 +5004,58 @@ ports` lists, built; (3e) connect and disconnect of a running member, built.
   next. Mutation-checked, each caught: connected with no address of its own; connected,
   or disconnected, with no grants built again; disconnected keeping its address; its last
   network taken; no way out through its next network.
+
+### D183. `--cgroup-parent`: a microVM's processes under a slice of the user's service manager (designed and measured; slice 1 in progress)
+
+Decided by the user on 2026-10-14 ("so long as they apply appropriately to microvms").
+
+- **The microVM need.** A host running many microVMs needs to cap and account groups of
+  them with its own resource manager: a project's agents under one memory and CPU
+  budget, a CI job's microVMs under its job's slice. A microVM's guest memory, vCPU
+  threads and I/O are its VM process's, and its network process's, so `--cgroup-parent`
+  (`run`, `create`, the Engine API's `HostConfig.CgroupParent`) names the group those
+  processes go in. Inside the microVM, its cgroups stay its own.
+- **On Linux, a slice of the user's own systemd manager.** `NAME.slice` (a `-` nesting
+  it, `a-b.slice` under `a.slice`, systemd.slice(5)) is a slice of the user's manager,
+  asked on the user's bus (`shards-bus`: the D-Bus Specification 0.43's EXTERNAL
+  authentication as the user, `StartTransientUnit`, waited for to its `JobRemoved`, which
+  systemd sends the client that started the job: src/core/dbus-job.c). Rootless, with
+  nothing to configure: the manager is delegated the user's cgroups (on the GPU desktop
+  `user@1000.service`, `Delegate=yes`, cpu cpuset io memory pids), and where the daemon
+  was started from an ssh login, in a session scope the manager may not move a process
+  out of, the manager has the system's manager move it (systemd's src/core/cgroup.c,
+  `unit_attach_pids_to_cgroup`), which moves only a process of the uid that asks
+  (src/core/dbus-unit.c). M248 placed 300 of 300 so, from a login and from inside the
+  manager's tree.
+- **Born there, charged there from its first page, never moved.** A process moved
+  between cgroups keeps its memory charged where it was (cgroup-v2.rst, "Memory
+  Ownership"; M248: a child that touched 64 MiB first left its scope 0 KiB), and each
+  move waits out an RCU grace period (kernel/cgroup/cgroup.c, `cgroup_attach_lock`; M248:
+  the manager's start of a scope 6.7 ms at p50 and 18.6 at p99 past its reply, a move by
+  hand 8.4 and 16.7), past the whole start budget (§4, 5 ms). So no microVM is moved: the
+  daemon keeps a spawner (D158's) for each parent, placed once by the user's manager as
+  the one process of a scope of its own in that slice, and every process of a microVM
+  under that parent, its VM process and its network process, is made by that spawner:
+  in the scope from its first instruction (a child is born in its parent's cgroup, which
+  takes no grace period), charged there from its first page. The first run under a
+  parent pays the one placement (M248: 10 ms at p50 from a login); every one after, none.
+- **Warm under its parent too.** A warm pool (D26) is kept per template and parent, its
+  microVMs made by that parent's spawner: a warm microVM taken for a run has been its
+  parent's from its first page, and none of another parent's is taken.
+- **Refused before anything starts, each with why**: on Linux, a value that is no slice
+  name (a path names a cgroup the user's manager owns, not the user), no user manager on
+  the user's bus, a slice the manager refuses (its own words); on macOS, which has no
+  host resource group a process can be placed in; on Windows, until slice 3.
+- **Shown as given**: inspect's `HostConfig.CgroupParent`.
+- **Past a container's cgroup parent.** Rootless with nothing to set up, from an ssh login
+  as from a desktop session; the microVM's whole host footprint, guest memory, vCPUs and
+  its network process, under the parent and charged there from its first page, warm
+  starts included; a run under a parent costs nothing past the first; and every refusal
+  before anything starts.
+- **Slices.** 1: Linux, a slice of the user's manager (this). 2: Linux hosts with no user
+  manager (OpenRC, runit), a cgroupfs path delegated to the user. 3: Windows, a job object
+  the VM process is made in. 4: the microVM's own engine's members (D181), a cgroup
+  within the microVM.
 
 ### D179. Other CPUs' images, emulated in their microVM (parts 1 to 3 built)
 
@@ -12936,6 +12988,13 @@ So one agent holding connections fills it, and every other agent's new flows fai
   (priority −300, before tracking) gives what others open to the domain, and the domain's
   answers to them, `notrack`. A peer opening many flows takes none of the receiver's
   table. Those flows are accepted by their ports, from the peers granted them.
+- **What a domain opens past the microVM goes to none of its networks.** Its gate accepts
+  its egress ports to any address but the microVM's own subnets, its agents' networks'
+  and its engine's (D181), each gate made again as its engine makes or removes a network.
+  So a flow to a peer is a pair's alone, held at three points that each hold it by
+  themselves: the switch, the receiver's gate and the opener's. Before, the opener's gate
+  passed its egress ports to a peer too, and the switch and the receiver's gate alone held
+  them.
 - **The switch keeps no state for agents.** Its rules are stateless, both ways of each
   grant; it has no conntrack expression, so the kernel tracks nothing it forwards.
 - **The stateful point for what leaves the microVM is init.** The gates and the switch let
@@ -12975,6 +13034,17 @@ Tested, each guard mutation-checked:
   not. With init's egress rules matching no source, a was answered.
 - `an_agents_own_flows_take_no_port_it_accepts`: c, which b may open 32768 to 60999
   to, reaches x. Without `local_ports`, c's connection timed out.
+- `agents_reach_only_what_connect_grants` and `agents_reach_by_ipv6_only_what_connect_grants`,
+  now with a's egress on 7001 (by IPv6 too, where the microVM's own network has it), a
+  port its peer b listens on that no `CONNECT` grants. With the switch and b's gate made
+  to pass every port of a's pair, a's gate alone kept b's 7001 shut, by IPv4 and by IPv6;
+  with a's egress let onto the microVM's own subnets as well, a reached it.
+- `an_engines_member_reaches_no_farther_than_the_command_beside_agents`, now with a
+  member of a network the microVM's engine makes after its agent started, serving the
+  agent's egress port (the agent waits on the host's word, testguest `hear`, until the
+  member serves). With the switch forwarding everything and the member's gate accepting
+  every port, the agent's gate alone kept it shut; with the domains' gates not made again
+  as the network came, the agent reached it.
 
 Open: packet-rate fairness. A flood's packets themselves can delay another agent's:
 `an_agents_flood_of_flows_takes_no_others` saw, on x86_64 CI, c make 199 of 200

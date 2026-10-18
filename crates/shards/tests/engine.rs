@@ -3328,6 +3328,22 @@ fn a_microvms_own_engine_makes_networks_whose_members_reach_what_each_declares()
     assert!(status.starts_with("api HTTP/1.1 204"), "{status} {said}");
     let (status, _) = api("GET", "/networks/app", &Value::Null);
     assert!(status.starts_with("api HTTP/1.1 404"), "{status}");
+    // Removed twice at once, as Compose's `down` asks: each is done, or finds it gone
+    // (x86_64 CI job 117535804957, where the second was answered 500).
+    let (status, said) = api("POST", "/networks/create", &json!({ "Name": "twice" }));
+    assert!(status.starts_with("api HTTP/1.1 201"), "{status} {said}");
+    let answers: Vec<String> = std::thread::scope(|s| {
+        let both: Vec<_> = (0..2)
+            .map(|_| s.spawn(|| api("DELETE", "/networks/twice", &Value::Null).0))
+            .collect();
+        both.into_iter().map(|h| h.join().unwrap()).collect()
+    });
+    for status in &answers {
+        assert!(
+            status.starts_with("api HTTP/1.1 204") || status.starts_with("api HTTP/1.1 404"),
+            "{answers:?}"
+        );
+    }
     let (status, pruned) = api("POST", "/networks/prune", &Value::Null);
     assert!(status.starts_with("api HTTP/1.1 200"), "{status} {pruned}");
     assert_eq!(pruned["NetworksDeleted"], json!(["other", "local"]), "{pruned}");

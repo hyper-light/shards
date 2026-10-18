@@ -1,0 +1,11 @@
+[package]
+name = "shards-bus"
+version = "0.1.0"
+description = "Asks the user's service manager over D-Bus to place a microVM's process in a slice of its"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true

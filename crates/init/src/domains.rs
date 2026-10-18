@@ -1091,6 +1091,28 @@ fn gate_of(
             .collect(),
         // As the uplink carries IPv6: eth0 has IPv6, and so has this domain with egress.
         egress6: crate::net::current6().is_some() && !link.addresses6.is_empty() && !link.egress.is_empty(),
+        // Every domain's networks, which its egress goes to none of; the engine's are the
+        // switch's to add as they come (Switch::routes).
+        subnets: {
+            let mut all: Vec<(std::net::Ipv4Addr, u8)> = domains
+                .iter()
+                .filter_map(|d| d.link.as_ref())
+                .flat_map(|l| l.addresses.iter().map(|a| (a.subnet, a.prefix)))
+                .collect();
+            all.sort_unstable();
+            all.dedup();
+            all
+        },
+        subnets6: {
+            let mut all: Vec<(std::net::Ipv6Addr, u8)> = domains
+                .iter()
+                .filter_map(|d| d.link.as_ref())
+                .flat_map(|l| l.addresses6.iter().map(|a| (a.subnet, a.prefix)))
+                .collect();
+            all.sort_unstable();
+            all.dedup();
+            all
+        },
     }
 }
 

@@ -391,6 +391,9 @@ pub struct Switch {
     here: OwnedFd,
     /// Each gate's namespace, by its link's index, which nothing else holds.
     gates: std::sync::Mutex<Vec<(usize, OwnedFd)>>,
+    /// Each domain's gate as it was linked, made again with the subnets the switch carries
+    /// as its engine's networks come and go (D181).
+    domain_gates: std::sync::Mutex<Vec<(usize, Gate)>>,
     /// What it carries, kept so that it is programmed again, whole and at once, as the
     /// members its microVM's engine makes come and go (D181).
     carried: std::sync::Mutex<Carried>,
@@ -457,6 +460,11 @@ pub struct Gate {
     pub accepts6: Vec<(Vec<Ipv6Addr>, Vec<crate::netplan::Egress>)>,
     /// Whether its egress ports reach past the microVM by IPv6 too.
     pub egress6: bool,
+    /// The subnets of the microVM's own networks, its agents' and its engine's members'
+    /// (D61, D181): no flow it opens on its egress ports goes to one, each flow to a peer
+    /// being a pair's, so that its gate holds a peer's ports alone as the switch does.
+    pub subnets: Vec<(Ipv4Addr, u8)>,
+    pub subnets6: Vec<(Ipv6Addr, u8)>,
 }
 
 impl Gate {
@@ -523,6 +531,7 @@ impl Switch {
             uplink6,
             here: netlink_socket(libc::NETLINK_ROUTE)?,
             gates: std::sync::Mutex::new(Vec::new()),
+            domain_gates: std::sync::Mutex::new(Vec::new()),
             carried: std::sync::Mutex::new(Carried {
                 pairs: pairs.to_vec(),
                 egress: egress.to_vec(),
@@ -610,7 +619,8 @@ impl Switch {
                 u.subnets.push(subnet);
             }
         }
-        Ok(())
+        drop(c);
+        self.regate_domains()
     }
 
     /// Lets `subnet` go (D181), a network its engine removed: its route down from init's
@@ -632,7 +642,8 @@ impl Switch {
         if let Some(u) = c.uplink.as_mut() {
             u.subnets.retain(|s| *s != subnet);
         }
-        Ok(())
+        drop(c);
+        self.regate_domains()
     }
 
     /// Carries `members` and their `pairs` (D181), each pair a flow its engine's networks
@@ -929,7 +940,33 @@ impl Switch {
     /// Links the `n`-th domain, its first process `pid`, as `link` says, through a gate
     /// of its own that lets through what `gate` says.
     pub fn attach(&self, n: usize, pid: libc::pid_t, link: &Link, gate: &Gate) -> io::Result<()> {
-        self.attach_ns(n, &open_ns(&format!("/proc/{pid}/ns/net"))?, link, gate)
+        self.attach_ns(n, &open_ns(&format!("/proc/{pid}/ns/net"))?, link, gate)?;
+        self.domain_gates
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push((n, gate.clone()));
+        Ok(())
+    }
+
+    /// Each domain's gate made again, the subnets the switch carries now among those its
+    /// egress keeps off (D181), as its engine makes or removes a network.
+    fn regate_domains(&self) -> io::Result<()> {
+        let carried = self.subnets();
+        let kept = self
+            .domain_gates
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        for (n, gate) in kept {
+            let mut g = gate;
+            for s in &carried {
+                if !g.subnets.contains(s) {
+                    g.subnets.push(*s);
+                }
+            }
+            self.regate(n, &g)?;
+        }
+        Ok(())
     }
 
     /// Links the network namespace `domain_ns` as the `n`-th link, as [`Self::attach`]
@@ -1555,6 +1592,22 @@ pub(crate) fn address(list: &mut Vec<u8>, offset: u32, addr: Ipv4Addr) {
 pub(crate) const SOURCE: u32 = 12;
 pub(crate) const DESTINATION: u32 = 16;
 
+/// The packet's address at `offset` (its source's or destination's) outside `subnet`.
+fn not_within(list: &mut Vec<u8>, offset: u32, (net, prefix): (Ipv4Addr, u8)) {
+    let mask = u32::MAX.checked_shl(32 - u32::from(prefix)).unwrap_or(0);
+    payload(list, nft::NFT_PAYLOAD_NETWORK_HEADER, offset, 4);
+    masked(list, &mask.to_be_bytes());
+    compare(list, nft::NFT_CMP_NEQ, &(u32::from(net) & mask).to_be_bytes());
+}
+
+/// The packet's IPv6 address at `offset` outside `subnet`.
+fn not_within6(list: &mut Vec<u8>, offset: u32, (net, prefix): (Ipv6Addr, u8)) {
+    let mask = u128::MAX.checked_shl(128 - u32::from(prefix)).unwrap_or(0);
+    payload(list, nft::NFT_PAYLOAD_NETWORK_HEADER, offset, 16);
+    masked(list, &mask.to_be_bytes());
+    compare(list, nft::NFT_CMP_NEQ, &(u128::from(net) & mask).to_be_bytes());
+}
+
 /// The packet's IPv6 source (offset 8 of its header) or destination (24) address.
 fn address6(list: &mut Vec<u8>, offset: u32, addr: Ipv6Addr) {
     payload(list, nft::NFT_PAYLOAD_NETWORK_HEADER, offset, 16);
@@ -1737,7 +1790,15 @@ fn gate_policy(sock: &OwnedFd, g: &Gate) -> io::Result<()> {
             }
         }
         for &range in &g.egress {
-            opens(&mut b, None, range);
+            let mut e = Vec::new();
+            on(&mut e, nft::NFT_META_IIF, inside);
+            address(&mut e, SOURCE, own);
+            for &subnet in &g.subnets {
+                not_within(&mut e, DESTINATION, subnet);
+            }
+            ports(&mut e, range);
+            accept(&mut e);
+            b.rule(b"forward\0", e);
         }
         if g.dns {
             opens(&mut b, Some(TRANSIT_SWITCH), (17, 53, 53));
@@ -1864,6 +1925,9 @@ fn gate_policy6(sock: &OwnedFd, g: &Gate) -> io::Result<()> {
                 let mut e = Vec::new();
                 on(&mut e, nft::NFT_META_IIF, inside);
                 address6(&mut e, SOURCE6, own);
+                for &subnet in &g.subnets6 {
+                    not_within6(&mut e, DESTINATION6, subnet);
+                }
                 ports(&mut e, range);
                 accept(&mut e);
                 b.rule(b"forward\0", e);
