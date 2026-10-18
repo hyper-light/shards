@@ -54,13 +54,40 @@ struct Spawner {
     free: Vec<UnixStream>,
     program: PathBuf,
     args: Vec<OsString>,
-    generation: u64,
+    id: u64,
 }
 
-static SPAWNER: Mutex<Option<Spawner>> = Mutex::new(None);
+/// A process's spawners: its own, which makes its children, and its groups', each made
+/// beside it to make children elsewhere ([`start_group`]).
+struct Spawners {
+    own: Option<Spawner>,
+    groups: Vec<Spawner>,
+    /// The last id a spawner was given, its own or a group's: each is its own.
+    last: u64,
+}
 
-fn current() -> MutexGuard<'static, Option<Spawner>> {
-    SPAWNER.lock().unwrap_or_else(PoisonError::into_inner)
+impl Spawners {
+    fn next(&mut self) -> u64 {
+        self.last += 1;
+        self.last
+    }
+
+    fn by(&mut self, id: u64) -> Option<&mut Spawner> {
+        self.own
+            .iter_mut()
+            .chain(self.groups.iter_mut())
+            .find(|s| s.id == id)
+    }
+}
+
+static SPAWNERS: Mutex<Spawners> = Mutex::new(Spawners {
+    own: None,
+    groups: Vec::new(),
+    last: 0,
+});
+
+fn current() -> MutexGuard<'static, Spawners> {
+    SPAWNERS.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 /// Makes this process's spawner, `program` run with `args`, which calls
@@ -68,14 +95,19 @@ fn current() -> MutexGuard<'static, Option<Spawner>> {
 /// before this process holds anything its children must not: the spawner holds what this
 /// process holds as it is made, until its own exec.
 pub fn start_spawner(program: &Path, args: &[&OsStr]) -> io::Result<()> {
-    let spawner = make(program, args.iter().map(|a| a.to_os_string()).collect(), 1)?;
-    *current() = Some(spawner);
+    let mut held = current();
+    let id = held.next();
+    held.own = Some(make(
+        program,
+        args.iter().map(|a| a.to_os_string()).collect(),
+        id,
+    )?);
     Ok(())
 }
 
-/// Spawner number `generation`: given /dev/null and this process's stderr for stdio,
-/// its first connection at descriptor 3, and no environment.
-fn make(program: &Path, args: Vec<OsString>, generation: u64) -> io::Result<Spawner> {
+/// Spawner `id`: given /dev/null and this process's stderr for stdio, its first
+/// connection at descriptor 3, and no environment.
+fn make(program: &Path, args: Vec<OsString>, id: u64) -> io::Result<Spawner> {
     let (first, theirs) = UnixStream::pair()?;
     let null = std::fs::File::open("/dev/null")?;
     let err = io::stderr();
@@ -98,8 +130,128 @@ fn make(program: &Path, args: Vec<OsString>, generation: u64) -> io::Result<Spaw
         free: Vec::new(),
         program: program.to_path_buf(),
         args,
-        generation,
+        id,
     })
+}
+
+/// A spawner of a process's made beside its own (D183), its children made where it was
+/// placed: its process's pid, for placing it, and which spawner it is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Group {
+    id: u64,
+    pid: u32,
+}
+
+impl Group {
+    /// Its process, for placing it before it makes any child.
+    pub fn pid(self) -> u32 {
+        self.pid
+    }
+}
+
+/// Another spawner for this process, made by its own (so that it holds nothing this
+/// process lets go of) and run as its own is, to make children where it is placed: none
+/// is made until this process has placed it. One that ends is not made again: a spawn
+/// asked of it fails, and its group is ended.
+pub fn start_group() -> io::Result<Group> {
+    let none = || io::Error::other("this process has no spawner to make another with");
+    let (program, args) = {
+        let held = current();
+        let own = held.own.as_ref().ok_or_else(none)?;
+        (own.program.clone(), own.args.clone())
+    };
+    let (first, theirs) = UnixStream::pair()?;
+    let null = std::fs::File::open("/dev/null")?;
+    let err = io::stderr();
+    let given: Vec<&OsStr> = args.iter().map(OsString::as_os_str).collect();
+    let fds = [
+        (null.as_fd(), 0),
+        (err.as_fd(), 1),
+        (err.as_fd(), 2),
+        (theirs.as_fd(), 3),
+    ];
+    // Made by the time it is answered for: its end of the connection is its own then.
+    let process = spawn(&program, &given, &fds, false, &[]).ok_or_else(none)??;
+    drop(theirs);
+    let pid = process.id();
+    let mut held = current();
+    let id = held.next();
+    held.groups.push(Spawner {
+        process,
+        first,
+        free: Vec::new(),
+        program,
+        args,
+        id,
+    });
+    Ok(Group { id, pid })
+}
+
+/// A child made as [`spawn_in`](crate::spawn_in) makes one, `env` alone its environment,
+/// by `group`'s spawner where one is given: where that spawner is from its first
+/// instruction.
+pub fn spawn_in_group(
+    group: Option<Group>,
+    program: &Path,
+    args: &[&OsStr],
+    fds: &[(BorrowedFd<'_>, RawFd)],
+    detach: bool,
+    env: &[(&str, &OsStr)],
+) -> io::Result<Child> {
+    let Some(group) = group else {
+        return crate::unix::spawn_in(program, args, fds, detach, env);
+    };
+    let env: Vec<(OsString, OsString)> = env
+        .iter()
+        .map(|(k, v)| (OsStr::new(k).to_os_string(), v.to_os_string()))
+        .collect();
+    let request = encode(program, args, fds, detach, &env)?;
+    let given: Vec<BorrowedFd<'_>> = fds.iter().map(|(fd, _)| *fd).collect();
+    let answer = call(group.id, SPAWN, &request, &given)?;
+    let pid = answer
+        .first_chunk::<4>()
+        .map(|p| libc::pid_t::from_be_bytes(*p))
+        .filter(|p| *p > 0)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "the spawner's answer"))?;
+    Ok(Child::new(pid, Some(group.id)))
+}
+
+/// Whether `group`'s spawner has ended (killed with what it was placed in, say), or been
+/// ended: its spawns fail then, and it is to be placed again. Its first connection, which
+/// it never writes, is readable once its end is closed: asked without waiting, and of no
+/// other process.
+pub fn group_ended(group: Group) -> bool {
+    use std::os::fd::AsRawFd as _;
+    let held = current();
+    let Some(s) = held.groups.iter().find(|s| s.id == group.id) else {
+        return true;
+    };
+    let mut asked = libc::pollfd {
+        fd: s.first.as_raw_fd(),
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    // SAFETY: poll(2) of one descriptor this process holds, waiting for nothing.
+    let ready = unsafe { libc::poll(&mut asked, 1, 0) };
+    ready > 0 && asked.revents & (libc::POLLIN | libc::POLLHUP | libc::POLLERR) != 0
+}
+
+/// Ends `group`'s spawner, and reaps it: what it made is init's from here, as its own
+/// spawner's children are once it ends.
+pub fn end_group(group: Group) {
+    let ended = {
+        let mut held = current();
+        let at = held.groups.iter().position(|s| s.id == group.id);
+        at.map(|at| held.groups.swap_remove(at))
+    };
+    if let Some(Spawner {
+        process, first, free, ..
+    }) = ended
+    {
+        drop(free);
+        drop(first);
+        let _ = process.wait();
+    }
 }
 
 /// A child of this process's spawner, made as [`spawn`](crate::spawn) makes one with
@@ -111,14 +263,14 @@ pub(crate) fn spawn(
     detach: bool,
     env: &[(OsString, OsString)],
 ) -> Option<io::Result<Child>> {
-    let generation = current().as_ref()?.generation;
+    let own = current().own.as_ref()?.id;
     Some((|| {
         let request = encode(program, args, fds, detach, env)?;
         let given: Vec<BorrowedFd<'_>> = fds.iter().map(|(fd, _)| *fd).collect();
-        let (answer, by) = match call(generation, SPAWN, &request, &given) {
-            Ok(answer) => (answer, generation),
+        let (answer, by) = match call(own, SPAWN, &request, &given) {
+            Ok(answer) => (answer, own),
             // One that has gone is made again, and asked again: it never made this child.
-            Err(e) => match replaced(generation)? {
+            Err(e) => match replaced(own)? {
                 Some(next) => (call(next, SPAWN, &request, &given)?, next),
                 None => return Err(e),
             },
@@ -152,7 +304,7 @@ pub(crate) fn reap(by: u64, pid: libc::pid_t) -> io::Result<i32> {
 
 /// Whether spawner `by` is this process's still, which reaps none of its children unasked.
 pub(crate) fn serving(by: u64) -> bool {
-    current().as_ref().is_some_and(|s| s.generation == by)
+    current().by(by).is_some()
 }
 
 fn status_in(bytes: &[u8]) -> io::Result<i32> {
@@ -196,7 +348,7 @@ fn call(by: u64, kind: u8, payload: &[u8], fds: &[BorrowedFd<'_>]) -> io::Result
     // Answered on, the connection is the spawner's: its end, sent over the first, is no
     // longer in flight (M24).
     drop(theirs);
-    if let Some(s) = current().as_mut().filter(|s| s.generation == by) {
+    if let Some(s) = current().by(by) {
         s.free.push(conn);
     }
     answer
@@ -208,8 +360,7 @@ fn call(by: u64, kind: u8, payload: &[u8], fds: &[BorrowedFd<'_>]) -> io::Result
 fn connection(by: u64) -> io::Result<(UnixStream, Option<UnixStream>)> {
     let mut held = current();
     let s = held
-        .as_mut()
-        .filter(|s| s.generation == by)
+        .by(by)
         .ok_or_else(|| io::Error::other("the spawner that made it has gone"))?;
     if let Some(conn) = s.free.pop() {
         return Ok((conn, None));
@@ -223,17 +374,21 @@ fn connection(by: u64) -> io::Result<(UnixStream, Option<UnixStream>)> {
 /// is now. `None` while `by` lives: what failed was not its end.
 fn replaced(by: u64) -> io::Result<Option<u64>> {
     let mut held = current();
-    let Some(s) = held.as_mut() else {
+    let Some(s) = held.own.as_ref() else {
         return Ok(None);
     };
-    if s.generation != by {
-        return Ok(Some(s.generation));
+    if s.id != by {
+        return Ok(Some(s.id));
     }
+    // The process's own spawner is its own child, waited for here without the lock's
+    // being asked again.
     if s.process.try_wait().is_none() {
         return Ok(None);
     }
-    *s = make(&s.program, s.args.clone(), by + 1)?;
-    Ok(Some(by + 1))
+    let (program, args) = (s.program.clone(), s.args.clone());
+    let id = held.next();
+    held.own = Some(make(&program, args, id)?);
+    Ok(Some(id))
 }
 
 /// An error the spawner sent: its OS error, or what it said.
@@ -503,7 +658,7 @@ mod tests {
         own::statuses_and_signals();
         own::detached_children_lead_their_own_session();
         own::a_reaped_child_is_never_signalled();
-        let spawner = current().as_ref().unwrap().process.id();
+        let spawner = current().own.as_ref().unwrap().process.id();
         let (mut r, w) = std::io::pipe().unwrap();
         let child = crate::spawn(
             Path::new("/bin/sh"),
@@ -567,7 +722,7 @@ mod tests {
         let orphan = crate::spawn(Path::new("/bin/sleep"), &["5".as_ref()], &[], false).unwrap();
         let first = {
             let held = current();
-            let s = held.as_ref().unwrap();
+            let s = held.own.as_ref().unwrap();
             // SAFETY: kill(2) of the spawner, this process's own child, not reaped.
             let killed = unsafe { libc::kill(s.process.id() as libc::pid_t, libc::SIGKILL) };
             assert_eq!(killed, 0);
@@ -582,9 +737,108 @@ mod tests {
         )
         .unwrap();
         assert_eq!(child.wait().unwrap(), 3);
-        assert_ne!(current().as_ref().unwrap().process.id(), first);
+        assert_ne!(current().own.as_ref().unwrap().process.id(), first);
         assert!(orphan.kill(libc::SIGKILL).is_err());
         assert!(orphan.wait().is_err());
+    }
+
+    /// A group's spawner, made beside the process's own (D183), makes its children apart:
+    /// their parent is the group's spawner, which the process's own made; they are
+    /// watched, signalled and reaped through it; the process's own still makes the rest;
+    /// and once the group ends, what it made is signalled no more.
+    #[test]
+    fn a_groups_spawner_makes_its_children_apart() {
+        in_own_process("spawner::tests::group");
+    }
+
+    #[test]
+    #[ignore = "run by a_groups_spawner_makes_its_children_apart, with a spawner"]
+    fn group() {
+        if !start() {
+            return;
+        }
+        let parent_of = |made: io::Result<Child>, w: std::io::PipeWriter, mut r: std::io::PipeReader| {
+            let child = made.unwrap();
+            drop(w);
+            assert_eq!(child.wait().unwrap(), 0);
+            let mut said = String::new();
+            r.read_to_string(&mut said).unwrap();
+            said.trim().parse::<u32>().unwrap()
+        };
+        let say_parent = ["-c".as_ref(), "echo $PPID >&3".as_ref()];
+        let own = current().own.as_ref().unwrap().process.id();
+        let group = start_group().unwrap();
+        assert_ne!(group.pid(), own);
+        // The group's spawner is the process's own spawner's child.
+        let (r, w) = std::io::pipe().unwrap();
+        let ppid = std::fs::read_to_string(format!("/proc/{}/stat", group.pid()))
+            .ok()
+            .and_then(|s| {
+                s.rsplit_once(") ")
+                    .and_then(|(_, rest)| rest.split(' ').nth(1).map(str::to_string))
+            });
+        if let Some(ppid) = ppid {
+            assert_eq!(ppid, own.to_string());
+        }
+        let made = spawn_in_group(
+            Some(group),
+            Path::new("/bin/sh"),
+            &say_parent,
+            &[(w.as_fd(), 3)],
+            false,
+            &[],
+        );
+        assert_eq!(parent_of(made, w, r), group.pid(), "made by the group's spawner");
+        let (r, w) = std::io::pipe().unwrap();
+        let made = crate::spawn(Path::new("/bin/sh"), &say_parent, &[(w.as_fd(), 3)], false);
+        assert_eq!(parent_of(made, w, r), own, "made by the process's own");
+        // Watched and signalled through the group.
+        let sleeper = spawn_in_group(
+            Some(group),
+            Path::new("/bin/sleep"),
+            &["30".as_ref()],
+            &[],
+            false,
+            &[],
+        )
+        .unwrap();
+        assert_eq!(sleeper.try_wait(), None);
+        sleeper.kill(libc::SIGKILL).unwrap();
+        assert_eq!(sleeper.wait().unwrap(), 128 + libc::SIGKILL);
+        assert!(!group_ended(group));
+        // Ended, its children are signalled no more, and it makes none.
+        let orphan = spawn_in_group(
+            Some(group),
+            Path::new("/bin/sleep"),
+            &["5".as_ref()],
+            &[],
+            false,
+            &[],
+        )
+        .unwrap();
+        end_group(group);
+        assert!(orphan.kill(libc::SIGKILL).is_err());
+        assert!(spawn_in_group(Some(group), Path::new("/bin/true"), &[], &[], false, &[]).is_err());
+        // One killed is found ended.
+        let killed = start_group().unwrap();
+        let pid = libc::pid_t::try_from(killed.pid()).unwrap();
+        // SAFETY: kill(2) of the group's spawner, not reaped until asked.
+        assert_eq!(unsafe { libc::kill(pid, libc::SIGKILL) }, 0);
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !group_ended(killed) {
+            assert!(Instant::now() < deadline, "a killed group's spawner never ended");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        end_group(killed);
+        // The process's own makes children still.
+        let child = crate::spawn(
+            Path::new("/bin/sh"),
+            &["-c".as_ref(), "exit 4".as_ref()],
+            &[],
+            false,
+        )
+        .unwrap();
+        assert_eq!(child.wait().unwrap(), 4);
     }
 
     /// What this process lets go of while children are made, no child holds (M158): a

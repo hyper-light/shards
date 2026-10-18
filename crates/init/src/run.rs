@@ -2623,6 +2623,12 @@ impl Standby {
             groups.extend(added);
         }
         none_of_theirs(uid, gid, &groups)?;
+        // A fresh volume where the image has nothing at its mount point is the run's user's
+        // (D38): each that takes the image's files is told whose it is.
+        let setup: Vec<Vec<u8>> = setup
+            .into_iter()
+            .map(|e| crate::setup::with_owner(e, uid, gid))
+            .collect();
         let env = user::prepare_env(&spec.env, uid, passwd).map_err(setup_failed)?;
         let cwd = if exec {
             exec_cwd(&spec.cwd)?

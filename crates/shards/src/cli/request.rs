@@ -743,6 +743,8 @@ fn request(parsed: &Parsed) -> Result<Run, String> {
         uts: uts.to_string(),
         userns: userns.to_string(),
         cgroupns: cgroupns.to_string(),
+        // Where its microVM's processes are made on the host (D183), the daemon's to judge.
+        cgroup_parent: parsed.string("cgroup-parent").to_string(),
         // The permission bits it clears, at most all nine.
         umask: match parsed.string("umask") {
             "<nil>" | "" => None,

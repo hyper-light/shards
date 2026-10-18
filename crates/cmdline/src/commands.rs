@@ -339,6 +339,12 @@ pub static RUN: Command = Command {
             "UTS namespace to use ('host': the host's hostname)",
         ),
         Flag::string(
+            "cgroup-parent",
+            None,
+            "",
+            "Run the microVM's processes under this slice of the user's systemd manager (NAME.slice)",
+        ),
+        Flag::string(
             "cgroupns",
             None,
             "",
@@ -422,9 +428,7 @@ pub static RUN: Command = Command {
         Flag::string("log-driver", None, "", "Logging driver for the container"),
         Flag::many("log-opt", None, "list", "Log driver options"),
     ],
-    unserved: "\
-cgroup-parent - s - -\n\
-link - m - -",
+    unserved: "link - m - -",
     interspersed: false,
     error_prefix: "",
 };
@@ -749,6 +753,12 @@ pub static CREATE: Command = Command {
             "UTS namespace to use ('host': the host's hostname)",
         ),
         Flag::string(
+            "cgroup-parent",
+            None,
+            "",
+            "Run the microVM's processes under this slice of the user's systemd manager (NAME.slice)",
+        ),
+        Flag::string(
             "cgroupns",
             None,
             "",
@@ -831,9 +841,7 @@ pub static CREATE: Command = Command {
         Flag::string("log-driver", None, "", "Logging driver for the container"),
         Flag::many("log-opt", None, "list", "Log driver options"),
     ],
-    unserved: "\
-cgroup-parent - s - -\n\
-link - m - -",
+    unserved: "link - m - -",
     interspersed: false,
     error_prefix: "",
 };

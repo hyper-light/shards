@@ -109,6 +109,11 @@ Reviewed feature by feature, each D-entry's design against what it took from Doc
     this host's disk and its builds' reuse keeps, measured as builds hit and miss.
   - A log keeps 5 segments of 20 MiB, Docker's `local` driver's: what a run's output
     costs the host per byte kept, against the disk the home has.
+  - (Fixed: a fresh volume's top where its image has nothing at the mount point was
+    root's, 0755, as Docker's local driver leaves one, which shut a run of any other user
+    out of the volume it was given. Now the run's user's (D38), measured first: of the
+    official images that run as other than root, one met it, percona's declared
+    `/var/log/mysql`, and none other changes (PM M249).)
 - The rest: open, D-entry by D-entry.
 
 ## Fixing order

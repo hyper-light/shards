@@ -407,12 +407,13 @@ impl<D: Disk> Daemon<D> {
     /// A VM restoring `r`, a snapshot of a run, for that run resumed (D176), ready: given
     /// the files the snapshot restores against, as it names them, which the daemon wrote;
     /// in the GPU's VM process where it has a GPU; its network process framing to `mac`,
-    /// the guest's own.
+    /// the guest's own; made under `parent` (D183).
     pub(super) fn resumed_vm<'s, 'e>(
         &'s self,
         threads: &'s super::Threads<'s, 'e>,
         r: &Resumable,
         mac: Option<[u8; 6]>,
+        parent: &str,
     ) -> Result<super::Ready, String> {
         let pinned = shards_vmm::snapshot::read(&r.dir)?;
         let mut args: Vec<OsString> = vec![
@@ -433,7 +434,7 @@ impl<D: Disk> Daemon<D> {
         }
         let net = pinned.snapshot.config.net.map(|saved| mac.unwrap_or(saved));
         drop(pinned);
-        self.start_for_run(threads, &args, net)
+        self.start_for_run(threads, &args, net, parent)
     }
 
     /// `shards list snapshots MICROVM` (D176): its snapshots, newest first, each one's name,

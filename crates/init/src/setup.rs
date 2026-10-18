@@ -600,10 +600,53 @@ fn one_name(name: &str) -> bool {
     !name.is_empty() && !name.contains('/') && name != "." && name != ".."
 }
 
+/// `entry`, a `volume=` or `join-volume=` entry that copies the image's files into a fresh
+/// volume (`copy`), told the run's user and group, `uid` and `gid`: where the image has
+/// nothing at its mount point, the fresh volume's top is theirs (D38, PM M249), as root's
+/// shuts a run of another user out of the volume it was given. Any other entry as it is.
+pub fn with_owner(entry: Vec<u8>, uid: libc::uid_t, gid: libc::gid_t) -> Vec<u8> {
+    let Ok(text) = std::str::from_utf8(&entry) else {
+        return entry;
+    };
+    let Some((kind, rest)) = ["volume=", "join-volume="]
+        .into_iter()
+        .find_map(|k| text.strip_prefix(k).map(|rest| (k, rest)))
+    else {
+        return entry;
+    };
+    let parts: Vec<&str> = rest.split('\0').collect();
+    let [which, dest, flags, name] = parts.as_slice() else {
+        return entry;
+    };
+    let given: Vec<&str> = flags.split(',').collect();
+    if !given.contains(&"copy") || given.iter().any(|f| f.starts_with("owner=")) {
+        return entry;
+    }
+    format!("{kind}{which}\0{dest}\0{flags},owner={uid}:{gid}\0{name}").into_bytes()
+}
+
+/// A fresh volume's top, at `top`, given the owner its FLAGS name (`owner=UID:GID`), if
+/// they name one.
+fn own_top(top: &std::path::Path, flags: &str) -> io::Result<()> {
+    let Some((uid, gid)) = flags
+        .split(',')
+        .find_map(|f| f.strip_prefix("owner="))
+        .and_then(|o| o.split_once(':'))
+    else {
+        return Ok(());
+    };
+    let (uid, gid) = match (uid.parse(), gid.parse()) {
+        (Ok(uid), Ok(gid)) => (uid, gid),
+        _ => return Err(io::Error::from_raw_os_error(libc::EINVAL)),
+    };
+    std::os::unix::fs::lchown(top, Some(uid), Some(gid))
+}
+
 /// Mounts a shared directory (D38), `TAG\0DEST\0FLAGS\0NAME`: by its virtio-fs tag at
 /// DEST, read-only with `ro`, and `nosuid`, `nodev` and `noexec` as they say (a CDI
-/// mount's, D146); with `copy`, the image's files at DEST copied into it first, where it
-/// is empty (moby daemon/create_unix.go populateVolume); with a NAME, only that file of
+/// mount's, D146); with `copy`, where it is empty, the image's files at DEST copied into
+/// it first, with their owner, or where the image has nothing at DEST, its top given the
+/// run's user and group (`owner=UID:GID`, [`with_owner`]); with a NAME, only that file of
 /// it, bound at DEST, as a file bind mount is.
 fn volume(spec: &str) -> io::Result<()> {
     let (tag, dest, flags, name) = shared_parts(spec)?;
@@ -651,12 +694,16 @@ fn volume(spec: &str) -> io::Result<()> {
             let _ = std::fs::remove_dir(&staging);
         }
         None if copy => {
+            let image_has = std::fs::symlink_metadata(dest).is_ok();
             mkdir_all(dest)?;
             std::fs::create_dir_all(&staging)?;
             mount(tag, &staging, Some("virtiofs"), 0)?;
             let empty = std::fs::read_dir(&staging)?.next().is_none();
             if empty {
                 copy_tree(std::path::Path::new(dest), std::path::Path::new(&staging))?;
+                if !image_has {
+                    own_top(std::path::Path::new(&staging), flags)?;
+                }
             }
             mount(&staging, dest, None, libc::MS_MOVE)?;
             if base != 0 {
@@ -707,9 +754,13 @@ fn join_volume(spec: &str) -> io::Result<()> {
     let bound = (|| {
         let dir = format!("{staging}/{volume}");
         let source = if name.is_empty() {
+            let image_has = std::fs::symlink_metadata(dest).is_ok();
             mkdir_all(dest)?;
             if copy && std::fs::read_dir(&dir)?.next().is_none() {
                 copy_tree(std::path::Path::new(dest), std::path::Path::new(&dir))?;
+                if !image_has {
+                    own_top(std::path::Path::new(&dir), flags)?;
+                }
             }
             dir
         } else {
@@ -1013,4 +1064,32 @@ pub fn failed(entry: &[u8], errno: i32) -> String {
         return format!("error mounting a shared directory to rootfs at \"{dest}\": {err}");
     }
     format!("error remounting the root read-only: {err}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Each volume that takes the image's files is told the run's owner, once; a volume
+    /// told not to copy, and every other entry, is left as it is.
+    #[test]
+    fn a_copied_volume_is_told_its_runs_owner() {
+        let told = |e: &[u8]| String::from_utf8(with_owner(e.to_vec(), 1000, 1001)).unwrap();
+        assert_eq!(
+            told(b"volume=v1\0/data\0copy\0"),
+            "volume=v1\0/data\0copy,owner=1000:1001\0"
+        );
+        assert_eq!(
+            told(b"join-volume=abc\0/data\0ro,copy\0"),
+            "join-volume=abc\0/data\0ro,copy,owner=1000:1001\0"
+        );
+        for kept in [
+            "volume=v1\0/data\0ro\0",
+            "volume=v1\0/data\0copy,owner=0:0\0",
+            "hostname=x",
+            "volume=broken",
+        ] {
+            assert_eq!(told(kept.as_bytes()), kept);
+        }
+    }
 }

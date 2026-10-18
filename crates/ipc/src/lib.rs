@@ -698,6 +698,9 @@ pub struct Run {
     /// (empty for one its microVM gives it) and its aliases there, as
     /// `NETWORK\0ADDR[\0ALIAS...]`.
     pub engine_nets: Vec<String>,
+    /// `--cgroup-parent`: the slice of the user's service manager its microVM's processes
+    /// are made in (D183), as given; empty for none.
+    pub cgroup_parent: String,
 }
 
 /// The streams a create says its client attaches (Config.AttachStdin, AttachStdout and
@@ -1296,6 +1299,7 @@ impl Run {
                 },
             ),
             ("engine-nets", self.engine_nets.clone()),
+            ("cgroup-parent", one(&self.cgroup_parent)),
             ("device-requests", {
                 let mut values = Vec::new();
                 for r in &self.device_requests {
@@ -1477,6 +1481,7 @@ impl Run {
                     "own-binds" => run.own_binds = values,
                     "engine-net" => run.engine_net = values.into_iter().next().unwrap_or_default(),
                     "engine-nets" => run.engine_nets = values,
+                    "cgroup-parent" => run.cgroup_parent = values.into_iter().next().unwrap_or_default(),
                     "device-requests" => {
                         let mut rest = values.iter();
                         while rest.len() > 0 {
@@ -1772,7 +1777,7 @@ mod spawner;
 #[cfg(unix)]
 mod unix;
 #[cfg(unix)]
-pub use spawner::{serve_spawner, start_spawner};
+pub use spawner::{Group, end_group, group_ended, serve_spawner, spawn_in_group, start_group, start_spawner};
 #[cfg(unix)]
 pub use unix::*;
 #[cfg(windows)]
@@ -2197,6 +2202,7 @@ mod tests {
             own_binds: vec!["/work\0/src\0ro\0rprivate".into()],
             engine_net: "app".into(),
             engine_nets: vec!["app\0\0web\0www".into(), "back\x0010.244.2.9".into()],
+            cgroup_parent: "agents-ci.slice".into(),
         };
         let bytes = run.encode();
         let identity = run.daemon;
@@ -2266,6 +2272,7 @@ mod tests {
             own_binds: Vec::new(),
             engine_net: String::new(),
             engine_nets: Vec::new(),
+            cgroup_parent: String::new(),
             ..run.clone()
         };
         let boundary = earlier.encode().len() - 4;

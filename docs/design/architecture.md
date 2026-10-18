@@ -2610,7 +2610,18 @@ microVM as virtio-fs shares (virtio 1.3 §5.11; Linux fs/fuse/virtio_fs.c):
   whose destination holds files in the image, first mounted empty, gets them copied in
   as continuity's CopyDir copies them (owners, modes, times, xattrs, hard links), then
   its root's owner and mode (copyExistingContents); dockerd copies at create, shards at
-  the first start, the only moment the image's files are in reach.
+  the first start, the only moment the image's files are in reach. One whose destination
+  the image has nothing at, first mounted empty, has its top owned by the run's user and
+  group (init tells each such volume's setup entry `owner=UID:GID`, as it resolved the
+  run's `--user`), where a root-owned top would shut a run of any other user out of the
+  volume it was given: of the official images that run as other than root, PM M249 found
+  one whose own user meets it, percona's declared `/var/log/mysql`, and no other image's
+  volume it changes. The first run's user keeps it, as any directory's owner does.
+  Tested: `a_fresh_volume_where_its_image_has_nothing_is_its_runs_users` (the image's own
+  non-root user writes its fresh `/data` and owns it; root's is root's; another user then
+  writes it not; an image's own directory still gives its owner), and init's unit test of
+  the entries told. Mutation-checked, each caught: the owner never told; told and not
+  used; given over the image's own directory.
 - **`shards volume`** (`daemon/volume.rs`): `create`, `ls`, `inspect`, `rm` and `prune`
   as `docker volume` (docker/cli v29.8.1 cli/command/volume; the help and parse held by
   the docker-cli oracle), dockerd's volume service behind them (filters `dangling`,
@@ -5005,7 +5016,7 @@ ports` lists, built; (3e) connect and disconnect of a running member, built.
   or disconnected, with no grants built again; disconnected keeping its address; its last
   network taken; no way out through its next network.
 
-### D183. `--cgroup-parent`: a microVM's processes under a slice of the user's service manager (designed and measured; slice 1 in progress)
+### D183. `--cgroup-parent`: a microVM's processes under a slice of the user's service manager (slice 1 built)
 
 Decided by the user on 2026-10-14 ("so long as they apply appropriately to microvms").
 
@@ -5052,10 +5063,62 @@ Decided by the user on 2026-10-14 ("so long as they apply appropriately to micro
   its network process, under the parent and charged there from its first page, warm
   starts included; a run under a parent costs nothing past the first; and every refusal
   before anything starts.
-- **Slices.** 1: Linux, a slice of the user's manager (this). 2: Linux hosts with no user
-  manager (OpenRC, runit), a cgroupfs path delegated to the user. 3: Windows, a job object
-  the VM process is made in. 4: the microVM's own engine's members (D181), a cgroup
-  within the microVM.
+- **How slice 1 is built.** The daemon's own spawner (D158) makes a spawner for each
+  parent as its first run asks (`shards_ipc::start_group`), holding nothing the daemon
+  lets go of, which the user's manager places before it makes anything
+  (`shards_bus::place`: a match rule for `JobRemoved`, then `StartTransientUnit` of a scope
+  `shards-PID-N.scope` in the slice with it as its one process, gone once its processes
+  have, `CollectMode=inactive-or-failed`, its memory counted, `MemoryAccounting=yes`, which
+  systemd turns on for its slices too, waited for to its job's end); one parent's
+  placement keeps no run under another waiting (`daemon/parents.rs`). Every process of a
+  microVM under that parent is made by it (`spawn_in_group`), in its scope from its first
+  instruction: the VM process, its network process, its share process, a stopped
+  container's visit's, and the join share of a microVM others join, under that microVM's
+  own parent. Warm pools are kept per template and parent (`PoolKey`), and a template
+  collected ends its pools under every parent. A spawner found ended as a run asks for it
+  (its first connection, which it never writes, readable: one `poll(2)` that waits for
+  nothing) is ended and another placed: one stopped with its slice is replaced by the next
+  run. Each is the daemon's for its life, and goes with it, its scope once its processes
+  have. Refused before anything is made, each saying why: any parent off Linux; a value
+  that is no slice's name, as systemd's own check has it (src/basic/unit-name.c); a joiner
+  (D119) naming a parent other than its provider's; and from a microVM's own engine (D181),
+  not built yet (501). Inspect's `HostConfig.CgroupParent` says it, and the Engine API takes
+  `HostConfig.CgroupParent` as the command line takes the flag (D170's create bodies, a
+  case of it among them).
+- **Tested.** On real microVMs on Linux, where CI's x86_64 runner has its user's manager
+  (lingering, `SHARDS_REQUIRE_USER_MANAGER`): `a_microvm_is_made_under_the_slice_its_cgroup_parent_names`,
+  a run under a slice made in a scope of it whose processes are its VM process, its
+  network process and the spawner alone; all the VM process's own memory charged to the
+  slice (its `RssAnon` within the slice's `anon`); a second run under it made in the same
+  scope; a run without one, its template's pool warm, outside the slice; `inspect` saying
+  it; a joiner naming another slice refused, its provider's taken; and the scope gone once
+  the daemon has stopped. On macOS, the same test's refusals. Unit tests: slice names as
+  systemd's check has them, the check before anything starts, the Engine API's create
+  bodies, a microVM engine's refusal, a group's spawner making its children apart (their
+  parent its process, watched, signalled and reaped through it; ended, signalled no more)
+  and a killed one found ended; shards-bus against a bus of a test's own.
+  Mutation-checked on macOS, each caught: a parent served off Linux; a path taken for a
+  slice; the Engine API's `CgroupParent` dropped; a microVM engine's container given a
+  parent; a group's children made by the process's own spawner; a killed group's spawner
+  never found ended.
+- **Where no user's manager is.** A `--cgroup-parent` there is refused before anything is
+  made, naming the bus it looked for (its `XDG_RUNTIME_DIR`'s, or `/run/user/UID`'s): a
+  start would fail with it otherwise.
+- **Slice 2, designed: a cgroup delegated to the user, where no user's manager is.** The
+  kernel lets a process of the user place one in a cgroup only within a sub-hierarchy
+  delegated to it, both of them in it (cgroup-v2.rst, "Model of Delegation", "Delegation
+  Containment"): a cgroup namespace's root where the hierarchy is mounted `nsdelegate`
+  (a container's own, the hosts of OpenRC, runit and s6 having no per-user delegation),
+  or a directory an administrator gave the user, its `cgroup.procs`, `cgroup.threads` and
+  `cgroup.subtree_control` theirs. There `--cgroup-parent PATH` would name a cgroup of
+  that sub-hierarchy, the daemon's own cgroup in it, and the parent's spawner be moved
+  into a leaf of its own there once (a move, PM M248's cost, once per parent), its
+  children born there as slice 1's are. Built once a host needs it.
+- **Slices.** 1: Linux, a slice of the user's manager (built). 2: a delegated cgroup
+  where no user's manager is (designed, above). 3: Windows, a job object the VM process
+  is made in, once the daemon runs there (README: not yet). 4: the microVM's own
+  engine's members (D181), a cgroup within the microVM, refused (501) until a need for it
+  inside a microVM is shown.
 
 ### D179. Other CPUs' images, emulated in their microVM (parts 1 to 3 built)
 
@@ -5814,14 +5877,15 @@ unchanged (`DOCKER_HOST=unix://HOME/engine.sock`). What they gain, each for the 
   have. A pull's credentials (X-Registry-Auth) stay in memory, never written.
 - **What is asked is kept, or refused with why.** A create's body becomes the run
   `shards create vm` makes of the command line that made it (daemon/engine/create.rs),
-  held to docker/cli v29.8.1's own `parse` by 71 recorded command lines of every flag:
-  70 make the same run, and both refuse the I/O maxima. Two things a command line cannot
+  held to docker/cli v29.8.1's own `parse` by 72 recorded command lines of every flag,
+  each making the same run (the I/O maxima since D178, `--cgroup-parent` since D183).
+  Two things a command line cannot
   say are kept as given, and inspect gives them back: the streams a client attaches
   (none for a detached run) and GPU requests whole (Compose's `capabilities: [gpu,
   utility]`, which `--gpus` would reorder). `Entrypoint: []` takes the image's command,
   `[""]` none (moby's merge, daemon/commit.go). What a microVM cannot hold is refused,
   the field named, never dropped: OnBuild, Shell, legacy Links (default deny names each
-  grant), Cgroup, CgroupParent, the I/O maxima, custom masked and read-only paths, tmpfs
+  grant), Cgroup, custom masked and read-only paths, tmpfs
   mount flags (HostConfig.Tmpfs takes them), one mount type's options on another, a `=`
   in a map's key, a `:` in a tmpfs path. `NetworkDisabled` is network none.
 - **Output from its first byte.** A client that attaches before it starts a sandbox (the

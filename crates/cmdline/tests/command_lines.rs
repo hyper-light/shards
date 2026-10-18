@@ -108,13 +108,15 @@ const EXTENDED: &[(&str, &str)] = &[
 /// share of the host's CPU time, D155; `--io-maxbandwidth` and `--io-maxiops` its I/O to the
 /// host's storage, D178); and those whose meaning is the microVM's
 /// (`--uts host` the host's hostname, `--cgroupns host` the microVM's cgroups,
-/// `--storage-opt` the writable layer's size, D156).
-const MICROVM_FLAGS: [&str; 7] = [
+/// `--storage-opt` the writable layer's size, D156, `--cgroup-parent` the slice of the
+/// user's service manager its processes run under, D183).
+const MICROVM_FLAGS: [&str; 8] = [
     "cpu-count",
     "cpu-percent",
     "io-maxbandwidth",
     "io-maxiops",
     "cgroupns",
+    "cgroup-parent",
     "uts",
     "storage-opt",
 ];

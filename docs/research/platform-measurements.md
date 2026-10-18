@@ -9054,3 +9054,40 @@ revision before comparing a changed API/implementation.
     per parent (one move, the cost above), makes that parent's processes, each born in
     its scope and charged there from its first page; a run pays the move once per
     parent, not per microVM.
+
+### M249. The users official images run as, and whether their volumes' mount points are their own (D38)
+
+- **Question.** A fresh volume mounted where its image has nothing took a top root owns,
+  0755, which a run of another user cannot write. Would the run's user as that top's owner
+  change what any official image does, and does any image's own user meet the root-owned
+  top?
+- **Method.** `docs/research/measurements/volume-owners/survey.py` read the linux/amd64
+  config of 40 images' `latest` on Docker Hub, anonymously: its `User` and `Volumes`. 36
+  were read (elasticsearch, consul and vault have no `latest` there; minio refused an
+  anonymous pull). Then, for each that runs as other than root, its layers' tar entries
+  at its volumes' paths, streamed (a path's last entry is its own), and grafana's
+  documented `/var/lib/grafana`. 2026-10-17.
+- **Results.** 29 of the 36 run as root: their volumes' tops are root's either way. The
+  7 others, and their volumes' mount points in their layers:
+
+  | image | user | mount point | owner | mode |
+  |---|---|---|---|---|
+  | jenkins/jenkins | jenkins | /var/jenkins_home | 1000:1000 | 755 |
+  | solr | 8983 | /var/solr | 8983:0 | 770 |
+  | odoo | odoo | /mnt/extra-addons | 100:0 | 755 |
+  | odoo | odoo | /var/lib/odoo | 100:101 | 750 |
+  | sonarqube | sonarqube | /opt/sonarqube/{data,extensions,logs,temp} | 1000:0 | 770 |
+  | percona | mysql | /var/lib/mysql | 999:0 | 775 |
+  | percona | mysql | /var/log/mysql | not in the image | |
+  | grafana/grafana | 472 | /var/lib/grafana (documented, not declared) | 472:0 | 777 |
+  | memcached | memcache | none declared | | |
+
+  - Every mount point but one is in its image, its user's: a fresh volume there takes
+    that directory's owner and files, whatever the rule for one where the image has
+    nothing.
+  - percona declares `VOLUME /var/log/mysql` and runs as mysql (999), and its image has
+    no `/var/log/mysql` (its `/var/log` is root's, 0755, and `/var/log/mysqld.log`
+    mysql's): a root-owned top shuts its own user out of its own declared volume.
+  - So the run's user as the top's owner where the image has nothing changes no official
+    image's volume but percona's `/var/log/mysql`, which it opens to that image's own
+    user (D38).

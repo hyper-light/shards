@@ -338,6 +338,9 @@ pub struct Prepared {
     pub exposed: Vec<String>,
     /// Its labels: the image's, and the run's over them (daemon/commit.go, merge).
     pub labels: std::collections::BTreeMap<String, String>,
+    /// The slice of the user's service manager its microVM's processes are made under
+    /// (D183, `--cgroup-parent`); empty for the daemon's own place.
+    pub parent: String,
     /// The image's ID: what its reference resolved to.
     pub image_id: String,
     /// The microVM's vCPUs and the memory it boots with, in MiB ([`sizes`]).
@@ -832,6 +835,7 @@ pub fn prepare(
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| vec!["/bin/sh".into(), "-c".into()]),
         labels,
+        parent: request.cgroup_parent.clone(),
         size: {
             let (vcpus, boot, _) = sizes(&request.resources, crate::build::host_memory());
             (vcpus, boot)

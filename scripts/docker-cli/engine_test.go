@@ -80,6 +80,7 @@ var engineCases = [][]string{
 	{"--group-add", "audio", "--group-add", "1234", "img"},
 	{"--ipc", "shareable", "--pid", "host", "--uts", "host", "img"},
 	{"--userns", "host", "--cgroupns", "private", "img"},
+	{"--cgroup-parent", "agents-ci.slice", "img"},
 	{"--init", "img"},
 	{"--oom-score-adj", "100", "--shm-size", "64m", "img"},
 	{"--stop-signal", "SIGINT", "--stop-timeout", "5", "img"},

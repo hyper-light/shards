@@ -1548,6 +1548,173 @@ fn a_microvms_io_is_paced_at_its_limits() {
     assert_eq!(shards(&["rm", "-f", "limited"]).status, Some(0));
 }
 
+/// `--cgroup-parent` (D183): on Linux, a microVM's processes, its VM process and its
+/// network process, are made under the slice of the user's systemd manager it names, by a
+/// spawner the manager placed there once, the one process of a scope of the daemon's, and
+/// are charged there from their first page; a second run under the slice is made in that
+/// scope, and a run without one, its template's pool warm, in none of the slice; `inspect`
+/// says it; a joiner names its provider's or none; and the scope goes with the daemon. A
+/// path, which names no slice, is refused; and elsewhere than Linux, any.
+#[test]
+fn a_microvm_is_made_under_the_slice_its_cgroup_parent_names() {
+    let Some((home, image)) = home("containers-parent") else {
+        return;
+    };
+    let shards = |args: &[&str]| shards_in(&home, args);
+    // The image's template, and a pool of it warm in the daemon's own place: a run under a
+    // slice takes none of its VMs.
+    let plain = run_in(&home, &image, &["--rm"], &["exit", "0"]);
+    assert_eq!(plain.status, Some(0), "{plain}");
+    let path = run_in(
+        &home,
+        &image,
+        &["--rm", "--cgroup-parent", "/agents"],
+        &["exit", "0"],
+    );
+    assert_ne!(path.status, Some(0), "{path}");
+    let slice = format!("shardstest{}.slice", std::process::id());
+    if !cfg!(target_os = "linux") {
+        let refused = run_in(
+            &home,
+            &image,
+            &["--rm", "--cgroup-parent", &slice],
+            &["exit", "0"],
+        );
+        assert!(
+            refused.status != Some(0) && refused.stderr.contains("--memory"),
+            "{refused}"
+        );
+        return;
+    }
+    assert!(path.stderr.contains("NAME.slice"), "{path}");
+    // The user's systemd manager, on its bus: CI's Linux runners have one, and must find it
+    // (SHARDS_REQUIRE_USER_MANAGER).
+    let bus = std::env::var_os("XDG_RUNTIME_DIR")
+        .map(std::path::PathBuf::from)
+        // SAFETY: getuid(2) takes nothing and cannot fail.
+        .unwrap_or_else(|| std::path::PathBuf::from(format!("/run/user/{}", unsafe { libc::getuid() })))
+        .join("bus");
+    if !bus.exists() {
+        assert!(
+            !std::env::var_os("SHARDS_REQUIRE_USER_MANAGER").is_some_and(|v| v == "1"),
+            "no user's systemd manager's bus at {}",
+            bus.display()
+        );
+        eprintln!("SKIP: no user's systemd manager here: {} is not", bus.display());
+        return;
+    }
+    let started = run_in(
+        &home,
+        &image,
+        &["-d", "--name", "placed", "--cgroup-parent", &slice],
+        &["sleep"],
+    );
+    assert_eq!(started.status, Some(0), "{started}");
+    let pid_of = |name: &str| -> u32 {
+        let pid = shards(&["inspect", "-f", "{{.State.Pid}}", name]);
+        pid.stdout.trim().parse().unwrap_or_else(|_| panic!("{pid}"))
+    };
+    let cgroup_of = |pid: u32| -> String {
+        let text = std::fs::read_to_string(format!("/proc/{pid}/cgroup")).unwrap();
+        text.lines()
+            .find_map(|l| l.strip_prefix("0::"))
+            .unwrap()
+            .to_string()
+    };
+    let vm = pid_of("placed");
+    let scope = cgroup_of(vm);
+    assert!(
+        scope.contains(&format!("/{slice}/shards-")) && scope.ends_with(".scope"),
+        "{scope}"
+    );
+    let scope_dir = Path::new("/sys/fs/cgroup").join(scope.trim_start_matches('/'));
+    // In it: the VM process, its network process, and the spawner that made them, alone.
+    let procs = std::fs::read_to_string(scope_dir.join("cgroup.procs")).unwrap();
+    let mut names: Vec<String> = procs
+        .lines()
+        .map(|p| {
+            std::fs::read_to_string(format!("/proc/{p}/comm"))
+                .unwrap_or_default()
+                .trim()
+                .to_string()
+        })
+        .collect();
+    names.sort();
+    assert_eq!(names, ["shards", "shards-net", "shards-vm"], "{procs}");
+    // Charged there from its first page: all the VM process's own memory is the slice's, as
+    // it would not be of a process moved there once it ran (cgroup-v2.rst, "Memory
+    // Ownership").
+    let own_kib = std::fs::read_to_string(format!("/proc/{vm}/status"))
+        .unwrap()
+        .lines()
+        .find_map(|l| l.strip_prefix("RssAnon:"))
+        .and_then(|v| v.trim().strip_suffix("kB"))
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .unwrap();
+    let slice_dir = scope_dir.parent().unwrap().to_path_buf();
+    let charged = std::fs::read_to_string(slice_dir.join("memory.stat"))
+        .unwrap()
+        .lines()
+        .find_map(|l| l.strip_prefix("anon "))
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap();
+    assert!(
+        own_kib > 0 && charged >= own_kib << 10,
+        "the VM's own {own_kib} KiB, the slice's {charged} bytes"
+    );
+    // A second run under it: made in the same scope, placed once.
+    let second = run_in(
+        &home,
+        &image,
+        &["-d", "--name", "second", "--cgroup-parent", &slice],
+        &["sleep"],
+    );
+    assert_eq!(second.status, Some(0), "{second}");
+    assert_eq!(cgroup_of(pid_of("second")), scope);
+    // A run without one, its pool warm: none of the slice's.
+    let free = run_in(&home, &image, &["-d", "--name", "free"], &["sleep"]);
+    assert_eq!(free.status, Some(0), "{free}");
+    let elsewhere = cgroup_of(pid_of("free"));
+    assert!(!elsewhere.contains(&slice), "{elsewhere}");
+    let inspected = shards(&["inspect", "-f", "{{.HostConfig.CgroupParent}}", "placed"]);
+    assert_eq!(inspected.stdout, format!("{slice}\n"), "{inspected}");
+    // A joiner runs in its provider's microVM, under its provider's parent alone.
+    let other = format!("shardstest{}b.slice", std::process::id());
+    let joined = run_in(
+        &home,
+        &image,
+        &["--rm", "--network", "container:placed", "--cgroup-parent", &other],
+        &["exit", "0"],
+    );
+    assert!(
+        joined.status != Some(0) && joined.stderr.contains("runs in its microVM"),
+        "{joined}"
+    );
+    let joined = run_in(
+        &home,
+        &image,
+        &["--rm", "--network", "container:placed", "--cgroup-parent", &slice],
+        &["exit", "0"],
+    );
+    assert_eq!(joined.status, Some(0), "{joined}");
+    // The scope goes with the daemon, each of its processes ended.
+    let stopped = shards(&["stop", "daemon"]);
+    assert_eq!(stopped.status, Some(0), "{stopped}");
+    let deadline = std::time::Instant::now() + TIMEOUT;
+    while scope_dir.exists() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "{} outlived the daemon",
+            scope_dir.display()
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    // The slice is the test's, stopped as its user would.
+    let _ = std::process::Command::new("systemctl")
+        .args(["--user", "stop", &slice])
+        .status();
+}
+
 #[test]
 fn pause_freezes_a_microvm_until_unpause_or_stop() {
     let Some((home, image)) = home("containers-pause") else {
@@ -8618,6 +8785,52 @@ fn run_mounts_binds_volumes_and_tmpfs() {
 /// volume made, mounted, refused removal while a microVM mounts it, listed, pruned; a
 /// local volume with `o=bind` mounts its host directory; `system df` counts them.
 #[cfg(unix)]
+/// A fresh volume where its image has nothing at the mount point is its run's user's (D38,
+/// PM M249): its top owned by the run's user and group, so that a run as other than root
+/// writes the volume it was given, as root's top would not let it; a root run's is root's;
+/// the first run's user keeps it for the runs after; and one where the image has a
+/// directory takes that directory's owner, as it did.
+#[test]
+fn a_fresh_volume_where_its_image_has_nothing_is_its_runs_users() {
+    let Some((home, image)) = home("containers-fresh") else {
+        return;
+    };
+    // The image runs as app, 1000:1000, and has no /data.
+    let wrote = run_in(
+        &home,
+        &image,
+        &["--rm", "-v", "fresh:/data"],
+        &["fs", "write:/data/x=1"],
+    );
+    assert_eq!(wrote.status, Some(0), "{wrote}");
+    let seen = run_in(&home, &image, &["--rm", "-v", "fresh:/data"], &["stat", "/data"]);
+    assert!(seen.stdout.starts_with("/data dir 755 1000:1000 "), "{seen}");
+    let rooted = run_in(
+        &home,
+        &image,
+        &["--rm", "-u", "0", "-v", "rooted:/data"],
+        &["stat", "/data"],
+    );
+    assert!(rooted.stdout.starts_with("/data dir 755 0:0 "), "{rooted}");
+    let other = run_in(
+        &home,
+        &image,
+        &["--rm", "-u", "2000:2000", "-v", "fresh:/data"],
+        &["fs", "write:/data/y=2"],
+    );
+    assert_ne!(other.status, Some(0), "{other}");
+    let imaged = run_in(
+        &home,
+        &image,
+        &["--rm", "-u", "0", "-v", "homes:/home/app"],
+        &["stat", "/home/app"],
+    );
+    assert!(
+        imaged.stdout.starts_with("/home/app dir 755 1000:1000 "),
+        "{imaged}"
+    );
+}
+
 #[test]
 fn volume_commands_keep_volumes() {
     let Some((home, image)) = home("containers-volume-commands") else {

@@ -948,7 +948,8 @@ fn host_config(f: &Facts<'_>) -> Value {
         .tagged("CPUShares", Some("CpuShares"), false, int(res.cpu_shares))
         .field("Memory", int(res.memory))
         .tagged("NanoCPUs", Some("NanoCpus"), false, int(res.nano_cpus))
-        .field("CgroupParent", s(""))
+        // The slice of the user's service manager its processes are made under (D183).
+        .field("CgroupParent", s(&run.cgroup_parent))
         .field("BlkioWeight", Value::Uint(u64::from(res.blkio_weight)))
         .field(
             "BlkioWeightDevice",

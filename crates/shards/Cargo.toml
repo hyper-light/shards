@@ -70,6 +70,10 @@ libc = { workspace = true }
 [target.'cfg(target_os = "macos")'.dependencies]
 shards-apple = { path = "../apple" }
 
+# A run's microVM placed under a slice of the user's systemd manager (D183).
+[target.'cfg(target_os = "linux")'.dependencies]
+shards-bus = { path = "../bus" }
+
 [target.'cfg(windows)'.dependencies]
 windows-sys = { workspace = true, features = ["Win32_System_Pipes"] }
 

@@ -206,6 +206,9 @@ pub fn run_of(
         uts: uts.clone(),
         userns: userns.clone(),
         cgroupns: cgroupns.clone(),
+        // Where its microVM's processes are made on the host (D183), judged as a command
+        // line's is.
+        cgroup_parent: text(host, "CgroupParent"),
         umask,
         storage_opt: pairs(host, "StorageOpt", "HostConfig.StorageOpt")?,
         log_driver: text(log, "Type"),
@@ -232,7 +235,7 @@ fn unheld(body: &Value, host: &Value) -> Result<(), String> {
             Value::Bool(b) => *b,
         })
     };
-    let refusals: [(&Value, &str, &str); 5] = [
+    let refusals: [(&Value, &str, &str); 4] = [
         (
             body,
             "OnBuild",
@@ -252,11 +255,6 @@ fn unheld(body: &Value, host: &Value) -> Result<(), String> {
             host,
             "Cgroup",
             "HostConfig.Cgroup: a run's cgroup is its microVM's own; one of another run's it cannot be",
-        ),
-        (
-            host,
-            "CgroupParent",
-            "HostConfig.CgroupParent: a run's cgroups are its microVM's own, and shards places no microVM under a host cgroup of a run's choosing",
         ),
     ];
     for (v, k, why) in refusals {
@@ -999,10 +997,6 @@ mod tests {
             (
                 json!({"HostConfig": {"Cgroup": "container:x"}}),
                 "HostConfig.Cgroup",
-            ),
-            (
-                json!({"HostConfig": {"CgroupParent": "/agents"}}),
-                "HostConfig.CgroupParent",
             ),
             (
                 json!({"HostConfig": {"MaskedPaths": ["/proc/kcore"]}}),
