@@ -889,8 +889,8 @@ fn disconnect(e: &mut Engine, id: u32, network: &str) -> Result<String, String> 
 /// GATEWAY RANGE FLAGS`, each of the three addresses empty for one init picks, FLAGS a
 /// comma list of `internal` and `no-peers`, answered with the subnet and gateway made
 /// (`10.244.3.0/24 10.244.3.1`); `default`, the engine's default network, made where it is
-/// not yet, answered so; or `remove NAME`, of a network no member is on. Why not,
-/// otherwise.
+/// not yet, answered so; or `remove NAME`, of a network no member is on, done where none
+/// is named so. Why not, otherwise.
 pub fn network(args: &[Vec<u8>]) -> Result<String, String> {
     let text: Vec<String> = args
         .iter()
@@ -1010,8 +1010,10 @@ pub fn network(args: &[Vec<u8>]) -> Result<String, String> {
                     on.len()
                 ));
             }
+            // Removed already: a removal that raced another (two of a client's at once, as
+            // Compose's `down` asks) finds it gone, which is what it asked for.
             let Some(at) = e.networks.iter().position(|n| n.name == name) else {
-                return Err(format!("network {name}: no network of its engine's is named so"));
+                return Ok(String::new());
             };
             let gone = e.networks.remove(at);
             if let Some(sw) = crate::domains::SWITCH.get() {
@@ -1331,6 +1333,22 @@ fn relay_udp(sock: &UdpSocket, to: SocketAddr, idle: (Duration, Duration)) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A network removed twice, as two of a client's removals at once may ask (Compose's
+    /// `down`), is done each time: the second finds it gone.
+    #[test]
+    fn a_network_removed_again_is_done() {
+        let name = "removed-twice";
+        assert!(!engine().networks.iter().any(|n| n.name == name));
+        assert_eq!(
+            network(&[b"remove".to_vec(), name.as_bytes().to_vec()]),
+            Ok(String::new())
+        );
+        assert_eq!(
+            network(&[b"remove".to_vec(), name.as_bytes().to_vec()]),
+            Ok(String::new())
+        );
+    }
 
     /// A socket table's listeners past the loopback: the any address's and an address's
     /// of its own, not 127.0.0.1's, ::1's or 127.0.0.1's mapped, nor a connected socket.
