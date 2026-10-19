@@ -9875,3 +9875,57 @@ revision before comparing a changed API/implementation.
   each share is given waits on what mappings cost a run restored from it, and on
   throughput against FUSE.
 
+### M270. What a guest reads through a DAX window's range after the host writes its file, on HVF (D189)
+
+- **Question.** Hypervisor.framework maps a file's range into a guest from a private
+  mapping where the descriptor was opened to read alone, and refuses a shared one (M17).
+  Does a guest reading a volume's file through its window go on reading the host's page
+  cache through a private mapping, as the host writes the file?
+- **Method.** The E2E test `a_volumes_large_files_go_through_its_dax_window`
+  (crates/shards/tests/containers.rs): a microVM whose volume's device has a 64 MiB window
+  reads an 8 MiB file of the volume whole, each 2 MiB range of it mapped to read; the host
+  then writes one byte of it in place at 3 MiB (pwrite), and the guest reads that byte
+  (`fs peek`). Two builds: each range's host mapping private (MAP_PRIVATE, PROT_READ, the
+  descriptor opened to read alone), and shared (MAP_SHARED, PROT_READ, the descriptor
+  opened to read and write). 3 runs of each. macOS 26.4.1, Apple M5 Max, shards cbcc125c
+  with this entry's commit, 2026-10-19.
+- **Results.**
+  - Private: the guest read the byte as it was before the host's write, 3 of 3 (209,
+    where the host wrote 211).
+  - Shared: the byte the host wrote, 3 of 3; and in a range the guest mapped to write,
+    both ways (the guest's write read by the host, and the host's by the guest), 3 of 3.
+- **Consequence.** D189: on HVF every range is mapped shared, from a descriptor opened to
+  read and write (`window::SHARED_NEEDS_WRITE`), and the guest is told to map only files
+  its share's server may write, in a volume it may write; a read-only volume's files are
+  read through FUSE. KVM maps a shared mapping of a descriptor opened to read alone.
+
+### M271. A file cut short on the host under a guest's DAX mapping (D189)
+
+- **Question.** The host truncates a file whose ranges a guest maps through its window,
+  and the guest, which has not asked the file's size again, reads past the new end. What
+  does the hypervisor do, and can the VMM keep the guest going?
+- **Method.** The same E2E test: a file of 3 MiB and 5000 bytes, grown by the guest and by
+  the host and read through the window; truncated to 1 MiB on the host (ftruncate); read
+  at 3 MiB by the guest (`fs peek`); then written at 3 MiB by the host, and read there by
+  the guest until it reads the byte written. 3 runs without the window's handling of the
+  fault, 3 with it. macOS 26.4.1, Apple M5 Max, 2026-10-19.
+- **Results.**
+  - HVF does not keep a truncated file's pages at stage 2, as it keeps those a host
+    mapping replaces (M193): the guest's next access past the new end exits to the VMM, as
+    a data abort at the window's address. Unhandled, the abort of a load pair (the
+    guest kernel's memcpy, whose syndrome names no register) ended the vCPU's run with an
+    error, and the microVM with it: `exec` said "the guest stopped before the command
+    ended", and the run exited 125, 3 of 3.
+  - With the window giving anonymous zeros where a range lies wholly past its file's end,
+    the access run again: the guest read 0 there, the microVM ran on, and once the host had
+    written at 3 MiB the guest read that byte through the window, the range mapped from the
+    file again as the reply that told the guest the file's size passed through the
+    device, 3 of 3. The one run timed took 33 ms from the truncation to that read.
+  - KVM, read in its source: a page a memory slot's host mapping cannot give (a shared
+    file mapping faults SIGBUS past the file's end, which get_user_pages makes EFAULT)
+    fails KVM_RUN with EFAULT, which names no address (arch/x86/kvm/mmu/mmu.c,
+    `kvm_handle_error_pfn`; arch/arm64/kvm/mmu.c, `user_mem_abort`). The VMM then gives
+    zeros past the end of every range whose file is short of it, and runs the vCPU again.
+- **Consequence.** D189: a file cut short under a mapping never ends a microVM; the guest
+  reads zeros past the new end until it learns the file's size, as it may read stale
+  bytes through FUSE's page cache until then, and the file once it grows back.

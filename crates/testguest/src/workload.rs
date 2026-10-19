@@ -2702,6 +2702,42 @@ fn fs(ops: &[String]) -> i32 {
                 );
             }),
             "roundrobin" => roundrobin(rest),
+            // Whether the guest's kernel maps a file into a DAX window (D189):
+            // `dax PATH yes|no`, as statx(2) says (STATX_ATTR_DAX).
+            "dax" => dax_of(rest).map(|dax| {
+                let _ = writeln!(io::stdout(), "dax {rest} {}", if dax { "yes" } else { "no" });
+            }),
+            // One byte written in place, opened to write alone: `poke:PATH:OFFSET:BYTE`.
+            "poke" => {
+                use std::os::unix::fs::FileExt as _;
+                let mut parts = rest.rsplitn(3, ':');
+                let (byte, offset, path) = (parts.next(), parts.next(), parts.next());
+                match (
+                    path,
+                    offset.and_then(|o| o.parse::<u64>().ok()),
+                    byte.and_then(|b| b.parse::<u8>().ok()),
+                ) {
+                    (Some(path), Some(offset), Some(byte)) => std::fs::OpenOptions::new()
+                        .write(true)
+                        .open(path)
+                        .and_then(|f| f.write_all_at(&[byte], offset)),
+                    _ => Err(io::Error::other("poke:PATH:OFFSET:BYTE")),
+                }
+            }
+            // One byte read, `peek:PATH:OFFSET`, said as `peek PATH OFFSET BYTE`.
+            "peek" => {
+                use std::os::unix::fs::FileExt as _;
+                let (path, offset) = rest.rsplit_once(':').unwrap_or((rest, ""));
+                offset
+                    .parse::<u64>()
+                    .map_err(io::Error::other)
+                    .and_then(|offset| {
+                        let mut byte = [0u8];
+                        std::fs::File::open(path)?.read_exact_at(&mut byte, offset)?;
+                        let _ = writeln!(io::stdout(), "peek {path} {offset} {}", byte[0]);
+                        Ok(())
+                    })
+            }
             _ => Err(io::Error::other("an unknown operation")),
         };
         if let Err(e) = done {
@@ -2712,7 +2748,31 @@ fn fs(ops: &[String]) -> i32 {
     0
 }
 
-/// `KIND:MAJOR:MINOR:PATH`'s node, mode 0600.
+/// Whether statx(2) says the kernel maps `path` directly (STATX_ATTR_DAX).
+fn dax_of(path: &str) -> io::Result<bool> {
+    // include/uapi/linux/stat.h: struct statx's 256 bytes, `stx_attributes` its second
+    // word and `stx_attributes_mask` its eighth; its basic fields asked for.
+    const STATX_BASIC_STATS: libc::c_uint = 0x7ff;
+    const STATX_ATTR_DAX: u64 = 0x0020_0000;
+    let c = std::ffi::CString::new(path).map_err(io::Error::other)?;
+    let mut st = [0u64; 32];
+    // SAFETY: statx(2) of a NUL-terminated path into a buffer of struct statx's size.
+    let r = unsafe {
+        libc::syscall(
+            libc::SYS_statx,
+            libc::AT_FDCWD,
+            c.as_ptr(),
+            0,
+            STATX_BASIC_STATS,
+            st.as_mut_ptr(),
+        )
+    };
+    if r != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(st[7] & STATX_ATTR_DAX != 0 && st[1] & STATX_ATTR_DAX != 0)
+}
+
 /// The mount family's syscalls, as `fs` names them, each made once.
 fn mounts(kind: &str, spec: &str) -> io::Result<()> {
     let c = |s: &str| std::ffi::CString::new(s).map_err(io::Error::other);
@@ -2823,6 +2883,7 @@ fn mounts(kind: &str, spec: &str) -> io::Result<()> {
     }
 }
 
+/// `KIND:MAJOR:MINOR:PATH`'s node, mode 0600.
 fn mknod(spec: &str) -> io::Result<()> {
     let mut parts = spec.splitn(4, ':');
     let bad = || io::Error::other("a malformed mknod");

@@ -110,7 +110,21 @@ mod init {
     pub const PARALLEL_DIROPS: u32 = 1 << 18;
     pub const MAX_PAGES: u32 = 1 << 22;
     pub const CACHE_SYMLINKS: u32 = 1 << 23;
+    /// A DAX window's offsets are whole host pages (D189): `map_alignment` says how large.
+    pub const MAP_ALIGNMENT: u32 = 1 << 26;
+    /// `flags2` follows.
+    pub const INIT_EXT: u32 = 1 << 30;
+    /// `flags2`'s: the server says which files the guest maps into its DAX window
+    /// (FUSE_HAS_INODE_DAX, bit 33 of the flags), by `fuse_attr`'s FUSE_ATTR_DAX.
+    pub const HAS_INODE_DAX: u32 = 1 << 1;
 }
+
+/// `fuse_attr.flags`' FUSE_ATTR_DAX: the guest maps this file into its DAX window (D189).
+const ATTR_DAX: u32 = 1 << 1;
+/// The smallest file the guest is told to map into its DAX window: one of the window's
+/// ranges, which it maps a file in (fs/fuse/dax.c, FUSE_DAX_SZ); smaller files are read
+/// through FUSE, each mapping a round trip to the share process and a host mmap.
+const DAX_SMALLEST: u64 = super::window::RANGE;
 
 mod fattr {
     pub const MODE: u32 = 1 << 0;
@@ -701,8 +715,9 @@ impl Reply {
         self.0.extend_from_slice(b);
         self
     }
-    /// struct fuse_attr.
-    fn attr(&mut self, st: &libc::stat, owner: Owner) -> &mut Self {
+    /// struct fuse_attr; `dax` where the guest maps the file into its DAX window
+    /// ([`Server::dax_of`]).
+    fn attr(&mut self, st: &libc::stat, owner: Owner, dax: bool) -> &mut Self {
         #[allow(clippy::useless_conversion, clippy::unnecessary_cast, clippy::cast_sign_loss)]
         let (size, blocks, at, mt, ct) = (
             st.st_size as u64,
@@ -739,17 +754,17 @@ impl Reply {
             .u32(owner.gid)
             .u32(rdev)
             .u32(blksize)
-            .u32(0)
+            .u32(if emulated.is_none() && dax { ATTR_DAX } else { 0 })
     }
     /// struct fuse_entry_out.
-    fn entry(&mut self, nodeid: u64, st: &libc::stat, owner: Owner) -> &mut Self {
+    fn entry(&mut self, nodeid: u64, st: &libc::stat, owner: Owner, dax: bool) -> &mut Self {
         self.u64(nodeid)
             .u64(0)
             .u64(VALID_S)
             .u64(VALID_S)
             .u32(0)
             .u32(0)
-            .attr(st, owner)
+            .attr(st, owner, dax)
     }
 }
 
@@ -1176,6 +1191,71 @@ impl Server {
         Ok(())
     }
 
+    /// Whether the guest is told to map node `node`'s file, `st`, into its DAX window
+    /// (D189): a regular file of at least [`DAX_SMALLEST`] the server may read, as a
+    /// mapping does; and write, in a volume the guest may write, wherever a mapping's
+    /// descriptor is opened to write too (window::SHARED_NEEDS_WRITE).
+    fn dax_of(&self, s: &State, node: u64, st: &libc::stat) -> bool {
+        static EUID: std::sync::OnceLock<libc::uid_t> = std::sync::OnceLock::new();
+        // SAFETY: geteuid(2) takes nothing and cannot fail.
+        let euid = *EUID.get_or_init(|| unsafe { libc::geteuid() });
+        let mode = mode_of(st);
+        #[allow(clippy::unnecessary_cast)]
+        let size = st.st_size as i64;
+        // The owner's bits where the server owns it, else others': a group's members are
+        // not looked up, and a file only a group gives is read through FUSE.
+        #[allow(clippy::unnecessary_cast)]
+        let (read, write) = if st.st_uid == euid {
+            (libc::S_IRUSR as u32, libc::S_IWUSR as u32)
+        } else {
+            (libc::S_IROTH as u32, libc::S_IWOTH as u32)
+        };
+        let large = mode & S_IFMT == S_IFREG && u64::try_from(size).is_ok_and(|n| n >= DAX_SMALLEST);
+        let reachable = mode & read != 0
+            && (!super::window::SHARED_NEEDS_WRITE || (mode & write != 0 && self.writable(s, node).is_ok()));
+        large && reachable
+    }
+
+    /// A descriptor of node `node`'s file for a DAX window's mapping of it (D189), opened
+    /// to read, and to write too where `writable`: the guest names a mapping's file by its
+    /// node alone, its handle -1 (fs/fuse/dax.c, `fuse_setup_one_mapping`), so the server
+    /// opens it, as virtiofsd does (`setupmapping`). Along its path, checked to be the node;
+    /// a file no path reaches, by a copy of its pin where that allows as much. A Linux
+    /// errno where it gives none.
+    pub fn descriptor(&self, node: u64, writable: bool) -> Result<OwnedFd, Errno> {
+        let mut s = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        let s = &mut *s;
+        let n = s.nodes.get(&node).ok_or(ENOENT)?;
+        if n.dir {
+            return Err(EISDIR);
+        }
+        let want = n.key;
+        // Opened to write too wherever the hypervisor maps a shared mapping only of such a
+        // descriptor (window::SHARED_NEEDS_WRITE): never in a volume the guest may not write.
+        let rdwr = writable || super::window::SHARED_NEEDS_WRITE;
+        if rdwr {
+            self.writable(s, node)?;
+        }
+        let access = if rdwr { libc::O_RDWR } else { libc::O_RDONLY };
+        let flags = access | libc::O_NOFOLLOW | libc::O_CLOEXEC;
+        let why = match at(s, node).and_then(|(dir, name)| open_regular(dir, &name, flags, 0)) {
+            Ok((fd, st)) if key(&st) == want => return Ok(fd),
+            Ok(_) => ESTALE,
+            Err(e) => stale(e),
+        };
+        let pin = match s.pins.get(&node) {
+            Some((pin, held)) if why == ESTALE && allows(*held, access) => pin,
+            _ => return Err(why),
+        };
+        // SAFETY: fcntl(2) F_DUPFD_CLOEXEC of a descriptor the server holds open.
+        let copy = unsafe { libc::fcntl(pin.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 0) };
+        if copy < 0 {
+            return Err(last());
+        }
+        // SAFETY: a descriptor fcntl(2) just made, owned here alone.
+        Ok(unsafe { OwnedFd::from_raw_fd(copy) })
+    }
+
     /// Answers request `req`, the bytes of its readable descriptors: the reply's bytes,
     /// none for a request that takes none (FORGET, BATCH_FORGET, INTERRUPT).
     pub fn handle(&self, req: &[u8]) -> Option<Vec<u8>> {
@@ -1287,6 +1367,11 @@ impl Server {
                 let minor = a.u32()?;
                 let readahead = a.u32()?;
                 let flags = a.u32()?;
+                let flags2 = if flags & init::INIT_EXT != 0 {
+                    a.u32().unwrap_or(0)
+                } else {
+                    0
+                };
                 if major != 7 {
                     // The kernel retries with ours.
                     r.u32(7).u32(45);
@@ -1299,7 +1384,17 @@ impl Server {
                     | init::READDIRPLUS_AUTO
                     | init::PARALLEL_DIROPS
                     | init::MAX_PAGES
-                    | init::CACHE_SYMLINKS;
+                    | init::CACHE_SYMLINKS
+                    | init::MAP_ALIGNMENT
+                    | init::INIT_EXT;
+                // A DAX window's ranges are whole pages of this host's (D189).
+                // SAFETY: sysconf(3) of a constant.
+                let page = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
+                let alignment = if flags & init::MAP_ALIGNMENT != 0 {
+                    u16::try_from(u64::try_from(page).unwrap_or(4096).trailing_zeros()).unwrap_or(12)
+                } else {
+                    0
+                };
                 r.u32(7)
                     .u32(minor.min(45))
                     .u32(readahead)
@@ -1309,8 +1404,8 @@ impl Server {
                     .u32(MAX_WRITE)
                     .u32(1)
                     .u16(MAX_PAGES)
-                    .u16(0)
-                    .u32(0)
+                    .u16(alignment)
+                    .u32(flags2 & init::HAS_INODE_DAX)
                     .u32(0)
                     .u16(0)
                     .bytes(&[0u8; 22]);
@@ -1319,7 +1414,8 @@ impl Server {
             op::LOOKUP => {
                 let name = a.name()?;
                 let (id, st, owner) = lookup(s, nodeid, &name)?;
-                r.entry(id, &st, owner);
+                let dax = self.dax_of(s, id, &st);
+                r.entry(id, &st, owner, dax);
             }
             op::GETATTR => {
                 let flags = a.u32()?;
@@ -1333,7 +1429,8 @@ impl Server {
                     (node_stat(s, nodeid)?, true)
                 };
                 let owner = node_owner(s, nodeid, own.then_some(&st))?;
-                r.u64(VALID_S).u32(0).u32(0).attr(&st, owner);
+                let dax = self.dax_of(s, nodeid, &st);
+                r.u64(VALID_S).u32(0).u32(0).attr(&st, owner, dax);
             }
             op::SETATTR => {
                 self.writable(s, nodeid)?;
@@ -1347,7 +1444,8 @@ impl Server {
                     (node_stat(s, nodeid)?, true)
                 };
                 let owner = node_owner(s, nodeid, own.then_some(&st))?;
-                r.u64(VALID_S).u32(0).u32(0).attr(&st, owner);
+                let dax = self.dax_of(s, nodeid, &st);
+                r.u64(VALID_S).u32(0).u32(0).attr(&st, owner, dax);
             }
             op::READLINK => {
                 let (dir, name) = at(s, nodeid)?;
@@ -1499,7 +1597,8 @@ impl Server {
                     return Err(last());
                 }
                 let (id, st, owner) = lookup(s, nodeid, &name)?;
-                r.entry(id, &st, owner);
+                let dax = self.dax_of(s, id, &st);
+                r.entry(id, &st, owner, dax);
             }
             op::OPEN => {
                 let flags = a.u32()?;
@@ -1556,7 +1655,8 @@ impl Server {
                     self.made(s, nodeid, &name, caller, Kept::mode(mode), &mut r)?
                 } else {
                     let (id, found, owner) = lookup(s, nodeid, &name)?;
-                    r.entry(id, &found, owner);
+                    let dax = self.dax_of(s, id, &found);
+                    r.entry(id, &found, owner, dax);
                     id
                 };
                 // Made with a mode that refuses its own handle (a read-only file opened to be
@@ -1701,7 +1801,8 @@ impl Server {
                                     if let Some(k) = owner.kind.filter(|_| mode_of(&st) & S_IFMT == S_IFREG) {
                                         kind = dirent_kind(k);
                                     }
-                                    r.entry(id, &st, owner);
+                                    let dax = self.dax_of(s, id, &st);
+                                    r.entry(id, &st, owner, dax);
                                 }
                                 // Gone since the directory was read: an entry the guest
                                 // looks up, and does not find.
@@ -1835,7 +1936,8 @@ impl Server {
     ) -> Result<u64, Errno> {
         self.record(s, parent, name, caller, kept)?;
         let (id, st, owner) = lookup(s, parent, name)?;
-        r.entry(id, &st, owner);
+        let dax = self.dax_of(s, id, &st);
+        r.entry(id, &st, owner, dax);
         Ok(id)
     }
 
@@ -3293,6 +3395,87 @@ mod tests {
         let fd = std::fs::File::open(&p).unwrap();
         let server = Server::new(fd.into(), false, None).unwrap();
         (p, server)
+    }
+
+    /// A guest that maps files into a DAX window (D189) is told the host's page size its
+    /// mappings' offsets are whole multiples of, and which files to map: a regular file of
+    /// a range or more the server may read, never a small one, and where a mapping's
+    /// descriptor is opened to write too (Hypervisor.framework's), one it may write, in a
+    /// share written to. A mapping's file, which the guest names by its node alone, is
+    /// opened to read, and to write too where the share is written to; never a directory, a
+    /// node the server does not know, or a file put at its name since.
+    #[test]
+    fn dax_is_offered_for_files_a_window_maps() {
+        let (p, s) = dir();
+        std::fs::write(p.join("big"), vec![1u8; DAX_SMALLEST as usize]).unwrap();
+        std::fs::write(p.join("small"), [1u8; 4096]).unwrap();
+        std::fs::write(p.join("kept"), vec![1u8; DAX_SMALLEST as usize]).unwrap();
+        std::fs::set_permissions(
+            p.join("kept"),
+            std::os::unix::fs::PermissionsExt::from_mode(0o444),
+        )
+        .unwrap();
+        let mut init = Vec::new();
+        for word in [
+            7u32,
+            45,
+            0,
+            init::MAP_ALIGNMENT | init::INIT_EXT,
+            init::HAS_INODE_DAX,
+        ] {
+            init.extend_from_slice(&word.to_le_bytes());
+        }
+        init.extend_from_slice(&[0u8; 44]);
+        let (err, out) = answer(&s, &req(op::INIT, ROOT, 0, &init));
+        assert_eq!(err, 0);
+        let flags = u32::from_le_bytes(out[12..16].try_into().unwrap());
+        let alignment = u16::from_le_bytes(out[30..32].try_into().unwrap());
+        let flags2 = u32::from_le_bytes(out[32..36].try_into().unwrap());
+        // SAFETY: sysconf(3) of a constant.
+        let page = unsafe { libc::sysconf(libc::_SC_PAGESIZE) } as u64;
+        assert_ne!(flags & init::MAP_ALIGNMENT, 0);
+        assert_eq!(u32::from(alignment), page.trailing_zeros());
+        assert_ne!(flags2 & init::HAS_INODE_DAX, 0);
+        // fuse_entry_out: the node, then the attribute after 40 bytes; its flags its last.
+        let looked = |n: &str| {
+            let (err, out) = answer(&s, &req(op::LOOKUP, ROOT, 0, &name(n)));
+            assert_eq!(err, 0);
+            let node = u64::from_le_bytes(out[0..8].try_into().unwrap());
+            (node, u32::from_le_bytes(out[124..128].try_into().unwrap()))
+        };
+        let (big, big_flags) = looked("big");
+        let (_, small_flags) = looked("small");
+        let (_, kept_flags) = looked("kept");
+        assert_eq!(big_flags & ATTR_DAX, ATTR_DAX);
+        assert_eq!(small_flags & ATTR_DAX, 0);
+        let read_alone = if super::super::window::SHARED_NEEDS_WRITE {
+            0
+        } else {
+            ATTR_DAX
+        };
+        assert_eq!(kept_flags & ATTR_DAX, read_alone);
+        let mut first = [0u8];
+        let read = std::fs::File::from(s.descriptor(big, false).unwrap());
+        crate::platform::read_exact_at(&read, &mut first, 0).unwrap();
+        assert_eq!(first, [1]);
+        let written = std::fs::File::from(s.descriptor(big, true).unwrap());
+        crate::platform::write_all_at(&written, &[2], 0).unwrap();
+        assert_eq!(std::fs::read(p.join("big")).unwrap()[0], 2);
+        assert_eq!(s.descriptor(ROOT, false).err(), Some(EISDIR));
+        assert_eq!(s.descriptor(999, false).err(), Some(ENOENT));
+        // A read-only share: its file read alone, never written; where a mapping's
+        // descriptor is opened to write too, neither, and no file is mapped.
+        let ro = Server::new(std::fs::File::open(&p).unwrap().into(), true, None).unwrap();
+        let (err, out) = answer(&ro, &req(op::LOOKUP, ROOT, 0, &name("big")));
+        assert_eq!(err, 0);
+        let node = u64::from_le_bytes(out[0..8].try_into().unwrap());
+        let flags = u32::from_le_bytes(out[124..128].try_into().unwrap());
+        assert_eq!(flags & ATTR_DAX, read_alone);
+        assert_eq!(ro.descriptor(node, false).is_ok(), read_alone != 0);
+        assert_eq!(ro.descriptor(node, true).err(), Some(EROFS));
+        // Another file put at its name on the host: stale, the guest's kernel looks again.
+        std::fs::rename(p.join("small"), p.join("big")).unwrap();
+        assert_eq!(s.descriptor(big, false).err(), Some(ESTALE));
     }
 
     /// A join share's volumes (D119): each reached from the share's empty root by its name

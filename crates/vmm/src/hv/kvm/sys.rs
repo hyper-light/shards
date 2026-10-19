@@ -475,6 +475,9 @@ pub enum RunExit<'a> {
     Interrupted,
     /// EAGAIN: an AP just received INIT/SIPI; run it again.
     Again,
+    /// EFAULT: the guest touched memory of a slot whose host mapping gave no page (a file
+    /// past its end, memory withheld); KVM says not where.
+    Fault,
     IoIn {
         port: u16,
         size: usize,
@@ -527,6 +530,7 @@ impl VcpuFd {
             Ok(_) => {}
             Err(e) if e.raw_os_error() == Some(libc::EINTR) => return Ok(RunExit::Interrupted),
             Err(e) if e.raw_os_error() == Some(libc::EAGAIN) => return Ok(RunExit::Again),
+            Err(e) if e.raw_os_error() == Some(libc::EFAULT) => return Ok(RunExit::Fault),
             Err(e) => return Err(e),
         }
         let run = &*self.run;

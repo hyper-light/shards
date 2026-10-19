@@ -238,6 +238,18 @@ impl mem::Mapper for crate::hv::Stage2 {
     }
 }
 
+#[cfg(all(hv, unix))]
+impl crate::devices::virtio::fs::window::Stage2 for crate::hv::Stage2 {
+    unsafe fn map(&self, host: *mut u8, gpa: u64, len: usize, writable: bool) -> Result<(), String> {
+        // SAFETY: forwarded caller contract.
+        unsafe { crate::hv::Stage2::map_file(self, host, gpa, len, writable) }.map_err(|e| e.to_string())
+    }
+
+    fn unmap(&self, gpa: u64, len: usize) -> Result<(), String> {
+        crate::hv::Stage2::unmap(self, gpa, len).map_err(|e| e.to_string())
+    }
+}
+
 #[cfg(hv)]
 impl pmem::Slots for crate::hv::DeviceSlots {
     unsafe fn map(&self, i: u32, host: *mut u8, gpa: u64, len: usize, writable: bool) -> Result<(), String> {
@@ -359,6 +371,25 @@ fn share_windows(
     Ok((windows, next))
 }
 
+/// A share's DAX window (D189) at `(gpa, len)`: its host side reserved, and on KVM one
+/// memslot over it, as memory to plug's (`add_hotplug`), which each range its guest maps is
+/// placed in; on other hypervisors each range mapped at stage 2 as it is placed.
+#[cfg(all(hv, unix))]
+fn dax_window(
+    vm: Option<&crate::hv::Vm>,
+    (gpa, len): (u64, u64),
+) -> Result<Arc<crate::devices::virtio::fs::window::Window>, String> {
+    let vm = vm.ok_or("a DAX window with no VM to map it into")?;
+    let size = usize::try_from(len).map_err(|_| format!("a DAX window of {len} bytes"))?;
+    let window = crate::devices::virtio::fs::window::Window::new(gpa, len, |host| {
+        // SAFETY: the window's reservation stays mapped until the window drops, which its
+        // device holds, after the VM (`Machine` and `Running` drop the VM first).
+        let stage2 = unsafe { vm.add_hotplug(host, gpa, size) }.map_err(|e| e.to_string())?;
+        Ok(Box::new(stage2) as Box<dyn crate::devices::virtio::fs::window::Stage2>)
+    })?;
+    Ok(Arc::new(window))
+}
+
 /// The swap window of `layout` (D159), its head mapped through slots of its own, which the
 /// control page shares with its device; none where it has none.
 #[cfg(hv)]
@@ -398,8 +429,9 @@ fn reporting_device(
 fn virtio_devices(
     config: &crate::snapshot::MachineConfig,
     regions: &[(Arc<pmem::Region>, u64)],
-    // The shares' alone, which only Unix hosts have.
+    // The shares' alone, which only Unix hosts have, and the VM their windows map into.
     #[cfg_attr(not(unix), allow(unused_variables))] windows: &[(u64, u64)],
+    #[cfg_attr(not(unix), allow(unused_variables))] vm: Option<&crate::hv::Vm>,
     hosts: Hosts<'_>,
     last: Vec<Box<dyn crate::devices::virtio::VirtioDevice>>,
     max: u64,
@@ -459,10 +491,11 @@ fn virtio_devices(
             .get(i)
             .ok_or("the machine has a shared directory but no slot for it")?
             .clone();
+        let window = windows.get(i).map(|&w| dax_window(vm, w)).transpose()?;
         devices.push(Box::new(
             crate::devices::virtio::fs::Fs::new(&format!("shards{i}"), slot)?
                 .with_limit(hosts.io)
-                .with_window(windows.get(i).copied()),
+                .with_window(window),
         ));
     }
     // Its join share, after them, which init mounts by its tag once a joiner brings
@@ -472,10 +505,14 @@ fn virtio_devices(
         let slot = hosts
             .join_share
             .ok_or("the machine has a join share but no slot for it")?;
+        let window = windows
+            .get(config.shares as usize)
+            .map(|&w| dax_window(vm, w))
+            .transpose()?;
         devices.push(Box::new(
             crate::devices::virtio::fs::Fs::join(shards_abi::JOIN_SHARE_TAG, slot)?
                 .with_limit(hosts.io)
-                .with_window(windows.get(config.shares as usize).copied()),
+                .with_window(window),
         ));
     }
     devices.extend(last);
@@ -1898,7 +1935,7 @@ mod tests {
             join_share: None,
             io: None,
         };
-        let e = virtio_devices(&config, &regions, &[], hosts, Vec::new(), 4)
+        let e = virtio_devices(&config, &regions, &[], None, hosts, Vec::new(), 4)
             .err()
             .unwrap();
         assert_eq!(e, "at most 4 virtio devices are supported");
@@ -1906,17 +1943,17 @@ mod tests {
             let sizes = Arc::new(mem::Sizes::new(1 << 32, mem::ALIGN, mem::ALIGN));
             vec![Box::new(mem::Mem::new(sizes, Unmapped)) as Box<dyn crate::devices::virtio::VirtioDevice>]
         };
-        let e = virtio_devices(&config, &regions, &[], hosts, plugging(), 5)
+        let e = virtio_devices(&config, &regions, &[], None, hosts, plugging(), 5)
             .err()
             .unwrap();
         assert_eq!(e, "at most 5 virtio devices are supported");
-        let ids: Vec<u32> = virtio_devices(&config, &regions, &[], hosts, plugging(), 6)
+        let ids: Vec<u32> = virtio_devices(&config, &regions, &[], None, hosts, plugging(), 6)
             .unwrap()
             .iter()
             .map(|d| d.device_id())
             .collect();
         assert_eq!(ids, [2, 2, 27, 19, 1, mem::DEVICE_ID]);
-        let devices = virtio_devices(&config, &regions, &[], hosts, Vec::new(), 5).unwrap();
+        let devices = virtio_devices(&config, &regions, &[], None, hosts, Vec::new(), 5).unwrap();
         let ids: Vec<u32> = devices.iter().map(|d| d.device_id()).collect();
         assert_eq!(ids, [2, 2, 27, 19, 1]);
         let mut mac = [0u8; 6];
@@ -1936,7 +1973,7 @@ mod tests {
             join_share: None,
             io: None,
         };
-        let e = virtio_devices(&config, &regions, &[], missing, Vec::new(), 5)
+        let e = virtio_devices(&config, &regions, &[], None, missing, Vec::new(), 5)
             .err()
             .unwrap();
         assert!(e.contains("no host side"), "{e}");
@@ -1949,7 +1986,7 @@ mod tests {
             join_share: None,
             io: None,
         };
-        let e = virtio_devices(&config, &regions, &[], missing, Vec::new(), 5)
+        let e = virtio_devices(&config, &regions, &[], None, missing, Vec::new(), 5)
             .err()
             .unwrap();
         assert!(e.contains("no network process"), "{e}");

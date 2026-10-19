@@ -94,7 +94,10 @@ const USAGE: &str = "usage: shards run daemon [--detached] [--listen ADDR:PORT]
     runs have come at once, while it is used.
   SHARDS_POOL_KEEP: seconds an image's warm microVMs are kept after its last run (600).
   SHARDS_MAX_CLIENTS: the most clients served at once (default: as many as the threads
-    the daemon may have hold).";
+    the daemon may have hold).
+  SHARDS_SHARE_WINDOW_MIB: a DAX window of this many MiB, whole 2 MiB ranges, for each
+    volume of a microVM (default 0, none): its large files read and written from the
+    host's page cache, never copied into the guest's.";
 
 /// How long a VM may take to be ready: a restore takes milliseconds, a boot that saves a
 /// template tens of them.
@@ -805,6 +808,8 @@ struct Daemon<D: Disk = Real> {
     idle: Duration,
     /// How long a pool keeps warm VMs after its last claim ([`DEFAULT_KEEP`]).
     keep: Duration,
+    /// Each volume's DAX window in MiB, 0 for none (D189): `SHARDS_SHARE_WINDOW_MIB`.
+    share_window_mib: u64,
     /// How much of each container's output its log keeps, where the daemon's environment
     /// says (`SHARDS_LOG_MAX_SIZE`, `SHARDS_LOG_MAX_FILE`); else [`Daemon::log_retention`]
     /// reads the home's disk settings.
@@ -1122,6 +1127,8 @@ struct Settings {
     max_clients: usize,
     /// Docker's default bridge, as [`elect_bridge`] found it: none if no subnet is free.
     bridge: Option<shards_net::bridge::Bridge>,
+    /// Each volume's DAX window in MiB, 0 for none (D189): `SHARDS_SHARE_WINDOW_MIB`.
+    share_window_mib: u64,
 }
 
 /// The daemon's settings, checked before it serves: a malformed or excessive one stops it
@@ -1170,6 +1177,12 @@ fn settings() -> Result<Settings, String> {
     } else {
         None
     };
+    let share_window_mib = count("SHARDS_SHARE_WINDOW_MIB", 0)?;
+    if !share_window_mib.is_multiple_of(2) {
+        return Err(format!(
+            "SHARDS_SHARE_WINDOW_MIB: {share_window_mib} MiB: a DAX window is whole 2 MiB ranges"
+        ));
+    }
     Ok(Settings {
         pool,
         warm_max,
@@ -1178,6 +1191,7 @@ fn settings() -> Result<Settings, String> {
         logs,
         max_clients,
         bridge: elect_bridge(),
+        share_window_mib,
     })
 }
 
@@ -1429,6 +1443,7 @@ impl<D: Disk> Daemon<D> {
             target: settings.pool,
             warm_max: settings.warm_max,
             idle: settings.idle,
+            share_window_mib: settings.share_window_mib,
             keep: settings.keep,
             logs: settings.logs,
             request_timeout: REQUEST_TIMEOUT,
@@ -5640,6 +5655,8 @@ impl<D: Disk> Daemon<D> {
             }
             // A slot for each directory it shares (D38), which its run fills.
             cfg.shares = (0..prepared.shares).map(|_| Arc::default()).collect();
+            // And each share's DAX window, where the daemon gives one (D189).
+            cfg.share_window_mib = self.share_window_mib;
             if let Some(bridge) = &bridge {
                 cfg.cmdline.push(' ');
                 cfg.cmdline.push_str(&bridge.cmdline());
@@ -6117,6 +6134,9 @@ impl<D: Disk> Daemon<D> {
         }
         if !cfg.shares.is_empty() {
             args.extend(["--shares".into(), cfg.shares.len().to_string().into()]);
+        }
+        if cfg.share_window_mib > 0 {
+            args.extend(["--share-window".into(), cfg.share_window_mib.to_string().into()]);
         }
         // A join disk and a join share in every microVM, empty and unserved until a
         // container joins its network (D119): its templates have them, and so every restore
@@ -7037,6 +7057,7 @@ mod tests {
                     logs: None,
                     max_clients: most_clients(),
                     bridge: shards_net::bridge::Bridge::elect(&[]),
+                    share_window_mib: 0,
                 },
                 containers,
                 disk,

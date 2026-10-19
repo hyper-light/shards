@@ -125,6 +125,18 @@ impl Stage2 {
         Ok(unsafe { sys::map(host, gpa, len, sys::Perms::RWX) }?)
     }
 
+    /// Maps `len` bytes of a file's mapping at `host` at `gpa`, in a share's DAX window
+    /// (D189): writable by the guest only if `writable`, as the host maps it, and
+    /// executable, as a guest runs programs from its volumes.
+    ///
+    /// # Safety
+    /// As for [`map`](Self::map).
+    pub unsafe fn map_file(&self, host: *mut u8, gpa: u64, len: usize, writable: bool) -> Result<()> {
+        let perms = if writable { sys::Perms::RWX } else { sys::Perms::RX };
+        // SAFETY: forwarded caller contract; the handle exists only while the VM does.
+        Ok(unsafe { sys::map(host, gpa, len, perms) }?)
+    }
+
     /// Unmaps `len` bytes at `gpa`: the guest's accesses there exit as MMIO to nothing.
     pub fn unmap(&self, gpa: u64, len: usize) -> Result<()> {
         Ok(sys::unmap(gpa, len)?)
@@ -566,6 +578,10 @@ impl Vcpu {
                 // A cache maintenance instruction on no guest memory: nothing to keep
                 // coherent, as KVM has it (esr::cache_maintenance).
                 esr::EC_DABT_LOW if esr::cache_maintenance(syndrome) => self.advance_pc(syndrome)?,
+                // Memory the host could not give: a share's DAX window's range past its
+                // file's end, the file cut short on the host under the guest (D189, PM
+                // M271). Given now, the access runs again.
+                esr::EC_DABT_LOW | esr::EC_IABT_LOW if io.memory_fault(Some(ipa)) => {}
                 esr::EC_DABT_LOW => self.mmio(io, syndrome, ipa)?,
                 esr::EC_HVC64 | esr::EC_SMC64 => {
                     // HVC exits with PC already past the instruction; a trapped SMC does not

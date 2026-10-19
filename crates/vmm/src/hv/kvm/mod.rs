@@ -178,6 +178,15 @@ impl Stage2 {
         Ok(())
     }
 
+    /// Maps nothing, as [`map`](Self::map): a file's mapping in a share's DAX window (D189)
+    /// is the guest's as the host maps it, writable where that is.
+    ///
+    /// # Safety
+    /// As for [`map`](Self::map).
+    pub unsafe fn map_file(&self, _host: *mut u8, _gpa: u64, _len: usize, _writable: bool) -> Result<()> {
+        Ok(())
+    }
+
     /// Unmaps nothing: the host withholding the memory takes it from the guest.
     pub fn unmap(&self, _gpa: u64, _len: usize) -> Result<()> {
         Ok(())
@@ -347,6 +356,14 @@ fn run(fd: &mut sys::VcpuFd, io: &dyn Io) -> Result<Exit> {
                 return Ok(Exit::Canceled);
             }
             sys::RunExit::Again => {}
+            // Memory the host could not give: given now where it is the VMM's to give (a
+            // share's DAX window's range past its file's end, D189), and the access runs
+            // again; else the guest touched what it promised not to (memory withheld).
+            sys::RunExit::Fault => {
+                if !io.memory_fault(None) {
+                    return Err(call("KVM_RUN")(io::Error::from_raw_os_error(libc::EFAULT)));
+                }
+            }
             // String I/O arrives as `count` elements of `size` bytes.
             sys::RunExit::IoIn { port, size, data } => {
                 data.chunks_mut(size.max(1)).for_each(|c| io.pio_read(port, c));

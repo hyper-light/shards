@@ -324,6 +324,10 @@ impl MmioDevice for MmioTransport {
         lock(&self.state).device.unsaved()
     }
 
+    fn memory_fault(&self, gpa: Option<u64>) -> bool {
+        lock(&self.state).device.memory_fault(gpa)
+    }
+
     fn save(&self, w: &mut Writer) {
         let s = lock(&self.state);
         for v in [

@@ -591,7 +591,15 @@ fn assemble(
         .chain(swap_device)
         .chain(iommu_device)
         .collect();
-    let devices = super::virtio_devices(config, &regions, &windows, hosts, last, layout::VIRTIO_MMIO_MAX)?;
+    let devices = super::virtio_devices(
+        config,
+        &regions,
+        &windows,
+        Some(&vm),
+        hosts,
+        last,
+        layout::VIRTIO_MMIO_MAX,
+    )?;
     let iommu_at = iommu.is_some().then(|| devices.len() - 1);
     let mut bus = MmioBus::default();
     let mut virtio = Vec::with_capacity(devices.len());

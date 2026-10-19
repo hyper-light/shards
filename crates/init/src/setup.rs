@@ -642,6 +642,37 @@ fn own_top(top: &std::path::Path, flags: &str) -> io::Result<()> {
     std::os::unix::fs::lchown(top, Some(uid), Some(gid))
 }
 
+/// mount(2) of `src` at `dst`; a volume's (`dax`) with `dax=inode`, so that its server says
+/// which of its files the guest maps into the share's DAX window, where the share has one
+/// (D189): a kernel without FUSE's DAX refuses the option (EINVAL), and mounts it as
+/// before.
+fn virtiofs_mount(
+    src: &std::ffi::CStr,
+    dst: &std::ffi::CStr,
+    ty: *const libc::c_char,
+    flags: libc::c_ulong,
+    dax: bool,
+) -> io::Result<()> {
+    let data: *const libc::c_void = if dax {
+        c"dax=inode".as_ptr().cast()
+    } else {
+        std::ptr::null()
+    };
+    // SAFETY: mount(2) of NUL-terminated strings that outlive the call.
+    if unsafe { libc::mount(src.as_ptr(), dst.as_ptr(), ty, flags, data) } == 0 {
+        return Ok(());
+    }
+    let e = io::Error::last_os_error();
+    if dax && e.raw_os_error() == Some(libc::EINVAL) {
+        // SAFETY: as above, with no options.
+        if unsafe { libc::mount(src.as_ptr(), dst.as_ptr(), ty, flags, std::ptr::null()) } == 0 {
+            return Ok(());
+        }
+        return Err(io::Error::last_os_error());
+    }
+    Err(e)
+}
+
 /// Mounts a shared directory (D38), `TAG\0DEST\0FLAGS\0NAME`: by its virtio-fs tag at
 /// DEST, read-only with `ro`, and `nosuid`, `nodev` and `noexec` as they say (a CDI
 /// mount's, D146); with `copy`, where it is empty, the image's files at DEST copied into
@@ -667,13 +698,10 @@ fn volume(spec: &str) -> io::Result<()> {
             c(src).ok_or(io::ErrorKind::InvalidInput)?,
             c(dst).ok_or(io::ErrorKind::InvalidInput)?,
         );
+        let dax = fstype == Some("virtiofs");
         let fstype = fstype.and_then(c);
         let ty = fstype.as_ref().map_or(std::ptr::null(), |t| t.as_ptr());
-        // SAFETY: mount(2) of NUL-terminated strings that outlive the call.
-        if unsafe { libc::mount(src.as_ptr(), dst.as_ptr(), ty, flags, std::ptr::null()) } != 0 {
-            return Err(io::Error::last_os_error());
-        }
-        Ok(())
+        virtiofs_mount(&src, &dst, ty, flags, dax)
     };
     let staging = format!("/dev/.shards-{tag}");
     match file {
@@ -741,13 +769,10 @@ fn join_volume(spec: &str) -> io::Result<()> {
             c(src).ok_or(io::ErrorKind::InvalidInput)?,
             c(dst).ok_or(io::ErrorKind::InvalidInput)?,
         );
+        let dax = fstype == Some("virtiofs");
         let fstype = fstype.and_then(c);
         let ty = fstype.as_ref().map_or(std::ptr::null(), |t| t.as_ptr());
-        // SAFETY: mount(2) of NUL-terminated strings that outlive the call.
-        if unsafe { libc::mount(src.as_ptr(), dst.as_ptr(), ty, flags, std::ptr::null()) } != 0 {
-            return Err(io::Error::last_os_error());
-        }
-        Ok(())
+        virtiofs_mount(&src, &dst, ty, flags, dax)
     };
     std::fs::create_dir_all(&staging)?;
     mount(tag, &staging, Some("virtiofs"), 0)?;

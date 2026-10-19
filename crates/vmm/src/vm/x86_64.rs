@@ -149,6 +149,10 @@ impl Io for Bus {
             debug!("unclaimed port write {port:#x} ({} bytes)", data.len());
         }
     }
+
+    fn memory_fault(&self, gpa: Option<u64>) -> bool {
+        self.mmio.memory_fault(gpa)
+    }
 }
 
 impl Bus {
@@ -440,6 +444,7 @@ fn assemble(
         config,
         &regions,
         &windows,
+        Some(&vm),
         hosts,
         hotplug
             .into_iter()

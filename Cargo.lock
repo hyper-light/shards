@@ -1549,6 +1549,7 @@ dependencies = [
  "libc",
  "shards-abi",
  "shards-afunix",
+ "shards-ipc",
  "shards-netring",
  "shards-syscall-filter",
  "shards-testdir",

@@ -7,6 +7,7 @@
 
 pub mod host;
 pub mod server;
+pub mod window;
 
 use std::io::{self, Read as _, Write as _};
 use std::os::unix::net::UnixStream;
@@ -64,9 +65,17 @@ pub const MAX_FRAME: usize = server::MAX_WRITE as usize + 4096;
 /// which no guest's request (at most [`MAX_FRAME`]) sets, as the device sends what the
 /// guest asks. Its first byte names what it asks, and its answer is one too.
 const CONTROL: u32 = 1 << 31;
-/// A control frame's ask: the server's tables, or that it take them.
+/// A control frame's ask: the server's tables, or that it take them; or the descriptor of a
+/// file it holds open, for a DAX window's mapping of it (D189), which comes back as a
+/// shards_ipc message, the descriptor with it.
 const SAVE: u8 = 1;
 const RESTORE: u8 = 2;
+const DESCRIPTOR: u8 = 3;
+/// The requests a device with a DAX window answers itself (include/uapi/linux/fuse.h), and
+/// a mapping's flag that it may be written.
+const SETUPMAPPING: u32 = 48;
+const REMOVEMAPPING: u32 = 49;
+const MAP_WRITE: u64 = 1 << 0;
 /// The most a control frame holds: a share's tables, which a snapshot's state holds.
 const MAX_CONTROL: usize = server::MAX_TABLES;
 
@@ -108,6 +117,31 @@ impl Slot {
         match conn.as_mut() {
             Some(conn) => control(conn, SAVE, &[]).map(Some),
             None => Ok(None),
+        }
+    }
+
+    /// A descriptor of the file of its server's node `node`, for a DAX window's mapping of
+    /// it (D189), writable only if `writable`: an errno where the server refuses it, or
+    /// there is none.
+    fn descriptor(&self, node: u64, writable: bool) -> Result<std::os::fd::OwnedFd, i32> {
+        let mut conn = self
+            .conn
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let conn = conn.as_mut().ok_or(libc::ENODEV)?;
+        let mut ask = Vec::with_capacity(10);
+        ask.push(DESCRIPTOR);
+        ask.extend_from_slice(&node.to_le_bytes());
+        ask.push(u8::from(writable));
+        write_control(conn, &ask).map_err(|_| libc::EIO)?;
+        match shards_ipc::recv(conn) {
+            Ok(Some(m)) if m.kind == 0 => m.fds.into_iter().next().ok_or(libc::EIO),
+            Ok(Some(m)) => Err(m
+                .payload
+                .get(..4)
+                .and_then(|b| <[u8; 4]>::try_from(b).ok())
+                .map_or(libc::EIO, i32::from_le_bytes)),
+            _ => Err(libc::EIO),
         }
     }
 
@@ -155,12 +189,18 @@ pub fn read_frame(from: &mut UnixStream) -> io::Result<Option<Vec<u8>>> {
 }
 
 /// The bytes of the host's storage a request reads or writes, which its microVM's I/O
-/// limits charge (D178): a READ's asked for, a WRITE's given; none of anything else it asks.
+/// limits charge (D178): a READ's asked for, a WRITE's given, a DAX mapping's length (D189);
+/// none of anything else it asks.
 fn io_bytes(req: &[u8]) -> u64 {
     let word = |at: usize| {
         req.get(at..at.saturating_add(4))
             .and_then(|b| <[u8; 4]>::try_from(b).ok())
             .map(u32::from_le_bytes)
+    };
+    let long = |at: usize| {
+        req.get(at..at.saturating_add(8))
+            .and_then(|b| <[u8; 8]>::try_from(b).ok())
+            .map(u64::from_le_bytes)
     };
     match word(4) {
         // fuse_read_in after the header: fh, offset, then size.
@@ -169,6 +209,10 @@ fn io_bytes(req: &[u8]) -> u64 {
         Some(server::op::WRITE) => {
             u64::try_from(req.len().saturating_sub(server::IN_HEADER_BYTES + 40)).unwrap_or(u64::MAX)
         }
+        // A DAX window's range (D189), which the guest then reads and writes as memory: the
+        // I/O it stands for, its length, charged as it is mapped (fuse_setupmapping_in: fh,
+        // foffset, then len).
+        Some(SETUPMAPPING) => long(server::IN_HEADER_BYTES + 16).unwrap_or(0),
         _ => 0,
     }
 }
@@ -244,13 +288,32 @@ fn read_any(from: &mut UnixStream) -> io::Result<Option<Frame>> {
 /// Answers `conn`'s requests with `server` until it closes: the share process's side.
 /// A request that takes no reply gets an empty frame, so that the asker waits on none. A
 /// control frame, the VM process's own, asks for the server's tables, or gives them
-/// (D176), and is answered with one: 0 then what it asked for, or 1 then why not.
+/// (D176), and is answered with one: 0 then what it asked for, or 1 then why not; or asks
+/// for a file's descriptor (D189), answered as a shards_ipc message: 0 and the
+/// descriptor, or 1 and the errno that refused it.
 pub fn answer(server: &server::Server, mut conn: UnixStream) -> io::Result<()> {
     while let Some(frame) = read_any(&mut conn)? {
         match frame {
             Frame::Request(req) => {
                 let reply = server.handle(&req).unwrap_or_default();
                 write_frame(&mut conn, &reply)?;
+            }
+            Frame::Control(asked) if asked.first() == Some(&DESCRIPTOR) => {
+                let node = asked
+                    .get(1..9)
+                    .and_then(|b| <[u8; 8]>::try_from(b).ok())
+                    .map(u64::from_le_bytes);
+                let writable = asked.get(9).is_some_and(|&w| w != 0);
+                match node
+                    .ok_or(libc::EINVAL)
+                    .and_then(|node| server.descriptor(node, writable))
+                {
+                    Ok(fd) => {
+                        use std::os::fd::AsFd as _;
+                        shards_ipc::send(&conn, 0, &[], &[fd.as_fd()])?;
+                    }
+                    Err(errno) => shards_ipc::send(&conn, 1, &errno.to_le_bytes(), &[])?,
+                }
             }
             Frame::Control(asked) => {
                 let done = match asked.split_first() {
@@ -283,8 +346,9 @@ pub struct Fs {
     limit: Option<&'static Limiter>,
     holds_limit: bool,
     /// Its DAX window (D189): the cache, shared memory region 0 (VIRTIO_FS_SHMCAP_ID_CACHE),
-    /// which its guest maps the files it reads into; none where it has none.
-    window: Option<[ShmRegion; 1]>,
+    /// which its guest maps the files it reads into, and what maps them there; none where
+    /// it has none.
+    window: Option<([ShmRegion; 1], Arc<window::Window>)>,
 }
 
 /// The cache's shared memory region's id (include/uapi/linux/virtio_fs.h).
@@ -336,10 +400,16 @@ impl Fs {
         self
     }
 
-    /// The device with a DAX window of `len` bytes at guest address `base` (D189), where
-    /// `window` gives one.
-    pub fn with_window(mut self, window: Option<(u64, u64)>) -> Fs {
-        self.window = window.map(|(base, len)| [ShmRegion { id: CACHE, base, len }]);
+    /// The device with DAX window `window` (D189), where one is given.
+    pub fn with_window(mut self, window: Option<Arc<window::Window>>) -> Fs {
+        self.window = window.map(|w| {
+            let region = ShmRegion {
+                id: CACHE,
+                base: w.gpa(),
+                len: w.size(),
+            };
+            ([region], w)
+        });
         self
     }
 
@@ -353,7 +423,8 @@ impl Fs {
             let (server, mem) = (self.server.clone(), memory.clone());
             // The first queue is the high priority one (FORGET, INTERRUPT): no I/O.
             let limit = self.limit.filter(|_| !self.workers.is_empty());
-            let answer = move |chain: &Chain| serve(chain, &mem, &server, limit);
+            let window = self.window.as_ref().map(|(_, w)| w.clone());
+            let answer = move |chain: &Chain| serve(chain, &mem, &server, limit, window.as_deref());
             match Worker::start("virtio-fs", queue, memory.clone(), interrupt.clone(), answer) {
                 Ok(w) => self.workers.push(w),
                 Err((e, queue)) => {
@@ -386,7 +457,13 @@ impl Fs {
 /// the reply, never while the share answers (D29): a share slow to answer, or never
 /// answering, held every other device's queue work, and a snapshot, off guest memory for
 /// as long (audit V04).
-fn serve(chain: &Chain, mem: &GuestMemory, slot: &Slot, limit: Option<&Limiter>) -> u32 {
+fn serve(
+    chain: &Chain,
+    mem: &GuestMemory,
+    slot: &Slot,
+    limit: Option<&Limiter>,
+    window: Option<&window::Window>,
+) -> u32 {
     // Every FUSE request fits a frame, the largest write with its headers: a chain that
     // claims more, up to 256 descriptors of 4 GiB, is answered EINVAL from its header,
     // with nothing allocated for the rest (audit V03).
@@ -404,9 +481,21 @@ fn serve(chain: &Chain, mem: &GuestMemory, slot: &Slot, limit: Option<&Limiter>)
         limit.take(io_bytes(&req));
     }
     let reply = match total {
-        // No directory, or its server gone: the guest is told so (ENODEV), as for a share
-        // it may not mount.
-        Some(_) => slot.ask(&req).unwrap_or_else(|_| server::unattached(&req)),
+        // A DAX window's mappings, the device's own to make (D189); anything else its
+        // server's. No directory, or its server gone: the guest is told so (ENODEV), as
+        // for a share it may not mount.
+        Some(_) => match window.and_then(|w| mapping(&req, w, slot)) {
+            Some(reply) => Some(reply),
+            None => {
+                let reply = slot.ask(&req).unwrap_or_else(|_| server::unattached(&req));
+                // A file its window gave zeros past the end of, grown back since, is the
+                // window's again before the guest hears of it.
+                if let Some(w) = window {
+                    w.refill();
+                }
+                reply
+            }
+        },
         None => server::too_long(&req),
     };
     let Some(reply) = reply else {
@@ -432,6 +521,65 @@ fn serve(chain: &Chain, mem: &GuestMemory, slot: &Slot, limit: Option<&Limiter>)
     written
 }
 
+/// A FUSE_SETUPMAPPING or FUSE_REMOVEMAPPING, answered from `window` (D189): a range of the
+/// file of the request's node mapped there, from a descriptor its server opens, or ranges
+/// unmapped; none where `req` is neither. Answered with its out header alone, its error 0
+/// or an errno.
+fn mapping(req: &[u8], window: &window::Window, slot: &Slot) -> Option<Vec<u8>> {
+    let word = |at: usize| {
+        req.get(at..at.checked_add(4)?)
+            .and_then(|b| <[u8; 4]>::try_from(b).ok())
+            .map(u32::from_le_bytes)
+    };
+    let long = |at: usize| {
+        req.get(at..at.checked_add(8)?)
+            .and_then(|b| <[u8; 8]>::try_from(b).ok())
+            .map(u64::from_le_bytes)
+    };
+    let opcode = word(4)?;
+    if opcode != SETUPMAPPING && opcode != REMOVEMAPPING {
+        return None;
+    }
+    let unique = long(8).unwrap_or(0);
+    let at = server::IN_HEADER_BYTES;
+    let done = if opcode == SETUPMAPPING {
+        // fuse_setupmapping_in: fh, foffset, len, flags, moffset. Linux's guest gives no
+        // handle (-1), the file its header's node (fs/fuse/dax.c).
+        match (
+            long(16),
+            long(at + 8),
+            long(at + 16),
+            long(at + 24),
+            long(at + 32),
+        ) {
+            (Some(node), Some(foffset), Some(len), Some(flags), Some(moffset)) => {
+                let writable = flags & MAP_WRITE != 0;
+                slot.descriptor(node, writable)
+                    .and_then(|fd| window.map(fd, node, foffset, moffset, len, writable))
+            }
+            _ => Err(libc::EINVAL),
+        }
+    } else {
+        // fuse_removemapping_in's count, then each fuse_removemapping_one: moffset, len.
+        match word(at) {
+            Some(count) => (0..count as usize).try_for_each(|i| {
+                let one = at + 4 + i * 16;
+                match (long(one), long(one + 8)) {
+                    (Some(moffset), Some(len)) => window.unmap(moffset, len),
+                    _ => Err(libc::EINVAL),
+                }
+            }),
+            None => Err(libc::EINVAL),
+        }
+    };
+    let error = done.err().map_or(0, |errno| errno.saturating_neg());
+    let mut reply = Vec::with_capacity(16);
+    reply.extend_from_slice(&16u32.to_le_bytes());
+    reply.extend_from_slice(&error.to_le_bytes());
+    reply.extend_from_slice(&unique.to_le_bytes());
+    Some(reply)
+}
+
 /// Fills `buf` with the chain's readable bytes, in order, as far as they go; false if one
 /// it needs lies outside guest memory.
 fn gather(chain: &Chain, mem: &Access<'_>, buf: &mut [u8]) -> bool {
@@ -451,7 +599,7 @@ fn gather(chain: &Chain, mem: &Access<'_>, buf: &mut [u8]) -> bool {
 
 impl VirtioDevice for Fs {
     fn shm_regions(&self) -> &[ShmRegion] {
-        self.window.as_ref().map_or(&[], |w| w.as_slice())
+        self.window.as_ref().map_or(&[], |(r, _)| r.as_slice())
     }
 
     fn device_id(&self) -> u32 {
@@ -505,6 +653,10 @@ impl VirtioDevice for Fs {
         self.paused.clear();
         self.context = None;
         self.release_limit();
+        // Its driver's mappings went with it.
+        if let Some((_, w)) = &self.window {
+            w.clear();
+        }
     }
 
     /// Its limits paused first (D178): a worker waiting on them answers the request in hand
@@ -535,7 +687,20 @@ impl VirtioDevice for Fs {
     /// live in the server alone (D176): its server's tables are asked for here, as the
     /// snapshot's devices are paused, for the save that follows to keep, and what it
     /// cannot keep refuses the snapshot.
+    fn memory_fault(&self, gpa: Option<u64>) -> bool {
+        self.window.as_ref().is_some_and(|(_, w)| w.fill_past_end(gpa))
+    }
+
     fn unsaved(&self) -> Option<String> {
+        if self
+            .window
+            .as_ref()
+            .is_some_and(|(_, w)| !w.mappings().is_empty())
+        {
+            return Some(
+                "a volume's DAX window holds files mapped, which no snapshot keeps yet (D189)".into(),
+            );
+        }
         match self.server.tables() {
             Ok(tables) => {
                 *self
@@ -638,7 +803,8 @@ mod tests {
     }
 
     /// What a request costs its microVM's I/O limits (D178): a READ the bytes it asks for,
-    /// after its 40-byte header; a WRITE the bytes it gives; anything else nothing.
+    /// after its 40-byte header; a WRITE the bytes it gives; a DAX mapping its length (D189);
+    /// anything else nothing.
     #[test]
     fn requests_are_charged_what_they_read_and_write() {
         let request = |opcode: u32, args: &[u8]| {
@@ -662,7 +828,101 @@ mod tests {
         let mut write = vec![0u8; 40];
         write.extend([7u8; 4096]);
         assert_eq!(io_bytes(&request(server::op::WRITE, &write)), 4096);
+        let mut setup = Vec::new();
+        for v in [7u64, 0, 2 << 20, 2, 0] {
+            setup.extend(v.to_le_bytes());
+        }
+        assert_eq!(io_bytes(&request(SETUPMAPPING, &setup)), 2 << 20);
         assert_eq!(io_bytes(&request(1, b"f\0")), 0);
+    }
+
+    /// A DAX window's mappings are the device's (D189): a FUSE_SETUPMAPPING, which names its
+    /// file by its node alone as Linux's guest sends it, maps the range of that file into
+    /// the window, from a descriptor its share's server opens and sends, writable where it
+    /// asks; a directory's is refused; a FUSE_REMOVEMAPPING unmaps; anything else goes to
+    /// the server.
+    #[test]
+    fn a_dax_mapping_maps_the_file_of_its_node() {
+        struct Nothing;
+        impl window::Stage2 for Nothing {
+            unsafe fn map(&self, _: *mut u8, _: u64, _: usize, _: bool) -> Result<(), String> {
+                Ok(())
+            }
+            fn unmap(&self, _: u64, _: usize) -> Result<(), String> {
+                Ok(())
+            }
+        }
+        const MIB: u64 = 1 << 20;
+        let dir = shards_testdir::TempDir::new("fs-dax").unwrap();
+        let bytes: Vec<u8> = (0..4 * MIB).map(|i| (i / 4096 % 251) as u8).collect();
+        std::fs::write(dir.join("big"), &bytes).unwrap();
+        let server = server::Server::new(std::fs::File::open(&dir).unwrap().into(), false, None).unwrap();
+        let (ours, theirs) = UnixStream::pair().unwrap();
+        let t = std::thread::spawn(move || answer(&server, theirs).unwrap());
+        let slot = Slot::new();
+        slot.attach(ours).unwrap();
+        let request = |opcode: u32, nodeid: u64, body: &[u8]| {
+            let mut r = Vec::new();
+            r.extend((40 + body.len() as u32).to_le_bytes());
+            r.extend(opcode.to_le_bytes());
+            r.extend(9u64.to_le_bytes());
+            r.extend(nodeid.to_le_bytes());
+            r.extend([0u8; 16]);
+            r.extend(body);
+            r
+        };
+        let looked = slot.ask(&request(1, 1, b"big\0")).unwrap().unwrap();
+        assert_eq!(
+            i32::from_le_bytes(looked[4..8].try_into().unwrap()),
+            0,
+            "{looked:?}"
+        );
+        let node = u64::from_le_bytes(looked[16..24].try_into().unwrap());
+        let w = window::Window::new(1 << 32, 8 * MIB, |_| {
+            Ok(Box::new(Nothing) as Box<dyn window::Stage2>)
+        })
+        .unwrap();
+        // fuse_setupmapping_in as Linux's guest sends it: no handle, 2 MiB of the file from
+        // 2 MiB; FUSE_SETUPMAPPING_FLAG_READ, and _WRITE where asked.
+        let setup = |node: u64, write: bool, moffset: u64| {
+            let mut body = Vec::new();
+            let flags = 2 | if write { MAP_WRITE } else { 0 };
+            for v in [u64::MAX, 2 * MIB, 2 * MIB, flags, moffset] {
+                body.extend(v.to_le_bytes());
+            }
+            request(SETUPMAPPING, node, &body)
+        };
+        let error = |reply: Vec<u8>| i32::from_le_bytes(reply[4..8].try_into().unwrap());
+        assert_eq!(
+            error(mapping(&setup(node, false, 4 * MIB), &w, &slot).unwrap()),
+            0
+        );
+        // SAFETY: the window's own range, the file mapped there, for as long as `w` is.
+        let seen = unsafe { std::slice::from_raw_parts(w.host().add(4 << 20), 2 << 20) };
+        assert_eq!(seen, &bytes[2 << 20..4 << 20]);
+        assert_eq!(w.mappings().len(), 1);
+        // Writable: what the guest writes there is the file's.
+        assert_eq!(error(mapping(&setup(node, true, 0), &w, &slot).unwrap()), 0);
+        // SAFETY: the window's own range, mapped writable above.
+        unsafe { w.host().write_volatile(!bytes[2 << 20]) };
+        assert_eq!(std::fs::read(dir.join("big")).unwrap()[2 << 20], !bytes[2 << 20]);
+        assert_eq!(
+            error(mapping(&setup(1, false, 6 * MIB), &w, &slot).unwrap()),
+            -libc::EISDIR
+        );
+        let mut gone = 2u32.to_le_bytes().to_vec();
+        for moffset in [4 * MIB, 0] {
+            gone.extend(moffset.to_le_bytes());
+            gone.extend((2 * MIB).to_le_bytes());
+        }
+        assert_eq!(
+            error(mapping(&request(REMOVEMAPPING, node, &gone), &w, &slot).unwrap()),
+            0
+        );
+        assert!(w.mappings().is_empty());
+        assert!(mapping(&request(1, 1, b"big\0"), &w, &slot).is_none());
+        drop(slot);
+        t.join().unwrap();
     }
 
     /// A share that answers each request with an empty success, after `hold` lets it.
@@ -757,12 +1017,15 @@ mod tests {
             claims,
             vec![readable(REQUEST, 56), readable(BASE + 0x2000, just_over)],
         ] {
-            assert_eq!(serve(&chain(readables), &mem, &slot, None), 16);
+            assert_eq!(serve(&chain(readables), &mem, &slot, None, None), 16);
             assert_eq!(reply(&mem), (16, -22, 0x1234));
             assert!(requests.try_recv().is_err(), "the share was asked");
         }
         go.send(()).unwrap();
-        assert_eq!(serve(&chain(vec![readable(REQUEST, 56)]), &mem, &slot, None), 16);
+        assert_eq!(
+            serve(&chain(vec![readable(REQUEST, 56)]), &mem, &slot, None, None),
+            16
+        );
         assert_eq!(reply(&mem), (16, 0, 0x1234));
         assert_eq!(requests.recv().unwrap().len(), 56);
         drop((slot, go));
@@ -779,7 +1042,7 @@ mod tests {
         let (asked, requests) = mpsc::channel();
         let (slot, server) = share(hold, asked);
         let free = std::thread::scope(|scope| {
-            let serving = scope.spawn(|| serve(&chain(vec![readable(REQUEST, 56)]), &mem, &slot, None));
+            let serving = scope.spawn(|| serve(&chain(vec![readable(REQUEST, 56)]), &mem, &slot, None, None));
             requests.recv().unwrap();
             let (took, taken) = mpsc::channel();
             let mem = &mem;

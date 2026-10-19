@@ -460,6 +460,42 @@ pub unsafe fn map_file_readonly(file: &File, len: usize, at: NonNull<u8>) -> io:
     Ok(())
 }
 
+/// Replaces `len` bytes at `at` with a mapping of `file` from `offset` that a hypervisor
+/// maps into a guest as the file's own memory: a share's DAX window's (D189). Shared, so
+/// that the guest and the host have one file between them, and writable where `writable`.
+///
+/// # Safety
+/// `at..at+len` must be page-aligned, inside a reservation of the caller's that nothing
+/// references meanwhile; `offset` must be page-aligned.
+pub unsafe fn map_file_range(
+    file: std::os::fd::BorrowedFd<'_>,
+    offset: u64,
+    len: usize,
+    at: NonNull<u8>,
+    writable: bool,
+) -> io::Result<()> {
+    let offset = file_offset(offset)?;
+    let prot = libc::PROT_READ | if writable { libc::PROT_WRITE } else { 0 };
+    // SAFETY: MAP_FIXED over memory the caller owns and nothing references.
+    let p = unsafe {
+        libc::mmap(
+            at.as_ptr().cast(),
+            len,
+            prot,
+            libc::MAP_SHARED | libc::MAP_FIXED,
+            file.as_raw_fd(),
+            offset,
+        )
+    };
+    if p == libc::MAP_FAILED {
+        return Err(io::Error::last_os_error());
+    }
+    if p != at.as_ptr().cast() {
+        return Err(io::Error::other("mmap(MAP_FIXED) placed the mapping elsewhere"));
+    }
+    Ok(())
+}
+
 /// The `size` bytes of `file` read-only, then zeros, `len` bytes in all at one address; and
 /// how many of them are the file's mapping: a reservation with the file mapped over its
 /// start, to the page its last byte is in ([`map_file_readonly`]), whose rest the kernel

@@ -932,7 +932,8 @@ pub fn template(home: &Path, guest: &Guest, rootfs: &Path, cfg: &Config) -> Path
         + &plug(cfg)
         + &swap(cfg)
         + gpu(cfg)
-        + JOIN_SHARE;
+        + JOIN_SHARE
+        + &share_window(cfg);
     let hex: String = Sha256::digest(key.as_bytes())
         .iter()
         .map(|b| format!("{b:02x}"))
@@ -962,6 +963,14 @@ fn swap(cfg: &Config) -> String {
     match cfg.swap_mib {
         0 => String::new(),
         mib => format!("swap window {mib}\n"),
+    }
+}
+
+/// A template's shares' DAX windows (D189), in its key where it has them.
+fn share_window(cfg: &Config) -> String {
+    match cfg.share_window_mib {
+        0 => String::new(),
+        mib => format!("share window {mib}\n"),
     }
 }
 

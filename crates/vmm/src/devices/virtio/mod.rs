@@ -188,4 +188,9 @@ pub trait VirtioDevice: Send {
     fn unsaved(&self) -> Option<String> {
         None
     }
+    /// As [`crate::hv::Io::memory_fault`], for memory the device gives the guest: a
+    /// share's DAX window (D189).
+    fn memory_fault(&self, _gpa: Option<u64>) -> bool {
+        false
+    }
 }

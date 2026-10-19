@@ -1579,6 +1579,174 @@ fn a_microvms_io_is_paced_at_its_limits() {
     assert_eq!(shards(&["rm", "-f", "limited"]).status, Some(0));
 }
 
+/// A volume's large files go through its microVM's DAX window where the daemon gives
+/// one (`SHARDS_SHARE_WINDOW_MIB`, D189): its guest maps them from the host's page cache,
+/// as statx says, and reads its small ones through FUSE as before; it reads the host's
+/// bytes and keeps none of them in its own page cache; what it writes in place the host
+/// reads, and what the host writes it reads, in ranges it maps to read and to write; a
+/// file grown past its end, by either, it reads whole; and one the host cuts short under
+/// its mapping leaves it zeros where the host has no page, never an end to its microVM,
+/// and the file once the host writes there again.
+#[test]
+fn a_volumes_large_files_go_through_its_dax_window() {
+    if cannot_run_vms() {
+        return;
+    }
+    let (image, _) = served();
+    let home = TempDir::new("containers-dax");
+    let (kernel, init) = (kernel(), guest_init());
+    let env: [(&str, &OsStr); 4] = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", kernel.as_os_str()),
+        ("SHARDS_INIT", init.as_os_str()),
+        ("SHARDS_SHARE_WINDOW_MIB", "64".as_ref()),
+    ];
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let pulled = shards(&["pull", "-q", &image]);
+    assert_eq!(pulled.status, Some(0), "{pulled}");
+    let dir = TempDir::new("containers-dax-v");
+    // 8 MiB, four of the window's 2 MiB ranges, none of whose bytes repeat a range's.
+    let big: Vec<u8> = (0..8u32 << 20)
+        .map(|i| (i.wrapping_mul(2_654_435_761) >> 24) as u8)
+        .collect();
+    std::fs::write(dir.join("big"), &big).unwrap();
+    std::fs::write(dir.join("small"), b"small").unwrap();
+    let volume = format!("{}:/v", dir.display());
+    let run = shards(&[
+        "run", "-d", "--pull", "never", "--name", "dax", "-u", "0", "-v", &volume, &image, "sleep",
+    ]);
+    assert_eq!(run.status, Some(0), "{run}");
+    let exec = |args: &[&str]| {
+        let mut all = vec!["exec", "dax", "/bin/testguest"];
+        all.extend_from_slice(args);
+        let r = shards(&all);
+        assert_eq!(r.status, Some(0), "{args:?}: {r}");
+        r.stdout
+    };
+    let said = exec(&["fs", "dax:/v/big", "dax:/v/small"]);
+    assert_eq!(said, "dax /v/big yes\ndax /v/small no\n");
+    // The guest's page cache, before and after it reads the whole file: a read through
+    // FUSE keeps all 8 MiB there, a read through the window none; it may grow by less
+    // than half.
+    let cached = || -> u64 {
+        let line = exec(&["meminfo", "Cached"]);
+        line.split_whitespace()
+            .nth(1)
+            .and_then(|k| k.parse().ok())
+            .unwrap_or_else(|| panic!("{line}"))
+    };
+    let before = cached();
+    let digest = format!("{:016x}", shards_testguest::fnv1a(&big));
+    assert_eq!(exec(&["digest", "/v/big"]), format!("digest /v/big {digest}\n"));
+    let after = cached();
+    let half_kib = (big.len() as u64 >> 10) / 2;
+    assert!(
+        after.saturating_sub(before) < half_kib,
+        "Cached {before} kB, then {after} kB"
+    );
+    // Written in place by the guest, through a handle opened to write alone, which the
+    // window maps writable: the host reads it.
+    let at = 5 << 20;
+    let byte = big[at].wrapping_add(1);
+    exec(&["fs", &format!("poke:/v/big:{at}:{byte}")]);
+    let host = std::fs::read(dir.join("big")).unwrap();
+    assert_eq!(host[at], byte);
+    // Written by the host, in place, in a range the guest mapped to read and in the one it
+    // mapped to write: the guest reads each through the mapping it holds.
+    let file = std::fs::OpenOptions::new()
+        .write(true)
+        .open(dir.join("big"))
+        .unwrap();
+    for at in [3 << 20, (5 << 20) + 1] {
+        use std::os::unix::fs::FileExt as _;
+        let byte = big[at].wrapping_add(2);
+        file.write_all_at(&[byte], at as u64).unwrap();
+        assert_eq!(
+            exec(&["fs", &format!("peek:/v/big:{at}")]),
+            format!("peek /v/big {at} {byte}\n")
+        );
+    }
+    // A file whose end is no range's: its last range is mapped past its end, where the
+    // guest reads nothing. Grown past it, by the guest through FUSE and by the host, within
+    // a range the guest maps, the guest reads through the window what each wrote.
+    let odd: Vec<u8> = (0..(3u32 << 20) + 5000)
+        .map(|i| (i.wrapping_mul(40_503) >> 8) as u8)
+        .collect();
+    std::fs::write(dir.join("odd"), &odd).unwrap();
+    let digest = format!("{:016x}", shards_testguest::fnv1a(&odd));
+    assert_eq!(exec(&["fs", "dax:/v/odd"]), "dax /v/odd yes\n");
+    assert_eq!(exec(&["digest", "/v/odd"]), format!("digest /v/odd {digest}\n"));
+    let end = odd.len();
+    // At its end, in the page that holds it, and a page and more past it.
+    for at in [end, end + 20_000] {
+        exec(&["fs", &format!("poke:/v/odd:{at}:7")]);
+        assert_eq!(
+            exec(&["fs", &format!("peek:/v/odd:{at}")]),
+            format!("peek /v/odd {at} 7\n")
+        );
+    }
+    // The host's, which the guest reads once it asks the file's size again (VALID_S).
+    let at = end + 40_000;
+    {
+        use std::os::unix::fs::FileExt as _;
+        let odd_file = std::fs::OpenOptions::new()
+            .write(true)
+            .open(dir.join("odd"))
+            .unwrap();
+        odd_file.write_all_at(&[9], at as u64).unwrap();
+    }
+    let deadline = Instant::now() + TIMEOUT;
+    loop {
+        let r = shards(&[
+            "exec",
+            "dax",
+            "/bin/testguest",
+            "fs",
+            &format!("peek:/v/odd:{at}"),
+        ]);
+        if r.status == Some(0) {
+            assert_eq!(r.stdout, format!("peek /v/odd {at} 9\n"));
+            break;
+        }
+        assert!(Instant::now() < deadline, "{r}");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    // Cut short by the host under the guest's mapping: read there before the guest asks
+    // its size again, its window gives zeros past the file's end, where the host has no
+    // page to give, and the microVM runs on (D189); after, the guest is at the file's end.
+    // Written there again by the host, the guest reads the file's byte through the window.
+    let odd_file = std::fs::OpenOptions::new()
+        .write(true)
+        .open(dir.join("odd"))
+        .unwrap();
+    odd_file.set_len(1 << 20).unwrap();
+    let cut = shards(&["exec", "dax", "/bin/testguest", "fs", "peek:/v/odd:3145728"]);
+    assert!(
+        cut.stdout == "peek /v/odd 3145728 0\n"
+            || (cut.status == Some(1) && cut.stderr.contains("failed to fill whole buffer")),
+        "{cut}"
+    );
+    {
+        use std::os::unix::fs::FileExt as _;
+        odd_file.write_all_at(&[5], 3 << 20).unwrap();
+    }
+    let deadline = Instant::now() + TIMEOUT;
+    loop {
+        let r = shards(&["exec", "dax", "/bin/testguest", "fs", "peek:/v/odd:3145728"]);
+        if r.stdout == "peek /v/odd 3145728 5\n" {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline
+                && (r.stdout == "peek /v/odd 3145728 0\n"
+                    || r.stderr.contains("failed to fill whole buffer")),
+            "{r}"
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    assert_eq!(shards(&["rm", "-f", "dax"]).status, Some(0));
+}
+
 /// `--cgroup-parent` (D183): on Linux, a microVM's processes, its VM process and its
 /// network process, are made under the slice of the user's systemd manager it names, by a
 /// spawner the manager placed there once, the one process of a scope of the daemon's, and

@@ -37,6 +37,10 @@ pub trait MmioDevice: Send + Sync {
     fn unsaved(&self) -> Option<String> {
         None
     }
+    /// As [`crate::hv::Io::memory_fault`], for memory the device gives the guest.
+    fn memory_fault(&self, _gpa: Option<u64>) -> bool {
+        false
+    }
 }
 
 /// Stores `value` little-endian into `data` (an access of 1-8 bytes); bytes past the
@@ -230,6 +234,18 @@ impl crate::hv::Io for MmioBus {
                 data.len()
             );
         }
+    }
+
+    /// None of a device's registers, which an access to is MMIO, as the most are; else
+    /// every device asked, none left out once one has given memory: with no address, each
+    /// may have a range past a file's end.
+    fn memory_fault(&self, gpa: Option<u64>) -> bool {
+        if gpa.is_some_and(|g| self.find(g, 1).is_some()) {
+            return false;
+        }
+        self.devices
+            .iter()
+            .fold(false, |given, (_, _, d)| d.memory_fault(gpa) | given)
     }
 }
 
