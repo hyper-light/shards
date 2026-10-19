@@ -9704,3 +9704,72 @@ revision before comparing a changed API/implementation.
   on the client's host, or COLORTERM's 24-bit), which 14 of the 17 describe; else xterm.
   Held by `a_terminal_is_told_its_clients_type_where_its_image_describes_it`
   (tests/tty.rs).
+
+### M264. What filesystem DAX on a pmem device costs a microVM, by the device's size (the plan's item 2)
+
+- **Question.** The user's plan moves a run's writable layer off tmpfs, onto ext4 over a
+  pmem device backed by a sparse file in its container's directory, mounted with DAX, so
+  that its data lives in the host's page cache and not in the guest's memory. Filesystem
+  DAX needs the device's pages described (struct page, 64 bytes a 4 KiB page: a 64th of
+  the device, drivers/nvdimm/pmem.c, pmem_should_map_pages), where the swap window probes
+  its device raw to give it none (D159). What does that take of the guest's memory and
+  boot, by the device's size?
+- **Method.** `docs/research/measurements/dax-layer/measure.sh SHARDS 5 0 1 4 16`: shards'
+  VMM (`shards run --kernel`, its pinned 6.18.48 kernel) boots a 1 GiB, 2-vCPU guest from
+  the sustained-I/O benchmark's ext4 root, given a sparse file of SIZE GiB as its virtio-pmem
+  device, ext4 made on it by the host with lazy inode tables and journal (16 GiB of it
+  allocates 6.4 MiB on the host). Its init reads MemFree as it starts, waits for the
+  NVDIMM bus's probes, reads it again, and mounts the device `-o dax=always`, timing the
+  mount; the kernel's log gives when init ran. 5 boots a size; 0 is no device. Fedora 44
+  (6.19.10) on M258's host (i9-14900HX), shards 41eab0d5, 2026-10-19.
+- **Results** (p50 of 5; free is MemFree as init starts, within 0.5 MiB of it after the
+  probes' wait):
+
+  | device | free | less than none | init ran at | DAX mount p50 / max |
+  |---|---|---|---|---|
+  | none | 950.0 MiB | - | 0.124 s | - |
+  | 1 GiB | 929.4 MiB | 20.6 MiB | 0.117 s | 2.1 / 5.7 ms |
+  | 4 GiB | 883.0 MiB | 67.0 MiB | 0.121 s | 2.2 / 7.5 ms |
+  | 16 GiB | 690.6 MiB | 259.5 MiB | 0.172 s (max 0.243) | 2.9 / 15.4 ms |
+
+  - The memory taken is the 64th the page structures need (16, 64, 256 MiB) and 3 to 5
+    MiB more; every boot mounted with DAX. 64 GiB, a gigabyte of page structures in a 1
+    GiB guest: 3 boots of this harness's first version ended in 1.06-1.08 s with no line
+    from the guest (their consoles were not kept).
+- **Consequence.** A DAX layer costs the guest a 64th of its size in memory, paid at boot
+  and kept for the run, and a layer sized by the host's disk does not fit a small microVM
+  at all. Item 2's design is the user's to choose (asked 2026-10-19): ext4 on the pmem
+  device probed raw, without DAX (no page structures; its data in the guest's page cache,
+  which reclaim can drop, as on a disk); DAX with the device capped by the microVM's
+  memory; or the layer on virtio-fs with a DAX window (the plan's item 5).
+
+### M265. What bringing a microVM's vCPUs online and offline costs (the plan's item 3)
+
+- **Question.** The user's plan gives every microVM the host's CPUs and has init bring the
+  run's `--cpus` online, `update --cpus` onlining more or fewer. What does each cost the
+  guest, on each hypervisor, and does it depend on how many vCPUs there are?
+- **Method.** `docs/research/measurements/cpu-online/measure.sh SHARDS CPUS ROUNDS`: a
+  privileged `shards run --cpus CPUS` of Alpine takes every CPU but CPU 0 offline, then
+  online again, timing each pass whole on the guest's clock (/proc/timer_list's `now`);
+  per CPU is a pass over its CPUs. Offlining stops every online CPU for each CPU it takes
+  (kernel/cpu.c, takedown_cpu, stop_machine). KVM: Fedora 44 (6.19.10) on M258's host
+  (i9-14900HX, 32 CPUs), shards 41eab0d5, 20 passes at 8 vCPUs, 10 at 32. HVF: macOS 26.4.1
+  on an Apple M5 Max (18 CPUs), shards 0167721b, 20 passes at 8, 10 at 18. 2026-10-19.
+- **Results** (per CPU, ms):
+
+  | hypervisor | vCPUs | online p50 | p90 | p99 | max | offline p50 | p90 | p99 | max |
+  |---|---|---|---|---|---|---|---|---|---|
+  | KVM | 8 | 1.28 | 2.93 | 3.11 | 3.11 | 20.67 | 25.19 | 27.47 | 27.47 |
+  | KVM | 32 | 45.23 | 50.18 | 55.69 | 55.69 | 23.27 | 25.07 | 25.59 | 25.59 |
+  | HVF | 8 | 0.96 | 1.21 | 1.23 | 1.23 | 8.69 | 9.28 | 10.82 | 10.82 |
+  | HVF | 18 | 12.96 | 13.96 | 14.08 | 14.08 | 10.04 | 10.50 | 10.50 | 10.50 |
+
+  - Onlining a CPU costs more the more vCPUs the microVM has, on both hypervisors (35
+    times at 32 vCPUs on KVM, 13 at 18 on HVF), where offlining one stays near its cost at
+    8; why is not yet measured. A microVM of a 32-CPU host onlining 31 took 1.40 s (p50).
+- **Consequence.** Onlining a run's `--cpus` as it starts costs tens of milliseconds a CPU
+  where the microVM has the host's CPUs, past the 5 ms a request has to be usable, and
+  offlining one for `update --cpus` stops the whole guest each time. Item 3's CPU half is
+  the user's to choose (asked 2026-10-19): online and offline per run as the plan says, or
+  every CPU online in the template and each run confined to its share (a cpuset of its
+  CPUs, a quota in the guest, a cap on the VM process's vCPU threads from the host).
