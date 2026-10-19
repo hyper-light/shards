@@ -2546,18 +2546,42 @@ fn erofs() -> Result<(), String> {
         cstr("erofs")?,
         cstr("dax=always")?,
     );
-    // SAFETY: NUL-terminated strings.
-    if unsafe {
-        libc::mount(
-            src.as_ptr(),
-            target.as_ptr(),
-            fs.as_ptr(),
-            libc::MS_RDONLY,
-            opts.as_ptr().cast(),
-        )
-    } != 0
-    {
-        return Err(format!("mount erofs: {}", io::Error::last_os_error()));
+    let mount = || {
+        // SAFETY: NUL-terminated strings.
+        if unsafe {
+            libc::mount(
+                src.as_ptr(),
+                target.as_ptr(),
+                fs.as_ptr(),
+                libc::MS_RDONLY,
+                opts.as_ptr().cast(),
+            )
+        } != 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
+    };
+    // libnvdimm makes a pmem device's node asynchronously, in a domain the kernel does not
+    // wait for before init runs (crates/init/src/pmem.rs): where it is not there yet, once
+    // its buses' probing is done.
+    let mounted = mount().or_else(|e| match e.raw_os_error() {
+        Some(libc::ENOENT | libc::ENXIO) => {
+            for bus in std::fs::read_dir("/sys/bus/nd/devices")
+                .into_iter()
+                .flatten()
+                .flatten()
+            {
+                if bus.file_name().as_encoded_bytes().starts_with(b"ndbus") {
+                    let _ = std::fs::read(bus.path().join("wait_probe"));
+                }
+            }
+            mount()
+        }
+        _ => Err(e),
+    });
+    if let Err(e) = mounted {
+        return Err(format!("mount erofs: {e}"));
     }
     let mounts = std::fs::read_to_string("/proc/mounts").map_err(|e| e.to_string())?;
     let line = mounts.lines().find(|l| l.contains(" /mnt ")).unwrap_or_default();
