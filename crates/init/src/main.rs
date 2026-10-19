@@ -62,6 +62,8 @@ mod run;
 mod setup;
 #[cfg(target_os = "linux")]
 mod swap;
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+mod terms;
 #[cfg(target_os = "linux")]
 mod tree;
 

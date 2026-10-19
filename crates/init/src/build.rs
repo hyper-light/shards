@@ -174,6 +174,8 @@ fn serve() -> io::Result<()> {
     // Layers live in memory, or on swap once memory runs short: as much of it as the
     // builder may have, where it is plugged as the build needs it (D133).
     let plug = crate::plug::plug()?;
+    // Each step's /dev/shm sized as a run's is (run::SHM).
+    crate::run::size_shm(plug.as_ref());
     let size = plug.map_or_else(|| "size=100%".to_string(), |p| p.tmpfs());
     mount("tmpfs", Path::new(B), "tmpfs", 0, &format!("mode=0755,{size}"))?;
     for d in [
@@ -1174,7 +1176,7 @@ fn setup(step: &Step, root: &Path, files: &Path, sources: &[Option<PathBuf>], wo
         &inroot::path(&under(b"/dev/shm")?),
         "tmpfs",
         nosuid | noexec | nodev,
-        "mode=1777,size=65536k",
+        crate::run::shm(),
     )?;
     mount(
         "mqueue",

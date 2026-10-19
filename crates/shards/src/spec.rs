@@ -37,6 +37,10 @@ pub struct Options {
     pub interactive: bool,
     /// A pty for the command's stdio, of this size.
     pub tty: Option<Size>,
+    /// The terminal types its client's terminal is, best first, where the client gave the
+    /// command a pty: TERM's where the environment gives none ([`spec`]); none where the
+    /// client said none, as an Engine API client does.
+    pub terms: Vec<String>,
 }
 
 /// The workload `docker run` would start. Its environment is Docker's PATH and HOSTNAME,
@@ -58,9 +62,30 @@ pub fn spec(o: &Options, lookup: impl Fn(&str) -> Option<std::ffi::OsString>) ->
         }
     };
     let mut defaults = vec![format!("PATH={DEFAULT_PATH}"), format!("HOSTNAME={hostname}")];
-    if o.tty.is_some() {
+    // With a terminal, TERM: the environment's (the image's, the user's), and xterm where
+    // neither names it, as Docker's. Where the client said what its terminal is, the
+    // command is told the first of its types its root describes instead, else xterm, which
+    // init chooses there (Spec::terms).
+    let names_term = |list: &[String]| list.iter().any(|e| e.split('=').next() == Some("TERM"));
+    let choose = o.tty.is_some() && !o.terms.is_empty() && !names_term(&o.env) && !names_term(&o.exec_env);
+    if o.tty.is_some() && !choose {
         defaults.push("TERM=xterm".into());
     }
+    let terms: Vec<Vec<u8>> = if choose {
+        let mut terms: Vec<Vec<u8>> = o
+            .terms
+            .iter()
+            .map(|t| t.clone().into_bytes())
+            .filter(|t| run::terminal_name(t))
+            .collect();
+        terms.dedup();
+        if terms.last().is_none_or(|t| t != b"xterm") {
+            terms.push(b"xterm".to_vec());
+        }
+        terms
+    } else {
+        Vec::new()
+    };
     let given = |list: &[String]| -> Result<Vec<Vec<u8>>, String> {
         list.iter()
             .map(|entry| match entry.split_once('=') {
@@ -96,6 +121,7 @@ pub fn spec(o: &Options, lookup: impl Fn(&str) -> Option<std::ffi::OsString>) ->
         domainname: Vec::new(),
         cgroup: Vec::new(),
         setup: Vec::new(),
+        terms,
     };
     fits(&spec)?;
     Ok(spec)
@@ -310,6 +336,57 @@ mod tests {
         );
         assert_eq!(env(&["TERM=vt100"]).get(2), Some(&b"TERM=vt100".to_vec()));
         assert!(!env(&["TERM"]).iter().any(|e| e.starts_with(b"TERM")));
+    }
+
+    /// Where the client said what its terminal is, a command with a terminal is told the
+    /// first of its types its root describes, which init chooses: no TERM in its
+    /// environment, the types, and xterm last, once. The environment's own TERM, set or
+    /// unset, is Docker's, as without a terminal there is none, and a client that says
+    /// nothing gets xterm.
+    #[test]
+    fn a_terminal_of_the_clients_types_is_chosen_where_none_is_given() {
+        let made = |given: &[&str], tty: bool, terms: &[&str]| {
+            let o = Options {
+                argv: vec!["x".into()],
+                env: given.iter().map(|s| (*s).to_string()).collect(),
+                hostname: Some("box".into()),
+                tty: tty.then(Size::default),
+                terms: terms.iter().map(|s| (*s).to_string()).collect(),
+                ..Options::default()
+            };
+            let s = spec(&o, |_| None).unwrap();
+            let term = s
+                .env
+                .iter()
+                .find(|e| e.starts_with(b"TERM"))
+                .map(|e| String::from_utf8(e.clone()).unwrap());
+            let terms: Vec<String> = s
+                .terms
+                .into_iter()
+                .map(|t| String::from_utf8(t).unwrap())
+                .collect();
+            (term, terms)
+        };
+        let client = ["xterm-ghostty", "xterm-256color"];
+        assert_eq!(
+            made(&["A=1"], true, &client),
+            (
+                None,
+                vec!["xterm-ghostty".into(), "xterm-256color".into(), "xterm".into()]
+            )
+        );
+        assert_eq!(made(&[], true, &["xterm"]), (None, vec!["xterm".into()]));
+        assert_eq!(
+            made(&[], true, &["../up", "screen", ""]),
+            (None, vec!["screen".into(), "xterm".into()])
+        );
+        assert_eq!(
+            made(&["TERM=vt100"], true, &client),
+            (Some("TERM=vt100".into()), Vec::new())
+        );
+        assert_eq!(made(&["TERM"], true, &client), (None, Vec::new()));
+        assert_eq!(made(&[], true, &[]), (Some("TERM=xterm".into()), Vec::new()));
+        assert_eq!(made(&[], false, &client), (None, Vec::new()));
     }
 
     #[test]

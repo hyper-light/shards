@@ -5597,6 +5597,12 @@ impl<D: Disk> Daemon<D> {
             if cfg.hotplug_mib > 0 {
                 cfg.cmdline.push_str(" memhp_default_state=online_kernel");
             }
+            // Each /dev/shm of it half the memory it may have in all (D156): part of its
+            // template's command line, so each shape's template has its own.
+            cfg.cmdline.push_str(&format!(
+                " shards_shm={}",
+                crate::run::shm_bytes(prepared.memory_max)
+            ));
             // And memory its workload frees given back to the host, as it reports it
             // free, as a container's is (D151).
             cfg.reporting = true;
@@ -8143,7 +8149,9 @@ mod tests {
     #[test]
     fn a_closed_daemon_waits_for_a_client_taking_its_answer_slowly() {
         let mut t = Test::new("sl");
-        t.daemon.request_timeout = Duration::from_millis(500);
+        // A request's time each piece has, many times what one takes this client: a host at
+        // a load of 31 slowed its reads fourfold, and a piece of 64 KiB missed 500 ms.
+        t.daemon.request_timeout = Duration::from_secs(3);
         t.run(|t| {
             let living = slots::Living::new(&t.daemon, 0);
             t.daemon.close();
@@ -8152,11 +8160,12 @@ mod tests {
             let answer = vec![b'x'; 1 << 20];
             std::thread::scope(|s| {
                 let writer = s.spawn(|| living.answer(&ours, kind::ERR, &answer));
-                // 32 KiB every 50 ms: the whole answer in about 1.6 s.
-                let mut piece = vec![0; 32 << 10];
+                // 16 KiB every 60 ms: the whole answer in about 3.9 s, past a request's time,
+                // each piece of it in about 240 ms.
+                let mut piece = vec![0; 16 << 10];
                 let (t0, mut taken, mut let_go) = (Instant::now(), 0, None);
                 while taken < answer.len() + 5 && let_go.is_none() {
-                    std::thread::sleep(Duration::from_millis(50));
+                    std::thread::sleep(Duration::from_millis(60));
                     match std::io::Read::read(&mut client, &mut piece) {
                         Ok(0) | Err(_) => break,
                         Ok(n) => taken += n,
@@ -8174,7 +8183,7 @@ mod tests {
                 );
                 written.unwrap();
                 assert_eq!(taken, answer.len() + 5);
-                assert!(t0.elapsed() > 2 * t.daemon.request_timeout, "{:?}", t0.elapsed());
+                assert!(t0.elapsed() > t.daemon.request_timeout, "{:?}", t0.elapsed());
             });
             drop(living);
             assert!(lock(&t.daemon.live).is_empty());

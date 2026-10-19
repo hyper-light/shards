@@ -901,6 +901,16 @@ pub fn sizes(resources: &shards_ipc::Resources, host: Option<u64>) -> (u32, u64,
     }
 }
 
+/// The bytes of each /dev/shm of a microVM, its own and each run's alike (D156): half of
+/// `most_mib`, all the memory, in MiB, it may have, as Linux sizes a tmpfs by default
+/// (Documentation/filesystems/tmpfs.rst). What a browser's renderers and a data loader's
+/// workers share memory through, where Docker gives a container 64 MiB of its host's, which
+/// Playwright's docs and PyTorch's README tell its users to raise. Its guest is told them
+/// on its kernel's command line (`shards_shm`, init run.rs `SHM`), and `inspect` says them.
+pub fn shm_bytes(most_mib: u64) -> u64 {
+    most_mib.saturating_mul(1 << 19)
+}
+
 /// The template a run of `rootfs` on `guest` with `cfg`'s shape restores: named by the
 /// SHA-256 of everything that goes into it, the snapshot format included.
 pub fn template(home: &Path, guest: &Guest, rootfs: &Path, cfg: &Config) -> PathBuf {
@@ -1141,6 +1151,7 @@ fn compose(image: Option<&RunConfig>, asked: &Run) -> Result<Options, String> {
         hostname: asked.hostname.clone(),
         interactive: asked.interactive,
         tty: asked.tty.map(|(rows, cols)| shards_abi::run::Size { rows, cols }),
+        terms: asked.terms.clone(),
     })
 }
 

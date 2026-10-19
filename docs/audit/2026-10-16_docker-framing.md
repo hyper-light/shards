@@ -158,7 +158,11 @@ Reviewed feature by feature, each D-entry's design against what it took from Doc
       and what agents run share memory through it: a browser's renderers, a data loader's
       workers (Playwright's docs and PyTorch's README tell containers' users to raise it).
       The microVM's holds half its memory, as Linux sizes a tmpfs (tmpfs.rst); each run's
-      own, 64 MiB, dockerd's `DefaultShmSize` (D156). To size each run's as the microVM's.
+      own was 64 MiB, dockerd's `DefaultShmSize`. Done: every /dev/shm of a microVM, each
+      run's and each build step's, is half the memory it may have (D156).
+    - A command's terminal was told TERM=xterm, dockerd's, 8 colours, whatever its client's
+      terminal was. Done: its client's type where its root describes it, else
+      xterm-256color where the client's terminal speaks it, else xterm (D16, PM M263).
     - What happened to a home's microVMs, for `events --since`: the last 256 events,
       dockerd's `eventsLimit`, gone with the daemon. To keep them in the home, as long as
       the disk's share for them allows, derived.

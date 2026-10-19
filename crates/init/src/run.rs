@@ -415,14 +415,10 @@ fn mount_root(device: &str) -> Result<(), Failure> {
     mount(".", "/", "", libc::MS_MOVE, "")?;
     chdir_chroot(".", true)?;
     chdir_chroot("/", false)?;
-    // The microVM's /dev/shm, a run's under `--ipc host` (D156), as large as a host's is
-    // by default: half its memory (Documentation/filesystems/tmpfs.rst), all of it the
-    // plugged memory's where it has some.
-    let shm = match &plug {
-        Some(plug) => format!("mode=1777,size={}", plug.full() / 2),
-        None => "mode=1777".to_string(),
-    };
-    container_mounts(&shm)?;
+    // The microVM's /dev/shm, a run's under `--ipc host` (D156), sized as every /dev/shm
+    // of the microVM is ([`SHM`]), from here on.
+    size_shm(plug.as_ref());
+    container_mounts(shm())?;
     container_files()?;
     loopback_up().map_err(|e| setup_failed(e.to_string()))?;
     // A VM with a network: eth0 as the host named it, before any snapshot.
@@ -466,9 +462,32 @@ fn mount_root(device: &str) -> Result<(), Failure> {
     masked()
 }
 
-/// The options of a run's own /dev/shm (D156), 64 MiB, as Docker's default is (moby
-/// daemon/config/config.go).
-pub(crate) const OWN_SHM: &str = "mode=1777,size=65536k";
+/// The options of each /dev/shm of a microVM (D156): its own, each run's and each
+/// joiner's, and a builder's steps', all of one size: half of all the memory the microVM may
+/// have, as Linux sizes a tmpfs by default (Documentation/filesystems/tmpfs.rst), where a
+/// browser's renderers and a data loader's workers share memory. Its daemon says the bytes
+/// on the kernel's command line (`shards_shm=BYTES`, shards' `run::shm_bytes`), which
+/// `inspect` says too; where it says none, half of all the guest may plug, else tmpfs's
+/// own default, half what it boots with. Set as it boots ([`size_shm`]), before its
+/// snapshot, which keeps it; read by each fork and each restore of it.
+static SHM: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+/// Sizes each /dev/shm of the microVM ([`SHM`]): `plug` is its memory to plug, where it
+/// plugs any.
+pub(crate) fn size_shm(plug: Option<&crate::plug::Plug>) {
+    let given = std::env::var("shards_shm")
+        .ok()
+        .and_then(|bytes| bytes.parse::<u64>().ok())
+        .filter(|&bytes| bytes > 0);
+    let bytes = given.or_else(|| plug.map(|p| p.full() / 2));
+    let _ = SHM.set(bytes.map_or_else(|| "mode=1777".to_string(), |b| format!("mode=1777,size={b}")));
+}
+
+/// The options of each /dev/shm of the microVM ([`SHM`]): tmpfs's own default where none
+/// was set.
+pub(crate) fn shm() -> &'static str {
+    SHM.get().map_or("mode=1777", String::as_str)
+}
 
 /// A run's mounts, in the root this process is in, with /dev/shm of options `shm` (moby
 /// daemon/pkg/oci/defaults.go has the same), and its devices: /dev holds its devices
@@ -996,7 +1015,7 @@ fn isolate(join: Option<libc::pid_t>, joiner: bool) -> Result<(), i32> {
         return Ok(());
     }
     let (nosuid, noexec, nodev) = (libc::MS_NOSUID, libc::MS_NOEXEC, libc::MS_NODEV);
-    let own_shm = std::ffi::CString::new(OWN_SHM).map_err(|_| libc::EINVAL)?;
+    let own_shm = std::ffi::CString::new(shm()).map_err(|_| libc::EINVAL)?;
     // SAFETY: unshare(2), mount(2) and umount2(2) on NUL-terminated strings that outlive
     // the calls; this process is a single-threaded fork of init.
     unsafe {
@@ -2540,6 +2559,7 @@ impl Standby {
             tty: Vec::new(),
             null_stdin: true,
             setup: mounts.clone(),
+            terms: Vec::new(),
             caps: default_caps(),
         }
         .encode();
@@ -2700,6 +2720,12 @@ impl Standby {
             tty: pty.as_ref().map(|p| p.peer.clone()).unwrap_or_default(),
             null_stdin,
             setup: setup.clone(),
+            // Its TERM chosen in its own root, which the standby is in (terms.rs).
+            terms: if pty.is_some() {
+                spec.terms.clone()
+            } else {
+                Vec::new()
+            },
             caps: process.caps.unwrap_or_else(default_caps),
         }
         .encode();
@@ -2820,6 +2846,15 @@ fn standby(ends: Ends, isolation: Isolation) -> ! {
     let got = File::from(orders).read_to_end(&mut bytes);
     let decoded = got.ok().and_then(|_| Orders::decode(&bytes));
     let built = decoded.and_then(|mut o| {
+        // Its TERM, where it is to be chosen: the first of its client's terminal types
+        // this root describes, else the last (terms.rs).
+        if !o.terms.is_empty()
+            && let Some(term) = crate::terms::term(std::path::Path::new("/"), &o.terms, &o.env)
+        {
+            let mut entry = Vec::with_capacity(term.len().saturating_add(1));
+            entry.extend_from_slice(&term);
+            o.env.push(entry);
+        }
         let tty = std::mem::take(&mut o.tty);
         let tty = if tty.is_empty() {
             None

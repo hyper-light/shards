@@ -519,6 +519,54 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
             .into_bytes())
     }
 
+    /// The bytes of the /dev/shm container `c`'s command sees (D156), as `inspect` says
+    /// them: none where it has none (`--ipc none`); where it shares another's (`--ipc
+    /// container:NAME`), that one's; its own `--shm-size`; else its microVM's, half all the
+    /// memory that microVM may have (`run::shm_bytes`), its own or that of the microVM it
+    /// lives in: the one it joins (`--network container:NAME`), or whose own engine made it.
+    /// Each followed 64 steps at most, as a run names only those made before it. `request`
+    /// is `c`'s as it was asked for.
+    fn shm_size(&self, c: &crate::containers::Container, request: &shards_ipc::Run) -> i64 {
+        let read = |reference: &str| -> Option<(String, shards_ipc::Run)> {
+            let id = self.resolve(reference).ok()?;
+            let dir = super::lock(&self.containers).dir(&id);
+            let run = std::fs::read(dir.join(super::REQUEST))
+                .ok()
+                .and_then(|b| shards_ipc::Run::decode(&b))?;
+            Some((id, run))
+        };
+        let (mut id, mut run) = (c.id.clone(), request.clone());
+        // Whose /dev/shm it is.
+        for _ in 0..64 {
+            if run.ipc == "none" {
+                return 0;
+            }
+            match run.ipc.strip_prefix("container:").and_then(read) {
+                Some(next) => (id, run) = next,
+                None => break,
+            }
+        }
+        if run.shm_size != 0 {
+            return run.shm_size;
+        }
+        // The microVM it is in.
+        for _ in 0..64 {
+            let engine_of = super::lock(&self.containers)
+                .get(&id)
+                .and_then(|c| c.engine_made.as_ref().map(|m| m.of.clone()));
+            let next = match engine_of {
+                Some(of) => read(&of),
+                None => run.network.strip_prefix("container:").and_then(read),
+            };
+            match next {
+                Some(next) => (id, run) = next,
+                None => break,
+            }
+        }
+        let (_, _, most) = crate::run::sizes(&run.resources, crate::build::host_memory());
+        i64::try_from(crate::run::shm_bytes(most)).unwrap_or(i64::MAX)
+    }
+
     pub(super) fn container_value(
         &self,
         c: &crate::containers::Container,
@@ -533,6 +581,7 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
                 image: c.image.clone(),
                 ..shards_ipc::Run::default()
             });
+        let shm = self.shm_size(c, &request);
         // One its microVM's engine made is on that engine's network, or on the microVM's
         // own, its engine's host's (D181), as its engine says it.
         if let Some(m) = &c.engine_made {
@@ -710,6 +759,7 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
             net,
             user_nets,
             size: sized.then(|| self.container_sizes(c)),
+            shm,
         })
     }
 

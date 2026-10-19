@@ -310,6 +310,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
             hostname: base.hostname.clone(),
             interactive: exec.interactive,
             tty: exec.tty.map(|(rows, cols)| shards_abi::run::Size { rows, cols }),
+            terms: exec.terms,
         };
         let mut spec = match crate::spec::spec(&options, |_| None) {
             Ok(spec) => spec,

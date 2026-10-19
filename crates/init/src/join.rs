@@ -943,7 +943,7 @@ pub fn build(join: Join, cgroup: &str) -> Result<Built, String> {
         return Err(last("its cgroup namespace"));
     }
     pivot()?;
-    crate::run::container_mounts(crate::run::OWN_SHM).map_err(|f| f.message)?;
+    crate::run::container_mounts(crate::run::shm()).map_err(|f| f.message)?;
     // Its /dev/shm (D156): the one it shares in place of its own, or none.
     match (&shm, join.ipc) {
         (Some(tree), _) => {

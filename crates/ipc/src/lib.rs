@@ -336,6 +336,9 @@ pub struct Exec {
     pub daemon: Identity,
     /// `--privileged`: every capability.
     pub privileged: bool,
+    /// `-t` from a client that says what its terminal is: its terminal types, as a run's
+    /// ([`Run::terms`]).
+    pub terms: Vec<String>,
 }
 
 impl Exec {
@@ -359,6 +362,7 @@ impl Exec {
         w.push(u8::from(self.stdin_terminal));
         put_identity(&mut w, &self.daemon);
         w.push(u8::from(self.privileged));
+        put_list(&mut w, &self.terms);
         w
     }
 
@@ -382,6 +386,7 @@ impl Exec {
             stdin_terminal: r.flag()?,
             daemon: r.identity()?,
             privileged: r.flag()?,
+            terms: r.list()?,
         };
         r.0.is_empty().then_some(exec)
     }
@@ -706,6 +711,11 @@ pub struct Run {
     /// `--cgroup-parent`: the slice of the user's service manager its microVM's processes
     /// are made in (D183), as given; empty for none.
     pub cgroup_parent: String,
+    /// `-t` from a client that says what its terminal is: the terminal types it is, best
+    /// first, of which the command is told the first its root describes where its
+    /// environment names no TERM; empty where the client says none, as an Engine API client
+    /// says none.
+    pub terms: Vec<String>,
 }
 
 /// The streams a create says its client attaches (Config.AttachStdin, AttachStdout and
@@ -1305,6 +1315,7 @@ impl Run {
             ),
             ("engine-nets", self.engine_nets.clone()),
             ("cgroup-parent", one(&self.cgroup_parent)),
+            ("terms", self.terms.clone()),
             ("device-requests", {
                 let mut values = Vec::new();
                 for r in &self.device_requests {
@@ -1487,6 +1498,7 @@ impl Run {
                     "engine-net" => run.engine_net = values.into_iter().next().unwrap_or_default(),
                     "engine-nets" => run.engine_nets = values,
                     "cgroup-parent" => run.cgroup_parent = values.into_iter().next().unwrap_or_default(),
+                    "terms" => run.terms = values,
                     "device-requests" => {
                         let mut rest = values.iter();
                         while rest.len() > 0 {
@@ -2000,6 +2012,7 @@ mod tests {
             tty: Some((24, 80)),
             stdin_terminal: true,
             privileged: true,
+            terms: vec!["xterm-kitty".into()],
             daemon: Identity {
                 dev: 1,
                 ino: 2,
@@ -2218,6 +2231,7 @@ mod tests {
             engine_net: "app".into(),
             engine_nets: vec!["app\0\0web\0www".into(), "back\x0010.244.2.9".into()],
             cgroup_parent: "agents-ci.slice".into(),
+            terms: vec!["xterm-ghostty".into(), "xterm-256color".into()],
         };
         let bytes = run.encode();
         let identity = run.daemon;
@@ -2288,6 +2302,7 @@ mod tests {
             engine_net: String::new(),
             engine_nets: Vec::new(),
             cgroup_parent: String::new(),
+            terms: Vec::new(),
             ..run.clone()
         };
         let boundary = earlier.encode().len() - 4;

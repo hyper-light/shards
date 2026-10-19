@@ -259,7 +259,7 @@ virtio-pmem with DAX ([image-storage](../research/image-storage.md) R1, R2). The
   - It moves the overlay over the initramfs, which cannot be unmounted
     (`Documentation/filesystems/ramfs-rootfs-initramfs.rst`).
   - It then makes Docker's mounts (moby `daemon/pkg/oci/defaults.go`): proc, read-only
-    sysfs, devpts, a 64 MiB `/dev/shm`, and mqueue.
+    sysfs, devpts, a `/dev/shm` (half the memory the microVM may have, D156), and mqueue.
   - `/dev` is devtmpfs, the VM's own devices.
   - Unlike Docker, there is no cgroup mount, `/etc/hosts` or `resolv.conf` yet.
 - **Protocol.** Once the image is mounted, the guest dials host port 1024 over vsock, so
@@ -369,9 +369,17 @@ virtio-pmem with DAX ([image-storage](../research/image-storage.md) R1, R2). The
     (`TIOCSCTTY`), so the command leads a session in the terminal's foreground.
   - The pty keeps the kernel's settings: the command's output reaches the host as a
     terminal shows it, one stream with `\r\n` line ends and its echoes, and `logs` keeps
-    it so, as a script reading a TTY container's log expects. `TERM=xterm` joins PATH and
-    HOSTNAME (dockerd's value: the client's own terminal type, where the image knows it,
-    would serve its programs better, open in docs/audit/2026-10-16_docker-framing.md).
+    it so, as a script reading a TTY container's log expects.
+  - Its TERM, where its environment (the image's, the user's) names none: its client's
+    terminal type where its root describes it (a terminfo entry where ncurses looks, by
+    the command's own TERMINFO, HOME and TERMINFO_DIRS), else xterm-256color where the
+    client's terminal speaks 256 colours or more (its own entry on the client's host says
+    so, or COLORTERM says 24-bit colour), else xterm, dockerd's. Of 17 common images, 14
+    describe xterm-256color and none ghostty's, kitty's or wezterm's own types; Alpine's
+    describe none, xterm included (PM M263). The client says its types with a run's or an
+    exec's request; the standby chooses in the run's own root, so a joiner's is its own
+    image's, and each exec's is its own client's. An Engine API client says none:
+    xterm.
   - Its input never closes: a terminal's input lasts as long as its session. Under `-t`
     alone nothing writes it, and under `-it` the client's end only stops writing.
   - init reads the master until EIO, which Linux returns once every holder of the peer
@@ -5395,7 +5403,7 @@ descriptors.
   (M261), so an answer past that is what such a client leaves untaken. A slot writes an
   answer 64 KiB at a time, what a Linux FIFO holds, each piece a step on as its client
   takes it: a client taking a long answer slowly goes on (timed from the whole answer's
-  write, one reading 640 KiB a second was let go of half a second in, a request's time
+  write, one reading 16 KiB at a time, 60 ms apart, was let go of a request's time in, 3 s
   in the test, still reading). A stop's slot is not counted: the daemon holds that session
   until its exit, which is how `daemon stop` learns of it.
 - **Many clients on one list** (PM M262). On macOS a client waiting in select(2) for its
@@ -7294,18 +7302,28 @@ with its host, so "host" is the microVM's, and what one run shares with another 
 inside the microVM the other runs in (D119).
 
 - **IPC: a namespace and a /dev/shm of the run's own.** A run's standby enters an IPC
-  namespace of its own and mounts its own 64 MiB /dev/shm before the template's snapshot,
-  and its execs enter both. Before, a workload shared init's IPC namespace and /dev/shm.
-  No restore time resolved, and memory per VM within one 16 KiB step of what two
-  templates of one machine differ by (PM M228).
+  namespace of its own and mounts its own /dev/shm before the template's snapshot, and its
+  execs enter both. Before, a workload shared init's IPC namespace and /dev/shm. No restore
+  time resolved, and memory per VM within one 16 KiB step of what two templates of one
+  machine differ by (PM M228).
+- **Every /dev/shm of a microVM is half the memory it may have.** A microVM's /dev/shm is
+  its own kernel's tmpfs, bounded by the microVM's memory alone, and what agents run share
+  memory through: a browser's renderers, a data loader's workers (Playwright's docs and
+  PyTorch's README tell containers' users to raise Docker's 64 MiB, which a container takes
+  of its host's). The microVM's own, each run's, each joiner's and a builder's steps' are
+  all half the memory the microVM may have in all (`run::sizes`, D148: a run without a
+  limit, the host's), as Linux sizes a tmpfs by default (Documentation/filesystems/
+  tmpfs.rst). The daemon says the bytes on the guest's command line (`shards_shm`,
+  `run::shm_bytes`), so each template's shape has its own; init sizes each mount by them,
+  and `inspect`'s `ShmSize` says them, held to what the guest's statfs says. A run's
+  memory limit still holds what it writes there, as memory. A run wrote 128 MiB there,
+  where 64 MiB refused it (`a_microvm_takes_its_ipc_hostname_cgroups_umask_and_writable_layer`).
   - `--ipc private` (the default) and `shareable`: its own; another run may share a
     `shareable` run's alone, as Docker's daemon allows (moby
     daemon/container_operations_unix.go, getIPCContainer). `--shm-size` sizes its own.
   - `--ipc none`: its own namespace, and no /dev/shm at all.
   - `--ipc host`: the microVM's, init's namespace and /dev/shm, which no run has unless it
-    asks. A host's /dev/shm is half its memory by default (tmpfs's default size,
-    Documentation/filesystems/tmpfs.rst), and runs ask for the host's for a /dev/shm larger
-    than 64 MiB: the microVM's is half the microVM's memory, all it may plug (D148).
+    asks, of the same size as its own.
   - `--ipc container:NAME`: NAME's namespace and /dev/shm, inside the microVM this run
     joins (`--network container:` of a run in NAME's microVM, D119), NAME `shareable` (or
     `host`, the microVM's); a run sharing a third's is followed to it. A joiner's own is

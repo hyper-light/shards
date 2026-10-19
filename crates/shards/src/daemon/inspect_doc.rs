@@ -45,9 +45,6 @@ fn or_private(mode: &str) -> &str {
     if mode.is_empty() { "private" } else { mode }
 }
 
-/// dockerd's default /dev/shm (daemon/config, DefaultShmSize).
-const SHM_SIZE: i64 = 64 << 20;
-
 /// A health check's state, as `State.Health` holds it.
 pub(super) struct Health {
     pub status: &'static str,
@@ -109,6 +106,9 @@ pub(super) struct Facts<'a> {
     pub user_nets: Vec<UserNet>,
     /// With `--size`: SizeRw and SizeRootFs.
     pub size: Option<(i64, i64)>,
+    /// The bytes of the /dev/shm its command sees (D156): its microVM's, half all the memory
+    /// that microVM may have, its own `--shm-size`, another's it shares, or none.
+    pub shm: i64,
 }
 
 fn s(v: &str) -> Value {
@@ -916,10 +916,7 @@ fn host_config(f: &Facts<'_>) -> Value {
         )
         .field("UTSMode", s(&run.uts))
         .field("UsernsMode", s(&run.userns))
-        .field(
-            "ShmSize",
-            int(if run.shm_size == 0 { SHM_SIZE } else { run.shm_size }),
-        )
+        .field("ShmSize", int(f.shm))
         .tagged(
             "Sysctls",
             Some("Sysctls"),
@@ -1594,10 +1591,19 @@ mod tests {
                 net: None,
                 user_nets: Vec::new(),
                 size: None,
+                // What --shm-size gave, held to dockerd's below; a microVM's own size is
+                // held to its guest's in tests/containers.rs.
+                shm: run.shm_size,
             };
             let mut got: serde_json::Value = serde_json::from_str(&json(&document(&facts))).unwrap();
             let mut want = want.clone();
             normalize(&mut got, &mut want, started);
+            // A microVM's /dev/shm is half the memory it may have (D156), its host's to say,
+            // where dockerd's is 64 MiB of its own, and with --ipc none there is none: held to
+            // what its guest sees in tests/containers.rs.
+            if run.shm_size == 0 {
+                got["HostConfig"]["ShmSize"] = want["HostConfig"]["ShmSize"].clone();
+            }
             // Swappiness and the OOM killer kept off as given (D159), the run's microVM's
             // own, which a cgroup v2 host's dockerd discards.
             if let Some(s) = run.resources.memory_swappiness {

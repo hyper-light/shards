@@ -11537,9 +11537,10 @@ fn a_microvm_swaps_and_throttles_as_its_limits_say() {
 }
 
 /// A run's IPC, hostname, cgroups, umask and writable layer as its microVM has them (D156).
-/// A run has an IPC namespace and a 64 MiB /dev/shm of its own, which its execs share;
-/// `--shm-size` sizes it, `--ipc none` takes it away, and `--ipc host` gives the
-/// microVM's, as large as half its memory. A run joining another's microVM shares that
+/// A run has an IPC namespace and a /dev/shm of its own, which its execs share, as large as
+/// the microVM's: half the memory it may have, which `inspect` says, and which takes what a
+/// browser's renderers write there (Docker's 64 MiB refused 128 MiB); `--shm-size` sizes
+/// it, `--ipc none` takes it away, and `--ipc host` gives the microVM's. A run joining another's microVM shares that
 /// one's (`--ipc container:NAME`) only where it said so (`--ipc shareable`), a joiner's
 /// too; `--ipc host` runs share the microVM's. `--uts host` names the run by its host,
 /// `--cgroupns host` shows it the microVM's cgroup tree, `--umask` is its command's and its
@@ -11564,12 +11565,19 @@ fn a_microvm_takes_its_ipc_hostname_cgroups_umask_and_writable_layer() {
             .unwrap_or_default()
             .to_string()
     };
-    // Its own /dev/shm, and the sizes asked of it.
-    assert_eq!(shm(&ipc(&[], "")), (64u64 << 20).to_string());
+    // Its own /dev/shm, the microVM's size, and the sizes asked of it.
+    let host_shm: u64 = shm(&ipc(&["--ipc", "host"], "")).parse().unwrap();
+    assert!(host_shm > 128 << 20, "the microVM's /dev/shm: {host_shm}");
+    assert_eq!(shm(&ipc(&[], "")), host_shm.to_string());
     assert_eq!(shm(&ipc(&["--shm-size", "16m"], "")), (16u64 << 20).to_string());
     assert_eq!(shm(&ipc(&["--ipc", "none"], "")), "none");
-    let host_shm: u64 = shm(&ipc(&["--ipc", "host"], "")).parse().unwrap();
-    assert!(host_shm > 64 << 20, "the microVM's /dev/shm: {host_shm}");
+    let wrote = run_in(&home, &image, &["--rm"], &["big", "/dev/shm/renderer", "128"]);
+    assert_eq!(wrote.status, Some(0), "128 MiB in its /dev/shm: {wrote}");
+    let made = run_in(&home, &image, &["-d", "--name", "sized"], &["sleep", "600"]);
+    assert_eq!(made.status, Some(0), "{made}");
+    let said = shards(&["inspect", "-f", "{{.HostConfig.ShmSize}}", "sized"]);
+    assert_eq!(said.stdout.trim(), host_shm.to_string(), "{said}");
+    assert_eq!(shards(&["rm", "-f", "sized"]).status, Some(0));
     for (flags, said) in [
         (&["--ipc", "bogus"][..], "--ipc bogus: give private"),
         (
@@ -11638,9 +11646,25 @@ fn a_microvm_takes_its_ipc_hostname_cgroups_umask_and_writable_layer() {
     assert!(shared.contains("sysv 42 yes\nfile 42 yes\n"), "{shared}");
     let own = ipc(&["--network", "container:owner"], "42");
     assert!(
-        own.contains("shm 67108864\nsysv 42 errno 2\nfile 42 errno 2\n"),
+        own.contains(&format!("shm {host_shm}\nsysv 42 errno 2\nfile 42 errno 2\n")),
         "{own}"
     );
+    // inspect says the /dev/shm each sees: a joiner's, of the microVM it lives in, whatever
+    // memory limit it has of its own; none where it has none.
+    let sized = |name: &str, flags: &[&str]| {
+        let mut all = vec!["-d", "--name", name];
+        all.extend(flags);
+        let r = run_in(&home, &image, &all, &["sleep"]);
+        assert_eq!(r.status, Some(0), "{name}: {r}");
+        let said = shards(&["inspect", "-f", "{{.HostConfig.ShmSize}}", name]);
+        assert_eq!(shards(&["rm", "-f", name]).status, Some(0));
+        said.stdout.trim().to_string()
+    };
+    assert_eq!(
+        sized("joined", &["--network", "container:owner", "-m", "256m"]),
+        host_shm.to_string()
+    );
+    assert_eq!(sized("unshared", &["--ipc", "none"]), "0");
     let microvms = ipc(&["--network", "container:owner", "--ipc", "host"], "42");
     assert!(
         microvms.contains("sysv 42 errno 2\nfile 42 errno 2\n"),

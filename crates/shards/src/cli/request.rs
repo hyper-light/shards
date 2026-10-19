@@ -308,6 +308,11 @@ pub fn exec(path: &str, args: &[OsString]) -> ExitCode {
         interactive: parsed.bool("interactive"),
         detach: parsed.bool("detach"),
         tty: parsed.bool("tty").then(stdout_size),
+        terms: if parsed.bool("tty") {
+            super::terms::terms()
+        } else {
+            Vec::new()
+        },
         // `-it` without a terminal is refused by the daemon, once it has found the
         // container: the CLI inspects it first, so that "No such container" comes first
         // (docker/cli exec.go RunExec).
@@ -673,8 +678,14 @@ fn request(parsed: &Parsed) -> Result<Run, String> {
         name: given("name"),
         detach: parsed.bool("detach"),
         remove: parsed.bool("rm"),
-        // Sized as the CLI's stdout is, even detached (docker/cli create.go, ConsoleSize).
+        // Sized as the CLI's stdout is, even detached (docker/cli create.go, ConsoleSize),
+        // and told what this terminal is.
         tty: parsed.bool("tty").then(stdout_size),
+        terms: if parsed.bool("tty") {
+            super::terms::terms()
+        } else {
+            Vec::new()
+        },
         network: network::mode(&attachments).to_string(),
         endpoints,
         stop_signal: parsed

@@ -345,6 +345,7 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
                 hostname: base.hostname.clone(),
                 interactive: false,
                 tty: None,
+                terms: Vec::new(),
             };
             match crate::spec::spec(&options, |_| None) {
                 Ok(spec) => spec,

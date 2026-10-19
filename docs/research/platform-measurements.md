@@ -9673,3 +9673,34 @@ revision before comparing a changed API/implementation.
   select(2) (M253): a slot's FIFOs have one reader each. Which waiting client takes the
   next record is the kernel's to say: kqueue(2) wakes each for every record, and one
   takes it.
+
+### M263. Which terminal types common images describe (D16)
+
+- **Question.** A command with a terminal learns its keys and colours from TERM and its
+  root's terminfo database. dockerd tells every one TERM=xterm, 8 colours. Which of the
+  types people's terminals are do common images describe: the client's own, and
+  xterm-256color, which most terminals today speak?
+- **Method.** `docs/research/measurements/terminfo/images.sh SHARDS IMAGE...`: in a
+  microVM of shards' for each image, looks for each type's entry where ncurses looks
+  (/etc/terminfo, /lib/terminfo, /usr/share/terminfo; filed by its first character or that
+  character's hex code, terminfo(5)): xterm, xterm-256color, xterm-ghostty, xterm-kitty,
+  alacritty, wezterm, foot, tmux-256color, screen-256color, vt100, linux and dumb. 17 images
+  of mirror.gcr.io/library, 2026-10-18, on M257's host (Fedora 44); the survey reads the
+  images' files, and nothing of shards' it ran them with.
+- **Results.**
+
+  | images | the types described |
+  |---|---|
+  | alpine:3.22, busybox:1.37, node:22-alpine | none |
+  | debian:12-slim, debian:13-slim, debian:13, ubuntu:24.04, python:3.13-slim, node:22-slim, golang:1.25, ruby:3.4-slim, nginx:1.29, postgres:17, redis:8 | xterm, xterm-256color, tmux-256color, screen-256color, vt100, linux, dumb |
+  | python:3.13-alpine | those, and alacritty |
+  | fedora:42, amazonlinux:2023 | those, alacritty and foot |
+
+  - 14 of 17 describe xterm-256color; none describes xterm-ghostty, xterm-kitty or wezterm;
+    3 describe nothing, xterm included (Alpine's entries are a package of their own,
+    ncurses-terminfo-base).
+- **Consequence.** A command is told its client's type where its root describes it; else
+  xterm-256color where the client's terminal speaks 256 colours or more (by its own entry
+  on the client's host, or COLORTERM's 24-bit), which 14 of the 17 describe; else xterm.
+  Held by `a_terminal_is_told_its_clients_type_where_its_image_describes_it`
+  (tests/tty.rs).
