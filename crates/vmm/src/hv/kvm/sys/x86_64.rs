@@ -25,6 +25,7 @@ pub const IOCTLS: &[u64] = &[
     KVM_SET_IDENTITY_MAP_ADDR,
     KVM_CREATE_IRQCHIP,
     KVM_IRQ_LINE,
+    KVM_IRQ_LINE_STATUS,
     KVM_RUN,
     KVM_SET_REGS,
     KVM_GET_SREGS,
@@ -67,6 +68,8 @@ pub const KVM_GET_SUPPORTED_CPUID: u64 = 0xC008_AE05;
 pub const KVM_SET_TSS_ADDR: u64 = 0xAE47;
 pub const KVM_SET_IDENTITY_MAP_ADDR: u64 = 0x4008_AE48;
 pub const KVM_CREATE_IRQCHIP: u64 = 0xAE60;
+/// KVM_IRQ_LINE, saying what became of the change: an edge's pulse's (`Irqs::pulse`).
+pub const KVM_IRQ_LINE_STATUS: u64 = 0xC008_AE67;
 pub const KVM_SET_REGS: u64 = 0x4090_AE82;
 pub const KVM_GET_SREGS: u64 = 0x8138_AE83;
 pub const KVM_SET_SREGS: u64 = 0x4138_AE84;
@@ -122,6 +125,7 @@ const _: () = {
     assert!(size(KVM_GET_CLOCK) == CLOCK_SIZE && size(KVM_SET_CLOCK) == CLOCK_SIZE);
     assert!(size(KVM_GET_REGS) == size_of::<kvm_regs>());
     assert!(size(KVM_PRE_FAULT_MEMORY) == size_of::<kvm_pre_fault_memory>());
+    assert!(size(KVM_IRQ_LINE_STATUS) == size_of::<super::kvm_irq_level>());
 };
 /// `kvm_irqchip.chip_id`s.
 pub const IRQCHIP_PIC_MASTER: u32 = 0;
@@ -365,6 +369,19 @@ impl Kvm {
 }
 
 impl VmFd {
+    /// As `irq_line`, saying what became of it (api.rst, KVM_IRQ_LINE_STATUS): above 0
+    /// delivered, 0 coalesced with one still pending, below 0 held by a masked pin or
+    /// refused.
+    pub fn irq_line_status(&self, irq: u32, level: bool) -> io::Result<i32> {
+        let mut l = super::kvm_irq_level {
+            irq,
+            level: u32::from(level),
+        };
+        // SAFETY: a pointer to a live struct, whose first word KVM writes the status into.
+        unsafe { ioctl(self.fd(), KVM_IRQ_LINE_STATUS, (&raw mut l) as libc::c_ulong) }?;
+        Ok(i32::from_ne_bytes(l.irq.to_ne_bytes()))
+    }
+
     /// As `Kvm::check_extension`, for capabilities that depend on the VM.
     pub fn check_extension(&self, cap: u64) -> io::Result<i32> {
         // SAFETY: the capability number is passed by value.

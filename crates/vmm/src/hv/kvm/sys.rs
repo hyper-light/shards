@@ -29,8 +29,6 @@ pub const KVM_GET_VCPU_MMAP_SIZE: u64 = 0xAE04;
 pub const KVM_CREATE_VCPU: u64 = 0xAE41;
 pub const KVM_SET_USER_MEMORY_REGION: u64 = 0x4020_AE46;
 pub const KVM_IRQ_LINE: u64 = 0x4008_AE61;
-#[cfg(target_arch = "x86_64")]
-pub const KVM_IRQ_LINE_STATUS: u64 = 0xC008_AE67;
 pub const KVM_RUN: u64 = 0xAE80;
 pub const KVM_GET_MP_STATE: u64 = 0x8004_AE98;
 pub const KVM_SET_MP_STATE: u64 = 0x4004_AE99;
@@ -48,8 +46,6 @@ const _: () = {
     }
     assert!(size(KVM_SET_USER_MEMORY_REGION) == size_of::<kvm_userspace_memory_region>());
     assert!(size(KVM_IRQ_LINE) == size_of::<kvm_irq_level>());
-    #[cfg(target_arch = "x86_64")]
-    assert!(size(KVM_IRQ_LINE_STATUS) == size_of::<kvm_irq_level>());
     assert!(size(KVM_GET_DEVICE_ATTR) == size_of::<kvm_device_attr>());
     assert!(size(KVM_SET_DEVICE_ATTR) == size_of::<kvm_device_attr>());
     assert!(size(KVM_IRQFD) == size_of::<kvm_irqfd>());
@@ -355,20 +351,6 @@ impl VmFd {
         };
         // SAFETY: a pointer to a live struct.
         unsafe { ioctl(self.fd(), KVM_IRQ_LINE, (&raw const l) as libc::c_ulong) }.map(drop)
-    }
-
-    /// As [`irq_line`](Self::irq_line), saying what became of it (api.rst,
-    /// KVM_IRQ_LINE_STATUS): above 0 delivered, 0 coalesced with one still pending, below
-    /// 0 held by a masked pin or refused. x86's pulses' (`Irqs::pulse`).
-    #[cfg(target_arch = "x86_64")]
-    pub fn irq_line_status(&self, irq: u32, level: bool) -> io::Result<i32> {
-        let mut l = kvm_irq_level {
-            irq,
-            level: u32::from(level),
-        };
-        // SAFETY: a pointer to a live struct, whose first word KVM writes the status into.
-        unsafe { ioctl(self.fd(), KVM_IRQ_LINE_STATUS, (&raw mut l) as libc::c_ulong) }?;
-        Ok(i32::from_ne_bytes(l.irq.to_ne_bytes()))
     }
 
     /// Raises `gsi` each time `event` is written, in the kernel; with `resample`, a
