@@ -846,6 +846,16 @@ struct Daemon<D: Disk = Real> {
     /// When it last said its clients in hand reached its most (slots.rs).
     at_most_said: Mutex<Option<Instant>>,
     clients_ended: AtomicBool,
+    /// The request slots offered and served, by number, each from its offer until its
+    /// serving ends (slots.rs): a daemon is quiet, and exits, only once none holds it
+    /// ([`slots_hold`](Self::slots_hold)), so that what it said last reaches each client
+    /// still reading, a stepping-aside daemon's RESTART among them, which its exit had cut
+    /// off before the slot passed it on ("the command's microVM stopped before the command
+    /// ended", x86_64 CI; PM M261).
+    live: Mutex<HashMap<u64, slots::Live>>,
+    /// When it closed ([`close`](Self::close)): what a slot waits on its client from, once
+    /// it has.
+    closed_at: Mutex<Option<Instant>>,
     /// Held as the Engine API's socket is removed by [`close`](Self::close) and as the
     /// listener binds it again ([`relisten_api`](Self::relisten_api)): a daemon's own
     /// removal is never undone.
@@ -1351,6 +1361,7 @@ fn take_lock(home: &Path) -> Result<Option<File>, String> {
         .open(&path)
         .map_err(|e| format!("{}: {e}", path.display()))?;
     let mut deadline = Instant::now() + TAKEOVER;
+    let mut said = false;
     loop {
         // SAFETY: flock(2) on a descriptor we own.
         if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
@@ -1364,6 +1375,20 @@ fn take_lock(home: &Path) -> Result<Option<File>, String> {
         // step aside for its own.
         if shards_ipc::slots::served(home) || UnixStream::connect(shards_ipc::SOCKET).is_ok() {
             return Ok(None);
+        }
+        // Held and offering nothing: its lists may have been removed by hand, which its
+        // maker learns of only as a name of the home comes or goes. One made and removed
+        // says so, once, never through a link at its name (D185).
+        if !std::mem::replace(&mut said, true) {
+            let name = home.join("daemon.waiting");
+            if std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&name)
+                .is_ok()
+            {
+                let _ = std::fs::remove_file(&name);
+            }
         }
         if shards_ipc::exiting(home) {
             deadline = Instant::now() + TAKEOVER;
@@ -1421,6 +1446,8 @@ impl<D: Disk> Daemon<D> {
             requests_end: io::pipe()?,
             at_most_said: Mutex::new(None),
             clients_ended: AtomicBool::new(false),
+            live: Mutex::default(),
+            closed_at: Mutex::new(None),
             socket_at: Mutex::new(()),
             stoppers: Mutex::default(),
             runs: Mutex::default(),
@@ -1476,7 +1503,10 @@ impl<D: Disk> Daemon<D> {
     /// here on.
     fn close(&self) {
         let _at = lock(&self.socket_at);
-        if !self.closed.swap(true, Ordering::SeqCst) {
+        if !self.closed.load(Ordering::SeqCst) {
+            // When first, so that no look at the slots finds it closed and not since when.
+            *lock(&self.closed_at) = Some(Instant::now());
+            self.closed.store(true, Ordering::SeqCst);
             let _ = std::fs::remove_file(engine::SOCKET);
             // Its slots' lists go at once: a client looking for one asks the next daemon.
             shards_ipc::slots::unoffer(&self.home);
@@ -1591,21 +1621,27 @@ impl<D: Disk> Daemon<D> {
             }
             self.age_pools();
             self.mark_collection();
+            // Closed as of here, before its slots are looked at, which hold it otherwise once
+            // it has: a close since, by another thread, is the next pass's.
+            let closed = self.closed.load(Ordering::SeqCst);
+            let (held, lets_go) = self.slots_hold();
             let quiet = self.busy.load(Ordering::SeqCst) == 0
+                && !held
                 && lock(&self.runs).is_empty()
                 && self.engine.open.load(Ordering::SeqCst) == 0;
             let idle = quiet && lock(&self.last).elapsed() >= self.idle;
-            if !self.closed.load(Ordering::SeqCst) && (self.stopping.load(Ordering::SeqCst) || idle) {
+            if !closed && (self.stopping.load(Ordering::SeqCst) || idle) {
                 self.close();
                 // A client may have taken a slot before its lists went.
                 continue;
             }
-            if self.closed.load(Ordering::SeqCst) && quiet {
+            if closed && quiet {
                 // Closed by another thread since this pass began: the contexts' sockets go
                 // first, on the next.
                 if !relays.is_empty() {
                     continue;
                 }
+                self.leave_slots();
                 self.exit();
             }
             let looking = !api_ready || !relays_ready || watches.iter().any(Option::is_none);
@@ -1614,12 +1650,25 @@ impl<D: Disk> Daemon<D> {
             } else {
                 self.next_duty(quiet)
             };
-            contexts_changed = self.wait_for_work(
+            // A slot's client given until then to go on.
+            let timeout = timeout
+                .into_iter()
+                .chain(lets_go.map(|at| at.saturating_duration_since(Instant::now())))
+                .min();
+            let home_changed;
+            (home_changed, contexts_changed) = self.wait_for_work(
                 api.as_ref().filter(|_| api_ready),
                 relays_ready.then_some(&relays),
                 &watches,
                 timeout,
             );
+            // The slots' lists may have gone with a name of the home (a removal of the home
+            // takes `requests/`), or a daemon waiting for the lock finds none and says so
+            // by a name it makes there (`take_lock`): the maker looks. Where the home's
+            // watch could not be made, it looks at each of the listener's looks.
+            if home_changed || watches[0].is_none() {
+                self.tell_slots(slots::Event::Look);
+            }
         }
     }
 
@@ -1680,14 +1729,15 @@ impl<D: Disk> Daemon<D> {
 
     /// Waits for a client at the Engine API's socket (`api`, when given), or a context's
     /// (`relays`), a wake, a change a watch sees, or `timeout` (for ever if `None`):
-    /// whether the contexts the home joined may have changed.
+    /// whether a name of the home came or went, and whether the contexts the home joined
+    /// may have changed.
     fn wait_for_work(
         &self,
         api: Option<&UnixListener>,
         relays: Option<&relay::Relays>,
         watches: &[Option<FileWatch>; 3],
         timeout: Option<Duration>,
-    ) -> bool {
+    ) -> (bool, bool) {
         let pollfd = |fd: RawFd| libc::pollfd {
             fd,
             events: libc::POLLIN,
@@ -1725,7 +1775,7 @@ impl<D: Disk> Daemon<D> {
                 watch.clear();
             }
         }
-        ready(3)
+        (ready(1), ready(3))
     }
 
     pub(super) fn take<'s, 'e>(&'s self, threads: &'s Threads<'s, 'e>, conn: UnixStream) {
@@ -1781,6 +1831,8 @@ impl<D: Disk> Daemon<D> {
             lock(&self.clients).remove(&number);
             self.busy.fetch_sub(1, Ordering::SeqCst);
             log(format!("a client's thread: {e}"));
+            // Room again: the slots' maker, which waits for word of it, offers on.
+            self.wake_listener();
         }
     }
 
@@ -7961,8 +8013,8 @@ mod tests {
     }
 
     /// The slots' lists someone removes while the daemon serves are made again, offered
-    /// on; once a stop has unoffered them, never: a daemon told to stop never offers
-    /// again, as it never listened again (PM M188).
+    /// on, once its maker is told to look; once a stop has unoffered them, never: a daemon
+    /// told to stop never offers again, as it never listened again (PM M188).
     #[test]
     fn a_daemon_told_to_stop_never_offers_again() {
         use shards_ipc::slots as s;
@@ -7971,19 +8023,161 @@ mod tests {
             t.t.daemon
                 .serve_slots(t.threads, s::Requests::open(&t.home).unwrap());
             let free = t.home.join(s::DIR).join("free");
-            t.until("no slot was offered", |_| s::served(&t.home));
-            // Its lists' names, as one removes them by hand.
+            // A slot's names beside the lists: the maker's first look is done. Served
+            // alone, its lists are as they were opened, and that look could find them half
+            // removed below and make them again as they go (gate e2, under load).
+            t.until("no slot was offered", |_| {
+                std::fs::read_dir(t.home.join(s::DIR))
+                    .unwrap()
+                    .any(|e| !matches!(e.unwrap().file_name().to_str(), Some("free" | "free-streams")))
+            });
+            // Its lists' names, as one removes them by hand, and its maker told to look,
+            // as the listener tells it once a name of the home comes or goes.
             for list in ["free", "free-streams"] {
                 std::fs::remove_file(t.home.join(s::DIR).join(list)).unwrap();
             }
+            t.daemon.tell_slots(slots::Event::Look);
             t.until("removed lists were not made again", |_| {
                 s::served(&t.home) && free.exists()
             });
             t.daemon.close();
             assert!(!s::served(&t.home), "served once closed");
-            // Past the maker's looks, two of which would have made them again.
-            std::thread::sleep(slots::LOOK * 2);
+            // Told to look again, and ended: it made nothing again.
+            t.daemon.tell_slots(slots::Event::Look);
+            t.until("the slots' maker did not end", |_| {
+                lock(&t.daemon.slot_events).is_none()
+            });
             assert!(!free.exists(), "a daemon told to stop offered again");
+        });
+    }
+
+    /// A closed daemon's slots hold it while each client takes what it is given: one read
+    /// late is still whole, as a stepping-aside daemon's RESTART must reach its client
+    /// (cut off by its exit before its slot passed it on, x86_64 CI); and a client that
+    /// takes nothing holds it no longer than a request's time from the start of the piece
+    /// it leaves untaken, so that a stopped client keeps no daemon from exiting (PM M261).
+    #[test]
+    fn a_closed_daemon_waits_for_its_clients_to_take_their_answers() {
+        use shards_ipc::slots as s;
+        let mut t = Test::new("la");
+        t.daemon.request_timeout = Duration::from_millis(500);
+        t.run(|t| {
+            t.t.daemon
+                .serve_slots(t.threads, s::Requests::open(&t.home).unwrap());
+            // An answer far past a FIFO's buffer, which its slot is still writing once the
+            // daemon's handling of it has ended.
+            let name = "x".repeat(300 << 10);
+            let command = shards_ipc::Command {
+                argv: vec!["inspect".to_string(), name.clone()],
+                registry_env: Vec::new(),
+                east_asian: false,
+                now: 0,
+                utc_offset: 0,
+                terminal: false,
+                width: 0,
+                color: false,
+                daemon: Identity::default(),
+            };
+            let ask = || {
+                let s::Taken::Slot(client) = s::take(&t.home, 0).unwrap() else {
+                    panic!("no daemon");
+                };
+                client.ask(kind::CONTAINER, &command.encode(), &[]).unwrap();
+                client
+            };
+            let late = ask();
+            let never = ask();
+            t.until("its answers were not being written", |d| {
+                d.busy.load(Ordering::SeqCst) == 0
+                    && lock(&d.live).values().filter(|l| l.writing.is_some()).count() == 2
+            });
+            t.daemon.close();
+            assert!(t.daemon.slots_hold().0, "closed, held by no answer being written");
+            let mut err = Vec::new();
+            let end = loop {
+                match late.recv().unwrap() {
+                    Some(f) if f.kind == kind::ERR => err.extend(f.payload),
+                    Some(f) if f.kind == kind::END => break f.payload,
+                    Some(_) => {}
+                    None => panic!("the answer ended unsaid, after {} bytes", err.len()),
+                }
+            };
+            assert_eq!(end, [1]);
+            assert!(
+                String::from_utf8_lossy(&err).contains(&name),
+                "{} bytes",
+                err.len()
+            );
+            // All of its answer read, its slot holds the daemon no longer, though its
+            // client has not ended its own: the other's alone, whose write began before the
+            // close.
+            t.until("a slot whose client has its whole answer held the daemon", |d| {
+                lock(&d.live).len() == 1
+            });
+            drop(late);
+            let since = lock(&t.daemon.live)
+                .values()
+                .find_map(|l| l.writing)
+                .expect("its write");
+            t.until("a client that takes nothing held its closed daemon", |d| {
+                !d.slots_hold().0
+            });
+            assert!(
+                since.elapsed() >= t.daemon.request_timeout,
+                "{:?}",
+                since.elapsed()
+            );
+            // Its slot is still there, its write waiting: exited without, the daemon says so.
+            assert_eq!(lock(&t.daemon.live).len(), 1);
+            drop(never);
+            t.until("its slot did not end with its client", |d| {
+                lock(&d.live).is_empty()
+            });
+        });
+    }
+
+    /// A closed daemon's slot holds it while its client takes a long answer slowly, though
+    /// all of it takes that client far past a request's time: each piece it takes is a step
+    /// on. Timed from the whole answer's write, its client was let go of a request's time
+    /// in, still reading, and the daemon would have exited mid-answer.
+    #[test]
+    fn a_closed_daemon_waits_for_a_client_taking_its_answer_slowly() {
+        let mut t = Test::new("sl");
+        t.daemon.request_timeout = Duration::from_millis(500);
+        t.run(|t| {
+            let living = slots::Living::new(&t.daemon, 0);
+            t.daemon.close();
+            let (mut client, ours) = std::io::pipe().unwrap();
+            let ours = File::from(std::os::fd::OwnedFd::from(ours));
+            let answer = vec![b'x'; 1 << 20];
+            std::thread::scope(|s| {
+                let writer = s.spawn(|| living.answer(&ours, kind::ERR, &answer));
+                // 32 KiB every 50 ms: the whole answer in about 1.6 s.
+                let mut piece = vec![0; 32 << 10];
+                let (t0, mut taken, mut let_go) = (Instant::now(), 0, None);
+                while taken < answer.len() + 5 && let_go.is_none() {
+                    std::thread::sleep(Duration::from_millis(50));
+                    match std::io::Read::read(&mut client, &mut piece) {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => taken += n,
+                    }
+                    if !t.daemon.slots_hold().0 {
+                        let_go = Some(t0.elapsed());
+                    }
+                }
+                // Its reader gone, a write left waiting fails, and the writer ends.
+                drop(client);
+                let written = writer.join().unwrap();
+                assert_eq!(
+                    let_go, None,
+                    "a client taking its answer let go of, {taken} bytes in"
+                );
+                written.unwrap();
+                assert_eq!(taken, answer.len() + 5);
+                assert!(t0.elapsed() > 2 * t.daemon.request_timeout, "{:?}", t0.elapsed());
+            });
+            drop(living);
+            assert!(lock(&t.daemon.live).is_empty());
         });
     }
 

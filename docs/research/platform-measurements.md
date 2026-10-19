@@ -9503,3 +9503,173 @@ revision before comparing a changed API/implementation.
   run, on the efficiency cores): 9bbd7c55 10 threads and no context switch; the change 11
   threads (the file watches' reader, M257) and 30 switches, every one the slot maker's,
   which looked at its lists once a second.
+
+### M260. An idle daemon, its slots' maker woken only by what happens (D185)
+
+- **Question.** Slice 4's slots' maker looked at its lists once a second, so that lists
+  removed by hand were made again: an idle daemon woke 30 times in 30 s, where 9bbd7c55's
+  switched no thread (M259). Does it wake for nothing once the maker looks only as it is
+  told (the listener, as a name of the home comes or goes; a daemon waiting for the lock,
+  by a name it makes there) and sweeps only while a slot is taken with no request read?
+- **Method.** `docs/research/measurements/daemon-idle/threads.sh SHARDS 30`, a daemon in a
+  home of its own with no run, on the host's efficiency cores (`taskset -c 16-31`), twice,
+  the change's `test-release` build; M259's host, 2026-10-18.
+- **Results.** 11 threads, no context switch in either 30 s, and no CPU tick (of 100 a
+  second). `an_idle_daemon_wakes_for_nothing` (tests/daemon.rs, Linux) holds it: a quiet
+  3 s within 30 s of the daemon's start; with a one-second timer put back into the maker,
+  it fails, naming `slots` (mutation-checked on this host).
+- **Consequence.** An idle daemon costs nothing of its host's CPU until something happens,
+  as before slice 4. What the timer did is now done on the home's word: lists removed with
+  `requests/` are made again as the listener sees the name go, and lists removed by hand
+  inside it as the next client's daemon says so
+  (`lists_removed_by_hand_are_made_again_for_the_next_client`; without that word, the client
+  failed once its daemon had waited out `TAKEOVER` and it its own start, 51 s:
+  mutation-checked).
+
+### M261. A closing daemon's last answers, and its exit (D185)
+
+- **Question.** x86_64 CI failed three tests at 79caf2d7 (run 39191414199), each a run's
+  client hearing its slot end unanswered, "the command's microVM stopped before the command
+  ended": `rm_cancels_a_run_whose_vm_is_not_ready` and
+  `a_container_outlives_a_daemon_that_dies` (tests/containers.rs), whose copy of shards
+  makes the daemon before it step aside, and `a_rebuilt_binary_replaces_the_daemon`
+  (tests/daemon.rs). A daemon that steps aside answers RESTART and exits once no client is
+  in hand; its slots pass what it says on, each on threads of its own. Does its exit cut
+  off what they have yet to pass on? And once a daemon waits for them, what may a client
+  that reads nothing hold it to?
+- **Method.** `docs/research/measurements/slot-bridges/ab.sh N TREE…`: the three tests, N
+  rounds in each tree (20, and 50 for the change), pinned with `taskset -c 2,3` to two CPUs that two busy loops also
+  run on, about a 4-vCPU CI runner's pressure; 2026-10-18, M257's host (Intel Core
+  i9-14900HX, Fedora 44, Linux 6.19.10). The trees: 79caf2d7; a first cut, which counted
+  only the slots passing a daemon's messages on (its bridges); and the change, which counts
+  each slot from its offer until its client has all the daemon will say (`Daemon::live`).
+  `docs/research/measurements/fifo-capacity/capacity.c DIR STEP` writes to a FIFO and a pipe
+  no reader reads, their ends not blocking, STEP bytes at a time (1 KiB, 64 KiB and 1 MiB)
+  until EAGAIN, then by halves to the byte, on that host and on an Apple M5 Max (macOS 26.4.1,
+  Darwin 25.4.0), 3 rounds each.
+- **Results.**
+
+  | tree | runs that failed |
+  |---|---|
+  | 79caf2d7 | 23 of 40 |
+  | bridges counted | 1 of 40 (`rm_cancels_a_run_whose_vm_is_not_ready`, the same message) |
+  | every slot counted | 0 of 100 |
+
+  | | macOS | Linux |
+  |---|---|---|
+  | a FIFO takes | 8,192 bytes | 65,536 bytes |
+  | a pipe takes | 65,536 bytes | 65,536 bytes |
+  | PIPE_BUF | 512 | 4,096 |
+
+  - The same at every STEP, in every round.
+  - The first cut left uncounted the slots a client takes as the daemon's lists go: each is
+    answered RESTART by its own thread, not by a bridge, and the daemon could exit first.
+  - Counting every slot, a client that reads nothing would hold the daemon for ever. A
+    client's answer is all in its FIFO once the daemon's last message is written there, read
+    as well after the daemon has gone; but a bridge that had written all still waited for
+    its client to end its own messages, and held a daemon told to stop for 10 s (seen as
+    `a_stopping_daemon_waits_for_no_client_that_reads_nothing` took 10.1 s on macOS, where
+    the whole answer had gone into the FIFO, its client holding the first message
+    unwritten). A slot now lets go of the daemon as its last message is written.
+- **Consequence.** A daemon exits once no slot holds it: what it said last reaches each
+  client still reading, and a client that takes nothing holds a closing daemon no longer
+  than a request's time (`REQUEST_TIMEOUT`, 10 s) from the write it leaves, or from its
+  last step or the close. Past a FIFO's 8 KiB on macOS and 64 KiB on Linux, the rest of an
+  answer is what such a client leaves untaken. Held by
+  `a_closed_daemon_waits_for_its_clients_to_take_their_answers` (src/daemon.rs: an answer
+  read after the close is whole; a slot whose client has all of it lets go; one whose
+  client takes nothing, a request's time after its write began), mutation-checked three ways
+  (a closed daemon held by no slot, as 79caf2d7 was; a write held for ever; no letting go
+  once all is written), and by `a_stopping_daemon_waits_for_no_client_that_reads_nothing`
+  (tests/daemon.rs, two clients of `inspect` whose stdout nobody reads: the one whose
+  answer was all written has it whole, and the daemon waits only the other's 10 s and says
+  so), mutation-checked three ways (no wake when a slot's time is up: the stop failed at
+  60 s; held slots ignored: the daemon exited at once, leaving the waiting write and the
+  slots it had offered; no letting go: both clients' slots held it the 10 s).
+
+### M262. Many clients waiting on one list for their slots (D185)
+
+- **Question.** A gate on macOS failed `inspecting_a_run_as_it_ends_never_deadlocks`
+  (tests/containers.rs): one of its 16 `inspect` clients waited 60 s for a request slot
+  while its daemon served the other 15. Every client of a home waits for its slot on one
+  FIFO, `requests/free`, reading the next record; on macOS each waited in select(2), as
+  M253 has every reader of a FIFO do there, then read. Does a client waiting so sleep
+  through the records the others take? Which ways of waiting see each record; and, on
+  macOS, how does a client that waits in one of those learn that its list's writer has
+  gone, which there only select(2) and a read see (M253)?
+- **Method.** `docs/research/measurements/fifo-readers/readers.c DIR CLIENTS SECONDS MODE
+  [PAUSE_US] [threads|processes]`: a maker keeps two 16-byte records waiting on the FIFO
+  (counted by FIONREAD of its own reader) and writes another as each is taken, as the
+  daemon's maker does; each of CLIENTS threads, or processes, takes records over and over
+  as a client of shards does: opens the list not waiting, reads, and where nothing is
+  there, waits as MODE says and reads again. MODE: select(2) and then a waiting read, as
+  shards did on macOS; a waiting read(2), as on Linux; or select(2), poll(2), kqueue(2) or
+  epoll(7), each then a read not waiting. A client has stuck when it has waited 5 s while
+  the others took 100 records or more. 16 clients, 0, 500 and 2,000 µs between each
+  client's takes, 20 s, 3 rounds of each, 2026-10-18, on an Apple M5 Max (macOS 26.4.1,
+  Darwin 25.4.0) and on M257's host (Intel Core i9-14900HX, Fedora 44, Linux 6.19.10); as
+  processes, on macOS, 10 s, 1 round. `ends.c DIR CLIENTS ROUNDS HOW` (macOS): 16 client
+  processes wait in kqueue(2) on an empty FIFO for a record (EVFILT_READ), its name's
+  removal (EVFILT_VNODE: NOTE_DELETE, NOTE_RENAME, NOTE_REVOKE) and its writer's exit
+  (EVFILT_PROC: NOTE_EXIT); the writer removes the name and holds its ends, as a closing
+  daemon does (`unlink`), exits leaving the name, as a killed daemon does (`exit`), or
+  both; 10 rounds each. `stolen.c DIR MODE ROUNDS SETTLE_US` (macOS): one client waits; a
+  record comes and the maker's own reader takes it back at once, as another client would;
+  then a second record comes and stays; 20 rounds, 20 ms to settle.
+- **Results.** Clients stuck, of 16, in each round, then the longest wait seen:
+
+  | macOS, threads, 20 s | 0 µs apart | 500 µs | 2,000 µs |
+  |---|---|---|---|
+  | select(2), then a waiting read (shards before) | 12, 12, 12; 20.0 s | 1, 0, 1; 17.2 s | 0, 0, 0; 0.004 s |
+  | select(2) | 12, 12, 14; 20.0 s | 4, 3, 0; 12.6 s | 0, 0, 0; 0.001 s |
+  | a waiting read(2) | 0, 0, 0; 0.005 s | 0, 0, 0; 0.001 s | 0, 0, 0; 0.008 s |
+  | poll(2) | 0, 0, 0; 0.196 s | 0, 0, 0; 0.125 s | 0, 0, 0; 0.003 s |
+  | kqueue(2) | 0, 0, 0; 0.056 s | 0, 0, 0; 0.126 s | 0, 0, 0; 0.002 s |
+
+  | macOS, processes, 10 s | 0 µs apart | 500 µs |
+  |---|---|---|
+  | select(2), then a waiting read | 12; 9.6 s | 0; 3.4 s |
+  | select(2) | 13; 9.9 s | 0; 0.005 s |
+  | a waiting read(2) | 0; 0.006 s | 0; 0.006 s |
+  | poll(2) | 0; 0.013 s | 0; 0.005 s |
+  | kqueue(2) | 0; 0.012 s | 0; 0.004 s |
+
+  - On Linux no client stuck, in any way of waiting, pause or round: the longest wait
+    0.005 s, with 2.4 to 12.1 million records taken in 20 s at 0 µs apart.
+  - A stuck client's select(2) never returned while the others took hundreds of
+    thousands of records, its wait returning 0 times: it was not losing each race for a
+    record, but no longer woken at all, threads and processes alike. The longer each
+    client paused between takes, the fewer stuck: none at 2,000 µs.
+  - A lone client whose record is taken from under it as it wakes still wakes for the
+    next: 20 of 20 rounds, with select(2), poll(2) and kqueue(2) alike (`stolen.c`). What
+    in XNU loses the wakeups was not found. A writer wakes select(2)'s waiters only while
+    the receiving socket buffer's `SB_SEL` is set (`sb_notify`, bsd/kern/uipc_socket2.c),
+    and `soo_select` clears it whenever it finds data ready (bsd/kern/sys_socket.c), other
+    threads registered or not (xnu-12377.101.15); the one interleaving tried, above, does
+    not lose a wakeup.
+
+  | ends.c, macOS, 16 clients, 10 rounds | woke within 2 s | by EVFILT_READ | by EVFILT_VNODE | by EVFILT_PROC |
+  |---|---|---|---|---|
+  | the name removed, its ends held | 160 | 0 | 160 | 0 |
+  | the writer exits, the name left | 160 | 0 | 0 | 160 |
+  | both | 160 | 0 | 160 | 0 |
+
+  - kqueue(2) says nothing of a FIFO's writer going (M253), but says its name's removal
+    and its writer's exit, each to every client waiting.
+- **The test.** `clients_waiting_on_one_list_wake_for_its_records` (crates/ipc/src/slots.rs):
+  16 clients take records as fast as they come for 2 s, then each takes one more and ends,
+  records offered as before; one that no longer wakes leaves them untaken, which fails it
+  after 5 s. With select(2) put back in a client's wait, it failed in 6 of 6 runs, 8 to 12
+  of the 16 clients asleep (32 clients for 1 s caught 5 of 6; 2 s caught 6 of 6 at 16, 32
+  and 64 clients); with kqueue(2), it passed 10 of 10 runs, and 10 of 10 beside 20 busy
+  loops. Clients that each took a whole slot (`take`, its FIFOs made and removed by the
+  maker each time) did not reproduce it: the making held the rate of records far below
+  what loses wakeups.
+- **Consequence.** On macOS a client waits for its slot in kqueue(2): for its list's
+  records, its name's removal, and its daemon's exit, the process `daemon.pid` names. It
+  reads after each, not waiting. Where `daemon.pid` names no live process, it looks again
+  every 250 ms, its only wait with a timeout. On Linux it waits in a read, which sees
+  records and the writer's end alike. Every other reader of a FIFO on macOS keeps
+  select(2) (M253): a slot's FIFOs have one reader each. Which waiting client takes the
+  next record is the kernel's to say: kqueue(2) wakes each for every record, and one
+  takes it.

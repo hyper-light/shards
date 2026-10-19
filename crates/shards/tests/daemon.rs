@@ -1120,6 +1120,188 @@ fn a_home_removed_once_is_gone_with_its_daemon() {
     eventually("what was left of the home was left", || !path.exists());
 }
 
+/// Lists removed by hand while the daemon idles, every name of the home kept: the next
+/// client finds none and starts a daemon, which, finding the home's lock held, says so by
+/// a name it makes and removes in the home, so that the daemon serving makes its lists
+/// again (D185). The client is answered by the daemon that served before, which says it
+/// made them again; the one it started steps aside. No VM needed.
+#[test]
+fn lists_removed_by_hand_are_made_again_for_the_next_client() {
+    let home = TempDir::new("daemon-hand");
+    let daemon = start_daemon(&home, None);
+    for list in ["free", "free-streams"] {
+        std::fs::remove_file(home.join("requests").join(list)).unwrap();
+    }
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_LOCAL_STORE", "none".as_ref()),
+    ];
+    let asked = run_shards_env(&["ps"], &[] as &[&str], &env, TIMEOUT);
+    assert_eq!(asked.status, Some(0), "{asked}");
+    assert_eq!(daemon_pid(&home), Some(daemon), "another daemon serves");
+    let log = std::fs::read_to_string(home.join("daemon.log")).unwrap();
+    assert!(log.contains("was removed; offering slots there again"), "{log}");
+    let stopped = run_shards_env(&["daemon"], &["stop"], &env, TIMEOUT);
+    assert_eq!(stopped.status, Some(0), "{stopped}");
+}
+
+/// A daemon told to stop waits for a client that takes nothing of its answer no longer
+/// than a request's time (10 s) from that write's start, says so, and exits; for one whose
+/// answer is all written, not at all, and that client reads it whole once it reads, a FIFO
+/// keeping what was written as its writer goes. Here two clients of `inspect` whose stdout
+/// is a pipe nobody reads yet, as a pager's that waits: each has the answer's first message
+/// in its hands, a volume with a label of 100 KiB, more than its pipe takes. For the one,
+/// a name nothing has follows, its error a message of 120 KiB, more than the slot's FIFO
+/// takes (8 KiB on macOS, 64 KiB on Linux, PM M261), whose write waits; the other's answer
+/// ends there, all written. Before, the daemon waited for both for ever, its slots counted
+/// until each had passed all on and its client had ended. No VM needed.
+#[test]
+fn a_stopping_daemon_waits_for_no_client_that_reads_nothing() {
+    use std::os::fd::AsRawFd;
+    let home = TempDir::new("daemon-unread");
+    start_daemon(&home, None);
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_LOCAL_STORE", "none".as_ref()),
+    ];
+    let label = format!("k={}", "v".repeat(100 << 10));
+    let made = run_shards_env(&["volume"], &["create", "--label", &label, "big"], &env, TIMEOUT);
+    assert_eq!(made.status, Some(0), "{made}");
+    let missing = "m".repeat(120 << 10);
+    let inspect = |args: &[&str]| {
+        let mut child = common::command()
+            .arg("inspect")
+            .args(args)
+            .env("SHARDS_HOME", &*home)
+            .env("SHARDS_LOCAL_STORE", "none")
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let out = child.stdout.take().unwrap();
+        let err = child.stderr.take().unwrap();
+        (child, out, err)
+    };
+    let cut = inspect(&["big", &missing]);
+    let whole = inspect(&["big"]);
+    // Each has the volume in its hands, and stops reading as it waits on its full pipe.
+    for out in [&cut.1, &whole.1] {
+        let deadline = Instant::now() + TIMEOUT;
+        loop {
+            let mut waiting: libc::c_int = 0;
+            // SAFETY: FIONREAD of the pipe's end this test holds, into an int on this stack.
+            let asked = unsafe { libc::ioctl(out.as_raw_fd(), libc::FIONREAD, &mut waiting) };
+            assert_eq!(asked, 0);
+            if waiting > 0 {
+                break;
+            }
+            assert!(Instant::now() < deadline, "a client showed nothing");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+    let stopped = run_shards_env(&["daemon"], &["stop"], &env, TIMEOUT);
+    assert_eq!(stopped.status, Some(0), "{stopped}");
+    // The slot whose write waited held the daemon a request's time, and only it: unless
+    // the stop came before the daemon had the error to write, and cut it off with the rest.
+    let log = std::fs::read_to_string(home.join("daemon.log")).unwrap();
+    let without: Vec<&str> = log.lines().filter(|l| l.contains("exiting without it")).collect();
+    assert!(without.len() <= 1, "{log}");
+    for line in &without {
+        assert!(line.contains("took no more of its answer"), "{line}");
+        let held = line
+            .split(" in ")
+            .nth(1)
+            .and_then(|rest| rest.split(';').next())
+            .and_then(|d| d.strip_suffix('s'))
+            .and_then(|s| s.parse::<f64>().ok())
+            .unwrap_or_default();
+        assert!(held >= 10.0, "{line}");
+    }
+    // Each read at last: all of what is written is read.
+    let read =
+        |(mut child, mut out, mut err): (Child, std::process::ChildStdout, std::process::ChildStderr)| {
+            let said = std::thread::spawn(move || {
+                let mut text = String::new();
+                err.read_to_string(&mut text).unwrap();
+                text
+            });
+            let mut shown = String::new();
+            out.read_to_string(&mut shown).unwrap();
+            let status = child.wait().unwrap();
+            (status.code(), shown, said.join().unwrap())
+        };
+    let (status, shown, said) = read(whole);
+    assert_eq!(status, Some(0), "{said}");
+    assert!(
+        shown.contains(label.trim_start_matches("k=")),
+        "{} bytes shown",
+        shown.len()
+    );
+    // The other's answer ends where its client took nothing.
+    let (status, _, said) = read(cut);
+    assert_eq!(
+        status,
+        Some(125),
+        "{}",
+        said.chars().take(300).collect::<String>()
+    );
+    if without.is_empty() {
+        eprintln!("the stop came before the daemon had the error to write");
+    }
+}
+
+/// An idle daemon wakes for nothing: within a while of its start, a few seconds in which
+/// none of its threads is switched to, by its own wake or the kernel's (Linux: each
+/// thread's context switches, /proc/PID/task/TID/status). Its slots' maker woke once a
+/// second to look at its lists (PM M259); it sleeps until it is told something now. No VM
+/// needed.
+#[cfg(target_os = "linux")]
+#[test]
+fn an_idle_daemon_wakes_for_nothing() {
+    let home = TempDir::new("daemon-idle");
+    let daemon = start_daemon(&home, None);
+    let switches = || -> std::collections::BTreeMap<String, (String, u64)> {
+        let mut each = std::collections::BTreeMap::new();
+        for task in std::fs::read_dir(format!("/proc/{daemon}/task")).unwrap() {
+            let task = task.unwrap().path();
+            let tid = task.file_name().unwrap().to_string_lossy().into_owned();
+            let comm = std::fs::read_to_string(task.join("comm")).unwrap_or_default();
+            let status = std::fs::read_to_string(task.join("status")).unwrap_or_default();
+            let n: u64 = status
+                .lines()
+                .filter(|l| l.contains("ctxt_switches:"))
+                .filter_map(|l| l.split_whitespace().last()?.parse::<u64>().ok())
+                .sum();
+            each.insert(tid, (comm.trim().to_string(), n));
+        }
+        each
+    };
+    // What it does as it starts may take a while on a busy host: the first quiet window
+    // within 30 s is what is asked for.
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let mut woke = Vec::new();
+    while Instant::now() < deadline {
+        let before = switches();
+        std::thread::sleep(Duration::from_secs(3));
+        woke = switches()
+            .into_iter()
+            .filter(|(tid, (_, n))| before.get(tid).is_none_or(|(_, was)| was != n))
+            .map(|(tid, (comm, _))| format!("{comm} ({tid})"))
+            .collect();
+        if woke.is_empty() {
+            break;
+        }
+    }
+    assert!(
+        woke.is_empty(),
+        "threads that woke in every 3 s while it idled: {woke:?}"
+    );
+    let env = [("SHARDS_HOME", home.as_os_str())];
+    let stopped = run_shards_env(&["daemon"], &["stop"], &env, TIMEOUT);
+    assert_eq!(stopped.status, Some(0), "{stopped}");
+}
+
 /// Clients waiting long, on a container's end (`wait`) or its output (`logs -f`), shut
 /// out no other, however few the daemon serves at once: here one (review 7.9).
 #[test]

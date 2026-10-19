@@ -141,11 +141,28 @@ jobs:
               "(Get-CimInstance Win32_Processor).Name; (Get-CimInstance Win32_ComputerSystem).HypervisorPresent; (Get-WindowsOptionalFeature -Online -FeatureName HypervisorPlatform).State" || true ;;
           esac
       # The GPU's renderer (D144), from pinned sources: `shards` then carries shards-vm-gpu.
+      # Built once for each version of its script and of the runner's image, and kept: its
+      # sources' hosts answering 502 and 504 for eight minutes (run 39191414199) left a run
+      # with none, and none of its macOS tests ran.
+      - name: The GPU's renderer's key
+        if: matrix.target == 'aarch64-apple-darwin'
+        id: gpu-key
+        shell: bash
+        run: echo "image=$ImageOS-$ImageVersion" >> "$GITHUB_OUTPUT"
+      - name: The GPU's renderer, as built before
+        if: matrix.target == 'aarch64-apple-darwin'
+        id: gpu-kept
+        uses: actions/cache@v6.1.0
+        with:
+          path: ${{ runner.temp }}/gpu-libs
+          key: gpu-libs-${{ steps.gpu-key.outputs.image }}-${{ hashFiles('scripts/gpu-libs') }}
       - name: The GPU's renderer
         if: matrix.target == 'aarch64-apple-darwin'
         shell: bash
         run: |
-          scripts/gpu-libs "$RUNNER_TEMP/gpu-libs"
+          if [ "${{ steps.gpu-kept.outputs.cache-hit }}" != true ]; then
+            scripts/gpu-libs "$RUNNER_TEMP/gpu-libs"
+          fi
           echo "SHARDS_GPU_LIBS=$RUNNER_TEMP/gpu-libs" >> "$GITHUB_ENV"
       - name: Lints (production code never panics; clippy.toml exempts tests)
         shell: bash

@@ -9,7 +9,7 @@
 //! reader. It names each slot it offers on `requests/free`, or `requests/free-streams` for
 //! one with streams, a record of [`RECORD`] bytes, written whole (far under `PIPE_BUF`, 512
 //! bytes on macOS); a client takes one by reading a record, which no other client can then
-//! read, and where none is there its read waits for one, in the order clients came. It
+//! read, and where none is there it waits for one ([`take`]). It
 //! opens its slot's `answer` and the streams it uses, then `say`, and writes which streams
 //! it opened, what each descriptor its request stands for is ([`fds`]), and its request.
 //! The daemon, reading that, lets go of the other ends it held of them: from then on each
@@ -79,7 +79,9 @@ pub fn write_frame(mut to: &File, kind: u8, payload: &[u8]) -> io::Result<()> {
     to.write_all(&frame(kind, payload)?)
 }
 
-fn frame(kind: u8, payload: &[u8]) -> io::Result<Vec<u8>> {
+/// One message's bytes, as [`write_frame`] writes them: for a writer that writes them a
+/// piece at a time.
+pub fn frame(kind: u8, payload: &[u8]) -> io::Result<Vec<u8>> {
     if payload.len() > MAX_PAYLOAD {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -214,13 +216,19 @@ fn open_now(path: &Path, write: bool) -> io::Result<File> {
 
 /// `file`'s reads and writes wait again.
 fn blocking(file: File) -> io::Result<File> {
+    wait_on(&file)?;
+    Ok(file)
+}
+
+/// Sets `file`'s reads and writes to wait.
+fn wait_on(file: &File) -> io::Result<()> {
     // SAFETY: fcntl(2) on a descriptor `file` holds open.
     let flags = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_GETFL) };
     // SAFETY: as above.
     if flags < 0 || unsafe { libc::fcntl(file.as_raw_fd(), libc::F_SETFL, flags & !libc::O_NONBLOCK) } < 0 {
         return Err(io::Error::last_os_error());
     }
-    Ok(file)
+    Ok(())
 }
 
 /// The FIFO `path` opened by both ends, each waiting: `(reader, writer)`.
@@ -387,6 +395,19 @@ impl Requests {
         }
         let free = self.free.get(list(streams)).ok_or(io::ErrorKind::InvalidInput)?;
         (&*free).write_all(record.as_bytes())
+    }
+
+    /// How many slots on one list, with `streams` or without, no client has taken: the
+    /// records waiting in its FIFO, by the bytes its own reader has to read (FIONREAD,
+    /// pipe(7)), none of them read.
+    pub fn waiting(&self, streams: bool) -> io::Result<usize> {
+        let back = self.back.get(list(streams)).ok_or(io::ErrorKind::InvalidInput)?;
+        let mut bytes: libc::c_int = 0;
+        // SAFETY: FIONREAD of a FIFO this holds open, into an int on this stack.
+        if unsafe { libc::ioctl(back.as_raw_fd(), libc::FIONREAD, &mut bytes) } < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(usize::try_from(bytes).unwrap_or(0) / RECORD)
     }
 
     /// The slots offered on one list, with `streams` or without, that no client has taken:
@@ -704,44 +725,217 @@ pub struct Client {
 /// since it offered it.
 pub fn take(home: &Path, streams: u8) -> io::Result<Taken> {
     let dir = home.join(DIR);
-    let offers = if streams == 0 { FREE } else { FREE_STREAMS };
-    let free = match open_now(&dir.join(offers), false) {
-        Ok(free) => free,
-        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Taken::NoDaemon),
-        Err(e) => return Err(e),
-    };
-    let mut free = Some(free);
-    let mut waiting = None;
+    let list = dir.join(if streams == 0 { FREE } else { FREE_STREAMS });
     let mut record = [0u8; RECORD];
-    loop {
-        // A first read that does not wait: none there and no writer is no daemon.
-        let got = match (&free, &waiting) {
-            (Some(now), _) => match read_some(&mut &*now, &mut record) {
-                Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
-                    waiting = free.take().map(blocking).transpose()?;
-                    continue;
-                }
-                got => got?,
-            },
-            (None, Some(waits)) => read_some(&mut &*waits, &mut record)?,
-            (None, None) => return Err(io::Error::other("free: no reader")),
+    'list: loop {
+        let mut waits = match open_now(&list, false) {
+            Ok(free) => Waits::new(free),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Taken::NoDaemon),
+            Err(e) => return Err(e),
         };
-        match got {
-            0 => return Ok(Taken::NoDaemon),
-            RECORD => {}
-            _ => {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "a short record on free",
-                ));
+        loop {
+            // None there and no writer is no daemon.
+            let Some(got) = waits.record(home, &list, &mut record)? else {
+                // Its name names another list now, or its daemon has gone: the one there.
+                continue 'list;
+            };
+            match got {
+                0 => return Ok(Taken::NoDaemon),
+                RECORD => {}
+                _ => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "a short record on free",
+                    ));
+                }
+            }
+            let n = number(&record)?;
+            match open_slot(&dir, n, streams) {
+                Ok(client) => return Ok(Taken::Slot(client)),
+                // Removed since it was offered: the next.
+                Err(e) if matches!(e.raw_os_error(), Some(libc::ENOENT | libc::ENXIO)) => {}
+                Err(e) => return Err(e),
             }
         }
-        let n = number(&record)?;
-        match open_slot(&dir, n, streams) {
-            Ok(client) => return Ok(Taken::Slot(client)),
-            // Removed since it was offered: the next.
-            Err(e) if matches!(e.raw_os_error(), Some(libc::ENOENT | libc::ENXIO)) => {}
-            Err(e) => return Err(e),
+    }
+}
+
+/// A client's wait on a list for its next record ([`take`]), the list opened not waiting.
+/// Many clients wait on one list at once. On Linux a read(2) waits, which wakes for a record
+/// and for the list's writer's end alike (PM M253, M262). On macOS select(2), which sees the
+/// writer's end, sleeps through records the other clients take: 12 of 16 clients waited
+/// out 20 s while the others took 1.4 million (M262), and one of an E2E test's waited 60 s
+/// while its daemon served the rest. There it waits in kqueue(2), which wakes for each
+/// record, and for the list's name going and its daemon's exit, which neither kqueue(2) nor
+/// poll(2) says as a writer's end (M253); then reads what is there, not waiting.
+struct Waits {
+    free: File,
+    #[cfg(not(target_os = "macos"))]
+    waiting: bool,
+    #[cfg(target_os = "macos")]
+    queue: Option<ListWatch>,
+}
+
+/// A list's readiness and lifetime. A missing or already-dead PID leaves no process
+/// event to wait for; only then a bounded wait checks its writers again.
+#[cfg(target_os = "macos")]
+struct ListWatch {
+    queue: std::os::fd::OwnedFd,
+    process: bool,
+}
+
+impl Waits {
+    fn new(free: File) -> Waits {
+        Waits {
+            free,
+            #[cfg(not(target_os = "macos"))]
+            waiting: false,
+            #[cfg(target_os = "macos")]
+            queue: None,
+        }
+    }
+
+    /// The next record's bytes, read into `record` from the list at `list` of `home`'s
+    /// daemon: 0 where it has no writer; `None` where its name names another list now, or
+    /// its daemon has gone.
+    #[cfg(not(target_os = "macos"))]
+    fn record(&mut self, _home: &Path, _list: &Path, record: &mut [u8; RECORD]) -> io::Result<Option<usize>> {
+        loop {
+            match read_some(&mut &self.free, record) {
+                // A first read that does not wait, then reads that do.
+                Err(e) if e.kind() == io::ErrorKind::WouldBlock && !self.waiting => {
+                    wait_on(&self.free)?;
+                    self.waiting = true;
+                }
+                got => return got.map(Some),
+            }
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    fn record(&mut self, home: &Path, list: &Path, record: &mut [u8; RECORD]) -> io::Result<Option<usize>> {
+        loop {
+            match read_some(&mut &self.free, record) {
+                Err(e) if e.kind() == io::ErrorKind::WouldBlock => {}
+                got => return got.map(Some),
+            }
+            let Some(watch) = &self.queue else {
+                self.queue = self.watch(home, list)?;
+                if self.queue.is_none() {
+                    return Ok(None);
+                }
+                // The writer may have exited between the empty read and registration.
+                // Read again with the watches installed before waiting on any event.
+                continue;
+            };
+            let retry = libc::timespec {
+                tv_sec: 0,
+                tv_nsec: 250_000_000,
+            };
+            let timeout = if watch.process {
+                std::ptr::null()
+            } else {
+                &raw const retry
+            };
+            let mut event = std::mem::MaybeUninit::<libc::kevent>::zeroed();
+            // SAFETY: kevent(2) on a kqueue this holds, writing at most one event into
+            // `event`; timeout is null or points to the live timespec above.
+            let n = unsafe {
+                libc::kevent(
+                    watch.queue.as_raw_fd(),
+                    std::ptr::null(),
+                    0,
+                    event.as_mut_ptr(),
+                    1,
+                    timeout,
+                )
+            };
+            if n < 0 {
+                let e = io::Error::last_os_error();
+                if e.kind() == io::ErrorKind::Interrupted {
+                    continue;
+                }
+                return Err(e);
+            }
+            if n == 0 {
+                // A PID unavailable on the last look may have been written since.
+                self.queue = None;
+                continue;
+            }
+            // SAFETY: kevent(2) returned one initialized event.
+            let event = unsafe { event.assume_init() };
+            if event.flags & libc::EV_ERROR != 0 {
+                let errno =
+                    i32::try_from(event.data).map_err(|_| io::Error::other("a list watch's errno"))?;
+                return Err(io::Error::from_raw_os_error(errno));
+            }
+            if event.filter != libc::EVFILT_READ {
+                return Ok(None);
+            }
+        }
+    }
+
+    /// A kqueue of the list's records, its name's going, and its daemon's exit; `None` where
+    /// its name names another list already. Its daemon is the one `daemon.pid` names, where
+    /// that one runs: one gone has left no writer, which a read sees.
+    #[cfg(target_os = "macos")]
+    fn watch(&self, home: &Path, list: &Path) -> io::Result<Option<ListWatch>> {
+        use std::os::fd::FromRawFd as _;
+        use std::os::unix::fs::MetadataExt as _;
+        // SAFETY: kqueue(2) takes no arguments. A kqueue is not inherited by a child.
+        let raw = unsafe { libc::kqueue() };
+        if raw < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        // SAFETY: a fresh descriptor nothing else owns.
+        let queue = unsafe { std::os::fd::OwnedFd::from_raw_fd(raw) };
+        let fd = usize::try_from(self.free.as_raw_fd())
+            .map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?;
+        let event = |ident: usize, filter: i16, fflags: u32| libc::kevent {
+            ident,
+            filter,
+            flags: libc::EV_ADD,
+            fflags,
+            data: 0,
+            udata: std::ptr::null_mut(),
+        };
+        let add = |e: &libc::kevent| -> io::Result<()> {
+            // SAFETY: kevent(2) reading one change from `e`, writing no event.
+            if unsafe { libc::kevent(queue.as_raw_fd(), e, 1, std::ptr::null_mut(), 0, std::ptr::null()) } < 0
+            {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(())
+        };
+        add(&event(fd, libc::EVFILT_READ, 0))?;
+        add(&event(
+            fd,
+            libc::EVFILT_VNODE,
+            libc::NOTE_DELETE | libc::NOTE_RENAME | libc::NOTE_REVOKE,
+        ))?;
+        let daemon = std::fs::read_to_string(home.join("daemon.pid"))
+            .ok()
+            .and_then(|p| p.trim().parse::<libc::pid_t>().ok())
+            .filter(|&pid| pid > 0)
+            .and_then(|pid| usize::try_from(pid).ok());
+        let mut process = false;
+        if let Some(pid) = daemon {
+            match add(&event(pid, libc::EVFILT_PROC, libc::NOTE_EXIT)) {
+                Ok(()) => process = true,
+                // Gone already: read again rather than wait for an exit never watched.
+                Err(e) if e.raw_os_error() == Some(libc::ESRCH) => {}
+                Err(e) => return Err(e),
+            }
+        }
+        // Watched from here: a name that went before is seen now.
+        let held = self.free.metadata()?;
+        match std::fs::metadata(list) {
+            Ok(named) if named.dev() == held.dev() && named.ino() == held.ino() => {
+                Ok(Some(ListWatch { queue, process }))
+            }
+            Ok(_) => Ok(None),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(e),
         }
     }
 }
@@ -919,6 +1113,264 @@ mod tests {
         assert!(matches!(take(&home, 0).unwrap(), Taken::NoDaemon));
     }
 
+    /// With no usable PID, a macOS client still sees the list's writer close: kqueue
+    /// has no process exit to report, and does not report a FIFO's last writer (M253).
+    /// The name stays, as it does after a daemon is killed.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_list_without_a_live_pid_still_ends_with_its_writer() {
+        let mut child = Command::new("/bin/sh").args(["-c", "exit 0"]).spawn().unwrap();
+        let gone = child.id().to_string();
+        assert!(child.wait().unwrap().success());
+        for pid in [None, Some("not a pid"), Some(gone.as_str())] {
+            let home = home("slot-no-pid");
+            let requests = Requests::open(&home).unwrap();
+            let list = home.join(DIR).join(FREE);
+            if let Some(pid) = pid {
+                std::fs::write(home.join("daemon.pid"), pid).unwrap();
+            }
+            let mut waits = Waits::new(open_now(&list, false).unwrap());
+            waits.queue = waits.watch(&home, &list).unwrap();
+            assert!(!waits.queue.as_ref().unwrap().process);
+            std::thread::scope(|s| {
+                let (home, list) = (&*home, &list);
+                let (answer, answered) = std::sync::mpsc::channel();
+                let reader = s.spawn(move || {
+                    let got = waits.record(home, list, &mut [0; RECORD]);
+                    answer.send(got).unwrap();
+                });
+                std::thread::sleep(Duration::from_millis(50));
+                assert!(answered.try_recv().is_err(), "an empty list did not wait");
+                drop(requests);
+                let got = answered.recv_timeout(Duration::from_secs(3));
+                // Release the reader even when its writer's end did not wake it.
+                unoffer(home);
+                reader.join().unwrap();
+                assert_eq!(got.unwrap().unwrap(), Some(0), "PID {pid:?}");
+            });
+        }
+    }
+
+    /// A client waiting on a list whose name goes wakes even while its writer still
+    /// lives and holds it. The next take opens the new list, not the unlinked old one.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_waiting_client_leaves_a_list_whose_name_went() {
+        let home = home("slot-unlisted");
+        let requests = Requests::open(&home).unwrap();
+        std::fs::write(home.join("daemon.pid"), std::process::id().to_string()).unwrap();
+        let list = home.join(DIR).join(FREE);
+        let mut waits = Waits::new(open_now(&list, false).unwrap());
+        waits.queue = waits.watch(&home, &list).unwrap();
+        assert!(waits.queue.as_ref().unwrap().process);
+        std::thread::scope(|s| {
+            let (home, list) = (&*home, &list);
+            let (answer, answered) = std::sync::mpsc::channel();
+            let reader = s.spawn(move || {
+                answer.send(waits.record(home, list, &mut [0; RECORD])).unwrap();
+            });
+            std::thread::sleep(Duration::from_millis(50));
+            assert!(answered.try_recv().is_err(), "an empty list did not wait");
+            unoffer(home);
+            let got = answered.recv_timeout(Duration::from_secs(3));
+            // A readable record releases even a reader missing the name's removal.
+            requests.offer(0, false).unwrap();
+            reader.join().unwrap();
+            assert_eq!(got.unwrap().unwrap(), None);
+        });
+    }
+
+    /// A list's waiting slots are those offered on it that no client has taken, counted
+    /// without taking any: each list apart, one fewer as a client takes one.
+    #[test]
+    fn a_lists_waiting_slots_are_those_no_client_took() {
+        let home = home("slot-waiting");
+        let mut requests = Requests::open(&home).unwrap();
+        assert_eq!(requests.waiting(false).unwrap(), 0);
+        let slots: Vec<Slot> = (0..2).map(|_| requests.make(false).unwrap()).collect();
+        for slot in &slots {
+            requests.offer(slot.number(), false).unwrap();
+        }
+        let with = requests.make(true).unwrap();
+        requests.offer(with.number(), true).unwrap();
+        assert_eq!(
+            (requests.waiting(false).unwrap(), requests.waiting(true).unwrap()),
+            (2, 1)
+        );
+        // Counted again, none taken by the count.
+        assert_eq!(requests.waiting(false).unwrap(), 2);
+        let Taken::Slot(client) = take(&home, 0).unwrap() else {
+            panic!("no slot");
+        };
+        assert_eq!(
+            (requests.waiting(false).unwrap(), requests.waiting(true).unwrap()),
+            (1, 1)
+        );
+        drop(client);
+    }
+
+    /// Clients waiting on one list each take a slot of their own as records come, however
+    /// many wait: the maker keeps two offered, and offers another as each is taken, as a
+    /// daemon's does. None is taken twice.
+    #[test]
+    fn clients_waiting_on_one_list_each_take_a_slot() {
+        const CLIENTS: usize = 16;
+        const TAKES: usize = 100;
+        let home = home("slot-herd");
+        let (taken, longest) = std::thread::scope(|s| {
+            // Made inside the scope so every writer closes before the scope joins its
+            // clients even if the maker fails. A failed assertion must not hang the test.
+            let mut requests = Requests::open(&home).unwrap();
+            let (took, told) = std::sync::mpsc::channel();
+            let clients: Vec<_> = (0..CLIENTS)
+                .map(|_| {
+                    let took = took.clone();
+                    let home = &home;
+                    s.spawn(move || {
+                        for _ in 0..TAKES {
+                            let t0 = Instant::now();
+                            let Taken::Slot(client) = take(home, 0).unwrap() else {
+                                return;
+                            };
+                            let waited = t0.elapsed();
+                            let n = client.n;
+                            drop(client);
+                            if took.send((n, waited)).is_err() {
+                                return;
+                            }
+                        }
+                    })
+                })
+                .collect();
+            drop(took);
+            // The maker: two offered at first, and another as each is taken; each slot let
+            // go of once its client has taken it.
+            let mut offered = std::collections::HashMap::new();
+            for _ in 0..OFFERED {
+                let slot = requests.make(false).unwrap();
+                requests.offer(slot.number(), false).unwrap();
+                offered.insert(slot.number(), slot);
+            }
+            let deadline = Instant::now() + Duration::from_secs(60);
+            let mut taken = 0;
+            let mut longest = Duration::ZERO;
+            while taken < CLIENTS * TAKES {
+                let left = deadline.saturating_duration_since(Instant::now());
+                let Ok((n, waited)) = told.recv_timeout(left) else {
+                    break;
+                };
+                taken += 1;
+                longest = longest.max(waited);
+                // A reader may open its slot after another reader has opened a later
+                // one: only its own acknowledgement lets the maker remove its names.
+                assert!(offered.remove(&n).is_some(), "slot {n} taken twice");
+                requests.remove(n);
+                while requests.waiting(false).unwrap() < OFFERED {
+                    let slot = requests.make(false).unwrap();
+                    requests.offer(slot.number(), false).unwrap();
+                    offered.insert(slot.number(), slot);
+                }
+            }
+            unoffer(&home);
+            drop(requests);
+            for client in clients {
+                client.join().unwrap();
+            }
+            (taken, longest)
+        });
+        assert_eq!(taken, CLIENTS * TAKES, "only {taken} slots taken in 60 s");
+        assert!(
+            longest < Duration::from_secs(5),
+            "a client waited {longest:?} for a slot"
+        );
+    }
+
+    /// Clients waiting on one list wake for its records however fast the others take
+    /// theirs. On macOS a client waiting in select(2) can stop waking at all: 12 of 16
+    /// slept through the records the others took for all of 20 s (PM M262), and one of an
+    /// E2E test's for 60 s while its daemon served the rest. Here records are taken as fast
+    /// as they come for 2 s, by 16 clients at once; then each client takes one more and
+    /// ends, records offered as before: one that no longer wakes leaves them untaken. With
+    /// select(2) back, 8 to 12 of the 16 slept, in each of 6 runs.
+    #[test]
+    fn clients_waiting_on_one_list_wake_for_its_records() {
+        use std::sync::mpsc::{RecvTimeoutError, TryRecvError, channel};
+        const CLIENTS: usize = 16;
+        let home = home("slot-wake");
+        let list = home.join(DIR).join(FREE);
+        // The list's daemon, whose exit a client on macOS watches for: this process.
+        std::fs::write(home.join("daemon.pid"), std::process::id().to_string()).unwrap();
+        let requests = Requests::open(&home).unwrap();
+        // What clients say: `true` for each record taken, `false` as one ends.
+        let (say, heard) = channel::<bool>();
+        // Not scoped: a client that no longer wakes is left to the test process's exit,
+        // the test failed, rather than waited for for ever.
+        let lasts: Vec<_> = (0..CLIENTS)
+            .map(|_| {
+                let (last, is_last) = channel::<()>();
+                let (home, list, say) = (home.to_path_buf(), list.clone(), say.clone());
+                std::thread::spawn(move || {
+                    let mut record = [0; RECORD];
+                    while let Ok(free) = open_now(&list, false) {
+                        let got = Waits::new(free).record(&home, &list, &mut record);
+                        if !matches!(got, Ok(Some(RECORD))) || say.send(true).is_err() {
+                            break;
+                        }
+                        // Its last, once told so.
+                        if !matches!(is_last.try_recv(), Err(TryRecvError::Empty)) {
+                            break;
+                        }
+                    }
+                    let _ = say.send(false);
+                });
+                last
+            })
+            .collect();
+        drop(say);
+        let offer = || {
+            while requests.waiting(false).unwrap() < OFFERED {
+                requests.offer(0, false).unwrap();
+            }
+        };
+        let (mut taken, mut ended) = (0, 0);
+        let until = Instant::now() + Duration::from_secs(2);
+        while Instant::now() < until {
+            offer();
+            match heard.recv_timeout(Duration::from_millis(100)) {
+                Ok(true) => taken += 1,
+                Ok(false) => ended += 1,
+                Err(_) => {}
+            }
+        }
+        assert_eq!(ended, 0, "clients ended as they took records");
+        assert!(taken >= 10 * CLIENTS, "only {taken} records taken");
+        for last in &lasts {
+            last.send(()).unwrap();
+        }
+        let mut since = Instant::now();
+        while ended < CLIENTS {
+            offer();
+            match heard.recv_timeout(Duration::from_millis(100)) {
+                Ok(took) => {
+                    since = Instant::now();
+                    if took {
+                        taken += 1;
+                    } else {
+                        ended += 1;
+                    }
+                }
+                Err(RecvTimeoutError::Timeout) => assert!(
+                    since.elapsed() < Duration::from_secs(5),
+                    "{} of {CLIENTS} clients slept through records for 5 s, {taken} taken",
+                    CLIENTS - ended
+                ),
+                Err(RecvTimeoutError::Disconnected) => break,
+            }
+        }
+        assert_eq!(ended, CLIENTS, "clients gone unsaid");
+        unoffer(&home);
+    }
+
     /// A home's slots are served while its daemon holds its lists, and not once it has
     /// unoffered them or gone; its lists are listed until someone removes one.
     #[test]
@@ -943,9 +1395,18 @@ mod tests {
         requests.renew().unwrap();
         assert!(requests.listed() && served(&home));
         assert_eq!(requests.make(false).unwrap().number(), before + 1);
-        // Gone without unoffering, as a killed daemon goes: its list has no reader.
+        // Gone without unoffering, as a killed daemon goes: its list has no reader once no
+        // process holds its end, a fork of another test's that has yet to execute included
+        // (descriptors are closed at exec, O_CLOEXEC).
         drop(requests);
-        assert!(!served(&home), "its daemon gone, yet served");
+        let t0 = Instant::now();
+        while served(&home) {
+            assert!(
+                t0.elapsed() < Duration::from_secs(5),
+                "its daemon gone, yet served"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
     }
 
     /// A client waits no longer for its answer than it asks, and takes one that comes in

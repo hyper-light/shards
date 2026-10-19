@@ -394,6 +394,7 @@ impl<D: Disk> Daemon<D> {
             Err(e) => {
                 release(&provider);
                 log(format!("an API client's connection: {e}"));
+                self.wake_listener();
                 return;
             }
         };

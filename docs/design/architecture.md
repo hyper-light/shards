@@ -5261,7 +5261,8 @@ descriptors.
   writes (`EPIPE`). But on macOS a read that has just taken its writer's last data can
   sleep through the end that follows at once: 6 in 224,000, where select(2) saw all of
   192,000. So each side holds the read end of a FIFO the other writes, and waits on it in
-  select(2) on macOS, in a read on Linux, never in poll or kqueue.
+  select(2) on macOS, in a read on Linux, never in poll or kqueue: but for the many clients
+  of one list (M262, below).
 - What a request costs (PM M254), against the socket's 23 to 30 µs at p50: a directory
   made for each request, 413 to 562 µs on macOS (APFS's metadata operations, with tails to
   21 ms under load) and 55 µs on Linux; a slot the daemon made ahead, which the client takes
@@ -5282,7 +5283,7 @@ descriptors.
   no other client can then read. No lock file, and no search: the client opens the list it
   needs, reads, opens its slot's `answer` to read and `say` to write, and writes its
   request. Where every slot is taken, the client's read waits until the daemon has made
-  more, in the order clients came. A slot a client took and never wrote to is removed
+  more. A slot a client took and never wrote to is removed
   after a minute, its wait ended through a pipe of its own, never a byte on its `say`,
   where a client may be writing; a client that finds its slot gone reads another.
 - **Liveness, each way.** The daemon reads `say` (waiting in select(2) on macOS, then
@@ -5330,7 +5331,8 @@ descriptors.
   request (`slots::Sender`, each message written whole). A daemon of an older build, which
   offers no slots, is still reached on its socket, so that it steps aside for this one's.
 - On macOS every read of a FIFO waits first in select(2) (M253 part 3): the slots', the
-  client's copies, and `shards_ipc::read` of a FIFO, a run's stdin in its VM among them.
+  client's copies, and `shards_ipc::read` of a FIFO, a run's stdin in its VM among them;
+  all but a client's wait on its list for a slot (M262, below).
 
 - **No `daemon.sock`** (slice 4). The daemon makes its lists as soon as it holds the
   home's lock, so that a client that finds them waits on them for its slot rather than
@@ -5342,12 +5344,20 @@ descriptors.
   requests a daemon puts to itself for a context's steps go through slots of its own home
   (`cli::ask_here`), which start no daemon. The default context's endpoint is the Engine
   API's socket, which Docker's clients take.
-- **Lists made again.** Lists someone removes as the daemon serves, by hand or as the home
-  is removed, are made again within a second (`LOOK`, a stat of each), the slots' numbers
-  going on from the last, and what was offered on the old ones let go of: the waits of
-  those no client took, read back from their lists, end through their own pipes. Under
-  `socket_at`, which `close` holds as it unoffers them, so that a daemon told to stop never
-  offers again (PM M188, of the socket it replaces).
+- **Lists made again.** Lists someone removes as the daemon serves are made again, the
+  slots' numbers going on from the last, and what was offered on the old ones let go of:
+  the waits of those no client took, read back from their lists, end through their own
+  pipes. The maker looks as it is told to, never on a timer: by the listener, as a name of
+  the home comes or goes (a removal of the home takes `requests/`), and, for lists removed
+  by hand inside it, by the daemon the next client starts, which, finding the home's lock
+  held and nothing offered, makes and removes a name in the home (`daemon.waiting`) once.
+  Under `socket_at`, which `close` holds as it unoffers them, so that a daemon told to stop
+  never offers again (PM M188, of the socket it replaces).
+- **An idle daemon wakes for nothing.** The maker offers what its lists hold no client's
+  of (their records counted where they wait, FIONREAD), so that a client dead after it
+  took a slot holds no place; and sweeps only while a slot is taken with no request
+  read: a minute after it is first seen so, and again a minute after, when a slot still
+  unwritten goes. With none, it sleeps until it hears something (PM M260).
 - **A request in time.** The rest of a request is read within 10 s of its first byte
   (`REQUEST_TIMEOUT`, a socket's first message's), and no longer once the daemon ends its
   clients (`requests_end`, a pipe written once): such a client hears RESTART, as one whose
@@ -5367,11 +5377,44 @@ descriptors.
   check): what went to the slot of a daemon that then asked for a restart went with it, and
   a piped stdin was lost, the next daemon's command waiting for ever. A client of an older
   build ignores the message.
+- **What it said last** (PM M261). A daemon exits only once no slot holds it
+  (`Daemon::live`, `slots_hold`): each slot is counted from its offer until its client has
+  all the daemon will say to it, there in its FIFO whether or not the daemon is (pipe(7)),
+  or until its serving ends. So what a closing daemon said last reaches each client still
+  reading: a stepping-aside daemon's RESTART, and the RESTART a slot taken as the lists
+  went is answered with by its own thread. Before, it exited once no client was in hand,
+  and its exit cut off what its slots had yet to pass on: the client heard its slot end
+  unanswered, "the command's microVM stopped before the command ended" (three tests on
+  x86_64 CI, run 39191414199; 23 of 40 runs of them at 79caf2d7 on a loaded Fedora host,
+  1 of 40 counting only the slots that pass a daemon's messages on). While it serves, a
+  slot its client opened holds it; once it has closed, every slot does, but a client that
+  takes nothing, stopped, or held by a pager that waits, holds it no longer than a
+  request's time (`REQUEST_TIMEOUT`, 10 s) from the start of the piece of its answer it
+  leaves untaken, or from its last step or the close, the later: the daemon says so, and
+  exits, and the next daemon starts. A FIFO takes 8 KiB on macOS and 64 KiB on Linux
+  (M261), so an answer past that is what such a client leaves untaken. A slot writes an
+  answer 64 KiB at a time, what a Linux FIFO holds, each piece a step on as its client
+  takes it: a client taking a long answer slowly goes on (timed from the whole answer's
+  write, one reading 640 KiB a second was let go of half a second in, a request's time
+  in the test, still reading). A stop's slot is not counted: the daemon holds that session
+  until its exit, which is how `daemon stop` learns of it.
+- **Many clients on one list** (PM M262). On macOS a client waiting in select(2) for its
+  slot could stop waking at all while the others took theirs: 12 of 16 clients slept
+  through 20 s of records others took, and one of an E2E test's 16 waited 60 s while its
+  daemon served the rest. A waiting read(2), poll(2) and kqueue(2) saw every record, but
+  only select(2) and a read see a FIFO's writer go there (M253). So a client waits on its
+  list in kqueue(2), for its records, its name's removal (a closing daemon unoffers it; a
+  new one makes its own), and its daemon's exit (the process `daemon.pid` names; a killed
+  daemon leaves its list's name), and reads after each, not waiting; where `daemon.pid`
+  names no live process, it looks again every 250 ms. On Linux a read waits, which sees
+  both. Held by `clients_waiting_on_one_list_wake_for_its_records`, which failed in each
+  of 6 runs with select(2) put back, 8 to 12 of its 16 clients asleep.
 - **Measured** against slice 3 (build-ab, PM M259): what slots alone change costs a run
   nothing, within ±31 µs of none at every quiet round's p50 of 2.3 to 2.6 ms, and within
-  the noise loaded; a request's own cost through a slot is M254's and M255's. An idle
-  daemon now wakes once a second, its maker looking at its lists (30 context switches in
-  30 s, where the daemon before had none, M259): to take out.
+  the noise loaded; a request's own cost through a slot is M254's and M255's. Slice 4's
+  first cut woke an idle daemon once a second, its maker looking at its lists on a timer
+  (30 context switches in 30 s, where the daemon before had none, M259), which the looks
+  above replaced.
 
 ### D186. How much of the disk shards keeps is its user's to set (`shards configure disk`, built)
 
