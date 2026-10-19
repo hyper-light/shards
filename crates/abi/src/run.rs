@@ -595,7 +595,9 @@ pub mod builtin {
     pub const LISTENS: u8 = 14;
     /// What the microVM holds cold of its files given back to its host, at the host's
     /// memory pressure (D188): its run's inactive file pages reclaimed, then reported free
-    /// at once (D151), answered with the bytes its run's cgroup holds less, in decimal.
+    /// at once (D151); then what it holds plugged past twice what it uses asked to be
+    /// unplugged (D148). Answered with the bytes its run's cgroup holds less and the bytes
+    /// asked to be unplugged, in decimal, a space between.
     pub const RECLAIM: u8 = 15;
 }
 

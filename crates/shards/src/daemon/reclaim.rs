@@ -84,9 +84,9 @@ impl<D: Disk> Daemon<D> {
     /// Has the microVMs give back what they hold cold each time the host is short of
     /// memory, until the daemon closes.
     fn watch_pressure(&self, mut pressure: MemoryPressure) {
-        // What was given back since it was last said: since when, how much, in how many
-        // passes.
-        let mut unsaid: Option<(Instant, u64, u32)> = None;
+        // What was given back since it was last said: since when, how much of files and of
+        // memory plugged, in how many passes.
+        let mut unsaid: Option<(Instant, Gave, u32)> = None;
         let mut said: Option<Instant> = None;
         loop {
             if let Err(e) = pressure.wait() {
@@ -98,17 +98,18 @@ impl<D: Disk> Daemon<D> {
             if self.closed.load(Ordering::SeqCst) {
                 return;
             }
-            let freed = self.give_back_cold();
-            if freed > 0 {
-                let (since, total, passes) = unsaid.unwrap_or((Instant::now(), 0, 0));
-                unsaid = Some((since, total.saturating_add(freed), passes.saturating_add(1)));
+            let gave = self.give_back_cold();
+            if gave.freed > 0 || gave.unplugging > 0 {
+                let (since, total, passes) = unsaid.unwrap_or((Instant::now(), Gave::default(), 0));
+                unsaid = Some((since, total.and(gave), passes.saturating_add(1)));
             }
             if let Some((since, total, passes)) = unsaid
                 && said.is_none_or(|at| at.elapsed() >= SAY_EVERY)
             {
                 log(format!(
-                    "the host is short of memory: its microVMs gave back {} MiB they held cold of their files, in {passes} passes over {:?}",
-                    total >> 20,
+                    "the host is short of memory: its microVMs gave back {} MiB they held cold of their files, and asked to unplug {} MiB they held plugged past twice what they use, in {passes} passes over {:?}",
+                    total.freed >> 20,
+                    total.unplugging >> 20,
                     since.elapsed()
                 ));
                 said = Some(Instant::now());
@@ -117,10 +118,10 @@ impl<D: Disk> Daemon<D> {
         }
     }
 
-    /// Has each running microVM give back what it holds cold of its files, one after
-    /// another, each through one run of it (its own, else a joiner's, D119): the bytes they
-    /// hold less, all together.
-    fn give_back_cold(&self) -> u64 {
+    /// Has each running microVM give back what it holds cold of its files, and what it
+    /// holds plugged past twice what it uses, one after another, each through one run of it
+    /// (its own, else a joiner's, D119): what they gave, all together.
+    fn give_back_cold(&self) -> Gave {
         let mut vms: HashMap<String, String> = HashMap::new();
         for (id, run) in lock(&self.runs).iter() {
             if let RunState::Tracked(t) = run {
@@ -138,18 +139,19 @@ impl<D: Disk> Daemon<D> {
             builtin: shards_abi::run::builtin::RECLAIM,
             ..Default::default()
         };
-        let mut freed = 0u64;
+        let mut gave = Gave::default();
         for id in vms.values() {
             if self.closed.load(Ordering::SeqCst) {
                 break;
             }
             match self.exec_quietly(id, &spec, None, 64, TAKE_TIMEOUT) {
                 Ok(q) if q.status == Some(0) => {
-                    let bytes = String::from_utf8_lossy(&q.output)
-                        .trim()
-                        .parse::<u64>()
-                        .unwrap_or(0);
-                    freed = freed.saturating_add(bytes);
+                    let said = String::from_utf8_lossy(&q.output);
+                    let mut amounts = said.split_whitespace().map(|n| n.parse::<u64>().unwrap_or(0));
+                    gave = gave.and(Gave {
+                        freed: amounts.next().unwrap_or(0),
+                        unplugging: amounts.next().unwrap_or(0),
+                    });
                 }
                 Ok(q) => log(format!(
                     "container {id}: giving back what it holds cold: {}",
@@ -160,6 +162,23 @@ impl<D: Disk> Daemon<D> {
                 Err(e) => log(format!("container {id}: giving back what it holds cold: {e}")),
             }
         }
-        freed
+        gave
+    }
+}
+
+/// What microVMs gave back: the bytes of files their runs' cgroups hold less, and the bytes
+/// of memory plugged they asked to be unplugged.
+#[derive(Debug, Default, Clone, Copy)]
+struct Gave {
+    freed: u64,
+    unplugging: u64,
+}
+
+impl Gave {
+    fn and(self, other: Gave) -> Gave {
+        Gave {
+            freed: self.freed.saturating_add(other.freed),
+            unplugging: self.unplugging.saturating_add(other.unplugging),
+        }
     }
 }

@@ -5545,7 +5545,7 @@ twice. Mutation-checked, each caught: no trimming; a line cut short written on. 
 (tests/containers.rs): `events_outlive_their_daemon`, a run's life read back by the next
 daemon after `daemon stop` (failed with the journal taken out); `events_tell_a_microvms_life`.
 
-### D188. A host short of memory gets back what its microVMs hold cold of their files (built; unplug not yet)
+### D188. A host short of memory gets back what its microVMs hold cold of their files (built)
 
 **Found.** The user's plan, item 4: memory that tracks the working set, reclaimed at the
 host's pressure, not on a timer. A run's guest keeps what its workload reads in its page
@@ -5578,6 +5578,15 @@ host (PM M267), where a container's page cache is its host's to drop. Free page 
   Anonymous memory and the tmpfs layer, the host's own reclaim takes as well as the guest
   would, and taking them would read memory the host may have compressed, which Apple's
   header warns against under pressure (dispatch/source.h, `DISPATCH_MEMORYPRESSURE_WARN`).
+- **Then what it holds plugged past what it uses goes back too** (D148's unplug): init
+  asks its device for twice what the run uses, past what the microVM booted with, in whole
+  memory blocks, as the grower asks for twice what the run reaches, and holds the run at
+  what it will have first, so that the grower hears it grow again however much the driver
+  unplugs; the grower asks for no less than the device is asked for now. The driver
+  unplugs what it can: a block the kernel holds part of stays (plugged memory comes online
+  as the kernel's own, D133). Reporting gives back a block's free pages either way;
+  unplugging gives back its page structures too, a 64th of it, which a session that once
+  grew holds for as long as it lives otherwise.
 - **Said in the daemon's log** at most once a minute, with what was given back since.
 - **Idle, it costs nothing**: a thread blocked in poll(2) on Linux 6.4 and later and on
   macOS; on an older Linux, a read of the host's average every ten seconds.
@@ -5590,12 +5599,13 @@ MiB of the read's stays: the page structures of the memory it plugged, and the k
 **Tested.** Unit (platform): the host's memory pressure can be watched where the daemon
 runs. E2E on Linux (tests/containers.rs `a_microvm_held_to_a_budget_gives_back_what_it_holds_cold`):
 a microVM under a slice held to 384 MiB (`MemoryHigh`, no swap) reads a gigabyte through
-to its end, the daemon's log saying it gave back. Not on macOS, whose pressure is the
+to its end, the daemon's log saying it gave back files and asked to unplug memory. Not on macOS, whose pressure is the
 whole system's, which no test may raise for every program on its host.
 
-**Not yet.** Unplug as the working set shrinks (D148): what was plugged stays plugged,
-its pages the host's again through reporting, its page structures the guest's. Builders
-(D133) give back nothing at pressure yet. M267 on Linux, once Fedora's benchmark is done.
+**Not yet.** What the driver unplugs of what it is asked, and its cost, unmeasured: on
+Linux, with Fedora's benchmark done, with plugged memory online as the kernel's and
+otherwise (`memory_hotplug.online_policy=auto-movable`, which keeps the kernel a share of
+it). Builders (D133) give back nothing at pressure yet. M267 on Linux.
 
 ### D179. Other CPUs' images, emulated in their microVM (parts 1 to 3 built)
 

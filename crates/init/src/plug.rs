@@ -441,6 +441,36 @@ impl Plug {
     }
 }
 
+/// Gives back what the run holds plugged past what the grower would plug for what it uses
+/// now (D188): twice that, past what the microVM booted with, in whole memory blocks, as
+/// the grower asks for twice what the run reaches (D148). The run is held at what it will
+/// have first, so that the grower hears it reach that and plugs again however much the
+/// driver unplugs, which it does as it can: a block the kernel holds part of stays. The
+/// bytes asked to be unplugged; none where that is less than a block.
+pub fn shrink_run(cgroup: &str) -> io::Result<u64> {
+    let Some(&boot) = BOOT.get() else {
+        return Ok(0);
+    };
+    let most = control_read64(control::HOTPLUG_SIZE)?;
+    let plugged = mem_total()?.saturating_sub(boot);
+    let used = number(&format!("{cgroup}/memory.current"))
+        .ok_or_else(|| err(format!("{cgroup}/memory.current unread")))?;
+    let keep = used
+        .saturating_mul(2)
+        .saturating_sub(boot)
+        .checked_next_multiple_of(ALIGN)
+        .unwrap_or(u64::MAX)
+        .min(most);
+    let gone = plugged.saturating_sub(keep);
+    if gone < ALIGN {
+        return Ok(0);
+    }
+    // The free memory that goes with it counted out of the hold now, before it goes.
+    set_high(cgroup, high(cgroup, most, keep)?.saturating_sub(gone))?;
+    control_write64(control::HOTPLUG_REQUEST, keep)?;
+    Ok(gone)
+}
+
 /// Holds a run's processes in `cgroup` at what is plugged so far again, as [`Plug::hold_run`]
 /// held them (D148), where the host has raised its most since (`update -m`, its `PLUG`):
 /// its grower lifted the hold once all its old most was plugged, and is woken only as its
@@ -949,12 +979,15 @@ fn grow(plug: Plug, events: &OwnedFd, notes: &OwnedFd) -> ! {
             lift();
             continue;
         }
+        // Never less than is asked for now: the device's request, which a run gives back
+        // by (D188), else what it asked for last.
+        let asking = control_read64(control::HOTPLUG_REQUEST).unwrap_or(asked);
         asked = total
             .saturating_mul(2)
             .saturating_sub(plug.boot)
             .checked_next_multiple_of(ALIGN)
             .unwrap_or(u64::MAX)
-            .max(asked)
+            .max(asking)
             .min(plug.most);
         let mut builder = Builder {
             plug,

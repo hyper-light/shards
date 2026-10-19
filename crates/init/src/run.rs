@@ -3270,7 +3270,10 @@ fn builtin(
                 .and_then(|()| crate::plug::report_pluggable())
                 .and_then(|()| crate::plug::rehold_run(RUN_CGROUP)),
             run::builtin::STATS => out.write_all(stats(&cgroup).as_bytes()),
-            run::builtin::RECLAIM => reclaim_cold(RUN_CGROUP).and_then(|freed| write!(out, "{freed}")),
+            run::builtin::RECLAIM => reclaim_cold(RUN_CGROUP).and_then(|freed| {
+                let unplugging = crate::plug::shrink_run(RUN_CGROUP)?;
+                write!(out, "{freed} {unplugging}")
+            }),
             run::builtin::FREEZE => freeze(&cgroup, args.first().is_some_and(|a| a == b"1")),
             run::builtin::SIZE => match &layers {
                 Some((_, upper)) => Some(format!("/proc/self/fd/{}", upper.as_raw_fd())),
