@@ -68,7 +68,8 @@ dump() {
 seen=" "
 while true; do
     for cli in $(pgrep -f "/target/[^ ]*/e2e/shards-[0-9a-f]+/shards |/target/e2e/shards-[0-9a-f]+/shards "); do
-        case "$(tr '\0' ' ' < "/proc/$cli/cmdline" 2>/dev/null)" in
+        # A command gone since pgrep found it has no cmdline to read: said nowhere.
+        case "$({ tr '\0' ' ' < "/proc/$cli/cmdline"; } 2>/dev/null)" in
             "" | *"shards daemon"* | *"shards spawner"* | *"shards share"*) continue ;;
         esac
         age=$(ps -o etimes= -p "$cli" 2>/dev/null | tr -d ' ')
