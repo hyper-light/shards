@@ -718,12 +718,19 @@ mod tests {
 
     /// A TCP port a server closed connections on first, its side in TIME_WAIT, binds
     /// again at once, as Go's net.Listen's does with its address reuse: a run after a
-    /// run publishes the same port.
+    /// run publishes the same port. The port is one below every system's ephemeral
+    /// range (Linux's 32768-60999; RFC 6335's 49152-65535, macOS's and Windows'), which
+    /// no connection made meanwhile is given as its own: an ephemeral one was, once,
+    /// between the close and the bind (two of this binary at once, 2026-10-19).
     #[test]
     fn tcp_ports_bind_again_after_their_connections_close() {
         use std::io::Read as _;
         let at = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0);
-        let (fd, port) = listen(at, TCP).unwrap();
+        let from = 1024 + u16::try_from(std::process::id() % 31_744).unwrap();
+        let (fd, port) = (from..32_768)
+            .chain(1024..from)
+            .find_map(|port| listen(SocketAddr::new(at.ip(), port), TCP).ok())
+            .unwrap();
         let listener = std::net::TcpListener::from(fd);
         listener.set_nonblocking(false).unwrap();
         let mut client = std::net::TcpStream::connect((Ipv4Addr::LOCALHOST, port)).unwrap();
