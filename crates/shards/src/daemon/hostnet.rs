@@ -391,6 +391,21 @@ mod tests {
         let answered = std::thread::spawn(move || {
             std::thread::sleep(Duration::from_millis(50));
             drop(fd);
+            // Answered once nothing listens there: a network process forks nothing, but this
+            // test's process forks for its other tests, and each fork holds a copy of every
+            // descriptor until it executes, the listener just closed here among them (as one
+            // held the port on Linux, the bind again refused). A connection tried takes no
+            // hold on the port; one that waits on a full backlog is given up on.
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while std::net::TcpStream::connect_timeout(&at, Duration::from_millis(100))
+                .map_or_else(|e| e.kind() != std::io::ErrorKind::ConnectionRefused, |_| true)
+            {
+                assert!(
+                    Instant::now() < deadline,
+                    "listened at 10 s after its copy closed"
+                );
+                std::thread::sleep(Duration::from_millis(1));
+            }
             shards_ipc::send(&net, shards_ipc::kind::NET_UNPUBLISHED, &[], &[]).unwrap();
             net
         });

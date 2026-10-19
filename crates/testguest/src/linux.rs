@@ -855,19 +855,34 @@ fn storm() -> Result<(), String> {
     // Every CPU's clock goes on from the snapshot in step with the others'.
     clock_in_step(cpus, "after the snapshot")?;
     let seen: Vec<u64> = storm.progress.iter().map(|p| p.load(Ordering::Relaxed)).collect();
-    // Long enough for 64 vCPUs sharing a smaller host's cores, short of what a lost
-    // completion or timer would cost: those never end.
-    thread::sleep(Duration::from_secs(1));
-    if let Some(e) = storm
-        .failure
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .take()
-    {
-        return Err(e);
-    }
-    for (i, (p, before)) in storm.progress.iter().zip(&seen).enumerate() {
-        if p.load(Ordering::Relaxed) == *before {
+    // Every worker goes on from the snapshot. A lost completion or timer never ends; a
+    // worker a loaded host gave no turn does (one waited 0.98 s on a Mac at a load of 20,
+    // and a verdict at 1 s failed the test): only the host's bound tells them apart, so the
+    // guest waits, saying which have not gone on and what is in flight, read once a second.
+    let mut failed = None;
+    let mut said = (Instant::now(), String::new());
+    waiting("every worker's progress after the snapshot", || {
+        if let Some(e) = storm
+            .failure
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+        {
+            failed = Some(e);
+            return Ok(());
+        }
+        let still: Vec<usize> = storm
+            .progress
+            .iter()
+            .zip(&seen)
+            .enumerate()
+            .filter(|(_, (p, before))| p.load(Ordering::Relaxed) == **before)
+            .map(|(i, _)| i)
+            .collect();
+        if still.is_empty() {
+            return Ok(());
+        }
+        if said.1.is_empty() || said.0.elapsed() >= Duration::from_secs(1) {
             let at = match storm.writer_at.load(Ordering::Relaxed) {
                 1 => "reading",
                 2 => "writing",
@@ -875,15 +890,22 @@ fn storm() -> Result<(), String> {
             };
             let interrupts = std::fs::read_to_string("/proc/interrupts").unwrap_or_default();
             let virtio: Vec<&str> = interrupts.lines().filter(|l| l.contains("virtio")).collect();
-            return Err(format!(
-                "worker {i} of {workers} made no progress in 1 s after the snapshot; longest gaps since: {}; the writer is {at} slot {}; in flight (reads writes): vda {}, vdb {}; {}",
-                gaps(&storm, false),
-                storm.written.load(Ordering::Relaxed),
-                sysfs("/sys/block/vda/inflight").unwrap_or_default(),
-                sysfs("/sys/block/vdb/inflight").unwrap_or_default(),
-                virtio.join(" | ")
-            ));
+            said = (
+                Instant::now(),
+                format!(
+                    "longest gaps since: {}; the writer is {at} slot {}; in flight (reads writes): vda {}, vdb {}; {}",
+                    gaps(&storm, false),
+                    storm.written.load(Ordering::Relaxed),
+                    sysfs("/sys/block/vda/inflight").unwrap_or_default(),
+                    sysfs("/sys/block/vdb/inflight").unwrap_or_default(),
+                    virtio.join(" | ")
+                ),
+            );
         }
+        Err(format!("workers {still:?} of {workers} have not; {}", said.1))
+    });
+    if let Some(e) = failed {
+        return Err(e);
     }
     stop(&storm);
     // A lost completion never ends, a slow one does: only the host's bound tells them
