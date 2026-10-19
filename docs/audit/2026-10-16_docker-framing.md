@@ -45,13 +45,14 @@ Reviewed feature by feature, each D-entry's design against what it took from Doc
 - `--cidfile`'s refusal says "container ID file found, make sure the other container isn't
   running": Docker's words for a microVM's ID, and on a terminal too. Now a terminal shows
   shards' words in a panel; piped, a `docker` script's. Fixed.
-- A Windows client polls its console's size every 250 ms (D180 part 2b, context.rs
+- A Windows client polled its console's size every 250 ms (D180 part 2b, context.rs
   `steer_console`), docker/cli's interval, never measured; a console reports its own
-  resizes as input events (WINDOW_BUFFER_SIZE_EVENT), which need no polling. Open: the
-  events come among its input records, which the stdin pump reads as bytes, so the pump
-  must read records (ReadConsoleInputW, keys as the VT input mode gives them, sizes as
-  they come); verifiable only on Windows, on a pseudo console resized by its test
-  (ResizePseudoConsole).
+  resizes as input events (WINDOW_BUFFER_SIZE_EVENT), which need no polling. Now its stdin
+  is read as the console's records (cli/terminal.rs `ConsoleInput`, ReadConsoleInputW):
+  keys as the VT input mode gives them, ^Z among them, and each resize as it comes; the
+  250 ms look stays only where a resize leaves no record (a window within a larger
+  buffer) or stdin is not the console. Held on a pseudo console its test resizes
+  (ResizePseudoConsole), on CI's Windows runner. Fixed.
 - The default network said it has a bridge named `docker0`
   (`com.docker.network.bridge.name`, daemon/networks.rs), which shards has none of, and a
   network's bridge name was checked against Linux's 15-byte interface names and against

@@ -4121,16 +4121,28 @@ a signal's Linux number taken for the daemon's system's.
 a context is how a Windows machine runs microVMs at all, and its console is its terminal as
 a Unix client's is:
 - **Raw, so that keys reach the command there as a terminal's**: no echo, line editing or
-  processed input, so ^C is a key the command's terminal there makes SIGINT of; no mouse or
-  window events; insert and quick-edit mode, and keys as the escape sequences a terminal
-  sends (ENABLE_VIRTUAL_TERMINAL_INPUT) where the console gives them (the modes moby/term
-  v0.5.2 sets, termios_windows.go, makeRaw, which the `docker` CLI's users' consoles are in).
-  stdout takes escape sequences, which the command there writes, and both modes are given
-  back after.
-- **Its size looked at every 250 ms**: a console has no SIGWINCH. The interval is docker/cli's
-  (MonitorTtySize, cli/command/container/tty.go), not measured; a console reports its own
-  resizes as input events (WINDOW_BUFFER_SIZE_EVENT), which would need no polling: open
-  (docs/audit/2026-10-16_docker-framing.md).
+  processed input, so ^C is a key the command's terminal there makes SIGINT of; no mouse
+  events; insert and quick-edit mode, and keys as the escape sequences a terminal sends
+  (ENABLE_VIRTUAL_TERMINAL_INPUT) where the console gives them (the modes moby/term v0.5.2
+  sets, termios_windows.go, makeRaw, which the `docker` CLI's users' consoles are in). Its
+  window events it keeps, which moby/term turns off. stdout takes escape sequences, which
+  the command there writes, and both modes are given back after.
+- **Its keys and its resizes read as the console's records** (ReadConsoleInputW,
+  cli/terminal.rs `ConsoleInput`), where Rust's stdin reads its text: each key's text in
+  UTF-8, a pair of surrogates whole, an Alt code's character; ^Z a key, which a read of
+  text ending in it would have ended stdin with (std sys/stdio/windows.rs); and each
+  record of the screen buffer's size (WINDOW_BUFFER_SIZE_EVENT) sizes the command's
+  terminal as it comes. A console has no SIGWINCH, and docker/cli looks at its size every
+  250 ms instead (MonitorTtySize, cli/command/container/tty.go). Where a resize leaves no
+  record, a window showing part of its buffer (conhost's, with lines kept above it), or
+  stdin not the console, its size is still looked at every 250 ms; a size changed before
+  the command is there to take it is sent as it is. Held on a pseudo console of its test's
+  own (`a_pseudo_consoles_keys_and_resizes_reach_the_command`, CI's Windows runner: keys,
+  ^Z, ^C, an arrow, text past the BMP, and a resize, each reaching a child in it).
+- **Its terminal's type**: a Windows console names none, and one taking escape sequences
+  is xterm-256color to the command there, as Microsoft's own Linux is told its Windows
+  console is (microsoft/WSL 4609b0c, src/windows/service/exe/DistributionRegistration.h,
+  TERM's default), where the client's TERM says nothing (D16's choice then reads it).
 - **Its events are signals as Go's runtime makes them** for a Windows process (go1.25.0
   runtime/os_windows.go, ctrlHandler), and so for docker/cli's signal proxy: ^C and ^Break,
   where the console's input is not raw, SIGINT; its closing, a logoff and a shutdown

@@ -2,12 +2,14 @@
 //! terminal types it says it is, best first, of which the command is told the first its
 //! microVM's root describes where its environment names no TERM.
 
+#[cfg(unix)]
 use std::path::{Path, PathBuf};
 
 /// `colors` in a compiled terminfo entry: the 14th of its numbers (term(5); ncurses
 /// include/Caps: columns, init_tabs, lines, lines_of_memory, magic_cookie_glitch,
 /// padding_baud_rate, virtual_terminal, width_status_line, num_labels, label_height,
 /// label_width, max_attributes, maximum_windows, max_colors).
+#[cfg(unix)]
 const MAX_COLORS: usize = 13;
 
 /// The terminal types this client's terminal is, best first: TERM's own, and then
@@ -30,6 +32,7 @@ pub fn terms() -> Vec<String> {
 
 /// The colours `term`'s description on this host says it has, where this host describes
 /// it: its entry where ncurses looks (terminfo(5), "Fetching Compiled Descriptions").
+#[cfg(unix)]
 fn colors(term: &str) -> Option<i32> {
     let home = std::env::var_os("HOME").map(PathBuf::from);
     let dirs = search(
@@ -41,9 +44,17 @@ fn colors(term: &str) -> Option<i32> {
         .find_map(|dir| entry(dir, term).and_then(|bytes| max_colors(&bytes)))
 }
 
+/// None on Windows, which keeps no terminfo database: its console's type is said by the
+/// client of a context (context.rs).
+#[cfg(not(unix))]
+fn colors(_: &str) -> Option<i32> {
+    None
+}
+
 /// Where ncurses looks for a description, in order: TERMINFO, `~/.terminfo`, each of
 /// TERMINFO_DIRS (an empty one the system's), then the system's: /etc/terminfo,
 /// /lib/terminfo, /usr/share/terminfo, and /usr/lib/terminfo.
+#[cfg(unix)]
 fn search(terminfo: Option<PathBuf>, home: Option<&Path>, dirs: Option<&str>) -> Vec<PathBuf> {
     let system = [
         "/etc/terminfo",
@@ -69,6 +80,7 @@ fn search(terminfo: Option<PathBuf>, home: Option<&Path>, dirs: Option<&str>) ->
 
 /// `term`'s compiled entry in `dir`: filed under its first character, or that character's
 /// hex code where a filesystem's names ignore case (term(5), "Storage").
+#[cfg(unix)]
 fn entry(dir: &Path, term: &str) -> Option<Vec<u8>> {
     let first = *term.as_bytes().first()?;
     [char::from(first).to_string(), format!("{first:02x}")]
@@ -80,6 +92,7 @@ fn entry(dir: &Path, term: &str) -> Option<Vec<u8>> {
 /// (0432, numbers of 16 bits; 01036, of 32), the names' bytes, the booleans' count and the
 /// numbers'; then the names and booleans, a byte more where they end on an odd one, and the
 /// numbers. None where the entry has none, or is no entry.
+#[cfg(unix)]
 fn max_colors(entry: &[u8]) -> Option<i32> {
     let short = |at: usize| -> Option<i16> {
         let bytes: [u8; 2] = entry.get(at..at.checked_add(2)?)?.try_into().ok()?;
@@ -108,7 +121,7 @@ fn max_colors(entry: &[u8]) -> Option<i32> {
     (value >= 0).then_some(value)
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 #[allow(clippy::unwrap_used, clippy::indexing_slicing)]
 mod tests {
     use super::*;
