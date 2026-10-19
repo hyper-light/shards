@@ -1558,6 +1558,16 @@ fn restore_vm(mut cfg: RestoreConfig) -> Result<(Handle, Running), String> {
             confine(&paths)?;
             let pinned = shards_vmm::snapshot::read(&cfg.dir)?;
             let backing = shards_vmm::snapshot::backing_of(&pinned);
+            // Each given file as its snapshot named the files it was taken with: resolved,
+            // links and all (vmm platform::input_path), so that one given through a link,
+            // macOS's /var to /private/var among them, is the file it names, not another.
+            let given: Vec<(PathBuf, bool)> = given
+                .iter()
+                .map(|(path, read_only)| {
+                    let real = shards_vmm::platform::input_path(path).unwrap_or_else(|_| path.clone());
+                    (real, *read_only)
+                })
+                .collect();
             let unasked: Vec<String> = backing
                 .iter()
                 .filter(|b| !given.contains(b))

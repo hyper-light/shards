@@ -15,13 +15,14 @@ const RO_SALT: u64 = 1;
 const RO_BYTES: usize = 4 << 20;
 const RESUMED: u32 = 2;
 
-struct Scratch(PathBuf);
+/// A test's directory, its read-only disk written: a test's own (`shards_testdir`), short
+/// enough for the sockets made in it on any checkout (sockaddr_un: 104 bytes on macOS, 108
+/// on Linux), where one under the checkout's `target/` was not.
+struct Scratch(shards_testdir::TempDir);
 
 impl Scratch {
     fn new(tag: &str) -> Scratch {
-        let dir = common::workspace().join(format!("target/e2e/{tag}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = shards_testdir::TempDir::new(tag).unwrap();
         let mut data = vec![0u8; RO_BYTES];
         fill(RO_SALT, 0, &mut data);
         std::fs::write(dir.join("ro.img"), &data).unwrap();
@@ -34,12 +35,6 @@ impl Scratch {
 
     fn snapshot(&self) -> PathBuf {
         self.0.join("snapshot")
-    }
-}
-
-impl Drop for Scratch {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
     }
 }
 
@@ -172,6 +167,23 @@ fn a_restore_given_its_files_refuses_a_snapshot_naming_others() {
         TIMEOUT,
     );
     assert!(given.stdout.contains("SHARDS-TEST PASS"), "{given}");
+    // Given through a link, it is the file the snapshot names, which it named resolved:
+    // macOS's temporary directory, under /var, a link to /private/var, is one such path.
+    #[cfg(unix)]
+    {
+        let link = s.0.join("link.img");
+        std::os::unix::fs::symlink(s.0.join("ro.img"), &link).unwrap();
+        let through = run_shards(
+            &["restore"],
+            &[
+                dir.to_str().unwrap(),
+                "--backing",
+                &format!("{}:ro", link.display()),
+            ],
+            TIMEOUT,
+        );
+        assert!(through.stdout.contains("SHARDS-TEST PASS"), "{through}");
+    }
     // Another file there is: the restore is confined to it before it reads the state,
     // which then names one it was not given.
     std::fs::copy(s.0.join("ro.img"), s.0.join("other.img")).unwrap();
@@ -182,10 +194,14 @@ fn a_restore_given_its_files_refuses_a_snapshot_naming_others() {
         TIMEOUT,
     );
     assert_ne!(refused.status, Some(0), "{refused}");
+    let named = format!(
+        "{}:ro",
+        std::fs::canonicalize(s.0.join("ro.img")).unwrap().display()
+    );
     assert!(
         refused
             .stderr
-            .contains(&format!("the template names files it was not given: {ours}")),
+            .contains(&format!("the template names files it was not given: {named}")),
         "{refused}"
     );
 }
@@ -409,7 +425,7 @@ mod storm {
             return;
         }
         for cpus in storm_cpus() {
-            let s = Scratch::new(&format!("storm-{cpus}"));
+            let s = Scratch::new(&format!("storm{cpus}"));
             let rw = s.0.join("rw.img");
             std::fs::write(&rw, vec![0u8; RW_BYTES]).unwrap();
             let sock = s.0.join("v.sock");
@@ -459,7 +475,7 @@ mod storm {
             return;
         }
         for cpus in storm_cpus() {
-            let s = Scratch::new(&format!("storm-resume-{cpus}"));
+            let s = Scratch::new(&format!("resume{cpus}"));
             std::fs::write(s.0.join("rw.img"), vec![0u8; RW_BYTES]).unwrap();
             let sock = s.0.join("v.sock");
             let stop = Arc::new(AtomicBool::new(false));
