@@ -76,7 +76,9 @@ const MAGIC: [u8; 8] = *b"SHRDSNAP";
 /// 21: a share's tables keep the bytes of the files its guest holds open that no path
 ///     reaches, which a restored server holds anew (D176).
 /// 22: and the length of each shared directory's DAX window in MiB, 0 for none (D189).
-const VERSION: u32 = 22;
+/// 23: a share's state keeps its DAX window's mappings, which a restore maps again from
+///     its new server (D189, D176).
+const VERSION: u32 = 23;
 /// The snapshot format this build writes and reads: what a snapshot kept for reuse is
 /// keyed by.
 pub const FORMAT: u32 = VERSION;

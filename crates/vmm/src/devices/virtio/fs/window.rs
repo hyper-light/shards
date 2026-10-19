@@ -56,8 +56,9 @@ pub struct Mapped {
 /// A mapped range, and what it maps.
 struct Entry {
     mapped: Mapped,
-    /// The descriptor it maps, kept to look at its file's size.
-    file: OwnedFd,
+    /// The descriptor it maps, kept to look at its file's size: none where zeros stand in
+    /// for a file a restore could not reach ([`Window::map_zeros`]).
+    file: Option<OwnedFd>,
     /// Where in the range zeros stand in for the file, its pages from there on wholly past
     /// the file's end as the host cut it short ([`Window::fill_past_end`]).
     zeros_from: Option<u64>,
@@ -158,7 +159,7 @@ fn size_of(fd: &OwnedFd) -> Option<u64> {
 /// Where in `e`'s range its pages lie wholly past its file's end, from a page boundary;
 /// none where the file reaches its last page.
 fn past_end(e: &Entry, page: u64) -> Option<u64> {
-    let end = size_of(&e.file)?
+    let end = size_of(e.file.as_ref()?)?
         .saturating_sub(e.mapped.foffset)
         .checked_next_multiple_of(page)?;
     (end < e.mapped.len).then_some(end)
@@ -274,8 +275,50 @@ impl Window {
             moffset,
             Entry {
                 mapped: mapped_now,
-                file,
+                file: Some(file),
                 zeros_from: None,
+            },
+        );
+        Ok(())
+    }
+
+    /// Zeros over `len` bytes at window offset `moffset`, which the guest holds as node
+    /// `node`'s from `foffset`, where its file can be given no more: a restore whose server
+    /// reaches the file a save mapped no longer (D176), as past a file's end (M271), so
+    /// that the guest's access there finds memory, never a fault no window answers.
+    pub fn map_zeros(
+        &self,
+        node: u64,
+        foffset: u64,
+        moffset: u64,
+        len: u64,
+        writable: bool,
+    ) -> Result<(), i32> {
+        let (host, size) = self.place(moffset, len).ok_or(libc::EINVAL)?;
+        let gpa = self.gpa.checked_add(moffset).ok_or(libc::EINVAL)?;
+        let mut mapped = self.lock();
+        self.forget(&mut mapped, moffset, len);
+        if let Err(e) = zeros(host, size, writable) {
+            let _ = reserve(host, size);
+            return Err(super::host::linux_errno(e.raw_os_error().unwrap_or(libc::ENOMEM)));
+        }
+        // SAFETY: anonymous memory the window holds until it replaces it.
+        if let Err(e) = unsafe { self.stage2.map(host, gpa, size, writable) } {
+            crate::debug!("virtio-fs: mapping zeros at {gpa:#x}: {e}");
+            let _ = reserve(host, size);
+            return Err(libc::EIO);
+        }
+        mapped.insert(
+            moffset,
+            Entry {
+                mapped: Mapped {
+                    len,
+                    node,
+                    foffset,
+                    writable,
+                },
+                file: None,
+                zeros_from: Some(0),
             },
         );
         Ok(())
@@ -382,10 +425,11 @@ impl Window {
         let mut mapped = self.lock();
         let mut left = false;
         for (&at, e) in mapped.iter_mut() {
-            let Some(from) = e.zeros_from else {
+            // Zeros for no file have none to grow back.
+            let (Some(from), Some(file)) = (e.zeros_from, e.file.as_ref()) else {
                 continue;
             };
-            let grown = size_of(&e.file).is_some_and(|n| n.saturating_sub(e.mapped.foffset) > from);
+            let grown = size_of(file).is_some_and(|n| n.saturating_sub(e.mapped.foffset) > from);
             let place = self.host_at(at, e.mapped.len);
             let (true, Some((host, size)), Some(nn)) =
                 (grown, place, place.and_then(|(h, _)| std::ptr::NonNull::new(h)))
@@ -399,7 +443,7 @@ impl Window {
             }
             // SAFETY: within the window's reservation, unmapped at stage 2 above.
             let again = unsafe {
-                crate::platform::map_file_range(e.file.as_fd(), e.mapped.foffset, size, nn, e.mapped.writable)
+                crate::platform::map_file_range(file.as_fd(), e.mapped.foffset, size, nn, e.mapped.writable)
             };
             // SAFETY: the file's mapping, or the zeros left where it failed, stay until the
             // window replaces them.

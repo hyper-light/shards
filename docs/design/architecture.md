@@ -5658,6 +5658,10 @@ stores.
 - A mapping is charged its range's bytes against the microVM's I/O limits (D178) as it is
   made: the guest's loads and stores through it are memory, which the host's page cache
   serves and writes back.
+- A save (D176) keeps each mapping (snapshot format 23), and its restore maps each range
+  again from its new share process, as the run gives the share its server, once that
+  server has the tables the guest's node IDs are in, and before the guest runs; a range
+  whose file that server no longer reaches is zeros, as past a file's end.
 
 **Measured (PM M269).** What a window costs a guest as it boots: its page structures, which
 Linux makes of it as it probes the device (virtio_fs_setup_dax, devm_memremap_pages of
@@ -5666,8 +5670,6 @@ it and 15% and some 2 MiB more; a boot reached PID 1 no later for one up to 2 Gi
 template pays it once; what its restores pay is to be measured with mappings.
 
 **Next.**
-- A save (D176) keeps each mapping, which its restore maps again from its new share
-  process's handles; until then a save of a microVM that holds mappings is refused.
 - A device's DMA to and from device memory: neither the pmem regions (the DAX root, the
   swap window) nor the windows are guest RAM a device's descriptor may name, so a guest's
   O_DIRECT write from a mapped file's pages fails, as it does from its root's.

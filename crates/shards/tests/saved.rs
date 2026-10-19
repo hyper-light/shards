@@ -519,6 +519,70 @@ fn a_saved_microvm_writes_on_through_its_volume() {
     assert_eq!(shards(&["rm", "-f", "ghost"]).status, Some(0));
 }
 
+/// A microVM whose volume's DAX window holds a file mapped (D189) is saved and restored
+/// with its mappings (D176): its restore maps each range again from its new share process
+/// before its guest runs, and the guest reads the file on through the window, a byte the
+/// host wrote while it was saved among it.
+#[test]
+fn a_saved_microvm_reads_on_through_its_dax_window() {
+    if cannot_run_vms() || cannot_snapshot() {
+        return;
+    }
+    let (image, _) = served();
+    let home = TempDir::new("saved-dax");
+    let (kernel, init) = (kernel(), guest_init());
+    let env: [(&str, &OsStr); 4] = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", kernel.as_os_str()),
+        ("SHARDS_INIT", init.as_os_str()),
+        ("SHARDS_SHARE_WINDOW_MIB", "64".as_ref()),
+    ];
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let pulled = shards(&["pull", "-q", &image]);
+    assert_eq!(pulled.status, Some(0), "{pulled}");
+    let dir = TempDir::new("saved-dax-v");
+    let mut big: Vec<u8> = (0..8u32 << 20)
+        .map(|i| (i.wrapping_mul(2_654_435_761) >> 24) as u8)
+        .collect();
+    std::fs::write(dir.join("big"), &big).unwrap();
+    let volume = format!("{}:/v", dir.display());
+    let run = shards(&[
+        "run", "-d", "--pull", "never", "--name", "daxsave", "-u", "0", "-v", &volume, &image, "sleep",
+    ]);
+    assert_eq!(run.status, Some(0), "{run}");
+    let exec = |args: &[&str]| {
+        let mut all = vec!["exec", "daxsave", "/bin/testguest"];
+        all.extend_from_slice(args);
+        let r = shards(&all);
+        assert_eq!(r.status, Some(0), "{args:?}: {r}");
+        r.stdout
+    };
+    assert_eq!(exec(&["fs", "dax:/v/big"]), "dax /v/big yes\n");
+    let digest = |b: &[u8]| format!("digest /v/big {:016x}\n", shards_testguest::fnv1a(b));
+    // Read whole: every range of it mapped.
+    assert_eq!(exec(&["digest", "/v/big"]), digest(&big));
+    let saved = shards(&["save", "vm", "daxsave", "mapped"]);
+    assert_eq!(saved.stdout, "mapped\n", "{saved}");
+    let at = 3 << 20;
+    big[at] = big[at].wrapping_add(1);
+    {
+        use std::os::unix::fs::FileExt as _;
+        let file = std::fs::OpenOptions::new()
+            .write(true)
+            .open(dir.join("big"))
+            .unwrap();
+        file.write_all_at(&big[at..=at], at as u64).unwrap();
+    }
+    let restored = shards(&["restore", "vm", "daxsave", "mapped"]);
+    assert_eq!(restored.status, Some(0), "{restored}");
+    assert_eq!(
+        exec(&["fs", &format!("peek:/v/big:{at}")]),
+        format!("peek /v/big {at} {}\n", big[at])
+    );
+    assert_eq!(exec(&["digest", "/v/big"]), digest(&big));
+    assert_eq!(shards(&["rm", "-f", "daxsave"]).status, Some(0));
+}
+
 /// `shards logs NAME`'s stdout.
 fn logs(home: &Path, name: &str) -> String {
     let logs = shards_in(home, &["logs", name]);
