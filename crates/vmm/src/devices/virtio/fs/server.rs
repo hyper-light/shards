@@ -2065,6 +2065,9 @@ impl Server {
 /// The bytes of a request's header that an answer of an error alone needs: its length,
 /// opcode and `unique`.
 pub const HEADER_BYTES: usize = 16;
+/// The bytes of a request's whole header (struct fuse_in_header), after which its
+/// arguments come.
+pub const IN_HEADER_BYTES: usize = 40;
 
 /// The answer to `req` where no directory is shared yet: ENODEV, or none for a request
 /// that takes no reply.

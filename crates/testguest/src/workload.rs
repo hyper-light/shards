@@ -2906,10 +2906,11 @@ fn cat() -> i32 {
     }
 }
 
-/// `read`'s: each file of `paths` read to its end, then `read PATH BYTES` said.
+/// `read`'s: each file of `paths` read to its end, then `read PATH BYTES in MS ms` said.
 fn read_through(paths: &[String]) -> i32 {
     let mut buf = vec![0u8; 1 << 20];
     for path in paths {
+        let began = std::time::Instant::now();
         let mut file = match std::fs::File::open(path) {
             Ok(file) => file,
             Err(e) => {
@@ -2929,7 +2930,11 @@ fn read_through(paths: &[String]) -> i32 {
                 }
             }
         }
-        let _ = writeln!(io::stdout(), "read {path} {total}");
+        let _ = writeln!(
+            io::stdout(),
+            "read {path} {total} in {} ms",
+            began.elapsed().as_millis()
+        );
     }
     0
 }

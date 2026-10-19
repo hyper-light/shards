@@ -163,11 +163,11 @@ fn io_bytes(req: &[u8]) -> u64 {
             .map(u32::from_le_bytes)
     };
     match word(4) {
-        // fuse_read_in: fh, offset, then size.
-        Some(server::op::READ) => word(server::HEADER_BYTES + 16).map_or(0, u64::from),
-        // fuse_write_in's 40 bytes, then the data.
+        // fuse_read_in after the header: fh, offset, then size.
+        Some(server::op::READ) => word(server::IN_HEADER_BYTES + 16).map_or(0, u64::from),
+        // fuse_write_in's 40 bytes after the header, then the data.
         Some(server::op::WRITE) => {
-            u64::try_from(req.len().saturating_sub(server::HEADER_BYTES + 40)).unwrap_or(u64::MAX)
+            u64::try_from(req.len().saturating_sub(server::IN_HEADER_BYTES + 40)).unwrap_or(u64::MAX)
         }
         _ => 0,
     }
@@ -635,6 +635,34 @@ mod tests {
             i32::from_le_bytes(out[4..8].try_into().unwrap()),
             u64::from_le_bytes(out[8..16].try_into().unwrap()),
         )
+    }
+
+    /// What a request costs its microVM's I/O limits (D178): a READ the bytes it asks for,
+    /// after its 40-byte header; a WRITE the bytes it gives; anything else nothing.
+    #[test]
+    fn requests_are_charged_what_they_read_and_write() {
+        let request = |opcode: u32, args: &[u8]| {
+            let mut r = Vec::new();
+            r.extend((40 + args.len() as u32).to_le_bytes());
+            r.extend(opcode.to_le_bytes());
+            r.extend(9u64.to_le_bytes());
+            r.extend(1u64.to_le_bytes());
+            // uid, gid and a pid of 4242, which a READ is not charged by.
+            r.extend([0u8; 8]);
+            r.extend(4242u32.to_le_bytes());
+            r.extend([0u8; 4]);
+            r.extend(args);
+            r
+        };
+        let mut read = 7u64.to_le_bytes().to_vec();
+        read.extend(0u64.to_le_bytes());
+        read.extend(65536u32.to_le_bytes());
+        read.extend([0u8; 20]);
+        assert_eq!(io_bytes(&request(server::op::READ, &read)), 65536);
+        let mut write = vec![0u8; 40];
+        write.extend([7u8; 4096]);
+        assert_eq!(io_bytes(&request(server::op::WRITE, &write)), 4096);
+        assert_eq!(io_bytes(&request(1, b"f\0")), 0);
     }
 
     /// A share that answers each request with an empty success, after `hold` lets it.

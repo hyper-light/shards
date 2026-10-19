@@ -1484,10 +1484,11 @@ fn an_s6_overlay_image_runs_as_pid_1() {
     }
 }
 
-/// A microVM's I/O limits (D178): its VMM paces what its guest writes to a volume at
-/// `--io-maxbandwidth`'s bytes and `--io-maxiops`'s requests a second, which no guest lifts,
-/// and nothing without them; `inspect` says them as dockerd's HostConfig does (D178); a container
-/// joining it, whose I/O is the microVM's, takes none of its own.
+/// A microVM's I/O limits (D178): its VMM paces what its guest writes to a volume, and
+/// reads from one, at `--io-maxbandwidth`'s bytes and `--io-maxiops`'s requests a second,
+/// which no guest lifts, and nothing without them; `inspect` says them as dockerd's
+/// HostConfig does (D178); a container joining it, whose I/O is the microVM's, takes none
+/// of its own.
 #[test]
 fn a_microvms_io_is_paced_at_its_limits() {
     let Some((home, image)) = home("containers-io") else {
@@ -1511,6 +1512,26 @@ fn a_microvms_io_is_paced_at_its_limits() {
     // 3 MiB at 1 MiB a second: at least the two seconds after its first request.
     let paced = poured(&["--io-maxbandwidth", "1m"], "3145728", "65536");
     assert!(paced >= 1900 && paced > free, "free {free} ms, paced {paced} ms");
+    // Read back by a microVM of its own, which has none of it cached: paced too, by the
+    // bytes each READ asks for.
+    let read = |limits: &[&str]| -> u128 {
+        let mut options = vec!["--rm", "-u", "0", "-v", "io:/v"];
+        options.extend_from_slice(limits);
+        let r = run_in(&home, &image, &options, &["read", "/v/p"]);
+        assert_eq!(r.status, Some(0), "{limits:?}: {r}");
+        let ms = r
+            .stdout
+            .strip_prefix("read /v/p 3145728 in ")
+            .and_then(|t| t.trim_end().strip_suffix(" ms"))
+            .unwrap_or_else(|| panic!("{limits:?}: {}", r.stdout));
+        ms.parse().unwrap()
+    };
+    let unpaced = read(&[]);
+    let held = read(&["--io-maxbandwidth", "1m"]);
+    assert!(
+        held >= 1900 && held > unpaced,
+        "free {unpaced} ms, paced {held} ms"
+    );
     // Thirty synced writes, each a WRITE and an FSYNC at least, at 20 requests a second.
     let counted = poured(&["--io-maxiops", "20"], "122880", "4096");
     assert!(counted >= 2900, "{counted} ms");
