@@ -627,7 +627,18 @@ mod tests {
     /// An IPv6 listener takes IPv6 alone: IPv4's connections are not its.
     #[test]
     fn ipv6_listeners_take_no_ipv4() {
-        let (_v6, port) = listen(SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 0), TCP).unwrap();
+        // A port below every ephemeral range, nothing of IPv4's on it as it is taken: an
+        // ephemeral one was another listener's on IPv4 meanwhile, or the connection's own
+        // (aarch64 CI 39291150299), which IPv6's listener does not keep from anyone.
+        let from = 1024 + u16::try_from(std::process::id() % 31_744).unwrap();
+        let (_v6, port) = (from..32_768)
+            .chain(1024..from)
+            .find_map(|port| {
+                let v6 = listen(SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), port), TCP).ok()?;
+                std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, port)).ok()?;
+                Some(v6)
+            })
+            .unwrap();
         assert!(std::net::TcpStream::connect((Ipv4Addr::LOCALHOST, port)).is_err());
         assert!(std::net::TcpStream::connect((Ipv6Addr::LOCALHOST, port)).is_ok());
     }
