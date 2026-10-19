@@ -9929,3 +9929,59 @@ revision before comparing a changed API/implementation.
 - **Consequence.** D189: a file cut short under a mapping never ends a microVM; the guest
   reads zeros past the new end until it learns the file's size, as it may read stale
   bytes through FUSE's page cache until then, and the file once it grows back.
+
+### M272. A volume request answered that its guest never heard of, on x86_64 (KVM)
+
+- **Question.** A cargo build on a volume, in the sustained-I/O benchmark's round 6 on the
+  Fedora host, made no progress for an hour (its harness's limit), with 54 s of CPU where a
+  build takes some 750. The CI jobs whose volumes hung were x86_64 too. Where did it stop?
+- **Method.** The microVM, still running, looked at without changing it, on the host
+  (Fedora 44, Linux 6.19.10, x86_64), shards 32df9efc, 2026-10-19: each thread's kernel
+  wait (`/proc/PID/task/*/wchan`) and user stack (`eu-stack`) in the VM process and the
+  share process; the guest's processes and their kernel stacks, and its interrupt counts
+  (`/sys/kernel/irq`), from `shards exec --privileged`; and the share's queues' rings,
+  read from the VM process's memory (`/proc/PID/mem`), each queue's addresses found in its
+  heap by the layout Linux gives a split ring. Then one request more on the volume (`ls`),
+  and the rings again.
+- **Results.**
+  - The guest: `ld.lld` waiting on a FUSE LOOKUP's answer (`request_wait_answer`, from
+    `newfstatat`), `rust-lld` on the same name (`d_alloc_parallel`), every rustc on them;
+    its 8 vCPUs halted.
+  - The host: the share's four queue workers parked, idle; its server waiting for a
+    request.
+  - The volume's request queue: 17,175 requests made available, every one taken and
+    answered by the device (its used index 17,175, its event index 17,175), while the
+    guest's event index asked to hear of the used index passing 17,167: the guest never
+    handled the last eight answers. Its high-priority queue had carried 10,837 FORGETs.
+  - The guest's interrupt for that device (an IOAPIC pin, edge-triggered) had been
+    handled 74,461 times, all on one vCPU. A new `ls` was taken and answered by the
+    device, which sent no interrupt, as the event index the guest had left behind says
+    not to: the `ls` waited too, and the count stayed at 74,461.
+- **Mechanism, read in Linux's source.** Each of a device's queue workers signals its
+  completions with a pulse on the device's pin, KVM_IRQ_LINE raised then lowered, from its
+  own thread, and every raise is one source's to KVM. A raise that finds the pin's IRR
+  still set is dropped as coalesced with a pending edge (arch/x86/kvm/ioapic.c,
+  `ioapic_set_irq`): a worker's raise landing between another's raise and lower has no
+  edge of its own. Where the guest's handler, woken by the first edge, had read the second
+  queue before its answer was there, that answer is never signalled, and with event
+  indexes (VIRTIO_RING_F_EVENT_IDX) no later one is either. arm64's vGIC latches every
+  raise of an edge-triggered interrupt as pending (`vgic_validate_injection`); the IOAPIC
+  model behind WHP drops a raise that finds its line high, as KVM does.
+- **KVM's count.** Two threads each pulsing one IOAPIC pin 20,000 times, the pin past
+  the legacy ones and masked, so that KVM holds each raise (below 0) and calls one that
+  found another still up coalesced (0) (`two_threads_pulses_are_never_coalesced`, the
+  Fedora host, KVM_IRQ_LINE_STATUS): pulsing as the backend did, KVM called 11,969, 14,832
+  and 12,243 of the 40,000 raises coalesced in 3 runs; with each VM's pulses taking turns,
+  none (40,000 pulses in 0.04 s).
+- **The model's own count.** The IOAPIC model behind WHP, 4 threads each pulsing one
+  unmasked edge-triggered pin 5,000 times (`every_threads_pulse_is_an_edge`, this Mac):
+  raised and lowered as two holds of its pins, as the backends pulsed, 20,000 pulses sent
+  19,914, 19,999 and 19,983 edges in 3 runs; raised and lowered as one, 20,000 each time.
+- **Consequence.** A pulse is one edge whatever other thread pulses: on KVM each VM's
+  pulses take turns, raise and lower (`two_threads_pulses_are_never_coalesced` holds KVM
+  to it on a masked pin, where a raise that found another still up is called coalesced);
+  WHP's model raises and lowers under one hold of its pins. An edge raised while the guest masks the pin is still lost (KVM delivers a pending
+  interrupt as a pin is unmasked only where it is level-triggered,
+  `ioapic_write_indirect`); level-triggered virtio interrupts on x86, as QEMU's virtio-mmio
+  raises them, close that.
+

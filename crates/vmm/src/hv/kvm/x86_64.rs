@@ -97,6 +97,8 @@ pub struct Vm {
     /// The MSIs routed to GSIs past the IOAPIC's, as the guest programmed its
     /// passed-through functions' (D154).
     routes: Arc<Mutex<Vec<MsiRoute>>>,
+    /// Held across each pulse's raise and lower, by whichever thread pulses ([`Irqs::pulse`]).
+    pulsing: Arc<Mutex<()>>,
     /// KVM's VFIO device, made as the first VFIO file is added ([`Vm::add_vfio_file`]).
     pub(super) vfio: OnceLock<sys::DeviceFd>,
 }
@@ -168,6 +170,7 @@ impl Vm {
             pre_fault,
             tsc_offsets,
             routes: Arc::new(Mutex::new(Vec::new())),
+            pulsing: Arc::new(Mutex::new(())),
             vfio: OnceLock::new(),
         })
     }
@@ -205,6 +208,7 @@ impl Vm {
         Irqs {
             fd: self.fd.clone(),
             routes: self.routes.clone(),
+            pulsing: self.pulsing.clone(),
         }
     }
 
@@ -306,6 +310,7 @@ impl Tsc {
 pub struct Irqs {
     fd: Arc<sys::VmFd>,
     routes: Arc<Mutex<Vec<MsiRoute>>>,
+    pulsing: Arc<Mutex<()>>,
 }
 
 impl Irqs {
@@ -313,11 +318,28 @@ impl Irqs {
         self.fd.irq_line(gsi, level).map_err(call("KVM_IRQ_LINE"))
     }
 
-    /// One edge on an edge-triggered pin: KVM coalesces a re-assertion that finds the
-    /// line still high, so it is raised and lowered (research doc §1.7).
+    /// One edge on an edge-triggered pin: KVM coalesces a raise that finds the pin's IRR
+    /// still set, an edge still pending (`ioapic_set_irq`), so it is raised and lowered
+    /// (research doc §1.7), and never while another thread's pulse is between its raise
+    /// and its lower. Every thread's raise is one source's to KVM (its userspace ID), and
+    /// a raise that landed there was dropped: a virtio device's two queues' workers each
+    /// told of a completion, the guest's handler woke at the first edge before the
+    /// second's completion was in its ring, and the guest, its event index set, never
+    /// heard of it, nor of any after (PM M272).
     pub fn pulse(&self, gsi: u32) -> Result<()> {
-        self.set(gsi, true)?;
-        self.set(gsi, false)
+        self.pulse_status(gsi).map(drop)
+    }
+
+    /// [`pulse`](Self::pulse), saying what KVM made of its raise
+    /// ([`sys::VmFd::irq_line_status`]).
+    fn pulse_status(&self, gsi: u32) -> Result<i32> {
+        let _one = crate::sync::lock(&self.pulsing);
+        let raised = self
+            .fd
+            .irq_line_status(gsi, true)
+            .map_err(call("KVM_IRQ_LINE_STATUS"))?;
+        self.set(gsi, false)?;
+        Ok(raised)
     }
 
     /// Delivers the MSI of `address` and `data`, as a function the VMM emulates sends it.
@@ -745,6 +767,35 @@ mod tests {
         let mut fewer = performance;
         fewer[3][4] &= !(1 << 5);
         assert!(!same_cpu(&performance, &fewer), "a feature less is another CPU");
+    }
+
+    /// Two threads' pulses on one pin are an edge each (PM M272): on a pin past the
+    /// legacy ones, which only the IOAPIC has, masked as at reset, KVM holds each raise
+    /// (below 0) and would call one that found another still up coalesced (0).
+    #[test]
+    fn two_threads_pulses_are_never_coalesced() {
+        if super::super::check_host().is_err() {
+            eprintln!("SKIP: no KVM here");
+            return;
+        }
+        let vm = Vm::new(VmConfig { vcpus: 1 }).unwrap();
+        let irqs = vm.irqs();
+        const GSI: u32 = 20;
+        let coalesced = std::sync::atomic::AtomicUsize::new(0);
+        std::thread::scope(|s| {
+            for _ in 0..2 {
+                s.spawn(|| {
+                    for _ in 0..20_000 {
+                        let raised = irqs.pulse_status(GSI).unwrap();
+                        assert!(raised <= 0, "a masked pin delivered: {raised}");
+                        if raised == 0 {
+                            coalesced.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        }
+                    }
+                });
+            }
+        });
+        assert_eq!(coalesced.into_inner(), 0);
     }
 
     /// Guests are permitted AMX's tile data exactly where the host has it, once the
