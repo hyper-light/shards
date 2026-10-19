@@ -1929,7 +1929,8 @@ impl<D: Disk> Daemon<D> {
     }
 
     /// All [`exit`](Self::exit) does but end the process: ends the VMs still waiting, waits
-    /// for what it last knew to be written, and lets go of the home. `shards daemon stop`
+    /// for the removals pending and what it last knew to be written, and lets go of the
+    /// home. `shards daemon stop`
     /// learns of it from its connection closing, which is done here, after the rest: the
     /// kernel would close it on exit, but in no order this could rely on (XNU closes a
     /// process's descriptors from the highest down, kern_descrip.c fdt_invalidate).
@@ -1941,8 +1942,11 @@ impl<D: Disk> Daemon<D> {
         for vm in waiting.chain(state.starting.values()) {
             let _ = vm.kill(libc::SIGTERM);
         }
-        // What it last knew of its containers is what the next daemon reads, and the
-        // files its runs asked for are made.
+        // The removals of runs that ended with `--rm`, done, their `destroy` kept: a
+        // daemon stopped as one is pending lost the event, and left its files for the
+        // next to delete (musl CI 39297260869). Then what it last knew of its containers is
+        // what the next daemon reads, and the files its runs asked for are made.
+        self.await_removals();
         self.await_recorded();
         self.await_made();
         log("exiting");

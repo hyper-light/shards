@@ -664,6 +664,9 @@ impl<D: crate::containers::Disk> Daemon<D> {
         let now = crate::spec::now() as i128;
         let only_past = until.is_some_and(|u| u < now);
         let filters = Filters::from_flags(parsed.many("filter"));
+        // The removals of runs that ended with `--rm` done first, their `destroy` with
+        // them, as `docker run --rm` has removed its container by the time it returns.
+        self.await_removals();
         let (kept, id, to, from) = self.events.listen(filters.clone());
         // On a colour terminal, each event a record of the page the client draws as they
         // come, its head with the first.
