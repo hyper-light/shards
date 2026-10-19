@@ -720,8 +720,11 @@ impl Registry {
     /// The referrers of `digest` as containerd's FetchReferrers asks for them (D116): the
     /// Referrers API (`referrers/<digest>`, with the artifact types and filters as its
     /// query), then the Referrers Tag Schema (`manifests/sha256-<hex>`) where the API is
-    /// not found; an empty index where neither is. The index's bytes, at most a
-    /// manifest's size.
+    /// not found or refuses; an empty index where neither is. An API that could not answer
+    /// then (no answer past the request's retries, 408, 429 or a 5xx) is no API that has
+    /// none: where the tag is not found either, that failure is returned, never an empty
+    /// list, which a policy would read as no signature (D116). The index's bytes, at most
+    /// a manifest's size.
     pub fn referrers(
         &self,
         digest: &str,
@@ -740,8 +743,10 @@ impl Registry {
             url = url.with_query_pair(k, v)?;
         }
         let tag = digest.replacen(':', "-", 1);
-        // The API's failure is kept, the tag tried anyway; the tag's 404 means none.
+        // The API's failure is kept, the tag tried anyway; the tag's 404 means none, but
+        // where the API could not answer, which leaves what it lists unknown.
         let mut first: Option<Error> = None;
+        let mut unanswered = false;
         for (fallback, url) in [(false, url), (true, self.base.join(&format!("manifests/{tag}"))?)] {
             let (mut response, _) = match self.request("GET", &url, &accept) {
                 Ok(r) => r,
@@ -750,6 +755,7 @@ impl Registry {
                         return Err(first.unwrap_or(e));
                     }
                     first = Some(e);
+                    unanswered = true;
                     continue;
                 }
             };
@@ -777,14 +783,18 @@ impl Registry {
                 }
                 404 if fallback => break,
                 404 => continue,
-                _ => {
+                status => {
                     let e = not_fetched(response, &url);
                     if fallback {
                         return Err(first.unwrap_or(e));
                     }
+                    unanswered = matches!(status, 408 | 429 | 500 | 502 | 503 | 504);
                     first = Some(e);
                 }
             }
+        }
+        if unanswered && let Some(e) = first {
+            return Err(e);
         }
         Ok(
             br#"{"schemaVersion":2,"mediaType":"application/vnd.oci.image.index.v1+json","manifests":[]}"#
@@ -1501,6 +1511,77 @@ mod tests {
                 1,
                 "asked in HTTPS once, silent {silent}"
             );
+        }
+    }
+
+    /// The tag is asked for where the API is not found or refuses, a 404 of both an empty
+    /// list; but an API that could not answer, past its retries, is a failure, whatever
+    /// the tag's 404 says: a policy would read an empty list as no signature (D116).
+    #[test]
+    fn referrers_that_could_not_be_read_are_no_empty_list() {
+        let digest = format!("sha256:{}", "c".repeat(64));
+        let tagged = br#"{"schemaVersion":2,"mediaType":"application/vnd.oci.image.index.v1+json","manifests":[{"mediaType":"application/vnd.oci.image.manifest.v1+json","digest":"sha256:dd","size":1}]}"#;
+        let asked = |api: &'static str, tag: Option<&'static [u8]>| {
+            let server = route(None, move |seen| {
+                let reply = if seen.target.contains("/referrers/") {
+                    // A 429 as Docker Hub's for a quota spent, which no wait outlasts.
+                    http(
+                        api,
+                        &[
+                            ("RateLimit-Limit", "100;w=21600"),
+                            ("RateLimit-Remaining", "0;w=21600"),
+                        ],
+                    )
+                } else {
+                    match tag {
+                        Some(body) => {
+                            let mut r = format!(
+                                "HTTP/1.1 200 OK\r\nContent-Type: application/vnd.oci.image.index.v1+json\r\nContent-Length: {}\r\n\r\n",
+                                body.len()
+                            )
+                            .into_bytes();
+                            r.extend_from_slice(body);
+                            r
+                        }
+                        None => http("404 Not Found", &[]),
+                    }
+                };
+                Some((reply, After::Keep))
+            });
+            let reference = Reference::parse(&format!("127.0.0.1:{}/test/image:v1", server.port)).unwrap();
+            let http = Client::new(
+                Box::new(|_| crate::tls::client_config(Vec::new(), None)),
+                "shards-test",
+            );
+            let registry = Registry::new(http, &reference, Credentials::Anonymous).unwrap();
+            registry
+                .referrers(&digest, &[], &[])
+                .map(|b| String::from_utf8(b).unwrap())
+        };
+        let empty =
+            r#"{"schemaVersion":2,"mediaType":"application/vnd.oci.image.index.v1+json","manifests":[]}"#;
+        // No API, no tag: none. An API that refuses, as one a registry does not serve
+        // may: the tag, and none where it is not found.
+        for api in [
+            "404 Not Found",
+            "400 Bad Request",
+            "405 Method Not Allowed",
+            "403 Forbidden",
+        ] {
+            assert_eq!(asked(api, None).unwrap(), empty, "{api}");
+            assert_eq!(asked(api, Some(tagged)).unwrap().as_bytes(), tagged, "{api}");
+        }
+        // An API that could not answer, past its retries: the tag where there is one,
+        // else its failure.
+        for api in [
+            "429 Too Many Requests",
+            "500 Internal Server Error",
+            "502 Bad Gateway",
+            "503 Service Unavailable",
+            "504 Gateway Timeout",
+        ] {
+            assert!(asked(api, None).is_err(), "{api}: read as none");
+            assert_eq!(asked(api, Some(tagged)).unwrap().as_bytes(), tagged, "{api}");
         }
     }
 

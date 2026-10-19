@@ -11158,7 +11158,18 @@ fields:
   the signature manifest among the attestation's referrers;
 - the referrers from the registry as the OCI distribution spec v1.1 lists them (containerd's `FetchReferrers` reads them so): the
   Referrers API with `artifactType` and its filter, else the tag schema `sha256-HEX`, a
-  404 there an empty list (`shards_registry::Registry::referrers`);
+  404 there an empty list (`shards_registry::Registry::referrers`). But an API that could
+  not answer, past the request's retries (no answer, 408, 429 or a 5xx), is not taken for
+  one that has none: where the tag is not found either, its failure is the build's.
+  containerd overwrites it with the tag's 404, which `FetchReferrers` makes an empty list
+  (core/remotes/docker/referrers.go b1ab012, `openReferrers`), and a policy then reads a
+  fetch that failed as no signature: a deny that names the wrong cause, or, for a policy
+  that denies on a signature it finds, an allow. The spec falls back to the tag on the
+  API's 404 alone (distribution-spec v1.1.1, "Listing Referrers"); an API that refuses
+  otherwise (400, 403, 405) still falls back, as registries that serve none answer so.
+  A policy test once denied `docker/dockerfile:1` for want of a verified signature and
+  passed again (gate e6, 2026-10-19), as a referrers fetch that failed would have; held by
+  `referrers_that_could_not_be_read_are_no_empty_list` (mutation-checked);
 - the blobs read on the way, and the attestation's layers of the predicate types asked
   for (`addAttestationBlobs`: SLSA v0.2 and v1 where provenance is unknown);
 - the chain's root checked against the image's digest, in BuildKit's words.
