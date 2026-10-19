@@ -1369,41 +1369,70 @@ fn a_daemon_out_of_descriptors_waits_for_room() {
     let daemon = start_daemon(&home, Some(128));
     let log = home.join("daemon.log");
     let said = || std::fs::read_to_string(&log).unwrap_or_default();
-    // The daemon's own words: EMFILE's text is the C library's, and musl's differs.
-    let starved = || said().contains("clients wait until the daemon has room");
+    // The daemon's own words as it runs out and as it has room again: EMFILE's text is
+    // the C library's, and musl's differs.
+    const OUT: &str = "clients wait until the daemon has room";
+    const AGAIN: &str = "offering slots again";
+    // Out as of `log`: it said it ran out, and has offered no slot since.
+    let out = |log: &str| {
+        log.rfind(OUT)
+            .is_some_and(|at| !log.get(at..).unwrap_or_default().contains(AGAIN))
+    };
     assert!(
-        !starved(),
+        !out(&said()),
         "out of descriptors idle; the daemon's log:\n{}",
         said()
     );
-    // Clients that take its slots and say nothing, until it has no room to make the next.
-    let mut silent = Vec::new();
-    let deadline = Instant::now() + Duration::from_secs(10);
-    while !starved() {
-        assert!(
-            Instant::now() < deadline,
-            "the daemon never ran out of descriptors, {} clients in; its log:\n{}",
-            silent.len(),
-            said()
-        );
-        silent.extend(silent_slot(&home, Duration::from_millis(100)));
-    }
-    let before = cpu_time(daemon);
-    std::thread::sleep(Duration::from_secs(1));
-    let spent = cpu_time(daemon).saturating_sub(before);
-    assert!(
-        spent < Duration::from_millis(300),
-        "the daemon spun: {spent:?} of CPU in 1 s"
-    );
-    // A collection due meanwhile waits: its files would take what clients wait for.
     let left = home.join("images").join("ingest").join("left");
     std::fs::create_dir_all(left.parent().unwrap()).unwrap();
-    std::fs::write(&left, b"left behind").unwrap();
     let due = home.join("images").join("collect-due");
-    std::fs::write(&due, b"").unwrap();
-    eventually("the collection due was not seen", || !due.exists());
-    std::thread::sleep(Duration::from_millis(500));
-    assert!(left.exists(), "collected while out of descriptors");
+    let mut silent = Vec::new();
+    for round in 1.. {
+        // Clients that take every slot it offers and say nothing past their first byte,
+        // until it has no room to make the next and offers none for a while: a client it
+        // has yet to see the end of (the `ps` that started it), or one that takes a slot
+        // as it runs out, gives it room for more first (CI 41eab0d5: 270 µs after).
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            match silent_slot(&home, Duration::from_millis(200)) {
+                Some(client) => silent.push(client),
+                None if out(&said()) => break,
+                None => {}
+            }
+            assert!(
+                Instant::now() < deadline,
+                "the daemon never ran out of descriptors, {} clients in; its log:\n{}",
+                silent.len(),
+                said()
+            );
+        }
+        let from = said().len();
+        let before = cpu_time(daemon);
+        std::thread::sleep(Duration::from_secs(1));
+        let spent = cpu_time(daemon).saturating_sub(before);
+        assert!(
+            spent < Duration::from_millis(300),
+            "the daemon spun: {spent:?} of CPU in 1 s"
+        );
+        // A collection due meanwhile waits: its files would take what clients wait for.
+        std::fs::write(&left, b"left behind").unwrap();
+        std::fs::write(&due, b"").unwrap();
+        eventually("the collection due was not seen", || !due.exists());
+        std::thread::sleep(Duration::from_millis(500));
+        // Room it found meanwhile, a client ending or its request's time running out
+        // (REQUEST_TIMEOUT), was room to collect in: the round says nothing, and is run
+        // again.
+        if said().get(from..).is_some_and(|since| since.contains(AGAIN)) {
+            assert!(round < 5, "the daemon kept finding room; its log:\n{}", said());
+            continue;
+        }
+        assert!(
+            left.exists(),
+            "collected while out of descriptors; its log:\n{}",
+            said()
+        );
+        break;
+    }
     drop(silent);
     let env = [("SHARDS_HOME", home.as_os_str())];
     let listed = run_shards_env(&["ps"], &[] as &[&str], &env, TIMEOUT);

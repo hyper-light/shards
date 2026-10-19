@@ -533,7 +533,12 @@ fn counts(logs: &str) -> Vec<u64> {
 
 /// Waits until `done`, failing the test after TIMEOUT with what `said` says then.
 fn until(what: &str, done: &mut dyn FnMut() -> bool, said: &dyn Fn() -> String) {
-    let deadline = Instant::now() + TIMEOUT;
+    until_in(what, TIMEOUT, done, said);
+}
+
+/// As [`until`], within `within`.
+fn until_in(what: &str, within: Duration, done: &mut dyn FnMut() -> bool, said: &dyn Fn() -> String) {
+    let deadline = Instant::now() + within;
     while !done() {
         assert!(Instant::now() < deadline, "{what}: {}", said());
         std::thread::sleep(Duration::from_millis(50));
@@ -692,7 +697,16 @@ fn a_saved_microvm_keeps_what_it_swapped() {
         let timed = shards(&["logs", "--timestamps", "swapped"]);
         format!("{}{}\n{}", timed.stdout, timed.stderr, evidence(&home, "swapped"))
     };
-    until("its pattern kept", &mut || log().contains("kept 2\n"), &said);
+    // A round's time on this host, from its first to its second: what the rounds after the
+    // restore are waited for by (CI's x86_64 runners took 20 s a round, CI 39249195872).
+    until("its pattern kept", &mut || log().contains("kept 1\n"), &said);
+    let first = Instant::now();
+    until(
+        "its pattern kept again",
+        &mut || log().contains("kept 2\n"),
+        &said,
+    );
+    let round = first.elapsed();
     let saved = shards(&["save", "vm", "swapped", "full"]);
     assert_eq!(saved.status, Some(0), "{saved}\n{}", evidence(&home, "swapped"));
     let snapshot = home
@@ -711,9 +725,12 @@ fn a_saved_microvm_keeps_what_it_swapped() {
         "{restored}\n{}",
         evidence(&home, "swapped")
     );
-    until(
+    // The round the save cut short ends from what was restored, and the next reads all of
+    // it back so.
+    until_in(
         "its pattern kept after the restore",
-        &mut || log().matches("kept ").count() >= rounds + 3,
+        TIMEOUT + 2 * round,
+        &mut || log().matches("kept ").count() >= rounds + 2,
         &said,
     );
     assert!(!log().contains("lost"), "{}", log());
