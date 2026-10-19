@@ -1012,6 +1012,22 @@ fn privileged() -> io::Result<()> {
     Ok(())
 }
 
+/// What is mounted at `path` in this process's mount namespace, for a failed remount's
+/// message: the topmost mount's filesystem, source and superblock options, as
+/// /proc/self/mountinfo has them (proc(5)), or that nothing is.
+fn mounted_at(path: &str) -> String {
+    let Ok(info) = std::fs::read_to_string("/proc/self/mountinfo") else {
+        return "its mounts unread".into();
+    };
+    info.lines()
+        .rev()
+        .find(|l| l.split(' ').nth(4) == Some(path))
+        .map_or_else(
+            || "nothing mounted".into(),
+            |l| l.split_once(" - ").map_or(l, |(_, fs)| fs).to_string(),
+        )
+}
+
 /// What runc says when setup `entry` fails with `errno`.
 pub fn failed(entry: &[u8], errno: i32) -> String {
     let err = shards_cmdline::go::linux_error(errno);
@@ -1031,7 +1047,8 @@ pub fn failed(entry: &[u8], errno: i32) -> String {
     }
     if let Some(size) = text.strip_prefix("shm=") {
         return format!(
-            "error mounting \"shm\" to rootfs at \"/dev/shm\": mount src=shm, dst=/dev/shm, flags=MS_NOSUID|MS_NODEV|MS_NOEXEC|MS_REMOUNT, data=mode=1777,size={size}: {err}"
+            "error mounting \"shm\" to rootfs at \"/dev/shm\": mount src=shm, dst=/dev/shm, flags=MS_NOSUID|MS_NODEV|MS_NOEXEC|MS_REMOUNT, data=mode=1777,size={size}: {err} (at /dev/shm: {})",
+            mounted_at("/dev/shm")
         );
     }
     if let Some(spec) = text.strip_prefix("ulimit=") {

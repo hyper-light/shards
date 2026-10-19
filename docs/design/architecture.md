@@ -7385,6 +7385,10 @@ inside the microVM the other runs in (D119).
   `run::shm_bytes` of the most of the run whose microVM it is: its own, a joiner's
   provider's), as every limit's runs restore one template (D148), whose own is sized by
   half all its guest may plug; a builder's are on its kernel's command line (`shards_shm`).
+  The entry comes before any of the run's mounts, so that what the run mounts at or under
+  /dev/shm (a volume, `--tmpfs /dev/shm:size=8m`) goes over the /dev/shm it was given, as
+  a container's mounts go over its default one, and is never resized itself: told after
+  them (32df9efc), a run's 8 MiB tmpfs there was made the microVM's 64 GiB.
   `inspect`'s `ShmSize` says them, held to what the guest's statfs says. A run's
   memory limit still holds what it writes there, as memory. A run wrote 128 MiB there,
   where 64 MiB refused it (`a_microvm_takes_its_ipc_hostname_cgroups_umask_and_writable_layer`).

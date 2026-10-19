@@ -1668,9 +1668,38 @@ fn a_microvm_is_made_under_the_slice_its_cgroup_parent_names() {
         .find_map(|l| l.strip_prefix("anon "))
         .and_then(|v| v.parse::<u64>().ok())
         .unwrap();
+    // What each cgroup holds, as a failure says it (gnu x86_64 CI 39273610992: none of it
+    // the slice's).
+    let held = |dir: &Path| {
+        let stat = std::fs::read_to_string(dir.join("memory.stat")).unwrap_or_default();
+        let kinds: Vec<&str> = stat
+            .lines()
+            .filter(|l| {
+                ["anon ", "file ", "shmem ", "kernel "]
+                    .iter()
+                    .any(|k| l.starts_with(k))
+            })
+            .collect();
+        format!(
+            "{}: {}; memory.current {}",
+            dir.display(),
+            kinds.join(", "),
+            std::fs::read_to_string(dir.join("memory.current"))
+                .unwrap_or_default()
+                .trim()
+        )
+    };
+    let resident = std::fs::read_to_string(format!("/proc/{vm}/status"))
+        .unwrap_or_default()
+        .lines()
+        .filter(|l| l.starts_with("Rss"))
+        .collect::<Vec<_>>()
+        .join(", ");
     assert!(
         own_kib > 0 && charged >= own_kib << 10,
-        "the VM's own {own_kib} KiB, the slice's {charged} bytes"
+        "the VM's own {own_kib} KiB, the slice's {charged} bytes\n{}\n{}\nthe VM's {resident}; its cgroup {scope}",
+        held(&scope_dir),
+        held(&slice_dir)
     );
     // A second run under it: made in the same scope, placed once.
     let second = run_in(
@@ -11532,14 +11561,26 @@ fn a_microvm_swaps_and_throttles_as_its_limits_say() {
     assert_eq!(held.stdout, "67108864\n", "{held}");
     let killed = joiner(&["--memory-swap", "64m"], &["alloc", "96"]);
     assert_eq!(killed.status, Some(137), "{killed}");
-    // Its end said in the daemon's log, as a run's is: what its cgroup was allowed and
-    // held, none of it swap, and what its kernel said of it.
-    let log = std::fs::read_to_string(home.join("daemon.log")).unwrap_or_default();
-    let said = log
-        .lines()
-        .rev()
-        .find(|l| l.contains("a process ended for want of memory"))
-        .unwrap_or_default();
+    // Its end said in the daemon's log, as a run's is, as the daemon hears it, which may be
+    // as its client has the exit: what its cgroup was allowed and held, none of it swap,
+    // and what its kernel said of it.
+    let deadline = Instant::now() + TIMEOUT;
+    let (log, said) = loop {
+        let log = std::fs::read_to_string(home.join("daemon.log")).unwrap_or_default();
+        let said = log
+            .lines()
+            .rev()
+            .find(|l| l.contains("a process ended for want of memory"))
+            .map(str::to_string);
+        if let Some(said) = said {
+            break (log, said);
+        }
+        assert!(
+            Instant::now() < deadline,
+            "no kill said in the daemon's log:\n{log}"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    };
     assert!(
         said.contains("memory.max 67108864")
             && said.contains("memory.swap.max 0")
@@ -11706,6 +11747,11 @@ fn a_microvm_takes_its_ipc_hostname_cgroups_umask_and_writable_layer() {
     assert_eq!(shm(&ipc(&[], "")), host_shm.to_string());
     assert_eq!(shm(&ipc(&["--shm-size", "16m"], "")), (16u64 << 20).to_string());
     assert_eq!(shm(&ipc(&["--ipc", "none"], "")), "none");
+    // A tmpfs of the run's own at /dev/shm goes over the one it was given, as its size
+    // says, sized before anything was mounted: never resized itself.
+    let own = ["--shm-size", "16m", "--tmpfs", "/dev/shm:size=8m"];
+    assert_eq!(shm(&ipc(&own[2..], "")), (8u64 << 20).to_string());
+    assert_eq!(shm(&ipc(&own, "")), (8u64 << 20).to_string());
     let wrote = run_in(&home, &image, &["--rm"], &["big", "/dev/shm/renderer", "128"]);
     assert_eq!(wrote.status, Some(0), "128 MiB in its /dev/shm: {wrote}");
     let made = run_in(&home, &image, &["-d", "--name", "sized"], &["sleep", "600"]);

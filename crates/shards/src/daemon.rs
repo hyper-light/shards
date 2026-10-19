@@ -292,9 +292,12 @@ fn fail(message: &str) -> ExitCode {
     ExitCode::FAILURE
 }
 
-/// A message in the daemon's log.
+/// A message in the daemon's log: its line written whole, in one write, so that a reader
+/// never finds part of it, nor another thread's line within it (stderr writes each piece
+/// of a formatted line as it comes).
 fn log(message: impl std::fmt::Display) {
-    let _ = writeln!(io::stderr(), "shards daemon {}: {message}", std::process::id());
+    let line = format!("shards daemon {}: {message}\n", std::process::id());
+    let _ = io::stderr().write_all(line.as_bytes());
 }
 
 /// The host's hosts file, as a container on its network has it (D124): `/etc/hosts`, or
