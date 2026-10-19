@@ -151,6 +151,28 @@ Reviewed feature by feature, each D-entry's design against what it took from Doc
     out of the volume it was given. Now the run's user's (D38), measured first: of the
     official images that run as other than root, one met it, percona's declared
     `/var/log/mysql`, and none other changes (PM M249).)
+  - Found in the code's constants (2026-10-18): what a microVM needs, then the figure of
+    Docker's machinery a constant took for it, none a contract its clients read. Open, each
+    a measurement or a design first.
+    - A microVM's /dev/shm is its own kernel's tmpfs, bounded by the microVM's memory alone,
+      and what agents run share memory through it: a browser's renderers, a data loader's
+      workers (Playwright's docs and PyTorch's README tell containers' users to raise it).
+      The microVM's holds half its memory, as Linux sizes a tmpfs (tmpfs.rst); each run's
+      own, 64 MiB, dockerd's `DefaultShmSize` (D156). To size each run's as the microVM's.
+    - What happened to a home's microVMs, for `events --since`: the last 256 events,
+      dockerd's `eventsLimit`, gone with the daemon. To keep them in the home, as long as
+      the disk's share for them allows, derived.
+    - A microVM's image pushed: 5 blobs at once, dockerd's `max-concurrent-uploads`, where a
+      pull's fetcher measures and adapts (PM M114). To adapt as the fetcher does, measured.
+    - A microVM whose command outlives its SIGKILL: its VM ended 10 s later, and a signal
+      that could not be sent waited out 2 s, moby's kill.go and stop.go. To derive from how
+      long a guest takes to say a killed command's end, with the shutdown's 5 s above.
+    - A microVM paused: its cgroup waited for 10 s to say it is frozen, runc's `waitFrozen`.
+      To derive from how long a freeze takes a busy microVM, measured.
+    - A builder's cache mount whose records are all held: its taker looks again every
+      100 ms, BuildKit's mount.go, a timer where the lock's release could wake it.
+    - A builder's cache collected: at most once a minute, BuildKit's controller. To derive
+      from what a collection costs, measured.
 - The rest: open, D-entry by D-entry.
 
 ## Fixing order
