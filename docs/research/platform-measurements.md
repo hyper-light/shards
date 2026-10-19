@@ -9846,3 +9846,32 @@ revision before comparing a changed API/implementation.
   size the other ways give back 2 to 4 MiB more and a block's page structures. Larger
   sizes, and Linux, unmeasured.
 
+### M269. What a virtio-fs DAX window costs a guest as it boots (D189)
+
+- **Question.** Linux describes a virtio-fs DAX window's pages as it probes the device
+  (virtio_fs_setup_dax, devm_memremap_pages of MEMORY_DEVICE_FS_DAX): what does that take of
+  a guest's memory, and of its boot, by the window's length?
+- **Method.** `docs/research/measurements/dax-window/measure.sh SHARDS KERNEL TESTGUEST 5
+  0 128 256 512 1024 2048 4096`: the test guest as PID 1 (`memory`) under shards' VMM, 512 MiB
+  and one shared directory whose device offers a window of each length (0: none), says
+  MemTotal, MemFree and MemAvailable and its uptime (/proc/uptime, 10 ms steps) as it
+  begins; 5 boots of each, interleaved. macOS 26.4.1, Apple M5 Max, shards dc26bb27 with
+  the window this entry's commit adds, 2026-10-19.
+- **Results** (n 5 each; MemTotal 482.4 MiB in every boot):
+
+  | window | free memory taken, p50 / max | a 64th of it | PID 1 at, p50 / max |
+  |---|---|---|---|
+  | none | 0 / 0.1 MiB | - | 50 / 50 ms |
+  | 128 MiB | 4.4 / 4.4 | 2 | 50 / 50 ms |
+  | 256 MiB | 4.8 / 4.8 | 4 | 50 / 50 ms |
+  | 512 MiB | 9.9 / 9.9 | 8 | 50 / 50 ms |
+  | 1 GiB | 18.1 / 18.2 | 16 | 50 / 50 ms |
+  | 2 GiB | 37.8 / 37.8 | 32 | 50 / 50 ms |
+  | 4 GiB | 73.7 / 73.7 | 64 | 60 / 60 ms |
+
+  - A window costs a 64th of it and about 15% more, and some 2 MiB, taken from free memory
+    as the device is probed; a boot reached PID 1 within the same 10 ms step up to 2 GiB.
+- **Consequence.** D189: a window's cost is a template's to pay once; how long a window
+  each share is given waits on what mappings cost a run restored from it, and on
+  throughput against FUSE.
+

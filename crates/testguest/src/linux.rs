@@ -33,6 +33,7 @@ pub fn main() {
             "snapshot-plug" => snapshot_plug(),
             "plug-snapshot" => plug_snapshot(),
             "unplug-cost" => unplug_cost(),
+            "memory" => memory_report(),
             "limits" => limits(),
             "pci" => pci(),
             "pci-irq" => pci_irq(),
@@ -2168,6 +2169,33 @@ fn unplug_cost() -> Result<(), String> {
         blocks_online()?.saturating_sub(blocks_before)
     ));
     let _ = writeln!(io::stdout(), "{said}");
+    Ok(())
+}
+
+/// The memory the kernel has as PID 1 begins, as /proc/meminfo says it, in bytes: what
+/// devices took of it as they were probed, a DAX window's page structures among them
+/// (D189), and how long the kernel took to come to it (/proc/uptime, in seconds):
+/// `SHARDS-TEST MEMORY <MemTotal> <MemFree> <MemAvailable> <uptime>`.
+fn memory_report() -> Result<(), String> {
+    let meminfo = std::fs::read_to_string("/proc/meminfo").map_err(|e| format!("/proc/meminfo: {e}"))?;
+    let field = |name: &str| -> Result<u64, String> {
+        meminfo
+            .lines()
+            .find_map(|l| l.strip_prefix(name))
+            .and_then(|v| v.trim().strip_suffix("kB"))
+            .and_then(|kb| kb.trim().parse::<u64>().ok())
+            .map(|kb| kb << 10)
+            .ok_or_else(|| format!("/proc/meminfo: no {name}"))
+    };
+    let uptime = std::fs::read_to_string("/proc/uptime").map_err(|e| format!("/proc/uptime: {e}"))?;
+    let _ = writeln!(
+        io::stdout(),
+        "SHARDS-TEST MEMORY {} {} {} {}",
+        field("MemTotal:")?,
+        field("MemFree:")?,
+        field("MemAvailable:")?,
+        uptime.split_whitespace().next().unwrap_or("?")
+    );
     Ok(())
 }
 

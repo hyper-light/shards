@@ -400,8 +400,11 @@ fn assemble(
     // has: its kernel takes no memory or window past them (Linux's iomem_resource), and the
     // hypervisor maps none.
     let bits = vm.phys_bits().map_err(|e| e.to_string())?;
-    // The swap window past all of that (D159), within them.
-    let (swap_at, top) = super::swap_layout(config, top, 1u64.checked_shl(bits).unwrap_or(u64::MAX))?;
+    // The swap window past all of that (D159), within them, and each share's DAX window
+    // past it (D189).
+    let reach = 1u64.checked_shl(bits).unwrap_or(u64::MAX);
+    let (swap_at, top) = super::swap_layout(config, top, reach)?;
+    let (windows, top) = super::share_windows(config, top, reach)?;
     if top > 1 << bits {
         return Err(format!(
             "the guest's memory and devices end at {top:#x}, past the {bits} address bits its CPU has"
@@ -436,6 +439,7 @@ fn assemble(
     let devices = super::virtio_devices(
         config,
         &regions,
+        &windows,
         hosts,
         hotplug
             .into_iter()

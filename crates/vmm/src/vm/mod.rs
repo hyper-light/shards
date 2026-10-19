@@ -312,6 +312,53 @@ fn swap_layout(
     Ok((Some((at, len)), end))
 }
 
+/// Each shared directory's DAX window (D189), its share's first and the join share's last:
+/// `(guest address, length)` of each, at a GiB boundary from `top` on, within `limit`; and
+/// where the last ends. None where `config` gives no window.
+#[cfg(hv)]
+fn share_windows(
+    config: &crate::snapshot::MachineConfig,
+    top: u64,
+    limit: u64,
+) -> Result<(Vec<(u64, u64)>, u64), String> {
+    const GIB: u64 = 1 << 30;
+    let count = config.shares as usize + usize::from(config.join_share);
+    if config.share_window_mib == 0 || count == 0 {
+        return Ok((Vec::new(), top));
+    }
+    let overflow = || {
+        format!(
+            "{count} DAX windows of {} MiB overflow the address space",
+            config.share_window_mib
+        )
+    };
+    let len = config
+        .share_window_mib
+        .checked_mul(1 << 20)
+        .ok_or_else(overflow)?;
+    // Whole 2 MiB ranges: what the guest maps a file's ranges in (fs/fuse/dax.c,
+    // FUSE_DAX_SZ), and the subsections it describes device memory's pages in
+    // (devm_memremap_pages, with SPARSEMEM_VMEMMAP).
+    if !len.is_multiple_of(pmem::ALIGN) {
+        return Err(format!(
+            "a DAX window of {} MiB: whole {} MiB",
+            config.share_window_mib,
+            pmem::ALIGN >> 20
+        ));
+    }
+    let mut windows = Vec::with_capacity(count);
+    let mut next = top;
+    for _ in 0..count {
+        let at = next.checked_next_multiple_of(GIB).ok_or_else(overflow)?;
+        next = at.checked_add(len).ok_or_else(overflow)?;
+        windows.push((at, len));
+    }
+    if next > limit {
+        return Err(overflow());
+    }
+    Ok((windows, next))
+}
+
 /// The swap window of `layout` (D159), its head mapped through slots of its own, which the
 /// control page shares with its device; none where it has none.
 #[cfg(hv)]
@@ -351,6 +398,8 @@ fn reporting_device(
 fn virtio_devices(
     config: &crate::snapshot::MachineConfig,
     regions: &[(Arc<pmem::Region>, u64)],
+    // The shares' alone, which only Unix hosts have.
+    #[cfg_attr(not(unix), allow(unused_variables))] windows: &[(u64, u64)],
     hosts: Hosts<'_>,
     last: Vec<Box<dyn crate::devices::virtio::VirtioDevice>>,
     max: u64,
@@ -411,7 +460,9 @@ fn virtio_devices(
             .ok_or("the machine has a shared directory but no slot for it")?
             .clone();
         devices.push(Box::new(
-            crate::devices::virtio::fs::Fs::new(&format!("shards{i}"), slot)?.with_limit(hosts.io),
+            crate::devices::virtio::fs::Fs::new(&format!("shards{i}"), slot)?
+                .with_limit(hosts.io)
+                .with_window(windows.get(i).copied()),
         ));
     }
     // Its join share, after them, which init mounts by its tag once a joiner brings
@@ -422,7 +473,9 @@ fn virtio_devices(
             .join_share
             .ok_or("the machine has a join share but no slot for it")?;
         devices.push(Box::new(
-            crate::devices::virtio::fs::Fs::join(shards_abi::JOIN_SHARE_TAG, slot)?.with_limit(hosts.io),
+            crate::devices::virtio::fs::Fs::join(shards_abi::JOIN_SHARE_TAG, slot)?
+                .with_limit(hosts.io)
+                .with_window(windows.get(config.shares as usize).copied()),
         ));
     }
     devices.extend(last);
@@ -502,6 +555,7 @@ fn machine_config(cfg: &Config) -> Result<crate::snapshot::MachineConfig, String
         // Its window's length, once the machine has its renderer (aarch64.rs `build`).
         gpu: None,
         swap_mib: cfg.swap_mib,
+        share_window_mib: cfg.share_window_mib,
     })
 }
 
@@ -588,6 +642,9 @@ pub struct Config {
     /// run's swap file mapped into it as it is given one; 0 for none. Hidden from the guest
     /// until its init shows it (`control::SHOW_SWAP`).
     pub swap_mib: u64,
+    /// A DAX window of this many MiB for each shared directory (D189): virtio-fs's cache, a
+    /// shared memory region its guest maps the files it reads into; 0 for none.
+    pub share_window_mib: u64,
     /// A PCI bus with test functions on it, QEMU's edu's identification and liveness
     /// registers (D153), at each of these places on bus 0, `(device, function)`: what
     /// tests read to show that the bus reaches the VMM. A machine with a PCI bus saves no
@@ -1319,6 +1376,7 @@ impl Config {
             reporting: false,
             gpu: false,
             swap_mib: 0,
+            share_window_mib: 0,
             pci_test: Vec::new(),
             vfio: Vec::new(),
         }
@@ -1679,6 +1737,7 @@ mod tests {
             reporting: false,
             gpu: None,
             swap_mib: 0,
+            share_window_mib: 0,
         }
     }
 
@@ -1741,6 +1800,39 @@ mod tests {
 
     /// pmem regions go from the first address, each right after the one before; none
     /// leaves the first address their end; one past the address space is refused.
+    /// Each share's DAX window and the join share's (D189), at GiB boundaries from where
+    /// the machine's addresses end, whole 2 MiB ranges, within its address limit.
+    #[test]
+    fn share_windows_go_one_after_another() {
+        const GIB: u64 = 1 << 30;
+        let mut config = machine(false, None);
+        assert_eq!(
+            share_windows(&config, 5 * GIB, u64::MAX).unwrap(),
+            (Vec::new(), 5 * GIB)
+        );
+        config.shares = 2;
+        config.join_share = true;
+        assert_eq!(
+            share_windows(&config, 5 * GIB, u64::MAX).unwrap(),
+            (Vec::new(), 5 * GIB)
+        );
+        config.share_window_mib = 1536;
+        let (windows, end) = share_windows(&config, 5 * GIB + 1, u64::MAX).unwrap();
+        assert_eq!(
+            windows,
+            [
+                (6 * GIB, 1536 << 20),
+                (8 * GIB, 1536 << 20),
+                (10 * GIB, 1536 << 20)
+            ]
+        );
+        assert_eq!(end, 10 * GIB + (1536 << 20));
+        assert!(share_windows(&config, 5 * GIB + 1, end - 1).is_err());
+        assert!(share_windows(&config, 5 * GIB + 1, end).is_ok());
+        config.share_window_mib = 3;
+        assert!(share_windows(&config, 5 * GIB, u64::MAX).is_err());
+    }
+
     #[test]
     fn pmem_regions_go_one_after_another() {
         let dir = shards_testdir::TempDir::new("pmem-regions").unwrap();
@@ -1806,7 +1898,7 @@ mod tests {
             join_share: None,
             io: None,
         };
-        let e = virtio_devices(&config, &regions, hosts, Vec::new(), 4)
+        let e = virtio_devices(&config, &regions, &[], hosts, Vec::new(), 4)
             .err()
             .unwrap();
         assert_eq!(e, "at most 4 virtio devices are supported");
@@ -1814,17 +1906,17 @@ mod tests {
             let sizes = Arc::new(mem::Sizes::new(1 << 32, mem::ALIGN, mem::ALIGN));
             vec![Box::new(mem::Mem::new(sizes, Unmapped)) as Box<dyn crate::devices::virtio::VirtioDevice>]
         };
-        let e = virtio_devices(&config, &regions, hosts, plugging(), 5)
+        let e = virtio_devices(&config, &regions, &[], hosts, plugging(), 5)
             .err()
             .unwrap();
         assert_eq!(e, "at most 5 virtio devices are supported");
-        let ids: Vec<u32> = virtio_devices(&config, &regions, hosts, plugging(), 6)
+        let ids: Vec<u32> = virtio_devices(&config, &regions, &[], hosts, plugging(), 6)
             .unwrap()
             .iter()
             .map(|d| d.device_id())
             .collect();
         assert_eq!(ids, [2, 2, 27, 19, 1, mem::DEVICE_ID]);
-        let devices = virtio_devices(&config, &regions, hosts, Vec::new(), 5).unwrap();
+        let devices = virtio_devices(&config, &regions, &[], hosts, Vec::new(), 5).unwrap();
         let ids: Vec<u32> = devices.iter().map(|d| d.device_id()).collect();
         assert_eq!(ids, [2, 2, 27, 19, 1]);
         let mut mac = [0u8; 6];
@@ -1844,7 +1936,7 @@ mod tests {
             join_share: None,
             io: None,
         };
-        let e = virtio_devices(&config, &regions, missing, Vec::new(), 5)
+        let e = virtio_devices(&config, &regions, &[], missing, Vec::new(), 5)
             .err()
             .unwrap();
         assert!(e.contains("no host side"), "{e}");
@@ -1857,7 +1949,7 @@ mod tests {
             join_share: None,
             io: None,
         };
-        let e = virtio_devices(&config, &regions, missing, Vec::new(), 5)
+        let e = virtio_devices(&config, &regions, &[], missing, Vec::new(), 5)
             .err()
             .unwrap();
         assert!(e.contains("no network process"), "{e}");

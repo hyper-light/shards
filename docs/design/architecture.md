@@ -5610,6 +5610,44 @@ none. Plugged memory stays the kernel's own (D133).
 **Not yet.** Builders (D133) give back nothing at pressure: a build runs in `shards build`'s
 own process, not the daemon's. M267 and M268 on Linux, and M268 at larger sizes.
 
+### D189. Volumes' file data once, in the host's page cache: virtio-fs DAX windows (in progress: the window built)
+
+**Found.** The user's plan, item 5. A volume's file the guest reads is in the host's page
+cache and again in the guest's (944 MiB of a 1 GiB file, PM M267), and every read and write
+goes through the share process: two copies a request, on one queue (the benchmark's
+trial, n 1: 1.1 GB/s of 1 MiB reads, where Cloud Hypervisor's virtiofsd gave 4.4). Linux's
+virtiofs maps a file's ranges into a window of device memory that the host fills from the
+file itself (DAX, fs/fuse/dax.c), with the pinned kernel's CONFIG_FUSE_DAX: the data then
+lives once, in the host's page cache, and reads and writes are the guest's own loads and
+stores.
+
+**Built so far.** Each shared directory's device, the join share's too, may offer a DAX
+window (`MachineConfig::share_window_mib`, snapshot format 22): virtio-fs's cache, shared
+memory region 0 (VIRTIO_FS_SHMCAP_ID_CACHE), at a GiB boundary past the swap window, whole
+2 MiB ranges as the guest maps files in them, within the addresses the guest's CPU has. Nothing asks for one
+yet, but the VM process's `--share-window MIB`.
+
+**Measured (PM M269).** What a window costs a guest as it boots: its page structures, which
+Linux makes of it as it probes the device (virtio_fs_setup_dax, devm_memremap_pages of
+MEMORY_DEVICE_FS_DAX): 18.1 MiB of free memory for a 1 GiB window, 73.7 for 4 GiB, a 64th of
+it and 15% and some 2 MiB more; a boot reached PID 1 no later for one up to 2 GiB. A
+template pays it once; what its restores pay is to be measured with mappings.
+
+**Next.**
+- FUSE_SETUPMAPPING and FUSE_REMOVEMAPPING in the VM process: it asks its share process for
+  the descriptor of the open handle a mapping names (a control frame; the descriptor by
+  SCM_RIGHTS), no wider than the handle was opened, and maps that range of the file into the
+  window, MAP_SHARED. On KVM one memslot over address space reserved for the window, each
+  range placed in it MAP_FIXED, which KVM's MMU notifiers see, where a memslot a mapping
+  would wait out a grace period each; on HVF each range mapped at stage 2 by address (M193:
+  one remapped in the host alone keeps the old pages).
+- A file truncated on the host under a mapping never ends the VM process: the range then
+  reads zeros.
+- A save (D176) keeps each mapping, which its restore maps again from its new share
+  process's handles.
+- Which files, and how large a window: dax=inode with the server saying per file
+  (FUSE_ATTR_DAX), from throughput and memory measured against FUSE.
+
 ### D179. Other CPUs' images, emulated in their microVM (parts 1 to 3 built)
 
 Images built on an arm64 Mac usually ship to x86_64 hosts, and the other way round, and a

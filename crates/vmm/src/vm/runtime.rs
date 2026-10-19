@@ -1039,6 +1039,7 @@ mod tests {
                 reporting: false,
                 gpu: None,
                 swap_mib: 0,
+                share_window_mib: 0,
             },
             plugged: Vec::new(),
             arch: Vec::new(),

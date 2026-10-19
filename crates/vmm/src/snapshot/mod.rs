@@ -75,7 +75,8 @@ const MAGIC: [u8; 8] = *b"SHRDSNAP";
 ///     is saved (D176).
 /// 21: a share's tables keep the bytes of the files its guest holds open that no path
 ///     reaches, which a restored server holds anew (D176).
-const VERSION: u32 = 21;
+/// 22: and the length of each shared directory's DAX window in MiB, 0 for none (D189).
+const VERSION: u32 = 22;
 /// The snapshot format this build writes and reads: what a snapshot kept for reuse is
 /// keyed by.
 pub const FORMAT: u32 = VERSION;
@@ -134,6 +135,10 @@ pub struct MachineConfig {
     /// device a run's swap file is mapped into, last of its devices. A snapshot keeps it
     /// with no run's file.
     pub swap_mib: u64,
+    /// The length of each shared directory's DAX window in MiB (D189), 0 for none: a shared
+    /// memory region (virtio-fs's cache) its guest maps the files it reads into, each share's
+    /// and the join share's its own, after the swap window.
+    pub share_window_mib: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -359,6 +364,7 @@ fn encode(s: &Snapshot, generation: &str, identities: &[Identity]) -> Result<Vec
     w.bool(s.config.gpu.is_some());
     w.u64(s.config.gpu.unwrap_or(0));
     w.u64(s.config.swap_mib);
+    w.u64(s.config.share_window_mib);
     w.seq(&s.plugged, |w, (gpa, len)| {
         w.u64(*gpa);
         w.u64(*len);
@@ -441,6 +447,7 @@ fn decode(bytes: &[u8]) -> codec::Result<Decoded> {
     let has_gpu = r.bool()?;
     let gpu_window = r.u64()?;
     let swap_mib = r.u64()?;
+    let share_window_mib = r.u64()?;
     // At most a run for every other block of the most a guest may plug.
     let plugged = r.seq(MAX_PLUGGED_RUNS, 16, |r| Ok((r.u64()?, r.u64()?)))?;
     let arch_state = r.bytes(usize::MAX)?.to_vec();
@@ -463,6 +470,7 @@ fn decode(bytes: &[u8]) -> codec::Result<Decoded> {
                 reporting,
                 gpu: has_gpu.then_some(gpu_window),
                 swap_mib,
+                share_window_mib,
             },
             plugged,
             arch: arch_state,
@@ -1057,6 +1065,7 @@ mod tests {
                 reporting: false,
                 gpu: None,
                 swap_mib: 0,
+                share_window_mib: 0,
             },
             plugged: Vec::new(),
             arch: vec![marker, 2, 3],

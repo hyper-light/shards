@@ -15,7 +15,7 @@ use std::sync::Arc;
 use super::limit::Limiter;
 use super::queue::{Chain, Queue};
 use super::worker::Worker;
-use super::{Activation, DeviceInterrupt, VirtioDevice, feature};
+use super::{Activation, DeviceInterrupt, ShmRegion, VirtioDevice, feature};
 use crate::debug;
 use crate::memory::{Access, GuestMemory};
 use crate::snapshot::codec::{self, Reader, Writer};
@@ -282,7 +282,13 @@ pub struct Fs {
     /// Its microVM's I/O limits (D178), and whether this device holds them paused.
     limit: Option<&'static Limiter>,
     holds_limit: bool,
+    /// Its DAX window (D189): the cache, shared memory region 0 (VIRTIO_FS_SHMCAP_ID_CACHE),
+    /// which its guest maps the files it reads into; none where it has none.
+    window: Option<[ShmRegion; 1]>,
 }
+
+/// The cache's shared memory region's id (include/uapi/linux/virtio_fs.h).
+pub const CACHE: u8 = 0;
 
 impl std::fmt::Debug for Fs {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -319,6 +325,7 @@ impl Fs {
             tables: std::sync::Mutex::new(None),
             limit: None,
             holds_limit: false,
+            window: None,
         })
     }
 
@@ -326,6 +333,13 @@ impl Fs {
     /// high priority queue's FORGETs and INTERRUPTs none.
     pub fn with_limit(mut self, limit: Option<&'static Limiter>) -> Fs {
         self.limit = limit;
+        self
+    }
+
+    /// The device with a DAX window of `len` bytes at guest address `base` (D189), where
+    /// `window` gives one.
+    pub fn with_window(mut self, window: Option<(u64, u64)>) -> Fs {
+        self.window = window.map(|(base, len)| [ShmRegion { id: CACHE, base, len }]);
         self
     }
 
@@ -436,6 +450,10 @@ fn gather(chain: &Chain, mem: &Access<'_>, buf: &mut [u8]) -> bool {
 }
 
 impl VirtioDevice for Fs {
+    fn shm_regions(&self) -> &[ShmRegion] {
+        self.window.as_ref().map_or(&[], |w| w.as_slice())
+    }
+
     fn device_id(&self) -> u32 {
         DEVICE_ID
     }

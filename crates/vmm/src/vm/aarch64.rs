@@ -471,8 +471,11 @@ fn assemble(
             .ok_or("the PCI 64-bit window overflows the address space")?,
         None => top,
     };
-    // The swap window past all of that (D159), within the addresses the host can give.
-    let (swap_at, top) = super::swap_layout(config, top, ipa_reach()?)?;
+    // The swap window past all of that (D159), within the addresses the host can give, and
+    // each share's DAX window past it (D189).
+    let reach = ipa_reach()?;
+    let (swap_at, top) = super::swap_layout(config, top, reach)?;
+    let (windows, top) = super::share_windows(config, top, reach)?;
     let pmem: Vec<(u64, u64)> = regions
         .iter()
         .map(|(region, gpa)| (*gpa, region.len() as u64))
@@ -588,7 +591,7 @@ fn assemble(
         .chain(swap_device)
         .chain(iommu_device)
         .collect();
-    let devices = super::virtio_devices(config, &regions, hosts, last, layout::VIRTIO_MMIO_MAX)?;
+    let devices = super::virtio_devices(config, &regions, &windows, hosts, last, layout::VIRTIO_MMIO_MAX)?;
     let iommu_at = iommu.is_some().then(|| devices.len() - 1);
     let mut bus = MmioBus::default();
     let mut virtio = Vec::with_capacity(devices.len());

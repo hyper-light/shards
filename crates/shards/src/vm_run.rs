@@ -323,6 +323,12 @@ fn parse_run(args: impl Iterator<Item = OsString>) -> Result<Run, String> {
             }
             // A join disk, empty until a container joins the VM's network (D119).
             "--join" => cfg.join = Some(give_join_disk()),
+            // A DAX window of this many MiB for each shared directory (D189).
+            "--share-window" => {
+                cfg.share_window_mib = text(value("--share-window")?)?
+                    .parse()
+                    .map_err(|e| format!("--share-window: {e}"))?
+            }
             // A swap window of this many MiB (D159), a run's swap mapped into it.
             "--swap-window" => {
                 cfg.swap_mib = text(value("--swap-window")?)?
