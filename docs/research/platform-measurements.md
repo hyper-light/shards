@@ -9774,6 +9774,61 @@ revision before comparing a changed API/implementation.
   every CPU online in the template and each run confined to its share (a cpuset of its
   CPUs, a quota in the guest, a cap on the VM process's vCPU threads from the host).
 
+### M266. An agent's long workloads on shards, Docker, Firecracker and Cloud Hypervisor (the plan's item 1)
+
+- **Question.** Where does shards stand, and where does it fall behind, over the work an
+  agent's session does for minutes at a time: installing packages, building, testing,
+  and I/O on its layer, its volumes and a disk?
+- **Method.** `docs/research/measurements/sustained-io/run.py` (its docstring says each
+  system's storage and the workloads): 8 rounds of every system, workload and place, the
+  systems' order rotating each round; each run a fresh microVM or container of 8 vCPUs and
+  8 GiB on the host's CPUs 0-15. The Fedora host (M258's: Intel Core i9-14900HX, 62.5
+  GiB, Fedora 44, Linux 6.19.10), shards 32df9efc, Docker 29.8.2, Firecracker v1.17.0,
+  Cloud Hypervisor v54.0, virtiofsd 1.14.0, 2026-10-19; 344 runs, 10 failed (below). At
+  n 8, p90 and p99 are the maximum.
+- **Results: the host's wall time from the request to the exit, s** (p50 / p90 / max):
+
+  | workload, place | shards | shards-vmm | Docker | Firecracker | Cloud Hypervisor |
+  |---|---|---|---|---|---|
+  | nop, layer | 0.05 / 0.30 / 0.30 | 0.15 / 0.90 / 0.90 | 0.42 / 2.92 / 2.92 | 0.23 / 0.37 / 0.37 | 0.19 / 0.95 / 0.95 |
+  | npm, layer | 4.30 / 7.95 / 7.95 | 5.49 / 7.50 / 7.50 | 11.89 / 16.08 / 16.08 | 4.52 / 10.37 / 10.37 | 5.29 / 17.30 / 17.30 |
+  | npm, volume | 7.65 / 10.15 / 10.15 | 5.50 / 9.87 / 9.87 | 11.41 / 15.69 / 15.69 | 4.63 / 6.05 / 6.05 | 5.33 / 8.16 / 8.16 |
+  | cargo, layer | 72.4 / 102.1 / 102.1 | 76.7 / 111.3 / 111.3 | 91.5 / 114.6 / 114.6 | 71.7 / 116.2 / 116.2 | 74.6 / 125.6 / 125.6 |
+  | cargo, volume | 77.1 / 96.7 / 96.7 (n 7) | 73.9 / 106.2 / 106.2 | 94.1 / 106.6 / 106.6 | 71.3 / 80.8 / 80.8 | 74.8 / 83.8 / 83.8 |
+  | test, layer | none finished | 67.3 / 114.5 / 114.5 | 67.9 / 84.8 / 84.8 | 66.5 / 85.8 / 85.8 | 76.8 / 130.5 / 130.5 |
+
+  A volume is shards' virtio-fs, Cloud Hypervisor's virtiofsd and Docker's bind mount,
+  where Firecracker and shards-vmm have ext4 on a second disk. npm on a volume took
+  shards 39.0 s of host CPU (p50) to Cloud Hypervisor's 20.7.
+- **Results: fio on a volume, p50 of 8.**
+
+  | job | shards | shards-vmm | Docker | Firecracker | Cloud Hypervisor |
+  |---|---|---|---|---|---|
+  | write 1 MiB, MiB/s | 1,731 | 3,111 | 1,092 | 3,062 | 2,876 |
+  | read 1 MiB, MiB/s | 1,028 | 7,700 | 2,614 | 7,368 | 6,288 |
+  | randread 4 KiB qd1, IOPS | 43,302 | 66,797 | 18,093 | 62,002 | 74,205 |
+  | randread 4 KiB qd32, IOPS | 105,910 | 232,529 | 589,767 | 270,222 | 286,268 |
+  | randwrite 4 KiB qd1, IOPS | 20,994 | 43,758 | 27,618 | 60,497 | 52,010 |
+  | randwrite 4 KiB qd32, IOPS | 17,150 | 180,315 | 95,024 | 232,089 | 50,672 |
+  | write 1 MiB buffered, MiB/s | 619 | 1,655 | 1,955 | 2,990 | 1,624 |
+
+  On its layer, shards' fio wrote and read its guest's tmpfs, memory (11,191 MiB/s
+  writes, 1.16 M randread IOPS at qd1), as no other system's layer is: not compared.
+- **Failures.** shards' test on its layer, every round: rustc and ld killed (SIGKILL) as
+  the guest ran out of memory, its build tree on the writable layer, a tmpfs in its 8
+  GiB. Round 6's shards cargo on a volume made no progress for the harness's hour (M272);
+  its microVM, still holding the run's name, failed round 6's next two shards runs.
+- **Consequence.**
+  - Volumes are where shards falls behind: through the share process, 1 MiB reads at a
+    sixth of virtiofsd's rate, 4 KiB writes at qd32 at a third, and npm at 1.4 times
+    Cloud Hypervisor's time with twice its host CPU. The plan's item 5 (D189's windows,
+    which take a mapped file's data off the FUSE path) and the share process's own path
+    (multiple queues; its server answering from guest memory rather than through the VM
+    process's copies) are next, each measured on this harness.
+  - The writable layer on tmpfs cannot hold a test suite's build: the plan's item 2.
+  - Starts and builds on the layer hold: nop 0.05 s, from the pool, to Firecracker's
+    0.23; cargo 72.4 s to Firecracker's 71.7 and Docker's 91.5.
+
 ### M267. What a run's guest keeps of what it reads, and what reclaim gives back (D188)
 
 - **Question.** A guest's page cache is guest memory, which its host cannot drop. How much
