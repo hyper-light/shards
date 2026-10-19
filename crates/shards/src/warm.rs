@@ -1073,6 +1073,10 @@ fn joined_finish(
     }
     if let Ok(ended) = served {
         tell_lost(link, ended);
+        // A joiner's process killed for want of memory, said as a run's is (D119, D159).
+        if let Some(facts) = &ended.oom {
+            let _ = shards_ipc::send(link, kind::OOM, facts, &[]);
+        }
     }
     let mut done = vec![status];
     if let Some((said, _)) = &failed {
@@ -1252,8 +1256,8 @@ pub fn finish(
     if let Ok(ended) = &served {
         tell_lost(&link.daemon, ended);
     }
-    if served.as_ref().is_ok_and(|ended| ended.oom) {
-        let _ = shards_ipc::send(&link.daemon, kind::OOM, &[], &[]);
+    if let Some(facts) = served.as_ref().ok().and_then(|ended| ended.oom.as_deref()) {
+        let _ = shards_ipc::send(&link.daemon, kind::OOM, facts, &[]);
     }
     if let Some((name, set)) = working_set {
         let _ = shards_ipc::working_set_parts(name, set, |part| {

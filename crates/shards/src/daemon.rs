@@ -4394,7 +4394,7 @@ impl<D: Disk> Daemon<D> {
                 }
                 kind::DONE => self.run_ended(id, inbox, Some(&m.payload)),
                 kind::LOST => self.log_lost(id, &m.payload),
-                kind::OOM => self.oom_killed(id),
+                kind::OOM => self.oom_killed(id, &m.payload),
                 kind::PROCESS => self.keep_processes(id, &m.payload),
                 // Its guest's ask on the host's network (D124), answered at once: a bind
                 // and a listen are each a system call's work, and what goes to the
@@ -4621,8 +4621,15 @@ impl<D: Disk> Daemon<D> {
     /// say (audit A12).
     /// Run `id`'s guest killed a process of it for want of memory: as dockerd hears
     /// containerd's TaskOOM (daemon/monitor.go), State.OOMKilled until it runs again, and
-    /// an `oom` event.
-    fn oom_killed(&self, id: &str) {
+    /// an `oom` event; and in the daemon's log, what its cgroup held and was allowed then,
+    /// of memory and of swap, and what its kernel said, as its init sends them (D159).
+    fn oom_killed(&self, id: &str, facts: &[u8]) {
+        if !facts.is_empty() {
+            log(format!(
+                "container {id}: a process ended for want of memory: {}",
+                String::from_utf8_lossy(facts)
+            ));
+        }
         let named = lock(&self.containers)
             .made(id)
             .map(|c| (c.name.clone(), c.image.clone(), c.labels.clone()));

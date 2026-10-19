@@ -7219,6 +7219,17 @@ and disk are its swap.
   Agentfile grants and no swap (`memory.swap.max` 0 over their domains' cgroups): given
   the run's microVM's swap, an agent past its limit swapped rather than ended
   (`agents_out_of_memory_end_whole_and_spare_the_run`, which holds it).
+- **A kill says why.** Where the kernel ends a run's or a joiner's process for want of
+  memory, its init sends with the `OOM` what the run's cgroup held and was allowed then
+  (`memory.max`, `memory.peak`, `memory.swap.max`, `memory.swap.peak`, `memory.events`,
+  `memory.swap.events`) and the kernel's report of it (its lines that say why, among them
+  the cgroup's `memory: usage ... limit` and `swap: usage ... limit`, read with syslog(2)
+  where the run's /dev has no kmsg), which the daemon writes to its log. A joiner's kill
+  was said nowhere: init removed its cgroup as it reaped its process, before its end was
+  said, and the VM process's reader of a joiner's frames took no `OOM`. Now it is read at
+  the reap, and a joiner is `OOMKilled` as a run is (D119). Found chasing a joiner killed
+  within its swap on x86_64 CI (job 117491995198, run 39245355471): the next such kill's
+  log says what its cgroup held of its swap.
 - **Members share.** A run joining another's microVM (D119) swaps to that microVM's swap:
   the first member with an allowance maps its file, and the rest share it, each held to
   its own allowance by its cgroup, as a host's containers share its swap. Joiners had

@@ -204,7 +204,7 @@ pub fn main(device: &str, template: bool) -> ! {
     // Said by the relay already where containers joined to its network outlived it (D119).
     if !reported {
         if oom_killed() {
-            let _ = send(&conn, kind::OOM, &[]);
+            let _ = send(&conn, kind::OOM, &oom_facts(WORKLOAD_CGROUP));
         }
         let _ = send(&conn, kind::EXIT, &status.to_be_bytes());
         // The host may ask for the container's writable layer, to keep (layer.rs).
@@ -1433,6 +1433,31 @@ fn reaper(last_cap: u32, ids: Ids, ready: RawFd) -> ! {
             }
         }
     }
+}
+
+/// What cgroup `dir` held and was allowed of memory and of swap as a process of it was
+/// ended for want of memory, and what the kernel said of it (plug::oom_said): the words
+/// of the run's `OOM`, which its daemon logs (D159).
+fn oom_facts(dir: &str) -> Vec<u8> {
+    let read = |file: &str| {
+        std::fs::read_to_string(format!("{dir}/{file}"))
+            .map(|s| s.split_whitespace().collect::<Vec<_>>().join(" "))
+            .unwrap_or_else(|_| "-".into())
+    };
+    let mut out = format!(
+        "memory.max {} memory.peak {} memory.swap.max {} memory.swap.peak {}; memory.events {}; memory.swap.events {}",
+        read("memory.max"),
+        read("memory.peak"),
+        read("memory.swap.max"),
+        read("memory.swap.peak"),
+        read("memory.events"),
+        read("memory.swap.events"),
+    );
+    for line in crate::plug::oom_said() {
+        out.push_str("; the kernel: ");
+        out.push_str(&line);
+    }
+    out.into_bytes()
 }
 
 /// Whether the kernel killed a process of the workload's cgroup for want of memory: its
@@ -2990,6 +3015,9 @@ struct Exec {
     ended: bool,
     /// A container joining the workload's network (D119), rather than a command beside it.
     joined: bool,
+    /// A joiner's process the kernel killed for want of memory: what its cgroup held and
+    /// was allowed, read as its process ended, before its cgroup went (D159).
+    oom: Option<Vec<u8>>,
     /// A joiner made through its microVM's own engine (D181), which ends as the workload
     /// does, as a nested engine's containers end with it.
     engine_made: bool,
@@ -3756,6 +3784,7 @@ impl Exec {
             status: None,
             ended: false,
             joined: false,
+            oom: None,
             engine_made: false,
             proxy: None,
             save: Save::Unasked,
@@ -4129,7 +4158,12 @@ impl Workload {
                 && self.domains.iter().all(|d| d.out.is_none())
             {
                 if oom_killed() {
-                    to_host.extend(&[&run::header(kind::OOM, 0)]);
+                    let facts = oom_facts(WORKLOAD_CGROUP);
+                    let len = u32::try_from(facts.len()).unwrap_or(0);
+                    to_host.extend(&[
+                        &run::header(kind::OOM, len),
+                        facts.get(..len as usize).unwrap_or_default(),
+                    ]);
                 }
                 to_host.extend(&[
                     &run::header(kind::EXIT, 4),
@@ -4366,6 +4400,10 @@ impl Workload {
                                 if e.joined {
                                     joined().retain(|(j, _)| *j != e.id);
                                     crate::join::kill_rest(e.id);
+                                    let dir = crate::join::cgroup(e.id);
+                                    if crate::plug::oom_kills(&dir) > 0 {
+                                        e.oom = Some(oom_facts(&dir));
+                                    }
                                     crate::join::remove_cgroup(e.id);
                                     // Its membership of the microVM's switch (D181).
                                     crate::members::leave(e.id);
@@ -4706,6 +4744,15 @@ impl Workload {
                     && e.stdout.is_none()
                     && e.stderr.is_none()
                 {
+                    // A joiner's process the kernel ended for want of memory, said as a
+                    // run's is (D119, D159), as it was read when it ended.
+                    if let Some(facts) = e.oom.take() {
+                        let len = u32::try_from(facts.len()).unwrap_or(0);
+                        e.to_conn.extend(&[
+                            &run::header(kind::OOM, len),
+                            facts.get(..len as usize).unwrap_or_default(),
+                        ]);
+                    }
                     e.to_conn
                         .extend(&[&run::header(kind::EXIT, 4), &code.to_be_bytes()]);
                     e.ended = true;

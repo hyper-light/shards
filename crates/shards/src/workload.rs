@@ -235,8 +235,9 @@ pub struct Ended {
     /// Bytes of its output a non-blocking log dropped, as they came while its queue was
     /// full (D162).
     pub dropped: u64,
-    /// The kernel killed a process of it for want of memory.
-    pub oom: bool,
+    /// What its init said as the kernel killed a process of it for want of memory: what
+    /// its cgroup held and was allowed, and the kernel's words (D159); none where none was.
+    pub oom: Option<Vec<u8>>,
 }
 
 /// Keeps a container's output (spec.rs, `LOG_STDOUT`): each record appended to its log,
@@ -747,7 +748,7 @@ fn relay_frames(
     // D08).
     let mut frame = Vec::new();
     let mut not_run = None;
-    let mut oom = false;
+    let mut oom = None;
     // As much as the guest sends at once, in one read, whatever the frames it holds
     // (review 8.20): the caller's reader, whose next part reads what this one read past
     // its end.
@@ -792,7 +793,7 @@ fn relay_frames(
                 quiescing().quiet = true;
                 QUIET.notify_all();
             }
-            kind::OOM => oom = true,
+            kind::OOM => oom = Some(payload.to_vec()),
             kind::PROCESS => {
                 if let Some(processes) = processes {
                     processes(payload);
@@ -1632,6 +1633,7 @@ pub fn join(
     }
     let mut frame = Vec::new();
     let mut not_run: Option<String> = None;
+    let mut oom: Option<Vec<u8>> = None;
     let mut conn = io::BufReader::with_capacity(run::BUFFERED, shards_ipc::Polled(&stream));
     let (ended, lost, dropped) = with_sink(log.as_mut(), |mut log| {
         loop {
@@ -1671,6 +1673,8 @@ pub fn join(
                     let (_, why) = payload.split_first().ok_or("an empty failure")?;
                     not_run = Some(String::from_utf8_lossy(why).into_owned());
                 }
+                // A process of it the kernel killed for want of memory (D159).
+                kind::OOM => oom = Some(payload.to_vec()),
                 // Its end, and its connection, on which the host may ask for its writable
                 // layer (`receive_layer`) before it closes it: the guest sends nothing more
                 // until then.
@@ -1681,7 +1685,7 @@ pub fn join(
                         not_run: not_run.take(),
                         lost: 0,
                         dropped: 0,
-                        oom: false,
+                        oom: oom.take(),
                     });
                 }
                 _ => return Err(format!("the guest sent an unknown frame kind {which}")),

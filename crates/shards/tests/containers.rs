@@ -11426,6 +11426,24 @@ fn a_microvm_swaps_and_throttles_as_its_limits_say() {
     assert_eq!(held.stdout, "67108864\n", "{held}");
     let killed = joiner(&["--memory-swap", "64m"], &["alloc", "96"]);
     assert_eq!(killed.status, Some(137), "{killed}");
+    // Its end said in the daemon's log, as a run's is: what its cgroup was allowed and
+    // held, none of it swap, and what its kernel said of it.
+    let log = std::fs::read_to_string(home.join("daemon.log")).unwrap_or_default();
+    let said = log
+        .lines()
+        .rev()
+        .find(|l| l.contains("a process ended for want of memory"))
+        .unwrap_or_default();
+    assert!(
+        said.contains("memory.max 67108864")
+            && said.contains("memory.swap.max 0")
+            && said.contains("oom_kill 1")
+            && said.contains("; the kernel: "),
+        "{log}"
+    );
+    // Killed again (CI run 39245355471), the swap mapped and none of it used once the
+    // joiner had gone: the daemon's log, shown as the test fails, says what its cgroup held
+    // and was allowed as it was killed, and the kernel's report.
     for _ in 0..2 {
         let joined = joiner(&[], &["alloc", "96"]);
         // Killed within its swap, once on x86_64 CI (job 117491995198): what the microVM's
@@ -11440,20 +11458,21 @@ fn a_microvm_swaps_and_throttles_as_its_limits_say() {
             ])
             .stdout
         };
+        let failed = joined.status != Some(0);
         assert_eq!(
             (joined.status, joined.stdout.as_str()),
             (Some(0), "allocated 96\n"),
             "{joined}\n--- the microVM's /proc/swaps\n{}\n--- its /proc/meminfo\n{}",
-            if joined.status == Some(0) {
-                String::new()
-            } else {
+            if failed {
                 swap("/proc/swaps")
-            },
-            if joined.status == Some(0) {
-                String::new()
             } else {
+                String::new()
+            },
+            if failed {
                 swap("/proc/meminfo")
-            }
+            } else {
+                String::new()
+            },
         );
     }
     assert_eq!(shards(&["rm", "-f", "provider"]).status, Some(0));

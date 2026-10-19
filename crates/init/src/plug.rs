@@ -788,7 +788,9 @@ fn oom_report() -> Vec<String> {
         .custom_flags(libc::O_NONBLOCK)
         .open("/dev/kmsg")
     else {
-        return Vec::new();
+        // A run's root moved over the VM's, its /dev has no kmsg: the log read whole with
+        // syslog(2), which init, the VM's own, may.
+        return oom_lines(&syslog_records());
     };
     let mut records = Vec::new();
     let mut record = [0u8; 8192];
@@ -806,6 +808,36 @@ fn oom_report() -> Vec<String> {
     oom_lines(&records)
 }
 
+/// The kernel's log read whole with syslog(2) (`SYSLOG_ACTION_READ_ALL`), each line a
+/// record as /dev/kmsg gives one (`LEVEL,SEQ,USECS,FLAGS;TEXT`), its fields but the text
+/// left as nothing is read of them.
+fn syslog_records() -> Vec<String> {
+    const READ_ALL: libc::c_int = 3;
+    const SIZE_BUFFER: libc::c_int = 10;
+    // SAFETY: syslog(2)'s size query takes no buffer.
+    let size = unsafe { libc::klogctl(SIZE_BUFFER, std::ptr::null_mut(), 0) };
+    let Ok(len) = usize::try_from(size) else {
+        return Vec::new();
+    };
+    let mut buf = vec![0u8; len.max(1)];
+    let room = libc::c_int::try_from(buf.len()).unwrap_or(libc::c_int::MAX);
+    // SAFETY: a buffer of `room` bytes, which syslog(2) fills at most.
+    let read = unsafe { libc::klogctl(READ_ALL, buf.as_mut_ptr().cast(), room) };
+    let Ok(read) = usize::try_from(read) else {
+        return Vec::new();
+    };
+    String::from_utf8_lossy(buf.get(..read).unwrap_or_default())
+        .lines()
+        .map(syslog_record)
+        .collect()
+}
+
+/// A line of syslog(2)'s, `<LEVEL>[SECONDS] TEXT`, as /dev/kmsg's record of it.
+fn syslog_record(line: &str) -> String {
+    let text = line.split_once("] ").map_or(line, |(_, t)| t);
+    format!("0,0,0,-;{text}")
+}
+
 /// Of the kernel's log `records`, the last report of a process ended for want of memory:
 /// each of its lines that says why, one line each, as a record of several lines is
 /// (`\x0a`, Documentation/ABI/testing/dev-kmsg).
@@ -820,6 +852,10 @@ fn oom_lines(records: &[String]) -> Vec<String> {
             said.clear();
         }
         if text.contains("invoked oom-killer")
+            // A cgroup's own: what it held and was allowed, of memory and of swap
+            // (mm/memcontrol.c, mem_cgroup_print_oom_meminfo).
+            || text.starts_with("memory: usage")
+            || text.starts_with("swap: usage")
             || text.starts_with("active_anon:")
             || (text.starts_with("Node ") && text.contains(" min:"))
             || text.starts_with("oom-kill:")
@@ -1036,6 +1072,38 @@ mod tests {
         assert!(ended(
             "Memory cgroup out of memory: Killed process 7 (cc1) total-vm:1kB"
         ));
+    }
+
+    /// A cgroup's own kill (6.18.48, a joiner of 64 MiB and no swap allocating 96): what
+    /// its cgroup held and was allowed, of memory and of swap, said with the rest; and the
+    /// log as syslog(2) reads it, each line a record as /dev/kmsg gives one.
+    #[test]
+    fn a_cgroups_kill_says_its_memory_and_swap() {
+        let records: Vec<String> = [
+            "<4>[    5.101010] kworker/u72:3 invoked oom-killer: gfp_mask=0xc00(GFP_NOIO), order=0, oom_score_adj=0",
+            "<6>[    5.101020] memory: usage 65536kB, limit 65536kB, failcnt 144",
+            "<6>[    5.101030] swap: usage 0kB, limit 0kB, failcnt 0",
+            "<6>[    5.101040] Memory cgroup stats for /run/join-2:",
+            "<6>[    5.101050] oom-kill:constraint=CONSTRAINT_MEMCG,nodemask=(null),cpuset=/,mems_allowed=0,oom_memcg=/run/join-2,task_memcg=/run/join-2,task=testguest,pid=202,uid=1000",
+            "<3>[    5.101060] Memory cgroup out of memory: Killed process 202 (testguest) total-vm:68060kB, anon-rss:65088kB, file-rss:64kB, shmem-rss:0kB, UID:1000 pgtables:168kB oom_score_adj:0",
+        ]
+        .iter()
+        .map(|l| syslog_record(l))
+        .collect();
+        assert_eq!(
+            records[1],
+            "0,0,0,-;memory: usage 65536kB, limit 65536kB, failcnt 144"
+        );
+        assert_eq!(
+            oom_lines(&records),
+            [
+                "kworker/u72:3 invoked oom-killer: gfp_mask=0xc00(GFP_NOIO), order=0, oom_score_adj=0",
+                "memory: usage 65536kB, limit 65536kB, failcnt 144",
+                "swap: usage 0kB, limit 0kB, failcnt 0",
+                "oom-kill:constraint=CONSTRAINT_MEMCG,nodemask=(null),cpuset=/,mems_allowed=0,oom_memcg=/run/join-2,task_memcg=/run/join-2,task=testguest,pid=202,uid=1000",
+                "Memory cgroup out of memory: Killed process 202 (testguest) total-vm:68060kB, anon-rss:65088kB, file-rss:64kB, shmem-rss:0kB, UID:1000 pgtables:168kB oom_score_adj:0",
+            ]
+        );
     }
 
     /// Memory that comes is asked for once, and raises the build's `memory.high`.
