@@ -5545,6 +5545,58 @@ twice. Mutation-checked, each caught: no trimming; a line cut short written on. 
 (tests/containers.rs): `events_outlive_their_daemon`, a run's life read back by the next
 daemon after `daemon stop` (failed with the journal taken out); `events_tell_a_microvms_life`.
 
+### D188. A host short of memory gets back what its microVMs hold cold of their files (built; unplug not yet)
+
+**Found.** The user's plan, item 4: memory that tracks the working set, reclaimed at the
+host's pressure, not on a timer. A run's guest keeps what its workload reads in its page
+cache, guest memory the host cannot drop, only swap: a 1 GiB file read from a volume left
+944 MiB of page cache in the guest and 1,003 MiB more of the VM process's memory on the
+host (PM M267), where a container's page cache is its host's to drop. Free page reporting
+(D151) gives back what a guest frees, and nothing asked a guest to free.
+
+**Decided.**
+- **The daemon watches the host's memory pressure** (`platform::MemoryPressure`). On
+  Linux, PSI triggers (Documentation/accounting/psi.rst): some task stalled on memory 140
+  ms in 2 s, Android's lmkd's lowest level (70 ms in 1 s, lmkd.cpp `psi_thresholds`) over
+  the shortest window an unprivileged process may watch (Linux 6.4, d82caa273565); on
+  the host's memory, on the daemon's own cgroup, where its microVMs are made, and on each
+  scope it makes microVMs in under a user's slice (D183), which may hold them to a budget:
+  a cgroup's stall counts in the host's figure against every CPU busy elsewhere, so a
+  budget is reached before the host says so. A kernel that arms none of its user's has
+  the host's ten-second average read every ten seconds. On macOS, libdispatch's memory
+  pressure source, said again every 2 s while the pressure stays raised, as a trigger is
+  while its stall goes on. The daemon has no other platform yet.
+- **Each time, every running microVM gives back what it holds cold of its files.** Its
+  init (builtin `RECLAIM`) reclaims as much of its run's file pages as its memory.stat
+  counts inactive, of its file pages alone (`memory.reclaim` with `swappiness=0`, Linux
+  6.11, 68cd9050d871; a kernel without the key takes the amount alone), then reports what
+  that freed at once (`page_reporting.flush`, D151's patch 0005), so that the host has it
+  back before init answers. One microVM after another, each through one of its runs, its
+  own or else a joiner's (D119).
+- **File pages alone.** A clean page of the page cache the guest drops is one the host
+  could only have swapped out, written and read back; dropping it reads none of its data.
+  Anonymous memory and the tmpfs layer, the host's own reclaim takes as well as the guest
+  would, and taking them would read memory the host may have compressed, which Apple's
+  header warns against under pressure (dispatch/source.h, `DISPATCH_MEMORYPRESSURE_WARN`).
+- **Said in the daemon's log** at most once a minute, with what was given back since.
+- **Idle, it costs nothing**: a thread blocked in poll(2) on Linux 6.4 and later and on
+  macOS; on an older Linux, a read of the host's average every ten seconds.
+
+**Measured (PM M267, macOS).** The guest's 944 MiB of a read file reclaimed in 33 ms
+(p50); with the flush, 946 MiB back to the host within 0.5 s (p50, the builtin 81 ms),
+where reporting at its own pace gave back 374 MiB by 2 s, 630 by 4 s and 952 by 8 s. 51
+MiB of the read's stays: the page structures of the memory it plugged, and the kernel's.
+
+**Tested.** Unit (platform): the host's memory pressure can be watched where the daemon
+runs. E2E on Linux (tests/containers.rs `a_microvm_held_to_a_budget_gives_back_what_it_holds_cold`):
+a microVM under a slice held to 384 MiB (`MemoryHigh`, no swap) reads a gigabyte through
+to its end, the daemon's log saying it gave back. Not on macOS, whose pressure is the
+whole system's, which no test may raise for every program on its host.
+
+**Not yet.** Unplug as the working set shrinks (D148): what was plugged stays plugged,
+its pages the host's again through reporting, its page structures the guest's. Builders
+(D133) give back nothing at pressure yet. M267 on Linux, once Fedora's benchmark is done.
+
 ### D179. Other CPUs' images, emulated in their microVM (parts 1 to 3 built)
 
 Images built on an arm64 Mac usually ship to x86_64 hosts, and the other way round, and a

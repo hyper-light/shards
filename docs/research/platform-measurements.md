@@ -9773,3 +9773,41 @@ revision before comparing a changed API/implementation.
   the user's to choose (asked 2026-10-19): online and offline per run as the plan says, or
   every CPU online in the template and each run confined to its share (a cpuset of its
   CPUs, a quota in the guest, a cap on the VM process's vCPU threads from the host).
+
+### M267. What a run's guest keeps of what it reads, and what reclaim gives back (D188)
+
+- **Question.** A guest's page cache is guest memory, which its host cannot drop. How much
+  of a file a run reads does its guest keep, what does `memory.reclaim` free of it, and
+  when does the host have that memory back: as free page reporting goes at its own pace
+  (D151), or at once after a flush (kernel patch 0005)?
+- **Method.** `docs/research/measurements/reclaim/measure.py SHARDS 10 1024`: a
+  privileged `shards run` of Alpine, no memory limit, a volume holding a 1 GiB file, reads
+  it (`cat`); then its cgroup is asked to reclaim what memory.stat counts as its file
+  pages; the VM process's `phys_footprint` (proc_pid_rusage) is read before the read,
+  after it, and 0.5, 1, 2, 4, 8, 16 and 32 s after the reclaim, which in alternate rounds
+  is followed by `page_reporting.flush`. 10 rounds, 5 an arm, interleaved. macOS 26.4.1,
+  Apple M5 Max, shards 6d5ee71e, 2026-10-19.
+- **Results** (MiB, p50 / p90 / p99 / max of 5):
+
+  | | paced | flushed |
+  |---|---|---|
+  | the guest's file pages after the read | 944.4 / 968.1 / 968.1 / 968.1 | 951.5 / 977.5 / 977.5 / 977.5 |
+  | after the reclaim | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 0 |
+  | the host's: what the read added | 1002.8 / 1023.2 / 1023.2 / 1023.2 | 999.4 / 1028.8 / 1028.8 / 1028.8 |
+  | given back 0.5 s after | -2.5 / 380.0 / 380.0 / 380.0 | 946.3 / 968.5 / 968.5 / 968.5 |
+  | 2 s after | 373.7 / 380.0 / 380.0 / 380.0 | 946.3 / 968.5 / 968.5 / 968.5 |
+  | 4 s after | 629.8 / 636.1 / 636.1 / 636.1 | 946.2 / 976.5 / 976.5 / 976.5 |
+  | 8 s after | 952.0 / 960.1 / 960.1 / 960.1 | 946.2 / 976.5 / 976.5 / 976.5 |
+  | 32 s after | 951.9 / 966.1 / 966.1 / 966.1 | 948.3 / 976.5 / 976.5 / 976.5 |
+  | still above before the read, at 32 s | 50.8 / 57.1 / 57.1 / 57.1 | 52.3 / 57.3 / 57.3 / 57.3 |
+  | the reclaim's exec, ms | 33 / 47 / 47 / 47 | 81 / 111 / 111 / 111 (with the flush) |
+
+  - All of the read was inactive file pages, all reclaimed. Paced, reporting gave back a
+    pass's worth every two seconds (D151); flushed, all of it within 0.5 s. What stays,
+    51 MiB, is what the guest grew by to hold the read: the page structures of what it
+    plugged, and the kernel's.
+- **Consequence.** D188: at the host's pressure, each microVM reclaims its inactive file
+  pages and flushes its reports, so the host has the memory back before init answers, in
+  a tenth of a second for a gigabyte. Linux's numbers to come, on M258's host, once its
+  benchmark (M266) is done.
+

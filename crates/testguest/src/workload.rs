@@ -185,6 +185,9 @@ pub fn main() -> ! {
                 1
             }
         },
+        // Reads each file named through, a megabyte at a time, and says how much: what it
+        // read stays in the page cache, the reader's own memory one megabyte.
+        "read" => read_through(args.get(1..).unwrap_or_default()),
         // Touches N MiB, a page at a time, then says so: what a memory limit stops.
         "alloc" => {
             let mib: usize = arg(1).parse().unwrap_or(0);
@@ -2901,6 +2904,34 @@ fn cat() -> i32 {
             Err(_) => return 1,
         }
     }
+}
+
+/// `read`'s: each file of `paths` read to its end, then `read PATH BYTES` said.
+fn read_through(paths: &[String]) -> i32 {
+    let mut buf = vec![0u8; 1 << 20];
+    for path in paths {
+        let mut file = match std::fs::File::open(path) {
+            Ok(file) => file,
+            Err(e) => {
+                let _ = writeln!(io::stderr(), "{path}: {e}");
+                return 1;
+            }
+        };
+        let mut total = 0u64;
+        loop {
+            match file.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => total += n as u64,
+                Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+                Err(e) => {
+                    let _ = writeln!(io::stderr(), "{path}: {e}");
+                    return 1;
+                }
+            }
+        }
+        let _ = writeln!(io::stdout(), "read {path} {total}");
+    }
+    0
 }
 
 /// Writes `len` pattern bytes of `salt` to stdout.

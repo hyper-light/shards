@@ -593,6 +593,10 @@ pub mod builtin {
     /// What a container listens on (D181): each TCP port it listens on and each UDP port
     /// it holds, at an address past its loopback, as `tcp PORT` and `udp PORT` lines.
     pub const LISTENS: u8 = 14;
+    /// What the microVM holds cold of its files given back to its host, at the host's
+    /// memory pressure (D188): its run's inactive file pages reclaimed, then reported free
+    /// at once (D151), answered with the bytes its run's cgroup holds less, in decimal.
+    pub const RECLAIM: u8 = 15;
 }
 
 /// A terminal's size in character cells. Zero in either leaves the pty's size alone, as

@@ -65,6 +65,11 @@ impl AsRawSocket for UnixListener {
 #[cfg(target_os = "macos")]
 mod macos_thread;
 
+#[cfg(unix)]
+mod pressure;
+#[cfg(unix)]
+pub use pressure::{MemoryPressure, PressureWatches};
+
 mod granted;
 #[cfg(unix)]
 pub use granted::open_beneath_input;

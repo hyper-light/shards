@@ -62,6 +62,7 @@ mod ps;
 mod publish;
 mod pull;
 mod push;
+mod reclaim;
 mod record;
 mod refill;
 mod relay;
@@ -182,10 +183,10 @@ const RETRY: Duration = Duration::from_millis(250);
 /// connects; one that has not by now is broken, or trickling it out.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 /// The threads the daemon keeps besides its clients': its listener, and the followers',
-/// the completer's, the files', the recorder's, the collector's, the refiller's and the
-/// health checks'; and the system's, the dispatch worker a framework it calls keeps, one
-/// with runs and without (PM M92, M98).
-const OWN_THREADS: u64 = 9;
+/// the completer's, the files', the recorder's, the collector's, the refiller's, the
+/// health checks' and the memory pressure watcher's (D188); and the system's, the dispatch
+/// worker a framework it calls keeps, one with runs and without (PM M92, M98).
+const OWN_THREADS: u64 = 10;
 /// The threads a client in hand may hold: its own, and the watcher of a VM started for
 /// its run, until that VM is ready.
 const CLIENT_THREADS: u64 = 2;
@@ -956,6 +957,9 @@ struct Daemon<D: Disk = Real> {
     refills: refill::Refills,
     /// Each `--cgroup-parent`'s spawner, placed once as its first run asks (D183).
     parents: parents::Parents,
+    /// What the memory pressure watcher watches past the host and the daemon's own cgroup
+    /// (D188).
+    watching: reclaim::Watching,
     /// When each running container's health check is next due (health.rs).
     checks: health::Checks,
     /// Runs waiting for a VM booted for them, by number: told as the daemon stops.
@@ -1274,6 +1278,7 @@ fn serve(ready: Option<File>, listen: Option<std::net::SocketAddr>) -> Result<()
         daemon.pack_left();
         daemon.ship_left(threads);
         daemon.start_collector(threads);
+        daemon.start_pressure(threads);
         daemon.restart_at_start(threads);
         daemon.serve_slots(threads, requests);
         daemon.listen(threads, api);
@@ -1495,6 +1500,7 @@ impl<D: Disk> Daemon<D> {
             engine: engine::Engine::default(),
             refills: refill::Refills::default(),
             parents: parents::Parents::default(),
+            watching: reclaim::Watching::default(),
             checks: health::Checks::default(),
             booting: Mutex::default(),
             next_cold: AtomicU64::new(0),
@@ -6166,13 +6172,16 @@ impl<D: Disk> Daemon<D> {
         if parent.is_empty() {
             return Ok(None);
         }
-        let group = self.parents.group(parent, &self.home)?;
-        if !shards_ipc::group_ended(group) {
-            return Ok(Some(group));
+        let mut group = self.parents.group(parent, &self.home)?;
+        if shards_ipc::group_ended(group) {
+            log(format!("the spawner under {parent} has gone: placing another"));
+            self.parents.forget(parent, group);
+            group = self.parents.group(parent, &self.home)?;
         }
-        log(format!("the spawner under {parent} has gone: placing another"));
-        self.parents.forget(parent, group);
-        self.parents.group(parent, &self.home).map(Some)
+        // The budget the slice may hold its microVMs to, watched as the host's memory is
+        // (D188).
+        self.watch_scope_of(group);
+        Ok(Some(group))
     }
 
     /// Starts shards-vm with `args` as a warm VM whose daemon socket is its descriptor 3,

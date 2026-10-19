@@ -81,6 +81,38 @@ fn open_flush() {
     let _ = std::fs::remove_dir(AT);
 }
 
+/// Reclaims what `cgroup` holds cold of its files, at its host's memory pressure (D188):
+/// as much as its memory.stat counts inactive (`inactive_file`), of its file pages alone
+/// (`swappiness=0`, Linux 6.11; a kernel without the key takes the amount alone), its
+/// anonymous memory and tmpfs left to the host, which reclaims those as well as the guest
+/// would, where a clean file page the guest drops is one the host could only have swapped.
+/// Then what that freed is reported at once (D151), so that the host has it back before
+/// this answers. The bytes the cgroup holds less after.
+fn reclaim_cold(cgroup: &str) -> io::Result<u64> {
+    let read = |file: &str| std::fs::read_to_string(format!("{cgroup}/{file}"));
+    let cold = read("memory.stat")?
+        .lines()
+        .find_map(|l| l.strip_prefix("inactive_file "))
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .unwrap_or(0);
+    let current = || -> io::Result<u64> { read("memory.current")?.trim().parse().map_err(io::Error::other) };
+    let before = current()?;
+    if cold > 0 {
+        let reclaim = format!("{cgroup}/memory.reclaim");
+        let asked = match std::fs::write(&reclaim, format!("{cold} swappiness=0")) {
+            Err(e) if e.raw_os_error() == Some(libc::EINVAL) => std::fs::write(&reclaim, cold.to_string()),
+            asked => asked,
+        };
+        // Less than asked for is what there was to reclaim.
+        match asked {
+            Err(e) if e.raw_os_error() != Some(libc::EAGAIN) => return Err(e),
+            _ => {}
+        }
+        flush_page_reports();
+    }
+    Ok(before.saturating_sub(current()?))
+}
+
 /// Reports at once the memory the guest holds free that waits to be reported to its
 /// microVM, which gives it back to the host (D151), and waits for it: a template is saved
 /// with none waiting, else each copy reports, two seconds into its life, what the
@@ -3238,6 +3270,7 @@ fn builtin(
                 .and_then(|()| crate::plug::report_pluggable())
                 .and_then(|()| crate::plug::rehold_run(RUN_CGROUP)),
             run::builtin::STATS => out.write_all(stats(&cgroup).as_bytes()),
+            run::builtin::RECLAIM => reclaim_cold(RUN_CGROUP).and_then(|freed| write!(out, "{freed}")),
             run::builtin::FREEZE => freeze(&cgroup, args.first().is_some_and(|a| a == b"1")),
             run::builtin::SIZE => match &layers {
                 Some((_, upper)) => Some(format!("/proc/self/fd/{}", upper.as_raw_fd())),

@@ -1754,6 +1754,81 @@ fn a_microvm_is_made_under_the_slice_its_cgroup_parent_names() {
         .status();
 }
 
+/// A microVM held to a budget gives back what it holds cold of its files as it reaches it
+/// (D188): under a slice of the user's manager whose `MemoryHigh` is past the microVM idle
+/// and short of a gigabyte it reads, its page cache grows until the budget slows it; the
+/// daemon, watching the scope it made there, has it reclaim what it holds cold and report
+/// it free at once, and it reads on to the end. Linux alone: macOS's memory pressure is the
+/// whole system's, which no test may raise for every program on its host.
+#[test]
+fn a_microvm_held_to_a_budget_gives_back_what_it_holds_cold() {
+    if !cfg!(target_os = "linux") {
+        return;
+    }
+    let Some((home, image)) = home("containers-budget") else {
+        return;
+    };
+    let shards = |args: &[&str]| shards_in(&home, args);
+    let bus = std::env::var_os("XDG_RUNTIME_DIR")
+        .map(std::path::PathBuf::from)
+        // SAFETY: getuid(2) takes nothing and cannot fail.
+        .unwrap_or_else(|| std::path::PathBuf::from(format!("/run/user/{}", unsafe { libc::getuid() })))
+        .join("bus");
+    if !bus.exists() {
+        assert!(
+            !std::env::var_os("SHARDS_REQUIRE_USER_MANAGER").is_some_and(|v| v == "1"),
+            "no user's systemd manager's bus at {}",
+            bus.display()
+        );
+        eprintln!("SKIP: no user's systemd manager here: {} is not", bus.display());
+        return;
+    }
+    let vol = TempDir::new("budget-vol");
+    std::fs::File::create(vol.join("big"))
+        .unwrap()
+        .set_len(1 << 30)
+        .unwrap();
+    let slice = format!("shardsbudget{}.slice", std::process::id());
+    /// The slice's budget taken off and the slice stopped, however the test ends.
+    struct Budget<'a>(&'a str);
+    impl Drop for Budget<'_> {
+        fn drop(&mut self) {
+            for verb in ["revert", "stop"] {
+                let _ = Command::new("systemctl").args(["--user", verb, self.0]).status();
+            }
+        }
+    }
+    let _budget = Budget(&slice);
+    let mount = format!("{}:/vol", vol.display());
+    let started = run_in(
+        &home,
+        &image,
+        &["-d", "--name", "budget", "--cgroup-parent", &slice, "-v", &mount],
+        &["sleep"],
+    );
+    assert_eq!(started.status, Some(0), "{started}");
+    let log = home.join("daemon.log");
+    let said = || std::fs::read_to_string(&log).unwrap_or_default();
+    if !said().contains("some task stalled on memory") {
+        eprintln!(
+            "SKIP: this host's kernel arms no memory pressure trigger of its user's (Linux 6.4); the daemon's log:\n{}",
+            said()
+        );
+        return;
+    }
+    let set = Command::new("systemctl")
+        .args(["--user", "set-property", "--runtime", &slice])
+        .args(["MemoryHigh=384M", "MemorySwapMax=0"])
+        .output()
+        .unwrap();
+    assert!(set.status.success(), "{}", String::from_utf8_lossy(&set.stderr));
+    let read = shards(&["exec", "budget", "/bin/testguest", "read", "/vol/big"]);
+    assert_eq!(read.status, Some(0), "{read}\n{}", said());
+    assert!(read.stdout.contains("read /vol/big 1073741824"), "{read}");
+    assert!(said().contains("its microVMs gave back"), "{}", said());
+    assert_eq!(shards(&["kill", "budget"]).status, Some(0));
+}
+
 #[test]
 fn pause_freezes_a_microvm_until_unpause_or_stop() {
     let Some((home, image)) = home("containers-pause") else {
