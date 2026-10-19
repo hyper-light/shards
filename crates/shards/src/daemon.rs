@@ -2703,7 +2703,8 @@ impl<D: Disk> Daemon<D> {
             })
             .and_then(|opened| {
                 let cdi = prepared.cdi.as_ref().ok().and_then(Option::as_ref);
-                prepared.spec.setup = crate::setup::setup(&run, &opened.mounts, cdi)?;
+                prepared.spec.setup =
+                    crate::setup::setup(&run, &opened.mounts, cdi, Some(self.microvm_shm(&id, &run)))?;
                 // An emulated command is never PID 1 of its namespace, but under shards'
                 // reaper, as `--init` runs one (D179, PM M251): the emulator ends a program
                 // that dies of a signal by sending itself that signal, which a namespace's
@@ -3372,7 +3373,8 @@ impl<D: Disk> Daemon<D> {
             ));
             spec.hosts = Vec::new();
             spec.domainname = run.domainname.clone().into_bytes();
-            spec.setup = crate::setup::setup(run, &[], crate::run::cdi_edits(run).ok().flatten().as_ref())?;
+            spec.setup =
+                crate::setup::setup(run, &[], crate::run::cdi_edits(run).ok().flatten().as_ref(), None)?;
             return Ok(());
         }
         spec.resolv = Some(crate::build::step::resolv_with(
@@ -3399,7 +3401,7 @@ impl<D: Disk> Daemon<D> {
             })
             .collect::<Result<_, &str>>()?;
         spec.domainname = run.domainname.clone().into_bytes();
-        spec.setup = crate::setup::setup(run, &[], crate::run::cdi_edits(run).ok().flatten().as_ref())?;
+        spec.setup = crate::setup::setup(run, &[], crate::run::cdi_edits(run).ok().flatten().as_ref(), None)?;
         Ok(())
     }
 
@@ -5605,12 +5607,6 @@ impl<D: Disk> Daemon<D> {
             if cfg.hotplug_mib > 0 {
                 cfg.cmdline.push_str(" memhp_default_state=online_kernel");
             }
-            // Each /dev/shm of it half the memory it may have in all (D156): part of its
-            // template's command line, so each shape's template has its own.
-            cfg.cmdline.push_str(&format!(
-                " shards_shm={}",
-                crate::run::shm_bytes(prepared.memory_max)
-            ));
             // And memory its workload frees given back to the host, as it reports it
             // free, as a container's is (D151).
             cfg.reporting = true;

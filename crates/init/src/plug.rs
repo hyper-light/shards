@@ -441,6 +441,23 @@ impl Plug {
     }
 }
 
+/// Holds a run's processes in `cgroup` at what is plugged so far again, as [`Plug::hold_run`]
+/// held them (D148), where the host has raised its most since (`update -m`, its `PLUG`):
+/// its grower lifted the hold once all its old most was plugged, and is woken only as its
+/// processes reach a hold. A most no larger than what is plugged leaves the hold as it is,
+/// the run's `memory.max` holding it.
+pub fn rehold_run(cgroup: &'static str) -> io::Result<()> {
+    let Some(&boot) = BOOT.get() else {
+        return Ok(());
+    };
+    let most = control_read64(control::HOTPLUG_SIZE)?;
+    let plugged = mem_total()?.saturating_sub(boot);
+    if plugged >= most {
+        return Ok(());
+    }
+    set_high(cgroup, high(cgroup, most, plugged)?)
+}
+
 /// The guest kernel's report of the memory the host may still plug (D149):
 /// `vm.pluggable_kbytes`, which shards' kernel adds to the total, free and available memory
 /// sysinfo(2) and /proc/meminfo report, and to what its overcommit heuristic counts.

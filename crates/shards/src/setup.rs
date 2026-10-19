@@ -532,6 +532,7 @@ pub fn setup(
     run: &Run,
     points: &[(String, Vec<u8>)],
     cdi: Option<&crate::build::cdi::Edits>,
+    microvm_shm: Option<u64>,
 ) -> Result<Vec<Vec<u8>>, String> {
     let mut out: Vec<Vec<u8>> = Vec::new();
     let mut mounts: Vec<(String, Vec<u8>)> = Vec::new();
@@ -557,6 +558,13 @@ pub fn setup(
     }
     if run.shm_size != 0 {
         out.push(format!("shm={}", run.shm_size).into_bytes());
+    } else if let Some(bytes) = microvm_shm
+        && run.ipc != "none"
+        && !run.ipc.starts_with("container:")
+    {
+        // Its own, or the microVM's (`--ipc host`), as large as the microVM it lives in
+        // may have them (`microvm_shm`): its template's is sized for every limit's.
+        out.push(format!("shm={bytes}").into_bytes());
     }
     // The microVM's UTS and cgroup namespaces (D156), and its writable layer's size.
     if run.uts == "host" {
@@ -878,7 +886,7 @@ mod tests {
             Err("invalid mount path: 'run' mount path must be absolute".into())
         );
         assert_eq!(
-            setup(&run(&["/x:foo"]), &[], None),
+            setup(&run(&["/x:foo"]), &[], None, None),
             Err("invalid tmpfs option \"foo\"".into())
         );
         let set = Run {
@@ -893,7 +901,7 @@ mod tests {
             read_only: true,
             ..Run::default()
         };
-        let text: Vec<String> = setup(&set, &[], None)
+        let text: Vec<String> = setup(&set, &[], None, None)
             .unwrap()
             .into_iter()
             .map(|b| String::from_utf8(b).unwrap())

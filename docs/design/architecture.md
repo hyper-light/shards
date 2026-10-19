@@ -2835,8 +2835,20 @@ CLI's, held to Docker Engine 29.3.1's.
   else `io.weight` on io.cost's scale, converted so that a weight means what it means
   under Docker (runc's ConvertBlkIOToIOWeightValue).
   The guest kernel has both; Docker Desktop's VM has neither and refuses the update.
-- A microVM's memory is sized as it starts (PM M117): a limit raised past it binds at the
-  VM's size until its next start. Open: resizing the guest (balloon or memory hotplug).
+- **A running microVM's memory moves with its limit, both ways** (the user's plan, item
+  3): every run plugs its memory as it needs it, up to its limit (D148), so `update -m`
+  tells the run's VM its new most to plug (`kind::PLUG`, before the exec that writes its
+  cgroup, on the same link), then init writes `memory.max`, reports what its guest may now
+  plug (D149) and holds the run at what is plugged again, which its grower lifts once all
+  of an old most was plugged and is woken by no more. Raised, a workload past the old limit
+  holds what the new one allows, and the guest reports it; lowered, `memory.max` ends one
+  past it, its memory staying plugged until it is given back (D148's unplug, the plan's
+  item 4). A joiner's limit is its cgroup's alone, its microVM's most its provider's.
+  Before, a microVM's memory was sized as it started (PM M117), and a limit raised past it
+  bound at the VM's size until its next start. Held by `update_moves_a_microvms_memory_both_ways`
+  (tests/containers.rs: 512 MiB killed at `-m 256m`, held at `1g`, MemTotal a gigabyte,
+  killed again at `256m`; mutation-checked: without `PLUG`, and without the hold again,
+  each killed at `1g`).
 - `--cpu-rt-period` and `--cpu-rt-runtime` parse, and are not served: cgroup v2 has no
   real-time CPU controller to write them to.
 - inspect's raw-JSON fallback (a template Docker's typed struct cannot answer) decodes
@@ -7369,9 +7381,11 @@ inside the microVM the other runs in (D119).
   of its host's). The microVM's own, each run's, each joiner's and a builder's steps' are
   all half the memory the microVM may have in all (`run::sizes`, D148: a run without a
   limit, the host's), as Linux sizes a tmpfs by default (Documentation/filesystems/
-  tmpfs.rst). The daemon says the bytes on the guest's command line (`shards_shm`,
-  `run::shm_bytes`), so each template's shape has its own; init sizes each mount by them,
-  and `inspect`'s `ShmSize` says them, held to what the guest's statfs says. A run's
+  tmpfs.rst). The daemon tells each run its bytes with the run (its `shm=` setup entry,
+  `run::shm_bytes` of the most of the run whose microVM it is: its own, a joiner's
+  provider's), as every limit's runs restore one template (D148), whose own is sized by
+  half all its guest may plug; a builder's are on its kernel's command line (`shards_shm`).
+  `inspect`'s `ShmSize` says them, held to what the guest's statfs says. A run's
   memory limit still holds what it writes there, as memory. A run wrote 128 MiB there,
   where 64 MiB refused it (`a_microvm_takes_its_ipc_hostname_cgroups_umask_and_writable_layer`).
   - `--ipc private` (the default) and `shareable`: its own; another run may share a
@@ -8136,14 +8150,17 @@ builder memory as its build needs it; runs now have it too.
 
 - **A run without a limit** boots as before, with a region to plug of the host's memory
   less that, and is given memory as its processes reach what it has, up to the host's
-  memory, as a container without one may have. **A run with `-m`** boots with what its
-  limit needs, as before, and `-m` ends a workload past it (`memory.max`, 137), as
-  Docker's does: a guest reports the memory it has, and Node.js sizes its heap by the
-  smaller of that and its cgroup's limit (PM M220), so a run with `-m` booted small sized
-  its heap at 259 MiB where Docker's sizes it at 2,096.
+  memory, as a container without one may have. **A run with `-m`** boots as one without
+  a limit does (the user's plan, item 3, 2026-10-19), its most to plug what its limit
+  needs, and `-m` ends a workload past it (`memory.max`, 137), as Docker's does. Its guest
+  reports what it may plug (D149), so Node.js sizes its heap by its limit as under Docker
+  (PM M220, M221: 2,096 MiB at `-m 8g`), where booted small before D149 it sized it at
+  259. Every limit's runs restore one template, where each limit had its own, and a run
+  of a large limit pays page structures as it plugs what it uses, not for all of it as it
+  boots (21 MiB and 4 ms per GiB, PM M82).
 - **Templates.** A snapshot keeps the region to plug, none of it plugged (format 13: the
-  machine's `hotplug_mib`); a restore remakes it as boot made it, withheld. The runs
-  without a limit share one template. What is plugged or asked for is not saved: a device says why
+  machine's `hotplug_mib`); a restore remakes it as boot made it, withheld. Every run of
+  one vCPU count shares one template, its limit or none its own most. What is plugged or asked for is not saved: a device says why
   (`VirtioDevice::unsaved`), and the snapshot is refused, not written without it. A run's
   most comes with the run (the `RUN` request) and the VM sets it before its guest hears
   of the run (`Handle::set_plug_most`): the host keeps the bound, never the guest.

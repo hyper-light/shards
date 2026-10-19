@@ -527,14 +527,7 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
     /// Each followed 64 steps at most, as a run names only those made before it. `request`
     /// is `c`'s as it was asked for.
     fn shm_size(&self, c: &crate::containers::Container, request: &shards_ipc::Run) -> i64 {
-        let read = |reference: &str| -> Option<(String, shards_ipc::Run)> {
-            let id = self.resolve(reference).ok()?;
-            let dir = super::lock(&self.containers).dir(&id);
-            let run = std::fs::read(dir.join(super::REQUEST))
-                .ok()
-                .and_then(|b| shards_ipc::Run::decode(&b))?;
-            Some((id, run))
-        };
+        let read = |reference: &str| self.stored_run(reference);
         let (mut id, mut run) = (c.id.clone(), request.clone());
         // Whose /dev/shm it is.
         for _ in 0..64 {
@@ -549,14 +542,35 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
         if run.shm_size != 0 {
             return run.shm_size;
         }
-        // The microVM it is in.
+        i64::try_from(self.microvm_shm(&id, &run)).unwrap_or(i64::MAX)
+    }
+
+    /// Container `reference`'s ID and the request it was made by, as it keeps it.
+    fn stored_run(&self, reference: &str) -> Option<(String, shards_ipc::Run)> {
+        let id = self.resolve(reference).ok()?;
+        let dir = super::lock(&self.containers).dir(&id);
+        let run = std::fs::read(dir.join(super::REQUEST))
+            .ok()
+            .and_then(|b| shards_ipc::Run::decode(&b))?;
+        Some((id, run))
+    }
+
+    /// The bytes of each /dev/shm of the microVM container `id`, made by `run`, lives in
+    /// (D156): half the memory that microVM may have in all, by the run whose microVM it is:
+    /// its own, the one it joined (`--network container:`), or the one whose engine made it
+    /// (D181). Every run of every limit restores one template (D148): each is told its own.
+    pub(super) fn microvm_shm(&self, id: &str, run: &shards_ipc::Run) -> u64 {
+        let (mut id, mut run) = (id.to_string(), run.clone());
         for _ in 0..64 {
             let engine_of = super::lock(&self.containers)
                 .get(&id)
                 .and_then(|c| c.engine_made.as_ref().map(|m| m.of.clone()));
             let next = match engine_of {
-                Some(of) => read(&of),
-                None => run.network.strip_prefix("container:").and_then(read),
+                Some(of) => self.stored_run(&of),
+                None => run
+                    .network
+                    .strip_prefix("container:")
+                    .and_then(|r| self.stored_run(r)),
             };
             match next {
                 Some(next) => (id, run) = next,
@@ -564,7 +578,7 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
             }
         }
         let (_, _, most) = crate::run::sizes(&run.resources, crate::build::host_memory());
-        i64::try_from(crate::run::shm_bytes(most)).unwrap_or(i64::MAX)
+        crate::run::shm_bytes(most)
     }
 
     pub(super) fn container_value(

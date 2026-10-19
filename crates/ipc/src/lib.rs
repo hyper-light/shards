@@ -296,6 +296,11 @@ pub mod kind {
     /// stdin from then on: what it wrote to the slot of a daemon that asked it to restart
     /// would be lost with that slot (D185).
     pub const HEARD: u8 = 62;
+    /// Daemon → a running run's VM: the most memory its guest may plug past what it booted
+    /// with, in bytes (8, big-endian), as `update -m` sets the run's limit (D148): before
+    /// its guest's cgroup is written, so that what the guest reports it may plug is the
+    /// new most (D149).
+    pub const PLUG: u8 = 63;
 }
 
 /// A `SAVE` flag: the microVM goes on running once saved, rather than stopping.

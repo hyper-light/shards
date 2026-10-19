@@ -563,6 +563,16 @@ pub fn save(save: vm::Save) -> Result<vm::Saved, String> {
     RUNNING.get().ok_or("the microVM has not started")?.save(save)
 }
 
+/// Sets the most memory this VM's guest may plug past what it booted with, its run's
+/// limit updated (`PLUG`, D148).
+#[cfg(unix)]
+pub fn set_plug_most(bytes: u64) -> Result<(), String> {
+    RUNNING
+        .get()
+        .ok_or("the microVM has not started")?
+        .set_plug_most(bytes)
+}
+
 /// This VM's join disk, for its device.
 fn give_join_disk() -> &'static shards_vmm::devices::virtio::block::Join {
     HAS_JOIN.store(true, std::sync::atomic::Ordering::Release);

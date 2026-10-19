@@ -535,6 +535,15 @@ fn relay_signals(conn: &UnixStream, to: &'static ToGuest, from: From<'_>) {
                     engine_held().remove(&u64::from_be_bytes(n));
                 }
             }
+            // Its run's limit updated (D148): its guest's most to plug, before the exec that
+            // writes its cgroup, which comes after this on the same link.
+            kind::PLUG if matches!(from, From::Daemon(_)) => {
+                if let Ok(bytes) = <[u8; 8]>::try_from(message.payload.as_slice())
+                    && let Err(e) = crate::vm_run::set_plug_most(u64::from_be_bytes(bytes))
+                {
+                    let _ = writeln!(io::stderr(), "shards: its memory to plug: {e}");
+                }
+            }
             // The host's answer to the guest's ask on the host's network (D124).
             kind::HOST_BOUND if matches!(from, From::Daemon(_)) => {
                 workload::bound_guest(to, &message.payload);

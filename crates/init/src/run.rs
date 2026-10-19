@@ -465,11 +465,13 @@ fn mount_root(device: &str) -> Result<(), Failure> {
 /// The options of each /dev/shm of a microVM (D156): its own, each run's and each
 /// joiner's, and a builder's steps', all of one size: half of all the memory the microVM may
 /// have, as Linux sizes a tmpfs by default (Documentation/filesystems/tmpfs.rst), where a
-/// browser's renderers and a data loader's workers share memory. Its daemon says the bytes
-/// on the kernel's command line (`shards_shm=BYTES`, shards' `run::shm_bytes`), which
-/// `inspect` says too; where it says none, half of all the guest may plug, else tmpfs's
-/// own default, half what it boots with. Set as it boots ([`size_shm`]), before its
-/// snapshot, which keeps it; read by each fork and each restore of it.
+/// browser's renderers and a data loader's workers share memory. A builder's daemon says
+/// the bytes on its kernel's command line (`shards_shm=BYTES`, shards' `run::shm_bytes`);
+/// where it says none, half of all the guest may plug, else tmpfs's own default, half what
+/// it boots with. Set as it boots ([`size_shm`]), before its snapshot, which keeps it; read
+/// by each fork and each restore of it. A run's microVM, whose template every limit's runs
+/// restore (D148), is told its own bytes with each run and each joiner (the `shm=` setup
+/// entry), which `inspect` says too.
 static SHM: std::sync::OnceLock<String> = std::sync::OnceLock::new();
 
 /// Sizes each /dev/shm of the microVM ([`SHM`]): `plug` is its memory to plug, where it
@@ -3229,7 +3231,12 @@ fn builtin(
                 (None, _) => crate::changes::write(&mut out),
             },
             run::builtin::EXPORT => export(&mut out),
-            run::builtin::CGROUP => write_cgroup_in(&cgroup, args).map_err(io::Error::other),
+            // Its limits, then what its microVM may still plug, its VM told its run's new
+            // most before this came (`PLUG`, D148, D149).
+            run::builtin::CGROUP => write_cgroup_in(&cgroup, args)
+                .map_err(io::Error::other)
+                .and_then(|()| crate::plug::report_pluggable())
+                .and_then(|()| crate::plug::rehold_run(RUN_CGROUP)),
             run::builtin::STATS => out.write_all(stats(&cgroup).as_bytes()),
             run::builtin::FREEZE => freeze(&cgroup, args.first().is_some_and(|a| a == b"1")),
             run::builtin::SIZE => match &layers {

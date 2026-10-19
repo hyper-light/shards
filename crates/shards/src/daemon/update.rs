@@ -6,7 +6,7 @@ use shards_cmdline::flags::Parsed;
 use shards_ipc::Resources;
 
 use super::commands::Reply;
-use super::{Daemon, REQUEST, lock};
+use super::{Daemon, REQUEST, RunState, lock};
 use crate::containers::Disk;
 
 /// The resources `update` asks for (docker/cli update.go): each given, or none.
@@ -167,6 +167,23 @@ impl<D: Disk> Daemon<D> {
         // Written to the running workload first: a limit it refuses changes nothing.
         let restarting = self.is_restarting(&id);
         if self.running(&id) && !restarting {
+            // A microVM's own run's limit is the most its guest plugs (D148): its VM told
+            // the new most first, on the link the exec below comes on after it, so that
+            // what its guest reports it may plug is the new (D149), up or down. A joiner's
+            // limit is its own cgroup's alone; its microVM's most its provider's.
+            if merged.memory != run.resources.memory {
+                let own = match lock(&self.runs).get(&id) {
+                    Some(RunState::Tracked(t)) if t.joined.is_none() => Some(t.socket.clone()),
+                    _ => None,
+                };
+                if let Some(socket) = own {
+                    let (_, boot, most) = crate::run::sizes(&merged, crate::build::host_memory());
+                    let bytes = most.saturating_sub(boot).saturating_mul(1 << 20);
+                    socket
+                        .send(shards_ipc::kind::PLUG, &bytes.to_be_bytes(), &[])
+                        .map_err(|e| cannot(format!("its microVM: {e}")))?;
+                }
+            }
             let spec = shards_abi::run::Spec {
                 builtin: shards_abi::run::builtin::CGROUP,
                 argv: crate::resources::cgroup(&merged, crate::resources::host_cpus()),

@@ -9220,6 +9220,53 @@ fn restart_policies_start_microvms_again() {
 /// `update`, as `docker update` takes it: a running microVM's limits written to its
 /// workload's cgroup as it runs, and kept; dockerd's refusals; the restart policy.
 #[cfg(unix)]
+/// `update -m` moves a running microVM's memory both ways (the user's plan, item 3): every
+/// run plugs memory as it needs it up to its limit (D148), and an update tells its VM its
+/// new most before its guest's cgroup, which its guest then reports it may plug (D149).
+/// Past `-m 256m` a workload of 512 MiB is killed; raised to `1g`, it holds them, and its
+/// microVM reports it may have a gigabyte; lowered again, it is killed again.
+#[test]
+fn update_moves_a_microvms_memory_both_ways() {
+    let Some((home, image)) = home("containers-update-memory") else {
+        return;
+    };
+    let shards = |args: &[&str]| shards_in(&home, args);
+    let mut held = start(
+        &home,
+        &image,
+        &["--name", "grows", "-m", "256m", "--memory-swap", "256m"],
+        &["sleep"],
+    );
+    let alloc = || shards(&["exec", "grows", "/bin/testguest", "alloc", "512"]);
+    let killed = alloc();
+    assert_eq!(killed.status, Some(137), "{killed}");
+    let raised = shards(&["update", "-m", "1g", "--memory-swap", "1g", "grows"]);
+    assert_eq!(raised.status, Some(0), "{raised}");
+    let held_more = alloc();
+    assert_eq!(
+        (held_more.status, held_more.stdout.as_str()),
+        (Some(0), "allocated 512\n"),
+        "{held_more}"
+    );
+    // What it reports it has: a gigabyte, its kernel's own aside, where it booted with
+    // what a run without a limit boots with.
+    let meminfo = shards(&["exec", "grows", "/bin/testguest", "meminfo", "MemTotal"]);
+    let total: u64 = meminfo
+        .stdout
+        .trim()
+        .strip_prefix("MemTotal:")
+        .and_then(|v| v.trim().strip_suffix("kB"))
+        .and_then(|v| v.trim().parse().ok())
+        .unwrap_or(0);
+    assert!((1 << 20..2 << 20).contains(&total), "{meminfo}");
+    let lowered = shards(&["update", "-m", "256m", "--memory-swap", "256m", "grows"]);
+    assert_eq!(lowered.status, Some(0), "{lowered}");
+    let killed = alloc();
+    assert_eq!(killed.status, Some(137), "{killed}");
+    assert_eq!(shards(&["stop", "-t", "1", "grows"]).status, Some(0));
+    let _ = exit(&mut held);
+}
+
 #[test]
 fn update_changes_limits_of_running_microvms() {
     let Some((home, image)) = home("containers-update") else {
@@ -11213,25 +11260,26 @@ fn a_runs_memory_grows_as_its_workload_needs_it() {
             let r = run(&["--rm"], &["alloc-once", "1024"]);
             assert_eq!(r.status, Some(0), "{r}");
             assert!(r.stdout.contains("allocated 1024 at once"), "{r}");
-            // A run with a limit reports its own memory, its template's most to plug
-            // lowered to its own, none, as it begins.
+            // A run with a limit boots as one without, and reports its own memory, what it
+            // may plug its limit's, its template's most lowered to its own as it begins
+            // (item 3: every limit's runs restore one template).
             let (pluggable, meminfo) = reported(&["--rm", "-m", "1g"]).unwrap();
             let total = kib(&meminfo, "MemTotal:");
             assert!(
-                pluggable == 0 && total < 2 << 20,
+                pluggable > 0 && (1 << 20..2 << 20).contains(&total),
                 "{pluggable} kB pluggable: {meminfo}"
             );
         }
     }
     // The templates, each a directory: the daemon's record of each is a file beside it.
-    // The runs without a limit share one; each limit has its own.
+    // The runs with a limit and without share one, each told its own most to plug.
     let templates: Vec<_> = std::fs::read_dir(home.join("templates"))
         .unwrap()
         .map(|e| e.unwrap())
         .filter(|e| e.path().is_dir())
         .map(|e| e.file_name())
         .collect();
-    assert_eq!(templates.len(), 3, "{templates:?}");
+    assert_eq!(templates.len(), 1, "{templates:?}");
 }
 
 /// A run's CPUs, real-time time, isolation and runtime as its microVM has them (D155):
