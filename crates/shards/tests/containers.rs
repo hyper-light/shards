@@ -220,7 +220,7 @@ fn a_joiner_is_a_container_of_its_own() {
     let hostname = shards(&["inspect", "-f", "{{.Config.Hostname}}", "prov"]);
     let hostname = hostname.stdout.trim().to_string();
     assert_eq!(hostname.len(), 12, "the provider's hostname: {hostname:?}");
-    // Its provider kept by its ID, as dockerd keeps it (adaptSharedNamespaceContainer).
+    // Its provider kept by its ID, as dockerd keeps it (D119; adaptSharedNamespaceContainer).
     let id = shards(&["inspect", "-f", "{{.Id}}", "prov"]).stdout;
     let inspected = shards(&[
         "inspect",
@@ -389,7 +389,7 @@ fn a_joiner_takes_volumes_as_a_container_does() {
     assert_eq!(theirs.status, Some(1), "{theirs}");
     let own = shards(&["exec", "j1", "/bin/testguest", "stat", "/data/a"]);
     assert_eq!(own.status, Some(0), "{own}");
-    // `cp` reads a volume where the joiner has it, as Docker's reads a container's.
+    // `cp` reads a volume where the joiner has it, as Docker's reads a container's (D119).
     let copied = shards(&["cp", "j1:/data/a", "-"]);
     assert_eq!(copied.status, Some(0), "{copied}");
     assert!(copied.stdout.contains("host"), "{copied}");
@@ -476,7 +476,7 @@ fn a_joiners_own_commands_reach_the_joiner() {
     });
     attached.stdin.as_mut().unwrap().write_all(b"hello\n").unwrap();
     assert_eq!(read.recv_timeout(TIMEOUT).unwrap(), "hello");
-    // Paused alone, its cgroup frozen in the guest as Docker freezes a container's: what is
+    // Paused alone, its cgroup frozen in the guest as Docker freezes a container's (D119): what is
     // written meanwhile comes back once it goes on, and its provider runs on.
     let paused = shards(&["pause", "joiner"]);
     assert_eq!(paused.status, Some(0), "{paused}");
@@ -539,7 +539,7 @@ fn a_joiners_own_commands_reach_the_joiner() {
     let kept = run_in(&home, "joined:1", &["--rm"], &["fs", "print:/made"]);
     assert_eq!(kept.stdout, "by-joiner", "{kept}");
     // Its command, PID 1 of its namespace, has no handler for SIGTERM: killed past the
-    // timeout, as Docker's would be; the client attached hears its status.
+    // timeout, as Docker's would be (D119); the client attached hears its status.
     let stopped = shards(&["stop", "-t", "1", "joiner"]);
     assert_eq!(stopped.status, Some(0), "{stopped}");
     assert_eq!(exit(&mut attached), Some(137));
@@ -654,7 +654,7 @@ fn a_joiner_may_share_its_providers_pid_namespace() {
 /// takes that of NAME's process (D119): its PID 1 is that joiner's command; a container
 /// naming it is in the same namespace; one naming a joiner in its provider's is in its
 /// provider's; and as the joiner whose namespace it is ends, so does all in it, as the
-/// kernel ends a namespace whose first process has gone, and as Docker's ends.
+/// kernel ends a namespace whose first process has gone, and as Docker's ends (D119).
 #[test]
 fn a_joiner_may_share_another_joiners_pid_namespace() {
     let Some((home, image)) = home("containers-joiner-pid-joiner") else {
@@ -1224,7 +1224,7 @@ fn a_command_is_pid_1_as_a_containers_is() {
         }
         assert_eq!(code(name), exit, "{name}");
     }
-    // Its events, as dockerd's (M145): the SIGTERM it did not hear, then the SIGKILL that
+    // Its events, as dockerd's (PM M145): the SIGTERM it did not hear, then the SIGKILL that
     // ended it, and its death of that.
     let until = format!(
         "{:.9}",
@@ -1476,7 +1476,7 @@ fn an_s6_overlay_image_runs_as_pid_1() {
 
 /// A microVM's I/O limits (D178): its VMM paces what its guest writes to a volume at
 /// `--io-maxbandwidth`'s bytes and `--io-maxiops`'s requests a second, which no guest lifts,
-/// and nothing without them; `inspect` says them as dockerd's HostConfig does; a container
+/// and nothing without them; `inspect` says them as dockerd's HostConfig does (D178); a container
 /// joining it, whose I/O is the microVM's, takes none of its own.
 #[test]
 fn a_microvms_io_is_paced_at_its_limits() {
@@ -1750,7 +1750,7 @@ fn pause_freezes_a_microvm_until_unpause_or_stop() {
     assert!(inspected.stdout.contains(r#""Status": "paused""#), "{inspected}");
     let rm = shards(&["rm", "frozen"]);
     assert!(rm.stderr.ends_with("it is paused: unpause it first\n"), "{rm}");
-    // Not started, nor said to be, as dockerd starts no paused container.
+    // Not started, nor said to be, as dockerd starts no paused container (D27).
     let start = shards(&["start", "frozen"]);
     assert_eq!(
         (start.status, start.stdout.as_str(), start.stderr.as_str()),
@@ -1776,7 +1776,7 @@ fn pause_freezes_a_microvm_until_unpause_or_stop() {
     );
     let not = shards(&["unpause", "frozen"]);
     assert!(not.stderr.ends_with("is not paused\n"), "{not}");
-    // A stop lets a frozen microVM go on to hear its signal, as dockerd's does.
+    // A stop lets a frozen microVM go on to hear its signal, as dockerd's does (D27).
     assert_eq!(shards(&["pause", "frozen"]).status, Some(0));
     let stopped = shards(&["stop", "-t", "5", "frozen"]);
     assert_eq!(
@@ -1861,7 +1861,7 @@ fn diff_shows_what_a_microvm_changed() {
     ]);
     assert_eq!(changed.status, Some(0), "{changed}");
     let diff = shards(&["diff", "changed"]);
-    // A parent of a change is changed; /etc/hosts is init's, as Docker's init layer's.
+    // A parent of a change is changed; /etc/hosts is init's, as Docker's init layer's (D37).
     assert_eq!(
         (diff.status, diff.stdout.as_str()),
         (
@@ -2093,7 +2093,7 @@ fn cp_copies_files_into_and_out_of_a_microvm() {
         streamed.stdout.contains("a.txt\0") && streamed.stdout.contains("one"),
         "{streamed}"
     );
-    // In Docker's words.
+    // In Docker's words (D37).
     let missing = shards(&["cp", "copier:/nope", home.join("x").to_str().unwrap()]);
     assert_eq!(
         (missing.status, missing.stderr.as_str()),
@@ -2149,7 +2149,7 @@ fn a_stopped_microvms_files_are_read_and_written() {
     assert_eq!(before.stdout, "resting exited\n", "{before}");
     let code = shards(&["inspect", "-f", "{{.State.ExitCode}}", "resting"]);
     assert_eq!(code.stdout, "0\n", "{code}");
-    // Its changes, read in a VM over its files, as dockerd reads a stopped container's.
+    // Its changes, read in a VM over its files, as dockerd reads a stopped container's (D37).
     let diff = shards(&["diff", "resting"]);
     assert_eq!(diff.status, Some(0), "{diff}");
     assert!(
@@ -2214,7 +2214,7 @@ fn a_stopped_microvms_files_are_read_and_written() {
         std::fs::read_to_string(home.join("note-again")).unwrap(),
         "visited"
     );
-    // top, as dockerd's, reads only a running one.
+    // top, as dockerd's, reads only a running one (D123).
     let top = shards(&["top", "resting"]);
     assert_eq!(top.status, Some(1), "{top}");
 }
@@ -2410,7 +2410,7 @@ fn a_runs_mac_is_its_own() {
         let first = u8::from_str_radix(m.get(..2).unwrap(), 16).unwrap();
         assert_eq!(first & 0b11, 0b10, "{m}");
     }
-    // Refused by the CLI, as docker/cli refuses them.
+    // Refused by the CLI, as docker/cli refuses them (D46).
     for (options, said) in [
         (
             &["--mac-address", "02:42:zz:11:00:99"][..],
@@ -2575,7 +2575,7 @@ fn a_runs_mac_is_its_own() {
 
 /// A run's link-local addresses, as dockerd gives them (PM M175): each on eth0 with its
 /// family's prefix, given either way, an IPv4-mapped one as IPv4, a malformed one dropped
-/// as docker/cli drops it; dockerd's refusals and failures in its words; none on `none`,
+/// as docker/cli drops it (D46); dockerd's refusals and failures in its words; none on `none`,
 /// and none of a joiner's own; inspect's LinkLocalIPs while created, running and exited.
 /// On a network, two given them reach each other at them and one without reaches neither;
 /// on one with IPv6, a member reaches another's at the address its kernel makes of its
@@ -2673,7 +2673,7 @@ fn a_runs_link_local_addresses_are_its_own() {
         &["addrs"],
     );
     assert!(r.status == Some(0) && !r.stdout.contains("169.254."), "{r}");
-    // inspect, as dockerd keeps it from the request: created, running and exited alike.
+    // inspect, as dockerd keeps it from the request (D123): created, running and exited alike.
     let ll = "{{range $k, $v := .NetworkSettings.Networks}}{{$k}} {{json $v.IPAMConfig}}{{end}}";
     let shown = |name: &str| shards(&["inspect", "-f", ll, name]).stdout;
     for (name, options, want) in [
@@ -3073,11 +3073,11 @@ fn a_runs_processes_are_recorded_as_they_start_and_end() {
     let _ = exit(&mut c);
 }
 
-/// A container given CAP_SYS_ADMIN mounts nothing, as Docker's default AppArmor profile
+/// A container given CAP_SYS_ADMIN mounts nothing, (D121), as Docker's default AppArmor profile
 /// keeps one where AppArmor is enforced (docker-default, `deny mount,`), which the guest
 /// has not: a mount, a remount of a read-only file, the new mount API and its microVM's own
 /// shares refused, EACCES, an exec and a joiner too; umount left to it. `apparmor=unconfined`
-/// and `--privileged` lift it, as Docker's do; without the capability, Docker's seccomp
+/// and `--privileged` lift it, as Docker's do (D121); without the capability, Docker's seccomp
 /// profile refuses first, EPERM, and under `seccomp=unconfined` the kernel, EPERM.
 #[test]
 fn a_container_given_sys_admin_mounts_nothing_as_apparmor_keeps_it() {
@@ -3107,11 +3107,11 @@ fn a_container_given_sys_admin_mounts_nothing_as_apparmor_keeps_it() {
     // Its microVM's own share, whose tag it knows.
     let with_share: Vec<&str> = admin.iter().copied().chain(["-v", bind.as_str()]).collect();
     refused(&with_share, "mount:virtiofs:shards0:/mnt", "Permission denied");
-    // umount is left to it, as docker-default leaves it: a tmpfs of its own.
+    // umount is left to it, as docker-default leaves it (D121): a tmpfs of its own.
     let with_tmpfs: Vec<&str> = admin.iter().copied().chain(["--tmpfs", "/t"]).collect();
     let unmounted = fs(&with_tmpfs, "umount:/t");
     assert_eq!(unmounted.status, Some(0), "{unmounted}");
-    // Lifted as Docker's is.
+    // Lifted as Docker's is (D121).
     for options in [
         &[
             "--rm",
@@ -3187,7 +3187,7 @@ fn a_container_given_sys_admin_mounts_nothing_as_apparmor_keeps_it() {
     assert_eq!(shards_in(&home, &["rm", "-f", "admin"]).status, Some(0));
 }
 
-/// `start -a` passes signals on as docker/cli's start does: to a container without a
+/// `start -a` passes signals on as docker/cli's start does (D160): to a container without a
 /// terminal, whose command hears them; not to one with a terminal, whose own keys are its
 /// signals: the client ends by the signal alone, the container running on.
 #[test]
@@ -3491,7 +3491,7 @@ fn ps_filters_microvms() {
     );
     assert_eq!(names(&["-a", "-f", "ancestor=test/child:1"]), "kid\n");
     assert_eq!(names(&["-a", "-f", "ancestor=nothing:here"]), "");
-    // Refused in dockerd's words.
+    // Refused in dockerd's words (D27).
     for (filter, said) in [
         ("bogus=1", "invalid filter 'bogus'"),
         (
@@ -3653,7 +3653,7 @@ fn inspect_describes_microvms_and_images() {
     ]);
     assert_eq!(at.status, Some(0), "{at}");
     assert!(at.stdout.trim_end().ends_with(" +0000 UTC"), "{at}");
-    // What is not there, in the CLI's and dockerd's words.
+    // What is not there, in the CLI's and dockerd's words (D27).
     let none = shards(&["inspect", "nosuch"]);
     assert_eq!(
         (none.status, none.stdout.as_str(), none.stderr.as_str()),
@@ -3780,9 +3780,9 @@ fn run_labels_names_and_resolves() {
     assert_eq!(left.stdout, "flagged\n", "{left}");
 }
 
-/// `--cidfile`, `-q`, `--platform` and `--sig-proxy`, as docker run and create take them:
+/// `--cidfile`, `-q`, `--platform` and `--sig-proxy`, as docker run and create take them (D27):
 /// the ID written once the microVM is made, and the file left alone or removed as
-/// docker/cli's cidFile does; a pull said nothing of; the platform read as containerd
+/// docker/cli's cidFile does (D27); a pull said nothing of; the platform read as containerd
 /// reads it, and one this host's microVMs cannot run refused before anything is pulled;
 /// signals kept from the command.
 #[test]
@@ -3944,7 +3944,7 @@ fn run_writes_cidfiles_pulls_quietly_and_keeps_signals() {
 /// `run`'s memory and CPU flags as docker run takes them: checked as dockerd checks them,
 /// its warnings said, the microVM growing to hold them (D148), and the workload's cgroup limited
 /// as runc limits it, seen read-only at /sys/fs/cgroup as a container sees its own; a
-/// workload past its memory killed, and OOMKilled, as Docker reports it.
+/// workload past its memory killed, and OOMKilled, as Docker reports it (D148).
 #[test]
 fn run_limits_a_microvms_resources() {
     let Some((home, image)) = home("containers-resources") else {
@@ -4021,7 +4021,7 @@ fn run_limits_a_microvms_resources() {
         "{shown}"
     );
     // JSON's names fail on the Go types, and are read from the JSON, where a null is no
-    // value, as docker/cli's inspector falls back.
+    // value, as docker/cli's inspector falls back (D27).
     let raw = shards(&[
         "inspect",
         "-f",
@@ -4123,10 +4123,10 @@ fn run_limits_a_microvms_resources() {
     );
 }
 
-/// `--read-only`, `--tmpfs`, `--shm-size`, `--ulimit` and `--sysctl` as docker run takes
+/// `--read-only`, `--tmpfs`, `--shm-size`, `--ulimit` and `--sysctl` (D38), as docker run takes
 /// them: the workload's root read-only and its tmpfs mounts in its own mount namespace,
 /// which an exec joins; its rlimits, which an exec takes too; its sysctls set; inspect
-/// as dockerd keeps them; and dockerd's and runc's refusals.
+/// as dockerd keeps them (D38); and dockerd's and runc's refusals.
 #[test]
 fn run_sets_up_mounts_limits_and_sysctls() {
     let Some((home, image)) = home("containers-setup") else {
@@ -4264,8 +4264,8 @@ fn run_sets_up_mounts_limits_and_sysctls() {
     }
 }
 
-/// `--cap-add`, `--cap-drop`, `--group-add`, `--oom-score-adj` and `--privileged` as docker
-/// run takes them, and `exec --privileged`: capabilities as moby tweaks them, groups as
+/// `--cap-add`, `--cap-drop`, `--group-add`, `--oom-score-adj` and `--privileged` (D42), as docker
+/// run takes them, and `exec --privileged`: capabilities as moby tweaks them (D42), groups as
 /// moby adds them, the OOM score set before the command, an exec taking the workload's;
 /// a privileged microVM unmasked, its /sys writable, every capability; dockerd's refusals.
 #[test]
@@ -4526,7 +4526,7 @@ fn logs_keep_what_a_container_wrote() {
     };
     let reported = run_in(&home, &image, &["--name", "reporter"], &["report"]);
     assert_eq!(reported.status, Some(0), "{}", reported.stderr);
-    // Its stdin, without `-i`, is /dev/null, as Docker's is; with it, a pipe.
+    // Its stdin, without `-i`, is /dev/null, as Docker's is (D160); with it, a pipe.
     assert!(reported.stdout.contains("stdin null\n"), "{reported}");
     let piped = run_in(&home, &image, &["-i", "--rm"], &["report"]);
     assert!(piped.stdout.contains("stdin pipe\n"), "{piped}");
@@ -4626,9 +4626,9 @@ fn eventually(what: &str, check: impl Fn() -> bool) {
 }
 
 /// An exec into a microVM whose command nests its own cgroups, as a nested runtime does
-/// (BuildKit's buildkitd, which buildx runs as a builder, and Docker in Docker): the
+/// (BuildKit's buildkitd, which buildx runs as a builder, and Docker-in-Docker): the
 /// workload's cgroup then takes no process, and the exec joins the one its command moved
-/// into, as runc's exec joins container init's (runc#2356).
+/// into, as runc's exec joins container init's (D173; runc#2356).
 #[test]
 fn an_exec_joins_a_workload_that_nests_its_cgroups() {
     let Some((home, image)) = home("containers-nest") else {
@@ -4775,7 +4775,7 @@ fn detached_runs_print_their_id_and_go_on() {
     eventually("the detached run's output never reached its log", || {
         shards_in(&home, &["logs", "bg"]).stdout == "ready\n"
     });
-    // Its host is named for its ID, as Docker names a container's.
+    // Its host is named for its ID, as Docker names a container's (D27).
     let reported = run_in(&home, &image, &["-d", "--name", "who"], &["report"]);
     assert_eq!(reported.status, Some(0), "{reported}");
     let short = reported.stdout.get(..12).unwrap();
@@ -4880,7 +4880,7 @@ fn every_form_of_shards_grammar_answers_help_with_its_own_page() {
             }
         }
     }
-    // What an option does, as shards does it, where Docker's words would say otherwise;
+    // What an option does, as shards does it, where Docker's words would say otherwise (D158);
     // Docker's own command keeps Docker's words.
     let page = without_vms(&home, &["create", "vm", "--help"]).stdout;
     for said in [
@@ -4939,7 +4939,7 @@ fn usage_mistakes_are_answered_without_a_daemon() {
         "{help}"
     );
     assert!(
-        !home.join("daemon.sock").exists() && !home.join("daemon.pid").exists(),
+        !home.join("requests").exists() && !home.join("daemon.pid").exists(),
         "no daemon was started"
     );
 }
@@ -13043,6 +13043,15 @@ fn a_runs_log_is_sent_to_journald_as_its_options_say() {
             .parse()
             .unwrap();
         let labels = (wmem_max * 2 + 65_536) / 60_000 + 1;
+        // A run's request carries at most a message's payload: a host whose datagrams carry
+        // more (its wmem_max raised, as Fedora's 4 MiB) cannot be given such an entry.
+        if labels * 60_000 > shards_ipc::MAX_PAYLOAD * 3 / 4 {
+            eprintln!(
+                "SKIP: an entry in a memfd: this host's datagrams carry {} bytes, past what a run's request may",
+                wmem_max * 2
+            );
+            return;
+        }
         let file = sockets.join("labels");
         let lines: String = (1..=labels)
             .map(|n| format!("big{n}={}\n", "z".repeat(60_000)))

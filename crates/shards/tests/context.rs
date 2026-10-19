@@ -1939,7 +1939,7 @@ fn a_builds_ssh_agents_through_a_context_are_the_clients() {
             std::fs::symlink_metadata(p)
                 .is_ok_and(|m| std::os::unix::fs::FileTypeExt::is_socket(&m.file_type()))
         })
-        .filter(|p| !p.ends_with("daemon.sock") && !p.ends_with("engine.sock"))
+        .filter(|p| !p.ends_with("engine.sock"))
         .collect();
     assert!(sockets.is_empty(), "sockets in the machine's home: {sockets:?}");
 }

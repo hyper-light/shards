@@ -189,7 +189,7 @@ fn an_image_built_of_settings_runs_as_built() {
 
     // The same build is the same image: its manifest's digest is its ID, the one every
     // command names it by, where it carries no provenance; with it, each build's index
-    // is its own (its invocation and times are), as Docker's is.
+    // is its own (its invocation and times are), as Docker's is (D71).
     let id = |r: &common::Run| r.stdout.trim().to_string();
     let mut plain = env.to_vec();
     plain.push(("BUILDX_NO_DEFAULT_ATTESTATIONS", std::ffi::OsStr::new("1")));
@@ -543,7 +543,7 @@ fn a_killed_build_takes_its_builder_with_it() {
     assert!(!left[0].exists(), "the killed build's directory is left");
 }
 
-/// `RUN` steps run in a builder microVM as BuildKit runs them (docs/research/
+/// `RUN` steps run in a builder microVM as BuildKit runs them (D34) (docs/research/
 /// buildkit-run.md, with the values Docker Desktop's BuildKit showed, 2026-10-02): PID 1
 /// of their own namespaces, `buildkitsandbox`, HOME from passwd, BuildKit's capabilities
 /// for root and none but the bounding set for any other user, umask 0022, a working
@@ -643,7 +643,7 @@ fn run_steps_run_in_a_builder_microvm() {
         ran.stderr
     );
 
-    // A step that fails fails the build, worded as BuildKit words it.
+    // A step that fails fails the build, worded as BuildKit words it (D34).
     let ctx = context(
         "build-run-fail-ctx",
         &format!("FROM {image}\nRUN [\"/bin/testguest\", \"exit\", \"3\"]\n"),
@@ -675,7 +675,7 @@ fn run_steps_run_in_a_builder_microvm() {
     );
 }
 
-/// A build's secrets, ulimits and entitlements reach its `RUN` steps as BuildKit's do: a
+/// A build's secrets, ulimits and entitlements reach its `RUN` steps as BuildKit's do (D64): a
 /// secret mounted at /run/secrets/ID, mode 0400 and root's, or where and as the step asks,
 /// or in a variable, and an optional one missing leaves nothing; every step takes
 /// `--ulimit`'s limits, `as` too, which buildx refuses; `--security=insecure` runs with
@@ -756,7 +756,7 @@ fn run_steps_take_the_builds_secrets_ulimits_and_entitlements() {
         "an insecure step, every capability\n{shown}"
     );
     assert!(!caps(&reports[3]).is_empty(), "{shown}");
-    // Under moby's default seccomp profile, as BuildKit runs every step (`Seccomp: 2`, a
+    // Under moby's default seccomp profile, as BuildKit runs every step (D49) (`Seccomp: 2`, a
     // filter); an insecure step unconfined.
     let seccomp =
         |r: &std::collections::BTreeMap<String, String>| r.get("seccomp").cloned().unwrap_or_default();
@@ -835,7 +835,7 @@ fn run_steps_start_with_high_file_and_process_limits() {
     }
 }
 
-/// A `RUN` step reaches the network through its builder's network process, as BuildKit's
+/// A `RUN` step reaches the network through its builder's network process (D34), as BuildKit's
 /// steps reach their host's: here a server on this host, at the host's own address (its
 /// loopback and the gateway are no guest's to reach). With `--network=none` it reaches
 /// nothing.
@@ -1121,7 +1121,7 @@ fn steps_under_the_proxy_cap_reach_the_network_through_it_alone() {
         })
         .collect();
     assert!(logged.contains(&summary), "{logged}\n{e}");
-    // The bundle as it was after the step, as BuildKit leaves it: a newline gained.
+    // The bundle as it was after the step, as BuildKit leaves it (D110): a newline gained.
     assert!(said(" original"), "{e}");
     assert!(!e.contains("buildkit proxy CA"), "{e}");
     // BuildKit's eight variables, the gateway's proxy.
@@ -1375,7 +1375,7 @@ fn a_build_file_error_shows_its_lines() {
 /// A step's read-only binds of one layer, a file of the context and a directory of an
 /// image, show what BuildKit's would (overlayfs takes no single lower directory without an
 /// upper one, which the builder's empty directory makes up); a source the context lacks
-/// fails the build before its step runs, as BuildKit's content checksum does.
+/// fails the build before its step runs, as BuildKit's content checksum does (D50).
 #[test]
 fn steps_bind_one_layer_trees() {
     if cannot_run_vms() {
@@ -1423,7 +1423,7 @@ fn steps_bind_one_layer_trees() {
         "{}",
         built.stderr
     );
-    // A source the context lacks fails as BuildKit's checksum of it does, before the
+    // A source the context lacks fails as BuildKit's checksum of it does (D50), before the
     // step runs.
     assert!(
         built.stderr.ends_with(
@@ -1434,12 +1434,12 @@ fn steps_bind_one_layer_trees() {
     );
 }
 
-/// What a step's setup makes and mounts, it resolves in the step's root, as BuildKit
+/// What a step's setup makes and mounts, it resolves in the step's root (D34), as BuildKit
 /// and runc do (fs.RootPath, securejoin): through symlinks an earlier step planted, never
 /// past the root. A tmpfs over an absolute symlink covers its target in the image, and a
 /// working directory replaced by an absolute symlink is made at its target in the image;
 /// resolved from outside the root, both would reach the builder's own files. A working
-/// directory under a file fails its step as BuildKit's does, the builder going on.
+/// directory under a file fails its step as BuildKit's does (D34), the builder going on.
 #[test]
 fn steps_resolve_their_paths_in_their_root() {
     if cannot_run_vms() {
@@ -1871,7 +1871,7 @@ fn an_images_stop_signal_is_what_stop_sends() {
     assert_eq!(waited.stdout, "138\n", "{}", waited.stderr);
 }
 
-/// An image's `HEALTHCHECK` runs as dockerd runs it: each probe an exec beside the
+/// An image's `HEALTHCHECK` runs as dockerd runs it (D26): each probe an exec beside the
 /// command, the container `(health: starting)` until the first result, then `(healthy)`,
 /// or `(unhealthy)` once failures, or probes past their timeout, reach its retries; a
 /// run's `--health-*` overrides the image's.
@@ -1964,7 +1964,7 @@ fn an_images_healthcheck_probes_its_microvm() {
     );
     // `inspect` shows each record as dockerd keeps it (moby daemon/health.go): its status,
     // its failing streak, and its last five probes, each with its times, exit code and
-    // output, a probe past its timeout -1 and dockerd's words.
+    // output, a probe past its timeout -1 and dockerd's words (D26).
     let health = |name: &str| -> serde_json::Value {
         let shown = run_shards_env(
             &["inspect"],
@@ -1980,7 +1980,7 @@ fn an_images_healthcheck_probes_its_microvm() {
     // more than five times too.
     for (name, status, code, output) in [
         ("bad", "unhealthy", 1, ""),
-        // What the probe said before its timeout follows dockerd's words.
+        // What the probe said before its timeout follows dockerd's words (D26).
         (
             "slow",
             "unhealthy",
@@ -2032,7 +2032,7 @@ fn an_images_healthcheck_probes_its_microvm() {
     }
 }
 
-/// `-P`: every port an image `EXPOSE`s published on a port the host picks, as dockerd
+/// `-P`: every port an image `EXPOSE`s published on a port the host picks (D31), as dockerd
 /// publishes them; without it, `ps` lists them unpublished.
 #[test]
 fn an_images_exposed_ports_publish_with_publish_all() {
@@ -2144,7 +2144,7 @@ fn an_images_volumes_are_anonymous_volumes_at_run() {
     assert_eq!(shards(&["volume", "ls", "-q"]).stdout, "");
 }
 
-/// `--call=outline`, `targets` and `subrequests.describe`, answered as buildx prints
+/// `--call=outline`, `targets` and `subrequests.describe`, answered as buildx prints (D70)
 /// BuildKit's frontend's answers (their every byte held to BuildKit's by the Dockerfile
 /// oracle): the target's arguments, secrets and SSH agents; the stages; the subrequests;
 /// each as text, and as result.json with `format=json`; nothing built.
@@ -2176,7 +2176,7 @@ fn call_answers_the_frontends_subrequests() {
         ctx.to_str().unwrap(),
     ]);
     assert_eq!(outline.status, Some(0), "{}", outline.stderr);
-    // The stage's ARG, given a value, is the one listed, as BuildKit lists it: the global
+    // The stage's ARG, given a value, is the one listed, as BuildKit lists it (D70): the global
     // ARG's comment is not its.
     assert_eq!(
         outline.stdout,
@@ -2345,7 +2345,7 @@ fn sboms_are_scanned() {
     );
     let text = String::from_utf8(raw(layers[0]["digest"].as_str().unwrap())).unwrap();
     assert!(text.contains(r#""note":"a\u003cb \u0026 c\u003ed""#), "{text}");
-    // The scanner among the provenance's materials, with no platform, as BuildKit
+    // The scanner among the provenance's materials, with no platform (D81), as BuildKit
     // resolves it.
     let deps: Vec<&str> = statements[3]["predicate"]["buildDefinition"]["resolvedDependencies"]
         .as_array()
@@ -2508,7 +2508,7 @@ fn provenance_max_records_a_builds_steps_and_layers() {
     assert_eq!(base_chain, image_layers[..base_chain.len()]);
     assert!(base_chain.len() < image_layers.len());
     assert!(layers.get(format!("{heredoc}:0")).is_none(), "{layers}");
-    // Asked for by a build argument (`BUILDKIT_ATTEST_PROVENANCE`), as BuildKit reads one.
+    // Asked for by a build argument (`BUILDKIT_ATTEST_PROVENANCE`), as BuildKit reads one (D72).
     let by_arg = shards(&[
         "build",
         "-t",
@@ -2852,7 +2852,7 @@ fn builds_attest_their_provenance() {
         blob(asked.stdout.trim())["mediaType"],
         "application/vnd.oci.image.manifest.v1+json"
     );
-    // eStargz, OCI's alone, refused in Docker's types, in BuildKit's words.
+    // eStargz, OCI's alone, refused in Docker's types, in BuildKit's words (D83).
     let refused = run_shards_env(
         &[],
         &[
@@ -3026,7 +3026,7 @@ fn crafted(name: &str) -> Vec<u8> {
 /// fetched without a checksum, else the newest regular file in what it fetched, when
 /// that is an archive; a Git repository's commit, its committer's time; none for what is
 /// neither, nor for `context`, a local directory; and a source that cannot be fetched
-/// fails the build, in BuildKit's words.
+/// fails the build, in BuildKit's words (D127).
 #[test]
 fn source_date_epoch_is_taken_from_a_source_stage() {
     if cannot_run_vms() {
@@ -3433,7 +3433,7 @@ fn add_checks_a_checksum_by_its_own_algorithm() {
 /// - redirects followed; a 3xx without one kept; a gzipped body undone;
 /// - the userinfo sent as Basic to the URL, not to where it redirects;
 /// - every source fetched at once (`/a` answers only once `/b` was asked for);
-/// - refused in BuildKit's words: a status from 400 while the cache key is worked out, a
+/// - refused in BuildKit's words (D33): a status from 400 while the cache key is worked out, a
 ///   checksum that differs (whatever the status) while the snapshot is made;
 /// - a failed fetch fails the build at once, while another still hangs.
 #[test]
@@ -3709,7 +3709,7 @@ fn an_agentfile_is_found_first_and_built() {
     let stored: serde_json::Value =
         serde_json::from_slice(&store.content(&config_desc, 1 << 20).unwrap().unwrap()).unwrap();
     // One layer more than the base's, the spec's, which its history names (the test
-    // image keeps no history, so the exporter adds one for the base's layer as BuildKit's).
+    // image keeps no history, so the exporter adds one for the base's layer as BuildKit's, D33).
     let history = stored["history"].as_array().unwrap();
     assert!(
         history
@@ -3892,13 +3892,13 @@ fn git_http_server(root: std::path::PathBuf, accepted: Vec<String>) -> u16 {
     port
 }
 
-/// `ADD` of Git repositories, as BuildKit's git source makes them, fetched by shards' own
+/// `ADD` of Git repositories, as BuildKit's git source makes them (D48), fetched by shards' own
 /// client from a real git daemon (`git://`) and over smart HTTP from git's own
 /// upload-pack: the default branch, an annotated tag, a subdirectory, a submodule found by
 /// its relative URL, `--keep-git-dir`; files 0644 or 0755, symlinks, all root's. Unlike
 /// BuildKit, every entry's time is the commit's, so that the same commit makes the same
 /// A layerless image (`FROM scratch` and `LABEL`), its manifest's `layers` and its
-/// config's `diff_ids` null as BuildKit writes them, inspects and filters as Docker shows
+/// config's `diff_ids` null as BuildKit writes them (D93), inspects and filters as Docker shows
 /// it: its labels, platform and config, behind the index its provenance makes.
 #[test]
 fn a_layerless_image_inspects_whole() {
@@ -3960,6 +3960,7 @@ fn frontend_build_args_are_read() {
     assert_ne!(refused.status, Some(0));
     assert!(
         refused.stderr.contains(
+            // BuildKit's own words, which docker/cli prints (D92).
             "ERROR: failed to build: failed to solve: support for \"BUILDKIT_DISABLE_FILEOP\" build-arg was removed in BuildKit 0.11"
         ),
         "{}",
@@ -3982,7 +3983,7 @@ fn frontend_build_args_are_read() {
 /// read from its directory (YAML), the device found by its name and granted by `--allow
 /// device`; its environment and groups the step's, a host file mounted read-only where the
 /// spec puts it, a device node made from the guest's own device of its host path. Refused
-/// as BuildKit refuses them: a device not granted, a required device not registered; an
+/// as BuildKit refuses them (D96): a device not granted, a required device not registered; an
 /// optional one not registered left out; and what only a host can do, a hook, by name.
 #[test]
 fn run_steps_take_cdi_devices() {
@@ -4294,7 +4295,7 @@ fn builds_take_remote_contexts() {
     );
     assert_eq!(std::fs::read(o.join("d")).unwrap(), plain);
 
-    // `-f` a URL: fetched as buildx fetches it, at most 2 MiB, over a local directory.
+    // `-f` a URL: fetched as buildx fetches it (D91), at most 2 MiB, over a local directory.
     let local = context("remote-ctx-local", "FROM scratch\n");
     std::fs::write(local.join("f.txt"), "local\n").unwrap();
     let (o, log) = exported(
@@ -4336,7 +4337,7 @@ fn builds_take_remote_contexts() {
     assert_eq!(files(&o), ["Dockerfile", "s.txt"]);
     let (o, _) = exported("stdin-file", &["-"], Some(b"FROM scratch\nCOPY . /\n"));
     assert_eq!(files(&o), Vec::<String>::new());
-    // Refused as buildx refuses them.
+    // Refused as buildx refuses them (D91).
     let (code, log) = build(&["-f", "-", "-"], Some(b""));
     assert_ne!(code, Some(0));
     assert!(
@@ -5055,7 +5056,7 @@ fn add_fetches_git_with_the_builds_secrets() {
     std::fs::write(origin.join("only.txt"), "for the asked\n").unwrap();
     git_in(&origin, &["add", "-A"]);
     git_in(&origin, &["commit", "-q", "-m", "one"]);
-    // base64("x-access-token:s3cr3t"), as BuildKit sends a token.
+    // base64("x-access-token:s3cr3t"), as BuildKit sends a token (D48).
     let token = "basic eC1hY2Nlc3MtdG9rZW46czNjcjN0".to_string();
     let header = "Bearer h3ad3r".to_string();
     let hport = git_http_server(repos.to_path_buf(), vec![token, header]);
@@ -5176,7 +5177,7 @@ fn builds_reuse_the_steps_they_have_run() {
         assert!(!cached(&fresh, step), "{step} ran\n{fresh}");
     }
 
-    // `system df` counts the cache's records, `system prune` removes them, as Docker's do;
+    // `system df` counts the cache's records, `system prune` removes them, as Docker's do (D50);
     // built again, every step runs.
     let df = shards(&["system", "df", "--format", "{{.Type}} {{.TotalCount}}"]);
     let records: usize = df
@@ -5186,7 +5187,7 @@ fn builds_reuse_the_steps_they_have_run() {
         .and_then(|n| n.parse().ok())
         .unwrap_or(0);
     assert!(records >= 3, "{}", df.stdout);
-    // Pruning microVMs or images leaves the cache, as docker's container and image
+    // Pruning microVMs or images leaves the cache (D50), as docker's container and image
     // prunes do; `system prune` alone clears it.
     for kind in ["container", "image"] {
         let kept = shards(&[kind, "prune", "-f"]);
@@ -5836,8 +5837,8 @@ fn run_caches_are_shared_among_concurrent_builds() {
     }
 }
 
-/// `buildx du` (and `builder du`) lists the build cache's records as buildx does: a step's
-/// `regular` record and a cache mount's `exec.cachemount` one, the records `system df`
+/// `buildx du` (and `builder du`) lists the build cache's records as buildx does
+/// (crates/cmdline/tests/buildx-du.json): a step's `regular` record and a cache mount's `exec.cachemount` one, the records `system df`
 /// lists and `builder prune` removes; its table, `--verbose`, `json` and templates, sorted
 /// by size; a filter leaves the totals out; a cache a running step holds is in use, sized
 /// 0B, as BuildKit's DiskUsage sizes a mutable record that is changing.
@@ -5966,7 +5967,7 @@ fn build_cache_usage_lists_every_record() {
 
 /// External build caches (D62): a build's records, written by `--cache-to` to a
 /// directory (`mode=max`), a registry (`min`) and the image itself (`inline`), answer
-/// another home's build from `--cache-from`, as BuildKit's remote caches do: from the
+/// another home's build from `--cache-from`, as BuildKit's remote caches do (D62): from the
 /// directory every step, from the registry and the image those of the image's own
 /// layers alone, the build stage's step running again; the image's layers the same.
 /// `--no-cache-filter` runs its stages' steps again and no others.
@@ -6068,7 +6069,7 @@ fn builds_take_steps_from_caches_written_elsewhere() {
     assert!(cached(&from_image, "write:/two=2"), "{from_image}");
     assert_eq!(layers(&homes[3], "taken:3"), made);
 
-    // --metadata-file: the image's config and manifest digests, and its name, as buildx
+    // --metadata-file: the image's config and manifest digests, and its name (D63), as buildx
     // writes them.
     let meta = dir.join("meta.json");
     build(&homes[0], &["--metadata-file", meta.to_str().unwrap()], "made:3");
@@ -6103,7 +6104,7 @@ fn builds_take_steps_from_caches_written_elsewhere() {
     assert!(cached(&filtered, "COPY --from=build"), "{filtered}");
     assert!(cached(&filtered, "write:/two=2"), "{filtered}");
 
-    // A cache that is not there is skipped, as BuildKit's are; one asked to be written
+    // A cache that is not there is skipped, as BuildKit's are (D62); one asked to be written
     // nowhere is refused.
     let missing = build(
         &homes[1],
@@ -6525,7 +6526,7 @@ fn builds_take_steps_from_a_github_actions_cache() {
         )
         .stdout
     };
-    // The records' key: the written scope's hash, as BuildKit's indexKey makes it.
+    // The records' key: the written scope's hash, as BuildKit's indexKey makes it (D90).
     let index = format!(
         "index-buildkit-1-{}",
         common::sha256_digest(b"refs/heads/main").get(7..15).unwrap()
@@ -6614,7 +6615,7 @@ fn builds_take_steps_from_a_github_actions_cache() {
     }
     let made = layers(&homes[0], "made:1");
 
-    // Read back from the runner's environment, as buildx reads it.
+    // Read back from the runner's environment, as buildx reads it (D90).
     let runner = [
         ("ACTIONS_RUNTIME_TOKEN", std::ffi::OsStr::new(token.as_str())),
         ("ACTIONS_CACHE_SERVICE_V2", std::ffi::OsStr::new("true")),
@@ -6708,7 +6709,7 @@ fn builds_take_steps_from_a_github_actions_cache() {
 
 /// What the build's flags give each `RUN`, as BuildKit's frontend gives them (D64):
 /// `--add-host`'s names in its `/etc/hosts`, `--shm-size`'s `/dev/shm`, and the limits of
-/// `--memory` and `--cpu-quota` (and `--resource`) in a cgroup of its own, as runc writes
+/// `--memory` and `--cpu-quota` (and `--resource`) in a cgroup of its own (D64), as runc writes
 /// them; a step past its memory is ended (137), and the build fails as BuildKit's does.
 #[test]
 fn run_steps_take_the_builds_hosts_shm_and_limits() {

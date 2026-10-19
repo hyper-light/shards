@@ -458,9 +458,9 @@ fn first(at: [Pos; 2]) -> u64 {
 }
 
 /// Whether any of `fds` is readable now.
-fn ready_now(fds: &[std::os::fd::BorrowedFd<'_>; 3]) -> bool {
+fn ready_now(fds: &[Option<std::os::fd::BorrowedFd<'_>>; 3]) -> bool {
     let mut polled = fds.map(|fd| libc::pollfd {
-        fd: fd.as_raw_fd(),
+        fd: fd.map_or(-1, |fd| fd.as_raw_fd()),
         events: libc::POLLIN,
         revents: 0,
     });
@@ -470,11 +470,11 @@ fn ready_now(fds: &[std::os::fd::BorrowedFd<'_>; 3]) -> bool {
 }
 
 /// Waits until one of `fds` is readable, or `within` has passed, where it is given:
-/// which are.
-fn wait_ready(fds: &[BorrowedFd<'_>; 3], within: Option<Duration>) -> io::Result<[bool; 3]> {
+/// which are. One not given is no descriptor, which poll(2) passes over.
+fn wait_ready(fds: &[Option<BorrowedFd<'_>>; 3], within: Option<Duration>) -> io::Result<[bool; 3]> {
     let deadline = within.and_then(|d| std::time::Instant::now().checked_add(d));
     let mut polled = fds.map(|fd| libc::pollfd {
-        fd: fd.as_raw_fd(),
+        fd: fd.map_or(-1, |fd| fd.as_raw_fd()),
         events: libc::POLLIN,
         revents: 0,
     });
@@ -624,7 +624,9 @@ impl<D: Disk> Daemon<D> {
             // Followed as it is written, while its run runs.
             if let Some((number, end)) = self.wake_at_end(id)? {
                 let followed = (|| -> io::Result<Shipped> {
-                    let mut watch = shards_vmm::platform::FileWatch::new(file.dir())?;
+                    // Where no watch can be had (on Linux, its user's inotify instances
+                    // spent: PM M257), it reads again every RETRY, as `logs -f` does.
+                    let mut watch = shards_vmm::platform::FileWatch::new(file.dir()).ok();
                     let mut watched = None;
                     loop {
                         let mut each = |p: Piece<'_>| lines.take(&p, &mut |m| sender.send(m)).map(|()| true);
@@ -636,25 +638,38 @@ impl<D: Disk> Daemon<D> {
                         }
                         if let Some(segment) = reader.segment()
                             && watched != Some(segment.seq())
+                            && let Some(watch) = watch.as_mut()
                         {
                             watch.file(segment.index())?;
                             watched = Some(segment.seq());
                             continue;
                         }
-                        let fds = [watch.fd(), end.as_fd(), stopped.as_fd()];
+                        let fds = [
+                            watch.as_ref().map(shards_vmm::platform::FileWatch::fd),
+                            Some(end.as_fd()),
+                            Some(stopped.as_fd()),
+                        ];
                         if !ready_now(&fds) {
                             sender.flush()?;
                             place.keep(id, dir, sender.delivered(), false, cached);
                         }
-                        // Woken as the driver asks, for what it holds back.
-                        let ready = wait_ready(&fds, sender.driver.due())?;
+                        // Woken as the driver asks, for what it holds back; without a watch,
+                        // at least every RETRY.
+                        let within = match (sender.driver.due(), &watch) {
+                            (due, Some(_)) => due,
+                            (Some(due), None) => Some(due.min(super::RETRY)),
+                            (None, None) => Some(super::RETRY),
+                        };
+                        let ready = wait_ready(&fds, within)?;
                         if ready[1] {
                             return Ok(Shipped::Ended);
                         }
                         if ready[2] {
                             return Ok(Shipped::Stopped);
                         }
-                        watch.clear();
+                        if let Some(watch) = &watch {
+                            watch.clear();
+                        }
                     }
                 })();
                 self.forget_waiter(id, number);

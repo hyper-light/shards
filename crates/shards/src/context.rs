@@ -2311,11 +2311,11 @@ fn own_named<'a>(refs: &[&'a str]) -> Option<&'a str> {
     }
 }
 
-/// Whether this home's daemon serves now.
+/// Whether this home's daemon serves now: its request slots (D185).
 fn daemon_serves(home: &Path) -> bool {
     #[cfg(unix)]
     {
-        std::os::unix::net::UnixStream::connect(home.join(shards_ipc::SOCKET)).is_ok()
+        shards_ipc::slots::served(home)
     }
     #[cfg(not(unix))]
     {
@@ -2324,11 +2324,12 @@ fn daemon_serves(home: &Path) -> bool {
     }
 }
 
-/// Where this home's daemon serves its own CLI.
+/// Where this home's daemon is reached from outside shards' own CLI: its Engine API's
+/// socket (D170), which Docker's clients and SDKs take as their endpoint.
 fn own_endpoint(home: &Path) -> String {
     #[cfg(unix)]
     {
-        format!("unix://{}", home.join(shards_ipc::SOCKET).display())
+        format!("unix://{}", home.join(crate::daemon::ENGINE_SOCKET).display())
     }
     #[cfg(not(unix))]
     {

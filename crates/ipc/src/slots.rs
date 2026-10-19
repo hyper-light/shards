@@ -24,10 +24,11 @@
 use std::ffi::CString;
 use std::fs::File;
 use std::io::{self, Read, Write};
-use std::os::fd::AsRawFd;
+use std::os::fd::{AsFd, AsRawFd, BorrowedFd};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use crate::MAX_PAYLOAD;
 
@@ -94,13 +95,22 @@ fn frame(kind: u8, payload: &[u8]) -> io::Result<Vec<u8>> {
 }
 
 /// Reads one message from `from`: `None` where its writers ended between messages.
-pub fn read_frame(mut from: &File) -> io::Result<Option<Frame>> {
+pub fn read_frame(from: &File) -> io::Result<Option<Frame>> {
+    frame_from(&mut Reader(from))
+}
+
+/// [`read_frame`], of what `from` reads.
+fn frame_from(from: &mut impl Read) -> io::Result<Option<Frame>> {
     let mut header = [0u8; HEADER];
-    let got = read_some(&mut from, &mut header)?;
+    let got = loop {
+        match from.read(&mut header) {
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+            got => break got?,
+        }
+    };
     if got == 0 {
         return Ok(None);
     }
-    let mut from = Reader(from);
     from.read_exact(header.get_mut(got..).unwrap_or_default())?;
     let [kind, l0, l1, l2, l3] = header;
     let len = u32::from_be_bytes([l0, l1, l2, l3]) as usize;
@@ -135,6 +145,39 @@ fn nonblocking(file: &File) -> bool {
     // SAFETY: fcntl(2) reading the flags of a descriptor `file` holds open.
     let flags = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_GETFL) };
     flags >= 0 && flags & libc::O_NONBLOCK != 0
+}
+
+/// What reads a slot's `say` until a deadline, and no longer once `ended` is readable: a
+/// request's reader, which neither a client that stops writing nor its daemon's end of its
+/// clients waits on for ever. Its errors: `TimedOut` past the deadline, `ConnectionAborted`
+/// once ended.
+struct Within<'a> {
+    file: &'a File,
+    ended: Option<BorrowedFd<'a>>,
+    deadline: Option<Instant>,
+}
+
+impl Read for Within<'_> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let mut fds = vec![self.file.as_fd()];
+        fds.extend(self.ended);
+        let left = self.deadline.map(|d| d.saturating_duration_since(Instant::now()));
+        let ready = crate::await_any_within(&fds, left)?;
+        // What the client wrote goes first, where both have come.
+        if !ready.first().copied().unwrap_or(false) {
+            return Err(if ready.get(1).copied().unwrap_or(false) {
+                io::Error::new(io::ErrorKind::ConnectionAborted, "its daemon ended its clients")
+            } else {
+                io::Error::new(io::ErrorKind::TimedOut, "no whole request in time")
+            });
+        }
+        loop {
+            match (&mut &*self.file).read(buf) {
+                Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+                got => return got,
+            }
+        }
+    }
 }
 
 /// What reads a slot's FIFO as [`read_some`] does, for `read_exact`, `read_to_end` and
@@ -210,12 +253,35 @@ fn list(streams: bool) -> usize {
     usize::from(streams)
 }
 
+/// Makes `dir`'s two lists, `free` and `free-streams`: each one's writer, and a reader of
+/// its own, which never waits.
+fn lists(dir: &Path) -> io::Result<([File; 2], [File; 2])> {
+    let made = [FREE, FREE_STREAMS].map(|name| -> io::Result<(File, File)> {
+        let at = dir.join(name);
+        make_fifo(&at)?;
+        let back = open_now(&at, false)?;
+        let free = blocking(open_now(&at, true)?)?;
+        Ok((free, back))
+    });
+    let [plain, with] = made;
+    let ((free_plain, back_plain), (free_with, back_with)) = (plain?, with?);
+    Ok(([free_plain, free_with], [back_plain, back_with]))
+}
+
 /// Ends `home`'s offers at once: its lists' names go, so that a client looking for a slot
 /// hears there is no daemon, and asks the next. What clients took stays theirs.
 pub fn unoffer(home: &Path) {
     for name in [FREE, FREE_STREAMS] {
         let _ = std::fs::remove_file(home.join(DIR).join(name));
     }
+}
+
+/// Whether a daemon offers `home`'s slots: its list `free` has a reader, the daemon's own,
+/// which it holds for as long as it serves ([`Requests`]); a closing daemon has taken the
+/// list's name already ([`unoffer`]). A client waiting on the list reads it too, until the
+/// daemon it waits on is gone, when its read ends.
+pub fn served(home: &Path) -> bool {
+    open_now(&home.join(DIR).join(FREE), true).is_ok()
 }
 
 impl Requests {
@@ -238,21 +304,32 @@ impl Requests {
             }
             Err(e) => return Err(e),
         }
-        let lists = [FREE, FREE_STREAMS].map(|name| -> io::Result<(File, File)> {
-            let at = dir.join(name);
-            make_fifo(&at)?;
-            let back = open_now(&at, false)?;
-            let free = blocking(open_now(&at, true)?)?;
-            Ok((free, back))
-        });
-        let [plain, with] = lists;
-        let ((free_plain, back_plain), (free_with, back_with)) = (plain?, with?);
+        let (free, back) = lists(&dir)?;
         Ok(Requests {
             dir,
-            free: [free_plain, free_with],
-            back: [back_plain, back_with],
+            free,
+            back,
             next: 0,
         })
+    }
+
+    /// Its lists made again where someone removed them ([`listed`](Self::listed)): new
+    /// FIFOs under the same names, the directory too where it went, the next slot's
+    /// number kept, so that no slot is named as one before it was. What was offered on the
+    /// old lists is the caller's to remove; a client waiting on one hears it has ended.
+    pub fn renew(&mut self) -> io::Result<()> {
+        match std::fs::DirBuilder::new().mode(0o700).create(&self.dir) {
+            Err(e) if e.kind() != io::ErrorKind::AlreadyExists => return Err(e),
+            _ => {}
+        }
+        for name in [FREE, FREE_STREAMS] {
+            match std::fs::remove_file(self.dir.join(name)) {
+                Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(e),
+                _ => {}
+            }
+        }
+        (self.free, self.back) = lists(&self.dir)?;
+        Ok(())
     }
 
     /// A new slot, with `streams` or without: its FIFOs made and its ends held, offered to
@@ -336,6 +413,15 @@ impl Requests {
         }
     }
 
+    /// Whether both lists' names are still there, FIFOs: someone may remove them while the
+    /// daemon serves, as they may any file of the home, and then no client finds a slot.
+    pub fn listed(&self) -> bool {
+        use std::os::unix::fs::FileTypeExt as _;
+        [FREE, FREE_STREAMS]
+            .iter()
+            .all(|name| std::fs::symlink_metadata(self.dir.join(name)).is_ok_and(|m| m.file_type().is_fifo()))
+    }
+
     /// Removes slot `n`'s names: a client may no longer open them, and those it opened stay
     /// its own.
     pub fn remove(&self, n: u64) {
@@ -390,6 +476,19 @@ pub struct Opened {
     session: Session,
 }
 
+/// What reading the rest of a client's request came to ([`Opened::request_within`]).
+#[derive(Debug)]
+pub enum Requested {
+    /// All of it.
+    Asked(Asked),
+    /// The client ended before it was whole.
+    Gone,
+    /// Not whole by its deadline: the session, its client to let go of.
+    Late(Session),
+    /// Its daemon ended its clients first: the session, for the daemon to answer.
+    Ended(Session),
+}
+
 /// A client's whole request: the slot's session, what each descriptor the request stands
 /// for is ([`fds`]), in order, and the request.
 #[derive(Debug)]
@@ -420,7 +519,6 @@ impl Slot {
     /// reader: then the client's end ends the session's reads, and a client that ends
     /// before its request is whole leaves [`Opened::request`] none.
     pub fn wait(self) -> io::Result<Waited> {
-        use std::os::fd::AsFd as _;
         let Slot {
             n,
             say,
@@ -485,35 +583,57 @@ impl Opened {
     /// The rest of the client's request: `None` where the client ended before it was
     /// whole.
     pub fn request(self) -> io::Result<Option<Asked>> {
+        Ok(match self.request_within(None, None)? {
+            Requested::Asked(asked) => Some(asked),
+            Requested::Gone | Requested::Late(_) | Requested::Ended(_) => None,
+        })
+    }
+
+    /// The rest of the client's request, whole within `timeout` of now where one is given,
+    /// and waited for no longer once `ended` is readable (its daemon ending its clients).
+    pub fn request_within(
+        self,
+        timeout: Option<Duration>,
+        ended: Option<BorrowedFd<'_>>,
+    ) -> io::Result<Requested> {
         let session = self.session;
-        let named = (|| -> io::Result<Option<(Vec<u8>, Frame)>> {
-            let mut count = [0u8; 1];
-            Reader(&session.say).read_exact(&mut count)?;
-            let [count] = count;
-            if usize::from(count) > fds::MAX {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "a request of too many descriptors",
-                ));
-            }
-            let mut named = vec![0u8; usize::from(count)];
-            Reader(&session.say).read_exact(&mut named)?;
-            if named.iter().any(|&f| f > fds::NULL) {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "a descriptor of no stream",
-                ));
-            }
-            Ok(read_frame(&session.say)?.map(|request| (named, request)))
-        })();
+        let named = {
+            let mut from = Within {
+                file: &session.say,
+                ended,
+                deadline: timeout.and_then(|t| Instant::now().checked_add(t)),
+            };
+            (|| -> io::Result<Option<(Vec<u8>, Frame)>> {
+                let mut count = [0u8; 1];
+                from.read_exact(&mut count)?;
+                let [count] = count;
+                if usize::from(count) > fds::MAX {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "a request of too many descriptors",
+                    ));
+                }
+                let mut named = vec![0u8; usize::from(count)];
+                from.read_exact(&mut named)?;
+                if named.iter().any(|&f| f > fds::NULL) {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "a descriptor of no stream",
+                    ));
+                }
+                Ok(frame_from(&mut from)?.map(|request| (named, request)))
+            })()
+        };
         match named {
-            Ok(Some((fds, request))) => Ok(Some(Asked {
+            Ok(Some((fds, request))) => Ok(Requested::Asked(Asked {
                 session,
                 fds,
                 request,
             })),
-            Ok(None) => Ok(None),
-            Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => Ok(None),
+            Ok(None) => Ok(Requested::Gone),
+            Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => Ok(Requested::Gone),
+            Err(e) if e.kind() == io::ErrorKind::TimedOut => Ok(Requested::Late(session)),
+            Err(e) if e.kind() == io::ErrorKind::ConnectionAborted => Ok(Requested::Ended(session)),
             Err(e) => Err(e),
         }
     }
@@ -676,6 +796,19 @@ impl Client {
         read_frame(&self.answer)
     }
 
+    /// [`recv`](Self::recv), waiting no longer than `timeout` for the daemon's message to
+    /// begin, or its end: an error of kind `TimedOut` where neither has come.
+    pub fn recv_within(&self, timeout: Duration) -> io::Result<Option<Frame>> {
+        let ready = crate::await_any_within(&[self.answer.as_fd()], Some(timeout))?;
+        if !ready.first().copied().unwrap_or(false) {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "the daemon did not answer in time",
+            ));
+        }
+        read_frame(&self.answer)
+    }
+
     /// What sends on this client's `say` beside it, from another thread: its signals' and
     /// resizes' sender.
     pub fn sender(&self) -> io::Result<Sender> {
@@ -784,6 +917,71 @@ mod tests {
             assert!(matches!(waiting.join().unwrap(), Taken::NoDaemon));
         });
         assert!(matches!(take(&home, 0).unwrap(), Taken::NoDaemon));
+    }
+
+    /// A home's slots are served while its daemon holds its lists, and not once it has
+    /// unoffered them or gone; its lists are listed until someone removes one.
+    #[test]
+    fn served_is_whether_a_daemon_holds_the_lists() {
+        let home = home("slot-served");
+        assert!(!served(&home), "no lists, yet served");
+        let requests = Requests::open(&home).unwrap();
+        assert!(served(&home));
+        assert!(requests.listed());
+        std::fs::remove_file(home.join(DIR).join(FREE_STREAMS)).unwrap();
+        assert!(!requests.listed(), "a list removed, yet listed");
+        unoffer(&home);
+        assert!(!served(&home), "unoffered, yet served");
+        let requests = Requests::open(&home).unwrap();
+        assert!(served(&home) && requests.listed());
+        // Removed, the directory and all, and made again: listed and served, its next
+        // slot named after the last made before.
+        let mut requests = requests;
+        let before = requests.make(false).unwrap().number();
+        std::fs::remove_dir_all(home.join(DIR)).unwrap();
+        assert!(!requests.listed() && !served(&home));
+        requests.renew().unwrap();
+        assert!(requests.listed() && served(&home));
+        assert_eq!(requests.make(false).unwrap().number(), before + 1);
+        // Gone without unoffering, as a killed daemon goes: its list has no reader.
+        drop(requests);
+        assert!(!served(&home), "its daemon gone, yet served");
+    }
+
+    /// A client waits no longer for its answer than it asks, and takes one that comes in
+    /// time.
+    #[test]
+    fn an_answer_is_waited_for_no_longer_than_asked() {
+        let home = home("slot-within");
+        let mut requests = Requests::open(&home).unwrap();
+        let slot = requests.make(false).unwrap();
+        requests.offer(slot.number(), false).unwrap();
+        std::thread::scope(|s| {
+            let served = s.spawn(move || {
+                let Asked { session, .. } = asked(slot);
+                std::thread::sleep(std::time::Duration::from_millis(300));
+                session.send(12, b"late").unwrap();
+                // Held until the client has heard it.
+                assert_eq!(session.recv().unwrap(), None);
+            });
+            let Taken::Slot(client) = take(&home, 0).unwrap() else {
+                panic!("no slot");
+            };
+            client.ask(7, b"ps", &[]).unwrap();
+            let t0 = std::time::Instant::now();
+            let early = client.recv_within(std::time::Duration::from_millis(50));
+            assert_eq!(early.map_err(|e| e.kind()), Err(io::ErrorKind::TimedOut));
+            assert!(t0.elapsed() >= std::time::Duration::from_millis(50));
+            assert_eq!(
+                client.recv_within(std::time::Duration::from_secs(10)).unwrap(),
+                Some(Frame {
+                    kind: 12,
+                    payload: b"late".to_vec()
+                })
+            );
+            drop(client);
+            served.join().unwrap();
+        });
     }
 
     /// The streams a client opens are the session's, each way, each ending as its writer

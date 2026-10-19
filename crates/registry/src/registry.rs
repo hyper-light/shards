@@ -91,7 +91,7 @@ pub fn host(reference: &Reference) -> &str {
 }
 
 impl Registry {
-    /// A registry to push `reference`'s repository to, as containerd's pusher asks:
+    /// A registry to push `reference`'s repository to, as containerd's pusher asks (D20):
     /// pull and push access to it, and pull access to `mounts`, repositories of the same
     /// registry its blobs may be mounted from.
     pub fn for_push(
@@ -402,7 +402,8 @@ impl Registry {
         }
     }
 
-    /// Sends a request as containerd's `doWithRetries` does, up to 5 attempts:
+    /// Sends a request as containerd's `doWithRetries` does, up to 5 attempts (D20; these
+    /// numbers are containerd's, open in docs/audit/2026-10-16_docker-framing.md):
     /// - a timeout or a cut connection is tried again after 50 ms;
     /// - a 401 is answered (auth.rs), then the request is sent again;
     /// - a HEAD of a manifest refused with 405 becomes a GET;
@@ -411,7 +412,7 @@ impl Registry {
     ///   leaves out (Docker Hub's token server answered a pull's request with one, which
     ///   the next passed: dev 3c2e3cd3's CI).
     ///
-    /// A 429 is tried again, as containerd tries it, but after a wait ([`throttle`]), and
+    /// A 429 is tried again, as containerd tries it (D131), but after a wait ([`throttle`]), and
     /// never for a quota spent: Docker Hub counts pulls over hours (§3.2). Where the
     /// registry names a window of a minute or less that its allowance is counted over, it
     /// is waited out within that window (D131). Returns the response and the method that
@@ -596,7 +597,7 @@ impl Registry {
         }
     }
 
-    /// Resolves `reference` to a descriptor, as containerd's `Resolve` does:
+    /// Resolves `reference` to a descriptor, as containerd's `Resolve` does (D20):
     /// - a HEAD of `manifests/<tag or digest>` with its `Accept` list, then of
     ///   `blobs/<digest>` for a digest, and only after a 404;
     /// - the digest comes from the reference, or else from `Docker-Content-Digest` with a
@@ -716,7 +717,7 @@ impl Registry {
             .ok_or_else(|| Error::new(format!("{digest}: gone from the store")))
     }
 
-    /// The referrers of `digest` as containerd's FetchReferrers asks for them: the
+    /// The referrers of `digest` as containerd's FetchReferrers asks for them (D116): the
     /// Referrers API (`referrers/<digest>`, with the artifact types and filters as its
     /// query), then the Referrers Tag Schema (`manifests/sha256-<hex>`) where the API is
     /// not found; an empty index where neither is. The index's bytes, at most a
@@ -879,7 +880,7 @@ impl Registry {
     }
 
     /// A blob by digest into the store, verified. An interrupted download resumes with
-    /// `Range: bytes=<offset>-`, as containerd's resumes do. A server that ignores the
+    /// `Range: bytes=<offset>-`, as containerd's resumes do (D20). A server that ignores the
     /// range sends the whole blob, and the download starts over. `progress` is told the
     /// bytes as they arrive.
     pub fn fetch_blob(
@@ -989,7 +990,7 @@ fn is_tag(name: &str) -> bool {
         && bytes.iter().all(|c| word(c) || matches!(c, b'.' | b'-'))
 }
 
-/// `<media type>, */*`, as containerd asks for content by descriptor.
+/// `<media type>, */*`, as containerd asks for content by descriptor (D20).
 fn accept(media_type: &str) -> String {
     if media_type.is_empty() {
         "*/*".to_string()
@@ -1026,7 +1027,7 @@ fn read_capped(response: &mut Response, max: u64, what: &dyn fmt::Display) -> Re
 /// asks for it (core/remotes/docker/fetcher.go, open).
 pub(crate) const ENCODINGS: &str = "zstd;q=1.0, gzip;q=0.8, deflate;q=0.5";
 
-/// A response body as its `Content-Encoding` says to decode it, as containerd's fetcher
+/// A response body as its `Content-Encoding` says to decode it, (D20), as containerd's fetcher
 /// decodes one: each coding undone, last first; zstd, gzip (every member, as Go's reader
 /// reads them), deflate (raw, RFC 1951, as Go's flate reads it), or none.
 ///
@@ -1126,7 +1127,7 @@ impl Refusal {
 }
 
 /// A response to a `method` request that is not a success, as [`Refusal::error`] words
-/// it, from as much of its body as containerd reads.
+/// it, from as much of its body as containerd reads (D20).
 fn unexpected(method: &str, mut response: Response) -> Error {
     let refusal = Refusal::of(&response);
     let mut body = Vec::new();
@@ -1134,7 +1135,7 @@ fn unexpected(method: &str, mut response: Response) -> Error {
     refusal.error(method, &body)
 }
 
-/// A fetch's refusal, as containerd words it (`withErrorCheck`): a 404 is no content at
+/// A fetch's refusal, as containerd words it (D20; `withErrorCheck`): a 404 is no content at
 /// `url`, the URL asked.
 pub(crate) fn not_fetched(response: Response, url: &Url) -> Error {
     if response.status == 404 {
@@ -1664,7 +1665,7 @@ mod tests {
         assert_eq!(out, b"as it is");
     }
 
-    /// Blobs are asked for compressed for their transfer and decoded as containerd's
+    /// Blobs are asked for compressed for their transfer and decoded (D20), as containerd's
     /// fetcher decodes them; a resumed download asks for the blob as it is.
     #[test]
     fn transfer_encodings_are_decoded() {
@@ -2042,7 +2043,7 @@ mod tests {
         }
     }
 
-    /// A login as dockerd's: `/v2/` asked, its bearer challenge answered with the password
+    /// A login as dockerd's (D21): `/v2/` asked, its bearer challenge answered with the password
     /// grant asking offline access (then a GET with Basic, the token server having no
     /// OAuth2), and the refresh token given back as the identity token; a token server's
     /// refusal unauthorized, in its own words; Basic taken and refused; a registry that

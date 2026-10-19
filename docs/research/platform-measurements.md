@@ -9363,3 +9363,143 @@ revision before comparing a changed API/implementation.
   while keeping Go's bytes is possible (a parse resynchronized at each part's start, the
   window's shifts and blocks replayed) and not built. Only the ratios hold on every host;
   x86_64 and Linux are unmeasured.
+
+### M257. A user's inotify instances, and what a daemon's watches took of them (D26, D27)
+
+- **Question.** The daemon waits on files (`FileWatch`, inotify(7) on Linux): its listener
+  on the home and on `images`, each `logs -f` on its log, each log driver and each process
+  watcher on theirs. Each watch made an inotify instance of its own, and a user may hold
+  few (`fs.inotify.max_user_instances`, 128 by default), shared with every program they
+  run. On a Fedora desktop the daemon's E2E tests failed where they passed on CI's runners.
+  How many instances does a desktop leave, and how many did a daemon take?
+- **Method.** 2026-10-18, an Intel Core i9-14900HX (32 CPUs), Fedora 44 KDE Plasma Desktop
+  Edition, Linux 6.19.10-300.fc44.x86_64, its user's Wayland session with a few apps open.
+  `docs/research/measurements/inotify-instances/count.sh` lists the instances the user's
+  processes hold, by descriptor (`anon_inode:inotify` in /proc/PID/fd). `followers.sh
+  SHARDS 100` starts a daemon in a home of its own, one run, and 100 followers of its log,
+  and 10 s later counts the daemon's instances and the followers still following: run with
+  9bbd7c55's build, an instance a watch, then with the change, one a process, each built
+  `--profile test-release`.
+- **Results.**
+  - The limits: 128 instances, 510,332 watches. Before shards ran, the session's programs
+    held 101 by descriptor: ChatGPT's app 14 in two processes, plasmashell 8, Dolphin 7 in
+    three, Slack 6, Chrome 5, xdg-desktop-portal 5, kded6 4, 16 processes of KDE's crash
+    reporter (drkonqi) one each, and 30 more processes 36 among them, one to three each.
+
+  | build | following, of 100 | the daemon's instances | the user's, before / after | the others' error |
+  |---|---|---|---|---|
+  | 9bbd7c55, an instance a watch | 16 | 19 | 101 / 120 | "its log: Too many open files (os error 24)", 84 |
+  | the change, one a process | 100 | 1 | 101 / 102 | none |
+
+  - The old daemon's 20th instance was refused where the kernel counted 128 and this count
+    120: 8 were held where /proc does not show them to the user, or came and went between
+    the counts. So the session left a daemon 19, not the 27 counted, and leaves fewer as
+    its programs come: 16 of them went to followers, and the 17th follower failed.
+  - The kernel refuses an instance past the limit with `EMFILE`, the error of a process out
+    of descriptors (inotify_init(2)); the daemon had raised its own descriptor limit.
+- **Consequence.** Every watch of a process is a watch of one inotify instance, read by one
+  thread, which counts each event into the eventfd that is each watch's descriptor (vmm
+  `platform::notify`); a daemon takes one instance whatever it watches, and each watch is
+  one of the user's half a million. Where that instance cannot be made, each watch has its
+  own as before, and where no watch can be made, a follower or a log driver reads again
+  every 250 ms (`RETRY`) rather than fail, as the listener did already.
+  `more_watches_than_a_user_has_instances_each_see_their_own`: 300 watches in one
+  process, each woken by its own directory's change and by no other's.
+
+### M258. What KVM gives a vCPU, asked on each kind of core of a hybrid host (D14)
+
+- **Question.** A snapshot's vCPU is restored only to a vCPU given the same CPUID (D14):
+  each VM process asks KVM for the CPUID it supports (`KVM_GET_SUPPORTED_CPUID`) as its VM
+  is made, and gives each vCPU that table with its own APIC id (`cpuid::for_vcpu`). On an
+  x86_64 Fedora host, restores of templates failed now and then, "this CPU is not the one
+  the snapshot was taken on (its CPUID differs)", with nothing of the host changed between.
+  Does KVM's answer depend on the core that asks?
+- **Method.** `docs/research/measurements/kvm-cpuid/supported.c`, built with the host's cc
+  and run pinned to one CPU at a time (`taskset -c N`), each answer diffed with CPU 0's,
+  2026-10-18: an Intel Core i9-14900HX, 8 performance cores with two threads each (CPUs 0
+  to 15, `/sys/devices/cpu_core/cpus`) and 16 efficiency cores (16 to 31, `cpu_atom`),
+  Fedora 44, Linux 6.19.10-300.fc44.x86_64; CPUs 0, 1 and 15, then 16, 17 and 31. Each
+  answer is 56 leaves.
+- **Results.**
+
+  | leaf (sub-leaf), register | performance core | efficiency core |
+  |---|---|---|
+  | 1, EBX 31:24; 0xB and 0x1F, EDX | the CPU's APIC id | the CPU's APIC id |
+  | 4 (0), L1 data | 48 KiB, 12 ways (EBX `02c0003f`) | 32 KiB, 8 ways (`01c0003f`) |
+  | 4 (1), L1 instruction | 32 KiB, 64 sets (ECX `3f`) | 64 KiB, 128 sets (`7f`) |
+  | 4 (2), L2 | 2 MiB, 2,048 sets (ECX `7ff`) | 4 MiB, 4,096 sets (`fff`) |
+  | 0x80000006, ECX | 2,048 KiB L2 (`08007040`) | 4,096 KiB (`10008040`) |
+
+  - Between CPUs of one kind only the APIC ids differ, which `for_vcpu` replaces with
+    each vCPU's own. Between a performance and an efficiency core the caches' leaves differ
+    too: KVM copies them from the core its ioctl runs on (arch/x86/kvm/cpuid.c,
+    `do_host_cpuid` executes `cpuid` on the calling CPU). Every other leaf, the feature
+    leaves among them (1's ECX and EDX, 7, 0xD, 0x80000001), is the same on all six.
+  - So a template made by a VM process that asked on one kind of core was refused by every
+    VM process that asked on the other: on this host, 16 of whose 32 CPUs are each kind,
+    wherever the scheduler happened to start it.
+  - How often (`docs/research/measurements/kvm-cpuid/rate.sh 200`, each build in a home of
+    its own, its processes where the scheduler put them, load average 4.4 to 4.8):
+    9bbd7c55 refused 156 of 200 restores, each such run booting cold, 50.0 ms a run on
+    average from its client's start to its exit; the change refused none, 18.5 ms a run.
+- **Consequence.** A restore compares every leaf but those that describe the caches: 4 and
+  0x80000006, and AMD's 0x80000005 and 0x8000001D, which its manual defines as cache and TLB
+  descriptors alone (AMD64 Architecture Programmer's Manual, volume 3, appendix E). None
+  gates an instruction, and a vCPU's thread runs on either kind of core under the one table
+  it was given, made or restored. A feature that differs still refuses the restore
+  (`a_hybrid_hosts_cores_are_one_cpu_but_their_features_are_not`). AMD's hybrid parts are
+  unmeasured.
+
+### M259. What a run pays once its client reaches the daemon through slots alone (D185)
+
+- **Question.** Slice 4 removed the daemon's socket: every client of shards' own asks
+  through a request slot (D185), and the daemon offers slots alone. Does a run pay for it,
+  against the build before it (9bbd7c55: runs through slots already, the socket still
+  bound and served beside them)?
+- **Method.** `docs/research/measurements/build-ab/ab.py`, 9bbd7c55 against the change, each
+  built `--release` and given a home of its own: `shards run --rm --pull never alpine:3.22
+  true` alternating, n = 500 a side a round after four warm-up runs each, every client,
+  daemon and VM process on the host's performance cores (0 to 15, `taskset`). A template's
+  generation names its home's files, so no one template can serve both homes: each round
+  removes both arms' templates and makes them again, and the share of a run from its VM's
+  request to its command's exit (`command`) differs from round to round by the templates'
+  restore costs (M29). What the change can touch is the rest (`outside`: the client, its
+  slot, the daemon, the VM's start). Six rounds on the host as it was (load average 4.8 to
+  26: the user's desktop and other work on it), four of them with the old arm's templates
+  made first and two with the new arm's; then six beside 16 busy loops on the same cores,
+  two of them with the new arm's first; last, four quiet rounds with both arms' daemons
+  given one VM binary.
+  2026-10-18, an Intel Core i9-14900HX, Fedora 44, Linux 6.19.10-300.fc44.x86_64. On the
+  host's efficiency cores 9bbd7c55 restores no template made on the other kind (M258): its
+  runs booted cold there, 438 refusals in a quarter of an hour of a first attempt, which
+  is why every process was pinned.
+- **Results** (µs; new − old, the paired median with its bootstrap 95% interval).
+
+  | round | outside | command | wall p50 old / new |
+  |---|---|---|---|
+  | quiet 1 | −5 [−31, +23] | −46 [−74, 0] | 4,688 / 4,623 |
+  | quiet 2 | −3 [−28, +16] | −162 [−179, −127] | 4,781 / 4,613 |
+  | quiet 3 | −7 [−27, +20] | −113 [−145, −74] | 4,969 / 4,836 |
+  | quiet 4 | +15 [−5, +31] | −92 [−125, −51] | 4,534 / 4,441 |
+  | quiet, new's template first | +26 [+4, +51] | −101 [−134, −76] | 4,554 / 4,469 |
+  | quiet, new's template first | −31 [−49, −12] | +28 [−6, +93] | 4,575 / 4,611 |
+  | loaded 1 | +8 [−141, +221] | −2,885 [−3,413, −2,179] | 33,636 / 30,572 |
+  | loaded 2 | +22 [−331, +280] | −839 [−1,317, −322] | 31,886 / 30,878 |
+  | loaded 3 | −135 [−437, +63] | +1,023 [+546, +1,404] | 28,890 / 29,896 |
+  | loaded 4 | +23 [−141, +257] | −225 [−553, +141] | 30,892 / 30,888 |
+  | loaded, new's template first | −178 [−414, +49] | +327 [+8, +708] | 29,420 / 29,505 |
+  | loaded, new's template first | +331 [+148, +552] | −1,942 [−2,528, −1,412] | 30,885 / 29,883 |
+
+  - What the change touches costs a run nothing: `outside` within ±31 µs of nothing in
+    every quiet round, of a p50 of 2.31 to 2.55 ms, either way; loaded, from −178 to
+    +331 µs of a p50 near 11 ms, either way.
+  - `command` went the new arm's way in five of six quiet rounds, by 46 to 162 µs, and
+    either way loaded, by up to 2.9 ms. Not the arms' code: with both arms' daemons given
+    one VM binary (`SHARDS_VM_BINARY`), 9bbd7c55's in two rounds and the change's in two,
+    it went −142 [−188, −116], −11 [−37, +41], +45 [−5, +91] and +74 [+36, +124], its sign
+    the round's, as each round's two templates restore at costs of their own (M29); the
+    guest is one init digest and one kernel in both.
+- **An idle daemon** (`docs/research/measurements/daemon-idle/threads.sh`, 30 s with no
+  run, on the efficiency cores): 9bbd7c55 10 threads and no context switch; the change 11
+  threads (the file watches' reader, M257) and 30 switches, every one the slot maker's,
+  which looked at its lists once a second.

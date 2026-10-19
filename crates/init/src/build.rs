@@ -1,4 +1,4 @@
-//! A builder guest: runs a build's `RUN` steps as BuildKit runs them
+//! A builder guest: runs a build's `RUN` steps as BuildKit runs them (D34)
 //! (docs/research/buildkit-run.md), over layers the host sends and the steps leave, and
 //! sends back what each step changed (docs/design/architecture.md D34,
 //! shards_abi::build).
@@ -44,7 +44,7 @@ fn err(what: impl std::fmt::Display) -> io::Error {
     io::Error::other(what.to_string())
 }
 
-/// What fails before a step's process starts as BuildKit's executor fails, not its
+/// What fails before a step's process starts as BuildKit's executor fails (D34), not its
 /// runtime: a mount's source its tree lacks. Said as the step's failure, where what fails
 /// as runc's container init fails is said in the step's output, which ends with 1
 /// (measured against BuildKit, 2026-10-02).
@@ -221,7 +221,7 @@ fn serve() -> io::Result<()> {
     swap_on()?;
     loopback_up()?;
     // A builder with a network: eth0 as the host named it, which a step with the default
-    // network shares, as BuildKit's steps share its host's.
+    // network shares, as BuildKit's steps share its host's (D34).
     if let Some((addr, prefix, gateway)) = crate::net::from_cmdline() {
         crate::net::configure(addr, prefix, gateway)?;
     }
@@ -429,7 +429,7 @@ impl Builder {
         };
         // Its agents' sockets go with it, whether or not it ran.
         self.ssh.clear();
-        // The proxy's CA goes before the stubs, as BuildKit's deferred cleanups run.
+        // The proxy's CA goes before the stubs, as BuildKit's deferred cleanups run (D110).
         if let Some(i) = &injected {
             i.clean(root);
         }
@@ -550,7 +550,7 @@ impl Builder {
         let r = Root::open(root)?;
         *stubs = self::stubs(&r, step);
         *injected = inject_ca(&r, &step.proxy_ca)?;
-        // A working directory not there yet, made as BuildKit's executor makes it, in the
+        // A working directory not there yet, made as BuildKit's executor makes it (D34), in the
         // step's root: each new directory 0755, owned by the step's user (§1).
         if !step.cwd.is_empty() && r.open_at(&step.cwd, libc::O_PATH).is_err() {
             let at = r.resolve(&step.cwd, true).map_err(|e| {
@@ -587,7 +587,7 @@ impl Builder {
         let (err_r, err_w) = pipe()?;
         // The child's setup failure, if any, as text: closed on its exec.
         let (fail_r, fail_w) = pipe()?;
-        // The builder's own network for the default, as BuildKit's host network; loopback
+        // The builder's own network for the default, as BuildKit's host network (D34); loopback
         // alone, in a namespace of the step's own, for none.
         let net = match step.network {
             Network::None => libc::CLONE_NEWNET,
@@ -934,7 +934,7 @@ fn stubs(r: &Root, step: &Step) -> Vec<Vec<u8>> {
         .into_iter()
         .chain(step.mounts.iter().map(|(t, _)| t.as_slice()));
     for t in targets {
-        // The stubs of the path the target resolves to, as BuildKit's cleaner finds them.
+        // The stubs of the path the target resolves to, as BuildKit's cleaner finds them (D110).
         let Ok(t) = r.resolve(t, false) else {
             continue;
         };
@@ -1219,7 +1219,7 @@ fn setup(step: &Step, root: &Path, files: &Path, sources: &[Option<PathBuf>], wo
                 let Some(Some(tree)) = sources.get(i) else {
                     return Err(err("a tree mount without its tree"));
                 };
-                // Its source in its own tree, as BuildKit resolves it there; one missing is
+                // Its source in its own tree, as BuildKit resolves it there (D34); one missing is
                 // BuildKit's executor's failure, before any process starts.
                 let src = Root::open(tree)?
                     .open_at(subpath, libc::O_PATH)
@@ -1343,7 +1343,7 @@ fn setup(step: &Step, root: &Path, files: &Path, sources: &[Option<PathBuf>], wo
             return Err(os_err("setting a ulimit"));
         }
     }
-    // The working directory, as runc's init makes it, in the step's root, now `/`.
+    // The working directory, as runc's init makes it (D34), in the step's root, now `/`.
     let cwd: &[u8] = if step.cwd.is_empty() { b"/" } else { &step.cwd };
     Root::open(Path::new("/"))?.mkdir_all(cwd, 0o755, None)?;
     confine(step)?;
@@ -1494,7 +1494,7 @@ fn confine(step: &Step) -> io::Result<()> {
     Ok(())
 }
 
-/// Groups, gid and uid, then the capabilities BuildKit gives a step, as runc applies them:
+/// Groups, gid and uid, then the capabilities BuildKit gives a step, as runc applies them (D34):
 /// the bounding set first, the others kept across the change of user.
 fn identity(step: &Step) -> io::Result<()> {
     let last = defaults::last_cap();
@@ -1512,7 +1512,7 @@ fn identity(step: &Step) -> io::Result<()> {
     // SAFETY: prctl(2) with constant arguments.
     unsafe { libc::prctl(libc::PR_SET_KEEPCAPS, 0, 0, 0, 0) };
     // For any user but root, execve then leaves none but the bounding set, there being no
-    // file or ambient capabilities (capabilities(7)): as BuildKit's steps have it (CapPrm
+    // file or ambient capabilities (capabilities(7)): as BuildKit's steps have it (D34) (CapPrm
     // and CapEff 0 for USER 1000:1000 and for nobody, Docker Desktop's BuildKit,
     // 2026-10-02).
     if !defaults::set(last, keep) {
@@ -1522,7 +1522,7 @@ fn identity(step: &Step) -> io::Result<()> {
 }
 
 /// Becomes the command, its stdin /dev/null, its stdout and stderr the pipes; looks it up
-/// in the step's `PATH` as runc does when it holds no slash.
+/// in the step's `PATH` as runc does when it holds no slash (D34).
 fn exec(step: &Step, out: &OwnedFd, err_fd: &OwnedFd) -> io::Result<Never> {
     let null = File::open("/dev/null")?;
     // SAFETY: dup2(2) onto the standard descriptors.
@@ -1642,7 +1642,7 @@ fn find_executable(file: &[u8]) -> Result<(), String> {
 /// unless the builder's memory is `plugging` (D133), where every step has one under the
 /// build's cgroup, whose `memory.high` holds it. The controllers its files need are enabled
 /// on the way down. A swap file absent, as where the kernel has no swap, is skipped for
-/// "max" or "0", as runc skips it.
+/// "max" or "0", as runc skips it (D64).
 fn step_cgroup(files: &[(Vec<u8>, Vec<u8>)], plugging: bool) -> io::Result<Option<(OwnedFd, PathBuf)>> {
     use std::os::unix::fs::OpenOptionsExt;
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -1828,7 +1828,7 @@ mod tests {
         assert_eq!(std::fs::read_dir(at("/certs")).unwrap().count(), 1);
     }
 
-    /// No CA, no bundle: nothing to do. A bundle past 10 MiB fails the step, as BuildKit's.
+    /// No CA, no bundle: nothing to do. A bundle past 10 MiB fails the step, as BuildKit's (D110).
     #[test]
     fn a_root_without_a_bundle_or_with_a_huge_one() {
         let s = scratch("noca");
@@ -1844,7 +1844,7 @@ mod tests {
     }
 
     /// A bundle of 10 MiB to the byte is read, and the CA goes in; past that, it no longer
-    /// reads, so the cleanup leaves it, as BuildKit's readCertBundle leaves it.
+    /// reads, so the cleanup leaves it, as BuildKit's readCertBundle leaves it (D110).
     #[test]
     fn a_bundle_of_ten_mib_takes_the_ca() {
         let s = scratch("most");

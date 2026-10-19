@@ -5,7 +5,7 @@
 //! Progress is BuildKit's plain display.
 //!
 //! Every Dockerfile instruction runs: file operations (COPY, ADD of the context, of
-//! archives and of URLs, WORKDIR) here, on in-memory snapshots as BuildKit's backend makes
+//! archives and of URLs, WORKDIR) here, on in-memory snapshots as BuildKit's backend makes (D33)
 //! them (`shards_build`), Git repositories by shards' own client (`git`), and RUN steps in
 //! a builder microVM (`builder`).
 
@@ -96,7 +96,7 @@ pub fn build(args: impl Iterator<Item = OsString>) -> ExitCode {
         }
     };
     let _ = write!(std::io::stdout(), "{}", parsed.notices);
-    // stdin, read once for every platform's build, as buildx reads it (LoadInputs).
+    // stdin, read once for every platform's build, as buildx reads it (D91; LoadInputs).
     let context_stdin = parsed.args.first().is_some_and(|a| a == "-");
     if context_stdin && parsed.string("file") == "-" {
         return failed("invalid argument: can't use stdin for both build context and dockerfile");
@@ -226,7 +226,7 @@ struct Progress {
     /// The step printed last and not ended, 0 for none (the printer's `current`).
     current: std::cell::Cell<usize>,
     /// What follows the recap: the warnings, then the excerpt of the Dockerfile where the
-    /// failing step comes from, as buildx prints them before its error.
+    /// failing step comes from, as buildx prints them before its error (D108).
     epilogue: RefCell<String>,
 }
 
@@ -857,7 +857,7 @@ struct Bases<'a> {
     /// that step again, under its own name.
     steps: RefCell<BTreeMap<String, usize>>,
     /// SOURCE_DATE_EPOCH's time from each source, once a build: each platform's plan asks
-    /// again, as BuildKit's frontend asks at once for every platform, one step in buildx's
+    /// again, as BuildKit's frontend asks at once for every platform (D77), one step in buildx's
     /// display.
     epochs: RefCell<Epochs>,
     /// The build's policies, asked of each base before its metadata is resolved (D101),
@@ -1544,7 +1544,7 @@ impl Bases<'_> {
                     .map_err(|_| fail(format!("{name}: a layer's size is negative")))?,
                 diff_id: diff_ids.get(i).cloned().unwrap_or_default(),
                 annotations: annotations.get(i).cloned().unwrap_or_default(),
-                // When the store first held the layer, as BuildKit's records time a pull.
+                // When the store first held the layer, as BuildKit's records time a pull (D114).
                 created: stored_at(&self.store.blob_path(&digest)),
                 description: format!("pulled from {reference}").into_bytes(),
             });
@@ -1560,7 +1560,7 @@ impl Bases<'_> {
             layers,
             id: manifest.config.digest.clone(),
         };
-        // A named context's image is its source by the reference alone, as BuildKit's
+        // A named context's image is its source by the reference alone, (D33), as BuildKit's
         // NamedContext names it (no digest).
         if !name.contains('@') {
             self.resolved
@@ -1577,7 +1577,7 @@ impl Bases<'_> {
 impl Bases<'_> {
     /// What a policy reads of the base `name` for `wanted` (D101): the digest its name
     /// resolves to and its config, found where [`Bases::fetch`] finds the image, without
-    /// its layers, as BuildKit resolves an image's metadata.
+    /// its layers, as BuildKit resolves an image's metadata (D33).
     fn metadata(&self, name: &str, wanted: &Platform) -> Result<(String, Vec<u8>), String> {
         let reference = Reference::parse(name).map_err(|e| e.to_string())?;
         let config_of = |record: &Descriptor| -> Result<Vec<u8>, String> {
@@ -1926,7 +1926,7 @@ impl<'a> PolicyStep<'a> {
         w
     }
 
-    /// Close(nil): the step done, as buildx ends it for every error but a denial.
+    /// Close(nil): the step done, as buildx ends it for every error but a denial (D101).
     fn close(&self) {
         if self.closed.replace(true) {
             return;
@@ -2008,8 +2008,8 @@ impl policy::Log for PolicyStep<'_> {
     }
 }
 
-/// A read refused as BuildKit's gRPC refuses a message too large (ResourceExhausted): a
-/// build that then fails exits 102, as buildx's main maps that code; one that goes on to
+/// A read refused as BuildKit's gRPC refuses a message too large (D111; ResourceExhausted): a
+/// build that then fails exits 102, as buildx's main maps that code (D111); one that goes on to
 /// succeed (its policy's `load_json` undefined) exits 0.
 static EXHAUSTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
@@ -2152,7 +2152,7 @@ fn ours(p: &Platform) -> bool {
 }
 
 /// Whether a builder runs `p`'s programs itself: its own platform's, and on an x86_64 host
-/// linux/386's, which its guest kernel runs (`IA32_EMULATION`), as BuildKit finds a host
+/// linux/386's, which its guest kernel runs (`IA32_EMULATION`), (D179), as BuildKit finds a host
 /// kernel runs them (util/archutil).
 fn native(p: &Platform) -> bool {
     ours(p) || (p.os == b"linux" && p.architecture == b"386" && host_platform().architecture == b"amd64")
@@ -2272,7 +2272,7 @@ fn show(b: &[u8]) -> String {
     String::from_utf8_lossy(b).into_owned()
 }
 
-/// The platforms `--platform` names, as buildx reads them (util/platformutil Parse): each
+/// The platforms `--platform` names, as buildx reads them (D74; util/platformutil Parse): each
 /// value a comma-separated list, each normalized, and the same platform once, as
 /// `Dedupe` keeps it, where BuildKit would build and export it twice. `local` is the
 /// platform this host's microVMs run, where buildx takes its client's own, which on a
@@ -2334,7 +2334,7 @@ fn default_spec() -> Platform {
     host
 }
 
-/// `KEY=VALUE` arguments as buildx reads them: a `KEY` alone takes its value from the
+/// `KEY=VALUE` arguments as buildx reads them (D64): a `KEY` alone takes its value from the
 /// environment, and is left out when unset (`listToMap`); a `KEY=VALUE` label alone is
 /// `KEY` with an empty value.
 pub(crate) fn build_args(list: &[String], from_env: bool) -> BTreeMap<Vec<u8>, Vec<u8>> {
@@ -2511,7 +2511,7 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
     // What the build is given, in the order buildx's runBuild meets it: its secrets, read
     // now and once, each as large as a step carries; then its entitlements; its ulimits
     // were read with its flags (shards_cmdline::buildflags).
-    // Its outputs as buildx reads them, first (toOptions); checked once its agents are.
+    // Its outputs as buildx reads them, first (D85; toOptions); checked once its agents are.
     let familiar = |n: &str| {
         Reference::parse_normalized(n)
             .map(|r| r.familiar())
@@ -2519,7 +2519,7 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
     };
     // The policies, read as toOptions reads them before the attestations (D101).
     let policy_configs = buildflags::parse_policies(parsed.many("policy"))?;
-    // The attestations asked for, read as buildx reads them, before the contexts.
+    // The attestations asked for, read as buildx reads them, before the contexts (D72).
     let (provenance_asked, sbom_asked) = provenance_of(parsed)?;
     let named = buildflags::parse_contexts(parsed.many("build-context"), &familiar)?;
     let exports = buildflags::parse_exports(parsed.many("output"))?;
@@ -2568,6 +2568,7 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
         "" | "default" => shards_agentfile::llb::NetMode::Sandbox,
         other => {
             return Err(format!(
+                // buildx's own words (D64).
                 "network mode {} not supported by buildkit - you can define a custom network for your builder using the network driver-opt in buildx create",
                 shards_cmdline::go::quote(other)
             ));
@@ -2580,7 +2581,7 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
             .ok_or_else(|| shards_net::bridge::NO_SUBNET.to_string())
     };
     let add_hosts = buildflags::add_hosts(parsed.many("add-host"), &gateway)?;
-    // --resource, after the legacy flags as buildx gathers them.
+    // --resource, after the legacy flags as buildx gathers them (D64).
     let mut resources: Vec<String> = [
         ("memory", "memory"),
         ("memory-swap", "memory-swap"),
@@ -2596,7 +2597,7 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
     .collect();
     resources.extend(parsed.many("resource").iter().cloned());
     let resource_attrs = buildflags::resource_attrs(&resources)?;
-    // The platforms, read as buildx reads them after the resource limits.
+    // The platforms, read as buildx reads them after the resource limits (D74).
     let target_platforms = target_platforms(&platforms(parsed), &host_platform())?;
     let target_platform = target_platforms.first().cloned().unwrap_or_else(host_platform);
     let mut agents: Agents = buildflags::ssh_agents(
@@ -2668,6 +2669,7 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
         .is_some_and(|v| shards_cmdline::go::parse_bool(&show(v)).unwrap_or(false))
     {
         return Err(
+            // BuildKit's own words, which buildx prints (D92).
             "failed to build: failed to solve: support for \"BUILDKIT_DISABLE_FILEOP\" build-arg was removed in BuildKit 0.11"
                 .into(),
         );
@@ -2683,7 +2685,7 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
         None => false,
     };
     let context_arg = parsed.args.first().cloned().unwrap_or_default();
-    // A remote context, as buildx sends one (the frontend's `context`): a Git URL, an HTTP(S)
+    // A remote context, as buildx sends one (D91; the frontend's `context`): a Git URL, an HTTP(S)
     // URL, or stdin's archive, which buildx uploads under a URL of its own and shards names
     // by its digest; stdin's Dockerfile has an empty context.
     let stdin = STDIN.get();
@@ -2754,7 +2756,7 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
     let _lease = store.lease().map_err(|e| e.to_string())?;
     let limits = crate::pull::limits()?;
     let mut exec = exec::Exec::new(&store, &limits);
-    // stdin's Dockerfile has an empty directory as its context, as buildx gives it one.
+    // stdin's Dockerfile has an empty directory as its context, as buildx gives it one (D91).
     let context = if empty_context {
         exec.stage()?
     } else if remote.is_some() {
@@ -2808,7 +2810,7 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
         }
     }
 
-    // `-f` an HTTP(S) URL: fetched as buildx fetches it (createTempDockerfileFromURL), at
+    // `-f` an HTTP(S) URL: fetched as buildx fetches it (D91; createTempDockerfileFromURL), at
     // most 2 MiB, and read as the Dockerfile.
     let file_flag = parsed.string("file");
     if file_flag.starts_with("http://") || file_flag.starts_with("https://") {
@@ -2850,7 +2852,7 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
     .map_err(|e| format!("failed to build: {e}"))?;
     // A source a policy refused: a denial's step failed with the build's error (any other
     // error's done), the failed steps recapped as the display ends, then the policy's
-    // messages, as buildx's main says them.
+    // messages, as buildx's main says them (D108).
     let refused = |r: policy::Refused, at: &str| -> String {
         let e = format!(
             "failed to solve: {}",
@@ -3174,7 +3176,7 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
         Ok(p) => p,
         Err(e) => {
             // A base a policy refused: a denial's step failed with the build's error (any
-            // other error's done), and the policy's messages said first, as buildx's main
+            // other error's done), and the policy's messages said first, (D101), as buildx's main
             // says them. A policy's own error is the build's as the policy said it.
             let refusal = bases.refused.borrow_mut().take();
             let message = match &refusal {
@@ -3370,7 +3372,7 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
             todo.extend(op.inputs.iter().map(|inp| inp.op));
         }
     }
-    // Every HTTP source is fetched from the start, as BuildKit's solver fetches them; a
+    // Every HTTP source is fetched from the start, as BuildKit's solver fetches them (D33); a
     // step waits only for the one it reads.
     let sources: Vec<(usize, String, Option<String>)> = def
         .ops
@@ -3441,7 +3443,7 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
     // request that is no material came from.
     let proxy_cap = policies.as_ref().is_some_and(|p| p.proxy);
     // Each request through the proxy, checked by the build's policies as an HTTP source,
-    // as BuildKit's handler asks them, on the build's thread: refused where they refuse
+    // as BuildKit's handler asks them (D110), on the build's thread: refused where they refuse
     // it, their denial never left for a later error. Only an image's pin converts a
     // source, so a request is allowed or refused.
     let check_request = |_method: &str, url: &str| -> bool {
@@ -3559,7 +3561,7 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
             return Err(fetch_failed(op, failure));
         }
         // A step the build cache holds is not run again: its outputs are the layers it
-        // made, as BuildKit's solver takes a vertex its cache key finds.
+        // made, as BuildKit's solver takes a vertex its cache key finds (D114).
         let step = matches!(
             op.kind,
             OpKind::Exec { .. } | OpKind::File { .. } | OpKind::Merge | OpKind::Skills { .. }
@@ -3571,7 +3573,7 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
         let apart = |k: String| if proxied { cache::proxied_key(&k) } else { k };
         // Its keys (D114): from each input's own key, which a build that changed nothing
         // the step reads finds at once; and, asked only where that one finds nothing, from
-        // what it reads of each input, as BuildKit's solver asks a content checksum. Its
+        // what it reads of each input, as BuildKit's solver asks a content checksum (D114). Its
         // result is known by the second, where it reads any input.
         let input_keys: Option<Vec<&str>> = op
             .inputs
@@ -3596,7 +3598,7 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
             }
         };
         // A step marked IgnoreCache (--no-cache-filter's stages) is run, and its result
-        // kept, as BuildKit's solver does: the cache is not asked for it.
+        // kept, as BuildKit's solver does (D114): the cache is not asked for it.
         let mut hit: Option<(String, Vec<u8>)> = None;
         if !no_cache
             && !meta.ignore_cache
@@ -4173,7 +4175,7 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
         )
         .map_err(|e| show(&e))?;
         // Its history as the image it would have been has it, each entry's time its own,
-        // as moby's squash keeps them.
+        // as moby's squash keeps them (D177).
         exported.history = Image::from_json(&unsquashed).map_err(|e| show(&e))?.history;
         let resolved = bases.resolved.borrow();
         let base = from.as_ref().and_then(|(at, name)| {
@@ -4576,7 +4578,7 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
     }
     // Named and kept where an output loads it (the image exporter, `--load`'s docker one,
     // or none asked for, docker build's own); an output to a file or directory alone
-    // leaves no image, as BuildKit's exporters leave none.
+    // leaves no image, as BuildKit's exporters leave none (D85).
     let kept = outputs.is_empty()
         || outputs.iter().any(|o| {
             matches!(o.dest, buildflags::Dest::Store)
@@ -4788,7 +4790,7 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
             .tag(&dangling, &desc, &id, &contents)
             .map_err(|e| e.to_string())?;
     }
-    // An image output that pushes: each of its names, as BuildKit's exporter pushes
+    // An image output that pushes: each of its names, (D85), as BuildKit's exporter pushes
     // them (util/push): its layers, then its manifest, then the index that names it.
     if pushes {
         let pushed = match &attested {
@@ -4913,7 +4915,7 @@ fn squash(
     });
     // Each of the base's layers keeps the entry the image pairs with it, the first that
     // many entries with a layer, and every later one is an empty layer's: where the base's
-    // history names its layers, those are its own entries, as moby's squash keeps them by
+    // history names its layers, those are its own entries, (D177), as moby's squash keeps them by
     // index; where it names fewer, BuildKit's export paired later entries with them
     // (export::normalize), and moby's would leave the merge's layer without one.
     let mut left = base.map_or(0, |(r, _)| r.layers.len());
@@ -5089,7 +5091,7 @@ fn annotations_of(
     let (mut manifest, mut descriptor) = (BTreeMap::new(), BTreeMap::new());
     for a in all {
         if let Some(p) = &a.platform {
-            // The platform's ID, as BuildKit finds a ref by it (FindRef): normalized, in full.
+            // The platform's ID, as BuildKit finds a ref by it (D77; FindRef): normalized, in full.
             let wanted = platform::normalize(&platform::parse(p.as_bytes(), &host).map_err(|e| show(&e))?);
             if platform::format_all(&wanted) != platform::format_all(target) {
                 return Err(format!("invalid annotation: no platform {p} found in source"));
@@ -5108,7 +5110,7 @@ fn annotations_of(
     Ok((manifest, descriptor))
 }
 
-/// The image's names as BuildKit's exporter has them: each tag in full.
+/// The image's names as BuildKit's exporter has them (D85): each tag in full.
 fn canonical_names(tags: &[String]) -> Result<Vec<String>, String> {
     tags.iter()
         .map(|t| {
@@ -5119,7 +5121,7 @@ fn canonical_names(tags: &[String]) -> Result<Vec<String>, String> {
         .collect()
 }
 
-/// Writes `--metadata-file`, whole or not at all, as buildx's atomic writer does.
+/// Writes `--metadata-file`, whole or not at all, as buildx's atomic writer does (D63).
 fn write_metadata(parsed: &Parsed, text: &str) -> Result<(), String> {
     let path = parsed.string("metadata-file");
     if path.is_empty() {
@@ -5163,7 +5165,7 @@ fn oci_types_attr(v: &str) -> Result<bool, String> {
     })
 }
 
-/// An image output's compression and whether it rewrites its layers' times, as BuildKit
+/// An image output's compression and whether it rewrites its layers' times, (D85), as BuildKit
 /// reads them (`ParseAttributes`; ImageCommitOpts.Load's parseBool, in its words).
 fn output_compression(o: &buildflags::Output) -> Result<(compress::Compression, bool), String> {
     let solve = |e: String| format!("failed to build: failed to solve: {e}");
@@ -5288,7 +5290,7 @@ fn write_fs_output(
         return Ok(());
     }
     let v = progress.borrow_mut().start("exporting to client tarball");
-    // Its attestations among its files, as BuildKit's tar exporter writes them.
+    // Its attestations among its files, as BuildKit's tar exporter writes them (D94).
     let attested;
     let fs = match provenance {
         Some((capture, run)) => {
@@ -5503,7 +5505,7 @@ fn named_contexts(named: &BTreeMap<String, String>) -> Result<NamedContexts, Str
                     format!("oci-layout reference {} could not be resolved: {e}", go_quote(v))
                 })?,
             };
-            // The layout's store, named for the frontend as buildx names it (a session
+            // The layout's store, named for the frontend as buildx names it (D33; a session
             // store's ID): here the order it is given in.
             let store = format!("layout{}", out.layouts.len());
             let mut spec = format!("oci-layout://{store}");
@@ -5561,7 +5563,7 @@ fn go_quote(s: &str) -> String {
     shards_cmdline::go::quote(s)
 }
 
-/// An `oci-layout://` reference as buildx's ocilayout.Parse reads it: the directory, a
+/// An `oci-layout://` reference as buildx's ocilayout.Parse reads it (D33): the directory, a
 /// tag and a digest, `latest` the tag when neither is given.
 pub(crate) struct LayoutRef {
     pub(crate) path: String,
@@ -6055,7 +6057,7 @@ enum Provenance {
     },
 }
 
-/// `--attest`, `--provenance` and `--sbom`, as buildx reads them (toBuildOptions,
+/// `--attest`, `--provenance` and `--sbom`, as buildx reads them (D72; toBuildOptions,
 /// ParseAttests, ToMap) and BuildKit takes the provenance's attributes
 /// (NewProvenanceCreator): `mode`, `version`, `builder-id`, `reproducible`,
 /// `inline-only`; and the SBOM's (attestations.Parse, dockerui): its generator, and every
@@ -6070,7 +6072,7 @@ fn provenance_of(parsed: &Parsed) -> Result<(Provenance, Option<sbom::Asked>), S
         }
     }
     let mut map = buildflags::attests_map(&buildflags::parse_attests(&asked)?);
-    // `BUILDKIT_ATTEST_<TYPE>` build arguments, as BuildKit's `attestations.Parse` reads
+    // `BUILDKIT_ATTEST_<TYPE>` build arguments, (D72), as BuildKit's `attestations.Parse` reads
     // them: the type lowercased, the value its attributes (no `type` among them); where a
     // flag asks for the same type, the flag (BuildKit takes whichever its map yields).
     for (k, v) in build_args(parsed.many("build-arg"), true) {
@@ -6304,7 +6306,7 @@ fn call_of(parsed: &Parsed) -> Result<Option<Call>, String> {
     }
 }
 
-/// The build's checks as BuildKit's lint subrequest prints them (frontend/subrequests/lint
+/// The build's checks as BuildKit's lint subrequest prints them (D73; frontend/subrequests/lint
 /// `LintResults.PrintTo`): by line, each its rule, URL, message and lines.
 pub(crate) fn lint_text(warnings: &[shards_agentfile::lint::Warning], file: &str, text: &[u8]) -> String {
     let mut sorted: Vec<&shards_agentfile::lint::Warning> = warnings.iter().collect();

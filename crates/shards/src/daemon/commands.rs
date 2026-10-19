@@ -2540,8 +2540,10 @@ impl<D: crate::containers::Disk> Daemon<D> {
             // Followed as it grows: woken by an append to the segment it is read from, by
             // a segment's coming, by the run's end, or by the client's hanging up, not by
             // a timer (audit A12). Each watch comes before a read, so no append between
-            // them goes unseen.
-            let mut watch = shards_vmm::platform::FileWatch::new(log.dir())?;
+            // them goes unseen. Where no watch can be had (on Linux, its user's inotify
+            // instances spent: PM M257), it reads again every RETRY, as the listener looks,
+            // rather than end the follow.
+            let mut watch = shards_vmm::platform::FileWatch::new(log.dir()).ok();
             let mut watched = None;
             let Some((number, end)) = self.wake_at_end(&id)? else {
                 if show.read(&mut reader, &log)? {
@@ -2558,12 +2560,20 @@ impl<D: crate::containers::Disk> Daemon<D> {
                     }
                     if let Some(segment) = reader.segment()
                         && watched != Some(segment.seq())
+                        && let Some(watch) = watch.as_mut()
                     {
                         watch.file(segment.index())?;
                         watched = Some(segment.seq());
                         continue;
                     }
-                    let ready = wait_readable(&[watch.fd(), end.as_fd(), reply.0.as_fd()])?;
+                    let ready = wait_readable(
+                        &[
+                            watch.as_ref().map(shards_vmm::platform::FileWatch::fd),
+                            Some(end.as_fd()),
+                            Some(reply.0.as_fd()),
+                        ],
+                        watch.is_none().then_some(super::RETRY),
+                    )?;
                     // Once the container has ended, what is left of a line is all of it.
                     if ready[1] {
                         if show.read(&mut reader, &log)? {
@@ -2575,7 +2585,9 @@ impl<D: crate::containers::Disk> Daemon<D> {
                     if ready[2] {
                         return Ok(());
                     }
-                    watch.clear();
+                    if let Some(watch) = &watch {
+                        watch.clear();
+                    }
                 }
             })();
             self.forget_waiter(&id, number);
@@ -3485,15 +3497,23 @@ impl Window {
 }
 
 /// Waits until one of `fds` is readable, or hung up; which are.
-pub(super) fn wait_readable(fds: &[BorrowedFd<'_>; 3]) -> io::Result<[bool; 3]> {
+pub(super) fn wait_readable(
+    fds: &[Option<BorrowedFd<'_>>; 3],
+    timeout: Option<Duration>,
+) -> io::Result<[bool; 3]> {
+    // One not given is no descriptor, which poll(2) passes over.
     let mut polled = fds.map(|fd| libc::pollfd {
-        fd: fd.as_raw_fd(),
+        fd: fd.map_or(-1, |fd| fd.as_raw_fd()),
         events: libc::POLLIN,
         revents: 0,
     });
+    // Rounded up: a wait of 0 ms would return at once, and spin.
+    let ms = timeout.map_or(-1, |t| {
+        libc::c_int::try_from(t.as_micros().div_ceil(1000)).unwrap_or(libc::c_int::MAX)
+    });
     loop {
-        // SAFETY: poll(2) on three pollfds of descriptors the caller holds open.
-        let n = unsafe { libc::poll(polled.as_mut_ptr(), 3, -1) };
+        // SAFETY: poll(2) on three pollfds of descriptors the caller holds open, or none.
+        let n = unsafe { libc::poll(polled.as_mut_ptr(), 3, ms) };
         if n >= 0 {
             break;
         }

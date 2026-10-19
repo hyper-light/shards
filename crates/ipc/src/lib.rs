@@ -291,6 +291,11 @@ pub mod kind {
     /// before `PORTS` and `STARTED`: its membership of that microVM's switch, as text, as
     /// init said it (`shards_abi::run::kind::MEMBER`).
     pub const MEMBER: u8 = 61;
+    /// Daemon → client, a run's, an exec's or an attach's: its request is this daemon's to
+    /// serve, which will not ask it to restart. A client of a slot fills its command's
+    /// stdin from then on: what it wrote to the slot of a daemon that asked it to restart
+    /// would be lost with that slot (D185).
+    pub const HEARD: u8 = 62;
 }
 
 /// A `SAVE` flag: the microVM goes on running once saved, rather than stopping.

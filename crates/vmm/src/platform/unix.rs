@@ -1415,7 +1415,9 @@ fn interrupted_or(e: io::Error) -> io::Result<()> {
 /// readable once a name in it has come or gone, or the file of it that is watched has
 /// been written, and for no other file's writes, for poll(2) to wait on beside others.
 /// kqueue's `EVFILT_VNODE` on macOS (kqueue(2)), inotify on Linux (inotify(7)), each on
-/// the directory and on the file watched.
+/// the directory and on the file watched. On Linux every watch of the process is a watch of
+/// one inotify instance ([`notify`]), its own descriptor an eventfd its events are counted
+/// into: a user may have few instances.
 #[derive(Debug)]
 pub struct FileWatch {
     fd: std::os::fd::OwnedFd,
@@ -1424,6 +1426,12 @@ pub struct FileWatch {
     _dir: File,
     #[cfg(target_os = "macos")]
     file: Option<File>,
+    /// The process's instance's watches of the directory and of the file watched, where it
+    /// has one ([`notify::shared`]); else `fd` is an instance of this watch's own.
+    #[cfg(not(target_os = "macos"))]
+    shared: Option<&'static notify::Shared>,
+    #[cfg(not(target_os = "macos"))]
+    dir: Option<libc::c_int>,
     /// inotify's watch of the file watched.
     #[cfg(not(target_os = "macos"))]
     file: Option<libc::c_int>,
@@ -1453,17 +1461,6 @@ impl FileWatch {
         }
         #[cfg(not(target_os = "macos"))]
         {
-            // SAFETY: inotify_init1(2) with flags.
-            let raw = unsafe { libc::inotify_init1(libc::IN_NONBLOCK | libc::IN_CLOEXEC) };
-            if raw < 0 {
-                return Err(io::Error::last_os_error());
-            }
-            // SAFETY: a descriptor just made, owned by nothing else.
-            let fd = unsafe { std::os::fd::OwnedFd::from_raw_fd(raw) };
-            // The directory itself, through its descriptor's link in /proc (proc(5)),
-            // which inotify follows.
-            let name = std::ffi::CString::new(format!("/proc/self/fd/{}", dir.as_raw_fd()))
-                .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "a path with NUL"))?;
             // Names alone: a write to a file in it is not one, nor seen unless the file
             // is watched (`file`).
             let mask = libc::IN_CREATE
@@ -1473,11 +1470,39 @@ impl FileWatch {
                 | libc::IN_DELETE_SELF
                 | libc::IN_MOVE_SELF
                 | libc::IN_ONLYDIR;
-            // SAFETY: inotify_add_watch(2) with a NUL-terminated path.
-            if unsafe { libc::inotify_add_watch(raw, name.as_ptr(), mask) } < 0 {
+            if let Some(shared) = notify::shared() {
+                // SAFETY: eventfd(2) with flags.
+                let raw = unsafe { libc::eventfd(0, libc::EFD_NONBLOCK | libc::EFD_CLOEXEC) };
+                if raw < 0 {
+                    return Err(io::Error::last_os_error());
+                }
+                // SAFETY: a descriptor just made, owned by nothing else.
+                let fd = unsafe { std::os::fd::OwnedFd::from_raw_fd(raw) };
+                let watched = shared.watch(dir, mask, fd.as_raw_fd())?;
+                return Ok(FileWatch {
+                    fd,
+                    shared: Some(shared),
+                    dir: Some(watched),
+                    file: None,
+                });
+            }
+            // SAFETY: inotify_init1(2) with flags.
+            let raw = unsafe { libc::inotify_init1(libc::IN_NONBLOCK | libc::IN_CLOEXEC) };
+            if raw < 0 {
                 return Err(io::Error::last_os_error());
             }
-            Ok(FileWatch { fd, file: None })
+            // SAFETY: a descriptor just made, owned by nothing else.
+            let fd = unsafe { std::os::fd::OwnedFd::from_raw_fd(raw) };
+            // SAFETY: inotify_add_watch(2) with a NUL-terminated path.
+            if unsafe { libc::inotify_add_watch(raw, notify::proc_path(dir)?.as_ptr(), mask) } < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(FileWatch {
+                fd,
+                shared: None,
+                dir: None,
+                file: None,
+            })
         }
     }
 
@@ -1494,11 +1519,25 @@ impl FileWatch {
         }
         #[cfg(not(target_os = "macos"))]
         {
-            let name = std::ffi::CString::new(format!("/proc/self/fd/{}", file.as_raw_fd()))
-                .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "a path with NUL"))?;
+            if let Some(shared) = self.shared {
+                let watched = shared.watch(file, libc::IN_MODIFY, self.fd.as_raw_fd())?;
+                // The one before let go of, past the new one's coming: a write to the file
+                // watched before wakes it no more, nor does its watch's end (`IN_IGNORED`).
+                if let Some(before) = self.file.replace(watched)
+                    && before != watched
+                {
+                    shared.unwatch(before, self.fd.as_raw_fd());
+                }
+                return Ok(());
+            }
             // SAFETY: inotify_add_watch(2) with a NUL-terminated path.
-            let watched =
-                unsafe { libc::inotify_add_watch(self.fd.as_raw_fd(), name.as_ptr(), libc::IN_MODIFY) };
+            let watched = unsafe {
+                libc::inotify_add_watch(
+                    self.fd.as_raw_fd(),
+                    notify::proc_path(file)?.as_ptr(),
+                    libc::IN_MODIFY,
+                )
+            };
             if watched < 0 {
                 return Err(io::Error::last_os_error());
             }
@@ -1570,10 +1609,163 @@ impl FileWatch {
         }
         #[cfg(not(target_os = "macos"))]
         {
+            // An eventfd's count, or an instance's events: either read until none is left.
             let mut buf = [0u8; 4096];
             // SAFETY: read(2) into a local buffer of its size, from a non-blocking
             // descriptor.
             while unsafe { libc::read(self.fd.as_raw_fd(), buf.as_mut_ptr().cast(), buf.len()) } > 0 {}
+        }
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+impl Drop for FileWatch {
+    fn drop(&mut self) {
+        if let Some(shared) = self.shared {
+            for watched in [self.dir.take(), self.file.take()].into_iter().flatten() {
+                shared.unwatch(watched, self.fd.as_raw_fd());
+            }
+        }
+    }
+}
+
+/// One inotify instance for the whole process (Linux). A user may have few: 128 by
+/// default (`fs.inotify.max_user_instances`), shared with every program the user runs,
+/// of which a KDE Plasma desktop's, a few apps open, held 101 (PM M257); and many watches
+/// (`max_user_watches`, half a million there). With an instance each, a daemon took one
+/// for each directory it watched and each follower of a log, and the followers past the
+/// user's last instance failed. One thread reads the instance and counts each event into
+/// the eventfd of each [`FileWatch`] that watches what it is of.
+#[cfg(not(target_os = "macos"))]
+mod notify {
+    use std::collections::HashMap;
+    use std::fs::File;
+    use std::io;
+    use std::os::fd::{AsRawFd as _, FromRawFd as _, OwnedFd, RawFd};
+    use std::sync::{Mutex, OnceLock, PoisonError};
+
+    #[derive(Debug)]
+    pub struct Shared {
+        fd: OwnedFd,
+        /// The eventfds each watch wakes, by its descriptor: two watches of one file share
+        /// one, and it goes with the last of them.
+        waking: Mutex<HashMap<libc::c_int, Vec<RawFd>>>,
+    }
+
+    static SHARED: OnceLock<Shared> = OnceLock::new();
+    static READER: OnceLock<bool> = OnceLock::new();
+
+    /// The process's instance, its reader started the first time: none where either could
+    /// not be made, and each watch then has an instance of its own, as before. An instance
+    /// the user has none left for is asked again by the next watch: instances free up.
+    pub fn shared() -> Option<&'static Shared> {
+        let shared = match SHARED.get() {
+            Some(shared) => shared,
+            None => {
+                // SAFETY: inotify_init1(2) with flags: its reader's reads wait.
+                let raw = unsafe { libc::inotify_init1(libc::IN_CLOEXEC) };
+                if raw < 0 {
+                    return None;
+                }
+                // SAFETY: a descriptor just made, owned by nothing else.
+                let fd = unsafe { OwnedFd::from_raw_fd(raw) };
+                // Another thread's, where it made one first: this one goes.
+                let _ = SHARED.set(Shared {
+                    fd,
+                    waking: Mutex::new(HashMap::new()),
+                });
+                SHARED.get()?
+            }
+        };
+        let started = *READER.get_or_init(|| {
+            std::thread::Builder::new()
+                .name("inotify".into())
+                .spawn(move || shared.read())
+                .is_ok()
+        });
+        started.then_some(shared)
+    }
+
+    /// `file`'s path through its descriptor's link in /proc (proc(5)), which inotify
+    /// follows: the file itself, wherever it has gone.
+    pub fn proc_path(file: &File) -> io::Result<std::ffi::CString> {
+        std::ffi::CString::new(format!("/proc/self/fd/{}", file.as_raw_fd()))
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "a path with NUL"))
+    }
+
+    impl Shared {
+        /// Watches `file` for `mask`, waking `wakes`: the watch's descriptor. Made under
+        /// the lock the reader takes to count an event, so that none of the watch's comes
+        /// before it is counted. A watch of a file watched already is that watch, its mask
+        /// joined (`IN_MASK_ADD`).
+        pub fn watch(&self, file: &File, mask: u32, wakes: RawFd) -> io::Result<libc::c_int> {
+            let path = proc_path(file)?;
+            let mut waking = self.waking.lock().unwrap_or_else(PoisonError::into_inner);
+            // SAFETY: inotify_add_watch(2) with a NUL-terminated path.
+            let watched = unsafe {
+                libc::inotify_add_watch(self.fd.as_raw_fd(), path.as_ptr(), mask | libc::IN_MASK_ADD)
+            };
+            if watched < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            waking.entry(watched).or_default().push(wakes);
+            Ok(watched)
+        }
+
+        /// `wakes` woken by `watched` no more; the watch removed with the last it wakes.
+        pub fn unwatch(&self, watched: libc::c_int, wakes: RawFd) {
+            let mut waking = self.waking.lock().unwrap_or_else(PoisonError::into_inner);
+            let Some(fds) = waking.get_mut(&watched) else {
+                return;
+            };
+            fds.retain(|fd| *fd != wakes);
+            if fds.is_empty() {
+                waking.remove(&watched);
+                // SAFETY: inotify_rm_watch(2) of a watch of this instance's; one whose
+                // file has gone went with it, and its removal fails harmlessly.
+                unsafe { libc::inotify_rm_watch(self.fd.as_raw_fd(), watched) };
+            }
+        }
+
+        /// The reader: each event counted into the eventfds its watch wakes; a watch that
+        /// has ended (`IN_IGNORED`) let go of, its file gone. Its reads wait, and end only
+        /// with the process.
+        fn read(&self) {
+            // Events are whole in a read: a header of 16 bytes, then a name of its length.
+            let mut buf = vec![0u8; 64 * 1024];
+            loop {
+                // SAFETY: read(2) into a buffer of its length.
+                let n = unsafe { libc::read(self.fd.as_raw_fd(), buf.as_mut_ptr().cast(), buf.len()) };
+                let Ok(n) = usize::try_from(n) else {
+                    if io::Error::last_os_error().kind() == io::ErrorKind::Interrupted {
+                        continue;
+                    }
+                    return;
+                };
+                let mut waking = self.waking.lock().unwrap_or_else(PoisonError::into_inner);
+                let mut at = 0;
+                while let Some(header) = buf.get(at..at + 16).filter(|_| at + 16 <= n) {
+                    let word = |i: usize| {
+                        header
+                            .get(i..i + 4)
+                            .and_then(|b| <[u8; 4]>::try_from(b).ok())
+                            .unwrap_or_default()
+                    };
+                    let watched = i32::from_ne_bytes(word(0));
+                    let mask = u32::from_ne_bytes(word(4));
+                    let len = u32::from_ne_bytes(word(12)) as usize;
+                    for fd in waking.get(&watched).into_iter().flatten() {
+                        let one = 1u64.to_ne_bytes();
+                        // SAFETY: write(2) of 8 bytes to an eventfd, which never waits
+                        // (EFD_NONBLOCK): a count past its most is one already pending.
+                        unsafe { libc::write(*fd, one.as_ptr().cast(), one.len()) };
+                    }
+                    if mask & libc::IN_IGNORED != 0 {
+                        waking.remove(&watched);
+                    }
+                    at = at.saturating_add(16).saturating_add(len);
+                }
+            }
         }
     }
 }

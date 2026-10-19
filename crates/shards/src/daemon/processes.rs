@@ -225,9 +225,10 @@ impl<D: Disk> Daemon<D> {
             return 0;
         }
         // Followed as it grows: woken by an append to its last segment or a segment's
-        // coming, by the run's end, or by the client's hanging up, as `logs -f` is.
+        // coming, by the run's end, or by the client's hanging up, as `logs -f` is; where
+        // no watch can be had, it reads again every RETRY, as `logs -f` does.
         let followed = (|| -> io::Result<()> {
-            let mut watch = shards_vmm::platform::FileWatch::new(&std::fs::File::open(&dir)?)?;
+            let mut watch = shards_vmm::platform::FileWatch::new(&std::fs::File::open(&dir)?).ok();
             // The segment watched, by its number.
             let mut watched: Option<u64> = None;
             let Some((number, end)) = self.wake_at_end(&id)? else {
@@ -238,6 +239,7 @@ impl<D: Disk> Daemon<D> {
                 loop {
                     if let Some((n, path)) = segments(&dir).last()
                         && watched != Some(*n)
+                        && let Some(watch) = watch.as_mut()
                     {
                         watch.file(&std::fs::File::open(path)?)?;
                         watched = Some(*n);
@@ -249,7 +251,14 @@ impl<D: Disk> Daemon<D> {
                             reply.out(&row(&r, w));
                         }
                     }
-                    let ready = wait_readable(&[watch.fd(), end.as_fd(), reply.0.as_fd()])?;
+                    let ready = wait_readable(
+                        &[
+                            watch.as_ref().map(shards_vmm::platform::FileWatch::fd),
+                            Some(end.as_fd()),
+                            Some(reply.0.as_fd()),
+                        ],
+                        watch.is_none().then_some(super::RETRY),
+                    )?;
                     if ready[1] {
                         for l in &read(&dir, at).0 {
                             if let Some(r) = shown(l) {
@@ -261,7 +270,9 @@ impl<D: Disk> Daemon<D> {
                     if ready[2] {
                         return Ok(());
                     }
-                    watch.clear();
+                    if let Some(watch) = &watch {
+                        watch.clear();
+                    }
                 }
             })();
             self.forget_waiter(&id, number);

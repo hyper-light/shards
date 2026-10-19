@@ -2,7 +2,7 @@
 //! root filesystem as EROFS, by ChainID (docs/design/architecture.md D18).
 //!
 //! Blobs keep the registry's bytes, as containerd's content store and the OCI image layout
-//! keep them, so a later push or save can reproduce their digests. Nothing enters the
+//! (image-spec v1.1) keep them, so a later push or save can reproduce their digests. Nothing enters the
 //! store unverified: a blob is committed only when its size and digest match its
 //! descriptor, and a layer only counts once its decompressed bytes match its DiffID
 //! (docs/research/registry-pull.md §5, rows 4 and 6).
@@ -257,7 +257,7 @@ struct Origin<'a> {
 
 /// What `refs/` records for a reference: the manifest it names, by the descriptor it was
 /// chosen by, so that finding the image again checks what pulling it checked; and what
-/// the reference resolved to, an index or the manifest itself, as Docker reports it.
+/// the reference resolved to, an index or the manifest itself, as Docker reports it (D18).
 /// Records written before `resolved` was kept read as resolving to their manifest.
 #[derive(serde::Serialize, serde::Deserialize)]
 struct Tag {
@@ -299,7 +299,7 @@ pub struct Named {
     /// The image it was made from, where a record says.
     pub parent: Option<Digest>,
     /// When each reference's record was written: when the name came to name this image,
-    /// as containerd's `CreatedAt` for it (a name given another image is a new record).
+    /// as containerd's `CreatedAt` for it (D18) (a name given another image is a new record).
     pub tagged: BTreeMap<String, std::time::SystemTime>,
 }
 
@@ -338,7 +338,7 @@ fn unix_now() -> i64 {
         .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX))
 }
 
-/// An image the store's references name: what they resolved to (its ID, as dockerd's
+/// An image the store's references name: what they resolved to (D18: its ID, as dockerd's
 /// containerd store gives it), those references, when it was made (its config's
 /// `created`), its manifests, and the bytes of it here: its content, and its root
 /// filesystems.
@@ -376,7 +376,7 @@ pub struct ImageManifest {
     pub unpacked: u64,
 }
 
-/// A platform as containerd's platforms.Format writes it.
+/// A platform as containerd's platforms.Format writes it (D74).
 fn platform_string(p: &oci::Platform) -> String {
     let mut s = format!("{}/{}", p.os, p.architecture);
     if let Some(v) = p.variant.as_deref().filter(|v| !v.is_empty()) {
@@ -957,7 +957,7 @@ impl Drop for BlobWriter {
 
 impl Store {
     /// Opens the store at `root`, making its directories inside. The caller makes `root`
-    /// private to its user, as containerd keeps its root 0700: blobs can come from private
+    /// private to its user, as containerd keeps its root 0700 (D18): blobs can come from private
     /// registries.
     pub fn open(root: &Path) -> Result<Store, Error> {
         if !root.is_dir() {
@@ -1724,7 +1724,7 @@ impl Store {
     }
 
     /// Image `id`, whose manifest for our platform `ours` describes, with no references
-    /// yet. Its content is counted as containerd and dockerd count an image's: each
+    /// yet. Its content is counted as containerd and dockerd count an image's (D18): each
     /// manifest's own, the blobs its walk reaches that are here, each as often as it is
     /// named, and not the index (dockerd 29.3.1, measured: a layer two platforms share
     /// counts in each, a layer listed twice counts twice).
@@ -2012,7 +2012,7 @@ impl Store {
             let Ok(tag) = serde_json::from_slice::<Tag>(&bytes) else {
                 continue;
             };
-            // What it resolved to, an index, is kept as containerd keeps it, with what it
+            // What it resolved to, an index, is kept as containerd keeps it (D18), with what it
             // names that is here: the image's platforms (`images --tree`), each unpacked as
             // a run of it unpacked it (D179), and the attestations a pull kept.
             if let Some(resolved) = tag.resolved.as_deref().and_then(|d| Digest::parse(d).ok()) {
@@ -2651,7 +2651,7 @@ impl Write for Sink<'_> {
     }
 }
 
-/// What a blob's first bytes say it is compressed with, as containerd tells.
+/// What a blob's first bytes say it is compressed with, as containerd tells (D18).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Compression {
     None,
@@ -3043,7 +3043,7 @@ mod tests {
 
     /// A record whose descriptor nothing can be held by, its size not its blob's,
     /// breaks neither the listing nor a collection: the listing shows its manifest as not
-    /// here, as dockerd lists one it cannot read, and the rest as ever; a collection runs,
+    /// here, as dockerd lists one it cannot read (D18), and the rest as ever; a collection runs,
     /// and keeps what the other image needs.
     #[test]
     fn a_record_nothing_can_be_held_by_breaks_nothing_else() {
@@ -3130,7 +3130,7 @@ mod tests {
     }
 
     /// A name moved to another image leaves the image it named dangling, when that was its
-    /// last name, as dockerd leaves it (`<none>`, still found by its ID); named again, it
+    /// last name, as dockerd leaves it (D18; `<none>`, still found by its ID); named again, it
     /// is dangling no more; named again what it names, nothing is rewritten.
     #[test]
     fn an_image_that_loses_its_last_name_stays_dangling() {
@@ -4000,7 +4000,7 @@ mod tests {
         let (old_blobs, old_rootfs) = tagged(&store, "one:v1", &[&c]);
         let (first_blobs, first_rootfs) = tagged(&store, "one:v1", &[&a, &b]);
         let (second_blobs, second_rootfs) = tagged(&store, "two:v1", &[&a, &c]);
-        // What `one` named first, its name moved, stays dangling, as dockerd keeps it,
+        // What `one` named first, its name moved, stays dangling, as dockerd keeps it (D18),
         // until removed (rmi, prune): then it is the collection's.
         let dangling: Vec<String> = store
             .references()
@@ -4207,7 +4207,7 @@ mod tests {
     }
 
     /// With nothing to leave free, the default, a build and a download never look at the
-    /// room their filesystem has, however little it says it has: as containerd's
+    /// room their filesystem has, however little it says it has: (D18), as containerd's
     /// unpacking and BuildKit's builds, they write until done or until the disk fails the
     /// write.
     #[test]

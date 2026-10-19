@@ -270,6 +270,20 @@ mod tests {
         ready == 1
     }
 
+    /// Whether `fd` becomes readable within a second: a watch's wake on Linux is counted by
+    /// its instance's reader, a moment after the change (FileWatch).
+    #[cfg(unix)]
+    fn woken(fd: std::os::fd::BorrowedFd<'_>) -> bool {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+        while !readable(fd) {
+            if std::time::Instant::now() >= deadline {
+                return false;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        true
+    }
+
     /// A poller names what has something to read, or has ended, by its token; waits out
     /// its timeout when nothing is; names one again while anything is left to read
     /// (level); forgets what it no longer watches; and gives what one wait cannot hold
@@ -428,6 +442,38 @@ mod tests {
         assert_eq!(ended.wait().unwrap().code(), Some(3));
     }
 
+    /// More watches than a user may have inotify instances (128 by default, shared with the
+    /// rest of the session) each see their own directory change and no other's: the
+    /// process's one instance serves them all (PM M257).
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn more_watches_than_a_user_has_instances_each_see_their_own() {
+        let root = shards_testdir::TempDir::new("platform-watches").unwrap();
+        let dirs: Vec<std::path::PathBuf> = (0..300)
+            .map(|i| {
+                let d = root.join(i.to_string());
+                std::fs::create_dir(&d).unwrap();
+                d
+            })
+            .collect();
+        let watches: Vec<FileWatch> = dirs
+            .iter()
+            .map(|d| FileWatch::new(&open_dir(d).unwrap()).unwrap())
+            .collect();
+        std::fs::write(dirs[7].join("x"), b"").unwrap();
+        assert!(woken(watches[7].fd()), "watch 7, of the directory changed");
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        for (i, w) in watches.iter().enumerate().filter(|(i, _)| *i != 7) {
+            assert!(!readable(w.fd()), "watch {i} woke for another's change");
+        }
+        for d in &dirs {
+            std::fs::write(d.join("y"), b"").unwrap();
+        }
+        for (i, w) in watches.iter().enumerate() {
+            assert!(woken(w.fd()), "watch {i}");
+        }
+    }
+
     /// A watch on a directory wakes for a name's coming and going there, and for writes
     /// to the file it watches in it, only that file's, and waits again once cleared;
     /// all wherever the directory goes. A write to a file it does not watch wakes it not.
@@ -452,24 +498,24 @@ mod tests {
         b.write_all(b"w").unwrap();
         assert!(!readable(watch.fd()), "a write to a file not watched");
         a.write_all(b"x").unwrap();
-        assert!(readable(watch.fd()), "a write to the file watched");
+        assert!(woken(watch.fd()), "a write to the file watched");
         watch.clear();
         assert!(!readable(watch.fd()));
         append("c");
-        assert!(readable(watch.fd()), "a name come");
+        assert!(woken(watch.fd()), "a name come");
         watch.clear();
         watch.file(&File::open(dir.join("b")).unwrap()).unwrap();
         watch.clear();
         a.write_all(b"w").unwrap();
         assert!(!readable(watch.fd()), "a write to the file watched before");
         b.write_all(b"y").unwrap();
-        assert!(readable(watch.fd()), "a write to the file watched now");
+        assert!(woken(watch.fd()), "a write to the file watched now");
         watch.clear();
         let moved = dir.with_extension("moved");
         std::fs::rename(&dir, &moved).unwrap();
         watch.clear();
         std::fs::remove_file(moved.join("c")).unwrap();
-        assert!(readable(watch.fd()), "a name gone, the directory moved");
+        assert!(woken(watch.fd()), "a name gone, the directory moved");
         std::fs::remove_dir_all(&moved).unwrap();
     }
 

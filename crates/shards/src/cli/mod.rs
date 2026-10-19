@@ -15,7 +15,7 @@ use shards_cmdline::flags::{self, Command, Outcome, Parsed};
 #[cfg(unix)]
 mod client;
 #[cfg(unix)]
-pub(crate) use client::Stream;
+pub(crate) use client::{Stream, ask_here};
 #[cfg(unix)]
 pub(crate) mod cp;
 #[cfg(unix)]

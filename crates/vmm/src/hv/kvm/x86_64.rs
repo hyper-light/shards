@@ -559,7 +559,7 @@ impl Vcpu {
     /// each vCPU's TSC where its own capture found it, apart from the others' by however
     /// far apart the captures were (arch/x86/kvm/x86.c, kvm_synchronize_tsc).
     pub fn restore_state(&mut self, st: &VcpuState) -> Result<()> {
-        if st.cpuid != self.cpuid {
+        if !same_cpu(&st.cpuid, &self.cpuid) {
             return Err(Error::Guest(
                 "this CPU is not the one the snapshot was taken on (its CPUID differs)".into(),
             ));
@@ -704,9 +704,48 @@ impl Vcpu {
     }
 }
 
+/// Whether two vCPUs' CPUID tables are one CPU's, as a snapshot asks of the vCPU it is
+/// restored to: every leaf alike but those that describe the caches (leaf 4, 0x8000_0005,
+/// 0x8000_0006 and 0x8000_001D). KVM fills those from the core its ioctl ran on, and on a
+/// hybrid host a performance core's and an efficiency core's differ (an i9-14900HX's L1 and
+/// L2, PM M258): a template made on one was refused on the other, so that every restore
+/// across them failed. They gate no instruction, and a vCPU's thread runs on either kind
+/// as the host schedules it, under the one table it was given.
+fn same_cpu(a: &[[u32; 7]], b: &[[u32; 7]]) -> bool {
+    let kept = |leaves: &[[u32; 7]]| -> Vec<[u32; 7]> {
+        leaves
+            .iter()
+            .filter(|l| !matches!(l[0], 4 | 0x8000_0005 | 0x8000_0006 | 0x8000_001d))
+            .copied()
+            .collect()
+    };
+    kept(a) == kept(b)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Two cores of a hybrid host, as KVM described them (PM M258): their caches differ,
+    /// and nothing else of what a vCPU is given; a feature that differs is another CPU.
+    #[test]
+    fn a_hybrid_hosts_cores_are_one_cpu_but_their_features_are_not() {
+        let performance = [
+            [1, 0, 0, 0x000b_0671, 0x0080_0800, 0xf7fa_3223, 0x0f8b_fbff],
+            [4, 0, 1, 0xfc00_4121, 0x02c0_003f, 0x0000_003f, 0],
+            [4, 2, 1, 0xfc01_c143, 0x03c0_003f, 0x0000_07ff, 0],
+            [7, 0, 1, 0, 0x239c_27eb, 0x9840_0784, 0xbc18_4410],
+            [0x8000_0006, 0, 0, 0, 0, 0x0800_7040, 0],
+        ];
+        let mut efficiency = performance;
+        efficiency[1] = [4, 0, 1, 0xfc00_4121, 0x01c0_003f, 0x0000_003f, 0];
+        efficiency[2] = [4, 2, 1, 0xfc01_c143, 0x03c0_003f, 0x0000_0fff, 0];
+        efficiency[4] = [0x8000_0006, 0, 0, 0, 0, 0x1000_8040, 0];
+        assert!(same_cpu(&performance, &efficiency));
+        let mut fewer = performance;
+        fewer[3][4] &= !(1 << 5);
+        assert!(!same_cpu(&performance, &fewer), "a feature less is another CPU");
+    }
 
     /// Guests are permitted AMX's tile data exactly where the host has it, once the
     /// process asks (review 1.10); where Linux knows no such request, nothing is asked.

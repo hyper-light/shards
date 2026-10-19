@@ -711,6 +711,14 @@ pub fn await_fifo(fd: BorrowedFd<'_>) -> io::Result<()> {
 /// which, in their order: on macOS in select(2), as [`await_fifo`] waits, every descriptor
 /// however high; elsewhere in poll(2), which sees a FIFO's end there (PM M253).
 pub fn await_any(fds: &[BorrowedFd<'_>]) -> io::Result<Vec<bool>> {
+    await_any_within(fds, None)
+}
+
+/// [`await_any`], waiting no longer than `timeout` where one is given: then none is ready.
+pub fn await_any_within(fds: &[BorrowedFd<'_>], timeout: Option<Duration>) -> io::Result<Vec<bool>> {
+    // None past what an Instant holds: for ever.
+    let deadline = timeout.and_then(|t| Instant::now().checked_add(t));
+    let left = || deadline.map(|d| d.saturating_duration_since(Instant::now()));
     #[cfg(target_os = "macos")]
     {
         // SAFETY: as `await_fifo`'s.
@@ -745,14 +753,20 @@ pub fn await_any(fds: &[BorrowedFd<'_>]) -> io::Result<Vec<bool>> {
                     *word |= 1 << (fd % 32);
                 }
             }
-            // SAFETY: a set of `bound` descriptors' bits, as long as that, and no timeout.
+            let mut tv = left().map(|l| libc::timeval {
+                tv_sec: libc::time_t::try_from(l.as_secs()).unwrap_or(libc::time_t::MAX),
+                tv_usec: libc::suseconds_t::try_from(l.subsec_micros()).unwrap_or(0),
+            });
+            let tv_at = tv.as_mut().map_or(std::ptr::null_mut(), std::ptr::from_mut);
+            // SAFETY: a set of `bound` descriptors' bits, as long as that, and a timeout of
+            // our own or none.
             let n = unsafe {
                 select_any(
                     bound,
                     set.as_mut_ptr(),
                     std::ptr::null_mut(),
                     std::ptr::null_mut(),
-                    std::ptr::null_mut(),
+                    tv_at,
                 )
             };
             if n > 0 {
@@ -761,8 +775,11 @@ pub fn await_any(fds: &[BorrowedFd<'_>]) -> io::Result<Vec<bool>> {
                     .map(|fd| set.get(fd / 32).is_some_and(|w| w & (1 << (fd % 32)) != 0))
                     .collect());
             }
+            if n == 0 {
+                return Ok(vec![false; at.len()]);
+            }
             let e = io::Error::last_os_error();
-            if n < 0 && e.kind() != io::ErrorKind::Interrupted {
+            if e.kind() != io::ErrorKind::Interrupted {
                 return Err(e);
             }
         }
@@ -780,9 +797,15 @@ pub fn await_any(fds: &[BorrowedFd<'_>]) -> io::Result<Vec<bool>> {
         let n =
             libc::nfds_t::try_from(polled.len()).map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?;
         loop {
-            // SAFETY: poll(2) on `n` valid pollfds, with no timeout.
-            if unsafe { libc::poll(polled.as_mut_ptr(), n, -1) } > 0 {
-                return Ok(polled.iter().map(|p| p.revents != 0).collect());
+            // Whole milliseconds, rounded up, so that a wait never ends before its time.
+            let ms = left().map_or(-1, |l| {
+                libc::c_int::try_from(l.as_nanos().div_ceil(1_000_000)).unwrap_or(libc::c_int::MAX)
+            });
+            // SAFETY: poll(2) on `n` valid pollfds.
+            match unsafe { libc::poll(polled.as_mut_ptr(), n, ms) } {
+                0 => return Ok(vec![false; polled.len()]),
+                ready if ready > 0 => return Ok(polled.iter().map(|p| p.revents != 0).collect()),
+                _ => {}
             }
             let e = io::Error::last_os_error();
             if e.kind() != io::ErrorKind::Interrupted {
@@ -994,15 +1017,16 @@ fn take_fds(msg: &libc::msghdr, fds: &mut Vec<OwnedFd>) -> io::Result<()> {
     Ok(())
 }
 
-/// The daemon's socket: `daemon.sock` in shards' home, named relative to the working
-/// directory, which each process that uses it makes the home first. A relative name fits
-/// a socket address (`sun_path`: 104 bytes on macOS, 108 on Linux, NUL included) whatever
-/// the home's path. The per-user directories macOS offers instead cost each new process a
-/// lookup of 0.4–1.3 ms (docs/research/platform-measurements.md M26).
+/// The socket of a daemon of a build from before request slots (D185): `daemon.sock` in
+/// shards' home, named relative to the working directory, which each process that uses it
+/// makes the home first. A client reaches such a daemon there only to have it step aside
+/// for its own build's, and a daemon starting removes one left. A relative name fits a
+/// socket address (`sun_path`: 104 bytes on macOS, 108 on Linux, NUL included) whatever
+/// the home's path (PM M26).
 pub const SOCKET: &str = "daemon.sock";
 
 /// What a daemon that no longer serves keeps in its home while it ends its runs: its
-/// process ID. A daemon or client that finds none listening waits for that one while it
+/// process ID. A daemon or client that finds none serving waits for that one while it
 /// lives, as long as its runs' stop timeouts make it, and then takes its place.
 pub const STOPPING: &str = "daemon.stopping";
 

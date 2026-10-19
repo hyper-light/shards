@@ -151,7 +151,12 @@ the crypto self-tests first, since every clone would replay the rest (PM M21).
     instant, and the guest's clock went back by up to 166 µs from one CPU to another
     (arch/x86/kvm/x86.c, kvm_synchronize_tsc; CI's x86_64 runners). Where KVM lacks the
     attribute, the MSRs are written as before;
-  - a vCPU whose CPUID differs from the snapshot's refuses, as arm64's CPU ID does;
+  - a vCPU whose CPUID differs from the snapshot's refuses, as arm64's CPU ID does, but
+    for the leaves that describe the caches (4, 0x80000005, 0x80000006, 0x8000001D):
+    KVM fills those from the core its ioctl ran on, and a hybrid host's performance and
+    efficiency cores give different ones (an i9-14900HX's L1 and L2, PM M258), so that
+    a template made on one kind was refused on the other. They gate no instruction,
+    and a vCPU's thread runs on either kind under the one table it was given;
   - the VMGenID reaches Linux's ACPI driver (`VMGENCTR`, with its `ADDR`), and its
     interrupt a Generic Event Device (`ACPI0013`) on GSI 23 whose `_EVT` notifies it, as
     Firecracker declares them; the 16 bytes are the first of the firmware area.
@@ -903,16 +908,18 @@ for the exit status.
 - **Built: the daemon** (`crates/shards/src/daemon.rs`), with `shards run` as its client
   (`client.rs`).
   - One serves each SHARDS_HOME, holding its `daemon.lock`. `shards run` starts it when
-    nothing listens on its socket, `daemon.sock` in the home, through `shards daemon
-    --detached`, which starts it in a session of its own and exits: init adopts the
+    none offers its request slots, in the home's `requests/` (D185; a socket,
+    `daemon.sock`, before), through `shards daemon --detached`, which starts it in a session of its own and exits: init adopts the
     daemon and reaps it when it exits (APUE §13.3). Left the child of the client that
     started it, it stayed a zombie for as long as that client lived.
-  - Every process that uses the socket first makes the home its working directory, and
-    names the socket relative to it. That name fits a socket address whatever the
-    home's path. The per-user directories macOS offers for sockets cost each new process
-    0.4–1.3 ms to look up [PM M26].
-  - It admits only clients of its own user (`getpeereid`, `SO_PEERCRED`): a home in a
-    shared directory must not let another user run commands as this one [PM M25].
+  - Every process that uses the slots first makes the home its working directory, and
+    names them relative to it, as it named the socket, whose name had to fit a socket
+    address whatever the home's path. The per-user directories macOS offers for sockets
+    cost each new process 0.4–1.3 ms to look up [PM M26].
+  - It admits only clients of its own user: its slots are FIFOs of mode 0600 in a
+    directory of 0700, and a connection's peer is checked besides (`getpeereid`,
+    `SO_PEERCRED`): a home in a shared directory must not let another user run commands as
+    this one [PM M25].
   - **Its clients are bounded (audit A07).**
     - A client has 10 s to send its whole request. The deadline bounds the message, not
       each read, so a client trickling it out a byte at a time gains nothing
@@ -1374,7 +1381,11 @@ removes it; `--rm` removes it once it ends.
       M48).
     - `-f` waits on the log (kqueue on macOS, inotify on Linux), the run's end and
       the client, not a timer: a hundred idle followers cost the daemon nothing, where
-      each looked 50 times a second.
+      each looked 50 times a second. On Linux every watch of a process is one inotify
+      instance's, which one thread reads, each watch woken through an eventfd of its
+      own: a user may have 128 instances, and a KDE Plasma desktop with a few apps
+      open held 101 of them (PM M257); with an instance each, the followers past the
+      rest failed. Where no watch can be made, a follower reads again every 250 ms.
     - **A log keeps only its newest output**: at most its user's history (`shards
       configure disk --log-history`, 1 GiB by default, D186), in equal segments of at
       most 20 MiB, two at least, the oldest removed as the next begins; the daemon's
@@ -5227,7 +5238,7 @@ answer read as the helper is found; a helper dropped unread left running; a canc
 ends no helper; one that ends the helper alone and not its group (its script's child
 holds its output open); the answer waited for under the hosts' lock; a wait never said.
 
-### D185. The client and its daemon meet through files in the home (slices 1 to 3 built; 4 to build)
+### D185. The client and its daemon meet through files in the home (built)
 
 **Why.** shards is filesystem based (the user, repeatedly; 2026-10-18: `daemon.sock` was an
 error). Its own interfaces are files in the home; a socket stays only where an outside
@@ -5291,14 +5302,14 @@ descriptors.
 - **Messages** are today's frames without descriptors, each FIFO of one writer at a time:
   the daemon's, until it hands `answer` to a run's VM.
 
-**Built** (slices 1 to 3).
+**Built.**
 - `shards_ipc::slots`: the slots, made, handed out, taken, read and written, each end seen.
   A slot is taken at its client's first byte, which says which streams it opened; the rest
   of its request says what each descriptor it stands for is (`slots::fds`), then the
   request itself.
-- The daemon serves slots beside its socket (`daemon/slots.rs`), each session bridged to
-  its handling of a client: a connection of its own, taken as a socket's client is, the
-  request's descriptors the slot's streams. The client's messages go on to the daemon, or
+- The daemon serves its clients through slots alone (`daemon/slots.rs`), each session
+  bridged to its handling of a client: a connection of its own, taken as a socket's client
+  was, the request's descriptors the slot's streams. The client's messages go on to the daemon, or
   to the run's VM it hands the connection to, and theirs come back, each side's end the
   other's. A device run's EXIT waits for its VM process's pidfd. So what serves a socket's
   client serves a slot's unchanged, the VM included.
@@ -5321,9 +5332,46 @@ descriptors.
 - On macOS every read of a FIFO waits first in select(2) (M253 part 3): the slots', the
   client's copies, and `shards_ipc::read` of a FIFO, a run's stdin in its VM among them.
 
-**Slice 4.** `daemon.sock` removed: the daemon's lock and a context's look at its daemon
-ask whether its slots are served; `daemon stop` and a context's own requests go through
-slots; a run's start and output measured before and after (build-ab, PM M29); the README.
+- **No `daemon.sock`** (slice 4). The daemon makes its lists as soon as it holds the
+  home's lock, so that a client that finds them waits on them for its slot rather than
+  start a second daemon; an older build's socket left there goes. A home is served while
+  its list `free` has a reader, the daemon's own (`slots::served`): a starting daemon
+  waiting for the lock (`take_lock`) and a context's look at its machine ask that, or
+  whether an older build's socket answers. `daemon stop` asks through a slot and waits for
+  the slot's end, which comes as the daemon exits, at most 60 s (`Client::recv_within`); the
+  requests a daemon puts to itself for a context's steps go through slots of its own home
+  (`cli::ask_here`), which start no daemon. The default context's endpoint is the Engine
+  API's socket, which Docker's clients take.
+- **Lists made again.** Lists someone removes as the daemon serves, by hand or as the home
+  is removed, are made again within a second (`LOOK`, a stat of each), the slots' numbers
+  going on from the last, and what was offered on the old ones let go of: the waits of
+  those no client took, read back from their lists, end through their own pipes. Under
+  `socket_at`, which `close` holds as it unoffers them, so that a daemon told to stop never
+  offers again (PM M188, of the socket it replaces).
+- **A request in time.** The rest of a request is read within 10 s of its first byte
+  (`REQUEST_TIMEOUT`, a socket's first message's), and no longer once the daemon ends its
+  clients (`requests_end`, a pipe written once): such a client hears RESTART, as one whose
+  request no thread had read did, and asks the next daemon.
+- **Out of descriptors**, the maker offers nothing, says so once, and looks again every
+  250 ms (`RETRY`); no collection starts meanwhile, and clients wait on their lists. A slot
+  is about 7 descriptors, 13 with streams, its FIFOs' ends and its stop pipe: four offered
+  hold 40. At its most clients in hand it says so too, once a minute at most.
+- **A request of any size.** The bridge starts the daemon's handling of its connection
+  before it writes the request there: written first, a request past the socket pair's
+  buffer (a run's labels; 8 KiB on macOS, 208 KiB on Linux) waited for ever for a reader
+  that came only after (x86_64 CI's journald test, a request of 540 KB). Found on Linux CI,
+  with the cap test's race: its silent clients now wait to be counted, which the daemon's
+  log says, before the next asks.
+- **Stdin after a restart.** A run's, an exec's and an attach's client fills its command's
+  stdin only once its daemon has said the request is its own (`HEARD`, after the build's
+  check): what went to the slot of a daemon that then asked for a restart went with it, and
+  a piped stdin was lost, the next daemon's command waiting for ever. A client of an older
+  build ignores the message.
+- **Measured** against slice 3 (build-ab, PM M259): what slots alone change costs a run
+  nothing, within ±31 µs of none at every quiet round's p50 of 2.3 to 2.6 ms, and within
+  the noise loaded; a request's own cost through a slot is M254's and M255's. An idle
+  daemon now wakes once a second, its maker looking at its lists (30 context switches in
+  30 s, where the daemon before had none, M259): to take out.
 
 ### D186. How much of the disk shards keeps is its user's to set (`shards configure disk`, built)
 
@@ -5771,7 +5819,10 @@ saved once it ends, restored and joined again) and `a_join_disk_reads_each_image
 Saved with `--leave-running`, the microVM goes on. Otherwise its save stops it, and it is
 told as stopped, not ended: its attached client says it was saved and as which snapshot,
 and exits 148, the status a shell gives a job it stopped (128 + SIGTSTP); its run records
-that status. Docker takes a checkpoint's stop for an exit like any other (moby
+that status. The save answers once its run's record says it has stopped, so that a
+`restore vm` asked at once finds it stopped: answered at its VM's word alone, a restore
+straight after found it running, 2 of 10 back to back on a Fedora host (none of 20
+since). Docker takes a checkpoint's stop for an exit like any other (moby
 daemon/monitor.go, handleContainerExit): a restart policy restarts it, and `--rm` removes
 it with its checkpoints, what was saved lost. A saved microVM is
 neither restarted nor removed: what it is saved as is there to resume. Held, on real
@@ -6178,8 +6229,8 @@ Testcontainers, the agent frameworks built on them, the docker CLI. Served by sh
 every sandbox they make is a microVM, made as `shards create vm` makes one, their code
 unchanged (`DOCKER_HOST=unix://HOME/engine.sock`). What they gain, each for the microVM:
 
-- **Reach: a file in the home, its user's alone.** `engine.sock` sits beside
-  `daemon.sock`, a Unix socket file whose peer's user is checked: no root daemon's
+- **Reach: a file in the home, its user's alone.** `engine.sock` sits in the home beside
+  its request slots (D185), a Unix socket file whose peer's user is checked: no root daemon's
   socket, whose group Docker's own post-install guide calls root-level, and no TCP
   listener. Remote use is shards' own, over QUIC (hyper-raft's `hyper-quic` and
   `hyper-tls`).
@@ -12710,7 +12761,7 @@ writes an Agentfile of an image, here or pulled as a run pulls it:
 
 A build finds an image pinned by digest in the store whatever it is named there
 (`Store::holding`: a reference whose index or manifest is the digest), as a store keyed by
-content finds it, and resolves it to the digest asked, as BuildKit resolves a pinned
+content finds it, and resolves it to the digest asked, (D78), as BuildKit resolves a pinned
 reference; before, a pinned reference to an image built here and never pushed was pulled.
 Linux images alone (`os` other than linux refused, named). Taking in OCI layouts and
 `docker save` archives is `shards load`'s (D41); Compose files and rebuildable `RUN`
@@ -12742,12 +12793,12 @@ written, `-a` not refused, a directory not its `Agentfile`'s.
 
 ### D77. `--platform` of several: one image of each platform's build
 
-`build --platform A,B,…` builds each platform as BuildKit's frontend does (dockerui
+`build --platform A,B,…` builds each platform as BuildKit's frontend does (D77; dockerui
 `Build`: one result a platform), then writes one image of them, as its exporter does.
 Each platform is built by the build itself, as one of several (`build/multi.rs`): its
 steps named with its platform (the frontend's multi-platform names), into an OCI layout
 of its own, its local outputs into a directory of its platform's name (`linux_amd64`, as
-BuildKit's `platform-split`). What the builds share is said once, as BuildKit's progress
+BuildKit's `platform-split`). What the builds share is said once, (D77), as BuildKit's progress
 merges a vertex by its digest: the build definition, the `.dockerignore`, and each base's
 metadata for a platform (`resolveSourceMetadata`'s vertex is its identifier and
 platform), resolved once for them all; steps the platforms share run once, the build
@@ -12860,7 +12911,7 @@ own.
   way. Layers compress on as many threads as the host has cores, and each once: the
   build cache keeps a record of each layer, level and kind, its blob held by it.
 - **The store keeps both forms.** A layer the build made stays uncompressed beside its
-  compressed blob, as Docker keeps a layer's blob and its snapshot: builds, the build
+  compressed blob, as Docker keeps a layer's blob and its snapshot (D75): builds, the build
   cache and runs read it as before, and an image holds it (`Store::roots`: the blob
   whose digest is a DiffID of the image's config, where there is one), so a step whose
   layer an image holds stays shared in `builder prune`.
@@ -12883,7 +12934,7 @@ shared, which failed until the store held the uncompressed form).
 `build --platform P` makes an image for P where this host's microVMs run another
 platform, without emulating P's CPU:
 
-- **The platforms**, read as buildx reads them (util/platformutil `Parse`): each value a
+- **The platforms**, read as buildx reads them (D74; util/platformutil `Parse`): each value a
   comma-separated list, each normalized, before the outputs and annotations are. The
   same platform named twice is built once, as buildx's `Dedupe` keeps it (measured on
   Docker 29.3.1 in `shards-dind`: `linux/amd64,linux/amd64` exports each manifest and
@@ -12895,7 +12946,7 @@ platform, without emulating P's CPU:
 - **Its bases** are P's: the manifest the name's index has for P, its config and layers
   fetched and checked as a pull checks them (`shards_registry::pull::fetch_untagged`),
   but no name recorded, no root filesystem built and no attestation fetched, so that what
-  a name holds in the store stays the guests' image, as BuildKit's pulls leave an image
+  a name holds in the store stays the guests' image, (D74), as BuildKit's pulls leave an image
   store's names. Each is kept as the build cache keeps what it made (its blobs the
   record's roots), found there again unless `--pull`, and gone with `builder prune`.
   Bases are resolved for each stage's own platform: one name can be two bases in a build
@@ -12943,7 +12994,7 @@ plan:
   (`json.MarshalIndent`): the warnings in the order they were found (`null` for none), the
   file (its name as given, its bytes in base64, its language), and `buildError`; then a
   newline, as `printValue` prints it; exit 1 for warnings unless `ignorestatus`. Any other
-  format is the text, as buildx's is.
+  format is the text, as buildx's is (D73).
 
 Deliberately unlike BuildKit: the file carries no `definition`. BuildKit's is the
 frontend's LLB for loading the Dockerfile, which carries that build's session ID
@@ -12963,13 +13014,13 @@ files' text and JSON output was the same as Docker's buildx v0.33.0's, byte for 
 
 The flags as buildx v0.37.1 reads them (util/buildflags/attests.go: the shorthands
 canonicalized, `ParseAttests`, `ToMap`, each type's first; held to buildx by the buildx
-oracle, `ATTEST` lines, with an empty value none at all as buildx's flag leaves it), read
+oracle, `ATTEST` lines, with an empty value none at all as buildx's flag leaves it; D72), read
 before the named contexts as toBuildOptions reads them, and the provenance's attributes
-as BuildKit takes them (NewProvenanceCreator): `--provenance=false` (or
+as BuildKit takes them (D72; NewProvenanceCreator): `--provenance=false` (or
 `disabled=true`) turns it off, even where Docker would attest by default; an explicit
 one attests a stored or pushed image with `builder-id` as the builder's ID and
 `reproducible` as `buildkit_reproducible`, `mode=min` and `version=v1` as given; a bad
-`mode`, `version` or `reproducible` refused in BuildKit's words.
+`mode`, `version` or `reproducible` refused in BuildKit's words (D72).
 
 Refused, named, until each is made and held to BuildKit's (no build is given less than it
 asked for in silence): `version=v0.2`, other types, and an explicit provenance in a docker or
@@ -13009,14 +13060,14 @@ true, so an image in an OCI or docker archive carries none, as there):
   attestation manifest whose config is an image config of no platform with the
   statement's digest as its one diff ID, and the index of the image's manifest (its
   platform) and the attestation's (`unknown/unknown`, the reference annotations), each
-  written as BuildKit's exporter writes it.
+  written as BuildKit's exporter writes it (D71).
 - **What names it**: the index is what the image's names resolve to and its ID
   (`image inspect`, `-q`, `--iidfile`, a dangling build's record), what `--push` pushes
   after its manifests, and what the metadata file's `containerimage.descriptor` and
   `.digest` name, beside `buildx.build.provenance`, the v0.2 form buildx writes there
   (every argument, the secrets and SSH agents mounted, no run metadata).
 
-Each build's index is its own (its invocation and times are), as Docker's is: two
+Each build's index is its own (its invocation and times are), as Docker's is (D71): two
 identical builds have one manifest and two IDs, the manifest's being the content's.
 
 The flags are D72's. A local named context's shared key carries no node identifier
@@ -13158,7 +13209,7 @@ takes: shards works them out (`d mod (p-1)`, bit by bit, the same work whatever 
 and AWS-LC checks every part against the others (`RSA_check_key`). Key material lives in
 buffers overwritten when dropped.
 
-- **Better than buildx's:** the agent is read-only, as BuildKit's forwarded agent is:
+- **Better than buildx's:** the agent is read-only, as BuildKit's forwarded agent is (D68):
   where buildx serves a key file's keyring as it is, so that a step can add keys to it,
   remove them, or lock it with a passphrase of its own for the steps after it, shards
   refuses each.
@@ -13177,7 +13228,7 @@ deterministic), each ECDSA signature verified; mutation-checked (the keyring's o
 mpints, the RSA hash, two PEM skips). `the_key_agent_is_read_only`,
 `crt_exponents_are_the_remainders`. On a real build (`run_steps_reach_the_clients_ssh_agent`,
 mutation-checked): a step lists the key file's key and has it sign, and is refused the
-agent's forgetting; a passphrase and a socket beside keys refused in buildx's words.
+agent's forgetting; a passphrase and a socket beside keys refused in buildx's words (D68).
 
 ### D67. `--check`, `--call` and `--debug`'s warnings
 
@@ -13188,14 +13239,14 @@ oracle): nothing built; "Check complete, N warnings have been found!" and each w
 BuildKit's lint subrequest prints it (frontend/subrequests/lint `PrintTo`: by line, its
 rule and URL, its message, its lines as `errdefs.Source` shows them), or "Check complete,
 no warnings found."; exit 1 for warnings, unless `ignorestatus`. With `--debug`, a build's
-warnings come in full, as buildx's `printWarnings` gives them at debug level: each
+warnings come in full, as buildx's `printWarnings` gives them at debug level (D67): each
 rule's description, "More info:" and its lines, and no "use --debug to expand".
 `--call=outline`, `targets` and `subrequests.describe` are D70's; `check` with
 `format=json`, every stage checked and an error planning the build are D73's. The hidden
 `--print` is taken as buildx takes it.
 
 Tested on a real build (`check_says_the_builds_warnings`); the flags by
-the buildx oracle (a flag whose value prints as nothing, as buildx's `callAlias` does,
+the buildx oracle (a flag whose value prints as nothing, as buildx's `callAlias` does, D67,
 now said so: `Flag::unshown`).
 
 ### D66. `--annotation`
@@ -13228,10 +13279,10 @@ rest); its warning and `[y/N]` before it removes anything, unless `-f`; and what
 removes as BuildKit's cache manager chooses (cache/manager.go): the records (D50) no
 filter keeps, `until` (or `unused-for`) an age a record's last use must reach, `id`
 matched as a pattern, the rest by field (`type`, `shared`, `private`, ...); a record whose
-layer an image holds is shared, and stays unless `--all`, as BuildKit keeps one an image
+layer an image holds is shared, and stays unless `--all`, (D65), as BuildKit keeps one an image
 shares; with `--reserved-space` (`--keep-storage`), `--max-used-space` or
 `--min-free-space`, the least recently and least often used first, one at a time, until
-what stays is what `calculateKeepBytes` allows. Said as buildx says it: a table of what
+what stays is what `calculateKeepBytes` allows. Said as buildx says it (D65): a table of what
 went (or each in full with `--verbose`), padded with tabs as Go's text/tabwriter pads it
 with buildx's settings (checked against Go's own), then the total. A record's `Created
 at` is written in UTC: shards keeps its second.
@@ -13268,12 +13319,12 @@ gateway on the bridge it is elected on; reaching the host stays refused (D31).
 - **The classic builder's flags**, which buildx takes and BuildKit ignores: `--rm`,
   `--force-rm` and `--compress` silently, `--isolation`, `--security-opt` and `--squash`
   with buildx's warnings, as its logrus formatter writes them.
-- **`--cgroup-parent`** is carried in the plan as BuildKit's; the builder microVM has no
+- **`--cgroup-parent`** is carried in the plan as BuildKit's (D64); the builder microVM has no
   host's cgroups to place steps under, so each limited step's cgroup is the builder's own.
 
 Tested on real builds (`run_steps_take_the_builds_hosts_shm_and_limits`): a step sees
-`--add-host`'s name, a 32 MiB `/dev/shm`, `memory.max` and `cpu.max` as runc writes them;
-past `--memory` it is ended (137) and the build fails in BuildKit's words; without, it
+`--add-host`'s name, a 32 MiB `/dev/shm`, `memory.max` and `cpu.max` as runc writes them (D64);
+past `--memory` it is ended (137) and the build fails in BuildKit's words (D64); without, it
 runs. Mutation-checked: without the step's cgroup files, and without the hosts in the
 plan, it fails. The flags are held to buildx's command line by the buildx oracle;
 dockerui's parsing by `build_frontend_options_are_read`. The plan of these options
@@ -13294,9 +13345,9 @@ Found with it, and fixed: `build -q`, `--iidfile` and the `writing image` line g
 config's digest, which moby's classic store names an image by (BuildKit's image exporter
 answers it, and buildx's `getImageID` prefers it), while shards' store names it by its
 manifest's digest: `shards run $(shards build -q .)` found no such image. Now each gives
-the manifest's digest, as Docker with its containerd store gives its image's
+the manifest's digest, (D63), as Docker with its containerd store gives its image's
 (`a_build_given_no_name_is_kept_dangling` runs the image by the ID `-q` printed). `buildx.build.ref` is
-`shards/shards/` and an ID made as BuildKit's `identity.NewID` makes one.
+`shards/shards/` and an ID made as BuildKit's `identity.NewID` makes one (D63).
 
 Measured beside it (Docker 29.3.1, containerd store, `docker:29.3.1-dind`, 2026-10-07):
 Docker's adds `buildx.build.provenance`, the provenance attestation it records by
@@ -13322,15 +13373,15 @@ control/control.go, cache/remotecache, solver/llbsolver/bridge.go).
   `type=local` and `type=registry` with any store.
 - **What is written.** The build cache's records (D50) that the build used or made, by
   their keys: `mode=max` every one, `min` (the default, and what an unknown mode is, as
-  `parseCacheExportMode` has it) those whose layers the image holds, as BuildKit's `min`
+  `parseCacheExportMode` has it) those whose layers the image holds, (D62), as BuildKit's `min`
   keeps to the image's chain. A cache is an OCI image manifest whose config, of type
   `application/vnd.shards.buildcache.config.v1+json`, holds each record's body by key, and
   whose layers are every layer a record names (`build/remote.rs`). A directory holds it as
   an OCI layout found by its `index.json`'s `org.opencontainers.image.ref.name` (`tag`,
   `latest` by default; `reset=true` empties it first), as BuildKit's client finds its
   own; a registry by its reference. `type=inline`, or the build argument
-  `BUILDKIT_INLINE_CACHE` as buildx reads it, puts the image's own records in the image's
-  config, field `vnd.shards.buildcache.v1`, the config's other bytes as BuildKit writes
+  `BUILDKIT_INLINE_CACHE` as buildx reads it (D62), puts the image's own records in the image's
+  config, field `vnd.shards.buildcache.v1`, the config's other bytes (D62) as BuildKit writes
   them. The progress is BuildKit's: `exporting cache to client directory` or `to
   registry`, `preparing build cache for export`, `writing layer`, `writing config`,
   `writing cache image manifest`.
@@ -13341,20 +13392,20 @@ control/control.go, cache/remotecache, solver/llbsolver/bridge.go).
   on); a layer that cannot be had leaves its step to run.
 - **Not BuildKit's records.** shards' keys are not BuildKit's (D50 keys definitions and
   inputs as shards plans them), so neither can use the other's caches. None is passed off
-  as BuildKit's (`application/vnd.buildkit.cacheconfig.v0`): a BuildKit cache given to
+  as BuildKit's (D62; `application/vnd.buildkit.cacheconfig.v0`): a BuildKit cache given to
   shards, or shards' to BuildKit, is read as no cache, which costs a rebuild and is never
   wrong.
-- **Refused as BuildKit refuses** before it builds: a directory without `dest`, a registry
+- **Refused as BuildKit refuses** before it builds (D62): a directory without `dest`, a registry
   without `ref`, an unknown backend (`unknown cache exporter: "x"`); and, for now, the
   backends shards did not write then (`s3` is D88, `azblob` D89, `gha` D90). A failed export
   fails the build unless `ignore-error=true`. A `gha` entry without its token and URL is
-  dropped, as buildx's `isActive` drops it.
-- **`--no-cache-filter`** is the frontend's `no-cache` option, as buildx sends it
+  dropped, as buildx's `isActive` drops it (D62).
+- **`--no-cache-filter`** is the frontend's `no-cache` option, (D62), as buildx sends it
   (`--no-cache` sends it empty, every stage): dockerui's `IsNoCache` by stage name, any
   case, marks each `RUN` and `COPY`/`ADD` of those stages, and `--link`'s merge, with
   `IgnoreCache` (convert.go, convert_copy.go). The plan is held to BuildKit's own by
   the Dockerfile oracle (`corpus/plan/no-cache-*.Dockerfile`). The solver runs such a step
-  without asking the cache, and keeps its result, as BuildKit's does; `IgnoreCache` is
+  without asking the cache, and keeps its result, as BuildKit's does (D62); `IgnoreCache` is
   metadata, no part of a key.
 
 Tested on real builds (`builds_take_steps_from_caches_written_elsewhere`), each guard
@@ -13584,7 +13635,7 @@ filter for it lets the fork through. Every other way to start a process is tried
 and CLONE_VFORK, issued so that the child touches no memory: libc's `vfork` is
 deprecated for the stack its child corrupts), a `clone` that is no thread, `clone3`
 (ENOSYS for every domain), a spawn as libc makes it, and so any program run: each refused
-(EPERM), each made by the first agent. Mutation-checked: `clone` left as Docker's rule lets
+(EPERM), each made by the first agent. Mutation-checked: `clone` left (D59), as Docker's rule lets
 musl's `fork`, itself a `clone`, through.
 
 The same test plants the file escapes of §9.10: a symlink in its scratch to another
@@ -13712,7 +13763,7 @@ Part five, names past the microVM:
   the daemon passes each `--resolver`, from `SHARDS_DNS` (`ADDR[:PORT]`, comma-separated,
   as `dockerd --dns` names them) or else the host's own IPv4 nameservers in
   `/etc/resolv.conf`. Under `Ports`, a query to the gateway's port 53 that the network's
-  members do not answer goes to the first of them, as Docker's embedded DNS asks the
+  members do not answer goes to the first of them, (D59), as Docker's embedded DNS asks the
   host's for a name its network does not hold. It goes as a UDP flow keyed to the
   gateway, so the answer comes back from the gateway. The host asks, so a loopback
   resolver (a local cache, systemd-resolved's 127.0.0.53) serves as it is, where Docker
@@ -13755,7 +13806,7 @@ Open: ingress to a network of several members (which one a connection is for). D
 TCP is D79.
 
 A port the Agentfile declares `EXPOSE … AS egress`, and nowhere both ways or for ingress,
-is named in the image's label `vnd.osi.agentfile.egress-declared` (ranges as Docker writes
+is named in the image's label `vnd.osi.agentfile.egress-declared` (D59; ranges as Docker writes
 them). A run that publishes one, by `-p` or `-P`, is refused before its microVM is made:
 an egress port is where agents reach out to, not where they listen (answer 6). Tested by
 the ingress test (`-p` of an egress-declared port refused, its words), mutation-checked;

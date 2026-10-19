@@ -711,6 +711,10 @@ impl<D: Disk> Daemon<D> {
             }
             return Err(failed(&e));
         }
+        // Stopped by its save, it is stopped in its record before the save is said done.
+        if !leave_running {
+            self.await_end(&id);
+        }
         // moby's event for a checkpoint (daemon/checkpoint.go).
         self.container_event(&id, "checkpoint", &[]);
         Ok((id, name))

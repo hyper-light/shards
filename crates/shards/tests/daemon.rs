@@ -445,10 +445,10 @@ fn a_daemon_ending_its_runs_is_waited_for() {
         .stderr(Stdio::piped())
         .spawn()
         .unwrap();
-    // Ending its runs, and no longer listening: a run asked for before then is one it
+    // Ending its runs, and no longer offering slots: a run asked for before then is one it
     // serves itself.
     eventually("the daemon did not begin to stop", || {
-        home.join("daemon.stopping").exists() && !home.join("daemon.sock").exists()
+        home.join("daemon.stopping").exists() && !shards_ipc::slots::served(&home)
     });
     let env = [("SHARDS_HOME", home.as_os_str())];
     let t0 = Instant::now();
@@ -479,8 +479,9 @@ fn a_dead_daemons_waiting_vms_end() {
     });
 }
 
-/// A client from another build replaces the daemon, and its run is served. Another file
-/// is another build: the daemon knows `shardsd` by its file's identity.
+/// A client from another build replaces the daemon, and its run is served, its stdin whole:
+/// none of it went to the daemon that stepped aside (HEARD, D185). Another file is another
+/// build: the daemon knows `shards` by its file's identity.
 #[test]
 fn a_rebuilt_binary_replaces_the_daemon() {
     if cannot_run_vms() || cannot_snapshot() {
@@ -496,18 +497,47 @@ fn a_rebuilt_binary_replaces_the_daemon() {
     // running it then fails with ETXTBSY (x86_64 CI, 2026-10-11).
     let copied = Command::new("cp").arg(shards()).arg(&other).status().unwrap();
     assert!(copied.success(), "{copied}");
-    let out = Command::new(&other)
-        .args(["run", "--pull", "never", &image, "exit", "0"])
+    let mut run = Command::new(&other)
+        .args(["run", "-i", "--pull", "never", &image, "cat"])
         .env("SHARDS_HOME", &*home)
         .env("SHARDS_LOCAL_STORE", "none")
-        .stdin(Stdio::null())
-        .output()
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
         .unwrap();
+    let said = "given before the old daemon stepped aside\n";
+    run.stdin.take().unwrap().write_all(said.as_bytes()).unwrap();
+    // Its output read as it comes, and the client ended past the deadline: a stdin lost
+    // leaves `cat` waiting for ever.
+    let read = |mut from: Box<dyn Read + Send>| {
+        std::thread::spawn(move || {
+            let mut all = String::new();
+            let _ = from.read_to_string(&mut all);
+            all
+        })
+    };
+    let (out, err) = (
+        read(Box::new(run.stdout.take().unwrap())),
+        read(Box::new(run.stderr.take().unwrap())),
+    );
+    let deadline = Instant::now() + TIMEOUT;
+    let status = loop {
+        if let Some(status) = run.try_wait().unwrap() {
+            break Some(status);
+        }
+        if Instant::now() >= deadline {
+            let _ = run.kill();
+            let _ = run.wait();
+            break None;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    let (out, err) = (out.join().unwrap(), err.join().unwrap());
     assert_eq!(
-        out.status.code(),
-        Some(0),
-        "{}",
-        String::from_utf8_lossy(&out.stderr)
+        (status.and_then(|s| s.code()), out.as_str()),
+        (Some(0), said),
+        "{err}"
     );
     let after = daemon_pid(&home).expect("a daemon pid");
     assert_ne!(before, after, "the old daemon still serves");
@@ -814,20 +844,51 @@ fn more_descriptors() {
     }
 }
 
-/// A connection to the daemon at `sock`, patient as the client is: macOS refuses
-/// connections past a listener's backlog (at most kern.ipc.somaxconn, 128), where Linux
-/// makes them wait.
-fn connect_patiently(sock: &Path) -> UnixStream {
-    let deadline = Instant::now() + Duration::from_secs(10);
+/// A client of a slot of its daemon's (D185) that says nothing past its first byte, which
+/// names the streams it opened (none): its `say`, held, and its `answer`, where the daemon
+/// tells it what it tells it.
+struct Silent {
+    _say: std::fs::File,
+    answer: std::fs::File,
+}
+
+/// A slot of `home`'s daemon taken by hand, as a client takes one (shards_ipc::slots), its
+/// first byte written and nothing after: patient, as a client is, while none is offered;
+/// `None` where none is within `patience`.
+fn silent_slot(home: &Path, patience: Duration) -> Option<Silent> {
+    use std::os::unix::fs::OpenOptionsExt as _;
+    let dir = home.join("requests");
+    let deadline = Instant::now() + patience;
+    let mut free = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK)
+        .open(dir.join("free"))
+        .ok()?;
+    let mut record = [0u8; 16];
     loop {
-        match UnixStream::connect(sock) {
-            Ok(conn) => return conn,
-            Err(e) if e.kind() == std::io::ErrorKind::ConnectionRefused && Instant::now() < deadline => {
+        match free.read(&mut record) {
+            Ok(16) => break,
+            // No writer: no daemon.
+            Ok(0) => return None,
+            Ok(n) => panic!("a record of {n} bytes on free"),
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                if Instant::now() >= deadline {
+                    return None;
+                }
                 std::thread::sleep(Duration::from_millis(1));
             }
-            Err(e) => panic!("{}: {e}", sock.display()),
+            Err(e) => panic!("free: {e}"),
         }
     }
+    let n: u64 = std::str::from_utf8(&record).unwrap().trim_end().parse().unwrap();
+    // Its daemon holds the other end of each: neither open waits.
+    let answer = std::fs::File::open(dir.join(format!("{n}.answer"))).unwrap();
+    let mut say = std::fs::OpenOptions::new()
+        .write(true)
+        .open(dir.join(format!("{n}.say")))
+        .unwrap();
+    say.write_all(&[0]).unwrap();
+    Some(Silent { _say: say, answer })
 }
 
 /// The CPU time process `pid` has used: from /proc on Linux, from `ps` elsewhere.
@@ -901,14 +962,14 @@ fn a_daemon_raises_its_descriptor_limit() {
     assert_eq!(stopped.status, Some(0), "{stopped}");
 }
 
-/// A client that connects and says nothing holds up no shutdown: the daemon ends it as it
-/// stops. The audit's reproduction (A07): before, `daemon stop` waited until the client
+/// A client that takes a slot and says nothing holds up no shutdown: the daemon ends it as
+/// it stops. The audit's reproduction (A07): before, `daemon stop` waited until the client
 /// closed. No VM needed.
 #[test]
 fn a_client_that_says_nothing_holds_up_no_stop() {
     let home = TempDir::new("daemon-silent");
     let daemon = start_daemon(&home, None);
-    let silent = UnixStream::connect(home.join("daemon.sock")).unwrap();
+    let silent = silent_slot(&home, Duration::from_secs(10)).expect("no slot was offered");
     let t0 = Instant::now();
     let env = [("SHARDS_HOME", home.as_os_str())];
     // Short of the daemon's 10 s deadline for a request, which would end it too.
@@ -917,16 +978,38 @@ fn a_client_that_says_nothing_holds_up_no_stop() {
     assert!(t0.elapsed() < Duration::from_secs(5), "{:?}", t0.elapsed());
     eventually("the daemon outlived its stop", || !alive(daemon));
     // Let go: told, as it asked nothing yet, to ask the next daemon (RESTART), and shut.
-    let mut got = shards_ipc::recv(&silent).map(|m| m.map(|m| m.kind));
+    let heard = || shards_ipc::slots::read_frame(&silent.answer).map(|f| f.map(|f| f.kind));
+    let mut got = heard();
     if matches!(got, Ok(Some(k)) if k == shards_ipc::kind::RESTART) {
-        got = shards_ipc::recv(&silent).map(|m| m.map(|m| m.kind));
+        got = heard();
     }
     assert!(matches!(got, Ok(None)), "the client was not let go: {got:?}");
 }
 
-/// Past its cap of clients in hand, here 16 (`SHARDS_MAX_CLIENTS`), the daemon leaves
-/// connections in its backlog, and takes the next as soon as one in hand leaves (audit
-/// A07). No VM needed.
+/// A request larger than a socket's buffer is served: here filters of 300 KB, past the 8 KiB
+/// of a macOS socket pair's and the 208 KiB of Linux's. Before, the daemon wrote the request
+/// to its own handling before it read it, and waited for ever. Three arguments of 100 KB:
+/// Linux takes none past 128 KiB (MAX_ARG_STRLEN). No VM needed.
+#[test]
+fn a_request_past_a_sockets_buffer_is_served() {
+    let home = TempDir::new("daemon-large");
+    let env = [("SHARDS_HOME", home.as_os_str())];
+    let labels: Vec<String> = (1..=3)
+        .map(|n| format!("label=big{n}={}", "x".repeat(100_000)))
+        .collect();
+    let mut args = vec!["-a", "-q"];
+    for label in &labels {
+        args.extend(["--filter", label.as_str()]);
+    }
+    let listed = run_shards_env(&["ps"], &args, &env, TIMEOUT);
+    assert_eq!((listed.status, listed.stdout.as_str()), (Some(0), ""), "{listed}");
+    let stopped = run_shards_env(&["daemon"], &["stop"], &env, TIMEOUT);
+    assert_eq!(stopped.status, Some(0), "{stopped}");
+}
+
+/// Past its cap of clients in hand, here 16 (`SHARDS_MAX_CLIENTS`), the daemon leaves the
+/// next waiting at its slot, and takes it as soon as one in hand leaves (audit A07). No VM
+/// needed.
 #[test]
 fn clients_past_the_cap_wait_their_turn() {
     more_descriptors();
@@ -950,8 +1033,16 @@ fn clients_past_the_cap_wait_their_turn() {
         let fields: Vec<&str> = line.split_whitespace().collect();
         assert_eq!(fields[3], fields[4], "{line}");
     }
-    let sock = home.join("daemon.sock");
-    let mut silent: Vec<UnixStream> = (0..16).map(|_| connect_patiently(&sock)).collect();
+    let mut silent: Vec<Silent> = (0..16)
+        .map(|_| silent_slot(&home, Duration::from_secs(10)).expect("no slot was offered"))
+        .collect();
+    // Each counted in hand as the daemon reads its first byte, on a thread of the slot's:
+    // all of them once it says it has its most, before the next asks.
+    eventually("the daemon never had its most clients in hand", || {
+        std::fs::read_to_string(home.join("daemon.log"))
+            .unwrap_or_default()
+            .contains("16 clients in hand, the most it takes at once")
+    });
     let mut listing = common::command()
         .arg("ps")
         .env("SHARDS_HOME", &*home)
@@ -977,27 +1068,34 @@ fn clients_past_the_cap_wait_their_turn() {
 }
 
 /// A home removed once, as `rm -rf` or a test's directory removes it, goes with its daemon
-/// whatever order its names go in. One that takes the socket first, which the daemon then
-/// listens at again, and the rest after, the lock among them, fails to remove the
-/// directory, not empty: the daemon, seeing its lock gone, exits and removes what it made.
-/// Before, it listened on in a home holding nothing but its socket. So too what it writes
-/// as the removal goes, a network's file: before, the home stayed, holding it, a test's
-/// home among hundreds left. No VM needed.
+/// whatever order its names go in. One that takes the slots first, which the daemon then
+/// offers again, and the rest after, the lock among them, fails to remove the directory,
+/// not empty: the daemon, seeing its lock gone, exits and removes what it made. Before, it
+/// listened on in a home holding nothing but its socket. So too what it writes as the
+/// removal goes, a network's file: before, the home stayed, holding it, a test's home among
+/// hundreds left. No VM needed.
 #[test]
 fn a_home_removed_once_is_gone_with_its_daemon() {
     let home = TempDir::new("daemon-home-once");
     let daemon = start_daemon(&home, None);
     let path = home.to_path_buf();
-    let sock = path.join("daemon.sock");
-    std::fs::remove_file(&sock).unwrap();
-    eventually("the daemon did not listen again", || sock.exists());
-    // Every other name but the lock, then the directory, which the socket keeps: the
+    let requests = path.join("requests");
+    // Gone once, whatever the daemon makes in it as it goes: a removal of a directory
+    // whose entries are being made fails not empty (rmdir(2)), and is tried again.
+    eventually("the slots' directory could not be removed", || {
+        let _ = std::fs::remove_dir_all(&requests);
+        !requests.exists()
+    });
+    eventually("the daemon did not offer its slots again", || {
+        shards_ipc::slots::served(&path)
+    });
+    // Every other name but the lock, then the directory, which the slots keep: the
     // removal has failed. Then the lock, which a removal in another order takes before
     // it fails: the daemon, seeing it gone, exits and finishes the removal.
     let lock = path.join("daemon.lock");
     for entry in std::fs::read_dir(&path).unwrap() {
         let name = entry.unwrap().path();
-        if name == sock || name == lock {
+        if name == requests || name == lock {
             continue;
         }
         // The daemon may be writing in it as it goes, a spare container: until it is gone.
@@ -1011,7 +1109,7 @@ fn a_home_removed_once_is_gone_with_its_daemon() {
     }
     assert!(
         std::fs::remove_dir(&path).is_err(),
-        "removed with the socket in it"
+        "removed with its slots in it"
     );
     // What the daemon writes as a removal goes, past the names the removal took: its
     // predefined networks, made the first time they are asked for.
@@ -1077,55 +1175,43 @@ fn waiters_shut_out_no_client() {
     assert_eq!(after.status, Some(0), "{}", after.stderr);
 }
 
-/// A daemon out of descriptors leaves connections in its backlog and waits for room,
-/// rather than spinning on a listener that stays readable (Linux), or dropping them one
-/// by one as its accepts fail (macOS), and serves again once clients leave (audit A07).
-/// No VM needed.
+/// A daemon out of descriptors makes no more slots and waits for room, rather than spin,
+/// its clients waiting on their list, and serves again once clients leave (audit A07). Its
+/// limit here is above what it holds idle, its four slots offered, which take 40
+/// descriptors of their FIFOs' ends and stop pipes (shards_ipc::slots): each client that
+/// begins its request then holds two more of it, its slot replaced. No VM needed.
 #[test]
 fn a_daemon_out_of_descriptors_waits_for_room() {
+    more_descriptors();
     let home = TempDir::new("daemon-starved");
-    let daemon = start_daemon(&home, Some(48));
-    let sock = home.join("daemon.sock");
+    let daemon = start_daemon(&home, Some(128));
     let log = home.join("daemon.log");
-    let began = Instant::now();
-    let silent: Vec<UnixStream> = (0..64).map(|_| connect_patiently(&sock)).collect();
+    let said = || std::fs::read_to_string(&log).unwrap_or_default();
     // The daemon's own words: EMFILE's text is the C library's, and musl's differs.
-    eventually("the daemon never ran out of descriptors", || {
-        std::fs::read_to_string(&log)
-            .unwrap_or_default()
-            .contains("clients wait until the daemon has room")
-    });
+    let starved = || said().contains("clients wait until the daemon has room");
+    assert!(
+        !starved(),
+        "out of descriptors idle; the daemon's log:\n{}",
+        said()
+    );
+    // Clients that take its slots and say nothing, until it has no room to make the next.
+    let mut silent = Vec::new();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !starved() {
+        assert!(
+            Instant::now() < deadline,
+            "the daemon never ran out of descriptors, {} clients in; its log:\n{}",
+            silent.len(),
+            said()
+        );
+        silent.extend(silent_slot(&home, Duration::from_millis(100)));
+    }
     let before = cpu_time(daemon);
     std::thread::sleep(Duration::from_secs(1));
     let spent = cpu_time(daemon).saturating_sub(before);
     assert!(
         spent < Duration::from_millis(300),
         "the daemon spun: {spent:?} of CPU in 1 s"
-    );
-    // Held by the daemon, or waiting in its backlog, a connection has nothing to read; one
-    // dropped reads its end. None is: where an accept that finds no descriptor drops its
-    // client (macOS), none is tried without one.
-    let dropped = silent
-        .iter()
-        .filter(|conn| {
-            let mut pfd = libc::pollfd {
-                fd: std::os::fd::AsRawFd::as_raw_fd(*conn),
-                events: libc::POLLIN,
-                revents: 0,
-            };
-            // SAFETY: poll(2) on one valid pollfd, without waiting.
-            unsafe { libc::poll(&mut pfd, 1, 0) > 0 }
-        })
-        .count();
-    // A client that sends no request in the daemon's time for one (daemon.rs,
-    // REQUEST_TIMEOUT, 10 s) is let go, as the daemon says: on a host slow enough, the
-    // first clients' time is up before this looks. Any other is dropped for want of room.
-    let said = std::fs::read_to_string(&log).unwrap_or_default();
-    let timed_out = said.matches("a client sent no request in").count();
-    assert!(
-        dropped == 0 || (dropped <= timed_out && began.elapsed() >= Duration::from_secs(10)),
-        "{dropped} waiting clients were dropped, {timed_out} for sending nothing, {:?} after the first connected; the daemon's log:\n{said}",
-        began.elapsed()
     );
     // A collection due meanwhile waits: its files would take what clients wait for.
     let left = home.join("images").join("ingest").join("left");
@@ -1856,8 +1942,23 @@ fn idle_followers_cost_nothing_and_end_with_their_container() {
                 .unwrap()
         })
         .collect();
-    std::thread::sleep(Duration::from_secs(1));
+    // Once they have all been taken, which a host under load takes a while to start: a
+    // second of the daemon's that costs next to nothing, as no follower that looks for
+    // output on a timer lets it have (audit A12's, 50 times a second each).
     let daemon = daemon_pid(&home).expect("a daemon pid");
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        let before = cpu_time(daemon);
+        std::thread::sleep(Duration::from_secs(1));
+        let second = cpu_time(daemon).saturating_sub(before);
+        if second < Duration::from_millis(30) {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "100 followers never let their daemon rest: {second:?} of CPU in the last second"
+        );
+    }
     let before = cpu_time(daemon);
     std::thread::sleep(Duration::from_secs(3));
     let spent = cpu_time(daemon).saturating_sub(before);
