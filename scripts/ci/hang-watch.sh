@@ -9,7 +9,10 @@
 # hangs this is for: a microVM engine's command waiting on a named volume's first mount,
 # twice on x86_64 CI (jobs 117501329133, 117577952136), never on a run of its own (240
 # rounds); an exec over a volume's overlay that never ended (job 117708850596), its microVM
-# idle. Usage: scripts/ci/hang-watch.sh OUT
+# idle; a joiner's start with a named volume new to it, on the musl job (job 118009214414).
+# The tests may run in a container of their own (the musl job's Alpine): its processes are
+# read from the runner, their files through each one's /proc entry (its cwd, its exe), as
+# their paths are the container's. Usage: scripts/ci/hang-watch.sh OUT
 set -u
 out=$1
 mkdir -p "$out"
@@ -19,16 +22,19 @@ dump() {
     at="$out/hang-$(date +%H%M%S)-$cli"
     mkdir -p "$at"
     tr '\0' ' ' < "/proc/$cli/cmdline" > "$at/command.txt" 2>/dev/null
-    shards=$(readlink "/proc/$cli/exe" 2>/dev/null)
+    # The command's own binary, which runs from here whatever its path is in its container.
+    shards=/proc/$cli/exe
     home=$(tr '\0' '\n' < "/proc/$cli/environ" 2>/dev/null | sed -n 's/^SHARDS_HOME=//p' | head -1)
     echo "home: $home" >> "$at/command.txt"
     ps -eLo pid,tid,ppid,pgid,etimes,stat,wchan:32,comm,args > "$at/ps.txt"
     [ -n "$home" ] || return
-    cp "$home/daemon.log" "$at/daemon.log" 2>/dev/null
     # The home's daemon, whose working directory is its home, and every process under it.
     for d in $(pgrep -f "shards daemon"); do
         [ "$(readlink "/proc/$d/cwd" 2>/dev/null)" = "$home" ] && daemon=$d
     done
+    # The home, as the daemon's working directory: the same directory from here.
+    [ -n "$daemon" ] && home=/proc/$daemon/cwd
+    cp "$home/daemon.log" "$at/daemon.log" 2>/dev/null
     tree=$daemon
     next=$daemon
     while [ -n "$next" ]; do
@@ -49,7 +55,7 @@ dump() {
         sudo timeout 15 gdb -p "$p" -batch -ex "set pagination off" -ex "thread apply all bt" > "$at/gdb-$p.txt" 2>&1 &
     done
     # What each running microVM's guest is doing, where the test guest is there to say.
-    if [ -n "$shards" ] && [ -n "$daemon" ]; then
+    if [ -n "$daemon" ]; then
         for id in $(SHARDS_HOME=$home timeout 15 "$shards" ps -q 2>/dev/null); do
             # Privileged: a kernel stack is read with CAP_SYS_ADMIN (proc(5)).
             SHARDS_HOME=$home timeout 20 "$shards" exec --privileged -u 0 "$id" /bin/testguest stacks \
