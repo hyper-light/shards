@@ -5602,10 +5602,13 @@ a microVM under a slice held to 384 MiB (`MemoryHigh`, no swap) reads a gigabyte
 to its end, the daemon's log saying it gave back files and asked to unplug memory. Not on macOS, whose pressure is the
 whole system's, which no test may raise for every program on its host.
 
-**Not yet.** What the driver unplugs of what it is asked, and its cost, unmeasured: on
-Linux, with Fedora's benchmark done, with plugged memory online as the kernel's and
-otherwise (`memory_hotplug.online_policy=auto-movable`, which keeps the kernel a share of
-it). Builders (D133) give back nothing at pressure yet. M267 on Linux.
+**Measured (PM M268, macOS).** Of a gigabyte a guest plugged, filled with its own pages
+and the kernel's among them, and freed, the driver gave back 98% within 0.1 s, 18 MiB
+staying (p50) in 3 of its 8 blocks; online as auto-movable, 14 MiB in one; all movable,
+none. Plugged memory stays the kernel's own (D133).
+
+**Not yet.** Builders (D133) give back nothing at pressure: a build runs in `shards build`'s
+own process, not the daemon's. M267 and M268 on Linux, and M268 at larger sizes.
 
 ### D179. Other CPUs' images, emulated in their microVM (parts 1 to 3 built)
 

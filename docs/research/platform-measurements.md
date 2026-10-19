@@ -9811,3 +9811,38 @@ revision before comparing a changed API/implementation.
   a tenth of a second for a gigabyte. Linux's numbers to come, on M258's host, once its
   benchmark (M266) is done.
 
+### M268. What the virtio-mem driver unplugs of memory a guest used and freed, by how it came online (D188, D133)
+
+- **Question.** At the host's pressure a run asks its device to unplug what it holds past
+  twice what it uses (D188). Its plugged memory comes online as the kernel's own (D133),
+  where the kernel may keep pages it cannot move, which keep their 2 MiB subblock plugged,
+  and a memory block with one plugged subblock keeps its page structures. How much does the
+  driver give back, how soon, and what would another way of onlining it give?
+- **Method.** `docs/research/measurements/unplug/measure.sh SHARDS KERNEL TESTGUEST 5 1024
+  16384`: the test guest as PID 1 under shards' VMM (`unplug-cost`), booted with 256 MiB and
+  a region of 1 GiB more, plugs that gigabyte, fills seven eighths of it with its own pages
+  in 16 rounds, writing 1,024 files of a page each in a tmpfs between rounds (the kernel's
+  inodes and dentries among its pages, as a session's are mixed), frees all of it and drops
+  the kernel's caches, then asks its device for none and reads what is still plugged at 0.1,
+  0.5, 1, 2, 5, 10 and 30 s, and the memory blocks of it still online at the end. Each way
+  of onlining it 5 times, interleaved: the kernel's own (`memhp_default_state=online_kernel`,
+  runs' today), `memory_hotplug.online_policy=auto-movable` (movable while the movable
+  zone is at most 301% of the kernel's), and all of it movable. macOS 26.4.1, Apple M5
+  Max, shards f61c1628 and its test guest, 2026-10-19.
+- **Results** (n 5 each; what is plugged is the same from 0.1 s to 30 s in every boot):
+
+  | onlined as | still plugged, MiB: p50 / p90 / p99 / max | blocks of 8 still online: p50 / max |
+  |---|---|---|
+  | the kernel's own | 18 / 20 / 20 / 20 | 3 / 4 |
+  | auto-movable | 14 / 16 / 16 / 16 | 1 / 1 |
+  | movable | 0 / 0 / 0 / 0 | 0 / 0 |
+
+  - Online as the kernel's own, 98% of the gigabyte went back within 0.1 s, and 4 to 6 of
+    its 8 blocks with their page structures; what stays is the kernel's few pageblocks of
+    what it cannot move, which group together. Auto-movable keeps 2 to 4 MiB less, in one
+    block; all movable, nothing stays, at D133's risk of a kernel short of memory with
+    memory free.
+- **Consequence.** D188's unplug keeps plugged memory online as the kernel's own: at this
+  size the other ways give back 2 to 4 MiB more and a block's page structures. Larger
+  sizes, and Linux, unmeasured.
+

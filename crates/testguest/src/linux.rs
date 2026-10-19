@@ -32,6 +32,7 @@ pub fn main() {
             "hotplug" => hotplug(),
             "snapshot-plug" => snapshot_plug(),
             "plug-snapshot" => plug_snapshot(),
+            "unplug-cost" => unplug_cost(),
             "limits" => limits(),
             "pci" => pci(),
             "pci-irq" => pci_irq(),
@@ -2088,6 +2089,98 @@ fn hotplug() -> Result<(), String> {
         now => Err(format!("MemTotal {now}, {before} before")),
     });
     Ok(())
+}
+
+/// What the virtio-mem driver gives back of memory a guest plugged, used and freed, as that
+/// memory came online (its command line's `memhp_default_state` and
+/// `memory_hotplug.online_policy`): plugs `shards_plug_mib` MiB; fills seven eighths of it
+/// with its own pages and, between them, the kernel's (`shards_files` files of a page each
+/// in a tmpfs: their pages, inodes and dentries), as a session's are mixed; frees all of it
+/// and drops the kernel's caches; then asks for none, and says how much is still plugged
+/// 0.1, 0.5, 1, 2, 5, 10 and 30 s after, and how many memory blocks of it are still
+/// online: `SHARDS-TEST UNPLUG <plugged> <ms>:<left>... blocks:<n>`.
+fn unplug_cost() -> Result<(), String> {
+    use shards_abi::control::{HOTPLUG_REQUEST, HOTPLUG_SIZE};
+    let control = ControlPage::map()?;
+    let most = control.read64(HOTPLUG_SIZE);
+    let want = env_u64("shards_plug_mib")? << 20;
+    if most < want {
+        return Err(format!("{want} bytes asked for; the guest may plug {most}"));
+    }
+    let files = env_u64("shards_files").unwrap_or(65_536);
+    let before = mem_total()?;
+    let blocks_before = blocks_online()?;
+    control.write64(HOTPLUG_REQUEST, want);
+    waiting("the memory asked for", || match mem_total()? {
+        now if now >= before + want => Ok(()),
+        now => Err(format!("MemTotal {now}, {before} before")),
+    });
+    std::fs::create_dir_all("/scratch").map_err(|e| format!("/scratch: {e}"))?;
+    // SAFETY: mount(2) of NUL-terminated literals.
+    if unsafe {
+        libc::mount(
+            c"tmpfs".as_ptr(),
+            c"/scratch".as_ptr(),
+            c"tmpfs".as_ptr(),
+            0,
+            std::ptr::null(),
+        )
+    } != 0
+    {
+        return Err(format!("/scratch: {}", io::Error::last_os_error()));
+    }
+    let used = usize::try_from(want - want / 8).map_err(|e| e.to_string())?;
+    let rounds = 16usize;
+    let mut held = Vec::with_capacity(rounds);
+    let page = [7u8; 4096];
+    for r in 0..rounds {
+        let mut buf = Aligned::new(used / rounds)?;
+        for p in buf.slice(used / rounds).chunks_mut(4096) {
+            p.fill(1);
+        }
+        held.push(buf);
+        for f in 0..files / rounds as u64 {
+            let path = format!("/scratch/{r}-{f}");
+            std::fs::write(&path, page).map_err(|e| format!("{path}: {e}"))?;
+        }
+    }
+    drop(held);
+    for r in 0..rounds {
+        for f in 0..files / rounds as u64 {
+            let _ = std::fs::remove_file(format!("/scratch/{r}-{f}"));
+        }
+    }
+    let _ = std::fs::write("/proc/sys/vm/drop_caches", "3");
+    let plugged = mem_total()?.saturating_sub(before);
+    let began = Instant::now();
+    control.write64(HOTPLUG_REQUEST, 0);
+    let mut said = format!("SHARDS-TEST UNPLUG {plugged}");
+    for at in [100u64, 500, 1_000, 2_000, 5_000, 10_000, 30_000] {
+        let due = Duration::from_millis(at);
+        if let Some(wait) = due.checked_sub(began.elapsed()) {
+            std::thread::sleep(wait);
+        }
+        said.push_str(&format!(" {at}:{}", mem_total()?.saturating_sub(before)));
+    }
+    // The memory blocks still online of what was plugged: each keeps its page structures.
+    said.push_str(&format!(
+        " blocks:{}",
+        blocks_online()?.saturating_sub(blocks_before)
+    ));
+    let _ = writeln!(io::stdout(), "{said}");
+    Ok(())
+}
+
+/// How many memory blocks the kernel has online (/sys/devices/system/memory, its
+/// `memoryN/online`).
+fn blocks_online() -> Result<u64, String> {
+    let dir = "/sys/devices/system/memory";
+    let entries = std::fs::read_dir(dir).map_err(|e| format!("{dir}: {e}"))?;
+    Ok(entries
+        .flatten()
+        .filter(|e| e.file_name().to_string_lossy().starts_with("memory"))
+        .filter(|e| std::fs::read_to_string(e.path().join("online")).is_ok_and(|v| v.trim() == "1"))
+        .count() as u64)
 }
 
 /// The limits the kernel sized by the memory it booted with (shards_testguest::LIMITS)
