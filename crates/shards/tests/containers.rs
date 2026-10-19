@@ -1030,16 +1030,8 @@ fn stats_measures_each_microvm_from_its_guest() {
     };
     let mut spinner = start(&home, &image, &["--name", "spinner"], &["spin"]);
     let mut sleeper = start(&home, &image, &["--name", "sleeper"], &["sleep"]);
-    let stats = shards_in(&home, &["stats", "--no-stream"]);
-    assert_eq!(stats.status, Some(0), "{stats}");
-    let mut lines = stats.stdout.lines();
-    assert_eq!(
-        lines.next(),
-        Some("CONTAINER ID   NAME      CPU %     MEM USAGE / LIMIT   MEM %     NET I/O   BLOCK I/O   PIDS"),
-        "{stats}"
-    );
     // Each row: its name, its share of a CPU, and its memory against the microVM's.
-    let row = |name: &str| -> (f64, String) {
+    let row = |stats: &Run, name: &str| -> (f64, String) {
         let line = stats
             .stdout
             .lines()
@@ -1062,13 +1054,31 @@ fn stats_measures_each_microvm_from_its_guest() {
         assert_eq!(fields.last(), Some(&"1"), "{line}");
         (cpu, fields[3].to_string())
     };
-    let (spinning, held) = row("spinner");
-    let (sleeping, _) = row("sleeper");
     // A workload spinning one vCPU uses what the host gives that vCPU, which on a busy
     // host is less than a CPU (34% on a shared CI runner, 2026-10-07; 9.55% here as a gate's
-    // tests ran beside it, 2026-10-17); one asleep, almost nothing, as little as the column
+    // tests ran beside it, 2026-10-17), and a second of a host at a load of 30 to 47 gave it
+    // none (0.00%, a gate, 2026-10-19); one asleep, almost nothing, as little as the column
     // shows (0.00%, its two decimals). Measured from each guest, the two stand apart by an
-    // order of magnitude, the sleeper's taken as no less than the column's least.
+    // order of magnitude, the sleeper's taken as no less than the column's least, in a table
+    // asked for until they do, for a minute at most: what the host gives a second is not
+    // what is tested.
+    let deadline = Instant::now() + Duration::from_secs(60);
+    let (stats, spinning, sleeping, held) = loop {
+        let stats = shards_in(&home, &["stats", "--no-stream"]);
+        assert_eq!(stats.status, Some(0), "{stats}");
+        assert_eq!(
+            stats.stdout.lines().next(),
+            Some(
+                "CONTAINER ID   NAME      CPU %     MEM USAGE / LIMIT   MEM %     NET I/O   BLOCK I/O   PIDS"
+            ),
+            "{stats}"
+        );
+        let (spinning, held) = row(&stats, "spinner");
+        let (sleeping, _) = row(&stats, "sleeper");
+        if spinning > 10.0 * sleeping.max(0.01) || Instant::now() > deadline {
+            break (stats, spinning, sleeping, held);
+        }
+    };
     assert!(spinning > 10.0 * sleeping.max(0.01) && sleeping < 10.0, "{stats}");
     // The workload's own memory, not its VM's: a binary size.
     assert!(
