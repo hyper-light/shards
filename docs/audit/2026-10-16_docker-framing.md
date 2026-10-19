@@ -165,8 +165,8 @@ Reviewed feature by feature, each D-entry's design against what it took from Doc
       terminal was. Done: its client's type where its root describes it, else
       xterm-256color where the client's terminal speaks it, else xterm (D16, PM M263).
     - What happened to a home's microVMs, for `events --since`: the last 256 events,
-      dockerd's `eventsLimit`, gone with the daemon. To keep them in the home, as long as
-      the disk's share for them allows, derived.
+      dockerd's `eventsLimit`, gone with the daemon. Done: a journal in the home, its
+      history a log's, `configure disk --events-history` (D187).
     - A microVM's image pushed: 5 blobs at once, dockerd's `max-concurrent-uploads`, where a
       pull's fetcher measures and adapts (PM M114). To adapt as the fetcher does, measured.
     - A microVM whose command outlives its SIGKILL: its VM ended 10 s later, and a signal

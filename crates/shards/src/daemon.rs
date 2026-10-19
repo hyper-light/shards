@@ -1412,6 +1412,7 @@ impl<D: Disk> Daemon<D> {
     ) -> io::Result<Daemon<D>> {
         use std::os::unix::fs::MetadataExt as _;
         let home_id = std::fs::symlink_metadata(&home).ok().map(|m| (m.dev(), m.ino()));
+        let events = events::Events::kept_in(&home);
         Ok(Daemon {
             home,
             bridge: settings.bridge,
@@ -1468,7 +1469,7 @@ impl<D: Disk> Daemon<D> {
             join_shares: Mutex::default(),
             joiner_links: Mutex::default(),
             members: Mutex::default(),
-            events: events::Events::default(),
+            events,
             settling: Mutex::default(),
             settled: Condvar::new(),
             restarts: Mutex::default(),

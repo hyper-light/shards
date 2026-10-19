@@ -5,7 +5,7 @@
 //! whether the daemon runs or not. A setting not there is its default: the build cache's
 //! shares of the disk its store is on (it reserves 10%, keeps at most 80%, and keeps 20%
 //! free), and at most 1 GiB of a run's newest output in its log (the user's calls,
-//! 2026-10-18).
+//! 2026-10-18), and of the home's newest events in its journal, the home's own log (D187).
 
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
@@ -51,6 +51,8 @@ pub struct Settings {
     pub cache_free: Option<Amount>,
     /// Bytes of a run's newest output its log keeps.
     pub log_history: Option<u64>,
+    /// Bytes of the home's newest events its journal keeps (D187).
+    pub events_history: Option<u64>,
 }
 
 pub const CACHE_RESERVE: Amount = Amount::Percent(10);
@@ -80,21 +82,25 @@ pub const fn log_retention(history: u64) -> crate::spec::LogRetention {
     crate::spec::LogRetention { size, files }
 }
 
-const NAMES: [&str; 4] = [
+const NAMES: [&str; 5] = [
     "build-cache-reserve",
     "build-cache-max",
     "build-cache-free",
     "log-history",
+    "events-history",
 ];
 
 const USAGE: &str = "usage: shards configure disk [--build-cache-reserve N%|SIZE] [--build-cache-max N%|SIZE]
-                             [--build-cache-free N%|SIZE] [--log-history SIZE] [--reset]
+                             [--build-cache-free N%|SIZE] [--log-history SIZE]
+                             [--events-history SIZE] [--reset]
   How much of the disk shards keeps, each setting until set again; alone, what each is.
   --build-cache-reserve: what the build cache always keeps, at most its most (default 10%
     of its disk)
   --build-cache-max: the most it keeps (default 80% of its disk; 0 for no most)
   --build-cache-free: the disk it keeps free, past its reserve (default 20%; 0 for none)
   --log-history: the most a run's log keeps of its newest output (default 1g)
+  --events-history: the most the home keeps of its newest events, for `--since`
+    (default 1g)
   --reset: every setting back to its default";
 
 fn path(home: &Path) -> PathBuf {
@@ -145,13 +151,16 @@ impl Settings {
             "build-cache-reserve" => self.cache_reserve = Some(Amount::parse(value)?),
             "build-cache-max" => self.cache_max = Some(Amount::parse(value)?),
             "build-cache-free" => self.cache_free = Some(Amount::parse(value)?),
-            "log-history" => {
+            "log-history" | "events-history" => {
                 let bytes = shards_cmdline::resources::ram_in_bytes(value)?;
                 let bytes = u64::try_from(bytes)
                     .ok()
                     .filter(|b| *b > 0)
                     .ok_or_else(|| format!("{value}: a log keeps at least a byte"))?;
-                self.log_history = Some(bytes);
+                match name {
+                    "log-history" => self.log_history = Some(bytes),
+                    _ => self.events_history = Some(bytes),
+                }
             }
             other => {
                 return Err(format!(
@@ -178,6 +187,9 @@ impl Settings {
         if let Some(b) = self.log_history {
             out.push(("log-history", b.to_string()));
         }
+        if let Some(b) = self.events_history {
+            out.push(("events-history", b.to_string()));
+        }
         out
     }
 
@@ -185,6 +197,13 @@ impl Settings {
     #[cfg_attr(not(unix), allow(dead_code))]
     pub fn log_retention(&self) -> crate::spec::LogRetention {
         log_retention(self.log_history.unwrap_or(LOG_HISTORY))
+    }
+
+    /// How the home's journal keeps its newest events: as a log keeps its run's output
+    /// ([`log_retention`]), the home's own log, by the same default (D187).
+    #[cfg_attr(not(unix), allow(dead_code))]
+    pub fn events_retention(&self) -> crate::spec::LogRetention {
+        log_retention(self.events_history.unwrap_or(LOG_HISTORY))
     }
 }
 
@@ -201,6 +220,7 @@ pub fn command(args: impl Iterator<Item = std::ffi::OsString>) -> ExitCode {
         "--build-cache-max",
         "--build-cache-free",
         "--log-history",
+        "--events-history",
     ];
     if crate::context::asks_help(&words, &flags) {
         return crate::context::help_page("disk", USAGE);
@@ -280,6 +300,14 @@ pub fn command(args: impl Iterator<Item = std::ffi::OsString>) -> ExitCode {
                 LOG_HISTORY.to_string()
             )
         );
+        let _ = writeln!(
+            out,
+            "events-history      {}",
+            shown(
+                settings.events_history.map(|b| b.to_string()),
+                LOG_HISTORY.to_string()
+            )
+        );
         Ok(())
     })();
     match result {
@@ -327,6 +355,15 @@ mod tests {
         }
         assert!(s.set("build-cache-free", "101%").is_err());
         assert!(s.set("log-history", "0").is_err());
+        // The home's events: kept as a log keeps a run's output, by its default.
+        assert_eq!(
+            Settings::default().events_retention(),
+            Settings::default().log_retention()
+        );
+        s.set("events-history", "64k").unwrap();
+        assert_eq!(s.events_history, Some(64 << 10));
+        assert_eq!(s.events_retention(), log_retention(64 << 10));
+        assert!(s.set("events-history", "0").is_err());
         assert!(s.set("cache", "1g").is_err());
     }
 }

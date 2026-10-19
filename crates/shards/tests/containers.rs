@@ -1887,6 +1887,64 @@ fn diff_shows_what_a_microvm_changed() {
     assert_eq!(ended.status, Some(0), "{ended}");
 }
 
+/// What happened is kept past the daemon that heard it (D187): the next, started by the
+/// next command as an idle daemon's exit leaves it to be, reads it back for `--since`,
+/// where dockerd's last 256 are gone with it.
+#[test]
+fn events_outlive_their_daemon() {
+    let Some((home, image)) = home("containers-events-kept") else {
+        return;
+    };
+    let shards = |args: &[&str]| shards_in(&home, args);
+    let since = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+        .to_string();
+    let ran = run_in(&home, &image, &["--rm", "--name", "kept"], &["exit", "3"]);
+    assert_eq!(ran.status, Some(3), "{ran}");
+    assert_eq!(shards(&["daemon", "stop"]).status, Some(0));
+    let until = format!(
+        "{:.9}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs_f64()
+    );
+    let past = shards(&[
+        "events",
+        "--since",
+        &since,
+        "--until",
+        &until,
+        "--filter",
+        "container=kept",
+    ]);
+    assert_eq!(past.status, Some(0), "{past}");
+    let actions: Vec<&str> = past.stdout.lines().filter_map(|l| l.split(' ').nth(2)).collect();
+    // Its life, in order, as the daemon that ran it heard it.
+    let order = ["create", "start", "die", "destroy"];
+    let mut at = 0;
+    for action in &actions {
+        if order.get(at) == Some(action) {
+            at += 1;
+        }
+    }
+    assert_eq!(at, order.len(), "{past}");
+    assert!(past.stdout.contains("exitCode=3"), "{past}");
+    // Kept in the home, an event a line, as `--format json` prints it.
+    let journal: String = std::fs::read_dir(home.join("events"))
+        .unwrap()
+        .map(|e| std::fs::read_to_string(e.unwrap().path()).unwrap())
+        .collect();
+    assert!(
+        journal
+            .lines()
+            .any(|l| l.starts_with("{\"Type\":\"container\",\"Action\":\"die\"")),
+        "{journal}"
+    );
+}
+
 #[test]
 fn events_tell_a_microvms_life() {
     let Some((home, image)) = home("containers-events") else {

@@ -625,6 +625,7 @@ mod tests {
             cache_max: Some(Amount::Percent(80)),
             cache_free: Some(Amount::Percent(20)),
             log_history: None,
+            events_history: None,
         };
         assert_eq!(caps(&explicit), caps(&Settings::default()));
         let sized = Settings {
@@ -632,6 +633,7 @@ mod tests {
             cache_max: Some(Amount::Bytes(50 << 30)),
             cache_free: Some(Amount::Percent(0)),
             log_history: None,
+            events_history: None,
         };
         assert_eq!(caps(&sized), Some((50 << 30, 50 << 30, 0)));
         let unread = default_policy(None, &sized);

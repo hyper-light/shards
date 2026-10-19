@@ -5452,7 +5452,8 @@ configurable".
 - `shards configure disk`, beside `configure guest` in shards' grammar (`disk configure`
   as the command it runs): `--build-cache-reserve`, `--build-cache-max` and
   `--build-cache-free`, each `N%` of the disk the image store is on (0 to 100) or a size
-  (`50g`, `512m`: binary units, as `--memory` reads them); `--log-history SIZE`; `--reset`.
+  (`50g`, `512m`: binary units, as `--memory` reads them); `--log-history SIZE`;
+  `--events-history SIZE`, the home's events' journal's (D187); `--reset`.
   Alone, each setting and whether it is its default. Every flag is checked before any is
   kept, so a command that fails changes nothing; a reset sets aside what was there,
   whether it reads or not.
@@ -5499,6 +5500,38 @@ the settings; a short history in one segment; a reset reading what it resets; fl
 a reset unchecked; a run admitted past settings that do not read; a reserve past the most;
 settings that do not read collected by the default policy; a set policy waiting out the
 last collection; a failed collection unsaid; the collection ignoring the settings.
+
+### D187. The home's events, kept for `--since` past their daemon (built)
+
+**Found.** The audit of what was taken from Docker (docs/audit/2026-10-16_docker-framing.md):
+a home's events for `events --since` were the last 256, dockerd's `eventsLimit` (moby
+daemon/events/events.go), in the daemon's memory and gone with it. A shards daemon exits
+once idle (`SHARDS_DAEMON_IDLE`, 900 s), and `--since` then said nothing of what had
+happened before, where Docker's daemon, which runs on, says its last 256.
+
+**Decided.**
+- **A journal in the home**, `events/`: segments of an event a line, each as `--format
+  json` prints it (Docker's events.Message, the API's from 1.52), named by number. The
+  daemon appends each event as it logs it, under the lock it tells its listeners under, so
+  that a listener has each event once: read from the journal up to where it was written
+  as the listener came, then heard. A segment that ends in a line cut short, by a crash
+  mid-write, is let be and the next begun past it; a line that does not read is passed by.
+- **Its history is a log's** (D186): `configure disk --events-history SIZE`, at most that
+  many bytes of the newest events, in equal segments of at most 20 MiB, two at least, the
+  oldest removed as the newest begins; by default a log's 1 GiB, the user's call for a log
+  (2026-10-18), the home's events being the home's log. The setting is read as each
+  segment begins, so a change takes at the next.
+- **`--since` reads from the newest segment that begins no later than it**, each segment
+  read whole, one at a time, its events filtered as before.
+- An event costs a write(2) of its line to a file opened for appending, unsynced: a host
+  that crashes may lose its last, as its page cache does a log's.
+
+**Tested.** Unit (daemon/events.rs): events kept for the next daemon, read back whole; the
+history kept and the oldest gone (two segments, at most the history's bytes); a line cut
+short passed by; a listener reads what came before and hears what comes after, none
+twice. Mutation-checked, each caught: no trimming; a line cut short written on. E2E
+(tests/containers.rs): `events_outlive_their_daemon`, a run's life read back by the next
+daemon after `daemon stop` (failed with the journal taken out); `events_tell_a_microvms_life`.
 
 ### D179. Other CPUs' images, emulated in their microVM (parts 1 to 3 built)
 
