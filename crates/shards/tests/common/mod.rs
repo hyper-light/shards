@@ -255,14 +255,14 @@ pub fn kvm_kernel() -> Option<&'static Path> {
         let pinned = match ARCH {
             _ if cfg!(windows) => return None,
             "aarch64" => Artifact {
-                name: "Image-6.18.48-aarch64-kvm-a6cbab8c9218",
-                url: "https://github.com/hyper-light/shards/releases/download/kernel-6.18.48-a6cbab8c9218/Image-6.18.48-aarch64-kvm",
-                sha256: "9f4f21d0f27fb5ade9f9868ade6e34ed56acd2ea1313490be693cfdfca0050df",
+                name: "Image-6.18.48-aarch64-kvm-426ba771634e",
+                url: "https://github.com/hyper-light/shards/releases/download/kernel-6.18.48-426ba771634e/Image-6.18.48-aarch64-kvm",
+                sha256: "08d0448b2db8ed9194776863244e09faeb0c2b2be6ef5b62c232c5a2435eb256",
             },
             "x86_64" => Artifact {
-                name: "vmlinux-6.18.48-x86_64-kvm-a6cbab8c9218",
-                url: "https://github.com/hyper-light/shards/releases/download/kernel-6.18.48-a6cbab8c9218/vmlinux-6.18.48-x86_64-kvm",
-                sha256: "c37b04b1c3b4f4f9062489931de7392f983ed11c6d5556626cf899f73b1dd7f9",
+                name: "vmlinux-6.18.48-x86_64-kvm-426ba771634e",
+                url: "https://github.com/hyper-light/shards/releases/download/kernel-6.18.48-426ba771634e/vmlinux-6.18.48-x86_64-kvm",
+                sha256: "0e986fdc01a8627235d9613d7f39de98b04ee9b899713b2bbea64efd84d5a9ad",
             },
             _ => return None,
         };

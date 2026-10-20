@@ -2750,6 +2750,23 @@ fn fs(ops: &[String]) -> i32 {
                     _ => Err(io::Error::other("hold:PATH:OFFSET:SIGNAL")),
                 }
             }
+            // A file mapped 2 MiB at a time across the host's change of its size,
+            // `map2m:PATH:SIGNAL`: its first 8 MiB mapped shared at a 2 MiB boundary and each
+            // page read, which a DAX file's mapping takes in 2 MiB pages (fs/dax.c,
+            // `dax_iomap_pmd_fault`), SIGNAL.ready made; once the host makes SIGNAL, and its
+            // attributes have aged (VALID_S, a second), the file stat'ed and opened again,
+            // and each page read again, said as `map2m PATH SIZE`.
+            "map2m" => {
+                let (path, signal) = rest.rsplit_once(':').unwrap_or((rest, ""));
+                map_2m(path, signal).map(|size| {
+                    let _ = writeln!(io::stdout(), "map2m {path} {size}");
+                })
+            }
+            // The kernel's log records holding `WORD` (`kmsg:WORD`), each said, then how many:
+            // /dev/kmsg, which only a privileged exec reads (CAP_SYSLOG).
+            "kmsg" => kmsg_holding(rest).map(|n| {
+                let _ = writeln!(io::stdout(), "kmsg {rest} {n}");
+            }),
             // One byte read, `peek:PATH:OFFSET`, said as `peek PATH OFFSET BYTE`.
             "peek" => {
                 use std::os::unix::fs::FileExt as _;
@@ -2772,6 +2789,87 @@ fn fs(ops: &[String]) -> i32 {
         }
     }
     0
+}
+
+/// [`fs`]'s `map2m`: `path`'s size as stat'ed once the host has made `signal`.
+fn map_2m(path: &str, signal: &str) -> io::Result<u64> {
+    use std::os::fd::AsRawFd as _;
+    const PMD: usize = 2 << 20;
+    const LEN: usize = 4 * PMD;
+    let file = std::fs::File::open(path)?;
+    // SAFETY: an anonymous reservation of no access, a 2 MiB page longer than the mapping,
+    // which goes at its first 2 MiB boundary; this process's until it ends.
+    let space = unsafe {
+        libc::mmap(
+            std::ptr::null_mut(),
+            LEN + PMD,
+            libc::PROT_NONE,
+            libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
+            -1,
+            0,
+        )
+    };
+    if space == libc::MAP_FAILED {
+        return Err(io::Error::last_os_error());
+    }
+    let at = (space as usize).next_multiple_of(PMD);
+    // SAFETY: MAP_FIXED within the reservation above.
+    let mapped = unsafe {
+        libc::mmap(
+            at as *mut libc::c_void,
+            LEN,
+            libc::PROT_READ,
+            libc::MAP_SHARED | libc::MAP_FIXED,
+            file.as_raw_fd(),
+            0,
+        )
+    };
+    if mapped == libc::MAP_FAILED {
+        return Err(io::Error::last_os_error());
+    }
+    let read_all = || {
+        (0..LEN).step_by(4096).fold(0u64, |sum, off| {
+            // SAFETY: within the file's mapping, its first 8 MiB, which stays mapped until
+            // the process ends.
+            let byte = unsafe { std::ptr::read_volatile(mapped.cast::<u8>().add(off)) };
+            sum.wrapping_add(u64::from(byte))
+        })
+    };
+    let _ = read_all();
+    std::fs::write(format!("{signal}.ready"), b"")?;
+    while std::fs::symlink_metadata(signal).is_err() {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    // Past its attributes' second (the share's VALID_S): the stat asks the host.
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    let size = std::fs::metadata(path)?.len();
+    drop(std::fs::File::open(path)?);
+    let _ = read_all();
+    Ok(size)
+}
+
+/// [`fs`]'s `kmsg`: how many of the kernel's log lines hold `word`, each said: its ring
+/// read whole through syslog(2) (SYSLOG_ACTION_READ_ALL), which a privileged exec may
+/// (CAP_SYSLOG) where its container has no /dev/kmsg.
+fn kmsg_holding(word: &str) -> io::Result<usize> {
+    // syslog(2)'s SYSLOG_ACTION_SIZE_BUFFER and SYSLOG_ACTION_READ_ALL.
+    const SIZE_BUFFER: libc::c_int = 10;
+    const READ_ALL: libc::c_int = 3;
+    // SAFETY: klogctl(3) asking the ring's size, which reads no buffer.
+    let size = unsafe { libc::klogctl(SIZE_BUFFER, std::ptr::null_mut(), 0) };
+    let size = usize::try_from(size).map_err(|_| io::Error::last_os_error())?;
+    let mut ring = vec![0u8; size.max(1)];
+    let len = libc::c_int::try_from(ring.len()).map_err(io::Error::other)?;
+    // SAFETY: klogctl(3) reading into `ring`, of `len` bytes.
+    let read = unsafe { libc::klogctl(READ_ALL, ring.as_mut_ptr().cast(), len) };
+    let read = usize::try_from(read).map_err(|_| io::Error::last_os_error())?;
+    let text = String::from_utf8_lossy(ring.get(..read).unwrap_or_default());
+    let mut held = 0;
+    for line in text.lines().filter(|l| l.contains(word)) {
+        held += 1;
+        let _ = writeln!(io::stdout(), "{line}");
+    }
+    Ok(held)
 }
 
 /// Whether statx(2) says the kernel maps `path` directly (STATX_ATTR_DAX).

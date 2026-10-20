@@ -1799,6 +1799,72 @@ fn a_volumes_large_files_go_through_its_dax_window() {
     let held = holder.join().unwrap();
     assert_eq!(held.stdout, "hold /v/held 3145728 0\n", "{held}");
     assert_eq!(shards(&["rm", "-f", "dax"]).status, Some(0));
+    // Mapped 2 MiB at a time by a process as the host grows it, then stat'ed and opened
+    // again: the guest learns the new size, and lets go of none of the entries the process
+    // still maps, which Linux's FUSE did at both (PM M274): the device keeps them at the
+    // open, shards' kernel at the size (resources/kernel/patches/0007). No warning of
+    // fs/dax.c in the guest's log, which a privileged microVM's exec reads (syslog(2)'s
+    // CAP_SYSLOG is the first user namespace's).
+    std::fs::write(dir.join("mapped"), [&big[..], &big[..1 << 20]].concat()).unwrap();
+    let run = shards(&[
+        "run",
+        "-d",
+        "--pull",
+        "never",
+        "--name",
+        "dax2m",
+        "--privileged",
+        "-u",
+        "0",
+        "-v",
+        &volume,
+        &image,
+        "sleep",
+    ]);
+    assert_eq!(run.status, Some(0), "{run}");
+    let mapper = {
+        let home = home.to_path_buf();
+        std::thread::spawn(move || {
+            let env: [(&str, &OsStr); 4] = [
+                ("SHARDS_HOME", home.as_os_str()),
+                ("SHARDS_KERNEL", kernel.as_os_str()),
+                ("SHARDS_INIT", init.as_os_str()),
+                ("SHARDS_SHARE_WINDOW_MIB", "64".as_ref()),
+            ];
+            let map = [
+                "exec",
+                "dax2m",
+                "/bin/testguest",
+                "fs",
+                "map2m:/v/mapped:/v/mapped-go",
+            ];
+            run_shards_env(&[], &map, &env, TIMEOUT)
+        })
+    };
+    let deadline = Instant::now() + TIMEOUT;
+    while !dir.join("mapped-go.ready").exists() {
+        assert!(Instant::now() < deadline, "the mapper never mapped the file");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    {
+        use std::os::unix::fs::FileExt as _;
+        let file = std::fs::OpenOptions::new()
+            .write(true)
+            .open(dir.join("mapped"))
+            .unwrap();
+        file.write_all_at(b"x", 9 << 20).unwrap();
+    }
+    std::fs::write(dir.join("mapped-go"), b"").unwrap();
+    let mapped = mapper.join().unwrap();
+    assert_eq!(
+        mapped.stdout,
+        format!("map2m /v/mapped {}\n", (9 << 20) + 1),
+        "{mapped}"
+    );
+    let log = shards(&["exec", "dax2m", "/bin/testguest", "fs", "kmsg:fs/dax.c"]);
+    assert_eq!(log.status, Some(0), "{log}");
+    assert!(log.stdout.ends_with("kmsg fs/dax.c 0\n"), "{log}");
+    assert_eq!(shards(&["rm", "-f", "dax2m"]).status, Some(0));
 }
 
 /// `--cgroup-parent` (D183): on Linux, a microVM's processes, its VM process and its

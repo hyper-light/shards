@@ -10148,4 +10148,8 @@ revision before comparing a changed API/implementation.
   window. The attribute and CREATE paths are the guest kernel's: shards' kernel carries
   0007 (resources/kernel/patches), which leaves a DAX file's entries to its layouts' own
   breaking, as an OPEN's O_TRUNC, a SETATTR's truncation, a fallocate, a range's reclaim
-  and an eviction break them.
+  and an eviction break them; released as kernel-6.18.48-426ba771634e, whose x86_64 vmlinux
+  is byte for byte the one measured here, and pinned. The DAX E2E test maps a file 2 MiB at
+  a time in a privileged microVM, grows it on the host and stats it, and finds no warning
+  of fs/dax.c in the guest's log; on the release before, an arm64 guest on this Mac logged
+  `fs/dax.c:415 dax_folio_put` there, and the test failed.
