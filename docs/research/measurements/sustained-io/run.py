@@ -21,12 +21,15 @@ in (volume), and fio a disk given whole (block):
 
     system            layer                         volume                       block
     shards            overlay over EROFS, tmpfs     virtio-fs, shards' server    -
+    shards-dax        overlay over EROFS, tmpfs     as shards', with DAX windows -
     shards-vmm        ext4 root on virtio-blk       ext4 on a second disk        virtio-blk
     docker            overlayfs, host filesystem    bind mount                   -
     firecracker       ext4 root on virtio-blk       ext4 on a second disk        virtio-blk
     cloud-hypervisor  ext4 root on virtio-blk       virtio-fs, virtiofsd         virtio-blk
 
 `shards` is a run as its users make one (`shards run`: its daemon, pool and template);
+`shards-dax` the same of a daemon whose microVMs' shares each have a DAX window of
+SIO_DAX_WINDOW_MIB (1024; SHARDS_SHARE_WINDOW_MIB, D189), in a home of its own;
 `shards-vmm` is shards' VMM booting the image's ext4 root as Firecracker and Cloud
 Hypervisor boot it (`shards run --kernel`, init.sh as PID 1), the same kernel in all
 three (shards' pinned 6.18.48), so that the VMMs compare apart from shards' runtime. Each
@@ -56,11 +59,14 @@ HERE = Path(__file__).resolve().parent
 CPUS, MEMORY_MIB, HOST_CPUS = 8, 8192, "0-15"
 TIMEOUT = 3600
 IMAGE = "shards-sio:1"
-SYSTEMS = ["shards", "shards-vmm", "docker", "firecracker", "cloud-hypervisor"]
+SYSTEMS = ["shards", "shards-dax", "shards-vmm", "docker", "firecracker", "cloud-hypervisor"]
+# The systems shards' daemon runs, each of a home of its own.
+DAEMONS = ("shards", "shards-dax")
+DAX_WINDOW_MIB = int(os.environ.get("SIO_DAX_WINDOW_MIB", "1024"))
 CELLS = [("nop", "layer"), ("npm", "layer"), ("npm", "volume"), ("cargo", "layer"),
          ("cargo", "volume"), ("test", "layer"), ("fio", "layer"), ("fio", "volume"),
          ("fio", "block")]
-BLOCKLESS = {"shards", "docker"}
+BLOCKLESS = {"shards", "shards-dax", "docker"}
 TREES = {"npm": "cli", "cargo": "rust-analyzer", "test": "rust-analyzer"}
 BOOT = "console=ttyS0 quiet panic=1 root=/dev/vda rw init=/sio/init"
 
@@ -70,8 +76,11 @@ def pct(v, p):
     return v[min(max(1, math.ceil(p / 100 * len(v))), len(v)) - 1]
 
 
-def env():
-    e = dict(os.environ, SHARDS_HOME=str(SIO / "home"), DOCKER_CONFIG=str(SIO / "docker-config"))
+def env(system="shards"):
+    home = SIO / ("home-dax" if system == "shards-dax" else "home")
+    e = dict(os.environ, SHARDS_HOME=str(home), DOCKER_CONFIG=str(SIO / "docker-config"))
+    if system == "shards-dax":
+        e["SHARDS_SHARE_WINDOW_MIB"] = str(DAX_WINDOW_MIB)
     return e
 
 
@@ -187,20 +196,26 @@ class Shards:
     benchmark: a round's other systems take longer than the daemon's idle exit
     (SHARDS_DAEMON_IDLE, 900 s), which the first run of the 2026-10-19 benchmark met."""
 
-    def __init__(self, shards):
-        self.shards = shards
+    def __init__(self, shards, system):
+        self.shards, self.system = shards, system
         self.starts = 0
-        subprocess.run([shards, "daemon", "stop"], env=env(), capture_output=True)
+        # The image, in a home that has it not yet: images.sh's archive of it. The client
+        # starts the home's daemon, which this one, in its scope, takes the place of.
+        if subprocess.run([shards, "image", "inspect", IMAGE], env=env(system),
+                          capture_output=True).returncode != 0:
+            subprocess.run([shards, "load", "-q", "-i", str(SIO / "image.tar")], env=env(system),
+                           check=True)
+        subprocess.run([shards, "daemon", "stop"], env=env(system), capture_output=True)
         self.start()
 
     def start(self):
         self.starts += 1
-        self.unit = f"sio-shards-{os.getpid()}-{self.starts}.scope"
+        self.unit = f"sio-{self.system}-{os.getpid()}-{self.starts}.scope"
         log = open(SIO / "daemon-run.log", "a")
         self.daemon = subprocess.Popen(
             ["systemd-run", "--user", "--scope", "-q", f"--unit={self.unit}",
              f"-p", f"AllowedCPUs={HOST_CPUS}", self.shards, "daemon"],
-            env=dict(env(), SHARDS_DAEMON_IDLE=str(7 * 86400)), stdout=log,
+            env=dict(env(self.system), SHARDS_DAEMON_IDLE=str(7 * 86400)), stdout=log,
             stderr=subprocess.STDOUT)
         deadline = time.monotonic() + 30
         while True:
@@ -222,15 +237,15 @@ class Shards:
         self.start()
 
     def stop(self):
-        subprocess.run([self.shards, "daemon", "stop"], env=env(), capture_output=True)
+        subprocess.run([self.shards, "daemon", "stop"], env=env(self.system), capture_output=True)
         self.daemon.wait(timeout=60)
 
 
 def command(system, workload, place, run, shards, daemon):
     """The run's argv, how its host measures are taken, and its spec for a scope."""
     work = ["/sio/work", workload, place]
-    if system in ("shards", "docker"):
-        argv = [shards if system == "shards" else "docker", "run", "--rm", "--cpus", str(CPUS),
+    if system in DAEMONS or system == "docker":
+        argv = [shards if system in DAEMONS else "docker", "run", "--rm", "--cpus", str(CPUS),
                 "-m", f"{MEMORY_MIB}m", "--memory-swap", f"{MEMORY_MIB}m"]
         argv += ["--name", f"sio-{os.getpid()}"]
         if system == "docker":
@@ -282,7 +297,7 @@ def command(system, workload, place, run, shards, daemon):
 
 
 def prepare(system, workload, place, run):
-    if system not in ("shards", "docker"):
+    if system not in DAEMONS and system != "docker":
         subprocess.run(["cp", "--reflink=auto", str(SIO / "rootfs.ext4"), str(run / "rootfs.ext4")],
                        check=True)
     if place == "volume":
@@ -299,19 +314,20 @@ def prepare(system, workload, place, run):
             f.truncate(8 << 30)
 
 
-def once(system, workload, place, rnd, shards, daemon):
+def once(system, workload, place, rnd, shards, daemons):
     run = fresh(SIO / "runs" / "current")
     prepare(system, workload, place, run)
+    daemon = daemons.get(system)
     argv, spec = command(system, workload, place, run, shards, daemon)
     peak_fd, cpu0, base = None, 0, 0
-    if system == "shards":
+    if daemon:
         daemon.ensure()
         peak_fd = os.open(daemon.cg / "memory.peak", os.O_RDWR)
         os.write(peak_fd, b"reset")
         cpu0, base = cpu_usec(daemon.cg), int((daemon.cg / "memory.current").read_text())
     hwm = {}
     watching = threading.Event()
-    if system == "shards":
+    if daemon:
         # The run's VM process, as `inspect` names it, its high-water mark read until it
         # ends (VmHWM: what of the daemon's scope is this run's own VM's).
         def watch():
@@ -319,7 +335,7 @@ def once(system, workload, place, rnd, shards, daemon):
             while not watching.is_set():
                 if not pid:
                     got = subprocess.run([shards, "inspect", "-f", "{{.State.Pid}}", f"sio-{os.getpid()}"],
-                                         env=env(), capture_output=True, text=True).stdout.strip()
+                                         env=env(system), capture_output=True, text=True).stdout.strip()
                     pid = int(got) if got.isdigit() else 0
                 try:
                     for line in Path(f"/proc/{pid}/status").read_text().splitlines() if pid else []:
@@ -332,7 +348,7 @@ def once(system, workload, place, rnd, shards, daemon):
         watcher.start()
     start = time.monotonic_ns()
     try:
-        r = subprocess.run(argv, env=env(), stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        r = subprocess.run(argv, env=env(system), stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                            timeout=TIMEOUT + 60)
         out, status = r.stdout.decode(errors="replace"), r.returncode
     except subprocess.TimeoutExpired as e:
@@ -348,6 +364,8 @@ def once(system, workload, place, rnd, shards, daemon):
            "total_s": got.get("total_ns", total) / 1e9}
     if "work_ns" in got:
         row["work_s"] = got["work_ns"] / 1e9
+    if system == "shards-dax":
+        row["share_window_mib"] = DAX_WINDOW_MIB
     for k in ("guest_peak", "host_peak", "vmm_hwm"):
         if k in got:
             row[k + "_mib"] = got[k] / 2**20
@@ -382,12 +400,12 @@ def rounds(shards, n, systems, cells):
     version = subprocess.run([shards, "--version"], capture_output=True, text=True).stdout.strip()
     meta = {"host": socket.gethostname(), "kernel": os.uname().release, "rev": head,
             "shards": version}
-    daemon = Shards(shards) if "shards" in systems else None
+    daemons = {s: Shards(shards, s) for s in systems if s in DAEMONS}
     try:
         # Unrecorded: each system's first start, which the rest do not pay again (shards'
         # template of the image, D25; the host's cache of the kernel and the root).
         for system in systems:
-            row = once(system, "nop", "layer", -1, shards, daemon)
+            row = once(system, "nop", "layer", -1, shards, daemons)
             print(f"warm-up {system:16} status {row['status']} total {row['total_s']:.2f} s", flush=True)
         with open(SIO / "results.jsonl", "a") as out:
             for rnd in range(n):
@@ -396,14 +414,14 @@ def rounds(shards, n, systems, cells):
                     for system in order:
                         if place == "block" and system in BLOCKLESS:
                             continue
-                        row = dict(meta, **once(system, workload, place, rnd, shards, daemon))
+                        row = dict(meta, **once(system, workload, place, rnd, shards, daemons))
                         out.write(json.dumps(row) + "\n")
                         out.flush()
                         print(f"{rnd} {system:16} {workload:5} {place:6} status {row['status']} "
                               f"total {row['total_s']:.2f} s work {row.get('work_s', 0):.2f} s",
                               flush=True)
     finally:
-        if daemon:
+        for daemon in daemons.values():
             daemon.stop()
 
 
