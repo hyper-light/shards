@@ -188,6 +188,50 @@ pub struct Request {
     pub tokens: Option<Vec<u8>>,
 }
 
+/// Tells the daemon of the files a share's DAX window maps (D189), for it to watch them
+/// for other processes cutting them short (`kind::WATCH`, `kind::UNWATCH`): Linux's alone,
+/// whose x86 KVM spins on a guest's access past a file's end where HVF and arm64's KVM end
+/// its run, which the window answers (PM M273).
+#[cfg(target_os = "linux")]
+struct Watching {
+    daemon: UnixStream,
+    share: u32,
+}
+
+#[cfg(target_os = "linux")]
+impl shards_vmm::devices::virtio::fs::window::Watch for Watching {
+    fn watch(&self, node: u64, file: std::os::fd::BorrowedFd<'_>, size: u64) {
+        let mut said = self.share.to_be_bytes().to_vec();
+        said.extend_from_slice(&node.to_be_bytes());
+        said.extend_from_slice(&size.to_be_bytes());
+        if let Err(e) = shards_ipc::send(&self.daemon, kind::WATCH, &said, &[file]) {
+            shards_vmm::warn!("a share's DAX window: telling the daemon of a file it maps: {e}");
+        }
+    }
+
+    fn unwatch(&self, node: u64) {
+        let mut said = self.share.to_be_bytes().to_vec();
+        said.extend_from_slice(&node.to_be_bytes());
+        if let Err(e) = shards_ipc::send(&self.daemon, kind::UNWATCH, &said, &[]) {
+            shards_vmm::debug!("a share's DAX window: telling the daemon of a file it maps no more: {e}");
+        }
+    }
+}
+
+/// Has the daemon watch what each of `slots`' DAX windows maps ([`Watching`]).
+#[cfg(target_os = "linux")]
+fn watch_windows(daemon: &UnixStream, slots: &[shards_vmm::devices::virtio::fs::Share]) {
+    for (share, slot) in slots.iter().enumerate() {
+        let (Some(window), Ok(share)) = (slot.window(), u32::try_from(share)) else {
+            continue;
+        };
+        match daemon.try_clone() {
+            Ok(daemon) => window.watch_with(Box::new(Watching { daemon, share })),
+            Err(e) => shards_vmm::warn!("a share's DAX window: the daemon's connection: {e}"),
+        }
+    }
+}
+
 /// Takes a connection for each of `slots` from the run's share process, in order, and
 /// says it has them (`kind::SHARE_ENDS`).
 fn shared(link: &UnixStream, slots: &[shards_vmm::devices::virtio::fs::Share]) -> Result<(), String> {
@@ -385,6 +429,10 @@ pub fn receive(
     {
         return Err(format!("telling the daemon the request is taken: {e}"));
     }
+    // Its windows' files watched by the daemon from their first mapping on (D189), a
+    // restored run's among them, which its shares map again as they are given.
+    #[cfg(target_os = "linux")]
+    watch_windows(daemon, slots);
     if let Some(link) = share_link {
         shared(&link, slots)?;
     }
@@ -542,6 +590,24 @@ fn relay_signals(conn: &UnixStream, to: &'static ToGuest, from: From<'_>) {
                     && let Err(e) = crate::vm_run::set_plug_most(u64::from_be_bytes(bytes))
                 {
                     let _ = writeln!(io::stderr(), "shards: its memory to plug: {e}");
+                }
+            }
+            // A file a share's DAX window maps, cut short by another process (D189): mapped
+            // as it is now, zeros where it has no pages, and a vCPU that spun there on its
+            // guest's read past its end runs on (PM M273).
+            kind::CUT if matches!(from, From::Daemon(_)) => {
+                let named = message
+                    .payload
+                    .first_chunk::<4>()
+                    .zip(message.payload.get(4..).and_then(|n| n.first_chunk::<8>()));
+                if let Some((share, node)) = named {
+                    let window = crate::vm_run::SHARES
+                        .get()
+                        .and_then(|s| s.get(u32::from_be_bytes(*share) as usize))
+                        .and_then(|slot| slot.window());
+                    if let Some(window) = window {
+                        window.cut(u64::from_be_bytes(*node));
+                    }
                 }
             }
             // The host's answer to the guest's ask on the host's network (D124).

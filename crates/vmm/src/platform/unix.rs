@@ -1665,6 +1665,28 @@ impl Drop for FileWatch {
     }
 }
 
+/// Watches `file` for writes, its truncations among them (inotify(7)'s `IN_MODIFY`), with
+/// the process's one inotify instance ([`notify`]), calling `call` with the watch's number
+/// on each, on the thread that reads the instance and under its lock: quick, and asking
+/// nothing of the watch. A file watched twice is one watch, which calls each. The daemon's
+/// watch on the files its microVMs' DAX windows map (D189), each the process's watch of
+/// one instance, as a microVM a process each would take an instance each (PM M257).
+#[cfg(target_os = "linux")]
+pub fn watch_writes(file: &File, call: fn(libc::c_int)) -> io::Result<libc::c_int> {
+    notify::shared()
+        .ok_or_else(|| io::Error::other("the process's inotify instance could not be made"))?
+        .watch_calling(file, libc::IN_MODIFY, call)
+}
+
+/// One of `watched`'s calls of `call` ([`watch_writes`]) made no more: the watch ends with
+/// the last.
+#[cfg(target_os = "linux")]
+pub fn unwatch_writes(watched: libc::c_int, call: fn(libc::c_int)) {
+    if let Some(shared) = notify::shared() {
+        shared.unwatch_calling(watched, call);
+    }
+}
+
 /// One inotify instance for the whole process (Linux). A user may have few: 128 by
 /// default (`fs.inotify.max_user_instances`), shared with every program the user runs,
 /// of which a KDE Plasma desktop's, a few apps open, held 101 (PM M257); and many watches
@@ -1683,9 +1705,23 @@ mod notify {
     #[derive(Debug)]
     pub struct Shared {
         fd: OwnedFd,
-        /// The eventfds each watch wakes, by its descriptor: two watches of one file share
-        /// one, and it goes with the last of them.
-        waking: Mutex<HashMap<libc::c_int, Vec<RawFd>>>,
+        /// What each watch wakes, by its descriptor: two watches of one file share one,
+        /// and it goes with the last of what it wakes.
+        waking: Mutex<HashMap<libc::c_int, Waking>>,
+    }
+
+    /// What a watch wakes: eventfds it counts its events into, and functions it calls with
+    /// its descriptor ([`super::watch_writes`]).
+    #[derive(Debug, Default)]
+    struct Waking {
+        fds: Vec<RawFd>,
+        calls: Vec<fn(libc::c_int)>,
+    }
+
+    impl Waking {
+        fn is_empty(&self) -> bool {
+            self.fds.is_empty() && self.calls.is_empty()
+        }
     }
 
     static SHARED: OnceLock<Shared> = OnceLock::new();
@@ -1744,18 +1780,56 @@ mod notify {
             if watched < 0 {
                 return Err(io::Error::last_os_error());
             }
-            waking.entry(watched).or_default().push(wakes);
+            waking.entry(watched).or_default().fds.push(wakes);
+            Ok(watched)
+        }
+
+        /// [`watch`](Self::watch), calling `call` with the watch's descriptor on each event
+        /// instead, on the reader's thread and under its lock: it must be quick, and ask
+        /// nothing of this instance.
+        pub fn watch_calling(
+            &self,
+            file: &File,
+            mask: u32,
+            call: fn(libc::c_int),
+        ) -> io::Result<libc::c_int> {
+            let path = proc_path(file)?;
+            let mut waking = self.waking.lock().unwrap_or_else(PoisonError::into_inner);
+            // SAFETY: inotify_add_watch(2) with a NUL-terminated path.
+            let watched = unsafe {
+                libc::inotify_add_watch(self.fd.as_raw_fd(), path.as_ptr(), mask | libc::IN_MASK_ADD)
+            };
+            if watched < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            waking.entry(watched).or_default().calls.push(call);
             Ok(watched)
         }
 
         /// `wakes` woken by `watched` no more; the watch removed with the last it wakes.
         pub fn unwatch(&self, watched: libc::c_int, wakes: RawFd) {
+            self.let_go(watched, |w| {
+                w.fds.retain(|fd| *fd != wakes);
+            });
+        }
+
+        /// One of the calls of `call` [`watch_calling`](Self::watch_calling) made, made no
+        /// more; the watch removed with the last it wakes.
+        pub fn unwatch_calling(&self, watched: libc::c_int, call: fn(libc::c_int)) {
+            self.let_go(watched, |w| {
+                if let Some(i) = w.calls.iter().position(|c| std::ptr::fn_addr_eq(*c, call)) {
+                    w.calls.remove(i);
+                }
+            });
+        }
+
+        fn let_go(&self, watched: libc::c_int, what: impl FnOnce(&mut Waking)) {
             let mut waking = self.waking.lock().unwrap_or_else(PoisonError::into_inner);
-            let Some(fds) = waking.get_mut(&watched) else {
+            let Some(w) = waking.get_mut(&watched) else {
                 return;
             };
-            fds.retain(|fd| *fd != wakes);
-            if fds.is_empty() {
+            what(w);
+            if w.is_empty() {
                 waking.remove(&watched);
                 // SAFETY: inotify_rm_watch(2) of a watch of this instance's; one whose
                 // file has gone went with it, and its removal fails harmlessly.
@@ -1790,11 +1864,16 @@ mod notify {
                     let watched = i32::from_ne_bytes(word(0));
                     let mask = u32::from_ne_bytes(word(4));
                     let len = u32::from_ne_bytes(word(12)) as usize;
-                    for fd in waking.get(&watched).into_iter().flatten() {
-                        let one = 1u64.to_ne_bytes();
-                        // SAFETY: write(2) of 8 bytes to an eventfd, which never waits
-                        // (EFD_NONBLOCK): a count past its most is one already pending.
-                        unsafe { libc::write(*fd, one.as_ptr().cast(), one.len()) };
+                    if let Some(w) = waking.get(&watched) {
+                        for fd in &w.fds {
+                            let one = 1u64.to_ne_bytes();
+                            // SAFETY: write(2) of 8 bytes to an eventfd, which never waits
+                            // (EFD_NONBLOCK): a count past its most is one already pending.
+                            unsafe { libc::write(*fd, one.as_ptr().cast(), one.len()) };
+                        }
+                        for call in &w.calls {
+                            call(watched);
+                        }
                     }
                     if mask & libc::IN_IGNORED != 0 {
                         waking.remove(&watched);

@@ -5649,12 +5649,21 @@ stores.
   read. A smaller one goes through FUSE, where a mapping would cost a round trip to the
   share process and a host mmap for less than a range. FUSE_INIT says the host's page
   size (map_alignment).
-- A file the host cuts short under a mapping never ends the microVM (M271): the guest's
-  access past the new end, which KVM fails with EFAULT and HVF exits with, is given
-  anonymous zeros where the range lies wholly past the end, and runs again; the range is
-  the file's again once the file grows back past them, before the guest hears of its
-  size, as each reply the device passes looks. Until the guest asks its size again it
-  reads zeros there, as through FUSE it may read stale bytes from its page cache.
+- A range never holds a page of its file wholly past the file's end, which the host cannot
+  give: HVF ends the vCPU's run at an access there (M271), and x86 KVM retries it without
+  end, its vCPU spinning in KVM_RUN (M273). A range is the file's pages to the one that
+  holds its end, and the window's anonymous zeros past it, from its mapping on; and before
+  the device passes a reply that may tell the guest a file's size (its request's node's,
+  and the entries a LOOKUP, CREATE, MKNOD, MKDIR, SYMLINK, LINK or READDIRPLUS gives), the
+  window follows the file: its pages where it has grown, zeros where it was cut short.
+- Another process cutting a file short under a mapping, which the guest reads past before
+  it learns the size, never ends the microVM nor holds a vCPU. On Linux the VM names each
+  file its windows begin to map to the daemon (`kind::WATCH`, the descriptor with it), and
+  the daemon watches them with its one inotify instance, as an instance a microVM would run
+  a user out of them (M257), and tells the VM of one cut short (`kind::CUT`): its window
+  gives zeros there, and a vCPU that spun there runs on. HVF's abort and arm64 KVM's
+  EFAULT have the window follow the file at once. Until the guest asks the file's size
+  again it reads zeros there, as through FUSE it may read stale bytes from its page cache.
 - A mapping is charged its range's bytes against the microVM's I/O limits (D178) as it is
   made: the guest's loads and stores through it are memory, which the host's page cache
   serves and writes back.

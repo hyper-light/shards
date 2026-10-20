@@ -9981,6 +9981,8 @@ revision before comparing a changed API/implementation.
     fails KVM_RUN with EFAULT, which names no address (arch/x86/kvm/mmu/mmu.c,
     `kvm_handle_error_pfn`; arch/arm64/kvm/mmu.c, `user_mem_abort`). The VMM then gives
     zeros past the end of every range whose file is short of it, and runs the vCPU again.
+    So arm64's does; x86's does only with the guest's interrupts off, and otherwise
+    retries the access without end (M273).
 - **Consequence.** D189: a file cut short under a mapping never ends a microVM; the guest
   reads zeros past the new end until it learns the file's size, as it may read stale
   bytes through FUSE's page cache until then, and the file once it grows back.
@@ -10032,6 +10034,10 @@ revision before comparing a changed API/implementation.
   unmasked edge-triggered pin 5,000 times (`every_threads_pulse_is_an_edge`, this Mac):
   raised and lowered as two holds of its pins, as the backends pulsed, 20,000 pulses sent
   19,914, 19,999 and 19,983 edges in 3 runs; raised and lowered as one, 20,000 each time.
+- **After.** The benchmark's workload that hung, shards' cargo on a volume, 20 runs in a
+  row on the same host with each VM's pulses taking turns (the build of e7e38676's tree,
+  the allowlist's fix with it), 2026-10-20: 20 of 20 finished, p50 79.5 s, p90 97.3, max
+  107.4, where the benchmark's 8 had one hang.
 - **Consequence.** A pulse is one edge whatever other thread pulses: on KVM each VM's
   pulses take turns, raise and lower (`two_threads_pulses_are_never_coalesced` holds KVM
   to it on a masked pin, where a raise that found another still up is called coalesced);
@@ -10040,3 +10046,49 @@ revision before comparing a changed API/implementation.
   `ioapic_write_indirect`); level-triggered virtio interrupts on x86, as QEMU's virtio-mmio
   raises them, close that.
 
+
+### M273. x86 KVM spins on a guest's access to a page its memslot's mapping cannot give (D189)
+
+- **Question.** M271 read KVM's source as failing KVM_RUN with EFAULT where a memslot's
+  host mapping cannot give a page, a shared file mapping past its file's end among them,
+  and D189's window answered that EFAULT. On x86_64 Linux the E2E test's read past a file
+  cut short on the host never returned (CI, e7e38676 and 3a79895c). Does KVM fail KVM_RUN
+  there, and what does the vCPU do?
+- **Method.** The Fedora host (Intel Core i9-14900HX, 32 CPUs, Linux
+  6.19.10-300.fc44.x86_64), 2026-10-20: a release build of 3a79895c's tree with a debug
+  line at every KVM_RUN that failed with EFAULT and at every range given zeros, its
+  daemon's microVMs logging at debug, `SHARDS_SHARE_WINDOW_MIB=64`. A volume's file of
+  3 MiB and 5000 bytes read whole by the guest through the window (its md5 the host's),
+  cut to 1 MiB on the host (`truncate`), then read at 3 MiB by the guest (`dd`), its exec
+  killed after 30 s. Then the VM process's threads' states, CPU times and voluntary
+  switches over 1 s and 2 s (/proc/PID/task/*/stat, status), the kworkers' too. And the
+  source: Linux v7.2-rc4's virt/kvm/kvm_main.c (`hva_to_pfn`), arch/x86/kvm/mmu/mmu.c
+  (`__kvm_mmu_faultin_pfn`, `kvm_handle_error_pfn`), arch/x86/kvm/x86.c
+  (`kvm_can_do_async_pf`), virt/kvm/async_pf.c (`async_pf_execute`) and
+  arch/arm64/kvm/mmu.c.
+- **Results.**
+  - The read never returned, and nothing was logged of an EFAULT or of zeros. The vCPU
+    that ran it was running (R) through both samples, 166 of 200 clock ticks in 2 s (83%
+    of a CPU), under 20 voluntary switches a second: spinning in KVM_RUN. No kworker's
+    time stood out from the host's I/O. Removing the run ended its VM.
+  - The source says why. `hva_to_pfn` takes any page of a valid VMA (readable, and
+    writable for a write) that get_user_pages could not fault in under FOLL_NOWAIT to need
+    I/O (`KVM_PFN_ERR_NEEDS_IO`), a file mapping's SIGBUS past its end among them. x86's
+    fault path then sets up an asynchronous page fault wherever the vCPU may take one
+    (interrupts on, as for any user task's read), and retries the access; the async work's
+    get_user_pages fails again, its error unread ("Notify and kick the vCPU even if
+    faulting in the page failed"), and the access runs again: without end. Only with the
+    guest's interrupts off is the fault retried at once, without FOLL_NOWAIT, and fails
+    KVM_RUN with EFAULT. arm64's `user_mem_abort` faults its pages in without FOLL_NOWAIT:
+    EFAULT, as M271 read.
+  - A page of no VMA, or of one the access may not use (PROT_NONE), is no page needing I/O
+    (`vma_is_valid`): KVM_RUN fails with EFAULT, on x86 too.
+- **Consequence.** D189: a window's range never holds a page of its file wholly past the
+  file's end. Its pages past the end are the window's zeros from its mapping on, and the
+  window follows each file before every reply that may tell the guest its size, the file
+  where it has grown and zeros where it was cut short. Another process cutting a file short
+  under a mapping, which the guest reads past before it learns the size, is seen by the
+  daemon, which watches the files its microVMs' windows map with its one inotify instance
+  (an instance a microVM would run a user out of them, M257) and tells the VM; its window
+  gives zeros there, and a vCPU that spun on one of those pages runs on. HVF's abort and
+  arm64's EFAULT have the window follow the file as well.

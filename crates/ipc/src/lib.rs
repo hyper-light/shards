@@ -301,6 +301,18 @@ pub mod kind {
     /// its guest's cgroup is written, so that what the guest reports it may plug is the
     /// new most (D149).
     pub const PLUG: u8 = 63;
+    /// A VM → its daemon (Linux): a file its share's DAX window has begun to map (D189), for
+    /// the daemon to watch for other processes cutting it short: the share's place among
+    /// the VM's shares (4, big-endian), the node of its server whose file it is (8) and the
+    /// file's size as the window mapped it (8), with the file's descriptor.
+    pub const WATCH: u8 = 64;
+    /// A VM → its daemon (Linux): a file its share's DAX window maps no more, by its share's
+    /// place (4, big-endian) and its node (8), as `WATCH` named it.
+    pub const UNWATCH: u8 = 65;
+    /// Daemon → a VM (Linux): a file `WATCH` named was cut short by another process, by its
+    /// share's place (4, big-endian) and its node (8): the window maps it as it is now,
+    /// zeros where it has no pages, before its guest reads there (PM M273).
+    pub const CUT: u8 = 66;
 }
 
 /// A `SAVE` flag: the microVM goes on running once saved, rather than stopping.

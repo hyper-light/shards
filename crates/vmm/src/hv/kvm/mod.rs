@@ -357,10 +357,14 @@ fn run(fd: &mut sys::VcpuFd, io: &dyn Io) -> Result<Exit> {
             }
             sys::RunExit::Again => {}
             // Memory the host could not give: given now where it is the VMM's to give (a
-            // share's DAX window's range past its file's end, D189), and the access runs
-            // again; else the guest touched what it promised not to (memory withheld).
+            // share's DAX window's range whose file another process cut short, D189), and
+            // the access runs again; else the guest touched what it promised not to (memory
+            // withheld). x86's KVM says so only with the guest's interrupts off, and
+            // otherwise retries the access itself until the window gives it (PM M273).
             sys::RunExit::Fault => {
-                if !io.memory_fault(None) {
+                let given = io.memory_fault(None);
+                crate::debug!("KVM_RUN: EFAULT; memory given: {given}");
+                if !given {
                     return Err(call("KVM_RUN")(io::Error::from_raw_os_error(libc::EFAULT)));
                 }
             }

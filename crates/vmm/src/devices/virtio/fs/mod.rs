@@ -138,6 +138,14 @@ impl Slot {
         Ok(())
     }
 
+    /// Its device's DAX window (D189), none where it has none.
+    pub fn window(&self) -> Option<Arc<window::Window>> {
+        self.window
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
     /// Its server's tables (D176), none with no server: asked while its device is paused,
     /// so between requests.
     fn tables(&self) -> Result<Option<Vec<u8>>, String> {
@@ -530,10 +538,10 @@ fn serve(
             Some(reply) => Some(reply),
             None => {
                 let reply = slot.ask(&req).unwrap_or_else(|_| server::unattached(&req));
-                // A file its window gave zeros past the end of, grown back since, is the
-                // window's again before the guest hears of it.
-                if let Some(w) = window {
-                    w.refill();
+                // The files whose sizes the reply tells the guest are what its window maps
+                // of them before it hears: grown, the file's pages; cut short, zeros.
+                if let (Some(w), Some(reply)) = (window, reply.as_deref()) {
+                    w.reconcile(&told(&req, reply));
                 }
                 reply
             }
@@ -620,6 +628,58 @@ fn mapping(req: &[u8], window: &window::Window, slot: &Slot) -> Option<Vec<u8>> 
     reply.extend_from_slice(&error.to_le_bytes());
     reply.extend_from_slice(&unique.to_le_bytes());
     Some(reply)
+}
+
+/// The nodes whose files' sizes `reply`, the server's to `req`, may tell the guest
+/// (include/uapi/linux/fuse.h): the request's own node, and each entry a reply gives, the
+/// attributes of a LOOKUP's, CREATE's, MKNOD's, MKDIR's, SYMLINK's and LINK's, and every
+/// READDIRPLUS entry's. The server serves no COPY_FILE_RANGE, TMPFILE nor STATX, whose
+/// replies would tell more (ENOSYS: the guest copies, makes and asks otherwise).
+fn told(req: &[u8], reply: &[u8]) -> Vec<u64> {
+    use server::op::{CREATE, LINK, LOOKUP, MKDIR, MKNOD, READDIRPLUS, SYMLINK};
+    let long = |b: &[u8], at: usize| {
+        b.get(at..at.checked_add(8)?)
+            .and_then(|b| <[u8; 8]>::try_from(b).ok())
+            .map(u64::from_le_bytes)
+    };
+    let word = |b: &[u8], at: usize| {
+        b.get(at..at.checked_add(4)?)
+            .and_then(|b| <[u8; 4]>::try_from(b).ok())
+            .map(u32::from_le_bytes)
+    };
+    let mut nodes: Vec<u64> = long(req, 16).into_iter().collect();
+    // fuse_out_header: len, error, unique; an error tells nothing of an entry.
+    const OUT_HEADER: usize = 16;
+    // fuse_entry_out: nodeid, generation, entry_valid, attr_valid, their nsecs, fuse_attr.
+    const ENTRY_OUT: usize = 128;
+    // fuse_dirent: ino, off, namelen, type, then the name, padded to 8 bytes.
+    const DIRENT: usize = 24;
+    let opcode = word(req, 4).unwrap_or(0);
+    let failed = word(reply, 4).is_none_or(|e| e != 0);
+    match opcode {
+        _ if failed => {}
+        LOOKUP | SYMLINK | MKNOD | MKDIR | LINK | CREATE => nodes.extend(long(reply, OUT_HEADER)),
+        READDIRPLUS => {
+            let mut at = OUT_HEADER;
+            while let (Some(node), Some(len)) = (
+                long(reply, at),
+                at.checked_add(ENTRY_OUT + 16).and_then(|n| word(reply, n)),
+            ) {
+                if node != 0 {
+                    nodes.push(node);
+                }
+                let Some(next) = (DIRENT + len as usize)
+                    .checked_next_multiple_of(8)
+                    .and_then(|d| at.checked_add(ENTRY_OUT + d))
+                else {
+                    break;
+                };
+                at = next;
+            }
+        }
+        _ => {}
+    }
+    nodes
 }
 
 /// Fills `buf` with the chain's readable bytes, in order, as far as they go; false if one
@@ -725,14 +785,16 @@ impl VirtioDevice for Fs {
         }
     }
 
+    /// Memory its DAX window maps that the host could not give: a range whose file another
+    /// process cut short under the guest's mapping (D189, PM M271).
+    fn memory_fault(&self, gpa: Option<u64>) -> bool {
+        self.window.as_ref().is_some_and(|(_, w)| w.memory_fault(gpa))
+    }
+
     /// A served share's files are its server's, which the guest holds by node IDs that
     /// live in the server alone (D176): its server's tables are asked for here, as the
     /// snapshot's devices are paused, for the save that follows to keep, and what it
     /// cannot keep refuses the snapshot.
-    fn memory_fault(&self, gpa: Option<u64>) -> bool {
-        self.window.as_ref().is_some_and(|(_, w)| w.fill_past_end(gpa))
-    }
-
     fn unsaved(&self) -> Option<String> {
         match self.server.tables() {
             Ok(tables) => {
@@ -990,6 +1052,66 @@ mod tests {
         assert!(mapping(&request(1, 1, b"big\0"), &w, &slot).is_none());
         drop(slot);
         t.join().unwrap();
+    }
+
+    /// The files whose sizes a reply may tell the guest, as the server answers: its
+    /// request's own node; a LOOKUP's entry; every READDIRPLUS entry's; and of a reply
+    /// that failed, its request's node alone.
+    #[test]
+    fn a_reply_tells_its_requests_node_and_its_entries() {
+        let dir = shards_testdir::TempDir::new("fs-told").unwrap();
+        for name in ["a", "bb", "a-longer-name-past-eight"] {
+            std::fs::write(dir.join(name), name).unwrap();
+        }
+        let server = server::Server::new(std::fs::File::open(&dir).unwrap().into(), false, None).unwrap();
+        let request = |opcode: u32, nodeid: u64, body: &[u8]| {
+            let mut r = Vec::new();
+            r.extend((40 + body.len() as u32).to_le_bytes());
+            r.extend(opcode.to_le_bytes());
+            r.extend(9u64.to_le_bytes());
+            r.extend(nodeid.to_le_bytes());
+            r.extend([0u8; 16]);
+            r.extend(body);
+            r
+        };
+        let ask = |req: &[u8]| {
+            (
+                server.handle(req).unwrap(),
+                told(req, &server.handle(req).unwrap()),
+            )
+        };
+        let node_of = |reply: &[u8]| u64::from_le_bytes(reply[16..24].try_into().unwrap());
+        let (looked, nodes) = ask(&request(server::op::LOOKUP, 1, b"bb\0"));
+        assert_eq!(nodes, [1, node_of(&looked)]);
+        let (_, nodes) = ask(&request(server::op::LOOKUP, 1, b"none\0"));
+        assert_eq!(nodes, [1], "a LOOKUP that failed");
+        let (_, nodes) = ask(&request(server::op::GETATTR, node_of(&looked), &[0u8; 16]));
+        assert_eq!(nodes, [node_of(&looked)]);
+        // fuse_open_in, then fuse_read_in: fh, offset, size, read_flags, lock_owner, flags.
+        let opened = server
+            .handle(&request(server::op::OPENDIR, 1, &[0u8; 8]))
+            .unwrap();
+        let fh = node_of(&opened);
+        let mut read = Vec::new();
+        read.extend(fh.to_le_bytes());
+        read.extend(0u64.to_le_bytes());
+        read.extend(4096u32.to_le_bytes());
+        read.extend([0u8; 20]);
+        let req = request(server::op::READDIRPLUS, 1, &read);
+        let listed = server.handle(&req).unwrap();
+        let nodes = told(&req, &listed);
+        let mut want = vec![1];
+        for name in ["a", "bb", "a-longer-name-past-eight"] {
+            let looked = server
+                .handle(&request(server::op::LOOKUP, 1, format!("{name}\0").as_bytes()))
+                .unwrap();
+            want.push(node_of(&looked));
+        }
+        let mut got = nodes.clone();
+        got.sort_unstable();
+        want.sort_unstable();
+        assert!(want.iter().all(|n| got.contains(n)), "{got:?} for {want:?}");
+        assert!(got.iter().all(|n| want.contains(n)), "{got:?} for {want:?}");
     }
 
     /// A share that answers each request with an empty success, after `hold` lets it.

@@ -524,6 +524,55 @@ mod tests {
         std::fs::remove_dir_all(&moved).unwrap();
     }
 
+    /// A file watched for writes calls its function with the watch's number as another
+    /// handle cuts it short, and as it writes it; two watches of it are one, which calls
+    /// each; and let go of, the last of them, it calls nothing.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_file_watched_for_writes_calls_as_it_is_cut_short() {
+        use std::sync::atomic::{AtomicI32, AtomicU32, Ordering};
+        static WATCHED: AtomicI32 = AtomicI32::new(-1);
+        static CALLS: AtomicU32 = AtomicU32::new(0);
+        fn called(watched: libc::c_int) {
+            WATCHED.store(watched, Ordering::SeqCst);
+            CALLS.fetch_add(1, Ordering::SeqCst);
+        }
+        let calls_within_a_second = |at_least: u32| {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+            while CALLS.load(Ordering::SeqCst) < at_least {
+                if std::time::Instant::now() >= deadline {
+                    return false;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            true
+        };
+        let dir = shards_testdir::TempDir::new("platform-writes").unwrap();
+        std::fs::write(dir.join("f"), vec![7u8; 1 << 16]).unwrap();
+        let file = File::open(dir.join("f")).unwrap();
+        let watched = watch_writes(&file, called).unwrap();
+        assert_eq!(watch_writes(&file, called).unwrap(), watched, "one watch");
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(dir.join("f"))
+            .unwrap()
+            .set_len(1 << 12)
+            .unwrap();
+        assert!(
+            calls_within_a_second(2),
+            "cut short: {}",
+            CALLS.load(Ordering::SeqCst)
+        );
+        assert_eq!(WATCHED.load(Ordering::SeqCst), watched);
+        unwatch_writes(watched, called);
+        unwatch_writes(watched, called);
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        let before = CALLS.load(Ordering::SeqCst);
+        std::fs::write(dir.join("f"), b"x").unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        assert_eq!(CALLS.load(Ordering::SeqCst), before, "let go of");
+    }
+
     #[test]
     fn reservations_are_zeroed_writable_and_page_aligned() {
         let page = page_size().unwrap();

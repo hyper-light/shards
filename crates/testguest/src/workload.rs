@@ -2724,6 +2724,32 @@ fn fs(ops: &[String]) -> i32 {
                     _ => Err(io::Error::other("poke:PATH:OFFSET:BYTE")),
                 }
             }
+            // A read through a handle held across the host's change of its file,
+            // `hold:PATH:OFFSET:SIGNAL`: PATH read whole through a handle of its own,
+            // SIGNAL.ready made, and once the host makes SIGNAL, a byte read at OFFSET
+            // through the handle held, said as `hold PATH OFFSET BYTE`. Nothing is asked
+            // about the file between: what it reads is what the guest's mapping holds.
+            "hold" => {
+                use std::io::Read as _;
+                use std::os::unix::fs::FileExt as _;
+                let mut parts = rest.rsplitn(3, ':');
+                let (signal, offset, path) = (parts.next(), parts.next(), parts.next());
+                match (path, offset.and_then(|o| o.parse::<u64>().ok()), signal) {
+                    (Some(path), Some(offset), Some(signal)) => (|| {
+                        let file = std::fs::File::open(path)?;
+                        (&file).read_to_end(&mut Vec::new())?;
+                        std::fs::write(format!("{signal}.ready"), b"")?;
+                        while std::fs::symlink_metadata(signal).is_err() {
+                            std::thread::sleep(std::time::Duration::from_millis(10));
+                        }
+                        let mut byte = [0u8];
+                        file.read_exact_at(&mut byte, offset)?;
+                        let _ = writeln!(io::stdout(), "hold {path} {offset} {}", byte[0]);
+                        Ok(())
+                    })(),
+                    _ => Err(io::Error::other("hold:PATH:OFFSET:SIGNAL")),
+                }
+            }
             // One byte read, `peek:PATH:OFFSET`, said as `peek PATH OFFSET BYTE`.
             "peek" => {
                 use std::os::unix::fs::FileExt as _;

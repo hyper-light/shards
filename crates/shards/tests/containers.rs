@@ -1744,6 +1744,44 @@ fn a_volumes_large_files_go_through_its_dax_window() {
         );
         std::thread::sleep(Duration::from_millis(100));
     }
+    // Cut short by the host while a process holds it open, read whole: with nothing asked
+    // about the file between, the holder's read past the new end goes through the mapping
+    // it holds, and reads zeros (Linux: the daemon's watch told the VM, PM M273; HVF: the
+    // read faults), its vCPU never spinning.
+    std::fs::write(dir.join("held"), &odd).unwrap();
+    let holder = {
+        let home = home.to_path_buf();
+        std::thread::spawn(move || {
+            let env: [(&str, &OsStr); 4] = [
+                ("SHARDS_HOME", home.as_os_str()),
+                ("SHARDS_KERNEL", kernel.as_os_str()),
+                ("SHARDS_INIT", init.as_os_str()),
+                ("SHARDS_SHARE_WINDOW_MIB", "64".as_ref()),
+            ];
+            let hold = [
+                "exec",
+                "dax",
+                "/bin/testguest",
+                "fs",
+                "hold:/v/held:3145728:/v/held-go",
+            ];
+            run_shards_env(&[], &hold, &env, TIMEOUT)
+        })
+    };
+    let deadline = Instant::now() + TIMEOUT;
+    while !dir.join("held-go.ready").exists() {
+        assert!(Instant::now() < deadline, "the holder never read the file");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(dir.join("held"))
+        .unwrap()
+        .set_len(1 << 20)
+        .unwrap();
+    std::fs::write(dir.join("held-go"), b"").unwrap();
+    let held = holder.join().unwrap();
+    assert_eq!(held.stdout, "hold /v/held 3145728 0\n", "{held}");
     assert_eq!(shards(&["rm", "-f", "dax"]).status, Some(0));
 }
 

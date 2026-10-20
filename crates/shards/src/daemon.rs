@@ -36,6 +36,8 @@ mod commands;
 pub(crate) use commands::COPY_STEP;
 mod builder_prune;
 mod commit;
+#[cfg(target_os = "linux")]
+mod cuts;
 mod demand;
 mod engine;
 /// The Engine API's socket in the home (D170), relative to it: what Docker's clients reach.
@@ -4400,6 +4402,9 @@ impl<D: Disk> Daemon<D> {
                 // What has come of the next is kept for the rest.
                 Ok(shards_ipc::Took::Partial) => break,
                 Ok(shards_ipc::Took::Ended) | Err(_) => {
+                    // The files its windows mapped are watched for it no more (D189).
+                    #[cfg(target_os = "linux")]
+                    cuts::forget(id);
                     // A save it never answered is not written (D176).
                     if let Some(saving) = inbox.saving.take() {
                         let _ = saving.told.send(Err("its microVM stopped".into()));
@@ -4427,6 +4432,12 @@ impl<D: Disk> Daemon<D> {
                 kind::LOST => self.log_lost(id, &m.payload),
                 kind::OOM => self.oom_killed(id, &m.payload),
                 kind::PROCESS => self.keep_processes(id, &m.payload),
+                // A file its share's DAX window maps, watched for another process cutting
+                // it short, and one it maps no more (D189, PM M273).
+                #[cfg(target_os = "linux")]
+                kind::WATCH => cuts::watch(id, &inbox.socket, &m.payload, m.fds),
+                #[cfg(target_os = "linux")]
+                kind::UNWATCH => cuts::unwatch(id, &m.payload),
                 // Its guest's ask on the host's network (D124), answered at once: a bind
                 // and a listen are each a system call's work, and what goes to the
                 // network process is not waited for.
@@ -4549,7 +4560,14 @@ impl<D: Disk> Daemon<D> {
                 _ => {}
             }
         }
-        guard.ended && !guard.layer_pending && guard.joiners == 0
+        let done = guard.ended && !guard.layer_pending && guard.joiners == 0;
+        // Its windows' files are watched for it no more (D189): followed no further, its
+        // VM's end may never be read here.
+        #[cfg(target_os = "linux")]
+        if done {
+            cuts::forget(id);
+        }
+        done
     }
 
     /// Container `id`'s writable layer, as its VM left it (D37): kept if it came `whole`;
