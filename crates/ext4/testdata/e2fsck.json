@@ -1,0 +1,44 @@
+[
+ {
+  "bytes": 8388608,
+  "digest": "971fa8aeb91f059faa2f61cc6a0272cbb2283d43981fe887461bc3445ef3f933",
+  "exit": 0,
+  "output": "e2fsck 1.47.0 (5-Feb-2023)\nPass 1: Checking inodes, blocks, and sizes\nPass 2: Checking directory structure\nPass 3: Checking directory connectivity\nPass 4: Checking reference counts\nPass 5: Checking group summary information\n/work/8388608.img: 11/512 files (0.0% non-contiguous), 1065/2048 blocks\n"
+ },
+ {
+  "bytes": 134217728,
+  "digest": "92dbaf7753f4c653fa304e577ada284e088517d360a1030664f1de8902d453f9",
+  "exit": 0,
+  "output": "e2fsck 1.47.0 (5-Feb-2023)\nPass 1: Checking inodes, blocks, and sizes\nPass 2: Checking directory structure\nPass 3: Checking directory connectivity\nPass 4: Checking reference counts\nPass 5: Checking group summary information\n/work/134217728.img: 11/8192 files (0.0% non-contiguous), 4617/32768 blocks\n"
+ },
+ {
+  "bytes": 135266304,
+  "digest": "8b85e46fb8d570caf3c8eaf26a586c1b999521e4b3c7d52981dd3abaee9d8353",
+  "exit": 0,
+  "output": "e2fsck 1.47.0 (5-Feb-2023)\nPass 1: Checking inodes, blocks, and sizes\nPass 2: Checking directory structure\nPass 3: Checking directory connectivity\nPass 4: Checking reference counts\nPass 5: Checking group summary information\n/work/135266304.img: 11/8256 files (0.0% non-contiguous), 4625/33024 blocks\n"
+ },
+ {
+  "bytes": 1054867456,
+  "digest": "91ae20c5e4b467effb38af91188883bbb5cc7156958bf9844fbd0bd69b9ff187",
+  "exit": 0,
+  "output": "e2fsck 1.47.0 (5-Feb-2023)\nPass 1: Checking inodes, blocks, and sizes\nPass 2: Checking directory structure\nPass 3: Checking directory connectivity\nPass 4: Checking reference counts\nPass 5: Checking group summary information\n/work/1054867456.img: 11/64384 files (0.0% non-contiguous), 8151/257536 blocks\n"
+ },
+ {
+  "bytes": 10737418240,
+  "digest": "6a697ec18daf6b5b84a17dc7590d78183d916029046b2288b881041cfdc052c1",
+  "exit": 0,
+  "output": "e2fsck 1.47.0 (5-Feb-2023)\nPass 1: Checking inodes, blocks, and sizes\nPass 2: Checking directory structure\nPass 3: Checking directory connectivity\nPass 4: Checking reference counts\nPass 5: Checking group summary information\n/work/10737418240.img: 11/655360 files (0.0% non-contiguous), 57536/2621440 blocks\n"
+ },
+ {
+  "bytes": 18253611008,
+  "digest": "377f6508e9c0e0c5097859f4709b5ac2e8115be7160319b8381f4faf1d6cb253",
+  "exit": 0,
+  "output": "e2fsck 1.47.0 (5-Feb-2023)\nPass 1: Checking inodes, blocks, and sizes\nPass 2: Checking directory structure\nPass 3: Checking directory connectivity\nPass 4: Checking reference counts\nPass 5: Checking group summary information\n/work/18253611008.img: 11/1114112 files (0.0% non-contiguous), 102721/4456448 blocks\n"
+ },
+ {
+  "bytes": 68719476736,
+  "digest": "a6eb5252af18e9f6aa54cb5bf63debd3efc4629b4984ec64ee88ffb1d2f522a6",
+  "exit": 0,
+  "output": "e2fsck 1.47.0 (5-Feb-2023)\nPass 1: Checking inodes, blocks, and sizes\nPass 2: Checking directory structure\nPass 3: Checking directory connectivity\nPass 4: Checking reference counts\nPass 5: Checking group summary information\n/work/68719476736.img: 11/4194304 files (0.0% non-contiguous), 296058/16777216 blocks\n"
+ }
+]
