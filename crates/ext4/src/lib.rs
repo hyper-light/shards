@@ -17,6 +17,9 @@
 
 use std::io;
 
+pub mod journal;
+pub mod read;
+
 /// Why a file system could not be made: what went wrong, said.
 #[derive(Debug)]
 pub struct Error(pub String);

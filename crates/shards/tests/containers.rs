@@ -3743,6 +3743,110 @@ fn start_attached_passes_signals_on() {
     assert_eq!(shards(&["rm", "-f", "terminal"]).status, Some(0));
 }
 
+/// A stopped container's writable layer stays in its own file (D190): an ext4 file system
+/// whose journal its guest wrote in place as its run ended, nothing of it left to replay,
+/// holding what its run wrote and its whiteouts, which its next run puts back. One whose
+/// microVM was killed holds what its guest committed: its journal is replayed on the host,
+/// and a visit to its files finds them.
+#[test]
+fn a_stopped_microvms_layer_stays_in_its_file() {
+    use shards_ext4::journal;
+    use shards_ext4::read::{Kind, Volume};
+    let Some((home, image)) = home("containers-kept") else {
+        return;
+    };
+    let shards = |args: &[&str]| shards_in(&home, args);
+    let first = run_in(
+        &home,
+        &image,
+        &["--name", "kept", "-u", "0"],
+        &["fs", "write:/kept=one", "rm:/etc/group"],
+    );
+    assert_eq!(first.status, Some(0), "{first}");
+    let dir_of = |name: &str| {
+        let id = shards(&["inspect", "-f", "{{.Id}}", name]);
+        home.join("containers").join(id.stdout.trim())
+    };
+    // Kept once its microVM has gone, after its end is told.
+    let settled = |dir: &Path| {
+        let deadline = Instant::now() + TIMEOUT;
+        while !(dir.join("layer.ext4").exists() && !dir.join("layer.new").exists()) {
+            assert!(Instant::now() < deadline, "no layer kept in {}", dir.display());
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    };
+    let dir = dir_of("kept");
+    settled(&dir);
+    assert!(!dir.join("layer.tar").exists());
+    let file = std::fs::File::open(dir.join("layer.ext4")).unwrap();
+    assert!(
+        !journal::needs_replay(&file).unwrap(),
+        "its journal written in place as its run ended"
+    );
+    let v = Volume::open(file).unwrap();
+    let kept = v.lookup(b"/upper/kept").unwrap().unwrap();
+    let mut bytes = vec![0u8; kept.size as usize];
+    v.read_at(&kept, 0, &mut bytes).unwrap();
+    assert_eq!(bytes, b"one");
+    let gone = v.lookup(b"/upper/etc/group").unwrap().unwrap();
+    assert_eq!((gone.kind, gone.device()), (Kind::Char, (0, 0)), "a whiteout");
+    // Its next run finds /etc/group gone, as its first left it.
+    let again = shards(&["start", "-a", "kept"]);
+    assert_eq!(again.status, Some(1), "{again}");
+    assert!(again.stderr.contains("rm:/etc/group: No such file"), "{again}");
+
+    // Killed once its guest has committed what it wrote: its journal still to replay.
+    let killed = run_in(
+        &home,
+        &image,
+        &["-d", "--name", "killed", "-u", "0"],
+        // A line, which stdout passes on as it ends (Rust's LineWriter).
+        &[
+            "fs",
+            "write:/crashed=two\n",
+            "sync",
+            "print:/crashed",
+            "sleep:600000",
+        ],
+    );
+    assert_eq!(killed.status, Some(0), "{killed}");
+    let deadline = Instant::now() + TIMEOUT;
+    loop {
+        let logs = shards(&["logs", "killed"]);
+        if logs.stdout == "two\n" {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the run never committed its file: {logs}"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let pid: i32 = shards(&["inspect", "-f", "{{.State.Pid}}", "killed"])
+        .stdout
+        .trim()
+        .parse()
+        .unwrap();
+    // SAFETY: kill(2) of the microVM's process, which this test's run started.
+    assert_eq!(unsafe { libc::kill(pid, libc::SIGKILL) }, 0);
+    let dir = dir_of("killed");
+    settled(&dir);
+    let file = std::fs::File::open(dir.join("layer.ext4")).unwrap();
+    assert!(
+        journal::needs_replay(&file).unwrap(),
+        "killed with what its guest committed in its journal"
+    );
+    drop(file);
+    let diff = shards(&["diff", "killed"]);
+    assert_eq!(diff.status, Some(0), "{diff}");
+    assert!(diff.stdout.lines().any(|l| l == "A /crashed"), "{diff}");
+    let file = std::fs::File::open(dir.join("layer.ext4")).unwrap();
+    assert!(!journal::needs_replay(&file).unwrap(), "replayed");
+    let log = std::fs::read_to_string(home.join("daemon.log")).unwrap_or_default();
+    assert!(log.contains("transactions of its journal"), "{log}");
+    assert_eq!(shards(&["rm", "-f", "kept", "killed"]).status, Some(0));
+}
+
 #[test]
 fn start_runs_a_stopped_microvm_again_over_its_own_files() {
     let Some((home, image)) = home("containers-start") else {

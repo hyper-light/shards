@@ -313,6 +313,11 @@ pub mod kind {
     /// share's place (4, big-endian) and its node (8): the window maps it as it is now,
     /// zeros where it has no pages, before its guest reads there (PM M273).
     pub const CUT: u8 = 66;
+    /// Warm VM → daemon, in `LAYER_SAVED`'s place: the container's writable layer stays in
+    /// its own file, an ext4 file system its guest's journal written in place (D190), said
+    /// once nothing of the VM's machine writes it, the file the daemon's from then on;
+    /// with the disk it used in the guest (a big-endian u64), where the guest said.
+    pub const LAYER_KEPT: u8 = 67;
 }
 
 /// A `SAVE` flag: the microVM goes on running once saved, rather than stopping.

@@ -2684,6 +2684,81 @@ fn layer() -> Result<(), String> {
         "LAYER write_64mib_ms={wrote:.3} small_1000_ms={small:.3} mapped_8mib_ms={mapped:.3} free_kib_spent={}",
         before.saturating_sub(free()?)
     );
+    // What keeping the layer costs as a run ends (D190), each after 100 more files, as a
+    // run leaves its last changes: its journal written in place as init's KEEP writes it
+    // (sync, syncfs, then EXT4_IOC_CHECKPOINT), the file system frozen (FIFREEZE, then
+    // FITHAW), or remounted read-only (then writable again). The first round's are the
+    // first of each in the microVM, as a run's KEEP is.
+    {
+        use std::os::fd::AsRawFd as _;
+        /// FIFREEZE and FITHAW, `_IOWR('X', 119, int)` and `_IOWR('X', 120, int)`.
+        const FIFREEZE: u32 = 0xC004_5877;
+        const FITHAW: u32 = 0xC004_5878;
+        /// EXT4_IOC_CHECKPOINT, `_IOW('f', 43, __u32)` (include/uapi/linux/ext4.h).
+        const CHECKPOINT: u32 = 0x4004_662B;
+        let root = std::fs::File::open("/l").map_err(|e| format!("/l: {e}"))?;
+        let fd = root.as_raw_fd();
+        let layer = c("/l")?;
+        let ioctl = |name: &str, request: u32, arg: *const u32| -> Result<f64, String> {
+            let t = now();
+            // SAFETY: an ioctl of a descriptor this holds, its argument null or a u32 that
+            // outlives the call.
+            if unsafe { libc::ioctl(fd, request as _, arg) } != 0 {
+                return Err(format!("{name}: {}", io::Error::last_os_error()));
+            }
+            Ok((now() - t) * 1e3)
+        };
+        let remount = |flags: libc::c_ulong| -> Result<f64, String> {
+            let t = now();
+            // SAFETY: a NUL-terminated mount point; a remount takes no source, type or data.
+            let r = unsafe {
+                libc::mount(
+                    std::ptr::null(),
+                    layer.as_ptr(),
+                    std::ptr::null(),
+                    libc::MS_REMOUNT | flags,
+                    std::ptr::null(),
+                )
+            };
+            if r != 0 {
+                return Err(format!("remount /l {flags:#x}: {}", io::Error::last_os_error()));
+            }
+            Ok((now() - t) * 1e3)
+        };
+        for round in 0..3 {
+            let more = |tag: &str| -> Result<(), String> {
+                for i in 0..100 {
+                    std::fs::write(format!("/merged/{tag}{round}-{i}"), b"more")
+                        .map_err(|e| e.to_string())?;
+                }
+                Ok(())
+            };
+            more("k")?;
+            let t = now();
+            // SAFETY: sync(2) takes nothing.
+            unsafe { libc::sync() };
+            let all = (now() - t) * 1e3;
+            let t = now();
+            // SAFETY: syncfs(2) of a descriptor this holds.
+            if unsafe { libc::syncfs(fd) } != 0 {
+                return Err(format!("syncfs: {}", io::Error::last_os_error()));
+            }
+            let synced = (now() - t) * 1e3;
+            let flags: u32 = 0;
+            let checkpointed = ioctl("EXT4_IOC_CHECKPOINT", CHECKPOINT, &raw const flags)?;
+            more("f")?;
+            let frozen = ioctl("FIFREEZE", FIFREEZE, std::ptr::null())?;
+            let thawed = ioctl("FITHAW", FITHAW, std::ptr::null())?;
+            more("r")?;
+            let read_only = remount(libc::MS_RDONLY)?;
+            let writable = remount(0)?;
+            let _ = writeln!(
+                out,
+                "LAYER keep{round} sync_us={all:.1} syncfs_us={synced:.1} checkpoint_us={checkpointed:.1} keep_us={:.1} freeze_us={frozen:.1} thaw_us={thawed:.1} remount_ro_us={read_only:.1} remount_rw_us={writable:.1}",
+                all + synced + checkpointed
+            );
+        }
+    }
     umount("/merged")?;
     umount("/l")?;
     for i in 0..3 {

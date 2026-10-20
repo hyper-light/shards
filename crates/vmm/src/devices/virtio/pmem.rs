@@ -11,7 +11,7 @@ use std::fs::File;
 use std::path::Path;
 use std::ptr::NonNull;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, PoisonError};
 
 use super::queue::{Chain, Queue};
 use super::worker::Worker;
@@ -268,7 +268,7 @@ impl SwapWindow {
         // block only as it writes it back would count none, and the copy would lose it.
         // SAFETY: the mapping `mapped` holds, which stays while its lock is held.
         unsafe { platform::flush_shared(mapped.host, mapped.len) }.map_err(at)?;
-        platform::copy_used(&mapped.file, to, mapped.len as u64).map_err(at)?;
+        mapped.copy_to(to, mapped.len as u64).map_err(at)?;
         Ok(mapped.len as u64)
     }
 
@@ -364,7 +364,10 @@ impl Drop for Zeros {
 struct Shared {
     host: NonNull<u8>,
     len: usize,
-    file: File,
+    /// Its file, until [`release`](Self::release) lets go of it.
+    file: Mutex<Option<File>>,
+    /// Unmapped before it drops ([`release`](Self::release)).
+    released: AtomicBool,
 }
 
 // SAFETY: the mapping is owned by this value; the guest writes it, through the
@@ -376,18 +379,48 @@ unsafe impl Sync for Shared {}
 impl Shared {
     fn map(file: File, len: usize) -> std::io::Result<Shared> {
         let host = platform::map_file_shared(&file, len)?;
-        Ok(Shared { host, len, file })
+        Ok(Shared {
+            host,
+            len,
+            file: Mutex::new(Some(file)),
+            released: AtomicBool::new(false),
+        })
     }
 
     fn host(&self) -> *mut u8 {
         self.host.as_ptr()
     }
+
+    /// Copies its file's first `len` bytes into `to` ([`platform::copy_used`]).
+    fn copy_to(&self, to: &File, len: u64) -> std::io::Result<()> {
+        let file = self.file.lock().unwrap_or_else(PoisonError::into_inner);
+        let file = file.as_ref().ok_or_else(|| std::io::Error::other(RELEASED))?;
+        platform::copy_used(file, to, len)
+    }
+
+    /// Unmaps it and closes its file now, rather than as it drops; once.
+    ///
+    /// # Safety
+    /// No VM maps it any more, and nothing uses [`host`](Self::host) after.
+    unsafe fn release(&self) {
+        if !self.released.swap(true, Ordering::AcqRel) {
+            // SAFETY: the mapping `map` made, which the caller says nothing uses.
+            unsafe { platform::unmap_file_shared(self.host, self.len) };
+            drop(self.file.lock().unwrap_or_else(PoisonError::into_inner).take());
+        }
+    }
+
+    fn released(&self) -> bool {
+        self.released.load(Ordering::Acquire)
+    }
 }
 
 impl Drop for Shared {
     fn drop(&mut self) {
-        // SAFETY: the mapping `map` made; the VM that mapped it is gone.
-        unsafe { platform::unmap_file_shared(self.host, self.len) };
+        if !*self.released.get_mut() {
+            // SAFETY: the mapping `map` made; the VM that mapped it is gone.
+            unsafe { platform::unmap_file_shared(self.host, self.len) };
+        }
     }
 }
 
@@ -476,6 +509,9 @@ pub struct Layer {
     head: Head,
     data: Shared,
 }
+
+/// Why a layer's mapping is not there to use: let go of as its machine stopped.
+const RELEASED: &str = "its writable layer was let go of as its machine stopped";
 
 /// A layer's head: memory of the VM's own, or a snapshot's copy of it, mapped privately, as
 /// guest RAM is restored (its writes the restored VM's alone).
@@ -600,6 +636,9 @@ impl Layer {
     /// then the file system, both writable by the guest. `gpa` must be a section's start
     /// ([`SECTION`]), where the head is sized for.
     pub fn mappings(&self, gpa: u64) -> Result<[(u64, *mut u8, usize); 2], String> {
+        if self.data.released() {
+            return Err(RELEASED.into());
+        }
         if !gpa.is_multiple_of(SECTION) {
             return Err(format!("a layer at {gpa:#x}: a {} MiB boundary", SECTION >> 20));
         }
@@ -623,11 +662,27 @@ impl Layer {
     /// The file system, flushed to its file first: the blocks not all zeros of the ranges
     /// its file holds data in.
     pub fn save(&self, head: &File, data: &File) -> Result<(), String> {
+        if self.data.released() {
+            return Err(RELEASED.into());
+        }
         let at = |e: std::io::Error| format!("its layer: {e}");
         save_head(head, self.head.host, self.head.len).map_err(at)?;
         // SAFETY: the mapping `data` holds, for the layer's life.
         unsafe { platform::flush_shared(self.data.host, self.data.len) }.map_err(at)?;
-        platform::copy_used(&self.data.file, data, self.data.len as u64).map_err(at)
+        self.data.copy_to(data, self.data.len as u64).map_err(at)
+    }
+
+    /// Lets go of its file system's mapping and file once its machine is gone, rather than
+    /// as the process ends: the file holds what the guest wrote, and its host reads it
+    /// with nothing of this process's still at it. On macOS the last writer to let go of a
+    /// file written through a shared mapping writes it back before it returns, and a reader
+    /// of the file meanwhile waits behind it (PM M278).
+    ///
+    /// # Safety
+    /// No VM maps it any more (`Running::teardown` destroys the VM first).
+    pub unsafe fn release(&self) {
+        // SAFETY: forwarded caller contract; `mappings` and `save` refuse it after.
+        unsafe { self.data.release() }
     }
 }
 

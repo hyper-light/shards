@@ -351,7 +351,10 @@ fn parse_run(args: impl Iterator<Item = OsString>) -> Result<Run, String> {
             "--join-share" => cfg.join_share = Some(give_join_share()),
             "--pmem" => cfg.pmem.push(PathBuf::from(value("--pmem")?)),
             // A writable layer (D190), its ext4 file system in this file.
-            "--layer" => cfg.layer = Some(PathBuf::from(value("--layer")?)),
+            "--layer" => {
+                cfg.layer = Some(PathBuf::from(value("--layer")?));
+                LAYERED.store(true, std::sync::atomic::Ordering::Relaxed);
+            }
             "--nested" => cfg.nested = true,
             "--gpu" => cfg.gpu = true,
             "--pci-test" => cfg.pci_test = vec![(vm::TEST_DEVICE, 0)],
@@ -480,7 +483,10 @@ fn parse_restore(args: impl Iterator<Item = OsString>) -> Result<Restore, String
             "--gpu" => {}
             "--backing" => backing.push(disk(value("--backing")?)),
             // The restore's own copy of the writable layer its snapshot kept (D190).
-            "--layer" => layer = Some(PathBuf::from(value("--layer")?)),
+            "--layer" => {
+                layer = Some(PathBuf::from(value("--layer")?));
+                LAYERED.store(true, std::sync::atomic::Ordering::Relaxed);
+            }
             "--warm" => {
                 let fd = text(value("--warm")?)?;
                 warm = Some(
@@ -555,6 +561,16 @@ fn parse_restore(args: impl Iterator<Item = OsString>) -> Result<Restore, String
         warm,
         resume,
     })
+}
+
+/// Whether this VM's writable layer is an ext4 file system in a file of its own (D190), its
+/// host's to keep, rather than a tmpfs in its memory.
+static LAYERED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// [`LAYERED`]: read where a run keeps its layer (workload.rs), a Unix host's.
+#[cfg(unix)]
+pub fn layered() -> bool {
+    LAYERED.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 /// This VM's shared directories' slots, which its run fills (D38).
@@ -1125,6 +1141,7 @@ fn serve_workload(
                                 layer_out: None,
                                 told: None,
                                 saved: None,
+                                kept: None,
                                 processes: None,
                                 host_net: None,
                                 resumed: None,
@@ -1139,8 +1156,11 @@ fn serve_workload(
                             }
                         };
                         (
-                            workload::serve(Some((&listener, signals)), request, to_guest, timing, &guest_abi),
-                            false,
+                            (
+                                workload::serve(Some((&listener, signals)), request, to_guest, timing, &guest_abi),
+                                false,
+                            ),
+                            None,
                         )
                     }
                     Command::Warm(link, resumed) => {
@@ -1181,6 +1201,15 @@ fn serve_workload(
                             );
                         };
                         let saved = |used| crate::warm::layer_saved(&link, used);
+                        // A layer that stays in its file (D190) is the daemon's to read
+                        // once the machine is gone, nothing of it writing the file then:
+                        // whether this run's may stay, and whether its guest kept it.
+                        let layer_stays = std::sync::atomic::AtomicBool::new(false);
+                        let layer_kept = std::sync::atomic::AtomicBool::new(false);
+                        let kept = |used| match crate::warm::hold_kept(&link, used) {
+                            Ok(()) => layer_kept.store(true, std::sync::atomic::Ordering::Relaxed),
+                            Err(e) => shards_vmm::debug!("holding the kept layer's word: {e}"),
+                        };
                         let processes = |records: &[u8]| crate::warm::processes(&link, records);
                         let host_net = |frame: &[u8]| crate::warm::host_net(&link, frame);
                         let ask = || {
@@ -1198,6 +1227,10 @@ fn serve_workload(
                                 &|| moved().inspect_err(|e| report(e)),
                                 resumed,
                             )?;
+                            layer_stays.store(
+                                request.layer_out.is_some() && crate::vm_run::layered(),
+                                std::sync::atomic::Ordering::Relaxed,
+                            );
                             // Its own engine (D181), before its guest hears of the run, where
                             // it has one; where not, its port is let go, and refuses. A resumed
                             // run's token comes after its save's (D176): its guest's relay says
@@ -1277,6 +1310,7 @@ fn serve_workload(
                                 layer_out: request.layer_out,
                                 told: Some(&finish),
                                 saved: Some(&saved),
+                                kept: Some(&kept),
                                 processes: Some(&processes),
                                 host_net: Some(&host_net),
                                 resumed: conns,
@@ -1292,7 +1326,7 @@ fn serve_workload(
                         );
                         // Some once the request came: its client, if it has one. A run that
                         // failed before its end was told is told now.
-                        match client.get() {
+                        let outcome = match client.get() {
                             Some(_) => {
                                 finish(&served);
                                 (served, true)
@@ -1302,6 +1336,21 @@ fn serve_workload(
                                 stopper.stop();
                                 (served, false)
                             }
+                        };
+                        // Where its layer may stay in its file, the daemon hears the VM has
+                        // gone, its link closing, only once the machine is down and its layer
+                        // let go of: the link goes with the outcome to the thread that waits
+                        // for that. Its layer kept, the guest has written all it had (init's
+                        // KEEP syncs every file system): the machine stops now, rather than
+                        // as its guest powers off, and that thread tells the daemon as soon
+                        // as nothing of it writes the layer (`warm::tell_kept`).
+                        if layer_stays.into_inner() {
+                            if layer_kept.into_inner() {
+                                stopper.stop();
+                            }
+                            (outcome, Some(link))
+                        } else {
+                            (outcome, None)
                         }
                     }
                 };
@@ -1311,7 +1360,7 @@ fn serve_workload(
             handle.stop();
             return failed(format!("workload thread: {e}"));
         }
-        let reason = running.wait();
+        let reason = running.wait_then(crate::warm::tell_kept);
         // Its joiners (D119), which the guest ended with its workload, tell the daemon how
         // each ended before this process goes, as the relay has had 5 s to (below).
         #[cfg(unix)]
@@ -1325,7 +1374,12 @@ fn serve_workload(
         }
         // The guest waits for its status to be read before it powers off, so the relay
         // has finished unless the guest never ran the command.
-        match rx.recv_timeout(std::time::Duration::from_secs(5)) {
+        // A warm VM's link to its daemon, where it kept its layer, closes as this returns:
+        // after the machine is down (D190).
+        match rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .map(|(outcome, _link)| outcome)
+        {
             // A warm VM's client has its status, and any error on its stderr: the warm
             // VM's own status says that it served.
             Ok((_, true)) => ExitCode::SUCCESS,

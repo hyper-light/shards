@@ -144,6 +144,47 @@ pub fn sync_dir(path: &std::path::Path) -> io::Result<()> {
     }
 }
 
+/// Whether letting go of a file written through a shared mapping, its last writable
+/// descriptor or mapping, writes its pages back before it returns, as whoever reads the
+/// file meanwhile waits: macOS (APFS, PM M278). Linux writes back in its own time.
+pub const LET_GO_WRITES_BACK: bool = cfg!(target_os = "macos");
+
+/// Has what was written to `file` written back now, on a thread of its own, where its OS
+/// would make whoever lets go of the file last wait for it: macOS writes a file's dirty
+/// pages back as its last writable descriptor or mapping goes, and whoever reads the file
+/// meanwhile waits too (APFS, PM M278). fsync(2) alone, which writes them to the drive, not
+/// through its cache as `F_FULLFSYNC` does: nothing here asks to be durable. Its own
+/// descriptor of the file, which it closes once written back; the caller goes on at once,
+/// or waits for it where no thread starts. Elsewhere nothing: Linux writes back in its own
+/// time, and a close never waits for it.
+pub fn write_back_ahead(file: &File) -> io::Result<()> {
+    #[cfg(target_os = "macos")]
+    {
+        use std::os::fd::AsRawFd as _;
+        let fsync = |file: &File| {
+            // SAFETY: fsync(2) of the descriptor `file` holds.
+            if unsafe { libc::fsync(file.as_raw_fd()) } != 0 {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(())
+        };
+        let own = file.try_clone()?;
+        let spawned = std::thread::Builder::new()
+            .name("write-back".into())
+            .spawn(move || {
+                if let Err(e) = fsync(&own) {
+                    crate::debug!("writing back: {e}");
+                }
+            });
+        if spawned.is_err() {
+            return fsync(file);
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = file;
+    Ok(())
+}
+
 /// Fills `buf` from `file` at `offset`, failing on a short file.
 pub fn read_exact_at(file: &File, buf: &mut [u8], offset: u64) -> io::Result<()> {
     let mut done = 0;

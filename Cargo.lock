@@ -1292,6 +1292,7 @@ version = "0.1.0"
 name = "shards-ext4"
 version = "0.1.0"
 dependencies = [
+ "flate2",
  "serde",
  "serde_json",
  "sha2",

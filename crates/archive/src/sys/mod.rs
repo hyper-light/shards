@@ -15,7 +15,7 @@ pub(crate) use windows::*;
 /// A file's type, as Go's FileMode tells it. Windows has no devices or FIFOs to pack.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(windows, allow(dead_code))]
-pub(crate) enum FileKind {
+pub enum FileKind {
     File,
     Dir,
     Symlink,
@@ -30,16 +30,18 @@ pub(crate) enum FileKind {
 /// What lstat says of a file. Windows has no owners, links or device numbers to pack.
 #[derive(Debug, Clone)]
 #[cfg_attr(windows, allow(dead_code))]
-pub(crate) struct Stat {
-    pub(crate) kind: FileKind,
+pub struct Stat {
+    pub kind: FileKind,
     /// `st_mode` on Unix; Go's permission bits on Windows.
-    pub(crate) mode: u32,
-    pub(crate) uid: u32,
-    pub(crate) gid: u32,
-    pub(crate) size: u64,
-    pub(crate) mtime: Time,
-    pub(crate) ino: u64,
-    pub(crate) dev: u64,
-    pub(crate) nlink: u64,
-    pub(crate) rdev: u64,
+    pub mode: u32,
+    pub uid: u32,
+    pub gid: u32,
+    pub size: u64,
+    pub mtime: Time,
+    pub ino: u64,
+    pub dev: u64,
+    pub nlink: u64,
+    /// The numbers of the device it is (`st_rdev`'s major and minor), 0 where it is none.
+    pub major: i64,
+    pub minor: i64,
 }

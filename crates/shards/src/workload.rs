@@ -115,6 +115,10 @@ pub struct Asked<'a> {
     pub told: Option<&'a Told<'a>>,
     /// Told the layer is saved whole.
     pub saved: Option<&'a (dyn Fn(Option<u64>) + Sync)>,
+    /// Told the layer stays in its own file (D190), its guest's journal written in place:
+    /// where the VM's layer is one and no container joined to its network outlives the
+    /// run, in place of a save.
+    pub kept: Option<&'a (dyn Fn(Option<u64>) + Sync)>,
     /// Given the records of the processes the run's members start and end (D123).
     pub processes: Option<&'a Records<'a>>,
     /// Given its guest's asks of the host on the host's network (D124): each frame's kind,
@@ -551,6 +555,7 @@ pub fn serve(
         layer_out,
         told,
         saved,
+        kept,
         processes,
         host_net,
         resumed,
@@ -565,6 +570,7 @@ pub fn serve(
             layer_out: None,
             told: None,
             saved: None,
+            kept: None,
             processes: None,
             host_net: None,
             resumed: None,
@@ -676,15 +682,30 @@ pub fn serve(
         _ => false,
     };
     // A container that stays keeps its files, as they are now its command has ended:
-    // once its end is told, so that nothing waits for them that does not need them.
+    // once its end is told, so that nothing waits for them that does not need them. Where
+    // they are an ext4 file system in a file of their own (D190), they stay there, its
+    // journal written in place, for its host to read once the microVM has gone, unless
+    // containers joined to its network go on in it past the run (D119): their files are
+    // its, and a microVM that goes on keeps it in use.
     if let (Ok(_), Some(out)) = (&status, layer_out) {
-        match receive_layer_from(&conn, &mut reader, out, &mut beyond) {
-            Ok(used) => {
-                if let Some(saved) = saved {
-                    saved(used);
+        if crate::vm_run::layered() && !crate::warm::joining() {
+            match keep_layer_from(&conn, &mut reader, &mut beyond) {
+                Ok(used) => {
+                    if let Some(kept) = kept {
+                        kept(used);
+                    }
                 }
+                Err(e) => shards_vmm::debug!("keeping the container's files: {e}"),
             }
-            Err(e) => shards_vmm::debug!("saving the container's files: {e}"),
+        } else {
+            match receive_layer_from(&conn, &mut reader, out, &mut beyond) {
+                Ok(used) => {
+                    if let Some(saved) = saved {
+                        saved(used);
+                    }
+                }
+                Err(e) => shards_vmm::debug!("saving the container's files: {e}"),
+            }
         }
     }
     // Containers joined to its network go on past it (D119): the guest's signal
@@ -951,6 +972,44 @@ fn receive_layer_from(
         frame.resize(len, 0);
         reader.read_exact(&mut frame)?;
         out.write_all(&frame)?;
+    }
+}
+
+/// Asks the guest to keep the container's writable layer in its own file ([`kind::KEEP`],
+/// D190) and reads its answer: what the layer uses ([`kind::USAGE`]) and an empty
+/// [`kind::LAYER`] frame; each other frame given to `beyond`, as
+/// [`receive_layer_from`]'s.
+#[cfg(unix)]
+fn keep_layer_from(
+    conn: &UnixStream,
+    reader: &mut impl Read,
+    beyond: &mut dyn FnMut(u8, &[u8]) -> bool,
+) -> io::Result<Option<u64>> {
+    let mut w = conn;
+    w.write_all(&run::header(kind::KEEP, 0))?;
+    let mut frame = Vec::new();
+    let mut used = None;
+    loop {
+        let mut h = [0u8; run::HEADER];
+        reader.read_exact(&mut h)?;
+        let (which, len) =
+            run::parse_header(h).ok_or_else(|| io::Error::other("the guest sent a malformed frame"))?;
+        let len = len as usize;
+        frame.resize(len, 0);
+        reader.read_exact(&mut frame)?;
+        match which {
+            kind::LAYER if len == 0 => return Ok(used),
+            kind::USAGE if len == 8 && used.is_none() => {
+                used = <[u8; 8]>::try_from(frame.as_slice()).ok().map(u64::from_be_bytes);
+            }
+            kind::SYSTEM_ERR => return Err(io::Error::other(String::from_utf8_lossy(&frame).into_owned())),
+            _ if beyond(which, &frame) => {}
+            _ => {
+                return Err(io::Error::other(
+                    "the guest sent another frame as it kept its files",
+                ));
+            }
+        }
     }
 }
 

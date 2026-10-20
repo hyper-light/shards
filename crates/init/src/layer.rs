@@ -8,19 +8,7 @@
 use std::fs::File;
 use std::io::{self, Read, Write};
 
-use shards_abi::run::{self, CHUNK, kind};
-
-/// What init makes of every container, which is not its change: its mounts and its
-/// files in `/etc`, as Docker's init layer holds them (changes.rs, MADE).
-const MADE: [&str; 7] = [
-    "proc",
-    "sys",
-    "dev",
-    "etc/hosts",
-    "etc/hostname",
-    "etc/resolv.conf",
-    "etc/mtab",
-];
+use shards_abi::run::{self, CHUNK, MADE, kind};
 
 /// Applies the layer that arrives as [`kind::LAYER`] frames on `conn`, the first of
 /// which said it is `first` bytes long, over the root.
@@ -45,9 +33,9 @@ pub fn apply(conn: &File, first: u32) -> io::Result<()> {
 
 /// Sends the container's writable layer on `conn`, as [`save_from`] sends one.
 pub fn save(conn: &File) -> io::Result<()> {
-    match crate::changes::upper() {
-        Some(upper) => save_from(conn, &upper),
-        None => {
+    match (crate::changes::lower_path(), crate::changes::upper()) {
+        (Some(lower), Some(upper)) => save_from(conn, &lower, &upper),
+        _ => {
             let why = io::Error::other("the writable layer was not kept");
             refuse(conn, &why)?;
             Err(why)
@@ -55,11 +43,43 @@ pub fn save(conn: &File) -> io::Result<()> {
     }
 }
 
-/// Sends the writable layer at `upper` on `conn`, the workload's or a joiner's (D119): what
-/// it uses ([`kind::USAGE`]), then [`kind::LAYER`] frames and an empty one; or, where it
-/// could not all be packed, why ([`kind::SYSTEM_ERR`]) in the empty one's place, so that
-/// the host keeps the layer it had.
-pub fn save_from(conn: &File, upper: &str) -> io::Result<()> {
+/// The container's writable layer kept in its file by its host (D190, `kind::KEEP`): what
+/// it uses ([`kind::USAGE`]) and an empty [`kind::LAYER`] frame, its files left where they
+/// are, every file system's writes made and its journal written in place first
+/// (`pmem::checkpoint_layer`): its host stops the machine as it hears, and reads the layer
+/// as it stands.
+pub fn keep(conn: &File) -> io::Result<()> {
+    let (Some(lower), Some(upper)) = (crate::changes::lower_path(), crate::changes::upper()) else {
+        let why = io::Error::other("the writable layer was not kept");
+        refuse(conn, &why)?;
+        return Err(why);
+    };
+    // What its pack leaves out of `/etc` and the like, which its host packs without the
+    // image at hand (run::MADE_ONLY).
+    let listed: String = made_only(&lower, &upper).into_iter().map(|d| d + "\n").collect();
+    if let Err(e) = crate::pmem::write_in_layer(run::MADE_ONLY, listed.as_bytes()) {
+        refuse(conn, &e)?;
+        return Err(e);
+    }
+    let used = usage(std::path::Path::new(&upper));
+    if let Err(e) = crate::pmem::checkpoint_layer() {
+        refuse(conn, &e)?;
+        return Err(e);
+    }
+    if let Ok(used) = used {
+        let mut c = conn;
+        c.write_all(&run::header(kind::USAGE, 8))?;
+        c.write_all(&used.to_be_bytes())?;
+    }
+    send(conn, &[])
+}
+
+/// Sends the writable layer at `upper` over the image's root at `lower` on `conn`, the
+/// workload's or a joiner's (D119): what it uses ([`kind::USAGE`]), then [`kind::LAYER`]
+/// frames and an empty one; or, where it could not all be packed, why
+/// ([`kind::SYSTEM_ERR`]) in the empty one's place, so that the host keeps the layer it
+/// had.
+pub fn save_from(conn: &File, lower: &str, upper: &str) -> io::Result<()> {
     // What it uses first, while its files are as they will be packed.
     if let Ok(used) = usage(std::path::Path::new(upper)) {
         let mut c = conn;
@@ -70,7 +90,7 @@ pub fn save_from(conn: &File, upper: &str) -> io::Result<()> {
         conn,
         buf: Vec::with_capacity(CHUNK),
     };
-    let packed = pack_from(upper, &mut out).and_then(|()| out.flush());
+    let packed = pack_from(lower, upper, &mut out).and_then(|()| out.flush());
     match &packed {
         Ok(()) => send(conn, &[])?,
         Err(e) => refuse(conn, e)?,
@@ -114,14 +134,17 @@ pub fn usage(root: &std::path::Path) -> io::Result<u64> {
 /// every container left out, and the directories that hold nothing else and are as the
 /// image has them (Docker's init layer is beneath a container's, not in it).
 pub fn pack(out: &mut impl Write) -> io::Result<()> {
-    let upper = crate::changes::upper().ok_or_else(|| io::Error::other("the writable layer was not kept"))?;
-    pack_from(&upper, out)
+    let not_kept = || io::Error::other("the writable layer was not kept");
+    let lower = crate::changes::lower_path().ok_or_else(not_kept)?;
+    let upper = crate::changes::upper().ok_or_else(not_kept)?;
+    pack_from(&lower, &upper, out)
 }
 
-/// [`pack`] of the writable layer at `upper`: the workload's, or a joiner's (D119).
-pub fn pack_from(upper: &str, out: &mut impl Write) -> io::Result<()> {
+/// [`pack`] of the writable layer at `upper` over the image's root at `lower`: the
+/// workload's, or a joiner's (D119).
+pub fn pack_from(lower: &str, upper: &str, out: &mut impl Write) -> io::Result<()> {
     let mut exclude: Vec<Vec<u8>> = MADE.iter().map(|p| p.as_bytes().to_vec()).collect();
-    exclude.extend(made_only(upper).into_iter().map(String::into_bytes));
+    exclude.extend(made_only(lower, upper).into_iter().map(String::into_bytes));
     let opts = shards_archive::PackOptions {
         exclude_patterns: exclude,
         whiteout: shards_archive::WhiteoutFormat::Overlay,
@@ -137,9 +160,9 @@ pub fn pack_from(upper: &str, out: &mut impl Write) -> io::Result<()> {
 }
 
 /// The directories of the writable layer `upper` that hold only what init made, and whose
-/// mode and owner are the image's: copied up for init's files, not changed by the
-/// container.
-fn made_only(upper: &str) -> Vec<String> {
+/// mode and owner are those of the image's root at `lower`: copied up for init's files, not
+/// changed by the container. (The root's own, an overlay over both, shows the copy's.)
+fn made_only(lower: &str, upper: &str) -> Vec<String> {
     use std::os::unix::fs::MetadataExt;
     let mut dirs: Vec<&str> = MADE
         .iter()
@@ -158,7 +181,7 @@ fn made_only(upper: &str) -> Vec<String> {
             });
             let (Ok(here), Ok(image)) = (
                 std::fs::symlink_metadata(format!("{upper}/{dir}")),
-                std::fs::symlink_metadata(format!("/{dir}")),
+                std::fs::symlink_metadata(format!("{lower}/{dir}")),
             ) else {
                 return false;
             };

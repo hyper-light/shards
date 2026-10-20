@@ -1452,6 +1452,38 @@ pub fn layer_saved(link: &Link, used: Option<u64>) {
     );
 }
 
+/// The daemon's word that the container's writable layer stays in its own file (D190),
+/// held until nothing of the machine writes the file ([`tell_kept`]): its link's own
+/// socket, and what the layer used in the guest.
+static KEPT: std::sync::Mutex<Option<(UnixStream, Option<u64>)>> = std::sync::Mutex::new(None);
+
+/// Holds the word that the container's writable layer stays in its own file (D190), its
+/// guest's journal written in place, for [`tell_kept`] once the machine is down. An error
+/// where its link's socket cannot be held: the daemon then keeps the layer as the VM goes.
+pub fn hold_kept(link: &Link, used: Option<u64>) -> std::io::Result<()> {
+    let daemon = link.daemon.try_clone()?;
+    *KEPT.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some((daemon, used));
+    Ok(())
+}
+
+/// Tells the daemon what [`hold_kept`] held, if anything: nothing of the machine writes the
+/// layer's file any more, which is the container's from now on (`Running::wait_then`).
+pub fn tell_kept() {
+    let held = KEPT
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .take();
+    if let Some((daemon, used)) = held {
+        let payload = used.map(u64::to_be_bytes);
+        let _ = shards_ipc::send(
+            &daemon,
+            kind::LAYER_KEPT,
+            payload.as_ref().map_or(&[][..], |p| p),
+            &[],
+        );
+    }
+}
+
 /// Stops using the client's stdio: this process's standard descriptors become `null`.
 fn let_go(null: &File) {
     for target in [0, 1, 2] {

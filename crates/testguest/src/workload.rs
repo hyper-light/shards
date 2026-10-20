@@ -2666,6 +2666,12 @@ fn fs(ops: &[String]) -> i32 {
                 .parse::<u64>()
                 .map_err(io::Error::other)
                 .map(|ms| std::thread::sleep(std::time::Duration::from_millis(ms))),
+            // sync(2): what was written committed to its file systems' journals.
+            "sync" => {
+                // SAFETY: sync(2) takes no arguments and cannot fail.
+                unsafe { libc::sync() };
+                Ok(())
+            }
             "open" => {
                 let (m, p) = rest.split_once(':').unwrap_or((rest, ""));
                 std::fs::OpenOptions::new()

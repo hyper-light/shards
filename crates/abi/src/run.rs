@@ -135,7 +135,34 @@ pub mod kind {
     /// network, its address and prefix there, its gateway and its link's hardware address
     /// (`bridge 10.244.0.2/24 10.244.0.1 aa:bb:cc:dd:ee:ff`).
     pub const MEMBER: u8 = 39;
+    /// Host to guest, after [`EXIT`], in [`SAVE`]'s place for a writable layer that is an
+    /// ext4 file system on its host's disk (D190): its files stay there, which the host
+    /// keeps; the guest says what the layer uses ([`USAGE`]) and ends with an empty
+    /// [`LAYER`] frame once every file system's writes are made and the layer's journal
+    /// is written in place (EXT4_IOC_CHECKPOINT), so that the host reads it as it stands
+    /// once it has stopped the machine.
+    pub const KEEP: u8 = 40;
 }
+
+/// The file at the root of a writable layer kept in its own file (D190), beside its
+/// overlay's `upper` and `work`, naming the directories of [`MADE`]'s files that its pack
+/// leaves out, one a line: those holding nothing else, as the image has them, which init
+/// finds as the layer is kept, where the image is at hand.
+pub const MADE_ONLY: &str = "shards-made-only";
+
+/// What init makes of every container, which is not its change: its mounts and the files
+/// it writes in `/etc`, as Docker's init layer holds them (moby daemon/initlayer/
+/// setup_unix.go). A container's writable layer is packed without them, in its guest
+/// (init's layer.rs) and on its host (D190).
+pub const MADE: [&str; 7] = [
+    "proc",
+    "sys",
+    "dev",
+    "etc/hosts",
+    "etc/hostname",
+    "etc/resolv.conf",
+    "etc/mtab",
+];
 
 /// A bind of the run's processes on the host's network (`--network host`, D124), as
 /// [`kind::BIND`] carries it: the host's address of the kind the guest bound (its every

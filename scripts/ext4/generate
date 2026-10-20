@@ -2,8 +2,10 @@
 # Regenerates crates/ext4/testdata/e2fsck.json and mke2fs.json: what e2fsck 1.47.0 finds
 # in the file systems shards-ext4 makes of each size (examples/images.rs, made as its unit
 # tests make them), and the structures mke2fs 1.47.0 makes of one, whose checksums the
-# tests compute again (crates/ext4/src/tests.rs). Both by Debian 12's e2fsprogs, in a Linux
-# container (Docker's).
+# tests compute again (crates/ext4/src/tests.rs); and tree.blocks.gz and tree.json, a file
+# system of every kind of file mke2fs copies a tree into (tree.sh) and what debugfs reads of
+# it, which the reader is held to (read.rs). All by Debian 12's e2fsprogs, in a Linux
+# container (Docker's), run as root there.
 #
 #   scripts/ext4/generate
 set -eu
@@ -33,5 +35,6 @@ docker run --rm -v "$out:/work" "$image" sh -c '
 		-U 5c7b4964-401a-46fd-a8d9-3d8fd0b86b12 -E hash_seed=f38f0154-1c25-4f49-b87a-24455a777588 \
 		/work/mke2fs.raw 257536
 '
+docker run --rm -v "$out:/work" -v "$here/tree.sh:/tree.sh:ro" "$image" sh /tree.sh
 python3 -I "$here/record.py" "$out" "$data"
 echo "wrote $data"

@@ -11,7 +11,17 @@
 
 use std::ffi::CString;
 use std::io;
+use std::os::fd::{AsRawFd as _, OwnedFd};
 use std::path::Path;
+use std::sync::OnceLock;
+
+/// The run's writable layer as it was mounted (D190): its root, opened, for its checkpoint.
+static LAYER: OnceLock<OwnedFd> = OnceLock::new();
+
+/// EXT4_IOC_CHECKPOINT, `_IOW('f', 43, __u32)` (include/uapi/linux/ext4.h, Linux 5.13), as
+/// the generic ioctl numbering x86_64 and arm64 share makes it: no libc of the guest's
+/// names it.
+const CHECKPOINT: u32 = 0x4004_662B;
 
 /// Mounts the EROFS on pmem `device` at `target`, read-only, with `data`. Where libnvdimm
 /// has not made its node yet (ENOENT), or the disk behind it (ENXIO), waits for its
@@ -88,7 +98,50 @@ pub fn mount_layer(target: &str) -> Result<bool, String> {
             io::Error::last_os_error()
         ));
     }
+    let root = std::fs::File::open(target).map_err(|e| format!("{target}: {e}"))?;
+    let _ = LAYER.set(root.into());
     Ok(true)
+}
+
+/// Writes `bytes` as file `name` at the writable layer's root, beside its overlay's
+/// directories, replacing what was there.
+pub fn write_in_layer(name: &str, bytes: &[u8]) -> io::Result<()> {
+    let root = LAYER
+        .get()
+        .ok_or_else(|| io::Error::other("no writable layer of its own"))?;
+    let path = format!("/proc/self/fd/{}/{name}", root.as_raw_fd());
+    std::fs::write(&path, bytes)
+}
+
+/// Writes what the writable layer's journal holds in place, which its host keeps in its
+/// file (`kind::KEEP`) from here on: every file system's writes first, volumes' included
+/// (sync(2)), as its host stops the machine as soon as this answers, where it powered off
+/// before; then the layer's journal emptied (fs/ext4/ioctl.c, ext4_ioctl_checkpoint,
+/// jbd2_journal_flush, which leaves `s_start` 0), so that its host reads it as it stands,
+/// with nothing of the guest's to replay. A kernel without the ioctl (before 5.13, ENOTTY)
+/// leaves the journal committed, which its host then replays, as it does a layer whose
+/// microVM was killed. Each took 0.1 to 0.4 ms, where a freeze took 13 to 26 ms (PM M278).
+pub fn checkpoint_layer() -> io::Result<()> {
+    let root = LAYER
+        .get()
+        .ok_or_else(|| io::Error::other("no writable layer of its own"))?;
+    // SAFETY: sync(2) takes nothing.
+    unsafe { libc::sync() };
+    // The layer's own once more, which says whether its writes failed, as sync(2) does not.
+    // SAFETY: syncfs(2) of the descriptor this holds.
+    if unsafe { libc::syncfs(root.as_raw_fd()) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let flags: u32 = 0;
+    // SAFETY: EXT4_IOC_CHECKPOINT on a descriptor of the mounted file system's root,
+    // which this holds, reading the flags it points at for the call.
+    if unsafe { libc::ioctl(root.as_raw_fd(), CHECKPOINT as _, &raw const flags) } != 0 {
+        let e = io::Error::last_os_error();
+        if e.raw_os_error() != Some(libc::ENOTTY) {
+            return Err(e);
+        }
+    }
+    Ok(())
 }
 
 /// The block device of the pmem region at `gpa`: its pfn device's, which claims its

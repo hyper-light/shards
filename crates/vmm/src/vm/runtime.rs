@@ -472,14 +472,25 @@ pub struct Running {
     /// Devices own memory the VM maps (virtio-pmem regions): they go after the VM, as
     /// guest RAM does.
     bus: Arc<machine::Bus>,
+    /// Its writable layer (D190), let go of as soon as the VM is gone.
+    control: Arc<Control>,
     _memory: Arc<GuestMemory>,
 }
 
 impl Running {
     /// Waits for the guest to exit, then tears the machine down.
-    pub fn wait(mut self) -> ExitReason {
+    pub fn wait(self) -> ExitReason {
+        self.wait_then(|| {})
+    }
+
+    /// [`wait`](Self::wait), calling `free` as soon as nothing of the machine writes its
+    /// writable layer's file (D190), so that its host may read it without waiting on this
+    /// process: once every vCPU has stopped and the device workers are quiet, or, where
+    /// letting go of a file written through a shared mapping writes it back as its readers
+    /// wait ([`platform::LET_GO_WRITES_BACK`], PM M278), once the layer is let go of too.
+    pub fn wait_then(mut self, free: impl FnOnce()) -> ExitReason {
         let reason = self.shared.wait_exit();
-        self.teardown(reason.clone());
+        self.teardown(reason.clone(), free);
         reason
     }
 
@@ -487,17 +498,35 @@ impl Running {
     /// snapshot coordinator joined, so each vCPU was destroyed on its own thread; the
     /// device workers stopped; the VM destroyed; and only then, as the fields drop, the
     /// devices and guest memory it mapped. Again, it does nothing.
-    fn teardown(&mut self, reason: ExitReason) {
+    fn teardown(&mut self, reason: ExitReason, free: impl FnOnce()) {
         self.shared.stop(reason);
         for t in self.threads.drain(..) {
             let _ = t.join();
         }
         // A save the host asked for holds the VM and its devices until it is done.
         self.shared.await_save();
-        if let Some(vm) = self.vm.take() {
+        let vm = self.vm.take();
+        if vm.is_some() {
             // The device workers go quiet before the VM they raise interrupts in goes.
             self.bus.pause();
+        }
+        // Nothing of the machine runs now: its writable layer is what its guest left.
+        let mut free = Some(free);
+        if !platform::LET_GO_WRITES_BACK
+            && let Some(free) = free.take()
+        {
+            free();
+        }
+        if let Some(vm) = vm {
             drop(vm);
+            // Its writable layer is its file's alone from here on (D190).
+            if let Some(layer) = self.control.layer() {
+                // SAFETY: the VM that mapped it is gone, and nothing maps it again.
+                unsafe { layer.release() };
+            }
+        }
+        if let Some(free) = free.take() {
+            free();
         }
     }
 }
@@ -506,7 +535,7 @@ impl Drop for Running {
     /// A machine dropped without [`wait`](Running::wait) is stopped, not left running
     /// with nothing to own its memory (audit A04).
     fn drop(&mut self) {
-        self.teardown(ExitReason::Stopped);
+        self.teardown(ExitReason::Stopped, || {});
     }
 }
 
@@ -605,6 +634,10 @@ pub fn restore_from(cfg: &RestoreConfig, pinned: snapshot::Pinned) -> Result<(Ha
                 ));
             }
             platform::copy_used(&kept, &file, len).map_err(at)?;
+            // Written back as it restores, ahead of its run, rather than as the VM lets go
+            // of the file, where its host waits to read what its run left (macOS, PM M278),
+            // on a thread of its own: the restore goes on.
+            platform::write_back_ahead(&file).map_err(at)?;
             Some(Arc::new(pmem::Layer::restore(head, file)?))
         }
         Some(path) => {
@@ -813,6 +846,7 @@ fn launch(
         crate::log::uptime_us()
     );
     let handle_shared = shared.clone();
+    let control_running = control.clone();
     Ok((
         Handle {
             shared,
@@ -825,6 +859,7 @@ fn launch(
             vm: Some(vm),
             threads,
             bus,
+            control: control_running,
             _memory: memory,
         },
     ))

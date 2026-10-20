@@ -6,7 +6,11 @@
 # verb (crates/testguest, `shards_test=layer`): MemFree as it starts and once the NVDIMM
 # buses' probes are done, the DAX mount's and the overlay's times, first and three times
 # again, 64 MiB written and synced, 1,000 small files and 8 MiB through a mapping, and what
-# they took of its memory. HOLDS 0 is a boot without a layer, to set beside the others.
+# they took of its memory; then what keeping it costs as a run ends (PM M278): its journal
+# written in place as init's KEEP writes it (sync, syncfs, EXT4_IOC_CHECKPOINT), against a
+# freeze (FIFREEZE) and a read-only remount, three rounds after 100 more files each, the
+# first of each the first in its microVM. HOLDS 0 is a boot without a layer, to set beside
+# the others.
 #
 # Usage: measure.sh SHARDS KERNEL TESTGUEST ROUNDS HOLDS_GIB...
 #   SHARDS a release build's `shards`; KERNEL shards' pinned kernel for this host;

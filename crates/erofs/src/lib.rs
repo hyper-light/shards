@@ -1578,6 +1578,40 @@ pub fn read_file(image: &mut (impl Read + Seek), path: &[u8], max: u64) -> Resul
     Ok(Found::File(data))
 }
 
+/// The metadata of what `path` (`/`-separated, from the root) names in an image [`write`]
+/// wrote, found as [`read_file`] finds it, and its file type's bits (`S_IFMT`'s); None
+/// where nothing has the name. A symlink is never followed.
+pub fn stat(image: &mut (impl Read + Seek), path: &[u8]) -> Result<Option<(u16, Meta)>, Error> {
+    let show = || String::from_utf8_lossy(path).into_owned();
+    let sb = bytes_at(image, SUPER_OFFSET, SUPER_SIZE)?;
+    if le32(&sb, 0) != Some(MAGIC) || sb.get(12) != Some(&BLOCK_BITS) || le32(&sb, 80) != Some(0) {
+        return err("not an EROFS image as shards writes them");
+    }
+    let corrupt = || Error("a corrupt superblock".into());
+    let epoch = le64(&sb, 24).map(|e| e as i64).ok_or_else(corrupt)?;
+    let mut img = Image {
+        image,
+        meta: u64::from(le32(&sb, 40).ok_or_else(corrupt)?) * BLOCK,
+        window: None,
+    };
+    let mut nid = u64::from(le16(&sb, 14).ok_or_else(corrupt)?);
+    for name in path.split(|&c| c == b'/').filter(|n| !n.is_empty()) {
+        if matches!(name, b"." | b"..") {
+            return err(format!("{:?}: names only, no . or ..", show()));
+        }
+        let dir = img.inode(nid)?;
+        if dir.mode & ifmt::FMT != ifmt::DIR {
+            return Ok(None);
+        }
+        match img.lookup(&dir, name)? {
+            Some(child) => nid = child,
+            None => return Ok(None),
+        }
+    }
+    let (rec, meta, _, _) = img.full(nid, epoch)?;
+    Ok(Some((rec.mode & ifmt::FMT, meta)))
+}
+
 /// An image [`write`] wrote, read back whole as the tree it was written from: each node's
 /// kind and metadata, an inode of several names one node with several entries (a hard
 /// link), and each regular file's data where it lies in the image, as `DataRef { source,
@@ -2521,6 +2555,33 @@ mod tests {
                 "{nameoff}: {e}"
             );
         }
+    }
+
+    /// What a path names, stated as `read_file` finds it: every kind, with its tree's
+    /// metadata; nothing where nothing has the name, or a symlink stands on the way.
+    #[test]
+    fn a_path_is_stated_as_its_tree_has_it() {
+        let (tree, mut mem) = sample();
+        let img = image(&tree, &mut mem);
+        let stat = |path: &str| stat(&mut io::Cursor::new(&img), path.as_bytes()).unwrap();
+        for (path, kind) in [
+            ("etc", ifmt::DIR),
+            ("etc/f1", ifmt::REG),
+            ("short", ifmt::LNK),
+            ("tty", ifmt::CHR),
+            ("", ifmt::DIR),
+        ] {
+            let (fmt, meta) = stat(path).unwrap_or_else(|| panic!("{path}"));
+            let mut node = Tree::ROOT;
+            for name in path.split('/').filter(|n| !n.is_empty()) {
+                node = tree.lookup(node, name.as_bytes()).unwrap().1;
+            }
+            assert_eq!((fmt, &meta), (kind, &tree.node(node).unwrap().meta), "{path}");
+        }
+        assert_eq!(stat("nope"), None);
+        assert_eq!(stat("short/x"), None, "through a symlink");
+        assert_eq!(stat("etc/f1/x"), None, "through a file");
+        assert!(super::stat(&mut io::Cursor::new(&img), b"etc/../etc").is_err());
     }
 
     /// A directory's names, as the reader written from the kernel's rules lists them.

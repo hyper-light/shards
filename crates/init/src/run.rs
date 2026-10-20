@@ -239,10 +239,14 @@ pub fn main(device: &str, template: bool) -> ! {
             let _ = send(&conn, kind::OOM, &oom_facts(WORKLOAD_CGROUP));
         }
         let _ = send(&conn, kind::EXIT, &status.to_be_bytes());
-        // The host may ask for the container's writable layer, to keep (layer.rs).
-        if asked_to_save(&conn)
-            && let Err(e) = crate::layer::save(&conn)
-        {
+        // The host may ask for the container's writable layer, to keep (layer.rs): packed
+        // and sent, or kept where it is, in its host's file (D190).
+        let kept = match asked_to_save(&conn) {
+            Some(kind::SAVE) => crate::layer::save(&conn),
+            Some(kind::KEEP) => crate::layer::keep(&conn),
+            _ => Ok(()),
+        };
+        if let Err(e) = kept {
             let _ = writeln!(io::stderr(), "shards-init: saving the container's files: {e}");
         }
     }
@@ -1878,30 +1882,30 @@ pub(crate) fn send(conn: &File, kind: u8, payload: &[u8]) -> io::Result<()> {
 }
 
 /// Half-closes the connection and waits, at most two seconds, for the host to close it.
-/// Whether the host, after the exit status, asks for the writable layer
-/// ([`kind::SAVE`]) rather than closing the connection. What it still sends of the
-/// workload's stdin is passed over.
-fn asked_to_save(conn: &File) -> bool {
+/// How the host, after the exit status, asks for the writable layer ([`kind::SAVE`], or
+/// [`kind::KEEP`] for one in its file), rather than closing the connection: None where it
+/// does not. What it still sends of the workload's stdin is passed over.
+fn asked_to_save(conn: &File) -> Option<u8> {
     let mut r = conn;
     let mut h = [0u8; run::HEADER];
     let mut skip = vec![0u8; CHUNK];
     loop {
         if r.read_exact(&mut h).is_err() {
-            return false;
+            return None;
         }
         match run::parse_header(h) {
-            Some((kind::SAVE, _)) => return true,
+            Some((asked @ (kind::SAVE | kind::KEEP), _)) => return Some(asked),
             Some((_, len)) => {
                 let mut left = len as usize;
                 while left > 0 {
                     let n = left.min(skip.len());
                     if r.read_exact(skip.get_mut(..n).unwrap_or_default()).is_err() {
-                        return false;
+                        return None;
                     }
                     left -= n;
                 }
             }
-            None => return false,
+            None => return None,
         }
     }
 }
@@ -3292,17 +3296,18 @@ fn builtin(
                 // (D119) frozen in its cgroup alone, its provider running on.
                 let pause = args.first().is_some_and(|a| a == b"pause");
                 match &layers {
-                    Some((_, upper)) => {
+                    Some((lower, upper)) => {
+                        let lower = format!("/proc/self/fd/{}", lower.as_raw_fd());
                         let path = format!("/proc/self/fd/{}", upper.as_raw_fd());
                         if pause {
                             // Thawed whatever the packing did; a thaw that fails is the
                             // error to say, its container left frozen.
                             freeze(&cgroup, true).and_then(|()| {
-                                let packed = crate::layer::pack_from(&path, &mut out);
+                                let packed = crate::layer::pack_from(&lower, &path, &mut out);
                                 freeze(&cgroup, false).and(packed)
                             })
                         } else {
-                            crate::layer::pack_from(&path, &mut out)
+                            crate::layer::pack_from(&lower, &path, &mut out)
                         }
                     }
                     None => {
@@ -3998,11 +4003,11 @@ impl Exec {
     /// now (`JOIN_LAYERS`). Where it has none, its root never built, or no child can be
     /// had, its connection goes unanswered, which the host hears as no layer.
     fn send_layer(&mut self) {
-        let upper = join_layers()
+        let kept = join_layers()
             .iter()
             .find(|(j, _)| *j == self.id)
-            .and_then(|(_, k)| k.upper.try_clone().ok());
-        let (Some(upper), Some(conn)) = (upper, self.conn.as_ref()) else {
+            .and_then(|(_, k)| Some((k.lower.try_clone().ok()?, k.upper.try_clone().ok()?)));
+        let (Some((lower, upper)), Some(conn)) = (kept, self.conn.as_ref()) else {
             self.save = Save::Done;
             self.conn = None;
             return;
@@ -4012,8 +4017,8 @@ impl Exec {
         if pid == 0 {
             // The connection's file is init's too, which writes no more to it.
             set_nonblocking(conn.as_raw_fd(), false);
-            let at = format!("/proc/self/fd/{}", upper.as_raw_fd());
-            let code = match crate::layer::save_from(conn, &at) {
+            let at = |fd: &OwnedFd| format!("/proc/self/fd/{}", fd.as_raw_fd());
+            let code = match crate::layer::save_from(conn, &at(&lower), &at(&upper)) {
                 Ok(()) => 0,
                 Err(e) => {
                     let _ = writeln!(io::stderr(), "shards-init: saving a joiner's files: {e}");

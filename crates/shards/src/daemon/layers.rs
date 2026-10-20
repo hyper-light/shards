@@ -4,12 +4,22 @@
 //! A microVM booted for a run is given one made empty here, of the run's size; one
 //! restored from a template is given an empty file, which it fills with a copy of the
 //! layer its snapshot kept, as it reads the snapshot, so that the two are always one
-//! generation's. Either is made in the home's `layers` and unlinked once the microVM is
-//! ready, holding it open and mapped: what the run wrote goes with the microVM, as its
-//! swap does (D159), and nothing is left of it whatever ends the daemon or the microVM.
+//! generation's. Either is made in the home's `layers`, and stays there until the run it
+//! serves ends: a container that stays keeps it in its directory once its microVM has
+//! gone ([`LayerFile::keep_at`]), its guest having written its journal in place, and every
+//! other goes with its handle, its microVM holding it open and mapped meanwhile, as a
+//! run's swap does (D159).
+//! What a daemon before left in `layers` is no run's by the next.
+//!
+//! A kept layer is read here, on the host ([`pack`]): what `commit` takes of a stopped
+//! container, and what a container's next run, or a visit to its files, puts back.
 
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+
+use shards_ext4::journal;
+use shards_ext4::read::{self, Kind, Volume, Walker};
 
 /// Where layers are made: in the home, beside the files they are copied from, so that a
 /// copy may share their blocks.
@@ -68,11 +78,206 @@ impl LayerFile {
     pub(super) fn path(&self) -> &Path {
         &self.0
     }
+
+    /// Keeps the file as `at`, a container's, in place of what was there: no longer the
+    /// handle's to remove.
+    pub(super) fn keep_at(self, at: &Path) -> std::io::Result<()> {
+        let from = self.0.clone();
+        std::fs::rename(&from, at)?;
+        std::mem::forget(self);
+        Ok(())
+    }
 }
 
 impl Drop for LayerFile {
     fn drop(&mut self) {
         let _ = std::fs::remove_file(&self.0);
+    }
+}
+
+/// Where a container keeps its writable layer once its microVM has gone (D190), in its
+/// directory, beside its log.
+pub(super) const KEPT: &str = "layer.ext4";
+
+/// Opens the writable layer kept at `at` for reading, its microVM gone. Its guest wrote
+/// its journal in place as its run ended (init's `pmem::checkpoint_layer`), and it is read
+/// as it stands; where its microVM went first (killed), or its guest's kernel only
+/// committed it, its journal is replayed in place first (shards_ext4::journal, as its
+/// kernel replays one as it mounts it): what its guest committed is in place, and what it
+/// never committed stays out.
+pub(super) fn open_kept(at: &Path) -> Result<std::fs::File, String> {
+    let file = std::fs::File::open(at).map_err(|e| format!("{}: {e}", at.display()))?;
+    if !journal::needs_replay(&file).map_err(|e| e.to_string())? {
+        return Ok(file);
+    }
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(at)
+        .map_err(|e| format!("{}: {e}", at.display()))?;
+    let done = journal::replay(&file).map_err(|e| format!("replaying its journal: {e}"))?;
+    if let Some(done) = done {
+        super::log(format!(
+            "{}: replayed {} transactions of its journal, {} blocks, {} revoked",
+            at.display(),
+            done.transactions,
+            done.blocks,
+            done.revoked
+        ));
+    }
+    Ok(file)
+}
+
+/// Writes the writable layer kept in `file` (D190) to `out` as an OCI layer: its overlay's
+/// upper directory, whiteouts as `.wh.` entries, without what init made of every
+/// container (shards_abi::run::MADE) and the directories its guest found held nothing
+/// else (run::MADE_ONLY): the archive its guest's own pack of it makes (init's layer.rs).
+pub(super) fn pack(file: std::fs::File, out: impl Write) -> Result<(), String> {
+    let volume = Volume::open(file).map_err(|e| e.to_string())?;
+    let mut walker = Walker::new(volume);
+    let mut exclude: Vec<Vec<u8>> = shards_abi::run::MADE
+        .iter()
+        .map(|m| m.as_bytes().to_vec())
+        .collect();
+    exclude.extend(made_only(&mut walker)?);
+    let opts = shards_archive::PackOptions {
+        exclude_patterns: exclude,
+        whiteout: shards_archive::WhiteoutFormat::Overlay,
+        ..Default::default()
+    };
+    shards_archive::pack_from(&mut Files(walker), b"/upper", &opts, out)
+        .map(drop)
+        .map_err(|e| e.to_string())
+}
+
+/// [`pack`] of the layer kept in `file` into a file of its own, unlinked from `dir`, where
+/// it was made, as soon as it is: what a joiner's run (D119) puts back, its join disk
+/// taking the archive's whole 512-byte sectors, as a tar archive's are, where a pipe has
+/// none to take.
+pub(super) fn pack_to_file(file: std::fs::File, dir: &Path) -> Result<std::fs::File, String> {
+    use std::io::{Seek as _, SeekFrom};
+    let at = dir.join("layer.in");
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true).write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    let mut out = options.open(&at).map_err(|e| format!("{}: {e}", at.display()))?;
+    let _ = std::fs::remove_file(&at);
+    pack(file, &mut out)?;
+    out.seek(SeekFrom::Start(0))
+        .map_err(|e| format!("{}: {e}", at.display()))?;
+    Ok(out)
+}
+
+/// The directories its guest found held nothing but init's files, as the image has them
+/// (run::MADE_ONLY): of those, only the directories of [`MADE`](shards_abi::run::MADE)'s
+/// files, whatever the file says, as the guest wrote it.
+fn made_only(walker: &mut Walker<std::fs::File>) -> Result<Vec<Vec<u8>>, String> {
+    let at = format!("/{}", shards_abi::run::MADE_ONLY);
+    let Some(listed) = walker.lookup(at.as_bytes()).map_err(|e| e.to_string())? else {
+        return Ok(Vec::new());
+    };
+    if listed.kind != Kind::File || listed.size > 4096 {
+        return Ok(Vec::new());
+    }
+    let mut text = vec![0u8; listed.size as usize];
+    let n = walker
+        .volume()
+        .read_at(&listed, 0, &mut text)
+        .map_err(|e| e.to_string())?;
+    text.truncate(n);
+    let dirs: Vec<&[u8]> = shards_abi::run::MADE
+        .iter()
+        .filter_map(|m| m.rsplit_once('/').map(|(d, _)| d.as_bytes()))
+        .collect();
+    Ok(text
+        .split(|&c| c == b'\n')
+        .filter(|d| dirs.contains(d))
+        .map(<[u8]>::to_vec)
+        .collect())
+}
+
+/// A kept layer's files, as a pack reads them ([`shards_archive::Files`]): through
+/// shards-ext4, its guest's bytes checked as they are read.
+struct Files(Walker<std::fs::File>);
+
+fn not_there(path: &[u8]) -> std::io::Error {
+    std::io::Error::new(
+        std::io::ErrorKind::NotFound,
+        format!("{}: no such file", String::from_utf8_lossy(path)),
+    )
+}
+
+impl Files {
+    fn inode(&mut self, path: &[u8]) -> std::io::Result<read::Inode> {
+        self.0
+            .lookup(path)
+            .map_err(|e| std::io::Error::other(e.0))?
+            .ok_or_else(|| not_there(path))
+    }
+}
+
+impl shards_archive::Files for Files {
+    fn lstat(&mut self, path: &[u8]) -> std::io::Result<shards_archive::Stat> {
+        use shards_archive::FileKind;
+        let inode = self.inode(path)?;
+        let (major, minor) = match inode.kind {
+            Kind::Char | Kind::Block => inode.device(),
+            _ => (0, 0),
+        };
+        Ok(shards_archive::Stat {
+            kind: match inode.kind {
+                Kind::File => FileKind::File,
+                Kind::Dir => FileKind::Dir,
+                Kind::Symlink => FileKind::Symlink,
+                Kind::Char => FileKind::Char,
+                Kind::Block => FileKind::Block,
+                Kind::Fifo => FileKind::Fifo,
+                Kind::Socket => FileKind::Socket,
+            },
+            mode: u32::from(inode.mode),
+            uid: inode.uid,
+            gid: inode.gid,
+            size: inode.size,
+            mtime: shards_archive::tar::Time::unix(inode.mtime.sec, i64::from(inode.mtime.nsec)),
+            ino: u64::from(inode.ino),
+            dev: 0,
+            nlink: u64::from(inode.links),
+            major: i64::from(major),
+            minor: i64::from(minor),
+        })
+    }
+
+    fn read_dir(&mut self, path: &[u8]) -> std::io::Result<Vec<(Vec<u8>, bool)>> {
+        self.0.list(path).map_err(|e| std::io::Error::other(e.0))
+    }
+
+    fn readlink(&mut self, path: &[u8]) -> std::io::Result<Vec<u8>> {
+        let inode = self.inode(path)?;
+        self.0
+            .volume()
+            .read_link(&inode)
+            .map_err(|e| std::io::Error::other(e.0))
+    }
+
+    fn xattr(&mut self, path: &[u8], name: &[u8]) -> std::io::Result<Option<Vec<u8>>> {
+        let inode = self.inode(path)?;
+        let all = self
+            .0
+            .volume()
+            .xattrs(&inode)
+            .map_err(|e| std::io::Error::other(e.0))?;
+        Ok(all.into_iter().find(|(n, _)| n == name).map(|(_, v)| v))
+    }
+
+    fn open(&mut self, path: &[u8]) -> std::io::Result<Box<dyn std::io::Read + '_>> {
+        let inode = self.inode(path)?;
+        let reader = self
+            .0
+            .volume()
+            .reader(&inode)
+            .map_err(|e| std::io::Error::other(e.0))?;
+        Ok(Box::new(reader))
     }
 }
 

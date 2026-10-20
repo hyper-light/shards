@@ -10,6 +10,7 @@
 
 use crate::error::{Error, quote};
 use crate::gopath::{self, NATIVE, posix};
+use crate::pack::Files;
 use crate::sys::{self, FileKind, Root, Stat};
 use crate::tar::{Header, PAX_SCHILY_XATTR, TYPE_REG};
 
@@ -84,12 +85,21 @@ fn uid_map_in_user_ns(line: &[u8]) -> bool {
 }
 
 impl Overlay {
+    /// The converter of an overlay mounted by a root of its own, outside any user
+    /// namespace: a microVM's guest's (`pack_from`).
+    pub(crate) fn trusted() -> Overlay {
+        Overlay {
+            opaque: b"trusted.overlay.opaque",
+        }
+    }
+
     /// ConvertWrite: a 0/0 character device becomes the empty file `.wh.NAME`; an opaque
     /// directory's attribute is dropped and the returned header, `.wh..wh..opq` inside it,
     /// follows it in the archive. Err where reading the attribute fails, which go-archive
     /// logs, skipping the file.
     pub(crate) fn convert_write(
         &self,
+        files: &mut dyn Files,
         hdr: &mut Header,
         src: &[u8],
         st: &Stat,
@@ -105,7 +115,7 @@ impl Overlay {
         if st.kind != FileKind::Dir {
             return Ok(None);
         }
-        let opaque = sys::lgetxattr(src, self.opaque).map_err(|_| ())?;
+        let opaque = files.xattr(src, self.opaque).map_err(|_| ())?;
         if opaque.as_deref() != Some(b"y") {
             return Ok(None);
         }

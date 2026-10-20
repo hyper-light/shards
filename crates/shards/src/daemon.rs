@@ -147,6 +147,14 @@ fn open_swap(at: &Path, bytes: u64) -> std::io::Result<std::fs::File> {
     Ok(file)
 }
 
+/// Removes the file at `at`, where there is one.
+fn remove_if_there(at: &Path) -> io::Result<()> {
+    match std::fs::remove_file(at) {
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+        done => done,
+    }
+}
+
 /// A new file for a container's layer to be written to, in place of any half-written
 /// one: only this user's.
 fn open_layer(at: &Path) -> std::io::Result<std::fs::File> {
@@ -376,6 +384,9 @@ struct Ready {
     /// VM, which the joiner's run may never end, and `socket` the joiner's own connection
     /// to it.
     joined: Option<String>,
+    /// Its writable layer's file (D190), which it holds open and mapped: the run it takes
+    /// keeps it, or lets it go.
+    layer: Option<layers::LayerFile>,
 }
 
 impl Ready {
@@ -646,6 +657,12 @@ struct Inbox {
     exec_ids: Vec<(u64, String)>,
     /// The container's writable layer is still to come, after its end (D37).
     layer_pending: bool,
+    /// Its writable layer's file (D190), its VM's, for a container that stays: kept in its
+    /// directory once nothing of its machine writes it, as the VM says it kept it
+    /// (`LAYER_KEPT`, its guest's journal written in place), or as the VM goes without a
+    /// word once its command had started, its journal then to replay as it is read
+    /// (`layers::open_kept`). Else let go of.
+    layer: Option<layers::LayerFile>,
     /// [`Keep::named`].
     named: Option<String>,
     /// [`Keep::restarted`].
@@ -3000,10 +3017,20 @@ impl<D: Disk> Daemon<D> {
             }
         };
         // What it changed before, to put back (D37); a resumed one's is in its memory.
-        let layer_in = again
-            .as_ref()
-            .filter(|_| resuming.is_none())
-            .and_then(|_| File::open(lock(&self.containers).dir(&id).join(LAYER)).ok());
+        let layer_in = match again.as_ref().filter(|_| resuming.is_none()) {
+            Some(_) => match self.layer_in(threads, &id, joining) {
+                Ok(file) => file,
+                Err(e) => {
+                    refuse(&format!(
+                        "{}: its writable layer: {e}",
+                        id.get(..12).unwrap_or(&id)
+                    ));
+                    abandon(&id);
+                    return None;
+                }
+            },
+            None => None,
+        };
         if let Some(file) = &layer_in {
             flags |= shards_ipc::RUN_LAYER_IN;
             fds.push(file.as_fd());
@@ -4326,6 +4353,9 @@ impl<D: Disk> Daemon<D> {
                 .map_err(|e| log(format!("holding a detached client's connection: {e}")))
                 .ok()
         });
+        // Its writable layer's file, for a container that stays; another's goes now, its VM
+        // holding it.
+        let layer = if layer_pending { ready.layer } else { None };
         // A joiner's provider (D119), which follows its microVM on for it.
         let provider = ready.joined.as_deref().and_then(|p| self.inbox_of(p));
         if let Some(p) = &provider {
@@ -4346,6 +4376,7 @@ impl<D: Disk> Daemon<D> {
             execs_in_flight: Vec::new(),
             exec_ids: Vec::new(),
             layer_pending,
+            layer,
             named,
             restarted,
             incoming: shards_ipc::Incoming::default(),
@@ -4430,7 +4461,14 @@ impl<D: Disk> Daemon<D> {
                     inbox.joiners = 0;
                     inbox.host_net = None;
                     if inbox.layer_pending {
-                        self.settle_layer(id, inbox, false);
+                        // Its layer in its file as its guest left it, once its command had
+                        // started (D190): its journal written in place where it said so
+                        // (`LAYER_KEPT`), else to replay.
+                        if inbox.layer.is_some() && inbox.started {
+                            self.settle_kept(id, inbox);
+                        } else {
+                            self.settle_layer(id, inbox, false);
+                        }
                     }
                     continue;
                 }
@@ -4543,6 +4581,23 @@ impl<D: Disk> Daemon<D> {
                         inbox.execs_in_flight.retain(|(held, _)| *held != n);
                     }
                 }
+                // Its layer stays in its file (D190), its guest's journal written in place,
+                // said once nothing of its machine writes it (`warm::tell_kept`): the
+                // container's from now on.
+                kind::LAYER_KEPT => {
+                    if inbox.layer_pending {
+                        self.settle_kept(id, inbox);
+                    }
+                    if let Ok(used) = <[u8; 8]>::try_from(m.payload.as_slice()) {
+                        let used = u64::from_be_bytes(used);
+                        if lock(&self.containers)
+                            .change(id, |c| c.size_rw = Some(used))
+                            .is_ok()
+                        {
+                            self.record_soon(id, Vec::new());
+                        }
+                    }
+                }
                 kind::LAYER_SAVED => {
                     self.settle_layer(id, inbox, true);
                     if let Ok(used) = <[u8; 8]>::try_from(m.payload.as_slice()) {
@@ -4584,19 +4639,80 @@ impl<D: Disk> Daemon<D> {
         done
     }
 
+    /// What container `id` changed before, to put back as its next run, or a visit to its
+    /// files, starts (D37): its writable layer kept in its file (D190), packed here as its
+    /// guest packs one, into a pipe a thread of its own writes, or into a file of its own
+    /// for a joiner (`joining`, D119), whose join disk takes it; else one its guest packed
+    /// (`layer.tar`); none where it never ran. A kept layer whose journal holds what its
+    /// guest had yet to write in place (its microVM killed) has it replayed first
+    /// ([`layers::open_kept`]).
+    pub(super) fn layer_in<'s, 'e>(
+        &'s self,
+        threads: &'s Threads<'s, 'e>,
+        id: &str,
+        joining: bool,
+    ) -> Result<Option<File>, String> {
+        let dir = lock(&self.containers).dir(id);
+        let kept = dir.join(layers::KEPT);
+        if !kept.exists() {
+            return Ok(File::open(dir.join(LAYER)).ok());
+        }
+        let file = layers::open_kept(&kept)?;
+        if joining {
+            return layers::pack_to_file(file, &dir).map(Some);
+        }
+        let (reader, writer) = io::pipe().map_err(|e| format!("a pipe for it: {e}"))?;
+        let shown = id.get(..12).unwrap_or(id).to_string();
+        std::thread::Builder::new()
+            .name("layer".into())
+            .spawn_scoped(threads, move || {
+                // Its reader gone, a write fails, and the pack ends.
+                if let Err(e) = layers::pack(file, writer) {
+                    log(format!("container {shown}: packing its writable layer: {e}"));
+                }
+            })
+            .map_err(|e| format!("a thread to pack it: {e}"))?;
+        Ok(Some(File::from(std::os::fd::OwnedFd::from(reader))))
+    }
+
     /// Container `id`'s writable layer, as its VM left it (D37): kept if it came `whole`;
     /// else what came of it goes, and the layer it had before stays.
     fn settle_layer(&self, id: &str, inbox: &mut Inbox, whole: bool) {
         inbox.layer_pending = false;
+        // Its VM's file goes (D190): what the VM sent is its layer now, or nothing is.
+        inbox.layer = None;
         let (new, kept) = (inbox.container.join(LAYER_NEW), inbox.container.join(LAYER));
         let settled = if whole {
-            std::fs::rename(&new, &kept)
+            // The newer, in place of one kept in its file before.
+            std::fs::rename(&new, &kept).and_then(|()| remove_if_there(&inbox.container.join(layers::KEPT)))
         } else {
             std::fs::remove_file(&new)
         };
         if let Err(e) = settled
             && e.kind() != io::ErrorKind::NotFound
         {
+            log(format!("container {id}: its writable layer: {e}"));
+        }
+        lock(&self.settling).remove(id);
+        self.settled.notify_all();
+    }
+
+    /// Container `id`'s writable layer, kept in its VM's file (D190), its VM gone: the
+    /// file is its layer from now on, in its directory, in place of what it had.
+    fn settle_kept(&self, id: &str, inbox: &mut Inbox) {
+        inbox.layer_pending = false;
+        // A container removed as its microVM went (`rm -f`) keeps nothing: the file goes.
+        if let Some(layer) = inbox.layer.take()
+            && inbox.container.is_dir()
+        {
+            let kept = layer
+                .keep_at(&inbox.container.join(layers::KEPT))
+                .and_then(|()| remove_if_there(&inbox.container.join(LAYER)));
+            if let Err(e) = kept {
+                log(format!("container {id}: keeping its writable layer: {e}"));
+            }
+        }
+        if let Err(e) = remove_if_there(&inbox.container.join(LAYER_NEW)) {
             log(format!("container {id}: its writable layer: {e}"));
         }
         lock(&self.settling).remove(id);
@@ -5502,6 +5618,7 @@ impl<D: Disk> Daemon<D> {
             pool: None,
             records: None,
             joined: Some(provider),
+            layer: None,
         })
     }
 
@@ -6403,9 +6520,16 @@ impl<D: Disk> Daemon<D> {
         let watching = std::thread::Builder::new()
             .name("warm vm".into())
             .spawn_scoped(threads, move || {
-                self.watch(threads, watched, ours, grants, net_control, dest, net_process);
-                // Ready, it holds its layer, open and mapped; or it never will.
-                drop(layer);
+                self.watch(
+                    threads,
+                    watched,
+                    ours,
+                    grants,
+                    net_control,
+                    dest,
+                    net_process,
+                    layer,
+                );
             });
         if let Err(e) = watching {
             if pooled {
@@ -6431,6 +6555,7 @@ impl<D: Disk> Daemon<D> {
         net: Option<(UnixStream, Option<[u8; 6]>)>,
         dest: For,
         net_process: Option<shards_ipc::Child>,
+        layer: Option<layers::LayerFile>,
     ) {
         // Its network process's control socket, and the guest's MAC on it.
         let (net, mac) = match net {
@@ -6482,6 +6607,7 @@ impl<D: Disk> Daemon<D> {
                             pool: Some(key.clone()),
                             records,
                             joined: None,
+                            layer,
                         });
                         self.rebalance(threads, &state, key);
                     }
@@ -6511,6 +6637,7 @@ impl<D: Disk> Daemon<D> {
                         pool: None,
                         records: None,
                         joined: None,
+                        layer,
                     }));
                 }
                 Err(e) => {
@@ -7195,6 +7322,7 @@ mod tests {
                 pool: pool.map(own),
                 records: None,
                 joined: None,
+                layer: None,
             };
             (ready, theirs)
         }
@@ -8517,6 +8645,7 @@ mod tests {
                     None,
                     None,
                     For::Pool(own(&watching)),
+                    None,
                     None,
                 )
             });

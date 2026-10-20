@@ -2537,9 +2537,10 @@ gone with the VM. So a container that stays (not `--rm`) keeps it on the host:
   run's own, mounted with DAX, so that what a container writes is its host's page cache,
   never its microVM's memory, and is held to what its layer holds, not to its memory limit:
   256 MiB written under `--memory 64m`, where a run whose layer was a tmpfs in its memory
-  was killed 64 MiB into a 100 MiB `dd` (2026-10-05). Open, and owed: a stop that keeps that file rather than packing it, and
-  `start`, `diff`, `export`, `cp` and `commit` reading it, without a VM; to be measured
-  against M115 and M116.
+  was killed 64 MiB into a 100 MiB `dd` (2026-10-05). A stop keeps that file rather than
+  packing it (D190 slice 2), its guest's journal written in place as its run ends;
+  `commit` packs it on the host, and `start` and a visit put back what the host packs of
+  it.
 - **`cp`.** docker/cli's `cp.go` on shards-archive's port of go-archive's copy rules;
   dockerd's half (stat, archive, extract into a directory, `-a`'s owner) runs as init
   built-ins in the microVM, and the archive passes between it and the client through a
@@ -5714,7 +5715,7 @@ template pays it once; what its restores pay is to be measured with mappings.
   for, none by default, until random writes through one are root-caused and fixed, and a
   window that holds a working set costs its guest less than its 64th at boot.
 
-### D190. A run's writable layer on its host's disk: ext4 with DAX over pmem (slice 1 built)
+### D190. A run's writable layer on its host's disk: ext4 with DAX over pmem (slices 1 and 2 built)
 
 A run's writable layer, the upper directory of its root's overlay, was a tmpfs in its
 microVM's memory (D16, D156): what it wrote was memory, held to its memory limit, and gone
@@ -5768,23 +5769,96 @@ the guest keeps their metadata alone.
   layer's head of 85 blocks kept in 5: 12 MiB where 170 MiB whole); a restore maps each
   block privately where the head had it. A save of a running microVM (D176) keeps both
   as a template's snapshot does (`prepare` makes a run's five files).
-- **Its lifetime is its microVM's.** The daemon unlinks a layer's file once its microVM
-  is ready, holding it open and mapped, as a run's swap file is (D159): nothing of it
-  stays past the microVM, whatever ends the daemon or the microVM, and what a daemon before
-  left in `layers` is removed as the next starts. A stop packs the layer as before (D37).
-- **Tests.** `shards-ext4`'s, including the oracle's; `pmem`'s for the head's size, its
+- **Its file is its run's, then its container's.** A layer's file stays in the home's
+  `layers` while its microVM serves its run, the daemon holding it with the microVM; what
+  a daemon before left there is no run's by the next, which removes it as it starts. A
+  container that stays keeps it once the microVM has gone (slice 2), in its directory as
+  `layer.ext4`, in place of the layer it had; every other run's goes with its microVM.
+- **Kept as it stops, not packed** (slice 2). As a run ends, its host asks the guest to
+  keep its layer (`kind::KEEP`) where it asked it to pack one (`kind::SAVE`, D37): init says
+  what the layer uses, writes beside its overlay's directories which directories its pack
+  leaves out (`shards-made-only`: those holding nothing but init's own `/etc` files, as the
+  image has them), syncs every file system (sync(2), its volumes' too), and writes the
+  layer's journal in place (syncfs, then EXT4_IOC_CHECKPOINT, fs/ext4/ioctl.c, Linux 5.13:
+  jbd2_journal_flush, every transaction written where its blocks are and the log emptied,
+  `s_start` 0), so that its host reads it as it stands, with nothing to replay. A guest
+  kernel without the ioctl leaves its journal committed, which its host replays (below).
+  Then the VM process stops the machine, the guest having nothing left to write, rather
+  than wait for its power-off (2 to 37 ms on the Mac), and says the layer is kept
+  (`LAYER_KEPT`) only once nothing of the machine can write it: once no vCPU runs and the
+  device workers are quiet, and on macOS once it has let go of the file too
+  (`Running::wait_then`): there, whoever lets go of a file last after writing it through a
+  shared mapping writes it back before the call returns, and whoever reads the file
+  meanwhile waits (`platform::LET_GO_WRITES_BACK`). Until it says so the daemon reads
+  nothing of the file: as the VM's link ended, its guest could still be powering off. A
+  restore on macOS has its copy of its template's layer written back on a thread of its
+  own as it restores (`platform::write_back_ahead`), so that what its VM lets go of at its
+  end is its run's own writes. The guest's part took 0.50 ms (Mac) and 0.90 ms (Fedora) at
+  p50, 1.9 at most, where a freeze (FIFREEZE: the same writes, and the file system then
+  marked as needing no recovery, fs/ext4/super.c ext4_freeze) took 16 and 32 ms the first
+  time in each microVM, 63 at most, and a read-only remount 3.6 and 7.3 (PM M278). A
+  microVM whose run has containers joined to its network (D119) packs its layer as before:
+  they go on in it, and its file with them.
+- **Read on the host.** `shards-ext4`'s reader reads a kept layer as Linux 6.18 reads one
+  (super.c, inode.c, extents.c, dir.c, namei.c, xattr.c, acl.c): its guest's bytes, which
+  the host trusts no more than an image's, every structure that carries a checksum checked
+  against it (metadata_csum), every number against the file system, a damaged one or one
+  of a feature it does not read refused; held to e2fsprogs' own reader, debugfs, over a
+  tree of every kind of file mke2fs -d copies into one, its directories indexed by e2fsck -D
+  (`scripts/ext4/generate`, `a_volume_reads_as_debugfs_reads_it`), and read without panic
+  however its bytes are changed. shards-archive packs it through `Files` as it packs the
+  host's own files (`pack_from`), as go-archive packs a Linux host's, whatever the host:
+  `commit` of a stopped container takes that pack, and its next run (`start`) and a visit
+  to its files (`cp`, `diff`, `export`, D37) put it back as they put back a packed layer,
+  the same bytes as its guest's pack of it (init's made-only rule now compares with the
+  image's directory, where it compared with the root's own, which shows the copy: always
+  alike).
+- **Replayed where its microVM died.** A file system mounted is marked as needing recovery
+  until its kernel unmounts or freezes it; one whose journal's log is empty, as a
+  checkpoint leaves it, holds nothing to replay (jbd2_journal_recover: "No recovery
+  required") and is read as it stands, the host writing nothing to it. A microVM killed
+  before its guest wrote its journal in place leaves what its guest committed in its log,
+  not yet in place. Its container keeps it all the same where its command had started (a
+  run that never started leaves the layer it had), and its journal is replayed on the host
+  before it is read (`shards_ext4::journal`), as jbd2 replays one as it mounts it
+  (fs/jbd2/recovery.c, its three passes: the log's whole transactions found, its revoke
+  records taken, each block it logged written in place but those a later transaction
+  revoked, each checked against its tag's checksum first), then, once what it wrote is in
+  the file (as jbd2 syncs its device first), the journal marked empty and the file system
+  as needing none: a host stopped partway finds it to replay again, or replayed. Held
+  block for block to debugfs's own replay
+  (`journal_run`) of transactions debugfs wrote (`journal_write`: blocks, one escaped for
+  jbd2's magic, a revoke, a later block over an earlier), but for two fields of debugfs's
+  own (`s_lastcheck`, `s_kbytes_written`); a transaction whose commit block does not hold
+  is not replayed; and replayed without panic however its log's bytes are changed.
+- **Measured against packing** (PM M278, n = 20 a side, interleaved). A stop costs the
+  same. `diff` of a stopped container is 25 to 84% quicker at 4 and 64 MiB written on both
+  hosts and at 0 on the Mac (6.75 ms against 32.56), and on Fedora at 0 0.41 ms slower at
+  p50; `start` quicker on the Mac at every size (64 MiB: 275 ms against 397) and on Fedora
+  the same at 0 and 4 MiB and 4% quicker at 64; `commit` the same or quicker. Open: the
+  Mac's `run` right after the same daemon's `rm -f` and `rmi`, its p90 at 0 B 24.76 ms
+  against 6.68.
+- **Tests.** `shards-ext4`'s, including the oracles'; `pmem`'s for the head's size, its
   info block's checksum, a layer saved and restored and a head's alike blocks kept once;
   the snapshot's for a run's five files; `layers`' for the files the daemon makes and
   removes; on real microVMs, `a_microvm_takes_its_ipc_hostname_cgroups_umask_and_writable_layer`:
-  sizes held to, refusals, and 256 MiB written under `--memory 64m`.
+  sizes held to, refusals, and 256 MiB written under `--memory 64m`; and
+  `a_stopped_microvms_layer_stays_in_its_file`: a stopped container's `layer.ext4`, its
+  journal written in place, holding its file and its whiteout, put back as it starts
+  again; a microVM killed after its guest committed a file, its layer kept with its
+  journal to replay, replayed as `diff` visits it, and the file found.
 
-**Next** (the slices after this one).
-- A stop that keeps the layer's file in its container's directory, and `start`, `diff`,
-  `export`, `cp` and `commit` reading it on the host, without a VM; a restart then goes on
-  over it where a copy of its files is put back today (D37).
+**Next** (the slices after these).
+- A restart that goes on over the kept file itself: today its files are put back, packed
+  on the host, into the warm microVM's own layer, which its template mounted as its root's
+  (a copy, as long as the layer's changes are); a template's root mounted where a run can
+  swap the file under it would make a restart's cost the layer's mount alone.
+- A restore's layer a clone of its template's (APFS clonefile, Linux FICLONE where the
+  home's file system has it) rather than a copy: nothing to copy as it restores, nor to
+  write back on macOS (PM M278), its blocks its template's until its run writes them.
 - Blocks the guest frees go back to the host: pmem takes no discard
-  (drivers/nvdimm/pmem.c), so a layer's file only grows while its microVM lives; the
-  file system frozen, the host could punch out what its bitmaps say is free.
+  (drivers/nvdimm/pmem.c), so a layer's file only grows while its microVM lives; its
+  microVM gone, the host could punch out what its bitmaps say is free.
 - Joiners' layers (D119) on the microVM's own, rather than tmpfs.
 - What a flush asks of the host: nothing yet, its writes the host's page cache already,
   which outlives the microVM but not its host.

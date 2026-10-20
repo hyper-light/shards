@@ -10336,3 +10336,117 @@ revision before comparing a changed API/implementation.
   template; the head kept as its blocks, each once. Open: the head's boot on KVM when the
   host compacts for huge pages; arm64's 512th; a first run's head held in its memory for
   its life; APFS's filled holes.
+
+### M278. A stopped container's writable layer kept in its file, against packing it (D190)
+
+- **Question.** D190's second slice keeps a stopped container's writable layer in its own
+  file, where D37 packed it into a tar archive as its microVM stopped, and reads it on the
+  host for `start`, `diff`, `commit` and the other visits. What must a guest do as its run
+  ends for its host to read the file whole, and what does each way cost? What does keeping
+  cost a stop and the commands after it, against packing?
+- **Method.** 2026-10-20, on the Mac (Apple M5 Max, macOS 26.4.1, Hypervisor.framework,
+  carrying other projects' builds: load 5 to 40) and the Fedora host (M266's: Intel Core
+  i9-14900HX, Linux 6.19.10-300.fc44, KVM); release builds.
+  - Guest side: `docs/research/measurements/layer/measure.sh SHARDS KERNEL TESTGUEST 20 10`,
+    20 microVMs a host, each with a 10 GiB layer: the test guest's `layer` verb writes 100
+    files, then times init's KEEP (sync(2), the layer's syncfs(2), EXT4_IOC_CHECKPOINT),
+    then 100 more and FIFREEZE then FITHAW, then 100 more and a read-only remount and back;
+    three rounds, the first's the first of each in its microVM.
+  - Commands: `docs/research/measurements/layer-kept/ab.py OLD NEW --runs 20`, OLD
+    e55402f8 (packs), NEW this slice (keeps), each with a home of its own, interleaved: a
+    container writes 0, 4 MiB or 64 MiB into its root and ends (`run`), then `start -a`,
+    `diff` and `commit` of it; n = 20 after a round that is not counted. The same, on the
+    way, for each design below (`--raw` gives each round's times), and with one build on
+    both sides.
+  - macOS's file system: `layer-kept/unmap.c`, a child mapping a sparse 10 GiB file
+    shared and writing a page in each 32 KiB of its start, its parent reading the file as
+    soon as the child's pipe ends; `layer-kept/copy-back.py`, a template's layer copied as
+    a restore copies it, then fsync(2). And in the daemon, for diagnosis only (not kept),
+    the time of each open and read of a kept layer, and of each message.
+- **Results.**
+  - Guest side, µs, n = 20, p50 / p90 / p99 / max (the KEEP's parts at p50):
+
+    | host | KEEP | its sync, syncfs, checkpoint | first FIFREEZE | first read-only remount |
+    |---|---|---|---|---|
+    | Mac | 503 / 579 / 592 / 592 | 317, 36, 118 | 16,280 / 20,257 / 21,246 / 21,246 | 3,616 / 3,696 / 3,708 / 3,708 |
+    | Fedora | 896 / 1,532 / 1,865 / 1,865 | 719, 54, 94 | 32,215 / 52,714 / 63,244 / 63,244 | 7,291 / 7,714 / 14,533 / 14,533 |
+
+    A second freeze moments after a thaw took 0.23 ms (Mac) and 0.41 ms (Fedora) at p50.
+  - The way there, size 0, `start` and `diff` p50, ms, OLD against NEW (Fedora unless
+    said):
+    - Frozen as KEEP answered, taken as the VM said so: 4.81 and 4.15 against 63.35 and
+      65.14.
+    - KEEP's journal written in place, taken as the VM's link ended: 4.01 and 4.20 against
+      7.72 and 7.74. The guest was still powering off then: the VM process lived on 17 to
+      86 ms past its link's end (Mac, n = 20).
+    - The machine stopped as KEEP answered, the layer taken once the VM was torn down and
+      had let go of it (0.55 to 2.6 ms after KEEP, n = 30, 7.08 once): 4.56 and 4.43
+      against 5.78 and 6.53; on the Mac 15.44 and 36.35 against 21.06 and 23.54 (n = 15).
+      On the Mac the daemon's open of the file waited 11 to 16 ms as the VM process exited,
+      22 times of 24, where /etc/hosts, opened between, never took 0.05 ms; with a
+      read-only descriptor of it held from its making, its first read waited instead, and
+      with a writable one, the daemon's own close of it (25 to 142 ms, the host loaded).
+    - With the restore's copy of its template's layer written back as it restores (Mac,
+      against without, n = 20): `start` 22.71 to 6.79, `diff` 25.96 to 6.82; at 4 MiB 41.17
+      to 25.73 and 31.77 to 11.80. Written back before the restore went on, `run`'s p90 at
+      0 B was 14.70 and 17.99 against 8.25 and 5.99 in the same runs; written back on a
+      thread of its own, as committed, 24.76 against 6.68 (below).
+  - The A/B, NEW as committed: the layer taken as soon as no vCPU runs (on the Mac once
+    the VM has let go of it too), the restore's copy written back on a thread of its own;
+    OLD / NEW, ms p50 (p90, max). The Mac's 64 MiB row is the run before, whose restores
+    wrote their copies back before they went on (the 0 and 4 MiB rows of that run: `start`
+    7.73 / 6.64, `diff` 39.53 / 6.40; 39.05 / 24.60, 41.58 / 10.84):
+
+    | host, size | `run` | `start` | `diff` | `commit` |
+    |---|---|---|---|---|
+    | Mac, 0 | 5.82 (6.68) / 5.97 (24.76) | 7.45 (8.81, 14.40) / 6.68 (8.39, 75.04) | 32.56 (37.83, 43.77) / 6.75 (7.86, 7.98) | 46.31 / 35.59 |
+    | Mac, 4 MiB | 17.81 / 18.67 | 33.71 (69.80, 97.88) / 25.41 (31.44, 39.03) | 40.63 (66.38, 79.95) / 11.55 (21.83, 22.41) | 48.58 / 40.58 |
+    | Mac, 64 MiB | 206.93 / 207.93 | 397.37 (467.02, 575.96) / 275.08 (314.16, 364.95) | 318.73 (411.05, 496.83) / 82.73 (148.06, 149.47) | 85.36 / 86.74 |
+    | Fedora, 0 | 3.76 / 3.70 | 4.04 (4.58, 8.17) / 4.12 (4.45, 4.46) | 4.09 (9.16, 10.80) / 4.50 (9.23, 9.34) | 1.56 / 1.56 |
+    | Fedora, 4 MiB | 25.59 / 25.36 | 32.57 (33.53, 34.89) / 32.23 (38.64, 39.96) | 14.34 (15.54, 15.71) / 10.78 (11.44, 11.89) | 4.25 / 4.42 |
+    | Fedora, 64 MiB | 360.95 / 358.26 | 462.37 (478.46, 487.81) / 444.64 (453.91, 454.55) | 160.94 (169.67, 176.85) / 97.15 (101.34, 107.06) | 41.97 / 42.04 |
+
+    The Mac's slowest size-0 `start`, 75.04, was its first counted round, the first
+    restart after the templates are made; one build against itself gave that round 18 to
+    59 ms (OLD) and 28 to 79 (NEW), whichever ran first. NEW's slow size-0 `run`s (19 to
+    25 ms) were 8 of the 10 rounds it ran first in, right after its own `rm -f` and `rmi`,
+    and none where it ran second; OLD's, none. Unlinking a kept layer's file just after its
+    VM ended took 0.1 to 0.6 ms (5.1, and once 36, n = 12), and a `run` right after it 5.1
+    to 5.7 ms but for two of 24.7 and 31.2, one after a 0.44 ms unlink: not the file's
+    removal alone. Under the heaviest load (5 to 22), round by round, NEW's size-0 `start`
+    against OLD's had a median difference of +2.1 ms; at 4 and 64 MiB NEW was 3.4 to 12
+    times as quick for `start` and `diff`.
+  - APFS: unmapping the 10 GiB mapping with 2 MiB written took 58.3 ms at p50 (n = 20);
+    in a 1 GiB file written whole first, 2.1 ms, where sparse, 50.0. Unmapped and closed by
+    the child itself (512 KiB written), 44.4 ms at p50, its parent's reads after it as
+    quick as ever; let go of only as the child exited, after its pipe ended, the parent's
+    reads waited up to 10.5 ms (p90 4.9). A template's layer, 47 blocks of 4 KiB in 18
+    ranges: copied in 0.18 to 1.05 ms and written back in 2.73 to 2.86 at p50 (p90 3.25 to
+    12.65, max 24.55; two runs of 20).
+- **Reading.**
+  - A freeze is not the way to hand the host a layer: its writes are a checkpoint's, but
+    the first in each microVM waits 16 to 63 ms beyond them, and a read-only remount 3.6 to
+    14.5 ms. Writing the journal in place leaves the same file system for the host, its
+    journal empty, in 0.5 to 1.9 ms. ext4 marks a file system needing recovery while it is
+    mounted; an empty journal leaves nothing to replay (jbd2_journal_recover), and the
+    host's reader reads it as it stands.
+  - The host may read the layer only once nothing of the microVM can write it: not as the
+    VM's link ends, which was while its guest still powered off. The machine now stops as
+    its guest answers KEEP, and the daemon takes the layer as soon as no vCPU runs.
+  - On macOS, whoever lets go of a file last after writing it through a shared mapping
+    (its last writable descriptor or mapping) writes it back before the call returns, and
+    whoever reads the file meanwhile waits. Most of what a run's VM let go of was its
+    restore's copy of its template's layer: written back as it restores, ahead of its run,
+    a stop's followers no longer wait for it. Linux writes back in its own time.
+  - Keeping against packing: a stop costs the same at p50. `diff` is 25 to 84% quicker at
+    4 and 64 MiB on both hosts and at 0 on the Mac, and on Fedora at 0 0.41 ms slower at
+    p50, the same at p90; `start` is quicker on the Mac at every size, and on Fedora the
+    same at 0 and 4 MiB at p50 (at 4 MiB its p90 38.64 against 33.53) and 4% quicker at 64
+    MiB; `commit` the same or quicker. Open: the Mac's `run` right after a `rm -f` and `rmi`
+    of the same daemon's, its p90 at 0 B 24.76 against 6.68.
+- **Consequence.** D190's second slice as built: KEEP syncs every file system and writes
+  the layer's journal in place; the VM stops the machine as its guest answers and says the
+  layer is kept once no vCPU runs, on macOS once it has let go of the file too
+  (`Running::wait_then`, `platform::LET_GO_WRITES_BACK`); a restore writes its copy back
+  ahead on macOS (`platform::write_back_ahead`); the host reads an empty journal as it
+  stands and replays one that holds transactions.
