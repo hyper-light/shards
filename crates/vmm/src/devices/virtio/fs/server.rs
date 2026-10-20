@@ -3195,12 +3195,17 @@ fn host_xattr(name: &CStr) -> Result<CString, Errno> {
 const PRIVATE_XATTR: &[u8] = b"user.shards.";
 
 /// The guest's name for a host attribute `host`: [`host_xattr`]'s, turned back; none for
-/// one the guest does not see (the server's own, and another of `user.shards.`'s).
+/// one the guest does not see: the server's own, another of `user.shards.`'s, and on Linux
+/// the host's own `trusted.` and `security.` attributes, which its kernel keeps (an SELinux
+/// label, file capabilities or an IMA hash the host set), where the guest's of those names
+/// are under `user.shards.`, and reading them by those names reaches the guest's alone.
 fn guest_xattr(host: &[u8]) -> Option<&[u8]> {
     match host.strip_prefix(PRIVATE_XATTR) {
         #[cfg(target_os = "linux")]
         Some(rest) if rest.starts_with(b"trusted.") || rest.starts_with(b"security.") => Some(rest),
         Some(_) => None,
+        #[cfg(target_os = "linux")]
+        None if host.starts_with(b"trusted.") || host.starts_with(b"security.") => None,
         None => Some(host),
     }
 }
@@ -4512,6 +4517,27 @@ mod tests {
         );
         assert!(s.state.lock().unwrap().pins.is_empty(), "let go with its handle");
         let _ = std::fs::remove_dir_all(&path);
+    }
+
+    /// The guest's names for the host's attributes: its own `trusted.` and `security.` ones
+    /// as the host keeps them (`user.shards.`), its `user.` ones as they are; and on Linux,
+    /// none for the host's own `trusted.` and `security.` ones (an SELinux label), which the
+    /// guest could list and never read; nor for the server's.
+    #[test]
+    fn the_guest_sees_its_own_attributes_and_not_the_hosts_security_ones() {
+        assert_eq!(guest_xattr(b"user.x"), Some(&b"user.x"[..]));
+        assert_eq!(guest_xattr(b"user.shards.other"), None);
+        let host_label = guest_xattr(b"security.selinux");
+        let host_trusted = guest_xattr(b"trusted.ima");
+        if cfg!(target_os = "linux") {
+            assert_eq!(
+                guest_xattr(b"user.shards.security.capability"),
+                Some(&b"security.capability"[..])
+            );
+            assert_eq!((host_label, host_trusted), (None, None));
+        } else {
+            assert_eq!(host_label, Some(&b"security.selinux"[..]));
+        }
     }
 
     /// What the guest makes that the host cannot hold is kept beside it (D174), as a
