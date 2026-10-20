@@ -537,11 +537,12 @@ fn serve(
         Some(_) => match window.and_then(|w| mapping(&req, w, slot)) {
             Some(reply) => Some(reply),
             None => {
-                let reply = slot.ask(&req).unwrap_or_else(|_| server::unattached(&req));
+                let mut reply = slot.ask(&req).unwrap_or_else(|_| server::unattached(&req));
                 // The files whose sizes the reply tells the guest are what its window maps
                 // of them before it hears: grown, the file's pages; cut short, zeros.
-                if let (Some(w), Some(reply)) = (window, reply.as_deref()) {
+                if let (Some(w), Some(reply)) = (window, reply.as_deref_mut()) {
                     w.reconcile(&told(&req, reply));
+                    keep_mapped(&req, reply, w);
                 }
                 reply
             }
@@ -680,6 +681,46 @@ fn told(req: &[u8], reply: &[u8]) -> Vec<u64> {
         _ => {}
     }
     nodes
+}
+
+/// Tells the guest to keep what it has of a file its window maps as it opens it again
+/// (FOPEN_KEEP_CACHE, in the OPEN's reply, or the CREATE's of a file there already): Linux
+/// drops a file's cached pages at each open without it (fs/fuse/file.c, `fuse_open`),
+/// and for a file it maps through the window, those are its DAX entries, which it lets go
+/// of while its processes still map them, 2 MiB ones split as they are (fs/dax.c,
+/// `__dax_invalidate_entry`, `dax_folio_put`): the pages' counts go wrong, and its
+/// processes' later faults there end in SIGBUS (PM M274). Such a file has no page cache
+/// of the guest's to go stale: its bytes are the host's page cache through the window.
+fn keep_mapped(req: &[u8], reply: &mut [u8], window: &window::Window) {
+    // fuse_open_out's open_flags: after fh, past the out header, and a CREATE's entry.
+    const OPEN_FLAGS: usize = 16 + 8;
+    const ENTRY_OUT: usize = 128;
+    const KEEP_CACHE: u32 = 1 << 1;
+    let long = |b: &[u8], at: usize| {
+        b.get(at..at.checked_add(8)?)
+            .and_then(|b| <[u8; 8]>::try_from(b).ok())
+            .map(u64::from_le_bytes)
+    };
+    let opcode = req
+        .get(4..8)
+        .and_then(|b| <[u8; 4]>::try_from(b).ok())
+        .map(u32::from_le_bytes);
+    if reply.get(4..8).is_none_or(|e| e != [0; 4]) {
+        return;
+    }
+    let (node, at) = match opcode {
+        Some(server::op::OPEN) => (long(req, 16), OPEN_FLAGS),
+        Some(server::op::CREATE) => (long(reply, 16), ENTRY_OUT + OPEN_FLAGS),
+        _ => return,
+    };
+    let Some(flags) = reply.get_mut(at..at.saturating_add(4)) else {
+        return;
+    };
+    if node.is_some_and(|n| window.maps(n))
+        && let Ok(bytes) = <[u8; 4]>::try_from(&*flags)
+    {
+        flags.copy_from_slice(&(u32::from_le_bytes(bytes) | KEEP_CACHE).to_le_bytes());
+    }
 }
 
 /// Fills `buf` with the chain's readable bytes, in order, as far as they go; false if one
@@ -1112,6 +1153,70 @@ mod tests {
         want.sort_unstable();
         assert!(want.iter().all(|n| got.contains(n)), "{got:?} for {want:?}");
         assert!(got.iter().all(|n| want.contains(n)), "{got:?} for {want:?}");
+    }
+
+    /// An OPEN of a file the window maps, or a CREATE that opens one there already, is told
+    /// to keep what the guest has of it (FOPEN_KEEP_CACHE), what else its flags say kept; a
+    /// file it maps none of, a reply that failed, or another request's, not.
+    #[test]
+    fn opening_a_file_the_window_maps_keeps_its_dax_entries() {
+        struct Nothing;
+        impl window::Stage2 for Nothing {
+            unsafe fn map(&self, _: *mut u8, _: u64, _: usize, _: bool) -> Result<(), String> {
+                Ok(())
+            }
+            fn unmap(&self, _: u64, _: usize) -> Result<(), String> {
+                Ok(())
+            }
+        }
+        const MIB: u64 = 1 << 20;
+        let dir = shards_testdir::TempDir::new("fs-keep").unwrap();
+        std::fs::write(dir.join("big"), vec![1u8; 4 << 20]).unwrap();
+        let w = window::Window::new(1 << 32, 8 * MIB, |_| {
+            Ok(Box::new(Nothing) as Box<dyn window::Stage2>)
+        })
+        .unwrap();
+        let fd = std::os::fd::OwnedFd::from(std::fs::File::open(dir.join("big")).unwrap());
+        w.map(fd, 7, 0, 0, 2 * MIB, false).unwrap();
+        let request = |opcode: u32, nodeid: u64| {
+            let mut r = Vec::new();
+            r.extend(48u32.to_le_bytes());
+            r.extend(opcode.to_le_bytes());
+            r.extend(9u64.to_le_bytes());
+            r.extend(nodeid.to_le_bytes());
+            r.extend([0u8; 24]);
+            r
+        };
+        // fuse_out_header, then fuse_open_out: fh, open_flags (FOPEN_DIRECT_IO already).
+        let open_reply = |error: i32| {
+            let mut r = Vec::new();
+            r.extend(32u32.to_le_bytes());
+            r.extend(error.to_le_bytes());
+            r.extend(9u64.to_le_bytes());
+            r.extend(3u64.to_le_bytes());
+            r.extend(1u32.to_le_bytes());
+            r.extend(0i32.to_le_bytes());
+            r
+        };
+        let flags = |r: &[u8], at: usize| u32::from_le_bytes(r[at..at + 4].try_into().unwrap());
+        let mut r = open_reply(0);
+        keep_mapped(&request(server::op::OPEN, 7), &mut r, &w);
+        assert_eq!(flags(&r, 24), 1 | 2, "kept, its own flag too");
+        for (req, mut r) in [
+            (request(server::op::OPEN, 8), open_reply(0)),
+            (request(server::op::OPEN, 7), open_reply(-libc::ENOENT)),
+            (request(server::op::GETATTR, 7), open_reply(0)),
+        ] {
+            keep_mapped(&req, &mut r, &w);
+            assert_eq!(flags(&r, 24), 1);
+        }
+        // A CREATE's: fuse_entry_out (nodeid first), then fuse_open_out.
+        let mut created = open_reply(0)[..16].to_vec();
+        created.extend(7u64.to_le_bytes());
+        created.extend([0u8; 120]);
+        created.extend(open_reply(0)[16..].iter());
+        keep_mapped(&request(server::op::CREATE, 1), &mut created, &w);
+        assert_eq!(flags(&created, 16 + 128 + 8), 1 | 2);
     }
 
     /// A share that answers each request with an empty success, after `hold` lets it.

@@ -43,6 +43,20 @@ shards builds its own guest kernel. Firecracker's CI kernel lacks EROFS, which i
     7.2's VIRTIO_GPU_F_BLOB_ALIGNMENT, backported, with a host blob's size rounded up to
     the alignment where upstream refuses it, so that userspace that aligns nothing gets
     whole pages too (D144).
+  - `0004`: a guest given memory as it needs it (virtio-mem) reported only what was
+    plugged so far, and programs sized themselves by it; `vm.pluggable_kbytes`, which init
+    sets, adds what may still be plugged to sysinfo(2), /proc/meminfo and the overcommit
+    checks.
+  - `0005`: a guest saved within two seconds of registering its page reporting device
+    carried the first pass into every copy restored from it; `page_reporting.flush`
+    reports what waits at once, as init writes it before a save.
+  - `0006`: memory a page reporting pass holds is free memory: counted so in sysinfo(2)
+    and /proc/meminfo, and waited for by an allocation that would otherwise fail.
+  - `0007`: FUSE dropped a DAX file's entries at each open and as its attributes showed
+    its size changed, before unmapping the processes that mapped them, and since 6.15's
+    counting of DAX pages by their mappings a 2 MiB entry still mapped split with its
+    counts wrong: processes that faulted there got SIGBUS (PM M274). A DAX file's entries
+    are left to its layouts' own breaking.
 - **The toolchain:** `builder.env` pins a Debian image by its multi-architecture index
   digest, and installs its compiler, linker and tools from Debian's snapshot archive at a
   fixed time. So every build of the same inputs gets the same toolchain, and a new

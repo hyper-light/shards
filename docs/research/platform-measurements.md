@@ -10092,3 +10092,60 @@ revision before comparing a changed API/implementation.
   (an instance a microVM would run a user out of them, M257) and tells the VM; its window
   gives zeros there, and a vCPU that spun on one of those pages runs on. HVF's abort and
   arm64's EFAULT have the window follow the file as well.
+
+### M274. A guest's open of a file it maps through its DAX window lets go of pages its processes still map (D189)
+
+- **Question.** With D189's windows (1024 MiB), the sustained-I/O benchmark's cargo build of
+  rust-analyzer on a volume (M266) failed every time: rustc "interrupted by SIGBUS" in early
+  crates (span, salsa, stdx, parser), where without a window 20 of 20 builds finished (M272).
+  Whose is the fault, and what keeps it from happening?
+- **Method.** The Fedora host (Intel Core i9-14900HX, Linux 6.19.10-300.fc44), 2026-10-20,
+  the guest shards' pinned Linux 6.18.48. The build in a detached microVM, privileged to read
+  its kernel's log: the benchmark's workload by `exec`, then `dmesg` in the guest. A build of
+  the VM process logging every FUSE_SETUPMAPPING and REMOVEMAPPING its window refused. A
+  window of 8 GiB, so that the guest never reclaims a range. The guest kernel's source, 6.18.48
+  and v7.2-rc4: fs/fuse/file.c (`fuse_open`), fs/fuse/dir.c (`fuse_create_open`),
+  fs/fuse/inode.c (`fuse_change_attributes`), fs/dax.c (`__dax_invalidate_entry`,
+  `dax_folio_put`, `dax_associate_entry`) and mm/truncate.c
+  (`invalidate_inode_pages2_range`).
+- **Results.**
+  - The window refused no mapping: no line was logged in a failing build. The 8 GiB window
+    never booted: the guest's page structures for it, a 64th of it (M269), outgrew its boot
+    memory, and "the microVM ended before its guest connected".
+  - The guest's log held the cause, in every failing build read (2): `WARNING: CPU: 6 PID:
+    1212 at fs/dax.c:415 dax_folio_put` from `invalidate_inode_pages2` in `fuse_open`, a
+    rustc opening a file another one mapped; then `fs/dax.c:437 dax_insert_entry` under a 2 MiB
+    (PMD) fault and `fs/dax.c:460 dax_insert_entry` under a 4 KiB one; then rustc's SIGBUS.
+  - The source says why. Linux's FUSE drops a file's cached pages at each open unless the
+    server says to keep them (FOPEN_KEEP_CACHE); for a file the guest maps through its window
+    they are DAX entries. `invalidate_inode_pages2_range` lets each go
+    (`__dax_invalidate_entry`) before it unmaps the processes' page tables, after its loop;
+    since 6.15 a DAX page is counted by its mappings, and a 2 MiB entry still mapped is split
+    into small pages that still hold counts (`dax_folio_put`'s warning). Later faults there
+    find pages whose file and counts are wrong. v7.2-rc4 has the same code. A size change seen
+    in a file's attributes (`fuse_change_attributes`: `truncate_pagecache`, then
+    `invalidate_inode_pages2`) and a CREATE that truncates a file there already
+    (`fuse_create_open`: `truncate_pagecache` with the file's layouts unbroken) take the same
+    path; Linux's own truncation of a DAX file (`fuse_do_setattr`, an OPEN's O_TRUNC) breaks
+    its layouts first.
+  - Before: 5 of 5 builds with a window ended in SIGBUS (one of the benchmark's, four by hand).
+    With the device telling the guest to keep what it has of a file its window maps as it
+    opens it (FOPEN_KEEP_CACHE in the OPEN's reply, and the CREATE's of a file there already):
+    5 of 5 finished, 82.3, 83.0, 87.3, 88.3 and 87.9 s, and the guest's log held no warning
+    (read after the first).
+  - The attribute path alone: a guest process maps a DAX file of 9 MiB in 2 MiB pages
+    (MAP_SHARED at a 2 MiB boundary, each page read), the host appends a byte, and the
+    process stats the file once its attributes' second has passed, opens it again and reads
+    each page again (a program the image's rustc built in the guest; the device's
+    FOPEN_KEEP_CACHE on). The pinned kernel: `fs/dax.c:415 dax_folio_put`, from
+    `invalidate_inode_pages2` in `fuse_change_attributes_i` under `fuse_dentry_revalidate`
+    and `vfs_statx`, 4 of 4 runs. The same kernel with patch 0007 (built in the pinned
+    builder, its vmlinux SHA-256 16888ea7…087da2): no warning, 3 of 3, the guest seeing the
+    new size each time.
+- **Consequence.** D189: the device marks the reply to an OPEN of a file its window maps
+  FOPEN_KEEP_CACHE, which keeps any guest kernel off the open's path. Such a file has no
+  page cache of the guest's to go stale: its bytes are the host's page cache, through the
+  window. The attribute and CREATE paths are the guest kernel's: shards' kernel carries
+  0007 (resources/kernel/patches), which leaves a DAX file's entries to its layouts' own
+  breaking, as an OPEN's O_TRUNC, a SETATTR's truncation, a fallocate, a range's reclaim
+  and an eviction break them.

@@ -5664,6 +5664,15 @@ stores.
   gives zeros there, and a vCPU that spun there runs on. HVF's abort and arm64 KVM's
   EFAULT have the window follow the file at once. Until the guest asks the file's size
   again it reads zeros there, as through FUSE it may read stale bytes from its page cache.
+- An OPEN of a file the window maps, and a CREATE that opens one there already, is told
+  to keep what the guest has of it (FOPEN_KEEP_CACHE): Linux drops a file's cached pages at
+  each open, and for a mapped file those are DAX entries its processes may still map, which
+  it lets go of first and unmaps after, its 2 MiB pages' counts going wrong, and every build
+  of the benchmark's cargo workload ended in SIGBUS (M274). A mapped file has no page cache
+  of the guest's to go stale. A size change another process makes, seen in the file's
+  attributes, takes the same path in the guest kernel, which shards' kernel's patch 0007
+  closes (resources/kernel/patches): a DAX file's entries left to its layouts' own
+  breaking.
 - A mapping is charged its range's bytes against the microVM's I/O limits (D178) as it is
   made: the guest's loads and stores through it are memory, which the host's page cache
   serves and writes back.

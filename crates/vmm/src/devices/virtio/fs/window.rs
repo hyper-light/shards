@@ -637,6 +637,11 @@ impl Window {
         true
     }
 
+    /// Whether any range maps node `node`'s file.
+    pub fn maps(&self, node: u64) -> bool {
+        maps(&self.lock(), node)
+    }
+
     /// Every mapping, by window offset: what a save keeps (D176).
     pub fn mappings(&self) -> Vec<(u64, Mapped)> {
         self.lock().iter().map(|(at, e)| (*at, e.mapped)).collect()
