@@ -237,10 +237,13 @@ jobs:
         shell: bash
         run: cargo test --locked --release -p shards-rego --test builtins --test deep --test depth --target ${{ matrix.target }}
       # A process the seccomp filter ended with its SIGSYS blocked says nothing; the kernel
-      # logs the syscall it refused (the filter's SECCOMP_FILTER_FLAG_LOG).
-      - name: What the kernel logged of seccomp refusals
+      # logs the syscall it refused (the filter's SECCOMP_FILTER_FLAG_LOG). Nor does one the
+      # host's OOM killer ended: the kernel logs which it chose, and the memory it had.
+      - name: What the kernel logged of seccomp refusals and OOM kills
         if: failure() && runner.os == 'Linux'
-        run: sudo dmesg | grep -iE 'seccomp|type=1326' | tail -40 || true
+        run: |
+          sudo dmesg | grep -iE 'seccomp|type=1326|out of memory|oom-kill|killed process' | tail -60 || true
+          free -m || true
 
   # shards against Firecracker on one KVM host: the same kernel, initrd and command line,
   # interleaved (crates/shards/benches/firecracker.rs). Hosted arm64 runners have no /dev/kvm.
@@ -371,10 +374,13 @@ jobs:
             echo "::endgroup::"
           done
       # A process the seccomp filter ended with its SIGSYS blocked says nothing; the kernel
-      # logs the syscall it refused (the filter's SECCOMP_FILTER_FLAG_LOG).
-      - name: What the kernel logged of seccomp refusals
+      # logs the syscall it refused (the filter's SECCOMP_FILTER_FLAG_LOG). Nor does one the
+      # host's OOM killer ended: the kernel logs which it chose, and the memory it had.
+      - name: What the kernel logged of seccomp refusals and OOM kills
         if: failure()
-        run: sudo dmesg | grep -iE 'seccomp|type=1326' | tail -40 || true
+        run: |
+          sudo dmesg | grep -iE 'seccomp|type=1326|out of memory|oom-kill|killed process' | tail -60 || true
+          free -m || true
       - name: The executable is static
         if: matrix.part == 'release'
         run: |
