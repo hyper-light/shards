@@ -5587,6 +5587,16 @@ host (PM M267), where a container's page cache is its host's to drop. Free page 
   as the kernel's own, D133). Reporting gives back a block's free pages either way;
   unplugging gives back its page structures too, a 64th of it, which a session that once
   grew holds for as long as it lives otherwise.
+- **Never from a run as it grows** (M275): a pass keeps no less than the run used at its
+  peak since the pass before (its `memory.peak`, counted afresh through a descriptor PID 1
+  holds, Linux 6.12), and gives back nothing while memory the grower asked for is still to
+  come (the device's request a block or more past what is plugged). Passes seconds apart
+  under a host's pressure had each cut back to twice the run's use at that moment the
+  request the grower had just raised, the one register both write; a hold slows an
+  allocation past it but cannot refuse one with no swap, and a run that grew faster than
+  its memory came back took the kernel's own and met its OOM killer: 3 of 30 runs of the
+  benchmark with DAX windows, whose guests hold no page cache of the files they map and so
+  keep less; none of 60 since, the host as short of memory and as much given back.
 - **Said in the daemon's log** at most once a minute, with what was given back since.
 - **Idle, it costs nothing**: a thread blocked in poll(2) on Linux 6.4 and later and on
   macOS; on an older Linux, a read of the host's average every ten seconds.

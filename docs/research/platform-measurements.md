@@ -10153,3 +10153,40 @@ revision before comparing a changed API/implementation.
   a time in a privileged microVM, grows it on the host and stats it, and finds no warning
   of fs/dax.c in the guest's log; on the release before, an arm64 guest on this Mac logged
   `fs/dax.c:415 dax_folio_put` there, and the test failed.
+
+### M275. A microVM asked to give back memory as it grows ends its workload for want of it (D188)
+
+- **Question.** In the DAX windows' benchmark (M276) three runs of shards with windows ended
+  for want of memory: `npm ci` killed (137), and rust-lld killed twice (cargo, 101), where no
+  run without a window was. Their runs' cgroups had used at most 278 MB and 2.7 GB of their
+  8 GiB and had met no limit. What ended them?
+- **Method.** The Fedora host (Intel Core i9-14900HX, Linux 6.19.10-300.fc44), 2026-10-20:
+  the benchmark's 10 rounds of shards and shards with windows (cargo, npm and fio on a
+  volume; `-m 8192m`, `--cpus 8`), the host short of memory from its other work throughout:
+  the daemons' logs (what their microVMs gave back and were asked to unplug, each pass), and
+  init's record of each kill (the run's memory.events, the kernel's own report). The source:
+  crates/init/src/plug.rs (`shrink_run`, `grow`), D148, D188.
+- **Results.**
+  - Each kill was the guest kernel's OOM killer at the guest's whole memory, not its run's
+    cgroup's: `global_oom`, `CONSTRAINT_NONE`, memory.events `max 0 oom 0 oom_kill 1`, its
+    Normal zone `present:1310720kB managed:131072kB` (rust-lld) and `present:262144kB
+    managed:131072kB` (npm): of what had been plugged, all but 128 MiB unplugged again.
+  - The daemons asked their microVMs to give back what they held past twice their use in
+    passes seconds apart, the whole benchmark: up to 11,776 MiB to unplug in 6 passes over
+    a minute (shards), 6,400 MiB in 17 (with windows); 1,024 MiB in 10 passes in the minute
+    before the first rust-lld kill.
+  - The source says how that ends a run that grows. A pass keeps twice what the run uses at
+    that moment and writes it as the device's request, which the grower, plugging as the run
+    reaches its hold, had just raised: one register, both write, the last write holds. A
+    hold (memory.high) slows an allocation past it but cannot refuse one with no swap, so a
+    run that grows faster than its memory comes back takes the kernel's own free memory,
+    then meets its OOM killer. A guest holds no page cache of the files its window maps, so
+    its use, and what a pass keeps, is smaller.
+- **After.** With a pass keeping no less than the run's peak since the pass before (its
+  memory.peak counted afresh through a descriptor PID 1 holds) and giving back nothing while
+  a block or more the grower asked for is still to come: the benchmark's 10 rounds again on
+  the same host, short of memory throughout (108 passes said, 123,264 MiB asked to be
+  unplugged in all, up to 14,720 MiB in a minute): no run of 60 ended for want of memory,
+  where 3 of 60 had, all of them with windows.
+- **Consequence.** D188: a pass keeps no less than the run used at its peak since the pass
+  before, and gives back nothing while memory the grower asked for is still to come.

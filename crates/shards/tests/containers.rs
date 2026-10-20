@@ -2073,8 +2073,8 @@ fn a_microvm_is_made_under_the_slice_its_cgroup_parent_names() {
 /// (D188): under a slice of the user's manager whose `MemoryHigh` is past the microVM idle
 /// and short of a gigabyte it reads, its page cache grows until the budget slows it; the
 /// daemon, watching the scope it made there, has it reclaim what it holds cold and report
-/// it free at once, and ask to unplug what it holds plugged past twice what it then uses,
-/// and it reads on to the end. Linux alone: macOS's memory pressure is the
+/// it free at once, and ask to unplug what it holds plugged past twice what it then uses
+/// and its peak since the pass before, and it reads on to the end. Linux alone: macOS's memory pressure is the
 /// whole system's, which no test may raise for every program on its host.
 #[test]
 fn a_microvm_held_to_a_budget_gives_back_what_it_holds_cold() {
@@ -2142,7 +2142,7 @@ fn a_microvm_held_to_a_budget_gives_back_what_it_holds_cold() {
     assert_eq!(read.status, Some(0), "{read}\n{}", said());
     assert!(read.stdout.contains("read /vol/big 1073741824"), "{read}");
     // What it gave back of its files, and of the memory it had plugged to hold them, which
-    // it held past twice what it used once they were gone.
+    // it held past twice what it used, and its peak since, once they were gone.
     let log = said();
     let gave = log
         .lines()

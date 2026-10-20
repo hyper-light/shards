@@ -107,7 +107,7 @@ impl<D: Disk> Daemon<D> {
                 && said.is_none_or(|at| at.elapsed() >= SAY_EVERY)
             {
                 log(format!(
-                    "the host is short of memory: its microVMs gave back {} MiB they held cold of their files, and asked to unplug {} MiB they held plugged past twice what they use, in {passes} passes over {:?}",
+                    "the host is short of memory: its microVMs gave back {} MiB they held cold of their files, and asked to unplug {} MiB they held plugged past twice what they use and their peak since, in {passes} passes over {:?}",
                     total.freed >> 20,
                     total.unplugging >> 20,
                     since.elapsed()
@@ -119,8 +119,9 @@ impl<D: Disk> Daemon<D> {
     }
 
     /// Has each running microVM give back what it holds cold of its files, and what it
-    /// holds plugged past twice what it uses, one after another, each through one run of it
-    /// (its own, else a joiner's, D119): what they gave, all together.
+    /// holds plugged past twice what it uses and its peak since the pass before, none as it
+    /// grows (M275), one after another, each through one run of it (its own, else a
+    /// joiner's, D119): what they gave, all together.
     fn give_back_cold(&self) -> Gave {
         let mut vms: HashMap<String, String> = HashMap::new();
         for (id, run) in lock(&self.runs).iter() {

@@ -422,6 +422,15 @@ impl Plug {
     /// words. Called by PID 1 before it starts any thread; a template's grower goes on in
     /// each of its restores.
     pub fn hold_run(&self, notes: OwnedFd) -> io::Result<()> {
+        // Its peak, counted afresh by each giving back through this descriptor
+        // ([`shrink_run`]), which its builtins' forks share; none where it does not open.
+        if let Ok(peak) = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(format!("{}/memory.peak", self.cgroup))
+        {
+            let _ = PEAK.set(peak);
+        }
         set_high(self.cgroup, high(self.cgroup, self.most, 0)?)?;
         let events = watch_events(self.cgroup)?;
         // SAFETY: fork(2) of PID 1 before it starts any thread: the child runs on a copy
@@ -441,30 +450,74 @@ impl Plug {
     }
 }
 
-/// Gives back what the run holds plugged past what the grower would plug for what it uses
-/// now (D188): twice that, past what the microVM booted with, in whole memory blocks, as
-/// the grower asks for twice what the run reaches (D148). The run is held at what it will
-/// have first, so that the grower hears it reach that and plugs again however much the
-/// driver unplugs, which it does as it can: a block the kernel holds part of stays. The
-/// bytes asked to be unplugged; none where that is less than a block.
+/// The run's `memory.peak`, opened by PID 1 as it holds the run ([`Plug::hold_run`]) and
+/// shared by its builtins' forks: written, the kernel counts its peak afresh for this open
+/// file alone (Linux 6.12, c6f53ed8f213), so that each giving back reads the run's peak
+/// since the one before ([`shrink_run`]).
+static PEAK: std::sync::OnceLock<std::fs::File> = std::sync::OnceLock::new();
+
+/// The run's peak since it was last read here, `used` at least, counted afresh from now:
+/// its peak since it began where the kernel counts no open file's own, or [`PEAK`] is not
+/// open.
+fn peak_since(used: u64) -> u64 {
+    use std::os::unix::fs::FileExt as _;
+    let Some(file) = PEAK.get() else {
+        return used;
+    };
+    let mut buf = [0u8; 32];
+    let peak = file
+        .read_at(&mut buf, 0)
+        .ok()
+        .and_then(|n| {
+            std::str::from_utf8(buf.get(..n)?)
+                .ok()?
+                .trim()
+                .parse::<u64>()
+                .ok()
+        })
+        .unwrap_or(used);
+    let _ = file.write_at(b"reset", 0);
+    peak.max(used)
+}
+
+/// What a run keeps plugged past what its microVM booted with as its host asks for memory
+/// back (D188), from what its microVM booted with (`boot`), the most it may have plugged,
+/// what it has plugged and has asked to have, what it uses and what it used at its peak
+/// since it was last asked: twice what it uses, as the grower asks for twice what it
+/// reaches (D148), never less than its peak, in whole memory blocks. None where it gives
+/// back nothing: less than a block, or while memory it asked for to grow is still to come,
+/// which the giving back would take away from it as it grows (PM M275).
+fn to_keep(boot: u64, most: u64, plugged: u64, asked: u64, used: u64, peak: u64) -> Option<u64> {
+    if asked.saturating_sub(plugged) >= ALIGN {
+        return None;
+    }
+    let keep = used
+        .saturating_mul(2)
+        .max(peak)
+        .saturating_sub(boot)
+        .checked_next_multiple_of(ALIGN)
+        .unwrap_or(u64::MAX)
+        .min(most);
+    (plugged.saturating_sub(keep) >= ALIGN).then_some(keep)
+}
+
+/// Gives back what the run holds plugged past what it keeps ([`to_keep`], D188). The run is
+/// held at what it will have first, so that the grower hears it reach that and plugs again
+/// however much the driver unplugs, which it does as it can: a block the kernel holds part
+/// of stays. The bytes asked to be unplugged; none where it keeps all it has.
 pub fn shrink_run(cgroup: &str) -> io::Result<u64> {
     let Some(&boot) = BOOT.get() else {
         return Ok(0);
     };
     let most = control_read64(control::HOTPLUG_SIZE)?;
     let plugged = mem_total()?.saturating_sub(boot);
+    let asked = control_read64(control::HOTPLUG_REQUEST).unwrap_or(plugged);
     let used = number(&format!("{cgroup}/memory.current"))
         .ok_or_else(|| err(format!("{cgroup}/memory.current unread")))?;
-    let keep = used
-        .saturating_mul(2)
-        .saturating_sub(boot)
-        .checked_next_multiple_of(ALIGN)
-        .unwrap_or(u64::MAX)
-        .min(most);
-    let gone = plugged.saturating_sub(keep);
-    if gone < ALIGN {
+    let Some(keep) = to_keep(boot, most, plugged, asked, used, peak_since(used)) else {
         return Ok(0);
-    }
+    };
+    let gone = plugged.saturating_sub(keep);
     // The free memory that goes with it counted out of the hold now, before it goes.
     set_high(cgroup, high(cgroup, most, keep)?.saturating_sub(gone))?;
     control_write64(control::HOTPLUG_REQUEST, keep)?;
@@ -1066,6 +1119,44 @@ mod tests {
             said: Vec::new(),
             clock: Duration::ZERO,
         }
+    }
+
+    /// A run gives back what it holds plugged past twice what it uses, in whole blocks, as
+    /// its host asks; never what it used at its peak since it was last asked, nor anything
+    /// while memory it asked for to grow is still to come, nor less than a block.
+    #[test]
+    fn a_run_keeps_its_peak_and_what_it_asked_for() {
+        const GIB: u64 = 1 << 30;
+        let boot = 256 * MIB;
+        // Using 300 MiB of 4 GiB plugged: it keeps 600 less what it booted with, 344 MiB,
+        // in whole blocks, 384.
+        assert_eq!(
+            to_keep(boot, 8 * GIB, 4 * GIB, 4 * GIB, 300 * MIB, 300 * MIB),
+            Some(384 * MIB)
+        );
+        // Having reached 2.5 GiB since it was last asked: it keeps that.
+        let peak = 2560 * MIB;
+        assert_eq!(
+            to_keep(boot, 8 * GIB, 4 * GIB, 4 * GIB, 300 * MIB, peak),
+            Some((peak - boot).next_multiple_of(ALIGN))
+        );
+        // Growing, a block or more it asked for not yet plugged: it gives back nothing.
+        assert_eq!(
+            to_keep(boot, 8 * GIB, 4 * GIB, 5 * GIB, 300 * MIB, 300 * MIB),
+            None
+        );
+        // What it would give back is less than a block, 448 MiB plugged and 384 kept; and a
+        // block exactly.
+        assert_eq!(
+            to_keep(boot, 8 * GIB, 448 * MIB, 448 * MIB, 300 * MIB, 300 * MIB),
+            None
+        );
+        assert_eq!(
+            to_keep(boot, 8 * GIB, 512 * MIB, 512 * MIB, 300 * MIB, 300 * MIB),
+            Some(384 * MIB)
+        );
+        // Never past its most.
+        assert_eq!(to_keep(boot, GIB, 4 * GIB, 4 * GIB, 3 * GIB, 3 * GIB), Some(GIB));
     }
 
     /// The kernel's memory less its report of what may still be plugged (D149): read
