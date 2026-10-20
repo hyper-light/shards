@@ -1066,11 +1066,27 @@ fn stats_measures_each_microvm_from_its_guest() {
     let (stats, spinning, sleeping, held) = loop {
         let stats = shards_in(&home, &["stats", "--no-stream"]);
         assert_eq!(stats.status, Some(0), "{stats}");
+        // Docker's columns, in its order: each as wide as its widest cell and three spaces
+        // more (its tabwriter's padding), so a reading wider than its header, as `1016KiB /
+        // 15.58GiB` is than `MEM USAGE / LIMIT`, widens the header's spaces too.
+        let header = stats.stdout.lines().next().unwrap_or_default();
+        let columns: Vec<&str> = header
+            .split("   ")
+            .map(str::trim)
+            .filter(|c| !c.is_empty())
+            .collect();
         assert_eq!(
-            stats.stdout.lines().next(),
-            Some(
-                "CONTAINER ID   NAME      CPU %     MEM USAGE / LIMIT   MEM %     NET I/O   BLOCK I/O   PIDS"
-            ),
+            columns,
+            [
+                "CONTAINER ID",
+                "NAME",
+                "CPU %",
+                "MEM USAGE / LIMIT",
+                "MEM %",
+                "NET I/O",
+                "BLOCK I/O",
+                "PIDS"
+            ],
             "{stats}"
         );
         let (spinning, held) = row(&stats, "spinner");
