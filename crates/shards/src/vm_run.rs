@@ -18,10 +18,13 @@ use shards_vmm::vm::{
 use crate::spec::Options;
 use crate::terminal::RawTerminal;
 
-const RUN_USAGE: &str = "usage: shards run vm --kernel PATH [--initrd PATH | --init PATH] [--cmdline STR] [--cpus N] [--memory MIB] [--memory-max MIB] [--disk PATH[:ro]]... [--pmem PATH]... [--vsock PATH] [--nested] [--gpu] [--reporting] [--pci-test | --pci-tests SS.F,...] [--vfio NAME|NODE]... [--vfio-iommu NAME|NODE]... [--no-console] [--snapshot-dir DIR [--snapshot-then stop|resume]]
+const RUN_USAGE: &str = "usage: shards run vm --kernel PATH [--initrd PATH | --init PATH] [--cmdline STR] [--cpus N] [--memory MIB] [--memory-max MIB] [--disk PATH[:ro]]... [--pmem PATH]... [--layer PATH] [--vsock PATH] [--nested] [--gpu] [--reporting] [--pci-test | --pci-tests SS.F,...] [--vfio NAME|NODE]... [--vfio-iommu NAME|NODE]... [--no-console] [--snapshot-dir DIR [--snapshot-then stop|resume]]
        shards run vm --kernel PATH --init SHARDS-INIT --rootfs IMAGE [OPTIONS] [WORKLOAD OPTIONS] -- COMMAND [ARG...]
        shards run vm --kernel PATH --init SHARDS-INIT --rootfs IMAGE --snapshot-dir DIR [OPTIONS]
   --pmem: a read-only virtio-pmem device backed by PATH: /dev/pmem0, pmem1, ... in order.
+  --layer: a writable layer (D190): the ext4 file system in PATH, whole 2 MiB, on a
+           virtio-pmem device after the --pmem ones, which the guest mounts with DAX and
+           finds by the address shards' control page gives (LAYER).
   --reporting: a virtio-balloon device that gives the host back the memory the guest
                reports free.
   --rootfs: boot into the EROFS image IMAGE. With a COMMAND, run it there: its output is
@@ -63,10 +66,10 @@ const RUN_USAGE: &str = "usage: shards run vm --kernel PATH [--initrd PATH | --i
                 VIRTIO_IOMMU. Not with --snapshot-dir.
   Console escape: Ctrl-A x stops the VM.";
 
-const RESTORE_USAGE: &str = "usage: shards restore vm DIR [--hold] [--vsock PATH] [--no-console] [--gpu] [--backing PATH[:ro]]... [--snapshot-dir DIR [--snapshot-then stop|resume]]
-       shards restore vm DIR [--hold] [--backing PATH[:ro]]... [WORKLOAD OPTIONS] -- COMMAND [ARG...]
-       shards restore vm DIR --warm FD [--backing PATH[:ro]]...
-       shards restore vm DIR --resume FD [--backing PATH[:ro]]...
+const RESTORE_USAGE: &str = "usage: shards restore vm DIR [--hold] [--vsock PATH] [--no-console] [--gpu] [--backing PATH[:ro]]... [--layer PATH] [--snapshot-dir DIR [--snapshot-then stop|resume]]
+       shards restore vm DIR [--hold] [--backing PATH[:ro]]... [--layer PATH] [WORKLOAD OPTIONS] -- COMMAND [ARG...]
+       shards restore vm DIR --warm FD [--backing PATH[:ro]]... [--layer PATH]
+       shards restore vm DIR --resume FD [--backing PATH[:ro]]... [--layer PATH]
        shards restore vm MICROVM [SNAPSHOT]
   Resumes the VM in snapshot directory DIR. Given a microVM's name rather than a directory
   holding a snapshot, resumes that stopped microVM from a snapshot of its own (`shards save
@@ -347,6 +350,8 @@ fn parse_run(args: impl Iterator<Item = OsString>) -> Result<Run, String> {
             #[cfg(unix)]
             "--join-share" => cfg.join_share = Some(give_join_share()),
             "--pmem" => cfg.pmem.push(PathBuf::from(value("--pmem")?)),
+            // A writable layer (D190), its ext4 file system in this file.
+            "--layer" => cfg.layer = Some(PathBuf::from(value("--layer")?)),
             "--nested" => cfg.nested = true,
             "--gpu" => cfg.gpu = true,
             "--pci-test" => cfg.pci_test = vec![(vm::TEST_DEVICE, 0)],
@@ -453,6 +458,7 @@ fn parse_restore(args: impl Iterator<Item = OsString>) -> Result<Restore, String
     let mut args = args;
     let (mut dir, mut common, mut hold, mut warm, mut resume) = (None, Common::new(), false, None, false);
     let mut backing = Vec::new();
+    let mut layer = None;
     while let Some(arg) = args.next() {
         // The snapshot directory is a path, in whatever bytes; every option is text.
         let Some(flag) = arg.to_str().map(str::to_owned) else {
@@ -473,6 +479,8 @@ fn parse_restore(args: impl Iterator<Item = OsString>) -> Result<Restore, String
             // needs (D150): the binary is chosen by it, the GPU by the snapshot.
             "--gpu" => {}
             "--backing" => backing.push(disk(value("--backing")?)),
+            // The restore's own copy of the writable layer its snapshot kept (D190).
+            "--layer" => layer = Some(PathBuf::from(value("--layer")?)),
             "--warm" => {
                 let fd = text(value("--warm")?)?;
                 warm = Some(
@@ -539,6 +547,7 @@ fn parse_restore(args: impl Iterator<Item = OsString>) -> Result<Restore, String
         // run's snapshot is no template, which restores prefetch from.
         record: warm.is_some() && !resume,
         swap: None,
+        layer,
     };
     Ok(Restore {
         cfg,
@@ -1468,6 +1477,7 @@ fn start(cfg: &Config) -> Result<(Handle, Running), String> {
         .into_iter()
         .flatten()
         .chain(cfg.pmem.iter_mut())
+        .chain(cfg.layer.as_mut())
         .chain(cfg.disks.iter_mut().map(|d| &mut d.path))
         .chain(cfg.snapshot.as_mut().map(|p| &mut p.dir))
         .chain(cfg.vsock.as_mut().and_then(|v| v.path.as_mut()))
@@ -1491,6 +1501,8 @@ fn start(cfg: &Config) -> Result<(Handle, Running), String> {
         paths.devices.push(PathBuf::from("/dev/iommu"));
         paths.devices.extend(cdevs.iter().filter_map(|v| v.cdev.clone()));
     }
+    // Its writable layer, which its guest writes (D190).
+    paths.write.extend(cfg.layer.iter().cloned());
     for disk in &cfg.disks {
         let list = if disk.read_only {
             &mut paths.read
@@ -1530,6 +1542,7 @@ fn restore_vm(mut cfg: RestoreConfig) -> Result<(Handle, Running), String> {
     for path in std::iter::once(&mut cfg.dir)
         .chain(cfg.snapshot.as_mut().map(|p| &mut p.dir))
         .chain(cfg.vsock.as_mut().and_then(|v| v.path.as_mut()))
+        .chain(cfg.layer.as_mut())
     {
         *path = absolute(path)?;
     }
@@ -1551,6 +1564,8 @@ fn restore_vm(mut cfg: RestoreConfig) -> Result<(Handle, Running), String> {
     );
     #[cfg(unix)]
     sealing(&paths, cfg.snapshot.as_ref().map(|p| p.dir.as_path()));
+    // Its writable layer, which its guest writes (D190).
+    paths.write.extend(cfg.layer.iter().cloned());
     let add = |paths: &mut crate::confine::Paths, files: &[(PathBuf, bool)]| {
         for (path, read_only) in files {
             let list = if *read_only {
@@ -2033,11 +2048,13 @@ fn dial_through_spawner(vsock: &Path) -> Result<(), String> {
 fn granted_template(dir: &Path) -> Result<(), String> {
     use crate::grant::Access;
     ask(&[(Access::ReadIfThere, shards_vmm::snapshot::pointer(dir))])?;
-    let ([state, memory], working_set) = shards_vmm::snapshot::generation_files(dir)?;
+    let ([state, memory], [working_set, layer_head, layer]) = shards_vmm::snapshot::generation_files(dir)?;
     ask(&[
         (Access::Read, state),
         (Access::Read, memory),
         (Access::ReadIfThere, working_set),
+        (Access::ReadIfThere, layer_head),
+        (Access::ReadIfThere, layer),
     ])
 }
 

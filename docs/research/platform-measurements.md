@@ -10257,3 +10257,82 @@ revision before comparing a changed API/implementation.
   default, until random writes through one are root-caused and fixed and a window that
   holds a working set costs its guest less than a 64th of it at boot.
 
+### M277. A run's writable layer on ext4 over pmem, its page structures in the device (D190)
+
+- **Question.** D190 moves a run's writable layer onto ext4 over a pmem device whose page
+  structures its guest keeps in the device itself (an NVDIMM pfn info block the host
+  writes, PFN_MODE_PMEM), where M264's, in the guest's memory, took a 64th of the device.
+  What does such a layer take of its guest's memory and boot, by its size? How long do its
+  mounts take, which decides whether a run could mount it as it starts or its template
+  must? How do its writes go? What does a template keep of it, and its first run hold? And
+  how do the hosts' file systems keep a layer file's holes?
+- **Method.** `docs/research/measurements/layer/measure.sh SHARDS KERNEL TESTGUEST 5 0 1 4
+  16 64`: shards' VMM (`shards run vm --layer`, a release build of D190's tree) boots its
+  pinned kernel (6.18.48-426ba771634e), 2 vCPUs and 1 GiB, with the test guest's `layer`
+  verb, given a file shards-ext4 made of HOLDS GiB (a copy each boot): MemFree as init
+  starts and once the NVDIMM buses' probes end; the ext4 mount (`dax=always,noinit_itable`)
+  and an overlay over it, first and three times again; 64 MiB written and synced, 1,000
+  small files, 8 MiB written through a shared mapping. 5 boots a size; 0 is none. The Mac
+  (Apple M5 Max, macOS 26.4.1, Hypervisor.framework) and the Fedora host (M266's: Intel Core
+  i9-14900HX, Linux 6.19.10-300.fc44, KVM; transparent huge pages and their defrag both
+  `madvise`), twice there, its second run then once more with the head on small pages
+  (`SHARDS_THP_ADVICE=never`), and the host's compaction counters (/proc/vmstat) before and
+  after. A template: the daemon's first run of Alpine 3.20 in a fresh home on the Mac, its
+  generation's files listed, and the physical footprint (vmmap) of that run's VM, which
+  goes on as the run, beside two warm VMs'. `sparse.py`: two 4 KiB blocks written into a
+  sparse 1 GiB file GAP blocks apart, and other orders, on the Mac's APFS and the Fedora
+  host's btrfs. 2026-10-20.
+- **Results.** p50 of 5 boots; remounts n = 15, overlays n = 20; memory is MemFree as
+  probed, against none's p50:
+
+  | host, layer | memory less than none | probes done at | first mount (max) | remount | overlay | 64 MiB | 1,000 files |
+  |---|---|---|---|---|---|---|---|
+  | Mac, none | - | 56.5 ms | - | - | - | - | - |
+  | Mac, 1 GiB | 2.1 MiB | 53.2 ms | 53.4 ms (65.0) | 0.41 ms | 0.20 ms | 11.9 ms | 7.2 ms |
+  | Mac, 4 GiB | 8.3 MiB | 58.9 ms | 67.7 ms (68.2) | 0.40 ms | 0.21 ms | 12.0 ms | 7.2 ms |
+  | Mac, 16 GiB | 38.8 MiB | 86.6 ms | 72.9 ms (105.3) | 0.44 ms | 0.20 ms | 12.1 ms | 7.2 ms |
+  | Mac, 64 GiB | 133.3 MiB | 204.6 ms | 79.6 ms (177.1) | 0.51 ms | 0.21 ms | 12.8 ms | 7.4 ms |
+  | Fedora, none | - | 110.4 / 72.4 ms | - | - | - | - | - |
+  | Fedora, 1 GiB | -0.2 / 1.4 MiB | 136.4 / 72.3 ms | 11.8 ms (21.2) | 0.58 ms | 0.32 ms | 44.9 ms | 19.1 ms |
+  | Fedora, 4 GiB | 2.7 / -3.0 MiB | 192.6 / 86.2 ms | 11.6 ms (16.0) | 0.49 ms | 0.29 ms | 41.0 ms | 18.4 ms |
+  | Fedora, 16 GiB | 0.5 / -3.4 MiB | 350.0 / 102.1 ms | 1.2 ms (1.5) | 0.52 ms | 0.29 ms | 38.1 ms | 16.3 ms |
+  | Fedora, 64 GiB | 2.5 / 0.1 MiB | 1,352.7 / 968.1 ms | 1.1 ms (1.7) | 0.65 ms | 0.31 ms | 41.7 ms | 18.8 ms |
+
+  Fedora's are its first run / its second, the mounts and writes its first's. On small
+  pages its probes were done at 182.4 ms (16 GiB) and 526.8 ms (64 GiB). Its second run's
+  boots with huge pages advised added 4,677 compaction stalls (4,610 failed) and 1,516
+  faults that fell back to small pages to the host's counters.
+
+  - Every boot made a pfn device of the layer, its disk DAX, and mounted it with DAX; what
+    the writes took of the guest's memory was 1.6 to 5.7 MiB of metadata.
+  - A template (10 GiB layer): its head 12 MiB, an index and 5 of its 85 2 MiB blocks,
+    where whole it was 170 MiB; its file system 432 KiB on the disk of a 10.24 GiB file;
+    its memory 83 MiB. The VM that saved it, going on as the first run, had a physical
+    footprint of 282.3 MiB; two warm VMs restored from it, 17.5 and 14.5 MiB.
+  - APFS (macOS 26.4.1) fills the hole between two written blocks less than 16 MiB apart,
+    however they are written (in order, far first, descending, synced each, through a
+    mapping, inside a hole): two blocks 4,096 apart took 16,400 KiB, 8,192 apart 32 KiB;
+    its least allocation is 16 KiB. btrfs (Fedora) kept each 4 KiB block alone, 8 KiB for
+    any two.
+- **Reading.**
+  - The page structures are not in the guest's memory: on x86_64 a 64 GiB layer took none
+    of it, within the runs' spread, where M264's 16 GiB took 259.5 MiB. On arm64 a layer
+    still takes about a 490th of itself (133 MiB at 64 GiB): the page tables that map it 4
+    KiB at a time in the kernel's linear map, 8 bytes a page, a 512th, which arm64 builds
+    without block mappings under `rodata=full`, its default (arch/arm64/mm/mmu.c,
+    arch_add_memory and force_pte_mapping; pageattr.c, `rodata_full` true); x86_64 maps
+    its direct map with large pages.
+  - The head is written as the guest probes the device, a 2 MiB block for each 128 MiB: a
+    boot's cost by size. On the Mac up to 2.3 ms a GiB (64 GiB in 148 ms more than none); on
+    KVM, on huge pages, 1.9 ms a GiB when the host has them free (16 GiB in 30 ms more) and
+    up to 19 ms a GiB when it compacts memory for them (64 GiB in 1.2 s more); on small
+    pages 6.9 to 7.1 ms a GiB.
+  - A mount after the first is 0.4 to 0.65 ms, and an overlay over it 0.2 to 0.32: as much
+    again as a run's whole start (0.73 ms at p50, M230). A template mounts the layer; a run
+    does not.
+  - Writes go at the host's page cache's pace: 64 MiB in 12 ms on the Mac, 38 to 45 ms on
+    KVM, each first touch of a 4 KiB page of the file a fault of the host's.
+- **Consequence.** D190: page structures in the device's head; the layer mounted in its
+  template; the head kept as its blocks, each once. Open: the head's boot on KVM when the
+  host compacts for huge pages; arm64's 512th; a first run's head held in its memory for
+  its life; APFS's filled holes.

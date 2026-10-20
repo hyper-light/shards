@@ -381,6 +381,8 @@ fn assemble(
             .ok_or("pmem regions overflow the address space")?,
     };
     let (regions, end) = super::pmem_regions(config, first)?;
+    // Its writable layer after them (D190).
+    let (layer, end) = super::layer_layout(hosts.layer, end)?;
     // The PCI bus's 64-bit window past all of that, as long as its 64-bit BARs need (D154).
     let mem64 = match pci.mem64()? {
         Some((len, align)) => Some((
@@ -424,6 +426,9 @@ fn assemble(
         unsafe { vm.map_device_memory(region.host(), *gpa, region.len(), false) }
             .map_err(|e| e.to_string())?;
     }
+    if let Some((l, gpa)) = &layer {
+        super::map_layer(&vm, l, *gpa)?;
+    }
     let (hotplug, sizes) = super::hotplug_device(&vm, memory, config)?.unzip();
     let reporting = super::reporting_device(&vm, config);
     let swap = super::swap_window(&vm, swap_at)?;
@@ -443,6 +448,7 @@ fn assemble(
     let devices = super::virtio_devices(
         config,
         &regions,
+        layer.as_ref(),
         &windows,
         Some(&vm),
         hosts,
@@ -486,6 +492,9 @@ fn assemble(
     let control = Arc::new(Control::default());
     if let Some(window) = swap {
         control.on_swap(window);
+    }
+    if let Some((l, gpa)) = layer {
+        control.on_layer(l, gpa);
     }
     if let Some(sizes) = sizes {
         control.on_hotplug(sizes);
@@ -568,7 +577,9 @@ fn assemble(
 
 pub fn build(cfg: &Config) -> Result<Machine, String> {
     let (ram, ranges) = ram_ranges(cfg.memory_mib)?;
-    let config = super::machine_config(cfg)?;
+    let mut config = super::machine_config(cfg)?;
+    let layer = super::boot_layer(cfg)?;
+    config.layer_mib = layer.as_ref().map_or(0, |l| l.data_len() >> 20);
     let memory = Arc::new(super::guest_memory(&ranges, &config, plug_at(ram))?);
     // Before anything touches it: on huge pages, its first 2 MiB would be resident whole
     // for its boot structures' few pages (layout::SPARSE, PM M157).
@@ -610,6 +621,7 @@ pub fn build(cfg: &Config) -> Result<Machine, String> {
             #[cfg(unix)]
             join_share: cfg.join_share,
             io: cfg.io_limit,
+            layer: layer.as_ref(),
         };
         let a = assemble(
             &memory,

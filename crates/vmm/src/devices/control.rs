@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use shards_abi::{control, marker};
 
 use super::virtio::mem::Sizes;
-use super::virtio::pmem::SwapWindow;
+use super::virtio::pmem::{Layer, SwapWindow};
 use super::{MmioDevice, get_le, put_le};
 use crate::snapshot::codec::{Reader, Result, Writer};
 
@@ -37,6 +37,8 @@ pub struct Control {
     mac: AtomicU64,
     /// The guest's swap window, where it has one (D159).
     swap: OnceLock<std::sync::Arc<SwapWindow>>,
+    /// The run's writable layer and its guest address, where it has one (D190).
+    layer: OnceLock<(std::sync::Arc<Layer>, u64)>,
 }
 
 impl std::fmt::Debug for Control {
@@ -89,6 +91,17 @@ impl Control {
         self.swap.get()
     }
 
+    /// The run's writable layer (D190), at `gpa`: which the guest finds here, and a
+    /// snapshot keeps.
+    pub fn on_layer(&self, layer: std::sync::Arc<Layer>, gpa: u64) {
+        let _ = self.layer.set((layer, gpa));
+    }
+
+    /// The run's writable layer, where it has one.
+    pub fn layer(&self) -> Option<&std::sync::Arc<Layer>> {
+        self.layer.get().map(|(layer, _)| layer)
+    }
+
     /// The MAC the VMM was given for the guest's network device, which the guest reads
     /// (`control::MAC`): a restored VM's own, where its guest still has its template's.
     pub fn on_mac(&self, mac: [u8; 6]) {
@@ -124,6 +137,7 @@ impl MmioDevice for Control {
             control::HOTPLUG_REQUEST if data.len() == 8 => self.hotplug.get().map_or(0, |s| s.requested()),
             control::MAC if data.len() == 8 => self.mac.load(Ordering::Acquire),
             control::SWAP if data.len() == 8 => self.swap.get().map_or(0, |w| w.len()),
+            control::LAYER if data.len() == 8 => self.layer.get().map_or(0, |&(_, gpa)| gpa),
             _ => 0,
         };
         put_le(data, value);

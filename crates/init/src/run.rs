@@ -425,7 +425,11 @@ fn mount_root(device: &str) -> Result<(), Failure> {
         Some(_) => Some(crate::plug::kmsg().map_err(|e| setup_failed(format!("its memory's notes: {e}")))?),
         None => None,
     };
-    mount("tmpfs", "/rw", "tmpfs", 0, &rw)?;
+    // Its writable layer: the ext4 file system its host gave it on a pmem device of its own
+    // (D190), with DAX, where it has one; else a tmpfs, in its memory.
+    if !crate::pmem::mount_layer("/rw").map_err(|e| setup_failed(format!("its writable layer: {e}")))? {
+        mount("tmpfs", "/rw", "tmpfs", 0, &rw)?;
+    }
     crate::setup::keep_rw().map_err(|e| setup_failed(format!("/rw: {e}")))?;
     for dir in ["/rw/upper", "/rw/work"] {
         mkdir(dir)?;

@@ -2533,16 +2533,13 @@ gone with the VM. So a container that stays (not `--rm`) keeps it on the host:
   visit's), one visit at a time, and `start` waits for one under way; what `cp` copied in
   is saved as its layer as the visit ends. It costs 5.7 ms at p50 over a running one's
   [PM M116]. `top` of a stopped container is refused, as dockerd refuses it.
-- Open, and owed before the Agentfile: keeping the layer on the host from the start (a
-  disk under the overlay) would cost a stop nothing and let a stopped container's files
-  be read without a VM; to be measured against M115 and M116. It is also what makes
-  shards hold what Docker holds: in guest memory, the files a container writes are its
-  memory, charged to its cgroup, so that `stats` shows a container that wrote a 20 MiB
-  file as 20.38MiB where Docker shows 1.398MiB (the file its page cache, which the CLI
-  leaves out), and a container without a limit can write what its VM's memory holds,
-  where Docker's writes what its host's disk does. Under a limit both alike kill a writer
-  past it (`dd` of 100 MiB under `--memory 64m`: killed at 64 MiB in both, Docker 29.3.1,
-  2026-10-05).
+- The layer is on the host from the start (D190): an ext4 file system in a file of the
+  run's own, mounted with DAX, so that what a container writes is its host's page cache,
+  never its microVM's memory, and is held to what its layer holds, not to its memory limit:
+  256 MiB written under `--memory 64m`, where a run whose layer was a tmpfs in its memory
+  was killed 64 MiB into a 100 MiB `dd` (2026-10-05). Open, and owed: a stop that keeps that file rather than packing it, and
+  `start`, `diff`, `export`, `cp` and `commit` reading it, without a VM; to be measured
+  against M115 and M116.
 - **`cp`.** docker/cli's `cp.go` on shards-archive's port of go-archive's copy rules;
   dockerd's half (stat, archive, extract into a directory, `-a`'s owner) runs as init
   built-ins in the microVM, and the archive passes between it and the client through a
@@ -5710,6 +5707,95 @@ template pays it once; what its restores pay is to be measured with mappings.
   for, none by default, until random writes through one are root-caused and fixed, and a
   window that holds a working set costs its guest less than its 64th at boot.
 
+### D190. A run's writable layer on its host's disk: ext4 with DAX over pmem (slice 1 built)
+
+A run's writable layer, the upper directory of its root's overlay, was a tmpfs in its
+microVM's memory (D16, D156): what it wrote was memory, held to its memory limit, and gone
+with its microVM unless packed as it stopped (D37). A test suite's build there ran its 8
+GiB microVM out of memory every round of the sustained-I/O benchmark (PM M266). Now it is an
+ext4 file system in a file of the run's own on its host's disk, on a virtio-pmem device of
+its own, mounted with DAX: the guest's CPUs read and write its files as the host's page
+cache of that file, which the host writes back and takes back as it would any file's, and
+the guest keeps their metadata alone.
+
+- **The device.** A head, then the file system, the run's file mapped shared and
+  writable (vmm `pmem::Layer`). The head holds an NVDIMM pfn info block at 4 KiB
+  (drivers/nvdimm/pfn.h, `nd_pfn_sb`, PFN_MODE_PMEM), which the host writes and the
+  guest's libnvdimm finds as it probes the device: so its kernel keeps the device's page
+  structures, which DAX needs, a 64th of the device, in the head itself (a vmem_altmap)
+  rather than in its memory: a 64 GiB layer took none of an x86_64 guest's, where M264's
+  page structures took a 64th of the device (PM M277). Each of the device's 128 MiB
+  sections takes a 2 MiB block of them, at a 2 MiB boundary past the info block's 8 KiB
+  (mm/sparse-vmemmap.c), so the head
+  is two blocks more than a block a section, and the device starts at a section
+  (`layer_head`). Init finds it by the address the control page gives (`control::LAYER`)
+  and mounts its ext4 `dax=always,noinit_itable` where it mounted the tmpfs. A machine
+  without one, a joiner's root among them (D119), keeps its tmpfs.
+- **Mounted in the template.** A mount took 0.4 to 0.65 ms at p50 and an overlay over it
+  0.2 to 0.32 ms more on a guest that had mounted it before, 1 to 80 ms the first time (PM
+  M277), where a run's whole start is 0.73 ms at p50 (M230): so the template mounts it
+  as it boots, before its snapshot, and the snapshot keeps it, and every run restored
+  from the template resumes with it mounted. A restore is given an empty file, in the
+  home's `layers`, and fills it with a copy of the file system its snapshot kept, read
+  from the very generation it resumes (a template saved again meanwhile is never paired
+  with another's layer), before any vCPU runs. Off the request's path: warm VMs are
+  restored ahead of their runs (D26).
+- **Made by the host.** `shards-ext4` makes the file system a boot is given: what mke2fs
+  1.47.0 makes for ext4 by default, less what a layer has no use for (no blocks kept to
+  grow it, for root, or for an orphan file), its inode tables zeros as the sparse file
+  reads, which neither mke2fs's lazy init nor the kernel's then writes. Held to e2fsck
+  1.47.0, which finds nothing to fix in any of seven sizes from 8 MiB to 64 GiB
+  (`scripts/ext4/generate`, `e2fsck_finds_nothing_to_fix`), and to mke2fs's own
+  checksums of each structure (`checksums_agree_with_mke2fss`); every guest of M277's
+  mounted one with DAX.
+- **Its size.** It holds 10 GiB unless the run asks for another (`--storage-opt size`),
+  Docker's device-mapper driver's default for a container's base device, a block
+  device's writable layer as this is (dockerd's `dm.basesize`): what the file system's
+  own metadata, its journal and the blocks the kernel keeps back (2% or 4096 clusters)
+  take is added (`shards_ext4::size_for`). A size is a template of its own (its key holds
+  it). One whose page structures, a 64th of it, would take more memory as its microVM
+  boots than its host has is refused, as one past ext4's 16 TiB is.
+- **Snapshots** (format 24) keep the layer's length in MiB, its head and its file system
+  beside the memory: the head's 2 MiB blocks each once, after an index of them, since all
+  but a few describe sections none of whose pages is in use, alike to the byte (a 10 GiB
+  layer's head of 85 blocks kept in 5: 12 MiB where 170 MiB whole); a restore maps each
+  block privately where the head had it. A save of a running microVM (D176) keeps both
+  as a template's snapshot does (`prepare` makes a run's five files).
+- **Its lifetime is its microVM's.** The daemon unlinks a layer's file once its microVM
+  is ready, holding it open and mapped, as a run's swap file is (D159): nothing of it
+  stays past the microVM, whatever ends the daemon or the microVM, and what a daemon before
+  left in `layers` is removed as the next starts. A stop packs the layer as before (D37).
+- **Tests.** `shards-ext4`'s, including the oracle's; `pmem`'s for the head's size, its
+  info block's checksum, a layer saved and restored and a head's alike blocks kept once;
+  the snapshot's for a run's five files; `layers`' for the files the daemon makes and
+  removes; on real microVMs, `a_microvm_takes_its_ipc_hostname_cgroups_umask_and_writable_layer`:
+  sizes held to, refusals, and 256 MiB written under `--memory 64m`.
+
+**Next** (the slices after this one).
+- A stop that keeps the layer's file in its container's directory, and `start`, `diff`,
+  `export`, `cp` and `commit` reading it on the host, without a VM; a restart then goes on
+  over it where a copy of its files is put back today (D37).
+- Blocks the guest frees go back to the host: pmem takes no discard
+  (drivers/nvdimm/pmem.c), so a layer's file only grows while its microVM lives; the
+  file system frozen, the host could punch out what its bitmaps say is free.
+- Joiners' layers (D119) on the microVM's own, rather than tmpfs.
+- What a flush asks of the host: nothing yet, its writes the host's page cache already,
+  which outlives the microVM but not its host.
+- A booted microVM's head is its own memory, a 64th of the layer, for its life: the
+  template's VM, which goes on as its first run, had a physical footprint of 282 MiB where
+  a warm VM's was 15 to 18 MiB (M277). Mapped back from its snapshot's copy once saved, it
+  would hold what its guest touches of it alone.
+- The head's boot: a 2 MiB block a section for the guest to write as it probes, on KVM
+  1.9 ms a GiB when the host has huge pages free and up to 19 ms a GiB when it compacts
+  for them (M277): a 10 GiB layer's template boot is 19 to 190 ms longer.
+- arm64 guests map device memory 4 KiB at a time in their linear map under `rodata=full`,
+  its default: a 512th of the layer in page tables (M277).
+- Hosts whose microVMs take no snapshots yet (arm64 KVM, Windows: D140) boot every run, so
+  each run pays the head's probe and the layer's first mount: not measured there yet.
+- APFS fills a hole shorter than 16 MiB between written blocks of a sparse file (PM
+  M277): a layer's file, as a swap file and a template's memory, takes more of a Mac's disk
+  than it was written.
+
 ### D179. Other CPUs' images, emulated in their microVM (parts 1 to 3 built)
 
 Images built on an arm64 Mac usually ship to x86_64 hosts, and the other way round, and a
@@ -7586,13 +7672,14 @@ inside the microVM the other runs in (D119).
 - **`--umask`**: its command's and its execs', as the workload's limits are (Docker's
   daemon keeps the container's for an exec too: moby daemon/exec_linux.go). At most 0777,
   the bits a umask clears.
-- **`--storage-opt size=`: its writable layer's size.** A run's writable layer is a tmpfs in
-  its microVM's memory (D25): init remounts it at the size asked, through a descriptor of
-  it kept from before the root moved over it; a joiner's is made at it. Docker serves
-  `size` only on overlay over XFS with project quotas; every run here takes it. `size` is
-  the one key; above 0; no more than the memory the layer is held in (`--memory`, or the
-  host's, which the microVM may grow to), refused in shards' words where it is, as a layer
-  a run could never fill to its size holds nothing back.
+- **`--storage-opt size=`: its writable layer's size.** A run's writable layer is an ext4
+  file system on its host's disk (D190), made to hold the size asked: its microVM restores
+  a template of that size. A joiner's is a tmpfs in its microVM's memory, made at it. Docker
+  serves `size` only on overlay over XFS with project quotas; every run here takes it.
+  `size` is the one key; above 0; for a joiner no more than the memory its layer is held in
+  (`--memory`, or the host's, which the microVM may grow to), and for a microVM's own no
+  more than the memory its page structures take as it boots, a 64th of it, of all its host
+  has, nor than ext4 holds: each refused in shards' words.
 - **A joiner beside an Agentfile's agents.** A run joining a microVM was held to its own
   image's rules alone, and the microVM's agents' went unchecked: a joiner could run
   `--privileged` beside them. It is now held to that microVM's (D115), by the daemon and

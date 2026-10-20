@@ -413,6 +413,8 @@ fn assemble(
         .ok_or("pmem regions overflow the address space")?;
     let (regions, end) = super::pmem_regions(config, pmem_at)?;
     let top = if regions.is_empty() { plug_end } else { end };
+    // Its writable layer after them (D190).
+    let (layer, top) = super::layer_layout(hosts.layer, top)?;
     // A GPU's window, at the first GiB boundary past all of that, as long as the renderer
     // says (D144): on macOS alone so far.
     #[cfg(not(hv = "hvf"))]
@@ -479,6 +481,7 @@ fn assemble(
     let pmem: Vec<(u64, u64)> = regions
         .iter()
         .map(|(region, gpa)| (*gpa, region.len() as u64))
+        .chain(layer.iter().map(|(layer, gpa)| (*gpa, layer.len())))
         .collect();
     let ipa_bits = ipa_bits(top)?;
     let mpidrs: Vec<u64> = (0..config.vcpus).map(aarch64::mpidr).collect();
@@ -500,6 +503,9 @@ fn assemble(
         // `Machine` and `Running` drop after the VM.
         unsafe { vm.map_device_memory(region.host(), *gpa, region.len(), false) }
             .map_err(|e| e.to_string())?;
+    }
+    if let Some((l, gpa)) = &layer {
+        super::map_layer(&vm, l, *gpa)?;
     }
     let (hotplug, sizes) = super::hotplug_device(&vm, memory, config)?.unzip();
     let reporting = super::reporting_device(&vm, config);
@@ -594,6 +600,7 @@ fn assemble(
     let devices = super::virtio_devices(
         config,
         &regions,
+        layer.as_ref(),
         &windows,
         Some(&vm),
         hosts,
@@ -632,6 +639,9 @@ fn assemble(
     let control = Arc::new(Control::default());
     if let Some(window) = swap {
         control.on_swap(window);
+    }
+    if let Some((l, gpa)) = layer {
+        control.on_layer(l, gpa);
     }
     if let Some(sizes) = sizes {
         control.on_hotplug(sizes);
@@ -708,6 +718,8 @@ fn assemble(
 pub fn build(cfg: &Config) -> Result<Machine, String> {
     let ram = ram_bytes(cfg.memory_mib)?;
     let mut config = super::machine_config(cfg)?;
+    let layer = super::boot_layer(cfg)?;
+    config.layer_mib = layer.as_ref().map_or(0, |l| l.data_len() >> 20);
     let memory = Arc::new(super::guest_memory(&ram_ranges(ram)?, &config, plug_at(ram))?);
     // The image is copied, not mapped: a mapped image stalled boots for up to 1 s
     // (platform-measurements M16). Where it and the initrd go, from its header and the
@@ -743,6 +755,7 @@ pub fn build(cfg: &Config) -> Result<Machine, String> {
             #[cfg(unix)]
             join_share: cfg.join_share,
             io: cfg.io_limit,
+            layer: layer.as_ref(),
         };
         let a = assemble(
             &memory,

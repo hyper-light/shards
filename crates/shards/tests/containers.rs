@@ -12191,8 +12191,8 @@ fn a_microvm_takes_its_ipc_hostname_cgroups_umask_and_writable_layer() {
             "--storage-opt size=0: a size is a number of bytes above 0",
         ),
         (
-            &["--memory", "512m", "--storage-opt", "size=1g"],
-            "--storage-opt size=1073741824: a run's writable layer is held in its microVM's memory, and 1073741824 bytes is more than its memory (--memory 536870912)",
+            &["--storage-opt", "size=20t"],
+            "--storage-opt size=21990232555520: an ext4 file system of 21990232555520 bytes: at most 16 TiB",
         ),
     ] {
         let mut all = vec!["--rm"];
@@ -12279,6 +12279,27 @@ fn a_microvm_takes_its_ipc_hostname_cgroups_umask_and_writable_layer() {
         joined_layer.stderr.contains("No space left on device"),
         "{joined_layer}"
     );
+    // Held in its microVM's memory, a joiner's layer is no larger than that memory.
+    let joined_past = run_in(
+        &home,
+        &image,
+        &[
+            "--rm",
+            "--network",
+            "container:owner",
+            "--memory",
+            "512m",
+            "--storage-opt",
+            "size=1g",
+        ],
+        &["exit", "0"],
+    );
+    assert!(
+        joined_past.stderr.contains(
+            "--storage-opt size=1073741824: a joiner's writable layer is held in its microVM's memory, and 1073741824 bytes is more than its memory (--memory 536870912)"
+        ),
+        "{joined_past}"
+    );
     let joined_tree = run_in(
         &home,
         &image,
@@ -12356,6 +12377,15 @@ fn a_microvm_takes_its_ipc_hostname_cgroups_umask_and_writable_layer() {
     let past = layer("4m", "8");
     assert_ne!(past.status, Some(0), "{past}");
     assert!(past.stderr.contains("No space left on device"), "{past}");
+    // Its host's disk, not its memory (D190): a run held to 64 MiB of memory writes 256 MiB
+    // there, where a layer in its memory would have ended it.
+    let beyond = run_in(
+        &home,
+        &image,
+        &["--rm", "--memory", "64m"],
+        &["big", "/tmp/big", "256"],
+    );
+    assert_eq!(beyond.status, Some(0), "{beyond}");
     // As given, in inspect.
     let made = run_in(
         &home,

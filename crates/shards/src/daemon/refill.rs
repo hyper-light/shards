@@ -259,6 +259,21 @@ impl<D: Disk> Daemon<D> {
                 pool.working_set_limit.get_or_insert(limit);
             }
         }
+        // Whether its template keeps a writable layer (D190), read once: each VM is given a
+        // file of its own to copy it into.
+        let cached = lock(&self.state).pools.get(&key).and_then(|p| p.layer);
+        let layered = match cached {
+            Some(layered) => layered,
+            None => {
+                let layered = shards_vmm::snapshot::has_layer(dir)
+                    .map_err(|e| log(format!("reading the template {}: {e}", dir.display())))
+                    .unwrap_or(false);
+                if let Some(pool) = lock(&self.state).pools.get_mut(&key) {
+                    pool.layer = Some(layered);
+                }
+                layered
+            }
+        };
         for started in 0..count {
             // Its own MAC, made as it is, as dockerd makes each start one (PM M173): its
             // network process frames to it, and its guest takes it as it resumes, before
@@ -267,7 +282,12 @@ impl<D: Disk> Daemon<D> {
                 .map(|_| shards_net::random_mac())
                 .transpose()
                 .map_err(|e| format!("a warm VM's MAC: {e}"))
-                .and_then(|mac| self.start(threads, &args, mac, For::Pool(key.clone()), &key.parent));
+                .and_then(|mac| {
+                    let layer = layered
+                        .then(|| super::layers::LayerFile::empty(&self.home))
+                        .transpose()?;
+                    self.start(threads, &args, mac, For::Pool(key.clone()), &key.parent, layer)
+                });
             if let Err(e) = started_vm {
                 let e = format!("starting a warm VM of {}: {e}", dir.display());
                 log(&e);

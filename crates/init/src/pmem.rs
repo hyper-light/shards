@@ -49,6 +49,77 @@ fn mount(device: &str, target: &str, data: &str) -> io::Result<()> {
     Ok(())
 }
 
+/// Mounts the run's writable layer at `target` (D190), where the microVM has one: the
+/// ext4 file system on the pmem device the control page names by its address
+/// (`control::LAYER`), with DAX, so that what the run writes is the host's memory of its
+/// file, never this guest's. Its kernel made the device's page structures in the device as
+/// it probed it, from the pfn info block the host wrote there (drivers/nvdimm/pfn_devs.c).
+/// Returns whether it has one; an error where it has one that does not mount.
+pub fn mount_layer(target: &str) -> Result<bool, String> {
+    let gpa = crate::linux::control_read64(shards_abi::control::LAYER)
+        .map_err(|e| format!("the control page: {e}"))?;
+    if gpa == 0 {
+        return Ok(false);
+    }
+    let mut found = Err(format!("no pmem region at {gpa:#x}"));
+    with_sysfs(|sys| {
+        await_probe(sys);
+        found = layer_disk(sys, gpa);
+    })
+    .map_err(|e| format!("sysfs: {e}"))?;
+    let disk = found?;
+    let c = |s: &str| CString::new(s).map_err(|_| format!("{s:?}: a NUL in it"));
+    let (device, target_c) = (c(&format!("/dev/{disk}"))?, c(target)?);
+    // noinit_itable: its host made every inode table zeros as it made the file system
+    // (shards-ext4, EXT4_BG_INODE_ZEROED), which nothing need write again.
+    // SAFETY: mount(2) of NUL-terminated strings that outlive the call.
+    let mounted = unsafe {
+        libc::mount(
+            device.as_ptr(),
+            target_c.as_ptr(),
+            c"ext4".as_ptr(),
+            0,
+            c"dax=always,noinit_itable".as_ptr().cast(),
+        )
+    };
+    if mounted != 0 {
+        return Err(format!(
+            "mounting /dev/{disk} on {target}: {}",
+            io::Error::last_os_error()
+        ));
+    }
+    Ok(true)
+}
+
+/// The block device of the pmem region at `gpa`: its pfn device's, which claims its
+/// namespace once libnvdimm finds the info block.
+fn layer_disk(sys: &Path, gpa: u64) -> Result<String, String> {
+    let devices = sys.join("bus/nd/devices");
+    let names = |dir: &Path| -> Vec<String> {
+        std::fs::read_dir(dir)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter_map(|e| e.file_name().into_string().ok())
+            .collect()
+    };
+    let region = names(&devices)
+        .into_iter()
+        .filter(|n| n.starts_with("region"))
+        .find(|n| {
+            std::fs::read_to_string(devices.join(n).join("resource"))
+                .ok()
+                .and_then(|r| u64::from_str_radix(r.trim().trim_start_matches("0x"), 16).ok())
+                == Some(gpa)
+        })
+        .ok_or_else(|| format!("no pmem region at {gpa:#x}"))?;
+    names(&devices.join(&region))
+        .into_iter()
+        .filter(|n| n.starts_with("pfn"))
+        .find_map(|pfn| names(&devices.join(&pfn).join("block")).into_iter().next())
+        .ok_or_else(|| format!("{region}, at {gpa:#x}: no disk of page structures in its device"))
+}
+
 /// Waits for each nd bus's probing to end, as ndctl waits for it.
 fn await_probe(sys: &Path) {
     let Ok(buses) = std::fs::read_dir(sys.join("bus/nd/devices")) else {

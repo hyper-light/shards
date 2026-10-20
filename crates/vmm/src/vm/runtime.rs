@@ -149,13 +149,17 @@ impl Handle {
             }
         };
         let swap = cut.swap.filter(|w| w.attached());
-        let written = snapshot::fill(&save.name, &snap, &self.memory, &save.memory, &save.state).and_then(
-            |()| match (swap, &save.swap) {
+        let written = snapshot::fill(&save.name, &snap, &self.memory, &save.memory, &save.state)
+            .and_then(|()| match (swap, &save.swap) {
                 (None, _) => Ok(()),
                 (Some(window), Some(file)) => window.save_run(file).map(|_| ()),
                 (Some(_), None) => Err("its run's swap has nowhere to go".into()),
-            },
-        );
+            })
+            .and_then(|()| match (self.control.layer(), &save.layer) {
+                (None, _) => Ok(()),
+                (Some(layer), Some((head, data))) => layer.save(head, data),
+                (Some(_), None) => Err("its writable layer has nowhere to go".into()),
+            });
         if let Err(e) = written {
             cut.go_on();
             return Err(e);
@@ -537,10 +541,17 @@ fn guest_pages(snap: &snapshot::Snapshot) -> u64 {
         .filter_map(|path| platform::input_metadata(path).ok())
         .map(|m| m.len().checked_next_multiple_of(pmem::ALIGN).unwrap_or(u64::MAX))
         .fold(0, u64::saturating_add);
+    // Its writable layer's, head and file system (D190).
+    let layer = match snap.config.layer_mib.checked_mul(1 << 20) {
+        Some(0) => 0,
+        Some(data) => pmem::layer_head(data).map_or(u64::MAX, |(head, _)| head.saturating_add(data)),
+        None => u64::MAX,
+    };
     snap.config
         .memory_mib
         .saturating_mul(1 << 20)
         .saturating_add(pmem)
+        .saturating_add(layer)
         .div_ceil(machine::PAGE)
 }
 
@@ -576,6 +587,34 @@ pub fn restore_from(cfg: &RestoreConfig, pinned: snapshot::Pinned) -> Result<(Ha
         }
     }
     let recording = cfg.record && working_set.is_none();
+    // Its writable layer (D190): the head as the snapshot kept it, and the restore's own
+    // copy of its file system, made here from this very generation's, into the empty file
+    // it was given. One the snapshot and the restore do not agree on is refused as the
+    // machine is checked (`check_hosts`).
+    let layer = match &cfg.layer {
+        Some(path) if snap.config.layer_mib > 0 => {
+            let at = |e: std::io::Error| format!("{}: its writable layer: {e}", generation.display());
+            let head = platform::open_beneath_input(&generation, &[snapshot::LAYER_HEAD]).map_err(at)?;
+            let kept = platform::open_beneath_input(&generation, &[snapshot::LAYER]).map_err(at)?;
+            let file = platform::open_input(path, true).map_err(|e| format!("{}: {e}", path.display()))?;
+            let len = kept.metadata().map_err(at)?.len();
+            if file.metadata().map_err(at)?.len() != 0 {
+                return Err(format!(
+                    "{}: a writable layer to copy its snapshot's into must be empty",
+                    path.display()
+                ));
+            }
+            platform::copy_used(&kept, &file, len).map_err(at)?;
+            Some(Arc::new(pmem::Layer::restore(head, file)?))
+        }
+        Some(path) => {
+            return Err(format!(
+                "{}: a writable layer for a snapshot that has none",
+                path.display()
+            ));
+        }
+        None => None,
+    };
     let machine = machine::restore(
         &snap,
         &memory_file,
@@ -589,6 +628,7 @@ pub fn restore_from(cfg: &RestoreConfig, pinned: snapshot::Pinned) -> Result<(Ha
             #[cfg(unix)]
             join_share: cfg.join_share,
             io: cfg.io_limit,
+            layer: layer.as_ref(),
         },
         working_set.unwrap_or_default(),
     )?;
@@ -897,7 +937,12 @@ impl Coordinator {
             Ok(None) => return,
             Err(e) => return failed(format!("snapshot: {e}"), true),
         };
-        let staged = match snapshot::stage(&self.policy.dir, &snap, &self.memory) {
+        let staged = match snapshot::stage(
+            &self.policy.dir,
+            &snap,
+            &self.memory,
+            self.control.layer().map(|l| &**l),
+        ) {
             Ok(staged) => staged,
             Err(e) => return failed(format!("snapshot: {e}"), true),
         };
@@ -1040,6 +1085,7 @@ mod tests {
                 gpu: None,
                 swap_mib: 0,
                 share_window_mib: 0,
+                layer_mib: 0,
             },
             plugged: Vec::new(),
             arch: Vec::new(),

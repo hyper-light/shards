@@ -433,8 +433,12 @@ impl<D: Disk> Daemon<D> {
             args.push("--gpu".into());
         }
         let net = pinned.snapshot.config.net.map(|saved| mac.unwrap_or(saved));
+        // Its writable layer (D190): a file it copies the save's into.
+        let layer = (pinned.snapshot.config.layer_mib > 0)
+            .then(|| super::layers::LayerFile::empty(&self.home))
+            .transpose()?;
         drop(pinned);
-        self.start_for_run(threads, &args, net, parent)
+        self.start_for_run(threads, &args, net, parent, layer)
     }
 
     /// `shards list snapshots MICROVM` (D176): its snapshots, newest first, each one's name,

@@ -93,6 +93,10 @@ pub mod control {
     /// (a 64th of it in memory, drivers/nvdimm/pmem.c, pmem_should_map_pages) that init
     /// then has it probed without (`force_raw`).
     pub const SWAP: u64 = 0x38;
+    /// Read, 64 bits in one access: the guest address of the run's writable layer (D190),
+    /// the virtio-pmem device whose ext4 file system init mounts with DAX under the root's
+    /// overlay; 0 where it has none. Init finds the device's region by it.
+    pub const LAYER: u64 = 0x40;
 
     pub const SNAPSHOT_NOW: u32 = 1;
     pub const SHOW_SWAP: u32 = 1;

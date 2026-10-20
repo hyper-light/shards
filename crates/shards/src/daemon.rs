@@ -53,6 +53,7 @@ mod import;
 mod info;
 mod inspect;
 mod inspect_doc;
+mod layers;
 mod load;
 mod logs;
 mod network;
@@ -420,6 +421,9 @@ struct Pool {
     /// Its template's network device's MAC, if it has one, once read: each of its VMs
     /// needs a network process of its own.
     net: Option<Option<[u8; 6]>>,
+    /// Whether its template keeps a writable layer (D190), once read: each of its VMs is
+    /// given a file to copy it into.
+    layer: Option<bool>,
     /// The most bytes a working set of its template may take, once read: none where the
     /// template could not be read, and its VMs' sets are not taken.
     working_set_limit: Option<Option<u64>>,
@@ -1234,8 +1238,10 @@ fn serve(ready: Option<File>, listen: Option<std::net::SocketAddr>) -> Result<()
     // works in the home, with the daemon's limits, as the children it makes do.
     shards_ipc::start_spawner(&exe, &[OsStr::new("spawner")])
         .map_err(|e| format!("the daemon's spawner: {e}"))?;
-    // Its daemon is gone, since this one holds the lock: an older build's socket with it.
+    // Its daemon is gone, since this one holds the lock: an older build's socket with it,
+    // and the writable layers made for its microVMs that none took (D190).
     let _ = std::fs::remove_file(shards_ipc::SOCKET);
+    layers::clear(&home);
     let _ = std::fs::remove_file(crate::context::LISTENING);
     let _ = std::fs::remove_file(home.join(shards_ipc::STOPPING));
     // The request slots' lists (D185), how its clients reach it, made at once: a client
@@ -5702,14 +5708,28 @@ impl<D: Disk> Daemon<D> {
             // And its init told to keep a sysfs of its own (`shards_vfio`), through which
             // it gives the functions to vfio-pci.
             cfg.cmdline.push_str(" shards_vfio=1");
-            return self.cold(threads, &cfg, &prepared.rootfs, None, &prepared.parent);
+            return self.cold(
+                threads,
+                &cfg,
+                &prepared.rootfs,
+                None,
+                &prepared.parent,
+                prepared.layer,
+            );
         }
         let guest = match &prepared.boot {
             Boot::Given(cfg) => {
                 let mut cfg = (**cfg).clone();
                 on_network(&mut cfg);
                 cfg.gpu = prepared.gpu.is_some();
-                return self.cold(threads, &cfg, &prepared.rootfs, None, &prepared.parent);
+                return self.cold(
+                    threads,
+                    &cfg,
+                    &prepared.rootfs,
+                    None,
+                    &prepared.parent,
+                    prepared.layer,
+                );
             }
             Boot::Stored(guest) => guest,
         };
@@ -5729,9 +5749,16 @@ impl<D: Disk> Daemon<D> {
         on_network(&mut cfg);
         cfg.gpu = prepared.gpu.is_some();
         if !shards_vmm::vm::SNAPSHOTS {
-            return self.cold(threads, &cfg, &prepared.rootfs, None, &prepared.parent);
+            return self.cold(
+                threads,
+                &cfg,
+                &prepared.rootfs,
+                None,
+                &prepared.parent,
+                prepared.layer,
+            );
         }
-        let dir = crate::run::template(&self.home, guest, &prepared.rootfs, &cfg);
+        let dir = crate::run::template(&self.home, guest, &prepared.rootfs, &cfg, prepared.layer);
         // Its pool: the template's warm VMs under its parent (D183).
         let key = PoolKey::new(&dir, &prepared.parent);
         if shards_vmm::snapshot::exists(&dir) {
@@ -5751,7 +5778,14 @@ impl<D: Disk> Daemon<D> {
         // first.
         let n = self.saved.fetch_add(1, Ordering::Relaxed);
         let fresh = dir.with_extension(format!("new-{}-{n}", std::process::id()));
-        let mut ready = self.cold(threads, &cfg, &prepared.rootfs, Some(&fresh), &prepared.parent);
+        let mut ready = self.cold(
+            threads,
+            &cfg,
+            &prepared.rootfs,
+            Some(&fresh),
+            &prepared.parent,
+            prepared.layer,
+        );
         if ready.is_ok()
             && let Err(e) = crate::run::Origin::of(
                 guest,
@@ -6096,7 +6130,8 @@ impl<D: Disk> Daemon<D> {
     }
 
     /// A VM booted for one run, from `cfg` into `rootfs`, saving a template to `save` on
-    /// the way, made under `parent` (D183).
+    /// the way, made under `parent` (D183), with a writable layer that holds `layer` bytes
+    /// (D190).
     /// `save` is where it saves the template, and where the template goes once saved.
     fn cold<'s, 'e>(
         &'s self,
@@ -6105,6 +6140,7 @@ impl<D: Disk> Daemon<D> {
         rootfs: &Path,
         save: Option<&Path>,
         parent: &str,
+        layer: u64,
     ) -> Result<Ready, String> {
         let mut args: Vec<OsString> = vec![
             "run".into(),
@@ -6167,7 +6203,9 @@ impl<D: Disk> Daemon<D> {
         } else {
             None
         };
-        self.start_for_run(threads, &args, net, parent)
+        // Its writable layer, made empty, of the run's size (D190).
+        let layer = layers::LayerFile::made(&self.home, layer)?;
+        self.start_for_run(threads, &args, net, parent, Some(layer))
     }
 
     /// Starts shards-vm with `args` for one run, under `parent` (D183), and waits until it is
@@ -6178,6 +6216,7 @@ impl<D: Disk> Daemon<D> {
         args: &[OsString],
         net: Option<[u8; 6]>,
         parent: &str,
+        layer: Option<layers::LayerFile>,
     ) -> Result<Ready, String> {
         let (tx, rx) = mpsc::channel();
         // Told by a shutdown too: registered, then checked, so a shutdown either finds it
@@ -6188,7 +6227,7 @@ impl<D: Disk> Daemon<D> {
             lock(&self.booting).remove(&waiting);
             return Err("the daemon is shutting down".into());
         }
-        let started = self.start(threads, args, net, For::Run(tx), parent);
+        let started = self.start(threads, args, net, For::Run(tx), parent, layer);
         // A VM given up on ends as its socket closes, the daemon's end dropped with it.
         let ready = started.and_then(|_| {
             rx.recv()
@@ -6227,7 +6266,9 @@ impl<D: Disk> Daemon<D> {
     }
 
     /// Starts shards-vm with `args` as a warm VM whose daemon socket is its descriptor 3,
-    /// on a network of its own if `net` names its MAC, and watches it.
+    /// on a network of its own if `net` names its MAC, with `layer` as its writable layer's
+    /// file where it has one (D190), unlinked once it is ready or has failed to start; and
+    /// watches it.
     fn start<'s, 'e>(
         &'s self,
         threads: &'s Threads<'s, 'e>,
@@ -6235,6 +6276,7 @@ impl<D: Disk> Daemon<D> {
         net: Option<[u8; 6]>,
         dest: For,
         parent: &str,
+        layer: Option<layers::LayerFile>,
     ) -> Result<(), String> {
         // Under its parent (D183): it and its network process made by the parent's
         // spawner, in its scope from their first instruction.
@@ -6299,6 +6341,11 @@ impl<D: Disk> Daemon<D> {
             .map(OsString::as_os_str)
             .chain(given)
             .chain(args.iter().skip(1).map(OsString::as_os_str))
+            .chain(
+                layer
+                    .iter()
+                    .flat_map(|l| [OsStr::new("--layer"), l.path().as_os_str()]),
+            )
             .collect();
         let mut env = crate::netproc::child_env();
         // A GPU's VM process is the GPU's build (D144), which says MoltenVK's errors alone.
@@ -6348,7 +6395,9 @@ impl<D: Disk> Daemon<D> {
         let watching = std::thread::Builder::new()
             .name("warm vm".into())
             .spawn_scoped(threads, move || {
-                self.watch(threads, watched, ours, grants, net_control, dest, net_process)
+                self.watch(threads, watched, ours, grants, net_control, dest, net_process);
+                // Ready, it holds its layer, open and mapped; or it never will.
+                drop(layer);
             });
         if let Err(e) = watching {
             if pooled {
@@ -6577,7 +6626,9 @@ fn again_as(stored: Run, client: &Run, id: &str) -> Run {
 
 /// A run's IPC, UTS and writable layer as its microVM has them (D156): a /dev/shm sized
 /// where it is the run's own alone; a hostname given once; `--storage-opt` its writable
-/// layer's size alone, no more than the memory that layer is held in.
+/// layer's size alone: a joiner's, no more than the memory that layer is held in; a
+/// microVM's own (D190), no more than the memory its page structures take as the microVM
+/// boots, of all its host has.
 fn microvm_namespaces(run: &Run) -> Result<(), String> {
     if run.shm_size != 0 {
         let whose = match run.ipc.as_str() {
@@ -6594,7 +6645,21 @@ fn microvm_namespaces(run: &Run) -> Result<(), String> {
     if run.uts == "host" && run.hostname.is_some() {
         return Err("--hostname and --uts host each name the microVM's host: give one".into());
     }
-    if let Some(size) = crate::setup::storage_size(run)? {
+    if let Some(size) = crate::setup::storage_size(run)?
+        && !run.network.starts_with("container:")
+    {
+        // Its layer's page structures, a 64th of it, in its microVM's memory as it boots
+        // (vmm pmem::layer_head): no more than its host has.
+        let bytes = layers::size(size).map_err(|e| format!("--storage-opt size={size}: {e}"))?;
+        let (head, _) = shards_vmm::devices::virtio::pmem::layer_head(bytes)
+            .map_err(|e| format!("--storage-opt size={size}: {e}"))?;
+        let host = crate::build::host_memory().unwrap_or(u64::MAX);
+        if head > host {
+            return Err(format!(
+                "--storage-opt size={size}: a run's writable layer takes {head} bytes of memory for its page structures as its microVM boots, more than its host's, {host} bytes"
+            ));
+        }
+    } else if let Some(size) = crate::setup::storage_size(run)? {
         let (limit, of) = match run.resources.memory {
             0 => (
                 crate::build::host_memory().unwrap_or(u64::MAX),
@@ -6607,7 +6672,7 @@ fn microvm_namespaces(run: &Run) -> Result<(), String> {
         };
         if size > limit {
             return Err(format!(
-                "--storage-opt size={size}: a run's writable layer is held in its microVM's memory, and {size} bytes is more than {of}, {limit} bytes"
+                "--storage-opt size={size}: a joiner's writable layer is held in its microVM's memory, and {size} bytes is more than {of}, {limit} bytes"
             ));
         }
     }
@@ -7227,6 +7292,7 @@ mod tests {
                 agentfile: None,
                 shares: 0,
                 emulator: None,
+                layer: crate::run::LAYER_HOLDS,
             };
             self.t.daemon.create(&run, &prepared, &id, Vec::new()).unwrap();
             self.t.daemon.record_arrival(self.threads, &id);

@@ -782,6 +782,12 @@ fn save_request(message: shards_ipc::Message) -> Result<shards_vmm::vm::Saved, S
         ));
     };
     let swap = fds.next();
+    // Its writable layer's head and file system (D190), both or neither.
+    let layer = match (fds.next(), fds.next()) {
+        (Some(head), Some(data)) => Some((head, data)),
+        (None, None) => None,
+        _ => return Err("a save brings its writable layer's head without its file system".into()),
+    };
     if fds.next().is_some() {
         return Err(format!("a save brings too many descriptors: {count}"));
     }
@@ -800,6 +806,7 @@ fn save_request(message: shards_ipc::Message) -> Result<shards_vmm::vm::Saved, S
         memory,
         state,
         swap,
+        layer,
         then,
     });
     // The guest goes on where the microVM does: saved and left running, or not saved.

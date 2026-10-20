@@ -1169,6 +1169,7 @@ dependencies = [
  "shards-build",
  "shards-bus",
  "shards-cmdline",
+ "shards-ext4",
  "shards-flate",
  "shards-gateway",
  "shards-git",

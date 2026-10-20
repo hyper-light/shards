@@ -29,6 +29,7 @@ pub fn main() {
             "vsock_snapshot_held" => vsock_snapshot_held(),
             "pmem" => pmem(),
             "erofs" => erofs(),
+            "layer" => layer(),
             "hotplug" => hotplug(),
             "snapshot-plug" => snapshot_plug(),
             "plug-snapshot" => plug_snapshot(),
@@ -2528,6 +2529,172 @@ fn check_pmem(i: usize, len: u64, salt: u64) -> Result<(), String> {
     }
     // SAFETY: closing our own descriptor.
     unsafe { libc::close(fd) };
+    Ok(())
+}
+
+/// A writable layer's costs (D190, PM M277): `/dev/pmem0` the ext4 file system `run vm
+/// --layer` gives it, its page structures in the device's head. Says, one `LAYER` line
+/// each: MemFree as it starts and once the NVDIMM buses' probes are done, and when they
+/// were; a DAX mount's time, an overlay's over it, 64 MiB written and synced, 1,000 small
+/// files, 8 MiB written through a mapping; and three mounts again. Without the device,
+/// MemFree alone, for a boot without one to set beside it.
+fn layer() -> Result<(), String> {
+    let now = || {
+        let mut ts = libc::timespec {
+            tv_sec: 0,
+            tv_nsec: 0,
+        };
+        // SAFETY: a valid timespec to fill.
+        unsafe { libc::clock_gettime(libc::CLOCK_BOOTTIME, &raw mut ts) };
+        ts.tv_sec as f64 * 1e3 + ts.tv_nsec as f64 / 1e6
+    };
+    let free = || -> Result<u64, String> {
+        let info = std::fs::read_to_string("/proc/meminfo").map_err(|e| format!("/proc/meminfo: {e}"))?;
+        info.lines()
+            .find_map(|l| l.strip_prefix("MemFree:"))
+            .and_then(|v| v.trim().trim_end_matches("kB").trim().parse().ok())
+            .ok_or_else(|| "no MemFree".to_string())
+    };
+    let mut out = io::stdout().lock();
+    let started = now();
+    let _ = writeln!(out, "LAYER start_ms={started:.3} free_kib={}", free()?);
+    for bus in std::fs::read_dir("/sys/bus/nd/devices")
+        .into_iter()
+        .flatten()
+        .flatten()
+    {
+        if bus.file_name().as_encoded_bytes().starts_with(b"ndbus") {
+            let _ = std::fs::read(bus.path().join("wait_probe"));
+        }
+    }
+    let _ = writeln!(out, "LAYER probed_ms={:.3} free_kib={}", now(), free()?);
+    if !std::path::Path::new("/dev/pmem0").exists() {
+        return Ok(());
+    }
+    let pfn = std::fs::read_dir("/sys/bus/nd/devices")
+        .into_iter()
+        .flatten()
+        .flatten()
+        .any(|e| {
+            let name = e.file_name();
+            name.as_encoded_bytes().starts_with(b"pfn") && e.path().join("block").exists()
+        });
+    let _ = writeln!(
+        out,
+        "LAYER pfn={pfn} dax={}",
+        sysfs("/sys/block/pmem0/queue/dax").unwrap_or_default()
+    );
+    let c = |s: &str| CString::new(s).map_err(|e| e.to_string());
+    let mount = |src: &str, target: &str, fs: &str, data: &str| -> Result<f64, String> {
+        std::fs::create_dir_all(target).map_err(|e| format!("{target}: {e}"))?;
+        let (src, target_c, fs, data) = (c(src)?, c(target)?, c(fs)?, c(data)?);
+        let t = now();
+        // SAFETY: NUL-terminated strings.
+        if unsafe {
+            libc::mount(
+                src.as_ptr(),
+                target_c.as_ptr(),
+                fs.as_ptr(),
+                0,
+                data.as_ptr().cast(),
+            )
+        } != 0
+        {
+            return Err(format!("mount {target:?}: {}", io::Error::last_os_error()));
+        }
+        Ok((now() - t) * 1e3)
+    };
+    let umount = |target: &str| -> Result<(), String> {
+        let target = c(target)?;
+        // SAFETY: a NUL-terminated path.
+        if unsafe { libc::umount(target.as_ptr()) } != 0 {
+            return Err(format!("umount: {}", io::Error::last_os_error()));
+        }
+        Ok(())
+    };
+    const OPTS: &str = "dax=always,noinit_itable";
+    const OVERLAY: &str = "lowerdir=/lower,upperdir=/l/upper,workdir=/l/work,volatile,xino=on";
+    let first = mount("/dev/pmem0", "/l", "ext4", OPTS)?;
+    for d in ["/l/upper", "/l/work", "/lower"] {
+        std::fs::create_dir_all(d).map_err(|e| format!("{d}: {e}"))?;
+    }
+    let overlay = mount("overlay", "/merged", "overlay", OVERLAY)?;
+    let mounts = std::fs::read_to_string("/proc/mounts").map_err(|e| e.to_string())?;
+    let dax = mounts
+        .lines()
+        .any(|l| l.contains(" /l ext4 ") && l.contains("dax=always"));
+    let _ = writeln!(
+        out,
+        "LAYER mount_us={first:.1} overlay_us={overlay:.1} mounted_dax={dax}"
+    );
+    let before = free()?;
+    let chunk = vec![0x5au8; 1 << 20];
+    let t = now();
+    let mut big = std::fs::File::create("/merged/big").map_err(|e| e.to_string())?;
+    for _ in 0..64 {
+        big.write_all(&chunk).map_err(|e| e.to_string())?;
+    }
+    big.sync_all().map_err(|e| e.to_string())?;
+    let wrote = now() - t;
+    drop(big);
+    let t = now();
+    for i in 0..1000 {
+        std::fs::write(format!("/merged/small{i}"), b"hello").map_err(|e| e.to_string())?;
+    }
+    let small = now() - t;
+    let t = now();
+    {
+        use std::os::fd::AsRawFd as _;
+        let len = 8 << 20;
+        let f = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open("/l/mapped")
+            .map_err(|e| e.to_string())?;
+        f.set_len(len as u64).map_err(|e| e.to_string())?;
+        // SAFETY: a fresh shared mapping of our own file, unmapped below.
+        let p = unsafe {
+            libc::mmap(
+                std::ptr::null_mut(),
+                len,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_SHARED,
+                f.as_raw_fd(),
+                0,
+            )
+        };
+        if p == libc::MAP_FAILED {
+            return Err(format!("mmap: {}", io::Error::last_os_error()));
+        }
+        for page in (0..len).step_by(4096) {
+            // SAFETY: within the mapping.
+            unsafe { *p.cast::<u8>().add(page) = 1 };
+        }
+        // SAFETY: the mapping made above.
+        unsafe {
+            libc::msync(p, len, libc::MS_SYNC);
+            libc::munmap(p, len);
+        }
+    }
+    let mapped = now() - t;
+    let _ = writeln!(
+        out,
+        "LAYER write_64mib_ms={wrote:.3} small_1000_ms={small:.3} mapped_8mib_ms={mapped:.3} free_kib_spent={}",
+        before.saturating_sub(free()?)
+    );
+    umount("/merged")?;
+    umount("/l")?;
+    for i in 0..3 {
+        let again = mount("/dev/pmem0", "/l", "ext4", OPTS)?;
+        // A volatile overlay's mark refuses the next mount of its directories (overlayfs.rst).
+        let _ = std::fs::remove_dir_all("/l/work/work");
+        let overlay = mount("overlay", "/merged", "overlay", OVERLAY)?;
+        umount("/merged")?;
+        umount("/l")?;
+        let _ = writeln!(out, "LAYER again{i} mount_us={again:.1} overlay_us={overlay:.1}");
+    }
     Ok(())
 }
 

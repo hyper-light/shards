@@ -41,6 +41,9 @@ pub fn keep_microvm_namespaces() -> io::Result<()> {
     Ok(())
 }
 
+/// statfs(2)'s word for ext4 (include/uapi/linux/magic.h).
+const EXT4_SUPER_MAGIC: u64 = 0xEF53;
+
 /// Opens `/rw`, the writable layer's tmpfs, for [`rw_size`], before the root moves over it.
 pub fn keep_rw() -> io::Result<()> {
     let _ = RW.set(open_kept(c"/rw", libc::O_PATH | libc::O_DIRECTORY)?);
@@ -55,6 +58,18 @@ pub fn rw_size(text: &[u8]) -> Result<(), String> {
         .and_then(|t| t.parse::<u64>().ok())
         .ok_or("a malformed writable layer size")?;
     let rw = RW.get().ok_or("the writable layer was not kept")?;
+    // An ext4 layer (D190) holds what its run asked for as it was made: its template is
+    // the size's own.
+    // SAFETY: all-zero is a valid statfs, which fstatfs(2) fills from our descriptor.
+    let mut fs: libc::statfs = unsafe { std::mem::zeroed() };
+    // SAFETY: as above.
+    let stated = unsafe { libc::fstatfs(rw.as_raw_fd(), &raw mut fs) } == 0;
+    // `f_type` is signed in some targets' C libraries and unsigned in others.
+    #[allow(clippy::unnecessary_cast)]
+    let ext4 = stated && fs.f_type as u64 == EXT4_SUPER_MAGIC;
+    if ext4 {
+        return Ok(());
+    }
     let path = CString::new(format!("/proc/self/fd/{}", rw.as_raw_fd())).map_err(|_| "a NUL in a path")?;
     let data = CString::new(format!("size={size}")).map_err(|_| "a NUL in a size")?;
     // SAFETY: mount(2) of NUL-terminated strings that outlive the call.

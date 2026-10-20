@@ -356,7 +356,16 @@ pub struct Prepared {
     pub shares: u32,
     /// The emulator its image's programs run under, where it is another CPU's (D179).
     pub emulator: Option<Emulated>,
+    /// What its writable layer holds, in bytes (D190): `--storage-opt size`, else
+    /// [`LAYER_HOLDS`].
+    pub layer: u64,
 }
+
+/// What a run's writable layer holds unless it asks for another size (D190,
+/// `--storage-opt size`): Docker's device-mapper driver's default for a container's base
+/// device, a block device's writable layer as a microVM's is (dockerd's `dm.basesize`,
+/// 10G).
+pub const LAYER_HOLDS: u64 = 10 << 30;
 
 /// The emulator a run of another CPU's image runs under (D179): the emulator image's root
 /// filesystem, one more of its microVM's devices, and the architecture its init registers
@@ -823,6 +832,7 @@ pub fn prepare(
         .unwrap_or_default();
     let labels = merge_labels(image_labels, &request.labels)?;
     Ok(Prepared {
+        layer: crate::setup::storage_size(request)?.unwrap_or(LAYER_HOLDS),
         agentfile,
         emulator,
         boot,
@@ -915,9 +925,10 @@ pub fn shm_bytes(most_mib: u64) -> u64 {
     most_mib.saturating_mul(1 << 19)
 }
 
-/// The template a run of `rootfs` on `guest` with `cfg`'s shape restores: named by the
-/// SHA-256 of everything that goes into it, the snapshot format included.
-pub fn template(home: &Path, guest: &Guest, rootfs: &Path, cfg: &Config) -> PathBuf {
+/// The template a run of `rootfs` on `guest` with `cfg`'s shape and a writable layer that
+/// holds `layer` bytes (D190) restores: named by the SHA-256 of everything that goes into
+/// it, the snapshot format included.
+pub fn template(home: &Path, guest: &Guest, rootfs: &Path, cfg: &Config, layer: u64) -> PathBuf {
     let key = format!(
         "snapshot format {}\nkernel {}\ninit {}\nrootfs {}\ncpus {}\nmemory {}\ncmdline {}\n{}",
         shards_vmm::snapshot::FORMAT,
@@ -933,7 +944,8 @@ pub fn template(home: &Path, guest: &Guest, rootfs: &Path, cfg: &Config) -> Path
         + &swap(cfg)
         + gpu(cfg)
         + JOIN_SHARE
-        + &share_window(cfg);
+        + &share_window(cfg)
+        + &format!("layer {layer}\n");
     let hex: String = Sha256::digest(key.as_bytes())
         .iter()
         .map(|b| format!("{b:02x}"))
