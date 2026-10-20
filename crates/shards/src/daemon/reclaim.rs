@@ -4,8 +4,8 @@
 //! to the host (D151), as a container's page cache is its host's to drop.
 
 use std::collections::{HashMap, HashSet};
-use std::sync::Mutex;
 use std::sync::atomic::Ordering;
+use std::sync::{Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use shards_vmm::platform::{MemoryPressure, PressureWatches};
@@ -89,6 +89,13 @@ impl<D: Disk> Daemon<D> {
         let mut unsaid: Option<(Instant, Gave, u32)> = None;
         let mut said: Option<Instant> = None;
         loop {
+            // With no microVM running, none is asked to give back anything: the host's
+            // pressure, which its kernel says again each window while it lasts, is not
+            // listened to until one runs, so that an idle daemon wakes for nothing. A
+            // trigger fired meanwhile is heard as the first runs (psi.c, psi_trigger_poll).
+            if !self.await_a_microvm() {
+                return;
+            }
             if let Err(e) = pressure.wait() {
                 log(format!(
                     "watching the host's memory pressure: {e}; nothing more is given back at it"
@@ -115,6 +122,21 @@ impl<D: Disk> Daemon<D> {
                 said = Some(Instant::now());
                 unsaid = None;
             }
+        }
+    }
+
+    /// Waits until a microVM runs: true then, false once the daemon closes ([`close`]
+    /// wakes this).
+    fn await_a_microvm(&self) -> bool {
+        let mut runs = lock(&self.runs);
+        loop {
+            if self.closed.load(Ordering::SeqCst) {
+                return false;
+            }
+            if runs.values().any(|r| matches!(r, RunState::Tracked(_))) {
+                return true;
+            }
+            runs = self.resolved.wait(runs).unwrap_or_else(PoisonError::into_inner);
         }
     }
 

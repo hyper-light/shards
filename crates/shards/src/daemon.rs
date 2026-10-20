@@ -1535,8 +1535,11 @@ impl<D: Disk> Daemon<D> {
     /// Ends its offers and removes the Engine API's socket, once: no client arrives from
     /// here on.
     fn close(&self) {
-        let _at = lock(&self.socket_at);
-        if !self.closed.load(Ordering::SeqCst) {
+        {
+            let _at = lock(&self.socket_at);
+            if self.closed.load(Ordering::SeqCst) {
+                return;
+            }
             // When first, so that no look at the slots finds it closed and not since when.
             *lock(&self.closed_at) = Some(Instant::now());
             self.closed.store(true, Ordering::SeqCst);
@@ -1549,6 +1552,11 @@ impl<D: Disk> Daemon<D> {
             let _held = lock(held);
             room.notify_all();
         }
+        // The memory pressure watcher, waiting for a microVM to run (reclaim.rs): under the
+        // runs' lock, so that it is either waiting or finds the daemon closed, and under no
+        // other, which a holder of the runs' may take.
+        let _runs = lock(&self.runs);
+        self.resolved.notify_all();
     }
 
     /// Binds the Engine API's socket again where someone removed it while the daemon

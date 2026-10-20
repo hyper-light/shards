@@ -5595,8 +5595,11 @@ host (PM M267), where a container's page cache is its host's to drop. Free page 
   benchmark with DAX windows, whose guests hold no page cache of the files they map and so
   keep less; none of 60 since, the host as short of memory and as much given back.
 - **Said in the daemon's log** at most once a minute, with what was given back since.
-- **Idle, it costs nothing**: a thread blocked in poll(2) on Linux 6.4 and later and on
-  macOS; on an older Linux, a read of the host's average every ten seconds.
+- **Idle, it costs nothing**: with no microVM running it waits for one, hearing no
+  pressure meanwhile, whose trigger fires each window while the host stays short (on a CI
+  runner short of memory it woke an idle daemon's thread every 2 s: job 118535098642);
+  then a thread blocked in poll(2) on Linux 6.4 and later and on macOS; on an older Linux,
+  a read of the host's average every ten seconds.
 
 **Measured (PM M267, macOS).** The guest's 944 MiB of a read file reclaimed in 33 ms
 (p50); with the flush, 946 MiB back to the host within 0.5 s (p50, the builtin 81 ms),
@@ -5606,8 +5609,12 @@ MiB of the read's stays: the page structures of the memory it plugged, and the k
 **Tested.** Unit (platform): the host's memory pressure can be watched where the daemon
 runs. E2E on Linux (tests/containers.rs `a_microvm_held_to_a_budget_gives_back_what_it_holds_cold`):
 a microVM under a slice held to 384 MiB (`MemoryHigh`, no swap) reads a gigabyte through
-to its end, the daemon's log saying it gave back files and asked to unplug memory. Not on macOS, whose pressure is the
-whole system's, which no test may raise for every program on its host.
+to its end, the daemon's log saying it gave back files and what it asked to unplug: none
+there, the run's peak since the pass before being the read's own page cache at its budget,
+which a pass keeps (M275); the cold files' pages are the host's again as they are reported
+free. Not on macOS, whose pressure is the whole system's, which no test may raise for every
+program on its host. `an_idle_daemon_wakes_for_nothing` (tests/daemon.rs) holds the idle
+daemon's threads still.
 
 **Measured (PM M268, macOS).** Of a gigabyte a guest plugged, filled with its own pages
 and the kernel's among them, and freed, the driver gave back 98% within 0.1 s, 18 MiB

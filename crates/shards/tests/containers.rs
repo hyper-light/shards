@@ -2073,9 +2073,10 @@ fn a_microvm_is_made_under_the_slice_its_cgroup_parent_names() {
 /// (D188): under a slice of the user's manager whose `MemoryHigh` is past the microVM idle
 /// and short of a gigabyte it reads, its page cache grows until the budget slows it; the
 /// daemon, watching the scope it made there, has it reclaim what it holds cold and report
-/// it free at once, and ask to unplug what it holds plugged past twice what it then uses
-/// and its peak since the pass before, and it reads on to the end. Linux alone: macOS's memory pressure is the
-/// whole system's, which no test may raise for every program on its host.
+/// it free at once, says what it asked to unplug (none while the run's peak since the pass
+/// before is the read's own page cache at the budget, which a pass keeps: M275), and it
+/// reads on to the end. Linux alone: macOS's memory pressure is the whole system's, which
+/// no test may raise for every program on its host.
 #[test]
 fn a_microvm_held_to_a_budget_gives_back_what_it_holds_cold() {
     if !cfg!(target_os = "linux") {
@@ -2141,8 +2142,8 @@ fn a_microvm_held_to_a_budget_gives_back_what_it_holds_cold() {
     let read = shards(&["exec", "budget", "/bin/testguest", "read", "/vol/big"]);
     assert_eq!(read.status, Some(0), "{read}\n{}", said());
     assert!(read.stdout.contains("read /vol/big 1073741824"), "{read}");
-    // What it gave back of its files, and of the memory it had plugged to hold them, which
-    // it held past twice what it used, and its peak since, once they were gone.
+    // What it gave back of its files, and what it asked to unplug of the memory it had
+    // plugged to hold them.
     let log = said();
     let gave = log
         .lines()
@@ -2155,7 +2156,7 @@ fn a_microvm_held_to_a_budget_gives_back_what_it_holds_cold() {
             .unwrap_or_else(|| panic!("no {words:?} in {gave}"))
     };
     assert!(mib_after("gave back ") > 0, "{gave}");
-    assert!(mib_after("asked to unplug ") > 0, "{gave}");
+    let _said = mib_after("asked to unplug ");
     assert_eq!(shards(&["kill", "budget"]).status, Some(0));
 }
 
