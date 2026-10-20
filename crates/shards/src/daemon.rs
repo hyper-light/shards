@@ -8323,6 +8323,40 @@ mod tests {
         });
     }
 
+    /// A slot's client hears what the daemon said on its connection though its request
+    /// never went there: a daemon stepping aside ends its clients' connections, each told
+    /// RESTART first (`end_clients`), and one may end before its slot has passed its
+    /// client's request on. That client asks the next daemon; before, its slot gave up on
+    /// the request, and the client took the end for its command's (CI job 118605157407:
+    /// "the command's microVM stopped before the command ended").
+    #[test]
+    fn a_client_whose_request_never_went_hears_its_restart() {
+        let t = Test::new("unsent");
+        t.run(|t| {
+            let living = slots::Living::new(&t.daemon, 0);
+            let (ours, theirs) = UnixStream::pair().unwrap();
+            shards_ipc::send(&theirs, kind::RESTART, &[], &[]).unwrap();
+            shards_ipc::end(&theirs);
+            let (say, _says) = std::io::pipe().unwrap();
+            let (heard, answer) = std::io::pipe().unwrap();
+            let session = shards_ipc::slots::Session {
+                n: 0,
+                say: File::from(std::os::fd::OwnedFd::from(say)),
+                answer: File::from(std::os::fd::OwnedFd::from(answer)),
+                input: None,
+                output: None,
+                errors: None,
+            };
+            let unsent = Err(io::Error::from(io::ErrorKind::BrokenPipe));
+            t.daemon.pass_on(unsent, &ours, session, &living).unwrap();
+            let heard = File::from(std::os::fd::OwnedFd::from(heard));
+            let told = shards_ipc::slots::read_frame(&heard).unwrap().map(|f| f.kind);
+            assert_eq!(told, Some(kind::RESTART));
+            assert!(shards_ipc::slots::read_frame(&heard).unwrap().is_none());
+            drop(living);
+        });
+    }
+
     /// A daemon that has closed starts no warm VM: a waiting one that ends as it exits is
     /// replaced by none, which would only end with it as the next daemon starts.
     #[test]

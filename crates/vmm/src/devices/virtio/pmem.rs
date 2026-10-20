@@ -557,8 +557,20 @@ impl Layer {
                 .and_then(|o| o.checked_add(first))
                 .ok_or("a layer head's block past any file")?;
             // SAFETY: a whole block of the reservation, which nothing references yet.
-            unsafe { platform::map_file_private(&kept, offset, HEAD_BLOCK, host.add(i * HEAD_BLOCK)) }
-                .map_err(at)?;
+            match unsafe { platform::map_file_private(&kept, offset, HEAD_BLOCK, host.add(i * HEAD_BLOCK)) } {
+                Ok(()) => {}
+                // Where no file maps over part of a reservation (Windows), read into it, as
+                // guest RAM is restored there (`GuestMemory::from_file`).
+                Err(e) if e.kind() == std::io::ErrorKind::Unsupported => {
+                    // SAFETY: a whole block of the reservation, committed memory that
+                    // nothing references yet.
+                    let block = unsafe {
+                        std::slice::from_raw_parts_mut(host.as_ptr().add(i * HEAD_BLOCK), HEAD_BLOCK)
+                    };
+                    platform::read_exact_at(&kept, block, offset).map_err(at)?;
+                }
+                Err(e) => return Err(at(e)),
+            }
         }
         head._file = Some(kept);
         Layer::over(head, file, data)

@@ -402,7 +402,11 @@ impl<D: Disk> Daemon<D> {
         // come. Ended before it is sent, the request is none, and its count goes with it.
         counted.hand(threads, theirs);
         let null = File::open("/dev/null")?;
-        {
+        // Where the daemon ended the connection before the request could go (its clients
+        // ended as it steps aside, `end_clients`), what it said on it still reaches the
+        // client: its RESTART, so that the client asks the next daemon rather than take
+        // the end for its command's.
+        let sent = {
             let stream = |f: u8| -> BorrowedFd<'_> {
                 let given = match f {
                     slots::fds::IN => session.input.as_ref(),
@@ -413,9 +417,22 @@ impl<D: Disk> Daemon<D> {
                 given.map_or_else(|| null.as_fd(), AsFd::as_fd)
             };
             let fds: Vec<BorrowedFd<'_>> = named.iter().map(|&f| stream(f)).collect();
-            shards_ipc::send(&ours, request.kind, &request.payload, &fds)?;
-        }
+            shards_ipc::send(&ours, request.kind, &request.payload, &fds)
+        };
         drop(null);
+        self.pass_on(sent, &ours, session, living)
+    }
+
+    /// Passes a slot's session on through `ours`, the connection the daemon took as the
+    /// client's, once its request was `sent` there or could not be: the client's messages
+    /// on to the daemon, and the daemon's back, until either side ends.
+    pub(super) fn pass_on(
+        &self,
+        sent: io::Result<()>,
+        ours: &UnixStream,
+        session: Session,
+        living: &Living<'_, D>,
+    ) -> io::Result<()> {
         let Session {
             say,
             answer,
@@ -428,24 +445,32 @@ impl<D: Disk> Daemon<D> {
         // with, which its first message says: a descriptor in flight is the sender's to
         // keep until then (M24).
         let mut streams = Some((input, output, errors));
+        let mut relayed = 0usize;
         std::thread::scope(|inner| {
-            let (ours, say) = (&ours, &say);
-            // The client's messages, on to the daemon; its end, the connection's.
-            let onward = std::thread::Builder::new()
-                .name("slot-say".into())
-                .spawn_scoped(inner, move || {
-                    while let Ok(Some(f)) = slots::read_frame(say) {
-                        if shards_ipc::send(ours, f.kind, &f.payload, &[]).is_err() {
-                            break;
-                        }
-                    }
+            let say = &say;
+            // The client's messages, on to the daemon; its end, the connection's. None
+            // where the request never went: the connection has ended there, and ended here
+            // too before its last messages are read, XNU would drop them (soshutdown's
+            // sorflush).
+            if sent.is_ok() {
+                let onward =
+                    std::thread::Builder::new()
+                        .name("slot-say".into())
+                        .spawn_scoped(inner, move || {
+                            while let Ok(Some(f)) = slots::read_frame(say) {
+                                if shards_ipc::send(ours, f.kind, &f.payload, &[]).is_err() {
+                                    break;
+                                }
+                            }
+                            shards_ipc::end(ours);
+                        });
+                if onward.is_err() {
                     shards_ipc::end(ours);
-                });
-            if onward.is_err() {
-                shards_ipc::end(ours);
+                }
             }
             // The daemon's messages, back to the client.
             while let Ok(Some(m)) = shards_ipc::recv(ours) {
+                relayed += 1;
                 streams = None;
                 // A microVM given a host's devices sends its process's pidfd with EXIT
                 // (D154): its run is over once that process has ended.
@@ -467,7 +492,12 @@ impl<D: Disk> Daemon<D> {
             // until it ends its own.
             living.settled();
         });
-        Ok(())
+        // A request that never went is the log's only where nothing came back for its
+        // client either.
+        match sent {
+            Err(e) if relayed == 0 => Err(e),
+            _ => Ok(()),
+        }
     }
 }
 
