@@ -1347,18 +1347,9 @@ mod tests {
         m.save(&file).unwrap();
         assert_eq!(file.metadata().unwrap().len(), 19 * p as u64);
 
-        let r = GuestMemory::from_file(&ranges, &file).unwrap();
-        for page in 0..19 {
-            let first = r.access().unwrap().read_obj::<u8>(gpa(page)).unwrap();
-            let last = r
-                .access()
-                .unwrap()
-                .read_obj::<u8>(gpa(page) + p as u64 - 1)
-                .unwrap();
-            assert_eq!((first, last), marks(page), "page {page}");
-        }
-
-        // The file holds data exactly where pages were used (lseek(2) SEEK_DATA, SEEK_HOLE).
+        // The file holds data exactly where pages were used (lseek(2) SEEK_DATA, SEEK_HOLE),
+        // looked at before a restore reads it: a fault on a hole of a tmpfs file fills it
+        // (shmem_fault allocates, where read(2) gives the zero page), as on Fedora's /tmp.
         let mut data = Vec::new();
         let mut at = 0;
         loop {
@@ -1376,6 +1367,17 @@ mod tests {
             at = end;
         }
         assert_eq!(data, (0..19).filter(|&page| used(page)).collect::<Vec<_>>());
+
+        let r = GuestMemory::from_file(&ranges, &file).unwrap();
+        for page in 0..19 {
+            let first = r.access().unwrap().read_obj::<u8>(gpa(page)).unwrap();
+            let last = r
+                .access()
+                .unwrap()
+                .read_obj::<u8>(gpa(page) + p as u64 - 1)
+                .unwrap();
+            assert_eq!((first, last), marks(page), "page {page}");
+        }
         drop((m, r, file));
         let _ = std::fs::remove_file(path);
     }

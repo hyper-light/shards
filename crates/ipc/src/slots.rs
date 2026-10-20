@@ -1244,7 +1244,11 @@ mod tests {
                 .collect();
             drop(took);
             // The maker: two offered at first, and another as each is taken; each slot let
-            // go of once its client has taken it.
+            // go of once its client has taken it. No more in hand than its clients and
+            // those offered, as the daemon holds no more than its most clients
+            // (daemon/slots.rs, make_slots): clients that take each record as it comes
+            // would have it make a slot, six descriptors, for every take before it hears of
+            // any, past a soft limit of 1,024 (systemd's default for a service's).
             let mut offered = std::collections::HashMap::new();
             for _ in 0..OFFERED {
                 let slot = requests.make(false).unwrap();
@@ -1265,7 +1269,7 @@ mod tests {
                 // one: only its own acknowledgement lets the maker remove its names.
                 assert!(offered.remove(&n).is_some(), "slot {n} taken twice");
                 requests.remove(n);
-                while requests.waiting(false).unwrap() < OFFERED {
+                while requests.waiting(false).unwrap() < OFFERED && offered.len() < CLIENTS + OFFERED {
                     let slot = requests.make(false).unwrap();
                     requests.offer(slot.number(), false).unwrap();
                     offered.insert(slot.number(), slot);

@@ -2159,6 +2159,19 @@ pub(crate) mod tests {
 
     #[test]
     fn descriptors_past_the_limit_are_closed() {
+        // Room for its 200 beside the other tests' descriptors: a test binary keeps the
+        // soft limit it was started with, 256 from a macOS shell (launchd's), where the
+        // daemon raises its own. macOS takes no more than OPEN_MAX (setrlimit(2)).
+        let mut lim = libc::rlimit {
+            rlim_cur: 0,
+            rlim_max: 0,
+        };
+        // SAFETY: getrlimit(2) and setrlimit(2) of this process, into and from a local.
+        unsafe {
+            assert_eq!(libc::getrlimit(libc::RLIMIT_NOFILE, &mut lim), 0);
+            lim.rlim_cur = lim.rlim_cur.max(lim.rlim_max.min(10240));
+            assert_eq!(libc::setrlimit(libc::RLIMIT_NOFILE, &lim), 0);
+        }
         let (a, b) = UnixStream::pair().unwrap();
         let (r, w) = pipe();
         send_raw(&a, &[1, 0, 0, 0, 0], &[w.as_raw_fd(); 200]);

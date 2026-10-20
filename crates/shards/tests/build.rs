@@ -4366,6 +4366,18 @@ fn add_fetches_git_repositories() {
         eprintln!("SKIP: no git on this host");
         return;
     }
+    // git's own daemon, which some hosts' git leaves to a package of its own (Fedora's
+    // git-daemon).
+    let exec_path = std::process::Command::new("git")
+        .arg("--exec-path")
+        .output()
+        .unwrap();
+    let git_daemon =
+        std::path::Path::new(String::from_utf8(exec_path.stdout).unwrap().trim()).join("git-daemon");
+    if !git_daemon.is_file() {
+        eprintln!("SKIP: no git-daemon on this host ({})", git_daemon.display());
+        return;
+    }
     let repos = TempDir::new("build-add-git-repos");
     let (origin, sub) = (repos.join("repo.git"), repos.join("sub.git"));
     std::fs::create_dir_all(&sub).unwrap();
@@ -4386,7 +4398,6 @@ fn add_fetches_git_repositories() {
     git_in(&origin, &["tag", "-a", "v1", "-m", "annotated"]);
     let head = git_in(&origin, &["rev-parse", "HEAD"]).trim().to_string();
     // The submodule's URL is relative: each server resolves it to its own sub.git.
-    let exec_path = git_in(&origin, &["--exec-path"]);
     let dport = std::net::TcpListener::bind("127.0.0.1:0")
         .unwrap()
         .local_addr()
@@ -4401,7 +4412,7 @@ fn add_fetches_git_repositories() {
         }
     }
     let _daemon = Ended(
-        std::process::Command::new(std::path::Path::new(exec_path.trim()).join("git-daemon"))
+        std::process::Command::new(&git_daemon)
             .args([
                 "--export-all",
                 "--reuseaddr",
