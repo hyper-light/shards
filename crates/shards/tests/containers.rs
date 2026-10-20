@@ -1525,9 +1525,15 @@ fn a_microvms_io_is_paced_at_its_limits() {
         ms.parse().unwrap()
     };
     let free = poured(&[], "3145728", "65536");
-    // 3 MiB at 1 MiB a second: at least the two seconds after its first request.
+    // 3 MiB at 1 MiB a second: at least the two seconds after its first request; and longer
+    // than with no limit wherever that took less, which a host busy enough to sync 48 writes
+    // slower (4,555 ms with no limit, 4,406 paced, a gate's tests and others' builds beside
+    // it) does not.
     let paced = poured(&["--io-maxbandwidth", "1m"], "3145728", "65536");
-    assert!(paced >= 1900 && paced > free, "free {free} ms, paced {paced} ms");
+    assert!(
+        paced >= 1900 && (free >= 1900 || paced > free),
+        "free {free} ms, paced {paced} ms"
+    );
     // Read back by a microVM of its own, which has none of it cached: paced too, by the
     // bytes each READ asks for.
     let read = |limits: &[&str]| -> u128 {
@@ -1545,7 +1551,7 @@ fn a_microvms_io_is_paced_at_its_limits() {
     let unpaced = read(&[]);
     let held = read(&["--io-maxbandwidth", "1m"]);
     assert!(
-        held >= 1900 && held > unpaced,
+        held >= 1900 && (unpaced >= 1900 || held > unpaced),
         "free {unpaced} ms, paced {held} ms"
     );
     // Thirty synced writes, each a WRITE and an FSYNC at least, at 20 requests a second.
