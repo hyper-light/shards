@@ -135,7 +135,8 @@ mod compare {
     const WALK_CMDLINE: &str = "console=ttyS0 quiet panic=-1 shards_test=walk shards_walk_mib=512";
 
     /// THP's A/B (`--thp-ab all,never`, PM M157): shards alone, its guest memory on huge
-    /// pages as shards advises it (MADV_HUGEPAGE, `all`), on none (`never`: the VM
+    /// pages as shards advises it (`all`: its kernel's image as it boots, the rest once its
+    /// PID 1 runs, PM M279), its boot's advice alone (`boot`), on none (`never`: the VM
     /// process's THP disabled), or unadvised, on what the host's THP gives memory no one
     /// advised (`unadvised`, SHARDS_THP_ADVICE=never, PM M225), interleaved, each order
     /// alternating. Boot: the idle guest's
@@ -149,8 +150,8 @@ mod compare {
         let initrd = idle_initrd();
         for arm in &arms {
             assert!(
-                arm == "all" || arm == "never" || arm == "unadvised",
-                "--thp-ab: all, never or unadvised, not {arm}"
+                arm == "all" || arm == "never" || arm == "unadvised" || arm == "boot",
+                "--thp-ab: all, never, unadvised or boot, not {arm}"
             );
         }
         let command = |arm: &str, memory: &str, cmdline: &str| {
@@ -162,6 +163,11 @@ mod compare {
                 .args(["--cpus", "1", "--memory", memory, "--cmdline", cmdline]);
             if arm == "unadvised" {
                 c.env("SHARDS_THP_ADVICE", "never");
+            }
+            // The boot's advice alone: its kernel's image on huge pages, nothing more once
+            // its PID 1 runs (PM M279).
+            if arm == "boot" {
+                c.env("SHARDS_THP_ADVICE", "boot");
             }
             if arm == "never" {
                 // No huge page for any of the VM process's memory, its MADV_HUGEPAGE guest

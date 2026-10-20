@@ -81,6 +81,12 @@ pub fn reserve_ram(len: usize) -> io::Result<NonNull<u8>> {
 /// Guest RAM on base pages, as `reserve_ram`'s always is here: nothing to do.
 pub fn small_pages(_ptr: NonNull<u8>, _len: usize) {}
 
+pub fn huge_pages(_ptr: NonNull<u8>, _len: usize) {}
+
+pub fn advised_huge_page() -> Option<usize> {
+    None
+}
+
 /// Gives the pages of `ptr..ptr+len` back and leaves the range inaccessible: decommitted,
 /// still reserved (VirtualFree MEM_DECOMMIT).
 ///

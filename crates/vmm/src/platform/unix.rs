@@ -130,6 +130,29 @@ pub fn small_pages(ptr: NonNull<u8>, len: usize) {
     let _ = (ptr, len);
 }
 
+/// Puts `ptr..ptr+len`, guest RAM from [`reserve_ram`], on huge pages as the guest next
+/// touches it, as [`reserve_ram`] advises it, where [`small_pages`] kept it off them.
+/// Advice only: where it fails, or the kernel has no THP, the memory stays as it was.
+pub fn huge_pages(ptr: NonNull<u8>, len: usize) {
+    #[cfg(all(target_os = "linux", not(miri)))]
+    // SAFETY: madvise(2) of guest RAM, which the caller maps.
+    if unsafe { libc::madvise(ptr.as_ptr().cast(), len, libc::MADV_HUGEPAGE) } != 0 {
+        crate::debug!("MADV_HUGEPAGE: {}", io::Error::last_os_error());
+    }
+    #[cfg(not(all(target_os = "linux", not(miri))))]
+    let _ = (ptr, len);
+}
+
+/// The transparent huge page size guest RAM is advised for, where the host has them and
+/// the advice is not left out (SHARDS_THP_ADVICE=never, PM M157, M225): Linux's.
+pub fn advised_huge_page() -> Option<usize> {
+    #[cfg(all(target_os = "linux", not(miri)))]
+    if std::env::var_os("SHARDS_THP_ADVICE").is_none_or(|a| a != "never") {
+        return huge_page_size();
+    }
+    None
+}
+
 /// The kernel's transparent huge page size, if it has transparent huge pages.
 #[cfg(all(target_os = "linux", not(miri)))]
 fn huge_page_size() -> Option<usize> {

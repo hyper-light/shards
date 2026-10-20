@@ -10450,3 +10450,62 @@ revision before comparing a changed API/implementation.
   (`Running::wait_then`, `platform::LET_GO_WRITES_BACK`); a restore writes its copy back
   ahead on macOS (`platform::write_back_ahead`); the host reads an empty journal as it
   stands and replays one that holds transactions.
+
+### M279. A boot's guest memory on huge pages where it touches whole: past its kernel's boot (D29)
+
+- **Question.** The Firecracker comparison failed on CI's newer runners (AMD EPYC 9V45,
+  Linux 7.0, transparent huge pages `madvise`) where it passed on the older (Linux 6.17,
+  `always`): a shards boot held 6.0 MiB more anonymous memory than Firecracker's, 7.3 more
+  at its peak (n = 30). With `always` Firecracker's guest memory is on huge pages too; with
+  `madvise` only shards', which advises it (M157). Where does a huge page hold memory its
+  boot does not touch, and can huge pages' faster boot be kept without it?
+- **Method.** The Fedora host (M266's: Intel Core i9-14900HX, Linux 6.19.10-300.fc44,
+  transparent huge pages and their defrag `madvise`, carrying other work: load 4 to 15),
+  2026-10-20. `docs/research/measurements/boot-touch/touch.py`: the comparison's boot
+  (pinned kernel, the test guest `idle`, 1 vCPU, 128 MiB), 3 boots each without advice
+  (SHARDS_THP_ADVICE=never) and with it, its guest memory's resident 4 KiB pages read from
+  /proc/PID/pagemap 200 ms after its ready line, by 2 MiB of guest address. Then the
+  comparison's huge-page A/B (`cargo bench --bench firecracker -- --thp-ab A,B --runs
+  30`: a boot's time to ready, its memory, and 512 MiB of fresh memory touched after it,
+  `walk`), interleaved, for advice on all of it (as before), on the kernel's image alone
+  (the `boot` arm, SHARDS_THP_ADVICE=boot, as now without its step at PID 1), none, and as
+  now; and the comparison itself (n = 30) before and after.
+- **Results.**
+  - Without advice a boot holds 51.1 to 53.4 MiB, in the same places each time: guest
+    addresses 16 to 40 MiB whole (the kernel's image), 40 to 42 MiB 444 pages of 512, 44
+    to 70 MiB whole but its edges (510, 448, 173 to 191, then 74 to 462 and 0 to 22), 120
+    to 128 MiB whole but one of 256 (the initrd, and what the kernel takes from the top
+    down), and 78 pages of the first 2 MiB. Advised, 54.3 to 58.3 MiB, as many of those
+    spans on huge pages as the host could give at once (20 to 58 MiB of them).
+  - p50, n = 30:
+
+    | advice | to ready | anonymous | peak | walk, touched |
+    |---|---|---|---|---|
+    | all of it (as before) | 57.1 ms | 58.3 MiB | 61.7 MiB | 180 ms |
+    | the kernel's image | 65.6 to 67.0 ms | 52.4 MiB | 55.8 MiB | 356 to 379 ms |
+    | none | 74.5 to 77.5 ms | 52.0 to 52.5 MiB | 55.4 to 56.0 MiB | 359 to 369 ms |
+    | the image, the rest at PID 1 (as now) | 62.2 ms | 52.7 MiB | 56.1 MiB | 180 ms (p90 462) |
+
+  - The comparison, shards against Firecracker, median difference [interval]: before,
+    anonymous +4.5 to +5.7 MiB, peak +5.6 to +6.9, PSS +3.7 to +5.0; as now, anonymous
+    -0.2 [-0.6, +0.1], tied, PSS -1.1, peak +0.9 [+0.6, +1.3], to ready -21 ms [-31,
+    -13]. Still worse: the VMM's own memory outside its guest's (overhead), +1.1 MiB at
+    boot and +0.8 after a restore, which the peak holds too, and its file-backed memory at
+    boot, +1.2 (glibc's pages; allowed 0.4); after a restore, its guest's first beat +0.9
+    ms on this host.
+- **Reading.**
+  - What a huge page wastes at boot is at the edges of what the boot touches: spans it
+    touched in part, rounded up to 2 MiB. The kernel's image is its densest, and the VMM
+    writes it whole: on huge pages alone it keeps half of what huge pages take off a boot
+    (8.9 to 10.5 ms of 17.4 to 20.4), and none of the waste.
+  - Memory the guest touches after its boot gains from huge pages as before (the walk
+    twice as fast): once the guest's PID 1 runs (`marker::INIT_STARTED`), the spans its
+    boot left untouched, or touched whole, go back on huge pages; the spans touched in
+    part stay on small pages, where khugepaged would otherwise fill them.
+  - The walk's p90 rose under the host's load (462 ms; 224 in the run before, all advised
+    from the start): its first touches can come before the VMM has read which spans the
+    boot touched.
+- **Consequence.** D29: a boot's memory on small pages but its kernel's image until its
+  PID 1 runs, then on huge pages where its boot left it untouched or touched whole. Open:
+  the VMM's own memory (+0.8 to +1.1 MiB) and glibc's file pages at boot; arm64's boot,
+  unmeasured; the walk's tail under load.

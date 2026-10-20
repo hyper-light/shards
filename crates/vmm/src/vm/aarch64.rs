@@ -720,7 +720,8 @@ pub fn build(cfg: &Config) -> Result<Machine, String> {
     let mut config = super::machine_config(cfg)?;
     let layer = super::boot_layer(cfg)?;
     config.layer_mib = layer.as_ref().map_or(0, |l| l.data_len() >> 20);
-    let memory = Arc::new(super::guest_memory(&ram_ranges(ram)?, &config, plug_at(ram))?);
+    let ranges = ram_ranges(ram)?;
+    let memory = Arc::new(super::guest_memory(&ranges, &config, plug_at(ram))?);
     // The image is copied, not mapped: a mapped image stalled boots for up to 1 s
     // (platform-measurements M16). Where it and the initrd go, from its header and the
     // initrd's length: the initrd between the kernel, at the next 2 MiB, and the device
@@ -729,6 +730,8 @@ pub fn build(cfg: &Config) -> Result<Machine, String> {
         .map_err(|e| format!("{}: {e}", cfg.kernel.display()))?;
     let fdt_addr = layout::DRAM_BASE + ram - boot::FDT_MAX;
     let (kernel, span) = boot::plan_kernel(&kernel_file, ram).map_err(|e| e.to_string())?;
+    // On huge pages where its boot touches much (D29, PM M279).
+    super::boot_pages(&memory, &ranges, span.gpa..kernel.end)?;
     let mut pieces = vec![super::Piece {
         span,
         file: &kernel_file,
@@ -771,6 +774,7 @@ pub fn build(cfg: &Config) -> Result<Machine, String> {
         a.vmgenid.write_new_id()?;
         Ok(a)
     })?;
+    super::huge_pages_when_init_runs(&a.control, &memory);
     debug!("kernel and initrd copied");
     // Its GPU's window as the guest sees it, which a snapshot keeps for a restore (D150).
     config.gpu = a.gpu_window;

@@ -39,6 +39,8 @@ pub struct Control {
     swap: OnceLock<std::sync::Arc<SwapWindow>>,
     /// The run's writable layer and its guest address, where it has one (D190).
     layer: OnceLock<(std::sync::Arc<Layer>, u64)>,
+    /// What runs as the guest first says its PID 1 runs (`marker::INIT_STARTED`).
+    on_init_started: std::sync::Mutex<Option<Box<dyn FnOnce() + Send>>>,
 }
 
 impl std::fmt::Debug for Control {
@@ -100,6 +102,15 @@ impl Control {
     /// The run's writable layer, where it has one.
     pub fn layer(&self) -> Option<&std::sync::Arc<Layer>> {
         self.layer.get().map(|(layer, _)| layer)
+    }
+
+    /// Runs `hook` as the guest first says its PID 1 runs (`marker::INIT_STARTED`), on
+    /// the vCPU that says so: its kernel's boot is done.
+    pub fn on_init_started(&self, hook: Box<dyn FnOnce() + Send>) {
+        *self
+            .on_init_started
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(hook);
     }
 
     /// The MAC the VMM was given for the guest's network device, which the guest reads
@@ -169,6 +180,16 @@ impl MmioDevice for Control {
                         .is_ok()
                 {
                     crate::info!("guest marker {value} at {at} us");
+                    if value == marker::INIT_STARTED {
+                        let hook = self
+                            .on_init_started
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .take();
+                        if let Some(hook) = hook {
+                            hook();
+                        }
+                    }
                 }
             }
             control::SWAP if value == control::SHOW_SWAP => {

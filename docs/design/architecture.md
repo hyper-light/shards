@@ -1775,18 +1775,28 @@ devices. The code is `crates/vmm/src/memory.rs`.
 - **Not yet:** a save still reads every untouched page, and so makes it resident (audit
   D01); snapshots of a machine whose every CPU and device has stopped (A02); a take whose
   release costs a small frame nothing; the copies on x86_64 hardware, unmeasured.
-- **Huge pages, where a boot touches much (2026-10-10, PM M157).** A cold boot's guest
-  memory is advised MADV_HUGEPAGE, which halves the boot (2.1 to 2.4 times) and makes the
-  guest's first touch of memory 4.7 to 5.6 times faster on x86_64 KVM. A huge page is
-  resident whole once touched, so the layout decides what a boot holds: on x86_64 the
-  initrd sits at the top of low RAM, beside what the guest kernel takes there from the
-  top down, as Firecracker and QEMU place it, and the first 2 MiB, whose boot structures
-  touch 78 of its 512 pages, stays on small pages. A boot then holds 56.3 MiB of
-  anonymous memory at p50 against Firecracker's 60.2, and 58.3 at most. arm64's layout
-  is unmeasured and unchanged. A run's restore maps its memory file, on small pages.
+- **Huge pages, where a boot touches much (2026-10-10, PM M157, M279).** Guest memory
+  advised MADV_HUGEPAGE halves a cold boot (2.1 to 2.4 times) and makes the guest's first
+  touch of memory 4.7 to 5.6 times faster on x86_64 KVM; but a huge page is resident whole
+  once touched, and a boot touches some 2 MiB spans in part: the edges of what its kernel
+  takes as it boots, which huge pages rounded up to 4.5 to 6 MiB more than Firecracker's
+  boot on hosts whose THP is `madvise`, where Firecracker's memory is on small pages
+  (M279). So a boot's memory is on small pages but its kernel's image, which the VMM
+  writes whole, until its PID 1 runs (`marker::INIT_STARTED`, which shards-init sends
+  first): then the spans its boot left untouched, or touched whole, go on huge pages for
+  what comes after, on a thread of the VMM's own, and those it touched in part stay on
+  small pages, where the host's khugepaged would fill them (`GuestMemory::
+  huge_pages_past_boot`). A boot then holds as much anonymous memory as Firecracker's
+  (52.0 MiB against 52.3) and reaches ready 21 ms sooner; 512 MiB of fresh memory
+  touched after it as fast as with huge pages throughout (180 ms against 359 without).
+  The initrd sits at the top of low RAM, beside what the guest kernel takes there from
+  the top down, as Firecracker and QEMU place it. arm64's boot is unmeasured. A run's
+  restore maps its memory file, on small pages.
 - **Tests:** `memory::tests` (copies at every alignment of either side to 64 bytes and
   lengths through 200, each way against bytes read alone; copies of 16 and 64 KiB;
-  threads taking turns, a nested access refused, ranges in any order, a reused file),
+  threads taking turns, a nested access refused, ranges in any order, a reused file; the
+  spans a boot leaves for huge pages, and on Linux the advice each span is given, read
+  back from smaps),
   `queue::tests::queues_laid_over_each_other_work_on_two_threads`, under
   `access-guard/check.sh` too, and
   `net::tests::frames_cross_guarded_in_the_takes_they_had` (a frame's bytes by the

@@ -220,6 +220,61 @@ fn hotplug(config: &crate::snapshot::MachineConfig) -> Result<Option<(u64, u64)>
     Ok(Some((most, region)))
 }
 
+/// A boot's guest RAM, `ranges`, on small pages but its kernel's image, `image`, whose whole
+/// huge pages the VMM writes as it copies it in: its kernel's boot touches other huge
+/// pages in part, which a huge page would hold resident whole (D29, PM M279). The rest
+/// goes on huge pages once its PID 1 runs ([`huge_pages_when_init_runs`]).
+#[cfg(hv)]
+fn boot_pages(
+    memory: &GuestMemory,
+    ranges: &[(u64, usize)],
+    image: std::ops::Range<u64>,
+) -> Result<(), String> {
+    let Some(huge) = crate::platform::advised_huge_page() else {
+        return Ok(());
+    };
+    for &(gpa, len) in ranges {
+        memory
+            .small_pages(gpa, len)
+            .map_err(|e| format!("guest RAM: {e}"))?;
+    }
+    let huge = huge as u64;
+    let (start, end) = (image.start.next_multiple_of(huge), image.end / huge * huge);
+    if end > start {
+        let len = usize::try_from(end - start).map_err(|_| format!("a kernel of {} bytes", end - start))?;
+        memory
+            .huge_pages(start, len)
+            .map_err(|e| format!("guest RAM: {e}"))?;
+    }
+    Ok(())
+}
+
+/// Has a boot's guest RAM put on huge pages past its boot as its PID 1 first runs
+/// (`GuestMemory::huge_pages_past_boot`), on a thread of its own: the vCPU that says so
+/// goes on. SHARDS_THP_ADVICE=boot leaves it out, the boot's advice alone, for measuring
+/// what each buys (PM M279).
+#[cfg(hv)]
+fn huge_pages_when_init_runs(control: &crate::devices::control::Control, memory: &Arc<GuestMemory>) {
+    if crate::platform::advised_huge_page().is_none()
+        || std::env::var_os("SHARDS_THP_ADVICE").is_some_and(|a| a == "boot")
+    {
+        return;
+    }
+    let memory = Arc::clone(memory);
+    control.on_init_started(Box::new(move || {
+        let spawned = std::thread::Builder::new()
+            .name("huge-pages".into())
+            .spawn(move || {
+                if let Err(e) = memory.huge_pages_past_boot() {
+                    crate::debug!("huge pages past its boot: {e}");
+                }
+            });
+        if let Err(e) = spawned {
+            crate::debug!("huge pages past its boot: {e}");
+        }
+    }));
+}
+
 /// Guest RAM of `ranges`, and the memory `config` may have plugged at `at`, withheld until
 /// plugged (D133).
 #[cfg(hv)]

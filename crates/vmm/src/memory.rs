@@ -617,6 +617,63 @@ impl GuestMemory {
         }
         Ok(())
     }
+
+    /// Puts `gpa..gpa+len`, within one region, on huge pages as the guest next touches it
+    /// ([`platform::huge_pages`]): undoes [`small_pages`](Self::small_pages).
+    pub fn huge_pages(&self, gpa: u64, len: usize) -> Result<(), OutOfBounds> {
+        let at = self.host_ptr(gpa, len)?;
+        if let Some(at) = std::ptr::NonNull::new(at) {
+            platform::huge_pages(at, len);
+        }
+        Ok(())
+    }
+
+    /// Puts its RAM on huge pages for what its guest goes on to touch, once its boot is
+    /// done, where the boot kept it on small pages (D29, PM M279): each huge page's span
+    /// the guest has not touched at all, or has touched whole; a span it touched in part
+    /// stays on small pages, where a huge page would hold the rest resident for nothing,
+    /// and the host's khugepaged would make one of it. Advice only, with the spans the
+    /// host says were touched (`platform::untouched`); an error where it cannot say.
+    pub fn huge_pages_past_boot(&self) -> io::Result<()> {
+        let Some(huge) = platform::advised_huge_page() else {
+            return Ok(());
+        };
+        let page = platform::page_size()?;
+        for r in &self.regions {
+            // SAFETY: a region this memory owns, page-aligned.
+            let Some(untouched) = (unsafe { platform::untouched(r.host.as_ptr(), r.len, page) })? else {
+                return Ok(());
+            };
+            for (first, pages) in huge_runs(&untouched, huge / page) {
+                if let Some(at) = std::ptr::NonNull::new(r.host.as_ptr().wrapping_add(first * page)) {
+                    platform::huge_pages(at, pages * page);
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+/// The runs of pages, `(first, count)`, to put on huge pages past a boot, of a region whose
+/// pages `untouched` says the boot never touched: each huge page's span of `per` pages
+/// untouched whole, or touched whole, coalesced with its neighbours; a span touched in part,
+/// and a region's last span short of a huge page, left out.
+fn huge_runs(untouched: &[bool], per: usize) -> Vec<(usize, usize)> {
+    let mut runs: Vec<(usize, usize)> = Vec::new();
+    if per == 0 {
+        return runs;
+    }
+    for (i, span) in untouched.chunks(per).enumerate() {
+        let whole = span.len() == per && (span.iter().all(|&u| u) || span.iter().all(|&u| !u));
+        if !whole {
+            continue;
+        }
+        match runs.last_mut() {
+            Some((first, count)) if *first + *count == i * per => *count += per,
+            _ => runs.push((i * per, per)),
+        }
+    }
+    runs
 }
 
 impl Drop for GuestMemory {
@@ -956,6 +1013,23 @@ mod tests {
         GuestMemory::anonymous(&[(0x8000_0000, 4 * p), (0x1_0000_0000, p)]).unwrap()
     }
 
+    /// Past a boot, a huge page's span goes on huge pages where the boot touched none of it
+    /// or all of it, never where it touched part (which would hold the rest resident),
+    /// neighbours coalesced, a short last span left out.
+    #[test]
+    fn huge_pages_go_where_a_boot_touched_none_or_all() {
+        // '.' never touched, '#' touched.
+        let t = |s: &str| s.chars().map(|c| c == '.').collect::<Vec<bool>>();
+        // Spans of 4: touched whole, in part, untouched, untouched, in part, a short last.
+        let untouched = t("#### #..# .... .... ..#. ..".replace(' ', "").as_str());
+        assert_eq!(huge_runs(&untouched, 4), vec![(0, 4), (8, 8)]);
+        assert_eq!(huge_runs(&t("........"), 4), vec![(0, 8)]);
+        assert_eq!(huge_runs(&t("#......#"), 4), Vec::<(usize, usize)>::new());
+        assert_eq!(huge_runs(&t("####....####"), 4), vec![(0, 12)]);
+        assert_eq!(huge_runs(&t("###"), 4), Vec::<(usize, usize)>::new());
+        assert_eq!(huge_runs(&t("...."), 0), Vec::<(usize, usize)>::new());
+    }
+
     /// Guest RAM kept on small pages has its own mapping, advised so (smaps' `nh`), and
     /// the rest keeps its huge pages' advice (`hg`), where the kernel has THP.
     #[cfg(target_os = "linux")]
@@ -986,6 +1060,51 @@ mod tests {
         assert!(small.iter().any(|f| f == "nh"), "{small:?}");
         assert!(rest.iter().any(|f| f == "hg"), "{rest:?}");
         assert!(m.small_pages(63 << 20, 2 << 20).is_err());
+    }
+
+    /// Past a boot on small pages, the huge pages' spans the boot left untouched, or
+    /// touched whole, are advised huge again (smaps' `hg`), and one it touched in part
+    /// stays on small pages (`nh`), where the kernel has THP.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_boots_untouched_and_whole_spans_go_back_on_huge_pages() {
+        let Some(huge) = platform::advised_huge_page() else {
+            return;
+        };
+        let page = page_size().unwrap();
+        let m = GuestMemory::anonymous(&[(0, 4 * huge)]).unwrap();
+        m.small_pages(0, 4 * huge).unwrap();
+        {
+            let access = m.access().unwrap();
+            // The first span whole, one page of the second; the rest untouched.
+            for at in (0..huge).step_by(page) {
+                access.write_obj(at as u64, 1u8).unwrap();
+            }
+            access.write_obj(huge as u64, 1u8).unwrap();
+        }
+        m.huge_pages_past_boot().unwrap();
+        let flags = |gpa: u64| {
+            let at = m.host_ptr(gpa, 1).unwrap() as u64;
+            let smaps = std::fs::read_to_string("/proc/self/smaps").unwrap();
+            let mut ours = false;
+            for line in smaps.lines() {
+                if let Some((range, _)) = line.split_once(' ')
+                    && let Some((s, e)) = range.split_once('-')
+                    && let (Ok(s), Ok(e)) = (u64::from_str_radix(s, 16), u64::from_str_radix(e, 16))
+                {
+                    ours = (s..e).contains(&at);
+                } else if ours && let Some(flags) = line.strip_prefix("VmFlags:") {
+                    return flags.split_whitespace().map(String::from).collect::<Vec<_>>();
+                }
+            }
+            Vec::new()
+        };
+        let huge = huge as u64;
+        let (whole, part, untouched) = (flags(0), flags(huge), flags(2 * huge));
+        assert!(whole.iter().any(|f| f == "hg"), "{whole:?}");
+        assert!(part.iter().any(|f| f == "nh"), "{part:?}");
+        assert!(untouched.iter().any(|f| f == "hg"), "{untouched:?}");
+        assert!(flags(3 * huge).iter().any(|f| f == "hg"));
     }
 
     #[test]

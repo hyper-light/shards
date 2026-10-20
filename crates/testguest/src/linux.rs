@@ -1891,6 +1891,10 @@ fn memory_walk() -> Result<(), String> {
     };
     let mib = usize::try_from(number("shards_walk_mib", 512)).map_err(|e| e.to_string())?;
     let reads = number("shards_walk_reads", 20_000_000);
+    // Its PID 1 runs, as shards-init says first thing: the VMM puts what the boot left
+    // untouched on huge pages for what comes after it (D29, PM M279). Shards' alone runs
+    // this test, whose control page Firecracker has not.
+    ControlPage::map()?.write(shards_abi::control::MARKER, shards_abi::marker::INIT_STARTED);
     let _ = writeln!(io::stdout(), "SHARDS-TEST READY");
     let began = Instant::now();
     let mut buf = vec![0u8; mib << 20];

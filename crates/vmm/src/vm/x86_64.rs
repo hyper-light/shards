@@ -581,11 +581,6 @@ pub fn build(cfg: &Config) -> Result<Machine, String> {
     let layer = super::boot_layer(cfg)?;
     config.layer_mib = layer.as_ref().map_or(0, |l| l.data_len() >> 20);
     let memory = Arc::new(super::guest_memory(&ranges, &config, plug_at(ram))?);
-    // Before anything touches it: on huge pages, its first 2 MiB would be resident whole
-    // for its boot structures' few pages (layout::SPARSE, PM M157).
-    memory
-        .small_pages(0, layout::SPARSE)
-        .map_err(|e| format!("guest RAM: {e}"))?;
     let low_ram_end = ram.min(layout::MMIO_GAP);
 
     let kernel_file = crate::platform::open_input(&cfg.kernel, false)
@@ -594,6 +589,9 @@ pub fn build(cfg: &Config) -> Result<Machine, String> {
     // length: the initrd between the kernel and the end of low RAM, at its top (boot.rs,
     // place_initrd). Their bytes are copied in as the machine is made.
     let (kernel, spans) = boot::plan_kernel(&kernel_file, low_ram_end).map_err(|e| e.to_string())?;
+    // On huge pages where its boot touches much (D29, PM M279).
+    let image = spans.iter().map(|s| s.gpa).min().unwrap_or(kernel.end);
+    super::boot_pages(&memory, &ranges, image..kernel.end)?;
     let mut pieces: Vec<super::Piece> = spans
         .into_iter()
         .map(|span| super::Piece {
@@ -643,6 +641,7 @@ pub fn build(cfg: &Config) -> Result<Machine, String> {
         a.vmgenid.write_new_id()?;
         Ok(a)
     })?;
+    super::huge_pages_when_init_runs(&a.control, &memory);
     debug!("kernel and initrd copied");
     let cmdline = match &a.pci {
         Some(_) => format!("{} {MACHINE_CMDLINE}", cfg.cmdline),
