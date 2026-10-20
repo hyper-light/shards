@@ -10190,3 +10190,70 @@ revision before comparing a changed API/implementation.
   where 3 of 60 had, all of them with windows.
 - **Consequence.** D188: a pass keeps no less than the run used at its peak since the pass
   before, and gives back nothing while memory the grower asked for is still to come.
+
+### M276. Volumes' DAX windows against a run without them, at 1 GiB and 4 GiB (D189)
+
+- **Question.** What do a volume's DAX windows (D189) do to an agent's long workloads on
+  it, against the same run without them: their time, the memory the guest and the host
+  hold, and each kind of I/O? And how long must a window be?
+- **Method.** The Fedora host (M266's: Intel Core i9-14900HX, 62.5 GiB, Fedora 44, Linux
+  6.19.10-300.fc44), 2026-10-20, carrying its other work throughout; shards 388a6575 with
+  the window fixes of M273 and M274 and its kernel's patch 0007. The sustained-I/O harness
+  (docs/research/measurements/sustained-io/run.py) with a second system, `shards-dax`: a
+  daemon of its own whose home gives each share a window (`SHARDS_SHARE_WINDOW_MIB`),
+  each round interleaved with plain shards, 10 rounds each, every run `-m 8192m --cpus 8`
+  on a volume. First 1 GiB windows (npm, cargo, fio), then 4 GiB (cargo, fio). fio's jobs
+  are fio.ini's: a 2 GiB file, psync, `direct=1`, 20 s each after 3 s of ramp. n = 10 a
+  side, no run failed (npm and cargo of the 1 GiB rounds are those of M275's After).
+- **Results.** Time in seconds, p50 / p90 / p99 / max:
+
+  | workload, window | shards | shards with windows |
+  |---|---|---|
+  | npm, 1 GiB | 10.7 / 13.5 / 15.8 / 15.8 | 11.0 / 13.8 / 13.9 / 13.9 |
+  | cargo, 1 GiB | 108.0 / 124.5 / 136.5 / 136.5 | 101.1 / 118.4 / 144.1 / 144.1 |
+  | cargo, 4 GiB | 96.9 / 102.5 / 121.2 / 121.2 | 86.5 / 105.5 / 147.9 / 147.9 |
+
+  Memory, MiB at p50: the guest's peak, the VM process's high-water mark and the host's
+  rise over its base:
+
+  | workload, window | shards | shards with windows |
+  |---|---|---|
+  | fio, 1 GiB | 1,604 / 1,708 / 3,515 | 27.7 / 893 / 2,108 |
+  | fio, 4 GiB | 2,073 / 2,204 / 4,242 | 28.5 / 2,224 / 2,439 |
+  | cargo, 1 GiB | 2,412 / 2,898 / 3,436 | 2,441 / 3,007 / 3,497 |
+  | cargo, 4 GiB | 2,560 / 3,031 / 3,621 | 2,605 / 3,394 / 3,852 |
+  | npm, 1 GiB | 934 / 1,198 / 1,625 | 990 / 1,238 / 1,620 |
+
+  fio, MiB/s at p50 (p90 and max beside them in the harness's records):
+
+  | job | 1 GiB: shards | with windows | 4 GiB: shards | with windows |
+  |---|---|---|---|---|
+  | write 1 MiB | 1,372 | 790 | 1,710 | 3,517 |
+  | read 1 MiB | 805 | 1,824 | 1,017 | 17,586 |
+  | random read 4 KiB, qd 1 | 146 | 89 | 148 | 5,302 |
+  | random read 4 KiB, qd 32 | 366 | 88 | 388 | 23,986 |
+  | random write 4 KiB, qd 1 | 60.0 | 18.2 | 81.3 | 16.9 |
+  | random write 4 KiB, qd 32 | 55.0 | 18.3 | 74.0 | 16.6 |
+  | write 1 MiB buffered | 680 | 683 | 951 | 2,699 |
+
+- **Reading.**
+  - A window shorter than what the guest reads through it loses: at 1 GiB, under fio's 2
+    GiB file, random reads ran at 61% (qd 1) and 24% (qd 32) of the rate without it and
+    1 MiB writes at 58%, the window's mappings made and taken down again as the reads move on. One
+    that holds the file wins: at 4 GiB, random reads 36 and 62 times as fast, 1 MiB reads
+    17 times, 1 MiB writes 2.1 times, buffered writes 2.8 times.
+  - Random 4 KiB writes lose at both lengths, to 21 to 33% of the rate without windows: a
+    4 KiB write about 210 to 230 µs at qd 1, and at 4 GiB its p99 383 µs at p50 and 1.2 ms
+    at most, where 71 µs and 774 µs without. Why is not measured yet: open.
+  - The guest holds none of the volume's files in its memory: fio's peak 28 MiB where 1.6
+    and 2.1 GiB without, and the host's rise 40 and 43% lower (3,515 to 2,108 MiB; 4,242 to
+    2,439). cargo's and npm's memory hardly move: their processes' own, not their files'.
+  - cargo is 6 and 11% faster at p50; its slowest run, round 0 on both sides, slower with
+    4 GiB windows (147.9 s against 121.2). npm moves within its spread.
+  - A window's page structures are a 64th of it in the guest's memory from its boot
+    (M269: an 8 GiB window's 128 MiB kept its guest from booting): 64 MiB at 4 GiB, in
+    every microVM given a volume.
+- **Consequence.** D189: windows stay asked for (`SHARDS_SHARE_WINDOW_MIB`), none by
+  default, until random writes through one are root-caused and fixed and a window that
+  holds a working set costs its guest less than a 64th of it at boot.
+

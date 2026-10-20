@@ -5701,8 +5701,14 @@ template pays it once; what its restores pay is to be measured with mappings.
 - A device's DMA to and from device memory: neither the pmem regions (the DAX root, the
   swap window) nor the windows are guest RAM a device's descriptor may name, so a guest's
   O_DIRECT write from a mapped file's pages fails, as it does from its root's.
-- How long a window, and from what size a file is mapped: throughput and host memory
-  measured against FUSE (the benchmark), then a default.
+- How long a window, and from what size a file is mapped. Measured against FUSE (PM
+  M276, the sustained-I/O benchmark, n = 10 a side): a window that holds what the guest
+  reads through it (4 GiB under fio's 2 GiB file) reads 17 to 62 times as fast and writes
+  whole MiBs 2 to 2.8 times as fast, the guest holding 28 MiB of memory where 2.1 GiB
+  without, the host 43% less; one shorter (1 GiB) reads slower, its mappings churning.
+  Random 4 KiB writes are 21 to 33% of FUSE's rate through either. So windows stay asked
+  for, none by default, until random writes through one are root-caused and fixed, and a
+  window that holds a working set costs its guest less than its 64th at boot.
 
 ### D179. Other CPUs' images, emulated in their microVM (parts 1 to 3 built)
 
