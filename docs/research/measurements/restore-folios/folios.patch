@@ -1,8 +1,8 @@
 diff --git a/crates/shards/src/netproc.rs b/crates/shards/src/netproc.rs
-index 3833c44c..b6193edc 100644
+index 3833c44c..071ade88 100644
 --- a/crates/shards/src/netproc.rs
 +++ b/crates/shards/src/netproc.rs
-@@ -43,10 +43,19 @@ pub fn resolvers() -> Vec<String> {
+@@ -43,10 +43,18 @@ pub fn resolvers() -> Vec<String> {
  }
  
  pub fn child_env() -> Vec<(&'static str, std::ffi::OsString)> {
@@ -17,7 +17,6 @@ index 3833c44c..b6193edc 100644
 +        "SHARDS_TIMING",
 +        "SHARDS_SAVE_WHOLE",
 +        "SHARDS_RESTORE_RANDOM",
-+        "SHARDS_RESTORE_EVICT",
 +        "SHARDS_WS_LOG",
 +    ]
 +    .into_iter()
@@ -27,32 +26,10 @@ index 3833c44c..b6193edc 100644
  
  /// [`child_env`], as `shards_ipc::spawn_in` (and on Windows `shards_ipc::Spawn`) takes it.
 diff --git a/crates/vmm/src/memory.rs b/crates/vmm/src/memory.rs
-index 5f6210d9..6ea9086e 100644
+index 5f6210d9..1fe403a1 100644
 --- a/crates/vmm/src/memory.rs
 +++ b/crates/vmm/src/memory.rs
-@@ -433,6 +433,21 @@ impl GuestMemory {
-                 format!("a memory file of {have} bytes for {total} bytes of guest RAM"),
-             ));
-         }
-+        // Experiment (docs/research/measurements/restore-folios): the file's pages dropped
-+        // from the page cache before it is mapped, those no other process maps, as a busy
-+        // host evicts them: written back first, since a dirty page is not dropped.
-+        #[cfg(target_os = "linux")]
-+        if std::env::var_os("SHARDS_RESTORE_EVICT").is_some_and(|v| v == "1") {
-+            use std::os::fd::AsRawFd as _;
-+            if let Err(e) = file.sync_data() {
-+                crate::debug!("restore-folios evict: fdatasync: {e}");
-+            }
-+            // SAFETY: advice on a descriptor of ours.
-+            let r = unsafe { libc::posix_fadvise(file.as_raw_fd(), 0, 0, libc::POSIX_FADV_DONTNEED) };
-+            if r != 0 {
-+                crate::debug!("restore-folios evict: POSIX_FADV_DONTNEED: {r}");
-+            }
-+        }
-         let mut offset = 0u64;
-         for r in &mem.regions {
-             // SAFETY: a whole region we just reserved: page-aligned, unmapped by any
-@@ -440,6 +455,13 @@ impl GuestMemory {
+@@ -440,6 +440,13 @@ impl GuestMemory {
              match unsafe { platform::map_file_private(file, offset, r.len, r.host) } {
                  Ok(()) => {
                      platform::small_pages(r.host, r.len);
@@ -66,7 +43,7 @@ index 5f6210d9..6ea9086e 100644
                      mem.file_backed = true;
                  }
                  Err(e) if e.kind() == io::ErrorKind::Unsupported => {
-@@ -1001,6 +1023,13 @@ fn write_run(file: &File, r: &Region, run: Range<usize>, offset: u64) -> io::Res
+@@ -1001,6 +1008,13 @@ fn write_run(file: &File, r: &Region, run: Range<usize>, offset: u64) -> io::Res
      } else {
          usize::MAX
      };

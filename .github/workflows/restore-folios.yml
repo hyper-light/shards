@@ -36,67 +36,59 @@ jobs:
           grep -H . /sys/kernel/mm/transparent_hugepage/{enabled,defrag} || true
           for at in target /tmp "$RUNNER_TEMP"; do echo "$at: $(findmnt -no FSTYPE -T "$at" || true)"; done
           cat /sys/kernel/mm/transparent_hugepage/hugepages-*/enabled 2>/dev/null | sort | uniq -c || true
-          # shipped: as shards is (a page a write on Linux); random: its restores mapped
-          # MADV_RANDOM; whole: runs written whole, as before the fix (the control); evict:
-          # the file dropped from the page cache before each restore maps it, as a busy host
-          # drops it; evict-random: both.
-          arms() {
-            case $1 in
-              random) echo "SHARDS_RESTORE_RANDOM=1" ;;
-              whole) echo "SHARDS_SAVE_WHOLE=1" ;;
-              evict) echo "SHARDS_RESTORE_EVICT=1" ;;
-              evict-random) echo "SHARDS_RESTORE_EVICT=1 SHARDS_RESTORE_RANDOM=1" ;;
-            esac
-          }
-          # Each arm's whole output is kept: its rows printed, or its tail where it fails,
-          # so that one arm's failure neither hides its error nor stops the others.
+          . docs/research/measurements/restore-folios/arms.sh
           for round in 1 2; do
-            for arm in shipped random whole evict evict-random; do
-              vars="SHARDS_WS_LOG=$RUNNER_TEMP/ws-$arm.log $(arms $arm)"
+            for arm in shipped random whole evict-shipped evict-random evict-whole; do
+              vars="SHARDS_WS_LOG=$RUNNER_TEMP/ws-$arm.log $(arm_vars $arm)"
               echo "=== round $round, $arm: $vars"
               out="$RUNNER_TEMP/compare-$round-$arm.log"
-              if env $vars cargo bench --locked -p shards --bench firecracker -- --runs 20 > "$out" 2>&1; then
+              arm_on $arm
+              env $vars cargo bench --locked -p shards --bench firecracker -- --runs 20 < /dev/null > "$out" 2>&1
+              status=$?
+              arm_off $arm
+              if [ $status -eq 0 ]; then
                 awk '/^firecracker(_restore|_density)?:/ || /^(shards|fc)_(to_ready|to_beat|overhead|peak_rss|rss_file|pss_file|pss|rss_anon|fleet_pss|fleet_private|fleet_host) / || /mappings by resident bytes/ || /^  rss .*memory$/' "$out"
               else
-                echo "--- $arm FAILED (exit $?), its last lines:"
+                echo "--- $arm FAILED (exit $status), its last lines:"
                 tail -40 "$out"
               fi
             done
           done
-          for arm in shipped random whole evict evict-random; do
+          for arm in shipped random whole evict-shipped evict-random evict-whole; do
             if [ -s "$RUNNER_TEMP/ws-$arm.log" ]; then
               echo "--- $arm's working sets"
               sort "$RUNNER_TEMP/ws-$arm.log" | uniq -c | sort -rn | head -8
             fi
           done
       # Where a run's time is: cold restores, warm requests and runs served from a
-      # template's pool; the arms alternating, three rounds.
+      # template's pool, the arms alternating; restores alone where the page cache is
+      # dropped (a pool's runs there would time the drops, not the restores).
       - name: Warm requests and pooled runs, each arm
         run: |
-          arms() {
-            case $1 in
-              random) echo "SHARDS_RESTORE_RANDOM=1" ;;
-              whole) echo "SHARDS_SAVE_WHOLE=1" ;;
-              evict) echo "SHARDS_RESTORE_EVICT=1" ;;
-              evict-random) echo "SHARDS_RESTORE_EVICT=1 SHARDS_RESTORE_RANDOM=1" ;;
-            esac
-          }
+          . docs/research/measurements/restore-folios/arms.sh
           for round in 1 2 3; do
-            for arm in shipped random whole evict evict-random; do
-              vars="SHARDS_WS_LOG=$RUNNER_TEMP/ws-bench-$arm.log $(arms $arm)"
+            for arm in shipped random whole evict-shipped evict-random evict-whole; do
+              case $arm in evict-*) [ $round -le 2 ] || continue; benches="restore -- --runs 30" ;;
+                *) benches="restore -- --runs 30
+          image -- --runs 60 --templates 3" ;; esac
+              vars="SHARDS_WS_LOG=$RUNNER_TEMP/ws-bench-$arm.log $(arm_vars $arm)"
               echo "=== round $round, $arm: $vars"
-              for bench in "restore -- --runs 30" "image -- --runs 60 --templates 3"; do
+              echo "$benches" | while read -r bench; do
                 out="$RUNNER_TEMP/bench-$round-$arm-${bench%% *}.log"
-                if env $vars cargo bench --locked -p shards --bench $bench > "$out" 2>&1; then
+                arm_on $arm
+                env $vars cargo bench --locked -p shards --bench $bench < /dev/null > "$out" 2>&1
+                status=$?
+                arm_off $arm
+                if [ $status -eq 0 ]; then
                   grep -E '^(cold_restore|cold_spawn_exit|warm_request|warm_peak_rss|run_template|template_command|template_outside|run_template_rss) ' "$out" || true
                 else
-                  echo "--- $arm ${bench%% *} FAILED (exit $?), its last lines:"
+                  echo "--- $arm ${bench%% *} FAILED (exit $status), its last lines:"
                   tail -40 "$out"
                 fi
               done
             done
           done
-          for arm in shipped random whole evict evict-random; do
+          for arm in shipped random whole evict-shipped evict-random evict-whole; do
             if [ -s "$RUNNER_TEMP/ws-bench-$arm.log" ]; then
               echo "--- $arm's working sets (benches)"
               sort "$RUNNER_TEMP/ws-bench-$arm.log" | uniq -c | sort -rn | head -8
