@@ -10806,3 +10806,52 @@ revision before comparing a changed API/implementation.
   (`platform::MAPPED_HIDES_HOLES`, held by a test to what the host's file system does), a
   save takes the guest's mapping and the VM's own away while it asks what the file holds,
   then maps both back; a run's swap is saved the same way. Linux's are asked as they are.
+
+### M286. What a guest's fsync into its writable layer keeps, and what keeping it costs (D190)
+
+- **Question.** A run's writable layer is the host's page cache of the run's file (D190).
+  What does a guest's fsync of a file there make durable on its host, and what does making
+  it durable cost, on Linux and on macOS?
+- **Method.** 2026-10-21. Reading: the guest's virtio-pmem driver waits for the device's
+  answer to each flush (drivers/nvdimm/nd_virtio.c, `virtio_pmem_flush`), and pmem turns a
+  bio's REQ_PREFLUSH and REQ_FUA each into one (drivers/nvdimm/pmem.c); jbd2 writes a
+  commit block with both unless `journal_async_commit`, which ext4 refuses with
+  `data=ordered` (fs/jbd2/commit.c, fs/ext4/super.c); overlayfs's `volatile` omits every
+  sync of its upper (Documentation/filesystems/overlayfs.rst). Probes on the host
+  (`docs/research/measurements/layer-flush/`: `sync-cost.c`, `fullfsync.c`,
+  `fullfsync-clone.c`): a 10 GiB sparse file mapped shared and writable, a few pages dirtied
+  through the mapping, then fsync, msync(MS_SYNC) and F_FULLFSYNC (Linux: fdatasync) timed,
+  and on macOS mincore(2)'s MINCORE_MODIFIED read after each, 5 rounds; F_FULLFSYNC after 3
+  pages written through the mapping, 20 times, of a fresh file and a clone. Then
+  `docs/research/measurements/layer-flush/fsync.py OLD NEW`, n = 10 after a round not
+  counted: OLD 8981f7ad (a flush answered at once; the root `volatile`), NEW the device's
+  flush durable and the root not `volatile` over a layer; a microVM times `exec` of 50
+  4 KiB writes into its root each `dd conv=fsync` against the same without, the difference
+  over 50 one fsync, then one `sync`. And the NEW VM's own log of each flush
+  (SHARDS_LOG=debug) behind 20 fsyncs. The Mac (Apple M5 Max, macOS 26.4.1, APFS; other
+  projects' work running, load 10 to 13) and the Fedora host (Linux 6.19.10, Btrfs).
+- **Results.**
+  - macOS: a page written through the mapping stays MINCORE_MODIFIED after fsync and is
+    clean after F_FULLFSYNC; F_FULLFSYNC took 3.1 to 6.3 ms at 1, 4 and 16 GiB on a quieter
+    host, 8.06 (clone) and 16.00 ms (fresh) at p50 at load 10; msync(MS_SYNC) of the 10 GiB
+    mapping 12.0 to 32.1 ms, and 2 to 4 µs where F_FULLFSYNC had just written it back.
+  - Linux: fsync of 16 pages written through the mapping 2.5 to 3.6 ms, msync of them 2.6
+    to 3.5, fdatasync and msync after them 1 to 5 µs.
+  - 20 guest fsyncs made 40 flushes, each 8.2 to 62.5 ms on the Mac.
+
+  | host | fsync, OLD | fsync, NEW | `sync`, OLD | `sync`, NEW |
+  |---|---|---|---|---|
+  | Mac | -3.14 ms (0.99) | 26.60 ms (31.71) | 350.02 ms (390.70) | 307.63 ms (618.17) |
+  | Fedora | 0.68 ms (1.11) | 3.64 ms (7.31) | 61.92 ms (66.28) | 62.68 ms (160.73) |
+
+  p50 (p90). An earlier Mac round, NEW's flush durable but its root still `volatile`:
+  fsync -0.03 ms against -0.05, `sync` 25.74 ms against 15.60 (n = 10).
+- **Reading.** Before, a guest's fsync into its layer kept nothing past its host: its root
+  overlay passed it on to nothing, and a flush that reached the device was answered at
+  once. Now a fsync costs the guest two flushes, each the host's durable sync of the run's
+  file: fdatasync on Linux, which already counts pages dirtied through a mapping; on macOS
+  F_FULLFSYNC, which writes those pages back too, where fsync does not and would need an
+  msync that walks all of a 10 GiB mapping. The Mac's cost is the drive's flush that
+  F_FULLFSYNC asks for, at its host's load.
+- **Consequence.** D190's sixth slice: a layer's flush is `platform::sync_mapped`, and a
+  run's root overlay passes its syncs on over a layer.

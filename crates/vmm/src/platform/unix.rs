@@ -624,6 +624,38 @@ pub unsafe fn map_file_shared_at(file: &File, len: usize, at: NonNull<u8>) -> io
     Ok(())
 }
 
+/// Makes what was written to `file` durable, through write(2) or through `ptr..ptr+len`,
+/// a shared mapping of it ([`map_file_shared`]). Linux's fdatasync(2) writes back the pages a
+/// mapping dirtied, as it does any (Btrfs: 2.5 to 3.6 ms for 16 pages of a 10 GiB file).
+/// macOS's F_FULLFSYNC writes them back too, and flushes the drive's cache (3 to 6 ms at
+/// any size), where a plain fsync leaves them dirty (mincore(2)'s MINCORE_MODIFIED) and an
+/// msync(2) of a 10 GiB mapping took 12 to 32 ms (PM M286); a file system without
+/// F_FULLFSYNC gets msync, then fsync.
+///
+/// # Safety
+/// `ptr..ptr+len` is the mapping [`map_file_shared`] made of `file`, still mapped.
+pub unsafe fn sync_mapped(file: &File, ptr: NonNull<u8>, len: usize) -> io::Result<()> {
+    #[cfg(target_os = "macos")]
+    {
+        // SAFETY: fcntl(2) on an owned, open descriptor.
+        if unsafe { libc::fcntl(file.as_raw_fd(), libc::F_FULLFSYNC) } == 0 {
+            return Ok(());
+        }
+        // SAFETY: forwarded caller contract.
+        unsafe { flush_shared(ptr, len) }?;
+        // SAFETY: fsync(2) on the same descriptor.
+        if unsafe { libc::fsync(file.as_raw_fd()) } == 0 {
+            return Ok(());
+        }
+        Err(io::Error::last_os_error())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (ptr, len);
+        file.sync_data()
+    }
+}
+
 /// Whether a mapping of a file hides its holes: lseek(2)'s SEEK_DATA and SEEK_HOLE then
 /// say that all of it holds data. APFS's do, for a file mapped shared and writable, by
 /// this process or by a guest through Hypervisor.framework's mapping of it, until neither

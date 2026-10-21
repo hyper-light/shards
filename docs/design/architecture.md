@@ -5753,7 +5753,7 @@ template pays it once; what its restores pay is to be measured with mappings.
   window reach its server as FUSE_WRITEs, measured in the guest, and a window that holds a
   working set costs its guest less than its 64th at boot.
 
-### D190. A run's writable layer on its host's disk: ext4 with DAX over pmem (slices 1 to 5 built)
+### D190. A run's writable layer on its host's disk: ext4 with DAX over pmem (slices 1 to 6 built)
 
 A run's writable layer, the upper directory of its root's overlay, was a tmpfs in its
 microVM's memory (D16, D156): what it wrote was memory, held to its memory limit, and gone
@@ -5853,6 +5853,24 @@ the guest keeps their metadata alone.
   One whose guest will not give its mapping up, or whose own cannot be withheld, copies
   the file whole, as before; one that cannot be put back leaves the layer lost, and the
   machine stops.
+- **A guest's fsync is the host's** (slice 6). A guest's flush of the layer
+  (VIRTIO_PMEM_REQ_TYPE_FLUSH), which its fsync waits for (drivers/nvdimm/nd_virtio.c,
+  `virtio_pmem_flush`), was answered at once, and the run's root overlay was mounted
+  `volatile`, which omits every sync of its upper (Documentation/filesystems/overlayfs.rst):
+  a container's fsync made nothing durable on its host, where Docker's overlay2 passes it to
+  the host's file system. The root is now `volatile` only over a tmpfs, which nothing
+  outlives, and the device makes the layer durable before it answers (`Layer::flush`,
+  `platform::sync_mapped`), outside guest memory's access, which other devices go on taking:
+  fdatasync on Linux, which writes back what the guest wrote through the mapping; on macOS
+  F_FULLFSYNC, the one call there whose data is persisted when it returns (fsync(2):
+  without it a drive may lose or reorder what fsync gave it, "not a theoretical edge case"),
+  and which writes back pages written through a mapping, which fsync leaves dirty (PM M286).
+  As Firecracker's flush msyncs its device's file (docs/pmem.md) and QEMU's fsyncs it. ext4
+  commits with two flushes, a pre-flush then its commit block's FUA (`journal_async_commit`,
+  one, it refuses with `data=ordered`), so a guest's fsync costs two: 3.64 ms at p50 on
+  Fedora's Btrfs and 26.6 on the Mac, F_FULLFSYNC 3 to 16 ms as the host's load went, where
+  before it cost 0.68 ms and nothing it wrote was the host's to keep (PM M286). A run's
+  swap and an image hold nothing past their run: their flushes are done at once.
 - **Its file is its run's, then its container's.** A layer's file stays in the home's
   `layers` while its microVM serves its run, the daemon holding it with the microVM; what
   a daemon before left there is no run's by the next, which removes it as it starts. A
@@ -5925,9 +5943,9 @@ the guest keeps their metadata alone.
 - **Tests.** `shards-ext4`'s, including the oracles'; `pmem`'s for the head's size, its
   info block's checksum, a layer saved and restored, a head's alike blocks kept once, a
   booted head mapped back from its saved copy, its own memory given back, taken from its
-  guest meanwhile, and a save that asks where the layer's file holds data with its
-  mappings away; `platform`'s that a mapping hides a file's holes where
-  `MAPPED_HIDES_HOLES` says;
+  guest meanwhile, a save that asks where the layer's file holds data with its mappings
+  away, and a flush answered once what the guest wrote is its file's; `platform`'s that a
+  mapping hides a file's holes where `MAPPED_HIDES_HOLES` says;
   the snapshot's for a run's five files; `layers`' for the files the daemon makes and
   removes; on real microVMs, `a_microvm_takes_its_ipc_hostname_cgroups_umask_and_writable_layer`:
   sizes held to, refusals, and 256 MiB written under `--memory 64m`; and
@@ -5945,8 +5963,6 @@ the guest keeps their metadata alone.
   (drivers/nvdimm/pmem.c), so a layer's file only grows while its microVM lives; its
   microVM gone, the host could punch out what its bitmaps say is free.
 - Joiners' layers (D119) on the microVM's own, rather than tmpfs.
-- What a flush asks of the host: nothing yet, its writes the host's page cache already,
-  which outlives the microVM but not its host.
 - The head's boot: a 2 MiB block a section for the guest to write as it probes, on KVM
   1.9 ms a GiB when the host has huge pages free and up to 19 ms a GiB when it compacts
   for them (M277): a 10 GiB layer's template boot is 19 to 190 ms longer.

@@ -402,6 +402,18 @@ pub unsafe fn flush_shared(ptr: NonNull<u8>, len: usize) -> io::Result<()> {
     }
 }
 
+/// Makes what was written to `file` durable, through a view of it at `ptr..ptr+len`
+/// ([`map_file_shared`]) too: the view's pages written to the file (FlushViewOfFile), then
+/// the file to its device (FlushFileBuffers).
+///
+/// # Safety
+/// `ptr..ptr+len` is the view [`map_file_shared`] made of `file`, still mapped.
+pub unsafe fn sync_mapped(file: &File, ptr: NonNull<u8>, len: usize) -> io::Result<()> {
+    // SAFETY: forwarded caller contract.
+    unsafe { flush_shared(ptr, len) }?;
+    sync_durable(file)
+}
+
 /// Whether a mapping of a file hides its holes (unix.rs): its ranges are all of it here
 /// ([`data_ranges`]).
 pub const MAPPED_HIDES_HOLES: bool = false;
