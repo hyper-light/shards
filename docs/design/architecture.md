@@ -5743,9 +5743,15 @@ template pays it once; what its restores pay is to be measured with mappings.
   reads through it (4 GiB under fio's 2 GiB file) reads 17 to 62 times as fast and writes
   whole MiBs 2 to 2.8 times as fast, the guest holding 28 MiB of memory where 2.1 GiB
   without, the host 43% less; one shorter (1 GiB) reads slower, its mappings churning.
-  Random 4 KiB writes are 21 to 33% of FUSE's rate through either. So windows stay asked
-  for, none by default, until random writes through one are root-caused and fixed, and a
-  window that holds a working set costs its guest less than its 64th at boot.
+  Random 4 KiB writes are 21 to 33% of FUSE's rate through either: a guest's store into a
+  page its host's page cache does not hold waits for the host to read the page in, where a
+  FUSE_WRITE's pwrite(2) of the whole page reads nothing (71 to 127 µs against 2 to 3 on
+  Btrfs, PM M283), and M276's host, short of memory, held few of its file's pages.
+  Reading each range ahead as it is mapped doubles the rate of a writer that writes a
+  range about 20 times and halves that of one that writes it once, so it is not done. So
+  windows stay asked for, none by default, until a guest's whole-page writes through a
+  window reach its server as FUSE_WRITEs, measured in the guest, and a window that holds a
+  working set costs its guest less than its 64th at boot.
 
 ### D190. A run's writable layer on its host's disk: ext4 with DAX over pmem (slices 1 to 3 built)
 

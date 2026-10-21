@@ -10656,3 +10656,45 @@ revision before comparing a changed API/implementation.
 - **Consequence.** D190's third slice: a restore is given a clone of its generation's
   layer where the home's file system makes one, the generation named; another
   generation's, or none, is filled as an empty file is.
+
+### M283. Where a DAX window's random 4 KiB writes go: the host's read of each page (D189)
+
+- **Question.** In M276 random 4 KiB writes through a volume's DAX window ran at 21 to 33%
+  of the rate without one, about 210 to 230 µs each. Where does a write's time go: the
+  host file system's page_mkwrite (Btrfs's reserves space and updates the file's times),
+  or elsewhere? And would reading each range ahead, as its server maps it, win it back?
+- **Method.** `docs/research/measurements/dax-writes/mkwrite.c`: random page-aligned 4 KiB
+  writes into a 2 GiB file laid out whole and synced first, as fio lays its file out, each
+  write timed: through a shared mapping of the file, as a guest's store into a window
+  reaches its host; the same with POSIX_FADV_WILLNEED (macOS: F_RDADVISE) of each 2 MiB
+  range as its first write comes, as a window's server could advise a range it maps; and
+  by pwrite(2), as a FUSE_WRITE reaches the server. `warm` with the file's pages in the
+  page cache, `cold` with them dropped (POSIX_FADV_DONTNEED; macOS: the file written with
+  F_NOCACHE). 20,000 writes, about 20 a range, then 5,000 and 1,000 on Fedora; 3 rounds of
+  each mode, interleaved. 2026-10-20, the Fedora host (M266's: Intel Core i9-14900HX, Linux
+  6.19.10-300.fc44; its home's Btrfs, `compress=zstd:1`, and /tmp's tmpfs) and the Mac
+  (Apple M5 Max, macOS 26.4.1, APFS, 16 KiB pages; other projects' builds running).
+- **Results.** p50 per write, and the rate:
+
+  | host, writes | mapping, warm | mapping, cold | + WILLNEED, cold | pwrite, cold |
+  |---|---|---|---|---|
+  | Btrfs, 20,000 | 1.9 to 2.9 µs | 71 to 77 µs, 57 to 69 MiB/s | 1.9 to 2.1 µs (p99 650 to 737), 117 to 126 MiB/s | 2.2 µs, 1,716 to 1,792 MiB/s |
+  | Btrfs, 5,000 | | 112 to 121 µs, 31.6 to 33.6 MiB/s | 4.9 to 5.4 µs (p90 630 to 699), 27.2 to 29.4 MiB/s | 2.5 to 3.2 µs, 1,122 to 1,504 MiB/s |
+  | Btrfs, 1,000 | | 88 to 127 µs, 15.4 to 19.0 MiB/s | 516 to 656 µs, 7.8 to 10.0 MiB/s | 2.3 to 2.7 µs, 1,204 to 1,589 MiB/s |
+  | tmpfs, 20,000 | 0.8 to 0.9 µs, cold the same | | | 0.6 µs |
+  | APFS, 20,000 | 2 µs | 129 to 704 µs, 1.4 to 24 MiB/s | 2 µs (p99 0.7 to 4.7 ms), 24 to 149 MiB/s | 117 to 178 µs, 1.2 to 12.7 MiB/s |
+
+  A warm pwrite took 1.3 to 1.6 µs on Btrfs.
+- **Reading.** A page the host holds takes a write through the mapping as quickly as a
+  pwrite: Btrfs's page_mkwrite costs nothing that matters. A page it does not hold is
+  read in first, as a store needs the page's other bytes, where a pwrite of the whole page
+  reads nothing: on Btrfs 71 to 127 µs against 2 to 3, 20 to 100 times the rate; on APFS,
+  whose pages are 16 KiB, a 4 KiB pwrite reads too. M276's host was short of memory
+  throughout, its fio file's pages evicted, and its windows' writes paid those reads.
+  Reading a range ahead as it is mapped wins them back only where a range takes many
+  writes: at about 20 a range twice the rate on Btrfs and 6 to 17 times on APFS, each
+  range's first write waiting for its 2 MiB (p99 0.65 to 0.74 ms); at about 5 the rate
+  without; at one, half of it, each write waiting for its range's 2 MiB.
+- **Consequence.** D189: no range is read ahead, which costs a sparse writer what it gives
+  a dense one. Windows stay asked for until a guest's whole-page writes through one reach
+  its server as FUSE_WRITEs, whose pwrite reads nothing, measured in the guest.
