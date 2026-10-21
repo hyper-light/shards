@@ -29,13 +29,21 @@ const TIMEOUT: Duration = Duration::from_secs(60);
 
 /// `shards ARGS` in `home`, whose runs boot the test kernel and init.
 fn shards_in(home: &Path, args: &[&str]) -> Run {
+    shards_in_within(home, args, TIMEOUT)
+}
+
+/// [`shards_in`] with a timeout of its own, for a run whose work is heavier than a start:
+/// a large `-m` whose guest plugs and touches gigabytes takes far longer than [`TIMEOUT`]
+/// on a slow, contended CI runner (it progresses, it is not hung: the whole of
+/// `run_limits_a_microvms_resources` took 199 s under 32 busy loops where it took 30 idle).
+fn shards_in_within(home: &Path, args: &[&str], timeout: Duration) -> Run {
     let (kernel, init) = (kernel(), guest_init());
     let env: [(&str, &OsStr); 3] = [
         ("SHARDS_HOME", home.as_os_str()),
         ("SHARDS_KERNEL", kernel.as_os_str()),
         ("SHARDS_INIT", init.as_os_str()),
     ];
-    run_shards_env(&[], args, &env, TIMEOUT)
+    run_shards_env(&[], args, &env, timeout)
 }
 
 /// `shards run` of the test image, with `options` before the image and `command` after it.
@@ -48,9 +56,14 @@ fn run_args(image: &str, options: &[&str], command: &[&str]) -> Vec<String> {
 }
 
 fn run_in(home: &Path, image: &str, options: &[&str], command: &[&str]) -> Run {
+    run_in_within(home, image, options, command, TIMEOUT)
+}
+
+/// [`run_in`] with a timeout of its own ([`shards_in_within`]), for a memory-heavy run.
+fn run_in_within(home: &Path, image: &str, options: &[&str], command: &[&str], timeout: Duration) -> Run {
     let args = run_args(image, options, command);
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
-    shards_in(home, &args)
+    shards_in_within(home, &args, timeout)
 }
 
 /// A run left going: its client, with the command's first line read.
@@ -4686,14 +4699,18 @@ fn run_limits_a_microvms_resources() {
         ("2500m", every.as_str()),
     ] {
         // It holds all but what its own process and page tables take of its limit, in a
-        // microVM that boots with less and plugs the rest as it needs it (D148).
+        // microVM that boots with less and plugs the rest as it needs it (D148). Plugging
+        // and touching gigabytes is far slower than a start on a contended CI runner, so
+        // these runs get a timeout of their own, well past TIMEOUT (measured 199 s for the
+        // whole test under 32 busy loops; it progresses, it never hangs).
         let limit_mib = limit.trim_end_matches('m').parse::<u64>().unwrap();
         let wanted = (limit_mib - 16).to_string();
-        let held = run_in(
+        let held = run_in_within(
             &home,
             &image,
             &["--rm", "-m", limit, "--cpus", cpus],
             &["alloc", &wanted],
+            Duration::from_secs(240),
         );
         assert_eq!(held.status, Some(0), "{limit}, --cpus {cpus}: {held}");
         assert!(
