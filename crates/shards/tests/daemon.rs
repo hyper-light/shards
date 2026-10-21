@@ -1388,6 +1388,21 @@ fn a_daemon_out_of_descriptors_waits_for_room() {
     let due = home.join("images").join("collect-due");
     let mut silent = Vec::new();
     for round in 1.. {
+        // Each round's clients its own: a client says nothing past its first byte, and the
+        // daemon lets one go once its request's time has run out (REQUEST_TIMEOUT, 10 s),
+        // so that an earlier round's, kept, gave it room in each later round on a busy host
+        // (a gate's five rounds in a row). Let go, they give a daemon that was out room at
+        // once, which it says before the round fills it again.
+        if !silent.is_empty() {
+            let before = said().len();
+            let was_out = out(&said());
+            silent.clear();
+            if was_out {
+                eventually("no room once a round's clients were let go", || {
+                    said().get(before..).is_some_and(|since| since.contains(AGAIN))
+                });
+            }
+        }
         // Clients that take every slot it offers and say nothing past their first byte,
         // until it has no room to make the next and offers none for a while: a client it
         // has yet to see the end of (the `ps` that started it), or one that takes a slot
