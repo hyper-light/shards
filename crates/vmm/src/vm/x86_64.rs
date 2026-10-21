@@ -581,6 +581,11 @@ pub fn build(cfg: &Config) -> Result<Machine, String> {
     let layer = super::boot_layer(cfg)?;
     config.layer_mib = layer.as_ref().map_or(0, |l| l.data_len() >> 20);
     let memory = Arc::new(super::guest_memory(&ranges, &config, plug_at(ram))?);
+    // Before anything touches it: on huge pages, its first 2 MiB would be resident whole
+    // for its boot structures' few pages (layout::SPARSE, PM M157).
+    memory
+        .small_pages(0, layout::SPARSE)
+        .map_err(|e| format!("guest RAM: {e}"))?;
     let low_ram_end = ram.min(layout::MMIO_GAP);
 
     let kernel_file = crate::platform::open_input(&cfg.kernel, false)

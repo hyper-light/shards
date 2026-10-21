@@ -153,6 +153,21 @@ pub fn advised_huge_page() -> Option<usize> {
     None
 }
 
+/// Whether the host puts every process's anonymous memory on transparent huge pages,
+/// advised or not (`always` in /sys/kernel/mm/transparent_hugepage/enabled), as against
+/// only what is advised (`madvise`): Linux's.
+pub fn thp_always() -> bool {
+    #[cfg(all(target_os = "linux", not(miri)))]
+    {
+        std::fs::read_to_string("/sys/kernel/mm/transparent_hugepage/enabled")
+            .is_ok_and(|mode| mode.split_whitespace().any(|m| m == "[always]"))
+    }
+    #[cfg(not(all(target_os = "linux", not(miri))))]
+    {
+        false
+    }
+}
+
 /// The kernel's transparent huge page size, if it has transparent huge pages.
 #[cfg(all(target_os = "linux", not(miri)))]
 fn huge_page_size() -> Option<usize> {

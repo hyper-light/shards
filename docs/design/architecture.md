@@ -1781,14 +1781,19 @@ devices. The code is `crates/vmm/src/memory.rs`.
   once touched, and a boot touches some 2 MiB spans in part: the edges of what its kernel
   takes as it boots, which huge pages rounded up to 4.5 to 6 MiB more than Firecracker's
   boot on hosts whose THP is `madvise`, where Firecracker's memory is on small pages
-  (M279). So a boot's memory is on small pages but its kernel's image, which the VMM
-  writes whole, until its PID 1 runs (`marker::INIT_STARTED`, which shards-init sends
-  first): then the spans its boot left untouched, or touched whole, go on huge pages for
-  what comes after, on a thread of the VMM's own, and those it touched in part stay on
-  small pages, where the host's khugepaged would fill them (`GuestMemory::
-  huge_pages_past_boot`). A boot then holds as much anonymous memory as Firecracker's
-  (52.0 MiB against 52.3) and reaches ready 21 ms sooner; 512 MiB of fresh memory
-  touched after it as fast as with huge pages throughout (180 ms against 359 without).
+  (M279). So on such a host a boot's memory is on small pages but its kernel's image,
+  which the VMM writes whole, until its PID 1 runs (`marker::INIT_STARTED`, which
+  shards-init sends first): then the spans its boot left untouched, or touched whole, go
+  on huge pages for what comes after, on a thread of the VMM's own, and those it touched
+  in part stay on small pages, where the host's khugepaged would fill them
+  (`GuestMemory::huge_pages_past_boot`). A boot then holds as much anonymous memory as
+  Firecracker's (52.0 MiB against 52.3) and reaches ready 21 ms sooner; 512 MiB of fresh
+  memory touched after it as fast as with huge pages throughout (180 ms against 359
+  without). Where the host's THP is `always`, which puts Firecracker's memory on huge
+  pages too, a boot's stays on them throughout, but the first 2 MiB, whose boot
+  structures touch 78 of its 512 pages: there small pages cost a boot more than they
+  save (on CI's nested runner, 204.5 ms to ready against Firecracker's 128.5, for 49.6 MiB
+  against 60.2), where huge pages beat Firecracker's on both (M157).
   The initrd sits at the top of low RAM, beside what the guest kernel takes there from
   the top down, as Firecracker and QEMU place it. arm64's boot is unmeasured. A run's
   restore maps its memory file, on small pages.

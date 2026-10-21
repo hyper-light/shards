@@ -87,6 +87,10 @@ pub fn advised_huge_page() -> Option<usize> {
     None
 }
 
+pub fn thp_always() -> bool {
+    false
+}
+
 /// Gives the pages of `ptr..ptr+len` back and leaves the range inaccessible: decommitted,
 /// still reserved (VirtualFree MEM_DECOMMIT).
 ///

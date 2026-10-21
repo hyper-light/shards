@@ -223,7 +223,10 @@ fn hotplug(config: &crate::snapshot::MachineConfig) -> Result<Option<(u64, u64)>
 /// A boot's guest RAM, `ranges`, on small pages but its kernel's image, `image`, whose whole
 /// huge pages the VMM writes as it copies it in: its kernel's boot touches other huge
 /// pages in part, which a huge page would hold resident whole (D29, PM M279). The rest
-/// goes on huge pages once its PID 1 runs ([`huge_pages_when_init_runs`]).
+/// goes on huge pages once its PID 1 runs ([`huge_pages_when_init_runs`]). Where the host
+/// puts every process's memory on huge pages (THP `always`), Firecracker's too, a boot's
+/// stays on them throughout: there small pages cost a boot more time than their memory
+/// saves against what its host gives every process (PM M279).
 #[cfg(hv)]
 fn boot_pages(
     memory: &GuestMemory,
@@ -233,6 +236,9 @@ fn boot_pages(
     let Some(huge) = crate::platform::advised_huge_page() else {
         return Ok(());
     };
+    if crate::platform::thp_always() {
+        return Ok(());
+    }
     for &(gpa, len) in ranges {
         memory
             .small_pages(gpa, len)
@@ -256,6 +262,7 @@ fn boot_pages(
 #[cfg(hv)]
 fn huge_pages_when_init_runs(control: &crate::devices::control::Control, memory: &Arc<GuestMemory>) {
     if crate::platform::advised_huge_page().is_none()
+        || crate::platform::thp_always()
         || std::env::var_os("SHARDS_THP_ADVICE").is_some_and(|a| a == "boot")
     {
         return;

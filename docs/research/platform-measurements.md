@@ -10505,7 +10505,14 @@ revision before comparing a changed API/implementation.
   - The walk's p90 rose under the host's load (462 ms; 224 in the run before, all advised
     from the start): its first touches can come before the VMM has read which spans the
     boot touched.
-- **Consequence.** D29: a boot's memory on small pages but its kernel's image until its
-  PID 1 runs, then on huge pages where its boot left it untouched or touched whole. Open:
-  the VMM's own memory (+0.8 to +1.1 MiB) and glibc's file pages at boot; arm64's boot,
-  unmeasured; the walk's tail under load.
+  - On a host whose THP is `always` (CI's runner, AMD EPYC 9V45, Linux 6.17, nested
+    virtualization; 76cd8fd2, n = 30), where Firecracker's memory is on huge pages too,
+    the image alone cost the boot what it saved: 204.5 ms to ready against Firecracker's
+    128.5 (+75.1 [+72.2, +76.7]), for 49.6 MiB anonymous against 60.2; there each small
+    page's first touch is a nested fault. Huge pages throughout beat Firecracker's there
+    on both (M157: 56.3 MiB against 60.2, the boot halved).
+- **Consequence.** D29: where the host's THP is `madvise`, a boot's memory on small pages
+  but its kernel's image until its PID 1 runs, then on huge pages where its boot left it
+  untouched or touched whole; where it is `always`, on huge pages throughout but the
+  first 2 MiB, as before. Open: the VMM's own memory (+0.8 to +1.1 MiB) and glibc's file
+  pages at boot; arm64's boot, unmeasured; the walk's tail under load.
