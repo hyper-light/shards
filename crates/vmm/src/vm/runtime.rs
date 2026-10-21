@@ -161,7 +161,12 @@ impl Handle {
                 (Some(_), None) => Err("its writable layer has nowhere to go".into()),
             });
         if let Err(e) = written {
-            cut.go_on();
+            // One whose guest lost a mapping taken from it for the save stops.
+            if self.control.lost() {
+                sh.stop(ExitReason::Error(e.clone()));
+            } else {
+                cut.go_on();
+            }
             return Err(e);
         }
         info!(
@@ -974,6 +979,10 @@ impl Coordinator {
         // `parked`: whether the guest still waits for the snapshot.
         let failed = |e: String, parked: bool| {
             if !resume {
+                return self.sh.stop(ExitReason::Error(e));
+            }
+            // One whose guest lost a mapping taken from it for the save stops.
+            if self.control.lost() {
                 return self.sh.stop(ExitReason::Error(e));
             }
             warn!("{e}; the VM goes on without its snapshot");

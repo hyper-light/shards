@@ -269,8 +269,22 @@ impl SwapWindow {
         // block only as it writes it back would count none, and the copy would lose it.
         // SAFETY: the mapping `mapped` holds, which stays while its lock is held.
         unsafe { platform::flush_shared(mapped.host, mapped.len) }.map_err(at)?;
-        mapped.copy_to(to, mapped.len as u64).map_err(at)?;
+        let unmap = || self.slots.unmap(RUN_SLOT, self.gpa, mapped.len);
+        // SAFETY: the mapping stays until the window drops, after the VM.
+        let map = || unsafe {
+            self.slots
+                .map(RUN_SLOT, mapped.host(), self.gpa, mapped.len, true)
+        };
+        // SAFETY: a save's machine is paused, its devices quiet.
+        let ranges = unsafe { mapped.data_ranges(&unmap, &map) }.map_err(|e| format!("its swap: {e}"))?;
+        mapped.copy_ranges_to(to, &ranges).map_err(at)?;
         Ok(mapped.len as u64)
+    }
+
+    /// Whether its guest has lost the run's swap: a mapping taken from it for its file's
+    /// ranges that could not be given back ([`Shared::data_ranges`]).
+    pub fn lost(&self) -> bool {
+        lock(&self.run).as_ref().is_some_and(Shared::lost)
     }
 
     /// Whether its snapshot kept a run's swap that is not mapped back yet (D176).
@@ -361,7 +375,8 @@ impl Drop for Zeros {
     }
 }
 
-/// A run's swap file, mapped shared and writable into this process.
+/// A run's swap file, or its writable layer's, mapped shared and writable into this
+/// process.
 struct Shared {
     host: NonNull<u8>,
     len: usize,
@@ -369,6 +384,9 @@ struct Shared {
     file: Mutex<Option<File>>,
     /// Unmapped before it drops ([`release`](Self::release)).
     released: AtomicBool,
+    /// Whether a mapping of it taken away for its file's ranges could not be put back
+    /// ([`data_ranges`](Self::data_ranges)): its machine cannot go on.
+    lost: AtomicBool,
 }
 
 // SAFETY: the mapping is owned by this value; the guest writes it, through the
@@ -385,6 +403,7 @@ impl Shared {
             len,
             file: Mutex::new(Some(file)),
             released: AtomicBool::new(false),
+            lost: AtomicBool::new(false),
         })
     }
 
@@ -392,11 +411,64 @@ impl Shared {
         self.host.as_ptr()
     }
 
-    /// Copies its file's first `len` bytes into `to` ([`platform::copy_used`]).
-    fn copy_to(&self, to: &File, len: u64) -> std::io::Result<()> {
-        let file = self.file.lock().unwrap_or_else(PoisonError::into_inner);
+    /// The ranges of its file that hold data ([`platform::data_ranges`]). Where a mapping of
+    /// a file hides them ([`platform::MAPPED_HIDES_HOLES`], APFS), asked with no mapping of
+    /// it left: `unmap` takes it from the guest, this process's mapping is withheld
+    /// meanwhile and mapped again after, and `map` gives the guest's back. Where the guest
+    /// would not give it up, or this process's could not be withheld, all of it, which a
+    /// copy then reads whole, as a save did before (a 10 GiB layer's on the Mac, 3 to 12 s,
+    /// PM M284, M285). One that could not be put back is lost ([`lost`](Self::lost)).
+    ///
+    /// # Safety
+    /// Its machine is paused and its devices quiet: nothing touches the mapping meanwhile.
+    unsafe fn data_ranges(
+        &self,
+        unmap: &dyn Fn() -> Result<(), String>,
+        map: &dyn Fn() -> Result<(), String>,
+    ) -> Result<Vec<(u64, u64)>, String> {
+        let file = lock(&self.file);
+        let file = file.as_ref().ok_or(RELEASED)?;
+        let len = self.len as u64;
+        if !platform::MAPPED_HIDES_HOLES {
+            return platform::data_ranges(file, len).map_err(|e| e.to_string());
+        }
+        let whole = vec![(0, len)];
+        if let Err(e) = unmap() {
+            crate::warn!("its file is read whole, its guest's mapping not given up: {e}");
+            return Ok(whole);
+        }
+        // SAFETY: the mapping `map` made, which nothing touches meanwhile (the caller's
+        // contract) and no hypervisor maps now.
+        if let Err(e) = unsafe { platform::withhold(self.host, self.len) } {
+            crate::warn!("its file is read whole, its mapping not withheld: {e}");
+            return map().map(|()| whole).map_err(|e| self.lose(&e));
+        }
+        let ranges = platform::data_ranges(file, len).map_err(|e| e.to_string());
+        // SAFETY: the range withheld above, mapped as `map` mapped it.
+        if let Err(e) = unsafe { platform::map_file_shared_at(file, self.len, self.host) } {
+            return Err(self.lose(&e.to_string()));
+        }
+        map().map_err(|e| self.lose(&e))?;
+        ranges
+    }
+
+    /// Says that a mapping of it taken away could not be put back: `e`, why.
+    fn lose(&self, e: &str) -> String {
+        self.lost.store(true, Ordering::Release);
+        format!("its mapping could not be put back: {e}")
+    }
+
+    /// Whether a mapping of it taken away could not be put back ([`data_ranges`](Self::data_ranges)).
+    fn lost(&self) -> bool {
+        self.lost.load(Ordering::Acquire)
+    }
+
+    /// Copies `ranges` of its file, as [`data_ranges`](Self::data_ranges) gave them, into
+    /// `to` ([`platform::copy_ranges`]).
+    fn copy_ranges_to(&self, to: &File, ranges: &[(u64, u64)]) -> std::io::Result<()> {
+        let file = lock(&self.file);
         let file = file.as_ref().ok_or_else(|| std::io::Error::other(RELEASED))?;
-        platform::copy_used(file, to, len)
+        platform::copy_ranges(file, to, self.len as u64, ranges)
     }
 
     /// Unmaps it and closes its file now, rather than as it drops; once.
@@ -634,9 +706,10 @@ impl Layer {
     }
 
     /// Whether its guest has lost it: a mapping taken from the guest that could not be given
-    /// back ([`remap_head`](Self::remap_head)), so that its machine cannot go on.
+    /// back ([`remap_head`](Self::remap_head), [`save`](Self::save)), so that its machine
+    /// cannot go on.
     pub fn lost(&self) -> bool {
-        self.lost.load(Ordering::Acquire)
+        self.lost.load(Ordering::Acquire) || self.data.lost()
     }
 
     /// The device's length: its head and its file system.
@@ -681,7 +754,8 @@ impl Layer {
     /// five (PM M277). An index first, block by block: which of those it is, or none for
     /// zeros.
     /// The file system, flushed to its file first: the blocks not all zeros of the ranges
-    /// its file holds data in.
+    /// its file holds data in, asked with its guest's mapping and this process's taken away
+    /// where a mapping hides them ([`Shared::data_ranges`]).
     pub fn save(&self, head: &File, data: &File) -> Result<(), String> {
         if self.data.released() {
             return Err(RELEASED.into());
@@ -690,7 +764,25 @@ impl Layer {
         save_head(head, self.head.host, self.head.len).map_err(at)?;
         // SAFETY: the mapping `data` holds, for the layer's life.
         unsafe { platform::flush_shared(self.data.host, self.data.len) }.map_err(at)?;
-        self.data.copy_to(data, self.data.len as u64).map_err(at)
+        // The file system's part of the guest's mapping, after the head.
+        let guest = self
+            .guest
+            .get()
+            .map(|(gpa, mapper)| (gpa + self.head.len as u64, mapper));
+        let unmap = || {
+            guest
+                .as_ref()
+                .map_or(Ok(()), |(gpa, mapper)| mapper.unmap(*gpa, self.data.len))
+        };
+        let map = || {
+            guest.as_ref().map_or(Ok(()), |(gpa, mapper)| {
+                // SAFETY: the mapping stays for the layer's life, which outlives the VM.
+                unsafe { mapper.map(self.data.host(), *gpa, self.data.len) }
+            })
+        };
+        // SAFETY: a save's machine is paused and its devices quiet (`Cut::take`).
+        let ranges = unsafe { self.data.data_ranges(&unmap, &map) }.map_err(|e| format!("its layer: {e}"))?;
+        self.data.copy_ranges_to(data, &ranges).map_err(at)
     }
 
     /// Maps its head back from `kept`, the copy a save has just written of it
@@ -1462,6 +1554,64 @@ mod tests {
             // SAFETY: as above.
             assert_eq!(unsafe { *head.add(HEAD_BLOCK + HEAD_BLOCK - 1) }, 0x40);
         }
+    }
+
+    /// A layer's save asks where its file holds data with no mapping of the file left
+    /// where a mapping hides that (APFS, PM M285): its guest's taken away and given back,
+    /// its own withheld and mapped again, both the file's still after; its copy holds what
+    /// was written through the mapping, and the ranges asked are the file's own.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn a_layers_save_asks_where_its_file_holds_data_with_its_mappings_away() {
+        type Calls = Arc<Mutex<Vec<(&'static str, u64, usize)>>>;
+        struct Guest {
+            calls: Calls,
+        }
+        impl Mapper for Guest {
+            unsafe fn map(&self, _: *mut u8, gpa: u64, len: usize) -> Result<(), String> {
+                lock(&self.calls).push(("map", gpa, len));
+                Ok(())
+            }
+            fn unmap(&self, gpa: u64, len: usize) -> Result<(), String> {
+                lock(&self.calls).push(("unmap", gpa, len));
+                Ok(())
+            }
+        }
+        let dir = shards_testdir::TempDir::new("layer-holes").unwrap();
+        let data_len = 1u64 << 30;
+        let booted = Layer::boot(file(&dir, "fs", data_len)).unwrap();
+        let [(_, _, head_len), (_, data, len)] = booted.mappings(SECTION).unwrap();
+        let calls = Calls::default();
+        booted.placed(SECTION, Box::new(Guest { calls: calls.clone() }));
+        // SAFETY: within the file system's mapping, which the layer holds.
+        unsafe { data.add(512 << 20).write_bytes(0x5a, 16 << 10) };
+        let copy = file(&dir, "copy", 0);
+        booted.save(&file(&dir, "head", 0), &copy).unwrap();
+        let data_gpa = SECTION + head_len as u64;
+        if platform::MAPPED_HIDES_HOLES {
+            assert_eq!(*lock(&calls), [("unmap", data_gpa, len), ("map", data_gpa, len)]);
+        } else {
+            assert!(lock(&calls).is_empty(), "{:?}", lock(&calls));
+        }
+        assert!(!booted.lost());
+        let mut byte = [0u8; 1];
+        platform::read_exact_at(&copy, &mut byte, (512 << 20) + 100).unwrap();
+        assert_eq!(byte, [0x5a]);
+        // Asked so, the ranges are the file's own, not all of it.
+        // SAFETY: nothing touches the mapping meanwhile; no hypervisor maps it.
+        let ranges = unsafe { booted.data.data_ranges(&|| Ok(()), &|| Ok(())) }.unwrap();
+        assert!(ranges.iter().map(|(_, n)| n).sum::<u64>() < 1 << 20, "{ranges:?}");
+        // The mapping is the file's still, both ways: what it held reads back, and what it
+        // takes now the next save's copy holds.
+        // SAFETY: as above.
+        unsafe {
+            assert_eq!(*data.add((512 << 20) + 1), 0x5a);
+            data.add(256 << 20).write_bytes(0x33, 4096);
+        }
+        let again = file(&dir, "copy-2", 0);
+        booted.save(&file(&dir, "head-2", 0), &again).unwrap();
+        platform::read_exact_at(&again, &mut byte, (256 << 20) + 4095).unwrap();
+        assert_eq!(byte, [0x33]);
     }
 
     /// How many of the pages of the `len` bytes at `ptr` this process holds as memory of

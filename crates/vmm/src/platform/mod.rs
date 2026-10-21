@@ -223,11 +223,18 @@ pub fn write_all_at(file: &File, buf: &[u8], offset: u64) -> io::Result<()> {
 /// its OS says hold data, and of them only the blocks not all zeros, so that `to` takes no
 /// more of a disk than `from` does.
 pub fn copy_used(from: &File, to: &File, len: u64) -> io::Result<()> {
+    copy_ranges(from, to, len, &data_ranges(from, len)?)
+}
+
+/// Copies `ranges` of `from`'s first `len` bytes, `(offset, length)` as [`data_ranges`]
+/// gives them, into `to`, which is `len` bytes long after: of them only the blocks not all
+/// zeros.
+pub fn copy_ranges(from: &File, to: &File, len: u64, ranges: &[(u64, u64)]) -> io::Result<()> {
     const CHUNK: usize = 1 << 20;
     const BLOCK: usize = 4 << 10;
     to.set_len(0)?;
     let mut buf = vec![0u8; CHUNK];
-    for (start, n) in data_ranges(from, len)? {
+    for &(start, n) in ranges {
         let end = start.saturating_add(n).min(len);
         let mut at = start;
         while at < end {

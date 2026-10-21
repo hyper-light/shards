@@ -1294,4 +1294,71 @@ mod tests {
         }
         let _ = std::fs::remove_file(&path);
     }
+
+    /// Which mappings of a sparse file keep APFS from saying where its holes are
+    /// (lseek(2) SEEK_DATA and SEEK_HOLE): the host's shared writable one, and the guest's
+    /// through hv_vm_map of it. Ignored because HVF allows one VM per process: run it alone
+    /// with `--ignored --exact`.
+    #[test]
+    #[ignore]
+    fn which_mappings_hide_a_files_holes() {
+        use std::os::fd::AsRawFd;
+        let vm = Vm::new(VmConfig {
+            ipa_bits: 36,
+            mpidrs: vec![0],
+            el2: false,
+        })
+        .unwrap();
+        let dir = shards_testdir::TempDir::new("holes").unwrap();
+        let len = 64usize << 20;
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .open(dir.join("sparse"))
+            .unwrap();
+        file.set_len(len as u64).unwrap();
+        crate::platform::write_all_at(&file, &[1; 16 << 10], 32 << 20).unwrap();
+        file.sync_all().unwrap();
+        let data = || crate::platform::data_ranges(&file, len as u64).unwrap();
+        let alone = data();
+        assert_eq!(alone, [(32 << 20, 16 << 10)]);
+        // SAFETY: a fresh shared mapping of our own file, which only this test uses.
+        let host = unsafe {
+            libc::mmap(
+                std::ptr::null_mut(),
+                len,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_SHARED,
+                file.as_raw_fd(),
+                0,
+            )
+        };
+        assert_ne!(host, libc::MAP_FAILED);
+        let hosts = data();
+        let gpa = 0x1_0000_0000u64;
+        // SAFETY: the mapping stays, or memory of the process's own over it, until the VM goes.
+        unsafe { vm.sys.map(host.cast(), gpa, len, sys::Perms::RW) }.unwrap();
+        let both = data();
+        // The host's mapping replaced by memory of its own, the guest's kept.
+        // SAFETY: MAP_FIXED over the test's own mapping, which nothing touches.
+        let replaced = unsafe {
+            libc::mmap(
+                host,
+                len,
+                libc::PROT_NONE,
+                libc::MAP_PRIVATE | libc::MAP_ANON | libc::MAP_FIXED,
+                -1,
+                0,
+            )
+        };
+        assert_eq!(replaced, host);
+        let guests = data();
+        sys::unmap(gpa, len).unwrap();
+        let neither = data();
+        eprintln!(
+            "none {alone:?}; the host's {hosts:?}; both {both:?}; the guest's alone {guests:?}; neither {neither:?}"
+        );
+        assert_eq!(neither, alone);
+    }
 }

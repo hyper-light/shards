@@ -10749,3 +10749,60 @@ revision before comparing a changed API/implementation.
   one run and 4.04 against 5.42 in the other.
 - **Consequence.** D190's fourth slice: a template's microVM maps its head back from its
   snapshot's copy before its vCPUs go on.
+
+### M285. A save's copy of a layer on macOS, and the holes a mapping hides (D190, D176)
+
+- **Question.** In M284 a template's save took 12 s on the Mac, against 65 to 83 ms on
+  Fedora, nearly all of it in its copy of the run's 10 GiB layer (`sample` of the VM
+  process: `Layer::save`, `Shared::copy_to`, `copy_used`), a copy that reads only the
+  ranges of the file that hold data, as lseek(2) SEEK_DATA and SEEK_HOLE say. What does
+  APFS say of a file a VM maps? And what do a template's save, an image's first run and a
+  run's save (D176) cost once the copy asks while nothing maps the file?
+- **Method.** 2026-10-20. A sparse 1 GiB file with a 4 KiB block written at 512 MiB, asked
+  with SEEK_DATA and SEEK_HOLE unmapped; mapped shared and writable, untouched; written at
+  100 MiB through the mapping; flushed (msync); unmapped again: on the Mac's APFS (macOS
+  26.4.1) and on Fedora's Btrfs and tmpfs (Linux 6.19.10). The vmm's ignored test
+  `which_mappings_hide_a_files_holes`: a 64 MiB sparse file mapped by the process and by
+  Hypervisor.framework (hv_vm_map), then the process's mapping replaced while the
+  guest's stays, then neither. Then, on the Mac (Apple M5 Max, other projects' builds and
+  tests running, their load varying through the runs), release builds of f295a0e8 (OLD)
+  and of the fix (NEW), each with its home: `layer-head/footprint.py`, a template's
+  writing and its image's first run, n = 10 and again n = 20, after a round not counted;
+  `layer-save/save.py`, a run that wrote 0 or 64 MiB into its root saved with
+  `--leave-running` and saved again stopping it, n = 10 a size; the builds alternating
+  which goes first.
+- **Results.** APFS: unmapped, the file's data ranges; mapped shared and writable, one
+  range, the whole file, untouched or written, flushed or not; the guest's mapping alone
+  the same; neither, the ranges again. Btrfs and tmpfs: the data ranges, mapped or not, the
+  block written through the mapping and not yet written back among them. The Mac, ms,
+  p50 (p90):
+
+  | step | OLD | NEW |
+  |---|---|---|
+  | template written, n = 10 | 3,144.69 (3,485.37) | 77.04 (145.00) |
+  | first run, n = 10 | 3,584.45 (4,274.19) | 620.55 (1,051.35) |
+  | template written, n = 20 | 4,178.40 (11,773.94) | 127.34 (376.37) |
+  | first run, n = 20 | 5,151.79 (12,780.96) | 707.14 (6,913.76) |
+  | run's save, 0 B, left running | 3,312.67 (3,626.15) | 356.29 (970.51) |
+  | run's save, 0 B, stopped | 3,304.17 (3,812.76) | 263.22 (634.11) |
+  | run's save, 64 MiB, left running | 4,082.22 (33,238.29) | 1,069.74 (5,472.88) |
+  | run's save, 64 MiB, stopped | 3,573.60 (17,656.33) | 814.74 (2,708.88) |
+
+  The first run's microVM and its warm microVM held the same either way (111.85 and 110.49
+  MiB, 14.22 and 14.24, n = 10); the head's mapping back 3.52 and 3.43 ms. A program run
+  from the layer after: 4.06 ms against 11.14 at p50 (n = 10, the NEW build's over 10 ms
+  in 6 rounds of 10, the OLD's in none), then 14.05 against 13.55 (n = 20), its NEW max
+  1,670 ms in the round whose OLD first run, right after, took 10.4 s; and 16.50 against
+  7.10 (n = 8, `exec` 3 s after `run -d` rather than once the warm microVM stood).
+- **Reading.** APFS answers that a file mapped shared and writable holds data throughout,
+  by the VM's mapping or its guest's alone: a save's copy read the whole 10 GiB, 3 to 12 s
+  as the host's load went, on every template, every image's first run, and every run's
+  save. Asked with neither mapping left, a template is written in 77 to 127 ms and an
+  image's first run starts in 0.6 to 0.7 s at p50; a run's save takes a tenth of what it
+  took, the rest the run's own data and memory. What the run does after costs what it did:
+  the program from the layer's medians crossed over between the runs, n = 10 against n = 20
+  and n = 8, the host's load moving both builds.
+- **Consequence.** D190's fifth slice: where a mapping hides a file's holes
+  (`platform::MAPPED_HIDES_HOLES`, held by a test to what the host's file system does), a
+  save takes the guest's mapping and the VM's own away while it asks what the file holds,
+  then maps both back; a run's swap is saved the same way. Linux's are asked as they are.

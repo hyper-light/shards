@@ -5753,7 +5753,7 @@ template pays it once; what its restores pay is to be measured with mappings.
   window reach its server as FUSE_WRITEs, measured in the guest, and a window that holds a
   working set costs its guest less than its 64th at boot.
 
-### D190. A run's writable layer on its host's disk: ext4 with DAX over pmem (slices 1 to 4 built)
+### D190. A run's writable layer on its host's disk: ext4 with DAX over pmem (slices 1 to 5 built)
 
 A run's writable layer, the upper directory of its root's overlay, was a tmpfs in its
 microVM's memory (D16, D156): what it wrote was memory, held to its memory limit, and gone
@@ -5835,6 +5835,24 @@ the guest keeps their metadata alone.
   the runs' spread (PM M284). One that fails partway leaves each block the copy's or the guest's own memory,
   which hold the same, and is said; one whose guest cannot be given its head back leaves
   the layer lost (`Layer::lost`), and the machine stops.
+- **A save's copy asks what the file holds with nothing mapping it** (slice 5). A save
+  copies the ranges of the layer's file that hold data, as lseek(2) SEEK_DATA and
+  SEEK_HOLE say, but APFS says that a file mapped shared and writable, by the VM process
+  or by its guest through Hypervisor.framework, holds data throughout, untouched or
+  written, flushed or not, until neither mapping is left (PM M285): a template's copy of a
+  10 GiB layer read all of it, 3 to 12 s of its image's first run as the host's load went
+  (PM M284, M285). Where a mapping
+  hides a file's holes (`platform::MAPPED_HIDES_HOLES`, macOS; a test holds it to what
+  the host's file system does), the save takes the file system from the guest's stage 2
+  and withholds the VM's own mapping while it asks, then maps both back
+  (`Shared::data_ranges`); a run's swap is saved the same way. A template's writing then
+  took 127 ms at p50 where it took 4,178, and the image's
+  first run 707 ms where it took 5,152; a run's save that leaves
+  it running 356 ms where it took 3,313 (PM M285).
+  Linux's Btrfs and tmpfs answer as they would unmapped, and nothing is taken away there.
+  One whose guest will not give its mapping up, or whose own cannot be withheld, copies
+  the file whole, as before; one that cannot be put back leaves the layer lost, and the
+  machine stops.
 - **Its file is its run's, then its container's.** A layer's file stays in the home's
   `layers` while its microVM serves its run, the daemon holding it with the microVM; what
   a daemon before left there is no run's by the next, which removes it as it starts. A
@@ -5905,9 +5923,11 @@ the guest keeps their metadata alone.
   Mac's `run` right after the same daemon's `rm -f` and `rmi`, its p90 at 0 B 24.76 ms
   against 6.68.
 - **Tests.** `shards-ext4`'s, including the oracles'; `pmem`'s for the head's size, its
-  info block's checksum, a layer saved and restored, a head's alike blocks kept once, and
-  a booted head mapped back from its saved copy, its own memory given back, taken from its
-  guest meanwhile;
+  info block's checksum, a layer saved and restored, a head's alike blocks kept once, a
+  booted head mapped back from its saved copy, its own memory given back, taken from its
+  guest meanwhile, and a save that asks where the layer's file holds data with its
+  mappings away; `platform`'s that a mapping hides a file's holes where
+  `MAPPED_HIDES_HOLES` says;
   the snapshot's for a run's five files; `layers`' for the files the daemon makes and
   removes; on real microVMs, `a_microvm_takes_its_ipc_hostname_cgroups_umask_and_writable_layer`:
   sizes held to, refusals, and 256 MiB written under `--memory 64m`; and
@@ -5921,9 +5941,6 @@ the guest keeps their metadata alone.
   on the host, into the warm microVM's own layer, which its template mounted as its root's
   (a copy, as long as the layer's changes are); a template's root mounted where a run can
   swap the file under it would make a restart's cost the layer's mount alone.
-- A save on macOS reads the whole layer: APFS says that a file mapped shared and
-  writable holds data throughout (lseek(2) SEEK_DATA), so a template's copy of a 10 GiB
-  layer read all of it, 12 s of its image's first run on the Mac (PM M284).
 - Blocks the guest frees go back to the host: pmem takes no discard
   (drivers/nvdimm/pmem.c), so a layer's file only grows while its microVM lives; its
   microVM gone, the host could punch out what its bitmaps say is free.
@@ -6282,14 +6299,16 @@ running microVM has done both, so a save keeps them:
 - **Swap** (part 2). A run's swap file is unlinked once its microVM maps it (D159), so the
   VM process copies it, the guest's writes flushed to it first (msync(2)), into the
   generation's `swap`: the ranges the file holds data in (lseek(2) SEEK_DATA, SEEK_HOLE),
-  of them the 4 KiB blocks not all zeros. The swap window's state keeps the length, and a
+  of them the 4 KiB blocks not all zeros, asked, on macOS, with the guest's mapping and
+  the VM's taken away for the moment: APFS says a file mapped shared and writable holds
+  data throughout (D190, PM M285). The swap window's state keeps the length, and a
   restore maps a copy of its own back at that length before any vCPU runs (snapshot format
   18). Held by
-  `a_runs_swap_is_kept_by_a_save_and_mapped_back_by_its_restore`. APFS counts a page
-  written through the mapping as data before it is written back (that test passes on
-  this host without the flush), as ext4 and XFS do, reserving its block as it is dirtied
-  (`ext4_da_get_block_prep`, `xfs_buffered_write_iomap_begin`); the flush is for a file
-  system that gives a page its block only at write-back.
+  `a_runs_swap_is_kept_by_a_save_and_mapped_back_by_its_restore`. ext4 and XFS count a
+  page written through the mapping as data before it is written back, reserving its
+  block as it is dirtied (`ext4_da_get_block_prep`, `xfs_buffered_write_iomap_begin`), as
+  Btrfs and tmpfs do (PM M285); the flush is for a file system that gives a page its block
+  only at write-back.
 
 A save is the host's to ask for (part 2), where a template's is the guest's. The daemon
 prepares a generation in the microVM's directory, `snapshots/NAME/`: its memory, state

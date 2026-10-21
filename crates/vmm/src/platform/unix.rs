@@ -217,7 +217,8 @@ fn reserve_huge(len: usize, huge: usize) -> io::Result<NonNull<u8>> {
 ///
 /// # Safety
 /// `ptr..ptr+len` must be page-aligned, within one mapping from [`reserve`] or
-/// [`reserve_ram`], and accessed by no host thread meanwhile.
+/// [`reserve_ram`], or a mapping [`map_file_shared`] made, and accessed by no host thread
+/// meanwhile.
 pub unsafe fn withhold(ptr: NonNull<u8>, len: usize) -> io::Result<()> {
     // SAFETY: MAP_FIXED over the caller's own mapping, which nothing accesses meanwhile.
     let p = unsafe {
@@ -596,6 +597,41 @@ pub fn map_file_shared(file: &File, len: usize) -> io::Result<NonNull<u8>> {
     NonNull::new(p.cast()).ok_or_else(|| io::Error::other("mmap returned NULL"))
 }
 
+/// Maps `len` bytes of `file`, opened for writing, shared and writable at `at` again, as
+/// [`map_file_shared`] mapped them: a mapping of it [`withhold`] took away for a while.
+///
+/// # Safety
+/// `at..at+len` must be page-aligned, the range of a mapping of this process's own that
+/// nothing references meanwhile and no hypervisor maps.
+pub unsafe fn map_file_shared_at(file: &File, len: usize, at: NonNull<u8>) -> io::Result<()> {
+    // SAFETY: MAP_FIXED over the caller's own range, which nothing references.
+    let p = unsafe {
+        libc::mmap(
+            at.as_ptr().cast(),
+            len,
+            libc::PROT_READ | libc::PROT_WRITE,
+            libc::MAP_SHARED | libc::MAP_FIXED,
+            file.as_raw_fd(),
+            0,
+        )
+    };
+    if p == libc::MAP_FAILED {
+        return Err(io::Error::last_os_error());
+    }
+    if p != at.as_ptr().cast() {
+        return Err(io::Error::other("mmap(MAP_FIXED) placed the mapping elsewhere"));
+    }
+    Ok(())
+}
+
+/// Whether a mapping of a file hides its holes: lseek(2)'s SEEK_DATA and SEEK_HOLE then
+/// say that all of it holds data. APFS's do, for a file mapped shared and writable, by
+/// this process or by a guest through Hypervisor.framework's mapping of it, until neither
+/// is left (macOS 26.4.1, PM M285); Linux's Btrfs and tmpfs answer as they would unmapped,
+/// pages written through a mapping and not yet written back counted as data (Linux
+/// 6.19).
+pub const MAPPED_HIDES_HOLES: bool = cfg!(target_os = "macos");
+
 /// Writes what was written through `ptr..ptr + len`, a mapping [`map_file_shared`] made,
 /// to its file, and waits until it has (msync(2) MS_SYNC): the file's blocks then hold it,
 /// which [`data_ranges`] says.
@@ -613,7 +649,8 @@ pub unsafe fn flush_shared(ptr: NonNull<u8>, len: usize) -> io::Result<()> {
 
 /// The ranges of `file`'s first `len` bytes that hold data, `(offset, length)` in order:
 /// what lseek(2)'s SEEK_DATA and SEEK_HOLE say of it. A file system that keeps no holes
-/// answers that all of it does, and one that cannot be asked (EINVAL) is taken to.
+/// answers that all of it does, and one that cannot be asked (EINVAL) is taken to, as one
+/// is of a file a mapping hides the holes of ([`MAPPED_HIDES_HOLES`]).
 pub fn data_ranges(file: &File, len: u64) -> io::Result<Vec<(u64, u64)>> {
     let end = libc::off_t::try_from(len).map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?;
     let seek = |at: libc::off_t, whence: libc::c_int| {
@@ -2122,6 +2159,38 @@ mod launched_tests {
         }
         assert_eq!(suspended, Some(false));
         assert_eq!(launched(std::process::id()), Some(true));
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod holes_tests {
+    use super::*;
+
+    /// A shared writable mapping of a file hides its holes from lseek(2) where
+    /// [`MAPPED_HIDES_HOLES`] says this host's file system does (PM M285), and they come
+    /// back once the mapping is gone.
+    #[test]
+    fn a_mapping_hides_a_files_holes_where_the_platform_says() {
+        let dir = shards_testdir::TempDir::new("holes").unwrap();
+        let len = 64usize << 20;
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .open(dir.join("sparse"))
+            .unwrap();
+        file.set_len(len as u64).unwrap();
+        crate::platform::write_all_at(&file, &[1; 16 << 10], 32 << 20).unwrap();
+        file.sync_all().unwrap();
+        let alone = data_ranges(&file, len as u64).unwrap();
+        assert_eq!(alone, [(32 << 20, 16 << 10)]);
+        let mapped = map_file_shared(&file, len).unwrap();
+        let hidden = data_ranges(&file, len as u64).unwrap();
+        // SAFETY: the mapping just made, which nothing else uses.
+        unsafe { unmap_file_shared(mapped, len) };
+        assert_eq!(hidden == [(0, len as u64)], MAPPED_HIDES_HOLES, "{hidden:?}");
+        assert_eq!(data_ranges(&file, len as u64).unwrap(), alone);
     }
 }
 

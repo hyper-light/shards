@@ -402,6 +402,19 @@ pub unsafe fn flush_shared(ptr: NonNull<u8>, len: usize) -> io::Result<()> {
     }
 }
 
+/// Whether a mapping of a file hides its holes (unix.rs): its ranges are all of it here
+/// ([`data_ranges`]).
+pub const MAPPED_HIDES_HOLES: bool = false;
+
+/// Maps a view of `file` at `at` again (unix.rs): never asked, as no mapping hides a
+/// file's holes here ([`MAPPED_HIDES_HOLES`]).
+///
+/// # Safety
+/// None: this never touches memory.
+pub unsafe fn map_file_shared_at(_file: &File, _len: usize, _at: NonNull<u8>) -> io::Result<()> {
+    Err(io::ErrorKind::Unsupported.into())
+}
+
 /// The ranges of `file`'s first `len` bytes that hold data: all of it, as no Windows
 /// backend takes snapshots, whose saves alone ask (`vm::SNAPSHOTS`).
 pub fn data_ranges(_file: &File, len: u64) -> io::Result<Vec<(u64, u64)>> {

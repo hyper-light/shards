@@ -104,6 +104,12 @@ impl Control {
         self.layer.get().map(|(layer, _)| layer)
     }
 
+    /// Whether the guest has lost its writable layer or its run's swap: a mapping taken
+    /// from it for a save that could not be given back, so that its machine cannot go on.
+    pub fn lost(&self) -> bool {
+        self.layer().is_some_and(|l| l.lost()) || self.swap().is_some_and(|w| w.lost())
+    }
+
     /// Runs `hook` as the guest first says its PID 1 runs (`marker::INIT_STARTED`), on
     /// the vCPU that says so: its kernel's boot is done.
     pub fn on_init_started(&self, hook: Box<dyn FnOnce() + Send>) {
