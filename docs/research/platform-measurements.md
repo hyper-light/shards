@@ -9772,7 +9772,8 @@ revision before comparing a changed API/implementation.
   offlining one for `update --cpus` stops the whole guest each time. Item 3's CPU half is
   the user's to choose (asked 2026-10-19): online and offline per run as the plan says, or
   every CPU online in the template and each run confined to its share (a cpuset of its
-  CPUs, a quota in the guest, a cap on the VM process's vCPU threads from the host).
+  CPUs, a quota in the guest, a cap on the VM process's vCPU threads from the host). The
+  latter, D191 (M288).
 
 ### M266. An agent's long workloads on shards, Docker, Firecracker and Cloud Hypervisor (the plan's item 1)
 
@@ -10913,3 +10914,98 @@ revision before comparing a changed API/implementation.
   mapped with MADV_NOHUGEPAGE (`GuestMemory::from_file`, pmem `Layer::restore`,
   `remap_head`); the envelope's restore allowances go, and an allowance now states the most
   it allows (`at_most`), which a wider gap fails.
+
+### M288. A run's microVM with every CPU of its host, its workload held to its own (D191)
+
+- **Question.** D191 gives every run's microVM the host's CPUs and holds a run to its
+  limit by its cgroup (`cpuset.cpus`, `cpu.max`); before, its microVM had the vCPUs its
+  limit needed, and each count its own template. What does a run with a limit gain and
+  pay: its first run, its later runs, its memory, what its home keeps warm, and what
+  `update --cpus` gives a running workload?
+- **Method.** `docs/research/measurements/cpu-elastic/ab.py`, 1468f07d against the change,
+  each built `--release` with a home of its own holding alpine: 10 rounds after one not
+  counted, which build goes first alternating. Each round removes its home's templates,
+  which a run without a limit makes again; then the first run of `--cpus 1` and of
+  `--cpus 4`, 10 runs of each of them and of none in turn, back to back; a sleeping run of
+  each (what its workload sees, its VM process's memory); the home's VM processes once they
+  settle; and a `--cpus 1` run updated to 4 and back to 1, the CPU time its cgroup used
+  under 6 busy loops for 2 s after each. Then `paced.py` (`--cpus 1`, 30 runs a side, 0.3 s
+  apart, each finding its warm microVMs made again) and `wake.sh` (round trips between two
+  vCPUs, `/bin/true` started from a C program and from a shell). Apple M5 Max (18 CPUs),
+  macOS 26.4.1, load average 2.8 to 4.4; and `ab.py` alone on Fedora 44 (Linux
+  6.19.10-300.fc44.x86_64, KVM) on M258's host, an Intel Core i9-14900HX, every process
+  on its performance cores (0 to 15, `taskset`: microVMs of 16 vCPUs), load average 10 to
+  16 (two CI jobs beside it); 2026-10-21. Last, a vCPU thread's CPU time read from another
+  thread (`hv::hvf::tests::a_vcpu_threads_cpu_time_counts_its_guest`, ignored, run alone):
+  a guest spinning on `b .`, its timer never armed, read by thread_info(THREAD_EXTENDED_INFO)
+  each 10 ms for 100 reads.
+- **Results, macOS** (ms, p50 / p90 / max; n 10, runs n 100).
+
+  | | 1468f07d | the change |
+  |---|---|---|
+  | first run, `--cpus 1` | 216.0 / 247.1 / 247.1 | 13.5 / 21.2 / 21.2 |
+  | first run, `--cpus 4` | 262.1 / 403.3 / 403.3 | 18.7 / 29.6 / 29.6 |
+  | run, `--cpus 1` | 13.35 / 19.14 / 26.61 | 18.09 / 29.46 / 45.26 |
+  | run, `--cpus 4` | 15.13 / 26.48 / 35.82 | 18.74 / 26.41 / 38.30 |
+  | run, no limit | 19.11 / 29.08 / 40.70 | 18.09 / 28.44 / 39.75 |
+  | a `--cpus 1` run's VM process, footprint / resident MiB | 10.39 / 25.58 | 15.63 / 30.77 |
+  | a `--cpus 4` run's | 13.49 / 28.98 | 18.50 / 33.73 |
+  | a run's without a limit | 17.81 / 33.22 | 18.10 / 33.47 |
+  | the home's VM processes, settled | 5 (p90 7) | 3 (p90 3) |
+  | their footprint / resident in all, MiB | 161.7 / 226.0 | 139.4 / 174.4 |
+  | `update --cpus 4`, then CPUs used | 4.58 ms, 1.00 | 4.51 ms, 4.01 |
+  | `update --cpus 1`, then CPUs used | 10.07 ms, 1.00 | 5.08 ms, 1.01 |
+
+  A run's workload saw, before: `--cpus 1` `nproc` 1, CPUs online 0, cpuset 0; `--cpus 4`
+  4, 0-3, 0-3. With the change: `--cpus 1` 1, 0-17, 0; `--cpus 4` 4, 0-17, 0-3; both
+  `cpu.max` as before; without a limit 18, 0-17, 0-17 in both.
+- **Results, Linux** (as above; memory smaps_rollup's, MiB).
+
+  | | 1468f07d | the change |
+  |---|---|---|
+  | first run, `--cpus 1` | 694.3 / 1,336.4 / 1,336.4 | 16.7 / 25.3 / 25.3 |
+  | first run, `--cpus 4` | 529.8 / 757.4 / 757.4 | 15.6 / 156.5 / 156.5 |
+  | run, `--cpus 1` | 7.28 / 11.02 / 20.76 | 9.89 / 14.50 / 28.67 |
+  | run, `--cpus 4` | 7.52 / 11.72 / 16.40 | 10.55 / 13.98 / 27.58 |
+  | run, no limit | 8.04 / 13.04 / 24.90 | 9.41 / 14.50 / 21.26 |
+  | a `--cpus 1` run's VM process, Rss / Pss / Anonymous | 28.2 / 12.0 / 4.2 | 41.7 / 20.3 / 9.3 |
+  | a `--cpus 4` run's | 33.5 / 15.2 / 6.0 | 42.2 / 21.0 / 9.8 |
+  | a run's without a limit | 40.3 / 19.7 / 9.2 | 42.3 / 21.2 / 9.8 |
+  | the home's VM processes, settled | 7 | 3 |
+  | their Rss / Pss / Anonymous in all | 273.8 / 184.4 / 105.4 | 156.4 / 121.4 / 88.4 |
+  | `update --cpus 4`, then CPUs used | 1.95 ms, 1.02 | 2.44 ms, 4.04 |
+  | `update --cpus 1`, then CPUs used | 2.26 ms, 1.02 | 2.59 ms, 1.02 |
+
+  What the workloads saw is as on macOS, of 16 CPUs.
+  - Paced, `--cpus 1`, n 30 a side (p50 / p90): the client 10.23 / 14.31 ms before, 12.73
+    / 18.63 with the change; in the guest, from the request to the command's start 1.16
+    against 2.00, the command (`true`) 0.17 against 0.51, from its exit to its answer 0.37
+    against 0.65.
+  - Waking another vCPU (a microVM of 18, without a limit, n 2000): a round trip through
+    two pipes, both threads on CPU 0, p50 1.0 to 1.1 µs; CPU 0 and 1, 15.2 to 18.2 µs (p99
+    25 to 45), 0 and 9, 14.9, 0 and 17, 14.7. `/bin/true` started and waited for (n 200):
+    124 to 148 µs on the parent's CPU, 150 to 157 on any. 200 started from a shell, on
+    the guest's clock (10 ms steps): 0.03 to 0.05 s in every arm, before and with the
+    change, privileged and not.
+  - A vCPU thread's CPU time, its guest spinning with no exit (0 exits): 6.87 s of 6.93 s
+    of wall time (0.992), the reads 10 ms apart taking up to 91 ms between them (the
+    reader's sleeps, at the default QoS); a read p50 3.2 µs, p99 and max 6.0.
+- **Reading.**
+  - A count's first run no longer boots and saves a template of its own: 13.5 ms where
+    it took 216, and 18.7 where 262. The home keeps one pool warm, not one a count:
+    three VM processes where five, 22 MiB less footprint and 52 MiB less resident memory
+    in all.
+  - `update --cpus` gives a running workload what it asks, both ways: 4.01 CPUs used after
+    an update to 4, where its microVM's one vCPU held it to 1.00 before.
+  - Fewer microVMs kept warm on Linux too: three where seven, 63 MiB less Pss in all, a
+    count's first run 16.7 ms where 694.
+  - A run with a limit pays what a run without one pays, its microVM being as large: its
+    VM process's memory (macOS 5 MiB more of footprint at `--cpus 1`; Linux 8.4 MiB more
+    Pss, each vCPU's own, M183), and its start: on macOS 2.5 ms at p50 paced and 4.7 back
+    to back, on Linux 2.6 back to back. Back to back, every count's runs take from one
+    pool where each count had its own, and a run without a limit took 1.4 ms more on
+    Linux, none more on macOS. Where a paced start goes is not yet known: not to waking
+    other vCPUs (15 to 18 µs a round trip) nor to starting processes across them (a C
+    program's `/bin/true` 150 µs on any CPU, against 124 to 148 on its own).
+  - A vCPU thread's CPU time counts its guest's, read from another thread, on HVF: what a
+    hold from the host can read (D191's slice 2), at 3.2 µs a read.

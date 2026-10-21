@@ -23,6 +23,15 @@ pub fn host_cpus() -> usize {
     std::thread::available_parallelism().map_or(1, std::num::NonZero::get)
 }
 
+/// The vCPUs every run's microVM has, whatever its run is given: the host's, all online, so
+/// that one template serves every `--cpus` and an update gives a running workload more or
+/// fewer of them (D191). Bringing a CPU online as a run starts cost 13 to 45 ms where a
+/// microVM had the host's (PM M265), past what a run's start has; a run is held to what it
+/// is given by its cgroup ([`cgroup`]).
+pub fn microvm_vcpus() -> u32 {
+    u32::try_from(host_cpus()).unwrap_or(u32::MAX)
+}
+
 /// What a run's limits may ask (D155, D159), checked as it is made, in the order moby's
 /// verifyPlatformContainerResources checks them, and refused in shards' words: an error,
 /// or what to warn of. Its microVM's kernel is the run's own, so what a host shared by
@@ -383,8 +392,17 @@ pub fn cgroup(r: &Resources, cpus: usize) -> Vec<Vec<u8>> {
         };
         out.push(format!("cpu.max={quota} {period}"));
     }
+    // The CPUs it runs on: `--cpuset-cpus`'s; else the first of its microVM's as many as it
+    // is given ([`run_cpus`]), its microVM having every one of the host's (D191), so that
+    // it sees and runs on what it was given as a microVM of its CPUs alone did; all of them
+    // named, for an update that gives it more to undo one that gave it fewer.
     if !r.cpuset_cpus.is_empty() {
         out.push(format!("cpuset.cpus={}", r.cpuset_cpus));
+    } else {
+        out.push(match run_cpus(r, cpus) {
+            0 | 1 => "cpuset.cpus=0".to_string(),
+            n => format!("cpuset.cpus=0-{}", n - 1),
+        });
     }
     if !r.cpuset_mems.is_empty() {
         out.push(format!("cpuset.mems={}", r.cpuset_mems));
@@ -392,11 +410,12 @@ pub fn cgroup(r: &Resources, cpus: usize) -> Vec<Vec<u8>> {
     out.into_iter().map(String::into_bytes).collect()
 }
 
-/// The vCPUs a microVM has for `r`, of a host of `cpus`: `--cpu-count`'s (D155); else as
-/// many as `--cpus`, `--cpu-percent` or the quota uses, and every CPU `--cpuset-cpus`
+/// The CPUs a run's workload is given, of a host of `cpus`: `--cpu-count`'s (D155); else
+/// as many as `--cpus`, `--cpu-percent` or the quota uses, and every CPU `--cpuset-cpus`
 /// names; with none of them, every CPU of the host's, as a container sees and uses every
-/// one (D125); one at least, and no more than the host's.
-pub fn vcpus(r: &Resources, cpus: usize) -> u32 {
+/// one (D125); one at least, and no more than the host's. Its microVM has every one of the
+/// host's ([`microvm_vcpus`]); its cgroup's cpuset names these ([`cgroup`]).
+pub fn run_cpus(r: &Resources, cpus: usize) -> u32 {
     let host = i64::try_from(cpus).unwrap_or(i64::MAX);
     if r.cpu_count > 0 {
         return u32::try_from(r.cpu_count.min(host)).unwrap_or(1);
@@ -691,23 +710,30 @@ mod tests {
             pids_limit: -1,
             ..r()
         };
-        assert_eq!(text(&unswapped), ["memory.max=33554432", "cpu.max=25000 50000"]);
+        assert_eq!(
+            text(&unswapped),
+            ["memory.max=33554432", "cpu.max=25000 50000", "cpuset.cpus=0"]
+        );
         assert_eq!(
             text(&Resources {
                 cpu_period: 50_000,
                 ..r()
             }),
-            ["cpu.max=max 50000"]
+            ["cpu.max=max 50000", "cpuset.cpus=0-7"]
         );
-        assert!(text(&r()).is_empty());
-        // `--cpu-percent` (D155): that share of all 8 of the host's CPUs' time.
+        // Every CPU of its microVM's, which has all the host's, named: an update that gives
+        // a run fewer is undone by one that gives it them all (D191).
+        assert_eq!(text(&r()), ["cpuset.cpus=0-7"]);
+        // `--cpu-percent` (D155): that share of all 8 of the host's CPUs' time, on as many.
         assert_eq!(
             text(&Resources {
                 cpu_percent: 50,
                 ..r()
             }),
-            ["cpu.max=400000 100000"]
+            ["cpu.max=400000 100000", "cpuset.cpus=0-3"]
         );
+        // `--cpu-count`'s CPUs, the first of its microVM's.
+        assert_eq!(text(&Resources { cpu_count: 3, ..r() }), ["cpuset.cpus=0-2"]);
         // ConvertCPUSharesToCgroupV2Value's fixed points, and its default.
         assert_eq!(
             (cpu_weight(2), cpu_weight(1024), cpu_weight(262_144)),
@@ -811,9 +837,9 @@ mod tests {
     #[test]
     fn microvms_are_sized_for_their_limits() {
         // No limit: every CPU of the host's, as Docker's container has (D125).
-        assert_eq!(vcpus(&r(), 8), 8);
+        assert_eq!(run_cpus(&r(), 8), 8);
         assert_eq!(
-            vcpus(
+            run_cpus(
                 &Resources {
                     nano_cpus: 500_000_000,
                     ..r()
@@ -823,7 +849,7 @@ mod tests {
             1
         );
         assert_eq!(
-            vcpus(
+            run_cpus(
                 &Resources {
                     nano_cpus: 1_500_000_000,
                     ..r()
@@ -833,7 +859,7 @@ mod tests {
             2
         );
         assert_eq!(
-            vcpus(
+            run_cpus(
                 &Resources {
                     cpuset_cpus: "3".into(),
                     ..r()
@@ -843,7 +869,7 @@ mod tests {
             4
         );
         assert_eq!(
-            vcpus(
+            run_cpus(
                 &Resources {
                     cpu_quota: 1_000_000,
                     cpu_period: 100_000,
@@ -860,13 +886,13 @@ mod tests {
             nano_cpus,
             ..r()
         };
-        assert_eq!(vcpus(&count(3, 0), 8), 3);
-        assert_eq!(vcpus(&count(3, 1_500_000_000), 8), 3);
-        assert_eq!(vcpus(&count(1, 0), 8), 1);
+        assert_eq!(run_cpus(&count(3, 0), 8), 3);
+        assert_eq!(run_cpus(&count(3, 1_500_000_000), 8), 3);
+        assert_eq!(run_cpus(&count(1, 0), 8), 1);
         let percent = |cpu_percent| Resources { cpu_percent, ..r() };
-        assert_eq!(vcpus(&percent(50), 8), 4);
-        assert_eq!(vcpus(&percent(33), 18), 6);
-        assert_eq!(vcpus(&percent(100), 18), 18);
+        assert_eq!(run_cpus(&percent(50), 8), 4);
+        assert_eq!(run_cpus(&percent(33), 18), 6);
+        assert_eq!(run_cpus(&percent(100), 18), 18);
         assert_eq!(memory_mib(0, 256, None, 1), 256);
         assert_eq!(memory_mib(1, 256, None, 1), 256);
         // The default, grown by what its vCPUs keep: as much may be allocated in it as in

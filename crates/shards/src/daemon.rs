@@ -3058,7 +3058,7 @@ impl<D: Disk> Daemon<D> {
             }
             (None, Some(bytes)) => {
                 let at = lock(&self.containers).dir(&id).join(SWAP);
-                let vcpus = crate::resources::vcpus(&run.resources, crate::resources::host_cpus());
+                let vcpus = crate::resources::microvm_vcpus();
                 match open_swap(&at, crate::resources::swap_device_bytes(bytes, vcpus)) {
                     Ok(file) => Some((file, at)),
                     Err(e) => {

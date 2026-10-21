@@ -1361,4 +1361,100 @@ mod tests {
         );
         assert_eq!(neither, alone);
     }
+
+    /// What a vCPU thread's CPU time says, read from another thread, while its guest runs
+    /// with no exit (D191's hold from the host): a guest spinning on `b .`, its timer never
+    /// armed, read each 10 ms for a second by thread_info(THREAD_EXTENDED_INFO); and what a
+    /// read costs. Ignored because HVF allows one VM per process: run it alone with
+    /// `--ignored --exact`.
+    #[test]
+    #[ignore]
+    fn a_vcpu_threads_cpu_time_counts_its_guest() {
+        use std::time::{Duration, Instant};
+        const RAM: u64 = 0x8000_0000;
+        let ram_len = 1usize << 20;
+        let ram = crate::platform::reserve(ram_len).unwrap().as_ptr();
+        // SAFETY: within the fresh reservation: `b .`.
+        unsafe { ram.cast::<u32>().write(0x1400_0000) };
+        let vm = Vm::new(VmConfig {
+            ipa_bits: 36,
+            mpidrs: vec![0],
+            el2: false,
+        })
+        .unwrap();
+        // SAFETY: the reservation is never unmapped.
+        unsafe { vm.map_ram(ram, RAM, ram_len) }.unwrap();
+        let _gic = vm
+            .create_gic(&GicLayout {
+                dist_base: 0x0800_0000,
+                redist_base: 0x080a_0000,
+                msi: None,
+                its: None,
+            })
+            .unwrap();
+        let (tx, rx) = mpsc::channel();
+        let vm = &vm;
+        std::thread::scope(|s| {
+            let spinning = s.spawn(move || {
+                let mut a = vm.create_vcpu(0).unwrap();
+                a.sys.set_reg(sys::Reg::PC, RAM).unwrap();
+                a.sys.set_reg(sys::Reg::CPSR, 0x3c5).unwrap();
+                // SAFETY: this thread's own port, which lives as long as it.
+                let port = unsafe { libc::pthread_mach_thread_np(libc::pthread_self()) };
+                tx.send((port, a.sys.kicker())).unwrap();
+                let mut exits = 0u64;
+                loop {
+                    match a.sys.run().unwrap() {
+                        sys::Exit::Canceled => break,
+                        _ => exits += 1,
+                    }
+                }
+                exits
+            });
+            let (port, kicker) = rx.recv().unwrap();
+            let cpu = || {
+                // SAFETY: zeroed plain data, which thread_info fills.
+                let mut info: libc::thread_extended_info = unsafe { std::mem::zeroed() };
+                let mut count = libc::THREAD_EXTENDED_INFO_COUNT;
+                // SAFETY: a live thread's port, a buffer of `count` words.
+                let r = unsafe {
+                    libc::thread_info(
+                        port,
+                        libc::THREAD_EXTENDED_INFO as libc::thread_flavor_t,
+                        (&raw mut info).cast(),
+                        &mut count,
+                    )
+                };
+                assert_eq!(r, libc::KERN_SUCCESS);
+                info.pth_user_time + info.pth_system_time
+            };
+            let (t0, c0) = (Instant::now(), cpu());
+            let mut samples = Vec::new();
+            let mut reads = Vec::new();
+            for _ in 0..100 {
+                std::thread::sleep(Duration::from_millis(10));
+                let r0 = Instant::now();
+                let c = cpu();
+                reads.push(r0.elapsed().as_nanos());
+                samples.push((t0.elapsed().as_nanos(), u128::from(c - c0)));
+            }
+            kicker.kick().unwrap();
+            let exits = spinning.join().unwrap();
+            // How far behind the wall the thread's time ever fell, and its steps.
+            let lag = samples.iter().map(|&(w, c)| w.saturating_sub(c)).max().unwrap();
+            let steps: Vec<u128> = samples.windows(2).map(|w| w[1].1 - w[0].1).collect();
+            reads.sort_unstable();
+            let (w, c) = samples[samples.len() - 1];
+            eprintln!(
+                "wall {w} ns, cpu {c} ns ({:.4}), {exits} exits; most behind {lag} ns; steps min {} \
+                 max {} ns; a read p50 {} p99 {} max {} ns",
+                c as f64 / w as f64,
+                steps.iter().min().unwrap(),
+                steps.iter().max().unwrap(),
+                reads[reads.len() / 2],
+                reads[reads.len() * 99 / 100],
+                reads[reads.len() - 1],
+            );
+        });
+    }
 }
