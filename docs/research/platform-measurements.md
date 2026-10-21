@@ -10895,7 +10895,11 @@ revision before comparing a changed API/implementation.
   | pooled run (`run_template`) | 28.23, 26.49 ms | 26.97, 25.13 ms |
 
   (the first experiment's: cold restore 20.19, 21.22 against 37.63, 36.16 ms; warm request
-  18.47, 19.75 against 35.65, 27.09; pooled run 34.98, 39.50 against 34.97, 33.64.)
+  18.47, 19.75 against 35.65, 27.09; pooled run 34.98, 39.50 against 34.97, 33.64.) The
+  pooled runs compared one build with itself: the image bench's runs are its daemon's,
+  whose VM processes take only SHARDS_LOG and SHARDS_TIMING of its environment
+  (`netproc::child_env`), so no arm's had the advice (found 2026-10-21; the restore-folios
+  experiment passes its switches through).
   Fedora (Btrfs, Linux 6.19.10), `layer-head/footprint.py` edbd4816 against the change,
   n = 10: warm microVMs 35.29 against 35.34 MiB resident, first runs 89.69 against 89.88;
   without the advice its warm microVMs' memory files had no page PMD-mapped (smaps
@@ -10906,8 +10910,8 @@ revision before comparing a changed API/implementation.
   restored VM holds less of its file than Firecracker's, and a fleet less PSS a VM, on
   every axis the comparison measures; its first beat still comes before Firecracker's. What
   base pages cost is the faults of a restore that has no working set to prefetch: cold
-  restores and an unprefetched warm request take 7 to 18 ms longer. A pooled run, the
-  request path, took as long or less in all four rounds. Where the page cache keeps no 2 MiB
+  restores and an unprefetched warm request take 7 to 18 ms longer. What it costs a pooled
+  run is not measured here (above: one build both times). Where the page cache keeps no 2 MiB
   folios of the file, as Fedora's Btrfs did, the advice changes nothing. A guest's
   steady-state speed on base pages is not measured here.
 - **Consequence.** A restored guest's memory, and a layer's head mapped from its copy, are
@@ -11009,3 +11013,40 @@ revision before comparing a changed API/implementation.
     program's `/bin/true` 150 µs on any CPU, against 124 to 148 on its own).
   - A vCPU thread's CPU time counts its guest's, read from another thread, on HVF: what a
     hold from the host can read (D191's slice 2), at 3.2 µs a read.
+
+### M289. A privileged workload that leaves its cgroup, and the host's hold on its vCPUs (D191)
+
+- **Question.** D191 holds a run's workload to its CPUs by its cgroup's cpuset inside the
+  microVM. Can a workload leave that cgroup, and does the host's hold on the VM process's
+  vCPU threads (slice 2) bound it where the cpuset does not?
+- **Method.** On a real microVM (Apple M5 Max, macOS 26.4.1, 18 CPUs), the E2E test
+  `a_workload_past_its_cgroup_is_held_to_its_cpus_by_its_host`: a `--privileged --cgroupns
+  host` run of `--cpus 1`, whose guest-root workload (`testguest burn 4 3000 escape`)
+  writes "0" to `/sys/fs/cgroup/cgroup.procs` — the microVM's cgroup root, which
+  `--cgroupns host` shows it and `--privileged` remounts read-write — then spins four
+  threads for three seconds. The VM process's CPU time over the burn
+  (`platform::process_usage`), its wall time, against the same run without a limit.
+  2026-10-21.
+- **Results.**
+  - The escape works: before it the workload's cgroup is `/run/workload`, cpuset `0`;
+    after, `/`, cpuset `0-17` — every CPU of the host's. The in-guest cpuset alone no
+    longer bounds it. (A root workload sharing the microVM's PID namespace cannot instead
+    `setns` into init's own namespaces: opening `/proc/1/ns/cgroup` is denied, init being
+    non-dumpable. And a workload held to the image's non-root user cannot write the
+    root-owned `cgroup.procs`: the escape needs guest root, which `--privileged` grants.)
+  - With the hold, the escaped four threads used 1 CPU's time over the three-second burn
+    (within a period's overrun): held to its `--cpus 1`. Without a limit, the same four
+    used 11.4 s of CPU in a 3.0 s window — every CPU the host gave. With the hold removed
+    (mutation), the limited run too used 11.4 s in 3.0 s.
+- **What the hold costs** (`cpu-elastic/ab.py`, slice 2 against slice 1 a9133de9, Fedora
+  KVM, 16 P-cores, n 10/100): nothing measurable. A run's start within 0.3 ms either way
+  (`--cpus 1` 7.24 → 6.92 ms p50, none 6.60 → 6.99), its VM process's memory within 1 MiB
+  (`--cpus 1` Pss 20.81 → 20.86 MiB; all VM processes' Pss 123.8 → 122.9), `update --cpus`
+  moving CPUs the same (4.03 used after `--cpus 4` either build). The governor thread is
+  made only for a limited run, and an unheld vCPU's per-exit check is one atomic load.
+- **Consequence.** The cpuset holds a workload that stays in its cgroup; the VM process's
+  hold on its vCPU threads (`vm::hold`, reading each thread's CPU time, holding them out of
+  the guest once a period's share is spent) holds the rest — kernel threads, interrupts,
+  and a workload that escaped its cgroup — to what a microVM of the run's CPUs alone could
+  use. Both are needed: a guest's root is still inside its microVM, but a microVM is not a
+  CPU budget until its host makes it one. It costs a run nothing (above).

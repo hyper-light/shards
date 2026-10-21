@@ -438,6 +438,36 @@ pub fn run_cpus(r: &Resources, cpus: usize) -> u32 {
     u32::try_from(need).unwrap_or(1)
 }
 
+/// The CPUs whose time a run's microVM may use of a host of `cpus` together, the host
+/// holding its vCPUs to it (D191): as many as its workload's limits let it use at once,
+/// whole, the fewest of `--cpu-count`'s, its quota's rounded up and the CPUs
+/// `--cpuset-cpus` names; 0, none held, where that is every CPU of the host's. Its
+/// workload is held inside its microVM to what it is given ([`cgroup`]); this holds the
+/// rest of its guest, kernel threads and interrupts, and a workload past its cgroup (a
+/// guest's root may leave it), to what a microVM of those CPUs alone could use.
+pub fn held_cpus(r: &Resources, cpus: usize) -> u32 {
+    let host = i64::try_from(cpus.max(1)).unwrap_or(i64::MAX);
+    let mut most = host;
+    if r.cpu_count > 0 {
+        most = most.min(r.cpu_count);
+    }
+    if let Some((quota, period)) = cpu_max(r, cpus).filter(|&(quota, period)| quota > 0 && period > 0) {
+        most = most.min(quota / period + i64::from(quota % period != 0));
+    }
+    if let Ok(mut named) = parse_uint_list(&r.cpuset_cpus, cpus)
+        && !named.is_empty()
+    {
+        named.sort_unstable();
+        named.dedup();
+        most = most.min(i64::try_from(named.len()).unwrap_or(i64::MAX));
+    }
+    if most >= host {
+        0
+    } else {
+        u32::try_from(most.max(1)).unwrap_or(u32::MAX)
+    }
+}
+
 /// The memory a microVM of `vcpus` vCPUs needs, in MiB, for its workload to use `limit`
 /// bytes: the least even size, as the VM takes it, whose memory less what its kernel keeps
 /// ([`overhead_kib`]) holds the limit; at least `default_mib`; and at most the host's
@@ -832,6 +862,55 @@ mod tests {
             }),
             Err("--cpu-rt-period 2147483648: a real-time period is from 1 to 2147483647 microseconds".into())
         );
+    }
+
+    /// The CPUs a run's microVM is held to by its host (D191): the fewest its limits let
+    /// its workload use at once, whole; none where that is every one.
+    #[test]
+    fn microvms_are_held_to_their_runs_cpus() {
+        let host = 8;
+        assert_eq!(held_cpus(&r(), host), 0, "no limit, no hold");
+        let nano = |nano_cpus| Resources { nano_cpus, ..r() };
+        assert_eq!(held_cpus(&nano(1_000_000_000), host), 1);
+        assert_eq!(held_cpus(&nano(1_500_000_000), host), 2);
+        assert_eq!(held_cpus(&nano(500_000_000), host), 1);
+        assert_eq!(held_cpus(&nano(8_000_000_000), host), 0, "every CPU");
+        let quota = Resources {
+            cpu_quota: 250_000,
+            cpu_period: 100_000,
+            ..r()
+        };
+        assert_eq!(held_cpus(&quota, host), 3);
+        // An unlimited quota, as Docker takes -1, and a period alone, hold nothing.
+        let unlimited = Resources { cpu_quota: -1, ..r() };
+        assert_eq!(held_cpus(&unlimited, host), 0);
+        let period = Resources {
+            cpu_period: 50_000,
+            ..r()
+        };
+        assert_eq!(held_cpus(&period, host), 0);
+        // The CPUs a cpuset names, however it names them, not its highest's.
+        let set = |cpuset_cpus: &str| Resources {
+            cpuset_cpus: cpuset_cpus.into(),
+            ..r()
+        };
+        assert_eq!(held_cpus(&set("3"), host), 1);
+        assert_eq!(held_cpus(&set("0,0-1"), host), 2);
+        assert_eq!(held_cpus(&set("0-7"), host), 0);
+        let count = Resources { cpu_count: 3, ..r() };
+        assert_eq!(held_cpus(&count, host), 3);
+        let percent = Resources {
+            cpu_percent: 50,
+            ..r()
+        };
+        assert_eq!(held_cpus(&percent, host), 4);
+        // Both a quota and a cpuset: the fewer.
+        let both = Resources {
+            nano_cpus: 4_000_000_000,
+            cpuset_cpus: "0-1".into(),
+            ..r()
+        };
+        assert_eq!(held_cpus(&both, host), 2);
     }
 
     #[test]

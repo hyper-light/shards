@@ -40,6 +40,8 @@ pub const RESTORES_RECORD: bool = cfg!(hv = "kvm");
 
 #[cfg(any(hv, test))]
 mod barrier;
+#[cfg(any(hv, test))]
+mod hold;
 #[cfg(hv)]
 mod runtime;
 #[cfg(hv)]

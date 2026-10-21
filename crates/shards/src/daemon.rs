@@ -3116,6 +3116,11 @@ impl<D: Disk> Daemon<D> {
             // Its microVM's I/O limits, its VMM's to keep (D178).
             io_bytes: run.resources.io_maximum_bandwidth,
             io_requests: run.resources.io_maximum_iops,
+            // The CPUs its VMM holds its vCPUs to (D191).
+            cpus: u64::from(crate::resources::held_cpus(
+                &run.resources,
+                crate::resources::host_cpus(),
+            )),
         }
         .encode_into(&mut payload);
         // A resumed run's command runs already: its request brings its save's tokens instead,

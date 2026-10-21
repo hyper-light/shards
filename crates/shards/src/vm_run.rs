@@ -615,6 +615,16 @@ pub fn set_plug_most(bytes: u64) -> Result<(), String> {
         .set_plug_most(bytes)
 }
 
+/// Holds this VM's vCPUs together to `cpus` CPUs' time of the host's, its run's CPU
+/// limits updated (`CPUS`, D191).
+#[cfg(unix)]
+pub fn hold_cpus(cpus: u32) -> Result<(), String> {
+    RUNNING
+        .get()
+        .ok_or("the microVM has not started")?
+        .hold_cpus(cpus)
+}
+
 /// This VM's join disk, for its device.
 fn give_join_disk() -> &'static shards_vmm::devices::virtio::block::Join {
     HAS_JOIN.store(true, std::sync::atomic::Ordering::Release);
@@ -1262,6 +1272,10 @@ fn serve_workload(
                             if let Err(e) = stopper.set_plug_most(request.plug) {
                                 shards_vmm::debug!("{e}");
                             }
+                            // The CPUs its vCPUs are held to (D191), before its guest
+                            // hears of the run: what its workload may use whatever its
+                            // guest does.
+                            stopper.hold_cpus(request.cpus).inspect_err(|e| report(e))?;
                             // Its I/O limits, before its guest hears of the run (D178).
                             IO.set(request.io.0, request.io.1);
                             // Its swap (D159), mapped into the guest's swap window before

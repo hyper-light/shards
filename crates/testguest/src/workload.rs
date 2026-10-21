@@ -274,6 +274,11 @@ pub fn main() -> ! {
         "clean-cache" => clean_cache(arg(1)),
         "orphan" => orphan(),
         "heavy" => heavy(arg(1).parse().unwrap_or(0)),
+        "burn" => burn(
+            arg(1).parse().unwrap_or(1),
+            arg(2).parse().unwrap_or(1000),
+            arg(3) == "escape",
+        ),
         "trap" => trap(arg(1)),
         "ignore" => ignore(arg(1)),
         "tty" => tty(arg(1)),
@@ -3164,6 +3169,42 @@ fn orphan() -> i32 {
 /// Leaves a child holding `mib` MiB, its output closed, and exits once the child holds
 /// them: the run's end kills the child after its command and output have ended, and the
 /// child's end takes freeing them, for a record of processes to wait for (D123).
+/// Spins `threads` threads for `ms` milliseconds each (D191), first, with `escape`,
+/// leaving the run's cgroup for its microVM's root, as a workload root of its own guest
+/// may with `--privileged --cgroupns host`: `/sys/fs/cgroup` is then the whole tree,
+/// writable, and it writes itself into the root's `cgroup.procs`, out of the run's cpuset.
+/// Says the cgroup it spins in (`cgroup PATH`), then `burned`.
+fn burn(threads: usize, ms: u64, escape: bool) -> i32 {
+    if escape && let Err(e) = std::fs::write("/sys/fs/cgroup/cgroup.procs", "0") {
+        let _ = writeln!(io::stdout(), "escape: cgroup.procs: {e}");
+        return 1;
+    }
+    let cgroup = std::fs::read_to_string("/proc/self/cgroup").unwrap_or_default();
+    let _ = writeln!(io::stdout(), "cgroup {}", cgroup.trim());
+    let until = std::time::Instant::now() + std::time::Duration::from_millis(ms);
+    let spinning: Vec<_> = (0..threads)
+        .filter_map(|_| {
+            std::thread::Builder::new()
+                .spawn(move || {
+                    while std::time::Instant::now() < until {
+                        std::hint::spin_loop();
+                    }
+                })
+                .ok()
+        })
+        .collect();
+    let spun = spinning.len();
+    for t in spinning {
+        let _ = t.join();
+    }
+    if spun < threads {
+        let _ = writeln!(io::stdout(), "burn: {spun} of {threads} threads");
+        return 1;
+    }
+    let _ = writeln!(io::stdout(), "burned");
+    0
+}
+
 fn heavy(mib: usize) -> i32 {
     let mut fds = [0; 2];
     // SAFETY: pipe(2) into a two-element array.

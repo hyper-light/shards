@@ -57,6 +57,13 @@ impl<C> Barrier<C> {
         true
     }
 
+    /// Whether a snapshot is requested and not yet done: a vCPU held out of its guest
+    /// (`hold`) goes on to park. Only the running machine asks (`cfg(hv)`).
+    #[cfg(hv)]
+    pub(super) fn requested(&self) -> bool {
+        lock(&self.state).requested
+    }
+
     /// On vCPU `index`'s thread, out of the guest: if a snapshot is requested, parks, runs
     /// `capture` once the devices are quiet, and waits until the snapshot is written.
     /// Returns at once while none is requested, and whenever `stopping`.

@@ -2126,6 +2126,76 @@ pub fn process_usage(pid: u32) -> io::Result<Usage> {
     }
 }
 
+/// A thread's CPU clock, read from any thread of the process while the thread lives
+/// (D191): on Linux its CPU-time clock (pthread_getcpuclockid(3)), its task's runtime,
+/// which counts its time in a guest as any other (kernel/sched/core.c,
+/// `task_sched_runtime`); on macOS its Mach port's thread_info(THREAD_EXTENDED_INFO),
+/// which counts a vCPU's time in its guest too (PM M288).
+#[derive(Debug, Clone, Copy)]
+pub struct ThreadClock(
+    #[cfg(target_os = "macos")] libc::mach_port_t,
+    #[cfg(not(target_os = "macos"))] libc::clockid_t,
+);
+
+impl ThreadClock {
+    /// The calling thread's.
+    pub fn current() -> io::Result<ThreadClock> {
+        #[cfg(target_os = "macos")]
+        {
+            // SAFETY: the calling thread's own port, which lives as long as it does.
+            Ok(ThreadClock(unsafe {
+                libc::pthread_mach_thread_np(libc::pthread_self())
+            }))
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let mut id: libc::clockid_t = 0;
+            // SAFETY: the calling thread's own handle, and a clock id to write.
+            match unsafe { libc::pthread_getcpuclockid(libc::pthread_self(), &raw mut id) } {
+                0 => Ok(ThreadClock(id)),
+                e => Err(io::Error::from_raw_os_error(e)),
+            }
+        }
+    }
+
+    /// The CPU time its thread has used, in nanoseconds; an error once the thread is gone.
+    pub fn read(&self) -> io::Result<u64> {
+        #[cfg(target_os = "macos")]
+        {
+            // SAFETY: zeroed plain data, which thread_info fills.
+            let mut info: libc::thread_extended_info = unsafe { std::mem::zeroed() };
+            let mut count = libc::THREAD_EXTENDED_INFO_COUNT;
+            // SAFETY: a port of a thread of this process; a buffer of `count` words.
+            let r = unsafe {
+                libc::thread_info(
+                    self.0,
+                    libc::THREAD_EXTENDED_INFO as libc::thread_flavor_t,
+                    (&raw mut info).cast(),
+                    &raw mut count,
+                )
+            };
+            if r != libc::KERN_SUCCESS {
+                return Err(io::Error::other(format!("thread_info: {r}")));
+            }
+            Ok(info.pth_user_time.saturating_add(info.pth_system_time))
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let mut t = libc::timespec {
+                tv_sec: 0,
+                tv_nsec: 0,
+            };
+            // SAFETY: a clock of a thread of this process, and a timespec to write.
+            if unsafe { libc::clock_gettime(self.0, &raw mut t) } != 0 {
+                return Err(io::Error::last_os_error());
+            }
+            let secs = u64::try_from(t.tv_sec).unwrap_or(0);
+            let nanos = u64::try_from(t.tv_nsec).unwrap_or(0);
+            Ok(secs.saturating_mul(1_000_000_000).saturating_add(nanos))
+        }
+    }
+}
+
 #[cfg(test)]
 mod usage_tests {
     use super::*;
@@ -2150,6 +2220,32 @@ mod usage_tests {
         assert!(after.resident > 0);
         assert!(after.footprint > 0);
         assert!(after.cpu_ns > before.cpu_ns, "{before:?} {after:?}");
+    }
+
+    /// A thread's clock, read from another thread, counts what it spins: about no more
+    /// than the wall time, and on a host that lets it run, a share of it.
+    #[test]
+    fn a_threads_clock_counts_what_it_runs() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let stop = AtomicBool::new(false);
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::scope(|s| {
+            s.spawn(|| {
+                tx.send(ThreadClock::current().unwrap()).unwrap();
+                while !stop.load(Ordering::Relaxed) {
+                    std::hint::spin_loop();
+                }
+            });
+            let clock = rx.recv().unwrap();
+            let (t0, before) = (std::time::Instant::now(), clock.read().unwrap());
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            let spun = clock.read().unwrap() - before;
+            let wall = u64::try_from(t0.elapsed().as_nanos()).unwrap();
+            stop.store(true, Ordering::Relaxed);
+            // A read may lag what its thread has run by what it ran since its last tick.
+            assert!(spun <= wall + wall / 10, "{spun} ns of CPU in {wall} ns");
+            assert!(spun >= wall / 10, "{spun} ns of CPU in {wall} ns");
+        });
     }
 }
 

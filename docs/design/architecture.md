@@ -5765,7 +5765,7 @@ template pays it once; what its restores pay is to be measured with mappings.
   window reach its server as FUSE_WRITEs, measured in the guest, and a window that holds a
   working set costs its guest less than its 64th at boot.
 
-### D191. A run's microVM has every CPU of its host, its workload the CPUs its limits give it (slice 1 built)
+### D191. A run's microVM has every CPU of its host, its workload the CPUs its limits give it (slices 1 and 2 built)
 
 The user's plan, item 3 (2026-10-18): a run's `--cpus` as elastic as its memory (D148),
 every microVM given the host's CPUs, init bringing the run's online and `update --cpus`
@@ -5786,9 +5786,27 @@ the user told).
   D155), every one with none; `cpu.max` as before. Its processes see what a microVM of
   those CPUs alone showed them, `nproc` (sched_getaffinity) N; its guest's online CPUs are
   the host's, as a container's are.
+- **The host holds its vCPUs to the same CPUs** (slice 2, `vm::hold`). Its workload is
+  held inside its microVM; but a workload root of its own guest may leave its cgroup —
+  with `--privileged --cgroupns host` it writes itself into the microVM's cgroup root,
+  out of the run's cpuset, onto every CPU (PM M289). So the VM process holds its vCPU
+  threads together to as many of the host's CPUs as the run's limits let its workload use
+  at once (`resources::held_cpus`: the fewest of `--cpu-count`'s, the quota's rounded up,
+  and the cpuset's; none where that is every CPU). A governor thread reads each vCPU
+  thread's CPU time (`platform::ThreadClock`: Linux its CPU-time clock, which counts its
+  time in the guest; macOS thread_info, PM M288; Windows GetThreadTimes), and once a 100
+  ms period's share is spent holds every vCPU out of its guest, by the same kick a
+  snapshot uses, until the period ends; what a period overran comes off the next. This
+  bounds the whole guest — kernel threads, interrupts, and any escaped workload — to what
+  a microVM of those CPUs alone could use, where the cpuset alone bounds only a workload
+  that stays in its cgroup. It comes with the run (the `RUN` head's `cpus`), before the
+  guest hears of the run, and `update` moves it (below).
 - **`update` moves them, both ways.** A running run's `--cpus`, quota, `--cpu-count` or
   `--cpuset-cpus` changed writes its cpuset and quota at once (`builtin::CGROUP`, D40), a
   raise giving it CPUs it had not; before, a raise past its microVM's vCPUs bound at them.
+  Where the CPUs its workload may use at once change, its VM is told the new hold first
+  (`kind::CPUS`), on the link the cgroup write comes on after, as `update -m` tells it the
+  new memory (D148).
 - **Measured (PM M288; macOS on an Apple M5 Max, Linux on M258's i9-14900HX).** A count's
   first run 13.5 ms on macOS and 16.7 on Linux, where it booted and saved a template in
   216 and 694; one warm pool for every limit, three VM processes held where five and seven,
@@ -5803,20 +5821,23 @@ the user told).
   every CPU of the host's online; `--cpu-percent 50` its share on half of them),
   `run_limits_a_microvms_resources` (`--cpus 1.5 --cpuset-cpus 0`: CPU 0, every CPU
   online) and `update_changes_limits_of_running_microvms` (`--cpus 1.5`, then the host's
-  count: CPUs 0-1, then every one, and their quota). Mutation-checked: a run naming no
-  cpuset given none fails resources' test, the CPUs test and the update test; a microVM
-  of its run's CPUs alone fails the limits test and the CPUs test.
+  count: CPUs 0-1, then every one, and their quota). The host hold: resources'
+  `microvms_are_held_to_their_runs_cpus` (the fewest of each limit's CPUs, none for every
+  one); `vm::hold`'s own tests (threads held to one CPU use about the time passing, not
+  every CPU's; a hold of every CPU holds nothing; the end lets a held vCPU go); on a real
+  microVM `a_workload_past_its_cgroup_is_held_to_its_cpus_by_its_host` (a privileged
+  guest-root workload that writes itself to the cgroup root, out of a `--cpus 1` cpuset,
+  uses no more than one CPU's time, where without a limit four threads run free), and
+  `platform`'s `a_threads_clock_counts_what_it_runs`. Mutation-checked: a run naming no
+  cpuset given none fails resources' test, the CPUs test and the update test; a microVM of
+  its run's CPUs alone fails the limits test and the CPUs test; the host hold removed, the
+  escaped workload uses every CPU (11.4 s of CPU in a 3 s window).
 - **Next.**
-  - Slice 2: the host holds a run to them too. A workload root of its own guest
-    (`--privileged`) may leave its cgroup inside its microVM, which then gives it every
-    CPU of the host's, where its microVM's vCPUs bounded it before. The VM process holds
-    its vCPU threads together to the CPUs the run's limits need, on every hypervisor: a
-    vCPU thread's CPU time counts its guest's (HVF: thread_info, PM M288's probe; KVM: the
-    task's runtime, which counts its time in the guest as any other, kernel/sched/core.c
-    `task_sched_runtime`).
   - What a microVM's vCPUs cost its run's start (M288: 2.5 ms paced at 18 against 1,
     which every run without a limit pays too): where it goes, and taking off what is not
     its guest's own.
+  - What the hold's governor costs a run (slice 2's A/B): its thread, made only for a
+    limited run, and the per-exit check every vCPU makes.
 
 ### D190. A run's writable layer on its host's disk: ext4 with DAX over pmem (slices 1 to 6 built)
 

@@ -12090,6 +12090,74 @@ fn a_microvm_takes_its_cpus_real_time_isolation_and_annotations() {
     assert_eq!(listed.stdout, "annotated\n", "{listed}");
 }
 
+/// A run's CPUs are held from its host too (D191): a workload root of its own guest
+/// (`--privileged --cgroupns host`) that writes itself into its microVM's cgroup root,
+/// out of the run's cpuset, where its guest gives it every CPU of the host's, uses no more
+/// of the host's CPU time than its limit's CPUs, its VM process held there; and a run
+/// without a limit is not held.
+#[test]
+fn a_workload_past_its_cgroup_is_held_to_its_cpus_by_its_host() {
+    let Some((home, image)) = home("containers-cpu-hold") else {
+        return;
+    };
+    let shards = |args: &[&str]| shards_in(&home, args);
+    let host = std::thread::available_parallelism().unwrap().get();
+    if host < 4 {
+        eprintln!("SKIP: {host} CPUs, which hold four burning threads already");
+        return;
+    }
+    // Four threads for three seconds, past the run's cgroup: the VM process's CPU time
+    // over the burn, and its wall time.
+    let burn = |name: &str| {
+        let pid: u32 = shards(&["inspect", "-f", "{{.State.Pid}}", name])
+            .stdout
+            .trim()
+            .parse()
+            .unwrap();
+        let before = shards_vmm::platform::process_usage(pid).unwrap().cpu_ns;
+        let t0 = Instant::now();
+        // As the guest's root, which a privileged run's workload may become.
+        let burned = shards(&[
+            "exec",
+            "-u",
+            "root",
+            name,
+            "/bin/testguest",
+            "burn",
+            "4",
+            "3000",
+            "escape",
+        ]);
+        let wall = u64::try_from(t0.elapsed().as_nanos()).unwrap();
+        let used = shards_vmm::platform::process_usage(pid).unwrap().cpu_ns - before;
+        assert_eq!(burned.stdout, "cgroup 0::/\nburned\n", "{burned}");
+        (used, wall)
+    };
+    let options = |name: &'static str, limit: &'static [&'static str]| {
+        let mut all = vec!["--name", name, "--privileged", "--cgroupns", "host"];
+        all.extend(limit);
+        all
+    };
+    let mut limited = start(&home, &image, &options("held", &["--cpus", "1"]), &["sleep"]);
+    let (used, wall) = burn("held");
+    // One CPU's time over the burn; what the burn may run of its first period, its
+    // microVM quiet till then; and the VM process's own threads, its devices'.
+    assert!(
+        used <= wall + 1_000_000_000,
+        "{used} ns of CPU in {wall} ns, held to one CPU"
+    );
+    let mut free = start(&home, &image, &options("free", &[]), &["sleep"]);
+    let (used, wall) = burn("free");
+    // Four threads' time, on a host that gives it: more than a CPU's.
+    assert!(
+        used > wall + 1_000_000_000,
+        "{used} ns of CPU in {wall} ns, without a limit"
+    );
+    assert_eq!(shards(&["rm", "-f", "held", "free"]).status, Some(0));
+    let _ = exit(&mut limited);
+    let _ = exit(&mut free);
+}
+
 /// A run's swap and memory as its microVM has them (D159): swap as its limits allow,
 /// on a sparse file of its own past its memory (as much again by default), which its
 /// workload uses past its memory where no swap would have it killed; its swappiness, the

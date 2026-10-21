@@ -169,19 +169,32 @@ impl<D: Disk> Daemon<D> {
         if self.running(&id) && !restarting {
             // A microVM's own run's limit is the most its guest plugs (D148): its VM told
             // the new most first, on the link the exec below comes on after it, so that
-            // what its guest reports it may plug is the new (D149), up or down. A joiner's
-            // limit is its own cgroup's alone; its microVM's most its provider's.
-            if merged.memory != run.resources.memory {
+            // what its guest reports it may plug is the new (D149), up or down; and the
+            // CPUs its vCPUs are held to (D191). A joiner's limits are its own cgroup's
+            // alone; its microVM's most and hold its provider's.
+            let host = crate::resources::host_cpus();
+            let held = crate::resources::held_cpus(&merged, host);
+            let cpus_moved = held != crate::resources::held_cpus(&run.resources, host);
+            if merged.memory != run.resources.memory || cpus_moved {
                 let own = match lock(&self.runs).get(&id) {
                     Some(RunState::Tracked(t)) if t.joined.is_none() => Some(t.socket.clone()),
                     _ => None,
                 };
                 if let Some(socket) = own {
-                    let (_, boot, most) = crate::run::sizes(&merged, crate::build::host_memory());
-                    let bytes = most.saturating_sub(boot).saturating_mul(1 << 20);
-                    socket
-                        .send(shards_ipc::kind::PLUG, &bytes.to_be_bytes(), &[])
-                        .map_err(|e| cannot(format!("its microVM: {e}")))?;
+                    if merged.memory != run.resources.memory {
+                        let (_, boot, most) = crate::run::sizes(&merged, crate::build::host_memory());
+                        let bytes = most.saturating_sub(boot).saturating_mul(1 << 20);
+                        socket
+                            .send(shards_ipc::kind::PLUG, &bytes.to_be_bytes(), &[])
+                            .map_err(|e| cannot(format!("its microVM: {e}")))?;
+                    }
+                    // The CPUs its vCPUs are held to (D191), as its guest's cgroup is
+                    // written after.
+                    if cpus_moved {
+                        socket
+                            .send(shards_ipc::kind::CPUS, &u64::from(held).to_be_bytes(), &[])
+                            .map_err(|e| cannot(format!("its microVM: {e}")))?;
+                    }
                 }
             }
             let spec = shards_abi::run::Spec {

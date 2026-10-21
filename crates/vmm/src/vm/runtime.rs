@@ -7,6 +7,7 @@ use std::sync::{Arc, Condvar, Mutex, OnceLock, Weak, mpsc};
 use std::thread::JoinHandle;
 
 use super::barrier::Barrier;
+use super::hold::Hold;
 use super::machine::{self, Machine};
 use super::{AfterSnapshot, Config, ExitReason, RestoreConfig, Save, SnapshotPolicy};
 use crate::devices::control::Control;
@@ -60,6 +61,29 @@ impl Handle {
         } else {
             Err("the VM has no memory to plug".into())
         }
+    }
+
+    /// Holds its vCPUs together to `cpus` CPUs' time of the host's each period, its run's
+    /// limit (D191), whatever its guest does with its own cgroups; 0, or as many CPUs as
+    /// it has vCPUs, lets them be. Its governor's thread is made with the first limit.
+    pub fn hold_cpus(&self, cpus: u32) -> Result<(), String> {
+        let sh = &self.shared;
+        sh.hold.set(cpus);
+        if cpus == 0 {
+            return Ok(());
+        }
+        let mut governor = lock(&sh.governor);
+        // Under the lock the teardown takes it by, once the machine stops: none is made
+        // after.
+        if governor.is_none() && !sh.exiting() {
+            let shared = sh.clone();
+            let made = std::thread::Builder::new()
+                .name("hold".into())
+                .spawn(move || shared.hold.govern(&|| shared.kick_all()))
+                .map_err(|e| format!("starting the hold on its vCPUs: {e}"))?;
+            *governor = Some(made);
+        }
+        Ok(())
     }
 
     /// Maps `file`, a run's swap, into the guest's swap window (D159), writable by the guest;
@@ -311,6 +335,10 @@ struct Shared {
     /// machine is taken apart only once it is done (`Running::teardown`).
     saving: Mutex<bool>,
     saved: Condvar,
+    /// The host's hold on the vCPUs' CPU time, a run's limit (D191), and its governor's
+    /// thread, made as the first limit comes and joined as the machine is taken apart.
+    hold: Hold,
+    governor: Mutex<Option<JoinHandle<()>>>,
 }
 
 /// What a snapshot the host asks for reads of the machine (D176): its VM and devices by
@@ -368,6 +396,8 @@ impl Shared {
             template: AtomicBool::new(false),
             saving: Mutex::new(false),
             saved: Condvar::new(),
+            hold: Hold::new(vcpus as usize),
+            governor: Mutex::new(None),
         }
     }
 
@@ -416,6 +446,8 @@ impl Shared {
         for kicker in self.kickers.iter().filter_map(OnceLock::get) {
             kicker.kick();
         }
+        // vCPUs held out of their guest look again at why they might go on.
+        self.hold.wake();
     }
 
     /// Records the first exit reason and interrupts every vCPU so it can wind down.
@@ -431,6 +463,7 @@ impl Shared {
         self.exited.notify_all();
         // Taking each lock orders the wakeup after any waiter's check of `exiting`.
         self.snapshot.wake();
+        self.hold.end();
         drop(lock(&self.released));
         self.release.notify_all();
         self.kick_all();
@@ -506,6 +539,9 @@ impl Running {
     fn teardown(&mut self, reason: ExitReason, free: impl FnOnce()) {
         self.shared.stop(reason);
         for t in self.threads.drain(..) {
+            let _ = t.join();
+        }
+        if let Some(t) = lock(&self.shared.governor).take() {
             let _ = t.join();
         }
         // A save the host asked for holds the VM and its devices until it is done.
@@ -908,6 +944,10 @@ fn vcpu_thread(
     if let Some(slot) = sh.kickers.get(index) {
         let _ = slot.set(vcpu.kicker());
     }
+    // Its clock, by which the host holds the vCPUs to their run's CPUs (D191).
+    if let Err(e) = sh.hold.register(index) {
+        warn!("vCPU {index}: its CPU time unread, so not held to its run's CPUs: {e}");
+    }
     let _ = created.send(Ok(set_up));
     if let Some(offset) = sh.wait_release()
         && let Err(e) = machine::set_counter_offset(&mut vcpu, offset)
@@ -921,6 +961,9 @@ fn vcpu_thread(
         if sh.exiting() {
             return;
         }
+        // Out of the guest while its run's CPU time is spent (D191), or until a snapshot
+        // needs it parked.
+        sh.hold.wait(&|| sh.exiting() || sh.snapshot.requested());
         match vcpu.run(io) {
             Ok(hv::Exit::Canceled) => sh.park_for_snapshot(index, &vcpu),
             Ok(hv::Exit::Shutdown) => return sh.stop(ExitReason::PowerOff),
