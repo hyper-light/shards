@@ -45,8 +45,12 @@ jobs:
             echo "=== $arm: $vars"
             env $vars cargo bench --locked -p shards --bench firecracker -- --runs 20 2>&1 |
               awk '/^firecracker(_restore|_density)?:/ || /^(shards|fc)_(to_ready|to_beat|overhead|peak_rss|rss_file|pss_file|pss|rss_anon|fleet_pss|fleet_private|fleet_host) / || /mappings by resident bytes/ || /^  rss .*memory$/'
-            echo "--- $arm's working sets"
-            sort "$RUNNER_TEMP/ws-$arm.log" | uniq -c | sort -rn | head -8 || true
+            # Working sets only where a recording restore wrote them (the daemon path, not
+            # the bench's cold restores): reported if present, never failing the step.
+            if [ -s "$RUNNER_TEMP/ws-$arm.log" ]; then
+              echo "--- $arm's working sets"
+              sort "$RUNNER_TEMP/ws-$arm.log" | uniq -c | sort -rn | head -8
+            fi
           done
       # Where a run's time is: warm requests, and runs served from a template's pool;
       # the arms alternating, twice each.
