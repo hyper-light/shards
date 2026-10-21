@@ -119,8 +119,15 @@ the crypto self-tests first, since every clone would replay the rest (PM M21).
   left before anything is allocated, and every page must be aligned, distinct and inside
   the guest; otherwise the restore goes without prefetching (audit A16).
 - **Restore.** Memory is mapped copy-on-write from the snapshot file; clones share every
-  page none of them writes. vCPUs are created in order and loaded with one counter offset,
-  so CNTVCT continues and agrees across CPUs. **The GIC distributor is applied only after
+  page none of them writes. On the host's base pages (MADV_NOHUGEPAGE): the file's pages
+  are the page cache's folios, up to 2 MiB, which a mapping without the advice maps whole
+  at a fault, 14 MiB of a restored test guest's where Firecracker's mapped none. On base
+  pages a lone restore holds 9.0 MiB of its file where it held 19.4 and Firecracker 11.7,
+  its first beat comes in 9.18 ms where it came in 7.36 and Firecracker's in 10.11, and a
+  fleet of 16 costs 1.2 MiB of PSS a VM where it cost 1.9 and Firecracker 5.7; a pooled
+  run, whose working set is prefetched before its request, takes as long, and a cold
+  restore 7 to 11 ms longer (PM M287, which reverses M55). vCPUs are created in order and
+  loaded with one counter offset, so CNTVCT continues and agrees across CPUs. **The GIC distributor is applied only after
   every vCPU exists:** HVF routes an SPI when IROUTER is written, and routing to a CPU
   that does not exist yet loses the SPI (found by the E2E test). Devices follow, and the
   vCPUs are released.

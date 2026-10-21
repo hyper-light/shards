@@ -694,6 +694,9 @@ impl Layer {
                 Err(e) => return Err(at(e)),
             }
         }
+        // On the host's base pages, as guest RAM restored from a file is (`GuestMemory::
+        // from_file`, PM M287): a block's page structures the guest touches are a few pages.
+        platform::small_pages(host, len);
         head._file = Some(kept);
         Layer::over(head, file, data)
     }
@@ -854,6 +857,8 @@ impl Layer {
         let at = |e: std::io::Error| format!("its layer's head: {e}");
         let blocks = self.head.len / HEAD_BLOCK;
         let index = read_head_index(kept, blocks).map_err(|e| format!("its layer's head: {e}"))?;
+        // On the host's base pages, as a restore's head is ([`restore`](Self::restore)).
+        platform::small_pages(self.head.host, self.head.len);
         for (i, kept_at) in index.iter().enumerate() {
             // SAFETY: a whole block of the head, which nothing touches meanwhile (the
             // caller's contract), and which held what the copy keeps of it.

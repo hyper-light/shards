@@ -70,7 +70,7 @@ for size in [int(s) for s in a.sizes.split(",")]:
         # Each build first in turn.
         for build in list(builds) if i % 2 else list(builds)[::-1]:
             n += 1
-            name = f"save-{n}"
+            name = f"save-{os.getpid()}-{n}"
             shards(build, "run", "-d", "--name", name, a.image, "sh", "-c", command)
             written(build, name, size)
             took = {

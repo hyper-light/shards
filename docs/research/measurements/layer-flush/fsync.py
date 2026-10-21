@@ -54,7 +54,7 @@ n = 0
 for i in range(a.rounds + 1):
     for build in list(builds) if i % 2 else list(builds)[::-1]:
         n += 1
-        name = f"flush-{n}"
+        name = f"flush-{os.getpid()}-{n}"
         shards(build, "run", "-d", "--name", name, a.image, "sleep", "100000")
         synced = shards(build, "exec", name, "sh", "-c", loop.format(n=a.writes, conv=" conv=fsync"))
         plain = shards(build, "exec", name, "sh", "-c", loop.format(n=a.writes, conv=""))

@@ -412,8 +412,13 @@ impl GuestMemory {
 
     /// Guest RAM backed copy-on-write by `file`, which holds each region in turn by guest
     /// address, as [`save`](Self::save) writes them, whatever order `ranges` lists them in
-    /// (audit A21). Clones share every page none of them writes. Where the platform cannot
-    /// map a file into reserved memory, the file is read in.
+    /// (audit A21). Clones share every page none of them writes. On the host's base pages
+    /// ([`platform::small_pages`]): the file's pages are the page cache's folios, up to 2 MiB,
+    /// which a mapping without the advice maps whole at a fault, 14 MiB of a restored test
+    /// guest's where Firecracker's mapped none, and a lone restore held 19.4 MiB of the file
+    /// where on base pages it holds 9.0; its first beat comes 1.8 ms later, and a pooled
+    /// run, whose working set is prefetched before its request, takes as long (PM M287).
+    /// Where the platform cannot map a file into reserved memory, the file is read in.
     ///
     /// The file must hold all of them, and must not change while the VM runs: pages the
     /// guest has not yet touched come from it.
@@ -433,7 +438,10 @@ impl GuestMemory {
             // SAFETY: a whole region we just reserved: page-aligned, unmapped by any
             // hypervisor, unreferenced; region offsets in the file are page-aligned sums.
             match unsafe { platform::map_file_private(file, offset, r.len, r.host) } {
-                Ok(()) => mem.file_backed = true,
+                Ok(()) => {
+                    platform::small_pages(r.host, r.len);
+                    mem.file_backed = true;
+                }
                 Err(e) if e.kind() == io::ErrorKind::Unsupported => {
                     mem.read_file(r.gpa, r.len, file, offset)?;
                 }
@@ -1363,6 +1371,44 @@ mod tests {
             .unwrap();
         let past = [(hot, block), (hot + 2 * block, 2 * block), (hot + block, block)];
         assert!(other.restore_plugged(&past, &file, |_, _, _| Ok(())).is_err());
+    }
+
+    /// Guest RAM restored from a file is on the host's base pages (MADV_NOHUGEPAGE, which
+    /// /proc/self/smaps shows as VmFlags `nh`): the page cache's folios of the file, up to
+    /// 2 MiB, are mapped a page at a time, not whole (PM M287).
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_restored_guests_memory_is_on_base_pages() {
+        let huge = 2usize << 20;
+        let ranges = [(0x8000_0000u64, 4 * huge)];
+        let m = GuestMemory::anonymous(&ranges).unwrap();
+        m.access().unwrap().write(0x8000_0000, b"hello").unwrap();
+        let dir = shards_testdir::TempDir::new("mem-base").unwrap();
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .open(dir.join("mem"))
+            .unwrap();
+        m.save(&file).unwrap();
+        let restored = GuestMemory::from_file(&ranges, &file).unwrap();
+        let (_, host, len) = restored.regions().next().unwrap();
+        let (start, end) = (host as usize, host as usize + len);
+        let smaps = std::fs::read_to_string("/proc/self/smaps").unwrap();
+        // Each mapping's header line, then its fields; VmFlags last.
+        let mut covering = false;
+        let mut flags = Vec::new();
+        for line in smaps.lines() {
+            if let Some((range, _)) = line.split_once(' ')
+                && let Some((a, b)) = range.split_once('-')
+                && let (Ok(a), Ok(b)) = (usize::from_str_radix(a, 16), usize::from_str_radix(b, 16))
+            {
+                covering = a < end && start < b;
+            } else if covering && let Some(vm) = line.strip_prefix("VmFlags:") {
+                flags.push(vm.split_whitespace().any(|f| f == "nh"));
+            }
+        }
+        assert!(!flags.is_empty() && flags.iter().all(|nh| *nh), "{flags:?}");
     }
 
     #[test]

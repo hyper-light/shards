@@ -10855,3 +10855,61 @@ revision before comparing a changed API/implementation.
   F_FULLFSYNC asks for, at its host's load.
 - **Consequence.** D190's sixth slice: a layer's flush is `platform::sync_mapped`, and a
   run's root overlay passes its syncs on over a layer.
+
+### M287. A restored guest's memory file on base pages, again (D25, M55)
+
+- **Question.** M55 chose no advice for a restored guest's memory file (a CI runner with THP
+  `always`): mapped on base pages its file pages halved, and restores took 1.3 to 2.3
+  times as long. Since, Firecracker's comparison failed on a runner with THP `madvise` and
+  Linux 7.0 (e11c49a6): a 16-VM fleet cost 2.3 MiB of PSS a VM against Firecracker's 1.9,
+  and a lone restore 12 MiB more of its file. What maps it, and does the choice still
+  stand?
+- **Method.** The comparison's own mapping of each VMM's memory file (`describe_mappings`,
+  /proc/PID/smaps: resident, anonymous and PMD-mapped bytes) in e11c49a6's CI job (Linux
+  7.0.0-1017-azure, THP `madvise`, AMD EPYC 9V74). Then `.github/workflows/restore-advice.yml`
+  (`docs/research/measurements/restore-advice/advice.patch`: SHARDS_FILE_ADVICE chooses the
+  mapping's madvise(2)), twice, 1459b351 and 29f266d6, 2026-10-21, both landing on Linux
+  6.17.0-1022-azure, THP `always`, AMD EPYC 7763: the comparison for no advice, `nohuge`
+  and `huge`, n = 20 each; then the restore bench (n = 30) and the image bench (n = 60, 3
+  templates) for no advice and `nohuge`, two rounds alternating.
+- **Results.** The memory file's mapping after a restore: on Linux 7.0, shards 25.98 MB
+  resident, 14.0 MiB of it PMD-mapped, Firecracker 12.45 MB, none; on 6.17, shards 19.28 MB,
+  14.0 MiB PMD-mapped, Firecracker 10.58 MB, none; with `nohuge`, shards 8.30 MB, none.
+  The second run's comparison, p50:
+
+  | advice | first beat, shards / Firecracker | memory file resident | PSS | fleet PSS a VM |
+  |---|---|---|---|---|
+  | none | 7.36 / 10.52 ms | 19.4 / 11.9 MiB | 20.1 / 16.8 MiB | 1.9 / 5.8 MiB |
+  | nohuge | 9.18 / 10.11 ms | 9.0 / 11.7 MiB | 9.6 / 16.6 MiB | 1.2 / 5.7 MiB |
+  | huge | 7.45 / 10.50 ms | 19.4 / 11.4 MiB | 20.1 / 16.3 MiB | 1.9 / 5.7 MiB |
+
+  The first run's: none 9.44 / 13.02 ms and 19.3 / 11.9 MiB; nohuge 11.34 / 12.52 ms and
+  8.8 / 11.8 MiB. Restore and image benches, none against nohuge, p50, the two rounds:
+
+  | step | none | nohuge |
+  |---|---|---|
+  | cold restore | 11.55, 7.80 ms | 18.85, 18.72 ms |
+  | warm request, no working set | 10.56, 6.70 ms | 17.58, 17.63 ms |
+  | its peak RSS | 24.0, 24.0 MiB | 15.1, 15.1 MiB |
+  | pooled run (`run_template`) | 28.23, 26.49 ms | 26.97, 25.13 ms |
+
+  (the first experiment's: cold restore 20.19, 21.22 against 37.63, 36.16 ms; warm request
+  18.47, 19.75 against 35.65, 27.09; pooled run 34.98, 39.50 against 34.97, 33.64.)
+  Fedora (Btrfs, Linux 6.19.10), `layer-head/footprint.py` edbd4816 against the change,
+  n = 10: warm microVMs 35.29 against 35.34 MiB resident, first runs 89.69 against 89.88;
+  without the advice its warm microVMs' memory files had no page PMD-mapped (smaps
+  `FilePmdMapped` 0 kB, 36.6 and 43.4 MB resident).
+- **Reading.** The page cache holds the memory file in folios of up to 2 MiB, and without
+  advice a fault maps one whole (do_set_pmd), whatever the host's THP setting:
+  Firecracker's guest touches the same pages and maps none so. On base pages a lone
+  restored VM holds less of its file than Firecracker's, and a fleet less PSS a VM, on
+  every axis the comparison measures; its first beat still comes before Firecracker's. What
+  base pages cost is the faults of a restore that has no working set to prefetch: cold
+  restores and an unprefetched warm request take 7 to 18 ms longer. A pooled run, the
+  request path, took as long or less in all four rounds. Where the page cache keeps no 2 MiB
+  folios of the file, as Fedora's Btrfs did, the advice changes nothing. A guest's
+  steady-state speed on base pages is not measured here.
+- **Consequence.** A restored guest's memory, and a layer's head mapped from its copy, are
+  mapped with MADV_NOHUGEPAGE (`GuestMemory::from_file`, pmem `Layer::restore`,
+  `remap_head`); the envelope's restore allowances go, and an allowance now states the most
+  it allows (`at_most`), which a wider gap fails.
