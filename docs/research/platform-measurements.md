@@ -10698,3 +10698,54 @@ revision before comparing a changed API/implementation.
 - **Consequence.** D189: no range is read ahead, which costs a sparse writer what it gives
   a dense one. Windows stay asked for until a guest's whole-page writes through one reach
   its server as FUSE_WRITEs, whose pwrite reads nothing, measured in the guest.
+
+### M284. A template's microVM with its layer's head mapped back from its snapshot (D190)
+
+- **Question.** A booted microVM's layer head is memory of its own, written whole as its
+  guest's kernel probes the device (170 MiB for a 10 GiB layer), and the template's
+  microVM, which goes on as its image's first run, held it for the run's life: 282 MiB of
+  physical footprint where a warm microVM restored from its template held 15 to 18
+  (M277). Mapped back from the copy its snapshot has just kept, as a restore maps one, what
+  does the first run hold, what does the mapping cost, and does what the run does after
+  pay for it?
+- **Method.** 2026-10-20. `docs/research/measurements/layer-head/footprint.py OLD NEW`: OLD
+  e11c49a6, NEW with D190's fourth slice, release builds, each with a home of its own that
+  holds Alpine 3.20. A round stops the home's daemon and removes its templates, so that a
+  `run -d` of `sleep` boots, saves its image's template and goes on as its first run
+  (timed); once the template's warm microVM is made and the home's VM processes stay for
+  5 s, each VM process's memory is read (macOS: proc_pid_rusage's physical footprint, which
+  vmmap's summary reads too; Linux: /proc/PID/smaps_rollup); then busybox, copied into
+  the run's root, its layer, runs from there under `exec` twice (timed), its pages mapped
+  from the layer and so its page structures written, and the run's memory is read again.
+  The VMs' own log (SHARDS_LOG=info) says how long the template's writing and the head's
+  mapping back took. 10 rounds after one not counted, the builds alternating which goes
+  first. The Fedora host (M266's: Intel Core i9-14900HX, Linux 6.19.10-300.fc44, KVM, its
+  home on Btrfs), twice, CI jobs holding most of its cores, the first run without the log's
+  times; the Mac (Apple M5 Max, macOS 26.4.1, HVF, APFS), other projects' builds and tests
+  running.
+- **Results.** p50 (p90), n = 10; memory in MiB, the Mac's physical footprint and Fedora's
+  resident set (its anonymous part after):
+
+  | host, build | first run's VM | after the program | warm VM | first run | head mapped back | program from the layer, again |
+  |---|---|---|---|---|---|---|
+  | Mac, OLD | 282.27 (282.92) | 285.05 | 13.86 | 18,291 ms (23,422) | | 112.98 ms (444.22), 142.23 |
+  | Mac, NEW | 111.97 (112.61) | 114.58 | 14.16 | 16,870 ms (18,762) | 4.97 ms (13.09) | 104.67 ms (181.20), 95.99 |
+  | Fedora, OLD | 257.09 (258.47), 253.92 | 259.13 | 37.29 | 682 ms (1,313) | | 4.34 ms (10.53), 8.83 |
+  | Fedora, NEW | 89.72 (91.00), 86.59 | 92.07 | 35.56 | 658 ms (1,478) | 1.65 ms (3.93) | 8.50 ms (65.65), 7.10 |
+
+  Fedora's first runs: 257.52 against 88.89 MiB (anonymous 254.33 against 85.83); the
+  program from the layer 5.42 ms (132.44) against 4.04 (22.85), again 4.29 against 3.51.
+  The templates' writing took 12,148 and 12,041 ms at p50 on the Mac and 65 and 83 on
+  Fedora: on the Mac its copy of the layer read all 10 GiB of it, APFS saying that a file
+  mapped shared and writable holds data throughout (lseek(2) SEEK_DATA), which is D190's
+  next to fix.
+- **Reading.** Mapped back, the first run's microVM holds 170.3 MiB less on the Mac and
+  167.4 MiB less on Fedora, its head's whole size but the pages its guest went on to touch:
+  112 MiB where its warm microVMs hold 14, the rest its guest's memory as it booted. Its
+  warm microVMs hold what they held. The mapping costs the first run 1.65 ms (Fedora) and
+  4.97 (Mac) at p50, inside a start of 0.7 to 18 s. Running a program from the layer, which
+  writes page structures of the head now mapped from the copy, gave no difference beyond
+  the runs' spread: faster in five of the six medians, and on Fedora 8.50 against 4.34 in
+  one run and 4.04 against 5.42 in the other.
+- **Consequence.** D190's fourth slice: a template's microVM maps its head back from its
+  snapshot's copy before its vCPUs go on.

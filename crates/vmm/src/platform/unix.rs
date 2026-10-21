@@ -444,8 +444,10 @@ pub unsafe fn untouched(ptr: *const u8, len: usize, page: usize) -> io::Result<O
 /// charging it (overcommit-accounting.rst; PM M56).
 ///
 /// # Safety
-/// `at..at+len` must be page-aligned, inside a reservation from [`reserve`] that no
-/// hypervisor maps and nothing references yet; `offset` must be page-aligned.
+/// `at..at+len` must be page-aligned, inside a reservation from [`reserve`] or
+/// [`reserve_ram`] that nothing references meanwhile and no hypervisor maps, but KVM, whose
+/// guest sees what the host maps there from then on (KVM_SET_USER_MEMORY_REGION,
+/// Documentation/virt/kvm/api.rst); `offset` must be page-aligned.
 pub unsafe fn map_file_private(file: &File, offset: u64, len: usize, at: NonNull<u8>) -> io::Result<()> {
     let offset = file_offset(offset)?;
     // SAFETY: MAP_FIXED over memory the caller owns and nothing references.

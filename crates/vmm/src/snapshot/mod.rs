@@ -637,6 +637,9 @@ pub struct Staged {
     /// Its files, made durable by the commit: its memory and state, a run's swap where it
     /// keeps one (D176), and its writable layer's head and file system (D190).
     files: Vec<File>,
+    /// Which of its files is its writable layer's head as [`stage`] wrote it, where it
+    /// keeps one.
+    layer_head: Option<usize>,
     /// Whether its commit has run, which leaves nothing of it the staging's to remove.
     committed: bool,
     /// Writers to one snapshot take turns, this one until its commit.
@@ -683,6 +686,8 @@ fn stage_with(
     })();
     match files {
         Ok(files) => {
+            // The layer's head and file system are its last two.
+            staged.layer_head = layer.and(files.len().checked_sub(2));
             staged.files = files;
             Ok(staged)
         }
@@ -786,6 +791,7 @@ fn staging(dir: &Path, name: String) -> Result<Staged, String> {
         name,
         staging,
         files: Vec::new(),
+        layer_head: None,
         committed: false,
         _lock: lock,
     })
@@ -801,6 +807,14 @@ impl Staged {
     /// renames it into place.
     pub fn generation(&self) -> Result<File, String> {
         platform::open_dir(&self.staging).map_err(|e| format!("{}: {e}", self.staging.display()))
+    }
+
+    /// Its writable layer's head as [`stage`] wrote it (D190), where it keeps one: what the
+    /// machine that goes on maps back ([`Layer::remap_head`]).
+    ///
+    /// [`Layer::remap_head`]: crate::devices::virtio::pmem::Layer::remap_head
+    pub fn layer_head(&self) -> Option<&File> {
+        self.layer_head.and_then(|i| self.files.get(i))
     }
 
     /// Its files for the VM that fills them ([`prepare`]): its memory, its state, and a

@@ -5753,7 +5753,7 @@ template pays it once; what its restores pay is to be measured with mappings.
   window reach its server as FUSE_WRITEs, measured in the guest, and a window that holds a
   working set costs its guest less than its 64th at boot.
 
-### D190. A run's writable layer on its host's disk: ext4 with DAX over pmem (slices 1 to 3 built)
+### D190. A run's writable layer on its host's disk: ext4 with DAX over pmem (slices 1 to 4 built)
 
 A run's writable layer, the upper directory of its root's overlay, was a tmpfs in its
 microVM's memory (D16, D156): what it wrote was memory, held to its memory limit, and gone
@@ -5816,6 +5816,25 @@ the guest keeps their metadata alone.
   layer's head of 85 blocks kept in 5: 12 MiB where 170 MiB whole); a restore maps each
   block privately where the head had it. A save of a running microVM (D176) keeps both
   as a template's snapshot does (`prepare` makes a run's five files).
+- **A template's head mapped back** (slice 4). A booted microVM's head is memory of its
+  own, written whole as its guest's kernel probes the device, and the template's microVM
+  goes on as its image's first run, which held it for its life: with a 10 GiB layer 282.3
+  MiB of physical footprint on the Mac and 257.1 MiB resident on Fedora, where a warm
+  microVM restored from the template holds 13.9 and 37.3 (PM M277, M284). Once the
+  template's snapshot is written, with every vCPU still parked, the VM maps its head back
+  from the snapshot's copy as a restore maps one (`Layer::remap_head`): each block
+  privately from the copy, the blocks alike one block's pages in the host's page cache,
+  as the template's restores' are, and the blocks of zeros fresh memory. HVF's stage 2
+  holds the pages it maps (PM M193), so the head is taken from the guest meanwhile and
+  given back after, through the stage 2 the layer is given as it is mapped
+  (`Layer::placed`); KVM's follows the host's mapping as it changes
+  (KVM_SET_USER_MEMORY_REGION, Documentation/virt/kvm/api.rst). The first run then holds
+  112.0 MiB (Mac) and 89.7 MiB (Fedora), 170 and 167 less; the mapping takes 4.97 and 1.65
+  ms at p50, while the run's start waits for its template anyway, and a program the run
+  then runs from its layer, whose page structures its guest writes, ran as quickly within
+  the runs' spread (PM M284). One that fails partway leaves each block the copy's or the guest's own memory,
+  which hold the same, and is said; one whose guest cannot be given its head back leaves
+  the layer lost (`Layer::lost`), and the machine stops.
 - **Its file is its run's, then its container's.** A layer's file stays in the home's
   `layers` while its microVM serves its run, the daemon holding it with the microVM; what
   a daemon before left there is no run's by the next, which removes it as it starts. A
@@ -5886,7 +5905,9 @@ the guest keeps their metadata alone.
   Mac's `run` right after the same daemon's `rm -f` and `rmi`, its p90 at 0 B 24.76 ms
   against 6.68.
 - **Tests.** `shards-ext4`'s, including the oracles'; `pmem`'s for the head's size, its
-  info block's checksum, a layer saved and restored and a head's alike blocks kept once;
+  info block's checksum, a layer saved and restored, a head's alike blocks kept once, and
+  a booted head mapped back from its saved copy, its own memory given back, taken from its
+  guest meanwhile;
   the snapshot's for a run's five files; `layers`' for the files the daemon makes and
   removes; on real microVMs, `a_microvm_takes_its_ipc_hostname_cgroups_umask_and_writable_layer`:
   sizes held to, refusals, and 256 MiB written under `--memory 64m`; and
@@ -5900,16 +5921,15 @@ the guest keeps their metadata alone.
   on the host, into the warm microVM's own layer, which its template mounted as its root's
   (a copy, as long as the layer's changes are); a template's root mounted where a run can
   swap the file under it would make a restart's cost the layer's mount alone.
+- A save on macOS reads the whole layer: APFS says that a file mapped shared and
+  writable holds data throughout (lseek(2) SEEK_DATA), so a template's copy of a 10 GiB
+  layer read all of it, 12 s of its image's first run on the Mac (PM M284).
 - Blocks the guest frees go back to the host: pmem takes no discard
   (drivers/nvdimm/pmem.c), so a layer's file only grows while its microVM lives; its
   microVM gone, the host could punch out what its bitmaps say is free.
 - Joiners' layers (D119) on the microVM's own, rather than tmpfs.
 - What a flush asks of the host: nothing yet, its writes the host's page cache already,
   which outlives the microVM but not its host.
-- A booted microVM's head is its own memory, a 64th of the layer, for its life: the
-  template's VM, which goes on as its first run, had a physical footprint of 282 MiB where
-  a warm VM's was 15 to 18 MiB (M277). Mapped back from its snapshot's copy once saved, it
-  would hold what its guest touches of it alone.
 - The head's boot: a 2 MiB block a section for the guest to write as it probes, on KVM
   1.9 ms a GiB when the host has huge pages free and up to 19 ms a GiB when it compacts
   for them (M277): a 10 GiB layer's template boot is 19 to 190 ms longer.

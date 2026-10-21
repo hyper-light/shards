@@ -1001,10 +1001,16 @@ impl Coordinator {
             crate::log::uptime_us().saturating_sub(t0)
         );
         if resume {
-            if self.policy.working_set {
-                self.record(staged.name().to_string());
+            // Before a working set is recorded, which takes the head from the guest too.
+            match self.remap_head(&staged) {
+                Ok(()) => {
+                    if self.policy.working_set {
+                        self.record(staged.name().to_string());
+                    }
+                    cut.go_on();
+                }
+                Err(e) => self.sh.stop(ExitReason::Error(e)),
             }
-            cut.go_on();
         }
         // Durable, and in use, with the guest running again: its files hold all of it
         // already (PM M63). The process ends only once this thread has.
@@ -1019,6 +1025,29 @@ impl Coordinator {
         if !resume {
             self.sh.stop(ExitReason::Snapshotted);
         }
+    }
+
+    /// Maps the writable layer's head back from the copy the snapshot just kept of it, with
+    /// every vCPU parked, for the machine that goes on: a template's, its image's first run,
+    /// which holds of its head from then on what its guest writes alone (D190,
+    /// [`pmem::Layer::remap_head`]). One that fails leaves the head the guest's own memory,
+    /// and is said; an error is a head its guest cannot be given back.
+    fn remap_head(&self, staged: &snapshot::Staged) -> Result<(), String> {
+        let (Some(layer), Some(kept)) = (self.control.layer(), staged.layer_head()) else {
+            return Ok(());
+        };
+        let t0 = crate::log::uptime_us();
+        // SAFETY: every vCPU is parked and the devices quiet since the head was saved into
+        // `kept`.
+        match unsafe { layer.remap_head(kept) } {
+            Ok(()) => info!(
+                "its writable layer's head mapped back from its snapshot in {} us",
+                crate::log::uptime_us().saturating_sub(t0)
+            ),
+            Err(e) if layer.lost() => return Err(format!("its writable layer's head: {e}")),
+            Err(e) => warn!("its writable layer's head stays its own memory where not mapped back: {e}"),
+        }
+        Ok(())
     }
 
     /// Starts recording the working set of `generation`, the snapshot just written, with

@@ -11,8 +11,9 @@ use std::fs::File;
 use std::path::Path;
 use std::ptr::NonNull;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
+use super::mem::Mapper;
 use super::queue::{Chain, Queue};
 use super::worker::Worker;
 use super::{Activation, DeviceInterrupt, VirtioDevice, feature};
@@ -508,6 +509,11 @@ pub fn layer_head(data: u64) -> Result<(u64, [u8; 4096]), String> {
 pub struct Layer {
     head: Head,
     data: Shared,
+    /// Where its guest has it, and what maps it there, once its VM has mapped it
+    /// ([`placed`](Self::placed)).
+    guest: OnceLock<(u64, Box<dyn Mapper>)>,
+    /// Whether its guest was not given back a mapping taken from it ([`lost`](Self::lost)).
+    lost: AtomicBool,
 }
 
 /// Why a layer's mapping is not there to use: let go of as its machine stopped.
@@ -583,15 +589,11 @@ impl Layer {
             len,
             _file: None,
         };
-        let first = head_index_len(blocks);
         for (i, kept_at) in index.iter().enumerate() {
             let Some(n) = kept_at else {
                 continue;
             };
-            let offset = (*n as u64)
-                .checked_mul(HEAD_BLOCK as u64)
-                .and_then(|o| o.checked_add(first))
-                .ok_or("a layer head's block past any file")?;
+            let offset = kept_block_at(*n, blocks)?;
             // SAFETY: a whole block of the reservation, which nothing references yet.
             match unsafe { platform::map_file_private(&kept, offset, HEAD_BLOCK, host.add(i * HEAD_BLOCK)) } {
                 Ok(()) => {}
@@ -615,7 +617,26 @@ impl Layer {
     fn over(head: Head, file: File, data: u64) -> Result<Layer, String> {
         let len = usize::try_from(data).map_err(|_| format!("a layer of {data} bytes"))?;
         let data = Shared::map(file, len).map_err(|e| format!("its layer: {e}"))?;
-        Ok(Layer { head, data })
+        Ok(Layer {
+            head,
+            data,
+            guest: OnceLock::new(),
+            lost: AtomicBool::new(false),
+        })
+    }
+
+    /// Says where its VM's guest has it, at `gpa` as [`mappings`](Self::mappings) gave
+    /// it, and what maps it there: what takes its head from the guest and gives it back as
+    /// it is mapped back ([`remap_head`](Self::remap_head)), where the hypervisor's stage 2
+    /// holds the pages it maps (`hv::Stage2`, PM M193). Once.
+    pub fn placed(&self, gpa: u64, mapper: Box<dyn Mapper>) {
+        let _ = self.guest.set((gpa, mapper));
+    }
+
+    /// Whether its guest has lost it: a mapping taken from the guest that could not be given
+    /// back ([`remap_head`](Self::remap_head)), so that its machine cannot go on.
+    pub fn lost(&self) -> bool {
+        self.lost.load(Ordering::Acquire)
     }
 
     /// The device's length: its head and its file system.
@@ -672,6 +693,74 @@ impl Layer {
         self.data.copy_to(data, self.data.len as u64).map_err(at)
     }
 
+    /// Maps its head back from `kept`, the copy a save has just written of it
+    /// ([`save`](Self::save)), as a restore maps one ([`restore`](Self::restore)): each
+    /// block privately from the copy where the head had it, fresh memory where it had
+    /// zeros. A booted machine's head is its own memory, written whole as its guest's
+    /// kernel probed the device, and resident for the machine's life: the template's
+    /// microVM, which goes on as its image's first run, held 282 MiB of physical footprint
+    /// on the Mac with a 10 GiB layer, 170 of them its head, where a warm microVM restored
+    /// from its template held 14 (PM M284). Mapped back, it holds what its guest goes on
+    /// to write alone, and its alike blocks are one copy in the host's page cache, its
+    /// restores' too. The guest has the head no more meanwhile, where it is placed
+    /// ([`placed`](Self::placed)). One that fails partway leaves each block the copy's or
+    /// the guest's own memory, which hold the same; one whose guest could not be given the
+    /// head back leaves the layer [`lost`](Self::lost). Where no file maps over part of a
+    /// reservation (Windows), the head stays the guest's own memory.
+    ///
+    /// # Safety
+    /// The machine is paused and the head saved into `kept` since: no vCPU runs and no host
+    /// thread touches the head until this returns.
+    pub unsafe fn remap_head(&self, kept: &File) -> Result<(), String> {
+        let len = self.head.len;
+        let guest = self.guest.get();
+        if let Some((gpa, mapper)) = guest {
+            mapper.unmap(*gpa, len)?;
+        }
+        // SAFETY: the caller's contract; the guest has the head no more meanwhile.
+        let remapped = unsafe { self.map_head_back(kept) };
+        if let Some((gpa, mapper)) = guest {
+            // SAFETY: the head stays mapped in this process for the layer's life, which
+            // outlives the VM (`Running` drops the VM before the devices).
+            if let Err(e) = unsafe { mapper.map(self.head.host.as_ptr(), *gpa, len) } {
+                self.lost.store(true, Ordering::Release);
+                return Err(e);
+            }
+        }
+        remapped
+    }
+
+    /// [`remap_head`](Self::remap_head)'s mapping of each block.
+    ///
+    /// # Safety
+    /// As for [`remap_head`](Self::remap_head); no hypervisor whose stage 2 holds the
+    /// pages it maps maps the head meanwhile.
+    unsafe fn map_head_back(&self, kept: &File) -> Result<(), String> {
+        let at = |e: std::io::Error| format!("its layer's head: {e}");
+        let blocks = self.head.len / HEAD_BLOCK;
+        let index = read_head_index(kept, blocks).map_err(|e| format!("its layer's head: {e}"))?;
+        for (i, kept_at) in index.iter().enumerate() {
+            // SAFETY: a whole block of the head, which nothing touches meanwhile (the
+            // caller's contract), and which held what the copy keeps of it.
+            let block = unsafe { self.head.host.add(i * HEAD_BLOCK) };
+            let remapped = match kept_at {
+                // SAFETY: as above.
+                None => unsafe { platform::discard(block, HEAD_BLOCK) },
+                Some(n) => {
+                    let offset = kept_block_at(*n, blocks)?;
+                    // SAFETY: as above.
+                    unsafe { platform::map_file_private(kept, offset, HEAD_BLOCK, block) }
+                }
+            };
+            match remapped {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::Unsupported => return Ok(()),
+                Err(e) => return Err(at(e)),
+            }
+        }
+        Ok(())
+    }
+
     /// Lets go of its file system's mapping and file once its machine is gone, rather than
     /// as the process ends: the file holds what the guest wrote, and its host reads it
     /// with nothing of this process's still at it. On macOS the last writer to let go of a
@@ -700,6 +789,15 @@ const HEAD_KINDS: usize = 64;
 fn head_index_len(blocks: usize) -> u64 {
     let bytes = 12 + 4 * blocks as u64;
     bytes.next_multiple_of(HEAD_BLOCK as u64)
+}
+
+/// Where a kept head of `blocks` blocks keeps its block `n`: after its index, in the order
+/// [`save_head`] kept them.
+fn kept_block_at(n: u32, blocks: usize) -> Result<u64, String> {
+    u64::from(n)
+        .checked_mul(HEAD_BLOCK as u64)
+        .and_then(|o| o.checked_add(head_index_len(blocks)))
+        .ok_or_else(|| "a layer head's block past any file".to_string())
 }
 
 /// Writes the `len` bytes of a head at `host`, whole [`HEAD_BLOCK`]s, into `file`: an index
@@ -1238,6 +1336,160 @@ mod tests {
         short.set_len(ALIGN + ALIGN).unwrap();
         platform::write_all_at(&short, &[9, 0, 0, 0], 12 + 4).unwrap();
         assert!(read_head_index(&short, 2).unwrap_err().contains("past the"));
+    }
+
+    /// A booted head mapped back from the copy its save kept holds what its guest wrote,
+    /// as the copy's pages rather than memory of its own, its zeros fresh memory; its writes
+    /// stay its own (D190). Where files map over part of a reservation.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn a_booted_head_is_mapped_back_from_its_saved_copy() {
+        let dir = shards_testdir::TempDir::new("layer-remap").unwrap();
+        let data_len = 1 << 30;
+        let booted = Layer::boot(file(&dir, "fs", data_len)).unwrap();
+        let [(_, head, head_len), _] = booted.mappings(SECTION).unwrap();
+        let blocks = head_len / HEAD_BLOCK;
+        assert_eq!(blocks, 10);
+        // As a guest's kernel writes them: alike blocks, one of its own, one of zeros.
+        // SAFETY: within the head, which the layer holds.
+        unsafe {
+            for i in 1..blocks - 2 {
+                head.add(i * HEAD_BLOCK).write_bytes(0x40, HEAD_BLOCK);
+            }
+            head.add((blocks - 2) * HEAD_BLOCK + 64).write_bytes(0x41, 64);
+            head.add((blocks - 1) * HEAD_BLOCK).write_bytes(0, HEAD_BLOCK);
+        }
+        // SAFETY: as above.
+        let wrote = unsafe { std::slice::from_raw_parts(head, head_len) }.to_vec();
+        let page = platform::page_size().unwrap();
+        let kept_blocks = (blocks - 1) * HEAD_BLOCK;
+        // Each page the process's own: written, or read as it was copied.
+        assert_eq!(own_pages(head, head_len), head_len / page);
+        let kept = file(&dir, "head", 0);
+        booted.save(&kept, &file(&dir, "data", 0)).unwrap();
+        // SAFETY: nothing else touches the head, which no hypervisor maps.
+        unsafe { booted.remap_head(&kept) }.unwrap();
+        assert_eq!(own_pages(head, head_len), 0, "the head's own memory, given back");
+        // SAFETY: as above.
+        assert!(unsafe { std::slice::from_raw_parts(head, kept_blocks) } == &wrote[..kept_blocks]);
+        assert_eq!(own_pages(head, kept_blocks), 0, "read, the copy's pages");
+        // SAFETY: as above.
+        let zeros = unsafe { std::slice::from_raw_parts(head.add(kept_blocks), HEAD_BLOCK) };
+        assert!(zeros == &wrote[kept_blocks..]);
+
+        // Its writes its own: the copy's, and the other alike blocks', as they were.
+        // SAFETY: as above.
+        unsafe { head.add(HEAD_BLOCK).write_bytes(0x11, page) };
+        assert_eq!(own_pages(head, kept_blocks), 1);
+        let alike = kept_block_at(read_head_index(&kept, blocks).unwrap()[1].unwrap(), blocks).unwrap();
+        let mut byte = [0u8; 1];
+        platform::read_exact_at(&kept, &mut byte, alike).unwrap();
+        assert_eq!(byte, [0x40]);
+        // SAFETY: as above.
+        assert_eq!(unsafe { *head.add(2 * HEAD_BLOCK) }, 0x40);
+    }
+
+    /// A placed head is taken from its guest while it is mapped back, and given back after
+    /// whatever came between; one its guest would not give up stays its own memory, and
+    /// one its guest could not be given back is lost to it (D190).
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn a_placed_heads_guest_gives_it_up_while_it_is_mapped_back() {
+        type Calls = Arc<Mutex<Vec<(&'static str, u64, usize)>>>;
+        struct Guest {
+            calls: Calls,
+            unmaps: bool,
+            maps: bool,
+        }
+        impl Mapper for Guest {
+            unsafe fn map(&self, _: *mut u8, gpa: u64, len: usize) -> Result<(), String> {
+                lock(&self.calls).push(("map", gpa, len));
+                if self.maps { Ok(()) } else { Err("no map".into()) }
+            }
+            fn unmap(&self, gpa: u64, len: usize) -> Result<(), String> {
+                lock(&self.calls).push(("unmap", gpa, len));
+                if self.unmaps {
+                    Ok(())
+                } else {
+                    Err("no unmap".into())
+                }
+            }
+        }
+        let dir = shards_testdir::TempDir::new("layer-placed").unwrap();
+        let page = platform::page_size().unwrap();
+        for (n, (unmaps, maps)) in [(true, true), (false, true), (true, false)]
+            .into_iter()
+            .enumerate()
+        {
+            let booted = Layer::boot(file(&dir, &format!("fs-{n}"), 8 * ALIGN)).unwrap();
+            let [(_, head, head_len), _] = booted.mappings(SECTION).unwrap();
+            // SAFETY: within the head, which the layer holds.
+            unsafe { head.add(HEAD_BLOCK).write_bytes(0x40, HEAD_BLOCK) };
+            let kept = file(&dir, &format!("head-{n}"), 0);
+            booted.save(&kept, &file(&dir, &format!("data-{n}"), 0)).unwrap();
+            let calls = Calls::default();
+            booted.placed(
+                SECTION,
+                Box::new(Guest {
+                    calls: calls.clone(),
+                    unmaps,
+                    maps,
+                }),
+            );
+            // SAFETY: nothing else touches the head, which no hypervisor maps.
+            let remapped = unsafe { booted.remap_head(&kept) };
+            let at = |what| (what, SECTION, head_len);
+            match (unmaps, maps) {
+                (true, true) => {
+                    assert_eq!(remapped, Ok(()));
+                    assert_eq!(*lock(&calls), [at("unmap"), at("map")]);
+                    assert_eq!(own_pages(head, head_len), 0);
+                }
+                (false, _) => {
+                    assert_eq!(remapped, Err("no unmap".into()));
+                    assert_eq!(*lock(&calls), [at("unmap")]);
+                    assert_eq!(
+                        own_pages(head.wrapping_add(HEAD_BLOCK), HEAD_BLOCK),
+                        HEAD_BLOCK / page
+                    );
+                }
+                (true, false) => {
+                    assert_eq!(remapped, Err("no map".into()));
+                    assert_eq!(*lock(&calls), [at("unmap"), at("map")]);
+                }
+            }
+            assert_eq!(booted.lost(), !maps);
+            // SAFETY: as above.
+            assert_eq!(unsafe { *head.add(HEAD_BLOCK + HEAD_BLOCK - 1) }, 0x40);
+        }
+    }
+
+    /// How many of the pages of the `len` bytes at `ptr` this process holds as memory of
+    /// its own, rather than a mapped file's: Linux's /proc/self/pagemap
+    /// ([`platform::mapped_pages`]), macOS's mincore(2), whose MINCORE_ANONYMOUS
+    /// (<sys/mman.h>) marks a page of an anonymous object.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn own_pages(ptr: *const u8, len: usize) -> usize {
+        #[cfg(target_os = "linux")]
+        {
+            platform::mapped_pages(ptr, len)
+                .unwrap()
+                .iter()
+                .filter(|(_, own)| *own)
+                .count()
+        }
+        #[cfg(target_os = "macos")]
+        {
+            const MINCORE_INCORE: libc::c_char = 0x1;
+            const MINCORE_ANONYMOUS: libc::c_char = 0x80u8 as libc::c_char;
+            let mut pages = vec![0 as libc::c_char; len / platform::page_size().unwrap()];
+            // SAFETY: mincore(2) writes a byte for each page of the range into `pages`.
+            assert_eq!(unsafe { libc::mincore(ptr.cast(), len, pages.as_mut_ptr()) }, 0);
+            pages
+                .iter()
+                .filter(|&&p| p & MINCORE_INCORE != 0 && p & MINCORE_ANONYMOUS != 0)
+                .count()
+        }
     }
 
     /// What the guest wrote to a run's swap through its mapping, never flushed, a save

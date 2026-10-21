@@ -178,7 +178,8 @@ fn layer_layout(layer: Option<&Arc<pmem::Layer>>, top: u64) -> Result<(Option<Pl
 }
 
 /// Maps the writable layer at `gpa` into `vm` (D190): its head and its file system, both
-/// writable by the guest.
+/// writable by the guest; the layer is told where, and given the hypervisor's stage 2 to
+/// map its head back through ([`pmem::Layer::remap_head`]).
 #[cfg(hv)]
 fn map_layer(vm: &crate::hv::Vm, layer: &pmem::Layer, gpa: u64) -> Result<(), String> {
     for (at, host, len) in layer.mappings(gpa)? {
@@ -186,6 +187,7 @@ fn map_layer(vm: &crate::hv::Vm, layer: &pmem::Layer, gpa: u64) -> Result<(), St
         // and `Running` drop after the VM.
         unsafe { vm.map_device_memory(host, at, len, true) }.map_err(|e| e.to_string())?;
     }
+    layer.placed(gpa, Box::new(vm.stage2()));
     Ok(())
 }
 
