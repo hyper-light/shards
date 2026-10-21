@@ -98,12 +98,15 @@ the crypto self-tests first, since every clone would replay the rest (PM M21).
   written whole on macOS, and a page at a time on a Linux host (`memory.rs::write_run`):
   on ext4 a write's length sets the order of the page-cache folios it fills, and from 6.18
   a restore's read fault maps a whole folio of the file at once (filemap_map_folio_range),
-  so a snapshot written in large runs gave a restored guest 26 MiB of its working set to
-  Firecracker's 14, where one written a page at a time gave 8.9 and beat Firecracker (PM
-  M289). Writing a page at a time costs the save 10–40 ms of a tens-of-MiB memory file
-  (PM M290), paid on template creation and `save`, never a warm pooled run; a restore's
-  first beat is within ~5% either way, where M37 once measured large runs 17–25% faster
-  (the working set is prefetched now, so the fault pattern at first beat barely shows).
+  so a snapshot written in large runs gave a restored guest 26 MiB of its file to
+  Firecracker's 14, where one written a page at a time holds 9.1 to 9.2 and beats
+  Firecracker, its fleets' PSS too (PM M291, Linux 7.0). Writing a page at a time costs the
+  save 12 to 47 ms of a 64 to 256 MiB file (PM M290), paid on template creation and `save`,
+  never a warm pooled run; a restore's first beat and a pooled run are as quick either way
+  (M37 once measured large runs 17 to 25% quicker to the first beat), and a cold restore as
+  quick as 6.17's, up to 10 ms slower at p50 than whole runs' on 7.0 in one run of two,
+  whose faults map 2 MiB at once (M291). Whether readahead, refilling a file its host
+  dropped, makes large folios again is open (M291).
   Decoding treats the files as untrusted.
 - **Generations.** A snapshot directory holds generations, each a directory of its own
   (`state`, `memory`, and later a `working-set`), and `current`, naming the one in use.
@@ -5821,7 +5824,11 @@ the user told).
   of a `--cpus 1` run, 4.01 and 4.04 CPUs used where 1.00 and 1.02. A run with a limit pays
   what one without pays: 5 MiB more of its VM process's footprint at `--cpus 1` (Linux 8.4
   of Pss), and its start, 2.5 ms more at p50 paced on macOS (12.73 against 10.23 ms), 2.6
-  back to back on Linux.
+  back to back on Linux; on a contended host 22 ms more (PM M292: 17.9 against 39.7 ms at
+  p50, a `--cpus 1` run on 4 CPUs that 4 busy loops hold), slice 1's own. The host's hold
+  (PM M289, n 10 a side): an escaped workload of a `--cpus 1` run uses 1.02 CPUs held, 3.99
+  where only its microVM's cgroups hold it; on an idle host it costs a run nothing
+  measurable.
 - **Tested.** resources' `workload_limits_are_written` (a cpuset for every run: none given
   its microVM's every CPU, a quota's first N, `--cpu-count`'s); on real microVMs,
   `a_microvm_takes_its_cpus_real_time_isolation_and_annotations` (`--cpu-count 2` CPUs 0-1,
@@ -5838,13 +5845,14 @@ the user told).
   `platform`'s `a_threads_clock_counts_what_it_runs`. Mutation-checked: a run naming no
   cpuset given none fails resources' test, the CPUs test and the update test; a microVM of
   its run's CPUs alone fails the limits test and the CPUs test; the host hold removed, the
-  escaped workload uses every CPU (11.4 s of CPU in a 3 s window).
+  escaped workload's four threads use four CPUs' time (11.41 s of CPU in 3.03 s, PM M289).
 - **Next.**
-  - What a microVM's vCPUs cost its run's start (M288: 2.5 ms paced at 18 against 1,
-    which every run without a limit pays too): where it goes, and taking off what is not
-    its guest's own.
-  - What the hold's governor costs a run (slice 2's A/B): its thread, made only for a
-    limited run, and the per-exit check every vCPU makes.
+  - A start on a contended host, this slice's regression (PM M292: 22 ms more at p50 on
+    4 busy CPUs, 2 to 3 idle, M288): where a microVM's vCPUs, one for each host CPU, spend
+    it, and taking off what is not its guest's own. Every run without a limit pays it
+    too. Its timing line (`SHARDS_TIMING`) splits a start's phases.
+  - What the hold costs a memory-heavy run on a contended host: fills 9 and 16% longer
+    there (PM M292, n 8, its load rising). Repeated before it is read, and then why.
 
 ### D190. A run's writable layer on its host's disk: ext4 with DAX over pmem (slices 1 to 6 built)
 

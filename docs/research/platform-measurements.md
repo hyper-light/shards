@@ -1198,12 +1198,13 @@ frame 3 (`base + 0x60000`) and processor number 3, and is marked Last.
     tracepoint (medians): 472 NPT faults against 756 on the 7763, 440 against 689 on the
     9V45, and 361 EPT violations against 570 on the Xeon.
 - **Consequence.** `GuestMemory::save` writes each run of used pages with one call
-  (e9ed44d). **Superseded on Linux (PM M289, M290, 2026-10-21):** from 6.18 a restore maps
+  (e9ed44d). **Superseded on Linux (PM M291, M290, 2026-10-21):** from 6.18 a restore maps
   a whole page-cache folio at a fault, so large runs balloon a restored guest's memory file
   (26 MiB against Firecracker's 14); `write_run` now writes a page at a time on a Linux host,
-  which holds it to 8.9 MiB. The first-beat gap this measured no longer appears — ~5% at
-  p50 on 6.17 and 7.0, not 17–25% — because a restore prefetches its recorded working set,
-  so the fault pattern at first beat barely shows. macOS still writes each run whole.
+  which holds it to 9.1 to 9.2 MiB (M291). The first-beat gap this measured no longer
+  appears: page-at-a-time first beats are within the rounds' spread of whole runs' on 6.17
+  and 7.0 (M291), where a restore now maps its recorded working set ahead, which may be
+  why (not measured). macOS still writes each run whole.
 - **Open.**
   - Where in the kernel's fault path the fewer faults come from.
   - The Xeon's outliers, which took more EPT violations and more time in the guest than
@@ -11039,49 +11040,219 @@ revision before comparing a changed API/implementation.
     `setns` into init's own namespaces: opening `/proc/1/ns/cgroup` is denied, init being
     non-dumpable. And a workload held to the image's non-root user cannot write the
     root-owned `cgroup.procs`: the escape needs guest root, which `--privileged` grants.)
-  - With the hold, the escaped four threads used 1 CPU's time over the three-second burn
-    (within a period's overrun): held to its `--cpus 1`. Without a limit, the same four
-    used 11.4 s of CPU in a 3.0 s window — every CPU the host gave. With the hold removed
-    (mutation), the limited run too used 11.4 s in 3.0 s.
-- **What the hold costs** (`cpu-elastic/ab.py`, slice 2 against slice 1 a9133de9, Fedora
-  KVM, 16 P-cores, n 10/100): nothing measurable. A run's start within 0.3 ms either way
-  (`--cpus 1` 7.24 → 6.92 ms p50, none 6.60 → 6.99), its VM process's memory within 1 MiB
-  (`--cpus 1` Pss 20.81 → 20.86 MiB; all VM processes' Pss 123.8 → 122.9), `update --cpus`
-  moving CPUs the same (4.03 used after `--cpus 4` either build). The governor thread is
-  made only for a limited run, and an unheld vCPU's per-exit check is one atomic load.
+  - The E2E test holds its bounds: with the hold, the escaped four threads use no more
+    than the burn's wall time and a second; without a limit, more (it passes on macOS and
+    on CI's x86 Linux). With the hold removed (mutation), the limited run used 11.41 s of
+    CPU in 3.03 s, 3.77 CPUs: all four threads (n 1). A passing test prints nothing, so
+    the held and unlimited runs' own figures are escape.py's:
+  - `docs/research/measurements/cpu-elastic/escape.py` (Fedora 44, Linux 6.19.10, M258's
+    i9-14900HX, 32 CPUs; 0aa00196, held, against a9133de9, slice 1 without the hold;
+    release; n 10 each, alternating; every escape reached the microVM's root cgroup,
+    `0::/`; 2026-10-21), CPUs used over the burn, p50 and max:
+
+    | build | `--cpus 1` | no limit |
+    |---|---|---|
+    | held | **1.02, 1.04** | 3.99, 4.00 |
+    | unheld | **3.99, 4.00** | 3.99, 4.00 |
+- **What the hold costs** (`cpu-elastic/ab.py`: old a9133de9, slice 1; new slice 2's tree
+  on 4827b324, committed as fe045980; release; Fedora 44, Linux 6.19.10, M258's
+  i9-14900HX pinned to its P-cores 0–15, load 2.78 at the start and 1.04 at the end; 10
+  rounds alternating, 2026-10-21). p50, p90 and max (ab.py's p99 is its max at these n):
+
+  | | old | new |
+  |---|---|---|
+  | start, `--cpus 1` (n 100), ms | 7.24, 13.69, 25.18 | 6.92, 11.28, 28.18 |
+  | start, `--cpus 4` (n 100), ms | 7.05, 9.94, 19.48 | 6.89, 11.78, 24.40 |
+  | start, no limit (n 100), ms | 6.60, 8.56, 11.74 | 6.99, 9.77, 25.75 |
+  | first run, `--cpus 1` (n 10), ms | 22.24, 22.65, 22.65 | 22.58, 36.12, 36.12 |
+  | its VM process's Pss, `--cpus 1` (n 10), MiB | 20.81, 23.94, 23.94 | 20.86, 22.85, 22.85 |
+  | all VM processes' Pss (n 10), MiB | 123.79, 129.29, 129.29 | 122.86, 129.90, 129.90 |
+  | `update --cpus 4` (n 10), ms | 2.10, 2.35, 2.35 | 2.37, 3.86, 3.86 |
+  | CPUs used after it (n 10) | 4.03, 4.05, 4.05 | 4.03, 4.05, 4.05 |
+  | `update --cpus 1` (n 10), ms | 2.27, 3.27, 3.27 | 2.20, 8.75, 8.75 |
+  | CPUs used after it (n 10) | 1.02, 1.02, 1.02 | 1.02, 1.03, 1.03 |
+
+  Starts' p50s are within 0.4 ms; their tails move both ways, the most on the run without
+  a limit, which makes no governor (`held_cpus` 0): the host's noise, not the hold.
+  Memory within 1 MiB. A workload in its cgroup gets what its limit gives with the hold
+  as without (4.03 and 1.02 CPUs). The governor thread is made only for a limited run, and
+  an unheld vCPU's per-exit check is one atomic load. On an idle host only: a contended
+  one is M292's.
 - **Consequence.** The cpuset holds a workload that stays in its cgroup; the VM process's
   hold on its vCPU threads (`vm::hold`, reading each thread's CPU time, holding them out of
   the guest once a period's share is spent) holds the rest — kernel threads, interrupts,
   and a workload that escaped its cgroup — to what a microVM of the run's CPUs alone could
   use. Both are needed: a guest's root is still inside its microVM, but a microVM is not a
-  CPU budget until its host makes it one. It costs a run nothing (above).
+  CPU budget until its host makes it one. On an idle host it costs a run nothing
+  measurable (above); on a contended one, M292.
 
 ### M290. A restored guest's memory file written a page at a time on Linux (the restore-folios fix)
 
-- **Question.** M288/M289's restore-folios experiment proved that writing the snapshot's
-  memory file a page at a time holds a restored guest's memory to a page per fault on Linux
-  6.18+ (8.9 MiB against 26). What does writing it that way cost the save, which writes it
-  in large contiguous runs otherwise (`memory.rs::write_run`)?
+- **Question.** M291's restore-folios experiments found that writing the snapshot's memory
+  file a page at a time holds a restored guest's memory file on Linux 7.0 to 6.17's (9.1 to
+  9.2 MiB against 26). What does writing it that way cost the save, which writes it in large
+  contiguous runs otherwise (`memory.rs::write_run`)?
 - **Method.** `docs/research/measurements/restore-folios/writecost.py`: for each size, write
   that many MiB to a fresh file in 2 MiB writes, then in 4 KiB writes (what `write_run` now
-  does on a Linux host), each fsync'd and timed, 8 rounds alternating. Fedora 44 (Linux
-  6.19.10) on M258's i9-14900HX, on Btrfs (the home's) and tmpfs; 2026-10-21. The memory
-  file holds only a booted guest's touched non-zero pages (tens of MiB; `write_used` skips
-  zero runs), so 64 and 256 MiB bracket it.
-- **Results** (p50, ms; 2 MiB writes → 4 KiB writes, delta):
+  does on a Linux host), each fsync'd and timed, 20 rounds alternating after one not
+  counted. Fedora 44 (Linux 6.19.10) on M258's i9-14900HX, on Btrfs (the home's) and tmpfs;
+  2026-10-21. The memory file holds only a booted guest's touched non-zero pages (tens of
+  MiB; `write_used` skips zero runs), so 64 and 256 MiB bracket it. ext4, whose large
+  folios this answers, is not measured. (A first run, 8 rounds, p50s alone: +10.2 and +40.4
+  ms on Btrfs, +3.2 and +12.7 on tmpfs.)
+- **Results** (ms: p50, p90 and max; n 20 each):
 
-  | size | Btrfs | tmpfs |
-  |---|---|---|
-  | 64 MiB | 28.8 → 39.0 (+10.2) | 10.0 → 13.2 (+3.2) |
-  | 256 MiB | 111.5 → 151.9 (+40.4) | 42.1 → 54.8 (+12.7) |
+  | size | file system | 2 MiB writes | 4 KiB writes | p50s' delta |
+  |---|---|---|---|---|
+  | 64 MiB | Btrfs | 28.45, 29.98, 30.34 | 40.88, 46.15, 48.84 | +12.43 |
+  | 256 MiB | Btrfs | 114.97, 121.27, 126.56 | 161.98, 174.50, 176.10 | +47.01 |
+  | 64 MiB | tmpfs | 10.18, 10.57, 10.91 | 13.83, 14.31, 14.70 | +3.65 |
+  | 256 MiB | tmpfs | 42.82, 45.98, 47.36 | 56.19, 59.26, 62.67 | +13.38 |
 
-- **Consequence.** Page-at-a-time adds about 10 ms to a 64 MiB save and 40 ms to a 256 MiB
-  one on Btrfs, less on tmpfs. It is paid on the save, not the restore: template creation
+- **Consequence.** Page-at-a-time adds about 12 ms to a 64 MiB save and 47 ms to a 256 MiB
+  one on Btrfs, a third of that on tmpfs. It is paid on the save, not the restore: template creation
   (a boot's memory, tens of MiB) and an explicit `save`/stop, never a warm pooled run (which
   restores). The alternative — write large, then drop the file from the page cache so the
   restore re-reads single-page folios — would move the cost onto the frequent restore and
   make it read cold, so it is not taken. The cost is paid on every Linux host, including
   6.17 and filesystems that make no large folios, where there is no folio to split; a
   once-per-template save of ~10 ms is accepted for a uniform fix over fragile
-  kernel/filesystem detection. Restores stay fast (a warm, now single-page page cache) and
-  small (PM M289's 8.9 MiB).
+  kernel/filesystem detection. What it costs a restore, and how small it holds one, is
+  M291's: as quick as 6.17's, a cold restore up to 10 ms slower at p50 than whole runs' in
+  one 7.0 run of two, at 9.1 to 9.2 MiB against 26.
+
+### M291. A restored guest's memory file where Linux maps a page-cache folio whole: the restore-folios experiments (D25)
+
+- **Question.** From Linux 6.18 a read fault on a file's page maps the page-cache folio
+  holding it whole, where it lies within the mapping and one page table (mm/filemap.c,
+  `filemap_map_folio_range`), whatever the mapping's madvise(2); before, fault-around
+  mapped at most `fault_around_bytes`, 64 KiB. ext4 makes large folios of long writes since
+  6.16. A restored guest's memory is its snapshot's file mapped private (D25), which its
+  save wrote in long contiguous runs, and the Firecracker comparison failed on a 7.0
+  runner (M287): a restore held 26 MiB of the file to Firecracker's 14. Which way of
+  writing and mapping the file keeps a restore small, and at what cost, with the file in
+  the page cache and dropped from it?
+- **Method.** `.github/workflows/restore-folios.yml` applies
+  `docs/research/measurements/restore-folios/folios.patch`, whose switches choose how the
+  file is written and mapped, and runs on GitHub's ubuntu-24.04 runners (ext4; the kernel
+  each landed on below) the Firecracker comparison (`benches/firecracker.rs`, n 20 an arm a
+  round: the restored file's resident MiB, the first beat, a 16-VM fleet's PSS a VM) and
+  the restore (n 30) and image (n 60, 3 templates) benches, the arms alternating;
+  `summarize.py` makes the tables from the runs' logs (its README has them whole).
+  2026-10-21.
+  - First (4827b324; runs 39614418049 and 39614443940 on 7.0.0-1017-azure, 39614431058 on
+    6.17.0-1022-azure): `base` (runs written whole, as shards was), `random` (restores
+    mapped MADV_RANDOM), `pagewise` (a page a write **and** MADV_RANDOM), `drop`. The benches
+    ran one round of the two intended, stopped by `drop`'s failure.
+  - Second (0aa00196, the fix ffe3d1cb: a page a write, no MADV_RANDOM; runs 39689552590
+    and 39689498647 on 7.0, 39689540483 on 6.17): `shipped`, `random`, `whole` (runs
+    written whole: the control); two rounds of the comparison, three of the benches.
+  - Dropping the file in the VM process (the second's `evict`, the first's `drop`) gave
+    nothing: its seccomp filter refuses fadvise(2) (`seccomp refused syscall 221`, x86_64's
+    fadvise64) and killed each restore. The third experiment drops the host's page cache
+    from outside it.
+- **Results.** The restored memory file, resident MiB, p50 (max); a fleet's PSS a VM, MiB,
+  p50; the first beat, p50 ms; Firecracker's in parentheses:
+
+  | kernel, run | arm | memory file | FC | fleet PSS a VM | first beat |
+  |---|---|---|---|---|---|
+  | 7.0, first 1 | base | 25.8 (26.0) | 13.5 | 2.3 (1.9) | 11.34 (11.45) |
+  | | random | 26.5 (26.5) | 13.8 | 2.3 (1.9) | 10.72 (10.86) |
+  | | pagewise | 8.9 (8.9) | 13.9 | 1.2 (1.9) | 10.89 (10.74) |
+  | 7.0, first 2 | base | 26.1 (26.2) | 13.7 | 2.3 (1.9) | 12.98 (13.85) |
+  | | random | 26.0 (26.3) | 13.5 | 2.3 (1.9) | 12.89 (13.45) |
+  | | pagewise | 9.1 (9.1) | 13.3 | 1.2 (1.9) | 12.45 (13.59) |
+  | 7.0, second A, two rounds | shipped | 9.2, 9.2 (9.3) | 13.8, 13.9 | 1.2 (1.9) | 10.90, 10.44 (10.48, 10.39) |
+  | | random | 9.1, 9.2 (9.3) | 13.9, 13.8 | 1.2 (1.9) | 11.60, 10.60 (10.46, 10.48) |
+  | | whole | 26.2, 26.1 (26.3) | 13.6, 13.8 | 2.3 (1.9) | 10.36, 11.71 (10.47, 10.72) |
+  | 7.0, second B | shipped | 9.1, 9.2 (9.4) | 13.6, 13.6 | 1.2 (1.9) | 12.35, 12.66 (13.21, 13.51) |
+  | | random | 9.2, 9.2 (9.4) | 14.0, 13.7 | 1.2 (1.9) | 13.12, 13.92 (12.44, 12.41) |
+  | | whole | 26.0, 26.3 (26.3) | 13.3, 14.0 | 2.3 (1.9) | 12.05, 13.28 (15.10, 14.20) |
+  | 6.17, first | each | 8.9 to 9.0 | 11.6 to 11.8 | 1.2 (5.7) | 9.51 to 10.59 (10.46 to 10.54) |
+  | 6.17, second | each | 8.9 to 9.0 | 11.6 to 11.8 | 1.2 (5.7) | 11.84 to 13.36 (13.06 to 14.23) |
+
+  The benches, p50 ms of each round, and the restore bench's warm peak RSS, MiB:
+
+  | kernel, run | arm | cold restore | warm request | warm peak RSS | pooled run |
+  |---|---|---|---|---|---|
+  | 7.0, first 1 | base / pagewise | 22.56 / 16.14 | 20.19 / 13.28 | 33.0 / 15.3 | 34.26 / 29.42 |
+  | 7.0, first 2 | base / pagewise | 24.24 / 29.50 | 20.25 / 23.88 | 30.0 / 15.2 | 48.96 / 46.77 |
+  | 6.17, first | base / pagewise | 23.29 / 27.66 | 22.25 / 27.98 | 15.2 / 15.4 | 26.04 / 26.08 |
+  | 7.0, second A | shipped | 22.88, 17.13, 23.34 | 16.65, 14.84, 19.62 | 15.9 to 16.3 | 29.94, 27.34, 33.93 |
+  | | whole | 16.80, 10.08, 13.37 | 14.24, 6.79, 10.44 | 30.1 to 31.4 | 26.73, 36.31, 27.61 |
+  | 7.0, second B | shipped | 19.16, 22.60, 16.15 | 16.27, 18.53, 12.17 | 15.1 to 15.4 | 34.71, 43.35, 44.27 |
+  | | whole | 16.67, 15.89, 23.09 | 13.49, 12.63, 19.33 | 29.5 to 31.5 | 45.06, 42.15, 41.39 |
+  | 6.17, second | shipped | 24.39, 17.38, 21.80 | 22.69, 15.74, 19.83 | 14.9 to 15.2 | 42.94, 36.11, 42.21 |
+  | | whole | 24.71, 37.36, 29.71 | 23.31, 35.95, 27.62 | 15.0 to 15.9 | 39.92, 40.15, 41.55 |
+
+  `random`'s bench rows, within the others' spread, are in the README.
+- **Reading.** On 7.0 a save that writes each run whole leaves its file in large folios,
+  and a restore's faults map them whole: 26 MiB of it, past Firecracker's 14, and a fleet
+  at 2.3 MiB of PSS a VM, past its 1.9. MADV_RANDOM changes nothing: it stops readahead,
+  but these folios are the save's writes'. Writing a page at a time, what shards ships,
+  with MADV_RANDOM or without, holds a restore at 9.1 to 9.2 MiB and a fleet at 1.2 MiB a
+  VM, 6.17's own and under Firecracker's on both; the first beat stays within the rounds'
+  spread. What it costs is the faults large folios spare: in one 7.0 run of the two, cold
+  restores 6 to 10 ms longer at p50 and warm requests 2 to 9, in the other none; a restore
+  as quick as 6.17's; pooled runs the same. With the page cache dropped: pending (the
+  third experiment).
+- **Consequence.** `memory.rs::write_run` writes a page at a time on a Linux host
+  (ffe3d1cb; what that costs the save is M290's), and the restore mapping keeps
+  MADV_NOHUGEPAGE alone. Open: whether readahead, refilling a dropped file, makes large
+  folios again (the third experiment); and a write between a page and a run (64 to 256
+  KiB), whose folios might map as few faults as large ones with as little memory as small
+  ones.
+
+### M292. A run's start and its memory-heavy work, before and after D191's slice 1, on an idle host and a contended one
+
+- **Question.** Slice 1 (a9133de9) gives a run's microVM every CPU of its host, where a
+  `--cpus 1` run's had one. b96501d3 raised a memory-heavy test's timeout (the x86 CI
+  flake, `run_limits_a_microvms_resources`'s 2500m case past 60 s), saying slice 1 made such a run
+  heavier; that was not measured. Is it, and what does slice 1 do to a run's start, on an
+  idle host and on a contended one, as a CI runner's 4 CPUs are?
+- **Method.** `docs/research/measurements/cpu-elastic/memory.py`: two release builds, each
+  with a home of its own holding alpine, each home's daemon stopped and templates removed
+  first, rounds alternating which goes first, one warmup round not counted; each round
+  times from the request to the exit `run --rm --cpus 1 alpine true` and two runs filling a
+  tmpfs in the guest, its pages charged to the run's cgroup as `alloc`'s are: 684 MiB at
+  `-m 700m` and 2484 MiB at `-m 2500m`. Under `taskset`: 4 CPUs; 4 CPUs with 4 busy
+  loops on them; 16 P-cores. Fedora 44, Linux 6.19.10, M258's i9-14900HX, with other
+  work on it (its load at each run's start and end below); n 8 a case; 2026-10-21. First
+  1468f07d (before slice 1) against 0aa00196 (dev e076065f's code: slice 1, the host's
+  hold, the folio fix), then a9133de9 (slice 1 alone) against 0aa00196.
+- **Results** (ms, p50 and max):
+
+  | host (load) | case | 1468f07d | 0aa00196 |
+  |---|---|---|---|
+  | 4 CPUs (12.6 → 9.5) | start | 7.1, 17.7 | 10.1, 15.0 |
+  | | fill 684 MiB | 222.4, 264.8 | 247.6, 290.9 |
+  | | fill 2484 MiB | 1538.4, 2304.6 | 1458.2, 2257.5 |
+  | 4 CPUs, 4 busy loops (9.5 → 8.2) | start | **17.9, 27.3** | **39.7, 46.3** |
+  | | fill 684 MiB | 557.0, 660.9 | 584.9, 709.8 |
+  | | fill 2484 MiB | 3493.2, 3819.5 | 3045.9, 3241.9 |
+  | 16 P-cores (8.2 → 7.3) | start | 5.7, 22.3 | 7.8, 15.1 |
+  | | fill 684 MiB | 232.6, 235.5 | 258.1, 295.9 |
+  | | fill 2484 MiB | 1492.0, 1718.5 | 1433.3, 1741.3 |
+
+  | host (load) | case | a9133de9 | 0aa00196 |
+  |---|---|---|---|
+  | 4 CPUs (4.3 → 4.3) | start | 7.1, 10.6 | 6.8, 13.9 |
+  | | fill 684 MiB | 246.2, 281.5 | 244.8, 274.9 |
+  | | fill 2484 MiB | 768.6, 1137.9 | 680.3, 1035.4 |
+  | 4 CPUs, 4 busy loops (4.3 → 5.9) | start | 41.3, 57.8 | 44.5, 48.7 |
+  | | fill 684 MiB | 585.7, 646.4 | 638.3, 807.8 |
+  | | fill 2484 MiB | 1643.5, 1894.4 | 1904.2, 2464.6 |
+
+- **Reading.** A memory-heavy run is not heavier since slice 1: its 2484 MiB take as long
+  or less (−4 to −13% at p50, each host); 684 MiB take 5 to 11% longer. A run's start is
+  2 to 3 ms longer on an idle host, as M288 found paced, and **22 ms longer on a contended
+  one, 2.2 times as long** (17.9 → 39.7 ms), where the slowest start before slice 1 (27.3)
+  came before the median after it. That is slice 1's: a9133de9 alone starts in 41.3 ms
+  there, its host's hold adding nothing past the noise (44.5). Where a start's time goes
+  with a vCPU per host CPU on a host whose CPUs are busy is not measured yet. With the
+  hold, the contended host's fills took 9 and 16% longer (n 8, its load rising). The same
+  build filled 2484 MiB in 1458 ms in one run and in 680 in the next: the host's state
+  between runs moves it as much, so only what one run interleaves is compared.
+- **Consequence.** b96501d3's reason is withdrawn: its 240 s timeout stays for a slow,
+  contended runner, not for a regression. A start on a contended host is an open
+  regression of D191 slice 1, its tail's first item.

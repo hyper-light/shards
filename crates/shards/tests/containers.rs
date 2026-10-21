@@ -66,6 +66,18 @@ fn run_in_within(home: &Path, image: &str, options: &[&str], command: &[&str], t
     shards_in_within(home, &args, timeout)
 }
 
+/// What `home`'s daemon logged of processes ended for want of memory, for a failure's
+/// message: init's facts of each (its cgroup's memory files, and the guest kernel's own
+/// words, which say whether the cgroup's limit ran out or the microVM's memory did; D159).
+/// A test's home goes as it drops, a failing test's too, and its log with it.
+fn oom_said(home: &Path) -> String {
+    let log = std::fs::read_to_string(home.join("daemon.log")).unwrap_or_default();
+    log.lines()
+        .filter(|l| l.contains("for want of memory"))
+        .map(|l| format!("\n  daemon.log: {l}"))
+        .collect()
+}
+
 /// A run left going: its client, with the command's first line read.
 fn start(home: &Path, image: &str, options: &[&str], command: &[&str]) -> Child {
     // In the home, and shown where the run ends unready ([`ended`]).
@@ -4712,7 +4724,12 @@ fn run_limits_a_microvms_resources() {
             &["alloc", &wanted],
             Duration::from_secs(240),
         );
-        assert_eq!(held.status, Some(0), "{limit}, --cpus {cpus}: {held}");
+        assert_eq!(
+            held.status,
+            Some(0),
+            "{limit}, --cpus {cpus}: {held}{}",
+            oom_said(&home)
+        );
         assert!(
             held.stdout.contains(&format!("allocated {wanted}")),
             "{limit}, --cpus {cpus}: {held}"
@@ -9822,7 +9839,8 @@ fn update_moves_a_microvms_memory_both_ways() {
     assert_eq!(
         (held_more.status, held_more.stdout.as_str()),
         (Some(0), "allocated 512\n"),
-        "{held_more}"
+        "{held_more}{}",
+        oom_said(&home)
     );
     // What it reports it has: a gigabyte, its kernel's own aside, where it booted with
     // what a run without a limit boots with.
