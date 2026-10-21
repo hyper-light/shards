@@ -10605,3 +10605,54 @@ revision before comparing a changed API/implementation.
 - **Consequence.** D36: on Linux the VM and network processes are static (musl), whatever
   C library `shards` links. Open: a restored guest's first beat, 0.9 to 1.2 ms behind
   Firecracker's on this host.
+
+### M282. A restore's writable layer as a clone of its snapshot's, against a copy (D190)
+
+- **Question.** D190's restores filled an empty file with a copy of the layer their
+  snapshot's generation kept, and on macOS wrote it back on a thread as they restored
+  (M278). A run's own snapshot (D176) keeps all the run wrote: its `restore vm` copies all
+  of it, on the request's path. Given a copy-on-write clone of the generation's layer
+  instead (APFS's fclonefileat, Btrfs's FICLONE), what does a restore save, and does
+  anything after it pay for it?
+- **Method.** 2026-10-20. `docs/research/measurements/layer-clone/ab.py OLD NEW`: OLD
+  the tree before the slice (copies), NEW with it (clones), release builds, each
+  with a home of its own, rounds alternating which goes first: a container writes `size`
+  random bytes into its root (the copy skips blocks of zeros) and sleeps, `save vm` saves
+  and stops it, `restore vm` resumes it (timed), it is removed, and a `run --rm` of a
+  container that ends at once follows (timed). And `build-ab/ab.py` between the two
+  builds, `AB_FLAGS=--rm`: pooled runs, each from a warm microVM restored from its
+  image's template, its layer a clone or a copy.
+- **Results.** Mac (Apple M5 Max, macOS 26.4.1, APFS; other projects' builds and tests
+  running, load 18 to 25), ms, NEW less OLD paired by round, median and bootstrap 95%:
+
+  | size, rounds | `restore vm` OLD p50 (p90) | NEW p50 (p90) | paired | `run --rm` after, paired |
+  |---|---|---|---|---|
+  | 0, n = 10 | 44.61 (67.73) | 31.12 (93.80) | -5.40 [-16.42, +3.26] | +18.15 [+4.13, +59.72] |
+  | 0, n = 20 | 204.61 (768.02) | 109.63 (151.97) | -107.94 [-160.10, -68.68] | +3.15 [-9.08, +20.85] |
+  | 64 MiB, n = 10 | 81.36 (128.27) | 26.57 (81.22) | -30.80 [-57.87, -16.16] | -0.83 [-5.96, +4.53] |
+  | 512 MiB, n = 10 | 350.61 (2,690.50) | 106.56 (264.82) | -146.13 [-2,127.17, -85.79] | +11.36 [-0.39, +53.56] |
+
+  The first size-0 rounds ran beside this host's own lint and test builds; the second
+  set, n = 20, on homes kept from before (a registry's pull limit), beside other
+  projects' alone. Pooled `run --rm`, n = 60 pairs: wall -6.58 ms [-19.46, +2.95], the
+  command's own +0.39 [-2.38, +1.63].
+
+  The Fedora host (M266's: Intel Core i9-14900HX, Linux 6.19.10-300.fc44, Btrfs, homes in
+  its home directory: /tmp is tmpfs, which clones nothing; load 3 to 13), n = 10 a size:
+
+  | size | `restore vm` OLD p50 (p90) | NEW p50 (p90) | paired | `run --rm` after, paired |
+  |---|---|---|---|---|
+  | 0 | 39.22 (41.96) | 33.74 (39.86) | -3.78 [-6.81, +0.42] | +3.50 [-1.98, +8.00] |
+  | 64 MiB | 66.17 (81.38) | 34.76 (41.31) | -28.79 [-32.92, -22.01] | -3.16 [-6.04, +0.80] |
+  | 512 MiB | 206.00 (214.85) | 34.68 (48.64) | -166.21 [-174.99, -155.52] | -2.42 [-7.81, +8.02] |
+- **Reading.** A clone costs a restore the same whatever its layer holds (Fedora: 33.7 to
+  34.8 ms at p50 from 0 to 512 MiB), where the copy's cost grows with it (39.2 to 206.0);
+  on the Mac it saved 31 and 146 ms at p50 at 64 and 512 MiB, and its p90 at 512 MiB was
+  264.8 ms where the copy's, its writing back meeting other projects' work, was 2.69 s.
+  At size 0 the two are within their spread on Fedora, and on the Mac a clone saved 108 ms
+  at p50 on the busier host. What comes after pays nothing for it: on Fedora no `run`
+  after a restore differs; on the Mac the pooled runs and the second size-0 set do not,
+  and the first size-0 set's, beside this host's own builds, did by 18 ms.
+- **Consequence.** D190's third slice: a restore is given a clone of its generation's
+  layer where the home's file system makes one, the generation named; another
+  generation's, or none, is filled as an empty file is.

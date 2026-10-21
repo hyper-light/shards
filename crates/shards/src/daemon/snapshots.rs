@@ -433,9 +433,9 @@ impl<D: Disk> Daemon<D> {
             args.push("--gpu".into());
         }
         let net = pinned.snapshot.config.net.map(|saved| mac.unwrap_or(saved));
-        // Its writable layer (D190): a file it copies the save's into.
+        // Its writable layer (D190): a clone of the save's, or a file it copies it into.
         let layer = (pinned.snapshot.config.layer_mib > 0)
-            .then(|| super::layers::LayerFile::empty(&self.home))
+            .then(|| super::layers::LayerFile::for_restore(&self.home, &pinned.path))
             .transpose()?;
         drop(pinned);
         self.start_for_run(threads, &args, net, parent, layer)

@@ -260,7 +260,7 @@ impl<D: Disk> Daemon<D> {
             }
         }
         // Whether its template keeps a writable layer (D190), read once: each VM is given a
-        // file of its own to copy it into.
+        // file of its own for it, a clone of it where the home's file system makes one.
         let cached = lock(&self.state).pools.get(&key).and_then(|p| p.layer);
         let layered = match cached {
             Some(layered) => layered,
@@ -284,7 +284,10 @@ impl<D: Disk> Daemon<D> {
                 .map_err(|e| format!("a warm VM's MAC: {e}"))
                 .and_then(|mac| {
                     let layer = layered
-                        .then(|| super::layers::LayerFile::empty(&self.home))
+                        .then(|| {
+                            shards_vmm::snapshot::generation(dir)
+                                .and_then(|g| super::layers::LayerFile::for_restore(&self.home, &g))
+                        })
                         .transpose()?;
                     self.start(threads, &args, mac, For::Pool(key.clone()), &key.parent, layer)
                 });

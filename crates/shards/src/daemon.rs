@@ -6471,6 +6471,12 @@ impl<D: Disk> Daemon<D> {
                     .iter()
                     .flat_map(|l| [OsStr::new("--layer"), l.path().as_os_str()]),
             )
+            .chain(
+                layer
+                    .iter()
+                    .filter_map(|l| l.cloned_of())
+                    .flat_map(|g| [OsStr::new("--layer-cloned"), OsStr::new(g)]),
+            )
             .collect();
         let mut env = crate::netproc::child_env();
         // A GPU's VM process is the GPU's build (D144), which says MoltenVK's errors alone.

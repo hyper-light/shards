@@ -5747,7 +5747,7 @@ template pays it once; what its restores pay is to be measured with mappings.
   for, none by default, until random writes through one are root-caused and fixed, and a
   window that holds a working set costs its guest less than its 64th at boot.
 
-### D190. A run's writable layer on its host's disk: ext4 with DAX over pmem (slices 1 and 2 built)
+### D190. A run's writable layer on its host's disk: ext4 with DAX over pmem (slices 1 to 3 built)
 
 A run's writable layer, the upper directory of its root's overlay, was a tmpfs in its
 microVM's memory (D16, D156): what it wrote was memory, held to its memory limit, and gone
@@ -5775,11 +5775,20 @@ the guest keeps their metadata alone.
   0.2 to 0.32 ms more on a guest that had mounted it before, 1 to 80 ms the first time (PM
   M277), where a run's whole start is 0.73 ms at p50 (M230): so the template mounts it
   as it boots, before its snapshot, and the snapshot keeps it, and every run restored
-  from the template resumes with it mounted. A restore is given an empty file, in the
-  home's `layers`, and fills it with a copy of the file system its snapshot kept, read
-  from the very generation it resumes (a template saved again meanwhile is never paired
-  with another's layer), before any vCPU runs. Off the request's path: warm VMs are
-  restored ahead of their runs (D26).
+  from the template resumes with it mounted. A restore is given, in the home's `layers`,
+  the file system its snapshot kept as a copy-on-write clone of it, where the home's file
+  system clones files (APFS's fclonefileat(2), Btrfs's and XFS's FICLONE: slice 3), its
+  blocks the snapshot's until its run writes them, so that nothing is copied as it
+  restores and, on macOS, nothing written back (PM M278); else an empty file, which it
+  fills with a copy. Either is the very generation's it resumes: the daemon names the
+  generation it cloned (`--layer-cloned`), and a clone of another, a template saved again
+  meanwhile, is filled as an empty file is (`copies_layer`), so that no run is paired with
+  another generation's layer. Before any vCPU runs; off the request's path, as warm VMs
+  are restored ahead of their runs (D26), but for a run's own snapshot (D176), whose
+  `restore vm` it is on: one that holds 512 MiB restores in 34.7 ms at p50 from a clone,
+  where from a copy it took 206.0 (Fedora's Btrfs; on the Mac's APFS 106.6 against
+  350.6), a clone costing a restore the same whatever its layer holds, and nothing after
+  it pays for one (PM M282).
 - **Made by the host.** `shards-ext4` makes the file system a boot is given: what mke2fs
   1.47.0 makes for ext4 by default, less what a layer has no use for (no blocks kept to
   grow it, for root, or for an orphan file), its inode tables zeros as the sparse file
@@ -5885,9 +5894,6 @@ the guest keeps their metadata alone.
   on the host, into the warm microVM's own layer, which its template mounted as its root's
   (a copy, as long as the layer's changes are); a template's root mounted where a run can
   swap the file under it would make a restart's cost the layer's mount alone.
-- A restore's layer a clone of its template's (APFS clonefile, Linux FICLONE where the
-  home's file system has it) rather than a copy: nothing to copy as it restores, nor to
-  write back on macOS (PM M278), its blocks its template's until its run writes them.
 - Blocks the guest frees go back to the host: pmem takes no discard
   (drivers/nvdimm/pmem.c), so a layer's file only grows while its microVM lives; its
   microVM gone, the host could punch out what its bitmaps say is free.

@@ -617,8 +617,9 @@ pub fn restore_from(cfg: &RestoreConfig, pinned: snapshot::Pinned) -> Result<(Ha
     }
     let recording = cfg.record && working_set.is_none();
     // Its writable layer (D190): the head as the snapshot kept it, and the restore's own
-    // copy of its file system, made here from this very generation's, into the empty file
-    // it was given. One the snapshot and the restore do not agree on is refused as the
+    // copy of its file system, this very generation's: the clone of it the restore was
+    // given, or a copy made here into the file it was given, empty or a clone of another
+    // generation's. One the snapshot and the restore do not agree on is refused as the
     // machine is checked (`check_hosts`).
     let layer = match &cfg.layer {
         Some(path) if snap.config.layer_mib > 0 => {
@@ -627,17 +628,16 @@ pub fn restore_from(cfg: &RestoreConfig, pinned: snapshot::Pinned) -> Result<(Ha
             let kept = platform::open_beneath_input(&generation, &[snapshot::LAYER]).map_err(at)?;
             let file = platform::open_input(path, true).map_err(|e| format!("{}: {e}", path.display()))?;
             let len = kept.metadata().map_err(at)?.len();
-            if file.metadata().map_err(at)?.len() != 0 {
-                return Err(format!(
-                    "{}: a writable layer to copy its snapshot's into must be empty",
-                    path.display()
-                ));
+            let given = file.metadata().map_err(at)?.len();
+            let copies = copies_layer(given, len, cfg.layer_cloned.as_deref(), &name)
+                .map_err(|e| format!("{}: {e}", path.display()))?;
+            if copies {
+                platform::copy_used(&kept, &file, len).map_err(at)?;
+                // Written back as it restores, ahead of its run, rather than as the VM lets
+                // go of the file, where its host waits to read what its run left (macOS, PM
+                // M278), on a thread of its own: the restore goes on.
+                platform::write_back_ahead(&file).map_err(at)?;
             }
-            platform::copy_used(&kept, &file, len).map_err(at)?;
-            // Written back as it restores, ahead of its run, rather than as the VM lets go
-            // of the file, where its host waits to read what its run left (macOS, PM M278),
-            // on a thread of its own: the restore goes on.
-            platform::write_back_ahead(&file).map_err(at)?;
             Some(Arc::new(pmem::Layer::restore(head, file)?))
         }
         Some(path) => {
@@ -706,6 +706,20 @@ pub fn working_set_limit(dir: &Path) -> Result<u64, String> {
         .checked_mul(8)
         .and_then(|b| b.checked_add(snapshot::WORKING_SET_HEADER))
         .ok_or_else(|| format!("{}: a guest too large to bound", dir.display()))
+}
+
+/// Whether a restore of generation `pinned` copies its writable layer, `len` bytes, into
+/// the file it was given, `given` bytes long (D190): not where the file is a clone of that
+/// very generation's layer (`cloned`); where it is empty, or a clone of another
+/// generation's, which a template's newer one replaced before the restore read it. A file
+/// that is neither is refused: it might hold a run's own.
+fn copies_layer(given: u64, len: u64, cloned: Option<&str>, pinned: &str) -> Result<bool, String> {
+    match cloned {
+        Some(of) if of == pinned && given == len => Ok(false),
+        Some(_) => Ok(true),
+        None if given == 0 => Ok(true),
+        None => Err("a writable layer to copy its snapshot's into must be empty".into()),
+    }
 }
 
 /// Writes the working set a VM recorded from generation `name` of the snapshot in `dir`,
@@ -1092,6 +1106,20 @@ impl Cut<'_> {
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+
+    /// A restore copies its generation's writable layer into an empty file or into a clone
+    /// of another generation's, takes a clone of its own generation's as it is, and refuses
+    /// a file that is neither (D190).
+    #[test]
+    fn a_restore_copies_its_layer_unless_given_its_own_generations_clone() {
+        assert_eq!(copies_layer(0, 8 << 20, None, "g-2"), Ok(true));
+        assert_eq!(copies_layer(8 << 20, 8 << 20, Some("g-2"), "g-2"), Ok(false));
+        // Its template saved again between the clone and the restore's read.
+        assert_eq!(copies_layer(8 << 20, 8 << 20, Some("g-1"), "g-2"), Ok(true));
+        // No whole clone: made again.
+        assert_eq!(copies_layer(4 << 20, 8 << 20, Some("g-2"), "g-2"), Ok(true));
+        assert!(copies_layer(4096, 8 << 20, None, "g-2").is_err());
+    }
 
     /// A pmem file's pages count whether the process reaches its path or only the
     /// descriptor granted for it, as a VM in App Sandbox does (review 1.11): each file

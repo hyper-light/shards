@@ -1591,10 +1591,15 @@ pub struct RestoreConfig {
     /// A copy of the run's swap a snapshot of a run kept (D176), the restore's own, mapped
     /// where its guest had it before any vCPU runs.
     pub swap: Option<std::fs::File>,
-    /// The restore's own file for the writable layer its snapshot kept (D190): empty, which
-    /// the restore fills with a copy of the generation's it resumes, and the guest writes;
-    /// one the snapshot has a layer needs.
+    /// The restore's own file for the writable layer its snapshot kept (D190), which the
+    /// guest writes; one the snapshot has a layer needs. Empty, which the restore fills
+    /// with a copy of the layer of the generation it resumes; or a copy-on-write clone of
+    /// generation `layer_cloned`'s, taken as it is where that is the generation it resumes,
+    /// and filled as an empty one is where it is not.
     pub layer: Option<PathBuf>,
+    /// The snapshot generation whose layer `layer` is a clone of, where its spawner made
+    /// one (APFS, btrfs, XFS).
+    pub layer_cloned: Option<String>,
 }
 
 #[derive(Debug, Clone)]

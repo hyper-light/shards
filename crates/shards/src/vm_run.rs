@@ -66,10 +66,10 @@ const RUN_USAGE: &str = "usage: shards run vm --kernel PATH [--initrd PATH | --i
                 VIRTIO_IOMMU. Not with --snapshot-dir.
   Console escape: Ctrl-A x stops the VM.";
 
-const RESTORE_USAGE: &str = "usage: shards restore vm DIR [--hold] [--vsock PATH] [--no-console] [--gpu] [--backing PATH[:ro]]... [--layer PATH] [--snapshot-dir DIR [--snapshot-then stop|resume]]
-       shards restore vm DIR [--hold] [--backing PATH[:ro]]... [--layer PATH] [WORKLOAD OPTIONS] -- COMMAND [ARG...]
-       shards restore vm DIR --warm FD [--backing PATH[:ro]]... [--layer PATH]
-       shards restore vm DIR --resume FD [--backing PATH[:ro]]... [--layer PATH]
+const RESTORE_USAGE: &str = "usage: shards restore vm DIR [--hold] [--vsock PATH] [--no-console] [--gpu] [--backing PATH[:ro]]... [--layer PATH [--layer-cloned GENERATION]] [--snapshot-dir DIR [--snapshot-then stop|resume]]
+       shards restore vm DIR [--hold] [--backing PATH[:ro]]... [--layer PATH [--layer-cloned GENERATION]] [WORKLOAD OPTIONS] -- COMMAND [ARG...]
+       shards restore vm DIR --warm FD [--backing PATH[:ro]]... [--layer PATH [--layer-cloned GENERATION]]
+       shards restore vm DIR --resume FD [--backing PATH[:ro]]... [--layer PATH [--layer-cloned GENERATION]]
        shards restore vm MICROVM [SNAPSHOT]
   Resumes the VM in snapshot directory DIR. Given a microVM's name rather than a directory
   holding a snapshot, resumes that stopped microVM from a snapshot of its own (`shards save
@@ -89,6 +89,10 @@ const RESTORE_USAGE: &str = "usage: shards restore vm DIR [--hold] [--vsock PATH
   --backing: a file the snapshot restores against, read-only with :ro: given, a snapshot
              naming any other is refused, its state being what the VM saving it wrote.
   --gpu: restore in the GPU's VM process, which a snapshot of a VM with a GPU needs.
+  --layer: the restore's own file for the writable layer its snapshot kept (D190): empty,
+           which it fills with a copy of the layer of the generation it resumes; or, with
+           --layer-cloned, a copy-on-write clone of GENERATION's, taken as it is where that
+           is the generation it resumes.
   Console escape: Ctrl-A x stops the VM.";
 
 /// An argument that is text, with an error naming it if it is not UTF-8. Paths are taken
@@ -462,6 +466,7 @@ fn parse_restore(args: impl Iterator<Item = OsString>) -> Result<Restore, String
     let (mut dir, mut common, mut hold, mut warm, mut resume) = (None, Common::new(), false, None, false);
     let mut backing = Vec::new();
     let mut layer = None;
+    let mut layer_cloned = None;
     while let Some(arg) = args.next() {
         // The snapshot directory is a path, in whatever bytes; every option is text.
         let Some(flag) = arg.to_str().map(str::to_owned) else {
@@ -487,6 +492,8 @@ fn parse_restore(args: impl Iterator<Item = OsString>) -> Result<Restore, String
                 layer = Some(PathBuf::from(value("--layer")?));
                 LAYERED.store(true, std::sync::atomic::Ordering::Relaxed);
             }
+            // Which generation's layer that file is a clone of.
+            "--layer-cloned" => layer_cloned = Some(text(value("--layer-cloned")?)?),
             "--warm" => {
                 let fd = text(value("--warm")?)?;
                 warm = Some(
@@ -530,6 +537,9 @@ fn parse_restore(args: impl Iterator<Item = OsString>) -> Result<Restore, String
         return Err("--warm takes its command from the daemon: no --hold, --vsock, --snapshot-dir, workload options or command".into());
     }
     let dir = dir.ok_or("the snapshot directory is required")?;
+    if layer_cloned.is_some() && layer.is_none() {
+        return Err("--layer-cloned says whose clone --layer's file is: it needs --layer".into());
+    }
     let cfg = RestoreConfig {
         dir,
         console: common.console,
@@ -554,6 +564,7 @@ fn parse_restore(args: impl Iterator<Item = OsString>) -> Result<Restore, String
         record: warm.is_some() && !resume,
         swap: None,
         layer,
+        layer_cloned,
     };
     Ok(Restore {
         cfg,

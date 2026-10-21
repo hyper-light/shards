@@ -2,9 +2,11 @@
 //! microVM maps as a pmem device and its guest mounts with DAX under its root's overlay.
 //!
 //! A microVM booted for a run is given one made empty here, of the run's size; one
-//! restored from a template is given an empty file, which it fills with a copy of the
-//! layer its snapshot kept, as it reads the snapshot, so that the two are always one
-//! generation's. Either is made in the home's `layers`, and stays there until the run it
+//! restored from a snapshot (a template's, or a run's own, D176) is given a copy-on-write
+//! clone of the layer the snapshot's generation kept, where the home's file system clones
+//! files, else an empty file, which it fills with a copy of that layer as it reads the
+//! snapshot, so that the two are always one generation's. Either is made in the home's
+//! `layers`, and stays there until the run it
 //! serves ends: a container that stays keeps it in its directory once its microVM has
 //! gone ([`LayerFile::keep_at`]), its guest having written its journal in place, and every
 //! other goes with its handle, its microVM holding it open and mapped meanwhile, as a
@@ -31,14 +33,63 @@ const STEP: u64 = 2 << 20;
 /// A microVM's writable layer's file, made for it, until it holds it: unlinked as this
 /// goes, which the daemon lets go of once the microVM is ready or has failed to start.
 #[derive(Debug)]
-pub(super) struct LayerFile(PathBuf);
+pub(super) struct LayerFile {
+    path: PathBuf,
+    /// The snapshot generation whose layer it is a clone of, for a restore of it.
+    of: Option<String>,
+}
 
 impl LayerFile {
     /// An empty file, which a restoring microVM fills with its snapshot's layer.
     pub(super) fn empty(home: &Path) -> Result<LayerFile, String> {
         let path = fresh(home)?;
         create(&path).map_err(|e| format!("{}: {e}", path.display()))?;
-        Ok(LayerFile(path))
+        Ok(LayerFile { path, of: None })
+    }
+
+    /// The file a restore of the snapshot generation at `generation` is given for its
+    /// layer: a copy-on-write clone of the generation's own where the home's file system
+    /// makes one (APFS; btrfs and XFS on Linux), which shares its blocks until its run
+    /// writes them, so that the restore copies nothing and on macOS writes nothing back
+    /// (PM M278); else an [`empty`](Self::empty) one. A generation replaced before the
+    /// microVM reads it is no matter: the microVM fills the file from the generation it
+    /// resumes unless that is the one it is a clone of ([`cloned_of`](Self::cloned_of)).
+    pub(super) fn for_restore(home: &Path, generation: &Path) -> Result<LayerFile, String> {
+        let name = generation.file_name().and_then(|n| n.to_str());
+        if let Some(name) = name {
+            let path = fresh(home)?;
+            let from = generation.join(shards_vmm::snapshot::LAYER);
+            let cloned = std::fs::File::open(&from).and_then(|f| shards_build::host::clone_file(&f, &path));
+            match cloned {
+                Ok(true) => {
+                    let layer = LayerFile {
+                        path,
+                        of: Some(name.to_string()),
+                    };
+                    // Its user's alone, as every layer's file is.
+                    #[cfg(unix)]
+                    std::fs::set_permissions(
+                        &layer.path,
+                        std::os::unix::fs::PermissionsExt::from_mode(0o600),
+                    )
+                    .map_err(|e| format!("{}: {e}", layer.path.display()))?;
+                    return Ok(layer);
+                }
+                Ok(false) => {}
+                // Replaced meanwhile: the microVM reads the generation that replaced it.
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => super::log(format!(
+                    "{}: cloning it for a restore: {e}; the restore copies it",
+                    from.display()
+                )),
+            }
+        }
+        Self::empty(home)
+    }
+
+    /// The generation whose layer this file is a clone of, if it is one.
+    pub(super) fn cloned_of(&self) -> Option<&str> {
+        self.of.as_deref()
     }
 
     /// A file holding an empty ext4 file system that holds `holds` bytes, for a microVM
@@ -46,9 +97,9 @@ impl LayerFile {
     pub(super) fn made(home: &Path, holds: u64) -> Result<LayerFile, String> {
         let bytes = size(holds)?;
         let path = fresh(home)?;
-        let layer = LayerFile(path);
-        let at = |e: &dyn std::fmt::Display| format!("{}: {e}", layer.0.display());
-        let mut file = create(&layer.0).map_err(|e| at(&e))?;
+        let layer = LayerFile { path, of: None };
+        let at = |e: &dyn std::fmt::Display| format!("{}: {e}", layer.path.display());
+        let mut file = create(&layer.path).map_err(|e| at(&e))?;
         file.set_len(bytes).map_err(|e| at(&e))?;
         let mut ids = [0u8; 32];
         shards_vmm::platform::fill_random(&mut ids).map_err(|e| at(&e))?;
@@ -76,22 +127,24 @@ impl LayerFile {
     }
 
     pub(super) fn path(&self) -> &Path {
-        &self.0
+        &self.path
     }
 
     /// Keeps the file as `at`, a container's, in place of what was there: no longer the
     /// handle's to remove.
-    pub(super) fn keep_at(self, at: &Path) -> std::io::Result<()> {
-        let from = self.0.clone();
-        std::fs::rename(&from, at)?;
-        std::mem::forget(self);
+    pub(super) fn keep_at(mut self, at: &Path) -> std::io::Result<()> {
+        std::fs::rename(&self.path, at)?;
+        self.path = PathBuf::new();
         Ok(())
     }
 }
 
 impl Drop for LayerFile {
     fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.0);
+        // None, once kept.
+        if !self.path.as_os_str().is_empty() {
+            let _ = std::fs::remove_file(&self.path);
+        }
     }
 }
 
@@ -342,5 +395,33 @@ mod tests {
         std::fs::write(home.join(LAYERS).join("1-0"), b"").unwrap();
         clear(&home);
         assert!(!home.join(LAYERS).join("1-0").exists() && !empty.path().exists());
+    }
+
+    /// A restore's file is a clone of its generation's layer, said to be that generation's,
+    /// where the home's file system clones files (always on macOS's APFS), else empty; one
+    /// for a generation gone is empty; and a file kept stays as its handle goes.
+    #[test]
+    fn a_restores_layer_is_its_generations_clone_where_files_clone() {
+        let home = shards_testdir::TempDir::new("layers-clone").unwrap();
+        let generation = home.join("template").join("g-3");
+        std::fs::create_dir_all(&generation).unwrap();
+        let bytes: Vec<u8> = (0..4u32 << 20).map(|i| (i % 251) as u8).collect();
+        std::fs::write(generation.join(shards_vmm::snapshot::LAYER), &bytes).unwrap();
+        let given = LayerFile::for_restore(&home, &generation).unwrap();
+        match given.cloned_of() {
+            Some(of) => {
+                assert_eq!(of, "g-3");
+                assert_eq!(std::fs::read(given.path()).unwrap(), bytes);
+            }
+            None => assert_eq!(std::fs::metadata(given.path()).unwrap().len(), 0),
+        }
+        #[cfg(target_os = "macos")]
+        assert!(given.cloned_of().is_some());
+        let gone = LayerFile::for_restore(&home, &home.join("template").join("g-4")).unwrap();
+        assert_eq!(gone.cloned_of(), None);
+        assert_eq!(std::fs::metadata(gone.path()).unwrap().len(), 0);
+        let (path, kept) = (given.path().to_path_buf(), home.join("kept.ext4"));
+        given.keep_at(&kept).unwrap();
+        assert!(kept.exists() && !path.exists());
     }
 }
