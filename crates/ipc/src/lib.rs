@@ -318,6 +318,10 @@ pub mod kind {
     /// once nothing of the VM's machine writes it, the file the daemon's from then on;
     /// with the disk it used in the guest (a big-endian u64), where the guest said.
     pub const LAYER_KEPT: u8 = 67;
+    /// Daemon → a running run's VM: the CPUs whose time its vCPUs may use of the host's
+    /// together (8, big-endian), 0 for every one, as `update` changes the run's CPU limits
+    /// (D191): before its guest's cgroup is written.
+    pub const CPUS: u8 = 68;
 }
 
 /// A `SAVE` flag: the microVM goes on running once saved, rather than stopping.
@@ -1691,8 +1695,9 @@ pub const RUN_SWAP: u8 = 128;
 /// A `kind::RUN` request's head, before its command's encoded spec, as the daemon writes
 /// it and a warm VM's run and a joiner's (D119) read it: its flags, its log's retention
 /// (each segment's most bytes, how many segments it keeps), its log's first segment, the
-/// most memory its guest may plug in bytes (D148), and its log's queue (D162): none where
-/// the run's output is kept as it comes, else the most bytes queued for its log.
+/// most memory its guest may plug in bytes (D148), its log's queue (D162): none where
+/// the run's output is kept as it comes, else the most bytes queued for its log; its I/O
+/// limits (D178); and the CPUs its microVM is held to (D191).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct RunHead {
     pub flags: u8,
@@ -1705,6 +1710,9 @@ pub struct RunHead {
     /// the host's storage, 0 for none.
     pub io_bytes: u64,
     pub io_requests: u64,
+    /// The CPUs whose time its microVM's vCPUs may use of the host's together (D191), 0
+    /// for every one.
+    pub cpus: u64,
 }
 
 /// The big-endian u64 `rest` begins with, `rest` then past it.
@@ -1716,8 +1724,8 @@ fn take_u64(rest: &mut &[u8]) -> Option<u64> {
 
 impl RunHead {
     /// Its length: the flags, four big-endian u64s, the queue's mode (0 blocking, 1
-    /// non-blocking), the queue's, then the I/O limits' two.
-    pub const LEN: usize = 1 + 4 * 8 + 1 + 8 + 2 * 8;
+    /// non-blocking), the queue's, the I/O limits' two, then the CPUs held to.
+    pub const LEN: usize = 1 + 4 * 8 + 1 + 8 + 2 * 8 + 8;
 
     pub fn encode_into(&self, out: &mut Vec<u8>) {
         out.push(self.flags);
@@ -1728,6 +1736,7 @@ impl RunHead {
         out.extend(self.queue.unwrap_or(0).to_be_bytes());
         out.extend(self.io_bytes.to_be_bytes());
         out.extend(self.io_requests.to_be_bytes());
+        out.extend(self.cpus.to_be_bytes());
     }
 
     /// The head `payload` begins with, and what follows it; why not, where it holds none.
@@ -1747,6 +1756,7 @@ impl RunHead {
         };
         let io_bytes = take_u64(&mut rest).ok_or(SHORT)?;
         let io_requests = take_u64(&mut rest).ok_or(SHORT)?;
+        let cpus = take_u64(&mut rest).ok_or(SHORT)?;
         let head = RunHead {
             flags,
             log_size,
@@ -1756,6 +1766,7 @@ impl RunHead {
             queue,
             io_bytes,
             io_requests,
+            cpus,
         };
         Ok((head, rest))
     }
@@ -1935,6 +1946,7 @@ mod tests {
                 queue,
                 io_bytes: 10 << 20,
                 io_requests: 100,
+                cpus: 2,
             };
             let mut bytes = Vec::new();
             head.encode_into(&mut bytes);

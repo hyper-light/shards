@@ -431,19 +431,26 @@ fn mount_root(device: &str) -> Result<(), Failure> {
     };
     // Its writable layer: the ext4 file system its host gave it on a pmem device of its own
     // (D190), with DAX, where it has one; else a tmpfs, in its memory.
-    if !crate::pmem::mount_layer("/rw").map_err(|e| setup_failed(format!("its writable layer: {e}")))? {
+    let layered =
+        crate::pmem::mount_layer("/rw").map_err(|e| setup_failed(format!("its writable layer: {e}")))?;
+    if !layered {
         mount("tmpfs", "/rw", "tmpfs", 0, &rw)?;
     }
     crate::setup::keep_rw().map_err(|e| setup_failed(format!("/rw: {e}")))?;
     for dir in ["/rw/upper", "/rw/work"] {
         mkdir(dir)?;
     }
+    // Over a layer on the host's disk, the root passes its fsyncs on to it, which the host
+    // makes durable (D190, vmm `Layer::flush`); over a tmpfs, which nothing outlives, it
+    // passes none (`volatile`: overlayfs omits every sync of the upper,
+    // Documentation/filesystems/overlayfs.rst).
+    let volatile = if layered { "" } else { "volatile," };
     mount(
         "overlay",
         "/newroot",
         "overlay",
         0,
-        &format!("lowerdir=/lower,upperdir=/rw/upper,workdir=/rw/work,volatile,{XINO}"),
+        &format!("lowerdir=/lower,upperdir=/rw/upper,workdir=/rw/work,{volatile}{XINO}"),
     )?;
     // Kept for `diff` (changes.rs), which compares the layers the root hides.
     if let Err(e) = crate::changes::keep("/lower", "/rw/upper") {

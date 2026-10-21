@@ -3058,7 +3058,7 @@ impl<D: Disk> Daemon<D> {
             }
             (None, Some(bytes)) => {
                 let at = lock(&self.containers).dir(&id).join(SWAP);
-                let vcpus = crate::resources::vcpus(&run.resources, crate::resources::host_cpus());
+                let vcpus = crate::resources::microvm_vcpus();
                 match open_swap(&at, crate::resources::swap_device_bytes(bytes, vcpus)) {
                     Ok(file) => Some((file, at)),
                     Err(e) => {
@@ -3116,6 +3116,11 @@ impl<D: Disk> Daemon<D> {
             // Its microVM's I/O limits, its VMM's to keep (D178).
             io_bytes: run.resources.io_maximum_bandwidth,
             io_requests: run.resources.io_maximum_iops,
+            // The CPUs its VMM holds its vCPUs to (D191).
+            cpus: u64::from(crate::resources::held_cpus(
+                &run.resources,
+                crate::resources::host_cpus(),
+            )),
         }
         .encode_into(&mut payload);
         // A resumed run's command runs already: its request brings its save's tokens instead,

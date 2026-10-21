@@ -885,17 +885,17 @@ pub fn prepare(
     })
 }
 
-/// A run's microVM's vCPUs, the memory it boots with and the most it may have in all, in
-/// MiB (D148). Every run boots as one without a limit does and plugs memory as its
-/// workload asks: without a limit, up to the host's memory, as a container without one may
-/// have; with one, up to what its limit needs, which its cgroup holds it to (`memory.max`),
-/// never less than it boots with. So every limit's runs restore one template, and its guest
-/// reports what it may plug (D149), by which runtimes size their heaps as under Docker
-/// (Node.js's V8, PM M220, M221). Where the host's memory is not known, it plugs none, and
-/// a run with a limit boots with what its limit needs.
+/// A run's microVM's vCPUs, every one of the host's (D191), the memory it boots with and
+/// the most it may have in all, in MiB (D148). Every run boots as one without a limit does
+/// and plugs memory as its workload asks: without a limit, up to the host's memory, as a
+/// container without one may have; with one, up to what its limit needs, which its cgroup
+/// holds it to (`memory.max`), never less than it boots with. So every limit's runs restore
+/// one template, and its guest reports what it may plug (D149), by which runtimes size
+/// their heaps as under Docker (Node.js's V8, PM M220, M221). Where the host's memory is
+/// not known, it plugs none, and a run with a limit boots with what its limit needs.
 pub fn sizes(resources: &shards_ipc::Resources, host: Option<u64>) -> (u32, u64, u64) {
     use shards_vmm::vm::MEMORY_MIB;
-    let vcpus = crate::resources::vcpus(resources, crate::resources::host_cpus());
+    let vcpus = crate::resources::microvm_vcpus();
     // Its swap's bookkeeping too, its kernel's and not its workload's (D159).
     let kernel = crate::resources::swap_bytes(resources).map_or(0, |allowance| {
         let device = crate::resources::swap_device_bytes(allowance, vcpus);

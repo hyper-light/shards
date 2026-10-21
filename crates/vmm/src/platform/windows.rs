@@ -402,6 +402,18 @@ pub unsafe fn flush_shared(ptr: NonNull<u8>, len: usize) -> io::Result<()> {
     }
 }
 
+/// Makes what was written to `file` durable, through a view of it at `ptr..ptr+len`
+/// ([`map_file_shared`]) too: the view's pages written to the file (FlushViewOfFile), then
+/// the file to its device (FlushFileBuffers).
+///
+/// # Safety
+/// `ptr..ptr+len` is the view [`map_file_shared`] made of `file`, still mapped.
+pub unsafe fn sync_mapped(file: &File, ptr: NonNull<u8>, len: usize) -> io::Result<()> {
+    // SAFETY: forwarded caller contract.
+    unsafe { flush_shared(ptr, len) }?;
+    sync_durable(file)
+}
+
 /// Whether a mapping of a file hides its holes (unix.rs): its ranges are all of it here
 /// ([`data_ranges`]).
 pub const MAPPED_HIDES_HOLES: bool = false;
@@ -622,4 +634,58 @@ pub fn disk_space(path: &std::path::Path) -> io::Result<(u64, u64)> {
         return Err(io::Error::last_os_error());
     }
     Ok((available, total))
+}
+
+/// A thread's CPU clock, read from any thread of the process while the thread lives
+/// (D191): its kernel and user times (GetThreadTimes), which Windows counts by its clock's
+/// ticks. The handle it holds is closed as it goes.
+#[derive(Debug)]
+pub struct ThreadClock(windows_sys::Win32::Foundation::HANDLE);
+
+// SAFETY: a thread handle opened for querying alone, which GetThreadTimes reads from any
+// thread; nothing else uses it.
+unsafe impl Send for ThreadClock {}
+// SAFETY: as above: reading the times through a shared handle changes nothing.
+unsafe impl Sync for ThreadClock {}
+
+impl ThreadClock {
+    /// The calling thread's.
+    pub fn current() -> io::Result<ThreadClock> {
+        use windows_sys::Win32::System::Threading::{
+            GetCurrentThreadId, OpenThread, THREAD_QUERY_LIMITED_INFORMATION,
+        };
+        // SAFETY: opens the calling thread, by its id, to query it alone.
+        let handle = unsafe { OpenThread(THREAD_QUERY_LIMITED_INFORMATION, 0, GetCurrentThreadId()) };
+        if handle.is_null() {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(ThreadClock(handle))
+    }
+
+    /// The CPU time its thread has used, in nanoseconds.
+    pub fn read(&self) -> io::Result<u64> {
+        use windows_sys::Win32::Foundation::FILETIME;
+        use windows_sys::Win32::System::Threading::GetThreadTimes;
+        let zero = || FILETIME {
+            dwLowDateTime: 0,
+            dwHighDateTime: 0,
+        };
+        let (mut created, mut exited, mut kernel, mut user) = (zero(), zero(), zero(), zero());
+        // SAFETY: a handle this value owns, and four times to write.
+        if unsafe { GetThreadTimes(self.0, &mut created, &mut exited, &mut kernel, &mut user) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        // In 100 ns units.
+        let ns = |t: FILETIME| {
+            ((u64::from(t.dwHighDateTime) << 32) | u64::from(t.dwLowDateTime)).saturating_mul(100)
+        };
+        Ok(ns(kernel).saturating_add(ns(user)))
+    }
+}
+
+impl Drop for ThreadClock {
+    fn drop(&mut self) {
+        // SAFETY: the handle this value opened, closed once.
+        unsafe { CloseHandle(self.0) };
+    }
 }

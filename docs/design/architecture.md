@@ -94,10 +94,17 @@ the crypto self-tests first, since every clone would replay the rest (PM M21).
   forever [PM M45]. The blob is versioned: a host update that changes it fails the
   restore, and the run boots and saves the template again (D25). The state records one
   guest counter for the whole VM and the CPU ID registers; a restore on another CPU is
-  refused. Memory is sparse (zero pages are holes). Each run of pages the guest used is one
-  write: on ext4 a write's length sets the order of the page-cache folios a restore maps,
-  and restores of a snapshot written that way reached their first beat 17–25% sooner than
-  of one written a page per write [PM M37]. Decoding treats the files as untrusted.
+  refused. Memory is sparse (zero pages are holes). Each run of pages the guest used is
+  written whole on macOS, and a page at a time on a Linux host (`memory.rs::write_run`):
+  on ext4 a write's length sets the order of the page-cache folios it fills, and from 6.18
+  a restore's read fault maps a whole folio of the file at once (filemap_map_folio_range),
+  so a snapshot written in large runs gave a restored guest 26 MiB of its working set to
+  Firecracker's 14, where one written a page at a time gave 8.9 and beat Firecracker (PM
+  M289). Writing a page at a time costs the save 10–40 ms of a tens-of-MiB memory file
+  (PM M290), paid on template creation and `save`, never a warm pooled run; a restore's
+  first beat is within ~5% either way, where M37 once measured large runs 17–25% faster
+  (the working set is prefetched now, so the fault pattern at first beat barely shows).
+  Decoding treats the files as untrusted.
 - **Generations.** A snapshot directory holds generations, each a directory of its own
   (`state`, `memory`, and later a `working-set`), and `current`, naming the one in use.
   - A write stages a generation under a name of its own, syncs its files and directory,
@@ -119,8 +126,15 @@ the crypto self-tests first, since every clone would replay the rest (PM M21).
   left before anything is allocated, and every page must be aligned, distinct and inside
   the guest; otherwise the restore goes without prefetching (audit A16).
 - **Restore.** Memory is mapped copy-on-write from the snapshot file; clones share every
-  page none of them writes. vCPUs are created in order and loaded with one counter offset,
-  so CNTVCT continues and agrees across CPUs. **The GIC distributor is applied only after
+  page none of them writes. On the host's base pages (MADV_NOHUGEPAGE): the file's pages
+  are the page cache's folios, up to 2 MiB, which a mapping without the advice maps whole
+  at a fault, 14 MiB of a restored test guest's where Firecracker's mapped none. On base
+  pages a lone restore holds 9.0 MiB of its file where it held 19.4 and Firecracker 11.7,
+  its first beat comes in 9.18 ms where it came in 7.36 and Firecracker's in 10.11, and a
+  fleet of 16 costs 1.2 MiB of PSS a VM where it cost 1.9 and Firecracker 5.7; a pooled
+  run, whose working set is prefetched before its request, takes as long, and a cold
+  restore 7 to 11 ms longer (PM M287, which reverses M55). vCPUs are created in order and
+  loaded with one counter offset, so CNTVCT continues and agrees across CPUs. **The GIC distributor is applied only after
   every vCPU exists:** HVF routes an SPI when IROUTER is written, and routing to a CPU
   that does not exist yet loses the SPI (found by the E2E test). Devices follow, and the
   vCPUs are released.
@@ -1603,8 +1617,8 @@ removes it; `--rm` removes it once it ends.
   standby the template keeps does so before the snapshot, so a run pays nothing for it.
   init writes the limits as runc v1.5.1 does (fs2 Manager.Set, after moby's and runc's
   translations: `--cpus` as `cpu.max` over 100 ms, shares to a weight, swap less memory).
-  The microVM is sized to hold them: as many vCPUs as `--cpus`, the quota or the cpuset
-  needs, and every CPU of the host's where none is given (D125), and memory of which what
+  The microVM is sized to hold them: every CPU of the host's, the workload held to what
+  `--cpus`, the quota or the cpuset gives it by its cpuset (D125, D191), and memory of which what
   may be allocated (MemAvailable, and the free pages the
   CPUs' lists hold, PM M179) holds `-m`, from the guest kernel's own share measured by
   size and by vCPU (PM M117, M179, M183: each vCPU keeps up to 1.9 MiB of its own). Where Docker limits a container below the host, shards does
@@ -2879,6 +2893,11 @@ CLI's, held to Docker Engine 29.3.1's.
   (tests/containers.rs: 512 MiB killed at `-m 256m`, held at `1g`, MemTotal a gigabyte,
   killed again at `256m`; mutation-checked: without `PLUG`, and without the hold again,
   each killed at `1g`).
+- **A running microVM's CPUs move with its limit, both ways** (the user's plan, item 3;
+  D191): its microVM has every CPU of the host's, so `update --cpus`, the quota,
+  `--cpu-count` or `--cpuset-cpus` writes the workload's cpuset with its quota, a raise
+  giving it CPUs it had not (PM M288: 4.01 CPUs used after `--cpus 4` of a `--cpus 1`
+  run, where its one vCPU held it to 1.00). Held by `update_changes_limits_of_running_microvms`.
 - `--cpu-rt-period` and `--cpu-rt-runtime` parse, and are not served: cgroup v2 has no
   real-time CPU controller to write them to.
 - inspect's raw-JSON fallback (a template Docker's typed struct cannot answer) decodes
@@ -5753,7 +5772,81 @@ template pays it once; what its restores pay is to be measured with mappings.
   window reach its server as FUSE_WRITEs, measured in the guest, and a window that holds a
   working set costs its guest less than its 64th at boot.
 
-### D190. A run's writable layer on its host's disk: ext4 with DAX over pmem (slices 1 to 5 built)
+### D191. A run's microVM has every CPU of its host, its workload the CPUs its limits give it (slices 1 and 2 built)
+
+The user's plan, item 3 (2026-10-18): a run's `--cpus` as elastic as its memory (D148),
+every microVM given the host's CPUs, init bringing the run's online and `update --cpus`
+more or fewer. Bringing a CPU online as a run starts costs what no start has: 13 ms a CPU
+on HVF and 45 on KVM where the microVM has the host's (PM M265: 31 brought online in 1.40
+s), and taking one offline stops every other (kernel/cpu.c, `stop_machine`). So every CPU
+stays online, in the template and in every run, and a run is held to what it is given
+inside its microVM, as a Linux host holds a container's processes (decided 2026-10-20, and
+the user told).
+
+- **Its microVM: every CPU of the host's** (`resources::microvm_vcpus`), whatever its
+  limits, as D125 gave a run without one. Every run of an image restores one template,
+  as every `-m` does (D148), where each count had its own, booted and saved by its first
+  run.
+- **Its workload: the CPUs its limits give it**, its cgroup's `cpuset.cpus`
+  (`resources::cgroup`): `--cpuset-cpus`'s; else its microVM's first N, N `--cpu-count`'s,
+  else as many as `--cpus`, the quota or `--cpu-percent` needs (`resources::run_cpus`,
+  D155), every one with none; `cpu.max` as before. Its processes see what a microVM of
+  those CPUs alone showed them, `nproc` (sched_getaffinity) N; its guest's online CPUs are
+  the host's, as a container's are.
+- **The host holds its vCPUs to the same CPUs** (slice 2, `vm::hold`). Its workload is
+  held inside its microVM; but a workload root of its own guest may leave its cgroup —
+  with `--privileged --cgroupns host` it writes itself into the microVM's cgroup root,
+  out of the run's cpuset, onto every CPU (PM M289). So the VM process holds its vCPU
+  threads together to as many of the host's CPUs as the run's limits let its workload use
+  at once (`resources::held_cpus`: the fewest of `--cpu-count`'s, the quota's rounded up,
+  and the cpuset's; none where that is every CPU). A governor thread reads each vCPU
+  thread's CPU time (`platform::ThreadClock`: Linux its CPU-time clock, which counts its
+  time in the guest; macOS thread_info, PM M288; Windows GetThreadTimes), and once a 100
+  ms period's share is spent holds every vCPU out of its guest, by the same kick a
+  snapshot uses, until the period ends; what a period overran comes off the next. This
+  bounds the whole guest — kernel threads, interrupts, and any escaped workload — to what
+  a microVM of those CPUs alone could use, where the cpuset alone bounds only a workload
+  that stays in its cgroup. It comes with the run (the `RUN` head's `cpus`), before the
+  guest hears of the run, and `update` moves it (below).
+- **`update` moves them, both ways.** A running run's `--cpus`, quota, `--cpu-count` or
+  `--cpuset-cpus` changed writes its cpuset and quota at once (`builtin::CGROUP`, D40), a
+  raise giving it CPUs it had not; before, a raise past its microVM's vCPUs bound at them.
+  Where the CPUs its workload may use at once change, its VM is told the new hold first
+  (`kind::CPUS`), on the link the cgroup write comes on after, as `update -m` tells it the
+  new memory (D148).
+- **Measured (PM M288; macOS on an Apple M5 Max, Linux on M258's i9-14900HX).** A count's
+  first run 13.5 ms on macOS and 16.7 on Linux, where it booted and saved a template in
+  216 and 694; one warm pool for every limit, three VM processes held where five and seven,
+  22 MiB less footprint (macOS) and 63 MiB less Pss (Linux) in all; after `update --cpus 4`
+  of a `--cpus 1` run, 4.01 and 4.04 CPUs used where 1.00 and 1.02. A run with a limit pays
+  what one without pays: 5 MiB more of its VM process's footprint at `--cpus 1` (Linux 8.4
+  of Pss), and its start, 2.5 ms more at p50 paced on macOS (12.73 against 10.23 ms), 2.6
+  back to back on Linux.
+- **Tested.** resources' `workload_limits_are_written` (a cpuset for every run: none given
+  its microVM's every CPU, a quota's first N, `--cpu-count`'s); on real microVMs,
+  `a_microvm_takes_its_cpus_real_time_isolation_and_annotations` (`--cpu-count 2` CPUs 0-1,
+  every CPU of the host's online; `--cpu-percent 50` its share on half of them),
+  `run_limits_a_microvms_resources` (`--cpus 1.5 --cpuset-cpus 0`: CPU 0, every CPU
+  online) and `update_changes_limits_of_running_microvms` (`--cpus 1.5`, then the host's
+  count: CPUs 0-1, then every one, and their quota). The host hold: resources'
+  `microvms_are_held_to_their_runs_cpus` (the fewest of each limit's CPUs, none for every
+  one); `vm::hold`'s own tests (threads held to one CPU use about the time passing, not
+  every CPU's; a hold of every CPU holds nothing; the end lets a held vCPU go); on a real
+  microVM `a_workload_past_its_cgroup_is_held_to_its_cpus_by_its_host` (a privileged
+  guest-root workload that writes itself to the cgroup root, out of a `--cpus 1` cpuset,
+  uses no more than one CPU's time, where without a limit four threads run free), and
+  `platform`'s `a_threads_clock_counts_what_it_runs`. Mutation-checked: a run naming no
+  cpuset given none fails resources' test, the CPUs test and the update test; a microVM of
+  its run's CPUs alone fails the limits test and the CPUs test; the host hold removed, the
+  escaped workload uses every CPU (11.4 s of CPU in a 3 s window).
+- **Next.**
+  - What a microVM's vCPUs cost its run's start (M288: 2.5 ms paced at 18 against 1,
+    which every run without a limit pays too): where it goes, and taking off what is not
+    its guest's own.
+  - What the hold's governor costs a run (slice 2's A/B): its thread, made only for a
+    limited run, and the per-exit check every vCPU makes.
+
+### D190. A run's writable layer on its host's disk: ext4 with DAX over pmem (slices 1 to 6 built)
 
 A run's writable layer, the upper directory of its root's overlay, was a tmpfs in its
 microVM's memory (D16, D156): what it wrote was memory, held to its memory limit, and gone
@@ -5853,6 +5946,24 @@ the guest keeps their metadata alone.
   One whose guest will not give its mapping up, or whose own cannot be withheld, copies
   the file whole, as before; one that cannot be put back leaves the layer lost, and the
   machine stops.
+- **A guest's fsync is the host's** (slice 6). A guest's flush of the layer
+  (VIRTIO_PMEM_REQ_TYPE_FLUSH), which its fsync waits for (drivers/nvdimm/nd_virtio.c,
+  `virtio_pmem_flush`), was answered at once, and the run's root overlay was mounted
+  `volatile`, which omits every sync of its upper (Documentation/filesystems/overlayfs.rst):
+  a container's fsync made nothing durable on its host, where Docker's overlay2 passes it to
+  the host's file system. The root is now `volatile` only over a tmpfs, which nothing
+  outlives, and the device makes the layer durable before it answers (`Layer::flush`,
+  `platform::sync_mapped`), outside guest memory's access, which other devices go on taking:
+  fdatasync on Linux, which writes back what the guest wrote through the mapping; on macOS
+  F_FULLFSYNC, the one call there whose data is persisted when it returns (fsync(2):
+  without it a drive may lose or reorder what fsync gave it, "not a theoretical edge case"),
+  and which writes back pages written through a mapping, which fsync leaves dirty (PM M286).
+  As Firecracker's flush msyncs its device's file (docs/pmem.md) and QEMU's fsyncs it. ext4
+  commits with two flushes, a pre-flush then its commit block's FUA (`journal_async_commit`,
+  one, it refuses with `data=ordered`), so a guest's fsync costs two: 3.64 ms at p50 on
+  Fedora's Btrfs and 26.6 on the Mac, F_FULLFSYNC 3 to 16 ms as the host's load went, where
+  before it cost 0.68 ms and nothing it wrote was the host's to keep (PM M286). A run's
+  swap and an image hold nothing past their run: their flushes are done at once.
 - **Its file is its run's, then its container's.** A layer's file stays in the home's
   `layers` while its microVM serves its run, the daemon holding it with the microVM; what
   a daemon before left there is no run's by the next, which removes it as it starts. A
@@ -5925,9 +6036,9 @@ the guest keeps their metadata alone.
 - **Tests.** `shards-ext4`'s, including the oracles'; `pmem`'s for the head's size, its
   info block's checksum, a layer saved and restored, a head's alike blocks kept once, a
   booted head mapped back from its saved copy, its own memory given back, taken from its
-  guest meanwhile, and a save that asks where the layer's file holds data with its
-  mappings away; `platform`'s that a mapping hides a file's holes where
-  `MAPPED_HIDES_HOLES` says;
+  guest meanwhile, a save that asks where the layer's file holds data with its mappings
+  away, and a flush answered once what the guest wrote is its file's; `platform`'s that a
+  mapping hides a file's holes where `MAPPED_HIDES_HOLES` says;
   the snapshot's for a run's five files; `layers`' for the files the daemon makes and
   removes; on real microVMs, `a_microvm_takes_its_ipc_hostname_cgroups_umask_and_writable_layer`:
   sizes held to, refusals, and 256 MiB written under `--memory 64m`; and
@@ -5945,8 +6056,6 @@ the guest keeps their metadata alone.
   (drivers/nvdimm/pmem.c), so a layer's file only grows while its microVM lives; its
   microVM gone, the host could punch out what its bitmaps say is free.
 - Joiners' layers (D119) on the microVM's own, rather than tmpfs.
-- What a flush asks of the host: nothing yet, its writes the host's page cache already,
-  which outlives the microVM but not its host.
 - The head's boot: a 2 MiB block a section for the guest to write as it probes, on KVM
   1.9 ms a GiB when the host has huge pages free and up to 19 ms a GiB when it compacts
   for them (M277): a 10 GiB layer's template boot is 19 to 190 ms longer.
@@ -8579,8 +8688,8 @@ builder memory as its build needs it; runs now have it too.
   of a large limit pays page structures as it plugs what it uses, not for all of it as it
   boots (21 MiB and 4 ms per GiB, PM M82).
 - **Templates.** A snapshot keeps the region to plug, none of it plugged (format 13: the
-  machine's `hotplug_mib`); a restore remakes it as boot made it, withheld. Every run of
-  one vCPU count shares one template, its limit or none its own most. What is plugged or asked for is not saved: a device says why
+  machine's `hotplug_mib`); a restore remakes it as boot made it, withheld. Every run
+  shares one template, its limit or none its own most, and since D191 its CPU limit too. What is plugged or asked for is not saved: a device says why
   (`VirtioDevice::unsaved`), and the snapshot is refused, not written without it. A run's
   most comes with the run (the `RUN` request) and the VM sets it before its guest hears
   of the run (`Handle::set_plug_most`): the host keeps the bound, never the guest.
@@ -9810,7 +9919,8 @@ container all (M182, M183).
 
 - **As many vCPUs as the host has CPUs**, where the run names no `--cpus`, quota or
   `--cpuset-cpus` (`resources::vcpus`); those decide as before, `--cpus N` giving N. A
-  build's builder already had every CPU (`builder_cpus`).
+  build's builder already had every CPU (`builder_cpus`). Since D191 every run's microVM
+  has them all, and those limits give its workload its cpuset.
 - **What it costs, measured (M183):** no start time (`run` p50 5.5 to 6.0 ms at 1, 2, 4,
   8 and 18 vCPUs quiet, 6.3 to 6.5 ms loaded); each vCPU keeps memory of its own, up to
   1.9 MiB in the guest (`resources::VCPUS`) and about 0.45 MiB in its VM process.

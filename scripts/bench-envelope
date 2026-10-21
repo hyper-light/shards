@@ -11,7 +11,9 @@ metric, the median of the paired differences (shards minus Firecracker) with a b
 zero, better when it is below, and tied otherwise. Every metric is lower-is-better.
 
 A metric shards is worse on fails the check unless docs/benchmarks-envelope.toml allows
-it: each allowance names the metric (`bench/metric`), why, and the date it lapses.
+it: each allowance names the metric (`bench/metric`), why, the most it allows (`at_most`,
+the median difference in the metric's unit), and the date it lapses. A difference past
+its `at_most` fails: an allowance holds only for the gap it was decided on.
 
 Python 3.11 or later (tomllib).
 
@@ -29,14 +31,16 @@ allowed = {}
 failed = False
 for a in allowances:
     expires = a.get("expires")
-    if not isinstance(expires, datetime.date) or not a.get("reason") or not a.get("metric"):
-        print(f"{envelope}: an allowance names its metric, reason and expiry date: {a}")
+    at_most = a.get("at_most")
+    if (not isinstance(expires, datetime.date) or not a.get("reason") or not a.get("metric")
+            or not isinstance(at_most, (int, float))):
+        print(f"{envelope}: an allowance names its metric, reason, at_most and expiry date: {a}")
         failed = True
     elif expires < today:
         print(f"{envelope}: the allowance for {a['metric']} lapsed on {expires}")
         failed = True
     else:
-        allowed[a["metric"]] = a["reason"]
+        allowed[a["metric"]] = (a["reason"], float(at_most))
 
 
 def interval(diffs, rng):
@@ -72,8 +76,12 @@ for path in files:
                 f"{statistics.median(diffs):+.1f} [{low:+.1f}, {high:+.1f}], {verdict}")
         key = f"{bench}/{metric}"
         if verdict == "worse":
-            if key in allowed:
-                line += f" (allowed: {allowed[key]})"
+            difference = statistics.median(diffs)
+            if key in allowed and difference <= allowed[key][1]:
+                line += f" (allowed up to {allowed[key][1]:+.1f}: {allowed[key][0]})"
+            elif key in allowed:
+                line += f" (outside the envelope: allowed up to {allowed[key][1]:+.1f})"
+                failed = True
             else:
                 line += " (outside the envelope)"
                 failed = True

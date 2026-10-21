@@ -194,6 +194,8 @@ impl<D: crate::containers::Disk> Daemon<D> {
             // Its own built-ins' reads: no run's I/O to limit.
             io_bytes: 0,
             io_requests: 0,
+            // Nor CPUs to hold.
+            cpus: 0,
         }
         .encode_into(&mut payload);
         prepared.spec.encode_into(&mut payload);

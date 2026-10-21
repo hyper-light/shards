@@ -155,7 +155,7 @@ for i in range(a.warmup + a.rounds):
         templates = os.path.join(home, "templates")
         if os.path.isdir(templates):
             shutil.rmtree(templates)
-        name = f"head-{n}"
+        name = f"head-{os.getpid()}-{n}"
         since = log_end(home)
         took, _ = shards(build, "run", "-d", "--name", name, a.image, "sleep", "100000")
         note(build, "first run ms", took)

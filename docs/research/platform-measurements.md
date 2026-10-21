@@ -1198,7 +1198,12 @@ frame 3 (`base + 0x60000`) and processor number 3, and is marked Last.
     tracepoint (medians): 472 NPT faults against 756 on the 7763, 440 against 689 on the
     9V45, and 361 EPT violations against 570 on the Xeon.
 - **Consequence.** `GuestMemory::save` writes each run of used pages with one call
-  (e9ed44d).
+  (e9ed44d). **Superseded on Linux (PM M289, M290, 2026-10-21):** from 6.18 a restore maps
+  a whole page-cache folio at a fault, so large runs balloon a restored guest's memory file
+  (26 MiB against Firecracker's 14); `write_run` now writes a page at a time on a Linux host,
+  which holds it to 8.9 MiB. The first-beat gap this measured no longer appears — ~5% at
+  p50 on 6.17 and 7.0, not 17–25% — because a restore prefetches its recorded working set,
+  so the fault pattern at first beat barely shows. macOS still writes each run whole.
 - **Open.**
   - Where in the kernel's fault path the fewer faults come from.
   - The Xeon's outliers, which took more EPT violations and more time in the guest than
@@ -9772,7 +9777,8 @@ revision before comparing a changed API/implementation.
   offlining one for `update --cpus` stops the whole guest each time. Item 3's CPU half is
   the user's to choose (asked 2026-10-19): online and offline per run as the plan says, or
   every CPU online in the template and each run confined to its share (a cpuset of its
-  CPUs, a quota in the guest, a cap on the VM process's vCPU threads from the host).
+  CPUs, a quota in the guest, a cap on the VM process's vCPU threads from the host). The
+  latter, D191 (M288).
 
 ### M266. An agent's long workloads on shards, Docker, Firecracker and Cloud Hypervisor (the plan's item 1)
 
@@ -10806,3 +10812,276 @@ revision before comparing a changed API/implementation.
   (`platform::MAPPED_HIDES_HOLES`, held by a test to what the host's file system does), a
   save takes the guest's mapping and the VM's own away while it asks what the file holds,
   then maps both back; a run's swap is saved the same way. Linux's are asked as they are.
+
+### M286. What a guest's fsync into its writable layer keeps, and what keeping it costs (D190)
+
+- **Question.** A run's writable layer is the host's page cache of the run's file (D190).
+  What does a guest's fsync of a file there make durable on its host, and what does making
+  it durable cost, on Linux and on macOS?
+- **Method.** 2026-10-21. Reading: the guest's virtio-pmem driver waits for the device's
+  answer to each flush (drivers/nvdimm/nd_virtio.c, `virtio_pmem_flush`), and pmem turns a
+  bio's REQ_PREFLUSH and REQ_FUA each into one (drivers/nvdimm/pmem.c); jbd2 writes a
+  commit block with both unless `journal_async_commit`, which ext4 refuses with
+  `data=ordered` (fs/jbd2/commit.c, fs/ext4/super.c); overlayfs's `volatile` omits every
+  sync of its upper (Documentation/filesystems/overlayfs.rst). Probes on the host
+  (`docs/research/measurements/layer-flush/`: `sync-cost.c`, `fullfsync.c`,
+  `fullfsync-clone.c`): a 10 GiB sparse file mapped shared and writable, a few pages dirtied
+  through the mapping, then fsync, msync(MS_SYNC) and F_FULLFSYNC (Linux: fdatasync) timed,
+  and on macOS mincore(2)'s MINCORE_MODIFIED read after each, 5 rounds; F_FULLFSYNC after 3
+  pages written through the mapping, 20 times, of a fresh file and a clone. Then
+  `docs/research/measurements/layer-flush/fsync.py OLD NEW`, n = 10 after a round not
+  counted: OLD 8981f7ad (a flush answered at once; the root `volatile`), NEW the device's
+  flush durable and the root not `volatile` over a layer; a microVM times `exec` of 50
+  4 KiB writes into its root each `dd conv=fsync` against the same without, the difference
+  over 50 one fsync, then one `sync`. And the NEW VM's own log of each flush
+  (SHARDS_LOG=debug) behind 20 fsyncs. The Mac (Apple M5 Max, macOS 26.4.1, APFS; other
+  projects' work running, load 10 to 13) and the Fedora host (Linux 6.19.10, Btrfs).
+- **Results.**
+  - macOS: a page written through the mapping stays MINCORE_MODIFIED after fsync and is
+    clean after F_FULLFSYNC; F_FULLFSYNC took 3.1 to 6.3 ms at 1, 4 and 16 GiB on a quieter
+    host, 8.06 (clone) and 16.00 ms (fresh) at p50 at load 10; msync(MS_SYNC) of the 10 GiB
+    mapping 12.0 to 32.1 ms, and 2 to 4 µs where F_FULLFSYNC had just written it back.
+  - Linux: fsync of 16 pages written through the mapping 2.5 to 3.6 ms, msync of them 2.6
+    to 3.5, fdatasync and msync after them 1 to 5 µs.
+  - 20 guest fsyncs made 40 flushes, each 8.2 to 62.5 ms on the Mac.
+
+  | host | fsync, OLD | fsync, NEW | `sync`, OLD | `sync`, NEW |
+  |---|---|---|---|---|
+  | Mac | -3.14 ms (0.99) | 26.60 ms (31.71) | 350.02 ms (390.70) | 307.63 ms (618.17) |
+  | Fedora | 0.68 ms (1.11) | 3.64 ms (7.31) | 61.92 ms (66.28) | 62.68 ms (160.73) |
+
+  p50 (p90). An earlier Mac round, NEW's flush durable but its root still `volatile`:
+  fsync -0.03 ms against -0.05, `sync` 25.74 ms against 15.60 (n = 10).
+- **Reading.** Before, a guest's fsync into its layer kept nothing past its host: its root
+  overlay passed it on to nothing, and a flush that reached the device was answered at
+  once. Now a fsync costs the guest two flushes, each the host's durable sync of the run's
+  file: fdatasync on Linux, which already counts pages dirtied through a mapping; on macOS
+  F_FULLFSYNC, which writes those pages back too, where fsync does not and would need an
+  msync that walks all of a 10 GiB mapping. The Mac's cost is the drive's flush that
+  F_FULLFSYNC asks for, at its host's load.
+- **Consequence.** D190's sixth slice: a layer's flush is `platform::sync_mapped`, and a
+  run's root overlay passes its syncs on over a layer.
+
+### M287. A restored guest's memory file on base pages, again (D25, M55)
+
+- **Question.** M55 chose no advice for a restored guest's memory file (a CI runner with THP
+  `always`): mapped on base pages its file pages halved, and restores took 1.3 to 2.3
+  times as long. Since, Firecracker's comparison failed on a runner with THP `madvise` and
+  Linux 7.0 (e11c49a6): a 16-VM fleet cost 2.3 MiB of PSS a VM against Firecracker's 1.9,
+  and a lone restore 12 MiB more of its file. What maps it, and does the choice still
+  stand?
+- **Method.** The comparison's own mapping of each VMM's memory file (`describe_mappings`,
+  /proc/PID/smaps: resident, anonymous and PMD-mapped bytes) in e11c49a6's CI job (Linux
+  7.0.0-1017-azure, THP `madvise`, AMD EPYC 9V74). Then `.github/workflows/restore-advice.yml`
+  (`docs/research/measurements/restore-advice/advice.patch`: SHARDS_FILE_ADVICE chooses the
+  mapping's madvise(2)), twice, 1459b351 and 29f266d6, 2026-10-21, both landing on Linux
+  6.17.0-1022-azure, THP `always`, AMD EPYC 7763: the comparison for no advice, `nohuge`
+  and `huge`, n = 20 each; then the restore bench (n = 30) and the image bench (n = 60, 3
+  templates) for no advice and `nohuge`, two rounds alternating.
+- **Results.** The memory file's mapping after a restore: on Linux 7.0, shards 25.98 MB
+  resident, 14.0 MiB of it PMD-mapped, Firecracker 12.45 MB, none; on 6.17, shards 19.28 MB,
+  14.0 MiB PMD-mapped, Firecracker 10.58 MB, none; with `nohuge`, shards 8.30 MB, none.
+  The second run's comparison, p50:
+
+  | advice | first beat, shards / Firecracker | memory file resident | PSS | fleet PSS a VM |
+  |---|---|---|---|---|
+  | none | 7.36 / 10.52 ms | 19.4 / 11.9 MiB | 20.1 / 16.8 MiB | 1.9 / 5.8 MiB |
+  | nohuge | 9.18 / 10.11 ms | 9.0 / 11.7 MiB | 9.6 / 16.6 MiB | 1.2 / 5.7 MiB |
+  | huge | 7.45 / 10.50 ms | 19.4 / 11.4 MiB | 20.1 / 16.3 MiB | 1.9 / 5.7 MiB |
+
+  The first run's: none 9.44 / 13.02 ms and 19.3 / 11.9 MiB; nohuge 11.34 / 12.52 ms and
+  8.8 / 11.8 MiB. Restore and image benches, none against nohuge, p50, the two rounds:
+
+  | step | none | nohuge |
+  |---|---|---|
+  | cold restore | 11.55, 7.80 ms | 18.85, 18.72 ms |
+  | warm request, no working set | 10.56, 6.70 ms | 17.58, 17.63 ms |
+  | its peak RSS | 24.0, 24.0 MiB | 15.1, 15.1 MiB |
+  | pooled run (`run_template`) | 28.23, 26.49 ms | 26.97, 25.13 ms |
+
+  (the first experiment's: cold restore 20.19, 21.22 against 37.63, 36.16 ms; warm request
+  18.47, 19.75 against 35.65, 27.09; pooled run 34.98, 39.50 against 34.97, 33.64.) The
+  pooled runs compared one build with itself: the image bench's runs are its daemon's,
+  whose VM processes take only SHARDS_LOG and SHARDS_TIMING of its environment
+  (`netproc::child_env`), so no arm's had the advice (found 2026-10-21; the restore-folios
+  experiment passes its switches through).
+  Fedora (Btrfs, Linux 6.19.10), `layer-head/footprint.py` edbd4816 against the change,
+  n = 10: warm microVMs 35.29 against 35.34 MiB resident, first runs 89.69 against 89.88;
+  without the advice its warm microVMs' memory files had no page PMD-mapped (smaps
+  `FilePmdMapped` 0 kB, 36.6 and 43.4 MB resident).
+- **Reading.** The page cache holds the memory file in folios of up to 2 MiB, and without
+  advice a fault maps one whole (do_set_pmd), whatever the host's THP setting:
+  Firecracker's guest touches the same pages and maps none so. On base pages a lone
+  restored VM holds less of its file than Firecracker's, and a fleet less PSS a VM, on
+  every axis the comparison measures; its first beat still comes before Firecracker's. What
+  base pages cost is the faults of a restore that has no working set to prefetch: cold
+  restores and an unprefetched warm request take 7 to 18 ms longer. What it costs a pooled
+  run is not measured here (above: one build both times). Where the page cache keeps no 2 MiB
+  folios of the file, as Fedora's Btrfs did, the advice changes nothing. A guest's
+  steady-state speed on base pages is not measured here.
+- **Consequence.** A restored guest's memory, and a layer's head mapped from its copy, are
+  mapped with MADV_NOHUGEPAGE (`GuestMemory::from_file`, pmem `Layer::restore`,
+  `remap_head`); the envelope's restore allowances go, and an allowance now states the most
+  it allows (`at_most`), which a wider gap fails.
+
+### M288. A run's microVM with every CPU of its host, its workload held to its own (D191)
+
+- **Question.** D191 gives every run's microVM the host's CPUs and holds a run to its
+  limit by its cgroup (`cpuset.cpus`, `cpu.max`); before, its microVM had the vCPUs its
+  limit needed, and each count its own template. What does a run with a limit gain and
+  pay: its first run, its later runs, its memory, what its home keeps warm, and what
+  `update --cpus` gives a running workload?
+- **Method.** `docs/research/measurements/cpu-elastic/ab.py`, 1468f07d against the change,
+  each built `--release` with a home of its own holding alpine: 10 rounds after one not
+  counted, which build goes first alternating. Each round removes its home's templates,
+  which a run without a limit makes again; then the first run of `--cpus 1` and of
+  `--cpus 4`, 10 runs of each of them and of none in turn, back to back; a sleeping run of
+  each (what its workload sees, its VM process's memory); the home's VM processes once they
+  settle; and a `--cpus 1` run updated to 4 and back to 1, the CPU time its cgroup used
+  under 6 busy loops for 2 s after each. Then `paced.py` (`--cpus 1`, 30 runs a side, 0.3 s
+  apart, each finding its warm microVMs made again) and `wake.sh` (round trips between two
+  vCPUs, `/bin/true` started from a C program and from a shell). Apple M5 Max (18 CPUs),
+  macOS 26.4.1, load average 2.8 to 4.4; and `ab.py` alone on Fedora 44 (Linux
+  6.19.10-300.fc44.x86_64, KVM) on M258's host, an Intel Core i9-14900HX, every process
+  on its performance cores (0 to 15, `taskset`: microVMs of 16 vCPUs), load average 10 to
+  16 (two CI jobs beside it); 2026-10-21. Last, a vCPU thread's CPU time read from another
+  thread (`hv::hvf::tests::a_vcpu_threads_cpu_time_counts_its_guest`, ignored, run alone):
+  a guest spinning on `b .`, its timer never armed, read by thread_info(THREAD_EXTENDED_INFO)
+  each 10 ms for 100 reads.
+- **Results, macOS** (ms, p50 / p90 / max; n 10, runs n 100).
+
+  | | 1468f07d | the change |
+  |---|---|---|
+  | first run, `--cpus 1` | 216.0 / 247.1 / 247.1 | 13.5 / 21.2 / 21.2 |
+  | first run, `--cpus 4` | 262.1 / 403.3 / 403.3 | 18.7 / 29.6 / 29.6 |
+  | run, `--cpus 1` | 13.35 / 19.14 / 26.61 | 18.09 / 29.46 / 45.26 |
+  | run, `--cpus 4` | 15.13 / 26.48 / 35.82 | 18.74 / 26.41 / 38.30 |
+  | run, no limit | 19.11 / 29.08 / 40.70 | 18.09 / 28.44 / 39.75 |
+  | a `--cpus 1` run's VM process, footprint / resident MiB | 10.39 / 25.58 | 15.63 / 30.77 |
+  | a `--cpus 4` run's | 13.49 / 28.98 | 18.50 / 33.73 |
+  | a run's without a limit | 17.81 / 33.22 | 18.10 / 33.47 |
+  | the home's VM processes, settled | 5 (p90 7) | 3 (p90 3) |
+  | their footprint / resident in all, MiB | 161.7 / 226.0 | 139.4 / 174.4 |
+  | `update --cpus 4`, then CPUs used | 4.58 ms, 1.00 | 4.51 ms, 4.01 |
+  | `update --cpus 1`, then CPUs used | 10.07 ms, 1.00 | 5.08 ms, 1.01 |
+
+  A run's workload saw, before: `--cpus 1` `nproc` 1, CPUs online 0, cpuset 0; `--cpus 4`
+  4, 0-3, 0-3. With the change: `--cpus 1` 1, 0-17, 0; `--cpus 4` 4, 0-17, 0-3; both
+  `cpu.max` as before; without a limit 18, 0-17, 0-17 in both.
+- **Results, Linux** (as above; memory smaps_rollup's, MiB).
+
+  | | 1468f07d | the change |
+  |---|---|---|
+  | first run, `--cpus 1` | 694.3 / 1,336.4 / 1,336.4 | 16.7 / 25.3 / 25.3 |
+  | first run, `--cpus 4` | 529.8 / 757.4 / 757.4 | 15.6 / 156.5 / 156.5 |
+  | run, `--cpus 1` | 7.28 / 11.02 / 20.76 | 9.89 / 14.50 / 28.67 |
+  | run, `--cpus 4` | 7.52 / 11.72 / 16.40 | 10.55 / 13.98 / 27.58 |
+  | run, no limit | 8.04 / 13.04 / 24.90 | 9.41 / 14.50 / 21.26 |
+  | a `--cpus 1` run's VM process, Rss / Pss / Anonymous | 28.2 / 12.0 / 4.2 | 41.7 / 20.3 / 9.3 |
+  | a `--cpus 4` run's | 33.5 / 15.2 / 6.0 | 42.2 / 21.0 / 9.8 |
+  | a run's without a limit | 40.3 / 19.7 / 9.2 | 42.3 / 21.2 / 9.8 |
+  | the home's VM processes, settled | 7 | 3 |
+  | their Rss / Pss / Anonymous in all | 273.8 / 184.4 / 105.4 | 156.4 / 121.4 / 88.4 |
+  | `update --cpus 4`, then CPUs used | 1.95 ms, 1.02 | 2.44 ms, 4.04 |
+  | `update --cpus 1`, then CPUs used | 2.26 ms, 1.02 | 2.59 ms, 1.02 |
+
+  What the workloads saw is as on macOS, of 16 CPUs.
+  - Paced, `--cpus 1`, n 30 a side (p50 / p90): the client 10.23 / 14.31 ms before, 12.73
+    / 18.63 with the change; in the guest, from the request to the command's start 1.16
+    against 2.00, the command (`true`) 0.17 against 0.51, from its exit to its answer 0.37
+    against 0.65.
+  - Waking another vCPU (a microVM of 18, without a limit, n 2000): a round trip through
+    two pipes, both threads on CPU 0, p50 1.0 to 1.1 µs; CPU 0 and 1, 15.2 to 18.2 µs (p99
+    25 to 45), 0 and 9, 14.9, 0 and 17, 14.7. `/bin/true` started and waited for (n 200):
+    124 to 148 µs on the parent's CPU, 150 to 157 on any. 200 started from a shell, on
+    the guest's clock (10 ms steps): 0.03 to 0.05 s in every arm, before and with the
+    change, privileged and not.
+  - A vCPU thread's CPU time, its guest spinning with no exit (0 exits): 6.87 s of 6.93 s
+    of wall time (0.992), the reads 10 ms apart taking up to 91 ms between them (the
+    reader's sleeps, at the default QoS); a read p50 3.2 µs, p99 and max 6.0.
+- **Reading.**
+  - A count's first run no longer boots and saves a template of its own: 13.5 ms where
+    it took 216, and 18.7 where 262. The home keeps one pool warm, not one a count:
+    three VM processes where five, 22 MiB less footprint and 52 MiB less resident memory
+    in all.
+  - `update --cpus` gives a running workload what it asks, both ways: 4.01 CPUs used after
+    an update to 4, where its microVM's one vCPU held it to 1.00 before.
+  - Fewer microVMs kept warm on Linux too: three where seven, 63 MiB less Pss in all, a
+    count's first run 16.7 ms where 694.
+  - A run with a limit pays what a run without one pays, its microVM being as large: its
+    VM process's memory (macOS 5 MiB more of footprint at `--cpus 1`; Linux 8.4 MiB more
+    Pss, each vCPU's own, M183), and its start: on macOS 2.5 ms at p50 paced and 4.7 back
+    to back, on Linux 2.6 back to back. Back to back, every count's runs take from one
+    pool where each count had its own, and a run without a limit took 1.4 ms more on
+    Linux, none more on macOS. Where a paced start goes is not yet known: not to waking
+    other vCPUs (15 to 18 µs a round trip) nor to starting processes across them (a C
+    program's `/bin/true` 150 µs on any CPU, against 124 to 148 on its own).
+  - A vCPU thread's CPU time counts its guest's, read from another thread, on HVF: what a
+    hold from the host can read (D191's slice 2), at 3.2 µs a read.
+
+### M289. A privileged workload that leaves its cgroup, and the host's hold on its vCPUs (D191)
+
+- **Question.** D191 holds a run's workload to its CPUs by its cgroup's cpuset inside the
+  microVM. Can a workload leave that cgroup, and does the host's hold on the VM process's
+  vCPU threads (slice 2) bound it where the cpuset does not?
+- **Method.** On a real microVM (Apple M5 Max, macOS 26.4.1, 18 CPUs), the E2E test
+  `a_workload_past_its_cgroup_is_held_to_its_cpus_by_its_host`: a `--privileged --cgroupns
+  host` run of `--cpus 1`, whose guest-root workload (`testguest burn 4 3000 escape`)
+  writes "0" to `/sys/fs/cgroup/cgroup.procs` — the microVM's cgroup root, which
+  `--cgroupns host` shows it and `--privileged` remounts read-write — then spins four
+  threads for three seconds. The VM process's CPU time over the burn
+  (`platform::process_usage`), its wall time, against the same run without a limit.
+  2026-10-21.
+- **Results.**
+  - The escape works: before it the workload's cgroup is `/run/workload`, cpuset `0`;
+    after, `/`, cpuset `0-17` — every CPU of the host's. The in-guest cpuset alone no
+    longer bounds it. (A root workload sharing the microVM's PID namespace cannot instead
+    `setns` into init's own namespaces: opening `/proc/1/ns/cgroup` is denied, init being
+    non-dumpable. And a workload held to the image's non-root user cannot write the
+    root-owned `cgroup.procs`: the escape needs guest root, which `--privileged` grants.)
+  - With the hold, the escaped four threads used 1 CPU's time over the three-second burn
+    (within a period's overrun): held to its `--cpus 1`. Without a limit, the same four
+    used 11.4 s of CPU in a 3.0 s window — every CPU the host gave. With the hold removed
+    (mutation), the limited run too used 11.4 s in 3.0 s.
+- **What the hold costs** (`cpu-elastic/ab.py`, slice 2 against slice 1 a9133de9, Fedora
+  KVM, 16 P-cores, n 10/100): nothing measurable. A run's start within 0.3 ms either way
+  (`--cpus 1` 7.24 → 6.92 ms p50, none 6.60 → 6.99), its VM process's memory within 1 MiB
+  (`--cpus 1` Pss 20.81 → 20.86 MiB; all VM processes' Pss 123.8 → 122.9), `update --cpus`
+  moving CPUs the same (4.03 used after `--cpus 4` either build). The governor thread is
+  made only for a limited run, and an unheld vCPU's per-exit check is one atomic load.
+- **Consequence.** The cpuset holds a workload that stays in its cgroup; the VM process's
+  hold on its vCPU threads (`vm::hold`, reading each thread's CPU time, holding them out of
+  the guest once a period's share is spent) holds the rest — kernel threads, interrupts,
+  and a workload that escaped its cgroup — to what a microVM of the run's CPUs alone could
+  use. Both are needed: a guest's root is still inside its microVM, but a microVM is not a
+  CPU budget until its host makes it one. It costs a run nothing (above).
+
+### M290. A restored guest's memory file written a page at a time on Linux (the restore-folios fix)
+
+- **Question.** M288/M289's restore-folios experiment proved that writing the snapshot's
+  memory file a page at a time holds a restored guest's memory to a page per fault on Linux
+  6.18+ (8.9 MiB against 26). What does writing it that way cost the save, which writes it
+  in large contiguous runs otherwise (`memory.rs::write_run`)?
+- **Method.** `docs/research/measurements/restore-folios/writecost.py`: for each size, write
+  that many MiB to a fresh file in 2 MiB writes, then in 4 KiB writes (what `write_run` now
+  does on a Linux host), each fsync'd and timed, 8 rounds alternating. Fedora 44 (Linux
+  6.19.10) on M258's i9-14900HX, on Btrfs (the home's) and tmpfs; 2026-10-21. The memory
+  file holds only a booted guest's touched non-zero pages (tens of MiB; `write_used` skips
+  zero runs), so 64 and 256 MiB bracket it.
+- **Results** (p50, ms; 2 MiB writes → 4 KiB writes, delta):
+
+  | size | Btrfs | tmpfs |
+  |---|---|---|
+  | 64 MiB | 28.8 → 39.0 (+10.2) | 10.0 → 13.2 (+3.2) |
+  | 256 MiB | 111.5 → 151.9 (+40.4) | 42.1 → 54.8 (+12.7) |
+
+- **Consequence.** Page-at-a-time adds about 10 ms to a 64 MiB save and 40 ms to a 256 MiB
+  one on Btrfs, less on tmpfs. It is paid on the save, not the restore: template creation
+  (a boot's memory, tens of MiB) and an explicit `save`/stop, never a warm pooled run (which
+  restores). The alternative — write large, then drop the file from the page cache so the
+  restore re-reads single-page folios — would move the cost onto the frequent restore and
+  make it read cold, so it is not taken. The cost is paid on every Linux host, including
+  6.17 and filesystems that make no large folios, where there is no folio to split; a
+  once-per-template save of ~10 ms is accepted for a uniform fix over fragile
+  kernel/filesystem detection. Restores stay fast (a warm, now single-page page cache) and
+  small (PM M289's 8.9 MiB).

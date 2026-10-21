@@ -29,13 +29,21 @@ const TIMEOUT: Duration = Duration::from_secs(60);
 
 /// `shards ARGS` in `home`, whose runs boot the test kernel and init.
 fn shards_in(home: &Path, args: &[&str]) -> Run {
+    shards_in_within(home, args, TIMEOUT)
+}
+
+/// [`shards_in`] with a timeout of its own, for a run whose work is heavier than a start:
+/// a large `-m` whose guest plugs and touches gigabytes takes far longer than [`TIMEOUT`]
+/// on a slow, contended CI runner (it progresses, it is not hung: the whole of
+/// `run_limits_a_microvms_resources` took 199 s under 32 busy loops where it took 30 idle).
+fn shards_in_within(home: &Path, args: &[&str], timeout: Duration) -> Run {
     let (kernel, init) = (kernel(), guest_init());
     let env: [(&str, &OsStr); 3] = [
         ("SHARDS_HOME", home.as_os_str()),
         ("SHARDS_KERNEL", kernel.as_os_str()),
         ("SHARDS_INIT", init.as_os_str()),
     ];
-    run_shards_env(&[], args, &env, TIMEOUT)
+    run_shards_env(&[], args, &env, timeout)
 }
 
 /// `shards run` of the test image, with `options` before the image and `command` after it.
@@ -48,9 +56,14 @@ fn run_args(image: &str, options: &[&str], command: &[&str]) -> Vec<String> {
 }
 
 fn run_in(home: &Path, image: &str, options: &[&str], command: &[&str]) -> Run {
+    run_in_within(home, image, options, command, TIMEOUT)
+}
+
+/// [`run_in`] with a timeout of its own ([`shards_in_within`]), for a memory-heavy run.
+fn run_in_within(home: &Path, image: &str, options: &[&str], command: &[&str], timeout: Duration) -> Run {
     let args = run_args(image, options, command);
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
-    shards_in(home, &args)
+    shards_in_within(home, &args, timeout)
 }
 
 /// A run left going: its client, with the command's first line read.
@@ -4615,6 +4628,13 @@ fn run_limits_a_microvms_resources() {
         .lines()
         .filter_map(|l| l.strip_prefix("= "))
         .collect();
+    // Its microVM has every CPU of the host's, and its workload the one it names (D191).
+    let host = std::thread::available_parallelism().unwrap().get();
+    let online = if host == 1 {
+        "0\\n".to_string()
+    } else {
+        format!("0-{}\\n", host - 1)
+    };
     assert_eq!(
         read,
         [
@@ -4626,7 +4646,7 @@ fn run_limits_a_microvms_resources() {
             "50\\n",
             "0\\n",
             "0::/\\n",
-            "0-1\\n",
+            online.as_str(),
         ],
         "{limited}"
     );
@@ -4652,7 +4672,8 @@ fn run_limits_a_microvms_resources() {
     // The microVM holds what the limit allows: what the kernel says may be allocated, and
     // the free pages its CPUs' lists hold, which it leaves out of that (M179), is at least
     // the limit, across the sizes where its own share steps up, as a run's guest keeps it;
-    // with every CPU of the host's too, each vCPU keeping memory of its own (M183).
+    // with one CPU and with every one, its microVM having all the host's either way, each
+    // vCPU keeping memory of its own (M183, D191).
     let host_cpus = std::thread::available_parallelism().map_or(1, usize::from);
     // Without a limit, every CPU of the host's, as Docker's container has (D125).
     let online = run_in(
@@ -4678,19 +4699,23 @@ fn run_limits_a_microvms_resources() {
         ("2500m", every.as_str()),
     ] {
         // It holds all but what its own process and page tables take of its limit, in a
-        // microVM that boots with less and plugs the rest as it needs it (D148).
+        // microVM that boots with less and plugs the rest as it needs it (D148). Plugging
+        // and touching gigabytes is far slower than a start on a contended CI runner, so
+        // these runs get a timeout of their own, well past TIMEOUT (measured 199 s for the
+        // whole test under 32 busy loops; it progresses, it never hangs).
         let limit_mib = limit.trim_end_matches('m').parse::<u64>().unwrap();
         let wanted = (limit_mib - 16).to_string();
-        let held = run_in(
+        let held = run_in_within(
             &home,
             &image,
             &["--rm", "-m", limit, "--cpus", cpus],
             &["alloc", &wanted],
+            Duration::from_secs(240),
         );
-        assert_eq!(held.status, Some(0), "{limit}, {cpus} vCPUs: {held}");
+        assert_eq!(held.status, Some(0), "{limit}, --cpus {cpus}: {held}");
         assert!(
             held.stdout.contains(&format!("allocated {wanted}")),
-            "{limit}, {cpus} vCPUs: {held}"
+            "{limit}, --cpus {cpus}: {held}"
         );
     }
     // Past its limit, the workload is killed, as the kernel kills it in its cgroup.
@@ -9863,11 +9888,28 @@ fn update_changes_limits_of_running_microvms() {
         "/sys/fs/cgroup/memory.swap.max",
         "/sys/fs/cgroup/cpu.max",
         "/sys/fs/cgroup/pids.max",
+        "/sys/fs/cgroup/cpuset.cpus.effective",
     ]);
+    // Its CPUs as many as --cpus 1.5 needs, of its microVM's, which has all the host's (D191).
+    let host_cpus = std::thread::available_parallelism().unwrap().get();
+    let first = |n: usize| {
+        if n == 1 {
+            "0".to_string()
+        } else {
+            format!("0-{}", n - 1)
+        }
+    };
+    let given = format!("{}\\n", first(host_cpus.min(2)));
     let values: Vec<&str> = read.stdout.lines().filter_map(|l| l.strip_prefix("= ")).collect();
     assert_eq!(
         values,
-        ["67108864\\n", "67108864\\n", "150000 100000\\n", "50\\n"],
+        [
+            "67108864\\n",
+            "67108864\\n",
+            "150000 100000\\n",
+            "50\\n",
+            given.as_str()
+        ],
         "{read}"
     );
     let shown = shards(&[
@@ -9879,6 +9921,26 @@ fn update_changes_limits_of_running_microvms() {
     assert_eq!(
         shown.stdout, "67108864 134217728 1500000000 50 300 always\n",
         "{shown}"
+    );
+    // And every one of them again, as its limit rises to the host's.
+    let every = shards(&["update", "--cpus", &host_cpus.to_string(), "held"]);
+    assert_eq!(every.status, Some(0), "{every}");
+    let read = shards(&[
+        "exec",
+        "held",
+        "/bin/testguest",
+        "slurp",
+        "/sys/fs/cgroup/cpuset.cpus.effective",
+        "/sys/fs/cgroup/cpu.max",
+    ]);
+    assert_eq!(
+        read.stdout,
+        format!(
+            "slurp /sys/fs/cgroup/cpuset.cpus.effective: {}\nslurp /sys/fs/cgroup/cpu.max: {} 100000\n",
+            first(host_cpus),
+            host_cpus * 100_000
+        ),
+        "{read}"
     );
     for (args, said) in [
         (
@@ -11836,8 +11898,9 @@ fn a_runs_memory_grows_as_its_workload_needs_it() {
 /// A run's CPUs, real-time time, isolation and runtime as its microVM has them (D155):
 /// real-time scheduling for a workload let have it (`--cap-add sys_nice`), within the
 /// guest's real-time budget, which `--cpu-rt-period` and `--cpu-rt-runtime` set, the run's
-/// alone in its microVM; `--cpu-count` its vCPUs; `--cpu-percent` the share of the host's
-/// CPU time its workload may use, on vCPUs enough for it; isolation by its microVM,
+/// alone in its microVM; `--cpu-count` its CPUs, of its microVM's, which has all the
+/// host's (D191); `--cpu-percent` the share of the host's CPU time its workload may use, on
+/// CPUs enough for it; isolation by its microVM,
 /// `default` or `hyperv`, never a kernel shared; its runtime the microVM, by runc's names
 /// or Kata's. Its annotations kept, shown and matched; each refusal in shards' words.
 #[test]
@@ -11894,13 +11957,25 @@ fn a_microvm_takes_its_cpus_real_time_isolation_and_annotations() {
         "{past}"
     );
     if host >= 2 {
+        // The first two of its microVM's CPUs, which are all the host's (D191).
         let two = run_in(
             &home,
             &image,
             &["--rm", "--cpu-count", "2"],
-            &["slurp", "/sys/devices/system/cpu/online"],
+            &[
+                "slurp",
+                "/sys/fs/cgroup/cpuset.cpus.effective",
+                "/sys/devices/system/cpu/online",
+            ],
         );
-        assert_eq!(two.stdout, "slurp /sys/devices/system/cpu/online: 0-1\n", "{two}");
+        assert_eq!(
+            two.stdout,
+            format!(
+                "slurp /sys/fs/cgroup/cpuset.cpus.effective: 0-1\nslurp /sys/devices/system/cpu/online: 0-{}\n",
+                host - 1
+            ),
+            "{two}"
+        );
     }
     let half = run_in(
         &home,
@@ -11909,19 +11984,20 @@ fn a_microvm_takes_its_cpus_real_time_isolation_and_annotations() {
         &[
             "slurp",
             "/sys/fs/cgroup/cpu.max",
-            "/sys/devices/system/cpu/online",
+            "/sys/fs/cgroup/cpuset.cpus.effective",
         ],
     );
-    let vcpus = (host * 50).div_ceil(100);
-    let online = if vcpus == 1 {
+    // On as many of its microVM's CPUs as its share needs, of all the host's (D191).
+    let cpus = (host * 50).div_ceil(100);
+    let given = if cpus == 1 {
         "0".to_string()
     } else {
-        format!("0-{}", vcpus - 1)
+        format!("0-{}", cpus - 1)
     };
     assert_eq!(
         half.stdout,
         format!(
-            "slurp /sys/fs/cgroup/cpu.max: {} 100000\nslurp /sys/devices/system/cpu/online: {online}\n",
+            "slurp /sys/fs/cgroup/cpu.max: {} 100000\nslurp /sys/fs/cgroup/cpuset.cpus.effective: {given}\n",
             50 * host * 1000
         ),
         "{half}"
@@ -12029,6 +12105,74 @@ fn a_microvm_takes_its_cpus_real_time_isolation_and_annotations() {
     // Nothing is left of the refused.
     let listed = shards(&["ps", "-a", "--format", "{{.Names}}"]);
     assert_eq!(listed.stdout, "annotated\n", "{listed}");
+}
+
+/// A run's CPUs are held from its host too (D191): a workload root of its own guest
+/// (`--privileged --cgroupns host`) that writes itself into its microVM's cgroup root,
+/// out of the run's cpuset, where its guest gives it every CPU of the host's, uses no more
+/// of the host's CPU time than its limit's CPUs, its VM process held there; and a run
+/// without a limit is not held.
+#[test]
+fn a_workload_past_its_cgroup_is_held_to_its_cpus_by_its_host() {
+    let Some((home, image)) = home("containers-cpu-hold") else {
+        return;
+    };
+    let shards = |args: &[&str]| shards_in(&home, args);
+    let host = std::thread::available_parallelism().unwrap().get();
+    if host < 4 {
+        eprintln!("SKIP: {host} CPUs, which hold four burning threads already");
+        return;
+    }
+    // Four threads for three seconds, past the run's cgroup: the VM process's CPU time
+    // over the burn, and its wall time.
+    let burn = |name: &str| {
+        let pid: u32 = shards(&["inspect", "-f", "{{.State.Pid}}", name])
+            .stdout
+            .trim()
+            .parse()
+            .unwrap();
+        let before = shards_vmm::platform::process_usage(pid).unwrap().cpu_ns;
+        let t0 = Instant::now();
+        // As the guest's root, which a privileged run's workload may become.
+        let burned = shards(&[
+            "exec",
+            "-u",
+            "root",
+            name,
+            "/bin/testguest",
+            "burn",
+            "4",
+            "3000",
+            "escape",
+        ]);
+        let wall = u64::try_from(t0.elapsed().as_nanos()).unwrap();
+        let used = shards_vmm::platform::process_usage(pid).unwrap().cpu_ns - before;
+        assert_eq!(burned.stdout, "cgroup 0::/\nburned\n", "{burned}");
+        (used, wall)
+    };
+    let options = |name: &'static str, limit: &'static [&'static str]| {
+        let mut all = vec!["--name", name, "--privileged", "--cgroupns", "host"];
+        all.extend(limit);
+        all
+    };
+    let mut limited = start(&home, &image, &options("held", &["--cpus", "1"]), &["sleep"]);
+    let (used, wall) = burn("held");
+    // One CPU's time over the burn; what the burn may run of its first period, its
+    // microVM quiet till then; and the VM process's own threads, its devices'.
+    assert!(
+        used <= wall + 1_000_000_000,
+        "{used} ns of CPU in {wall} ns, held to one CPU"
+    );
+    let mut free = start(&home, &image, &options("free", &[]), &["sleep"]);
+    let (used, wall) = burn("free");
+    // Four threads' time, on a host that gives it: more than a CPU's.
+    assert!(
+        used > wall + 1_000_000_000,
+        "{used} ns of CPU in {wall} ns, without a limit"
+    );
+    assert_eq!(shards(&["rm", "-f", "held", "free"]).status, Some(0));
+    let _ = exit(&mut limited);
+    let _ = exit(&mut free);
 }
 
 /// A run's swap and memory as its microVM has them (D159): swap as its limits allow,

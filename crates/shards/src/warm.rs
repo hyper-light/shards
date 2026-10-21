@@ -179,6 +179,9 @@ pub struct Request {
     pub plug: u64,
     /// Its microVM's I/O limits (D178): bytes and requests a second, 0 for none.
     pub io: (u64, u64),
+    /// The CPUs whose time its microVM's vCPUs may use of the host's together (D191), 0
+    /// for every one.
+    pub cpus: u32,
     /// Its swap (D159), a sparse file of what its limits allow, which the VM maps into its
     /// guest's swap window; or, for a run its microVM was restored from a save of, a copy of
     /// the swap the save kept (D176).
@@ -276,6 +279,8 @@ struct Head<'a> {
     queue: Option<u64>,
     /// Its microVM's I/O limits (D178): bytes and requests a second, 0 for none.
     io: (u64, u64),
+    /// The CPUs its microVM is held to (D191), 0 for every one.
+    cpus: u32,
     spec: &'a [u8],
 }
 
@@ -305,6 +310,7 @@ fn head(payload: &[u8]) -> Result<Head<'_>, String> {
         plug: head.plug,
         queue: head.queue,
         io: (head.io_bytes, head.io_requests),
+        cpus: u32::try_from(head.cpus).unwrap_or(u32::MAX),
         spec,
     })
 }
@@ -336,6 +342,7 @@ pub fn receive(
         plug,
         queue,
         io,
+        cpus,
         spec,
     } = head(&request.payload)?;
     let (spec, tokens) = if resumed {
@@ -472,6 +479,7 @@ pub fn receive(
         client,
         plug,
         io,
+        cpus,
         swap,
         spec,
         interactive: flags & shards_ipc::RUN_INTERACTIVE != 0,
@@ -590,6 +598,16 @@ fn relay_signals(conn: &UnixStream, to: &'static ToGuest, from: From<'_>) {
                     && let Err(e) = crate::vm_run::set_plug_most(u64::from_be_bytes(bytes))
                 {
                     let _ = writeln!(io::stderr(), "shards: its memory to plug: {e}");
+                }
+            }
+            // Its run's CPU limits updated (D191): the CPUs its vCPUs are held to, before
+            // the exec that writes its cgroup.
+            kind::CPUS if matches!(from, From::Daemon(_)) => {
+                if let Ok(bytes) = <[u8; 8]>::try_from(message.payload.as_slice())
+                    && let Err(e) =
+                        crate::vm_run::hold_cpus(u32::try_from(u64::from_be_bytes(bytes)).unwrap_or(u32::MAX))
+                {
+                    let _ = writeln!(io::stderr(), "shards: its CPUs' hold: {e}");
                 }
             }
             // A file a share's DAX window maps, cut short by another process (D189): mapped
@@ -945,7 +963,8 @@ fn joiner(link: &UnixStream, range: Result<(u64, u64), String>, to: &'static ToG
     if request.kind != kind::RUN {
         return Err(format!("expected its run, got message kind {}", request.kind));
     }
-    // Its memory is its provider's microVM's, whose most stays the provider's run's (D148).
+    // Its memory is its provider's microVM's, whose most stays the provider's run's (D148),
+    // as the hold on its CPUs does (D191).
     let Head {
         flags,
         retention,

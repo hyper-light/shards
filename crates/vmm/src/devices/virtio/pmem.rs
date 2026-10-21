@@ -11,7 +11,7 @@ use std::fs::File;
 use std::path::Path;
 use std::ptr::NonNull;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, OnceLock, PoisonError};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use super::mem::Mapper;
 use super::queue::{Chain, Queue};
@@ -471,15 +471,27 @@ impl Shared {
         platform::copy_ranges(file, to, self.len as u64, ranges)
     }
 
-    /// Unmaps it and closes its file now, rather than as it drops; once.
+    /// Makes what was written through it durable in its file ([`platform::sync_mapped`]:
+    /// fdatasync on Linux, F_FULLFSYNC on macOS). Under its file's lock, which
+    /// [`release`](Self::release) takes to let go of both.
+    fn flush(&self) -> std::io::Result<()> {
+        let file = lock(&self.file);
+        let file = file.as_ref().ok_or_else(|| std::io::Error::other(RELEASED))?;
+        // SAFETY: the mapping `map` made of `file`, which stays while its file is held here.
+        unsafe { platform::sync_mapped(file, self.host, self.len) }
+    }
+
+    /// Unmaps it and closes its file now, rather than as it drops; once. Under its file's
+    /// lock, so that no [`flush`](Self::flush) is at the mapping as it goes.
     ///
     /// # Safety
     /// No VM maps it any more, and nothing uses [`host`](Self::host) after.
     unsafe fn release(&self) {
         if !self.released.swap(true, Ordering::AcqRel) {
+            let mut file = lock(&self.file);
             // SAFETY: the mapping `map` made, which the caller says nothing uses.
             unsafe { platform::unmap_file_shared(self.host, self.len) };
-            drop(self.file.lock().unwrap_or_else(PoisonError::into_inner).take());
+            drop(file.take());
         }
     }
 
@@ -682,6 +694,9 @@ impl Layer {
                 Err(e) => return Err(at(e)),
             }
         }
+        // On the host's base pages, as guest RAM restored from a file is (`GuestMemory::
+        // from_file`, PM M287): a block's page structures the guest touches are a few pages.
+        platform::small_pages(host, len);
         head._file = Some(kept);
         Layer::over(head, file, data)
     }
@@ -785,6 +800,17 @@ impl Layer {
         self.data.copy_ranges_to(data, &ranges).map_err(at)
     }
 
+    /// Makes what its guest has written to its file system durable, as the guest's flush
+    /// asks (VIRTIO_PMEM_REQ_TYPE_FLUSH, virtio 1.3 §5.19): the guest's fsync of a file on it
+    /// waits for the device's answer (drivers/nvdimm/nd_virtio.c, `virtio_pmem_flush`), and
+    /// the guest's writes are the host's page cache of the run's file until the host writes
+    /// them back. Written back and synced to stable storage ([`Shared::flush`]), as
+    /// Firecracker's flush msyncs its device's whole file (docs/pmem.md) and QEMU's fsyncs
+    /// it. The guest's root overlay passes its fsyncs on to the layer (init `run.rs`).
+    pub fn flush(&self) -> Result<(), String> {
+        self.data.flush().map_err(|e| format!("its layer: {e}"))
+    }
+
     /// Maps its head back from `kept`, the copy a save has just written of it
     /// ([`save`](Self::save)), as a restore maps one ([`restore`](Self::restore)): each
     /// block privately from the copy where the head had it, fresh memory where it had
@@ -831,6 +857,8 @@ impl Layer {
         let at = |e: std::io::Error| format!("its layer's head: {e}");
         let blocks = self.head.len / HEAD_BLOCK;
         let index = read_head_index(kept, blocks).map_err(|e| format!("its layer's head: {e}"))?;
+        // On the host's base pages, as a restore's head is ([`restore`](Self::restore)).
+        platform::small_pages(self.head.host, self.head.len);
         for (i, kept_at) in index.iter().enumerate() {
             // SAFETY: a whole block of the head, which nothing touches meanwhile (the
             // caller's contract), and which held what the copy keeps of it.
@@ -1090,7 +1118,11 @@ impl Pmem {
             return Err("virtio-pmem started before activation".into());
         };
         let mem = memory.clone();
-        let answering = move |chain: &Chain| mem.access().map_or(0, |a| answer(chain, &a));
+        let layer = match &self.backing {
+            Backing::Layer(layer) => Some(layer.clone()),
+            Backing::File(_) | Backing::Swap(_) => None,
+        };
+        let answering = move |chain: &Chain| answer(chain, &mem, layer.as_deref());
         match Worker::start("virtio-pmem", queue, memory, interrupt, answering) {
             Ok(worker) => {
                 self.worker = Some(worker);
@@ -1221,18 +1253,55 @@ impl Drop for Pmem {
     }
 }
 
-/// Reads `struct virtio_pmem_req { le32 type; }` and writes `struct virtio_pmem_resp
-/// { le32 ret; }`: 0 for a flush, 1 for anything else. Returns the bytes written.
-fn answer(chain: &Chain, mem: &Access<'_>) -> u32 {
-    let (Some(req), Some(resp)) = (chain.readable().next(), chain.writable().next()) else {
+/// Answers a request, `struct virtio_pmem_req { le32 type; }`, with `struct virtio_pmem_resp
+/// { le32 ret; }`: 0 for a flush done, 1 for one that failed or anything else; returns the
+/// bytes written. A writable layer's flush is the host's ([`Layer::flush`]), outside guest
+/// memory's access, which other devices' workers go on taking meanwhile; an image has
+/// nothing to write back, and a run's swap holds nothing past its run (D159): theirs are
+/// done as asked.
+fn answer(chain: &Chain, mem: &GuestMemory, layer: Option<&Layer>) -> u32 {
+    let Some(asked) = mem.access().ok().and_then(|a| asked(chain, &a)) else {
         return 0;
     };
-    if req.len < 4 || resp.len < 4 {
-        return 0;
-    }
-    let ret: u32 = match mem.read_obj::<u32>(req.addr) {
-        Ok(t) if u32::from_le(t) == REQ_FLUSH => 0,
+    let t0 = crate::log::uptime_us();
+    let ret = match (asked, layer) {
+        (REQ_FLUSH, Some(layer)) => match layer.flush() {
+            Ok(()) => {
+                crate::debug!(
+                    "a guest's flush of its writable layer in {} us",
+                    crate::log::uptime_us().saturating_sub(t0)
+                );
+                0
+            }
+            Err(e) => {
+                crate::warn!("a guest's flush of its writable layer: {e}");
+                1
+            }
+        },
+        (REQ_FLUSH, None) => 0,
         _ => 1,
+    };
+    mem.access().map_or(0, |a| respond(chain, &a, ret))
+}
+
+/// What a request asks, the type of its `struct virtio_pmem_req { le32 type; }`; none for
+/// a chain with no room for its request or its answer.
+fn asked(chain: &Chain, mem: &Access<'_>) -> Option<u32> {
+    let (Some(req), Some(resp)) = (chain.readable().next(), chain.writable().next()) else {
+        return None;
+    };
+    if req.len < 4 || resp.len < 4 {
+        return None;
+    }
+    // One that cannot be read asks what no device does.
+    Some(mem.read_obj::<u32>(req.addr).map_or(u32::MAX, u32::from_le))
+}
+
+/// Writes `struct virtio_pmem_resp { le32 ret; }`, `ret` 0 for a request done; returns the
+/// bytes written.
+fn respond(chain: &Chain, mem: &Access<'_>, ret: u32) -> u32 {
+    let Some(resp) = chain.writable().next() else {
+        return 0;
     };
     match mem.write_obj(resp.addr, ret.to_le()) {
         Ok(()) => 4,
@@ -1612,6 +1681,56 @@ mod tests {
         booted.save(&file(&dir, "head-2", 0), &again).unwrap();
         platform::read_exact_at(&again, &mut byte, (256 << 20) + 4095).unwrap();
         assert_eq!(byte, [0x33]);
+    }
+
+    /// A guest's flush of its writable layer is answered 0 once what it wrote through the
+    /// mapping is its file's and synced; one of a layer let go of, and a request no device
+    /// knows, 1; an image's flush, with nothing to write back, 0.
+    #[test]
+    fn a_layers_flush_is_answered_once_its_writes_are_its_files() {
+        let page = platform::page_size().unwrap();
+        let base = 0x1000_0000u64;
+        let mem = GuestMemory::anonymous(&[(base, 4 * page)]).unwrap();
+        let (req, resp) = (base, base + 64);
+        let chain = Chain {
+            head: 0,
+            descriptors: vec![
+                super::super::queue::Descriptor {
+                    addr: req,
+                    len: 4,
+                    writable: false,
+                },
+                super::super::queue::Descriptor {
+                    addr: resp,
+                    len: 4,
+                    writable: true,
+                },
+            ],
+        };
+        let ask = |kind: u32| mem.access().unwrap().write_obj(req, kind.to_le()).unwrap();
+        let said = || u32::from_le(mem.access().unwrap().read_obj::<u32>(resp).unwrap());
+        let dir = shards_testdir::TempDir::new("layer-flush").unwrap();
+        let booted = Layer::boot(file(&dir, "fs", 8 * ALIGN)).unwrap();
+        let [_, (_, data, _)] = booted.mappings(SECTION).unwrap();
+        // SAFETY: within the file system's mapping, which the layer holds.
+        unsafe { data.add(3 << 20).write_bytes(0x5a, 4096) };
+        ask(REQ_FLUSH);
+        assert_eq!(answer(&chain, &mem, Some(&booted)), 4);
+        assert_eq!(said(), 0);
+        let mut byte = [0u8; 1];
+        let fs = File::open(dir.join("fs")).unwrap();
+        platform::read_exact_at(&fs, &mut byte, (3 << 20) + 4095).unwrap();
+        assert_eq!(byte, [0x5a]);
+        ask(7);
+        assert_eq!(answer(&chain, &mem, Some(&booted)), 4);
+        assert_eq!(said(), 1);
+        ask(REQ_FLUSH);
+        assert_eq!(answer(&chain, &mem, None), 4);
+        assert_eq!(said(), 0);
+        // SAFETY: no VM maps it.
+        unsafe { booted.release() };
+        assert_eq!(answer(&chain, &mem, Some(&booted)), 4);
+        assert_eq!(said(), 1);
     }
 
     /// How many of the pages of the `len` bytes at `ptr` this process holds as memory of

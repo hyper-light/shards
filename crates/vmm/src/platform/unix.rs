@@ -116,10 +116,12 @@ pub fn reserve_ram(len: usize) -> io::Result<NonNull<u8>> {
     reserve(len)
 }
 
-/// Keeps `ptr..ptr+len`, guest RAM from [`reserve_ram`], on the host's base pages: memory
-/// the guest touches sparsely, where each huge page would hold 2 MiB resident for the few
-/// KiB it uses (x86_64's first 2 MiB: 78 of 512 pages, PM M157). Advice only, given before
-/// the first touch: where it fails, or the kernel has no THP, the memory stays as it was.
+/// Keeps `ptr..ptr+len`, guest RAM from [`reserve_ram`] or a file mapped over it, on the
+/// host's base pages: memory the guest touches sparsely, where each huge page would hold 2
+/// MiB resident for the few KiB it uses (x86_64's first 2 MiB: 78 of 512 pages, PM M157),
+/// and a file's page cache folios, which a mapping without it maps whole (PM M287). Advice
+/// only, given before the first touch: where it fails, or the kernel has no THP, the memory
+/// stays as it was.
 pub fn small_pages(ptr: NonNull<u8>, len: usize) {
     #[cfg(all(target_os = "linux", not(miri)))]
     // SAFETY: madvise(2) of guest RAM, which the caller maps.
@@ -622,6 +624,38 @@ pub unsafe fn map_file_shared_at(file: &File, len: usize, at: NonNull<u8>) -> io
         return Err(io::Error::other("mmap(MAP_FIXED) placed the mapping elsewhere"));
     }
     Ok(())
+}
+
+/// Makes what was written to `file` durable, through write(2) or through `ptr..ptr+len`,
+/// a shared mapping of it ([`map_file_shared`]). Linux's fdatasync(2) writes back the pages a
+/// mapping dirtied, as it does any (Btrfs: 2.5 to 3.6 ms for 16 pages of a 10 GiB file).
+/// macOS's F_FULLFSYNC writes them back too, and flushes the drive's cache (3 to 6 ms at
+/// any size), where a plain fsync leaves them dirty (mincore(2)'s MINCORE_MODIFIED) and an
+/// msync(2) of a 10 GiB mapping took 12 to 32 ms (PM M286); a file system without
+/// F_FULLFSYNC gets msync, then fsync.
+///
+/// # Safety
+/// `ptr..ptr+len` is the mapping [`map_file_shared`] made of `file`, still mapped.
+pub unsafe fn sync_mapped(file: &File, ptr: NonNull<u8>, len: usize) -> io::Result<()> {
+    #[cfg(target_os = "macos")]
+    {
+        // SAFETY: fcntl(2) on an owned, open descriptor.
+        if unsafe { libc::fcntl(file.as_raw_fd(), libc::F_FULLFSYNC) } == 0 {
+            return Ok(());
+        }
+        // SAFETY: forwarded caller contract.
+        unsafe { flush_shared(ptr, len) }?;
+        // SAFETY: fsync(2) on the same descriptor.
+        if unsafe { libc::fsync(file.as_raw_fd()) } == 0 {
+            return Ok(());
+        }
+        Err(io::Error::last_os_error())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (ptr, len);
+        file.sync_data()
+    }
 }
 
 /// Whether a mapping of a file hides its holes: lseek(2)'s SEEK_DATA and SEEK_HOLE then
@@ -2092,6 +2126,76 @@ pub fn process_usage(pid: u32) -> io::Result<Usage> {
     }
 }
 
+/// A thread's CPU clock, read from any thread of the process while the thread lives
+/// (D191): on Linux its CPU-time clock (pthread_getcpuclockid(3)), its task's runtime,
+/// which counts its time in a guest as any other (kernel/sched/core.c,
+/// `task_sched_runtime`); on macOS its Mach port's thread_info(THREAD_EXTENDED_INFO),
+/// which counts a vCPU's time in its guest too (PM M288).
+#[derive(Debug, Clone, Copy)]
+pub struct ThreadClock(
+    #[cfg(target_os = "macos")] libc::mach_port_t,
+    #[cfg(not(target_os = "macos"))] libc::clockid_t,
+);
+
+impl ThreadClock {
+    /// The calling thread's.
+    pub fn current() -> io::Result<ThreadClock> {
+        #[cfg(target_os = "macos")]
+        {
+            // SAFETY: the calling thread's own port, which lives as long as it does.
+            Ok(ThreadClock(unsafe {
+                libc::pthread_mach_thread_np(libc::pthread_self())
+            }))
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let mut id: libc::clockid_t = 0;
+            // SAFETY: the calling thread's own handle, and a clock id to write.
+            match unsafe { libc::pthread_getcpuclockid(libc::pthread_self(), &raw mut id) } {
+                0 => Ok(ThreadClock(id)),
+                e => Err(io::Error::from_raw_os_error(e)),
+            }
+        }
+    }
+
+    /// The CPU time its thread has used, in nanoseconds; an error once the thread is gone.
+    pub fn read(&self) -> io::Result<u64> {
+        #[cfg(target_os = "macos")]
+        {
+            // SAFETY: zeroed plain data, which thread_info fills.
+            let mut info: libc::thread_extended_info = unsafe { std::mem::zeroed() };
+            let mut count = libc::THREAD_EXTENDED_INFO_COUNT;
+            // SAFETY: a port of a thread of this process; a buffer of `count` words.
+            let r = unsafe {
+                libc::thread_info(
+                    self.0,
+                    libc::THREAD_EXTENDED_INFO as libc::thread_flavor_t,
+                    (&raw mut info).cast(),
+                    &raw mut count,
+                )
+            };
+            if r != libc::KERN_SUCCESS {
+                return Err(io::Error::other(format!("thread_info: {r}")));
+            }
+            Ok(info.pth_user_time.saturating_add(info.pth_system_time))
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let mut t = libc::timespec {
+                tv_sec: 0,
+                tv_nsec: 0,
+            };
+            // SAFETY: a clock of a thread of this process, and a timespec to write.
+            if unsafe { libc::clock_gettime(self.0, &raw mut t) } != 0 {
+                return Err(io::Error::last_os_error());
+            }
+            let secs = u64::try_from(t.tv_sec).unwrap_or(0);
+            let nanos = u64::try_from(t.tv_nsec).unwrap_or(0);
+            Ok(secs.saturating_mul(1_000_000_000).saturating_add(nanos))
+        }
+    }
+}
+
 #[cfg(test)]
 mod usage_tests {
     use super::*;
@@ -2116,6 +2220,32 @@ mod usage_tests {
         assert!(after.resident > 0);
         assert!(after.footprint > 0);
         assert!(after.cpu_ns > before.cpu_ns, "{before:?} {after:?}");
+    }
+
+    /// A thread's clock, read from another thread, counts what it spins: about no more
+    /// than the wall time, and on a host that lets it run, a share of it.
+    #[test]
+    fn a_threads_clock_counts_what_it_runs() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let stop = AtomicBool::new(false);
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::scope(|s| {
+            s.spawn(|| {
+                tx.send(ThreadClock::current().unwrap()).unwrap();
+                while !stop.load(Ordering::Relaxed) {
+                    std::hint::spin_loop();
+                }
+            });
+            let clock = rx.recv().unwrap();
+            let (t0, before) = (std::time::Instant::now(), clock.read().unwrap());
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            let spun = clock.read().unwrap() - before;
+            let wall = u64::try_from(t0.elapsed().as_nanos()).unwrap();
+            stop.store(true, Ordering::Relaxed);
+            // A read may lag what its thread has run by what it ran since its last tick.
+            assert!(spun <= wall + wall / 10, "{spun} ns of CPU in {wall} ns");
+            assert!(spun >= wall / 10, "{spun} ns of CPU in {wall} ns");
+        });
     }
 }
 

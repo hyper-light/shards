@@ -64,6 +64,10 @@ impl Handle {
         match self.0 {}
     }
 
+    pub fn hold_cpus(&self, _cpus: u32) -> Result<(), String> {
+        match self.0 {}
+    }
+
     pub fn attach_swap(&self, _file: std::fs::File) -> Result<Option<u64>, String> {
         match self.0 {}
     }
