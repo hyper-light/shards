@@ -7,7 +7,8 @@
 //!   prebuilt one.
 //! - The VM process (`shards-vm`) and the network process (`shards-net`), which `shards`
 //!   writes out once per build and starts (src/helpers.rs). Built by a nested cargo for
-//!   this target and profile into `target/helpers`, kept between builds; on macOS the VM
+//!   this target and profile into `target/helpers`, kept between builds, on Linux static
+//!   (musl) whatever C library `shards` links (PM M281); on macOS the VM
 //!   process signed with its App Sandbox entitlements first, so that its signature travels
 //!   inside `shards`. `SHARDS_HELPERS_DIR` names prebuilt ones; `SHARDS_HELPERS=skip`
 //!   carries none, for check builds of other targets (scripts/lint), and such a `shards`
@@ -336,7 +337,11 @@ fn helpers() -> Result<(), String> {
 }
 
 /// Builds the helpers with a nested cargo, for this target and profile, into
-/// `target/helpers`; returns the directory holding them.
+/// `target/helpers`; returns the directory holding them. On Linux they are static, for
+/// the target's architecture with musl, whatever C library `shards` itself links: no
+/// shared library is mapped into every VM process, as Firecracker ships, which kept glibc's
+/// pages resident in each (1.1 to 1.9 MiB more, PM M281), and they start sooner. musl's
+/// targets are linked by rust-lld, as the init is: nothing of the host's toolchain.
 fn compile_helpers(out: &mut impl io::Write) -> Result<PathBuf, String> {
     let var = |name: &str| env::var(name).map_err(|e| format!("{name}: {e}"));
     let root = Path::new(&var("CARGO_MANIFEST_DIR")?).join("..").join("..");
@@ -368,7 +373,10 @@ fn compile_helpers(out: &mut impl io::Write) -> Result<PathBuf, String> {
     ] {
         let _ = writeln!(out, "cargo::rerun-if-changed={}", root.join(input).display());
     }
-    let target = var("TARGET")?;
+    let built_for = var("TARGET")?;
+    let target = built_for
+        .strip_suffix("-unknown-linux-gnu")
+        .map_or_else(|| built_for.clone(), |arch| format!("{arch}-unknown-linux-musl"));
     let profile = profile()?;
     let dir_name = if profile == "dev" {
         "debug"
@@ -380,6 +388,15 @@ fn compile_helpers(out: &mut impl io::Write) -> Result<PathBuf, String> {
         .unwrap_or_else(|| root.join("target"))
         .join("helpers");
     let mut command = Command::new(var("CARGO")?);
+    if target.ends_with("-unknown-linux-musl") {
+        command.env(
+            format!(
+                "CARGO_TARGET_{}_LINKER",
+                target.to_ascii_uppercase().replace('-', "_")
+            ),
+            "rust-lld",
+        );
+    }
     command
         .current_dir(&root)
         .args([

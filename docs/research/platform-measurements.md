@@ -10515,7 +10515,7 @@ revision before comparing a changed API/implementation.
   but its kernel's image until its PID 1 runs, then on huge pages where its boot left it
   untouched or touched whole; where it is `always`, on huge pages throughout but the
   first 2 MiB, as before. Open: the VMM's own memory (+0.8 to +1.1 MiB) and glibc's file
-  pages at boot; arm64's boot, unmeasured; the walk's tail under load.
+  pages at boot (M281); arm64's boot, unmeasured; the walk's tail under load.
 
 ### M280. A restored vCPU whose timer never fires again: its LAPIC saved before its MSRs
 
@@ -10570,3 +10570,38 @@ revision before comparing a changed API/implementation.
   watchdog, and the VM process its debug record of each vCPU's interrupts. Open: whether
   the engine member's hang in the same gates (`an_engines_member_reaches_no_farther_than_the_command_beside_agents`,
   its run's microVM restored from a template saved the same way) was this.
+
+### M281. The VM process static (musl) on Linux, against glibc's (D36)
+
+- **Question.** With a boot's huge pages settled (M279), the Firecracker comparison still
+  found shards' VM process holding more memory of its own: 3.6 MiB outside its guest's
+  memory against Firecracker's 2.5 at boot and 2.8 after a restore, and 1.2 MiB more
+  file-backed memory at boot. Firecracker ships one static binary; shards' VM process
+  linked glibc, whose library, loader and libgcc are mapped into every VM process. What
+  does a static (musl) VM process hold, and what does it cost a run?
+- **Method.** The Fedora host (M266's: Intel Core i9-14900HX, Linux 6.19.10-300.fc44,
+  load 3 to 8), 2026-10-20. The VM and network processes built for
+  `x86_64-unknown-linux-musl` (release, static-pie) and carried through
+  `SHARDS_HELPERS_DIR`; the comparison (`cargo bench --bench firecracker -- --runs 30`)
+  with them; then `docs/research/measurements/build-ab/ab.py` between a `shards` carrying
+  glibc's helpers and one carrying musl's, both restoring one template (copied from one
+  home to the other), pooled `--rm` runs of Alpine, both arms in turn: `true` (n = 150
+  pairs) and 50 MB written to stdout, which the VM process relays (n = 60).
+- **Results.**
+  - The comparison, musl's helpers, shards against Firecracker, median difference
+    [interval]: at boot, overhead 1.7 against 2.5 MiB (-0.8 [-0.8, -0.7]), peak -0.8,
+    PSS -0.8, file-backed 1.6 against 2.2 (-0.6), anonymous tied (-0.1 [-0.3, +0.1]),
+    to ready -11.1 ms; after a restore, overhead 1.7 against 2.8 (-1.1), peak 9.7
+    against 12.9 (-3.2), PSS -3.2, file-backed -2.8, anonymous -0.4; held 16 at once,
+    PSS -0.6, private -0.4, page tables -0.1, the host's memory tied. Worse only: the
+    restored guest's first beat, +1.2 ms [+0.7, +1.4], as with glibc's (+0.9).
+  - The A/B, musl's against glibc's, paired median [interval]: `true`, wall 5.72 against
+    5.98 ms at p50, -0.42 ms [-0.49, -0.31]; 50 MB relayed, 179.9 against 179.3 ms,
+    +1.8 ms [-1.3, +4.7].
+- **Reading.** The memory a VM process held beside its guest's was mostly glibc's shared
+  pages, which a static VM process does not map: it holds 1.9 MiB less, and less than
+  Firecracker's on every axis but the restore's first beat. A run gains 0.42 ms, the
+  dynamic loader's work at each VM process's start; what it relays costs the same.
+- **Consequence.** D36: on Linux the VM and network processes are static (musl), whatever
+  C library `shards` links. Open: a restored guest's first beat, 0.9 to 1.2 ms behind
+  Firecracker's on this host.

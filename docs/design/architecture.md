@@ -2470,6 +2470,14 @@ one CLI.
   named by their digests, whole (each synced, the directory renamed into place), and
   every later process of the build finds them with a `stat` each, and holds them while
   it lives (D182). They are no deliverables: nothing but `shards` is installed.
+- On Linux both are static (musl), whatever C library `shards` itself links, as
+  Firecracker ships: no shared library is mapped into every VM process, where glibc's,
+  its loader's and libgcc's pages were resident in each (PM M281). A VM process then holds
+  1.7 MiB outside its guest's memory, where it held 3.6 and Firecracker's holds 2.5 to
+  2.8, and a pooled run is 0.42 ms sooner; what a run relays is as fast. musl's targets
+  are linked by rust-lld, as the init's are, so a host needs no toolchain of its own for
+  them; the network code reads `resolv.conf` itself, and no helper uses the C library's
+  resolver.
 - A daemon's build is its binary's identity, which includes what it carries; one given
   another VM binary (`SHARDS_VM_BINARY`, for VMM work and tests) is another build.
 - **Tests:** `helpers::tests` (written whole once, found after, a cut copy replaced);
