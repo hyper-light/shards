@@ -384,7 +384,7 @@ impl Stage {
         let taken = if size >= CLONE_MIN {
             let dst = self.dir.join(self.next.to_string());
             self.next += 1;
-            if !clone(&f, &dst)? {
+            if !clone_file(&f, &dst)? {
                 copy(&f, &dst)?;
             }
             if !unchanged(&f, &before)? {
@@ -463,7 +463,7 @@ impl Stage {
         }
         let dst = self.dir.join(self.next.to_string());
         self.next += 1;
-        if !clone(f, &dst)? {
+        if !clone_file(f, &dst)? {
             return Ok(None);
         }
         // What it holds, its mode and its mtime are its source's as it was cloned, and no
@@ -767,9 +767,11 @@ fn copy(f: &fs::File, dst: &Path) -> io::Result<()> {
     Ok(())
 }
 
-/// A copy-on-write clone of `f` at `dst`; false where the file system makes none.
+/// A copy-on-write clone of `f` at `dst`, a new file; false where the file system makes
+/// none, which leaves nothing at `dst`. The daemon's restores clone their snapshots'
+/// writable layers with it too (D190).
 #[cfg(target_os = "macos")]
-fn clone(f: &fs::File, dst: &Path) -> io::Result<bool> {
+pub fn clone_file(f: &fs::File, dst: &Path) -> io::Result<bool> {
     use std::ffi::CString;
     use std::os::fd::AsRawFd;
     use std::os::unix::ffi::OsStrExt;
@@ -787,7 +789,7 @@ fn clone(f: &fs::File, dst: &Path) -> io::Result<bool> {
 }
 
 #[cfg(target_os = "linux")]
-fn clone(f: &fs::File, dst: &Path) -> io::Result<bool> {
+pub fn clone_file(f: &fs::File, dst: &Path) -> io::Result<bool> {
     use std::os::fd::AsRawFd;
     let out = fs::File::options().write(true).create_new(true).open(dst)?;
     // SAFETY: both descriptors are open for the call; FICLONE reads the source's.
@@ -806,7 +808,7 @@ fn clone(f: &fs::File, dst: &Path) -> io::Result<bool> {
 
 /// Windows has no clone shards makes yet: a copy.
 #[cfg(windows)]
-fn clone(_: &fs::File, _: &Path) -> io::Result<bool> {
+pub fn clone_file(_: &fs::File, _: &Path) -> io::Result<bool> {
     Ok(false)
 }
 

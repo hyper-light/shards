@@ -73,6 +73,7 @@ fn kind_of(mode: u32) -> FileKind {
 /// os.Lstat.
 pub(crate) fn lstat(p: &[u8]) -> io::Result<Stat> {
     let md = std::fs::symlink_metadata(os_path(p))?;
+    let (major, minor) = major_minor(md.rdev());
     Ok(Stat {
         kind: kind_of(md.mode()),
         mode: md.mode(),
@@ -83,13 +84,15 @@ pub(crate) fn lstat(p: &[u8]) -> io::Result<Stat> {
         ino: md.ino(),
         dev: md.dev(),
         nlink: md.nlink(),
-        rdev: md.rdev(),
+        major,
+        minor,
     })
 }
 
 /// os.Stat.
 pub(crate) fn stat(p: &[u8]) -> io::Result<Stat> {
     let md = std::fs::metadata(os_path(p))?;
+    let (major, minor) = major_minor(md.rdev());
     Ok(Stat {
         kind: kind_of(md.mode()),
         mode: md.mode(),
@@ -100,7 +103,8 @@ pub(crate) fn stat(p: &[u8]) -> io::Result<Stat> {
         ino: md.ino(),
         dev: md.dev(),
         nlink: md.nlink(),
-        rdev: md.rdev(),
+        major,
+        minor,
     })
 }
 
@@ -191,12 +195,6 @@ pub(crate) fn lgetxattr(p: &[u8], name: &[u8]) -> io::Result<Option<Vec<u8>>> {
 const NOATTR: i32 = libc::ENODATA;
 #[cfg(not(any(target_os = "linux", target_os = "android")))]
 const NOATTR: i32 = libc::ENOATTR;
-
-/// security.capability, None where it is unset or unreadable, as go-archive ignores the
-/// error (ReadSecurityXattrToTarHeader).
-pub(crate) fn capability(p: &[u8]) -> Option<Vec<u8>> {
-    lgetxattr(p, b"security.capability").ok().flatten()
-}
 
 /// fsetxattr.
 ///
@@ -309,6 +307,8 @@ fn fstatat(dir: RawFd, name: &CStr) -> io::Result<Stat> {
     let st = unsafe { st.assume_init() };
     let mode = mode32(st.st_mode);
     #[allow(clippy::unnecessary_cast)]
+    let (major, minor) = major_minor(st.st_rdev as u64);
+    #[allow(clippy::unnecessary_cast)]
     Ok(Stat {
         kind: kind_of(mode),
         mode,
@@ -319,7 +319,8 @@ fn fstatat(dir: RawFd, name: &CStr) -> io::Result<Stat> {
         ino: st.st_ino as u64,
         dev: st.st_dev as u64,
         nlink: st.st_nlink as u64,
-        rdev: st.st_rdev as u64,
+        major,
+        minor,
     })
 }
 

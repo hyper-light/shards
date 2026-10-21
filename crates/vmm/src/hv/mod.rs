@@ -91,6 +91,13 @@ pub trait Io: Sync {
     }
     /// x86 port I/O (OUT).
     fn pio_write(&self, _port: u16, _data: &[u8]) {}
+    /// A guest access faulted on memory the host could not give, at `gpa` where the
+    /// hypervisor says: true where the VMM has given memory there now, and the access runs
+    /// again (a share's DAX window's range past its file's end, the file cut short on the
+    /// host, D189); false where the fault is the guest's own.
+    fn memory_fault(&self, _gpa: Option<u64>) -> bool {
+        false
+    }
 }
 
 /// Why `Vcpu::run` returned to the caller.

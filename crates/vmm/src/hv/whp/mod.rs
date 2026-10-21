@@ -770,10 +770,10 @@ impl Irqs {
         self.partition.deliver(&self.ioapic.set(gsi, level))
     }
 
-    /// One edge on an edge-triggered pin: raised and lowered, as KVM's backend pulses one.
+    /// One edge on an edge-triggered pin: raised and lowered at once, as KVM's backend
+    /// pulses one, so that no other thread's raise finds the line high (PM M272).
     pub fn pulse(&self, gsi: u32) -> Result<()> {
-        self.set(gsi, true)?;
-        self.set(gsi, false)
+        self.partition.deliver(&self.ioapic.pulse(gsi))
     }
 
     /// Delivers the MSI of `address` and `data`, as the IOAPIC delivers its messages.

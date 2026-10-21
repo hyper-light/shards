@@ -524,16 +524,35 @@ pub(crate) fn merge_tmpfs_options(options: &[&str]) -> Result<Vec<String>, Strin
 }
 
 /// What the workload's namespaces are given, in order (shards_abi::run::Spec::setup), or
-/// what dockerd says as it cannot start the container: each tmpfs, the shallowest first
-/// as moby sorts mounts, with moby's default options before the run's; `/dev/shm`'s size;
-/// the ulimits, the last of each by name; the sysctls, the last of each; and the root
+/// what dockerd says as it cannot start the container: its IPC namespace and `/dev/shm`'s
+/// size, before anything is mounted, so that what the run mounts at or under /dev/shm (a
+/// volume, a tmpfs) goes over it, as a container's mounts go over its default /dev/shm,
+/// and is never resized nor unmounted with it; each tmpfs and mount point, the shallowest
+/// first as moby sorts mounts, with moby's default options before the run's; the
+/// ulimits, the last of each by name; the sysctls, the last of each; and the root
 /// read-only last, after everything is mounted on it.
 pub fn setup(
     run: &Run,
     points: &[(String, Vec<u8>)],
     cdi: Option<&crate::build::cdi::Edits>,
+    microvm_shm: Option<u64>,
 ) -> Result<Vec<Vec<u8>>, String> {
     let mut out: Vec<Vec<u8>> = Vec::new();
+    // Its IPC namespace and /dev/shm (D156): none, or the microVM's, before the size of
+    // one of its own; another run's is the daemon's to name (`shared_ipc_entry`).
+    if run.ipc == "none" || run.ipc == "host" {
+        out.push(format!("ipc={}", run.ipc).into_bytes());
+    }
+    if run.shm_size != 0 {
+        out.push(format!("shm={}", run.shm_size).into_bytes());
+    } else if let Some(bytes) = microvm_shm
+        && run.ipc != "none"
+        && !run.ipc.starts_with("container:")
+    {
+        // Its own, or the microVM's (`--ipc host`), as large as the microVM it lives in
+        // may have them (`microvm_shm`): its template's is sized for every limit's.
+        out.push(format!("shm={bytes}").into_bytes());
+    }
     let mut mounts: Vec<(String, Vec<u8>)> = Vec::new();
     for (dest, opts) in tmpfs_map(run) {
         let dest = clean(&dest);
@@ -550,14 +569,6 @@ pub fn setup(
     mounts.extend(points.iter().cloned());
     mounts.sort_by_key(|(dest, _)| dest.split('/').filter(|p| !p.is_empty()).count());
     out.extend(mounts.into_iter().map(|(_, entry)| entry));
-    // Its IPC namespace and /dev/shm (D156): none, or the microVM's, before the size of
-    // one of its own; another run's is the daemon's to name (`shared_ipc_entry`).
-    if run.ipc == "none" || run.ipc == "host" {
-        out.push(format!("ipc={}", run.ipc).into_bytes());
-    }
-    if run.shm_size != 0 {
-        out.push(format!("shm={}", run.shm_size).into_bytes());
-    }
     // The microVM's UTS and cgroup namespaces (D156), and its writable layer's size.
     if run.uts == "host" {
         out.push(b"uts=host".to_vec());
@@ -878,7 +889,7 @@ mod tests {
             Err("invalid mount path: 'run' mount path must be absolute".into())
         );
         assert_eq!(
-            setup(&run(&["/x:foo"]), &[], None),
+            setup(&run(&["/x:foo"]), &[], None, None),
             Err("invalid tmpfs option \"foo\"".into())
         );
         let set = Run {
@@ -893,7 +904,7 @@ mod tests {
             read_only: true,
             ..Run::default()
         };
-        let text: Vec<String> = setup(&set, &[], None)
+        let text: Vec<String> = setup(&set, &[], None, None)
             .unwrap()
             .into_iter()
             .map(|b| String::from_utf8(b).unwrap())
@@ -901,10 +912,11 @@ mod tests {
         assert_eq!(
             text,
             [
+                // Resized before anything is mounted, which a mount at /dev/shm then covers.
+                "shm=134217728",
                 "tmpfs=/run\0nosuid,nodev,rprivate,exec,size=2m",
                 "tmpfs=/tmp\0noexec,nosuid,nodev,rprivate",
                 "tmpfs=/run/a\0noexec,nosuid,nodev,rprivate,size=1m",
-                "shm=134217728",
                 "ulimit=nofile=1024:2048",
                 "ulimit=nproc=20:20",
                 "sysctl=kernel.shmmax=1",

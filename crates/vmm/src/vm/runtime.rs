@@ -149,15 +149,24 @@ impl Handle {
             }
         };
         let swap = cut.swap.filter(|w| w.attached());
-        let written = snapshot::fill(&save.name, &snap, &self.memory, &save.memory, &save.state).and_then(
-            |()| match (swap, &save.swap) {
+        let written = snapshot::fill(&save.name, &snap, &self.memory, &save.memory, &save.state)
+            .and_then(|()| match (swap, &save.swap) {
                 (None, _) => Ok(()),
                 (Some(window), Some(file)) => window.save_run(file).map(|_| ()),
                 (Some(_), None) => Err("its run's swap has nowhere to go".into()),
-            },
-        );
+            })
+            .and_then(|()| match (self.control.layer(), &save.layer) {
+                (None, _) => Ok(()),
+                (Some(layer), Some((head, data))) => layer.save(head, data),
+                (Some(_), None) => Err("its writable layer has nowhere to go".into()),
+            });
         if let Err(e) = written {
-            cut.go_on();
+            // One whose guest lost a mapping taken from it for the save stops.
+            if self.control.lost() {
+                sh.stop(ExitReason::Error(e.clone()));
+            } else {
+                cut.go_on();
+            }
             return Err(e);
         }
         info!(
@@ -468,14 +477,25 @@ pub struct Running {
     /// Devices own memory the VM maps (virtio-pmem regions): they go after the VM, as
     /// guest RAM does.
     bus: Arc<machine::Bus>,
+    /// Its writable layer (D190), let go of as soon as the VM is gone.
+    control: Arc<Control>,
     _memory: Arc<GuestMemory>,
 }
 
 impl Running {
     /// Waits for the guest to exit, then tears the machine down.
-    pub fn wait(mut self) -> ExitReason {
+    pub fn wait(self) -> ExitReason {
+        self.wait_then(|| {})
+    }
+
+    /// [`wait`](Self::wait), calling `free` as soon as nothing of the machine writes its
+    /// writable layer's file (D190), so that its host may read it without waiting on this
+    /// process: once every vCPU has stopped and the device workers are quiet, or, where
+    /// letting go of a file written through a shared mapping writes it back as its readers
+    /// wait ([`platform::LET_GO_WRITES_BACK`], PM M278), once the layer is let go of too.
+    pub fn wait_then(mut self, free: impl FnOnce()) -> ExitReason {
         let reason = self.shared.wait_exit();
-        self.teardown(reason.clone());
+        self.teardown(reason.clone(), free);
         reason
     }
 
@@ -483,17 +503,35 @@ impl Running {
     /// snapshot coordinator joined, so each vCPU was destroyed on its own thread; the
     /// device workers stopped; the VM destroyed; and only then, as the fields drop, the
     /// devices and guest memory it mapped. Again, it does nothing.
-    fn teardown(&mut self, reason: ExitReason) {
+    fn teardown(&mut self, reason: ExitReason, free: impl FnOnce()) {
         self.shared.stop(reason);
         for t in self.threads.drain(..) {
             let _ = t.join();
         }
         // A save the host asked for holds the VM and its devices until it is done.
         self.shared.await_save();
-        if let Some(vm) = self.vm.take() {
+        let vm = self.vm.take();
+        if vm.is_some() {
             // The device workers go quiet before the VM they raise interrupts in goes.
             self.bus.pause();
+        }
+        // Nothing of the machine runs now: its writable layer is what its guest left.
+        let mut free = Some(free);
+        if !platform::LET_GO_WRITES_BACK
+            && let Some(free) = free.take()
+        {
+            free();
+        }
+        if let Some(vm) = vm {
             drop(vm);
+            // Its writable layer is its file's alone from here on (D190).
+            if let Some(layer) = self.control.layer() {
+                // SAFETY: the VM that mapped it is gone, and nothing maps it again.
+                unsafe { layer.release() };
+            }
+        }
+        if let Some(free) = free.take() {
+            free();
         }
     }
 }
@@ -502,7 +540,7 @@ impl Drop for Running {
     /// A machine dropped without [`wait`](Running::wait) is stopped, not left running
     /// with nothing to own its memory (audit A04).
     fn drop(&mut self) {
-        self.teardown(ExitReason::Stopped);
+        self.teardown(ExitReason::Stopped, || {});
     }
 }
 
@@ -537,10 +575,17 @@ fn guest_pages(snap: &snapshot::Snapshot) -> u64 {
         .filter_map(|path| platform::input_metadata(path).ok())
         .map(|m| m.len().checked_next_multiple_of(pmem::ALIGN).unwrap_or(u64::MAX))
         .fold(0, u64::saturating_add);
+    // Its writable layer's, head and file system (D190).
+    let layer = match snap.config.layer_mib.checked_mul(1 << 20) {
+        Some(0) => 0,
+        Some(data) => pmem::layer_head(data).map_or(u64::MAX, |(head, _)| head.saturating_add(data)),
+        None => u64::MAX,
+    };
     snap.config
         .memory_mib
         .saturating_mul(1 << 20)
         .saturating_add(pmem)
+        .saturating_add(layer)
         .div_ceil(machine::PAGE)
 }
 
@@ -576,6 +621,38 @@ pub fn restore_from(cfg: &RestoreConfig, pinned: snapshot::Pinned) -> Result<(Ha
         }
     }
     let recording = cfg.record && working_set.is_none();
+    // Its writable layer (D190): the head as the snapshot kept it, and the restore's own
+    // copy of its file system, this very generation's: the clone of it the restore was
+    // given, or a copy made here into the file it was given, empty or a clone of another
+    // generation's. One the snapshot and the restore do not agree on is refused as the
+    // machine is checked (`check_hosts`).
+    let layer = match &cfg.layer {
+        Some(path) if snap.config.layer_mib > 0 => {
+            let at = |e: std::io::Error| format!("{}: its writable layer: {e}", generation.display());
+            let head = platform::open_beneath_input(&generation, &[snapshot::LAYER_HEAD]).map_err(at)?;
+            let kept = platform::open_beneath_input(&generation, &[snapshot::LAYER]).map_err(at)?;
+            let file = platform::open_input(path, true).map_err(|e| format!("{}: {e}", path.display()))?;
+            let len = kept.metadata().map_err(at)?.len();
+            let given = file.metadata().map_err(at)?.len();
+            let copies = copies_layer(given, len, cfg.layer_cloned.as_deref(), &name)
+                .map_err(|e| format!("{}: {e}", path.display()))?;
+            if copies {
+                platform::copy_used(&kept, &file, len).map_err(at)?;
+                // Written back as it restores, ahead of its run, rather than as the VM lets
+                // go of the file, where its host waits to read what its run left (macOS, PM
+                // M278), on a thread of its own: the restore goes on.
+                platform::write_back_ahead(&file).map_err(at)?;
+            }
+            Some(Arc::new(pmem::Layer::restore(head, file)?))
+        }
+        Some(path) => {
+            return Err(format!(
+                "{}: a writable layer for a snapshot that has none",
+                path.display()
+            ));
+        }
+        None => None,
+    };
     let machine = machine::restore(
         &snap,
         &memory_file,
@@ -589,6 +666,7 @@ pub fn restore_from(cfg: &RestoreConfig, pinned: snapshot::Pinned) -> Result<(Ha
             #[cfg(unix)]
             join_share: cfg.join_share,
             io: cfg.io_limit,
+            layer: layer.as_ref(),
         },
         working_set.unwrap_or_default(),
     )?;
@@ -633,6 +711,20 @@ pub fn working_set_limit(dir: &Path) -> Result<u64, String> {
         .checked_mul(8)
         .and_then(|b| b.checked_add(snapshot::WORKING_SET_HEADER))
         .ok_or_else(|| format!("{}: a guest too large to bound", dir.display()))
+}
+
+/// Whether a restore of generation `pinned` copies its writable layer, `len` bytes, into
+/// the file it was given, `given` bytes long (D190): not where the file is a clone of that
+/// very generation's layer (`cloned`); where it is empty, or a clone of another
+/// generation's, which a template's newer one replaced before the restore read it. A file
+/// that is neither is refused: it might hold a run's own.
+fn copies_layer(given: u64, len: u64, cloned: Option<&str>, pinned: &str) -> Result<bool, String> {
+    match cloned {
+        Some(of) if of == pinned && given == len => Ok(false),
+        Some(_) => Ok(true),
+        None if given == 0 => Ok(true),
+        None => Err("a writable layer to copy its snapshot's into must be empty".into()),
+    }
 }
 
 /// Writes the working set a VM recorded from generation `name` of the snapshot in `dir`,
@@ -773,6 +865,7 @@ fn launch(
         crate::log::uptime_us()
     );
     let handle_shared = shared.clone();
+    let control_running = control.clone();
     Ok((
         Handle {
             shared,
@@ -785,6 +878,7 @@ fn launch(
             vm: Some(vm),
             threads,
             bus,
+            control: control_running,
             _memory: memory,
         },
     ))
@@ -887,6 +981,10 @@ impl Coordinator {
             if !resume {
                 return self.sh.stop(ExitReason::Error(e));
             }
+            // One whose guest lost a mapping taken from it for the save stops.
+            if self.control.lost() {
+                return self.sh.stop(ExitReason::Error(e));
+            }
             warn!("{e}; the VM goes on without its snapshot");
             if parked {
                 cut.go_on();
@@ -897,7 +995,12 @@ impl Coordinator {
             Ok(None) => return,
             Err(e) => return failed(format!("snapshot: {e}"), true),
         };
-        let staged = match snapshot::stage(&self.policy.dir, &snap, &self.memory) {
+        let staged = match snapshot::stage(
+            &self.policy.dir,
+            &snap,
+            &self.memory,
+            self.control.layer().map(|l| &**l),
+        ) {
             Ok(staged) => staged,
             Err(e) => return failed(format!("snapshot: {e}"), true),
         };
@@ -907,10 +1010,16 @@ impl Coordinator {
             crate::log::uptime_us().saturating_sub(t0)
         );
         if resume {
-            if self.policy.working_set {
-                self.record(staged.name().to_string());
+            // Before a working set is recorded, which takes the head from the guest too.
+            match self.remap_head(&staged) {
+                Ok(()) => {
+                    if self.policy.working_set {
+                        self.record(staged.name().to_string());
+                    }
+                    cut.go_on();
+                }
+                Err(e) => self.sh.stop(ExitReason::Error(e)),
             }
-            cut.go_on();
         }
         // Durable, and in use, with the guest running again: its files hold all of it
         // already (PM M63). The process ends only once this thread has.
@@ -925,6 +1034,29 @@ impl Coordinator {
         if !resume {
             self.sh.stop(ExitReason::Snapshotted);
         }
+    }
+
+    /// Maps the writable layer's head back from the copy the snapshot just kept of it, with
+    /// every vCPU parked, for the machine that goes on: a template's, its image's first run,
+    /// which holds of its head from then on what its guest writes alone (D190,
+    /// [`pmem::Layer::remap_head`]). One that fails leaves the head the guest's own memory,
+    /// and is said; an error is a head its guest cannot be given back.
+    fn remap_head(&self, staged: &snapshot::Staged) -> Result<(), String> {
+        let (Some(layer), Some(kept)) = (self.control.layer(), staged.layer_head()) else {
+            return Ok(());
+        };
+        let t0 = crate::log::uptime_us();
+        // SAFETY: every vCPU is parked and the devices quiet since the head was saved into
+        // `kept`.
+        match unsafe { layer.remap_head(kept) } {
+            Ok(()) => info!(
+                "its writable layer's head mapped back from its snapshot in {} us",
+                crate::log::uptime_us().saturating_sub(t0)
+            ),
+            Err(e) if layer.lost() => return Err(format!("its writable layer's head: {e}")),
+            Err(e) => warn!("its writable layer's head stays its own memory where not mapped back: {e}"),
+        }
+        Ok(())
     }
 
     /// Starts recording the working set of `generation`, the snapshot just written, with
@@ -1013,6 +1145,20 @@ impl Cut<'_> {
 mod tests {
     use super::*;
 
+    /// A restore copies its generation's writable layer into an empty file or into a clone
+    /// of another generation's, takes a clone of its own generation's as it is, and refuses
+    /// a file that is neither (D190).
+    #[test]
+    fn a_restore_copies_its_layer_unless_given_its_own_generations_clone() {
+        assert_eq!(copies_layer(0, 8 << 20, None, "g-2"), Ok(true));
+        assert_eq!(copies_layer(8 << 20, 8 << 20, Some("g-2"), "g-2"), Ok(false));
+        // Its template saved again between the clone and the restore's read.
+        assert_eq!(copies_layer(8 << 20, 8 << 20, Some("g-1"), "g-2"), Ok(true));
+        // No whole clone: made again.
+        assert_eq!(copies_layer(4 << 20, 8 << 20, Some("g-2"), "g-2"), Ok(true));
+        assert!(copies_layer(4096, 8 << 20, None, "g-2").is_err());
+    }
+
     /// A pmem file's pages count whether the process reaches its path or only the
     /// descriptor granted for it, as a VM in App Sandbox does (review 1.11): each file
     /// at its size rounded up to the alignment pmem maps it at, beside the RAM.
@@ -1039,6 +1185,8 @@ mod tests {
                 reporting: false,
                 gpu: None,
                 swap_mib: 0,
+                share_window_mib: 0,
+                layer_mib: 0,
             },
             plugged: Vec::new(),
             arch: Vec::new(),

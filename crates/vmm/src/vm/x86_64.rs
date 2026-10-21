@@ -149,6 +149,10 @@ impl Io for Bus {
             debug!("unclaimed port write {port:#x} ({} bytes)", data.len());
         }
     }
+
+    fn memory_fault(&self, gpa: Option<u64>) -> bool {
+        self.mmio.memory_fault(gpa)
+    }
 }
 
 impl Bus {
@@ -377,6 +381,8 @@ fn assemble(
             .ok_or("pmem regions overflow the address space")?,
     };
     let (regions, end) = super::pmem_regions(config, first)?;
+    // Its writable layer after them (D190).
+    let (layer, end) = super::layer_layout(hosts.layer, end)?;
     // The PCI bus's 64-bit window past all of that, as long as its 64-bit BARs need (D154).
     let mem64 = match pci.mem64()? {
         Some((len, align)) => Some((
@@ -400,8 +406,11 @@ fn assemble(
     // has: its kernel takes no memory or window past them (Linux's iomem_resource), and the
     // hypervisor maps none.
     let bits = vm.phys_bits().map_err(|e| e.to_string())?;
-    // The swap window past all of that (D159), within them.
-    let (swap_at, top) = super::swap_layout(config, top, 1u64.checked_shl(bits).unwrap_or(u64::MAX))?;
+    // The swap window past all of that (D159), within them, and each share's DAX window
+    // past it (D189).
+    let reach = 1u64.checked_shl(bits).unwrap_or(u64::MAX);
+    let (swap_at, top) = super::swap_layout(config, top, reach)?;
+    let (windows, top) = super::share_windows(config, top, reach)?;
     if top > 1 << bits {
         return Err(format!(
             "the guest's memory and devices end at {top:#x}, past the {bits} address bits its CPU has"
@@ -416,6 +425,9 @@ fn assemble(
         // and its device sits on the bus, which `Machine` and `Running` drop after the VM.
         unsafe { vm.map_device_memory(region.host(), *gpa, region.len(), false) }
             .map_err(|e| e.to_string())?;
+    }
+    if let Some((l, gpa)) = &layer {
+        super::map_layer(&vm, l, *gpa)?;
     }
     let (hotplug, sizes) = super::hotplug_device(&vm, memory, config)?.unzip();
     let reporting = super::reporting_device(&vm, config);
@@ -436,6 +448,9 @@ fn assemble(
     let devices = super::virtio_devices(
         config,
         &regions,
+        layer.as_ref(),
+        &windows,
+        Some(&vm),
         hosts,
         hotplug
             .into_iter()
@@ -477,6 +492,9 @@ fn assemble(
     let control = Arc::new(Control::default());
     if let Some(window) = swap {
         control.on_swap(window);
+    }
+    if let Some((l, gpa)) = layer {
+        control.on_layer(l, gpa);
     }
     if let Some(sizes) = sizes {
         control.on_hotplug(sizes);
@@ -559,7 +577,9 @@ fn assemble(
 
 pub fn build(cfg: &Config) -> Result<Machine, String> {
     let (ram, ranges) = ram_ranges(cfg.memory_mib)?;
-    let config = super::machine_config(cfg)?;
+    let mut config = super::machine_config(cfg)?;
+    let layer = super::boot_layer(cfg)?;
+    config.layer_mib = layer.as_ref().map_or(0, |l| l.data_len() >> 20);
     let memory = Arc::new(super::guest_memory(&ranges, &config, plug_at(ram))?);
     // Before anything touches it: on huge pages, its first 2 MiB would be resident whole
     // for its boot structures' few pages (layout::SPARSE, PM M157).
@@ -574,6 +594,9 @@ pub fn build(cfg: &Config) -> Result<Machine, String> {
     // length: the initrd between the kernel and the end of low RAM, at its top (boot.rs,
     // place_initrd). Their bytes are copied in as the machine is made.
     let (kernel, spans) = boot::plan_kernel(&kernel_file, low_ram_end).map_err(|e| e.to_string())?;
+    // On huge pages where its boot touches much (D29, PM M279).
+    let image = spans.iter().map(|s| s.gpa).min().unwrap_or(kernel.end);
+    super::boot_pages(&memory, &ranges, image..kernel.end)?;
     let mut pieces: Vec<super::Piece> = spans
         .into_iter()
         .map(|span| super::Piece {
@@ -601,6 +624,7 @@ pub fn build(cfg: &Config) -> Result<Machine, String> {
             #[cfg(unix)]
             join_share: cfg.join_share,
             io: cfg.io_limit,
+            layer: layer.as_ref(),
         };
         let a = assemble(
             &memory,
@@ -622,6 +646,7 @@ pub fn build(cfg: &Config) -> Result<Machine, String> {
         a.vmgenid.write_new_id()?;
         Ok(a)
     })?;
+    super::huge_pages_when_init_runs(&a.control, &memory);
     debug!("kernel and initrd copied");
     let cmdline = match &a.pci {
         Some(_) => format!("{} {MACHINE_CMDLINE}", cfg.cmdline),

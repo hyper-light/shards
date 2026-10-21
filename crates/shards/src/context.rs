@@ -234,47 +234,68 @@ fn here_terminal() -> Option<frame::Terminal> {
     })
 }
 
-/// A console has no SIGWINCH: its size is looked at every 250 ms (docker/cli's interval,
-/// MonitorTtySize, not measured; the console's own resize events would need none, open in
-/// docs/audit/2026-10-16_docker-framing.md), and a change sizes the command's terminal. Its events, ^C and ^Break where its input is not raw, and
-/// its closing, go to the command as Go's runtime gives them to a Windows process
-/// ([`console_signal`]).
+/// A console has no SIGWINCH: a resize is told by the console's record of its screen
+/// buffer's size, which its input carries ([`crate::cli::terminal::ConsoleInput`], which
+/// reads stdin where it is the console), and sizes the command's terminal as it comes. A
+/// console whose window shows part of its buffer (conhost's, with lines kept above it)
+/// records no resize that leaves the buffer's size, nor does one whose input is not stdin:
+/// there its size is looked at every 250 ms (docker/cli's interval, MonitorTtySize), as
+/// Docker's CLI looks at every console's. Its events, ^C and ^Break where its input is not
+/// raw, and its closing, go to the command as Go's runtime gives them to a Windows process
+/// ([`console_signal`]). The descriptor whose console's size the command's terminal takes,
+/// if any: stdout's, else stderr's.
 #[cfg(windows)]
-fn steer_console(terminal: Option<frame::Terminal>) -> Result<(), String> {
+fn steer_console(terminal: Option<frame::Terminal>) -> Result<Option<i32>, String> {
     use windows_sys::Win32::System::Console::SetConsoleCtrlHandler;
     // SAFETY: a handler of this process's console's events, which it never removes. A
     // process with no console has no events to take: a handler it could not have is none.
     let _ = unsafe { SetConsoleCtrlHandler(Some(on_console_event), 1) };
     let Some(terminal) = terminal else {
-        return Ok(());
+        return Ok(None);
     };
     let fd = match (terminal.stdout, terminal.stderr) {
         (true, _) => 1,
         (false, true) => 2,
-        (false, false) => return Ok(()),
+        (false, false) => return Ok(None),
     };
-    let mut last = (terminal.rows, terminal.cols);
+    *SIZED.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some((terminal.rows, terminal.cols));
+    if terminal.stdin && crate::cli::terminal::shows_whole_buffer(fd) {
+        return Ok(Some(fd));
+    }
     std::thread::Builder::new()
         .name("resizes".into())
         .spawn(move || {
-            loop {
+            while send_size(fd) {
                 std::thread::sleep(std::time::Duration::from_millis(250));
-                let now = crate::cli::terminal::size(fd);
-                if now == last {
-                    continue;
-                }
-                // A size with no command yet to take it is sent once there is one.
-                let steered = STEERED.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-                if let Some(controls) = steered.as_ref() {
-                    if controls.resize(now.0, now.1).is_err() {
-                        return;
-                    }
-                    last = now;
-                }
             }
         })
         .map_err(|e| format!("resize thread: {e}"))?;
-    Ok(())
+    Ok(Some(fd))
+}
+
+/// The size last sent to the command (rows, columns): what a resize is told apart from.
+#[cfg(windows)]
+static SIZED: std::sync::Mutex<Option<(u16, u16)>> = std::sync::Mutex::new(None);
+
+/// Sends the command the console `fd`'s size where it has changed since last sent; a
+/// size with no command yet to take it is sent once there is one, as the command's
+/// steering is given. False once the command takes no more.
+#[cfg(windows)]
+fn send_size(fd: i32) -> bool {
+    let now = crate::cli::terminal::size(fd);
+    let mut sized = SIZED.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    if *sized == Some(now) {
+        return true;
+    }
+    let steered = STEERED.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let Some(controls) = steered.as_ref() else {
+        return true;
+    };
+    if controls.resize(now.0, now.1).is_err() {
+        return false;
+    }
+    *sized = Some(now);
+    true
 }
 
 /// The console's event `kind`: sent to the command as its signal, or, with no command to
@@ -2311,11 +2332,11 @@ fn own_named<'a>(refs: &[&'a str]) -> Option<&'a str> {
     }
 }
 
-/// Whether this home's daemon serves now.
+/// Whether this home's daemon serves now: its request slots (D185).
 fn daemon_serves(home: &Path) -> bool {
     #[cfg(unix)]
     {
-        std::os::unix::net::UnixStream::connect(home.join(shards_ipc::SOCKET)).is_ok()
+        shards_ipc::slots::served(home)
     }
     #[cfg(not(unix))]
     {
@@ -2324,11 +2345,12 @@ fn daemon_serves(home: &Path) -> bool {
     }
 }
 
-/// Where this home's daemon serves its own CLI.
+/// Where this home's daemon is reached from outside shards' own CLI: its Engine API's
+/// socket (D170), which Docker's clients and SDKs take as their endpoint.
 fn own_endpoint(home: &Path) -> String {
     #[cfg(unix)]
     {
-        format!("unix://{}", home.join(shards_ipc::SOCKET).display())
+        format!("unix://{}", home.join(crate::daemon::ENGINE_SOCKET).display())
     }
     #[cfg(not(unix))]
     {
@@ -2396,6 +2418,14 @@ pub(crate) fn forward(home: &Path, context: &Context, args: Vec<OsString>) -> Ex
                 .map(|v| (name.to_string(), v.into_bytes()))
         })
         .collect();
+    // A Windows console names no terminal type: one that takes escape sequences is
+    // xterm-256color, as Microsoft's own Linux is told its Windows console is (microsoft/WSL
+    // 4609b0c, src/windows/service/exe/DistributionRegistration.h, TERM's default), where
+    // this client's TERM says nothing.
+    #[cfg(windows)]
+    if std::env::var_os("TERM").is_none() && crate::cli::terminal::styles(1) {
+        env.push(("TERM".to_string(), b"xterm-256color".to_vec()));
+    }
     match own_credentials(&words_sent, &|name| std::env::var(name).ok()) {
         Ok((sent, warnings)) => {
             for warning in warnings {
@@ -2424,11 +2454,10 @@ pub(crate) fn forward(home: &Path, context: &Context, args: Vec<OsString>) -> Ex
         (t.stdin || t.stdout || t.stderr).then_some(t)
     });
     #[cfg(windows)]
-    {
-        if let Err(e) = steer_console(terminal) {
-            return fail(e);
-        }
-    }
+    let size_fd = match steer_console(terminal) {
+        Ok(fd) => fd,
+        Err(e) => return fail(e),
+    };
     #[cfg(unix)]
     {
         let reads = terminal.is_some_and(|t| t.stdin);
@@ -2539,6 +2568,18 @@ pub(crate) fn forward(home: &Path, context: &Context, args: Vec<OsString>) -> Ex
         };
         return fail(format!("{terminal}: {e}"));
     }
+    // A raw console's keys are read as its records, which carry its resizes too, and
+    // its ^Z, which Rust's reader of its text would take for the end of input.
+    #[cfg(windows)]
+    if terminal.is_some_and(|t| t.stdin)
+        && let Some(input) = crate::cli::terminal::ConsoleInput::new(move || {
+            if let Some(fd) = size_fd {
+                send_size(fd);
+            }
+        })
+    {
+        stdin = Box::new(input);
+    }
     let request = Request {
         args: bytes,
         env: env.clone(),
@@ -2570,6 +2611,13 @@ pub(crate) fn forward(home: &Path, context: &Context, args: Vec<OsString>) -> Ex
             }
         }
         *steered = Some(controls);
+        #[cfg(windows)]
+        {
+            drop(steered);
+            if let Some(fd) = size_fd {
+                send_size(fd);
+            }
+        }
     };
     // The ID of what it made, written to this client's `--cidfile` as it comes; one the file
     // cannot take fails the command as here, which there goes on no more.
@@ -2677,11 +2725,13 @@ fn step_there(
     identity: &Identity,
     context: &Context,
     argv: Vec<String>,
-    fds: &[std::os::fd::BorrowedFd<'_>],
+    fds: &[crate::cli::Stream<'_>],
 ) -> Result<(u8, Vec<u8>, Vec<u8>), String> {
     let what = argv.get(1).cloned().unwrap_or_default();
-    let owned = |fd: &std::os::fd::BorrowedFd<'_>| {
-        fd.try_clone_to_owned()
+    let owned = |stream: &crate::cli::Stream<'_>| {
+        stream
+            .fd()
+            .try_clone_to_owned()
             .map(fs::File::from)
             .map_err(|e| format!("the copy's pipe: {e}"))
     };

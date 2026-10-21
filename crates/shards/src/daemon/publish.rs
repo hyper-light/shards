@@ -627,7 +627,18 @@ mod tests {
     /// An IPv6 listener takes IPv6 alone: IPv4's connections are not its.
     #[test]
     fn ipv6_listeners_take_no_ipv4() {
-        let (_v6, port) = listen(SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 0), TCP).unwrap();
+        // A port below every ephemeral range, nothing of IPv4's on it as it is taken: an
+        // ephemeral one was another listener's on IPv4 meanwhile, or the connection's own
+        // (aarch64 CI 39291150299), which IPv6's listener does not keep from anyone.
+        let from = 1024 + u16::try_from(std::process::id() % 31_744).unwrap();
+        let (_v6, port) = (from..32_768)
+            .chain(1024..from)
+            .find_map(|port| {
+                let v6 = listen(SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), port), TCP).ok()?;
+                std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, port)).ok()?;
+                Some(v6)
+            })
+            .unwrap();
         assert!(std::net::TcpStream::connect((Ipv4Addr::LOCALHOST, port)).is_err());
         assert!(std::net::TcpStream::connect((Ipv6Addr::LOCALHOST, port)).is_ok());
     }
@@ -718,12 +729,19 @@ mod tests {
 
     /// A TCP port a server closed connections on first, its side in TIME_WAIT, binds
     /// again at once, as Go's net.Listen's does with its address reuse: a run after a
-    /// run publishes the same port.
+    /// run publishes the same port. The port is one below every system's ephemeral
+    /// range (Linux's 32768-60999; RFC 6335's 49152-65535, macOS's and Windows'), which
+    /// no connection made meanwhile is given as its own: an ephemeral one was, once,
+    /// between the close and the bind (two of this binary at once, 2026-10-19).
     #[test]
     fn tcp_ports_bind_again_after_their_connections_close() {
         use std::io::Read as _;
         let at = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0);
-        let (fd, port) = listen(at, TCP).unwrap();
+        let from = 1024 + u16::try_from(std::process::id() % 31_744).unwrap();
+        let (fd, port) = (from..32_768)
+            .chain(1024..from)
+            .find_map(|port| listen(SocketAddr::new(at.ip(), port), TCP).ok())
+            .unwrap();
         let listener = std::net::TcpListener::from(fd);
         listener.set_nonblocking(false).unwrap();
         let mut client = std::net::TcpStream::connect((Ipv4Addr::LOCALHOST, port)).unwrap();

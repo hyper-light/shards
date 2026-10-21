@@ -413,6 +413,8 @@ fn assemble(
         .ok_or("pmem regions overflow the address space")?;
     let (regions, end) = super::pmem_regions(config, pmem_at)?;
     let top = if regions.is_empty() { plug_end } else { end };
+    // Its writable layer after them (D190).
+    let (layer, top) = super::layer_layout(hosts.layer, top)?;
     // A GPU's window, at the first GiB boundary past all of that, as long as the renderer
     // says (D144): on macOS alone so far.
     #[cfg(not(hv = "hvf"))]
@@ -471,11 +473,15 @@ fn assemble(
             .ok_or("the PCI 64-bit window overflows the address space")?,
         None => top,
     };
-    // The swap window past all of that (D159), within the addresses the host can give.
-    let (swap_at, top) = super::swap_layout(config, top, ipa_reach()?)?;
+    // The swap window past all of that (D159), within the addresses the host can give, and
+    // each share's DAX window past it (D189).
+    let reach = ipa_reach()?;
+    let (swap_at, top) = super::swap_layout(config, top, reach)?;
+    let (windows, top) = super::share_windows(config, top, reach)?;
     let pmem: Vec<(u64, u64)> = regions
         .iter()
         .map(|(region, gpa)| (*gpa, region.len() as u64))
+        .chain(layer.iter().map(|(layer, gpa)| (*gpa, layer.len())))
         .collect();
     let ipa_bits = ipa_bits(top)?;
     let mpidrs: Vec<u64> = (0..config.vcpus).map(aarch64::mpidr).collect();
@@ -497,6 +503,9 @@ fn assemble(
         // `Machine` and `Running` drop after the VM.
         unsafe { vm.map_device_memory(region.host(), *gpa, region.len(), false) }
             .map_err(|e| e.to_string())?;
+    }
+    if let Some((l, gpa)) = &layer {
+        super::map_layer(&vm, l, *gpa)?;
     }
     let (hotplug, sizes) = super::hotplug_device(&vm, memory, config)?.unzip();
     let reporting = super::reporting_device(&vm, config);
@@ -588,7 +597,16 @@ fn assemble(
         .chain(swap_device)
         .chain(iommu_device)
         .collect();
-    let devices = super::virtio_devices(config, &regions, hosts, last, layout::VIRTIO_MMIO_MAX)?;
+    let devices = super::virtio_devices(
+        config,
+        &regions,
+        layer.as_ref(),
+        &windows,
+        Some(&vm),
+        hosts,
+        last,
+        layout::VIRTIO_MMIO_MAX,
+    )?;
     let iommu_at = iommu.is_some().then(|| devices.len() - 1);
     let mut bus = MmioBus::default();
     let mut virtio = Vec::with_capacity(devices.len());
@@ -621,6 +639,9 @@ fn assemble(
     let control = Arc::new(Control::default());
     if let Some(window) = swap {
         control.on_swap(window);
+    }
+    if let Some((l, gpa)) = layer {
+        control.on_layer(l, gpa);
     }
     if let Some(sizes) = sizes {
         control.on_hotplug(sizes);
@@ -697,7 +718,10 @@ fn assemble(
 pub fn build(cfg: &Config) -> Result<Machine, String> {
     let ram = ram_bytes(cfg.memory_mib)?;
     let mut config = super::machine_config(cfg)?;
-    let memory = Arc::new(super::guest_memory(&ram_ranges(ram)?, &config, plug_at(ram))?);
+    let layer = super::boot_layer(cfg)?;
+    config.layer_mib = layer.as_ref().map_or(0, |l| l.data_len() >> 20);
+    let ranges = ram_ranges(ram)?;
+    let memory = Arc::new(super::guest_memory(&ranges, &config, plug_at(ram))?);
     // The image is copied, not mapped: a mapped image stalled boots for up to 1 s
     // (platform-measurements M16). Where it and the initrd go, from its header and the
     // initrd's length: the initrd between the kernel, at the next 2 MiB, and the device
@@ -706,6 +730,8 @@ pub fn build(cfg: &Config) -> Result<Machine, String> {
         .map_err(|e| format!("{}: {e}", cfg.kernel.display()))?;
     let fdt_addr = layout::DRAM_BASE + ram - boot::FDT_MAX;
     let (kernel, span) = boot::plan_kernel(&kernel_file, ram).map_err(|e| e.to_string())?;
+    // On huge pages where its boot touches much (D29, PM M279).
+    super::boot_pages(&memory, &ranges, span.gpa..kernel.end)?;
     let mut pieces = vec![super::Piece {
         span,
         file: &kernel_file,
@@ -732,6 +758,7 @@ pub fn build(cfg: &Config) -> Result<Machine, String> {
             #[cfg(unix)]
             join_share: cfg.join_share,
             io: cfg.io_limit,
+            layer: layer.as_ref(),
         };
         let a = assemble(
             &memory,
@@ -747,6 +774,7 @@ pub fn build(cfg: &Config) -> Result<Machine, String> {
         a.vmgenid.write_new_id()?;
         Ok(a)
     })?;
+    super::huge_pages_when_init_runs(&a.control, &memory);
     debug!("kernel and initrd copied");
     // Its GPU's window as the guest sees it, which a snapshot keeps for a restore (D150).
     config.gpu = a.gpu_window;

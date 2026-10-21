@@ -73,6 +73,9 @@ pub(crate) struct Hosts<'a> {
     pub join_share: Option<&'static crate::devices::virtio::fs::Slot>,
     /// The microVM's I/O limits (D178), which its disks and shared directories charge.
     pub io: Option<&'static crate::devices::virtio::limit::Limiter>,
+    /// The run's writable layer (D190), where the machine has one: a boot's, or a
+    /// restore's, its head the snapshot's and its file system the restore's own copy.
+    pub layer: Option<&'a Arc<pmem::Layer>>,
 }
 
 /// A snapshot's vsock and network devices, and the restore's host sides for them, come
@@ -105,6 +108,19 @@ fn check_hosts(snap: &crate::snapshot::Snapshot, hosts: Hosts<'_>) -> Result<(),
             snap.config.shares,
             hosts.shares.len()
         ));
+    }
+    match (snap.config.layer_mib, hosts.layer) {
+        (0, Some(_)) => return Err("the snapshot has no writable layer for the restore's".into()),
+        (mib, None) if mib > 0 => {
+            return Err("the snapshot has a writable layer: give the restored VM its own copy of it".into());
+        }
+        (mib, Some(layer)) if layer.data_len() != mib << 20 => {
+            return Err(format!(
+                "a writable layer of {} bytes for a snapshot whose was {mib} MiB",
+                layer.data_len()
+            ));
+        }
+        _ => {}
     }
     match (snap.config.join, hosts.join) {
         (true, None) => return Err("the snapshot has a join disk: give the restored VM its own".into()),
@@ -142,6 +158,50 @@ fn pmem_regions(config: &crate::snapshot::MachineConfig, first: u64) -> Result<(
     Ok((regions, next))
 }
 
+/// A writable layer and the guest address its device is at (D190).
+#[cfg(hv)]
+type Placed = (Arc<pmem::Layer>, u64);
+
+/// Where the machine's writable layer goes (D190), if it has one: at the first GiB boundary
+/// at or past `top`, a section's start ([`pmem::SECTION`]), as its head is sized for; and
+/// the address past it, or `top` where it has none.
+#[cfg(hv)]
+fn layer_layout(layer: Option<&Arc<pmem::Layer>>, top: u64) -> Result<(Option<Placed>, u64), String> {
+    let Some(layer) = layer else {
+        return Ok((None, top));
+    };
+    const GIB: u64 = 1 << 30;
+    let overflow = || "the writable layer overflows the address space".to_string();
+    let at = top.checked_next_multiple_of(GIB).ok_or_else(overflow)?;
+    let end = at.checked_add(layer.len()).ok_or_else(overflow)?;
+    Ok((Some((layer.clone(), at)), end))
+}
+
+/// Maps the writable layer at `gpa` into `vm` (D190): its head and its file system, both
+/// writable by the guest; the layer is told where, and given the hypervisor's stage 2 to
+/// map its head back through ([`pmem::Layer::remap_head`]).
+#[cfg(hv)]
+fn map_layer(vm: &crate::hv::Vm, layer: &pmem::Layer, gpa: u64) -> Result<(), String> {
+    for (at, host, len) in layer.mappings(gpa)? {
+        // SAFETY: the layer outlives the VM: its device sits on the bus, which `Machine`
+        // and `Running` drop after the VM.
+        unsafe { vm.map_device_memory(host, at, len, true) }.map_err(|e| e.to_string())?;
+    }
+    layer.placed(gpa, Box::new(vm.stage2()));
+    Ok(())
+}
+
+/// The run's writable layer `cfg` boots with (D190): its file opened for writing, its head
+/// the VM's own memory.
+#[cfg(hv)]
+fn boot_layer(cfg: &Config) -> Result<Option<Arc<pmem::Layer>>, String> {
+    let Some(path) = &cfg.layer else {
+        return Ok(None);
+    };
+    let file = crate::platform::open_input(path, true).map_err(|e| format!("{}: {e}", path.display()))?;
+    Ok(Some(Arc::new(pmem::Layer::boot(file)?)))
+}
+
 /// The memory `config` may have plugged (D133), `(most, region)` in bytes: its
 /// `hotplug_mib`, whole blocks of [`mem::BLOCK`], and the region that holds it, whole
 /// blocks of Linux's memory ([`mem::ALIGN`]); none where it has none.
@@ -160,6 +220,68 @@ fn hotplug(config: &crate::snapshot::MachineConfig) -> Result<Option<(u64, u64)>
     }
     let region = most.checked_next_multiple_of(mem::ALIGN).ok_or_else(too_much)?;
     Ok(Some((most, region)))
+}
+
+/// A boot's guest RAM, `ranges`, on small pages but its kernel's image, `image`, whose whole
+/// huge pages the VMM writes as it copies it in: its kernel's boot touches other huge
+/// pages in part, which a huge page would hold resident whole (D29, PM M279). The rest
+/// goes on huge pages once its PID 1 runs ([`huge_pages_when_init_runs`]). Where the host
+/// puts every process's memory on huge pages (THP `always`), Firecracker's too, a boot's
+/// stays on them throughout: there small pages cost a boot more time than their memory
+/// saves against what its host gives every process (PM M279).
+#[cfg(hv)]
+fn boot_pages(
+    memory: &GuestMemory,
+    ranges: &[(u64, usize)],
+    image: std::ops::Range<u64>,
+) -> Result<(), String> {
+    let Some(huge) = crate::platform::advised_huge_page() else {
+        return Ok(());
+    };
+    if crate::platform::thp_always() {
+        return Ok(());
+    }
+    for &(gpa, len) in ranges {
+        memory
+            .small_pages(gpa, len)
+            .map_err(|e| format!("guest RAM: {e}"))?;
+    }
+    let huge = huge as u64;
+    let (start, end) = (image.start.next_multiple_of(huge), image.end / huge * huge);
+    if end > start {
+        let len = usize::try_from(end - start).map_err(|_| format!("a kernel of {} bytes", end - start))?;
+        memory
+            .huge_pages(start, len)
+            .map_err(|e| format!("guest RAM: {e}"))?;
+    }
+    Ok(())
+}
+
+/// Has a boot's guest RAM put on huge pages past its boot as its PID 1 first runs
+/// (`GuestMemory::huge_pages_past_boot`), on a thread of its own: the vCPU that says so
+/// goes on. SHARDS_THP_ADVICE=boot leaves it out, the boot's advice alone, for measuring
+/// what each buys (PM M279).
+#[cfg(hv)]
+fn huge_pages_when_init_runs(control: &crate::devices::control::Control, memory: &Arc<GuestMemory>) {
+    if crate::platform::advised_huge_page().is_none()
+        || crate::platform::thp_always()
+        || std::env::var_os("SHARDS_THP_ADVICE").is_some_and(|a| a == "boot")
+    {
+        return;
+    }
+    let memory = Arc::clone(memory);
+    control.on_init_started(Box::new(move || {
+        let spawned = std::thread::Builder::new()
+            .name("huge-pages".into())
+            .spawn(move || {
+                if let Err(e) = memory.huge_pages_past_boot() {
+                    crate::debug!("huge pages past its boot: {e}");
+                }
+            });
+        if let Err(e) = spawned {
+            crate::debug!("huge pages past its boot: {e}");
+        }
+    }));
 }
 
 /// Guest RAM of `ranges`, and the memory `config` may have plugged at `at`, withheld until
@@ -231,6 +353,18 @@ impl mem::Mapper for crate::hv::Stage2 {
     unsafe fn map(&self, host: *mut u8, gpa: u64, len: usize) -> Result<(), String> {
         // SAFETY: forwarded caller contract.
         unsafe { crate::hv::Stage2::map(self, host, gpa, len) }.map_err(|e| e.to_string())
+    }
+
+    fn unmap(&self, gpa: u64, len: usize) -> Result<(), String> {
+        crate::hv::Stage2::unmap(self, gpa, len).map_err(|e| e.to_string())
+    }
+}
+
+#[cfg(all(hv, unix))]
+impl crate::devices::virtio::fs::window::Stage2 for crate::hv::Stage2 {
+    unsafe fn map(&self, host: *mut u8, gpa: u64, len: usize, writable: bool) -> Result<(), String> {
+        // SAFETY: forwarded caller contract.
+        unsafe { crate::hv::Stage2::map_file(self, host, gpa, len, writable) }.map_err(|e| e.to_string())
     }
 
     fn unmap(&self, gpa: u64, len: usize) -> Result<(), String> {
@@ -312,6 +446,72 @@ fn swap_layout(
     Ok((Some((at, len)), end))
 }
 
+/// Each shared directory's DAX window (D189), its share's first and the join share's last:
+/// `(guest address, length)` of each, at a GiB boundary from `top` on, within `limit`; and
+/// where the last ends. None where `config` gives no window.
+#[cfg(hv)]
+fn share_windows(
+    config: &crate::snapshot::MachineConfig,
+    top: u64,
+    limit: u64,
+) -> Result<(Vec<(u64, u64)>, u64), String> {
+    const GIB: u64 = 1 << 30;
+    let count = config.shares as usize + usize::from(config.join_share);
+    if config.share_window_mib == 0 || count == 0 {
+        return Ok((Vec::new(), top));
+    }
+    let overflow = || {
+        format!(
+            "{count} DAX windows of {} MiB overflow the address space",
+            config.share_window_mib
+        )
+    };
+    let len = config
+        .share_window_mib
+        .checked_mul(1 << 20)
+        .ok_or_else(overflow)?;
+    // Whole 2 MiB ranges: what the guest maps a file's ranges in (fs/fuse/dax.c,
+    // FUSE_DAX_SZ), and the subsections it describes device memory's pages in
+    // (devm_memremap_pages, with SPARSEMEM_VMEMMAP).
+    if !len.is_multiple_of(pmem::ALIGN) {
+        return Err(format!(
+            "a DAX window of {} MiB: whole {} MiB",
+            config.share_window_mib,
+            pmem::ALIGN >> 20
+        ));
+    }
+    let mut windows = Vec::with_capacity(count);
+    let mut next = top;
+    for _ in 0..count {
+        let at = next.checked_next_multiple_of(GIB).ok_or_else(overflow)?;
+        next = at.checked_add(len).ok_or_else(overflow)?;
+        windows.push((at, len));
+    }
+    if next > limit {
+        return Err(overflow());
+    }
+    Ok((windows, next))
+}
+
+/// A share's DAX window (D189) at `(gpa, len)`: its host side reserved, and on KVM one
+/// memslot over it, as memory to plug's (`add_hotplug`), which each range its guest maps is
+/// placed in; on other hypervisors each range mapped at stage 2 as it is placed.
+#[cfg(all(hv, unix))]
+fn dax_window(
+    vm: Option<&crate::hv::Vm>,
+    (gpa, len): (u64, u64),
+) -> Result<Arc<crate::devices::virtio::fs::window::Window>, String> {
+    let vm = vm.ok_or("a DAX window with no VM to map it into")?;
+    let size = usize::try_from(len).map_err(|_| format!("a DAX window of {len} bytes"))?;
+    let window = crate::devices::virtio::fs::window::Window::new(gpa, len, |host| {
+        // SAFETY: the window's reservation stays mapped until the window drops, which its
+        // device holds, after the VM (`Machine` and `Running` drop the VM first).
+        let stage2 = unsafe { vm.add_hotplug(host, gpa, size) }.map_err(|e| e.to_string())?;
+        Ok(Box::new(stage2) as Box<dyn crate::devices::virtio::fs::window::Stage2>)
+    })?;
+    Ok(Arc::new(window))
+}
+
 /// The swap window of `layout` (D159), its head mapped through slots of its own, which the
 /// control page shares with its device; none where it has none.
 #[cfg(hv)]
@@ -342,15 +542,20 @@ fn reporting_device(
 
 /// `config`'s virtio devices in the guest's probe order, which each machine gives the
 /// next of its MMIO windows and interrupt lines: its disks, its join disk, its pmem
-/// `regions`, its vsock device, its network device, its shared directories, its join share,
+/// `regions`, its writable `layer` and where it is, its vsock device, its network device, its shared directories, its join share,
 /// and the machine's own devices, `last`: its GPU, its memory to plug, then its balloon (last of
 /// all: no other device's window moves for them); at most `max` of them. The devices share the regions:
 /// `regions`, made before the VM, holds them until after it on every early return, the
 /// hypervisor mapping them until its destroy.
 #[cfg(hv)]
+#[allow(clippy::too_many_arguments)]
 fn virtio_devices(
     config: &crate::snapshot::MachineConfig,
     regions: &[(Arc<pmem::Region>, u64)],
+    layer: Option<&Placed>,
+    // The shares' alone, which only Unix hosts have, and the VM their windows map into.
+    #[cfg_attr(not(unix), allow(unused_variables))] windows: &[(u64, u64)],
+    #[cfg_attr(not(unix), allow(unused_variables))] vm: Option<&crate::hv::Vm>,
     hosts: Hosts<'_>,
     last: Vec<Box<dyn crate::devices::virtio::VirtioDevice>>,
     max: u64,
@@ -358,6 +563,7 @@ fn virtio_devices(
     let slots = config.disks.len()
         + usize::from(config.join)
         + regions.len()
+        + usize::from(layer.is_some())
         + usize::from(config.vsock)
         + usize::from(config.net.is_some())
         + config.shares as usize
@@ -387,6 +593,11 @@ fn virtio_devices(
     for (region, gpa) in regions {
         devices.push(Box::new(pmem::Pmem::new(region.clone(), *gpa)));
     }
+    // Its writable layer, the pmem device after its files (D190), which init finds by its
+    // address (`control::LAYER`).
+    if let Some((layer, gpa)) = layer {
+        devices.push(Box::new(pmem::Pmem::layer(layer.clone(), *gpa)));
+    }
     if config.vsock {
         let host = hosts
             .vsock
@@ -410,8 +621,11 @@ fn virtio_devices(
             .get(i)
             .ok_or("the machine has a shared directory but no slot for it")?
             .clone();
+        let window = windows.get(i).map(|&w| dax_window(vm, w)).transpose()?;
         devices.push(Box::new(
-            crate::devices::virtio::fs::Fs::new(&format!("shards{i}"), slot)?.with_limit(hosts.io),
+            crate::devices::virtio::fs::Fs::new(&format!("shards{i}"), slot)?
+                .with_limit(hosts.io)
+                .with_window(window),
         ));
     }
     // Its join share, after them, which init mounts by its tag once a joiner brings
@@ -421,8 +635,14 @@ fn virtio_devices(
         let slot = hosts
             .join_share
             .ok_or("the machine has a join share but no slot for it")?;
+        let window = windows
+            .get(config.shares as usize)
+            .map(|&w| dax_window(vm, w))
+            .transpose()?;
         devices.push(Box::new(
-            crate::devices::virtio::fs::Fs::join(shards_abi::JOIN_SHARE_TAG, slot)?.with_limit(hosts.io),
+            crate::devices::virtio::fs::Fs::join(shards_abi::JOIN_SHARE_TAG, slot)?
+                .with_limit(hosts.io)
+                .with_window(window),
         ));
     }
     devices.extend(last);
@@ -502,6 +722,9 @@ fn machine_config(cfg: &Config) -> Result<crate::snapshot::MachineConfig, String
         // Its window's length, once the machine has its renderer (aarch64.rs `build`).
         gpu: None,
         swap_mib: cfg.swap_mib,
+        share_window_mib: cfg.share_window_mib,
+        // Its file system's length, once its layer is open (`boot_layer`).
+        layer_mib: 0,
     })
 }
 
@@ -588,6 +811,12 @@ pub struct Config {
     /// run's swap file mapped into it as it is given one; 0 for none. Hidden from the guest
     /// until its init shows it (`control::SHOW_SWAP`).
     pub swap_mib: u64,
+    /// A DAX window of this many MiB for each shared directory (D189): virtio-fs's cache, a
+    /// shared memory region its guest maps the files it reads into; 0 for none.
+    pub share_window_mib: u64,
+    /// The run's writable layer (D190): its ext4 file system's file, which the guest
+    /// writes, a pmem device after the pmem files.
+    pub layer: Option<PathBuf>,
     /// A PCI bus with test functions on it, QEMU's edu's identification and liveness
     /// registers (D153), at each of these places on bus 0, `(device, function)`: what
     /// tests read to show that the bus reaches the VMM. A machine with a PCI bus saves no
@@ -1319,6 +1548,8 @@ impl Config {
             reporting: false,
             gpu: false,
             swap_mib: 0,
+            share_window_mib: 0,
+            layer: None,
             pci_test: Vec::new(),
             vfio: Vec::new(),
         }
@@ -1362,6 +1593,15 @@ pub struct RestoreConfig {
     /// A copy of the run's swap a snapshot of a run kept (D176), the restore's own, mapped
     /// where its guest had it before any vCPU runs.
     pub swap: Option<std::fs::File>,
+    /// The restore's own file for the writable layer its snapshot kept (D190), which the
+    /// guest writes; one the snapshot has a layer needs. Empty, which the restore fills
+    /// with a copy of the layer of the generation it resumes; or a copy-on-write clone of
+    /// generation `layer_cloned`'s, taken as it is where that is the generation it resumes,
+    /// and filled as an empty one is where it is not.
+    pub layer: Option<PathBuf>,
+    /// The snapshot generation whose layer `layer` is a clone of, where its spawner made
+    /// one (APFS, btrfs, XFS).
+    pub layer_cloned: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -1384,6 +1624,8 @@ pub struct Save {
     pub state: std::fs::File,
     /// Where the run's swap goes (D159), where the machine maps one.
     pub swap: Option<std::fs::File>,
+    /// Where its writable layer's head and file system go (D190), where it has one.
+    pub layer: Option<(std::fs::File, std::fs::File)>,
     pub then: AfterSnapshot,
 }
 
@@ -1679,6 +1921,8 @@ mod tests {
             reporting: false,
             gpu: None,
             swap_mib: 0,
+            share_window_mib: 0,
+            layer_mib: 0,
         }
     }
 
@@ -1717,6 +1961,7 @@ mod tests {
             #[cfg(unix)]
             join_share: None,
             io: None,
+            layer: None,
         };
         let mac = Some([2, 0, 0, 0, 0, 1]);
         for (has_vsock, has_net) in [(false, false), (true, false), (false, true), (true, true)] {
@@ -1741,6 +1986,39 @@ mod tests {
 
     /// pmem regions go from the first address, each right after the one before; none
     /// leaves the first address their end; one past the address space is refused.
+    /// Each share's DAX window and the join share's (D189), at GiB boundaries from where
+    /// the machine's addresses end, whole 2 MiB ranges, within its address limit.
+    #[test]
+    fn share_windows_go_one_after_another() {
+        const GIB: u64 = 1 << 30;
+        let mut config = machine(false, None);
+        assert_eq!(
+            share_windows(&config, 5 * GIB, u64::MAX).unwrap(),
+            (Vec::new(), 5 * GIB)
+        );
+        config.shares = 2;
+        config.join_share = true;
+        assert_eq!(
+            share_windows(&config, 5 * GIB, u64::MAX).unwrap(),
+            (Vec::new(), 5 * GIB)
+        );
+        config.share_window_mib = 1536;
+        let (windows, end) = share_windows(&config, 5 * GIB + 1, u64::MAX).unwrap();
+        assert_eq!(
+            windows,
+            [
+                (6 * GIB, 1536 << 20),
+                (8 * GIB, 1536 << 20),
+                (10 * GIB, 1536 << 20)
+            ]
+        );
+        assert_eq!(end, 10 * GIB + (1536 << 20));
+        assert!(share_windows(&config, 5 * GIB + 1, end - 1).is_err());
+        assert!(share_windows(&config, 5 * GIB + 1, end).is_ok());
+        config.share_window_mib = 3;
+        assert!(share_windows(&config, 5 * GIB, u64::MAX).is_err());
+    }
+
     #[test]
     fn pmem_regions_go_one_after_another() {
         let dir = shards_testdir::TempDir::new("pmem-regions").unwrap();
@@ -1805,8 +2083,9 @@ mod tests {
             #[cfg(unix)]
             join_share: None,
             io: None,
+            layer: None,
         };
-        let e = virtio_devices(&config, &regions, hosts, Vec::new(), 4)
+        let e = virtio_devices(&config, &regions, None, &[], None, hosts, Vec::new(), 4)
             .err()
             .unwrap();
         assert_eq!(e, "at most 4 virtio devices are supported");
@@ -1814,17 +2093,17 @@ mod tests {
             let sizes = Arc::new(mem::Sizes::new(1 << 32, mem::ALIGN, mem::ALIGN));
             vec![Box::new(mem::Mem::new(sizes, Unmapped)) as Box<dyn crate::devices::virtio::VirtioDevice>]
         };
-        let e = virtio_devices(&config, &regions, hosts, plugging(), 5)
+        let e = virtio_devices(&config, &regions, None, &[], None, hosts, plugging(), 5)
             .err()
             .unwrap();
         assert_eq!(e, "at most 5 virtio devices are supported");
-        let ids: Vec<u32> = virtio_devices(&config, &regions, hosts, plugging(), 6)
+        let ids: Vec<u32> = virtio_devices(&config, &regions, None, &[], None, hosts, plugging(), 6)
             .unwrap()
             .iter()
             .map(|d| d.device_id())
             .collect();
         assert_eq!(ids, [2, 2, 27, 19, 1, mem::DEVICE_ID]);
-        let devices = virtio_devices(&config, &regions, hosts, Vec::new(), 5).unwrap();
+        let devices = virtio_devices(&config, &regions, None, &[], None, hosts, Vec::new(), 5).unwrap();
         let ids: Vec<u32> = devices.iter().map(|d| d.device_id()).collect();
         assert_eq!(ids, [2, 2, 27, 19, 1]);
         let mut mac = [0u8; 6];
@@ -1843,8 +2122,9 @@ mod tests {
             #[cfg(unix)]
             join_share: None,
             io: None,
+            layer: None,
         };
-        let e = virtio_devices(&config, &regions, missing, Vec::new(), 5)
+        let e = virtio_devices(&config, &regions, None, &[], None, missing, Vec::new(), 5)
             .err()
             .unwrap();
         assert!(e.contains("no host side"), "{e}");
@@ -1856,8 +2136,9 @@ mod tests {
             #[cfg(unix)]
             join_share: None,
             io: None,
+            layer: None,
         };
-        let e = virtio_devices(&config, &regions, missing, Vec::new(), 5)
+        let e = virtio_devices(&config, &regions, None, &[], None, missing, Vec::new(), 5)
             .err()
             .unwrap();
         assert!(e.contains("no network process"), "{e}");

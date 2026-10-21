@@ -610,8 +610,10 @@ impl Builder {
             // memory free (Documentation/admin-guide/mm/memory-hotplug.rst, "ZONE_MOVABLE
             // Sizing Considerations").
             // Real-time scheduling for a step that asks for it, as for a run (D155).
+            // Each step's /dev/shm half the memory the builder may have (D156), as a run's.
             format!(
-                "console=ttyS0 earlycon panic=-1 shards_build=1 memhp_default_state=online_kernel rt_group_sched=0 {}",
+                "console=ttyS0 earlycon panic=-1 shards_build=1 memhp_default_state=online_kernel rt_group_sched=0 shards_shm={} {}",
+                crate::run::shm_bytes(boot.memory_mib),
                 bridge.cmdline()
             )
             .into(),

@@ -155,6 +155,19 @@ fn pulled(
     } else {
         targets
     };
+    // What a refusal names: the platform asked, else the guest's own, level-less, as a
+    // script that reads it expects (`linux/amd64`, not the CPU's `linux/amd64/v3`).
+    let plain: Vec<Target> = guest
+        .iter()
+        .filter(|t| t.variant.is_empty())
+        .take(1)
+        .cloned()
+        .collect();
+    let named = if targets.is_empty() {
+        plain.as_slice()
+    } else {
+        targets
+    };
     // What it writes is recorded only at its end: no collection runs meanwhile.
     let _lease = store.lease()?;
     let top = registry
@@ -167,7 +180,7 @@ fn pulled(
         annotations: Default::default(),
         ..top.clone()
     };
-    // The attestations of the manifest chosen, as dockerd keeps them: provenance and SBOMs.
+    // The attestations of the manifest chosen, as dockerd keeps them (D100): provenance and SBOMs.
     let mut attestations: Vec<Descriptor> = Vec::new();
     let mut platforms: Vec<String> = Vec::new();
     let mut listed: Option<Index> = None;
@@ -195,7 +208,7 @@ fn pulled(
                     ErrorKind::NotFound,
                     format!(
                         "no matching manifest for {} in the manifest list entries: no match for platform in manifest: not found",
-                        pulling_for(choose)
+                        pulling_for(named)
                     ),
                 )
             })?;
@@ -301,7 +314,7 @@ fn pulled(
     contents.extend(attested?);
     // The record names what a lookup that asks no platform takes of what is here of the
     // index, the manifest pulled among it: a pull of another platform leaves this host's
-    // in its place, as dockerd's image keeps every platform pulled and prefers its host's.
+    // in its place, as dockerd's image keeps every platform pulled and prefers its host's (D22).
     let recorded = match &listed {
         Some(index) => preferred(store, index, &manifest_desc),
         None => manifest_desc.clone(),
@@ -348,7 +361,7 @@ pub fn fetch_untagged(
 
 /// What `reference` resolves to and its image's config for one of `targets`, fetched
 /// into `store` and checked as [`pull`] checks them, without a layer: what a build
-/// policy reads of an image before the build may load it, as BuildKit resolves an
+/// policy reads of an image before the build may load it, (D106), as BuildKit resolves an
 /// image's metadata.
 pub fn metadata(
     registry: &Registry,
@@ -514,7 +527,7 @@ fn build(
     }
 }
 
-/// A resolve's failure, as containerd's client reports it: after `failed to resolve
+/// A resolve's failure, as containerd's client reports it (D22): after `failed to resolve
 /// reference`, and a refused authorization after its resolver's words for one.
 fn resolving(e: Error, reference: &Reference) -> Error {
     let e = if e.kind() == ErrorKind::Unauthorized {
@@ -962,7 +975,7 @@ fn checked(
 ) -> Result<Checked, Error> {
     let config = oci::parse_config(config)?;
     let platform = platform_of(chosen, &config);
-    // Any, where no platform is asked: an image taken by its name, as dockerd takes one;
+    // Any, where no platform is asked: an image taken by its name, as dockerd takes one (D22);
     // and, where `lone_any`, a lone manifest whatever its platform, as dockerd pulls one
     // (Docker 29.3.1 pulled amd64's alpine manifest by its digest with `--platform
     // linux/arm64`). Else not found, as dockerd's lookup of the platform asked finds none.
@@ -1519,13 +1532,13 @@ mod tests {
             &|_| {},
         )
         .unwrap_err();
-        // dockerd's words, then containerd's (LimitManifests).
+        // dockerd's words, then containerd's (D22; LimitManifests).
         assert_eq!(e.kind(), ErrorKind::NotFound);
         assert_eq!(
             e.to_string(),
             "no matching manifest for linux/riscv64 in the manifest list entries: no match for platform in manifest: not found"
         );
-        // arm64 named as containerd's DefaultSpec names it on Linux: with its variant.
+        // arm64 named as containerd's DefaultSpec names it on Linux (D74): with its variant.
         let amd64 = fake(image("amd64", &[("a", b"a")], true), None);
         let reference =
             Reference::parse(&format!("127.0.0.1:{}/test/image:v1", amd64.registry.port)).unwrap();
@@ -1662,7 +1675,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// A manifest at the tag itself is said to be pulled before it is fetched, as dockerd
+    /// A manifest at the tag itself is said to be pulled before it is fetched, (D22), as dockerd
     /// says it of the first manifest it sees.
     #[test]
     fn a_tagged_manifest_is_said_to_be_pulled_before_it_is_fetched() {
@@ -1864,7 +1877,7 @@ mod tests {
             (&pulled.manifest, &pulled.config, &pulled.rootfs)
         );
         // Its index labelled it for this host's platform: a lookup for another finds none,
-        // in dockerd's words.
+        // in dockerd's words (D22).
         let e = local(&store, &reference, &riscv64(), &Limits::none()).unwrap_err();
         assert_eq!(e.kind(), ErrorKind::NotFound, "{e}");
         assert_eq!(
@@ -1938,7 +1951,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// An index's label outranks the platform its manifest's config names, as containerd
+    /// An index's label outranks the platform its manifest's config names, (D74), as containerd
     /// ranks them, when the image is found again too.
     #[test]
     fn an_index_label_decides_the_platform_of_a_stored_image_too() {
@@ -2027,7 +2040,7 @@ mod tests {
     }
 
     /// A push asks for push access to its repository and pull access to the one it
-    /// mounts from, as containerd's pusher scopes them; a blob there already is not sent,
+    /// mounts from, as containerd's pusher scopes them (D22); a blob there already is not sent,
     /// one another repository holds is mounted, and the manifest goes last, by its tag.
     #[test]
     fn pushes_ask_for_push_access_and_mount_what_they_can() {
@@ -2309,7 +2322,7 @@ mod tests {
             assert_eq!(found.config, pulled.config, "{targets:?}");
             assert!(found.rootfs.is_some(), "{targets:?}");
         }
-        // A build's base lookup takes it for arm64 too, as BuildKit's resolver does.
+        // A build's base lookup takes it for arm64 too, as BuildKit's resolver does (D74).
         let (tagged, shown) = (reference.to_string(), reference.familiar());
         let base = local_base(&store, &tagged, &shown, &arm64(), &Limits::none())
             .unwrap()
@@ -2359,7 +2372,7 @@ mod tests {
         }
         let e = local_tagged(&store, named, named, &linux("riscv64"), &Limits::none()).unwrap_err();
         assert_eq!(e.kind(), ErrorKind::NotFound, "{e}");
-        // None of its platforms here: none, in dockerd's words.
+        // None of its platforms here: none, in dockerd's words (D22).
         std::fs::remove_file(store.blob_path(&pulled.manifest)).unwrap();
         let e = local_tagged(&store, named, named, &[], &Limits::none()).unwrap_err();
         assert_eq!(e.kind(), ErrorKind::NotFound, "{e}");

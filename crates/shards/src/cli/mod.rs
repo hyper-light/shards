@@ -15,6 +15,8 @@ use shards_cmdline::flags::{self, Command, Outcome, Parsed};
 #[cfg(unix)]
 mod client;
 #[cfg(unix)]
+pub(crate) use client::{Stream, ask_here};
+#[cfg(unix)]
 pub(crate) mod cp;
 #[cfg(unix)]
 pub(crate) mod listing;
@@ -27,6 +29,7 @@ mod screens;
 #[cfg(unix)]
 mod show;
 pub(crate) mod terminal;
+pub(crate) mod terms;
 pub(crate) mod version;
 
 /// `docker run`'s status when it could not run the command at all.
@@ -57,9 +60,9 @@ pub fn main() -> ExitCode {
 }
 
 /// The commands shards has besides the catalog's: the daemon side's own words.
-/// `daemon` and `guest` are what `run daemon`, `stop daemon` and `configure guest` are
-/// said as, and how the client starts the daemon.
-const OWN: [&str; 24] = [
+/// `daemon`, `guest` and `disk` are what `run daemon`, `stop daemon`, `configure guest` and
+/// `configure disk` are said as, and `daemon` how the client starts the daemon.
+const OWN: [&str; 25] = [
     "system",
     // Contexts, and the clients and invitations of this machine's (D180).
     "context",
@@ -77,6 +80,7 @@ const OWN: [&str; 24] = [
     "mcp",
     "daemon",
     "guest",
+    "disk",
     "grants",
     "share",
     "frontend",
@@ -510,10 +514,12 @@ fn container(
         match resolved {
             Ok((daemon, identity, home)) => {
                 use std::os::fd::AsFd as _;
-                let mut fds: Vec<std::os::fd::BorrowedFd<'_>> = output.iter().map(save::Output::fd).collect();
+                // What the daemon writes, the command's output; what it reads, its input.
+                let mut fds: Vec<client::Stream<'_>> =
+                    output.iter().map(|o| client::Stream::To(o.fd())).collect();
                 match &input {
-                    Some(Some(file)) => fds.push(file.as_fd()),
-                    Some(None) => fds.push(stdin.as_fd()),
+                    Some(Some(file)) => fds.push(client::Stream::From(file.as_fd())),
+                    Some(None) => fds.push(client::Stream::From(stdin.as_fd())),
                     None => {}
                 }
                 let command_of = |argv: Vec<String>| shards_ipc::Command {

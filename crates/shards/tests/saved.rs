@@ -124,16 +124,58 @@ fn evidence(home: &Path, name: &str) -> String {
         );
         format!("{}{}", s.stdout.trim(), s.stderr.trim())
     };
+    // What its kernel does with memory, a second apart: swapping, reclaiming or stalled
+    // (vmstat's pswpin, pswpout and pgscan, the pressure it is under, its cgroup's events),
+    // and the host's, whose faults a guest's swap and restored memory take.
+    let memory = || {
+        let guest = shards_in(
+            home,
+            &[
+                "exec",
+                name,
+                "/bin/testguest",
+                "files",
+                "/proc/vmstat",
+                "/proc/meminfo",
+                "/proc/pressure/memory",
+                "@cgroup/memory.stat",
+                "@cgroup/memory.events",
+                "@cgroup/memory.pressure",
+            ],
+        );
+        let host: String = ["/proc/pressure/memory", "/proc/pressure/io", "/proc/meminfo"]
+            .iter()
+            .map(|p| format!("== host {p}\n{}", std::fs::read_to_string(p).unwrap_or_default()))
+            .collect();
+        format!("{}{}{host}", guest.stdout, guest.stderr)
+    };
     let first = stats();
+    let first_memory = memory();
     std::thread::sleep(Duration::from_secs(1));
     let second = stats();
+    let second_memory = memory();
+    // Where each of its processes waits, in its kernel (proc(5)'s stack: privileged).
+    let stacks = shards_in(
+        home,
+        &[
+            "exec",
+            "--privileged",
+            "-u",
+            "0",
+            name,
+            "/bin/testguest",
+            "stacks",
+        ],
+    );
     format!(
-        "its state: {}{}\nits processes:\n{}{}\nits use, a second apart: {first} | {second}\nits VM process's threads:\n{}\nthe daemon's log's end:\n{}",
+        "its state: {}{}\nits processes:\n{}{}\nits use, a second apart: {first} | {second}\nits VM process's threads:\n{}\nits processes' stacks:\n{}{}\nits memory:\n{first_memory}\na second later:\n{second_memory}\nthe daemon's log's end:\n{}",
         state.stdout,
         state.stderr,
         top.stdout,
         top.stderr,
         vm_threads(&state.stdout),
+        stacks.stdout,
+        stacks.stderr,
         tail.join("\n")
     )
 }
@@ -477,6 +519,70 @@ fn a_saved_microvm_writes_on_through_its_volume() {
     assert_eq!(shards(&["rm", "-f", "ghost"]).status, Some(0));
 }
 
+/// A microVM whose volume's DAX window holds a file mapped (D189) is saved and restored
+/// with its mappings (D176): its restore maps each range again from its new share process
+/// before its guest runs, and the guest reads the file on through the window, a byte the
+/// host wrote while it was saved among it.
+#[test]
+fn a_saved_microvm_reads_on_through_its_dax_window() {
+    if cannot_run_vms() || cannot_snapshot() {
+        return;
+    }
+    let (image, _) = served();
+    let home = TempDir::new("saved-dax");
+    let (kernel, init) = (kernel(), guest_init());
+    let env: [(&str, &OsStr); 4] = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", kernel.as_os_str()),
+        ("SHARDS_INIT", init.as_os_str()),
+        ("SHARDS_SHARE_WINDOW_MIB", "64".as_ref()),
+    ];
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let pulled = shards(&["pull", "-q", &image]);
+    assert_eq!(pulled.status, Some(0), "{pulled}");
+    let dir = TempDir::new("saved-dax-v");
+    let mut big: Vec<u8> = (0..8u32 << 20)
+        .map(|i| (i.wrapping_mul(2_654_435_761) >> 24) as u8)
+        .collect();
+    std::fs::write(dir.join("big"), &big).unwrap();
+    let volume = format!("{}:/v", dir.display());
+    let run = shards(&[
+        "run", "-d", "--pull", "never", "--name", "daxsave", "-u", "0", "-v", &volume, &image, "sleep",
+    ]);
+    assert_eq!(run.status, Some(0), "{run}");
+    let exec = |args: &[&str]| {
+        let mut all = vec!["exec", "daxsave", "/bin/testguest"];
+        all.extend_from_slice(args);
+        let r = shards(&all);
+        assert_eq!(r.status, Some(0), "{args:?}: {r}");
+        r.stdout
+    };
+    assert_eq!(exec(&["fs", "dax:/v/big"]), "dax /v/big yes\n");
+    let digest = |b: &[u8]| format!("digest /v/big {:016x}\n", shards_testguest::fnv1a(b));
+    // Read whole: every range of it mapped.
+    assert_eq!(exec(&["digest", "/v/big"]), digest(&big));
+    let saved = shards(&["save", "vm", "daxsave", "mapped"]);
+    assert_eq!(saved.stdout, "mapped\n", "{saved}");
+    let at = 3 << 20;
+    big[at] = big[at].wrapping_add(1);
+    {
+        use std::os::unix::fs::FileExt as _;
+        let file = std::fs::OpenOptions::new()
+            .write(true)
+            .open(dir.join("big"))
+            .unwrap();
+        file.write_all_at(&big[at..=at], at as u64).unwrap();
+    }
+    let restored = shards(&["restore", "vm", "daxsave", "mapped"]);
+    assert_eq!(restored.status, Some(0), "{restored}");
+    assert_eq!(
+        exec(&["fs", &format!("peek:/v/big:{at}")]),
+        format!("peek /v/big {at} {}\n", big[at])
+    );
+    assert_eq!(exec(&["digest", "/v/big"]), digest(&big));
+    assert_eq!(shards(&["rm", "-f", "daxsave"]).status, Some(0));
+}
+
 /// `shards logs NAME`'s stdout.
 fn logs(home: &Path, name: &str) -> String {
     let logs = shards_in(home, &["logs", name]);
@@ -491,7 +597,12 @@ fn counts(logs: &str) -> Vec<u64> {
 
 /// Waits until `done`, failing the test after TIMEOUT with what `said` says then.
 fn until(what: &str, done: &mut dyn FnMut() -> bool, said: &dyn Fn() -> String) {
-    let deadline = Instant::now() + TIMEOUT;
+    until_in(what, TIMEOUT, done, said);
+}
+
+/// As [`until`], within `within`.
+fn until_in(what: &str, within: Duration, done: &mut dyn FnMut() -> bool, said: &dyn Fn() -> String) {
+    let deadline = Instant::now() + within;
     while !done() {
         assert!(Instant::now() < deadline, "{what}: {}", said());
         std::thread::sleep(Duration::from_millis(50));
@@ -645,8 +756,21 @@ fn a_saved_microvm_keeps_what_it_swapped() {
     ]);
     assert_eq!(run.status, Some(0), "{run}");
     let log = || logs(&home, "swapped");
-    let said = || format!("{}\n{}", log(), evidence(&home, "swapped"));
-    until("its pattern kept", &mut || log().contains("kept 2\n"), &said);
+    // Its rounds' times, which say whether they slowed and when.
+    let said = || {
+        let timed = shards(&["logs", "--timestamps", "swapped"]);
+        format!("{}{}\n{}", timed.stdout, timed.stderr, evidence(&home, "swapped"))
+    };
+    // A round's time on this host, from its first to its second: what the rounds after the
+    // restore are waited for by (CI's x86_64 runners took 20 s a round, CI 39249195872).
+    until("its pattern kept", &mut || log().contains("kept 1\n"), &said);
+    let first = Instant::now();
+    until(
+        "its pattern kept again",
+        &mut || log().contains("kept 2\n"),
+        &said,
+    );
+    let round = first.elapsed();
     let saved = shards(&["save", "vm", "swapped", "full"]);
     assert_eq!(saved.status, Some(0), "{saved}\n{}", evidence(&home, "swapped"));
     let snapshot = home
@@ -665,9 +789,12 @@ fn a_saved_microvm_keeps_what_it_swapped() {
         "{restored}\n{}",
         evidence(&home, "swapped")
     );
-    until(
+    // The round the save cut short ends from what was restored, and the next reads all of
+    // it back so.
+    until_in(
         "its pattern kept after the restore",
-        &mut || log().matches("kept ").count() >= rounds + 3,
+        TIMEOUT + 2 * round,
+        &mut || log().matches("kept ").count() >= rounds + 2,
         &said,
     );
     assert!(!log().contains("lost"), "{}", log());

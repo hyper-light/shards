@@ -920,6 +920,8 @@ pub struct RunOp<'o> {
     pub proxy: Option<&'o super::proxy::Proxy>,
     /// Each input's key (D50), where it has one: what a cache mount's `from=` is keyed by.
     pub input_keys: &'o [Option<String>],
+    /// Its programs run under another CPU's emulator (D179).
+    pub emulated: bool,
 }
 
 /// A cache record a step holds (D114), until its changes are kept.
@@ -1535,6 +1537,7 @@ impl Exec<'_> {
             devices,
             // Its trust bundle holds the proxy's CA while it runs (InjectProxyCA).
             proxy_ca: proxy.map(|p| p.ca().to_vec()).unwrap_or_default(),
+            emulated: op.emulated,
         };
         let mut fs = (*root.fs).clone();
         fs.begin();

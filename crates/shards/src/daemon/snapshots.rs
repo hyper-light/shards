@@ -433,8 +433,12 @@ impl<D: Disk> Daemon<D> {
             args.push("--gpu".into());
         }
         let net = pinned.snapshot.config.net.map(|saved| mac.unwrap_or(saved));
+        // Its writable layer (D190): a clone of the save's, or a file it copies it into.
+        let layer = (pinned.snapshot.config.layer_mib > 0)
+            .then(|| super::layers::LayerFile::for_restore(&self.home, &pinned.path))
+            .transpose()?;
         drop(pinned);
-        self.start_for_run(threads, &args, net, parent)
+        self.start_for_run(threads, &args, net, parent, layer)
     }
 
     /// `shards list snapshots MICROVM` (D176): its snapshots, newest first, each one's name,
@@ -710,6 +714,10 @@ impl<D: Disk> Daemon<D> {
                 });
             }
             return Err(failed(&e));
+        }
+        // Stopped by its save, it is stopped in its record before the save is said done.
+        if !leave_running {
+            self.await_end(&id);
         }
         // moby's event for a checkpoint (daemon/checkpoint.go).
         self.container_event(&id, "checkpoint", &[]);

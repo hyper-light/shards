@@ -1109,15 +1109,11 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn a_helper_that_does_not_read_its_input_is_heard() {
-        use std::os::unix::fs::PermissionsExt;
         let bin = temp("deaf-helper");
-        let path = bin.join("docker-credential-deaf");
-        std::fs::write(
-            &path,
+        program(
+            &bin.join("docker-credential-deaf"),
             "#!/bin/sh\nexec 0<&-\necho '{\"ServerURL\":\"x\",\"Username\":\"u\",\"Secret\":\"s\"}'\n",
-        )
-        .unwrap();
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        );
         let dirs = format!("{}:/bin:/usr/bin", bin.display());
         let env = [("PATH", dirs.as_str())];
         let long = "k".repeat(1 << 20);
@@ -1388,19 +1384,15 @@ esac
     #[cfg(unix)]
     #[test]
     fn logins_go_to_the_credential_helper() {
-        use std::os::unix::fs::PermissionsExt as _;
         let dir = temp("store-helper");
         let log = dir.join("helper.log");
-        let helper = dir.join("docker-credential-shardstest");
-        std::fs::write(
-            &helper,
-            format!(
+        program(
+            &dir.join("docker-credential-shardstest"),
+            &format!(
                 "#!/bin/sh\nIFS= read -r line || true\nprintf '%s %s\\n' \"$1\" \"$line\" >> '{}'\n",
                 log.display()
             ),
-        )
-        .unwrap();
-        std::fs::set_permissions(&helper, std::fs::Permissions::from_mode(0o755)).unwrap();
+        );
         std::fs::write(dir.join("config.json"), r#"{"credsStore":"shardstest"}"#).unwrap();
         let mut vars: HashMap<String, String> = HashMap::new();
         vars.insert("DOCKER_CONFIG".into(), dir.to_string_lossy().into_owned());

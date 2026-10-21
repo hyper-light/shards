@@ -136,4 +136,8 @@ impl Running {
     pub fn wait(self) -> ExitReason {
         match self.0 {}
     }
+
+    pub fn wait_then(self, _free: impl FnOnce()) -> ExitReason {
+        match self.0 {}
+    }
 }

@@ -21,6 +21,8 @@ shards-netring = { path = "../netring" }
 
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true }
+# A share's server hands the VM process a file's descriptor for a DAX window (D189).
+shards-ipc = { path = "../ipc" }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 shards-syscall-filter = { path = "../syscall-filter" }

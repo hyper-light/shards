@@ -356,7 +356,16 @@ pub struct Prepared {
     pub shares: u32,
     /// The emulator its image's programs run under, where it is another CPU's (D179).
     pub emulator: Option<Emulated>,
+    /// What its writable layer holds, in bytes (D190): `--storage-opt size`, else
+    /// [`LAYER_HOLDS`].
+    pub layer: u64,
 }
+
+/// What a run's writable layer holds unless it asks for another size (D190,
+/// `--storage-opt size`): Docker's device-mapper driver's default for a container's base
+/// device, a block device's writable layer as a microVM's is (dockerd's `dm.basesize`,
+/// 10G).
+pub const LAYER_HOLDS: u64 = 10 << 30;
 
 /// The emulator a run of another CPU's image runs under (D179): the emulator image's root
 /// filesystem, one more of its microVM's devices, and the architecture its init registers
@@ -388,13 +397,22 @@ fn emulator_for(
 ) -> Result<Emulated, String> {
     let target = shards_image::platform::normalize(platform);
     let shown = format_all(&target.os, &target.architecture, &target.variant);
+    let name = || Reference::parse(&request.image).map_or_else(|_| request.image.clone(), |r| r.familiar());
+    // An amd64 level past the emulator's own runs nowhere here: its CPU lacks it, or the run
+    // would be native (PM M251: the emulator has none of v4's AVX-512).
+    if !shards_image::platform::emulator_runs(&target) {
+        return Err(format!(
+            "{}: an image of {shown}, built for CPUs with AVX-512, which neither this host's CPU nor its emulator has",
+            name()
+        ));
+    }
     let emulator = (target.os == "linux")
         .then(|| shards_abi::emulate::of(&target.architecture))
         .flatten()
         .ok_or_else(|| {
             format!(
                 "{}: an image of {shown}, which this host's microVMs neither run nor emulate",
-                Reference::parse(&request.image).map_or_else(|_| request.image.clone(), |r| r.familiar())
+                name()
             )
         })?;
     let store = crate::pull::store(home)?;
@@ -814,6 +832,7 @@ pub fn prepare(
         .unwrap_or_default();
     let labels = merge_labels(image_labels, &request.labels)?;
     Ok(Prepared {
+        layer: crate::setup::storage_size(request)?.unwrap_or(LAYER_HOLDS),
         agentfile,
         emulator,
         boot,
@@ -867,12 +886,13 @@ pub fn prepare(
 }
 
 /// A run's microVM's vCPUs, the memory it boots with and the most it may have in all, in
-/// MiB (D148). Without a memory limit, it boots as before and plugs memory as its workload
-/// asks, up to the host's memory, as a container without one may have. With one, it boots
-/// with what its limit needs, as before: the memory a guest reports is what it has, which
-/// runtimes size their heaps by (Node.js's V8 by its total, 259 MiB of a microVM booted
-/// small where `-m 8g` was asked, PM M220), until it reports what it may plug. Where the
-/// host's memory is not known, it plugs none.
+/// MiB (D148). Every run boots as one without a limit does and plugs memory as its
+/// workload asks: without a limit, up to the host's memory, as a container without one may
+/// have; with one, up to what its limit needs, which its cgroup holds it to (`memory.max`),
+/// never less than it boots with. So every limit's runs restore one template, and its guest
+/// reports what it may plug (D149), by which runtimes size their heaps as under Docker
+/// (Node.js's V8, PM M220, M221). Where the host's memory is not known, it plugs none, and
+/// a run with a limit boots with what its limit needs.
 pub fn sizes(resources: &shards_ipc::Resources, host: Option<u64>) -> (u32, u64, u64) {
     use shards_vmm::vm::MEMORY_MIB;
     let vcpus = crate::resources::vcpus(resources, crate::resources::host_cpus());
@@ -885,16 +905,30 @@ pub fn sizes(resources: &shards_ipc::Resources, host: Option<u64>) -> (u32, u64,
         m if m > 0 => m.saturating_add(i64::try_from(kernel).unwrap_or(i64::MAX)),
         m => m,
     };
-    let boot = crate::resources::memory_mib(limit, MEMORY_MIB, host, vcpus);
+    let needs = crate::resources::memory_mib(limit, MEMORY_MIB, host, vcpus);
+    let boot = crate::resources::memory_mib(0, MEMORY_MIB, host, vcpus);
     match host {
         Some(bytes) if resources.memory <= 0 => (vcpus, boot, ((bytes >> 20) & !1).max(boot)),
-        _ => (vcpus, boot, boot),
+        Some(_) => (vcpus, boot, needs.max(boot)),
+        None => (vcpus, needs, needs),
     }
 }
 
-/// The template a run of `rootfs` on `guest` with `cfg`'s shape restores: named by the
-/// SHA-256 of everything that goes into it, the snapshot format included.
-pub fn template(home: &Path, guest: &Guest, rootfs: &Path, cfg: &Config) -> PathBuf {
+/// The bytes of each /dev/shm of a microVM, its own and each run's alike (D156): half of
+/// `most_mib`, all the memory, in MiB, it may have, as Linux sizes a tmpfs by default
+/// (Documentation/filesystems/tmpfs.rst). What a browser's renderers and a data loader's
+/// workers share memory through, where Docker gives a container 64 MiB of its host's, which
+/// Playwright's docs and PyTorch's README tell its users to raise. Its guest is told them
+/// with each run (setup.rs, the `shm=` entry; a builder's on its kernel's command line,
+/// `shards_shm`), and `inspect` says them.
+pub fn shm_bytes(most_mib: u64) -> u64 {
+    most_mib.saturating_mul(1 << 19)
+}
+
+/// The template a run of `rootfs` on `guest` with `cfg`'s shape and a writable layer that
+/// holds `layer` bytes (D190) restores: named by the SHA-256 of everything that goes into
+/// it, the snapshot format included.
+pub fn template(home: &Path, guest: &Guest, rootfs: &Path, cfg: &Config, layer: u64) -> PathBuf {
     let key = format!(
         "snapshot format {}\nkernel {}\ninit {}\nrootfs {}\ncpus {}\nmemory {}\ncmdline {}\n{}",
         shards_vmm::snapshot::FORMAT,
@@ -909,7 +943,9 @@ pub fn template(home: &Path, guest: &Guest, rootfs: &Path, cfg: &Config) -> Path
         + &plug(cfg)
         + &swap(cfg)
         + gpu(cfg)
-        + JOIN_SHARE;
+        + JOIN_SHARE
+        + &share_window(cfg)
+        + &format!("layer {layer}\n");
     let hex: String = Sha256::digest(key.as_bytes())
         .iter()
         .map(|b| format!("{b:02x}"))
@@ -939,6 +975,14 @@ fn swap(cfg: &Config) -> String {
     match cfg.swap_mib {
         0 => String::new(),
         mib => format!("swap window {mib}\n"),
+    }
+}
+
+/// A template's shares' DAX windows (D189), in its key where it has them.
+fn share_window(cfg: &Config) -> String {
+    match cfg.share_window_mib {
+        0 => String::new(),
+        mib => format!("share window {mib}\n"),
     }
 }
 
@@ -1132,6 +1176,7 @@ fn compose(image: Option<&RunConfig>, asked: &Run) -> Result<Options, String> {
         hostname: asked.hostname.clone(),
         interactive: asked.interactive,
         tty: asked.tty.map(|(rows, cols)| shards_abi::run::Size { rows, cols }),
+        terms: asked.terms.clone(),
     })
 }
 

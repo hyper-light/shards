@@ -97,6 +97,8 @@ pub struct Vm {
     /// The MSIs routed to GSIs past the IOAPIC's, as the guest programmed its
     /// passed-through functions' (D154).
     routes: Arc<Mutex<Vec<MsiRoute>>>,
+    /// Held across each pulse's raise and lower, by whichever thread pulses ([`Irqs::pulse`]).
+    pulsing: Arc<Mutex<()>>,
     /// KVM's VFIO device, made as the first VFIO file is added ([`Vm::add_vfio_file`]).
     pub(super) vfio: OnceLock<sys::DeviceFd>,
 }
@@ -168,6 +170,7 @@ impl Vm {
             pre_fault,
             tsc_offsets,
             routes: Arc::new(Mutex::new(Vec::new())),
+            pulsing: Arc::new(Mutex::new(())),
             vfio: OnceLock::new(),
         })
     }
@@ -205,6 +208,7 @@ impl Vm {
         Irqs {
             fd: self.fd.clone(),
             routes: self.routes.clone(),
+            pulsing: self.pulsing.clone(),
         }
     }
 
@@ -306,6 +310,7 @@ impl Tsc {
 pub struct Irqs {
     fd: Arc<sys::VmFd>,
     routes: Arc<Mutex<Vec<MsiRoute>>>,
+    pulsing: Arc<Mutex<()>>,
 }
 
 impl Irqs {
@@ -313,11 +318,28 @@ impl Irqs {
         self.fd.irq_line(gsi, level).map_err(call("KVM_IRQ_LINE"))
     }
 
-    /// One edge on an edge-triggered pin: KVM coalesces a re-assertion that finds the
-    /// line still high, so it is raised and lowered (research doc §1.7).
+    /// One edge on an edge-triggered pin: KVM coalesces a raise that finds the pin's IRR
+    /// still set, an edge still pending (`ioapic_set_irq`), so it is raised and lowered
+    /// (research doc §1.7), and never while another thread's pulse is between its raise
+    /// and its lower. Every thread's raise is one source's to KVM (its userspace ID), and
+    /// a raise that landed there was dropped: a virtio device's two queues' workers each
+    /// told of a completion, the guest's handler woke at the first edge before the
+    /// second's completion was in its ring, and the guest, its event index set, never
+    /// heard of it, nor of any after (PM M272).
     pub fn pulse(&self, gsi: u32) -> Result<()> {
-        self.set(gsi, true)?;
-        self.set(gsi, false)
+        self.pulse_status(gsi).map(drop)
+    }
+
+    /// [`pulse`](Self::pulse), saying what KVM made of its raise
+    /// ([`sys::VmFd::irq_line_status`]).
+    fn pulse_status(&self, gsi: u32) -> Result<i32> {
+        let _one = crate::sync::lock(&self.pulsing);
+        let raised = self
+            .fd
+            .irq_line_status(gsi, true)
+            .map_err(call("KVM_IRQ_LINE_STATUS"))?;
+        self.set(gsi, false)?;
+        Ok(raised)
     }
 
     /// Delivers the MSI of `address` and `data`, as a function the VMM emulates sends it.
@@ -444,6 +466,51 @@ struct HeldTsc {
     deadline: Option<u64>,
 }
 
+/// What a LAPIC's registers (KVM_GET_LAPIC's, at their APIC offsets) hold of interrupts,
+/// for a debug log: its timer's mode and vector, and the vectors it has requested (IRR,
+/// 0x200) and is servicing (ISR, 0x100).
+fn apic_interrupts(lapic: &[u8]) -> String {
+    let reg = |at: usize| {
+        lapic
+            .get(at..at + 4)
+            .and_then(|b| <[u8; 4]>::try_from(b).ok())
+            .map_or(0, u32::from_le_bytes)
+    };
+    let vectors = |base: usize| -> Vec<u32> {
+        (0..8u32)
+            .flat_map(|i| {
+                let bits = reg(base + i as usize * 0x10);
+                (0..32u32)
+                    .filter(move |b| bits & (1 << b) != 0)
+                    .map(move |b| i * 32 + b)
+            })
+            .collect()
+    };
+    let lvtt = reg(0x320);
+    let mode = match (lvtt >> 17) & 3 {
+        0 => "one-shot",
+        1 => "periodic",
+        2 => "deadline",
+        _ => "reserved",
+    };
+    let masked = if lvtt & (1 << 16) != 0 { " masked" } else { "" };
+    format!(
+        "timer {mode} vector {:#x}{masked}, IRR {:x?}, ISR {:x?}",
+        lvtt & 0xff,
+        vectors(0x200),
+        vectors(0x100)
+    )
+}
+
+/// The interrupt KVM_GET_VCPU_EVENTS says was injected and not yet delivered, if any
+/// (kvm_vcpu_events' `interrupt`, after its 8-byte `exception`).
+fn event_interrupt(events: &[u8]) -> String {
+    match (events.get(8), events.get(9)) {
+        (Some(&injected), Some(&nr)) if injected != 0 => format!("interrupt {nr:#x} injected"),
+        _ => "no interrupt injected".into(),
+    }
+}
+
 /// IA32_TSC_DEADLINE, restored after IA32_TSC: KVM arms the deadline against the TSC, so
 /// in the other order a timer could fire at the wrong time or not at all (as Firecracker's
 /// DEFERRED_MSRS notes; arch/x86/kvm/lapic.c).
@@ -456,8 +523,17 @@ const TSC_KHZ_TOLERANCE_PPM: u64 = 250;
 
 impl Vcpu {
     /// Captures the vCPU's state, in the order Firecracker's comments give: MP state first,
-    /// since reading it may change the LAPIC's, and the events last. Call on the vCPU's
-    /// thread, with the vCPU out of the guest and every other stopped.
+    /// since reading it may change the LAPIC's, and the events last; but the LAPIC after the
+    /// MSRs. Each of these ioctls loads the vCPU, and one that loads it on another host CPU
+    /// than it last ran on restarts its hypervisor timer (Intel's VMX preemption timer),
+    /// which, its deadline past, injects the timer's interrupt there and then, posted, and
+    /// clears the deadline (arch/x86/kvm/x86.c, kvm_arch_vcpu_load; lapic.c,
+    /// kvm_lapic_restart_hv_timer, apic_timer_expired). Read after IA32_TSC_DEADLINE, the
+    /// LAPIC holds an interrupt so injected, KVM_GET_LAPIC folding the posted ones into its
+    /// IRR (kvm_vcpu_ioctl_get_lapic); or the deadline was read before it was cleared, and
+    /// its restore fires it again. Read before, an interrupt injected between the two was
+    /// in neither, and the guest waited for that CPU's timer for ever (PM M280). Call on
+    /// the vCPU's thread, with the vCPU out of the guest and every other stopped.
     pub fn save_state(&self) -> Result<VcpuState> {
         let fd = &self.fd;
         let mp_state = fd.get_mp_state().map_err(call("KVM_GET_MP_STATE"))?;
@@ -471,7 +547,6 @@ impl Vcpu {
         };
         let xcrs = get(sys::KVM_GET_XCRS, sys::XCRS_SIZE, "KVM_GET_XCRS")?;
         let debugregs = get(sys::KVM_GET_DEBUGREGS, sys::DEBUGREGS_SIZE, "KVM_GET_DEBUGREGS")?;
-        let lapic = get(sys::KVM_GET_LAPIC, sys::LAPIC_SIZE, "KVM_GET_LAPIC")?;
         let tsc_khz = fd.tsc_khz().map_err(call("KVM_GET_TSC_KHZ"))?;
         let tsc_offset = if self.tsc_offsets {
             Some(fd.tsc_offset().map_err(call("KVM_GET_DEVICE_ATTR"))?)
@@ -479,6 +554,7 @@ impl Vcpu {
             None
         };
         let msrs = self.save_msrs()?;
+        let lapic = get(sys::KVM_GET_LAPIC, sys::LAPIC_SIZE, "KVM_GET_LAPIC")?;
         let events = get(
             sys::KVM_GET_VCPU_EVENTS,
             sys::VCPU_EVENTS_SIZE,
@@ -526,10 +602,30 @@ impl Vcpu {
         self.fd
             .set_tsc_offset(held.offset.wrapping_add(delta))
             .map_err(call("KVM_SET_DEVICE_ATTR"))?;
-        match held.deadline {
+        let armed = match held.deadline {
             Some(deadline) => self.set_msrs(&[(MSR_IA32_TSC_DEADLINE, deadline)]),
             None => Ok(()),
+        };
+        // What KVM holds of it as it resumes: its TSC, and the deadline it armed.
+        if crate::log::enabled(crate::log::Level::Debug) {
+            let now = self
+                .fd
+                .get_msrs(&[MSR_IA32_TSC, MSR_IA32_TSC_DEADLINE])
+                .unwrap_or_default();
+            let apic = self
+                .fd
+                .get_state(sys::KVM_GET_LAPIC, sys::LAPIC_SIZE)
+                .map(|lapic| apic_interrupts(&lapic))
+                .unwrap_or_default();
+            crate::debug!(
+                "{}: TSC resumed at offset {:#x}, its deadline {:?} held; KVM's TSC and deadline now {:x?}, its LAPIC {apic}",
+                std::thread::current().name().unwrap_or("vCPU"),
+                held.offset.wrapping_add(delta),
+                held.deadline,
+                now
+            );
         }
+        armed
     }
 
     /// Every MSR in KVM's list that it reads for this vCPU. KVM stops at the first it
@@ -559,7 +655,7 @@ impl Vcpu {
     /// each vCPU's TSC where its own capture found it, apart from the others' by however
     /// far apart the captures were (arch/x86/kvm/x86.c, kvm_synchronize_tsc).
     pub fn restore_state(&mut self, st: &VcpuState) -> Result<()> {
-        if st.cpuid != self.cpuid {
+        if !same_cpu(&st.cpuid, &self.cpuid) {
             return Err(Error::Guest(
                 "this CPU is not the one the snapshot was taken on (its CPUID differs)".into(),
             ));
@@ -570,6 +666,17 @@ impl Vcpu {
                 st.xsave.len(),
                 self.xsave_size
             )));
+        }
+        if crate::log::enabled(crate::log::Level::Debug) {
+            let deadline = st.msrs.iter().find(|&&(index, _)| index == MSR_IA32_TSC_DEADLINE);
+            crate::debug!(
+                "{}: restoring mp state {}, {}, events {}, deadline {:x?}",
+                std::thread::current().name().unwrap_or("vCPU"),
+                st.mp_state,
+                apic_interrupts(&st.lapic),
+                event_interrupt(&st.events),
+                deadline.map(|&(_, v)| v)
+            );
         }
         let fd = &self.fd;
         let set =
@@ -704,9 +811,77 @@ impl Vcpu {
     }
 }
 
+/// Whether two vCPUs' CPUID tables are one CPU's, as a snapshot asks of the vCPU it is
+/// restored to: every leaf alike but those that describe the caches (leaf 4, 0x8000_0005,
+/// 0x8000_0006 and 0x8000_001D). KVM fills those from the core its ioctl ran on, and on a
+/// hybrid host a performance core's and an efficiency core's differ (an i9-14900HX's L1 and
+/// L2, PM M258): a template made on one was refused on the other, so that every restore
+/// across them failed. They gate no instruction, and a vCPU's thread runs on either kind
+/// as the host schedules it, under the one table it was given.
+fn same_cpu(a: &[[u32; 7]], b: &[[u32; 7]]) -> bool {
+    let kept = |leaves: &[[u32; 7]]| -> Vec<[u32; 7]> {
+        leaves
+            .iter()
+            .filter(|l| !matches!(l[0], 4 | 0x8000_0005 | 0x8000_0006 | 0x8000_001d))
+            .copied()
+            .collect()
+    };
+    kept(a) == kept(b)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Two cores of a hybrid host, as KVM described them (PM M258): their caches differ,
+    /// and nothing else of what a vCPU is given; a feature that differs is another CPU.
+    #[test]
+    fn a_hybrid_hosts_cores_are_one_cpu_but_their_features_are_not() {
+        let performance = [
+            [1, 0, 0, 0x000b_0671, 0x0080_0800, 0xf7fa_3223, 0x0f8b_fbff],
+            [4, 0, 1, 0xfc00_4121, 0x02c0_003f, 0x0000_003f, 0],
+            [4, 2, 1, 0xfc01_c143, 0x03c0_003f, 0x0000_07ff, 0],
+            [7, 0, 1, 0, 0x239c_27eb, 0x9840_0784, 0xbc18_4410],
+            [0x8000_0006, 0, 0, 0, 0, 0x0800_7040, 0],
+        ];
+        let mut efficiency = performance;
+        efficiency[1] = [4, 0, 1, 0xfc00_4121, 0x01c0_003f, 0x0000_003f, 0];
+        efficiency[2] = [4, 2, 1, 0xfc01_c143, 0x03c0_003f, 0x0000_0fff, 0];
+        efficiency[4] = [0x8000_0006, 0, 0, 0, 0, 0x1000_8040, 0];
+        assert!(same_cpu(&performance, &efficiency));
+        let mut fewer = performance;
+        fewer[3][4] &= !(1 << 5);
+        assert!(!same_cpu(&performance, &fewer), "a feature less is another CPU");
+    }
+
+    /// Two threads' pulses on one pin are an edge each (PM M272): on a pin past the
+    /// legacy ones, which only the IOAPIC has, masked as at reset, KVM holds each raise
+    /// (below 0) and would call one that found another still up coalesced (0).
+    #[test]
+    fn two_threads_pulses_are_never_coalesced() {
+        if super::super::check_host().is_err() {
+            eprintln!("SKIP: no KVM here");
+            return;
+        }
+        let vm = Vm::new(VmConfig { vcpus: 1 }).unwrap();
+        let irqs = vm.irqs();
+        const GSI: u32 = 20;
+        let coalesced = std::sync::atomic::AtomicUsize::new(0);
+        std::thread::scope(|s| {
+            for _ in 0..2 {
+                s.spawn(|| {
+                    for _ in 0..20_000 {
+                        let raised = irqs.pulse_status(GSI).unwrap();
+                        assert!(raised <= 0, "a masked pin delivered: {raised}");
+                        if raised == 0 {
+                            coalesced.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        }
+                    }
+                });
+            }
+        });
+        assert_eq!(coalesced.into_inner(), 0);
+    }
 
     /// Guests are permitted AMX's tile data exactly where the host has it, once the
     /// process asks (review 1.10); where Linux knows no such request, nothing is asked.

@@ -45,13 +45,14 @@ Reviewed feature by feature, each D-entry's design against what it took from Doc
 - `--cidfile`'s refusal says "container ID file found, make sure the other container isn't
   running": Docker's words for a microVM's ID, and on a terminal too. Now a terminal shows
   shards' words in a panel; piped, a `docker` script's. Fixed.
-- A Windows client polls its console's size every 250 ms (D180 part 2b, context.rs
+- A Windows client polled its console's size every 250 ms (D180 part 2b, context.rs
   `steer_console`), docker/cli's interval, never measured; a console reports its own
-  resizes as input events (WINDOW_BUFFER_SIZE_EVENT), which need no polling. Open: the
-  events come among its input records, which the stdin pump reads as bytes, so the pump
-  must read records (ReadConsoleInputW, keys as the VT input mode gives them, sizes as
-  they come); verifiable only on Windows, on a pseudo console resized by its test
-  (ResizePseudoConsole).
+  resizes as input events (WINDOW_BUFFER_SIZE_EVENT), which need no polling. Now its stdin
+  is read as the console's records (cli/terminal.rs `ConsoleInput`, ReadConsoleInputW):
+  keys as the VT input mode gives them, ^Z among them, and each resize as it comes; the
+  250 ms look stays only where a resize leaves no record (a window within a larger
+  buffer) or stdin is not the console. Held on a pseudo console its test resizes
+  (ResizePseudoConsole), on CI's Windows runner. Fixed.
 - The default network said it has a bridge named `docker0`
   (`com.docker.network.bridge.name`, daemon/networks.rs), which shards has none of, and a
   network's bridge name was checked against Linux's 15-byte interface names and against
@@ -108,15 +109,75 @@ Reviewed feature by feature, each D-entry's design against what it took from Doc
   - (Not one: the design said layers download 3 at a time, dockerd's default; the
     fetcher has been measured and adaptive since PM M114, four connections doubling to
     sixteen while they gain, large layers split into ranges. The design is corrected.)
-  - The build cache's collection policy is dockerd's default GC policy: what a cache of
-    this host's disk and its builds' reuse keeps, measured as builds hit and miss.
-  - A log keeps 5 segments of 20 MiB, Docker's `local` driver's: what a run's output
-    costs the host per byte kept, against the disk the home has.
+  - (Decided by the user, 2026-10-18, and built, D186: the build cache's collection keeps
+    dockerd's 10% reserve, 80% most and 20% free as its defaults, each the user's to set
+    with `shards configure disk`; each now exactly that share of the disk, where dockerd's
+    arithmetic, which shards had taken, kept 9.3%, 74.5% and 18.6%.)
+  - A terminal run's `TERM=xterm`, dockerd's value: open. The client's own terminal type,
+    where the image's terminfo has it, would serve its programs better (colours, keys);
+    xterm where it has not.
+  - A download that stops without progress fails after three (containerd's
+    `httpReadSeeker`'s count): open, to derive from what a stalling server costs.
+  - Splunk's batch of 1,000 events (moby's default): open, to derive from what a batch costs
+    the daemon and the collector.
+  - A log's non-blocking queue of 1,000,000 bytes where `max-buffer-size` gives none (moby's
+    ring logger's): open, to derive from what a run's output costs the host to hold.
+  - A long line cut into parts of 16 KiB for the drivers that send a log away (moby's copier's
+    size): open. It is what receivers that join Docker's parts expect, so it stays until a
+    receiver-led size is measured.
+  - A registry's request tried 5 times, 50 ms apart, and a 500, 502, 503 or 504 tried again
+    only once unless it changes (containerd's `maxAttempts` and pause, crates/registry
+    `ATTEMPTS`, `PAUSE`): open. Docker Hub's token server answered 502 twice within the
+    pause and a CI build failed (job 117733752147, 2026-10-18). To derive from how long a
+    registry's 5xx last, measured.
+  - A builder's ceiling of half the host's memory (Docker Desktop's VM's share, which
+    `builder_memory_mib` took): open. Its memory is plugged as its build needs it (D133),
+    so the ceiling can come from what the host can give as the build asks, measured.
+  - A restart's wait (100 ms doubling to a minute, from scratch after a run of 10 s), dockerd's
+    restart manager's figures: open, to derive from what a microVM's restart costs, so that
+    a crash loop's restarts take a bounded share of a core.
+  - A daemon's shutdown ends a VM whose command outlives its stop timeout by 5 s (dockerd's
+    `ShutdownTimeout` grace): open, to derive from how long a guest takes to say a killed
+    command's end, measured.
+  - The build cache's other rules are still dockerd's, open: the temporary share of the
+    reserve (e·π·φ %, 512 MB at least) that what is easiest to make again may take, the
+    ages at which records go (two days for those, 60 for any), and 2 GB reserved where the
+    disk cannot be read. Each to derive from what remaking a record of each kind costs a
+    microVM build, measured.
+  - (Decided by the user, 2026-10-18, and built, D186: a log keeps at most 1 GiB of its
+    run's newest output by default, where it kept Docker's `local` driver's 5 segments of
+    20 MiB, and the user sets it with `shards configure disk --log-history`.)
   - (Fixed: a fresh volume's top where its image has nothing at the mount point was
     root's, 0755, as Docker's local driver leaves one, which shut a run of any other user
     out of the volume it was given. Now the run's user's (D38), measured first: of the
     official images that run as other than root, one met it, percona's declared
     `/var/log/mysql`, and none other changes (PM M249).)
+  - Found in the code's constants (2026-10-18): what a microVM needs, then the figure of
+    Docker's machinery a constant took for it, none a contract its clients read. Open, each
+    a measurement or a design first.
+    - A microVM's /dev/shm is its own kernel's tmpfs, bounded by the microVM's memory alone,
+      and what agents run share memory through it: a browser's renderers, a data loader's
+      workers (Playwright's docs and PyTorch's README tell containers' users to raise it).
+      The microVM's holds half its memory, as Linux sizes a tmpfs (tmpfs.rst); each run's
+      own was 64 MiB, dockerd's `DefaultShmSize`. Done: every /dev/shm of a microVM, each
+      run's and each build step's, is half the memory it may have (D156).
+    - A command's terminal was told TERM=xterm, dockerd's, 8 colours, whatever its client's
+      terminal was. Done: its client's type where its root describes it, else
+      xterm-256color where the client's terminal speaks it, else xterm (D16, PM M263).
+    - What happened to a home's microVMs, for `events --since`: the last 256 events,
+      dockerd's `eventsLimit`, gone with the daemon. Done: a journal in the home, its
+      history a log's, `configure disk --events-history` (D187).
+    - A microVM's image pushed: 5 blobs at once, dockerd's `max-concurrent-uploads`, where a
+      pull's fetcher measures and adapts (PM M114). To adapt as the fetcher does, measured.
+    - A microVM whose command outlives its SIGKILL: its VM ended 10 s later, and a signal
+      that could not be sent waited out 2 s, moby's kill.go and stop.go. To derive from how
+      long a guest takes to say a killed command's end, with the shutdown's 5 s above.
+    - A microVM paused: its cgroup waited for 10 s to say it is frozen, runc's `waitFrozen`.
+      To derive from how long a freeze takes a busy microVM, measured.
+    - A builder's cache mount whose records are all held: its taker looks again every
+      100 ms, BuildKit's mount.go, a timer where the lock's release could wake it.
+    - A builder's cache collected: at most once a minute, BuildKit's controller. To derive
+      from what a collection costs, measured.
 - The rest: open, D-entry by D-entry.
 
 ## Fixing order

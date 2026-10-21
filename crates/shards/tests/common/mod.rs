@@ -49,6 +49,22 @@ pub fn spawn(command: &mut std::process::Command) -> io::Result<std::process::Ch
     }
 }
 
+/// The program `text` at `path`, written by a process of its own: a file this one held open
+/// to write, a child another test's thread forked meanwhile would hold until it execs, and
+/// an exec of it, by this process or any other, would fail with ETXTBSY until then (Linux).
+#[cfg(unix)]
+pub fn program(path: &Path, text: &str) {
+    let mut writer = Command::new("/bin/sh")
+        .arg("-c")
+        .arg(r#"cat > "$0" && chmod 755 "$0""#)
+        .arg(path)
+        .stdin(Stdio::piped())
+        .spawn()
+        .unwrap();
+    writer.stdin.take().unwrap().write_all(text.as_bytes()).unwrap();
+    assert!(writer.wait().unwrap().success(), "{} not written", path.display());
+}
+
 pub fn workspace() -> PathBuf {
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
@@ -255,14 +271,14 @@ pub fn kvm_kernel() -> Option<&'static Path> {
         let pinned = match ARCH {
             _ if cfg!(windows) => return None,
             "aarch64" => Artifact {
-                name: "Image-6.18.48-aarch64-kvm-a6cbab8c9218",
-                url: "https://github.com/hyper-light/shards/releases/download/kernel-6.18.48-a6cbab8c9218/Image-6.18.48-aarch64-kvm",
-                sha256: "9f4f21d0f27fb5ade9f9868ade6e34ed56acd2ea1313490be693cfdfca0050df",
+                name: "Image-6.18.48-aarch64-kvm-426ba771634e",
+                url: "https://github.com/hyper-light/shards/releases/download/kernel-6.18.48-426ba771634e/Image-6.18.48-aarch64-kvm",
+                sha256: "08d0448b2db8ed9194776863244e09faeb0c2b2be6ef5b62c232c5a2435eb256",
             },
             "x86_64" => Artifact {
-                name: "vmlinux-6.18.48-x86_64-kvm-a6cbab8c9218",
-                url: "https://github.com/hyper-light/shards/releases/download/kernel-6.18.48-a6cbab8c9218/vmlinux-6.18.48-x86_64-kvm",
-                sha256: "c37b04b1c3b4f4f9062489931de7392f983ed11c6d5556626cf899f73b1dd7f9",
+                name: "vmlinux-6.18.48-x86_64-kvm-426ba771634e",
+                url: "https://github.com/hyper-light/shards/releases/download/kernel-6.18.48-426ba771634e/vmlinux-6.18.48-x86_64-kvm",
+                sha256: "0e986fdc01a8627235d9613d7f39de98b04ee9b899713b2bbea64efd84d5a9ad",
             },
             _ => return None,
         };
@@ -489,19 +505,17 @@ fn carried() -> PathBuf {
     PathBuf::from(env!("SHARDS_HELPERS_CARRIED"))
 }
 
-/// Waits until no daemon listens in `home`: a daemon killed accepts connections until
-/// its listening socket closes, which may be after a client sees its own connection
-/// close, as the kernel closes the dead process's descriptors one by one. A client that
-/// connects meanwhile hears the daemon hang up.
+/// Waits until no daemon serves `home`'s slots: a daemon killed holds its lists until the
+/// kernel has closed all its descriptors, which may be after a client sees its own slot
+/// end, as the kernel closes the dead process's descriptors one by one.
 #[cfg(unix)]
 pub fn until_unserved(home: &Path) {
-    let socket = home.join("daemon.sock");
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-    while std::os::unix::net::UnixStream::connect(&socket).is_ok() {
+    while shards_ipc::slots::served(home) {
         assert!(
             std::time::Instant::now() < deadline,
             "{} is still served",
-            socket.display()
+            home.display()
         );
         std::thread::sleep(std::time::Duration::from_millis(5));
     }
@@ -1754,6 +1768,40 @@ pub fn served_variant(variant: &[u8]) -> String {
     let (manifest, blobs) = test_image_with(Some(variant));
     let (port, _) = registry(manifest, blobs);
     format!("127.0.0.1:{port}/test/image:v1")
+}
+
+/// A static program for `arch` (`amd64` or `arm64`) that does nothing but meet an
+/// undefined instruction (x86-64's `ud2`, AArch64's `udf #0`): it dies of SIGILL, a fault,
+/// natively or emulated alike. One ELF64 program header loads the file whole.
+pub fn crashing_program(arch: &str) -> Vec<u8> {
+    let (machine, code): (u16, &[u8]) = match arch {
+        "amd64" => (0x3e, &[0x0f, 0x0b]),
+        "arm64" => (0xb7, &[0, 0, 0, 0]),
+        other => panic!("no crashing program for {other}"),
+    };
+    let base: u64 = 0x40_0000;
+    let entry: u64 = 0x78;
+    let total = entry + code.len() as u64;
+    let mut elf = b"\x7fELF\x02\x01\x01\x00".to_vec();
+    elf.extend_from_slice(&[0; 8]);
+    elf.extend_from_slice(&2u16.to_le_bytes());
+    elf.extend_from_slice(&machine.to_le_bytes());
+    elf.extend_from_slice(&1u32.to_le_bytes());
+    for word in [base + entry, 0x40, 0] {
+        elf.extend_from_slice(&word.to_le_bytes());
+    }
+    elf.extend_from_slice(&0u32.to_le_bytes());
+    for half in [0x40u16, 0x38, 1, 0, 0, 0] {
+        elf.extend_from_slice(&half.to_le_bytes());
+    }
+    // PT_LOAD, readable and executable: the file at `base`.
+    elf.extend_from_slice(&1u32.to_le_bytes());
+    elf.extend_from_slice(&5u32.to_le_bytes());
+    for word in [0, base, base, total, total, 0x1000] {
+        elf.extend_from_slice(&word.to_le_bytes());
+    }
+    elf.extend_from_slice(code);
+    elf
 }
 
 /// Serves the test image at `127.0.0.1:<port>/test/image:v1`.

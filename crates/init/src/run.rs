@@ -81,6 +81,38 @@ fn open_flush() {
     let _ = std::fs::remove_dir(AT);
 }
 
+/// Reclaims what `cgroup` holds cold of its files, at its host's memory pressure (D188):
+/// as much as its memory.stat counts inactive (`inactive_file`), of its file pages alone
+/// (`swappiness=0`, Linux 6.11; a kernel without the key takes the amount alone), its
+/// anonymous memory and tmpfs left to the host, which reclaims those as well as the guest
+/// would, where a clean file page the guest drops is one the host could only have swapped.
+/// Then what that freed is reported at once (D151), so that the host has it back before
+/// this answers. The bytes the cgroup holds less after.
+fn reclaim_cold(cgroup: &str) -> io::Result<u64> {
+    let read = |file: &str| std::fs::read_to_string(format!("{cgroup}/{file}"));
+    let cold = read("memory.stat")?
+        .lines()
+        .find_map(|l| l.strip_prefix("inactive_file "))
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .unwrap_or(0);
+    let current = || -> io::Result<u64> { read("memory.current")?.trim().parse().map_err(io::Error::other) };
+    let before = current()?;
+    if cold > 0 {
+        let reclaim = format!("{cgroup}/memory.reclaim");
+        let asked = match std::fs::write(&reclaim, format!("{cold} swappiness=0")) {
+            Err(e) if e.raw_os_error() == Some(libc::EINVAL) => std::fs::write(&reclaim, cold.to_string()),
+            asked => asked,
+        };
+        // Less than asked for is what there was to reclaim.
+        match asked {
+            Err(e) if e.raw_os_error() != Some(libc::EAGAIN) => return Err(e),
+            _ => {}
+        }
+        flush_page_reports();
+    }
+    Ok(before.saturating_sub(current()?))
+}
+
 /// Reports at once the memory the guest holds free that waits to be reported to its
 /// microVM, which gives it back to the host (D151), and waits for it: a template is saved
 /// with none waiting, else each copy reports, two seconds into its life, what the
@@ -204,13 +236,17 @@ pub fn main(device: &str, template: bool) -> ! {
     // Said by the relay already where containers joined to its network outlived it (D119).
     if !reported {
         if oom_killed() {
-            let _ = send(&conn, kind::OOM, &[]);
+            let _ = send(&conn, kind::OOM, &oom_facts(WORKLOAD_CGROUP));
         }
         let _ = send(&conn, kind::EXIT, &status.to_be_bytes());
-        // The host may ask for the container's writable layer, to keep (layer.rs).
-        if asked_to_save(&conn)
-            && let Err(e) = crate::layer::save(&conn)
-        {
+        // The host may ask for the container's writable layer, to keep (layer.rs): packed
+        // and sent, or kept where it is, in its host's file (D190).
+        let kept = match asked_to_save(&conn) {
+            Some(kind::SAVE) => crate::layer::save(&conn),
+            Some(kind::KEEP) => crate::layer::keep(&conn),
+            _ => Ok(()),
+        };
+        if let Err(e) = kept {
             let _ = writeln!(io::stderr(), "shards-init: saving the container's files: {e}");
         }
     }
@@ -368,7 +404,7 @@ fn chdir_chroot(path: &str, root: bool) -> Result<(), Failure> {
 /// one filesystem (EROFS, tmpfs), where overlayfs numbers a directory anew each time it
 /// takes it back into its caches (fs/overlayfs/inode.c, ovl_map_dev_ino), and gives a file
 /// its layer's device, not the directory's; xino maps its layers' own numbers into one
-/// space, persistent, under one device, as Docker's one filesystem gives them. Without it,
+/// space, persistent, under one device, as Docker's one filesystem gives them (D37). Without it,
 /// GNU tar, which checks a directory's numbers as it ends it, failed extracting Linux's
 /// sources in a build step ("Directory renamed before its status could be extracted").
 pub const XINO: &str = "xino=on";
@@ -393,7 +429,11 @@ fn mount_root(device: &str) -> Result<(), Failure> {
         Some(_) => Some(crate::plug::kmsg().map_err(|e| setup_failed(format!("its memory's notes: {e}")))?),
         None => None,
     };
-    mount("tmpfs", "/rw", "tmpfs", 0, &rw)?;
+    // Its writable layer: the ext4 file system its host gave it on a pmem device of its own
+    // (D190), with DAX, where it has one; else a tmpfs, in its memory.
+    if !crate::pmem::mount_layer("/rw").map_err(|e| setup_failed(format!("its writable layer: {e}")))? {
+        mount("tmpfs", "/rw", "tmpfs", 0, &rw)?;
+    }
     crate::setup::keep_rw().map_err(|e| setup_failed(format!("/rw: {e}")))?;
     for dir in ["/rw/upper", "/rw/work"] {
         mkdir(dir)?;
@@ -415,14 +455,10 @@ fn mount_root(device: &str) -> Result<(), Failure> {
     mount(".", "/", "", libc::MS_MOVE, "")?;
     chdir_chroot(".", true)?;
     chdir_chroot("/", false)?;
-    // The microVM's /dev/shm, a run's under `--ipc host` (D156), as large as a host's is
-    // by default: half its memory (Documentation/filesystems/tmpfs.rst), all of it the
-    // plugged memory's where it has some.
-    let shm = match &plug {
-        Some(plug) => format!("mode=1777,size={}", plug.full() / 2),
-        None => "mode=1777".to_string(),
-    };
-    container_mounts(&shm)?;
+    // The microVM's /dev/shm, a run's under `--ipc host` (D156), sized as every /dev/shm
+    // of the microVM is ([`SHM`]), from here on.
+    size_shm(plug.as_ref());
+    container_mounts(shm())?;
     container_files()?;
     loopback_up().map_err(|e| setup_failed(e.to_string()))?;
     // A VM with a network: eth0 as the host named it, before any snapshot.
@@ -466,9 +502,34 @@ fn mount_root(device: &str) -> Result<(), Failure> {
     masked()
 }
 
-/// The options of a run's own /dev/shm (D156), 64 MiB, as Docker's default is (moby
-/// daemon/config/config.go).
-pub(crate) const OWN_SHM: &str = "mode=1777,size=65536k";
+/// The options of each /dev/shm of a microVM (D156): its own, each run's and each
+/// joiner's, and a builder's steps', all of one size: half of all the memory the microVM may
+/// have, as Linux sizes a tmpfs by default (Documentation/filesystems/tmpfs.rst), where a
+/// browser's renderers and a data loader's workers share memory. A builder's daemon says
+/// the bytes on its kernel's command line (`shards_shm=BYTES`, shards' `run::shm_bytes`);
+/// where it says none, half of all the guest may plug, else tmpfs's own default, half what
+/// it boots with. Set as it boots ([`size_shm`]), before its snapshot, which keeps it; read
+/// by each fork and each restore of it. A run's microVM, whose template every limit's runs
+/// restore (D148), is told its own bytes with each run and each joiner (the `shm=` setup
+/// entry), which `inspect` says too.
+static SHM: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+/// Sizes each /dev/shm of the microVM ([`SHM`]): `plug` is its memory to plug, where it
+/// plugs any.
+pub(crate) fn size_shm(plug: Option<&crate::plug::Plug>) {
+    let given = std::env::var("shards_shm")
+        .ok()
+        .and_then(|bytes| bytes.parse::<u64>().ok())
+        .filter(|&bytes| bytes > 0);
+    let bytes = given.or_else(|| plug.map(|p| p.full() / 2));
+    let _ = SHM.set(bytes.map_or_else(|| "mode=1777".to_string(), |b| format!("mode=1777,size={b}")));
+}
+
+/// The options of each /dev/shm of the microVM ([`SHM`]): tmpfs's own default where none
+/// was set.
+pub(crate) fn shm() -> &'static str {
+    SHM.get().map_or("mode=1777", String::as_str)
+}
 
 /// A run's mounts, in the root this process is in, with /dev/shm of options `shm` (moby
 /// daemon/pkg/oci/defaults.go has the same), and its devices: /dev holds its devices
@@ -517,7 +578,7 @@ struct Inherited {
     /// `--group-add`'s groups.
     groups: Vec<Vec<u8>>,
     /// Its setup entries an exec's standby applies too: `ulimit=`, `oom=`, and its
-    /// seccomp filter and no_new_privs, as runc's exec takes the container's.
+    /// seccomp filter and no_new_privs, as runc's exec takes the container's (D42).
     setup: Vec<Vec<u8>>,
 }
 
@@ -748,9 +809,9 @@ fn token_of(hex: &[u8]) -> Option<[u8; run::TOKEN]> {
 /// CPU time in ns (cpu.stat usage_usec), memory in use, its inactive file pages and its
 /// limit (memory.current, memory.stat, memory.max, else MemTotal), processes
 /// (pids.current), bytes read and written (io.stat's rbytes and wbytes, summed); the
-/// VM's CPU time in ns from /proc/stat, as dockerd's system usage, and its online CPUs;
-/// and the bytes its interfaces received and sent but loopback's (/proc/net/dev), as
-/// libnetwork counts a container's endpoints.
+/// VM's CPU time in ns from /proc/stat, as dockerd's system usage, which `stats` clients
+/// divide by (D27), and its online CPUs; and the bytes its interfaces received and sent but
+/// loopback's (/proc/net/dev), as libnetwork counts a container's endpoints.
 fn stats(cgroup: &str) -> String {
     let read = |p: &str| std::fs::read_to_string(p).unwrap_or_default();
     let cg = |f: &str| read(&format!("{cgroup}/{f}"));
@@ -830,7 +891,7 @@ fn stats(cgroup: &str) -> String {
 /// cgroups/fs2/freezer.go, waitFrozen: 1,000 looks 10 ms apart).
 const FREEZE_WAIT: Duration = Duration::from_secs(10);
 
-/// Freezes the cgroup at `dir`, or thaws it, as runc's fs2 freezer does: `cgroup.freeze`
+/// Freezes the cgroup at `dir`, or thaws it, as runc's fs2 freezer does (D119): `cgroup.freeze`
 /// written, then, for a freeze, `cgroup.events` read until it says `frozen 1`. Where runc
 /// looks every 10 ms, this waits for the kernel's word that the file changed
 /// (cgroup-v2.rst: a change of `cgroup.events` is a poll(2) event), within runc's bound
@@ -905,7 +966,7 @@ pub fn workload_headroom() -> u64 {
     }
 }
 
-/// The cgroup v2 hierarchy (Linux Documentation/admin-guide/cgroup-v2.rst), as runc gives
+/// The cgroup v2 hierarchy (Linux Documentation/admin-guide/cgroup-v2.rst), (D156), as runc gives
 /// a container its own: mounted with `nsdelegate`, so that a cgroup namespace bounds what
 /// its processes may change; the controllers runc sets limits through enabled below the
 /// root; and the cgroup every workload process joins ([`isolate`]). The root is then
@@ -957,7 +1018,7 @@ fn isolate(join: Option<libc::pid_t>, joiner: bool) -> Result<(), i32> {
     match (enter(&cgroup), join.filter(|_| !joiner)) {
         (Ok(()), _) => {}
         // An exec's, where the workload's cgroup takes no process: the cgroup its process
-        // is in now, as runc's exec joins container init's (workload_cgroup_of).
+        // is in now, as runc's exec joins container init's (D173; workload_cgroup_of).
         (Err(_), Some(pid)) => enter(&workload_cgroup_of(pid)?).map_err(errno)?,
         (Err(e), None) => return Err(errno(e)),
     }
@@ -996,7 +1057,7 @@ fn isolate(join: Option<libc::pid_t>, joiner: bool) -> Result<(), i32> {
         return Ok(());
     }
     let (nosuid, noexec, nodev) = (libc::MS_NOSUID, libc::MS_NOEXEC, libc::MS_NODEV);
-    let own_shm = std::ffi::CString::new(OWN_SHM).map_err(|_| libc::EINVAL)?;
+    let own_shm = std::ffi::CString::new(shm()).map_err(|_| libc::EINVAL)?;
     // SAFETY: unshare(2), mount(2) and umount2(2) on NUL-terminated strings that outlive
     // the calls; this process is a single-threaded fork of init.
     unsafe {
@@ -1078,7 +1139,7 @@ fn make_workdir(cwd: &CString) -> Result<(), i32> {
 
 /// A `/proc` of the PID namespace this process was born in, the workload's own (D115), in
 /// place of init's, which shows every process of the microVM, its agents' among them;
-/// masked and read-only where init's is (`masked`), as runc mounts a container's.
+/// masked and read-only where init's is (`masked`), as runc mounts a container's (D42).
 fn own_proc() -> Result<(), i32> {
     let last = || io::Error::last_os_error().raw_os_error().unwrap_or(libc::EIO);
     let (nosuid, noexec, nodev) = (libc::MS_NOSUID, libc::MS_NOEXEC, libc::MS_NODEV);
@@ -1253,7 +1314,7 @@ fn spawn_reaper(cgroup: &str, ids: Ids, whose: &str) -> Result<(libc::pid_t, Own
 fn await_reaper(pid: libc::pid_t, ready: OwnedFd, whose: &str) -> Result<libc::pid_t, Failure> {
     let failed = |e: io::Error| setup_failed(format!("{whose} PID namespace: {e}"));
     // No process of the container's is born in its namespace before it is ready, as none
-    // is in docker-init's before runc has made it the command's user: one would find it
+    // is in docker-init's (D115) before runc has made it the command's user: one would find it
     // root, with init's privileges and descriptors, be refused signalling it as the
     // command's user (kill(2)), and lose a signal it sent before the reaper blocked its
     // own, which a namespace's first process discards where it neither handles nor
@@ -1416,6 +1477,31 @@ fn reaper(last_cap: u32, ids: Ids, ready: RawFd) -> ! {
     }
 }
 
+/// What cgroup `dir` held and was allowed of memory and of swap as a process of it was
+/// ended for want of memory, and what the kernel said of it (plug::oom_said): the words
+/// of the run's `OOM`, which its daemon logs (D159).
+fn oom_facts(dir: &str) -> Vec<u8> {
+    let read = |file: &str| {
+        std::fs::read_to_string(format!("{dir}/{file}"))
+            .map(|s| s.split_whitespace().collect::<Vec<_>>().join(" "))
+            .unwrap_or_else(|_| "-".into())
+    };
+    let mut out = format!(
+        "memory.max {} memory.peak {} memory.swap.max {} memory.swap.peak {}; memory.events {}; memory.swap.events {}",
+        read("memory.max"),
+        read("memory.peak"),
+        read("memory.swap.max"),
+        read("memory.swap.peak"),
+        read("memory.events"),
+        read("memory.swap.events"),
+    );
+    for line in crate::plug::oom_said() {
+        out.push_str("; the kernel: ");
+        out.push_str(&line);
+    }
+    out.into_bytes()
+}
+
 /// Whether the kernel killed a process of the workload's cgroup for want of memory: its
 /// `memory.events` counts an `oom_kill` (Documentation/admin-guide/cgroup-v2.rst), whether
 /// its own limit or the VM's ran out.
@@ -1429,7 +1515,7 @@ fn oom_killed() -> bool {
     })
 }
 
-/// Sets the workload's limits, each `FILE=VALUE` of [`Spec::cgroup`], as runc's cgroups
+/// Sets the workload's limits, each `FILE=VALUE` of [`Spec::cgroup`], (D156), as runc's cgroups
 /// WriteFile does, and in its words when the kernel refuses one; with its devices' I/O
 /// limits and filter, in the order runc's fs2 Set writes them all: pids, memory and the
 /// weight (the list's head), the devices' I/O, CPU, the filter, then cpusets.
@@ -1550,7 +1636,7 @@ fn devices() -> Result<(), Failure> {
     Ok(())
 }
 
-/// The paths a container has masked and read-only (crate::defaults), as runc makes
+/// The paths a container has masked and read-only (crate::defaults), (D42), as runc makes
 /// them: a file under /dev/null, a directory under an empty read-only tmpfs, a
 /// read-only path bound onto itself and remounted so.
 pub(crate) fn masked() -> Result<(), Failure> {
@@ -1580,7 +1666,7 @@ pub(crate) fn masked() -> Result<(), Failure> {
 /// What Docker gives every container beside its image (moby daemon/initlayer/setup_unix.go),
 /// alike for every run, so made before any snapshot: `/etc/mtab` as a link to `/proc/mounts`,
 /// `/etc/hosts` ([`HOSTS`]), and `/etc/hostname`, which each run fills ([`set_hostname`]).
-/// Each replaces whatever the image has there, as Docker's do: 89 of 99 official images
+/// Each replaces whatever the image has there, as Docker's do (D37): 89 of 99 official images
 /// ship an `/etc/hostname` left from their build, and amazonlinux an empty `/etc/mtab`.
 /// They are files of the run's own, in the overlay's upper layer: unlike Docker's bind
 /// mounts, a workload may replace or rename them as it may any other file.
@@ -1588,7 +1674,7 @@ fn container_files() -> Result<(), Failure> {
     use std::os::unix::fs::DirBuilderExt;
     let etc = std::fs::symlink_metadata("/etc");
     if etc.as_ref().is_ok_and(|m| !m.is_dir()) {
-        // A directory over whatever else the image has there, as Docker's init layer
+        // A directory over whatever else the image has there, (D37), as Docker's init layer
         // above the image is.
         std::fs::remove_file("/etc").map_err(|e| setup_failed(format!("replacing /etc: {e}")))?;
     }
@@ -1638,7 +1724,7 @@ fn write_file(path: &str, bytes: &[u8]) -> Result<(), Failure> {
 /// fails. With guest networking (D31), the VM's address takes its place.
 const OWN_ADDRESS: &[u8] = b"127.0.1.1";
 
-/// Names the run in `/etc/hostname` and `/etc/hosts`, as Docker does: the name and a
+/// Names the run in `/etc/hostname` and `/etc/hosts`, as Docker does (D27): the name and a
 /// newline; then [`HOSTS`]'s lines, `--add-host`'s (`extra`), and the run's own, its full
 /// name with `domain` and its first label after (moby
 /// daemon/libnetwork/sandbox_dns_unix.go, buildHostsFile and makeHostsRecs), all of mode
@@ -1663,7 +1749,7 @@ fn set_hostname(name: &[u8], domain: &[u8], extra: &[Vec<u8>]) -> Result<(), Fai
         hosts.extend_from_slice(line);
         hosts.push(b'\n');
     }
-    // The guest's own address on a network, as Docker names a container on its bridge;
+    // The guest's own address on a network, as Docker names a container on its bridge (D46);
     // the loopback's otherwise.
     let own = crate::net::current().map(|(addr, _, _)| addr.to_string());
     let mut full = name.to_vec();
@@ -1796,30 +1882,30 @@ pub(crate) fn send(conn: &File, kind: u8, payload: &[u8]) -> io::Result<()> {
 }
 
 /// Half-closes the connection and waits, at most two seconds, for the host to close it.
-/// Whether the host, after the exit status, asks for the writable layer
-/// ([`kind::SAVE`]) rather than closing the connection. What it still sends of the
-/// workload's stdin is passed over.
-fn asked_to_save(conn: &File) -> bool {
+/// How the host, after the exit status, asks for the writable layer ([`kind::SAVE`], or
+/// [`kind::KEEP`] for one in its file), rather than closing the connection: None where it
+/// does not. What it still sends of the workload's stdin is passed over.
+fn asked_to_save(conn: &File) -> Option<u8> {
     let mut r = conn;
     let mut h = [0u8; run::HEADER];
     let mut skip = vec![0u8; CHUNK];
     loop {
         if r.read_exact(&mut h).is_err() {
-            return false;
+            return None;
         }
         match run::parse_header(h) {
-            Some((kind::SAVE, _)) => return true,
+            Some((asked @ (kind::SAVE | kind::KEEP), _)) => return Some(asked),
             Some((_, len)) => {
                 let mut left = len as usize;
                 while left > 0 {
                     let n = left.min(skip.len());
                     if r.read_exact(skip.get_mut(..n).unwrap_or_default()).is_err() {
-                        return false;
+                        return None;
                     }
                     left -= n;
                 }
             }
-            None => return false,
+            None => return None,
         }
     }
 }
@@ -2395,7 +2481,7 @@ impl Standby {
         } else if spec.setup.iter().any(|e| e == b"pid=host") {
             Born::Host
         } else if spec.setup.iter().any(|e| e == b"init") {
-            // As the command's user, as docker-init runs, so that each may signal the
+            // As the command's user, as docker-init runs (D115), so that each may signal the
             // other; refused before it is born where the command's would be (`launch`).
             let ExecUser { uid, gid, .. } =
                 user::resolve(&spec.user, self.passwd.as_deref(), self.group.as_deref())
@@ -2451,7 +2537,7 @@ impl Standby {
             }
             return standby.hold(&spec.setup).map(|held| (held, None));
         }
-        // Its devices first, as dockerd finds them and runc makes their nodes, init's: in
+        // Its devices first, as dockerd finds them and runc makes their nodes (D44), init's: in
         // the /dev it shares with the workload, the limits and filter on the cgroup it is
         // outside of.
         // The process's owner, which CDI gives a node whose spec gives it none (D146).
@@ -2540,6 +2626,7 @@ impl Standby {
             tty: Vec::new(),
             null_stdin: true,
             setup: mounts.clone(),
+            terms: Vec::new(),
             caps: default_caps(),
         }
         .encode();
@@ -2592,9 +2679,9 @@ impl Standby {
         })
     }
 
-    /// Resolves the spec as Docker and runc do, then has the standby exec it. The
+    /// Resolves the spec as Docker and runc do (D27), then has the standby exec it. The
     /// workload's working directory is made if missing, as `docker run` makes it; an
-    /// exec's (`exec`) must be there, as runc's exec finds it, and its unknown user is the
+    /// exec's (`exec`) must be there, as runc's exec finds it (D27), and its unknown user is the
     /// daemon's refusal.
     fn launch(
         self,
@@ -2614,7 +2701,7 @@ impl Standby {
                 daemon: exec,
                 ..setup_failed(m)
             })?;
-        // `--group-add`, as moby's getUser adds them (GetAdditionalGroupsPath).
+        // `--group-add`, as moby's getUser adds them (D42; GetAdditionalGroupsPath).
         if !process.groups.is_empty() {
             let added = user::additional_groups(&process.groups, group).map_err(|m| Failure {
                 daemon: exec,
@@ -2645,7 +2732,7 @@ impl Standby {
             .unwrap_or_default();
         let explicit = argv0.contains(&b'/');
         // An empty PATH has no entries (Go's filepath.SplitList), so nothing is found in
-        // it, as runc finds nothing.
+        // it, as runc finds nothing (D27).
         let candidates: Vec<Vec<u8>> = if explicit {
             vec![argv0.clone()]
         } else if path_env.is_empty() {
@@ -2686,7 +2773,7 @@ impl Standby {
             }
         };
         let tried = candidates.clone();
-        // Without `-i` or a terminal, its stdin is /dev/null, as Docker's is.
+        // Without `-i` or a terminal, its stdin is /dev/null, as Docker's is (D160).
         let null_stdin = pty.is_none() && !spec.stdin;
         let orders = Orders {
             uid,
@@ -2700,6 +2787,12 @@ impl Standby {
             tty: pty.as_ref().map(|p| p.peer.clone()).unwrap_or_default(),
             null_stdin,
             setup: setup.clone(),
+            // Its TERM chosen in its own root, which the standby is in (terms.rs).
+            terms: if pty.is_some() {
+                spec.terms.clone()
+            } else {
+                Vec::new()
+            },
             caps: process.caps.unwrap_or_else(default_caps),
         }
         .encode();
@@ -2820,6 +2913,15 @@ fn standby(ends: Ends, isolation: Isolation) -> ! {
     let got = File::from(orders).read_to_end(&mut bytes);
     let decoded = got.ok().and_then(|_| Orders::decode(&bytes));
     let built = decoded.and_then(|mut o| {
+        // Its TERM, where it is to be chosen: the first of its client's terminal types
+        // this root describes, else the last (terms.rs).
+        if !o.terms.is_empty()
+            && let Some(term) = crate::terms::term(std::path::Path::new("/"), &o.terms, &o.env)
+        {
+            let mut entry = Vec::with_capacity(term.len().saturating_add(1));
+            entry.extend_from_slice(&term);
+            o.env.push(entry);
+        }
         let tty = std::mem::take(&mut o.tty);
         let tty = if tty.is_empty() {
             None
@@ -2880,7 +2982,7 @@ fn standby(ends: Ends, isolation: Isolation) -> ! {
     let (argv_ptrs, envp_ptrs) = (pointers(&argv), pointers(&envp));
     let [stdin, stdout, stderr] = &stdio;
     // Opened here, in this single-threaded fork of init: a workload without `-i` or a
-    // terminal reads /dev/null, as Docker's does; the pipe, at its end already, where
+    // terminal reads /dev/null, as Docker's does (D160); the pipe, at its end already, where
     // that cannot be opened.
     let null = o.null_stdin.then(|| File::open("/dev/null").ok()).flatten();
     let stdin = null.as_ref().map_or(stdin.as_raw_fd(), AsRawFd::as_raw_fd);
@@ -2955,6 +3057,9 @@ struct Exec {
     ended: bool,
     /// A container joining the workload's network (D119), rather than a command beside it.
     joined: bool,
+    /// A joiner's process the kernel killed for want of memory: what its cgroup held and
+    /// was allowed, read as its process ended, before its cgroup went (D159).
+    oom: Option<Vec<u8>>,
     /// A joiner made through its microVM's own engine (D181), which ends as the workload
     /// does, as a nested engine's containers end with it.
     engine_made: bool,
@@ -3120,7 +3225,7 @@ fn builtin(
             run::builtin::STAT | run::builtin::ARCHIVE | run::builtin::EXTRACT
         ) {
             let path = args.first().map_or(&[][..], Vec::as_slice);
-            // The container's files, as dockerd's are in its root: without init's /proc,
+            // The container's files, as dockerd's are in its root (D37): without init's /proc,
             // /sys and /dev, kernel filesystems no file of the run's is in, and whose
             // /proc reaches every process of the microVM, an agent's root among them
             // (`/proc/PID/root`), which this process, init's, could read and write (D115).
@@ -3166,8 +3271,17 @@ fn builtin(
                 (None, _) => crate::changes::write(&mut out),
             },
             run::builtin::EXPORT => export(&mut out),
-            run::builtin::CGROUP => write_cgroup_in(&cgroup, args).map_err(io::Error::other),
+            // Its limits, then what its microVM may still plug, its VM told its run's new
+            // most before this came (`PLUG`, D148, D149).
+            run::builtin::CGROUP => write_cgroup_in(&cgroup, args)
+                .map_err(io::Error::other)
+                .and_then(|()| crate::plug::report_pluggable())
+                .and_then(|()| crate::plug::rehold_run(RUN_CGROUP)),
             run::builtin::STATS => out.write_all(stats(&cgroup).as_bytes()),
+            run::builtin::RECLAIM => reclaim_cold(RUN_CGROUP).and_then(|freed| {
+                let unplugging = crate::plug::shrink_run(RUN_CGROUP)?;
+                write!(out, "{freed} {unplugging}")
+            }),
             run::builtin::FREEZE => freeze(&cgroup, args.first().is_some_and(|a| a == b"1")),
             run::builtin::SIZE => match &layers {
                 Some((_, upper)) => Some(format!("/proc/self/fd/{}", upper.as_raw_fd())),
@@ -3182,17 +3296,18 @@ fn builtin(
                 // (D119) frozen in its cgroup alone, its provider running on.
                 let pause = args.first().is_some_and(|a| a == b"pause");
                 match &layers {
-                    Some((_, upper)) => {
+                    Some((lower, upper)) => {
+                        let lower = format!("/proc/self/fd/{}", lower.as_raw_fd());
                         let path = format!("/proc/self/fd/{}", upper.as_raw_fd());
                         if pause {
                             // Thawed whatever the packing did; a thaw that fails is the
                             // error to say, its container left frozen.
                             freeze(&cgroup, true).and_then(|()| {
-                                let packed = crate::layer::pack_from(&path, &mut out);
+                                let packed = crate::layer::pack_from(&lower, &path, &mut out);
                                 freeze(&cgroup, false).and(packed)
                             })
                         } else {
-                            crate::layer::pack_from(&path, &mut out)
+                            crate::layer::pack_from(&lower, &path, &mut out)
                         }
                     }
                     None => {
@@ -3440,8 +3555,8 @@ fn start_joiner(
             }
         }
     };
-    // Its sysctls in its own namespaces, as runc writes a container's from within them:
-    // init's own would be its provider's (`sort_setup`).
+    // Its sysctls in its own namespaces, written from within them (D119), as runc writes a
+    // container's: init's own would be its provider's (`sort_setup`).
     // What its build took (D156) is done, not applied again by its standby or init.
     let (sysctls, setup): (Vec<Vec<u8>>, Vec<Vec<u8>>) = spec
         .setup
@@ -3721,6 +3836,7 @@ impl Exec {
             status: None,
             ended: false,
             joined: false,
+            oom: None,
             engine_made: false,
             proxy: None,
             save: Save::Unasked,
@@ -3887,11 +4003,11 @@ impl Exec {
     /// now (`JOIN_LAYERS`). Where it has none, its root never built, or no child can be
     /// had, its connection goes unanswered, which the host hears as no layer.
     fn send_layer(&mut self) {
-        let upper = join_layers()
+        let kept = join_layers()
             .iter()
             .find(|(j, _)| *j == self.id)
-            .and_then(|(_, k)| k.upper.try_clone().ok());
-        let (Some(upper), Some(conn)) = (upper, self.conn.as_ref()) else {
+            .and_then(|(_, k)| Some((k.lower.try_clone().ok()?, k.upper.try_clone().ok()?)));
+        let (Some((lower, upper)), Some(conn)) = (kept, self.conn.as_ref()) else {
             self.save = Save::Done;
             self.conn = None;
             return;
@@ -3901,8 +4017,8 @@ impl Exec {
         if pid == 0 {
             // The connection's file is init's too, which writes no more to it.
             set_nonblocking(conn.as_raw_fd(), false);
-            let at = format!("/proc/self/fd/{}", upper.as_raw_fd());
-            let code = match crate::layer::save_from(conn, &at) {
+            let at = |fd: &OwnedFd| format!("/proc/self/fd/{}", fd.as_raw_fd());
+            let code = match crate::layer::save_from(conn, &at(&lower), &at(&upper)) {
                 Ok(()) => 0,
                 Err(e) => {
                     let _ = writeln!(io::stderr(), "shards-init: saving a joiner's files: {e}");
@@ -4094,7 +4210,12 @@ impl Workload {
                 && self.domains.iter().all(|d| d.out.is_none())
             {
                 if oom_killed() {
-                    to_host.extend(&[&run::header(kind::OOM, 0)]);
+                    let facts = oom_facts(WORKLOAD_CGROUP);
+                    let len = u32::try_from(facts.len()).unwrap_or(0);
+                    to_host.extend(&[
+                        &run::header(kind::OOM, len),
+                        facts.get(..len as usize).unwrap_or_default(),
+                    ]);
                 }
                 to_host.extend(&[
                     &run::header(kind::EXIT, 4),
@@ -4327,10 +4448,14 @@ impl Workload {
                                 // namespace's other processes before its first's end is
                                 // reaped (D119).
                                 // In another's PID namespace, what it started is killed
-                                // as it ends, as runc kills it.
+                                // as it ends, as runc kills it (D119).
                                 if e.joined {
                                     joined().retain(|(j, _)| *j != e.id);
                                     crate::join::kill_rest(e.id);
+                                    let dir = crate::join::cgroup(e.id);
+                                    if crate::plug::oom_kills(&dir) > 0 {
+                                        e.oom = Some(oom_facts(&dir));
+                                    }
                                     crate::join::remove_cgroup(e.id);
                                     // Its membership of the microVM's switch (D181).
                                     crate::members::leave(e.id);
@@ -4671,6 +4796,15 @@ impl Workload {
                     && e.stdout.is_none()
                     && e.stderr.is_none()
                 {
+                    // A joiner's process the kernel ended for want of memory, said as a
+                    // run's is (D119, D159), as it was read when it ended.
+                    if let Some(facts) = e.oom.take() {
+                        let len = u32::try_from(facts.len()).unwrap_or(0);
+                        e.to_conn.extend(&[
+                            &run::header(kind::OOM, len),
+                            facts.get(..len as usize).unwrap_or_default(),
+                        ]);
+                    }
                     e.to_conn
                         .extend(&[&run::header(kind::EXIT, 4), &code.to_be_bytes()]);
                     e.ended = true;
@@ -4829,7 +4963,7 @@ fn joined_workdir(cwd: &[u8]) -> Result<Vec<u8>, Failure> {
     }
 }
 
-/// An exec's working directory as runc's exec takes it: `/` if none, refused unless
+/// An exec's working directory as runc's exec takes it (D27): `/` if none, refused unless
 /// absolute, never made.
 fn exec_cwd(cwd: &[u8]) -> Result<Vec<u8>, Failure> {
     match cwd.first() {
@@ -5016,11 +5150,11 @@ unsafe fn child(c: &Child<'_>) -> ! {
         if !c.nnp && !load_all() {
             fail(step::SECCOMP);
         }
-        // A container's capabilities (crate::defaults), as runc applies them
+        // A container's capabilities (crate::defaults), (D42), as runc applies them
         // (finalizeNamespace): the bounding set first, the rest kept across the change of
         // user, then set. For any user but root, execve then leaves none but the
         // bounding set, there being no file or ambient capabilities (capabilities(7)),
-        // as Docker's are.
+        // as Docker's are (D42).
         let keep = |cap: u32| cap < 64 && c.caps & (1 << cap) != 0;
         if !defaults::bound(c.last_cap, keep) || libc::prctl(libc::PR_SET_KEEPCAPS, 1, 0, 0, 0) != 0 {
             fail(step::USER);

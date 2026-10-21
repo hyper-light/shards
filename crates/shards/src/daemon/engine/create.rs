@@ -768,6 +768,9 @@ mod tests {
             }
             l.sort();
         };
+        // Its client's terminal types: the CLI's, of the terminal it runs in; a create
+        // body's none, as an Engine API client gives no terminal type (spec.rs).
+        r.terms.clear();
         kv(&mut r.labels);
         kv(&mut r.sysctls);
         kv(&mut r.annotations);

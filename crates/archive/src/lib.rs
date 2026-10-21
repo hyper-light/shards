@@ -41,7 +41,8 @@ pub mod tar;
 
 pub use error::{Error, Kind};
 pub use layer::apply_layer;
-pub use pack::{PackOptions, pack, pack_changes};
+pub use pack::{Files, PackOptions, pack, pack_changes, pack_from};
+pub use sys::{FileKind, Stat};
 pub use unpack::{UnpackOptions, unpack, untar};
 pub use whiteout::{
     WHITEOUT_LINK_DIR, WHITEOUT_META_PREFIX, WHITEOUT_OPAQUE_DIR, WHITEOUT_PREFIX, WhiteoutFormat,

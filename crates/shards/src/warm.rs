@@ -188,6 +188,50 @@ pub struct Request {
     pub tokens: Option<Vec<u8>>,
 }
 
+/// Tells the daemon of the files a share's DAX window maps (D189), for it to watch them
+/// for other processes cutting them short (`kind::WATCH`, `kind::UNWATCH`): Linux's alone,
+/// whose x86 KVM spins on a guest's access past a file's end where HVF and arm64's KVM end
+/// its run, which the window answers (PM M273).
+#[cfg(target_os = "linux")]
+struct Watching {
+    daemon: UnixStream,
+    share: u32,
+}
+
+#[cfg(target_os = "linux")]
+impl shards_vmm::devices::virtio::fs::window::Watch for Watching {
+    fn watch(&self, node: u64, file: std::os::fd::BorrowedFd<'_>, size: u64) {
+        let mut said = self.share.to_be_bytes().to_vec();
+        said.extend_from_slice(&node.to_be_bytes());
+        said.extend_from_slice(&size.to_be_bytes());
+        if let Err(e) = shards_ipc::send(&self.daemon, kind::WATCH, &said, &[file]) {
+            shards_vmm::warn!("a share's DAX window: telling the daemon of a file it maps: {e}");
+        }
+    }
+
+    fn unwatch(&self, node: u64) {
+        let mut said = self.share.to_be_bytes().to_vec();
+        said.extend_from_slice(&node.to_be_bytes());
+        if let Err(e) = shards_ipc::send(&self.daemon, kind::UNWATCH, &said, &[]) {
+            shards_vmm::debug!("a share's DAX window: telling the daemon of a file it maps no more: {e}");
+        }
+    }
+}
+
+/// Has the daemon watch what each of `slots`' DAX windows maps ([`Watching`]).
+#[cfg(target_os = "linux")]
+fn watch_windows(daemon: &UnixStream, slots: &[shards_vmm::devices::virtio::fs::Share]) {
+    for (share, slot) in slots.iter().enumerate() {
+        let (Some(window), Ok(share)) = (slot.window(), u32::try_from(share)) else {
+            continue;
+        };
+        match daemon.try_clone() {
+            Ok(daemon) => window.watch_with(Box::new(Watching { daemon, share })),
+            Err(e) => shards_vmm::warn!("a share's DAX window: the daemon's connection: {e}"),
+        }
+    }
+}
+
 /// Takes a connection for each of `slots` from the run's share process, in order, and
 /// says it has them (`kind::SHARE_ENDS`).
 fn shared(link: &UnixStream, slots: &[shards_vmm::devices::virtio::fs::Share]) -> Result<(), String> {
@@ -385,6 +429,10 @@ pub fn receive(
     {
         return Err(format!("telling the daemon the request is taken: {e}"));
     }
+    // Its windows' files watched by the daemon from their first mapping on (D189), a
+    // restored run's among them, which its shares map again as they are given.
+    #[cfg(target_os = "linux")]
+    watch_windows(daemon, slots);
     if let Some(link) = share_link {
         shared(&link, slots)?;
     }
@@ -533,6 +581,33 @@ fn relay_signals(conn: &UnixStream, to: &'static ToGuest, from: From<'_>) {
             kind::ENGINE_CONN if matches!(from, From::Daemon(_)) => {
                 if let Ok(n) = <[u8; 8]>::try_from(message.payload.as_slice()) {
                     engine_held().remove(&u64::from_be_bytes(n));
+                }
+            }
+            // Its run's limit updated (D148): its guest's most to plug, before the exec that
+            // writes its cgroup, which comes after this on the same link.
+            kind::PLUG if matches!(from, From::Daemon(_)) => {
+                if let Ok(bytes) = <[u8; 8]>::try_from(message.payload.as_slice())
+                    && let Err(e) = crate::vm_run::set_plug_most(u64::from_be_bytes(bytes))
+                {
+                    let _ = writeln!(io::stderr(), "shards: its memory to plug: {e}");
+                }
+            }
+            // A file a share's DAX window maps, cut short by another process (D189): mapped
+            // as it is now, zeros where it has no pages, and a vCPU that spun there on its
+            // guest's read past its end runs on (PM M273).
+            kind::CUT if matches!(from, From::Daemon(_)) => {
+                let named = message
+                    .payload
+                    .first_chunk::<4>()
+                    .zip(message.payload.get(4..).and_then(|n| n.first_chunk::<8>()));
+                if let Some((share, node)) = named {
+                    let window = crate::vm_run::SHARES
+                        .get()
+                        .and_then(|s| s.get(u32::from_be_bytes(*share) as usize))
+                        .and_then(|slot| slot.window());
+                    if let Some(window) = window {
+                        window.cut(u64::from_be_bytes(*node));
+                    }
                 }
             }
             // The host's answer to the guest's ask on the host's network (D124).
@@ -707,6 +782,12 @@ fn save_request(message: shards_ipc::Message) -> Result<shards_vmm::vm::Saved, S
         ));
     };
     let swap = fds.next();
+    // Its writable layer's head and file system (D190), both or neither.
+    let layer = match (fds.next(), fds.next()) {
+        (Some(head), Some(data)) => Some((head, data)),
+        (None, None) => None,
+        _ => return Err("a save brings its writable layer's head without its file system".into()),
+    };
     if fds.next().is_some() {
         return Err(format!("a save brings too many descriptors: {count}"));
     }
@@ -725,6 +806,7 @@ fn save_request(message: shards_ipc::Message) -> Result<shards_vmm::vm::Saved, S
         memory,
         state,
         swap,
+        layer,
         then,
     });
     // The guest goes on where the microVM does: saved and left running, or not saved.
@@ -1073,6 +1155,10 @@ fn joined_finish(
     }
     if let Ok(ended) = served {
         tell_lost(link, ended);
+        // A joiner's process killed for want of memory, said as a run's is (D119, D159).
+        if let Some(facts) = &ended.oom {
+            let _ = shards_ipc::send(link, kind::OOM, facts, &[]);
+        }
     }
     let mut done = vec![status];
     if let Some((said, _)) = &failed {
@@ -1252,8 +1338,8 @@ pub fn finish(
     if let Ok(ended) = &served {
         tell_lost(&link.daemon, ended);
     }
-    if served.as_ref().is_ok_and(|ended| ended.oom) {
-        let _ = shards_ipc::send(&link.daemon, kind::OOM, &[], &[]);
+    if let Some(facts) = served.as_ref().ok().and_then(|ended| ended.oom.as_deref()) {
+        let _ = shards_ipc::send(&link.daemon, kind::OOM, facts, &[]);
     }
     if let Some((name, set)) = working_set {
         let _ = shards_ipc::working_set_parts(name, set, |part| {
@@ -1364,6 +1450,38 @@ pub fn layer_saved(link: &Link, used: Option<u64>) {
         payload.as_ref().map_or(&[][..], |p| p),
         &[],
     );
+}
+
+/// The daemon's word that the container's writable layer stays in its own file (D190),
+/// held until nothing of the machine writes the file ([`tell_kept`]): its link's own
+/// socket, and what the layer used in the guest.
+static KEPT: std::sync::Mutex<Option<(UnixStream, Option<u64>)>> = std::sync::Mutex::new(None);
+
+/// Holds the word that the container's writable layer stays in its own file (D190), its
+/// guest's journal written in place, for [`tell_kept`] once the machine is down. An error
+/// where its link's socket cannot be held: the daemon then keeps the layer as the VM goes.
+pub fn hold_kept(link: &Link, used: Option<u64>) -> std::io::Result<()> {
+    let daemon = link.daemon.try_clone()?;
+    *KEPT.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some((daemon, used));
+    Ok(())
+}
+
+/// Tells the daemon what [`hold_kept`] held, if anything: nothing of the machine writes the
+/// layer's file any more, which is the container's from now on (`Running::wait_then`).
+pub fn tell_kept() {
+    let held = KEPT
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .take();
+    if let Some((daemon, used)) = held {
+        let payload = used.map(u64::to_be_bytes);
+        let _ = shards_ipc::send(
+            &daemon,
+            kind::LAYER_KEPT,
+            payload.as_ref().map_or(&[][..], |p| p),
+            &[],
+        );
+    }
 }
 
 /// Stops using the client's stdio: this process's standard descriptors become `null`.

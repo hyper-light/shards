@@ -130,6 +130,44 @@ pub fn small_pages(ptr: NonNull<u8>, len: usize) {
     let _ = (ptr, len);
 }
 
+/// Puts `ptr..ptr+len`, guest RAM from [`reserve_ram`], on huge pages as the guest next
+/// touches it, as [`reserve_ram`] advises it, where [`small_pages`] kept it off them.
+/// Advice only: where it fails, or the kernel has no THP, the memory stays as it was.
+pub fn huge_pages(ptr: NonNull<u8>, len: usize) {
+    #[cfg(all(target_os = "linux", not(miri)))]
+    // SAFETY: madvise(2) of guest RAM, which the caller maps.
+    if unsafe { libc::madvise(ptr.as_ptr().cast(), len, libc::MADV_HUGEPAGE) } != 0 {
+        crate::debug!("MADV_HUGEPAGE: {}", io::Error::last_os_error());
+    }
+    #[cfg(not(all(target_os = "linux", not(miri))))]
+    let _ = (ptr, len);
+}
+
+/// The transparent huge page size guest RAM is advised for, where the host has them and
+/// the advice is not left out (SHARDS_THP_ADVICE=never, PM M157, M225): Linux's.
+pub fn advised_huge_page() -> Option<usize> {
+    #[cfg(all(target_os = "linux", not(miri)))]
+    if std::env::var_os("SHARDS_THP_ADVICE").is_none_or(|a| a != "never") {
+        return huge_page_size();
+    }
+    None
+}
+
+/// Whether the host puts every process's anonymous memory on transparent huge pages,
+/// advised or not (`always` in /sys/kernel/mm/transparent_hugepage/enabled), as against
+/// only what is advised (`madvise`): Linux's.
+pub fn thp_always() -> bool {
+    #[cfg(all(target_os = "linux", not(miri)))]
+    {
+        std::fs::read_to_string("/sys/kernel/mm/transparent_hugepage/enabled")
+            .is_ok_and(|mode| mode.split_whitespace().any(|m| m == "[always]"))
+    }
+    #[cfg(not(all(target_os = "linux", not(miri))))]
+    {
+        false
+    }
+}
+
 /// The kernel's transparent huge page size, if it has transparent huge pages.
 #[cfg(all(target_os = "linux", not(miri)))]
 fn huge_page_size() -> Option<usize> {
@@ -179,7 +217,8 @@ fn reserve_huge(len: usize, huge: usize) -> io::Result<NonNull<u8>> {
 ///
 /// # Safety
 /// `ptr..ptr+len` must be page-aligned, within one mapping from [`reserve`] or
-/// [`reserve_ram`], and accessed by no host thread meanwhile.
+/// [`reserve_ram`], or a mapping [`map_file_shared`] made, and accessed by no host thread
+/// meanwhile.
 pub unsafe fn withhold(ptr: NonNull<u8>, len: usize) -> io::Result<()> {
     // SAFETY: MAP_FIXED over the caller's own mapping, which nothing accesses meanwhile.
     let p = unsafe {
@@ -406,8 +445,10 @@ pub unsafe fn untouched(ptr: *const u8, len: usize, page: usize) -> io::Result<O
 /// charging it (overcommit-accounting.rst; PM M56).
 ///
 /// # Safety
-/// `at..at+len` must be page-aligned, inside a reservation from [`reserve`] that no
-/// hypervisor maps and nothing references yet; `offset` must be page-aligned.
+/// `at..at+len` must be page-aligned, inside a reservation from [`reserve`] or
+/// [`reserve_ram`] that nothing references meanwhile and no hypervisor maps, but KVM, whose
+/// guest sees what the host maps there from then on (KVM_SET_USER_MEMORY_REGION,
+/// Documentation/virt/kvm/api.rst); `offset` must be page-aligned.
 pub unsafe fn map_file_private(file: &File, offset: u64, len: usize, at: NonNull<u8>) -> io::Result<()> {
     let offset = file_offset(offset)?;
     // SAFETY: MAP_FIXED over memory the caller owns and nothing references.
@@ -449,6 +490,42 @@ pub unsafe fn map_file_readonly(file: &File, len: usize, at: NonNull<u8>) -> io:
             libc::MAP_PRIVATE | libc::MAP_FIXED,
             file.as_raw_fd(),
             0,
+        )
+    };
+    if p == libc::MAP_FAILED {
+        return Err(io::Error::last_os_error());
+    }
+    if p != at.as_ptr().cast() {
+        return Err(io::Error::other("mmap(MAP_FIXED) placed the mapping elsewhere"));
+    }
+    Ok(())
+}
+
+/// Replaces `len` bytes at `at` with a mapping of `file` from `offset` that a hypervisor
+/// maps into a guest as the file's own memory: a share's DAX window's (D189). Shared, so
+/// that the guest and the host have one file between them, and writable where `writable`.
+///
+/// # Safety
+/// `at..at+len` must be page-aligned, inside a reservation of the caller's that nothing
+/// references meanwhile; `offset` must be page-aligned.
+pub unsafe fn map_file_range(
+    file: std::os::fd::BorrowedFd<'_>,
+    offset: u64,
+    len: usize,
+    at: NonNull<u8>,
+    writable: bool,
+) -> io::Result<()> {
+    let offset = file_offset(offset)?;
+    let prot = libc::PROT_READ | if writable { libc::PROT_WRITE } else { 0 };
+    // SAFETY: MAP_FIXED over memory the caller owns and nothing references.
+    let p = unsafe {
+        libc::mmap(
+            at.as_ptr().cast(),
+            len,
+            prot,
+            libc::MAP_SHARED | libc::MAP_FIXED,
+            file.as_raw_fd(),
+            offset,
         )
     };
     if p == libc::MAP_FAILED {
@@ -520,6 +597,41 @@ pub fn map_file_shared(file: &File, len: usize) -> io::Result<NonNull<u8>> {
     NonNull::new(p.cast()).ok_or_else(|| io::Error::other("mmap returned NULL"))
 }
 
+/// Maps `len` bytes of `file`, opened for writing, shared and writable at `at` again, as
+/// [`map_file_shared`] mapped them: a mapping of it [`withhold`] took away for a while.
+///
+/// # Safety
+/// `at..at+len` must be page-aligned, the range of a mapping of this process's own that
+/// nothing references meanwhile and no hypervisor maps.
+pub unsafe fn map_file_shared_at(file: &File, len: usize, at: NonNull<u8>) -> io::Result<()> {
+    // SAFETY: MAP_FIXED over the caller's own range, which nothing references.
+    let p = unsafe {
+        libc::mmap(
+            at.as_ptr().cast(),
+            len,
+            libc::PROT_READ | libc::PROT_WRITE,
+            libc::MAP_SHARED | libc::MAP_FIXED,
+            file.as_raw_fd(),
+            0,
+        )
+    };
+    if p == libc::MAP_FAILED {
+        return Err(io::Error::last_os_error());
+    }
+    if p != at.as_ptr().cast() {
+        return Err(io::Error::other("mmap(MAP_FIXED) placed the mapping elsewhere"));
+    }
+    Ok(())
+}
+
+/// Whether a mapping of a file hides its holes: lseek(2)'s SEEK_DATA and SEEK_HOLE then
+/// say that all of it holds data. APFS's do, for a file mapped shared and writable, by
+/// this process or by a guest through Hypervisor.framework's mapping of it, until neither
+/// is left (macOS 26.4.1, PM M285); Linux's Btrfs and tmpfs answer as they would unmapped,
+/// pages written through a mapping and not yet written back counted as data (Linux
+/// 6.19).
+pub const MAPPED_HIDES_HOLES: bool = cfg!(target_os = "macos");
+
 /// Writes what was written through `ptr..ptr + len`, a mapping [`map_file_shared`] made,
 /// to its file, and waits until it has (msync(2) MS_SYNC): the file's blocks then hold it,
 /// which [`data_ranges`] says.
@@ -537,7 +649,8 @@ pub unsafe fn flush_shared(ptr: NonNull<u8>, len: usize) -> io::Result<()> {
 
 /// The ranges of `file`'s first `len` bytes that hold data, `(offset, length)` in order:
 /// what lseek(2)'s SEEK_DATA and SEEK_HOLE say of it. A file system that keeps no holes
-/// answers that all of it does, and one that cannot be asked (EINVAL) is taken to.
+/// answers that all of it does, and one that cannot be asked (EINVAL) is taken to, as one
+/// is of a file a mapping hides the holes of ([`MAPPED_HIDES_HOLES`]).
 pub fn data_ranges(file: &File, len: u64) -> io::Result<Vec<(u64, u64)>> {
     let end = libc::off_t::try_from(len).map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?;
     let seek = |at: libc::off_t, whence: libc::c_int| {
@@ -1415,7 +1528,9 @@ fn interrupted_or(e: io::Error) -> io::Result<()> {
 /// readable once a name in it has come or gone, or the file of it that is watched has
 /// been written, and for no other file's writes, for poll(2) to wait on beside others.
 /// kqueue's `EVFILT_VNODE` on macOS (kqueue(2)), inotify on Linux (inotify(7)), each on
-/// the directory and on the file watched.
+/// the directory and on the file watched. On Linux every watch of the process is a watch of
+/// one inotify instance ([`notify`]), its own descriptor an eventfd its events are counted
+/// into: a user may have few instances.
 #[derive(Debug)]
 pub struct FileWatch {
     fd: std::os::fd::OwnedFd,
@@ -1424,6 +1539,12 @@ pub struct FileWatch {
     _dir: File,
     #[cfg(target_os = "macos")]
     file: Option<File>,
+    /// The process's instance's watches of the directory and of the file watched, where it
+    /// has one ([`notify::shared`]); else `fd` is an instance of this watch's own.
+    #[cfg(not(target_os = "macos"))]
+    shared: Option<&'static notify::Shared>,
+    #[cfg(not(target_os = "macos"))]
+    dir: Option<libc::c_int>,
     /// inotify's watch of the file watched.
     #[cfg(not(target_os = "macos"))]
     file: Option<libc::c_int>,
@@ -1453,17 +1574,6 @@ impl FileWatch {
         }
         #[cfg(not(target_os = "macos"))]
         {
-            // SAFETY: inotify_init1(2) with flags.
-            let raw = unsafe { libc::inotify_init1(libc::IN_NONBLOCK | libc::IN_CLOEXEC) };
-            if raw < 0 {
-                return Err(io::Error::last_os_error());
-            }
-            // SAFETY: a descriptor just made, owned by nothing else.
-            let fd = unsafe { std::os::fd::OwnedFd::from_raw_fd(raw) };
-            // The directory itself, through its descriptor's link in /proc (proc(5)),
-            // which inotify follows.
-            let name = std::ffi::CString::new(format!("/proc/self/fd/{}", dir.as_raw_fd()))
-                .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "a path with NUL"))?;
             // Names alone: a write to a file in it is not one, nor seen unless the file
             // is watched (`file`).
             let mask = libc::IN_CREATE
@@ -1473,11 +1583,39 @@ impl FileWatch {
                 | libc::IN_DELETE_SELF
                 | libc::IN_MOVE_SELF
                 | libc::IN_ONLYDIR;
-            // SAFETY: inotify_add_watch(2) with a NUL-terminated path.
-            if unsafe { libc::inotify_add_watch(raw, name.as_ptr(), mask) } < 0 {
+            if let Some(shared) = notify::shared() {
+                // SAFETY: eventfd(2) with flags.
+                let raw = unsafe { libc::eventfd(0, libc::EFD_NONBLOCK | libc::EFD_CLOEXEC) };
+                if raw < 0 {
+                    return Err(io::Error::last_os_error());
+                }
+                // SAFETY: a descriptor just made, owned by nothing else.
+                let fd = unsafe { std::os::fd::OwnedFd::from_raw_fd(raw) };
+                let watched = shared.watch(dir, mask, fd.as_raw_fd())?;
+                return Ok(FileWatch {
+                    fd,
+                    shared: Some(shared),
+                    dir: Some(watched),
+                    file: None,
+                });
+            }
+            // SAFETY: inotify_init1(2) with flags.
+            let raw = unsafe { libc::inotify_init1(libc::IN_NONBLOCK | libc::IN_CLOEXEC) };
+            if raw < 0 {
                 return Err(io::Error::last_os_error());
             }
-            Ok(FileWatch { fd, file: None })
+            // SAFETY: a descriptor just made, owned by nothing else.
+            let fd = unsafe { std::os::fd::OwnedFd::from_raw_fd(raw) };
+            // SAFETY: inotify_add_watch(2) with a NUL-terminated path.
+            if unsafe { libc::inotify_add_watch(raw, notify::proc_path(dir)?.as_ptr(), mask) } < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(FileWatch {
+                fd,
+                shared: None,
+                dir: None,
+                file: None,
+            })
         }
     }
 
@@ -1494,11 +1632,25 @@ impl FileWatch {
         }
         #[cfg(not(target_os = "macos"))]
         {
-            let name = std::ffi::CString::new(format!("/proc/self/fd/{}", file.as_raw_fd()))
-                .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "a path with NUL"))?;
+            if let Some(shared) = self.shared {
+                let watched = shared.watch(file, libc::IN_MODIFY, self.fd.as_raw_fd())?;
+                // The one before let go of, past the new one's coming: a write to the file
+                // watched before wakes it no more, nor does its watch's end (`IN_IGNORED`).
+                if let Some(before) = self.file.replace(watched)
+                    && before != watched
+                {
+                    shared.unwatch(before, self.fd.as_raw_fd());
+                }
+                return Ok(());
+            }
             // SAFETY: inotify_add_watch(2) with a NUL-terminated path.
-            let watched =
-                unsafe { libc::inotify_add_watch(self.fd.as_raw_fd(), name.as_ptr(), libc::IN_MODIFY) };
+            let watched = unsafe {
+                libc::inotify_add_watch(
+                    self.fd.as_raw_fd(),
+                    notify::proc_path(file)?.as_ptr(),
+                    libc::IN_MODIFY,
+                )
+            };
             if watched < 0 {
                 return Err(io::Error::last_os_error());
             }
@@ -1570,10 +1722,242 @@ impl FileWatch {
         }
         #[cfg(not(target_os = "macos"))]
         {
+            // An eventfd's count, or an instance's events: either read until none is left.
             let mut buf = [0u8; 4096];
             // SAFETY: read(2) into a local buffer of its size, from a non-blocking
             // descriptor.
             while unsafe { libc::read(self.fd.as_raw_fd(), buf.as_mut_ptr().cast(), buf.len()) } > 0 {}
+        }
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+impl Drop for FileWatch {
+    fn drop(&mut self) {
+        if let Some(shared) = self.shared {
+            for watched in [self.dir.take(), self.file.take()].into_iter().flatten() {
+                shared.unwatch(watched, self.fd.as_raw_fd());
+            }
+        }
+    }
+}
+
+/// Watches `file` for writes, its truncations among them (inotify(7)'s `IN_MODIFY`), with
+/// the process's one inotify instance ([`notify`]), calling `call` with the watch's number
+/// on each, on the thread that reads the instance and under its lock: quick, and asking
+/// nothing of the watch. A file watched twice is one watch, which calls each. The daemon's
+/// watch on the files its microVMs' DAX windows map (D189), each the process's watch of
+/// one instance, as a microVM a process each would take an instance each (PM M257).
+#[cfg(target_os = "linux")]
+pub fn watch_writes(file: &File, call: fn(libc::c_int)) -> io::Result<libc::c_int> {
+    notify::shared()
+        .ok_or_else(|| io::Error::other("the process's inotify instance could not be made"))?
+        .watch_calling(file, libc::IN_MODIFY, call)
+}
+
+/// One of `watched`'s calls of `call` ([`watch_writes`]) made no more: the watch ends with
+/// the last.
+#[cfg(target_os = "linux")]
+pub fn unwatch_writes(watched: libc::c_int, call: fn(libc::c_int)) {
+    if let Some(shared) = notify::shared() {
+        shared.unwatch_calling(watched, call);
+    }
+}
+
+/// One inotify instance for the whole process (Linux). A user may have few: 128 by
+/// default (`fs.inotify.max_user_instances`), shared with every program the user runs,
+/// of which a KDE Plasma desktop's, a few apps open, held 101 (PM M257); and many watches
+/// (`max_user_watches`, half a million there). With an instance each, a daemon took one
+/// for each directory it watched and each follower of a log, and the followers past the
+/// user's last instance failed. One thread reads the instance and counts each event into
+/// the eventfd of each [`FileWatch`] that watches what it is of.
+#[cfg(not(target_os = "macos"))]
+mod notify {
+    use std::collections::HashMap;
+    use std::fs::File;
+    use std::io;
+    use std::os::fd::{AsRawFd as _, FromRawFd as _, OwnedFd, RawFd};
+    use std::sync::{Mutex, OnceLock, PoisonError};
+
+    #[derive(Debug)]
+    pub struct Shared {
+        fd: OwnedFd,
+        /// What each watch wakes, by its descriptor: two watches of one file share one,
+        /// and it goes with the last of what it wakes.
+        waking: Mutex<HashMap<libc::c_int, Waking>>,
+    }
+
+    /// What a watch wakes: eventfds it counts its events into, and functions it calls with
+    /// its descriptor ([`super::watch_writes`]).
+    #[derive(Debug, Default)]
+    struct Waking {
+        fds: Vec<RawFd>,
+        calls: Vec<fn(libc::c_int)>,
+    }
+
+    impl Waking {
+        fn is_empty(&self) -> bool {
+            self.fds.is_empty() && self.calls.is_empty()
+        }
+    }
+
+    static SHARED: OnceLock<Shared> = OnceLock::new();
+    static READER: OnceLock<bool> = OnceLock::new();
+
+    /// The process's instance, its reader started the first time: none where either could
+    /// not be made, and each watch then has an instance of its own, as before. An instance
+    /// the user has none left for is asked again by the next watch: instances free up.
+    pub fn shared() -> Option<&'static Shared> {
+        let shared = match SHARED.get() {
+            Some(shared) => shared,
+            None => {
+                // SAFETY: inotify_init1(2) with flags: its reader's reads wait.
+                let raw = unsafe { libc::inotify_init1(libc::IN_CLOEXEC) };
+                if raw < 0 {
+                    return None;
+                }
+                // SAFETY: a descriptor just made, owned by nothing else.
+                let fd = unsafe { OwnedFd::from_raw_fd(raw) };
+                // Another thread's, where it made one first: this one goes.
+                let _ = SHARED.set(Shared {
+                    fd,
+                    waking: Mutex::new(HashMap::new()),
+                });
+                SHARED.get()?
+            }
+        };
+        let started = *READER.get_or_init(|| {
+            std::thread::Builder::new()
+                .name("inotify".into())
+                .spawn(move || shared.read())
+                .is_ok()
+        });
+        started.then_some(shared)
+    }
+
+    /// `file`'s path through its descriptor's link in /proc (proc(5)), which inotify
+    /// follows: the file itself, wherever it has gone.
+    pub fn proc_path(file: &File) -> io::Result<std::ffi::CString> {
+        std::ffi::CString::new(format!("/proc/self/fd/{}", file.as_raw_fd()))
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "a path with NUL"))
+    }
+
+    impl Shared {
+        /// Watches `file` for `mask`, waking `wakes`: the watch's descriptor. Made under
+        /// the lock the reader takes to count an event, so that none of the watch's comes
+        /// before it is counted. A watch of a file watched already is that watch, its mask
+        /// joined (`IN_MASK_ADD`).
+        pub fn watch(&self, file: &File, mask: u32, wakes: RawFd) -> io::Result<libc::c_int> {
+            let path = proc_path(file)?;
+            let mut waking = self.waking.lock().unwrap_or_else(PoisonError::into_inner);
+            // SAFETY: inotify_add_watch(2) with a NUL-terminated path.
+            let watched = unsafe {
+                libc::inotify_add_watch(self.fd.as_raw_fd(), path.as_ptr(), mask | libc::IN_MASK_ADD)
+            };
+            if watched < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            waking.entry(watched).or_default().fds.push(wakes);
+            Ok(watched)
+        }
+
+        /// [`watch`](Self::watch), calling `call` with the watch's descriptor on each event
+        /// instead, on the reader's thread and under its lock: it must be quick, and ask
+        /// nothing of this instance.
+        pub fn watch_calling(
+            &self,
+            file: &File,
+            mask: u32,
+            call: fn(libc::c_int),
+        ) -> io::Result<libc::c_int> {
+            let path = proc_path(file)?;
+            let mut waking = self.waking.lock().unwrap_or_else(PoisonError::into_inner);
+            // SAFETY: inotify_add_watch(2) with a NUL-terminated path.
+            let watched = unsafe {
+                libc::inotify_add_watch(self.fd.as_raw_fd(), path.as_ptr(), mask | libc::IN_MASK_ADD)
+            };
+            if watched < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            waking.entry(watched).or_default().calls.push(call);
+            Ok(watched)
+        }
+
+        /// `wakes` woken by `watched` no more; the watch removed with the last it wakes.
+        pub fn unwatch(&self, watched: libc::c_int, wakes: RawFd) {
+            self.let_go(watched, |w| {
+                w.fds.retain(|fd| *fd != wakes);
+            });
+        }
+
+        /// One of the calls of `call` [`watch_calling`](Self::watch_calling) made, made no
+        /// more; the watch removed with the last it wakes.
+        pub fn unwatch_calling(&self, watched: libc::c_int, call: fn(libc::c_int)) {
+            self.let_go(watched, |w| {
+                if let Some(i) = w.calls.iter().position(|c| std::ptr::fn_addr_eq(*c, call)) {
+                    w.calls.remove(i);
+                }
+            });
+        }
+
+        fn let_go(&self, watched: libc::c_int, what: impl FnOnce(&mut Waking)) {
+            let mut waking = self.waking.lock().unwrap_or_else(PoisonError::into_inner);
+            let Some(w) = waking.get_mut(&watched) else {
+                return;
+            };
+            what(w);
+            if w.is_empty() {
+                waking.remove(&watched);
+                // SAFETY: inotify_rm_watch(2) of a watch of this instance's; one whose
+                // file has gone went with it, and its removal fails harmlessly.
+                unsafe { libc::inotify_rm_watch(self.fd.as_raw_fd(), watched) };
+            }
+        }
+
+        /// The reader: each event counted into the eventfds its watch wakes; a watch that
+        /// has ended (`IN_IGNORED`) let go of, its file gone. Its reads wait, and end only
+        /// with the process.
+        fn read(&self) {
+            // Events are whole in a read: a header of 16 bytes, then a name of its length.
+            let mut buf = vec![0u8; 64 * 1024];
+            loop {
+                // SAFETY: read(2) into a buffer of its length.
+                let n = unsafe { libc::read(self.fd.as_raw_fd(), buf.as_mut_ptr().cast(), buf.len()) };
+                let Ok(n) = usize::try_from(n) else {
+                    if io::Error::last_os_error().kind() == io::ErrorKind::Interrupted {
+                        continue;
+                    }
+                    return;
+                };
+                let mut waking = self.waking.lock().unwrap_or_else(PoisonError::into_inner);
+                let mut at = 0;
+                while let Some(header) = buf.get(at..at + 16).filter(|_| at + 16 <= n) {
+                    let word = |i: usize| {
+                        header
+                            .get(i..i + 4)
+                            .and_then(|b| <[u8; 4]>::try_from(b).ok())
+                            .unwrap_or_default()
+                    };
+                    let watched = i32::from_ne_bytes(word(0));
+                    let mask = u32::from_ne_bytes(word(4));
+                    let len = u32::from_ne_bytes(word(12)) as usize;
+                    if let Some(w) = waking.get(&watched) {
+                        for fd in &w.fds {
+                            let one = 1u64.to_ne_bytes();
+                            // SAFETY: write(2) of 8 bytes to an eventfd, which never waits
+                            // (EFD_NONBLOCK): a count past its most is one already pending.
+                            unsafe { libc::write(*fd, one.as_ptr().cast(), one.len()) };
+                        }
+                        for call in &w.calls {
+                            call(watched);
+                        }
+                    }
+                    if mask & libc::IN_IGNORED != 0 {
+                        waking.remove(&watched);
+                    }
+                    at = at.saturating_add(16).saturating_add(len);
+                }
+            }
         }
     }
 }
@@ -1775,6 +2159,38 @@ mod launched_tests {
         }
         assert_eq!(suspended, Some(false));
         assert_eq!(launched(std::process::id()), Some(true));
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod holes_tests {
+    use super::*;
+
+    /// A shared writable mapping of a file hides its holes from lseek(2) where
+    /// [`MAPPED_HIDES_HOLES`] says this host's file system does (PM M285), and they come
+    /// back once the mapping is gone.
+    #[test]
+    fn a_mapping_hides_a_files_holes_where_the_platform_says() {
+        let dir = shards_testdir::TempDir::new("holes").unwrap();
+        let len = 64usize << 20;
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .open(dir.join("sparse"))
+            .unwrap();
+        file.set_len(len as u64).unwrap();
+        crate::platform::write_all_at(&file, &[1; 16 << 10], 32 << 20).unwrap();
+        file.sync_all().unwrap();
+        let alone = data_ranges(&file, len as u64).unwrap();
+        assert_eq!(alone, [(32 << 20, 16 << 10)]);
+        let mapped = map_file_shared(&file, len).unwrap();
+        let hidden = data_ranges(&file, len as u64).unwrap();
+        // SAFETY: the mapping just made, which nothing else uses.
+        unsafe { unmap_file_shared(mapped, len) };
+        assert_eq!(hidden == [(0, len as u64)], MAPPED_HIDES_HOLES, "{hidden:?}");
+        assert_eq!(data_ranges(&file, len as u64).unwrap(), alone);
     }
 }
 

@@ -72,6 +72,7 @@ fn launch() -> Spec {
         domainname: Vec::new(),
         cgroup: Vec::new(),
         setup: Vec::new(),
+        terms: Vec::new(),
     }
 }
 

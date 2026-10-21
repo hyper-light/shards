@@ -266,6 +266,28 @@ impl Ioapic {
         sent
     }
 
+    /// One edge on pin `pin`, raised and lowered under one hold of the pins' state, so
+    /// that no other thread's raise lands while it is up and finds the line high, its edge
+    /// lost (PM M272); what it sends.
+    pub fn pulse(&self, pin: u32) -> Sent {
+        let mut sent = Sent::none();
+        let pin = pin as usize;
+        let mut st = lock(&self.state);
+        let Some(line) = st.lines.get_mut(pin) else {
+            return sent;
+        };
+        let was = *line;
+        *line = true;
+        let message = st.service(pin, !was);
+        if let Some(line) = st.lines.get_mut(pin) {
+            *line = was;
+        }
+        if let Some(m) = message {
+            sent.push(pin, m);
+        }
+        sent
+    }
+
     /// The EOI of `vector`, broadcast by a local APIC: each level-triggered pin of it
     /// acknowledged, and sent again where its line is still asserted.
     pub fn eoi(&self, vector: u8) -> Sent {
@@ -344,6 +366,27 @@ mod tests {
         assert_eq!(io.set(5, true).iter().count(), 1);
         // An EOI of its vector does nothing to an edge-triggered pin.
         assert!(io.eoi(0x41).iter().next().is_none());
+    }
+
+    /// Pulses on one edge-triggered pin from many threads send a message each: a raise
+    /// and lower at once never lets another thread's raise find the line high (PM M272).
+    #[test]
+    fn every_threads_pulse_is_an_edge() {
+        let io = Ioapic::default();
+        write_entry(&io, 5, 0x0300_0000_0000_0041);
+        let sent = std::sync::atomic::AtomicUsize::new(0);
+        std::thread::scope(|s| {
+            for _ in 0..4 {
+                s.spawn(|| {
+                    for _ in 0..5_000 {
+                        let n = io.pulse(5).iter().count();
+                        sent.fetch_add(n, std::sync::atomic::Ordering::Relaxed);
+                    }
+                });
+            }
+        });
+        assert_eq!(sent.into_inner(), 20_000);
+        assert!(io.set(5, true).iter().next().is_some(), "the line is left low");
     }
 
     /// A level-triggered pin sends while asserted and unacknowledged: once, then again at

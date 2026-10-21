@@ -141,11 +141,28 @@ jobs:
               "(Get-CimInstance Win32_Processor).Name; (Get-CimInstance Win32_ComputerSystem).HypervisorPresent; (Get-WindowsOptionalFeature -Online -FeatureName HypervisorPlatform).State" || true ;;
           esac
       # The GPU's renderer (D144), from pinned sources: `shards` then carries shards-vm-gpu.
+      # Built once for each version of its script and of the runner's image, and kept: its
+      # sources' hosts answering 502 and 504 for eight minutes (run 39191414199) left a run
+      # with none, and none of its macOS tests ran.
+      - name: The GPU's renderer's key
+        if: matrix.target == 'aarch64-apple-darwin'
+        id: gpu-key
+        shell: bash
+        run: echo "image=$ImageOS-$ImageVersion" >> "$GITHUB_OUTPUT"
+      - name: The GPU's renderer, as built before
+        if: matrix.target == 'aarch64-apple-darwin'
+        id: gpu-kept
+        uses: actions/cache@v6.1.0
+        with:
+          path: ${{ runner.temp }}/gpu-libs
+          key: gpu-libs-${{ steps.gpu-key.outputs.image }}-${{ hashFiles('scripts/gpu-libs') }}
       - name: The GPU's renderer
         if: matrix.target == 'aarch64-apple-darwin'
         shell: bash
         run: |
-          scripts/gpu-libs "$RUNNER_TEMP/gpu-libs"
+          if [ "${{ steps.gpu-kept.outputs.cache-hit }}" != true ]; then
+            scripts/gpu-libs "$RUNNER_TEMP/gpu-libs"
+          fi
           echo "SHARDS_GPU_LIBS=$RUNNER_TEMP/gpu-libs" >> "$GITHUB_ENV"
       - name: Lints (production code never panics; clippy.toml exempts tests)
         shell: bash
@@ -220,10 +237,13 @@ jobs:
         shell: bash
         run: cargo test --locked --release -p shards-rego --test builtins --test deep --test depth --target ${{ matrix.target }}
       # A process the seccomp filter ended with its SIGSYS blocked says nothing; the kernel
-      # logs the syscall it refused (the filter's SECCOMP_FILTER_FLAG_LOG).
-      - name: What the kernel logged of seccomp refusals
+      # logs the syscall it refused (the filter's SECCOMP_FILTER_FLAG_LOG). Nor does one the
+      # host's OOM killer ended: the kernel logs which it chose, and the memory it had.
+      - name: What the kernel logged of seccomp refusals and OOM kills
         if: failure() && runner.os == 'Linux'
-        run: sudo dmesg | grep -iE 'seccomp|type=1326' | tail -40 || true
+        run: |
+          sudo dmesg | grep -iE 'seccomp|type=1326|out of memory|oom-kill|killed process' | tail -60 || true
+          free -m || true
 
   # shards against Firecracker on one KVM host: the same kernel, initrd and command line,
   # interleaved (crates/shards/benches/firecracker.rs). Hosted arm64 runners have no /dev/kvm.
@@ -317,8 +337,14 @@ jobs:
       - uses: actions/checkout@v7.0.1
       - name: Host virtualization (what this runner offers each backend)
         run: ls -l /dev/kvm 2>&1 || true
+      # What a hung test's processes are doing, kept as it hangs (scripts/ci/hang-watch.sh),
+      # read from the runner: gdb for their backtraces, where the runner boots microVMs.
+      - name: Hang watcher's gdb (x86_64)
+        if: matrix.part == 'test' && matrix.target == 'x86_64-unknown-linux-musl'
+        run: scripts/retry 5 30 sudo apt-get install -y gdb
       - name: On the native architecture, in Alpine
         timeout-minutes: 60
+        shell: bash
         run: |
           # VM tests need the host's /dev/kvm inside the container, which runs them as the
           # runner's user (scripts/musl-ci): the node there takes this one's mode.
@@ -327,15 +353,34 @@ jobs:
           # x86_64 runners offer /dev/kvm: every VM test must run there.
           require=0
           if [ "$TARGET" = x86_64-unknown-linux-musl ]; then require=1; fi
+          if [ "$MUSL_CI" = test ] && [ "$TARGET" = x86_64-unknown-linux-musl ]; then
+            scripts/ci/hang-watch.sh "$RUNNER_TEMP/hangs" &
+            watcher=$!
+          fi
+          status=0
           docker run --rm $kvm -v "$PWD:/work" -w /work -e TARGET -e MUSL_CI -e SHARDS_REQUIRE_VMS=$require \
             -e CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=cc \
             -e CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=cc \
-            "$MUSL_IMAGE" scripts/musl-ci
+            "$MUSL_IMAGE" scripts/musl-ci || status=$?
+          if [ -n "${watcher:-}" ]; then kill "$watcher" 2>/dev/null || true; fi
+          exit "$status"
+      - name: What hung tests' processes were doing
+        if: ${{ !cancelled() && matrix.part == 'test' && matrix.target == 'x86_64-unknown-linux-musl' }}
+        shell: bash
+        run: |
+          for f in $(find "$RUNNER_TEMP/hangs" -type f 2>/dev/null | sort); do
+            echo "::group::$f"
+            cat "$f"
+            echo "::endgroup::"
+          done
       # A process the seccomp filter ended with its SIGSYS blocked says nothing; the kernel
-      # logs the syscall it refused (the filter's SECCOMP_FILTER_FLAG_LOG).
-      - name: What the kernel logged of seccomp refusals
+      # logs the syscall it refused (the filter's SECCOMP_FILTER_FLAG_LOG). Nor does one the
+      # host's OOM killer ended: the kernel logs which it chose, and the memory it had.
+      - name: What the kernel logged of seccomp refusals and OOM kills
         if: failure()
-        run: sudo dmesg | grep -iE 'seccomp|type=1326' | tail -40 || true
+        run: |
+          sudo dmesg | grep -iE 'seccomp|type=1326|out of memory|oom-kill|killed process' | tail -60 || true
+          free -m || true
       - name: The executable is static
         if: matrix.part == 'release'
         run: |

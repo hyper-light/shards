@@ -5,7 +5,7 @@
 //! image's (`builtin::HOLD`), the same built-ins answering as for a running one. The
 //! container stays stopped throughout: no start, no end, no event of the visit's own; what
 //! the visit changed (`cp` into it) is saved as its layer when the visit ends, as a run's
-//! is.
+//! is, and a visit that only reads (`diff`, `export`, `cp` out of it) saves nothing.
 
 use std::fs::File;
 use std::os::fd::{AsFd as _, AsRawFd as _, BorrowedFd};
@@ -16,9 +16,7 @@ use std::time::{Duration, Instant};
 use shards_cmdline::flags::{self, Outcome};
 use shards_ipc::{Run, kind};
 
-use super::{
-    Daemon, Inbox, Keep, LAYER, LAYER_NEW, REQUEST, RunState, Threads, lock, log, network, open_layer,
-};
+use super::{Daemon, Inbox, Keep, LAYER_NEW, REQUEST, RunState, Threads, lock, log, network, open_layer};
 
 /// How long a visit's VM may take to start holding.
 const START_LIMIT: Duration = Duration::from_secs(30);
@@ -33,7 +31,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
         threads: &'s Threads<'s, 'e>,
         argv: &[String],
     ) -> Option<String> {
-        let (given, copies) = target(argv)?;
+        let (given, copies, writes) = target(argv)?;
         // What any client has seen of its last run first, as every command takes it
         // (`settle`): a run that has just returned its status may have sent a DONE not yet
         // taken, and the container would read as running still, its files then read in a
@@ -63,7 +61,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
         if free {
             // Its files as its last run left them.
             self.await_settled(&id);
-            match self.start_visit(threads, &id, copies) {
+            match self.start_visit(threads, &id, copies, writes) {
                 Ok(()) => return Some(id),
                 Err(e) => {
                     log(format!("container {id}: visiting its files: {e}"));
@@ -117,12 +115,14 @@ impl<D: crate::containers::Disk> Daemon<D> {
     }
 
     /// Boots a VM over container `id`'s files, holding, as its run, pending in `runs`; for
-    /// a copy (`copies`), with its shared directories.
+    /// a copy (`copies`), with its shared directories; its layer kept as the visit ends
+    /// where it `writes` (`cp` into it).
     fn start_visit<'s, 'e>(
         &'s self,
         threads: &'s Threads<'s, 'e>,
         id: &str,
         copies: bool,
+        writes: bool,
     ) -> Result<(), String> {
         let dir = lock(&self.containers).dir(id);
         let stored = std::fs::read(dir.join(REQUEST))
@@ -147,7 +147,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
                 .unwrap_or_default();
             let points: Vec<_> = points.into_iter().filter(|p| !p.domains_only).collect();
             let opened = crate::volumes::open(&points, first, &crate::volumes::Store::new(&self.home))?;
-            prepared.spec.setup = crate::setup::setup(&stored, &opened.mounts, None)?;
+            prepared.spec.setup = crate::setup::setup(&stored, &opened.mounts, None, None)?;
             crate::spec::fits(&prepared.spec)?;
             let link = self.start_shares(threads, &opened.dirs, &prepared.parent)?;
             prepared.shares = u32::try_from(opened.dirs.len()).map_err(|_| "too many shares")?;
@@ -157,24 +157,32 @@ impl<D: crate::containers::Disk> Daemon<D> {
         };
         let (ours, theirs) = UnixStream::pair().map_err(|e| format!("a visit's connection: {e}"))?;
         let null = File::open("/dev/null").map_err(|e| format!("/dev/null: {e}"))?;
-        let layer_in = File::open(dir.join(LAYER)).ok();
-        let layer_out = open_layer(&dir.join(LAYER_NEW)).map_err(|e| format!("its writable layer: {e}"))?;
-        let mut flags = shards_ipc::RUN_LAYER_OUT;
+        // Its files as its last run left them: in their file (D190), packed here, or as its
+        // guest packed them.
+        let layer_in = self.layer_in(threads, id, false)?;
+        let layer_out = writes
+            .then(|| open_layer(&dir.join(LAYER_NEW)).map_err(|e| format!("its writable layer: {e}")))
+            .transpose()?;
+        let mut flags = 0;
         let mut fds: Vec<BorrowedFd<'_>> = vec![theirs.as_fd(), null.as_fd(), null.as_fd(), null.as_fd()];
         if let Some(file) = &layer_in {
             flags |= shards_ipc::RUN_LAYER_IN;
             fds.push(file.as_fd());
         }
-        fds.push(layer_out.as_fd());
+        if let Some(file) = &layer_out {
+            flags |= shards_ipc::RUN_LAYER_OUT;
+            fds.push(file.as_fd());
+        }
         if let Some(link) = &link {
             fds.push(link.as_fd());
         }
         let mut payload =
             Vec::with_capacity(shards_ipc::RunHead::LEN + prepared.spec.encoded_len().unwrap_or(0));
+        let kept = self.log_retention()?;
         shards_ipc::RunHead {
             flags,
-            log_size: self.logs.size,
-            log_files: self.logs.files,
+            log_size: kept.size,
+            log_files: kept.files,
             first: 0,
             // The most memory its guest may plug (D148): a run's, for a visit's built-ins.
             plug: prepared
@@ -203,8 +211,8 @@ impl<D: crate::containers::Disk> Daemon<D> {
                 published: Vec::new(),
                 named: None,
                 restarted: false,
-                layer_pending: true,
-                log_files: self.logs.files,
+                layer_pending: writes,
+                log_files: kept.files,
                 log_compress: false,
                 visit: true,
                 egress: None,
@@ -287,11 +295,13 @@ fn said_to(client: &UnixStream) -> String {
 }
 
 /// The container container command `argv` reads the files of, given as its client gave
-/// it: `cp`'s steps', `diff`'s and `export`'s; and whether it copies.
-fn target(argv: &[String]) -> Option<(String, bool)> {
+/// it: `cp`'s steps', `diff`'s and `export`'s; whether it copies, and whether it writes
+/// them (`cp`'s extract step).
+fn target(argv: &[String]) -> Option<(String, bool, bool)> {
     use shards_cmdline::commands::{self, DIFF, EXPORT};
     if argv.first().is_some_and(|a| a == super::COPY_STEP) {
-        return argv.get(2).cloned().map(|c| (c, true));
+        let writes = argv.get(1).is_some_and(|step| step == "extract");
+        return argv.get(2).cloned().map(|c| (c, true, writes));
     }
     let words: Vec<&str> = argv.iter().map(String::as_str).collect();
     let (command, path, named) = commands::find(&words)?;
@@ -304,7 +314,7 @@ fn target(argv: &[String]) -> Option<(String, bool)> {
         argv.get(named..).unwrap_or_default(),
         &flags::value,
     ) {
-        Outcome::Run(parsed) => parsed.args.first().cloned().map(|c| (c, false)),
+        Outcome::Run(parsed) => parsed.args.first().cloned().map(|c| (c, false, false)),
         _ => None,
     }
 }

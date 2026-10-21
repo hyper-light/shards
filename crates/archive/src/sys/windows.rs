@@ -123,7 +123,8 @@ pub(crate) fn lstat(p: &[u8]) -> io::Result<Stat> {
         ino: 0,
         dev: 0,
         nlink: 1,
-        rdev: 0,
+        major: 0,
+        minor: 0,
     })
 }
 
@@ -167,11 +168,6 @@ pub(crate) fn read_dir(p: &[u8]) -> io::Result<Vec<(Vec<u8>, bool)>> {
 /// No attributes on Windows (xattr_unsupported.go).
 pub(crate) fn lgetxattr(_: &[u8], _: &[u8]) -> io::Result<Option<Vec<u8>>> {
     Ok(None)
-}
-
-/// No security.capability on Windows (xattr_unsupported.go).
-pub(crate) fn capability(_: &[u8]) -> Option<Vec<u8>> {
-    None
 }
 
 /// go-archive's chmod of an implied directory changes nothing Windows keeps.

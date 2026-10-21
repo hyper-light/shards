@@ -41,6 +41,9 @@ pub fn keep_microvm_namespaces() -> io::Result<()> {
     Ok(())
 }
 
+/// statfs(2)'s word for ext4 (include/uapi/linux/magic.h).
+const EXT4_SUPER_MAGIC: u64 = 0xEF53;
+
 /// Opens `/rw`, the writable layer's tmpfs, for [`rw_size`], before the root moves over it.
 pub fn keep_rw() -> io::Result<()> {
     let _ = RW.set(open_kept(c"/rw", libc::O_PATH | libc::O_DIRECTORY)?);
@@ -55,6 +58,18 @@ pub fn rw_size(text: &[u8]) -> Result<(), String> {
         .and_then(|t| t.parse::<u64>().ok())
         .ok_or("a malformed writable layer size")?;
     let rw = RW.get().ok_or("the writable layer was not kept")?;
+    // An ext4 layer (D190) holds what its run asked for as it was made: its template is
+    // the size's own.
+    // SAFETY: all-zero is a valid statfs, which fstatfs(2) fills from our descriptor.
+    let mut fs: libc::statfs = unsafe { std::mem::zeroed() };
+    // SAFETY: as above.
+    let stated = unsafe { libc::fstatfs(rw.as_raw_fd(), &raw mut fs) } == 0;
+    // `f_type` is signed in some targets' C libraries and unsigned in others.
+    #[allow(clippy::unnecessary_cast)]
+    let ext4 = stated && fs.f_type as u64 == EXT4_SUPER_MAGIC;
+    if ext4 {
+        return Ok(());
+    }
     let path = CString::new(format!("/proc/self/fd/{}", rw.as_raw_fd())).map_err(|_| "a NUL in a path")?;
     let data = CString::new(format!("size={size}")).map_err(|_| "a NUL in a size")?;
     // SAFETY: mount(2) of NUL-terminated strings that outlive the call.
@@ -642,6 +657,37 @@ fn own_top(top: &std::path::Path, flags: &str) -> io::Result<()> {
     std::os::unix::fs::lchown(top, Some(uid), Some(gid))
 }
 
+/// mount(2) of `src` at `dst`; a volume's (`dax`) with `dax=inode`, so that its server says
+/// which of its files the guest maps into the share's DAX window, where the share has one
+/// (D189): a kernel without FUSE's DAX refuses the option (EINVAL), and mounts it as
+/// before.
+fn virtiofs_mount(
+    src: &std::ffi::CStr,
+    dst: &std::ffi::CStr,
+    ty: *const libc::c_char,
+    flags: libc::c_ulong,
+    dax: bool,
+) -> io::Result<()> {
+    let data: *const libc::c_void = if dax {
+        c"dax=inode".as_ptr().cast()
+    } else {
+        std::ptr::null()
+    };
+    // SAFETY: mount(2) of NUL-terminated strings that outlive the call.
+    if unsafe { libc::mount(src.as_ptr(), dst.as_ptr(), ty, flags, data) } == 0 {
+        return Ok(());
+    }
+    let e = io::Error::last_os_error();
+    if dax && e.raw_os_error() == Some(libc::EINVAL) {
+        // SAFETY: as above, with no options.
+        if unsafe { libc::mount(src.as_ptr(), dst.as_ptr(), ty, flags, std::ptr::null()) } == 0 {
+            return Ok(());
+        }
+        return Err(io::Error::last_os_error());
+    }
+    Err(e)
+}
+
 /// Mounts a shared directory (D38), `TAG\0DEST\0FLAGS\0NAME`: by its virtio-fs tag at
 /// DEST, read-only with `ro`, and `nosuid`, `nodev` and `noexec` as they say (a CDI
 /// mount's, D146); with `copy`, where it is empty, the image's files at DEST copied into
@@ -667,13 +713,10 @@ fn volume(spec: &str) -> io::Result<()> {
             c(src).ok_or(io::ErrorKind::InvalidInput)?,
             c(dst).ok_or(io::ErrorKind::InvalidInput)?,
         );
+        let dax = fstype == Some("virtiofs");
         let fstype = fstype.and_then(c);
         let ty = fstype.as_ref().map_or(std::ptr::null(), |t| t.as_ptr());
-        // SAFETY: mount(2) of NUL-terminated strings that outlive the call.
-        if unsafe { libc::mount(src.as_ptr(), dst.as_ptr(), ty, flags, std::ptr::null()) } != 0 {
-            return Err(io::Error::last_os_error());
-        }
-        Ok(())
+        virtiofs_mount(&src, &dst, ty, flags, dax)
     };
     let staging = format!("/dev/.shards-{tag}");
     match file {
@@ -741,13 +784,10 @@ fn join_volume(spec: &str) -> io::Result<()> {
             c(src).ok_or(io::ErrorKind::InvalidInput)?,
             c(dst).ok_or(io::ErrorKind::InvalidInput)?,
         );
+        let dax = fstype == Some("virtiofs");
         let fstype = fstype.and_then(c);
         let ty = fstype.as_ref().map_or(std::ptr::null(), |t| t.as_ptr());
-        // SAFETY: mount(2) of NUL-terminated strings that outlive the call.
-        if unsafe { libc::mount(src.as_ptr(), dst.as_ptr(), ty, flags, std::ptr::null()) } != 0 {
-            return Err(io::Error::last_os_error());
-        }
-        Ok(())
+        virtiofs_mount(&src, &dst, ty, flags, dax)
     };
     std::fs::create_dir_all(&staging)?;
     mount(tag, &staging, Some("virtiofs"), 0)?;
@@ -1012,6 +1052,22 @@ fn privileged() -> io::Result<()> {
     Ok(())
 }
 
+/// What is mounted at `path` in this process's mount namespace, for a failed remount's
+/// message: the topmost mount's filesystem, source and superblock options, as
+/// /proc/self/mountinfo has them (proc(5)), or that nothing is.
+fn mounted_at(path: &str) -> String {
+    let Ok(info) = std::fs::read_to_string("/proc/self/mountinfo") else {
+        return "its mounts unread".into();
+    };
+    info.lines()
+        .rev()
+        .find(|l| l.split(' ').nth(4) == Some(path))
+        .map_or_else(
+            || "nothing mounted".into(),
+            |l| l.split_once(" - ").map_or(l, |(_, fs)| fs).to_string(),
+        )
+}
+
 /// What runc says when setup `entry` fails with `errno`.
 pub fn failed(entry: &[u8], errno: i32) -> String {
     let err = shards_cmdline::go::linux_error(errno);
@@ -1031,7 +1087,8 @@ pub fn failed(entry: &[u8], errno: i32) -> String {
     }
     if let Some(size) = text.strip_prefix("shm=") {
         return format!(
-            "error mounting \"shm\" to rootfs at \"/dev/shm\": mount src=shm, dst=/dev/shm, flags=MS_NOSUID|MS_NODEV|MS_NOEXEC|MS_REMOUNT, data=mode=1777,size={size}: {err}"
+            "error mounting \"shm\" to rootfs at \"/dev/shm\": mount src=shm, dst=/dev/shm, flags=MS_NOSUID|MS_NODEV|MS_NOEXEC|MS_REMOUNT, data=mode=1777,size={size}: {err} (at /dev/shm: {})",
+            mounted_at("/dev/shm")
         );
     }
     if let Some(spec) = text.strip_prefix("ulimit=") {

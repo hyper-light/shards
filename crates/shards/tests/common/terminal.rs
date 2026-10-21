@@ -71,6 +71,10 @@ impl Terminal {
             .env("SHARDS_HOME", home)
             .env("SHARDS_KERNEL", kernel())
             .env("SHARDS_INIT", guest_init())
+            // A terminal emulator's type (Terminal.app's, iTerm2's, VTE's), with colours,
+            // not that of whatever started the tests: a service's is often `dumb`.
+            .env("TERM", "xterm-256color")
+            .env_remove("NO_COLOR")
             .env_remove("NORAW")
             .stdin(stdio())
             .stdout(stdio())

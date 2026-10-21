@@ -55,8 +55,10 @@ const RESP_LEN: usize = 10;
 /// `struct virtio_mem_config`.
 const CONFIG_LEN: usize = 56;
 
-/// Maps plugged memory into the guest at the hypervisor's stage 2 and unmaps it: the
-/// hypervisor's (`hv::Stage2`), or a test's.
+/// Maps host memory into the guest at the hypervisor's stage 2 and unmaps it, while the VM
+/// lives, readable, writable and executable: plugged memory, and a writable layer's head as
+/// it is mapped back (pmem `Layer::remap_head`). The hypervisor's (`hv::Stage2`), or a
+/// test's.
 pub trait Mapper: Send + Sync {
     /// # Safety
     /// `host..host+len` must stay mapped in this process until unmapped here or the VM is

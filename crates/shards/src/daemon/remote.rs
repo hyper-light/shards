@@ -667,9 +667,9 @@ impl Machine {
             .name("copy-step".into())
             .spawn(move || {
                 let (code, out, err) = {
-                    let fds: Vec<std::os::fd::BorrowedFd<'_>> = match args.get(1).map(String::as_str) {
-                        Some("archive") => vec![out_w.as_fd()],
-                        Some("extract") => vec![in_r.as_fd()],
+                    let fds: Vec<crate::cli::Stream<'_>> = match args.get(1).map(String::as_str) {
+                        Some("archive") => vec![crate::cli::Stream::To(out_w.as_fd())],
+                        Some("extract") => vec![crate::cli::Stream::From(in_r.as_fd())],
                         _ => Vec::new(),
                     };
                     ask_self(args, identity, &fds).unwrap_or_else(|e| (1, Vec::new(), e.into_bytes()))
@@ -855,17 +855,14 @@ fn serve_agents<W: Write>(
     }
 }
 
-/// `argv` asked of this daemon as its CLI asks it (cli/client.rs `ask`), with `fds`: over its
-/// socket, which the daemon's working directory, its home, holds; its status, and what it
-/// said on stdout and stderr.
+/// `argv` asked of this daemon as its CLI asks it, with `fds` the streams its request stands
+/// for: through a slot of its home, the daemon's working directory (cli/client.rs
+/// `ask_here`); its status, and what it said on stdout and stderr.
 fn ask_self(
     argv: Vec<String>,
     daemon: shards_ipc::Identity,
-    fds: &[std::os::fd::BorrowedFd<'_>],
+    fds: &[crate::cli::Stream<'_>],
 ) -> Result<(u8, Vec<u8>, Vec<u8>), String> {
-    use shards_ipc::kind;
-    let conn = std::os::unix::net::UnixStream::connect(shards_ipc::SOCKET)
-        .map_err(|e| format!("this daemon's socket: {e}"))?;
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| i64::try_from(d.as_nanos()).unwrap_or(i64::MAX))
@@ -877,21 +874,7 @@ fn ask_self(
         daemon,
         ..shards_ipc::Command::default()
     };
-    shards_ipc::send(&conn, kind::CONTAINER, &command.encode(), fds)
-        .map_err(|e| format!("asking the daemon: {e}"))?;
-    let (mut out, mut err) = (Vec::new(), Vec::new());
-    loop {
-        match shards_ipc::recv(&conn) {
-            Ok(Some(m)) if m.kind == kind::OUT => out.extend(m.payload),
-            Ok(Some(m)) if m.kind == kind::ERR => err.extend(m.payload),
-            Ok(Some(m)) if m.kind == kind::END => {
-                return Ok((m.payload.first().copied().unwrap_or(1), out, err));
-            }
-            Ok(Some(m)) if m.kind == kind::RESTART => return Err("the daemon is shutting down".into()),
-            Ok(Some(_)) => {}
-            Ok(None) | Err(_) => return Err("the daemon ended before it answered".into()),
-        }
-    }
+    crate::cli::ask_here(&command, fds)
 }
 
 /// Whether the daemon's variable `name` goes to a client's command: shards' own settings of

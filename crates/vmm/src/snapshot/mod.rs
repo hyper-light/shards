@@ -8,6 +8,9 @@
 //! - `g-<id>/memory`: guest RAM, one region after another, then the memory a virtio-mem
 //!   device had plugged, one run of its blocks after another, with all-zero pages as holes
 //! - `g-<id>/swap`: in a snapshot of a run, the run's swap as its guest had it (D176)
+//! - `g-<id>/layer-head` and `g-<id>/layer`: of a machine with a writable layer (D190), its
+//!   device's head as memory, all-zero pages as holes, and its ext4 file system as the guest
+//!   had it, which each run restored from the snapshot is given a copy of
 //!
 //! and, once a VM resumed from the generation has recorded one, a third:
 //!
@@ -42,6 +45,10 @@ const MEMORY: &str = "memory";
 const WORKING_SET: &str = "working-set";
 /// A run's swap, as its guest had it, where a snapshot of a run keeps one (D176).
 const SWAP: &str = "swap";
+/// A writable layer's head, the page structures its guest's kernel wrote there (D190).
+pub const LAYER_HEAD: &str = "layer-head";
+/// A writable layer's file system, as its guest had it (D190).
+pub const LAYER: &str = "layer";
 const WORKING_SET_MAGIC: [u8; 8] = *b"SHRDWSET";
 const WORKING_SET_VERSION: u32 = 1;
 /// A working set's bytes before its entries: magic, version, architecture, page size
@@ -75,7 +82,12 @@ const MAGIC: [u8; 8] = *b"SHRDSNAP";
 ///     is saved (D176).
 /// 21: a share's tables keep the bytes of the files its guest holds open that no path
 ///     reaches, which a restored server holds anew (D176).
-const VERSION: u32 = 21;
+/// 22: and the length of each shared directory's DAX window in MiB, 0 for none (D189).
+/// 23: a share's state keeps its DAX window's mappings, which a restore maps again from
+///     its new server (D189, D176).
+/// 24: and the length of its writable layer's file system in MiB, 0 for none, whose head and
+///     file system the generation keeps beside it (D190).
+const VERSION: u32 = 24;
 /// The snapshot format this build writes and reads: what a snapshot kept for reuse is
 /// keyed by.
 pub const FORMAT: u32 = VERSION;
@@ -134,6 +146,14 @@ pub struct MachineConfig {
     /// device a run's swap file is mapped into, last of its devices. A snapshot keeps it
     /// with no run's file.
     pub swap_mib: u64,
+    /// The length of each shared directory's DAX window in MiB (D189), 0 for none: a shared
+    /// memory region (virtio-fs's cache) its guest maps the files it reads into, each share's
+    /// and the join share's its own, after the swap window.
+    pub share_window_mib: u64,
+    /// The length of its writable layer's file system in MiB (D190), 0 for none: a
+    /// virtio-pmem device after the pmem files, its head and file system kept beside the
+    /// snapshot, and a restore's own copy of the file system mapped there.
+    pub layer_mib: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -237,10 +257,17 @@ pub fn net(dir: &Path) -> Result<Option<[u8; 6]>, String> {
     Ok(read(dir)?.snapshot.config.net)
 }
 
+/// Whether the snapshot in `dir` keeps a writable layer (D190): a VM restoring it is given
+/// a file to copy it into.
+pub fn has_layer(dir: &Path) -> Result<bool, String> {
+    Ok(read(dir)?.snapshot.config.layer_mib > 0)
+}
+
 /// The files of the generation the snapshot in `dir` is at, for a VM in App Sandbox to be
 /// granted before it reads the snapshot (shards `grant`; PM M70): its state and memory,
-/// and its working set, which it may not have. Its pointer is read as the VM's input.
-pub fn generation_files(dir: &Path) -> Result<([PathBuf; 2], PathBuf), String> {
+/// then its working set and its writable layer's head and file system (D190), which it may
+/// not have. Its pointer is read as the VM's input.
+pub fn generation_files(dir: &Path) -> Result<([PathBuf; 2], [PathBuf; 3]), String> {
     let name = current(dir).map_err(|e| match e.kind() {
         io::ErrorKind::NotFound => format!("{}: no snapshot here", dir.display()),
         _ => format!("{}: {CURRENT}: {e}", dir.display()),
@@ -248,7 +275,11 @@ pub fn generation_files(dir: &Path) -> Result<([PathBuf; 2], PathBuf), String> {
     let generation = dir.join(name);
     Ok((
         [generation.join(STATE), generation.join(MEMORY)],
-        generation.join(WORKING_SET),
+        [
+            generation.join(WORKING_SET),
+            generation.join(LAYER_HEAD),
+            generation.join(LAYER),
+        ],
     ))
 }
 
@@ -265,6 +296,12 @@ pub fn generation(dir: &Path) -> Result<PathBuf, String> {
 /// The swap a snapshot of a run kept, in generation `generation` (D176).
 pub fn swap_of(generation: &Path) -> PathBuf {
     generation.join(SWAP)
+}
+
+/// The writable layer's file system a snapshot kept, in generation `generation` (D190):
+/// what each VM restored from it is given a copy of.
+pub fn layer_of(generation: &Path) -> PathBuf {
+    generation.join(LAYER)
 }
 
 /// A snapshot's pointer, for [`generation_files`].
@@ -359,6 +396,8 @@ fn encode(s: &Snapshot, generation: &str, identities: &[Identity]) -> Result<Vec
     w.bool(s.config.gpu.is_some());
     w.u64(s.config.gpu.unwrap_or(0));
     w.u64(s.config.swap_mib);
+    w.u64(s.config.share_window_mib);
+    w.u64(s.config.layer_mib);
     w.seq(&s.plugged, |w, (gpa, len)| {
         w.u64(*gpa);
         w.u64(*len);
@@ -441,6 +480,8 @@ fn decode(bytes: &[u8]) -> codec::Result<Decoded> {
     let has_gpu = r.bool()?;
     let gpu_window = r.u64()?;
     let swap_mib = r.u64()?;
+    let share_window_mib = r.u64()?;
+    let layer_mib = r.u64()?;
     // At most a run for every other block of the most a guest may plug.
     let plugged = r.seq(MAX_PLUGGED_RUNS, 16, |r| Ok((r.u64()?, r.u64()?)))?;
     let arch_state = r.bytes(usize::MAX)?.to_vec();
@@ -463,6 +504,8 @@ fn decode(bytes: &[u8]) -> codec::Result<Decoded> {
                 reporting,
                 gpu: has_gpu.then_some(gpu_window),
                 swap_mib,
+                share_window_mib,
+                layer_mib,
             },
             plugged,
             arch: arch_state,
@@ -575,7 +618,7 @@ fn write_with(
     memory: &GuestMemory,
     after: &mut dyn FnMut(Step) -> io::Result<()>,
 ) -> Result<File, String> {
-    let staged = stage_with(dir, snap, memory, after)?;
+    let staged = stage_with(dir, snap, memory, None, after)?;
     let generation = staged.generation()?;
     staged.commit_with(after)?;
     Ok(generation)
@@ -591,24 +634,34 @@ pub struct Staged {
     dir: PathBuf,
     name: String,
     staging: PathBuf,
-    /// Its files, made durable by the commit: its memory and state, and a run's swap
-    /// where it keeps one (D176).
+    /// Its files, made durable by the commit: its memory and state, a run's swap where it
+    /// keeps one (D176), and its writable layer's head and file system (D190).
     files: Vec<File>,
+    /// Which of its files is its writable layer's head as [`stage`] wrote it, where it
+    /// keeps one.
+    layer_head: Option<usize>,
     /// Whether its commit has run, which leaves nothing of it the staging's to remove.
     committed: bool,
     /// Writers to one snapshot take turns, this one until its commit.
     _lock: File,
 }
 
-/// Stages a snapshot of a paused VM in `dir`, creating `dir` if needed ([`Staged`]).
-pub fn stage(dir: &Path, snap: &Snapshot, memory: &GuestMemory) -> Result<Staged, String> {
-    stage_with(dir, snap, memory, &mut |_| Ok(()))
+/// Stages a snapshot of a paused VM in `dir`, creating `dir` if needed ([`Staged`]), with
+/// its writable `layer` where it has one (D190).
+pub fn stage(
+    dir: &Path,
+    snap: &Snapshot,
+    memory: &GuestMemory,
+    layer: Option<&crate::devices::virtio::pmem::Layer>,
+) -> Result<Staged, String> {
+    stage_with(dir, snap, memory, layer, &mut |_| Ok(()))
 }
 
 fn stage_with(
     dir: &Path,
     snap: &Snapshot,
     memory: &GuestMemory,
+    layer: Option<&crate::devices::virtio::pmem::Layer>,
     after: &mut dyn FnMut(Step) -> io::Result<()>,
 ) -> Result<Staged, String> {
     let at = |e: &dyn std::fmt::Display| format!("{}: {e}", dir.display());
@@ -622,10 +675,19 @@ fn stage_with(
         after(Step::Memory)?;
         let state_file = create_unsynced(&staged.staging.join(STATE), |mut f| f.write_all(&state))?;
         after(Step::State)?;
-        Ok(vec![memory_file, state_file])
+        let mut files = vec![memory_file, state_file];
+        if let Some(layer) = layer {
+            let head = create_unsynced(&staged.staging.join(LAYER_HEAD), |_| Ok(()))?;
+            let data = create_unsynced(&staged.staging.join(LAYER), |_| Ok(()))?;
+            layer.save(&head, &data).map_err(io::Error::other)?;
+            files.extend([head, data]);
+        }
+        Ok(files)
     })();
     match files {
         Ok(files) => {
+            // The layer's head and file system are its last two.
+            staged.layer_head = layer.and(files.len().checked_sub(2));
             staged.files = files;
             Ok(staged)
         }
@@ -638,15 +700,16 @@ fn stage_with(
 }
 
 /// Stages an empty generation in `dir`, creating `dir` if needed, for a VM to fill
-/// ([`fill`]) that writes only the files it is handed (D30): its memory and state and,
-/// with `swap`, the run's swap (D176). The VM's are [`Staged::handed`]; the commit makes
-/// the generation durable and the one in use once the VM has filled them.
-pub fn prepare(dir: &Path, swap: bool) -> Result<Staged, String> {
+/// ([`fill`]) that writes only the files it is handed (D30): its memory and state and, for
+/// a `run`'s, the run's swap (D176) and its writable layer's head and file system (D190),
+/// which a machine without them leaves empty. The VM's are [`Staged::handed`]; the commit
+/// makes the generation durable and the one in use once the VM has filled them.
+pub fn prepare(dir: &Path, run: bool) -> Result<Staged, String> {
     let mut staged = staging(dir, fresh_name())?;
-    let names = [MEMORY, STATE, SWAP];
+    let names = [MEMORY, STATE, SWAP, LAYER_HEAD, LAYER];
     let made = names
         .iter()
-        .take(if swap { 3 } else { 2 })
+        .take(if run { names.len() } else { 2 })
         .map(|name| create_unsynced(&staged.staging.join(name), |_| Ok(())))
         .collect::<io::Result<Vec<File>>>();
     match made {
@@ -728,6 +791,7 @@ fn staging(dir: &Path, name: String) -> Result<Staged, String> {
         name,
         staging,
         files: Vec::new(),
+        layer_head: None,
         committed: false,
         _lock: lock,
     })
@@ -745,8 +809,16 @@ impl Staged {
         platform::open_dir(&self.staging).map_err(|e| format!("{}: {e}", self.staging.display()))
     }
 
-    /// Its files for the VM that fills them ([`prepare`]): its memory, its state, and its
-    /// swap where it has one, each a descriptor of its own.
+    /// Its writable layer's head as [`stage`] wrote it (D190), where it keeps one: what the
+    /// machine that goes on maps back ([`Layer::remap_head`]).
+    ///
+    /// [`Layer::remap_head`]: crate::devices::virtio::pmem::Layer::remap_head
+    pub fn layer_head(&self) -> Option<&File> {
+        self.layer_head.and_then(|i| self.files.get(i))
+    }
+
+    /// Its files for the VM that fills them ([`prepare`]): its memory, its state, and a
+    /// run's swap, layer head and layer, each a descriptor of its own.
     pub fn handed(&self) -> Result<Vec<File>, String> {
         self.files
             .iter()
@@ -759,7 +831,8 @@ impl Staged {
     /// no VM writes, made durable with the rest by the commit (D176). A name of the
     /// generation's own files is refused.
     pub fn add(&mut self, name: &str, bytes: &[u8]) -> Result<(), String> {
-        if [STATE, MEMORY, SWAP, WORKING_SET].contains(&name) || name.contains(['/', '\\']) {
+        if [STATE, MEMORY, SWAP, LAYER_HEAD, LAYER, WORKING_SET].contains(&name) || name.contains(['/', '\\'])
+        {
             return Err(format!("{name:?} names no file a generation's spawner adds"));
         }
         let at = self.staging.join(name);
@@ -1057,6 +1130,8 @@ mod tests {
                 reporting: false,
                 gpu: None,
                 swap_mib: 0,
+                share_window_mib: 0,
+                layer_mib: 0,
             },
             plugged: Vec::new(),
             arch: vec![marker, 2, 3],
@@ -1259,7 +1334,7 @@ mod tests {
 
         /// A generation prepared for a VM that writes only what it is handed (D30, D176):
         /// filled through its files and committed, it reads as one the VM wrote, the run's
-        /// swap kept beside it; until the commit, the one before is in use.
+        /// swap and writable layer kept beside it; until the commit, the one before is in use.
         #[test]
         fn a_prepared_generation_filled_and_committed_reads_back() {
             let s = Scratch::new("prepared");
@@ -1267,13 +1342,17 @@ mod tests {
             write(&dir, &sample(&s.0, 1), &ram(1)).unwrap();
             let mut staged = prepare(&dir, true).unwrap();
             let handed = staged.handed().unwrap();
-            assert_eq!(handed.len(), 3);
+            assert_eq!(handed.len(), 5);
             let name = staged.name().to_string();
             fill(&name, &sample(&s.0, 2), &ram(2), &handed[0], &handed[1]).unwrap();
             platform::write_all_at(&handed[2], b"swap", 0).unwrap();
+            platform::write_all_at(&handed[3], b"head", 0).unwrap();
+            platform::write_all_at(&handed[4], b"ext4", 0).unwrap();
             // And a file of the spawner's own, beside the VM's; none of theirs.
             staged.add("resume", b"tokens").unwrap();
-            assert!(staged.add(STATE, b"x").unwrap_err().contains("names no file"));
+            for theirs in [STATE, LAYER_HEAD, LAYER] {
+                assert!(staged.add(theirs, b"x").unwrap_err().contains("names no file"));
+            }
             assert_eq!(markers(&read(&dir).unwrap()), (1, 1));
             staged.commit().unwrap();
             let p = read(&dir).unwrap();
@@ -1281,6 +1360,8 @@ mod tests {
             assert_eq!(p.name, name);
             assert_eq!(generation(&dir).unwrap(), p.path);
             assert_eq!(fs::read(swap_of(&p.path)).unwrap(), b"swap");
+            assert_eq!(fs::read(p.path.join(LAYER_HEAD)).unwrap(), b"head");
+            assert_eq!(fs::read(layer_of(&p.path)).unwrap(), b"ext4");
             assert_eq!(fs::read(p.path.join("resume")).unwrap(), b"tokens");
             // Only its user's: a generation holds a guest's memory.
             {

@@ -10,8 +10,19 @@ use shards_git::Oid;
 use shards_git::object::{self, Kind};
 use shards_git::pack::Pack;
 
+/// `git` with nothing of the user's or the system's configuration (a host's may sign every
+/// commit and tag with a key of its own): its `HOME` is `home`.
+fn git_command(home: &Path) -> Command {
+    let mut cmd = Command::new("git");
+    cmd.env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("HOME", home)
+        .env_remove("XDG_CONFIG_HOME")
+        .env_remove("GIT_CONFIG_GLOBAL");
+    cmd
+}
+
 fn git(dir: &Path, args: &[&str]) -> Vec<u8> {
-    let out = Command::new("git")
+    let out = git_command(dir)
         .arg("-C")
         .arg(dir)
         .args([
@@ -23,8 +34,6 @@ fn git(dir: &Path, args: &[&str]) -> Vec<u8> {
             "commit.gpgsign=false",
         ])
         .args(args)
-        .env("GIT_CONFIG_NOSYSTEM", "1")
-        .env("HOME", dir)
         .output()
         .unwrap();
     assert!(
@@ -32,6 +41,31 @@ fn git(dir: &Path, args: &[&str]) -> Vec<u8> {
         "git {args:?}: {}",
         String::from_utf8_lossy(&out.stderr)
     );
+    out.stdout
+}
+
+/// What `cmd` writes given `input` on its stdin, written by a thread of its own as its
+/// output is read: a git that answers as it reads (`cat-file --batch`) waits on a test that
+/// writes all before it reads once both pipes are full, and Linux gives a user's new pipes
+/// less room once theirs hold `pipe-user-pages-soft` (pipe(7)).
+fn fed(cmd: &mut Command, input: Vec<u8>) -> Vec<u8> {
+    use std::io::Write as _;
+    use std::process::Stdio;
+    let mut child = cmd
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    let writer = std::thread::spawn(move || stdin.write_all(&input));
+    let out = child.wait_with_output().unwrap();
+    assert!(
+        out.status.success(),
+        "{cmd:?}: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    writer.join().unwrap().unwrap();
     out.stdout
 }
 
@@ -68,38 +102,23 @@ fn packs_git_writes_are_read_object_for_object() {
         .collect();
     objects.sort();
     objects.dedup();
-    let want = {
-        use std::io::Write as _;
-        let mut child = Command::new("git")
+    let list: String = objects.iter().map(|o| o.hex() + "\n").collect();
+    let want = fed(
+        git_command(&dir)
             .arg("-C")
             .arg(&dir)
-            .args(["cat-file", "--batch"])
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped())
-            .spawn()
-            .unwrap();
-        let list: String = objects.iter().map(|o| o.hex() + "\n").collect();
-        child.stdin.take().unwrap().write_all(list.as_bytes()).unwrap();
-        child.wait_with_output().unwrap().stdout
-    };
+            .args(["cat-file", "--batch"]),
+        list.clone().into_bytes(),
+    );
     for (delta_base_offset, name) in [(true, "ofs"), (false, "ref")] {
-        let list: String = objects.iter().map(|o| o.hex() + "\n").collect();
         let mut args = vec!["pack-objects", "--stdout", "--depth=50", "--window=50"];
         if delta_base_offset {
             args.push("--delta-base-offset");
         }
-        let mut child = Command::new("git")
-            .arg("-C")
-            .arg(&dir)
-            .args(&args)
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-            .unwrap();
-        use std::io::Write as _;
-        child.stdin.take().unwrap().write_all(list.as_bytes()).unwrap();
-        let bytes = child.wait_with_output().unwrap().stdout;
+        let bytes = fed(
+            git_command(&dir).arg("-C").arg(&dir).args(&args),
+            list.clone().into_bytes(),
+        );
         let pack = Pack::read(bytes, 1 << 24).unwrap_or_else(|e| panic!("{name}: {e}"));
         assert_eq!(pack.len(), objects.len(), "{name}");
         let mut batch: &[u8] = &want;
@@ -133,23 +152,12 @@ fn packs_git_writes_are_read_object_for_object() {
 /// Runs `git upload-pack --stateless-rpc`, as git's HTTP backend runs it for a `POST`,
 /// with protocol version 2, on `body`.
 fn upload_pack(dir: &Path, advertise: bool, body: &[u8]) -> Vec<u8> {
-    use std::io::Write as _;
-    let mut cmd = Command::new("git");
+    let mut cmd = git_command(dir);
     cmd.arg("upload-pack").arg("--stateless-rpc");
     if advertise {
         cmd.arg("--advertise-refs");
     }
-    let mut child = cmd
-        .arg(dir)
-        .env("GIT_PROTOCOL", "version=2")
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .spawn()
-        .unwrap();
-    child.stdin.take().unwrap().write_all(body).unwrap();
-    let out = child.wait_with_output().unwrap();
-    assert!(out.status.success());
-    out.stdout
+    fed(cmd.arg(dir).env("GIT_PROTOCOL", "version=2"), body.to_vec())
 }
 
 /// A shallow fetch of a branch from git's own upload-pack, its tree walked as git checks
@@ -457,6 +465,15 @@ fn a_git_daemon_serves_as_smart_http_does() {
         eprintln!("SKIP: no git on this host");
         return;
     }
+    // git's own daemon, which some hosts' git leaves to a package of its own (Fedora's
+    // git-daemon).
+    let exec_path = git_command(Path::new("/")).arg("--exec-path").output().unwrap();
+    let git_daemon = Path::new(String::from_utf8(exec_path.stdout).unwrap().trim())
+        .join(format!("git-daemon{}", std::env::consts::EXE_SUFFIX));
+    if !git_daemon.is_file() {
+        eprintln!("SKIP: no git-daemon on this host ({})", git_daemon.display());
+        return;
+    }
     let base_dir = shards_testdir::TempDir::new("git-daemon").unwrap();
     let base = base_dir.join("git-daemon");
     let _ = std::fs::remove_dir_all(&base);
@@ -474,8 +491,7 @@ fn a_git_daemon_serves_as_smart_http_does() {
         .port();
     // git-daemon itself, not `git daemon`, which runs it as a child that killing `git`
     // would leave behind.
-    let exec_path = String::from_utf8(git(&dir, &["--exec-path"])).unwrap();
-    let mut daemon = Command::new(Path::new(exec_path.trim()).join("git-daemon"))
+    let mut daemon = Command::new(&git_daemon)
         .args([
             "--export-all",
             "--reuseaddr",
@@ -620,20 +636,13 @@ fn an_objects_abbreviation_is_gits() {
     for i in 0..20_000 {
         blob(&format!("f/{i}"), &format!("filler {i}\n"));
     }
-    {
-        use std::io::Write as _;
-        let mut child = Command::new("git")
+    fed(
+        git_command(&big)
             .arg("-C")
             .arg(&big)
-            .args(["fast-import", "--quiet"])
-            .env("GIT_CONFIG_NOSYSTEM", "1")
-            .env("HOME", big.as_os_str())
-            .stdin(std::process::Stdio::piped())
-            .spawn()
-            .unwrap();
-        child.stdin.take().unwrap().write_all(import.as_bytes()).unwrap();
-        assert!(child.wait().unwrap().success());
-    }
+            .args(["fast-import", "--quiet"]),
+        import.into_bytes(),
+    );
     git(&big, &["repack", "-adq"]);
     git(&big, &["prune-packed"]);
     let pack = pack_of(&big);

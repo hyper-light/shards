@@ -169,6 +169,7 @@ pub fn rewrite(args: &[String]) -> Option<Vec<String>> {
         ("run" | "start", Thing::Daemon) => &["daemon"],
         ("stop", Thing::Daemon) => &["daemon", "stop"],
         ("configure" | "use" | "set", Thing::Guest) => &["guest", "use"],
+        ("configure" | "set", Thing::Disk) => &["disk", "configure"],
         ("inspect" | "show", Thing::Guest) => &["guest"],
         ("login", Thing::Registry) => &["login"],
         ("logout", Thing::Registry) => &["logout"],
@@ -281,8 +282,8 @@ pub static ACTIONS: &[(&str, &str, &str, &str)] = &[
     (
         "manage",
         "configure",
-        "guest",
-        "Choose the kernel and shards-init runs boot",
+        "guest | disk",
+        "Choose the kernel and shards-init runs boot, or how much of the disk shards keeps",
     ),
     ("manage", "copy", "vm", "Copy files into or out of a microVM"),
     (
@@ -545,6 +546,12 @@ pub static USES: &[(&str, &str, &str, &str)] = &[
         "configure",
         "guest --kernel FILE --init FILE",
         "Choose the kernel and shards-init runs boot",
+    ),
+    (
+        "manage",
+        "configure",
+        "disk [--build-cache-max N%|SIZE] [--log-history SIZE] ...",
+        "How much of the disk the build cache and each run's log keep",
     ),
     (
         "manage",
@@ -900,6 +907,11 @@ mod tests {
             Some("daemon --detached")
         );
         assert_eq!(said("stop daemon").as_deref(), Some("daemon stop"));
+        // What shards keeps on disk, set by its user (D186).
+        assert_eq!(
+            said("configure disk --log-history 2g").as_deref(),
+            Some("disk configure --log-history 2g")
+        );
         assert_eq!(
             said("configure guest --kernel k --init i").as_deref(),
             Some("guest use --kernel k --init i")

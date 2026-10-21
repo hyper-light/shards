@@ -355,6 +355,7 @@ fn now() -> i64 {
 /// oracle/main.go's manifest.
 fn manifest(root: &Path, owners: bool) -> Value {
     let now = now();
+    let label = root.parent().and_then(host_label);
     let mut out = Vec::new();
     let mut first: BTreeMap<(u64, u64), Vec<u8>> = BTreeMap::new();
     let mut closed = BTreeMap::new();
@@ -425,7 +426,10 @@ fn manifest(root: &Path, owners: bool) -> Value {
                 }
             }
         }
-        let x = xattrs(&p);
+        let mut x = xattrs(&p);
+        if label.is_some() && x.get("security.selinux") == label.as_ref() {
+            x.remove("security.selinux");
+        }
         if !x.is_empty() {
             m.insert("xattrs".into(), json!(x));
         }
@@ -435,6 +439,17 @@ fn manifest(root: &Path, owners: bool) -> Value {
         return Value::Null;
     }
     Value::Array(out)
+}
+
+/// The SELinux label this host gives a file made in `dir` (Fedora's `user_tmp_t`), as a
+/// manifest holds an attribute: the host's, not an archive's, which Go's answers, recorded
+/// where no policy labels files, never hold. None where nothing labels a new file.
+fn host_label(dir: &Path) -> Option<String> {
+    let probe = dir.join(".label-probe");
+    fs::write(&probe, b"").unwrap();
+    let label = xattrs(&probe).remove("security.selinux");
+    fs::remove_file(&probe).unwrap();
+    label
 }
 
 /// Directories only root could walk, opened to their owner, with the modes they had: an

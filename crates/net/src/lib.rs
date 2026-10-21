@@ -3193,10 +3193,21 @@ mod tests {
         let (daemon, daemons) = UnixStream::pair().unwrap();
         let (vm, vms) = UnixStream::pair().unwrap();
         let soon = || Instant::now() + Duration::from_secs(10);
-        let (hosted, kept) = (
-            std::net::TcpListener::bind("127.0.0.1:0").unwrap(),
-            std::net::TcpListener::bind("127.0.0.1:0").unwrap(),
-        );
+        // Below the ports a bind of port 0 is given (Linux's ip_local_port_range, from
+        // 32768 by default; macOS's from 49152): once let go, the port is no other bind's,
+        // where one of that range was another test's at once.
+        let low: u16 = std::fs::read_to_string("/proc/sys/net/ipv4/ip_local_port_range")
+            .ok()
+            .and_then(|r| r.split_whitespace().next().and_then(|n| n.parse().ok()))
+            .unwrap_or(32768)
+            .min(32768);
+        let outside = || {
+            (1024..low)
+                .rev()
+                .find_map(|port| std::net::TcpListener::bind(("127.0.0.1", port)).ok())
+                .unwrap()
+        };
+        let (hosted, kept) = (outside(), outside());
         let (hosted_at, kept_at) = (hosted.local_addr().unwrap(), kept.local_addr().unwrap());
         std::thread::scope(|scope| {
             let served = scope.spawn(move || {

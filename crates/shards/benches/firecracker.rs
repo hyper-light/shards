@@ -135,7 +135,8 @@ mod compare {
     const WALK_CMDLINE: &str = "console=ttyS0 quiet panic=-1 shards_test=walk shards_walk_mib=512";
 
     /// THP's A/B (`--thp-ab all,never`, PM M157): shards alone, its guest memory on huge
-    /// pages as shards advises it (MADV_HUGEPAGE, `all`), on none (`never`: the VM
+    /// pages as shards advises it (`all`: its kernel's image as it boots, the rest once its
+    /// PID 1 runs, PM M279), its boot's advice alone (`boot`), on none (`never`: the VM
     /// process's THP disabled), or unadvised, on what the host's THP gives memory no one
     /// advised (`unadvised`, SHARDS_THP_ADVICE=never, PM M225), interleaved, each order
     /// alternating. Boot: the idle guest's
@@ -149,8 +150,8 @@ mod compare {
         let initrd = idle_initrd();
         for arm in &arms {
             assert!(
-                arm == "all" || arm == "never" || arm == "unadvised",
-                "--thp-ab: all, never or unadvised, not {arm}"
+                arm == "all" || arm == "never" || arm == "unadvised" || arm == "boot",
+                "--thp-ab: all, never, unadvised or boot, not {arm}"
             );
         }
         let command = |arm: &str, memory: &str, cmdline: &str| {
@@ -162,6 +163,11 @@ mod compare {
                 .args(["--cpus", "1", "--memory", memory, "--cmdline", cmdline]);
             if arm == "unadvised" {
                 c.env("SHARDS_THP_ADVICE", "never");
+            }
+            // The boot's advice alone: its kernel's image on huge pages, nothing more once
+            // its PID 1 runs (PM M279).
+            if arm == "boot" {
+                c.env("SHARDS_THP_ADVICE", "boot");
             }
             if arm == "never" {
                 // No huge page for any of the VM process's memory, its MADV_HUGEPAGE guest
@@ -399,6 +405,9 @@ mod compare {
         let dir = common::workspace().join(format!("target/bench/fc-restore-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
+        // Firecracker's API sockets, in a test's own short directory: a path under the
+        // workspace can pass sockaddr_un's 108 bytes, and Firecracker then never starts.
+        let sockets = shards_testdir::TempDir::new("fc").unwrap();
 
         // shards: the guest asks for its snapshot, and the VM stops once it is written.
         let snapshot = dir.join("shards");
@@ -429,7 +438,7 @@ mod compare {
             BEAT_CMDLINE,
             "firecracker-beat.json",
         );
-        let socket = dir.join("fc-save.sock");
+        let socket = sockets.join("save.sock");
         let mut booted = Command::new(firecracker)
             .arg("--api-sock")
             .arg(&socket)
@@ -479,7 +488,7 @@ mod compare {
                         restore_sample(&mut c, guest_bytes, || {})
                     }
                     Vmm::Firecracker => {
-                        let socket = dir.join(format!("fc-{i}.sock"));
+                        let socket = sockets.join(format!("{i}.sock"));
                         let mut c = Command::new(firecracker);
                         c.arg("--api-sock").arg(&socket).args(["--level", "error"]);
                         restore_sample(&mut c, guest_bytes, || {
@@ -495,7 +504,7 @@ mod compare {
                 }
             }
         }
-        density(firecracker, &snapshot, &dir, &load, fleet, cpus, memory);
+        density(firecracker, &snapshot, &sockets, &load, fleet, cpus, memory);
         let _ = std::fs::remove_dir_all(&dir);
         let to_beat = |v: &[Sample]| v.iter().map(|s| s.to_ready_us).collect::<Vec<_>>();
         let mib =
@@ -582,11 +591,12 @@ mod compare {
             * 1024
     }
 
-    /// The density rounds (above): `fleet` restores of each VMM's snapshot held at once.
+    /// The density rounds (above): `fleet` restores of each VMM's snapshot held at once,
+    /// Firecracker's API sockets in `sockets`.
     fn density(
         firecracker: &Path,
         snapshot: &Path,
-        dir: &Path,
+        sockets: &Path,
         load: &str,
         fleet: usize,
         cpus: &str,
@@ -614,7 +624,7 @@ mod compare {
                         Held::start(&mut c, || {})
                     }
                     Vmm::Firecracker => {
-                        let socket = dir.join(format!("fleet-{round}-{k}.sock"));
+                        let socket = sockets.join(format!("f{round}-{k}.sock"));
                         let mut c = Command::new(firecracker);
                         c.arg("--api-sock").arg(&socket).args(["--level", "error"]);
                         Held::start(&mut c, || api(&socket, "PUT", "/snapshot/load", load))
@@ -984,36 +994,65 @@ mod compare {
             shown.push(key);
         }
         let smaps = std::fs::read_to_string(format!("/proc/{pid}/smaps")).unwrap_or_default();
-        let mut rows: Vec<(String, u64, u64, u64)> = Vec::new();
-        let (mut name, mut size) = (String::new(), 0);
+        // Each mapping: its name, size, start, and its resident, anonymous, PMD-mapped file
+        // and huge anonymous bytes, which say how much of it a huge page holds.
+        struct Row {
+            name: String,
+            size: u64,
+            start: u64,
+            rss: u64,
+            anon: u64,
+            file_pmd: u64,
+            anon_huge: u64,
+        }
+        let mut rows: Vec<Row> = Vec::new();
+        let (mut name, mut size, mut at) = (String::new(), 0, 0);
         for line in smaps.lines() {
             let mut fields = line.split_whitespace();
             let Some(first) = fields.next() else { continue };
+            let bytes = |fields: &mut std::str::SplitWhitespace<'_>| -> u64 {
+                fields.next().unwrap().parse::<u64>().unwrap() * 1024
+            };
             if let Some((start, end)) = first.split_once('-')
                 && let (Ok(start), Ok(end)) = (u64::from_str_radix(start, 16), u64::from_str_radix(end, 16))
             {
-                size = end - start;
+                (size, at) = (end - start, start);
                 name = line
                     .split_whitespace()
                     .nth(5)
                     .unwrap_or("[anonymous]")
                     .to_string();
             } else if first == "Rss:" {
-                let kib: u64 = fields.next().unwrap().parse().unwrap();
-                rows.push((name.clone(), size, kib * 1024, 0));
-            } else if first == "Anonymous:" {
-                let kib: u64 = fields.next().unwrap().parse().unwrap();
-                if let Some(last) = rows.last_mut() {
-                    last.3 = kib * 1024;
+                rows.push(Row {
+                    name: name.clone(),
+                    size,
+                    start: at,
+                    rss: bytes(&mut fields),
+                    anon: 0,
+                    file_pmd: 0,
+                    anon_huge: 0,
+                });
+            } else if let Some(last) = rows.last_mut() {
+                match first {
+                    "Anonymous:" => last.anon = bytes(&mut fields),
+                    "FilePmdMapped:" => last.file_pmd = bytes(&mut fields),
+                    "AnonHugePages:" => last.anon_huge = bytes(&mut fields),
+                    _ => {}
                 }
             }
         }
-        rows.sort_by_key(|r| std::cmp::Reverse(r.2));
+        rows.sort_by_key(|r| std::cmp::Reverse(r.rss));
         let mut out = format!("{vmm} (pid {pid}) mappings by resident bytes:\n");
-        for (name, size, rss, anon) in rows.iter().take(12) {
+        for r in rows.iter().take(12) {
             out.push_str(&format!(
-                "  rss {:>9} anon {:>9} size {:>11}  {name}\n",
-                rss, anon, size
+                "  rss {:>9} anon {:>9} pmd {:>9} huge {:>9} size {:>11} at +{:#x} of 2 MiB  {}\n",
+                r.rss,
+                r.anon,
+                r.file_pmd,
+                r.anon_huge,
+                r.size,
+                r.start % (2 << 20),
+                r.name
             ));
         }
         let _ = std::io::Write::write_all(&mut std::io::stderr(), out.as_bytes());

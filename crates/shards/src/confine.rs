@@ -118,11 +118,16 @@ pub fn confine() -> Result<(), String> {
     // VFIO's, for a passed-through PCI function (D154): only Landlock's rules give a
     // process a VFIO descriptor to make them of.
     requests.extend(shards_vmm::devices::pci::vfio::IOCTLS.iter().map(|&r| r as u32));
-    // `isatty` asks TCGETS in glibc and TIOCGWINSZ in musl.
+    // What a terminal is asked: whether it is one, its settings, and its settings set
+    // (raw mode, terminal.rs). `isatty` asks TIOCGWINSZ in musl, TCGETS in older glibc and
+    // TCGETS2 in glibc 2.43, whose tcgetattr asks TCGETS2 and tcsetattr sets with TCSETS2
+    // (their code on Fedora 44, where a filter without them killed `run --kernel`'s VM).
     requests.extend([
         libc::FIONBIO as u32,
         libc::TCGETS as u32,
         libc::TCSETS as u32,
+        libc::TCGETS2 as u32,
+        libc::TCSETS2 as u32,
         libc::TIOCGWINSZ as u32,
     ]);
     rules.push(Rule::with(libc::SYS_ioctl, 1, &requests));
@@ -571,6 +576,73 @@ mod tests {
     /// sockets only where it may, moves nothing from one directory to another, has no TCP,
     /// and is refused a rule for a path not there (D30, PM M66). shards runs no VM on a
     /// kernel without ABI v5, and this test fails on one.
+    /// In a child process (this test binary, told by `CONFINED_TERMINAL_CHILD`): a
+    /// terminal's pair opened, then confined as a VM process is, it asks of the terminal
+    /// what a VM asks of its own. Exits 0 where its filter allowed it all; 1 where a call
+    /// failed, 2 where no terminal opened, 3 where it could not be confined. A call refused
+    /// ends it by SIGSYS, the call named.
+    fn terminal_child() -> ! {
+        let (mut leader, mut follower) = (0, 0);
+        // SAFETY: openpty(3) writing two descriptors into ints of ours, with no name,
+        // settings or size given.
+        let opened = unsafe {
+            libc::openpty(
+                &mut leader,
+                &mut follower,
+                std::ptr::null_mut(),
+                std::ptr::null(),
+                std::ptr::null(),
+            )
+        } == 0;
+        let status = if !opened {
+            2
+        } else if confine().is_err() {
+            3
+        } else {
+            // SAFETY: isatty(3), tcgetattr(3) and tcsetattr(3) of the terminal just opened,
+            // its settings read into, and set from, a termios of ours.
+            let asked = unsafe {
+                let mut settings: libc::termios = std::mem::zeroed();
+                libc::isatty(follower) == 1
+                    && libc::tcgetattr(follower, &mut settings) == 0
+                    && libc::tcsetattr(follower, libc::TCSANOW, &settings) == 0
+            };
+            i32::from(!asked)
+        };
+        // SAFETY: exit_group(2), which the filter allows.
+        unsafe { libc::syscall(libc::SYS_exit_group, status) };
+        loop {
+            std::hint::spin_loop();
+        }
+    }
+
+    /// A VM process asks its terminal what its C library asks with, which its filter
+    /// allows: TCGETS2 and TCSETS2 in glibc 2.43, TCGETS and TCSETS in older glibc,
+    /// TIOCGWINSZ in musl's isatty (a filter without the first killed `run --kernel`'s VM on
+    /// Fedora 44, glibc 2.43).
+    #[test]
+    fn a_confined_vm_asks_its_terminal_as_its_c_library_does() {
+        if std::env::var_os("CONFINED_TERMINAL_CHILD").is_some() {
+            terminal_child();
+        }
+        let out = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "confine::tests::a_confined_vm_asks_its_terminal_as_its_c_library_does",
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .env("CONFINED_TERMINAL_CHILD", "1")
+            .output()
+            .unwrap();
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
     #[test]
     fn landlock_confines_the_process_to_its_paths() {
         if let Ok(dir) = std::env::var("LANDLOCK_CHILD") {

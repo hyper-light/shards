@@ -65,6 +65,11 @@ impl AsRawSocket for UnixListener {
 #[cfg(target_os = "macos")]
 mod macos_thread;
 
+#[cfg(unix)]
+mod pressure;
+#[cfg(unix)]
+pub use pressure::{MemoryPressure, PressureWatches};
+
 mod granted;
 #[cfg(unix)]
 pub use granted::open_beneath_input;
@@ -139,6 +144,47 @@ pub fn sync_dir(path: &std::path::Path) -> io::Result<()> {
     }
 }
 
+/// Whether letting go of a file written through a shared mapping, its last writable
+/// descriptor or mapping, writes its pages back before it returns, as whoever reads the
+/// file meanwhile waits: macOS (APFS, PM M278). Linux writes back in its own time.
+pub const LET_GO_WRITES_BACK: bool = cfg!(target_os = "macos");
+
+/// Has what was written to `file` written back now, on a thread of its own, where its OS
+/// would make whoever lets go of the file last wait for it: macOS writes a file's dirty
+/// pages back as its last writable descriptor or mapping goes, and whoever reads the file
+/// meanwhile waits too (APFS, PM M278). fsync(2) alone, which writes them to the drive, not
+/// through its cache as `F_FULLFSYNC` does: nothing here asks to be durable. Its own
+/// descriptor of the file, which it closes once written back; the caller goes on at once,
+/// or waits for it where no thread starts. Elsewhere nothing: Linux writes back in its own
+/// time, and a close never waits for it.
+pub fn write_back_ahead(file: &File) -> io::Result<()> {
+    #[cfg(target_os = "macos")]
+    {
+        use std::os::fd::AsRawFd as _;
+        let fsync = |file: &File| {
+            // SAFETY: fsync(2) of the descriptor `file` holds.
+            if unsafe { libc::fsync(file.as_raw_fd()) } != 0 {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(())
+        };
+        let own = file.try_clone()?;
+        let spawned = std::thread::Builder::new()
+            .name("write-back".into())
+            .spawn(move || {
+                if let Err(e) = fsync(&own) {
+                    crate::debug!("writing back: {e}");
+                }
+            });
+        if spawned.is_err() {
+            return fsync(file);
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = file;
+    Ok(())
+}
+
 /// Fills `buf` from `file` at `offset`, failing on a short file.
 pub fn read_exact_at(file: &File, buf: &mut [u8], offset: u64) -> io::Result<()> {
     let mut done = 0;
@@ -177,11 +223,18 @@ pub fn write_all_at(file: &File, buf: &[u8], offset: u64) -> io::Result<()> {
 /// its OS says hold data, and of them only the blocks not all zeros, so that `to` takes no
 /// more of a disk than `from` does.
 pub fn copy_used(from: &File, to: &File, len: u64) -> io::Result<()> {
+    copy_ranges(from, to, len, &data_ranges(from, len)?)
+}
+
+/// Copies `ranges` of `from`'s first `len` bytes, `(offset, length)` as [`data_ranges`]
+/// gives them, into `to`, which is `len` bytes long after: of them only the blocks not all
+/// zeros.
+pub fn copy_ranges(from: &File, to: &File, len: u64, ranges: &[(u64, u64)]) -> io::Result<()> {
     const CHUNK: usize = 1 << 20;
     const BLOCK: usize = 4 << 10;
     to.set_len(0)?;
     let mut buf = vec![0u8; CHUNK];
-    for (start, n) in data_ranges(from, len)? {
+    for &(start, n) in ranges {
         let end = start.saturating_add(n).min(len);
         let mut at = start;
         while at < end {
@@ -268,6 +321,20 @@ mod tests {
         // SAFETY: poll(2) of one descriptor, without waiting.
         let ready = unsafe { libc::poll(&mut poll, 1, 0) };
         ready == 1
+    }
+
+    /// Whether `fd` becomes readable within a second: a watch's wake on Linux is counted by
+    /// its instance's reader, a moment after the change (FileWatch).
+    #[cfg(unix)]
+    fn woken(fd: std::os::fd::BorrowedFd<'_>) -> bool {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+        while !readable(fd) {
+            if std::time::Instant::now() >= deadline {
+                return false;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        true
     }
 
     /// A poller names what has something to read, or has ended, by its token; waits out
@@ -428,6 +495,38 @@ mod tests {
         assert_eq!(ended.wait().unwrap().code(), Some(3));
     }
 
+    /// More watches than a user may have inotify instances (128 by default, shared with the
+    /// rest of the session) each see their own directory change and no other's: the
+    /// process's one instance serves them all (PM M257).
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn more_watches_than_a_user_has_instances_each_see_their_own() {
+        let root = shards_testdir::TempDir::new("platform-watches").unwrap();
+        let dirs: Vec<std::path::PathBuf> = (0..300)
+            .map(|i| {
+                let d = root.join(i.to_string());
+                std::fs::create_dir(&d).unwrap();
+                d
+            })
+            .collect();
+        let watches: Vec<FileWatch> = dirs
+            .iter()
+            .map(|d| FileWatch::new(&open_dir(d).unwrap()).unwrap())
+            .collect();
+        std::fs::write(dirs[7].join("x"), b"").unwrap();
+        assert!(woken(watches[7].fd()), "watch 7, of the directory changed");
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        for (i, w) in watches.iter().enumerate().filter(|(i, _)| *i != 7) {
+            assert!(!readable(w.fd()), "watch {i} woke for another's change");
+        }
+        for d in &dirs {
+            std::fs::write(d.join("y"), b"").unwrap();
+        }
+        for (i, w) in watches.iter().enumerate() {
+            assert!(woken(w.fd()), "watch {i}");
+        }
+    }
+
     /// A watch on a directory wakes for a name's coming and going there, and for writes
     /// to the file it watches in it, only that file's, and waits again once cleared;
     /// all wherever the directory goes. A write to a file it does not watch wakes it not.
@@ -452,25 +551,74 @@ mod tests {
         b.write_all(b"w").unwrap();
         assert!(!readable(watch.fd()), "a write to a file not watched");
         a.write_all(b"x").unwrap();
-        assert!(readable(watch.fd()), "a write to the file watched");
+        assert!(woken(watch.fd()), "a write to the file watched");
         watch.clear();
         assert!(!readable(watch.fd()));
         append("c");
-        assert!(readable(watch.fd()), "a name come");
+        assert!(woken(watch.fd()), "a name come");
         watch.clear();
         watch.file(&File::open(dir.join("b")).unwrap()).unwrap();
         watch.clear();
         a.write_all(b"w").unwrap();
         assert!(!readable(watch.fd()), "a write to the file watched before");
         b.write_all(b"y").unwrap();
-        assert!(readable(watch.fd()), "a write to the file watched now");
+        assert!(woken(watch.fd()), "a write to the file watched now");
         watch.clear();
         let moved = dir.with_extension("moved");
         std::fs::rename(&dir, &moved).unwrap();
         watch.clear();
         std::fs::remove_file(moved.join("c")).unwrap();
-        assert!(readable(watch.fd()), "a name gone, the directory moved");
+        assert!(woken(watch.fd()), "a name gone, the directory moved");
         std::fs::remove_dir_all(&moved).unwrap();
+    }
+
+    /// A file watched for writes calls its function with the watch's number as another
+    /// handle cuts it short, and as it writes it; two watches of it are one, which calls
+    /// each; and let go of, the last of them, it calls nothing.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_file_watched_for_writes_calls_as_it_is_cut_short() {
+        use std::sync::atomic::{AtomicI32, AtomicU32, Ordering};
+        static WATCHED: AtomicI32 = AtomicI32::new(-1);
+        static CALLS: AtomicU32 = AtomicU32::new(0);
+        fn called(watched: libc::c_int) {
+            WATCHED.store(watched, Ordering::SeqCst);
+            CALLS.fetch_add(1, Ordering::SeqCst);
+        }
+        let calls_within_a_second = |at_least: u32| {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+            while CALLS.load(Ordering::SeqCst) < at_least {
+                if std::time::Instant::now() >= deadline {
+                    return false;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            true
+        };
+        let dir = shards_testdir::TempDir::new("platform-writes").unwrap();
+        std::fs::write(dir.join("f"), vec![7u8; 1 << 16]).unwrap();
+        let file = File::open(dir.join("f")).unwrap();
+        let watched = watch_writes(&file, called).unwrap();
+        assert_eq!(watch_writes(&file, called).unwrap(), watched, "one watch");
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(dir.join("f"))
+            .unwrap()
+            .set_len(1 << 12)
+            .unwrap();
+        assert!(
+            calls_within_a_second(2),
+            "cut short: {}",
+            CALLS.load(Ordering::SeqCst)
+        );
+        assert_eq!(WATCHED.load(Ordering::SeqCst), watched);
+        unwatch_writes(watched, called);
+        unwatch_writes(watched, called);
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        let before = CALLS.load(Ordering::SeqCst);
+        std::fs::write(dir.join("f"), b"x").unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        assert_eq!(CALLS.load(Ordering::SeqCst), before, "let go of");
     }
 
     #[test]

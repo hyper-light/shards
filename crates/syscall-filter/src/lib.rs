@@ -479,8 +479,11 @@ pub fn install(filter: &Filter, all_threads: bool) -> io::Result<()> {
 }
 
 /// Reports a syscall a filter refused: on SIGSYS, writes `shards: seccomp refused syscall
-/// N in thread NAME` to stderr and exits with [`REFUSED`]. Only write(2), prctl(2) and
-/// exit_group(2) are made, which every filter allows.
+/// N in thread NAME, arguments A0 A1 A2` to stderr and exits with [`REFUSED`]. The arguments
+/// are what the filter decides by where it decides by one (ioctl's request, fcntl's
+/// command): read from the registers the syscall was made with, in the handler's
+/// ucontext_t. Only write(2), prctl(2) and exit_group(2) are made, which every filter
+/// allows.
 pub fn name_refusals() -> io::Result<()> {
     // SAFETY: an all-zero sigaction is a valid value to fill.
     let mut action: libc::sigaction = unsafe { std::mem::zeroed() };
@@ -495,12 +498,12 @@ pub fn name_refusals() -> io::Result<()> {
 }
 
 /// The SIGSYS handler: async-signal-safe, formatting into a stack buffer.
-extern "C" fn refused(_: libc::c_int, info: *mut libc::siginfo_t, _: *mut libc::c_void) {
+extern "C" fn refused(_: libc::c_int, info: *mut libc::siginfo_t, context: *mut libc::c_void) {
     // `si_syscall`, after `si_call_addr` in the union after three ints and padding
     // (include/uapi/asm-generic/siginfo.h, _sigsys), at 24 on 64-bit Linux.
     // SAFETY: the kernel passes a valid siginfo_t for SIGSYS, whose _sigsys it filled.
     let syscall = unsafe { info.cast::<u8>().add(24).cast::<i32>().read_unaligned() };
-    let mut buf = [0u8; 128];
+    let mut buf = [0u8; 192];
     let mut len = 0;
     let mut put = |bytes: &[u8]| {
         for &b in bytes {
@@ -531,11 +534,63 @@ extern "C" fn refused(_: libc::c_int, info: *mut libc::siginfo_t, _: *mut libc::
     unsafe { libc::prctl(libc::PR_GET_NAME, name.as_mut_ptr(), 0, 0, 0) };
     let end = name.iter().position(|&b| b == 0).unwrap_or(name.len());
     put(name.get(..end).unwrap_or_default());
+    if let Some(arguments) = arguments(context) {
+        put(b", arguments");
+        for a in arguments {
+            put(b" 0x");
+            let mut hex = [0u8; 16];
+            let mut at = hex.len();
+            let mut n = a;
+            loop {
+                at -= 1;
+                if let Some(d) = hex.get_mut(at) {
+                    *d = b"0123456789abcdef"
+                        .get((n & 0xf) as usize)
+                        .copied()
+                        .unwrap_or(b'?');
+                }
+                n >>= 4;
+                if n == 0 || at == 0 {
+                    break;
+                }
+            }
+            put(hex.get(at..).unwrap_or_default());
+        }
+    }
     put(b"\n");
     // SAFETY: write(2) of our stack buffer, then exit_group(2).
     unsafe {
         libc::write(2, buf.as_ptr().cast(), len);
         libc::syscall(libc::SYS_exit_group, REFUSED);
+    }
+}
+
+/// The first three arguments of the syscall a SIGSYS stopped, from the registers it was made
+/// with: SA_SIGINFO's third argument is the stopped thread's ucontext_t (sigaction(2)), and
+/// a syscall's arguments are in rdi, rsi and rdx on x86_64 (syscall(2)), x0 to x2 on
+/// aarch64.
+fn arguments(context: *mut libc::c_void) -> Option<[u64; 3]> {
+    if context.is_null() {
+        return None;
+    }
+    // SAFETY: the kernel passes the handler a valid ucontext_t for the signal it delivers,
+    // which lives while the handler runs.
+    let uc = unsafe { &*context.cast::<libc::ucontext_t>() };
+    #[cfg(target_arch = "x86_64")]
+    {
+        let gregs = &uc.uc_mcontext.gregs;
+        let at = |r: libc::c_int| {
+            usize::try_from(r)
+                .ok()
+                .and_then(|i| gregs.get(i))
+                .map(|&v| v as u64)
+        };
+        Some([at(libc::REG_RDI)?, at(libc::REG_RSI)?, at(libc::REG_RDX)?])
+    }
+    #[cfg(target_arch = "aarch64")]
+    {
+        let regs = &uc.uc_mcontext.regs;
+        Some([*regs.first()?, *regs.get(1)?, *regs.get(2)?])
     }
 }
 
@@ -648,6 +703,11 @@ mod tests {
             if let Some(said) = said {
                 assert!(stderr.contains(&said), "{case}, large {large}: {stderr}");
                 assert!(stderr.contains("in thread "), "{case}, large {large}: {stderr}");
+            }
+            // The arguments it was refused for: fcntl(2, F_GETFL), its third whatever was there.
+            if case == "argument" {
+                let arguments = format!(", arguments 0x2 0x{:x} 0x", libc::F_GETFL);
+                assert!(stderr.contains(&arguments), "{case}, large {large}: {stderr}");
             }
         }
     }

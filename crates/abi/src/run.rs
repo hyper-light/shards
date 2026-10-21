@@ -135,7 +135,34 @@ pub mod kind {
     /// network, its address and prefix there, its gateway and its link's hardware address
     /// (`bridge 10.244.0.2/24 10.244.0.1 aa:bb:cc:dd:ee:ff`).
     pub const MEMBER: u8 = 39;
+    /// Host to guest, after [`EXIT`], in [`SAVE`]'s place for a writable layer that is an
+    /// ext4 file system on its host's disk (D190): its files stay there, which the host
+    /// keeps; the guest says what the layer uses ([`USAGE`]) and ends with an empty
+    /// [`LAYER`] frame once every file system's writes are made and the layer's journal
+    /// is written in place (EXT4_IOC_CHECKPOINT), so that the host reads it as it stands
+    /// once it has stopped the machine.
+    pub const KEEP: u8 = 40;
 }
+
+/// The file at the root of a writable layer kept in its own file (D190), beside its
+/// overlay's `upper` and `work`, naming the directories of [`MADE`]'s files that its pack
+/// leaves out, one a line: those holding nothing else, as the image has them, which init
+/// finds as the layer is kept, where the image is at hand.
+pub const MADE_ONLY: &str = "shards-made-only";
+
+/// What init makes of every container, which is not its change: its mounts and the files
+/// it writes in `/etc`, as Docker's init layer holds them (moby daemon/initlayer/
+/// setup_unix.go). A container's writable layer is packed without them, in its guest
+/// (init's layer.rs) and on its host (D190).
+pub const MADE: [&str; 7] = [
+    "proc",
+    "sys",
+    "dev",
+    "etc/hosts",
+    "etc/hostname",
+    "etc/resolv.conf",
+    "etc/mtab",
+];
 
 /// A bind of the run's processes on the host's network (`--network host`, D124), as
 /// [`kind::BIND`] carries it: the host's address of the kind the guest bound (its every
@@ -327,6 +354,11 @@ pub struct Spec {
     /// `KIND=VALUE`: `tmpfs=DEST\0OPTIONS` (moby's merged tmpfs options), `shm=BYTES`,
     /// `ulimit=NAME=SOFT:HARD`, `sysctl=KEY=VALUE`, and `readonly` alone.
     pub setup: Vec<Vec<u8>>,
+    /// The terminal types a command with a pty may be told of in TERM, best first, where its
+    /// environment gives none: its client's terminal's, then what that terminal speaks, and
+    /// last what every terminal does. init gives it the first the run's root has a
+    /// description of (terminfo(5)), else the last; empty for none to choose.
+    pub terms: Vec<Vec<u8>>,
 }
 
 /// A container's capabilities by default, by number (linux/capability.h; moby
@@ -588,6 +620,12 @@ pub mod builtin {
     /// What a container listens on (D181): each TCP port it listens on and each UDP port
     /// it holds, at an address past its loopback, as `tcp PORT` and `udp PORT` lines.
     pub const LISTENS: u8 = 14;
+    /// What the microVM holds cold of its files given back to its host, at the host's
+    /// memory pressure (D188): its run's inactive file pages reclaimed, then reported free
+    /// at once (D151); then what it holds plugged past twice what it uses asked to be
+    /// unplugged (D148). Answered with the bytes its run's cgroup holds less and the bytes
+    /// asked to be unplugged, in decimal, a space between.
+    pub const RECLAIM: u8 = 15;
 }
 
 /// A terminal's size in character cells. Zero in either leaves the pty's size alone, as
@@ -614,12 +652,28 @@ impl Size {
     }
 }
 
+/// Whether `name` is a terminal type a run's TERM may be given ([`Spec::terms`]): a name
+/// terminfo(5) files an entry under, one path component of at most 255 bytes, each a
+/// letter, a digit or one of `.`, `_`, `+` and `-`, and neither `.` nor `..`. What a client
+/// says of its terminal is looked up with it in a run's root, which no other name reaches
+/// past.
+pub fn terminal_name(name: &[u8]) -> bool {
+    !name.is_empty()
+        && name.len() <= 255
+        && name != b"."
+        && name != b".."
+        && name
+            .iter()
+            .all(|&b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'+' | b'-'))
+}
+
 impl Spec {
     /// Lists are a big-endian u32 count, then their strings; each string is a big-endian
     /// u32 length, then its bytes. Then the optional sections, each a tag and what it
     /// holds, in order: a terminal, 1 and its size; resolv.conf, 2 and its bytes; stdin
     /// read, 3 alone; a built-in, 4 and its kind; hosts, 5 and a list; a domain name, 6
-    /// and its bytes; cgroup limits, 7 and a list; namespace setup, 8 and a list.
+    /// and its bytes; cgroup limits, 7 and a list; namespace setup, 8 and a list; terminal
+    /// types, 9 and a list.
     ///
     /// Callers see [`encoded_len`](Spec::encoded_len) within [`MAX_PAYLOAD`] first: past
     /// it, a length would not fit its u32.
@@ -681,6 +735,13 @@ impl Spec {
                 put_bytes(out, c);
             }
         }
+        if !self.terms.is_empty() {
+            out.push(9);
+            put(out, self.terms.len());
+            for t in &self.terms {
+                put_bytes(out, t);
+            }
+        }
     }
 
     /// The bytes [`encode`](Spec::encode) writes, or `None` past `usize`: measured without
@@ -718,6 +779,11 @@ impl Spec {
         } else {
             strings(&self.setup)?.checked_add(1)?
         };
+        let terms = if self.terms.is_empty() {
+            0
+        } else {
+            strings(&self.terms)?.checked_add(1)?
+        };
         n.checked_add(if self.tty.is_some() { 5 } else { 0 })?
             .checked_add(resolv)?
             .checked_add(usize::from(self.stdin))?
@@ -725,7 +791,8 @@ impl Spec {
             .checked_add(hosts)?
             .checked_add(domain)?
             .checked_add(cgroup)?
-            .checked_add(setup)
+            .checked_add(setup)?
+            .checked_add(terms)
     }
 
     /// The spec in `bytes`, or `None` unless they hold exactly one.
@@ -745,10 +812,12 @@ impl Spec {
             domainname: Vec::new(),
             cgroup: Vec::new(),
             setup: Vec::new(),
+            terms: Vec::new(),
         };
         let mut spec = spec;
         // Optional sections, each once, in order: 1 a terminal, 2 resolv.conf, 3 stdin, 4
-        // a built-in, 5 hosts, 6 a domain name, 7 cgroup limits.
+        // a built-in, 5 hosts, 6 a domain name, 7 cgroup limits, 8 namespace setup, 9
+        // terminal types.
         let mut last = 0u8;
         while let Some(tag) = r.take(1).and_then(|t| t.first().copied()) {
             if tag <= last {
@@ -764,6 +833,7 @@ impl Spec {
                 6 => spec.domainname = r.bytes().filter(|d| !d.is_empty())?,
                 7 => spec.cgroup = r.list().filter(|l| !l.is_empty())?,
                 8 => spec.setup = r.list().filter(|l| !l.is_empty())?,
+                9 => spec.terms = r.list().filter(|l| !l.is_empty())?,
                 _ => return None,
             }
         }
@@ -925,12 +995,17 @@ mod tests {
             domainname: b"example.org".to_vec(),
             cgroup: vec![b"memory.max=33554432".to_vec(), b"cpu.max=50000 100000".to_vec()],
             setup: vec![b"readonly".to_vec(), b"shm=1".to_vec()],
+            terms: vec![
+                b"xterm-ghostty".to_vec(),
+                b"xterm-256color".to_vec(),
+                b"xterm".to_vec(),
+            ],
         };
         let bytes = spec.encode();
         assert_eq!(bytes.len(), spec.encoded_len().unwrap());
         assert_eq!(Spec::decode(&bytes), Some(spec.clone()));
         // Its length measured as written, whichever optional sections it has (review 1.20).
-        for sections in 0..=255u8 {
+        for sections in 0..=511u16 {
             let some = Spec {
                 tty: (sections & 1 != 0).then_some(Size { rows: 1, cols: 2 }),
                 resolv: (sections & 2 != 0).then(|| b"nameserver 10.0.0.1\n".to_vec()),
@@ -956,6 +1031,11 @@ mod tests {
                 } else {
                     Vec::new()
                 },
+                terms: if sections & 256 != 0 {
+                    vec![b"xterm".to_vec()]
+                } else {
+                    Vec::new()
+                },
                 ..spec.clone()
             };
             let written = some.encode();
@@ -967,6 +1047,7 @@ mod tests {
             domainname: Vec::new(),
             cgroup: Vec::new(),
             setup: Vec::new(),
+            terms: Vec::new(),
             tty: None,
             resolv: None,
             stdin: false,
@@ -980,6 +1061,7 @@ mod tests {
             domainname: Vec::new(),
             cgroup: Vec::new(),
             setup: Vec::new(),
+            terms: Vec::new(),
             resolv: None,
             stdin: false,
             builtin: 0,
@@ -991,6 +1073,7 @@ mod tests {
             domainname: Vec::new(),
             cgroup: Vec::new(),
             setup: Vec::new(),
+            terms: Vec::new(),
             stdin: false,
             builtin: 0,
             ..spec.clone()
@@ -1001,6 +1084,7 @@ mod tests {
             domainname: Vec::new(),
             cgroup: Vec::new(),
             setup: Vec::new(),
+            terms: Vec::new(),
             builtin: 0,
             ..spec.clone()
         };
@@ -1010,6 +1094,7 @@ mod tests {
             domainname: Vec::new(),
             cgroup: Vec::new(),
             setup: Vec::new(),
+            terms: Vec::new(),
             ..spec.clone()
         };
         let without_hosts = hostless.encode();
@@ -1017,20 +1102,28 @@ mod tests {
             domainname: Vec::new(),
             cgroup: Vec::new(),
             setup: Vec::new(),
+            terms: Vec::new(),
             ..spec.clone()
         };
         let without_domain = domainless.encode();
         let unlimited = Spec {
             cgroup: Vec::new(),
             setup: Vec::new(),
+            terms: Vec::new(),
             ..spec.clone()
         };
         let without_cgroup = unlimited.encode();
         let bare = Spec {
             setup: Vec::new(),
+            terms: Vec::new(),
             ..spec.clone()
         };
         let without_setup = bare.encode();
+        let termless = Spec {
+            terms: Vec::new(),
+            ..spec.clone()
+        };
+        let without_terms = termless.encode();
         assert_eq!(Spec::decode(&Spec::default().encode()), Some(Spec::default()));
         let reading = Spec {
             stdin: true,
@@ -1057,6 +1150,8 @@ mod tests {
                 Some(unlimited.clone())
             } else if cut == without_setup.len() {
                 Some(bare.clone())
+            } else if cut == without_terms.len() {
+                Some(termless.clone())
             } else {
                 None
             };

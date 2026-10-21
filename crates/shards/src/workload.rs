@@ -115,6 +115,10 @@ pub struct Asked<'a> {
     pub told: Option<&'a Told<'a>>,
     /// Told the layer is saved whole.
     pub saved: Option<&'a (dyn Fn(Option<u64>) + Sync)>,
+    /// Told the layer stays in its own file (D190), its guest's journal written in place:
+    /// where the VM's layer is one and no container joined to its network outlives the
+    /// run, in place of a save.
+    pub kept: Option<&'a (dyn Fn(Option<u64>) + Sync)>,
     /// Given the records of the processes the run's members start and end (D123).
     pub processes: Option<&'a Records<'a>>,
     /// Given its guest's asks of the host on the host's network (D124): each frame's kind,
@@ -235,8 +239,9 @@ pub struct Ended {
     /// Bytes of its output a non-blocking log dropped, as they came while its queue was
     /// full (D162).
     pub dropped: u64,
-    /// The kernel killed a process of it for want of memory.
-    pub oom: bool,
+    /// What its init said as the kernel killed a process of it for want of memory: what
+    /// its cgroup held and was allowed, and the kernel's words (D159); none where none was.
+    pub oom: Option<Vec<u8>>,
 }
 
 /// Keeps a container's output (spec.rs, `LOG_STDOUT`): each record appended to its log,
@@ -550,6 +555,7 @@ pub fn serve(
         layer_out,
         told,
         saved,
+        kept,
         processes,
         host_net,
         resumed,
@@ -564,6 +570,7 @@ pub fn serve(
             layer_out: None,
             told: None,
             saved: None,
+            kept: None,
             processes: None,
             host_net: None,
             resumed: None,
@@ -675,15 +682,30 @@ pub fn serve(
         _ => false,
     };
     // A container that stays keeps its files, as they are now its command has ended:
-    // once its end is told, so that nothing waits for them that does not need them.
+    // once its end is told, so that nothing waits for them that does not need them. Where
+    // they are an ext4 file system in a file of their own (D190), they stay there, its
+    // journal written in place, for its host to read once the microVM has gone, unless
+    // containers joined to its network go on in it past the run (D119): their files are
+    // its, and a microVM that goes on keeps it in use.
     if let (Ok(_), Some(out)) = (&status, layer_out) {
-        match receive_layer_from(&conn, &mut reader, out, &mut beyond) {
-            Ok(used) => {
-                if let Some(saved) = saved {
-                    saved(used);
+        if crate::vm_run::layered() && !crate::warm::joining() {
+            match keep_layer_from(&conn, &mut reader, &mut beyond) {
+                Ok(used) => {
+                    if let Some(kept) = kept {
+                        kept(used);
+                    }
                 }
+                Err(e) => shards_vmm::debug!("keeping the container's files: {e}"),
             }
-            Err(e) => shards_vmm::debug!("saving the container's files: {e}"),
+        } else {
+            match receive_layer_from(&conn, &mut reader, out, &mut beyond) {
+                Ok(used) => {
+                    if let Some(saved) = saved {
+                        saved(used);
+                    }
+                }
+                Err(e) => shards_vmm::debug!("saving the container's files: {e}"),
+            }
         }
     }
     // Containers joined to its network go on past it (D119): the guest's signal
@@ -747,7 +769,7 @@ fn relay_frames(
     // D08).
     let mut frame = Vec::new();
     let mut not_run = None;
-    let mut oom = false;
+    let mut oom = None;
     // As much as the guest sends at once, in one read, whatever the frames it holds
     // (review 8.20): the caller's reader, whose next part reads what this one read past
     // its end.
@@ -792,7 +814,7 @@ fn relay_frames(
                 quiescing().quiet = true;
                 QUIET.notify_all();
             }
-            kind::OOM => oom = true,
+            kind::OOM => oom = Some(payload.to_vec()),
             kind::PROCESS => {
                 if let Some(processes) = processes {
                     processes(payload);
@@ -950,6 +972,44 @@ fn receive_layer_from(
         frame.resize(len, 0);
         reader.read_exact(&mut frame)?;
         out.write_all(&frame)?;
+    }
+}
+
+/// Asks the guest to keep the container's writable layer in its own file ([`kind::KEEP`],
+/// D190) and reads its answer: what the layer uses ([`kind::USAGE`]) and an empty
+/// [`kind::LAYER`] frame; each other frame given to `beyond`, as
+/// [`receive_layer_from`]'s.
+#[cfg(unix)]
+fn keep_layer_from(
+    conn: &UnixStream,
+    reader: &mut impl Read,
+    beyond: &mut dyn FnMut(u8, &[u8]) -> bool,
+) -> io::Result<Option<u64>> {
+    let mut w = conn;
+    w.write_all(&run::header(kind::KEEP, 0))?;
+    let mut frame = Vec::new();
+    let mut used = None;
+    loop {
+        let mut h = [0u8; run::HEADER];
+        reader.read_exact(&mut h)?;
+        let (which, len) =
+            run::parse_header(h).ok_or_else(|| io::Error::other("the guest sent a malformed frame"))?;
+        let len = len as usize;
+        frame.resize(len, 0);
+        reader.read_exact(&mut frame)?;
+        match which {
+            kind::LAYER if len == 0 => return Ok(used),
+            kind::USAGE if len == 8 && used.is_none() => {
+                used = <[u8; 8]>::try_from(frame.as_slice()).ok().map(u64::from_be_bytes);
+            }
+            kind::SYSTEM_ERR => return Err(io::Error::other(String::from_utf8_lossy(&frame).into_owned())),
+            _ if beyond(which, &frame) => {}
+            _ => {
+                return Err(io::Error::other(
+                    "the guest sent another frame as it kept its files",
+                ));
+            }
+        }
     }
 }
 
@@ -1632,6 +1692,7 @@ pub fn join(
     }
     let mut frame = Vec::new();
     let mut not_run: Option<String> = None;
+    let mut oom: Option<Vec<u8>> = None;
     let mut conn = io::BufReader::with_capacity(run::BUFFERED, shards_ipc::Polled(&stream));
     let (ended, lost, dropped) = with_sink(log.as_mut(), |mut log| {
         loop {
@@ -1671,6 +1732,8 @@ pub fn join(
                     let (_, why) = payload.split_first().ok_or("an empty failure")?;
                     not_run = Some(String::from_utf8_lossy(why).into_owned());
                 }
+                // A process of it the kernel killed for want of memory (D159).
+                kind::OOM => oom = Some(payload.to_vec()),
                 // Its end, and its connection, on which the host may ask for its writable
                 // layer (`receive_layer`) before it closes it: the guest sends nothing more
                 // until then.
@@ -1681,7 +1744,7 @@ pub fn join(
                         not_run: not_run.take(),
                         lost: 0,
                         dropped: 0,
-                        oom: false,
+                        oom: oom.take(),
                     });
                 }
                 _ => return Err(format!("the guest sent an unknown frame kind {which}")),

@@ -41,7 +41,8 @@ use http::Answer;
 pub(super) use own_networks::own_id;
 pub(super) use scope::Scope;
 
-/// The socket, relative to the home, the daemon's working directory, as `daemon.sock` is.
+/// The socket, relative to the home, the daemon's working directory: a socket address fits
+/// it whatever the home's path (`sun_path`).
 pub(super) const SOCKET: &str = "engine.sock";
 /// The API served, and the oldest answered (cli/version.rs).
 pub(super) const VERSION: &str = crate::cli::version::ENGINE_API.0;
@@ -393,6 +394,7 @@ impl<D: Disk> Daemon<D> {
             Err(e) => {
                 release(&provider);
                 log(format!("an API client's connection: {e}"));
+                self.wake_listener();
                 return;
             }
         };

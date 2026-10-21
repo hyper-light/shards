@@ -3,7 +3,7 @@
 //! image of the container's image and the layer of what it changed (D37), its config the
 //! container's, its history one step longer.
 
-use std::io::{Read as _, Write as _};
+use std::io::{Read as _, Write};
 
 use shards_cmdline::flags::Parsed;
 use shards_image::reference::Reference;
@@ -161,11 +161,23 @@ impl<D: crate::containers::Disk> Daemon<D> {
                 }
             } else {
                 self.await_settled(&id);
-                match std::fs::File::open(dir.join(LAYER)) {
-                    Ok(mut layer) => copy_into(&mut layer, &mut writer, &mut written),
-                    // Never run: nothing changed.
-                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-                    Err(e) => Err(e.to_string()),
+                // Kept in its file (D190), packed here as its guest would pack it.
+                let kept = dir.join(super::layers::KEPT);
+                if kept.exists() {
+                    super::layers::open_kept(&kept).and_then(|file| {
+                        let mut counted = Counted {
+                            to: &mut writer,
+                            written: &mut written,
+                        };
+                        super::layers::pack(file, &mut counted)
+                    })
+                } else {
+                    match std::fs::File::open(dir.join(LAYER)) {
+                        Ok(mut layer) => copy_into(&mut layer, &mut writer, &mut written),
+                        // Never run: nothing changed.
+                        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                        Err(e) => Err(e.to_string()),
+                    }
                 }
             };
         if let Err(e) = wrote {
@@ -468,4 +480,22 @@ fn container_config(image: Option<&serde_json::Value>, run: Option<&Run>) -> ser
         }
     }
     config
+}
+
+/// A writer that counts what goes through it.
+struct Counted<'a, W: Write> {
+    to: &'a mut W,
+    written: &'a mut u64,
+}
+
+impl<W: Write> Write for Counted<'_, W> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let n = self.to.write(buf)?;
+        *self.written += n as u64;
+        Ok(n)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.to.flush()
+    }
 }

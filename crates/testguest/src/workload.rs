@@ -63,6 +63,23 @@ pub fn main() -> ! {
             }
             0
         }
+        // Each file whole, after a line naming it, or the errno that refused it: what a
+        // failing test keeps of the guest's state. `@cgroup/NAME` is NAME in this
+        // process's own cgroup, which an exec shares with its run's command.
+        "files" => {
+            let own = std::fs::read_to_string("/proc/self/cgroup").unwrap_or_default();
+            let own = own.lines().find_map(|l| l.strip_prefix("0::")).unwrap_or("/");
+            for p in args.get(1..).unwrap_or_default() {
+                let path = match p.strip_prefix("@cgroup/") {
+                    Some(name) => format!("/sys/fs/cgroup{}/{name}", own.trim_end_matches('/')),
+                    None => p.clone(),
+                };
+                let said = std::fs::read_to_string(&path)
+                    .unwrap_or_else(|e| format!("errno {}\n", e.raw_os_error().unwrap_or(0)));
+                let _ = write!(io::stdout(), "== {path}\n{said}");
+            }
+            0
+        }
         // Real-time scheduling asked for: SCHED_FIFO at priority 1, or the errno that
         // refused it.
         "fifo" => {
@@ -114,6 +131,7 @@ pub fn main() -> ! {
         }
         "tree" => tree(arg(1)),
         "ps" => ps(),
+        "stacks" => stacks(),
         "mtime" => {
             use std::os::unix::fs::MetadataExt as _;
             for p in args.get(1..).unwrap_or_default() {
@@ -167,6 +185,9 @@ pub fn main() -> ! {
                 1
             }
         },
+        // Reads each file named through, a megabyte at a time, and says how much: what it
+        // read stays in the page cache, the reader's own memory one megabyte.
+        "read" => read_through(args.get(1..).unwrap_or_default()),
         // Touches N MiB, a page at a time, then says so: what a memory limit stops.
         "alloc" => {
             let mib: usize = arg(1).parse().unwrap_or(0);
@@ -540,6 +561,44 @@ fn ps() -> i32 {
             .map(|a| String::from_utf8_lossy(a).into_owned())
             .collect();
         out.push_str(&format!("{pid} {state} {}\n", args.join(" ")));
+    }
+    let _ = io::stdout().write_all(out.as_bytes());
+    0
+}
+
+/// What each process of the guest's is doing, for a test's hang to be read by (CI's
+/// scripts/ci/hang-watch.sh): `PID STATE WCHAN ARGS`, then its kernel stack, indented.
+fn stacks() -> i32 {
+    let mut pids: Vec<u32> = std::fs::read_dir("/proc")
+        .map(|d| {
+            d.filter_map(|e| e.ok()?.file_name().to_str()?.parse().ok())
+                .collect()
+        })
+        .unwrap_or_default();
+    pids.sort_unstable();
+    let mut out = String::new();
+    for pid in pids {
+        let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) else {
+            continue;
+        };
+        let state = stat
+            .rsplit_once(')')
+            .and_then(|(_, rest)| rest.split_whitespace().next())
+            .unwrap_or("?");
+        let wchan = std::fs::read_to_string(format!("/proc/{pid}/wchan")).unwrap_or_default();
+        let args = std::fs::read(format!("/proc/{pid}/cmdline")).unwrap_or_default();
+        let args: Vec<String> = args
+            .split(|&b| b == 0)
+            .filter(|a| !a.is_empty())
+            .map(|a| String::from_utf8_lossy(a).into_owned())
+            .collect();
+        out.push_str(&format!("{pid} {state} {} {}\n", wchan.trim(), args.join(" ")));
+        for line in std::fs::read_to_string(format!("/proc/{pid}/stack"))
+            .unwrap_or_default()
+            .lines()
+        {
+            out.push_str(&format!("    {line}\n"));
+        }
     }
     let _ = io::stdout().write_all(out.as_bytes());
     0
@@ -2607,6 +2666,12 @@ fn fs(ops: &[String]) -> i32 {
                 .parse::<u64>()
                 .map_err(io::Error::other)
                 .map(|ms| std::thread::sleep(std::time::Duration::from_millis(ms))),
+            // sync(2): what was written committed to its file systems' journals.
+            "sync" => {
+                // SAFETY: sync(2) takes no arguments and cannot fail.
+                unsafe { libc::sync() };
+                Ok(())
+            }
             "open" => {
                 let (m, p) = rest.split_once(':').unwrap_or((rest, ""));
                 std::fs::OpenOptions::new()
@@ -2643,6 +2708,85 @@ fn fs(ops: &[String]) -> i32 {
                 );
             }),
             "roundrobin" => roundrobin(rest),
+            // Whether the guest's kernel maps a file into a DAX window (D189):
+            // `dax PATH yes|no`, as statx(2) says (STATX_ATTR_DAX).
+            "dax" => dax_of(rest).map(|dax| {
+                let _ = writeln!(io::stdout(), "dax {rest} {}", if dax { "yes" } else { "no" });
+            }),
+            // One byte written in place, opened to write alone: `poke:PATH:OFFSET:BYTE`.
+            "poke" => {
+                use std::os::unix::fs::FileExt as _;
+                let mut parts = rest.rsplitn(3, ':');
+                let (byte, offset, path) = (parts.next(), parts.next(), parts.next());
+                match (
+                    path,
+                    offset.and_then(|o| o.parse::<u64>().ok()),
+                    byte.and_then(|b| b.parse::<u8>().ok()),
+                ) {
+                    (Some(path), Some(offset), Some(byte)) => std::fs::OpenOptions::new()
+                        .write(true)
+                        .open(path)
+                        .and_then(|f| f.write_all_at(&[byte], offset)),
+                    _ => Err(io::Error::other("poke:PATH:OFFSET:BYTE")),
+                }
+            }
+            // A read through a handle held across the host's change of its file,
+            // `hold:PATH:OFFSET:SIGNAL`: PATH read whole through a handle of its own,
+            // SIGNAL.ready made, and once the host makes SIGNAL, a byte read at OFFSET
+            // through the handle held, said as `hold PATH OFFSET BYTE`. Nothing is asked
+            // about the file between: what it reads is what the guest's mapping holds.
+            "hold" => {
+                use std::io::Read as _;
+                use std::os::unix::fs::FileExt as _;
+                let mut parts = rest.rsplitn(3, ':');
+                let (signal, offset, path) = (parts.next(), parts.next(), parts.next());
+                match (path, offset.and_then(|o| o.parse::<u64>().ok()), signal) {
+                    (Some(path), Some(offset), Some(signal)) => (|| {
+                        let file = std::fs::File::open(path)?;
+                        (&file).read_to_end(&mut Vec::new())?;
+                        std::fs::write(format!("{signal}.ready"), b"")?;
+                        while std::fs::symlink_metadata(signal).is_err() {
+                            std::thread::sleep(std::time::Duration::from_millis(10));
+                        }
+                        let mut byte = [0u8];
+                        file.read_exact_at(&mut byte, offset)?;
+                        let _ = writeln!(io::stdout(), "hold {path} {offset} {}", byte[0]);
+                        Ok(())
+                    })(),
+                    _ => Err(io::Error::other("hold:PATH:OFFSET:SIGNAL")),
+                }
+            }
+            // A file mapped 2 MiB at a time across the host's change of its size,
+            // `map2m:PATH:SIGNAL`: its first 8 MiB mapped shared at a 2 MiB boundary and each
+            // page read, which a DAX file's mapping takes in 2 MiB pages (fs/dax.c,
+            // `dax_iomap_pmd_fault`), SIGNAL.ready made; once the host makes SIGNAL, and its
+            // attributes have aged (VALID_S, a second), the file stat'ed and opened again,
+            // and each page read again, said as `map2m PATH SIZE`.
+            "map2m" => {
+                let (path, signal) = rest.rsplit_once(':').unwrap_or((rest, ""));
+                map_2m(path, signal).map(|size| {
+                    let _ = writeln!(io::stdout(), "map2m {path} {size}");
+                })
+            }
+            // The kernel's log records holding `WORD` (`kmsg:WORD`), each said, then how many:
+            // /dev/kmsg, which only a privileged exec reads (CAP_SYSLOG).
+            "kmsg" => kmsg_holding(rest).map(|n| {
+                let _ = writeln!(io::stdout(), "kmsg {rest} {n}");
+            }),
+            // One byte read, `peek:PATH:OFFSET`, said as `peek PATH OFFSET BYTE`.
+            "peek" => {
+                use std::os::unix::fs::FileExt as _;
+                let (path, offset) = rest.rsplit_once(':').unwrap_or((rest, ""));
+                offset
+                    .parse::<u64>()
+                    .map_err(io::Error::other)
+                    .and_then(|offset| {
+                        let mut byte = [0u8];
+                        std::fs::File::open(path)?.read_exact_at(&mut byte, offset)?;
+                        let _ = writeln!(io::stdout(), "peek {path} {offset} {}", byte[0]);
+                        Ok(())
+                    })
+            }
             _ => Err(io::Error::other("an unknown operation")),
         };
         if let Err(e) = done {
@@ -2653,7 +2797,112 @@ fn fs(ops: &[String]) -> i32 {
     0
 }
 
-/// `KIND:MAJOR:MINOR:PATH`'s node, mode 0600.
+/// [`fs`]'s `map2m`: `path`'s size as stat'ed once the host has made `signal`.
+fn map_2m(path: &str, signal: &str) -> io::Result<u64> {
+    use std::os::fd::AsRawFd as _;
+    const PMD: usize = 2 << 20;
+    const LEN: usize = 4 * PMD;
+    let file = std::fs::File::open(path)?;
+    // SAFETY: an anonymous reservation of no access, a 2 MiB page longer than the mapping,
+    // which goes at its first 2 MiB boundary; this process's until it ends.
+    let space = unsafe {
+        libc::mmap(
+            std::ptr::null_mut(),
+            LEN + PMD,
+            libc::PROT_NONE,
+            libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
+            -1,
+            0,
+        )
+    };
+    if space == libc::MAP_FAILED {
+        return Err(io::Error::last_os_error());
+    }
+    let at = (space as usize).next_multiple_of(PMD);
+    // SAFETY: MAP_FIXED within the reservation above.
+    let mapped = unsafe {
+        libc::mmap(
+            at as *mut libc::c_void,
+            LEN,
+            libc::PROT_READ,
+            libc::MAP_SHARED | libc::MAP_FIXED,
+            file.as_raw_fd(),
+            0,
+        )
+    };
+    if mapped == libc::MAP_FAILED {
+        return Err(io::Error::last_os_error());
+    }
+    let read_all = || {
+        (0..LEN).step_by(4096).fold(0u64, |sum, off| {
+            // SAFETY: within the file's mapping, its first 8 MiB, which stays mapped until
+            // the process ends.
+            let byte = unsafe { std::ptr::read_volatile(mapped.cast::<u8>().add(off)) };
+            sum.wrapping_add(u64::from(byte))
+        })
+    };
+    let _ = read_all();
+    std::fs::write(format!("{signal}.ready"), b"")?;
+    while std::fs::symlink_metadata(signal).is_err() {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    // Past its attributes' second (the share's VALID_S): the stat asks the host.
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    let size = std::fs::metadata(path)?.len();
+    drop(std::fs::File::open(path)?);
+    let _ = read_all();
+    Ok(size)
+}
+
+/// [`fs`]'s `kmsg`: how many of the kernel's log lines hold `word`, each said: its ring
+/// read whole through syslog(2) (SYSLOG_ACTION_READ_ALL), which a privileged exec may
+/// (CAP_SYSLOG) where its container has no /dev/kmsg.
+fn kmsg_holding(word: &str) -> io::Result<usize> {
+    // syslog(2)'s SYSLOG_ACTION_SIZE_BUFFER and SYSLOG_ACTION_READ_ALL.
+    const SIZE_BUFFER: libc::c_int = 10;
+    const READ_ALL: libc::c_int = 3;
+    // SAFETY: klogctl(3) asking the ring's size, which reads no buffer.
+    let size = unsafe { libc::klogctl(SIZE_BUFFER, std::ptr::null_mut(), 0) };
+    let size = usize::try_from(size).map_err(|_| io::Error::last_os_error())?;
+    let mut ring = vec![0u8; size.max(1)];
+    let len = libc::c_int::try_from(ring.len()).map_err(io::Error::other)?;
+    // SAFETY: klogctl(3) reading into `ring`, of `len` bytes.
+    let read = unsafe { libc::klogctl(READ_ALL, ring.as_mut_ptr().cast(), len) };
+    let read = usize::try_from(read).map_err(|_| io::Error::last_os_error())?;
+    let text = String::from_utf8_lossy(ring.get(..read).unwrap_or_default());
+    let mut held = 0;
+    for line in text.lines().filter(|l| l.contains(word)) {
+        held += 1;
+        let _ = writeln!(io::stdout(), "{line}");
+    }
+    Ok(held)
+}
+
+/// Whether statx(2) says the kernel maps `path` directly (STATX_ATTR_DAX).
+fn dax_of(path: &str) -> io::Result<bool> {
+    // include/uapi/linux/stat.h: struct statx's 256 bytes, `stx_attributes` its second
+    // word and `stx_attributes_mask` its eighth; its basic fields asked for.
+    const STATX_BASIC_STATS: libc::c_uint = 0x7ff;
+    const STATX_ATTR_DAX: u64 = 0x0020_0000;
+    let c = std::ffi::CString::new(path).map_err(io::Error::other)?;
+    let mut st = [0u64; 32];
+    // SAFETY: statx(2) of a NUL-terminated path into a buffer of struct statx's size.
+    let r = unsafe {
+        libc::syscall(
+            libc::SYS_statx,
+            libc::AT_FDCWD,
+            c.as_ptr(),
+            0,
+            STATX_BASIC_STATS,
+            st.as_mut_ptr(),
+        )
+    };
+    if r != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(st[7] & STATX_ATTR_DAX != 0 && st[1] & STATX_ATTR_DAX != 0)
+}
+
 /// The mount family's syscalls, as `fs` names them, each made once.
 fn mounts(kind: &str, spec: &str) -> io::Result<()> {
     let c = |s: &str| std::ffi::CString::new(s).map_err(io::Error::other);
@@ -2764,6 +3013,7 @@ fn mounts(kind: &str, spec: &str) -> io::Result<()> {
     }
 }
 
+/// `KIND:MAJOR:MINOR:PATH`'s node, mode 0600.
 fn mknod(spec: &str) -> io::Result<()> {
     let mut parts = spec.splitn(4, ':');
     let bad = || io::Error::other("a malformed mknod");
@@ -2845,6 +3095,39 @@ fn cat() -> i32 {
             Err(_) => return 1,
         }
     }
+}
+
+/// `read`'s: each file of `paths` read to its end, then `read PATH BYTES in MS ms` said.
+fn read_through(paths: &[String]) -> i32 {
+    let mut buf = vec![0u8; 1 << 20];
+    for path in paths {
+        let began = std::time::Instant::now();
+        let mut file = match std::fs::File::open(path) {
+            Ok(file) => file,
+            Err(e) => {
+                let _ = writeln!(io::stderr(), "{path}: {e}");
+                return 1;
+            }
+        };
+        let mut total = 0u64;
+        loop {
+            match file.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => total += n as u64,
+                Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+                Err(e) => {
+                    let _ = writeln!(io::stderr(), "{path}: {e}");
+                    return 1;
+                }
+            }
+        }
+        let _ = writeln!(
+            io::stdout(),
+            "read {path} {total} in {} ms",
+            began.elapsed().as_millis()
+        );
+    }
+    0
 }
 
 /// Writes `len` pattern bytes of `salt` to stdout.

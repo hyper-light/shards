@@ -310,6 +310,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
             hostname: base.hostname.clone(),
             interactive: exec.interactive,
             tty: exec.tty.map(|(rows, cols)| shards_abi::run::Size { rows, cols }),
+            terms: exec.terms,
         };
         let mut spec = match crate::spec::spec(&options, |_| None) {
             Ok(spec) => spec,
@@ -1039,10 +1040,13 @@ impl<D: crate::containers::Disk> Daemon<D> {
             })
         };
         let mut last: std::collections::HashMap<String, (Usage, Instant)> = std::collections::HashMap::new();
-        let mut sample = || -> Vec<shards_cmdline::format::stats::Stats> {
+        // The rows, and whether each running one's CPU was measured: a sample after one
+        // before it. Where the one before was not taken, its 0% would be no measure.
+        let mut sample = || -> (Vec<shards_cmdline::format::stats::Stats>, bool) {
             let targets = targets();
             let used = take(&targets);
-            targets
+            let mut measured = true;
+            let rows = targets
                 .into_iter()
                 .zip(used)
                 .map(|((id, name, pid), u)| {
@@ -1060,12 +1064,20 @@ impl<D: crate::containers::Disk> Daemon<D> {
                     };
                     let now = Instant::now();
                     let before = last.insert(id.clone(), (u.clone(), now));
+                    measured &= before.is_some();
                     let elapsed = before.as_ref().map(|(_, at)| now.duration_since(*at));
                     u.stats(before.as_ref().map(|(b, _)| b).zip(elapsed), container, name, id)
                 })
-                .collect()
+                .collect();
+            (rows, measured)
         };
-        // The first sample is a baseline: CPU is measured over the second after it.
+        // The first sample is a baseline: CPU is measured over the second after it. With
+        // `--no-stream`, a running one whose baseline was not taken is sampled once more a
+        // second later, the sample just taken its baseline, as dockerd answers a one-off
+        // request with two samples, to fill its CPU's sample before (moby 3f38b15
+        // daemon/stats.go, ContainerStats): then each row is measured, or, its last sample
+        // not taken, unmeasured ("--").
+        let mut resampled = false;
         sample();
         let source = match parsed.string("format") {
             "" => shards_cmdline::format::TABLE,
@@ -1074,7 +1086,11 @@ impl<D: crate::containers::Disk> Daemon<D> {
         let format = shards_cmdline::format::stats::format(source);
         loop {
             std::thread::sleep(Duration::from_secs(1));
-            let rows = sample();
+            let (rows, measured) = sample();
+            if !measured && parsed.bool("no-stream") && !resampled {
+                resampled = true;
+                continue;
+            }
             let taken = if asker.styled() && parsed.string("format").is_empty() {
                 let mut sheet = shards_ipc::Sheet::new("stats");
                 for r in &rows {
@@ -2457,7 +2473,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
         }
         // One whose driver sends it elsewhere, its local copy kept from `logs` (D163).
         if let Some(r) = &request
-            && crate::logging::kept(r, self.logs)
+            && crate::logging::kept(r, super::DEFAULT_LOGS)
                 .ok()
                 .flatten()
                 .is_some_and(|k| !k.cached)
@@ -2540,8 +2556,10 @@ impl<D: crate::containers::Disk> Daemon<D> {
             // Followed as it grows: woken by an append to the segment it is read from, by
             // a segment's coming, by the run's end, or by the client's hanging up, not by
             // a timer (audit A12). Each watch comes before a read, so no append between
-            // them goes unseen.
-            let mut watch = shards_vmm::platform::FileWatch::new(log.dir())?;
+            // them goes unseen. Where no watch can be had (on Linux, its user's inotify
+            // instances spent: PM M257), it reads again every RETRY, as the listener looks,
+            // rather than end the follow.
+            let mut watch = shards_vmm::platform::FileWatch::new(log.dir()).ok();
             let mut watched = None;
             let Some((number, end)) = self.wake_at_end(&id)? else {
                 if show.read(&mut reader, &log)? {
@@ -2558,12 +2576,20 @@ impl<D: crate::containers::Disk> Daemon<D> {
                     }
                     if let Some(segment) = reader.segment()
                         && watched != Some(segment.seq())
+                        && let Some(watch) = watch.as_mut()
                     {
                         watch.file(segment.index())?;
                         watched = Some(segment.seq());
                         continue;
                     }
-                    let ready = wait_readable(&[watch.fd(), end.as_fd(), reply.0.as_fd()])?;
+                    let ready = wait_readable(
+                        &[
+                            watch.as_ref().map(shards_vmm::platform::FileWatch::fd),
+                            Some(end.as_fd()),
+                            Some(reply.0.as_fd()),
+                        ],
+                        watch.is_none().then_some(super::RETRY),
+                    )?;
                     // Once the container has ended, what is left of a line is all of it.
                     if ready[1] {
                         if show.read(&mut reader, &log)? {
@@ -2575,7 +2601,9 @@ impl<D: crate::containers::Disk> Daemon<D> {
                     if ready[2] {
                         return Ok(());
                     }
-                    watch.clear();
+                    if let Some(watch) = &watch {
+                        watch.clear();
+                    }
                 }
             })();
             self.forget_waiter(&id, number);
@@ -3109,11 +3137,18 @@ impl<D: crate::containers::Disk> Daemon<D> {
             builtin: shards_abi::run::builtin::STATS,
             ..Default::default()
         };
-        let u = self
-            .exec_quietly(id, &spec, None, 1 << 12, super::TAKE_TIMEOUT)
-            .ok()
-            .filter(|q| q.status == Some(0))
-            .map(|q| Usage::parse(&String::from_utf8_lossy(&q.output)))?;
+        // A sample not taken is said in the daemon's log: the row shows it unmeasured.
+        let u = match self.exec_quietly(id, &spec, None, 1 << 12, super::TAKE_TIMEOUT) {
+            Ok(q) if q.status == Some(0) => Usage::parse(&String::from_utf8_lossy(&q.output)),
+            Ok(q) => {
+                super::log(format!("container {id}: its stats: status {:?}", q.status));
+                return None;
+            }
+            Err(e) => {
+                super::log(format!("container {id}: its stats: {e}"));
+                return None;
+            }
+        };
         let mut last = lock(&LAST_USAGE);
         last.retain(|known, _| lock(&self.containers).get(known).is_some());
         last.insert(id.to_string(), u.clone());
@@ -3485,15 +3520,23 @@ impl Window {
 }
 
 /// Waits until one of `fds` is readable, or hung up; which are.
-pub(super) fn wait_readable(fds: &[BorrowedFd<'_>; 3]) -> io::Result<[bool; 3]> {
+pub(super) fn wait_readable(
+    fds: &[Option<BorrowedFd<'_>>; 3],
+    timeout: Option<Duration>,
+) -> io::Result<[bool; 3]> {
+    // One not given is no descriptor, which poll(2) passes over.
     let mut polled = fds.map(|fd| libc::pollfd {
-        fd: fd.as_raw_fd(),
+        fd: fd.map_or(-1, |fd| fd.as_raw_fd()),
         events: libc::POLLIN,
         revents: 0,
     });
+    // Rounded up: a wait of 0 ms would return at once, and spin.
+    let ms = timeout.map_or(-1, |t| {
+        libc::c_int::try_from(t.as_micros().div_ceil(1000)).unwrap_or(libc::c_int::MAX)
+    });
     loop {
-        // SAFETY: poll(2) on three pollfds of descriptors the caller holds open.
-        let n = unsafe { libc::poll(polled.as_mut_ptr(), 3, -1) };
+        // SAFETY: poll(2) on three pollfds of descriptors the caller holds open, or none.
+        let n = unsafe { libc::poll(polled.as_mut_ptr(), 3, ms) };
         if n >= 0 {
             break;
         }

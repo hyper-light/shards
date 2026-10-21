@@ -23,6 +23,10 @@ pub struct Orders {
     /// What the standby sets up in its namespaces before it execs, in order: entries of
     /// `Spec::setup` (run.rs `set_up`).
     pub setup: Vec<Vec<u8>>,
+    /// The terminal types the command's TERM is the first of its root describes, where it
+    /// has a terminal and its environment names none (`Spec::terms`, terms.rs); empty for
+    /// none to choose.
+    pub terms: Vec<Vec<u8>>,
     /// Its capabilities, a bit for each by number.
     pub caps: u64,
 }
@@ -44,14 +48,20 @@ impl Orders {
             }
         }
         let singles = [std::slice::from_ref(&self.cwd), std::slice::from_ref(&self.tty)];
-        let total = [&self.candidates[..], &self.argv, &self.env, &self.setup]
-            .into_iter()
-            .chain(singles)
-            .map(len)
-            .fold(
-                22usize.saturating_add(self.groups.len().saturating_mul(4)),
-                usize::saturating_add,
-            );
+        let total = [
+            &self.candidates[..],
+            &self.argv,
+            &self.env,
+            &self.setup,
+            &self.terms,
+        ]
+        .into_iter()
+        .chain(singles)
+        .map(len)
+        .fold(
+            22usize.saturating_add(self.groups.len().saturating_mul(4)),
+            usize::saturating_add,
+        );
         let mut w = Vec::with_capacity(total);
         w.extend_from_slice(&self.uid.to_be_bytes());
         w.extend_from_slice(&self.gid.to_be_bytes());
@@ -67,6 +77,7 @@ impl Orders {
         list(&mut w, &self.env);
         list(&mut w, std::slice::from_ref(&self.tty));
         list(&mut w, &self.setup);
+        list(&mut w, &self.terms);
         w.extend_from_slice(&self.caps.to_be_bytes());
         w
     }
@@ -122,6 +133,7 @@ impl Orders {
             tty: list(&mut r)?.pop()?,
             null_stdin: null_stdin != 0,
             setup: list(&mut r)?,
+            terms: list(&mut r)?,
             caps: {
                 let (head, rest) = r.split_first_chunk::<8>()?;
                 r = rest;
@@ -169,6 +181,7 @@ mod tests {
             tty: b"/dev/pts/0".to_vec(),
             null_stdin: true,
             setup: vec![b"readonly".to_vec()],
+            terms: vec![b"xterm-256color".to_vec(), b"xterm".to_vec()],
             caps: 0xa804_25fb,
         }
     }
@@ -196,6 +209,7 @@ mod tests {
             (&back.candidates, &back.argv, &back.env, &back.tty),
             (&orders.candidates, &orders.argv, &orders.env, &orders.tty)
         );
+        assert_eq!((&back.setup, &back.terms), (&orders.setup, &orders.terms));
         assert!(Orders::decode(&bytes[..bytes.len() - 1]).is_none());
         assert!(Orders::decode(&[&bytes[..], &[0]].concat()).is_none());
     }

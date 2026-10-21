@@ -64,6 +64,13 @@ pub fn lower() -> Option<std::os::fd::BorrowedFd<'static>> {
     LAYERS.get().map(|(lower, _)| lower.as_fd())
 }
 
+/// Where the image's layers kept by [`keep`] are reached, whatever the root.
+pub fn lower_path() -> Option<String> {
+    LAYERS
+        .get()
+        .map(|(lower, _)| format!("/proc/self/fd/{}", lower.as_raw_fd()))
+}
+
 /// Where the writable layer kept by [`keep`] is reached, whatever the root.
 pub fn upper() -> Option<String> {
     LAYERS

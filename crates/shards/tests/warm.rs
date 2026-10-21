@@ -293,6 +293,7 @@ impl Warm {
             domainname: Vec::new(),
             cgroup: Vec::new(),
             setup,
+            terms: Vec::new(),
         };
         let (conn, theirs) = UnixStream::pair().unwrap();
         let (stdin_r, stdin_w) = pipe();

@@ -531,6 +531,20 @@ fn a_run_of_another_cpus_image_runs_under_its_emulator() {
         ),
         "{shown_arm32}"
     );
+    // A program the emulator runs that dies of a fault ends its run as a native one's does,
+    // 132 for SIGILL: the emulator sends itself the signal to die by, which a namespace's
+    // PID 1 is never sent, so the command runs under shards' reaper (PM M251), where as PID
+    // 1 its run never ended.
+    let crashing = TempDir::new("emulated-crash");
+    let crash = crashing.join("crash");
+    std::fs::write(&crash, common::crashing_program(other)).unwrap();
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(&crash, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let bound = format!("{}:/t:ro", crashing.display());
+    let crashed = run(&["--rm", "-v", &bound, lone, "/t/crash"]);
+    assert_eq!(crashed.status, Some(132), "{}", shown(&crashed));
     // A lone manifest is pulled whatever its platform, and run for its own alone.
     let asked = format!("linux/{ours}");
     let strict = run(&["--rm", "--platform", &asked, lone, "true"]);
@@ -547,6 +561,65 @@ fn a_run_of_another_cpus_image_runs_under_its_emulator() {
     );
     let lenient = run_shards_env(&["pull"], &["--platform", &asked, lone], &env, TIMEOUT);
     assert_eq!(lenient.status, Some(0), "{}", shown(&lenient));
+    let stopped = run_shards_env(&["daemon"], &["stop"], &env, TIMEOUT);
+    assert_eq!(stopped.status, Some(0), "{}", stopped.stderr);
+}
+
+/// A guest runs its host's x86-64 level: the flags its own kernel reads of its CPU hold
+/// every feature of the level the host's CPU reaches (the x86-64 psABI's levels, as
+/// go-archvariant reads them), the basis on which an x86_64 host's guests take amd64's
+/// levelled builds as their own (shards_image::platform::guest). x86_64 hosts alone.
+#[test]
+fn a_guest_runs_its_hosts_x86_64_level() {
+    if !cfg!(target_arch = "x86_64") {
+        eprintln!("SKIP: an x86_64 host's");
+        return;
+    }
+    if cannot_run_vms() {
+        eprintln!("SKIP: this host cannot run VMs");
+        return;
+    }
+    let home = TempDir::new("guest-level");
+    let env = [("SHARDS_HOME", home.as_os_str())];
+    let args = [
+        "use".as_ref(),
+        "--kernel".as_ref(),
+        kernel().as_os_str(),
+        "--init".as_ref(),
+        guest_init().as_os_str(),
+    ];
+    let recorded = run_shards_env(&["guest"], &args, &env, TIMEOUT);
+    assert_eq!(recorded.status, Some(0), "{}", recorded.stderr);
+    // Docker Hub's alpine:3.22, amd64's manifest (2026-10-15).
+    let alpine = "alpine@sha256:3e9b4b680bfc9fb5269227cffbd6d42be39fbf7c0b908123913864aa4447e764";
+    let read = run_shards_env(&["run"], &["--rm", alpine, "cat", "/proc/cpuinfo"], &env, TIMEOUT);
+    assert_eq!(read.status, Some(0), "{}", read.stderr);
+    let flags = read
+        .stdout
+        .lines()
+        .find_map(|l| {
+            l.strip_prefix("flags")
+                .and_then(|r| r.split_once(':'))
+                .map(|(_, f)| f)
+        })
+        .expect("the guest's flags");
+    let has = |all: &[&str]| all.iter().all(|f| flags.split_whitespace().any(|g| g == *f));
+    let level = if !has(&["cx16", "lahf_lm", "popcnt", "pni", "sse4_1", "sse4_2", "ssse3"]) {
+        1
+    } else if !has(&[
+        "avx", "avx2", "bmi1", "bmi2", "f16c", "fma", "abm", "movbe", "xsave",
+    ]) {
+        2
+    } else if !has(&["avx512f", "avx512bw", "avx512cd", "avx512dq", "avx512vl"]) {
+        3
+    } else {
+        4
+    };
+    assert_eq!(
+        format!("v{level}"),
+        shards_image::platform::maximum().variant,
+        "the guest's flags: {flags}"
+    );
     let stopped = run_shards_env(&["daemon"], &["stop"], &env, TIMEOUT);
     assert_eq!(stopped.status, Some(0), "{}", stopped.stderr);
 }
@@ -778,7 +851,6 @@ fn the_template(home: &std::path::Path) -> std::path::PathBuf {
 /// template still restores.
 #[test]
 fn a_templates_saver_leaves_nothing_the_daemon_writes_through() {
-    use std::os::unix::fs::PermissionsExt as _;
     if cannot_run_vms() || !shards_vmm::vm::SNAPSHOTS {
         eprintln!("SKIP: this host saves no templates");
         return;
@@ -789,16 +861,15 @@ fn a_templates_saver_leaves_nothing_the_daemon_writes_through() {
     let canary = victim.join("canary");
     std::fs::write(&canary, b"the user's\n").unwrap();
     let wrapper = victim.join("shards-vm");
-    std::fs::write(
+    // Exec'd by the daemon's spawner.
+    common::program(
         &wrapper,
-        format!(
+        &format!(
             "#!/bin/sh\nprev=\nfor a in \"$@\"; do\n  if [ \"$prev\" = --snapshot-dir ]; then mkdir -p \"$a\" && ln -s '{canary}' \"$a/origin.json\"; fi\n  prev=$a\ndone\nexec '{vm}' \"$@\"\n",
             canary = canary.display(),
             vm = common::shards_vm().display()
         ),
-    )
-    .unwrap();
-    std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755)).unwrap();
+    );
     let env = [
         ("SHARDS_HOME", home.as_os_str()),
         ("SHARDS_VM_BINARY", wrapper.as_os_str()),

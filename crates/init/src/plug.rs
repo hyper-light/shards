@@ -422,6 +422,15 @@ impl Plug {
     /// words. Called by PID 1 before it starts any thread; a template's grower goes on in
     /// each of its restores.
     pub fn hold_run(&self, notes: OwnedFd) -> io::Result<()> {
+        // Its peak, counted afresh by each giving back through this descriptor
+        // ([`shrink_run`]), which its builtins' forks share; none where it does not open.
+        if let Ok(peak) = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(format!("{}/memory.peak", self.cgroup))
+        {
+            let _ = PEAK.set(peak);
+        }
         set_high(self.cgroup, high(self.cgroup, self.most, 0)?)?;
         let events = watch_events(self.cgroup)?;
         // SAFETY: fork(2) of PID 1 before it starts any thread: the child runs on a copy
@@ -439,6 +448,97 @@ impl Plug {
         let _ = GROWER.set(pid);
         Ok(())
     }
+}
+
+/// The run's `memory.peak`, opened by PID 1 as it holds the run ([`Plug::hold_run`]) and
+/// shared by its builtins' forks: written, the kernel counts its peak afresh for this open
+/// file alone (Linux 6.12, c6f53ed8f213), so that each giving back reads the run's peak
+/// since the one before ([`shrink_run`]).
+static PEAK: std::sync::OnceLock<std::fs::File> = std::sync::OnceLock::new();
+
+/// The run's peak since it was last read here, `used` at least, counted afresh from now:
+/// its peak since it began where the kernel counts no open file's own, or [`PEAK`] is not
+/// open.
+fn peak_since(used: u64) -> u64 {
+    use std::os::unix::fs::FileExt as _;
+    let Some(file) = PEAK.get() else {
+        return used;
+    };
+    let mut buf = [0u8; 32];
+    let peak = file
+        .read_at(&mut buf, 0)
+        .ok()
+        .and_then(|n| {
+            std::str::from_utf8(buf.get(..n)?)
+                .ok()?
+                .trim()
+                .parse::<u64>()
+                .ok()
+        })
+        .unwrap_or(used);
+    let _ = file.write_at(b"reset", 0);
+    peak.max(used)
+}
+
+/// What a run keeps plugged past what its microVM booted with as its host asks for memory
+/// back (D188), from what its microVM booted with (`boot`), the most it may have plugged,
+/// what it has plugged and has asked to have, what it uses and what it used at its peak
+/// since it was last asked: twice what it uses, as the grower asks for twice what it
+/// reaches (D148), never less than its peak, in whole memory blocks. None where it gives
+/// back nothing: less than a block, or while memory it asked for to grow is still to come,
+/// which the giving back would take away from it as it grows (PM M275).
+fn to_keep(boot: u64, most: u64, plugged: u64, asked: u64, used: u64, peak: u64) -> Option<u64> {
+    if asked.saturating_sub(plugged) >= ALIGN {
+        return None;
+    }
+    let keep = used
+        .saturating_mul(2)
+        .max(peak)
+        .saturating_sub(boot)
+        .checked_next_multiple_of(ALIGN)
+        .unwrap_or(u64::MAX)
+        .min(most);
+    (plugged.saturating_sub(keep) >= ALIGN).then_some(keep)
+}
+
+/// Gives back what the run holds plugged past what it keeps ([`to_keep`], D188). The run is
+/// held at what it will have first, so that the grower hears it reach that and plugs again
+/// however much the driver unplugs, which it does as it can: a block the kernel holds part
+/// of stays. The bytes asked to be unplugged; none where it keeps all it has.
+pub fn shrink_run(cgroup: &str) -> io::Result<u64> {
+    let Some(&boot) = BOOT.get() else {
+        return Ok(0);
+    };
+    let most = control_read64(control::HOTPLUG_SIZE)?;
+    let plugged = mem_total()?.saturating_sub(boot);
+    let asked = control_read64(control::HOTPLUG_REQUEST).unwrap_or(plugged);
+    let used = number(&format!("{cgroup}/memory.current"))
+        .ok_or_else(|| err(format!("{cgroup}/memory.current unread")))?;
+    let Some(keep) = to_keep(boot, most, plugged, asked, used, peak_since(used)) else {
+        return Ok(0);
+    };
+    let gone = plugged.saturating_sub(keep);
+    // The free memory that goes with it counted out of the hold now, before it goes.
+    set_high(cgroup, high(cgroup, most, keep)?.saturating_sub(gone))?;
+    control_write64(control::HOTPLUG_REQUEST, keep)?;
+    Ok(gone)
+}
+
+/// Holds a run's processes in `cgroup` at what is plugged so far again, as [`Plug::hold_run`]
+/// held them (D148), where the host has raised its most since (`update -m`, its `PLUG`):
+/// its grower lifted the hold once all its old most was plugged, and is woken only as its
+/// processes reach a hold. A most no larger than what is plugged leaves the hold as it is,
+/// the run's `memory.max` holding it.
+pub fn rehold_run(cgroup: &'static str) -> io::Result<()> {
+    let Some(&boot) = BOOT.get() else {
+        return Ok(());
+    };
+    let most = control_read64(control::HOTPLUG_SIZE)?;
+    let plugged = mem_total()?.saturating_sub(boot);
+    if plugged >= most {
+        return Ok(());
+    }
+    set_high(cgroup, high(cgroup, most, plugged)?)
 }
 
 /// The guest kernel's report of the memory the host may still plug (D149):
@@ -788,7 +888,9 @@ fn oom_report() -> Vec<String> {
         .custom_flags(libc::O_NONBLOCK)
         .open("/dev/kmsg")
     else {
-        return Vec::new();
+        // A run's root moved over the VM's, its /dev has no kmsg: the log read whole with
+        // syslog(2), which init, the VM's own, may.
+        return oom_lines(&syslog_records());
     };
     let mut records = Vec::new();
     let mut record = [0u8; 8192];
@@ -806,6 +908,36 @@ fn oom_report() -> Vec<String> {
     oom_lines(&records)
 }
 
+/// The kernel's log read whole with syslog(2) (`SYSLOG_ACTION_READ_ALL`), each line a
+/// record as /dev/kmsg gives one (`LEVEL,SEQ,USECS,FLAGS;TEXT`), its fields but the text
+/// left as nothing is read of them.
+fn syslog_records() -> Vec<String> {
+    const READ_ALL: libc::c_int = 3;
+    const SIZE_BUFFER: libc::c_int = 10;
+    // SAFETY: syslog(2)'s size query takes no buffer.
+    let size = unsafe { libc::klogctl(SIZE_BUFFER, std::ptr::null_mut(), 0) };
+    let Ok(len) = usize::try_from(size) else {
+        return Vec::new();
+    };
+    let mut buf = vec![0u8; len.max(1)];
+    let room = libc::c_int::try_from(buf.len()).unwrap_or(libc::c_int::MAX);
+    // SAFETY: a buffer of `room` bytes, which syslog(2) fills at most.
+    let read = unsafe { libc::klogctl(READ_ALL, buf.as_mut_ptr().cast(), room) };
+    let Ok(read) = usize::try_from(read) else {
+        return Vec::new();
+    };
+    String::from_utf8_lossy(buf.get(..read).unwrap_or_default())
+        .lines()
+        .map(syslog_record)
+        .collect()
+}
+
+/// A line of syslog(2)'s, `<LEVEL>[SECONDS] TEXT`, as /dev/kmsg's record of it.
+fn syslog_record(line: &str) -> String {
+    let text = line.split_once("] ").map_or(line, |(_, t)| t);
+    format!("0,0,0,-;{text}")
+}
+
 /// Of the kernel's log `records`, the last report of a process ended for want of memory:
 /// each of its lines that says why, one line each, as a record of several lines is
 /// (`\x0a`, Documentation/ABI/testing/dev-kmsg).
@@ -820,6 +952,10 @@ fn oom_lines(records: &[String]) -> Vec<String> {
             said.clear();
         }
         if text.contains("invoked oom-killer")
+            // A cgroup's own: what it held and was allowed, of memory and of swap
+            // (mm/memcontrol.c, mem_cgroup_print_oom_meminfo).
+            || text.starts_with("memory: usage")
+            || text.starts_with("swap: usage")
             || text.starts_with("active_anon:")
             || (text.starts_with("Node ") && text.contains(" min:"))
             || text.starts_with("oom-kill:")
@@ -896,12 +1032,15 @@ fn grow(plug: Plug, events: &OwnedFd, notes: &OwnedFd) -> ! {
             lift();
             continue;
         }
+        // Never less than is asked for now: the device's request, which a run gives back
+        // by (D188), else what it asked for last.
+        let asking = control_read64(control::HOTPLUG_REQUEST).unwrap_or(asked);
         asked = total
             .saturating_mul(2)
             .saturating_sub(plug.boot)
             .checked_next_multiple_of(ALIGN)
             .unwrap_or(u64::MAX)
-            .max(asked)
+            .max(asking)
             .min(plug.most);
         let mut builder = Builder {
             plug,
@@ -982,6 +1121,44 @@ mod tests {
         }
     }
 
+    /// A run gives back what it holds plugged past twice what it uses, in whole blocks, as
+    /// its host asks; never what it used at its peak since it was last asked, nor anything
+    /// while memory it asked for to grow is still to come, nor less than a block.
+    #[test]
+    fn a_run_keeps_its_peak_and_what_it_asked_for() {
+        const GIB: u64 = 1 << 30;
+        let boot = 256 * MIB;
+        // Using 300 MiB of 4 GiB plugged: it keeps 600 less what it booted with, 344 MiB,
+        // in whole blocks, 384.
+        assert_eq!(
+            to_keep(boot, 8 * GIB, 4 * GIB, 4 * GIB, 300 * MIB, 300 * MIB),
+            Some(384 * MIB)
+        );
+        // Having reached 2.5 GiB since it was last asked: it keeps that.
+        let peak = 2560 * MIB;
+        assert_eq!(
+            to_keep(boot, 8 * GIB, 4 * GIB, 4 * GIB, 300 * MIB, peak),
+            Some((peak - boot).next_multiple_of(ALIGN))
+        );
+        // Growing, a block or more it asked for not yet plugged: it gives back nothing.
+        assert_eq!(
+            to_keep(boot, 8 * GIB, 4 * GIB, 5 * GIB, 300 * MIB, 300 * MIB),
+            None
+        );
+        // What it would give back is less than a block, 448 MiB plugged and 384 kept; and a
+        // block exactly.
+        assert_eq!(
+            to_keep(boot, 8 * GIB, 448 * MIB, 448 * MIB, 300 * MIB, 300 * MIB),
+            None
+        );
+        assert_eq!(
+            to_keep(boot, 8 * GIB, 512 * MIB, 512 * MIB, 300 * MIB, 300 * MIB),
+            Some(384 * MIB)
+        );
+        // Never past its most.
+        assert_eq!(to_keep(boot, GIB, 4 * GIB, 4 * GIB, 3 * GIB, 3 * GIB), Some(GIB));
+    }
+
     /// The kernel's memory less its report of what may still be plugged (D149): read
     /// again where memory came between the reports, as the one the kernel added is then
     /// not known.
@@ -1036,6 +1213,38 @@ mod tests {
         assert!(ended(
             "Memory cgroup out of memory: Killed process 7 (cc1) total-vm:1kB"
         ));
+    }
+
+    /// A cgroup's own kill (6.18.48, a joiner of 64 MiB and no swap allocating 96): what
+    /// its cgroup held and was allowed, of memory and of swap, said with the rest; and the
+    /// log as syslog(2) reads it, each line a record as /dev/kmsg gives one.
+    #[test]
+    fn a_cgroups_kill_says_its_memory_and_swap() {
+        let records: Vec<String> = [
+            "<4>[    5.101010] kworker/u72:3 invoked oom-killer: gfp_mask=0xc00(GFP_NOIO), order=0, oom_score_adj=0",
+            "<6>[    5.101020] memory: usage 65536kB, limit 65536kB, failcnt 144",
+            "<6>[    5.101030] swap: usage 0kB, limit 0kB, failcnt 0",
+            "<6>[    5.101040] Memory cgroup stats for /run/join-2:",
+            "<6>[    5.101050] oom-kill:constraint=CONSTRAINT_MEMCG,nodemask=(null),cpuset=/,mems_allowed=0,oom_memcg=/run/join-2,task_memcg=/run/join-2,task=testguest,pid=202,uid=1000",
+            "<3>[    5.101060] Memory cgroup out of memory: Killed process 202 (testguest) total-vm:68060kB, anon-rss:65088kB, file-rss:64kB, shmem-rss:0kB, UID:1000 pgtables:168kB oom_score_adj:0",
+        ]
+        .iter()
+        .map(|l| syslog_record(l))
+        .collect();
+        assert_eq!(
+            records[1],
+            "0,0,0,-;memory: usage 65536kB, limit 65536kB, failcnt 144"
+        );
+        assert_eq!(
+            oom_lines(&records),
+            [
+                "kworker/u72:3 invoked oom-killer: gfp_mask=0xc00(GFP_NOIO), order=0, oom_score_adj=0",
+                "memory: usage 65536kB, limit 65536kB, failcnt 144",
+                "swap: usage 0kB, limit 0kB, failcnt 0",
+                "oom-kill:constraint=CONSTRAINT_MEMCG,nodemask=(null),cpuset=/,mems_allowed=0,oom_memcg=/run/join-2,task_memcg=/run/join-2,task=testguest,pid=202,uid=1000",
+                "Memory cgroup out of memory: Killed process 202 (testguest) total-vm:68060kB, anon-rss:65088kB, file-rss:64kB, shmem-rss:0kB, UID:1000 pgtables:168kB oom_score_adj:0",
+            ]
+        );
     }
 
     /// Memory that comes is asked for once, and raises the build's `memory.high`.

@@ -291,6 +291,33 @@ pub mod kind {
     /// before `PORTS` and `STARTED`: its membership of that microVM's switch, as text, as
     /// init said it (`shards_abi::run::kind::MEMBER`).
     pub const MEMBER: u8 = 61;
+    /// Daemon → client, a run's, an exec's or an attach's: its request is this daemon's to
+    /// serve, which will not ask it to restart. A client of a slot fills its command's
+    /// stdin from then on: what it wrote to the slot of a daemon that asked it to restart
+    /// would be lost with that slot (D185).
+    pub const HEARD: u8 = 62;
+    /// Daemon → a running run's VM: the most memory its guest may plug past what it booted
+    /// with, in bytes (8, big-endian), as `update -m` sets the run's limit (D148): before
+    /// its guest's cgroup is written, so that what the guest reports it may plug is the
+    /// new most (D149).
+    pub const PLUG: u8 = 63;
+    /// A VM → its daemon (Linux): a file its share's DAX window has begun to map (D189), for
+    /// the daemon to watch for other processes cutting it short: the share's place among
+    /// the VM's shares (4, big-endian), the node of its server whose file it is (8) and the
+    /// file's size as the window mapped it (8), with the file's descriptor.
+    pub const WATCH: u8 = 64;
+    /// A VM → its daemon (Linux): a file its share's DAX window maps no more, by its share's
+    /// place (4, big-endian) and its node (8), as `WATCH` named it.
+    pub const UNWATCH: u8 = 65;
+    /// Daemon → a VM (Linux): a file `WATCH` named was cut short by another process, by its
+    /// share's place (4, big-endian) and its node (8): the window maps it as it is now,
+    /// zeros where it has no pages, before its guest reads there (PM M273).
+    pub const CUT: u8 = 66;
+    /// Warm VM → daemon, in `LAYER_SAVED`'s place: the container's writable layer stays in
+    /// its own file, an ext4 file system its guest's journal written in place (D190), said
+    /// once nothing of the VM's machine writes it, the file the daemon's from then on;
+    /// with the disk it used in the guest (a big-endian u64), where the guest said.
+    pub const LAYER_KEPT: u8 = 67;
 }
 
 /// A `SAVE` flag: the microVM goes on running once saved, rather than stopping.
@@ -331,6 +358,9 @@ pub struct Exec {
     pub daemon: Identity,
     /// `--privileged`: every capability.
     pub privileged: bool,
+    /// `-t` from a client that says what its terminal is: its terminal types, as a run's
+    /// ([`Run::terms`]).
+    pub terms: Vec<String>,
 }
 
 impl Exec {
@@ -354,6 +384,7 @@ impl Exec {
         w.push(u8::from(self.stdin_terminal));
         put_identity(&mut w, &self.daemon);
         w.push(u8::from(self.privileged));
+        put_list(&mut w, &self.terms);
         w
     }
 
@@ -377,6 +408,7 @@ impl Exec {
             stdin_terminal: r.flag()?,
             daemon: r.identity()?,
             privileged: r.flag()?,
+            terms: r.list()?,
         };
         r.0.is_empty().then_some(exec)
     }
@@ -701,6 +733,11 @@ pub struct Run {
     /// `--cgroup-parent`: the slice of the user's service manager its microVM's processes
     /// are made in (D183), as given; empty for none.
     pub cgroup_parent: String,
+    /// `-t` from a client that says what its terminal is: the terminal types it is, best
+    /// first, of which the command is told the first its root describes where its
+    /// environment names no TERM; empty where the client says none, as an Engine API client
+    /// says none.
+    pub terms: Vec<String>,
 }
 
 /// The streams a create says its client attaches (Config.AttachStdin, AttachStdout and
@@ -1300,6 +1337,7 @@ impl Run {
             ),
             ("engine-nets", self.engine_nets.clone()),
             ("cgroup-parent", one(&self.cgroup_parent)),
+            ("terms", self.terms.clone()),
             ("device-requests", {
                 let mut values = Vec::new();
                 for r in &self.device_requests {
@@ -1482,6 +1520,7 @@ impl Run {
                     "engine-net" => run.engine_net = values.into_iter().next().unwrap_or_default(),
                     "engine-nets" => run.engine_nets = values,
                     "cgroup-parent" => run.cgroup_parent = values.into_iter().next().unwrap_or_default(),
+                    "terms" => run.terms = values,
                     "device-requests" => {
                         let mut rest = values.iter();
                         while rest.len() > 0 {
@@ -1773,6 +1812,8 @@ pub fn working_set_part(payload: &[u8]) -> Option<(u8, &str, &[u8])> {
 pub const MAX_FDS: usize = 9;
 
 #[cfg(unix)]
+pub mod slots;
+#[cfg(unix)]
 mod spawner;
 #[cfg(unix)]
 mod unix;
@@ -1993,6 +2034,7 @@ mod tests {
             tty: Some((24, 80)),
             stdin_terminal: true,
             privileged: true,
+            terms: vec!["xterm-kitty".into()],
             daemon: Identity {
                 dev: 1,
                 ino: 2,
@@ -2211,6 +2253,7 @@ mod tests {
             engine_net: "app".into(),
             engine_nets: vec!["app\0\0web\0www".into(), "back\x0010.244.2.9".into()],
             cgroup_parent: "agents-ci.slice".into(),
+            terms: vec!["xterm-ghostty".into(), "xterm-256color".into()],
         };
         let bytes = run.encode();
         let identity = run.daemon;
@@ -2281,6 +2324,7 @@ mod tests {
             engine_net: String::new(),
             engine_nets: Vec::new(),
             cgroup_parent: String::new(),
+            terms: Vec::new(),
             ..run.clone()
         };
         let boundary = earlier.encode().len() - 4;

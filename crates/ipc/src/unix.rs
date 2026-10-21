@@ -523,11 +523,17 @@ fn fill(
 ///
 /// On macOS a socket is read with `MSG_DONTWAIT`, and waited for only where nothing has
 /// come, as a read waits: not at all where `fd` is set not to block, and no longer than
-/// its receive timeout, `WouldBlock` either way. A read a signal cut short is made again.
+/// its receive timeout, `WouldBlock` either way. A FIFO or pipe that waits is waited for in
+/// [`await_fifo`], whose select(2) sees a writer's end that a read can sleep through (PM
+/// M253). A read a signal cut short is made again.
 pub fn read(fd: impl AsFd, buf: &mut [u8]) -> io::Result<usize> {
     let fd = fd.as_fd();
     let mut socket = cfg!(target_os = "macos");
+    let mut fifo = false;
     loop {
+        if fifo {
+            await_fifo(fd)?;
+        }
         let n = if socket {
             // SAFETY: recv(2) into `buf`, at most its length.
             unsafe {
@@ -548,11 +554,29 @@ pub fn read(fd: impl AsFd, buf: &mut [u8]) -> io::Result<usize> {
         let e = io::Error::last_os_error();
         match e.raw_os_error() {
             Some(libc::EINTR) => {}
-            Some(libc::ENOTSOCK) if socket => socket = false,
+            Some(libc::ENOTSOCK) if socket => {
+                socket = false;
+                fifo = waiting_fifo(fd);
+            }
             _ if socket && e.kind() == io::ErrorKind::WouldBlock => await_readable(fd, None)?,
             _ => return Err(e),
         }
     }
+}
+
+/// Whether `fd` is a FIFO or pipe whose reads wait: one that is set not to is never
+/// waited for.
+fn waiting_fifo(fd: BorrowedFd<'_>) -> bool {
+    // SAFETY: fstat(2) into a zeroed stat buffer, of a descriptor the caller holds open.
+    let mut st: libc::stat = unsafe { std::mem::zeroed() };
+    // SAFETY: as above; and fcntl(2) reading its flags.
+    let (stat, flags) = unsafe {
+        (
+            libc::fstat(fd.as_raw_fd(), &mut st),
+            libc::fcntl(fd.as_raw_fd(), libc::F_GETFL),
+        )
+    };
+    stat == 0 && st.st_mode & libc::S_IFMT == libc::S_IFIFO && flags >= 0 && flags & libc::O_NONBLOCK == 0
 }
 
 /// What reads through [`read`]: a socket, a pipe or a terminal read with
@@ -618,6 +642,174 @@ fn await_readable(fd: BorrowedFd<'_>, deadline: Option<Instant>) -> io::Result<(
                 if e.kind() != io::ErrorKind::Interrupted {
                     return Err(e);
                 }
+            }
+        }
+    }
+}
+
+/// Waits until the FIFO or pipe `fd` has something to read, or has ended. On macOS a read(2)
+/// of a FIFO sleeping as its writer ends, just after the data it took, can sleep through
+/// that end: 6 in 224,000 such ends, raced 8 at once (PM M253), as a read of a Unix stream
+/// socket can (M236); select(2) saw all of 192,000. So its reader waits here, then
+/// reads what is there. A descriptor past `FD_SETSIZE` is waited on as one below it is
+/// (`_DARWIN_UNLIMITED_SELECT`, select(2)). Elsewhere a read sees its writer's end, and
+/// this waits for nothing.
+pub fn await_fifo(fd: BorrowedFd<'_>) -> io::Result<()> {
+    #[cfg(target_os = "macos")]
+    {
+        // SAFETY: the libSystem select(2) that takes descriptor sets of any length, its
+        // first argument a bound on the descriptors they hold.
+        unsafe extern "C" {
+            #[link_name = "select$DARWIN_EXTSN"]
+            fn select_any(
+                nfds: libc::c_int,
+                read: *mut u32,
+                write: *mut u32,
+                error: *mut u32,
+                timeout: *mut libc::timeval,
+            ) -> libc::c_int;
+        }
+        let raw = fd.as_raw_fd();
+        let at = usize::try_from(raw).map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?;
+        let bound = raw
+            .checked_add(1)
+            .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidInput))?;
+        // An fd_set's bits, 32 to a word, as FD_SET sets them.
+        let mut set = vec![0u32; at / 32 + 1];
+        loop {
+            if let Some(word) = set.get_mut(at / 32) {
+                *word = 1 << (at % 32);
+            }
+            // SAFETY: a set of `bound` descriptors' bits, as long as that, and no timeout:
+            // select(2) waits until `fd` is readable, or a signal cuts it short.
+            let n = unsafe {
+                select_any(
+                    bound,
+                    set.as_mut_ptr(),
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                )
+            };
+            if n > 0 {
+                return Ok(());
+            }
+            let e = io::Error::last_os_error();
+            if n < 0 && e.kind() != io::ErrorKind::Interrupted {
+                return Err(e);
+            }
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = fd;
+        Ok(())
+    }
+}
+
+/// Waits until one of `fds`, FIFOs or pipes, has something to read or has ended, and says
+/// which, in their order: on macOS in select(2), as [`await_fifo`] waits, every descriptor
+/// however high; elsewhere in poll(2), which sees a FIFO's end there (PM M253).
+pub fn await_any(fds: &[BorrowedFd<'_>]) -> io::Result<Vec<bool>> {
+    await_any_within(fds, None)
+}
+
+/// [`await_any`], waiting no longer than `timeout` where one is given: then none is ready.
+pub fn await_any_within(fds: &[BorrowedFd<'_>], timeout: Option<Duration>) -> io::Result<Vec<bool>> {
+    // None past what an Instant holds: for ever.
+    let deadline = timeout.and_then(|t| Instant::now().checked_add(t));
+    let left = || deadline.map(|d| d.saturating_duration_since(Instant::now()));
+    #[cfg(target_os = "macos")]
+    {
+        // SAFETY: as `await_fifo`'s.
+        unsafe extern "C" {
+            #[link_name = "select$DARWIN_EXTSN"]
+            fn select_any(
+                nfds: libc::c_int,
+                read: *mut u32,
+                write: *mut u32,
+                error: *mut u32,
+                timeout: *mut libc::timeval,
+            ) -> libc::c_int;
+        }
+        let at: Vec<usize> = fds
+            .iter()
+            .map(|fd| {
+                usize::try_from(fd.as_raw_fd()).map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))
+            })
+            .collect::<io::Result<_>>()?;
+        let most = at
+            .iter()
+            .copied()
+            .max()
+            .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidInput))?;
+        let bound =
+            libc::c_int::try_from(most + 1).map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?;
+        let mut set = vec![0u32; most / 32 + 1];
+        loop {
+            set.iter_mut().for_each(|w| *w = 0);
+            for fd in &at {
+                if let Some(word) = set.get_mut(fd / 32) {
+                    *word |= 1 << (fd % 32);
+                }
+            }
+            let mut tv = left().map(|l| libc::timeval {
+                tv_sec: libc::time_t::try_from(l.as_secs()).unwrap_or(libc::time_t::MAX),
+                tv_usec: libc::suseconds_t::try_from(l.subsec_micros()).unwrap_or(0),
+            });
+            let tv_at = tv.as_mut().map_or(std::ptr::null_mut(), std::ptr::from_mut);
+            // SAFETY: a set of `bound` descriptors' bits, as long as that, and a timeout of
+            // our own or none.
+            let n = unsafe {
+                select_any(
+                    bound,
+                    set.as_mut_ptr(),
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                    tv_at,
+                )
+            };
+            if n > 0 {
+                return Ok(at
+                    .iter()
+                    .map(|fd| set.get(fd / 32).is_some_and(|w| w & (1 << (fd % 32)) != 0))
+                    .collect());
+            }
+            if n == 0 {
+                return Ok(vec![false; at.len()]);
+            }
+            let e = io::Error::last_os_error();
+            if e.kind() != io::ErrorKind::Interrupted {
+                return Err(e);
+            }
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let mut polled: Vec<libc::pollfd> = fds
+            .iter()
+            .map(|fd| libc::pollfd {
+                fd: fd.as_raw_fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            })
+            .collect();
+        let n =
+            libc::nfds_t::try_from(polled.len()).map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?;
+        loop {
+            // Whole milliseconds, rounded up, so that a wait never ends before its time.
+            let ms = left().map_or(-1, |l| {
+                libc::c_int::try_from(l.as_nanos().div_ceil(1_000_000)).unwrap_or(libc::c_int::MAX)
+            });
+            // SAFETY: poll(2) on `n` valid pollfds.
+            match unsafe { libc::poll(polled.as_mut_ptr(), n, ms) } {
+                0 => return Ok(vec![false; polled.len()]),
+                ready if ready > 0 => return Ok(polled.iter().map(|p| p.revents != 0).collect()),
+                _ => {}
+            }
+            let e = io::Error::last_os_error();
+            if e.kind() != io::ErrorKind::Interrupted {
+                return Err(e);
             }
         }
     }
@@ -825,15 +1017,16 @@ fn take_fds(msg: &libc::msghdr, fds: &mut Vec<OwnedFd>) -> io::Result<()> {
     Ok(())
 }
 
-/// The daemon's socket: `daemon.sock` in shards' home, named relative to the working
-/// directory, which each process that uses it makes the home first. A relative name fits
-/// a socket address (`sun_path`: 104 bytes on macOS, 108 on Linux, NUL included) whatever
-/// the home's path. The per-user directories macOS offers instead cost each new process a
-/// lookup of 0.4–1.3 ms (docs/research/platform-measurements.md M26).
+/// The socket of a daemon of a build from before request slots (D185): `daemon.sock` in
+/// shards' home, named relative to the working directory, which each process that uses it
+/// makes the home first. A client reaches such a daemon there only to have it step aside
+/// for its own build's, and a daemon starting removes one left. A relative name fits a
+/// socket address (`sun_path`: 104 bytes on macOS, 108 on Linux, NUL included) whatever
+/// the home's path (PM M26).
 pub const SOCKET: &str = "daemon.sock";
 
 /// What a daemon that no longer serves keeps in its home while it ends its runs: its
-/// process ID. A daemon or client that finds none listening waits for that one while it
+/// process ID. A daemon or client that finds none serving waits for that one while it
 /// lives, as long as its runs' stop timeouts make it, and then takes its place.
 pub const STOPPING: &str = "daemon.stopping";
 
@@ -1966,6 +2159,19 @@ pub(crate) mod tests {
 
     #[test]
     fn descriptors_past_the_limit_are_closed() {
+        // Room for its 200 beside the other tests' descriptors: a test binary keeps the
+        // soft limit it was started with, 256 from a macOS shell (launchd's), where the
+        // daemon raises its own. macOS takes no more than OPEN_MAX (setrlimit(2)).
+        let mut lim = libc::rlimit {
+            rlim_cur: 0,
+            rlim_max: 0,
+        };
+        // SAFETY: getrlimit(2) and setrlimit(2) of this process, into and from a local.
+        unsafe {
+            assert_eq!(libc::getrlimit(libc::RLIMIT_NOFILE, &mut lim), 0);
+            lim.rlim_cur = lim.rlim_cur.max(lim.rlim_max.min(10240));
+            assert_eq!(libc::setrlimit(libc::RLIMIT_NOFILE, &lim), 0);
+        }
         let (a, b) = UnixStream::pair().unwrap();
         let (r, w) = pipe();
         send_raw(&a, &[1, 0, 0, 0, 0], &[w.as_raw_fd(); 200]);
