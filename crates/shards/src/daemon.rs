@@ -10175,8 +10175,10 @@ mod tests {
                 // ways (sosetoptlock).
                 ours.set_read_timeout(Some(PATIENCE)).unwrap();
                 shards_ipc::send(&vm, kind::ENGINE_CONN, &5u64.to_be_bytes(), &[theirs.as_fd()]).unwrap();
-                drop(theirs);
                 t.daemon.settle();
+                // Held until the daemon has it: XNU's collector flushes a socket in flight
+                // that no process holds (M24), and the engine read nothing of it.
+                drop(theirs);
                 assert_eq!(heard(&vm), (kind::ENGINE_CONN, 5u64.to_be_bytes().to_vec()));
                 let arrived = t.daemon.engine.take_arrived();
                 match engine {

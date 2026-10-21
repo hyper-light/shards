@@ -1267,12 +1267,23 @@ mod tests {
         assert!(bytes[4096..8192].iter().all(|&b| b == 7));
         assert!(bytes[3 << 20..(3 << 20) + 100].iter().all(|&b| b == 9));
         assert_eq!(bytes.iter().filter(|&&b| b != 0).count(), 4096 + 100);
-        // No more of a disk than what was written: a block or two of its 8 MiB.
+        // No more of a disk than the run's own file takes, both written back first: what
+        // a file system allocates of a sparse file is its own, and APFS fills a hole shorter
+        // than 16 MiB between two written blocks as it writes them back (PM M277), which a
+        // count taken before the write-back missed.
         #[cfg(unix)]
         {
             use std::os::unix::fs::MetadataExt as _;
-            let on_disk = kept.metadata().unwrap().blocks() * 512;
-            assert!(on_disk <= 1 << 20, "{on_disk} bytes on disk");
+            let run = File::open(dir.join("run")).unwrap();
+            run.sync_all().unwrap();
+            kept.sync_all().unwrap();
+            let on_disk = |f: &File| f.metadata().unwrap().blocks() * 512;
+            assert!(
+                on_disk(&kept) <= on_disk(&run),
+                "{} bytes on disk against the run's {}",
+                on_disk(&kept),
+                on_disk(&run)
+            );
         }
 
         let restored = window();

@@ -1977,12 +1977,25 @@ fn a_microvm_is_made_under_the_slice_its_cgroup_parent_names() {
         .and_then(|v| v.trim().parse::<u64>().ok())
         .unwrap();
     let slice_dir = scope_dir.parent().unwrap().to_path_buf();
-    let charged = std::fs::read_to_string(slice_dir.join("memory.stat"))
-        .unwrap()
-        .lines()
-        .find_map(|l| l.strip_prefix("anon "))
-        .and_then(|v| v.parse::<u64>().ok())
-        .unwrap();
+    // Read until they have caught up: a cgroup's statistics are its descendants' as they were
+    // last flushed into it (mm/memcontrol.c, memcg_vmstats_needs_flush and the periodic
+    // flush_memcg_stats_dwork), where memory.current is charged as each page is: on Fedora
+    // the slice's anon read 94.7 MB while its scope's read 264 MB and both its
+    // memory.current 277 MB.
+    let slice_anon = || {
+        std::fs::read_to_string(slice_dir.join("memory.stat"))
+            .unwrap()
+            .lines()
+            .find_map(|l| l.strip_prefix("anon "))
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap()
+    };
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let mut charged = slice_anon();
+    while charged < own_kib << 10 && std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(100));
+        charged = slice_anon();
+    }
     // What each cgroup holds, as a failure says it (gnu x86_64 CI 39273610992: none of it
     // the slice's).
     let held = |dir: &Path| {
