@@ -7954,15 +7954,20 @@ mod tests {
 
     /// `stop` ends every container it names at once, from one loop: 60 that ignore their
     /// SIGTERM all hear it before any hears SIGKILL, and all are stopped one grace after,
-    /// where docker/cli's 50 at a time would take two; the answers in the order asked.
+    /// where docker/cli's 50 at a time would take two; the answers in the order asked. The
+    /// grace is long beside what sending 60 signals takes a busy host (2.8 s once, where
+    /// the bound was 0.9 s), so that its bounds, the grace's own, tell one grace from two
+    /// whatever the host's load.
     #[test]
     fn stop_ends_every_container_at_once() {
         const N: usize = 60;
+        const GRACE: Duration = Duration::from_secs(10);
         let t = Test::new("stop-all");
         t.run(|t| {
             let names: Vec<String> = (0..N).map(|i| format!("c{i}")).collect();
             let vms: Vec<_> = names.iter().map(|n| running(t, n)).collect();
-            let mut args = vec!["stop", "-t", "1"];
+            let grace = GRACE.as_secs().to_string();
+            let mut args = vec!["stop", "-t", grace.as_str()];
             args.extend(names.iter().map(String::as_str));
             let t0 = std::time::Instant::now();
             let asked = t.asking(&args);
@@ -7978,14 +7983,9 @@ mod tests {
             let took = t0.elapsed();
             assert_eq!((status, err.as_str()), (0, ""));
             assert_eq!(out, names.iter().map(|n| format!("{n}\n")).collect::<String>());
-            assert!(
-                terms < Duration::from_millis(900),
-                "SIGTERM to all took {terms:?}"
-            );
-            assert!(
-                took >= Duration::from_secs(1) && took < Duration::from_millis(1900),
-                "one grace, not two: {took:?}"
-            );
+            // A second round of 50 would start a grace after the first.
+            assert!(terms < GRACE, "SIGTERM to all took {terms:?}, a grace or more");
+            assert!(took >= GRACE && took < 2 * GRACE, "one grace, not two: {took:?}");
             for (_, starting, _) in vms {
                 let _ = joined(starting.run);
             }
