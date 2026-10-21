@@ -10516,3 +10516,57 @@ revision before comparing a changed API/implementation.
   untouched or touched whole; where it is `always`, on huge pages throughout but the
   first 2 MiB, as before. Open: the VMM's own memory (+0.8 to +1.1 MiB) and glibc's file
   pages at boot; arm64's boot, unmeasured; the walk's tail under load.
+
+### M280. A restored vCPU whose timer never fires again: its LAPIC saved before its MSRs
+
+- **Question.** On the Fedora host, with the VM process built static (musl), the storm
+  test (`storm::restores_of_a_busy_machine_lose_no_interrupt_and_repeat_no_write`) failed
+  in 3 of 6 full gates and in 4 of 6 runs of its test binary alone; with glibc's VM
+  process, in none of 5 gates and 3 runs. Its restored guest said nothing past its clock
+  check, and the test waited out its 120 s. What stops it?
+- **Method.** 2026-10-20, the Fedora host (M266's: Intel Core i9-14900HX, Linux
+  6.19.10-300.fc44, KVM): the test binary `snapshot` in a loop; the VM process's threads
+  sampled once 110 s old (eu-stack, wchan); the storm guest's watchdog (testguest
+  `stood_still`), four threads on CPUs spread across the guest's, which, its main thread
+  15 s without a step, write through printk's console (it polls the UART, needing none
+  of its interrupts) the CPU the main thread last ran on, the CPUs whose local timer took
+  no interrupt in a second, each CPU's timers and clock event device (sysrq `q`) and
+  every task's stack (sysrq `t`); and `SHARDS_LOG=debug`, under which the VM process logs
+  each vCPU's saved interrupt state as it restores it and what KVM holds once its
+  deadline is armed.
+- **Results.**
+  - The stuck VM process: every vCPU thread in KVM_RUN, its device threads waiting, the
+    test's readers on an empty pipe: the guest had stopped saying anything.
+  - The guest's main thread asleep in clock_nanosleep, on the one CPU whose local timer
+    took no interrupt in a second (CPU 53; in another run CPU 1; in another 46). That
+    CPU's `lapic-deadline` device was one-shot with its next event at 0.444 s, the time
+    then 17.57 s, and every hrtimer on it overdue by 13 to 17 s, where its neighbour's
+    next event was due.
+  - The VM process's record of that vCPU: its snapshot's IA32_TSC_DEADLINE 0, and the
+    timer's vector (0xec) in neither its IRR nor its ISR nor the interrupt its events
+    said was injected (`IRR [fb], ISR []`). Of that restore's 64 vCPUs, 27 had saved a
+    deadline of 0 with 0xec in their IRR, 12 a deadline, and 25 a deadline of 0 with 0xec
+    in no register: those 25, the main thread's among them, are the 25 CPUs whose local
+    timers took no interrupt in a second (0, 3, 10 to 13, 20, 21, 23, 24, 27, 31, 33, 35,
+    41, 44 to 46, 48 to 50, 52, 54, 55, 60), the rest of its CPUs' timers going on.
+  - With the LAPIC read after the MSRs (below): the binary's 15 runs passed, where 4 of
+    6 had failed.
+- **Reading.** KVM clears a vCPU's IA32_TSC_DEADLINE as it injects its timer's interrupt,
+  which with APICv it posts (PIR); KVM_GET_LAPIC folds the posted interrupts into the
+  IRR it returns (arch/x86/kvm/lapic.c, kvm_apic_inject_pending_timer_irqs; x86.c,
+  kvm_vcpu_ioctl_get_lapic). Each ioctl of a save loads the vCPU, and one that loads it
+  on another host CPU than it last ran on restarts its VMX preemption timer, which, its
+  deadline past, injects then and there (x86.c, kvm_arch_vcpu_load;
+  kvm_lapic_restart_hv_timer, apic_timer_expired). A save read the LAPIC, then the MSRs:
+  an interrupt injected between the two was in neither, and the guest, whose clock event
+  device had the deadline armed, never armed it again, as it arms one only for an
+  earlier event. Intel's alone: AMD's SVM has no such timer, and CI's EPYC runners never
+  failed the test. Why the static VM process lost one so often is not measured; its
+  allocator takes one lock, which the 64 threads saving at once take between their
+  ioctls, each ioctl's state a buffer of its own, where glibc's has an arena per thread.
+- **Consequence.** D25: a vCPU's save reads its LAPIC after its MSRs. An interrupt
+  injected before the deadline's read is in the LAPIC; one after it, the deadline was
+  read before it cleared, and its restore fires it again. The storm guest keeps its
+  watchdog, and the VM process its debug record of each vCPU's interrupts. Open: whether
+  the engine member's hang in the same gates (`an_engines_member_reaches_no_farther_than_the_command_beside_agents`,
+  its run's microVM restored from a template saved the same way) was this.

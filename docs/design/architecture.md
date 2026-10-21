@@ -138,6 +138,15 @@ the crypto self-tests first, since every clone would replay the rest (PM M21).
   - restored in the order KVM's dependencies need: MP state first, the registers before
     the events (SET_REGS drops a pending exception), the LAPIC after the special
     registers and before the MSRs, IA32_TSC_DEADLINE after IA32_TSC;
+  - saved with the LAPIC after the MSRs, not before them as Firecracker saves it: an
+    ioctl that loads a vCPU on another host CPU than it last ran on restarts its VMX
+    preemption timer, which, its deadline past, injects the timer's interrupt as a posted
+    one and clears IA32_TSC_DEADLINE (kvm_arch_vcpu_load, kvm_lapic_restart_hv_timer).
+    Read before the MSRs, the LAPIC missed an interrupt injected between the two, and the
+    deadline read zero: a restored storm's CPU waited for its timer for ever, in one of
+    two of its test's runs on an Intel host whose VM process's threads migrated between
+    the ioctls (PM M280). Read after, the LAPIC holds it, KVM_GET_LAPIC folding the
+    posted interrupts into its IRR, or the deadline was read before it cleared;
   - the interrupt controllers and kvmclock only once every vCPU exists, as the GIC on
     arm64; kvmclock goes on from its saved value;
   - **the TSCs by their offsets** (Linux 5.16+, `KVM_VCPU_TSC_OFFSET`), as KVM documents

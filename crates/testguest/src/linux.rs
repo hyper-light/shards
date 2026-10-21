@@ -847,6 +847,7 @@ fn storm() -> Result<(), String> {
     // A restored copy continues here, as does the original, if it resumed.
     let generation = control.read(shards_abi::control::GENERATION);
     let echoed_at = ECHOED.load(Ordering::Relaxed);
+    let beats = watch_main_thread(cpus);
     let _ = writeln!(io::stdout(), "SHARDS-TEST INFO generation={generation}");
 
     let _ = writeln!(
@@ -856,7 +857,9 @@ fn storm() -> Result<(), String> {
         spread(&storm.late, true)
     );
     // Every CPU's clock goes on from the snapshot in step with the others'.
+    beats.fetch_add(1, Ordering::Relaxed);
     clock_in_step(cpus, "after the snapshot")?;
+    beats.fetch_add(1, Ordering::Relaxed);
     let seen: Vec<u64> = storm.progress.iter().map(|p| p.load(Ordering::Relaxed)).collect();
     // Every worker goes on from the snapshot. A lost completion or timer never ends; a
     // worker a loaded host gave no turn does (one waited 0.98 s on a Mac at a load of 20,
@@ -865,6 +868,7 @@ fn storm() -> Result<(), String> {
     let mut failed = None;
     let mut said = (Instant::now(), String::new());
     waiting("every worker's progress after the snapshot", || {
+        beats.fetch_add(1, Ordering::Relaxed);
         if let Some(e) = storm
             .failure
             .lock()
@@ -914,6 +918,7 @@ fn storm() -> Result<(), String> {
     // A lost completion never ends, a slow one does: only the host's bound tells them
     // apart, so the guest waits, saying which workers are still in their rounds.
     waiting("the workers' last rounds", || {
+        beats.fetch_add(1, Ordering::Relaxed);
         let left: Vec<usize> = threads
             .iter()
             .enumerate()
@@ -938,6 +943,7 @@ fn storm() -> Result<(), String> {
         return Err(e);
     }
     // Exactly the records the writer completed, each whole, and nothing after them.
+    beats.fetch_add(1, Ordering::Relaxed);
     let written = storm.written.load(Ordering::Relaxed);
     let mut got = Aligned::new(RECORD)?;
     let mut want = vec![0u8; RECORD];
@@ -966,6 +972,7 @@ fn storm() -> Result<(), String> {
     if generation == 0 {
         let deadline = Instant::now() + Duration::from_secs(60);
         while ECHOED.load(Ordering::Relaxed).saturating_sub(echoed_at) < 8 << 20 {
+            beats.fetch_add(1, Ordering::Relaxed);
             if Instant::now() > deadline {
                 return Err(format!(
                     "the host streamed {} bytes after the snapshot in 60 s",
@@ -976,7 +983,8 @@ fn storm() -> Result<(), String> {
         }
     }
     // The verdict waits for the host to say it has stopped streaming, so every round the
-    // host streamed ended with the guest alive.
+    // host streamed ended with the guest alive: its main thread watched no more.
+    beats.store(u64::MAX, Ordering::Relaxed);
     let _ = writeln!(io::stdout(), "SHARDS-TEST INFO storm checked");
     // The host's side of the connection is up only once it has read its OK, after this
     // side's accept: its byte, or its close, says so.
@@ -985,6 +993,152 @@ fn storm() -> Result<(), String> {
     std::io::Read::read(&mut host, &mut byte)
         .map(drop)
         .map_err(|e| format!("waiting for the host's word: {e}"))
+}
+
+/// Watches the storm's main thread from its snapshot on, by the count it adds to at each
+/// step and each look at what it waits for: once the count has stood still 15 s, has the
+/// kernel say what it can of it ([`stood_still`]). What stops the main thread past the
+/// snapshot stops what it says too, a lost timer and a stuck console alike; printk's
+/// console polls the UART, needing none of its interrupts, so the kernel's word reaches
+/// the host either way. Four watchers, each pinned to its own of the guest's `cpus`, spread
+/// across them: a CPU whose timer stopped stops the one there, whose sleeps never end, and
+/// not the rest. The first to see it says it, once; none does after the count is
+/// `u64::MAX`, which ends the watch.
+fn watch_main_thread(cpus: usize) -> std::sync::Arc<std::sync::atomic::AtomicU64> {
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+    let beats = std::sync::Arc::new(AtomicU64::new(0));
+    let said = std::sync::Arc::new(AtomicBool::new(false));
+    let watchers = cpus.clamp(1, 4);
+    for w in 0..watchers {
+        let (watched, said) = (beats.clone(), said.clone());
+        thread::spawn(move || {
+            if pin(w * cpus / watchers).is_err() {
+                return;
+            }
+            let (mut last, mut since) = (0, Instant::now());
+            loop {
+                thread::sleep(Duration::from_secs(1));
+                let now = watched.load(Ordering::Relaxed);
+                if now == u64::MAX || said.load(Ordering::Relaxed) {
+                    return;
+                }
+                if now != last {
+                    (last, since) = (now, Instant::now());
+                } else if since.elapsed() >= Duration::from_secs(15) {
+                    if !said.swap(true, Ordering::Relaxed) {
+                        stood_still(now);
+                    }
+                    return;
+                }
+            }
+        });
+    }
+    beats
+}
+
+/// What the kernel can say of a main thread that stood still ([`watch_main_thread`]), on
+/// its console at a log level that shows it: what it logged that the console's level kept
+/// off it (notices and worse), the CPU the main thread last ran on, the CPUs whose local
+/// timer took no interrupt in a second, each CPU's timers and clock event device (sysrq
+/// `q`), and every task's stack (sysrq `t`).
+fn stood_still(beat: u64) {
+    let say = |line: &str| {
+        let _ = std::fs::write("/dev/kmsg", format!("storm: {line}\n"));
+    };
+    let _ = std::fs::write("/proc/sys/kernel/printk", "7");
+    let logged = kernel_log(5);
+    // SAFETY: sched_getcpu(3) takes no arguments.
+    let here = unsafe { libc::sched_getcpu() };
+    say(&format!(
+        "the main thread stood still 15 s at beat {beat} (seen from CPU {here})"
+    ));
+    for line in logged {
+        say(&format!("log: {line}"));
+    }
+    // /proc/PID/stat's field 39, the CPU it last ran on: the 37th after its command's ")".
+    let cpu = std::fs::read_to_string("/proc/1/stat")
+        .ok()
+        .and_then(|s| {
+            s.rsplit(')')
+                .next()
+                .and_then(|rest| rest.split_whitespace().nth(36))
+                .map(str::to_string)
+        })
+        .unwrap_or_default();
+    say(&format!("the main thread last ran on CPU {cpu}"));
+    if let Some(before) = local_timer_interrupts() {
+        thread::sleep(Duration::from_secs(1));
+        if let Some(after) = local_timer_interrupts() {
+            let none: Vec<String> = before
+                .iter()
+                .zip(&after)
+                .enumerate()
+                .filter(|(_, (b, a))| a <= b)
+                .map(|(cpu, _)| cpu.to_string())
+                .collect();
+            say(&format!(
+                "CPUs whose local timer took no interrupt in 1 s: [{}]",
+                none.join(" ")
+            ));
+        }
+    }
+    say("each CPU's timers follow, then every task's stack");
+    let _ = std::fs::write("/proc/sysrq-trigger", "q");
+    let _ = std::fs::write("/proc/sysrq-trigger", "t");
+}
+
+/// Each CPU's count of local timer interrupts, /proc/interrupts' `LOC` line.
+fn local_timer_interrupts() -> Option<Vec<u64>> {
+    let text = std::fs::read_to_string("/proc/interrupts").ok()?;
+    let cpus = text.lines().next()?.split_whitespace().count();
+    let line = text.lines().find_map(|l| l.trim_start().strip_prefix("LOC:"))?;
+    Some(
+        line.split_whitespace()
+            .take(cpus)
+            .map(|n| n.parse().unwrap_or(0))
+            .collect(),
+    )
+}
+
+/// The messages the kernel has logged at `at_most` or more urgent (syslog levels: 5 is a
+/// notice), read from /dev/kmsg's start without waiting for more.
+fn kernel_log(at_most: u32) -> Vec<String> {
+    use std::io::Read as _;
+    use std::os::unix::fs::OpenOptionsExt as _;
+    let Ok(mut kmsg) = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK)
+        .open("/dev/kmsg")
+    else {
+        return Vec::new();
+    };
+    let mut said = Vec::new();
+    let mut buf = vec![0u8; 8192];
+    loop {
+        match kmsg.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => {
+                // "PRIORITY,SEQUENCE,MICROSECONDS,FLAGS;MESSAGE": the level is the
+                // priority's low three bits.
+                let record = String::from_utf8_lossy(buf.get(..n).unwrap_or_default()).into_owned();
+                let Some((head, message)) = record.split_once(';') else {
+                    continue;
+                };
+                let level = head
+                    .split(',')
+                    .next()
+                    .and_then(|p| p.parse::<u32>().ok())
+                    .map(|p| p & 7);
+                if level.is_some_and(|l| l <= at_most) {
+                    said.push(message.lines().next().unwrap_or_default().to_string());
+                }
+            }
+            // Records overwritten before they were read: the next are there.
+            Err(e) if e.raw_os_error() == Some(libc::EPIPE) => {}
+            Err(_) => break,
+        }
+    }
+    said
 }
 
 /// The next connection to `listener`, or an error once `limit` passes without one.

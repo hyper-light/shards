@@ -466,6 +466,51 @@ struct HeldTsc {
     deadline: Option<u64>,
 }
 
+/// What a LAPIC's registers (KVM_GET_LAPIC's, at their APIC offsets) hold of interrupts,
+/// for a debug log: its timer's mode and vector, and the vectors it has requested (IRR,
+/// 0x200) and is servicing (ISR, 0x100).
+fn apic_interrupts(lapic: &[u8]) -> String {
+    let reg = |at: usize| {
+        lapic
+            .get(at..at + 4)
+            .and_then(|b| <[u8; 4]>::try_from(b).ok())
+            .map_or(0, u32::from_le_bytes)
+    };
+    let vectors = |base: usize| -> Vec<u32> {
+        (0..8u32)
+            .flat_map(|i| {
+                let bits = reg(base + i as usize * 0x10);
+                (0..32u32)
+                    .filter(move |b| bits & (1 << b) != 0)
+                    .map(move |b| i * 32 + b)
+            })
+            .collect()
+    };
+    let lvtt = reg(0x320);
+    let mode = match (lvtt >> 17) & 3 {
+        0 => "one-shot",
+        1 => "periodic",
+        2 => "deadline",
+        _ => "reserved",
+    };
+    let masked = if lvtt & (1 << 16) != 0 { " masked" } else { "" };
+    format!(
+        "timer {mode} vector {:#x}{masked}, IRR {:x?}, ISR {:x?}",
+        lvtt & 0xff,
+        vectors(0x200),
+        vectors(0x100)
+    )
+}
+
+/// The interrupt KVM_GET_VCPU_EVENTS says was injected and not yet delivered, if any
+/// (kvm_vcpu_events' `interrupt`, after its 8-byte `exception`).
+fn event_interrupt(events: &[u8]) -> String {
+    match (events.get(8), events.get(9)) {
+        (Some(&injected), Some(&nr)) if injected != 0 => format!("interrupt {nr:#x} injected"),
+        _ => "no interrupt injected".into(),
+    }
+}
+
 /// IA32_TSC_DEADLINE, restored after IA32_TSC: KVM arms the deadline against the TSC, so
 /// in the other order a timer could fire at the wrong time or not at all (as Firecracker's
 /// DEFERRED_MSRS notes; arch/x86/kvm/lapic.c).
@@ -478,8 +523,17 @@ const TSC_KHZ_TOLERANCE_PPM: u64 = 250;
 
 impl Vcpu {
     /// Captures the vCPU's state, in the order Firecracker's comments give: MP state first,
-    /// since reading it may change the LAPIC's, and the events last. Call on the vCPU's
-    /// thread, with the vCPU out of the guest and every other stopped.
+    /// since reading it may change the LAPIC's, and the events last; but the LAPIC after the
+    /// MSRs. Each of these ioctls loads the vCPU, and one that loads it on another host CPU
+    /// than it last ran on restarts its hypervisor timer (Intel's VMX preemption timer),
+    /// which, its deadline past, injects the timer's interrupt there and then, posted, and
+    /// clears the deadline (arch/x86/kvm/x86.c, kvm_arch_vcpu_load; lapic.c,
+    /// kvm_lapic_restart_hv_timer, apic_timer_expired). Read after IA32_TSC_DEADLINE, the
+    /// LAPIC holds an interrupt so injected, KVM_GET_LAPIC folding the posted ones into its
+    /// IRR (kvm_vcpu_ioctl_get_lapic); or the deadline was read before it was cleared, and
+    /// its restore fires it again. Read before, an interrupt injected between the two was
+    /// in neither, and the guest waited for that CPU's timer for ever (PM M280). Call on
+    /// the vCPU's thread, with the vCPU out of the guest and every other stopped.
     pub fn save_state(&self) -> Result<VcpuState> {
         let fd = &self.fd;
         let mp_state = fd.get_mp_state().map_err(call("KVM_GET_MP_STATE"))?;
@@ -493,7 +547,6 @@ impl Vcpu {
         };
         let xcrs = get(sys::KVM_GET_XCRS, sys::XCRS_SIZE, "KVM_GET_XCRS")?;
         let debugregs = get(sys::KVM_GET_DEBUGREGS, sys::DEBUGREGS_SIZE, "KVM_GET_DEBUGREGS")?;
-        let lapic = get(sys::KVM_GET_LAPIC, sys::LAPIC_SIZE, "KVM_GET_LAPIC")?;
         let tsc_khz = fd.tsc_khz().map_err(call("KVM_GET_TSC_KHZ"))?;
         let tsc_offset = if self.tsc_offsets {
             Some(fd.tsc_offset().map_err(call("KVM_GET_DEVICE_ATTR"))?)
@@ -501,6 +554,7 @@ impl Vcpu {
             None
         };
         let msrs = self.save_msrs()?;
+        let lapic = get(sys::KVM_GET_LAPIC, sys::LAPIC_SIZE, "KVM_GET_LAPIC")?;
         let events = get(
             sys::KVM_GET_VCPU_EVENTS,
             sys::VCPU_EVENTS_SIZE,
@@ -548,10 +602,30 @@ impl Vcpu {
         self.fd
             .set_tsc_offset(held.offset.wrapping_add(delta))
             .map_err(call("KVM_SET_DEVICE_ATTR"))?;
-        match held.deadline {
+        let armed = match held.deadline {
             Some(deadline) => self.set_msrs(&[(MSR_IA32_TSC_DEADLINE, deadline)]),
             None => Ok(()),
+        };
+        // What KVM holds of it as it resumes: its TSC, and the deadline it armed.
+        if crate::log::enabled(crate::log::Level::Debug) {
+            let now = self
+                .fd
+                .get_msrs(&[MSR_IA32_TSC, MSR_IA32_TSC_DEADLINE])
+                .unwrap_or_default();
+            let apic = self
+                .fd
+                .get_state(sys::KVM_GET_LAPIC, sys::LAPIC_SIZE)
+                .map(|lapic| apic_interrupts(&lapic))
+                .unwrap_or_default();
+            crate::debug!(
+                "{}: TSC resumed at offset {:#x}, its deadline {:?} held; KVM's TSC and deadline now {:x?}, its LAPIC {apic}",
+                std::thread::current().name().unwrap_or("vCPU"),
+                held.offset.wrapping_add(delta),
+                held.deadline,
+                now
+            );
         }
+        armed
     }
 
     /// Every MSR in KVM's list that it reads for this vCPU. KVM stops at the first it
@@ -592,6 +666,17 @@ impl Vcpu {
                 st.xsave.len(),
                 self.xsave_size
             )));
+        }
+        if crate::log::enabled(crate::log::Level::Debug) {
+            let deadline = st.msrs.iter().find(|&&(index, _)| index == MSR_IA32_TSC_DEADLINE);
+            crate::debug!(
+                "{}: restoring mp state {}, {}, events {}, deadline {:x?}",
+                std::thread::current().name().unwrap_or("vCPU"),
+                st.mp_state,
+                apic_interrupts(&st.lapic),
+                event_interrupt(&st.events),
+                deadline.map(|&(_, v)| v)
+            );
         }
         let fd = &self.fd;
         let set =
