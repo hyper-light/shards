@@ -49,6 +49,22 @@ pub fn spawn(command: &mut std::process::Command) -> io::Result<std::process::Ch
     }
 }
 
+/// The program `text` at `path`, written by a process of its own: a file this one held open
+/// to write, a child another test's thread forked meanwhile would hold until it execs, and
+/// an exec of it, by this process or any other, would fail with ETXTBSY until then (Linux).
+#[cfg(unix)]
+pub fn program(path: &Path, text: &str) {
+    let mut writer = Command::new("/bin/sh")
+        .arg("-c")
+        .arg(r#"cat > "$0" && chmod 755 "$0""#)
+        .arg(path)
+        .stdin(Stdio::piped())
+        .spawn()
+        .unwrap();
+    writer.stdin.take().unwrap().write_all(text.as_bytes()).unwrap();
+    assert!(writer.wait().unwrap().success(), "{} not written", path.display());
+}
+
 pub fn workspace() -> PathBuf {
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../..")

@@ -10111,10 +10111,17 @@ mod tests {
         let mut t = Test::new("refiller");
         t.daemon.target = 2;
         t.daemon.warm_max = 8;
-        // A VM that never says it is ready.
+        // A VM that never says it is ready, written by a process of its own: a file this one
+        // held open to write, a child another test's thread forked meanwhile would hold
+        // until it execs, and the daemon's exec of it would fail with ETXTBSY until then.
         let vm = t.home.join("vm");
-        std::fs::write(&vm, b"#!/bin/sh\nexec /bin/sleep 600\n").unwrap();
-        std::fs::set_permissions(&vm, std::os::unix::fs::PermissionsExt::from_mode(0o700)).unwrap();
+        let written = std::process::Command::new("/bin/sh")
+            .arg("-c")
+            .arg(r#"printf '#!/bin/sh\nexec /bin/sleep 600\n' > "$0" && chmod 700 "$0""#)
+            .arg(&vm)
+            .status()
+            .unwrap();
+        assert!(written.success(), "{written}");
         t.daemon.vm = vm;
         t.run(|t| {
             let dir = t.home.join("template");

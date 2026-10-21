@@ -18,7 +18,7 @@ use std::process::Stdio;
 use std::time::Duration;
 
 use base64::Engine as _;
-use common::{TempDir, guest_init, kernel, run_shards_env};
+use common::{TempDir, guest_init, kernel, program, run_shards_env};
 
 const TIMEOUT: Duration = Duration::from_secs(60);
 
@@ -160,21 +160,6 @@ fn logins_are_checked_kept_used_and_forgotten() {
             "error: cannot perform an interactive login from a non-TTY device\n"
         ),
     );
-}
-
-/// The program `text` at `path`, written by a process of its own: a file this one held open
-/// to write, a child another test's thread forked meanwhile would hold until it execs, and
-/// an exec of it would fail with ETXTBSY until then (Linux).
-fn program(path: &Path, text: &str) {
-    let mut writer = std::process::Command::new("/bin/sh")
-        .arg("-c")
-        .arg(r#"cat > "$0" && chmod 755 "$0""#)
-        .arg(path)
-        .stdin(Stdio::piped())
-        .spawn()
-        .unwrap();
-    writer.stdin.take().unwrap().write_all(text.as_bytes()).unwrap();
-    assert!(writer.wait().unwrap().success(), "{} not written", path.display());
 }
 
 /// Whether process `pid` has gone: reaped, as kill(2) of no signal finds none.

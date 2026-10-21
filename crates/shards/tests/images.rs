@@ -851,7 +851,6 @@ fn the_template(home: &std::path::Path) -> std::path::PathBuf {
 /// template still restores.
 #[test]
 fn a_templates_saver_leaves_nothing_the_daemon_writes_through() {
-    use std::os::unix::fs::PermissionsExt as _;
     if cannot_run_vms() || !shards_vmm::vm::SNAPSHOTS {
         eprintln!("SKIP: this host saves no templates");
         return;
@@ -862,16 +861,15 @@ fn a_templates_saver_leaves_nothing_the_daemon_writes_through() {
     let canary = victim.join("canary");
     std::fs::write(&canary, b"the user's\n").unwrap();
     let wrapper = victim.join("shards-vm");
-    std::fs::write(
+    // Exec'd by the daemon's spawner.
+    common::program(
         &wrapper,
-        format!(
+        &format!(
             "#!/bin/sh\nprev=\nfor a in \"$@\"; do\n  if [ \"$prev\" = --snapshot-dir ]; then mkdir -p \"$a\" && ln -s '{canary}' \"$a/origin.json\"; fi\n  prev=$a\ndone\nexec '{vm}' \"$@\"\n",
             canary = canary.display(),
             vm = common::shards_vm().display()
         ),
-    )
-    .unwrap();
-    std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755)).unwrap();
+    );
     let env = [
         ("SHARDS_HOME", home.as_os_str()),
         ("SHARDS_VM_BINARY", wrapper.as_os_str()),

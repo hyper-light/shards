@@ -5561,7 +5561,6 @@ struct Gated {
 
 impl Gated {
     fn new(name: &str) -> Gated {
-        use std::os::unix::fs::PermissionsExt;
         let dir = TempDir::new(name);
         for (from, to) in [(shards(), "shards")] {
             // A link where there can be one: macOS assesses a copy as a new binary.
@@ -5577,8 +5576,8 @@ impl Gated {
             dir = dir.display(),
             vm = shards_vm().display()
         );
-        std::fs::write(&vm, script).unwrap();
-        std::fs::set_permissions(&vm, std::fs::Permissions::from_mode(0o755)).unwrap();
+        // Exec'd by the daemon's spawner.
+        common::program(&vm, &script);
         Gated { dir }
     }
 
