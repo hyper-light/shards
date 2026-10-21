@@ -35,7 +35,7 @@ jobs:
           for advice in none nohuge huge; do
             echo "=== SHARDS_FILE_ADVICE=$advice"
             SHARDS_FILE_ADVICE=$advice cargo bench --locked -p shards --bench firecracker -- --runs 20 2>&1 |
-              awk '/^firecracker_restore:/{p=1} p && (/^(shards|fc)_(to_beat|overhead|peak_rss|rss_file|pss_file|pss|rss_anon|fleet_pss|fleet_private|fleet_host) / || /mappings by resident bytes/ || /^  rss .*memory$/)'
+              awk '/^firecracker(_restore|_density)?:/ || /^(shards|fc)_(to_ready|to_beat|overhead|peak_rss|rss_file|pss_file|pss|rss_anon|fleet_pss|fleet_private|fleet_host) / || /mappings by resident bytes/ || /^  rss .*memory$/'
           done
       # What the choice does where a run's time is: warm requests, and runs served from a
       # template's pool; alternating the two advices, twice each.
