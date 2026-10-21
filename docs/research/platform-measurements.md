@@ -1198,7 +1198,12 @@ frame 3 (`base + 0x60000`) and processor number 3, and is marked Last.
     tracepoint (medians): 472 NPT faults against 756 on the 7763, 440 against 689 on the
     9V45, and 361 EPT violations against 570 on the Xeon.
 - **Consequence.** `GuestMemory::save` writes each run of used pages with one call
-  (e9ed44d).
+  (e9ed44d). **Superseded on Linux (PM M289, M290, 2026-10-21):** from 6.18 a restore maps
+  a whole page-cache folio at a fault, so large runs balloon a restored guest's memory file
+  (26 MiB against Firecracker's 14); `write_run` now writes a page at a time on a Linux host,
+  which holds it to 8.9 MiB. The first-beat gap this measured no longer appears — ~5% at
+  p50 on 6.17 and 7.0, not 17–25% — because a restore prefetches its recorded working set,
+  so the fault pattern at first beat barely shows. macOS still writes each run whole.
 - **Open.**
   - Where in the kernel's fault path the fewer faults come from.
   - The Xeon's outliers, which took more EPT violations and more time in the guest than
@@ -11050,3 +11055,33 @@ revision before comparing a changed API/implementation.
   and a workload that escaped its cgroup — to what a microVM of the run's CPUs alone could
   use. Both are needed: a guest's root is still inside its microVM, but a microVM is not a
   CPU budget until its host makes it one. It costs a run nothing (above).
+
+### M290. A restored guest's memory file written a page at a time on Linux (the restore-folios fix)
+
+- **Question.** M288/M289's restore-folios experiment proved that writing the snapshot's
+  memory file a page at a time holds a restored guest's memory to a page per fault on Linux
+  6.18+ (8.9 MiB against 26). What does writing it that way cost the save, which writes it
+  in large contiguous runs otherwise (`memory.rs::write_run`)?
+- **Method.** `docs/research/measurements/restore-folios/writecost.py`: for each size, write
+  that many MiB to a fresh file in 2 MiB writes, then in 4 KiB writes (what `write_run` now
+  does on a Linux host), each fsync'd and timed, 8 rounds alternating. Fedora 44 (Linux
+  6.19.10) on M258's i9-14900HX, on Btrfs (the home's) and tmpfs; 2026-10-21. The memory
+  file holds only a booted guest's touched non-zero pages (tens of MiB; `write_used` skips
+  zero runs), so 64 and 256 MiB bracket it.
+- **Results** (p50, ms; 2 MiB writes → 4 KiB writes, delta):
+
+  | size | Btrfs | tmpfs |
+  |---|---|---|
+  | 64 MiB | 28.8 → 39.0 (+10.2) | 10.0 → 13.2 (+3.2) |
+  | 256 MiB | 111.5 → 151.9 (+40.4) | 42.1 → 54.8 (+12.7) |
+
+- **Consequence.** Page-at-a-time adds about 10 ms to a 64 MiB save and 40 ms to a 256 MiB
+  one on Btrfs, less on tmpfs. It is paid on the save, not the restore: template creation
+  (a boot's memory, tens of MiB) and an explicit `save`/stop, never a warm pooled run (which
+  restores). The alternative — write large, then drop the file from the page cache so the
+  restore re-reads single-page folios — would move the cost onto the frequent restore and
+  make it read cold, so it is not taken. The cost is paid on every Linux host, including
+  6.17 and filesystems that make no large folios, where there is no folio to split; a
+  once-per-template save of ~10 ms is accepted for a uniform fix over fragile
+  kernel/filesystem detection. Restores stay fast (a warm, now single-page page cache) and
+  small (PM M289's 8.9 MiB).

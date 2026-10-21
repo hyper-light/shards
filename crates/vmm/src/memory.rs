@@ -989,6 +989,18 @@ fn write_run(file: &File, r: &Region, run: Range<usize>, offset: u64) -> io::Res
     if run.start > run.end || run.end > r.len {
         return Err(io::ErrorKind::InvalidInput.into());
     }
+    // On a Linux host the page cache holds a file written in large contiguous runs as
+    // large folios (ext4 makes them, 6.16+), and a restore's read fault then maps a whole
+    // folio of the file at once (filemap_map_folio_range, 6.18+), whatever the mapping's
+    // advice: a restored guest's memory file held 26 MiB of its working set to
+    // Firecracker's 14 (PM M288, M289). Writing a page at a time keeps the folios to a
+    // page, so a fault maps a page (8.9 MiB, beating Firecracker). Elsewhere, and where the
+    // host makes no large folios, there is nothing to split and the run goes whole.
+    let most = if cfg!(target_os = "linux") {
+        platform::page_size()?
+    } else {
+        usize::MAX
+    };
     let at = offset + run.start as u64;
     let mut done = 0;
     while done < run.len() {
@@ -998,7 +1010,7 @@ fn write_run(file: &File, r: &Region, run: Range<usize>, offset: u64) -> io::Res
             platform::write_at(
                 file,
                 r.host.as_ptr().add(run.start + done),
-                run.len() - done,
+                (run.len() - done).min(most),
                 at + done as u64,
             )?
         };

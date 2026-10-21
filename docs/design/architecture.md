@@ -94,10 +94,17 @@ the crypto self-tests first, since every clone would replay the rest (PM M21).
   forever [PM M45]. The blob is versioned: a host update that changes it fails the
   restore, and the run boots and saves the template again (D25). The state records one
   guest counter for the whole VM and the CPU ID registers; a restore on another CPU is
-  refused. Memory is sparse (zero pages are holes). Each run of pages the guest used is one
-  write: on ext4 a write's length sets the order of the page-cache folios a restore maps,
-  and restores of a snapshot written that way reached their first beat 17–25% sooner than
-  of one written a page per write [PM M37]. Decoding treats the files as untrusted.
+  refused. Memory is sparse (zero pages are holes). Each run of pages the guest used is
+  written whole on macOS, and a page at a time on a Linux host (`memory.rs::write_run`):
+  on ext4 a write's length sets the order of the page-cache folios it fills, and from 6.18
+  a restore's read fault maps a whole folio of the file at once (filemap_map_folio_range),
+  so a snapshot written in large runs gave a restored guest 26 MiB of its working set to
+  Firecracker's 14, where one written a page at a time gave 8.9 and beat Firecracker (PM
+  M289). Writing a page at a time costs the save 10–40 ms of a tens-of-MiB memory file
+  (PM M290), paid on template creation and `save`, never a warm pooled run; a restore's
+  first beat is within ~5% either way, where M37 once measured large runs 17–25% faster
+  (the working set is prefetched now, so the fault pattern at first beat barely shows).
+  Decoding treats the files as untrusted.
 - **Generations.** A snapshot directory holds generations, each a directory of its own
   (`state`, `memory`, and later a `working-set`), and `current`, naming the one in use.
   - A write stages a generation under a name of its own, syncs its files and directory,
