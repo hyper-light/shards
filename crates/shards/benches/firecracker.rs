@@ -43,6 +43,12 @@
 //! - `to_beat`: the host's clock from spawn until the guest's first beat after the restore
 //!   reaches the VMM's stdout: the guest running again, what a user waits for.
 //! - `overhead` and `peak_rss`, as above, while the guest beats.
+//! - Where shards' restores' time goes, which the envelope does not check: as many restores
+//!   of shards' again, after the paired ones, each with its VM process's log
+//!   (`SHARDS_LOG=info`), whose writes are in no paired sample. `restored`, `vcpus_ready`
+//!   and `resumed`: the VM process's clock, from its start, as it had the guest's state
+//!   back, its vCPUs ready to run, and the guest saying it resumed (its RESUMED marker);
+//!   `logged_to_beat`, those restores' own `to_beat`.
 //!
 //! Then density (audit D14): `--fleet K` (16) restored VMs of one VMM held at once, all
 //! beating, then the other's, in rounds S F F S S F F S. Each VM's row pairs with the other
@@ -504,9 +510,11 @@ mod compare {
                 }
             }
         }
+        let phases: Vec<Phases> = (0..runs).map(|_| restore_phases(&snapshot)).collect();
         density(firecracker, &snapshot, &sockets, &load, fleet, cpus, memory);
         let _ = std::fs::remove_dir_all(&dir);
         let to_beat = |v: &[Sample]| v.iter().map(|s| s.to_ready_us).collect::<Vec<_>>();
+        let phase = |f: fn(&Phases) -> f64| phases.iter().map(f).collect::<Vec<_>>();
         let mib =
             |v: &[Sample], f: fn(&Sample) -> u64| v.iter().map(|s| f(s) as f64 / MIB).collect::<Vec<_>>();
         support::report(
@@ -533,6 +541,10 @@ mod compare {
                 support::stats("fc_pss", "MiB", mib(&fc, |s| s.pss_bytes)),
                 support::stats("shards_pss_file", "MiB", mib(&shards, |s| s.pss_file_bytes)),
                 support::stats("fc_pss_file", "MiB", mib(&fc, |s| s.pss_file_bytes)),
+                support::diagnostic("restored", "us", phase(|p| p.restored_us)),
+                support::diagnostic("vcpus_ready", "us", phase(|p| p.vcpus_ready_us)),
+                support::diagnostic("resumed", "us", phase(|p| p.resumed_us)),
+                support::diagnostic("logged_to_beat", "us", phase(|p| p.to_beat_us)),
             ],
         );
     }
@@ -704,6 +716,65 @@ mod compare {
             all
         });
         (rx, reader)
+    }
+
+    /// Where one of shards' restores of `snapshot` spends its time, by its VM process's own
+    /// log (`SHARDS_LOG=info`), each line led by its clock, in µs since the process started
+    /// (vmm `log`): NaN for a line it did not write.
+    struct Phases {
+        restored_us: f64,
+        vcpus_ready_us: f64,
+        resumed_us: f64,
+        to_beat_us: f64,
+    }
+
+    fn restore_phases(snapshot: &Path) -> Phases {
+        let mut command = Command::new(common::shards_vm());
+        command
+            .arg("restore")
+            .arg(snapshot)
+            .env("SHARDS_LOG", "info")
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let start = Instant::now();
+        let mut child = command.spawn().expect("spawning the VMM");
+        let (beat, out) = first_beat(child.stdout.take().unwrap());
+        let mut stderr = child.stderr.take().unwrap();
+        let err = thread::spawn(move || {
+            let mut all = String::new();
+            let _ = stderr.read_to_string(&mut all);
+            all
+        });
+        let beat = beat.recv_timeout(TIMEOUT);
+        let _ = child.kill();
+        child.wait().unwrap();
+        let (out, err) = (out.join().unwrap(), err.join().unwrap());
+        let Ok(beat) = beat else {
+            panic!(
+                "the restored guest never beat\n--- stdout\n{}\n--- stderr\n{err}",
+                String::from_utf8_lossy(&out)
+            );
+        };
+        let at = |says: &str| {
+            err.lines()
+                .find(|l| l.contains(says))
+                .and_then(|l| {
+                    l.strip_prefix('[')?
+                        .split_once("us ")?
+                        .0
+                        .trim()
+                        .parse::<f64>()
+                        .ok()
+                })
+                .unwrap_or(f64::NAN)
+        };
+        Phases {
+            restored_us: at(" restored a "),
+            vcpus_ready_us: at(" ready to run after "),
+            resumed_us: at(" guest marker 2 at "),
+            to_beat_us: beat.duration_since(start).as_secs_f64() * 1e6,
+        }
     }
 
     /// One restore: `command` spawned, then `after_spawn` (Firecracker's load), then the
