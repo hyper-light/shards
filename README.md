@@ -58,12 +58,26 @@ took 7 ms, most of it process start and exit. The saved microVM runs the test pr
 > with Firecracker's CI build of Linux 6.18 as `vmlinux`.
 
 > [!IMPORTANT]
-> Shards has no release yet. See [Where things stand](#where-things-stand) for what works on
+> Shards is young, at 0.x. See [Where things stand](#where-things-stand) for what works on
 > which machines.
 
 ## Install
 
-Build from source with Rust 1.98 (pinned by the toolchain file):
+Download `shards` for your machine from the
+[latest release](https://github.com/hyper-light/shards/releases/latest), and check it
+against the release's `SHA256SUMS` (`sha256sum -c` on Linux):
+
+```sh
+os=$(uname -s | tr A-Z a-z); arch=$(uname -m | sed 's/x86_64/amd64/; s/aarch64/arm64/')
+base=https://github.com/hyper-light/shards/releases/latest/download
+curl -fL -O $base/shards-$os-$arch -O $base/SHA256SUMS
+grep " shards-$os-$arch\$" SHA256SUMS | shasum -a 256 -c
+chmod +x shards-$os-$arch && mv shards-$os-$arch ~/.local/bin/shards
+```
+
+On Linux, `shards-linux-amd64-musl` and `shards-linux-arm64-musl` are static, for any
+distribution; on Windows, download `shards-windows-amd64.exe`. Or build it from source with
+Rust 1.98 (pinned by the toolchain file):
 
 ```sh
 git clone https://github.com/hyper-light/shards && cd shards
@@ -191,14 +205,14 @@ reproducibly by CI ([resources/kernel](resources/kernel/README.md)):
 ```sh
 arch=$(uname -m | sed s/arm64/aarch64/)
 file=$([ $arch = x86_64 ] && echo vmlinux || echo Image)-6.18.48-$arch
-curl -fLo vmlinux https://github.com/hyper-light/shards/releases/download/kernel-6.18.48-9199fc6fad00/$file
+curl -fLo vmlinux https://github.com/hyper-light/shards/releases/download/kernel-6.18.48-426ba771634e/$file
 shasum -a 256 vmlinux
 ```
 
 | Architecture | SHA-256 |
 |---|---|
-| aarch64 (arm64) | `9193e849396621f788bb18f48ac6b581c2b5ef99b51bc6063c21e4f774b4fa27` |
-| x86_64 | `69405cd3e6e20432d076deac84c0414797b031de5dbadd30d1d1510eb9ad5070` |
+| aarch64 (arm64) | `1fbbd508e8ef67e7a4380ca2e5c6264c78d14a36ff88605f8c3c62ad49891a61` |
+| x86_64 | `16888ea7591da397ae0c7f7df270192a6df3a3f1cecca6328fd413393c087da2` |
 
 Build `shards-init`, a tiny PID 1 that reports Linux's boot time and powers off:
 

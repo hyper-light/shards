@@ -1517,8 +1517,13 @@ fn oom_facts(dir: &str) -> Vec<u8> {
 /// the limit failed), what it was allowed and held at most, and how many; none where none
 /// was. The words of the run's `PIDS`, which its daemon logs and says as an event.
 fn pids_refused() -> Option<Vec<u8>> {
+    pids_refused_in(WORKLOAD_CGROUP)
+}
+
+/// [`pids_refused`] of the cgroup at `dir`: the workload's, or a joiner's (D119).
+fn pids_refused_in(dir: &str) -> Option<Vec<u8>> {
     let read = |file: &str| {
-        std::fs::read_to_string(format!("{WORKLOAD_CGROUP}/{file}"))
+        std::fs::read_to_string(format!("{dir}/{file}"))
             .map(|s| s.split_whitespace().collect::<Vec<_>>().join(" "))
             .unwrap_or_else(|_| "-".into())
     };
@@ -3098,6 +3103,9 @@ struct Exec {
     /// A joiner's process the kernel killed for want of memory: what its cgroup held and
     /// was allowed, read as its process ended, before its cgroup went (D159).
     oom: Option<Vec<u8>>,
+    /// What a joiner's cgroup was refused past its `pids.max` (D193), read as it ended,
+    /// before its cgroup went.
+    pids: Option<Vec<u8>>,
     /// A joiner made through its microVM's own engine (D181), which ends as the workload
     /// does, as a nested engine's containers end with it.
     engine_made: bool,
@@ -3875,6 +3883,7 @@ impl Exec {
             ended: false,
             joined: false,
             oom: None,
+            pids: None,
             engine_made: false,
             proxy: None,
             save: Save::Unasked,
@@ -4457,24 +4466,34 @@ impl Workload {
                                     // SAFETY: kill(2) of a joiner's first process, init's child.
                                     unsafe { libc::kill(e.pid, libc::SIGKILL) };
                                 }
+                                // The layers of joiners that ended, being sent by children
+                                // of init's, go on however the rest ends: one cut short
+                                // leaves its host waiting for the rest of it (D119).
+                                let sending: Vec<libc::pid_t> = execs
+                                    .iter()
+                                    .filter_map(|e| match e.save {
+                                        Save::Sending(pid) => Some(pid),
+                                        _ => None,
+                                    })
+                                    .collect();
                                 if execs.iter().any(|e| e.joined && e.pid > 0 && e.status.is_none()) {
                                     outlived = true;
-                                    // And init's own work for them: their built-ins, and
-                                    // the layers of those that ended, being sent.
+                                    // And init's own work for them: their built-ins.
                                     let spared: Vec<libc::pid_t> = execs
                                         .iter()
-                                        .filter_map(|e| match e.save {
-                                            Save::Sending(pid) => Some(pid),
-                                            _ => (e.into_joiner && e.pid > 0 && e.status.is_none())
-                                                .then_some(e.pid),
-                                        })
+                                        .filter(|e| e.into_joiner && e.pid > 0 && e.status.is_none())
+                                        .map(|e| e.pid)
                                         .collect();
-                                    kill_all_but_joiners(&[&spared[..], hosts_pid.as_slice()].concat());
+                                    kill_all_but_joiners(
+                                        &[&spared[..], &sending[..], hosts_pid.as_slice()].concat(),
+                                    );
                                 } else if let Some(hosts) = hosts_pid {
                                     // Every process but init and the relays of the host's
                                     // network, which finish what its servers sent (D124).
-                                    kill_all_but_joiners(&[hosts]);
+                                    kill_all_but_joiners(&[&sending[..], &[hosts]].concat());
                                     self.hosts = None;
+                                } else if !sending.is_empty() {
+                                    kill_all_but_joiners(&sending);
                                 } else {
                                     // SAFETY: kill(2) of every process but init.
                                     unsafe { libc::kill(-1, libc::SIGKILL) };
@@ -4501,6 +4520,7 @@ impl Workload {
                                     if crate::plug::oom_kills(&dir) > 0 {
                                         e.oom = Some(oom_facts(&dir));
                                     }
+                                    e.pids = pids_refused_in(&dir);
                                     crate::join::remove_cgroup(e.id);
                                     // Its membership of the microVM's switch (D181).
                                     crate::members::leave(e.id);
@@ -4514,9 +4534,14 @@ impl Workload {
                                 // Its layer sent, whole or not: the host keeps only a whole
                                 // one, and closes the connection once it has what came. The
                                 // connection's file, which the child made blocking to write
-                                // it, is nonblocking again for this loop.
+                                // it, is nonblocking again for this loop. A child that
+                                // failed may have ended amid a frame, or been killed: the
+                                // connection goes, so that the host hears its end rather
+                                // than waiting on the rest.
                                 e.save = Save::Done;
-                                if let Some(conn) = &e.conn {
+                                if code != 0 {
+                                    e.conn = None;
+                                } else if let Some(conn) = &e.conn {
                                     set_nonblocking(conn.as_raw_fd(), true);
                                 }
                             }
@@ -4847,6 +4872,14 @@ impl Workload {
                         let len = u32::try_from(facts.len()).unwrap_or(0);
                         e.to_conn.extend(&[
                             &run::header(kind::OOM, len),
+                            facts.get(..len as usize).unwrap_or_default(),
+                        ]);
+                    }
+                    // And what its cgroup was refused past its pids limit (D193).
+                    if let Some(facts) = e.pids.take() {
+                        let len = u32::try_from(facts.len()).unwrap_or(0);
+                        e.to_conn.extend(&[
+                            &run::header(kind::PIDS, len),
                             facts.get(..len as usize).unwrap_or_default(),
                         ]);
                     }

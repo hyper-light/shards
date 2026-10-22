@@ -1174,9 +1174,13 @@ fn joined_finish(
     }
     if let Ok(ended) = served {
         tell_lost(link, ended);
-        // A joiner's process killed for want of memory, said as a run's is (D119, D159).
+        // A joiner's process killed for want of memory, said as a run's is (D119, D159),
+        // and what its cgroup was refused past its pids limit (D193).
         if let Some(facts) = &ended.oom {
             let _ = shards_ipc::send(link, kind::OOM, facts, &[]);
+        }
+        if let Some(facts) = &ended.pids {
+            let _ = shards_ipc::send(link, kind::PIDS, facts, &[]);
         }
     }
     let mut done = vec![status];

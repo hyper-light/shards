@@ -830,10 +830,14 @@ pub fn build(join: Join, cgroup: &str) -> Result<Built, String> {
         mkdir(dir)?;
     }
     mount(&device, LOWER, "erofs", libc::MS_RDONLY, "")?;
-    // Its writable layer, the size it asks for (`--storage-opt size=`, D156).
-    let rw = match join.rw_size {
-        Some(size) => format!("mode=0755,size={size}"),
-        None => "mode=0755".to_string(),
+    // Its writable layer, the size it asks for (`--storage-opt size=`, D156), else as much
+    // as the workload's tmpfs holds, all the memory the microVM may have (D148): sized by
+    // the memory it has now, a microVM that plugs its memory as it needs it would hold half
+    // of what it booted with.
+    let rw = match (join.rw_size, crate::plug::tmpfs_now()) {
+        (Some(size), _) => format!("mode=0755,size={size}"),
+        (None, Some(full)) => format!("mode=0755,{full}"),
+        (None, None) => "mode=0755".to_string(),
     };
     mount("tmpfs", RW, "tmpfs", 0, &rw)?;
     for dir in ["/dev/join/rw/upper", "/dev/join/rw/work"] {

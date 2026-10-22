@@ -11553,3 +11553,37 @@ revision before comparing a changed API/implementation.
   it grew, 1.4 MiB are file pages D188 could take.
 - **Consequence.** D188: builders' memory comes back as their layers leave memory (the swap
   window, or a layer on the host's disk as D190's), not by reclaiming their files.
+
+### M296. What held a run's end after its engine's member ended (D119, D181)
+
+- **Question.** On x86_64 Linux, build.rs
+  `an_engines_member_reaches_no_farther_than_the_command_beside_agents` hung now and then
+  at its last run, `run --rm --use-api-socket IMAGE api-run IMAGE ask ...`: its command
+  exited, and the run never ended. Which of init's conditions for ending its relay went
+  unmet?
+- **Method.** `docs/research/measurements/relay-end/relay-end.patch`: 2 s past the
+  workload's end, init writes a guest marker for each of its relay's end conditions still
+  unmet, once, which the VM process logs under `SHARDS_LOG=debug`: 11 its flush to the
+  host unfinished, 12 and 13 the command's stdout and stderr open, 14 frames for the host
+  unsent, 15 an exec unfinished, 16 the workload's layer being sent, 17 the host's ask for
+  it unheard, 18 the host network's relays going, 19 a domain's output open, 20 its
+  processes' record unsettled. The test, 30 rounds, each beside 16 busy loops, with
+  `scripts/ci/hang-watch.sh` keeping a hung command's daemon log and its processes'
+  stacks. Intel Core i9-14900HX (32 threads), Fedora 44, Linux 6.19.10-300.fc44, guest
+  Linux 6.18.48; shards 0052b7d4 with the patch, test-release; 2026-10-21.
+- **Results.** 27 rounds passed and 3 hung (rounds 5, 20 and 25). In each, the hung run's
+  guest wrote marker 15 alone, and its VM process's joiner thread was in
+  `receive_layer_from`: the member had ended, and its host had asked for its writable
+  layer and waited for the rest of it.
+- **Reading.** The member's layer was being sent by a child of init's as the run's command
+  exited. No joiner outlived the command, so init killed every process but itself
+  (`kill(-1, SIGKILL)`), the sender among them: it spared senders only where joiners
+  outlived the command. The host waited for the rest of the layer, and init for the host
+  to close the member's connection.
+- **Consequence.** D119: init spares the senders however it ends the rest, and a sender
+  that fails, or is killed otherwise, takes init's end of its connection with it, so that
+  the host hears the end and keeps no layer. containers.rs
+  `a_joiners_layer_is_kept_whole_as_its_provider_ends` holds both (macOS 26.4.1, Apple M5
+  Max): it kills a provider as its joiner's 256 MiB layer is sent; with the sender killed,
+  the layer is lost, and with no close as well, the provider's run ends only as its daemon
+  ends its microVM, 10 s past the kill (moby's kill wait).
