@@ -69,6 +69,11 @@ shards builds its own guest kernel. Firecracker's CI kernel lacks EROFS, which i
     whole pages it does not hold (FUSE_INIT's map_alignment) as FUSE_WRITEs, mapping or
     upgrading each range it meets first so that the record is taken as the write comes
     (D189, PM M301).
+  - `0010`: arm64 maps memory it adds in pages where rodata=full or KFENCE asks, so that a
+    page's permissions in the linear map can change alone; a file system DAX device's
+    memory (a pmem namespace, a virtio-fs DAX window) is never given out by the page
+    allocator, nor its permissions changed, and its page tables took a 512th of it from
+    the guest's memory (PM M300). It is mapped in blocks (D189).
 - **The toolchain:** `builder.env` pins a Debian image by its multi-architecture index
   digest, and installs its compiler, linker and tools from Debian's snapshot archive at a
   fixed time. So every build of the same inputs gets the same toolchain, and a new

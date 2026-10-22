@@ -1,0 +1,45 @@
+arm64: mm: a file system DAX device's memory mapped in blocks
+
+arm64 maps memory it adds in pages where rodata=full or KFENCE asks, and the CPU has no
+BBML2_NOABORT (force_pte_mapping), so that a page's permissions in the linear map can
+change alone. A file system DAX device's memory, a pmem namespace's or a virtio-fs DAX
+window's, is never given out by the page allocator, and nothing changes the permissions of
+its linear alias; mapped in pages, its page tables take a 512th of it from the guest's
+memory: 8 MiB for a 4 GiB window (shards' PM M300).
+
+memremap_pages() names such memory to arch_add_memory() by its pagemap: it is mapped in
+blocks, as boot memory is where nothing forces pages, but where DEBUG_PAGEALLOC is on, or
+the guest is a realm, whose memory is shared with its host page by page.
+
+--- a/arch/arm64/mm/mmu.c
++++ b/arch/arm64/mm/mmu.c
+@@ -1968,6 +1968,20 @@ struct range arch_get_mappable_range(void)
+ 	return mhp_range;
+ }
+ 
++/*
++ * shards: whether @params adds a file system DAX device's memory (a pmem namespace, a
++ * virtio-fs DAX window), which the page allocator never gives out: nothing changes the
++ * permissions of its linear alias (set_memory_*(), set_direct_map_*()), which is what the
++ * page mappings rodata=full and KFENCE force are for, so it may be mapped in blocks as boot
++ * memory is where nothing forces pages. Mapped in pages, a 4 GiB DAX window took 8 MiB of
++ * its guest's memory in page tables (shards' PM M300).
++ */
++static bool fs_dax_memory(struct mhp_params *params)
++{
++	return params->pgmap && params->pgmap->type == MEMORY_DEVICE_FS_DAX &&
++	       !debug_pagealloc_enabled() && !is_realm_world();
++}
++
+ int arch_add_memory(int nid, u64 start, u64 size,
+ 		    struct mhp_params *params)
+ {
+@@ -1975,7 +1989,7 @@ int arch_add_memory(int nid, u64 start, u64 size,
+ 
+ 	VM_BUG_ON(!mhp_range_allowed(start, size, true));
+ 
+-	if (force_pte_mapping())
++	if (force_pte_mapping() && !fs_dax_memory(params))
+ 		flags |= NO_BLOCK_MAPPINGS | NO_CONT_MAPPINGS;
+ 
+ 	ret = __create_pgd_mapping(swapper_pg_dir, start, __phys_to_virt(start),
