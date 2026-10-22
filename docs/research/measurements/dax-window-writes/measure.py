@@ -7,16 +7,16 @@ run's shares no window, DAX's gives each one of WINDOW MiB (SHARDS_SHARE_WINDOW_
 round lays out FILE, SIZE MiB of random bytes synced, in DIR (so that its host's file
 system holds data, neither holes nor zeros it would compress), and runs the four arms in
 an order that turns each round: for each, it leaves the file's pages in the host's page
-cache, read whole (`warm`), or not (`cold`: Linux's POSIX_FADV_DONTNEED; on macOS the file
-written again with F_NOCACHE, which keeps it out of the unified buffer cache), then times
-`run --rm -v DIR:/data IMAGE /data/guestwrite /data/file N BYTES` (guestwrite.c, built
+cache, read whole (`warm`), or not (`cold`: Linux's POSIX_FADV_DONTNEED; on macOS msync(2)
+MS_INVALIDATE of a shared mapping of it, which drops it from the unified buffer cache), then
+times `run --rm -v DIR:/data IMAGE /data/guestwrite /data/file N BYTES` (guestwrite.c, built
 static by zig for the guest's architecture into DIR): N random writes of BYTES (4096
 unless --write-size says), each at a multiple of BYTES, with O_DIRECT, the same places each
 run; with --premap, a page of each 2 MiB range read first, untimed, so that through a
 window each range is mapped before its writes (to be read, which a range's first store
 upgrades); with --premap-write, a page of each written first instead (mapped to be
-written). Each run's line: its writes' n, p50, p90,
-p99 and max, µs, and MiB/s; then, of each arm's rounds, the p50 and the range of each.
+written). Each run's line: its writes' n, p50, p90, p99 and max, µs, and MiB/s; then, of
+each arm's rounds, the p50 and the range of each.
 With --kernel LABEL=PATH, once for each of two or more guest kernels, every arm is run on
 each of them within each round (SHARDS_KERNEL), so that kernels are compared under the
 same load, each arm's name ending in its kernel's label.
@@ -90,13 +90,42 @@ def lay_out():
         os.fsync(f.fileno())
 
 
+def invalidate():
+    """Drops the file's pages from macOS's unified buffer cache: msync(2) MS_INVALIDATE of a
+    shared mapping of it, which an unprivileged process may ask (PM M302: 2,048 MiB
+    resident by mincore(2), none after, in 29 ms; 4 KiB reads at random 1 µs before, 1,996
+    after), where writing it again with F_NOCACHE did not always (PM M299)."""
+    import ctypes
+    import ctypes.util
+    libc = ctypes.CDLL(ctypes.util.find_library("c"), use_errno=True)
+    libc.mmap.restype = ctypes.c_void_p
+    libc.mmap.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_int, ctypes.c_int,
+                          ctypes.c_int, ctypes.c_longlong]
+    libc.msync.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_int]
+    libc.munmap.argtypes = [ctypes.c_void_p, ctypes.c_size_t]
+    prot_read, map_shared, ms_invalidate = 0x1, 0x1, 0x2  # sys/mman.h
+    size = file.stat().st_size
+    fd = os.open(file, os.O_RDONLY)
+    try:
+        at = libc.mmap(None, size, prot_read, map_shared, fd, 0)
+        if at in (None, ctypes.c_void_p(-1).value):
+            raise SystemExit(f"mmap of {file}: errno {ctypes.get_errno()}")
+        try:
+            if libc.msync(at, size, ms_invalidate) != 0:
+                raise SystemExit(f"msync of {file}: errno {ctypes.get_errno()}")
+        finally:
+            libc.munmap(at, size)
+    finally:
+        os.close(fd)
+
+
 def leave(cache):
     if cache == "warm":
         with open(file, "rb") as f:
             while f.read(1 << 22):
                 pass
     elif macos:
-        lay_out()
+        invalidate()
     else:
         fd = os.open(file, os.O_RDONLY)
         try:

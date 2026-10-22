@@ -5827,8 +5827,12 @@ stores.
   `a_ranges_held_pages_are_recorded_as_it_is_mapped`,
   `a_files_ranges_follow_it_only_where_it_changed`, and
   `a_volumes_large_files_go_through_its_dax_window` (whole pages written where the host
-  holds none, read by host and guest). The kernel with the patch is pinned once the Mac's
-  passes are measured.
+  holds none, read by host and guest). The pinned kernel (kernel-6.18.48-4970e0190ebe)
+  carries the patch. On the Mac, evicted with msync(2) MS_INVALIDATE (M301: rewriting the
+  file had timed the SSD's flush), cold 64 KiB writes into ranges mapped first took 306 µs
+  at p50 where they took 2,459 (FUSE's 204 to 220), and 1 MiB into ranges not yet mapped
+  1,310 where 2,811 (FUSE's 1,243 to 1,434); cold 4 KiB writes, parts of 16 KiB host
+  pages, cost what they did.
 - **One descriptor a file** (PM M302). The slowest write where ranges are mapped as
   writes come took 7.8 to 32.6 ms on every kernel (M301): the window kept each mapped
   range's descriptor, so its VM process's descriptor table grew as the run's mappings
@@ -5877,11 +5881,11 @@ template pays it once; what its restores pay is to be measured with mappings.
   worse middle (1,589 against 898 at p50). A guest's FUSE weighing each range's writes
   against its mapping (`dax-window-writes/fuse-writes-until-mapped.patch`, M299) was
   measured and not taken: its rationale was that cost. A whole page a host does not hold
-  is written as a FUSE_WRITE now (above; M301), measured on Fedora; windows stay asked for,
-  none by default, until the Mac's passes are measured with it (there 64 KiB writes into
-  cold ranges took 181 µs at p50 against FUSE's 139; M299), and what a write into a range
-  not yet mapped pays before it writes, still more than a FUSE_WRITE of 1 MiB (M301), is
-  measured part by part. A window's
+  is written as a FUSE_WRITE now (above; M301), on Fedora and the Mac, and what a write into
+  a range not yet mapped pays before it writes was measured part by part (M302); windows
+  stay asked for, none by default, while some rounds of a cold file's 1 MiB writes into
+  ranges not yet mapped cost some 500 µs more than FUSE's on Fedora, which is unexplained
+  (M302). A window's
   page structures are its head's (above); what it takes of an arm64 guest's memory is its
   linear map's page tables, a 512th of head and window (M300), which arm64 Linux keeps in
   base pages under rodata=full, and in blocks would be all but none.

@@ -2052,9 +2052,19 @@ fn a_killed_daemons_runs_end_with_it() {
     let daemon = daemon_pid(&home).expect("a daemon pid");
     // SAFETY: kill(2) of this test's daemon.
     unsafe { libc::kill(daemon, libc::SIGKILL) };
-    eventually("runs outlived their killed daemon", || {
-        processes_with(&named).is_empty()
-    });
+    // Within five seconds, and those that outlive it named, for a failure to say which.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let left = commands_with(&named);
+        if left.is_empty() {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "runs outlived their killed daemon: {left:?}"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
 }
 
 /// A home named relatively is one home, wherever it is named from, however long, with

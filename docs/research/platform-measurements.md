@@ -11962,6 +11962,38 @@ revision before comparing a changed API/implementation.
   alone, by FUSE_INIT's map_alignment, which the server sets from the host's page, and
   sends a part of a host page through the window, as before: on Linux, whose pages are 4
   KiB, as B2 did. Its Mac passes come with CI's build of it.
+- **The Mac again: its eviction mended, and 0009 by host pages (B3).** The Mac's cold arms
+  above, and M298's and M299's, evicted the file by writing it again with F_NOCACHE, 2 GiB,
+  whose flush to the SSD each cold arm then waited behind: FUSE's own cold 4 KiB writes took
+  1,748 to 2,025 µs at p50 there. `measure.py` now evicts it with msync(2) MS_INVALIDATE of
+  a shared mapping of it, which an unprivileged process may ask: 2,048 MiB of the file
+  resident by mincore(2) before, none after, in 29 ms; 4 KiB reads at random 1 µs before,
+  1,996 after. `held-ab.sh` with a release build of 4aec5baa on the pinned kernel (A), B2,
+  and 0009 as 895d2df0 made it (B3, kernel-6.18.48-4970e0190ebe), every arm on each kernel
+  in each round, 5 rounds, macOS 26.4.1, load 9.9 to 11.7 for the 4 KiB pass and 9.9 to
+  30.3 for the 64 KiB one from other work; the 1 MiB pass then with A and B3 alone, load
+  14. µs at p50 [the rounds' range], p99; FUSE's p50 beside:
+
+  | pass | arm | A | B2 | B3 | FUSE |
+  |---|---|---|---|---|---|
+  | 4 KiB over 2 GiB | cold | 191.4 [158.5, 253.2], 4,691.2 | 224.3 [187.8, 276.1], 6,478.6 | 193.0 [160.2, 1,999.9], 3,722.7 | 198.0 to 235.0 |
+  | | warm | 63.8 [52.2, 111.6], 485.1 | 72.8 [52.9, 108.0], 439.2 | 67.8 [52.0, 101.8], 296.7 | 97.3 to 105.4 |
+  | 64 KiB, mapped first | cold | 2,458.5 [342.3, 5,001.8], 27,724.5 | 268.8 [151.2, 514.0], 2,607.0 | 305.8 [150.2, 417.9], 2,310.0 | 204.4 to 219.6 |
+  | | warm | 165.5 [74.4, 189.9], 4,196.1 | 150.8 [73.5, 175.7], 1,995.0 | 147.7 [73.7, 173.7], 3,625.9 | 137.0 to 245.9 |
+  | 1 MiB, not mapped | cold | 2,811.2 [1,794.0, 32,026.7], 21,692.7 | | 1,309.6 [996.5, 2,293.5], 54,883.3 | 1,243.3 to 1,433.8 |
+  | | warm | 328.0 [240.4, 403.0], 21,375.0 | | 338.0 [241.6, 351.1], 20,188.1 | 1,358.6 to 1,608.7 |
+
+  Evicted so, a cold 4 KiB write through FUSE on APFS takes some 200 µs, not 2 ms: the
+  earlier cold arms timed the SSD's flush as much as the writes. B2 still lost the cold 4
+  KiB writes (224 against A's 191 at p50, p99 6,479 against 4,691); B3, which sends parts
+  of host pages through the window, wrote them as A did (193, p99 3,723). Whole host pages
+  B3 writes as B2 did: 64 KiB into ranges mapped first, cold, 306 against A's 2,459 at p50
+  (p99 2,310 against 27,725), and 1 MiB into ranges not yet mapped 1,310 against 2,811,
+  within FUSE's (1,243 to 1,434); warm, as A did, 1.4 to 1.6 times FUSE's speed for 4 KiB
+  and 4.0 to 4.8 for 1 MiB. The 64 KiB and 1 MiB passes ran with the host loaded to 30 by
+  other work, FUSE's own p99 up to 98 ms and its 64 KiB warm p50 137 to 246 by kernel: their
+  tails, and that pass's warm arms, are the host's. Consequence: 0009 as B3 is pinned
+  (kernel-6.18.48-4970e0190ebe).
 
 ### M302. What a write into a range of a DAX window not yet mapped pays before it writes (D189, item 5)
 
