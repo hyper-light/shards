@@ -10368,7 +10368,8 @@ revision before comparing a changed API/implementation.
     KiB at a time in the kernel's linear map, 8 bytes a page, a 512th, which arm64 builds
     without block mappings under `rodata=full`, its default (arch/arm64/mm/mmu.c,
     arch_add_memory and force_pte_mapping; pageattr.c, `rodata_full` true); x86_64 maps
-    its direct map with large pages.
+    its direct map with large pages. Shards' kernel patch 0010 maps it in blocks: none
+    (M300, its follow-up).
   - The head is written as the guest probes the device, a 2 MiB block for each 128 MiB: a
     boot's cost by size. On the Mac up to 2.3 ms a GiB (64 GiB in 148 ms more than none); on
     KVM, on huge pages, 1.9 ms a GiB when the host has them free (16 GiB in 30 ms more) and
@@ -11848,3 +11849,345 @@ revision before comparing a changed API/implementation.
   (on both, its bound a 512th of head and window and 2 MiB). The test guest says its CPUs'
   listed free pages with its free memory. A window's linear map in blocks on arm64 is
   D189's next step for a guest's memory.
+- **Patch 0010** (2026-10-22). arm64's linear map of a file system DAX device's memory
+  (MEMORY_DEVICE_FS_DAX: a window, a writable layer) in blocks, where rodata=full forced
+  base pages, but where debug_pagealloc or a realm needs them: a linear alias's
+  permissions change only for a vmalloc area's pages (arm64 `change_memory_common`), which
+  are RAM. `heads-ab.sh` on the Mac (as above, the release build of 4aec5baa), the pinned
+  kernel (kernel-6.18.48-4970e0190ebe) against one with 0010 (kernel-6.18.48-8df0015cca35,
+  its x86_64 images byte for byte the pinned ones), 12 rounds; and `layer/kernels-ab.sh`,
+  M277's `measure.sh` booting each kernel in turn, round by round, 5 rounds of 0, 4, 16 and
+  64 GiB layers, then 8 of 0, 16 and 64 GiB (`kernels-ab.py`; free memory MemFree once the
+  NVDIMM buses' probes are done). Nothing else was measured or built meanwhile. What each
+  takes of its guest's free memory against none, MiB at p50 (by the most free):
+
+  | | pinned kernel | with 0010 |
+  |---|---|---|
+  | window 128 MiB | 0.5 (0.5) | 0.0 (0.0) |
+  | window 256 MiB | 0.7 (0.8) | 0.0 (0.1) |
+  | window 512 MiB | 1.3 (1.3) | 0.0 (0.0) |
+  | window 1 GiB | 2.2 (2.2) | 0.0 (0.0) |
+  | window 2 GiB | 4.2 (4.3) | 0.0 (0.1) |
+  | window 4 GiB | 8.3 (8.3) | 0.0 (0.1) |
+  | layer 4 GiB, n 5 | 9.3 (9.0) | 0.3 (0.2) |
+  | layer 16 GiB, n 5 then 8 | 39.1, 38.4 (36.9, 32.2) | -0.5, -0.2 (-0.1, -0.5) |
+  | layer 64 GiB, n 5 then 8 | 133.6, 133.2 (133.3, 132.1) | -0.7, -0.3 (-0.1, -0.5) |
+
+  PID 1 ran at 0.04 to 0.05 s at p50 with either kernel at every window length (max 0.06
+  and 0.05). A layer's probes were done sooner with 0010: 16 GiB at 76.3 and 74.9 ms at p50
+  against 86.8 and 85.7, 64 GiB at 157.9 and 156.6 against 197.7 and 197.3. Its first
+  mount: in the first run 21.5 (16 GiB) and 41.7 ms (64 GiB) at p50 on the pinned kernel
+  against 57.9 and 68.8 with 0010, each kernel's boots spread over the other's (15 to 127
+  ms); in the second, 8.3 and 8.8 against 8.0 and 9.1, max 290.8 and 23.9 against 13.2
+  and 12.7: no difference the runs agree on. Its writes alike (64 MiB in 14.5 to 14.7 ms,
+  1,000 files in 7.2 to 7.3), and 8 MiB through a mapping in 30.6 to 34.5 ms against 37.0
+  to 39.8 (first run, n 5).
+- **Reading (0010).** In blocks, an arm64 guest's window and writable layer take none of
+  its memory, as x86_64's: what they took, a 512th of head and device (8.3 MiB for a 4 GiB
+  window, 133 MiB for a 64 GiB layer), was the linear map's page tables alone, and a
+  layer's probe is shorter by the time it took to write them. 0010 is pinned, and
+  `a_dax_windows_page_structures_take_none_of_its_guests_memory` holds a 4 GiB window to
+  the spread of boots alone, 2 MiB, on both architectures (D189, D190).
+
+### M301. Whole pages a host does not hold, written as FUSE_WRITEs by the window's record (D189, item 5)
+
+- **Question.** A store through a DAX window into a page its host does not hold waits for
+  the host to read it (M283; M299: a cold file's scattered 4 KiB writes 1,483 µs at p99
+  through the window, 206 through FUSE). With a record of which pages the host holds (the
+  window's held record: one bit a 4 KiB page, taken with `mincore(2)` as each range is
+  mapped, in shared memory region 0xfd) and a guest kernel that writes the whole pages its
+  host does not hold as FUSE_WRITEs (shards' patch 0009), what do writes through a window
+  cost?
+- **Method.** `dax-window-writes/held-ab.sh`: M299's `measure.py` passes (5,000 writes of 4
+  KiB at random over a 2 GiB file; 2,000 of 64 KiB, a page of each 2 MiB range read first;
+  500 of 1 MiB, no range mapped first), each through FUSE alone and through a window of
+  4,096 MiB, the file evicted from the host's page cache first (cold) or read whole (warm),
+  every arm on each kernel within each round (`--kernel`), 5 rounds. One release build of
+  shards (28f029fa with the held record as this entry commits it) on kernel A, the pinned
+  one (0008 alone, whose guest reads no record), and on B1, 0009 as first built, then B2,
+  0009 as committed; both built by `scripts/build-kernel-in-builder.sh`, CI's pinned
+  toolchain and config. Where B1 lost: `classes.sh`, guestwrite's writes of the 64 KiB pass
+  split into each range's first and the rest, A, B1 and B2 in each round, their order
+  turning, 6 rounds. The device's own costs: `window_costs` (window.rs; `cargo test
+  --release -p shards-vmm window_costs -- --ignored --nocapture`), and its first measure
+  against e1ac4cce's window, which walked every range. Fedora 44, Linux 6.19.10, M258's
+  i9-14900HX, 2026-10-22, load 2.4 to 9.7 from other work; the costs on the Mac too (M5
+  Max, macOS 26.4.1).
+- **Results.** µs a write through the window, the p50 of the rounds' p50 [their range],
+  p90 and p99; FUSE's own p50 beside it (A's arm of that run):
+
+  | pass | arm | A | B1 | FUSE | A | B2 | FUSE |
+  |---|---|---|---|---|---|---|---|
+  | 4 KiB over 2 GiB | cold | 31.0 [26.8, 76.3], 616.8, 1,603.9 | 50.9 [45.7, 139.8], 98.2, 315.1 | 66.2 | 30.2 [27.2, 66.7], 646.5, 1,905.3 | 53.6 [47.6, 75.3], 123.3, 318.6 | 45.3 |
+  | | warm | 29.5 [22.5, 58.9], 84.6, 243.3 | 24.8 [22.7, 74.5], 85.4, 235.5 | 62.3 | 23.0 [22.6, 30.4], 77.9, 299.8 | 23.3 [22.6, 34.6], 76.6, 288.2 | 46.2 |
+  | 64 KiB, mapped first | cold | 94.9 [79.9, 103.4], 169.1, 250.1 | 131.5 [114.4, 174.9], 211.3, 277.9 | 98.5 | 78.0 [76.2, 113.3], 138.7, 263.6 | 103.0 [76.7, 117.8], 185.3, 347.1 | 90.6 |
+  | | warm | 92.1 [78.0, 99.2], 181.0, 215.4 | 96.5 [81.6, 106.4], 179.1, 234.5 | 98.7 | 84.5 [78.4, 105.9], 161.8, 246.4 | 78.3 [77.1, 105.5], 136.6, 173.7 | 86.4 |
+  | 1 MiB, not mapped | cold | 1,609.4 [1,513.8, 1,726.8], 2,496.3, 2,916.7 | 1,103.8 [1,003.6, 1,797.9], 1,756.8, 2,130.1 | 973.0 | 1,728.8 [1,495.0, 2,031.5], 2,497.0, 2,950.9 | 1,386.2 [969.4, 1,561.4], 1,683.6, 2,366.9 | 1,028.0 |
+  | | warm | 766.3 [670.3, 809.2], 845.1, 1,476.4 | 730.2 [652.0, 768.4], 834.6, 1,551.7 | 989.1 | 702.6 [674.6, 809.7], 886.1, 1,183.4 | 729.1 [666.9, 1,253.3], 900.7, 1,655.0 | 936.9 |
+
+  The window's cold 4 KiB writes ran at 22.3 MiB/s on A and 48.6 on B1, 21.0 and 44.6 on
+  B2. In the passes that map ranges as writes come, the slowest write of every window arm,
+  on every kernel, took 7.8 to 32.6 ms; where a read had mapped them first, 1.4 at most.
+  The 64 KiB pass by class, cold, 874 first writes and 1,126 later ones a run: µs at p50,
+  the median of 6 rounds [their range]:
+
+  | | A | B1 | B2 |
+  |---|---|---|---|
+  | a range's first write | 158.5 [136.0, 184.4] | 152.9 [126.2, 198.6] | 137.4 [127.1, 189.4] |
+  | its later ones | 76.0 [61.0, 90.8] | 110.8 [95.9, 136.9] | 69.8 [52.3, 115.3] |
+  | all | 105.3 [85.8, 123.4] | 131.2 [104.7, 167.7] | 97.3 [79.4, 140.0] |
+
+  Warm, the first and later writes cost 136.8 and 68.6 on A, 171.0 and 73.2 on B1, 158.5
+  and 67.2 on B2. The device's own, µs, n 2,000 (1,000 for a range's first record), p50,
+  p90, p99, max:
+
+  | | Fedora | the Mac |
+  |---|---|---|
+  | a reply about a file in 1,024 ranges, its size unchanged | 0.29, 0.29, 0.30, 2.52 | 0.33, 0.38, 0.46, 2.29 |
+  | the same, e1ac4cce's window | 8.54, 9.00, 10.50, 80.29 | 7.83, 7.96, 11.54, 134.17 |
+  | a range's held record taken again, its first time | 3.40, 5.56, 6.30, 102.51 | 35.46, 43.62, 52.46, 62.33 |
+  | after | 0.04, 0.04, 0.04, 0.26 | 0.04, 0.04, 0.04, 3.42 |
+  | `mincore(2)` of a range, its pages held | 8.09, 8.21, 10.96, 25.18 | 25.88, 28.67, 34.96, 82.46 |
+  | of none | 2.48, 3.02, 3.65, 6.51 | 25.75, 25.96, 31.63, 44.54 |
+
+- **Reading.** With the record, a cold file's scattered 4 KiB writes have FUSE's tail: p99
+  315 to 319 µs where they took 1,604 to 1,905, p90 98 to 123 where 617 to 647, at twice
+  the rate. Their p50 is a FUSE_WRITE's, 51 to 54, where A's was 30 or 31: at least half of
+  A's met pages its host held already, which a fault's read-around brings in (Btrfs reads
+  4 MiB about a fault, M297); with the record no such fault comes, and the pages about a
+  write stay cold. 1 MiB into ranges not yet mapped, cold, costs a fifth to a third less
+  (1,104 against 1,609; 1,386 against 1,729), p99 a fifth to a quarter less, and still more than FUSE
+  (973; 1,028): each write maps its range first. Warm, no pass lost. B1 lost the 64 KiB
+  pass, cold (131.5 against 94.9, every round), by its later writes (110.8 against 76.0): a
+  range a read maps is mapped to be read alone, and its first store upgrades the mapping
+  (fuse_iomap_begin: another FUSE_SETUPMAPPING, the window mapping the range again), which
+  A's first write paid; B1's went as a FUSE_WRITE, its record taken before the read's fault
+  read the range around, and the store after it paid the upgrade. B2 upgrades a read's
+  mapping as a write comes, so its record is taken then: its later writes cost A's (69.8
+  against 76.0), and over the 11 paired rounds of both runs B2 less A had a median of +4.4
+  µs, 6 rounds above and 5 below, no difference past the host's own. The window's own
+  bookkeeping: a reply about a file in 1,024 ranges looks at that file's ranges alone,
+  where it walked every range (0.29 µs at p50 against 8.54 on Fedora, 0.33 against 7.83 on
+  the Mac), and a range's record is taken again once a mapping, as a `mincore(2)` of 2 MiB
+  costs 2.5 to 8.1 µs on Fedora and 26 on the Mac, where a host's pwrite(2) of 4 KiB takes
+  1.0 (M299).
+- **Consequence.** D189: the window's held record (snapshot format 26) and patch 0009 as
+  B2 are taken; CI builds the kernel with it, pinned after the Mac's passes. Next: what a
+  write into a range not yet mapped pays before it writes, part by part, and the slowest
+  write where ranges are mapped as writes come (7.8 to 32.6 ms).
+- **The Mac.** `held-ab.sh`'s passes with a release build of 6f2929ee, on the pinned arm64
+  kernel (A) and on CI's build of B2 (kernel-6.18.48-caeec082891b, whose x86_64 kernel is
+  byte for byte the one measured above), 5 rounds, macOS 26.4.1, APFS, load 2.8 to 4.0
+  (a minute's unit tests ran during the second pass); µs a write through the window, the
+  p50 of the rounds' p50 [their range], p90 and p99; FUSE's own p50 beside it:
+
+  | pass | arm | A | B2 | FUSE |
+  |---|---|---|---|---|
+  | 4 KiB over 2 GiB | cold | 1,894.8 [1,853.8, 1,971.0], 10,013.0, 22,051.2 | 2,334.1 [2,033.2, 2,952.7], 13,039.0, 22,538.1 | 1,748.1 |
+  | | warm | 53.3 [53.0, 54.6], 147.3, 167.8 | 52.9 [52.2, 53.3], 147.6, 165.6 | 86.8 |
+  | 64 KiB, mapped first | cold | 1,993.3 [1,926.7, 2,005.2], 10,967.1, 21,963.3 | 154.5 [152.8, 156.7], 293.6, 320.5 | 142.8 |
+  | | warm | 72.5 [71.1, 88.1], 167.0, 181.7 | 72.7 [67.2, 73.1], 167.8, 184.8 | 138.9 |
+  | 1 MiB, not mapped | cold | 19,920.7 [16,468.3, 21,993.4], 49,880.2, 85,666.0 | 1,031.7 [961.1, 1,044.1], 1,087.9, 1,170.0 | 915.5 |
+  | | warm | 243.5 [237.1, 254.2], 263.7, 300.1 | 244.3 [238.8, 248.9], 263.1, 287.3 | 911.0 |
+
+  Where a cold write is whole pages of the host's (16 KiB on Apple silicon), the record
+  takes a window's from 14 and 22 times FUSE's p50 to within 8 and 13% of it, its p99 from
+  21,963 and 85,666 µs to 321 and 1,170, at 19 and 25 times the rate; warm, it costs what
+  it did, 1.6 to 3.7 times less than FUSE. But B2 lost the cold 4 KiB pass, every round (p50 2,033 to
+  2,953 against 1,854 to 1,971; p90 13,039 against 10,013): a guest's 4 KiB page is a
+  quarter of the host's, so its FUSE_WRITE makes APFS read the rest of the host's page
+  first, as the store does, and without the store's fault no read comes about it. FUSE's
+  own cold arm lost little to the kernel (2,025 against 1,748, two of A's rounds' evictions
+  not taking: 194 and 249). So 0009 now writes as FUSE_WRITEs the host's whole pages
+  alone, by FUSE_INIT's map_alignment, which the server sets from the host's page, and
+  sends a part of a host page through the window, as before: on Linux, whose pages are 4
+  KiB, as B2 did. Its Mac passes come with CI's build of it.
+- **The Mac again: its eviction mended, and 0009 by host pages (B3).** The Mac's cold arms
+  above, and M298's and M299's, evicted the file by writing it again with F_NOCACHE, 2 GiB,
+  whose flush to the SSD each cold arm then waited behind: FUSE's own cold 4 KiB writes took
+  1,748 to 2,025 µs at p50 there. `measure.py` now evicts it with msync(2) MS_INVALIDATE of
+  a shared mapping of it, which an unprivileged process may ask: 2,048 MiB of the file
+  resident by mincore(2) before, none after, in 29 ms; 4 KiB reads at random 1 µs before,
+  1,996 after. `held-ab.sh` with a release build of 4aec5baa on the pinned kernel (A), B2,
+  and 0009 as 895d2df0 made it (B3, kernel-6.18.48-4970e0190ebe), every arm on each kernel
+  in each round, 5 rounds, macOS 26.4.1, load 9.9 to 11.7 for the 4 KiB pass and 9.9 to
+  30.3 for the 64 KiB one from other work; the 1 MiB pass then with A and B3 alone, load
+  14. µs at p50 [the rounds' range], p99; FUSE's p50 beside:
+
+  | pass | arm | A | B2 | B3 | FUSE |
+  |---|---|---|---|---|---|
+  | 4 KiB over 2 GiB | cold | 191.4 [158.5, 253.2], 4,691.2 | 224.3 [187.8, 276.1], 6,478.6 | 193.0 [160.2, 1,999.9], 3,722.7 | 198.0 to 235.0 |
+  | | warm | 63.8 [52.2, 111.6], 485.1 | 72.8 [52.9, 108.0], 439.2 | 67.8 [52.0, 101.8], 296.7 | 97.3 to 105.4 |
+  | 64 KiB, mapped first | cold | 2,458.5 [342.3, 5,001.8], 27,724.5 | 268.8 [151.2, 514.0], 2,607.0 | 305.8 [150.2, 417.9], 2,310.0 | 204.4 to 219.6 |
+  | | warm | 165.5 [74.4, 189.9], 4,196.1 | 150.8 [73.5, 175.7], 1,995.0 | 147.7 [73.7, 173.7], 3,625.9 | 137.0 to 245.9 |
+  | 1 MiB, not mapped | cold | 2,811.2 [1,794.0, 32,026.7], 21,692.7 | | 1,309.6 [996.5, 2,293.5], 54,883.3 | 1,243.3 to 1,433.8 |
+  | | warm | 328.0 [240.4, 403.0], 21,375.0 | | 338.0 [241.6, 351.1], 20,188.1 | 1,358.6 to 1,608.7 |
+
+  Evicted so, a cold 4 KiB write through FUSE on APFS takes some 200 µs, not 2 ms: the
+  earlier cold arms timed the SSD's flush as much as the writes. B2 still lost the cold 4
+  KiB writes (224 against A's 191 at p50, p99 6,479 against 4,691); B3, which sends parts
+  of host pages through the window, wrote them as A did (193, p99 3,723). Whole host pages
+  B3 writes as B2 did: 64 KiB into ranges mapped first, cold, 306 against A's 2,459 at p50
+  (p99 2,310 against 27,725), and 1 MiB into ranges not yet mapped 1,310 against 2,811,
+  within FUSE's (1,243 to 1,434); warm, as A did, 1.4 to 1.6 times FUSE's speed for 4 KiB
+  and 4.0 to 4.8 for 1 MiB. The 64 KiB and 1 MiB passes ran with the host loaded to 30 by
+  other work, FUSE's own p99 up to 98 ms and its 64 KiB warm p50 137 to 246 by kernel: their
+  tails, and that pass's warm arms, are the host's. Consequence: 0009 as B3 is pinned
+  (kernel-6.18.48-4970e0190ebe).
+
+### M302. What a write into a range of a DAX window not yet mapped pays before it writes (D189, item 5)
+
+- **Question.** M301 left a window's cold 1 MiB writes into ranges not yet mapped above
+  FUSE's (1,386 µs at p50 against 1,028 with patch 0009), and the slowest write where
+  ranges are mapped as writes come at 7.8 to 32.6 ms on every kernel. What does mapping a
+  range cost, part by part?
+- **Method.** `dax-window-writes/setup-costs.sh`: 500 writes of 1 MiB over a 2 GiB file,
+  its ranges not yet mapped, mapped to be read first (guestwrite's `premap`) or to be
+  written (`premapw`), cold and warm, on the pinned kernel (A) and with 0009 (B2, the
+  kernel CI then built as kernel-6.18.48-caeec082891b, byte for byte), every arm in each
+  round, 4 rounds; a release build carrying `setup-costs.patch`, whose VM process logs each
+  FUSE_SETUPMAPPING's parts (the descriptor its share process opens; the file's size, the
+  host mapping, stage 2, the table, the held record, the settling and its watch), read by
+  `setup-costs.py`. Three builds: 6f2929ee (before), the window keeping one descriptor a
+  file and its ranges mapped from copies of it (reuse), and as committed (one descriptor
+  a file kept, each range's own from its server closed once mapped, and no record of a
+  range mapped to be read alone). The VM process's descriptors and threads read from
+  /proc as a run began. Fedora 44, M298's host, 2026-10-22, load 4.5 to 6.7 from other
+  work.
+- **Results.** Each FUSE_SETUPMAPPING, µs, n of each arm's 4 runs (384 to 1,408 mappings a
+  run), p50, p99 and max:
+
+  | build | the descriptor from its server | the held record, cold / warm (p50) | the whole mapping |
+  |---|---|---|---|
+  | before | 8 to 14, 63 to 236, 14,626 to 23,552 | 5 to 9 / 51 to 53 | 24 to 77, 109 to 304, 14,738 to 23,587 |
+  | reuse | one a run, 14 to 21 (the rest the window's copy, 0) | 5 to 9 / 23 to 35 | 11 to 51, 34 to 99, 90 to 310 |
+  | as committed | 6 to 19, 27 to 172, 198 to 332 (once 1,358) | 5 to 8 / 21 to 28; read alone 0 | 19 to 56, 78 to 224, 254 to 498 (once 1,396) |
+
+  Before, the slowest descriptor of every run, 9,062 to 23,552 µs, came at its 60th,
+  188th, 444th or 956th mapping; as a run began, its VM process held 67 descriptors, the highest 68, on 50
+  threads. The writes' p50, µs, the median of 4 rounds:
+
+  | arm | A before | A as committed | B2 before | B2 as committed |
+  |---|---|---|---|---|
+  | cold, not mapped | 1,693.4 | 1,476.0 | 1,136.6 | 953.5 |
+  | cold, mapped to be written | 682.0 (reuse: 1,285.0) | 636.2 | 976.7 | 964.8 |
+  | cold, mapped to be read | | 724.8 | | 724.3 |
+  | warm, not mapped | 728.2 | 726.1 | 740.0 | 724.8 |
+  | warm, mapped to be written | 656.4 | 635.5 | 667.5 | 639.8 |
+  | warm, mapped to be read | | 718.3 | | 731.5 |
+
+  `held-ab.sh` with the build as committed (Fedora, load 3.0 to 5.4): the slowest write of
+  each window arm, 4 KiB over 2 GiB, took 0.5 to 3.4 ms where it took 14.1 to 25.5 in M301,
+  and 1 MiB into ranges not yet mapped 1.2 to 8.8 where 7.8 to 32.6; 64 KiB, mapped first,
+  cold: A 78.0
+  [77.7, 80.1], B2 81.6 [77.3, 84.1], FUSE 88.6; 1 MiB, not mapped, cold: A 1,515.4
+  [1,509.2, 1,535.8], B2 1,374.3 [905.9, 1,610.5], FUSE 914.0. B2's rounds there, in M301's
+  two runs and this one: 1,798, 1,607, 1,104, 1,009, 1,004; 969, 1,386, 1,561, 995, 1,502;
+  906, 1,194, 1,374, 1,447, 1,611; A's 1,495 to 2,032, FUSE's 874 to 1,543.
+- **Reading.** The slowest mapping was the VM process's descriptor table growing. Linux
+  grows a process's table as a descriptor passes its size, 128, 256, 512 and on (fs/file.c,
+  alloc_fdtable), and where other threads share the table it waits a grace period of RCU
+  first (expand_fdtable, synchronize_rcu): with 68 descriptors open as a run began and
+  each mapped range's kept, the 60th, 188th, 444th and 956th mappings passed 128, 256, 512
+  and 1,024. Keeping one descriptor a file, each range's own closed once it is mapped,
+  leaves the table as it was: the slowest mapping 0.25 to 0.5 ms, and the slowest 4 KiB
+  window write 0.5 to 3.4 ms where it was 14.1 to 25.5. Mapping a file's ranges from copies of its one descriptor spared the
+  server's open, but its ranges then share one open file's readahead, which Linux stops
+  after a hundred misses (mm/filemap.c, do_sync_mmap_readahead, MMAP_LOTSAMISS), where each
+  range's own open begins anew: kernel A's writes after a page of each range was written,
+  which find those ranges read around, lost that (1,285 µs against 682). B2's page writes
+  are FUSE_WRITEs, which read nothing, so its writes there cost a FUSE_WRITE's (965 against
+  A's 636), A having paid for its reads in writes the harness does not time. A range
+  mapped to be read alone has no record now: no guest reads it, and its `mincore(2)` took
+  51 to 53 µs of a warm mapping's 75 to 77. What a mapping costs a write into a range not
+  yet mapped is now 19 to 56 µs at p50: B2's cold 1 MiB writes there cost 954 µs at p50
+  run after run, as FUSE's do; in `held-ab.sh`'s rounds, 906 to 1,798, some near FUSE's
+  and others some 500 µs above them, in no order of rounds, which is unexplained.
+- **Consequence.** D189: one descriptor a file, each range's own closed once mapped, and
+  no record of a range mapped to be read (held by `a_window_keeps_one_descriptor_of_a_file`,
+  mutation-checked: 401 descriptors more for 400 ranges where each range's was kept). Next:
+  what puts a round of B2's cold 1 MiB writes some 500 µs above FUSE's (below).
+- **The rounds' spread.** `rounds.sh`: 20 pairs back to back, a FUSE run then a window run,
+  B3, the build as committed, the file evicted before each, /proc/vmstat read about each: no run
+  reclaimed or faulted in a page from disk, each began with 2 to 11 MiB dirty and 19 GiB
+  free, and in a slow window run its writes into ranges it mapped and those into ranges
+  mapped already were slow alike (first 1,938 to 2,168 µs at p50 against 932 to 979 in a
+  fast one, later 1,130 to 1,419 against 595 to 640). The host's CPU is hybrid, its
+  performance cores' threads 0 to 15 and its efficient cores' 16 to 31: 12 pairs with
+  every process on the performance cores (`taskset`, which the daemon and its VMs inherit)
+  gave FUSE 889 µs at p50 [833, 1,074] and the window 946 [893, 1,168]; 12 on the
+  efficient cores 1,499 [1,468, 1,531] and 1,592 [1,564, 1,731]. A round's spread is where
+  the scheduler put its processes: the window's cold 1 MiB writes into ranges not yet
+  mapped cost 6% more than FUSE's on either kind of core.
+
+### M303. A provider's end held behind its ended joiner's layer (D119)
+
+- **Question.** In a full gate on the Mac, containers.rs
+  `a_joiners_layer_is_kept_whole_as_its_provider_ends` found its killed provider's status
+  255 where it is 137; its daemon logged "VM ended before its command did", then the VM
+  "ended with Ok(137)", its own SIGKILL. What held the provider's end?
+- **Method.** The test, its `kill` timed (`Run::elapsed`, printed), 5 runs on the init
+  committed at 16409941 and 5, then 3, on one that says the workload's end at once where an
+  ended joiner's connection is still open (`run.rs`, `outlived`), the Mac (Apple M5 Max,
+  macOS 26.4.1), load 8.8 to 16.7 from other work, 2026-10-22; then the joiner and engine
+  tests of containers.rs, engine.rs and daemon.rs (22) with the change, there and on
+  Fedora.
+- **Results.** 16409941's init: `kill` took 10,025 to 10,187 ms, and the provider's status
+  was 255, every run. With the change: 11.4, 36.6, 122.8, 13.0 and 18.7 ms, then 80.8, 83.7
+  and 35.0 ms, the status 137 and the joiner's layer whole (`diff` of it, `A /big`), every
+  run; the 22 tests pass on both hosts. Earlier in the day, 16409941's init had passed the
+  test 6 runs of 6 in 1.4 to 4.4 s.
+- **Reading.** Init said the workload's end early only where a joiner still ran; a joiner
+  that had ended, its layer being sent or its connection waiting for the host, held the
+  loop, and the end with it, until the layer was sent. `kill` waits 10 s for the end after
+  its SIGKILL, as moby's does (KILL_WAIT), then kills the microVM: where the 256 MiB layer
+  took longer to send than that, as on a host busy with other work, the end and the rest
+  of the layer went with it. Said at once, the end no longer waits on the layer.
+- **Consequence.** D119: a provider's end is said at once where any joiner outlives it,
+  running or ended with its layer still to come.
+
+### M304. What a copy from memory whose pages may be gone costs (D189, item 5)
+
+- **Question.** A guest names its devices the pages of the files it maps as any of its
+  pages: an O_DIRECT read or write from a mapping, and on a share a write that grows a file
+  the window maps (fs/fuse/dax.c, `fuse_dax_direct_write`). A DAX file's are device memory,
+  a pmem device's file or a window's ranges: a file's mapping in the VMM, which another
+  process may cut short under it, where the host's kernel answers a system call's access
+  with EFAULT and the VMM's own access ends its process (SIGBUS). The VMM copies some of a
+  device's bytes itself (virtio-fs's requests and replies, a network frame). What does a
+  copy cost that a fault fails, rather than the process: through a pipe (the source written
+  into it and read back out; POSIX's write(2) and read(2) answer an inaccessible buffer
+  with EFAULT), by process_vm_readv(2) of the process itself (Linux alone), or by a copy
+  whose faults its signal handler resumes as failed (`platform::copy_checked`), against
+  memcpy and the VMM's copy of guest RAM (`copy_in`)?
+- **Method.** `checked-copy/copy.c`: a 2 MiB file's first MiB mapped shared and read
+  whole, every page resident, copied 2,000 times a size into a heap buffer, each timed
+  (CLOCK_UPTIME_RAW on the Mac, CLOCK_MONOTONIC on Linux); then the file cut to 64 KiB and
+  each method given a page past its end. vmm's `checked_copy_costs` (ignored, a
+  measurement): `copy_checked` against `copy_in` alike. The Mac (Apple M5 Max, macOS
+  26.4.1), two runs each; Fedora (M258's i9-14900HX, Linux 6.19.10), two pinned to a
+  performance core (CPU 2) and two to an efficient one (CPU 20), copy.c's with a CI job
+  running, `checked_copy_costs`'s beside a loop of the daemon tests (load 15). copy.c at
+  e3d4544a, `checked_copy_costs` at b7f38bb6 with the copy added. 2026-10-22.
+- **Results.** 1 MiB, µs, the two runs' p50 / p90 / p99 / max:
+
+  | host | memcpy | pipe | process_vm_readv | `copy_in` | `copy_checked` |
+  |---|---|---|---|---|---|
+  | Mac | 12.9-13.9 / 25.0-26.8 / 54.0-77.7 / 77.7-112.3 | 99.3-115.3 / 184.1-245.7 / 300.7-672.8 / 1,659-1,944 | - | 12.9-13.6 / 14.0-15.0 / 16.5-17.2 / 28.7-29.0 | 15.7-16.0 / 16.4-16.5 / 17.0-17.9 / 27.0-30.9 |
+  | Fedora, P-core | 18.6-20.5 / 21.1-22.6 / 24.1-25.7 / 43.5-44.0 | 69.1-71.4 / 76.4-77.3 / 92.5-93.0 / 120.7-126.7 | 32.4-33.8 / 36.0-37.0 / 41.8-42.1 / 64.5-71.4 | 20.8-21.2 / 21.7-30.2 / 26.9-37.9 / 53.6-64.0 | 19.6-21.1 / 20.7-22.0 / 24.4-26.5 / 32.0-34.4 |
+  | Fedora, E-core | 29.5-29.6 / 29.9-30.0 / 32.9-33.0 / 63.6-63.8 | 138.2-139.9 / 141.0-143.0 / 143.2-145.8 / 150.8-167.3 | 48.9-49.2 / 51.3-51.6 / 53.5-66.2 / 75.5-91.6 | 30.7-31.9 / 32.6 / 35.2-35.6 / 46.8-85.9 | 31.2-31.9 / 32.3-32.9 / 34.7-35.4 / 43.1-44.0 |
+
+  At p50, 64 KiB: memcpy 0.5 to 0.6 µs on the Mac, 0.9 to 2.5 on Fedora; the pipe 2.7 to
+  3.3 and 3.9 to 8.6; process_vm_readv 1.9 to 3.5; `copy_checked` 0.62 to 0.71 and 0.96 to
+  1.96, as `copy_in`. 4 KiB: memcpy and `copy_checked` 0.04 to 0.10, the pipe and
+  process_vm_readv 0.26 to 0.84. Past the file's end, the pipe's write and
+  process_vm_readv failed with EFAULT and the process went on, as `copy_checked` fails
+  (`a_checked_copy_fails_where_its_pages_are_gone`).
+- **Reading.** A pipe costs 3.4 to 4.7 times memcpy for 1 MiB on Fedora and 7 to 9 times
+  on the Mac, its tail to 0.67 ms; process_vm_readv 1.7 times, and macOS has none. A copy
+  whose faults its handler resumes costs what the VMM's copy of RAM costs on Fedora (`rep
+  movsb` against `copy_in`'s 16-byte moves), and on the Mac the same to 64 KiB and 1.2
+  times it for 1 MiB, its loads and stores kept in the caches where `copy_in`'s stream
+  past them from 16 KiB on, as macOS's memcpy does (M137).
+- **Consequence.** D189: device memory is reached by the host's devices as RAM is, by
+  system calls given its pages (`GuestMemory::io_ptr`) and copies by `copy_checked`.

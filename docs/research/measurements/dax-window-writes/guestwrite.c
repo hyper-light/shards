@@ -9,10 +9,14 @@
 // offset drawn from a fixed seed, so that each run writes the same places; each write's
 // time on CLOCK_MONOTONIC. With `premap`, a page of each 2 MiB range (FUSE_DAX_SZ) is
 // read first, untimed: through a window, so that each range is mapped before its writes
-// come, which leaves them the stores alone.
+// come, which leaves them the stores alone (a mapping to be read, which a range's first
+// store upgrades). With `premapw`, a page of each is written first instead, so that each
+// range is mapped to be written before its writes come.
 //
-// Usage: guestwrite PATH N [SIZE [premap]]
+// Usage: guestwrite PATH N [SIZE [premap|premapw]]
 //   prints: n p50_us p90_us p99_us max_us mib_s
+//   and on stderr, the same of the writes that were their 2 MiB range's first, and of the
+//   rest: `first n p50 p90 p99 max; later n p50 p90 p99 max`.
 #define _GNU_SOURCE
 #ifndef __linux__
 #error "guestwrite runs in a Linux guest: zig cc -target <arch>-linux-musl -static"
@@ -61,8 +65,9 @@ static uint64_t pct(const uint64_t *v, size_t n, double p) {
 }
 
 int main(int argc, char **argv) {
-    if (argc < 3 || argc > 5 || (argc == 5 && strcmp(argv[4], "premap") != 0)) {
-        fprintf(stderr, "usage: guestwrite PATH N [SIZE [premap]]\n");
+    if (argc < 3 || argc > 5 ||
+        (argc == 5 && strcmp(argv[4], "premap") != 0 && strcmp(argv[4], "premapw") != 0)) {
+        fprintf(stderr, "usage: guestwrite PATH N [SIZE [premap|premapw]]\n");
         return 2;
     }
     size_t n = strtoul(argv[2], NULL, 10);
@@ -86,13 +91,21 @@ int main(int argc, char **argv) {
     if (posix_memalign(&buf, PAGE, size) != 0)
         die("posix_memalign");
     memset(buf, 0x5a, size);
-    if (argc == 5)
+    if (argc == 5 && strcmp(argv[4], "premap") == 0)
         for (off_t at = 0; at + PAGE <= st.st_size; at += RANGE)
             if (pread(fd, buf, PAGE, at) != PAGE)
                 die("pread");
+    if (argc == 5 && strcmp(argv[4], "premapw") == 0)
+        for (off_t at = 0; at + PAGE <= st.st_size; at += RANGE)
+            if (pwrite(fd, buf, PAGE, at) != PAGE)
+                die("pwrite");
     uint64_t *took = calloc(n, sizeof *took);
-    if (!took)
+    uint64_t *first = calloc(n, sizeof *first), *later = calloc(n, sizeof *later);
+    size_t ranges = (size_t)((st.st_size + RANGE - 1) / RANGE);
+    unsigned char *met = calloc(ranges ? ranges : 1, 1);
+    if (!took || !first || !later || !met)
         die("calloc");
+    size_t firsts = 0, laters = 0;
     uint64_t seed = 0x9e3779b97f4a7c15ull, all = now_ns();
     for (size_t i = 0; i < n; i++) {
         off_t at = (off_t)(next(&seed) % places) * (off_t)size;
@@ -100,11 +113,33 @@ int main(int argc, char **argv) {
         if (pwrite(fd, buf, size, at) != (ssize_t)size)
             die("pwrite");
         took[i] = now_ns() - t;
+        // Its range's first write, or a later one (a write meeting two ranges counts by its
+        // first).
+        size_t r = (size_t)(at / RANGE);
+        if (!met[r]) {
+            met[r] = 1;
+            first[firsts++] = took[i];
+        } else {
+            later[laters++] = took[i];
+        }
     }
     all = now_ns() - all;
     close(fd);
     qsort(took, n, sizeof *took, cmp);
     printf("%zu %.1f %.1f %.1f %.1f %.1f\n", n, pct(took, n, 50) / 1e3, pct(took, n, 90) / 1e3,
            pct(took, n, 99) / 1e3, took[n - 1] / 1e3, (double)n * size / (1 << 20) / (all / 1e9));
+    const char *names[2] = {"first", "later"};
+    uint64_t *sets[2] = {first, later};
+    size_t counts[2] = {firsts, laters};
+    for (int k = 0; k < 2; k++) {
+        size_t c = counts[k];
+        qsort(sets[k], c, sizeof *sets[k], cmp);
+        if (c == 0)
+            fprintf(stderr, "%s 0%s", names[k], k == 0 ? "; " : "\n");
+        else
+            fprintf(stderr, "%s %zu %.1f %.1f %.1f %.1f%s", names[k], c, pct(sets[k], c, 50) / 1e3,
+                    pct(sets[k], c, 90) / 1e3, pct(sets[k], c, 99) / 1e3, sets[k][c - 1] / 1e3,
+                    k == 0 ? "; " : "\n");
+    }
     return 0;
 }

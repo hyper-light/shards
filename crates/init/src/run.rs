@@ -4476,8 +4476,15 @@ impl Workload {
                                         _ => None,
                                     })
                                     .collect();
-                                if execs.iter().any(|e| e.joined && e.pid > 0 && e.status.is_none()) {
+                                // Its end said at once where any joiner outlives it, running
+                                // or ended with its writable layer still to come: not after
+                                // that layer, which a kill's escalation, its VM killed 10 s
+                                // after a SIGKILL the command took (KILL_WAIT), would cut
+                                // short with the end it held (D119).
+                                if execs.iter().any(|e| e.joined && !e.finished()) {
                                     outlived = true;
+                                }
+                                if execs.iter().any(|e| e.joined && e.pid > 0 && e.status.is_none()) {
                                     // And init's own work for them: their built-ins.
                                     let spared: Vec<libc::pid_t> = execs
                                         .iter()

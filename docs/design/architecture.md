@@ -5796,9 +5796,97 @@ stores.
   map's page tables; with its head, none on Fedora (-0.2 to 0.1 MiB at every length, n 12)
   and those page tables alone on the Mac (8.3 MiB). Fedora's 4 GiB boot reached PID 1 20 ms
   sooner: its page structures go on the host's huge pages, not on a boot's base pages
-  (D29). The pinned
-  kernel (kernel-6.18.48-301acf1c45d0) carries the patch; held by
-  `a_dax_windows_page_structures_take_none_of_its_guests_memory`.
+  (D29). arm64 Linux maps memory it adds in base pages under rodata=full (arch_add_memory,
+  force_pte_mapping), so that a page's permissions can change alone, which a DAX device's
+  linear alias never does: shards' kernel patch 0010 maps a file system DAX device's memory
+  in blocks, but where debug_pagealloc or a realm needs base pages, and an arm64 window
+  takes none of its guest's memory either (0.0 to 0.1 MiB at every length to 4 GiB, n 12,
+  M300). The pinned kernel (kernel-6.18.48-8df0015cca35) carries both; held by
+  `a_dax_windows_page_structures_take_none_of_its_guests_memory`, its bound the spread of
+  boots alone.
+- **Whole pages a host does not hold written as FUSE_WRITEs** (PM M301). A store into a
+  page its host does not hold waits for the host to read it, where a FUSE_WRITE's pwrite(2)
+  of the whole page reads nothing (M283). Each window's device now keeps a record of which
+  of the window's pages its host holds, one bit a 4 KiB page, in memory of its own right
+  after the window, shared memory region 0xfd (`fs::HELD`, `head::window_held_len`): taken
+  with `mincore(2)` as each range is mapped, cleared as it is unmapped, and taken again
+  once a mapping after its first FUSE_WRITE, as the host reads around faults since
+  (`Window::rerecord`). The guest's kernel (shards' patch 0009) maps, or upgrades from
+  read alone, each range a write of whole pages meets, as a store would, then writes the
+  host's whole pages its host does not hold as FUSE_WRITEs and the rest through the
+  window, and records the pages it writes and reads. The host's page is FUSE_INIT's
+  map_alignment, 16 KiB on Apple silicon: a FUSE_WRITE of part of one makes the host read
+  the rest first, as a store does, so parts of host pages go through the window (on the
+  Mac, 4 KiB FUSE_WRITEs into cold 16 KiB pages lost to the stores they replaced, M301). The record is advice: a page the host let go
+  of since is read in as a store meets it, as before. Nothing keeps it: a restore takes it
+  again as it maps each range (snapshot format 26, for the layout). The VM process's
+  seccomp allowlist has `mincore`. On Fedora a cold file's scattered 4 KiB writes through
+  the window took 315 to 319 µs at p99 where they took 1,604 to 1,905 (FUSE's 153 to 180),
+  at twice the rate; 1 MiB into ranges not yet mapped a fifth to a third less at p50;
+  nothing warm lost. Its first build sent a range's first write after a read as a FUSE_WRITE
+  by a record taken before the read's fault read the range around, and the next store paid
+  the upgrade after it (64 KiB writes 131.5 µs at p50 against 94.9): a read's mapping is
+  upgraded as the write comes. A reply about a file the window maps in 1,024 ranges looks at
+  that file's ranges alone, and its ranges follow it only where its size changed (`Table`,
+  0.29 µs at p50 where walking every range took 8.54). Held by
+  `a_ranges_held_pages_are_recorded_as_it_is_mapped`,
+  `a_files_ranges_follow_it_only_where_it_changed`, and
+  `a_volumes_large_files_go_through_its_dax_window` (whole pages written where the host
+  holds none, read by host and guest). The pinned kernel carries the patch (since
+  kernel-6.18.48-4970e0190ebe). On the Mac, evicted with msync(2) MS_INVALIDATE (M301: rewriting the
+  file had timed the SSD's flush), cold 64 KiB writes into ranges mapped first took 306 µs
+  at p50 where they took 2,459 (FUSE's 204 to 220), and 1 MiB into ranges not yet mapped
+  1,310 where 2,811 (FUSE's 1,243 to 1,434); cold 4 KiB writes, parts of 16 KiB host
+  pages, cost what they did.
+- **One descriptor a file** (PM M302). The slowest write where ranges are mapped as
+  writes come took 7.8 to 32.6 ms on every kernel (M301): the window kept each mapped
+  range's descriptor, so its VM process's descriptor table grew as the run's mappings
+  passed 128, 256, 512 and 1,024 descriptors, and Linux, growing a table other threads
+  share, waits a grace period of RCU first (fs/file.c, expand_fdtable): 9 to 24 ms, once a
+  growth. The window now keeps one descriptor a file (`Node::file`), which follows its size
+  and maps more of it as it grows; each range's own, from its server, closes once the range
+  is mapped, as virtiofsd's does: the slowest mapping took 0.25 to 0.5 ms. Mapping a
+  file's ranges from one descriptor, which spares the server's open (6 to 19 µs), was
+  measured and not taken: one open file's readahead stops reading around its faults after
+  a hundred misses (mm/filemap.c, MMAP_LOTSAMISS), where each range's open begins anew
+  (1,285 µs against 682 at p50 for kernel A's writes after a page of each range was
+  written). A range mapped to be read alone keeps no record, which no guest reads: its
+  mincore(2) took 51 to 53 µs of a warm mapping's 75 to 77. Held by
+  `a_window_keeps_one_descriptor_of_a_file` (mutation-checked: 401 descriptors more for
+  400 ranges where each range's was kept).
+
+- **A device reaches the pages of the files its guest maps** (PM M304). A guest names its
+  devices the pages a mapping of a file holds as any of its pages: an O_DIRECT read or
+  write, and on a share a write that grows a file the window maps (fs/fuse/dax.c,
+  `fuse_dax_direct_write`), whose user pages FUSE gives its device (fs/fuse/file.c,
+  `fuse_get_user_pages`). A DAX file's are device memory, a pmem device's (the image's
+  root, the writable layer) or a window's, which no device reached: in a microVM with a 64
+  MiB window, an append to a file the window maps, from a mapping of another, was answered
+  as done with 0 bytes written, and an O_DIRECT read into a mapping of one as done with its
+  bytes missing; an O_DIRECT write from such a mapping was whole only because Linux's FUSE
+  wrote it again, buffered, once the direct write wrote nothing (`direct_write_fallback`).
+  Each device that gives its guest such memory now says so (`VirtioDevice::device_memory`:
+  a pmem device's file, a layer's file system, a share's window), and its guest memory
+  gives it to every device as RAM (`GuestMemory::give_devices`): system calls given its
+  pages (`io_ptr`: a disk's transfers, vsock's), whose kernel answers EFAULT where one is
+  gone, and an access's copies by `platform::copy_checked` (virtio-fs's requests and
+  replies, a network frame), a copy whose fault its signal handler resumes as failed, as
+  Linux resumes its own copies from user memory (its exception tables), never the end of
+  the VM's process: a file cut short under its mapping by another process, which the window
+  follows only as it learns (above), takes the request at it alone. It costs what the VMM's
+  copy of RAM does on Fedora, and 1.2 times it for 1 MiB on the Mac, where a copy through a
+  pipe cost 3.4 to 9 times memcpy (M304). A request whose bytes, or whose answer's, a
+  device cannot reach is answered EIO (virtio-fs) or an I/O error (a disk), and a frame
+  dropped (virtio-net), never served short. A GPU's renderer and a passed-through function
+  are given RAM alone, as before. Held by
+  `a_microvms_devices_reach_the_pages_of_the_files_it_maps` (mutation-checked: without
+  device memory the append fails), and vmm's
+  `device_memory_is_reached_as_ram_is_and_its_lost_pages_fail`,
+  `a_requests_device_memory_goes_whole_and_its_lost_pages_fail_it`,
+  `a_transfer_reaches_device_memory_and_its_lost_pages_fail_it`,
+  `a_frame_from_device_memory_is_sent_and_one_whose_page_is_gone_dropped`,
+  `a_checked_copy_fails_where_its_pages_are_gone` and
+  `a_fault_outside_a_checked_copy_still_ends_its_process`.
 
 **Measured (PM M269).** What a window costs a guest as it boots: its page structures, which
 Linux makes of it as it probes the device (virtio_fs_setup_dax, devm_memremap_pages of
@@ -5807,9 +5895,6 @@ it and 15% and some 2 MiB more; a boot reached PID 1 no later for one up to 2 Gi
 template pays it once; what its restores pay is to be measured with mappings.
 
 **Next.**
-- A device's DMA to and from device memory: neither the pmem regions (the DAX root, the
-  swap window) nor the windows are guest RAM a device's descriptor may name, so a guest's
-  O_DIRECT write from a mapped file's pages fails, as it does from its root's.
 - How long a window, and from what size a file is mapped. Measured against FUSE (PM
   M276, the sustained-I/O benchmark, n = 10 a side): a window that holds what the guest
   reads through it (4 GiB under fio's 2 GiB file) reads 17 to 62 times as fast and writes
@@ -5830,12 +5915,14 @@ template pays it once; what its restores pay is to be measured with mappings.
   tail (4 KiB, p99 1,483 µs against 206) and 1 MiB writes into ranges not yet mapped the
   worse middle (1,589 against 898 at p50). A guest's FUSE weighing each range's writes
   against its mapping (`dax-window-writes/fuse-writes-until-mapped.patch`, M299) was
-  measured and not taken: its rationale was that cost. Windows stay asked for, none by
-  default, until a whole page a host does not hold is written as a FUSE_WRITE (on the Mac
-  too, 64 KiB writes into cold ranges 181 µs at p50 against FUSE's 139; M299). A window's
-  page structures are its head's (above); what it takes of an arm64 guest's memory is its
-  linear map's page tables, a 512th of head and window (M300), which arm64 Linux keeps in
-  base pages under rodata=full, and in blocks would be all but none.
+  measured and not taken: its rationale was that cost. A whole page a host does not hold
+  is written as a FUSE_WRITE now (above; M301), on Fedora and the Mac, and what a write into
+  a range not yet mapped pays before it writes was measured part by part (M302): a cold
+  file's 1 MiB writes into ranges not yet mapped cost 6% more than FUSE's, on Fedora's
+  performance cores and on its efficient cores alike, their rounds' spread the cores the
+  scheduler put a run on (M302). Windows stay asked for, none by default, until the
+  default is decided. A window takes none of its guest's memory on either architecture
+  (above: its page structures its head's, and arm64's linear map of it in blocks).
 
 ### D194. The registries Docker's daemon configuration names: an insecure one asked in plain HTTP too, Docker Hub's mirrors first (built)
 
@@ -6289,6 +6376,16 @@ the guest keeps their metadata alone.
   `a_layer_reads_ahead_once_its_command_runs` (its mapping's VmFlags; mutation-checked both
   ways).
 
+- **Its linear map in blocks on arm64** (PM M300, shards' kernel patch 0010). arm64 Linux
+  mapped the device memory it added 4 KiB at a time under `rodata=full`, its default
+  (arch_add_memory, force_pte_mapping), so that a page's permissions could change alone,
+  which a DAX device's linear alias never does: a 512th of the layer in page tables, 133
+  MiB of a guest's memory for a 64 GiB layer (M277). 0010 maps a file system DAX device's
+  memory in blocks, but where debug_pagealloc or a realm needs base pages: a layer of 4 to
+  64 GiB takes none of its guest's memory (-0.7 to 0.3 MiB at p50), and its probe is done
+  11 ms (16 GiB) to 41 ms (64 GiB) sooner. The pinned kernel (kernel-6.18.48-8df0015cca35)
+  carries it.
+
 **Next** (the slices after these).
 - A restart that goes on over the kept file itself: today its files are put back, packed
   on the host, into the warm microVM's own layer, which its template mounted as its root's
@@ -6301,8 +6398,6 @@ the guest keeps their metadata alone.
 - The head's boot: a 2 MiB block a section for the guest to write as it probes, on KVM
   1.9 ms a GiB when the host has huge pages free and up to 19 ms a GiB when it compacts
   for them (M277): a 10 GiB layer's template boot is 19 to 190 ms longer.
-- arm64 guests map device memory 4 KiB at a time in their linear map under `rodata=full`,
-  its default: a 512th of the layer in page tables (M277).
 - Hosts whose microVMs take no snapshots yet (arm64 KVM, Windows: D140) boot every run, so
   each run pays the head's probe and the layer's first mount: not measured there yet.
 - APFS fills a hole shorter than 16 MiB between written blocks of a sparse file (PM
@@ -10646,7 +10741,11 @@ the boundary is a container's, which is what the mode asks for.
   no layer (`a_joiners_layer_is_kept_whole_as_its_provider_ends`: a provider killed as its
   joiner's 256 MiB layer is sent; mutation-checked: killed with the rest, the layer is
   lost; without the close as well, the provider's run ends only as the daemon ends its
-  microVM, 10 s after the kill). Put back
+  microVM, 10 s after the kill). The provider's end is said at once where any joiner
+  outlives it, running or ended with its layer still to come, not after that layer: held
+  till the layer was sent, its end came after `kill`'s 10 s, whose escalation killed the
+  microVM, the end and the rest of the layer with it (PM M303: 5 runs of 5 on the Mac, the
+  provider's status 255; said at once, `kill` took 11 to 123 ms). Put back
   as it starts again: the VM process appends the layer to the join disk beside its image
   (`join-layer=OFFSET,LEN`), and the joiner's child applies it over its root as ApplyLayer
   does, before it reads its users and before anything is mounted in its root, with its

@@ -684,6 +684,29 @@ pub unsafe fn sync_mapped(file: &File, ptr: NonNull<u8>, len: usize) -> io::Resu
     }
 }
 
+/// Which host pages of `ptr..ptr+len`, a mapping of a file, the host's page cache holds,
+/// one for each page in order: mincore(2), whose byte for a page has its low bit set where
+/// the page is in core (Linux mm/mincore.c, a file mapping's pages as the page cache holds
+/// them; macOS MINCORE_INCORE, sys/mman.h).
+///
+/// # Safety
+/// `ptr..ptr+len` must be mapped in this process, `ptr` page-aligned.
+pub unsafe fn in_core(ptr: *const u8, len: usize) -> io::Result<Vec<bool>> {
+    let page = page_size()?;
+    let mut held = vec![0; len.div_ceil(page)];
+    // SAFETY: the caller's range; mincore(2) writes one byte for each of its pages into
+    // `held`, which has that many.
+    #[cfg(target_os = "linux")]
+    let r = unsafe { libc::mincore(ptr.cast_mut().cast(), len, held.as_mut_ptr()) };
+    // SAFETY: as above.
+    #[cfg(target_os = "macos")]
+    let r = unsafe { libc::mincore(ptr.cast(), len, held.as_mut_ptr()) };
+    if r != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(held.into_iter().map(|b| b & 1 != 0).collect())
+}
+
 /// Whether a mapping of a file hides its holes: lseek(2)'s SEEK_DATA and SEEK_HOLE then
 /// say that all of it holds data. APFS's do, for a file mapped shared and writable, by
 /// this process or by a guest through Hypervisor.framework's mapping of it, until neither

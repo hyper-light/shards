@@ -194,4 +194,11 @@ pub trait VirtioDevice: Send {
     fn memory_fault(&self, _gpa: Option<u64>) -> bool {
         false
     }
+    /// The memory it gives the guest that is not RAM and holds files the guest maps, a
+    /// pmem device's or a share's DAX window, `(gpa, host, len)` each: which the guest so
+    /// names to any device as its pages, as a write from a mapped file's pages does (D189,
+    /// [`GuestMemory::give_devices`]). Mapped in this process until the device drops.
+    fn device_memory(&self) -> Vec<(u64, *mut u8, usize)> {
+        Vec::new()
+    }
 }

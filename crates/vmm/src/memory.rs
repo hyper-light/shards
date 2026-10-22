@@ -18,6 +18,11 @@
 //! - Bulk data goes by system calls given guest addresses ([`GuestMemory::host_ptr`]),
 //!   without an access held, as the guest's own accesses go: the kernel, like the guest,
 //!   is outside Rust's abstract machine.
+//! - Device memory, a pmem device's file or a DAX window, which a guest maps its files from
+//!   and names to its devices as any of its pages (D189), is a file's mapping whose pages
+//!   may be gone: system calls reach it ([`GuestMemory::io_ptr`]), whose kernel answers a
+//!   fault EFAULT, and an access's copies by [`platform::copy_checked`], which a fault
+//!   fails, not the VMM's process.
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -26,7 +31,7 @@ use std::io;
 use std::ops::Range;
 use std::ptr::NonNull;
 use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Mutex, MutexGuard};
+use std::sync::{Mutex, MutexGuard, OnceLock};
 
 use crate::platform;
 use crate::sync::lock;
@@ -225,6 +230,9 @@ pub struct GuestMemory {
     reported: AtomicU64,
     /// What a device's DMA holds pinned ([`GuestMemory::pin`]).
     pins: Mutex<Pins>,
+    /// Device memory its devices reach as they reach RAM ([`give_devices`](Self::give_devices)):
+    /// its devices' own mappings, which this memory never releases.
+    devices: OnceLock<Box<[Region]>>,
     /// Held by the thread with the [`Access`].
     host: Mutex<()>,
     /// That thread's [`token`], or 0.
@@ -270,6 +278,7 @@ impl GuestMemory {
             host: Mutex::new(()),
             reported: AtomicU64::new(0),
             pins: Mutex::new(Pins::default()),
+            devices: OnceLock::new(),
             holder: AtomicUsize::new(0),
         };
         for &(gpa, len) in ranges {
@@ -584,6 +593,66 @@ impl GuestMemory {
         Ok(h.host(gpa))
     }
 
+    /// Has the host's devices reach `regions` as they reach RAM, each `(gpa, host, len)`
+    /// of device memory (D189): memory a device gives its guest that is not RAM, a pmem
+    /// device's file or a DAX window, which the guest maps its files from and so names to
+    /// its other devices as any of its pages, as a write from a mapped file's pages does.
+    /// Once, before the guest runs: a region that overlaps RAM, the memory to plug or
+    /// another is refused, as is a second call.
+    ///
+    /// # Safety
+    /// Each region is host memory that stays mapped while a device may reach this memory:
+    /// until its machine's devices are quiet for good (`Running::teardown`), or it drops.
+    pub unsafe fn give_devices(
+        &self,
+        regions: impl IntoIterator<Item = (u64, *mut u8, usize)>,
+    ) -> Result<(), String> {
+        let mut given: Vec<Region> = Vec::new();
+        for (gpa, host, len) in regions {
+            let named = || format!("device memory {gpa:#x}+{len:#x}");
+            let end = gpa
+                .checked_add(len as u64)
+                .filter(|_| len > 0)
+                .ok_or_else(named)?;
+            let host = NonNull::new(host).ok_or_else(|| format!("{} at no host address", named()))?;
+            let meets = |at: u64, to: u64| gpa < to && at < end;
+            if self.regions.iter().any(|r| meets(r.gpa, r.end()))
+                || self.hotplug.as_ref().is_some_and(|h| meets(h.gpa, h.end()))
+                || given.iter().any(|r| meets(r.gpa, r.end()))
+            {
+                return Err(format!("{} overlaps other guest memory", named()));
+            }
+            given.push(Region { gpa, len, host });
+        }
+        self.devices
+            .set(given.into_boxed_slice())
+            .map_err(|_| "its device memory was given already".to_string())
+    }
+
+    /// Host address of `gpa..gpa+len` for a system call: within RAM or the memory plugged,
+    /// as [`host_ptr`](Self::host_ptr) gives it, or within one region of device memory
+    /// ([`give_devices`](Self::give_devices)). Device memory is a file's mapping, whose pages
+    /// may be gone (its file cut short by another process, a page its disk could not give
+    /// back): the host's kernel answers a system call's access there with EFAULT, where an
+    /// access of the VMM's own would end its process. So system calls alone are given it,
+    /// and an [`Access`] copies it by [`platform::copy_checked`].
+    pub fn io_ptr(&self, gpa: u64, len: usize) -> Result<*mut u8, OutOfBounds> {
+        self.host_ptr(gpa, len)
+            .or_else(|oob| self.device_ptr(gpa, len).ok_or(oob))
+    }
+
+    /// Host address of `gpa..gpa+len` within one region of device memory.
+    fn device_ptr(&self, gpa: u64, len: usize) -> Option<*mut u8> {
+        let end = gpa.checked_add(len as u64)?;
+        let r = self
+            .devices
+            .get()?
+            .iter()
+            .find(|r| gpa >= r.gpa && end <= r.end())?;
+        // SAFETY: offset is within the region's mapping (found above).
+        Some(unsafe { r.host.as_ptr().add((gpa - r.gpa) as usize) })
+    }
+
     /// Pins `gpa..gpa+len` for a device's DMA, as the host's IOMMU has mapped it ([`Pins`]),
     /// until [`unpin`](Self::unpin)ned as many times.
     pub fn pin(&self, gpa: u64, len: u64) {
@@ -854,13 +923,14 @@ impl<'a> Access<'a> {
         Ok(Blocks { h, blocks, at, size })
     }
 
-    /// Copies guest memory at `gpa` into `buf`.
+    /// Copies guest memory at `gpa` into `buf`: RAM, the memory plugged, or device memory,
+    /// whose copy fails where its pages are gone ([`GuestMemory::io_ptr`]).
     pub fn read(&self, gpa: u64, buf: &mut [u8]) -> Result<(), OutOfBounds> {
         // SAFETY: `buf` is valid for writes of its length, and nothing else accesses it.
         unsafe { self.read_raw(gpa, buf.as_mut_ptr(), buf.len()) }
     }
 
-    /// Copies `buf` into guest memory at `gpa`.
+    /// Copies `buf` into guest memory at `gpa`, as [`read`](Self::read) reaches it.
     pub fn write(&self, gpa: u64, buf: &[u8]) -> Result<(), OutOfBounds> {
         // SAFETY: `buf` is valid for reads of its length.
         unsafe { self.write_raw(gpa, buf.as_ptr(), buf.len()) }
@@ -868,12 +938,22 @@ impl<'a> Access<'a> {
 
     /// Copies `len` bytes of guest memory at `gpa` to `dst`, memory no Rust reference
     /// covers: a record of a ring another process shares, written before it is published.
+    /// As [`read`](Self::read) reaches it.
     ///
     /// # Safety
     /// `dst` must be valid for writes of `len` bytes, of host memory that nothing else
     /// accesses meanwhile.
     pub unsafe fn read_raw(&self, gpa: u64, dst: *mut u8, len: usize) -> Result<(), OutOfBounds> {
-        let src = self.mem.host_ptr(gpa, len)?;
+        let src = match self.mem.host_ptr(gpa, len) {
+            Ok(src) => src,
+            Err(oob) => {
+                let src = self.mem.device_ptr(gpa, len).ok_or(oob)?;
+                // SAFETY: `len` bytes of device memory, mapped while a device reaches it
+                // (`give_devices`), which host memory like `dst` never overlaps, and whose
+                // faults fail the copy; `dst` as the caller promises.
+                return unsafe { platform::copy_checked(src, dst, len) }.map_err(|_| oob);
+            }
+        };
         // SAFETY: `src` is valid for `len` bytes of guest memory, which host memory like
         // `dst` never overlaps; `dst` as the caller promises.
         unsafe { platform::copy_in(src, dst, len) };
@@ -881,12 +961,19 @@ impl<'a> Access<'a> {
     }
 
     /// Copies `len` bytes at `src`, memory no Rust reference covers, into guest memory at
-    /// `gpa`.
+    /// `gpa`, as [`read`](Self::read) reaches it.
     ///
     /// # Safety
     /// `src` must be valid for reads of `len` bytes of host memory.
     pub unsafe fn write_raw(&self, gpa: u64, src: *const u8, len: usize) -> Result<(), OutOfBounds> {
-        let dst = self.mem.host_ptr(gpa, len)?;
+        let dst = match self.mem.host_ptr(gpa, len) {
+            Ok(dst) => dst,
+            Err(oob) => {
+                let dst = self.mem.device_ptr(gpa, len).ok_or(oob)?;
+                // SAFETY: as in `read_raw`, the other way.
+                return unsafe { platform::copy_checked(src, dst, len) }.map_err(|_| oob);
+            }
+        };
         // SAFETY: `dst` is valid for `len` bytes of guest memory, which host memory like
         // `src` never overlaps; `src` as the caller promises.
         unsafe { platform::copy_out(src, dst, len) };
@@ -1914,6 +2001,74 @@ mod tests {
             == "2";
         if !strict {
             assert!(flags.contains(&"nr") && !flags.contains(&"ac"), "{flags:?}");
+        }
+    }
+
+    /// Device memory a device gives its guest (D189) is reached by the host's devices as RAM
+    /// is: by system calls (`io_ptr`) and by an access's copies; never by `host_ptr`, which
+    /// the kernel and the hypervisor are given RAM by. A page of it whose file was cut short
+    /// fails a copy, and a system call EFAULT, the process going on. It may overlap no other
+    /// guest memory, and is given once.
+    #[cfg(unix)]
+    #[test]
+    fn device_memory_is_reached_as_ram_is_and_its_lost_pages_fail() {
+        use std::os::fd::AsRawFd as _;
+        use std::os::unix::fs::FileExt as _;
+        let m = mem();
+        let p = page_size().unwrap();
+        let file = tempfile("device");
+        file.set_len(4 * p as u64).unwrap();
+        // SAFETY: a shared mapping of the file's four pages, unmapped at the test's end.
+        let host = unsafe {
+            libc::mmap(
+                std::ptr::null_mut(),
+                4 * p,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_SHARED,
+                file.as_raw_fd(),
+                0,
+            )
+        };
+        assert_ne!(host, libc::MAP_FAILED);
+        let host = host.cast::<u8>();
+        let at = 0x2_0000_0000u64;
+        // SAFETY: the mapping above, which outlives every use of `m`'s.
+        unsafe {
+            assert!(m.give_devices([(0x8000_0000 + p as u64, host, p)]).is_err());
+            assert!(
+                m.give_devices([(at, host, 2 * p), (at + p as u64, host, p)])
+                    .is_err()
+            );
+            m.give_devices([(at, host, 4 * p)]).unwrap();
+            assert!(m.give_devices([(at + 8 * p as u64, host, p)]).is_err());
+        }
+        assert!(m.host_ptr(at, 8).is_err());
+        assert_eq!(m.io_ptr(at + 8, 8).unwrap(), host.wrapping_add(8));
+        assert!(m.io_ptr(at + 4 * p as u64 - 4, 8).is_err());
+        m.access().unwrap().write(at + 8, b"device").unwrap();
+        let mut back = [0u8; 6];
+        m.access().unwrap().read(at + 8, &mut back).unwrap();
+        assert_eq!(&back, b"device");
+        let mut held = [0u8; 6];
+        file.read_exact_at(&mut held, 8).unwrap();
+        assert_eq!(&held, b"device");
+        // Cut short under its mapping: copies from and to its lost pages fail, a system call
+        // given one fails EFAULT, and the rest of guest memory is reached as before.
+        file.set_len(p as u64).unwrap();
+        assert!(m.access().unwrap().read(at + 2 * p as u64, &mut back).is_err());
+        assert!(m.access().unwrap().write(at + 3 * p as u64, b"x").is_err());
+        m.access().unwrap().read(at + 8, &mut back).unwrap();
+        m.access().unwrap().write(0x8000_0000, b"ram").unwrap();
+        let lost = m.io_ptr(at + 2 * p as u64, 16).unwrap();
+        let mut fds = [0; 2];
+        // SAFETY: pipe(2) into a two-element array; a write(2) of the lost page into it.
+        unsafe {
+            assert_eq!(libc::pipe(fds.as_mut_ptr()), 0);
+            assert_eq!(libc::write(fds[1], lost.cast(), 16), -1);
+            assert_eq!(std::io::Error::last_os_error().raw_os_error(), Some(libc::EFAULT));
+            libc::close(fds[0]);
+            libc::close(fds[1]);
+            libc::munmap(host.cast(), 4 * p);
         }
     }
 

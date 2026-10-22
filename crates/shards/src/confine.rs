@@ -65,6 +65,9 @@ pub fn confine() -> Result<(), String> {
         libc::SYS_madvise,
         // A run's swap, flushed to its file as a save copies it (D176).
         libc::SYS_msync,
+        // Which of a DAX window's pages its host holds, recorded for its guest as each range
+        // is mapped (D189, `Window::record_held`).
+        libc::SYS_mincore,
         libc::SYS_brk,
         libc::SYS_futex,
         libc::SYS_clock_nanosleep,

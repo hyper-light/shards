@@ -391,10 +391,14 @@ pub struct Fs {
     limit: Option<&'static Limiter>,
     holds_limit: bool,
     /// Its DAX window (D189): the cache, shared memory region 0 (VIRTIO_FS_SHMCAP_ID_CACHE),
-    /// which its guest maps the files it reads into, and its head, region [`HEAD`]; and what
-    /// maps them there; none where it has none.
-    window: Option<([ShmRegion; 2], Arc<window::Window>)>,
+    /// which its guest maps the files it reads into, its head, region [`HEAD`], and its held
+    /// record, region [`HELD`]; and what maps them there; none where it has none.
+    window: Option<([ShmRegion; 3], Arc<window::Window>)>,
 }
+
+/// A DAX window (D189), and where its guest has its head and its held record, `(gpa, len)`
+/// each ([`HEAD`], [`HELD`]).
+pub type PlacedWindow = (Arc<window::Window>, (u64, u64), (u64, u64));
 
 /// The cache's shared memory region's id (include/uapi/linux/virtio_fs.h).
 pub const CACHE: u8 = 0;
@@ -402,6 +406,10 @@ pub const CACHE: u8 = 0;
 /// guest's kernel keeps the cache's page structures in rather than its RAM (shards' kernel
 /// patch 0008, VIRTIO_FS_SHMCAP_ID_SHARDS_HEAD).
 pub const HEAD: u8 = 0xfe;
+/// Its held record's (D189): which of the cache's pages its host holds, one bit a page,
+/// which the guest's kernel writes whole pages its host does not hold as FUSE_WRITEs by
+/// (shards' kernel patch 0009, VIRTIO_FS_SHMCAP_ID_SHARDS_HELD).
+pub const HELD: u8 = 0xfd;
 
 impl std::fmt::Debug for Fs {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -449,15 +457,16 @@ impl Fs {
         self
     }
 
-    /// The device with DAX window `window` (D189), where one is given, and the window's
-    /// head right before it, `(gpa, len)` ([`HEAD`]).
-    pub fn with_window(mut self, window: Option<(Arc<window::Window>, (u64, u64))>) -> Fs {
+    /// The device with DAX window `window` (D189), where one is given, the window's head
+    /// right before it, `(gpa, len)` ([`HEAD`]), and its held record right after it
+    /// ([`HELD`]).
+    pub fn with_window(mut self, window: Option<PlacedWindow>) -> Fs {
         *self
             .server
             .window
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = window.as_ref().map(|(w, _)| w.clone());
-        self.window = window.map(|(w, (head, head_len))| {
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = window.as_ref().map(|(w, _, _)| w.clone());
+        self.window = window.map(|(w, (head, head_len), (held, held_len))| {
             let regions = [
                 ShmRegion {
                     id: CACHE,
@@ -468,6 +477,11 @@ impl Fs {
                     id: HEAD,
                     base: head,
                     len: head_len,
+                },
+                ShmRegion {
+                    id: HELD,
+                    base: held,
+                    len: held_len,
                 },
             ];
             (regions, w)
@@ -534,9 +548,18 @@ fn serve(
         .try_fold(0usize, |n, d| n.checked_add(d.len as usize))
         .filter(|&n| n <= MAX_FRAME);
     let mut req = vec![0u8; total.unwrap_or(server::HEADER_BYTES)];
-    if !mem.access().is_ok_and(|a| gather(chain, &a, &mut req)) {
-        debug!("virtio-fs: a request outside guest memory");
+    let Ok(access) = mem.access() else {
         return 0;
+    };
+    let read = gather(chain, &access, &mut req);
+    drop(access);
+    if read < req.len() {
+        // Bytes its device could not read where the guest said they were (outside its
+        // memory, or device memory whose pages are gone): told EIO where its header was
+        // read, as a device whose DMA failed, never served short.
+        debug!("virtio-fs: a request outside guest memory");
+        let failed = req.get(..read).and_then(server::unreachable);
+        return failed.map_or(0, |reply| scatter(chain, mem, &reply).unwrap_or(0));
     }
     // Charged to its microVM's I/O limits before it is asked (D178).
     if let (Some(limit), Some(_)) = (limit, total) {
@@ -555,6 +578,7 @@ fn serve(
                 if let (Some(w), Some(reply)) = (window, reply.as_deref_mut()) {
                     w.reconcile(&told(&req, reply));
                     keep_mapped(&req, reply, w);
+                    rerecord_written(&req, reply, w);
                 }
                 reply
             }
@@ -564,10 +588,18 @@ fn serve(
     let Some(reply) = reply else {
         return 0;
     };
-    let Ok(access) = mem.access() else {
-        return 0;
-    };
-    let mut rest = reply.as_slice();
+    // A reply its device could not write whole where the guest said (device memory whose
+    // pages are gone, say): EIO in its place, never a success whose bytes are not there.
+    scatter(chain, mem, &reply)
+        .or_else(|_| server::unreachable(&req).map_or(Ok(0), |e| scatter(chain, mem, &e)))
+        .unwrap_or(0)
+}
+
+/// Writes `reply` into the chain's writable descriptors, in order: how many bytes, or
+/// Err where one it needs could not be written.
+fn scatter(chain: &Chain, mem: &GuestMemory, reply: &[u8]) -> Result<u32, ()> {
+    let access = mem.access().map_err(|_| ())?;
+    let mut rest = reply;
     let mut written = 0u32;
     for d in chain.writable() {
         if rest.is_empty() {
@@ -575,13 +607,11 @@ fn serve(
         }
         let n = rest.len().min(d.len as usize);
         let (chunk, tail) = rest.split_at(n);
-        if access.write(d.addr, chunk).is_err() {
-            return written;
-        }
+        access.write(d.addr, chunk).map_err(|_| ())?;
         written = written.saturating_add(n as u32);
         rest = tail;
     }
-    written
+    Ok(written)
 }
 
 /// A FUSE_SETUPMAPPING or FUSE_REMOVEMAPPING, answered from `window` (D189): a range of the
@@ -617,6 +647,12 @@ fn mapping(req: &[u8], window: &window::Window, slot: &Slot) -> Option<Vec<u8>> 
         ) {
             (Some(node), Some(foffset), Some(len), Some(flags), Some(moffset)) => {
                 let writable = flags & MAP_WRITE != 0;
+                // A descriptor its server opens for each mapping, as virtiofsd's does: each
+                // range's host faults then read around them as a file opened anew does, where
+                // one open of the file for all its ranges stops reading around after a
+                // hundred misses, and the window's 1 MiB writes after a page of each range
+                // was written took 1,285 µs at p50 where they took 682 (PM M302). The window
+                // keeps one a file, not one a range.
                 slot.descriptor(node, writable)
                     .and_then(|fd| window.map(fd, node, foffset, moffset, len, writable))
             }
@@ -735,9 +771,36 @@ fn keep_mapped(req: &[u8], reply: &mut [u8], window: &window::Window) {
     }
 }
 
-/// Fills `buf` with the chain's readable bytes, in order, as far as they go; false if one
-/// it needs lies outside guest memory.
-fn gather(chain: &Chain, mem: &Access<'_>, buf: &mut [u8]) -> bool {
+/// Has the window record again which pages its host holds of the ranges it maps of a file
+/// a FUSE_WRITE wrote, once the write is done ([`window::Window::rerecord`]): a guest's
+/// kernel with patch 0009 sends a write of whole pages its host does not hold as one, by
+/// the window's record, which goes stale as the host reads around a fault (D189).
+fn rerecord_written(req: &[u8], reply: &[u8], window: &window::Window) {
+    // fuse_in_header, 40 bytes, its nodeid at 16; then fuse_write_in: fh, offset, size.
+    const IN_HEADER: usize = 40;
+    let long = |at: usize| {
+        req.get(at..at.checked_add(8)?)
+            .and_then(|b| <[u8; 8]>::try_from(b).ok())
+            .map(u64::from_le_bytes)
+    };
+    let word = |b: &[u8], at: usize| {
+        b.get(at..at.checked_add(4)?)
+            .and_then(|b| <[u8; 4]>::try_from(b).ok())
+            .map(u32::from_le_bytes)
+    };
+    if word(req, 4) != Some(server::op::WRITE) || word(reply, 4) != Some(0) {
+        return;
+    }
+    if let (Some(node), Some(offset), Some(size)) = (long(16), long(IN_HEADER + 8), word(req, IN_HEADER + 16))
+    {
+        window.rerecord(node, offset, u64::from(size));
+    }
+}
+
+/// Fills `buf` with the chain's readable bytes, in order, as far as they go: how many,
+/// fewer than `buf` holds where one it needs could not be read (outside guest memory, or
+/// device memory whose pages are gone).
+fn gather(chain: &Chain, mem: &Access<'_>, buf: &mut [u8]) -> usize {
     let mut at = 0;
     for d in chain.readable() {
         let Some(dst) = buf.get_mut(at..).filter(|rest| !rest.is_empty()) else {
@@ -745,16 +808,25 @@ fn gather(chain: &Chain, mem: &Access<'_>, buf: &mut [u8]) -> bool {
         };
         let n = dst.len().min(d.len as usize);
         if dst.get_mut(..n).is_none_or(|dst| mem.read(d.addr, dst).is_err()) {
-            return false;
+            return at;
         }
         at += n;
     }
-    true
+    at
 }
 
 impl VirtioDevice for Fs {
     fn shm_regions(&self) -> &[ShmRegion] {
         self.window.as_ref().map_or(&[], |(r, _)| r.as_slice())
+    }
+
+    /// Its DAX window, whose ranges hold the files its guest maps: not its head nor its
+    /// held record, whose pages no file of the guest's is.
+    fn device_memory(&self) -> Vec<(u64, *mut u8, usize)> {
+        self.window
+            .iter()
+            .filter_map(|(_, w)| Some((w.gpa(), w.host(), usize::try_from(w.size()).ok()?)))
+            .collect()
     }
 
     fn device_id(&self) -> u32 {
@@ -1360,6 +1432,15 @@ mod tests {
     }
 
     fn share(hold: mpsc::Receiver<()>, asked: mpsc::Sender<Vec<u8>>) -> (Share, std::thread::JoinHandle<()>) {
+        share_answering(hold, asked, 0)
+    }
+
+    /// [`share`], its answers `extra` bytes longer than their header.
+    fn share_answering(
+        hold: mpsc::Receiver<()>,
+        asked: mpsc::Sender<Vec<u8>>,
+        extra: usize,
+    ) -> (Share, std::thread::JoinHandle<()>) {
         let (ours, theirs) = UnixStream::pair().unwrap();
         let slot = Share::default();
         slot.attach(ours).unwrap();
@@ -1370,9 +1451,10 @@ mod tests {
                 if hold.recv().is_err() {
                     return;
                 }
-                let mut out = 16u32.to_le_bytes().to_vec();
+                let mut out = (16 + extra as u32).to_le_bytes().to_vec();
                 out.extend_from_slice(&0i32.to_le_bytes());
                 out.extend_from_slice(&req[8..16]);
+                out.resize(16 + extra, 0x77);
                 if write_frame(&mut conn, &out).is_err() {
                     return;
                 }
@@ -1441,5 +1523,82 @@ mod tests {
         assert_eq!(reply(&mem), (16, 0, 0x1234));
         drop((slot, go));
         server.join().unwrap();
+    }
+
+    /// A request whose bytes lie in device memory, a page of a file its guest maps (D189),
+    /// goes to the share whole, as one in RAM does: a write from a mapped file's pages. One
+    /// whose bytes, or whose reply's, its device cannot reach, a page of device memory whose
+    /// file was cut short, or none at all, is answered EIO: never sent short, nor answered
+    /// as done with its bytes missing.
+    #[cfg(unix)]
+    #[test]
+    fn a_requests_device_memory_goes_whole_and_its_lost_pages_fail_it() {
+        use std::os::fd::AsRawFd as _;
+        const DEVICE: u64 = 0x2_0000_0000;
+        let mem = guest();
+        let p = crate::platform::page_size().unwrap();
+        let dir = shards_testdir::TempDir::new("fs-device").unwrap();
+        let bytes: Vec<u8> = (0..2 * p).map(|i| (i * 7 + 1) as u8).collect();
+        std::fs::write(dir.join("f"), &bytes).unwrap();
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(dir.join("f"))
+            .unwrap();
+        // SAFETY: a shared mapping of the file's two pages, unmapped at the test's end.
+        let host = unsafe {
+            libc::mmap(
+                std::ptr::null_mut(),
+                2 * p,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_SHARED,
+                file.as_raw_fd(),
+                0,
+            )
+        };
+        assert_ne!(host, libc::MAP_FAILED);
+        // SAFETY: the mapping above, which outlives every use of `mem`'s.
+        unsafe { mem.give_devices([(DEVICE, host.cast(), 2 * p)]) }.unwrap();
+        let (go, hold) = mpsc::channel();
+        let (asked, requests) = mpsc::channel();
+        let (slot, server) = share_answering(hold, asked, 100);
+        // Its bytes in device memory: sent whole, and answered.
+        go.send(()).unwrap();
+        let readables = vec![readable(REQUEST, 56), readable(DEVICE + 8, 100)];
+        assert_eq!(serve(&chain(readables), &mem, &slot, None, None), 116);
+        assert_eq!(reply(&mem), (116, 0, 0x1234));
+        let sent = requests.recv().unwrap();
+        assert_eq!(sent.len(), 156);
+        assert_eq!(&sent[56..], &bytes[8..108]);
+        // Cut short under its mapping: its lost page is not read, the share not asked.
+        file.set_len(p as u64).unwrap();
+        let lost = DEVICE + p as u64;
+        let readables = vec![readable(REQUEST, 56), readable(lost + 8, 100)];
+        assert_eq!(serve(&chain(readables), &mem, &slot, None, None), 16);
+        assert_eq!(reply(&mem), (16, -5, 0x1234));
+        assert!(requests.try_recv().is_err(), "the share was asked");
+        // A reply whose bytes go to the lost page: EIO in its place.
+        go.send(()).unwrap();
+        let descriptors = vec![
+            readable(REQUEST, 56),
+            Descriptor {
+                addr: REPLY,
+                len: 16,
+                writable: true,
+            },
+            Descriptor {
+                addr: lost,
+                len: 4096,
+                writable: true,
+            },
+        ];
+        let lost_reply = Chain { head: 0, descriptors };
+        assert_eq!(serve(&lost_reply, &mem, &slot, None, None), 16);
+        assert_eq!(reply(&mem), (16, -5, 0x1234));
+        assert_eq!(requests.recv().unwrap().len(), 56);
+        drop((slot, go));
+        server.join().unwrap();
+        // SAFETY: the mapping made above.
+        unsafe { libc::munmap(host, 2 * p) };
     }
 }

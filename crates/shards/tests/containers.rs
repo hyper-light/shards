@@ -1669,7 +1669,8 @@ fn a_microvms_io_is_paced_at_its_limits() {
 /// reads, and what the host writes it reads, in ranges it maps to read and to write; a
 /// file grown past its end, by either, it reads whole; and one the host cuts short under
 /// its mapping leaves it zeros where the host has no page, never an end to its microVM,
-/// and the file once the host writes there again.
+/// and the file once the host writes there again; whole pages it writes where its host
+/// holds none of them, the host and the guest read (as FUSE_WRITEs, patch 0009).
 #[test]
 fn a_volumes_large_files_go_through_its_dax_window() {
     if cannot_run_vms() {
@@ -1865,6 +1866,38 @@ fn a_volumes_large_files_go_through_its_dax_window() {
     std::fs::write(dir.join("held-go"), b"").unwrap();
     let held = holder.join().unwrap();
     assert_eq!(held.stdout, "hold /v/held 3145728 0\n", "{held}");
+    // Whole pages written by the guest where its host holds none of the file (D189, patch
+    // 0009): on Linux the host lets go of the file's pages first, and the guest's kernel
+    // writes them as a FUSE_WRITE, by its window's record; elsewhere through the window.
+    // Either way the host reads them, and the guest reads them through its window.
+    let pages: Vec<u8> = (0..4u32 << 20)
+        .map(|i| (i.wrapping_mul(2_654_435_761) >> 24) as u8)
+        .collect();
+    std::fs::write(dir.join("pages"), &pages).unwrap();
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::fd::AsRawFd as _;
+        let file = std::fs::File::open(dir.join("pages")).unwrap();
+        file.sync_all().unwrap();
+        // SAFETY: posix_fadvise(2) on a descriptor this test holds open.
+        let advised = unsafe { libc::posix_fadvise(file.as_raw_fd(), 0, 0, libc::POSIX_FADV_DONTNEED) };
+        assert_eq!(advised, 0);
+    }
+    assert_eq!(exec(&["fs", "dax:/v/pages"]), "dax /v/pages yes\n");
+    let at = (2 << 20) + 3 * 4096;
+    exec(&["fs", &format!("pages:/v/pages:{at}:4:7")]);
+    let host = std::fs::read(dir.join("pages")).unwrap();
+    assert!(host[at..at + 4 * 4096].iter().all(|&b| b == 7));
+    assert_eq!(
+        (host[at - 1], host[at + 4 * 4096]),
+        (pages[at - 1], pages[at + 4 * 4096])
+    );
+    for off in [at, at + 4 * 4096 - 1] {
+        assert_eq!(
+            exec(&["fs", &format!("peek:/v/pages:{off}")]),
+            format!("peek /v/pages {off} 7\n")
+        );
+    }
     assert_eq!(shards(&["rm", "-f", "dax"]).status, Some(0));
     // Mapped 2 MiB at a time by a process as the host grows it, then stat'ed and opened
     // again: the guest learns the new size, and lets go of none of the entries the process
@@ -1932,6 +1965,92 @@ fn a_volumes_large_files_go_through_its_dax_window() {
     assert_eq!(log.status, Some(0), "{log}");
     assert!(log.stdout.ends_with("kmsg fs/dax.c 0\n"), "{log}");
     assert_eq!(shards(&["rm", "-f", "dax2m"]).status, Some(0));
+}
+
+/// A microVM's devices reach the pages of the files its guest maps, device memory, as they
+/// reach its RAM (D189): a write from a mapping of its image's root (pmem) or of a file a
+/// volume's DAX window maps, appended to a file the window maps, which its guest's kernel
+/// gives its device as the mapping's pages, writes every byte; an O_DIRECT read of a file
+/// under a range, which its guest reads through FUSE, into a mapping of a file the window
+/// maps, or of one in its writable layer (pmem), reads every byte. Before, its device
+/// answered the write as done with nothing written (0 bytes) and the read as done with its
+/// bytes missing.
+#[test]
+fn a_microvms_devices_reach_the_pages_of_the_files_it_maps() {
+    if cannot_run_vms() {
+        return;
+    }
+    let (image, _) = served();
+    let home = TempDir::new("containers-dma");
+    let (kernel, init) = (kernel(), guest_init());
+    let env: [(&str, &OsStr); 4] = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", kernel.as_os_str()),
+        ("SHARDS_INIT", init.as_os_str()),
+        ("SHARDS_SHARE_WINDOW_MIB", "64".as_ref()),
+    ];
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let pulled = shards(&["pull", "-q", &image]);
+    assert_eq!(pulled.status, Some(0), "{pulled}");
+    let dir = TempDir::new("containers-dma-v");
+    let pattern =
+        |len: u32, k: u32| -> Vec<u8> { (0..len).map(|i| (i.wrapping_mul(k) >> 8) as u8).collect() };
+    let big = pattern(8 << 20, 40_503);
+    let src = pattern(1 << 20, 2_654_435_761);
+    std::fs::write(dir.join("big"), &big).unwrap();
+    std::fs::write(dir.join("src"), &src).unwrap();
+    for name in ["from-window", "from-root", "into"] {
+        std::fs::write(dir.join(name), vec![0u8; 8 << 20]).unwrap();
+    }
+    let volume = format!("{}:/v", dir.display());
+    let run = shards(&[
+        "run", "-d", "--pull", "never", "--name", "dma", "-u", "0", "-v", &volume, &image, "sleep",
+    ]);
+    assert_eq!(run.status, Some(0), "{run}");
+    let exec = |op: &str| {
+        let r = shards(&["exec", "dma", "/bin/testguest", "fs", op]);
+        assert_eq!(r.status, Some(0), "{op}: {r}");
+        r.stdout
+    };
+    assert_eq!(
+        exec("dax:/v/from-window") + &exec("dax:/bin/testguest"),
+        "dax /v/from-window yes\ndax /bin/testguest yes\n"
+    );
+    assert_eq!(
+        exec("frommap:/v/big:/v/from-window:append"),
+        format!("frommap /v/from-window {}\n", 8 << 20)
+    );
+    let root = exec("frommap:/bin/testguest:/v/from-root:append");
+    let wrote: u64 = root
+        .strip_prefix("frommap /v/from-root ")
+        .and_then(|n| n.trim().parse().ok())
+        .unwrap_or_else(|| panic!("{root}"));
+    assert!(wrote >= 1 << 20, "{root}");
+    assert_eq!(
+        exec("intomap:/v/src:/v/into"),
+        format!("intomap /v/into {}\n", 1 << 20)
+    );
+    exec("write:/work/layer=x");
+    exec("pages:/work/layer:0:256:0");
+    assert_eq!(exec("dax:/work/layer"), "dax /work/layer yes\n");
+    assert_eq!(
+        exec("intomap:/v/src:/work/layer"),
+        format!("intomap /work/layer {}\n", 1 << 20)
+    );
+    // What the host reads: each byte the guest moved.
+    let appended = std::fs::read(dir.join("from-window")).unwrap();
+    assert_eq!(appended.len(), 16 << 20);
+    assert!(appended[8 << 20..] == big[..], "the window's bytes appended");
+    assert_eq!(
+        std::fs::metadata(dir.join("from-root")).unwrap().len(),
+        (8 << 20) + wrote
+    );
+    let into = std::fs::read(dir.join("into")).unwrap();
+    assert!(
+        into[..1 << 20] == src[..],
+        "the bytes read into the window's mapping"
+    );
+    assert_eq!(shards(&["rm", "-f", "dma"]).status, Some(0));
 }
 
 /// `--cgroup-parent` (D183): on Linux, a microVM's processes, its VM process and its

@@ -2735,6 +2735,26 @@ fn fs(ops: &[String]) -> i32 {
                     _ => Err(io::Error::other("poke:PATH:OFFSET:BYTE")),
                 }
             }
+            // Whole pages written in place in one write, opened to write alone:
+            // `pages:PATH:OFFSET:COUNT:BYTE`, COUNT pages of BYTE at OFFSET, a page's
+            // multiple, as a DAX file's guest writes whole pages (D189, patch 0009).
+            "pages" => {
+                use std::os::unix::fs::FileExt as _;
+                let mut parts = rest.rsplitn(4, ':');
+                let (byte, count, offset, path) = (parts.next(), parts.next(), parts.next(), parts.next());
+                match (
+                    path,
+                    offset.and_then(|o| o.parse::<u64>().ok()),
+                    count.and_then(|c| c.parse::<usize>().ok()),
+                    byte.and_then(|b| b.parse::<u8>().ok()),
+                ) {
+                    (Some(path), Some(offset), Some(count), Some(byte)) => std::fs::OpenOptions::new()
+                        .write(true)
+                        .open(path)
+                        .and_then(|f| f.write_all_at(&vec![byte; count * 4096], offset)),
+                    _ => Err(io::Error::other("pages:PATH:OFFSET:COUNT:BYTE")),
+                }
+            }
             // A read through a handle held across the host's change of its file,
             // `hold:PATH:OFFSET:SIGNAL`: PATH read whole through a handle of its own,
             // SIGNAL.ready made, and once the host makes SIGNAL, a byte read at OFFSET
@@ -2773,6 +2793,24 @@ fn fs(ops: &[String]) -> i32 {
                     let _ = writeln!(io::stdout(), "map2m {path} {size}");
                 })
             }
+            // A write from a mapping of another file, `frommap:SRC:DST:HOW`: SRC's whole
+            // pages mapped shared and written to DST in one write, appended to what it
+            // holds (`append`) or in place of it, O_DIRECT (`direct`), and what DST then
+            // holds there read back and held to SRC's bytes, said as `frommap DST BYTES`.
+            // Where SRC's file system maps it with DAX, a pmem device's or a share's
+            // window's (D189), the pages written are device memory a device is given to
+            // read.
+            "frommap" => from_map(rest).map(|(dst, n)| {
+                let _ = writeln!(io::stdout(), "frommap {dst} {n}");
+            }),
+            // A read into a mapping of another file, `intomap:SRC:DST`: DST's whole pages
+            // mapped shared to write, SRC read into them in one read, O_DIRECT, and what DST
+            // then holds read back and held to SRC's bytes, said as `intomap DST BYTES`.
+            // Where DST's file system maps it with DAX, the pages read into are device
+            // memory a device is given to write.
+            "intomap" => into_map(rest).map(|(dst, n)| {
+                let _ = writeln!(io::stdout(), "intomap {dst} {n}");
+            }),
             // The kernel's log records holding `WORD` (`kmsg:WORD`), each said, then how many:
             // /dev/kmsg, which only a privileged exec reads (CAP_SYSLOG).
             "kmsg" => kmsg_holding(rest).map(|n| {
@@ -2857,6 +2895,96 @@ fn map_2m(path: &str, signal: &str) -> io::Result<u64> {
     drop(std::fs::File::open(path)?);
     let _ = read_all();
     Ok(size)
+}
+
+/// `file`'s whole pages mapped shared, `prot` their access: where, and how many bytes,
+/// mapped until the process ends.
+fn map_pages(file: &std::fs::File, prot: libc::c_int) -> io::Result<(*mut libc::c_void, usize)> {
+    use std::os::fd::AsRawFd as _;
+    let len = usize::try_from(file.metadata()?.len()).map_err(io::Error::other)? / 4096 * 4096;
+    if len == 0 {
+        return Err(io::Error::other("no whole page"));
+    }
+    // SAFETY: a shared mapping of an open file's first `len` bytes, which nothing unmaps.
+    let at = unsafe {
+        libc::mmap(
+            std::ptr::null_mut(),
+            len,
+            prot,
+            libc::MAP_SHARED,
+            file.as_raw_fd(),
+            0,
+        )
+    };
+    if at == libc::MAP_FAILED {
+        return Err(io::Error::last_os_error());
+    }
+    Ok((at, len))
+}
+
+/// Whether `dst` holds `want`'s first `n` bytes at `at`, read through a handle of its own.
+fn holds(dst: &str, at: u64, want: &[u8], n: usize) -> io::Result<()> {
+    use std::os::unix::fs::FileExt as _;
+    let mut back = vec![0u8; n];
+    std::fs::File::open(dst)?.read_exact_at(&mut back, at)?;
+    if want.get(..n) == Some(&back[..]) {
+        Ok(())
+    } else {
+        Err(io::Error::other(format!(
+            "{n} bytes moved, not the bytes read back"
+        )))
+    }
+}
+
+/// [`fs`]'s `frommap`: DST and how many bytes the write wrote.
+fn from_map(spec: &str) -> io::Result<(&str, usize)> {
+    use std::os::fd::AsRawFd as _;
+    use std::os::unix::fs::OpenOptionsExt as _;
+    let mut parts = spec.rsplitn(3, ':');
+    let (Some(how), Some(dst), Some(src)) = (parts.next(), parts.next(), parts.next()) else {
+        return Err(io::Error::other("frommap:SRC:DST:append|direct"));
+    };
+    let (map, len) = map_pages(&std::fs::File::open(src)?, libc::PROT_READ)?;
+    let out = match how {
+        "append" => std::fs::OpenOptions::new().append(true).open(dst)?,
+        "direct" => std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .custom_flags(libc::O_DIRECT)
+            .open(dst)?,
+        _ => return Err(io::Error::other("append or direct")),
+    };
+    let at = out.metadata()?.len();
+    // SAFETY: write(2) of the mapping's `len` bytes.
+    let n = unsafe { libc::write(out.as_raw_fd(), map, len) };
+    let n = usize::try_from(n).map_err(|_| io::Error::last_os_error())?;
+    holds(dst, at, &std::fs::read(src)?, n)?;
+    Ok((dst, n))
+}
+
+/// [`fs`]'s `intomap`: DST and how many bytes the read read.
+fn into_map(spec: &str) -> io::Result<(&str, usize)> {
+    use std::os::fd::AsRawFd as _;
+    use std::os::unix::fs::OpenOptionsExt as _;
+    let (src, dst) = spec
+        .rsplit_once(':')
+        .ok_or_else(|| io::Error::other("intomap:SRC:DST"))?;
+    let target = std::fs::OpenOptions::new().read(true).write(true).open(dst)?;
+    let (map, len) = map_pages(&target, libc::PROT_READ | libc::PROT_WRITE)?;
+    let input = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_DIRECT)
+        .open(src)?;
+    // SAFETY: read(2) into the mapping's `len` bytes, mapped to be written.
+    let n = unsafe { libc::read(input.as_raw_fd(), map, len) };
+    let n = usize::try_from(n).map_err(|_| io::Error::last_os_error())?;
+    // SAFETY: msync(2) of the mapping above.
+    if unsafe { libc::msync(map, len, libc::MS_SYNC) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    holds(dst, 0, &std::fs::read(src)?, n)?;
+    Ok((dst, n))
 }
 
 /// [`fs`]'s `kmsg`: how many of the kernel's log lines hold `word`, each said: its ring

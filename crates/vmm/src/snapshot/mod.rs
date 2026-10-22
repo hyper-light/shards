@@ -94,10 +94,12 @@ const MAGIC: [u8; 8] = *b"SHRDSNAP";
 ///     file system the generation keeps beside it (D190).
 /// 25: each DAX window has a head before it, its guest's page structures, which the
 ///     generation keeps beside it (D189).
-const VERSION: u32 = 25;
-/// The format before, which this build reads too where the machine has no DAX windows: for
-/// such a machine it says what this one says, so that a microVM saved by shards 0.6.0
-/// restores (D176).
+/// 26: and a record of which of its pages its host holds after it, which nothing keeps
+///     (D189).
+const VERSION: u32 = 26;
+/// The oldest format this build reads too where the machine has no DAX windows: for such
+/// a machine each since says what this one says, so that a microVM saved by shards 0.6.0
+/// (24) restores (D176).
 const VERSION_WITHOUT_WINDOWS: u32 = 24;
 /// The snapshot format this build writes and reads: what a snapshot kept for reuse is
 /// keyed by.
@@ -445,7 +447,7 @@ fn decode(bytes: &[u8]) -> codec::Result<Decoded> {
         return Err(DecodeError("not a shards snapshot".into()));
     }
     let version = r.u32()?;
-    if version != VERSION && version != VERSION_WITHOUT_WINDOWS {
+    if !(VERSION_WITHOUT_WINDOWS..=VERSION).contains(&version) {
         return Err(DecodeError(format!(
             "snapshot format {version}; this shards reads {VERSION}"
         )));
@@ -493,8 +495,8 @@ fn decode(bytes: &[u8]) -> codec::Result<Decoded> {
     let gpu_window = r.u64()?;
     let swap_mib = r.u64()?;
     let share_window_mib = r.u64()?;
-    // Whose windows had no heads before them (D189).
-    if version == VERSION_WITHOUT_WINDOWS && share_window_mib > 0 && (shares > 0 || join_share) {
+    // Whose windows were laid out otherwise (D189).
+    if version != VERSION && share_window_mib > 0 && (shares > 0 || join_share) {
         return Err(DecodeError(format!(
             "snapshot format {version} of a machine with DAX windows; this shards reads {VERSION}"
         )));
@@ -1242,17 +1244,26 @@ mod tests {
         assert!(decode(&short).unwrap_err().0.contains("2 identities for 3"));
     }
 
-    /// A state of the format before this one reads as it was written where its machine has
-    /// no DAX windows, a microVM shards 0.6.0 saved; one with windows, which had no heads
-    /// before them, is refused, as is any older format (D189, D176).
+    /// A state of the formats before this one, back to shards 0.6.0's, reads as it was
+    /// written where its machine has no DAX windows; one with windows, laid out otherwise
+    /// then, is refused, as is any older format (D189, D176).
     #[test]
-    fn a_state_of_the_format_before_reads_where_its_machine_has_no_dax_windows() {
+    fn a_state_of_the_formats_before_reads_where_its_machine_has_no_dax_windows() {
         let ids = vec![Identity::default(); 3];
-        let as_before = |snap: &Snapshot| {
+        let as_of = |snap: &Snapshot, version: u32| {
             let mut bytes = encode(snap, "g-1", &ids).unwrap();
-            bytes[8..12].copy_from_slice(&VERSION_WITHOUT_WINDOWS.to_le_bytes());
+            bytes[8..12].copy_from_slice(&version.to_le_bytes());
             bytes
         };
+        for version in VERSION_WITHOUT_WINDOWS..VERSION {
+            let snap = sample(&nowhere(), 1);
+            assert_eq!(
+                decode(&as_of(&snap, version)).unwrap().snapshot,
+                snap,
+                "{version}"
+            );
+        }
+        let as_before = |snap: &Snapshot| as_of(snap, VERSION_WITHOUT_WINDOWS);
         let mut snap = sample(&nowhere(), 1);
         assert_eq!(decode(&as_before(&snap)).unwrap().snapshot, snap);
         // A length for windows, but no share to give one: none.

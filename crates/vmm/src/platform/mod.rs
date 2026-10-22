@@ -5,7 +5,9 @@
 use std::fs::File;
 use std::io;
 
+mod checked;
 mod copy;
+pub use checked::copy_checked;
 #[cfg(test)]
 pub use copy::COPIED;
 pub use copy::{copy_in, copy_out};

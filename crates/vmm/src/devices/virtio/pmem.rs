@@ -943,6 +943,19 @@ impl VirtioDevice for Pmem {
         feature::VERSION_1
     }
 
+    /// An image's file, or a writable layer's file system, which its guest maps files
+    /// from: not a swap window, nor a layer's head, whose pages no file of the guest's is.
+    fn device_memory(&self) -> Vec<(u64, *mut u8, usize)> {
+        match &self.backing {
+            Backing::File(region) => vec![(self.gpa, region.host(), region.len())],
+            Backing::Layer(layer) => layer
+                .mappings(self.gpa)
+                .map(|[_, data]| vec![data])
+                .unwrap_or_default(),
+            Backing::Swap(_) => Vec::new(),
+        }
+    }
+
     fn queue_max_sizes(&self) -> &[u16] {
         &[QUEUE_SIZE]
     }

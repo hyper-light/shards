@@ -57,13 +57,13 @@ fn boots_to_root_mount_without_a_root_device() {
     );
 }
 
-/// A DAX window's page structures are its head's, not its guest's memory (D189, shards'
-/// kernel patch 0008, PM M300): a guest with a 4 GiB window has as much memory free as one
-/// with none, but for its linear map's page tables (8 bytes for each 4 KiB page of head and
-/// window, where Linux maps device memory in base pages, as arm64 does) and the spread of
-/// boots, where they took a 64th of the window, 64 MiB. Free memory is MemFree and the
-/// pages its CPUs' free lists hold, which held up to 16 MiB as a boot began (M300); each
-/// the most of three boots.
+/// A DAX window's page structures are its head's, not its guest's memory, and its linear
+/// map is in blocks (D189, shards' kernel patches 0008 and 0010, PM M300): a guest with a
+/// 4 GiB window has as much memory free as one with none, but for the spread of boots,
+/// where its page structures took a 64th of the window, 64 MiB, and on arm64 its linear
+/// map's page tables 8.3 MiB more, a 512th of head and window in base pages. Free memory
+/// is MemFree and the pages its CPUs' free lists hold, which held up to 16 MiB as a boot
+/// began (M300); each the most of three boots.
 // Shared directories, and so DAX windows, are Unix hosts' alone.
 #[cfg(unix)]
 #[test]
@@ -106,16 +106,13 @@ fn a_dax_windows_page_structures_take_none_of_its_guests_memory() {
             .unwrap()
     };
     let none = most_free("0");
-    let window = 4u64 << 30;
     let with = most_free("4096");
-    let head = shards_vmm::devices::virtio::head::window_head_len(window).unwrap();
-    let (tables, spread) = ((head + window) / 512, 2 << 20);
+    let spread = 2 << 20;
     let taken = none.saturating_sub(with);
     assert!(
-        taken <= tables + spread,
-        "a 4 GiB window took {} KiB of its guest's free memory, past {} KiB of page tables and {} KiB",
+        taken <= spread,
+        "a 4 GiB window took {} KiB of its guest's free memory, past {} KiB",
         taken >> 10,
-        tables >> 10,
         spread >> 10
     );
 }
