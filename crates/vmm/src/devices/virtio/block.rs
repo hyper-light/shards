@@ -269,7 +269,7 @@ impl Join {
     ///
     /// # Safety
     ///
-    /// `ptr .. ptr + len` lies in guest RAM, as `GuestMemory::host_ptr` gives it.
+    /// `ptr .. ptr + len` lies in guest memory, as `GuestMemory::io_ptr` gives it.
     unsafe fn read_at(&self, ptr: *mut u8, len: usize, offset: u64) -> Result<usize, u8> {
         let ranges = self.ranges.read().unwrap_or_else(PoisonError::into_inner);
         // The last range that starts at or before `offset`.
@@ -281,7 +281,8 @@ impl Join {
             let file = r.file.as_ref().ok_or(S_IOERR)?;
             let left = r.start.saturating_add(r.len) - offset;
             let n = usize::try_from(left).map_or(len, |left| left.min(len));
-            // SAFETY: the caller's: `ptr .. ptr + n` lies in guest RAM.
+            // SAFETY: the caller's: `ptr .. ptr + n` lies in guest memory, which the
+            // kernel's read reaches.
             return match unsafe { platform::read_at(file, ptr, n, offset - r.start) } {
                 Ok(0) | Err(_) => Err(S_IOERR),
                 Ok(n) => Ok(n),
@@ -289,9 +290,8 @@ impl Join {
         }
         // Between ranges, or before the first: zeros, up to the next range.
         let gap = next.map_or(len, |s| usize::try_from(s - offset).map_or(len, |g| g.min(len)));
-        // SAFETY: the caller's: `ptr .. ptr + gap` lies in guest RAM; no Rust reference
-        // to it exists, the kernel's reads aside.
-        unsafe { std::ptr::write_bytes(ptr, 0, gap) };
+        // SAFETY: the caller's: `ptr .. ptr + gap` lies in guest memory.
+        unsafe { zeros(ptr, gap) }?;
         Ok(gap)
     }
 
@@ -301,7 +301,7 @@ impl Join {
     ///
     /// # Safety
     ///
-    /// `ptr .. ptr + len` lies in guest RAM, as `GuestMemory::host_ptr` gives it.
+    /// `ptr .. ptr + len` lies in guest memory, as `GuestMemory::io_ptr` gives it.
     unsafe fn write_at(&self, ptr: *const u8, len: usize, offset: u64) -> Result<usize, u8> {
         let ranges = self.ranges.read().unwrap_or_else(PoisonError::into_inner);
         let at = ranges.partition_point(|r| r.start <= offset);
@@ -313,7 +313,8 @@ impl Join {
         let file = r.file.as_ref().ok_or(S_IOERR)?;
         let left = r.start.saturating_add(r.len) - offset;
         let n = usize::try_from(left).map_or(len, |left| left.min(len));
-        // SAFETY: the caller's: `ptr .. ptr + n` lies in guest RAM.
+        // SAFETY: the caller's: `ptr .. ptr + n` lies in guest memory, which the kernel's
+        // write reaches.
         match unsafe { platform::write_at(file, ptr, n, offset - r.start) } {
             Ok(0) | Err(_) => Err(S_IOERR),
             Ok(n) => Ok(n),
@@ -679,6 +680,25 @@ enum Direction {
     Write,
 }
 
+/// Writes `len` zeros at `ptr`, in guest memory as `GuestMemory::io_ptr` gives it: by
+/// [`platform::copy_checked`], which a page of device memory that is gone fails, not the
+/// VMM's process.
+///
+/// # Safety
+/// `ptr .. ptr + len` lies in guest memory, as `GuestMemory::io_ptr` gives it.
+unsafe fn zeros(ptr: *mut u8, len: usize) -> Result<(), u8> {
+    static ZEROS: [u8; 4096] = [0; 4096];
+    let mut done = 0;
+    while done < len {
+        let n = (len - done).min(ZEROS.len());
+        // SAFETY: the caller's: `ptr + done .. ptr + done + n` lies in guest memory, apart
+        // from `ZEROS`.
+        unsafe { platform::copy_checked(ZEROS.as_ptr(), ptr.add(done), n) }.map_err(|_| S_IOERR)?;
+        done += n;
+    }
+    Ok(())
+}
+
 fn transfer(
     bufs: &[Descriptor],
     sector: u64,
@@ -694,11 +714,13 @@ fn transfer(
     }
     let mut offset = start;
     for d in bufs {
-        let ptr = mem.host_ptr(d.addr, d.len as usize).map_err(|_| S_IOERR)?;
+        // Guest RAM, or device memory: a page of a file the guest maps (D189), which a
+        // system call reaches as RAM, and answers EFAULT where its page is gone.
+        let ptr = mem.io_ptr(d.addr, d.len as usize).map_err(|_| S_IOERR)?;
         let mut done = 0usize;
         while done < d.len as usize {
             let remaining = d.len as usize - done;
-            // SAFETY: `ptr + done .. ptr + len` lies inside guest RAM (host_ptr checked
+            // SAFETY: `ptr + done .. ptr + len` lies inside guest memory (io_ptr checked
             // the whole descriptor); the kernel copies to/from it without Rust aliasing.
             let n = unsafe {
                 let p = ptr.add(done);
@@ -944,6 +966,83 @@ mod tests {
         );
         disk.detach(out_at).unwrap();
         assert_eq!(write(out_at, &[1; 512]), Err(S_IOERR), "let go");
+    }
+
+    /// A transfer reaches device memory, a page of a file its guest maps (D189), as it
+    /// reaches RAM: read into and written from. One whose page is gone, its file cut short,
+    /// is an I/O error, a join disk's zeros between its ranges too, never the end of the
+    /// VMM's process.
+    #[cfg(unix)]
+    #[test]
+    fn a_transfer_reaches_device_memory_and_its_lost_pages_fail_it() {
+        use std::os::fd::AsRawFd as _;
+        const BASE: u64 = 0x8000_0000;
+        const DEVICE: u64 = 0x2_0000_0000;
+        let dir = shards_testdir::TempDir::new("blk-device").unwrap();
+        let disk: Vec<u8> = (0..8 * 512u32).map(|i| (i % 251) as u8).collect();
+        std::fs::write(dir.join("disk"), &disk).unwrap();
+        let b = Block::open(&dir.join("disk"), false, "disk0").unwrap();
+        let p = crate::platform::page_size().unwrap();
+        std::fs::write(dir.join("mapped"), vec![0u8; 2 * p]).unwrap();
+        let mapped = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(dir.join("mapped"))
+            .unwrap();
+        // SAFETY: a shared mapping of the file's two pages, unmapped at the test's end.
+        let host = unsafe {
+            libc::mmap(
+                std::ptr::null_mut(),
+                2 * p,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_SHARED,
+                mapped.as_raw_fd(),
+                0,
+            )
+        };
+        assert_ne!(host, libc::MAP_FAILED);
+        let mem = GuestMemory::anonymous(&[(BASE, 1 << 16)]).unwrap();
+        // SAFETY: the mapping above, which outlives every use of `mem`'s.
+        unsafe { mem.give_devices([(DEVICE, host.cast(), 2 * p)]) }.unwrap();
+        let at = |addr: u64, writable: bool| Descriptor {
+            addr,
+            len: 1024,
+            writable,
+        };
+        let (read, write) = (Direction::Read, Direction::Write);
+        assert_eq!(
+            transfer(&[at(DEVICE + 512, true)], 1, &mem, &b.backend, read),
+            Ok(1024)
+        );
+        assert_eq!(
+            std::fs::read(dir.join("mapped")).unwrap()[512..1536],
+            disk[512..1536]
+        );
+        assert_eq!(
+            transfer(&[at(DEVICE + 512, false)], 4, &mem, &b.backend, write),
+            Ok(1024)
+        );
+        assert_eq!(
+            std::fs::read(dir.join("disk")).unwrap()[2048..3072],
+            disk[512..1536]
+        );
+        // Cut short under its mapping: each way an I/O error.
+        mapped.set_len(p as u64).unwrap();
+        let lost = DEVICE + p as u64;
+        assert_eq!(
+            transfer(&[at(lost, true)], 0, &mem, &b.backend, read),
+            Err(S_IOERR)
+        );
+        assert_eq!(
+            transfer(&[at(lost, false)], 0, &mem, &b.backend, write),
+            Err(S_IOERR)
+        );
+        static JOIN: Join = Join::new();
+        let ptr = mem.io_ptr(lost, 512).unwrap();
+        // SAFETY: `ptr` is guest memory as io_ptr gives it, 512 bytes.
+        assert_eq!(unsafe { JOIN.read_at(ptr, 512, 0) }, Err(S_IOERR));
+        // SAFETY: the mapping made above.
+        unsafe { libc::munmap(host, 2 * p) };
     }
 
     #[test]

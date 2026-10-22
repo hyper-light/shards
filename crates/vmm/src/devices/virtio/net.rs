@@ -633,11 +633,19 @@ fn writable(c: &Chain) -> usize {
 /// dropped, as a NIC drops what it cannot send.
 fn push(tx: &mut Producer<'_>, chain: &Chain, access: Access<'_>) -> Result<bool, String> {
     let mut n = 0usize;
+    let mut device = false;
     for d in chain.readable() {
-        if access.memory().host_ptr(d.addr, d.len as usize).is_err() {
-            return Ok(true);
+        let len = d.len as usize;
+        if access.memory().host_ptr(d.addr, len).is_err() {
+            if access.memory().io_ptr(d.addr, len).is_err() {
+                return Ok(true);
+            }
+            device = true;
         }
-        n = n.saturating_add(d.len as usize);
+        n = n.saturating_add(len);
+    }
+    if device {
+        return push_gathered(tx, chain, access, n);
     }
     // Without room, or past the ring's largest, the copy is not made and `access` goes as
     // this returns.
@@ -651,6 +659,34 @@ fn push(tx: &mut Producer<'_>, chain: &Chain, access: Access<'_>) -> Result<bool
         }
         drop(access);
     }) {
+        Ok(Some(_)) => Ok(true),
+        Ok(None) => Ok(false),
+        Err(b) => Err(b.to_string()),
+    }
+}
+
+/// A frame of `n` bytes some of which are device memory, a page of a file the guest maps
+/// (D189), into the ring if there is room: copied out first, so that one whose page is gone
+/// is dropped, as a NIC drops a frame it cannot read, where a record once in the ring
+/// goes to the peer.
+fn push_gathered(tx: &mut Producer<'_>, chain: &Chain, access: Access<'_>, n: usize) -> Result<bool, String> {
+    if n > shards_netring::MAX_FRAME {
+        return Ok(true);
+    }
+    let mut frame = vec![0u8; n];
+    let mut off = 0usize;
+    for d in chain.readable() {
+        let len = d.len as usize;
+        let read = frame
+            .get_mut(off..off.saturating_add(len))
+            .is_some_and(|dst| access.read(d.addr, dst).is_ok());
+        if !read {
+            return Ok(true);
+        }
+        off += len;
+    }
+    drop(access);
+    match tx.try_push(&[&frame]) {
         Ok(Some(_)) => Ok(true),
         Ok(None) => Ok(false),
         Err(b) => Err(b.to_string()),
@@ -980,6 +1016,82 @@ mod tests {
     /// A frame of `len` bytes, its virtio header zeroed.
     fn frame(len: usize) -> Vec<u8> {
         (0..len).map(|i| if i < HEADER { 0 } else { i as u8 }).collect()
+    }
+
+    /// A frame whose bytes lie in device memory, a page of a file its guest maps (D189),
+    /// goes to the network process as one in RAM does: a send from a mapped file's pages.
+    /// One whose page is gone, its file cut short, is dropped, never sent with a hole.
+    #[cfg(unix)]
+    #[test]
+    fn a_frame_from_device_memory_is_sent_and_one_whose_page_is_gone_dropped() {
+        use super::super::queue::Descriptor;
+        use std::os::fd::AsRawFd as _;
+        const DEVICE: u64 = 0x2_0000_0000;
+        let dir = shards_testdir::TempDir::new("net-device").unwrap();
+        let p = crate::platform::page_size().unwrap();
+        let f = frame(200);
+        let mut bytes = vec![0u8; 2 * p];
+        bytes[..f.len() - HEADER].copy_from_slice(&f[HEADER..]);
+        std::fs::write(dir.join("mapped"), &bytes).unwrap();
+        let mapped = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(dir.join("mapped"))
+            .unwrap();
+        // SAFETY: a shared mapping of the file's two pages, unmapped at the test's end.
+        let host = unsafe {
+            libc::mmap(
+                std::ptr::null_mut(),
+                2 * p,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_SHARED,
+                mapped.as_raw_fd(),
+                0,
+            )
+        };
+        assert_ne!(host, libc::MAP_FAILED);
+        let mem = GuestMemory::anonymous(&[(BASE, 16 * p)]).unwrap();
+        // SAFETY: the mapping above, which outlives every use of `mem`'s.
+        unsafe { mem.give_devices([(DEVICE, host.cast(), 2 * p)]) }.unwrap();
+        mem.access().unwrap().write(DATA, &f[..HEADER]).unwrap();
+        let chain = |payload: u64| Chain {
+            head: 0,
+            descriptors: vec![
+                Descriptor {
+                    addr: DATA,
+                    len: HEADER as u32,
+                    writable: false,
+                },
+                Descriptor {
+                    addr: payload,
+                    len: (f.len() - HEADER) as u32,
+                    writable: false,
+                },
+            ],
+        };
+        let ring = Region::map(shards_netring::memory().unwrap()).unwrap();
+        let (tx_waits, tx_rings) = shards_netring::doorbell().unwrap();
+        let mut tx = ring.producer(0, tx_rings);
+        assert_eq!(push(&mut tx, &chain(DEVICE), mem.access().unwrap()), Ok(true));
+        mapped.set_len(p as u64).unwrap();
+        let lost = DEVICE + p as u64;
+        assert_eq!(push(&mut tx, &chain(lost), mem.access().unwrap()), Ok(true));
+        let (_nobody, rings) = shards_netring::doorbell().unwrap();
+        let mut from_guest = ring.consumer(0, rings, tx_waits);
+        let mut got = vec![0u8; f.len()];
+        let mut take = || {
+            from_guest
+                .pop(|n, copy| {
+                    copy(0, got.as_mut_ptr(), n.min(f.len()));
+                    n
+                })
+                .unwrap()
+        };
+        assert_eq!(take(), Some(f.len()));
+        assert_eq!(take(), None, "the frame whose page is gone was sent");
+        assert_eq!(got, f);
+        // SAFETY: the mapping made above.
+        unsafe { libc::munmap(host, 2 * p) };
     }
 
     /// A chain with no room for the frame goes back at once, empty, and the frame goes to

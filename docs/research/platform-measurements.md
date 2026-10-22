@@ -12145,3 +12145,49 @@ revision before comparing a changed API/implementation.
   of the layer went with it. Said at once, the end no longer waits on the layer.
 - **Consequence.** D119: a provider's end is said at once where any joiner outlives it,
   running or ended with its layer still to come.
+
+### M304. What a copy from memory whose pages may be gone costs (D189, item 5)
+
+- **Question.** A guest names its devices the pages of the files it maps as any of its
+  pages: an O_DIRECT read or write from a mapping, and on a share a write that grows a file
+  the window maps (fs/fuse/dax.c, `fuse_dax_direct_write`). A DAX file's are device memory,
+  a pmem device's file or a window's ranges: a file's mapping in the VMM, which another
+  process may cut short under it, where the host's kernel answers a system call's access
+  with EFAULT and the VMM's own access ends its process (SIGBUS). The VMM copies some of a
+  device's bytes itself (virtio-fs's requests and replies, a network frame). What does a
+  copy cost that a fault fails, rather than the process: through a pipe (the source written
+  into it and read back out; POSIX's write(2) and read(2) answer an inaccessible buffer
+  with EFAULT), by process_vm_readv(2) of the process itself (Linux alone), or by a copy
+  whose faults its signal handler resumes as failed (`platform::copy_checked`), against
+  memcpy and the VMM's copy of guest RAM (`copy_in`)?
+- **Method.** `checked-copy/copy.c`: a 2 MiB file's first MiB mapped shared and read
+  whole, every page resident, copied 2,000 times a size into a heap buffer, each timed
+  (CLOCK_UPTIME_RAW on the Mac, CLOCK_MONOTONIC on Linux); then the file cut to 64 KiB and
+  each method given a page past its end. vmm's `checked_copy_costs` (ignored, a
+  measurement): `copy_checked` against `copy_in` alike. The Mac (Apple M5 Max, macOS
+  26.4.1), two runs each; Fedora (M258's i9-14900HX, Linux 6.19.10), two pinned to a
+  performance core (CPU 2) and two to an efficient one (CPU 20), copy.c's with a CI job
+  running, `checked_copy_costs`'s beside a loop of the daemon tests (load 15). copy.c at
+  e3d4544a, `checked_copy_costs` at b7f38bb6 with the copy added. 2026-10-22.
+- **Results.** 1 MiB, µs, the two runs' p50 / p90 / p99 / max:
+
+  | host | memcpy | pipe | process_vm_readv | `copy_in` | `copy_checked` |
+  |---|---|---|---|---|---|
+  | Mac | 12.9-13.9 / 25.0-26.8 / 54.0-77.7 / 77.7-112.3 | 99.3-115.3 / 184.1-245.7 / 300.7-672.8 / 1,659-1,944 | - | 12.9-13.6 / 14.0-15.0 / 16.5-17.2 / 28.7-29.0 | 15.7-16.0 / 16.4-16.5 / 17.0-17.9 / 27.0-30.9 |
+  | Fedora, P-core | 18.6-20.5 / 21.1-22.6 / 24.1-25.7 / 43.5-44.0 | 69.1-71.4 / 76.4-77.3 / 92.5-93.0 / 120.7-126.7 | 32.4-33.8 / 36.0-37.0 / 41.8-42.1 / 64.5-71.4 | 20.8-21.2 / 21.7-30.2 / 26.9-37.9 / 53.6-64.0 | 19.6-21.1 / 20.7-22.0 / 24.4-26.5 / 32.0-34.4 |
+  | Fedora, E-core | 29.5-29.6 / 29.9-30.0 / 32.9-33.0 / 63.6-63.8 | 138.2-139.9 / 141.0-143.0 / 143.2-145.8 / 150.8-167.3 | 48.9-49.2 / 51.3-51.6 / 53.5-66.2 / 75.5-91.6 | 30.7-31.9 / 32.6 / 35.2-35.6 / 46.8-85.9 | 31.2-31.9 / 32.3-32.9 / 34.7-35.4 / 43.1-44.0 |
+
+  At p50, 64 KiB: memcpy 0.5 to 0.6 µs on the Mac, 0.9 to 2.5 on Fedora; the pipe 2.7 to
+  3.3 and 3.9 to 8.6; process_vm_readv 1.9 to 3.5; `copy_checked` 0.62 to 0.71 and 0.96 to
+  1.96, as `copy_in`. 4 KiB: memcpy and `copy_checked` 0.04 to 0.10, the pipe and
+  process_vm_readv 0.26 to 0.84. Past the file's end, the pipe's write and
+  process_vm_readv failed with EFAULT and the process went on, as `copy_checked` fails
+  (`a_checked_copy_fails_where_its_pages_are_gone`).
+- **Reading.** A pipe costs 3.4 to 4.7 times memcpy for 1 MiB on Fedora and 7 to 9 times
+  on the Mac, its tail to 0.67 ms; process_vm_readv 1.7 times, and macOS has none. A copy
+  whose faults its handler resumes costs what the VMM's copy of RAM costs on Fedora (`rep
+  movsb` against `copy_in`'s 16-byte moves), and on the Mac the same to 64 KiB and 1.2
+  times it for 1 MiB, its loads and stores kept in the caches where `copy_in`'s stream
+  past them from 16 KiB on, as macOS's memcpy does (M137).
+- **Consequence.** D189: device memory is reached by the host's devices as RAM is, by
+  system calls given its pages (`GuestMemory::io_ptr`) and copies by `copy_checked`.

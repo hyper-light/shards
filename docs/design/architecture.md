@@ -5855,6 +5855,39 @@ stores.
   `a_window_keeps_one_descriptor_of_a_file` (mutation-checked: 401 descriptors more for
   400 ranges where each range's was kept).
 
+- **A device reaches the pages of the files its guest maps** (PM M304). A guest names its
+  devices the pages a mapping of a file holds as any of its pages: an O_DIRECT read or
+  write, and on a share a write that grows a file the window maps (fs/fuse/dax.c,
+  `fuse_dax_direct_write`), whose user pages FUSE gives its device (fs/fuse/file.c,
+  `fuse_get_user_pages`). A DAX file's are device memory, a pmem device's (the image's
+  root, the writable layer) or a window's, which no device reached: in a microVM with a 64
+  MiB window, an append to a file the window maps, from a mapping of another, was answered
+  as done with 0 bytes written, and an O_DIRECT read into a mapping of one as done with its
+  bytes missing; an O_DIRECT write from such a mapping was whole only because Linux's FUSE
+  wrote it again, buffered, once the direct write wrote nothing (`direct_write_fallback`).
+  Each device that gives its guest such memory now says so (`VirtioDevice::device_memory`:
+  a pmem device's file, a layer's file system, a share's window), and its guest memory
+  gives it to every device as RAM (`GuestMemory::give_devices`): system calls given its
+  pages (`io_ptr`: a disk's transfers, vsock's), whose kernel answers EFAULT where one is
+  gone, and an access's copies by `platform::copy_checked` (virtio-fs's requests and
+  replies, a network frame), a copy whose fault its signal handler resumes as failed, as
+  Linux resumes its own copies from user memory (its exception tables), never the end of
+  the VM's process: a file cut short under its mapping by another process, which the window
+  follows only as it learns (above), takes the request at it alone. It costs what the VMM's
+  copy of RAM does on Fedora, and 1.2 times it for 1 MiB on the Mac, where a copy through a
+  pipe cost 3.4 to 9 times memcpy (M304). A request whose bytes, or whose answer's, a
+  device cannot reach is answered EIO (virtio-fs) or an I/O error (a disk), and a frame
+  dropped (virtio-net), never served short. A GPU's renderer and a passed-through function
+  are given RAM alone, as before. Held by
+  `a_microvms_devices_reach_the_pages_of_the_files_it_maps` (mutation-checked: without
+  device memory the append fails), and vmm's
+  `device_memory_is_reached_as_ram_is_and_its_lost_pages_fail`,
+  `a_requests_device_memory_goes_whole_and_its_lost_pages_fail_it`,
+  `a_transfer_reaches_device_memory_and_its_lost_pages_fail_it`,
+  `a_frame_from_device_memory_is_sent_and_one_whose_page_is_gone_dropped`,
+  `a_checked_copy_fails_where_its_pages_are_gone` and
+  `a_fault_outside_a_checked_copy_still_ends_its_process`.
+
 **Measured (PM M269).** What a window costs a guest as it boots: its page structures, which
 Linux makes of it as it probes the device (virtio_fs_setup_dax, devm_memremap_pages of
 MEMORY_DEVICE_FS_DAX): 18.1 MiB of free memory for a 1 GiB window, 73.7 for 4 GiB, a 64th of
@@ -5862,9 +5895,6 @@ it and 15% and some 2 MiB more; a boot reached PID 1 no later for one up to 2 Gi
 template pays it once; what its restores pay is to be measured with mappings.
 
 **Next.**
-- A device's DMA to and from device memory: neither the pmem regions (the DAX root, the
-  swap window) nor the windows are guest RAM a device's descriptor may name, so a guest's
-  O_DIRECT write from a mapped file's pages fails, as it does from its root's.
 - How long a window, and from what size a file is mapped. Measured against FUSE (PM
   M276, the sustained-I/O benchmark, n = 10 a side): a window that holds what the guest
   reads through it (4 GiB under fio's 2 GiB file) reads 17 to 62 times as fast and writes

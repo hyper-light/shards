@@ -74,7 +74,7 @@ fn readv(stream: &UnixStream, spans: &[Span], max: usize) -> io::Result<usize> {
         return Err(io::ErrorKind::WouldBlock.into());
     }
     loop {
-        // SAFETY: every iovec lies in guest RAM, checked by host_ptr when its span was
+        // SAFETY: every iovec lies in guest memory, checked by io_ptr when its span was
         // made; the kernel writes there without Rust aliasing it.
         let n = unsafe { libc::readv(fd, iov.as_ptr(), iov.len() as libc::c_int) };
         if let Ok(n) = usize::try_from(n) {
@@ -131,7 +131,7 @@ fn readv(stream: &UnixStream, spans: &[Span], max: usize) -> io::Result<usize> {
     if runs.is_empty() {
         return Err(io::ErrorKind::WouldBlock.into());
     }
-    // SAFETY: every run lies in guest RAM, checked by host_ptr when its span was made;
+    // SAFETY: every run lies in guest memory, checked by io_ptr when its span was made;
     // Winsock writes there without Rust aliasing it.
     unsafe { stream.readv(&runs) }
 }
@@ -614,7 +614,9 @@ fn step(s: &mut Session, mem: &GuestMemory, irq: &DeviceInterrupt) -> Result<boo
 }
 
 /// The spans of a chain's readable or writable descriptors, skipping the first `skip`
-/// bytes. None if a descriptor lies outside guest RAM.
+/// bytes: in guest RAM, or device memory, a page of a file the guest maps (D189), which a
+/// system call reaches as RAM and answers EFAULT where its page is gone. None if a
+/// descriptor lies outside guest memory.
 fn spans(chain: &Chain, mem: &GuestMemory, writable: bool, mut skip: usize) -> Option<Vec<Span>> {
     let mut out = Vec::new();
     for d in chain.descriptors.iter().filter(|d| d.writable == writable) {
@@ -626,7 +628,7 @@ fn spans(chain: &Chain, mem: &GuestMemory, writable: bool, mut skip: usize) -> O
         let gpa = d.addr.checked_add(skip as u64)?;
         let len = len - skip;
         skip = 0;
-        let ptr = mem.host_ptr(gpa, len).ok()?;
+        let ptr = mem.io_ptr(gpa, len).ok()?;
         out.push(Span { gpa, ptr, len });
     }
     Some(out)

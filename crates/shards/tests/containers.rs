@@ -1967,6 +1967,92 @@ fn a_volumes_large_files_go_through_its_dax_window() {
     assert_eq!(shards(&["rm", "-f", "dax2m"]).status, Some(0));
 }
 
+/// A microVM's devices reach the pages of the files its guest maps, device memory, as they
+/// reach its RAM (D189): a write from a mapping of its image's root (pmem) or of a file a
+/// volume's DAX window maps, appended to a file the window maps, which its guest's kernel
+/// gives its device as the mapping's pages, writes every byte; an O_DIRECT read of a file
+/// under a range, which its guest reads through FUSE, into a mapping of a file the window
+/// maps, or of one in its writable layer (pmem), reads every byte. Before, its device
+/// answered the write as done with nothing written (0 bytes) and the read as done with its
+/// bytes missing.
+#[test]
+fn a_microvms_devices_reach_the_pages_of_the_files_it_maps() {
+    if cannot_run_vms() {
+        return;
+    }
+    let (image, _) = served();
+    let home = TempDir::new("containers-dma");
+    let (kernel, init) = (kernel(), guest_init());
+    let env: [(&str, &OsStr); 4] = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", kernel.as_os_str()),
+        ("SHARDS_INIT", init.as_os_str()),
+        ("SHARDS_SHARE_WINDOW_MIB", "64".as_ref()),
+    ];
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let pulled = shards(&["pull", "-q", &image]);
+    assert_eq!(pulled.status, Some(0), "{pulled}");
+    let dir = TempDir::new("containers-dma-v");
+    let pattern =
+        |len: u32, k: u32| -> Vec<u8> { (0..len).map(|i| (i.wrapping_mul(k) >> 8) as u8).collect() };
+    let big = pattern(8 << 20, 40_503);
+    let src = pattern(1 << 20, 2_654_435_761);
+    std::fs::write(dir.join("big"), &big).unwrap();
+    std::fs::write(dir.join("src"), &src).unwrap();
+    for name in ["from-window", "from-root", "into"] {
+        std::fs::write(dir.join(name), vec![0u8; 8 << 20]).unwrap();
+    }
+    let volume = format!("{}:/v", dir.display());
+    let run = shards(&[
+        "run", "-d", "--pull", "never", "--name", "dma", "-u", "0", "-v", &volume, &image, "sleep",
+    ]);
+    assert_eq!(run.status, Some(0), "{run}");
+    let exec = |op: &str| {
+        let r = shards(&["exec", "dma", "/bin/testguest", "fs", op]);
+        assert_eq!(r.status, Some(0), "{op}: {r}");
+        r.stdout
+    };
+    assert_eq!(
+        exec("dax:/v/from-window") + &exec("dax:/bin/testguest"),
+        "dax /v/from-window yes\ndax /bin/testguest yes\n"
+    );
+    assert_eq!(
+        exec("frommap:/v/big:/v/from-window:append"),
+        format!("frommap /v/from-window {}\n", 8 << 20)
+    );
+    let root = exec("frommap:/bin/testguest:/v/from-root:append");
+    let wrote: u64 = root
+        .strip_prefix("frommap /v/from-root ")
+        .and_then(|n| n.trim().parse().ok())
+        .unwrap_or_else(|| panic!("{root}"));
+    assert!(wrote >= 1 << 20, "{root}");
+    assert_eq!(
+        exec("intomap:/v/src:/v/into"),
+        format!("intomap /v/into {}\n", 1 << 20)
+    );
+    exec("write:/work/layer=x");
+    exec("pages:/work/layer:0:256:0");
+    assert_eq!(exec("dax:/work/layer"), "dax /work/layer yes\n");
+    assert_eq!(
+        exec("intomap:/v/src:/work/layer"),
+        format!("intomap /work/layer {}\n", 1 << 20)
+    );
+    // What the host reads: each byte the guest moved.
+    let appended = std::fs::read(dir.join("from-window")).unwrap();
+    assert_eq!(appended.len(), 16 << 20);
+    assert!(appended[8 << 20..] == big[..], "the window's bytes appended");
+    assert_eq!(
+        std::fs::metadata(dir.join("from-root")).unwrap().len(),
+        (8 << 20) + wrote
+    );
+    let into = std::fs::read(dir.join("into")).unwrap();
+    assert!(
+        into[..1 << 20] == src[..],
+        "the bytes read into the window's mapping"
+    );
+    assert_eq!(shards(&["rm", "-f", "dma"]).status, Some(0));
+}
+
 /// `--cgroup-parent` (D183): on Linux, a microVM's processes, its VM process and its
 /// network process, are made under the slice of the user's systemd manager it names, by a
 /// spawner the manager placed there once, the one process of a scope of the daemon's, and

@@ -548,9 +548,18 @@ fn serve(
         .try_fold(0usize, |n, d| n.checked_add(d.len as usize))
         .filter(|&n| n <= MAX_FRAME);
     let mut req = vec![0u8; total.unwrap_or(server::HEADER_BYTES)];
-    if !mem.access().is_ok_and(|a| gather(chain, &a, &mut req)) {
-        debug!("virtio-fs: a request outside guest memory");
+    let Ok(access) = mem.access() else {
         return 0;
+    };
+    let read = gather(chain, &access, &mut req);
+    drop(access);
+    if read < req.len() {
+        // Bytes its device could not read where the guest said they were (outside its
+        // memory, or device memory whose pages are gone): told EIO where its header was
+        // read, as a device whose DMA failed, never served short.
+        debug!("virtio-fs: a request outside guest memory");
+        let failed = req.get(..read).and_then(server::unreachable);
+        return failed.map_or(0, |reply| scatter(chain, mem, &reply).unwrap_or(0));
     }
     // Charged to its microVM's I/O limits before it is asked (D178).
     if let (Some(limit), Some(_)) = (limit, total) {
@@ -579,10 +588,18 @@ fn serve(
     let Some(reply) = reply else {
         return 0;
     };
-    let Ok(access) = mem.access() else {
-        return 0;
-    };
-    let mut rest = reply.as_slice();
+    // A reply its device could not write whole where the guest said (device memory whose
+    // pages are gone, say): EIO in its place, never a success whose bytes are not there.
+    scatter(chain, mem, &reply)
+        .or_else(|_| server::unreachable(&req).map_or(Ok(0), |e| scatter(chain, mem, &e)))
+        .unwrap_or(0)
+}
+
+/// Writes `reply` into the chain's writable descriptors, in order: how many bytes, or
+/// Err where one it needs could not be written.
+fn scatter(chain: &Chain, mem: &GuestMemory, reply: &[u8]) -> Result<u32, ()> {
+    let access = mem.access().map_err(|_| ())?;
+    let mut rest = reply;
     let mut written = 0u32;
     for d in chain.writable() {
         if rest.is_empty() {
@@ -590,13 +607,11 @@ fn serve(
         }
         let n = rest.len().min(d.len as usize);
         let (chunk, tail) = rest.split_at(n);
-        if access.write(d.addr, chunk).is_err() {
-            return written;
-        }
+        access.write(d.addr, chunk).map_err(|_| ())?;
         written = written.saturating_add(n as u32);
         rest = tail;
     }
-    written
+    Ok(written)
 }
 
 /// A FUSE_SETUPMAPPING or FUSE_REMOVEMAPPING, answered from `window` (D189): a range of the
@@ -782,9 +797,10 @@ fn rerecord_written(req: &[u8], reply: &[u8], window: &window::Window) {
     }
 }
 
-/// Fills `buf` with the chain's readable bytes, in order, as far as they go; false if one
-/// it needs lies outside guest memory.
-fn gather(chain: &Chain, mem: &Access<'_>, buf: &mut [u8]) -> bool {
+/// Fills `buf` with the chain's readable bytes, in order, as far as they go: how many,
+/// fewer than `buf` holds where one it needs could not be read (outside guest memory, or
+/// device memory whose pages are gone).
+fn gather(chain: &Chain, mem: &Access<'_>, buf: &mut [u8]) -> usize {
     let mut at = 0;
     for d in chain.readable() {
         let Some(dst) = buf.get_mut(at..).filter(|rest| !rest.is_empty()) else {
@@ -792,16 +808,25 @@ fn gather(chain: &Chain, mem: &Access<'_>, buf: &mut [u8]) -> bool {
         };
         let n = dst.len().min(d.len as usize);
         if dst.get_mut(..n).is_none_or(|dst| mem.read(d.addr, dst).is_err()) {
-            return false;
+            return at;
         }
         at += n;
     }
-    true
+    at
 }
 
 impl VirtioDevice for Fs {
     fn shm_regions(&self) -> &[ShmRegion] {
         self.window.as_ref().map_or(&[], |(r, _)| r.as_slice())
+    }
+
+    /// Its DAX window, whose ranges hold the files its guest maps: not its head nor its
+    /// held record, whose pages no file of the guest's is.
+    fn device_memory(&self) -> Vec<(u64, *mut u8, usize)> {
+        self.window
+            .iter()
+            .filter_map(|(_, w)| Some((w.gpa(), w.host(), usize::try_from(w.size()).ok()?)))
+            .collect()
     }
 
     fn device_id(&self) -> u32 {
@@ -1407,6 +1432,15 @@ mod tests {
     }
 
     fn share(hold: mpsc::Receiver<()>, asked: mpsc::Sender<Vec<u8>>) -> (Share, std::thread::JoinHandle<()>) {
+        share_answering(hold, asked, 0)
+    }
+
+    /// [`share`], its answers `extra` bytes longer than their header.
+    fn share_answering(
+        hold: mpsc::Receiver<()>,
+        asked: mpsc::Sender<Vec<u8>>,
+        extra: usize,
+    ) -> (Share, std::thread::JoinHandle<()>) {
         let (ours, theirs) = UnixStream::pair().unwrap();
         let slot = Share::default();
         slot.attach(ours).unwrap();
@@ -1417,9 +1451,10 @@ mod tests {
                 if hold.recv().is_err() {
                     return;
                 }
-                let mut out = 16u32.to_le_bytes().to_vec();
+                let mut out = (16 + extra as u32).to_le_bytes().to_vec();
                 out.extend_from_slice(&0i32.to_le_bytes());
                 out.extend_from_slice(&req[8..16]);
+                out.resize(16 + extra, 0x77);
                 if write_frame(&mut conn, &out).is_err() {
                     return;
                 }
@@ -1488,5 +1523,82 @@ mod tests {
         assert_eq!(reply(&mem), (16, 0, 0x1234));
         drop((slot, go));
         server.join().unwrap();
+    }
+
+    /// A request whose bytes lie in device memory, a page of a file its guest maps (D189),
+    /// goes to the share whole, as one in RAM does: a write from a mapped file's pages. One
+    /// whose bytes, or whose reply's, its device cannot reach, a page of device memory whose
+    /// file was cut short, or none at all, is answered EIO: never sent short, nor answered
+    /// as done with its bytes missing.
+    #[cfg(unix)]
+    #[test]
+    fn a_requests_device_memory_goes_whole_and_its_lost_pages_fail_it() {
+        use std::os::fd::AsRawFd as _;
+        const DEVICE: u64 = 0x2_0000_0000;
+        let mem = guest();
+        let p = crate::platform::page_size().unwrap();
+        let dir = shards_testdir::TempDir::new("fs-device").unwrap();
+        let bytes: Vec<u8> = (0..2 * p).map(|i| (i * 7 + 1) as u8).collect();
+        std::fs::write(dir.join("f"), &bytes).unwrap();
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(dir.join("f"))
+            .unwrap();
+        // SAFETY: a shared mapping of the file's two pages, unmapped at the test's end.
+        let host = unsafe {
+            libc::mmap(
+                std::ptr::null_mut(),
+                2 * p,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_SHARED,
+                file.as_raw_fd(),
+                0,
+            )
+        };
+        assert_ne!(host, libc::MAP_FAILED);
+        // SAFETY: the mapping above, which outlives every use of `mem`'s.
+        unsafe { mem.give_devices([(DEVICE, host.cast(), 2 * p)]) }.unwrap();
+        let (go, hold) = mpsc::channel();
+        let (asked, requests) = mpsc::channel();
+        let (slot, server) = share_answering(hold, asked, 100);
+        // Its bytes in device memory: sent whole, and answered.
+        go.send(()).unwrap();
+        let readables = vec![readable(REQUEST, 56), readable(DEVICE + 8, 100)];
+        assert_eq!(serve(&chain(readables), &mem, &slot, None, None), 116);
+        assert_eq!(reply(&mem), (116, 0, 0x1234));
+        let sent = requests.recv().unwrap();
+        assert_eq!(sent.len(), 156);
+        assert_eq!(&sent[56..], &bytes[8..108]);
+        // Cut short under its mapping: its lost page is not read, the share not asked.
+        file.set_len(p as u64).unwrap();
+        let lost = DEVICE + p as u64;
+        let readables = vec![readable(REQUEST, 56), readable(lost + 8, 100)];
+        assert_eq!(serve(&chain(readables), &mem, &slot, None, None), 16);
+        assert_eq!(reply(&mem), (16, -5, 0x1234));
+        assert!(requests.try_recv().is_err(), "the share was asked");
+        // A reply whose bytes go to the lost page: EIO in its place.
+        go.send(()).unwrap();
+        let descriptors = vec![
+            readable(REQUEST, 56),
+            Descriptor {
+                addr: REPLY,
+                len: 16,
+                writable: true,
+            },
+            Descriptor {
+                addr: lost,
+                len: 4096,
+                writable: true,
+            },
+        ];
+        let lost_reply = Chain { head: 0, descriptors };
+        assert_eq!(serve(&lost_reply, &mem, &slot, None, None), 16);
+        assert_eq!(reply(&mem), (16, -5, 0x1234));
+        assert_eq!(requests.recv().unwrap().len(), 56);
+        drop((slot, go));
+        server.join().unwrap();
+        // SAFETY: the mapping made above.
+        unsafe { libc::munmap(host, 2 * p) };
     }
 }

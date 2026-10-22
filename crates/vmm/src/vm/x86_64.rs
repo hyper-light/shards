@@ -467,6 +467,9 @@ fn assemble(
             .collect(),
         virtio_max,
     )?;
+    // SAFETY: each device's memory stays mapped until the device drops, after
+    // `Running::teardown` has quieted its machine's devices for good.
+    unsafe { memory.give_devices(devices.iter().flat_map(|d| d.device_memory())) }?;
     let iommu_at = iommu.is_some().then(|| devices.len() - 1);
     let mut bus = Bus {
         pmem: regions
