@@ -1289,7 +1289,7 @@ mod tests {
             head.add((blocks - 1) * HEAD_BLOCK + 64).write_bytes(0x41, 64);
         }
         let kept = file(&dir, "head", 0);
-        save_head(&kept, NonNull::new(head).unwrap(), head_len).unwrap();
+        save_head(&kept, NonNull::new(head).unwrap(), head_len, None).unwrap();
         assert_eq!(kept.metadata().unwrap().len(), ALIGN + 3 * ALIGN);
         let index = read_head_index(&kept, blocks).unwrap();
         assert_eq!(
@@ -1320,7 +1320,7 @@ mod tests {
         }
         // A kept head of another count of blocks, or naming a block it does not keep, is refused.
         let short = file(&dir, "short", 0);
-        save_head(&short, NonNull::new(head).unwrap(), 2 * HEAD_BLOCK).unwrap();
+        save_head(&short, NonNull::new(head).unwrap(), 2 * HEAD_BLOCK, None).unwrap();
         assert!(
             read_head_index(&short, blocks)
                 .unwrap_err()
