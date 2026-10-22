@@ -1147,7 +1147,7 @@ dependencies = [
 
 [[package]]
 name = "shards"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "aws-lc-rs",
  "base64",
