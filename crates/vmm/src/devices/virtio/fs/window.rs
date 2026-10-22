@@ -188,8 +188,16 @@ fn file_range(
     unsafe { crate::platform::map_file_range(file, foffset, len, at, writable) }
 }
 
+// How many times this thread has looked at a file's size ([`size_of`]), for the tests.
+#[cfg(test)]
+thread_local! {
+    static SIZES_LOOKED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 /// The size of the file `fd` holds open.
 fn size_of(fd: &OwnedFd) -> Option<u64> {
+    #[cfg(test)]
+    SIZES_LOOKED.set(SIZES_LOOKED.get() + 1);
     // SAFETY: a zeroed stat is a valid out-parameter.
     let mut st: libc::stat = unsafe { std::mem::zeroed() };
     // SAFETY: fstat(2) of a descriptor held open, into `st`.
@@ -218,6 +226,21 @@ fn file_end(size: u64, foffset: u64, len: u64, page: u64) -> u64 {
         .checked_next_multiple_of(page)
         .unwrap_or(u64::MAX)
         .min(len)
+}
+
+/// Each node's file's size, looked at once in a pass over a window's ranges: a file mapped
+/// in many ranges costs one fstat(2), not one a range, as each request about it is
+/// answered (PM M299: a FUSE_WRITE into a file mapped in 1,024 ranges took 1,024).
+#[derive(Default)]
+struct Sizes(BTreeMap<u64, Option<u64>>);
+
+impl Sizes {
+    fn of(&mut self, e: &Entry) -> Option<u64> {
+        *self
+            .0
+            .entry(e.mapped.node)
+            .or_insert_with(|| e.file.as_ref().and_then(size_of))
+    }
 }
 
 /// Whether any range maps node `node`.
@@ -501,11 +524,11 @@ impl Window {
         }
     }
 
-    /// Makes `e`'s range, at window offset `at`, what its file is now: its pages to the one
-    /// that holds its end, where it has grown since, and zeros past that, where it was cut
-    /// short. Whether it changed.
-    fn follow(&self, at: u64, e: &mut Entry, page: u64) -> bool {
-        let Some(size) = e.file.as_ref().and_then(size_of) else {
+    /// Makes `e`'s range, at window offset `at`, what its file is now, `size` bytes (none
+    /// where it could not be looked at): its pages to the one that holds its end, where it
+    /// has grown since, and zeros past that, where it was cut short. Whether it changed.
+    fn follow(&self, at: u64, e: &mut Entry, page: u64, size: Option<u64>) -> bool {
+        let Some(size) = size else {
             return false;
         };
         let file_to = file_end(size, e.mapped.foffset, e.mapped.len, page);
@@ -576,10 +599,11 @@ impl Window {
         }
         let mut nodes = nodes.to_vec();
         nodes.sort_unstable();
-        let mut changed = false;
+        let (mut changed, mut sizes) = (false, Sizes::default());
         for (&at, e) in mapped.iter_mut() {
             if nodes.binary_search(&e.mapped.node).is_ok() {
-                changed |= self.follow(at, e, page);
+                let size = sizes.of(e);
+                changed |= self.follow(at, e, page, size);
             }
         }
         if changed {
@@ -607,14 +631,15 @@ impl Window {
             return false;
         };
         let mut mapped = self.lock();
-        let (mut held, mut changed) = (false, false);
+        let (mut held, mut changed, mut sizes) = (false, false, Sizes::default());
         for (&at, e) in mapped.iter_mut() {
             let start = self.gpa.saturating_add(at);
             if gpa.is_some_and(|g| g < start || g >= start.saturating_add(e.mapped.len)) {
                 continue;
             }
             held = true;
-            changed |= self.follow(at, e, page);
+            let size = sizes.of(e);
+            changed |= self.follow(at, e, page, size);
         }
         drop(mapped);
         if changed {
@@ -763,6 +788,27 @@ mod tests {
         assert!(w.mappings().is_empty());
         assert_eq!(watched.0.lock().unwrap().last(), Some(&(false, 8, 0)));
         assert_eq!(w.unmap(15 * MIB, 2 * MIB), Err(libc::EINVAL));
+    }
+
+    /// A file mapped in every range of a window is looked at once as a request about it is
+    /// answered, not once a range: a FUSE_WRITE into a file mapped in 1,024 ranges took
+    /// 1,024 fstat(2)s, 393 µs where 76 was its own (PM M299).
+    #[test]
+    fn a_file_mapped_in_many_ranges_is_looked_at_once() {
+        let dir = shards_testdir::TempDir::new("dax-sizes").unwrap();
+        let path = dir.join("file");
+        std::fs::write(&path, vec![1u8; (16 * MIB) as usize]).unwrap();
+        let file = std::fs::File::open(&path).unwrap();
+        let w = window(&Arc::new(Told::default()));
+        for range in 0..8 {
+            let fd = OwnedFd::from(file.try_clone().unwrap());
+            w.map(fd, 7, range * 2 * MIB, range * 2 * MIB, 2 * MIB, false)
+                .unwrap();
+        }
+        assert_eq!(w.mappings().len(), 8);
+        let before = SIZES_LOOKED.get();
+        w.reconcile(&[7]);
+        assert_eq!(SIZES_LOOKED.get() - before, 1);
     }
 
     /// A range past its file's end holds the file's pages to the one that holds its end,

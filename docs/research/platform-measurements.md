@@ -11721,3 +11721,59 @@ revision before comparing a changed API/implementation.
   the writes of each range it has not mapped to write, with the count from these costs;
   and the window's page structures, a 64th of it, kept out of the guest's memory as the
   layer's are in its head (D190), before any window is given by default.
+- **Correction (M299).** The window's costs above were not its mappings': with each reply
+  the device followed the files it told of, and looked at a file's size once for each
+  range it mapped of it, so that the guest's every request about a file mapped in many
+  ranges took as many fstat(2)s. Looked at once a request, the window's writes cost less
+  than FUSE_WRITEs at p50 throughout; the Reading and the Consequence above stand for
+  that build alone.
+
+### M299. A DAX window's writes once each file it maps is looked at once a request (D189, item 5)
+
+- **Question.** M298 put a window write's cost in its range's mapping, and a patch of the
+  guest's FUSE was to write through FUSE_WRITEs until a range's writes repaid it (as a
+  rental is bought once its rent reaches its price). Tried, its pass of 4 KiB writes into a
+  2 GiB file whose ranges a read had mapped found each FUSE_WRITE there taking 393 µs at
+  p50, where one through no window took 58. Why?
+- **Method.** The host alone first (`dax-window-writes/mapped_pwrite.py`): the server's
+  pwrite(2) of 4 KiB at random into a 2 GiB file, with nothing else mapping it and with a
+  read-only shared mapping of it holding each 2 MiB range's first page, 5,000 writes, 5
+  rounds, Fedora's Btrfs. Then the device's code: each reply the server gives has the
+  window follow the files it tells of first (`Window::reconcile`, the request's own file
+  among them), and `follow` looked at a file's size once for each range it mapped of it.
+  Fixed to once a pass (`window::Sizes`), M298's passes and the size sweep's again with it
+  (a release build of the working tree, 2026-10-22, Fedora as M298's, its load 1.4 to
+  2.3): on the pinned kernel, then on one with the patch
+  (`fuse-writes-until-mapped.patch`), its costs given by the daemon
+  (`daemon-costs.patch`: M298's, a range's mapping 170.5 µs, a FUSE_WRITE 25.9 µs and
+  1.375 µs a KiB more than stores).
+- **Results.** The host's pwrite: 1.0 µs at p50 either way. With the device fixed, µs a
+  write at p50 (p99), the p50 of 5 rounds:
+
+  | pass | no window, warm | window, warm | no window, cold | window, cold | window, warm, with the patch |
+  |---|---|---|---|---|---|
+  | 4 KiB over 2 GiB | 44.6 (164.9) | 30.6 (225.0) | 46.3 (206.1) | 38.0 (1,483.1) | 46.5 |
+  | the same, mapped first | 40.3 (74.8) | 30.2 (125.9) | 45.5 (73.8) | 31.0 (97.5) | 57.4 |
+  | 4 KiB over 64 MiB, mapped first | 44.4 (119.4) | 23.4 (65.5) | 46.4 (186.6) | 22.7 (84.5) | 29.5 |
+  | 64 KiB over 2 GiB, mapped first | 84.5 (227.5) | 76.2 (205.4) | 88.4 (214.1) | 64.0 (187.2) | 96.0 |
+  | 64 KiB over 64 MiB, mapped first | 83.8 | 30.8 | 85.7 | 25.5 | 25.7 |
+  | 256 KiB over 64 MiB, mapped first | 199.3 | 34.0 | 207.7 | 37.6 | 33.1 |
+  | 1 MiB over 64 MiB, mapped first | 855.3 | 73.8 | 812.9 | 82.1 | 86.6 |
+  | 1 MiB over 2 GiB, not mapped | 923.3 | 630.4 | 897.6 | 1,588.7 | 624.6 |
+
+- **Reading.** A file of 1,024 mapped ranges took 1,024 fstat(2)s at each request about it,
+  and the guest's requests about a file it writes through the window, as its writes go,
+  paid them: what M298 took for a range's mapping. Looked at once a request, a write
+  through the window costs less than a FUSE_WRITE at p50 in every pass, and up to 11.6
+  times less (1 MiB close together). Its p99 is worse where a range is first mapped (4 KiB
+  scattered, warm: 225 against 165) and, cold, where its store meets a page the host does
+  not hold and waits for it to be read (1,483 against 206), as M283 found on the host; 1
+  MiB into ranges not yet mapped over a cold file is the one pass whose p50 the window
+  loses (1,589 against 898). The patch sends writes away from a window now the quicker:
+  worse at p50 in five passes of the eight (4 KiB scattered 46.5 against 30.6), better in
+  none past its rounds' spread.
+- **Consequence.** D189: each file's size is looked at once a request (the fix, held by
+  `a_file_mapped_in_many_ranges_is_looked_at_once`); the patch is not taken. Before a
+  window is given by default: a whole page the host does not hold written as a FUSE_WRITE,
+  and the window's page structures out of the guest's memory. The Mac's passes are to be
+  run again with the fix.

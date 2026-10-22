@@ -1,0 +1,140 @@
+diff --git a/crates/shards/src/daemon.rs b/crates/shards/src/daemon.rs
+index 78e069b7..d2b5e198 100644
+--- a/crates/shards/src/daemon.rs
++++ b/crates/shards/src/daemon.rs
+@@ -79,6 +79,7 @@ mod top;
+ mod update;
+ mod visit;
+ mod volume;
++mod window;
+ use crate::run::{Boot, Prepared};
+ use crate::segments::log_segment;
+ use crate::spec::{LogRetention, NOT_RUN};
+@@ -5877,8 +5878,15 @@ impl<D: Disk> Daemon<D> {
+             }
+             // A slot for each directory it shares (D38), which its run fills.
+             cfg.shares = (0..prepared.shares).map(|_| Arc::default()).collect();
+-            // And each share's DAX window, where the daemon gives one (D189).
++            // And each share's DAX window, where the daemon gives one (D189), with what its
++            // writes cost on this host, which its guest weighs before it maps a range to
++            // write (PM M299).
+             cfg.share_window_mib = self.share_window_mib;
++            if cfg.share_window_mib > 0
++                && let Some(costs) = window::costs()
++            {
++                cfg.cmdline.push_str(&costs.cmdline());
++            }
+             if let Some(bridge) = &bridge {
+                 cfg.cmdline.push(' ');
+                 cfg.cmdline.push_str(&bridge.cmdline());
+diff --git a/crates/shards/src/daemon/window.rs b/crates/shards/src/daemon/window.rs
+new file mode 100644
+index 00000000..fb4a90c6
+--- /dev/null
++++ b/crates/shards/src/daemon/window.rs
+@@ -0,0 +1,105 @@
++//! What a write through a volume's DAX window costs on this host (D189, PM M298, M299), as
++//! the guest's FUSE weighs it before it maps a range of the window to write (the guest
++//! kernel's patch 0008, fs/fuse/dax.c `fuse_dax_write_through`): a range's writes go as
++//! FUSE_WRITEs until what they would have cost less through a mapping reaches what its
++//! mapping costs, and the range is mapped then.
++
++/// The costs, in ns: a range's mapping for writing, and what a FUSE_WRITE costs more than
++/// stores through a mapping, each write and each KiB it writes.
++#[derive(Debug, PartialEq, Eq)]
++pub(super) struct Costs {
++    map_ns: u32,
++    write_ns: u32,
++    write_ns_per_kib: u32,
++}
++
++impl Costs {
++    /// The guest kernel's parameters that say them (patch 0008's module parameters).
++    pub(super) fn cmdline(&self) -> String {
++        format!(
++            " fuse.dax_map_ns={} fuse.dax_write_ns={} fuse.dax_write_ns_per_kib={}",
++            self.map_ns, self.write_ns, self.write_ns_per_kib
++        )
++    }
++}
++
++/// One host's measurements, µs a write at p50 with the host holding the file's pages
++/// (dax-window-writes/measure.py): through a window, a 4 KiB write into a range a read
++/// mapped first, which its first write maps again to write, and writes close together of
++/// 4 KiB, 256 KiB and 1 MiB, their ranges long mapped; and those as FUSE_WRITEs.
++struct Measured {
++    first_4k: f64,
++    window: [f64; 3],
++    fuse: [f64; 3],
++}
++
++impl Measured {
++    /// A range's mapping: its first write less a write once it is mapped. What a FUSE_WRITE
++    /// costs more for each KiB: its slope from 256 KiB to 1 MiB; for each write, what it
++    /// costs more at 4 KiB less its 4 KiB's.
++    fn costs(&self) -> Costs {
++        let more = |i: usize| self.fuse[i] - self.window[i];
++        let per_kib = (more(2) - more(1)) / (1024.0 - 256.0);
++        let ns = |us: f64| (us * 1000.0).round() as u32;
++        Costs {
++            map_ns: ns(self.first_4k - self.window[0]),
++            write_ns: ns(more(0) - 4.0 * per_kib),
++            write_ns_per_kib: ns(per_kib),
++        }
++    }
++}
++
++/// Fedora's: Linux 6.19 KVM, Btrfs, Intel Core i9-14900HX (PM M298, M299).
++const KVM: Measured = Measured {
++    first_4k: 217.5,
++    window: [47.0, 56.1, 115.0],
++    fuse: [78.4, 334.8, 1449.8],
++};
++
++/// The costs this host's windows are weighed by: Linux's KVM, as Fedora measured them.
++pub(super) fn costs() -> Option<Costs> {
++    cfg!(target_os = "linux").then(|| KVM.costs())
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    /// The costs a guest is given are its host's measurements: on KVM a range's mapping
++    /// 170.5 µs, a FUSE_WRITE 25.9 µs more a write and 1.375 µs more a KiB.
++    #[test]
++    fn a_hosts_costs_are_its_measurements() {
++        assert_eq!(
++            KVM.costs(),
++            Costs {
++                map_ns: 170_500,
++                write_ns: 25_899,
++                write_ns_per_kib: 1_375
++            }
++        );
++    }
++
++    /// What the guest's rule makes of them on KVM: a range's 4 KiB writes are FUSE_WRITEs
++    /// until the sixth, its 64 KiB ones until the second, and a write of 256 KiB or more
++    /// maps it at once (fs/fuse/dax.c, patch 0008: what the writes would have cost less,
++    /// this one's with them, against the mapping).
++    #[test]
++    fn a_ranges_writes_map_it_once_they_would_repay_it() {
++        let c = KVM.costs();
++        let through = |kib: u32| {
++            let mut owed = 0u64;
++            (0..)
++                .take_while(|_| {
++                    let more = u64::from(c.write_ns) + u64::from(c.write_ns_per_kib) * u64::from(kib);
++                    let mapped = owed + more >= u64::from(c.map_ns);
++                    owed += more;
++                    !mapped
++                })
++                .count()
++        };
++        assert_eq!(
++            [through(4), through(64), through(256), through(1024)],
++            [5, 1, 0, 0]
++        );
++    }
++}

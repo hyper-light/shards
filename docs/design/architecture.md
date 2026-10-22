@@ -5766,6 +5766,17 @@ stores.
   again from its new share process, as the run gives the share its server, once that
   server has the tables the guest's node IDs are in, and before the guest runs; a range
   whose file that server no longer reaches is zeros, as past a file's end.
+- **Each file's size looked at once a request** (PM M299). Each reply of the server's has
+  the window follow the files it tells of first (`Window::reconcile`), the request's own
+  among them; it looked at a file's size once for each range it mapped of it, so a request
+  about a file mapped in 1,024 ranges took 1,024 fstat(2)s, and every write through such a
+  file's window paid for the guest's requests about it: on Fedora a 4 KiB write took 288
+  µs where a FUSE_WRITE took 86. Each file is now looked at once a pass (`window::Sizes`),
+  and a write through the window costs less than a FUSE_WRITE at p50 in every case
+  measured: 4 KiB at random over 2 GiB 30.6 µs against 44.6, close together 23.4 against
+  44.4, 1 MiB close together 74 against 855. Held by
+  `a_file_mapped_in_many_ranges_is_looked_at_once` (mutation-checked: 8 looks for 8
+  ranges).
 
 **Measured (PM M269).** What a window costs a guest as it boots: its page structures, which
 Linux makes of it as it probes the device (virtio_fs_setup_dax, devm_memremap_pages of
@@ -5788,13 +5799,17 @@ template pays it once; what its restores pay is to be measured with mappings.
   Btrfs, PM M283), and M276's host, short of memory, held few of its file's pages.
   Reading each range ahead as it is mapped doubles the rate of a writer that writes a
   range about 20 times and halves that of one that writes it once, so it is not done.
-  Measured in the guest (PM M298), a window's write costs its 2 MiB range's mapping for
-  writing, about 170 µs on Fedora and 250 on the Mac, a read's mapping being to read alone:
-  writes scattered a few to a range run at a quarter to a third of FUSE's rate, and writes
-  close together, once their range is mapped, at 1.5 to 1.7 times it. So a write the
-  window takes should be a FUSE_WRITE until its range has had as many as repay the mapping
-  (some 6 on Fedora, 9 on the Mac): a patch of the guest's FUSE (fs/fuse/dax.c). Windows
-  stay asked for, none by default, until that is built and measured, and until a window
+  In the guest (PM M298, M299), what M276 and M298 took for a range's mapping was the
+  device's own following of each file it maps, a look at its size for each range of it, as
+  each request about it was answered: looked at once a request, a write through the window
+  costs less than a FUSE_WRITE at p50 in every case measured (above). What stays is the
+  page its host does not hold: a store there waits for the host to read it, which a
+  FUSE_WRITE of the whole page does not, so a cold file's scattered writes have the worse
+  tail (4 KiB, p99 1,483 µs against 206) and 1 MiB writes into ranges not yet mapped the
+  worse middle (1,589 against 898 at p50). A guest's FUSE weighing each range's writes
+  against its mapping (`dax-window-writes/fuse-writes-until-mapped.patch`, M299) was
+  measured and not taken: its rationale was that cost. Windows stay asked for, none by
+  default, until a whole page a host does not hold is written as a FUSE_WRITE, and a window
   that holds a working set costs its guest less than its 64th at boot.
 
 ### D194. The registries Docker's daemon configuration names: an insecure one asked in plain HTTP too, Docker Hub's mirrors first (built)
