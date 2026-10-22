@@ -1521,6 +1521,73 @@ mod tests {
         assert_eq!(get().as_deref(), Some("Bearer second"));
     }
 
+    /// A credential helper, `docker-credential-NAME` in `dir` running `script`, which a config
+    /// there names the registry's store: found for the registry, asked as a pull asks it.
+    #[cfg(unix)]
+    fn helper(dir: &std::path::Path, name: &str, script: &str) -> Found {
+        use std::io::Write as _;
+        // Written by a child, as credentials.rs's tests write theirs: an exec of a file this
+        // process holds open to write fails (ETXTBSY, Linux).
+        let path = dir.join(format!("docker-credential-{name}"));
+        let mut writer = std::process::Command::new("/bin/sh")
+            .arg("-c")
+            .arg(r#"cat > "$0" && chmod 755 "$0""#)
+            .arg(&path)
+            .stdin(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        writer.stdin.take().unwrap().write_all(script.as_bytes()).unwrap();
+        assert!(writer.wait().unwrap().success());
+        std::fs::write(dir.join("config.json"), format!(r#"{{"credsStore":"{name}"}}"#)).unwrap();
+        let vars = HashMap::from([
+            ("DOCKER_CONFIG".to_string(), dir.to_string_lossy().into_owned()),
+            ("PATH".to_string(), format!("{}:/bin:/usr/bin", dir.display())),
+        ]);
+        let env = |k: &str| vars.get(k).cloned();
+        let (found, _) = crate::credentials::find("127.0.0.1:5000", &env, None).unwrap();
+        assert!(matches!(found, Found::Asked(_)), "{found:?}");
+        found
+    }
+
+    /// No anonymous fallback (D184): a Bearer challenge of the registry's own, its helper
+    /// still to answer, waits for the helper, as a user may be answering its prompt, and asks
+    /// for its token with what the user configured, never anonymously in its place.
+    #[cfg(unix)]
+    #[test]
+    fn a_bearer_challenge_waits_for_the_helper_the_user_configured() {
+        let dir = shards_testdir::TempDir::new("auth-late").unwrap();
+        let release = dir.join("release");
+        let found = helper(
+            &dir,
+            "late",
+            &format!(
+                "#!/bin/sh\nwhile [ ! -e '{}' ]; do /bin/sleep 0.01; done\necho '{{\"ServerURL\":\"127.0.0.1:5000\",\"Username\":\"u\",\"Secret\":\"s\"}}'\n",
+                release.display()
+            ),
+        );
+        let tokens = token_server(&[r#"{"access_token":"theirs"}"#]);
+        let challenge = format!(
+            r#"Bearer realm="http://127.0.0.1:{}/token",service="svc""#,
+            tokens.port
+        );
+        let auth = Authorizer::new(&registry(), found);
+        std::thread::scope(|s| {
+            let challenged = s.spawn(|| auth.challenged(&registry(), &refusal(&plain(), &challenge), false));
+            // Still waiting on the helper: the challenge is not answered without it.
+            std::thread::sleep(Duration::from_millis(300));
+            assert!(!challenged.is_finished(), "answered without the helper's answer");
+            std::fs::write(&release, "").unwrap();
+            assert!(challenged.join().unwrap().unwrap());
+        });
+        let value = auth.authorization(&plain(), &registry(), &pull("a/b")).unwrap();
+        assert_eq!(value.as_deref(), Some("Bearer theirs"));
+        let requests = tokens.requests();
+        assert_eq!(requests.len(), 1, "no anonymous token asked for first");
+        // With a secret, an OAuth2 POST whose body carries it.
+        assert!(requests[0].starts_with("POST /token"), "{}", requests[0]);
+        assert!(requests[0].contains("password=s"), "{}", requests[0]);
+    }
+
     #[test]
     fn credentials_never_show_their_secrets() {
         let shown = format!(
