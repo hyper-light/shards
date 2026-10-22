@@ -11319,8 +11319,16 @@ revision before comparing a changed API/implementation.
   seen on the CPU it ran on; but the request to the command executing takes half as long
   again on 4 CPUs and twice as long on 16, all of a start's work on one vCPU of a host
   whose CPUs are busy (and the confinement's own writes on that path). So it is not taken.
+- **Nor does a cgroup migration without a grace period** (`cpu-elastic/favordynmods.patch`:
+  cgroup2 mounted `favordynmods`, so that the command's move into its cgroup takes
+  `cgroup_threadgroup_rwsem` without an RCU grace period of every CPU's, cgroup-v2.rst;
+  e2160f7f with it against 0aa00196, phases.py, n 50 a side, the host's load 2 to 5). The
+  start's p50, ms, then the wall's: 4 CPUs with 4 busy loops 19.77 against 18.88 (38.32,
+  38.67); 16 P-cores with 16, 25.91 against 29.61 (42.33, 45.89); 4 CPUs idle, 4.96 against
+  4.87. No change: the command's migration is not what a start waits on.
 - **Consequence.** b96501d3's reason is withdrawn: its 240 s timeout stays for a slow,
   contended runner, not for a regression. A start on a contended host is an open
   regression of D191 slice 1, its tail's first item: the guest's start of a run's command,
-  not its VM's restore; where in that start a microVM of many vCPUs waits is to be
-  measured, not moved.
+  not its VM's restore. Two mechanisms are ruled out above; next, markers through init's
+  start of a run, a microVM of one CPU against one of four on the same contended host, to
+  find the step that grows before anything is moved.
