@@ -64,6 +64,8 @@ fn boots_to_root_mount_without_a_root_device() {
 /// boots, where they took a 64th of the window, 64 MiB. Free memory is MemFree and the
 /// pages its CPUs' free lists hold, which held up to 16 MiB as a boot began (M300); each
 /// the most of three boots.
+// Shared directories, and so DAX windows, are Unix hosts' alone.
+#[cfg(unix)]
 #[test]
 fn a_dax_windows_page_structures_take_none_of_its_guests_memory() {
     if cannot_run_vms() {
