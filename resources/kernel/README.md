@@ -82,6 +82,17 @@ shards builds its own guest kernel. Firecracker's CI kernel lacks EROFS, which i
     never map (PM M306). The window's pagemap leaves them to FUSE's DAX
     (`PGMAP_LAZY_MEMMAP`), which makes each 2 MiB range's as it first sets the range up,
     before any page of it is mapped (D189).
+  - `0012`: a pagemap whose pages' structures lie in its own memory made the structures
+    of that memory's pages too, a 4,096th of the device, each its own, so a snapshot keeps
+    every one: 18 MiB of a 64 GiB window's head, written as its guest boots and kept by
+    each template of it (PM M306). Where the pagemap's owner makes its pages' structures
+    (`PGMAP_LAZY_MEMMAP`), those are left unmade: they are its metadata, which no pfn of it
+    hands out and nothing reads (D189).
+  - `0013`: FUSE's DAX made a mapping of 128 bytes for each 2 MiB range of a window as the
+    file system was mounted, and freed them all as it was unmounted: a window as long as
+    its host's memory cost its guest 64 KiB of memory a GiB, and each mount their making
+    (PM M306). Each range's is made as the range is first wanted, in the window's order
+    (D189).
 - **The toolchain:** `builder.env` pins a Debian image by its multi-architecture index
   digest, and installs its compiler, linker and tools from Debian's snapshot archive at a
   fixed time. So every build of the same inputs gets the same toolchain, and a new
