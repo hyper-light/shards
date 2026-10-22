@@ -5776,6 +5776,53 @@ template pays it once; what its restores pay is to be measured with mappings.
   window reach its server as FUSE_WRITEs, measured in the guest, and a window that holds a
   working set costs its guest less than its 64th at boot.
 
+### D192. A network's egress: its members' own commands reach the destinations it names, and nothing else (built)
+
+**Found** (kiln's harnesses, 2026-10-21). A run's own command had three reaches past its
+microVM: none (`--network none`, and every network by default), its network's own members,
+or everything (`--network host`, D124). An Agentfile's egress and remote MCP grants are its
+agents' (D59), never the command's (D115). So a sandboxed run could not be granted
+"api.anthropic.com on 443, and its name": the one thing an agent harness needs, and
+`--network host` gave it all of the host's reach instead.
+
+**Decided.**
+- **Where a grant lives: on a network**, as shards' own driver option `shards.egress`
+  (`networks::EGRESS`): `docker network create --opt shards.egress=HOST:PORT[,...]`, which
+  the Docker CLI, a Compose file's `driver_opts` and the Engine API's NetworkCreate all
+  say, so no flag of `docker run`'s is added (its flags stay docker/cli's, held to them by
+  the CLI's golden answers). Who is granted: the network's members, each joined by name;
+  to whom: each destination, a host's name or an IPv4 address; which port: its TCP port;
+  which way: out alone. A network without the option grants nothing past its microVMs,
+  as before: default deny.
+- **Held by the member's network process**, as a remote MCP server's grant is (D59 part
+  seven): its policy the destinations alone (`encode_policy`, no ports, the names), a flow
+  passed only to an address its own resolver answered for a destination's name, or the
+  address a destination is, on that destination's port; and of names, only the
+  destinations' asked of the host's resolver (`SHARDS_DNS` or its own), every other
+  question REFUSED. A member asks through the network's relay at 127.0.0.11 (D46), which
+  asks the gateway, where the network process answers its members' names and the granted
+  ones.
+- **Refused where it could not be held.** A destination that is no `HOST:PORT` (a port of 1
+  to 65535; a host a name of DNS's letters, digits and hyphens, or an IPv4 address; no
+  pattern, no IPv6 address yet), said as the network is made; on a driver but bridge, or
+  an internal network, whose members reach nothing past their microVMs; and, as a run
+  starts, beside its image's agents' grants past the microVM: its network process holds
+  those for the whole microVM, and its command's flows and its agents' come to it alike,
+  so the command would reach what the agents were granted (D115).
+- **Tested** (containers.rs `a_networks_egress_is_a_grant_of_its_destinations_alone`, on
+  real microVMs): a member reaches its destination by name; not another port of the same
+  host, not a name the destinations do not name though the host's resolver has it, not
+  the destination's address in a microVM that never asked its name; a run of the default
+  bridge reaches none of it; and the option's refusals as the network is made. build.rs
+  `a_remote_mcp_server_is_a_grant_of_that_server_alone`: beside an image's agents' grants,
+  the start is refused. networks' `egress_names_each_destination_and_its_port` holds the
+  option's reading.
+
+**Next.** IPv6 destinations (the network process learns A records alone); a destination
+on a network whose members' images have agents with grants of their own, held apart by
+the address its flows come from; a run's own grant on the default bridge, if one is
+asked for beside a network's.
+
 ### D191. A run's microVM has every CPU of its host, its workload the CPUs its limits give it (slices 1 and 2 built)
 
 The user's plan, item 3 (2026-10-18): a run's `--cpus` as elastic as its memory (D148),

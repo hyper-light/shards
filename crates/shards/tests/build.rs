@@ -10387,6 +10387,21 @@ fn a_remote_mcp_server_is_a_grant_of_that_server_alone() {
             ran.stderr
         );
     }
+    // A network's own egress (D192) beside the image's agents' grants: refused as the run
+    // starts, as its network process could not tell the run's command's flows from its
+    // agents', whose grants the command would then reach.
+    let option = format!("shards.egress=api.example:{other}");
+    let made = shards(&["network", "create", "--opt", &option, "mcp-out"]);
+    assert_eq!(made.status, Some(0), "{}", made.stderr);
+    let beside = shards(&["run", "--rm", "--network", "mcp-out", "mcp:1", "true"]);
+    assert_ne!(beside.status, Some(0), "{}{}", beside.stdout, beside.stderr);
+    assert!(
+        beside.stderr.contains(
+            "network mcp-out: --opt shards.egress beside its image's agents' grants past the microVM"
+        ),
+        "{}",
+        beside.stderr
+    );
 }
 
 /// `SKILL --from=<agent>` takes, at build time, a skill the agent's OSI config lists into

@@ -126,7 +126,10 @@ registry's catalog), disk use, version and system information. Disk use counts t
 microVMs that make starts fast, too. Copies are packed and unpacked inside the microVM, and
 land where its program will find them: in its volumes, running or stopped, and its tmpfs
 mounts while it runs. A network's microVMs reach each other by name and nothing else through
-it. Stats add what the microVM itself costs your machine (`microvm`: its memory and CPU
+it. A network can let them reach chosen hosts outside, and only those: made with `--opt
+shards.egress=api.anthropic.com:443,github.com:443`, its microVMs reach each host on its
+port, look up those names and no others, and reach nothing else past themselves; a
+network made without it lets nothing out. Stats add what the microVM itself costs your machine (`microvm`: its memory and CPU
 time). A setting a microVM can't take is refused with the reason, never dropped.
 
 ### A microVM's own engine

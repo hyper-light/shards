@@ -3136,6 +3136,34 @@ impl<D: Disk> Daemon<D> {
             None => prepared.spec.encode_into(&mut payload),
         }
         let detached = run.detach.then_some(conn);
+        // Its user network's own destinations for its members' commands (D192, the
+        // network's shards.egress): kept apart from an image's agents' grants, whose flows
+        // its network process could not tell from the command's, so refused beside them.
+        let network_egress = match user_net
+            .as_ref()
+            .map(crate::networks::Network::egress)
+            .transpose()
+        {
+            Ok(egress) => egress.unwrap_or_default(),
+            Err(e) => {
+                refuse(&format!(
+                    "network {}: --opt {}: {e}",
+                    run.network,
+                    crate::networks::EGRESS
+                ));
+                abandon(&id);
+                return None;
+            }
+        };
+        if !network_egress.is_empty() && grants.is_some() {
+            refuse(&format!(
+                "network {}: --opt {} beside its image's agents' grants past the microVM: their flows and its command's are not held apart yet",
+                run.network,
+                crate::networks::EGRESS
+            ));
+            abandon(&id);
+            return None;
+        }
         // An Agentfile's egress grants and remote MCP servers (D59), as the daemon read
         // them from the image's own normalized Agentfile, checked against its digest
         // (D109), never from its labels: its VM's network process's policy.
@@ -3145,6 +3173,12 @@ impl<D: Disk> Daemon<D> {
             None if start == network::Start::Attach(network::Net::Host) => {
                 Some(shards_net::HOST_POLICY.to_vec())
             }
+            // Its network's destinations alone, by name, and of names only theirs.
+            None if !network_egress.is_empty() => Some(shards_net::encode_policy(
+                &shards_net::Ports::default(),
+                &network_egress,
+                false,
+            )),
             None => None,
             Some(g) => {
                 let ports = if g.egress.is_empty() {

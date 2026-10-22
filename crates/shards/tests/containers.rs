@@ -2915,6 +2915,137 @@ fn an_endpoints_sysctls_are_its_interfaces() {
 /// one no interface can have fails the start in libnetwork's words; on `none` it is taken,
 /// and no interface has it. A published port reaches a run past its change, and two given
 /// one MAC on a network reach one another, as on Docker's bridge they would not.
+/// A network's egress is a grant of its destinations alone (D192, its `shards.egress`;
+/// networks are default deny): its member's own command reaches each destination it names,
+/// by name, at the addresses that name resolved to through the member's network process,
+/// and nothing else: not another port of the same host, not a name the destinations do not
+/// name, not the host's address unasked; a run of the default bridge reaches none of it.
+/// The option is refused where it names no destination, or where nothing could reach one.
+#[test]
+fn a_networks_egress_is_a_grant_of_its_destinations_alone() {
+    use std::io::Write as _;
+    if cannot_run_vms() {
+        return;
+    }
+    // The host's own address on its network, which the guest's flows reach it at.
+    let host = std::net::UdpSocket::bind("0.0.0.0:0")
+        .and_then(|s| s.connect("192.0.2.1:9").map(|()| s))
+        .and_then(|s| s.local_addr());
+    let Ok(std::net::SocketAddr::V4(host)) = host else {
+        eprintln!("SKIP: this host has no IPv4 route to give a guest an address of it");
+        return;
+    };
+    let address = *host.ip();
+    let serve = |hello: &'static str| {
+        let listener = std::net::TcpListener::bind("0.0.0.0:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            for c in listener.incoming().flatten() {
+                let mut c = c;
+                let _ = c.write_all(hello.as_bytes());
+            }
+        });
+        port
+    };
+    let (granted, other) = (serve("granted"), serve("other"));
+    // The host's resolver, as the daemon is told to ask (SHARDS_DNS): api.example and
+    // also.example are this host, so that a name refused is shards' refusal, not the
+    // resolver's.
+    let resolver = std::net::UdpSocket::bind("0.0.0.0:0").unwrap();
+    let resolver_at = format!("{address}:{}", resolver.local_addr().unwrap().port());
+    std::thread::spawn(move || {
+        let mut q = [0u8; 512];
+        while let Ok((n, from)) = resolver.recv_from(&mut q) {
+            let q = &q[..n];
+            let mut at = 12;
+            let mut name = Vec::new();
+            while at < q.len() && q[at] != 0 {
+                let len = usize::from(q[at]);
+                name.push(String::from_utf8_lossy(&q[at + 1..at + 1 + len]).to_lowercase());
+                at += 1 + len;
+            }
+            let a = q.get(at + 1..at + 3) == Some(&[0, 1]);
+            let count = u8::from(a && matches!(name.join(".").as_str(), "api.example" | "also.example"));
+            let mut r = q[..2].to_vec();
+            r.extend_from_slice(&[0x81, 0x80, 0, 1, 0, count, 0, 0, 0, 0]);
+            r.extend_from_slice(&q[12..at + 5]);
+            if count == 1 {
+                r.extend_from_slice(&[0xc0, 0x0c, 0, 1, 0, 1, 0, 0, 0, 60, 0, 4]);
+                r.extend_from_slice(&address.octets());
+            }
+            let _ = resolver.send_to(&r, from);
+        }
+    });
+    let (image, _) = served();
+    let home = TempDir::new("containers-egress");
+    let (kernel, init) = (kernel(), guest_init());
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", kernel.as_os_str()),
+        ("SHARDS_INIT", init.as_os_str()),
+        ("SHARDS_DNS", OsStr::new(&resolver_at)),
+    ];
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let pulled = shards(&["pull", "-q", &image]);
+    assert_eq!(pulled.status, Some(0), "{pulled}");
+    // Refused as the network is made: a destination of no port, none at all, a pattern,
+    // and an internal network's, whose members reach nothing past their microVMs.
+    for (opt, internal, why) in [
+        (
+            "shards.egress=api.example",
+            false,
+            "--opt shards.egress: api.example: a destination is HOST:PORT",
+        ),
+        (
+            "shards.egress=",
+            false,
+            "--opt shards.egress: an empty destination, where each is HOST:PORT",
+        ),
+        (
+            "shards.egress=*.example:443",
+            false,
+            "--opt shards.egress: *.example:443: *.example is neither a host's name nor an IPv4 address",
+        ),
+        (
+            "shards.egress=api.example:443",
+            true,
+            "--opt shards.egress: an internal network's members reach nothing past their microVMs",
+        ),
+    ] {
+        let mut args = vec!["network", "create", "--opt", opt];
+        if internal {
+            args.push("--internal");
+        }
+        args.push("refused");
+        let made = shards(&args);
+        assert_ne!(made.status, Some(0), "{opt}: {made}");
+        assert!(made.stderr.contains(why), "{opt}: {made}");
+    }
+    let option = format!("shards.egress=api.example:{granted}");
+    let made = shards(&["network", "create", "--opt", &option, "out"]);
+    assert_eq!(made.status, Some(0), "{made}");
+    let run = |network: &str, command: &[&str]| {
+        let mut args = vec!["run", "--rm", "--network", network, image.as_str()];
+        args.extend(command);
+        shards(&args)
+    };
+    // Its destination, by its name.
+    let reached = run("out", &["tcp", &format!("api.example:{granted}")]);
+    assert_eq!(reached.stdout, "tcp 7 granted\n", "{reached}");
+    // Another port of the same host, whose name it may ask.
+    let refused = run("out", &["tcp", &format!("api.example:{other}")]);
+    assert!(refused.stdout.starts_with("tcp error"), "{refused}");
+    // A name its destinations do not name, though the host's resolver has it.
+    let unnamed = run("out", &["resolve", "also.example"]);
+    assert!(unnamed.stdout.starts_with("resolve error"), "{unnamed}");
+    // The destination's address, in a microVM that never asked for its name.
+    let unasked = run("out", &["tcp", &format!("{address}:{granted}")]);
+    assert!(unasked.stdout.starts_with("tcp error"), "{unasked}");
+    // A run of the default bridge, whose network grants nothing past its microVM.
+    let bridged = run("bridge", &["tcp", &format!("{address}:{granted}")]);
+    assert!(bridged.stdout.starts_with("tcp error"), "{bridged}");
+}
+
 #[test]
 fn a_runs_mac_is_its_own() {
     use std::io::{Read as _, Write as _};
