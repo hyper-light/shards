@@ -12067,3 +12067,29 @@ revision before comparing a changed API/implementation.
   no record of a range mapped to be read (held by `a_window_keeps_one_descriptor_of_a_file`,
   mutation-checked: 401 descriptors more for 400 ranges where each range's was kept). Next:
   what puts a round of B2's cold 1 MiB writes some 500 µs above FUSE's.
+
+### M303. A provider's end held behind its ended joiner's layer (D119)
+
+- **Question.** In a full gate on the Mac, containers.rs
+  `a_joiners_layer_is_kept_whole_as_its_provider_ends` found its killed provider's status
+  255 where it is 137; its daemon logged "VM ended before its command did", then the VM
+  "ended with Ok(137)", its own SIGKILL. What held the provider's end?
+- **Method.** The test, its `kill` timed (`Run::elapsed`, printed), 5 runs on the init
+  committed at 16409941 and 5, then 3, on one that says the workload's end at once where an
+  ended joiner's connection is still open (`run.rs`, `outlived`), the Mac (Apple M5 Max,
+  macOS 26.4.1), load 8.8 to 16.7 from other work, 2026-10-22; then the joiner and engine
+  tests of containers.rs, engine.rs and daemon.rs (22) with the change, there and on
+  Fedora.
+- **Results.** 16409941's init: `kill` took 10,025 to 10,187 ms, and the provider's status
+  was 255, every run. With the change: 11.4, 36.6, 122.8, 13.0 and 18.7 ms, then 80.8, 83.7
+  and 35.0 ms, the status 137 and the joiner's layer whole (`diff` of it, `A /big`), every
+  run; the 22 tests pass on both hosts. Earlier in the day, 16409941's init had passed the
+  test 6 runs of 6 in 1.4 to 4.4 s.
+- **Reading.** Init said the workload's end early only where a joiner still ran; a joiner
+  that had ended, its layer being sent or its connection waiting for the host, held the
+  loop, and the end with it, until the layer was sent. `kill` waits 10 s for the end after
+  its SIGKILL, as moby's does (KILL_WAIT), then kills the microVM: where the 256 MiB layer
+  took longer to send than that, as on a host busy with other work, the end and the rest
+  of the layer went with it. Said at once, the end no longer waits on the layer.
+- **Consequence.** D119: a provider's end is said at once where any joiner outlives it,
+  running or ended with its layer still to come.

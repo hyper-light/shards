@@ -10699,7 +10699,11 @@ the boundary is a container's, which is what the mode asks for.
   no layer (`a_joiners_layer_is_kept_whole_as_its_provider_ends`: a provider killed as its
   joiner's 256 MiB layer is sent; mutation-checked: killed with the rest, the layer is
   lost; without the close as well, the provider's run ends only as the daemon ends its
-  microVM, 10 s after the kill). Put back
+  microVM, 10 s after the kill). The provider's end is said at once where any joiner
+  outlives it, running or ended with its layer still to come, not after that layer: held
+  till the layer was sent, its end came after `kill`'s 10 s, whose escalation killed the
+  microVM, the end and the rest of the layer with it (PM M303: 5 runs of 5 on the Mac, the
+  provider's status 255; said at once, `kill` took 11 to 123 ms). Put back
   as it starts again: the VM process appends the layer to the join disk beside its image
   (`join-layer=OFFSET,LEN`), and the joiner's child applies it over its root as ApplyLayer
   does, before it reads its users and before anything is mounted in its root, with its
