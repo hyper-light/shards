@@ -15,7 +15,7 @@ use crate::memory::{FileSpan, GuestMemory};
 #[cfg(hv = "hvf")]
 use crate::devices::virtio::gpu;
 #[cfg(hv)]
-use crate::devices::virtio::{mem, pmem, vsock};
+use crate::devices::virtio::{head, mem, pmem, vsock};
 
 #[cfg(all(hv, target_arch = "aarch64"))]
 mod aarch64;
@@ -78,6 +78,9 @@ pub(crate) struct Hosts<'a> {
     /// The run's writable layer (D190), where the machine has one: a boot's, or a
     /// restore's, its head the snapshot's and its file system the restore's own copy.
     pub layer: Option<&'a Arc<pmem::Layer>>,
+    /// The heads of its DAX windows a snapshot kept (D189), which a restore maps privately;
+    /// none for a boot's, whose are its own memory.
+    pub window_heads: Option<&'a std::fs::File>,
 }
 
 /// A snapshot's vsock and network devices, and the restore's host sides for them, come
@@ -122,6 +125,11 @@ fn check_hosts(snap: &crate::snapshot::Snapshot, hosts: Hosts<'_>) -> Result<(),
                 layer.data_len()
             ));
         }
+        _ => {}
+    }
+    match (has_windows(&snap.config), hosts.window_heads) {
+        (true, None) => return Err("the snapshot has DAX windows: give the restored VM their heads".into()),
+        (false, Some(_)) => return Err("the snapshot has no DAX windows for the restore's heads".into()),
         _ => {}
     }
     match (snap.config.join, hosts.join) {
@@ -448,15 +456,32 @@ fn swap_layout(
     Ok((Some((at, len)), end))
 }
 
-/// Each shared directory's DAX window (D189), its share's first and the join share's last:
-/// `(guest address, length)` of each, at a GiB boundary from `top` on, within `limit`; and
-/// where the last ends. None where `config` gives no window.
+/// Whether `config`'s machine has DAX windows (D189): a length for them, and a shared
+/// directory or a join share to give one.
+#[cfg(hv)]
+pub(crate) fn has_windows(config: &crate::snapshot::MachineConfig) -> bool {
+    config.share_window_mib > 0 && (config.shares > 0 || config.join_share)
+}
+
+/// A shared directory's DAX window's place in its guest (D189), `(guest address, length)`
+/// of each part: its head ([`head::window_head_len`]), at a GiB boundary, a section's start,
+/// and the window right after it.
+#[cfg(hv)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct WindowAt {
+    head: (u64, u64),
+    window: (u64, u64),
+}
+
+/// Each shared directory's DAX window (D189), its share's first and the join share's last,
+/// each at a GiB boundary from `top` on, its head first, within `limit`; and where the last
+/// ends. None where `config` gives no window.
 #[cfg(hv)]
 fn share_windows(
     config: &crate::snapshot::MachineConfig,
     top: u64,
     limit: u64,
-) -> Result<(Vec<(u64, u64)>, u64), String> {
+) -> Result<(Vec<WindowAt>, u64), String> {
     const GIB: u64 = 1 << 30;
     let count = config.shares as usize + usize::from(config.join_share);
     if config.share_window_mib == 0 || count == 0 {
@@ -482,17 +507,60 @@ fn share_windows(
             pmem::ALIGN >> 20
         ));
     }
+    let head = head::window_head_len(len)?;
     let mut windows = Vec::with_capacity(count);
     let mut next = top;
     for _ in 0..count {
         let at = next.checked_next_multiple_of(GIB).ok_or_else(overflow)?;
-        next = at.checked_add(len).ok_or_else(overflow)?;
-        windows.push((at, len));
+        let window = at.checked_add(head).ok_or_else(overflow)?;
+        next = window.checked_add(len).ok_or_else(overflow)?;
+        windows.push(WindowAt {
+            head: (at, head),
+            window: (window, len),
+        });
     }
     if next > limit {
         return Err(overflow());
     }
     Ok((windows, next))
+}
+
+/// The heads of `windows` (D189), one after another in one head: a snapshot's, `kept`,
+/// mapped privately, or a boot's, memory of the VM's own; none where it has no windows.
+#[cfg(hv)]
+fn window_heads(
+    windows: &[WindowAt],
+    kept: Option<&std::fs::File>,
+) -> Result<Option<Arc<head::WindowHeads>>, String> {
+    let Some(first) = windows.first() else {
+        return Ok(None);
+    };
+    let at = |e: String| format!("its DAX windows' heads: {e}");
+    let each = usize::try_from(first.head.1).map_err(|_| at(format!("a head of {} bytes", first.head.1)))?;
+    let len = each
+        .checked_mul(windows.len())
+        .ok_or_else(|| at(format!("{} heads of {each} bytes", windows.len())))?;
+    let head = match kept {
+        Some(kept) => head::Head::restore(kept.try_clone().map_err(|e| at(e.to_string()))?, len),
+        None => head::Head::new(len),
+    }
+    .map_err(at)?;
+    let heads = head::WindowHeads::new(head, windows.iter().map(|w| w.head.0).collect(), each).map_err(at)?;
+    Ok(Some(Arc::new(heads)))
+}
+
+/// Maps the DAX windows' heads into `vm` (D189), writable by the guest, each at its
+/// window's head; the heads are given the hypervisor's stage 2 to be mapped back through
+/// ([`head::WindowHeads::remap`]).
+#[cfg(hv)]
+fn map_window_heads(vm: &crate::hv::Vm, heads: &head::WindowHeads) -> Result<(), String> {
+    for (gpa, host, len) in heads.mappings() {
+        // SAFETY: the heads outlive the VM: the control page holds them, which sits on the
+        // bus, and `Machine` and `Running` drop the bus after the VM.
+        unsafe { vm.map_device_memory(host, gpa, len, true) }.map_err(|e| e.to_string())?;
+    }
+    heads.placed(Box::new(vm.stage2()));
+    Ok(())
 }
 
 /// A share's DAX window (D189) at `(gpa, len)`: its host side reserved, and on KVM one
@@ -556,7 +624,7 @@ fn virtio_devices(
     regions: &[(Arc<pmem::Region>, u64)],
     layer: Option<&Placed>,
     // The shares' alone, which only Unix hosts have, and the VM their windows map into.
-    #[cfg_attr(not(unix), allow(unused_variables))] windows: &[(u64, u64)],
+    #[cfg_attr(not(unix), allow(unused_variables))] windows: &[WindowAt],
     #[cfg_attr(not(unix), allow(unused_variables))] vm: Option<&crate::hv::Vm>,
     hosts: Hosts<'_>,
     last: Vec<Box<dyn crate::devices::virtio::VirtioDevice>>,
@@ -623,7 +691,10 @@ fn virtio_devices(
             .get(i)
             .ok_or("the machine has a shared directory but no slot for it")?
             .clone();
-        let window = windows.get(i).map(|&w| dax_window(vm, w)).transpose()?;
+        let window = windows
+            .get(i)
+            .map(|w| dax_window(vm, w.window).map(|window| (window, w.head)))
+            .transpose()?;
         devices.push(Box::new(
             crate::devices::virtio::fs::Fs::new(&format!("shards{i}"), slot)?
                 .with_limit(hosts.io)
@@ -639,7 +710,7 @@ fn virtio_devices(
             .ok_or("the machine has a join share but no slot for it")?;
         let window = windows
             .get(config.shares as usize)
-            .map(|&w| dax_window(vm, w))
+            .map(|w| dax_window(vm, w.window).map(|window| (window, w.head)))
             .transpose()?;
         devices.push(Box::new(
             crate::devices::virtio::fs::Fs::join(shards_abi::JOIN_SHARE_TAG, slot)?
@@ -1628,6 +1699,8 @@ pub struct Save {
     pub swap: Option<std::fs::File>,
     /// Where its writable layer's head and file system go (D190), where it has one.
     pub layer: Option<(std::fs::File, std::fs::File)>,
+    /// Where its DAX windows' heads go (D189), where it has windows.
+    pub window_heads: Option<std::fs::File>,
     pub then: AfterSnapshot,
 }
 
@@ -1964,6 +2037,7 @@ mod tests {
             join_share: None,
             io: None,
             layer: None,
+            window_heads: None,
         };
         let mac = Some([2, 0, 0, 0, 0, 1]);
         for (has_vsock, has_net) in [(false, false), (true, false), (false, true), (true, true)] {
@@ -2006,15 +2080,16 @@ mod tests {
         );
         config.share_window_mib = 1536;
         let (windows, end) = share_windows(&config, 5 * GIB + 1, u64::MAX).unwrap();
-        assert_eq!(
-            windows,
-            [
-                (6 * GIB, 1536 << 20),
-                (8 * GIB, 1536 << 20),
-                (10 * GIB, 1536 << 20)
-            ]
-        );
-        assert_eq!(end, 10 * GIB + (1536 << 20));
+        // Each window's head at its GiB, a section's start, its 13 sections' page
+        // structures in one section, and the window right after it.
+        let head = head::window_head_len(1536 << 20).unwrap();
+        assert_eq!(head, pmem::SECTION);
+        let at = |gib: u64| WindowAt {
+            head: (gib * GIB, head),
+            window: (gib * GIB + head, 1536 << 20),
+        };
+        assert_eq!(windows, [at(6), at(8), at(10)]);
+        assert_eq!(end, 10 * GIB + head + (1536 << 20));
         assert!(share_windows(&config, 5 * GIB + 1, end - 1).is_err());
         assert!(share_windows(&config, 5 * GIB + 1, end).is_ok());
         config.share_window_mib = 3;
@@ -2086,6 +2161,7 @@ mod tests {
             join_share: None,
             io: None,
             layer: None,
+            window_heads: None,
         };
         let e = virtio_devices(&config, &regions, None, &[], None, hosts, Vec::new(), 4)
             .err()
@@ -2125,6 +2201,7 @@ mod tests {
             join_share: None,
             io: None,
             layer: None,
+            window_heads: None,
         };
         let e = virtio_devices(&config, &regions, None, &[], None, missing, Vec::new(), 5)
             .err()
@@ -2139,6 +2216,7 @@ mod tests {
             join_share: None,
             io: None,
             layer: None,
+            window_heads: None,
         };
         let e = virtio_devices(&config, &regions, None, &[], None, missing, Vec::new(), 5)
             .err()

@@ -5777,6 +5777,24 @@ stores.
   44.4, 1 MiB close together 74 against 855. Held by
   `a_file_mapped_in_many_ranges_is_looked_at_once` (mutation-checked: 8 looks for 8
   ranges).
+- **Each window's page structures in its head, not its guest's memory** (PM M300). Linux
+  describes a window's pages as it probes the device, with page structures (64 bytes for
+  each 4 KiB page) it took from guest RAM: a 64th of the window (M269), from a guest that,
+  given its memory as it needs it (virtio-mem, D133), boots with little. Each window's
+  device now gives a head right before the window, shared memory region 0xfe (`fs::HEAD`):
+  memory of the VM's own, sized so that head and window are whole sections, each
+  section's page structures a 2 MiB block of the head (`head::window_head_len`: one 128
+  MiB section for a window of 1 or 4 GiB), since a part section's would come from guest
+  RAM on x86_64 (vmemmap_populate). The guest's kernel maps head and window as one range
+  whose page structures are the head's, a vmem_altmap, as libnvdimm keeps a pmem
+  namespace's (shards' kernel patch 0008); a kernel without the patch maps the window as
+  before. A snapshot keeps the heads as it keeps a writable layer's (D190): each alike 2
+  MiB block once, beside its memory (`window-heads`, format 25), mapped back after a
+  template's save and privately by each restore. A microVM saved in format 24, as shards
+  0.6.0 saves, restores where it has no windows. On Fedora a 4 GiB window took 63.8 MiB of
+  its guest's free memory and, with its head, none past the spread of its boots, which
+  reached PID 1 20 ms sooner: its page structures go on the host's huge pages, not on a
+  boot's base pages (D29).
 
 **Measured (PM M269).** What a window costs a guest as it boots: its page structures, which
 Linux makes of it as it probes the device (virtio_fs_setup_dax, devm_memremap_pages of
@@ -5809,8 +5827,10 @@ template pays it once; what its restores pay is to be measured with mappings.
   worse middle (1,589 against 898 at p50). A guest's FUSE weighing each range's writes
   against its mapping (`dax-window-writes/fuse-writes-until-mapped.patch`, M299) was
   measured and not taken: its rationale was that cost. Windows stay asked for, none by
-  default, until a whole page a host does not hold is written as a FUSE_WRITE, and a window
-  that holds a working set costs its guest less than its 64th at boot.
+  default, until a whole page a host does not hold is written as a FUSE_WRITE. A window's
+  page structures are its head's (above); arm64's, whose linear map takes a 512th of a
+  window in page tables of its own (M269), is measured with the kernel CI publishes with
+  patch 0008.
 
 ### D194. The registries Docker's daemon configuration names: an insecure one asked in plain HTTP too, Docker Hub's mirrors first (built)
 

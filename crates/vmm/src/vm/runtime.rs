@@ -14,7 +14,7 @@ use crate::devices::control::Control;
 use crate::devices::power::PowerEvent;
 use crate::devices::serial::Serial;
 use crate::devices::virtio::block::Join;
-use crate::devices::virtio::pmem;
+use crate::devices::virtio::{head, pmem};
 use crate::hv;
 use crate::memory::GuestMemory;
 use crate::snapshot::{self, MachineConfig, Snapshot, codec::Writer};
@@ -192,6 +192,13 @@ impl Handle {
                 (None, _) => Ok(()),
                 (Some(layer), Some((head, data))) => layer.save(head, data),
                 (Some(_), None) => Err("its writable layer has nowhere to go".into()),
+            })
+            .and_then(|()| match (self.control.window_heads(), &save.window_heads) {
+                (None, _) => Ok(()),
+                (Some(heads), Some(file)) => heads
+                    .save(file)
+                    .map_err(|e| format!("its DAX windows' heads: {e}")),
+                (Some(_), None) => Err("its DAX windows' heads have nowhere to go".into()),
             });
         if let Err(e) = written {
             // One whose guest lost a mapping taken from it for the save stops.
@@ -626,11 +633,19 @@ fn guest_pages(snap: &snapshot::Snapshot) -> u64 {
         Some(data) => pmem::layer_head(data).map_or(u64::MAX, |(head, _)| head.saturating_add(data)),
         None => u64::MAX,
     };
+    // Its DAX windows' heads (D189).
+    let windows = u64::from(snap.config.shares) + u64::from(snap.config.join_share);
+    let heads = match snap.config.share_window_mib.checked_mul(1 << 20) {
+        _ if !super::has_windows(&snap.config) => 0,
+        Some(len) => head::window_head_len(len).map_or(u64::MAX, |each| each.saturating_mul(windows)),
+        None => u64::MAX,
+    };
     snap.config
         .memory_mib
         .saturating_mul(1 << 20)
         .saturating_add(pmem)
         .saturating_add(layer)
+        .saturating_add(heads)
         .div_ceil(machine::PAGE)
 }
 
@@ -698,6 +713,13 @@ pub fn restore_from(cfg: &RestoreConfig, pinned: snapshot::Pinned) -> Result<(Ha
         }
         None => None,
     };
+    // Its DAX windows' heads (D189), as the snapshot kept them.
+    let window_heads = super::has_windows(&snap.config)
+        .then(|| {
+            platform::open_beneath_input(&generation, &[snapshot::WINDOW_HEADS])
+                .map_err(|e| format!("{}: its DAX windows' heads: {e}", generation.display()))
+        })
+        .transpose()?;
     let machine = machine::restore(
         &snap,
         &memory_file,
@@ -712,6 +734,7 @@ pub fn restore_from(cfg: &RestoreConfig, pinned: snapshot::Pinned) -> Result<(Ha
             join_share: cfg.join_share,
             io: cfg.io_limit,
             layer: layer.as_ref(),
+            window_heads: window_heads.as_ref(),
         },
         working_set.unwrap_or_default(),
     )?;
@@ -1047,12 +1070,11 @@ impl Coordinator {
             Ok(None) => return,
             Err(e) => return failed(format!("snapshot: {e}"), true),
         };
-        let staged = match snapshot::stage(
-            &self.policy.dir,
-            &snap,
-            &self.memory,
-            self.control.layer().map(|l| &**l),
-        ) {
+        let beside = snapshot::Beside {
+            layer: self.control.layer().map(|l| &**l),
+            window_heads: self.control.window_heads().map(|h| &**h),
+        };
+        let staged = match snapshot::stage(&self.policy.dir, &snap, &self.memory, beside) {
             Ok(staged) => staged,
             Err(e) => return failed(format!("snapshot: {e}"), true),
         };
@@ -1094,6 +1116,7 @@ impl Coordinator {
     /// [`pmem::Layer::remap_head`]). One that fails leaves the head the guest's own memory,
     /// and is said; an error is a head its guest cannot be given back.
     fn remap_head(&self, staged: &snapshot::Staged) -> Result<(), String> {
+        self.remap_window_heads(staged)?;
         let (Some(layer), Some(kept)) = (self.control.layer(), staged.layer_head()) else {
             return Ok(());
         };
@@ -1107,6 +1130,27 @@ impl Coordinator {
             ),
             Err(e) if layer.lost() => return Err(format!("its writable layer's head: {e}")),
             Err(e) => warn!("its writable layer's head stays its own memory where not mapped back: {e}"),
+        }
+        Ok(())
+    }
+
+    /// Maps the DAX windows' heads back from the copy the snapshot just kept of them, as
+    /// [`remap_head`](Self::remap_head) does the writable layer's (D189,
+    /// [`WindowHeads::remap`](crate::devices::virtio::head::WindowHeads::remap)).
+    fn remap_window_heads(&self, staged: &snapshot::Staged) -> Result<(), String> {
+        let (Some(heads), Some(kept)) = (self.control.window_heads(), staged.window_heads()) else {
+            return Ok(());
+        };
+        let t0 = crate::log::uptime_us();
+        // SAFETY: every vCPU is parked and the devices quiet since the heads were saved
+        // into `kept`.
+        match unsafe { heads.remap(kept) } {
+            Ok(()) => info!(
+                "its DAX windows' heads mapped back from its snapshot in {} us",
+                crate::log::uptime_us().saturating_sub(t0)
+            ),
+            Err(e) if heads.lost() => return Err(format!("its DAX windows' heads: {e}")),
+            Err(e) => warn!("its DAX windows' heads stay its own memory where not mapped back: {e}"),
         }
         Ok(())
     }

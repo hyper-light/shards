@@ -411,6 +411,7 @@ fn assemble(
     let reach = 1u64.checked_shl(bits).unwrap_or(u64::MAX);
     let (swap_at, top) = super::swap_layout(config, top, reach)?;
     let (windows, top) = super::share_windows(config, top, reach)?;
+    let window_heads = super::window_heads(&windows, hosts.window_heads)?;
     if top > 1 << bits {
         return Err(format!(
             "the guest's memory and devices end at {top:#x}, past the {bits} address bits its CPU has"
@@ -428,6 +429,9 @@ fn assemble(
     }
     if let Some((l, gpa)) = &layer {
         super::map_layer(&vm, l, *gpa)?;
+    }
+    if let Some(heads) = &window_heads {
+        super::map_window_heads(&vm, heads)?;
     }
     let (hotplug, sizes) = super::hotplug_device(&vm, memory, config)?.unzip();
     let reporting = super::reporting_device(&vm, config);
@@ -495,6 +499,9 @@ fn assemble(
     }
     if let Some((l, gpa)) = layer {
         control.on_layer(l, gpa);
+    }
+    if let Some(heads) = window_heads {
+        control.on_window_heads(heads);
     }
     if let Some(sizes) = sizes {
         control.on_hotplug(sizes);
@@ -625,6 +632,7 @@ pub fn build(cfg: &Config) -> Result<Machine, String> {
             join_share: cfg.join_share,
             io: cfg.io_limit,
             layer: layer.as_ref(),
+            window_heads: None,
         };
         let a = assemble(
             &memory,

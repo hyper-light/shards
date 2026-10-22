@@ -13,6 +13,7 @@ use std::ptr::NonNull;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
+use super::head::Head;
 use super::mem::Mapper;
 use super::queue::{Chain, Queue};
 use super::worker::Worker;
@@ -613,33 +614,10 @@ pub struct Layer {
 /// Why a layer's mapping is not there to use: let go of as its machine stopped.
 const RELEASED: &str = "its writable layer was let go of as its machine stopped";
 
-/// A layer's head: memory of the VM's own, or a snapshot's copy of it, mapped privately, as
-/// guest RAM is restored (its writes the restored VM's alone).
-struct Head {
-    host: NonNull<u8>,
-    len: usize,
-    /// The snapshot's copy, where the head was restored from one.
-    _file: Option<File>,
-}
-
-// SAFETY: the head's memory is owned by this value; the guest writes it, through the
-// hypervisor, and this process reads it only for a snapshot, of a paused machine.
-unsafe impl Send for Head {}
-// SAFETY: as above.
-unsafe impl Sync for Head {}
-
-impl Drop for Head {
-    fn drop(&mut self) {
-        // SAFETY: the reservation `Layer` made (a snapshot's file mapped over it); the VM
-        // that mapped it is gone (`Running` drops the VM before the devices).
-        unsafe { platform::release(self.host, self.len) };
-    }
-}
-
 impl std::fmt::Debug for Layer {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Layer")
-            .field("head", &self.head.len)
+            .field("head", &self.head.len())
             .field("data", &self.data.len)
             .finish_non_exhaustive()
     }
@@ -652,16 +630,10 @@ impl Layer {
         let data = file.metadata().map_err(|e| format!("its layer: {e}"))?.len();
         let (head_len, block) = layer_head(data)?;
         let len = usize::try_from(head_len).map_err(|_| format!("a layer head of {head_len} bytes"))?;
-        let host = platform::reserve_ram(len).map_err(|e| format!("its layer's head: {e}"))?;
-        let head = Head {
-            host,
-            len,
-            _file: None,
-        };
-        // SAFETY: the reservation is `len` bytes, more than 8 KiB, and only this value
-        // holds it yet.
+        let head = Head::new(len).map_err(|e| format!("its layer's head: {e}"))?;
+        // SAFETY: the head is `len` bytes, more than 8 KiB, and only this value holds it yet.
         unsafe {
-            std::ptr::copy_nonoverlapping(block.as_ptr(), host.as_ptr().add(4096), block.len());
+            std::ptr::copy_nonoverlapping(block.as_ptr(), head.host().as_ptr().add(4096), block.len());
         }
         Layer::over(head, file, data)
     }
@@ -670,44 +642,10 @@ impl Layer {
     /// snapshot's copy ([`save`](Self::save)), each 2 MiB block where the head had it, and
     /// `file`, the run's copy of its file system as the snapshot kept it, mapped shared.
     pub fn restore(kept: File, file: File) -> Result<Layer, String> {
-        let at = |e: std::io::Error| format!("its layer's head: {e}");
         let data = file.metadata().map_err(|e| format!("its layer: {e}"))?.len();
         let (head_len, _) = layer_head(data)?;
         let len = usize::try_from(head_len).map_err(|_| format!("a layer head of {head_len} bytes"))?;
-        let blocks = len / HEAD_BLOCK;
-        let index = read_head_index(&kept, blocks).map_err(|e| format!("its layer's head: {e}"))?;
-        let host = platform::reserve(len).map_err(at)?;
-        // Held from here, so that a failure releases the reservation.
-        let mut head = Head {
-            host,
-            len,
-            _file: None,
-        };
-        for (i, kept_at) in index.iter().enumerate() {
-            let Some(n) = kept_at else {
-                continue;
-            };
-            let offset = kept_block_at(*n, blocks)?;
-            // SAFETY: a whole block of the reservation, which nothing references yet.
-            match unsafe { platform::map_file_private(&kept, offset, HEAD_BLOCK, host.add(i * HEAD_BLOCK)) } {
-                Ok(()) => {}
-                // Where no file maps over part of a reservation (Windows), read into it, as
-                // guest RAM is restored there (`GuestMemory::from_file`).
-                Err(e) if e.kind() == std::io::ErrorKind::Unsupported => {
-                    // SAFETY: a whole block of the reservation, committed memory that
-                    // nothing references yet.
-                    let block = unsafe {
-                        std::slice::from_raw_parts_mut(host.as_ptr().add(i * HEAD_BLOCK), HEAD_BLOCK)
-                    };
-                    platform::read_exact_at(&kept, block, offset).map_err(at)?;
-                }
-                Err(e) => return Err(at(e)),
-            }
-        }
-        // On the host's base pages, as guest RAM restored from a file is (`GuestMemory::
-        // from_file`, PM M287): a block's page structures the guest touches are a few pages.
-        platform::small_pages(host, len);
-        head._file = Some(kept);
+        let head = Head::restore(kept, len).map_err(|e| format!("its layer's head: {e}"))?;
         Layer::over(head, file, data)
     }
 
@@ -751,7 +689,7 @@ impl Layer {
 
     /// The device's length: its head and its file system.
     pub fn len(&self) -> u64 {
-        (self.head.len + self.data.len) as u64
+        (self.head.len() + self.data.len) as u64
     }
 
     pub fn is_empty(&self) -> bool {
@@ -774,11 +712,11 @@ impl Layer {
             return Err(format!("a layer at {gpa:#x}: a {} MiB boundary", SECTION >> 20));
         }
         let data_gpa = gpa
-            .checked_add(self.head.len as u64)
+            .checked_add(self.head.len() as u64)
             .filter(|at| at.checked_add(self.data.len as u64).is_some())
             .ok_or_else(|| format!("a layer at {gpa:#x} overflows the address space"))?;
         Ok([
-            (gpa, self.head.host.as_ptr(), self.head.len),
+            (gpa, self.head.host().as_ptr(), self.head.len()),
             (data_gpa, self.data.host(), self.data.len),
         ])
     }
@@ -798,14 +736,14 @@ impl Layer {
             return Err(RELEASED.into());
         }
         let at = |e: std::io::Error| format!("its layer: {e}");
-        save_head(head, self.head.host, self.head.len).map_err(at)?;
+        self.head.save(head).map_err(at)?;
         // SAFETY: the mapping `data` holds, for the layer's life.
         unsafe { platform::flush_shared(self.data.host, self.data.len) }.map_err(at)?;
         // The file system's part of the guest's mapping, after the head.
         let guest = self
             .guest
             .get()
-            .map(|(gpa, mapper)| (gpa + self.head.len as u64, mapper));
+            .map(|(gpa, mapper)| (gpa + self.head.len() as u64, mapper));
         let unmap = || {
             guest
                 .as_ref()
@@ -852,55 +790,22 @@ impl Layer {
     /// The machine is paused and the head saved into `kept` since: no vCPU runs and no host
     /// thread touches the head until this returns.
     pub unsafe fn remap_head(&self, kept: &File) -> Result<(), String> {
-        let len = self.head.len;
+        let len = self.head.len();
         let guest = self.guest.get();
         if let Some((gpa, mapper)) = guest {
             mapper.unmap(*gpa, len)?;
         }
         // SAFETY: the caller's contract; the guest has the head no more meanwhile.
-        let remapped = unsafe { self.map_head_back(kept) };
+        let remapped = unsafe { self.head.map_back(kept) }.map_err(|e| format!("its layer's head: {e}"));
         if let Some((gpa, mapper)) = guest {
             // SAFETY: the head stays mapped in this process for the layer's life, which
             // outlives the VM (`Running` drops the VM before the devices).
-            if let Err(e) = unsafe { mapper.map(self.head.host.as_ptr(), *gpa, len) } {
+            if let Err(e) = unsafe { mapper.map(self.head.host().as_ptr(), *gpa, len) } {
                 self.lost.store(true, Ordering::Release);
                 return Err(e);
             }
         }
         remapped
-    }
-
-    /// [`remap_head`](Self::remap_head)'s mapping of each block.
-    ///
-    /// # Safety
-    /// As for [`remap_head`](Self::remap_head); no hypervisor whose stage 2 holds the
-    /// pages it maps maps the head meanwhile.
-    unsafe fn map_head_back(&self, kept: &File) -> Result<(), String> {
-        let at = |e: std::io::Error| format!("its layer's head: {e}");
-        let blocks = self.head.len / HEAD_BLOCK;
-        let index = read_head_index(kept, blocks).map_err(|e| format!("its layer's head: {e}"))?;
-        // On the host's base pages, as a restore's head is ([`restore`](Self::restore)).
-        platform::small_pages(self.head.host, self.head.len);
-        for (i, kept_at) in index.iter().enumerate() {
-            // SAFETY: a whole block of the head, which nothing touches meanwhile (the
-            // caller's contract), and which held what the copy keeps of it.
-            let block = unsafe { self.head.host.add(i * HEAD_BLOCK) };
-            let remapped = match kept_at {
-                // SAFETY: as above.
-                None => unsafe { platform::discard(block, HEAD_BLOCK) },
-                Some(n) => {
-                    let offset = kept_block_at(*n, blocks)?;
-                    // SAFETY: as above.
-                    unsafe { platform::map_file_private(kept, offset, HEAD_BLOCK, block) }
-                }
-            };
-            match remapped {
-                Ok(()) => {}
-                Err(e) if e.kind() == std::io::ErrorKind::Unsupported => return Ok(()),
-                Err(e) => return Err(at(e)),
-            }
-        }
-        Ok(())
     }
 
     /// Lets go of its file system's mapping and file once its machine is gone, rather than
@@ -915,144 +820,6 @@ impl Layer {
         // SAFETY: forwarded caller contract; `mappings` and `save` refuse it after.
         unsafe { self.data.release() }
     }
-}
-
-/// A layer head's blocks as a snapshot keeps them: what the guest's kernel fills each of a
-/// whole 2 MiB, a section's page structures (vmemmap_populate_hugepages).
-const HEAD_BLOCK: usize = ALIGN as usize;
-/// A kept head's first bytes (D190).
-const HEAD_MAGIC: [u8; 8] = *b"SHRDHEAD";
-/// The most blocks a kept head's index compares each block with before it keeps it as one
-/// more: a head's alike blocks are a few kinds.
-const HEAD_KINDS: usize = 64;
-
-/// The bytes of a kept head's index for `blocks` blocks: its magic, its count, and a 32-bit
-/// number for each, whole blocks of it, so that what follows lies at block boundaries.
-fn head_index_len(blocks: usize) -> u64 {
-    let bytes = 12 + 4 * blocks as u64;
-    bytes.next_multiple_of(HEAD_BLOCK as u64)
-}
-
-/// Where a kept head of `blocks` blocks keeps its block `n`: after its index, in the order
-/// [`save_head`] kept them.
-fn kept_block_at(n: u32, blocks: usize) -> Result<u64, String> {
-    u64::from(n)
-        .checked_mul(HEAD_BLOCK as u64)
-        .and_then(|o| o.checked_add(head_index_len(blocks)))
-        .ok_or_else(|| "a layer head's block past any file".to_string())
-}
-
-/// Writes the `len` bytes of a head at `host`, whole [`HEAD_BLOCK`]s, into `file`: an index
-/// of its blocks, each a number among those kept after it, or `u32::MAX` for all zeros;
-/// then each kept block once, in the order first met.
-fn save_head(file: &File, host: NonNull<u8>, len: usize) -> std::io::Result<()> {
-    let invalid = || std::io::Error::from(std::io::ErrorKind::InvalidInput);
-    if !len.is_multiple_of(HEAD_BLOCK) {
-        return Err(invalid());
-    }
-    let blocks = len / HEAD_BLOCK;
-    let block = |i: usize| host.as_ptr().wrapping_add(i * HEAD_BLOCK).cast_const();
-    // The head blocks kept, by their first place in the head.
-    let mut kept: Vec<usize> = Vec::new();
-    let mut index: Vec<u32> = Vec::with_capacity(blocks);
-    for i in 0..blocks {
-        // SAFETY: a whole block within the head, which the paused machine leaves alone.
-        if unsafe { words_zero(block(i), HEAD_BLOCK) } {
-            index.push(u32::MAX);
-            continue;
-        }
-        // Compared with the first kinds kept alone: past them, each block is kept as it is.
-        // SAFETY: as above, for both blocks.
-        let alike = kept
-            .iter()
-            .take(HEAD_KINDS)
-            .position(|&k| unsafe { words_equal(block(i), block(k), HEAD_BLOCK) });
-        let n = match alike {
-            Some(n) => n,
-            None => {
-                kept.push(i);
-                kept.len() - 1
-            }
-        };
-        index.push(u32::try_from(n).map_err(|_| invalid())?);
-    }
-    let first = head_index_len(blocks);
-    let mut header = Vec::with_capacity(12 + 4 * blocks);
-    header.extend_from_slice(&HEAD_MAGIC);
-    header.extend_from_slice(&u32::try_from(blocks).map_err(|_| invalid())?.to_le_bytes());
-    for n in &index {
-        header.extend_from_slice(&n.to_le_bytes());
-    }
-    file.set_len(0)?;
-    platform::write_all_at(file, &header, 0)?;
-    for (n, &i) in kept.iter().enumerate() {
-        let at = first + (n * HEAD_BLOCK) as u64;
-        let mut done = 0;
-        while done < HEAD_BLOCK {
-            // SAFETY: the rest of block `i` of the head, which the kernel only reads.
-            let wrote =
-                unsafe { platform::write_at(file, block(i).add(done), HEAD_BLOCK - done, at + done as u64) }?;
-            if wrote == 0 {
-                return Err(std::io::ErrorKind::WriteZero.into());
-            }
-            done += wrote;
-        }
-    }
-    file.set_len(first + (kept.len() * HEAD_BLOCK) as u64)
-}
-
-/// The index of a head [`save_head`] kept in `file`, of `blocks` blocks: each block's
-/// number among those kept, or none for zeros; checked against the file's length.
-fn read_head_index(file: &File, blocks: usize) -> Result<Vec<Option<u32>>, String> {
-    let mut magic = [0u8; 12];
-    platform::read_exact_at(file, &mut magic, 0).map_err(|e| e.to_string())?;
-    if magic.get(..8) != Some(&HEAD_MAGIC[..]) {
-        return Err("not a layer head shards kept".into());
-    }
-    let count = magic
-        .get(8..12)
-        .and_then(|b| <[u8; 4]>::try_from(b).ok())
-        .map(u32::from_le_bytes);
-    if count != u32::try_from(blocks).ok() {
-        return Err(format!("a head of {count:?} blocks kept for one of {blocks}"));
-    }
-    let mut raw = vec![0u8; 4 * blocks];
-    platform::read_exact_at(file, &mut raw, 12).map_err(|e| e.to_string())?;
-    let len = file.metadata().map_err(|e| e.to_string())?.len();
-    let kept = len.saturating_sub(head_index_len(blocks)) / HEAD_BLOCK as u64;
-    raw.as_chunks::<4>()
-        .0
-        .iter()
-        .map(|b| {
-            let n = u32::from_le_bytes(*b);
-            match n {
-                u32::MAX => Ok(None),
-                n if u64::from(n) < kept => Ok(Some(n)),
-                n => Err(format!("a head's block {n} past the {kept} it keeps")),
-            }
-        })
-        .collect()
-}
-
-/// Whether the `len` bytes at `p`, word-aligned, are all zeros, read word by word as the
-/// guest's memory they are.
-///
-/// # Safety
-/// `p` must be valid for reads of `len` bytes, word-aligned, a whole number of words.
-unsafe fn words_zero(p: *const u8, len: usize) -> bool {
-    let words = p.cast::<u64>();
-    // SAFETY: each word lies within the caller's range.
-    (0..len / 8).all(|k| unsafe { words.add(k).read_volatile() } == 0)
-}
-
-/// Whether the `len` bytes at `a` and at `b` are alike, read word by word.
-///
-/// # Safety
-/// As [`words_zero`], for both.
-unsafe fn words_equal(a: *const u8, b: *const u8, len: usize) -> bool {
-    let (a, b) = (a.cast::<u64>(), b.cast::<u64>());
-    // SAFETY: each word lies within the caller's ranges.
-    (0..len / 8).all(|k| unsafe { a.add(k).read_volatile() == b.add(k).read_volatile() })
 }
 
 /// What a virtio-pmem device is backed by.
@@ -1334,6 +1101,9 @@ fn respond(chain: &Chain, mem: &Access<'_>, ret: u32) -> u32 {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::indexing_slicing)]
 mod tests {
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    use super::super::head::kept_block_at;
+    use super::super::head::{HEAD_BLOCK, read_head_index, save_head, words_equal};
     use super::*;
 
     /// Slots no hypervisor maps: whatever a window asks of them is done.
@@ -1483,7 +1253,7 @@ mod tests {
 
         // What is no kept head is refused.
         let e = Layer::restore(file(&dir, "short", ALIGN), file(&dir, "fs2", data_len)).unwrap_err();
-        assert!(e.contains("not a layer head"), "{e}");
+        assert!(e.contains("not a head shards kept"), "{e}");
         let e = restored.mappings(ALIGN).unwrap_err();
         assert!(e.contains("boundary"), "{e}");
     }

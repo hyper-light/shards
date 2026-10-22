@@ -11777,3 +11777,46 @@ revision before comparing a changed API/implementation.
   window is given by default: a whole page the host does not hold written as a FUSE_WRITE,
   and the window's page structures out of the guest's memory. The Mac's passes are to be
   run again with the fix.
+
+### M300. What a DAX window takes of its guest's memory with its head (D189, item 5)
+
+- **Question.** Linux takes a DAX window's page structures, a 64th of it, from its guest's
+  memory as it probes the device (M269). With the window's head, a region of the device's
+  own right before the window that the guest's kernel keeps them in (shards' kernel patch
+  0008, a vmem_altmap, as libnvdimm keeps a pmem namespace's), what does a window take?
+- **Method.** `dax-window/heads-ab.sh`, M269's `measure.sh` with each kernel booted in
+  turn, round by round, and `heads-ab.py`: the test guest as PID 1, 512 MiB, one shared
+  directory whose device gives a window of each length with its head (a release build of
+  the working tree, 2026-10-22), on the pinned kernel (no patch) and on one built with 0008
+  (`scripts/build-kernel.sh`). Fedora 44, Linux 6.19.10, M258's i9-14900HX, load about 1: 5
+  rounds of 0, 128, 256, 512, 1024, 2048 and 4096 MiB, then 12 of 0, 1024 and 4096.
+- **Results.** A boot's free memory falls in one of two bands about 12 MiB apart, the same
+  for every length and either kernel (5 of 12 boots without a window in the lower one, and
+  1 of 8 with a single vCPU, so not the per-CPU free lists), so what a window takes is read
+  from the most free of a length's boots against the most free with none (MiB; p50's in
+  brackets):
+
+  | window | pinned kernel, n 5 | with the head, n 5 | pinned, n 12 | with the head, n 12 |
+  |---|---|---|---|---|
+  | 128 MiB | 1.7 (0.3) | -0.2 (0.0) | | |
+  | 256 MiB | 2.4 (2.3) | 1.1 (1.6) | | |
+  | 512 MiB | 7.9 (20.9) | -0.3 (-1.4) | | |
+  | 1 GiB | 15.6 (28.4) | -0.1 (-0.1) | 16.0 (28.6) | -0.3 (5.7) |
+  | 2 GiB | 30.6 (30.6) | 0.4 (14.4) | | |
+  | 4 GiB | 62.8 (63.3) | -0.1 (13.9) | 63.8 (77.3) | -1.6 (0.8) |
+
+  PID 1 ran at 0.07 s at p50 for every length but 4 GiB: 0.10 on the pinned kernel (max
+  0.11, n 12), 0.08 with the head (max 0.08). The VM process's minor faults for a boot
+  (`/usr/bin/time`, n 3 each): 9,428 to 9,625 without a window on either kernel; 25,866 to
+  25,954 with a 4 GiB one on the pinned kernel, 8,769 to 9,635 with its head.
+- **Reading.** Without its head a window takes a 64th of its length on x86_64, its page
+  structures alone, where M269's arm64 took a 64th and 15% more, its linear map's page
+  tables (base pages there: a 512th); with it, nothing past the spread of one length's
+  boots (the most free of a length 462.4 to 464.5 MiB). Its page structures are written
+  still, into the head, and a 4 GiB window's boot is 20 ms sooner: in guest RAM, which a
+  boot keeps on the host's base pages (D29), its 64 MiB took 16,400 more faults, one a 4
+  KiB page; the head is on huge pages as its reservation advises, and they took none
+  measurable.
+- **Consequence.** D189: a window's page structures are its head's (snapshot format 25).
+  arm64's, whose linear map takes its own page tables for the window, is measured with the
+  kernel CI publishes with 0008.

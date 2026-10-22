@@ -806,6 +806,8 @@ fn save_request(message: shards_ipc::Message) -> Result<shards_vmm::vm::Saved, S
         (None, None) => None,
         _ => return Err("a save brings its writable layer's head without its file system".into()),
     };
+    // Its DAX windows' heads (D189).
+    let window_heads = fds.next();
     if fds.next().is_some() {
         return Err(format!("a save brings too many descriptors: {count}"));
     }
@@ -825,6 +827,7 @@ fn save_request(message: shards_ipc::Message) -> Result<shards_vmm::vm::Saved, S
         state,
         swap,
         layer,
+        window_heads,
         then,
     });
     // The guest goes on where the microVM does: saved and left running, or not saved.
