@@ -4504,9 +4504,9 @@ impl<D: Disk> Daemon<D> {
                         // started (D190): its journal written in place where it said so
                         // (`LAYER_KEPT`), else to replay.
                         if inbox.layer.is_some() && inbox.started {
-                            self.settle_kept(id, inbox);
+                            self.settle_kept(id, inbox, None);
                         } else {
-                            self.settle_layer(id, inbox, false);
+                            self.settle_layer(id, inbox, false, None);
                         }
                     }
                     continue;
@@ -4625,30 +4625,20 @@ impl<D: Disk> Daemon<D> {
                 // said once nothing of its machine writes it (`warm::tell_kept`): the
                 // container's from now on.
                 kind::LAYER_KEPT => {
+                    let used = <[u8; 8]>::try_from(m.payload.as_slice())
+                        .ok()
+                        .map(u64::from_be_bytes);
                     if inbox.layer_pending {
-                        self.settle_kept(id, inbox);
-                    }
-                    if let Ok(used) = <[u8; 8]>::try_from(m.payload.as_slice()) {
-                        let used = u64::from_be_bytes(used);
-                        if lock(&self.containers)
-                            .change(id, |c| c.size_rw = Some(used))
-                            .is_ok()
-                        {
-                            self.record_soon(id, Vec::new());
-                        }
+                        self.settle_kept(id, inbox, used);
+                    } else {
+                        self.layer_used(id, used);
                     }
                 }
                 kind::LAYER_SAVED => {
-                    self.settle_layer(id, inbox, true);
-                    if let Ok(used) = <[u8; 8]>::try_from(m.payload.as_slice()) {
-                        let used = u64::from_be_bytes(used);
-                        if lock(&self.containers)
-                            .change(id, |c| c.size_rw = Some(used))
-                            .is_ok()
-                        {
-                            self.record_soon(id, Vec::new());
-                        }
-                    }
+                    let used = <[u8; 8]>::try_from(m.payload.as_slice())
+                        .ok()
+                        .map(u64::from_be_bytes);
+                    self.settle_layer(id, inbox, true, used);
                 }
                 kind::EXEC_ENDED => {
                     if let Some((n, &[status])) = m.payload.split_first_chunk::<8>()
@@ -4717,7 +4707,20 @@ impl<D: Disk> Daemon<D> {
 
     /// Container `id`'s writable layer, as its VM left it (D37): kept if it came `whole`;
     /// else what came of it goes, and the layer it had before stays.
-    fn settle_layer(&self, id: &str, inbox: &mut Inbox, whole: bool) {
+    /// What container `id`'s writable layer uses as its last run left it, where its VM said
+    /// (`SizeRw`, inspect's): recorded before its layer is settled, so that a reader that
+    /// waited for it (`await_settled`) reads it.
+    fn layer_used(&self, id: &str, used: Option<u64>) {
+        if let Some(used) = used
+            && lock(&self.containers)
+                .change(id, |c| c.size_rw = Some(used))
+                .is_ok()
+        {
+            self.record_soon(id, Vec::new());
+        }
+    }
+
+    fn settle_layer(&self, id: &str, inbox: &mut Inbox, whole: bool, used: Option<u64>) {
         inbox.layer_pending = false;
         // Its VM's file goes (D190): what the VM sent is its layer now, or nothing is.
         inbox.layer = None;
@@ -4733,13 +4736,14 @@ impl<D: Disk> Daemon<D> {
         {
             log(format!("container {id}: its writable layer: {e}"));
         }
+        self.layer_used(id, used);
         lock(&self.settling).remove(id);
         self.settled.notify_all();
     }
 
     /// Container `id`'s writable layer, kept in its VM's file (D190), its VM gone: the
     /// file is its layer from now on, in its directory, in place of what it had.
-    fn settle_kept(&self, id: &str, inbox: &mut Inbox) {
+    fn settle_kept(&self, id: &str, inbox: &mut Inbox, used: Option<u64>) {
         inbox.layer_pending = false;
         // A container removed as its microVM went (`rm -f`) keeps nothing: the file goes.
         if let Some(layer) = inbox.layer.take()
@@ -4755,6 +4759,7 @@ impl<D: Disk> Daemon<D> {
         if let Err(e) = remove_if_there(&inbox.container.join(LAYER_NEW)) {
             log(format!("container {id}: its writable layer: {e}"));
         }
+        self.layer_used(id, used);
         lock(&self.settling).remove(id);
         self.settled.notify_all();
     }
