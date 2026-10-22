@@ -5890,12 +5890,15 @@ A harness that sorts its runs' failures could not tell a pids limit from any oth
   (dockerd has none): its attributes the name and image every event of a container's has,
   with `pids.max` and `refused`. Docker's typed State stays Docker's: inspect gains
   nothing.
+- **A joiner's too** (D119): init reads its own cgroup's `pids.events` as its process is
+  reaped, before its cgroup goes, as its OOM is read (D159), and sends `PIDS` before its
+  `EXIT`; the VM process passes it on as it passes a joiner's `OOM`, and the event is the
+  joiner's container's.
 - **Tested** (containers.rs `a_run_past_its_pids_limit_says_so`, on real microVMs): a
   `--pids-limit 4` run starting eight threads at once says one `pids-limit` event, with
   `pids.max` 4 and a count of what was refused, and the daemon's log its facts; a run
-  within its limit says none.
-
-**Next.** A joiner's (D119), from its own cgroup's `pids.events`, as its OOM is read.
+  within its limit says none; a `--network container:` joiner held to `--pids-limit 4`
+  says its own, by its own name (without init's read of its cgroup, the test fails).
 
 ### D192. A network's egress: its members' own commands reach the destinations it names, and nothing else (built)
 

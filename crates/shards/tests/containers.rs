@@ -9947,7 +9947,8 @@ fn restart_policies_start_microvms_again() {
 /// A run refused a process or thread past its `--pids-limit` says so (D193): a
 /// `pids-limit` event of its container's, with the limit and how many it refused, which no
 /// state of Docker's has, and the daemon's log of what its cgroup was allowed and held; a
-/// run within its limit says nothing of it.
+/// run within its limit says nothing of it; and a container joined to another's network
+/// (D119), held to its own limit in its own cgroup, says so of its own.
 #[test]
 fn a_run_past_its_pids_limit_says_so() {
     let Some((home, image)) = home("containers-pids") else {
@@ -10002,6 +10003,43 @@ fn a_run_past_its_pids_limit_says_so() {
         log.contains("past its pids limit, a process or thread was refused: pids.max 4"),
         "{log}"
     );
+    // A joiner's own limit, in its own cgroup.
+    let provider = run_in(&home, &image, &["-d", "--name", "provider"], &["sleep"]);
+    assert_eq!(provider.status, Some(0), "{provider}");
+    let since = now().to_string();
+    let joined = run_in(
+        &home,
+        &image,
+        &[
+            "--rm",
+            "--name",
+            "joined",
+            "--network",
+            "container:provider",
+            "--pids-limit",
+            "4",
+        ],
+        &["burn", "8", "100"],
+    );
+    assert!(joined.stdout.contains("of 8 threads"), "{joined}");
+    let until = (now() + 1).to_string();
+    let events = shards_in(
+        &home,
+        &[
+            "events",
+            "--since",
+            &since,
+            "--until",
+            &until,
+            "--filter",
+            "event=pids-limit",
+            "--format",
+            r#"{{.Actor.Attributes.name}} {{index .Actor.Attributes "pids.max"}}"#,
+        ],
+    );
+    assert_eq!(events.stdout, "joined 4\n", "{events}");
+    let removed = shards_in(&home, &["rm", "-f", "provider"]);
+    assert_eq!(removed.status, Some(0), "{removed}");
 }
 
 /// `update -m` moves a running microVM's memory both ways (the user's plan, item 3): every

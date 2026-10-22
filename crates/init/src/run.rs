@@ -1517,8 +1517,13 @@ fn oom_facts(dir: &str) -> Vec<u8> {
 /// the limit failed), what it was allowed and held at most, and how many; none where none
 /// was. The words of the run's `PIDS`, which its daemon logs and says as an event.
 fn pids_refused() -> Option<Vec<u8>> {
+    pids_refused_in(WORKLOAD_CGROUP)
+}
+
+/// [`pids_refused`] of the cgroup at `dir`: the workload's, or a joiner's (D119).
+fn pids_refused_in(dir: &str) -> Option<Vec<u8>> {
     let read = |file: &str| {
-        std::fs::read_to_string(format!("{WORKLOAD_CGROUP}/{file}"))
+        std::fs::read_to_string(format!("{dir}/{file}"))
             .map(|s| s.split_whitespace().collect::<Vec<_>>().join(" "))
             .unwrap_or_else(|_| "-".into())
     };
@@ -3098,6 +3103,9 @@ struct Exec {
     /// A joiner's process the kernel killed for want of memory: what its cgroup held and
     /// was allowed, read as its process ended, before its cgroup went (D159).
     oom: Option<Vec<u8>>,
+    /// What a joiner's cgroup was refused past its `pids.max` (D193), read as it ended,
+    /// before its cgroup went.
+    pids: Option<Vec<u8>>,
     /// A joiner made through its microVM's own engine (D181), which ends as the workload
     /// does, as a nested engine's containers end with it.
     engine_made: bool,
@@ -3875,6 +3883,7 @@ impl Exec {
             ended: false,
             joined: false,
             oom: None,
+            pids: None,
             engine_made: false,
             proxy: None,
             save: Save::Unasked,
@@ -4501,6 +4510,7 @@ impl Workload {
                                     if crate::plug::oom_kills(&dir) > 0 {
                                         e.oom = Some(oom_facts(&dir));
                                     }
+                                    e.pids = pids_refused_in(&dir);
                                     crate::join::remove_cgroup(e.id);
                                     // Its membership of the microVM's switch (D181).
                                     crate::members::leave(e.id);
@@ -4847,6 +4857,14 @@ impl Workload {
                         let len = u32::try_from(facts.len()).unwrap_or(0);
                         e.to_conn.extend(&[
                             &run::header(kind::OOM, len),
+                            facts.get(..len as usize).unwrap_or_default(),
+                        ]);
+                    }
+                    // And what its cgroup was refused past its pids limit (D193).
+                    if let Some(facts) = e.pids.take() {
+                        let len = u32::try_from(facts.len()).unwrap_or(0);
+                        e.to_conn.extend(&[
+                            &run::header(kind::PIDS, len),
                             facts.get(..len as usize).unwrap_or_default(),
                         ]);
                     }
